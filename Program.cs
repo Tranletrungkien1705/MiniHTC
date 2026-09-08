@@ -46079,6 +46079,103 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #714 CẤU HÌNH MÁY CHỦ THƯ: TẠO / SỬA `Email_Config_Create` + `_Update` =====
+// `BizCarSv.SendMail.cs` — `_Create` :2154-2351 md5 `7fb63ded` · `_Update` :2353-2561 md5 `01b43a24`
+// (**cả hai KHỚP máy 150, cùng offset**). → `POST /api/email/serverconfigs`, `PUT .../{idConfig}`.
+// Hoàn tất bộ ba với `_Delete` đã port ở #710. Đối chiếu cặp create/update theo luật #404.
+//
+// 🔴🔴🔴 **`@@Identity` THAY VÌ `SCOPE_IDENTITY()`** — lỗi kinh điển, ở đây có hậu quả dây chuyền:
+//     `declare @ID int  select @ID = **@@Identity**  select cf.* from Email_Config cf where cf.IdConfig = @ID`
+//   `@@IDENTITY` trả identity cuối cùng **của cả PHIÊN**, **kể cả sinh ra bên trong TRIGGER** trên bảng khác.
+//   ⇒ Nếu `Email_Config` có trigger ghi sang một bảng có `identity`, `@ID` là ID của **bảng kia** ⇒ câu `select`
+//     trả **0 dòng** ⇒ dòng ngay sau đó `dsGetData.Tables[0].**Rows[0]**[0].ToString()` ném **IndexOutOfRange**
+//     — và trước đó `SaveData` **đã ghi**, nên bản ghi tồn tại nhưng lời gọi **báo lỗi**.
+//   📌 `Rows.Count` xuất hiện **0 lần** trong cả `_Create` lẫn `_Update` (đã đếm) ⇒ không có lưới an toàn nào.
+// 🔴🔴🔴 **MẬT KHẨU SMTP ĐI VÀO DANH SÁCH THAM SỐ CỦA LOG LỖI**: `alParamsCoupleError` chứa
+//     `, "strmailServerPassword", strmailServerPassword`
+//   ⇒ mọi lần ném lỗi đều mang theo **mật khẩu máy chủ thư** vào nhật ký.
+//   📌 **Mở rộng #594**: ở đó tôi ghi *API trả mật khẩu SMTP*; nay thêm hai đường rò nữa — **log lỗi** (đây) và
+//     **`select cf.*` trả về client** ngay trong hàm TẠO (dưới).
+// 🔴🔴🔴 **HÀM TẠO TRẢ NGUYÊN DÒNG CẤU HÌNH, GỒM CẢ MẬT KHẨU**: `select **cf.***` rồi
+//   `DataUtils.MoveDataTable(ref mdsFinal, ref dsGetData)` ⇒ `mailServerPassword` **đi thẳng ra client** như
+//   một phần kết quả của thao tác tạo.
+// 🔴🔴 **`_Update` DÙNG `"top 1 *"` KHÔNG `ORDER BY`** rồi ghi `Rows[0]` — **y hệt #711**; `IdConfig` là khoá
+//   nên thường vô hại, nhưng khuôn thì giống hệt và **không có kiểm `Rows.Count`**.
+// 🔴🔴 **KHÔNG HÀM NÀO CÓ `#region // Check`** (#403 — đã liệt kê trọn region để trích):
+//   `_Create` = `Temp:` · `Init:` · **`dt_Ser_Customer: //dt_Email_Config`** · `Catch of try:` · `Finally of try:`;
+//   `_Update` = `Temp:` · `Init:` · `Update:` · `Catch of try:` · `Finally of try:`. `CMyException.Raise` **0 lần**
+//   ở cả hai ⇒ **hai đường ghi không validate** (họ #709/#710).
+// 🔴 **TÊN REGION CỦA `_Create` CÒN NGUYÊN TỪ VỰNG CỦA HÀM KHÁCH HÀNG**: `#region // **dt_Ser_Customer**:
+//   //dt_Email_Config` — tên cũ **không xoá**, tên đúng dán thêm phía sau. **Mẫu thứ NĂM** của họ "khối chép từ
+//   hàm khác" (sau #703 · #707 · #708 · #709).
+// 🔴 **`_dbDealer` bị `RollbackSafety` ở LỐI RA THÀNH CÔNG** — đúng họ #710/#711.
+// ⚪ **DƯƠNG TÍNH — #404: hai hàm ghi khác nhau ĐÚNG CHỖ ĐÁNG KHÁC**: `_Create` gọi `SaveData` **không** kèm
+//   danh sách cột (ghi trọn dòng mới); `_Update` truyền `alEffectiveColumn` (**chỉ** cột được đổi). Hợp lý.
+// ⚪ **DƯƠNG TÍNH — ĐỒNG BỘ ID SANG KHO ĐÚNG CÁCH**: `_Create` gán `IdConfig` lấy từ Main vào DataTable **trước**
+//   khi `SetDataRowStateOfAllRows(…, Added)` + `_dbWH.SaveData` ⇒ hai CSDL **cùng một `IdConfig`**, không để
+//   identity của WH tự sinh. (Thủ thuật giống #711 nhưng ở đây dùng **đúng**.)
+app.MapPost("/api/email/serverconfigs", async (EmailServerConfigDto dto, AppDbContext db, ITenantContext t) =>
+{
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    var row = new EmailServerConfig
+    {
+        OrgId = t.OrgId, IdConfig = (dto.IdConfig ?? "").Trim(), DealerCode = dto.DealerCode,
+        MailServerAddress = OrNull(dto.MailServerAddress), MailServerUser = OrNull(dto.MailServerUser),
+        MailServerPassword = OrNull(dto.MailServerPassword), Port = OrNull(dto.Port),
+        TimeOut = OrNull(dto.TimeOut), EnableSSL = dto.EnableSSL?.ToString(),
+        CreatedAt = DateTime.Now,
+    };
+    db.EmailServerConfigs.Add(row);
+    await db.SaveChangesAsync();
+    if (string.IsNullOrWhiteSpace(row.IdConfig)) { row.IdConfig = row.Id.ToString(); await db.SaveChangesAsync(); }
+
+    return Results.Ok(new
+    {
+        // 🔴 Nguồn trả `select cf.*` (GỒM mật khẩu). Port KHÔNG trả mật khẩu, chỉ báo có/không.
+        row.Id, row.IdConfig, row.DealerCode, row.MailServerAddress, row.MailServerUser,
+        row.Port, row.TimeOut, row.EnableSSL,
+        hasPassword = !string.IsNullOrEmpty(row.MailServerPassword),
+        // ===== #714 =====
+        usesAtAtIdentityInsteadOfScopeIdentity = "@@Identity THAY VI SCOPE_IDENTITY() — loi kinh dien, o day co hau qua day chuyen: declare @ID int; select @ID = @@Identity; select cf.* from Email_Config cf where cf.IdConfig = @ID. @@IDENTITY tra identity cuoi cung CUA CA PHIEN, KE CA sinh ra ben trong TRIGGER tren bang khac => neu Email_Config co trigger ghi sang mot bang co identity, @ID la ID cua BANG KIA => cau select tra 0 DONG => dong ngay sau do dsGetData.Tables[0].Rows[0][0].ToString() nem IndexOutOfRange — va truoc do SaveData DA GHI, nen ban ghi ton tai nhung loi goi BAO LOI. Rows.Count xuat hien 0 LAN trong ca _Create lan _Update (da dem) => khong co luoi an toan nao",
+        smtpPasswordGoesIntoErrorLogParameters = "MAT KHAU SMTP DI VAO DANH SACH THAM SO CUA LOG LOI: alParamsCoupleError chua (strmailServerPassword, strmailServerPassword) => moi lan nem loi deu mang theo MAT KHAU MAY CHU THU vao nhat ky. MO RONG #594: o do ghi API tra mat khau SMTP; nay them hai duong ro nua — LOG LOI (day) va select cf.* tra ve client ngay trong ham TAO",
+        createReturnsWholeRowIncludingPassword = "HAM TAO TRA NGUYEN DONG CAU HINH, GOM CA MAT KHAU: select cf.* roi DataUtils.MoveDataTable(ref mdsFinal, ref dsGetData) => mailServerPassword DI THANG RA CLIENT nhu mot phan ket qua cua thao tac tao. Port KHONG tra mat khau, chi bao hasPassword",
+        neitherFunctionHasCheckRegion = "KHONG HAM NAO CO #region // Check (#403 — da liet ke tron region de trich): _Create = Temp:, Init:, dt_Ser_Customer: //dt_Email_Config, Catch of try:, Finally of try:; _Update = Temp:, Init:, Update:, Catch of try:, Finally of try:. CMyException.Raise 0 LAN o ca hai => hai duong GHI KHONG VALIDATE (ho #709/#710)",
+        createRegionStillNamedAfterCustomerFunction = "TEN REGION CUA _Create CON NGUYEN TU VUNG CUA HAM KHACH HANG: #region // dt_Ser_Customer: //dt_Email_Config — ten cu KHONG XOA, ten dung dan them phia sau. MAU THU NAM cua ho khoi-chep-tu-ham-khac (sau #703, #707, #708, #709)",
+        dealerRolledBackOnSuccessPath = "_dbDealer bi RollbackSafety o LOI RA THANH CONG — dung ho #710/#711",
+        positiveCreateAndUpdateWriteDifferently = "DUONG TINH #404: _Create goi SaveData KHONG kem danh sach cot (ghi tron dong moi); _Update truyen alEffectiveColumn (CHI cot duoc doi). Hop ly, khac nhau dung cho dang khac",
+        positiveIdSyncedToWarehouseCorrectly = "DUONG TINH: _Create gan IdConfig lay tu Main vao DataTable TRUOC khi SetDataRowStateOfAllRows(…, Added) + _dbWH.SaveData => hai CSDL CUNG MOT IdConfig, khong de identity cua WH tu sinh. Thu thuat giong #711 nhung o day dung DUNG",
+    });
+}).RequireAuthorization();
+
+// #714 `Email_Config_Update` (:2353). `top 1 *` không `ORDER BY`, ghi `Rows[0]`, không kiểm `Rows.Count`.
+app.MapPut("/api/email/serverconfigs/{idConfig}", async (string idConfig, EmailServerConfigDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var key = (idConfig ?? "").Trim();
+    var row = await db.EmailServerConfigs.Where(x => x.OrgId == t.OrgId && x.IdConfig == key)
+        .OrderBy(x => x.Id).FirstOrDefaultAsync();      // nguồn `top 1 *` KHÔNG ORDER BY — port sắp xác định
+    if (row is null)
+        return Results.BadRequest(new
+        {
+            error = "IDCONFIG_NOT_FOUND", idConfig = key,
+            sourceWouldThrowIndexOutOfRange = "nguon ghi thang Rows[0] sau GetTableContents(top 1 *) ma KHONG kiem Rows.Count (ho #711/#709)",
+        });
+
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    row.DealerCode = dto.DealerCode;
+    row.MailServerAddress = OrNull(dto.MailServerAddress); row.MailServerUser = OrNull(dto.MailServerUser);
+    row.MailServerPassword = OrNull(dto.MailServerPassword); row.Port = OrNull(dto.Port);
+    row.TimeOut = OrNull(dto.TimeOut); row.EnableSSL = dto.EnableSSL?.ToString();
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.IdConfig, row.DealerCode, row.MailServerAddress, row.MailServerUser,
+        row.Port, row.TimeOut, row.EnableSSL,
+        hasPassword = !string.IsNullOrEmpty(row.MailServerPassword), updated = true,
+        sourceHasNoOrderBy = true,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #713 BÁO CÁO EMAIL KHÁCH ĐÃ NHẬN `Email_ReportCusReceivedEmail` =====
 // `BizCarSv.SendMail.cs:4562-4733`, md5 `9c22649e` — **KHỚP máy 150, cùng offset**.
 // → `GET /api/email/reports/customer-received`. Bảng mã của hàm này đã được **trích dẫn** ở #300 nhưng
@@ -63644,8 +63741,9 @@ record SupplierPartOrderDto(string? SupplierID, string? OrderNo = null, string? 
     List<SupplierPartOrderLineDto>? Lines = null);
 // #290: cấu hình gửi email tự động — 11 trường của `Email_ConfigSendAuto_Create`.
 // #433 Cấu hình máy chủ thư (Email_Config) — KHÁC EmailConfigSendAutoDto (lịch gửi tự động).
+// #714: them IdConfig — khoa ma Email_Config_Update tra (GetTableContents(top 1 *, IdConfig, =, ...)).
 record EmailServerConfigDto(string? DealerCode, string? MailServerAddress, string? MailServerUser,
-    string? MailServerPassword, string? Port, string? TimeOut, bool? EnableSSL);
+    string? MailServerPassword, string? Port, string? TimeOut, bool? EnableSSL, string? IdConfig = null);
 
 record EmailConfigSendAutoDto(string? DealerCode = null, string? AutoTime = null,
     DateTime? StartDate = null, DateTime? EndDate = null, string? Description = null,
