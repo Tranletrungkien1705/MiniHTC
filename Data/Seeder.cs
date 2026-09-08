@@ -2345,6 +2345,8 @@ public static class Seeder
                 "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"InvoiceIDCode\" text NULL",   // #B115 - nua kia cua PHAM VI day so
                 "ALTER TABLE public.\"VatHtcInvoices\" ADD COLUMN IF NOT EXISTS \"InvoiceIDCode\" text NULL",   // #B116
                 "ALTER TABLE public.\"VatHtcInvoices\" ADD COLUMN IF NOT EXISTS \"OS_HDDT_InvoiceCode\" text NULL",   // #B118
+                "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",   // #B232
+                "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",   // #B232
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",   // #B203
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"VisitDTime\" timestamp NULL",   // #B203
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",   // #B203

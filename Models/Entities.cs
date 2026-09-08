@@ -11372,6 +11372,10 @@ public sealed class PmtPayment
     public decimal? TotalAmount { get; set; }
     /// <summary>"P" khi tạo (TConst.Stage).</summary>
     public string PaymentStatus { get; set; } = "P";
+    /// <summary>🔴 #B232 — hai cột vết sửa mà `Pmt_Payment_UpdateFinancial` ghi
+    /// (`zzB_Update_Pmt_Payment_zzE`: `LogLUDateTime`/`LogLUBy`/`AccountingRecordNo`).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public string? Funds { get; set; }
     public string? BankLending { get; set; }
     /// <summary>Cờ đã đẩy sang ngân hàng ("1"/"0"), khởi tạo "0". Tên cột nguồn thiếu chữ n: "Baking".</summary>

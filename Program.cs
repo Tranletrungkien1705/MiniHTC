@@ -27846,6 +27846,102 @@ app.MapPost("/api/transportinspayments/{no}/update-multi", async (
     });
 }).RequireAuthorization();
 
+// ===== #B230/#B231 DANH SÁCH HỢP ĐỒNG CỦA PHIẾU THANH TOÁN — `Pmt_Payment_ContractList_Get`
+//       → `…_ContractList_GetX` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy** (vị trí **trùng**): cửa `48301,48411 / 886a5552b308bad2bbf0f2d59081e5b7` ·
+//   thân `48151,48300 / 6223ef5aa4e3ab01ae8a7794f914a32e`.
+//   ⚠️ Thân `…GetX` nằm **TRƯỚC** cửa trong file (48151 < 48301) — cùng khuôn #B153.
+// 🔴 **CHUỖI BỐN BƯỚC qua bảng tạm**, mỗi bước một `select distinct`:
+//   1. `#tblPmt_Payment` ← lọc `Pmt_Payment` theo điều kiện đầu vào;
+//   2. `#tblPmt_PaymentDtl` ← `inner join Pmt_PaymentDetail on t.PaymentNo = pmpd.PaymentNo`;
+//   3. gộp hợp đồng: `left join DMS40_CT_DealerContract` (theo **`DlrCtrNo`**) rồi
+//      `left join DMS40_CT_DealerContractDetail` (theo `DlrCtrNo`) + **`group by`**;
+//   4. kết quả cuối nối lại `Pmt_PaymentDetail` + `DMS40_CT_DealerContract` theo `pmpd.DlrCtrNo`.
+//   ⇒ **Khoá nối phiếu ↔ hợp đồng là `DlrCtrNo` nằm ở BẢNG DÒNG** (`Pmt_PaymentDetail`), **không**
+//     phải ở đầu phiếu. Port nối từ `Pmt_Payment` thẳng sang hợp đồng là **thiếu một chặng**.
+// 🔴 Dùng **`DMS40_CT_DealerContract`** (tiền tố **`DMS40_`**), khác `Dlr_Contract` của cụm hợp đồng
+//   đại lý (#B198) — **hai bảng hợp đồng khác nhau trong cùng hệ**; xem luật `C0-…septuagesimusquintus`.
+// 📌 **NỢ**: MiniHTC chưa có `DMS40_CT_DealerContract`/`…Detail` ⇒ endpoint trả danh sách
+//   **`DlrCtrNo` lấy từ `Pmt_PaymentDetail`** kèm cờ `contractTablesMissing`, **không bịa** thông tin
+//   hợp đồng.
+app.MapGet("/api/payments/{no}/contract-list", async (
+    string no, AppDbContext db, ITenantContext t) =>
+{
+    var pmtNo = (no ?? "").Trim().ToUpperInvariant();
+    var pmt = await db.PmtPayments.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PaymentNo == pmtNo);
+    if (pmt is null) return Results.NotFound(new { error = "Pmt_Payment_CheckDB_NotFound", check = new { PaymentNo = pmtNo } });
+
+    // 🔴 DlrCtrNo nằm ở BẢNG DÒNG, không phải ở đầu phiếu.
+    var contracts = await db.PmtPaymentDetails
+        .Where(d => d.OrgId == t.OrgId && d.PaymentNo == pmtNo && d.DlrCtrNo != null && d.DlrCtrNo != "")
+        .Select(d => d.DlrCtrNo)
+        .Distinct()
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        paymentNo = pmtNo,
+        count = contracts.Count,
+        DlrCtrNoList = contracts,
+        contractTablesMissing = true,
+        fourStepNote = "CHUOI BON BUOC qua bang tam, moi buoc mot 'select distinct': (1) #tblPmt_Payment <- loc Pmt_Payment; (2) #tblPmt_PaymentDtl <- inner join Pmt_PaymentDetail on PaymentNo; (3) gop hop dong: left join DMS40_CT_DealerContract theo DlrCtrNo roi left join DMS40_CT_DealerContractDetail + group by; (4) ket qua cuoi noi lai Pmt_PaymentDetail + DMS40_CT_DealerContract theo pmpd.DlrCtrNo.",
+        keyChainNote = "KHOA NOI PHIEU <-> HOP DONG la DlrCtrNo nam o BANG DONG (Pmt_PaymentDetail), KHONG phai o dau phieu. Port noi tu Pmt_Payment thang sang hop dong la THIEU MOT CHANG.",
+        tablePrefixNote = "Dung DMS40_CT_DealerContract (tien to DMS40_), KHAC Dlr_Contract cua cum hop dong dai ly (#B198) - HAI BANG HOP DONG KHAC NHAU trong cung he (luat C0-...septuagesimusquintus).",
+        bodyBeforeDoorNote = "Than ...GetX nam TRUOC cua trong file (48151 < 48301) - cung khuon #B153; dung gia dinh than luon nam sau cua.",
+        debtNote = "NO: MiniHTC chua co DMS40_CT_DealerContract/...Detail => endpoint tra danh sach DlrCtrNo lay tu Pmt_PaymentDetail, KHONG bia thong tin hop dong."
+    });
+}).RequireAuthorization();
+
+// ===== #B232 CẬP NHẬT SỐ CHỨNG TỪ KẾ TOÁN — `Pmt_Payment_UpdateFinancial`
+//       (`TCFIntergration/BizHTC.TCFIntergration.cs:2771`) =====
+// **3B khớp cả 2 máy**: `2771,3004 / d7f08b5b8508ac177545b94d279dcb21`.
+// ⚠️ **`strFunctionName` GHI SAI**: `= "Pmt_Payment_**CreateMulti**"` trong khi hàm là
+//   `Pmt_Payment_UpdateFinancial` (mã lỗi mặc định thì đúng). ⇒ **Log ghi tên hàm khác** — cùng họ
+//   với lỗi mã-lỗi-sai ở #B215. Ghi lại, **không tự sửa**.
+// 🔴🔴 **CHỈ SỬA ĐƯỢC PHIẾU ĐÃ HOÀN TẤT**: `Pmt_Payment_CheckDB(…, TConst.Stage.**Finished**)`
+//   ⇒ ngược với trực giác "sửa khi còn nháp": số chứng từ kế toán chỉ điền **sau khi** thanh toán xong.
+// 🔴 **Chỉ BA cột được ghi** (`zzB_Update_Pmt_Payment_zzE`):
+//   `LogLUDateTime` · `LogLUBy` · **`AccountingRecordNo`** — nối `on t.PaymentNo = f.PaymentNo`.
+//   ⇒ Không đụng số tiền, không đụng trạng thái.
+// 🔴 Bảng đầu vào rỗng ⇒ `…_UpdateFinancial_TableBlank`. Ghi **cả `_dbMain` và `_dbWH`**.
+app.MapPost("/api/payments/update-financial", async (
+    PmtUpdateFinancialDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Pmt_Payment_UpdateFinancial_TableBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = 0;
+    var notFinished = new List<object>();
+
+    foreach (var r in dto.Rows)
+    {
+        var pmtNo = (r.PaymentNo ?? "").Trim().ToUpperInvariant();
+        var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == pmtNo);
+        if (p is null) { notFinished.Add(new { PaymentNo = pmtNo, reason = "NotFound" }); continue; }
+
+        // 🔴 CHỈ phiếu ĐÃ HOÀN TẤT ('F') mới sửa được.
+        if (p.PaymentStatus != "F")
+        { notFinished.Add(new { PaymentNo = pmtNo, p.PaymentStatus }); continue; }
+
+        p.AccountingRecordNo = r.AccountingRecordNo;   // 🔴 cột nghiệp vụ DUY NHẤT
+        p.LogLUDateTime = now; p.LogLUBy = by;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updated, skipped = notFinished,
+        finishedOnlyNote = "CHI SUA DUOC PHIEU DA HOAN TAT: Pmt_Payment_CheckDB(..., TConst.Stage.Finished) => NGUOC VOI TRUC GIAC 'sua khi con nhap'. So chung tu ke toan chi dien SAU KHI thanh toan xong.",
+        threeColumnNote = "CHI BA cot duoc ghi (zzB_Update_Pmt_Payment_zzE): LogLUDateTime, LogLUBy, AccountingRecordNo - noi 'on t.PaymentNo = f.PaymentNo'. Khong dung so tien, khong dung trang thai.",
+        wrongFunctionNameNote = "strFunctionName GHI SAI: = 'Pmt_Payment_CreateMulti' trong khi ham la Pmt_Payment_UpdateFinancial (ma loi mac dinh thi dung) => LOG GHI TEN HAM KHAC - cung ho voi loi ma-loi-sai o #B215. Ghi lai, KHONG tu sua.",
+        twoDbNote = "Nguon ExecQuery hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -46618,6 +46714,8 @@ record DriveTestHtcCreateDto(string? DriveTestCode, string? DriverTestType, stri
 record CtmVisitHtcCreateDto(string? CtmVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);   // #B203
 record TransportInsUpdateMultiLineDto(string? VIN, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? InvEndDate, decimal? TransportCost, decimal? DelayPenaty, decimal? TotalAmount);   // #B227
 record TransportInsUpdateMultiDto(List<TransportInsUpdateMultiLineDto>? Lines);   // #B227
+record PmtUpdateFinancialRowDto(string? PaymentNo, string? AccountingRecordNo);   // #B232
+record PmtUpdateFinancialDto(List<PmtUpdateFinancialRowDto>? Rows);   // #B232
 record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType);   // #B206
 record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines);   // #B206
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
