@@ -3364,6 +3364,23 @@ public sealed class SalesManType
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>🔴 #B245 — Ma trận chứng chỉ **theo LOẠI nhân viên** (`Mst_SalesManTypeCertificate`),
+/// khoá ba `DepartmentCode × SMType × CertificateCode`.
+/// ⚠️ **BẢNG THỨ BA, đừng lẫn**: <see cref="SalesManType"/> (`Mst_SalesManType`) là danh mục loại NV;
+/// `Mst_SalesManCertificate` là bản **GÁN chứng chỉ cho MỘT NGƯỜI** có hạn; bảng này quy định
+/// **loại NV nào CẦN chứng chỉ nào**. Báo cáo `Rpt_SMCertificate` dựa vào **bảng này**, không phải hai bảng kia.
+/// 🔴 Giá trị `CertificateCode = 'NONE'` là **mục hợp lệ** (nghĩa là "không cần chứng chỉ"), không phải rỗng —
+/// mẫu số của tỷ lệ **đếm CẢ** dòng `NONE`, tử số **loại** `NONE`.</summary>
+public sealed class SalesManTypeCertificate
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DepartmentCode { get; set; } = "";
+    public string SMType { get; set; } = "";
+    public string CertificateCode { get; set; } = "";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Hồ sơ phiếu thùng theo VIN — port 1:1 FrmUpdateCarVIN_CBInvoice (Car_VIN CB info, TCMotor). Batch cập nhật số/ngày phiếu xuất xưởng có thùng (CB) + ngày giao phiếu, upsert theo VIN.</summary>
 public sealed class CarVinCBInfo
 {

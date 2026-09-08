@@ -276,6 +276,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerStorageLocal> DealerStorageLocals => Set<DealerStorageLocal>();
     public DbSet<CarVinInvoiceInfo> CarVinInvoiceInfos => Set<CarVinInvoiceInfo>();
     public DbSet<SalesManType> SalesManTypes => Set<SalesManType>();
+    public DbSet<SalesManTypeCertificate> SalesManTypeCertificates => Set<SalesManTypeCertificate>();   // #B245
     public DbSet<CarVinCBInfo> CarVinCBInfos => Set<CarVinCBInfo>();
     public DbSet<InvoiceRecall> InvoiceRecalls => Set<InvoiceRecall>();
     public DbSet<CarContractType> CarContractTypes => Set<CarContractType>();

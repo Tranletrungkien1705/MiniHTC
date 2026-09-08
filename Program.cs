@@ -31152,6 +31152,173 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // Nguồn: mySql_HR_SalesManOfMonth_ApprAuto() (RptSQLQuery.cs:15105) gọi từ
 // HR_SalesManOfMonth_ApprAuto_New20221026 (DataWH/Biz.HTC.WH.cs:17214).
 // Đây là JOB chụp ảnh dữ liệu, không phải chứng từ ⇒ không có duyệt/huỷ, chỉ có chốt và tra cứu.
+
+// ===== #B245/#B246/#B247 BÁO CÁO TỶ LỆ NHÂN VIÊN CÓ CHỨNG CHỈ —
+//       `Rpt_SMCertificate_WH_New20181119` → `Rpt_SMCertificateX` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   cửa `_WH` laptop `99978,100100` ≡ 150 `99983,100105` ⇒ `99e3708676c86d056d89d19da5b76033`
+//   thân `X`  laptop `100101,100338` ≡ 150 `100106,100343` ⇒ `abdf819d6b89493671bdd163439fdd80`
+// 🔴🔴 **BA HÀM CÙNG TÊN, CHỈ HAI HÀM SỐNG** — phải trace cửa WS, không đoán theo tên/ngày:
+//   · `Rpt_SMCertificate_New20181115` (`BizHTC.zzzzCode.cs:16933`, csproj 141) ← **WS64 `Rpt_SMCertificate`** (SỐNG, SQL riêng);
+//   · `Rpt_SMCertificate_WH_New20181119` (`Biz.HTC.WH.cs:99978`) ← **WS64 `Rpt_SMCertificate_WH`** (SỐNG, gọi `X`);
+//   · `Rpt_SMCertificate_New20181119` (`Biz.HTC.WH.cs:99868`) — **KHÔNG cửa WS nào gọi ⇒ CHẾT**,
+//     dù **NGÀY MỚI HƠN** bản `_New20181115` đang sống. Chọn theo ngày là **sai**.
+// 🔴🔴🔴 **BUG THẬT: tham số `_dbAction` BỊ BỎ QUA — báo cáo `_WH` thực chất chạy trên DB MAIN.**
+//   Cửa `_WH` truyền **`_dbWH`** vào `Rpt_SMCertificateX(… , _dbWH /* _dbAction */ , …)`, nhưng trong
+//   thân `X` chuỗi `_dbAction` xuất hiện **đúng MỘT lần** — chính dòng khai báo tham số; câu truy vấn
+//   viết cứng **`_dbMain.ExecQuery(…)`**. ⇒ Gọi cửa WH hay cửa Main **đều đọc DB Main**.
+//   📌 **KHÔNG tự vá**; port đọc DB duy nhất của MiniHTC và trả cờ `dbActionParamIgnored`.
+// 🔴🔴 **LỖ RBAC — CA 25 & 26, HAI TẦNG CÙNG LÚC, và GIỐNG HỆT NHAU Ở CẢ HAI BẢN SỐNG**:
+//   (a) cổng `myCommon_CheckHTCDirect(…)` **bị comment toàn khối**;
+//   (b) lọc dòng **bị comment ngay trên dòng `on`**, trong khi **câu giải thích vẫn còn**:
+//       `inner join Mst_Dealer md --//[mylock] -- Must inner join to filter AbilityOfUser`
+//       `    on hrsmom.DealerCode = md.DealerCode **--and (md.BUCode like @strBUPatternOfUser)**`
+//   ⇒ `inner join Mst_Dealer` **còn nguyên nhưng mất lý do tồn tại**. Biến thể "giải thích còn, bộ lọc
+//     mất" đã gặp ở #B124. Điểm mới: **hai bản sống (`zzzzCode` và `WH`) hỏng y hệt nhau** ⇒ lỗ được
+//     **nhân bản khi tách twin**, không phải sự cố một lần. **KHÔNG tự vá.**
+// 🔴🔴 **BAKE-PARAM-MIX**: `@strHRMonth` được **NƯỚNG bằng `StringUtils.Replace`** và trong SQL nằm
+//   **trong dấu nháy** (`hrsmom.HRMonth = '@strHRMonth'`), trong khi `@strBUPatternOfUser` /
+//   `@strTDateMax` / `@strHTCDealerCode` là **tham số runtime**. `@strHRMonth` **cũng bị nạp vào
+//   `alParamsCoupleSql`** nhưng sau `Replace` không còn token nào ⇒ **tham số mồ côi**.
+//   ⇒ Đúng lớp `[BAKE-PARAM-MIX]` (`dmssales-bake-param-mix-guard-chet-cam`) — và vì nướng thô vào
+//     literal nên **`strHRMonth` là bề mặt SQL injection**. Port dùng tham số hoá, chặn định dạng.
+// 🔴 **Ba mã đại lý CHẶN CỨNG trong SQL**, lặp ở **hai** câu:
+//   `and hrsmom.DealerCode not in ('VKL01', 'VU005', 'VU008')`.
+//   ⚠️ Khối chú thích ngay trên (chép từ hội thoại Skype **10/08/2018**) ghi yêu cầu là
+//     `VKL01, VU005, **VU0083**` — **lệch một ký tự** so với code (`VU008`). Ghi lại, **không tự sửa**.
+// 🔴 **Công thức tỷ lệ — port DÒNG ACTIVE, không port dòng comment**: dòng cũ
+//   `--, (IsNull(TotalQtySMOtherNone,0.0)/IsNull(TotalQtySM,0.0))` đã bị thay bằng
+//   `Convert(int, Round( Convert(decimal, TotalQtySMOtherNone) * 100 / Convert(decimal, TotalQtySM), 0))`.
+//   ⇒ Chính khối chú thích Skype giải thích lý do: `26/30*100 = 86,67` **kỳ vọng 87** nhưng bản cũ
+//     ra **86**. ⇒ **Phải LÀM TRÒN nửa-lên (away-from-zero)**, không phải cắt cụt và **không phải
+//     `Math.Round` mặc định của C# (làm tròn chẵn — sẽ ra 86 với 86,5)**. Port dùng
+//     `MidpointRounding.AwayFromZero`.
+// 🔴 **Mẫu số ĐẾM CẢ `NONE`, tử số LOẠI `NONE`**: `TotalQtySM` đếm mọi dòng của `#tbl_Summary`;
+//   `TotalQtySMOtherNone` chỉ đếm `CertificateCode <> 'NONE'`. Trong `#tbl_FlagRptCertificate`,
+//   dòng `--and msmtc.CertificateCode <> 'NONE'` **bị comment** ⇒ `NONE` **được giữ lại** có chủ đích.
+// 🔴 Chỉ báo cáo loại NV **có ít nhất một chứng chỉ khác `NONE`**: `FlagRptCertificate = '1'` sinh từ
+//   subquery `top 1 '1' … where CertificateCode <> 'NONE' and SMType = …`, rồi lọc `and f.FlagRptCertificate = '1'`.
+// 🔴 Trạng thái nhân viên — **port dòng ACTIVE**: `--and hrsmomdt.SMFlagActive = '1'` **bị comment**
+//   (20221026, HuongTTT), thay bằng **`and hrsmomdt.SMStatus in ('1','2')`** (thử việc + chính thức).
+// 🔴 Chặn chia 0 bằng `and t.TotalQtySM != 0.0` ở câu cuối; `md.FlagActive = '1'` lặp ở hai câu.
+app.MapGet("/api/reports/sm-certificate", async (
+    AppDbContext db, ITenantContext t, string? hrMonth) =>
+{
+    // 🔴 Nguồn NƯỚNG thẳng strHRMonth vào literal ⇒ bề mặt injection. Port chặn định dạng + tham số hoá.
+    var month = (hrMonth ?? "").Trim();
+    if (!System.Text.RegularExpressions.Regex.IsMatch(month, @"^\d{4}-\d{2}$"))
+        return Results.BadRequest(new { error = "Rpt_SMCertificate_InvalidHRMonth", check = new { hrMonth = month },
+            hint = "Dinh dang yyyy-MM (vd 2018-05)." });
+
+    var y = int.Parse(month[..4]); var mo = int.Parse(month[5..]);
+    var monthStart = new DateTime(y, mo, 1);
+
+    // 🔴 Ba mã đại lý CHẶN CỨNG, lặp ở hai câu của nguồn.
+    var blocked = new[] { "VKL01", "VU005", "VU008" };
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1").ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var heads = await db.HrSalesManOfMonths
+        .Where(h => h.OrgId == t.OrgId && h.HRMonth == monthStart && !blocked.Contains(h.DealerCode))
+        .ToListAsync();
+    var headKeys = heads.Select(h => h.DealerCode).Where(dealers.ContainsKey).ToHashSet();
+
+    // 🔴 Ma trận chứng chỉ theo LOẠI nhân viên (bảng THỨ BA — không phải SalesManType/SalesManCertificate).
+    var matrix = await db.SalesManTypeCertificates.Where(m => m.OrgId == t.OrgId).ToListAsync();
+    // 🔴 FlagRptCertificate: loại NV có ÍT NHẤT MỘT chứng chỉ khác 'NONE'.
+    var typesWithCert = matrix.Where(m => m.CertificateCode != "NONE")
+        .Select(m => (m.DepartmentCode, m.SMType)).ToHashSet();
+
+    var dtls = await db.HrSalesManOfMonthDtls
+        .Where(d => d.OrgId == t.OrgId && d.HRMonth == monthStart
+                    && headKeys.Contains(d.DealerCode)
+                    // 🔴 DÒNG ACTIVE: SMStatus in ('1','2'), KHÔNG phải SMFlagActive='1' (đã comment).
+                    && (d.SMStatus == "1" || d.SMStatus == "2"))
+        .ToListAsync();
+
+    // #tbl_Summary: inner join ma trận theo BA cột (DepartmentCode + SMType + CertificateCode).
+    var matrixKey = matrix.Select(m => (m.DepartmentCode, m.SMType, m.CertificateCode)).ToHashSet();
+    var summary = dtls.Where(d =>
+            matrixKey.Contains((d.DepartmentCode ?? "", d.SMType ?? "", d.CertificateCode ?? ""))
+            && typesWithCert.Contains((d.DepartmentCode ?? "", d.SMType ?? "")))
+        .ToList();
+
+    var rows = summary
+        .GroupBy(d => new { d.DealerCode, SMType = d.SMType ?? "" })
+        .Select(g =>
+        {
+            var totalQtySM = g.Select(x => x.SMCode).Count();                          // 🔴 ĐẾM CẢ 'NONE'
+            var totalOtherNone = g.Count(x => (x.CertificateCode ?? "") != "NONE");    // 🔴 LOẠI 'NONE'
+            dealers.TryGetValue(g.Key.DealerCode, out var dlr);
+            // 🔴 Round nửa-LÊN, KHÔNG dùng Math.Round mặc định (làm tròn chẵn).
+            int? rate = totalQtySM == 0 ? null
+                : (int)Math.Round((decimal)totalOtherNone * 100m / totalQtySM, 0, MidpointRounding.AwayFromZero);
+            return new
+            {
+                DealerCode = g.Key.DealerCode, DealerName = dlr?.DealerName,
+                ProvinceCode = dlr?.ProvinceCode,
+                SMType = g.Key.SMType, HRMonth = month,
+                TotalQtySM = (decimal)totalQtySM,
+                TotalQtySMOtherNone = (decimal)totalOtherNone,
+                Rate = rate
+            };
+        })
+        .Where(r => r.TotalQtySM != 0m)          // 🔴 chặn chia 0 đúng nguồn
+        .OrderBy(r => r.DealerCode).ThenBy(r => r.SMType)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        hrMonth = month,
+        Rpt_SMCertificate = rows,
+        blockedDealerCodes = blocked,
+        dbActionParamIgnored = true,
+        rbacHoleCases = new[] { "CheckHTCDirect commented", "BUPattern row filter commented" },
+        threeTwinsNote = "BA HAM CUNG TEN, CHI HAI HAM SONG - phai trace cua WS, khong doan theo ten/ngay: Rpt_SMCertificate_New20181115 (BizHTC.zzzzCode.cs:16933, csproj 141) <- WS64 Rpt_SMCertificate (SONG, SQL rieng); Rpt_SMCertificate_WH_New20181119 (Biz.HTC.WH.cs:99978) <- WS64 Rpt_SMCertificate_WH (SONG, goi X); Rpt_SMCertificate_New20181119 (Biz.HTC.WH.cs:99868) - KHONG cua WS nao goi => CHET, du NGAY MOI HON ban _New20181115 dang song. Chon theo ngay la SAI.",
+        dbActionIgnoredNote = "BUG THAT: tham so _dbAction BI BO QUA - bao cao _WH thuc chat chay tren DB MAIN. Cua _WH truyen _dbWH vao Rpt_SMCertificateX(..., _dbWH /* _dbAction */, ...), nhung trong than X chuoi '_dbAction' xuat hien DUNG MOT LAN - chinh dong khai bao tham so; cau truy van viet cung '_dbMain.ExecQuery(...)'. => Goi cua WH hay cua Main DEU DOC DB MAIN. KHONG TU VA.",
+        rbacNote = "LO RBAC - CA 25 & 26, HAI TANG CUNG LUC va GIONG HET NHAU O CA HAI BAN SONG: (a) cong myCommon_CheckHTCDirect BI COMMENT TOAN KHOI; (b) loc dong bi comment ngay tren dong 'on', trong khi CAU GIAI THICH VAN CON: 'inner join Mst_Dealer md -- Must inner join to filter AbilityOfUser' / 'on hrsmom.DealerCode = md.DealerCode --and (md.BUCode like @strBUPatternOfUser)'. => inner join Mst_Dealer CON NGUYEN NHUNG MAT LY DO TON TAI. Bien the 'giai thich con, bo loc mat' da gap o #B124. DIEM MOI: hai ban song (zzzzCode va WH) hong Y HET NHAU => lo duoc NHAN BAN KHI TACH TWIN, khong phai su co mot lan. KHONG TU VA.",
+        bakeParamMixNote = "BAKE-PARAM-MIX: @strHRMonth duoc NUONG bang StringUtils.Replace va trong SQL nam TRONG DAU NHAY (hrsmom.HRMonth = '@strHRMonth'), trong khi @strBUPatternOfUser / @strTDateMax / @strHTCDealerCode la tham so runtime. @strHRMonth CUNG bi nap vao alParamsCoupleSql nhung sau Replace khong con token nao => THAM SO MO COI. Dung lop [BAKE-PARAM-MIX]; va vi nuong tho vao literal nen strHRMonth la BE MAT SQL INJECTION. Port chan dinh dang yyyy-MM + tham so hoa.",
+        hardcodedDealerNote = "Ba ma dai ly CHAN CUNG trong SQL, lap o HAI cau: 'and hrsmom.DealerCode not in (VKL01, VU005, VU008)'. Khoi chu thich ngay tren (chep tu hoi thoai Skype 10/08/2018) ghi yeu cau la 'VKL01, VU005, VU0083' - LECH MOT KY TU so voi code (VU008). Ghi lai, KHONG TU SUA.",
+        rateFormulaNote = "Cong thuc ty le - PORT DONG ACTIVE: dong cu '--, (IsNull(TotalQtySMOtherNone,0.0)/IsNull(TotalQtySM,0.0))' da bi thay bang 'Convert(int, Round(Convert(decimal, TotalQtySMOtherNone) * 100 / Convert(decimal, TotalQtySM), 0))'. Chinh khoi chu thich Skype giai thich ly do: 26/30*100 = 86,67 KY VONG 87 nhung ban cu ra 86. => PHAI LAM TRON NUA-LEN (away-from-zero), khong phai cat cut va KHONG phai Math.Round mac dinh cua C# (lam tron chan - se ra 86 voi 86,5). Port dung MidpointRounding.AwayFromZero.",
+        noneCountingNote = "MAU SO DEM CA 'NONE', TU SO LOAI 'NONE': TotalQtySM dem moi dong cua #tbl_Summary; TotalQtySMOtherNone chi dem CertificateCode <> 'NONE'. Trong #tbl_FlagRptCertificate, dong '--and msmtc.CertificateCode <> NONE' BI COMMENT => NONE DUOC GIU LAI co chu dich.",
+        flagRptNote = "Chi bao cao loai NV CO IT NHAT MOT chung chi khac 'NONE': FlagRptCertificate = '1' sinh tu subquery top 1 '1' ... where CertificateCode <> 'NONE' and SMType = ..., roi loc 'and f.FlagRptCertificate = 1'.",
+        smStatusNote = "Trang thai nhan vien - PORT DONG ACTIVE: '--and hrsmomdt.SMFlagActive = 1' BI COMMENT (20221026, HuongTTT), thay bang 'and hrsmomdt.SMStatus in (1,2)' (thu viec + chinh thuc).",
+        newTableNote = "Bang MOI SalesManTypeCertificate (Mst_SalesManTypeCertificate) - BANG THU BA, dung lan: SalesManType (Mst_SalesManType) la danh muc loai NV; Mst_SalesManCertificate la ban GAN chung chi cho MOT NGUOI co han; bang nay quy dinh LOAI NV NAO CAN CHUNG CHI NAO."
+    });
+}).RequireAuthorization();
+
+// ===== #B247 — cửa master cho `Mst_SalesManTypeCertificate` (§12: cột mới phải có cả GET và ghi) =====
+app.MapGet("/api/masters/salesman-type-certificates", async (
+    AppDbContext db, ITenantContext t, string? departmentCode, string? smType) =>
+{
+    var q = db.SalesManTypeCertificates.Where(m => m.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(departmentCode)) q = q.Where(m => m.DepartmentCode == departmentCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(smType)) q = q.Where(m => m.SMType == smType!.Trim());
+    var items = await q.OrderBy(m => m.DepartmentCode).ThenBy(m => m.SMType).ThenBy(m => m.CertificateCode)
+        .Select(m => new { m.DepartmentCode, m.SMType, m.CertificateCode, m.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        noneIsValidNote = "CertificateCode = 'NONE' la MUC HOP LE (nghia la 'khong can chung chi'), khong phai rong." });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/salesman-type-certificates", async (
+    SalesManTypeCertificateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dep = (dto.DepartmentCode ?? "").Trim();
+    var smt = (dto.SMType ?? "").Trim();
+    var cer = (dto.CertificateCode ?? "").Trim();
+    if (dep.Length == 0 || smt.Length == 0 || cer.Length == 0)
+        return Results.BadRequest(new { error = "Mst_SalesManTypeCertificate_InvalidKey", check = new { dep, smt, cer } });
+
+    var cur = await db.SalesManTypeCertificates.FirstOrDefaultAsync(m => m.OrgId == t.OrgId
+        && m.DepartmentCode == dep && m.SMType == smt && m.CertificateCode == cer);
+    if (cur is null)
+        db.SalesManTypeCertificates.Add(new SalesManTypeCertificate
+        { OrgId = t.OrgId, DepartmentCode = dep, SMType = smt, CertificateCode = cer, UpdatedAt = DateTime.Now });
+    else cur.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = cur is null, DepartmentCode = dep, SMType = smt, CertificateCode = cer });
+}).RequireAuthorization();
 app.MapGet("/api/salesmanofmonth", async (AppDbContext db, ITenantContext t, string? dealer, DateTime? month) =>
 {
     var q = db.HrSalesManOfMonths.Where(x => x.OrgId == t.OrgId);
@@ -48280,6 +48447,7 @@ record AtmvNewSpecUpdateDto(string? FtColsUpd, string? FlagActive = null);
 // ---- #141: DTO chốt tháng nhân sự bán hàng ----
 record SmOfMonthDtlDto(string SMCode, string? SMName, string? SMGender, DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode, string? QualificationCode, string? SMSpecialized, decimal SMYearExperence, DateTime? SMStartDate, DateTime? SMEndDate, string? DepartmentCode, string? SMPosition, string? SMType, string? CertificateCode, string? SMFlagActive, string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? SMStatus, decimal DaysOfService, string? ListDealerHyundai, DateTime? EffEndCertificate, string? AccountHTA, string? BDHStatus, DateTime? ChallengeStartDate, DateTime? ChallengeEndDate, string? QualityRank, string? SMHyundaiCode, string? IdentityCardNo, string? UpdateStatusBy, DateTime? UpdateStatusDtime, decimal ViolateNumber, string? ViolateTypeId, string? ViolateTypeName, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? Remark);
 record SmOfMonthDto(string DealerCode, DateTime HRMonth, List<SmOfMonthDtlDto>? Details);
+record SalesManTypeCertificateDto(string? DepartmentCode, string? SMType, string? CertificateCode);   // #B245-B247
 
 // ---- #139: DTO 4 họ phiếu thanh toán dịch vụ theo xe ----
 record PmtGpsDtlDto(string VIN, string? CarId, string? GPSID, DateTime? GPSStartDate, DateTime? CostGPSStartDate, DateTime? RetailDate, DateTime? CostGPSEndDate, DateTime? PlanCostGPSDate, DateTime? DeductDate, DateTime? ActualCostGPSDate, decimal PriceGPS, decimal AmountGPS, string? ContractGPS);
