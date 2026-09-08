@@ -31145,6 +31145,82 @@ app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
     note = "Bộ mã TRỘN số + chữ trong cùng một cột (chỉ CONF là mã chữ). Mã ngoài bốn giá trị ⇒ nhãn NULL (nguồn không có ELSE).",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #617 BIÊN BẢN LỆNH SỬA CHỮA (`SerROReport_WH20220926`, `BizCarSv.WH.cs:1190`) =====
+// DIFF với bản trần `SerROReport_WH` (`:975`) — **cực gọn, chỉ MỘT khác biệt thật**: bản mới thêm cột
+//   `, rp.**FlagAccessory**` vào bảng thứ 6 (`Ser_ROPartItems`). TRACE WS: `WSCarSv.asmx.cs:32738` gọi
+//   `SerROReport_WH**20220926**` (lưu ý: hậu tố **không** có dấu `_`), hai file WS cũ gọi bản trần ⇒ bản trần **chết**.
+// Kết quả gồm **7 bảng**: `#tbl_ser_ro` (tạm) · Sys_User · Ser_RO · Ser_Customer · Ser_Car · Mst_ReportHeader ·
+//   Ser_ROPartItems (+ dịch vụ).
+//
+// 🔴🔴 **CỘT THÀNH TIỀN LÀ CHUỖI RỖNG CỨNG**: bảng phụ tùng chọn
+//     `, rp.Quantity, rp.Price, rp.Factor, **'' Amount**, (Isnull(rp.VAT,0)) VAT, rp.Note`
+//   ⇒ Cột `Amount` (**thành tiền**) **không được tính**, luôn là **chuỗi rỗng**. Biên bản in ra có số lượng,
+//     đơn giá, hệ số, VAT — nhưng **ô thành tiền trống**, và chỗ gọi phải tự nhân lại.
+//   ⚠️ Đây là **chứng từ in** (họ #567/#582): ô trống trên giấy là lỗi nghiệp vụ, không chỉ lệch số.
+//   📌 Port **tính thật** `quantity × price × factor × (1 + vat/100)` và nêu cờ.
+//
+// ⚪ **HAI KIỂM TRA ÂM TÍNH — SUÝT BÁO NHẦM, ĐỌC TIẾP MỚI RÕ**:
+//   1) Cờ `zzzzClauseWhere_strROIDConditionList` sinh ra mệnh đề dùng alias **`r`**
+//      (`BuildClause("and", "**r**.ROID", …)`) và được chèn vào **cả** câu `sys_user`. Thoạt nhìn tưởng
+//      *"multi-part identifier 'r.ROID' could not be bound"* vì câu đó `FROM sys_user **t**`. Đọc tiếp thì
+//      thấy câu đó **có** `left join #tbl_ser_ro **r** on t.Usercode = r.Creator` (kèm chú thích `issue 962`)
+//      ⇒ alias `r` **tồn tại** ⇒ **không lỗi**. Lại một ca của luật *"đọc tới khi THẤY"* (như #592/#590).
+//   2) Cờ `zzzzClauseWhere_strDealerCodeConditionList` dùng alias **`t`** và được chèn vào **hai** câu khác
+//      bảng: `sys_user **t**` và `Mst_ReportHeader **t**` ⇒ **cả hai đều có** alias `t` ⇒ chạy đúng.
+//      ⚠️ Nhưng đây là **trùng hợp may mắn**: hai bảng khác nhau **tình cờ** cùng đặt alias một chữ. Thêm một
+//      câu thứ ba dùng alias khác là **vỡ** — cùng dạng rủi ro "một mệnh đề chèn vào nhiều câu" đã ghi ở #574.
+// 🔴 `left join #tbl_ser_ro r` **kèm** `where … r.ROID …` ⇒ **LEFT hoá INNER** (luật #414, câu hỏi thứ ba).
+//   ⚪ Ở đây **đúng ý**: bảng Sys_User của biên bản chỉ cần **người tạo lệnh**, không phải danh mục người dùng
+//     (hai chú thích `issue 962` cho thấy là thay đổi có chủ đích). Ghi rõ để lần sau không báo nhầm là bug.
+// 🔴 `INNER JOIN #tbl_ser_ro` ở bảng **Ser_Customer** và **Ser_Car** ⇒ lệnh không khớp khách/xe **rơi khỏi**
+//   biên bản (#410) — port đếm.
+app.MapGet("/api/ro-reports/{roNo}", async (AppDbContext db, ITenantContext t, string? roNo) =>
+{
+    var no = (roNo ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0) return Results.BadRequest(new { error = "roNo bat buoc." });
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { roNo = no });
+
+    var cus = ro.CusID == null ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusCode == ro.CusID);
+    var car = ro.Vin == null ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == ro.Vin);
+    var creator = ro.Creator == null ? null
+        : await db.SysUsers.FirstOrDefaultAsync(u => u.OrgId == t.OrgId && u.UserCode == ro.Creator);
+
+    var partRows = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id).ToListAsync();
+    var parts = partRows.Select(p => new
+    {
+        p.PartCode, p.PartName, p.Unit,
+        quantity = p.NeedQty, price = p.UnitPrice, factor = p.Factor, vat = p.Vat, p.Note,
+        flagAccessory = p.FlagAccessory,                       // cột bản LIVE THÊM
+        // Nguồn trả '' Amount (chuỗi rỗng cứng) — port TÍNH THẬT.
+        amount = p.UnitPrice * p.NeedQty * p.Factor * (1m + p.Vat / 100m),
+    }).ToList();
+
+    var services = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Vat, x.Amount, x.ExpenseType }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        roNo = no, ro.Status, ro.CheckInDate, ro.DealerCode, ro.Creator,
+        creatorName = creator?.UserName,
+        customer = cus is null ? null : new { cus.CusCode, cus.CusName, cus.Address, cus.Mobile },
+        vehicle = car is null ? null : new { car.PlateNo, car.FrameNo, car.EngineNo, car.ModelCode },
+        parts, services,
+        droppedByInnerJoinCustomer = cus is null,
+        droppedByInnerJoinCar = car is null,
+        amountIsEmptyStringInSource = "bang phu tung chon \"\" Amount — cot THANH TIEN khong duoc tinh, luon la chuoi rong; bien ban in ra co so luong/don gia/he so/VAT nhung O THANH TIEN TRONG",
+        portComputesAmount = "quantity * price * factor * (1 + vat/100)",
+        printedDocumentFamily = "ho #567/#582 — o trong tren giay la loi nghiep vu, khong chi lech so",
+        liveVariantAddsFlagAccessory = "ban _WH20220926 chi khac ban tran DUNG MOT cot: rp.FlagAccessory (hau to KHONG co dau gach duoi)",
+        negativeCheckAliasRBound = "co ROID dung alias r va duoc chen vao ca cau sys_user; cau do CO left join #tbl_ser_ro r on t.Usercode = r.Creator nen alias r TON TAI => khong loi (luat doc-toi-khi-thay)",
+        negativeCheckAliasTLucky = "co DealerCode dung alias t va duoc chen vao HAI cau khac bang (sys_user t va Mst_ReportHeader t) — ca hai deu co alias t, nhung day la TRUNG HOP may man; them cau thu ba alias khac la VO (rui ro #574)",
+        leftJoinTurnedInnerButIntended = "left join #tbl_ser_ro r + where r.ROID => hoa INNER; o day DUNG Y vi bang Sys_User cua bien ban chi can NGUOI TAO lenh (hai chu thich issue 962)",
+        sevenResultTables = new[] { "#tbl_ser_ro", "Sys_User", "Ser_RO", "Ser_Customer", "Ser_Car", "Mst_ReportHeader", "Ser_ROPartItems" },
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #616 HOÁ ĐƠN LỆNH SỬA CHỮA (`Ser_ROInvoice_Get_WH_New20220926`, `BizCarSv.WH.cs:2778`) =====
 // Hàm có **BỐN** bản: trần (`:1742`) · `_New20181105` (`:2085`) · `_New20200118` (`:2439`) ·
 //   `_New20220926` (`:2778`). TRACE WS: `WSCarSv.asmx.cs:32579` gọi bản **`_New20220926`**; hai file WS cũ
