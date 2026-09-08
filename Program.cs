@@ -53008,6 +53008,105 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #647 KHÁCH ĐÃ ĐẾN XƯỞNG `Ser_Count_Customer_ToHTC_WH` (`WH.cs:8392-8592`) =====
+// 3B: laptop `:8392` md5 `505ca420` **KHỚP** máy 150 `:8392`. WS gọi thẳng bản này (không hậu tố).
+// Cụm có **ba** hàm anh em, **cả ba đều LIVE và cả ba chưa port**: `Ser_Count_Customer_ToHTC_WH` (`:8392`) ·
+//   `Ser_Count_Customer_WH` (`:8593`) · `Ser_Count_Customer_OnlyHTC_WH` (`:18586`) — DIFF cho thấy chúng là
+//   **ba truy vấn khác nhau thật**, không phải bản sao (khác #645).
+//
+// 🔴🔴 **CẢ HÀM CÓ HAI NHÁNH `if/else` DỰNG SQL — VÀ HAI NHÁNH CHỈ KHÁC ĐÚNG *MỘT CỘT HIỂN THỊ***:
+//     `if (!StringUtils.IsEmpty(strTradeMarkCodeConditionList)) { strSqlGetData = @"…" } else { strSqlGetData = @"…" }`
+//   DIFF hai thân (đã bỏ khoảng trắng): khác biệt **duy nhất** là nhánh `if` có thêm dòng
+//     `, tm.TradeMarkName` (đứng riêng), còn nhánh `else` **không có**; cột ghép
+//     `tm.TradeMarkName + ' - ' + mdl.modelName as TradeMarkNameModel` thì **cả hai nhánh đều có**.
+//   ⇒ **`40 dòng SQL bị nhân đôi chỉ để thêm/bớt một cột.** Đúng cảnh báo #414 ("khác biệt thật thường ở
+//     DANH SÁCH CỘT, không ở WHERE") — và ở đây nó còn nằm ở **hai nhánh code**, không phải hai hàm.
+//   🔴 Hệ quả thật: **hình dạng kết quả đổi theo việc người dùng CÓ lọc hãng xe hay không** ⇒ client bind cột
+//     `TradeMarkName` sẽ **mất cột** khi bỏ trống bộ lọc. §12 không bắt được loại này.
+//   ⚠️ Và cả **hai** nhánh vẫn chèn `zzzzClauseWhereTradeMarkCodeConditionList` — ở nhánh `else` mệnh đề đó
+//     chắc chắn **rỗng**, nên việc tách nhánh **không** phục vụ mục đích lọc nào cả.
+//
+// 🔴🔴 **BA `join` LẤY KHOÁ TỪ MỘT BẢNG *LEFT* KHÁC — AN TOÀN CHỈ NHỜ MỘT ĐIỀU KIỆN Ở NƠI KHÁC**:
+//     `left join ser_Customer cus  on car.cusid = cus.cusid       and **ro**.DealerCode = cus.DealerCode`
+//     `left join ser_mst_Model mdl on car.ModelID = mdl.ModelID   and **ro**.DealerCode = mdl.DealerCode`
+//     `join      ser_mst_TradeMark tm on car.TradeMarkCode = …    and **ro**.DealerCode = tm.DealerCode`
+//   Cả ba dùng `ro.DealerCode` (bảng `ro` là **`left join`**) thay vì `car.DealerCode` vốn có sẵn ⇒ đúng câu
+//   hỏi **thứ nhất** của #414. Hiện tại **không hỏng** chỉ vì `WHERE` có `and ro.ROID is not null` ép `ro`
+//   khác NULL. ⇒ **Ai bỏ điều kiện đó đi thì ba join kia hỏng IM LẶNG** (mọi dòng mất khách/model/hãng).
+// ⚪ **Âm tính có điều kiện**: `left join ser_ro ro` bị giết bởi **ba** điều kiện `WHERE` (`ro.ROID is not null`,
+//   `ro.Status in (…)`, hai `datediff` trên `ro.CheckInDate`) ⇒ LEFT hoá INNER. Ở đây là **đúng ý** vì báo cáo
+//   đếm **khách ĐÃ đến xưởng**; nhưng viết `left join` rồi giết bằng `WHERE` là **gây hiểu nhầm** cho người đọc.
+// 🔴 **BỌC CỘT TRONG HÀM ⇒ MẤT INDEX**: `datediff(day, convert(datetime, '@FromDate', 20), ro.CheckInDate) >= 0`
+//   và `datediff(day, ro.CheckInDate, convert(datetime, '@ToDate', 20)) >= 0` — cột `ro.CheckInDate` nằm **bên**
+//   **trong** `datediff` ⇒ truy vấn **không sargable**. Viết `ro.CheckInDate >= @from and < @to+1` mới dùng được
+//   index. ⚪ Nhưng cách này **không** dính bẫy mốc ngày cuối (#415): `datediff(day,…) >= 0` so theo **NGÀY**.
+// 🔴 **BAKE THAM SỐ**: `@DealerCode`/`@FromDate`/`@ToDate` nằm **trong nháy** và thay bằng `Replace` ⇒ bề mặt
+//   tiêm SQL (họ [BAKE-PARAM-MIX]).
+// 🔴 `and ro.Status in ('PAID','FNS')` — literal rời rạc; theo bảng nhãn ở #286 thì `PAID` = "Đã thanh toán",
+//   `FNS` = "Đã hoàn thành/Đã giao xe" ⇒ báo cáo chỉ đếm lệnh **đã xong tiền hoặc đã giao xe**.
+// ⚪ Câu **có** `order by cus.cusname` (đúng chỗ, không phải trên `SELECT … INTO`).
+app.MapGet("/api/report/customers-to-htc", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? tradeMarkCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId
+                                        && x.Status != null
+                                        && (x.Status == "PAID" || x.Status == "FNS"));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    var ros = await qy.Select(x => new { x.RONo, x.CheckInDate, x.CusID, x.CusName, x.CusAddress,
+                                         x.CusRequest, x.Vin, x.LicensePlate, x.DealerCode }).ToListAsync();
+    // Nguồn so bằng datediff(day, …) >= 0 ⇒ so theo NGÀY, cận trên là ngày `to` TRỌN.
+    ros = ros.Where(r => r.CheckInDate.HasValue
+                         && r.CheckInDate.Value.Date >= from && r.CheckInDate.Value.Date <= to).ToList();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.ModelCode, c.TradeMark }).ToListAsync();
+    var cus = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.CusCode, c.CusName, c.Address, c.Tel, c.Mobile }).ToListAsync();
+
+    var hasTradeMarkFilter = !string.IsNullOrWhiteSpace(tradeMarkCode);
+    var rows = ros.Select(r =>
+    {
+        var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
+        var cu = r.CusID == null ? null : cus.FirstOrDefault(c => c.CusCode == r.CusID);
+        return new
+        {
+            cusName = cu?.CusName ?? r.CusName,
+            address = cu?.Address,
+            phone = cu?.Tel ?? cu?.Mobile,      // nguồn: isnull(cus.tel, cus.mobile) as phone
+            carId = r.Vin, plateNo = car?.PlateNo ?? r.LicensePlate, frameNo = car?.FrameNo,
+            tradeMarkCode = car?.TradeMark,
+            // Nhánh `if` của nguồn có thêm cột này; nhánh `else` KHÔNG (xem cờ).
+            tradeMarkName = hasTradeMarkFilter ? car?.TradeMark : null,
+            tradeMarkNameModel = car?.TradeMark + " - " + car?.ModelCode,
+            roNo = "LS-" + r.RONo,
+            r.CheckInDate, r.CusRequest, r.CusAddress,
+        };
+    })
+    .Where(x => !hasTradeMarkFilter || x.tradeMarkCode == tradeMarkCode!.Trim())
+    .OrderBy(x => x.cusName).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows,
+        // ===== #647 =====
+        threeLiveSiblingsAllUnported = "cum co BA ham anh em, ca ba deu LIVE: Ser_Count_Customer_ToHTC_WH (:8392), Ser_Count_Customer_WH (:8593), Ser_Count_Customer_OnlyHTC_WH (:18586); DIFF cho thay chung la BA truy van khac nhau that, khong phai ban sao (khac #645)",
+        twoBranchesDifferByOneDisplayColumn = "ham co if (!IsEmpty(strTradeMarkCodeConditionList)) { SQL A } else { SQL B }; DIFF hai than (bo khoang trang) cho khac biet DUY NHAT la nhanh if co them dong , tm.TradeMarkName dung rieng — con cot ghep TradeMarkNameModel thi CA HAI nhanh deu co => `40 dong SQL bi nhan doi chi de them/bot MOT cot",
+        resultShapeDependsOnWhetherFilterIsUsed = "hinh dang ket qua doi theo viec nguoi dung CO loc hang xe hay khong => client bind cot TradeMarkName se MAT COT khi bo trong bo loc; §12 khong bat duoc",
+        branchingServesNoFilterPurpose = "ca HAI nhanh van chen zzzzClauseWhereTradeMarkCodeConditionList; o nhanh else menh de do chac chan RONG nen viec tach nhanh KHONG phuc vu muc dich loc nao",
+        threeJoinsTakeKeyFromAnotherLeftTable = "left join ser_Customer cus on car.cusid = cus.cusid AND ro.DealerCode = cus.DealerCode; left join ser_mst_Model mdl … AND ro.DealerCode = mdl.DealerCode; join ser_mst_TradeMark tm … AND ro.DealerCode = tm.DealerCode — ca ba dung ro.DealerCode (bang ro la LEFT JOIN) thay vi car.DealerCode von co san => dung cau hoi THU NHAT cua #414",
+        safetyDependsOnAConditionElsewhere = "hien tai khong hong CHI VI WHERE co and ro.ROID is not null ep ro khac NULL => ai bo dieu kien do di thi ba join kia hong IM LANG (moi dong mat khach/model/hang)",
+        leftJoinRoKilledButIntended = "AM TINH co dieu kien: left join ser_ro ro bi giet boi BA dieu kien WHERE (ro.ROID is not null, ro.Status in (…), hai datediff tren ro.CheckInDate) => LEFT hoa INNER; o day DUNG Y vi bao cao dem khach DA den xuong, nhung viet left join roi giet bang WHERE la GAY HIEU NHAM",
+        datediffWrapsColumnSoNotSargable = "datediff(day, convert(datetime, @FromDate, 20), ro.CheckInDate) >= 0 va datediff(day, ro.CheckInDate, convert(datetime, @ToDate, 20)) >= 0 — cot nam BEN TRONG datediff => truy van khong sargable, khong dung duoc index",
+        endDateTrapAbsentBecauseDayComparison = "AM TINH: cach nay KHONG dinh bay moc ngay cuoi (#415) vi datediff(day, …) >= 0 so theo NGAY, khong phai theo thoi diem",
+        parametersAreBaked = "@DealerCode/@FromDate/@ToDate nam trong nhay va thay bang Replace => be mat tiem SQL (ho BAKE-PARAM-MIX)",
+        statusLiteralsMeaning = "and ro.Status in (PAID, FNS) — theo bang nhan #286: PAID = Da thanh toan, FNS = Da hoan thanh/Da giao xe => bao cao chi dem lenh DA XONG TIEN hoac DA GIAO XE",
+        orderByPresent = "cau CO order by cus.cusname, dung cho",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #646 BCBH HTMV `Ser_ROWarrantyReportHTMV_Get_WH_New20230417` (`WH.cs:15214-15714`) =====
 // 3B: laptop `:15214` md5 `6cb0fed1` **KHỚP** máy 150 `:15214`. Cùng đợt 2023-04-17 (xem #640).
 //
