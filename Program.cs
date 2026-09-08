@@ -53008,6 +53008,69 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #645 BCBH THEO TIỀN TỐ SỐ KHUNG — `…HTC_RLU_Get_WH` vs `…HTC_RLUU_Get_WH` =====
+// Hai hàm LIVE cùng đợt 2023-04-17 (xem #640): `Ser_ROWarrantyReportHTC_**RLU**_Get_WH_New20230417`
+//   (`WH.cs:17002-17397`, md5 `f54aaa5a`) và `…_**RLUU**_Get_WH_New20230417` (`:18191-18585`, md5 `3fc58488`).
+//   3B: máy 150 cũng có đúng hai hàm này ở `:17002` / `:18191`.
+//
+// 🔴🔴 **HAI HÀM `395 DÒNG, GIỐNG NHAU TỪNG KÝ TỰ — TRỪ ĐÚNG MỘT DÒNG**:
+//   Chuẩn hoá `RLU`/`RLUU` về một token rồi `diff` ⇒ khác biệt còn lại là **một dòng trắng**. Bốn chỗ mang
+//   chuỗi đó là: tên hàm · `strFunctionName` · `strErrorCodeDefault` · và **một** mệnh đề SQL:
+//     RLU  : `and ro.FrameNo like **'RLU%'**`
+//     RLUU : `and ro.FrameNo like **'RLUU%'**`
+//   ⇒ Toàn bộ khác biệt nghiệp vụ giữa hai báo cáo nằm ở **một tiền tố số khung**.
+//
+// 🔴🔴🔴 **`'RLU%'` BAO TRÙM `'RLUU%'` — HAI BÁO CÁO CHỒNG NHAU, CHỨNG MINH BẰNG LOGIC CHUỖI**:
+//   Mọi số khung bắt đầu bằng `RLUU` **cũng** bắt đầu bằng `RLU` ⇒ báo cáo **RLU chứa TRỌN** báo cáo RLUU.
+//   ⇒ ① Cộng hai báo cáo là **đếm trùng**; ② người dùng chọn "RLU" nhận **cả** xe RLUU mà không biết.
+//   ⇒ Đúng luật #412: `like` trên cột **MÃ** là bộ lọc nghiệp vụ trá hình — ở đây trá hình thành **phân loại xe**.
+// 🔴🔴 **VÀ NÓ CÒN NUỐT CẢ NHÓM HTMV — MÂU THUẪN NGAY TRONG CÙNG CODEBASE**:
+//   Đếm toàn tầng biz: `like 'RLU%'` = **12** site · `like 'RLUU%'` = **6** site; và một khối `case` phân loại
+//   **HTMV** liệt kê **bảy** tiền tố cụ thể — `RLUDB` · `RLUDC` · `RLUDT` · `RLUG` · `RLUS` · `RLUT` · `RLUZ`
+//   (mỗi tiền tố 3 site, dạng `when … like 'RLUxx%' then 'HTMV'`).
+//   ⇒ **Cả bảy tiền tố đó đều bắt đầu bằng `RLU`** ⇒ báo cáo "HTC" (`RLU%`) **gom luôn mọi xe mà chính hệ này
+//     phân loại là HTMV ở chỗ khác**. Một hệ, hai định nghĩa "xe HTC" mâu thuẫn nhau.
+//   📌 Kết luận này **không cần DB**: nó suy ra được hoàn toàn từ quan hệ tiền tố chuỗi.
+// 🔴 **CẢ HAI HÀM TỰ GHI LOG BẰNG TÊN KHÔNG CÓ HẬU TỐ** (`strFunctionName = "…_RLU_Get_WH"`) — cùng bệnh
+//   #636: nhật ký không phân biệt được bản nào chạy.
+// 📌 Port gộp **một** endpoint có tham số `vinPrefix` (đúng vì hai hàm chỉ khác tiền tố), **đo thật** mức chồng
+//   lấn và số xe thuộc nhóm HTMV bị `RLU%` gom vào.
+app.MapGet("/api/rowarranty-reports/htc-by-vin-prefix", async (AppDbContext db, ITenantContext t,
+    string? vinPrefix, string? dealerCode, string? status) =>
+{
+    var prefix = string.IsNullOrWhiteSpace(vinPrefix) ? "RLU" : vinPrefix!.Trim().ToUpperInvariant();
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+
+    var all = await qy.OrderBy(x => x.Id).Take(1000)
+        .Select(x => new { x.Id, x.ClaimNo, x.RONo, x.DealerCode, x.Vin, x.PlateNo,
+                           x.WarrantyType, x.PartCode, x.Amount, x.Status }).ToListAsync();
+
+    // Nguồn: and ro.FrameNo like '<prefix>%'
+    var items = all.Where(x => (x.Vin ?? "").StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    // Bảy tiền tố mà chính nguồn phân loại là HTMV (chép NGUYÊN VĂN từ khối case).
+    var htmvPrefixes = new[] { "RLUDB", "RLUDC", "RLUDT", "RLUG", "RLUS", "RLUT", "RLUZ" };
+    var overlapRluu = items.Count(x => (x.Vin ?? "").StartsWith("RLUU", StringComparison.OrdinalIgnoreCase));
+    var overlapHtmv = items.Count(x => htmvPrefixes.Any(p => (x.Vin ?? "").StartsWith(p, StringComparison.OrdinalIgnoreCase)));
+
+    return Results.Ok(new
+    {
+        vinPrefix = prefix, count = items.Count, items,
+        // ===== #645 =====
+        twoFunctionsDifferByOneLine = "Ser_ROWarrantyReportHTC_RLU_Get_WH_New20230417 (`395 dong) va _RLUU_ (`395 dong) giong nhau tung ky tu tru DUNG MOT dong SQL: and ro.FrameNo like RLU% vs RLUU% (ba cho con lai chi la ten ham, strFunctionName, strErrorCodeDefault)",
+        rluPrefixSwallowsRluuAndHtmv = "moi so khung bat dau bang RLUU CUNG bat dau bang RLU => bao cao RLU CHUA TRON bao cao RLUU: cong hai bao cao la DEM TRUNG, va nguoi chon RLU nhan ca xe RLUU ma khong biet",
+        overlapWithRluu = overlapRluu,
+        htmvPrefixesAlsoStartWithRlu = "dem toan tang biz: like RLU% = 12 site, like RLUU% = 6 site; va mot khoi case phan loai HTMV liet ke BAY tien to cu the RLUDB/RLUDC/RLUDT/RLUG/RLUS/RLUT/RLUZ (moi tien to 3 site, dang when … like RLUxx% then HTMV) — CA BAY deu bat dau bang RLU => bao cao HTC gom luon moi xe ma chinh he nay phan loai la HTMV o cho khac",
+        overlapWithHtmvPrefixes = overlapHtmv,
+        contradictionProvableWithoutDb = "ket luan nay suy ra hoan toan tu quan he tien to chuoi, KHONG can truy van DB",
+        bothLogUnderNameWithoutSuffix = "ca hai ham co strFunctionName = …_RLU_Get_WH / …_RLUU_Get_WH (khong hau to ngay) => nhat ky khong phan biet duoc ban nao chay (cung benh #636)",
+        portMergesIntoOneEndpoint = "hai ham chi khac tien to nen port gop mot endpoint co tham so vinPrefix, va DO THAT muc chong lan thay vi nhan doi ma",
+        sameBatchAsIssue640 = "cung dot _New20230417 da dem duoc 23 ham o #640",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #644 TRA CỨU PHIẾU XUẤT KHO `SerStockOutSearch_WH` (`WH.cs:28494-28819`) =====
 // 3B: laptop `:28494` md5 `df55017f` **KHỚP** máy 150 `:28494`.
 //
