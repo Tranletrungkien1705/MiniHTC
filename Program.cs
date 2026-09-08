@@ -30713,6 +30713,102 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #582 BIÊN BẢN NHẬP KHO IN GIẤY (`Blt_SerStockInPaperRpt`, `Bulletin.cs:23`) =====
+// Hàm nằm **nhầm file** (`BizCarSv.Bulletin.cs`) dù không liên quan bản tin — tra theo tên bảng nguồn
+//   (`Ser_Inv_StockIn`) mới thấy; tìm theo "file nào chứa nghiệp vụ kho" thì trượt.
+//
+// 🔴🔴 **HAI `INNER JOIN` SANG DANH MỤC, ĐỀU KÈM RÀNG BUỘC ĐẠI LÝ — TRÊN MỘT CHỨNG TỪ IN**:
+//     đầu phiếu: `INNER JOIN Ser_MST_Supplier su ON si.SupplierID = su.SupplierID **AND si.DealerCode = su.DealerCode**`
+//     chi tiết:  `INNER JOIN Ser_Mst_Part p ON sid.PartID = p.PartID **AND sid.DealerCode = p.DealerCode**`
+//   ⇒ (a) Nhà cung cấp **chưa khai ở đại lý đó** ⇒ **cả phiếu biến mất** khỏi biên bản.
+//     (b) Phụ tùng chưa khai ở đại lý ⇒ **dòng chi tiết rơi** trong khi **đầu phiếu vẫn in** ⇒ tờ giấy có
+//         phiếu nhưng **thiếu dòng hàng**, và **tổng tiền in ra thiếu** mà không một dòng cảnh báo nào.
+//   Cùng họ #567 (biểu mẫu in): sai ở đây không chỉ là số liệu lệch mà là **chứng từ giấy sai**.
+//   📌 Port dùng `left join` để **giữ dòng**, và **đếm** số dòng nguồn sẽ làm rơi (`droppedBy…`).
+// 🔴 **`LEFT JOIN Ser_Mst_Location l ON sid.ActualLocationID = l.LocationID` — THIẾU VẾ ĐẠI LÝ**, trong khi
+//   **cả hai** join phía trên đều có `AND … DealerCode = …` ⇒ mã vị trí trùng nhau giữa hai đại lý là
+//   **nở dòng chi tiết** (đúng dạng đã gặp ở `sys_user` #563 và `ser_customer` #572).
+// 🔴 **`#region // Check` HOÀN TOÀN RỖNG** (trích theo #403) — cộng với hai bộ lọc dùng `BuildClause` **không**
+//   **toán tử** (`si.DealerCode`, `si.StockInNo`): client gửi giá trị trần ⇒ **bỏ im lặng** ⇒ biên bản in
+//   **toàn bộ phiếu nhập của mọi đại lý**. Đây là **lần thứ hai** gặp cặp "báo cáo in + guard rỗng + `BuildClause`
+//   thiếu toán tử" (lần đầu #567) ⇒ không phải cá biệt.
+// 🔴 **BA CỘT TIỀN ĐỘC LẬP, KHÔNG CỘT NÀO GỒM THUẾ**:
+//     `Cost = ISNULL(sid.Price,0)`
+//     `TotalPrice = ISNULL(sid.Price,0) * ISNULL(sid.Quantity,0)`
+//     `VAT = ISNULL(sid.VAT,0) * Price * Quantity * **0.01**`
+//   ⇒ `TotalPrice` là tiền **trước thuế**; muốn tổng phải tự cộng `TotalPrice + VAT`. **Không có phép làm
+//     tròn nào** (#408) ⇒ số lẻ đi thẳng ra giấy. Port trả **cả ba** cột **và** tổng đã cộng, ghi rõ.
+// ⚠️ Bảng chi tiết chỉ được sinh khi `strIsGetDetail` bằng `TConst.Flag.Active`; ngược lại cờ được thay bằng
+//   chuỗi `"-- Nothing."` ⇒ kết quả **chỉ có hai bảng**. Chỗ gọi phải tự biết mà không đọc `Tables[2]`.
+// ⚠️ `SELECT si.*` ⇒ hợp đồng không xác định (lặp lại #564/#572).
+app.MapGet("/api/stockins/paper-report", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? stockInNo, bool? withDetail) =>
+{
+    // Nguồn KHÔNG chặn tham số rỗng (#region Check rỗng) ⇒ in cả hệ. Port bắt buộc một trong hai.
+    if (string.IsNullOrWhiteSpace(dealerCode) && string.IsNullOrWhiteSpace(stockInNo))
+        return Results.BadRequest(new
+        {
+            error = "Can dealerCode hoac stockInNo — nguon khong chan nen in toan bo phieu nhap moi dai ly.",
+            sourceCheckRegionIsEmpty = true,
+        });
+
+    var hq = db.ServiceStockIns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) hq = hq.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(stockInNo)) hq = hq.Where(x => x.StockInNo == stockInNo!.Trim());
+    var heads = await hq.OrderBy(x => x.StockInNo).ToListAsync();
+    if (heads.Count == 0) return Results.NotFound(new { error = "Khong co phieu nhap nao khop." });
+
+    var supCodes = heads.Select(x => x.SupplierCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var sups = await db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && supCodes.Contains(x.SupplierCode)).ToListAsync();
+    // INNER JOIN danh mục NCC kèm DealerCode ⇒ nguồn làm RƠI CẢ PHIẾU.
+    var droppedHeadsBySupplierJoin = heads.Count(h => h.SupplierCode == null
+        || !sups.Any(sp => sp.SupplierCode == h.SupplierCode));
+
+    var ids = heads.Select(h => h.Id).ToList();
+    var lines = withDetail == true
+        ? await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.ServiceStockInId)).ToListAsync()
+        : new List<ServiceStockInLine>();
+
+    var items = heads.Select(h =>
+    {
+        var sp = h.SupplierCode == null ? null : sups.FirstOrDefault(x => x.SupplierCode == h.SupplierCode);
+        var det = lines.Where(l => l.ServiceStockInId == h.Id).Select(l => new
+        {
+            l.PartCode, l.PartName, l.Quantity, l.ActualLocationCode,
+            cost = l.Price,
+            totalPrice = l.Price * l.Quantity,                      // TRƯỚC thuế, đúng nguồn
+            vat = l.Vat * l.Price * l.Quantity * 0.01m,             // nguồn nhân 0.01, không làm tròn
+            totalWithVat = l.Price * l.Quantity * (1m + l.Vat * 0.01m),   // port cộng sẵn — nguồn KHÔNG có
+        }).ToList();
+        return new
+        {
+            h.StockInNo, h.DealerCode, h.StockInDate, h.Status, h.TotalAmount,
+            supplierCode = h.SupplierCode,
+            supplierName = sp?.SupplierName, supplierAddress = sp?.Address,
+            supplierMissingInCatalog = sp is null,
+            detailCount = det.Count, detail = det,
+            detailSubTotal = det.Sum(x => x.totalPrice),
+            detailVat = det.Sum(x => x.vat),
+            detailTotal = det.Sum(x => x.totalWithVat),
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, withDetail = withDetail == true,
+        sourceInnerJoinsDropRows = "Ser_MST_Supplier (roi CA PHIEU) va Ser_Mst_Part (roi DONG CHI TIET) deu inner join kem AND DealerCode",
+        droppedHeadsBySupplierJoin,
+        detailLinesMayVanishSilently = "dong chi tiet roi ma dau phieu van in => to giay thieu dong hang, tong tien thieu, khong canh bao",
+        locationJoinMissingDealerScope = "LEFT JOIN Ser_Mst_Location chi noi LocationID, khong noi DealerCode => no dong",
+        twoFiltersWithoutOperator = new[] { "si.DealerCode", "si.StockInNo" },
+        checkRegionIsEmptyInSource = true,
+        threeMoneyColumnsNoneIncludeVat = "Cost = Price; TotalPrice = Price*Quantity (TRUOC thue); VAT = VAT*Price*Quantity*0.01",
+        noRoundingAnywhereInSource = "khong co Math.Round/Convert => so le di thang ra giay",
+        detailTableOmittedWhenFlagOff = "zzzzClauseSelect_Inv_StockInDetail bi thay bang chuoi -- Nothing. => ket qua chi co HAI bang",
+        functionLivesInUnrelatedFile = "Blt_SerStockInPaperRpt nam trong BizCarSv.Bulletin.cs du la nghiep vu kho",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #581 TRA BẢN TIN THEO VIN — **HAI WS GỌI HAI BẢN, ĐỌC HAI DB KHÁC NHAU** =====
 // Nguồn có **năm** bản cùng tên gốc `Blt_Bulletin_Get_byVin` (`:2987` trần · `_New20180625` `:3155` ·
 //   `_New20191104` `:3367` · `_New20210618` `:3585` · `_New20221114` `:3796`). Hai bản **đang sống**:
