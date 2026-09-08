@@ -46036,6 +46036,76 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #693 TST TRẢ GIÁ VỀ — `Req_PartPrice_UpdTST` (`BizCarSv.SuggestPrice.cs:1536-1660`) =====
+// Vỏ bọc md5 `da74e92e` → thân thật `Req_PartPrice_UpdTST**X**` (`:1662-2042`, md5 `f988148d`)
+// — **cả hai KHỚP** máy 150. WS `WSCarSv.asmx.cs:39093` gọi bằng `WSReturn(...)`, **không** `MyDSEncode`
+// (một trong **20** phương thức WS không bọc, xem #676). Đây là **chiều VÀO**: hãng TST trả giá về DMS.
+// #238/#241 đã port chiều **đi** (`_Save`, `_SentTST`); chiều **về** thì chưa.
+//
+// 🔴🔴🔴 **CA THỨ MƯỜI BA CỦA LỚP "GHI NHIỀU CSDL" — VÀ LÀ CA RÕ NHẤT**: cùng **một chuỗi SQL** chạy tuần tự
+//   trên **ba** CSDL: `DataSet dsExec = _dbMain.ExecQuery(strSqlExec);` ·
+//   `DataSet dsExecWH = _dbWH.ExecQuery(strSqlExec);` · `if (!bIsWSMain) { _dbDealer.ExecQuery(strSqlExec); }`
+//   Ba `CommitSafety` **rời nhau** ở vỏ bọc ⇒ **không phải giao dịch phân tán**: `_dbWH` lỗi sau khi `_dbMain`
+//   đã commit thì Main **đã ghi**, WH **chưa** ⇒ **lệch vĩnh viễn**, không có đường lùi.
+// 🔴🔴🔴 **GHI VÀ COMMIT CỦA CSDL THỨ BA DO HAI CỜ KHÁC NHAU ĐIỀU KHIỂN**:
+//   · **ghi**    ⟵ `if (!bIsWSMain)`            (ba chỗ trong `…UpdTSTX`: dòng 136, 273, 370 của vùng hàm)
+//   · **mở/commit/rollback transaction** ⟵ `if (bNeedTransaction_Dealer)` (ở vỏ bọc)
+//   📌 `…UpdTSTX` **nhận cả hai** cờ làm tham số nhưng **chỉ dùng `bIsWSMain`** để chặn ghi.
+//   ⇒ Bốn tổ hợp, **hai** trong đó sai:
+//     · `bIsWSMain=false` **+** `bNeedTransaction_Dealer=false` ⇒ **GHI mà KHÔNG có transaction** (auto-commit,
+//       không rollback cùng hai DB kia);
+//     · `bIsWSMain=true`  **+** `bNeedTransaction_Dealer=true`  ⇒ **mở và commit một transaction RỖNG**.
+//   ⇒ Nối tiếp #690 (ở đó điều kiện ghi DB thứ ba là **cờ transaction**); ở đây tệ hơn: **hai cờ khác nhau**
+//     cho **cùng một CSDL**.
+// 🔴🔴 **`CommitSafety(_dbMain)` và `CommitSafety(_dbWH)` là VÔ ĐIỀU KIỆN**, chỉ `_dbDealer` mới có `if`
+//   ⇒ ba CSDL, **hai quy tắc commit khác nhau** trong cùng một hàm.
+// 🔴 Thân `…UpdTSTX` có `#region // Clear for debug` — khối dọn bảng tạm đặt tên "for debug" (họ #681: các câu
+//   `--select null tbl_…` và `--drop table` bị comment "để debug" rồi ở lại vĩnh viễn).
+// 📌 Nguồn còn `#region // Ser_OrderComplain` **bên trong** hàm cập nhật giá ⇒ TST trả giá về **kéo theo** ghi
+//   khiếu nại đơn hàng — một side-effect không nằm trong tên hàm.
+app.MapPost("/api/reqpartprices/{no}/tst-reply", async (string no, ReqPartPriceTstReplyDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var reqNo = no.Trim();
+    var req = await db.ReqPartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqNo == reqNo);
+    if (req is null) return Results.NotFound(new { error = "Khong tim thay yeu cau bao gia.", reqNo });
+
+    // Nguồn cập nhật header: TSTReqPartPriceID · TSTSentDate · TSTReqPartPriceStatus.
+    if (!string.IsNullOrWhiteSpace(dto.TSTReqPartPriceID)) req.TSTReqPartPriceID = dto.TSTReqPartPriceID!.Trim();
+    if (dto.TSTSentDate is not null) req.TSTSentDate = dto.TSTSentDate;
+    if (!string.IsNullOrWhiteSpace(dto.TSTStatus)) req.TSTStatus = dto.TSTStatus!.Trim();
+
+    // …và các dòng: giá TST trả về theo mã phụ tùng.
+    var updated = 0;
+    if (dto.Lines is not null)
+    {
+        var lines = await db.ReqPartPriceLines.Where(x => x.OrgId == t.OrgId && x.ReqId == req.Id).ToListAsync();
+        foreach (var l in dto.Lines)
+        {
+            if (string.IsNullOrWhiteSpace(l.PartCode)) continue;
+            var row = lines.FirstOrDefault(x => x.PartCode == l.PartCode!.Trim());
+            if (row is null) continue;
+            row.QuotedPrice = l.TSTPrice ?? row.QuotedPrice;
+            if (!string.IsNullOrWhiteSpace(l.TSTPartCode)) row.TSTPartCode = l.TSTPartCode!.Trim();
+            updated++;
+        }
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        reqNo, req.TSTReqPartPriceID, req.TSTSentDate, req.TSTStatus, linesUpdated = updated,
+        // ===== #693 =====
+        thirteenthMultiDbWriteCaseAndTheClearest = "CA THU MUOI BA CUA LOP GHI NHIEU CSDL — VA LA CA RO NHAT: cung MOT chuoi SQL chay tuan tu tren BA CSDL: DataSet dsExec = _dbMain.ExecQuery(strSqlExec); DataSet dsExecWH = _dbWH.ExecQuery(strSqlExec); if (!bIsWSMain) { _dbDealer.ExecQuery(strSqlExec); }. Ba CommitSafety ROI NHAU o vo boc => KHONG phai giao dich phan tan: _dbWH loi sau khi _dbMain da commit thi Main DA GHI, WH CHUA => LECH VINH VIEN, khong co duong lui",
+        writeAndCommitOfThirdDbGatedByDifferentFlags = "GHI VA COMMIT CUA CSDL THU BA DO HAI CO KHAC NHAU DIEU KHIEN: ghi <- if (!bIsWSMain) (ba cho trong …UpdTSTX); mo/commit/rollback transaction <- if (bNeedTransaction_Dealer) (o vo boc). …UpdTSTX NHAN CA HAI co lam tham so nhung CHI DUNG bIsWSMain de chan ghi => bon to hop, HAI trong do sai: (1) bIsWSMain=false + bNeedTransaction_Dealer=false => GHI ma KHONG co transaction (auto-commit, khong rollback cung hai DB kia); (2) bIsWSMain=true + bNeedTransaction_Dealer=true => mo va commit mot transaction RONG. Noi tiep #690 (dieu kien ghi DB thu ba la co transaction); o day te hon: HAI CO KHAC NHAU cho CUNG MOT CSDL",
+        twoCommitRulesInOneFunction = "CommitSafety(_dbMain) va CommitSafety(_dbWH) la VO DIEU KIEN, chi _dbDealer moi co if => ba CSDL, HAI QUY TAC COMMIT KHAC NHAU trong cung mot ham",
+        clearForDebugRegion = "than …UpdTSTX co #region // Clear for debug — khoi don bang tam dat ten for debug (ho #681: cac cau --select null tbl_… va --drop table bi comment de debug roi o lai vinh vien)",
+        hiddenOrderComplainSideEffect = "nguon con #region // Ser_OrderComplain BEN TRONG ham cap nhat gia => TST tra gia ve KEO THEO ghi khieu nai don hang — mot side-effect khong nam trong ten ham",
+        wsDoesNotWrapWithMyDsEncode = "WS goi bang WSReturn(...) khong phai MyDSEncode — mot trong 20 phuong thuc WS khong boc (xem #676)",
+        portIsSingleDatabase = "MiniHTC mot CSDL nen khong tai hien duoc ba-CSDL; port ghi mot lan va neu ro cac co tren",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/reqpartprices/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -61934,6 +62004,8 @@ record CavityUpdateDto(string? CavityName = null, string? CavityType = null, str
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
 record MstParamDto(string? DealerCode, string? ParamType, string? ParamCode, string? ParamValue, string? Description);
 record MstVinModelOrginalDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive, string? Remark);
+record ReqPartPriceTstReplyLineDto(string? PartCode, string? TSTPartCode, decimal? TSTPrice);
+record ReqPartPriceTstReplyDto(string? TSTReqPartPriceID, DateTime? TSTSentDate, string? TSTStatus, List<ReqPartPriceTstReplyLineDto>? Lines);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath);
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
