@@ -31671,6 +31671,196 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   (`TypeReport`, `TextReport`, `SoLuong`, `GiaTri`) — giống #B272.
 // ⚠️ **Toàn bộ `drop table` BỊ COMMENT** (7 bảng tạm) — khác #B272 (có drop). Dựa vào scope tự huỷ.
 // ⚠️ `Thread.Sleep(4000)` trên đường thành công, đặt **SAU** `mdsFinal.AcceptChanges()` — **KHÔNG port**.
+
+// ===== #B278/#B279/#B280 BẢO LÃNH QUÁ HẠN ĐÃ THANH TOÁN (lịch sử) —
+//       `Rpt_BLQuaHanDaThanhToan_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `149827,150194` ≡ 150 `149832,150199` ⇒ **`366632f33447725aa957b6bb2135a391`**.
+// 📄 Nguồn ghi rõ **6 điều kiện nghiệp vụ** ngay trong chú thích SQL: có bảo lãnh **A**; ngày kết thúc BL
+//   trong `[a;b]`; **tổng % đã thanh toán = 100%** tính đến hôm nay; số ngày chậm `= ngày đủ 100% − ngày
+//   kết thúc > 0`; **không lấy** ngân hàng phát hành `TCGBANK`/`DEALER`; *tổng tiền chậm* = tổng thanh
+//   toán có **ngày tiền về ∈ [ngày kết thúc, ngày đủ 100%]**.
+// ⚠️ **MÃ LỖI CỦA HÀM KHÁC**: guard ngày `throw … TError.ErrHTC.**Rpt_BLDenHanThanhToan**_InvalidDateInput`
+//   trong khi hàm là `Rpt_BLQuaHanDaThanhToan` ⇒ cùng họ #B215/#B232. Ghi lại, **không tự sửa**.
+// ✅ Guard ngày **ACTIVE** (`To` rỗng ⇒ `DateMax`; `From > To` ⇒ lỗi). RBAC **tổ hợp (1)**:
+//   `CheckHTCDirect` **ACTIVE**, SQL không dùng `BUPattern` ⇒ **cố ý**, không phải lỗ.
+// 🔴🔴🔴 **BUG THẬT — SO SÁNH BẰNG CHÍNH XÁC TRÊN SỐ THỰC**: `where t.PMPPercentAccum **= 100**`
+//   với `PMPPercentAccum = round(AmountTotal * 100 / UnitPriceActual, **8**)`.
+//   ⇒ Xe thanh toán ra `99.99999999` hoặc `100.00000001` (lẻ do làm tròn 8 chữ số) **rớt khỏi báo cáo**.
+//   ⚠️ **Cùng hệ, hai báo cáo hai kiểu**: #B248 dùng **`>= 100`** cho đúng chỉ tiêu này.
+//   📌 **KHÔNG tự vá**: port giữ `== 100m` và trả `nearlyFullyPaid` (khoảng `99.99…`–`100.01`) để đối soát.
+// 🔴🔴🔴 **CHIA CHO 0 — HAI CHỖ**:
+//   · `round(isnull(AmountTotal,0) * 100 / **isnull(UnitPriceActual, 0)**, 8)` — mẫu số **ép về 0**
+//     ⇒ xe chưa có đơn giá thực tế làm **gãy CẢ báo cáo** (cùng lớp #B248);
+//   · `round((GuaranteeValue / **cc.UnitPriceActual**), 8) * 100 PercentGuarantee` — không `isnull`,
+//     nên `NULL` ⇒ NULL (an toàn) nhưng **`0` ⇒ chia 0**.
+//   Port bỏ qua xe `UnitPriceActual` null/0, liệt kê ở `droppedNoUnitPrice`.
+// 🔴🔴 **`NgayCham` LẤY `DateEnd` TỪ MỘT NGUỒN KHÁC với cột `DateEnd` hiển thị**:
+//     cột hiển thị `t.DateEnd` đến từ `#tbl_Car_Car_Filter` (lọc `GuaranteeDetailStatus **in ('A')**`),
+//     còn `datediff(day, **pgd**.DateEnd, p.PaymentEndDateMax_100PT) NgayCham` lấy `pgd` từ
+//     `left join Pmt_GuaranteeDetail … **in ('A','F')**` ở câu Return.
+//   ⇒ Xe có **nhiều dòng bảo lãnh** thì `pgd` có thể khớp **dòng khác** ⇒ **`NgayCham` không khớp với
+//     `DateEnd` in ra**. Port dùng **cùng một dòng** và ghi rõ khác biệt.
+// 🔴 **BA bộ lọc trạng thái bảo lãnh trong CÙNG một hàm**: `#tbl_Car_Car_Filter` → `pgd … in ('A')`;
+//   câu Return → `pgd … in ('A','F')` **và** `pg.GuaranteeStatus in ('F','A')`.
+// 🔴 `PaymentEndDate <= @strToDay **or is null or = ''**` ⇒ (a) cột **lưu varchar**;
+//   (b) **thanh toán CHƯA có ngày tiền về vẫn được cộng** vào tổng để xét đủ 100%.
+// 🔴 **Bốn khoảng ngày chậm**: `=0` · `1–2` · `3–6` · `>6`, và `where t.NgayCham **>= 0**`
+//   ⇒ **loại xe trả TRƯỚC hạn** (chậm âm). ⚠️ Nhóm `NgayCham_0` = trả **đúng hạn** nhưng **vẫn nằm trong
+//   báo cáo "quá hạn"** — đúng nguồn, dễ gây hiểu nhầm khi đọc tiêu đề.
+// 🔴 Hai bảng, **thứ tự ngược trực giác** (`Tables[0]` = chi tiết, có **cột nhãn rỗng**
+//   `select '' #tbl_Report_Detail_Final, *`; `Tables[1]` = tổng theo ngân hàng).
+// ⚠️ Bảy lệnh `drop table` **không có dấu `;`** — khác #B275 (comment hết), khác #B272 (có `;`).
+app.MapGet("/api/reports/bl-quahan-dathanhtoan", async (
+    AppDbContext db, ITenantContext t, DateTime? dateEndFrom, DateTime? dateEndTo) =>
+{
+    var from = dateEndFrom ?? DateTime.MinValue;
+    var to = dateEndTo ?? new DateTime(9999, 12, 31);
+    if (from > to)
+        // ⚠️ Mã lỗi của HÀM KHÁC — giữ đúng nguồn.
+        return Results.BadRequest(new { error = "Rpt_BLDenHanThanhToan_InvalidDateInput", check = new { from, to } });
+
+    var today = DateTime.Today;
+
+    // #tbl_Car_Car_Filter: BL trạng thái CHỈ 'A', loại NH phát hành TCGBANK/DEALER, DateEnd trong kỳ.
+    var grtHeads = (await db.BankGuarantees
+            .Where(g => g.OrgId == t.OrgId && g.BankCode != "TCGBANK" && g.BankCode != "DEALER")
+            .ToListAsync())
+        .ToDictionary(g => g.Id);
+    var grtLines = await db.BankGuaranteeDtls
+        .Where(l => l.OrgId == t.OrgId && l.GuaranteeDetailStatus == "A"
+                    && l.DateEnd != null && l.DateEnd >= from && l.DateEnd <= to)
+        .ToListAsync();
+    var baseRows = grtLines.Where(l => grtHeads.ContainsKey(l.GuaranteeId)).ToList();
+
+    var vins = baseRows.Select(l => l.VIN).Distinct().ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var carIds = cvs.Values.Where(v => v.CarId != null).Select(v => v.CarId!).Distinct().ToList();
+
+    // Caching thanh toán: PaymentStatus in ('A','F') và (PaymentEndDate <= hôm nay HOẶC chưa có ngày tiền về).
+    var payLines = await (from d in db.PmtPaymentDetails
+                          join p in db.PmtPayments on d.PaymentNo equals p.PaymentNo
+                          where d.OrgId == t.OrgId && p.OrgId == t.OrgId
+                                && d.CarId != null && carIds.Contains(d.CarId)
+                                && (p.PaymentStatus == "A" || p.PaymentStatus == "F")
+                          select new { d.CarId, d.Amount, p.PaymentEndDate }).ToListAsync();
+    var payInScope = payLines.Where(x => x.PaymentEndDate == null || x.PaymentEndDate <= today).ToList();
+    var payAgg = payInScope.GroupBy(x => x.CarId!)
+        .ToDictionary(g => g.Key, g => (Total: g.Sum(x => x.Amount ?? 0m),
+                                        EndMax: g.Where(x => x.PaymentEndDate != null).Max(x => x.PaymentEndDate)));
+
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(b => b.BankCode).ToDictionary(g => g.Key, g => g.First());
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var invInfo = (await db.CarVinInvoiceInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync())
+        .GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var detail = new List<object>();
+    var droppedNoUnitPrice = new List<object>();
+    var nearlyFullyPaid = new List<object>();
+    foreach (var l in baseRows)
+    {
+        if (!cvs.TryGetValue(l.VIN, out var cv) || cv.CarId is null) continue;
+        var head = grtHeads[l.GuaranteeId];
+
+        // 🔴 Nguồn: mẫu số isnull(UnitPriceActual, 0) ⇒ chia 0 làm gãy báo cáo. Port bỏ qua.
+        var unitPrice = cv.UnitPriceActual ?? 0m;
+        if (unitPrice == 0m) { droppedNoUnitPrice.Add(new { l.VIN, cv.CarId }); continue; }
+
+        if (!payAgg.TryGetValue(cv.CarId, out var pay)) continue;   // inner join tầng caching
+        var pct = Math.Round(pay.Total * 100m / unitPrice, 8);
+
+        // 🔴 SO SÁNH BẰNG CHÍNH XÁC — giữ đúng nguồn.
+        if (pct != 100m)
+        {
+            if (pct > 99.99m && pct < 100.01m)
+                nearlyFullyPaid.Add(new { l.VIN, cv.CarId, PMPPercentAccum = pct });
+            continue;
+        }
+
+        var paidFull = pay.EndMax;                       // PaymentEndDateMax_100PT
+        int? ngayCham = (paidFull != null && l.DateEnd != null)
+            ? (int)(paidFull.Value.Date - l.DateEnd.Value.Date).TotalDays : null;
+        if (ngayCham is null || ngayCham < 0) continue;  // where NgayCham >= 0
+
+        // Tổng tiền chậm: thanh toán có ngày tiền về ∈ [DateEnd, PaymentEndDateMax_100PT].
+        var amountTTC = payInScope
+            .Where(x => x.CarId == cv.CarId && x.PaymentEndDate != null
+                        && x.PaymentEndDate >= l.DateEnd && x.PaymentEndDate <= paidFull)
+            .Sum(x => x.Amount ?? 0m);
+
+        invInfo.TryGetValue(l.VIN, out var inv);
+        dealers.TryGetValue(cv.DealerCode ?? "", out var dlr);
+        banks.TryGetValue(head.BankCode, out var bk);
+
+        var nc = ngayCham.Value;
+        detail.Add(new
+        {
+            cv.CarId, l.VIN,
+            l.DateEnd,                                   // Ngày kết thúc bảo lãnh
+            GuaranteeValue = l.GrtValue,
+            head.BankCode,
+            PMPPercentAccum = pct,
+            PaymentEndDateMax_100PT = paidFull,
+            NgayCham = nc,
+            cv.EngineNo,
+            CQno = inv?.CQNo, CONo = inv?.CONo,
+            cv.DealerCode,
+            AC_SpecDescription = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
+            DealerName = dlr?.DealerName,
+            GuaranteeNo = head.GuaranteeNo,
+            head.DateOpen, head.DateExpired, head.BankCodeMonitor,
+            l.DateStart,
+            UnitPriceActual = unitPrice,
+            PercentGuarantee = Math.Round(l.GrtValue / unitPrice, 8) * 100m,
+            BankName = bk?.BankName,
+            AmountTotal_TTC = amountTTC,
+            TransportMinutesNo = (string?)null,          // 📌 NỢ: Car_TransportMinutesDetail chưa nối theo CarId
+            NgayCham_0 = nc == 0 ? 1 : 0,
+            NgayCham_1_2 = (nc >= 1 && nc <= 2) ? 1 : 0,
+            NgayCham_3_6 = (nc >= 3 && nc <= 6) ? 1 : 0,
+            NgayCham_6 = nc > 6 ? 1 : 0
+        });
+    }
+
+    var summary = detail
+        .Select(d => d.GetType().GetProperties().ToDictionary(p => p.Name, p => p.GetValue(d)))
+        .GroupBy(d => (string)d["BankCode"]!)
+        .Select(g => new
+        {
+            BankCode = g.Key,
+            BankName = (string?)g.First()["BankName"],
+            NgayCham_0 = g.Sum(x => (int)x["NgayCham_0"]!),
+            NgayCham_1_2 = g.Sum(x => (int)x["NgayCham_1_2"]!),
+            NgayCham_3_6 = g.Sum(x => (int)x["NgayCham_3_6"]!),
+            NgayCham_6 = g.Sum(x => (int)x["NgayCham_6"]!),
+            CountCarId = g.Count(),
+            SumAmountTotal_TTC = g.Sum(x => (decimal)x["AmountTotal_TTC"]!)
+        })
+        .OrderBy(x => x.BankCode).ToList();
+
+    return Results.Ok(new
+    {
+        Rpt_BLQuaHanDaThanhToanDetail = detail,   // 🔴 Tables[0] = CHI TIẾT
+        Rpt_BLQuaHanDaThanhToan = summary,        // 🔴 Tables[1] = TỔNG HỢP
+        droppedNoUnitPrice, nearlyFullyPaid,
+        businessRulesNote = "Nguon ghi ro 6 dieu kien nghiep vu trong chu thich SQL: co bao lanh A; ngay ket thuc BL trong [a;b]; TONG % DA THANH TOAN = 100% tinh den hom nay; so ngay cham = ngay du 100% - ngay ket thuc > 0; KHONG lay ngan hang phat hanh TCGBANK/DEALER; tong tien cham = tong thanh toan co ngay tien ve thuoc [ngay ket thuc, ngay du 100%].",
+        wrongErrorCodeNote = "MA LOI CUA HAM KHAC: guard ngay throw TError.ErrHTC.Rpt_BLDenHanThanhToan_InvalidDateInput trong khi ham la Rpt_BLQuaHanDaThanhToan => cung ho #B215/#B232. Ghi lai, KHONG TU SUA.",
+        exactEqualityBugNote = "BUG THAT - SO SANH BANG CHINH XAC TREN SO THUC: 'where t.PMPPercentAccum = 100' voi PMPPercentAccum = round(AmountTotal*100/UnitPriceActual, 8). Xe thanh toan ra 99.99999999 hoac 100.00000001 (le do lam tron 8 chu so) ROT KHOI BAO CAO. CUNG HE, HAI BAO CAO HAI KIEU: #B248 dung '>= 100' cho dung chi tieu nay. KHONG TU VA - xem nearlyFullyPaid.",
+        divideByZeroNote = "CHIA CHO 0 - HAI CHO: (1) 'round(isnull(AmountTotal,0) * 100 / isnull(UnitPriceActual, 0), 8)' - mau so EP VE 0 => xe chua co don gia thuc te lam GAY CA BAO CAO (cung lop #B248); (2) 'round((GuaranteeValue / cc.UnitPriceActual), 8) * 100 PercentGuarantee' - khong isnull nen NULL => NULL (an toan) nhung 0 => CHIA 0. Port bo qua xe UnitPriceActual null/0.",
+        dateEndTwoSourcesNote = "NgayCham LAY DateEnd TU MOT NGUON KHAC voi cot DateEnd hien thi: cot hien thi t.DateEnd den tu #tbl_Car_Car_Filter (loc GuaranteeDetailStatus in ('A')), con 'datediff(day, pgd.DateEnd, p.PaymentEndDateMax_100PT) NgayCham' lay pgd tu 'left join Pmt_GuaranteeDetail ... in (A,F)' o cau Return => xe co NHIEU DONG BAO LANH thi pgd co the khop DONG KHAC => NgayCham KHONG KHOP voi DateEnd in ra. Port dung CUNG MOT DONG.",
+        threeStatusSetsNote = "BA bo loc trang thai bao lanh trong CUNG mot ham: #tbl_Car_Car_Filter -> pgd in ('A'); cau Return -> pgd in ('A','F') VA pg.GuaranteeStatus in ('F','A').",
+        varcharAndNullPayDateNote = "'PaymentEndDate <= @strToDay or is null or = \"\"' => (a) cot LUU VARCHAR; (b) THANH TOAN CHUA CO NGAY TIEN VE VAN DUOC CONG vao tong de xet du 100%.",
+        bucketNote = "BON khoang ngay cham: =0 / 1-2 / 3-6 / >6, va 'where t.NgayCham >= 0' => LOAI xe tra TRUOC han (cham am). Nhom NgayCham_0 = tra DUNG HAN nhung VAN nam trong bao cao 'qua han' - dung nguon, de gay hieu nham khi doc tieu de.",
+        twoTablesOrderNote = "Hai bang, thu tu NGUOC TRUC GIAC: Tables[0] = chi tiet (co COT NHAN RONG 'select \"\" #tbl_Report_Detail_Final, *'); Tables[1] = tong theo ngan hang. Bay lenh 'drop table' KHONG co dau ';' - khac #B275 (comment het), khac #B272 (co ';').",
+        rbacNote = "RBAC - to hop (1): CheckHTCDirect ACTIVE, SQL khong dung BUPattern => CO Y. Guard ngay ACTIVE (To rong => DateMax).",
+        debtNote = "NO: Car_TransportMinutesDetail chua noi theo CarId => TransportMinutesNo tra NULL, khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/xuat-hoso", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
 {
