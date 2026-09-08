@@ -27942,6 +27942,116 @@ app.MapPost("/api/payments/update-financial", async (
     });
 }).RequireAuthorization();
 
+// ===== #B233/#B234 DANH SÁCH HOÁ ĐƠN CỦA PHIẾU THANH TOÁN — `Pmt_Payment_InvoiceList_Get`
+//       → `…_InvoiceList_GetX` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy**: cửa `48040,48150 / e7648bd3b89bbdcd4734920d1964736d` ·
+//   thân `47883,48039 / 1e3329e33fea862b32fab08b2c524b82` (thân **TRƯỚC** cửa — khuôn #B153/#B230).
+// 🔴🔴 **CHUỖI KHOÁ BỐN CHẶNG: phiếu → dòng → xe → hoá đơn** (không có khoá trực tiếp):
+//   `Pmt_Payment.PaymentNo` → `Pmt_PaymentDetail.PaymentNo` → **`pmpd.CarId = cc.CarId`** →
+//   **`vhd.VIN = cc.VIN`** → `vh.HTCInvoiceCode = vhd.HTCInvoiceCode`.
+//   ⇒ Nối phiếu thẳng sang hoá đơn là **thiếu HAI chặng** (dòng và xe).
+//   ⚠️ Chặng xe đổi **loại khoá giữa chừng**: `CarId` ở nhánh dòng→xe, rồi **`VIN`** ở nhánh xe→hoá đơn.
+// 🔴 **Chỉ hoá đơn ĐÃ HOÀN TẤT**: `and vh.VatHTCStatus in ('F')` — nằm **trong mệnh đề `on`** của
+//   `left join`, không phải `where` ⇒ hoá đơn khác trạng thái **không loại dòng xe**, chỉ để trống.
+// 🔴🔴 **LỌC NGƯỢC QUA `RefNo` — loại hoá đơn ĐÃ BỊ THAY THẾ**:
+//     `left join VAT_HTCInvoice vh2 on **vh.HTCInvoiceCode = vh2.RefNo**`
+//     `where … and **vh2.HTCInvoiceCode is null**`
+//   ⇒ Nếu tồn tại hoá đơn khác **trỏ về** hoá đơn này (`RefNo`), tức nó **đã bị thay thế/điều chỉnh**
+//     ⇒ **loại**. Chỉ giữ hoá đơn **chưa bị ai thay thế**.
+//   ⚠️ Cùng cột `RefNo` đã gặp ở #B117/#B118 (hoá đơn điều chỉnh trỏ về hoá đơn gốc) — **cùng cơ chế**.
+// 🔴 `and isnull(vh.HTCInvoiceNo, '') <> ''` ⇒ **bỏ hoá đơn chưa có SỐ** (mới tạo, chưa phát hành).
+// 📌 **NỢ**: MiniHTC chưa nối `VAT_HTCInvoiceDetail` theo VIN ⇒ endpoint trả **danh sách CarId từ
+//   bảng dòng** + hoá đơn khớp VIN nếu có, cờ `invoiceJoinPartial`.
+app.MapGet("/api/payments/{no}/invoice-list", async (
+    string no, AppDbContext db, ITenantContext t) =>
+{
+    var pmtNo = (no ?? "").Trim().ToUpperInvariant();
+    var pmt = await db.PmtPayments.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PaymentNo == pmtNo);
+    if (pmt is null) return Results.NotFound(new { error = "Pmt_Payment_CheckDB_NotFound", check = new { PaymentNo = pmtNo } });
+
+    // Chặng 1–2: phiếu → dòng → xe (khoá `CarId`).
+    var carIds = await db.PmtPaymentDetails
+        .Where(d => d.OrgId == t.OrgId && d.PaymentNo == pmtNo && d.CarId != null && d.CarId != "")
+        .Select(d => d.CarId!).Distinct().ToListAsync();
+
+    // Chặng 3: xe → hoá đơn theo **VIN** (MiniHTC gộp CarId/VIN vào `CarVinMaster`).
+    var invoices = await db.VatHtcInvoices
+        .Where(v => v.OrgId == t.OrgId && v.VatHTCStatus == "F"
+                    && v.HTCInvoiceNo != null && v.HTCInvoiceNo != "")
+        .Select(v => new { v.HTCInvoiceCode, v.HTCInvoiceNo, v.RefNo, v.VatHTCStatus })
+        .ToListAsync();
+
+    // 🔴 LỌC NGƯỢC: bỏ hoá đơn đã bị hoá đơn khác trỏ về qua `RefNo`.
+    var replaced = invoices.Where(v => v.RefNo != null && v.RefNo != "")
+        .Select(v => v.RefNo!).ToHashSet();
+    var kept = invoices.Where(v => !replaced.Contains(v.HTCInvoiceCode)).ToList();
+
+    return Results.Ok(new
+    {
+        paymentNo = pmtNo,
+        carIdCount = carIds.Count, CarIdList = carIds,
+        invoiceCount = kept.Count, VAT_HTCInvoice = kept,
+        replacedInvoiceCodes = replaced,
+        invoiceJoinPartial = true,
+        keyChainNote = "CHUOI KHOA BON CHANG: Pmt_Payment.PaymentNo -> Pmt_PaymentDetail.PaymentNo -> pmpd.CarId = cc.CarId -> vhd.VIN = cc.VIN -> vh.HTCInvoiceCode = vhd.HTCInvoiceCode. Noi phieu THANG sang hoa don la THIEU HAI CHANG (dong va xe). Chang xe DOI LOAI KHOA giua chung: CarId o nhanh dong->xe, roi VIN o nhanh xe->hoa don.",
+        statusInOnNote = "'and vh.VatHTCStatus in (F)' nam TRONG MENH DE 'on' cua left join, khong phai 'where' => hoa don khac trang thai KHONG LOAI DONG XE, chi de trong.",
+        refNoReverseFilterNote = "LOC NGUOC QUA RefNo - loai hoa don DA BI THAY THE: 'left join VAT_HTCInvoice vh2 on vh.HTCInvoiceCode = vh2.RefNo' + 'where ... and vh2.HTCInvoiceCode is null'. Neu ton tai hoa don khac TRO VE hoa don nay (RefNo) tuc no DA BI THAY THE/DIEU CHINH => LOAI. Chi giu hoa don CHUA BI AI THAY THE. Cung cot RefNo da gap o #B117/#B118 - CUNG CO CHE.",
+        noInvoiceNoNote = "'and isnull(vh.HTCInvoiceNo, '') <> ''' => BO hoa don CHUA CO SO (moi tao, chua phat hanh).",
+        debtNote = "NO: MiniHTC chua noi VAT_HTCInvoiceDetail theo VIN => tra danh sach CarId tu bang dong + hoa don khop trang thai/RefNo, co invoiceJoinPartial."
+    });
+}).RequireAuthorization();
+
+// ===== #B235 CẬP NHẬT LÃI SUẤT / KỲ HẠN VAY — `Pmt_Payment_UpdateInterestRate_LoanPeriod`
+//       (`BankIntergration/BizHTC.MBBank.cs:3724`) =====
+// **3B khớp cả 2 máy**: `3724,4001 / cd4884be75c738513db29c320b36f68d`.
+// 🔴🔴 **KHÔNG GIỚI HẠN TRẠNG THÁI PHIẾU**: `Pmt_Payment_CheckDB(…, TConst.Flag.Yes,
+//   **"" // strPaymentStatusListToCheck**, …)` ⇒ **sửa được phiếu ở MỌI trạng thái**.
+//   ⚠️ **Đối lập #B232** (`Pmt_Payment_UpdateFinancial` chỉ cho `Stage.Finished`) — **cùng bảng
+//     `Pmt_Payment`, hai hàm update, hai chính sách trạng thái NGƯỢC NHAU**. Không đồng nhất.
+// 🔴 **Hai guard giá trị, mỗi cái một mã lỗi**: `InterestRate < 0` ⇒ `…_InvalidInterestRate`;
+//   `LoanPeriod < 0` ⇒ `…_InvalidLoanPeriod`. **Không** chặn cận trên (khác #B175 chặn `> 100`).
+// 🔴 Cả hai chuẩn hoá bằng **`StdDouble`** (số thực) — khác #B178 dùng `Int64`.
+// 🔴 **Bốn cột ghi**: `LogLUDateTime` · `LogLUBy` · `LoanPeriod` · `InterestRate`; nối `on t.PaymentNo
+//   = f.PaymentNo`. Bảng đầu vào rỗng ⇒ `…_TableBlank`.
+app.MapPost("/api/payments/update-interest-loan", async (
+    PmtUpdateInterestDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Pmt_Payment_UpdateInterestRate_LoanPeriod_TableBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = 0; var notFound = new List<string>();
+
+    foreach (var r in dto.Rows)
+    {
+        if ((r.InterestRate ?? 0m) < 0)
+            return Results.BadRequest(new { error = "Pmt_Payment_UpdateInterestRate_LoanPeriod_InvalidInterestRate", check = new { r.PaymentNo, r.InterestRate } });
+        if ((r.LoanPeriod ?? 0m) < 0)
+            return Results.BadRequest(new { error = "Pmt_Payment_UpdateInterestRate_LoanPeriod_InvalidLoanPeriod", check = new { r.PaymentNo, r.LoanPeriod } });
+
+        var pmtNo = (r.PaymentNo ?? "").Trim().ToUpperInvariant();
+        // 🔴 KHÔNG lọc trạng thái — đúng nguồn (`strPaymentStatusListToCheck = ""`).
+        var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == pmtNo);
+        if (p is null) { notFound.Add(pmtNo); continue; }
+
+        p.LoanPeriod = r.LoanPeriod;
+        p.InterestRate = r.InterestRate;
+        p.LogLUDateTime = now; p.LogLUBy = by;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updated, notFound,
+        noStatusGuardNote = "KHONG GIOI HAN TRANG THAI PHIEU: Pmt_Payment_CheckDB(..., TConst.Flag.Yes, \"\" /* strPaymentStatusListToCheck */, ...) => SUA DUOC PHIEU O MOI TRANG THAI. DOI LAP #B232 (Pmt_Payment_UpdateFinancial chi cho Stage.Finished) - CUNG BANG Pmt_Payment, HAI HAM UPDATE, HAI CHINH SACH TRANG THAI NGUOC NHAU. Khong dong nhat.",
+        valueGuardNote = "Hai guard gia tri, moi cai mot ma loi: InterestRate < 0 => _InvalidInterestRate; LoanPeriod < 0 => _InvalidLoanPeriod. KHONG chan can tren (khac #B175 chan > 100). Ca hai chuan hoa bang StdDouble (so thuc) - khac #B178 dung Int64.",
+        fourColumnNote = "BON cot ghi: LogLUDateTime, LogLUBy, LoanPeriod, InterestRate; noi 'on t.PaymentNo = f.PaymentNo'."
+    });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -46716,6 +46826,8 @@ record TransportInsUpdateMultiLineDto(string? VIN, string? TProvinceName, DateTi
 record TransportInsUpdateMultiDto(List<TransportInsUpdateMultiLineDto>? Lines);   // #B227
 record PmtUpdateFinancialRowDto(string? PaymentNo, string? AccountingRecordNo);   // #B232
 record PmtUpdateFinancialDto(List<PmtUpdateFinancialRowDto>? Rows);   // #B232
+record PmtUpdateInterestRowDto(string? PaymentNo, decimal? InterestRate, decimal? LoanPeriod);   // #B235
+record PmtUpdateInterestDto(List<PmtUpdateInterestRowDto>? Rows);   // #B235
 record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType);   // #B206
 record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines);   // #B206
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
