@@ -48075,15 +48075,84 @@ app.MapPost("/api/customercares/{no}/survey", async (
 }).RequireAuthorization();
 
 // ===== Chăm sóc KH chương trình MACE hãng (CustomerCareMace — port 1:1 FrmCustomerCareMace/Update/ApointDate, TCMotor DMSCarSv/Customer) =====
-app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, string? maceType, string? status, string? vin) =>
+//
+// ===== 🔴🔴🔴 #663 PARITY BẢN KHO `Ser_CustomerCareMace_Get_WH` (`WH.cs:26394-26603`) =====
+// 3B: laptop `:26394` md5 `ccda2961` **KHỚP** máy 150 `:26394`. WS `WSCarSv.asmx.cs:29871` gọi thẳng (không hậu tố).
+// #490 đã port bản Main (`Customer.cs:13215`); vòng này đối chiếu bản **kho** và tìm ra lỗi nằm ở **cả hai bản**.
+//
+// 🔴🔴🔴 **BỘ LỌC "LOẠI CHĂM SÓC" TRỎ VÀO MỘT CỘT KHÔNG TỒN TẠI**:
+//     `BuildClause("and", "t.**CareType**", **strMaceTypeConditionList**, "@p", ref alParamsCoupleSql)`
+//   `t` = `Ser_CustomerCareMace`. Danh sách cột của bảng này đọc được nguyên vẹn từ khối `insert into
+//   Ser_CustomerCareMace` (`Customer.cs:14145`, đã bị comment nhưng vẫn là danh sách cột đầy đủ):
+//     MaceId · DealerCode · CreatedDate · CreatedBy · MaceRecomentDate · Status · ApointDate · Remark ·
+//     CarID · CusID · **MaceType** · ContactDate · ROID · LogLUDateTime · LogLUBy — **KHÔNG có `CareType`**.
+//   📌 Đếm **và phân loại theo vai trò** (theo luật đã ghi ở #660): `[alias].MaceType` = **12** lần, **toàn bộ**
+//     ở vị trí **SELECT/`case`**; `[alias].CareType` trong họ Mace = **3** lần, **toàn bộ** ở vị trí **`BuildClause`**
+//     (`WH.cs:26530` · `Customer.cs:13354` · `Customer.cs:13568`) ⇒ **không phải hai cách viết cùng tồn tại như
+//     `JPD`/`JDP` ở #660**: ở đây cột đọc ra và cột lọc vào là **hai cột khác nhau**, và cột lọc **không có thật**.
+//   ⇒ **BIẾN THỂ NẶNG HƠN của "LỌC SAI CỘT" (#637 · #662)**: hai ca trước lọc nhầm sang một cột **có thật**
+//     (kết quả sai **âm thầm**); ca này lọc vào cột **không tồn tại** ⇒ SQL **đổ** ngay:
+//     *Invalid column name `CareType`*. Nhưng vì `BuildClause` **không sinh gì** khi giá trị thiếu toán tử (#410),
+//     câu SQL **chỉ hỏng khi người dùng THỰC SỰ lọc theo loại chăm sóc** ⇒ **mìn hẹn giờ**: mở màn thì chạy,
+//     bấm lọc thì đổ. Cả **ba** màn của họ Mace (kho · main · hẹn ngày) đều dính.
+// ⇒ Port ràng `maceType` vào **`MaceType`** và nêu cờ.
+//
+// ⚪ **ÂM TÍNH 1 — `join ser_ro ro on t.ROID = ro.ROID` là INNER, nhưng KHÔNG làm rơi dòng**: phiếu nhắc Mace
+//   luôn **sinh ra từ một lệnh sửa chữa** — bộ sinh (`ZTemp.cs:1466-1502`) đọc phiếu bằng
+//   `GetTableContents(…, "ROID", "=", strROID, "DealerCode", "=", strDealerCode)` rồi mới ghi `MaceType` ⇒ `ROID`
+//   luôn có. Khác #661 (ở đó `inner join Ser_Customer` **thật sự** làm rơi phiếu xuất nội bộ). Ghi lại để vòng sau
+//   không phải điều tra lại: **không phải mọi `inner join` đều là lỗi — phải xem NGUỒN SINH DÒNG.**
+// ⚪ **ÂM TÍNH 2 — nối `ser_ro` KHÔNG kèm `DealerCode` là QUY ƯỚC NHÀ, không phải lỗi riêng hàm này**:
+//   đếm trong `TERP.BizCarSv`, số lần nối `ser_ro` có kèm vế `… .DealerCode = ro.DealerCode` = **0** ⇒ toàn hệ coi
+//   `ROID` là **duy nhất toàn cục**. Đừng báo "thiếu DealerCode ở join" cho từng hàm nữa.
+//
+// 🔴 **HAI BẢN SINH ĐÔI LỆCH NHAU Ở BA CHỖ** (đọc kỹ vì #490 đã port bản Main):
+//   (a) khoá: bản kho dùng marker nhà `--//[mylock]`, bản Main dùng `with(nolock)` — **đọc bẩn** ở bản Main;
+//   (b) bản Main nối `[@strDBName_CommonCenter].[dbo].ser_mst_model`, bản kho nối thẳng `ser_mst_model`
+//       (đúng cơ chế đã chốt ở #655: tiền tố chỉ tồn tại ở bản chạy trên DB đại lý);
+//   (c) `drop table #tblCustomerCare` **sống** ở bản Main nhưng **bị comment** ở bản kho (`---- drop table`).
+// 🔴 Hai khối `case` (`MaceTypeText` `1/2/3`, `StatusText` `0/1/2`) **không có `else`** ⇒ mã lạ ra **NULL**, không
+//   phải chuỗi rỗng (họ #656 — ở đó tôi đã đếm và chứng minh chỉ 2/8 site thực sự hỏng; ở đây mã đóng theo hằng
+//   `Constants.SerCareMaceStatus` = `0`/`1`/`2` nên **kín**, chỉ `MaceType` là không có lớp hằng nào canh).
+// 📌 **CA THỨ MƯỜI MỘT của lớp ghi BA DB**: `Ser_CustomerCareMace_Create` ghi `_dbMain` (`Customer.cs:14088`)
+//   → `_dbWH` (`:14105`) → `_dbDealer` (`:14110`) **không transaction chung**. Cộng vào nợ đã ghi.
+app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, string? maceType, string? status,
+    string? vin, string? careNo, string? dealerCode, string? cusId, string? cusName, string? plateNo,
+    DateTime? recomentFrom, DateTime? recomentTo) =>
 {
     var q = db.CustomerCareMaces.Where(c => c.OrgId == t.OrgId);
+    // #663: nguồn ràng bộ lọc này vào `t.CareType` (cột KHÔNG có trên bảng). Port ràng đúng vào `MaceType`.
     if (!string.IsNullOrWhiteSpace(maceType)) q = q.Where(c => c.MaceType == maceType);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.Vin != null && c.Vin.Contains(vin.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(careNo)) q = q.Where(c => c.CareNo == careNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusId)) q = q.Where(c => c.CusID == cusId!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusName)) q = q.Where(c => c.CusName != null && c.CusName.Contains(cusName!.Trim()));
+    if (recomentFrom is not null) q = q.Where(c => c.MaceRecomentDate >= recomentFrom);
+    if (recomentTo is not null) q = q.Where(c => c.MaceRecomentDate <= recomentTo);
+    if (!string.IsNullOrWhiteSpace(plateNo))
+    {
+        // Nguồn lọc `car.PlateNo` qua `inner join Ser_Car car on t.CarId = car.CarId`; Mini nối xe bằng VIN.
+        var vins = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.PlateNo == plateNo!.Trim())
+            .Select(x => x.FrameNo).ToListAsync();
+        q = q.Where(c => c.Vin != null && vins.Contains(c.Vin));
+    }
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark }).ToListAsync();
-    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+    { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark,
+      c.DealerCode, c.CusID, c.CarID, c.ROID, c.CreatedDate }).ToListAsync();
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items,
+        // ===== #663 =====
+        maceTypeFilterBoundToNonExistentColumn = "BuildClause(and, t.CareType, strMaceTypeConditionList, …) — Ser_CustomerCareMace KHONG co cot CareType (danh sach cot day du doc tu khoi insert o Customer.cs:14145: MaceId, DealerCode, CreatedDate, CreatedBy, MaceRecomentDate, Status, ApointDate, Remark, CarID, CusID, MaceType, ContactDate, ROID, LogLUDateTime, LogLUBy); cot that la MaceType",
+        countedByRole = "alias.MaceType = 12 lan TOAN BO o SELECT/case; alias.CareType trong ho Mace = 3 lan TOAN BO o BuildClause (WH.cs:26530, Customer.cs:13354, Customer.cs:13568) => khong phai hai cach viet cung ton tai nhu JPD/JDP o #660, ma la cot doc ra va cot loc vao la HAI COT khac nhau va cot loc KHONG co that",
+        latentCrashNotSilentWrongResult = "bien the NANG HON cua LOC SAI COT (#637, #662): hai ca truoc loc nham sang cot CO THAT nen sai am tham; ca nay loc vao cot khong ton tai => SQL do Invalid column name CareType. Nhung BuildClause khong sinh gi khi thieu toan tu (#410) => chi hong khi nguoi dung THUC SU loc theo loai cham soc => min hen gio; ca BA man ho Mace deu dinh",
+        portBindsToMaceType = "port rang maceType vao cot MaceType",
+        negativeInnerJoinRoIsSafe = "AM TINH: join ser_ro on t.ROID = ro.ROID la INNER nhung KHONG lam roi dong — phieu Mace luon sinh tu mot lenh sua chua (ZTemp.cs:1466-1502 doc phieu bang GetTableContents ROID=…, DealerCode=… roi moi ghi MaceType) => ROID luon co. Khac #661 noi inner join Ser_Customer THAT SU lam roi phieu xuat noi bo => khong phai moi inner join deu la loi, phai xem NGUON SINH DONG",
+        negativeRoJoinWithoutDealerCode = "AM TINH: noi ser_ro KHONG kem DealerCode la QUY UOC NHA — dem trong TERP.BizCarSv so lan noi ser_ro co kem ve .DealerCode = ro.DealerCode = 0 => toan he coi ROID la duy nhat toan cuc; dung bao thieu DealerCode o join cho tung ham nua",
+        twinDivergesInThreePlaces = "(a) ban kho dung --//[mylock], ban Main dung with(nolock) => doc ban o ban Main; (b) ban Main noi [@strDBName_CommonCenter].[dbo].ser_mst_model, ban kho noi thang ser_mst_model (dung co che #655); (c) drop table #tblCustomerCare SONG o ban Main nhung BI COMMENT o ban kho",
+        caseWithoutElseYieldsNull = "hai khoi case (MaceTypeText 1/2/3, StatusText 0/1/2) khong co else => ma la ra NULL; ma trang thai dong theo hang Constants.SerCareMaceStatus (0/1/2) nen KIN, chi MaceType khong co lop hang nao canh (ho #656)",
+        threeDbWriteCaseEleven = "CA THU MUOI MOT cua lop ghi BA DB: Ser_CustomerCareMace_Create ghi _dbMain (Customer.cs:14088) -> _dbWH (:14105) -> _dbDealer (:14110) khong transaction chung",
+    });
 }).RequireAuthorization();
 
 // Tạo bản ghi MACE (WinForm gốc chỉ search vì nguồn phát sinh từ hãng — thêm POST để nhập tay tương đương)
