@@ -34216,6 +34216,64 @@ app.MapPost("/api/dlrcontracts/htc-create/validate", async (
     });
 }).RequireAuthorization();
 
+// ===== #B209/#B210/#B211 JOB GỬI MAIL NHẮC NỢ — `AutoSendMailNhacThanhToanNo`
+//       (`DMS40/zTemp.Report.cs:2074`, 375 dòng) =====
+// **3B khớp cả 2 máy** (vị trí **trùng** hai máy): `2074,2448 / a1cbc5f5dc54fd96d4644a6f7c5a8ed8`.
+// 🔴🔴 **JOB TỰ XOÁ DỮ LIỆU NGÀY HÔM QUA — chỉ giữ file 1 NGÀY**:
+//     `strFolder    = @"UploadedFiles\SendMailNhacNo\" + dtimesys.ToString("yyyy-MM-dd");`
+//     `strFolderOld = @"UploadedFiles\SendMailNhacNo\" + dtimesys.**AddDays(-1)**.ToString("yyyy-MM-dd");`
+//     `if (Directory.Exists(strPathOldFolder)) Directory.**Delete(strPathOldFolder, true)**;`
+//   ⇒ Mỗi lần chạy: **tạo thư mục hôm nay** và **xoá đệ quy thư mục hôm qua**.
+//     File đính kèm mail nhắc nợ **không lưu quá 1 ngày** ⇒ muốn đối chiếu lại phải lấy từ hộp thư,
+//     không lấy từ máy chủ. **Không tự đổi** thành giữ lâu hơn (đổi chính sách lưu trữ).
+//   ⚠️ `Directory.Delete(..., true)` là **xoá đệ quy**, chạy **trước** khi vào transaction DB ⇒
+//     lỗi giữa chừng **không cuộn lại được** phần đã xoá.
+// 🔴 **NĂM bảng kết quả** từ `mySql_AutoSendMailNhacThanhToanNo_20251104()`:
+//   `[0] tbTTCocDealer` (thanh toán **cọc** — đại lý) · `[1] tbTTCocBank` (cọc — ngân hàng) ·
+//   `[2] tbTTBLBank` (thanh toán **bảo lãnh** — ngân hàng) · `[3] tbBankSendTTBL` (ngân hàng nhận mail BL) ·
+//   `[4] tbMstDealer` (danh mục đại lý).
+//   ⇒ **Cọc và bảo lãnh là HAI luồng khác nhau**, và mỗi luồng lại tách **đại lý / ngân hàng**.
+// 🔴🔴 **HAI HÀM GỬI MAIL RIÊNG BIỆT**, không phải một vòng lặp chung:
+//     `DMS40_Email_BatchSendEmail_SendMailNhacThanhToanNo_**DL**(…)`   — gửi cho **đại lý**;
+//     `DMS40_Email_BatchSendEmail_SendMailNhacThanhToanNo_**Bank**(…)` — gửi cho **ngân hàng**.
+//   ⇒ Nội dung/người nhận khác nhau; gộp một hàm là **sai người nhận**.
+// 🔴 Bảng đính kèm được `Clone()` rồi **đặt lại tên**: `dbTTCoc_Dealer.TableName = "ThanhToanCoc"` …
+//   ⇒ tên bảng trong file đính kèm **khác** tên bảng trong kết quả SQL.
+// 📌 **NỢ — HIỆU ỨNG RA NGOÀI**: MiniHTC **không gửi mail** và **không đụng thư mục** (luật
+//   `C0-…quingentesimusseptimus`). Endpoint chỉ **dựng danh sách người nhận + số liệu**, trả cờ
+//   `mailNotSent` và `folderNotTouched`.
+app.MapGet("/api/jobs/mail-nhacno/preview", async (
+    AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var today = DateTime.Now.Date;
+
+    // Cọc: phiếu thanh toán chưa hoàn tất (dựng theo tầng caching #B125, lọc trạng thái 'A','F').
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1")
+        .Select(d => new { d.DealerCode, d.DealerName, d.Email }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        dealers = dealers.Where(d => d.DealerCode == dealerCode.Trim()).ToList();
+
+    var banks = await db.MstBanks.Where(b => b.OrgId == t.OrgId)
+        .Select(b => new { b.BankCode, b.BankName }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        runDate = today,
+        folderToday = $@"UploadedFiles\SendMailNhacNo\{today:yyyy-MM-dd}",
+        folderDeleted = $@"UploadedFiles\SendMailNhacNo\{today.AddDays(-1):yyyy-MM-dd}",
+        ThanhToanCoc_Dealer = dealers,
+        ThanhToanBaoLanh_Bank = banks,
+        mailNotSent = true,
+        folderNotTouched = true,
+        oneDayRetentionNote = "JOB TU XOA DU LIEU NGAY HOM QUA - chi giu file 1 NGAY: strFolder = 'UploadedFiles\\SendMailNhacNo\\' + hom nay; strFolderOld = ... + dtimesys.AddDays(-1); 'if (Directory.Exists(strPathOldFolder)) Directory.Delete(strPathOldFolder, true);'. File dinh kem mail nhac no KHONG LUU QUA 1 NGAY => muon doi chieu lai phai lay tu HOP THU, khong lay tu may chu. KHONG tu doi thanh giu lau hon (doi chinh sach luu tru).",
+        deleteBeforeTxnNote = "Directory.Delete(..., true) la XOA DE QUY va chay TRUOC khi vao transaction DB => loi giua chung KHONG CUON LAI DUOC phan da xoa.",
+        fiveTableNote = "NAM bang ket qua tu mySql_AutoSendMailNhacThanhToanNo_20251104(): [0] tbTTCocDealer (coc - dai ly), [1] tbTTCocBank (coc - ngan hang), [2] tbTTBLBank (bao lanh - ngan hang), [3] tbBankSendTTBL (ngan hang nhan mail BL), [4] tbMstDealer. => COC va BAO LANH la HAI LUONG KHAC NHAU, moi luong lai tach dai ly / ngan hang.",
+        twoSenderNote = "HAI HAM GUI MAIL RIENG BIET, khong phai mot vong lap chung: DMS40_Email_BatchSendEmail_SendMailNhacThanhToanNo_DL (dai ly) va ..._Bank (ngan hang). Noi dung/nguoi nhan khac nhau; gop mot ham la SAI NGUOI NHAN.",
+        cloneRenameNote = "Bang dinh kem duoc Clone() roi DAT LAI TEN: dbTTCoc_Dealer.TableName = 'ThanhToanCoc' ... => ten bang trong FILE DINH KEM khac ten bang trong ket qua SQL.",
+        outwardEffectNote = "NO - HIEU UNG RA NGOAI: MiniHTC KHONG gui mail va KHONG dung thu muc (luat C0-...quingentesimusseptimus). Endpoint chi dung danh sach nguoi nhan + so lieu."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
