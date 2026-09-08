@@ -31899,6 +31899,171 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // 📌 **NỢ**: `WO_WorkOrder` và `CT_LC` chưa có trong MiniHTC ⇒ port nối **trực tiếp theo `WorkOrderNo`**
 //   (cột có sẵn trên `Ord_PerformanceInvoiceDetail` và `Car_VIN`) và **bỏ chặng `CT_LC`**; ghi rõ ở
 //   `joinChainShortenedNote` — **không bịa** dữ liệu hợp đồng ngoại.
+
+// ===== #B296/#B297/#B298 BÁO CÁO MASTER — BÁN LẺ —
+//       `RptMaster_BanLe_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`)
+//       + builder `RptSQLQuery.mySql_RptMaster_BanLe_WH()` =====
+// **3B khớp cả 2 máy**: cửa laptop `146707,146886` ≡ 150 `146712,146891` ⇒ **`663d8e2217916d768e96a66f5d90624b`**;
+//   builder `RptSQLQuery.cs 31739,31959` **trùng vị trí** cả hai máy ⇒ **`8c745adeaaac6cf6a2f05794b59d5274`**.
+// ✅🔴 **RBAC — CA KÍN NHẤT ĐÃ GẶP: CÓ CỔNG **VÀ** CÓ LỌC DÒNG (hai chỗ)**:
+//   `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**; và `md.BUCode like @strBUPatternOfUser`
+//   **ACTIVE ở HAI câu**: `#tbl_Mst_Dealer` và `inner join mst_Dealer` trong `#tbl_Info2` (`--20141031`).
+//   ⇒ Tổ hợp **(1)+(3)** — phản ví dụ lành mạnh nhất cho luật `C0-…nonagesimus`.
+// ⚠️🔴 **NHƯNG: BẢNG TẠM LỌC QUYỀN BỊ DỰNG RỒI BỎ KHÔNG — biến thể RBAC mới**:
+//     `#tbl_Mst_Dealer` được dựng riêng để lọc quyền, nhưng ở `#tbl_F1` dòng dùng nó **bị comment**:
+//     `--inner join #tbl_Mst_Dealer md … -- Must inner join to filter AbilityOfUser`
+//     `--  on cdo.DealerCode = md.MDDealerCode`
+//   ⇒ **Bước 1 KHÔNG lọc quyền**; quyền chỉ được áp lại ở `#tbl_Info2` (bản vá `20141031`) qua
+//     `mst_Dealer` **trực tiếp**, và lọc theo **`DLSDDealerCodeOwner`** (đại lý **đang sở hữu**), **không**
+//     theo `cdo.DealerCode` (đại lý **nhận lệnh xuất xe**) như bản bị comment ⇒ **đổi định nghĩa phạm vi**
+//     (đúng luật `C0-…nonagesimusquintus`). Kết quả **vẫn kín**, nhưng **kín theo cột KHÁC**.
+// 🔴🔴🔴 **PHÂN LOẠI SÁU TRẠNG THÁI RỒI CHỈ DÙNG MỘT**: `MyStatus` có 6 nhãn —
+//   `SELLCUSTOMER` (bán lẻ) · `SELLDEALER` (bán ngang) · `INSTOCK` · `ONWAY` · `BUYDEALER` · `UNKNOWN` —
+//   nhưng `#tbl_Info4` lọc **`and f.MyStatus = 'SELLCUSTOMER'`** ⇒ **5/6 nhãn tính xong rồi vứt**.
+//   ⚠️ Và điều kiện `and f.MyStatus **not in ('UNKNOWN')**` đứng ngay trên là **THỪA** (đã hàm ý bởi `=`).
+// 🔴 **`MyStt_Sell` ba trạng thái theo mốc kỳ**: `SELLINFUTURE` (chưa bán **hoặc** bán sau `@To`) ·
+//   `SELLINPAST` (bán trước `@From`) · `SELLINRANGE`.
+//   ⚠️ **`SELLINPAST` KHÔNG xuất hiện trong bất kỳ nhánh nào** của `MyStatus` ⇒ luôn rơi `UNKNOWN` ⇒ bị loại.
+// 🔴🔴 **SELF-JOIN tìm giao dịch KẾ TIẾP của cùng xe** (chuỗi bán ngang):
+//     `left join #tbl_Info1 f_Sell on f.CarId = f_Sell.CarId and **f.DealNo != f_Sell.DealNo**`
+//     `                            and **f.DLSDDealerCodeOwner = f_Sell.DLSDDealerCodeSource**`
+//   ⇒ "chủ sở hữu của deal này = **bên bán** của deal kế" ⇒ `NextDLSDDealerCodeOwner` **null** nghĩa là
+//     **bán tới người tiêu dùng**, **không null** nghĩa là **bán ngang**.
+// 🔴 **Điều kiện kỳ BẤT ĐỐI XỨNG**: `cdod.DeliveryOutDate <= @strTDate_To` (**chỉ cận trên**) và
+//   `(dlsdd.DeliveryDate **is null** or dlsdd.DeliveryDate >= @strTDate_From)` (**chỉ cận dưới, cho phép null**)
+//   ⇒ xe **chưa bán** vẫn vào tập nền để phân loại `INSTOCK`/`ONWAY`.
+// 🔴 `dlsdd.DealNoPrevious is not null` — *"lọc bỏ những Deal_Giả"* (khuôn #B242/#B257).
+// ⚠️ **Câu debug bị bỏ quên, KHÔNG comment**: `select null tbl_Info4, f.* From #tbl_Info4 f;`
+//   ⇒ trở thành `Tables[0] = "Table_Banle_Detail"` — **hợp đồng API** (lần thứ **hai**, sau #B290).
+// 🔴 Bảng tổng gom theo **BẢY cột** (`CVModelCode`, `ModelName`, `ActualSpec`, `AC_SpecDescription`,
+//   `CVColorCode`, `ColorName`, `ColumnMonth`) với `count(t.CarId) Total`, `order by ColumnMonth`.
+app.MapGet("/api/reports/master-banle", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);      // To rỗng ⇒ DateMax
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    // #tbl_F1 — điều kiện kỳ BẤT ĐỐI XỨNG (chỉ cận trên cho ngày xuất, chỉ cận dưới cho ngày bán).
+    var doCars = await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.CarId != null
+                    && (c.ConfirmStatus == "A" || c.ConfirmStatus == "F")
+                    && c.DeliveryOutDate != null && c.DeliveryOutDate <= to)
+        .ToListAsync();
+    var carIds = doCars.Select(c => c.CarId!).Distinct().ToList();
+
+    var allDtls = await db.DealerDealDetails
+        .Where(d => d.OrgId == t.OrgId && carIds.Contains(d.CarId)
+                    && d.DealNoPrevious != null && d.DealNoPrevious != "")   // 🔴 bỏ Deal_Giả
+        .ToListAsync();
+    var dealIds = allDtls.Select(d => d.DealId).Distinct().ToList();
+    var deals = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id)).ToListAsync())
+        .ToDictionary(d => d.Id);
+
+    // #tbl_Info1 — mỗi dòng deal của xe.
+    var info1 = allDtls
+        .Where(d => deals.ContainsKey(d.DealId)
+                    && (d.DeliveryDate == null || d.DeliveryDate >= from))
+        .Select(d => new
+        {
+            d.CarId, Dtl = d, Deal = deals[d.DealId],
+            OwnerCode = deals[d.DealId].DealerCodeBuyer,
+            SourceCode = deals[d.DealId].DealerCode
+        }).ToList();
+
+    var cvs = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId && v.CarId != null && carIds.Contains(v.CarId)).ToListAsync())
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var detail = new List<object>();
+    foreach (var f in info1)
+    {
+        // 🔴 Quyền áp ở BƯỚC NÀY theo DLSDDealerCodeOwner (không phải cdo.DealerCode).
+        if (f.OwnerCode is null || f.OwnerCode == "") continue;               // "loại bỏ Rác"
+        if (!dealers.ContainsKey(f.OwnerCode)) continue;
+
+        // 🔴 SELF-JOIN: deal KẾ TIẾP = deal khác của cùng xe mà BÊN BÁN = chủ sở hữu hiện tại.
+        var next = info1.FirstOrDefault(x => x.CarId == f.CarId
+            && x.Deal.DealNo != f.Deal.DealNo && x.SourceCode == f.OwnerCode);
+
+        var nextDeliveryDate = next?.Dtl.DeliveryDate;
+        var mySttSell = (nextDeliveryDate == null || nextDeliveryDate > to) ? "SELLINFUTURE"
+                      : (nextDeliveryDate < from) ? "SELLINPAST" : "SELLINRANGE";
+        var mySttStockIn = (f.Dtl.DeliveryDate == null || f.Dtl.DeliveryDate > to) ? "0" : "1";
+
+        // 🔴 SÁU nhãn — nhưng chỉ 'SELLCUSTOMER' được giữ ở bước sau.
+        string sttLabel =
+            (mySttSell == "SELLINRANGE" && next?.OwnerCode is null) ? "SELLCUSTOMER"
+          : (mySttSell == "SELLINRANGE" && next?.OwnerCode is not null) ? "SELLDEALER"
+          : (mySttSell == "SELLINFUTURE" && f.Deal.FlagInitDeal == "1" && mySttStockIn == "1") ? "INSTOCK"
+          : (mySttSell == "SELLINFUTURE" && f.Deal.FlagInitDeal == "1" && mySttStockIn == "0") ? "ONWAY"
+          : (mySttSell == "SELLINFUTURE" && f.Deal.FlagInitDeal == "0" && mySttStockIn == "1") ? "BUYDEALER"
+          : "UNKNOWN";
+
+        if (sttLabel != "SELLCUSTOMER") continue;        // 🔴 #tbl_Info4 chỉ giữ MỘT nhãn
+
+        cvs.TryGetValue(f.CarId, out var cv);
+        detail.Add(new
+        {
+            tbl_Info4 = (string?)null,                   // ⚠️ cột rác của câu debug bị bỏ quên
+            f.CarId, VIN = cv?.VIN,
+            CVModelCode = cv?.ModelCode,
+            ModelName = (cv?.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null,
+            ActualSpec = cv?.ActualSpec,
+            AC_SpecDescription = (cv?.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
+            CVColorCode = cv?.ColorCode, ColorName = (string?)null,   // 📌 NỢ: Mst_CarColor chưa nối
+            ColumnMonth = f.Dtl.DeliveryDate?.ToString("yyyy-MM"),
+            DLSDDealNo = f.Deal.DealNo,
+            DLSDDealerCodeSource = f.SourceCode,
+            DLSDDealerCodeOwner = f.OwnerCode,
+            DLSDDDeliveryDate = f.Dtl.DeliveryDate,
+            DLSDDDeliveryStatus = f.Dtl.DeliveryStatus,
+            DLSDDPlateNo = f.Dtl.PlateNo,
+            DLSDFlagInitDeal = f.Deal.FlagInitDeal,
+            MyStt_Sell = mySttSell, MyStt_StockIn = mySttStockIn, MyStatus = sttLabel,
+            NextDLSDDealerCodeOwner = next?.OwnerCode,
+            Tt_CarId = 1
+        });
+    }
+
+    // Bảng tổng — gom theo BẢY cột.
+    var summary = detail
+        .Select(d => d.GetType().GetProperties().ToDictionary(p => p.Name, p => p.GetValue(d)))
+        .GroupBy(d => ((string?)d["CVModelCode"], (string?)d["ModelName"], (string?)d["ActualSpec"],
+                       (string?)d["AC_SpecDescription"], (string?)d["CVColorCode"],
+                       (string?)d["ColorName"], (string?)d["ColumnMonth"]))
+        .Select(g => new
+        {
+            CVModelCode = g.Key.Item1, ModelName = g.Key.Item2,
+            CVActualSpec = g.Key.Item3, AC_SpecDescription = g.Key.Item4,
+            CVColorCode = g.Key.Item5, ColorName = g.Key.Item6,
+            ColumnMonth = g.Key.Item7,
+            Total = g.Count()
+        })
+        .OrderBy(x => x.ColumnMonth).ToList();
+
+    return Results.Ok(new
+    {
+        Table_Banle_Detail = detail,      // Tables[0] — từ câu debug bị bỏ quên
+        Table_Banle = summary,            // Tables[1]
+        rbacTightestNote = "RBAC - CA KIN NHAT DA GAP: CO CONG VA CO LOC DONG (hai cho). myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE; va 'md.BUCode like @strBUPatternOfUser' ACTIVE o HAI cau: #tbl_Mst_Dealer va 'inner join mst_Dealer' trong #tbl_Info2 (--20141031). To hop (1)+(3) - phan vi du lanh manh nhat cho luat C0-...nonagesimus.",
+        orphanRbacTempTableNote = "NHUNG: BANG TAM LOC QUYEN BI DUNG ROI BO KHONG - bien the RBAC moi. #tbl_Mst_Dealer duoc dung rieng de loc quyen, nhung o #tbl_F1 dong dung no BI COMMENT: '--inner join #tbl_Mst_Dealer md ... -- Must inner join to filter AbilityOfUser / --on cdo.DealerCode = md.MDDealerCode'. => BUOC 1 KHONG LOC QUYEN; quyen chi duoc ap lai o #tbl_Info2 (ban va 20141031) qua mst_Dealer TRUC TIEP, va loc theo DLSDDealerCodeOwner (dai ly DANG SO HUU) chu KHONG theo cdo.DealerCode (dai ly NHAN LENH XUAT XE) nhu ban bi comment => DOI DINH NGHIA PHAM VI (luat C0-...nonagesimusquintus). Ket qua VAN KIN nhung KIN THEO COT KHAC.",
+        sixLabelsOneUsedNote = "PHAN LOAI SAU TRANG THAI ROI CHI DUNG MOT: MyStatus co 6 nhan - SELLCUSTOMER (ban le), SELLDEALER (ban ngang), INSTOCK, ONWAY, BUYDEALER, UNKNOWN - nhung #tbl_Info4 loc 'and f.MyStatus = SELLCUSTOMER' => 5/6 NHAN TINH XONG ROI VUT. Va dieu kien 'and f.MyStatus not in (UNKNOWN)' dung ngay tren la THUA (da ham y boi '=').",
+        sellInPastDeadNote = "MyStt_Sell ba trang thai theo moc ky: SELLINFUTURE (chua ban HOAC ban sau @To); SELLINPAST (ban truoc @From); SELLINRANGE. SELLINPAST KHONG xuat hien trong bat ky nhanh nao cua MyStatus => luon roi UNKNOWN => bi loai.",
+        selfJoinNote = "SELF-JOIN tim giao dich KE TIEP cua cung xe (chuoi ban ngang): 'left join #tbl_Info1 f_Sell on f.CarId = f_Sell.CarId and f.DealNo != f_Sell.DealNo and f.DLSDDealerCodeOwner = f_Sell.DLSDDealerCodeSource' => 'chu so huu cua deal nay = BEN BAN cua deal ke' => NextDLSDDealerCodeOwner NULL nghia la BAN TOI NGUOI TIEU DUNG, KHONG NULL nghia la BAN NGANG.",
+        asymmetricRangeNote = "Dieu kien ky BAT DOI XUNG: 'cdod.DeliveryOutDate <= @strTDate_To' (CHI can tren) va '(dlsdd.DeliveryDate is null or dlsdd.DeliveryDate >= @strTDate_From)' (CHI can duoi, CHO PHEP null) => xe CHUA BAN van vao tap nen de phan loai INSTOCK/ONWAY.",
+        fakeDealNote = "'dlsdd.DealNoPrevious is not null' - 'loc bo nhung Deal_Gia' (khuon #B242/#B257).",
+        forgottenDebugSelectNote = "CAU DEBUG BI BO QUEN, KHONG COMMENT: 'select null tbl_Info4, f.* From #tbl_Info4 f;' => tro thanh Tables[0] = 'Table_Banle_Detail' - HOP DONG API (lan thu HAI, sau #B290). Cot dau luon null.",
+        summaryKeyNote = "Bang tong gom theo BAY cot (CVModelCode, ModelName, ActualSpec, AC_SpecDescription, CVColorCode, ColorName, ColumnMonth) voi count(t.CarId) Total, order by ColumnMonth.",
+        debtNote = "NO: Mst_CarColor chua noi => ColorName tra NULL; Dlr_Contract/Mst_SalesMan (DCDlrContractNo, DSMSMCode/DSMSMName) chua noi. Khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/pi-instock", async (
     AppDbContext db, ITenantContext t, DateTime? inputDate, string? productionMonth) =>
 {
