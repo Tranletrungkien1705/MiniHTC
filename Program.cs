@@ -9133,6 +9133,99 @@ app.MapPost("/api/htcldinvoices/calc-before-approve", async (
     List<string> htcInvoiceCodes, AppDbContext db, ITenantContext t, string? flagUnapprove) =>
     await HtcCalcBeforeApprAsync(htcInvoiceCodes, db, t, flagUnapprove, "HTCLD")).RequireAuthorization();
 
+// ===== #B123 LẤY SAO KÊ NGÂN HÀNG TỪ TCF — `OS_DMS_TCF_WA_Bank_BankStatementDtl_Get_New20210601` =====
+// Trace LIVE: `BizHTC.TCFIntergration.cs:7427`. 3B đo thật, **khớp cả 2 máy**:
+//   `7427/1350c81c9d76b77d1c2d62b4c7f5c67c`.
+// 🔴 **Dữ liệu KHÔNG nằm ở DMS** — hàm chỉ **dựng mệnh đề lọc** rồi gọi
+//   `OS_DMS_TCF_WA_Bank_BankStatementDtl_GetX` sang **hệ TCF** (`_strConfig_TCF_*`).
+//   ⇒ MiniHTC chưa có kênh TCF ⇒ endpoint này **dựng đúng mệnh đề + giải ra danh sách tài khoản** rồi
+//     trả về, **không tự gọi ra ngoài** (luật `C0-…quingentesimusseptimus`), cờ `tcfNotCalled`.
+// 🔴 **BẮT BUỘC có bảng `Pmt_Payment` và KHÔNG được rỗng**: thiếu ⇒ `…_PmtPaymnetTblNotFound`
+//   (⚠️ **tên hằng lỗi sai chính tả `PmtPaymnet`** — giữ nguyên để đối chiếu log);
+//   rỗng ⇒ `…_PmtPaymnetTblInvalid`. Đây là **guard chống tìm trắng** — cấm nới lỏng.
+// 🔴 **`strTypeApprAuto` BẮT BUỘC, chỉ HAI giá trị**, khác đi là **ném lỗi** (`…_TypeApprAutoInvalid`):
+//     · `TConst.TypeApprTCF.ONline  = "ONLINE"`  ⇒ thêm `Bank_BankStatement.CreateBy **=** 'SA.BG.ALL'`
+//     · `TConst.TypeApprTCF.OFFline = "OFFLINE"` ⇒ thêm `Bank_BankStatement.CreateBy **<>** 'SA.BG.ALL'`
+//   ⚠️ Cùng lớp hằng **có `ALL = "ALL"` nhưng guard KHÔNG nhận** ⇒ truyền `"ALL"` là **lỗi**.
+//     (Cùng khuôn #B118: `FlagisNone = "0"` cũng là hằng hợp lệ nhưng bị chặn.)
+//   ⚠️ `'SA.BG.ALL'` là **tài khoản người tạo cắm cứng** — dấu hiệu "sao kê do máy nạp" (ONLINE).
+// 🔴 **Mệnh đề thời gian LUÔN có** (không có nhánh bỏ qua):
+//     `ThoiDiemGiaoDichDTime >= '{from}' and ThoiDiemGiaoDichDTime <= '{to}'`.
+// 🔴 **Danh sách tài khoản nhận lấy từ DMS**, không do client gửi:
+//     `select distinct f.BankAccountReceive from #input_Pmt_Payment pp inner join Pmt_Payment f
+//      on pp.PaymentNo = f.PaymentNo where f.PaymentStatus **not in ('F')**`
+//   ⇒ chỉ phiếu **chưa hoàn tất** mới được đối chiếu sao kê.
+// 🔴🔴 **`in '{0}'` — CHUỖI GHÉP BỌC MỘT CẶP NHÁY, KHÔNG PHẢI IN-LIST**:
+//     `… += " and Bank_BankStatementDtl.AccountNoBankNhan in '" + "a,b,c" + "'"`
+//   ⇒ theo cú pháp SQL Server đây là **so sánh bằng với chuỗi `"a,b,c"`**, không phải tập hợp.
+//     Có **đúng một** tài khoản thì vẫn đúng; từ **hai** trở lên thì phụ thuộc **bộ phân tích của TCF**.
+//   📌 **NGHI VẤN, chưa kết luận** (mệnh đề chạy ở **hệ ngoài**, không phải SQL Server của DMS):
+//     port dựng **y hệt** nguồn và **gắn cờ `inListSuspicious`** khi số tài khoản ≥ 2 — không tự sửa
+//     thành `in ('a','b')` vì làm vậy là **đổi kết quả** so với hệ đang chạy.
+//   ⚠️ Khối tương tự cho `PaymentCode` **bị comment** (`:7534-7549`) — cùng lỗi hình dạng, đã tắt.
+// 🔴 Phân trang **vô hiệu**: `RecordStart = "0"`, `RecordCount = **"12345600"**` (số ma).
+// 🔴 Kết quả TCF trả về phải có bảng `Bank_BankStatementDtl`, thiếu ⇒ `…_BankStatementDtlTblNotFound`.
+app.MapPost("/api/tcf/bank-statement-dtl/build-query", async (
+    TcfBankStatementQueryDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // Bảng Pmt_Payment: thiếu ⇒ NotFound; RỖNG ⇒ TỪ CHỐI (guard chống tìm trắng).
+    if (dto.PaymentNos is null)
+        return Results.BadRequest(new { error = "OS_DMS_TCF_WA_Bank_BankStatementDtl_Get_PmtPaymnetTblNotFound" });
+    var paymentNos = dto.PaymentNos.Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    if (paymentNos.Count == 0)
+        return Results.BadRequest(new { error = "OS_DMS_TCF_WA_Bank_BankStatementDtl_Get_PmtPaymnetTblInvalid" });
+
+    // 🔴 TypeApprAuto: CHỈ "ONLINE" / "OFFLINE"; "ALL" tuy là hằng cùng lớp nhưng BỊ CHẶN.
+    var typeAppr = (dto.TypeApprAuto ?? "").Trim().ToUpperInvariant();
+    if (!(typeAppr == "ONLINE" || typeAppr == "OFFLINE"))
+        return Results.BadRequest(new
+        {
+            error = "OS_DMS_TCF_WA_Bank_BankStatementDtl_Get_TypeApprAutoInvalid",
+            check = new { TypeApprAuto = typeAppr },
+            vocabNote = "TConst.TypeApprTCF: ALL='ALL' | ONline='ONLINE' | OFFline='OFFLINE'. Guard CHI nhan ONLINE/OFFLINE => 'ALL' BI CHAN du la hang cung lop (cung khuon #B118 voi FlagisNone)."
+        });
+
+    // 🔴 Tài khoản nhận LẤY TỪ DMS (không do client gửi), chỉ phiếu PaymentStatus not in ('F').
+    var accounts = await db.PmtPayments
+        .Where(p => p.OrgId == t.OrgId && paymentNos.Contains(p.PaymentNo) && p.PaymentStatus != "F")
+        .Select(p => p.BankAccountReceive)
+        .Where(a => a != null && a != "")
+        .Distinct().ToListAsync();
+
+    var from = (dto.DateTimeFrom ?? "").Trim();
+    var to = (dto.DateTimeTo ?? "").Trim();
+
+    // 🔴 Dựng Y HỆT nguồn — kể cả `in '<chuỗi ghép>'`.
+    var where = $"Bank_BankStatementDtl.ThoiDiemGiaoDichDTime >= '{from}' "
+              + $" and Bank_BankStatementDtl.ThoiDiemGiaoDichDTime <= '{to}' ";
+    var accountList = string.Join(",", accounts);
+    if (accountList.Length > 0)
+        where += $" and Bank_BankStatementDtl.AccountNoBankNhan in '{accountList}'";
+    where += typeAppr == "ONLINE"
+        ? " and Bank_BankStatement.CreateBy = 'SA.BG.ALL'"
+        : " and Bank_BankStatement.CreateBy <> 'SA.BG.ALL'";
+
+    return Results.Ok(new
+    {
+        typeApprAuto = typeAppr,
+        paymentNoCount = paymentNos.Count,
+        bankAccountReceive = accounts,
+        dateTimeFrom = from, dateTimeTo = to,
+        whereClause = where,
+        recordStart = "0", recordCount = "12345600",
+        Bank_BankStatementDtl = Array.Empty<object>(),
+        tcfNotCalled = true,
+        inListSuspicious = accounts.Count >= 2,
+        remoteNote = "Du lieu KHONG nam o DMS: ham chi DUNG MENH DE LOC roi goi OS_DMS_TCF_WA_Bank_BankStatementDtl_GetX sang he TCF (_strConfig_TCF_*). MiniHTC chua co kenh TCF => endpoint dung dung menh de + giai ra danh sach tai khoan roi TRA VE, KHONG tu goi ra ngoai (luat C0-...quingentesimusseptimus).",
+        guardNote = "BAT BUOC co bang Pmt_Payment va KHONG duoc rong: thieu => _PmtPaymnetTblNotFound (TEN HANG LOI SAI CHINH TA 'PmtPaymnet' - giu nguyen de doi chieu log); rong => _PmtPaymnetTblInvalid. Day la GUARD CHONG TIM TRANG - cam noi long.",
+        typeApprNote = "strTypeApprAuto BAT BUOC, chi HAI gia tri, khac di la NEM LOI: ONLINE => them Bank_BankStatement.CreateBy = 'SA.BG.ALL'; OFFLINE => them CreateBy <> 'SA.BG.ALL'. 'SA.BG.ALL' la tai khoan nguoi tao CAM CUNG - dau hieu 'sao ke do may nap' (ONLINE).",
+        accountSourceNote = "Danh sach tai khoan nhan LAY TU DMS, khong do client gui: 'select distinct f.BankAccountReceive from #input_Pmt_Payment pp inner join Pmt_Payment f on pp.PaymentNo = f.PaymentNo where f.PaymentStatus NOT IN (F)' => chi phieu CHUA HOAN TAT moi duoc doi chieu sao ke.",
+        inListSuspiciousNote = "NGHI VAN (chua ket luan): nguon ghep 'AccountNoBankNhan in ' + 'a,b,c' + ' ' - BOC MOT CAP NHAY, KHONG PHAI IN-LIST. Theo cu phap SQL Server day la SO SANH BANG voi chuoi 'a,b,c'. Co DUNG MOT tai khoan thi van dung; tu HAI tro len thi phu thuoc bo phan tich cua TCF (menh de chay o HE NGOAI, khong phai SQL Server cua DMS). Port dung Y HET nguon va gan co inListSuspicious khi so tai khoan >= 2 - KHONG tu sua thanh in ('a','b') vi lam vay la DOI KET QUA so voi he dang chay. Khoi tuong tu cho PaymentCode (:7534-7549) BI COMMENT - cung loi hinh dang, da tat.",
+        pagingNote = "Phan trang VO HIEU: RecordStart='0', RecordCount='12345600' (so ma).",
+        outputNote = "Ket qua TCF tra ve phai co bang Bank_BankStatementDtl, thieu => _BankStatementDtlTblNotFound."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
@@ -42685,6 +42778,7 @@ record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? R
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
 record TcgInvoiceHddtDeleteDto(string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B117
 record HtcInvoiceHddtDeleteDto(string? FlagisHTC, string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B118
+record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
 record VinInvoiceTransferredDto(string? VIN, string? InvoiceNoTransferred, DateTime? InvoiceTransferredDate);   // #B109
