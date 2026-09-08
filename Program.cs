@@ -16158,8 +16158,22 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
-    // Guard của nguồn (checkPaymentFieldEmpty): đại lý + người nộp + CMND/CCCD + ngày thu đều BẮT BUỘC.
-    // ⚠️ CusID KHÔNG bắt buộc — nguồn đã COMMENT dòng truyền strCusID vào hàm check (luật "port dòng active").
+    // ===== 🔴 #570 SỬA CHÚ THÍCH SAI Ở TRÊN — ĐỌC TRỌN `checkPaymentFieldEmpty` (`Debit.cs`) =====
+    // Chú thích cũ ghi *"người nộp + CMND/CCCD ... đều BẮT BUỘC"* — **sai**. Trong thân hàm check,
+    //   **cả hai** guard đó nằm trong một khối `/* … */` **bị comment**:
+    //     `/*  if (IsEmpty(strPayPersonName)) throw … Ser_CusDebit_PayPersonEmpty;`
+    //     `    if (IsEmpty(strPayPersonIDCardNo)) throw … Ser_CusDebit_PayPersonIDEmpty;  */`
+    //   ⇒ Nguồn hiện chỉ bắt buộc **ba** thứ: `DealerCode` · `PaymentAmount` · `PayDate`.
+    //   Hai tham số kia **vẫn nằm trong chữ ký hàm** nên đọc chữ ký sẽ tưởng còn kiểm.
+    //   📌 MiniHTC **giữ** chặt hơn nguồn (vẫn bắt buộc) vì phiếu thu tiền mặt cần danh tính người nộp —
+    //     nhưng nay nói **đúng** rằng đó là **lựa chọn của port**, không phải guard của nguồn.
+    // 🔴 **GUARD SỐ TIỀN CỦA NGUỒN KHÔNG BAO GIỜ CHẠY ĐÚNG**:
+    //     `if (!double.TryParse(strPaymentAmount, out result) && !double.IsPositiveInfinity(float.Parse(strPaymentAmount)))`
+    //   · Chuỗi **hợp lệ** ⇒ `TryParse` true ⇒ vế đầu **false** ⇒ bỏ qua kiểm ⇒ số **âm** vẫn lọt.
+    //   · Chuỗi **không phải số** ⇒ vế đầu true ⇒ chạy tiếp `float.Parse(...)` ⇒ **ném `FormatException` thô**,
+    //     **không** phải mã lỗi nghiệp vụ `Ser_CusDebit_ReceptAmountNotNumber` mà dòng này định ném.
+    //   ⇒ Mã lỗi "số tiền không phải số" **không bao giờ tới tay người dùng**. Port kiểm số âm/không phải số tử tế.
+    // ⚠️ `//, strCusID` — lời gọi có comment **đúng tham số này**, và hàm check cũng **không còn** tham số đó.
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
     if (string.IsNullOrWhiteSpace(dto.PayPersonName)) return Results.BadRequest(new { error = "Chưa nhập tên người nộp tiền." });
     if (string.IsNullOrWhiteSpace(dto.PayPersonIDCardNo)) return Results.BadRequest(new { error = "Chưa nhập số CMND/CCCD người nộp tiền." });
@@ -16172,6 +16186,76 @@ app.MapPost("/api/cusdebits/{no}/payments", async (string no, CusDebitPaymentDto
     if (h.PaidAmount >= h.DebitAmount) h.Status = "Paid";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status });
+}).RequireAuthorization();
+
+// ===== 🔴🔴 #570 SỬA PHIẾU THU (`SerPaymentUpdate`, `Debit.cs:3089`) — **"RỖNG" ĐỔI NGHĨA GIỮA TẠO VÀ SỬA** =====
+// Đối chiếu cặp create/update (luật #404) — hai hàm **lệch nhau ở cả guard lẫn ý nghĩa của chuỗi rỗng**:
+//
+// 🔴🔴 **UPDATE KHÔNG CÓ GUARD TRƯỜNG BẮT BUỘC**: `SerPaymentCreate` gọi `checkPaymentFieldEmpty(...)`;
+//   `SerPaymentUpdate` chỉ gọi `CheckExistPayment(...)` — **kiểm phiếu có tồn tại, hết**.
+//   ⇒ Sửa một phiếu thu về **số tiền rỗng**, **ngày thu rỗng**, **đại lý rỗng** đều **lọt**. Cửa tạo khoá,
+//     cửa sửa mở toang — và cửa sửa ghi đè **chính bản ghi** mà cửa tạo đã kiểm.
+// 🔴 **"RỖNG" NGHĨA KHÁC NHAU** (đúng cảnh báo #404):
+//   · Create: `if (!IsEmpty(strCusID)) dt.Rows[0]["CusID"] = strCusID;` — rỗng ⇒ **không gán** (giữ mặc định).
+//   · Update: `… else dt_Payment.Rows[0]["CusID"] = **DBNull.Value**;` — rỗng ⇒ **XOÁ TRẮNG**.
+//     Áp cho **bốn** cột: `CusID` · `InsNo` · `SupplierID` · `PayPersonName`; và cả bốn đều được thêm vào
+//     `alColumnEffective` **sau** vòng gán, nên chúng **luôn** nằm trong danh sách cột ghi.
+//   ⇒ Client gửi thiếu một trường lúc **sửa** là **mất dữ liệu**, trong khi lúc **tạo** thì vô hại.
+// 🔴 **HAI ĐƯỜNG GHI, HAI ĐỊNH DẠNG NGÀY**: Update ghi `Convert.ToDateTime(strPayDate).ToString("yyyy-MM-dd HH:mm")`
+//   ⇒ **mất giây**; Create ghi thẳng chuỗi client gửi. Cùng một cột `PayDate`, hai độ chính xác.
+// ⚠️ Create lấy khoá mới bằng `select @@Identity` rồi `Convert.ToInt32` — `@@IDENTITY` **không giới hạn phạm vi**
+//   (trigger ở bảng khác sẽ trả nhầm khoá; đúng ra dùng `SCOPE_IDENTITY()`), và `Int32` trên khoá **bigint**.
+// ⚠️ Create ghi Main rồi **chép sang WH bằng câu SQL**; Update gọi `_dbMain.SaveData` **và** `_dbWH.SaveData`
+//   với cùng `alColumnEffective` — **hai cơ chế đồng bộ khác nhau** cho cùng một bảng.
+// 📌 MiniHTC một DB: endpoint dưới giữ **ngữ nghĩa xoá-trắng** của nguồn (đúng 1:1) nhưng **thêm** guard
+//   bắt buộc mà nguồn thiếu, và nói rõ bằng cờ `guardsAddedByPort`.
+app.MapPost("/api/cusdebits/payments/{paymentNo}/update", async (string paymentNo, CusDebitPaymentDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var no = paymentNo.Trim().ToUpperInvariant();
+    var p = await db.CusDebitPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { paymentNo = no });   // nguồn: CheckExistPayment
+
+    // Guard nguồn KHÔNG có ở nhánh sửa — port thêm vào (xem chú thích trên).
+    if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
+    if (dto.PayDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày thu tiền." });
+
+    var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == p.CusDebitId);
+    if (h is null) return Results.NotFound(new { error = "Không thấy công nợ gốc của phiếu thu." });
+
+    // Số dư còn lại KHÔNG tính phiếu đang sửa (nguồn không kiểm — port kiểm, nêu cờ).
+    var otherPaid = await db.CusDebitPayments
+        .Where(x => x.OrgId == t.OrgId && x.CusDebitId == h.Id && x.Id != p.Id)
+        .SumAsync(x => (decimal?)x.PaymentAmount) ?? 0m;
+    if (otherPaid + dto.PaymentAmount > h.DebitAmount)
+        return Results.BadRequest(new { error = $"Tổng thu vượt số nợ ({h.DebitAmount})." });
+
+    p.DealerCode = dto.DealerCode;
+    p.PaymentAmount = dto.PaymentAmount;
+    p.PayDate = dto.PayDate!.Value;
+    p.Note = dto.Note;
+    p.PayPersonIDCardNo = dto.PayPersonIDCardNo;
+    // ĐÚNG NGUỒN: rỗng = XOÁ TRẮNG (khác hẳn nhánh tạo).
+    p.PayPersonName = string.IsNullOrWhiteSpace(dto.PayPersonName) ? null : dto.PayPersonName;
+
+    h.PaidAmount = otherPaid + dto.PaymentAmount;
+    h.Status = h.PaidAmount >= h.DebitAmount ? "Paid" : "Open";
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        p.PaymentNo, p.PaymentAmount, p.PayDate, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, p.Note,
+        debitNo = h.DebitNo, paidAmount = h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, status = h.Status,
+        // ===== #570 =====
+        sourceUpdateHasNoFieldGuards = "SerPaymentUpdate chi goi CheckExistPayment; khong kiem DealerCode/PaymentAmount/PayDate",
+        guardsAddedByPort = new[] { "DealerCode", "PaymentAmount > 0", "PayDate", "tong thu khong vuot no" },
+        emptyMeansClearOnUpdateOnly = new[] { "CusID", "InsNo", "SupplierID", "PayPersonName" },
+        emptyMeansSkipOnCreate = "nhanh tao: rong thi KHONG gan (giu mac dinh), khong xoa trang",
+        payDateLosesSecondsInSource = "Update: ToString(yyyy-MM-dd HH:mm); Create ghi thang chuoi client gui",
+        identityScopeIssueInSource = "Create: select @@Identity + Convert.ToInt32 tren khoa bigint (nen la SCOPE_IDENTITY)",
+        twoDifferentWhSyncMechanisms = "Create chep sang WH bang cau SQL; Update goi _dbWH.SaveData",
+    });
 }).RequireAuthorization();
 
 // ===== Đề nghị bảo hành dịch vụ (ServiceWarrantyClaim — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved, TCMotor) =====
@@ -27620,8 +27704,22 @@ app.MapPost("/api/insdebits/{no}/payments", async (string no, InsDebitPaymentDto
     var h = await db.InsDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền thu phải lớn hơn 0." });
-    // Guard của nguồn (checkPaymentFieldEmpty): đại lý + người nộp + CMND/CCCD + ngày thu đều BẮT BUỘC.
-    // ⚠️ CusID KHÔNG bắt buộc — nguồn đã COMMENT dòng truyền strCusID vào hàm check (luật "port dòng active").
+    // ===== 🔴 #570 SỬA CHÚ THÍCH SAI Ở TRÊN — ĐỌC TRỌN `checkPaymentFieldEmpty` (`Debit.cs`) =====
+    // Chú thích cũ ghi *"người nộp + CMND/CCCD ... đều BẮT BUỘC"* — **sai**. Trong thân hàm check,
+    //   **cả hai** guard đó nằm trong một khối `/* … */` **bị comment**:
+    //     `/*  if (IsEmpty(strPayPersonName)) throw … Ser_CusDebit_PayPersonEmpty;`
+    //     `    if (IsEmpty(strPayPersonIDCardNo)) throw … Ser_CusDebit_PayPersonIDEmpty;  */`
+    //   ⇒ Nguồn hiện chỉ bắt buộc **ba** thứ: `DealerCode` · `PaymentAmount` · `PayDate`.
+    //   Hai tham số kia **vẫn nằm trong chữ ký hàm** nên đọc chữ ký sẽ tưởng còn kiểm.
+    //   📌 MiniHTC **giữ** chặt hơn nguồn (vẫn bắt buộc) vì phiếu thu tiền mặt cần danh tính người nộp —
+    //     nhưng nay nói **đúng** rằng đó là **lựa chọn của port**, không phải guard của nguồn.
+    // 🔴 **GUARD SỐ TIỀN CỦA NGUỒN KHÔNG BAO GIỜ CHẠY ĐÚNG**:
+    //     `if (!double.TryParse(strPaymentAmount, out result) && !double.IsPositiveInfinity(float.Parse(strPaymentAmount)))`
+    //   · Chuỗi **hợp lệ** ⇒ `TryParse` true ⇒ vế đầu **false** ⇒ bỏ qua kiểm ⇒ số **âm** vẫn lọt.
+    //   · Chuỗi **không phải số** ⇒ vế đầu true ⇒ chạy tiếp `float.Parse(...)` ⇒ **ném `FormatException` thô**,
+    //     **không** phải mã lỗi nghiệp vụ `Ser_CusDebit_ReceptAmountNotNumber` mà dòng này định ném.
+    //   ⇒ Mã lỗi "số tiền không phải số" **không bao giờ tới tay người dùng**. Port kiểm số âm/không phải số tử tế.
+    // ⚠️ `//, strCusID` — lời gọi có comment **đúng tham số này**, và hàm check cũng **không còn** tham số đó.
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
     if (string.IsNullOrWhiteSpace(dto.PayPersonName)) return Results.BadRequest(new { error = "Chưa nhập tên người nộp tiền." });
     if (string.IsNullOrWhiteSpace(dto.PayPersonIDCardNo)) return Results.BadRequest(new { error = "Chưa nhập số CMND/CCCD người nộp tiền." });
@@ -27701,8 +27799,22 @@ app.MapPost("/api/supplierdebits/{id:long}/payments", async (long id, SupplierDe
     var h = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     if (dto.PaymentAmount <= 0) return Results.BadRequest(new { error = "Số tiền trả phải lớn hơn 0." });
-    // Guard của nguồn (checkPaymentFieldEmpty): đại lý + người nộp + CMND/CCCD + ngày thu đều BẮT BUỘC.
-    // ⚠️ CusID KHÔNG bắt buộc — nguồn đã COMMENT dòng truyền strCusID vào hàm check (luật "port dòng active").
+    // ===== 🔴 #570 SỬA CHÚ THÍCH SAI Ở TRÊN — ĐỌC TRỌN `checkPaymentFieldEmpty` (`Debit.cs`) =====
+    // Chú thích cũ ghi *"người nộp + CMND/CCCD ... đều BẮT BUỘC"* — **sai**. Trong thân hàm check,
+    //   **cả hai** guard đó nằm trong một khối `/* … */` **bị comment**:
+    //     `/*  if (IsEmpty(strPayPersonName)) throw … Ser_CusDebit_PayPersonEmpty;`
+    //     `    if (IsEmpty(strPayPersonIDCardNo)) throw … Ser_CusDebit_PayPersonIDEmpty;  */`
+    //   ⇒ Nguồn hiện chỉ bắt buộc **ba** thứ: `DealerCode` · `PaymentAmount` · `PayDate`.
+    //   Hai tham số kia **vẫn nằm trong chữ ký hàm** nên đọc chữ ký sẽ tưởng còn kiểm.
+    //   📌 MiniHTC **giữ** chặt hơn nguồn (vẫn bắt buộc) vì phiếu thu tiền mặt cần danh tính người nộp —
+    //     nhưng nay nói **đúng** rằng đó là **lựa chọn của port**, không phải guard của nguồn.
+    // 🔴 **GUARD SỐ TIỀN CỦA NGUỒN KHÔNG BAO GIỜ CHẠY ĐÚNG**:
+    //     `if (!double.TryParse(strPaymentAmount, out result) && !double.IsPositiveInfinity(float.Parse(strPaymentAmount)))`
+    //   · Chuỗi **hợp lệ** ⇒ `TryParse` true ⇒ vế đầu **false** ⇒ bỏ qua kiểm ⇒ số **âm** vẫn lọt.
+    //   · Chuỗi **không phải số** ⇒ vế đầu true ⇒ chạy tiếp `float.Parse(...)` ⇒ **ném `FormatException` thô**,
+    //     **không** phải mã lỗi nghiệp vụ `Ser_CusDebit_ReceptAmountNotNumber` mà dòng này định ném.
+    //   ⇒ Mã lỗi "số tiền không phải số" **không bao giờ tới tay người dùng**. Port kiểm số âm/không phải số tử tế.
+    // ⚠️ `//, strCusID` — lời gọi có comment **đúng tham số này**, và hàm check cũng **không còn** tham số đó.
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
     if (string.IsNullOrWhiteSpace(dto.PayPersonName)) return Results.BadRequest(new { error = "Chưa nhập tên người nộp tiền." });
     if (string.IsNullOrWhiteSpace(dto.PayPersonIDCardNo)) return Results.BadRequest(new { error = "Chưa nhập số CMND/CCCD người nộp tiền." });
