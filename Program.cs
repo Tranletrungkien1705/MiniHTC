@@ -53008,6 +53008,100 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #641 BÁO CÁO TỒN KHO `Ser_InvReportBalanceRpt_WH_New20221011` (`WH.cs:25478-25715`) =====
+// 3B: laptop `:25478` md5 `7d9596e9` **KHỚP** máy 150 `:25478`. Cụm có **ba** bản; WS gọi `_New20221011`.
+// DIFF `_New20191108` → LIVE: bản mới **thêm cụm "TUỔI TỒN KHO"** — ba cột `TypeName` · `StockInDate` ·
+//   `AgeOfExist`, một bảng tạm `#tbl_StockInDate`, và một khối template `zzB_tbl_Ser_Inv_StockInDate_zzE`.
+//
+// 🔴🔴🔴 **"TUỔI TỒN" TÍNH ĐẾN `GETDATE()`, KHÔNG ĐẾN MỐC BÁO CÁO** ⇒ **báo cáo lịch sử không tái lập được**:
+//     `DATEDIFF(day, g.StockInDate, **GETDATE()**) AgeOfExist`
+//   ⇒ Chạy lại báo cáo tồn của **cuối tháng trước** vào hôm nay thì "số ngày tồn" **cộng thêm** số ngày đã trôi
+//     qua ⇒ hai lần chạy cùng một kỳ cho **hai kết quả khác nhau**. Cùng họ bệnh với #638 (tồn cuối tính theo
+//     trạng thái **hiện tại**) — đây là biểu hiện thứ hai của cùng một lỗi kiểu (#412).
+// 🔴 **MỐC TÍNH TUỔI LẤY LẦN NHẬP *MỚI NHẤT***: `select **top 1** f.StockInDate … order by f.StockInDate **desc**`
+//   ⇒ Với phụ tùng nhập **nhiều lô**, tuổi tồn được tính theo **lô mới nhất** nên **luôn trẻ hơn** lô cũ còn
+//     nằm kho ⇒ hàng tồn lâu **không lộ ra** trên cột `AgeOfExist`. Báo cáo tổng hợp theo `PartID` buộc phải
+//     chọn **một** mốc, nên đây có thể là chủ ý — **ghi cờ để người đọc biết**, không kết luận là bug.
+// 🔴🔴 **CÙNG BUG VỚI #638, CA THỨ HAI**: `left join ser_mst_part p` rồi `where **p.IsActive='1'**`
+//   (kèm `and p.DealerCode='@DealerCode'`) ⇒ **LEFT chết** ⇒ phụ tùng **đã ngưng dùng mà vẫn còn tồn**
+//   (`op.SLC != 0` ngay bên cạnh!) **biến mất khỏi báo cáo TỒN KHO**. Hai báo cáo kho khác nhau, **cùng một**
+//   **khuôn lỗi** ⇒ không còn là ca lẻ.
+// 🔴🔴 **LỜI GỌI TEMPLATE CHẾT — NAY ĐẾM ĐƯỢC TRÊN CẢ FILE** (mở rộng #638):
+//   Quét `BizCarSv.WH.cs` theo từng hàm, đếm số lần token `zzB_tbl_ser_inv_partInstance_StockIn_zzE` xuất hiện
+//   (**1** = chỉ có trong đối số `Replace` ⇒ **chết**; **2** = có cả trong chuỗi SQL ⇒ **thật**):
+//     · **chết (1)**: `Ser_InvReportBalanceRpt_WH_New20191108` · **`Ser_InvReportBalanceRpt_WH_New20221011`** ·
+//       **`Ser_InventoryReport_InOutBalance_WH_New20191112`**  → **3 hàm, trong đó HAI đang LIVE**
+//     · **thật (2)**: `…BalanceRpt_SumLocation_WH_New20191108` · `…CardStockRpt_WH_New20181027` ·
+//       `…CardStockRpt_WH_New20230623` · `…PartMinQuantity_WH_New20181027` · `…InOutBalance_WH_New20181027`
+//   ⇒ **3/8 dùng chết, 5/8 dùng thật**; và **hai báo cáo kho đang chạy thật** nằm trong nhóm chết ⇒ ai sửa
+//     `SqlTemplate_ser_inv_partInstance_New20191112` **không** ảnh hưởng tới chúng dù code trông như có gọi.
+//   ⚪ Trớ trêu: template **mới thêm năm 2022** (`zzB_tbl_Ser_Inv_StockInDate_zzE`) thì **có token thật trong**
+//     **SQL** — tức phần vừa viết thì nối đúng, phần cũ (2019) mới là phần bị bỏ lại khi thân hàm được viết tay.
+// ⚪ **Kiểm tra âm tính**: `#tbl_StockInDate` dựng từ `#tbl_Open`, mà `#tbl_Open` ở hàm này là **toàn bộ tập tồn**
+//   (`#tbl_sd left join #tbl_sdo`), **không** phải "tồn đầu kỳ" ⇒ **không** có chuyện phụ tùng mới phát sinh bị
+//   thiếu `AgeOfExist`. Ghi lại để lượt sau khỏi soi lại.
+// ⚪ `left join Ser_MST_PartType f` và `left join ser_mst_location sml`: `WHERE` **không** có điều kiện nào trên
+//   chúng ⇒ **LEFT còn sống** (đủ ba câu hỏi #414).  ⚪ Câu kết quả **có** `order by p.PartCode`.
+app.MapGet("/api/report/stock-balance-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, DateTime? toDate) =>
+{
+    var asOf = (toDate ?? DateTime.Today).Date.AddDays(1);   // cận trên MỞ (theo #638, không theo #639)
+    var q0 = db.PartInstances.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q0 = q0.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(partCode)) q0 = q0.Where(x => x.PartCode == partCode!.Trim());
+    var inst = await q0.Select(x => new { x.PartCode, x.LocationID, x.Quantity, x.SIPrice, x.SIVAT,
+                                          x.DateIn, x.DateOut }).ToListAsync();
+
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync();
+
+    var keys = inst.Select(x => new { x.PartCode, x.LocationID }).Distinct().ToList();
+    var rows = keys.Select(k =>
+    {
+        var g = inst.Where(x => x.PartCode == k.PartCode && x.LocationID == k.LocationID).ToList();
+        var inQty = g.Where(x => x.DateIn != null && x.DateIn < asOf).Sum(x => x.Quantity);
+        var outQty = g.Where(x => x.DateOut != null && x.DateOut < asOf).Sum(x => x.Quantity);
+        var slc = inQty - outQty;
+        var tgc = g.Where(x => x.DateIn != null && x.DateIn < asOf)
+                   .Sum(x => x.Quantity * (x.SIPrice ?? 0m) * (1m + (x.SIVAT ?? 0m) / 100m))
+                - g.Where(x => x.DateOut != null && x.DateOut < asOf)
+                   .Sum(x => x.Quantity * (x.SIPrice ?? 0m) * (1m + (x.SIVAT ?? 0m) / 100m));
+        // Nguồn: top 1 … order by StockInDate DESC ⇒ lô MỚI NHẤT
+        var newestIn = g.Where(x => x.DateIn != null && x.DateIn < asOf).Max(x => x.DateIn);
+        var oldestIn = g.Where(x => x.DateIn != null && x.DateIn < asOf).Min(x => x.DateIn);
+        var p = parts.FirstOrDefault(x => x.PartCode == k.PartCode);
+        return new
+        {
+            partCode = k.PartCode, partName = p?.PartName, unit = p?.Unit,
+            locationId = k.LocationID,
+            SLC = slc, TGC = tgc,
+            stockInDate = newestIn,
+            // Nguồn: DATEDIFF(day, StockInDate, GETDATE()) — tính đến HÔM NAY.
+            ageOfExistAsSource = newestIn == null ? (int?)null : (int)(DateTime.Today - newestIn.Value.Date).TotalDays,
+            // Port bổ sung: tuổi tồn tính đến MỐC BÁO CÁO (tái lập được).
+            ageOfExistAsOfReportDate = newestIn == null ? (int?)null : (int)(asOf.AddDays(-1) - newestIn.Value.Date).TotalDays,
+            oldestStockInDate = oldestIn,
+            ageByOldestLot = oldestIn == null ? (int?)null : (int)(asOf.AddDays(-1) - oldestIn.Value.Date).TotalDays,
+        };
+    }).Where(r => r.SLC != 0).OrderBy(r => r.partCode).ThenBy(r => r.locationId).ToList();
+
+    return Results.Ok(new
+    {
+        asOfExclusive = asOf, count = rows.Count, rows,
+        // ===== #641 =====
+        ageUsesGetdateNotReportDate = "nguon: DATEDIFF(day, g.StockInDate, GETDATE()) AgeOfExist => chay lai bao cao ton cuoi thang truoc vao hom nay thi so ngay ton CONG THEM so ngay da troi qua; hai lan chay cung mot ky cho HAI ket qua khac nhau (cung ho benh voi #638, luat #412)",
+        portReturnsBothAgeVariants = "port tra ageOfExistAsSource (theo GETDATE nhu nguon) VA ageOfExistAsOfReportDate (theo moc bao cao, tai lap duoc)",
+        ageAnchorIsNewestLot = "nguon: select top 1 f.StockInDate … order by f.StockInDate DESC => voi phu tung nhap NHIEU LO, tuoi ton tinh theo lo MOI NHAT nen LUON TRE HON lo cu con nam kho => hang ton lau khong lo ra; bao cao tong hop theo PartID buoc phai chon MOT moc nen co the la chu y — ghi co, KHONG ket luan la bug",
+        portAlsoReturnsOldestLotAge = "port tra them oldestStockInDate va ageByOldestLot de do chenh lech giua hai cach chon moc",
+        samePartCatalogBugAsIssue638 = "left join ser_mst_part p roi where p.IsActive = 1 (kem and p.DealerCode = @DealerCode) => LEFT CHET => phu tung da ngung dung ma VAN CON TON (op.SLC != 0 ngay ben canh) BIEN MAT khoi bao cao TON KHO; hai bao cao kho khac nhau, CUNG MOT khuon loi => khong con la ca le",
+        deadTemplateCallsCountedAcrossWhFile = "quet BizCarSv.WH.cs theo tung ham, dem so lan token zzB_tbl_ser_inv_partInstance_StockIn_zzE (1 = chi trong doi so Replace => CHET; 2 = co ca trong chuoi SQL => THAT): CHET = Ser_InvReportBalanceRpt_WH_New20191108, Ser_InvReportBalanceRpt_WH_New20221011, Ser_InventoryReport_InOutBalance_WH_New20191112 (3 ham, HAI trong do dang LIVE); THAT = BalanceRpt_SumLocation_WH_New20191108, CardStockRpt_WH_New20181027, CardStockRpt_WH_New20230623, PartMinQuantity_WH_New20181027, InOutBalance_WH_New20181027 => 3/8 dung chet, 5/8 dung that",
+        maintenanceTrapIsLive = "hai bao cao kho DANG CHAY THAT nam trong nhom chet => ai sua SqlTemplate_ser_inv_partInstance_New20191112 KHONG anh huong toi chung du code trong nhu co goi",
+        newTemplateIsWiredOldOneIsNot = "template moi them nam 2022 (zzB_tbl_Ser_Inv_StockInDate_zzE) CO token that trong SQL; phan cu (2019) moi la phan bi bo lai khi than ham duoc viet tay",
+        openTableIsWholeStockNotOpeningBalance = "AM TINH: #tbl_StockInDate dung tu #tbl_Open, ma #tbl_Open o ham nay la TOAN BO tap ton (#tbl_sd left join #tbl_sdo) chu khong phai ton dau ky => KHONG co chuyen phu tung moi phat sinh bi thieu AgeOfExist",
+        otherLeftJoinsAlive = "AM TINH: left join Ser_MST_PartType f va left join ser_mst_location sml — WHERE khong co dieu kien nao tren chung => LEFT con song (du ba cau hoi #414); cau ket qua CO order by p.PartCode",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #640 BCBH GỬI HTC `Ser_ROWarrantyReportHTC_Get_WH_New20230417` (`WH.cs:32845-33265`) =====
 // 3B: laptop `:32845` md5 `a956b9c0` **KHỚP** máy 150 `:32845`. Cụm có **bốn** bản (trần `:31778` ·
 //   `_New20191108OLD` `:32130` · `_New20191108` `:32474` · **`_New20230417` `:32845` LIVE**).
