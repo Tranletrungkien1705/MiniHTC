@@ -31145,6 +31145,99 @@ app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
     note = "Bộ mã TRỘN số + chữ trong cùng một cột (chỉ CONF là mã chữ). Mã ngoài bốn giá trị ⇒ nhãn NULL (nguồn không có ELSE).",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #616 HOÁ ĐƠN LỆNH SỬA CHỮA (`Ser_ROInvoice_Get_WH_New20220926`, `BizCarSv.WH.cs:2778`) =====
+// Hàm có **BỐN** bản: trần (`:1742`) · `_New20181105` (`:2085`) · `_New20200118` (`:2439`) ·
+//   `_New20220926` (`:2778`). TRACE WS: `WSCarSv.asmx.cs:32579` gọi bản **`_New20220926`**; hai file WS cũ
+//   gọi `_New20200118` ⇒ ba bản kia **chết**. DIFF hai bản gần nhau nhất (`20200118` → `20220926`):
+//
+// ⚪ **HIẾM — BẢN MỚI SỬA ĐÚNG MỘT BUG CỦA BẢN CŨ** (phải ghi, vì gần như mọi lượt trước bản mới đều làm hỏng thêm):
+//   Bản cũ có **ba** khối `case` cùng khuôn *"lệnh sửa có tên khách riêng thì lấy của lệnh"*:
+//     `case when not ro.CusName is null then **ro.CusAddress** … end CusAddress`   ← **ĐÚNG**
+//     `case when not ro.CusName is null then **cus.Tel**       … end CusTel`       ← **SAI**
+//     `case when not ro.CusName is null then **cus.Mobile**    … end CusMobile`    ← **SAI**
+//   ⇒ Điều kiện hỏi *"lệnh có tên khách riêng không"* nhưng hai khối sau lại lấy số điện thoại **từ hồ sơ**
+//     **khách** chứ không phải **từ lệnh** ⇒ hoá đơn in **số điện thoại của hồ sơ**, dù người nhận xe khai số
+//     khác trên lệnh. Ba khối cạnh nhau, **một đúng hai sai** — dấu vết chép khối rồi sửa thiếu.
+//   ⇒ Bản `_New20220926` **thay cả ba** bằng `isnull(ro.X, isnull(cus.X, cus.ContX))` — mạch lạc và đúng thứ
+//     tự ưu tiên. **Bản mới ở đây là bản sửa bug.**
+// 🔴 **BẢN MỚI THÊM MỘT LOẠT `isnull(ro.X, car.X)` CHO THÔNG TIN XE**: `ModelID` · `PlateNo` · `FrameNo` ·
+//   `EngineNo` · `ColorCode` · `TradeMarkCode` · `BatteryNo` · `SerialNo` · `WarrantyRegistrationDate` ·
+//   `WarrantyExpiresDate` · `WarrantyKM`. ⇒ Trước đó hoá đơn lấy thông tin xe từ **một nguồn duy nhất**;
+//     nay ưu tiên **bản chụp trên lệnh**, thiếu mới lấy **hồ sơ xe**. Đây là **quy tắc nghiệp vụ thật**:
+//     chứng từ phải in đúng thứ đã ghi lúc tiếp nhận, kể cả khi hồ sơ xe **đổi sau đó**.
+// 🔴 **HAI BẢNG DANH MỤC ĐƯỢC NỐI HAI LẦN**: bản mới thêm `left join ser_mst_Model **mdl1**` và
+//   `left join ser_mst_TradeMark **tm1**` rồi lấy `isnull(tm1.TradeMarkName, tm.TradeMarkName)` —
+//   một nhánh nối theo mã **trên lệnh**, một nhánh theo mã **của xe**. Cần thiết để khớp quy tắc trên,
+//   nhưng làm câu truy vấn nặng thêm và **dễ nở dòng** nếu danh mục có mã trùng.
+// 🔴 **BẢN MỚI TRẢ THÊM BẢNG THỨ TƯ** `Ser_RO_MemberVoucher` (voucher hội viên) và cột
+//   `ro.PointConsumptionPrm` (điểm tiêu dùng) ⇒ **hình dạng kết quả đổi**: chỗ gọi bản cũ đọc `Tables[0..2]`,
+//   bản mới có `Tables[3]`. §12 không bắt được loại thay đổi này.
+app.MapGet("/api/ro-invoices/{roNo}", async (AppDbContext db, ITenantContext t, string? roNo) =>
+{
+    var no = (roNo ?? "").Trim().ToUpperInvariant();
+    if (no.Length == 0) return Results.BadRequest(new { error = "roNo bat buoc." });
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { roNo = no });
+
+    var cus = ro.CusID == null ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusCode == ro.CusID);
+    var car = ro.Vin == null ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == ro.Vin);
+
+    string? Pick(string? onOrder, string? onProfile, string? onContact = null)
+        => !string.IsNullOrWhiteSpace(onOrder) ? onOrder
+         : !string.IsNullOrWhiteSpace(onProfile) ? onProfile : onContact;
+
+    // Bản LIVE: isnull(ro.X, isnull(cus.X, cus.ContX)) — ưu tiên BẢN CHỤP TRÊN LỆNH.
+    var customer = new
+    {
+        cusCode = ro.CusID,
+        cusName = Pick(ro.CusName, cus?.CusName, cus?.ContName),
+        cusAddress = Pick(ro.CusAddress, cus?.Address),
+        cusTel = Pick(ro.CusTel, cus?.Tel),
+        cusMobile = Pick(ro.CusMobile, cus?.Mobile),
+        idCardNo = Pick(ro.IDCardNo, cus?.IDCardNo),
+    };
+
+    // Bản LIVE: isnull(ro.X, car.X) cho 11 cột thông tin xe.
+    var vehicle = new
+    {
+        plateNo = Pick(ro.LicensePlate, car?.PlateNo),
+        frameNo = Pick(ro.Vin, car?.FrameNo),
+        engineNo = car?.EngineNo,
+        modelCode = car?.ModelCode,
+        colorCode = car?.ColorCode,
+        tradeMarkCode = car?.TradeMark,
+        batteryNo = car?.BatteryNo,
+        serialNo = car?.SerialNo,
+        warrantyRegistrationDate = car?.WarrantyRegistrationDate,
+        warrantyExpiresDate = car?.WarrantyExpiresDate,
+        warrantyKM = car?.WarrantyKM,
+    };
+
+    var services = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Vat, x.Amount }).ToListAsync();
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.PartCode, x.PartName, x.NeedQty, x.UnitPrice, x.Vat, x.Amount }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        roNo = no, ro.Status, ro.CheckInDate, ro.ActualDeliveryDate, ro.DealerCode,
+        pointConsumptionPrm = ro.PointConsumptionPrm,   // cột bản LIVE THÊM
+        customer, vehicle,
+        services, parts,
+        memberVouchers = Array.Empty<object>(),          // bảng thứ TƯ của bản LIVE — MiniHTC chưa nối
+        liveVariantIsNew20220926 = "WSCarSv.asmx.cs:32579 goi _New20220926; hai file WS cu goi _New20200118 => ba ban kia CHET",
+        newVariantFixedOldBug = "ban cu co BA khoi case cung khuon: CusAddress lay ro.CusAddress (DUNG) nhung CusTel lay cus.Tel va CusMobile lay cus.Mobile (SAI) — dieu kien hoi ro.CusName con gia tri lay tu ho so khach; ban moi thay ca ba bang isnull(ro.X, isnull(cus.X, cus.ContX))",
+        rareCaseNewerVariantIsTheFix = "gan nhu moi luot truoc ban moi lam hong them; day la lan ban moi SUA BUG",
+        vehicleFieldsNowPreferOrderSnapshot = "isnull(ro.X, car.X) cho 11 cot: ModelID/PlateNo/FrameNo/EngineNo/ColorCode/TradeMarkCode/BatteryNo/SerialNo/WarrantyRegistrationDate/WarrantyExpiresDate/WarrantyKM",
+        whyItMatters = "chung tu phai in dung thu da ghi luc tiep nhan, ke ca khi ho so xe DOI SAU DO",
+        catalogJoinedTwice = "left join ser_mst_Model mdl1 va ser_mst_TradeMark tm1 (theo ma tren LENH) ben canh mdl/tm (theo ma cua XE); isnull(tm1.TradeMarkName, tm.TradeMarkName)",
+        resultShapeChanged = "ban moi tra them Tables[3] = Ser_RO_MemberVoucher va cot ro.PointConsumptionPrm => cho goi ban cu chi doc Tables[0..2]; §12 khong bat duoc loai thay doi nay",
+        memberVoucherNotWiredYet = "MiniHTC co entity MemberVoucher (Crd_MemberVoucher) nhung chua noi vao hoa don — ghi no, KHONG bia mang rong co du lieu",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #614 BẢN THỨ BA `Ser_Part_OrderGet_StatusList_WH` (`BizCarSv.WH.cs:29834`) — **HAI CỔNG, HAI SỐ ĐƠN** =====
 // Hàm này nằm ở **file khác** (`BizCarSv.WH.cs`, không phải `PartOrder.cs`) nên grep theo file sẽ trượt —
 //   phải grep theo **tên hàm** (bài học #582: hàm nằm nhầm/khác file).
