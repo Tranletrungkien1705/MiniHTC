@@ -46079,6 +46079,88 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #707 VELOCA: DANH SÁCH PHIẾU NHẬP KHO =====
+// `OSVeloca_Ser_Inv_StockIn_Get` (`BizCarSv.Inventory.StockIn.cs:8517-8689`, md5 `2d8cfe9a` — **KHỚP máy 150,
+// cùng offset**). → `GET /api/osveloca/stockins`. Cùng họ Veloca với #704/#705/#706 nhưng phía **kho phụ tùng**;
+// anh em đánh cờ đã port ở #304/#305 (`…_UpdFlagSyncVeloca`).
+//
+// 🔴🔴 **`left join Ser_Mst_Supplier` CHẾT CÓ ĐIỀU KIỆN** (luật #414, câu hỏi 3 — WHERE có điều kiện trên bảng
+//   LEFT): `and ( '' = @strSupplierCode or **sms.SupplierCode** = @strSupplierCode)`. Vì điều kiện được bọc
+//   trong `'' = @x or …` nên `left join` **sống khi không lọc NCC** và **chết khi có lọc**.
+//   ⇒ Hệ quả nghiệp vụ: phiếu nhập **không gắn nhà cung cấp** **không thể tìm ra** bằng bộ lọc NCC — kể cả khi
+//     người dùng muốn tìm "phiếu chưa có NCC". Đếm và trả `stockInsWithoutSupplier`.
+//   📌 Đây là **dạng thứ ba** của bẫy `left join` trong sổ: #410 (chết hẳn) · #700/#513 (còn sống) · đây
+//     (**sống/chết tuỳ tham số người dùng truyền**).
+// 🔴🔴 **LỌC LOẠI NHẬP KHO ĐÃ BỊ GỠ, CÓ GHI LÝ DO**:
+//     `--and sisi.StockInType = '1' -- … -- 20240203. HuongTTT: Chị Đông không quan tâm đến Loại nhập kho nữa.`
+//   ⇒ Port **dòng ACTIVE**: **không** lọc loại nhập. Cột `StockInType` vẫn được **trả ra**, chỉ thôi lọc.
+// 🔴 **TRẠNG THÁI GÕ CỨNG MỘT MÃ**: `and sisi.Status = '3'` (chú thích: "Kết thúc"). Khác #705 nơi lọc bằng
+//   `not in` (kết nạp mã mới) — ở đây `= '3'` **loại** mọi mã khác, kể cả mã mới. Cặp đối lập thứ hai.
+// ⚪ **ÂM TÍNH — DANH SÁCH THAM SỐ BỊ COMMENT LÀ VÔ HẠI**: cuối `StringUtils.Replace(...)` có **bảy** dòng
+//   `//, "@strStockInDateFrom", …` bị comment. Thoạt nhìn giống lỗi "SQL dùng `@x` mà không truyền", nhưng đọc
+//   `#region // Get Data` thì **cả tám** tham số **đều được truyền** ở `_dbDealer.ExecQuery(...)` ⇒ khối comment
+//   chỉ là **tàn dư**. 📌 Chi tiết đắt: **bảy** dòng comment nhưng **tám** tham số thật — `@strUserCode` là cái
+//     được **thêm sau**, nên không có mặt trong khối tàn dư. Dấu vết niên đại, không phải lỗi.
+// ⚪ **ÂM TÍNH — không có `#region // Check`** vì là hàm chỉ đọc; đã mở và liệt kê region để xác nhận (#403).
+// 🔴 **MẤT TRỌN NGÀY CUỐI** (#415) trên `StockInDate` **và** `SyncVelocaDTime` (cột này có phần giờ).
+// §12 GAP đã vá: `SerMstSupplier` **thiếu `SupplierID`** — nguồn nối `sisi.SupplierID = sms.SupplierID` chứ
+//   **không** nối bằng `SupplierCode` ⇒ thêm đủ bốn chỗ để nối đúng khoá của nguồn.
+app.MapGet("/api/osveloca/stockins", async (AppDbContext db, ITenantContext t,
+    DateTime? stockInDateFrom, DateTime? stockInDateTo, string? stockInNo, string? supplierCode,
+    DateTime? syncVelocaDTimeFrom, DateTime? syncVelocaDTimeTo, string? flagSyncVeloca, string? userCode) =>
+{
+    var qy = db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "3");   // nguồn gõ cứng "3" = Kết thúc
+    if (stockInDateFrom is not null) qy = qy.Where(x => x.StockInDate >= stockInDateFrom!.Value);
+    if (stockInDateTo is not null) qy = qy.Where(x => x.StockInDate <= stockInDateTo!.Value);   // 1:1, mất ngày cuối
+    if (!string.IsNullOrWhiteSpace(stockInNo)) qy = qy.Where(x => x.StockInNo == stockInNo!.Trim());
+    if (syncVelocaDTimeFrom is not null) qy = qy.Where(x => x.SyncVelocaDTime >= syncVelocaDTimeFrom!.Value);
+    if (syncVelocaDTimeTo is not null) qy = qy.Where(x => x.SyncVelocaDTime <= syncVelocaDTimeTo!.Value);
+    if (!string.IsNullOrWhiteSpace(flagSyncVeloca)) qy = qy.Where(x => x.FlagSyncVeloca == flagSyncVeloca!.Trim());
+    if (!string.IsNullOrWhiteSpace(userCode)) qy = qy.Where(x => x.UserCode == userCode!.Trim());
+
+    var heads = await qy.ToListAsync();
+    var supIds = heads.Where(h => h.SupplierID != null).Select(h => h.SupplierID!).Distinct().ToList();
+    var sups = await db.SerMstSuppliers.Where(s => s.OrgId == t.OrgId && s.SupplierID != null && supIds.Contains(s.SupplierID))
+        .ToListAsync();
+    SerMstSupplier? Sup(string? sid) => sid is null ? null : sups.FirstOrDefault(s => s.SupplierID == sid);
+
+    // Nguồn lọc NCC trong WHERE trên bảng LEFT ⇒ left join CHẾT khi có lọc: phiếu không có NCC bị loại.
+    var stockInsWithoutSupplier = heads.Count(h => Sup(h.SupplierID) is null);
+    var filtered = heads;
+    if (!string.IsNullOrWhiteSpace(supplierCode))
+        filtered = heads.Where(h => Sup(h.SupplierID)?.SupplierCode == supplierCode!.Trim()).ToList();
+
+    var items = filtered.Select(h => new
+    {
+        h.StockInID, h.StockInNo, h.StockInDate,
+        SupplierCode = Sup(h.SupplierID)?.SupplierCode, SupplierName = Sup(h.SupplierID)?.SupplierName,
+        h.OrderPartNo,
+        StockNo = h.WarehouseCode,          // nguồn `sisi.StockNo` ⇒ Mini `WarehouseCode`
+        h.StockInType,                      // vẫn TRẢ RA dù bộ lọc theo cột này đã bị gỡ (20240203)
+        h.Description, h.UserCode, h.FlagSyncVeloca, h.SyncVelocaDTime,
+    }).OrderBy(x => x.StockInNo).ToList();
+
+    var lostByEndDateInclusive = 0;
+    if (syncVelocaDTimeTo is not null)
+        lostByEndDateInclusive = await db.PartStockIns.CountAsync(x => x.OrgId == t.OrgId && x.Status == "3"
+            && x.SyncVelocaDTime > syncVelocaDTimeTo!.Value
+            && x.SyncVelocaDTime < syncVelocaDTimeTo!.Value.Date.AddDays(1));
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, stockInsWithoutSupplier, lostByEndDateInclusive,
+        droppedBySupplierFilter = string.IsNullOrWhiteSpace(supplierCode) ? 0 : heads.Count - filtered.Count,
+        // ===== #707 =====
+        leftJoinSupplierDiesOnlyWhenFilterSupplied = "left join Ser_Mst_Supplier CHET CO DIEU KIEN (luat #414 cau hoi 3 — WHERE co dieu kien tren bang LEFT): and ('' = @strSupplierCode or sms.SupplierCode = @strSupplierCode). Vi dieu kien duoc boc trong '' = @x or … nen left join SONG khi khong loc NCC va CHET khi co loc => phieu nhap KHONG gan nha cung cap KHONG THE TIM RA bang bo loc NCC, ke ca khi nguoi dung muon tim phieu chua co NCC. Day la DANG THU BA cua bay left join trong so: #410 (chet han), #700/#513 (con song), day (SONG/CHET TUY THAM SO NGUOI DUNG TRUYEN)",
+        stockInTypeFilterWasRemovedWithReason = "LOC LOAI NHAP KHO DA BI GO, CO GHI LY DO: --and sisi.StockInType = 1 -- 20240203. HuongTTT: Chi Dong khong quan tam den Loai nhap kho nua. Port dong ACTIVE: KHONG loc loai nhap. Cot StockInType van duoc TRA RA, chi thoi loc",
+        statusHardcodedToSingleCode = "TRANG THAI GO CUNG MOT MA: and sisi.Status = 3 (chu thich: Ket thuc). Khac #705 noi loc bang not in (ket nap ma moi) — o day = 3 LOAI moi ma khac, ke ca ma moi. Cap doi lap thu hai trong so",
+        negativeCommentedParamListIsHarmless = "AM TINH: cuoi StringUtils.Replace(...) co BAY dong //, @strStockInDateFrom, … bi comment. Thoat nhin giong loi SQL dung @x ma khong truyen, nhung doc #region // Get Data thi CA TAM tham so DEU DUOC TRUYEN o _dbDealer.ExecQuery(...) => khoi comment chi la TAN DU. Chi tiet dat: BAY dong comment nhung TAM tham so that — @strUserCode la cai duoc THEM SAU nen khong co mat trong khoi tan du. Dau vet nien dai, khong phai loi",
+        negativeNoCheckRegionBecauseReadOnly = "AM TINH: khong co #region // Check vi la ham chi doc; da mo va liet ke region de xac nhan (#403)",
+        endDateInclusiveLosesLastDay = "MAT TRON NGAY CUOI (#415) tren StockInDate VA SyncVelocaDTime (cot nay co phan gio). Da do bang lostByEndDateInclusive",
+        gapSupplierIdWasMissing = "§12 GAP da va: SerMstSupplier THIEU SupplierID — nguon noi sisi.SupplierID = sms.SupplierID chu KHONG noi bang SupplierCode => them du bon cho de noi dung khoa cua nguon",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #706 VELOCA: CHI TIẾT MỘT LỆNH SỬA CHỮA CHƯA HOÀN TẤT =====
 // `OSVeloca_Ser_RO_Incomplete_GetByROID` (laptop `ZTemp.cs:17504-18804` md5 `915f8fdf` /
 // máy 150 `:17505-18806` md5 `7a1ff20c`). WS `WSCarSv.asmx.cs:12410`.

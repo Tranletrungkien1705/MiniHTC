@@ -3603,6 +3603,9 @@ public sealed class SerMstSupplier
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string SupplierCode { get; set; } = "";
+    /// <summary>🔴 #707 `Ser_Mst_Supplier.SupplierID` — khoá kỹ thuật, **KHÁC** `SupplierCode`.
+    /// Nguồn `OSVeloca_Ser_Inv_StockIn_Get` nối `sisi.SupplierID = sms.SupplierID`, không nối bằng mã.</summary>
+    public string? SupplierID { get; set; }
     public string? SupplierName { get; set; }
     public string? Address { get; set; }
     public string? Phone { get; set; }
