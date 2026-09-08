@@ -53918,6 +53918,112 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #668 CHI TIẾT XUẤT KHO PHỤ TÙNG `Ser_InvReportTotalStockOutDetailRpt_WH_New20230623` =====
+// (`WH.cs:25860-26034`, md5 `be34d650` **KHỚP** máy 150 `:25860`.)
+// 🔴 **BẢN LIVE LÀ BẢN CÓ HẬU TỐ** — `WSCarSv.asmx.cs:30084` gọi thẳng `…_WH_**New20230623**`, còn hàm trần
+//   `Ser_InvReportTotalStockOutDetailRpt_WH` (`:26036`, md5 `fddf5a23`) **CHẾT**. Đọc thân WS trước đã cứu
+//   một lần port nhầm logic cũ.
+// Theo luật #414, DIFF **bản chết ↔ bản sống** trước khi đọc rời — và DIFF cho ra bốn thay đổi nghiệp vụ:
+//
+// 🔴🔴🔴 **BẢN MỚI THÊM HẲN MỘT NHÁNH `union all` TỪ THANH TOÁN NHÀ CUNG CẤP**:
+//     `from Ser_SupplierPaymentDtl sspdt inner join Ser_SupplierPayment ssp on sspdt.SupplierPaymentNo =`
+//     `ssp.SupplierPaymentNo … where ssp.SupplierPaymentStatus = 'A' …` với `SUM(QtyPay)` làm `Quantity`.
+//   ⇒ "Tổng hợp chi tiết **XUẤT KHO**" từ 2023-06-23 **gộp thêm phần trả/thanh toán nhà cung cấp**.
+//     Đây là thay đổi **nghiệp vụ**, không phải refactor — port bản cũ là **thiếu hẳn một nguồn số**.
+// 🔴🔴🔴 **HAI NHÁNH DÙNG HAI QUY ƯỚC MỐC NGÀY KHÁC NHAU TRONG CÙNG MỘT CÂU** (bằng chứng #415 rõ nhất từ trước
+//   tới nay): nhánh **xuất kho** so `siso.StockOutTime >= '@FromDate' and <= '@ToDate'` — **chuỗi thô** truyền
+//   vào; nhánh **NCC** so `ssp.ApprDTime >= '@strDateFrom' and <= '@strDateTo'` với
+//     `strDateTo = dtToDate.ToString("yyyy-MM-dd **23:59:59**")`
+//   ⇒ **cùng một kỳ, hai nhánh cắt khác nhau**: nhánh xuất kho **mất trọn ngày cuối** nếu cột có phần giờ,
+//     nhánh NCC thì **không**. 🔴 Nghĩa là **họ ĐÃ BIẾT cách sửa và viết đúng ngay bên cạnh**, nhưng chỉ áp cho
+//     nhánh mới thêm. Port giữ 1:1 + cờ `endDateExclusive` cho **riêng** nhánh xuất kho.
+// 🔴🔴 **`union all` KHÔNG GỘP LẠI**: hai nhánh cùng `PartID` ra **hai dòng** (không có `group by` bao ngoài)
+//   ⇒ báo cáo "tổng hợp theo phụ tùng" có thể ra **hai dòng cho một mã** — đúng loại "KẾT QUẢ SAI HÌNH DẠNG".
+//   Port trả **cả hai mức**: `rows` theo (mã, nguồn) và `byPart` gộp thật theo mã.
+// 🔴 **BẢN MỚI MẤT `ORDER BY`**: bản chết có `ORDER BY p.PartCode`, bản sống **không còn** ⇒ thứ tự bất định
+//   (#415) ⇒ trả cờ `sourceHasNoOrderBy`, port tự sắp theo mã.
+// ⚪ **DƯƠNG TÍNH — bản mới SỬA ĐÚNG một lỗi mất dòng của bản cũ**: `INNER JOIN Ser_Mst_Part` (bản chết) đổi
+//   thành `left join Ser_MST_Part smp` (bản sống) ⇒ phụ tùng **không có trong danh mục** không còn bị rơi lúc
+//   ĐỌC (đúng luật #410). ⚠️ Nhưng khi đó `smp.PartCode` NULL và `group by` gộp **mọi mã lạ vào MỘT dòng NULL**.
+// 🔴 **GUARD CHẾT lặp lại nguyên xi #666**: `and siso.Status = 3` rồi `and siso.Status not in ('4','5')`.
+//   📌 Đếm trong `BizCarSv.WH.cs`: mẫu `status = 3` = **5** site, trong đó **2** site có kèm vế `not in ('4','5')`
+//   chết ngay dưới ⇒ **không phải gõ nhầm một lần**, là **thói quen sao chép**.
+// 🔴 `Convert.ToDateTime(strFromDate, dtfi)` **không guard rỗng** ⇒ FormatException (họ #626/#627).
+// 🔴 Ngày và mã đại lý **bake** vào SQL ⇒ bề mặt tiêm SQL; ⚪ `alParamsCoupleSql` rỗng nên không dính
+//   `[BAKE-PARAM-MIX]`. 📌 Hằng `ssp.SupplierPaymentStatus = 'A'` = **Đã duyệt** (khớp `TConst.SupplierPaymentStatus`
+//   `P`→`A` đã ghi ở #237).
+app.MapGet("/api/report/stockout-detail-wh", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+    // Nhánh NCC của nguồn chuẩn hoá mốc cuối thành 23:59:59; nhánh xuất kho thì KHÔNG. Giữ đúng bất đối xứng đó.
+    var toEndOfDay = to?.AddDays(1).AddTicks(-1);
+
+    var qo = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "Confirmed");
+    if (from is not null) qo = qo.Where(x => x.StockOutDate >= from);
+    if (to is not null) qo = qo.Where(x => x.StockOutDate <= to);   // #415 giữ 1:1 — KHÔNG cộng ngày
+    var outs = await qo.Select(x => new { x.Id, x.StockOutDate }).ToListAsync();
+    var outIds = outs.Select(x => x.Id).ToList();
+
+    var outLines = await db.ServiceStockOutLines
+        .Where(x => x.OrgId == t.OrgId && outIds.Contains(x.ServiceStockOutId))
+        .Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat }).ToListAsync();
+
+    var qp = db.SupplierPayments.Where(x => x.OrgId == t.OrgId && x.Status == "A");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qp = qp.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (from is not null) qp = qp.Where(x => x.ApprovedAt >= from);
+    if (toEndOfDay is not null) qp = qp.Where(x => x.ApprovedAt <= toEndOfDay);
+    var payNos = await qp.Select(x => x.PaymentNo).ToListAsync();
+
+    var payLines = await db.SupplierPaymentLines
+        .Where(x => x.OrgId == t.OrgId && payNos.Contains(x.PaymentNo))
+        .Select(x => new { x.PartCode, x.PartName, x.QtyPay, x.Price, x.Vat }).ToListAsync();
+
+    // Nguồn `union all` HAI nhánh, KHÔNG gộp ngoài ⇒ giữ nguyên hình dạng đó ở `rows`.
+    var rows = outLines.GroupBy(x => new { x.PartCode, x.PartName }).Select(g => new
+        {
+            source = "stockout", partCode = g.Key.PartCode, partName = g.Key.PartName,
+            quantity = g.Sum(x => x.Quantity),
+            amount = g.Sum(x => x.Quantity * x.Price + x.Quantity * x.Price * 0.01m * x.Vat),
+        })
+        .Concat(payLines.GroupBy(x => new { x.PartCode, x.PartName }).Select(g => new
+        {
+            source = "supplierpayment", partCode = g.Key.PartCode, partName = g.Key.PartName,
+            quantity = g.Sum(x => x.QtyPay),
+            amount = g.Sum(x => x.QtyPay * x.Price + x.QtyPay * x.Price * 0.01m * x.Vat),
+        }))
+        .OrderBy(x => x.partCode).ThenBy(x => x.source).ToList();
+
+    var byPart = rows.GroupBy(x => x.partCode).Select(g => new
+    {
+        partCode = g.Key, sources = g.Count(),
+        quantity = g.Sum(x => x.quantity), amount = g.Sum(x => x.amount),
+    }).OrderBy(x => x.partCode).ToList();
+
+    var lastDayOutRows = to is null ? 0 : outs.Count(x => x.StockOutDate is not null && x.StockOutDate!.Value.Date == to);
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows, byPart,
+        // ===== #668 =====
+        liveVersionIsTheSuffixedOne = "BAN LIVE LA BAN CO HAU TO: WSCarSv.asmx.cs:30084 goi thang …_WH_New20230623, con ham tran Ser_InvReportTotalStockOutDetailRpt_WH (:26036, md5 fddf5a23) CHET. Doc than WS truoc da cuu mot lan port nham logic cu",
+        newBranchFromSupplierPayment = "BAN MOI THEM HAN MOT NHANH union all TU THANH TOAN NHA CUNG CAP: from Ser_SupplierPaymentDtl sspdt inner join Ser_SupplierPayment ssp on sspdt.SupplierPaymentNo = ssp.SupplierPaymentNo where ssp.SupplierPaymentStatus = A, voi SUM(QtyPay) lam Quantity => bao cao tong hop chi tiet XUAT KHO tu 2023-06-23 GOP THEM phan tra/thanh toan nha cung cap; day la thay doi NGHIEP VU, port ban cu la THIEU HAN mot nguon so",
+        twoBranchesTwoDateBoundConventions = "HAI NHANH DUNG HAI QUY UOC MOC NGAY KHAC NHAU TRONG CUNG MOT CAU: nhanh xuat kho so siso.StockOutTime >= @FromDate and <= @ToDate (CHUOI THO truyen vao); nhanh NCC so ssp.ApprDTime >= @strDateFrom and <= @strDateTo voi strDateTo = dtToDate.ToString(yyyy-MM-dd 23:59:59) => cung mot ky hai nhanh cat KHAC NHAU: nhanh xuat kho MAT TRON NGAY CUOI neu cot co phan gio, nhanh NCC thi KHONG => ho DA BIET cach sua va viet dung ngay ben canh nhung chi ap cho nhanh moi them",
+        endDateExclusiveOnStockOutBranchOnly = "port giu 1:1: nhanh xuat kho dung <= to (khong cong ngay), nhanh NCC dung <= cuoi ngay",
+        stockOutRowsOnLastDay = lastDayOutRows,
+        unionAllNotRegrouped = "union all KHONG GOP LAI: hai nhanh cung PartID ra HAI dong (khong co group by bao ngoai) => bao cao tong hop theo phu tung co the ra HAI dong cho MOT ma (KET QUA SAI HINH DANG). Port tra ca hai muc: rows theo (ma, nguon) va byPart gop that theo ma",
+        partsWithTwoSources = byPart.Count(x => x.sources > 1),
+        sourceHasNoOrderBy = "BAN MOI MAT ORDER BY: ban chet co ORDER BY p.PartCode, ban song KHONG con => thu tu bat dinh (#415); port tu sap theo ma",
+        positiveInnerJoinFixedToLeftJoin = "DUONG TINH: ban moi SUA DUNG mot loi mat dong cua ban cu — INNER JOIN Ser_Mst_Part (ban chet) doi thanh left join Ser_MST_Part smp (ban song) => phu tung KHONG co trong danh muc khong con bi roi luc DOC (dung luat #410). CANH BAO: khi do smp.PartCode NULL va group by gop MOI ma la vao MOT dong NULL",
+        deadStatusGuardRepeated = "GUARD CHET lap lai nguyen xi #666: and siso.Status = 3 roi and siso.Status not in (4,5). Dem trong BizCarSv.WH.cs: mau status = 3 co 5 site, trong do 2 site co kem ve not in (4,5) chet ngay duoi => khong phai go nham mot lan, la THOI QUEN SAO CHEP",
+        convertToDateTimeHasNoGuard = "Convert.ToDateTime(strFromDate, dtfi) khong guard rong => FormatException (ho #626/#627)",
+        datesAndDealerBaked = "ngay va ma dai ly bake vao SQL => be mat tiem SQL; AM TINH: alParamsCoupleSql rong nen khong dinh [BAKE-PARAM-MIX]",
+        supplierPaymentStatusConstant = "ssp.SupplierPaymentStatus = A = Da duyet (khop TConst.SupplierPaymentStatus P->A da ghi o #237)",
+        miniModelGap = "ServiceStockOut cua Mini KHONG co cot DealerCode nen bo loc dai ly moi ap duoc cho nhanh NCC; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #667 TÌM KIẾM BÁO GIÁ PHỤ TÙNG `Ser_Inv_QuoteGet_WH` (`WH.cs:30671-30948`) =====
 // 3B: laptop `:30671` md5 `a51436ef` **KHỚP** máy 150 `:30671`. WS `WSCarSv.asmx.cs:28910` gọi thẳng.
 //
