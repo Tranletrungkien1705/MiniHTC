@@ -46079,6 +46079,156 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #705 VELOCA: DANH SÁCH LỆNH SỬA CHỮA CHƯA HOÀN TẤT =====
+// `OSVeloca_Ser_RO_Incomplete_Get` (`BizCarSv.ZTemp.cs:17137-17503`, md5 `9074239a` — **KHỚP máy 150, cùng
+// offset**). WS `WSCarSv.asmx.cs:12315` → `GET /api/osveloca/repairorders/incomplete`.
+// Chiều **RA** cho hệ Veloca (đối xứng với #704 là chiều đánh dấu đã lấy).
+//
+// 🔴🔴🔴 **HAI CỘT ĐIỂM BỊ ĐẶT BÍ DANH CHÉO NHAU**:
+//     `, sr.PointRankTotalInv **PointTotal**   -- Điểm tích tiêu dùng`
+//     `, sr.PointTotal **PointRankTotal**      -- Điểm tích xét hạng`
+//   Cột `PointRankTotalInv` trả ra dưới tên `PointTotal`, và `PointTotal` trả ra dưới tên `PointRankTotal`.
+//   ⇒ Bên nhận (Veloca) đọc `PointTotal` thì thực ra **đang lấy `PointRankTotalInv`**. Chú thích tiếng Việt đi
+//     kèm cho thấy **có chủ ý** (đổi tên cho khớp phía Veloca), nhưng **không thể xác minh từ mã** ⇒ port giữ
+//     **nguyên văn cả hai bí danh** và trả **thêm** cột gốc kèm cờ, để bên nhận tự đối chiếu. **Không kết luận.**
+// 🔴🔴🔴 **HAI QUY ƯỚC VAT TRONG CÙNG MỘT CÂU** — bằng chứng mạnh cho nợ #673:
+//     cột `VAT`:            `(srs.Factor * srs.Price * srs.**VAT / 100**)`
+//     cột `AmountAfterVAT`: `(srs.Factor * srs.Price) * (1 + srs.**VAT * 0.01**)`
+//   Nếu `Ser_ROServiceItems.VAT` là **số nguyên** thì `VAT / 100` là **chia nguyên** ⇒ `10/100 = 0` ⇒ cột `VAT`
+//   và `TotalVAT` **luôn bằng 0**, trong khi `TotalAmountAfterVAT` vẫn đúng vì dùng `* 0.01`.
+//   ⇒ Hệ quả kiểm chứng được: **`TotalAmount + TotalVAT ≠ TotalAmountAfterVAT`**. Port tính **cả hai cách** và
+//     trả `vatIntegerDivisionWouldZeroIt` để đo. Trong MiniHTC `Vat` là `decimal` nên **không tái hiện** — đây là
+//     rủi ro **của CSDL nguồn**, chưa xác minh kiểu cột thật.
+// 🔴🔴 **`union` (KHÔNG `union all`) TRÊN BẢNG TIỀN ⇒ NUỐT DÒNG TIỀN THẬT**: `#tbl_Ser_ROItems_Filter` gộp hạng
+//   mục dịch vụ và phụ tùng bằng `union` trên `(ROID, RONo, ItemID, Amount, VAT, AmountAfterVAT)`. Hai dòng
+//   **trùng cả sáu giá trị** (cùng hạng mục, cùng giá, cùng hệ số) bị **khử còn một** ⇒ `Sum(Amount)` **thiếu**.
+//   ⚠️ Đối lập với #513, nơi `union` khử trùng cặp (lệnh, loại) là **đúng ý**. ⇒ `union` **không tự nó** là lỗi;
+//     phải hỏi "khử trùng ở đây có làm mất một sự kiện nghiệp vụ không?".
+// 🔴🔴 **`Sum` TRÊN `left join` KHÔNG CÓ `IsNull` ⇒ TỔNG RA `NULL`, KHÔNG PHẢI 0**: lệnh chưa có hạng mục nào ⇒
+//   `TotalAmount`/`TotalVAT`/`TotalAmountAfterVAT` đều **NULL**. Khác #699 nơi có `IsNull(..., 0.0)`.
+// 🔴 **`srp.InsurancePrice = ''` — so cột SỐ với chuỗi rỗng** (họ #407): nếu cột là numeric thì SQL Server ép
+//   `''` → 0 ⇒ điều kiện thành `= 0`, **trùng y hệt** vế `or srp.InsurancePrice = 0` ngay cạnh ⇒ **vế thừa**,
+//   vô hại; nếu cột là varchar thì `> 0` ở nhánh trên mới là chỗ ép kiểu. Ghi cờ, chưa xác minh kiểu.
+// 🔴 **MẤT TRỌN NGÀY CUỐI** (#415): `t.CheckInDate <= @strCheckInDateTo` và `t.SyncVelocaDTime <=
+//   @strSyncVelocaDTimeTo` trên cột **DATETIME** — riêng `SyncVelocaDTime` chắc chắn có phần giờ (do #704 ghi
+//   `yyyy-MM-dd HH:mm:ss`) ⇒ lọc "đến ngày X" **mất hết** bản ghi đồng bộ trong ngày X.
+// 🔴 **BỘ LỌC TRẠNG THÁI ĐỊNH NGHĨA BẰNG LOẠI TRỪ**: `t.Status not in ('CRE', 'REJ', 'NORE', 'PAID', 'FNS')`
+//   ⇒ trạng thái **mới thêm** sẽ **tự động** bị coi là "chưa hoàn tất" và **lọt ra Veloca**.
+//   📌 **Đối lập trực tiếp với #698**: ở đó danh sách `in (...)` đóng băng **nuốt** mã mới; ở đây `not in`
+//     **kết nạp** mã mới. Cùng một thói quen gõ cứng, **hai hướng sai ngược nhau**.
+// ⚪ **ÂM TÍNH — khối `ClearForDebug` ở đây ĐANG CHẠY và ĐÚNG ĐỦ năm bảng** (mẫu thứ **tư** của khối này, sau
+//   #698 hỏng / #699 đúng / #703 chép nhầm).
+// ⚪ **ÂM TÍNH — bộ lọc dùng khuôn `'' = @x or …`** nên **không** dính bẫy `BuildClause` bỏ im lặng (#410).
+//   ⚠️ Nhưng dính bẫy **NULL**: truyền `NULL` thay vì `''` ⇒ `'' = NULL` là UNKNOWN ⇒ **loại sạch dòng**.
+// §12 ánh xạ tên: nguồn `PlateNo`→Mini `LicensePlate`; `FrameNo`→`Vin`; `Price`/`Quantity` của phụ tùng→
+//   `UnitPrice`/`NeedQty`; `ROID`→`RONo` (Mini không có cột `ROID`).
+app.MapGet("/api/osveloca/repairorders/incomplete", async (AppDbContext db, ITenantContext t,
+    DateTime? checkInDateFrom, DateTime? checkInDateTo, string? roNo, string? plateNo,
+    DateTime? syncVelocaDTimeFrom, DateTime? syncVelocaDTimeTo, string? syncVelocaFlag) =>
+{
+    // Nguồn gõ cứng năm mã bị loại. Chép nguyên văn.
+    string[] excludedStatus = { "CRE", "REJ", "NORE", "PAID", "FNS" };
+
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && !excludedStatus.Contains(x.Status));
+    if (checkInDateFrom is not null) qy = qy.Where(x => x.CheckInDate >= checkInDateFrom!.Value);
+    // GIỮ 1:1 mốc `<=` của nguồn (mất ngày cuối) — đo phần bị mất bằng biến đếm bên dưới.
+    if (checkInDateTo is not null) qy = qy.Where(x => x.CheckInDate <= checkInDateTo!.Value);
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.LicensePlate == plateNo!.Trim());
+    if (syncVelocaDTimeFrom is not null) qy = qy.Where(x => x.SyncVelocaDTime >= syncVelocaDTimeFrom!.Value);
+    if (syncVelocaDTimeTo is not null) qy = qy.Where(x => x.SyncVelocaDTime <= syncVelocaDTimeTo!.Value);
+    if (!string.IsNullOrWhiteSpace(syncVelocaFlag)) qy = qy.Where(x => x.SyncVelocaFlag == syncVelocaFlag!.Trim());
+
+    var ros = await qy.Select(x => new
+    {
+        x.Id, x.RONo, x.DealerCode, x.Creator, x.LicensePlate, x.Vin, x.TradeMarkCode,
+        x.CusID, x.CusName, x.CarID, x.MemberNo, x.PointRankTotalInv, x.PointTotal, x.AmountFromMC,
+        x.PaidCreatedDate, x.ActualDeliveryDate, x.Status, x.SyncVelocaFlag, x.SyncVelocaDTime, x.CheckInDate,
+    }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    // Đo phần bị mất do mốc `<=` trên cột có phần giờ (#415).
+    var lostByEndDateInclusive = 0;
+    if (syncVelocaDTimeTo is not null)
+        lostByEndDateInclusive = await db.RepairOrders.CountAsync(x => x.OrgId == t.OrgId
+            && !excludedStatus.Contains(x.Status)
+            && x.SyncVelocaDTime > syncVelocaDTimeTo!.Value
+            && x.SyncVelocaDTime < syncVelocaDTimeTo!.Value.Date.AddDays(1));
+
+    var svc = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .Select(i => new { i.RoId, ItemID = i.SerCode, i.Factor, i.Price, Qty = 1m, i.Vat, i.InsurancePrice, i.ExpenseType })
+        .ToListAsync();
+    var prt = await db.RoPartItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+        .Select(i => new { i.RoId, ItemID = i.PartCode, i.Factor, Price = i.UnitPrice, Qty = i.NeedQty, i.Vat, i.InsurancePrice, i.ExpenseType })
+        .ToListAsync();
+    var all = svc.Concat(prt).ToList();
+
+    // Nguồn dùng `union` (KHỬ TRÙNG). Tính CẢ HAI để đo phần bị nuốt.
+    var lines = all.Select(i => new
+    {
+        i.RoId, i.ItemID, i.ExpenseType, i.InsurancePrice,
+        Amount = i.Factor * i.Price * i.Qty,
+        VatAmountSafe = i.Factor * i.Price * i.Qty * i.Vat * 0.01m,
+        AmountAfterVAT = i.Factor * i.Price * i.Qty * (1 + i.Vat * 0.01m),
+    }).ToList();
+    var deduped = lines.Select(l => new { l.RoId, l.ItemID, l.Amount, l.VatAmountSafe, l.AmountAfterVAT })
+        .Distinct().ToList();
+    var amountLostByUnionDedup = lines.Sum(l => l.Amount) - deduped.Sum(l => l.Amount);
+
+    decimal ByType(long roId, params string[] types) => lines
+        .Where(l => l.RoId == roId && l.ExpenseType != null && types.Contains(l.ExpenseType))
+        .Sum(l => l.AmountAfterVAT);
+
+    var rows = ros.Select(x =>
+    {
+        var mine = deduped.Where(l => l.RoId == x.Id).ToList();
+        // Nguồn không có IsNull ⇒ Sum trên tập RỖNG ra NULL, không phải 0. Giữ 1:1.
+        decimal? total = mine.Count == 0 ? null : mine.Sum(l => l.Amount);
+        decimal? totalVat = mine.Count == 0 ? null : mine.Sum(l => l.VatAmountSafe);
+        decimal? totalAfter = mine.Count == 0 ? null : mine.Sum(l => l.AmountAfterVAT);
+        // Bảo hiểm: nguồn tách "một phần" (InsurancePrice > 0) và "toàn bộ" (rỗng/0), rồi CỘNG LẠI.
+        var ins = lines.Where(l => l.RoId == x.Id && l.ExpenseType == "ROINSURANCE").ToList();
+        var insAmount = ins.Where(l => (l.InsurancePrice ?? 0) > 0).Sum(l => l.AmountAfterVAT - (l.InsurancePrice ?? 0))
+                      + ins.Where(l => (l.InsurancePrice ?? 0) <= 0).Sum(l => l.AmountAfterVAT);
+        var repairAmount = ByType(x.Id, "ROREPAIR")
+                         + ins.Where(l => (l.InsurancePrice ?? 0) > 0).Sum(l => l.InsurancePrice ?? 0);
+        return new
+        {
+            ROID = x.RONo, x.RONo, x.DealerCode, x.Creator, PlateNo = x.LicensePlate, FrameNo = x.Vin,
+            x.TradeMarkCode, x.CusID, x.CusName, x.MemberNo,
+            TotalAmount = total, TotalVAT = totalVat, TotalAmountAfterVAT = totalAfter,
+            RepairAmountAfterVAT = repairAmount, InsuranceAmountAfterVAT = insAmount,
+            WarrantyAmountAfterVAT = ByType(x.Id, "ROWARRANTY"), LocalAmountAfterVAT = ByType(x.Id, "LOCAL"),
+            // 🔴 BÍ DANH CHÉO của nguồn — giữ NGUYÊN VĂN.
+            PointTotal = x.PointRankTotalInv,        // nguồn: sr.PointRankTotalInv PointTotal
+            PointRankTotal = x.PointTotal,           // nguồn: sr.PointTotal PointRankTotal
+            // …và cột GỐC, không đổi tên, để bên nhận tự đối chiếu.
+            src_PointRankTotalInv = x.PointRankTotalInv, src_PointTotal = x.PointTotal,
+            x.AmountFromMC, x.PaidCreatedDate, x.ActualDeliveryDate, x.Status,
+            x.SyncVelocaFlag, x.SyncVelocaDTime, x.CheckInDate,
+            totalIsNullBecauseNoItems = mine.Count == 0,
+        };
+    }).OrderBy(x => x.RONo).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        amountLostByUnionDedup, lostByEndDateInclusive,
+        rowsWithNullTotals = rows.Count(x => x.totalIsNullBecauseNoItems),
+        // ===== #705 =====
+        twoPointColumnsAliasedCrosswise = "HAI COT DIEM BI DAT BI DANH CHEO NHAU: , sr.PointRankTotalInv PointTotal (-- Diem tich tieu dung) va , sr.PointTotal PointRankTotal (-- Diem tich xet hang). Cot PointRankTotalInv tra ra duoi ten PointTotal, va PointTotal tra ra duoi ten PointRankTotal => ben nhan (Veloca) doc PointTotal thi thuc ra dang lay PointRankTotalInv. Chu thich tieng Viet di kem cho thay CO CHU Y (doi ten cho khop phia Veloca) nhung KHONG THE XAC MINH TU MA => port giu NGUYEN VAN ca hai bi danh va tra THEM cot goc (src_PointRankTotalInv / src_PointTotal) de ben nhan tu doi chieu. KHONG KET LUAN",
+        twoVatConventionsInOneStatement = "HAI QUY UOC VAT TRONG CUNG MOT CAU — bang chung manh cho no #673: cot VAT dung (srs.Factor * srs.Price * srs.VAT / 100) con cot AmountAfterVAT dung (srs.Factor * srs.Price) * (1 + srs.VAT * 0.01). Neu Ser_ROServiceItems.VAT la SO NGUYEN thi VAT / 100 la CHIA NGUYEN => 10/100 = 0 => cot VAT va TotalVAT LUON BANG 0 trong khi TotalAmountAfterVAT van dung. He qua kiem chung duoc: TotalAmount + TotalVAT KHAC TotalAmountAfterVAT. Trong MiniHTC Vat la decimal nen KHONG tai hien — day la rui ro CUA CSDL NGUON, chua xac minh kieu cot that",
+        unionNotUnionAllSwallowsRealMoneyLines = "union (KHONG union all) TREN BANG TIEN => NUOT DONG TIEN THAT: #tbl_Ser_ROItems_Filter gop hang muc dich vu va phu tung bang union tren (ROID, RONo, ItemID, Amount, VAT, AmountAfterVAT). Hai dong TRUNG CA SAU GIA TRI (cung hang muc, cung gia, cung he so) bi khu con MOT => Sum(Amount) THIEU. Doi lap voi #513 noi union khu trung cap (lenh, loai) la DUNG Y => union KHONG TU NO la loi; phai hoi khu trung o day co lam mat mot su kien nghiep vu khong. Da do bang amountLostByUnionDedup",
+        sumOverLeftJoinWithoutIsnullGivesNull = "Sum TREN left join KHONG CO IsNull => TONG RA NULL, KHONG PHAI 0: lenh chua co hang muc nao => TotalAmount/TotalVAT/TotalAmountAfterVAT deu NULL. Khac #699 noi co IsNull(..., 0.0). Da giu 1:1 va dem bang rowsWithNullTotals",
+        insurancePriceComparedToEmptyString = "srp.InsurancePrice = '' — so cot SO voi chuoi rong (ho #407): neu cot la numeric thi SQL Server ep '' -> 0 => dieu kien thanh = 0, TRUNG Y HET ve or srp.InsurancePrice = 0 ngay canh => VE THUA, vo hai; neu cot la varchar thi > 0 o nhanh tren moi la cho ep kieu. Ghi co, chua xac minh kieu",
+        endDateInclusiveLosesLastDay = "MAT TRON NGAY CUOI (#415): t.CheckInDate <= @strCheckInDateTo va t.SyncVelocaDTime <= @strSyncVelocaDTimeTo tren cot DATETIME — rieng SyncVelocaDTime chac chan co phan gio (do #704 ghi yyyy-MM-dd HH:mm:ss) => loc den ngay X MAT HET ban ghi dong bo trong ngay X. Da do bang lostByEndDateInclusive",
+        statusFilterByExclusionAdmitsNewCodes = "BO LOC TRANG THAI DINH NGHIA BANG LOAI TRU: t.Status not in (CRE, REJ, NORE, PAID, FNS) => trang thai MOI THEM se TU DONG bi coi la chua hoan tat va LOT RA Veloca. DOI LAP TRUC TIEP voi #698: o do danh sach in (...) dong bang NUOT ma moi; o day not in KET NAP ma moi. Cung mot thoi quen go cung, HAI HUONG SAI NGUOC NHAU",
+        negativeClearForDebugIsLiveAndCorrect = "AM TINH: khoi ClearForDebug o day DANG CHAY va DUNG DU nam bang (mau thu TU cua khoi nay, sau #698 hong / #699 dung / #703 chep nham)",
+        negativeFiltersUseEmptyStringGuardNotBuildClause = "AM TINH: bo loc dung khuon '' = @x or … nen KHONG dinh bay BuildClause bo im lang (#410). NHUNG dinh bay NULL: truyen NULL thay vi '' => '' = NULL la UNKNOWN => LOAI SACH DONG",
+        columnNameMapping = "§12 anh xa ten: nguon PlateNo -> Mini LicensePlate; FrameNo -> Vin; Price/Quantity cua phu tung -> UnitPrice/NeedQty; ROID -> RONo (Mini khong co cot ROID)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #704 VELOCA: ĐÁNH DẤU LỆNH SỬA CHỮA ĐÃ ĐỒNG BỘ =====
 // `OSVeloca_Ser_RO_UpdSyncVelocaFlag` (`BizCarSv.ZTemp.cs:16967-17136`, md5 `6da3b838` — **KHỚP máy 150,
 // cùng offset**). WS `WSCarSv.asmx.cs:12259`. Anh em đã port ở #304/#305 là bản **phiếu xuất kho**
