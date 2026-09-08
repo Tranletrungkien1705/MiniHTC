@@ -9384,6 +9384,156 @@ app.MapGet("/api/reports/summary-car-at-dealer", async (
     });
 }).RequireAuthorization();
 
+// ===== #B125 TẦNG CACHING THANH TOÁN (trả nợ tồn) — `mySql_GetClauseSelect_CachingForPaymentTotal`
+//       và `…CachingForPaymentAccum` (`TERP.BizHTC.SQLQuery/CommonSQLQuery.cs`) =====
+// 📌 Đây là **món nợ đã ghi từ #B114/#B124** ("tầng thanh toán chưa có ⇒ mọi cột tiền null").
+//   Nay đọc được **trọn công thức** nên **trả nợ**, không còn phải để null.
+// 🔴 **CÔNG THỨC ĐÚNG NGUYÊN VĂN**:
+//      `select t.CarId, **Sum(pmpd.Amount) AmountTotal**, **Max(pmp.PaymentEndDate) PaymentEndDateMax**`
+//      `from <bảng xe đã lọc> t inner join Pmt_PaymentDetail pmpd on t.CarId = pmpd.CarId`
+//      `                        inner join Pmt_Payment pmp       on pmpd.PaymentNo = pmp.PaymentNo`
+//      `where (pmp.PaymentStatus **in (<danh sách>)**) <và tuỳ chọn `and (pmpd.GuaranteeNo is null)`>`
+//      `group by t.CarId`
+//   ⚠️ **`inner join` hai lớp** ⇒ xe **không có** thanh toán nào khớp trạng thái thì **không có dòng**
+//     trong bảng tạm ⇒ ở báo cáo nó `left join` vào và ra **NULL**, rồi mới `IsNull(...,0)`.
+//     Port bằng `Sum(...)` mặc định 0 ngay từ đầu là **không phân biệt được "chưa trả" với "trả 0"**.
+// 🔴🔴 **THAM SỐ `bGuaranteeNoBeNull` LÀ ĐỊNH NGHĨA "TIỀN CỌC"**:
+//      `true` ⇒ thêm **`and (pmpd.GuaranteeNo is null)`** — tức **cọc = khoản thanh toán KHÔNG gắn
+//      bảo lãnh**. Bỏ điều kiện này là **gộp cả tiền bảo lãnh vào tiền cọc**.
+// 🔴🔴 **CÙNG MỘT HÀM, MỖI BÁO CÁO GỌI VỚI BỘ LỌC TRẠNG THÁI KHÁC NHAU** — số liệu **cố ý khác**:
+//      · #B114 `CarCarGetList`      : Total `'A','F'` · Deposit `'A','F'` · A_Deposit `'A','F'`
+//      · #B124 `SummaryCarAtDealer` : Total `'A','F'` · Deposit `'A','F'` · A_Deposit `'A','F'`
+//      · #B126 `RptPayment_01`      : Total **`'F'`**  · Deposit **`'F'`**  (Accum `'F'`)
+//      · #B127 `RptPayment_01_Mst`  : Total **`'F'`**  · Deposit **`'A','F'`**  ← xem #B127
+//   ⇒ **Không được dùng một hàm chung "tính tiền cọc" cho mọi báo cáo.**
+static async Task<Dictionary<string, (decimal AmountTotal, DateTime? PaymentEndDateMax)>>
+    CachingForPaymentTotalAsync(AppDbContext db, Guid orgId, List<string> carIds,
+                                string[] statusList, bool guaranteeNoBeNull)
+{
+    var q = from d in db.PmtPaymentDetails
+            join p in db.PmtPayments on d.PaymentNo equals p.PaymentNo
+            where d.OrgId == orgId && p.OrgId == orgId
+                  && d.CarId != null && carIds.Contains(d.CarId)
+                  && statusList.Contains(p.PaymentStatus)
+            select new { d.CarId, d.Amount, d.GuaranteeNo, p.PaymentEndDate };
+    // 🔴 "Tiền cọc" = thanh toán KHÔNG gắn bảo lãnh.
+    if (guaranteeNoBeNull) q = q.Where(x => x.GuaranteeNo == null || x.GuaranteeNo == "");
+    var raw = await q.ToListAsync();
+    return raw.GroupBy(x => x.CarId!)
+        .ToDictionary(g => g.Key,
+            g => (g.Sum(x => x.Amount ?? 0m),
+                  g.Where(x => x.PaymentEndDate != null).Select(x => x.PaymentEndDate).DefaultIfEmpty(null).Max()));
+}
+
+// ===== #B126/#B127 BÁO CÁO THANH TOÁN 01 — `RptPayment_01_New20260514` và `…_New20260514_Mst` =====
+// Trace LIVE: WS64 `:30096` → `_biz.RptPayment_01_New20260514` (`DataWH/BizHTC.zTemp.cs:23162`);
+//   WS64 `:30208` → `_biz.RptPayment_01_New20260514_Mst` (`:24757`).
+//   3B đo thật, **khớp cả 2 máy**: `23162/f12f2b609d2b2a669d7eedc14695a17f` ·
+//   `24757/fe6bbc6645915e026ef43fa01b311373`.
+// ✅ **PHẢN VÍ DỤ LÀNH MẠNH VỀ RBAC** (hiếm, ghi lại để đối chiếu với 22 ca lỗ đã thống kê):
+//    `DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);` **KHÔNG bị comment**,
+//    và `alParamsCoupleSql.AddRange(new object[]{ "@strBUPatternOfUser", drAbilityOfUser["BUPattern"] });`
+//    **bind quyền THẬT**; thêm `myCommon_CheckHTCDirect(...)`. ⇒ Báo cáo này **có lọc phạm vi đúng**.
+// 🔴🔴 **HAI CỬA CỦA CÙNG MỘT BÁO CÁO TÍNH TIỀN CỌC KHÁC NHAU** — đối chiếu từng dòng:
+//      · bản **chi tiết** (`:23283`): `CachingForPaymentTotal(#tbl_…_Deposit, **"'F'"**, true)`
+//        — chú thích *"Chỉ xét Thanh toán Cọc ('F')"*;
+//      · bản **master** (`:24882`): `CachingForPaymentTotal(#tbl_…_Deposit, **"'A','F'"**, true)`
+//        — chú thích *"…('A','F') **//20210601 thêm trạng thái A**"*.
+//    ⇒ Thay đổi 2021 **chỉ áp vào bản master, KHÔNG lan sang bản chi tiết** ⇒ **tổng ở master có thể
+//      LỚN HƠN tổng cộng dồn của chi tiết**, đúng bằng phần cọc đang ở trạng thái `'A'` (đã duyệt,
+//      chưa hoàn tất). **Cả hai SQL đều thật sự dùng bảng này** (mỗi bên 3 lần) nên chênh lệch là **có
+//      hiệu lực**, không phải mã chết.
+//    📌 **KHÔNG tự đồng bộ** — đây là quyết định nghiệp vụ; port giữ **đúng từng bên** và trả
+//      `depositStatusFilter` để người dùng thấy ngay mình đang xem con số theo bộ lọc nào.
+// 🔴 `strZoneCode`: `IsNullOrEmpty ? "" : StandardizeParam(...)` ⇒ **chuẩn hoá về CHUỖI RỖNG, không
+//    để NULL** — đúng khuôn tránh bẫy `@strZoneCode = NULL` làm mất sạch dòng (đã ghi nhớ riêng).
+// 🔴 **17 tham số lọc đều đi qua `BuildClause("and", "<cột>", <danh sách>, "@p", ref params)`** ⇒
+//    danh sách rỗng ⇒ **bỏ hẳn mệnh đề** (không phải `in ()`).
+// 📌 **NỢ còn lại** (không đoán): `mySql_GetClauseSelect_Mst_Calendar_GetForDayT` (bảng tham số ngày
+//    làm việc), `RatioDebtPolicy_V20`, `GetDiscountOfCar_02_Dtl`, `Pmt_Guarantee` ⇒ các cột chính sách
+//    công nợ / chiết khấu / bảo lãnh để **null**.
+static async Task<IResult> RptPayment01Async(
+    AppDbContext db, ITenantContext t, string? dealerCode, string? soCode, string? modelCode,
+    string? zoneCode, string? enforceBuScope, string? buPattern, bool isMst)
+{
+    // 🔴 Zone: chuẩn hoá về "" chứ KHÔNG để null.
+    var zone = (zoneCode ?? "").Trim();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) cars = cars.Where(c => c.DealerCode == dealerCode.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(soCode)) cars = cars.Where(c => c.SOCode == soCode.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(modelCode)) cars = cars.Where(c => c.ModelCode == modelCode.Trim()).ToList();
+
+    // ✅ Nguồn bind quyền THẬT ở báo cáo này; MiniHTC chưa có bảng quyền ⇒ cờ đo.
+    var scoped = enforceBuScope == "1";
+    if (scoped)
+    {
+        var pat = (buPattern ?? "HTC").Trim();
+        var okDealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId)
+            .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync())
+            .Where(d => (d.BUCode ?? "").StartsWith(pat)).Select(d => d.DealerCode).ToHashSet();
+        cars = cars.Where(c => okDealers.Contains(c.DealerCode ?? "")).ToList();
+    }
+
+    var carIds = cars.Select(c => c.VIN).ToList();
+
+    // 🔴 BỘ LỌC TRẠNG THÁI KHÁC NHAU GIỮA HAI CỬA — đây là điểm cốt tử của cặp này.
+    var depositStatus = isMst ? new[] { "A", "F" } : new[] { "F" };
+    var total = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "F" }, false);
+    var deposit = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, depositStatus, true);
+
+    var rows = cars.Select(c =>
+    {
+        var hasTotal = total.TryGetValue(c.VIN, out var tt);
+        var hasDep = deposit.TryGetValue(c.VIN, out var dp);
+        return new
+        {
+            CarId = c.VIN, c.VIN, c.SpecCode, c.ModelCode, c.ColorCode, c.DealerCode, c.SOCode,
+            c.FlagEarlyCancel, c.FlagisHTC,
+            // 🔴 Không có dòng trong bảng tạm ⇒ NULL (khác hẳn "đã trả 0").
+            PmtAmountTotal = hasTotal ? tt.AmountTotal : (decimal?)null,
+            PmtPaymentEndDateMax = hasTotal ? tt.PaymentEndDateMax : null,
+            PmtDepositTotal = hasDep ? dp.AmountTotal : (decimal?)null,
+            PmtDepositEndDateMax = hasDep ? dp.PaymentEndDateMax : null,
+            // 📌 NỢ còn lại — không đoán công thức:
+            RatioDebtPolicy = (decimal?)null,
+            DiscountOfCar_02_Dtl = (decimal?)null,
+            GuaranteeValue = (decimal?)null,
+            DateDayT = (DateTime?)null
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        variant = isMst ? "Mst" : "Detail",
+        zoneCode = zone,
+        count = rows.Count,
+        items = rows,
+        depositStatusFilter = depositStatus,
+        totalStatusFilter = new[] { "F" },
+        enforceBuScope = scoped,
+        cachingFormulaNote = "CONG THUC DUNG NGUYEN VAN: select t.CarId, Sum(pmpd.Amount) AmountTotal, Max(pmp.PaymentEndDate) PaymentEndDateMax from <bang xe da loc> t inner join Pmt_PaymentDetail pmpd on t.CarId = pmpd.CarId inner join Pmt_Payment pmp on pmpd.PaymentNo = pmp.PaymentNo where pmp.PaymentStatus in (<ds>) [and pmpd.GuaranteeNo is null] group by t.CarId. INNER JOIN HAI LOP => xe khong co thanh toan khop trang thai thi KHONG CO DONG trong bang tam => bao cao left join vao va ra NULL, roi moi IsNull(...,0). Port de mac dinh 0 ngay tu dau la KHONG PHAN BIET DUOC 'chua tra' voi 'tra 0'.",
+        depositDefinitionNote = "Tham so bGuaranteeNoBeNull LA DINH NGHIA 'TIEN COC': true => them 'and (pmpd.GuaranteeNo is null)' - coc = khoan thanh toan KHONG GAN BAO LANH. Bo dieu kien nay la GOP CA TIEN BAO LANH VAO TIEN COC.",
+        twoDoorsDivergenceNote = "HAI CUA CUA CUNG MOT BAO CAO TINH TIEN COC KHAC NHAU: ban CHI TIET (:23283) dung \"'F'\" (chu thich 'Chi xet Thanh toan Coc (F)'); ban MASTER (:24882) dung \"'A','F'\" (chu thich '...(A,F) //20210601 them trang thai A'). Thay doi 2021 CHI AP VAO BAN MASTER, KHONG lan sang ban chi tiet => tong o master co the LON HON tong cong don cua chi tiet, dung bang phan coc dang o trang thai 'A'. CA HAI SQL deu that su dung bang nay (moi ben 3 lan) nen chenh lech CO HIEU LUC, khong phai ma chet. KHONG tu dong bo - day la quyet dinh nghiep vu.",
+        rbacHealthyNote = "PHAN VI DU LANH MANH VE RBAC (hiem): myCommon_GetAbilityOfUser KHONG bi comment, va alParamsCoupleSql bind '@strBUPatternOfUser' = drAbilityOfUser['BUPattern'] - QUYEN THAT; them myCommon_CheckHTCDirect. Bao cao nay CO loc pham vi dung. Ghi lai de doi chieu voi 22 ca lo da thong ke.",
+        zoneNote = "strZoneCode: IsNullOrEmpty ? '' : StandardizeParam(...) => CHUAN HOA VE CHUOI RONG, KHONG de NULL - dung khuon tranh bay @strZoneCode = NULL lam mat sach dong.",
+        buildClauseNote = "17 tham so loc deu di qua BuildClause('and', '<cot>', <danh sach>, '@p', ref params) => danh sach RONG => BO HAN menh de (khong phai 'in ()').",
+        remainingDebt = "NO CON LAI (khong doan): mySql_GetClauseSelect_Mst_Calendar_GetForDayT (bang tham so ngay lam viec), RatioDebtPolicy_V20, GetDiscountOfCar_02_Dtl, Pmt_Guarantee => cac cot chinh sach cong no / chiet khau / bao lanh de null."
+    });
+}
+
+app.MapGet("/api/reports/payment-01", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? soCode, string? modelCode,
+    string? zoneCode, string? enforceBuScope, string? buPattern) =>
+    await RptPayment01Async(db, t, dealerCode, soCode, modelCode, zoneCode, enforceBuScope, buPattern, false))
+    .RequireAuthorization();
+
+app.MapGet("/api/reports/payment-01-mst", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? soCode, string? modelCode,
+    string? zoneCode, string? enforceBuScope, string? buPattern) =>
+    await RptPayment01Async(db, t, dealerCode, soCode, modelCode, zoneCode, enforceBuScope, buPattern, true))
+    .RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
