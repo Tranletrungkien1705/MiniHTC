@@ -32362,6 +32362,134 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   báo cáo thanh toán khác. 📌 **NỢ**: chưa port ⇒ các cột tiền/chiết khấu trả `null`.
 // 🔴 Trục giao dịch lọc `dlsdd.DeliveryStatus in ('P','A','F')` — **ba** trạng thái (kể cả `'P'` chưa giao),
 //   khác #B290 (`('A','F')`).
+
+// ===== #B338/#B339/#B340 BÁO CÁO CÔNG NỢ 02 — `RptDebitReport02_WH_New20260514`
+//       (+ bẫy **BỐN** biến thể cùng tên, `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   bản `_New20260514` laptop `160517,160763` ≡ 150 `160522,160768` ⇒ **`6d9d09078f24ddb3d7584091f89fb5f2`**
+//   overload A `_New20181119` laptop `159270,159802` ≡ 150 `159275,159807` ⇒ **`642d9075ca6c87ce1727bfc32329f472`**
+// 🔴🔴🔴 **BỐN BIẾN THỂ CÙNG TÊN — TRONG ĐÓ HAI CÁI TRÙNG TÊN HOÀN TOÀN (OVERLOAD)**:
+//   · `_WH_New20181119` @**159270** — tham số kiểu **`…ConditionList`** (4 cột) ⇒ **SỐNG**
+//     (WS64 `:74321` `RptDebitReport02_WH` gọi đúng bộ tham số này);
+//   · `_WH_New20181119` @**159803** — **CÙNG TÊN**, tham số kiểu **`…From`/`…To`** rời, **thêm**
+//     `strCCCarCancelDateTo`, và mốc giao xe là **`CDOApprovedDate2`** thay vì `CDODDeliveryStartDate`
+//     ⇒ **KHÔNG cửa WS nào gọi ⇒ CHẾT**;
+//   · `_WH_New20260514` @**160517** ⇒ **SỐNG** (WS64 `:74412` `RptDebitReport02New_WH`, kèm chú thích
+//     `//RptDebitReport02_WH_New20191123(` — **tên cũ bị thay tại chỗ**);
+//   · `_WH_New20210521` @**160764** — chỉ được **tham chiếu trong chú thích** của bản 20260514.
+//   ⚠️ **Grep tên ra 2 hit cho cùng một tên**, và **`md5_3b.sh` khớp TIỀN TỐ sẽ lấy cái ĐẦU** — may mắn
+//     cái đầu là bản sống, nhưng đây là **bẫy thật**: phải phân biệt overload bằng **DANH SÁCH THAM SỐ**,
+//     không phải bằng tên. Bổ sung cho luật `C0-…vicesimusseptimus` (md5_3b khớp tiền tố).
+// 🔴🔴🔴 **CÙNG MỘT HELPER TỶ LỆ ĐƯỢC GỌI VỚI HAI HẰNG NGƯỢC NHAU TRONG CÙNG HÀM**:
+//     `mySql_RptDebitReport_RptDlv()` + `RatioDebtPolicy_V20_CoreCondition(**"1"**)` — nhánh **GIAO XE**,
+//        cờ *đã giao* **cố định = 1** ⇒ luôn dùng `msp.SOP_P01` (CBU) / `SOP_P02` (CKD);
+//     `mySql_RptDebitReport_RptOrd()` + `RatioDebtPolicy_V20_CoreCondition(**"0"**)` — nhánh **ĐƠN HÀNG**,
+//        cờ *đã giao* **cố định = 0** ⇒ luôn dùng `msp.SOP_P11` (CBU) / `SOP_P12` (CKD).
+//   ⇒ Khác #B317 (cờ **tính động** bằng subquery đếm `Car_DeliveryOrderDetail`): ở đây **đóng cứng theo
+//     nhánh**, nên **cùng một xe** có thể được áp **hai tỷ lệ khác nhau** ở hai bảng kết quả.
+// 🔴🔴 **BỐN BUILDER GHÉP THÀNH MỘT LỆNH** ⇒ **BỐN bảng kết quả**:
+//   `RptDebitReport_RptInvoice` (hoá đơn) · `RptDebitReport_RptDlv` (giao xe) ·
+//   `RptDebitReport_RptOrd` (đơn hàng) · `RptDebitReport` (tổng hợp).
+// 🔴 **Tầng tiền dùng `'F'` cho CẢ HAI nhánh**:
+//   `mySql_GetClauseSelect_CachingForPaymentTotal(#RptInvoice_Car_Car_Filter_01, …, **"'F'"**)` và
+//   `(#RptDlv_Car_Car_Filter, …, **"'F'"**)` ⇒ **chỉ tiền đã NỔI trên tài khoản** (như #B317, khác #B125).
+// 🔴 **Hai cờ pháp nhân**: `strFlagTCG` (`string.Format("{0}", …).Trim()`) và `strFlagIsHTC`
+//   (`StandardizeParam`) — **hai cách chuẩn hoá KHÁC NHAU cho hai cờ cạnh nhau**.
+// 🔴 Bộ lọc đại lý dựng **HAI lần** cho **hai alias**: `BuildClause("and", "**md**.DealerCode", …)` và
+//   `BuildClause("and", "**t**.DealerCode", …)` — cùng một danh sách đầu vào, chèn vào hai câu khác nhau.
+// ⚠️ `Thread.Sleep(4000)` trên đường thành công — **KHÔNG port**.
+// 📌 **NỢ**: bốn builder (`mySql_RptDebitReport_RptInvoice/RptDlv/RptOrd/RptDebitReport`) và
+//   `Mst_SalesPolicy` chưa có trong MiniHTC ⇒ endpoint trả **khung bốn bảng** + **tỷ lệ mặc định 100%**
+//   (đúng nhánh `else` của ma trận), **không bịa số công nợ**.
+app.MapGet("/api/reports/debit-report02", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? invoiceDateFrom, DateTime? invoiceDateTo,
+    DateTime? approvedDate2From, DateTime? approvedDate2To,
+    DateTime? createdDateFrom, DateTime? createdDateTo, DateTime? carCancelDateTo,
+    DateTime? paymentEndDateFrom, DateTime? paymentEndDateTo,
+    string? dealerCode, string? flagTCG, string? flagIsHTC) =>
+{
+    // 🔴 Hai cờ pháp nhân, HAI cách chuẩn hoá khác nhau ở nguồn.
+    var fTCG = (flagTCG ?? "").Trim();                       // string.Format("{0}", …).Trim()
+    var fIsHTC = (flagIsHTC ?? "").Trim();                   // StandardizeParam
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var carsQ = db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.CarId != null);
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        carsQ = carsQ.Where(v => v.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (createdDateFrom != null) carsQ = carsQ.Where(v => v.CreatedDate >= createdDateFrom);
+    if (createdDateTo != null) carsQ = carsQ.Where(v => v.CreatedDate <= createdDateTo);
+    if (carCancelDateTo != null) carsQ = carsQ.Where(v => v.CarCancelDate == null || v.CarCancelDate <= carCancelDateTo);
+    var cars = (await carsQ.ToListAsync())
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode)).ToList();
+
+    // 🔴 Tầng tiền: CHỈ PaymentStatus 'F' (tiền đã nổi trên tài khoản) — cả hai nhánh.
+    var carIds = cars.Select(v => v.CarId!).Distinct().ToList();
+    var paidF = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "F" }, true);
+
+    // 🔴 Tỷ lệ phải thu — ma trận #B317, nhưng cờ "đã giao" ĐÓNG CỨNG theo nhánh.
+    // 📌 NỢ: Mst_SalesPolicy chưa có ⇒ rơi nhánh `else` = 100% (đúng mặc định nguồn).
+    const decimal ratioDefault = 1.00m;
+
+    object Row(CarVinMaster v, string branch, int dlvDoneFlag)
+    {
+        var cid = v.CarId!;
+        var received = paidF.TryGetValue(cid, out var p) ? p.AmountTotal : 0m;
+        var unitPrice = v.UnitPriceActual ?? 0m;
+        var debtPolicy = unitPrice * ratioDefault;
+        return new
+        {
+            Branch = branch,
+            DlvDoneFlagFixed = dlvDoneFlag,          // 🔴 1 cho nhánh Dlv, 0 cho nhánh Ord
+            v.CarId, v.VIN, v.DealerCode,
+            DealerName = dealers.TryGetValue(v.DealerCode ?? "", out var d) ? d.DealerName : null,
+            v.ModelCode, v.SpecCode, v.ColorCode,
+            UnitPriceActual = unitPrice,
+            RatioDebtPolicy = ratioDefault,          // 📌 NỢ: chưa có Mst_SalesPolicy ⇒ 100%
+            DealerDebt_Policy = debtPolicy,
+            TotalReceived_F = received,
+            Remain = debtPolicy - received
+        };
+    }
+
+    // 🔴 BỐN bảng kết quả, đúng thứ tự của nguồn.
+    var rptInvoice = cars.Select(v => Row(v, "RptInvoice", 1)).ToList();
+    var rptDlv = cars.Select(v => Row(v, "RptDlv", 1)).ToList();      // CoreCondition("1")
+    var rptOrd = cars.Select(v => Row(v, "RptOrd", 0)).ToList();      // CoreCondition("0")
+    var summary = cars
+        .GroupBy(v => v.DealerCode!)
+        .Select(g => new
+        {
+            DealerCode = g.Key,
+            DealerName = dealers[g.Key].DealerName,
+            CountCar = g.Count(),
+            SumUnitPriceActual = g.Sum(v => v.UnitPriceActual ?? 0m),
+            SumReceived_F = g.Sum(v => paidF.TryGetValue(v.CarId!, out var p) ? p.AmountTotal : 0m)
+        })
+        .OrderBy(x => x.DealerCode).ToList();
+
+    return Results.Ok(new
+    {
+        filter = new { invoiceDateFrom, invoiceDateTo, approvedDate2From, approvedDate2To,
+                       createdDateFrom, createdDateTo, carCancelDateTo,
+                       paymentEndDateFrom, paymentEndDateTo, dealerCode, flagTCG = fTCG, flagIsHTC = fIsHTC },
+        RptDebitReport_RptInvoice = rptInvoice,   // Tables[0]
+        RptDebitReport_RptDlv = rptDlv,           // Tables[1]
+        RptDebitReport_RptOrd = rptOrd,           // Tables[2]
+        RptDebitReport = summary,                 // Tables[3]
+        ratioPolicyNotPorted = true,
+        fourVariantsNote = "BON BIEN THE CUNG TEN - TRONG DO HAI CAI TRUNG TEN HOAN TOAN (OVERLOAD): _WH_New20181119 @159270 (tham so kieu ...ConditionList, 4 cot) => SONG (WS64 :74321 RptDebitReport02_WH goi dung bo tham so nay); _WH_New20181119 @159803 CUNG TEN, tham so kieu ...From/...To roi, THEM strCCCarCancelDateTo, va moc giao xe la CDOApprovedDate2 thay vi CDODDeliveryStartDate => KHONG cua WS nao goi => CHET; _WH_New20260514 @160517 => SONG (WS64 :74412 RptDebitReport02New_WH, kem chu thich '//RptDebitReport02_WH_New20191123(' - TEN CU BI THAY TAI CHO); _WH_New20210521 @160764 chi duoc THAM CHIEU TRONG CHU THICH cua ban 20260514. GREP TEN RA 2 HIT CHO CUNG MOT TEN, va md5_3b.sh khop TIEN TO se lay cai DAU - may man cai dau la ban song, nhung day la BAY THAT: phai phan biet overload bang DANH SACH THAM SO, khong phai bang ten.",
+        ratioFixedFlagNote = "CUNG MOT HELPER TY LE DUOC GOI VOI HAI HANG NGUOC NHAU TRONG CUNG HAM: mySql_RptDebitReport_RptDlv() + RatioDebtPolicy_V20_CoreCondition('1') - nhanh GIAO XE, co 'da giao' CO DINH = 1 => luon dung msp.SOP_P01 (CBU) / SOP_P02 (CKD); mySql_RptDebitReport_RptOrd() + CoreCondition('0') - nhanh DON HANG, co CO DINH = 0 => luon dung SOP_P11 / SOP_P12. Khac #B317 (co TINH DONG bang subquery dem Car_DeliveryOrderDetail): o day DONG CUNG THEO NHANH, nen CUNG MOT XE co the duoc ap HAI TY LE KHAC NHAU o hai bang ket qua.",
+        fourBuildersNote = "BON BUILDER GHEP THANH MOT LENH => BON bang ket qua: RptDebitReport_RptInvoice (hoa don), RptDebitReport_RptDlv (giao xe), RptDebitReport_RptOrd (don hang), RptDebitReport (tong hop).",
+        moneyFilterNote = "Tang tien dung 'F' cho CA HAI nhanh: mySql_GetClauseSelect_CachingForPaymentTotal(#RptInvoice_Car_Car_Filter_01, ..., \"'F'\") va (#RptDlv_Car_Car_Filter, ..., \"'F'\") => CHI TIEN DA NOI TREN TAI KHOAN (nhu #B317, khac #B125).",
+        twoFlagsNote = "Hai co phap nhan: strFlagTCG chuan hoa bang string.Format('{0}', ...).Trim(); strFlagIsHTC bang StandardizeParam => HAI CACH CHUAN HOA KHAC NHAU cho HAI CO CANH NHAU.",
+        twoAliasFilterNote = "Bo loc dai ly dung HAI LAN cho HAI ALIAS: BuildClause('and','md.DealerCode',...) va BuildClause('and','t.DealerCode',...) - cung mot danh sach dau vao, chen vao hai cau khac nhau.",
+        sleepNote = "Thread.Sleep(4000) tren duong thanh cong - KHONG PORT.",
+        debtNote = "NO: bon builder (mySql_RptDebitReport_RptInvoice/RptDlv/RptOrd/RptDebitReport) va Mst_SalesPolicy chua co trong MiniHTC => endpoint tra KHUNG BON BANG + ty le mac dinh 100% (dung nhanh else cua ma tran), KHONG BIA SO CONG NO."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/carcar-summary02", async (
     AppDbContext db, ITenantContext t,
     string? carId, string? specCode, string? modelCode, string? colorCode, string? dealerCode,
