@@ -30713,6 +30713,80 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #588 ĐỔI TRẠNG THÁI EMAIL (`EmailSendEmailUpdateStatus`, `SendMail.cs:457`) =====
+// Toàn bộ phần "làm việc" của hàm **vỏn vẹn ba dòng**:
+//     `DataTable dt = GetTableContents(_dbMain, "Email_SendEmail", "top 1 *", "", "IdSendEmail", "=", strIdSendEmail);`
+//     `dt.Rows[**0**]["Status"] = strStatusNew; alEffectiveColumn.Add("Status");`
+//     `_dbMain.SaveData("Email_SendEmail", dt, alEffectiveColumn.ToArray());`
+//
+// 🔴🔴 **KHÔNG KIỂM BẢNG RỖNG TRƯỚC KHI ĐỌC `Rows[0]`**: `IdSendEmail` không tồn tại ⇒ `Rows[0]` ném
+//   **`IndexOutOfRangeException` thô**, không phải mã lỗi nghiệp vụ. So sánh trực tiếp: `CheckExistPayment`
+//   (#571) **có** `if (dtPayment == null || dtPayment.Rows.Count == 0) throw Ser_Payment_NotFound`.
+//   ⇒ Cùng một hệ, cùng một khuôn "đọc bản ghi rồi sửa", chỗ có guard chỗ không.
+// 🔴🔴 **KHÔNG CÓ `#region // Check` NÀO CẢ** (trích theo #403: giữa Init và Update **không tồn tại** khối đó,
+//   chỉ có `myUtils_ValidateId` kiểm **Tid** ở phần Init) ⇒ `strStatusNew` **không hề được kiểm**:
+//   truyền chuỗi rỗng, truyền `"XYZ"`, truyền khoảng trắng — tất cả **ghi thẳng** vào cột trạng thái.
+//   ⇒ Email mang trạng thái lạ **rơi khỏi mọi bộ lọc** `status = '0'` của hàng đợi gửi (xem #587) ⇒
+//     **không bao giờ được gửi, cũng không nằm trong nhóm lỗi**. Đúng khuôn hệ quả chuỗi của #575/#579.
+// 🔴 **KHÔNG RÀNG BUỘC ĐẠI LÝ**: câu tra chỉ có `"IdSendEmail", "=", strIdSendEmail` — **không** lọc
+//   `DealerCode` ⇒ người dùng của đại lý A đổi được trạng thái email của đại lý B. Cùng họ #571 (guard hẹp
+//   hơn phạm vi ghi), nhưng ở đây **không có guard nào cả**.
+// ⚠️ `"top 1 *"` với `strClauseOrderBy = ""` ⇒ `TOP` **không** `ORDER BY` (#415). ⚪ Âm tính: tra theo khoá
+//   `IdSendEmail` nên chỉ một dòng — nhưng đây là **lần thứ hai** gặp đúng khuôn này (lần đầu #571).
+// 📌 MiniHTC: bảng tương ứng gần nhất là `EmailBatches` (cột `BatchStatus`). Port **thêm** cả ba guard mà
+//   nguồn thiếu và nêu cờ để chỗ đối chiếu thấy rõ mình đang chặt hơn nguồn.
+app.MapPost("/api/emails/batches/{batchNo}/status", async (string batchNo, AppDbContext db, ITenantContext t,
+    string? status, string? dealerCode) =>
+{
+    var no = batchNo.Trim().ToUpperInvariant();
+
+    // GUARD 1 — nguồn KHÔNG có: chặn trạng thái rỗng/lạ.
+    var st = (status ?? "").Trim();
+    var ALLOWED = new[] { "0", "1", "2", "3", "-1" };
+    if (st.Length == 0)
+        return Results.BadRequest(new
+        {
+            error = "status bat buoc — nguon ghi thang chuoi rong vao cot trang thai.",
+            sourceHasNoStatusValidation = true,
+        });
+    if (!ALLOWED.Contains(st))
+        return Results.BadRequest(new
+        {
+            error = $"status khong hop le: {st}",
+            allowed = ALLOWED,
+            sourceWouldAcceptAnyString = "nguon ghi bat ky chuoi nao => email roi khoi moi bo loc status=0 va khong bao gio duoc gui",
+        });
+
+    var qy = db.EmailBatches.Where(x => x.OrgId == t.OrgId && x.BatchNo == no);
+    // GUARD 2 — nguồn KHÔNG có: ràng buộc đại lý.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    var row = await qy.FirstOrDefaultAsync();
+
+    // GUARD 3 — nguồn KHÔNG có: kiểm tồn tại (nguồn đọc thẳng Rows[0]).
+    if (row is null)
+        return Results.NotFound(new
+        {
+            batchNo = no,
+            sourceWouldThrowIndexOutOfRange = "nguon doc dt.Rows[0] ngay sau GetTableContents, khong kiem Rows.Count",
+        });
+
+    var old = row.BatchStatus;
+    row.BatchStatus = st;
+    row.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.BatchNo, row.DealerCode, oldStatus = old, newStatus = row.BatchStatus,
+        guardsAddedByPort = new[] { "status khac rong va thuoc danh sach", "rang buoc DealerCode", "kiem ton tai truoc khi ghi" },
+        sourceBodyIsThreeLines = "GetTableContents -> Rows[0][Status] = moi -> SaveData; khong co gi khac",
+        sourceHasNoCheckRegion = "giua Init va Update khong ton tai #region Check; chi co myUtils_ValidateId kiem Tid",
+        sourceNoDealerScope = "cau tra chi co IdSendEmail = ... nen dai ly A doi duoc trang thai email cua dai ly B",
+        topOneWithoutOrderBy = "GetTableContents(top 1 *, orderBy rong) — tra theo khoa nen vo hai, nhung lan thu hai gap khuon nay (lan dau #571)",
+        contrastWithCheckExistPayment = "CheckExistPayment (#571) CO kiem Rows.Count == 0 roi nem Ser_Payment_NotFound; ham nay thi khong",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #587 GIỚI HẠN TỆP ĐÍNH KÈM EMAIL (`CheckAttachmentLimit`, `SendMail.cs:858`) =====
 // Guard đọc tham số `MaxAttachmentSize` trong `mst_param` theo đại lý rồi so với độ dài mảng byte.
 // Chỉ **MỘT** nơi gọi: `SendMail.cs:993` (bên trong `Email_BatchSendEmailCreate`).
