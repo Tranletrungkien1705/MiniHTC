@@ -40251,6 +40251,158 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B386 XE HTC XUẤT KHO 01 — `RptStatistic_HTCStockOut01_WH_New20260514`
+//       (`DataWH/BizHTC.zTemp.cs:29660` → SQL `RptSQLQuery.cs:51313`) =====
+// **3B khớp cả 2 máy (2 md5); cả hai file KHÔNG lệch offset**:
+//   hàm `29660,29872` ⇒ **`6e332077beff6ad2cf647cdc4b22387c`**;
+//   SQL `51313,51471` ⇒ **`445c7f77c8bc5375623195c8ed361fbb`**.
+//
+// ✅✅✅ **THAM SỐ HOÁ NHIỀU NHẤT TỪ TRƯỚC TỚI NAY — CHÍN bộ lọc, KHÔNG một tham số nướng nào**:
+//   `BuildClause(… "@p" …)` cho `md.DealerCode`, `oso.ApprovedDate2`, `oso.SOCode`,
+//   `osod.ApprovedDate`, `cdod.DeliveryOutDate`, `mcm.ModelCode`, `cdo.ApprovedDate2`,
+//   `cdo.CreatedDate`, `vhi.HTCInvoiceDate`; cộng `@strBUPatternOfUser`/`@strHTCDealerCode`/
+//   `@strHTCDealerName` **bind thật**. Hai `Replace` còn lại chỉ ghép **mảnh SQL dựng sẵn**
+//   (`zzzzClauseColumn_CarAndVINInfo_01`, `zzzzClauseJoin_CarAndVINInfo_01`) ⇒ **không có giá trị
+//   người dùng nào đi qua đường chuỗi**.
+//   📌 Đặt cạnh #B377 (nướng **11** tham số) — hai thái cực trong cùng file `BizHTC.zTemp.cs`
+//     ⇒ tiếp tục củng cố `C0-…quinquagesimusquartus`.
+//
+// ✅ **RBAC tổ hợp (3)**: cổng `//myCommon_CheckHTCDirect(` **bị comment**, **nhưng**
+//   `@strBUPatternOfUser` **được SQL dùng** (đếm trong `mySql_RptStatistic_HTCStockOut01()`: **1 hit**)
+//   ⇒ **có lọc dòng** ⇒ **không phải lỗ**. (Đã kiểm đủ sáu trục.)
+// ✅ **Ba bảng, bảng đầu ĐƯỢC ĐẶT TÊN `…_Base`** — mức **(c)** của idiom `select null tbl_X`
+//   (giống #B350 `RptStatistic_GrpDealer03_Base`): `nIdx` chạy 0→2 đặt tên
+//   `…_Base` · `…_Detail` · `RptStatistic_HTCStockOut01` ⇒ **hợp đồng API có chủ đích**.
+// 🔴 `@strHTCDealerName` nhận `TConst.HTCConst.HTCDealerCode` — **lần thứ MƯỜI**.
+// 🔴 `Thread.Sleep(4000)` cuối hàm — **không port** (loại 1 theo `C0-…sexagesimus`).
+// ⚠️ **NỢ**: `Ord_SalesOrder(Detail)`, `Car_DeliveryOrder(Detail)`, `VAT_HTCInvoice` chưa đủ ghép
+//   ⇒ trả khung ba bảng + cờ; **không bịa**.
+app.MapGet("/api/reports/htcstockout01", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? soCode, string? modelCode,
+    DateTime? deliveryOutFrom, DateTime? deliveryOutTo, string? buPattern) =>
+{
+    // ✅ RBAC tổ hợp (3): BUPattern được SQL dùng thật ở nguồn.
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dealersInScope = dealers.Count,
+        RptStatistic_HTCStockOut01_Base = Array.Empty<object>(),     // Tables[0] — CÓ TÊN ở nguồn
+        RptStatistic_HTCStockOut01_Detail = Array.Empty<object>(),   // Tables[1]
+        RptStatistic_HTCStockOut01 = Array.Empty<object>(),          // Tables[2]
+        filtersEcho = new { soCode, modelCode, deliveryOutFrom, deliveryOutTo },
+        fullyParameterisedNote = "THAM SO HOA NHIEU NHAT TU TRUOC TOI NAY - CHIN bo loc, KHONG mot tham so nuong nao: BuildClause('@p') cho md.DealerCode, oso.ApprovedDate2, oso.SOCode, osod.ApprovedDate, cdod.DeliveryOutDate, mcm.ModelCode, cdo.ApprovedDate2, cdo.CreatedDate, vhi.HTCInvoiceDate; cong @strBUPatternOfUser / @strHTCDealerCode / @strHTCDealerName BIND THAT. Hai Replace con lai chi ghep MANH SQL DUNG SAN (zzzzClauseColumn_CarAndVINInfo_01, zzzzClauseJoin_CarAndVINInfo_01) => KHONG co gia tri nguoi dung nao di qua duong chuoi. Dat canh #B377 (nuong 11 tham so) - HAI THAI CUC TRONG CUNG FILE BizHTC.zTemp.cs => cung co C0-...quinquagesimusquartus.",
+        rbacNote = "RBAC to hop (3): cong '//myCommon_CheckHTCDirect(' BI COMMENT, NHUNG @strBUPatternOfUser DUOC SQL DUNG (dem trong mySql_RptStatistic_HTCStockOut01(): 1 hit) => CO LOC DONG => KHONG phai lo. Da kiem du sau truc.",
+        namedBaseTableNote = "BA BANG, BANG DAU DUOC DAT TEN '..._Base' - muc (c) cua idiom 'select null tbl_X' (giong #B350 RptStatistic_GrpDealer03_Base): nIdx chay 0->2 dat ten _Base / _Detail / RptStatistic_HTCStockOut01 => HOP DONG API CO CHU DICH.",
+        htcDealerNameNote = "@strHTCDealerName nhan TConst.HTCConst.HTCDealerCode - LAN THU MUOI. Thread.Sleep(4000) cuoi ham - KHONG port (loai 1 theo C0-...sexagesimus).",
+        debtNote = "NO - KHONG DOAN: Ord_SalesOrder(Detail), Car_DeliveryOrder(Detail), VAT_HTCInvoice chua du ghep => tra khung ba bang + co."
+    });
+}).RequireAuthorization();
+
+// ===== #B387 TỒN KHO ĐẠI LÝ 21 — `RptStatistic_DealerStock_21_WH_New20260514`
+//       (`DataWH/Biz.HTC.WH.cs:162707` → SQL `RptSQLQuery.cs:44020`) =====
+// **3B khớp cả 2 máy (2 md5)**: hàm laptop `162707,162885` ≡ 150 `162712,162890`
+//   ⇒ **`ebd436c4591313bddb443fb23fc4f0dc`**; SQL `44020,44373` ⇒ **`05369147019bd91813b8401dfb0ea2e0`**.
+//
+// ✅✅ **`@strZoneCode` ĐƯỢC XỬ ĐÚNG — MINH HOẠ TRỰC TIẾP CÁI BẪY ĐÃ GHI TRONG BỘ NHỚ**:
+//     `and (**@strZoneCode = ''** or mdz.ZoneCode = @strZoneCode)`   ← xuất hiện **2 lần** trong SQL
+//   Đây là **param runtime** (không nháy) với vế bỏ-qua là `= ''`.
+//   ⚠️ **Chính vì vậy**, nếu tầng gọi bind `@strZoneCode` là **NULL** thay vì **chuỗi rỗng** thì
+//     `NULL = ''` cho **UNKNOWN** ⇒ **cả hai vế sai** ⇒ **điều kiện loại sạch dòng** ⇒ **báo cáo ra 0
+//     một cách CÂM**. Đó đúng là bẫy `dmssales-zonecode-null-vs-empty-filter-bug` đã ghi trong bộ nhớ.
+//   ✅ Nguồn ở đây bind `strZoneCode` (giá trị người dùng) ⇒ **an toàn nếu tầng trên chuẩn hoá NULL→''**;
+//     port **luôn truyền chuỗi rỗng**, không bao giờ NULL, và trả `zoneCodeEcho` để thấy rõ.
+// ✅ **Tham số hoá hoàn toàn**: `@strBUPatternOfUser` (**dùng 2 lần trong SQL**), `@strTDate_From/To`,
+//   `@strZoneCode` **bind thật**; `md.DealerCode` qua `BuildClause("@p")`. **Không nướng gì.**
+// ✅ **RBAC tổ hợp (3)**: cổng `//myCommon_CheckHTCDirect(` bị comment **nhưng** `@strBUPatternOfUser`
+//   **được SQL dùng 2 lần** ⇒ **có lọc dòng** ⇒ **không phải lỗ**.
+// 🔴 **Điều kiện `or … is null` — lần này ĐÚNG Ý** (áp luật `C0-…quadragesimusquartus`):
+//     `and (dlsdd.DeliveryDate **is null** or dlsdd.DeliveryDate >= @strTDate_From)`
+//   `DeliveryDate` NULL nghĩa là **chưa giao cho khách** ⇒ xe **vẫn còn tồn** ⇒ **đúng là phải đếm**
+//   trong báo cáo tồn kho. ⇒ **Không phải bug** (khác #B362 nơi NULL nghĩa là *thiếu dữ liệu*).
+// 🔴 `Thread.Sleep(4000)` — không port. Trả **MỘT** bảng `Tables[0] = "RptStatistic_DealerStock_21"`.
+// ⚠️ **NỢ**: `Dls_DealDetail`/`Mst_DealerZone` ghép đủ chưa có ⇒ trả khung + cờ.
+app.MapGet("/api/reports/dealerstock21", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? tDateFrom, DateTime? tDateTo, string? dealerCode, string? zoneCode, string? buPattern) =>
+{
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .Where(d => string.IsNullOrWhiteSpace(dealerCode)
+                 || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dealersInScope = dealers.Count,
+        RptStatistic_DealerStock_21 = Array.Empty<object>(),   // Tables[0]
+        // 🔴 LUÔN truyền chuỗi RỖNG, KHÔNG BAO GIỜ NULL — xem zoneCodeEmptyNotNullNote.
+        zoneCodeEcho = zoneCode ?? "",
+        filtersEcho = new { tDateFrom, tDateTo },
+        zoneCodeEmptyNotNullNote = "@strZoneCode DUOC XU DUNG - MINH HOA TRUC TIEP CAI BAY DA GHI TRONG BO NHO: SQL co 'and (@strZoneCode = '' or mdz.ZoneCode = @strZoneCode)' - xuat hien 2 LAN. Day la PARAM RUNTIME (khong nhay) voi ve bo-qua la '= '''. CHINH VI VAY, neu tang goi bind @strZoneCode la NULL thay vi CHUOI RONG thi 'NULL = ''' cho UNKNOWN => CA HAI VE SAI => dieu kien LOAI SACH DONG => BAO CAO RA 0 MOT CACH CAM. Do dung la bay dmssales-zonecode-null-vs-empty-filter-bug. Port LUON truyen chuoi rong, khong bao gio NULL.",
+        fullyParameterisedNote = "THAM SO HOA HOAN TOAN: @strBUPatternOfUser (DUNG 2 LAN trong SQL), @strTDate_From/To, @strZoneCode BIND THAT; md.DealerCode qua BuildClause('@p'). KHONG NUONG GI.",
+        rbacNote = "RBAC to hop (3): cong '//myCommon_CheckHTCDirect(' bi comment NHUNG @strBUPatternOfUser DUOC SQL DUNG 2 LAN => CO LOC DONG => KHONG phai lo.",
+        orIsNullIntentionalNote = "Dieu kien 'or ... is null' LAN NAY DUNG Y (ap luat C0-...quadragesimusquartus): 'and (dlsdd.DeliveryDate is null or dlsdd.DeliveryDate >= @strTDate_From)'. DeliveryDate NULL nghia la CHUA GIAO CHO KHACH => xe VAN CON TON => DUNG LA PHAI DEM trong bao cao ton kho. KHONG phai bug (khac #B362 noi NULL nghia la THIEU DU LIEU).",
+        debtNote = "NO - KHONG DOAN: Dls_DealDetail / Mst_DealerZone ghep du chua co => tra khung + co. Thread.Sleep(4000) - khong port."
+    });
+}).RequireAuthorization();
+
+// ===== #B388 THỐNG KÊ NHÓM ĐẠI LÝ 01 — `RptStatistic_GrpDealer01_WH_New20260514`
+//       (`DataWH/Biz.HTC.WH.cs:165074` → SQL `RptSQLQuery.cs` `mySql_RptStatistic_GrpDealer01()`) =====
+// **3B khớp cả 2 máy**: laptop `165074,165262` ≡ 150 `165079,165267`
+//   ⇒ **`db98b3fea239776d0d9a24da8a24b63e`**.
+//
+// ✅ **RBAC tổ hợp (1)**: `myCommon_CheckHTCDirect(…)` **ACTIVE, không bị comment** ⇒ **có cổng**
+//   ⇒ **không phải lỗ**. `@strBUPatternOfUser` cũng được bind.
+// 🔴🔴 **LẠI DÙNG HẰNG DANH SÁCH ĐẠI LÝ BA BẢN — món nợ #B290 quay lại lần thứ BA**:
+//     `mySql_Rpt_GetClauseWhere_GrpDealer_01("cc.DealerCode")`
+//     `mySql_Rpt_GetClauseWhere_GrpDealer_01("md.DealerCode")`
+//   Đây **chính là** hằng có **ba bản** lệch nhau đã phát hiện ở #B290 (bản
+//   `TERP.BizBank/BizHTC.Common.cs:1096` **thiếu `VS086`**) và gặp lại ở #B350.
+//   ⇒ **Ba báo cáo cùng phụ thuộc một hằng đang lệch** ⇒ nếu chạy qua assembly khác nhau thì
+//     **khung dòng đại lý khác nhau**. 📌 **Vẫn đang chờ quyết định nghiệp vụ**; **không tự hợp nhất**.
+//   ⇒ Port **nhận danh sách qua tham số** để **không đẻ bản thứ tư** của hằng.
+// ✅ **Tham số hoá hoàn toàn**: `@strTDate`, `@strTMonth`, `@strTYear`, `@strZoneCode`,
+//   `@strHTCDealerCode`, `@strHTCDealerName` **bind thật**; hai `Replace` chỉ ghép **mảnh SQL dựng sẵn**
+//   (`zzzzClauseColumn_CarAndVINInfo_01`, `zzzzClauseJoin_CarAndVINInfo_01`) ⇒ **không nướng giá trị**.
+// 🔴 `@strHTCDealerName` nhận `HTCDealerCode` — **lần thứ MƯỜI MỘT**.
+// 🔴 `@strZoneCode` ⇒ port truyền **chuỗi rỗng** (xem #B387).
+// ⚠️ **NỢ**: chuỗi `CarAndVINInfo_01` + nhóm đại lý chưa đủ ⇒ trả khung + cờ.
+app.MapGet("/api/reports/grpdealer01", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? tDate, string? tMonth, string? tYear, string? zoneCode, string? grpDealerCodes) =>
+{
+    // 🔴 Danh sách đại lý của "nhóm" ở nguồn là HẰNG BA BẢN (#B290/#B350) — port nhận qua tham số
+    //   để KHÔNG chép lại bản thứ tư.
+    var grp = (grpDealerCodes ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => grp.Count == 0 || grp.Contains(d.DealerCode.ToUpperInvariant()))
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = 0,
+        dealersInScope = dealers.Count,
+        RptStatistic_GrpDealer01 = Array.Empty<object>(),
+        zoneCodeEcho = zoneCode ?? "",     // 🔴 chuỗi RỖNG, không NULL
+        filtersEcho = new { tDate, tMonth, tYear },
+        grpDealerConstThirdTimeNote = "LAI DUNG HANG DANH SACH DAI LY BA BAN - mon no #B290 quay lai LAN THU BA: 'mySql_Rpt_GetClauseWhere_GrpDealer_01(\"cc.DealerCode\")' va '...(\"md.DealerCode\")'. Day CHINH LA hang co BA BAN lech nhau da phat hien o #B290 (ban TERP.BizBank/BizHTC.Common.cs:1096 THIEU VS086) va gap lai o #B350. BA BAO CAO CUNG PHU THUOC MOT HANG DANG LECH => neu chay qua assembly khac nhau thi KHUNG DONG DAI LY KHAC NHAU. VAN DANG CHO QUYET DINH NGHIEP VU; KHONG tu hop nhat. Port nhan danh sach qua tham so grpDealerCodes de KHONG DE BAN THU TU.",
+        rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE, khong bi comment => CO CONG => KHONG phai lo. @strBUPatternOfUser cung duoc bind.",
+        fullyParameterisedNote = "THAM SO HOA HOAN TOAN: @strTDate, @strTMonth, @strTYear, @strZoneCode, @strHTCDealerCode, @strHTCDealerName BIND THAT; hai Replace chi ghep MANH SQL DUNG SAN => KHONG nuong gia tri. @strHTCDealerName nhan HTCDealerCode - LAN THU MUOI MOT. @strZoneCode => port truyen CHUOI RONG (xem #B387).",
+        debtNote = "NO - KHONG DOAN: chuoi CarAndVINInfo_01 + nhom dai ly chua du => tra khung + co."
+    });
+}).RequireAuthorization();
 // ===== #B383 CÔNG NỢ BẢO LÃNH 01 — `RptGuarantee_Debit_01_WH_New20260514`
 //       (`DataWH/Biz.HTC.WH.cs:169066` → SQL `RptSQLQuery.cs:52303` `mySql_RptGuarantee_Debit_01()`) =====
 // **3B khớp cả 2 máy (2 md5)**: hàm laptop `169066,169273` ≡ 150 `169071,169278`
