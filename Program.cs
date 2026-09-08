@@ -46168,98 +46168,6 @@ app.MapPost("/api/osveloca/customers", async (OsVelocaCustomerDto dto, AppDbCont
     });
 }).RequireAuthorization();
 
-// ===== 🔴🔴🔴 #700 TAB: LOẠI LỆNH & ĐỐI TƯỢNG THANH TOÁN THEO CVDV / THEO ĐẠI LÝ =====
-// `Rpt_Ser_RO_ExpTpAndROTpGroupByCVDVForTab` (vỏ bọc `Tab/BizCarSv.Tab.Report.cs:1203-1321`, md5 `f2076a08`)
-// → thân thật `…GroupByCVDV**X**` (`:1322-1487`, md5 `8b020cfc`); anh em `…GroupByDealer**X**` (`:1043-1201`,
-// md5 `247c16ac`) — **cả ba KHỚP** máy 150. WS `WSCarSvTab.asmx.cs:5450` / `:5380`.
-// DIFF hai bản X (luật #414): khác biệt **chỉ ở TRỤC GỘP** — `…GroupBy**Dealer**` vs `…GroupBy**CVDV**` trong tên
-// năm template `zzB_…_zzE`, **cộng thêm** ở bản CVDV có nối `Sys_User` để lấy tên cố vấn dịch vụ.
-//
-// 🔴🔴🔴 **KHỐI `Clear For Debug` ĐƯỢC CHÉP NGUYÊN TỪ MỘT HÀM KHÁC — 5/6 TÊN BẢNG KHÔNG THUỘC HÀM NÀY**:
-//   Hàm này tạo `#tbl_Ser_RO_Filter` · `#tbl_Ser_RO_ROType` · `#tbl_Ser_RO_ROTypeGroupByCVDV(_Pvt)` ·
-//   `#tbl_Ser_RO_ExpenseType` · `#tbl_Ser_RO_ExpenseTypeGroupByCVDV(_Pvt)`.
-//   Nhưng khối drop lại liệt kê: `-- drop table #tbl_Ser_RO_Filter;` (**đúng**) · `#tbl_Ser_RO_RO` ·
-//   `#tbl_Ser_RO_RO_GroupBy` · `#tbl_Ser_RO_Day` · `#tbl_Ser_RO_GroupDayInMonth` · `#tbl_Summary`
-//   ⇒ **đúng năm bảng của `Rpt_Ser_RO_AvgQtyROInDayX` (#699)**, chép sang mà **không đổi tên**.
-//   📌 Nay đủ **ba** mẫu của cùng khối trong **cùng một file**, mỗi bản một chất lượng:
-//     · #699 `AvgQtyROInDayX` — **đang chạy**, **đúng đủ** bảy bảng;
-//     · #698 `App_GroupByDateAndStatusX` — **bị comment**, liệt kê `#tbl_Ser_ReceptionF_Filter` của màn khác;
-//     · #700 (đây) — **bị comment**, và **5/6 tên là của #699**.
-//   ⇒ Khối "Clear For Debug" là **khối chép qua chép lại**; tên bảng trong đó **không phải bằng chứng** về việc
-//     hàm tạo ra bảng nào.
-// 🔴🔴 **`StringUtils.Replace(strSqlGetData);` một đối số** — site thứ ba tôi gặp trong ba lượt liền
-//   (#698, #699, đây); đã đếm **8** chỗ toàn `TERP.BizCarSv` ở #699. Lệnh rỗng.
-// 🔴 **Dấu `;;` thừa** (hai chấm phẩy liền) giữa hai câu `SELECT` cuối — câu rỗng, vô hại nhưng là dấu vết chép.
-// 🔴 `select t.*, su.UserCode su_UserCode, su.UserName su_UserName` — `t.*` trên bảng **đã PIVOT** nên danh sách
-//   cột **phụ thuộc dữ liệu** (mỗi mã loại lệnh là một cột). Đổi danh mục loại lệnh ⇒ **đổi hợp đồng cột API**.
-// ⚪ **DƯƠNG TÍNH — `left join Sys_User su` CÒN SỐNG**: `where(1=1)` **không** đụng tới `su`, và cột lấy ra đều
-//   có alias riêng ⇒ CVDV **không có** trong danh mục người dùng **vẫn hiện** (chỉ thiếu tên).
-//   ⇒ Đây là **phản ví dụ** cho cảnh báo #410 ("join sang bảng người dùng = mất dữ liệu lúc đọc"): ở đây `left`
-//     được giữ đúng, nên **không mất dòng**. Ghi ⚪ để cân bằng.
-// 📌 Nguồn nối `Sys_User` bằng **cặp khoá** `(Creator, DealerCode)` — không phải chỉ `UserCode` ⇒ cùng một mã
-//   người dùng ở hai đại lý là **hai người**.
-app.MapGet("/api/tab/report/ro-type-expense-by-advisor", async (AppDbContext db, ITenantContext t,
-    string? dealerCode, DateTime? fromDate, DateTime? toDate, string? groupBy) =>
-{
-    // Nguồn có HAI hàm cùng khuôn, khác đúng TRỤC GỘP: theo CVDV (Creator) hoặc theo đại lý.
-    var axis = (groupBy ?? "cvdv").Trim().ToLowerInvariant();
-    if (axis != "cvdv" && axis != "dealer")
-        return Results.BadRequest(new { error = "groupBy phai la cvdv hoac dealer (hai ham anh em cua nguon)." });
-
-    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
-    if (fromDate is not null) qr = qr.Where(x => x.CheckInDate >= fromDate!.Value.Date);
-    if (toDate is not null) qr = qr.Where(x => x.CheckInDate < toDate!.Value.Date.AddDays(1));
-    var ros = await qr.Select(x => new { x.Id, x.RONo, x.DealerCode, x.Creator }).ToListAsync();
-    var roIds = ros.Select(x => x.Id).ToList();
-    var roById = ros.ToDictionary(x => x.Id);
-
-    var items = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
-        .Select(x => new { x.RoId, x.ROType, x.ExpenseType, x.Price, x.Factor }).ToListAsync();
-
-    // Nguồn nối Sys_User bằng CẶP KHOÁ (Creator, DealerCode) — cùng mã ở hai đại lý là hai người.
-    var creators = ros.Where(x => x.Creator != null).Select(x => x.Creator!).Distinct().ToList();
-    var users = (await db.ServiceEngineers.Where(x => x.OrgId == t.OrgId && creators.Contains(x.EngineerNo))
-            .Select(x => new { x.EngineerNo, x.EngineerName, x.DealerCode }).ToListAsync())
-        .GroupBy(x => (x.EngineerNo, x.DealerCode)).ToDictionary(g => g.Key, g => g.First().EngineerName);
-
-    string KeyOf(long roId)
-    {
-        var r = roById[roId];
-        return axis == "cvdv" ? (r.Creator ?? "") : (r.DealerCode ?? "");
-    }
-
-    var byRoType = items.GroupBy(x => new { k = KeyOf(x.RoId), x.ROType })
-        .Select(g => new { key = g.Key.k, roType = g.Key.ROType, qty = g.Count(),
-                           amount = g.Sum(x => x.Price * x.Factor) })
-        .OrderBy(x => x.key).ThenBy(x => x.roType).ToList();
-
-    var byExpenseType = items.GroupBy(x => new { k = KeyOf(x.RoId), x.ExpenseType })
-        .Select(g => new { key = g.Key.k, expenseType = g.Key.ExpenseType, qty = g.Count(),
-                           amount = g.Sum(x => x.Price * x.Factor) })
-        .OrderBy(x => x.key).ThenBy(x => x.expenseType).ToList();
-
-    var keysWithoutUser = axis != "cvdv" ? 0
-        : byRoType.Select(x => x.key).Distinct()
-            .Count(k => !users.Keys.Any(u => u.EngineerNo == k));
-
-    return Results.Ok(new
-    {
-        groupBy = axis, count = byRoType.Count, byRoType, byExpenseType,
-        advisorsWithoutUserRecord = keysWithoutUser,
-        // ===== #700 =====
-        twoSiblingsDifferOnlyByGroupingAxis = "DIFF hai ban X (luat #414): khac biet CHI o TRUC GOP — …GroupByDealer vs …GroupByCVDV trong ten nam template zzB_…_zzE, CONG THEM o ban CVDV co noi Sys_User de lay ten co van dich vu",
-        dropBlockCopiedWholesaleFromAnotherFunction = "KHOI Clear For Debug DUOC CHEP NGUYEN TU MOT HAM KHAC — 5/6 TEN BANG KHONG THUOC HAM NAY: ham nay tao #tbl_Ser_RO_Filter, #tbl_Ser_RO_ROType, #tbl_Ser_RO_ROTypeGroupByCVDV(_Pvt), #tbl_Ser_RO_ExpenseType, #tbl_Ser_RO_ExpenseTypeGroupByCVDV(_Pvt); nhung khoi drop liet ke #tbl_Ser_RO_Filter (dung) + #tbl_Ser_RO_RO, #tbl_Ser_RO_RO_GroupBy, #tbl_Ser_RO_Day, #tbl_Ser_RO_GroupDayInMonth, #tbl_Summary = DUNG NAM BANG cua Rpt_Ser_RO_AvgQtyROInDayX (#699), chep sang ma KHONG doi ten",
-        threeSamplesOfTheSameBlockInOneFile = "Nay du BA mau cua cung khoi trong CUNG MOT FILE, moi ban mot chat luong: #699 AvgQtyROInDayX dang chay va DUNG DU bay bang; #698 App_GroupByDateAndStatusX bi comment va liet ke #tbl_Ser_ReceptionF_Filter cua man khac; #700 (day) bi comment va 5/6 ten la cua #699 => khoi Clear For Debug la KHOI CHEP QUA CHEP LAI; ten bang trong do KHONG PHAI BANG CHUNG ve viec ham tao ra bang nao",
-        replaceWithOneArgumentThirdSite = "StringUtils.Replace(strSqlGetData); mot doi so — site thu BA gap trong ba luot lien (#698, #699, day); da dem 8 cho toan TERP.BizCarSv o #699. Lenh rong",
-        doubleSemicolon = "dau ;; thua (hai cham phay lien) giua hai cau SELECT cuoi — cau rong, vo hai nhung la dau vet chep",
-        selectStarOnPivotedTable = "select t.*, su.UserCode su_UserCode, su.UserName su_UserName — t.* tren bang DA PIVOT nen danh sach cot PHU THUOC DU LIEU (moi ma loai lenh la mot cot); doi danh muc loai lenh => DOI HOP DONG COT API",
-        positiveLeftJoinSysUserIsAlive = "DUONG TINH: left join Sys_User su CON SONG — where(1=1) KHONG dung toi su, va cot lay ra deu co alias rieng => CVDV khong co trong danh muc nguoi dung VAN HIEN (chi thieu ten). Day la PHAN VI DU cho canh bao #410 (join sang bang nguoi dung = mat du lieu luc doc): o day left duoc giu dung nen KHONG mat dong",
-        sysUserJoinedByCompositeKey = "nguon noi Sys_User bang CAP KHOA (Creator, DealerCode) — khong phai chi UserCode => cung mot ma nguoi dung o hai dai ly la HAI NGUOI",
-        miniModelGap = "Mini chua co bang Sys_User rieng => port tra ten qua ServiceEngineers (EngineerNo, DealerCode); va chua co #input_tbl_ReportType nen gop theo mot khoang ngay; ghi NO",
-    });
-}).RequireAuthorization();
-
 // ===== 🔴🔴🔴 #699 TAB: SỐ LỆNH SỬA CHỮA TRUNG BÌNH MỖI NGÀY `Rpt_Ser_RO_AvgQtyROInDayForTab` =====
 // Vỏ bọc `Tab/BizCarSv.Tab.Report.cs:808-917` (md5 `feb18c54`) → thân thật `Rpt_Ser_RO_AvgQtyROInDay**X**`
 // (`:544-806`, md5 `aa68e1a2`) — **cả hai KHỚP** máy 150. WS `WSCarSvTab.asmx.cs:5311`.
@@ -54328,6 +54236,12 @@ app.MapGet("/api/reports/ro-type-expense-by-cvdv", async (AppDbContext db, ITena
             + expRows.Where(x => !x.inSourcePivot).Sum(x => x.QtyExpenseType),
         rowIsRoTypePairNotRo = true,
         deadGuardInvalidReportType = "strReportType gan cung = MONTH ngay dau ham",
+        // ===== #703: GOP tu vong #700, roi RUT LAI #700 vi no la BAN TRUNG cua chinh endpoint nay =====
+        retracted700WasADuplicateOf513 = "TU SUA (#703). Vong #700 toi da port LAI DUNG ham nay (Rpt_Ser_RO_ExpTpAndROTpGroupByCVDVX) duoi route khac /api/tab/report/ro-type-expense-by-advisor, trong khi #513 DA port no tu truoc tai /api/reports/ro-type-expense-by-cvdv. Hai route khac ten nen trinh bien dich KHONG bao xung dot => khong co gi bat duoc, chi doi chieu tay moi thay. Da XOA khoi #700 va gop cac phat hien RIENG cua no xuong day. #700 KHONG duoc tinh la mot man moi",
+        clearForDebugBlockIsCopyPasted = "PHAT HIEN RIENG cua #700, giu lai: khoi ---- Clear For Debug: cua ham nay bi COMMENT va 5/6 ten bang trong do KHONG thuoc ham nay ma la cua Rpt_Ser_RO_AvgQtyROInDayX (#699): #tbl_Ser_RO_RO, #tbl_Ser_RO_RO_GroupBy, #tbl_Ser_RO_Day, #tbl_Ser_RO_GroupDayInMonth, #tbl_Summary; chi #tbl_Ser_RO_Filter la dung. Nay du BA mau cua cung khoi trong CUNG MOT FILE, moi ban mot chat luong: #699 dang chay va dung du bay bang; #698 bi comment + liet ke bang cua man khac; day bi comment + 5/6 ten la cua #699 => khoi Clear For Debug la KHOI CHEP QUA CHEP LAI, ten bang trong do KHONG phai bang chung ve viec ham tao ra bang nao",
+        replaceWithOneArgumentThirdSite = "PHAT HIEN RIENG cua #700, giu lai: StringUtils.Replace(strSqlGetData); mot doi so — site thu ba gap trong ba luot lien (#698, #699, day); da dem 8 cho toan TERP.BizCarSv o #699. Lenh rong",
+        strayDoubleSemicolon = "PHAT HIEN RIENG cua #700, giu lai: dau ;; thua (hai cham phay lien) giua hai cau SELECT cuoi — cau rong, vo hai nhung la dau vet chinh sua tay",
+        selectStarOnPivotedTable = "PHAT HIEN RIENG cua #700, giu lai: select t.*, su.UserCode su_UserCode, su.UserName su_UserName — t.* tren bang DA PIVOT nen danh sach cot PHU THUOC DU LIEU (moi ma loai lenh la mot cot) => doi danh muc loai lenh la DOI HOP DONG COT API (ho #677/#700/#702)",
         divergesFromDealerVariantOnlyInColumns = true,
     });
 }).RequireAuthorization();
