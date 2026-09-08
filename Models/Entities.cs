@@ -10930,7 +10930,9 @@ public sealed class CarVinMaster
     /// `Biz.HTC.WH.cs:95770`) — cùng lượt sinh dòng `HMC_Report`. Không có cột này thì không phân biệt được
     /// xe đã bán với xe còn trong lệnh giao.
     /// </summary>
-    public string? SellStatus { get; set; }
+    /// 🔴 #B314 — Giá trị KHỞI TẠO của nguồn là **`TConst.Stage.Pending` = "P"** (`Biz.HTC.WH.cs:25882`
+    /// và `:78311`, cả hai chỗ tạo xe), nên đặt default `"P"` cho đúng parity — không phải mặc định tự chế.
+    public string? SellStatus { get; set; } = "P";
 
     // ===== #160 parity + side-effect `RD_ReqInvoiceDtlApprove_New20181119`
     //       (DataWH/Biz.HTC.WH.cs:128014, csproj 272; vùng md5 1e58bf10 khớp 2 máy) =====

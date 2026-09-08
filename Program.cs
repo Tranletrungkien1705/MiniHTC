@@ -32103,6 +32103,109 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   `left(cdod.DeliveryOutDate, 7)` ⇒ cột **lưu VARCHAR**.
 // 🔴 `ModelName` = **`mcm_CV.ModelName`** join theo **`cv.ModelCode`** (helper) — giống #B308,
 //   **khác #B305** (join theo `mcs.ModelCode`).
+
+// ===== #B314/#B315/#B316 TỒN KHO ĐẠI LÝ 01 —
+//       `RptStatistic_DealerStock01_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `161596,161769` ≡ 150 `161601,161774` ⇒ **`966a26335d3ad7387dda47b03b716de2`**.
+// ✅🔴 **RBAC — tổ hợp (3): CÓ lọc dòng, KHÔNG cổng** (`CheckHTCDirect` grep = **0 hit**, không tồn tại):
+//     `inner join Mst_Dealer md --//[mylock] **-- Must inner join to filter AbilityOfUser**`
+//     `    on cc.DealerCode = md.DealerCode **and (md.BUCode like @strBUPatternOfUser)**`
+//   ⇒ Ở đây **câu giải thích CÒN và điều kiện lọc CŨNG CÒN** — **đối lập #B124/#B245** (giải thích còn
+//     nhưng điều kiện bị comment). ⇒ **Không phải lỗ**; dữ liệu đã cắt theo phạm vi đại lý của user.
+// 🔴🔴 **`md.FlagDirect = '0'` — *"Không thống kê HTC"***: HTC là đại lý **trực tiếp** (`FlagDirect='1'`)
+//   nên bị loại khỏi báo cáo **tồn kho ĐẠI LÝ**. ⇒ Cột `FlagDirect` ở đây dùng làm **bộ lọc NGHIỆP VỤ**,
+//   không phải cột RBAC (liên quan ghi nhớ `dmssales-rbac-flagdirect-to-flaghq-remap`).
+// 🔴🔴 **BỐN trạng thái giao xe**: `cc.DeliveryStatus in ('A','A1','A2','F')`
+//   — chú thích nguồn: *"Xe đã Delivery (**bất kể đến nơi hay chưa**)"*.
+//   ⚠️ Bộ **bốn** giá trị (có `'A1'`, `'A2'`) hiếm gặp — các báo cáo khác thường chỉ `('A','F')`;
+//     rút gọn còn hai giá trị là **mất xe đang trên đường**.
+// 🔴 **`cc.SellStatus in ('P')`** — *"Xe chưa bán tới Khách hàng cuối"* ⇒ đây chính là định nghĩa
+//   **TỒN KHO đại lý**: đã nhận từ HTC nhưng chưa bán lẻ.
+// 🔴🔴 **`Mst_CarSpec` join theo `cc.SpecCode`** (spec của **`Car_Car`**) — **KHÁC** #B305/#B308/#B311
+//   (đều join theo **`cv.ActualSpec`**). ⇒ **Cùng hệ, hai nguồn spec khác nhau**; port nhầm cột ⇒ sai
+//   mô tả xe và sai nhóm gộp.
+// 🔴 **Gộp theo 11 CỘT**: `DealerCode` + `ModelCode/ModelName` + `SpecCode/SpecDescription/OCNCode`
+//   + `ColorCode/ColorExtName/ColorExtNameVN/ColorIntName/ColorIntNameVN`, đếm `Count(0) CountCar`.
+//   ⚠️ `Count(0)` đếm **DÒNG SAU JOIN**: `left join Mst_CarColor` khớp `(ModelCode, ColorCode)` — nếu
+//     master màu có **bản ghi trùng cặp đó** thì **đếm nhân lên**.
+// 🔴 Trả **MỘT** bảng: `Tables[0] = "RptStatistic_DealerStock01"` — **không** có câu debug bị bỏ quên
+//   (khác #B290/#B296/#B299/#B308/#B311).
+app.MapGet("/api/reports/dealer-stock01", async (
+    AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    // ✅ Lọc quyền: nguồn `inner join Mst_Dealer … and (BUCode like @strBUPatternOfUser)` — ACTIVE.
+    // 🔴 Và `md.FlagDirect = '0'` ⇒ LOẠI HTC khỏi báo cáo tồn kho đại lý.
+    var dq = db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagDirect == "0");
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        dq = dq.Where(d => d.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var dealers = (await dq.ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 BỐN trạng thái giao xe + chưa bán tới khách cuối.
+    var dlvStatuses = new[] { "A", "A1", "A2", "F" };
+    var cars = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId
+                        && v.FlagActive == "1"
+                        && v.DeliveryStatus != null && dlvStatuses.Contains(v.DeliveryStatus)
+                        && v.SellStatus == "P")
+            .ToListAsync())
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode))
+        .ToList();
+
+    // 🔴 Spec lấy theo cc.SpecCode (KHÔNG phải cv.ActualSpec như #B305/#B308/#B311).
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = cars
+        .Select(v =>
+        {
+            specs.TryGetValue(v.SpecCode ?? "", out var sp);
+            models.TryGetValue(v.ModelCode ?? "", out var mm);
+            return new
+            {
+                v.DealerCode,
+                ModelCode = mm?.ModelCode, ModelName = mm?.ModelName,
+                SpecCode = sp?.SpecCode, SpecDescription = sp?.SpecDesc, OCNCode = sp?.OCNCode,
+                v.ColorCode,
+                ColorExtName = (string?)null, ColorExtNameVN = (string?)null,      // 📌 NỢ: Mst_CarColor
+                ColorIntName = (string?)null, ColorIntNameVN = (string?)null
+            };
+        })
+        // 🔴 Gộp theo 11 cột.
+        .GroupBy(x => (x.DealerCode, x.ModelCode, x.ModelName, x.SpecCode, x.SpecDescription,
+                       x.OCNCode, x.ColorCode, x.ColorExtName, x.ColorExtNameVN,
+                       x.ColorIntName, x.ColorIntNameVN))
+        .Select(g => new
+        {
+            DealerCode = g.Key.DealerCode,
+            DealerName = dealers.TryGetValue(g.Key.DealerCode ?? "", out var dd) ? dd.DealerName : null,
+            ModelCode = g.Key.ModelCode, ModelName = g.Key.ModelName,
+            SpecCode = g.Key.SpecCode, SpecDescription = g.Key.SpecDescription, OCNCode = g.Key.OCNCode,
+            ColorCode = g.Key.ColorCode,
+            ColorExtName = g.Key.ColorExtName, ColorExtNameVN = g.Key.ColorExtNameVN,
+            ColorIntName = g.Key.ColorIntName, ColorIntNameVN = g.Key.ColorIntNameVN,
+            CountCar = g.Count()
+        })
+        .OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).ThenBy(x => x.SpecCode)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        RptStatistic_DealerStock01 = rows,          // Tables[0] — MỘT bảng duy nhất
+        rbacHealthyNote = "RBAC - to hop (3): CO LOC DONG, KHONG CONG (CheckHTCDirect grep = 0 hit, khong ton tai). 'inner join Mst_Dealer md -- Must inner join to filter AbilityOfUser / on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' - CAU GIAI THICH CON VA DIEU KIEN LOC CUNG CON, DOI LAP #B124/#B245 (giai thich con nhung dieu kien bi comment). KHONG PHAI LO.",
+        flagDirectBusinessFilterNote = "'md.FlagDirect = 0' - 'Khong thong ke HTC': HTC la dai ly TRUC TIEP (FlagDirect='1') nen bi loai khoi bao cao TON KHO DAI LY. Cot FlagDirect o day dung lam BO LOC NGHIEP VU, khong phai cot RBAC (lien quan ghi nho dmssales-rbac-flagdirect-to-flaghq-remap).",
+        fourDeliveryStatusNote = "BON trang thai giao xe: cc.DeliveryStatus in ('A','A1','A2','F') - chu thich nguon: 'Xe da Delivery (BAT KE DEN NOI HAY CHUA)'. Bo BON gia tri (co 'A1','A2') HIEM GAP - cac bao cao khac thuong chi ('A','F'); rut gon con hai gia tri la MAT XE DANG TREN DUONG.",
+        sellStatusNote = "cc.SellStatus in ('P') - 'Xe chua ban toi Khach hang cuoi' => day chinh la dinh nghia TON KHO dai ly: da nhan tu HTC nhung chua ban le.",
+        specSourceNote = "Mst_CarSpec join theo cc.SpecCode (spec cua Car_Car) - KHAC #B305/#B308/#B311 (deu join theo cv.ActualSpec). CUNG HE, HAI NGUON SPEC KHAC NHAU; port nham cot => sai mo ta xe va sai nhom gop.",
+        elevenColumnGroupNote = "Gop theo 11 COT: DealerCode + ModelCode/ModelName + SpecCode/SpecDescription/OCNCode + ColorCode/ColorExtName/ColorExtNameVN/ColorIntName/ColorIntNameVN, dem Count(0) CountCar. Count(0) dem DONG SAU JOIN: left join Mst_CarColor khop (ModelCode, ColorCode) - neu master mau co ban ghi TRUNG cap do thi DEM NHAN LEN.",
+        singleTableNote = "Tra MOT bang: Tables[0] = 'RptStatistic_DealerStock01' - KHONG co cau debug bi bo quen (khac #B290/#B296/#B299/#B308/#B311).",
+        debtNote = "NO: Mst_CarColor chua noi => bon cot ten mau tra NULL. Khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/master-banbuon-htc", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
 {
