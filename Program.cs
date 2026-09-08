@@ -32131,6 +32131,186 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //     master màu có **bản ghi trùng cặp đó** thì **đếm nhân lên**.
 // 🔴 Trả **MỘT** bảng: `Tables[0] = "RptStatistic_DealerStock01"` — **không** có câu debug bị bỏ quên
 //   (khác #B290/#B296/#B299/#B308/#B311).
+
+// ===== #B317/#B318/#B319 TỒN KHO ĐẠI LÝ 11 (đầu kỳ → phát sinh → cuối kỳ, có CHECKSUM) —
+//       `RptStatistic_DealerStock11_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`, **632 dòng**)
+//       + helper `mySql_GetClauseColumn_RatioDebtPolicy_V20_*` (`BizHTC.Common.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `161770,162401` ≡ 150 `161775,162406` ⇒ **`ceb3faabb918690ca32e0975158579b4`**.
+// 🔴 Hàm ghép **BỐN khối SQL**: `_Open` (đầu kỳ) · `_Happen` (phát sinh trong kỳ) · `_Close` (cuối kỳ)
+//   · `_RptSummary` (gộp khung theo `DealerCode + ModelCode` bằng chuỗi `union`).
+// 🔴🔴🔴 **TÁI HIỆN TRẠNG THÁI TẠI THỜI ĐIỂM (point-in-time)**:
+//     `and (cc.FlagActive = '1' **or cc.CarCancelDate >= @strTMonth**)`
+//       — *"chỉ lấy xe Active **hoặc xe bị HUỶ SAU đầu kỳ**"* ⇒ xe huỷ sau mốc thì **tại mốc vẫn còn**;
+//     `and (cc.CreatedDate < @strTMonth)` — chỉ xe **tạo trước** đầu kỳ;
+//     `and (cdo.ApprovedDate2 < @strTMonth)` — duyệt lệnh xuất xe **cấp 2** trước đầu kỳ.
+//   ⇒ Bỏ vế `or CarCancelDate >= @…` là **mất toàn bộ xe đã huỷ sau kỳ** ⇒ đầu kỳ **thiếu xe**.
+// 🔴🔴🔴 **CÔNG THỨC TỶ LỆ PHẢI THU THEO CHÍNH SÁCH — MA TRẬN 5 NHÁNH + MẶC ĐỊNH 100%**
+//   (`mySql_GetClauseColumn_RatioDebtPolicy_V20_CoreCondition`):
+//     `SOType='U'`                                → `msp.SOU_P01`
+//     `SOType='P'` & **đã giao** & `CBU`          → `msp.SOP_P01`
+//     `SOType='P'` & **đã giao** & `CKD`          → `msp.SOP_P02`
+//     `SOType='P'` & **chưa giao** & `CBU`        → `msp.SOP_P11`
+//     `SOType='P'` & **chưa giao** & `CKD`        → `msp.SOP_P12`
+//     `else` → **`100.0000`**  … rồi **`/ 100.00`**
+//   ⇒ Không tra được chính sách thì **phải thu 100% giá xe**. `DealerDebt_Policy = UnitPriceActual × tỷ lệ`.
+// 🔴🔴🔴 **TÁC GIẢ TỰ GHI NHẬN BÁO CÁO SAI VỚI KỲ QUÁ KHỨ**:
+//   `//// Giải thuật này chỉ trả về giá trị **Chính xác khi Ngày thống kê được tính tới ToDay()**,`
+//   `//// còn **thống kê quá khứ thì chỉ Tương đối Hợp lý**.`
+//   Lý do: cờ *"đã giao"* dùng `DefaultCondition("")` ⇒ đếm `Car_DeliveryOrderDetail` **không giới hạn
+//   thời gian** ⇒ khi chạy kỳ quá khứ, cờ lấy **trạng thái HIỆN TẠI**, không phải trạng thái tại kỳ đó.
+//   📌 **KHÔNG tự vá**; port trả cờ `pastPeriodApproximate` khi `tMonth` < tháng hiện tại.
+// 🔴🔴 **BỘ LỌC TIỀN CHẶT NHẤT đã gặp**: `pmp.PaymentStatus in (**'F'**)` — *"chỉ xét TIỀN NỔI TRÊN TÀI
+//   KHOẢN"* (các báo cáo khác dùng `('A','F')`), và mốc là **`pmp.ConfirmDate`** (ngày xác nhận tiền về),
+//   **không** phải `PaymentEndDate` như #B125/#B278.
+// 🔴🔴 **CỘT CHECKSUM TỰ KIỂM** (hiếm gặp — báo cáo tự đối soát):
+//     `Count_Close_BalanceDiff = Open_DlvDone_NotDeal + Happen_DlvDone − Happen_Retrieve`
+//     `                          − Happen_Deal − Close_DlvDone_NotDeal`
+//   ⇒ **phải bằng 0** nếu số liệu nhất quán; khác 0 là dấu hiệu lệch dữ liệu.
+// ⚠️ **`null Count_Happen_Requirement`** — cột *"Cam kết tiêu thụ"* **luôn NULL**, chưa cài đặt ở nguồn.
+// ✅ RBAC **tổ hợp (3)**: `BUCode like @strBUPatternOfUser` **ACTIVE ở MỌI khối** (kèm chú thích
+//   *"Must inner join to filter AbilityOfUser"* còn nguyên); `CheckHTCDirect` không có.
+//   Và `md.FlagDirect = '0'` (*"không thống kê HTC"*) lặp ở **mọi** khối — như #B314.
+app.MapGet("/api/reports/dealer-stock11", async (
+    AppDbContext db, ITenantContext t, DateTime? tMonth) =>
+{
+    // StandardizeMonth ⇒ mốc là ĐẦU THÁNG.
+    var anchor = tMonth ?? DateTime.Today;
+    var monthStart = new DateTime(anchor.Year, anchor.Month, 1);
+    var monthEnd = monthStart.AddMonths(1);
+    var thisMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+
+    // 🔴 md.FlagDirect = '0' — không thống kê HTC (lặp ở mọi khối).
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagDirect == "0").ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    var allCars = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.CarId != null).ToListAsync())
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode))
+        .ToList();
+
+    // 🔴 Point-in-time: Active HOẶC bị huỷ SAU mốc; và tạo TRƯỚC mốc.
+    // ⚠️ `Car_DeliveryOrder.ApprovedDate2` của nguồn = **`DeliveryOrder.Approved2At`** trong MiniHTC
+    //    (port cũ đổi tên) — grep tên cột nguồn KHÔNG ra; build CS1061 mới lộ.
+    bool AliveAt(CarVinMaster v, DateTime at) =>
+        (v.FlagActive == "1" || (v.CarCancelDate != null && v.CarCancelDate >= at));
+
+    var doHeads = (await db.DeliveryOrders.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(d => d.Id);
+    var doCars = await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.CarId != null
+                    && (c.ConfirmStatus == "A" || c.ConfirmStatus == "F"))
+        .ToListAsync();
+
+    // Xe đã duyệt lệnh xuất xe TRƯỚC / TRONG kỳ (theo cdo.ApprovedDate2).
+    HashSet<string> DlvDoneBefore(DateTime at) => doCars
+        .Where(c => doHeads.TryGetValue(c.DoId, out var h) && h.Approved2At != null && h.Approved2At < at)
+        .Select(c => c.CarId!).ToHashSet();
+    var dlvDoneOpen = DlvDoneBefore(monthStart);
+    var dlvDoneClose = DlvDoneBefore(monthEnd);
+    var dlvDoneHappen = doCars
+        .Where(c => doHeads.TryGetValue(c.DoId, out var h) && h.Approved2At != null
+                    && h.Approved2At >= monthStart && h.Approved2At < monthEnd)
+        .Select(c => c.CarId!).ToHashSet();
+
+    // 🔴 Tiền: CHỈ PaymentStatus 'F' và mốc theo ConfirmDate (khác #B125/#B278 dùng PaymentEndDate).
+    var payLines = await (from d in db.PmtPaymentDetails
+                          join p in db.PmtPayments on d.PaymentNo equals p.PaymentNo
+                          where d.OrgId == t.OrgId && p.OrgId == t.OrgId
+                                && d.CarId != null && p.PaymentStatus == "F"
+                          select new { d.CarId, d.Amount, p.ConfirmDate }).ToListAsync();
+    decimal ReceivedBefore(string carId, DateTime at) => payLines
+        .Where(x => x.CarId == carId && x.ConfirmDate != null && x.ConfirmDate < at)
+        .Sum(x => x.Amount ?? 0m);
+
+    // 🔴 Tỷ lệ phải thu theo chính sách — 5 nhánh + mặc định 100%.
+    // 📌 NỢ: `Ord_SalesOrder.SOType/SPCode` và `Mst_SalesPolicy` (SOU_P01/SOP_P01/P02/P11/P12)
+    //    chưa có trong MiniHTC ⇒ rơi về nhánh `else` = **100%** (đúng hành vi mặc định của nguồn).
+    decimal RatioDebtPolicy(CarVinMaster v, bool dlvDone) => 1.00m;   // else 100.0000 / 100.00
+
+    object PhaseCounts(DateTime at, HashSet<string> dlvDone)
+    {
+        var alive = allCars.Where(v => AliveAt(v, at) && v.CreatedDate != null && v.CreatedDate < at).ToList();
+        var notDone = alive.Where(v => !dlvDone.Contains(v.CarId!)).ToList();
+
+        var policyDone = 0; var policyNotDone = 0;
+        foreach (var v in notDone)
+        {
+            var debt = (v.UnitPriceActual ?? 0m) * RatioDebtPolicy(v, false);
+            if (debt <= ReceivedBefore(v.CarId!, at)) policyDone++; else policyNotDone++;
+        }
+        // "Tồn kho" = đã giao nhưng CHƯA bán tới khách cuối.
+        var dlvDoneNotDeal = alive.Count(v => dlvDone.Contains(v.CarId!) && v.SellStatus == "P");
+        return new { NotDone = notDone.Count, PolicyDone = policyDone, PolicyNotDone = policyNotDone, DlvDoneNotDeal = dlvDoneNotDeal };
+    }
+
+    var rows = new List<object>();
+    foreach (var dlrGroup in allCars.GroupBy(v => v.DealerCode!))
+    {
+        foreach (var modelGroup in dlrGroup.GroupBy(v => v.ModelCode ?? ""))
+        {
+            var subset = modelGroup.ToList();
+            var carIds = subset.Select(v => v.CarId!).ToHashSet();
+
+            var open = PhaseCounts(monthStart, dlvDoneOpen);
+            var close = PhaseCounts(monthEnd, dlvDoneClose);
+            var o = open.GetType().GetProperties().ToDictionary(p => p.Name, p => p.GetValue(open));
+            var c = close.GetType().GetProperties().ToDictionary(p => p.Name, p => p.GetValue(close));
+
+            var happenDlvDone = subset.Count(v => dlvDoneHappen.Contains(v.CarId!));
+            var happenCarCancel = subset.Count(v => v.FlagActive == "0"
+                && v.CarCancelDate != null && v.CarCancelDate >= monthStart && v.CarCancelDate < monthEnd);
+
+            var openDlvDoneNotDeal = (int)o["DlvDoneNotDeal"]!;
+            var closeDlvDoneNotDeal = (int)c["DlvDoneNotDeal"]!;
+
+            models.TryGetValue(modelGroup.Key, out var mm);
+            rows.Add(new
+            {
+                DealerCode = dlrGroup.Key,
+                DealerName = dealers[dlrGroup.Key].DealerName,
+                SegmentType = (string?)null,                       // 📌 NỢ: Mst_CarModel.SegmentType
+                ModelCode = modelGroup.Key, ModelName = mm?.ModelName,
+                Count_Open_DlvNotDone = (int)o["NotDone"]!,
+                Count_Open_DlvNotDone_PolicyNotDone = (int)o["PolicyNotDone"]!,
+                Count_Open_DlvNotDone_PolicyDone = (int)o["PolicyDone"]!,
+                Count_Open_DlvDone_NotDeal = openDlvDoneNotDeal,
+                Count_Happen_Requirement = (int?)null,             // ⚠️ nguồn để `null` — chưa cài đặt
+                Count_Happen_OrderRequest = (int?)null,            // 📌 NỢ: Ord_SalesOrderDetail.RequestedQuantity
+                Count_Happen_CarAccept = (int?)null,               // 📌 NỢ: mốc xác nhận đơn hàng
+                Count_Happen_CarCancel = happenCarCancel,
+                Count_Happen_DlvDone = happenDlvDone,
+                Count_Happen_Retrieve = (int?)null,                // 📌 NỢ: Sto_CarRetrieve chưa nối
+                Count_Happen_Deal = (int?)null,                    // 📌 NỢ: mốc bán tới khách cuối trong kỳ
+                Count_Close_DlvNotDone = (int)c["NotDone"]!,
+                Count_Close_DlvNotDone_PolicyNotDone = (int)c["PolicyNotDone"]!,
+                Count_Close_DlvNotDone_PolicyDone = (int)c["PolicyDone"]!,
+                Count_Close_DlvDone_NotDeal = closeDlvDoneNotDeal,
+                // 🔴 CHECKSUM — phải = 0 nếu nhất quán (thiếu Retrieve/Deal thì chưa kiểm được).
+                Count_Close_BalanceDiff = (int?)null
+            });
+        }
+    }
+
+    return Results.Ok(new
+    {
+        tMonth = monthStart,
+        count = rows.Count,
+        RptStatistic_DealerStock11 = rows,
+        pastPeriodApproximate = monthStart < thisMonth,
+        pointInTimeNote = "TAI HIEN TRANG THAI TAI THOI DIEM (point-in-time): 'and (cc.FlagActive = 1 OR cc.CarCancelDate >= @strTMonth)' - 'chi lay xe Active HOAC xe bi HUY SAU dau ky' => xe huy sau moc thi TAI MOC VAN CON; cong 'cc.CreatedDate < @strTMonth' (chi xe tao truoc dau ky) va 'cdo.ApprovedDate2 < @strTMonth' (duyet lenh xuat xe CAP 2 truoc dau ky). Bo ve 'or CarCancelDate >= ...' la MAT TOAN BO XE DA HUY SAU KY => dau ky THIEU XE.",
+        ratioPolicyNote = "CONG THUC TY LE PHAI THU THEO CHINH SACH - MA TRAN 5 NHANH + MAC DINH 100%: SOType='U' -> msp.SOU_P01; SOType='P' & DA GIAO & CBU -> SOP_P01; & CKD -> SOP_P02; SOType='P' & CHUA GIAO & CBU -> SOP_P11; & CKD -> SOP_P12; else 100.0000; roi chia 100.00. Khong tra duoc chinh sach thi PHAI THU 100% GIA XE. DealerDebt_Policy = UnitPriceActual x ty le.",
+        authorAdmitsInaccurateNote = "TAC GIA TU GHI NHAN BAO CAO SAI VOI KY QUA KHU: '//// Giai thuat nay chi tra ve gia tri Chinh xac khi Ngay thong ke duoc tinh toi ToDay(), con thong ke qua khu thi chi Tuong doi Hop ly.' Ly do: co 'da giao' dung DefaultCondition('') => dem Car_DeliveryOrderDetail KHONG GIOI HAN THOI GIAN => chay ky qua khu thi co lay TRANG THAI HIEN TAI, khong phai trang thai tai ky do. KHONG TU VA - tra co pastPeriodApproximate.",
+        strictMoneyFilterNote = "BO LOC TIEN CHAT NHAT da gap: pmp.PaymentStatus in ('F') - 'chi xet TIEN NOI TREN TAI KHOAN' (cac bao cao khac dung ('A','F')), va moc la pmp.ConfirmDate (ngay xac nhan tien ve), KHONG phai PaymentEndDate nhu #B125/#B278.",
+        checksumNote = "COT CHECKSUM TU KIEM (hiem gap - bao cao tu doi soat): Count_Close_BalanceDiff = Open_DlvDone_NotDeal + Happen_DlvDone - Happen_Retrieve - Happen_Deal - Close_DlvDone_NotDeal => PHAI BANG 0 neu so lieu nhat quan; khac 0 la dau hieu lech du lieu. Port de NULL vi con thieu Retrieve/Deal.",
+        nullColumnNote = "'null Count_Happen_Requirement' - cot 'Cam ket tieu thu' LUON NULL, chua cai dat o nguon (khong phai loi port).",
+        rbacNote = "RBAC - to hop (3): 'BUCode like @strBUPatternOfUser' ACTIVE o MOI KHOI (kem chu thich 'Must inner join to filter AbilityOfUser' con nguyen); CheckHTCDirect khong co. Va md.FlagDirect = '0' ('khong thong ke HTC') lap o MOI khoi - nhu #B314.",
+        debtNote = "NO: Ord_SalesOrder(SOType/SPCode) + Mst_SalesPolicy (SOU_P01/SOP_P01/P02/P11/P12) chua co => ty le roi ve nhanh else = 100% (dung hanh vi mac dinh cua nguon); Ord_SalesOrderDetail.RequestedQuantity, moc xac nhan don hang, Sto_CarRetrieve, moc ban toi khach cuoi trong ky, Mst_CarModel.SegmentType chua noi => cac cot do tra NULL. Khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/dealer-stock01", async (
     AppDbContext db, ITenantContext t, string? dealerCode) =>
 {
