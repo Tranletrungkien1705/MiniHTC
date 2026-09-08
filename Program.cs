@@ -20010,6 +20010,35 @@ app.MapPost("/api/tstparts", async (TstPartDto dto, AppDbContext db, ITenantCont
 //   ở lệnh này — chúng do màn `FrmTST_Mst_Part` nhập tay, tức `POST /api/tstparts`). Ghi song song `_dbWH` (nợ).
 // ⚠️ Form gốc còn chặn bằng **key cứng** (`strKeyFix` nhập tay trên form) — đó là bảo vệ ở tầng client,
 //   KHÔNG port thành tham số API; API đã có `RequireAuthorization()`.
+// ===== 🔴🔴 #598 ĐỌC LẠI `TST_SavePartAll` (`Bravo.cs:79`) — **XOÁ Ở MAIN, KHÔNG XOÁ Ở KHO** =====
+// (Vòng parity: endpoint đã có từ #212. Dưới đây là ba điều DIFF/đọc trọn lộ ra mà lượt trước chưa ghi.)
+//
+// 🔴🔴 **REPLACE-ALL CHỈ ÁP CHO `_dbMain`; KHO THÌ CHỈ CHÈN THÊM**:
+//     `string strSqlClear = "delete t from TST_Mst_Part t where (1=1);"`
+//     `**_dbMain**.ExecQuery(strSqlClear);`          ← xoá **chỉ ở Main**
+//     … `_dbMain.SaveData("TST_Mst_Part", dt, …);`
+//     `DataTableUtils.SetDataRowStateOfAllRows(ref dt, DataRowState.**Added**);`
+//     `**_dbWH**.SaveData("TST_Mst_Part", dt, …);`   ← **chèn thêm** vào kho, **không** xoá trước
+//   ⇒ Main đúng nghĩa "thay toàn bộ"; **kho thì cộng dồn**: mỗi lần đồng bộ là **nhân thêm một bản đầy đủ**
+//     của toàn bộ danh mục phụ tùng TST. Sau N lần đồng bộ, kho có **N bản** mỗi mã.
+//   ⇒ Đây là **biến thể thứ ba** của họ lỗi "hai DB, một thao tác": #571 (xoá **quên** kho vì gõ nhầm DAL),
+//     #573 (ghi kho **ngoài** giao dịch), và nay là **xoá một bên, chèn hai bên**.
+// 🔴 **`alColumnEffective` ĐƯỢC `Clear()` RỒI KHÔNG BAO GIỜ `Add` GÌ** — trích nguyên văn:
+//     `ArrayList alColumnEffective = new ArrayList();` … `alColumnEffective.Clear();`
+//     `_dbMain.SaveData("TST_Mst_Part", dt_TST_Mst_Part, **alColumnEffective.ToArray()**);`
+//   ⇒ Truyền một **mảng RỖNG** làm danh sách cột hiệu lực. Ở #575/#589 các lời gọi tương tự đều truyền danh
+//     sách **có phần tử**; ở đây không có phần tử nào.
+//   ⚠️ **Không kết luận hành vi**: tôi không đọc được thân `SaveData` của EzDAL nên **không biết** mảng rỗng
+//     nghĩa là *"ghi mọi cột"* hay *"không ghi cột nào"*. Ghi lại làm **điểm cần đo trên DB thật**, không suy đoán.
+// 🔴 **XOÁ TOÀN BẢNG KHÔNG KÈM `DealerCode`**: `where (1=1)` — không một điều kiện phạm vi nào.
+//   `TST_Mst_Part` là danh mục **dùng chung**, nên một đại lý bấm đồng bộ là **xoá dữ liệu của tất cả** rồi
+//   nạp lại theo lô **của riêng mình**. Nếu lô đó thiếu mã ⇒ mã biến mất khỏi toàn hệ.
+// ⚪ **Âm tính (điều làm ĐÚNG)**: guard chạy **trọn lô trước khi chạm dữ liệu** —
+//   `for (i…) if (IsNullOrEmpty(Rows[i]["TSTPartCode"])) throw TST_SavePartAll_InvalidTSTPartCode;`
+//   nằm **trên** khối xoá ⇒ một dòng hỏng là **huỷ cả lô**, không có chuyện xoá sạch rồi mới phát hiện lỗi.
+//   Đây là thứ tự **đúng**, khác hẳn #571 (xoá trước, không kiểm số dòng ảnh hưởng).
+// ⚠️ Guard chỉ kiểm **mã rỗng**: **không** kiểm `TSTPrice` (âm? không phải số?), **không** kiểm **trùng mã
+//   trong cùng lô** ⇒ hai dòng cùng mã đều được chèn.
 app.MapPost("/api/tstparts/sync-all", async (List<TstPartSyncDto> rows, AppDbContext db, ITenantContext t) =>
 {
     rows ??= new List<TstPartSyncDto>();
@@ -20034,9 +20063,22 @@ app.MapPost("/api/tstparts/sync-all", async (List<TstPartSyncDto> rows, AppDbCon
             LUDTime = now
         });
 
+    // #598: nguồn KHÔNG kiểm trùng mã trong lô — port đếm để chỗ đối chiếu thấy.
+    var duplicatedInBatch = rows.GroupBy(r => r.TSTPartCode!.Trim().ToUpperInvariant())
+        .Count(g => g.Count() > 1);
+
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = old.Count, inserted = rows.Count, luDTime = now,
-        note = "REPLACE-ALL đúng nguồn: mã không có trong lô mới sẽ biến mất." });
+        note = "REPLACE-ALL đúng nguồn: mã không có trong lô mới sẽ biến mất.",
+        // ===== #598 =====
+        duplicatedInBatch,
+        sourceDeletesMainOnlyButInsertsBoth = "delete chi chay _dbMain.ExecQuery; sau do SaveData vao CA _dbMain lan _dbWH voi DataRowState.Added => kho CONG DON, sau N lan dong bo kho co N ban moi ma",
+        thirdVariantOfTwoDbBug = "#571 xoa QUEN kho (go nham DAL), #573 ghi kho NGOAI giao dich, #598 xoa mot ben chen hai ben",
+        effectiveColumnListIsEmptyArray = "alColumnEffective duoc Clear() roi khong bao gio Add gi; truyen mang RONG vao SaveData — CHUA DO duoc EzDAL hieu la ghi-moi-cot hay khong-ghi-cot-nao",
+        deleteHasNoDealerScope = "delete t from TST_Mst_Part t where (1=1) — danh muc dung chung, mot dai ly dong bo la xoa du lieu cua tat ca",
+        guardRunsBeforeDeleteNegativeCheck = "vong kiem ma rong nam TREN khoi xoa => mot dong hong la huy ca lo, khong xoa sach roi moi phat hien loi (khac #571)",
+        guardChecksCodeOnly = "khong kiem TSTPrice (am? khong phai so?), khong kiem trung ma trong lo",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
