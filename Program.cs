@@ -53008,6 +53008,85 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #651 XE LƯU KHO `Rpt_DMSSer_XeLuuKho_WH` (`WH.cs:14160-14422`) — BÁO CÁO LIÊN HỆ THỐNG =====
+// 3B: laptop `:14160` md5 `35b39e33` **KHỚP** máy 150 `:14160`.
+// Đây là **báo cáo liên hệ thống**: hàm gọi WS của **DMS Sale** (`WSDMSSale.WSHTC64.Rpt_DMSSer_XeLuuKhoDL_HTC`),
+//   lấy về một `DataTable`, `InsertHuge` vào bảng tạm `#tbl_Rpt_FromSale`, rồi mới nối với danh mục cục bộ.
+//
+// 🔴🔴 **TIMEOUT "SỐ MA" ≈ 34,3 GIỜ**: `Timeout = **123456000**` (ms) — dãy phím 1-2-3-4-5-6 + ba số 0,
+//   tức **thực chất là vô hạn**. DMS Sale treo ⇒ lời gọi này giữ luồng suốt hơn một ngày.
+//   📌 **Đếm toàn tầng biz: 37 site** dùng đúng con số này (`Report.Special.Warranty.cs` 13 · `WarrantyReport.cs` 7
+//     · `WH.cs` 6 · `AssignmentOfWork.cs` 3 · `DMSSales.cs` 2 · `ZTemp.cs` 2 · `Car/Common/Customer/Service` mỗi
+//     file 1) ⇒ **quy ước nhà cho mọi lời gọi liên hệ thống**, không phải sơ suất một chỗ.
+// 🔴🔴🔴 **NỐI DANH MỤC BẰNG TIỀN TỐ VIN 4 *HOẶC* 5 KÝ TỰ**:
+//     `inner join Mst_VINModelOrginal mvo on (**left(t.VIN,4) = mvo.VINCode or left(t.VIN,5) = mvo.VINCode**)`
+//   Ba hệ quả:
+//     ① **`inner join`** ⇒ xe có tiền tố VIN **không nằm trong danh mục** ⇒ **biến mất khỏi báo cáo xe lưu kho**.
+//     ② **`or` giữa hai độ dài** ⇒ nếu danh mục có **cả** mã 4 ký tự lẫn mã 5 ký tự cùng khớp một VIN ⇒
+//        **NỞ DÒNG** (một xe ra hai dòng) — cùng họ "tiền tố ngắn nuốt tiền tố dài" đã ghi ở #645/#646, nhưng
+//        ở đây biểu hiện thành **nhân đôi**, không phải bao trùm.
+//     ③ `left(t.VIN, n)` **bọc cột** ⇒ **không sargable**.
+// 🔴 **`GROUP BY` KHÔNG CÓ HÀM TỔNG = `DISTINCT` VIẾT VÒNG VO — VÀ NÓ CHE HIỆN TƯỢNG NỞ DÒNG**: câu gom theo
+//   **toàn bộ** cột đã chọn (kể cả `VIN`, `mvo.OrginalCode`, `mvo.ModelCode`) mà **không** có `sum/count` nào.
+//   ⇒ Tương đương `select distinct`; và vì `mvo.*` **nằm trong `group by`**, hai dòng sinh ra bởi `or` ở ② có
+//     giá trị `mvo` khác nhau nên **vẫn là hai nhóm** ⇒ `group by` **không** cứu được.
+// 🔴🔴 **`null` KHÁC `""` — TRUYỀN NULL LÀ LỌC SẠCH**: `if (strModelCode != "") strModelCodeConditionList = " = " + strModelCode;`
+//   So sánh với **chuỗi rỗng** mà **không** kiểm `null` và **không** `Trim()`. Nếu `strModelCode` là **`null`**
+//   thì `null != ""` là **true** ⇒ chuỗi điều kiện thành `" = "` (toán tử `=` + giá trị **rỗng**) ⇒ mệnh đề
+//   `and mvo.ModelCode = ''` ⇒ **loại sạch mọi dòng**. Bỏ trống đúng cách (`""`) thì không lọc; truyền `null`
+//   thì **ra 0 dòng, im lặng**.
+//   ⚪ Âm tính: chuỗi đưa vào `BuildClause` **bắt đầu bằng toán tử** (`" = "`) nên **không** rơi im lặng (#410),
+//     và `BuildClause` có `ref alParamsCoupleSql` ⇒ giá trị **được tham số hoá** ⇒ **không** có bề mặt tiêm.
+// 🔴 **NGÀY ĐƯỢC ĐỔ VÀO BẢNG TẠM DƯỚI DẠNG CHUỖI**: schema bảng tạm khai `Cast(null as nvarchar(50)) StoreDate`
+//   và `… DeliveryEndDate`, rồi mọi cột đều đi qua `StandardizeParam` ⇒ **so sánh/sắp xếp theo CHUỖI**, đúng
+//   hay sai phụ thuộc hoàn toàn vào định dạng mà DMS Sale trả về (họ #533).
+// 🔴 **KẾT QUẢ RỖNG ⇒ KHÔNG CÓ BẢNG NÀO, KHÔNG PHẢI BẢNG 0 DÒNG**: toàn bộ khối tạo bảng tạm **và** câu truy vấn
+//   chính nằm **bên trong** `if (dtDB_Rpt_From_Sale != null && dtDB_Rpt_From_Sale.Rows.Count > 0)` ⇒ DMS Sale
+//   trả 0 dòng thì `mdsFinal` **không có bảng kết quả nào** — chỗ gọi đọc `Tables[0]` sẽ **IndexOutOfRange**
+//   thay vì nhận bảng rỗng (§12: **hình dạng kết quả**).
+// 📌 MiniHTC **không có** hệ DMS Sale để gọi ⇒ port dựng báo cáo từ dữ liệu xe cục bộ, **giữ nguyên hình dạng**
+//   **cột** và trả các cờ đo được; phần gọi liên hệ thống ghi **nợ**, không giả lập.
+app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? modelCode, string? vin) =>
+{
+    var qy = db.ServiceCars.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(c => c.FrameNo == vin!.Trim().ToUpperInvariant());
+    var cars = await qy.Select(c => new { c.FrameNo, c.ModelCode, c.TradeMark, c.PlateNo }).ToListAsync();
+
+    // Nguồn nối danh mục theo tiền tố VIN 4 HOẶC 5 ký tự — MiniHTC chưa có Mst_VINModelOrginal.
+    var rows = cars.Select(c => new
+    {
+        dealerCode,
+        vin = c.FrameNo,
+        vinPrefix4 = (c.FrameNo ?? "").Length >= 4 ? c.FrameNo!.Substring(0, 4) : null,
+        vinPrefix5 = (c.FrameNo ?? "").Length >= 5 ? c.FrameNo!.Substring(0, 5) : null,
+        modelCode = c.ModelCode,
+        modelCarSv = c.ModelCode,
+        tradeMark = c.TradeMark,
+    })
+    .Where(x => string.IsNullOrWhiteSpace(modelCode) || x.modelCode == modelCode!.Trim())
+    .OrderBy(x => x.vin).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        // ===== #651 =====
+        crossSystemReport = "ham goi WS cua DMS Sale (WSDMSSale.WSHTC64.Rpt_DMSSer_XeLuuKhoDL_HTC), lay ve mot DataTable, InsertHuge vao bang tam #tbl_Rpt_FromSale roi moi noi voi danh muc cuc bo",
+        magicTimeoutCountedAcrossBiz = "Timeout = 123456000 ms (`34,3 gio) — day phim 1-2-3-4-5-6 + ba so 0, thuc chat la VO HAN; dem toan tang biz: 37 site (Report.Special.Warranty.cs 13, WarrantyReport.cs 7, WH.cs 6, AssignmentOfWork.cs 3, DMSSales.cs 2, ZTemp.cs 2, Car/Common/Customer/Service moi file 1) => QUY UOC NHA cho moi loi goi lien he thong, khong phai so suat mot cho",
+        vinPrefixJoinIsFourOrFive = "inner join Mst_VINModelOrginal mvo on (left(t.VIN,4) = mvo.VINCode OR left(t.VIN,5) = mvo.VINCode)",
+        vinJoinIsInnerSoUnknownPrefixesVanish = "inner join => xe co tien to VIN KHONG nam trong danh muc BIEN MAT khoi bao cao xe luu kho",
+        vinJoinOrCanDuplicateRows = "or giua hai do dai => neu danh muc co CA ma 4 ky tu lan ma 5 ky tu cung khop mot VIN thi mot xe ra HAI DONG — cung ho tien to voi #645/#646 nhung bieu hien thanh NHAN DOI, khong phai bao trum",
+        leftFunctionWrapsColumn = "left(t.VIN, n) boc cot => khong sargable",
+        groupByWithoutAggregateIsDistinct = "cau gom theo TOAN BO cot da chon (ke ca VIN, mvo.OrginalCode, mvo.ModelCode) ma KHONG co sum/count nao => tuong duong select distinct; va vi mvo.* nam trong group by nen hai dong sinh boi or van la HAI NHOM => group by KHONG cuu duoc hien tuong no dong, chi che no",
+        nullIsNotEmptyStringHere = "if (strModelCode != \"\") strModelCodeConditionList = \" = \" + strModelCode; — so sanh voi chuoi rong ma KHONG kiem null va KHONG Trim; strModelCode la null thi null != \"\" la TRUE => chuoi dieu kien thanh \" = \" (toan tu = + gia tri RONG) => and mvo.ModelCode = \"\" => LOAI SACH MOI DONG. Bo trong dung cach (chuoi rong) thi khong loc; truyen null thi ra 0 dong, IM LANG",
+        buildClauseIsSafeHere = "AM TINH: chuoi dua vao BuildClause BAT DAU BANG TOAN TU ( = ) nen khong roi im lang (#410), va BuildClause co ref alParamsCoupleSql nen gia tri DUOC THAM SO HOA => khong co be mat tiem",
+        datesArriveAsStrings = "schema bang tam khai Cast(null as nvarchar(50)) StoreDate va DeliveryEndDate, moi cot deu di qua StandardizeParam => so sanh/sap xep theo CHUOI, dung hay sai phu thuoc hoan toan vao dinh dang ma DMS Sale tra ve (ho #533)",
+        emptyResultMeansNoTableAtAll = "toan bo khoi tao bang tam VA cau truy van chinh nam BEN TRONG if (dtDB_Rpt_From_Sale != null && Rows.Count > 0) => DMS Sale tra 0 dong thi mdsFinal KHONG co bang ket qua nao; cho goi doc Tables[0] se IndexOutOfRange thay vi nhan bang rong (§12 hinh dang ket qua)",
+        crossSystemCallNotSimulated = "MiniHTC khong co he DMS Sale de goi => port dung bao cao tu du lieu xe cuc bo, GIU NGUYEN hinh dang cot va tra cac co do duoc; phan goi lien he thong ghi NO, khong gia lap",
+        vinModelOriginalNotModelled = "Mst_VINModelOrginal chua duoc mo hinh hoa trong MiniHTC => port tra vinPrefix4/vinPrefix5 de thay ro khoa noi ma nguon dung, chua ap noi danh muc",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #650 TRA CỨU CÔNG NỢ `SerCusDebitSearch_WH` (`WH.cs:5323-5677`) — LOẠI NỢ LẠ LÀM VỠ CÂU SQL =====
 // 3B: laptop `:5323` md5 `10af3fe0` **KHỚP** máy 150 `:5323`. Anh em `SerInsuranceDebitSearch_WH` (`:4970`)
 //   là **bản gần như sao chép** — DIFF cho thấy bản khách hàng chỉ thêm `d.CusID` vào `SELECT`/`GROUP BY`.
