@@ -16130,6 +16130,33 @@ app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantCo
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #575 ĐỐI CHIẾU LẠI `SerCusDebitCreate` (`:432`) / `SerCusDebitUpdate` (`:645`) — BA PHÁT HIỆN MỚI =====
+// (Vòng parity: endpoint đã có từ #557; dưới đây là những gì DIFF hai hàm lộ ra mà lượt trước chưa ghi.)
+//
+// 🔴🔴 **NHÁNH SỬA XOÁ TRẮNG CẢ `DebitType`** — trích nguyên văn:
+//     `if (!StringUtils.IsEmpty(strDebitType)) { dt_CusDebit.Rows[0]["DebitType"] = strDebitType; }`
+//     `else dt_CusDebit.Rows[0]["DebitType"] = **DBNull.Value**;`
+//   và `alColumnEffective.Add("DebitType")` **vô điều kiện** ⇒ cột **luôn được ghi**.
+//   ⇒ Client sửa một công nợ mà **quên gửi loại** ⇒ bản ghi **mất `DebitType`**. Ghép với hai kết luận trước:
+//     · `SerCusDebitSearch` (#568) lọc **`d.DebitType = @DebitType`** trong **cả ba** nhánh;
+//     · `SerPaymentGet` (#572) lọc `p.PaymentType in ('1','2')`;
+//   ⇒ Công nợ mất loại **biến mất khỏi MỌI màn tra cứu** — không xoá, không log, chỉ là **không tìm thấy nữa**.
+//     Đây là ví dụ rõ nhất về **hệ quả chuỗi**: một lỗi ghi cộng một bộ lọc đọc = dữ liệu bốc hơi khỏi giao diện.
+//   📌 MiniHTC **cố ý lệch**: rỗng thì **giữ nguyên** loại cũ (`if (!IsNullOrWhiteSpace(dto.DebitType))`).
+// 🔴 **NHÁNH SỬA ĐỌC BẢN GHI TỪ `_dbDealer` RỒI GHI CẢ BA DB** — `CheckExistCusDebit(**_dbDealer**, …)` rồi
+//   `_dbMain.SaveData` / `_dbWH.SaveData` / `_dbDealer.SaveData`. **Y HỆT `UpdateInsDebit` (#573)** ⇒ không
+//   phải cá biệt mà là **khuôn của cả cụm công nợ**: nguồn sự thật khi SỬA là **DB đại lý**, kể cả khi lệnh
+//   chạy ở trung tâm. Bất kỳ lệch nào giữa ba DB đều được "san phẳng theo phía đại lý" ở lần sửa kế tiếp.
+// 🔴 **NHÁNH TẠO GHI KHO BẰNG CÁCH DỰNG LẠI BẢN GHI VÀ CHÉP KHOÁ**:
+//     `string strSqlGet_CusDebitID = "select @@Identity CusDebitID";`
+//     `Int32 i_CusDebitID = Convert.ToInt32(_dbMain.ExecQuery(...).Tables[0].Rows[0][0]);`
+//     `dt_CusDebit_WH.Rows[0]["CusDebitID"] = i_CusDebitID; //pK`
+//   ⇒ Khoá **được CHÉP** sang kho chứ không sinh lại — đúng nguyên tắc, nhưng `@@IDENTITY` **không giới hạn
+//     phạm vi** (trigger ở bảng khác trả nhầm khoá) và `Int32` trên khoá **bigint**. Cùng lỗi với #570.
+//   ⚠️ Nhánh **tạo** chép tay **từng cột** sang `dt_CusDebit_WH`; nhánh **sửa** thì dùng lại **cùng một**
+//     `DataTable` cho cả ba DB. Hai cách đồng bộ kho khác nhau **trong cùng một cặp hàm**.
+// ⚠️ Nhánh sửa gán `DebitAmount` **vô điều kiện** (không guard rỗng) trong khi `DebitDate`/`Note` thì có
+//   nhánh `else DBNull` ⇒ ba cột số/ngày/ghi chú, **ba cách xử lý rỗng khác nhau** trong cùng một khối lệnh.
 app.MapPost("/api/cusdebits/{id:long}/update", async (long id, CusDebitDto dto,
     AppDbContext db, ITenantContext t) =>
 {
@@ -16169,6 +16196,14 @@ app.MapPost("/api/cusdebits/{id:long}/update", async (long id, CusDebitDto dto,
         sourceUpdateSkipsFieldEmptyGuard = "nguon chi co CheckExistCusDebit(ID)",
         debitDateLosesSecondsOnUpdateOnly = "Convert.ToDateTime(x).ToString(\"yyyy-MM-dd HH:mm\")",
         supplierColumnNameDiffersBetweenReadAndWrite = "ghi: SupplierID / doc: SupplierCode",
+        // ===== #575 =====
+        sourceClearsDebitTypeWhenEmpty = "else row[DebitType] = DBNull + alColumnEffective.Add(DebitType) vo dieu kien",
+        portKeepsDebitTypeInstead = true,
+        chainedConsequence = "mat DebitType + bo loc d.DebitType (#568) va p.PaymentType (#572) => cong no bien mat khoi MOI man tra cuu, khong xoa khong log",
+        updateReadsDealerDbWritesAllThree = "CheckExistCusDebit(_dbDealer) roi SaveData len Main/WH/Dealer — y het UpdateInsDebit (#573)",
+        createCopiesPrimaryKeyToWh = "select @@Identity roi gan dt_CusDebit_WH[CusDebitID] — khoa duoc CHEP, nhung @@IDENTITY khong gioi han pham vi va ep Int32 tren khoa bigint",
+        twoDifferentWhSyncStylesInOnePair = "nhanh tao chep tay tung cot sang DataTable rieng; nhanh sua dung chung mot DataTable cho ca ba DB",
+        threeEmptyHandlingsInOneBlock = "DebitAmount gan vo dieu kien; DebitDate va Note co else DBNull; DebitType cung else DBNull",
     });
 }).RequireAuthorization();
 
