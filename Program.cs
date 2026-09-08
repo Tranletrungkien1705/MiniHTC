@@ -31355,6 +31355,103 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // 🔴 Trạng thái nhân viên — **port dòng ACTIVE**: `--and hrsmomdt.SMFlagActive = '1'` **bị comment**
 //   (20221026, HuongTTT), thay bằng **`and hrsmomdt.SMStatus in ('1','2')`** (thử việc + chính thức).
 // 🔴 Chặn chia 0 bằng `and t.TotalQtySM != 0.0` ở câu cuối; `md.FlagActive = '1'` lặp ở hai câu.
+
+// ===== #B254/#B255/#B256 LỊCH SỬ GẮN/GỠ THIẾT BỊ GPS THEO SỐ THIẾT BỊ —
+//       `Rpt_StoTransactionGPS_MapAndUnMap_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng** (laptop `212978` / 150 `212983`):
+//   laptop `155706,155904` ≡ 150 `155711,155909` ⇒ **`a91b3375bcbb5b46a207093f6d90167d`**.
+// 🔴 Cửa `_WH` chạy **`_dbWH.ExecQuery`** ⇒ DB Warehouse (đúng, không như #B245).
+// 🔴🔴🔴 **GHÉP CẶP MAP ↔ UNMAP BẰNG **SỐ THỨ TỰ DÒNG**, KHÔNG BẰNG KHOÁ NGHIỆP VỤ**:
+//     `#…_Filter_Map`   = `identity(bigint,0,1) MyIdxSeq` trên các dòng `RefType = 'GPSMAPVIN'`
+//     `#…_Filter_UnMap` = `identity(bigint,0,1) MyIdxSeq` trên các dòng `RefType = 'GPSUNMAPVIN'`
+//     rồi `left join … on t.GPSDvNo = f.GPSDvNo and t.StorageCode = f.StorageCode`
+//         `where (1=1) **and t.MyIdxSeq = f.MyIdxSeq**`
+//   ⇒ Lần gắn thứ **n** được ghép với lần tháo thứ **n**. Ba hệ quả:
+//   🔴 (a) **`left join` BỊ BIẾN THÀNH `inner join`** vì điều kiện `t.MyIdxSeq = f.MyIdxSeq` nằm ở
+//     **`where`** chứ không phải `on` (NULL không bằng NULL) ⇒ **lần gắn CHƯA THÁO (thiết bị đang gắn
+//     trên xe) BIẾN MẤT khỏi báo cáo** — đúng thứ người dùng cần thấy nhất.
+//     ⚠️ **Đối cực của #B233/#B239** (đặt điều kiện trong `on` thay vì `where`): ở đây ngược lại.
+//   🔴 (b) **`MyIdxSeq` đánh trên TOÀN bảng**, không phân hoạch theo `StorageCode`, trong khi phép nối
+//     lại khớp thêm `StorageCode` ⇒ nếu cùng một thiết bị gắn/tháo ở **nhiều kho**, số thứ tự của nhánh
+//     Map và nhánh UnMap **không còn tương ứng** ⇒ **ghép nhầm cặp gắn–tháo**.
+//   🔴 (c) `order by t.CreateDateTime asc` đặt trong câu `select … into` — SQL Server **KHÔNG bảo đảm**
+//     `identity` được cấp theo thứ tự `order by` đó ⇒ thứ tự ghép chỉ **tình cờ** đúng.
+//   📌 **KHÔNG tự vá**: port giữ nguyên cách ghép và giữ nguyên việc **loại dòng chưa tháo**; trả cờ
+//     `sourceDropsStillMapped` + tham số `includeStillMapped` để người vận hành xem được phần bị nuốt.
+// 🔴🔴 **LỖ RBAC — CA 27**: `myCommon_GetAbilityOfUser` **có gọi** nhưng `myCommon_CheckHTCDirect` **bị
+//   comment cả khối**, và grep `BUPattern` trên toàn thân hàm = **0 hit** ⇒ **không cổng, không lọc dòng**.
+//   Đúng khuôn đếm-hit của luật `C0-…octogesimusprimus`. **KHÔNG tự vá.**
+// 🔴 **`@strGPSDvNo` NƯỚNG bằng `StringUtils.Replace`** vào literal `'@strGPSDvNo'`; `alParamsCoupleSql`
+//   được dựng (`@strToday`) nhưng dòng truyền tham số **bị comment** (`//, alParamsCoupleSql.ToArray()`)
+//   ⇒ **tham số mồ côi + bề mặt SQL injection**. Port tham số hoá.
+// 🔴 Nhánh **UnMap KHÔNG lấy `VIN`** (chỉ `StorageCode`/`GPSDvNo`/`CreateDateTime`) — VIN của cặp lấy từ
+//   **dòng Map**. Hai cột ra đổi tên: `MapDateTime → GPSMapVINDateTime`, `UnMapDateTime → GPSUnMapVINDateTime`.
+// 🔴 Cửa kết thúc bằng **`CommitSafety`** cả `_dbMain` lẫn `_dbWH` dù chỉ đọc — cùng khuôn #B251.
+// ⚠️ MiniHTC lưu `Sto_StoTransactionGPS` **đúng hình dạng nguồn** (mỗi lượt một DÒNG, phân biệt bằng
+//   `RefType` + `CreateDateTime`) nên tái hiện được **nguyên văn** cách ghép theo số thứ tự.
+app.MapGet("/api/reports/gps-map-unmap", async (
+    AppDbContext db, ITenantContext t, string? gpsDvNo, bool? includeStillMapped) =>
+{
+    var dv = (gpsDvNo ?? "").Trim();
+    if (dv.Length == 0)
+        return Results.BadRequest(new { error = "Rpt_StoTransactionGPS_MapAndUnMap_InvalidGPSDvNo" });
+
+    // 🔴 Hai nhánh, mỗi nhánh một RefType — đúng nguồn.
+    var maps = await db.GpsTransactions
+        .Where(x => x.OrgId == t.OrgId && x.GpsDvNo == dv && x.RefType == "GPSMAPVIN")
+        .OrderBy(x => x.CreateDateTime)
+        .Select(x => new { x.StorageCode, x.GpsDvNo, x.Vin, MapDateTime = x.CreateDateTime })
+        .ToListAsync();
+    var unmaps = await db.GpsTransactions
+        .Where(x => x.OrgId == t.OrgId && x.GpsDvNo == dv && x.RefType == "GPSUNMAPVIN")
+        .OrderBy(x => x.CreateDateTime)
+        .Select(x => new { x.StorageCode, x.GpsDvNo, UnMapDateTime = x.CreateDateTime })
+        .ToListAsync();
+
+    // 🔴 identity(bigint,0,1) — đánh trên TOÀN bảng, KHÔNG phân hoạch theo StorageCode (giữ đúng nguồn).
+    var rows = new List<object>();
+    var droppedStillMapped = new List<object>();
+    for (var i = 0; i < maps.Count; i++)
+    {
+        var m = maps[i];
+        // Nối theo (GPSDvNo, StorageCode) + CÙNG số thứ tự.
+        var u = (i < unmaps.Count
+                 && unmaps[i].GpsDvNo == m.GpsDvNo
+                 && (unmaps[i].StorageCode ?? "") == (m.StorageCode ?? ""))
+                ? unmaps[i] : null;
+
+        if (u is null)
+        {
+            // 🔴 Nguồn: điều kiện ở `where` ⇒ dòng này BỊ LOẠI HẲN.
+            droppedStillMapped.Add(new { m.StorageCode, m.GpsDvNo, m.Vin, GPSMapVINDateTime = m.MapDateTime });
+            if (includeStillMapped != true) continue;
+        }
+
+        rows.Add(new
+        {
+            m.StorageCode, m.GpsDvNo, m.Vin,
+            GPSMapVINDateTime = m.MapDateTime,
+            GPSUnMapVINDateTime = u?.UnMapDateTime
+        });
+    }
+
+    return Results.Ok(new
+    {
+        gpsDvNo = dv,
+        Rpt_Sto_StoTransactionGPS_MapAndUnMap = rows,
+        droppedStillMapped,
+        sourceDropsStillMapped = includeStillMapped != true,
+        pairByRowIndexNote = "GHEP CAP MAP <-> UNMAP BANG SO THU TU DONG, KHONG BANG KHOA NGHIEP VU: #..._Filter_Map = identity(bigint,0,1) MyIdxSeq tren cac dong RefType='GPSMAPVIN'; #..._Filter_UnMap tuong tu voi 'GPSUNMAPVIN'; roi 'left join ... on t.GPSDvNo=f.GPSDvNo and t.StorageCode=f.StorageCode where (1=1) and t.MyIdxSeq = f.MyIdxSeq'. Lan gan thu n duoc ghep voi lan thao thu n.",
+        leftBecomesInnerNote = "(a) 'left join' BI BIEN THANH 'inner join' vi dieu kien t.MyIdxSeq = f.MyIdxSeq nam o WHERE chu khong phai ON (NULL khong bang NULL) => LAN GAN CHUA THAO (thiet bi DANG GAN tren xe) BIEN MAT khoi bao cao - dung thu nguoi dung can thay nhat. DOI CUC cua #B233/#B239 (dat dieu kien trong 'on' thay vi 'where'): o day nguoc lai. Xem droppedStillMapped, hoac truyen includeStillMapped=true.",
+        idxNotPartitionedNote = "(b) MyIdxSeq danh tren TOAN BANG, khong phan hoach theo StorageCode, trong khi phep noi lai khop them StorageCode => neu cung mot thiet bi gan/thao o NHIEU KHO, so thu tu cua nhanh Map va nhanh UnMap khong con tuong ung => GHEP NHAM CAP gan-thao.",
+        identityOrderNote = "(c) 'order by t.CreateDateTime asc' dat trong cau 'select ... into' - SQL Server KHONG BAO DAM identity duoc cap theo thu tu order by do => thu tu ghep chi TINH CO dung.",
+        rbacNote = "LO RBAC - CA 27: myCommon_GetAbilityOfUser CO goi nhung myCommon_CheckHTCDirect BI COMMENT CA KHOI, va grep BUPattern tren toan than ham = 0 HIT => KHONG CONG, KHONG LOC DONG. Dung khuon dem-hit cua luat C0-...octogesimusprimus. KHONG TU VA.",
+        bakedParamNote = "@strGPSDvNo NUONG bang StringUtils.Replace vao literal '@strGPSDvNo'; alParamsCoupleSql duoc dung (@strToday) nhung dong truyen tham so BI COMMENT ('//, alParamsCoupleSql.ToArray()') => THAM SO MO COI + be mat SQL INJECTION. Port tham so hoa.",
+        columnNote = "Nhanh UnMap KHONG lay VIN (chi StorageCode/GPSDvNo/CreateDateTime) - VIN cua cap lay tu DONG MAP. Hai cot ra doi ten: MapDateTime -> GPSMapVINDateTime, UnMapDateTime -> GPSUnMapVINDateTime.",
+        commitNote = "Cua ket thuc bang CommitSafety ca _dbMain lan _dbWH du chi doc - cung khuon #B251.",
+        shapeNote = "MiniHTC luu Sto_StoTransactionGPS DUNG HINH DANG NGUON (moi luot mot DONG, phan biet bang RefType + CreateDateTime) nen tai hien duoc NGUYEN VAN cach ghep theo so thu tu."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/sm-certificate", async (
     AppDbContext db, ITenantContext t, string? hrMonth) =>
 {
