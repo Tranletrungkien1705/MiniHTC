@@ -31868,6 +31868,142 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   nên đã thành một phần hợp đồng API. Cột đầu tên `tbl_Car_Car_Filter` giá trị **luôn `null`** (cột rác).
 // 🔴 Bộ lọc ngày giao (`dlsdd.DeliveryDate`) đi qua `BuildClause(… "@p" …)` ⇒ **tham số runtime** (an toàn),
 //   khác các mã đại lý **nướng thẳng** vào literal.
+
+// ===== #B293/#B294/#B295 THỐNG KÊ TỒN PI (Performance Invoice) —
+//       `RptStatistic_PIInStock_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `154614,154973` ≡ 150 `154619,154978` ⇒ **`efc485172054b3a3f1db8558ac4cbe5c`**.
+// 🔴🔴🔴 **LỖ RBAC — CA 29, BIẾN THỂ MẠNH NHẤT: KHÔNG CÓ CẢ KHỐI CỔNG**:
+//   `myCommon_CheckHTCDirect` = **0 hit** — **không tồn tại**, thậm chí **không bị comment** như các ca
+//   trước (#B239/#B245/#B254 còn để lại khối `//`); `@strBUPatternOfUser` = **1 hit** (chỉ dòng nạp)
+//   ⇒ tổ hợp **(2) không cổng + không lọc** theo luật `C0-…nonagesimus` = **LỖ THẬT**, và là biến thể
+//   **không để lại dấu vết nào** (khối cổng bị xoá hẳn khi copy hàm). **KHÔNG tự vá.**
+// 🔴🔴 **NGÀY CHẶN CỨNG `'2014-01-01'` kèm chú thích hội thoại**:
+//   `and opi.CreatedDate >= '2014-01-01' -- [10:57:51 AM] dongnt: tồn PI chỉ lấy 2014-01-01 đến hiện tại`
+//   ⇒ hằng nghiệp vụ viết cứng trong SQL (cùng họ 3 mã đại lý #B245, 6 mã nhóm đại lý #B290).
+// 🔴 **CÔNG THỨC TỒN**: `SoLuongTonPI = SoLuongPI − SLDaLenTau − SLDaToiCang`.
+//   ✅ **Trừ hai lần là ĐÚNG** vì hai tập **rời nhau** theo `ShippingDateEnd`:
+//   · `#tbl_DaLenTau` = *"đã lên tàu **nhưng chưa tới cảng**"*: `ShippingDateStart <= @strInputDate`
+//     **và** (`ShippingDateEnd` **null/rỗng** hoặc `> @strInputDate`);
+//   · `#tbl_DaToiCang` = `ShippingDateEnd` **không rỗng** và `<= @strInputDate`.
+//   ⇒ Đọc lướt sẽ tưởng "tới cảng ⊂ lên tàu" và báo trừ trùng — **không phải**; phải đọc điều kiện ngày.
+// 🔴🔴 **`AND opid.Quantity > 0` viết HAI LẦN — một ở `on`, một ở `where`** của cùng `LEFT JOIN
+//   Ord_PerformanceInvoiceDetail opid` ⇒ vế ở `where` so cột bảng phải ⇒ **`left join` BIẾN THÀNH `inner`**
+//   (luật `C0-…octogesimusnonus`) ⇒ dòng PI không khớp bị **loại hẳn**, không phải để trống.
+// 🔴 `ShippingDateStart <> ''` / `ShippingDateEnd <> ''` ⇒ **hai cột ngày lưu VARCHAR** (khuôn #B260/#B272).
+// 🔴 **Khoá gộp NĂM cột** ở cả ba bảng đếm: `(ContractNo, WorkOrderNo, ModelCode, SpecCode, ColorCode)`
+//   ⇒ thiếu **bất kỳ** cột nào khi nối là **lệch số tồn**.
+// 🔴 **Trả BỐN bảng**: `RptStatistic_PIInStock` (tồn, `Tables[0]`) · `Rpt_SoLuongPI` · `Rpt_SLDaLenTau` ·
+//   `Rpt_SLDaToiCang` — ba bảng sau là **`SELECT *` của bảng tạm** (chứa `cv.*` ⇒ **toàn bộ cột `Car_VIN`**).
+// ⚠️ Toàn bộ **chín** lệnh `DROP TABLE` **bị comment** (khuôn #B275).
+// 📌 **NỢ**: `WO_WorkOrder` và `CT_LC` chưa có trong MiniHTC ⇒ port nối **trực tiếp theo `WorkOrderNo`**
+//   (cột có sẵn trên `Ord_PerformanceInvoiceDetail` và `Car_VIN`) và **bỏ chặng `CT_LC`**; ghi rõ ở
+//   `joinChainShortenedNote` — **không bịa** dữ liệu hợp đồng ngoại.
+app.MapGet("/api/reports/pi-instock", async (
+    AppDbContext db, ITenantContext t, DateTime? inputDate, string? productionMonth) =>
+{
+    var asOf = (inputDate ?? DateTime.Today).Date;
+
+    // 🔴 Ngày chặn cứng của nguồn.
+    var hardFloor = new DateTime(2014, 1, 1);
+
+    var piQ = db.OrdPerformanceInvoices.Where(p => p.OrgId == t.OrgId && p.CreatedDate >= hardFloor);
+    if (!string.IsNullOrWhiteSpace(productionMonth))
+        piQ = piQ.Where(p => p.ProductionMonth == productionMonth!.Trim());
+    var pis = await piQ.ToListAsync();
+    var refNos = pis.Select(p => p.RefNo).Distinct().ToList();
+
+    var piDtls = await db.OrdPerformanceInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && refNos.Contains(d.RefNo))
+        .ToListAsync();
+    var woNos = piDtls.Where(d => d.WorkOrderNo != null).Select(d => d.WorkOrderNo!).Distinct().ToList();
+
+    // #tbl_SoLuongPI — chi tiết PI kèm số hợp đồng ngoại.
+    var soLuongPI = piDtls.Select(d => new
+    {
+        CCOContractNo = d.ContractNo, WWOWorkOrderNo = d.WorkOrderNo,
+        d.RefNo, d.ModelCode, d.SpecCode, d.ColorCode, d.Quantity, d.PortCode, d.PlantCode
+    }).ToList();
+
+    // Xe theo WorkOrderNo + packing list.
+    var cars = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.WorkOrderNo != null && woNos.Contains(v.WorkOrderNo)
+                    && v.PackingListNo != null && v.PackingListNo != "")
+        .ToListAsync();
+    var plNos = cars.Select(c => c.PackingListNo!).Distinct().ToList();
+    var pls = (await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo)).ToListAsync())
+        .GroupBy(p => p.PLNo).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 HAI TẬP RỜI NHAU theo ShippingDateEnd.
+    var daLenTau = new List<object>();
+    var daToiCang = new List<object>();
+    foreach (var c in cars)
+    {
+        if (!pls.TryGetValue(c.PackingListNo!, out var pl)) continue;
+        var row = new
+        {
+            CCOContractNo = (string?)null,          // 📌 NỢ: chặng CT_LC → CT_ContractOversea chưa nối
+            WOWorkOrderNo = c.WorkOrderNo,
+            c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.ActualSpec,
+            pl.ShippingDateStart, pl.ShippingDateEnd
+        };
+        if (pl.ShippingDateStart <= asOf && (pl.ShippingDateEnd == null || pl.ShippingDateEnd > asOf))
+            daLenTau.Add(row);                       // đã lên tàu NHƯNG CHƯA tới cảng
+        else if (pl.ShippingDateEnd != null && pl.ShippingDateEnd <= asOf)
+            daToiCang.Add(row);                      // đã tới cảng
+    }
+
+    // 🔴 Khoá gộp NĂM cột.
+    static string K5(string? contract, string? wo, string? model, string? spec, string? color)
+        => $"{contract ?? ""}|#|{wo ?? ""}|#|{model ?? ""}|#|{spec ?? ""}|#|{color ?? ""}";
+
+    var sumPI = soLuongPI
+        .GroupBy(x => K5(x.CCOContractNo, x.WWOWorkOrderNo, x.ModelCode, x.SpecCode, x.ColorCode))
+        .ToDictionary(g => g.Key, g => new
+        {
+            g.First().CCOContractNo, g.First().WWOWorkOrderNo,
+            g.First().ModelCode, g.First().SpecCode, g.First().ColorCode,
+            SoLuongPI = g.Sum(x => x.Quantity ?? 0m)
+        });
+
+    int CountBy(List<object> src, string key) => src.Count(o =>
+    {
+        var p = o.GetType().GetProperties().ToDictionary(x => x.Name, x => x.GetValue(o));
+        return K5((string?)p["CCOContractNo"], (string?)p["WOWorkOrderNo"],
+                  (string?)p["ModelCode"], (string?)p["SpecCode"], (string?)p["ColorCode"]) == key;
+    });
+
+    var final = sumPI.Select(kv =>
+    {
+        var lt = CountBy(daLenTau, kv.Key);
+        var tc = CountBy(daToiCang, kv.Key);
+        return new
+        {
+            kv.Value.CCOContractNo, kv.Value.WWOWorkOrderNo,
+            kv.Value.ModelCode, kv.Value.SpecCode, kv.Value.ColorCode,
+            kv.Value.SoLuongPI,
+            SoLuongDaLenTau = lt, SoLuongDaToiCang = tc,
+            SoLuongTonPI = kv.Value.SoLuongPI - lt - tc      // 🔴 trừ HAI lần — đúng vì hai tập RỜI NHAU
+        };
+    }).OrderBy(x => x.WWOWorkOrderNo).ToList();
+
+    return Results.Ok(new
+    {
+        asOf,
+        RptStatistic_PIInStock = final,        // Tables[0]
+        Rpt_SoLuongPI = soLuongPI,             // Tables[1]
+        Rpt_SLDaLenTau = daLenTau,             // Tables[2]
+        Rpt_SLDaToiCang = daToiCang,           // Tables[3]
+        rbacHoleCase29Note = "LO RBAC - CA 29, BIEN THE MANH NHAT: KHONG CO CA KHOI CONG. myCommon_CheckHTCDirect = 0 HIT - KHONG TON TAI, tham chi KHONG BI COMMENT nhu cac ca truoc (#B239/#B245/#B254 con de lai khoi '//'); @strBUPatternOfUser = 1 HIT (chi dong nap) => to hop (2) khong cong + khong loc theo luat C0-...nonagesimus = LO THAT, va la bien the KHONG DE LAI DAU VET NAO (khoi cong bi xoa han khi copy ham). KHONG TU VA.",
+        hardcodedDateNote = "NGAY CHAN CUNG '2014-01-01' kem chu thich hoi thoai: 'and opi.CreatedDate >= 2014-01-01 -- [10:57:51 AM] dongnt: ton PI chi lay 2014-01-01 den hien tai' => hang nghiep vu viet cung trong SQL (cung ho 3 ma dai ly #B245, 6 ma nhom dai ly #B290).",
+        formulaNote = "CONG THUC TON: SoLuongTonPI = SoLuongPI - SLDaLenTau - SLDaToiCang. TRU HAI LAN LA DUNG vi hai tap ROI NHAU theo ShippingDateEnd: #tbl_DaLenTau = 'da len tau NHUNG CHUA toi cang' (ShippingDateStart <= @strInputDate VA (ShippingDateEnd null/rong HOAC > @strInputDate)); #tbl_DaToiCang = ShippingDateEnd khong rong VA <= @strInputDate. Doc luot se tuong 'toi cang thuoc len tau' va bao tru trung - KHONG PHAI; phai doc dieu kien ngay.",
+        leftBecomesInnerNote = "'AND opid.Quantity > 0' viet HAI LAN - mot o 'on', mot o 'where' cua cung LEFT JOIN Ord_PerformanceInvoiceDetail => ve o 'where' so cot bang phai => LEFT JOIN BIEN THANH INNER (luat C0-...octogesimusnonus) => dong PI khong khop bi LOAI HAN, khong phai de trong.",
+        varcharDateNote = "ShippingDateStart <> '' / ShippingDateEnd <> '' => HAI COT NGAY LUU VARCHAR (khuon #B260/#B272).",
+        fiveColumnKeyNote = "KHOA GOP NAM COT o ca ba bang dem: (ContractNo, WorkOrderNo, ModelCode, SpecCode, ColorCode) => thieu BAT KY cot nao khi noi la LECH SO TON.",
+        fourTablesNote = "Tra BON bang: RptStatistic_PIInStock (ton, Tables[0]); Rpt_SoLuongPI; Rpt_SLDaLenTau; Rpt_SLDaToiCang - ba bang sau la 'SELECT *' cua bang tam (chua cv.* => TOAN BO cot Car_VIN). Toan bo CHIN lenh DROP TABLE bi comment (khuon #B275).",
+        joinChainShortenedNote = "NO: WO_WorkOrder va CT_LC chua co trong MiniHTC => port noi TRUC TIEP theo WorkOrderNo (cot co san tren Ord_PerformanceInvoiceDetail va Car_VIN) va BO chang CT_LC => CCOContractNo o hai bang xe tra NULL. KHONG BIA du lieu hop dong ngoai."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/statistic-grpdealer02", async (
     AppDbContext db, ITenantContext t, DateTime? deliveryDateFrom, DateTime? deliveryDateTo) =>
 {
