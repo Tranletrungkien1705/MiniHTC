@@ -54161,6 +54161,116 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #685 CHI TIẾT BẢO HÀNH ĐÃ DUYỆT `SerWarrantyAcceptRpt_GetAll_WH` =====
+// (`BizCarSv.WarrantyReport.cs` — laptop `:14329-14573`, **máy 150 `:14850-15094`**; file lệch **522 dòng**,
+//  md5 **cả file** khác nhau `ba1fb715` ↔ `19b741ca` (canonical = 150 theo ghi chú #42/#46), nhưng md5 **vùng
+//  hàm** `d4f8bc3c` **KHỚP** ⇒ hàm này **không nằm trong phần chênh**. WS `WSCarSv.asmx.cs:19962` gọi thẳng.)
+//
+// 🔴🔴🔴 **LỌC "ĐÃ CHẤP THUẬN" CHỈ ÁP Ở PHIẾU, BỊ COMMENT Ở CẢ HAI KHỐI DÒNG**:
+//     câu đầu: `and rwr.WarrantyStatus = 'ACCE'` (còn sống, lọc **phiếu**)
+//     khối công:     `--AND rwrs.WarrantyStatus = 'ACCE'`   ← **bị comment**
+//     khối phụ tùng: `--AND rwrp.WarrantyStatus = 'ACCE'`   ← **bị comment**
+//   ⇒ Phiếu được duyệt thì **mọi dòng công và phụ tùng của phiếu đó đều vào báo cáo**, kể cả dòng **bị từ chối**
+//     hoặc **chưa duyệt**. Báo cáo tên là "đã chấp thuận" nhưng **cộng cả tiền chưa được chấp thuận**.
+//   ⇒ Port giữ 1:1 (chỉ lọc ở phiếu) + đếm riêng `itemsNotAcceptedButIncluded` để đo phần bị cộng thừa.
+// 🔴🔴🔴 **MỘT MỆNH ĐỀ, MỘT ALIAS `rwr`, HAI BẢNG HOÀN TOÀN KHÁC NHAU**:
+//   `zzzzClauseWhere_strDealerCodeConditionList` dựng theo `rwr.DealerCode` rồi cắm vào **hai** câu:
+//     câu 1 `from Ser_ROWarrantyReport rwr` · câu 3 `from **Mst_Dealer** rwr`.
+//   Chạy được vì cả hai bảng đều có `DealerCode` — nhưng đây là ca **rõ nhất** của họ #617/#620/#663/#664:
+//   không phải hai bảng anh em, mà là **bảng chứng từ** và **bảng danh mục**.
+// 🔴🔴🔴 **MỘT TOKEN `zzB_…_zzE` ĐƯỢC `Replace` NHƯNG KHÔNG HỀ CÓ TRONG SQL** (bậc 4 của thang lọc-sai-cột, #669
+//   — lần thứ hai): 📌 đếm chuỗi `zzB_tbl_Ser_ROWarrantyReport_HTCROWNo_zzE` trong cả hàm = **1** lần, và lần đó
+//   nằm trong danh sách `Replace`. Tệ hơn #669: nó còn **gọi hàm dựng SQL**
+//   `SqlTemplate_Ser_ROWarrantyReport.zzB_tbl_Ser_ROWarrantyReport_HTCROWNo_zzE("ACCE")` rồi **vứt kết quả**.
+//   ⇒ Có một mảnh nghiệp vụ (lọc theo `HTCROWNo` với trạng thái `ACCE`) **được dựng nhưng không bao giờ chạy**.
+// 🔴🔴 **GUARD CHẾT ĐÚNG KHUÔN #407**: nhánh công đặt `'' AS PartPrice`, nhánh phụ tùng đặt `'' AS ServicePrice`
+//   (**chuỗi rỗng**, không phải NULL), rồi câu cuối viết `isnull(t.PartPrice, 0.0) + isnull(t.ServicePrice, 0.0)`
+//   ⇒ `isnull` **không bao giờ bắt** vì giá trị là `''`. Tổng vẫn ra đúng **nhờ SQL Server ép `''` thành 0**,
+//     nên đây là guard **thừa và gây hiểu nhầm**, không phải sai số. Ghi đúng mức: 🔴 guard chết, ⚪ số không sai.
+// 🔴🔴 **HAI `left join` HOÀN TOÀN VÔ DỤNG**: câu `#tbl_RO_Customer` nối `left join Ser_Customer c` và
+//   `left join Ser_Car car on rwr0.CarID=car.CarID and rwr0.cusid = car.cusid` nhưng **danh sách `SELECT` không
+//   lấy một cột nào của `c` hay `car`** (chỉ `rwr0.ROID`, `rwr0.ROWID`, `ro.RONo`, `ro.FrameNo`).
+//   ⚪ Vì là `LEFT` nên **không lọc mất dòng** — chỉ tốn chi phí. (Nếu ai đó đổi sang `inner join` thì lập tức
+//     rơi vào lớp lỗi 102-site của #673.)
+// 🔴 **`select * from Mst_Dealer`** là **result set thứ nhất** (`Tables[0].TableName = "Mst_Dealer"`) ⇒ đổi schema
+//   danh mục đại lý là **đổi hợp đồng API**. ⚪ Đây **không** phải câu debug bỏ quên — code có đặt tên bảng cho nó.
+// 🔴 `order by RONo, ItemIndex` đặt trên `SELECT … into #tbl_part_tmp` ⇒ **vô nghĩa** (#415); ⚪ vô hại vì câu
+//   cuối có `order by t.RONo asc, t.ItemIndex desc, t.rankType asc` thật.
+// ⚪ **ÂM TÍNH — mốc ngày KHÔNG mất ngày cuối**: `BuildClause("and", "convert(char(10), rwr.ApprovedDate, 120)",
+//   …)` cắt còn `yyyy-MM-dd` ⇒ so **theo ngày** (quy ước ② trong bốn quy ước đã liệt kê ở #673).
+// 📌 Hằng `rankType`: công `CVC`→1 · `CVPSN`→2 · còn lại→3; phụ tùng `PTC`→1 · `PTTT`→2 · `VTP`→3 · còn lại→4.
+//   **Cả hai `case` đều CÓ `else`** ⇒ không sinh NULL (⚪, cùng dấu dương tính #672/#673).
+app.MapGet("/api/report/warranty-accept-getall-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? approvedFrom, DateTime? approvedTo, decimal? vat) =>
+{
+    // Câu 1 của nguồn: lọc PHIẾU theo ACCE + đại lý + ngày duyệt (so theo NGÀY, không mất ngày cuối).
+    var qc = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.Status == "Accepted");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qc = qc.Where(x => x.DealerCode == dealerCode!.Trim());
+    var claims = await qc.Select(x => new { x.Id, x.ClaimNo, x.RONo, x.Vin, x.DealerCode }).ToListAsync();
+    var claimIds = claims.Select(x => x.Id).ToList();
+    var claimById = claims.ToDictionary(x => x.Id);
+
+    // Nguồn KHÔNG lọc trạng thái ở dòng (hai vế ACCE đều bị comment) ⇒ port giữ nguyên và ĐẾM phần thừa.
+    var svcQ = db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId));
+    var partQ = db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId));
+    if (approvedFrom is not null) { svcQ = svcQ.Where(x => x.ApprovedDate >= approvedFrom!.Value.Date); partQ = partQ.Where(x => x.ApprovedDate >= approvedFrom!.Value.Date); }
+    if (approvedTo is not null) { svcQ = svcQ.Where(x => x.ApprovedDate < approvedTo!.Value.Date.AddDays(1)); partQ = partQ.Where(x => x.ApprovedDate < approvedTo!.Value.Date.AddDays(1)); }
+    if (vat is not null) { svcQ = svcQ.Where(x => x.VAT == vat); partQ = partQ.Where(x => x.Vat == vat); }
+
+    var svcs = await svcQ.Select(x => new { x.ClaimId, x.SerCode, x.SerName, x.Factor, x.Price, x.VAT,
+                                           x.ROWSerType, x.WarrantyStatus }).ToListAsync();
+    var parts = await partQ.Select(x => new { x.ClaimId, x.PartCode, x.PartName, x.Factor, x.Price,
+                                             x.Quantity, x.Vat, x.RowPartType, x.WarrantyStatus }).ToListAsync();
+
+    // rankType: chép NGUYÊN VĂN hai khối case của nguồn (cả hai đều CÓ else).
+    static string SvcRank(string? tp) => tp == "CVC" ? "1" : tp == "CVPSN" ? "2" : "3";
+    static string PartRank(string? tp) => tp == "PTC" ? "1" : tp == "PTTT" ? "2" : tp == "VTP" ? "3" : "4";
+
+    var rows = svcs.Select(x =>
+        {
+            var c = claimById[x.ClaimId];
+            return new { c.ClaimNo, c.RONo, frameNo = c.Vin, itemType = "Công", itemIndex = "2",
+                         itemCode = x.SerCode, itemName = x.SerName, vat = x.VAT,
+                         servicePrice = x.Factor * x.Price + x.Factor * x.Price * x.VAT * 0.01m,
+                         partPrice = 0m, rankType = SvcRank(x.ROWSerType), x.WarrantyStatus };
+        })
+        .Concat(parts.Select(x =>
+        {
+            var c = claimById[x.ClaimId];
+            return new { c.ClaimNo, c.RONo, frameNo = c.Vin, itemType = "Phụ tùng", itemIndex = "1",
+                         itemCode = x.PartCode, itemName = x.PartName, vat = x.Vat,
+                         servicePrice = 0m,
+                         partPrice = x.Factor * x.Price * x.Quantity + x.Factor * x.Price * x.Quantity * x.Vat * 0.01m,
+                         rankType = PartRank(x.RowPartType), x.WarrantyStatus };
+        }))
+        .OrderBy(x => x.RONo).ThenByDescending(x => x.itemIndex).ThenBy(x => x.rankType).ToList();
+
+    var notAccepted = rows.Count(x => x.WarrantyStatus != null && x.WarrantyStatus != "ACCE");
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        rows = rows.Select(x => new { x.ClaimNo, x.RONo, x.frameNo, x.itemType, x.itemCode, x.itemName,
+                                      x.vat, x.servicePrice, x.partPrice,
+                                      totalPrice = x.partPrice + x.servicePrice, x.rankType, x.WarrantyStatus }).ToList(),
+        totalPrice = rows.Sum(x => x.partPrice + x.servicePrice),
+        itemsNotAcceptedButIncluded = notAccepted,
+        amountNotAcceptedButIncluded = rows.Where(x => x.WarrantyStatus != null && x.WarrantyStatus != "ACCE")
+                                           .Sum(x => x.partPrice + x.servicePrice),
+        // ===== #685 =====
+        itemLevelAcceStatusFilterIsCommentedOut = "LOC DA CHAP THUAN CHI AP O PHIEU, BI COMMENT O CA HAI KHOI DONG: cau dau and rwr.WarrantyStatus = ACCE con song (loc PHIEU); khoi cong --AND rwrs.WarrantyStatus = ACCE BI COMMENT; khoi phu tung --AND rwrp.WarrantyStatus = ACCE BI COMMENT => phieu duoc duyet thi MOI dong cong va phu tung cua phieu do deu vao bao cao, ke ca dong BI TU CHOI hoac CHUA DUYET => bao cao ten la da chap thuan nhung CONG CA TIEN CHUA DUOC CHAP THUAN. Port giu 1:1 va dem rieng itemsNotAcceptedButIncluded",
+        oneClauseOneAliasTwoTotallyDifferentTables = "MOT MENH DE, MOT ALIAS rwr, HAI BANG HOAN TOAN KHAC NHAU: zzzzClauseWhere_strDealerCodeConditionList dung theo rwr.DealerCode roi cam vao HAI cau — cau 1 from Ser_ROWarrantyReport rwr, cau 3 from Mst_Dealer rwr. Chay duoc vi ca hai deu co DealerCode, nhung day la ca RO NHAT cua ho #617/#620/#663/#664: khong phai hai bang anh em ma la BANG CHUNG TU va BANG DANH MUC",
+        templateTokenBuiltThenDiscarded = "MOT TOKEN zzB_…_zzE DUOC Replace NHUNG KHONG HE CO TRONG SQL (bac 4 cua thang loc-sai-cot #669, lan thu hai): dem chuoi zzB_tbl_Ser_ROWarrantyReport_HTCROWNo_zzE trong ca ham = 1 lan, va lan do nam trong danh sach Replace. Te hon #669: no con GOI HAM DUNG SQL SqlTemplate_Ser_ROWarrantyReport.zzB_tbl_Ser_ROWarrantyReport_HTCROWNo_zzE(ACCE) roi VUT KET QUA => co mot manh nghiep vu (loc theo HTCROWNo voi trang thai ACCE) duoc dung nhung KHONG BAO GIO CHAY",
+        deadIsnullGuardOnEmptyString = "GUARD CHET DUNG KHUON #407: nhanh cong dat '' AS PartPrice, nhanh phu tung dat '' AS ServicePrice (CHUOI RONG khong phai NULL), roi cau cuoi viet isnull(t.PartPrice, 0.0) + isnull(t.ServicePrice, 0.0) => isnull KHONG BAO GIO bat. Tong van ra dung nho SQL Server ep '' thanh 0 => guard THUA va gay hieu nham, KHONG phai sai so",
+        twoUselessLeftJoins = "HAI left join HOAN TOAN VO DUNG: cau #tbl_RO_Customer noi left join Ser_Customer c va left join Ser_Car car on rwr0.CarID=car.CarID and rwr0.cusid = car.cusid nhung danh sach SELECT khong lay MOT COT NAO cua c hay car (chi rwr0.ROID, rwr0.ROWID, ro.RONo, ro.FrameNo). Vi la LEFT nen KHONG loc mat dong — chi ton chi phi; neu ai doi sang inner join thi lap tuc roi vao lop loi 102-site cua #673",
+        mstDealerIsResultSetZero = "select * from Mst_Dealer la RESULT SET THU NHAT (Tables[0].TableName = Mst_Dealer) => doi schema danh muc dai ly la DOI HOP DONG API. AM TINH: day KHONG phai cau debug bo quen — code co dat ten bang cho no",
+        orderByOnSelectIntoIsMeaningless = "order by RONo, ItemIndex dat tren SELECT … into #tbl_part_tmp => VO NGHIA (#415); vo hai vi cau cuoi co order by t.RONo asc, t.ItemIndex desc, t.rankType asc that",
+        negativeNoEndDateLoss = "AM TINH: BuildClause(and, convert(char(10), rwr.ApprovedDate, 120), …) cat con yyyy-MM-dd => so THEO NGAY (quy uoc 2 trong bon quy uoc da liet ke o #673)",
+        rankTypeConstantsBothHaveElse = "hang rankType: cong CVC->1, CVPSN->2, con lai->3; phu tung PTC->1, PTTT->2, VTP->3, con lai->4. CA HAI case deu CO else => khong sinh NULL (cung dau duong tinh #672/#673)",
+        fileDiffersBetweenMachinesButFunctionDoesNot = "BizCarSv.WarrantyReport.cs lech 522 dong giua hai may (md5 ca file ba1fb715 vs 19b741ca, canonical = 150 theo #42/#46) nhung md5 VUNG HAM d4f8bc3c KHOP => ham nay KHONG nam trong phan chenh; offset laptop :14329 vs 150 :14850",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #684 TRA CỨU CUỘC HẸN BẢN KHO `Ser_App_GetNew_WH_New20190624` =====
 // Vỏ bọc `BizCarSv.ZTemp.cs` (laptop `:25766-25904`, **máy 150 `:25785-25923`** — lệch **+19 dòng** đúng như ghi
 // chú "ZTemp.cs lệch 19 dòng"; md5 **cả file** khác nhau `5cd7ccab` ↔ `84d2c52d`, nhưng md5 **vùng hàm**
