@@ -248,6 +248,35 @@ app.MapDelete("/api/master/{cat}/{code}", async (string cat, string code, AppDbC
 //    `DealerCode` (chỉ áp ở bước Draft) **không cứu được** vì join cuối đã kéo lại mọi đại lý.
 //    Bản port lọc và khớp theo ĐỦ CẶP. Đây là sai lệch CỐ Ý so với nguồn, dựa trên chính khoá mà
 //    `_Update`/`_Delete`/`CheckDB` của nguồn dùng.
+// ===== 🔴🔴🔴 #635 PARITY `Mst_DeliveryLocation_GetX` (`Master.cs:11108`) — **RÒ RỈ CHÉO ĐẠI LÝ Ở MÀN DANH MỤC** =====
+// 3B: laptop `:11108` md5 `1b913afd` **KHỚP** máy 150 `:11108`.
+// ⚠️ **HAI CỔNG CHO CÙNG MỘT DANH MỤC**: endpoint dưới đây port từ đường **WinForm/DMS** (`%…%` +
+//   `GenEqualCondition2`); còn WS `Mst_DeliveryLocation_Get` (`:11256`) gọi `…_GetX` dùng **`BuildClause`**
+//   (đòi toán tử ở đầu chuỗi, thiếu là **rơi im lặng** — #410) ⇒ **cùng một danh mục, hai ngữ nghĩa lọc**:
+//   đường WinForm khớp **CHỨA**, đường WS khớp theo **toán tử người gọi tự truyền**.
+//
+// 🔴🔴🔴 **`DISTINCT` VÀ JOIN-NGƯỢC CHỈ THEO **MỘT NỬA** KHOÁ ⇒ BỘ LỌC ĐẠI LÝ BỊ RÒ**:
+//   Khoá thật của bảng là **CẶP** (`DeliveryLocationCode`, `DealerCode`) — chứng minh bằng hai hàm ghi:
+//     `Mst_DeliveryLocation_CheckDB`: `where t.DeliveryLocationCode = @… **and t.DealerCode = @…**`
+//     `Mst_DeliveryLocation_Delete` : `delete … where DeliveryLocationCode = @… **and DealerCode = @…**`
+//   Nhưng `…_GetX` thì:
+//     bảng lọc  : `select **distinct** identity(...) MyIdxSeq, mdl.DeliveryLocationCode into #tbl_…_Filter_Draft`
+//                 (WHERE **có** lọc `mdl.DealerCode`)
+//     bảng kết quả: `inner join Mst_DeliveryLocation mdl **on t.DeliveryLocationCode = mdl.DeliveryLocationCode**`
+//                 — **KHÔNG** nối lại `DealerCode`.
+//   ⇒ Hai hệ quả **cùng lúc**:
+//     ① `Count(0)` đếm **số MÃ** chứ không phải số bản ghi (họ #631 — tổng bị co lại);
+//     ② Lọc theo đại lý **A** chọn ra các *mã* của A, rồi câu kết quả **nở lại sang MỌI đại lý** dùng chung mã
+//        đó ⇒ **địa điểm giao xe của đại lý B lọt vào danh sách của A**. Đây là **rò rỉ dữ liệu chéo đại lý**,
+//        không chỉ là lệch số.
+//   📌 Khẳng định này dựa trên **khoá do chính nguồn định nghĩa** (hai hàm ghi ở trên), không phải suy đoán.
+// 🔴🔴 **`inner join Mst_Dealer` CHỈ CÓ Ở KHỐI KẾT QUẢ**: `inner join Mst_Dealer md on mdl.DealerCode = md.DealerCode`
+//   (để lấy `md.DealerName`) — bảng lọc/đếm **không** có join này ⇒ địa điểm thuộc đại lý đã bị xoá khỏi
+//   `Mst_Dealer` **vẫn được đếm** nhưng **không hiện** (họ #628 — tổng lớn hơn danh sách).
+//   ⇒ Một hàm chứa **cả hai chiều lệch**: ① co tổng lại, ② lại làm rơi dòng. Đừng kết luận "net" chiều nào.
+// ⚪ Đối chứng #634: bảng anh em `Mst_DeliveryForm` khoá **một cột**, `distinct` một cột ⇒ **an toàn**. Cùng
+//   một khuôn, khác khoá ⇒ khác hậu quả. Đây chính là tiêu chí đã chốt ở #632.
+// 📌 Lượt PARITY — vá endpoint đã có, **không** tăng bộ đếm màn. Port **giữ đúng cặp khoá**.
 app.MapGet("/api/deliverylocations", async (AppDbContext db, ITenantContext t,
     string? deliveryLocationCode, string? dealerCode, string? deliveryLocationName, string? flagActive) =>
 {
@@ -268,7 +297,36 @@ app.MapGet("/api/deliverylocations", async (AppDbContext db, ITenantContext t,
         .Select(x => new { x.d.DeliveryLocationCode, x.d.DealerCode, x.dealerName,
                            x.d.DeliveryLocationName, x.d.FlagActive, x.d.LogLUDateTime, x.d.LogLUBy })
         .ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+
+    // ===== #635: đo thật hai hậu quả của nguồn trên chính dữ liệu đang có =====
+    var allLocs = await db.DeliveryLocations.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.DeliveryLocationCode, x.DealerCode }).ToListAsync();
+    var dealerCodes = await db.Dealers.Where(x => x.OrgId == t.OrgId).Select(x => x.DealerCode).ToListAsync();
+    // ① distinct theo MỘT cột ⇒ tổng của nguồn = số MÃ, không phải số bản ghi
+    var sourceMyCountWouldBe = allLocs.Select(x => x.DeliveryLocationCode).Distinct().Count();
+    // ② mã dùng chung bởi >1 đại lý ⇒ chính là số mã làm rò bộ lọc đại lý
+    var codesSharedAcrossDealers = allLocs.GroupBy(x => x.DeliveryLocationCode)
+        .Count(g => g.Select(x => x.DealerCode).Distinct().Count() > 1);
+    // ③ inner join Mst_Dealer chỉ ở khối kết quả ⇒ dòng bị nuốt khỏi danh sách nhưng vẫn được đếm
+    var droppedByDealerJoin = allLocs.Count(x => !dealerCodes.Contains(x.DealerCode));
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #635 =====
+        realKeyIsThePair = "khoa that la CAP (DeliveryLocationCode, DealerCode) — chung minh bang Mst_DeliveryLocation_CheckDB (where code = @… AND DealerCode = @…) va _Delete (delete … where code = @… AND DealerCode = @…)",
+        getxDistinctsAndJoinsOnHalfTheKey = "nhung _GetX distinct chi tren DeliveryLocationCode va cau ket qua noi nguoc lai CHI theo cot do, KHONG noi lai DealerCode",
+        consequenceOneCountIsCodes = "Count(0) dem SO MA chu khong phai so ban ghi (ho #631 — tong bi co lai)",
+        sourceMyCountWouldBe,
+        consequenceTwoDealerFilterLeaks = "loc theo dai ly A chon ra cac MA cua A roi cau ket qua NO LAI sang MOI dai ly dung chung ma do => dia diem giao xe cua dai ly B lot vao danh sach cua A — RO RI DU LIEU CHEO DAI LY, khong chi lech so",
+        codesSharedAcrossDealers,
+        consequenceThreeDealerJoinDropsRows = "inner join Mst_Dealer CHI co o khoi ket qua (de lay DealerName); bang loc/dem KHONG co join nay => dia diem thuoc dai ly da bi xoa khoi Mst_Dealer VAN duoc dem nhung KHONG hien (ho #628)",
+        droppedByDealerJoin,
+        bothMismatchDirectionsInOneFunction = "mot ham chua CA HAI chieu lech: co tong lai VA lam roi dong — dung ket luan net chieu nao",
+        portKeepsFullKey = "port loc va sap theo DU CAP (DeliveryLocationCode, DealerCode) nen khong ro ri",
+        twoGatewaysTwoFilterSemantics = "endpoint nay port tu duong WinForm/DMS (%…% + GenEqualCondition2); WS Mst_DeliveryLocation_Get goi _GetX dung BuildClause (doi toan tu o dau chuoi, thieu la roi im lang #410) => cung mot danh muc, HAI ngu nghia loc",
+        siblingTableIsSafe = "AM TINH doi chung #634: Mst_DeliveryForm khoa MOT cot nen distinct mot cot la dung; cung mot khuon, khac khoa => khac hau qua",
+    });
 }).RequireAuthorization();
 
 // Thêm/sửa — port `Mst_DeliveryLocation_Add` (BizCarSv.Master.cs:11386) và `_Update`.
