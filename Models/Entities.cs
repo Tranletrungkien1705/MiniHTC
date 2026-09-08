@@ -9510,6 +9510,23 @@ public sealed class DisbursementType
     public string? DisbursementTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
 }
+
+/// <summary>🔴 #B161–#B164 — `Mst_BankDealer`: **ngân hàng của đại lý**, khoá đôi
+/// `(DealerCode, BankCode)`. Hai cờ **độc lập**: `FlagBankGrt` (ngân hàng **bảo lãnh**) và
+/// `FlagBankPmt` (ngân hàng **thanh toán**) — một ngân hàng có thể giữ một, cả hai, hoặc không vai nào.</summary>
+public sealed class BankDealer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string BankCode { get; set; } = "";
+    public string? FlagBankGrt { get; set; }
+    public string? FlagBankPmt { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

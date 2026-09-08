@@ -28933,6 +28933,176 @@ app.MapGet("/api/masters/disbursement-types", async (
     });
 }).RequireAuthorization();
 
+// ===== #B161–#B164 NGÂN HÀNG CỦA ĐẠI LÝ — `Mst_BankDealer_Get` / `_Create` / `_Update` / `_Delete`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// 🔴 WS64 có **ĐỦ BỐN cửa** (`grep -o "_biz.Mst_BankDealer_[A-Za-z]*" | sort -u`) — khác ba danh mục
+//   ở #B158–#B160 chỉ có `_Get`. ⇒ Port đủ bốn, **không thiếu không thừa**.
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy** (lần này vị trí hàm **trùng** trên hai máy —
+//   đã kiểm lại bằng `grep -n` hai bên theo luật `C0-…quadragesimusprimus`):
+//   `4661,4829 / 8ae96d9b6726ab4a75b18a6ff992076a`  (`_Create`)
+//   `5019,5191 / a164c4045389f7fa28d813c8d78470b1`  (`_Update`)
+//   `5390,5531 / 6ad451a4448b0bfe9d1d0f45596c4fce`  (`_Delete`)
+// 🔴 **Khoá đôi `(DealerCode, BankCode)`**; hai cờ **độc lập**: `FlagBankGrt` (ngân hàng **bảo lãnh**)
+//   và `FlagBankPmt` (ngân hàng **thanh toán**). Một ngân hàng có thể giữ **một, cả hai, hoặc không**
+//   vai nào ⇒ **không phải cờ loại trừ lẫn nhau**; port thành một trường "loại ngân hàng" là **sai mô hình**.
+// 🔴 `_Create` có **HAI guard tồn tại**, mỗi cái một hàm riêng:
+//     · `Mst_BankDealer_CheckDB(…)` — cặp (đại lý, ngân hàng) **chưa được khai**;
+//     · `Mst_Bank_CheckDB(…)` — **ngân hàng phải có** trong danh mục `Mst_Bank`.
+//   ⇒ Thiếu guard thứ hai sẽ cho khai ngân hàng **không tồn tại**.
+// 🔴 `_Update` **cập nhật TỪNG PHẦN**, chỉ **BỐN** cột có cờ: `FlagBankGrt` · `FlagBankPmt` ·
+//   `FlagActive` · `Remark`. **`DealerCode`/`BankCode` KHÔNG có cờ** ⇒ **khoá bất biến**
+//   (luật `C0-…quadragesimus`).
+// 🔴 `_Delete` **XOÁ THẬT** (`dtDB.Rows[0].Delete()` + `SaveData`), sau khi `CheckDB` xác nhận tồn tại.
+// 🔴🔴 **`LogLUDateTime` ở cụm này CHỈ LƯU NGÀY, MẤT GIỜ**:
+//     `drDB["LogLUDateTime"] = Utils.CUtils.StandardizeDate(DateTime.Now);`
+//     `StandardizeDate` trả **`yyyy-MM-dd`** — khác hẳn các cụm khác dùng
+//     `DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")`. ⇒ Vết sửa ở bảng này **không truy được giờ**.
+//     Ghi lại; port MiniHTC ghi `DateTime` đầy đủ và **nêu rõ khác biệt** (`sourceStoresDateOnly`).
+// 🔴 Mọi đường ghi đều `SaveData` **hai lần** (`_dbMain` và `_dbWH`).
+// 📌 §12: thực thể `BankDealer` + Seeder + DbSet + DTO + có ở **cả POST/PUT và GET**.
+app.MapGet("/api/masters/bank-dealers", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? bankCode, string? flagActive,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.BankDealers.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim());
+    if (!string.IsNullOrWhiteSpace(bankCode)) q = q.Where(x => x.BankCode == bankCode.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+
+    var all = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.BankCode).ToListAsync();
+    var myCount = all.Count;                                   // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId)
+        .Select(b => new { b.BankCode, b.BankName }).ToListAsync())
+        .GroupBy(b => b.BankCode).ToDictionary(g => g.Key, g => g.First().BankName);
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_BankDealer = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.DealerCode, x.BankCode, x.FlagBankGrt, x.FlagBankPmt, x.FlagActive, x.Remark,
+            x.LogLUDateTime, x.LogLUBy,
+            mb_BankName = banks.TryGetValue(x.BankCode, out var bn) ? bn : null,
+            md_DealerName = dealers.TryGetValue(x.DealerCode, out var dn) ? dn : null
+        }),
+        recordStart = start, recordCount = count,
+        twoFlagNote = "HAI CO DOC LAP: FlagBankGrt (ngan hang BAO LANH) va FlagBankPmt (ngan hang THANH TOAN). Mot ngan hang co the giu MOT, CA HAI, hoac KHONG vai nao => KHONG phai co loai tru lan nhau; port thanh mot truong 'loai ngan hang' la SAI MO HINH.",
+        fourDoorsNote = "WS64 co DU BON cua (_Get/_Create/_Update/_Delete) - khac ba danh muc #B158-#B160 chi co _Get. Port du bon, khong thieu khong thua."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/bank-dealers", async (
+    BankDealerCreateDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dl = (dto.DealerCode ?? "").Trim();
+    var bk = (dto.BankCode ?? "").Trim();
+
+    // 🔴 Guard 1 — cặp (đại lý, ngân hàng) chưa được khai.
+    var dup = await db.BankDealers.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.BankCode == bk);
+    if (dup)
+        return Results.BadRequest(new
+        {
+            error = "Mst_BankDealer_CheckDB_Exist",
+            check = new { DealerCode = dl, BankCode = bk },
+            note = "Nguon goi Mst_BankDealer_CheckDB truoc khi tao."
+        });
+
+    // 🔴 Guard 2 — NGÂN HÀNG PHẢI CÓ trong Mst_Bank (hàm CheckDB RIÊNG, dễ bị bỏ sót khi port).
+    var bankOk = await db.MstBanks.AnyAsync(b => b.OrgId == t.OrgId && b.BankCode == bk);
+    if (!bankOk)
+        return Results.BadRequest(new
+        {
+            error = "Mst_Bank_CheckDB_NotFound",
+            check = new { BankCode = bk },
+            note = "Nguon goi Mst_Bank_CheckDB - guard RIENG; thieu no se cho khai ngan hang KHONG TON TAI."
+        });
+
+    var x2 = new BankDealer
+    {
+        OrgId = t.OrgId, DealerCode = dl, BankCode = bk,
+        FlagBankGrt = dto.FlagBankGrt, FlagBankPmt = dto.FlagBankPmt,
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim(),
+        Remark = dto.Remark,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"
+    };
+    db.BankDealers.Add(x2);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        x2.DealerCode, x2.BankCode, x2.FlagBankGrt, x2.FlagBankPmt, x2.FlagActive, x2.Remark,
+        sourceStoresDateOnly = true,
+        dateOnlyNote = "LogLUDateTime o cum nay CHI LUU NGAY, MAT GIO: nguon ghi Utils.CUtils.StandardizeDate(DateTime.Now) - tra 'yyyy-MM-dd' - khac han cac cum khac dung ToString('yyyy-MM-dd HH:mm:ss'). Vet sua o bang nay KHONG TRUY DUOC GIO. Port MiniHTC ghi DateTime day du - khac biet co chu y.",
+        twoGuardNote = "_Create co HAI guard ton tai, moi cai mot ham rieng: Mst_BankDealer_CheckDB (cap chua duoc khai) va Mst_Bank_CheckDB (ngan hang phai co trong danh muc).",
+        twoDbNote = "Nguon SaveData hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
+app.MapPut("/api/masters/bank-dealers/{dealerCode}/{bankCode}", async (
+    string dealerCode, string bankCode, BankDealerUpdDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var bk = (bankCode ?? "").Trim();
+    var x = await db.BankDealers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.BankCode == bk);
+    if (x is null) return Results.NotFound(new { dealerCode = dl, bankCode = bk });
+
+    // 🔴 CHỈ BỐN cột có cờ bUpd_*; khoá (DealerCode, BankCode) BẤT BIẾN.
+    var written = new List<string>();
+    if (dto.FlagBankGrt is not null) { x.FlagBankGrt = dto.FlagBankGrt; written.Add("FlagBankGrt"); }
+    if (dto.FlagBankPmt is not null) { x.FlagBankPmt = dto.FlagBankPmt; written.Add("FlagBankPmt"); }
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) { x.FlagActive = dto.FlagActive.Trim(); written.Add("FlagActive"); }
+    if (dto.Remark is not null) { x.Remark = dto.Remark; written.Add("Remark"); }
+    x.LogLUDateTime = DateTime.Now; written.Add("LogLUDateTime");
+    x.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; written.Add("LogLUBy");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        x.DealerCode, x.BankCode, x.FlagBankGrt, x.FlagBankPmt, x.FlagActive, x.Remark,
+        x.LogLUDateTime, x.LogLUBy,
+        columnsWritten = written,
+        partialUpdateNote = "Cap nhat TUNG PHAN, chi BON cot co co bUpd_*: FlagBankGrt, FlagBankPmt, FlagActive, Remark. DealerCode/BankCode KHONG co co => KHOA BAT BIEN (luat C0-...quadragesimus).",
+        twoDbNote = "Nguon SaveData hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/masters/bank-dealers/{dealerCode}/{bankCode}", async (
+    string dealerCode, string bankCode, AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var bk = (bankCode ?? "").Trim();
+    var x = await db.BankDealers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.BankCode == bk);
+    if (x is null)
+        return Results.NotFound(new
+        {
+            error = "Mst_BankDealer_CheckDB_NotFound",
+            check = new { DealerCode = dl, BankCode = bk },
+            note = "Nguon goi Mst_BankDealer_CheckDB xac nhan ton tai truoc khi xoa."
+        });
+
+    // 🔴 XOÁ THẬT — `dtDB.Rows[0].Delete()` + SaveData.
+    db.BankDealers.Remove(x);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = true, dealerCode = dl, bankCode = bk,
+        hardDeleteNote = "XOA THAT: nguon chay dtDB_Mst_BankDealer.Rows[0].Delete() roi SaveData - khong phai doi co.",
+        twoDbNote = "Nguon SaveData hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
@@ -44735,6 +44905,8 @@ record MngRateTonKhoBanHangSaveDto(string? FlagIsDelete, List<MngRateTonKhoBanHa
 record AmplitudeApprOrdRowDto(string? DealerCode, string? ModelCode, decimal? AmplitudeOrdMax, decimal? AmplitudePlanMax);   // #B154
 record AmplitudeApprOrdSaveDto(string? FlagIsDelete, List<AmplitudeApprOrdRowDto>? Rows);   // #B154
 record MapVinSupplyDistSumUpdDto(string? SPDBSName, string? FlagActive);   // #B157
+record BankDealerCreateDto(string? DealerCode, string? BankCode, string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark);   // #B162
+record BankDealerUpdDto(string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark);   // #B163
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
