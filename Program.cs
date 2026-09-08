@@ -31937,6 +31937,130 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   ⇒ trở thành `Tables[0] = "Table_Banle_Detail"` — **hợp đồng API** (lần thứ **hai**, sau #B290).
 // 🔴 Bảng tổng gom theo **BẢY cột** (`CVModelCode`, `ModelName`, `ActualSpec`, `AC_SpecDescription`,
 //   `CVColorCode`, `ColorName`, `ColumnMonth`) với `count(t.CarId) Total`, `order by ColumnMonth`.
+
+// ===== #B299/#B300/#B301 BÁO CÁO MASTER — PI (CBU từ DB + CKD từ WS nhà máy) —
+//       `RptMaster_PI_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `147536,147791` ≡ 150 `147541,147796` ⇒ **`af2388695c1e94ebfd73c06981985655`**.
+// 🔴🔴🔴 **BÁO CÁO HAI NGUỒN**: `Table_PI_CBU_ChiTiet` + `Table_PI_CBU` dựng **từ DB HTC**
+//   (lọc `mcs.AssemblyStatus = 'CBU'`), còn **`Table_PI_CKD` lấy từ WEB SERVICE NHÀ MÁY**
+//   (`ws.Rpt_MnfPlanOrderSummary_PivotByMonth(user, pass, @From, @To)`).
+// 🔴🔴🔴 **BUG THẬT — LỖI WS NHÀ MÁY BỊ NUỐT HOÀN TOÀN, KHÔNG MỘT DÒNG GUARD**:
+//     `DataTable dtCKD = mdsNM.Tables["Rpt_MnfPlanOrderSummary_PivotByMonth"];`
+//     `if (dtCKD != null && dtCKD.Rows.Count > 0) { … dsGetData.Tables.Add(dtCKD.Copy()); }`
+//   ⇒ **Không có `HasError` nào cả**: nhà máy trả lỗi ⇒ `dtCKD` null/rỗng ⇒ **bảng CKD đơn giản
+//     BIẾN MẤT khỏi kết quả**, người dùng thấy báo cáo **thiếu hẳn phần CKD mà không có thông báo**.
+//   ⚠️ **Tệ hơn #B251**: ở đó ít nhất còn `if (HasError(...))` (dù kiểm nhầm DataSet); ở đây **không có
+//     guard nào** ⇒ *"không có dữ liệu"* và *"hệ nhà máy hỏng"* **không phân biệt được**.
+//   📌 Port trả cờ `ckdSourceMissing` khi không có dữ liệu CKD, thay vì im lặng.
+// 🔴🔴 **`left join Mst_CarSpec` + `where mcs.AssemblyStatus = 'CBU'`** ⇒ điều kiện ở `where` trên cột
+//   bảng phải ⇒ **`left join` BIẾN THÀNH `inner`** (luật `C0-…octogesimusnonus`)
+//   ⇒ dòng PI có `SpecCode` **không tồn tại trong `Mst_CarSpec`** bị **loại hẳn**, không phải để trống.
+// 🔴🔴 **SO SÁNH CHUỖI GIỮA HAI ĐỘ DÀI KHÁC NHAU**:
+//     `and opi.ProductionMonth >= @strTDate_From and opi.ProductionMonth <= @strTDate_To`
+//   `@strTDate_From/To` đã qua `StandardizeDate` ⇒ **`'yyyy-MM-dd'` (10 ký tự)**, còn `ProductionMonth`
+//   được cắt `left(f.ProductionMonth, 7)` ở cuối ⇒ khả năng cao là **`'yyyy-MM'` (7 ký tự)**.
+//   ⇒ So chuỗi: `'2020-03' < '2020-03-15'` ⇒ **tháng 03 bị LOẠI** dù nó bao trùm ngày lọc.
+//     Cùng lớp ghi nhớ `dmssales-stddate-vs-stddtime-theo-kieu-luu`. 📌 Port so theo **THÁNG**
+//     (`yyyy-MM`) và ghi rõ ở `monthVsDateNote` — **không** sao chép lỗi so lệch độ dài.
+// 🔴 **`ColorName = mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN`** — nối chuỗi bằng `+`, **không**
+//   `CONCAT` ⇒ **một vế NULL là CẢ CHUỖI NULL** (không phải "chỉ mất một nửa").
+// ⚠️ `order by` đặt trong câu `select … into` ⇒ **vô nghĩa** (giống #B245): thứ tự bảng tạm không đảm bảo.
+// ⚠️ **Câu debug bị bỏ quên, KHÔNG comment** — `select null tbl_PI_Raw, tt.* from #tbl_PI_Raw tt;`
+//   ⇒ trở thành `Tables[0] = "Table_PI_CBU_ChiTiet"` — **hợp đồng API**, lần thứ **BA** (sau #B290, #B296).
+// ✅ RBAC **tổ hợp (1)**: `CheckHTCDirect` **ACTIVE**; `@strBUPatternOfUser` nạp nhưng SQL không dùng.
+// ✅ Guard ngày: `To` rỗng ⇒ `TConst.DateTimeSpecial.DateMax`.
+app.MapPost("/api/reports/master-pi", async (
+    MasterPiDto? dto, AppDbContext db, ITenantContext t,
+    DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);
+
+    // 🔴 Port so theo THÁNG (yyyy-MM) — nguồn so chuỗi lệch độ dài.
+    var fromMonth = from == DateTime.MinValue ? "0000-01" : from.ToString("yyyy-MM");
+    var toMonth = to.Year >= 9999 ? "9999-12" : to.ToString("yyyy-MM");
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var pis = (await db.OrdPerformanceInvoices.Where(p => p.OrgId == t.OrgId && p.ProductionMonth != null)
+            .ToListAsync())
+        .Where(p => string.CompareOrdinal(p.ProductionMonth!.Length >= 7 ? p.ProductionMonth[..7] : p.ProductionMonth, fromMonth) >= 0
+                 && string.CompareOrdinal(p.ProductionMonth!.Length >= 7 ? p.ProductionMonth[..7] : p.ProductionMonth, toMonth) <= 0)
+        .ToList();
+    var refNos = pis.Select(p => p.RefNo).Distinct().ToList();
+    var monthByRef = pis.GroupBy(p => p.RefNo).ToDictionary(g => g.Key, g => g.First().ProductionMonth!);
+
+    var dtls = await db.OrdPerformanceInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && refNos.Contains(d.RefNo)).ToListAsync();
+
+    // 🔴 `left join Mst_CarSpec` + `where AssemblyStatus='CBU'` ⇒ thực chất INNER: spec thiếu ⇒ loại hẳn.
+    var droppedNoSpecOrNotCbu = new List<object>();
+    var filtered = new List<(OrdPerformanceInvoiceDetail D, string Month, string? SpecDesc)>();
+    foreach (var d in dtls)
+    {
+        var sc = d.SpecCode ?? "";
+        if (!specs.TryGetValue(sc, out var sp) || sp.AssemblyStatus != "CBU")
+        { droppedNoSpecOrNotCbu.Add(new { d.RefNo, d.SpecCode, d.ModelCode, d.ColorCode }); continue; }
+        filtered.Add((d, monthByRef[d.RefNo], sp.SpecDesc));
+    }
+
+    // #tbl_PI_Raw — gộp theo NĂM cột.
+    var raw = filtered
+        .GroupBy(x => (x.D.ModelCode, x.D.SpecCode, x.D.ColorCode, x.SpecDesc, x.Month))
+        .Select(g => new
+        {
+            ModelCode = g.Key.ModelCode, SpecCode = g.Key.SpecCode, ColorCode = g.Key.ColorCode,
+            SpecDescription = g.Key.SpecDesc, ProductionMonth = g.Key.Month,
+            Total = g.Sum(x => x.D.Quantity ?? 0m)
+        })
+        .OrderBy(x => x.ModelCode).ThenBy(x => x.SpecCode).ThenBy(x => x.ColorCode)
+        .ThenBy(x => x.ProductionMonth).ToList();
+
+    // Tables[0] — câu debug bị bỏ quên (cột đầu luôn null).
+    var chiTiet = raw.Select(r => new
+    {
+        tbl_PI_Raw = (string?)null,
+        r.ModelCode, r.SpecCode, r.ColorCode, r.SpecDescription, r.ProductionMonth, r.Total
+    }).ToList();
+
+    // Tables[1] — bảng CBU tổng hợp.
+    var cbu = raw.Select(r => new
+    {
+        CVModelCode = r.ModelCode,
+        CVActualSpec = r.SpecCode,
+        CVColorCode = r.ColorCode,
+        AC_SpecDescription = r.SpecDescription,
+        ModelName = (r.ModelCode != null && models.TryGetValue(r.ModelCode, out var mm)) ? mm.ModelName : null,
+        // 🔴 Nguồn nối chuỗi bằng '+' ⇒ một vế NULL là CẢ CHUỖI NULL. Giữ đúng.
+        ColorName = (string?)null,                  // 📌 NỢ: Mst_CarColor chưa nối
+        ColumnMonth = r.ProductionMonth != null && r.ProductionMonth.Length >= 7 ? r.ProductionMonth[..7] : r.ProductionMonth,
+        r.Total
+    }).ToList();
+
+    // Tables[2] — CKD: nguồn lấy từ WS NHÀ MÁY; MiniHTC nhận qua payload.
+    var ckd = dto?.CkdRows ?? new List<MasterPiCkdRowDto>();
+
+    return Results.Ok(new
+    {
+        Table_PI_CBU_ChiTiet = chiTiet,     // Tables[0]
+        Table_PI_CBU = cbu,                 // Tables[1]
+        Table_PI_CKD = ckd,                 // Tables[2] — chỉ thêm khi CÓ dòng (đúng nguồn)
+        ckdSourceMissing = ckd.Count == 0,
+        droppedNoSpecOrNotCbu,
+        twoSourcesNote = "BAO CAO HAI NGUON: Table_PI_CBU_ChiTiet + Table_PI_CBU dung TU DB HTC (loc mcs.AssemblyStatus = 'CBU'); con Table_PI_CKD lay tu WEB SERVICE NHA MAY (ws.Rpt_MnfPlanOrderSummary_PivotByMonth(user, pass, @From, @To)). MiniHTC chua noi WS nha may => nhan qua payload, KHONG BIA.",
+        swallowedWsErrorNote = "BUG THAT - LOI WS NHA MAY BI NUOT HOAN TOAN, KHONG MOT DONG GUARD: 'DataTable dtCKD = mdsNM.Tables[\"Rpt_MnfPlanOrderSummary_PivotByMonth\"]; if (dtCKD != null && dtCKD.Rows.Count > 0) { ... dsGetData.Tables.Add(dtCKD.Copy()); }' - KHONG co HasError nao ca: nha may tra loi => dtCKD null/rong => BANG CKD DON GIAN BIEN MAT khoi ket qua, nguoi dung thay bao cao THIEU HAN PHAN CKD ma khong co thong bao. TE HON #B251 (o do it nhat con if (HasError(...)) du kiem nham DataSet); o day 'khong co du lieu' va 'he nha may hong' KHONG PHAN BIET DUOC. Port tra co ckdSourceMissing.",
+        leftBecomesInnerNote = "'left join Mst_CarSpec' + 'where mcs.AssemblyStatus = CBU' => dieu kien o 'where' tren cot bang phai => LEFT JOIN BIEN THANH INNER (luat C0-...octogesimusnonus) => dong PI co SpecCode KHONG TON TAI trong Mst_CarSpec bi LOAI HAN, khong phai de trong. Xem droppedNoSpecOrNotCbu.",
+        monthVsDateNote = "SO SANH CHUOI GIUA HAI DO DAI KHAC NHAU: 'and opi.ProductionMonth >= @strTDate_From and <= @strTDate_To'. @strTDate_From/To da qua StandardizeDate => 'yyyy-MM-dd' (10 ky tu), con ProductionMonth duoc cat left(...,7) o cuoi => kha nang cao la 'yyyy-MM' (7 ky tu). So chuoi: '2020-03' < '2020-03-15' => THANG 03 BI LOAI du no bao trum ngay loc. Cung lop ghi nho dmssales-stddate-vs-stddtime-theo-kieu-luu. Port so theo THANG (yyyy-MM), KHONG sao chep loi so lech do dai.",
+        concatNullNote = "ColorName = mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN - noi chuoi bang '+', KHONG dung CONCAT => MOT VE NULL LA CA CHUOI NULL (khong phai 'chi mat mot nua').",
+        orderByIntoNote = "'order by' dat trong cau 'select ... into' => VO NGHIA (giong #B245): thu tu bang tam khong dam bao.",
+        forgottenDebugSelectNote = "CAU DEBUG BI BO QUEN, KHONG COMMENT: 'select null tbl_PI_Raw, tt.* from #tbl_PI_Raw tt;' => tro thanh Tables[0] = 'Table_PI_CBU_ChiTiet' - HOP DONG API, lan thu BA (sau #B290, #B296). Cot dau luon null.",
+        rbacNote = "RBAC - to hop (1): CheckHTCDirect ACTIVE; @strBUPatternOfUser nap nhung SQL khong dung => co cong, khong phai lo. Guard ngay: To rong => TConst.DateTimeSpecial.DateMax."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/master-banle", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
 {
@@ -50935,6 +51059,8 @@ record Dms40SoRootApproveLineDto(string? ModelCode, string? SpecCode, string? Co
 record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);
 record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime, string? PDIStorageStatus = null);   // #B251
 record MnfPlOrderStatisticDto(List<MnfPlMmsRowDto>? MmsRows, string? OrderStatusQtyReturn);   // #B251-B253
+record MasterPiDto(List<MasterPiCkdRowDto>? CkdRows);   // #B299-B301 - CKD lay tu WS nha may
+record MasterPiCkdRowDto(string? ModelCode, string? SpecCode, string? ColorCode, string? SpecDescription, string? ColumnMonth, decimal? Total);   // #B299-B301
 record MnfPlMmsRowDto(string? OrderNo, string? ModelCode, string? ColorCode, string? SpecCode, decimal? QtyOrdMonthN0, decimal? QtyApprMonthN0, string? CreateDTime, string? ApprDTime, string? OrdMonth, string? ApprMonth, string? ModelName, string? SpecDescription, string? ColorName, string? OCNCode);   // #B251-B253 - 14 cot dung khuon MyBuildDBDT_Common
 record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
 record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
