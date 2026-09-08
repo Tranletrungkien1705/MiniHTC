@@ -16919,9 +16919,12 @@ app.MapGet("/api/customercare/birthday", async (AppDbContext db, ITenantContext 
         count = rows.Count, rows,
         carsHiddenTotal = rows.Sum(x => x.otherCarsHiddenBySource),
         // ===== #662 =====
-        dobFilterBoundToCareDate = "BuildClause(and, t.Date, strDOBConditionList, …) — t la Ser_CustomerCare nen t.Date la NGAY CHAM SOC, khong phai ngay sinh; day la man cham soc khach SINH NHAT (Bth = Birthday) ma bo loc sinh nhat KHONG cham toi ngay sinh (cung loai LOC SAI COT voi #637)",
-        correctColumnExistsRightThere = "Ser_Customer CO cot DOB — dung o 3 site khac (Inventory.StockOut.cs x2 duoi ten scus.DOB CustomerDateOfBirth, Service.cs x1 cus.DOB); va bang cus DA duoc inner join ngay trong chinh cau nay => chi can doi t.Date thanh cus.DOB",
-        careDateNotNullFilter = "and t.Date is not null o WHERE — loc co ngay cham soc, tuc ban ghi CHUA cham soc lan nao bi loai khoi man LAP KE HOACH cham soc",
+        // 🔴🔴🔴 #664 RUT LAI PHAT HIEN CHINH CUA #662 — TOI DA DOC SAI TEN COT.
+        retracted_dobFilterBoundToCareDate = "RUT LAI (#664). #662 ghi BuildClause(and, t.Date, strDOBConditionList, …) va ket luan bo loc sinh nhat lai loc NGAY CHAM SOC. SAI. Doc lai nguon: FROM Ser_CustomerCareBth t va BuildClause(and, t.DateBth, strDOBConditionList, …). Bang phieu cham soc sinh nhat CO cot rieng DateBth (dem 35 lan trong tang biz) va bo loc rang DUNG vao no. Dem quyet dinh: chuoi \"t.Date\" (dau nhay chinh xac, khong phai DateBth) xuat hien 0 lan trong toan bo TERP.BizCarSv => cot do KHONG TON TAI o day. KHONG co loi loc sai cot o man nay.",
+        retracted_correctColumnExistsRightThere = "RUT LAI (#664) — he qua cua tren. Ser_Customer.DOB co that nhung KHONG lien quan: phieu sinh nhat luu ngay nhac o DateBth cua chinh phieu, khong doc DOB cua khach.",
+        retracted_careDateNotNullFilter = "RUT LAI (#664). Dong that la AND t.DateBth is not null — loc phieu CO ngay sinh nhat, dung nghiep vu, khong phai loc ngay cham soc. Khop voi ghi chep #492 da co tu truoc (Sinh nhat: AND t.DateBth is not null + zzzzClauseWhereDateBthConditionList) — #662 mau thuan voi #492 ve CUNG MOT BANG ma toi khong doi chieu.",
+        retractionLesson = "#662 mau thuan voi #492 da ghi truoc do ve CUNG MOT BANG (Ser_CustomerCareBth) va toi khong doi chieu => luat moi: phat hien moi mau thuan voi ghi chep cu ve CUNG bang/cot thi PHAI mo lai ghi chep cu truoc khi ket luan",
+        survivingFindings662 = "CON DUNG sau khi ra soat lai: min(t.CarId) chon dai mot xe (da doc lai nguyen khoi left join subquery tai WH.cs:26271-26282), bo loc FrameNo/PlateNo ap len car nen chi khop chiec da chon, Row_Number() over (order by cus.CusID desc) thieu tie-breaker, va phan trang o day CO chay that",
         minCarIdPicksOneCarArbitrarily = "left join (select t.CusID, min(t.CarId) CarId from ser_car t … group by t.CusId) tt on cus.CusID = tt.cusId, roi left join Ser_Car car on tt.CarId = car.CarId => khach nhieu xe thi man chi hien MOT chiec (ma nho nhat)",
         plateFilterOnlyMatchesThePickedCar = "hai bo loc FrameNo/PlateNo ap len car => CHI khop duoc dung chiec da bi min() chon; tim theo bien so chiec xe THU HAI cua khach => 0 dong, khong loi khong canh bao",
         portFiltersAcrossAllCars = "port loc tren MOI xe cua khach va tra allPlateNos + otherCarsHiddenBySource de do phan bi bo",
@@ -48192,11 +48195,52 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
 //     `DATEADD(day, 3, ro.ActualDeliveryDate) <= "@ToDate"`    ⇒ `ActualDeliveryDate <= To - 3 ngày`
 //   ⇒ Không phải "giao xe trong kỳ" mà là **"cửa sổ gọi 72h rơi trong kỳ"**. Lệch hai đầu khác nhau
 //     (−1 và −3) nên **không thể rút gọn thành một khoảng quanh kỳ**. Giữ nguyên công thức.
+// ===== 🔴🔴 #664 PARITY BẢN KHO `Ser_CustomerCareRpt_WH` (`WH.cs:8151-8391`) =====
+// 3B: laptop `:8151` md5 `e4ba3256` **KHỚP** máy 150 `:8151`. WS `WSCarSv.asmx.cs:31402` gọi thẳng (không hậu tố).
+// #219 rồi #492 đã port bản Main (`Customer.cs:17534`); vòng này đọc bản **kho** và nó **bác một phát hiện của tôi**.
+//
+// 🔴🔴🔴 **RÚT LẠI PHÁT HIỆN CHÍNH CỦA #662** (đã sửa tại chỗ ở `/api/customercare/birthday`):
+//   #662 ghi *"màn chăm sóc sinh nhật lọc theo ngày chăm sóc (`t.Date`)"*. **Sai — tôi đọc sai tên cột.**
+//   Nguồn thật: `from Ser_CustomerCareBth t` và `BuildClause("and", "t.**DateBth**", strDOBConditionList, …)`.
+//   Bảng phiếu sinh nhật **có cột riêng `DateBth`** và bộ lọc ràng **đúng** vào nó. Báo cáo này dùng lại đúng cột đó
+//   (`AND t.DateBth is not null` + `zzzzClauseWhereDateBthConditionList`) — **khớp ghi chép #492 đã có từ trước**.
+//   📌 Đếm quyết định: chuỗi `"t.Date"` (đúng dấu nháy, không phải `DateBth`) = **0** lần trong `TERP.BizCarSv`.
+//   ⇒ **Không có lỗi lọc sai cột ở màn sinh nhật.** Các phát hiện còn lại của #662 (`min(t.CarId)`, lọc biển số chỉ
+//     khớp chiếc đã chọn, `Row_Number()` thiếu tie-breaker) **đã đọc lại nguyên khối và vẫn đúng**.
+//   🔴 **Bài học**: #662 **mâu thuẫn với #492** về **cùng một bảng** mà tôi không đối chiếu. Từ nay: phát hiện mới
+//     chọi với ghi chép cũ về **cùng bảng/cột** ⇒ **mở lại ghi chép cũ trước khi kết luận**.
+//
+// 🔴🔴 **NĂM BẢNG TẠM ĐƯỢC TẠO, CHỈ BỐN BẢNG ĐƯỢC DỌN** — `#tblCustomerCareCamp` **thiếu** trong khối `drop`:
+//     `drop table #tblCustomerCareMace; … Bth; … 72h; … 24h;` (hết) — **không có** `… Camp;`.
+//   📌 Đối chiếu bản Main (`Customer.cs:17692-17696`): drop **đủ NĂM**, có `#tblCustomerCareCamp`.
+//   ⇒ Đây là **lệch thật giữa hai bản sinh đôi**, không phải quy ước. Rủi ro: nếu phiên/kết nối được tái dùng mà
+//     không reset, lần gọi thứ hai đổ *"There is already an object named #tblCustomerCareCamp"*.
+// 🔴🔴 **TÊN MỆNH ĐỀ NÓI DỐI — sửa ghi chép #492 về nhóm 24h**: #492 ghi nhóm 24h lọc theo `FinishedDate24`.
+//   Đọc lời gọi thật: `BuildClause("and", " **DATEADD(day, 1, ro.ActualDeliveryDate)**", strContactDateConditionList, …)`
+//   ⇒ tên biến `zzzzClauseWhereFinishedDate24ConditionList` **chỉ là cái tên**; cột lọc thật là **ngày giao xe + 1**.
+//   ⇒ Luật: mệnh đề `zzzz…` phải đọc ở **lời gọi `BuildClause`**, không suy từ tên chỗ cắm.
+// 🔴🔴 **MỘT THAM SỐ NGÀY DUY NHẤT LÁI BỐN CỘT KHÁC NHAU**: `strContactDateConditionList` được `BuildClause` bốn lần
+//   vào `t.MaceRecomentDate` · `t.Datebth` · `DATEADD(day,1,ro.ActualDeliveryDate)` · (72h không dùng).
+//   ⚪ Đúng chủ đích (mỗi nhóm có mốc riêng, xem #492) — ghi ⚪ để vòng sau khỏi báo nhầm là copy-paste.
+// 🔴🔴 **`@FromDate`/`@ToDate` BỊ BAKE THẲNG, KHÔNG THAM SỐ HOÁ**: `Replace(…, "@FromDate", strContactDateFrom…)`
+//   ⇒ (a) bề mặt **tiêm SQL**; (b) **rỗng là thảm hoạ câm**: `… <= ''` ⇒ ngày rỗng thành `1900-01-01`
+//   ⇒ **nhóm 72h và nhóm khuyến mãi trả 0** trong khi ba nhóm kia vẫn có số ⇒ báo cáo **lệch nhóm**, không lỗi.
+//   ⚪ Không dính bẫy [BAKE-PARAM-MIX] đã ghi: tên baked (`@FromDate`) khác hẳn tên param runtime (`@p…`).
+// 🔴 **Nhóm khuyến mãi đếm SỐ LIÊN HỆ, không phải số chiến dịch**: `FROM Ser_Campaign t inner join Ser_CamContact cam`
+//   và lấy `cam.status` ⇒ một "bản ghi" ở nhóm này = **một lần liên hệ**, bốn nhóm kia = **một phiếu**.
+//   ⇒ Đúng loại "KẾT QUẢ SAI HÌNH DẠNG" mà §12 không bắt được.
+// ⚪ **ÂM TÍNH — `bNeedTransaction_WH = true` trên một hàm CHỈ ĐỌC không phải lỗi riêng hàm này**: đếm trong
+//   `BizCarSv.WH.cs` được **96 `true` / 22 `false`** ⇒ mở transaction khi đọc là **mặc định của nhà**.
+//   Đừng gắn cờ cho từng hàm nữa. (#663 nằm trong nhóm thiểu số `false`.)
+// ⚪ **`#region //Check` của hàm này RỖNG** (đã mở và đọc, theo luật #403) — không có guard nào bị bỏ sót.
 app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
 {
     var from = fromDate?.Date;
     var to = toDate?.Date;
+
+    // #664: nguồn bake @FromDate/@ToDate; rỗng ⇒ `<= ''` ⇒ nhóm 72h và khuyến mãi ra 0 mà không báo lỗi.
+    var dateWindowMissing = from is null || to is null;
 
     // --- nhóm 1+2: 24h / 72h trên bảng CustomerCares (mã PEND / CINFB|CIFB / REJ) ---
     // #492: mốc thời gian lấy từ LỆNH SỬA CHỮA, không phải ContactDate của phiếu.
@@ -48275,6 +48319,17 @@ app.MapGet("/api/report/customercare-summary", async (AppDbContext db, ITenantCo
     var groups = new List<object> { g24, g72, gMace, gBth, gCamp };
     return Results.Ok(new { fromDate = from, toDate = to, groups,
         note = "Mỗi nhóm dùng bảng mã RIÊNG (24h/72h: PEND/CINFB|CIFB/REJ · Mace+Bth: 0/1/2 · Campaign: 2/1/3 — đảo).",
+        // ===== #664 (đối chiếu bản kho `Ser_CustomerCareRpt_WH`) =====
+        campTempTableNeverDropped = "ban kho tao NAM bang tam nhung khoi drop chi co BON: drop table #tblCustomerCareMace; …Bth; …72h; …24h; — THIEU #tblCustomerCareCamp. Ban Main (Customer.cs:17692-17696) drop du NAM => lech THAT giua hai ban sinh doi, khong phai quy uoc; neu phien/ket noi duoc tai dung ma khong reset thi lan goi thu hai do There is already an object named #tblCustomerCareCamp",
+        clauseNameLies24h = "SUA #492: #492 ghi nhom 24h loc theo FinishedDate24. Loi goi that la BuildClause(and, \" DATEADD(day, 1, ro.ActualDeliveryDate)\", strContactDateConditionList, …) => ten bien zzzzClauseWhereFinishedDate24ConditionList CHI LA CAI TEN, cot loc that la ngay giao xe + 1 => menh de zzzz… phai doc o loi goi BuildClause, khong suy tu ten cho cam",
+        oneDateParamDrivesFourColumns = "AM TINH: strContactDateConditionList duoc BuildClause BON lan vao t.MaceRecomentDate, t.Datebth, DATEADD(day,1,ro.ActualDeliveryDate) (nhom 72h khong dung) — dung chu dich vi moi nhom co moc rieng (#492), khong phai copy-paste",
+        fromToDateBakedNotParameterised = "Replace(…, @FromDate, strContactDateFromConditionList) bake thang => (a) be mat tiem SQL; (b) RONG la tham hoa cam: … <= '' cho ngay rong thanh 1900-01-01 => nhom 72h va nhom khuyen mai tra 0 trong khi ba nhom kia van co so => bao cao LECH NHOM, khong loi",
+        dateWindowMissingNow = dateWindowMissing,
+        notBakeParamMix = "AM TINH: khong dinh bay [BAKE-PARAM-MIX] da ghi — ten baked (@FromDate/@ToDate) khac han ten param runtime (@p…)",
+        campaignGroupCountsContactsNotCampaigns = "FROM Ser_Campaign t inner join Ser_CamContact cam on t.CamId=cam.CamId va lay cam.status => mot ban ghi o nhom khuyen mai = MOT LAN LIEN HE, bon nhom kia = MOT PHIEU => KET QUA SAI HINH DANG (loai §12 khong bat duoc)",
+        negativeTransactionOnReadIsHouseDefault = "AM TINH: bNeedTransaction_WH = true tren ham CHI DOC khong phai loi rieng ham nay — dem trong BizCarSv.WH.cs duoc 96 true / 22 false => mo transaction khi doc la MAC DINH CUA NHA; dung gan co cho tung ham nua (#663 nam trong nhom thieu so false)",
+        checkRegionIsEmpty = "#region //Check cua ham nay RONG (da mo va doc theo luat #403) — khong co guard nao bi bo sot",
+        retracted662AtBirthdayEndpoint = "#664 da RUT LAI phat hien chinh cua #662 ngay tai /api/customercare/birthday: bo loc sinh nhat rang DUNG vao t.DateBth cua Ser_CustomerCareBth, khong phai t.Date; chuoi t.Date dem duoc 0 lan trong TERP.BizCarSv",
         // ===== #492 =====
         dateColumnPerGroup = new
         {
