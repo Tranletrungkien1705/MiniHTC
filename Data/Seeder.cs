@@ -1281,6 +1281,9 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"ROID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        // #574 §12 nguoi lien he cua nha cung cap (Ser_Mst_Supplier)
+        "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"ContactName\" text",
+        "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"ContactPhone\" text",
         // #569 §12 ho so hang bao hiem (Ser_Insurance: Address/Fax/Website)
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Address\" text",
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Tel\" text",

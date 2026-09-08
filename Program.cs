@@ -15673,6 +15673,26 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
     if (type is not ("1" or "2" or "3"))
         return Results.BadRequest(new { error = "debitType chỉ nhận 1 (khách), 2 (bảo hiểm), 3 (nhà cung cấp)." });
 
+    // ===== 🔴 #574 DIFF BA BẢN `*DebitDetailGet` — CÙNG KHUNG, KHÁC BẢNG NỐI VÀ KHÁC CHIẾN LƯỢC KHOÁ =====
+    // Ba hàm: `SerCusDebitDetailGet` (`:997`, #554) · `SerInsuranceDebitDetailGet` (`:1314`) ·
+    //   `SerSupplierDebitDetailGet` (`:1475`). Mỗi hàm trả **BA bảng**: danh mục đối tượng · nợ · phiếu thu.
+    // 📐 Khác biệt thật (luật #414 — nằm ở **danh sách cột** và **bảng nối**, không ở `where`):
+    //   · bảo hiểm: danh mục `Ser_Insurance` (`InsNo`, `InsVieName`, `Address`, `TelePhone`, `Email`),
+    //     nợ nối `Ser_RO` **và** `ser_car` (3 điều kiện) để lấy `RONo` + **`PlateNo`**;
+    //   · nhà cung cấp: danh mục `Ser_Mst_supplier` (`SupplierCode`, `SupplierName`, `Phone`,
+    //     **`ContactName`**, **`ContactPhone`**), nợ nối `Ser_Inv_stockIn` để lấy `StockInNo`;
+    //   · hằng lọc: `DebitType='2'`/`PaymentType='2'` so với `'3'`/`'3'`.
+    // 🔴 **MỘT CHUỖI MỆNH ĐỀ CHÈN VÀO CẢ BA CÂU `SELECT` KHÁC BẢNG**: `zzzzClauseWhere_strInsNoConditionList`
+    //   (và bản NCC là `…strSupplierIDConditionList`) xuất hiện **ba lần** — trong câu danh mục, câu nợ, và
+    //   câu phiếu thu — mà **cả ba bảng đều đặt alias `d`**. Chỉ cần một bảng thiếu cột đó là **hỏng cả câu**.
+    //   Cùng dạng với cảnh báo alias dùng chung đã ghi ở #554.
+    // 🔴 **HAI BẢN SINH ĐÔI DÙNG HAI CHIẾN LƯỢC KHOÁ KHÁC NHAU**: bản **bảo hiểm** viết `with(nolock)` trên
+    //   **mọi** bảng (đọc bẩn); bản **nhà cung cấp** viết `--//[mylock]` (chuẩn khoá của hệ). Cùng chức năng,
+    //   cùng tác giả, hai kiểu — nên số dư hai màn có thể "sạch" khác nhau khi hệ đang ghi.
+    // ⚠️ Bản NCC còn thừa biến `int nTidSeq = 0;` (bản bảo hiểm không có) — dấu vết chép hàm.
+    // ⚠️ Bản NCC lọc theo `d.**SupplierID**` trong khi câu danh mục chọn `d.**SupplierCode**` — hai tên cột
+    //   khác nhau trên cùng bảng; MiniHTC chỉ mô hình hoá `SupplierCode` nên lọc theo mã, nêu cờ.
+    //
     // ===== 🔴🔴 #558 SỬA LẠI #555: MiniHTC **ĐÃ CÓ BA BẢNG RIÊNG**, không phải một bảng ba loại =====
     // #555 đọc `db.CusDebits` cho **cả ba** loại vì nguồn dùng chung `Ser_CusDebit`. Nhưng grep route
     //   (`/api/debits/search`, `:27235` — cụm #213/#214/#215) cho thấy MiniHTC **từ trước** đã tách:
@@ -15706,7 +15726,9 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
         if (ins.Length == 0) return Results.BadRequest(new { error = "Loại 2 cần insNo." });
         // MiniHTC lưu danh mục bảo hiểm theo InsCompanyCode (nguồn dùng Ser_Insurance.InsNo).
         var i = await db.MstInsuranceCompanies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsCompanyCode == ins);
-        party = i is null ? null : new { i.InsCompanyCode, i.InsCompanyName, i.FlagActive };
+        // #574 §12: nguồn chọn thêm Address/TelePhone/Email ở bảng danh mục bảo hiểm.
+        party = i is null ? null : new { i.InsCompanyCode, i.InsCompanyName, i.FlagActive,
+            i.Address, tel = i.Tel, i.Fax, i.Website };
         var rows2 = await db.InsDebits.Where(x => x.OrgId == t.OrgId && x.InsNo == ins)
             .OrderByDescending(x => x.Id)
             .Select(x => new { x.Id, x.DebitNo, key = x.InsNo, name = x.InsName, doc = x.RONo,
@@ -15720,7 +15742,9 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
         var sup = (supplierCode ?? "").Trim();
         if (sup.Length == 0) return Results.BadRequest(new { error = "Loại 3 cần supplierCode." });
         var sp = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == sup);
-        party = sp is null ? null : new { sp.SupplierCode, sp.SupplierName, sp.Address, sp.Phone };
+        // #574 §12: nguồn chọn thêm ContactName/ContactPhone ở bảng danh mục nhà cung cấp.
+        party = sp is null ? null : new { sp.SupplierCode, sp.SupplierName, sp.Address, sp.Phone,
+            sp.ContactName, sp.ContactPhone };
         var rows3 = await db.SupplierDebits.Where(x => x.OrgId == t.OrgId && x.SupplierCode == sup)
             .OrderByDescending(x => x.Id)
             .Select(x => new { x.Id, DebitNo = (string?)null, key = x.SupplierCode, name = (string?)null, doc = x.StockInNo,
@@ -15763,6 +15787,13 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
         payments, paymentCount = payments.Count,
         oneTableThreeDebitTypesInSource = "Ser_CusDebit chua ca no khach (1), bao hiem (2), nha cung cap (3)",
         miniHtcUsesThreeSeparateTables = "CusDebits / InsDebits / SupplierDebits — sua lai #555",
+        // ===== #574 =====
+        catalogColumnsPerType = "bao hiem: Address/TelePhone/Email; NCC: Phone/ContactName/ContactPhone",
+        docTableJoinedPerType = "1,2 -> Ser_RO (ban bao hiem noi them ser_car lay PlateNo); 3 -> Ser_Inv_stockIn (StockInNo)",
+        oneClauseInjectedIntoThreeSelects = "zzzzClauseWhere_str...ConditionList xuat hien o CA BA cau (danh muc, no, phieu thu) va ca ba deu dat alias d",
+        twinsUseDifferentLockingStrategy = "ban bao hiem with(nolock) tren moi bang; ban NCC dung --//[mylock]",
+        supplierFilterColumnMismatch = "nguon loc d.SupplierID nhung cau danh muc chon d.SupplierCode",
+        plateNoOnlyOnInsuranceBranch = true,
         documentJoinKeyDiffersByType = "loai 1/2 noi Ser_RO qua ROID; loai 3 noi Ser_Inv_StockIn qua StockInID",
         filterAliasSharedAcrossThreeTables = true,
         insuranceVariantUsesRawNolock = true,

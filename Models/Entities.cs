@@ -3599,6 +3599,10 @@ public sealed class SerMstSupplier
     public string? Address { get; set; }
     public string? Phone { get; set; }
     public string? Fax { get; set; }
+    /// <summary>#574 §12 Hai cột người liên hệ — nguồn `SerSupplierDebitDetailGet` chọn `d.ContactName`,
+    /// `d.ContactPhone` ở bảng danh mục nhà cung cấp (bản bảo hiểm sinh đôi chọn `TelePhone`/`Email`).</summary>
+    public string? ContactName { get; set; }
+    public string? ContactPhone { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
 }
