@@ -40237,6 +40237,301 @@ static string DutyDaysRangeAsSource(int? dutyDays)
     return "00-02";      // 🔴 else của nguồn — gom cả NULL lẫn d <= 0
 }
 
+
+// ===== #B347 TỒN PI PHỤC VỤ KẾ HOẠCH VẬN CHUYỂN — `RptStatistic_PIInStock_ForTrspPlan_WH_New20181119`
+//       (`DataWH/Biz.HTC.WH.cs` + `RptSQLQuery.cs:33301`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `154453,154613` ≡ 150 `154458,154618` ⇒ **`51fb1e9676195517a00cd42a7431e4e4`** (WS64 `:76818`).
+//
+// 🔴🔴🔴 **[BAKE-PARAM-MIX] — BA THAM SỐ BỊ NƯỚNG BẰNG `Replace` CHUỖI THÔ, TRỘN VỚI THAM SỐ CHẠY**:
+//     `strSqlGetData = CmUtils.StringUtils.Replace(strSqlGetData`
+//     `    , "zzzzClauseWhere_strOPIProductionMonthConditionList", …   // ← BuildClause "@p" (an toàn)`
+//     `    , "@strInputDate",   strInputDate        // ← NƯỚNG THẲNG giá trị người dùng`
+//     `    , "@strProMonthFrom", strOPIDProducMonthFrom`
+//     `    , "@strProMonthTo",   strOPIDProducMonthTo );`
+//   Trong SQL, chỗ nhận là **`'@strInputDate'` — NẰM TRONG DẤU NHÁY ĐƠN**:
+//     `AND (cpl.ShippingDateStart <= '@strInputDate')`
+//     `AND (cpl.ShippingDateEnd IS NULL OR cpl.ShippingDateEnd = '' OR cpl.ShippingDateEnd > '@strInputDate')`
+//     `AND (cpl.ShippingDateEnd <= '@strInputDate')`
+//   ⇒ Giá trị **đến thẳng từ đầu vào** được ghép vào giữa hai nháy ⇒ **bề mặt SQL injection thật**
+//     (một dấu `'` là thoát chuỗi), trong khi các tham số khác (`@strTDate`,
+//     `@strIsGet_dt_Car_Car_Detail`, `@strBUPatternOfUser`) lại là **param runtime**.
+//   ⇒ Đúng cảnh báo **`[BAKE-PARAM-MIX]`** đã ghi trong bộ nhớ. **KHÔNG tự vá nguồn**; port dùng
+//     tham số hoá hoàn toàn (EF) và trả cờ `bakeParamMixNote`.
+//
+// 🔴🔴 **HAI THAM SỐ NƯỚNG VÀO HƯ VÔ**: `@strProMonthFrom` và `@strProMonthTo` được `Replace`
+//   nhưng **đếm 0 lần trong toàn bộ câu SQL** ⇒ hai đối số `strOPIDProducMonthFrom/To` mà cửa WS
+//   nhận từ người dùng **không có tác dụng gì**. Người dùng chọn khoảng tháng sản xuất ⇒ **báo cáo
+//   không đổi**, không báo lỗi. Bộ lọc tháng thực sự đang chạy là
+//   `strOPIProducMonthConditionList` (qua `BuildClause` trên `opi.ProductionMonth`).
+//
+// 🔴🔴🔴 **LỖ RBAC — CA 33 (tổ hợp (2): KHÔNG cổng + KHÔNG lọc)**: `myCommon_CheckHTCDirect` = **0 hit**;
+//   `@strBUPatternOfUser` **được bind** nhưng **đếm 0 lần trong câu SQL** (`RptSQLQuery.cs:33301-33617`).
+//   ⇒ Trả toàn bộ tồn PI / lên tàu / tới cảng của **mọi** phạm vi. **KHÔNG tự bịt.**
+//
+// 🔴 `@strIsGet_dt_Car_Car_Detail` cũng **mồ côi** (bind nhưng SQL không dùng) — khác #B346 nơi cờ này
+//   thật sự điều khiển `if (…)`. Ở đây **luôn** trả đủ **BỐN** bảng, đặt tên cứng theo thứ tự:
+//   `Tables[0]=<tên hàm>`, `[1]="Rpt_SoLuongPI"`, `[2]="Rpt_SLDaLenTau"`, `[3]="Rpt_SLDaToiCang"`.
+// ⚠️ **NỢ (đã ghi từ trước, không đoán)**: chuỗi `CT_PackingList → CT_LC → CT_ContractOversea` và
+//   `WO_WorkOrder` **chưa có** trong MiniHTC ⇒ ba bảng "đã lên tàu / đã tới cảng / số lượng PI theo
+//   packing list" trả **rỗng** kèm `notPortedTables`; **không** bịa số.
+app.MapGet("/api/reports/pi-instock-trspplan", async (
+    AppDbContext db, ITenantContext t,
+    string? productionMonth, DateTime? inputDate) =>
+{
+    // 🔴 Bộ lọc DUY NHẤT thật sự chạy ở nguồn: BuildClause trên `opi.ProductionMonth` (tham số runtime).
+    var q = db.OrdPerformanceInvoices.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(productionMonth))
+        q = q.Where(p => p.ProductionMonth == productionMonth!.Trim());
+    var pis = await q.ToListAsync();
+    var refNos = pis.Select(p => p.RefNo).Distinct().ToList();
+    var dtls = (await db.OrdPerformanceInvoiceDetails.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => refNos.Contains(d.RefNo)).ToList();
+
+    // Tables[0] — tổng hợp tồn PI theo model/spec/màu.
+    var summary = dtls
+        .GroupBy(d => new { d.ModelCode, d.SpecCode, d.ColorCode })
+        .Select(g => new
+        {
+            g.Key.ModelCode, g.Key.SpecCode, g.Key.ColorCode,
+            Quantity = g.Sum(x => x.Quantity ?? 0m),
+            RefNoCount = g.Select(x => x.RefNo).Distinct().Count()
+        }).ToList();
+
+    // Tables[1] — số lượng PI theo RefNo.
+    var soLuongPI = pis.Select(p => new
+    {
+        p.RefNo, p.ModelCode, p.OrderMonth, p.ProductionMonth, p.ExpectedMonth,
+        Quantity = dtls.Where(d => d.RefNo == p.RefNo).Sum(d => d.Quantity ?? 0m)
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        RptStatistic_PIInStock_ForTrspPlan = summary,   // Tables[0]
+        Rpt_SoLuongPI = soLuongPI,                       // Tables[1]
+        Rpt_SLDaLenTau = Array.Empty<object>(),          // Tables[2] — ⚠️ NỢ CT_PackingList/CT_LC
+        Rpt_SLDaToiCang = Array.Empty<object>(),         // Tables[3] — ⚠️ NỢ CT_PackingList/CT_LC
+        inputDateEcho = inputDate,
+        bakeParamMixNote = "[BAKE-PARAM-MIX] BA THAM SO BI NUONG bang Replace chuoi tho, TRON voi tham so chay: Replace(sql, 'zzzzClauseWhere_strOPIProductionMonthConditionList', <BuildClause @p an toan>, '@strInputDate', strInputDate, '@strProMonthFrom', strOPIDProducMonthFrom, '@strProMonthTo', strOPIDProducMonthTo). Trong SQL cho nhan la '@strInputDate' - NAM TRONG DAU NHAY DON: \"AND (cpl.ShippingDateStart <= '@strInputDate')\", \"AND (cpl.ShippingDateEnd IS NULL OR cpl.ShippingDateEnd = '' OR cpl.ShippingDateEnd > '@strInputDate')\", \"AND (cpl.ShippingDateEnd <= '@strInputDate')\" => gia tri den THANG TU DAU VAO duoc ghep vao giua hai nhay => BE MAT SQL INJECTION THAT (mot dau nhay la thoat chuoi), trong khi @strTDate / @strIsGet_dt_Car_Car_Detail / @strBUPatternOfUser lai la PARAM RUNTIME. Dung canh bao [BAKE-PARAM-MIX] da ghi trong bo nho. KHONG TU VA NGUON - port dung tham so hoa hoan toan.",
+        deadBakedParamsNote = "HAI THAM SO NUONG VAO HU VO: @strProMonthFrom va @strProMonthTo duoc Replace nhung DEM 0 LAN trong toan bo cau SQL (RptSQLQuery.cs:33301-33617) => hai doi so strOPIDProducMonthFrom/To ma cua WS nhan tu nguoi dung KHONG CO TAC DUNG GI. Nguoi dung chon khoang thang san xuat => bao cao KHONG DOI, khong bao loi. Bo loc thang thuc su dang chay la strOPIProducMonthConditionList qua BuildClause tren opi.ProductionMonth.",
+        rbacHoleCase33Note = "LO RBAC - CA 33 (to hop (2): KHONG cong + KHONG loc): myCommon_CheckHTCDirect = 0 HIT; @strBUPatternOfUser duoc bind nhung DEM 0 LAN trong cau SQL => tra toan bo ton PI / len tau / toi cang cua MOI pham vi. KHONG TU BIT.",
+        orphanDetailFlagNote = "@strIsGet_dt_Car_Car_Detail cung MO COI (bind nhung SQL khong dung) - khac #B346 noi co nay that su dieu khien 'if (...)'. O day LUON tra du BON bang, dat ten cung theo thu tu: Tables[0]=<ten ham>, [1]='Rpt_SoLuongPI', [2]='Rpt_SLDaLenTau', [3]='Rpt_SLDaToiCang'.",
+        notPortedTables = new[] { "Rpt_SLDaLenTau", "Rpt_SLDaToiCang" },
+        debtNote = "NO (da ghi tu truoc, KHONG doan): chuoi CT_PackingList -> CT_LC -> CT_ContractOversea va WO_WorkOrder CHUA CO trong MiniHTC => hai bang 'da len tau' / 'da toi cang' tra RONG; KHONG bia so."
+    });
+}).RequireAuthorization();
+
+// ===== #B348/#B349 CẶP BÙ NHAU NHÓM ĐẠI LÝ — BÁN LẺ vs TỒN KHO
+//       (`RptStatistic_GrpDealerRetail01_WH_New20181119` / `RptStatistic_GrpDealerInStock01_WH_New20181119`,
+//        `DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — offset lệch 5 dòng**:
+//   Retail01  laptop `165747,165972` ≡ 150 `165752,165977` ⇒ **`f48440d181d6f8df2f9a728a69c267f2`**
+//   InStock01 laptop `165973,166224` ≡ 150 `165978,166229` ⇒ **`218f0de5481fe55234be086b6f826230`**
+//
+// 🔴🔴🔴 **HAI BÁO CÁO BÙ NHAU NHƯNG LỌC KỲ KHÁC NHAU ⇒ TỒN + BÁN ≠ SỞ HỮU**:
+//   `InStock01` (tồn kho) **GIỮ** hai điều kiện kỳ:
+//     `and cc.CreatedDate <= @strTDate                                  -- Xe được tạo ra Trong kỳ.`
+//     `and (cc.CarCancelDate is null or cc.CarCancelDate > @strTDate)   -- Xe Chưa bị Huỷ Trong kỳ.`
+//   `Retail01` (bán lẻ) có **ĐÚNG HAI DÒNG ĐÓ NHƯNG BỊ COMMENT**:
+//     `--and cc.CreatedDate <= @strTDate`
+//     `--and (cc.CarCancelDate is null or cc.CarCancelDate > @strTDate)`
+//   **trong khi chú thích tiêu đề của Retail01 VẪN GHI** *"Lọc lấy các CarId Thuộc Sở hữu,
+//   **Chưa bị Huỷ Trong kỳ**, Nhận xe Tận nơi Trong kỳ, Và Bán luôn."*
+//   ⇒ **Chú thích nói một đằng, code chạy một nẻo**: bản bán lẻ **đếm cả xe đã huỷ** và **cả xe tạo
+//     sau kỳ**. Hai báo cáo cùng nhóm đại lý **không cộng khớp với nhau**.
+//   📌 Cùng họ "message lệch condition = port sai chiều" đã ghi trong bộ nhớ. **KHÔNG tự vá.**
+//
+// 🔴🔴 **HAI PHIÊN BẢN KHÁC NHAU CỦA CÙNG MỘT HELPER TỔNG HỢP**:
+//   Retail01 : `mySql_Rpt_GetClauseSelect_RptStatistic_GrpDealer_Summary01()`            ← **không tham số**
+//   InStock01: `mySql_Rpt_GetClauseSelect_RptStatistic_GrpDealer_Summary01_New20180726("and md.FlagActive = '1'")`
+//   ⇒ Bản tồn kho **loại đại lý đã ngừng hoạt động**, bản bán lẻ **thì không** ⇒ **khung dòng đại lý
+//     của hai báo cáo khác nhau**. Lại một nguồn nữa khiến hai số không khớp.
+//
+// ✅ **RBAC — tổ hợp (3) chặt ở CẢ HAI**: `inner join Mst_Dealer md … and (md.BUCode like
+//   @strBUPatternOfUser)` kèm chú thích nguồn *"Must inner join to filter AbilityOfUser"* /
+//   *"Danh sách Đại lý Được Truy cập"*. Không phải lỗ.
+// ✅ **Cách xử số bảng động thứ BA**: cả hai gọi một **hàm chung** nhận
+//   `strIsGet_dt_Car_Car_Detail`, `"dt_Car_Car_Detail"` (tên bảng chi tiết) và `strFunctionName`
+//   (tên bảng tổng hợp) rồi `out dsResult` ⇒ logic đặt tên **được tách ra dùng chung**, không lặp
+//   `Tables[n]` ở từng báo cáo. Bổ sung cho luật `C0-…tricesimustertius`.
+// 🔴 **Port dòng ACTIVE**: `LoaiThungText` ở Retail01 từng là `case` liệt kê cứng
+//   (`TKI/TLU/TLA/KMU/TKC`) — **cả khối bị comment**; dòng đang chạy là `mlt.TenLoaiThung` lấy từ
+//   master `Mst_LoaiThung` ⇒ port **dùng master**, không chép bảng mã cứng.
+// 🔴 Điều kiện "đại lý nhập hàng phải là đại lý xuất hàng": Retail01
+//   `dlsd_Owner.DealerCodeBuyer = dlsd.DealerCode` + `dlsd_Owner.DealNo != dlsdd.DealNo`;
+//   InStock01 dùng **lọc ngược** (`left join #tblCarSold … where cs.CarId is null`).
+// 🔴 `Thread.Sleep(4000)` trên đường thành công ở **cả hai** — **không port**.
+app.MapGet("/api/reports/grpdealer-retail01", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? deliveryDateFrom, DateTime? deliveryDateTo,
+    string? isGetDetail, string? buPattern) =>
+{
+    // ✅ RBAC tổ hợp (3): inner join Mst_Dealer + BUCode like @strBUPatternOfUser.
+    // 🔴 KHÔNG lọc `md.FlagActive` — đúng nguồn (helper bản CŨ, không nhận tham số lọc active).
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var dtls = await db.DealerDealDetails.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var dealById = deals.ToDictionary(d => d.Id);
+
+    // #tbl_Car_Car_Filter: giao dịch NHẬP (owner) có DealerCodeBuyer trong phạm vi,
+    // ghép với một giao dịch XUẤT khác DealNo mà đại lý xuất = đại lý nhập.
+    var byCar = dtls.GroupBy(d => d.CarId).ToDictionary(g => g.Key, g => g.ToList());
+    var rows0 = new List<(DealerDeal Owner, DealerDeal Sell, DealerDealDetail SellDtl, string CarId)>();
+    foreach (var od in dtls)
+    {
+        if (!dealById.TryGetValue(od.DealId, out var owner)) continue;
+        if (owner.DealerCodeBuyer == null || !dealers.ContainsKey(owner.DealerCodeBuyer)) continue;
+        if (!byCar.TryGetValue(od.CarId, out var sames)) continue;
+        foreach (var sd in sames)
+        {
+            if (sd.DealId == od.DealId) continue;
+            if (!dealById.TryGetValue(sd.DealId, out var sell)) continue;
+            if (sell.DealNo == owner.DealNo) continue;                     // dlsd_Owner.DealNo != dlsdd.DealNo
+            if (!string.Equals(owner.DealerCodeBuyer, sell.DealerCode,     // đại lý nhập = đại lý xuất
+                    StringComparison.OrdinalIgnoreCase)) continue;
+            // 🔴🔴🔴 HAI ĐIỀU KIỆN KỲ BỊ COMMENT Ở NGUỒN (xem periodFilterMismatchNote) — KHÔNG thêm vào.
+            if (deliveryDateFrom != null && !(sd.DeliveryDate >= deliveryDateFrom)) continue;
+            if (deliveryDateTo != null && !(sd.DeliveryDate <= deliveryDateTo)) continue;
+            if (!string.IsNullOrWhiteSpace(dealerCode)
+                && !string.Equals(owner.DealerCodeBuyer, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+            rows0.Add((owner, sell, sd, od.CarId));
+        }
+    }
+
+    var carIds = rows0.Select(x => x.CarId).Distinct().ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.CarId != null && carIds.Contains(v.CarId)).ToListAsync())
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 Port dòng ACTIVE: LoaiThungText lấy từ master Mst_LoaiThung, KHÔNG dùng `case` cứng (đã bị comment).
+    var thung = (await db.LoaiThungMsts.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.LoaiThung).ToDictionary(g => g.Key, g => g.First().TenLoaiThung);
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var detail = rows0.Select(x =>
+    {
+        cvs.TryGetValue(x.CarId, out var cv);
+        return new
+        {
+            MyTotal = 1,
+            DealNo = x.Owner.DealNo, DealerCode = x.Owner.DealerCodeBuyer, x.CarId,
+            cv?.VIN, DealNoSell = x.Sell.DealNo,
+            CCSpecCode = cv?.SpecCode, CCModelCode = cv?.ModelCode, CCColorCode = cv?.ColorCode,
+            CCDealerCode = cv?.DealerCode,
+            CVSpecCode = cv?.ActualSpec, CVModelCode = cv?.ModelCode, CVColorCode = cv?.ColorCode,
+            cv?.TypeCB, cv?.LoaiThung,
+            LoaiThungText = cv?.LoaiThung != null && thung.TryGetValue(cv.LoaiThung, out var tn) ? tn : null,
+            CVModelName = cv?.ModelCode != null && models.TryGetValue(cv.ModelCode, out var m) ? m.ModelName : null,
+            CVModelNameStd = cv?.ModelCode != null && models.TryGetValue(cv.ModelCode, out var m2) ? m2.ModelName : null,
+            DLSDDDealNo = x.Sell.DealNo, DLSDDDeliveryDate = x.SellDtl.DeliveryDate,
+            DLSDDDeliveryStatus = (string?)null
+        };
+    }).ToList();
+
+    var summary = detail.GroupBy(d => d.DealerCode)
+        .Select(g => new { DealerCode = g.Key, DealerName = g.Key != null && dealers.TryGetValue(g.Key, out var dl) ? dl.DealerName : null, MyTotal = g.Count() })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        dt_Car_Car_Detail = isGetDetail == "1" ? detail : null,   // chỉ khi @strIsGet_dt_Car_Car_Detail = '1'
+        RptStatistic_GrpDealerRetail01 = summary,
+        periodFilterMismatchNote = "HAI BAO CAO BU NHAU NHUNG LOC KY KHAC NHAU => TON + BAN != SO HUU. InStock01 (ton kho) GIU hai dieu kien ky: 'and cc.CreatedDate <= @strTDate -- Xe duoc tao ra Trong ky.' va 'and (cc.CarCancelDate is null or cc.CarCancelDate > @strTDate) -- Xe Chua bi Huy Trong ky.'. Retail01 (ban le) co DUNG HAI DONG DO NHUNG BI COMMENT, TRONG KHI chu thich tieu de cua Retail01 VAN GHI 'Loc lay cac CarId Thuoc So huu, Chua bi Huy Trong ky, Nhan xe Tan noi Trong ky, Va Ban luon.' => CHU THICH NOI MOT DANG, CODE CHAY MOT NEO: ban ban le DEM CA XE DA HUY va ca xe tao sau ky. Cung ho 'message lech condition = port sai chieu' da ghi trong bo nho. KHONG TU VA.",
+        summaryHelperVersionNote = "HAI PHIEN BAN KHAC NHAU CUA CUNG MOT HELPER TONG HOP: Retail01 goi mySql_Rpt_GetClauseSelect_RptStatistic_GrpDealer_Summary01() - KHONG THAM SO; InStock01 goi ..._Summary01_New20180726(\"and md.FlagActive = '1'\") => ban ton kho LOAI dai ly da ngung hoat dong, ban ban le THI KHONG => KHUNG DONG DAI LY cua hai bao cao khac nhau. Lai mot nguon nua khien hai so khong khop.",
+        rbacNote = "RBAC to hop (3) CHAT o CA HAI: 'inner join Mst_Dealer md ... and (md.BUCode like @strBUPatternOfUser)' kem chu thich nguon 'Must inner join to filter AbilityOfUser' / 'Danh sach Dai ly Duoc Truy cap'. KHONG phai lo.",
+        activeLineNote = "PORT DONG ACTIVE: LoaiThungText tung la 'case' liet ke cung (TKI/TLU/TLA/KMU/TKC) - CA KHOI BI COMMENT; dong dang chay la mlt.TenLoaiThung lay tu master Mst_LoaiThung => port DUNG MASTER, khong chep bang ma cung. Thread.Sleep(4000) tren duong thanh cong o CA HAI - KHONG port.",
+        dynamicTableNote = "CACH XU SO BANG DONG THU BA: ca hai goi mot HAM CHUNG nhan strIsGet_dt_Car_Car_Detail, 'dt_Car_Car_Detail' (ten bang chi tiet) va strFunctionName (ten bang tong hop) roi out dsResult => logic dat ten duoc TACH RA DUNG CHUNG, khong lap Tables[n] o tung bao cao. Bo sung cho luat C0-...tricesimustertius."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/reports/grpdealer-instock01", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? tDate, string? isGetDetail, string? buPattern) =>
+{
+    var asOf = tDate ?? DateTime.Now.Date;
+    var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
+    // 🔴 KHÁC Retail01: helper bản `_New20180726` truyền `and md.FlagActive = '1'` ⇒ CHỈ đại lý active.
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1").ToListAsync())
+        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
+        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
+
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var dtls = await db.DealerDealDetails.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var dealById = deals.ToDictionary(d => d.Id);
+    var carIdsAll = dtls.Select(d => d.CarId).Distinct().ToList();
+    var cvsAll = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.CarId != null && carIdsAll.Contains(v.CarId)).ToListAsync())
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+
+    // #tblCarOwner — GIỮ hai điều kiện kỳ (khác hẳn Retail01, xem periodFilterMismatchNote ở endpoint kia).
+    var owner = new List<(DealerDeal Deal, DealerDealDetail Dtl)>();
+    foreach (var d in dtls)
+    {
+        if (!dealById.TryGetValue(d.DealId, out var head)) continue;
+        if (head.DealerCodeBuyer == null || !dealers.ContainsKey(head.DealerCodeBuyer)) continue;
+        if (!string.IsNullOrWhiteSpace(dealerCode)
+            && !string.Equals(head.DealerCodeBuyer, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+        if (!(d.DeliveryDate != null && d.DeliveryDate <= asOf)) continue;   // giao tới đại lý trong kỳ
+        cvsAll.TryGetValue(d.CarId, out var cv);
+        // ⚠️ NỢ: Car_Car.CreatedDate và CarCancelDate chưa có trong MiniHTC ⇒ HAI điều kiện kỳ của
+        //   nguồn (`cc.CreatedDate <= @strTDate`, `cc.CarCancelDate is null or > @strTDate`) CHƯA áp
+        //   dụng được. Ghi nợ, KHÔNG đoán giá trị thay thế.
+        if (cv == null) continue;
+        owner.Add((head, d));
+    }
+
+    // #tblCarSold — xe đã bán thực sự trong kỳ (đại lý nhập = đại lý xuất).
+    var byCar = dtls.GroupBy(d => d.CarId).ToDictionary(g => g.Key, g => g.ToList());
+    var sold = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var (head, d) in owner)
+    {
+        if (!byCar.TryGetValue(d.CarId, out var sames)) continue;
+        foreach (var sd in sames)
+        {
+            if (sd.DealId == d.DealId) continue;
+            if (!dealById.TryGetValue(sd.DealId, out var sell)) continue;
+            if (sell.DealNo == head.DealNo) continue;
+            if (!(sd.DeliveryDate != null && sd.DeliveryDate <= asOf)) continue;
+            if (!string.Equals(head.DealerCodeBuyer, sell.DealerCode, StringComparison.OrdinalIgnoreCase)) continue;
+            sold.Add(d.CarId + "|#|" + head.DealNo);
+        }
+    }
+
+    // #tblCarInStock — LỌC NGƯỢC: sở hữu trừ đã bán.
+    var inStock = owner.Where(x => !sold.Contains(x.Dtl.CarId + "|#|" + x.Deal.DealNo)).ToList();
+
+    var detail = inStock.Select(x =>
+    {
+        cvsAll.TryGetValue(x.Dtl.CarId, out var cv);
+        return new
+        {
+            MyTotal = 1,
+            x.Deal.DealNo, DealerCode = x.Deal.DealerCodeBuyer, x.Dtl.CarId, cv?.VIN,
+            CCSpecCode = cv?.SpecCode, CCModelCode = cv?.ModelCode, CCColorCode = cv?.ColorCode,
+            DLSDDDeliveryDate = x.Dtl.DeliveryDate
+        };
+    }).ToList();
+
+    var summary = detail.GroupBy(d => d.DealerCode)
+        .Select(g => new { DealerCode = g.Key, DealerName = g.Key != null && dealers.TryGetValue(g.Key, out var dl) ? dl.DealerName : null, MyTotal = g.Count() })
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = summary.Count,
+        asOf,
+        dt_Car_Car_Detail = isGetDetail == "1" ? detail : null,
+        RptStatistic_GrpDealerInStock01 = summary,
+        reverseFilterNote = "Nguon dung KY THUAT LOC NGUOC (chu thich '(*1) Su dung ky thuat loc nguoc'): #tblCarInStock = #tblCarOwner LEFT JOIN #tblCarSold ON CarId+DealNo WHERE cs.CarId is null => loai tru cac xe DA BAN THUC SU TRONG KY.",
+        dealerActiveFilterNote = "KHAC Retail01: helper ban _New20180726 truyen \"and md.FlagActive = '1'\" => bao cao TON KHO chi tinh dai ly con hoat dong, bao cao BAN LE thi khong loc => khung dong dai ly cua hai bao cao KHAC NHAU.",
+        periodFilterNote = "Ban nay GIU du hai dieu kien ky ma Retail01 da comment: 'and cc.CreatedDate <= @strTDate' va 'and (cc.CarCancelDate is null or cc.CarCancelDate > @strTDate)'. Chi tiet o periodFilterMismatchNote cua /api/reports/grpdealer-retail01.",
+        debtNote = "NO: cot Car_Car.CreatedDate va Car_Car.CarCancelDate CHUA CO trong MiniHTC => HAI dieu kien ky cua nguon (cc.CreatedDate <= @strTDate va cc.CarCancelDate is null or > @strTDate) CHUA AP DUNG DUOC. Da ghi no, KHONG doan gia tri thay the. Luu y: day chinh la hai dieu kien ma ban Retail01 DA COMMENT o nguon - xem periodFilterMismatchNote."
+    });
+}).RequireAuthorization();
 // ===== #B344/#B345 PIVOT LÁI THỬ & THĂM KHÁCH HÀNG — cặp SINH ĐÔI LỆCH NHAU
 //       (`RptPivot_DlrDriveTest_WH_New20181119` / `RptPivot_DlrCtmVisit_WH_New20181119`,
 //        `DataWH/Biz.HTC.WH.cs`) =====
