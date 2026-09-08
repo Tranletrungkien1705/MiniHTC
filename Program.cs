@@ -29350,6 +29350,132 @@ app.MapGet("/api/masters/dealer-salesgroup-types", async (
     });
 }).RequireAuthorization();
 
+// ===== #B170/#B171 PHÍ BẢO HIỂM THEO HỢP ĐỒNG — `Mst_InsuranceFee_Save` (`DataWH/Biz.HTC.WH.cs`)
+//       + màn `FrmMst_InsuranceFee` =====
+// 🔴 WS64 **chỉ có MỘT cửa `_Save`** (`grep -o "_biz.Mst_InsuranceFee_[A-Za-z]*"`) — **không có
+//   `_Get` riêng**; màn nạp dữ liệu bằng đường khác. Bảng **cũng có** trong danh sách trắng cửa chung.
+// **3B khớp cả 2 máy** (căn theo TÊN — lại lệch 5 dòng, cùng file với #B159):
+//   laptop `197467,197830` · máy 150 `197472,197835` ⇒ **`7cad72471debff47c4afb0c56c726a1f`**.
+//   ⚠️ Đo cùng dải số cho md5 khác (`7cad7247…` vs `cd2a3cb8…`) — **ca lệch offset thứ ba**.
+// 🔴🔴 **CLIENT CHIA BA LÔ, GỌI CÙNG MỘT HÀM BA LẦN** (`FrmMst_InsuranceFee.cs:263,272,281`):
+//     · lô **thêm**  → `Mst_InsuranceFee_Save(objFlagIsDelete = **"0"**, …)`
+//     · lô **sửa**   → `Mst_InsuranceFee_Save(objFlagIsDelete = **"0"**, …)`
+//     · lô **xoá**   → `Mst_InsuranceFee_Save(objFlagIsDelete = **"1"**, …)`
+//   ⇒ Biz **không phân biệt thêm với sửa** — cả hai đều `FlagIsDelete = "0"`; việc tách lô là **của
+//     client**, dựa trên `TblCommon.Status == EditStatus.ITEM_VALUE_STT_DELETE`.
+//   ⇒ Port thành một endpoint nhận **cả ba lô cùng lúc** là **đổi ngữ nghĩa giao dịch**: ở nguồn, ba
+//     lô là **ba lời gọi độc lập** — lô sau lỗi thì lô trước **đã ghi rồi**. Giữ đúng: mỗi lô một lời gọi.
+// 🔴 **BỐN guard, mỗi cái một mã lỗi**, kiểm trên **`Rows[0]`** (bảng đầu vào chỉ dùng dòng đầu):
+//     · bảng thiếu ⇒ `…_Input_Mst_InsuranceFeeTblNotFound`
+//     · `InsuranceContractNo` rỗng ⇒ `…_InvalidInsuranceContractNo`
+//     · `EffStartDate` rỗng ⇒ `…_InvalidEffStartDate`  (chuẩn hoá bằng **`StdDate`**)
+//     · `InsurancePercent` rỗng **hoặc `< 0`** ⇒ `…_InvalidInsurancePercent`
+//       ⚠️ **Không chặn `> 100`** — khác `Mst_CarAllocationByArea` (#B166) chặn `[0,100]`. Không tự thêm.
+// 🔴🔴 **GUARD TRÙNG CHỈ CHẠY Ở NHÁNH XOÁ**: `if (bIsDelete) { … select top 1 … where
+//   t.InsuranceContractNo = @… ; if (rows > 0) throw …_ExistInsuranceContractNo; }`
+//   ⇒ Tên mã lỗi là *"Exist…"* nhưng nó **chặn khi TÌM THẤY** trong lúc **xoá** — đọc lướt theo tên
+//     sẽ tưởng là guard chống trùng lúc **thêm**. **Nhánh thêm KHÔNG có guard trùng.**
+// 🔴 Cột ghi: `InsuranceContractNo` · `InsurancePercent` · `EffStartDate` · `FlagActive` ·
+//   `LogLUDateTime` · `LogLUBy`. Cột thật (`DbDefine.cs:5284`) viết HOA: `INSURANCECONTRACTNO`,
+//   `INSURANCEPERCENT`, `EFFSTARTDATE`, `FLAGACTIVE` (bẫy tên hằng ≠ giá trị — luật `C0-…quadragesimusseptimus`).
+// 📌 Thực thể `InsuranceFee` **đã có sẵn** trong MiniHTC (port trước từ nguồn khác) và có **thêm** cột
+//   `Code`/`InsCompanyCode`/`InsTypeCode`/`Fee` **không thuộc** `Mst_InsuranceFee`. Giữ nguyên, chỉ
+//   dùng đúng bốn cột của nguồn; ghi rõ để người sau không tưởng nguồn có các cột kia.
+app.MapGet("/api/masters/insurance-fees", async (
+    AppDbContext db, ITenantContext t, string? insuranceContractNo, string? flagActive) =>
+{
+    var q = db.InsuranceFees.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(insuranceContractNo)) q = q.Where(x => x.ContractNo == insuranceContractNo.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.Status == flagActive.Trim());
+    var items = await q.OrderBy(x => x.ContractNo).ThenBy(x => x.EffStartDate).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count,
+        Mst_InsuranceFee = items.Select(x => new
+        {
+            INSURANCECONTRACTNO = x.ContractNo,
+            INSURANCEPERCENT = x.Percent,
+            EFFSTARTDATE = x.EffStartDate,
+            FLAGACTIVE = x.Status
+        }),
+        noGetDoorNote = "WS64 CHI CO MOT cua _Save cho bang nay - KHONG co _Get rieng; man nap du lieu bang duong khac. Endpoint GET nay la tien ich cua MiniHTC de doi soat, khong phai port mot cua nguon.",
+        extraColumnNote = "Thuc the InsuranceFee cua MiniHTC co THEM cot Code/InsCompanyCode/InsTypeCode/Fee KHONG THUOC Mst_InsuranceFee (port truoc tu nguon khac). Chi dung dung bon cot cua nguon: INSURANCECONTRACTNO, INSURANCEPERCENT, EFFSTARTDATE, FLAGACTIVE."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/insurance-fees/save", async (
+    InsuranceFeeSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // 🔴 Bảng đầu vào bắt buộc; nguồn chỉ dùng Rows[0].
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceFee_Save_Input_Mst_InsuranceFeeTblNotFound" });
+
+    var isDelete = (dto.FlagIsDelete ?? "0").Trim() == "1";
+    var r = dto.Rows[0];
+    var contractNo = (r.InsuranceContractNo ?? "").Trim();
+
+    if (contractNo.Length == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceFee_Save_InvalidInsuranceContractNo", check = new { InsuranceContractNo = contractNo } });
+    if (r.EffStartDate is null)
+        return Results.BadRequest(new { error = "Mst_InsuranceFee_Save_InvalidEffStartDate" });
+    if (r.InsurancePercent is null || r.InsurancePercent < 0)
+        return Results.BadRequest(new
+        {
+            error = "Mst_InsuranceFee_Save_InvalidInsurancePercent",
+            check = new { r.InsurancePercent },
+            note = "Nguon chi chan RONG hoac < 0 - KHONG chan > 100 (khac Mst_CarAllocationByArea #B166 chan [0,100]). Khong tu them."
+        });
+
+    var cur = await db.InsuranceFees
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == contractNo
+                                  && x.EffStartDate == r.EffStartDate);
+
+    if (isDelete)
+    {
+        // 🔴 Guard TRÙNG CHỈ Ở NHÁNH XOÁ — tên là "Exist…" nhưng chặn khi TÌM THẤY.
+        if (cur is not null)
+            return Results.BadRequest(new
+            {
+                error = "Mst_InsuranceFee_Save_ExistInsuranceContractNo",
+                check = new { InsuranceContractNo = contractNo },
+                deleteGuardNote = "GUARD TRUNG CHI CHAY O NHANH XOA: 'if (bIsDelete) { select top 1 ... where t.InsuranceContractNo = @...; if (rows > 0) throw ..._ExistInsuranceContractNo; }'. Ten ma loi la 'Exist...' nhung no CHAN KHI TIM THAY trong luc XOA - doc luot theo ten se tuong la guard chong trung luc THEM. Nhanh THEM KHONG co guard trung."
+            });
+        return Results.Ok(new { deleted = 0, flagIsDelete = "1", note = "Khong tim thay dong khop - nguon khong nem loi o truong hop nay." });
+    }
+
+    // 🔴 Nhánh ghi: thêm hoặc sửa — biz KHÔNG phân biệt (client mới tách lô).
+    if (cur is null)
+    {
+        cur = new InsuranceFee
+        {
+            OrgId = t.OrgId, ContractNo = contractNo,
+            Percent = r.InsurancePercent.Value,
+            EffStartDate = r.EffStartDate,
+            Status = string.IsNullOrWhiteSpace(r.FlagActive) ? "1" : r.FlagActive.Trim()
+        };
+        db.InsuranceFees.Add(cur);
+    }
+    else
+    {
+        cur.Percent = r.InsurancePercent.Value;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) cur.Status = r.FlagActive.Trim();
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        insuranceContractNo = contractNo,
+        insurancePercent = cur.Percent,
+        effStartDate = cur.EffStartDate,
+        flagActive = cur.Status,
+        flagIsDelete = "0",
+        threeBatchNote = "CLIENT CHIA BA LO, GOI CUNG MOT HAM BA LAN (FrmMst_InsuranceFee.cs:263,272,281): lo THEM -> FlagIsDelete '0'; lo SUA -> FlagIsDelete '0'; lo XOA -> FlagIsDelete '1'. Biz KHONG phan biet them voi sua - viec tach lo la CUA CLIENT, dua tren TblCommon.Status == EditStatus.ITEM_VALUE_STT_DELETE. Port thanh MOT endpoint nhan CA BA LO cung luc la DOI NGU NGHIA GIAO DICH: o nguon, ba lo la BA LOI GOI DOC LAP - lo sau loi thi lo truoc DA GHI ROI.",
+        rowsZeroNote = "Nguon kiem guard tren Rows[0] - bang dau vao chi dung DONG DAU.",
+        columnNote = "Cot ghi: InsuranceContractNo, InsurancePercent, EffStartDate, FlagActive, LogLUDateTime, LogLUBy. Cot that (DbDefine.cs:5284) VIET HOA: INSURANCECONTRACTNO, INSURANCEPERCENT, EFFSTARTDATE, FLAGACTIVE - bay ten hang khac gia tri (luat C0-...quadragesimusseptimus).",
+        stdDateNote = "EffStartDate duoc chuan hoa bang StdDate truoc khi kiem rong."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
@@ -45161,6 +45287,8 @@ record PortTypeRowDto(string? PortType, string? PortTypeName, string? Status);  
 record PortTypeSaveDto(List<PortTypeRowDto>? Rows);   // #B167
 record SalesOrderTypeRowDto(string? SOType, string? SOTypeName, string? Status);   // #B168
 record SalesOrderTypeSaveDto(List<SalesOrderTypeRowDto>? Rows);   // #B168
+record InsuranceFeeRowDto(string? InsuranceContractNo, decimal? InsurancePercent, DateTime? EffStartDate, string? FlagActive);   // #B171
+record InsuranceFeeSaveDto(string? FlagIsDelete, List<InsuranceFeeRowDto>? Rows);   // #B171
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
