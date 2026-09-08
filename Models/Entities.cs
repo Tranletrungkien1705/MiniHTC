@@ -15096,6 +15096,25 @@ public sealed class SerFilePathVideo
 /// (`ROID`, `ROFileType`) và lưu **đường dẫn + tên file**, không lưu blob.
 /// Cột nguồn (`DbDefine.cs:343`): `ROID` · `ROFILETYPE` · `ROFILEPATH` · `ROFILENAME` ·
 /// `LOGLUDATETIME` · `LOGLUBY` — lần này **không** có hằng sai chính tả (đối chứng với #627).</summary>
+/// <summary>#632 MASTER file đính kèm mẫu của phiếu tiếp nhận (`Ser_Mst_ReceptionAttachFile`),
+/// khoá `ReceptionAttachFileNo`. ⚠️ **KHÁC** <see cref="ReceptionAttachFile"/> (file thật của TỪNG phiếu).
+/// Cột nguồn (`DbDefine.cs`): `ReceptionAttachFileNo` · `FilePath` · `FileName` · `CreatedDateTime` ·
+/// `CreatedBy` · `FlagActive` · `LogLUDateTime` · `LogLUBy`.</summary>
+public sealed class ReceptionAttachFileMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionAttachFileNo { get; set; } = "";
+    public string? FilePath { get; set; }
+    public string? FileName { get; set; }
+    public DateTime? CreatedDateTime { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>Nguồn gán cứng `TConst.Flag.Active` = **"1"** lúc tạo, không nhận từ client.</summary>
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class RoAttachFile
 {
     public long Id { get; set; }

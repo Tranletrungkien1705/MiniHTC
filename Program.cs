@@ -52950,6 +52950,113 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #632 MASTER FILE ĐÍNH KÈM PHIẾU TIẾP NHẬN `Ser_Mst_ReceptionAttachFile` (`Tab.cs:14419`) =====
+// 3B: laptop `:14419` md5 `b7e207ea` **KHỚP** máy 150 `:14437` (lệch **+18**, căn theo TÊN).
+// ⚠️ **KHÁC BẢNG** với `ReceptionAttachFile` mà MiniHTC đã có (`/api/receptions/{no}/attachfiles`): bảng kia
+//   là file **của từng phiếu**, bảng này là **MASTER** khoá `ReceptionAttachFileNo`.
+//
+// 🔴🔴🔴 **BẢN MỚI ĐÃ NGỪNG GHI SANG DB KHO — CA THỨ MƯỜI CỦA HỌ "GHI BA DB"**:
+//   DIFF hai bản `CreateX` nằm **cạnh nhau** trong cùng file:
+//     · `Ser_Mst_ReceptionAttachFile_CreateX**_New20180917**` (**chết**): nhận thêm `strDealerCode` và ghi
+//       `_dbMain.SaveData(...)` **VÀ** `_dbWH.SaveData(...)` — **hai DB**.
+//     · `Ser_Mst_ReceptionAttachFile_CreateX` (**LIVE**, vỏ bọc `:14254` gọi): **bỏ hẳn** tham số
+//       `strDealerCode` và **bỏ luôn dòng** `_dbWH.SaveData` — chỉ còn **một DB**.
+//   ⇒ Đây là **biến thể MỚI** của họ đã ghi (#571 gõ nhầm tên DB · #573 ghi ngoài transaction · #598 xoá một
+//     bên chèn hai bên · #608 · #612 dòng ghi bị comment): ở đây dòng ghi thứ hai **biến mất khi hàm được**
+//     **nhân bản sang phiên bản mới**, không để lại comment nào.
+//   ☠️ **DẤU VẾT DUY NHẤT CÒN LẠI NẰM Ở VỎ BỌC**: `Ser_Mst_ReceptionAttachFile_Create` vẫn gọi
+//     `CommitSafety(_dbMain)` **và** `CommitSafety(_dbWH)`, và khối `finally` vẫn `Rollback`+`ReleaseAllSemaphore`
+//     cho **cả hai** ⇒ mở/đóng một giao dịch WH mà **không ghi gì vào đó**. Ai đọc vỏ bọc sẽ tưởng vẫn ghi 2 DB.
+// 🔴 **`#region // Check:` CHỈ CHUẨN HOÁ, GUARD LÀ MỘT KHỐI NGOẶC RỖNG** — trích nguyên văn (luật #403):
+//     `strReceptionAttachFileNo = TUtils.CUtils.StandardizeParam(strReceptionAttachFileNo);`
+//     `strFilePath = string.Format("{0}", strFilePath).Trim();`
+//     `strFileName = string.Format("{0}", strFileName).Trim();`
+//     `{` `}`   ← **khối rỗng**
+//   ⇒ Không kiểm rỗng, không kiểm trùng khoá. Khối `{ }` bỏ trống cho thấy **có ý định** đặt guard rồi thôi.
+//   ⚪ #404: đối chiếu **cả hai** bản `CreateX` — **cả hai đều rỗng như nhau**, nên đây không phải hồi quy.
+// 🔴 **BẢN CHẾT CÒN CÓ THAM SỐ CHẾT**: `_New20180917` chuẩn hoá `strDealerCode` rồi **không dùng nó** vào
+//   `DataTable` lần nào ⇒ tham số vô dụng ngay trong chính bản đã bỏ.
+// 🔴 **TÊN GHI LOG SAI TÊN HÀM**: trong `CreateX` có `strFunctionName = "Ser_Mst_ReceptionAttachFile**CreateX**"`
+//   — **thiếu dấu gạch dưới** trước `CreateX`, và nó **ghi đè** giá trị người gọi truyền vào ⇒ tra log theo tên
+//   hàm thật sẽ **không ra**. (Họ nhãn chẩn đoán sai của #627/#631.)
+// 🔴🔴 **TIÊU ĐỀ CHÚ THÍCH LẠC MÔ-ĐUN — ĐẾM ĐƯỢC, KHÔNG CÒN LÀ CẢM TÍNH**: chuỗi
+//   `---- #tbl_**Dls_CustomerCare**_Filter:` xuất hiện **7 lần** trong `Tab.cs` (máy 150 cũng **7**), ở 7 hàm:
+//   `Ser_ROAttachFile_GetX` · `Ser_ReceptionF_GetX` + ba bản có hậu tố ngày · `Ser_Mst_ReceptionAttachFile_GetX`
+//   · `Ser_Mst_ReceptionFAudType_GetX`. Và **toàn bộ 7 lần nhắc `Dls_CustomerCare` trong file đều là chú thích**
+//   **này** — trong file **không hề có** hàm hay bảng `Dls_CustomerCare` nào.
+//   ⇒ Cả họ `*_GetX` của `Tab.cs` được **đóng dấu từ một khuôn** viết cho mô-đun chăm sóc khách hàng. Điều đó
+//     giải thích luôn kiểu **tên bảng tạm tự mâu thuẫn** (`into #tblSer_…` vs `--drop table #tbl_Ser_…`).
+// ⚪ **`SELECT DISTINCT` Ở ĐÂY VÔ HẠI — ĐỐI CHỨNG VỚI #631**: bảng lọc `distinct` trên **một** cột
+//   `ReceptionAttachFileNo` (đúng khoá chính) ⇒ `Count(0)` = **số bản ghi thật**. Ở #631 `distinct` chạy trên
+//   **cặp** (`ROID`, `ROFileType`) vốn **không** phải khoá đầy đủ ⇒ tổng bị co lại. **Tiêu chí phân biệt**:
+//   `distinct` chỉ an toàn khi tập cột bằng đúng khoá của bảng.
+// 🔴 Cùng bệnh đã đếm: phân trang bị comment (**có** `identity()` ⇒ mức "tắt", như #631) · cờ khối chi tiết
+//   dùng `(str != null && str.Length > 0)` nên `"0"`/`"N"` vẫn **BẬT** · `Convert.ToInt64` không guard rỗng ·
+//   `order by` nằm trên `SELECT … INTO`, câu kết quả **không** có `ORDER BY`.
+app.MapGet("/api/receptionattachfilemsts", async (AppDbContext db, ITenantContext t,
+    string? no, string? flagActive, int? recordStart, int? recordCount, bool? isGetDetail) =>
+{
+    var qy = db.ReceptionAttachFileMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(no)) qy = qy.Where(x => x.ReceptionAttachFileNo == no!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var items = (isGetDetail == false) ? new List<object>() : (await qy
+        .OrderBy(x => x.ReceptionAttachFileNo)          // nguồn KHÔNG sắp ở câu kết quả
+        .Skip(skip).Take(take)
+        .Select(x => new { x.Id, x.ReceptionAttachFileNo, x.FilePath, x.FileName,
+                           x.CreatedDateTime, x.CreatedBy, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync()).Cast<object>().ToList();
+    return Results.Ok(new
+    {
+        myCountAsSource = total, count = items.Count, items,
+        // ===== #632 =====
+        liveCreateStoppedWritingToWarehouseDb = "DIFF hai ban CreateX canh nhau: ban _New20180917 (CHET) nhan them strDealerCode va ghi _dbMain.SaveData VA _dbWH.SaveData (hai DB); ban LIVE bo han tham so strDealerCode va bo luon dong _dbWH.SaveData (mot DB) — dong ghi thu hai BIEN MAT khi ham duoc nhan ban sang phien ban moi, khong de lai comment nao",
+        tenthCaseOfThreeDbWriteFamily = "bien the MOI cua ho da ghi: #571 go nham ten DB, #573 ghi ngoai transaction, #598 xoa mot ben chen hai ben, #608, #612 dong ghi bi comment — nay #632 dong ghi bien mat khi len phien ban moi",
+        onlyTraceLeftIsInTheWrapper = "vo boc Ser_Mst_ReceptionAttachFile_Create VAN goi CommitSafety(_dbMain) VA CommitSafety(_dbWH), finally van Rollback + ReleaseAllSemaphore cho CA HAI => mo/dong mot giao dich WH ma khong ghi gi vao do; ai doc vo boc se tuong van ghi 2 DB",
+        checkRegionIsStandardizeOnlyWithEmptyBraces = "trich nguyen van: StandardizeParam(strReceptionAttachFileNo); strFilePath/strFileName .Trim(); roi mot khoi { } RONG => khong kiem rong, khong kiem trung khoa; khoi ngoac bo trong cho thay CO Y DINH dat guard roi thoi",
+        bothCreateVariantsHaveSameEmptyGuard = "#404: doi chieu CA HAI ban CreateX — ca hai deu rong nhu nhau nen day KHONG phai hoi quy",
+        deadVariantHasDeadParameter = "_New20180917 chuan hoa strDealerCode roi KHONG dung no vao DataTable lan nao",
+        logFunctionNameMissesUnderscore = "trong CreateX co strFunctionName = Ser_Mst_ReceptionAttachFileCreateX — THIEU dau gach duoi truoc CreateX, va no GHI DE gia tri nguoi goi truyen vao => tra log theo ten ham that se KHONG ra (ho #627/#631)",
+        strayTemplateCommentCounted = "chuoi ---- #tbl_Dls_CustomerCare_Filter: xuat hien 7 lan trong Tab.cs (may 150 cung 7), o 7 ham: Ser_ROAttachFile_GetX, Ser_ReceptionF_GetX + ba ban hau to ngay, Ser_Mst_ReceptionAttachFile_GetX, Ser_Mst_ReceptionFAudType_GetX; va TOAN BO 7 lan nhac Dls_CustomerCare trong file deu la chu thich nay — file KHONG he co ham hay bang Dls_CustomerCare nao => ca ho *_GetX cua Tab.cs duoc dong dau tu MOT KHUON viet cho mo-dun cham soc khach hang",
+        distinctIsHarmlessHere = "AM TINH doi chung #631: distinct o day tren MOT cot ReceptionAttachFileNo (dung khoa chinh) nen Count(0) = so ban ghi that; o #631 distinct chay tren CAP (ROID, ROFileType) von khong phai khoa day du nen tong bi co lai. TIEU CHI: distinct chi an toan khi tap cot bang dung khoa cua bang",
+        samePagingAndFlagDefects = "phan trang bi comment nhung CO identity() => muc tat (nhu #631); co khoi chi tiet dung (str != null && str.Length > 0) nen 0 hay N van BAT; Convert.ToInt64 khong guard rong; order by nam tren SELECT INTO, cau ket qua khong co ORDER BY",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptionattachfilemsts", async (ReceptionAttachFileMstDto dto, AppDbContext db,
+    ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    // Nguồn chuẩn hoá bằng StandardizeParam rồi Trim; guard là khối { } RỖNG ⇒ port giữ 1:1 phần chuẩn hoá,
+    // nhưng CHẶN khoá rỗng và nêu cờ guardsAddedByPort (không im lặng bắt chước lỗi).
+    var no = (dto.ReceptionAttachFileNo ?? "").Trim();
+    if (no.Length == 0) return Results.BadRequest(new { error = "Chua nhap so file dinh kem." });
+    var by = user.Identity?.Name ?? "system";
+    var row = await db.ReceptionAttachFileMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionAttachFileNo == no);
+    var isNew = row is null;
+    if (row is null)
+    {
+        row = new ReceptionAttachFileMst { OrgId = t.OrgId, ReceptionAttachFileNo = no,
+                                           CreatedDateTime = DateTime.Now, CreatedBy = by };
+        db.ReceptionAttachFileMsts.Add(row);
+    }
+    row.FilePath = (dto.FilePath ?? "").Trim();
+    row.FileName = (dto.FileName ?? "").Trim();
+    row.FlagActive = "1";                    // nguồn gán cứng TConst.Flag.Active, KHÔNG nhận từ client
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.ReceptionAttachFileNo, row.FilePath, row.FileName,
+        row.CreatedDateTime, row.CreatedBy, row.FlagActive, row.LogLUDateTime, row.LogLUBy,
+        isNew,
+        guardsAddedByPort = "nguon KHONG kiem rong va KHONG kiem trung khoa (khoi { } rong); port chan khoa rong va lam upsert theo khoa",
+        flagActiveIsServerSet = "nguon gan cung TConst.Flag.Active = 1 luc tao, khong nhan tu client",
+        portWritesOneDbLikeLiveVariant = "ban LIVE chi ghi _dbMain; MiniHTC mot DB nen trung khop, nhung ghi ro de khong ai tuong day la mat ghi WH do port",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #631 FILE ĐÍNH KÈM LỆNH SỬA CHỮA `Ser_ROAttachFile_GetX` (`Tab.cs:1468`) =====
 // 3B: laptop `:1468` md5 `637d10dc` **KHỚP** máy 150 `:1468`.
 // TRACE: WS Tab `WSCarSvTab.asmx.cs:3287` → vỏ bọc `Ser_ROAttachFile_Get` (`Tab.cs:304`) → thân thật
@@ -57389,6 +57496,7 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
+record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo, string? FilePath, string? FileName);   // #632
 record ReceptionFAudTypeMstDto(string? ReceptionFAudType, string? ReceptionFAudTypeName, string? FlagActive, string? Remark);   // #627
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
