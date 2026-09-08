@@ -9166,6 +9166,103 @@ app.MapPost("/api/vins/{vin}/close-box", async (
     });
 }).RequireAuthorization();
 
+// ===== #B113 TRA DANH SÁCH VIN THEO LÔ LỚN — `CarVINGetList_New20181115` =====
+// Trace LIVE: **HAI** điểm vào WS (`:14806` và `:53953`) cùng gọi
+//   `_biz.CarVINGetList_New20181115` (`BizHTC.Car.cs:1045`).
+//   3B đo thật, **khớp cả 2 máy**: start=1045 md5 `a34b3661b5921a5408ede477c089424c`.
+// 🔴🔴 **CHIA LÔ VÌ GIỚI HẠN THAM SỐ CỦA SQL SERVER — `myUtil_GetDataForHugeList`**
+//    (`BizHTC.Common.cs:614`): danh sách VIN bị **cắt thành từng lô
+//    `TConst.HTCConst.MaxParamsSqlSv` = **2000** phần tử** (`Const.Main.cs:325`, chú thích nguồn:
+//    *"Must be less than 2100 - limited by SqlServer"*), chạy **cùng câu SQL nhiều lần**, rồi
+//    **`UnionAll`** kết quả lại.
+//    ⇒ Đây là lý do hàm tên *"HugeList"*. Port dùng `IN (...)` một phát với danh sách > 2000 VIN sẽ
+//      **vỡ ở SQL Server thật**; MiniHTC/Postgres không vỡ nhưng **phải giữ nguyên ngữ nghĩa gộp**
+//      (`UnionAll`, **không** distinct) để số dòng khớp nguồn.
+//    ⚠️ `UnionAll(ref dtResult, ref dtGetData, **false**)` — tham số cuối `false` = **KHÔNG khử trùng**.
+// 🔴 **RBAC biến thể 2 — ca thứ 20**: `myUtil_GetDataForHugeList` bind
+//    `"@strBUPatternOfUser", drAbilityOfUser["BUPattern"]` (**quyền THẬT**, hiếm!) nhưng **bước 3 cho
+//    thấy SQL của `CarVINGetList` KHÔNG dùng tham số này** (`grep -c` trong vùng hàm = **0**).
+//    ⇒ Hàm dùng chung có sẵn quyền thật, **nhưng câu SQL bỏ qua** ⇒ vẫn **không lọc phạm vi**.
+//    (Đối chiếu: `CarCarGetList_New20181115` cùng file **có** 1 lần dùng — sẽ kiểm ở đơn vị riêng.)
+// 🔴 **Bí danh CÓ TIỀN TỐ để tránh đè cột** (khuôn #B93/#B97/#B102): `cv.*` giữ nguyên tên, còn
+//    `CT_PackingList` → **`CTPL…`**, `Car_Car` → **`CC…`**, `CT_Declaration` → **`CTD…`**.
+//    ⚠️ Hai chỗ **lệch khuôn**: `ctt.DeclarationNo` mang bí danh **`CTPLDeclarationNo`** (tiền tố
+//      `CTPL` nhưng lấy từ bảng **`CT_TKHQ`**, không phải `CT_PackingList`); và `ctlc.BankName` /
+//      `ctlc.ContractNo` **không có tiền tố nào**. Giữ nguyên để đối chiếu.
+// 🔴 `inner join Car_VIN` (bắt buộc) + **BỐN `left join`** làm giàu: `CT_TKHQ` (theo `DeclarationNo`),
+//    `CT_PackingList`, `CT_LC`, `CT_Declaration`, `Car_Car` — thiếu bảng nào chỉ để trống, **không loại dòng**.
+app.MapPost("/api/vins/get-list", async (
+    List<string> vins, AppDbContext db, ITenantContext t, int? batchSize) =>
+{
+    if (vins is null || vins.Count == 0)
+        return Results.BadRequest(new { error = "CarVINGetList_InvalidVINList" });
+
+    // `TConst.HTCConst.MaxParamsSqlSv` = 2000 (phải < 2100 — giới hạn của SQL Server).
+    const int MaxParamsSqlSv = 2000;
+    var step = Math.Clamp(batchSize ?? MaxParamsSqlSv, 1, MaxParamsSqlSv);
+    var list = vins.Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var pls = (await db.PackingLists.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.PLNo).ToDictionary(g => g.Key, g => g.First());
+    var tkhqs = (await db.CtTkhqs.Where(k => k.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(k => k.DeclarationNo).ToDictionary(g => g.Key, g => g.First());
+    var lcs = (await db.LettersOfCredit.Where(l => l.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(l => l.LCNo).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 CHIA LÔ đúng như nguồn, rồi UnionAll (KHÔNG khử trùng).
+    var result = new List<object>();
+    var batches = 0;
+    for (var i = 0; i < list.Count; i += step)
+    {
+        var chunk = list.Skip(i).Take(step).ToList();
+        batches++;
+        var cars = await db.CarVinMasters
+            .Where(c => c.OrgId == t.OrgId && chunk.Contains(c.VIN)).ToListAsync();
+        foreach (var cv in cars)
+        {
+            pls.TryGetValue(cv.PackingListNo ?? "", out var ctpl);
+            tkhqs.TryGetValue(cv.DeclarationNo ?? "", out var ctt);
+            lcs.TryGetValue(ctpl?.LcNo ?? "", out var ctlc);
+            result.Add(new
+            {
+                cv.VIN, cv.ModelCode, cv.SpecCode, cv.ColorCode, cv.ActualSpec, cv.EngineNo,
+                cv.DeclarationNo, cv.PackingListNo, cv.WorkOrderNo, cv.FlagActive,
+                cv.CQStartDate, cv.CQExpectedDate, cv.TypeCB, cv.LoaiThung,
+                // Tiền tố CTPL… (từ CT_PackingList)
+                CTPLPackingListNo = ctpl?.PLNo,
+                CTPLLCNo = ctpl?.LcNo,
+                // ⚠️ Lệch khuôn: tiền tố CTPL nhưng LẤY TỪ CT_TKHQ.
+                CTPLDeclarationNo = ctt?.DeclarationNo,
+                CTPLPortCode = ctpl?.PortCode,
+                CTPLShippingDateStart = ctpl?.ShippingDateStart,
+                CTPLShippingDateEnd = ctpl?.ShippingDateEnd,
+                CTPLShippingDateEndExpected = ctpl?.ShippingDateEndExpected,
+                CTPLCreatedDate = ctpl?.CreatedAt,
+                // ⚠️ Lệch khuôn: KHÔNG có tiền tố.
+                BankName = ctlc?.BankName,
+                ContractNo = ctlc?.ContractNo,
+                // Tiền tố CC… (từ Car_Car) — MiniHTC gộp vào CarVinMaster.
+                CCCarId = cv.VIN, CCSpecCode = cv.SpecCode, CCModelCode = cv.ModelCode,
+                CCColorCode = cv.ColorCode, CCDealerCode = cv.DealerCode,
+                CCFlagActive = cv.FlagActive, CCVIN = cv.VIN,
+                CCCarCancelRemark = cv.CarCancelRemark,
+                CTDOpenDate = ctt?.OpenDate
+            });
+        }
+    }
+
+    return Results.Ok(new
+    {
+        inputVins = list.Count, batches, batchSize = step, count = result.Count, items = result,
+        hugeListNote = "CHIA LO VI GIOI HAN THAM SO CUA SQL SERVER - myUtil_GetDataForHugeList (BizHTC.Common.cs:614): danh sach VIN bi cat thanh tung lo TConst.HTCConst.MaxParamsSqlSv = 2000 phan tu (Const.Main.cs:325, chu thich nguon: 'Must be less than 2100 - limited by SqlServer'), chay CUNG CAU SQL NHIEU LAN roi UnionAll ket qua. Day la ly do ham ten 'HugeList'. Port dung IN (...) mot phat voi > 2000 VIN se VO o SQL Server that.",
+        unionAllNote = "UnionAll(ref dtResult, ref dtGetData, FALSE) - tham so cuoi 'false' = KHONG KHU TRUNG. Port phai giu nguyen ngu nghia gop de so dong khop nguon.",
+        rbacHole = "RBAC bien the 2 (khai ma khong dung), CA THU 20: myUtil_GetDataForHugeList bind '@strBUPatternOfUser' = drAbilityOfUser['BUPattern'] - QUYEN THAT (hiem!) - nhung BUOC 3 cho thay SQL cua CarVINGetList KHONG dung tham so nay (grep -c trong vung ham = 0). Ham dung chung co san quyen that NHUNG CAU SQL BO QUA => van KHONG loc pham vi. Doi chieu: CarCarGetList_New20181115 cung file CO 1 lan dung.",
+        aliasPrefixNote = "Bi danh CO TIEN TO de tranh de cot (khuon #B93/#B97/#B102): cv.* giu nguyen ten; CT_PackingList -> CTPL...; Car_Car -> CC...; CT_Declaration -> CTD... HAI CHO LECH KHUON: ctt.DeclarationNo mang bi danh CTPLDeclarationNo (tien to CTPL nhung lay tu bang CT_TKHQ); va ctlc.BankName / ctlc.ContractNo KHONG CO tien to nao. Giu nguyen de doi chieu.",
+        joinShapeNote = "inner join Car_VIN (bat buoc) + BON left join lam giau: CT_TKHQ (theo DeclarationNo), CT_PackingList, CT_LC, CT_Declaration, Car_Car - thieu bang nao chi de trong, KHONG loai dong.",
+        twoEntryNote = "HAI diem vao WS (:14806 va :53953) cung goi mot ham biz."
+    });
+}).RequireAuthorization();
+
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
