@@ -33051,6 +33051,135 @@ app.MapPost("/api/insurancecompanies", async (MstInsCompanyDto dto, AppDbContext
     return Results.Ok(new { row.Id, row.InsCompanyCode, row.InsCompanyName, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== #B172/#B173/#B174 HÃNG BẢO HIỂM theo nguồn **2010.HTC** — `Mst_InsuranceCompanyCreate` /
+//       `…Update` / `…Delete` / `…Get` (`_New20181119`, `DataWH/Biz.HTC.WH.cs`) =====
+// 🔴🔴 **HAI HỆ CÙNG MỘT BẢNG**: bản port trước (`/api/insurancecompanies`) lấy từ hệ
+//   **`ERP.V15.DMSSales.Real`** (cổng `TERP.WSINS`, chỉ có trên máy 150) — xem chú thích ngay trên đó.
+//   Lượt này đọc **2010.HTC**, nơi có **BỐN cửa riêng** ở WS64. Hai hệ **khác tập cột**:
+//     · bản cũ: `InsCompanyCode` · `InsCompanyName` · `FlagActive` · `UpdatedAt`;
+//     · 2010.HTC ghi **TÁM cột**: thêm `Remark` · `CreatedDate` · `CreatedBy` · `LogLUDateTime` · `LogLUBy`.
+//   ⇒ **§12 bổ sung 5 cột**, **không** phá endpoint cũ (hai hệ dùng chung một bảng ở MiniHTC).
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5** dòng — cùng file với #B159/#B171):
+//   `Create 123243,123436 / f28a8cc29145028a22d07b29c1d8b855`
+//   `Update 123437,123671 / d6c542f9d0383863b758d0b40b971bd1`
+//   `Delete 123672,123883 / 78ec0cae35012b4dd6347afb750016e1`
+//   `Get    184446,184628 / 2df4a80f322eddde5d921bfb1d176779`
+// 🔴 **`_Create` KHÔNG có guard trùng mã**: chỉ kiểm bảng rỗng (`…_TableDetailBeBlank`),
+//   `InsCompanyCode` rỗng (`…_InvalidstrInsCompanyCode` — tên hằng có **`str`** giữa chừng),
+//   `InsCompanyName` rỗng (`…_InvalidInsCompanyName`). ⇒ Gọi hai lần cùng mã ⇒ **hai dòng trùng**.
+//   Ghi lại, **không tự thêm guard**. Ngoài ra `_Create` **ép `FlagActive = Flag.Active`**.
+// 🔴 **`_Update` ghi theo LÔ qua bảng tạm**: `InsertHuge("#tbl_Mst_InsuranceCompany", …)` rồi
+//   `update mic set InsCompanyName / FlagActive / Remark / LogLUDateTime / LogLUBy … inner join`.
+//   ⇒ **`InsCompanyCode` không nằm trong `set`** ⇒ **khoá bất biến**; `CreatedDate`/`CreatedBy`
+//     **không bị đụng** dù bảng tạm mang giá trị mới — **chỉ 5 cột được ghi**.
+// 🔴 **`_Delete` XOÁ THẬT** (`delete … from Mst_InsuranceCompany`), không đổi cờ.
+// 🔴 Cả ba đường ghi đều chạy **hai lần** (`_dbMain` và `_dbWH`).
+app.MapPost("/api/insurancecompanies/htc-create", async (
+    InsCompanyHtcSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceCompanyCreate_TableDetailBeBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var added = new List<string>();
+
+    foreach (var r in dto.Rows)
+    {
+        var code = (r.InsCompanyCode ?? "").Trim();
+        if (code.Length == 0)
+            return Results.BadRequest(new { error = "Mst_InsuranceCompanyCreate_InvalidstrInsCompanyCode" });
+        if (string.IsNullOrWhiteSpace(r.InsCompanyName))
+            return Results.BadRequest(new { error = "Mst_InsuranceCompanyCreate_InvalidInsCompanyName", check = new { InsCompanyCode = code } });
+
+        // 🔴 KHÔNG kiểm trùng — đúng nguồn. FlagActive bị ÉP = "1".
+        db.MstInsuranceCompanies.Add(new MstInsuranceCompany
+        {
+            OrgId = t.OrgId, InsCompanyCode = code, InsCompanyName = r.InsCompanyName,
+            FlagActive = "1", Remark = r.Remark,
+            CreatedDate = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by,
+            UpdatedAt = now
+        });
+        added.Add(code);
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        inserted = added.Count, codes = added,
+        noDupGuardNote = "_Create KHONG co guard trung ma: chi kiem bang rong (_TableDetailBeBlank), InsCompanyCode rong (_InvalidstrInsCompanyCode - ten hang co 'str' giua chung), InsCompanyName rong (_InvalidInsCompanyName). Goi hai lan cung ma => HAI DONG TRUNG. Ghi lai, KHONG tu them guard.",
+        forcedFlagNote = "_Create EP FlagActive = TERP.Constants.Flag.Active - client gui gi cung bi de.",
+        twoSystemsNote = "HAI HE CUNG MOT BANG: ban port truoc (/api/insurancecompanies) lay tu he ERP.V15.DMSSales.Real (cong TERP.WSINS, chi co tren may 150); luot nay doc 2010.HTC voi BON cua rieng. 2010.HTC ghi TAM cot - S12 da bo sung 5 cot con thieu, KHONG pha endpoint cu.",
+        twoDbNote = "Nguon InsertHuge hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancecompanies/htc-update", async (
+    InsCompanyHtcSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceCompanyUpdate_TableDetailBeBlank" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = 0; var notFound = new List<string>();
+
+    foreach (var r in dto.Rows)
+    {
+        var code = (r.InsCompanyCode ?? "").Trim();
+        if (code.Length == 0)
+            return Results.BadRequest(new { error = "Mst_InsuranceCompanyUpdate_InvalidstrInsCompanyCode" });
+        if (string.IsNullOrWhiteSpace(r.InsCompanyName))
+            return Results.BadRequest(new { error = "Mst_InsuranceCompanyUpdate_InvalidInsCompanyName", check = new { InsCompanyCode = code } });
+
+        var cur = await db.MstInsuranceCompanies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsCompanyCode == code);
+        if (cur is null) { notFound.Add(code); continue; }   // inner join ⇒ không khớp thì bỏ qua
+
+        // 🔴 CHỈ 5 cột trong `set`; InsCompanyCode/CreatedDate/CreatedBy KHÔNG bị đụng.
+        cur.InsCompanyName = r.InsCompanyName;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) cur.FlagActive = r.FlagActive.Trim();
+        cur.Remark = r.Remark;
+        cur.LogLUDateTime = now; cur.LogLUBy = by;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        updated, notFound,
+        setColumnsNote = "_Update ghi theo LO qua bang tam: InsertHuge('#tbl_Mst_InsuranceCompany', ...) roi 'update mic set mic.InsCompanyName, mic.FlagActive, mic.Remark, mic.LogLUDateTime, mic.LogLUBy from Mst_InsuranceCompany mic inner join #tbl_... t on mic.InsCompanyCode = t.InsCompanyCode'. InsCompanyCode KHONG nam trong set => KHOA BAT BIEN; CreatedDate/CreatedBy KHONG bi dung du bang tam co mang gia tri moi - CHI 5 COT duoc ghi.",
+        innerJoinNote = "Dung inner join => ma khong ton tai thi KHONG bao loi, chi la khong co dong nao duoc cap nhat. Port tra notFound de nguoi dung biet.",
+        twoDbNote = "Nguon chay cau update hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/insurancecompanies/htc-delete", async (
+    InsCompanyHtcSaveDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceCompanyDelete_TableDetailBeBlank" });
+
+    var codes = dto.Rows.Select(r => (r.InsCompanyCode ?? "").Trim()).Where(c => c.Length > 0).ToList();
+    if (codes.Count == 0)
+        return Results.BadRequest(new { error = "Mst_InsuranceCompanyDelete_InvalidInsCompanyCode" });
+
+    var rows = await db.MstInsuranceCompanies
+        .Where(x => x.OrgId == t.OrgId && codes.Contains(x.InsCompanyCode)).ToListAsync();
+
+    // 🔴 XOÁ THẬT — nguồn `delete … from Mst_InsuranceCompany`, không đổi cờ.
+    db.MstInsuranceCompanies.RemoveRange(rows);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = rows.Count, codes,
+        hardDeleteNote = "_Delete XOA THAT: nap bang tam roi 'delete ... from Mst_InsuranceCompany' - KHONG doi co. Doi chieu #B117 (ham '_Deleted' ben hoa don doi trang thai) - ten khong quyet dinh hanh vi.",
+        twoDbNote = "Nguon chay cau delete hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
@@ -45289,6 +45418,8 @@ record SalesOrderTypeRowDto(string? SOType, string? SOTypeName, string? Status);
 record SalesOrderTypeSaveDto(List<SalesOrderTypeRowDto>? Rows);   // #B168
 record InsuranceFeeRowDto(string? InsuranceContractNo, decimal? InsurancePercent, DateTime? EffStartDate, string? FlagActive);   // #B171
 record InsuranceFeeSaveDto(string? FlagIsDelete, List<InsuranceFeeRowDto>? Rows);   // #B171
+record InsCompanyHtcRowDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive, string? Remark);   // #B172-B174
+record InsCompanyHtcSaveDto(List<InsCompanyHtcRowDto>? Rows);   // #B172-B174
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110

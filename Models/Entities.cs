@@ -10404,6 +10404,13 @@ public sealed class MstInsuranceCompany
     public string InsCompanyCode { get; set; } = "";
     public string? InsCompanyName { get; set; }
     public string FlagActive { get; set; } = "1";
+    /// <summary>🔴 #B172 — bốn cột nguồn **2010.HTC** (`Mst_InsuranceCompanyCreate_New20181119` ghi
+    /// đủ 8 cột) mà bản port trước (từ hệ `ERP.V15.DMSSales.Real`) **không có**.</summary>
+    public string? Remark { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
