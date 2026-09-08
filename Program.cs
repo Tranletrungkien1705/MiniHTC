@@ -30713,6 +30713,83 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #587 GIỚI HẠN TỆP ĐÍNH KÈM EMAIL (`CheckAttachmentLimit`, `SendMail.cs:858`) =====
+// Guard đọc tham số `MaxAttachmentSize` trong `mst_param` theo đại lý rồi so với độ dài mảng byte.
+// Chỉ **MỘT** nơi gọi: `SendMail.cs:993` (bên trong `Email_BatchSendEmailCreate`).
+//
+// 🔴🔴 **GUARD CHỈ BẢO VỆ ĐƯỜNG GỬI HÀNG LOẠT, ĐƯỜNG GỬI ĐƠN LẺ KHÔNG CÓ**: `Email_SendEmailCreate` (`:25`)
+//   **không** gọi `CheckAttachmentLimit` ở đâu cả — đọc trọn `#region // Check:` của nó (luật #403) thì thấy
+//   khối đó chỉ **lấy cấu hình SMTP**, không có một dòng kiểm dung lượng nào.
+//   ⇒ Cùng một hệ thống: gửi **theo lô** thì bị chặn tệp lớn, gửi **đơn lẻ** thì **không**.
+// 🔴🔴 **`catch` NÉM LẠI VỚI MÃ LỖI RỖNG**:
+//     `string strErrorCode = "";`  … (gán mã ở từng nhánh ném) …
+//     `catch (Exception exc) { throw CMyException.Raise(**strErrorCode**, exc, …); }`
+//   Nếu lỗi xảy ra **trước** khi kịp gán — ví dụ `ExecQuery` hỏng, hoặc `Convert.ToInt32(ParamValue)` ném
+//   `FormatException` vì tham số cấu hình ghi `"10MB"`/rỗng — thì mã lỗi ném lên là **chuỗi rỗng**.
+//   ⇒ Tầng trên nhận một lỗi **không tên**: không tra được, không dịch được ra thông báo cho người dùng.
+// 🔴 **HAI NGUYÊN NHÂN, MỘT THÔNG BÁO**: `if (dtGetParams.Rows.Count != 1) throw Email_AttachmentNotAllowed`
+//   ⇒ *"chưa khai tham số"* và *"khai TRÙNG hai dòng"* đều ra **cùng một** mã *"không được phép đính kèm"*.
+//   Người quản trị khai thừa một dòng sẽ đi tìm quyền, trong khi lỗi thật là **dữ liệu danh mục trùng**.
+// 🔴 **ĐƠN VỊ CỦA NGƯỠNG KHÔNG ĐƯỢC GHI Ở ĐÂU**: so `arrbAttachment.Length` (**byte**) với `iMaxAttachmentSize`
+//   lấy thẳng từ `ParamValue`. Nếu người khai hiểu là **MB** thì ngưỡng thành `10` byte ⇒ **chặn mọi tệp**.
+// 🔴 **Bake**: `where DealerCode = '@strDealerCode'` + `StringUtils.Replace`, trong khi `alParamsCoupleSql`
+//   được tạo **rỗng** rồi vẫn truyền vào `ExecQuery` — y hệt #576.
+//
+// 📌 Phát hiện thêm khi đọc `#region // Check:` của `Email_SendEmailCreate`:
+// 🔴 `INNER JOIN Email_Config ec ON t.DealerCode = ec.DealerCode` ⇒ đại lý **chưa cấu hình SMTP** thì email
+//   của họ **không bao giờ được lấy ra để gửi**: bản ghi nằm im ở `status='0'` **mãi mãi**, không lỗi,
+//   không hàng đợi lỗi. (Cùng họ "inner join danh mục làm mất dòng" #410, nhưng hậu quả là **thư không đi**.)
+// 🔴 `SELECT … ec.mailServerPassword …` — **mật khẩu SMTP được chọn ra** cùng dữ liệu email và đi vào
+//   `DataSet` trả về tầng trên; câu SQL này còn được `myDebug_SaveSql` ghi lại khi bật gỡ lỗi.
+// ⚠️ `AND t.EffectDate <= GETDATE()` dùng giờ **máy chủ DB** (khác #567 vốn dùng `GETDATE()` làm **ngày in**).
+app.MapPost("/api/emails/check-attachment-limit", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, long? attachmentBytes) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "dealerCode bat buoc." });
+    var dc = dealerCode!.Trim();
+
+    // Nguồn: select ParamCode, ParamValue from mst_param where DealerCode = ... and ParamCode = MaxAttachmentSize
+    var rows = await db.Masters
+        .Where(m => m.OrgId == t.OrgId && m.Category == "MaxAttachmentSize" && m.Code == dc)
+        .ToListAsync();
+
+    if (rows.Count != 1)
+        return Results.BadRequest(new
+        {
+            error = "Email_AttachmentNotAllowed",
+            rowCount = rows.Count,
+            reason = rows.Count == 0 ? "Chua khai tham so MaxAttachmentSize cho dai ly nay"
+                                     : "Khai TRUNG nhieu dong — nguon gop hai nguyen nhan vao mot ma loi",
+            sourceMergesTwoCausesIntoOneCode = true,
+        });
+
+    var raw = (rows[0].Name ?? "").Trim();
+    if (!long.TryParse(raw, out var maxBytes))
+        return Results.BadRequest(new
+        {
+            error = "MaxAttachmentSize khong phai so.",
+            rawValue = raw,
+            sourceWouldThrowWithEmptyErrorCode = "Convert.ToInt32 nem FormatException roi catch nem lai voi strErrorCode = chuoi RONG",
+        });
+
+    var size = attachmentBytes ?? 0;
+    var overLimit = size > maxBytes;
+
+    return Results.Ok(new
+    {
+        dealerCode = dc, maxAttachmentSize = maxBytes, attachmentBytes = size, overLimit,
+        error = overLimit ? "Email_AttachmentSizeOverLimit" : null,
+        guardOnlyOnBatchPath = "chi Email_BatchSendEmailCreate goi CheckAttachmentLimit; Email_SendEmailCreate KHONG kiem dung luong",
+        catchRethrowsEmptyErrorCode = "strErrorCode khoi tao rong; loi xay ra truoc khi gan thi nem len ma loi KHONG TEN",
+        thresholdUnitUndocumented = "so arrbAttachment.Length (byte) voi ParamValue tho — khai theo MB la chan moi tep",
+        parameterBakedIntoSql = "where DealerCode = quote@strDealerCode + StringUtils.Replace; alParamsCoupleSql tao ra RONG",
+        emailConfigInnerJoinBlocksSending = "Email_SendEmailCreate: INNER JOIN Email_Config on DealerCode => dai ly chua cau hinh SMTP thi email nam im o status=0 MAI MAI, khong loi",
+        smtpPasswordSelectedIntoResultSet = "cau SQL chon ca ec.mailServerPassword va di vao DataSet tra ve tang tren; con bi myDebug_SaveSql ghi lai khi bat go loi",
+        effectDateUsesDbClock = "AND t.EffectDate <= GETDATE()",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #586 TẦNG VẬN CHUYỂN HYUNDAI ME (`HyundaiMeService` + hàng đợi nền) — **MẤT GÓI IM LẶNG** =====
 // Nguồn: `PushToHyundaiMe.cs:381` (`ser_bgfuncProcessLogQueue`) và `:601` (`PostData`), `:625/:636`
 //   (`WA_OSHyundaiMe_PushAppointments` / `WA_OSHyundaiMe_PushRO`).
