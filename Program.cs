@@ -54161,6 +54161,83 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #684 TRA CỨU CUỘC HẸN BẢN KHO `Ser_App_GetNew_WH_New20190624` =====
+// Vỏ bọc `BizCarSv.ZTemp.cs` (laptop `:25766-25904`, **máy 150 `:25785-25923`** — lệch **+19 dòng** đúng như ghi
+// chú "ZTemp.cs lệch 19 dòng"; md5 **cả file** khác nhau `5cd7ccab` ↔ `84d2c52d`, nhưng md5 **vùng hàm**
+// `5c08cc44` **KHỚP**). Thân thật `Ser_App_GetX_New20190624` (`BizCarSv.Tab.cs:3027-3382`, md5 `3119d407`,
+// **KHỚP** máy 150 cùng offset). WS `WSCarSv.asmx.cs:24281` gọi thẳng bản `_New20190624`.
+// ⇒ Đây là minh hoạ đúng vì sao BƯỚC 3B **cấm hardcode số dòng**: cùng một hàm, hai máy lệch 19 dòng.
+//
+// 🔴🔴🔴 **PHÂN TRANG TRẢ DÒNG NGẪU NHIÊN — VÀ Ở ĐÂY LÀ BUG ĐANG CHẠY, KHÔNG PHẢI MÌN CHỜ**:
+//     `select distinct identity(bigint, 0, 1) MyIdxSeq, Convert(nvarchar, sera.AppId) AppId`
+//     `into #tbl_Ser_App_Filter_Draft from Ser_App sera … where(1=1) …`   ← **KHÔNG có `ORDER BY` nào cả**
+//   rồi `and (t.MyIdxSeq >= @nFilterRecordStart) and (t.MyIdxSeq <= @nFilterRecordEnd)` — **KHÔNG bị comment**.
+//   ⇒ Số thứ tự gán theo thứ tự **bất định** của `SELECT … INTO`, và phân trang **dùng thật** con số đó.
+//   📌 **Cặp đối chiếu với #678**: `Mst_CarModelStd_GetX` **có** `ORDER BY` (vô nghĩa) nhưng phân trang **bị
+//     comment** ⇒ 🕓 vô hại; ở đây **không có `ORDER BY`** và phân trang **chạy** ⇒ 🔴 **hỏng thật**.
+//     Hai hàm cùng một khuôn mẫu, khác nhau đúng ở chỗ dòng nào bị comment.
+// 🔴 **CHÚ THÍCH LỆCH CODE (và code mới là bên ĐÚNG)**: `"@nFilterRecordStart", nFilterRecordStart // Because of`
+//   `C# based from 0 but SqlIdx based from 1.` — chú thích nói phải `+1`, code **không** `+1`.
+//   Vì `identity(bigint, **0**, 1)` đánh số **từ 0**, không `+1` mới đúng ⇒ chú thích được **chép nguyên từ chỗ
+//   dùng `Row_Number()`** (bắt đầu từ 1, xem #662/#679 nơi code thật sự viết `+ 1`). Ghi lại vì nó **dụ người sửa**.
+// 🔴🔴 **Lại khối join làm mất dòng**: `inner join ser_car car on sera.carid=car.carid **and sera.cusid=car.cusid**`
+//   ⇒ cuộc hẹn của xe **đã sang tên** biến mất; nằm trong **102 site đang chạy** đã đếm ở #673.
+//   Kèm `inner join ser_Customer cus` ⇒ hẹn không gắn khách cũng rơi.
+// 🔴 **Bảng mã trạng thái cuộc hẹn BỊ COMMENT TRỌN KHỐI**: `--case tpsera.AppStatus when '1' … '4' N'Hủy' end`
+//   ⇒ client tự dịch mã `1/2/3/4`. Port giữ mã **nguyên văn** và kèm nhãn theo đúng khối đã comment.
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` **không guard rỗng** ⇒ FormatException (họ #626/#627).
+// ⚪ **ÂM TÍNH — tiền tố DB ở đây dùng CƠ CHẾ ĐỘNG đã chốt ở #655**, không phải viết thiếu:
+//   SQL ghi `@strDBName_CommonCenter.sys_user` (không ngoặc vuông, không `.dbo`) nhưng lời `Replace` là
+//   `"@strDBName_CommonCenter.", dbAction == _dbDealer ? "[" + _strConfig_DBName_Main + "].[dbo]." : ""`
+//   ⇒ chạy trên `_dbWH` thì tiền tố thành **rỗng** ⇒ `left join sys_user su`. 📌 Đếm dạng tĩnh
+//   `[@strDBName_CommonCenter].[dbo].` = **498** site; dạng động là thiểu số (7 site, #655).
+// ⚪ **ÂM TÍNH — `strFunctionName = "Ser_App_GetNew_WH"` (KHÔNG hậu tố)** dù hàm là `…_New20190624`:
+//   log và mã lỗi ghi tên **bản trần** ⇒ nhìn log **không biết** bản nào đã chạy. Cùng họ với #683.
+app.MapGet("/api/appointments/search-wh", async (AppDbContext db, ITenantContext t,
+    string? appNo, string? plateNo, string? cusName, string? status, string? creator,
+    int? recordStart, int? recordCount) =>
+{
+    var qa = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(appNo)) qa = qa.Where(x => x.AppNo == appNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qa = qa.Where(x => x.PlateNo == plateNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusName)) qa = qa.Where(x => x.CusName != null && x.CusName.Contains(cusName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(status)) qa = qa.Where(x => x.Status == status!.Trim());
+    if (!string.IsNullOrWhiteSpace(creator)) qa = qa.Where(x => x.EngineerNo == creator!.Trim());
+
+    var total = await qa.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 200;
+    // Nguồn đánh số bằng identity() KHÔNG có ORDER BY ⇒ thứ tự bất định. Port sắp ỔN ĐỊNH rồi mới cắt.
+    var rows = await qa.OrderBy(x => x.AppFrom).ThenBy(x => x.AppNo).Skip(skip).Take(take)
+        .Select(x => new { x.AppNo, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
+                           x.AppFrom, x.AppTo, x.Status, x.CavityName, x.EngineerNo, x.QuoteNo })
+        .ToListAsync();
+
+    // Khối dịch mã trạng thái BỊ COMMENT ở nguồn — port giữ mã nguyên văn và kèm nhãn đúng khối đó.
+    static string? AppStatusText(string? st) => st switch
+    {
+        "1" => "Mới tạo", "2" => "Xác nhận", "3" => "Tiếp nhận", "4" => "Hủy", _ => null,
+    };
+
+    return Results.Ok(new
+    {
+        count = rows.Count, total, skip, take,
+        rows = rows.Select(x => new { x.AppNo, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
+                                      x.AppFrom, x.AppTo, x.Status, appStatusText = AppStatusText(x.Status),
+                                      x.CavityName, x.EngineerNo, x.QuoteNo }).ToList(),
+        // ===== #684 =====
+        wrapperAndBodyLiveInDifferentFiles = "vo boc Ser_App_GetNew_WH_New20190624 o BizCarSv.ZTemp.cs (laptop :25766-25904, may 150 :25785-25923 — lech +19 dong dung nhu ghi chu ZTemp.cs lech 19 dong; md5 CA FILE khac nhau 5cd7ccab vs 84d2c52d nhung md5 VUNG HAM 5c08cc44 KHOP); than that Ser_App_GetX_New20190624 o BizCarSv.Tab.cs:3027-3382 (md5 3119d407, KHOP may 150). Minh hoa dung vi sao BUOC 3B CAM hardcode so dong",
+        identityNumberingWithNoOrderByAndPagingLive = "PHAN TRANG TRA DONG NGAU NHIEN — VA O DAY LA BUG DANG CHAY: select distinct identity(bigint, 0, 1) MyIdxSeq, Convert(nvarchar, sera.AppId) AppId into #tbl_Ser_App_Filter_Draft from Ser_App sera … where(1=1) — KHONG co ORDER BY nao ca; roi and (t.MyIdxSeq >= @nFilterRecordStart) and (t.MyIdxSeq <= @nFilterRecordEnd) KHONG bi comment => so thu tu gan theo thu tu BAT DINH cua SELECT … INTO va phan trang DUNG THAT con so do",
+        contrastWith678 = "CAP DOI CHIEU VOI #678: Mst_CarModelStd_GetX CO ORDER BY (vo nghia) nhung phan trang BI COMMENT => vo hai; o day KHONG co ORDER BY va phan trang CHAY => HONG THAT. Hai ham cung mot khuon mau, khac nhau dung o cho dong nao bi comment",
+        commentContradictsCodeAndCodeIsRight = "CHU THICH LECH CODE (code moi la ben DUNG): @nFilterRecordStart, nFilterRecordStart // Because of C# based from 0 but SqlIdx based from 1. — chu thich noi phai +1, code KHONG +1. Vi identity(bigint, 0, 1) danh so TU 0, khong +1 moi dung => chu thich duoc chep nguyen tu cho dung Row_Number() (bat dau tu 1, xem #662/#679 noi code that su viet + 1). Ghi lai vi no DU NGUOI SUA",
+        rowLossJoinAgain = "inner join ser_car car on sera.carid=car.carid AND sera.cusid=car.cusid => cuoc hen cua xe DA SANG TEN bien mat; nam trong 102 site dang chay da dem o #673. Kem inner join ser_Customer cus => hen khong gan khach cung roi",
+        appStatusCaseBlockIsCommentedOut = "bang ma trang thai cuoc hen BI COMMENT tron khoi (--case tpsera.AppStatus when 1 … 4 N'Huy' end) => client tu dich ma 1/2/3/4; port giu ma NGUYEN VAN va kem nhan theo dung khoi da comment",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        negativeDbPrefixUsesDynamicMechanism = "AM TINH: tien to DB o day dung CO CHE DONG da chot o #655, khong phai viet thieu — SQL ghi @strDBName_CommonCenter.sys_user (khong ngoac vuong, khong .dbo) nhung loi Replace la (@strDBName_CommonCenter., dbAction == _dbDealer ? [ + _strConfig_DBName_Main + ].[dbo]. : \"\") => chay tren _dbWH thi tien to thanh RONG => left join sys_user su. Dem dang tinh [@strDBName_CommonCenter].[dbo]. = 498 site; dang dong la thieu so (7 site, #655)",
+        functionNameLogsBareVersion = "strFunctionName = Ser_App_GetNew_WH (KHONG hau to) du ham la …_New20190624 => log va ma loi ghi ten BAN TRAN => nhin log KHONG BIET ban nao da chay (cung ho voi #683)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #682 BẢNG TRẠNG THÁI XƯỞNG THỜI GIAN THỰC `Ser_RO_GetStatusList_ForStatusRealTime_WH_New20230220` =====
 // (`BizCarSv.zzzzCode.cs:7747-8121`, md5 `92f12b34` **KHỚP** máy 150. WS `WSCarSv.asmx.cs:32177` gọi thẳng.
 //  Bản trần `…_ForStatusRealTime_WH` (`WH.cs:5678-5971`, md5 `9d73071c`) **CHẾT** — ca thứ **ba** liên tiếp
