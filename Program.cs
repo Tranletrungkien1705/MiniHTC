@@ -21947,6 +21947,148 @@ app.MapPost("/api/paymentreqdiscounts/{no}/htc-amounts", async (string no, PrdHt
 
 // ===== Hỗ trợ bán lẻ theo VIN (SPSupportRetail — port 1:1 FrmPolicySales_Mng, 2010.HTC/Sales) =====
 // CHÚ Ý: gốc DateFullStatus tự tính qua join SO/DO/HTCInvoice/PaymentReqDiscount (SPL_SPSupportRetail_Calc_DateFullStatus) — ở đây nhập tay (đơn giản hoá, xem ghi chú entity).
+
+// ===== #B242/#B243/#B244 BÁO CÁO HỖ TRỢ BÁN LẺ THEO CHÍNH SÁCH —
+//       `Rpt_SPL_SPSupportRetail_WH_New20190508` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset LỆCH 5 dòng** (laptop `212978` dòng / 150 `212983`):
+//   laptop `157053,157493` ≡ 150 `157058,157498` ⇒ **`9c84e0b96fd4ee58a8fde21760aa3806`** (khớp).
+// 🔴 Client `SalesService.Rpt_SPL_SPSupportRetail(… , bool dataWH)`: `dataWH=true` ⇒ bản `_WH`;
+//   biz chạy **`_dbWH.ExecQuery`** ⇒ **DB Warehouse**, không phải DB Main.
+// ✅ **RBAC — CA LÀNH MẠNH, đối lập #B239**: hàm này **không** lọc `BUPattern` (grep `BUPattern` trong
+//   toàn thân = **0 hit**) nhưng có **CỔNG CỨNG** `myCommon_CheckHTCDirect(…, TConst.Flag.Active)`
+//   ⇒ **chỉ user HTC trực tiếp mới chạy được**, đại lý bị **từ chối hẳn** (không phải lọc dòng).
+//   ⇒ Không lọc dòng ở đây là **có chủ đích**, khác #B239 (không cổng, không lọc — lỗ thật).
+// 🔴🔴 **`inner join DLS_Deal` SAU `left join #tb_Dls_DealDetail` ⇒ BIẾN `left` THÀNH `inner`**:
+//     `left join #tb_Dls_DealDetail ddd on t.VIN = ddd.vin and cc.CarId = ddd.carid`
+//     `**inner** join DLS_Deal dd on dd.DealNo = ddd.DealNo`
+//   ⇒ VIN **không có giao dịch bán lẻ** thì `ddd.DealNo` là NULL ⇒ `inner join` **loại hẳn dòng**.
+//     Đọc lướt thấy `left join` sẽ tưởng "không có deal vẫn hiện" — **sai**.
+//   Mà `#tb_Dls_DealDetail` lại **đã lọc rất chặt**: `DeliveryStatus not in ('R','C')` ·
+//   **`dd.DealerCodeBuyer is null`** (chỉ **bán lẻ**) · `dd.FlagInitDeal = '0'` ·
+//   **`ddd.DealNoPrevious is not null`** (loại **dealBase**) ⇒ bốn điều kiện này thực chất là
+//   **bộ lọc BẮT BUỘC của cả báo cáo**, dù nằm ở bảng tạm trông như phụ trợ.
+// 🔴🔴 **`inner join #tbl_SPL_SalesPolicyMst_FilterDetail g` khớp BA cột**
+//   (`SPSRCode` + **`ModelCode`** + **`SpecCode`**) ⇒ dòng hỗ trợ có model/spec **không khớp đúng**
+//   một dòng chi tiết chính sách thì **biến mất khỏi báo cáo**, không phải hiện với ô trống.
+//   Bảng `g` là **UNION hai nguồn**: `SPL_SalesPolicyMstDetail` (áp chung) ∪
+//   `SPL_SalesPolicyMstDetailDealer` (theo đại lý) — MiniHTC gộp sẵn ở `SalesPolicyEligibility`.
+// 🔴 **Hai cột spec khác nhau trong cùng câu** (cùng lớp bẫy #B239): chính sách khớp `ssr.SpecCode`,
+//   nhưng `Mst_CarSpec` (mô tả xe) join theo **`cv.ActualSpec`**.
+// 🔴 `Ord_SalesOrderDetail` nối bằng **BỐN cột** `ColorCode + ModelCode + SpecCode + SOCode` — **không có VIN**.
+// 🔴 **Guard ngày thanh toán BỊ COMMENT TOÀN BỘ**: chỉ `DateSupport` được kiểm `From > To`
+//   (`…_InvalidDateInput`); khối kiểm `strHTCDatePayment_From/To` **và cả hai lệnh `StandardizeDate`**
+//   của chúng đều nằm trong `//` ⇒ **so sánh CHUỖI THÔ, không chuẩn hoá, không kiểm thứ tự**.
+//   Port **dòng ACTIVE**: chỉ giữ guard `DateSupport`.
+// 🔴 Filter khuôn `( @strHTCDatePayment_From = '' or ssr.HTCDatePayment >= @… )` ⇒ **truyền NULL thay vì
+//   rỗng sẽ LOẠI SẠCH dòng** (đúng lớp lỗi đã ghi ở `dmssales-zonecode-null-vs-empty-filter-bug`).
+//   Port dùng `""` mặc định, không dùng `null`.
+// ⚠️ **BẪY GREP**: nguồn viết **`> =`** và **`< =`** (có **dấu cách** giữa hai ký tự) cho `DateSupport`.
+//   T-SQL vẫn hiểu, nhưng **grep `">="` sẽ KHÔNG tìm thấy dòng lọc này**.
+// 🔴 `strTDate_To` rỗng ⇒ thay bằng **`TConst.DateTimeSpecial.DateMax`** (không phải hôm nay).
+// 🔴 Phân trang `Row_Number() over (order by ssr.VIN asc) MyRowIdx`; `@MyRowIdx_Start = start + 1`
+//   (**C# đếm từ 0, SQL đếm từ 1**); **`MyCount` đếm TRƯỚC khi cắt trang**. Cột hằng **`1.0 TOTAL`**.
+// 📌 **NỢ — không đoán công thức**: bốn cột `DateFullStatus` · `PaymentEndDateMax_100PT` ·
+//   `DutyCompletedDate` · `PGApprovedDate` do builder dùng chung
+//   `mySql_GetClauseSelect_CalcDateFullStatus("#tbl_SPL_SPSupportRetail_Rpt")` sinh ra — chưa port
+//   ⇒ trả `DateFullStatus` **đang lưu tay** trong MiniHTC, ba cột kia **`null`**, cờ `calcDateFullStatusNotPorted`.
+app.MapGet("/api/reports/spl-spsupport-retail", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? spsrCode, string? spNo,
+    DateTime? tDateFrom, DateTime? tDateTo,
+    DateTime? htcDatePaymentFrom, DateTime? htcDatePaymentTo,
+    int? recordStart, int? recordCount) =>
+{
+    // 🔴 Chỉ guard DateSupport — guard HTCDatePayment bị comment ở nguồn (port dòng ACTIVE).
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);       // 🔴 rỗng ⇒ DateMax, không phải hôm nay
+    if (from > to)
+        return Results.BadRequest(new { error = "Rpt_SPL_SPSupportRetail_InvalidDateInput", check = new { from, to } });
+
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var q = db.SPSupportRetails.Where(x => x.OrgId == t.OrgId
+        && x.DateSupport >= from && x.DateSupport <= to);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(spsrCode)) q = q.Where(x => x.SPSRCode == spsrCode!.Trim().ToUpperInvariant());
+    // 🔴 Khuôn `(@p = '' or col >= @p)` — dùng "rỗng" chứ KHÔNG dùng NULL.
+    if (htcDatePaymentFrom != null) q = q.Where(x => x.HTCDatePayment >= htcDatePaymentFrom);
+    if (htcDatePaymentTo != null) q = q.Where(x => x.HTCDatePayment <= htcDatePaymentTo);
+
+    var all = await q.ToListAsync();
+
+    // Lọc theo số hiệu văn bản: nguồn nối `SPL_SalesPolicyMst` rồi `BuildClause("and","sspm.SPNo",…)`.
+    var policies = await db.SalesPolicyMsts.Where(p => p.OrgId == t.OrgId).ToListAsync();
+    var polByCode = policies.GroupBy(p => p.SPSRCode).ToDictionary(g => g.Key, g => g.First());
+    if (!string.IsNullOrWhiteSpace(spNo))
+        all = all.Where(x => polByCode.TryGetValue(x.SPSRCode, out var p) && p.SPNo == spNo!.Trim()).ToList();
+
+    all = all.OrderBy(x => x.VIN).ToList();
+    var myCount = all.Count;                              // 🔴 đếm TRƯỚC khi cắt trang
+    var page = all.Skip(start).Take(count).ToList();
+
+    // 🔴🔴 inner join chính sách theo BA cột (SPSRCode + ModelCode + SpecCode) — không khớp ⇒ LOẠI DÒNG.
+    var elig = await db.SalesPolicyEligibilities.Where(e => e.OrgId == t.OrgId).ToListAsync();
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = new List<object>();
+    var droppedNoPolicyDetail = new List<object>();
+    var idx = start;
+    foreach (var s in page)
+    {
+        idx++;
+        var g = elig.FirstOrDefault(e => e.SPSRCode == s.SPSRCode
+            && (e.ModelCode ?? "") == (s.ModelCode ?? "")
+            && (e.SpecCode ?? "") == (s.SpecCode ?? ""));
+        if (g is null) { droppedNoPolicyDetail.Add(new { s.VIN, s.SPSRCode, s.ModelCode, s.SpecCode }); continue; }
+
+        polByCode.TryGetValue(s.SPSRCode, out var pol);
+        dealers.TryGetValue(s.DealerCode ?? "", out var dlr);
+
+        rows.Add(new
+        {
+            MyRowIdx = idx,
+            s.VIN, s.SPSRCode, s.DealerCode,
+            SSRAmountSupport = s.AmountSupport, s.DateSupport,
+            s.HTCInvoiceNo, s.HTCInvoiceDate, s.PRDiscountNo,
+            s.HTCDatePayment,                              // 🔴 #B242 cột MỚI thêm
+            s.ModelCode, s.SpecCode,
+            ProvinceCodeDealer = dlr?.ProvinceCode,
+            SPNo = pol?.SPNo, SPSRType = pol?.SPSRType,
+            Remark = pol?.Remark,
+            FormBusinessSupportCode = pol?.FormBusinessSupportCode,
+            PolicyModelCode = g.ModelCode, PolicySpecCode = g.SpecCode, PolicyDealerCode = g.DealerCode,
+            // 📌 NỢ — bốn cột dưới do mySql_GetClauseSelect_CalcDateFullStatus sinh, chưa port.
+            s.DateFullStatus,
+            PaymentEndDateMax_100PT = (DateTime?)null,
+            DutyCompletedDate = (DateTime?)null,
+            PGApprovedDate = (DateTime?)null,
+            TOTAL = 1.0m                                   // 🔴 cột hằng của nguồn
+        });
+    }
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new { MyCount = myCount },        // 🔴 đếm TRƯỚC khi cắt trang
+        recordStart = start, recordCount = count,
+        items = rows,
+        droppedNoPolicyDetail,
+        calcDateFullStatusNotPorted = true,
+        dbWhNote = "Client SalesService.Rpt_SPL_SPSupportRetail(..., bool dataWH): dataWH=true => ban _WH; biz chay _dbWH.ExecQuery => DB WAREHOUSE, khong phai DB Main.",
+        rbacHealthyNote = "RBAC - CA LANH MANH, DOI LAP #B239: ham nay KHONG loc BUPattern (grep BUPattern toan than = 0 hit) nhung co CONG CUNG myCommon_CheckHTCDirect(..., TConst.Flag.Active) => CHI USER HTC TRUC TIEP MOI CHAY DUOC, dai ly bi TU CHOI HAN (khong phai loc dong). Khong loc dong o day la CO CHU DICH, khac #B239 (khong cong, khong loc - lo that).",
+        leftBecomesInnerNote = "inner join DLS_Deal SAU left join #tb_Dls_DealDetail => BIEN 'left' THANH 'inner': VIN khong co giao dich ban le thi ddd.DealNo NULL => inner join LOAI HAN DONG. Doc luot thay 'left join' se tuong 'khong co deal van hien' - SAI. Ma #tb_Dls_DealDetail lai DA LOC RAT CHAT: DeliveryStatus not in ('R','C'), dd.DealerCodeBuyer is null (CHI BAN LE), dd.FlagInitDeal='0', ddd.DealNoPrevious is not null (loai dealBase) => BON dieu kien nay thuc chat la BO LOC BAT BUOC cua ca bao cao, du nam o bang tam trong nhu phu tro.",
+        policyInnerJoinNote = "inner join #tbl_SPL_SalesPolicyMst_FilterDetail khop BA cot (SPSRCode + ModelCode + SpecCode) => dong ho tro co model/spec khong khop dung mot dong chi tiet chinh sach thi BIEN MAT khoi bao cao, khong phai hien voi o trong. Bang do la UNION hai nguon: SPL_SalesPolicyMstDetail (ap chung) va SPL_SalesPolicyMstDetailDealer (theo dai ly) - xem droppedNoPolicyDetail.",
+        twoSpecColumnNote = "HAI COT SPEC KHAC NHAU trong cung cau (cung lop bay #B239): chinh sach khop ssr.SpecCode, nhung Mst_CarSpec (mo ta xe) join theo cv.ActualSpec.",
+        sodJoinNote = "Ord_SalesOrderDetail noi bang BON cot ColorCode + ModelCode + SpecCode + SOCode - KHONG co VIN.",
+        commentedGuardNote = "Guard ngay thanh toan BI COMMENT TOAN BO: chi DateSupport duoc kiem From > To (_InvalidDateInput); khoi kiem strHTCDatePayment_From/To VA ca hai lenh StandardizeDate cua chung deu nam trong '//' => SO SANH CHUOI THO, khong chuan hoa, khong kiem thu tu. Port DONG ACTIVE: chi giu guard DateSupport.",
+        nullVsEmptyNote = "Filter khuon '( @strHTCDatePayment_From = '' or ssr.HTCDatePayment >= @... )' => TRUYEN NULL THAY VI RONG SE LOAI SACH DONG (lop loi da ghi o dmssales-zonecode-null-vs-empty-filter-bug).",
+        grepTrapNote = "BAY GREP: nguon viet '> =' va '< =' (CO DAU CACH giua hai ky tu) cho DateSupport. T-SQL van hieu, nhung grep '>=' se KHONG tim thay dong loc nay.",
+        dateMaxNote = "strTDate_To rong => thay bang TConst.DateTimeSpecial.DateMax (khong phai hom nay).",
+        pagingNote = "Row_Number() over (order by ssr.VIN asc) MyRowIdx; @MyRowIdx_Start = start + 1 (C# dem tu 0, SQL dem tu 1); MyCount DEM TRUOC khi cat trang. Cot hang 1.0 TOTAL.",
+        debtNote = "NO - khong doan cong thuc: bon cot DateFullStatus / PaymentEndDateMax_100PT / DutyCompletedDate / PGApprovedDate do builder dung chung mySql_GetClauseSelect_CalcDateFullStatus('#tbl_SPL_SPSupportRetail_Rpt') sinh ra - chua port => tra DateFullStatus DANG LUU TAY trong MiniHTC, ba cot kia NULL."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/spsupportretails", async (AppDbContext db, ITenantContext t, string? vin, string? spsrCode, string? dealer) =>
 {
     var qry = db.SPSupportRetails.Where(x => x.OrgId == t.OrgId);
@@ -21954,7 +22096,7 @@ app.MapGet("/api/spsupportretails", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(spsrCode)) qry = qry.Where(x => x.SPSRCode == spsrCode.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer.Trim().ToUpperInvariant());
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.Remark }).ToListAsync();
+    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.HTCDatePayment, x.Remark }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(x => x.AmountSupport), items });
 }).RequireAuthorization();
 
@@ -22013,7 +22155,7 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
         {
             OrgId = t.OrgId, VIN = vin, SPSRCode = r.SPSRCode!.Trim().ToUpperInvariant(), DealerCode = vm.DealerCode,
             SpecCode = vm.SpecCode, ModelCode = vm.ModelCode, PRDiscountNo = r.PRDiscountNo!.Trim(), AmountSupport = r.AmountSupport, DateSupport = r.DateSupport ?? DateTime.Now,
-            DateFullStatus = r.DateFullStatus, HTCInvoiceNo = r.HTCInvoiceNo, HTCInvoiceDate = r.HTCInvoiceDate, Remark = r.Remark
+            DateFullStatus = r.DateFullStatus, HTCInvoiceNo = r.HTCInvoiceNo, HTCInvoiceDate = r.HTCInvoiceDate, HTCDatePayment = r.HTCDatePayment, Remark = r.Remark
         });
     }
     await db.SaveChangesAsync();
@@ -47885,7 +48027,7 @@ record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, st
 record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines, string? AreaCode);
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
-record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark);
+record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode);
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);

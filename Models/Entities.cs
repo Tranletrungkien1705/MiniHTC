@@ -10809,6 +10809,10 @@ public sealed class SPSupportRetail
     public DateTime? DateFullStatus { get; set; }
     public string? HTCInvoiceNo { get; set; }
     public DateTime? HTCInvoiceDate { get; set; }
+    /// <summary>🔴 #B242 — Ngày HTC thanh toán tiền hỗ trợ (`SPL_SPSupportRetail.HTCDatePayment`).
+    /// Vừa là **cột lọc** vừa là **cột ra** của `Rpt_SPL_SPSupportRetail_WH_New20190508`; port cũ
+    /// thiếu hoàn toàn nên báo cáo không lọc được theo kỳ thanh toán.</summary>
+    public DateTime? HTCDatePayment { get; set; }
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
