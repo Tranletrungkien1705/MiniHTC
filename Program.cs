@@ -29688,6 +29688,70 @@ app.MapPost("/api/emailconfigsendauto", async (EmailConfigSendAutoDto dto, AppDb
     return Results.Ok(new { row.Id, row.SendMode, row.TypeEmail, row.IsActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #590 XOÁ CẤU HÌNH GỬI TỰ ĐỘNG (`Email_ConfigSendAuto_Delete`, `SendMail.cs:1603`) =====
+// Khép lại bộ ba Create (`:1124`) / Update (`:1369`) / Delete (`:1603`) — và bộ ba này **không nhất quán**.
+//
+// ⚪ **KIỂM TRA ÂM TÍNH (điều tốt, phải ghi):** câu xoá dùng **tham số thật** và **có** ràng buộc đại lý:
+//     `delete from Email_ConfigSendAuto where (1=1) and **DealerCode=@DealerCode** and ConfigAutoID = @ConfigAutoID`
+//     `_dbMain.ExecQuery(strSqlDelete, "@ConfigAutoID", strConfigAutoID, "@DealerCode", strDealerCode);`
+//   ⇒ **Chỉ Delete có ràng buộc đại lý**; Update (#589) thì **không** — cùng cụm ba hàm, cùng bảng, cùng tác
+//     giả, nhưng chỉ một cửa khoá. Không thể suy "cụm này an toàn" từ một hàm.
+// 🔴 **KHÔNG KIỂM TỒN TẠI, KHÔNG ĐỌC SỐ DÒNG ẢNH HƯỞNG**: không có `#region // Check` (chỉ `myUtils_ValidateId`
+//   kiểm Tid), và sau `ExecQuery` không ai hỏi đã xoá được mấy dòng ⇒ **xoá 0 dòng vẫn trả về thành công**
+//   (đúng khuôn #571). Sai mã đại lý ⇒ người dùng thấy "đã xoá" mà bản ghi **vẫn còn**.
+// 🔴 **XOÁ CỨNG, TRONG KHI CỤM ĐÃ CÓ `Email_ConfigSendAuto_Cancel` RIÊNG** (huỷ = **tắt cờ**, không xoá).
+//   ⇒ Hai đường "bỏ" khác ngữ nghĩa trong cùng một cụm — **mẫu lặp lần thứ hai** sau cặp
+//     `Blt_Bullentin_Delete` (cứng) / `Blt_BulletinUpdate_Delete` (mềm) ở #578/#579.
+//
+// 📌 Đọc trọn nhánh Create còn ra thêm **hai** điều:
+// 🔴 **CREATE TRẢ VỀ BẢN GHI TRA BẰNG `@@IDENTITY`**:
+//     `_dbMain.SaveData("Email_ConfigSendAuto", dt_Email_ConfigSendAuto);`
+//     `declare @ID int  select @ID = **@@Identity**  select cf.* … where cf.ConfigAutoID = @ID`
+//   ⚪ Biến `@ID` được **khai báo trong chính câu SQL** nên **không** thiếu tham số (đọc thoáng dễ tưởng là
+//     lỗi "Must declare the scalar variable" — đọc tiếp mới thấy dòng `declare`).
+//   🔴 Nhưng `@@IDENTITY` **không giới hạn phạm vi**: nếu bảng có **trigger** ghi sang bảng khác thì nó trả
+//     khoá **của bảng kia** ⇒ Create trả về client **một bản ghi khác** với cái vừa tạo. Đúng ra dùng
+//     `SCOPE_IDENTITY()` — lặp lại y hệt #570/#575/#577.
+// 🔴 **`case TypeEmail` THIẾU MÃ `0` VÀ KHÔNG CÓ `else`**: chỉ liệt kê `'1'`…`'7'` ⇒ cấu hình mang mã `0`
+//   (*"chưa phân loại"*, xem #290) trả về nhãn **NULL** — ô trống trên màn, không phải chữ "Khác".
+app.MapPost("/api/emailconfigsendauto/{id:long}/delete", async (long id, AppDbContext db, ITenantContext t,
+    string? dealerCode) =>
+{
+    // Nguồn ràng buộc CẢ dealerCode lẫn id ⇒ port bắt buộc truyền dealerCode để 1:1 với câu xoá.
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new
+        {
+            error = "dealerCode bat buoc — cau xoa cua nguon co and DealerCode=@DealerCode.",
+        });
+    var dc = dealerCode!.Trim().ToUpperInvariant();
+
+    var row = await db.EmailConfigSendAutos
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id && x.DealerCode == dc);
+
+    // Nguồn KHÔNG kiểm tồn tại và KHÔNG đọc số dòng ảnh hưởng ⇒ xoá 0 dòng vẫn "thành công".
+    if (row is null)
+        return Results.NotFound(new
+        {
+            id, dealerCode = dc,
+            sourceWouldReportSuccessWithZeroRows = "khong co #region Check, khong doc so dong anh huong sau ExecQuery",
+        });
+
+    db.EmailConfigSendAutos.Remove(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = id, dealerCode = dc,
+        deleteHasDealerScopeButUpdateDoesNot = "chi Delete co and DealerCode=@DealerCode; Update (#589) thi khong — cung cum ba ham ma chi mot cua khoa",
+        parametersProperlyBoundHere = "@ConfigAutoID va @DealerCode deu la tham so that, khong bake",
+        sourceDoesNotCheckAffectedRows = true,
+        hardDeleteWhileCancelExists = "cum da co Email_ConfigSendAuto_Cancel (tat co) — hai duong bo khac ngu nghia, mau lap lan hai sau #578/#579",
+        createReturnsRowFoundByAtAtIdentity = "declare @ID int; select @ID = @@Identity; select cf.* where cf.ConfigAutoID = @ID — @@IDENTITY khong gioi han pham vi nen trigger o bang khac se tra khoa SAI",
+        atAtIdentityNotAScopedIdentity = "nen dung SCOPE_IDENTITY(); lap lai #570/#575/#577",
+        typeEmailCaseMissesZeroAndElse = "case TypeEmail chi co 1..7, khong co nhanh 0 va khong co else => ma 0 (chua phan loai) tra nhan NULL",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #589 SỬA CẤU HÌNH GỬI TỰ ĐỘNG (`Email_ConfigSendAuto_Update`, `SendMail.cs:1369`) =====
 // Đối chiếu cặp create/update (luật #404) với `Email_ConfigSendAuto_Create` (`:1124`). Hai hàm dùng **chung
 //   một danh sách 11 trường**, và DIFF cho ra **ba** khác biệt — cả ba đều là lỗi.
