@@ -2096,6 +2096,9 @@ public static class Seeder
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"StorageCode\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"GpsBoxNo\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"VINUnMap\" text NULL",   // #B260
+                "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"RefNoType\" text NULL",   // #B266
+                "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"RefNoPk\" text NULL",   // #B266
+                "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"GPSAddress\" text NULL",   // #B266
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"VinReal\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"RefType\" text NULL",
                 "ALTER TABLE public.\"GpsTransactions\" ADD COLUMN IF NOT EXISTS \"RefCode00\" text NULL",

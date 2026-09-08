@@ -27457,6 +27457,7 @@ app.MapPost("/api/gpsinstalls/auto-unmap", async (
             //    `t.RefType = 'GPSUNMAPVIN'` ⇒ để nguyên tên hằng thì KHÔNG BAO GIỜ tìm thấy dòng gỡ map.
             RefType = "GPSUNMAPVIN",                     // TConst.RefTypeGPS.Sto_StoBalanceGPS_UNMapVIN
             RefCode00 = unmapNo,                         // nguồn ghi SỐ LÔ gỡ map vào RefCode00
+            RefNoType = row.RefNoType, RefNoPk = row.RefNoPk, GPSAddress = row.GpsAddress,   // #B266 - nguon ghi 3 cot nay tren dong nhat ky
             FunctionName = "MYSTO_STOBALANCEGPS_UNMAPVINX",  // nguồn viết HOA tên hàm
             MapStatusAfter = "0", BlockStatus = row.BlockStatus, InStatus = row.InStatus,
             CreateDateTime = now, CreateBy = actorUnmap,
@@ -31510,6 +31511,129 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   `Replace(strSqlGetData)` **không cặp thay thế** (no-op) — lần thứ ba gặp trong họ báo cáo GPS.
 // ⚠️ MiniHTC: `Sto_StoBalanceGPS` được port thành **`GpsInstall`** (bản đầy đủ, có `MapStatus`/`InStatus`/
 //   `UnMappedAt`/`UnMapBy`/`VinUnMap`), **không phải** `GpsBalance` (bản rút gọn cũ).
+
+// ===== #B266/#B267/#B268 LỊCH SỬ GẮN–GỠ THIẾT BỊ GPS (có phân trang) —
+//       `Rpt_HistMapUnMapGPS_WH_New_20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `156757,157052` ≡ 150 `156762,157057` ⇒ **`6df0c023e6013bfab3b3a843dbfa8b2a`**.
+// ⚠️ Tên hàm có **GẠCH DƯỚI THỪA**: `_WH_New**_**20181119` — thêm một biến thể sai khuôn nữa sau
+//   `_New2018119` của #B260 ⇒ củng cố luật `C0-…nonagesimustertius` (grep bằng tên nghiệp vụ).
+// 🔴🔴🔴 **BUG PHÂN TRANG THẬT — CẬN TRÊN DÙNG NHẦM THAM SỐ**:
+//     `and (t.MyIdxSeq >= **@nFilterRecordStart**)`
+//     `and (t.MyIdxSeq <= **@nResultRecordCount**)`   ← phải là `start + count − 1`
+//   ⇒ Trang 1 (`start=0, count=50`) lấy `0..50` = **51 dòng**; trang 2 (`start=50, count=50`) lấy
+//     `50..50` = **ĐÚNG 1 DÒNG**; trang 3 (`start=100`) ⇒ `100..50` = **RỖNG**.
+//   ⇒ **Phân trang gãy hoàn toàn từ trang 2 trở đi.**
+//   ⚠️ **Cùng file, cùng họ, một bên ĐÚNG**: #B242 `Rpt_SPL_SPSupportRetail` tính
+//     `@MyRowIdx_Start = start + 1` và `@MyRowIdx_End = start + count`. ⇒ Không được giả định khuôn
+//     phân trang giống nhau giữa các báo cáo.
+//   📌 **KHÔNG tự vá**: port trả **đúng cửa sổ nguồn** và cờ `sourcePagingWindowBroken` + trường
+//     `sourceWindow` để người vận hành thấy ngay cửa sổ thật.
+// 🔴🔴 **LỖ RBAC — CA 28**: `myCommon_GetAbilityOfUser` có gọi, `@strBUPatternOfUser` **có nạp** vào
+//   `alParamsCoupleSql`, nhưng grep toàn thân hàm = **1 hit duy nhất** (chính dòng nạp) ⇒ **không SQL
+//   nào dùng**; `myCommon_CheckHTCDirect` **bị comment cả khối** ⇒ tổ hợp **(2) không cổng + không lọc**
+//   theo luật `C0-…nonagesimus` = **lỗ thật**. Không tự vá.
+// 🔴🔴 **MỘT MỆNH ĐỀ ĐƯỢC DỰNG NHƯNG KHÔNG BAO GIỜ CHÈN**:
+//     `string zzzzClauseWhere_strSSTGPSRefNo_TypeConditionList = BuildClause("and",
+//         "sstgps.RefNo_Type", **"=GPSMAPVIN"**, "@p", ref alParamsCoupleSql);`
+//   Biến này **KHÔNG có trong danh sách `Replace(...)`** ⇒ **điều kiện `RefNo_Type = 'GPSMAPVIN'` không
+//   bao giờ được áp dụng**, trong khi `BuildClause` **vẫn đẩy tham số `@p…` vào `alParamsCoupleSql`**
+//   ⇒ tham số **thừa** đi kèm câu lệnh. Đây là biến thể mới của mã chết: **clause dựng-mà-không-chèn**
+//   (khác "dòng bị comment"): grep tên biến ra **hai** hit (khai báo + …không có), phải soi danh sách
+//   `Replace` mới thấy.
+// 🔴🔴 **`Convert(nvarchar, sstgps.AutoId)` rồi `order by` theo CHUỖI**: khoá `AutoId` là **bigint**
+//   nhưng bị ép sang `nvarchar` để làm cột `sstgps_AutoId`, và `order by Convert(nvarchar, AutoId)`
+//   ⇒ **sắp theo thứ tự CHỮ**: `"10" < "9"`. Vì `identity(bigint,0,1) MyIdxSeq` được cấp theo thứ tự đó,
+//   **thứ tự trang là thứ tự chuỗi, không phải thứ tự thời gian/số**.
+// ✅🔴 **PHẢN VÍ DỤ LÀNH MẠNH cho #B254 — CÙNG bài toán ghép MAP↔UNMAP, cách làm ĐÚNG**:
+//     `select top 1 sstgps.AutoId … where **t.sstgps_AutoId_Map < sstgps.AutoId**`
+//     `  and sstgps.RefType = 'GPSUNMAPVIN' and t.GPSDvNo = … and t.StorageCode = …`
+//     `order by sstgps.AutoId **asc**`
+//   ⇒ Lấy **lần tháo ĐẦU TIÊN SAU lần gắn**, khớp đủ **thiết bị + kho**, **tất định**.
+//   Và ba `left join` nối cặp đều đặt điều kiện ở **`on`** ⇒ **lần gắn CHƯA THÁO VẪN HIỆN** (UnMap null).
+//   ⇒ Đối lập trực tiếp #B254 (ghép theo số thứ tự dòng, điều kiện ở `where` nên nuốt dòng chưa tháo).
+//   ⚠️ So sánh `<` giữa `nvarchar` (`sstgps_AutoId_Map`) và `bigint` (`AutoId`): SQL Server **ép ngầm
+//     nvarchar → bigint** (bigint ưu tiên cao hơn) nên thực tế so **SỐ** — may mắn đúng, nhưng là ép ngầm.
+// 🔴 Cột ra `VIN` thực chất là **`sstgps.VINReal`** (đặt alias), không phải cột `VIN`.
+//   Ba cột `UnMapDateTime` · `UnMapBy` · `GPSAddress` lấy từ **DÒNG UNMAP** (`sstgps_unmap`), còn
+//   `MapDateTime` là **`sstgps.CreateDateTime` của dòng MAP** (cùng giá trị với cột `CreateDateTime`).
+// 🔴 `MyCount` đếm **TRƯỚC** khi cắt trang. Trả **HAI** bảng: `MySummaryTable` + `Sto_StoTransactionGPS`.
+app.MapGet("/api/reports/gps-map-unmap-history", async (
+    AppDbContext db, ITenantContext t,
+    string? gpsDvNo, string? vin, DateTime? mapFrom, DateTime? mapTo,
+    int? recordStart, int? recordCount) =>
+{
+    var start = recordStart ?? 0;
+    var count = recordCount ?? 200;
+
+    var q = db.GpsTransactions.Where(x => x.OrgId == t.OrgId && x.RefType == "GPSMAPVIN");
+    if (!string.IsNullOrWhiteSpace(gpsDvNo)) q = q.Where(x => x.GpsDvNo == gpsDvNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.Vin == vin!.Trim().ToUpperInvariant());
+    if (mapFrom != null) q = q.Where(x => x.CreateDateTime >= mapFrom);
+    if (mapTo != null) q = q.Where(x => x.CreateDateTime <= mapTo);
+    var maps = await q.ToListAsync();
+
+    // 🔴 `order by Convert(nvarchar, AutoId)` ⇒ sắp theo CHUỖI ("10" < "9"), không phải theo số.
+    var ordered = maps.OrderBy(x => x.Id.ToString(), StringComparer.Ordinal).ToList();
+    var myCount = ordered.Count;                     // 🔴 đếm TRƯỚC khi cắt trang
+
+    // 🔴 CỬA SỔ CỦA NGUỒN: MyIdxSeq bắt đầu từ 0; giữ nguyên `>= start` và `<= count`.
+    var lo = start;
+    var hi = count;
+    var page = new List<GpsTransaction>();
+    for (var i = 0; i < ordered.Count; i++)
+        if (i >= lo && i <= hi) page.Add(ordered[i]);
+
+    // ✅ Ghép cặp ĐÚNG: lần THÁO đầu tiên có AutoId LỚN HƠN, cùng thiết bị + cùng kho.
+    var devices = page.Select(p => p.GpsDvNo).Distinct().ToList();
+    var unmaps = await db.GpsTransactions
+        .Where(x => x.OrgId == t.OrgId && x.RefType == "GPSUNMAPVIN" && devices.Contains(x.GpsDvNo))
+        .ToListAsync();
+
+    var rows = new List<object>();
+    var idx = lo;
+    foreach (var m in page)
+    {
+        var u = unmaps
+            .Where(x => x.Id > m.Id
+                        && x.GpsDvNo == m.GpsDvNo
+                        && (x.StorageCode ?? "") == (m.StorageCode ?? ""))
+            .OrderBy(x => x.Id)                       // 🔴 asc — lần tháo ĐẦU TIÊN sau lần gắn
+            .FirstOrDefault();
+
+        rows.Add(new
+        {
+            MyIdxSeq = idx++,
+            m.StorageCode, m.GpsDvNo, m.GpsBoxNo,
+            VIN = m.VinReal,                          // 🔴 alias: nguồn lấy VINReal, không phải VIN
+            RefNo_PK = m.RefNoPk, RefNo_Type = m.RefNoType,
+            m.BlockStatus, m.InStatus,
+            MapStatus = m.MapStatusAfter,
+            m.Remark, m.CreateDateTime, m.FunctionName, m.RefType, m.RefCode00,
+            MapDateTime = m.CreateDateTime,           // 🔴 nguồn lấy lại CHÍNH CreateDateTime của dòng MAP
+            // 🔴 ba cột dưới lấy từ DÒNG UNMAP; `left join` ⇒ chưa tháo thì để NULL (vẫn hiện dòng).
+            UnMapDateTime = u?.UnMapDateTime ?? u?.CreateDateTime,
+            UnMapBy = u?.UnMapBy,
+            GPSAddress = u?.GPSAddress
+        });
+    }
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new { MyCount = myCount },   // 🔴 đếm TRƯỚC khi cắt trang
+        Sto_StoTransactionGPS = rows,
+        sourceWindow = new { fromIdx = lo, toIdx = hi, rowsReturned = rows.Count },
+        sourcePagingWindowBroken = true,
+        pagingBugNote = "BUG PHAN TRANG THAT - CAN TREN DUNG NHAM THAM SO: 'and (t.MyIdxSeq >= @nFilterRecordStart) and (t.MyIdxSeq <= @nResultRecordCount)' - phai la start + count - 1. Trang 1 (start=0,count=50) lay 0..50 = 51 DONG; trang 2 (start=50,count=50) lay 50..50 = DUNG 1 DONG; trang 3 (start=100) => 100..50 = RONG. PHAN TRANG GAY HOAN TOAN TU TRANG 2. CUNG FILE, CUNG HO, MOT BEN DUNG: #B242 Rpt_SPL_SPSupportRetail tinh @MyRowIdx_Start = start+1 va @MyRowIdx_End = start+count. Khong duoc gia dinh khuon phan trang giong nhau giua cac bao cao. KHONG TU VA - xem sourceWindow.",
+        rbacNote = "LO RBAC - CA 28: myCommon_GetAbilityOfUser co goi, @strBUPatternOfUser CO nap vao alParamsCoupleSql, nhung grep toan than ham = 1 HIT DUY NHAT (chinh dong nap) => khong SQL nao dung; myCommon_CheckHTCDirect BI COMMENT ca khoi => to hop (2) khong cong + khong loc theo luat C0-...nonagesimus = LO THAT. Khong tu va.",
+        clauseBuiltNeverInsertedNote = "MOT MENH DE DUOC DUNG NHUNG KHONG BAO GIO CHEN: 'zzzzClauseWhere_strSSTGPSRefNo_TypeConditionList = BuildClause(\"and\", \"sstgps.RefNo_Type\", \"=GPSMAPVIN\", \"@p\", ref alParamsCoupleSql)' - bien nay KHONG co trong danh sach Replace(...) => dieu kien RefNo_Type = 'GPSMAPVIN' KHONG BAO GIO duoc ap dung, trong khi BuildClause VAN day tham so @p vao alParamsCoupleSql => tham so THUA di kem cau lenh. Bien the moi cua ma chet: CLAUSE DUNG-MA-KHONG-CHEN (khac 'dong bi comment'); phai soi danh sach Replace moi thay.",
+        stringOrderNote = "Convert(nvarchar, sstgps.AutoId) roi 'order by' theo CHUOI: khoa AutoId la bigint nhung bi ep sang nvarchar, nen sap theo THU TU CHU ('10' < '9'). Vi identity(bigint,0,1) MyIdxSeq duoc cap theo thu tu do, THU TU TRANG LA THU TU CHUOI, khong phai thu tu thoi gian/so.",
+        healthyPairingNote = "PHAN VI DU LANH MANH cho #B254 - CUNG bai toan ghep MAP<->UNMAP, cach lam DUNG: 'select top 1 sstgps.AutoId ... where t.sstgps_AutoId_Map < sstgps.AutoId and sstgps.RefType = GPSUNMAPVIN and t.GPSDvNo = ... and t.StorageCode = ... order by sstgps.AutoId asc' => lay lan thao DAU TIEN SAU lan gan, khop du THIET BI + KHO, TAT DINH. Va ba left join noi cap deu dat dieu kien o 'on' => LAN GAN CHUA THAO VAN HIEN (UnMap null). Doi lap truc tiep #B254 (ghep theo so thu tu dong, dieu kien o 'where' nen nuot dong chua thao). Luu y: so sanh '<' giua nvarchar va bigint => SQL Server ep ngam nvarchar -> bigint nen thuc te so SO.",
+        columnAliasNote = "Cot ra 'VIN' thuc chat la sstgps.VINReal (dat alias), khong phai cot VIN. Ba cot UnMapDateTime/UnMapBy/GPSAddress lay tu DONG UNMAP; MapDateTime la CreateDateTime cua DONG MAP (trung gia tri voi cot CreateDateTime).",
+        twoTablesNote = "MyCount dem TRUOC khi cat trang. Tra HAI bang: MySummaryTable + Sto_StoTransactionGPS.",
+        newColumnsNote = "§12 ba cot moi tren GpsTransaction (RefNoType, RefNoPk, GPSAddress) du 4 cho: entity + Seeder ALTER ... IF NOT EXISTS + ghi khi unmap + GET /api/gpshistory. Ten trung voi GpsInstall nhung LA HAI BANG KHAC NHAU - lan nay KHONG dung sed toan cuc (bai hoc #B260)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/gps-unmapped-not-in-storage", async (
     AppDbContext db, ITenantContext t, string? gpsDvNo, DateTime? unMapFrom, DateTime? unMapTo) =>
 {
@@ -47251,7 +47375,7 @@ app.MapGet("/api/gpshistory", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(device)) q = q.Where(x => x.GpsDvNo.Contains(device.ToUpper()));
     if (open == "1") q = q.Where(x => x.UnMapDateTime == null);
     var items = await q.OrderByDescending(x => x.Id).Take(1000)
-        .Select(x => new { x.Vin, x.GpsDvNo, x.VINAddress, x.MapDateTime, x.UnMapDateTime, x.VINUnMap, x.RefType, x.StorageCode, x.CreateDateTime }).ToListAsync();
+        .Select(x => new { x.Vin, x.GpsDvNo, x.VINAddress, x.MapDateTime, x.UnMapDateTime, x.VINUnMap, x.RefType, x.StorageCode, x.CreateDateTime, x.RefNoType, x.RefNoPk, x.GPSAddress }).ToListAsync();
     return Results.Ok(new { count = items.Count, active = items.Count(i => i.UnMapDateTime == null), items });
 }).RequireAuthorization();
 

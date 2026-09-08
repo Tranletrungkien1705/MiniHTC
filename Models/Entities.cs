@@ -1704,6 +1704,14 @@ public sealed class GpsTransaction
     /// (`stostgps.VINUnMap`), và `#tbl_AutoId_MapOnline` so nó với `Sto_StoBalanceGPS.VIN` để loại
     /// xe **đã map lại**. ⚠️ Trùng tên với `GpsInstall.VinUnMap` — **hai bảng khác nhau**.</summary>
     public string? VINUnMap { get; set; }
+    /// <summary>🔴 #B266 — Loại chứng từ nguồn của giao dịch (`Sto_StoTransactionGPS.RefNo_Type`).
+    /// ⚠️ Trùng tên với `GpsInstall.RefNoType` — **hai bảng khác nhau**, đừng gộp.</summary>
+    public string? RefNoType { get; set; }
+    /// <summary>🔴 #B266 — Khoá chứng từ nguồn (`Sto_StoTransactionGPS.RefNo_PK`).</summary>
+    public string? RefNoPk { get; set; }
+    /// <summary>🔴 #B266 — Địa chỉ thiết bị do dịch vụ GPS trả về tại thời điểm **GỠ** map (`GPSAddress`).
+    /// Báo cáo lịch sử gắn/gỡ lấy cột này **từ DÒNG UNMAP**, không phải dòng MAP.</summary>
+    public string? GPSAddress { get; set; }
     public DateTime CreateDateTime { get; set; } = DateTime.Now;
     public string? CreateBy { get; set; }
 }
