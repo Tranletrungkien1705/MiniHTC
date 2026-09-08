@@ -1281,6 +1281,8 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"ROID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        // #566 danh muc mang luoi (CmCt_Mst_Network)
+        "CREATE TABLE IF NOT EXISTS public.\"NetworkMsts\" (\"Id\" bigserial primary key, \"OrgId\" uuid not null, \"NetworkID\" text not null, \"NetworkName\" text, \"GroupNetworkID\" text, \"CoreAddr\" text, \"PingAddr\" text, \"XSysAddr\" text, \"WSUrlAddr\" text, \"DBUrlAddr\" text, \"WAUrlAddr\" text, \"FlagActive\" text, \"LogLUDTimeUTC\" timestamp, \"LogLUBy\" text)",
         // #557 dai ly cua cong no (nua khoa xoa cua nguon)
         "ALTER TABLE public.\"CusDebits\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         // #555 mot bang ba loai cong no (Ser_CusDebit)

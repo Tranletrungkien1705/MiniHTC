@@ -25742,6 +25742,67 @@ app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #566 DANH MỤC MẠNG LƯỚI (`CarService_GetNetworkID`) — LỌC SAI CỘT SO VỚI TÊN THAM SỐ =====
+// Nguồn: `BizCarSv.TVO.cs:2914`. **BA cửa WS cùng gọi một biz**, khác nhau ở cách xác thực:
+//   `WSCarSv.asmx.cs:36620` (`CarService_GetNetworkID`, xác thực FOS user/password),
+//   `WSCarSv.asmx.cs:36648` (`CarService_GetNetworkID_**ForDesk**`, xác thực **SessionId**),
+//   `WSCarSvTab.asmx.cs:5027`. Ngoài ra job `DMS40_ChotKPIServices.cs:33` gọi qua `_dbService`.
+//
+// 🔴 **THAM SỐ TÊN `strDealerCode` NHƯNG LỌC CỘT `t.NetworkID`**:
+//     `and (@strDealerCode = '' or t.**NetworkID** = @strDealerCode)`
+//   Bảng `CmCt_Mst_Network` **có cột riêng** cho mạng lưới; người gọi đọc tên tham số sẽ truyền **mã đại lý**,
+//   trong khi câu lệnh so với **mã mạng lưới**. Hai mã **thường trùng nhau** trong hệ này (một đại lý = một
+//   mạng lưới) nên **hiện chạy đúng** — nhưng đây đúng là mục *"LỌC SAI CỘT"* mà §12 không bắt được:
+//   ngày nào một đại lý có nhiều mạng lưới (hoặc ngược lại) là **sai câm**. Port đặt tên tham số `networkId`
+//   và giữ `dealerCode` làm bí danh, trả cờ `paramNamedDealerCodeButFiltersNetworkId`.
+// ⚪ **KIỂM TRA ÂM TÍNH — VÀ LÀ BẰNG CHỨNG TRỰC TIẾP CHO #565**: ở đây guard "rỗng thì bỏ lọc" viết
+//   `(@strDealerCode = '' or …)` — **đúng cách**. Cùng một file `TVO.cs`, `SoBaoHanhOnline_GetSerRoService`
+//   lại viết `(@strPlateNo **is null** or …)` ⇒ **chết**. Hai cách viết cạnh nhau, một đúng một sai:
+//   khẳng định #565 là **lỗi thật**, không phải quy ước của hệ.
+// 🔴 **KHÔNG LỌC `FlagActive`, KHÔNG LOẠI `HTC`** — trong khi mọi chỗ khác đọc cùng bảng đều lọc:
+//     `BizCarSv.AssignmentOfWork.cs:4553` ← `where t.FlagActive = '1' and t.NetworkID not in ('HTC')`
+//   ⇒ API này trả **cả mạng lưới đã ngưng hoạt động** và **cả bản ghi tổng 'HTC'**. Bên gọi phải tự lọc:
+//     job KPI (`DMS40_ChotKPIServices.cs:51`) quả thật có `if (Equals(strNetworkID, "HTC")) …` — **lọc ở
+//     phía client**, nghĩa là client nào quên thì **nhân đôi số liệu**. Port trả cả hai bộ + cờ.
+// ⚠️ `string strCount = "12346560000";` — biến **không dùng ở đâu cả** (hai dòng phân trang ngay dưới bị
+//   comment). Một hằng số vô nghĩa còn sót lại sau khi bỏ phân trang.
+// ⚠️ `StringUtils.Replace(@"…")` gọi với **đúng một tham số**, **không** có cặp thay thế nào ⇒ vô nghĩa,
+//   dấu vết cắt dán từ hàm có cờ `zzzz`. ⚠️ `select t.*` ⇒ hợp đồng API **không xác định**.
+// 📌 §12: MiniHTC chưa có bảng mạng lưới ⇒ thêm entity `NetworkMst` + `CREATE TABLE IF NOT EXISTS`,
+//   cột lấy theo script khởi tạo thật (`Refs/Migrate/…InitDB.VC079.Main.sql:226`).
+app.MapGet("/api/networkmsts", async (AppDbContext db, ITenantContext t,
+    string? networkId, string? dealerCode, bool? activeOnly, bool? excludeHtc) =>
+{
+    var key = (networkId ?? dealerCode ?? "").Trim();   // nguồn: một tham số, tên là DealerCode
+    var q0 = db.NetworkMsts.Where(x => x.OrgId == t.OrgId);
+    if (key.Length > 0) q0 = q0.Where(x => x.NetworkID == key);
+
+    var all = await q0.OrderBy(x => x.NetworkID).ToListAsync();
+    var inactive = all.Count(x => x.FlagActive != "1");
+    var htcRows = all.Count(x => x.NetworkID == "HTC");
+    var rows = all
+        .Where(x => activeOnly != true || x.FlagActive == "1")
+        .Where(x => excludeHtc != true || x.NetworkID != "HTC")
+        .ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        paramNamedDealerCodeButFiltersNetworkId = "nguon: (@strDealerCode = rong or t.NetworkID = @strDealerCode)",
+        emptyGuardWrittenCorrectlyHere = "= rong (dung) — khac SoBaoHanhOnline dung is-null (chet, xem #565)",
+        sourceDoesNotFilterFlagActive = true,
+        sourceDoesNotExcludeHtc = true,
+        inactiveRowsIncludedBySource = inactive,
+        htcRowsIncludedBySource = htcRows,
+        otherReadersFilterBoth = "BizCarSv.AssignmentOfWork.cs:4553 — where t.FlagActive = 1 and t.NetworkID not in (HTC)",
+        clientSideFilteringRequired = "job DMS40_ChotKPIServices tu bo qua HTC o phia client => client nao quen thi nhan doi so lieu",
+        unusedConstantInSource = "string strCount = 12346560000 — khong dung o dau",
+        pointlessStringReplace = "StringUtils.Replace(@sql) goi voi dung mot tham so, khong cap thay the nao",
+        selectStarContract = "nguon select t.* — hop dong API khong xac dinh",
+        threeWebMethodsOneBiz = new[] { "CarService_GetNetworkID (FOS)", "CarService_GetNetworkID_ForDesk (SessionId)", "WSCarSvTab" },
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #565 SỔ BẢO HÀNH ONLINE (`SoBaoHanhOnline_GetSerRoService`) — SINH ĐÔI CỦA #564 =====
 // Nguồn: `BizCarSv.TVO.cs:3038`. **DIFF trước, đọc riêng sau** (luật #414) — và diff cho thấy hai hàm
 //   dùng **chung một khung**, khác nhau ở **tham số, danh sách trạng thái, và danh sách cột**.

@@ -4985,6 +4985,26 @@ public sealed class WarrantyWorkMst
 /// <summary>Khoang/ngăn kho (Mst_Compartment) — port 1:1 FrmMst_Compartment (TCMotor DMSCarSv/Admin). Mã + tên khoang. Upsert-by-code + toggle.</summary>
 /// <summary>#520 Danh mục **màu biển số** (`Mst_PlateColor`) — port 1:1 `Mst_PlateColor_Get`
 /// (`BizCarSv.Master.cs:5743`), sống qua **kênh ClientService** (`Mst_PlateColorService.cs:40`), xem #519.</summary>
+/// <summary>#566 §12 Danh mục **mạng lưới** (`CmCt_Mst_Network`) — mỗi bản ghi là một hệ thống con
+/// (một đại lý hoặc HTC) kèm **các địa chỉ dịch vụ** để hệ khác gọi sang.</summary>
+public sealed class NetworkMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string NetworkID { get; set; } = "";
+    public string? NetworkName { get; set; }
+    public string? GroupNetworkID { get; set; }
+    public string? CoreAddr { get; set; }
+    public string? PingAddr { get; set; }
+    public string? XSysAddr { get; set; }
+    public string? WSUrlAddr { get; set; }
+    public string? DBUrlAddr { get; set; }
+    public string? WAUrlAddr { get; set; }
+    public string? FlagActive { get; set; }
+    public DateTime? LogLUDTimeUTC { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class PlateColorMst
 {
     public long Id { get; set; }
