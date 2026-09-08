@@ -32230,6 +32230,151 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   📌 Port giữ đúng và trả cờ `carVinFilterApplied` để người dùng biết mình vừa đổi ngữ nghĩa phép nối.
 // 🔴 **`select cc.*`** ⇒ trả **toàn bộ cột `Car_Car`**; thêm/bớt cột ở bảng nguồn là **đổi hợp đồng API**.
 // 🔴 Trả **MỘT** bảng; **không** có bộ lọc quyền, **không** có phân trang, **không** giới hạn số dòng.
+
+// ===== #B326/#B327/#B328 PIVOT KẾ HOẠCH ↔ THỰC TẾ VẬN CHUYỂN —
+//       `Rpt_PivotTransPlan_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `162402,162706` ≡ 150 `162407,162711` ⇒ **`12082eeb59ee0868e805f398f82e651c`**.
+// ⚠️ Cửa WS bọc bằng **`TERP.Utils.CUtils.MyDSEncode(...)`** (khác mọi hàm khác dùng `WSReturn`)
+//   ⇒ kết quả bị **mã hoá** trước khi trả về client.
+// 🔴🔴🔴 **BỘ LỌC QUYỀN BỊ THAY BẰNG MẪU NƯỚNG CỨNG `'HTC%'` — VÀ ĐẶT SAI CHỖ NÊN VÔ TÁC DỤNG**:
+//     `LEFT JOIN Mst_Dealer md ON stp.DealerCode = md.DealerCode **and (md.BUCode like 'HTC%')**`
+//   (giống hệt ở **cả hai** nhánh `#tbl_KH` và `#tbl_TT`), trong khi **`@strBUPatternOfUser` được NẠP
+//   nhưng KHÔNG dùng** (grep = 1 hit).
+//   ⇒ **Hai sai một lúc**: (a) phạm vi **đóng băng** theo mẫu `'HTC%'` thay vì theo **quyền user**
+//     ⇒ mọi user thấy **cùng một tập**; (b) điều kiện nằm trong **`ON` của `LEFT JOIN`** nên
+//     **KHÔNG LOẠI DÒNG NÀO** — đại lý không khớp `'HTC%'` vẫn ra, chỉ **trống tên đại lý**
+//     ⇒ bộ lọc **thực chất không lọc gì cả** (khuôn `C0-…octogesimusnonus`, chiều ngược lại).
+//   ✅ `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE** ⇒ vẫn có **cổng**, nên không phải lỗ hở toàn phần.
+//   📌 **KHÔNG tự vá**; port giữ đúng (không loại dòng) và trả cờ `buPatternHardcodedNotUserScoped`.
+// 🔴🔴🔴 **TOÀN BỘ GUARD NGÀY VÀ THAM SỐ NGÀY BỊ COMMENT (~35 dòng)**:
+//   `strFrom`/`strTo`, `strDeliveryDateFrom/To`, `strCreatedDateFrom/To`, **hai khối `throw`**
+//   (`Rpt_PivotTransPlan_InvalidInputDlvStartDate`, `…_InvalidInputTPExpectedDate`) và **bốn** dòng
+//   `alParamsCoupleSql.AddRange(…)` — **tất cả đều nằm trong `//`**.
+//   ⇒ **Báo cáo KHÔNG lọc theo ngày**; hai mã lỗi kia **không bao giờ được ném**.
+//   ⚠️ Cùng lớp #B287 (bốn tham số ngày bị comment ở `where`), nhưng ở đây bị comment **ngay từ tầng C#**.
+// 🔴 `@HTCDealerCode` nạp vào params nhưng SQL **không dùng** ⇒ **tham số mồ côi** (lần thứ N).
+// 🔴🔴 **HAI NHÁNH `union` KHÔNG THỂ TRÙNG NHAU** vì có cột phân biệt `Flag_chungchung` = `'KH'` / `'TT'`
+//   ⇒ dùng **`union`** (khử trùng) thay vì `union all` là **tốn kém vô ích**. Hai nhánh phải **cùng 15 cột,
+//   cùng thứ tự** — thêm/bớt một cột ở một nhánh là **gãy câu lệnh**.
+// 🔴🔴 **HAI NGUỒN `ModelCode` KHÁC NHAU GIỮA HAI NHÁNH**: nhánh **KH** lấy `stp.ModelCode`
+//   (từ **kế hoạch**); nhánh **TT** lấy `mcm.ModelCode` (từ `Mst_CarModel` nối qua **`cv.ModelCode`**)
+//   ⇒ nếu kế hoạch ghi model khác model thực của VIN thì **hai nhánh không khớp nhau**.
+// 🔴 **`ISNULL(stp.VIN, stp.VINPlan) AS VIN`** — nhánh kế hoạch: VIN **thực tế** nếu đã gán, chưa gán thì
+//   lấy **VIN dự kiến** ⇒ cột `VIN` của nhánh KH **không đảm bảo là VIN thật**.
+// 🔴 **Nối chuỗi `ProvinceName + ' - ' + DistrictName`** (hai cột `TinhGiao_HuyenGiao`,
+//   `TinhNhan_HuyenNhan`, ở **cả hai** nhánh) ⇒ **một vế NULL là CẢ CHUỖI NULL** — lần thứ **tư** trong hệ.
+// 🔴 Nhánh TT lọc thêm `sdm.FDlvMnStatus not in ('R','C')` **và** `sdm.TDlvMnStatus not in ('R','C')`
+//   (`--20141030`) — **hai** trục trạng thái, cả hai đều phải khác R/C. Cột hằng **`1.0 TOTAL`** cho pivot.
+app.MapGet("/api/reports/pivot-transplan", async (
+    AppDbContext db, ITenantContext t, string? transporterStatus) =>
+{
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var districts = (await db.MstDistricts.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => (d.ProvinceCode, d.DistrictCode)).ToDictionary(g => g.Key, g => g.First());
+    var transporters = (await db.Transporters.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.TransporterCode).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 Nối chuỗi bằng '+' ⇒ một vế NULL là CẢ CHUỖI NULL. Giữ đúng nguồn.
+    string? Concat2(string? a, string? b) => (a == null || b == null) ? null : $"{a} - {b}";
+    string? Prov(string? code) => (code != null && provinces.TryGetValue(code, out var p)) ? p.ProvinceName : null;
+    string? Dist(string? pc, string? dc) =>
+        (pc != null && dc != null && districts.TryGetValue((pc, dc), out var d)) ? d.DistrictName : null;
+
+    // ---- 1. Nhánh KẾ HOẠCH (#tbl_KH) ----
+    var planQ = db.TransportPlans.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(transporterStatus))
+        planQ = planQ.Where(p => p.TransporterStatus == transporterStatus!.Trim());
+    var plans = await planQ.ToListAsync();
+
+    var rowsKH = plans.Select(p =>
+    {
+        dealers.TryGetValue(p.DealerCode, out var dlr);
+        return new
+        {
+            // 🔴 ISNULL(VIN, VINPlan) ⇒ chưa gán thì lấy VIN DỰ KIẾN.
+            VIN = string.IsNullOrEmpty(p.Vin) ? p.VINPlan : p.Vin,
+            ModelCode = p.ModelCode,                       // 🔴 nhánh KH lấy từ KẾ HOẠCH
+            NgayChungChung = p.ExpectedDate,
+            MCMModelName = models.TryGetValue(p.ModelCode, out var mm) ? mm.ModelName : null,
+            MDDealerName = dlr?.DealerName, MDDealerCode = dlr?.DealerCode,
+            p.StorageCode, p.TransporterCode,
+            TransporterName = (p.TransporterCode != null && transporters.TryGetValue(p.TransporterCode, out var tr)) ? tr.TransporterName : null,
+            TenTinhGiao = Prov(p.FProvinceCode), TenTinhNhan = Prov(p.TProvinceCode),
+            TenHuyenGiao = Dist(p.FProvinceCode, p.FDistrictCode),
+            TenHuyenNhan = Dist(p.TProvinceCode, p.TDistrictCode),
+            TinhGiao_HuyenGiao = Concat2(Prov(p.FProvinceCode), Dist(p.FProvinceCode, p.FDistrictCode)),
+            TinhNhan_HuyenNhan = Concat2(Prov(p.TProvinceCode), Dist(p.TProvinceCode, p.TDistrictCode)),
+            Flag_chungchung = "KH",
+            TOTAL = 1.0m
+        };
+    }).ToList();
+
+    // ---- 2. Nhánh THỰC TẾ (#tbl_TT) ----
+    // 🔴 HAI trục trạng thái, cả hai đều phải khác R/C (--20141030).
+    var heads = (await db.TranspDlvConfirms
+            .Where(h => h.OrgId == t.OrgId
+                        && h.FDlvMnStatus != "R" && h.FDlvMnStatus != "C"
+                        && h.TDlvMnStatus != "R" && h.TDlvMnStatus != "C")
+            .ToListAsync())
+        .ToDictionary(h => h.Id);
+    var dlvCars = (await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .Where(c => heads.ContainsKey(c.TranspDlvConfirmId)).ToList();
+    var vins = dlvCars.Select(c => c.VIN).Distinct().ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var rowsTT = dlvCars.Select(c =>
+    {
+        var h = heads[c.TranspDlvConfirmId];
+        dealers.TryGetValue(h.DealerCode, out var dlr);
+        cvs.TryGetValue(c.VIN, out var cv);
+        // 🔴 nhánh TT lấy ModelCode qua Car_VIN → Mst_CarModel (KHÁC nhánh KH).
+        var modelCode = (cv?.ModelCode != null && models.ContainsKey(cv.ModelCode)) ? cv.ModelCode : null;
+        return new
+        {
+            VIN = c.VIN,
+            ModelCode = modelCode,
+            NgayChungChung = c.DlvStartDate,
+            MCMModelName = (modelCode != null && models.TryGetValue(modelCode, out var mm)) ? mm.ModelName : null,
+            MDDealerName = dlr?.DealerName, MDDealerCode = dlr?.DealerCode,
+            StorageCode = h.FStorageCode, h.TransporterCode,
+            TransporterName = transporters.TryGetValue(h.TransporterCode, out var tr) ? tr.TransporterName : null,
+            TenTinhGiao = Prov(c.FProvinceCode), TenTinhNhan = Prov(c.TProvinceCode),
+            TenHuyenGiao = Dist(c.FProvinceCode, c.FDistrictCode),
+            TenHuyenNhan = Dist(c.TProvinceCode, c.TDistrictCode),
+            TinhGiao_HuyenGiao = Concat2(Prov(c.FProvinceCode), Dist(c.FProvinceCode, c.FDistrictCode)),
+            TinhNhan_HuyenNhan = Concat2(Prov(c.TProvinceCode), Dist(c.TProvinceCode, c.TDistrictCode)),
+            Flag_chungchung = "TT",
+            TOTAL = 1.0m
+        };
+    }).ToList();
+
+    // ---- 3. Union — hai nhánh KHÔNG THỂ trùng nhau (Flag_chungchung khác nhau).
+    var all = rowsKH.Cast<object>().Concat(rowsTT.Cast<object>()).ToList();
+
+    return Results.Ok(new
+    {
+        count = all.Count,
+        Rpt_PivotTransPlan = all,
+        planCount = rowsKH.Count, actualCount = rowsTT.Count,
+        buPatternHardcodedNotUserScoped = true,
+        buPatternNote = "BO LOC QUYEN BI THAY BANG MAU NUONG CUNG 'HTC%' - VA DAT SAI CHO NEN VO TAC DUNG: 'LEFT JOIN Mst_Dealer md ON stp.DealerCode = md.DealerCode and (md.BUCode like HTC%)' (giong het o CA HAI nhanh #tbl_KH va #tbl_TT), trong khi @strBUPatternOfUser DUOC NAP nhung KHONG DUNG (grep = 1 hit). HAI SAI MOT LUC: (a) pham vi DONG BANG theo mau 'HTC%' thay vi theo QUYEN USER => moi user thay CUNG MOT TAP; (b) dieu kien nam trong ON cua LEFT JOIN nen KHONG LOAI DONG NAO - dai ly khong khop van ra, chi TRONG TEN DAI LY => bo loc THUC CHAT KHONG LOC GI CA. myCommon_CheckHTCDirect ACTIVE nen VAN CO CONG. KHONG TU VA.",
+        commentedDateGuardsNote = "TOAN BO GUARD NGAY VA THAM SO NGAY BI COMMENT (~35 dong): strFrom/strTo, strDeliveryDateFrom/To, strCreatedDateFrom/To, HAI khoi 'throw' (Rpt_PivotTransPlan_InvalidInputDlvStartDate, ..._InvalidInputTPExpectedDate) va BON dong alParamsCoupleSql.AddRange - TAT CA nam trong '//'. => BAO CAO KHONG LOC THEO NGAY; hai ma loi kia KHONG BAO GIO DUOC NEM. Cung lop #B287 nhung o day bi comment NGAY TU TANG C#.",
+        orphanParamNote = "@HTCDealerCode nap vao params nhung SQL KHONG DUNG => THAM SO MO COI.",
+        unionNote = "HAI NHANH union KHONG THE TRUNG NHAU vi co cot phan biet Flag_chungchung = 'KH'/'TT' => dung 'union' (khu trung) thay vi 'union all' la TON KEM VO ICH. Hai nhanh phai CUNG 15 COT, CUNG THU TU - them/bot mot cot o mot nhanh la GAY CAU LENH.",
+        twoModelSourcesNote = "HAI NGUON ModelCode KHAC NHAU GIUA HAI NHANH: nhanh KH lay stp.ModelCode (tu KE HOACH); nhanh TT lay mcm.ModelCode (Mst_CarModel noi qua cv.ModelCode) => neu ke hoach ghi model khac model thuc cua VIN thi HAI NHANH KHONG KHOP NHAU.",
+        vinFallbackNote = "'ISNULL(stp.VIN, stp.VINPlan) AS VIN' - nhanh ke hoach: VIN THUC TE neu da gan, chua gan thi lay VIN DU KIEN => cot VIN cua nhanh KH KHONG DAM BAO LA VIN THAT.",
+        concatNullNote = "Noi chuoi 'ProvinceName + \" - \" + DistrictName' (hai cot TinhGiao_HuyenGiao, TinhNhan_HuyenNhan, o CA HAI nhanh) => MOT VE NULL LA CA CHUOI NULL - lan thu TU trong he.",
+        twoStatusAxisNote = "Nhanh TT loc them 'sdm.FDlvMnStatus not in (R,C)' VA 'sdm.TDlvMnStatus not in (R,C)' (--20141030) - HAI truc trang thai, ca hai deu phai khac R/C. Cot hang '1.0 TOTAL' cho pivot.",
+        encodeNote = "Cua WS boc bang TERP.Utils.CUtils.MyDSEncode(...) (khac moi ham khac dung WSReturn) => ket qua bi MA HOA truoc khi tra ve client."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/carcar-statistic", async (
     AppDbContext db, ITenantContext t,
     // --- 17 bộ lọc Car_Car ---
