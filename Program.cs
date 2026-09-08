@@ -46079,6 +46079,108 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #713 BÁO CÁO EMAIL KHÁCH ĐÃ NHẬN `Email_ReportCusReceivedEmail` =====
+// `BizCarSv.SendMail.cs:4562-4733`, md5 `9c22649e` — **KHỚP máy 150, cùng offset**.
+// → `GET /api/email/reports/customer-received`. Bảng mã của hàm này đã được **trích dẫn** ở #300 nhưng
+// **báo cáo thì chưa port**.
+//
+// 🔴🔴🔴 **THAM SỐ TÊN LÀ "List" NHƯNG DÙNG NHƯ MỘT GIÁ TRỊ ĐƠN**: tham số `strDealerCode**List**` được bake
+//   vào `and t.DealerCode='@DealerCode'` — **so BẰNG**, không phải `in (…)`. ⇒ Gọi với danh sách nhiều đại lý
+//   (đúng như tên tham số mời gọi) thì câu SQL thành `DealerCode='VN029,VN068'` ⇒ **0 dòng, im lặng**.
+//   📌 **Tên tham số nói dối về hình dạng dữ liệu** — dạng lỗi mới trong sổ: không phải mã sai, mà là **hợp
+//     đồng API sai**, và chỉ lộ ra khi người gọi tin vào cái tên.
+// 🔴🔴🔴 **BAKE BA THAM SỐ VÀO NHÁY, LẠI TRỘN VỚI SqlParameter THẬT**: `'@DealerCode'` · `'@FromDate'` ·
+//   `'@ToDate'` đều thay bằng `StringUtils.Replace`, trong khi hai `zzzzClauseWhere*` dùng `@p…` thật do
+//   `BuildClause` sinh ⇒ **cùng một câu có cả hai cơ chế** = khuôn `[BAKE-PARAM-MIX]`. **Bề mặt tiêm SQL trên
+//   cả ba giá trị**, trong đó `DealerCode` đến thẳng từ client. Đây là site thứ **hai** trong cùng lượt (sau #712).
+// 🔴🔴 **`with(nolock)` VÀ `--//[mylock]` TRONG CÙNG MỘT CÂU**: `from Email_sendEmail t **with(nolock)**` nhưng
+//   `left join Ser_Customer t1 **--//[mylock]**` ⇒ hai quy ước khoá đối lập cạnh nhau. `nolock` = **đọc bẩn**:
+//   báo cáo có thể đếm cả email đang trong transaction chưa commit.
+// 🔴🔴 **NỐI KHÁCH HÀNG CHỈ THEO `CusID`, KHÔNG THEO ĐẠI LÝ**: `on t.Cusid = t1.Cusid` — nếu `CusID` **không**
+//   duy nhất toàn hệ thống (mỗi đại lý một dải mã) thì một dòng email khớp **nhiều** khách ⇒ **nở dòng** trong
+//   báo cáo. Đếm và trả `rowsMultipliedByCustomerJoin`.
+// 🔴🔴 **`case t.TypeEmail` — HAI CÁCH "KHÔNG CÓ NHÃN" TRONG CÙNG MỘT `case`**: mã `'0'` dịch thành **chuỗi
+//   RỖNG** (`when '0' then N''`), còn mã **ngoài** `0..7` ra **NULL** vì **không có `else`** (họ #656/#698/#708).
+//   ⇒ Người đọc báo cáo không phân biệt được "loại 0" với "loại lạ".
+//   Bảng mã nguyên văn: `1` Thông báo chiến dịch · `2` Nhắc bảo dưỡng · `3` Chúc mừng SN · `4` Hẹn khách hàng ·
+//   `5` Khuyến mại · `6` Thông báo sửa xong · `7` Khác.
+// ⚪ **DƯƠNG TÍNH — MỐC NGÀY KHÔNG MẤT NGÀY CUỐI**: dùng `datediff(day, convert(datetime,'@FromDate',20),
+//   t.SendDate) >= 0` và `datediff(day, t.SendDate, convert(datetime,'@ToDate',20)) >= 0` ⇒ so theo **NGÀY**,
+//   **không** dính bẫy `<= @ToDate` mất trọn ngày cuối (#415). Đây là **quy ước ③** trong bốn quy ước ngày đã
+//   liệt kê ở #673. ⚠️ Đổi lại: `datediff` trên cột ⇒ **không sargable** ⇒ không dùng được chỉ mục.
+// ⚪ **DƯƠNG TÍNH — `left join Ser_Customer` CÒN SỐNG**: `WHERE` không đụng `t1`, cột lấy ra có alias riêng
+//   ⇒ email của khách **không có** trong danh mục **vẫn hiện** (chỉ trống tên). Trả lời đủ ba câu của #414.
+// ⚪ **DƯƠNG TÍNH — CÓ `ORDER BY` THẬT**: `order by t.Senddate desc, t.Typeemail, t.status` — khác hẳn loạt màn
+//   `top 1`/`top N` không `ORDER BY` ở #708/#711.
+// 🔴 **TÊN CỘT VIẾT HOA/THƯỜNG KHÔNG NHẤT QUÁN** trong cùng câu: `Email_sendEmail` · `t.Cusid` · `t.Senddate` ·
+//   `t.Typeemail` ⇒ phụ thuộc collation của CSDL (nợ đã mở ở #681).
+// 🔴 `select **t.***` ⇒ hợp đồng cột theo schema (họ #677/#700/#702/#708).
+app.MapGet("/api/email/reports/customer-received", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, DateTime? fromDate, DateTime? toDate, string? typeEmail, string? status) =>
+{
+    // 🔴 Nguồn so BẰNG dù tên tham số là "List". Giữ 1:1 và trả cờ khi phát hiện người gọi truyền danh sách.
+    var dc = (dealerCodeList ?? "").Trim();
+    var callerPassedAList = dc.Contains(',');
+
+    var qy = db.EmailSends.Where(x => x.OrgId == t.OrgId && x.DealerCode == dc);
+    // datediff(day, …) >= 0 ⇒ so theo NGÀY, bao trọn cả hai đầu.
+    if (fromDate is not null) qy = qy.Where(x => x.SendDate >= fromDate!.Value.Date);
+    if (toDate is not null) qy = qy.Where(x => x.SendDate < toDate!.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status!.Trim());
+    if (!string.IsNullOrWhiteSpace(typeEmail)) qy = qy.Where(x => x.EmailType == typeEmail!.Trim());
+
+    var mails = await qy.OrderByDescending(x => x.SendDate).ThenBy(x => x.EmailType).ThenBy(x => x.Status)
+        .ToListAsync();
+    var cusIds = mails.Where(m => m.CusId != null).Select(m => m.CusId!).Distinct().ToList();
+    // 🔴 Nguồn nối CHỈ theo CusID, KHÔNG theo đại lý ⇒ có thể khớp nhiều khách.
+    var cusAll = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && c.CusCode != null && cusIds.Contains(c.CusCode))
+        .Select(c => new { c.CusCode, c.CusName, c.DealerCode }).ToListAsync();
+
+    // Bảng mã NGUYÊN VĂN của nguồn — giữ cả nhánh "0 ⇒ chuỗi rỗng" và việc KHÔNG có else.
+    static string? NewStatus(string? st) => st switch
+    { "0" => "Chưa gửi", "1" => "Thành công", "2" => "Thất bại", _ => null };
+    static string? NewTypeEmail(string? tp) => tp switch
+    {
+        "0" => "",                              // 🔴 nguồn dịch mã 0 thành CHUỖI RỖNG, không phải nhãn
+        "1" => "Thông báo chiến dịch", "2" => "Nhắc bảo dưỡng", "3" => "Chúc mừng SN",
+        "4" => "Hẹn khách hàng", "5" => "Khuyến mại", "6" => "Thông báo sửa xong", "7" => "Khác",
+        _ => null,                              // 🔴 nguồn KHÔNG có else ⇒ NULL
+    };
+
+    var rows = mails.SelectMany(m =>
+    {
+        var hits = cusAll.Where(c => c.CusCode == m.CusId).ToList();
+        if (hits.Count == 0) hits.Add(new { CusCode = (string?)null, CusName = (string?)null, DealerCode = (string?)null });
+        return hits.Select(c => new
+        {
+            m.Id, m.BatchNo, m.Email, m.EmailType, m.Subject, m.Status, m.CusId, m.DealerCode,
+            m.IsAuto, m.FromAddress, m.UserName, m.SendDate,
+            CusName = c.CusName,
+            NewStatus = NewStatus(m.Status), NewTypeEmail = NewTypeEmail(m.EmailType),
+        });
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, mailCount = mails.Count, rows,
+        rowsMultipliedByCustomerJoin = rows.Count - mails.Count,
+        rowsWithoutCustomerName = rows.Count(x => x.CusName is null),
+        unknownStatusCodes = rows.Where(x => x.NewStatus is null).Select(x => x.Status).Distinct().ToList(),
+        unknownTypeCodes = rows.Where(x => x.NewTypeEmail is null).Select(x => x.EmailType).Distinct().ToList(),
+        callerPassedAList,
+        // ===== #713 =====
+        parameterNamedListIsUsedAsSingleValue = "THAM SO TEN LA List NHUNG DUNG NHU MOT GIA TRI DON: strDealerCodeList duoc bake vao and t.DealerCode='@DealerCode' — SO BANG, khong phai in (…). Goi voi danh sach nhieu dai ly (dung nhu ten tham so moi goi) thi cau SQL thanh DealerCode='VN029,VN068' => 0 DONG, IM LANG. TEN THAM SO NOI DOI VE HINH DANG DU LIEU — dang loi moi trong so: khong phai ma sai ma la HOP DONG API SAI, chi lo ra khi nguoi goi tin vao cai ten",
+        bakesThreeValuesAndMixesWithRealParameters = "BAKE BA THAM SO VAO NHAY, LAI TRON VOI SqlParameter THAT: '@DealerCode', '@FromDate', '@ToDate' deu thay bang StringUtils.Replace, trong khi hai zzzzClauseWhere* dung @p… that do BuildClause sinh => CUNG MOT CAU CO CA HAI CO CHE = khuon [BAKE-PARAM-MIX]. BE MAT TIEM SQL tren ca ba gia tri, trong do DealerCode den thang tu client. Site thu HAI trong cung luot (sau #712)",
+        nolockAndMylockInTheSameStatement = "with(nolock) VA --//[mylock] TRONG CUNG MOT CAU: from Email_sendEmail t with(nolock) nhung left join Ser_Customer t1 --//[mylock] => hai quy uoc khoa doi lap canh nhau. nolock = DOC BAN: bao cao co the dem ca email dang trong transaction chua commit",
+        customerJoinIgnoresDealerScope = "NOI KHACH HANG CHI THEO CusID, KHONG THEO DAI LY: on t.Cusid = t1.Cusid — neu CusID KHONG duy nhat toan he thong (moi dai ly mot dai ma) thi mot dong email khop NHIEU khach => NO DONG trong bao cao. Da dem bang rowsMultipliedByCustomerJoin",
+        twoWaysOfHavingNoLabelInOneCase = "case t.TypeEmail — HAI CACH khong-co-nhan TRONG CUNG MOT case: ma 0 dich thanh CHUOI RONG (when 0 then N''), con ma NGOAI 0..7 ra NULL vi KHONG CO else (ho #656/#698/#708) => nguoi doc bao cao khong phan biet duoc loai 0 voi loai la",
+        negativeDateBoundsDoNotLoseLastDay = "DUONG TINH: dung datediff(day, convert(datetime, @FromDate, 20), t.SendDate) >= 0 va datediff(day, t.SendDate, convert(datetime, @ToDate, 20)) >= 0 => so theo NGAY, KHONG dinh bay <= @ToDate mat tron ngay cuoi (#415). Quy uoc 3 trong bon quy uoc ngay o #673. Doi lai: datediff tren cot => KHONG SARGABLE, khong dung duoc chi muc",
+        negativeLeftJoinCustomerStillAlive = "DUONG TINH: left join Ser_Customer CON SONG — WHERE khong dung t1, cot lay ra co alias rieng => email cua khach KHONG CO trong danh muc VAN HIEN (chi trong ten). Tra loi du ba cau cua #414",
+        negativeHasRealOrderBy = "DUONG TINH: CO ORDER BY THAT — order by t.Senddate desc, t.Typeemail, t.status — khac han loat man top 1/top N khong ORDER BY o #708/#711",
+        inconsistentColumnCasing = "TEN COT VIET HOA/THUONG KHONG NHAT QUAN trong cung cau: Email_sendEmail, t.Cusid, t.Senddate, t.Typeemail => phu thuoc collation cua CSDL (no da mo o #681)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #712 MẪU EMAIL: TẠO / SỬA / XOÁ + GUARD ĐÍNH KÈM `CheckTempAttachmentLimit` =====
 // `BizCarSv.SendMail.cs` — `_Create` :2989-3186 md5 `d01b854b` · `_Update` :3188-3404 md5 `99075ce6` ·
 // `_Delete` :3406-3528 md5 `c9cc59d5` · guard `CheckTempAttachmentLimit` :2855.
