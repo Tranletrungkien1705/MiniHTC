@@ -9583,6 +9583,23 @@ public sealed class TcgCarPrice
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B195 — `Mst_File_ImportExcel_Temp`: **vùng đệm file Excel nhập liệu**, khoá `FileCode`.
+/// Bảng TẠM theo nghiệp vụ (tên có `_Temp`) nhưng là **bảng thật trong DB**, có cửa `_Get` riêng ở WS.</summary>
+public sealed class FileImportExcelTemp
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string FileCode { get; set; } = "";
+    public string? FileName { get; set; }
+    public string? FileType { get; set; }
+    public string? Status { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

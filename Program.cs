@@ -33713,6 +33713,85 @@ app.MapGet("/api/masters/tcg-car-prices", async (
     });
 }).RequireAuthorization();
 
+// ===== #B195 VÙNG ĐỆM FILE EXCEL NHẬP LIỆU — `Mst_File_ImportExcel_Temp_Get` / `…_GetX`
+//       (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy** (căn theo TÊN, lệch **+5**): `GetX 201452,201604 / 1720cb42a19e83f3f1b1d063a726ea67`.
+// 🔴 Tên bảng có hậu tố **`_Temp`** nhưng đây là **BẢNG THẬT trong DB**, có cửa `_Get` riêng ở WS64 —
+//   không phải bảng tạm `#tbl_…`. Đừng bỏ qua vì tưởng là tạm.
+// 🔴 Khoá `FileCode`; sắp **`order by mfie.FileCode`**; khuôn `identity(bigint,0,1) MyIdxSeq` +
+//   `MyCount` **đếm trước khi cắt trang**; trả **hai bảng** `MySummaryTable` + `Mst_File_ImportExcel_Temp`.
+app.MapGet("/api/masters/file-import-excel-temps", async (
+    AppDbContext db, ITenantContext t, string? fileCode, int? recordStart, int? recordCount) =>
+{
+    var q = db.FileImportExcelTemps.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(fileCode)) q = q.Where(x => x.FileCode == fileCode.Trim());
+
+    var all = await q.OrderBy(x => x.FileCode).ToListAsync();
+    var myCount = all.Count;                                   // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_File_ImportExcel_Temp = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.FileCode, x.FileName, x.FileType, x.Status, x.Remark,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy
+        }),
+        recordStart = start, recordCount = count,
+        tempNameNote = "Ten bang co hau to '_Temp' nhung day la BANG THAT TRONG DB, co cua _Get rieng o WS64 - khong phai bang tam #tbl_... Dung bo qua vi tuong la tam."
+    });
+}).RequireAuthorization();
+
+// ===== #B196 MẪU HỢP ĐỒNG ĐẠI LÝ — `Dlr_Mst_ContractForm_Get_New20181115` → `…_GetX`
+//       (`BizHTC.RetailContract.cs`) — ĐỐI CHIẾU với `/api/dealercontractforms` đã port =====
+// **3B khớp cả 2 máy**: `GetX 1835,1968 / 1415b592335d5a7af5842fb7cfc0399c` ·
+//   cửa LIVE `2109,2240 / 52651c971d685630cad97e26b721ea7c`.
+// 🔴🔴 **BẪY NẠP CHỒNG (overload)**: có **HAI** hàm tên `Dlr_Mst_ContractForm_GetX` trong **cùng
+//   partial class `BizHTC`**, khác nhau ở **chữ ký**:
+//     · `BizHTC.RetailContract.cs:1835` — **không** có `TDAL.IEzDAL _dbAction`;
+//     · `DataWH/Biz.HTC.WH.cs:183378`  — **có thêm** `TDAL.IEzDAL _dbAction` (chọn DB Main/WH).
+//   Cửa LIVE `_New20181115` gọi bản **không có `_dbAction`** ⇒ chạy trên DB mặc định.
+//   ⇒ `grep` theo tên ra **hai kết quả**; **phải phân biệt bằng CHỮ KÝ**, không phải bằng file.
+//     Đo 3B nhầm bản kia sẽ ra md5 khác mà vẫn "khớp hai máy" — sai không có tín hiệu.
+// 🔴🔴 **RBAC — ca thứ 23**: `//DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);`
+//   **bị comment** ngay trong cửa LIVE ⇒ hàm **không lọc phạm vi người dùng**. Không tự vá.
+// 🔴 Khoá lọc **chỉ có `ContractFNo`** (`zzzzClauseWhere_strDMCTRFContractFNoConditionList`) — nguồn
+//   **không** lọc theo `DealerCode`; bản port `/api/dealercontractforms` có lọc `DealerCode`
+//   ⇒ **chặt hơn nguồn** ở tham số này. Ghi rõ, giữ nguyên bản cũ.
+// 🔴 Khuôn `MyIdxSeq` + `MyCount` **đếm trước khi cắt trang**, trả **hai bảng**.
+app.MapGet("/api/dealercontractforms/htc-paged", async (
+    AppDbContext db, ITenantContext t, string? contractFNo, int? recordStart, int? recordCount) =>
+{
+    var q = db.DealerContractForms.Where(x => x.OrgId == t.OrgId);
+    // 🔴 Nguồn CHỈ lọc theo ContractFNo — không có bộ lọc DealerCode.
+    if (!string.IsNullOrWhiteSpace(contractFNo)) q = q.Where(x => x.ContractFNo == contractFNo.Trim());
+
+    var all = await q.OrderBy(x => x.ContractFNo).ToListAsync();
+    var myCount = all.Count;
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Dlr_Mst_ContractForm = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.DealerCode, x.ContractFNo, x.ContractFName, x.FlagActive
+        }),
+        recordStart = start, recordCount = count,
+        overloadTrapNote = "BAY NAP CHONG: co HAI ham ten Dlr_Mst_ContractForm_GetX trong CUNG partial class BizHTC, khac nhau o CHU KY: BizHTC.RetailContract.cs:1835 KHONG co TDAL.IEzDAL _dbAction; DataWH/Biz.HTC.WH.cs:183378 CO THEM _dbAction (chon DB Main/WH). Cua LIVE _New20181115 goi ban KHONG co _dbAction => chay tren DB mac dinh. grep theo ten ra HAI ket qua - phai phan biet bang CHU KY, khong phai bang file. Do 3B nham ban kia se ra md5 khac ma van 'khop hai may' - SAI KHONG CO TIN HIEU.",
+        rbacHole = "RBAC - CA THU 23: '//DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);' BI COMMENT ngay trong cua LIVE => ham KHONG LOC PHAM VI nguoi dung. Khong tu va.",
+        filterScopeNote = "Nguon CHI co bo loc ContractFNo (zzzzClauseWhere_strDMCTRFContractFNoConditionList) - KHONG loc theo DealerCode. Ban port /api/dealercontractforms co loc DealerCode => CHAT HON NGUON o tham so nay. Ghi ro, giu nguyen ban cu.",
+        deadVersionNote = "Ban Dlr_Mst_ContractForm_Get (:1969, KHONG hau to) la BAN CHET - WS64 goi _Get_New (grep -o '_biz.Dlr_Mst_ContractForm[A-Za-z_]*' chi ra _Get_New)."
+    });
+}).RequireAuthorization();
+
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
 app.MapGet("/api/insurancetypes", async (
     AppDbContext db, ITenantContext t, string? insCompanyPattern, string? company, string? active) =>
