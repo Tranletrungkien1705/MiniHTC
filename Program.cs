@@ -19999,6 +19999,92 @@ app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContex
 //   các bản `xxx` khác **không ai gọi** ⇒ mã chết nhưng **vẫn mang cùng lỗi `&&`** — sửa bản sống mà quên
 //   bản chết thì lần sau ai chép lại là lỗi quay về.
 // 📌 MiniHTC: endpoint dưới **liệt kê** kết quả quét để chỗ đối chiếu có con số, và mô tả đúng hai nhánh hỏng.
+// ===== 🔴🔴 #603 TRẢ NỢ #423 — **"HÀNG ĐANG VỀ" KHÔNG TỒN TẠI NHƯ MỘT NGUỒN DÙNG ĐƯỢC** =====
+// Nợ #423 ghi *"hàng đang về chưa có nguồn đúng — cấm bịa 0"*. Nay tìm được **hai** hàm mang đúng tên đó
+//   trong `BizCarSv.PartOrder.cs`, và **cả hai đều không cho ta thứ cần**:
+//
+// 🔴🔴 **BẢN ĐÚNG TÊN (`Ser_Inv_OrderInshipment_GetAll`, `:3826`) GẦN NHƯ CHẮC CHẮN LUÔN NÉM LỖI SQL**:
+//     `select t1.*, t2.OOquantity **into #tbl_part_tmp**`
+//     `from Ser_Inv_OrderInshipment t1 left join Ser_Inv_OOInShipment t2 on t1.OrderShipID = t2.OrderShipID`
+//     … `from #tbl_part_tmp t where t.**MyRowIdx** >= @MyRowIdx_Start and t.MyRowIdx <= @MyRowIdx_End`
+//   Bảng tạm **không hề sinh cột `MyRowIdx`** — không có `Row_Number() … MyRowIdx` ở đâu trong câu.
+//   ⇒ *"Invalid column name 'MyRowIdx'"*. **Bằng chứng đối chiếu**: cùng khuôn phân trang ở ba nơi khác
+//     (`PartOrder.cs:4060`, `BizCarSv.Customer.cs:492`) **đều có** dòng `Row_Number() over (…) MyRowIdx`;
+//     chỉ bản này thiếu. ⚠️ Điều kiện duy nhất để nó **không** lỗi là bảng `Ser_Inv_OrderInshipment` có sẵn
+//     một cột vật lý tên `MyRowIdx` — chưa đo được trên DB thật, nên ghi là **gần như chắc chắn**, không tuyệt đối.
+//   📌 Đây **là** lời giải cho nợ #423: hàm duy nhất đọc đúng hai bảng "hàng đang về"
+//     (`Ser_Inv_OrderInshipment` + `Ser_Inv_OOInShipment`, cột `OOquantity`) thì **không chạy được**.
+//
+// 🔴🔴 **BẢN ĐANG SỐNG (`_GetAll_01`, `:3985`) KHÔNG PHẢI "HÀNG ĐANG VỀ"** — TRACE WS: **mọi** WebMethod
+//   (`WSCarSv.asmx.cs:23909`, `TERP.WSCarSv/App_Code/WSCarSv.cs:32439`, và hai file WS cũ) đều gọi `_01`.
+//   Nhưng câu SQL của nó **không đụng bảng `Ser_Inv_OrderInshipment` một lần nào**:
+//     `from **ser_Ro** ro left join Ser_ROPartItems rop … left join Ser_MST_Part part …`
+//     `where ro.status = **'w4p'** and ro.DealerCode = '@DealerCode' and part.IsActive = '@IsActive'`
+//   `'W4P'` = `Constants.Ser_RO_Stage.**Wait4Part**` (`Const.Main.cs:177`, xem #584) = **"Đợi phụ tùng"**.
+//   ⇒ Hàm trả **danh sách phụ tùng mà các LỆNH SỬA CHỮA đang chờ**, tức **nhu cầu**, chứ **không** phải
+//     **hàng đang trên đường về kho**. Hai khái niệm khác hẳn nhau về nghiệp vụ.
+//   ⇒ **Tên hàm nói dối lần thứ TƯ** (sau #576 `..._OnlyByBulletinID`, #579 `..._Delete`, #592 `...Create`).
+//
+// ✅ **KẾT LUẬN TRẢ NỢ #423**: giữ nguyên quyết định cũ — **không bịa `inShipment = 0`**. Nay có **lý do đo
+//   được**: nguồn **không có** hàm chạy được nào trả "hàng đang về"; bản đúng tên thì hỏng câu SQL, bản sống
+//   thì đọc **dữ liệu khác**. Endpoint dưới port **đúng cái bản sống thật sự làm** và đặt tên theo **việc nó
+//   làm** (`parts-awaiting`), không theo tên hàm nguồn.
+//
+// 🔴 `left join Ser_MST_Part part` nhưng `where part.IsActive = '@IsActive'` ⇒ **LEFT hoá INNER** (#414):
+//   dòng phụ tùng chưa có trong danh mục **rơi khỏi kết quả**, và người dùng không được báo.
+// 🔴 **Bake** `'@DealerCode'` và `'@IsActive'` (`StringUtils.Replace`), trong khi `@MyRowIdx_*` lại là
+//   **tham số thật** ⇒ đúng bẫy **[BAKE-PARAM-MIX]** (một câu, hai cơ chế — đã ghi ở #572).
+// ⚠️ `Row_Number() over (order by part.PartId **desc**)` — thứ tự trang theo **mã phụ tùng giảm dần**, không
+//   theo nghiệp vụ; mà `part` là bảng LEFT nên trước khi bị `where` giết, NULL sắp ở đâu là tuỳ engine.
+// ⚠️ `'BG-'+ro.RoNo as RONO` — tiền tố cứng, lặp lại #564.
+// ⚪ Âm tính: `select Count(0) MyCount` chạy **trước** khi cắt trang ⇒ tổng số đúng, không bị trang che.
+app.MapGet("/api/partorders/parts-awaiting", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, int? start, int? count) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode))
+        return Results.BadRequest(new { error = "dealerCode bat buoc (nguon bake thang vao cau SQL)." });
+    var dc = dealerCode!.Trim().ToUpperInvariant();
+    var from = Math.Max(0, start ?? 0);
+    var take = count is > 0 ? count!.Value : 100;
+
+    // ĐÚNG BẢN SỐNG: lệnh sửa chữa đang ĐỢI PHỤ TÙNG (W4P), không phải hàng đang về.
+    var baseQ = from ro in db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Status == "W4P" && x.DealerCode == dc)
+                join pi in db.RoPartItems.Where(x => x.OrgId == t.OrgId) on ro.Id equals pi.RoId
+                select new { ro, pi };
+
+    var total = await baseQ.CountAsync();
+    var rows = await baseQ
+        .OrderByDescending(x => x.pi.PartCode)   // nguồn: order by part.PartId desc
+        .Skip(from).Take(take)
+        .Select(x => new
+        {
+            dealerCode = x.ro.DealerCode,
+            roId = x.ro.Id,
+            roNo = "BG-" + x.ro.RONo,            // nguồn: tiền tố cứng
+            x.pi.PartCode, x.pi.PartName, x.pi.Unit,
+            quantity = x.pi.NeedQty, vat = x.pi.Vat, note = x.pi.Note,
+        })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, total, start = from, rows,
+        // ===== #603 — TRẢ NỢ #423 =====
+        debt423Resolved = "KHONG bia inShipment = 0; nguon KHONG co ham chay duoc nao tra hang-dang-ve",
+        namedVariantIsBroken = "Ser_Inv_OrderInshipment_GetAll (:3826) loc t.MyRowIdx nhung bang tam khong sinh cot do (khong co Row_Number) => Invalid column name; ba noi khac cung khuon deu CO dong Row_Number",
+        brokenClaimCaveat = "gan nhu chac chan, tru khi bang Ser_Inv_OrderInshipment co san cot vat ly MyRowIdx — chua do duoc tren DB that",
+        liveVariantReadsSomethingElse = "moi WebMethod goi _GetAll_01, nhung cau SQL cua no doc ser_Ro + Ser_ROPartItems voi ro.status = w4p, KHONG dung bang Ser_Inv_OrderInshipment lan nao",
+        w4pConstantValue = "Constants.Ser_RO_Stage.Wait4Part = W4P = Doi phu tung (Const.Main.cs:177, xem #584)",
+        meaningIsDemandNotInbound = "danh sach phu tung ma cac LENH SUA CHUA dang cho (NHU CAU), khac han hang dang tren duong ve kho",
+        functionNameLiesFourthTime = "sau #576, #579, #592",
+        leftJoinTurnedInnerByWhere = "left join Ser_MST_Part nhung where part.IsActive = ... => dong phu tung chua co trong danh muc ROI khoi ket qua",
+        bakeParamMixInSource = "DealerCode va IsActive bi dan chuoi; @MyRowIdx_* lai la tham so that (bay #572)",
+        pageOrderByPartIdDesc = "Row_Number() over (order by part.PartId desc) — thu tu trang theo ma phu tung giam dan, khong theo nghiep vu",
+        hardcodedRoNoPrefix = "BG- (lap #564)",
+        countBeforePagingNegativeCheck = "select Count(0) MyCount chay TRUOC khi cat trang — tong so dung",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #602 CỤM `PartOrder` ĐƯỢC CHÉP TỪ CỤM `StockIn` — **4 MÃ LỖI LẠC HÀM** =====
 // Tiếp #600/#601 trên cùng file `BizCarSv.PartOrder.cs`. Quét `TError.ErrCarSv.*` trong file (41 lần dùng):
 //     `:212` `TError.ErrCarSv.**Ser_Inv_StockIn_NotFound**`
