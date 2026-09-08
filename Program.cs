@@ -17031,6 +17031,29 @@ var warrantyClaimStatusNamesByScreen = new Dictionary<string, Dictionary<string,
 var warrantyClaimStatusNames = warrantyClaimStatusNamesByScreen["biz"];
 
 // ===== 🔴 #302 CHI TIẾT PHIẾU ĐỀ NGHỊ BẢO HÀNH — LUẬT ĐỌC của bản LIVE =====
+// ===== 🔴🔴 #618 BÁO CÁO SỬA CHỮA BẢO HÀNH `SerWarrantyRepairRpt_WH_New20230417` (`BizCarSv.WH.cs:297`) =====
+// DIFF với bản trần `SerWarrantyRepairRpt_WH` (`:27`). TRACE WS: `WSCarSv.asmx.cs:32955` gọi bản
+//   `_New20230417`; hai file WS cũ gọi bản trần ⇒ **bản trần chết**. Bản mới **viết lại toàn bộ** câu SQL,
+//   không phải sửa vặt — ba khác biệt có hệ quả:
+//
+// 🔴🔴 **`Mst_Dealer` VÀ `Sys_User` CHUYỂN SANG CROSS-DB `[CommonCenter]`**:
+//     bản trần: `SELECT * FROM **Mst_Dealer t**` · `FROM **sys_user t** with(nolock)`
+//     bản LIVE: `from **[@strDBName_CommonCenter].[dbo].Mst_Dealer t**` ·
+//               `from **[@strDBName_CommonCenter].[dbo].Sys_User t**`
+//   ⇒ **LẦN THỨ BA** gặp đúng kiểu chuyển này: #581 (bản tin theo VIN), #611 (`Sys_User` của danh sách đơn
+//     hàng), nay #618 (đại lý + người dùng của báo cáo bảo hành). ⇒ Đây là **một đợt di trú danh mục dùng**
+//     **chung sang DB trung tâm**, làm dần qua nhiều năm — mỗi hàm được chuyển vào một thời điểm khác nhau.
+//   ⚠️ Hệ quả: hai bản của **cùng một báo cáo** đọc danh mục từ **hai DB**; đại lý/người dùng chỉ có ở DB cục
+//     bộ mà chưa đồng bộ lên trung tâm sẽ **mất** ở bản mới (các join này là `where`-lọc, xem #611).
+// 🔴 **ĐỔI CHIẾN LƯỢC KHOÁ THEO CHIỀU NGƯỢC #574**: bản trần dùng `with(nolock)` **khắp nơi**; bản LIVE dùng
+//   `--//[mylock]` (chuẩn nhà). Ở #574 hai bản sinh đôi *cùng thời* lệch nhau; ở đây là **bản mới sửa về**
+//   **chuẩn** ⇒ cùng một hệ có cả hai chiều, **không suy được** "bản mới thì nolock" hay ngược lại.
+// 🔴 **ĐỔI TÊN BẢNG TẠM + THÊM MỘT BẢNG TẠM**: `#tbl_ser_ro` → `#tbl_Ser_RO` (khác **hoa/thường**) và bản mới
+//   thêm `#tbl_Ser_Warranty` (gom `Ser_ROWarrantyReport` **inner join** `#tbl_Ser_RO`).
+//   ⚠️ Tên bảng tạm phân biệt hoa/thường **tuỳ collation** của tempdb ⇒ một câu vá lẫn tên cũ là **lỗi câm**
+//     trên máy chủ collation CS. Ghi lại làm bẫy khi ai đó merge hai bản.
+// ⚪ Âm tính: `inner join #tbl_Ser_RO` ở bảng bảo hành là **đúng ý** (chỉ lấy BCBH của các lệnh đã lọc).
+//
 // TRACE TWIN: `Ser_ROWarrantyReport` có **BỐN** bản Get (`_GetOld` :12318 · bản trần :12605 ·
 //   `_New20230220` :12973 · `_New20230417` :13388). WS `WSCarSv.asmx.cs:19855` gọi **`_New20230417`**
 //   ⇒ ba bản kia CHẾT.
