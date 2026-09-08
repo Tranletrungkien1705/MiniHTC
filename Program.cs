@@ -30180,6 +30180,32 @@ app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q
 // Upsert theo số thông báo (số trống = auto-gen).
 // TWIN đã trace: WS gọi `Blt_BulletinCreate_20210224` / `Blt_BulletinUpdate_20210224`
 // (KHÔNG phải Blt_BulletinCreate / Blt_BulletinUpdate trần — có tới 4 phiên bản trong biz).
+// ===== 🔴🔴 #580 XÁC NHẬN CHÉO #577 QUA `Blt_BulletinUpdate_20210224` — **HÀM SỬA CÓ GHI VIN, HÀM TẠO THÌ KHÔNG** =====
+// WS LIVE `WSCarSv.asmx.cs:26178` gọi `Blt_BulletinUpdate_**20210224**` ⇒ bản trần `:1828` **CHẾT**.
+// 🔴 Bản sống là **VỎ BỌC**: thân nó chỉ kiểm phần mở rộng tệp rồi gọi `UpdateBulletin_20210224(...)`
+//   (`Bulletin.cs:921`) — SQL/ghi dữ liệu nằm **trong hàm con**. Đúng luật *"biz có thể là vỏ bọc, đọc tới
+//   khi THẤY SQL"*; dừng ở hàm ngoài sẽ kết luận "hàm này không ghi gì".
+//
+// 🔴🔴 **BẰNG CHỨNG CHÉO CHO #577**: trong `UpdateBulletin_20210224` **CÓ** ghi bảng VIN:
+//     `_dbMain.SaveData("Btl_Bulletin_VIN", dt_Blt_BulletinDetail);` (và bản WH ngay sau, chép `IDDetail`
+//     lấy từ `select @@Identity`) — trong khi `Blt_BulletinCreate_20210224` **không có dòng nào như vậy**.
+//   ⇒ Không phải tôi đọc sót ở #577: **cùng một cụm, hàm SỬA ghi VIN, hàm TẠO thì không**.
+//   ⇒ Hệ quả nghiệp vụ: **cách duy nhất để một bản tin có VIN là TẠO rồi SỬA lại**. Tạo xong mà không sửa thì
+//     bản tin vĩnh viễn không có xe — và do #576 (`Get` dùng `inner join` bảng VIN) nên **cũng không tra được**.
+// 🔴 **XOÁ HẾT RỒI CHÈN LẠI**: hàm sửa gọi `Blt_BulletinDtlDelete(...)` và `Blt_BulletinDetailDelete(...)`
+//   rồi `foreach` chèn lại từng dòng ⇒ mọi `IDDetail` **đổi số sau mỗi lần sửa**; bất cứ chỗ nào lưu
+//   `IDDetail` làm tham chiếu đều **trỏ sai** sau lần sửa kế tiếp.
+// 🔴 **BA KIỂU XỬ LÝ RỖNG TRONG CÙNG MỘT KHỐI** (lặp lại khuôn #575):
+//   · `Remark`, `IsActive` → rỗng thì **`DBNull` (xoá trắng)**;
+//   · `FileAttachment`, `CreateDate`, `UserCreate`, `DateExpired`, `FileNameAttachment` → rỗng thì **không gán**
+//     — nhưng **vẫn nằm trong** `alColumnEffective` ⇒ **vẫn được ghi** bằng giá trị đọc lên;
+//   · `BulletinNo`, `BulletinNoHMC`, `LogLU*` → gán **vô điều kiện**.
+//   ⚠️ `IsActive` bị xoá trắng ở đây **y hệt** #579 ⇒ sửa bản tin mà không gửi cờ là **bản tin biến mất khỏi
+//     mọi danh sách** (cả nhóm đang hoạt động lẫn nhóm đã ẩn).
+// ⚠️ `Mst_FileTypeUpload_CheckDB(..., strFileTypeCode, TConst.Flag.Yes, ...)` chạy **trước** mọi thứ; khi
+//   `strFileNameAttachment` rỗng thì `strFileTypeCode` là **chuỗi rỗng** và vẫn bị đem đi tra danh mục
+//   phần mở rộng — hành vi phụ thuộc hoàn toàn vào việc danh mục có dòng rỗng hay không.
+//
 // ===== 🔴🔴 #577 `Blt_BulletinCreate_20210224` — **DANH SÁCH VIN ĐƯỢC KIỂM RỒI VỨT ĐI** =====
 // TRACE WS: `WSCarSv.asmx.cs:26130` gọi bản `_20210224` ⇒ bản trần `Bulletin.cs:1214` **CHẾT**.
 //   Bản sống thêm **hai** tham số: `strDateExpired`, `strBulletinNoHMC` (bản chết không có).
@@ -30297,6 +30323,12 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
         whCopyHasNoFileContent = "dong gan FileAttachment o nhanh WH BI COMMENT trong khi FileNameAttachment van gan => kho co ten tep ma khong co tep",
         isActiveConstantValue = "Constants.Flag.Active = 1 (Const.Main.cs:28)",
         liveBizIsDateSuffixed = "WSCarSv.asmx.cs:26130 goi Blt_BulletinCreate_20210224; ban tran :1214 CHET",
+        // ===== #580 =====
+        updateFunctionDoesPersistVins = "UpdateBulletin_20210224 (Bulletin.cs:921) CO _dbMain.SaveData(Btl_Bulletin_VIN) + ban WH — xac nhan cheo rang ham TAO thieu that",
+        onlyWayToAttachVinsInSource = "tao roi SUA lai; tao xong khong sua thi ban tin vinh vien khong co xe va cung khong tra duoc (#576)",
+        updateIsWrapperCallingInnerFunction = "Blt_BulletinUpdate_20210224 chi kiem phan mo rong tep roi goi UpdateBulletin_20210224",
+        updateDeletesThenReinsertsDetails = "Blt_BulletinDtlDelete + Blt_BulletinDetailDelete roi chen lai => IDDetail doi so sau moi lan sua",
+        updateClearsRemarkAndIsActiveWhenEmpty = "Remark va IsActive rong => DBNull; cac cot khac rong thi khong gan nhung VAN nam trong alColumnEffective",
     });
 }).RequireAuthorization();
 
