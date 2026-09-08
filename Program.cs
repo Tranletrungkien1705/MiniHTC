@@ -46079,6 +46079,71 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #704 VELOCA: ĐÁNH DẤU LỆNH SỬA CHỮA ĐÃ ĐỒNG BỘ =====
+// `OSVeloca_Ser_RO_UpdSyncVelocaFlag` (`BizCarSv.ZTemp.cs:16967-17136`, md5 `6da3b838` — **KHỚP máy 150,
+// cùng offset**). WS `WSCarSv.asmx.cs:12259`. Anh em đã port ở #304/#305 là bản **phiếu xuất kho**
+// (`OSVeloca_Ser_Inv_StockOut_UpdFlagSyncVeloca`); đây là bản **lệnh sửa chữa**, **chưa từng port**.
+//
+// 🔴🔴🔴 **KIỂM TRÊN MỘT CSDL, GHI VÀO BA CSDL**: `#region // Check` đọc `Ser_RO` bằng **`_dbDealer`**,
+//   nhưng khối cập nhật chạy `ExecQuery` **cùng một câu `update`** trên **`_dbMain`, `_dbWH` VÀ `_dbDealer`**.
+//   ⇒ Lệnh chỉ có ở DB đại lý ⇒ hai lệnh kia sửa **0 dòng**, **không lỗi, không cảnh báo**, hệ Veloca vẫn nhận
+//     "thành công" trong khi CSDL trung tâm **chưa hề được đánh dấu**.
+//   ⇒ Ngược lại: lệnh có ở Main nhưng **không** có ở DB đại lý ⇒ **ném `…_ROIDNotExist`** dù dữ liệu tồn tại.
+//   📌 Đây là dạng **guard-DB ≠ write-DB** — khác các ca "ghi nhiều CSDL" đã ghi nợ trước đây ở chỗ **phạm vi
+//     kiểm hẹp hơn phạm vi ghi**.
+// 🔴🔴 **BA MỐC THỜI GIAN KHÁC NHAU CHO MỘT LẦN ĐỒNG BỘ**: mỗi lời gọi `ExecQuery` tự tính lại
+//   `DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")` ⇒ **ba** giá trị, có thể **lệch giây** nhau; trong khi hàm
+//   **đã có sẵn** `DateTime dtimeSys = DateTime.Now;` ở đầu và **không dùng**. ⇒ `SyncVelocaDTime` của cùng một
+//   lệnh **khác nhau giữa ba CSDL**. Port dùng **một** mốc duy nhất và trả cờ.
+// 🔴 **GUARD CHẾT** (họ #407): `if (dtSer_RO != null && dtSer_RO.Rows.Count > 0)` đặt **ngay sau** khối đã
+//   `throw` khi null/0 dòng ⇒ điều kiện **không bao giờ false**.
+// 🔴 **GHI `_dbDealer` VÔ ĐIỀU KIỆN NHƯNG COMMIT CÓ ĐIỀU KIỆN**: `_dbDealer.ExecQuery(...)` chạy **không** hỏi
+//   `bNeedTransaction_Dealer`, còn commit thì `if (bNeedTransaction_Dealer) CommitSafety(_dbDealer)`.
+//   Khi `bIsWSMain = true` ⇒ cờ = false ⇒ **không mở transaction, có ghi, không commit**. Nhất quán **nếu**
+//   EzDAL tự-commit khi không có transaction — **chưa xác minh** ⇒ ghi cờ, **không kết luận**.
+// 🔴 **TÊN CỘT KHÁC NHAU CHO CÙNG MỘT KHÁI NIỆM**: ở đây `Ser_RO.**SyncVelocaFlag**`; ở #304 bảng phiếu xuất
+//   dùng `Ser_Inv_StockOut.**FlagSyncVeloca**` (đảo trật tự từ). Copy nguyên văn cả hai, **không thống nhất lại**
+//   (luật HẰNG ≠ GIÁ TRỊ).
+// ⚪ **ÂM TÍNH — trả về RỖNG là đúng ý**: `dsGetData` **không bao giờ được nạp** rồi `MoveDataTable` ⇒ `mdsFinal`
+//   rỗng. Đúng cho một hàm chỉ đánh cờ; nhưng client **không nhận được xác nhận nào** ⇒ port trả thêm dữ liệu.
+// ⚪ **ÂM TÍNH — tham số hoá ĐÚNG**: cả câu kiểm lẫn câu `update` đều dùng `@strROID` / `@strLogLUDateTime` /
+//   `@strLogLUBy` truyền qua `ExecQuery` ⇒ **không bake**, không có `Replace` tham số (đối lập #699).
+// §12 GAP đã vá: `RepairOrder` **có** `SyncVelocaFlag` (#271) nhưng **thiếu `SyncVelocaDTime`** — nguồn ghi
+//   **cả hai** ⇒ thêm đủ bốn chỗ (entity + Seeder ALTER + trả ở GET này + ghi ở POST này).
+app.MapPost("/api/osveloca/repairorders/{roId}/sync-flag", async (string roId, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var id = (roId ?? "").Trim();
+    if (id.Length < 1) return Results.BadRequest(new { error = "ErrCarSv.OSVeloca_Ser_RO_UpdSyncVelocaFlag_ROIDNotExist" });
+
+    // Nguồn KIỂM trên _dbDealer. Mini một CSDL nên không tái hiện được sự lệch; trả cờ mô tả.
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == id);   // Mini khoa la RONo, khong co cot ROID rieng — anh xa 1:1 theo so lenh.
+    if (ro is null) return Results.BadRequest(new { error = "ErrCarSv.OSVeloca_Ser_RO_UpdSyncVelocaFlag_ROIDNotExist", roId = id });
+
+    // Nguồn tính DateTime.Now BA LẦN. Port dùng MỘT mốc.
+    var stamp = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    ro.SyncVelocaFlag = "1";
+    ro.SyncVelocaDTime = stamp;
+    ro.LogLUDateTime = stamp;
+    ro.LogLUBy = by;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        roIdParam = id, ro.RONo, ro.SyncVelocaFlag, ro.SyncVelocaDTime, ro.LogLUBy, ro.LogLUDateTime,
+        // ===== #704 =====
+        guardReadsDealerDbButWriteHitsAllThree = "KIEM TREN MOT CSDL, GHI VAO BA CSDL: #region // Check doc Ser_RO bang _dbDealer, nhung khoi cap nhat chay CUNG MOT cau update tren _dbMain, _dbWH VA _dbDealer. Lenh chi co o DB dai ly => hai lenh kia sua 0 DONG, khong loi khong canh bao, he Veloca van nhan thanh cong trong khi CSDL trung tam CHUA HE duoc danh dau. Nguoc lai: lenh co o Main nhung khong co o DB dai ly => nem ROIDNotExist du du lieu ton tai. Dang guard-DB KHAC write-DB: pham vi KIEM hep hon pham vi GHI",
+        threeDifferentTimestampsForOneSync = "BA MOC THOI GIAN KHAC NHAU CHO MOT LAN DONG BO: moi loi goi ExecQuery tu tinh lai DateTime.Now.ToString(yyyy-MM-dd HH:mm:ss) => BA gia tri, co the lech giay nhau; trong khi ham DA CO SAN DateTime dtimeSys = DateTime.Now; o dau va KHONG DUNG => SyncVelocaDTime cua cung mot lenh KHAC NHAU giua ba CSDL. Port dung MOT moc duy nhat",
+        deadGuardRowsCountAfterThrow = "GUARD CHET (ho #407): if (dtSer_RO != null && dtSer_RO.Rows.Count > 0) dat NGAY SAU khoi da throw khi null/0 dong => dieu kien KHONG BAO GIO false",
+        dealerWriteUnconditionalButCommitConditional = "GHI _dbDealer VO DIEU KIEN NHUNG COMMIT CO DIEU KIEN: _dbDealer.ExecQuery(...) chay KHONG hoi bNeedTransaction_Dealer, con commit thi if (bNeedTransaction_Dealer) CommitSafety(_dbDealer). Khi bIsWSMain = true => co = false => khong mo transaction, co ghi, khong commit. Nhat quan NEU EzDAL tu-commit khi khong co transaction — CHUA XAC MINH => ghi co, KHONG ket luan",
+        columnNamedDifferentlyFromStockOutTwin = "TEN COT KHAC NHAU CHO CUNG MOT KHAI NIEM: o day Ser_RO.SyncVelocaFlag; o #304 bang phieu xuat dung Ser_Inv_StockOut.FlagSyncVeloca (dao trat tu tu). Copy nguyen van ca hai, KHONG thong nhat lai (luat HANG KHAC GIA TRI)",
+        negativeEmptyReturnIsIntentional = "AM TINH: dsGetData KHONG BAO GIO duoc nap roi MoveDataTable => mdsFinal rong. Dung cho mot ham chi danh co; nhung client KHONG nhan duoc xac nhan nao => port tra them du lieu",
+        negativeProperlyParameterised = "AM TINH: ca cau kiem lan cau update deu dung @strROID / @strLogLUDateTime / @strLogLUBy truyen qua ExecQuery => KHONG bake, khong co Replace tham so (doi lap #699)",
+        gapSyncVelocaDTimeWasMissing = "§12 GAP da va: RepairOrder CO SyncVelocaFlag (#271) nhung THIEU SyncVelocaDTime — nguon ghi CA HAI => them du bon cho",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #701 CỔNG VELOCA GHI KHÁCH HÀNG `OSVeloca_Ser_Customer_Save` =====
 // (`BizCarSv.Customer.cs:20880-21178`, md5 `4c87ec29`; md5 **cả file** `44c7c87b` — **cả hai KHỚP** máy 150.)
 // WS `WSCarSv.asmx.cs:7669`. Đây là **chiều VÀO** từ hệ Veloca ghi khách hàng vào DMS.

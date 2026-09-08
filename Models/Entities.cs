@@ -2354,6 +2354,14 @@ public sealed class RepairOrder
     /// ⚠️ Cờ chỉ có ở nhánh LẤY MỘT LSC; nhánh TÌM KIẾM danh sách **không** lọc cờ này.
     /// </summary>
     public string? SyncVelocaFlag { get; set; }
+
+    /// <summary>
+    /// 🔴 #704 `Ser_RO.SyncVelocaDTime` — mốc thời gian đi kèm cờ trên. Nguồn
+    /// `OSVeloca_Ser_RO_UpdSyncVelocaFlag` ghi **cả hai** trong một câu `update`:
+    /// `set t.SyncVelocaFlag = '1', t.SyncVelocaDTime = @strLogLUDateTime`.
+    /// ⚠️ Nguồn tính `DateTime.Now` **ba lần** cho ba CSDL ⇒ ba giá trị có thể lệch giây.
+    /// </summary>
+    public DateTime? SyncVelocaDTime { get; set; }
     // ===== #464 §12: hai khối JSON giao dịch Loyalty mà WebMethod thật KHÔNG nhận =====
     /// <summary>`Crd_DealSerRO` dạng JSON — client dựng và gửi, nhưng WS live không khai tham số này.
     /// MiniHTC nhận và LƯU để không mất dữ liệu (lệch nguồn CỐ Ý).</summary>
