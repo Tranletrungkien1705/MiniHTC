@@ -31592,6 +31592,175 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   ⇒ công cụ quét/thay `--//[mylock]` sẽ **bỏ sót bảng này** (xem ghi nhớ `dmssales-mylock-marker-only-on-tables`).
 // 🔴 `md.FlagActive = '1'` chỉ được lọc ở **câu Return**, không ở hai bảng tạm ⇒ subquery `top 1` vẫn
 //   chạy cho cả đại lý đã ngừng hoạt động rồi mới bị loại — kết quả đúng, chi phí thừa.
+
+// ===== #B272/#B273/#B274 TỒN HỒ SƠ NGÂN HÀNG (theo tuổi hồ sơ) —
+//       `Rpt_TonHoSoNganHang_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`)
+//       + builder `RptSQLQuery.mySql_Rpt_TonHoSoNganHang_WH()` =====
+// **3B khớp cả 2 máy** — cửa định vị theo TÊN (lệch 5 dòng), builder **trùng vị trí**:
+//   cửa laptop `148405,148546` ≡ 150 `148410,148551` ⇒ **`f9f508b18e1b047cb6550b5d57383231`**
+//   builder `RptSQLQuery.cs 32323,32536` (cả hai máy, file `56209` dòng) ⇒ **`d03e6e4b5562a544d47a4115316c6ffa`**
+// 🔴🔴🔴 **BUG THẬT — THAM SỐ NGÀY BỊ GHI ĐÈ NGAY DÒNG ĐẦU**:
+//     `strTDate_To = DateTime.Now.ToString("yyyy-MM-dd");`  ← đặt ở đầu vùng `// Check:`
+//   ⇒ **Người dùng chọn ngày nào cũng vô nghĩa: luôn là HÔM NAY.** Dòng nạp tham số tương ứng
+//     (`//alParamsCoupleSql.AddRange(… "@strTDate_To" …)`) cũng **bị comment**, và SQL dùng thẳng
+//     **`getdate()`** để tính tuổi ⇒ **báo cáo KHÔNG xem được kỳ quá khứ**.
+//   ⚠️ Cùng lớp với ghi nhớ `dmssales-9b-merge-khong-thay-diff-matrix` (GAP "RptDate = hôm nay").
+//   📌 **KHÔNG tự vá**: port bỏ qua tham số ngày, trả cờ `sourceForcesToday`.
+// ✅ **RBAC — tổ hợp (1) theo luật `C0-…nonagesimus`: CÓ CỔNG, không lọc dòng.**
+//   `myCommon_CheckHTCDirect(…, TConst.Flag.Active)` **ACTIVE** (không comment) và SQL **không** dùng
+//   `BUPattern` ⇒ **cố ý**, giống #B242. Không phải lỗ.
+// 🔴 **Điều kiện lọc "có ngân hàng" BỊ COMMENT — nhưng CÓ CHỦ ĐÍCH**:
+//   `--and cv.MortageBankCode is not null and cv.MortageBankCode <> ''` bị bỏ, nên xe **không có ngân
+//   hàng thế chấp vẫn vào** báo cáo và được gom vào nhóm **`'Blank'`** ở bảng tổng
+//   (`isnull(t.MortageBankCode,'Blank')`). ⇒ Đọc lướt tưởng thiếu bộ lọc; thực ra nhóm `Blank` là **đầu ra
+//   mong muốn**. Kèm theo, `--and cv.MortageStartDate is not null` cũng bị bỏ ⇒ nhóm `Blank` có
+//   `TuoiTonHS` **NULL**.
+// 🔴 Điều kiện **SỐNG** chỉ có hai: `(cv.MortageEndDate is NULL **or cv.MortageEndDate = ''**)`
+//   — so cột ngày với **chuỗi rỗng** ⇒ xác nhận `Car_VIN.MortageEndDate` lưu **VARCHAR**
+//   (cùng khuôn #B260) — và `cv.DocumentsStatus = 'A'`.
+// 🔴🔴 **NĂM KHOẢNG TUỔI HỒ SƠ CÓ KHE HỞ**: `0–90` · `91–180` · `181–270` · `271–360` · `>360`.
+//   ⇒ `TuoiHoSo` **âm** (ngày C/O nằm ở tương lai, hoặc `CODate` NULL ⇒ `datediff` NULL) **không rơi vào
+//     khoảng nào** ⇒ đếm `0` ở **mọi** cột nhưng **vẫn có dòng chi tiết** ⇒ **tổng `SLTuoiHoSo` < số dòng
+//     chi tiết**. Port trả `rowsOutsideAllBuckets` để đối soát.
+// 🔴 **Hai cột "tuổi" GỐC KHÁC NHAU**: `TuoiHoSo = datediff(day, **cv.CODate**, getdate())` (từ ngày C/O)
+//   còn `TuoiTonHS = datediff(day, **cv.MortageStartDate**, getdate())` (từ ngày thế chấp). Chỉ `TuoiHoSo`
+//   được dùng để chia nhóm.
+// 🔴 **Giá xe khớp theo `ActualSpec`, không phải `SpecCode`** (cùng bẫy #B239/#B242):
+//   `#tbl_Mst_CarPrice_Draft` lấy `max(EffectiveDate)` theo `(ModelCode, SpecCode, ColorCode)` với
+//   `SOType='P'` và `EffectiveDate <= getdate()`, rồi **`inner join` lại** để lấy `UnitPrice`; khi nối vào
+//   xe thì `mcp.SpecCode = **cv.ActualSpec**`.
+//   ⚠️ Bước lấy giá dùng `inner join` chứ **không `top 1`** ⇒ nếu có **hai dòng giá cùng `MaxEffectiveDate`**
+//     thì **NHÂN DÒNG** cả báo cáo. Port lấy **một** dòng và ghi ở `priceDuplicateRiskNote`.
+// 🔴 **Hai bảng kết quả, THỨ TỰ NGƯỢC TRỰC GIÁC**: `Tables[0]` = **`…Detail`** (chi tiết từng VIN),
+//   `Tables[1]` = **`…`** (tổng hợp theo ngân hàng). Câu chi tiết còn có **cột nhãn rỗng đầu tiên**
+//   `select '' tbl_Car_VIN_Dtl_Add, * …`.
+// ⚠️ **`Thread.Sleep(4000)` trên ĐƯỜNG THÀNH CÔNG** (`/// HoangTV Debug: Sleep WH. (chốt 2019-01-31)`)
+//   — thuộc nhóm 83 site đã thống kê; **KHÔNG port**.
+app.MapGet("/api/reports/ton-hoso-nganhang", async (
+    AppDbContext db, ITenantContext t, string? mortageBankCode) =>
+{
+    var today = DateTime.Today;   // 🔴 nguồn ép getdate(); tham số ngày bị ghi đè.
+
+    // 🔴 Chỉ HAI điều kiện sống: MortageEndDate rỗng/NULL và DocumentsStatus = 'A'.
+    var q = db.CarVinMasters.Where(v => v.OrgId == t.OrgId
+        && v.MortageEndDate == null
+        && v.DocumentsStatus == "A");
+    if (!string.IsNullOrWhiteSpace(mortageBankCode))
+        q = q.Where(v => v.MortageBankCode == mortageBankCode!.Trim());
+    var cars = await q.ToListAsync();
+
+    var vins = cars.Select(c => c.VIN).ToList();
+    var invInfo = (await db.CarVinInvoiceInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync())
+        .GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(b => b.BankCode).ToDictionary(g => g.Key, g => g.First());
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    // 🔴 Giá: SOType='P', EffectiveDate <= hôm nay, lấy bản HIỆU LỰC MỚI NHẤT theo (Model, Spec, Color).
+    var prices = await db.CarPrices
+        .Where(p => p.OrgId == t.OrgId && p.SoType == "P" && p.EffectiveDate <= today).ToListAsync();
+    var priceGroups = prices.GroupBy(p => (p.ModelCode, p.SpecCode ?? "", p.ColorCode ?? ""));
+    var priceByKey = priceGroups.ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.EffectiveDate).ToList());
+    var priceDuplicateKeys = priceGroups
+        .Where(g => g.Count(p => p.EffectiveDate == g.Max(x => x.EffectiveDate)) > 1)
+        .Select(g => new { g.Key.ModelCode, SpecCode = g.Key.Item2, ColorCode = g.Key.Item3 }).ToList();
+
+    var detail = new List<object>();
+    var rowsOutsideAllBuckets = new List<object>();
+    foreach (var c in cars)
+    {
+        invInfo.TryGetValue(c.VIN, out var inv);
+        // 🔴 Nối giá theo ActualSpec, KHÔNG phải SpecCode.
+        var pkey = (c.ModelCode ?? "", c.ActualSpec ?? "", c.ColorCode ?? "");
+        decimal? unitPrice = priceByKey.TryGetValue(pkey, out var pl) ? pl[0].Price : null;
+
+        int? tuoiHoSo = c.CODate == null ? null : (int)(today - c.CODate.Value.Date).TotalDays;
+        int? tuoiTonHS = c.MortageStartDate == null ? null : (int)(today - c.MortageStartDate.Value.Date).TotalDays;
+
+        int b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0;
+        if (tuoiHoSo is int th)
+        {
+            if (th >= 0 && th <= 90) b0 = 1;
+            else if (th >= 91 && th <= 180) b1 = 1;
+            else if (th >= 181 && th <= 270) b2 = 1;
+            else if (th >= 271 && th <= 360) b3 = 1;
+            else if (th > 360) b4 = 1;
+        }
+        // 🔴 KHE HỞ: tuổi ÂM hoặc NULL không rơi vào khoảng nào ⇒ tổng SL < số dòng chi tiết.
+        if (b0 + b1 + b2 + b3 + b4 == 0)
+            rowsOutsideAllBuckets.Add(new { c.VIN, TuoiHoSo = tuoiHoSo, c.CODate });
+
+        var up = unitPrice ?? 0m;
+        detail.Add(new
+        {
+            c.VIN, c.EngineNo, c.ActualSpec,
+            AC_SpecDescription = (c.ActualSpec != null && specs.TryGetValue(c.ActualSpec, out var sp)) ? sp.SpecDesc : null,
+            CQNo = inv?.CQNo, CONo = inv?.CONo, c.CODate, c.DeclarationNo,
+            DealerContractNo = (string?)null,          // 📌 NỢ: CT_DealerContractDetail chưa có trong MiniHTC
+            LCNo = (string?)null,                      // 📌 NỢ: CT_PackingList → CT_LC chưa có
+            DRFullDocDate = (DateTime?)null,           // 📌 NỢ: Car_VIN.DRFullDocDate chưa có
+            c.DocumentsStatus, c.SpecCode,
+            TuoiHoSo = tuoiHoSo,
+            c.MortageBankCode,
+            BankName = (c.MortageBankCode != null && banks.TryGetValue(c.MortageBankCode, out var bk)) ? bk.BankName : null,
+            TuoiTonHS = tuoiTonHS, c.MortageStartDate,
+            InvoiceNoFactory = inv?.InvoiceNoFactory,
+            HTCInvoiceNo = (string?)null, TCGInvoiceNo = (string?)null,   // 📌 NỢ: nối hoá đơn theo VIN
+            UnitPrice = unitPrice,
+            SLTuoiHoSo_0_90 = b0, SLTuoiHoSo_91_180 = b1, SLTuoiHoSo_181_270 = b2,
+            SLTuoiHoSo_271_360 = b3, SLTuoiHoSo_360 = b4,
+            GTTuoiHoSo_0_90 = b0 * up, GTTuoiHoSo_91_180 = b1 * up, GTTuoiHoSo_181_270 = b2 * up,
+            GTTuoiHoSo_271_360 = b3 * up, GTTuoiHoSo_360 = b4 * up
+        });
+    }
+
+    // Bảng TỔNG: gom theo ngân hàng, NULL ⇒ nhóm 'Blank'.
+    var summary = detail
+        .Select(d => d.GetType().GetProperties().ToDictionary(p => p.Name, p => p.GetValue(d)))
+        .GroupBy(d => ((string?)d["MortageBankCode"]) ?? "Blank")
+        .Select(g => new
+        {
+            MortageBankCode = g.Key,
+            BankName = (string?)g.First()["BankName"] ?? "Blank",
+            SLTuoiHoSo_0_90 = g.Sum(x => (int)x["SLTuoiHoSo_0_90"]!),
+            SLTuoiHoSo_91_180 = g.Sum(x => (int)x["SLTuoiHoSo_91_180"]!),
+            SLTuoiHoSo_181_270 = g.Sum(x => (int)x["SLTuoiHoSo_181_270"]!),
+            SLTuoiHoSo_271_360 = g.Sum(x => (int)x["SLTuoiHoSo_271_360"]!),
+            SLTuoiHoSo_360 = g.Sum(x => (int)x["SLTuoiHoSo_360"]!),
+            SLTuoiHoSo = g.Sum(x => (int)x["SLTuoiHoSo_0_90"]! + (int)x["SLTuoiHoSo_91_180"]!
+                                    + (int)x["SLTuoiHoSo_181_270"]! + (int)x["SLTuoiHoSo_271_360"]!
+                                    + (int)x["SLTuoiHoSo_360"]!),
+            GTTuoiHoSo_0_90 = g.Sum(x => (decimal)x["GTTuoiHoSo_0_90"]!),
+            GTTuoiHoSo_91_180 = g.Sum(x => (decimal)x["GTTuoiHoSo_91_180"]!),
+            GTTuoiHoSo_181_270 = g.Sum(x => (decimal)x["GTTuoiHoSo_181_270"]!),
+            GTTuoiHoSo_271_360 = g.Sum(x => (decimal)x["GTTuoiHoSo_271_360"]!),
+            GTTuoiHoSo_360 = g.Sum(x => (decimal)x["GTTuoiHoSo_360"]!),
+            GTTuoiHoSo = g.Sum(x => (decimal)x["GTTuoiHoSo_0_90"]! + (decimal)x["GTTuoiHoSo_91_180"]!
+                                    + (decimal)x["GTTuoiHoSo_181_270"]! + (decimal)x["GTTuoiHoSo_271_360"]!
+                                    + (decimal)x["GTTuoiHoSo_360"]!)
+        })
+        .OrderBy(x => x.MortageBankCode).ToList();
+
+    return Results.Ok(new
+    {
+        Rpt_TonHoSoNganHangDetail = detail,     // 🔴 Tables[0] = CHI TIẾT (đứng TRƯỚC)
+        Rpt_TonHoSoNganHang = summary,          // 🔴 Tables[1] = TỔNG HỢP
+        rowsOutsideAllBuckets,
+        priceDuplicateKeys,
+        sourceForcesToday = true,
+        overwrittenParamNote = "BUG THAT - THAM SO NGAY BI GHI DE NGAY DONG DAU: 'strTDate_To = DateTime.Now.ToString(\"yyyy-MM-dd\");' dat o dau vung Check => NGUOI DUNG CHON NGAY NAO CUNG VO NGHIA, LUON LA HOM NAY. Dong nap tham so '@strTDate_To' cung BI COMMENT, va SQL dung thang getdate() de tinh tuoi => BAO CAO KHONG XEM DUOC KY QUA KHU. Cung lop voi ghi nho dmssales-9b-merge-khong-thay-diff-matrix (GAP RptDate=hom nay). KHONG TU VA.",
+        rbacNote = "RBAC - to hop (1) theo luat C0-...nonagesimus: CO CONG, khong loc dong. myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE (khong comment) va SQL KHONG dung BUPattern => CO Y, giong #B242. Khong phai lo.",
+        blankGroupNote = "Dieu kien loc 'co ngan hang' BI COMMENT nhung CO CHU DICH: '--and cv.MortageBankCode is not null and <> \"\"' bi bo nen xe KHONG co ngan hang the chap van vao bao cao va duoc gom vao nhom 'Blank' o bang tong (isnull(t.MortageBankCode,'Blank')). Doc luot tuong thieu bo loc; thuc ra nhom Blank la DAU RA MONG MUON. Kem theo '--and cv.MortageStartDate is not null' cung bi bo => nhom Blank co TuoiTonHS NULL.",
+        varcharDateNote = "Dieu kien SONG chi co hai: '(cv.MortageEndDate is NULL or cv.MortageEndDate = \"\")' - so cot ngay voi CHUOI RONG => xac nhan Car_VIN.MortageEndDate luu VARCHAR (cung khuon #B260); va 'cv.DocumentsStatus = A'.",
+        bucketGapNote = "NAM KHOANG TUOI HO SO CO KHE HO: 0-90, 91-180, 181-270, 271-360, >360. TuoiHoSo AM (ngay C/O o tuong lai) hoac NULL (CODate NULL => datediff NULL) KHONG roi vao khoang nao => dem 0 o MOI cot nhung VAN CO DONG CHI TIET => tong SLTuoiHoSo < so dong chi tiet. Xem rowsOutsideAllBuckets.",
+        twoAgeColumnsNote = "HAI cot 'tuoi' GOC KHAC NHAU: TuoiHoSo = datediff(day, cv.CODate, getdate()) (tu ngay C/O); TuoiTonHS = datediff(day, cv.MortageStartDate, getdate()) (tu ngay the chap). Chi TuoiHoSo duoc dung de chia nhom.",
+        priceDuplicateRiskNote = "Gia xe khop theo cv.ActualSpec, KHONG phai SpecCode (cung bay #B239/#B242). #tbl_Mst_CarPrice_Draft lay max(EffectiveDate) theo (ModelCode, SpecCode, ColorCode) voi SOType='P' va EffectiveDate <= getdate(), roi INNER JOIN lai de lay UnitPrice - KHONG dung top 1 => neu co HAI dong gia cung MaxEffectiveDate thi NHAN DONG ca bao cao. Port lay MOT dong; xem priceDuplicateKeys.",
+        twoTablesOrderNote = "HAI bang ket qua, THU TU NGUOC TRUC GIAC: Tables[0] = ...Detail (chi tiet tung VIN), Tables[1] = ... (tong hop theo ngan hang). Cau chi tiet con co COT NHAN RONG dau tien: select '' tbl_Car_VIN_Dtl_Add, * ...",
+        sleepNote = "Thread.Sleep(4000) tren DUONG THANH CONG ('HoangTV Debug: Sleep WH. (chot 2019-01-31)') - thuoc nhom 83 site da thong ke; KHONG PORT.",
+        debtNote = "NO: CT_DealerContractDetail (DealerContractNo), CT_PackingList -> CT_LC (LCNo), Car_VIN.DRFullDocDate, va noi hoa don HTC/TCG theo VIN chua co trong MiniHTC => bon nhom cot do tra NULL, KHONG bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/salesman-update-by-dealer", async (
     AppDbContext db, ITenantContext t, string? dealerCode) =>
 {
