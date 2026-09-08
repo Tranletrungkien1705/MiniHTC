@@ -19999,6 +19999,28 @@ app.MapGet("/api/partorders/next-orderno", async (AppDbContext db, ITenantContex
 //   các bản `xxx` khác **không ai gọi** ⇒ mã chết nhưng **vẫn mang cùng lỗi `&&`** — sửa bản sống mà quên
 //   bản chết thì lần sau ai chép lại là lỗi quay về.
 // 📌 MiniHTC: endpoint dưới **liệt kê** kết quả quét để chỗ đối chiếu có con số, và mô tả đúng hai nhánh hỏng.
+// ===== 🔴🔴 #602 CỤM `PartOrder` ĐƯỢC CHÉP TỪ CỤM `StockIn` — **4 MÃ LỖI LẠC HÀM** =====
+// Tiếp #600/#601 trên cùng file `BizCarSv.PartOrder.cs`. Quét `TError.ErrCarSv.*` trong file (41 lần dùng):
+//     `:212` `TError.ErrCarSv.**Ser_Inv_StockIn_NotFound**`
+//     `:238` `TError.ErrCarSv.**Ser_Inv_StockIn_NotFound**`
+//     `:256` `TError.ErrCarSv.**Ser_Inv_StockIn_StockInDetailEmpty**`  ← trong `CheckPartOrderDetailEmpty`
+//     `:342` `TError.ErrCarSv.**SerStockInGetMaxStockInNo**`           ← trong `SerOrderPartGetMaxOrderNo` (#601)
+//   ⇒ **Bốn** chỗ trong cụm *đơn hàng phụ tùng* ném mã lỗi của cụm *nhập kho*.
+//   ⇒ Kết luận (có **hai** dấu vết độc lập, không suy từ một chỗ): **cả cụm `PartOrder` được chép từ cụm**
+//     **`StockIn`** rồi đổi tên hàm/bảng mà **quên đổi mã lỗi**. Người dùng gặp lỗi ở màn đặt hàng phụ tùng
+//     sẽ nhận thông báo về **nhập kho**; đội hỗ trợ tra mã lỗi sẽ đi tìm nhầm nghiệp vụ.
+//
+// ⚪ **ĐỐI CHỨNG TRỰC TIẾP CHO #600 — CÙNG FILE CÓ CẢ GUARD ĐÚNG LẪN GUARD CHẾT**:
+//     `CheckPartOrderDetailEmpty` (`:248`): `if (dtPartOrderDetail == null **||** dtPartOrderDetail.Rows.Count == 0)` ✅
+//     `CheckExistOrderNo_Update` (`:108`):  `if (dtSer_Part_PartOrder == null **&&** … .Rows.Count == 0)` ❌
+//   ⇒ Cùng file, cùng tác giả, cùng khuôn hàm — chỗ đúng chỗ sai ⇒ khẳng định #600: **lỗi gõ lặp lại**,
+//     **không phải quy ước** của hệ.
+// ⚪ **PHÂN BIỆT — KHÔNG PHẢI MỌI `&&` ĐỀU SAI**: `CheckExistConfirmNo` (`:292`) dùng
+//     `if (dtSer_Part_PartOrder **!= null && ** dtSer_Part_PartOrder.Rows.Count > 0) throw … ConfirmNo_Exist;`
+//   Ở đây `&&` là **đúng**: cần **cả hai** vế (bảng có thật **và** có dòng) mới kết luận "số xác nhận đã tồn
+//   tại". Guard này thuộc loại *"chặn trùng"*, ngược với loại *"kiểm tồn tại"* của #600.
+//   ⇒ Khi quét mẫu `== null && …`, **phải đọc chiều của guard** trước khi gọi là lỗi: `== null &&` là sai,
+//     `!= null &&` là đúng. Đây là lý do con số ở #600 chỉ đếm đúng mẫu `== null &&`.
 app.MapGet("/api/audit/null-guard-scan", () =>
 {
     var files = new[]
@@ -20023,6 +20045,20 @@ app.MapGet("/api/audit/null-guard-scan", () =>
         errorCodeIsAVietnameseSentence = "CMyException.Raise(khong-ton-tai-don-hang-nay, ...) — tham so thu nhat la MA LOI, moi cho khac truyen TError.ErrCarSv.Xxx",
         deadTwinsCarrySameBug = "cap ham xxx (_dbMain cung) va ban thuong (nhan dbAction) than giong het; ban xxx phan lon KHONG ai goi nhung VAN mang loi && — sua ban song ma quen ban chet thi lan sau chep lai la loi quay ve",
         onlyLiveXxxCaller = "CheckExistPartOrderxxx — PartOrder.cs:3556",
+        // ===== #602 =====
+        notEveryAmpersandIsWrong = "CheckExistConfirmNo dung (dt != null && dt.Rows.Count > 0) — DUNG, vi guard chan-trung can CA HAI ve; chi mau (== null &&) moi la loi",
+        sameFileHasBothFormsProof = "CheckPartOrderDetailEmpty (:248) dung || DUNG; CheckExistOrderNo_Update (:108) dung && SAI — cung file cung tac gia => khang dinh loi go, khong phai quy uoc",
+        strayErrorCodesFromStockInCluster = new[]
+        {
+            "PartOrder.cs:212 -> Ser_Inv_StockIn_NotFound",
+            "PartOrder.cs:238 -> Ser_Inv_StockIn_NotFound",
+            "PartOrder.cs:256 -> Ser_Inv_StockIn_StockInDetailEmpty (trong CheckPartOrderDetailEmpty)",
+            "PartOrder.cs:342 -> SerStockInGetMaxStockInNo (trong SerOrderPartGetMaxOrderNo, #601)",
+        },
+        strayErrorCodeCount = 4,
+        totalErrCarSvUsesInFile = 41,
+        clusterWasCopiedFromStockIn = "hai dau vet doc lap (#601 + #602) => ca cum PartOrder chep tu cum StockIn roi doi ten ham/bang ma QUEN doi ma loi",
+        userImpact = "loi o man dat hang phu tung hien thong bao ve NHAP KHO; doi ho tro tra ma loi se di tim nham nghiep vu",
     });
 }).RequireAuthorization();
 
