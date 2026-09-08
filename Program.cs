@@ -36135,6 +36135,104 @@ app.MapGet("/api/icic/rpt-ssi", async (
     });
 }).RequireAuthorization();
 
+// ===== #B103 TÌM KHÁCH HÀNG ĐẠI LÝ — KÊNH BẢO HIỂM `ICIC` =====
+//        `DealerSalesDealerCustomerGet_ICIC_New20181115`
+// Trace LIVE: WS → `_biz.…_ICIC_New20181115` (`BizHTC.DealerSales.cs:1003`).
+//   3B đo thật, **khớp cả 2 máy**: start=1003 md5 `9be5a322a6b719efaf8ffe8d81b1d41c`.
+// 🔴🔴 **RBAC — BIẾN THỂ 5 (client điều khiển phạm vi), GIỐNG HỆT #B101** (`:1068-1080`):
+//    `dealerCode` khác rỗng/khác `"HTC"` ⇒ pattern = `"HTC." + <giá trị client> + "%"`;
+//    rỗng hoặc `"HTC"` ⇒ **`"HTC%"`**; dòng `drAbilityOfUser["BUPattern"]` **bị comment tại chỗ bind**.
+//    ⇒ **ca thứ 18**, và là **ca thứ HAI** cùng biến thể 5 — chứng tỏ đây là **khuôn lặp lại**
+//      trên các kênh đối tác, không phải sơ suất đơn lẻ. 📌 Cùng mức ưu tiên với #B101.
+// 🔴 **`AND (1=2 …)` — HẠT GIỐNG cho chuỗi `OR`, và là guard "CẤM TÌM RỖNG"**:
+//    nguồn bọc toàn bộ mệnh đề tìm kiếm trong `AND (1=2  <các clause nối bằng OR> )`.
+//      · `1=2` là **hạt giống sai** để các clause sau đều mở đầu bằng `or` mà vẫn hợp lệ cú pháp;
+//      · ⇒ **không nhập gì thì `AND (1=2)` ⇒ TRẢ VỀ RỖNG**, **không** phải trả tất cả.
+//    Port bỏ hạt giống này ⇒ tìm rỗng trả **toàn bộ khách hàng** — vừa sai nghiệp vụ vừa **khuếch đại**
+//    lỗ hổng RBAC ở trên.
+// 🔴 **MỘT ô tìm kiếm áp vào CHÍN cột bằng `OR`**: `strDLSDSearchConditonList` được `BuildClause("or",…)`
+//    trên `CustomerCode`, `FullName`, `FullNameEN`, `Address`, `PhoneNo`, `TaxCode`, `ProvinceCode`,
+//    `CreatedDate`, `CreatedBy`. ⚠️ Kể cả `CreatedDate` — nên gõ chữ vào ô tìm vẫn so với cột ngày.
+// 🔴 Phân trang **`Row_Number() over (order by dlsdc.FullName asc)`** — sắp theo **TÊN**, khác #B101
+//    (sắp theo mã) và khác #B102 (`DealNo desc`). `MyCount` đếm **trước** khi cắt trang.
+app.MapGet("/api/icic/dealercustomers", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? search, int? recordStart, int? recordCount,
+    string? enforceBuScope, string? buPatternOfUser) =>
+{
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = Math.Clamp(recordCount ?? 200, 1, 1000);
+
+    // 🔴 Biến thể 5 — pattern dựng TỪ THAM SỐ CLIENT (y hệt #B101).
+    var dlrParam = (dealerCode ?? "").Trim();
+    var buPatternFromClient = (dlrParam.Length == 0 || dlrParam.Equals("HTC", StringComparison.OrdinalIgnoreCase))
+        ? "HTC%" : "HTC." + dlrParam + "%";
+    var realPattern = (buPatternOfUser ?? "").Trim();
+    var applied = (enforceBuScope == "1" && realPattern.Length > 0) ? realPattern : buPatternFromClient;
+    var prefix = applied.TrimEnd('%').ToUpperInvariant();
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
+    var inScope = dealers.Where(d => (d.BUCode ?? "").ToUpperInvariant().StartsWith(prefix))
+        .Select(d => d.DealerCode).ToHashSet();
+
+    // 🔴 `AND (1=2 …)` — không nhập gì ⇒ TRẢ RỖNG, KHÔNG phải trả tất cả.
+    var term = (search ?? "").Trim();
+    if (term.Length == 0)
+        return Results.Ok(new
+        {
+            myCount = 0, recordStart = start, recordCount = count, count = 0,
+            items = Array.Empty<object>(),
+            emptySearchReturnsEmpty = true,
+            seedNote = "Nguon boc menh de tim kiem trong 'AND (1=2 <cac clause noi bang OR>)'. '1=2' la HAT GIONG SAI de cac clause sau deu mo dau bang 'or' ma van hop le cu phap => KHONG NHAP GI thi AND (1=2) => TRA VE RONG, khong phai tra tat ca. Port bo hat giong nay se lam tim rong tra TOAN BO khach hang - vua sai nghiep vu vua KHUECH DAI lo hong RBAC.",
+            buPatternApplied = applied, buPatternFromClient
+        });
+
+    var all = await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    all = all.Where(c => inScope.Contains(c.DealerCode)).ToList();
+
+    // 🔴 MỘT ô tìm áp vào CHÍN cột bằng OR (kể cả CreatedDate/CreatedBy).
+    bool Hit(string? s) => s is not null && s.Contains(term, StringComparison.OrdinalIgnoreCase);
+    all = all.Where(c =>
+        Hit(c.CustomerCode) || Hit(c.FullName) || Hit(c.FullNameEN) || Hit(c.Address)
+        || Hit(c.PhoneNo) || Hit(c.TaxCode) || Hit(c.ProvinceCode)
+        || Hit(c.CreatedAt.ToString("yyyy-MM-dd")) || Hit(c.CreatedBy)).ToList();
+
+    var myCount = all.Count;                       // `MyCount` đếm TRƯỚC khi cắt trang
+    // `Row_Number() over (order by dlsdc.FullName asc)` — sắp theo TÊN.
+    var page = all.OrderBy(c => c.FullName, StringComparer.Ordinal).Skip(start).Take(count).ToList();
+
+    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
+        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync())
+        .GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First());
+
+    var items = page.Select(c =>
+    {
+        provinces.TryGetValue(c.ProvinceCode ?? "", out var mpv);
+        return new
+        {
+            dlsdcCustomerCode = c.CustomerCode, dlsdcDealerCode = c.DealerCode,
+            dlsdcFullName = c.FullName, dlsdcFullNameEN = c.FullNameEN,
+            dlsdcAddress = c.Address, dlsdcPhoneNo = c.PhoneNo, dlsdcEmail = c.Email,
+            dlsdcTaxCode = c.TaxCode, dlsdcProvinceCode = c.ProvinceCode,
+            dlsdcCreatedDate = c.CreatedAt, dlsdcCreatedBy = c.CreatedBy,
+            MPVProvinceCode = mpv?.Code, MPVAreaCode = mpv?.ParentCode, MPVProvinceName = mpv?.Name
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        myCount, recordStart = start, recordCount = count, count = items.Count, items,
+        buPatternApplied = applied, buPatternFromClient,
+        buPatternIsClientControlled = enforceBuScope != "1",
+        emptySearchReturnsEmpty = false,
+        rbacHole = "RBAC BIEN THE 5 (client dieu khien pham vi), GIONG HET #B101 (:1068-1080): dealerCode khac rong/khac 'HTC' => pattern = 'HTC.' + <gia tri client> + '%'; rong hoac 'HTC' => 'HTC%'; dong drAbilityOfUser['BUPattern'] BI COMMENT TAI CHO BIND. CA THU 18, va la CA THU HAI cung bien the 5 => day la KHUON LAP LAI tren cac kenh doi tac, khong phai so suat don le. Cung muc uu tien voi #B101.",
+        seedNote = "'AND (1=2 <clause noi bang OR>)' - 1=2 la HAT GIONG SAI de chuoi OR hop le cu phap, DONG THOI la guard CAM TIM RONG: khong nhap gi => tra RONG. Port bo hat giong nay se lam tim rong tra TOAN BO khach hang.",
+        searchColumnsNote = "MOT o tim kiem ap vao CHIN cot bang OR: CustomerCode, FullName, FullNameEN, Address, PhoneNo, TaxCode, ProvinceCode, CreatedDate, CreatedBy. Ke ca CreatedDate - go chu vao o tim van so voi cot ngay.",
+        pagingNote = "Row_Number() over (order by dlsdc.FullName asc) - sap theo TEN, khac #B101 (theo ma) va #B102 (DealNo desc). MyCount dem TRUOC khi cat trang."
+    });
+}).RequireAuthorization();
+
 // ===== #B97 THÔNG TIN NGƯỜI DÙNG ĐANG ĐĂNG NHẬP — `SysGetUser_ForCurrentUser_New20181115` =====
 // Trace LIVE: WS → `_biz.SysGetUser_ForCurrentUser_New20181115` (`BizHTC.System.cs:202`).
 //   3B đo thật, **khớp cả 2 máy**: start=202 md5 `d8dfab486c1899d56f9e59cbf9c5a077`.
