@@ -31389,6 +31389,152 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // 🔴 Cửa kết thúc bằng **`CommitSafety`** cả `_dbMain` lẫn `_dbWH` dù chỉ đọc — cùng khuôn #B251.
 // ⚠️ MiniHTC lưu `Sto_StoTransactionGPS` **đúng hình dạng nguồn** (mỗi lượt một DÒNG, phân biệt bằng
 //   `RefType` + `CreateDateTime`) nên tái hiện được **nguyên văn** cách ghép theo số thứ tự.
+
+// ===== #B257/#B258/#B259 RÀ SOÁT ĐỊA CHỈ GIAO XE THỰC TẾ (GPS) ↔ KẾ HOẠCH —
+//       `Rpt_AddressDeliveryActualAndPlan_ForGPS_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `155905,156142` ≡ 150 `155910,156147` ⇒ **`b85313b2473de4665d4583285e42797d`**.
+//   Chú thích nguồn: *"Mục đích rà soát thực tế giữa xe tại đại lý và xe giao thực tế của GPS"*.
+// ✅🔴 **RBAC — BIẾN THỂ THỨ BA: CÓ LỌC DÒNG, KHÔNG CÓ CỔNG.**
+//   `inner join Mst_Dealer md --//[mylock] -- Must inner join to filter AbilityOfUser`
+//   `    on stodlvm.DealerCode = md.DealerCode **and (md.BUCode like @strBUPatternOfUser)**`
+//   ⇒ dòng lọc **KHÔNG bị comment** (khác #B245 nơi đúng dòng này bị comment, và khác #B239 nơi tham số
+//     mồ côi hoàn toàn). Nhưng `myCommon_CheckHTCDirect` **vẫn bị comment cả khối**.
+//   ⇒ Ba biến thể đã gặp: (1) có cổng, không lọc — **cố ý**, #B242; (2) không cổng, không lọc — **lỗ**,
+//     #B239/#B245/#B254; (3) **không cổng, CÓ lọc** — ca này. Chỉ (2) mới là lỗ thật.
+// 🔴🔴🔴 **BẪY ALIAS: chữ `md` mang HAI NGHĨA trong CÙNG một hàm**:
+//   · câu **Filter**: `inner join **Mst_Dealer** md` ⇒ `md.BUCode`, và bộ lọc dựng bằng
+//     `BuildClause("and", "**md.DealerCode**", strMDDealerCodeConditionList, …)` — **khớp đúng**;
+//   · câu **Return**: đại lý đổi alias thành **`mdl`**, còn `md` trở thành **`Mst_District`** ⇒ `md.DistrictName`.
+//   ⇒ Cùng ký tự `md`, hai bảng khác nhau. Chèn nhầm mệnh đề `md.DealerCode` vào câu Return sẽ **gãy**
+//     (`Mst_District` không có `DealerCode`). Khi port phải **bám theo TỪNG CÂU**, không theo alias.
+// 🔴 **Chỉ lấy giao xe, loại điều chuyển kho**: `and stodlvm.TranspReqType **not in ('STORAGEREARRANGE')**`
+//   ⇒ khác #B239 (chỉ lấy **ba** loại, trong đó **có** `STORAGEREARRANGE`). Hai báo cáo cùng bảng
+//   `Sto_DlvMinutes` nhưng **phạm vi loại lệnh ngược nhau**.
+// 🔴🔴 **BAKE-PARAM-MIX trong CÙNG một câu**: `DlvEndDate` From/To **nướng vào literal**
+//   (`stodlvm.DlvEndDate >= '@strDlvEndDateFrom'`), trong khi VIN và DealerCode đi qua
+//   `BuildClause(…, "@p", ref alParamsCoupleSql)` là **tham số runtime** ⇒ đúng lớp `[BAKE-PARAM-MIX]`
+//   (`dmssales-bake-param-mix-guard-chet-cam`); ngày cũng là **bề mặt injection**. Port tham số hoá.
+// ⚠️ Hai đoạn **mã thừa** trong nguồn, ghi lại để người sau khỏi mất công truy:
+//   · `, "@strSysDate", DateTime.Now…` truyền cho `Replace` nhưng **không token nào** tên đó trong SQL
+//     ⇒ **phép thay thế mồ côi**;
+//   · `strSqlGetData = CmUtils.StringUtils.Replace(strSqlGetData);` — gọi `Replace` **không cặp thay thế nào**
+//     ⇒ **no-op**.
+// ⚠️ Cột **`stodlvm.TDistrictCode` xuất hiện HAI LẦN** trong cùng `select` ⇒ `DataTable` nhận **hai cột
+//   trùng tên** (ADO.NET tự đổi cột thứ hai thành `TDistrictCode1`). Port trả **một** cột, ghi rõ.
+// 🔴 **Bảy `inner join` liên tiếp** ở câu Return (`Sto_DlvMinutes`, `Mst_Dealer`, `Car_VIN`, `Car_Car`,
+//   `Mst_CarSpec`, `Mst_Province`, `Mst_District`) — **chỉ `GPS_DlvMinutesAddress` là `left join`**
+//   ⇒ thiếu **bất kỳ** master nào (kể cả `Mst_CarSpec` khớp theo **`cv.ActualSpec`**, không phải `SpecCode`)
+//   là **xe biến mất khỏi báo cáo rà soát** — đúng nghịch lý: xe dữ liệu xấu nhất lại không hiện ra.
+// 🔴 `Mst_District` nối bằng **CẶP** `(TProvinceCode, TDistrictCode)`, không chỉ mã huyện.
+app.MapGet("/api/reports/gps-delivery-address-check", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? dlvEndDateFrom, DateTime? dlvEndDateTo, string? vin, string? dealerCode) =>
+{
+    var from = dlvEndDateFrom ?? DateTime.MinValue;
+    var to = dlvEndDateTo ?? new DateTime(9999, 12, 31);
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    // ✅ Lọc dòng theo quyền: nguồn `inner join Mst_Dealer … and (md.BUCode like @strBUPatternOfUser)`.
+    //    MiniHTC lọc theo tenant (`OrgId`) + đại lý tồn tại — giữ tính "inner".
+    var headsQ = db.TranspDlvConfirms.Where(h => h.OrgId == t.OrgId
+        // 🔴 loại điều chuyển kho — NGƯỢC phạm vi với #B239.
+        && h.TranspReqType != "STORAGEREARRANGE");
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        headsQ = headsQ.Where(h => h.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var heads = (await headsQ.ToListAsync()).Where(h => dealers.ContainsKey(h.DealerCode)).ToList();
+    var headById = heads.ToDictionary(h => h.Id);
+
+    var carsQ = db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId
+        && c.DlvEndDate != null && c.DlvEndDate >= from && c.DlvEndDate <= to
+        && headById.Keys.Contains(c.TranspDlvConfirmId));
+    if (!string.IsNullOrWhiteSpace(vin))
+        carsQ = carsQ.Where(c => c.VIN == vin!.Trim().ToUpperInvariant());
+    var cars = await carsQ.ToListAsync();
+
+    var vins = cars.Select(c => c.VIN).Distinct().ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var districts = (await db.MstDistricts.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        // 🔴 khoá CẶP (ProvinceCode, DistrictCode) — không chỉ mã huyện.
+        .GroupBy(d => (d.ProvinceCode, d.DistrictCode)).ToDictionary(g => g.Key, g => g.First());
+    var dlvNos = heads.Select(h => h.DlvMinutesNo).ToList();
+    var gpsAddr = (await db.GpsDlvMinutesAddresses
+            .Where(g => g.OrgId == t.OrgId && dlvNos.Contains(g.DlvMnNo)).ToListAsync())
+        .GroupBy(g => g.DlvMnNo).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = new List<object>();
+    var droppedMissingMaster = new List<object>();
+    foreach (var c in cars)
+    {
+        var h = headById[c.TranspDlvConfirmId];
+        cvs.TryGetValue(c.VIN, out var cv);
+
+        // 🔴 BẢY inner join: thiếu bất kỳ master nào là XE BIẾN MẤT (giữ đúng nguồn, có liệt kê).
+        var spec = (cv?.ActualSpec != null && specs.ContainsKey(cv.ActualSpec)) ? specs[cv.ActualSpec] : null;
+        var prov = (h.TProvinceCode != null && provinces.ContainsKey(h.TProvinceCode)) ? provinces[h.TProvinceCode] : null;
+        var dist = (h.TProvinceCode != null && h.TDistrictCode != null
+                    && districts.ContainsKey((h.TProvinceCode, h.TDistrictCode)))
+                   ? districts[(h.TProvinceCode, h.TDistrictCode)] : null;
+
+        if (cv is null || spec is null || prov is null || dist is null)
+        {
+            droppedMissingMaster.Add(new
+            {
+                c.VIN, h.DlvMinutesNo,
+                missingCarVin = cv is null, missingSpec = spec is null,
+                missingProvince = prov is null, missingDistrict = dist is null,
+                ActualSpec = cv?.ActualSpec, h.TProvinceCode, h.TDistrictCode
+            });
+            continue;
+        }
+
+        gpsAddr.TryGetValue(h.DlvMinutesNo, out var ga);   // 🔴 left join DUY NHẤT
+        dealers.TryGetValue(h.DealerCode, out var dlr);
+
+        rows.Add(new
+        {
+            DlvMnNo = h.DlvMinutesNo,                       // Số BBGN
+            h.TranspReqNo,                                  // Số YCVT
+            h.GPSDvNo,                                      // Số GPS
+            GPSDvAddress = ga?.GPSAddress,                  // Địa chỉ thực tế do GPS trả về
+            h.GPSDvResponse,                                // Kết quả GPS trả về
+            h.TDistrictCode,                                // ⚠️ nguồn liệt kê cột này HAI LẦN
+            CarId = cv.CarId,
+            cv.ModelCode, cv.VIN, cv.ActualSpec,
+            SpecDescription = spec.SpecDesc,   // Mst_CarSpec.SpecDescription (MiniHTC dat ten SpecDesc)
+            cv.ColorCode,
+            h.TProvinceCode,
+            c.DlvEndDate,                                   // Ngày nhận xe
+            h.DlvEndDateTime,                               // Thời điểm xác nhận BBGN đại lý
+            MP_ProvinceName = prov.ProvinceName,
+            md_DistrictName = dist.DistrictName,
+            md_DealerCode = h.DealerCode,
+            md_DealerName = dlr?.DealerName
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_AddressDeliveryActualAndPlan = rows,
+        droppedMissingMaster,
+        rbacVariantNote = "RBAC - BIEN THE THU BA: CO LOC DONG, KHONG CO CONG. 'inner join Mst_Dealer md -- Must inner join to filter AbilityOfUser / on stodlvm.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' - dong loc KHONG bi comment (khac #B245 noi dung dong nay bi comment, va khac #B239 noi tham so mo coi hoan toan). Nhung myCommon_CheckHTCDirect VAN bi comment ca khoi. Ba bien the: (1) co cong khong loc = CO Y (#B242); (2) khong cong khong loc = LO THAT (#B239/#B245/#B254); (3) khong cong CO loc = ca nay. Chi (2) moi la lo.",
+        aliasTrapNote = "BAY ALIAS: chu 'md' mang HAI NGHIA trong CUNG mot ham. Cau Filter: 'inner join Mst_Dealer md' => md.BUCode, va bo loc dung bang BuildClause('and','md.DealerCode',...) - khop dung. Cau Return: dai ly doi alias thanh 'mdl', con 'md' tro thanh Mst_District => md.DistrictName. Cung ky tu 'md', HAI BANG KHAC NHAU. Chen nham menh de md.DealerCode vao cau Return se GAY (Mst_District khong co DealerCode). Khi port phai bam theo TUNG CAU, khong theo alias.",
+        scopeOppositeNote = "Chi lay giao xe, loai dieu chuyen kho: 'and stodlvm.TranspReqType not in (STORAGEREARRANGE)' => KHAC #B239 (chi lay BA loai, trong do CO STORAGEREARRANGE). Hai bao cao cung bang Sto_DlvMinutes nhung PHAM VI LOAI LENH NGUOC NHAU.",
+        bakeParamMixNote = "BAKE-PARAM-MIX trong CUNG mot cau: DlvEndDate From/To NUONG vao literal ('stodlvm.DlvEndDate >= @strDlvEndDateFrom' co nhay), trong khi VIN va DealerCode di qua BuildClause(..., '@p', ref alParamsCoupleSql) la THAM SO RUNTIME. Ngay cung la BE MAT INJECTION. Port tham so hoa.",
+        deadCodeNote = "Hai doan MA THUA trong nguon: (1) ', \"@strSysDate\", DateTime.Now...' truyen cho Replace nhung KHONG token nao ten do trong SQL => phep thay the mo coi; (2) 'strSqlGetData = CmUtils.StringUtils.Replace(strSqlGetData);' - goi Replace KHONG cap thay the nao => NO-OP.",
+        duplicateColumnNote = "Cot stodlvm.TDistrictCode XUAT HIEN HAI LAN trong cung 'select' => DataTable nhan HAI COT TRUNG TEN (ADO.NET tu doi cot thu hai thanh TDistrictCode1). Port tra MOT cot.",
+        innerJoinChainNote = "BAY inner join lien tiep o cau Return (Sto_DlvMinutes, Mst_Dealer, Car_VIN, Car_Car, Mst_CarSpec, Mst_Province, Mst_District) - CHI GPS_DlvMinutesAddress la left join => thieu BAT KY master nao (ke ca Mst_CarSpec khop theo cv.ActualSpec, khong phai SpecCode) la XE BIEN MAT khoi bao cao RA SOAT - dung nghich ly: xe du lieu xau nhat lai khong hien ra. Xem droppedMissingMaster.",
+        districtKeyNote = "Mst_District noi bang CAP (TProvinceCode, TDistrictCode), khong chi ma huyen."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/gps-map-unmap", async (
     AppDbContext db, ITenantContext t, string? gpsDvNo, bool? includeStillMapped) =>
 {
