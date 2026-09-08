@@ -28719,6 +28719,119 @@ app.MapPost("/api/dms40/amplitude-appr-ord/save", async (
     });
 }).RequireAuthorization();
 
+// ===== #B155 CHI TIẾT LOẠI HUỶ HỢP ĐỒNG — `Mst_CtrCancelTypeDtl_Get` (`DMS40/0.01.Master.cs`) =====
+// Cửa public `:13144` là **vỏ mỏng (122 dòng)** gọi thân thật `Mst_CtrCancelTypeDtl_GetX` `:13267`.
+// **3B đo TRÊN THÂN THẬT, khớp cả 2 máy**: `13267,13438 / a1a7696ab6646ab1732d6836b17cc849`.
+// 🔴 Khoá **MỘT cột** `CtrCTDNo`; sắp `mcctd.CtrCTDNo asc`; `MyCount` đếm **trước** khi cắt trang;
+//   trả **hai bảng** `MySummaryTable` + `Mst_CtrCancelTypeDtl`.
+// 🔴 WS64 **chỉ có cửa `_Get`** cho bảng này — **không** có `_Add`/`_Update`/`_Delete`.
+//   ⇒ Đây là **danh mục chỉ đọc từ phía ứng dụng**; dữ liệu nạp bằng đường khác (script/DB).
+//     **Không tự sinh** endpoint ghi — làm vậy là **mở một cửa nguồn không có**.
+app.MapGet("/api/dms40/ctr-cancel-type-dtls", async (
+    AppDbContext db, ITenantContext t, string? ctrCTDNo, string? flagActive,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.CtrCancelTypeDtls.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(ctrCTDNo)) q = q.Where(x => x.CtrCTDNo == ctrCTDNo.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+
+    var all = await q.OrderBy(x => x.CtrCTDNo).ToListAsync();
+    var myCount = all.Count;                                   // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_CtrCancelTypeDtl = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.CtrCTDNo, x.CtrCancelTypeCode, x.CtrCTDName, x.FlagActive, x.LogLUDateTime, x.LogLUBy
+        }),
+        recordStart = start, recordCount = count,
+        readOnlyNote = "WS64 CHI CO cua _Get cho bang nay - KHONG co _Add/_Update/_Delete => day la DANH MUC CHI DOC tu phia ung dung; du lieu nap bang duong khac (script/DB). KHONG tu sinh endpoint ghi - lam vay la MO MOT CUA NGUON KHONG CO.",
+        wrapperNote = "Cua public :13144 la VO MONG (122 dong) goi than that Mst_CtrCancelTypeDtl_GetX :13267 - 3B do tren THAN THAT."
+    });
+}).RequireAuthorization();
+
+// ===== #B156/#B157 NHÓM PHÂN BỔ NGUỒN CUNG — `Mst_MapVINSupplyDistributionSum_Get` / `_Update`
+//       (`DMS40/0.01.Master.cs`) =====
+// Cửa `_Get` `:13504` là vỏ mỏng gọi `…_GetX` `:13627`.
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `13627,13776 / 5488c244749ee62992b8a94d2b0e5e8d`  (`_GetX`)
+//   `13777,13920 / ac0bd12064259fbc6366719f8a489114`  (`_Update`)
+//   ⚠️ Biên `_Update` chặn ở `#endregion` dòng **13921**, không phải ở "hàm `public` kế tiếp".
+// 🔴 **Chỉ HAI cột sửa được**: `SPDBSName` và `FlagActive` (`bUpd_SPDBSName` / `bUpd_FlagActive`).
+//   **`SPDBSCode` KHÔNG nằm trong danh sách sửa** ⇒ mã nhóm là **bất biến**; muốn đổi mã phải tạo bản
+//   mới. Port cho sửa `SPDBSCode` là **mở một khả năng nguồn cố ý chặn**.
+// 🔴 **Cập nhật TỪNG PHẦN** đúng khuôn #B149: chỉ cột được yêu cầu mới ghi; `LogLUDateTime`/`LogLUBy`
+//   ghi **vô điều kiện**.
+//   ✅ Ở hàm này nguồn dùng **đúng** định dạng `"yyyy-MM-dd HH:mm:ss"` — **khác** `Mst_DealerInventoryThreshold`
+//     (#B148) dùng nhầm `"yyyyMMddHH:mm:ss"`. ⇒ Xác nhận lỗi kia là **lỗi gõ đơn lẻ**, không phải quy ước.
+// 🔴 `_Update` gọi `Mst_MapVINSupplyDistributionSum_CheckDB` trước khi ghi (bản phải tồn tại).
+// 🔴 `_Get`: sắp **`mmi.SPDBSCode`**, `MyCount` đếm trước khi cắt trang, hai bảng ra.
+// 📌 §12: `CtrCancelTypeDtl` + `MapVinSupplyDistSum` + Seeder + DbSet + DTO + có ở cả POST và GET.
+app.MapGet("/api/dms40/mapvin-supply-distsum", async (
+    AppDbContext db, ITenantContext t, string? spdbsCode, string? flagActive,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.MapVinSupplyDistSums.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(spdbsCode)) q = q.Where(x => x.SPDBSCode == spdbsCode.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+
+    var all = await q.OrderBy(x => x.SPDBSCode).ToListAsync();
+    var myCount = all.Count;
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_MapVINSupplyDistributionSum = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.SPDBSCode, x.SPDBSName, x.FlagActive, x.LogLUDateTime, x.LogLUBy
+        }),
+        recordStart = start, recordCount = count,
+        orderNote = "Sap theo mmi.SPDBSCode; MyCount dem TRUOC khi cat trang; hai bang ra."
+    });
+}).RequireAuthorization();
+
+app.MapPut("/api/dms40/mapvin-supply-distsum/{spdbsCode}", async (
+    string spdbsCode, MapVinSupplyDistSumUpdDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (spdbsCode ?? "").Trim();
+    var x = await db.MapVinSupplyDistSums.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SPDBSCode == code);
+    if (x is null)
+        return Results.NotFound(new
+        {
+            error = "Mst_MapVINSupplyDistributionSum_Update",
+            check = new { SPDBSCode = code },
+            note = "Nguon goi Mst_MapVINSupplyDistributionSum_CheckDB truoc khi ghi - ban phai ton tai."
+        });
+
+    // 🔴 CHỈ HAI cột sửa được; SPDBSCode là BẤT BIẾN (không có trong danh sách bUpd_*).
+    var written = new List<string>();
+    if (dto.SPDBSName is not null) { x.SPDBSName = dto.SPDBSName; written.Add("SPDBSName"); }
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) { x.FlagActive = dto.FlagActive.Trim(); written.Add("FlagActive"); }
+    x.LogLUDateTime = DateTime.Now; written.Add("LogLUDateTime");
+    x.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; written.Add("LogLUBy");
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        x.SPDBSCode, x.SPDBSName, x.FlagActive, x.LogLUDateTime, x.LogLUBy,
+        columnsWritten = written,
+        immutableKeyNote = "CHI HAI cot sua duoc: SPDBSName va FlagActive (bUpd_SPDBSName / bUpd_FlagActive). SPDBSCode KHONG nam trong danh sach sua => ma nhom la BAT BIEN; muon doi ma phai tao ban moi. Port cho sua SPDBSCode la MO MOT KHA NANG NGUON CO Y CHAN.",
+        partialUpdateNote = "Cap nhat TUNG PHAN dung khuon #B149: chi cot duoc yeu cau moi ghi; LogLUDateTime/LogLUBy ghi VO DIEU KIEN.",
+        dateFormatNote = "O ham nay nguon dung DUNG dinh dang 'yyyy-MM-dd HH:mm:ss' - KHAC Mst_DealerInventoryThreshold (#B148) dung nham 'yyyyMMddHH:mm:ss'. Xac nhan loi kia la LOI GO DON LE, khong phai quy uoc.",
+        twoDbNote = "Nguon SaveData hai lan (_dbMain va _dbWH)."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
@@ -44520,6 +44633,7 @@ record MngRateTonKhoBanHangRowDto(string? DealerCode, string? ModelCode, decimal
 record MngRateTonKhoBanHangSaveDto(string? FlagIsDelete, List<MngRateTonKhoBanHangRowDto>? Rows);   // #B152
 record AmplitudeApprOrdRowDto(string? DealerCode, string? ModelCode, decimal? AmplitudeOrdMax, decimal? AmplitudePlanMax);   // #B154
 record AmplitudeApprOrdSaveDto(string? FlagIsDelete, List<AmplitudeApprOrdRowDto>? Rows);   // #B154
+record MapVinSupplyDistSumUpdDto(string? SPDBSName, string? FlagActive);   // #B157
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110

@@ -9453,6 +9453,32 @@ public sealed class AmplitudeApprOrd
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B155 — `Mst_CtrCancelTypeDtl`: **chi tiết loại huỷ hợp đồng**, khoá `CtrCTDNo`.</summary>
+public sealed class CtrCancelTypeDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CtrCTDNo { get; set; } = "";
+    public string? CtrCancelTypeCode { get; set; }
+    public string? CtrCTDName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>🔴 #B156/#B157 — `Mst_MapVINSupplyDistributionSum`: danh mục **nhóm phân bổ nguồn cung**,
+/// khoá `SPDBSCode`. Chỉ **hai** cột sửa được: `SPDBSName` và `FlagActive`.</summary>
+public sealed class MapVinSupplyDistSum
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SPDBSCode { get; set; } = "";
+    public string? SPDBSName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
