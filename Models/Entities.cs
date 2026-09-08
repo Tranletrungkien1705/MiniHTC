@@ -9422,6 +9422,37 @@ public sealed class AutoMapVin
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public string? CreatedBy { get; set; }
 }
+
+/// <summary>🔴 #B151/#B152 — `Mst_MngRateTonKhoBanHang`: **ngưỡng bán hàng** theo cặp
+/// (đại lý × model). Khoá nghiệp vụ là **bộ ĐÔI** `(DealerCode, ModelCode)`.
+/// Khác [[DealerInventoryThreshold]] (ngưỡng **tồn**): bảng này là ngưỡng **bán**, có thêm `Remark`
+/// và **không có** cờ `FlagActive`.</summary>
+public sealed class MngRateTonKhoBanHang
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public decimal? NguongBH { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>🔴 #B153/#B154 — `Mst_AmplitudeApprOrd`: **biên độ tối đa** khi duyệt đơn hàng, theo cặp
+/// (đại lý × model). Hai ngưỡng **riêng biệt**: `AmplitudeOrdMax` (đơn hàng) và `AmplitudePlanMax`
+/// (kế hoạch) — dùng lẫn là duyệt sai hạn mức.</summary>
+public sealed class AmplitudeApprOrd
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public decimal? AmplitudeOrdMax { get; set; }
+    public decimal? AmplitudePlanMax { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>

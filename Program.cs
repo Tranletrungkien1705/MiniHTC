@@ -28489,6 +28489,236 @@ app.MapDelete("/api/dealerinvthresholds/{dealer}/{model}", async (
     });
 }).RequireAuthorization();
 
+// ===== #B151/#B152 NGƯỠNG BÁN HÀNG THEO ĐẠI LÝ × MODEL — `Mst_MngRateTonKhoBanHang_Get` / `_Save`
+//       (`DMS40/0.01.Master.cs`) =====
+// Trace LIVE: WS64 chỉ có **HAI cửa** cho cụm này — `_Get` và `_Save` (không có `_Update`/`_Delete`
+//   riêng; xoá đi kèm `_Save` qua cờ). **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `7288,7524 / 9e9962fa54f8350ea064e4fecb7874d1`  (`_Get`)
+//   `7525,7838 / 01366eb32abda53d25e3a73b08a83a9b`  (`_Save`)
+//   ⚠️ Biên `_Save` phải chặn ở `#endregion` + `#region // Auto_MapVIN_MapRound:` (dòng 7839);
+//     nếu chặn theo "hàm `public` kế tiếp" sẽ ra **2400 dòng** — trùm sang cụm khác
+//     (đúng cảnh báo `C0-…tricesimustertius`: **độ dài dải bất thường = dấu hiệu trùm lố**).
+// 🔴 **ĐỪNG NHẦM VỚI `Mst_DealerInventoryThreshold` (#B148–#B150)** — hai bảng **rất giống nhau**:
+//     cùng khoá `(DealerCode, ModelCode)`, cùng màn kiểu master, cùng `left join Mst_Dealer` +
+//     `Mst_CarModel`. Khác biệt thật:
+//       · bảng kia là **ngưỡng TỒN** (`Qty`, có `FlagActive`, có `_Update`/`_Delete` riêng);
+//       · bảng này là **ngưỡng BÁN** (`NguongBH`, có `Remark`, **KHÔNG có `FlagActive`**,
+//         chỉ có `_Save` gộp cả thêm/sửa/xoá).
+//     ⇒ Không có cờ hiệu lực nghĩa là **không có khái niệm "tắt tạm"** — muốn bỏ thì **xoá hẳn**.
+// 🔴 Cột ghi (`MyBuildDBDT_Common`): `DealerCode` · `ModelCode` · **`NguongBH`** · `Remark` ·
+//   `LogLUDateTime` · `LogLUBy`.
+// 🔴 **`_Save` = xoá theo khoá rồi chèn lại**, `FlagIsDelete = "1"` (`TConst.Flag.Yes`) ⇒ **chỉ xoá**
+//   — **cùng khuôn #B138/#B141**, nhưng ở đây khoá chỉ **hai** cột (kia bốn/ba cột).
+// 🔴 Guard: bảng đầu vào thiếu ⇒ `…_Save_Input_Mst_MngRateTonKhoBanHangTblNotFound`;
+//   `ModelCode` không tồn tại ⇒ `…_Save_InvalidModelCode`.
+//   ⚠️ **KHÔNG có guard cho `DealerCode`** dù nó cũng là nửa khoá — nguồn chỉ kiểm model.
+//     Ghi lại, **không tự thêm** (thêm guard = từ chối dữ liệu mà hệ cũ vẫn nhận).
+// 🔴 `_Get`: phân trang `MyIdxSeq` + `MyCount` **đếm trước khi cắt trang**; sắp
+//   **`DealerCode asc, ModelCode asc`**; trả **hai bảng** `MySummaryTable` + `Mst_MngRateTonKhoBanHang`.
+// 📌 §12: thực thể `MngRateTonKhoBanHang` + Seeder + DbSet + DTO + có ở **cả POST và GET**.
+app.MapGet("/api/dms40/mngrate-tonkho-banhang", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? modelCode,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.MngRateTonKhoBanHangs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim());
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(x => x.ModelCode == modelCode.Trim());
+
+    var all = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).ToListAsync();
+    var myCount = all.Count;                                   // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId)
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_MngRateTonKhoBanHang = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.DealerCode, x.ModelCode, x.NguongBH, x.Remark, x.LogLUDateTime, x.LogLUBy,
+            md_DealerName = dealers.TryGetValue(x.DealerCode, out var dn) ? dn : null,
+            mcm_ModelName = models.TryGetValue(x.ModelCode, out var mn) ? mn : null
+        }),
+        recordStart = start, recordCount = count,
+        notSameAsInventoryThresholdNote = "DUNG NHAM VOI Mst_DealerInventoryThreshold (#B148-#B150): hai bang RAT GIONG NHAU (cung khoa DealerCode+ModelCode, cung left join Mst_Dealer + Mst_CarModel). Khac that: bang kia la NGUONG TON (Qty, CO FlagActive, co _Update/_Delete rieng); bang nay la NGUONG BAN (NguongBH, co Remark, KHONG co FlagActive, chi co _Save gop ca them/sua/xoa). Khong co co hieu luc nghia la KHONG CO khai niem 'tat tam' - muon bo thi XOA HAN.",
+        pagingNote = "Phan trang MyIdxSeq + MyCount DEM TRUOC KHI CAT TRANG; sap DealerCode asc, ModelCode asc; tra HAI bang MySummaryTable + Mst_MngRateTonKhoBanHang."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/dms40/mngrate-tonkho-banhang/save", async (
+    MngRateTonKhoBanHangSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null)
+        return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Save_Input_Mst_MngRateTonKhoBanHangTblNotFound" });
+
+    var isDelete = (dto.FlagIsDelete ?? "0").Trim() == "1";
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => m.ModelCode).ToListAsync()).ToHashSet();
+
+    // 🔴 CHỈ kiểm ModelCode — nguồn KHÔNG có guard cho DealerCode. Không tự thêm.
+    foreach (var r in dto.Rows)
+    {
+        var mc = (r.ModelCode ?? "").Trim();
+        if (!models.Contains(mc))
+            return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Save_InvalidModelCode", check = new { ModelCode = mc } });
+    }
+
+    var keys = dto.Rows.Select(r => ((r.DealerCode ?? "").Trim(), (r.ModelCode ?? "").Trim())).ToHashSet();
+    var existing = await db.MngRateTonKhoBanHangs.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var toDelete = existing.Where(x => keys.Contains((x.DealerCode, x.ModelCode))).ToList();
+    db.MngRateTonKhoBanHangs.RemoveRange(toDelete);
+
+    var inserted = 0;
+    if (!isDelete)
+        foreach (var r in dto.Rows)
+        {
+            db.MngRateTonKhoBanHangs.Add(new MngRateTonKhoBanHang
+            {
+                OrgId = t.OrgId,
+                DealerCode = (r.DealerCode ?? "").Trim(),
+                ModelCode = (r.ModelCode ?? "").Trim(),
+                NguongBH = r.NguongBH,
+                Remark = r.Remark,
+                LogLUDateTime = now, LogLUBy = by
+            });
+            inserted++;
+        }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        flagIsDelete = isDelete ? "1" : "0",
+        deleted = toDelete.Count, inserted,
+        deleteInsertNote = "_Save = xoa theo khoa roi chen lai; FlagIsDelete = '1' (TConst.Flag.Yes) => CHI XOA - cung khuon #B138/#B141, nhung o day khoa chi HAI cot (kia bon/ba cot).",
+        guardNote = "Guard: bang dau vao thieu => _Save_Input_..._TblNotFound; ModelCode khong ton tai => _Save_InvalidModelCode. KHONG co guard cho DealerCode du no cung la nua khoa - nguon chi kiem model. Ghi lai, KHONG tu them (them guard = tu choi du lieu ma he cu van nhan).",
+        columnsNote = "Cot ghi (MyBuildDBDT_Common): DealerCode, ModelCode, NguongBH, Remark, LogLUDateTime, LogLUBy.",
+        twoDbNote = "Nguon ghi ca _dbMain va _dbWH."
+    });
+}).RequireAuthorization();
+
+// ===== #B153/#B154 BIÊN ĐỘ DUYỆT ĐƠN HÀNG — `Mst_AmplitudeApprOrd_Get` / `_Save`
+//       (`DataWH/BizHTC.zTemp.cs`) =====
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `55872,56111 / 49d47ffd4f4d139c8330cc68af1d9c35`  (`_Get`)
+//   `55560,55871 / 6b00596d22dd5dfdedb8e82ab0f1f5fa`  (`_Save`)
+//   ⚠️ `_Save` nằm **TRƯỚC** `_Get` trong file (55560 < 55872) — thứ tự khai báo **không** theo
+//     thứ tự nghiệp vụ; đừng giả định "Get đứng trước Save" khi dò biên.
+// 🔴 **HAI NGƯỠNG RIÊNG BIỆT, KHÔNG PHẢI MỘT**: `AmplitudeOrdMax` (biên độ **đơn hàng**) và
+//   `AmplitudePlanMax` (biên độ **kế hoạch**). Dùng lẫn ⇒ **duyệt sai hạn mức**. Khoá `(DealerCode, ModelCode)`.
+// 🔴 **Cụm thứ BA cùng khuôn trong một lượt** — ba bảng master khác nhau, **cùng khoá đôi**
+//   `(DealerCode, ModelCode)`, cùng `left join Mst_Dealer` + `Mst_CarModel`, cùng phân trang:
+//     · `Mst_DealerInventoryThreshold` (#B148–#B150) — ngưỡng **tồn**, có `FlagActive`, có `_Delete` riêng;
+//     · `Mst_MngRateTonKhoBanHang`     (#B151–#B152) — ngưỡng **bán**, có `Remark`, chỉ `_Get`/`_Save`;
+//     · `Mst_AmplitudeApprOrd`         (#B153–#B154) — **biên độ duyệt**, hai cột ngưỡng, chỉ `_Get`/`_Save`.
+//   ⇒ Ba bảng **không thay thế được cho nhau**; nhìn lướt rất dễ nhầm.
+// 🔴 `_Save`: **xoá theo khoá đôi rồi chèn lại**, `FlagIsDelete = "1"` ⇒ **chỉ xoá** (khuôn #B152).
+//   Guard: bảng đầu vào thiếu ⇒ `…_Save_Input_Mst_AmplitudeApprOrdTblNotFound`;
+//   `ModelCode` sai ⇒ `…_Save_InvalidModelCode`. **Không có guard `DealerCode`** — **y hệt #B152**,
+//   ⇒ đây là **thói quen của cả cụm**, không phải sơ suất một chỗ. Vẫn **không tự thêm**.
+// 🔴 `_Get`: sắp **`DealerCode asc, ModelCode asc`**, `MyCount` **đếm trước khi cắt trang**,
+//   trả **hai bảng** `MySummaryTable` + `Mst_AmplitudeApprOrd`.
+// 📌 §12: thực thể `AmplitudeApprOrd` + Seeder + DbSet + DTO + có ở **cả POST và GET**.
+app.MapGet("/api/dms40/amplitude-appr-ord", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? modelCode,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.AmplitudeApprOrds.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim());
+    if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(x => x.ModelCode == modelCode.Trim());
+
+    var all = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).ToListAsync();
+    var myCount = all.Count;                                   // đếm TRƯỚC khi cắt trang
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId)
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_AmplitudeApprOrd = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.DealerCode, x.ModelCode, x.AmplitudeOrdMax, x.AmplitudePlanMax, x.LogLUDateTime, x.LogLUBy,
+            md_DealerName = dealers.TryGetValue(x.DealerCode, out var dn) ? dn : null,
+            mcm_ModelName = models.TryGetValue(x.ModelCode, out var mn) ? mn : null
+        }),
+        recordStart = start, recordCount = count,
+        twoThresholdNote = "HAI NGUONG RIENG BIET, KHONG PHAI MOT: AmplitudeOrdMax (bien do DON HANG) va AmplitudePlanMax (bien do KE HOACH). Dung lan => DUYET SAI HAN MUC.",
+        threeSiblingTablesNote = "CUM THU BA CUNG KHUON: ba bang master khac nhau, CUNG KHOA DOI (DealerCode, ModelCode), cung left join Mst_Dealer + Mst_CarModel, cung phan trang: Mst_DealerInventoryThreshold (#B148-#B150, nguong TON, co FlagActive, co _Delete rieng); Mst_MngRateTonKhoBanHang (#B151-#B152, nguong BAN, co Remark); Mst_AmplitudeApprOrd (#B153-#B154, BIEN DO DUYET, hai cot nguong). Ba bang KHONG thay the duoc cho nhau.",
+        declOrderNote = "_Save nam TRUOC _Get trong file (55560 < 55872) - thu tu khai bao KHONG theo thu tu nghiep vu; dung gia dinh 'Get dung truoc Save' khi do bien."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/dms40/amplitude-appr-ord/save", async (
+    AmplitudeApprOrdSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Rows is null)
+        return Results.BadRequest(new { error = "Mst_AmplitudeApprOrd_Save_Input_Mst_AmplitudeApprOrdTblNotFound" });
+
+    var isDelete = (dto.FlagIsDelete ?? "0").Trim() == "1";
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => m.ModelCode).ToListAsync()).ToHashSet();
+    foreach (var r in dto.Rows)
+    {
+        var mc = (r.ModelCode ?? "").Trim();
+        if (!models.Contains(mc))
+            return Results.BadRequest(new { error = "Mst_AmplitudeApprOrd_Save_InvalidModelCode", check = new { ModelCode = mc } });
+    }
+
+    var keys = dto.Rows.Select(r => ((r.DealerCode ?? "").Trim(), (r.ModelCode ?? "").Trim())).ToHashSet();
+    var existing = await db.AmplitudeApprOrds.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var toDelete = existing.Where(x => keys.Contains((x.DealerCode, x.ModelCode))).ToList();
+    db.AmplitudeApprOrds.RemoveRange(toDelete);
+
+    var inserted = 0;
+    if (!isDelete)
+        foreach (var r in dto.Rows)
+        {
+            db.AmplitudeApprOrds.Add(new AmplitudeApprOrd
+            {
+                OrgId = t.OrgId,
+                DealerCode = (r.DealerCode ?? "").Trim(),
+                ModelCode = (r.ModelCode ?? "").Trim(),
+                AmplitudeOrdMax = r.AmplitudeOrdMax,
+                AmplitudePlanMax = r.AmplitudePlanMax,
+                LogLUDateTime = now, LogLUBy = by
+            });
+            inserted++;
+        }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        flagIsDelete = isDelete ? "1" : "0",
+        deleted = toDelete.Count, inserted,
+        deleteInsertNote = "_Save = xoa theo KHOA DOI roi chen lai; FlagIsDelete = '1' => CHI XOA (khuon #B152).",
+        noDealerGuardNote = "Guard chi kiem ModelCode - KHONG co guard DealerCode, y het #B152 => day la THOI QUEN CUA CA CUM, khong phai so suat mot cho. Van KHONG tu them.",
+        columnsNote = "Cot ghi: DealerCode, ModelCode, AmplitudeOrdMax, AmplitudePlanMax, LogLUDateTime, LogLUBy.",
+        twoDbNote = "Nguon ghi ca _dbMain va _dbWH."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.
@@ -44286,6 +44516,10 @@ record ConfigMapVinInputAddDto(string? CfgATMVIpCode, string? ModelCode, DateTim
 record ConfigMapVinInputUpdateDto(List<ConfigMapVinInputRowDto>? Rows);   // #B144
 record AutoMapVinBoSaveDto(string? ATMVNo, string? ATMVType);   // #B145
 record DealerInvThresholdUpdDto(int? Qty, string? FlagActive);   // #B149
+record MngRateTonKhoBanHangRowDto(string? DealerCode, string? ModelCode, decimal? NguongBH, string? Remark);   // #B152
+record MngRateTonKhoBanHangSaveDto(string? FlagIsDelete, List<MngRateTonKhoBanHangRowDto>? Rows);   // #B152
+record AmplitudeApprOrdRowDto(string? DealerCode, string? ModelCode, decimal? AmplitudeOrdMax, decimal? AmplitudePlanMax);   // #B154
+record AmplitudeApprOrdSaveDto(string? FlagIsDelete, List<AmplitudeApprOrdRowDto>? Rows);   // #B154
 record TcfBankStatementQueryDto(List<string>? PaymentNos, string? TypeApprAuto, string? DateTimeFrom, string? DateTimeTo);   // #B123
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
