@@ -15103,6 +15103,21 @@ public sealed class SerFilePathVideo
 /// <summary>#633 Master **LOẠI khiếu nại** đơn phụ tùng (`Mst_OrderComplainType`), khoá
 /// `OrderComplainType`. Nguồn chỉ có hàm ĐỌC (`Mst_OrderComplainType_Get`) — **không có** Create/Update
 /// trong tầng biz ⇒ danh mục được nuôi thẳng trong DB.</summary>
+/// <summary>#634 Master **HÌNH THỨC GIAO XE** (`Mst_DeliveryForm`), khoá **một cột** `DeliveryFormCode`.
+/// ⚠️ Khác <see cref="DeliveryLocation"/> (`Mst_DeliveryLocation`) — bảng kia khoá **hợp**
+/// (`DeliveryLocationCode`, `DealerCode`), xem #635.
+/// Nguồn chỉ có hàm ĐỌC; `Mst_DeliveryForm_CheckDB` tồn tại nhưng **không ai gọi** (mã chết).</summary>
+public sealed class MstDeliveryForm
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DeliveryFormCode { get; set; } = "";
+    public string? DeliveryFormName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class MstOrderComplainType
 {
     public long Id { get; set; }

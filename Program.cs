@@ -52950,6 +52950,69 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #634 MASTER HÌNH THỨC GIAO XE `Mst_DeliveryForm_GetX` (`Master.cs:10765`) =====
+// 3B: laptop `:10765` md5 `57b49855` **KHỚP** máy 150 `:10765`. TRACE: `WSCarSv.asmx.cs:39347` →
+//   vỏ bọc `Mst_DeliveryForm_Get` (`:10905`) → thân thật `…_GetX`, chạy trên `_dbMain`.
+// MiniHTC **đã có** `Mst_DeliveryLocation` nhưng **chưa có** `Mst_DeliveryForm` ⇒ lượt này bù (§12 đủ bốn chỗ).
+//
+// 🔴 **`Mst_DeliveryForm_CheckDB` LÀ MÃ CHẾT**: hàm guard tồn tại (`:10698`, kiểm tồn tại + `FlagActive`)
+//   nhưng grep toàn cây **chỉ ra đúng dòng định nghĩa của chính nó** — **không ai gọi**. Và tầng biz **không**
+//   **có** `Mst_DeliveryForm_Add/_Update/_Delete` ⇒ danh mục này **chỉ đọc qua API**, nuôi thẳng trong DB.
+//   ⇒ Đối lập với `Mst_DeliveryLocation` (bảng anh em) vốn có **đủ** `_Add`/`_Update`/`_Delete` + guard sống.
+// ⚪ **`SELECT DISTINCT` AN TOÀN Ở ĐÂY**: `distinct` trên `mdf.DeliveryFormCode` — và `_CheckDB` cho thấy khoá
+//   thật **đúng là một cột đó** (`where t.DeliveryFormCode = @obj…`, **không** có `DealerCode`) ⇒ `Count(0)`
+//   = số bản ghi thật. (Tiêu chí đã chốt ở #632/#633; đối lập với #631 và với bảng anh em ở #635.)
+// 🔴 **DIFF VỚI `Mst_DeliveryLocation_GetX`** (hai hàm gần như sao chép; khác biệt thật, đúng #414):
+//     · bản này **KHÔNG** có tham số `strDealerCodeList` ⇒ là danh mục **toàn hệ**, không theo đại lý;
+//     · khối kết quả bản này chỉ `select t.MyIdxSeq, mdf.*`, còn bản `Location` **thêm** `, md.DealerName`
+//       kèm `inner join Mst_Dealer` (xem #635 — chỗ đó làm mất dòng).
+// 🔴 Cùng bệnh khuôn `*_GetX` (đã đếm ở #626): hai dòng phân trang **bị comment** (**có** `identity()` ⇒ mức
+//   "tắt") · cờ khối chi tiết `(str != null && str.Length > 0)` nên `"0"`/`"N"` vẫn **BẬT** ·
+//   `Convert.ToInt64(strFt_RecordStart)` **không guard rỗng** · `order by` nằm trên `SELECT … INTO` nên câu
+//   **kết quả không có `ORDER BY`**.
+app.MapGet("/api/mstdeliveryforms", async (AppDbContext db, ITenantContext t,
+    string? code, string? name, string? flagActive, int? recordStart, int? recordCount) =>
+{
+    var qy = db.MstDeliveryForms.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(code)) qy = qy.Where(x => x.DeliveryFormCode == code!.Trim());
+    if (!string.IsNullOrWhiteSpace(name)) qy = qy.Where(x => x.DeliveryFormName!.Contains(name!.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+    var items = await qy.OrderBy(x => x.DeliveryFormCode).Skip(skip).Take(take)
+        .Select(x => new { x.Id, x.DeliveryFormCode, x.DeliveryFormName, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        myCountAsSource = total, count = items.Count, items,
+        // ===== #634 =====
+        checkDbIsDeadCode = "Mst_DeliveryForm_CheckDB (:10698) ton tai nhung grep toan cay CHI ra dong dinh nghia cua chinh no — khong ai goi; va tang biz KHONG co Mst_DeliveryForm_Add/_Update/_Delete => danh muc CHI DOC qua API",
+        contrastWithSiblingTable = "doi lap Mst_DeliveryLocation von co DU _Add/_Update/_Delete + guard song",
+        distinctIsSafeHere = "distinct tren mdf.DeliveryFormCode va _CheckDB cho thay khoa that DUNG LA mot cot do (where t.DeliveryFormCode = @obj…, KHONG co DealerCode) => Count(0) = so ban ghi that",
+        noDealerScopeHere = "ban nay KHONG co tham so strDealerCodeList => danh muc TOAN HE, khong theo dai ly (khac ban Location)",
+        resultBlockHasNoDealerJoin = "khoi ket qua chi select t.MyIdxSeq, mdf.* — khong join Mst_Dealer nhu ban Location (xem #635)",
+        sameTemplateDefects = "phan trang bi comment (CO identity() => muc tat); co khoi chi tiet (str != null && str.Length > 0) nen 0 hay N van BAT; Convert.ToInt64 khong guard rong; order by nam tren SELECT INTO nen cau ket qua khong co ORDER BY",
+        writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay; POST duoi day la PHAN THEM cua port",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdeliveryforms", async (MstDeliveryFormDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.DeliveryFormCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chua nhap ma hinh thuc giao xe." });
+    var by = user.Identity?.Name ?? "system";
+    var row = await db.MstDeliveryForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeliveryFormCode == code);
+    if (row is null) { row = new MstDeliveryForm { OrgId = t.OrgId, DeliveryFormCode = code }; db.MstDeliveryForms.Add(row); }
+    row.DeliveryFormName = dto.DeliveryFormName;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DeliveryFormCode, row.DeliveryFormName, row.FlagActive,
+                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #633 HAI MASTER KHIẾU NẠI ĐƠN PHỤ TÙNG (`BizCarSv.Master.cs`) =====
 // 3B **cả hai khớp 2 máy, cùng số dòng**: `Mst_OrderComplainType_GetX` `:12284` md5 `0a7998ed` ·
 //   `Mst_OrderComplainImageType_GetX` `:12619` md5 `4aa98b49`.
@@ -57599,6 +57662,7 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
+record MstDeliveryFormDto(string? DeliveryFormCode, string? DeliveryFormName, string? FlagActive);   // #634
 record MstOrderComplainTypeDto(string? OrderComplainType, string? OrderComplainTypeName, string? FlagActive);   // #633
 record MstOrderComplainImageTypeDto(string? OrderComplainImageType, string? OrderComplainImageName, string? FlagActive);   // #633
 record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo, string? FilePath, string? FileName);   // #632
