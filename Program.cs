@@ -8951,6 +8951,117 @@ app.MapPost("/api/vins/update-profile-multi", async (
     });
 }).RequireAuthorization();
 
+// ===== #B111 GỬI MAIL YÊU CẦU HỒ SƠ THEO VIN — `Car_VIN_SendMailForDoc` =====
+// Trace LIVE: WS → `_biz.Car_VIN_SendMailForDoc` (`BizHTC.Car.cs:3373`) → thân thật ở
+//   **`Car_VIN_SendMailForDocX`** (`:3494`). **Không có hậu tố `_NewYYYYMMDD`**.
+//   3B đo thật, **khớp cả 2 máy**: start=3494 md5 `8aaadb9e02fafd54218fe2ec8e18ecaa`.
+// 🔴🔴 **GUARD ĐỌC NGƯỢC RẤT DỄ SAI — điều kiện CHẶN là `MortageEndDate IS NULL`**:
+//      `select t.VIN, t.MortageEndDate from Car_VIN t where t.VIN = '@strVIN' **and
+//       t.MortageEndDate is null**;`   →   `if (dtCheck.Rows.Count > 0) throw
+//       Car_VIN_SendMailForDocX_InvalidMortageEndDate`
+//    ⇒ **CÓ dòng nghĩa là VIN CHƯA kết thúc thế chấp ⇒ CHẶN gửi mail.**
+//    Chỉ gửi được cho VIN **đã có `MortageEndDate`**. Đọc lướt thành "phải có `MortageEndDate` thì
+//    mới chặn" là **đảo ngược hoàn toàn** tập VIN được gửi.
+//    ⚠️ Nguồn chép cả điều kiện vào chẩn đoán: `"Check.ConditionRaiseError", "t.MortageEndDate is null"`
+//      — port giữ nguyên chuỗi để log hai bên khớp (khuôn `C0-…quingentesimusquartus`).
+//    ⚠️ Guard chạy **theo TỪNG VIN trong lô** và **ném ngay** ở VIN đầu tiên hỏng ⇒ **cả lô không gửi**.
+// 🔴 **KHOÁ GOM NHÓM GỬI MAIL = CẶP `(DealerCode, BankCodeMyFilter)`** (`select distinct`) ⇒
+//    **một email cho MỖI cặp (đại lý, ngân hàng)** — cùng khuôn gom nhóm của #B86. Gom sai khoá
+//    ⇒ **sai SỐ LƯỢNG email gửi ra ngoài**, và đây là **hiệu ứng ra khỏi hệ thống** (không undo được).
+// 🔴 **Ngân hàng lấy qua BẢO LÃNH, không phải từ `Car_VIN`**: `Car_Car → Pmt_GuaranteeDetail
+//    (`GuaranteeDetailStatus not in ('R','C')`) → Pmt_Guarantee (`GuaranteeStatus not in ('R','C')`)`
+//    — **cả hai** đều `left join` **mang điều kiện trong `on`** ⇒ bảo lãnh đã huỷ/từ chối **chỉ bị bỏ
+//    ghép** (BankCode = null), **KHÔNG loại VIN** khỏi danh sách gửi.
+//    ⚠️ `inner join Car_Car` thì **có** loại: VIN không có bản ghi xe **bị bỏ hẳn**.
+// 📌 **NỢ — KHÔNG GỬI MAIL THẬT**: `DMS40_Email_BatchSendEmail_CarVINSendMailForDoc` là tầng gửi mail
+//    hàng loạt, MiniHTC **chưa có**. Endpoint này **chỉ DỰNG danh sách nhóm nhận** và trả về để đối
+//    chiếu; cờ `emailNotSent = true`. **Cố ý không tự gửi** — hiệu ứng ra ngoài phải do nghiệp vụ bật.
+app.MapPost("/api/vins/send-mail-for-doc", async (
+    List<string> vins, AppDbContext db, ITenantContext t) =>
+{
+    // Bảng đầu vào: thiếu ⇒ NotFound; rỗng ⇒ TỪ CHỐI.
+    if (vins is null)
+        return Results.BadRequest(new { error = "Car_VIN_SendMailForDocX_Input_Car_VINTblNotFound" });
+    var list = vins.Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+    if (list.Count == 0)
+        return Results.BadRequest(new { error = "Car_VIN_SendMailForDocX_Input_Car_VINTblInvalid" });
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && list.Contains(c.VIN)).ToListAsync();
+
+    // 🔴 CHẶN nếu VIN CHƯA kết thúc thế chấp (`MortageEndDate is null`) — ném ngay ở VIN đầu tiên.
+    foreach (var vin in list)
+    {
+        var cv = cars.FirstOrDefault(c => c.VIN == vin);
+        if (cv is null)
+            return Results.BadRequest(new { error = "Common_InvalidVIN", check = new { VIN = vin } });
+        if (cv.MortageEndDate is null)
+            return Results.BadRequest(new
+            {
+                error = "Car_VIN_SendMailForDocX_InvalidMortageEndDate",
+                check = new
+                {
+                    VIN = vin, cv.MortageEndDate,
+                    Check_ConditionRaiseError = "t.MortageEndDate is null",
+                    Check_ErrRows_Count = 1
+                },
+                guardNote = "CO dong nghia la VIN CHUA ket thuc the chap => CHAN gui mail. Chi gui duoc cho VIN DA CO MortageEndDate. Guard chay theo TUNG VIN va NEM NGAY o VIN dau tien hong => CA LO khong gui."
+            });
+    }
+
+    // `inner join Car_Car` — VIN không có bản ghi xe bị BỎ HẲN.
+    var withCar = cars.Where(c => c.DealerCode != null).ToList();
+    var droppedNoCarCar = cars.Count - withCar.Count;
+
+    // Ngân hàng lấy QUA BẢO LÃNH; `left join` mang điều kiện ⇒ bảo lãnh huỷ chỉ mất BankCode.
+    var grtDtls = await db.BankGuaranteeDtls
+        .Where(d => d.OrgId == t.OrgId && list.Contains(d.VIN)).ToListAsync();
+    var grtIds = grtDtls.Select(d => d.GuaranteeId).Distinct().ToList();
+    var grts = (await db.BankGuarantees.Where(g => g.OrgId == t.OrgId && grtIds.Contains(g.Id)).ToListAsync())
+        .ToDictionary(g => g.Id);
+
+    var rowsFull = withCar.Select(c =>
+    {
+        var dtl = grtDtls.FirstOrDefault(d => d.VIN == c.VIN
+            && d.GuaranteeDetailStatus != "R" && d.GuaranteeDetailStatus != "C");
+        BankGuarantee? g = null;
+        if (dtl is not null) grts.TryGetValue(dtl.GuaranteeId, out g);
+        var bankOk = g is not null && g.Status != "R" && g.Status != "C";
+        return new
+        {
+            c.VIN, c.DealerCode,
+            BankCode = bankOk ? g!.BankCode : null,
+            GuaranteeNo = bankOk ? g!.GuaranteeNo : null
+        };
+    }).ToList();
+
+    // 🔴 GOM NHÓM = CẶP (DealerCode, BankCode) — MỘT email cho MỖI cặp.
+    var groups = rowsFull
+        .GroupBy(x => (x.DealerCode, x.BankCode))
+        .OrderBy(g => g.Key.DealerCode, StringComparer.Ordinal)
+        .Select(g => new
+        {
+            dealerCode = g.Key.DealerCode,
+            bankCodeMyFilter = g.Key.BankCode,
+            vinCount = g.Count(),
+            vins = g.Select(x => x.VIN).OrderBy(x => x, StringComparer.Ordinal).ToList(),
+            guaranteeNos = g.Select(x => x.GuaranteeNo).Where(x => x != null).Distinct().ToList()
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        inputVins = list.Count,
+        droppedNoCarCar,
+        emailGroupCount = groups.Count,
+        groups,
+        emailNotSent = true,
+        guardInvertedNote = "GUARD DOC NGUOC RAT DE SAI: dieu kien CHAN la 'MortageEndDate IS NULL'. Cau kiem 'select ... where VIN = @VIN and t.MortageEndDate is null' roi 'if (Rows.Count > 0) throw' => CO dong nghia la VIN CHUA ket thuc the chap => CHAN. CHI gui duoc cho VIN DA CO MortageEndDate. Doc luot thanh 'phai co MortageEndDate thi moi chan' la DAO NGUOC hoan toan tap VIN duoc gui.",
+        batchAbortNote = "Guard chay theo TUNG VIN trong lo va NEM NGAY o VIN dau tien hong => CA LO khong gui, khong phai bo qua rieng VIN do.",
+        groupingNote = "KHOA GOM NHOM GUI MAIL = CAP (DealerCode, BankCodeMyFilter) qua 'select distinct' => MOT EMAIL cho MOI cap (dai ly, ngan hang) - cung khuon gom nhom cua #B86. Gom sai khoa => SAI SO LUONG EMAIL GUI RA NGOAI, va day la HIEU UNG RA KHOI HE THONG (khong undo duoc).",
+        bankViaGuaranteeNote = "Ngan hang lay QUA BAO LANH, khong phai tu Car_VIN: Car_Car -> Pmt_GuaranteeDetail (GuaranteeDetailStatus not in R,C) -> Pmt_Guarantee (GuaranteeStatus not in R,C). CA HAI deu left join MANG DIEU KIEN TRONG 'on' => bao lanh da huy/tu choi CHI BI BO GHEP (BankCode = null), KHONG loai VIN khoi danh sach gui. Rieng 'inner join Car_Car' THI CO loai.",
+        emailDebt = "NO - KHONG GUI MAIL THAT: DMS40_Email_BatchSendEmail_CarVINSendMailForDoc (tang gui mail hang loat) chua co trong MiniHTC. Endpoint nay CHI DUNG danh sach nhom nhan va tra ve de doi chieu. CO Y khong tu gui - hieu ung ra ngoai phai do nghiep vu bat."
+    });
+}).RequireAuthorization();
+
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
