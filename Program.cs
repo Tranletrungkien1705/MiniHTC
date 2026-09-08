@@ -16821,6 +16821,105 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #657 XE CÒN HẠN BẢO HÀNH `Rpt_DMSSer_XeConHanBaoHanh_WH` (`WH.cs:14423-14722`) =====
+// 3B: laptop `:14423` md5 `5cf4ea5f` **KHỚP** máy 150 `:14423`. Cùng khuôn liên hệ thống với #651/#654.
+//
+// 🔴🔴🔴 **HAI BÁO CÁO, HAI CHÍNH SÁCH BẢO HÀNH KHÁC NHAU CHO CÙNG MỘT CHIẾC XE**:
+//   DIFF khối `case` tính hạn của hàm này với hàm ở #654 (`Rpt_DMSSer_ThongKeBaoHanhTheoModel_WH`):
+//     #654: `when t.OrginalCode = 'HTMV' then CONVERT(…, dateadd(year, **3**, DeliveryDate), 126)`
+//     #657: `when t.OrginalCode = 'HTMV' then (case`
+//           `   when t.Model_CarSv in ('TUCSON','SANTAFE','KONA')`
+//           `   and t.DeliveryDate >= '2020-07-15' and t.DeliveryDate <= '2020-12-31'`
+//           `   then CONVERT(…, dateadd(year, **5**, DeliveryDate), 126)`
+//           `   else CONVERT(…, dateadd(year, 3, DeliveryDate), 126) end)`
+//   ⇒ Xe **TUCSON/SANTAFE/KONA** giao trong khoảng **15/07/2020 – 31/12/2020** được tính **5 năm** ở báo cáo
+//     "xe còn hạn bảo hành" nhưng chỉ **3 năm** ở báo cáo "thống kê bảo hành theo model".
+//   📌 Kiểm chứng: grep `TUCSON` trong thân hàm #654 ⇒ **0 lần**. Hai báo cáo **không cùng một định nghĩa hạn**.
+//   🔴 Ba mốc ngày `'2016-03-01'`, `'2020-07-15'`, `'2020-12-31'` đều là **hằng cứng trong SQL** (họ #413):
+//     một chương trình khuyến mãi bảo hành 5 năm được **nhúng vĩnh viễn** vào mã nguồn của **một** báo cáo.
+//
+// ⚪ **HÀM NÀY CÓ GUARD MÀ #654 THIẾU** (xác nhận kết quả rà nợ ở #656):
+//     `where (1=1) and t.ExpiredDateWarranty **not in ('Unknown')**` ở câu cuối.
+//   ⚠️ Nhưng guard chỉ nằm ở **câu cuối**: bảng tạm `#tbl_XeConHanBaoHanh_Final` **vẫn chứa** dòng `'Unknown'`
+//     ⇒ ai dùng lại bảng tạm đó ở chỗ khác thì **vẫn dính** lỗi so chuỗi của #654.
+//
+// ⚪ **MỘT CA LÀM ĐÚNG ĐÁNG GHI**: `left join Ser_RO sr on sc.CarId = sr.CarId **and sr.Status = 'FNS'**` —
+//   điều kiện lọc trạng thái đặt **TRONG `ON`**, không phải trong `WHERE` ⇒ **LEFT vẫn sống**: xe chưa từng có
+//   lệnh hoàn thành vẫn ra với `KM = 0` (nhờ `isnull(max(sr.KM),0)`). Tương phản với hàng loạt ca trước
+//   (#619/#624/#638/#647) nơi cùng kiểu điều kiện đặt vào `WHERE` và **giết** `left join`.
+// 🔴 `order by max(sr.KM) desc` nằm trên `SELECT … INTO` ⇒ **vô nghĩa** (#415) — bảng tạm không giữ thứ tự, và
+//   câu **kết quả cuối cùng không có `ORDER BY`** ⇒ thứ tự trả về là bất kỳ.
+// 🔴 `left join Mst_VINModelOrginal on (left(t.VIN,4) = mvo.VINCode or left(t.VIN,5) = mvo.VINCode)` + `group by`
+//   **có** `mvo.OrginalCode`/`mvo.ModelCode` ⇒ **một xe ra hai dòng** nếu danh mục có cả mã 4 và 5 ký tự khớp
+//   (giống #655; khác #651/#654 vốn dùng `inner join` nên **mất xe**).
+// 🔴 `t.DeliveryDate` đến từ bảng tạm khai **`nvarchar`** ⇒ `< '2016-03-01'` là so **chuỗi với chuỗi** và
+//   `dateadd(year, n, …)` ép **varchar → datetime** ⇒ phụ thuộc định dạng DMS Sale trả về (như #654).
+app.MapGet("/api/report/xe-con-han-bao-hanh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? orginal, string? modelCode, string? vin) =>
+{
+    var today = DateTime.Today;
+    var qy = db.ServiceCars.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(c => c.FrameNo == vin!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(modelCode)) qy = qy.Where(c => c.ModelCode == modelCode!.Trim());
+    var cars = await qy.Select(c => new { c.FrameNo, c.PlateNo, c.ModelCode, c.TradeMark,
+                                          c.WarrantyRegistrationDate, c.WarrantyExpiresDate }).ToListAsync();
+
+    // Km lớn nhất từ các lệnh đã hoàn thành — nguồn đặt điều kiện Status trong ON nên LEFT còn sống.
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.Status == "FNS")
+        .Select(r => new { r.Vin, r.Km }).ToListAsync();
+
+    // Hai chính sách hạn bảo hành của nguồn — port tính CẢ HAI để thấy chênh lệch.
+    static DateTime? Expiry(DateTime? delivery, string? model, int years)
+        => delivery?.AddYears(years);
+    static bool IsPromoWindow(DateTime? d) =>
+        d.HasValue && d.Value.Date >= new DateTime(2020, 7, 15) && d.Value.Date <= new DateTime(2020, 12, 31);
+    var promoModels = new[] { "TUCSON", "SANTAFE", "KONA" };
+
+    var rows = cars.Select(c =>
+    {
+        // RepairOrder.Km cua Mini la CHUOI => parse an toan roi lay max (nguon dung isnull(max(sr.KM),0)).
+        var km = ros.Where(r => r.Vin == c.FrameNo)
+            .Select(r => decimal.TryParse(r.Km, out var v) ? v : 0m)
+            .DefaultIfEmpty(0m).Max();
+        var delivery = c.WarrantyRegistrationDate;
+        var promo = promoModels.Contains((c.ModelCode ?? "").ToUpperInvariant()) && IsPromoWindow(delivery);
+        var expThisReport = Expiry(delivery, c.ModelCode, promo ? 5 : 3);
+        var expOtherReport = Expiry(delivery, c.ModelCode, 3);
+        return new
+        {
+            dealerCode, vin = c.FrameNo, plateNo = c.PlateNo,
+            modelCarSv = c.ModelCode, orginalCode = c.TradeMark,
+            deliveryDate = delivery, km,
+            expiredDateWarranty = expThisReport,
+            expiredDateWarrantyAsOtherReport = expOtherReport,
+            policyDiffers = expThisReport != expOtherReport,
+            unknownExpiry = delivery == null,
+        };
+    })
+    // Nguồn: and t.ExpiredDateWarranty not in ('Unknown') — loại bản ghi không xác định được hạn.
+    .Where(x => !x.unknownExpiry)
+    .Where(x => x.expiredDateWarranty!.Value.Date >= today)
+    .OrderByDescending(x => x.km).ToList();
+
+    return Results.Ok(new
+    {
+        asOf = today, count = rows.Count, rows,
+        policyDiffCount = rows.Count(x => x.policyDiffers == true),
+        // ===== #657 =====
+        twoReportsTwoWarrantyPolicies = "DIFF khoi case tinh han giua ham nay va #654: #654 chi co when OrginalCode = HTMV then 3 nam; ham nay co case LONG — when Model_CarSv in (TUCSON, SANTAFE, KONA) and DeliveryDate >= 2020-07-15 and <= 2020-12-31 then 5 NAM else 3 nam => cung mot chiec xe co HAI han bao hanh khac nhau tuy bao cao nao doc",
+        verifiedByGrep = "grep TUCSON trong than ham #654 => 0 lan; hai bao cao KHONG cung mot dinh nghia han",
+        threeHardcodedPolicyDates = "2016-03-01, 2020-07-15, 2020-12-31 deu la hang cung trong SQL (ho #413): mot chuong trinh khuyen mai bao hanh 5 nam duoc NHUNG VINH VIEN vao ma nguon cua MOT bao cao",
+        portComputesBothPolicies = "port tra expiredDateWarranty (chinh sach cua bao cao nay) VA expiredDateWarrantyAsOtherReport (chinh sach cua #654) kem co policyDiffers de DO so xe bi lech",
+        thisFunctionHasTheGuardThat654Lacks = "where (1=1) and t.ExpiredDateWarranty not in (Unknown) o cau cuoi — xac nhan ket qua ra no o #656",
+        butGuardIsOnlyOnTheFinalSelect = "guard chi nam o CAU CUOI; bang tam #tbl_XeConHanBaoHanh_Final VAN CHUA dong Unknown => ai dung lai bang tam do o cho khac thi VAN DINH loi so chuoi cua #654",
+        statusConditionInOnNotWhere = "CA LAM DUNG dang ghi: left join Ser_RO sr on sc.CarId = sr.CarId AND sr.Status = FNS — dieu kien loc trang thai dat TRONG ON chu khong phai WHERE => LEFT VAN SONG, xe chua tung co lenh hoan thanh van ra voi KM = 0 (nho isnull(max(sr.KM),0)); tuong phan voi #619/#624/#638/#647 noi cung kieu dieu kien dat vao WHERE va GIET left join",
+        orderByOnSelectIntoIsMeaningless = "order by max(sr.KM) desc nam tren SELECT … INTO => vo nghia (#415); cau ket qua cuoi cung KHONG co ORDER BY nen thu tu tra ve la bat ky — port sap tuong minh theo km giam dan",
+        vinPrefixJoinDuplicatesRows = "left join Mst_VINModelOrginal on (left(VIN,4) = VINCode or left(VIN,5) = VINCode) + group by co mvo.OrginalCode/ModelCode => mot xe ra HAI DONG neu danh muc co ca ma 4 va 5 ky tu khop (giong #655; khac #651/#654 von dung inner join nen MAT xe)",
+        deliveryDateIsNvarchar = "t.DeliveryDate den tu bang tam khai nvarchar => < 2016-03-01 la so CHUOI voi CHUOI va dateadd(year, n, …) ep varchar sang datetime => phu thuoc dinh dang DMS Sale tra ve (nhu #654)",
+        crossSystemCallNotSimulated = "MiniHTC khong co he DMS Sale => port dung tu du lieu xe cuc bo; phan goi lien he thong ghi NO (nhu #651/#654)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #655 BIỂU ĐỒ THỐNG KÊ BẢO HÀNH — TÌM RA *CƠ CHẾ* ĐỨNG SAU CHUYỆN "CommonCenter" =====
 // TRACE: WS gọi `Rpt_DMSSer_Chart_ThongKeBaoHanh_WH_New20180807` (`WH.cs:13055-13156`, md5 `0ddcabd6`) —
 //   **vỏ bọc**, thân thật là `Rpt_DMSSer_Chart_ThongKeBaoHanhX` (`ZTemp.cs:910-1203`, md5 `9b571d4d`
