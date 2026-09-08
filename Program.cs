@@ -30843,6 +30843,82 @@ var supplierPartOrderStatusNames = new Dictionary<string, string>
     ["1"] = "Mới tạo", ["CONF"] = "Xác nhận", ["2"] = "Hàng đang về", ["3"] = "Hoàn thành",
 };
 
+// ===== 🔴🔴 #608 `Ser_OrderPart_UpdateStatus` (`PartOrder.cs:3061`) — **CHỈ GHI MỘT DB TRONG KHI TẠO GHI BA** =====
+// Toàn bộ phần làm việc **đúng bốn dòng**:
+//     `DataTable dt_Ser_OrderPart = GetTableContents(**_dbMain**, "Ser_Part_Order", "top 1 *", "", "OrderPartID", "=", strOrderPartID);`
+//     `dt_Ser_OrderPart.Rows[**0**]["Status"] = strStatus; alEffectiveColumn.Add("Status");`
+//     `**_dbMain**.SaveData("Ser_Part_Order", dt_Ser_OrderPart, alEffectiveColumn.ToArray());`
+//
+// 🔴🔴 **GHI MỘT DB, TRONG KHI CÙNG BẢNG ĐÓ CÁC HÀM KHÁC GHI BA**: `Ser_Part_OrderCreate` / `_Update`
+//   (#605) mở giao dịch và ghi **`_dbMain` + `_dbWH` + `_dbDealer`**; `SerPartOrderDelete` (#606) cũng xoá
+//   ba nơi. Riêng hàm đổi **trạng thái** chỉ đụng `_dbMain` (và `bNeedTransaction` cũng chỉ mở Main).
+//   ⇒ Đơn được duyệt/huỷ ở trung tâm, **kho và đại lý vẫn thấy trạng thái cũ** — không lỗi, không log.
+//   ⇒ **Biến thể thứ TƯ** của họ "nhiều DB, một thao tác": #571 (xoá **quên** dealer) · #573 (ghi dealer
+//     **ngoài** giao dịch) · #598 (**xoá một bên, chèn hai bên**) · **#608 (ghi một DB trong khi tạo ghi ba)**.
+//     Ba cái trước là **gõ nhầm/sót**; cái này là **thiếu hẳn hai lời gọi** — nặng hơn vì trạng thái là thứ
+//     mọi màn tra cứu đều lọc theo.
+// 🔴 **KHÔNG KIỂM `Rows.Count` TRƯỚC `Rows[0]`** ⇒ `OrderPartID` sai là **`IndexOutOfRangeException` thô**.
+//   Trước nay mẫu này đếm được **bốn** lần trong `SendMail.cs` (#588/#589/#592/#593) nên tôi ghi là *"khuôn
+//   của cả file đó"*. Nay gặp lại ở **`PartOrder.cs`** ⇒ **mở rộng kết luận**: đây là **khuôn toàn hệ**,
+//   không riêng một file. (Đối chứng vẫn đứng: `CheckExistPayment` bên `Debit.cs` **có** kiểm.)
+// 🔴 **KHÔNG KIỂM GIÁ TRỊ `strStatus`** ⇒ ghi **bất kỳ chuỗi nào** vào cột trạng thái ⇒ đơn rơi khỏi mọi bộ
+//   lọc trạng thái của màn tra cứu (`Ser_Part_OrderGet` lọc `si.IsActive` và `Status`). Lặp lại #588 —
+//   và là **mắt xích thứ SÁU** của chuỗi "cột phân loại bị ghi bừa/NULL" (#575 · #579 · #588 · #591 · #593).
+// 🔴 **KHÔNG RÀNG BUỘC ĐẠI LÝ**: tra chỉ theo `OrderPartID` ⇒ đại lý A đổi trạng thái đơn của đại lý B.
+// ⚠️ **Chú thích sai tên bảng**: khối mang nhãn `#region // **Ser_RO**:` nhưng bảng thao tác là
+//   `Ser_Part_Order` — thêm một dấu vết chép khối (cùng họ #602 mã lỗi lạc cụm, #607 chú thích đúng/mã sai).
+// ⚠️ `"top 1 *"` + `orderBy` rỗng — khuôn `TOP` không `ORDER BY` (#571/#588/#589), ở đây tra theo khoá nên vô hại.
+app.MapPost("/api/supplierpartorders/{orderNo}/status", async (string orderNo, AppDbContext db,
+    ITenantContext t, string? status, string? dealerCode) =>
+{
+    var no = orderNo.Trim().ToUpperInvariant();
+    var st = (status ?? "").Trim();
+
+    // GUARD nguồn KHÔNG có: trạng thái rỗng/lạ.
+    if (st.Length == 0)
+        return Results.BadRequest(new
+        {
+            error = "status bat buoc — nguon ghi thang bat ky chuoi nao vao cot trang thai.",
+            sourceHasNoStatusValidation = true,
+        });
+    if (!supplierPartOrderStatusNames.ContainsKey(st))
+        return Results.BadRequest(new
+        {
+            error = $"status khong hop le: {st}",
+            allowed = supplierPartOrderStatusNames.Keys,
+            sixthLinkOfSameChain = "#575 DebitType, #579 IsActive, #588 trang thai email, #591 luc NAP, #593 luc SUA, #608 trang thai don hang",
+        });
+
+    var qy = db.SupplierPartOrders.Where(x => x.OrgId == t.OrgId && x.OrderNo == no);
+    // GUARD nguồn KHÔNG có: ràng buộc đại lý.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var h = await qy.FirstOrDefaultAsync();
+    // GUARD nguồn KHÔNG có: kiểm tồn tại (nguồn đọc thẳng Rows[0]).
+    if (h is null)
+        return Results.NotFound(new
+        {
+            orderNo = no,
+            sourceWouldThrowIndexOutOfRange = "GetTableContents roi doc thang Rows[0], khong kiem Rows.Count",
+        });
+
+    var old = h.Status;
+    h.Status = st;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        h.OrderNo, oldStatus = old, newStatus = h.Status,
+        statusName = supplierPartOrderStatusNames.TryGetValue(st, out var nm) ? nm : null,
+        sourceWritesMainOnly = "chi _dbMain.SaveData; Create/Update (#605) ghi ca _dbMain + _dbWH + _dbDealer, Delete (#606) xoa ba noi",
+        fourthVariantOfMultiDbBug = "#571 quen dealer, #573 ngoai giao dich, #598 xoa mot ben chen hai ben, #608 ghi mot DB trong khi tao ghi ba",
+        consequence = "don duoc duyet/huy o trung tam nhung kho va dai ly VAN thay trang thai cu — khong loi khong log",
+        rowsZeroWithoutCountCheck = "mau nay tung dem duoc BON lan trong SendMail.cs (#588/#589/#592/#593); nay gap o PartOrder.cs => KHUON TOAN HE, khong rieng mot file",
+        noDealerScopeInSource = "tra chi theo OrderPartID => dai ly A doi trang thai don cua dai ly B",
+        regionCommentNamesWrongTable = "khoi mang nhan #region // Ser_RO: nhung bang thao tac la Ser_Part_Order",
+        guardsAddedByPort = new[] { "status khac rong va thuoc bang ma", "rang buoc DealerCode", "kiem ton tai" },
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/supplierpartorders/statuses", () => Results.Ok(new
 {
     statuses = supplierPartOrderStatusNames.Select(kv => new { code = kv.Key, name = kv.Value }),
