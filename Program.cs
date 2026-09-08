@@ -30754,6 +30754,62 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #579 `Blt_BulletinUpdate_Delete` (`Bulletin.cs:4354`) — **"XOÁ" THỨ HAI, KHÁC HẲN CÁI THỨ NHẤT** =====
+// WS LIVE: `WSCarSv.asmx.cs:26257`. Cùng file với `Blt_Bullentin_Delete` (#578) mà **khác nhau mọi mặt**:
+//
+// 🔴🔴 **ĐÂY LÀ XOÁ MỀM, VÀ CHỈ GHI MỘT DB**: toàn thân hàm chỉ có **một** thao tác ghi —
+//     `if (!IsEmpty(strIsActive)) dt_Blt_Bulletin.Rows[0]["IsActive"] = strIsActive;`
+//     `else dt_Blt_Bulletin.Rows[0]["IsActive"] = DBNull.Value;`
+//     `alColumnEffective.Add("IsActive");`
+//     `**_dbMain**.SaveData("Btl_Bulletin", dt_Blt_Bulletin, alColumnEffective.ToArray());`
+//   **Không có `_dbWH`**. Trong khi `Blt_Bullentin_Delete` (#578) xoá **cứng** ở **cả Main lẫn WH**.
+//   ⇒ Hai hàm tên gần giống nhau, cùng file, cùng được WS gọi, nhưng: một **xoá cứng hai DB**, một **ẩn mềm
+//     một DB**. Ẩn bản tin ở trung tâm xong, **kho vẫn thấy nó đang hoạt động** — và không ai được báo.
+// 🔴 **RỖNG ⇒ `IsActive = DBNull`, KHÔNG PHẢI `"0"`**: hàm tên *"Delete"* nhưng khi client **không gửi** cờ
+//   thì cột bị đặt **NULL**. Mọi câu lọc `IsActive = '1'` loại nó ra, mọi câu `IsActive = '0'` **cũng** loại
+//   ⇒ bản tin rơi vào trạng thái **vô hình với cả hai phía** — không hoạt động, cũng không nằm trong danh
+//     sách đã ẩn. **Hệ quả chuỗi** y như #575 (`DebitType` bị xoá trắng).
+// 🔴 **TÊN NÓI DỐI (lần thứ hai sau #576)**: tham số là `strIsActive` **tự do**, nên gọi hàm `..._Delete` với
+//   `strIsActive = "1"` chính là **kích hoạt lại** bản tin. Một endpoint "xoá" dùng được để "phục hồi".
+// ⚠️ Hàm này còn thuộc **thế hệ log cũ**: dùng `_log.WriteLogAsync(...)` + `myUtils_ValidateId(...)` thay vì
+//   `ProcessBizReq/ProcessBizReturn` như các hàm cùng file — dấu hiệu code chưa được nâng theo khuôn mới,
+//   dù WS **vẫn gọi**. (Đừng suy "hàm kiểu cũ ⇒ hàm chết": ở đây kiểu cũ mà **sống**.)
+// ⚠️ `int nTidSeq = 0;` thừa — cùng dấu vết chép hàm đã gặp ở #574/#577.
+// 📌 MiniHTC: cột tương ứng là `Bulletin.FlagActive`. Endpoint dưới **bắt buộc** truyền cờ (chặn đúng lỗ
+//   NULL của nguồn) và ghi rõ hai đường xoá khác nhau.
+app.MapPost("/api/bulletins/{bulletinNo}/set-active", async (string bulletinNo, AppDbContext db,
+    ITenantContext t, string? isActive) =>
+{
+    var no = bulletinNo.Trim().ToUpperInvariant();
+    var b = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
+    if (b is null) return Results.NotFound(new { bulletinNo = no });   // nguồn: CheckExistBulletin
+
+    var v = (isActive ?? "").Trim();
+    if (v.Length == 0)
+        return Results.BadRequest(new
+        {
+            error = "isActive bat buoc — nguon de rong se ghi NULL, ban tin thanh vo hinh voi ca hai phia.",
+            sourceWritesNullWhenEmpty = true,
+        });
+    if (v is not ("0" or "1"))
+        return Results.BadRequest(new { error = "isActive chi nhan 0 hoac 1 (Constants.Flag.Active = 1)." });
+
+    b.FlagActive = v;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        b.BulletinNo, flagActive = b.FlagActive,
+        action = v == "1" ? "kich hoat lai" : "an (xoa mem)",
+        softDeleteWritesMainOnlyInSource = "toan ham chi co mot _dbMain.SaveData; KHONG co _dbWH => kho van thay ban tin dang hoat dong",
+        hardDeleteTwinWritesBothDbs = "Blt_Bullentin_Delete (#578) xoa CUNG o ca Main lan WH",
+        twoDeletePathsDifferentSemantics = "mot xoa cung hai DB, mot an mem mot DB — ten gan giong nhau, cung file, cung duoc WS goi",
+        emptyBecomesNullNotZero = "else row[IsActive] = DBNull.Value => khong thuoc ca nhom dang hoat dong lan nhom da an",
+        deleteFunctionCanReactivate = "tham so strIsActive tu do nen goi ham _Delete voi 1 la KICH HOAT LAI",
+        sourceUsesOldLoggingGeneration = "_log.WriteLogAsync + myUtils_ValidateId thay vi ProcessBizReq — kieu cu ma VAN SONG",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #578 XOÁ BẢN TIN (`Blt_Bullentin_Delete`, `Bulletin.cs:2122`) =====
 // ⚠️ **Tên hàm SAI CHÍNH TẢ trong nguồn**: `Blt_**Bullentin**_Delete` (thiếu chữ, "Bullentin" ≠ "Bulletin"),
 //   trong khi mã lỗi lại viết đúng: `TError.ErrCarSv.Blt_**Bulletin**_Delete`. Giữ nguyên khi tra cứu —
