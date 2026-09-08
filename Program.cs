@@ -53008,6 +53008,126 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #638 BÁO CÁO NHẬP–XUẤT–TỒN `Ser_InventoryReport_InOutBalance_WH_New20191112` =====
+// Nguồn `BizCarSv.WH.cs:23996-24398`; 3B md5 vùng `4d6b1766` **KHỚP 2 máy** (cùng số dòng).
+// TRACE: `WSCarSv.asmx.cs` gọi bản `_New20191112` (một trong **ba** bản của cụm).
+// ⚠️ Mini **đã có** `/api/report/stock-inout` nhưng port từ **màn WinForm** `FrmReportInOutStock` (tổng nhập/
+//   xuất theo phiếu). Bản WS này khác hẳn: tính trên **bảng TEM** `ser_inv_partInstance`, có **chiều VỊ TRÍ**
+//   (`LocationID`) và **bốn khối kỳ** (tồn đầu · nhập · xuất · tồn cuối) ⇒ là **màn khác**, port riêng.
+//
+// 🔴🔴🔴 **NHÁNH GIÁ VỐN BÌNH QUÂN BỊ COMMENT, THAY BẰNG HẰNG `0` ⇒ ĐẠI LÝ KHÔNG DÙNG FIFO MẤT SẠCH PHẦN TIỀN**:
+//     `case when (select paramvalue from mst_param where dealercode='@DealerCode' and paramcode='MCC'`
+//     `and paramtype='MCC') = 'FIFO' then sum(…giá nhập…) **Else '0'** --sum(isnull(dbo.GetAverageCost(…),0)*Quantity)`
+//   Nhánh `else` **đúng ra** phải gọi `dbo.GetAverageCost` nhưng dòng đó **bị comment**, chỉ còn hằng `'0'`.
+//   ⇒ Với đại lý cấu hình phương pháp tính giá **khác FIFO**, **mọi cột giá trị** (tồn đầu `TGD`, nhập `TGN`,
+//     xuất `TGSON`, tồn cuối `TGC`) đều bằng **0** — báo cáo nhập-xuất-tồn **chỉ còn số lượng**.
+//   📌 Khối `case` này lặp lại ở **cả năm** khối (tồn đầu-nhập, tồn đầu-xuất, nhập trong kỳ, xuất trong kỳ ×2,
+//     tồn cuối) ⇒ sửa một chỗ là **thiếu**. Và `'0'` là **chuỗi** trong `case` mà nhánh kia trả **số** —
+//     SQL Server ép về số theo thứ tự ưu tiên kiểu nên không lỗi, nhưng là dấu hiệu viết vội.
+// 🔴🔴 **TRUY VẤN CON `mst_param` KHÔNG CÓ `TOP 1`, LẶP LẠI Ở MỖI KHỐI**: nếu `mst_param` có **hơn một** dòng
+//   cho cùng (`dealercode`, `MCC`, `MCC`) ⇒ **"Subquery returned more than 1 value"** ⇒ **cả báo cáo chết**.
+//   Và nó chạy lại **5 lần** trong một câu.
+// 🔴🔴🔴 **`left join ser_mst_part p` RỒI `where p.IsActive='1' and p.DealerCode='@DealerCode'`** ⇒ **LEFT CHẾT**
+//   (#414, câu hỏi thứ ba) ⇒ phụ tùng **đã ngưng dùng** mà **vẫn còn tồn hoặc còn phát sinh trong kỳ** **biến**
+//   **mất khỏi báo cáo kho** ⇒ **tổng tồn trên sổ < tồn thật**. Với báo cáo kho đây là mất hàng khỏi sổ.
+// 🔴🔴 **BA LỜI GỌI TEMPLATE LÀ CÔNG VÔ ÍCH — VÀ LÀ BẪY BẢO TRÌ**: khối `Replace` truyền
+//   `SqlTemplate_ser_inv_partInstance_New20191112.zzB_tbl_ser_inv_partInstance_{StockIn,StockOut,QtyInStock}_zzE(…)`
+//   nhưng **ba token đó KHÔNG hề có trong chuỗi SQL** của hàm này (đếm: **0** lần trong vùng SQL, **3** lần —
+//   đúng ba đối số `Replace`). Hàm đã được viết tay lại thành `#tbl_sd`/`#tbl_sdo`/`#tbl_Open_DuDAUKY`.
+//   ⇒ Ba hàm template **vẫn được gọi**, dựng chuỗi SQL rồi **vứt đi**; và ai sửa template dùng chung (các hàm
+//     `:8036`, `:9712`, `:10088` **có** token thật trong SQL) sẽ tưởng đã sửa cả báo cáo này — **không hề**.
+// 🔴🔴 **TỒN CUỐI TÍNH THEO TRẠNG THÁI *HIỆN TẠI*, KHÔNG THEO KỲ** ⇒ **báo cáo lịch sử SAI** (họ #412):
+//     `#tbl_close: … where spi.[Status] = '1' and spi.DateIn < '@ToDate'` — chỉ lọc `DateIn`, **không** hề
+//     kiểm `DateOut` so với kỳ. Tem đã xuất **sau** `ToDate` thì `Status` hiện tại là `'2'` ⇒ **không** được
+//     tính vào tồn cuối của kỳ quá khứ ⇒ **chạy lại báo cáo tháng trước hôm nay ra số khác lúc đó**.
+// 🔴 **GUARD THỪA/CHẾT**: `and spi.[Status]='2' … and spi.Status not in ('4','5')` — vế sau **vô nghĩa** khi
+//   vế trước đã ghim `'2'`; y hệt ở khối tồn cuối (`Status='1'` + `not in ('4','5')`).
+// 🔴 **BAKE THAM SỐ, KHÔNG THAM SỐ HOÁ**: `@DealerCode`/`@FromDate`/`@ToDate` được thay bằng
+//   `StringUtils.Replace` vào chuỗi **có nháy** (`'@DealerCode'`) ⇒ **bề mặt tiêm SQL** ở tham số do client
+//   truyền (họ [BAKE-PARAM-MIX] đã ghi trong sổ).
+// ⚪ **KIỂM TRA ÂM TÍNH — BẪY MỐC NGÀY CUỐI (#415) KHÔNG CÓ Ở ĐÂY**: `@ToDate` được thay bằng
+//   `strToDateNext = dtimeTo.**AddDays(1)**` ⇒ `DateIn < '@ToDate'` là **cận trên mở của ngày kế tiếp** ⇒
+//   **ngày cuối được tính trọn**. Họ làm đúng — ghi lại để lượt sau khỏi báo nhầm.
+// ⚪ Âm tính khác: câu kết quả **CÓ** `order by p.PartCode` (đúng chỗ, không phải trên `SELECT … INTO`);
+//   nhánh `union all` thứ hai (trả nhà cung cấp) có `left join Ser_SupplierPayment so` + `where so.…` ⇒ LEFT
+//   hoá INNER **đúng ý** (chỉ lấy tem có phiếu trả NCC). **Nhưng** nhánh thứ nhất `left join Ser_Inv_StockOut sis`
+//   + `where sis.status not in ('4','5')` thì **làm mất dòng thật**: tem đã xuất mà **không có phiếu xuất kho**
+//   rơi khỏi phần xuất. Cùng một khuôn, một nhánh đúng ý, một nhánh là bug.
+// 🔴 `#tbl_close` được nối vào **chỉ để lọc** (`or tc.SLC != 0`) — cột tồn cuối trả ra là **tính lại**
+//   `SLC = SLD + SLN − SLX`, **không** phải số đếm thật từ bảng tem ⇒ nếu hai số lệch, báo cáo **che mất**.
+// ⚠️ `TGC = TGD + TGN − **TGSON**` (giá **vốn** xuất) — đúng kế toán; nhưng `TGX` (giá **bán** xuất) vẫn được
+//   trả ra cạnh đó ⇒ người đọc tự tính `TGD+TGN−TGX` sẽ ra số khác. Port trả **cả hai** kèm ghi chú.
+app.MapGet("/api/report/inout-balance-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = fromDate ?? DateTime.Today.AddMonths(-1);
+    var toNext = (toDate ?? DateTime.Today).Date.AddDays(1);   // nguồn: dtimeTo.AddDays(1) — ngày cuối TRỌN
+
+    var q0 = db.PartInstances.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q0 = q0.Where(x => x.DealerCode == dealerCode!.Trim());
+    var inst = await q0.Select(x => new { x.PartCode, x.LocationID, x.Status, x.Quantity,
+                                          x.SIPrice, x.SOPrice, x.SIVAT, x.DateIn, x.DateOut }).ToListAsync();
+
+    decimal CostOf(decimal qty, decimal? siPrice, decimal? siVat)
+        => qty * (siPrice ?? 0m) * (1m + (siVat ?? 0m) / 100m);
+
+    var keys = inst.Select(x => new { x.PartCode, x.LocationID }).Distinct().ToList();
+    var rows = keys.Select(k =>
+    {
+        var g = inst.Where(x => x.PartCode == k.PartCode && x.LocationID == k.LocationID).ToList();
+        // Tồn đầu = (đã nhập trước kỳ) − (đã xuất trước kỳ)
+        var sd = g.Where(x => x.DateIn != null && x.DateIn < from).ToList();
+        var sdo = g.Where(x => x.DateOut != null && x.DateOut < from).ToList();
+        var sld = sd.Sum(x => x.Quantity) - sdo.Sum(x => x.Quantity);
+        var tgd = sd.Sum(x => CostOf(x.Quantity, x.SIPrice, x.SIVAT)) - sdo.Sum(x => CostOf(x.Quantity, x.SIPrice, x.SIVAT));
+        // Nhập trong kỳ
+        var si = g.Where(x => x.DateIn != null && x.DateIn >= from && x.DateIn < toNext).ToList();
+        // Xuất trong kỳ
+        var so = g.Where(x => x.DateOut != null && x.DateOut >= from && x.DateOut < toNext).ToList();
+        var slx = so.Sum(x => x.Quantity);
+        var tgx = so.Sum(x => x.Quantity * (x.SOPrice ?? 0m));          // giá BÁN
+        var tgson = so.Sum(x => CostOf(x.Quantity, x.SIPrice, x.SIVAT)); // giá VỐN
+        // Tồn cuối ĐÚNG THEO KỲ (nguồn tính theo Status hiện tại — xem cờ)
+        var closingByPeriod = g.Count(x => x.DateIn != null && x.DateIn < toNext
+                                           && (x.DateOut == null || x.DateOut >= toNext));
+        var closingBySourceRule = g.Count(x => x.Status == "1" && x.DateIn != null && x.DateIn < toNext);
+        return new
+        {
+            partCode = k.PartCode, locationId = k.LocationID,
+            SLD = sld, TGD = tgd,
+            SLN = si.Sum(x => x.Quantity), TGN = si.Sum(x => CostOf(x.Quantity, x.SIPrice, x.SIVAT)),
+            SLX = slx, TGX = tgx, TGSON = tgson,
+            SLC = sld + si.Sum(x => x.Quantity) - slx,
+            TGC = tgd + si.Sum(x => CostOf(x.Quantity, x.SIPrice, x.SIVAT)) - tgson,
+            closingByPeriod, closingBySourceRule,
+            closingRuleDiffers = closingByPeriod != closingBySourceRule,
+        };
+    }).Where(r => r.SLD != 0 || r.SLN != 0 || r.SLX != 0 || r.SLC != 0)
+      .OrderBy(r => r.partCode).ThenBy(r => r.locationId).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDateExclusive = toNext, count = rows.Count, rows,
+        // ===== #638 =====
+        averageCostBranchIsCommentedOut = "case … when paramvalue = FIFO then sum(gia nhap) Else 0 — nhanh else dung ra goi dbo.GetAverageCost nhung dong do BI COMMENT, chi con hang 0 => dai ly cau hinh phuong phap tinh gia KHAC FIFO thi MOI cot gia tri (TGD/TGN/TGSON/TGC) deu bang 0, bao cao chi con so luong",
+        thatCaseBlockRepeatsFiveTimes = "khoi case nay lap o ca nam khoi (ton dau-nhap, ton dau-xuat, nhap trong ky, xuat trong ky x2, ton cuoi) => sua mot cho la THIEU",
+        paramSubqueryHasNoTop1 = "truy van con mst_param khong co TOP 1 va chay lai 5 lan trong mot cau; neu co hon mot dong cho cung (dealercode, MCC, MCC) => Subquery returned more than 1 value => CA BAO CAO CHET",
+        partCatalogLeftJoinKilledByWhere = "left join ser_mst_part p roi where p.IsActive = 1 and p.DealerCode = @DealerCode => LEFT CHET (#414 cau hoi 3) => phu tung da ngung dung ma VAN CON TON hoac con phat sinh trong ky BIEN MAT khoi bao cao kho => tong ton tren so < ton that",
+        templateReplaceCallsAreDeadWork = "khoi Replace truyen ba SqlTemplate_ser_inv_partInstance_New20191112.zzB_… nhung ba token do KHONG he co trong chuoi SQL cua ham (dem: 0 lan trong vung SQL, 3 lan tong = dung ba doi so Replace) => ba ham template van duoc GOI, dung chuoi SQL roi VUT DI",
+        templateEditTrapForMaintainers = "cac ham :8036, :9712, :10088 CO token that trong SQL nen dung template; ai sua template dung chung se tuong da sua ca bao cao nay — KHONG HE",
+        closingStockUsesCurrentStatusNotPeriod = "#tbl_close: where spi.Status = 1 and spi.DateIn < @ToDate — chi loc DateIn, KHONG kiem DateOut so voi ky; tem da xuat SAU ToDate thi Status hien tai la 2 nen khong duoc tinh vao ton cuoi cua ky qua khu => chay lai bao cao thang truoc hom nay ra so KHAC luc do (ho #412)",
+        portComputesBothClosingRules = "port tra ca closingByPeriod (dung theo ky) lan closingBySourceRule (theo luat cua nguon) va co closingRuleDiffers de do muc lech",
+        redundantStatusGuard = "and spi.[Status]=2 … and spi.Status not in (4,5) — ve sau VO NGHIA khi ve truoc da ghim 2; y het o khoi ton cuoi (Status=1 + not in (4,5))",
+        parametersAreBakedNotParameterised = "@DealerCode/@FromDate/@ToDate duoc thay bang StringUtils.Replace vao chuoi CO NHAY (@DealerCode) => be mat tiem SQL o tham so do client truyen (ho BAKE-PARAM-MIX)",
+        endDateTrapIsAbsentHere = "AM TINH: @ToDate duoc thay bang strToDateNext = dtimeTo.AddDays(1) nen DateIn < @ToDate la can tren MO cua ngay ke tiep => NGAY CUOI DUOC TINH TRON; ho lam dung, dung bao nham (#415)",
+        orderByIsInTheResultQuery = "AM TINH: cau ket qua CO order by p.PartCode, dung cho (khong phai tren SELECT … INTO)",
+        oneUnionBranchIntendedOneIsBug = "nhanh union all thu hai (tra NCC) co left join Ser_SupplierPayment so + where so.… => LEFT hoa INNER DUNG Y (chi lay tem co phieu tra NCC); nhung nhanh thu nhat left join Ser_Inv_StockOut sis + where sis.status not in (4,5) LAM MAT DONG THAT: tem da xuat ma khong co phieu xuat kho roi khoi phan xuat",
+        closingTempTableUsedOnlyAsFilter = "#tbl_close duoc noi vao CHI de loc (or tc.SLC != 0); cot ton cuoi tra ra la TINH LAI SLD+SLN-SLX chu khong phai so dem that tu bang tem => neu hai so lech, bao cao CHE MAT",
+        twoOutflowValueColumns = "TGC = TGD + TGN - TGSON (gia VON xuat) — dung ke toan; nhung TGX (gia BAN xuat) van duoc tra ra canh do => nguoi doc tu tinh TGD+TGN-TGX se ra so khac",
+        differentScreenFromStockInoutReport = "/api/report/stock-inout port tu man WinForm FrmReportInOutStock (tong theo PHIEU); ban WS nay tinh tren bang TEM ser_inv_partInstance, co chieu VI TRI (LocationID) va bon khoi ky => MAN KHAC",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #637 BẢN CỔNG CarSv `Ser_ReceptionF_GetX_New20180921` (`Tab.cs:7559`) =====
 // 3B: laptop `:7559` md5 `17fa1731` **KHỚP** máy 150 `:7577` (lệch **+18**, căn theo TÊN).
 // Đây là bản mà **cổng CarSv** (`WSCarSv.asmx.cs:33087`) đang gọi — khác bản cổng Tab đã port ở #636.
