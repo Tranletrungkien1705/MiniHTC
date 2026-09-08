@@ -16847,6 +16847,93 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #662 CHĂM SÓC KHÁCH SINH NHẬT `Ser_CustomerCareBth_Get_WH` (`WH.cs:26174-26393`) =====
+// 3B: laptop `:26174` md5 `61486e41` **KHỚP** máy 150 `:26174`. WS gọi thẳng bản này (không hậu tố).
+//
+// 🔴🔴🔴 **LỌC SINH NHẬT LẠI LỌC THEO NGÀY CHĂM SÓC — VÀ CỘT ĐÚNG CÓ SẴN NGAY TRONG CÂU**:
+//     `BuildClause("and", "**t.Date**", **strDOBConditionList**, "@p", ref alParamsCoupleSql)`
+//   `t` ở đây là **`Ser_CustomerCare`** ⇒ `t.Date` là **ngày chăm sóc**, không phải ngày sinh.
+//   📌 Bằng chứng cột đúng tồn tại: `Ser_Customer` **có** cột `DOB` — dùng ở **3 site** khác
+//     (`Inventory.StockOut.cs` ×2 dưới tên `scus.DOB CustomerDateOfBirth`, `Service.cs` ×1 `cus.DOB`).
+//     Và bảng `cus` **đã được `inner join`** ngay trong chính câu này ⇒ chỉ cần đổi `t.Date` → `cus.DOB`.
+//   ⇒ Đây là màn **"chăm sóc khách SINH NHẬT"** (`Bth` = Birthday) mà bộ lọc sinh nhật **không chạm** tới ngày
+//     sinh. Cùng loại "LỌC SAI CỘT" với #637, nhưng lần này **chứng minh được cột đúng có thật và ở ngay đó**.
+// 🔴 Kèm theo: `and t.Date is not null` ở `WHERE` — lọc "có ngày chăm sóc", tức bản ghi **chưa chăm sóc lần nào**
+//   bị loại khỏi màn *lập kế hoạch* chăm sóc.
+//
+// 🔴🔴🔴 **`min(t.CarId)` — CHỌN ĐẠI MỘT CHIẾC XE CỦA KHÁCH, RỒI LỌC BIỂN SỐ TRÊN CHÍNH CHIẾC ĐÓ**:
+//     `left join (select t.CusID, **min(t.CarId) CarId** from ser_car t where … group by t.CusId) tt`
+//     `  on cus.CusID = tt.cusId` · `left join Ser_Car car on tt.CarId = car.CarId`
+//   ⇒ Khách có **nhiều xe** thì màn chỉ hiện **một** chiếc (mã nhỏ nhất). Nghiêm trọng hơn: hai bộ lọc
+//     `FrameNo`/`PlateNo` áp lên `car` ⇒ **chỉ khớp được đúng chiếc đã bị `min()` chọn** ⇒ tìm theo biển số
+//     **chiếc xe thứ hai** của khách ⇒ **0 dòng**, không lỗi, không cảnh báo.
+// 🔴🔴 **MỘT MỆNH ĐỀ CHẠY TRÊN HAI BẢNG NHỜ TRÙNG ALIAS `t`** (họ #617/#620): `zzzzClauseWhereDealerCodeConditionList`
+//   được chèn **cả trong subquery** (`t` = `ser_car`) **lẫn ở `WHERE` chính** (`t` = `Ser_CustomerCare`).
+//   ⚪ Ở đây **cố ý và chạy được** vì cả hai bảng đều có `DealerCode` — nhưng vẫn là phụ thuộc vào trùng alias.
+// 🔴🔴 **PHÂN TRANG KHÔNG ỔN ĐỊNH — `Row_Number()` THIẾU TIE-BREAKER**:
+//     `Row_Number() over (order by **cus.CusID desc**) MyRowIdx`
+//   `#tblCustomerCare` là bảng **chăm sóc**: một khách có **nhiều** bản ghi ⇒ các dòng cùng `CusID` được đánh số
+//   theo thứ tự **bất định** ⇒ giữa hai lần gọi, một bản ghi có thể **xuất hiện hai lần** hoặc **rơi mất** giữa
+//   hai trang. Đây là bản chính xác hơn của bẫy đã ghi ở #533/#542.
+// ⚪ **Nhưng phân trang ở đây CÓ CHẠY THẬT** (`and t.MyRowIdx >= @MyRowIdx_Start and <= @MyRowIdx_End`) — khác
+//   **12/40** site đã đếm ở #626 nơi hai dòng này bị comment. Và dùng `Row_Number()` là cách **đúng hơn**
+//   `identity()` trên `SELECT … INTO` (#415).
+// 🔴 `Convert.ToInt32(strResultRecordStart)` **không guard rỗng** ⇒ FormatException (họ #626/#627).
+// 🔴 Cột tên **`Date`** (từ khoá SQL) **không được bọc ngoặc vuông** — chạy được nhưng là bẫy khi ai đó đổi
+//   mức tương thích hoặc chép sang ngữ cảnh khác.
+app.MapGet("/api/customercare/birthday", async (AppDbContext db, ITenantContext t,
+    string? cusId, string? cusName, string? plateNo, string? status, int? recordStart, int? recordCount) =>
+{
+    var qy = db.ServiceCustomers.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(cusId)) qy = qy.Where(c => c.CusCode == cusId!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(c => c.CusName!.Contains(cusName!.Trim()));
+    var custs = await qy.Select(c => new { c.CusCode, c.CusName, c.Address, c.Tel, c.Mobile }).ToListAsync();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.ModelCode, c.CusName }).ToListAsync();
+
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
+
+    var rows = custs.Select(c =>
+    {
+        // Nguồn lấy min(CarId) — MỘT xe duy nhất cho mỗi khách. Port trả CẢ danh sách để thấy phần bị bỏ.
+        var owned = cars.Where(x => x.CusName == c.CusName).OrderBy(x => x.FrameNo).ToList();
+        var picked = owned.FirstOrDefault();
+        return new
+        {
+            cusId = c.CusCode, c.CusName, c.Address, phone = c.Tel ?? c.Mobile,
+            pickedCarFrameNo = picked?.FrameNo, pickedCarPlateNo = picked?.PlateNo,
+            modelCode = picked?.ModelCode,
+            ownedCarCount = owned.Count,
+            otherCarsHiddenBySource = owned.Count > 1 ? owned.Count - 1 : 0,
+            allPlateNos = owned.Select(x => x.PlateNo).ToList(),
+        };
+    })
+    // Nguồn lọc biển số trên CHIẾC ĐÃ ĐƯỢC min() CHỌN; port lọc trên MỌI xe của khách và nêu cờ.
+    .Where(x => string.IsNullOrWhiteSpace(plateNo) || x.allPlateNos.Any(p => p == plateNo!.Trim()))
+    .OrderByDescending(x => x.cusId).Skip(skip).Take(take).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        carsHiddenTotal = rows.Sum(x => x.otherCarsHiddenBySource),
+        // ===== #662 =====
+        dobFilterBoundToCareDate = "BuildClause(and, t.Date, strDOBConditionList, …) — t la Ser_CustomerCare nen t.Date la NGAY CHAM SOC, khong phai ngay sinh; day la man cham soc khach SINH NHAT (Bth = Birthday) ma bo loc sinh nhat KHONG cham toi ngay sinh (cung loai LOC SAI COT voi #637)",
+        correctColumnExistsRightThere = "Ser_Customer CO cot DOB — dung o 3 site khac (Inventory.StockOut.cs x2 duoi ten scus.DOB CustomerDateOfBirth, Service.cs x1 cus.DOB); va bang cus DA duoc inner join ngay trong chinh cau nay => chi can doi t.Date thanh cus.DOB",
+        careDateNotNullFilter = "and t.Date is not null o WHERE — loc co ngay cham soc, tuc ban ghi CHUA cham soc lan nao bi loai khoi man LAP KE HOACH cham soc",
+        minCarIdPicksOneCarArbitrarily = "left join (select t.CusID, min(t.CarId) CarId from ser_car t … group by t.CusId) tt on cus.CusID = tt.cusId, roi left join Ser_Car car on tt.CarId = car.CarId => khach nhieu xe thi man chi hien MOT chiec (ma nho nhat)",
+        plateFilterOnlyMatchesThePickedCar = "hai bo loc FrameNo/PlateNo ap len car => CHI khop duoc dung chiec da bi min() chon; tim theo bien so chiec xe THU HAI cua khach => 0 dong, khong loi khong canh bao",
+        portFiltersAcrossAllCars = "port loc tren MOI xe cua khach va tra allPlateNos + otherCarsHiddenBySource de do phan bi bo",
+        oneClauseTwoTablesViaSharedAlias = "zzzzClauseWhereDealerCodeConditionList duoc chen CA trong subquery (t = ser_car) LAN o WHERE chinh (t = Ser_CustomerCare) — chay duoc vi ca hai bang deu co DealerCode, nhung van la phu thuoc vao TRUNG ALIAS (ho #617/#620)",
+        rowNumberHasNoTieBreaker = "Row_Number() over (order by cus.CusID desc) MyRowIdx tren bang CHAM SOC (mot khach nhieu ban ghi) => cac dong cung CusID duoc danh so theo thu tu BAT DINH => giua hai lan goi, mot ban ghi co the XUAT HIEN HAI LAN hoac ROI MAT giua hai trang (ban chinh xac hon cua bay #533/#542)",
+        pagingActuallyRunsHere = "AM TINH: phan trang o day CO CHAY THAT (and t.MyRowIdx >= @MyRowIdx_Start and <= @MyRowIdx_End) — khac 12/40 site da dem o #626 noi hai dong nay bi comment; va Row_Number() la cach DUNG HON identity() tren SELECT … INTO (#415)",
+        recordStartHasNoGuard = "Convert.ToInt32(strResultRecordStart) khong guard rong => FormatException (ho #626/#627)",
+        dateKeywordNotBracketed = "cot ten Date (tu khoa SQL) khong duoc boc ngoac vuong — chay duoc nhung la bay khi doi muc tuong thich hoac chep sang ngu canh khac",
+        careTableNotModelledInMini = "MiniHTC chua mo hinh hoa Ser_CustomerCare => port dung tu danh muc khach + xe, chua co cot ngay cham soc/trang thai; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #661 TRA CỨU YÊU CẦU XUẤT KHO `SerStockOutOrderGetAll_WH` (`WH.cs:28259-28493`) =====
 // 3B: laptop `:28259` md5 `3347054f` **KHỚP** máy 150 `:28259`. WS gọi thẳng bản này (không hậu tố).
 //
