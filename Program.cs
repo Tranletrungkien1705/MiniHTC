@@ -53008,6 +53008,86 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #650 TRA CỨU CÔNG NỢ `SerCusDebitSearch_WH` (`WH.cs:5323-5677`) — LOẠI NỢ LẠ LÀM VỠ CÂU SQL =====
+// 3B: laptop `:5323` md5 `10af3fe0` **KHỚP** máy 150 `:5323`. Anh em `SerInsuranceDebitSearch_WH` (`:4970`)
+//   là **bản gần như sao chép** — DIFF cho thấy bản khách hàng chỉ thêm `d.CusID` vào `SELECT`/`GROUP BY`.
+//
+// 🔴🔴🔴 **`strDebitType` KHÔNG KHỚP BA HẰNG ⇒ TOKEN CHỖ-GIỮ-CHỖ CÒN NGUYÊN TRONG SQL ⇒ CÂU LỆNH VỠ**:
+//   Câu chính có `FULL JOIN … zzzzClauseJoin_Debit`, và token đó **chỉ được thay BÊN TRONG ba khối `if`**:
+//     `if (StringUtils.StringEqual(strDebitType, TConst.SerDebitType.CusDebit))      … "zzzzClauseJoin_Debit", "ON d1.CusID = r1.CusID"`
+//     `if (… TConst.SerDebitType.InsuranceDebit) … "zzzzClauseJoin_Debit", "ON d1.InsNo = r1.InsNo"`
+//     `if (… TConst.SerDebitType.SupplierDebit)  … "zzzzClauseJoin_Debit", "ON d1.SupplierID = r1.SupplierID"`
+//   **Không có nhánh `else`/mặc định** (đếm: token xuất hiện **4** lần = 1 trong SQL + 3 trong ba nhánh).
+//   ⇒ Client gửi `strDebitType` **rỗng** hoặc `"4"` ⇒ **không nhánh nào chạy** ⇒ chuỗi `zzzzClauseJoin_Debit`
+//     **nằm lại trong câu SQL** ⇒ **lỗi cú pháp SQL**, *không phải* "trả 0 dòng".
+//   🔴 Và `#region // Check` **RỖNG** (trích nguyên văn theo #403) ⇒ **không có guard nào** chặn giá trị lạ.
+//   📌 **HẰNG ≠ GIÁ TRỊ** (mở ra ghi giá trị): `TConst.SerDebitType.CusDebit = **"1"**` ·
+//     `InsuranceDebit = **"2"**` · `SupplierDebit = **"3"**` (`Const.Main.cs:372-376`) — khớp ghi chú #555
+//     ("một bảng `Ser_CusDebit`, ba loại nợ phân biệt bằng literal 1/2/3").
+//
+// ⚪ **XÁC NHẬN LẠI PHẦN RÚT LẠI Ở #568**: ở #568 tôi đã rút lại kết luận "FULL JOIN chỉ nối `CusID`".
+//   Đọc bản `_WH` lần này **khẳng định phần rút lại là đúng**: mỗi nhánh gán **đúng khoá của loại nợ đó**
+//   (`CusID` / `InsNo` / `SupplierID`). Dòng `--ON d1.CusID = r1.CusID and d1.InsNo=r1.InsNo and d1.SupplierID=r1.SupplierID`
+//   nằm ngay dưới token là **dòng COMMENT** — chính nó từng làm tôi đọc nhầm. Ghi lại để không lặp lại.
+// 🔴 `FULL JOIN` giữa bảng tổng nợ (`d1`) và bảng tổng thu (`r1`) ⇒ khoản **chỉ có phiếu thu mà không có nợ**
+//   vẫn ra dòng, nhưng cột khoá của `d1` sẽ **NULL** ⇒ đúng họ #620 (`full outer join` rồi lấy khoá một vế).
+//   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
+// ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
+//   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+app.MapGet("/api/debits/search-wh", async (AppDbContext db, ITenantContext t,
+    string? debitType, string? dealerCode, string? cusId, string? insNo, string? supplierCode) =>
+{
+    // Nguồn KHÔNG guard debitType và sẽ VỠ SQL nếu giá trị lạ ⇒ port chặn tường minh và nêu cờ.
+    var type = (debitType ?? "").Trim();
+    if (type != "1" && type != "2" && type != "3")
+        return Results.BadRequest(new
+        {
+            error = "debitType phai la 1 (khach hang), 2 (bao hiem) hoac 3 (nha cung cap).",
+            guardsAddedByPort = "nguon KHONG co guard: gia tri la lam token zzzzClauseJoin_Debit con nguyen trong SQL => LOI CU PHAP SQL, khong phai 0 dong",
+        });
+
+    var q0 = db.CusDebits.Where(x => x.OrgId == t.OrgId && x.DebitType == type);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q0 = q0.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (type == "1" && !string.IsNullOrWhiteSpace(cusId)) q0 = q0.Where(x => x.CusId == cusId!.Trim());
+    if (type == "2" && !string.IsNullOrWhiteSpace(insNo)) q0 = q0.Where(x => x.InsNo == insNo!.Trim());
+    if (type == "3" && !string.IsNullOrWhiteSpace(supplierCode)) q0 = q0.Where(x => x.SupplierCode == supplierCode!.Trim());
+
+    var debits = await q0.Select(x => new { x.Id, x.DebitNo, x.DealerCode, x.CusId, x.CusName, x.InsNo,
+                                            x.SupplierCode, x.RONo, x.DebitAmount, x.PaidAmount,
+                                            x.DebitDate, x.Status }).ToListAsync();
+
+    // Khoá gộp theo LOẠI nợ — đúng như ba nhánh của nguồn.
+    string KeyOf(string? cus, string? ins, string? sup) => type switch
+    {
+        "1" => cus ?? "", "2" => ins ?? "", _ => sup ?? "",
+    };
+
+    var rows = debits.GroupBy(x => KeyOf(x.CusId, x.InsNo, x.SupplierCode)).Select(g => new
+    {
+        key = g.Key,
+        cusId = type == "1" ? g.Key : null,
+        insNo = type == "2" ? g.Key : null,
+        supplierCode = type == "3" ? g.Key : null,
+        debitAmount = g.Sum(x => x.DebitAmount),
+        paymentAmount = g.Sum(x => x.PaidAmount),
+        deb = g.Sum(x => x.DebitAmount) - g.Sum(x => x.PaidAmount),
+        count = g.Count(),
+    }).OrderBy(x => x.key).ToList();
+
+    return Results.Ok(new
+    {
+        debitType = type, count = rows.Count, rows,
+        // ===== #650 =====
+        unmatchedDebitTypeLeavesTokenInSql = "token zzzzClauseJoin_Debit CHI duoc thay BEN TRONG ba khoi if (CusDebit/InsuranceDebit/SupplierDebit), KHONG co nhanh else; dem: token xuat hien 4 lan = 1 trong SQL + 3 trong ba nhanh => strDebitType rong hoac 4 thi khong nhanh nao chay, chuoi zzzzClauseJoin_Debit NAM LAI trong cau SQL => LOI CU PHAP SQL chu khong phai tra 0 dong",
+        checkRegionIsEmpty = "trich nguyen van: #region // Check … #endregion RONG => khong co guard nao chan gia tri la (#403)",
+        debitTypeConstantValues = "TConst.SerDebitType.CusDebit = 1, InsuranceDebit = 2, SupplierDebit = 3 (Const.Main.cs:372-376) — khop ghi chu #555: mot bang Ser_CusDebit, ba loai no phan biet bang literal 1/2/3",
+        confirmsRetractionOfIssue568 = "AM TINH: o #568 toi da RUT LAI ket luan FULL JOIN chi noi CusID; doc ban _WH lan nay KHANG DINH phan rut lai la DUNG — moi nhanh gan DUNG KHOA cua loai no do (CusID / InsNo / SupplierID). Dong --ON d1.CusID = r1.CusID and d1.InsNo=r1.InsNo and d1.SupplierID=r1.SupplierID nam ngay duoi token la dong COMMENT, chinh no tung lam toi doc nham",
+        fullJoinTakesKeyFromOneSide = "FULL JOIN giua bang tong no (d1) va bang tong thu (r1); SELECT lay d1.CusID (mot ve) => khoan chi co phieu thu ma khong co no se ra dong voi khoa NULL — cung bay #620; port gop theo khoa cua CA HAI ve",
+        customerGroupLeftJoinsAlive = "AM TINH: LEFT JOIN Ser_CustomerGroupCustomer va LEFT JOIN Ser_CustomerGroup — WHERE khong co dieu kien nao tren chung => LEFT con song (khach chua thuoc nhom nao van ra)",
+        siblingIsNearClone = "SerInsuranceDebitSearch_WH (:4970) la ban gan nhu sao chep; DIFF cho thay ban khach hang chi them d.CusID vao SELECT/GROUP BY",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #649 `Ser_Count_Customer_OnlyHTC_WH` (`WH.cs:18586-18753`) — LỌC TRÊN BIỂU THỨC GHÉP CHUỖI =====
 // 3B: laptop `:18586` md5 `bd751e7c` **KHỚP** máy 150 `:18586`. Hàm **thứ ba** của cụm (#647 · #648 · #649) —
 //   trọn cụm `Ser_Count_Customer*_WH` nay đã port đủ ba.
