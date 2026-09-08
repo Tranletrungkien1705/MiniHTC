@@ -53918,8 +53918,43 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #665 BẢN SINH ĐÔI BẢO HIỂM `SerInsuranceDebitSearch_WH` (`WH.cs:4970-5322`) =====
+// 3B: laptop `:4970` md5 `f5b2e7f5` **KHỚP** máy 150 `:4970`. WS `WSCarSv.asmx.cs:32253` gọi thẳng.
+// Theo luật #414 tôi **DIFF hai chuỗi SQL với nhau trước** (`SerCusDebitSearch_WH` vs bản này) thay vì đọc rời —
+// và đúng như luật nói, khác biệt thật nằm ở **DANH SÁCH CỘT**, không ở `WHERE`.
+// 📌 **SỬA ghi chép #650**: ở #650 tôi ghi *"bản khách hàng chỉ thêm `d.CusID` vào SELECT/GROUP BY"* —
+//   **nói nhẹ quá**. DIFF đầy đủ cho **năm** khác biệt, trong đó **ba** là lỗi thật (dưới đây).
+//
+// 🔴🔴🔴 **XOÁ CỘT KHỎI `SELECT` NHƯNG BỎ QUÊN NÓ TRONG `GROUP BY`** — bản bảo hiểm gộp nợ theo hãng
+//   (`GROUP BY d.InsNo, d.SupplierID, d.DebitType`, **đã bỏ** `d.CusID`) nhưng vế **thu tiền** vẫn là
+//     `(SELECT sum(IsNull(r.PaymentAmount,0)) AS PaymentAmount, r.InsNo, r.SupplierID FROM Ser_Payment r`
+//     ` … GROUP BY **r.CusID**, r.InsNo, r.SupplierID) r1`
+//   ⇒ `r.CusID` **còn trong `GROUP BY` mà không có trong `SELECT`**: một hãng bảo hiểm có phiếu thu ghi cho
+//     **n khách khác nhau** sinh **n dòng** ở vế thu, trong khi vế nợ chỉ **một dòng** ⇒ `FULL JOIN … ON d1.InsNo
+//     = r1.InsNo` **nhân dòng nợ lên n lần** ⇒ `DebitAmount` cộng n lần, `Deb` sai. Bản khách hàng **không dính**
+//     vì ở đó `r.CusID` **có** trong `SELECT`. Đây là dấu vết sao chép sót — DIFF mới thấy.
+// 🔴🔴🔴 **BA MỆNH ĐỀ TRỎ VÀO MỘT ALIAS KHÔNG TỒN TẠI**: nhánh bảo hiểm có `FROM Ser_Insurance si INNER JOIN
+//   #tbl_debit db` — **không có alias `c`**. Nhưng ba `BuildClause` vẫn dựng `c.CusID` · `c.PlateNo` · `c.CusName`
+//   (sao nguyên từ nhánh khách hàng, nơi `FROM Ser_Customer c`). Dùng bất kỳ bộ lọc nào trong ba ⇒
+//   *The multi-part identifier "c.CusID" could not be bound*. **Cùng lớp mìn hẹn giờ với #663** (ở đó là **cột**
+//   không tồn tại, ở đây là **ALIAS** không tồn tại) và cũng chỉ nổ khi người dùng thực sự lọc (#410).
+// 🔴🔴 **MẤT LUÔN TỪ NỐI `and`**: `BuildClause(**""**, "c.CusName", strNameConditionList, …)` — tiền tố toán tử là
+//   **chuỗi rỗng** thay vì `"and"`. Nhánh khách hàng viết `"and "`. Nếu mệnh đề này có sinh ra thì câu SQL còn
+//   **thiếu cả liên từ** ⇒ vỡ cú pháp. Ba lỗi trên **chồng lên nhau ở cùng một bộ lọc**.
+// 🔴🔴 **LỌC `Deb > 0` ĐẶT TRƯỚC `GROUP BY` — chỉ nhánh bảo hiểm mới có `GROUP BY`**:
+//   `WHERE 1=1 zzzzClauseWhereIsDebitConditionList` (→ `and db.Deb > 0`) nằm **trước** `GROUP BY si.InsNo, …`
+//   ⇒ lọc theo **từng dòng** `#tbl_debit`, không theo **tổng** của hãng ⇒ hãng có dòng `+100` và `−100`
+//   (tổng 0, **hết nợ**) vẫn hiện trong danh sách "còn nợ". Hai nhánh kia không gộp nên không dính.
+// 🔴 **`FULL JOIN` CHẾT**: khoá lấy từ **một vế** (`SELECT d1.InsNo`) rồi `INNER JOIN Ser_Insurance si ON
+//   si.InsNo = db.InsNo` ⇒ khoản **chỉ có phiếu thu, không có nợ** ra `InsNo = NULL` rồi **bị inner join loại**
+//   ⇒ `FULL JOIN` không mang lại gì so với `LEFT JOIN` (luật #414: WHERE/join sau giết join ngoài).
+// ⚪ **ÂM TÍNH — `zzzzClauseWhereIsDebitConditionList` KHÔNG bị bỏ quên**: nó không nằm trong khối `Replace`
+//   của từng nhánh, nhưng được thay ở **cuối hàm** trên chuỗi SQL đã ghép (`#region // Replace sqlget`).
+//   Ghi ⚪ để vòng sau khỏi báo nhầm "token còn sót trong SQL".
+// ⚪ **ÂM TÍNH — `strIsDebit` rỗng là CHỦ ĐÍCH**: `Active` ⇒ `"> 0"`, ngược lại `""` ⇒ `BuildClause` không sinh gì
+//   (#410) ⇒ hiện **cả** hãng đã hết nợ. Đúng ý "bỏ tick chỉ xem còn nợ".
 app.MapGet("/api/debits/search-wh", async (AppDbContext db, ITenantContext t,
-    string? debitType, string? dealerCode, string? cusId, string? insNo, string? supplierCode) =>
+    string? debitType, string? dealerCode, string? cusId, string? insNo, string? supplierCode, string? insName) =>
 {
     // Nguồn KHÔNG guard debitType và sẽ VỠ SQL nếu giá trị lạ ⇒ port chặn tường minh và nêu cờ.
     var type = (debitType ?? "").Trim();
@@ -53935,6 +53970,13 @@ app.MapGet("/api/debits/search-wh", async (AppDbContext db, ITenantContext t,
     if (type == "1" && !string.IsNullOrWhiteSpace(cusId)) q0 = q0.Where(x => x.CusId == cusId!.Trim());
     if (type == "2" && !string.IsNullOrWhiteSpace(insNo)) q0 = q0.Where(x => x.InsNo == insNo!.Trim());
     if (type == "3" && !string.IsNullOrWhiteSpace(supplierCode)) q0 = q0.Where(x => x.SupplierCode == supplierCode!.Trim());
+    // #665: nguồn có `BuildClause("and", "si.InsVieName", strInsNameConditionList, …)` — endpoint trước thiếu.
+    if (type == "2" && !string.IsNullOrWhiteSpace(insName))
+    {
+        var insNos = await db.SerInsurances.Where(x => x.OrgId == t.OrgId && x.InsVieName != null
+                && x.InsVieName.Contains(insName!.Trim())).Select(x => x.InsNo).ToListAsync();
+        q0 = q0.Where(x => x.InsNo != null && insNos.Contains(x.InsNo));
+    }
 
     var debits = await q0.Select(x => new { x.Id, x.DebitNo, x.DealerCode, x.CusId, x.CusName, x.InsNo,
                                             x.SupplierCode, x.RONo, x.DebitAmount, x.PaidAmount,
@@ -53968,7 +54010,16 @@ app.MapGet("/api/debits/search-wh", async (AppDbContext db, ITenantContext t,
         confirmsRetractionOfIssue568 = "AM TINH: o #568 toi da RUT LAI ket luan FULL JOIN chi noi CusID; doc ban _WH lan nay KHANG DINH phan rut lai la DUNG — moi nhanh gan DUNG KHOA cua loai no do (CusID / InsNo / SupplierID). Dong --ON d1.CusID = r1.CusID and d1.InsNo=r1.InsNo and d1.SupplierID=r1.SupplierID nam ngay duoi token la dong COMMENT, chinh no tung lam toi doc nham",
         fullJoinTakesKeyFromOneSide = "FULL JOIN giua bang tong no (d1) va bang tong thu (r1); SELECT lay d1.CusID (mot ve) => khoan chi co phieu thu ma khong co no se ra dong voi khoa NULL — cung bay #620; port gop theo khoa cua CA HAI ve",
         customerGroupLeftJoinsAlive = "AM TINH: LEFT JOIN Ser_CustomerGroupCustomer va LEFT JOIN Ser_CustomerGroup — WHERE khong co dieu kien nao tren chung => LEFT con song (khach chua thuoc nhom nao van ra)",
-        siblingIsNearClone = "SerInsuranceDebitSearch_WH (:4970) la ban gan nhu sao chep; DIFF cho thay ban khach hang chi them d.CusID vao SELECT/GROUP BY",
+        siblingIsNearClone_corrected = "SUA (#665): #650 ghi ban khach hang CHI them d.CusID vao SELECT/GROUP BY — NOI NHE QUA. DIFF day du cho NAM khac biet, trong do BA la loi that (xem cac co duoi day)",
+        // ===== #665 (bản sinh đôi bảo hiểm) =====
+        payGroupByCusIdLeftBehind = "XOA COT KHOI SELECT NHUNG BO QUEN TRONG GROUP BY: ve no gop theo GROUP BY d.InsNo, d.SupplierID, d.DebitType (DA BO d.CusID) nhung ve thu van la SELECT sum(r.PaymentAmount), r.InsNo, r.SupplierID … GROUP BY r.CusID, r.InsNo, r.SupplierID => r.CusID con trong GROUP BY ma khong co trong SELECT => mot hang bao hiem co phieu thu ghi cho n khach sinh n dong o ve thu trong khi ve no chi mot dong => FULL JOIN ON d1.InsNo = r1.InsNo NHAN DONG NO len n lan => DebitAmount cong n lan, Deb sai. Ban khach hang KHONG dinh vi o do r.CusID CO trong SELECT",
+        threeClausesReferenceNonExistentAliasC = "nhanh bao hiem co FROM Ser_Insurance si INNER JOIN #tbl_debit db — KHONG co alias c; nhung ba BuildClause van dung c.CusID, c.PlateNo, c.CusName (sao nguyen tu nhanh khach hang noi FROM Ser_Customer c) => dung bat ky bo loc nao trong ba => The multi-part identifier c.CusID could not be bound. Cung lop min hen gio voi #663 (o do la COT khong ton tai, o day la ALIAS khong ton tai), chi no khi nguoi dung thuc su loc (#410)",
+        cusNameClauseMissingAndConnector = "BuildClause(\"\", \"c.CusName\", strNameConditionList, …) — tien to toan tu la CHUOI RONG thay vi and (nhanh khach hang viet \"and \") => neu menh de nay co sinh ra thi cau SQL con THIEU CA LIEN TU => vo cu phap; ba loi chong len nhau o cung mot bo loc",
+        debFilterBeforeGroupBy = "and db.Deb > 0 nam TRUOC GROUP BY si.InsNo, … — va CHI nhanh bao hiem moi co GROUP BY => loc theo TUNG DONG #tbl_debit chu khong theo TONG cua hang => hang co dong +100 va -100 (tong 0, HET NO) van hien trong danh sach con no",
+        fullJoinDeadInInsuranceBranch = "FULL JOIN CHET: khoa lay tu MOT ve (SELECT d1.InsNo) roi INNER JOIN Ser_Insurance si ON si.InsNo = db.InsNo => khoan CHI co phieu thu khong co no ra InsNo NULL roi bi inner join loai => FULL JOIN khong mang lai gi so voi LEFT JOIN (luat #414)",
+        negativeIsDebitTokenIsReplacedLater = "AM TINH: zzzzClauseWhereIsDebitConditionList khong nam trong khoi Replace cua tung nhanh nhung duoc thay o CUOI HAM tren chuoi SQL da ghep (#region // Replace sqlget) => dung bao nham token con sot trong SQL",
+        negativeStrIsDebitEmptyIsIntentional = "AM TINH: strIsDebit = \"> 0\" khi Active, nguoc lai \"\" => BuildClause khong sinh gi (#410) => hien CA hang da het no. Dung y bo tick chi xem con no",
+        insNameFilterAddedByPort = "nguon co BuildClause(and, si.InsVieName, strInsNameConditionList, …) — endpoint truoc thieu, nay da them tham so insName",
     });
 }).RequireAuthorization();
 
