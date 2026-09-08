@@ -30180,6 +30180,39 @@ app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q
 // Upsert theo số thông báo (số trống = auto-gen).
 // TWIN đã trace: WS gọi `Blt_BulletinCreate_20210224` / `Blt_BulletinUpdate_20210224`
 // (KHÔNG phải Blt_BulletinCreate / Blt_BulletinUpdate trần — có tới 4 phiên bản trong biz).
+// ===== 🔴🔴 #577 `Blt_BulletinCreate_20210224` — **DANH SÁCH VIN ĐƯỢC KIỂM RỒI VỨT ĐI** =====
+// TRACE WS: `WSCarSv.asmx.cs:26130` gọi bản `_20210224` ⇒ bản trần `Bulletin.cs:1214` **CHẾT**.
+//   Bản sống thêm **hai** tham số: `strDateExpired`, `strBulletinNoHMC` (bản chết không có).
+//
+// 🔴🔴 **BẢNG `Btl_Bulletin_VIN` CHỈ ĐƯỢC ĐỌC ĐỂ KIỂM TRÙNG, KHÔNG HỀ ĐƯỢC GHI** — đếm toàn hàm chỉ có
+//   **bốn** lời gọi `SaveData`: `Btl_Bulletin` (Main), `Btl_Bulletin` (WH), `Btl_BulletinDtl` (Main),
+//   `Btl_BulletinDtl` (WH). **Không có lời gọi nào cho `Btl_Bulletin_VIN`**; bảng này chỉ xuất hiện đúng
+//   một lần: `DataTable dtBulletinDetail = dsBulletinDetail.Tables["Btl_Bulletin_VIN"];` rồi vòng lặp
+//   kiểm trùng. ⇒ Client gửi danh sách xe lên, hàm **kiểm trùng xong rồi bỏ**, bản tin tạo ra **không gắn
+//   VIN nào**.
+//   🔴🔴 **GHÉP VỚI #576 THÀNH MỘT CHUỖI HOÀN CHỈNH**: `Blt_Bulletin_Get_OnlyByBulletinID` có
+//     `inner join Btl_Bulletin_VIN` ⇒ **bản tin vừa tạo bằng hàm này KHÔNG BAO GIỜ tra được bằng hàm kia**.
+//     Một bên không ghi con, một bên bắt buộc phải có con — mỗi lỗi nhìn riêng đều "nhỏ", ghép lại là
+//     **tính năng không chạy được từ đầu đến cuối**. Đây là hệ quả chuỗi thứ hai sau #575.
+//   📌 MiniHTC **ghi VIN thật** (khối bên dưới) ⇒ cố ý lệch, nêu cờ `sourceNeverPersistsVinList`.
+// 🔴 **KIỂM TRÙNG BẰNG CHUỖI LỌC `DataTable.Select` NỐI TAY**:
+//     `dtBulletinDetail.Select(string.Format("VinNo='{0}'", row["VinNo"].ToString()))`
+//   · VIN chứa dấu nháy đơn ⇒ **biểu thức lọc hỏng** ⇒ ném lỗi thô, không phải mã lỗi nghiệp vụ.
+//   · Vòng lặp gọi `Select` **cho từng dòng** ⇒ O(n²) trên lô lớn.
+//   · Chỉ kiểm trùng **trong lô gửi lên**; **không** kiểm VIN đã gắn ở bản tin khác trong DB.
+// 🔴 **HAI BẢNG, HAI NGUỒN SCHEMA**: bảng cha lấy `GetSchema(**_dbMain**, "Btl_Bulletin")`, còn bảng chi tiết
+//   lấy `GetSchema(**_dbWH**, "Btl_BulletinDtl")` rồi **cùng một** `DataTable` đó được `SaveData` lên **cả**
+//   `_dbMain` **lẫn** `_dbWH`. ⇒ Nếu schema hai DB lệch (cột chỉ có ở Main), bản ghi ghi xuống Main sẽ
+//   **thiếu cột** — mà không có lỗi nào báo.
+// 🔴 **KHO KHÔNG CÓ FILE ĐÍNH KÈM**: ở nhánh WH, dòng gán nội dung tệp **bị comment**:
+//     `//    dt_Blt_Bulletin_WH.Rows[0]["FileAttachment"] = fAttachment;`
+//   trong khi `FileNameAttachment` **vẫn** được gán ⇒ bản ghi ở kho có **tên tệp** mà **không có tệp**.
+//   Màn nào đọc bản tin từ DB kho sẽ hiện nút tải về **rồi tải ra rỗng**.
+// ⚠️ HẰNG ≠ GIÁ TRỊ: `IsActive = **Constants**.Flag.Active` — lưu ý dùng lớp `Constants` chứ không phải
+//   `TConst` như phần lớn file; mở định nghĩa (`TERP.Constants/Const.Main.cs:28`) thì **giá trị là `"1"`**.
+// ⚠️ Khoá kho chép từ `select @@Identity` + `Convert.ToInt32` — lặp lại đúng lỗi phạm vi/kiểu của #570/#575.
+// ⚪ Âm tính: `BulletinNoHMC` gán **vô điều kiện** trong khi các cột khác có guard rỗng — nhưng phía trên đã
+//   có `if (string.IsNullOrEmpty(strBulletinNoHMC)) throw Blt_Bulletin_InvalidBulletinNoHMC` nên **không lọt**.
 app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Remark)) return Results.BadRequest(new { error = "Chưa nhập nội dung thông báo." });
@@ -30196,11 +30229,18 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
         // Nguồn gọi CheckVINEmpty cho từng dòng trước khi ghi.
         if (string.IsNullOrWhiteSpace(line.VinNo)) return Results.BadRequest(new { error = "Số khung không được để trống!" });
     }
+    // #577: nguồn kiểm trùng bằng dtBulletinDetail.Select("VinNo='…'") nối tay ⇒ VIN có dấu nháy làm hỏng
+    //   biểu thức lọc, và là O(n²). Ở đây gom nhóm — cùng kết quả, không dính hai vấn đề trên.
     var duplicatedVin = vinLines
         .GroupBy(v => v.VinNo!.Trim().ToUpperInvariant())
         .FirstOrDefault(g => g.Count() > 1);
     if (duplicatedVin is not null)
         return Results.BadRequest(new { error = $"Số khung '{duplicatedVin.Key}' bị trùng trong danh sách!" });
+    // #577: nguồn KHÔNG kiểm VIN đã gắn ở bản tin KHÁC — port chỉ ĐẾM để báo, không chặn (giữ hành vi nguồn).
+    var vinKeys = vinLines.Select(v => v.VinNo!.Trim().ToUpperInvariant()).ToList();
+    var vinAlreadyOnOtherBulletin = vinKeys.Count == 0 ? 0 : await db.BulletinVins
+        .CountAsync(x => x.OrgId == t.OrgId && vinKeys.Contains(x.VinNo)
+                         && x.BulletinNo != (dto.BulletinNo ?? "").Trim().ToUpper());
 
     var no = string.IsNullOrWhiteSpace(dto.BulletinNo) ? "BLT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.BulletinNo.Trim().ToUpperInvariant();
     var row = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
@@ -30245,7 +30285,19 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
     }
     await db.SaveChangesAsync();
 
-    return Results.Ok(new { row.BulletinNo, row.BulletinNoHMC, details = dto.Details?.Count ?? 0, vins = vinLines.Count, updated });
+    return Results.Ok(new
+    {
+        row.BulletinNo, row.BulletinNoHMC, details = dto.Details?.Count ?? 0, vins = vinLines.Count, updated,
+        // ===== #577 =====
+        sourceNeverPersistsVinList = "toan ham chi co BON SaveData (Btl_Bulletin x2, Btl_BulletinDtl x2); Btl_Bulletin_VIN chi duoc doc de kiem trung",
+        chainedWithGetByIdInnerJoin = "#576 tra ban tin bang inner join Btl_Bulletin_VIN => ban tin tao boi ham nay KHONG BAO GIO tra duoc",
+        vinAlreadyOnOtherBulletin,
+        sourceDuplicateCheckUsesStringFilter = "dtBulletinDetail.Select(VinNo=quote) noi tay: VIN co dau nhay lam hong bieu thuc loc, va la O(n^2)",
+        detailSchemaTakenFromWhButSavedToBoth = "GetSchema(_dbWH, Btl_BulletinDtl) roi SaveData len ca _dbMain lan _dbWH",
+        whCopyHasNoFileContent = "dong gan FileAttachment o nhanh WH BI COMMENT trong khi FileNameAttachment van gan => kho co ten tep ma khong co tep",
+        isActiveConstantValue = "Constants.Flag.Active = 1 (Const.Main.cs:28)",
+        liveBizIsDateSuffixed = "WSCarSv.asmx.cs:26130 goi Blt_BulletinCreate_20210224; ban tran :1214 CHET",
+    });
 }).RequireAuthorization();
 
 // Chi tiết một bản tin: dịch vụ/phụ tùng liên quan + danh sách VIN áp dụng kèm trạng thái từng xe.
