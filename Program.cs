@@ -16847,6 +16847,91 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #661 TRA CỨU YÊU CẦU XUẤT KHO `SerStockOutOrderGetAll_WH` (`WH.cs:28259-28493`) =====
+// 3B: laptop `:28259` md5 `3347054f` **KHỚP** máy 150 `:28259`. WS gọi thẳng bản này (không hậu tố).
+//
+// 🔴 **ĐÍNH CHÍNH #643 — "TRỌN MỘT TÍNH NĂNG CHƯA BAO GIỜ CHẠY" LÀ DIỄN ĐẠT SAI**:
+//   Ở #643 tôi đếm được **9 hàm** `_New20240115` (thêm **Mã kho**) và **không nơi nào ngoài tầng biz gọi tới**
+//   — **phần đếm đó vẫn đúng**. Nhưng kết luận "tính năng chưa bao giờ được bật" thì **sai**: hàm này cho thấy
+//   **bốn ngày sau** (19/01/2024) họ sửa **THẲNG vào hàm đang chạy**:
+//     `, siso.StockNo   -- 20240119. HuongTTT:` · `, sis.StockName -- 20240119. HuongTTT:`
+//     `left join Ser_Inv_StockOut siso … on si.StockOutID = siso.StockOutID`
+//     `left join Ser_Inv_Stock    sis  … on siso.StockNo   = sis.StockNo`
+//   📌 Đếm chú thích `20240119`: **11 site** (`Inventory.Stock.cs` 1 · `Inventory.StockOut.cs` 5 · `WH.cs` 5).
+//   ⇒ **Đợt "thêm Mã kho" được triển khai theo HAI cách**: (A) 15/01 tạo 9 biến thể `_New20240115` — **bị bỏ**;
+//     (B) 19/01 sửa thẳng hàm đang chạy — **được dùng**. Tính năng **CÓ chạy**, chỉ là qua đường khác.
+//   ⇒ Bài học: "không ai gọi bản mới" **không** đồng nghĩa "tính năng không tồn tại" — phải tìm xem **thay đổi
+//     tương đương có được đưa vào bản đang chạy hay không**, và mốc thời gian gần nhau là manh mối.
+//
+// 🔴🔴🔴 **`INNER JOIN Ser_Customer` LÀM MẤT YÊU CẦU XUẤT KHO NỘI BỘ**:
+//     `FROM #tbl_Ser_Inv_StockOutOrder si INNER JOIN Ser_Customer cus ON si.CusID = cus.CusID`
+//   ⇒ Yêu cầu xuất kho **không gắn khách hàng** (xuất nội bộ, xuất sang kho khác, xuất bảo hành nội bộ)
+//     **biến mất khỏi màn tra cứu**. Đây là màn tra **yêu cầu xuất kho**, nơi xuất nội bộ là chuyện thường.
+// 🔴🔴 **`AND BackOrderIndex = 0` — HẰNG CỨNG LOẠI HẾT HÀNG ĐANG VỀ**: bộ lọc nghiệp vụ **không tham số hoá**,
+//   nằm cuối `WHERE` của bảng tạm ⇒ mọi dòng back-order (`BackOrderIndex > 0`) **không bao giờ tra được** qua
+//   hàm này, dù giao diện không có ô nào để bật/tắt.
+// ⚪ **CA HIẾM — DÒNG BỊ COMMENT CHÍNH LÀ DÒNG SAI, VÀ HỌ ĐÃ SỬA ĐÚNG**:
+//     `--left join ser_car car --//[mylock] on cus.CusID = car.**CarID**`  ← nối **mã KHÁCH** với **mã XE**
+//     `--, car.PlateNo`  → thay bằng `, sr.PlateNo` (lấy biển số từ **lệnh sửa chữa**)
+//   ⇒ Khác hầu hết các ca comment đã gặp (nơi dòng bị tắt là dòng **đúng**), ở đây họ **tắt đúng thứ cần tắt**.
+//     Ghi lại để cân bằng: không phải mọi dòng comment đều là "chức năng bị đánh rơi".
+// 🔴 **CÙNG MỘT THAM SỐ SINH HAI MỆNH ĐỀ TRÊN HAI BẢNG** (họ #624): `strStockOutOrderIDConditionList` và
+//   `strDealerCodeConditionList` mỗi cái có **hai** bản — hậu tố `…SOD` (áp trong subquery trên
+//   `Ser_Inv_StockOutDetail`) và `…SI` (áp trên `Ser_Inv_StockOutOrder`).
+//   ⚪ **Nhưng ở đây an toàn hơn #624**: subquery được nối bằng `Left join` nên lọc bên trong **không** làm mất
+//     yêu cầu xuất kho, chỉ làm `StockOutID` về NULL. Cùng khuôn, khác hậu quả — phải phân biệt.
+// 🔴 Khối chi tiết chỉ sinh khi `strIsGetDetail == TConst.Flag.Active` (= **"1"**), ngược lại `-- Nothing.`
+//   (khuôn #582). **Không** câu nào có `ORDER BY`.
+app.MapGet("/api/stockoutorders/search-wh", async (AppDbContext db, ITenantContext t,
+    string? stockOutOrderNo, string? dealerCode, string? status, string? cusName, bool? isGetDetail) =>
+{
+    var qy = db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(stockOutOrderNo)) qy = qy.Where(x => x.OrderNo == stockOutOrderNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    // 📌 SerStockOutOrder cua Mini KHONG co cot DealerCode/CusID/StockOutType => ba bo loc do chua ap duoc.
+
+    var orders = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+
+    var items = orders.Select(o => new
+    {
+        o.Id, stockOutOrderNo = o.OrderNo, o.OrderDate, o.Status, o.SourceType, o.RONo,
+        o.CusName, o.Address, phone = o.Phone ?? o.Mobile, cusTel = o.Phone, cusMobile = o.Mobile,
+        o.BackOrderIndex, o.TotalQty,
+        // Nguon INNER JOIN Ser_Customer => yeu cau khong gan khach se bien mat; port GIU va danh dau.
+        wouldBeDroppedByCustomerJoin = string.IsNullOrWhiteSpace(o.CusName),
+        // Nguon AND BackOrderIndex = 0 => moi dong back-order bi loai; port GIU va danh dau.
+        wouldBeDroppedByBackOrderFilter = !string.IsNullOrWhiteSpace(o.BackOrderIndex) && o.BackOrderIndex != "0",
+    })
+    .Where(x => string.IsNullOrWhiteSpace(cusName) || (x.CusName ?? "").Contains(cusName!.Trim()))
+    .OrderBy(x => x.stockOutOrderNo).ToList();
+
+    object? lines = null;
+    if (isGetDetail == true)
+    {
+        var ids = items.Select(x => x.Id).ToList();
+        lines = await db.SerStockOutOrderLines.Where(l => l.OrgId == t.OrgId && ids.Contains(l.OrderId))
+            .Select(l => new { l.OrderId, l.PartCode, l.PartName, l.Unit, l.OrderQuantity })
+            .ToListAsync();
+    }
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, lines,
+        droppedByCustomerJoin = items.Count(x => x.wouldBeDroppedByCustomerJoin == true),
+        droppedByBackOrderFilter = items.Count(x => x.wouldBeDroppedByBackOrderFilter == true),
+        miniOrderHasNoDealerOrCusId = "SerStockOutOrder cua Mini luu CusName/Address/Phone TRUC TIEP tren don, khong co CusID/DealerCode/StockOutType => ba bo loc do chua ap duoc, ghi NO",
+        // ===== #661 =====
+        correctionOfIssue643 = "DINH CHINH #643: phan dem 9 ham _New20240115 khong duoc dau day VAN DUNG, nhung ket luan tron mot tinh nang chua bao gio chay la SAI — bon ngay sau (19/01/2024) ho sua THANG vao ham dang chay, danh dau bang chu thich 20240119, dem duoc 11 site (Inventory.Stock.cs 1, Inventory.StockOut.cs 5, WH.cs 5)",
+        twoRoutesForOneFeature = "dot them Ma kho trien khai theo HAI cach: (A) 15/01 tao 9 bien the _New20240115 — BI BO; (B) 19/01 sua thang ham dang chay — DUOC DUNG; tinh nang CO chay, chi la qua duong khac",
+        methodLesson = "khong ai goi ban moi KHONG dong nghia tinh nang khong ton tai; phai tim xem thay doi tuong duong co duoc dua vao ban dang chay khong, va moc thoi gian gan nhau la manh moi",
+        customerInnerJoinDropsInternalOrders = "FROM #tbl_Ser_Inv_StockOutOrder si INNER JOIN Ser_Customer cus ON si.CusID = cus.CusID => yeu cau xuat kho KHONG gan khach hang (xuat noi bo, xuat sang kho khac, xuat bao hanh noi bo) BIEN MAT khoi man tra cuu",
+        backOrderIndexHardFilter = "AND BackOrderIndex = 0 — hang cung, khong tham so hoa, nam cuoi WHERE cua bang tam => moi dong back-order (BackOrderIndex > 0) KHONG BAO GIO tra duoc qua ham nay du giao dien khong co o nao de bat/tat",
+        commentedLineWasTheWrongOne = "CA HIEM: --left join ser_car car on cus.CusID = car.CarID (noi MA KHACH voi MA XE) va --, car.PlateNo bi comment, thay bang , sr.PlateNo lay bien so tu LENH SUA CHUA => ho TAT DUNG thu can tat; khac hau het cac ca comment da gap noi dong bi tat la dong DUNG",
+        sameParamTwoClausesButSafeHere = "strStockOutOrderIDConditionList va strDealerCodeConditionList moi cai co HAI ban: hau to …SOD (ap trong subquery tren Ser_Inv_StockOutDetail) va …SI (ap tren Ser_Inv_StockOutOrder) — ho #624; NHUNG o day an toan hon vi subquery duoc noi bang Left join nen loc ben trong KHONG lam mat yeu cau xuat kho, chi lam StockOutID ve NULL",
+        detailGatedAndNoOrderBy = "khoi chi tiet chi sinh khi strIsGetDetail == TConst.Flag.Active (= 1), nguoc lai -- Nothing. (khuon #582); KHONG cau nao co ORDER BY",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #659 TỔNG HỢP CHIẾN DỊCH HTC `Rpt_SerCamMarketingHTC_Summary_WH` (`WH.cs:18754-19247`) =====
 // 3B: laptop `:18754` md5 `bdb6ec88` **KHỚP** máy 150 `:18754`. WS gọi thẳng bản này (không hậu tố).
 //
@@ -54190,7 +54275,7 @@ app.MapGet("/api/stockouts/search-wh", async (AppDbContext db, ITenantContext t,
         aliasMismatchWasAFalseAlarm = "AM TINH: thoat nhin tuong lech alias (s o bo loc vs siso o phan hien thi) nhung bo loc duoc chen vao CAU THU NHAT noi FROM ser_inv_stockout s => DUNG alias, khong phai loi",
         deadBatchDocCommentSaysStockIn = "doc-comment cua ban chet ghi NC Tim kiem phieu NHAP kho trong khi day la ham XUAT — chep nguyen van tu yeu cau ben nhap",
         stockOutWithoutOrderDisappears = "#tbl_soo dung bang inner join ser_inv_stockoutorderstockout + INNER JOIN ser_inv_stockoutorder, roi cau ket qua INNER JOIN #tbl_soo => phieu xuat KHONG qua yeu cau xuat (xuat ban le, xuat dieu chinh, xuat tra NCC) KHONG TRA DUOC",
-        stockOutOrderNotModelledInMini = "MiniHTC chua mo hinh hoa StockOutOrder nen KHONG do duoc so phieu se bi nuot boi nhanh nay — ghi NO, khong bia",
+        stockOutOrderNotModelledInMini = "DA DINH CHINH o #661: cau nay SAI. MiniHTC CO day du SerStockOutOrder, SerStockOutOrderStockOut, SerStockOutOrderLine (Entities.cs:3204/3263/3281) va `10 endpoint /api/stockoutorders => hoan toan DO DUOC so phieu bi nuot; no ghi o #644 la ghi nham, da go",
         detailInnerJoinsDropDocuments = "#tbl_sod inner join ser_inv_stockoutdetail + INNER JOIN ser_mst_part pl, roi #tbl_sodd INNER JOIN #tbl_sod => phieu chua co dong hoac moi dong deu tro phu tung da roi danh muc se roi khoi ket qua",
         chainedLeftJoinWithKeysFromTwoLeftTables = "left join ser_car car ON cus.CusID = car.CusID AND car.CarID = ro.CarID — cus va ro deu la bang left join => phieu khong gan lenh sua chua thi ro.CarID NULL nen khong khop => car.PlateNo LUON RONG (dung cau hoi THU NHAT cua #414)",
         concatColumnDiesFromLeftJoin = "(LS- + ro.RONo) RONo => phieu khong gan lenh thi CA COT NULL, khong phai LS- (ca thu hai sau #621)",
@@ -54297,7 +54382,10 @@ app.MapGet("/api/stockins/search-wh", async (AppDbContext db, ITenantContext t,
         droppedBySourceJoins = items.Count(x => x.wouldBeDroppedBySource),
         creatorColumnNotModelled = "ServiceStockIn cua Mini KHONG co cot nguoi tao (CreatedBy) nen KHONG mo phong duoc nhanh inner join Sys_user on (UserCode + DealerCode) — ghi NO, khong bia; co wouldBeDroppedBySource hien chi phan anh nhanh nha cung cap",
         // ===== #643 =====
-        wholeFeatureBatchNeverWired = "hau to _New20240115 co o 9 ham (SerStockInGet, SerStockInGet_WH, SerStockInCreate, SerStockInUpdate, SerStockOutSearch, SerStockOutSearch_WH, SerStockOutCreate, SerStockOutUpdate, SerStockBalanceQuantityGet) — may 150 dem lai cung 9; grep toan cay LOAI TRU thu muc TERP.BizCarSv cho ra KHONG mot dong nao => khong WS nao, khong tang nao ben ngoai goi toi bat ky ban nao trong chin ham do",
+        // 🔴 ĐÍNH CHÍNH (#661): phần đếm dưới đây ĐÚNG, nhưng cách diễn đạt "trọn một tính năng chưa bao giờ
+        //    chạy" là SAI. Đợt "thêm Mã kho" được triển khai theo HAI cách; xem `featureShippedViaSecondRoute`.
+        wholeFeatureBatchNeverWired = "hau to _New20240115 co o 9 ham (SerStockInGet, SerStockInGet_WH, SerStockInCreate, SerStockInUpdate, SerStockOutSearch, SerStockOutSearch_WH, SerStockOutCreate, SerStockOutUpdate, SerStockBalanceQuantityGet) — may 150 dem lai cung 9; grep toan cay LOAI TRU thu muc TERP.BizCarSv cho ra KHONG mot dong nao => CHIN BAN DO khong duoc dau day (phan dem nay VAN DUNG)",
+        featureShippedViaSecondRoute = "DINH CHINH #661: tinh nang them Ma kho VAN CHAY, chi la qua duong khac. Bon ngay sau (19/01/2024) ho sua THANG vao ham dang chay va danh dau bang chu thich 20240119 — dem duoc 11 site (Inventory.Stock.cs 1, Inventory.StockOut.cs 5, WH.cs 5), vi du SerStockOutOrderGetAll_WH co siso.StockNo -- 20240119. HuongTTT: va sis.StockName -- 20240119. => cach A (tao ban _New20240115) bi BO, cach B (sua thang) duoc dung",
         featureRequestIsDocumentedInSource = "doc-comment cua nguon: 20240115. HuongTTT: NC Tim kiem phieu nhap kho them thong tin Ma kho / Tham chieu tu ham SerStockInGet_WH",
         whatTheDeadBatchWouldAdd = "DIFF _New20230620 -> _New20240115 dung bon thu: tham so strStockNoConditionList, BuildClause(and, si.StockNo, …), cot sis.StockName, va left JOIN Ser_Inv_Stock sis ON si.StockNo = sis.StockNo AND si.DealerCode = sis.DealerCode",
         deadBatchItselfIsCorrect = "ban 2024 tu no DUNG: left join Ser_Inv_Stock khong bi WHERE giet (du ba cau hoi #414)",
