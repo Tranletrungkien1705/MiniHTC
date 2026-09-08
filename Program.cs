@@ -31711,6 +31711,133 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // 🔴 Hai bảng, **thứ tự ngược trực giác** (`Tables[0]` = chi tiết, có **cột nhãn rỗng**
 //   `select '' #tbl_Report_Detail_Final, *`; `Tables[1]` = tổng theo ngân hàng).
 // ⚠️ Bảy lệnh `drop table` **không có dấu `;`** — khác #B275 (comment hết), khác #B272 (có `;`).
+
+// ===== #B281/#B282/#B283 PIVOT XE CHỜ ĐÓNG THÙNG THEO SỐ NGÀY —
+//       `RptPivot_RearrangeCB_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `148188,148404` ≡ 150 `148193,148409` ⇒ **`3a92d7caf6c5966b30516d0dc38e2fda`**.
+// ✅ **Tham số ngày KHÔNG bị ghi đè** (đối lập #B272): `strTDate = (rỗng ? hôm nay : StandardizeDate(strTDate))`
+//   ⇒ chỉ **mặc định** khi rỗng, người dùng vẫn chọn được mốc. `RangeDate = Datediff(day, ApprovedDate, @strTDate)`.
+// 🔴 **RBAC — tổ hợp (1)**: `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**; `@strBUPatternOfUser`
+//   nạp nhưng grep toàn thân = **1 hit** (chỉ dòng nạp) ⇒ **tham số mồ côi**, không lọc dòng.
+//   Có cổng ⇒ **không phải lỗ** (khuôn #B242/#B272).
+// 🔴🔴🔴 **BUG THẬT — NHÁNH `else` NUỐT DÒNG `RangeDate` NULL VÀO NHÃN KHÔNG TỒN TẠI**:
+//   Bảy nhánh `when` phủ **mọi số nguyên** (`<0`, `0-5`, `6-10`, `11-15`, `16-20`, `21-25`, `>=25`)
+//   ⇒ `else N'00-15'` đáng lẽ là **mã chết**. **Nhưng** khi `ApprovedDate` NULL thì `RangeDate` NULL,
+//   mọi `when` trả **UNKNOWN** ⇒ rơi vào `else` ⇒ dòng được gán nhãn **`'00-15'`** — một nhãn **không nằm
+//   trong bộ nhãn hợp lệ** và **không căn lề** như sáu nhãn kia ⇒ pivot mọc thêm **một cột lạ**.
+//   📌 **KHÔNG tự vá**: giữ đúng nhãn `'00-15'` và trả `rowsWithNullRangeDate` để đối soát.
+// 🔴🔴 **NHÃN CÓ KHOẢNG TRẮNG ĐẦU LÀ CƠ CHẾ SẮP XẾP, KHÔNG PHẢI LỖI ĐỊNH DẠNG**:
+//     `N'      < 0'` (6) · `N'     0-5'` (5) · `N'    6-10'` (4) · `N'   11-15'` (3) ·
+//     `N'  16-20'` (2) · `N' 21-25'` (1) · `N'Trên 25'` (0)
+//   ⇒ **Số khoảng trắng giảm dần** để pivot sắp cột **theo thứ tự chuỗi** cho ra đúng thứ tự nghiệp vụ.
+//   ⚠️ **`Trim()` nhãn khi port là LÀM HỎNG thứ tự cột pivot.** Giữ **nguyên văn**.
+// ⚠️ Nhánh `Trên 25` viết `RangeDate **>= 25**` (đáng lẽ `> 25`) ⇒ **chồng lấn với `21-25`**; vô hại vì
+//   `case when` xét **theo thứ tự** nên 25 rơi vào `21-25` trước. Ghi lại, **không sửa**.
+// 🔴 **Ba điều kiện lọc nền**: `src2.RearCBStatus in ('A')` (lệnh đóng thùng **đã duyệt**) ·
+//   `src.RearCBDtlStatus in ('A')` (dòng đã duyệt) · **`cv.TypeCB in ('N')`** (chỉ xe **loại thùng N**).
+// 🔴 **`select distinct … cv.*`** — lấy **TOÀN BỘ cột `Car_VIN`** vào bảng tạm; thêm/bớt cột ở `Car_VIN`
+//   sẽ **đổi luôn cấu trúc báo cáo**. Port trả **tập cột đã liệt kê rõ**, ghi ở `starSelectNote`.
+// 🔴 Nối `Sto_CBReqDetail` bằng **CẶP** `(VIN, CBReqNo)` để lấy `LoaiThung`; `Mst_CarSpec` join theo
+//   **`cv.ActualSpec`** (không phải `SpecCode`) — cùng bẫy #B239/#B242/#B272.
+// 🔴 Cột hằng **`1.0 TOTAL`** cho pivot (giống #B242).
+app.MapGet("/api/reports/pivot-rearrange-cb", async (
+    AppDbContext db, ITenantContext t, DateTime? tDate) =>
+{
+    // ✅ Rỗng ⇒ hôm nay; KHÔNG ghi đè giá trị người dùng chọn.
+    var asOf = (tDate ?? DateTime.Today).Date;
+
+    // 🔴 Ba điều kiện nền: lệnh 'A', dòng 'A', xe TypeCB = 'N'.
+    var heads = (await db.StoRearCBs.Where(h => h.OrgId == t.OrgId && h.RearCBStatus == "A").ToListAsync())
+        .ToDictionary(h => h.Id);
+    var lines = (await db.StoRearCBDtls.Where(l => l.OrgId == t.OrgId && l.RearCBDtlStatus == "A").ToListAsync())
+        .Where(l => heads.ContainsKey(l.StoRearCBId)).ToList();
+
+    var vins = lines.Select(l => l.VIN).Distinct().ToList();
+    var cvs = (await db.CarVinMasters
+            .Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN) && v.TypeCB == "N").ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    // Nối `Sto_CBReqDetail` theo CẶP (VIN, CBReqNo) để lấy LoaiThung.
+    var cbReqHeads = (await db.StoCBReqs.Where(h => h.OrgId == t.OrgId).ToListAsync()).ToDictionary(h => h.Id);
+    var cbReqLines = await db.StoCBReqDtls.Where(d => d.OrgId == t.OrgId && vins.Contains(d.VIN)).ToListAsync();
+
+    var rows = new List<object>();
+    var rowsWithNullRangeDate = new List<object>();
+    foreach (var l in lines)
+    {
+        if (!cvs.TryGetValue(l.VIN, out var cv)) continue;     // inner join Car_VIN + TypeCB='N'
+        var head = heads[l.StoRearCBId];
+
+        int? rangeDate = head.ApprovedDate == null ? null
+            : (int)(asOf - head.ApprovedDate.Value.Date).TotalDays;
+
+        // 🔴 Bộ nhãn CÓ KHOẢNG TRẮNG ĐẦU — cơ chế sắp xếp cột pivot. KHÔNG Trim.
+        string rangeLabel;
+        if (rangeDate is int rd)
+        {
+            if (rd < 0) rangeLabel = "      < 0";
+            else if (rd <= 5) rangeLabel = "     0-5";
+            else if (rd <= 10) rangeLabel = "    6-10";
+            else if (rd <= 15) rangeLabel = "   11-15";
+            else if (rd <= 20) rangeLabel = "  16-20";
+            else if (rd <= 25) rangeLabel = " 21-25";   // ⚠️ nhánh sau viết ">= 25" nhưng thứ tự case chặn trước
+            else rangeLabel = "Trên 25";
+        }
+        else
+        {
+            // 🔴 NULL ⇒ mọi `when` UNKNOWN ⇒ rơi vào `else N'00-15'` (nhãn KHÔNG thuộc bộ hợp lệ).
+            rangeLabel = "00-15";
+            rowsWithNullRangeDate.Add(new { l.VIN, head.StoRearCBNo });
+        }
+
+        // Lấy LoaiThung theo cặp (VIN, CBReqNo).
+        string? loaiThung = null;
+        if (l.CBReqNo != null)
+        {
+            var d = cbReqLines.FirstOrDefault(x => x.VIN == l.VIN
+                && cbReqHeads.TryGetValue(x.StoCBReqId, out var h) && h.CBReqNo == l.CBReqNo);
+            loaiThung = d?.Remark;   // MiniHTC lưu tên loại thùng ở dòng lệnh (TenLoaiThung) — xem note
+        }
+
+        rows.Add(new
+        {
+            ttVIN = l.VIN,
+            head.StoRearCBNo,
+            l.StorageCodeTo,
+            cv.VIN, cv.ModelCode, cv.SpecCode, cv.ActualSpec, cv.ColorCode, cv.EngineNo, cv.TypeCB,
+            ModelName = (cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null,
+            SpecDescription = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
+            ColorIntNameVN = (string?)null, ColorExtNameVN = (string?)null,   // 📌 NỢ: Mst_CarColor chưa nối
+            head.ApprovedDate,
+            RangeDate = rangeDate,
+            SCDLoaiThung = loaiThung ?? l.TenLoaiThung,
+            Range_Date = rangeLabel,
+            TOTAL = 1.0m                                    // 🔴 cột hằng cho pivot
+        });
+    }
+
+    return Results.Ok(new
+    {
+        asOf,
+        count = rows.Count,
+        RptPivot_RearrangeCB = rows,
+        rowsWithNullRangeDate,
+        dateParamNote = "Tham so ngay KHONG bi ghi de (doi lap #B272): strTDate = (rong ? hom nay : StandardizeDate(strTDate)) => chi MAC DINH khi rong, nguoi dung van chon duoc moc. RangeDate = Datediff(day, ApprovedDate, @strTDate).",
+        rbacNote = "RBAC - to hop (1): myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE; @strBUPatternOfUser nap nhung grep toan than = 1 HIT (chi dong nap) => THAM SO MO COI, khong loc dong. Co cong => KHONG PHAI LO (khuon #B242/#B272).",
+        nullBucketBugNote = "BUG THAT - NHANH 'else' NUOT DONG RangeDate NULL VAO NHAN KHONG TON TAI: bay nhanh 'when' phu MOI SO NGUYEN (<0, 0-5, 6-10, 11-15, 16-20, 21-25, >=25) => 'else N00-15' dang le la MA CHET. NHUNG khi ApprovedDate NULL thi RangeDate NULL, moi 'when' tra UNKNOWN => roi vao 'else' => dong duoc gan nhan '00-15' - mot nhan KHONG nam trong bo nhan hop le va KHONG CAN LE nhu sau nhan kia => pivot moc them MOT COT LA. KHONG TU VA - xem rowsWithNullRangeDate.",
+        labelPaddingNote = "NHAN CO KHOANG TRANG DAU LA CO CHE SAP XEP, KHONG PHAI LOI DINH DANG: '      < 0' (6 space), '     0-5' (5), '    6-10' (4), '   11-15' (3), '  16-20' (2), ' 21-25' (1), 'Tren 25' (0) => SO KHOANG TRANG GIAM DAN de pivot sap cot THEO THU TU CHUOI cho ra dung thu tu nghiep vu. Trim() nhan khi port la LAM HONG THU TU COT PIVOT. Giu NGUYEN VAN.",
+        overlapNote = "Nhanh 'Tren 25' viet 'RangeDate >= 25' (dang le > 25) => CHONG LAN voi '21-25'; vo hai vi 'case when' xet THEO THU TU nen 25 roi vao '21-25' truoc. Ghi lai, KHONG SUA.",
+        baseFilterNote = "Ba dieu kien loc nen: src2.RearCBStatus in ('A') (lenh dong thung DA DUYET); src.RearCBDtlStatus in ('A') (dong da duyet); cv.TypeCB in ('N') (chi xe LOAI THUNG N).",
+        starSelectNote = "'select distinct ... cv.*' - lay TOAN BO cot Car_VIN vao bang tam; them/bot cot o Car_VIN se DOI LUON CAU TRUC BAO CAO. Port tra tap cot da liet ke ro.",
+        joinNote = "Noi Sto_CBReqDetail bang CAP (VIN, CBReqNo) de lay LoaiThung; Mst_CarSpec join theo cv.ActualSpec (khong phai SpecCode) - cung bay #B239/#B242/#B272. Cot hang 1.0 TOTAL cho pivot (giong #B242).",
+        debtNote = "NO: Mst_CarColor chua noi (ColorIntNameVN/ColorExtNameVN tra NULL), khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/bl-quahan-dathanhtoan", async (
     AppDbContext db, ITenantContext t, DateTime? dateEndFrom, DateTime? dateEndTo) =>
 {
