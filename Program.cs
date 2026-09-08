@@ -16821,6 +16821,88 @@ app.MapPost("/api/insdebits/recalc-from-ro/{roNo}", async (string roNo, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #655 BIỂU ĐỒ THỐNG KÊ BẢO HÀNH — TÌM RA *CƠ CHẾ* ĐỨNG SAU CHUYỆN "CommonCenter" =====
+// TRACE: WS gọi `Rpt_DMSSer_Chart_ThongKeBaoHanh_WH_New20180807` (`WH.cs:13055-13156`, md5 `0ddcabd6`) —
+//   **vỏ bọc**, thân thật là `Rpt_DMSSer_Chart_ThongKeBaoHanhX` (`ZTemp.cs:910-1203`, md5 `9b571d4d`
+//   **KHỚP** máy 150 `:910`). Trả **bốn** bảng: `…_ByDealer` · `…_ByMonth` · `…_ByArea` · `…_ByModelB`.
+//
+// 🔴🔴🔴 **TÌM RA CƠ CHẾ — MỘT DÒNG TERNARY QUYẾT ĐỊNH ĐỌC DB NÀO**:
+//     `strSqlGetData = StringUtils.Replace(strSqlGetData,`
+//     `  "@strDBName_CommonCenter.", dbAction == **_dbDealer** ? "[" + _strConfig_DBName_Main + "].[dbo]." : **""**);`
+//   ⇒ Chạy trên **`_dbDealer`** ⇒ thay bằng `[<DBName_Main>].[dbo].` (**gọi chéo sang Main**);
+//     chạy trên **`_dbWH`/`_dbMain`** ⇒ thay bằng **chuỗi RỖNG** ⇒ **đọc cục bộ**.
+//   📌 Đây chính là **lời giải thích** cho toàn bộ chuỗi quan sát #619 · #621 · #624 · #625 · #636 · #652:
+//     cùng một câu SQL, hai cổng ⇒ hai đích DB. Ở các hàm kia họ **viết cứng hai bản**; ở đây họ làm **động**.
+//   ⇒ Củng cố thêm phần **RÚT LẠI ở #619**: chỗ giữ chỗ `@strDBName_CommonCenter` **không hề là một DB riêng** —
+//     nó chỉ là **tiền tố tuỳ chọn**, và giá trị duy nhất từng được gán là **tên DB Main**.
+//   📌 Đếm cơ chế động này: `dbAction == _dbDealer ?` có **7** site (`ZTemp.cs` 3 · `Inventory.Stock.cs` 2 ·
+//     `SendMail.cs` 1 · `Tab.cs` 1) ⇒ **thiểu số**: phần lớn cụm vẫn nhân bản hai hàm thay vì dùng cách này.
+//
+// 🔴🔴 **JOIN TIỀN TỐ VIN 4-HOẶC-5 — CA THỨ BA, LẦN NÀY LÀ `left join` NÊN HẬU QUẢ KHÁC**:
+//     `left join @strDBName_CommonCenter.Mst_VINModelOrginal mvo on (mvo.VINCode = left(sc.FrameNo,4)`
+//     `or mvo.VINCode = left(sc.FrameNo,5))`
+//   ⇒ Khác #651/#654 (dùng `inner join` ⇒ **mất xe**): ở đây là `left join` nên **không mất**, **nhưng** `or`
+//     hai độ dài vẫn **nở dòng**, và `group by` **có** `mvo.ModelCode` + `mvo.OrginalCode` ⇒ hai dòng vẫn là
+//     **hai nhóm** ⇒ **một BCBH bị đếm HAI LẦN** trong biểu đồ thống kê. Cùng một mẫu join, **ba hàm, hai loại**
+//     **hậu quả** — phải phân biệt khi báo.
+// 🔴 **BA TẦNG `left join` PHỤ THUỘC NHAU**: `left join Ser_ROWarrantyReport srr` → `left join ser_car sc on`
+//   `**srr**.CarID = sc.CarID` → `left join Ser_MST_Model smm on smm.ModelID = **sc**.ModelID` ⇒ khoá nối lấy từ
+//   bảng LEFT phía trước (luật #414 câu 1). Hiện không hỏng vì `srr` luôn khớp bảng tạm đã lọc, nhưng là
+//   **phụ thuộc ngầm**.
+// ⚪ **KHỐI `case` PHÂN LOẠI THEO TIỀN TỐ VIN LẠI BỊ COMMENT** (`--when sc.FrameNo like 'KMJW%' then 'HMC'` …)
+//   — **ca thứ hai** sau #646. ⇒ Củng cố đính chính #645/#646: các bảng phân loại VIN trong hệ này **đều đã tắt**,
+//   nên **không được** dùng chúng làm bằng chứng về phân loại đang chạy.
+// ⚪ **DÒNG DEBUG Ở ĐÂY ĐÃ ĐƯỢC COMMENT** (`-- select '' #tbl_x,* from #tbl_x`) — **ngược với #654** nơi dòng
+//   tương tự **còn ACTIVE** và vẫn trả về client. Cùng một thói quen debug, hai kết cục.
+// ⚪ Âm tính: khối `union all` gộp tiền phụ tùng và tiền công rồi `sum()` theo `ROWID` — hợp lệ, không nhân đôi
+//   (mỗi nhánh chỉ đóng góp cột của mình). `CONVERT(varchar(10)/(7), CreatedDate, 126)` để gom ngày/tháng —
+//   style 126 ISO nên **thứ tự chuỗi = thứ tự thời gian**.
+app.MapGet("/api/report/warranty-chart", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? reportDateFrom, DateTime? reportDateTo) =>
+{
+    var from = (reportDateFrom ?? DateTime.Today.AddMonths(-3)).Date;
+    var to = (reportDateTo ?? DateTime.Today).Date;
+
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    var claims = await qy.Select(x => new { x.Id, x.ClaimNo, x.DealerCode, x.Vin, x.Amount, x.Status }).ToListAsync();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.ModelCode, c.TradeMark }).ToListAsync();
+
+    var joined = claims.Select(c =>
+    {
+        var car = c.Vin == null ? null : cars.FirstOrDefault(x => x.FrameNo == c.Vin);
+        return new { c.Id, c.ClaimNo, c.DealerCode, c.Vin, c.Amount, modelCode = car?.ModelCode,
+                     tradeMark = car?.TradeMark };
+    }).ToList();
+
+    var byDealer = joined.GroupBy(x => x.DealerCode)
+        .Select(g => new { dealerCode = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) })
+        .OrderBy(x => x.dealerCode).ToList();
+    var byModel = joined.GroupBy(x => x.modelCode)
+        .Select(g => new { modelCode = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) })
+        .OrderBy(x => x.modelCode).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to,
+        byDealer, byModel,
+        // ===== #655 =====
+        mechanismBehindTheCommonCenterStory = "tim ra CO CHE: StringUtils.Replace(sql, @strDBName_CommonCenter., dbAction == _dbDealer ? [<DBName_Main>].[dbo]. : chuoi RONG) => chay tren _dbDealer thi GOI CHEO sang Main, chay tren _dbWH/_dbMain thi doc CUC BO; day chinh la loi giai thich cho chuoi quan sat #619/#621/#624/#625/#636/#652",
+        reinforcesRetractionInIssue619 = "cung co them phan RUT LAI o #619: @strDBName_CommonCenter KHONG he la mot DB rieng — no chi la TIEN TO TUY CHON, va gia tri duy nhat tung duoc gan la ten DB Main",
+        dynamicMechanismIsTheMinority = "dem dbAction == _dbDealer ? tren toan tang biz: 7 site (ZTemp.cs 3, Inventory.Stock.cs 2, SendMail.cs 1, Tab.cs 1) => THIEU SO; phan lon cum van nhan ban HAI HAM thay vi dung cach dong nay",
+        vinPrefixJoinThirdCaseButLeftJoin = "left join Mst_VINModelOrginal on (VINCode = left(FrameNo,4) or VINCode = left(FrameNo,5)) — khac #651/#654 (inner join => MAT xe): o day left join nen KHONG mat, NHUNG or hai do dai van NO DONG va group by co mvo.ModelCode + mvo.OrginalCode nen hai dong van la HAI NHOM => mot BCBH bi DEM HAI LAN trong bieu do",
+        sameJoinPatternTwoKindsOfDamage = "cung mot mau join, ba ham, HAI loai hau qua (mat dong vs dem trung) — phai phan biet khi bao",
+        threeLevelChainedLeftJoins = "left join Ser_ROWarrantyReport srr -> left join ser_car sc on srr.CarID = sc.CarID -> left join Ser_MST_Model smm on smm.ModelID = sc.ModelID => khoa noi lay tu bang LEFT phia truoc (#414 cau 1); hien khong hong vi srr luon khop bang tam da loc, nhung la PHU THUOC NGAM",
+        vinClassifierCaseCommentedAgain = "khoi case phan loai theo tien to VIN (--when sc.FrameNo like KMJW% then HMC …) LAI BI COMMENT — ca thu hai sau #646 => cung co dinh chinh #645/#646: cac bang phan loai VIN trong he nay DEU DA TAT, khong duoc dung lam bang chung ve phan loai dang chay",
+        debugLinesAreCommentedHere = "AM TINH: dong -- select \"\" #tbl_x,* from #tbl_x o day DA duoc comment — NGUOC voi #654 noi dong tuong tu con ACTIVE va van tra ve client",
+        unionAllAggregationIsCorrect = "AM TINH: khoi union all gop tien phu tung va tien cong roi sum() theo ROWID — hop le, khong nhan doi (moi nhanh chi dong gop cot cua minh)",
+        dateGroupingUsesIso = "CONVERT(varchar(10)/(7), CreatedDate, 126) de gom ngay/thang — style 126 ISO nen thu tu chuoi = thu tu thoi gian",
+        sourceReturnsFourTables = "nguon tra BON bang: …_ByDealer, …_ByMonth, …_ByArea, …_ByModelB; port moi dung hai (byDealer, byModel) vi MiniHTC chua mo hinh hoa VUNG (Area) va thang bao cao — ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #654 THỐNG KÊ BẢO HÀNH THEO MODEL `Rpt_DMSSer_ThongKeBaoHanhTheoModel_WH` (`WH.cs:13620-14159`) =====
 // 3B: laptop `:13620` md5 `229429a2` **KHỚP** máy 150 `:13620`. WS gọi thẳng bản này (không hậu tố).
 // Cùng khuôn **liên hệ thống** với #651: gọi WS DMS Sale → `InsertHuge` vào `#tbl_Rpt_FromSale` → nối cục bộ.
