@@ -31741,6 +31741,118 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // 🔴 Nối `Sto_CBReqDetail` bằng **CẶP** `(VIN, CBReqNo)` để lấy `LoaiThung`; `Mst_CarSpec` join theo
 //   **`cv.ActualSpec`** (không phải `SpecCode`) — cùng bẫy #B239/#B242/#B272.
 // 🔴 Cột hằng **`1.0 TOTAL`** cho pivot (giống #B242).
+
+// ===== #B284/#B285/#B286 TỔNG HỢP NHÂN SỰ BÁN HÀNG THEO THÁNG / QUÝ / NĂM —
+//       `Rpt_HRSalesMan_HRSummary_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `153192,153444` ≡ 150 `153197,153449` ⇒ **`b76490237348772c10d6638b57ceb48c`**.
+// 🔴🔴🔴 **BUG THẬT — HAI THAM SỐ LỌC LÀ *BẮT BUỘC NGẦM*, BỎ TRỐNG ⇒ BÁO CÁO RỖNG**:
+//     `and hrsmom.DealerCode = '@strDealerCode'`
+//     `and hrsmomdt.SMType   = '@strSMType'`
+//   Cả hai viết theo kiểu **so BẰNG với literal đã nướng**, **không** theo khuôn an toàn của hệ
+//   `(@x = '' or col = @x)` (xem #B242/#B272). ⇒ Người dùng **không chọn** đại lý/loại NV thì
+//   `StandardizeParam` trả **chuỗi rỗng** ⇒ điều kiện thành `DealerCode = ''` ⇒ **không dòng nào khớp**
+//   ⇒ **báo cáo trả RỖNG chứ không phải "lấy tất cả"**. 📌 Không tự vá; port **guard đầu vào** và
+//   trả `requiredFilters` để người dùng biết ngay vì sao rỗng.
+// 🔴🔴 **BỐN THAM SỐ NẠP, KHÔNG CÁI NÀO ĐƯỢC DÙNG**: `@strBUPatternOfUser` (grep toàn thân = **1 hit**),
+//   `@strTDateMax`, `@strHTCDealerCode`, `@strHTCDealerName` — SQL **chỉ** dùng token **đã nướng**
+//   (`'@strDealerCode'`, `'@strSMType'`, `'@strHRMonthFrom'`, `'@strHRMonthTo'`).
+//   ⇒ **4/4 tham số runtime mồ côi**. Và lặp lại lỗi của #B269: `"@strHTCDealerName"` **nhận giá trị**
+//     `TConst.HTCConst.**HTCDealerCode**` (biến tên *Name* nhận *Code*).
+// 🔴 **Toàn bộ bộ lọc đều NƯỚNG vào literal** bằng `StringUtils.Replace` ⇒ **bề mặt SQL injection**
+//   trên cả 4 giá trị. Port tham số hoá + chuẩn hoá tháng.
+// 🔴 **Hằng ngày biên VIẾT CỨNG, KHÁC chuẩn hệ**: `From` rỗng ⇒ **`"1900-01-01"`**, `To` rỗng ⇒
+//   **`"2100-01-01"`** — trong khi #B242/#B275 dùng **`TConst.DateTimeSpecial.DateMax`**.
+//   ⇒ Cùng hệ, hai kiểu mốc biên; đừng giả định chung.
+// ✅ **RBAC — tổ hợp (1)**: `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**, không lọc dòng ⇒ **cố ý**.
+// 🔴🔴 **BA CẤP ĐẾM DÙNG BA LẦN `distinct` RIÊNG ⇒ `Quý ≠ Σ tháng`, `Năm ≠ Σ quý`** (đúng thiết kế):
+//   · **Tháng**: `count(*)` trên tập đã `distinct (DealerCode, HRMonth, SMCode)`;
+//   · **Quý**: dựng `#tbl_HR_SalesMan_ForQuy_Draft` = `distinct (DealerCode, Year, Quy, SMCode)` rồi đếm
+//     ⇒ nhân viên làm **nhiều tháng trong quý chỉ đếm MỘT lần**;
+//   · **Năm**: `distinct (DealerCode, Year, SMCode)` rồi đếm.
+//   ⇒ **Không được cộng dồn tháng ra quý** — đây là **số người DUY NHẤT** theo từng cấp, không phải tổng.
+// 🔴 **Quý** = `month < 4 → 1` · `< 7 → 2` · `< 10 → 3` · `else 4`.
+// ⚠️ Trong `#tbl_HR_SalesManOfMonthDtl_Filter`, ba cột đầu lấy từ **`hsmomd`** nhưng `Quy`/`Year` lại tính
+//   từ **`t.HRMonth`** (bảng tạm) — vô hại vì `on … hsmomd.HRMonth = t.HRMonth`, nhưng là **trộn nguồn cột
+//   trong cùng `select`**; đọc lướt dễ tưởng hai mốc khác nhau.
+// 🔴 Trả **BA bảng**: `Rpt_HR_SalesMan_ForMonth` · `…ForQuy` · `…ForYear` (ba `select … group by` **không**
+//   có `into`; chỉ các bảng `_Draft` mới `into`).
+app.MapGet("/api/reports/hrsalesman-summary", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? smType,
+    DateTime? hrMonthFrom, DateTime? hrMonthTo) =>
+{
+    // 🔴 Hai tham số này là BẮT BUỘC NGẦM ở nguồn (so BẰNG literal) — port báo rõ thay vì trả rỗng câm.
+    var dlr = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var smt = (smType ?? "").Trim();
+    if (dlr.Length == 0 || smt.Length == 0)
+        return Results.BadRequest(new
+        {
+            error = "Rpt_HRSalesMan_HRSummary_RequiredFilterMissing",
+            requiredFilters = new[] { "dealerCode", "smType" },
+            reason = "Nguon viet 'and hrsmom.DealerCode = @strDealerCode' va 'and hrsmomdt.SMType = @strSMType' (so BANG literal, KHONG theo khuon (@x = '' or col = @x)) => bo trong se tra RONG chu khong phai 'lay tat ca'."
+        });
+
+    // 🔴 Mốc biên viết cứng ở nguồn: 1900-01-01 / 2100-01-01 (KHÔNG dùng DateTimeSpecial.DateMax).
+    var from = (hrMonthFrom ?? new DateTime(1900, 1, 1)).Date;
+    var to = (hrMonthTo ?? new DateTime(2100, 1, 1)).Date;
+    from = new DateTime(from.Year, from.Month, 1);      // StandardizeMonth ⇒ đầu tháng
+    to = new DateTime(to.Year, to.Month, 1);
+
+    // #tbl_HR_SalesManOfMonth_Filter: inner join đầu ↔ dòng, lọc đại lý + loại NV + khoảng tháng.
+    var heads = await db.HrSalesManOfMonths
+        .Where(h => h.OrgId == t.OrgId && h.DealerCode == dlr
+                    && h.HRMonth != null && h.HRMonth >= from && h.HRMonth <= to)
+        .ToListAsync();
+    var headKeys = heads.Select(h => h.HRMonth!.Value).ToHashSet();
+
+    var dtls = (await db.HrSalesManOfMonthDtls
+            .Where(d => d.OrgId == t.OrgId && d.DealerCode == dlr && d.SMType == smt
+                        && d.HRMonth != null)
+            .ToListAsync())
+        .Where(d => headKeys.Contains(d.HRMonth!.Value))
+        .ToList();
+
+    // 🔴 BA CẤP, BA LẦN `distinct` RIÊNG — Quý ≠ Σ tháng, Năm ≠ Σ quý.
+    static int QuyOf(DateTime m) => m.Month < 4 ? 1 : m.Month < 7 ? 2 : m.Month < 10 ? 3 : 4;
+
+    var byMonth = dtls
+        .Select(d => (d.DealerCode, Month: d.HRMonth!.Value, d.SMCode))
+        .Distinct()
+        .GroupBy(x => (x.DealerCode, x.Month))
+        .Select(g => new { DealerCode = g.Key.DealerCode, HRMonth = g.Key.Month, QtySMMonth = g.Count() })
+        .OrderBy(x => x.HRMonth).ToList();
+
+    var byQuy = dtls
+        .Select(d => (d.DealerCode, Year: d.HRMonth!.Value.Year, Quy: QuyOf(d.HRMonth!.Value), d.SMCode))
+        .Distinct()
+        .GroupBy(x => (x.DealerCode, x.Year, x.Quy))
+        .Select(g => new { DealerCode = g.Key.DealerCode, Year = g.Key.Year, Quy = g.Key.Quy, QtySMQuy = g.Count() })
+        .OrderBy(x => x.Year).ThenBy(x => x.Quy).ToList();
+
+    var byYear = dtls
+        .Select(d => (d.DealerCode, Year: d.HRMonth!.Value.Year, d.SMCode))
+        .Distinct()
+        .GroupBy(x => (x.DealerCode, x.Year))
+        .Select(g => new { DealerCode = g.Key.DealerCode, Year = g.Key.Year, QtySMYear = g.Count() })
+        .OrderBy(x => x.Year).ToList();
+
+    return Results.Ok(new
+    {
+        filter = new { dealerCode = dlr, smType = smt, hrMonthFrom = from, hrMonthTo = to },
+        Rpt_HR_SalesMan_ForMonth = byMonth,     // Tables[0]
+        Rpt_HR_SalesMan_ForQuy = byQuy,         // Tables[1]
+        Rpt_HR_SalesMan_ForYear = byYear,       // Tables[2]
+        requiredFilterNote = "BUG THAT - HAI THAM SO LOC LA BAT BUOC NGAM, BO TRONG => BAO CAO RONG: 'and hrsmom.DealerCode = @strDealerCode' va 'and hrsmomdt.SMType = @strSMType' viet theo kieu so BANG voi literal DA NUONG, KHONG theo khuon an toan cua he '(@x = \"\" or col = @x)'. Nguoi dung khong chon thi StandardizeParam tra CHUOI RONG => dieu kien thanh DealerCode = '' => KHONG dong nao khop => bao cao tra RONG chu khong phai 'lay tat ca'. Port guard dau vao + tra requiredFilters.",
+        orphanParamsNote = "BON THAM SO NAP, KHONG CAI NAO DUOC DUNG: @strBUPatternOfUser (grep toan than = 1 hit), @strTDateMax, @strHTCDealerCode, @strHTCDealerName - SQL CHI dung token DA NUONG. => 4/4 tham so runtime MO COI. Lap lai loi cua #B269: '@strHTCDealerName' nhan gia tri TConst.HTCConst.HTCDealerCode (bien ten Name nhan Code).",
+        bakedInjectionNote = "Toan bo bo loc deu NUONG vao literal bang StringUtils.Replace => BE MAT SQL INJECTION tren ca 4 gia tri. Port tham so hoa + chuan hoa thang.",
+        hardcodedBoundsNote = "Hang ngay bien VIET CUNG, KHAC chuan he: From rong => '1900-01-01', To rong => '2100-01-01' - trong khi #B242/#B275 dung TConst.DateTimeSpecial.DateMax. Cung he, hai kieu moc bien; dung gia dinh chung.",
+        rbacNote = "RBAC - to hop (1): myCommon_CheckHTCDirect(..., Flag.Active) ACTIVE, khong loc dong => CO Y.",
+        threeLevelDistinctNote = "BA CAP DEM DUNG BA LAN 'distinct' RIENG => Quy KHAC tong thang, Nam KHAC tong quy (DUNG THIET KE): Thang = count(*) tren tap distinct (DealerCode, HRMonth, SMCode); Quy = dung #tbl_HR_SalesMan_ForQuy_Draft distinct (DealerCode, Year, Quy, SMCode) roi dem => nhan vien lam NHIEU THANG trong quy chi dem MOT lan; Nam = distinct (DealerCode, Year, SMCode) roi dem. KHONG duoc cong don thang ra quy - day la SO NGUOI DUY NHAT theo tung cap, khong phai tong.",
+        quarterNote = "Quy = month < 4 -> 1; < 7 -> 2; < 10 -> 3; else 4.",
+        mixedAliasNote = "Trong #tbl_HR_SalesManOfMonthDtl_Filter, ba cot dau lay tu 'hsmomd' nhung Quy/Year lai tinh tu 't.HRMonth' (bang tam) - vo hai vi join 'on hsmomd.HRMonth = t.HRMonth', nhung la TRON NGUON COT trong cung select; doc luot de tuong hai moc khac nhau.",
+        threeTablesNote = "Tra BA bang: Rpt_HR_SalesMan_ForMonth / ...ForQuy / ...ForYear (ba 'select ... group by' KHONG co 'into'; chi cac bang _Draft moi 'into')."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/pivot-rearrange-cb", async (
     AppDbContext db, ITenantContext t, DateTime? tDate) =>
 {
