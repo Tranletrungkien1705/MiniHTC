@@ -33096,6 +33096,74 @@ app.MapPost("/api/customergroups", async (CustomerGroupDto dto, AppDbContext db,
     return Results.Ok(new { g.GroupNo, updated = false });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #607 `SerCustomerGroupDelete` (`Service.cs:7836`) — **CHỖ GÕ NHẦM `_dbWH` THỨ BA, KHÉP QUÉT #606** =====
+// Đây là site thứ ba trong danh sách ba chỗ đã đếm ở #606 (`Debit.cs:3360` #571 · `PartOrder.cs:2974` #606 ·
+//   **`Service.cs:7916`** — hàm này). Đọc xong ⇒ **cả ba đều đã được xác minh tận mắt**, không còn suy đoán.
+//
+// 🔴🔴 **CÙNG MỘT DÒNG SAI, CÙNG MỘT CHÚ THÍCH ĐÚNG** — trích nguyên văn:
+//     `// delete in Data Dealer`
+//     `if (bNeedTransaction_Dealer)`
+//     `{`
+//     `    **_dbWH**.ExecQuery(strSqlDelete, "@GroupNo", strGroupNo, "@DealerCode", strDealerCode);`
+//     `}`
+//   ⇒ **DB đại lý không bao giờ bị xoá**; kho bị xoá **ba lần**; `CommitSafety(_dbDealer)` commit **rỗng**.
+//   📌 **Đặc điểm chung của cả ba site** (nay đã đọc đủ, kết luận có cơ sở):
+//     · cả ba đều là hàm **XOÁ** (`SerPaymentDelete`, `SerPartOrderDelete`, `SerCustomerGroupDelete`);
+//     · cả ba đều có **chú thích đúng** (`// delete in Data Dealer`) ngay trên dòng sai;
+//     · cả ba đều nằm ở **nhánh thứ ba** của khối ghi ba DB (Main → WH → Dealer).
+//   ⇒ Người viết chép khối `_dbWH` ở giữa xuống làm nhánh thứ ba rồi **quên đổi tên đối tượng DAL**.
+//     Chú thích được sửa, **mã thì không** — đúng loại lỗi mà đọc chú thích sẽ **không** phát hiện được.
+//
+// 🔴 **KHÔNG CÓ `#region // Check` NÀO** (trích theo #403): giữa Init và `#region // Save data` **không tồn
+//   tại** khối kiểm nào ⇒ không kiểm nhóm có tồn tại, **không kiểm nhóm còn thành viên hay không**.
+//   ⇒ Xoá nhóm khách hàng để lại **thành viên mồ côi** ở bảng chi tiết (nếu có bảng đó ở nguồn) — và **không**
+//     đọc số dòng ảnh hưởng nên xoá 0 dòng vẫn báo thành công (khuôn #571/#590).
+// ⚪ Âm tính: câu xoá **có** ràng buộc `DealerCode` **và** dùng **tham số thật** (`@GroupNo`, `@DealerCode`) —
+//   giống `Email_ConfigSendAuto_Delete` (#590), khác `Blt_Bulletin_Get_OnlyByBulletinID` (#576, bake).
+// 📌 MiniHTC một DB ⇒ endpoint dưới xoá **cả nhóm lẫn thành viên**, kiểm tồn tại, và nêu cờ.
+app.MapPost("/api/customergroups/{no}/delete", async (string no, AppDbContext db, ITenantContext t,
+    string? dealerCode, bool? force) =>
+{
+    var code = no.Trim().ToUpperInvariant();
+    var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == code);
+    // GUARD nguồn KHÔNG có: kiểm tồn tại.
+    if (g is null)
+        return Results.NotFound(new
+        {
+            groupNo = code,
+            sourceHasNoCheckRegion = "giua Init va Save data khong ton tai khoi kiem nao; xoa 0 dong van bao thanh cong",
+        });
+
+    var members = await db.CustomerGroupMembers
+        .Where(x => x.OrgId == t.OrgId && x.CustomerGroupId == g.Id).ToListAsync();
+
+    // GUARD nguồn KHÔNG có: nhóm còn thành viên.
+    if (members.Count > 0 && force != true)
+        return Results.BadRequest(new
+        {
+            error = $"Nhom {code} con {members.Count} thanh vien — them force=true de xoa ca thanh vien.",
+            memberCount = members.Count,
+            sourceWouldLeaveOrphans = "nguon chi xoa Ser_CustomerGroup, khong dung bang thanh vien",
+        });
+
+    db.CustomerGroupMembers.RemoveRange(members);
+    db.CustomerGroups.Remove(g);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = code, membersDeleted = members.Count,
+        thirdWrongDalSiteVerified = "Service.cs:7916 — doc tan mat, khep danh sach ba cho cua #606",
+        allThreeSitesAreDeleteFunctions = new[] { "SerPaymentDelete (#571)", "SerPartOrderDelete (#606)", "SerCustomerGroupDelete (#607)" },
+        allThreeHaveCorrectCommentWrongCode = "ca ba deu co // delete in Data Dealer ngay tren dong goi _dbWH => doc chu thich se KHONG phat hien duoc",
+        allThreeAreThirdBranch = "deu la nhanh thu ba cua khoi ghi ba DB (Main -> WH -> Dealer) => chep khoi _dbWH o giua xuong roi quen doi ten DAL",
+        sourceNoCheckRegion = true,
+        sourceDoesNotDeleteMembers = "cau xoa chi dung Ser_CustomerGroup",
+        sourceDoesNotCheckAffectedRows = true,
+        parametersProperlyBoundAndDealerScoped = "@GroupNo + @DealerCode deu la tham so that va co rang buoc dai ly (giong #590, khac #576)",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/customergroups/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
