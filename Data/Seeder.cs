@@ -1289,6 +1289,8 @@ public static class Seeder
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Tel\" text",
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Fax\" text",
         "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Website\" text",
+        // #586 hop thu di Hyundai Me (nguon KHONG co bang nay — hang doi trong bo nho)
+        "CREATE TABLE IF NOT EXISTS public.\"HyundaiMeOutboxes\" (\"Id\" bigserial primary key, \"OrgId\" uuid not null, \"Kind\" text not null default '', \"RefNo\" text not null default '', \"Endpoint\" text, \"Payload\" text, \"Status\" text not null default 'PENDING', \"AttemptCount\" integer not null default 0, \"LastError\" text, \"CreatedAt\" timestamp not null default now(), \"SentAt\" timestamp)",
         // #566 danh muc mang luoi (CmCt_Mst_Network)
         "CREATE TABLE IF NOT EXISTS public.\"NetworkMsts\" (\"Id\" bigserial primary key, \"OrgId\" uuid not null, \"NetworkID\" text not null, \"NetworkName\" text, \"GroupNetworkID\" text, \"CoreAddr\" text, \"PingAddr\" text, \"XSysAddr\" text, \"WSUrlAddr\" text, \"DBUrlAddr\" text, \"WAUrlAddr\" text, \"FlagActive\" text, \"LogLUDTimeUTC\" timestamp, \"LogLUBy\" text)",
         // #557 dai ly cua cong no (nua khoa xoa cua nguon)

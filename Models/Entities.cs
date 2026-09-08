@@ -4991,6 +4991,24 @@ public sealed class WarrantyWorkMst
 /// (`BizCarSv.Master.cs:5743`), sống qua **kênh ClientService** (`Mst_PlateColorService.cs:40`), xem #519.</summary>
 /// <summary>#566 §12 Danh mục **mạng lưới** (`CmCt_Mst_Network`) — mỗi bản ghi là một hệ thống con
 /// (một đại lý hoặc HTC) kèm **các địa chỉ dịch vụ** để hệ khác gọi sang.</summary>
+/// <summary>#586 §12 Hộp thư đi Hyundai Me — nguồn **không có bảng này**: hàng đợi nằm trong bộ nhớ
+/// (`ConcurrentQueue`) và gói bị `TryDequeue` **trước** khi đẩy, nên đẩy lỗi là **mất vĩnh viễn**.
+/// MiniHTC **cố ý lệch**: ghi gói xuống DB trước, đánh dấu sau, để còn phát lại được.</summary>
+public sealed class HyundaiMeOutbox
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Kind { get; set; } = "";          // "ro" | "app"
+    public string RefNo { get; set; } = "";         // RONo hoặc AppNo
+    public string? Endpoint { get; set; }           // webhook/push-service-status | webhook/push-appointment
+    public string? Payload { get; set; }
+    public string Status { get; set; } = "PENDING"; // PENDING | SENT | FAILED
+    public int AttemptCount { get; set; }
+    public string? LastError { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+}
+
 public sealed class NetworkMst
 {
     public long Id { get; set; }

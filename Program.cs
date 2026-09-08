@@ -30713,6 +30713,84 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #586 TẦNG VẬN CHUYỂN HYUNDAI ME (`HyundaiMeService` + hàng đợi nền) — **MẤT GÓI IM LẶNG** =====
+// Nguồn: `PushToHyundaiMe.cs:381` (`ser_bgfuncProcessLogQueue`) và `:601` (`PostData`), `:625/:636`
+//   (`WA_OSHyundaiMe_PushAppointments` / `WA_OSHyundaiMe_PushRO`).
+//
+// 🔴🔴 **GÓI BỊ LẤY RA KHỎI HÀNG ĐỢI TRƯỚC KHI ĐẨY**:
+//     `if (cqLogBuff.TryDequeue(out objItem)) { PushToHyundaiMe(objItem); }`
+//   ⇒ `TryDequeue` **thành công là gói đã rời hàng đợi**; nếu `PushToHyundaiMe` ném lỗi thì **không còn bản
+//     nào để phát lại**. Không có `Peek`, không có đưa lại vào hàng, không có bảng lưu.
+// 🔴🔴 **`catch` RỖNG HOÀN TOÀN** ở chính vòng lặp đó — trích nguyên văn:
+//     `catch (Exception exc)`
+//     `{`
+//     `    //using (StreamWriter sw = new StreamWriter("D:\\logQELTS.txt"))` … (toàn bộ thân **bị comment**)
+//     `}`
+//   ⇒ Mọi lỗi **bị nuốt sạch**: không log, không đếm, không báo. Cộng với gạch đầu dòng trên ⇒ **mất gói**
+//     **hoàn toàn im lặng**. Bên hãng không nhận được, bên mình **không có một dấu vết nào**.
+// 🔴 **HÀNG ĐỢI NẰM TRONG BỘ NHỚ** (`ConcurrentQueue<object>`, khởi tạo ở `InitQueue()`) ⇒ **restart IIS /
+//   app pool recycle = mất sạch** mọi gói chưa kịp đẩy. Không có hàng đợi bền vững nào phía sau.
+// 🔴 **KHÔNG ĐỌC KẾT QUẢ TRẢ VỀ**: bản đang chạy là `PostData(ref alParamsCoupleError, apiUrl, data)` —
+//   nó **chỉ nhét** phản hồi vào mảng log (`"RTFromHyundaiMe", response`) rồi thôi. **Không** kiểm mã HTTP,
+//   **không** đọc `status`/`code`/`message` dù lớp `UtilHyundaiMe.WARTBase` **có sẵn ba trường đó**.
+//   ⇒ Hãng trả HTTP 200 kèm thân báo lỗi nghiệp vụ ⇒ ta **coi như thành công**.
+//   ⚪ Âm tính (luật "port dòng ACTIVE"): bản tổng quát `PostData<R, M>` **có** `JsonConvert.DeserializeObject<R>`
+//     và ràng buộc `where R : WARTBase` — nhưng **cả hai lời gọi dùng nó đều bị comment** ⇒ bản đang chạy là
+//     bản `void`. Đọc nhầm bản comment sẽ kết luận "có kiểm kết quả".
+// 🔴 `WebClient.UploadString`: **không đặt timeout** (mặc định 100 giây), **không retry**, **không** dùng
+//   `using` nên `WebClient` không được giải phóng. Một lần hãng treo là **giữ luồng nền 100 giây**.
+// ⚠️ `BuildUrlAPI` — dòng **active**: `string.Format("{0}{1}/{2}", apiUrl, objServiceName, objFunctionName)`
+//   ⇒ **không có dấu `/` giữa `apiUrl` và tên dịch vụ**, và **bỏ `api/v1`** (dòng có `api/v1` **bị comment**)
+//   ⇒ cấu hình `_strOS_HyundaiMe_API_Url` **bắt buộc phải kết thúc bằng `/`**; thiếu một ký tự là URL sai câm.
+//   Đường thật: `webhook/push-appointment` và `webhook/push-service-status`.
+// 📌 §12 — MiniHTC **cố ý lệch**: thêm bảng `HyundaiMeOutboxes` (hộp thư đi) để gói được **ghi xuống DB trước**,
+//   đánh dấu `SENT` sau, và đếm `AttemptCount` ⇒ có đường phát lại. Nguồn **không có** bảng nào tương đương.
+app.MapPost("/api/hyundaime/outbox/{kind}/{refNo}", async (string kind, string refNo, AppDbContext db,
+    ITenantContext t, string? payload) =>
+{
+    var k = kind.Trim().ToLowerInvariant();
+    if (k is not ("ro" or "app"))
+        return Results.BadRequest(new { error = "kind chi nhan ro hoac app." });
+    var no = refNo.Trim().ToUpperInvariant();
+
+    var row = new HyundaiMeOutbox
+    {
+        OrgId = t.OrgId, Kind = k, RefNo = no,
+        Endpoint = k == "ro" ? "webhook/push-service-status" : "webhook/push-appointment",
+        Payload = payload, Status = "PENDING",
+    };
+    db.HyundaiMeOutboxes.Add(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.Kind, row.RefNo, row.Endpoint, row.Status, row.AttemptCount, row.CreatedAt,
+        sourceDequeuesBeforeSending = "TryDequeue roi moi PushToHyundaiMe => day loi la goi da roi hang doi, khong con ban nao de phat lai",
+        sourceCatchBlockIsEmpty = "catch (Exception exc) { } — toan bo than bi comment, khong log khong dem khong bao",
+        sourceQueueIsInMemoryOnly = "ConcurrentQueue<object> khoi tao o InitQueue() => restart IIS la mat sach goi chua day",
+        sourceIgnoresResponse = "PostData(ref al, url, data) chi nhet phan hoi vao mang log; khong kiem ma HTTP, khong doc status/code/message du WARTBase co san",
+        typedPostDataIsCommentedOut = "ban PostData<R,M> co DeserializeObject va rang buoc where R : WARTBase nhung CA HAI loi goi deu bi comment",
+        noTimeoutNoRetryNoUsing = "WebClient.UploadString: timeout mac dinh 100s, khong retry, khong using",
+        buildUrlHasNoSlashAndDropsApiV1 = "string.Format({0}{1}/{2}) — thieu dau gach giua apiUrl va service; dong co api/v1 bi comment",
+        portAddsDurableOutbox = "MiniHTC ghi goi xuong bang HyundaiMeOutboxes truoc, danh dau SENT sau, dem AttemptCount — nguon KHONG co bang tuong duong",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/hyundaime/outbox", async (AppDbContext db, ITenantContext t, string? status) =>
+{
+    var qy = db.HyundaiMeOutboxes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status!.Trim().ToUpperInvariant());
+    var rows = await qy.OrderByDescending(x => x.Id).Take(200)
+        .Select(x => new { x.Id, x.Kind, x.RefNo, x.Endpoint, x.Status, x.AttemptCount, x.LastError, x.CreatedAt, x.SentAt })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        pending = rows.Count(x => x.Status == "PENDING"),
+        sourceHasNoSuchVisibility = "nguon khong luu goi o dau ca nen khong the liet ke goi chua day",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #585 GÓI ĐẨY **LỊCH HẸN** SANG HYUNDAI ME (`PushDataAppToHyundaiMe`, `PushToHyundaiMe.cs:289`) =====
 // Sinh đôi của #583 nhưng cho `Ser_App`. Chỉ **một** nơi gọi: `BizCarSv.ZTemp.cs:19060`.
 //

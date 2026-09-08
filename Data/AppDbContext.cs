@@ -263,6 +263,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ROWarrantyTypePhoto> ROWarrantyTypePhotos => Set<ROWarrantyTypePhoto>();
     public DbSet<WarrantyWorkMst> WarrantyWorkMsts => Set<WarrantyWorkMst>();
     public DbSet<CompartmentMst> CompartmentMsts => Set<CompartmentMst>();
+    public DbSet<HyundaiMeOutbox> HyundaiMeOutboxes => Set<HyundaiMeOutbox>();   // #586
     public DbSet<NetworkMst> NetworkMsts => Set<NetworkMst>();   // #566
     public DbSet<PlateColorMst> PlateColorMsts => Set<PlateColorMst>();   // #520
     public DbSet<StaffMst> StaffMsts => Set<StaffMst>();
