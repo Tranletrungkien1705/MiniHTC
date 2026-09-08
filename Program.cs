@@ -15673,56 +15673,96 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
     if (type is not ("1" or "2" or "3"))
         return Results.BadRequest(new { error = "debitType chỉ nhận 1 (khách), 2 (bảo hiểm), 3 (nhà cung cấp)." });
 
-    var qy = db.CusDebits.Where(x => x.OrgId == t.OrgId && x.DebitType == type);
+    // ===== 🔴🔴 #558 SỬA LẠI #555: MiniHTC **ĐÃ CÓ BA BẢNG RIÊNG**, không phải một bảng ba loại =====
+    // #555 đọc `db.CusDebits` cho **cả ba** loại vì nguồn dùng chung `Ser_CusDebit`. Nhưng grep route
+    //   (`/api/debits/search`, `:27235` — cụm #213/#214/#215) cho thấy MiniHTC **từ trước** đã tách:
+    //   `CusDebits` (khách) · `InsDebits` (bảo hiểm) · `SupplierDebits` (nhà cung cấp).
+    // ⇒ Nếu giữ nguyên #555 thì `debitType=2|3` **luôn trả rỗng** — dữ liệu nằm ở hai bảng kia.
+    //   Nay đọc **đúng bảng theo loại**; cột `DebitType` thêm ở #555 vẫn giữ để đánh dấu nguồn gốc
+    //   dữ liệu nhập từ hệ cũ (nơi cả ba loại nằm chung một bảng).
+    // 📌 Bài học quy trình: BƯỚC 2 phải grep **cả ROUTE** (`MapGet("/api/…")`), không chỉ tên hàm nguồn —
+    //   ở đây tên hàm `SerCusDebitSearch` chỉ xuất hiện trong **chú thích** nên grep tên trượt,
+    //   và lỗi lộ ra ở **cảnh báo route trùng** lúc build chứ không phải lúc đọc.
     object? party = null;
+    var debits = new List<object>();
+    var debitIds = new List<long>();
     if (type == "1")
     {
         var cus = (cusId ?? "").Trim();
         if (cus.Length == 0) return Results.BadRequest(new { error = "Loại 1 cần cusId." });
-        qy = qy.Where(x => x.CusId == cus);
         var c = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == cus);
         party = c is null ? null : new { c.CusCode, c.CusName, c.Address, c.ContName };
+        var rows1 = await db.CusDebits.Where(x => x.OrgId == t.OrgId && x.CusId == cus)
+            .OrderByDescending(x => x.Id)
+            .Select(x => new { x.Id, x.DebitNo, key = x.CusId, name = x.CusName, doc = x.RONo,
+                x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount,
+                x.DebitDate, x.Status, x.Note }).ToListAsync();
+        debits.AddRange(rows1);
+        debitIds.AddRange(rows1.Select(x => x.Id));
     }
     else if (type == "2")
     {
         var ins = (insNo ?? "").Trim();
         if (ins.Length == 0) return Results.BadRequest(new { error = "Loại 2 cần insNo." });
-        qy = qy.Where(x => x.InsNo == ins);
         // MiniHTC lưu danh mục bảo hiểm theo InsCompanyCode (nguồn dùng Ser_Insurance.InsNo).
         var i = await db.MstInsuranceCompanies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsCompanyCode == ins);
         party = i is null ? null : new { i.InsCompanyCode, i.InsCompanyName, i.FlagActive };
+        var rows2 = await db.InsDebits.Where(x => x.OrgId == t.OrgId && x.InsNo == ins)
+            .OrderByDescending(x => x.Id)
+            .Select(x => new { x.Id, x.DebitNo, key = x.InsNo, name = x.InsName, doc = x.RONo,
+                x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount,
+                x.DebitDate, x.Status, x.Note }).ToListAsync();
+        debits.AddRange(rows2);
+        debitIds.AddRange(rows2.Select(x => x.Id));
     }
     else
     {
         var sup = (supplierCode ?? "").Trim();
         if (sup.Length == 0) return Results.BadRequest(new { error = "Loại 3 cần supplierCode." });
-        qy = qy.Where(x => x.SupplierCode == sup);
         var sp = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == sup);
         party = sp is null ? null : new { sp.SupplierCode, sp.SupplierName, sp.Address, sp.Phone };
+        var rows3 = await db.SupplierDebits.Where(x => x.OrgId == t.OrgId && x.SupplierCode == sup)
+            .OrderByDescending(x => x.Id)
+            .Select(x => new { x.Id, DebitNo = (string?)null, key = x.SupplierCode, name = (string?)null, doc = x.StockInNo,
+                x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount,
+                x.DebitDate, x.Status, x.Note }).ToListAsync();
+        debits.AddRange(rows3);
+        debitIds.AddRange(rows3.Select(x => x.Id));
     }
 
-    var debits = await qy.OrderByDescending(x => x.Id)
-        .Select(x => new { x.Id, x.DebitNo, x.DebitType, x.CusId, x.CusName, x.InsNo, x.SupplierCode,
-            x.RONo, x.StockInID, x.DebitAmount, x.PaidAmount,
-            balance = x.DebitAmount - x.PaidAmount, x.DebitDate, x.Status, x.Note })
-        .ToListAsync();
-    var debitIds = debits.Select(x => x.Id).ToList();
 
-    var payQuery = db.CusDebitPayments.Where(x => x.OrgId == t.OrgId && debitIds.Contains(x.CusDebitId));
-    if (!string.IsNullOrWhiteSpace(dealerCode)) payQuery = payQuery.Where(x => x.DealerCode == dealerCode!.Trim());
-    var payments = await payQuery.OrderByDescending(x => x.Id)
-        .Select(x => new { x.Id, x.CusDebitId, x.PaymentNo, x.DealerCode, x.PayPersonName,
-            x.PaymentAmount, x.PayDate, x.Note }).ToListAsync();
+    // Mỗi loại nợ có bảng phiếu thu RIÊNG trong MiniHTC (nguồn dùng chung Ser_Payment + PaymentType).
+    List<object> payments = new();
+    if (type == "1")
+    {
+        var pq = db.CusDebitPayments.Where(x => x.OrgId == t.OrgId && debitIds.Contains(x.CusDebitId));
+        if (!string.IsNullOrWhiteSpace(dealerCode)) pq = pq.Where(x => x.DealerCode == dealerCode!.Trim());
+        payments.AddRange((await pq.OrderByDescending(x => x.Id)
+            .Select(x => new { x.Id, debitId = x.CusDebitId, x.PaymentNo, x.DealerCode, x.PayPersonName,
+                x.PaymentAmount, x.PayDate, x.Note }).ToListAsync()).Cast<object>());
+    }
+    else if (type == "2")
+    {
+        payments.AddRange((await db.InsDebitPayments.Where(x => x.OrgId == t.OrgId && debitIds.Contains(x.InsDebitId))
+            .OrderByDescending(x => x.Id)
+            .Select(x => new { x.Id, debitId = x.InsDebitId, x.PaymentNo, x.PaymentAmount, x.PayDate, x.Note })
+            .ToListAsync()).Cast<object>());
+    }
+    else
+    {
+        payments.AddRange((await db.SupplierDebitPayments.Where(x => x.OrgId == t.OrgId && debitIds.Contains(x.SupplierDebitId))
+            .OrderByDescending(x => x.Id)
+            .Select(x => new { x.Id, debitId = x.SupplierDebitId, x.PaymentNo, x.PaymentAmount, x.PayDate, x.Note })
+            .ToListAsync()).Cast<object>());
+    }
 
     return Results.Ok(new
     {
         debitType = type, party, partyFound = party is not null,
         debits, debitCount = debits.Count,
         payments, paymentCount = payments.Count,
-        totalDebit = debits.Sum(x => x.DebitAmount),
-        totalPaid = debits.Sum(x => x.PaidAmount),
-        totalBalance = debits.Sum(x => x.balance),
-        oneTableThreeDebitTypes = "Ser_CusDebit chua ca no khach (1), bao hiem (2), nha cung cap (3)",
+        oneTableThreeDebitTypesInSource = "Ser_CusDebit chua ca no khach (1), bao hiem (2), nha cung cap (3)",
+        miniHtcUsesThreeSeparateTables = "CusDebits / InsDebits / SupplierDebits — sua lai #555",
         documentJoinKeyDiffersByType = "loai 1/2 noi Ser_RO qua ROID; loai 3 noi Ser_Inv_StockIn qua StockInID",
         filterAliasSharedAcrossThreeTables = true,
         insuranceVariantUsesRawNolock = true,
