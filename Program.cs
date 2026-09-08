@@ -52006,9 +52006,33 @@ app.MapGet("/api/reports/care-mace", async (AppDbContext db, ITenantContext t,
 }).RequireAuthorization();
 
 // ===== 🔴 #493 PHỤ TÙNG CHẬM LUÂN CHUYỂN — `Ser_Mst_Part_SP_Get` (`BizCarSv.PartOrder.cs:4196`) =====
-// ⚪ Cặp `_WH` (`WH.cs:27415`) khác **đúng một dòng** và chỉ là **khoảng trắng cuối dòng** trong lời gọi
-//   `Replace(…, "@iNotRotateFrom", …)` — cả hai bản đều có đủ cả hai placeholder ⇒ **tương đương**.
-//   Đóng thêm một ca của #484 (**còn 9**).
+// ===== #671 SỬA ghi chép #493 về khác biệt của cặp `_WH` =====
+// #493 ghi *"khác đúng một dòng và chỉ là khoảng trắng cuối dòng"* — **không chính xác**. Diff lại sau khi
+// **chuẩn hoá khoảng trắng** thì hai khối `Build Sql` khác **đúng 2 dòng**, và **không** phải khoảng trắng:
+//   · bản Main `LEFT JOIN [@strDBName_CommonCenter].[dbo].SP_SharePart_Detail sspd`
+//     bản kho  `LEFT JOIN SP_SharePart_Detail sspd`
+//   · bản Main có thêm `, "@strDBName_CommonCenter", _strConfig_DBName_Main` trong `Replace`.
+// ⇒ Đúng **cơ chế đã chốt ở #655** ⇒ kết luận "tương đương" của #493 **vẫn đúng**, chỉ **lý do là sai**.
+//   3B: `WH.cs:27415` md5 `c10a8558` **KHỚP** máy 150 `:27415`.
+// 📌 Bài học phương pháp: hai hàm sao chép **thụt lề khác nhau** làm `diff` thô ra hàng trăm dòng nhiễu.
+//   **Chuẩn hoá khoảng trắng trước khi diff** biến 506↔412 dòng thành **2 dòng khác**.
+//
+// ===== 🔴🔴🔴 #671 `RANK()` THAY VÌ `ROW_NUMBER()` KHI CHỌN GIÁ HIỆU LỰC — 35/35 SITE TOÀN HỆ =====
+//     `RANK() OVER(PARTITION BY sipp.PartId ORDER BY sipp.DateEffect DESC) AS rn … WHERE rn = 1`
+//   `RANK()` trả **cùng thứ hạng cho các dòng bằng nhau** ⇒ một phụ tùng có **hai bản giá cùng `DateEffect`**
+//   thì **cả hai** đều `rn = 1` ⇒ `#tprice` có **hai dòng cho một mã** ⇒ mọi `join` sau đó **nhân đôi dòng phụ
+//   tùng** ⇒ số lượng và tiền **cộng đôi**. `ROW_NUMBER()` sẽ chọn đúng một.
+// 📌 **Đếm và phân loại theo vai trò** (luật #660) trong `TERP.BizCarSv`:
+//   · `RANK() OVER` = **35** site — **toàn bộ** là `PARTITION BY PartId ORDER BY DateEffect DESC` (chọn giá).
+//   · `Row_Number() OVER` = **39** site — **0** site dùng cho việc chọn giá.
+//   ⇒ **Toàn hệ chọn giá bằng `RANK()`**, không có site nào làm đúng để đối chiếu. Rủi ro chỉ hiện khi có hai
+//     bản giá trùng ngày hiệu lực ⇒ **im lặng cho tới lúc trùng**.
+// 🔴 (#412) **Giá lấy theo NGÀY HÔM NAY, không theo kỳ**: `and DateEffect <= '@strDateNow'` + `AND IsActive = '1'`
+//   ⚪ Chấp nhận được ở màn trạng thái hiện tại này, nhưng cùng khối SQL được sao chép sang báo cáo **theo kỳ**.
+// ⚪ **ÂM TÍNH — phân trang ở đây CÓ chạy**; `Row_Number() over (ORDER BY t.PartCode ASC)` sắp theo mã nên gần như
+//   không có ràng buộc hoà — nhẹ hơn hẳn ca #662.
+// ⚪ **ÂM TÍNH — `LEFT JOIN SP_SharePart_Detail` còn SỐNG**: `WHERE` cuối chỉ lọc `k9.KLuanChuyen` (#414: cả ba
+//   câu hỏi đều "không").
 //
 // 🔴 **"SỐ NGÀY KHÔNG LUÂN CHUYỂN" ĐẾM TỚI HÔM NAY**:
 //     `DATEDIFF(DAY, q.MaxStockInDate, GETDATE()) KLuanChuyen`
@@ -52077,6 +52101,14 @@ app.MapGet("/api/reports/slow-moving-parts", async (AppDbContext db, ITenantCont
         total = rows.Count, start = st, count = cnt,
         rowIdxStart = st + 1, rowIdxEnd = st + cnt,   // đúng @MyRowIdx_Start/@MyRowIdx_End
         items = page,
+        // ===== #671 =====
+        whTwinDiffersOnlyByDbPrefix = "SUA #493: #493 ghi cap _WH khac dung mot dong va chi la khoang trang cuoi dong — KHONG chinh xac. Diff lai sau khi CHUAN HOA KHOANG TRANG thi hai khoi Build Sql khac dung 2 dong va khong phai khoang trang: ban Main co LEFT JOIN [@strDBName_CommonCenter].[dbo].SP_SharePart_Detail sspd, ban kho co LEFT JOIN SP_SharePart_Detail sspd; va ban Main co them dong Replace @strDBName_CommonCenter -> _strConfig_DBName_Main. Dung co che da chot o #655 => ket luan tuong duong cua #493 VAN DUNG, chi ly do la sai. 3B: WH.cs:27415 md5 c10a8558 KHOP may 150",
+        normaliseWhitespaceBeforeDiff = "BAI HOC PHUONG PHAP: hai ham sao chep THUT LE KHAC NHAU lam diff tho ra hang tram dong nhieu va de dan toi ket luan bua; chuan hoa khoang trang truoc khi diff bien 506 vs 412 dong thanh 2 DONG KHAC",
+        rankNotRowNumberForEffectivePrice = "RANK() THAY VI ROW_NUMBER() KHI CHON GIA HIEU LUC: RANK() OVER(PARTITION BY sipp.PartId ORDER BY sipp.DateEffect DESC) AS rn … WHERE rn = 1. RANK() tra CUNG THU HANG cho cac dong bang nhau => mot phu tung co HAI ban gia cung DateEffect thi CA HAI deu rn = 1 => #tprice co hai dong cho mot ma => moi join sau do NHAN DOI dong phu tung => so luong va tien CONG DOI. ROW_NUMBER() se chon dung mot",
+        rankCountedAcrossBiz = "Dem va phan loai theo vai tro trong TERP.BizCarSv: RANK() OVER = 35 site, TOAN BO deu la PARTITION BY PartId ORDER BY DateEffect DESC (chon gia); Row_Number() OVER = 39 site, KHONG site nao dung cho viec chon gia => khong phai go nham mot cho, TOAN HE chon gia bang RANK() va khong co site nao lam dung de doi chieu; rui ro chi hien khi du lieu co hai ban gia trung ngay hieu luc nen no IM LANG cho toi luc trung",
+        priceTakenAtTodayNotPeriod = "(#412) gia lay theo NGAY HOM NAY khong theo ky bao cao: and DateEffect <= @strDateNow + AND IsActive = 1 => danh muc CO cot hieu luc nhung bao cao luon dung moc hien tai; chap nhan duoc o man trang thai hien tai nay nhung cung khoi SQL duoc sao chep sang cac bao cao THEO KY khac",
+        negativePagingRunsHere = "AM TINH: phan trang o day CO chay (t.MyRowIdx >= @MyRowIdx_Start and <= @MyRowIdx_End), khac 12/40 site da dem o #626; Row_Number() over (ORDER BY t.PartCode ASC) sap theo MA PHU TUNG nen gan nhu khong co rang buoc hoa — nhe hon han ca #662",
+        negativeSharePartLeftJoinAlive = "AM TINH: LEFT JOIN SP_SharePart_Detail con SONG — WHERE cuoi chi loc k9.KLuanChuyen, khong co dieu kien nao tren sspd => phu tung KHONG chia se van ra (luat #414: ca ba cau hoi deu khong)",
         ageCountedToTodayNotReportDate = true,
         emptyMeansZeroInSource = true,
         sourceOverflowsAboveInt16 = overflowsInSource,
