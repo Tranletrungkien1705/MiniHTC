@@ -25742,6 +25742,121 @@ app.MapGet("/api/tvo/service-reminders", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #563 API TVO LẤY LỊCH HẸN (`HTCMobileTVO_GetSer_App`) — **SÁU BỘ LỌC BỊ COMMENT SẠCH** =====
+// Nguồn: `BizCarSv.TVO.cs:888-1080`. WS LIVE: `WSCarSvTab.asmx.cs:4812` gọi **bản trần** (không hậu tố)
+//   — ngược với #562, nên **phải trace từng hàm**, không suy từ hàm hàng xóm.
+//
+// 🔴🔴 **TOÀN BỘ SÁU BỘ LỌC ĐỀU CHẾT** — không chỉ cờ `zzzz` trong SQL trơ lại thành chú thích, mà **cả
+//   phần khai báo lẫn lời gọi `StringUtils.Replace` cũng bị comment**:
+//     `//string zzzzClauseWhere_strDealerCodeList = BuildClauseConditionList("and", "ro.DealerCode", …);`
+//     `//string zzzzClauseWhere_strStatusList …` · `//… strPlateNoParttern …` · `//… CusName …`
+//     `//… AppDateTime …` · `//… Creator …` · và cả khối `//strSqlGetData = StringUtils.Replace(…)`.
+//   ⇒ API **không lọc đại lý, không lọc trạng thái, không lọc biển số, không lọc tên khách, không lọc
+//     ngày hẹn, không lọc người tạo**. Ứng dụng mobile gửi tham số lên thì bị **bỏ hết**, và dữ liệu trả về
+//     là của **toàn hệ thống** chứ không riêng đại lý gọi. Đây là mức nặng nhất của họ lỗi "cờ search DEAD":
+//     ở #410 tham số chết vì **thiếu toán tử**; ở đây chết vì **cả hàng lệnh bị comment**.
+//   📌 Port **áp thật** các bộ lọc đó (client đã gửi lên thì phải có tác dụng) và trả cờ nói rõ nguồn không áp.
+// 🔴 Điều kiện **duy nhất còn sống** về trạng thái là hằng cứng `and ro.AppStatus in ('2')` ⇒ chỉ lịch
+//   **Xác nhận**. Bộ lọc trạng thái do người dùng chọn (`strStatusList`) nằm trong nhóm bị comment ⇒ dù
+//   mobile xin trạng thái khác cũng **không bao giờ nhận được**.
+// ⚪ Kiểm tra âm tính: `case ro.AppStatus when '2' then N'Xác nhận' end` có ba nhánh khác bị comment ⇒
+//   `StatusName` sẽ **NULL** với mọi mã khác. Vì đã lọc cứng `in ('2')` nên **hiện không lộ** — nhưng nếu
+//   ai đó bỏ dòng lọc cứng để "mở rộng trạng thái" thì cột tên trạng thái **trắng câm**. Ghi lại làm mìn.
+// 🔴 **HAI `left join` VÀO CÙNG MỘT BẢNG `sys_user`, NỐI KHÁC SỐ CỘT**:
+//     `left join sys_user u on ro.creator = u.Usercode **and ro.dealercode = u.dealercode**`
+//     `left join Sys_User suser on ro.CVDVCode = suser.UserCode`   ← **thiếu vế đại lý**
+//   ⇒ Mã người dùng trùng nhau giữa hai đại lý là `suser` **nở dòng**: một lịch hẹn ra nhiều dòng.
+//   Cùng một bảng, cùng một câu, một chỗ nhớ nối đại lý, một chỗ quên — dấu hiệu chép tay.
+// 🔴 `inner join ser_mst_TradeMark tm on car.TradeMarkCode = tm.TradeMarkCode **and ro.DealerCode = tm.DealerCode**`
+//   — nối **INNER** sang **danh mục hãng xe** kèm ràng buộc đại lý ⇒ đại lý nào chưa khai hãng đó thì
+//   **mọi lịch hẹn của xe hãng đó biến mất** (#410: mất dữ liệu lúc ĐỌC). Port đếm `droppedByTradeMarkJoin`.
+// 🔴 `Convert(nvarchar, cus.CusName, 30)` … — lại là bẫy **style ≠ độ dài** (#561): tên khách, tên CVDV
+//   **bị cắt còn 30 ký tự**. Port trả **nguyên văn**.
+// 🔴 `ro.LogLUDateTime <= @strToDate` mất trọn ngày cuối (#415) ⇒ port dùng **< ngày kế tiếp**.
+// ⚠️ `identity(bigint,0,1)` trên `select … into` **không có `order by`** ⇒ số thứ tự (và do đó **trang**)
+//   không ổn định (#415). ⚠️ `nFilterRecordStart` đóng cứng **0** ⇒ **không có trang 2**.
+// ⚠️ `drop table #tmpro` nhưng **không drop** `#tbl_Ser_App_Filter` — sót dọn dẹp trong chính câu SQL.
+// ⚠️ `left join Ser_Engineer se on tpro.CVDVCode = se.EngineerNo` — so **mã cố vấn dịch vụ** với **mã kỹ
+//   thuật viên**: hai vai khác nhau, chỉ khớp khi hệ dùng chung một dải mã. Giữ 1:1 + cờ.
+// 📌 MiniHTC: cột trạng thái là `ServiceAppointment.Status` (chính là `AppStatus` chữ số, xem #319);
+//   mốc thời gian dùng `CreatedAt` vì entity chưa có `LogLUDateTime` — ghi rõ, không lặng lẽ đổi trục.
+app.MapGet("/api/tvo/appointments/confirmed", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? count,
+    string? dealerCode, string? statusList, string? plateNo, string? cusName, string? creator) =>
+{
+    var f = (fromDate ?? DateTime.Today).Date;
+    var toRaw = (toDate ?? DateTime.Today);
+    var toEx = toRaw.Date == toRaw ? toRaw.AddDays(1) : toRaw;   // #415
+    var take = count is > 0 ? count!.Value : 50;
+
+    var q0 = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId
+        && x.CreatedAt >= f && x.CreatedAt < toEx);
+
+    // Trạng thái: nguồn CỨNG in ('2'); bộ lọc do người dùng chọn đã bị comment.
+    var statuses = (statusList ?? "").Split((char)124, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+    if (statuses.Count > 0) q0 = q0.Where(x => statuses.Contains(x.Status));
+    else q0 = q0.Where(x => x.Status == "2");
+
+    // Năm bộ lọc còn lại — nguồn KHÔNG áp (bị comment); port áp thật.
+    var revived = new List<string>();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) { q0 = q0.Where(x => x.DealerCode == dealerCode!.Trim()); revived.Add("dealerCode"); }
+    if (!string.IsNullOrWhiteSpace(plateNo)) { var p = plateNo!.Trim().ToLower(); q0 = q0.Where(x => x.PlateNo != null && x.PlateNo.ToLower().Contains(p)); revived.Add("plateNo"); }
+    if (!string.IsNullOrWhiteSpace(cusName)) { var c = cusName!.Trim().ToLower(); q0 = q0.Where(x => x.CusName != null && x.CusName.ToLower().Contains(c)); revived.Add("cusName"); }
+    if (!string.IsNullOrWhiteSpace(creator)) { q0 = q0.Where(x => x.Creator == creator!.Trim()); revived.Add("creator"); }
+    if (statuses.Count > 0) revived.Add("statusList");
+
+    var myCount = await q0.CountAsync();
+    var rows = await q0.OrderBy(x => x.AppFrom).ThenBy(x => x.Id).Take(take).ToListAsync();
+
+    // inner join danh mục hãng xe KÈM ràng buộc đại lý — đếm số lịch nguồn sẽ làm rơi.
+    var models = await db.ServiceModels.Where(m => m.OrgId == t.OrgId).ToListAsync();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var tradeMarks = cars.Where(c => c.TradeMark != null).Select(c => c.TradeMark!).Distinct().ToHashSet();
+    var droppedByTradeMarkJoin = rows.Count(r =>
+        r.Vin != null && cars.Any(c => c.FrameNo == r.Vin && (c.TradeMark == null || !tradeMarks.Contains(c.TradeMark))));
+
+    var items = rows.Select(r =>
+    {
+        var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
+        var mdl = car?.ModelCode == null ? null : models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
+        return new
+        {
+            r.Id, r.AppNo, appAppNo = "AP-" + r.AppNo,
+            customerCode = r.CusID, customerName = r.CusName,   // KHÔNG cắt 30 ký tự
+            customerMobile = r.Mobile, customerTel = r.CusTel,
+            r.PlateNo, vin = r.Vin, tradeMarkCode = car?.TradeMark,
+            modelCode = car?.ModelCode, modelName = mdl?.ModelName ?? r.ModelName,
+            r.DealerCode, r.CVDVCode, r.EngineerNo, r.Creator,
+            appStatus = r.Status,
+            statusName = r.Status == "2" ? "Xác nhận" : null,   // đúng nguồn: nhánh khác bị comment
+            appFrom = r.AppFrom.ToString("yyyy-MM-dd HH:mm"),
+            appTo = r.AppTo.ToString("yyyy-MM-dd HH:mm"),
+            r.CusRequest, r.Note, r.QuoteNo, createDateTime = r.CreatedAt,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, myCount, items,
+        allSixFiltersCommentedOutInSource = new[] { "strDealerCodeList", "strStatusList", "strPlateNoParttern", "CusName", "AppDateTime", "Creator" },
+        commentedAtDeclarationAndReplaceToo = "ca dong khai bao lan khoi StringUtils.Replace deu bi comment => tham so mobile gui len bi bo het, du lieu tra ve la TOAN HE",
+        filtersRevivedByPort = revived,
+        hardCodedStatusInSource = "and ro.AppStatus in ('2') — chi lich Xac nhan",
+        statusNameOtherBranchesCommented = "case chi con nhanh '2'; bo dong loc cung thi StatusName trang cam",
+        sysUserJoinedTwiceWithDifferentKeys = "u: Usercode+dealercode; suser: chi UserCode => trung ma giua hai dai ly se NO DONG",
+        droppedByTradeMarkJoin,
+        tradeMarkJoinIsInnerWithDealer = "inner join ser_mst_TradeMark on TradeMarkCode and ro.DealerCode = tm.DealerCode",
+        sourceTruncatesStringsAt30 = "Convert(nvarchar, x, 30): 30 la STYLE, nvarchar mac dinh 30 ky tu",
+        dateUpperBoundFixed = "nguon <= @strToDate; port dung < ngay ke tiep",
+        pagingStartAlwaysZero = true,
+        identityWithoutOrderBy = "identity() tren select into khong order by => so thu tu/trang khong on dinh",
+        tempTableNotDropped = "#tbl_Ser_App_Filter khong duoc drop",
+        engineerJoinedByCvdvCode = "left join Ser_Engineer on CVDVCode = EngineerNo — hai vai khac nhau",
+        dateAxisSubstituted = "MiniHTC dung CreatedAt vi entity chua co LogLUDateTime",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db, ITenantContext t) =>
 {
     // Thứ tự và tập trường bắt buộc lấy đúng theo nguồn. ModelCode và CVDVCode **không** bắt buộc
