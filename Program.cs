@@ -40246,6 +40246,211 @@ static string DutyDaysRangeAsSource(int? dutyDays)
 
 
 
+
+// ===== #B371 THÔNG TIN BẢO HÀNH XE (DMS Service) — `Rpt_DMSSer_Car_Warranty_Information_WH`
+//       (`TERP.BizHTC/BizHTC.Report.Special.cs:1817`) =====
+// **3B khớp cả 2 máy — `BizHTC.Report.Special.cs` KHÔNG lệch offset (3010 dòng cả 2 máy)**:
+//   `1817,2013` ⇒ **`2aa98d86b2861cb8d66ca6d8d6f1e888`**.
+//
+// ✅✅🔴 **CƠ CHẾ BẢO VỆ THỨ BẢY — GUARD BẮT BUỘC KHOÁ TRA CỨU, KHÔNG PHẢI PHÂN QUYỀN**:
+//     `if (IsEmpty(strPlateNoConditionList) && IsEmpty(strVINConditionList))`
+//     `    throw … Rpt_DMSSer_Car_Warranty_Information_WH_**InvalidPlateNoOrVIN**;`
+//   ⇒ **Không thể gọi "trần"** để lấy toàn bộ dữ liệu: **bắt buộc** biết trước **VIN hoặc biển số**.
+//   📌 Đây **KHÔNG phải** một trục phạm vi thứ bảy — mà là **một loại bảo vệ khác hẳn**: thay vì lọc theo
+//     quyền, nguồn **bắt buộc tham số định danh** để hạn chế phơi nhiễm.
+//   ⚠️ **Ghi đúng mức, không tô hồng**: `drAbilityOfUser` **bị comment**, `myCommon_CheckHTCDirect`
+//     **bị comment cả khối**, và đã grep **cả sáu trục** ⇒ **0 hit** ⇒ **hàm này KHÔNG có phân quyền**.
+//     Một đại lý **biết VIN của đại lý khác** vẫn tra ra **họ tên / điện thoại / CMND / địa chỉ** của khách
+//     hàng đó. Guard chỉ chặn *quét hàng loạt*, **không** chặn *tra chéo*. Dữ liệu trả về là **thông tin
+//     cá nhân** ⇒ đáng lưu ý nhất trong các ca đã gặp. **KHÔNG tự vá.**
+//
+// 🔴🔴 **BUG THẬT — NỐI CHUỖI TÊN MÀU: MỘT VẾ NULL ⇒ MẤT TRẮNG CẢ CỘT**:
+//     `mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN **ColorName**`
+//   Trong T-SQL, `X + NULL = NULL` (mặc định `CONCAT_NULL_YIELDS_NULL ON`) ⇒ xe **thiếu MỘT trong hai**
+//   tên màu ⇒ **`ColorName` NULL hoàn toàn**, không phải hiện một nửa. Người đọc tưởng "chưa có màu"
+//   trong khi thực ra **có một màu**. (Dùng `CONCAT(…)` hoặc `IsNull` mới đúng.)
+// 🔴 **Hai `inner join` LÀM MẤT DÒNG một cách im lặng**:
+//   `inner join Mst_CarColor mcc on cv.ColorCode = mcc.ColorCode and cv.ModelCode = mcc.ModelCode`
+//   ⇒ xe **không khớp cặp (model, màu)** trong master ⇒ **biến mất khỏi báo cáo bảo hành**;
+//   `inner join Mst_Province mp on f.ProvinceCode = mp.ProvinceCode`
+//   ⇒ khách **thiếu tỉnh** ⇒ **biến mất**. Trong khi `Mst_District` lại là `left join`
+//   ⇒ **tỉnh bắt buộc, huyện không** — bất đối xứng, dễ tưởng cả hai đều không bắt buộc.
+// 🔴 `'Hyundai' TradeMarkCode` — **nhãn hiệu ghi CỨNG trong SQL**, không đọc từ master.
+// 🔴 `and t.DealerCodeBuyer is null --Chỉ lấy giao dịch bán lẻ` ⇒ loại giao dịch bán cho đại lý khác.
+// ✅ Hai bộ lọc `VIN` / `PlateNo` đi qua `BuildClause(… "@p" …)` ⇒ **tham số runtime** (an toàn).
+// 🔴 Hàm chỉ mở `_dbWH` (không đụng `_dbMain`) ⇒ đối chứng tốt cho luật ghi-kép `C0-…tricesimusprimus`.
+app.MapGet("/api/reports/dmsser-car-warranty-info", async (
+    AppDbContext db, ITenantContext t, string? vin, string? plateNo) =>
+{
+    // ✅✅ GUARD BẮT BUỘC của nguồn: thiếu CẢ VIN lẫn biển số ⇒ ném lỗi, KHÔNG trả gì.
+    if (string.IsNullOrWhiteSpace(vin) && string.IsNullOrWhiteSpace(plateNo))
+        return Results.BadRequest(new
+        {
+            error = "Rpt_DMSSer_Car_Warranty_Information_WH_InvalidPlateNoOrVIN",
+            message = "Phải nhập VIN hoặc biển số — nguồn KHÔNG cho phép gọi trần."
+        });
+
+    var deals = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .Where(d => d.DealerCodeBuyer == null)          // 🔴 chỉ giao dịch BÁN LẺ
+        .ToDictionary(d => d.Id);
+    var dtls = await db.DealerDealDetails.Where(d => d.OrgId == t.OrgId).ToListAsync();
+
+    var cvsAll = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId).ToListAsync())
+        .Where(v => string.IsNullOrWhiteSpace(vin)
+                 || string.Equals(v.VIN, vin!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .GroupBy(v => v.CarId ?? v.VIN).ToDictionary(g => g.Key, g => g.First());
+
+    var custs = (await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => c.CustomerCode).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode ?? "") + "|" + (c.ColorCode ?? "")).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = new List<object>();
+    var droppedNoColorMaster = 0;
+    var droppedNoProvince = 0;
+    foreach (var d in dtls)
+    {
+        if (!deals.TryGetValue(d.DealId, out var head)) continue;
+        if (!string.IsNullOrWhiteSpace(plateNo)
+            && !string.Equals(d.PlateNo, plateNo!.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+        if (!cvsAll.TryGetValue(d.CarId, out var cv)) continue;
+
+        // 🔴 inner join Mst_CarColor theo CẶP (model, màu) — không khớp ⇒ MẤT DÒNG (đúng nguồn).
+        var ckey = (cv.ModelCode ?? "") + "|" + (cv.ColorCode ?? "");
+        if (!colors.TryGetValue(ckey, out var color)) { droppedNoColorMaster++; continue; }
+
+        DealerCustomer? cus = head.CustomerCodeBuyer != null && custs.TryGetValue(head.CustomerCodeBuyer, out var cc0) ? cc0 : null;
+        // 🔴 inner join Mst_Province — khách thiếu tỉnh ⇒ MẤT DÒNG (đúng nguồn); huyện thì left join.
+        if (cus?.ProvinceCode == null || !provinces.ContainsKey(cus.ProvinceCode)) { droppedNoProvince++; continue; }
+        var prov = provinces[cus.ProvinceCode];
+
+        // 🔴 BUG NGUỒN GIỮ NGUYÊN HÌNH DẠNG: một vế NULL ⇒ ColorName NULL hoàn toàn.
+        string? colorName = (color.ColorExtNameVN == null || color.ColorIntNameVN == null)
+            ? null
+            : color.ColorExtNameVN + "/" + color.ColorIntNameVN;
+
+        rows.Add(new
+        {
+            cus.CustomerCode, cus.FullName, cus.PhoneNo, cus.IDCardNo,
+            prov.ProvinceCode, prov.ProvinceName,
+            cus.DistrictCode, DistrictName = (string?)null,     // left join — thiếu huyện vẫn giữ dòng
+            cus.Address,
+            d.PlateNo, cv.VIN, cv.EngineNo,
+            TradeMarkCode = "Hyundai",                          // 🔴 hằng ghi CỨNG trong SQL nguồn
+            cv.ModelCode,
+            ModelName = cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var m) ? m.ModelName : null,
+            cv.ColorCode, ColorName = colorName,
+            BatteryNo = (string?)null, cv.SerialNo,             // ⚠️ NỢ: Car_VIN.BatteryNo chưa có
+            d.DeliveryDate,
+            WarrantyExpiresDate = (DateTime?)null,              // ⚠️ NỢ
+            CusConfirmedWarrantyDate = (DateTime?)null,         // ⚠️ NỢ
+            WarrantyKM = (decimal?)null,                        // ⚠️ NỢ
+            head.DealNo, head.DealerCode
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        droppedNoColorMaster,
+        droppedNoProvince,
+        Rpt_DMSSer_Car_Warranty_Information = rows,     // Tables[0]
+        mandatoryKeyGuardNote = "CO CHE BAO VE THU BAY - GUARD BAT BUOC KHOA TRA CUU, KHONG PHAI PHAN QUYEN: 'if (IsEmpty(strPlateNoConditionList) && IsEmpty(strVINConditionList)) throw Rpt_DMSSer_Car_Warranty_Information_WH_InvalidPlateNoOrVIN' => KHONG THE GOI TRAN de lay toan bo du lieu: BAT BUOC biet truoc VIN hoac bien so. Day KHONG phai mot truc pham vi - ma la MOT LOAI BAO VE KHAC HAN: thay vi loc theo quyen, nguon BAT BUOC THAM SO DINH DANH de han che phoi nhiem. GHI DUNG MUC, KHONG TO HONG: drAbilityOfUser BI COMMENT, myCommon_CheckHTCDirect BI COMMENT CA KHOI, da grep CA SAU TRUC => 0 HIT => HAM NAY KHONG CO PHAN QUYEN. Mot dai ly BIET VIN cua dai ly khac van tra ra HO TEN / DIEN THOAI / CMND / DIA CHI cua khach hang do. Guard chi chan QUET HANG LOAT, KHONG chan TRA CHEO. Du lieu tra ve la THONG TIN CA NHAN => dang luu y nhat trong cac ca da gap. KHONG TU VA.",
+        colorConcatNullNote = "BUG THAT - NOI CHUOI TEN MAU: MOT VE NULL => MAT TRANG CA COT. 'mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN ColorName' - trong T-SQL X + NULL = NULL (CONCAT_NULL_YIELDS_NULL ON) => xe THIEU MOT trong hai ten mau => ColorName NULL HOAN TOAN, khong phai hien mot nua. Nguoi doc tuong 'chua co mau' trong khi thuc ra CO MOT MAU. Dung CONCAT(...) hoac IsNull moi dung.",
+        innerJoinDropsNote = "HAI inner join LAM MAT DONG IM LANG: 'inner join Mst_CarColor mcc on cv.ColorCode = mcc.ColorCode and cv.ModelCode = mcc.ModelCode' => xe KHONG KHOP CAP (model, mau) trong master => BIEN MAT khoi bao cao bao hanh; 'inner join Mst_Province mp on f.ProvinceCode = mp.ProvinceCode' => khach THIEU TINH => BIEN MAT. Trong khi Mst_District lai la LEFT JOIN => TINH BAT BUOC, HUYEN KHONG - bat doi xung, de tuong ca hai deu khong bat buoc. Xem droppedNoColorMaster / droppedNoProvince.",
+        hardcodedBrandNote = "'Hyundai' TradeMarkCode - NHAN HIEU GHI CUNG TRONG SQL, khong doc tu master. 'and t.DealerCodeBuyer is null --Chi lay giao dich ban le' => loai giao dich ban cho dai ly khac. Hai bo loc VIN/PlateNo di qua BuildClause('@p') => THAM SO RUNTIME (an toan). Ham chi mo _dbWH (khong dung _dbMain) => doi chung tot cho luat C0-...tricesimusprimus.",
+        debtNote = "NO - KHONG DOAN: Car_VIN.BatteryNo, Dls_DealDetail.WarrantyExpiresDate / CusConfirmedWarrantyDate / WarrantyKM, va Mst_District.DistrictName chua co => de NULL."
+    });
+}).RequireAuthorization();
+
+// ===== #B372 NHẬP–XUẤT–TỒN QUYỀN ĐÒI NỢ — `Rpt_NXT_QuyenDoiNo_WH_New20190219`
+//       (vỏ `DataWH/Biz.HTC.WH.cs:149367` → `Rpt_NXT_QuyenDoiNo_X` (`BizHTC.Report.cs:22148`)
+//        → SQL `RptSQLQuery.cs:9651` `mySql_Rpt_NXT_QuyenDoiNo_X()`) =====
+// **3B khớp cả 2 máy (3 md5)**: vỏ laptop `149367,149496` ≡ 150 `149372,149501`
+//   ⇒ **`1866d6f23302f2ca671dbf9225183bbd`**; `…_X` `22148,22235` ⇒ **`d96ed7a11e8d5d65363196ed6bcc1713`**;
+//   SQL `9651,10124` (474 dòng) ⇒ **`b7a02b9a90f7f8e34718f29b682d7080`**.
+//
+// 🔴🔴🔴 **NGHI VẤN CAO — TÊN THAM SỐ BIND CÓ DẤU CÁCH THỪA**:
+//     `alParamsCoupleSql.AddRange(new object[] { "@strIsGetDetail**␠**", strIsGetDetail });`
+//   (chuỗi là `"@strIsGetDetail "`, **có một dấu cách ở cuối**), trong khi SQL tham chiếu
+//     `if (@strIsGetDetail = '1') select …`   ← **không có dấu cách**
+//   ⇒ **Hai nhánh hệ quả, phải nêu cả hai** (đúng kỷ luật `C0-…quinquagesimus`):
+//     · Nếu tầng `EzDAL` **không trim** tên tham số ⇒ tham số được tạo tên `"@strIsGetDetail "`
+//       ⇒ SQL không tìm thấy `@strIsGetDetail` ⇒ **`Must declare the scalar variable` ⇒ hàm CHẾT**;
+//     · Nếu `EzDAL` **có trim** ⇒ vô hại.
+//   📌 **Chưa đọc thân `EzDAL` thì KHÔNG được kết luận** — ghi là **nghi vấn cao**, không phải "đã chết"
+//     (khác #B352 nơi tôi có bằng chứng trực tiếp là `Invalid object name`).
+//
+// 🔴🔴 **`[BAKE-PARAM-MIX]` — CA THỨ TƯ, VÀ CÓ DẤU VẾT CHUYỂN ĐỔI RÕ RÀNG**:
+//     `//alParamsCoupleSql.AddRange(new object[] { "@strTDate_From", strTDate_From });`   ← **bị comment**
+//     `//alParamsCoupleSql.AddRange(new object[] { "@strTDate_To",   strTDate_To   });`   ← **bị comment**
+//   rồi ngay dưới: `Replace(… , "@strTDate_From", strTDate_From , "@strTDate_To", strTDate_To , …)`
+//   và trong SQL: `and t.DateStart < '@strTDate_From'` (nằm **trong nháy**, **8 vị trí**).
+//   ⇒ Đây là **bằng chứng trực tiếp** cho thấy hệ **cố ý chuyển từ param runtime sang nướng chuỗi**
+//     (hai dòng bind cũ còn nguyên dưới dạng comment). Cùng họ #B347/#B359/#B365.
+//   ⚠️ Mức: `strTDate_From/To` **không** đi qua `StandardizeDate` trong `…_X` ⇒ **mức (A) nướng thô**
+//     (như #B365), không phải mức (B) như #B359.
+// ✅ **RBAC tổ hợp (1)**: `myCommon_CheckHTCDirect(…)` **ACTIVE** (không bị comment) ⇒ **có cổng**
+//   ⇒ **không phải lỗ**, dù không có bộ lọc dòng.
+// ✅ Số bảng động xử bằng **con trỏ `nIdxTable`**: `…Detail` chỉ khi có cờ, rồi bảng tổng.
+// ⚠️ **NỢ**: `Pmt_Payment`, `Rpt_QuyenDoiNo` và các mảnh nhập–xuất–tồn chưa đủ ⇒ trả khung + cờ.
+app.MapGet("/api/reports/nxt-quyendoino", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo, string? isGetDetail) =>
+{
+    var wantDetail = isGetDetail == "1";
+    return Results.Ok(new
+    {
+        count = 0,
+        tDateFrom, tDateTo,
+        Rpt_NXT_QuyenDoiNoDetail = wantDetail ? Array.Empty<object>() : null,
+        Rpt_NXT_QuyenDoiNo = Array.Empty<object>(),
+        paramNameTrailingSpaceNote = "NGHI VAN CAO - TEN THAM SO BIND CO DAU CACH THUA: 'alParamsCoupleSql.AddRange(new object[] { \"@strIsGetDetail \", strIsGetDetail });' (chuoi la '@strIsGetDetail ' CO MOT DAU CACH O CUOI), trong khi SQL tham chieu 'if (@strIsGetDetail = 1) select ...' KHONG co dau cach. HAI NHANH HE QUA: (1) neu tang EzDAL KHONG TRIM ten tham so => tham so duoc tao ten '@strIsGetDetail ' => SQL khong tim thay @strIsGetDetail => 'Must declare the scalar variable' => HAM CHET; (2) neu EzDAL CO TRIM => vo hai. CHUA DOC THAN EzDAL thi KHONG duoc ket luan - ghi la NGHI VAN CAO, khong phai 'da chet' (khac #B352 noi co bang chung truc tiep la Invalid object name).",
+        bakeParamMixCase4Note = "[BAKE-PARAM-MIX] CA THU TU, VA CO DAU VET CHUYEN DOI RO RANG: '//alParamsCoupleSql.AddRange(new object[] { \"@strTDate_From\", strTDate_From });' va dong tuong tu cho _To DEU BI COMMENT, roi ngay duoi 'Replace(..., \"@strTDate_From\", strTDate_From, \"@strTDate_To\", strTDate_To, ...)' va trong SQL 'and t.DateStart < '@strTDate_From'' (nam TRONG NHAY, 8 vi tri). Day la BANG CHUNG TRUC TIEP cho thay he CO Y CHUYEN TU PARAM RUNTIME SANG NUONG CHUOI (hai dong bind cu con nguyen duoi dang comment). Muc: strTDate_From/To KHONG di qua StandardizeDate trong ..._X => MUC (A) NUONG THO (nhu #B365), khong phai muc (B) nhu #B359.",
+        rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE (khong bi comment) => CO CONG => KHONG phai lo, du khong co bo loc dong. So bang dong xu bang con tro nIdxTable: ...Detail chi khi co co, roi bang tong.",
+        debtNote = "NO - KHONG DOAN: Pmt_Payment, Rpt_QuyenDoiNo va cac manh nhap-xuat-ton chua du => tra khung + co."
+    });
+}).RequireAuthorization();
+
+// ===== #B373 DOANH THU THEO HOÁ ĐƠN HTC — `Rpt_Revenue_HTCInvoice_WH_New20191014`
+//       (vỏ `HDDTIntergration/BizHTC.HDDTIntergration.cs:23857`
+//        → `Rpt_Revenue_HTCInvoiceX_New20191014` (`:23988`)) =====
+// **3B khớp cả 2 máy (2 md5); `BizHTC.HDDTIntergration.cs` KHÔNG lệch offset (24770 dòng cả 2 máy)**:
+//   vỏ `23857,23987` ⇒ **`6f2bad8da886b8cf6ef9ab06c257039d`**;
+//   `…X` `23988,24410` (423 dòng) ⇒ **`d7e711b41c071a1632996d6887f01d97`**.
+//
+// 🔴 **NHÃN ĐỐI SỐ SAI — CA THỨ NĂM về nhãn** (sau `#region` #B365/#B366, đối số #B368):
+//     `, _dbWH // **_dbMain**`
+//   ✅ **Đã kiểm danh sách tham số thật của `…X`**: tham số ở vị trí đó tên là **`_dbAction`**
+//     ⇒ nhãn **sai gấp đôi** (không phải tên tham số, cũng không phải giá trị truyền vào).
+//   ⇒ **Wiring ĐÚNG** (bản `_WH` truyền `_dbWH` vào `_dbAction`, đúng như #B356 làm đúng);
+//     **chỉ nhãn sai**. Ghi là **lỗi nhãn**, **không** báo thành lỗi chọn DB.
+//   📌 Đây là **ca thứ năm liên tiếp** về nhãn ⇒ củng cố `C0-…quadragesimusoctavus`: trong repo này,
+//     **mọi loại nhãn** (`#region`, chú thích đối số) đều **không đáng tin**; chỉ **danh sách tham số
+//     thật của hàm được gọi** mới là bằng chứng.
+// 🔴 `strTypeReport` — cờ **đổi hình dạng báo cáo** (không phải bộ lọc dữ liệu), cùng khuôn #B366.
+// 🔴 Vỏ mở **cả** `_dbMain` lẫn `_dbWH` và `CommitSafety` **cả hai** ⇒ theo luật `C0-…tricesimusprimus`,
+//   đếm `CommitSafety` = **2** ⇒ ghi nợ **"không nguyên tử"**; tuy đây là hàm **chỉ đọc** nên tác hại
+//   thấp — nhưng vẫn giữ khoá/semaphore trên hai kết nối.
+// ⚠️ **NỢ**: chuỗi hoá đơn điện tử (`HDDT`) + `Car_InvoiceList*` chưa đủ ⇒ trả khung + cờ; **không bịa
+//   doanh thu**.
+app.MapGet("/api/reports/revenue-htcinvoice", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo, string? typeReport) =>
+{
+    return Results.Ok(new
+    {
+        count = 0,
+        tDateFrom, tDateTo, typeReportEcho = typeReport,
+        Rpt_Revenue_HTCInvoice = Array.Empty<object>(),
+        argLabelWrongFifthNote = "NHAN DOI SO SAI - CA THU NAM ve nhan (sau #region #B365/#B366, doi so #B368): ', _dbWH // _dbMain'. DA KIEM DANH SACH THAM SO THAT cua ...X: tham so o vi tri do ten la '_dbAction' => nhan SAI GAP DOI (khong phai ten tham so, cung khong phai gia tri truyen vao). WIRING DUNG (ban _WH truyen _dbWH vao _dbAction, dung nhu #B356 lam dung); CHI NHAN SAI. Ghi la LOI NHAN, KHONG bao thanh loi chon DB. Day la ca thu nam lien tiep ve nhan => cung co C0-...quadragesimusoctavus: trong repo nay MOI LOAI NHAN (#region, chu thich doi so) deu KHONG DANG TIN; chi DANH SACH THAM SO THAT cua ham duoc goi moi la bang chung.",
+        typeReportNote = "strTypeReport la CO DOI HINH DANG BAO CAO (khong phai bo loc du lieu), cung khuon #B366.",
+        dualCommitNote = "Vo mo CA _dbMain lan _dbWH va CommitSafety CA HAI => theo luat C0-...tricesimusprimus, dem CommitSafety = 2 => ghi no 'khong nguyen tu'; tuy day la ham CHI DOC nen tac hai thap - nhung van giu khoa/semaphore tren hai ket noi.",
+        debtNote = "NO - KHONG DOAN: chuoi hoa don dien tu (HDDT) + Car_InvoiceList* chua du => tra khung + co; KHONG bia doanh thu."
+    });
+}).RequireAuthorization();
 // ===== #B368/#B369 THỊ PHẦN NGÂN HÀNG — CẶP SINH ĐÔI BẢO LÃNH / CHO VAY
 //       (`Rpt_PmtGuaranteeBankMarketSum_01_WH` / `Rpt_PmtPaymentLoanBankMarketSum_01_WH`,
 //        `TERP.BizHTC/BizHTC.Report.cs`) =====
@@ -41848,7 +42053,7 @@ app.MapGet("/api/reports/grpdealer-instock02", async (
         sourceIsBrokenAtRuntime = true,
         brokenSqlNote = "BAO CAO NGUON KHONG THE CHAY - HAI LOI 'Invalid object name' TREN DONG ACTIVE: (1) 'select null #tbl_Detail_Filter, t.* from #tbl_Detail_Filter t' va '... from #tbl_Detail_Filter t group by ...' - #tbl_Detail_Filter KHONG BAO GIO DUOC TAO (dem 'into #tbl_Detail_Filter' = 0 lan trong ca ham, va khong placeholder zzzz nao sinh ra no; bang that duoc tao ten la #tbl_Detail_return - KHAC TEN). (2) 'select count (0) from tbl_Detail_return;' - THIEU DAU '#'; grep toan bo ma nguon: chuoi 'tbl_Detail_return' khong co '#' chi xuat hien DUNG 1 LAN, chinh la dong nay => tham chieu mot bang thuong khong ton tai. CA HAI deu la cau lenh ACTIVE, khong bi comment, nam giua hai cau tra ket qua that => ExecQuery NEM LOI => ham roi vao catch MOI LAN GOI. DAY LA MAN HINH CHET O RUNTIME DU SONG O MOI TANG TINH: co cua WS, co ReportService.cs:1823 goi, co ma loi rieng trong TERP.Constants, build xanh. KHONG TU VA.",
         rbacCase5Note = "LOC PHAM VI BI COMMENT O NAM CHO, CHI CON SONG O MOT - RBAC ca (5): '--and (md.BUCode like @strBUPatternOfUser)' tai #tbl_Car_Car_Filter, #tbl_Mst_Dealer, #tbl_F1, #tbl_Info1, #tbl_Info2; CON HIEU LUC DUY NHAT o #tbl_Detail_return (inner join, kem dau --20141031). Moi bang trung gian duoc tinh TREN TOAN BO DAI LY; chi cau cuoi moi siet pham vi. DA KIEM: ca hai bang tra ve deu dan xuat tu #tbl_Detail_return => ket qua cuoi VAN DUNG PHAM VI. Nhung chi phi tinh toan la toan he, va MOT THAY DOI NHO O CAU CUOI LA RO NGAY. myCommon_CheckHTCDirect = 0 HIT => KHONG CO CONG - chi con dung mot lop bao ve.",
-        aliasNote = "'select null #tbl_Detail_Filter, ...' - ALIAS COT BAT DAU BANG '#' KHONG BOC NGOAC VUONG: ke ca khi bang ton tai, day van la dinh danh khong hop le trong T-SQL (phai la [#tbl_Detail_Filter]).",
+        aliasNote = "SUA LAI (#B372): truoc do toi ghi \"alias cot bat dau bang # la dinh danh KHONG HOP LE\" - DIEU DO SAI. SQL Server cho phep dinh danh thuong bat dau bang chu cai, _, @ hoac # => 'select null #tbl_Detail_Filter' la CU PHAP HOP LE. Bang chung doi chieu: RptSQLQuery.cs:9651 (Rpt_NXT_QuyenDoiNo, ham SONG) cung dung khuon do: \"select ''#tbl_Report_Detail, t.* From #tbl_Report_Detail t\". => KET LUAN #B352 (bao cao CHET o runtime) VAN DUNG, nhung ly do CHI la hai loi Invalid object name (#tbl_Detail_Filter chua bao gio duoc tao; tbl_Detail_return thieu dau #), KHONG phai loi alias.",
         commentedWhereNote = "PORT DONG ACTIVE: ba 'where' bi comment lien tiep o cau #tbl_Detail_return ('--WHERE k.TrangThaiBackOrder NOT IN (UNKNOWN)', '--WHERE t.DutyDaysDeliveryEndDate <>0') => KHONG loc.",
         debtNote = "NO - KHONG DOAN CONG THUC: cac cot DutyCompletedPercent_Range, DutyDaysDeliveryEndDate_Range, DELIVERYRANGETYPE, PMGDGuaranteeValue, PMPDAMOUNTTOTAL_DEPOSIT can tang Pmt_Guarantee*/Ord_SalesOrderDetail chua co => de NULL."
     });
