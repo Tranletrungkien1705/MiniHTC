@@ -8926,6 +8926,118 @@ app.MapPost("/api/tcginvoices/{code}/hddt-delete", async (
     });
 }).RequireAuthorization();
 
+// ===== #B118 HUỶ HOÁ ĐƠN HTC TRÊN HDDT — `VAT_HTCInvoice_Invoice_Invoice_Deleted` =====
+// Trace LIVE: `BizHTC.InvoiceHTC_TCG.cs:2221` — **không có hậu tố**. 3B đo thật, **khớp cả 2 máy**:
+//   start=2221 md5 `3d34b5c058a6110c886dce5d02b76bc9`.
+// 🔴 Cùng khuôn "Deleted = ĐỔI TRẠNG THÁI, KHÔNG XOÁ" như #B117 (`VatHTCStatus`/`HTCStatusDetail`
+//   ← `'C'`, chú thích nguồn `-- Rejected` **lệch từ vựng**, giữ **giá trị**).
+// 🔴🔴 **NHƯNG SONG SINH NÀY KHÁC #B117 Ở HAI ĐIỂM CỐT TỬ — KHÔNG ĐƯỢC COPY #B117 SANG:**
+//   **(1) HOÁ ĐƠN ĐIỀU CHỈNH ⇒ BẮN LỖI, CHẶN HUỶ** (`:2588`):
+//        `if (dtInvoiceAdj != null && dtInvoiceAdj.Rows.Count > 0) throw …_HTCInvoiceCode_InvoiceadjExist;`
+//        Chú thích nguồn: *"Nếu thu hồi hóa đơn gốc có hóa đơn điều chỉnh ==> bắn lỗi"*.
+//        ⇒ Bên **TCG (#B117)** khối xử lý bị **comment** ⇒ dò ra mà **không làm gì**, huỷ vẫn chạy.
+//          Bên **HTC (#B118)** thì **CHẶN THẲNG**. Cùng một câu SQL dò, **hai hành vi ngược nhau**.
+//   **(2) THAM SỐ `strFlagisHTC` (PHÁP NHÂN) — mã lỗi riêng `…_Input_strFlagisHTCInvalid`:**
+//        chỉ nhận `FlagIsHTC.FlagisHTC = "1"` hoặc `FlagisHTCLD = "2"` (`Const.Main.cs:1158-1164`);
+//        **`"0"` (FlagisNone) BỊ CHẶN** dù vẫn là hằng hợp lệ của cùng lớp.
+//        Và nó **vào cả câu tìm hoá đơn**: `where HTCInvoiceCode = @… **and t.FlagisHTC = @…**`
+//        ⇒ đúng mã nhưng **sai pháp nhân** ⇒ báo **NotFound**, không phải "sai cờ".
+//        Chú thích nguồn giải thích vì sao update bên dưới **không** cần lọc lại: *"HTCInvoiceCode là PK"*.
+//        Ngoài ra `strFlagisHTC` chọn **cấu hình HDDT khác nhau**: `_strConfig_HDDT_NetworkHTC` vs
+//        `…NetworkHTCLD`, `_strConfig_HDDT_MSTHTC` vs `…MSTHTCLD` ⇒ **hai mạng HDDT, hai MST**.
+// 🔴 **NĂM kiểm đầu vào** (nhiều hơn #B117 một cái, do có `strFlagisHTC`), mỗi cái một mã lỗi riêng;
+//   rồi hoá đơn phải **tồn tại theo CẶP (mã, pháp nhân)** (`…_Input_strHTCInvoiceCodeNotFound`).
+// 🔴 `select **top 1**` vào `#tbl_VAT_HTCInvoiceInput` — chỉ lấy **một** hoá đơn (khác lô).
+// 📌 **NỢ — hiệu ứng RA NGOÀI**: `OSDMS_TVAN_Invoice_Invoice_GetX` (đọc hoá đơn bên TVAN, và **ném
+//   `…_InvoiceCodeInQinvoiceNotFound` nếu bảng trả về không đúng 1 dòng**) rồi
+//   `OSDMS_TVAN_OS_Invoice_Invoice_DeletedX` (đẩy huỷ sang TVAN, kèm `AttachedDelFileSpec` /
+//   `AttachedDelFileName` / `DeleteReason` / `DeleteDTimeActual` / `Remark = ""`).
+//   Chưa có trong MiniHTC ⇒ endpoint **chỉ đổi trạng thái trong DB**, cờ `tvanNotCalled = true`.
+//   Theo luật `C0-…quingentesimusseptimus`: hiệu ứng ra ngoài **không tự bắn**.
+// 🔴 Ghi **cả `_dbMain` và `_dbWH`**, cả hai bảng (đầu + dòng).
+// 📌 §12: `VatHtcInvoice.OS_HDDT_InvoiceCode`.
+app.MapPost("/api/htcinvoices/{code}/hddt-delete", async (
+    string code, HtcInvoiceHddtDeleteDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var invCode = (code ?? "").Trim();
+    if (invCode.Length == 0)
+        return Results.BadRequest(new { error = "VAT_HTCInvoice_Invoice_Invoice_Deleted_Input_strHTCInvoiceCodeInvalid" });
+
+    // 🔴 (2) PHÁP NHÂN — chỉ "1" (HTC) hoặc "2" (HTCLD); "0" (None) BỊ CHẶN.
+    var flagisHTC = (dto.FlagisHTC ?? "").Trim();
+    if (!(flagisHTC == "1" || flagisHTC == "2"))
+        return Results.BadRequest(new
+        {
+            error = "VAT_HTCInvoice_Invoice_Invoice_Deleted_Input_strFlagisHTCInvalid",
+            check = new { HTCInvoiceCode = invCode, FlagisHTC = flagisHTC },
+            vocabNote = "FlagIsHTC (Const.Main.cs:1158-1164): '1' = FlagisHTC | '2' = FlagisHTCLD | '0' = FlagisNone. Guard CHI nhan '1' hoac '2' => '0' BI CHAN du van la hang hop le cua cung lop."
+        });
+
+    if (dto.DeleteDTime is null)
+        return Results.BadRequest(new { error = "VAT_HTCInvoice_Invoice_Invoice_Deleted_Input_strDeleteDTimeInvalid" });
+    if (string.IsNullOrWhiteSpace(dto.DeleteReason))
+        return Results.BadRequest(new { error = "VAT_HTCInvoice_Invoice_Invoice_Deleted_Input_strDeleteReasonInvalid" });
+    if (string.IsNullOrWhiteSpace(dto.Email))
+        return Results.BadRequest(new { error = "VAT_HTCInvoice_Invoice_Invoice_Deleted_Input_strEmailInvalid" });
+
+    // 🔴 Tìm theo CẶP (mã, pháp nhân) — `select top 1 … where HTCInvoiceCode = @… and FlagisHTC = @…`
+    var inv = await db.VatHtcInvoices
+        .Where(v => v.OrgId == t.OrgId && v.HTCInvoiceCode == invCode && (v.FlagisHTC ?? "") == flagisHTC)
+        .OrderBy(v => v.Id).FirstOrDefaultAsync();
+    if (inv is null)
+        return Results.BadRequest(new
+        {
+            error = "VAT_HTCInvoice_Invoice_Invoice_Deleted_Input_strHTCInvoiceCodeNotFound",
+            check = new { HTCInvoiceCode = invCode, FlagisHTC = flagisHTC },
+            note = "Dung ma nhung SAI PHAP NHAN cung ra NotFound (dieu kien nam trong cau tim), khong phai loi 'sai co'."
+        });
+
+    // 🔴 (1) Hoá đơn ĐIỀU CHỈNH còn sống ⇒ CHẶN HUỶ (khác hẳn #B117 bên TCG).
+    var adjs = await db.VatHtcInvoices
+        .Where(v => v.OrgId == t.OrgId && v.RefNo == invCode
+                    && v.SourceInvoiceCode == "INVOICEADJ" && v.VatHTCStatus != "C")
+        .Select(v => new { v.HTCInvoiceCode, v.SourceInvoiceCode, v.VatHTCStatus, v.OS_HDDT_InvoiceCode })
+        .ToListAsync();
+    if (adjs.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "VAT_HTCInvoice_Invoice_Invoice_Deleted_HTCInvoiceCode_InvoiceadjExist",
+            check = new { HTCInvoiceCode = invCode },
+            invoiceAdj = adjs,
+            twinDivergenceNote = "SONG SINH KHAC NHAU: ben HTC (#B118) co hoa don DIEU CHINH con song => BAN LOI, CHAN HUY (chu thich nguon: 'Neu thu hoi hoa don goc co hoa don dieu chinh ==> ban loi'). Ben TCG (#B117) cung cau SQL do do NHUNG khoi xu ly BI COMMENT => do ra ma KHONG LAM GI, huy van chay."
+        });
+
+    var now = DateTime.Now;
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    var statusBefore = inv.VatHTCStatus;
+    inv.VatHTCStatus = "C";
+    inv.LogLUDateTime = now; inv.LogLUBy = by;
+
+    var dtls = await db.VatHtcInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && d.HTCInvoiceCode == invCode).ToListAsync();
+    foreach (var d in dtls) { d.HTCStatusDetail = "C"; d.LogLUDateTime = now; d.LogLUBy = by; }
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        htcInvoiceCode = invCode, flagisHTC,
+        statusBefore, vatHTCStatus = inv.VatHTCStatus,
+        detailsUpdated = dtls.Count,
+        osHddtInvoiceCode = inv.OS_HDDT_InvoiceCode,
+        deleteReason = dto.DeleteReason, deleteDTime = dto.DeleteDTime, email = dto.Email,
+        tvanNotCalled = true,
+        notDeleteNote = "'Deleted' KHONG PHAI XOA - ma la DOI TRANG THAI: update VAT_HTCInvoice set VatHTCStatus='C' va update VAT_HTCInvoiceDetail set HTCStatusDetail='C'. KHONG co 'delete' o dau ca. Chu thich nguon ghi '-- Rejected' cho 'C' - LECH TU VUNG (TConst.Stage: 'C'=Cancelled, 'R'=Rejected); giu GIA TRI, bo qua nhan.",
+        twinDivergenceNote = "KHONG DUOC COPY #B117 SANG: song sinh nay KHAC O HAI DIEM COT TU. (1) Hoa don DIEU CHINH con song => #B118 BAN LOI CHAN HUY, con #B117 (TCG) khoi xu ly BI COMMENT nen huy van chay. (2) #B118 co them tham so strFlagisHTC (phap nhan) voi ma loi rieng _Input_strFlagisHTCInvalid.",
+        flagisHTCNote = "strFlagisHTC chi nhan '1' (HTC) / '2' (HTCLD); '0' (FlagisNone) BI CHAN. No VAO CA CAU TIM hoa don: 'where HTCInvoiceCode = @... and t.FlagisHTC = @...' => dung ma nhung sai phap nhan ra NotFound. Chu thich nguon: update ben duoi KHONG can loc lai vi 'HTCInvoiceCode la PK'. Ngoai ra no chon CAU HINH HDDT khac nhau: _strConfig_HDDT_NetworkHTC vs ...NetworkHTCLD, _strConfig_HDDT_MSTHTC vs ...MSTHTCLD => HAI MANG HDDT, HAI MST.",
+        fiveChecksNote = "NAM kiem dau vao (nhieu hon #B117 mot cai): HTCInvoiceCode / FlagisHTC / DeleteDTime / DeleteReason / Email; roi hoa don phai TON TAI theo CAP (ma, phap nhan). Nguon dung 'select top 1' - chi lay MOT hoa don.",
+        tvanDebt = "NO - HIEU UNG RA NGOAI: OSDMS_TVAN_Invoice_Invoice_GetX (doc hoa don ben TVAN; nem _InvoiceCodeInQinvoiceNotFound neu bang tra ve KHONG dung 1 dong) roi OSDMS_TVAN_OS_Invoice_Invoice_DeletedX (day huy sang TVAN kem AttachedDelFileSpec / AttachedDelFileName / DeleteReason / DeleteDTimeActual / Remark = ''). Chua co trong MiniHTC => CHI doi trang thai trong DB. Luat C0-...quingentesimusseptimus: hieu ung ra ngoai KHONG TU BAN.",
+        twoDbNote = "Nguon ExecNonQuery tren CA _dbMain va _dbWH, cho CA HAI bang (dau + dong)."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5
@@ -42477,6 +42589,7 @@ record MstZoneToggleDto(string? FlagActive);   // #B89 - Mst_Zone_Update chi doi
 record PdiDtlRepairDto(string? PDINo, string? VIN, string? FlagRepair, string? RepairRemark);   // #B95
 // #B99 — KHÔNG có `FlagActive`: biz TỰ SUY từ `SMStatus` (xem khối chú thích của endpoint).
 record TcgInvoiceHddtDeleteDto(string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B117
+record HtcInvoiceHddtDeleteDto(string? FlagisHTC, string? DeleteReason, string? AttachedDelFileBase64, string? AttachedDelFileName, string? Email, DateTime? DeleteDTime);   // #B118
 record VinCloseBoxDto(string? LoaiThung, string? ActualSpec, string? SerialNo, DateTime? InspectionDate);   // #B112
 record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? MortageEndDate, string? StatusMortageEnd, DateTime? DRFullDocDate, string? CQNo, string? CONo, string? MortageBankCode, DateTime? RedeemDate);   // #B110
 record VinInvoiceTransferredDto(string? VIN, string? InvoiceNoTransferred, DateTime? InvoiceTransferredDate);   // #B109

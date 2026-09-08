@@ -7855,6 +7855,9 @@ public sealed class VatHtcInvoice
     public string? FlagView { get; set; }
     public string? FlagImport { get; set; }
     public string? FlagisHTC { get; set; }
+    /// <summary>🔴 #B118 — mã hoá đơn bên **hệ TVAN/HDDT**; nguồn lấy cột này ra để gọi
+    /// `OSDMS_TVAN_Invoice_Invoice_GetX` rồi `OSDMS_TVAN_OS_Invoice_Invoice_DeletedX`.</summary>
+    public string? OS_HDDT_InvoiceCode { get; set; }
     public string? TInvoiceCode { get; set; }
     /// <summary>Nguồn gán "0" lúc tạo (cờ đồng bộ sang VelocaBH).</summary>
     public string FlagSyncVeloca { get; set; } = "0";
