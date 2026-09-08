@@ -27866,14 +27866,28 @@ app.MapGet("/api/report/receivable-debt", async (AppDbContext db, ITenantContext
 //   · `plateNo` — nối qua `RONo` sang `RepairOrders.LicensePlate` (nguồn nối `c.PlateNo` trên bảng khách).
 //   ⚠️ Riêng `groupName` (`sg.GroupName`) **vẫn là nợ**: MiniHTC chưa có bảng nhóm khách hàng.
 //
-// 🔴🔴 **PHÁT HIỆN Ở NGUỒN — `FULL JOIN` CHỈ NỐI THEO `CusID`, ĐIỀU KIỆN ĐÚNG BỊ COMMENT**:
-//     `zzzzClauseJoin_Debit` ← `"ON d1.CusID = r1.CusID"`
-//     `--ON d1.CusID = r1.CusID and d1.InsNo = r1.InsNo and d1.SupplierID = r1.SupplierID`
-//   ⇒ Với nợ **bảo hiểm**/**nhà cung cấp** (khoá thật là `InsNo`/`SupplierID`, còn `CusID` **NULL**),
-//     phép nối so `NULL = NULL` — trong SQL là **KHÔNG khớp** ⇒ `FULL JOIN` **tách đôi** mỗi đối tượng
-//     thành **một dòng chỉ có nợ** và **một dòng chỉ có thu**; số dư **không bao giờ trừ được cho nhau**.
-//   ⇒ Luật *"port dòng ACTIVE"* dùng **ngược**: ở đây dòng **comment mới là dòng đúng**, dòng đang chạy
-//     là dòng **thiếu**. MiniHTC gộp theo **khoá đúng của từng loại** nên **không** dính — nêu cờ để đo.
+// 🔴🔴 **#568 RÚT LẠI KẾT LUẬN CỦA #558/#559 — KHÔNG CÓ LỖI `FULL JOIN` NÀO Ở ĐÂY**:
+//   #558 và #559 ghi rằng `zzzzClauseJoin_Debit` luôn được thay bằng `"ON d1.CusID = r1.CusID"` nên nợ
+//   bảo hiểm/NCC bị tách đôi. **Sai** — vì tôi mới đọc **nhánh đầu tiên**. Đọc trọn hàm thì thấy
+//   `SerCusDebitSearch` có **BA nhánh** theo `strDebitType`, mỗi nhánh thay bằng **khoá đúng của loại đó**:
+//     `if (StringEqual(strDebitType, TConst.SerDebitType.**CusDebit**))`      → `"ON d1.CusID = r1.CusID"`
+//     `if (StringEqual(strDebitType, TConst.SerDebitType.**InsuranceDebit**))` → `"ON d1.**InsNo** = r1.InsNo"`
+//     `if (StringEqual(strDebitType, TConst.SerDebitType.**SupplierDebit**))` → `"ON d1.**SupplierID** = r1.SupplierID"`
+//   ⇒ Dòng `--ON d1.CusID = r1.CusID and d1.InsNo=… and d1.SupplierID=…` là **phương án gộp một lần** đã bị
+//     **thay bằng ba nhánh riêng** — nó là **mã cũ**, không phải "điều kiện đúng bị bỏ quên".
+//   📌 Bài học quy trình: cờ `zzzzXxx` trong chuỗi SQL **không** nói nó được thay bằng gì. Phải grep **mọi**
+//     lời gọi `Replace(…, "zzzzXxx", …)` trong hàm — có thể có **nhiều lời gọi ở nhiều nhánh**.
+//     Đọc một lời gọi rồi kết luận là đúng kiểu lỗi mà chính #562 đã dạy: **một nhánh không đại diện cả hàm**.
+//
+// 🔴 **LỖI THẬT PHÁT HIỆN KHI ĐỌC TRỌN BA NHÁNH — TIỀN TỐ `and` BỊ BỎ TRỐNG Ở NHÁNH BẢO HIỂM**:
+//     nhánh khách:     `BuildClause(**"and "**, "c.CusName", strNameConditionList, "@p", …)`
+//     nhánh bảo hiểm:  `BuildClause(**""**,     "c.CusName", strNameConditionList, "@p", …)`   ← **rỗng**
+//   `BuildClause` kết bằng `string.Format("{0} ({1})", strOperatorPrefix, …)` ⇒ tiền tố rỗng sinh ra
+//   `" ((c.CusName = @p3))"` **không có `and`** đứng trước, dán thẳng vào `WHERE` sau mệnh đề khác
+//   ⇒ **lỗi cú pháp SQL** ⇒ **cả báo cáo ném lỗi** mỗi khi người dùng lọc **tên khách** ở loại nợ **bảo hiểm**.
+//   Không phải "bỏ im lặng" như #410 — đây là **hỏng to tiếng**, nhưng chỉ trên đúng một tổ hợp tham số.
+// ⚠️ `BuildClause` còn `strConditionList.Trim().**ToUpper()**` ⇒ **mọi giá trị lọc bị viết hoa** trước khi
+//   thành tham số. Với collation phân biệt hoa–thường thì lọc theo tên **không khớp gì cả**.
 // 🔴 **Chỉ `DealerCode` được bọc toán tử; các bộ lọc khác thì không** — bằng chứng trực tiếp cho bẫy #410:
 //     `BuildClause("and", "c.DealerCode", **"=" + strDealerCodeConditionList**, …)`
 //     `BuildClause("and", "c.CusID", strCusIDConditionList, …)`   ← **không** toán tử ⇒ **bỏ im lặng**
@@ -27943,8 +27957,12 @@ app.MapGet("/api/debits/search", async (AppDbContext db, ITenantContext t,
         dealerCodeFilterApplied = !string.IsNullOrWhiteSpace(dealerCode),
         plateNoFilterApplied = !string.IsNullOrWhiteSpace(plateNo) && dt == "1",
         plateNoResolvedVia = "CusDebit.RONo -> RepairOrder.LicensePlate",
-        sourceFullJoinOnCusIdOnly = "ON d1.CusID = r1.CusID — dieu kien day du (InsNo/SupplierID) BI COMMENT",
-        sourceWouldSplitRowsForType2And3 = dt != "1",
+        // #568 RUT LAI hai co sai cua #559 (xem chu thich dau endpoint).
+        retracted_sourceFullJoinOnCusIdOnly = "SAI — nguon co BA nhanh theo strDebitType, moi nhanh noi dung khoa cua loai do",
+        joinKeyPerDebitType = "1 -> d1.CusID = r1.CusID · 2 -> d1.InsNo = r1.InsNo · 3 -> d1.SupplierID = r1.SupplierID",
+        commentedJoinLineIsOldCode = "--ON d1.CusID=r1.CusID and d1.InsNo=... la phuong an gop mot lan DA BI THAY, khong phai dieu kien bi bo quen",
+        insuranceBranchMissingAndPrefix = "BuildClause(\"\", \"c.CusName\", ...) — tien to rong => sinh menh de KHONG co 'and' => LOI CU PHAP SQL khi loc ten khach o loai no bao hiem",
+        buildClauseUppercasesValues = "strConditionList.Trim().ToUpper() — moi gia tri loc bi viet hoa",
         onlyDealerCodeGetsOperatorPrefix = true,
         stillOwed = "Bo loc nhom khach (sg.GroupName) — MiniHTC chua co bang nhom khach hang." });
 }).RequireAuthorization();
