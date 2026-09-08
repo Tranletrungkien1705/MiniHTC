@@ -32068,6 +32068,134 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   `ColorName = mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN` ⇒ **một vế NULL là cả chuỗi NULL**.
 // ✅ RBAC **tổ hợp (1)**: `CheckHTCDirect` **ACTIVE**; `@strBUPatternOfUser` nạp nhưng SQL không dùng.
 //   Guard ngày: `To` rỗng ⇒ `TConst.DateTimeSpecial.DateMax`. Lọc kỳ **chỉ theo `ShippingDateStart`**.
+
+// ===== #B311/#B312/#B313 BÁO CÁO MASTER — BÁN BUÔN HTC (xe HTC đã xuất kho xuống đại lý) —
+//       `RptMaster_BanBuonHTC_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`, SQL viết thẳng trong hàm)
+//       + helper `mySql_Rpt_GetClauseColumn_CarAndVINInfo_01` / `…Join…` =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `146887,147123` ≡ 150 `146892,147128` ⇒ **`5e1f237923a90a2a5721dc0f9a61e5c2`**.
+// ✅🔴 **RBAC — tổ hợp (1)+(3), và LỌC ĐÚNG NGAY BƯỚC 1**:
+//     `inner join mst_Dealer md on cdo.DealerCode = md.DealerCode`
+//     `  and (md.BUCode like @strBUPatternOfUser) **--20141031**`   ← **ACTIVE ngay ở `#tbl_Car_Car_Filter`**
+//   cộng `myCommon_CheckHTCDirect(…, Flag.Active)` **ACTIVE**.
+//   ⚠️ **ĐỐI LẬP TRỰC TIẾP #B296** (`RptMaster_BanLe`, cùng họ, **cùng bản vá `20141031`**): ở đó dòng
+//     lọc quyền **tại bước 1 bị comment** và phải vá lại ở bước sau theo **`DLSDDealerCodeOwner`**;
+//     còn ở đây lọc ngay bước 1 theo **`cdo.DealerCode`** (đại lý **nhận lệnh xuất xe**).
+//   ⇒ **Hai báo cáo anh em, HAI ĐỊNH NGHĨA PHẠM VI QUYỀN KHÁC NHAU** (luật `C0-…nonagesimusquintus`).
+// ⚠️🔴 **HAI CÂU DEBUG, MỘT BỊ COMMENT — MỘT KHÔNG**:
+//   · `--select null tbl_Car_Car_Filter, t.* …` ⇒ **có** comment ⇒ **không** trả bảng;
+//   · `select null tbl_Car_Car_Raw, t.* from #tbl_Car_Car_Raw t;` ⇒ **KHÔNG** comment
+//     ⇒ trở thành `Tables[0] = "Table_BanBuonHTC_ChiTiet"` — **hợp đồng API**, lần thứ **NĂM**
+//       (sau #B290, #B296, #B299, #B308).
+//   ⇒ Xác nhận đúng luật `C0-sescentesimussextusdecimus`: **phải kiểm TỪNG câu**, cùng một hàm có câu
+//     comment có câu không — không suy từ câu này sang câu kia.
+// ✅ **Gộp MỘT TẦNG, đúng theo tháng** — **phản ví dụ lành mạnh** cho luật `C0-…quintusdecimus`:
+//   `left(cdod.DeliveryOutDate, 7) ColumnMonth` được tính ở **bảng tạm**, rồi câu tổng
+//   `group by … t.ColumnMonth` (**đã là tháng**) ⇒ **không** cần gộp hai tầng như #B305.
+// 🔴 **BỐN điều kiện nền**: `cc.FlagActive = '1'` · `cdod.DeliveryOutDate is not null` (*"xe đã xuất kho"*) ·
+//   `cdod.ConfirmStatus in ('A','F')` (*"lệnh xuất xe được phê duyệt trở lên và còn active"*) ·
+//   kỳ theo **`cdod.DeliveryOutDate`**.
+//   ⚠️ Tên báo cáo *"Bán buôn HTC"* nhưng **không có điều kiện nào về bán buôn** — nghiệp vụ hiểu ngầm:
+//     **HTC xuất xe xuống đại lý = bán buôn**.
+// 🔴 `Sum(t.Total)` với `Total` là cột hằng **`1 Total`** của helper `…CarAndVINInfo_01` ⇒ thực chất
+//   là **đếm xe**. Helper này còn kéo theo ~90 cột (`CT_TKHQ`, `Pmt_Guarantee`, `CT_PackingList`, …).
+// 🔴 `ColorName = (t.CVColorExtNameVN + '/' + t.CVColorIntNameVN)` ⇒ **một vế NULL là cả chuỗi NULL**.
+//   `left(cdod.DeliveryOutDate, 7)` ⇒ cột **lưu VARCHAR**.
+// 🔴 `ModelName` = **`mcm_CV.ModelName`** join theo **`cv.ModelCode`** (helper) — giống #B308,
+//   **khác #B305** (join theo `mcs.ModelCode`).
+app.MapGet("/api/reports/master-banbuon-htc", async (
+    AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    var from = tDateFrom ?? DateTime.MinValue;
+    var to = tDateTo ?? new DateTime(9999, 12, 31);
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    // #tbl_Car_Car_Filter — BỐN điều kiện nền + lọc quyền NGAY BƯỚC 1 theo cdo.DealerCode.
+    var doHeads = (await db.DeliveryOrders.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(d => d.Id);
+    var doCars = await db.DeliveryOrderCars
+        .Where(c => c.OrgId == t.OrgId && c.CarId != null
+                    && c.DeliveryOutDate != null
+                    && c.DeliveryOutDate >= from && c.DeliveryOutDate <= to
+                    && (c.ConfirmStatus == "A" || c.ConfirmStatus == "F"))
+        .ToListAsync();
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.FlagActive == "1").ToListAsync())
+        .Where(v => v.CarId != null)
+        .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+
+    var raw = new List<object>();
+    var keys = new List<(string? Model, string? ModelName, string? Spec, string? SpecDesc, string? Color, string Month)>();
+    var droppedNoDealerScope = new List<object>();
+    foreach (var c in doCars)
+    {
+        if (!cvs.TryGetValue(c.CarId!, out var cv)) continue;         // cc.FlagActive = '1'
+
+        // 🔴 Lọc quyền NGAY BƯỚC 1 theo đại lý của LỆNH XUẤT XE (khác #B296 lọc theo chủ sở hữu deal).
+        var dlrCode = doHeads.TryGetValue(c.DoId, out var h) ? h.DealerCode : null;
+        if (dlrCode is null || !dealers.ContainsKey(dlrCode))
+        { droppedNoDealerScope.Add(new { cv.VIN, DoDealerCode = dlrCode }); continue; }
+
+        var mon = c.DeliveryOutDate!.Value.ToString("yyyy-MM");
+        var modelName = (cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null;
+        var specDesc = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null;
+
+        raw.Add(new
+        {
+            tbl_Car_Car_Raw = (string?)null,        // ⚠️ cột rác của câu debug KHÔNG bị comment
+            cv.CarId, cv.VIN,
+            CVModelCode = cv.ModelCode, CVModelName = modelName,
+            cv.ActualSpec, AC_SpecDescription = specDesc,
+            CVColorCode = cv.ColorCode,
+            CVColorExtNameVN = (string?)null, CVColorIntNameVN = (string?)null,  // 📌 NỢ: Mst_CarColor
+            DeliveryOrderNo = (string?)null,        // 📌 NỢ: số lệnh xuất xe chưa nối
+            c.DeliveryOutDate, c.ConfirmStatus,
+            MDDealerCode = dlrCode,
+            MDDealerName = dealers[dlrCode].DealerName,
+            ColumnMonth = mon,
+            Total = 1                                // 🔴 cột hằng `1 Total` của helper
+        });
+        keys.Add((cv.ModelCode, modelName, cv.ActualSpec, specDesc, cv.ColorCode, mon));
+    }
+
+    // ✅ Gộp MỘT TẦNG — ColumnMonth đã là tháng ngay từ bảng tạm.
+    var summary = keys
+        .GroupBy(k => (k.Model, k.ModelName, k.Spec, k.SpecDesc, k.Color, k.Month))
+        .Select(g => new
+        {
+            CVModelCode = g.Key.Model,
+            ModelName = g.Key.ModelName,
+            CVActualSpec = g.Key.Spec,
+            AC_SpecDescription = g.Key.SpecDesc,
+            CVColorCode = g.Key.Color,
+            ColorName = (string?)null,               // 🔴 nguồn nối bằng '+' ⇒ NULL lan
+            ColumnMonth = g.Key.Month,
+            Total = g.Count()                        // Sum(1 Total) ⇒ đếm xe
+        })
+        .OrderBy(x => x.ColumnMonth, StringComparer.Ordinal)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        Table_BanBuonHTC_ChiTiet = raw,      // Tables[0] — từ câu debug KHÔNG bị comment
+        Table_BanBuonHTC = summary,          // Tables[1]
+        droppedNoDealerScope,
+        rbacStep1Note = "RBAC - to hop (1)+(3), va LOC DUNG NGAY BUOC 1: 'inner join mst_Dealer md on cdo.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser) --20141031' ACTIVE ngay o #tbl_Car_Car_Filter, cong CheckHTCDirect ACTIVE. DOI LAP TRUC TIEP #B296 (RptMaster_BanLe, cung ho, CUNG BAN VA 20141031): o do dong loc quyen TAI BUOC 1 BI COMMENT va phai va lai o buoc sau theo DLSDDealerCodeOwner; con o day loc ngay buoc 1 theo cdo.DealerCode (dai ly NHAN LENH XUAT XE). => HAI BAO CAO ANH EM, HAI DINH NGHIA PHAM VI QUYEN KHAC NHAU (luat C0-...nonagesimusquintus).",
+        twoDebugSelectsNote = "HAI CAU DEBUG, MOT BI COMMENT - MOT KHONG: '--select null tbl_Car_Car_Filter, t.* ...' CO comment => khong tra bang; 'select null tbl_Car_Car_Raw, t.* from #tbl_Car_Car_Raw t;' KHONG comment => tro thanh Tables[0] = 'Table_BanBuonHTC_ChiTiet' - HOP DONG API, lan thu NAM (sau #B290, #B296, #B299, #B308). Xac nhan luat C0-sescentesimussextusdecimus: PHAI KIEM TUNG CAU, cung mot ham co cau comment co cau khong.",
+        singleLevelGroupNote = "GOP MOT TANG, DUNG THEO THANG - PHAN VI DU LANH MANH cho luat C0-...quintusdecimus: 'left(cdod.DeliveryOutDate, 7) ColumnMonth' duoc tinh o BANG TAM, roi cau tong 'group by ... t.ColumnMonth' (DA LA THANG) => KHONG can gop hai tang nhu #B305.",
+        baseConditionsNote = "BON dieu kien nen: cc.FlagActive = '1'; cdod.DeliveryOutDate is not null ('xe da xuat kho'); cdod.ConfirmStatus in ('A','F') ('lenh xuat xe duoc phe duyet tro len va con active'); ky theo cdod.DeliveryOutDate. Ten bao cao 'Ban buon HTC' nhung KHONG CO DIEU KIEN NAO VE BAN BUON - nghiep vu hieu ngam: HTC xuat xe xuong dai ly = ban buon.",
+        totalConstNote = "Sum(t.Total) voi Total la cot hang '1 Total' cua helper mySql_Rpt_GetClauseColumn_CarAndVINInfo_01 => thuc chat la DEM XE. Helper nay con keo theo ~90 cot (CT_TKHQ, Pmt_Guarantee, CT_PackingList, ...).",
+        concatAndVarcharNote = "ColorName = (CVColorExtNameVN + '/' + CVColorIntNameVN) => MOT VE NULL LA CA CHUOI NULL. left(cdod.DeliveryOutDate, 7) => cot LUU VARCHAR.",
+        modelNameSourceNote = "ModelName = mcm_CV.ModelName join theo cv.ModelCode (helper) - giong #B308, KHAC #B305 (join theo mcs.ModelCode).",
+        debtNote = "NO: Mst_CarColor (CVColorExtNameVN/CVColorIntNameVN => ColorName), so lenh xuat xe (DeliveryOrderNo), va cac cot con lai cua helper CarAndVINInfo_01 chua noi => tra NULL. Khong bia."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/master-shipping", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
 {
