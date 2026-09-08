@@ -9263,6 +9263,82 @@ app.MapPost("/api/vins/get-list", async (
     });
 }).RequireAuthorization();
 
+// ===== #B114 TRA DANH SÁCH XE THEO LÔ LỚN — `CarCarGetList_New20181115` =====
+// Trace LIVE: WS `:13344` → **`_biz.CarCarGetList_New20181115`** (`BizHTC.Car.cs:856`).
+//   3B đo thật, **khớp cả 2 máy**: start=856 md5 `93ceb51d1854ca27ba891f7c425567da`.
+// 🔴 **TỰ SỬA GHI CHÉP CỦA #B113**: ở manifest #B113 tôi ghi *"`CarCarGetList` cùng file **CÓ** 1 lần
+//    dùng `@strBUPatternOfUser`"* — **SAI**. Con số 1 đó đến từ một lệnh `grep` **gộp hai mẫu**
+//    (`strBUPatternOfUser|myUtil_GetDataForHugeList`) và thực chất khớp **lời gọi hàm dùng chung**,
+//    không phải tham số phạm vi. Đếm lại riêng: `strBUPatternOfUser` = **0**.
+//    ⇒ Hàm này **cũng KHÔNG lọc phạm vi** — **ca thứ 21**, cùng biến thể 2 với #B113.
+//    📌 Bài học lặp lại đúng thứ `C0-…nonagesimusseptimus` đã cảnh báo: **grep gộp mẫu ⇒ số đếm vô
+//      nghĩa**. Từ nay mỗi mẫu đếm **riêng một lệnh**.
+// 🔴 **BA mảnh caching thanh toán, BA bộ lọc trạng thái KHÁC NHAU** — đọc kỹ từng cái:
+//    · `CachingForPaymentTotal(#tbl_Pmt_PaymentDetailTotal_Temp, **"'A','F'"**)` — *"chỉ xét thanh
+//      toán **đã duyệt trở lên**"*;
+//    · `CachingForPaymentTotal(#tbl_…_A_Deposit, **"'A','F'"**, true)` — cọc, **đã duyệt trở lên**;
+//    · `CachingForPaymentTotal(#tbl_…_Deposit,   **"'F'"**,     true)` — cọc, **CHỈ đã hoàn tất**.
+//    ⇒ Hai bảng cọc **khác nhau đúng ở bộ lọc trạng thái**; dùng lẫn là lệch số tiền cọc.
+// 🔴 Cột kết quả lấy từ hàm dùng chung **`mySql_GetClauseColumn_Car_Car_Result()`** — thêm cột vào
+//    đây ảnh hưởng **mọi** màn dùng chung (đã có ghi nhớ riêng về bẫy trùng cột của hàm này).
+// 🔴 Cùng khuôn **chia lô 2000** qua `myUtil_GetDataForHugeList` + `UnionAll(..., false)` như #B113.
+// 📌 **NỢ**: tầng thanh toán (`Pmt_PaymentDetail`/`Pmt_Payment` + ba mảnh caching) chưa có trong
+//    MiniHTC ⇒ **mọi cột tiền trả `null`**, cờ `paymentCachingSkipped`. **Không đoán công thức.**
+app.MapPost("/api/cars/get-list", async (
+    List<string> carIds, AppDbContext db, ITenantContext t, int? batchSize) =>
+{
+    if (carIds is null || carIds.Count == 0)
+        return Results.BadRequest(new { error = "CarCarGetList_InvalidCarIdList" });
+
+    const int MaxParamsSqlSv = 2000;
+    var step = Math.Clamp(batchSize ?? MaxParamsSqlSv, 1, MaxParamsSqlSv);
+    var list = carIds.Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId)
+        .Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First().SpecDesc);
+
+    var result = new List<object>();
+    var batches = 0;
+    for (var i = 0; i < list.Count; i += step)
+    {
+        var chunk = list.Skip(i).Take(step).ToList();
+        batches++;
+        var cars = await db.CarVinMasters
+            .Where(c => c.OrgId == t.OrgId && chunk.Contains(c.VIN)).ToListAsync();
+        foreach (var cc in cars)
+            result.Add(new
+            {
+                CarId = cc.VIN, cc.VIN, cc.SpecCode, cc.ModelCode, cc.ColorCode,
+                cc.DealerCode,
+                DealerName = dealers.TryGetValue(cc.DealerCode ?? "", out var dn) ? dn : null,
+                SpecDescription = specs.TryGetValue(cc.SpecCode ?? "", out var sd) ? sd : null,
+                cc.SOCode, cc.FlagActive, cc.FlagisHTC, cc.PackingListNo,
+                cc.CarCancelDate, cc.CarCancelRemark, cc.MortageBankCode,
+                cc.InvoiceNoTransferred, cc.InvoiceTransferredDate,
+                // 📌 Tầng thanh toán chưa có ⇒ MỌI cột tiền = null (không đoán).
+                PmtPaymentTotal_AF = (decimal?)null,
+                PmtDepositTotal_AF = (decimal?)null,
+                PmtDepositTotal_F = (decimal?)null
+            });
+    }
+
+    return Results.Ok(new
+    {
+        inputCarIds = list.Count, batches, batchSize = step, count = result.Count, items = result,
+        paymentCachingSkipped = true,
+        selfCorrection = "TU SUA GHI CHEP CUA #B113: o manifest #B113 toi ghi 'CarCarGetList cung file CO 1 lan dung @strBUPatternOfUser' - SAI. Con so 1 do den tu mot lenh grep GOP HAI MAU (strBUPatternOfUser|myUtil_GetDataForHugeList) va thuc chat khop LOI GOI HAM DUNG CHUNG, khong phai tham so pham vi. Dem lai rieng: strBUPatternOfUser = 0.",
+        rbacHole = "Ham nay CUNG KHONG loc pham vi - CA THU 21, cung bien the 2 voi #B113. Bai hoc lap lai dung thu C0-...nonagesimusseptimus da canh bao: grep gop mau => so dem vo nghia. Tu nay moi mau dem RIENG mot lenh.",
+        threeCachingNote = "BA manh caching thanh toan, BA bo loc trang thai KHAC NHAU: (1) CachingForPaymentTotal(#tbl_Pmt_PaymentDetailTotal_Temp, \"'A','F'\") - 'chi xet thanh toan DA DUYET TRO LEN'; (2) CachingForPaymentTotal(#tbl_..._A_Deposit, \"'A','F'\", true) - coc, DA DUYET TRO LEN; (3) CachingForPaymentTotal(#tbl_..._Deposit, \"'F'\", true) - coc, CHI DA HOAN TAT. Hai bang coc KHAC NHAU DUNG O BO LOC TRANG THAI; dung lan la lech so tien coc.",
+        sharedColumnNote = "Cot ket qua lay tu ham dung chung mySql_GetClauseColumn_Car_Car_Result() - them cot vao day anh huong MOI man dung chung (xem ghi nho rieng ve bay trung cot cua ham nay).",
+        hugeListNote = "Cung khuon chia lo 2000 qua myUtil_GetDataForHugeList + UnionAll(..., false) nhu #B113.",
+        paymentDebt = "NO: tang thanh toan (Pmt_PaymentDetail/Pmt_Payment + ba manh caching) chua co trong MiniHTC => MOI cot tien tra null. KHONG doan cong thuc."
+    });
+}).RequireAuthorization();
+
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
