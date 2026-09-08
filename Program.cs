@@ -52950,6 +52950,114 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴🔴 #628 MÀN HOME MÁY TÍNH BẢNG — LỊCH HẸN `Ser_App_HomeX` (`Tab.cs:2475`) =====
+// 3B: laptop `:2475` md5 `6dfa3e66` **KHỚP** máy 150 `:2475`.
+// Vỏ bọc (`Tab.cs:13911`) gọi **ba** hàm `*_HomeX` (App · ReceptionF · RO), tất cả bằng `_dbMain`, rồi ghép
+//   `dsGetData_X.Tables[**1**].Copy()` của từng hàm thành ba bảng trả về.
+//
+// 🔴🔴🔴 **PHÂN TRANG Ở ĐÂY KHÔNG CHỈ BỊ TẮT — NÓ *KHÔNG THỂ* BẬT LẠI**:
+//   Hai dòng `--and (t.MyIdxSeq >= @nFilterRecordStart)` / `--and (t.MyIdxSeq <= @nFilterRecordEnd)` tham
+//   chiếu cột `MyIdxSeq`, **nhưng bảng tạm không hề tạo cột đó**: câu dựng là `select **distinct sera.AppId**`
+//   `into #tbl_Ser_App_Filter_Draft` — **không có** `identity(bigint, 0, 1) MyIdxSeq`.
+//   ⇒ Ai bỏ comment để "bật lại phân trang" sẽ nhận **`Invalid column name 'MyIdxSeq'`** ngay.
+//   📌 Đếm cả ba hàm Home, **cả hai máy**: `identity(bigint` = **0/0/0**, `MyIdxSeq` = **2/2/2** (đúng hai
+//     dòng comment mỗi hàm). ⇒ **Khác #626**: ở `Ser_CampaignMarketing_Get_WH` cột `identity()` **có tồn tại**
+//     nên bỏ comment là chạy được. Cùng một triệu chứng, **hai mức độ hỏng khác nhau** — phải phân biệt.
+// 🔴🔴 **VỎ BỌC TRUYỀN `"0"` / `"10000"` CỨNG** cho cả ba hàm ⇒ ngay cả khi phân trang sống thì cũng là
+//   "trang đầu 10000 dòng". Hai tầng phân trang chết chồng lên nhau.
+// 🔴🔴 **`Tables[1]` TRUY THEO VỊ TRÍ, KHÔNG KIỂM `Tables.Count`** (luật #411): bảng thứ hai chỉ tồn tại khi
+//   cờ `bGet_Ser_App_Group` bật. Vỏ bọc truyền `"*"` cho `_Group` và `""` cho `_Ser_App` nên hiện tại có;
+//   đổi tham số một chút là **IndexOutOfRange**, không phải thông báo nghiệp vụ.
+// 🔴🔴 **TỔNG TRÊN HUY HIỆU ≠ SỐ DÒNG TRONG DANH SÁCH — DO THIẾT KẾ**:
+//   Bảng **Group** đếm từ `#tbl_Ser_App` (chỉ nối lại chính `Ser_App`, **không** nối danh mục nào);
+//   bảng **Detail** thì `inner join Ser_Car` + `inner join Ser_MST_Model` + `inner join Ser_Customer`.
+//   ⇒ Lịch hẹn **chưa gắn xe / xe thiếu model / chưa gắn khách** vẫn **được đếm** trong con số tổng nhưng
+//     **không xuất hiện** trong danh sách. Trên màn Home của máy tính bảng, người dùng thấy "5 lịch hẹn"
+//     rồi mở ra chỉ có 3 dòng — và không có gì giải thích.
+// 🔴🔴 **NHÃN TRẠNG THÁI THIẾU MÃ '5'**: khối Group dịch `case t.AppStatus when '1'..'4'` — **bốn** mã,
+//   trong khi màn danh sách lịch hẹn (`Ser_App_GetStatusList01_New20201230`, xem #474/#621) có **năm**:
+//   thêm `'5' = N'Đã liên hệ & Chưa xác nhận'`. ⇒ Lịch hẹn trạng thái `5` vẫn **được đếm** nhưng
+//   `AppStatusName` là **NULL** ⇒ Home hiện một nhóm **không tên**. Bản sao **bị comment** của chính khối
+//   `case` này nằm ngay đầu câu SQL cũng chỉ có bốn mã ⇒ thiếu từ đầu, không phải mới rơi.
+// 🔴🔴 **HAI CỘT CÙNG TÊN `CusID` TRONG MỘT `SELECT`, VÀ CHÚ THÍCH GẮN SAI**:
+//     `, scus.CusID -- ID khách hàng`
+//     `, sc.CusID   -- **ID xe**`   ← `sc` là `Ser_Car`, nhưng cột lấy vẫn là **`CusID`**, không phải `CarID`
+//   ⇒ Kết quả có **hai cột trùng tên** (`DataTable` sẽ đặt cột sau thành `CusID1`) và **`CarID` không bao giờ**
+//     **được trả về**, dù chú thích nói đó là ID xe. Port trả `carId` thật và nêu cờ.
+// 🔴 `Convert(nvarchar(10), sera.CreatedDate, 123) CreatedDate` ở khối Group (chuỗi ISO) nhưng khối Detail trả
+//   `serapp.CreatedDate` **nguyên kiểu datetime** ⇒ **cùng tên cột, hai kiểu dữ liệu** giữa hai bảng cùng màn.
+//   ⚪ Âm tính: style **123** là `yyyy-mm-dd` nên `group by` trên chuỗi vẫn **đúng thứ tự thời gian**.
+// 🔴 Hai bộ lọc đều là `BuildClause` (`sera.DealerCode`, `sera.CreatedDate`) ⇒ thiếu toán tử là **rơi im lặng**
+//   (#410) ⇒ Home trả **toàn hệ**. ⚪ Ở đây `drop table` là **dòng ACTIVE** (khác các hàm anh em).
+app.MapGet("/api/tab/home/appointments", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? createdDate) =>
+{
+    var qy = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (createdDate is not null) qy = qy.Where(x => x.AppFrom.Date == createdDate!.Value.Date);
+
+    // 📌 MiniHTC lưu trạng thái lịch hẹn dạng CHỮ (Booked/Arrived/…), nguồn dùng mã 1..5 ⇒ không map bừa;
+    //    nhóm theo đúng giá trị đang lưu và nêu cờ. Nguồn nhóm theo NGÀY TẠO, Mini dùng AppFrom (xem cờ).
+    var rows = await qy.Select(x => new { x.Id, x.AppNo, x.Status, x.AppFrom, x.CusID, x.CusName, x.PlateNo, x.Vin, x.CarID })
+        .ToListAsync();
+
+    // Nhóm: nguồn đếm trên tập CHƯA nối danh mục nào.
+    // Nguồn CHỈ dịch bốn mã 1..4 ở màn Home (màn danh sách lịch hẹn có năm) — mã ngoài bảng ra NULL.
+    static string? StatusName(string? code) => code switch
+    {
+        "1" => "Mới tạo", "2" => "Xác nhận", "3" => "Tiếp nhận", "4" => "Hủy",
+        _ => null,
+    };
+    var groups = rows
+        .GroupBy(x => new { date = x.AppFrom.ToString("yyyy-MM-dd"), x.Status })
+        .OrderBy(g => g.Key.date).ThenBy(g => g.Key.Status)
+        .Select(g => new
+        {
+            createdDate = g.Key.date,
+            appStatus = g.Key.Status,
+            appStatusName = StatusName(g.Key.Status),
+            qtySerApp = g.Count(),
+        }).ToList();
+
+    // Chi tiết: nguồn nối INNER sang xe + model + khách ⇒ nuốt dòng.
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.ModelCode }).ToListAsync();
+    var details = rows.Select(x =>
+    {
+        var car = x.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == x.Vin);
+        return new
+        {
+            appId = x.Id, x.AppNo, createdDate = x.AppFrom,
+            cusId = x.CusID, x.CusName,
+            carId = x.CarID,                      // nguồn KHÔNG trả CarID (xem cờ dưới) — port trả thật
+            plateNo = car?.PlateNo ?? x.PlateNo,
+            modelCode = car?.ModelCode,
+            wouldBeDroppedBySource = car is null || car.ModelCode is null || x.CusID is null,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        groupCount = groups.Count, groups,
+        detailCount = details.Count, details,
+        // ===== #628 =====
+        badgeTotalVsListMismatch = details.Count(d => d.wouldBeDroppedBySource),
+        groupCountsUnjoinedDetailIsInnerJoined = "bang Group dem tu #tbl_Ser_App (chi noi lai chinh Ser_App, KHONG noi danh muc nao) con bang Detail inner join Ser_Car + Ser_MST_Model + Ser_Customer => lich hen chua gan xe / xe thieu model / chua gan khach VAN duoc dem trong con so tong nhung KHONG xuat hien trong danh sach; nguoi dung thay 5 lich hen roi mo ra chi co 3 dong",
+        pagingCannotEvenBeReEnabled = "hai dong --and (t.MyIdxSeq >= @nFilterRecordStart) / <= @nFilterRecordEnd tham chieu cot MyIdxSeq nhung bang tam KHONG tao cot do (select distinct sera.AppId into … khong co identity(bigint,0,1)); bo comment se nhan Invalid column name MyIdxSeq",
+        identityCountedInAllThreeHomeFunctions = "dem ca ba ham Home tren CA HAI may: identity(bigint = 0/0/0, MyIdxSeq = 2/2/2 => khac #626 noi identity() CO ton tai nen bo comment la chay duoc; cung trieu chung, HAI MUC DO hong khac nhau",
+        wrapperHardcodesRecordWindow = "vo boc Tab.cs:13911 truyen 0 va 10000 CUNG cho ca ba ham => hai tang phan trang chet chong len nhau",
+        tablesIndexOneWithoutCountCheck = "vo boc lay dsGetData_X.Tables[1] theo VI TRI; bang thu hai chi ton tai khi co bGet_*_Group bat (vo boc truyen * cho _Group va rong cho ban chi tiet) => doi tham so mot chut la IndexOutOfRange (luat #411)",
+        statusCaseMissingCode5 = "khoi Group chi dich case t.AppStatus when 1..4 trong khi man danh sach lich hen (#474/#621) co NAM ma, them 5 = Da lien he & Chua xac nhan => lich hen trang thai 5 van duoc dem nhung AppStatusName la NULL, Home hien mot nhom KHONG TEN; ban sao bi comment cua chinh khoi case nay o dau cau SQL cung chi co bon ma",
+        duplicateCusIdColumnAndWrongComment = "select liet ke scus.CusID -- ID khach hang VA sc.CusID -- ID xe; sc la Ser_Car nhung cot lay van la CusID chu khong phai CarID => ket qua co HAI cot trung ten (DataTable dat cot sau thanh CusID1) va CarID KHONG BAO GIO duoc tra ve du chu thich noi do la ID xe",
+        createdDateTwoTypesAcrossTables = "khoi Group tra Convert(nvarchar(10), CreatedDate, 123) (chuoi ISO) con khoi Detail tra CreatedDate nguyen kieu datetime => cung ten cot, hai kieu du lieu giua hai bang cung mot man",
+        style123KeepsChronologicalOrder = "AM TINH: style 123 la yyyy-mm-dd nen group by tren chuoi van dung thu tu thoi gian",
+        bothFiltersAreBuildClause = "sera.DealerCode va sera.CreatedDate deu la BuildClause => thieu toan tu la roi im lang (#410) => Home tra TOAN HE",
+        dropTableActiveHere = "khac cac ham anh em, o day cac lenh drop table la dong ACTIVE",
+        miniStoresStatusAsText = "MiniHTC luu trang thai lich hen dang CHU (Booked/Arrived/Done/Cancelled) con nguon dung ma 1..5 => KHONG map bua; port nhom theo dung gia tri dang luu nen appStatusName se la null cho moi nhom — day la lech MO HINH cua Mini, khong phai loi cua nguon",
+        miniGroupsByAppFromNotCreatedDate = "nguon nhom theo NGAY TAO (sera.CreatedDate); ServiceAppointment cua Mini khong co cot ngay tao nen port nhom theo AppFrom (gio hen) => ghi NO, dung doi chieu so lieu hai ben theo ngay",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #627 MASTER **LOẠI** ĐẦU MỤC KIỂM TRA `Ser_Mst_ReceptionFAudType_GetX` (`Tab.cs:14738`) =====
 // Nửa còn thiếu của cặp master ở #526: #526 port **đầu mục** (`Ser_Mst_ReceptionFAudit`), lượt này port
 //   **loại đầu mục** (`Ser_Mst_ReceptionFAudType`). Trước đó Mini ghi rõ *"ReceptionFAudType, mã tự do —
