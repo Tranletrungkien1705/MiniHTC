@@ -521,6 +521,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerZone> DealerZones => Set<DealerZone>();
     public DbSet<MstZone> MstZones => Set<MstZone>();   // #B89 danh muc VUNG (Mst_Zone)
     public DbSet<AtedpRun> AtedpRuns => Set<AtedpRun>();   // #B134 luot chay job lap ke hoach giao xe
+    public DbSet<AutoEstDlvPlanStorage> AutoEstDlvPlanStorages => Set<AutoEstDlvPlanStorage>();   // #B135 cache dai ly x kho x model
     public DbSet<TranspFeeVer> TranspFeeVers => Set<TranspFeeVer>();       // #B90 dau phien ban CPVT
     public DbSet<TranspFeeHist> TranspFeeHists => Set<TranspFeeHist>();   // #B90 anh chup dong phi theo phien ban
     public DbSet<SysPartner> SysPartners => Set<SysPartner>();                 // #B96 danh muc doi tac he thong

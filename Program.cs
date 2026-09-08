@@ -9786,6 +9786,79 @@ app.MapPost("/api/dms40/auto-estimate-delivery-plan/run", async (
     });
 }).RequireAuthorization();
 
+// ===== #B135 DỰNG LẠI CACHE KHO CHO JOB KẾ HOẠCH — `myCache_Auto_EstimateDeliveryPlan_Storage_Gen`
+//       (bước tiền xử lý CHẠY NGAY TRƯỚC 8 chặng của #B134) =====
+// 🔴 **Bẫy tìm hàm — hàm sống nằm trong file tên `zTemp.*`**: `grep` ra **6 định nghĩa**, phần lớn ở
+//   `DMS40/Delete.0.21.PlanDelivery.cs` và `Backup/…`. Bản **ĐANG BIÊN DỊCH** là
+//   **`DMS40/zTemp.0.21.PlanDelivery.cs:779`** — csproj ghi `<Compile Include="DMS40\zTemp.0.21.PlanDelivery.cs" />`
+//   (dòng 279) trong khi `Delete.0.21.PlanDelivery.cs` chỉ là **`<None Include=…>`** (dòng 318) ⇒
+//   **không được biên dịch**. ⇒ Dấu `Delete.*` = chết **đã được csproj xác nhận**, nhưng dấu
+//   `zTemp.*` **KHÔNG** có nghĩa là tạm/chết.
+// 🔴🔴 **XOÁ SẠCH RỒI NẠP LẠI TOÀN BỘ**: `delete from Auto_EstimateDeliveryPlan_Storage;` rồi
+//   `insert into … select …` ⇒ đây là **cache dựng lại từ đầu mỗi lượt**, không phải bảng tích luỹ.
+//   Port bằng "thêm nếu chưa có" là **để lại rác của lần chạy trước**.
+// 🔴 **BỐN BƯỚC, thứ tự quyết định giá trị `FlagLocal`**:
+//   1. **TÍCH ĐỀ-CÁC** `Mst_Dealer × Mst_Storage × Mst_CarModel` (`inner join … on (1=1)` — **ba bảng
+//      nhân nhau, không điều kiện**) ⇒ `FlagLocal = '-1'`. ⚠️ Số dòng = |ĐL| × |Kho| × |Model|.
+//   2. `left join Mst_StorageGlobal` theo **(StorageCode, ModelCode)** ⇒ khớp thì `FlagLocal = '0'`.
+//   3. `left join Dlr_StorageLocal` theo **(DealerCode, StorageCode)** ⇒ khớp thì `FlagLocal = '1'`.
+//      ⇒ **local GHI ĐÈ global** vì chạy sau. Đảo hai bước là đổi phân loại kho.
+//   4. Bản cuối **chỉ giữ `FlagLocal != '-1'`** ⇒ bộ ba không thuộc global lẫn local **bị loại**;
+//      vì vậy giá trị `'-1'` **không bao giờ xuất hiện** trong bảng đích.
+// 📌 §12: thực thể `AutoEstDlvPlanStorage` + Seeder + DbSet + trả trong response.
+app.MapPost("/api/dms40/auto-estimate-delivery-plan/rebuild-storage-cache", async (
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => d.DealerCode).ToListAsync();
+    var storages = await db.Storages.Where(s => s.OrgId == t.OrgId).Select(s => s.StorageCode).ToListAsync();
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => m.ModelCode).ToListAsync();
+
+    var globals = (await db.StorageGlobalMaps.Where(g => g.OrgId == t.OrgId)
+        .Select(g => new { g.StorageCode, g.ModelCode }).ToListAsync())
+        .Select(g => g.StorageCode + "\u0001" + g.ModelCode).ToHashSet();
+    var locals = (await db.DealerStorageLocals.Where(l => l.OrgId == t.OrgId)
+        .Select(l => new { l.DealerCode, l.StorageCode }).ToListAsync())
+        .Select(l => l.DealerCode + "\u0001" + l.StorageCode).ToHashSet();
+
+    var rows = new List<AutoEstDlvPlanStorage>();
+    foreach (var d in dealers)
+        foreach (var s in storages)
+            foreach (var m in models)
+            {
+                var flag = "-1";                                             // bước 1
+                if (globals.Contains(s + "\u0001" + m)) flag = "0";          // bước 2
+                if (locals.Contains(d + "\u0001" + s)) flag = "1";           // bước 3 — GHI ĐÈ bước 2
+                if (flag == "-1") continue;                                  // bước 4 — loại
+                rows.Add(new AutoEstDlvPlanStorage
+                {
+                    OrgId = t.OrgId, DealerCode = d, StorageCode = s, ModelCode = m,
+                    FlagLocal = flag, LogLUDateTime = now, LogLUBy = by
+                });
+            }
+
+    // 🔴 XOÁ SẠCH rồi nạp lại — đúng như `delete from …; insert into …`.
+    var old = await db.AutoEstDlvPlanStorages.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    db.AutoEstDlvPlanStorages.RemoveRange(old);
+    db.AutoEstDlvPlanStorages.AddRange(rows);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted = old.Count,
+        inserted = rows.Count,
+        cartesianSize = (long)dealers.Count * storages.Count * models.Count,
+        dealers = dealers.Count, storages = storages.Count, models = models.Count,
+        byFlagLocal = rows.GroupBy(r => r.FlagLocal).Select(g => new { FlagLocal = g.Key, Qty = g.Count() }),
+        rebuildNote = "XOA SACH ROI NAP LAI TOAN BO: nguon chay 'delete from Auto_EstimateDeliveryPlan_Storage;' roi 'insert into ... select ...' => CACHE DUNG LAI TU DAU moi luot, khong phai bang tich luy. Port bang 'them neu chua co' la DE LAI RAC cua lan chay truoc.",
+        fourStepsNote = "BON BUOC, thu tu quyet dinh gia tri FlagLocal: (1) TICH DE-CAC Mst_Dealer x Mst_Storage x Mst_CarModel (inner join ... on (1=1) - ba bang nhan nhau, KHONG dieu kien) => FlagLocal '-1'; (2) left join Mst_StorageGlobal theo (StorageCode, ModelCode) => khop thi '0'; (3) left join Dlr_StorageLocal theo (DealerCode, StorageCode) => khop thi '1' - LOCAL GHI DE GLOBAL vi chay sau, dao hai buoc la doi phan loai kho; (4) ban cuoi CHI GIU FlagLocal != '-1' => bo ba khong thuoc global lan local BI LOAI, nen '-1' KHONG BAO GIO xuat hien trong bang dich.",
+        cartesianWarning = "So dong buoc 1 = |Dai ly| x |Kho| x |Model| - tich De-cac day du, khong co dieu kien loc nao.",
+        deadFileNote = "BAY TIM HAM: grep ra SAU dinh nghia, phan lon o DMS40/Delete.0.21.PlanDelivery.cs va Backup/... Ban DANG BIEN DICH la DMS40/zTemp.0.21.PlanDelivery.cs:779 - csproj ghi <Compile Include=(DMS40 zTemp.0.21.PlanDelivery.cs)> (dong 279) trong khi Delete.0.21.PlanDelivery.cs chi la <None Include=...> (dong 318) => KHONG duoc bien dich. Dau 'Delete.*' = chet DA DUOC CSPROJ XAC NHAN; nhung dau 'zTemp.*' KHONG co nghia la tam/chet."
+    });
+}).RequireAuthorization();
+
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=2155 md5

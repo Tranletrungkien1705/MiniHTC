@@ -9318,6 +9318,22 @@ public sealed class SysObjectTypeMst
 /// dùng ở hầu hết bảng khác. Giữ đúng tên nguồn.
 /// </summary>
 
+
+/// <summary>🔴 #B135 — bảng CACHE `Auto_EstimateDeliveryPlan_Storage`: bộ ba
+/// (đại lý × kho × model) kèm `FlagLocal`. Nguồn **xoá sạch rồi nạp lại toàn bộ** mỗi lượt chạy job.
+/// `FlagLocal`: `'0'` = kho **global**, `'1'` = kho **local của đại lý**; `'-1'` (chưa xác định)
+/// **bị loại** ở bước cuối nên không bao giờ có trong bảng.</summary>
+public sealed class AutoEstDlvPlanStorage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string StorageCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string FlagLocal { get; set; } = "-1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
