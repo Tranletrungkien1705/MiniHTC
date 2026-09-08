@@ -19748,6 +19748,132 @@ static bool HasSpecialChar(string? s) =>
 //    Nguồn vẫn kiểm riêng để **báo đúng lý do**; port giữ đủ 4 theo thứ tự, KHÔNG gộp.
 // ⚠️ Ngưỡng **45** là của riêng màn này (cụm Services) — không suy từ 24/192/254 của cụm TST.
 // ⚠️ `open.Filter` của nguồn chỉ nhận **jpg · jpeg · gif · bmp** (:307) ⇒ port kiểm phần mở rộng.
+// ===== 🔴🔴 #623 TRA CỨU BÁO CÁO BẢO HÀNH `Ser_ROWarrantyReport_Get_WH_New20230417` (`BizCarSv.WH.cs:3929`) =====
+// 3B: laptop `:3929` md5 `172bcd3b` **KHỚP** máy 150 `:3929`.
+// TRACE WS: **BỐN** bản (`_WH` :3345 · `_New20210618Old` :3645 · **`_New20230417` :3929** · `_New20210618`
+//   :4296 — thứ tự trong file **không** theo thứ tự thời gian). `WSCarSv.asmx.cs:32392` gọi `_New20230417`;
+//   hai file WS cũ gọi bản trần ⇒ ba bản kia **chết**.
+// DIFF `_New20210618` → `_New20230417` **sạch và gọn: ĐÚNG BA thay đổi**:
+//
+// 🔴🔴 **1) SÁU CỘT ĐỔI NGUỒN `car.*` → `ro.*`**: `FrameNo` · `PlateNo` · `BatteryNo` · `SerialNo` ·
+//   `WarrantyRegistrationDate` · `WarrantyExpiresDate`. ⇒ **Cùng một quy tắc nghiệp vụ với #616**: chứng từ
+//   phải in thứ đã ghi **trên lệnh lúc tiếp nhận**, không phải hồ sơ xe hiện tại. Hai lượt độc lập cùng chỉ
+//   về một luật ⇒ đọc #616 là **đúng**.
+//   ⚠️ **NHƯNG CÁCH LÀM KHÁC #616 VÀ TỆ HƠN**: #616 dùng `isnull(ro.X, car.X)` (**có dự phòng**); ở đây là
+//     `ro.X` **trần, không dự phòng** ⇒ lệnh nào **chưa chụp** số khung/biển số thì báo cáo bảo hành in **ô**
+//     **trống**, trong khi bản cũ vẫn lấy được từ hồ sơ xe. ⇒ Cùng một luật, **hai kiểu di trú**, một kiểu để
+//     lại lỗ hổng. Port dùng **dự phòng** (theo #616) và nêu cờ.
+// ⚪ **2) BỘ LỌC ĐỔI THEO — LẦN NÀY LÀM ĐÚNG**: `BuildClause("and","**car**.FrameNo",…)` → `"**ro**.FrameNo"`
+//   (và PlateNo). ⇒ Cột **hiển thị** và cột **LỌC** dời **cùng nhau**. §12 không bắt được "LỌC SAI CỘT", nên
+//   ghi lại đây như **kiểm tra âm tính có ích**: đây là ca họ làm đúng, đừng báo nhầm ở lượt sau.
+// ⚪ **3) THÊM `where(1=1)` + `order by rt.ROWRTransactionID`** cho bảng lịch sử ⇒ trước đó **nhật ký xử lý
+//   không có thứ tự**. Bản mới **sửa đúng** (ca thứ ba sau #616/#621 — nhưng xem #621: chiều ngược cũng có).
+//
+// ▼ Các vấn đề **có sẵn ở CẢ BỐN bản** (không phải do bản mới gây ra):
+// 🔴🔴 **BỘ LỌC LOẠI BẢO HÀNH GIẾT `left join`** (#414): `zzzzClauseWhere_ROWTypeCodeConditionList =`
+//   `BuildClause("and", "**smstrwt**.ROWTypeCode", …)` và `"smstrwt.ROWTID"` được chèn vào `WHERE` của câu
+//   **thứ nhất**, nơi `smstrwt` đến từ `**left join** Ser_MST_ROWarrantyType` ⇒ hễ người dùng **lọc theo loại**
+//   **bảo hành**, báo cáo có `ROWTID` **không khớp danh mục** (danh mục đổi/xoá) **biến mất** — chứ không phải
+//   "không thuộc loại đó".
+// 🔴🔴 **NGUYÊN KHỐI JOIN 6 BẢNG ĐƯỢC VIẾT **HAI LẦN**** — một lần để dựng `#Ser_ROWarrantyReport` (chỉ lấy
+//   `tt.*` = 5 cột của bảng lọc), một lần cho câu kết quả. Cùng một `where` ba mệnh đề cũng lặp lại. ⇒ Chi phí
+//   gấp đôi **và** mìn bảo trì: sửa một chỗ quên chỗ kia là hai câu lệch nhau **không báo lỗi**.
+// 🔴🔴 **`right join` VỚI BẢNG NGƯỜI DÙNG NHƯNG CHỈ `select su.*`**:
+//     `select **su.*** From sys_user su **with(nolock)** right join #Ser_ROWarrantyReport rop`
+//     `on su.UserCode = rop.CreatedBy and su.DealerCode = rop.DealerCode`
+//   `RIGHT JOIN` giữ **mọi** báo cáo, kể cả báo cáo không tìm thấy người tạo — nhưng vì chỉ chọn cột của `su`,
+//   những dòng đó ra **toàn NULL** và **không mang khoá nào** để biết thuộc báo cáo nào ⇒ bảng người dùng trả
+//   về **rác NULL**, số dòng bằng số báo cáo chứ không phải số người dùng.
+//   ⚠️ Lại là chỗ **duy nhất** dùng `with(nolock)` giữa rừng `--//[mylock]` (nối tiếp #620).
+// 🔴 **`case td.WarrantyStatus` SÁU MÃ, KHÔNG `else`**: `SENT`/`PEND`/`CONF`/`ACCE`/`**REJ**`/`REVERT` —
+//   lưu ý `REJ` **ba ký tự** trong khi các mã khác **bốn** ⇒ **copy nguyên văn**, đừng "sửa" thành `REJE`.
+// 🔴 **`inner join ser_car`** với điều kiện thứ hai `--and td.cusID=car.CusID` **bị comment** kèm ghi chú
+//   `// 2022-05-23. Confirm vs Ms.Đông KH ko bắt buộc phải giống nhau` ⇒ port **dòng ACTIVE**: nối **một khoá**
+//   `CarID`. Nhưng vẫn là INNER ⇒ báo cáo có xe đã bị xoá **rơi mất**; `Ser_Customer` cũng INNER.
+// ⚪ **ĐỐI CHỨNG QUAN TRỌNG VỚI #620**: khối chi tiết của **chính hàm này** tính tiền bằng
+//     `case when sst.VAT **is null** OR sst.VAT = 0 then Factor*Price else Factor*Price*(1+sst.VAT/100) end`
+//   — **có** guard NULL và **có** `else`. ⇒ Dạng đúng **tồn tại trong cùng codebase**, nên chỗ thiếu guard ở
+//     #620 (`SerROInvoiceBill_WH`) là **lỗi thật**, không phải quy ước nhà. Đây là bằng chứng đối chứng.
+// 🔴 Khối chi tiết chỉ sinh khi `strIsGetDetail == TConst.Flag.Active` (= **"1"**), ngược lại `-- Nothing.`
+//   (khuôn #582); có cột hằng `'ROWARRANTY' ExpenseType` và cờ dẫn xuất `FlagAdd` (`srop.SerID is null`).
+app.MapGet("/api/rowarranty-reports", async (AppDbContext db, ITenantContext t,
+    string? frameNo, string? plateNo, string? status, string? rowTypeCode, string? dealerCode, string? roNo) =>
+{
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    // #623: nguồn lọc loại bảo hành qua bảng danh mục nối LEFT ⇒ giết LEFT. Port lọc trên chính bản ghi.
+    if (!string.IsNullOrWhiteSpace(rowTypeCode)) qy = qy.Where(x => x.ROWTypeCode == rowTypeCode);
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.Vin == frameNo!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.PlateNo == plateNo!.Trim().ToUpperInvariant());
+
+    var claims = await qy.OrderBy(x => x.Id).Take(500).ToListAsync();
+    var roNos = claims.Select(c => c.RONo).Where(x => x != null).Distinct().ToList();
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && roNos.Contains(r.RONo))
+        .Select(r => new { r.RONo, r.Vin, r.LicensePlate }).ToListAsync();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.FrameNo, c.PlateNo, c.BatteryNo, c.SerialNo,
+                           c.WarrantyRegistrationDate, c.WarrantyExpiresDate }).ToListAsync();
+
+    static string? StatusText(string? code) => code switch
+    {
+        // Sáu mã của nguồn, giữ NGUYÊN VĂN (REJ ba ký tự). Nguồn KHÔNG có else ⇒ mã lạ trả null.
+        "SENT" => "Chờ xem xét", "PEND" => "Chưa gửi", "CONF" => "Chờ duyệt",
+        "ACCE" => "Chấp thuận B.H", "REJ" => "Không duyệt", "REVERT" => "HTC Hoàn trả",
+        _ => null,
+    };
+
+    var items = claims.Select(c =>
+    {
+        var ro = ros.FirstOrDefault(r => r.RONo == c.RONo);
+        var car = cars.FirstOrDefault(x => x.FrameNo == c.Vin);
+        return new
+        {
+            c.Id, c.ClaimNo, c.RONo, c.DealerCode, c.ROWTypeCode, c.ROWTypeDtlCode,
+            c.WarrantyType, c.PartCode, c.Description, c.Amount, c.Status,
+            warrantyStatusText = StatusText(c.Status),
+            // Bản LIVE lấy ro.X TRẦN; port thêm dự phòng car.X theo #616 và nêu cờ.
+            frameNo = ro?.Vin ?? car?.FrameNo,
+            plateNo = ro?.LicensePlate ?? car?.PlateNo,
+            batteryNo = car?.BatteryNo,
+            serialNo = car?.SerialNo,
+            warrantyRegistrationDate = car?.WarrantyRegistrationDate,
+            warrantyExpiresDate = car?.WarrantyExpiresDate,
+            roSnapshotMissing = ro is null || string.IsNullOrWhiteSpace(ro.Vin),
+        };
+    }).ToList();
+
+    var claimIds = claims.Select(c => c.Id).ToList();
+    var trans = await db.ServiceWarrantyClaimTransactions
+        .Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId))
+        .OrderBy(x => x.Id)                       // bản LIVE THÊM order by rt.ROWRTransactionID
+        .Select(x => new { x.Id, x.ClaimId, x.Creator, x.CurrentStatus, x.CreatedDate, x.Note })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items, transactions = trans,
+        // ===== #623 =====
+        sixColumnsMovedFromCarToRo = new[] { "FrameNo", "PlateNo", "BatteryNo", "SerialNo", "WarrantyRegistrationDate", "WarrantyExpiresDate" },
+        sameBusinessRuleAsIssue616 = "chung tu phai in thu da ghi TREN LENH luc tiep nhan, khong phai ho so xe hien tai — hai luot doc lap cung chi ve mot luat",
+        butMigratedWithoutFallback = "#616 dung isnull(ro.X, car.X) CO du phong; o day la ro.X TRAN => lenh chua chup so khung/bien so thi bao cao bao hanh in O TRONG trong khi ban cu van lay duoc tu ho so xe; port them du phong va neu co nay",
+        roSnapshotMissingCount = items.Count(x => x.roSnapshotMissing),
+        filterColumnsMovedTogether = "BuildClause doi tu car.FrameNo/car.PlateNo sang ro.FrameNo/ro.PlateNo cung luc voi cot hien thi => day la ca ho LAM DUNG (§12 khong bat duoc LOC SAI COT), ghi lai de luot sau khong bao nham",
+        transactionOrderingAddedByLiveVariant = "ban moi them where(1=1) + order by rt.ROWRTransactionID => truoc do nhat ky xu ly KHONG co thu tu",
+        warrantyTypeFilterKillsLeftJoin = "zzzzClauseWhere_ROWTypeCodeConditionList = BuildClause(and, smstrwt.ROWTypeCode, …) va smstrwt.ROWTID duoc chen vao WHERE cua cau THU NHAT, noi smstrwt den tu LEFT JOIN Ser_MST_ROWarrantyType => he loc theo loai bao hanh, bao cao co ROWTID khong khop danh muc BIEN MAT (khong phai khong thuoc loai do) — luat #414",
+        sixTableJoinBlockWrittenTwice = "nguyen khoi join 6 bang + where ba menh de duoc viet HAI LAN (mot lan dung #Ser_ROWarrantyReport chi lay tt.* = 5 cot, mot lan cho cau ket qua) => chi phi gap doi VA min bao tri: sua mot cho quen cho kia la hai cau lech nhau khong bao loi",
+        sysUserRightJoinReturnsNullJunk = "select su.* From sys_user su with(nolock) right join #Ser_ROWarrantyReport rop on su.UserCode=rop.CreatedBy and su.DealerCode=rop.DealerCode => RIGHT JOIN giu moi bao cao ke ca khong tim thay nguoi tao, nhung chi chon cot cua su nen nhung dong do ra TOAN NULL va khong mang khoa nao => bang nguoi dung tra ve rac NULL, so dong bang so bao cao chu khong phai so nguoi dung",
+        nolockOnlyOnUserQuery = "lai la cho DUY NHAT dung with(nolock) giua rung --//[mylock] (noi tiep #620)",
+        statusCodesVerbatim = "SENT/PEND/CONF/ACCE/REJ/REVERT — REJ BA ky tu trong khi cac ma khac BON; copy nguyen van, dung sua thanh REJE; nguon KHONG co else nen ma la tra null",
+        carJoinSecondKeyCommentedOut = "inner join ser_car chi con MOT khoa CarID; dieu kien --and td.cusID=car.CusID bi comment kem ghi chu 2022-05-23 Confirm vs Ms.Dong KH ko bat buoc phai giong nhau => port dong ACTIVE",
+        innerJoinsStillDropRows = "ser_car va Ser_Customer deu INNER => bao cao co xe/khach da bi xoa roi mat (#410)",
+        counterEvidenceForIssue620 = "khoi chi tiet cua CHINH ham nay tinh tien bang case when sst.VAT is null OR sst.VAT = 0 then Factor*Price else Factor*Price*(1+VAT/100) end — CO guard NULL va CO else => dang dung TON TAI trong cung codebase, nen cho thieu guard o #620 la LOI THAT chu khong phai quy uoc nha",
+        detailBlockGatedByFlagActive = "chi sinh khi strIsGetDetail == TConst.Flag.Active (= 1), nguoc lai -- Nothing. (khuon #582); co cot hang ROWARRANTY ExpenseType va co dan xuat FlagAdd (srop.SerID is null)",
+        fourVariantsFileOrderNotChronological = "_WH :3345, _New20210618Old :3645, _New20230417 :3929 (LIVE), _New20210618 :4296 — thu tu trong file KHONG theo thu tu thoi gian",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #622 BA BẢN ĐỌC ẢNH ĐÍNH KÈM LSC — MỘT BỘ LỌC HỎNG = XẢ TOÀN BỘ BLOB =====
 // 3B: cả **ba** hàm md5 **KHỚP 2 máy** — `SerROAttachmentGet_WH` (`BizCarSv.WH.cs:600`) `c0ba57f8` ·
 //   `SerROAttachmentGet` (`Service01.cs:12134`) `3dfbcda7` · `SerROAttachmentGetFull` (`:17196`) `5e9291a1`.
