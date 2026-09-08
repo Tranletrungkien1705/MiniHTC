@@ -27450,6 +27450,7 @@ app.MapPost("/api/gpsinstalls/auto-unmap", async (
             StorageCode = row.StorageCode ?? code, VinReal = vinRealBeforeUnmap,
             VINAddress = null,
             MapDateTime = row.MappedAt ?? now, UnMapDateTime = now, UnMapBy = actorUnmap,
+            VINUnMap = vinBeforeUnmap,   // #B260 - cot bao cao canh bao ban le loc theo (Sto_StoTransactionGPS.VINUnMap)
             // 🔴 #B01 SỬA GIÁ TRỊ SAI: port cũ ghi TÊN HẰNG `"Sto_StoBalanceGPS_UNMapVIN"`, còn GIÁ TRỊ thật
             //    của `TConst.RefTypeGPS.Sto_StoBalanceGPS_UNMapVIN` là **"GPSUNMAPVIN"**
             //    (`TERP.Constants/Const.Main.StorageFG.1.cs:77`). Nguồn `RecoverMapX` lọc
@@ -31427,6 +31428,191 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 //   ⇒ thiếu **bất kỳ** master nào (kể cả `Mst_CarSpec` khớp theo **`cv.ActualSpec`**, không phải `SpecCode`)
 //   là **xe biến mất khỏi báo cáo rà soát** — đúng nghịch lý: xe dữ liệu xấu nhất lại không hiện ra.
 // 🔴 `Mst_District` nối bằng **CẶP** `(TProvinceCode, TDistrictCode)`, không chỉ mã huyện.
+
+// ===== #B260/#B261/#B262 CẢNH BÁO BÁN LẺ (tháo GPS quá 24 giờ mà chưa giao khách) —
+//       `Rpt_WarningDealRetail_ForGPS_WH_New2018119` (`DataWH/Biz.HTC.WH.cs`) =====
+// **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
+//   laptop `156143,156520` ≡ 150 `156148,156525` ⇒ **`7f2cfb2efcacf8c34b84f650eb8792c7`**.
+// ⚠️ **TÊN HÀM THIẾU MỘT CHỮ SỐ**: `_WH_New2018119` (đúng khuôn phải là `_WH_New20181119`).
+//   Grep theo khuôn ngày 8 chữ số sẽ **KHÔNG ra hàm này**.
+// 🔴🔴🔴 **BẰNG CHỨNG `TERP.WSHTC` (bản 32-bit) LÀ DỰ ÁN CHẾT**: `TERP.WSHTC/App_Code/WSHTC.cs:40481`
+//   gọi `_biz.Rpt_WarningDealRetail_ForGPS_**New2018115**(…)` — grep toàn cây: **hàm này KHÔNG TỒN TẠI**
+//   ⇒ dự án đó **không thể build**. WS sống là **`TERP.WSHTC.64`** (gọi `…_ForGPS_New20200610`).
+//   ⇒ Khi trace cửa WS, **chỉ đọc `TERP.WSHTC.64/WSHTC.asmx.cs`**; `TERP.WSHTC/App_Code` là tàn dư.
+// 🔴🔴 **RBAC — BIẾN THỂ THỨ TƯ: LỌC Ở BẢNG TẠM, BỎ Ở CÂU CUỐI (vẫn KÍN)**:
+//   · `#tbl_Sto_StoTransactionGPS_Filter`: `**inner** join Mst_Dealer md … **and (md.BUCode like
+//     @strBUPatternOfUser)**` — **ACTIVE**;
+//   · câu **Return**: `**left** join Mst_Dealer md … `**--**and (md.BUCode like @strBUPatternOfUser)`` — **COMMENT**.
+//   ⇒ Vì tập VIN **đã bị cắt theo quyền ở bước 1**, kết quả cuối **vẫn kín**. Đây **không phải lỗ**.
+//     Ngoài ra câu Return bù lại bằng `and md.DealerCode is not null` ở `where` ⇒ `left join` **lại thành
+//     `inner`** (đúng khuôn luật `C0-…octogesimusnonus`). `CheckHTCDirect` vẫn bị comment.
+// 🔴🔴 **NGƯỠNG CẢNH BÁO = 24 GIỜ**:
+//     `datediff(HOUR, t.UnMapDateTime, **IsNull(k.DeliveryDate, '@strSysDate')**) > 24`
+//   ⇒ Xe **chưa có ngày giao khách** thì mốc so là **HÔM NAY** ⇒ số giờ **tăng dần mỗi ngày**, xe càng
+//     lâu càng chắc chắn lọt cảnh báo. Biểu thức `datediff` viết **LẶP** ở cả `select` (`TotalHourCalc`)
+//     và `where` — không dùng alias; sửa một chỗ mà quên chỗ kia là **lệch cột với bộ lọc**.
+// 🔴 **Điều kiện thứ hai**: `t.UnMapDateTime >= IsNull(z.DeliveryDate_BanNgang, **z.DlvEndDate + ' 00:00:00'**)`
+//   — chú thích nguồn: *"Chỉ lấy xe có thời điểm tháo thiết bị **sau** ngày đại lý nhận xe (BBGN)"*.
+//   ⚠️ Phép **nối chuỗi `+ ' 00:00:00'`** vào `DlvEndDate` chỉ chạy được nếu cột đó lưu **varchar**
+//     ⇒ xác nhận `Sto_DlvMinutes.DlvEndDate` là **chuỗi ngày**, không phải `datetime`
+//     (đúng luật đã ghi ở `dmssales-stddate-vs-stddtime-theo-kieu-luu`).
+// 🔴 **Loại VIN ĐÃ MAP LẠI**: `#tbl_AutoId_MapOnline` = `left join Sto_StoBalanceGPS … on **chỉ**
+//   `t.StorageCode = stosbgps.StorageCode`` (điều kiện `t.GPSDvNo = stosbgps.GPSDvNo` **bị comment**)
+//   rồi `where t.VINUnMap = stosbgps.VIN` ⇒ `left join` **thành `inner`**, và vì bỏ so số thiết bị nên
+//   **bất kỳ thiết bị nào** đang gắn lại trên VIN đó cũng tính. Sau đó `#tbl_VIN_Filter` lọc
+//   `f.AutoId is null` ⇒ **loại** các lượt tháo mà xe đã map lại. ⚠️ Đây là **phủ định ĐÚNG chiều** —
+//   khác #B248 (đảo ngược); phải mở định nghĩa bảng tạm ra đọc mới phân biệt được.
+// 🔴 `#tbl_VIN_DlvMnNo`: `top 1 f.DlvMnNo … order by f.CreatedDate **desc**` — BBGN **mới nhất** có
+//   **cả hai** phía `FDlvMnStatus`/`TDlvMnStatus` ∈ `('A','F')`.
+// 🔴 **BA loại lệnh bị loại**: `sdm.TranspReqType not in ('STORAGEREARRANGE','CARRETRIEVE','STORAGEREARRCB')`
+//   ⇒ khác #B257 (loại **một**) và khác #B239 (**lấy ba**, trong đó có `STORAGEREARRANGE`).
+//   **Cùng một bảng `Sto_DlvMinutes`, ba báo cáo ba phạm vi khác nhau** — không tái dùng bộ lọc.
+// 🔴 `DealerReciveDate = IsNull(z.DeliveryDate_BanNgang, z.DlvEndDate)` — **ưu tiên ngày đại lý BÁN NGANG
+//   nhận xe** (lấy qua `ddd.DealNoPrevious → ddd_prv.DeliveryDate`), thiếu mới lấy ngày BBGN.
+// 🔴 Bốn cột model/màu dùng **`IsNull(<theo Car_VIN>, <theo Car_Car>)`** ⇒ **hai nguồn dự phòng**
+//   (`cv` trước, `cc` sau); chỉ lấy một bên là **mất dòng có dữ liệu ở bên kia**.
+// ⚠️ **Mã thừa trong nguồn**: `and cc_t.VIN = cc_t.VIN` (tautology) · `dd_t.FlagInitDeal = '0'` lặp
+//   **hai lần** (một ở `on`, một ở `where`) · `Replace(strSqlGetData)` **không cặp thay thế** (no-op).
+app.MapGet("/api/reports/warning-deal-retail-gps", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? unMapFrom, DateTime? unMapTo, string? vin) =>
+{
+    var sysDate = DateTime.Today;
+
+    // B1 — các lượt THÁO thiết bị (RefType = 'GPSUNMAPVIN').
+    var unmapQ = db.GpsTransactions.Where(x => x.OrgId == t.OrgId && x.RefType == "GPSUNMAPVIN"
+        && x.VINUnMap != null && x.VINUnMap != "");
+    if (unMapFrom != null) unmapQ = unmapQ.Where(x => x.UnMapDateTime >= unMapFrom);
+    if (unMapTo != null) unmapQ = unmapQ.Where(x => x.UnMapDateTime <= unMapTo);
+    if (!string.IsNullOrWhiteSpace(vin)) unmapQ = unmapQ.Where(x => x.VINUnMap == vin!.Trim().ToUpperInvariant());
+    var unmaps = await unmapQ.ToListAsync();
+
+    // 🔴 Loại VIN ĐÃ MAP LẠI: khớp theo StorageCode + VIN (nguồn CỐ Ý bỏ so GPSDvNo).
+    var balances = await db.GpsBalances.Where(b => b.OrgId == t.OrgId && b.Vin != null).ToListAsync();
+    var mappedAgain = balances
+        .Select(b => ((b.StorageCode ?? "").Trim(), (b.Vin ?? "").Trim().ToUpperInvariant()))
+        .ToHashSet();
+    var stillUnmapped = unmaps
+        .Where(x => !mappedAgain.Contains(((x.StorageCode ?? "").Trim(), (x.VINUnMap ?? "").Trim().ToUpperInvariant())))
+        .ToList();
+
+    // #tbl_VIN_Filter: mỗi VIN lấy lượt tháo MỚI NHẤT (max UnMapDateTime, max AutoId).
+    var vinFilter = stillUnmapped
+        .GroupBy(x => (x.VINUnMap ?? "").Trim().ToUpperInvariant())
+        .Select(g => new
+        {
+            VIN = g.Key,
+            UnMapDateTime = g.Max(x => x.UnMapDateTime),
+            AutoId = g.Max(x => x.Id),
+            StorageCode = g.OrderByDescending(x => x.Id).First().StorageCode
+        })
+        .ToList();
+
+    var vins = vinFilter.Select(x => x.VIN).ToList();
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
+        .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var carIds = cvs.Values.Where(v => v.CarId != null).Select(v => v.CarId!).ToList();
+
+    var dtls = await db.DealerDealDetails.Where(d => d.OrgId == t.OrgId && carIds.Contains(d.CarId)).ToListAsync();
+    var dealIds = dtls.Select(d => d.DealId).Distinct().ToList();
+    var deals = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id)).ToListAsync())
+        .ToDictionary(d => d.Id);
+    var dealByNo = deals.Values.GroupBy(d => d.DealNo).ToDictionary(g => g.Key, g => g.First());
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    // #tbl_VIN_DlvMnNo + #tbl_DateDelear_Recive: BBGN mới nhất, hai phía đều 'A'/'F', loại BA loại lệnh.
+    var blockedTypes = new[] { "STORAGEREARRANGE", "CARRETRIEVE", "STORAGEREARRCB" };
+    var heads = await db.TranspDlvConfirms.Where(h => h.OrgId == t.OrgId
+        && h.TranspReqType != null && !blockedTypes.Contains(h.TranspReqType)
+        && (h.FDlvMnStatus == "A" || h.FDlvMnStatus == "F")
+        && (h.TDlvMnStatus == "A" || h.TDlvMnStatus == "F")).ToListAsync();
+    var headById = heads.ToDictionary(h => h.Id);
+    var dlvCars = (await db.TranspDlvConfirmCars
+            .Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync())
+        .Where(c => headById.ContainsKey(c.TranspDlvConfirmId))
+        .GroupBy(c => c.VIN)
+        .ToDictionary(g => g.Key,
+            g => g.OrderByDescending(c => headById[c.TranspDlvConfirmId].CreatedAt).First(),
+            StringComparer.OrdinalIgnoreCase);
+
+    var rows = new List<object>();
+    foreach (var f in vinFilter)
+    {
+        if (!cvs.TryGetValue(f.VIN, out var cv) || cv.CarId is null) continue;   // and cc.CarId is not null
+        // inner join Mst_CarSpec on cv.ActualSpec = mcs.SpecCode
+        if (cv.ActualSpec is null || !specs.TryGetValue(cv.ActualSpec, out var spec)) continue;
+        if (!dlvCars.TryGetValue(f.VIN, out var dlvCar)) continue;               // inner join Sto_DlvMinutes
+        var head = headById[dlvCar.TranspDlvConfirmId];
+
+        var cur = dtls.FirstOrDefault(d => d.CarId == cv.CarId && d.FlagCurrent == "1");
+        var deal = (cur != null && deals.TryGetValue(cur.DealId, out var dv)) ? dv : null;
+
+        // Đại lý: IsNull(DealerCodeBuyer, DealerCode); and md.DealerCode is not null ⇒ INNER.
+        var dlrCode = deal is null ? null
+            : (string.IsNullOrEmpty(deal.DealerCodeBuyer) ? deal.DealerCode : deal.DealerCodeBuyer);
+        if (dlrCode is null || !dealers.TryGetValue(dlrCode, out var dlr)) continue;
+
+        // #tbl_VIN_DeliveryDate: deal bán lẻ (FlagInitDeal='0' và DealerCodeBuyer is null).
+        var retail = dtls.Where(d => d.CarId == cv.CarId)
+            .Select(d => new { d, deal = deals.TryGetValue(d.DealId, out var x) ? x : null })
+            .FirstOrDefault(p => p.deal != null && p.deal.FlagInitDeal == "0"
+                                 && string.IsNullOrEmpty(p.deal.DealerCodeBuyer));
+        var deliveryDate = retail?.d.DeliveryDate;
+
+        // Ngày đại lý BÁN NGANG nhận xe: theo DealNoPrevious của dòng hiện hành.
+        DateTime? banNgang = null;
+        if (cur?.DealNoPrevious != null && dealByNo.TryGetValue(cur.DealNoPrevious, out var prevDeal))
+            banNgang = dtls.FirstOrDefault(d => d.CarId == cv.CarId && d.DealId == prevDeal.Id)?.DeliveryDate;
+
+        // 🔴 Mốc so: IsNull(DeliveryDate, HÔM NAY) ⇒ xe chưa giao thì số giờ tăng dần.
+        var deliveryCalc = deliveryDate ?? sysDate;
+        var totalHour = (int)Math.Floor((deliveryCalc - (f.UnMapDateTime ?? sysDate)).TotalHours);
+        if (totalHour <= 24) continue;                                            // 🔴 NGƯỠNG 24 GIỜ
+
+        // 🔴 Tháo phải SAU ngày đại lý nhận xe.
+        var dealerRecive = banNgang ?? dlvCar.DlvEndDate;
+        if (dealerRecive != null && f.UnMapDateTime < dealerRecive) continue;
+
+        rows.Add(new
+        {
+            AutoId = f.AutoId,
+            CarId = cv.CarId, VIN = f.VIN,
+            cv.ModelCode, ModelName = (string?)null,
+            cv.ColorCode, ColorExtName = (string?)null, ColorExtNameVN = (string?)null,
+            md_DealerCode = dlrCode, md_DealerName = dlr.DealerName,
+            SpecDescription = spec.SpecDesc,
+            DealNo = retail?.deal?.DealNo,
+            DeliveryDate_Calc = deliveryCalc,
+            UnMapDateTime = f.UnMapDateTime,
+            DeliveryDate_BanNgang = banNgang,
+            DeliveryDate = deliveryDate,
+            DlvEndDate = dlvCar.DlvEndDate,
+            DealerReciveDate = dealerRecive,
+            TotalHourCalc = totalHour
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_WarningDealRetail = rows,
+        nameTypoNote = "TEN HAM THIEU MOT CHU SO: '_WH_New2018119' (dung khuon phai la '_WH_New20181119'). Grep theo khuon ngay 8 chu so se KHONG RA ham nay.",
+        deadProjectNote = "BANG CHUNG TERP.WSHTC (ban 32-bit) LA DU AN CHET: TERP.WSHTC/App_Code/WSHTC.cs:40481 goi _biz.Rpt_WarningDealRetail_ForGPS_New2018115(...) - grep toan cay: HAM NAY KHONG TON TAI => du an do KHONG THE BUILD. WS song la TERP.WSHTC.64 (goi ..._ForGPS_New20200610). Khi trace cua WS chi doc TERP.WSHTC.64/WSHTC.asmx.cs.",
+        rbacVariant4Note = "RBAC - BIEN THE THU TU: LOC O BANG TAM, BO O CAU CUOI (van KIN). #tbl_Sto_StoTransactionGPS_Filter co 'inner join Mst_Dealer md ... and (md.BUCode like @strBUPatternOfUser)' ACTIVE; cau Return co 'left join Mst_Dealer md ... --and (md.BUCode like @strBUPatternOfUser)' COMMENT. Vi tap VIN DA bi cat theo quyen o buoc 1, ket qua cuoi VAN KIN => KHONG PHAI LO. Cau Return con bu bang 'and md.DealerCode is not null' o where => left join lai thanh inner (luat C0-...octogesimusnonus). CheckHTCDirect van bi comment.",
+        thresholdNote = "NGUONG CANH BAO = 24 GIO: datediff(HOUR, t.UnMapDateTime, IsNull(k.DeliveryDate, '@strSysDate')) > 24. Xe CHUA co ngay giao khach thi moc so la HOM NAY => so gio TANG DAN moi ngay. Bieu thuc datediff viet LAP o ca select (TotalHourCalc) va where - khong dung alias; sua mot cho ma quen cho kia la LECH COT VOI BO LOC.",
+        varcharDateNote = "Dieu kien thu hai: 't.UnMapDateTime >= IsNull(z.DeliveryDate_BanNgang, z.DlvEndDate + \" 00:00:00\")' - chu thich nguon: 'Chi lay xe co thoi diem thao thiet bi SAU ngay dai ly nhan xe (BBGN)'. Phep NOI CHUOI '+ 00:00:00' vao DlvEndDate chi chay duoc neu cot do luu VARCHAR => xac nhan Sto_DlvMinutes.DlvEndDate la CHUOI NGAY, khong phai datetime.",
+        mapAgainNote = "Loai VIN DA MAP LAI: #tbl_AutoId_MapOnline = left join Sto_StoBalanceGPS ... on CHI 't.StorageCode = stosbgps.StorageCode' (dieu kien t.GPSDvNo = stosbgps.GPSDvNo BI COMMENT) roi 'where t.VINUnMap = stosbgps.VIN' => left join THANH inner, va vi bo so so thiet bi nen BAT KY thiet bi nao dang gan lai tren VIN do cung tinh. Sau do #tbl_VIN_Filter loc 'f.AutoId is null' => LOAI cac luot thao ma xe da map lai. Day la PHU DINH DUNG CHIEU - khac #B248 (dao nguoc); phai mo dinh nghia bang tam ra doc moi phan biet duoc.",
+        dlvMnNoNote = "#tbl_VIN_DlvMnNo: 'top 1 f.DlvMnNo ... order by f.CreatedDate desc' - BBGN MOI NHAT co CA HAI phia FDlvMnStatus/TDlvMnStatus thuoc ('A','F').",
+        threeBlockedTypesNote = "BA loai lenh bi loai: sdm.TranspReqType not in ('STORAGEREARRANGE','CARRETRIEVE','STORAGEREARRCB') => khac #B257 (loai MOT) va khac #B239 (LAY BA, trong do co STORAGEREARRANGE). CUNG mot bang Sto_DlvMinutes, BA bao cao BA pham vi khac nhau - khong tai dung bo loc.",
+        dealerReciveNote = "DealerReciveDate = IsNull(z.DeliveryDate_BanNgang, z.DlvEndDate) - UU TIEN ngay dai ly BAN NGANG nhan xe (lay qua ddd.DealNoPrevious -> ddd_prv.DeliveryDate), thieu moi lay ngay BBGN.",
+        fallbackColumnsNote = "Bon cot model/mau dung IsNull(<theo Car_VIN>, <theo Car_Car>) => HAI NGUON DU PHONG (cv truoc, cc sau); chi lay mot ben la MAT DONG co du lieu o ben kia.",
+        deadCodeNote = "Ma thua trong nguon: 'and cc_t.VIN = cc_t.VIN' (tautology); 'dd_t.FlagInitDeal = 0' lap HAI LAN (mot o on, mot o where); 'Replace(strSqlGetData)' khong cap thay the (no-op)."
+    });
+}).RequireAuthorization();
 app.MapGet("/api/reports/gps-delivery-address-check", async (
     AppDbContext db, ITenantContext t,
     DateTime? dlvEndDateFrom, DateTime? dlvEndDateTo, string? vin, string? dealerCode) =>
@@ -46947,7 +47133,7 @@ app.MapGet("/api/gpshistory", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(device)) q = q.Where(x => x.GpsDvNo.Contains(device.ToUpper()));
     if (open == "1") q = q.Where(x => x.UnMapDateTime == null);
     var items = await q.OrderByDescending(x => x.Id).Take(1000)
-        .Select(x => new { x.Vin, x.GpsDvNo, x.VINAddress, x.MapDateTime, x.UnMapDateTime }).ToListAsync();
+        .Select(x => new { x.Vin, x.GpsDvNo, x.VINAddress, x.MapDateTime, x.UnMapDateTime, x.VINUnMap, x.RefType, x.StorageCode, x.CreateDateTime }).ToListAsync();
     return Results.Ok(new { count = items.Count, active = items.Count(i => i.UnMapDateTime == null), items });
 }).RequireAuthorization();
 

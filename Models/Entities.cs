@@ -1699,6 +1699,11 @@ public sealed class GpsTransaction
     public string? InStatus { get; set; }
     public string? UnMapBy { get; set; }
     public string? Remark { get; set; }
+    /// <summary>🔴 #B260 — VIN **được gỡ khỏi thiết bị** trong lượt này (`Sto_StoTransactionGPS.VINUnMap`).
+    /// Khác <see cref="Vin"/> (VIN của giao dịch): báo cáo cảnh báo bán lẻ lọc theo **cột này**
+    /// (`stostgps.VINUnMap`), và `#tbl_AutoId_MapOnline` so nó với `Sto_StoBalanceGPS.VIN` để loại
+    /// xe **đã map lại**. ⚠️ Trùng tên với `GpsInstall.VinUnMap` — **hai bảng khác nhau**.</summary>
+    public string? VINUnMap { get; set; }
     public DateTime CreateDateTime { get; set; } = DateTime.Now;
     public string? CreateBy { get; set; }
 }
