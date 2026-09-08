@@ -30713,6 +30713,91 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
 //   cách — hai lối viết khác nhau, cùng kết quả.) Ghi lại để lượt sau khỏi báo nhầm "bộ lọc chết".
 // ⚠️ Khoảng ngày tạo ghép bằng dấu `|`: `">= từ"` và `"<= đến"` — hai điều kiện trong MỘT chuỗi.
 // ⚠️ Tham số vị trí thứ 4 khi gọi WS luôn là `""` (một ô điều kiện bỏ trống cố định).
+// ===== 🔴🔴 #585 GÓI ĐẨY **LỊCH HẸN** SANG HYUNDAI ME (`PushDataAppToHyundaiMe`, `PushToHyundaiMe.cs:289`) =====
+// Sinh đôi của #583 nhưng cho `Ser_App`. Chỉ **một** nơi gọi: `BizCarSv.ZTemp.cs:19060`.
+//
+// 🔴 **`case` KHÔNG CÓ NHÁNH `else`**: `case ro.AppStatus when '2' then N'confirm' when '4' then N'reject' end`
+//   ⇒ mã khác (1 = mới tạo, 3 = tiếp nhận) cho `Status = NULL` **gửi thẳng sang hãng**.
+//   ⚪ **Kiểm tra âm tính**: nơi gọi duy nhất truyền `string.Format("'{0}','{1}'", "2", "4")` ⇒ mệnh đề
+//     `where ro.AppStatus in ('2','4')` chặn trước, nên **hiện không lộ**.
+//   ⚠️ Nhưng hai chữ số `"2"`/`"4"` ở nơi gọi là **gõ tay**, và `case` trong SQL cũng **gõ tay** ⇒ **hai bản
+//     sao của cùng một quy ước, không lớp hằng nào giữ**. Thêm một mã vào `where` mà quên sửa `case` là
+//     hãng nhận `Status: null`. (Đối lập: #584 ít nhất còn dùng `Constants.Ser_RO_Stage.*`.)
+// 🔴 **`inner join Ser_Mst_TradeMark tm` CHỈ ĐỂ LỌC, KHÔNG CHỌN CỘT NÀO** — kèm `and ro.DealerCode = tm.DealerCode`
+//   ⇒ lịch hẹn của hãng xe **chưa khai ở đại lý đó** thì `DataTable` **rỗng** ⇒ **không đẩy, không lỗi, không**
+//   **log** (khối log nằm bên trong nhánh có dòng — cùng cơ chế câm đã ghi ở #583).
+//   Đây là **lần thứ hai** gặp đúng join này làm mất dữ liệu: lần đầu ở đường ĐỌC (#563), nay ở đường **ĐẨY**.
+// 🔴 **CÙNG MỘT TRƯỜNG, HAI GÓI CẮT KHÁC NHAU**: ở gói RO (#583) `CusRequest` bị `Convert(nvarchar, …, 30)`
+//   ⇒ **cắt 30**; ở gói lịch hẹn này `ro.CusRequest CusRequest` **để nguyên**. Tương tự `car.PlateNo` và
+//   `ro.AppDateTimeFrom` cũng không bị bọc `Convert`. ⇒ Hãng nhận **cùng một loại nội dung** với **hai độ dài**
+//   tuỳ nó đến từ lệnh sửa chữa hay từ lịch hẹn.
+// ⚠️ `'' CustomerNote` — hằng **chuỗi rỗng** (lặp lại `DeletionTime`/`DeletionStatus` của #583).
+// ⚠️ `left join Sys_User` **bị comment**, thay bằng `left join Ser_Engineer se on ro.CVDVCode = se.EngineerNo`
+//   — so **mã cố vấn dịch vụ** với **mã kỹ thuật viên** (đã ghi ở #563), nhưng ở đây **có** nối thêm
+//   `DealerCode` nên ít nhất không nở dòng.
+// ⚠️ Bake toàn bộ (`'@strAppId'`, `in (@strStatus)` không bọc nháy) — y hệt #583.
+app.MapGet("/api/hyundaime/app-payload/{appNo}", async (string appNo, AppDbContext db, ITenantContext t,
+    string? statusList) =>
+{
+    var no = appNo.Trim().ToUpperInvariant();
+    var ap = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no);
+    if (ap is null) return Results.NotFound(new { appNo = no });
+
+    // Nơi gọi duy nhất của nguồn truyền cứng '2','4'.
+    var wanted = (statusList ?? "2|4").Split((char)124, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().Trim((char)39)).Where(x => x.Length > 0).ToList();
+    if (!wanted.Contains(ap.Status))
+        return Results.Ok(new
+        {
+            pushed = false, appNo = no, appStatus = ap.Status,
+            reason = "Trang thai ngoai danh sach => DataTable rong => bo qua im lang, khong log.",
+        });
+
+    // case chỉ có hai nhánh, KHÔNG có else.
+    string? StatusWord(string st) => st switch { "2" => "confirm", "4" => "reject", _ => null };
+    var statusWord = StatusWord(ap.Status);
+
+    var car = ap.Vin == null ? null : await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.FrameNo == ap.Vin);
+    var cus = ap.CusID == null ? null : await db.ServiceCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CusCode == ap.CusID);
+    var mdl = car?.ModelCode == null ? null : await db.ServiceModels.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.ModelCode == car.ModelCode);
+    var eng = ap.CVDVCode == null ? null : await db.ServiceEngineers.FirstOrDefaultAsync(e => e.OrgId == t.OrgId && e.EngineerNo == ap.CVDVCode);
+
+    // inner join ser_Customer / ser_car / Ser_Mst_TradeMark ở nguồn ⇒ thiếu bất kỳ cái nào là KHÔNG đẩy.
+    var tradeMarkKnown = car?.TradeMark != null;
+    var droppedByInnerJoins = cus is null || car is null || !tradeMarkKnown;
+
+    var payload = new
+    {
+        CustomerCode = ap.CusID, CustomerName = cus?.CusName,
+        CustomerMobile = cus?.Mobile ?? ap.Mobile, CustomerIDCardNo = cus?.IDCardNo,
+        PlateNo = ap.PlateNo,                       // nguồn KHÔNG bọc Convert ⇒ không cắt
+        VIN = ap.Vin, TradeMarkCode = car?.TradeMark,
+        ModelCode = car?.ModelCode, ModelName = mdl?.ModelName,
+        AppDateTime = ap.AppDateTimeFrom, AppTime = ap.AppTimeFrom,
+        ap.CusRequest,                              // KHÔNG cắt — khác gói RO (#583) vốn cắt 30
+        ap.DealerCode, AppCode = ap.Id, ap.AppNo,
+        CVDVName = eng?.EngineerName,
+        CreateDateTime = ap.CreatedAt, LogLUDTime = ap.CreatedAt,
+        CustomerNote = "",                          // hằng chuỗi rỗng, đúng nguồn
+        Status = statusWord,
+    };
+
+    return Results.Ok(new
+    {
+        pushed = !droppedByInnerJoins, payload,
+        droppedByInnerJoins, tradeMarkKnown,
+        statusCaseHasNoElse = "case chi co 2 -> confirm va 4 -> reject; ma khac cho Status = NULL gui sang hang",
+        statusWordIsNull = statusWord is null,
+        onlyCallerPassesLiteralTwoAndFour = "ZTemp.cs:19060 truyen string.Format(quote2,quote4) — go tay, khong dung lop hang",
+        conventionDuplicatedInTwoPlaces = "danh sach ma o WHERE va nhanh case la hai ban sao go tay; them ma vao WHERE ma quen sua case => hang nhan Status null",
+        tradeMarkJoinOnlyFilters = "inner join Ser_Mst_TradeMark khong chon cot nao, chi de loc — lan thu hai gap join nay lam mat du lieu (lan dau #563, o duong DOC)",
+        sameFieldTruncatedDifferentlyAcrossPayloads = "CusRequest: goi RO (#583) cat 30; goi lich hen de nguyen",
+        emptyStringConstants = new[] { "CustomerNote" },
+        engineerJoinedByCvdvCode = "left join Ser_Engineer on CVDVCode = EngineerNo (co noi them DealerCode nen khong no dong)",
+        everythingBakedNoRuntimeParams = new[] { "@strAppId", "@strStatus" },
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #584 HAI HÀM **TRÙNG TÊN** `PushDataROToHyundaiMe` — QUÁ TẢI KHÁC ĐÚNG MỘT THAM SỐ =====
 // DIFF hai vùng `:17-157` và `:158-288` (luật #414) cho ra **đúng ba** khác biệt:
 //     `private void PushDataROToHyundaiMe(string strROID, string strStatus, string strCavityID)`   ← 3 tham số
