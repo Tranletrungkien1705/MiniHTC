@@ -53975,6 +53975,88 @@ app.MapGet("/api/report/xe-luu-kho", async (AppDbContext db, ITenantContext t,
 //   ⚠️ Ở đây `SELECT` lấy `d1.CusID` (một vế) ⇒ **cùng bẫy #620**; port dùng `isnull(d1.k, r1.k)`.
 // ⚪ Âm tính: `LEFT JOIN Ser_CustomerGroupCustomer scgc` và `LEFT JOIN Ser_CustomerGroup sg` — `WHERE` không có
 //   điều kiện nào trên chúng ⇒ **LEFT còn sống** (khách chưa thuộc nhóm nào vẫn ra).
+// ===== 🔴🔴🔴 #676 CHI TIẾT BÁO GIÁ/LỆNH BẢN KHO `Ser_RO_Get_WH_New20230220` =====
+// 🔴🔴🔴 **HÀM LIVE KHÔNG NẰM TRONG `BizCarSv.WH.cs` MÀ Ở `BizCarSv.zzzzCode.cs:7277-7745`**
+//   (md5 vùng `a76b45f2` · md5 **cả file** `5eb7c3d0` — **cả hai KHỚP** máy 150).
+//   `WSCarSv.asmx.cs:31989` gọi thẳng `_biz.Ser_RO_Get_WH_**New20230220**`; còn `Ser_RO_Get_WH` **trần**
+//   (`WH.cs:6170-6611`, md5 `1104a4c2`) — nằm đúng chỗ "phải nằm" — thì **CHẾT**.
+//   ⚠️ **ĐÍNH CHÍNH PHƯƠNG PHÁP CỦA CHÍNH TÔI**: các lượt trước tôi dựng danh sách "hàm `_WH` chưa port" bằng
+//     cách quét **riêng `BizCarSv.WH.cs`** (117 hàm). Quét **toàn tầng biz** cho **142** hàm `_WH` — **25 hàm
+//     nằm ở 12 file khác** (`zzzzCode.cs`, `ZTemp.cs`, `Service.RO.cs`, `Inventory.Report.cs`, `Tab/…`, …),
+//     và **ba** trong số đó (`Ser_RO_Get_WH_New20230220` · `Ser_RO_GetStatusList_WH_New20230220` ·
+//     `Ser_RO_GetStatusList_ForStatusRealTime_WH_New20230220`) chính là **bản WS đang gọi**.
+//   ⇒ Mẫu số "42/117 chưa port" ở các lượt trước là **THIẾU**; mẫu số đúng là **142**. Đã sửa ở hàng đợi.
+//
+// DIFF **bản chết ↔ bản sống** (chuẩn hoá khoảng trắng, phương pháp #671): 314 ↔ 359 dòng, khác **10 khối**:
+// 🔴🔴🔴 **BẢN CHẾT CÓ HAI GUARD CHẾT — nhánh đầu TRÙNG KHÍT nhánh `else`** (họ #407):
+//     `case when not ro.CusName is null then **cus.Tel**  when not cus.ContName is null then cus.ContTel`
+//     `     else **cus.Tel** end CusTel`   ⇒ nhánh 1 và nhánh 3 **giống hệt nhau**;
+//     `case when not ro.CusName is null then **cus.Mobile** … else **cus.Mobile** end CusMobile` — y hệt.
+//   ⇒ Số điện thoại **ghi trên lệnh** (`ro.CusTel` / `ro.CusMobile`) **không bao giờ được dùng**, dù cột có tồn
+//     tại (bản sống dùng nó). Và guard lại xét **`ro.CusName`** (tên) để quyết định lấy **số điện thoại**.
+//   ✅ Bản sống thay bằng `isnull(ro.CusTel, isnull(cus.Tel, cus.ContTel))` ⇒ **sửa đúng**.
+// 🔴🔴 **BẢN SỐNG ĐỔI HƯỚNG ƯU TIÊN SANG "ẢNH CHỤP TRÊN LỆNH"** cho **11 cột xe**:
+//     `ModelID · PlateNo · FrameNo · EngineNo · ColorCode · TradeMarkCode · BatteryNo · SerialNo ·
+//      WarrantyRegistrationDate · WarrantyExpiresDate · WarrantyKM` — đều thành `isnull(ro.X, car.X)`.
+//   ⇒ Cùng hướng với bản vá doanh thu #670 (`cus.Tel` → `ro.CusTel`). Đây là **chủ trương**, không phải ngẫu nhiên.
+// 🔴🔴 **BẢN SỐNG THÊM MỘT BỘ LỌC NGHIỆP VỤ**: `and so.StockOutType = '1'` trên join phiếu xuất.
+//   ⚠️ Ghi chú trên entity `ServiceStockOut.StockOutType` của Mini nói **`"2"` = phiếu xuất thường**
+//   ⇒ bản sống lọc **loại KHÁC** loại thường. Chưa đủ căn cứ nói bên nào đúng ⇒ trả cờ, **không tự sửa**.
+// 🔴🔴 **KHỐI THẺ HỘI VIÊN CHỈ CÓ Ở BẢN SỐNG**: `--, ro.CardNo` **bị comment**, thay bằng `ro.MemberNo` và
+//   **thêm 10 cột**: `FlagOnlyPoint · DlrPDIReqNo · LevelOfInspection · InsuranceDeductible ·
+//   `AmountDiscountOther · CardNoInv · CardTypeInv · CardTypeExpectInv · PointEndInv · PointRankTotalInv ·
+//   `EffDateEndInv · PointConsumptionPrm` ⇒ port bản cũ là **mất trọn phần tích hợp Loyalty**.
+// 🔴 **BẢN SỐNG ĐỔI `ORDER BY` CỦA HAI LƯỚI CON**: `order by rs.itemid` → `order by rs.FlagAccrual asc, rs.itemid`
+//   (và tương tự cho lưới phụ tùng) ⇒ **thứ tự dòng đổi**. Luật #411 cảnh báo guard nào tra theo **vị trí dòng**
+//   sẽ đổi hành vi theo đúng chỗ này.
+// ⚪ **DƯƠNG TÍNH — bản sống thay `where exists(…)` tương quan bằng bảng tạm `#tbl_ser_RO_Filter` +
+//   `select distinct`**: cùng tập dòng, kế hoạch thực thi tốt hơn. Và viết rõ `inner join` thay cho `join`.
+// 📌 WS của hàm này `return _biz.…` **KHÔNG bọc `MyDSEncode`** — đếm trong `WSCarSv.asmx.cs`: **711** phương thức
+//   có `MyDSEncode`, **20** trả thẳng ⇒ thiểu số rõ rệt; client đọc hai kiểu DataSet khác nhau tuỳ endpoint.
+app.MapGet("/api/repairorders/{no}/detail-wh", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { error = "Khong tim thay lenh sua chua." });
+
+    var car = ro.Vin is null ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FrameNo == ro.Vin);
+
+    var svcs = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.Id, x.SerCode, x.SerName, x.Price, x.Factor, x.Vat, x.Engineer, x.ROType })
+        .ToListAsync();
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.Id, x.PartCode, x.PartName, x.Unit, x.NeedQty, x.UnitPrice, x.Factor, x.Vat,
+                           x.FlagAccessory, x.Note })
+        .ToListAsync();
+
+    return Results.Ok(new
+    {
+        ro.RONo, ro.DealerCode, ro.CusRequest, ro.CarStatus, ro.CheckInDate, ro.Status, ro.Km,
+        ro.PaidCreatedDate, ro.ActualDeliveryDate,
+        // Bản sống: isnull(ro.X, car.X) — ƯU TIÊN ảnh chụp trên lệnh, danh mục chỉ là dự phòng.
+        cusName = ro.CusName,
+        plateNo = ro.LicensePlate,
+        frameNo = ro.Vin ?? car?.FrameNo,
+        modelCode = car?.ModelCode,
+        tradeMark = car?.TradeMark,
+        warrantyRegistrationDate = car?.WarrantyRegistrationDate,
+        // Nguồn sắp lưới theo FlagAccrual TRƯỚC rồi mới tới itemid (bản sống).
+        services = svcs.OrderBy(x => x.Id).ToList(),
+        parts = parts.OrderBy(x => x.FlagAccessory).ThenBy(x => x.Id).ToList(),
+        // ===== #676 =====
+        liveFunctionLivesInZzzzCodeFile = "HAM LIVE KHONG NAM TRONG BizCarSv.WH.cs MA O BizCarSv.zzzzCode.cs:7277-7745 (md5 vung a76b45f2, md5 ca file 5eb7c3d0, ca hai KHOP may 150). WSCarSv.asmx.cs:31989 goi thang _biz.Ser_RO_Get_WH_New20230220; con Ser_RO_Get_WH TRAN (WH.cs:6170-6611, md5 1104a4c2) — nam dung cho phai nam — thi CHET",
+        methodCorrectionWhFunctionDenominator = "DINH CHINH PHUONG PHAP CUA CHINH TOI: cac luot truoc toi dung danh sach ham _WH chua port bang cach quet RIENG BizCarSv.WH.cs (117 ham). Quet TOAN TANG BIZ cho 142 ham _WH — 25 ham nam o 12 file khac (zzzzCode.cs, ZTemp.cs, Service.RO.cs, Inventory.Report.cs, Tab/…), va BA trong so do (Ser_RO_Get_WH_New20230220, Ser_RO_GetStatusList_WH_New20230220, Ser_RO_GetStatusList_ForStatusRealTime_WH_New20230220) chinh la ban WS dang goi => mau so 42/117 o cac luot truoc la THIEU, mau so dung la 142",
+        deadVersionHasTwoDeadGuards = "BAN CHET co HAI GUARD CHET — nhanh dau TRUNG KHIT nhanh else (ho #407): case when not ro.CusName is null then cus.Tel when not cus.ContName is null then cus.ContTel else cus.Tel end CusTel => nhanh 1 va nhanh 3 GIONG HET NHAU; case when not ro.CusName is null then cus.Mobile … else cus.Mobile end CusMobile — y het => so dien thoai GHI TREN LENH (ro.CusTel/ro.CusMobile) KHONG BAO GIO duoc dung du cot co ton tai (ban song dung no); va guard lai xet ro.CusName (TEN) de quyet dinh lay SO DIEN THOAI. Ban song thay bang isnull(ro.CusTel, isnull(cus.Tel, cus.ContTel)) => SUA DUNG",
+        liveVersionPrefersSnapshotOverCatalogue = "BAN SONG DOI HUONG UU TIEN SANG ANH CHUP TREN LENH cho 11 cot xe: ModelID, PlateNo, FrameNo, EngineNo, ColorCode, TradeMarkCode, BatteryNo, SerialNo, WarrantyRegistrationDate, WarrantyExpiresDate, WarrantyKM — deu thanh isnull(ro.X, car.X). Cung huong voi ban va doanh thu #670 (cus.Tel -> ro.CusTel) => day la CHU TRUONG, khong phai ngau nhien",
+        liveVersionAddsStockOutTypeFilter = "BAN SONG THEM MOT BO LOC NGHIEP VU: and so.StockOutType = 1 tren join phieu xuat. Ghi chu tren entity ServiceStockOut.StockOutType cua Mini noi 2 = phieu xuat thuong => ban song loc LOAI KHAC loai thuong. Chua du can cu noi ben nao dung => tra co, KHONG tu sua",
+        loyaltyBlockOnlyInLiveVersion = "KHOI THE HOI VIEN CHI CO O BAN SONG: --, ro.CardNo BI COMMENT, thay bang ro.MemberNo va THEM 10 cot (FlagOnlyPoint, DlrPDIReqNo, LevelOfInspection, InsuranceDeductible, AmountDiscountOther, CardNoInv, CardTypeInv, CardTypeExpectInv, PointEndInv, PointRankTotalInv, EffDateEndInv, PointConsumptionPrm) => port ban cu la MAT TRON phan tich hop Loyalty",
+        liveVersionChangedGridOrderBy = "BAN SONG DOI ORDER BY CUA HAI LUOI CON: order by rs.itemid -> order by rs.FlagAccrual asc, rs.itemid (va tuong tu cho luoi phu tung) => THU TU DONG DOI; luat #411 canh bao guard nao tra theo VI TRI DONG se doi hanh vi dung o cho nay",
+        positiveExistsReplacedByFilterTempTable = "DUONG TINH: ban song thay where exists(…) tuong quan bang bang tam #tbl_ser_RO_Filter + select distinct — cung tap dong, ke hoach thuc thi tot hon; va viet ro inner join thay cho join",
+        wsDoesNotWrapWithMyDsEncode = "WS cua ham nay return _biz.… KHONG boc MyDSEncode — dem trong WSCarSv.asmx.cs: 711 phuong thuc co MyDSEncode, 20 tra thang => thieu so ro ret; client doc hai kieu DataSet khac nhau tuy endpoint",
+        miniModelGap = "Mini chua mo hinh hoa khoi the hoi vien tren RepairOrder (MemberNo, CardNoInv, PointEndInv, …) va cac cot xe anh-chup tren lenh (ro.ModelID/ro.EngineNo/ro.BatteryNo/ro.SerialNo/ro.WarrantyKM) => port doc tam tu ServiceCars; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #675 LÃI/LỖ THEO LỆNH SỬA CHỮA `Ser_RO_ReportResult_Revenue_WH` (`WH.cs:11388-11684`) =====
 // 3B: laptop `:11388` md5 `32e46f88` **KHỚP** máy 150 `:11388`. WS `WSCarSv.asmx.cs:31045` gọi thẳng.
 //
