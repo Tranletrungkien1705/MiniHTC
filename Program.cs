@@ -20785,17 +20785,78 @@ app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #619 PARITY `Ser_StockAdj_Get_WH` (`BizCarSv.WH.cs`) — **RÚT LẠI KẾT LUẬN #581/#611/#618** =====
+// 3B: laptop `V20.2023.Release.V2:1408` md5 `965736f3` **KHỚP** máy 150 `V20.2023.Release:1408` `965736f3`.
+//     Cây cũ `V20:1104` md5 `fb2ee4e8` ⇒ **hai cây, hai bản** của cùng một hàm.
+//
+// 🔴🔴🔴 **RÚT LẠI: `[@strDBName_CommonCenter]` KHÔNG PHẢI MỘT DB RIÊNG.**
+//   Đếm thật toàn tầng biz: `"@strDBName_CommonCenter", **_strConfig_DBName_Main**` = **180/180** site trên
+//   laptop, **233/233** trên máy 150, và `_strConfig_DBName_Main` là **config DBName DUY NHẤT** tồn tại
+//   (199 lần dùng, không có `_strConfig_DBName_CommonCenter` nào). ⇒ Chỗ giữ chỗ mang tên "CommonCenter"
+//   nhưng **giá trị luôn là tên DB Main**. Đây đúng là bẫy **HẰNG ≠ GIÁ TRỊ**: ba lượt trước (#581, #611,
+//   #618) tôi đọc *tên* rồi kết luận có "đợt di trú danh mục sang DB trung tâm" — **sai về bản chất**.
+//   ⇒ Phát biểu ĐÚNG: các hàm chạy trên `_dbWH`/`_dbDealer` **gọi chéo sang DB Main bằng tên tường minh**
+//     để lấy danh mục dùng chung. Vẫn là phát hiện ba-DB thật, nhưng **không có DB thứ tư** nào tên
+//     CommonCenter, và **không suy ra được** chiều "di trú".
+// 🔴🔴 **CHIỀU ĐI CÒN NGƯỢC LẠI**: DIFF hai cây của chính hàm này chỉ **2 dòng**, và cây **MỚI** (bản live
+//   trên máy 150) **BỎ** tiền tố chéo:
+//     cũ : `join [@strDBName_CommonCenter].[dbo].sys_user u` · `, "@strDBName_CommonCenter", _strConfig_DBName_Main`
+//     mới: `join **sys_user** u`                              · `**//**, "@strDBName_CommonCenter", …` (**bị comment**)
+//   ⇒ Bản mới đọc `sys_user` **cục bộ trong DB WH**, bản cũ đọc ở **Main**. Nếu `sys_user` của WH không phải
+//     bản sao đồng bộ của Main thì **hai cây loại đi hai tập dòng khác nhau** (xem inner join dưới).
+//   ⚠️ Dòng thay thế bị **comment chứ không xoá**: chiều hiện tại vô hại (SQL không còn chuỗi cần thay), nhưng
+//     ai khôi phục tiền tố mà quên bỏ comment thì **tên DB không được thay** ⇒ **lỗi cú pháp SQL**.
+// 🔴🔴 **INNER JOIN SANG BẢNG NGƯỜI DÙNG BẰNG *HAI* KHOÁ** (#410 — mất dòng lúc ĐỌC):
+//     `join sys_user u on tt.UserCreate = u.UserCode **and tt.DealerCode = u.DealerCode**`
+//   ⇒ Phiếu điều chỉnh **biến mất khỏi danh sách** nếu người tạo đã bị xoá, **hoặc** đã được chuyển sang
+//     đại lý khác (khoá thứ hai lệch). Người dùng chuyển đại lý là việc **bình thường** ⇒ phiếu cũ của họ
+//     rụng dần theo thời gian, **không có thông báo nào**.
+// 🔴 **`case tt.status when 0 … when 1 … end` KHÔNG CÓ `else`** ⇒ trạng thái ngoài {0,1} ⇒ `StatusText` **NULL**.
+// 🔴🔴 **KHỐI CHI TIẾT NUỐT DÒNG BẰNG `inner join ser_inv_stockbalance`**:
+//     `inner join ser_inv_stockbalance sb on td.partid = sb.partid **and** td.BalanceLocationId = sb.LocationId`
+//   ⇒ Dòng phụ tùng **chưa có bản ghi tồn** ở kho cân đối đó bị **loại khỏi chi tiết phiếu**. Với chứng từ
+//     **điều chỉnh tồn kho**, đây chính là **trường hợp cần điều chỉnh nhất** (phụ tùng mới, kho mới) ⇒
+//     phiếu hiển thị **ít dòng hơn** số dòng đã lưu ⇒ **lệch câm**.
+//   ⚪ Âm tính: `inner join Ser_MST_part` và `inner join #Ser_Inv_StockAdj` là **đúng ý**.
+// 🔴 Khối chi tiết chỉ sinh khi `strIsGetDetail == TConst.Flag.**Active**`; mở hằng lấy GIÁ TRỊ = **"1"**
+//   (`Const.Main.cs:28`), ngược lại thay bằng `-- Nothing.` (khuôn #582) ⇒ chỗ gọi phải tự kiểm `Tables.Count > 1`.
+// ⚠️ **Không có `ORDER BY`** ở cả hai câu; bảng tạm chỉ giữ `StockAdjId` rồi nối lại bảng gốc.
+// 📌 Lượt PARITY — vá endpoint `/api/stockadjs` đã có, **không** tăng bộ đếm màn.
+
 // ===== Phiếu điều chỉnh tồn kho (StockAdj — port 1:1 FrmStockAdjCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? status, string? no) =>
 {
     var q = db.StockAdjs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.AdjStatus == status);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.StockAdjNo.Contains(no!));
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+    var rows = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
         x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus, x.CreatedBy, x.CreatedAt, x.ApprovedAt,
         lines = db.StockAdjLines.Count(l => l.OrgId == t.OrgId && l.StockAdjId == x.Id)
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // #619: nguồn nối sys_user bằng HAI khoá (UserCode + DealerCode) và là INNER ⇒ nuốt phiếu.
+    var users = await db.SysUsers.Where(u => u.OrgId == t.OrgId)
+        .Select(u => new { u.UserCode, u.UserName, u.DealerCode }).ToListAsync();
+    var items = rows.Select(x => new
+    {
+        x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus,
+        x.CreatedBy, x.CreatedAt, x.ApprovedAt, x.lines,
+        userName = users.FirstOrDefault(u => u.UserCode == x.CreatedBy && u.DealerCode == x.DealerCode)?.UserName,
+        // Nguồn: case status when 0 / when 1 — KHÔNG có else ⇒ ngoài {0,1} là NULL.
+        statusText = x.AdjStatus == "0" ? "Mới tạo" : x.AdjStatus == "1" ? "Kết thúc" : null,
+    }).ToList();
+    var droppedByUserJoin = items.Count(x => x.userName is null);
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #619 =====
+        droppedByInnerJoinSysUser = droppedByUserJoin,
+        sysUserJoinIsInnerOnTwoKeys = "nguon: join sys_user u on tt.UserCreate = u.UserCode AND tt.DealerCode = u.DealerCode => phieu BIEN MAT khoi danh sach neu nguoi tao bi xoa HOAC da chuyen sang dai ly khac; port GIU phieu va dem so bi nuot",
+        statusTextHasNoElse = "case tt.status when 0 then Moi tao when 1 then Ket thuc end — khong co else => trang thai ngoai {0,1} tra NULL",
+        commonCenterPlaceholderIsActuallyMainDb = "RUT LAI #581/#611/#618: @strDBName_CommonCenter luon duoc thay bang _strConfig_DBName_Main (180/180 site laptop, 233/233 may 150) va _strConfig_DBName_Main la config DBName DUY NHAT => KHONG co DB rieng ten CommonCenter, chi la goi cheo sang DB Main bang ten tuong minh",
+        migrationDirectionIsNotOneWay = "DIFF hai cay cua chinh ham nay: cay MOI (live tren may 150) BO tien to cheo, doc sys_user CUC BO trong DB WH; dong Replace bi COMMENT chu khong xoa",
+        twoTreesReadSysUserFromDifferentDbs = "cay cu doc sys_user o Main, cay moi doc o WH => neu sys_user cua WH khong phai ban sao dong bo thi hai cay loai di hai tap dong khac nhau",
+        noOrderByInSource = true,
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/stockadjs", async (StockAdjDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -20825,7 +20886,19 @@ app.MapGet("/api/stockadjs/{no}/lines", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust, l.BalanceLocation, l.InStockLocation }).ToListAsync();
-    return Results.Ok(new { h.StockAdjNo, h.AdjStatus, h.LogLUDateTime, h.LogLUBy, count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines });
+    // #619: khối chi tiết của nguồn dùng `inner join ser_inv_stockbalance sb on td.partid = sb.partid
+    //       and td.BalanceLocationId = sb.LocationId` ⇒ dòng chưa có bản ghi tồn ở kho cân đối bị LOẠI.
+    var droppedByBalanceJoin = lines.Count(l => string.IsNullOrWhiteSpace(l.BalanceLocation));
+    return Results.Ok(new
+    {
+        h.StockAdjNo, h.AdjStatus, h.LogLUDateTime, h.LogLUBy,
+        count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines,
+        // ===== #619 =====
+        droppedByInnerJoinStockBalance = droppedByBalanceJoin,
+        detailJoinDropsPartsWithoutBalance = "nguon: inner join ser_inv_stockbalance theo (partid, BalanceLocationId) => dong phu tung CHUA CO ban ghi ton o kho can doi bi loai khoi chi tiet; voi chung tu DIEU CHINH TON KHO day chinh la truong hop can dieu chinh nhat (phu tung moi, kho moi) => phieu hien thi IT DONG hon so dong da luu",
+        detailOnlyWhenFlagActive = "khoi chi tiet chi sinh khi strIsGetDetail == TConst.Flag.Active, mo hang lay GIA TRI = 1 (Const.Main.cs:28); nguoc lai thay bang -- Nothing. (khuon #582) => cho goi phai tu kiem Tables.Count > 1",
+        portReturnsAllLines = true,
+    });
 }).RequireAuthorization();
 
 // 🔴 KẾT THÚC phiếu điều chỉnh — port `ProcessFinishStockOutAdj` (BizCarSv.Inventory.StockAdj.cs:240-378).
