@@ -11134,6 +11134,96 @@ app.MapGet("/api/emailsends/statuses", () => Results.Ok(new
     autoTempNote = "Bảng Email_SendEmailAutoTemp dùng SỐ (có mã -1) và CÓ nhánh else ⇒ mã lạ/NULL hiện \"Lỗi\".",
 })).RequireAuthorization();
 
+// ===== 🔴🔴 #593 SỬA EMAIL (`Email_SendEmail_Update`, `SendMail.cs:189`) — **XOÁ TRẮNG ĐỊA CHỈ NGƯỜI NHẬN** =====
+// Cặp #404 cuối của `SendMail.cs`. Nhưng đây **không phải cặp create/update thật**: "create" (#592) là **job**
+//   quét hàng đợi, không nhận tham số; "update" thì nhận **14 tham số nghiệp vụ**. Hai cửa **không đối xứng**,
+//   nên không có "quy ước rỗng" nào để so — chỉ có **một chiều**: cửa sửa ghi đè mọi thứ.
+//
+// 🔴🔴 **`ToAddress` RỖNG ⇒ `DBNull`** — địa chỉ **người nhận** bị **xoá trắng**:
+//     `if (string.IsNullOrEmpty(strToAddress)) row["ToAddress"] = DBNull.Value; else row["ToAddress"] = strToAddress;`
+//     `alEffectiveColumn.Add("ToAddress");`   ← thêm **vô điều kiện** ⇒ cột **luôn được ghi**
+//   ⇒ Client sửa một email mà quên gửi người nhận ⇒ bản ghi **còn nguyên trong hàng đợi** nhưng **không còn
+//     địa chỉ để gửi tới**. Không lỗi, không cảnh báo.
+// 🔴🔴 **`Status` CŨNG XOÁ TRẮNG** ⇒ **mắt xích thứ NĂM** của cùng một chuỗi:
+//   #575 (`DebitType`) · #579 (`IsActive`) · #588 (trạng thái tuỳ ý) · #591 (lúc NẠP) · và nay là **lúc SỬA**.
+//   Trạng thái NULL ⇒ rơi khỏi bộ lọc `status = '0'` của job (#592) ⇒ **không bao giờ được gửi**.
+// 🔴 **`DealerCode` GÁN VÔ ĐIỀU KIỆN**: `row["DealerCode"] = strDealerCode;` — **không** có nhánh guard rỗng
+//   như 12 cột còn lại. ⇒ Gửi rỗng là **mất phạm vi đại lý** của bản ghi. Một cột **không theo khuôn** của
+//   chính khối lệnh đó — dấu hiệu sửa tay từng dòng.
+// 🔴 **KHÔNG KIỂM `Rows.Count` TRƯỚC `Rows[0]`** — **lần thứ TƯ** trong cùng `SendMail.cs`
+//   (#588 `EmailSendEmailUpdateStatus`, #589 `Email_ConfigSendAuto_Update`, #592 `ProcessSaveSendEmail`).
+//   ⇒ Không còn là sơ suất: **cả file** viết theo khuôn "đọc rồi dùng ngay `Rows[0]`".
+// 🔴 **KHÔNG RÀNG BUỘC ĐẠI LÝ KHI TRA**: chỉ `"IdSendEmail", "=", strIdSendEmail` (lặp #588/#589).
+// 🔴 **KHÔNG KIỂM ĐỊNH DẠNG EMAIL** ở bất kỳ đâu: `strToAddress`/`strFromAddress` ghi thẳng. Bảng có cột
+//   `InvalidEmail` nhưng **không hàm nào trong file này gán nó** ⇒ cột đánh dấu email hỏng **chưa bao giờ
+//   được ghi** từ đường này.
+// ⚠️ Nhiều khối `else { … };` có **dấu `;` thừa** sau dấu ngoặc nhọn — vô hại, nhưng là dấu vết chép tay
+//   lặp lại 12 lần (cùng loại vết với `int nTidSeq = 0;` thừa ở #574/#577/#579).
+app.MapPost("/api/emails/{id:long}/update", async (long id, AppDbContext db, ITenantContext t,
+    string? dealerCode, string? toAddress, string? fromAddress, string? subject, string? body,
+    string? status, string? typeEmail, string? note, string? userName, string? cusId) =>
+{
+    var qy = db.EmailSends.Where(x => x.OrgId == t.OrgId && x.Id == id);
+    // GUARD nguồn KHÔNG có: ràng buộc đại lý khi tra.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var row = await qy.FirstOrDefaultAsync();
+    // GUARD nguồn KHÔNG có: kiểm tồn tại (lần thứ tư trong cùng file nguồn).
+    if (row is null)
+        return Results.NotFound(new
+        {
+            id,
+            sourceReadsRowsZeroWithoutCountCheck = "lan thu TU trong SendMail.cs (#588, #589, #592)",
+        });
+
+    // GUARD nguồn KHÔNG có: người nhận là thứ KHÔNG được phép xoá trắng.
+    if (toAddress is not null && string.IsNullOrWhiteSpace(toAddress))
+        return Results.BadRequest(new
+        {
+            error = "toAddress rong — nguon se ghi DBNull va email mat nguoi nhan nhung van nam trong hang doi.",
+            sourceClearsRecipientAddress = true,
+        });
+    // GUARD nguồn KHÔNG có: định dạng email.
+    if (!string.IsNullOrWhiteSpace(toAddress) && !toAddress!.Contains((char)64))
+        return Results.BadRequest(new
+        {
+            error = "toAddress khong phai dia chi email hop le.",
+            sourceNeverValidatesEmailFormat = "ca file khong ham nao kiem dinh dang, va cot InvalidEmail khong duoc gan tu duong nay",
+        });
+    // GUARD nguồn KHÔNG có: trạng thái rỗng ⇒ rơi khỏi hàng đợi gửi.
+    if (status is not null && string.IsNullOrWhiteSpace(status))
+        return Results.BadRequest(new
+        {
+            error = "status rong — nguon ghi DBNull va email roi khoi bo loc status=0 cua job (#592).",
+            fifthLinkOfSameChain = "#575 DebitType, #579 IsActive, #588 trang thai tuy y, #591 luc NAP, #593 luc SUA",
+        });
+
+    // Cột nào client KHÔNG gửi thì giữ nguyên (nguồn: gửi rỗng = xoá trắng).
+    if (dealerCode is not null) row.DealerCode = dealerCode.Trim().ToUpperInvariant();
+    if (toAddress is not null) row.Email = toAddress.Trim();
+    if (fromAddress is not null) row.FromAddress = fromAddress;
+    if (subject is not null) row.Subject = subject;
+    if (body is not null) row.Body = body;
+    if (status is not null) row.Status = status.Trim();
+    if (typeEmail is not null) row.EmailType = typeEmail;
+    if (note is not null) row.Note = note;
+    if (userName is not null) row.UserName = userName;
+    if (cusId is not null) row.CusId = cusId;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.DealerCode, toAddress = row.Email, row.FromAddress, row.Subject,
+        row.Status, emailType = row.EmailType, row.Note, row.UserName, row.CusId,
+        pairIsNotSymmetric = "create (#592) la JOB khong nhan tham so; update nhan 14 tham so nghiep vu => khong co quy uoc rong de so",
+        sourceClearsToAddressWhenEmpty = "row[ToAddress] = DBNull + alEffectiveColumn.Add(ToAddress) vo dieu kien",
+        sourceClearsStatusWhenEmpty = true,
+        dealerCodeAssignedUnconditionally = "row[DealerCode] = strDealerCode — cot DUY NHAT khong theo khuon guard cua 12 cot con lai",
+        noEmailFormatValidationAnywhere = "InvalidEmail la cot co that nhung khong ham nao trong SendMail.cs gan no",
+        guardsAddedByPort = new[] { "kiem ton tai", "rang buoc DealerCode", "cam xoa trang toAddress", "kiem dinh dang email", "cam xoa trang status", "khong gui thi giu nguyen" },
+        strayCommentSemicolonsInSource = "12 khoi else { … }; co dau cham phay thua",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #592 `Email_SendEmailCreate` — **TÊN LÀ "CREATE" NHƯNG THỰC RA LÀ JOB QUÉT HÀNG ĐỢI** =====
 // Nguồn: `SendMail.cs:25` + hàm con `ProcessSaveSendEmail` (`:570`).
 //
