@@ -9464,6 +9464,24 @@ static async Task<IResult> RptPayment01Async(
     if (!string.IsNullOrWhiteSpace(soCode)) cars = cars.Where(c => c.SOCode == soCode.Trim()).ToList();
     if (!string.IsNullOrWhiteSpace(modelCode)) cars = cars.Where(c => c.ModelCode == modelCode.Trim()).ToList();
 
+    // 🔴🔴 CỔNG VÙNG (#B128 bổ sung cho cả ba cửa — đọc kỹ template SQL mới thấy):
+    //   `left join Mst_DealerZone mdz on md.DealerCode = mdz.DealerCode`
+    //   `left join Mst_Zone mz on mdz.ZoneCode = mz.ZoneCode`
+    //   `where … and (@strZoneCode = '' or mdz.ZoneCode = @strZoneCode)`
+    //   `      and mdz.FlagActive = '1'`
+    // ⚠️ `mdz.FlagActive = '1'` nằm ở **WHERE** trên một **`left join`** ⇒ **biến thành `inner join`
+    //   trên thực tế**: đại lý **không có dòng vùng đang hiệu lực** thì **BỊ LOẠI KHỎI BÁO CÁO**,
+    //   kể cả khi `@strZoneCode` rỗng. Đây **không phải** "bỏ lọc khi rỗng".
+    var zoneRows = await db.DealerZones
+        .Where(z => z.OrgId == t.OrgId && z.FlagActive == "1")
+        .Select(z => new { z.DealerCode, z.ZoneCode }).ToListAsync();
+    var zoneOfDealer = zoneRows.GroupBy(z => z.DealerCode).ToDictionary(g => g.Key, g => g.First().ZoneCode);
+    cars = cars.Where(c =>
+    {
+        if (!zoneOfDealer.TryGetValue(c.DealerCode ?? "", out var zc)) return false;   // FlagActive='1' ở WHERE
+        return zone.Length == 0 || zc == zone;
+    }).ToList();
+
     // ✅ Nguồn bind quyền THẬT ở báo cáo này; MiniHTC chưa có bảng quyền ⇒ cờ đo.
     var scoped = enforceBuScope == "1";
     if (scoped)
@@ -9533,6 +9551,43 @@ app.MapGet("/api/reports/payment-01-mst", async (
     string? zoneCode, string? enforceBuScope, string? buPattern) =>
     await RptPayment01Async(db, t, dealerCode, soCode, modelCode, zoneCode, enforceBuScope, buPattern, true))
     .RequireAuthorization();
+
+// ===== #B128 BÁO CÁO THANH TOÁN 01 — CỬA TÀI CHÍNH KẾ TOÁN `RptPayment_01_TCKT_New20260514` =====
+// Trace LIVE: WS64 `:30322` → `_biz.RptPayment_01_TCKT_New20260514` (`DataWH/BizHTC.zTemp.cs:24178`).
+//   3B đo thật, **khớp cả 2 máy**: `24178/031845e1537b54189debddad095f6478`.
+// 🔴 **Khác cửa chi tiết (#B126) đúng HAI điểm** (diff toàn thân + diff template SQL):
+//   1. **Thêm MỘT tham số lọc**: `strPMGDCancelDTimeConditionList` — lọc theo **thời điểm huỷ của
+//      DÒNG bảo lãnh** (`Pmt_GuaranteeDetail`), cửa chi tiết **không có**.
+//   2. Template riêng `mySql_RptPayment_01_TCKT_New20260514()` có thêm **hai mảnh ghép**
+//      `zzB_strPmt_Guarantee_Select_zzE` / `zzB_strPmt_Guarantee_Join_zzE` (khối bảo lãnh).
+// ✅ **Bộ lọc tiền GIỐNG cửa chi tiết**: Total `'F'` · Deposit `'F'` · Accum `'F'`
+//    ⇒ **chỉ cửa `_Mst` (#B127) mới lệch** sang `'A','F'`. Đã kiểm từng dòng, không suy từ tên.
+// 🔴 Điều kiện bảo lãnh trong cả hai template: `pmgd.GuaranteeDetailStatus in ('A','F')`
+//    (*"Bảo lãnh Chi tiết Đã Xác nhận"*) và `pmg.GuaranteeStatus in ('A','F')`;
+//    giao hàng `ddd.DeliveryStatus not in ('R','C')`; `dd.FlagInitDeal = '0'`.
+// ✅ RBAC lành mạnh y như #B126: `inner join Mst_Dealer md on cc.DealerCode = md.DealerCode
+//    **and (md.BUCode like @strBUPatternOfUser)`** — **KHÔNG bị comment** ở template này.
+// 📌 **NỢ**: `Pmt_GuaranteeDetail` chưa có trong MiniHTC ⇒ tham số `pmgdCancelDTime` **nhận vào,
+//    trả lại trong response, chưa lọc được**, cờ `guaranteeDetailLayerMissing` — **không đoán**.
+app.MapGet("/api/reports/payment-01-tckt", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? soCode, string? modelCode,
+    string? zoneCode, string? enforceBuScope, string? buPattern, string? pmgdCancelDTime) =>
+{
+    var res = await RptPayment01Async(db, t, dealerCode, soCode, modelCode, zoneCode,
+                                      enforceBuScope, buPattern, false);
+    return Results.Ok(new
+    {
+        variant = "TCKT",
+        baseResult = res,
+        pmgdCancelDTimeConditionList = pmgdCancelDTime,
+        guaranteeDetailLayerMissing = true,
+        twoDifferencesNote = "Khac cua CHI TIET (#B126) dung HAI diem: (1) THEM MOT tham so loc strPMGDCancelDTimeConditionList - loc theo THOI DIEM HUY cua DONG bao lanh (Pmt_GuaranteeDetail), cua chi tiet KHONG co; (2) template rieng mySql_RptPayment_01_TCKT_New20260514() co them hai manh ghep zzB_strPmt_Guarantee_Select_zzE / zzB_strPmt_Guarantee_Join_zzE.",
+        moneyFilterSameNote = "Bo loc tien GIONG cua chi tiet: Total 'F' / Deposit 'F' / Accum 'F' => CHI cua _Mst (#B127) moi lech sang 'A','F'. Da kiem tung dong, khong suy tu ten.",
+        guaranteeConditionNote = "Dieu kien bao lanh trong ca hai template: pmgd.GuaranteeDetailStatus in ('A','F') ('Bao lanh Chi tiet Da Xac nhan') va pmg.GuaranteeStatus in ('A','F'); giao hang ddd.DeliveryStatus not in ('R','C'); dd.FlagInitDeal = '0'.",
+        rbacHealthyNote = "RBAC lanh manh: inner join Mst_Dealer md on cc.DealerCode = md.DealerCode AND (md.BUCode like @strBUPatternOfUser) - KHONG bi comment o template nay.",
+        debtNote = "NO: Pmt_GuaranteeDetail chua co trong MiniHTC => tham so pmgdCancelDTime NHAN VAO, tra lai trong response, CHUA LOC DUOC. Khong doan."
+    });
+}).RequireAuthorization();
 
 // ===== #B109 GÁN HOÁ ĐƠN CHUYỂN GIAO CHO VIN — `Car_VIN_UpdMulti_InvoiceTransferred` =====
 // Trace LIVE: WS → **`_biz.Car_VIN_UpdMulti_InvoiceTransferred`** (`BizHTC.Car.cs:2155`) —
