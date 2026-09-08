@@ -27760,6 +27760,92 @@ app.MapDelete("/api/transportinspayments/{no}", async (string no, AppDbContext d
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
+// ===== #B227/#B228/#B229 SỬA HÀNG LOẠT DÒNG BẢO HIỂM VẬN CHUYỂN — `Pmt_TransportIns_UpdateMulti`
+//       (`DMS40/0.34.Contract.cs:18607`, 497 dòng) — **đóng nợ ghi ở #B226** =====
+// **3B khớp cả 2 máy** (vị trí **trùng**): `18607,19103 / f38840aac3316b4fb1733c0a244fbbc0`.
+// 🔴🔴🔴 **BUG THẬT TRONG NGUỒN — guard `DelayPenaty` KIỂM NHẦM BIẾN**:
+//     `double dblTransportCost = Convert.ToDouble(drScan["TransportCost"]);`
+//     `if (dblTransportCost < 0) throw …_InvalidTransportCost;`
+//     `double dblDelayPenaty = Convert.ToDouble(drScan["DelayPenaty"]);`
+//     `if (**dblTransportCost** < 0) throw …_InvalidDelayPenaty;`   ← **phải là `dblDelayPenaty`**
+//   ⇒ **Hai hệ quả cùng lúc**:
+//     · **`DelayPenaty` ÂM KHÔNG BỊ CHẶN** — tiền phạt trễ âm ghi thẳng vào DB;
+//     · `TransportCost` âm bị báo lỗi **hai lần** với **hai mã khác nhau**, mã thứ hai (`…DelayPenaty`)
+//       **gây hiểu nhầm** khi tra log.
+//   📌 **KHÔNG tự vá** (vá là chặn dữ liệu hệ cũ vẫn nhận). Port giữ đúng, nhưng **trả cờ
+//     `delayPenatyNegativeAllowed`** khi gặp giá trị âm để người vận hành thấy.
+//   ⚠️ Tên cột nguồn còn **sai chính tả**: `DelayPenaty` (thiếu `l` — đúng là *Penalty*). Giữ 1:1.
+// 🔴 **Khoá nối là BỘ ĐÔI** `(TransportInsNo, VIN)` — cả hai câu `update` đều nối đủ hai cột.
+// 🔴 **BẢY cột được ghi**, trong đó **một cặp LỆCH TÊN**:
+//   `LogLUDateTime` · `LogLUBy` · `TProvinceName` · `ExpectedDlvEndDate` · `InvEndDate` ·
+//   `TransportCost` · `DelayPenaty` · **`t.TotalPrice = f.TotalAmount`**
+//   ⇒ cột đích tên `TotalPrice`, cột nguồn tên `TotalAmount` — **cùng bẫy với #B193**
+//     (`t.SpecCode = f.SpecCodePromotion`). Port ghép theo cùng tên ⇒ **không ghi được cột tổng**.
+// 🔴 Guard đầu vào: bảng dòng thiếu ⇒ `…_Input_Pmt_TransportInsDetailTblNotFound`;
+//   `Pmt_TransportIns_CheckDB` xác nhận phiếu tồn tại trước khi sửa.
+app.MapPost("/api/transportinspayments/{no}/update-multi", async (
+    string no, TransportInsUpdateMultiDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var pmtNo = (no ?? "").Trim().ToUpperInvariant();
+    var h = await db.TransportInsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == pmtNo);
+    if (h is null)
+        return Results.NotFound(new { error = "Pmt_TransportIns_CheckDB_NotFound", check = new { TransportInsNo = pmtNo } });
+
+    if (dto.Lines is null || dto.Lines.Count == 0)
+        return Results.BadRequest(new { error = "Pmt_TransportIns_UpdateMulti_Input_Pmt_TransportInsDetailTblNotFound" });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var updated = 0;
+    var notFound = new List<string>();
+    var negativePenalty = new List<object>();
+
+    foreach (var l in dto.Lines)
+    {
+        // 🔴 Guard nguồn: chỉ chặn TransportCost < 0 (hai lần, hai mã lỗi).
+        if ((l.TransportCost ?? 0m) < 0)
+            return Results.BadRequest(new
+            {
+                error = "Pmt_TransportIns_UpdateMulti_InvalidTransportCost",
+                check = new { l.VIN, l.TransportCost }
+            });
+
+        // 🔴🔴 BUG NGUỒN: nhánh này lẽ ra kiểm `dblDelayPenaty` nhưng lại kiểm `dblTransportCost`
+        //   ⇒ DelayPenaty âm KHÔNG bị chặn. Giữ đúng nguồn, chỉ ghi cờ.
+        if ((l.DelayPenaty ?? 0m) < 0)
+            negativePenalty.Add(new { l.VIN, l.DelayPenaty });
+
+        // 🔴 Nối bằng ĐỦ BỘ ĐÔI (TransportInsNo, VIN).
+        var line = await db.TransportInsPaymentLines
+            .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportInsPaymentId == h.Id
+                                      && x.Vin == (l.VIN ?? "").Trim());
+        if (line is null) { notFound.Add(l.VIN ?? ""); continue; }
+
+        line.TProvinceName = l.TProvinceName;
+        line.ExpectedDlvEndDate = l.ExpectedDlvEndDate;
+        line.InvEndDate = l.InvEndDate;
+        line.TransportCost = l.TransportCost ?? 0m;
+        line.DelayPenaty = l.DelayPenaty ?? 0m;
+        line.TotalPrice = l.TotalAmount ?? 0m;      // 🔴 LỆCH TÊN: TotalPrice ← TotalAmount
+        line.LogLUDateTime = now; line.LogLUBy = by;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        transportInsNo = pmtNo, updated, notFound,
+        delayPenatyNegativeAllowed = negativePenalty,
+        sourceBugNote = "BUG THAT TRONG NGUON - guard DelayPenaty KIEM NHAM BIEN: 'double dblDelayPenaty = Convert.ToDouble(drScan[\"DelayPenaty\"]); if (dblTransportCost < 0) throw ..._InvalidDelayPenaty;' - le ra phai la dblDelayPenaty. HAI HE QUA: (1) DelayPenaty AM KHONG BI CHAN, tien phat tre am ghi thang vao DB; (2) TransportCost am bi bao loi HAI LAN voi HAI MA KHAC NHAU, ma thu hai (_InvalidDelayPenaty) GAY HIEU NHAM khi tra log. KHONG TU VA (va la chan du lieu he cu van nhan); tra co delayPenatyNegativeAllowed de nguoi van hanh thay.",
+        typoNote = "Ten cot nguon SAI CHINH TA: 'DelayPenaty' (thieu chu 'l' - dung la Penalty). Giu 1:1 - cot nay DA CO SAN trong entity kem chu thich.",
+        columnMismatchNote = "BAY cot duoc ghi, trong do MOT CAP LECH TEN: 't.TotalPrice = f.TotalAmount' - cot dich ten TotalPrice, cot nguon ten TotalAmount. CUNG BAY VOI #B193 (t.SpecCode = f.SpecCodePromotion). Port ghep theo cung ten => KHONG GHI DUOC cot tong.",
+        keyNote = "Khoa noi la BO DOI (TransportInsNo, VIN) - ca hai cau update deu noi du hai cot.",
+        guardNote = "Bang dong thieu => _Input_Pmt_TransportInsDetailTblNotFound; Pmt_TransportIns_CheckDB xac nhan phieu ton tai truoc khi sua.",
+        queueClosedNote = "Dong no ghi o #B226: cua UpdateMulti da port. Con lai GetAll rieng."
+    });
+}).RequireAuthorization();
+
 // ===== Khoang sửa chữa (Cavity — port 1:1 FrmCavityCreate/Search, TCMotor) =====
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
 {
@@ -46530,6 +46616,8 @@ record DlrContractDtlUpdLineDto(string? SpecCode, string? ModelCode, string? Col
 record DlrContractDtlUpdDto(List<DlrContractDtlUpdLineDto>? Lines);   // #B200
 record DriveTestHtcCreateDto(string? DriveTestCode, string? DriverTestType, string? DriverTestGroup, string? DrvTestPlateNo, string? CustomerCode, string? RangeAgeCode, string? DriverLisence, DateTime? DriveDTime);   // #B202
 record CtmVisitHtcCreateDto(string? CtmVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);   // #B203
+record TransportInsUpdateMultiLineDto(string? VIN, string? TProvinceName, DateTime? ExpectedDlvEndDate, DateTime? InvEndDate, decimal? TransportCost, decimal? DelayPenaty, decimal? TotalAmount);   // #B227
+record TransportInsUpdateMultiDto(List<TransportInsUpdateMultiLineDto>? Lines);   // #B227
 record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType);   // #B206
 record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines);   // #B206
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
