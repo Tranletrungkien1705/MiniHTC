@@ -19775,6 +19775,64 @@ app.MapDelete("/api/roattachments/{id:long}", async (long id, AppDbContext db, I
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #596 TẦNG XÁC THỰC BRAVO (`GetToken` + `PostBravoTokenGet`) — **MẬT KHẨU API ĐI VÀO LOG** =====
+// Nguồn: `BizCarSv.Bravo.cs:343` (`GetToken`) → `OS_BravoService.GetToken` (`:411`) →
+//   `BizCarSv.BravoService.cs:56` (`PostBravoTokenGet`). Mọi lời gọi Bravo (#212/#246/#247) đi qua đây.
+//
+// 🔴🔴 **REQUEST CHỨA `username`/`password` BỊ SERIALIZE VÀO ĐỐI TƯỢNG TRẢ VỀ**:
+//     `request.AddParameter("username", _strOS_Bravo_API_UserName);`
+//     `request.AddParameter("password", _strOS_Bravo_API_Password);`
+//     `var **requestLog = JsonConvert.SerializeObject(request)**;`
+//     `… new UtilBravo.RT_Bravo() { **request = requestLog.ToString()**, … }`
+//   ⇒ Chuỗi JSON của **toàn bộ request — kèm tên đăng nhập và mật khẩu API Bravo** — nằm trong trường
+//     `request` của kết quả, và trường đó được các hàm gọi đem đi **ghi log**.
+//   ⇒ Đây là **cơ chế lộ thông tin xác thực THỨ HAI** trong hệ, khác hẳn #594: ở đó mật khẩu SMTP lọt qua
+//     mệnh đề `select`; ở đây mật khẩu lọt qua **thao tác serialize để log**. Cùng hậu quả, hai đường khác
+//     nhau ⇒ soi `select` thôi là **không đủ**.
+// 🔴🔴 **`client.Timeout = -1` — KHÔNG CÓ THỜI HẠN CHỜ**: Bravo treo là **giữ luồng vĩnh viễn**, không có
+//   đường thoát. Nặng hơn #586 (`WebClient` ít nhất còn mặc định 100 giây).
+// 🔴 **KHÔNG RETRY, KHÔNG `using`/`Dispose`** cho `RestClient` (lặp lại đúng khuôn #586).
+// 🔴 **KHÔNG CACHE TOKEN**: `GetToken` gọi `POST /token` **mỗi lần**; nghĩa là mỗi thao tác Bravo tốn **hai**
+//   lượt HTTP, và mỗi lượt đều gửi lại mật khẩu qua mạng.
+// 🔴 **DESERIALIZE KHÔNG PHÒNG THỦ**: nhánh thành công làm
+//   `JsonConvert.DeserializeObject<UtilBravo.RT_Token>(response.content)` rồi `strToken = objRT_Token.access_token`
+//   — không kiểm `content` có phải JSON không, không kiểm `access_token` có rỗng không.
+//   ⇒ Bravo trả HTTP 200 với thân lạ ⇒ **exception thô**; trả JSON thiếu trường ⇒ **token rỗng** rồi vẫn đi
+//     gọi tiếp ⇒ lỗi hiện ra ở **bước sau**, xa chỗ gây lỗi.
+// ⚪ Âm tính (luật "port dòng ACTIVE"): lớp `OS_BravoService` có **một bản `CallBravo` bị comment toàn bộ**;
+//   bản đang chạy là `BizCarSv.CallBravo` ở lớp ngoài (`:371`), nó nối `apiUrl + "api/BravoWebApi/execute"`.
+//   Đọc nhầm bản comment sẽ tưởng `OS_BravoService` tự gọi được Bravo.
+// ⚠️ Ghép URL bằng **cộng chuỗi trần**: `apiUrl + "token"` và `apiUrl + "api/BravoWebApi/execute"` ⇒ cấu hình
+//   `_strOS_Bravo_API_Url` **bắt buộc** kết thúc bằng `/` — đúng cùng cái bẫy đã ghi ở #586 (`BuildUrlAPI`).
+// 📌 MiniHTC không gọi Bravo; endpoint dưới **chẩn đoán cấu hình** và nêu mọi cờ trên để chỗ vận hành thấy.
+app.MapGet("/api/bravo/transport-info", (IConfiguration cfg) =>
+{
+    var url = cfg["Bravo:ApiUrl"] ?? "";
+    var user = cfg["Bravo:UserName"] ?? "";
+    var hasPassword = !string.IsNullOrEmpty(cfg["Bravo:Password"]);
+
+    return Results.Ok(new
+    {
+        apiUrl = url,
+        userName = user,
+        hasPassword,
+        // Cấu hình PHẢI kết thúc bằng "/" vì nguồn ghép URL bằng cộng chuỗi trần.
+        urlEndsWithSlash = url.EndsWith("/"),
+        urlMisconfigured = url.Length > 0 && !url.EndsWith("/"),
+        tokenEndpoint = url + "token",
+        executeEndpoint = url + "api/BravoWebApi/execute",
+        credentialsSerializedIntoLog = "PostBravoTokenGet: JsonConvert.SerializeObject(request) sau khi AddParameter username/password roi gan vao RT_Bravo.request => mat khau API di vao doi tuong tra ve va vao LOG",
+        secondLeakMechanism = "khac #594 (mat khau SMTP lot qua menh de select); o day lot qua thao tac serialize de log => soi select thoi la KHONG DU",
+        noTimeoutAtAll = "client.Timeout = -1 => Bravo treo la giu luong vinh vien (nang hon #586 von co mac dinh 100s)",
+        noRetryNoDispose = "khong retry, khong using/Dispose RestClient",
+        tokenNotCached = "GetToken goi POST /token MOI LAN => moi thao tac Bravo ton hai luot HTTP va gui lai mat khau qua mang",
+        deserializeNotDefensive = "DeserializeObject<RT_Token>(response.content) roi lay access_token — khong kiem content co phai JSON, khong kiem token rong",
+        commentedCallBravoInsideService = "OS_BravoService co mot ban CallBravo bi comment toan bo; ban dang chay la BizCarSv.CallBravo o lop ngoai (:371)",
+        urlConcatenationTrap = "apiUrl + token va apiUrl + api/BravoWebApi/execute — cung bay #586 (BuildUrlAPI)",
+        portDoesNotCallBravo = "MiniHTC khong goi Bravo; endpoint nay chi chan doan cau hinh",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #247 BẢNG TẠM PHỤ TÙNG TST — `TST_Mst_Part_Temp_Get` (BizCarSv.Bravo.cs:223) =====
 // BƯỚC 3B: `BizCarSv.Bravo.cs` md5 `44509215` (469 dòng) — KHỚP 2 máy (đã đo ở #212).
 //
