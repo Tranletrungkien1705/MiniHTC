@@ -10988,6 +10988,13 @@ public sealed class MstInsuranceCompany
     public Guid OrgId { get; set; }
     public string InsCompanyCode { get; set; } = "";
     public string? InsCompanyName { get; set; }
+    /// <summary>#569 §12 Bốn cột hồ sơ hãng bảo hiểm — nguồn `SerInsuranceDebitSearch` chọn thêm
+    /// `si.Address`, `si.Fax`, `si.Website` (hai cột sau có chú thích *"huongkt add (menu danh sách hãng
+    /// bảo hiểm nợ)"*) và `si.InsVieName` dùng làm tên hiển thị.</summary>
+    public string? Address { get; set; }
+    public string? Tel { get; set; }
+    public string? Fax { get; set; }
+    public string? Website { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

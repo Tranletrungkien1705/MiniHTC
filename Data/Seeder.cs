@@ -1281,6 +1281,11 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"ROID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        // #569 §12 ho so hang bao hiem (Ser_Insurance: Address/Fax/Website)
+        "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Address\" text",
+        "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Tel\" text",
+        "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Fax\" text",
+        "ALTER TABLE public.\"MstInsuranceCompanies\" ADD COLUMN IF NOT EXISTS \"Website\" text",
         // #566 danh muc mang luoi (CmCt_Mst_Network)
         "CREATE TABLE IF NOT EXISTS public.\"NetworkMsts\" (\"Id\" bigserial primary key, \"OrgId\" uuid not null, \"NetworkID\" text not null, \"NetworkName\" text, \"GroupNetworkID\" text, \"CoreAddr\" text, \"PingAddr\" text, \"XSysAddr\" text, \"WSUrlAddr\" text, \"DBUrlAddr\" text, \"WAUrlAddr\" text, \"FlagActive\" text, \"LogLUDTimeUTC\" timestamp, \"LogLUBy\" text)",
         // #557 dai ly cua cong no (nua khoa xoa cua nguon)

@@ -36498,6 +36498,15 @@ app.MapPost("/api/storagerearranges/{no}/cars/{vin}", async (string no, string v
 }).RequireAuthorization();
 
 // ===== Đề nghị bảo hiểm (InsuranceReq — port 1:1 FrmNewInsuranceReq, 2010.HTC/Sales/Purchase) =====
+// ===== 🔴 #569 §12 BỐN CỘT HỒ SƠ HÃNG BẢO HIỂM — từ `SerInsuranceDebitSearch` (`Debit.cs:1992`) =====
+// DIFF với `SerCusDebitSearch` (luật #414): hai hàm dùng **chung khung ba nhánh**; khác biệt thật nằm ở
+//   **DANH SÁCH CỘT**, đúng như luật dự đoán — bản bảo hiểm chọn thêm `si.Address`, `si.Fax`, `si.Website`
+//   (hai cột sau kèm chú thích nguyên văn *"huongkt add (menu danh sach hang bao hiem no)"*), và **bỏ**
+//   `INNER JOIN Ser_Customer` cùng cột `d.CusID` khỏi `GROUP BY` (gom theo `d.InsNo`).
+// ⚠️ **HAI BẢNG NGUỒN, MỘT KHÁI NIỆM**: `Ser_Insurance` (hệ CarSv, tên ở cột `InsVieName`) và
+//   `Mst_InsuranceCompany` (hệ DMSSales, tên ở cột `InsCompanyName`) cùng ánh xạ vào bảng này của MiniHTC.
+//   Bốn cột thêm lấy theo **hệ CarSv**; đừng nhầm là cột của master DMSSales.
+//
 // ===== 🔴 Master BẢO HIỂM (Mst_InsuranceCompany / Mst_InsuranceType) — hệ `ERP.V15.DMSSales.Real` =====
 // Hệ này **CHỈ có trên máy 150**. Cổng `TERP.WSINS` cho công ty bảo hiểm đăng nhập tra dữ liệu.
 // 🔴 RBAC của nguồn: `and (mit.InsCompanyCode like @strAbilityOfUser)` (`TERP.BizInsurance/InsReq.cs:184`)
@@ -36507,8 +36516,17 @@ app.MapGet("/api/insurancecompanies", async (AppDbContext db, ITenantContext t, 
     var qy = db.MstInsuranceCompanies.Where(x => x.OrgId == t.OrgId);
     if (active != "all") qy = qy.Where(x => x.FlagActive == "1");
     var items = await qy.OrderBy(x => x.InsCompanyCode).Take(500)
-        .Select(x => new { x.Id, x.InsCompanyCode, x.InsCompanyName, x.FlagActive, x.UpdatedAt }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+        .Select(x => new { x.Id, x.InsCompanyCode, x.InsCompanyName, x.FlagActive, x.UpdatedAt,
+            x.Address, x.Tel, x.Fax, x.Website })   // #569 §12: co o CA GET lan POST
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        // ===== #569 =====
+        columnsFromInsuranceDebitScreen = "Address/Fax/Website — nguon SerInsuranceDebitSearch chon them cho MENU DANH SACH HANG BAO HIEM NO",
+        twoSourceTablesForOneConcept = "Ser_Insurance (he CarSv) va Mst_InsuranceCompany (he DMSSales) cung anh xa vao bang nay",
+        nameColumnDiffersBySystem = "Ser_Insurance.InsVieName vs Mst_InsuranceCompany.InsCompanyName",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/insurancecompanies", async (MstInsCompanyDto dto, AppDbContext db, ITenantContext t) =>
@@ -36519,9 +36537,12 @@ app.MapPost("/api/insurancecompanies", async (MstInsCompanyDto dto, AppDbContext
     if (row is null) { row = new MstInsuranceCompany { OrgId = t.OrgId, InsCompanyCode = code }; db.MstInsuranceCompanies.Add(row); }
     row.InsCompanyName = dto.InsCompanyName;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // #569 §12 — rỗng nghĩa là XOÁ TRẮNG (cùng quy ước với các master khác của MiniHTC).
+    row.Address = dto.Address; row.Tel = dto.Tel; row.Fax = dto.Fax; row.Website = dto.Website;
     row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.InsCompanyCode, row.InsCompanyName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.InsCompanyCode, row.InsCompanyName, row.FlagActive,
+        row.Address, row.Tel, row.Fax, row.Website });
 }).RequireAuthorization();
 
 // `insCompanyPattern` = quyền của người dùng công ty BH (nguồn dùng `like`); bỏ trống = xem tất cả (nội bộ HTC).
@@ -53585,7 +53606,8 @@ record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars);
 record ScApproveDto(bool Approve = true, string? Remark = null);
 record ScCarUpdateDto(DateTime? ExpectedEndDate, string? Remark);
 record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark);
-record MstInsCompanyDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive);
+record MstInsCompanyDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive,
+    string? Address, string? Tel, string? Fax, string? Website);   // #569 §12
 record MstInsTypeDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, string? FlagActive);
 record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<InsuranceReqCarDto>? Cars);
 record InsApproveDto(string? Remark);
