@@ -53008,6 +53008,95 @@ app.MapGet("/api/receptions/{no}/attachfiles", async (string no, AppDbContext db
 //   `_strConfig_DBName_Main`) ⇒ master dùng chung toàn hệ, không theo đại lý.
 // ⚠️ Ba `BuildClause` (`ReceptionFAudCode` · `ReceptionFAudType` · `FlagActive`) — cùng bẫy #410/#520:
 //   không có tiền tố toán tử là **bỏ im lặng**. Bản port lọc thật.
+// ===== 🔴🔴 #639 THẺ KHO `Ser_InvReportCardStockRpt_WH_New20230623` (`BizCarSv.WH.cs:9636-10011`) =====
+// 3B: laptop `:9636` md5 `5f715708` **KHỚP** máy 150 `:9636`. Cụm có **ba** bản (trần `:9316` ·
+//   `_New20230623` `:9636` **LIVE** · `_New20181027` `:10012`).
+//
+// 🔴🔴🔴 **MỐC NGÀY CUỐI: BẢN NÀY DÙNG `<=` VỚI NGÀY TRẦN — NGƯỢC HẲN #638**:
+//     ở đây : `AND spi.DateIn >= '@FromDate' AND spi.DateIn **<= '@ToDate'**` và `@ToDate` ← `strToDate`
+//             (**không** `AddDays`), lặp ở cả ba khối nhập/xuất/xuất-trả-NCC;
+//     ở #638: `DateIn **< '@ToDate'**` với `@ToDate` ← `dtimeTo.**AddDays(1)**` ⇒ **đúng**.
+//   ⇒ Nếu `DateIn`/`DateOut` là **DATETIME có giờ**, `<= 'yyyy-MM-dd'` = `<= 00:00:00` ⇒ **mất trọn ngày cuối**
+//     (luật #415). Không truy được kiểu cột từ source ⇒ **ghi rủi ro có điều kiện**, không kết luận —
+//     nhưng **hai báo cáo kho anh em đang dùng hai quy ước mốc ngày khác nhau**, nên số của chúng
+//     **không so được với nhau** dù cùng khoảng ngày người dùng nhập.
+//   📌 **Đếm thật trong `BizCarSv.WH.cs`**: `<= '@ToDate'` = **56** site · `< '@ToDate'` = **4** site
+//     (máy 150 đếm lại: **56 / 4**) ⇒ kiểu `<=` là **đa số áp đảo**; kiểu đúng-chắc-chắn của #638 là **thiểu số**.
+// 🔴🔴 **TRỘN BAKE VÀ THAM SỐ THẬT TRONG CÙNG MỘT BATCH** (gate `[BAKE-PARAM-MIX]` trong sổ):
+//   ngày và mã đại lý được **thay chuỗi** (`'@FromDate'`, `'@ToDate'`, `'@DealerCode'` — có nháy),
+//   nhưng câu cuối lại dùng **tham số thật** `AND p.PartID = @PartID` (không nháy) ⇒ nửa câu tiêm được,
+//   nửa câu an toàn.
+// ⚪ **ĐỐI CHỨNG VỚI #638 — Ở ĐÂY TEMPLATE ĐƯỢC DÙNG THẬT**: `SqlTemplate_ser_inv_partInstance.zzB_…_zzE`
+//   có token **thật trong chuỗi SQL** (khác #638 nơi ba lời gọi template là công vô ích). ⇒ Cùng một cụm,
+//   một hàm dùng template, một hàm đã viết tay lại mà **quên xoá lời gọi** — chính là bẫy bảo trì đã nêu ở #638.
+// 🔴 **CHUỖI JOIN "Issue 1072" NỐI 4 BẢNG ĐỂ TRUY RA XE**: `Ser_Inv_StockOutOrderStockOut` →
+//   `Ser_Inv_StockOutOrder` → `ser_ro` → `ser_car`, **tất cả `left join`** và **không** có điều kiện `WHERE`
+//   nào trên chúng ⇒ ⚪ **LEFT còn sống** (kiểm đủ ba câu hỏi #414): phiếu xuất không gắn lệnh sửa chữa vẫn ra.
+//   ⚠️ Nhưng chuỗi 4 mức `left join` **nở dòng** nếu một phiếu xuất thuộc **nhiều** yêu cầu xuất.
+// 🔴 `left join #stock st **with(nolock)**` giữa rừng `--//[mylock]` ⇒ lại trộn hai chiến lược khoá trong một
+//   batch (họ #620/#623) — và trớ trêu là `with(nolock)` đặt trên một **bảng tạm** (vô nghĩa: bảng tạm chỉ
+//   thuộc về phiên hiện tại, không có tranh chấp khoá).
+// 🔴 `and spi.Status not in ('4','5')` + `and si.Status not in ('4','5')` lặp ở mọi khối — hằng literal rời
+//   rạc, không qua `TConst`.
+// ⚠️ Câu cuối trả **thông tin phụ tùng** (`PartID/PartCode/VieName/Unit/Location`) **tách riêng** khỏi bảng
+//   chuyển động ⇒ **hai bảng kết quả**, chỗ gọi phải tự ghép (§12 không bắt được kiểu này).
+app.MapGet("/api/report/card-stock-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var code = (partCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "partCode bat buoc (nguon loc AND p.PartID = @PartID)." });
+    var from = fromDate ?? DateTime.Today.AddMonths(-1);
+    var toExclusive = (toDate ?? DateTime.Today).Date.AddDays(1);   // port: cận trên MỞ, xem cờ
+
+    var q0 = db.PartInstances.Where(x => x.OrgId == t.OrgId && x.PartCode == code);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q0 = q0.Where(x => x.DealerCode == dealerCode!.Trim());
+    var inst = await q0.Select(x => new { x.LocationID, x.Quantity, x.SIPrice, x.SOPrice, x.SIVAT,
+                                          x.DateIn, x.DateOut, x.StockInNo, x.StockOutNo, x.Status }).ToListAsync();
+
+    // Tồn đầu kỳ: đã nhập trước kỳ trừ đã xuất trước kỳ
+    var openQty = inst.Where(x => x.DateIn != null && x.DateIn < from).Sum(x => x.Quantity)
+                - inst.Where(x => x.DateOut != null && x.DateOut < from).Sum(x => x.Quantity);
+
+    var movements = new List<object>();
+    movements.AddRange(inst.Where(x => x.DateIn != null && x.DateIn >= from && x.DateIn < toExclusive)
+        .Select(x => (object)new { kind = "IN", refDate = x.DateIn, refNo = x.StockInNo,
+                                   qty = x.Quantity, price = x.SIPrice ?? 0m, vat = x.SIVAT ?? 0m,
+                                   locationId = x.LocationID }));
+    movements.AddRange(inst.Where(x => x.DateOut != null && x.DateOut >= from && x.DateOut < toExclusive)
+        .Select(x => (object)new { kind = "OUT", refDate = x.DateOut, refNo = x.StockOutNo,
+                                   qty = x.Quantity, price = x.SOPrice ?? 0m, vat = 0m,
+                                   locationId = x.LocationID }));
+
+    // Đo mức lệch nếu áp đúng quy ước của nguồn (<= ngày trần, tức cắt ở 00:00:00 ngày cuối)
+    var toInclusiveMidnight = (toDate ?? DateTime.Today).Date;
+    var droppedByInclusiveBound = inst.Count(x =>
+        (x.DateIn != null && x.DateIn > toInclusiveMidnight && x.DateIn < toExclusive) ||
+        (x.DateOut != null && x.DateOut > toInclusiveMidnight && x.DateOut < toExclusive));
+
+    var part = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.PartCode == code)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).FirstOrDefaultAsync();
+
+    return Results.Ok(new
+    {
+        partCode = code, fromDate = from, toDateExclusive = toExclusive,
+        openQty, movementCount = movements.Count, movements,
+        part,   // nguồn trả bảng thông tin phụ tùng TÁCH RIÊNG
+        // ===== #639 =====
+        sourceUsesInclusiveEndDate = "nguon: AND spi.DateIn >= @FromDate AND spi.DateIn <= @ToDate voi @ToDate <- strToDate (KHONG AddDays), lap o ca ba khoi nhap/xuat/xuat-tra-NCC",
+        siblingReportUsesExclusiveBound = "#638 dung DateIn < @ToDate voi @ToDate <- dtimeTo.AddDays(1) => DUNG; hai bao cao kho anh em dang dung HAI quy uoc moc ngay khac nhau nen so cua chung KHONG SO DUOC voi nhau du cung khoang ngay nguoi dung nhap",
+        riskIsConditional = "neu DateIn/DateOut la DATETIME co gio thi <= yyyy-MM-dd = <= 00:00:00 => MAT TRON NGAY CUOI (#415); khong truy duoc kieu cot tu source nen ghi RUI RO CO DIEU KIEN, khong ket luan",
+        endDateBoundCountedAcrossFile = "dem trong BizCarSv.WH.cs: <= @ToDate = 56 site, < @ToDate = 4 site (may 150 dem lai 56/4) => kieu <= la DA SO AP DAO, kieu dung-chac-chan cua #638 la thieu so",
+        droppedByInclusiveBound,
+        portUsesExclusiveBound = "port dung can tren MO (AddDays(1)) va tra droppedByInclusiveBound de do dung so ban ghi ma quy uoc cua nguon se bo",
+        bakeAndRealParamsMixedInOneBatch = "ngay va ma dai ly duoc THAY CHUOI (@FromDate/@ToDate/@DealerCode co nhay) nhung cau cuoi dung THAM SO THAT AND p.PartID = @PartID (khong nhay) => nua cau tiem duoc, nua cau an toan (gate BAKE-PARAM-MIX)",
+        templateIsActuallyUsedHere = "AM TINH doi chung #638: SqlTemplate_ser_inv_partInstance.zzB_…_zzE co token THAT trong chuoi SQL cua ham nay; o #638 ba loi goi template la cong vo ich => cung mot cum, mot ham dung template, mot ham viet tay lai ma quen xoa loi goi",
+        issue1072JoinChainToVehicle = "chuoi left join Ser_Inv_StockOutOrderStockOut -> Ser_Inv_StockOutOrder -> ser_ro -> ser_car (chu thich Issue 1072) de truy ra xe da tieu thu phu tung; TAT CA deu left join va KHONG co dieu kien WHERE nao tren chung => LEFT con song (kiem du ba cau hoi #414), nhung chuoi 4 muc co the NO DONG neu mot phieu xuat thuoc nhieu yeu cau xuat",
+        nolockOnATempTable = "left join #stock st with(nolock) giua rung --//[mylock] — vua tron hai chien luoc khoa (ho #620/#623) vua VO NGHIA vi #stock la bang TAM, chi thuoc phien hien tai",
+        statusLiteralsNotViaTConst = "and spi.Status not in (4,5) + and si.Status not in (4,5) lap o moi khoi — hang literal roi rac, khong qua TConst",
+        partInfoReturnedAsSeparateTable = "cau cuoi tra thong tin phu tung (PartID/PartCode/VieName/Unit/Location) TACH RIENG khoi bang chuyen dong => hai bang ket qua, cho goi phai tu ghep (§12 khong bat duoc)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #638 BÁO CÁO NHẬP–XUẤT–TỒN `Ser_InventoryReport_InOutBalance_WH_New20191112` =====
 // Nguồn `BizCarSv.WH.cs:23996-24398`; 3B md5 vùng `4d6b1766` **KHỚP 2 máy** (cùng số dòng).
 // TRACE: `WSCarSv.asmx.cs` gọi bản `_New20191112` (một trong **ba** bản của cụm).
