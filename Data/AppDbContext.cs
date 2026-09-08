@@ -530,6 +530,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<AmplitudeApprOrd> AmplitudeApprOrds => Set<AmplitudeApprOrd>();   // #B153-B154 bien do duyet don hang
     public DbSet<CtrCancelTypeDtl> CtrCancelTypeDtls => Set<CtrCancelTypeDtl>();   // #B155
     public DbSet<MapVinSupplyDistSum> MapVinSupplyDistSums => Set<MapVinSupplyDistSum>();   // #B156-B157
+    public DbSet<GpsErrorType> GpsErrorTypes => Set<GpsErrorType>();   // #B158
+    public DbSet<MstMarriage> MstMarriages => Set<MstMarriage>();   // #B159
+    public DbSet<DisbursementType> DisbursementTypes => Set<DisbursementType>();   // #B160
     public DbSet<AutoEstDlvPlanStorage> AutoEstDlvPlanStorages => Set<AutoEstDlvPlanStorage>();   // #B135 cache dai ly x kho x model
     public DbSet<TranspFeeVer> TranspFeeVers => Set<TranspFeeVer>();       // #B90 dau phien ban CPVT
     public DbSet<TranspFeeHist> TranspFeeHists => Set<TranspFeeHist>();   // #B90 anh chup dong phi theo phien ban

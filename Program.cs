@@ -28832,6 +28832,107 @@ app.MapPut("/api/dms40/mapvin-supply-distsum/{spdbsCode}", async (
     });
 }).RequireAuthorization();
 
+// ===== #B158/#B159/#B160 BA DANH MỤC CHỈ ĐỌC — `Mst_GPSErrorType_Get` · `Mst_Marriage_Get` ·
+//       `Mst_DisbursementType_Get` =====
+// 🔴 **Cả ba chỉ có ĐÚNG MỘT cửa `_Get` ở WS64** (đếm bằng `grep -o "_biz.<Tên>_[A-Za-z]*" | sort -u`)
+//   ⇒ **danh mục chỉ đọc**, không sinh endpoint ghi (luật `C0-…undequadragesimus`).
+// **3B đo theo dải dòng tường minh, khớp cả 2 máy**:
+//   `StorageFG/BizHTC.ZTempGPS.cs        4507,4727      / 249d94ac3b160908a4e79dc20a30fc14`
+//   `DataWH/Biz.HTC.WH.cs                <xem dưới>     / 57d5f68938a5eb74287150a81b5d7b30`
+//   `BankIntergration/BizHTC.VietinBank.cs 27131,27303  / 8017e36267ede43bfbae7c8bda0dde0b`
+// 🔴🔴 **CA 3B LỆCH ĐẦU TIÊN — file khác nhau giữa hai máy**: `Biz.HTC.WH.cs` có
+//   **212978 dòng ở laptop** và **212983 dòng ở máy 150**; `Mst_Marriage_GetX` bắt đầu ở
+//   **191826** (laptop) và **191831** (máy 150) — **lệch đúng 5 dòng**.
+//   Đo theo cùng một dải số ⇒ **md5 khác nhau** (`57d5f689…` vs `db534beb…`) — dễ bị hiểu nhầm là
+//   "hai máy có mã khác nhau". Định vị **theo TÊN trên từng máy** rồi đo `157` dòng ⇒ **md5 khớp**.
+//   ⇒ Đây đúng là ca mà luật 3B ("tìm hàm theo TÊN trên mỗi máy vì offset khác nhau") viết ra để bắt.
+// 🔴 **`Mst_Marriage` KHÔNG SẮP XẾP**: dòng `--order by mm.MarriageCode` **bị comment**, trong khi
+//   hai danh mục kia sắp rõ ràng (`GPSErrorType`, `mdt.DisbursementType asc`).
+//   Mà bảng Draft vẫn đánh `identity(bigint,0,1) MyIdxSeq` ⇒ **số thứ tự phụ thuộc thứ tự SQL Server
+//   trả về**, không ổn định giữa các lần chạy ⇒ **phân trang có thể trùng/sót dòng** khi người dùng
+//   lật trang. Ghi lại, **không tự thêm `order by`** (thêm là đổi thứ tự dữ liệu người dùng đang thấy).
+//   📌 Port MiniHTC sắp theo `MarriageCode` để **ổn định**, và **gắn cờ `sourceHasNoOrderBy`** nói rõ
+//     đây là **khác biệt có chủ ý** so với nguồn.
+// 🔴 `Mst_GPSErrorType_Get` nhận **BA danh sách điều kiện rời** (`…GPSErrorTypeConditionList`,
+//   `…GPSGPSErrorTypeNameConditionList` ⚠️ **tên có `GPSGPS` lặp** — giữ nguyên, `…FlagActiveConditionList`)
+//   thay vì một `strFt_WhereClause` chung như hai màn kia.
+// 🔴 Cả ba: `MyCount` đếm **trước** khi cắt trang, trả **hai bảng** `MySummaryTable` + bảng dữ liệu.
+// 📌 §12: `GpsErrorType` · `MstMarriage` · `DisbursementType` + Seeder + DbSet + response.
+app.MapGet("/api/masters/gps-error-types", async (
+    AppDbContext db, ITenantContext t, string? gpsErrorType, string? gpsErrorTypeName,
+    string? flagActive, int? recordStart, int? recordCount) =>
+{
+    var q = db.GpsErrorTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(gpsErrorType)) q = q.Where(x => x.GPSErrorType == gpsErrorType.Trim());
+    if (!string.IsNullOrWhiteSpace(gpsErrorTypeName)) q = q.Where(x => x.GPSErrorTypeName == gpsErrorTypeName.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+
+    var all = await q.OrderBy(x => x.GPSErrorType).ToListAsync();
+    var myCount = all.Count;
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_GPSErrorType = page.Select((x, i) => new { MyIdxSeq = start + i, x.GPSErrorType, x.GPSErrorTypeName, x.FlagActive }),
+        recordStart = start, recordCount = count,
+        readOnlyNote = "Chi co DUNG MOT cua _Get o WS64 => danh muc CHI DOC, khong sinh endpoint ghi (luat C0-...undequadragesimus).",
+        threeFilterNote = "Nhan BA danh sach dieu kien roi (...GPSErrorTypeConditionList, ...GPSGPSErrorTypeNameConditionList - TEN CO 'GPSGPS' LAP, giu nguyen -, ...FlagActiveConditionList) thay vi mot strFt_WhereClause chung nhu hai man kia."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/marriages", async (
+    AppDbContext db, ITenantContext t, string? marriageCode, string? flagActive,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.MstMarriages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(marriageCode)) q = q.Where(x => x.MarriageCode == marriageCode.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+
+    // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn KHÔNG sắp (dòng order by bị comment) ⇒ MyIdxSeq không ổn định.
+    var all = await q.OrderBy(x => x.MarriageCode).ToListAsync();
+    var myCount = all.Count;
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_Marriage = page.Select((x, i) => new { MyIdxSeq = start + i, x.MarriageCode, x.MarriageName, x.FlagActive }),
+        recordStart = start, recordCount = count,
+        sourceHasNoOrderBy = true,
+        noOrderByNote = "Mst_Marriage KHONG SAP XEP: dong '--order by mm.MarriageCode' BI COMMENT, trong khi hai danh muc kia sap ro rang. Bang Draft van danh identity(bigint,0,1) MyIdxSeq => SO THU TU PHU THUOC THU TU SQL SERVER TRA VE, khong on dinh giua cac lan chay => phan trang co the TRUNG/SOT DONG khi lat trang. Port MiniHTC sap theo MarriageCode de ON DINH - day la KHAC BIET CO CHU Y so voi nguon, khong tu them order by vao nguon.",
+        machineDiffNote = "CA 3B LECH DAU TIEN: Biz.HTC.WH.cs co 212978 dong o laptop va 212983 dong o may 150; Mst_Marriage_GetX bat dau o 191826 (laptop) va 191831 (may 150) - lech dung 5 dong. Do theo cung mot dai so => md5 KHAC NHAU; dinh vi THEO TEN tren tung may roi do 157 dong => md5 KHOP (57d5f68938a5eb74287150a81b5d7b30)."
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/disbursement-types", async (
+    AppDbContext db, ITenantContext t, string? disbursementType, string? flagActive,
+    int? recordStart, int? recordCount) =>
+{
+    var q = db.DisbursementTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(disbursementType)) q = q.Where(x => x.DisbursementType_ == disbursementType.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+
+    var all = await q.OrderBy(x => x.DisbursementType_).ToListAsync();
+    var myCount = all.Count;
+    var start = recordStart ?? 0;
+    var count = recordCount ?? myCount;
+    var page = all.Skip(start).Take(count <= 0 ? myCount : count).ToList();
+
+    return Results.Ok(new
+    {
+        MySummaryTable = new[] { new { MyCount = myCount } },
+        Mst_DisbursementType = page.Select((x, i) => new { MyIdxSeq = start + i, DisbursementType = x.DisbursementType_, x.DisbursementTypeName, x.FlagActive }),
+        recordStart = start, recordCount = count,
+        orderNote = "Sap 'mdt.DisbursementType asc'; MyCount dem TRUOC khi cat trang; hai bang ra.",
+        moduleNote = "Ham nam trong cum tich hop ngan hang (BankIntergration/BizHTC.VietinBank.cs) chu khong phai file master chung - tim theo ten, dung tim theo thu muc."
+    });
+}).RequireAuthorization();
+
 // ===== #B58 AUDIT TOÀN CỤM BỘ LỌC ZONE CỦA 2010.HTC (kết quả quét, không đổi hành vi) =====
 // Bối cảnh: sổ đã có luật "bind `@strZoneCode = NULL` trong filter `(@x='' or …)` ⇒ loại sạch dòng"
 // (ghi cho DMS.Sales). Lượt này quét **toàn bộ** `TERP.BizHTC.SQLQuery/RptSQLQuery.cs` của 2010.HTC.

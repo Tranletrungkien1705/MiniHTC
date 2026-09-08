@@ -9479,6 +9479,37 @@ public sealed class MapVinSupplyDistSum
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>🔴 #B158 — `Mst_GPSErrorType`: danh mục **loại lỗi GPS**, khoá `GPSErrorType`.</summary>
+public sealed class GpsErrorType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GPSErrorType { get; set; } = "";
+    public string? GPSErrorTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>🔴 #B159 — `Mst_Marriage`: danh mục **tình trạng hôn nhân**, khoá `MarriageCode`.</summary>
+public sealed class MstMarriage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string MarriageCode { get; set; } = "";
+    public string? MarriageName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>🔴 #B160 — `Mst_DisbursementType`: danh mục **hình thức giải ngân**, khoá
+/// `DisbursementType`. Thuộc cụm tích hợp ngân hàng (`BankIntergration/BizHTC.VietinBank.cs`).</summary>
+public sealed class DisbursementType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DisbursementType_ { get; set; } = "";
+    public string? DisbursementTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
 /// <summary>🔴 #B134 — một LƯỢT chạy job lập kế hoạch giao xe tự động
 /// (`DMS40_Auto_EstimateDeliveyPlan_New20240514`). Mỗi **chặng** trong lượt được cấp **một
 /// `ATEDPNo` riêng** từ dãy `Seq_ATEDPNo`; bảng này lưu lại từng số đó để tra ngược.</summary>
