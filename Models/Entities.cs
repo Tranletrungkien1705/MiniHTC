@@ -5975,6 +5975,13 @@ public sealed class PartBackorder
 /// customer master dịch vụ (cá nhân/tổ chức) + người liên hệ. CustomerCar/Care tham chiếu theo CusCode.</summary>
 public sealed class ServiceCustomer
 {
+    // ===== 🔴 #715 §12 — BỐN CỘT NHẬT KÝ nguồn ghi ở CẢ HAI bảng song song của `ProcessCustomerCreate`
+    //   (`dt_Ser_Customer` cho DB chính và `dt_Ser_Customer_WH` cho DB kho + DB đại lý) mà bản port thiếu hẳn.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string CusCode { get; set; } = "";
@@ -14804,6 +14811,10 @@ public sealed class DealerServiceOption
 /// <summary>Loại khách hàng dịch vụ (hệ số giá, cá nhân/tổ chức) — port 1:1 FrmCusTypeCreate (Ser_CusType, TCMotor).</summary>
 public sealed class CustomerType
 {
+    /// <summary>🔴 #715 §12 `Ser_MST_CustomerType.DealerCode` — `CheckExistCusType` tra danh mục theo BỘ BA
+    /// (`CusTypeName`, `DealerCode`, `IsActive`); bản port thiếu cột này nên guard mất một chiều phạm vi.</summary>
+    public string? DealerCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string CusTypeCode { get; set; } = "";

@@ -46079,6 +46079,149 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #715 CỔNG ĐỐI TÁC GHI KHÁCH HÀNG `ProcessCustomerCreate` + `ProcessCustomerUpdate` =====
+// `BizCarSv.Customer.cs` — `Create` :9058-9537 md5 `b5f823df` · `Update` :9539-9849 md5 `44dbe354`
+// (**cả hai KHỚP máy 150, cùng offset**). → `POST /api/partner/customers`, `PUT /api/partner/customers/{cusID}`.
+// Đối chiếu cặp create/update theo luật #404.
+//
+// 🔴🔴🔴 **`@@Identity` — SITE THỨ HAI, VÀ HẬU QUẢ NẶNG HƠN #714**:
+//     `declare @ID int  select @ID = **@@Identity**  select cus.* from Ser_Customer cus where cus.CusID = @ID`
+//   Ở #714 giá trị đó chỉ dùng để **trả về**; ở đây nó là **khoá để ghi tiếp sang hai CSDL khác**:
+//     `dt_Ser_Customer_WH.Rows[0]["CusID"] = dsGetData.Tables[0].**Rows[0]**["CusID"];`
+//   ⇒ `@@IDENTITY` sai (identity sinh trong **trigger** trên bảng khác) ⇒ `select` **0 dòng** ⇒ **IndexOutOfRange**
+//     **sau khi `_dbMain.SaveData` đã ghi** ⇒ khách hàng **có ở Main, KHÔNG có ở WH và Dealer**, im lặng về sau.
+//   📌 Phải là `SCOPE_IDENTITY()`. Hai site độc lập cùng khuôn (#714 `Email_Config`, đây `Ser_Customer`)
+//     ⇒ **thói quen của cả tầng biz**, không phải sơ suất lẻ.
+// 🔴🔴🔴 **HAI BẢNG DỮ LIỆU SONG SONG, GÁN TỪNG CỘT HAI LẦN BẰNG TAY**: `dt_Ser_Customer` (cho `_dbMain`) và
+//   `dt_Ser_Customer_WH` (cho `_dbWH` **và** `_dbDealer`) được dựng **riêng biệt**, mỗi cột viết lại một lần nữa.
+//   ⇒ Thêm/sửa một cột mà quên một bên ⇒ **lệch dữ liệu giữa ba CSDL, im lặng**.
+//   ⚪ **ĐÃ ĐẾM ĐỂ KIỂM CHỨNG, KHÔNG SUY ĐOÁN**: `dt_Ser_Customer` gán **29** cột, `dt_Ser_Customer_WH` gán **30**,
+//     chênh **đúng một** cột `CusID` (bản Main để identity tự sinh). **Hiện KHÔNG lệch** ⇒ rủi ro **cấu trúc**
+//     là thật nhưng **chưa hiện thực hoá**. Ghi đúng mức đó, không hơn.
+//   ⚪ `IsActive` được gán **`true` (bool)** ở **cả hai** bảng ⇒ nhất quán, không phải chỗ lệch kiểu.
+// 🔴🔴 **`_Update` ĐỌC `_dbDealer` NHƯNG GHI CẢ BA CSDL** (dạng **guard-DB ≠ write-DB** của #704):
+//     `GetTableContents(**_dbDealer**, "Ser_Customer", **"top 1 *"**, "", "CusID", "=", strCusID)`
+//   rồi `_dbMain.SaveData` · `_dbWH.SaveData` · `if (!bIsWSMain) _dbDealer.SaveData`.
+//   ⇒ Khách chỉ có ở Main mà không có ở DB đại lý ⇒ **`Rows[0]` ném IndexOutOfRange** (không kiểm `Rows.Count`).
+//   🔴 Và `"top 1 *"` **không `ORDER BY`** — khuôn y hệt #711/#714.
+// ⚪ **DƯƠNG TÍNH — #404: `#region // Check` CỦA HAI HÀM GIỐNG HỆT NHAU**, đã diff trọn: chỉ khác **dấu hai chấm**
+//   trong tên region (`// Check:` vs `// Check`). Không có lệch guard. **Đối lập với #712** nơi hai guard khác
+//   nhau **đúng chỗ đáng khác**.
+// ⚪ **DƯƠNG TÍNH — `Rows[0]` SAU `CheckExistCusType` LÀ AN TOÀN**: mở hàm phụ (`BizCarSv.Customer.cs:331`) thì
+//   nó **CÓ** kiểm `if (dtCustomerType == null || dtCustomerType.Rows.Count == 0) throw`
+//   `Ser_MST_CustomerType_NotFound`. ⇒ Khác hẳn #701, nơi cùng một phép tra danh mục loại khách **không** có
+//   guard. **Hai đường tới cùng một danh mục, một có lưới an toàn, một không.**
+// 🔴 **HẰNG ≠ GIÁ TRỊ (đã mở định nghĩa)**: `Constants.Ser_CusPersonType.CusTypeNormal` = **`"KHACHLE"`**
+//   (`TERP.Constants/Const.Main.cs:335`); `TConst.Flag.Active` = **`"1"`** (`:28`).
+//   📌 **NỐI THẲNG VỚI #701/#708**: `"KHACHLE"` chính là **giá trị nội bộ chuẩn** của loại khách — nó là hằng có
+//     tên trong `TERP.Constants`, còn `'CANHAN'`/`'TOCHUC'` mà #708 phát ra Veloca **không** phải hằng nào cả,
+//     chỉ là chuỗi gõ thẳng trong SQL. ⇒ Kết luận vòng đời rõ hơn: `KHACHLE` = **mã hệ CarSv**, `CANHAN`/`TOCHUC`
+//     = **từ vựng phía Veloca**; #701 comment mất hai nhánh dịch nên chiều VÀO không quy đổi ngược được.
+// 🔴 **`IsActive` TRA BẰNG CHUỖI `"1"` GÕ THẲNG** trong `CheckExistCusType`, dù hằng `TConst.Flag.Active` **có
+//   sẵn** và bằng đúng `"1"` ⇒ không nhất quán trong chính hàm dùng hằng ở chỗ khác.
+// 🔴 **`CheckExistCusType` TRA DANH MỤC BẰNG `CusTypeName`, KHÔNG BẰNG MÃ** (cùng bệnh #701/#686), và cũng dùng
+//   `"top 1 *"` **không `ORDER BY`** — ba điều kiện bằng (`CusTypeName`+`DealerCode`+`IsActive`) vẫn **không bảo
+//   đảm duy nhất**.
+// 🔴 **NHÁNH `if` RỖNG**: `if (!strIsNormal.Equals(TConst.Flag.Active)) { }` — thân trống, mọi việc ở `else`.
+//   Vô hại về hành vi, nhưng che mất ý định (đáng lẽ viết guard thuận).
+// §12 GAP đã vá: `ServiceCustomer` **thiếu bốn cột nhật ký** mà nguồn ghi ở **cả hai** bảng song song —
+//   `CreatedDate` · `CreatedBy` · `LogLUDateTime` · `LogLUBy` ⇒ thêm đủ bốn chỗ.
+app.MapPost("/api/partner/customers", async (PartnerCustomerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    const string CusTypeNormal = "KHACHLE";      // Constants.Ser_CusPersonType.CusTypeNormal
+    const string FlagActive = "1";               // TConst.Flag.Active
+    var dlr = (dto.DealerCode ?? "").Trim();
+
+    // === #region // Check: — CheckExistCusType, có guard Rows.Count == 0 (khác #701) ===
+    string? cusTypeId = dto.CusTypeID;
+    if (string.Equals(dto.IsNormal, FlagActive))
+    {
+        var ct = await db.CustomerTypes
+            .Where(x => x.OrgId == t.OrgId && x.CusTypeName == CusTypeNormal
+                     && x.DealerCode == dlr && x.FlagActive == "1")
+            .OrderBy(x => x.Id).FirstOrDefaultAsync();      // nguồn `top 1 *` KHÔNG ORDER BY
+        if (ct is null)
+            return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_CustomerType_NotFound",
+                cusTypeName = CusTypeNormal, dealerCode = dlr });
+        cusTypeId = ct.CusTypeCode;
+    }
+
+    var stamp = DateTime.Now;      // nguồn: strTDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    var row = new ServiceCustomer
+    {
+        OrgId = t.OrgId, DealerCode = dlr, CusName = dto.CusName ?? "", CusTypeID = cusTypeId,
+        Sex = OrNull(dto.Sex), Address = OrNull(dto.Address), Tel = OrNull(dto.Tel),
+        Mobile = OrNull(dto.Mobile), Fax = OrNull(dto.Fax), Email = OrNull(dto.Email),
+        TaxCode = OrNull(dto.TaxCode), Bank = OrNull(dto.Bank), BankAccountNo = OrNull(dto.BankAccountNo),
+        Website = OrNull(dto.Website), Note = OrNull(dto.Note), OrgTypeID = OrNull(dto.OrgTypeID),
+        ContName = OrNull(dto.ContName), ContSex = OrNull(dto.ContSex), ContTel = OrNull(dto.ContTel),
+        ContMobile = OrNull(dto.ContMobile), ContFax = OrNull(dto.ContFax), ContEmail = OrNull(dto.ContEmail),
+        ContAddress = OrNull(dto.ContAddress), IsContact = OrNull(dto.IsContact),
+        FlagActive = "1",                         // nguồn gán IsActive = true ở CẢ HAI bảng song song
+        CreatedDate = stamp, CreatedBy = dto.PartnerUserCode,
+        LogLUDateTime = stamp, LogLUBy = dto.PartnerUserCode,
+    };
+    if (!string.IsNullOrWhiteSpace(dto.DOB) && DateTime.TryParse(dto.DOB, out var dob)) row.DOB = dob;
+    db.ServiceCustomers.Add(row);
+    await db.SaveChangesAsync();
+    if (string.IsNullOrWhiteSpace(row.CusCode)) { row.CusCode = row.Id.ToString(); await db.SaveChangesAsync(); }
+
+    return Results.Ok(new
+    {
+        row.Id, row.CusCode, row.CusName, row.DealerCode, row.CusTypeID, row.FlagActive,
+        row.CreatedDate, row.CreatedBy,
+        // ===== #715 =====
+        atAtIdentitySecondSiteWorseConsequence = "@@Identity — SITE THU HAI, VA HAU QUA NANG HON #714: declare @ID int; select @ID = @@Identity; select cus.* from Ser_Customer cus where cus.CusID = @ID. O #714 gia tri do chi dung de TRA VE; o day no la KHOA DE GHI TIEP sang hai CSDL khac: dt_Ser_Customer_WH.Rows[0][CusID] = dsGetData.Tables[0].Rows[0][CusID]. => @@IDENTITY sai (identity sinh trong TRIGGER tren bang khac) => select 0 DONG => IndexOutOfRange SAU KHI _dbMain.SaveData DA GHI => khach hang CO o Main, KHONG co o WH va Dealer, im lang ve sau. Phai la SCOPE_IDENTITY(). Hai site doc lap cung khuon (#714 Email_Config, day Ser_Customer) => THOI QUEN CUA CA TANG BIZ, khong phai so suat le",
+        twoParallelTablesEachColumnAssignedTwice = "HAI BANG DU LIEU SONG SONG, GAN TUNG COT HAI LAN BANG TAY: dt_Ser_Customer (cho _dbMain) va dt_Ser_Customer_WH (cho _dbWH VA _dbDealer) duoc dung RIENG BIET, moi cot viet lai mot lan nua => them/sua mot cot ma quen mot ben => LECH DU LIEU GIUA BA CSDL, IM LANG",
+        countedColumnsNoDivergenceYet = "DA DEM DE KIEM CHUNG, KHONG SUY DOAN: dt_Ser_Customer gan 29 cot, dt_Ser_Customer_WH gan 30, chenh DUNG MOT cot CusID (ban Main de identity tu sinh). HIEN KHONG LECH => rui ro CAU TRUC la that nhung CHUA HIEN THUC HOA. Ghi dung muc do, khong hon. IsActive duoc gan true (bool) o CA HAI bang => nhat quan",
+        constantsOpenedAndValuesRecorded = "HANG KHAC GIA TRI (da mo dinh nghia): Constants.Ser_CusPersonType.CusTypeNormal = KHACHLE (TERP.Constants/Const.Main.cs:335); TConst.Flag.Active = 1 (:28). NOI THANG VOI #701/#708: KHACHLE chinh la GIA TRI NOI BO CHUAN cua loai khach — no la HANG CO TEN trong TERP.Constants, con CANHAN/TOCHUC ma #708 phat ra Veloca KHONG phai hang nao ca, chi la chuoi go thang trong SQL => vong doi ro hon: KHACHLE = MA HE CarSv, CANHAN/TOCHUC = TU VUNG PHIA VELOCA; #701 comment mat hai nhanh dich nen chieu VAO khong quy doi nguoc duoc",
+        positiveCheckRegionsAreIdentical = "DUONG TINH #404: #region // Check CUA HAI HAM GIONG HET NHAU, da diff tron: chi khac DAU HAI CHAM trong ten region (// Check: vs // Check). Khong co lech guard. DOI LAP voi #712 noi hai guard khac nhau DUNG CHO DANG KHAC",
+        positiveCheckExistCusTypeDoesGuard = "DUONG TINH: Rows[0] SAU CheckExistCusType LA AN TOAN — mo ham phu (BizCarSv.Customer.cs:331) thi no CO kiem if (dtCustomerType == null || dtCustomerType.Rows.Count == 0) throw Ser_MST_CustomerType_NotFound. Khac han #701, noi cung mot phep tra danh muc loai khach KHONG co guard. HAI DUONG TOI CUNG MOT DANH MUC, MOT CO LUOI AN TOAN, MOT KHONG",
+        isActiveComparedWithBareStringNotConstant = "IsActive TRA BANG CHUOI 1 GO THANG trong CheckExistCusType, du hang TConst.Flag.Active CO SAN va bang dung 1 => khong nhat quan trong chinh ham dung hang o cho khac",
+        catalogueLookedUpByNameNotCode = "CheckExistCusType TRA DANH MUC BANG CusTypeName, KHONG BANG MA (cung benh #701/#686), va cung dung top 1 * KHONG ORDER BY — ba dieu kien bang (CusTypeName + DealerCode + IsActive) van KHONG BAO DAM DUY NHAT",
+        emptyIfBranch = "NHANH if RONG: if (!strIsNormal.Equals(TConst.Flag.Active)) { } — than trong, moi viec o else. Vo hai ve hanh vi, nhung che mat y dinh",
+        gapFourAuditColumnsWereMissing = "§12 GAP da va: ServiceCustomer THIEU BON COT NHAT KY ma nguon ghi o CA HAI bang song song — CreatedDate, CreatedBy, LogLUDateTime, LogLUBy => them du bon cho",
+    });
+}).RequireAuthorization();
+
+// #715 `ProcessCustomerUpdate` (:9539). Đọc `_dbDealer` (`top 1 *`, không `ORDER BY`) nhưng ghi CẢ BA CSDL.
+app.MapPut("/api/partner/customers/{cusID}", async (string cusID, PartnerCustomerDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var key = (cusID ?? "").Trim();
+    var row = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId && x.CusCode == key)
+        .OrderBy(x => x.Id).FirstOrDefaultAsync();
+    if (row is null)
+        return Results.BadRequest(new
+        {
+            error = "CUSID_NOT_FOUND", cusID = key,
+            sourceReadsDealerDbButWritesAllThree = "_Update DOC _dbDealer NHUNG GHI CA BA CSDL (dang guard-DB KHAC write-DB cua #704): GetTableContents(_dbDealer, Ser_Customer, top 1 *, '', CusID, =, strCusID) roi _dbMain.SaveData, _dbWH.SaveData, if (!bIsWSMain) _dbDealer.SaveData => khach chi co o Main ma khong co o DB dai ly => Rows[0] nem IndexOutOfRange (khong kiem Rows.Count). Va top 1 * KHONG ORDER BY — khuon y het #711/#714",
+        });
+
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    var stamp = DateTime.Now;
+    row.DealerCode = (dto.DealerCode ?? "").Trim(); row.CusName = dto.CusName ?? "";
+    row.Sex = OrNull(dto.Sex); row.Address = OrNull(dto.Address); row.Tel = OrNull(dto.Tel);
+    row.Mobile = OrNull(dto.Mobile); row.Fax = OrNull(dto.Fax); row.Email = OrNull(dto.Email);
+    row.TaxCode = OrNull(dto.TaxCode); row.Bank = OrNull(dto.Bank); row.BankAccountNo = OrNull(dto.BankAccountNo);
+    row.Website = OrNull(dto.Website); row.Note = OrNull(dto.Note); row.OrgTypeID = OrNull(dto.OrgTypeID);
+    row.ContName = OrNull(dto.ContName); row.ContSex = OrNull(dto.ContSex); row.ContTel = OrNull(dto.ContTel);
+    row.ContMobile = OrNull(dto.ContMobile); row.ContFax = OrNull(dto.ContFax);
+    row.ContEmail = OrNull(dto.ContEmail); row.ContAddress = OrNull(dto.ContAddress);
+    row.IsContact = OrNull(dto.IsContact);
+    // 🔴 `_Update` NHẬN THÊM tham số `strIsActive` mà `_Create` KHÔNG có (#404).
+    if (!string.IsNullOrWhiteSpace(dto.IsActive)) row.FlagActive = dto.IsActive!.Trim();
+    row.LogLUDateTime = stamp; row.LogLUBy = dto.PartnerUserCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.CusCode, row.CusName, row.DealerCode, row.FlagActive, row.LogLUDateTime, updated = true,
+        sourceHasNoOrderBy = true,
+        updateTakesIsActiveCreateDoesNot = "#404: _Update nhan THEM tham so strIsActive ma _Create KHONG co => tao thi luon IsActive = true (go cung), chi sua moi doi duoc trang thai hoat dong",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #714 CẤU HÌNH MÁY CHỦ THƯ: TẠO / SỬA `Email_Config_Create` + `_Update` =====
 // `BizCarSv.SendMail.cs` — `_Create` :2154-2351 md5 `7fb63ded` · `_Update` :2353-2561 md5 `01b43a24`
 // (**cả hai KHỚP máy 150, cùng offset**). → `POST /api/email/serverconfigs`, `PUT .../{idConfig}`.
@@ -63815,6 +63958,14 @@ record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record EmailTemplateSourceDto(string? DealerCode = null, string? TempIDEmail = null, string? TempName = null,
     string? TempSubject = null, string? TempBody = null, string? TempTypeEmail = null,
     string? FileAttachment = null, long? TempFileBytes = null);
+/// <summary>#715 `ProcessCustomerCreate/_Update` — cổng đối tác ghi khách hàng (tên trường theo nguồn).</summary>
+record PartnerCustomerDto(string? DealerCode = null, string? CusName = null, string? CusTypeID = null,
+    string? IsNormal = null, string? Sex = null, string? Address = null, string? Tel = null,
+    string? Mobile = null, string? Fax = null, string? Email = null, string? TaxCode = null,
+    string? Bank = null, string? BankAccountNo = null, string? Website = null, string? Note = null,
+    string? OrgTypeID = null, string? ContName = null, string? ContSex = null, string? ContTel = null,
+    string? ContMobile = null, string? ContFax = null, string? ContEmail = null, string? ContAddress = null,
+    string? IsContact = null, string? DOB = null, string? IsActive = null, string? PartnerUserCode = null);
 record EmailAutoTempDto(string? BatchId = null, string? DealerCode = null, string? CusID = null,
     string? AutoTempID = null,
     string? CusEmail = null, string? Subject = null, string? Body = null, string? CurrentDate = null,
