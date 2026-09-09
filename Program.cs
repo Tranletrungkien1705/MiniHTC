@@ -45890,12 +45890,64 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
 //   + bộ dòng, kèm **HAI cờ**: `strFlagIsDelete` và `strFlagIsCheck` (cờ thứ hai chưa port — ghi nợ).
 // BƯỚC 3B: POCO header md5 `35f57589` · POCO dòng `bf24ceeb` · Service `6fd0af13` — KHỚP 2 máy.
 // 🔴 Dòng có `DMSPartCode` và `TSTPartCode` là HAI mã KHÁC NHAU — chính là mục đích của màn (ánh xạ mã).
-app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, string? dms, string? tst) =>
+// ===== 🔴🔴🔴 #717 ĐỐI CHIẾU `Req_PartPrice_Get` — VÒNG PARITY, KHÔNG TÍNH MÀN MỚI =====
+// Vỏ bọc `BizCarSv.SuggestPrice.cs:109-220` (md5 `b17a00a1`) → thân thật `Req_PartPrice_Get**X**`
+// (`:222-422`, md5 `40441f51`). BƯỚC 2: tên hàm **0 hit** nhưng route `/api/reqpartprices` **đã có** (#238)
+// ⇒ theo luật, **không viết mới** — vá bộ lọc/phân trang và ghi các phát hiện vào chính endpoint này.
+//
+// 🔴🔴🔴 **`ORDER BY` TRÊN `SELECT … INTO` ⇒ PHÂN TRANG KHÔNG ỔN ĐỊNH** (đúng luật #415):
+//     `select distinct **identity(bigint, 0, 1) MyIdxSeq**, rpp.ReqPartPriceNo`
+//     `**into #tbl_Req_PartPrice_Draft** … **order by** rpp.ReqPartPriceNo asc;`
+//   rồi trang được cắt bằng `t.MyIdxSeq >= @nFilterRecordStart and t.MyIdxSeq <= @nFilterRecordEnd`.
+//   `ORDER BY` trong một `SELECT … INTO` **không được bảo đảm** quyết định thứ tự gán `IDENTITY`
+//   (SQL Server chỉ bảo đảm tập kết quả, không bảo đảm thứ tự chèn) ⇒ **hai lần gọi cùng tham số có thể
+//   trả về hai tập bản ghi khác nhau**, trang 2 **lặp hoặc bỏ sót** so với trang 1.
+//   ⚠️ Trong thực tế SQL Server **thường** tôn trọng thứ tự này — nên đây là bẫy **im lặng và không tái hiện
+//     đều**; ghi đúng mức "không được bảo đảm", **không** khẳng định "chắc chắn sai".
+// 🔴🔴 **`left join Req_PartPriceDtl` CHẾT CÓ ĐIỀU KIỆN** (dạng thứ ba đã định danh ở #707): mệnh đề lọc do
+//   người gọi gửi được `BuildWhere` dựng trên **cả hai** bảng (`rpp.` và `rppdt.`). Lọc theo bất kỳ cột nào của
+//   bảng chi tiết ⇒ điều kiện rơi vào `WHERE` **trên bảng LEFT** ⇒ **phiếu KHÔNG có dòng chi tiết biến mất**.
+// 🔴🔴 **HAI `inner join` SANG DANH MỤC Ở CSDL KHÁC — MẤT DÒNG LÚC ĐỌC** (luật #410):
+//   · khối đầu phiếu: `inner join [_strConfig_DBName_Main].[dbo].**Mst_Dealer** md on rpp.DealerCode = md.DealerCode`
+//     ⇒ phiếu của đại lý **không có trong danh mục** ⇒ **biến mất khỏi danh sách**.
+//   · khối dòng: `inner join [...].**Mst_DeliveryForm** mdf on rppdt.DeliveryFormCode = mdf.DeliveryFormCode`
+//     ⇒ dòng có hình thức giao **lạ** ⇒ **dòng biến mất nhưng ĐẦU PHIẾU VẪN HIỆN** ⇒ người dùng thấy phiếu
+//       **thiếu dòng**, không có cảnh báo nào. Đây là hậu quả **nặng hơn** ca đại lý.
+// 🔴 **THAM SỐ CHẾT `@Today`**: `alParamsCoupleSql` nạp `"@Today", DateTime.Today.ToString("yyyy-MM-dd")` nhưng
+//   token `@Today` xuất hiện **đúng 1 lần** trong toàn hàm — chính dòng khai báo (đếm theo luật #669: **1** =
+//   khai báo mà **không có điểm dùng**) ⇒ **không câu SQL nào dùng**. Vô hại, nhưng là dấu vết một bộ lọc theo
+//   ngày đã bị gỡ mà quên dọn.
+// 🔴 **Khối `----- Clear for Debug:` BỊ COMMENT CẢ HAI DÒNG `drop table`** — mẫu thứ **sáu** của họ này
+//   (#698 · #699 · #703 · #707 · #709 · đây).
+// ⚪⚪ **DƯƠNG TÍNH LỚN — MỆNH ĐỀ LỌC DO CLIENT GỬI *KHÔNG* BỊ GHÉP THÔ**: tham số `strFt_WhereClause` thoạt
+//   nhìn là tiêm SQL toàn phần, nhưng nó đi qua
+//     `CmUtils.SqlUtils.BuildWhere(**htSpCols**, strFt_WhereClause, "@p_", ref alParamsCoupleSql)`
+//   với `htSpCols` dựng từ **schema thật** của hai bảng qua `MyBuildHTSupportedColumns(_dbDealer, …)`
+//   ⇒ **cột phải nằm trong danh sách cho phép**, và giá trị thành **SqlParameter `@p_…`**.
+//   ⇒ **Đối lập hoàn toàn với #712/#713** (bake `'@DealerCode'` bằng `StringUtils.Replace`). Cùng một tầng biz,
+//     **hai chuẩn an toàn khác hẳn nhau** — cần ghi để không kết luận "cả tầng đều bake".
+//   ⚠️ Vẫn còn nợ đã biết về `BuildWhere`: toán tử `in` không bọc nháy từng gây vỡ câu, `isnull` từng bị bỏ.
+// ⚪ **ÂM TÍNH — phân trang CÓ tham số hoá thật**: `@nFilterRecordStart`/`@nFilterRecordEnd` là SqlParameter.
+// 📌 §12 hình dạng kết quả: nguồn trả **HAI bảng rời** (đầu phiếu + dòng), mỗi bảng kèm `MyIdxSeq` để client tự
+//   ghép; **và một bảng `Summary` chỉ chứa `Count(0) MyCount`** = **tổng số bản ghi TRƯỚC khi cắt trang**.
+//   Bản Mini trước đây **không** trả tổng ⇒ đã vá (`total`).
+app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, string? dms, string? tst,
+    string? reqNo, string? dealerCode, int? recordStart, int? recordCount) =>
 {
     var q = db.ReqPartPrices.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dms)) q = q.Where(r => r.DMSStatus == dms);
     if (!string.IsNullOrWhiteSpace(tst)) q = q.Where(r => r.TSTStatus == tst);
-    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
+    // #717 GAP: nguồn cho lọc theo BẤT KỲ cột nào của đầu phiếu/dòng qua `BuildWhere`;
+    //   Mini mở hai bộ lọc hay dùng nhất, phần còn lại ghi nợ.
+    if (!string.IsNullOrWhiteSpace(reqNo)) q = q.Where(r => r.ReqNo == reqNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(r => r.DealerCode == dealerCode!.Trim());
+
+    // Nguồn trả bảng `Summary` = Count(0) TRƯỚC khi cắt trang.
+    var total = await q.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 2000 ? recordCount!.Value : 500;
+    // Nguồn sắp `ReqPartPriceNo asc` (trong SELECT INTO). Port sắp XÁC ĐỊNH rồi mới cắt.
+    var items = await q.OrderBy(r => r.ReqNo).ThenBy(r => r.Id).Skip(skip).Take(take).Select(r => new
     {
         r.ReqNo, r.DMSStatus, r.TSTStatus, r.CreatedAt, r.QuotedAt,
       // #238: 14 cột bổ sung của đầu phiếu
@@ -45905,7 +45957,20 @@ app.MapGet("/api/reqpartprices", async (AppDbContext db, ITenantContext t, strin
         lines = db.ReqPartPriceLines.Count(l => l.OrgId == t.OrgId && l.ReqId == r.Id),
         quotedTotal = db.ReqPartPriceLines.Where(l => l.OrgId == t.OrgId && l.ReqId == r.Id).Sum(l => (decimal?)(l.ReqQty * l.QuotedPrice)) ?? 0
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, total, skip, take, items,
+        // ===== #717 =====
+        orderByOnSelectIntoMakesPagingUnstable = "ORDER BY TREN SELECT … INTO => PHAN TRANG KHONG ON DINH (luat #415): select distinct identity(bigint, 0, 1) MyIdxSeq, rpp.ReqPartPriceNo INTO #tbl_Req_PartPrice_Draft … ORDER BY rpp.ReqPartPriceNo asc; roi trang duoc cat bang t.MyIdxSeq >= @nFilterRecordStart and <= @nFilterRecordEnd. ORDER BY trong mot SELECT … INTO KHONG DUOC BAO DAM quyet dinh thu tu gan IDENTITY (SQL Server chi bao dam tap ket qua, khong bao dam thu tu chen) => hai lan goi cung tham so co the tra ve hai tap ban ghi khac nhau, trang 2 LAP hoac BO SOT so voi trang 1. Thuc te SQL Server THUONG ton trong thu tu nay nen day la bay IM LANG VA KHONG TAI HIEN DEU; ghi dung muc khong-duoc-bao-dam, KHONG khang dinh chac chan sai",
+        leftJoinDetailDiesConditionally = "left join Req_PartPriceDtl CHET CO DIEU KIEN (dang thu ba da dinh danh o #707): menh de loc do nguoi goi gui duoc BuildWhere dung tren CA HAI bang (rpp. va rppdt.). Loc theo bat ky cot nao cua bang chi tiet => dieu kien roi vao WHERE TREN BANG LEFT => phieu KHONG co dong chi tiet BIEN MAT",
+        twoInnerJoinsToCatalogueInAnotherDb = "HAI inner join SANG DANH MUC O CSDL KHAC — MAT DONG LUC DOC (luat #410): khoi dau phieu inner join [Main].[dbo].Mst_Dealer md on rpp.DealerCode = md.DealerCode => phieu cua dai ly KHONG CO trong danh muc BIEN MAT khoi danh sach; khoi dong inner join [Main].[dbo].Mst_DeliveryForm mdf on rppdt.DeliveryFormCode = mdf.DeliveryFormCode => dong co hinh thuc giao LA thi DONG BIEN MAT NHUNG DAU PHIEU VAN HIEN => nguoi dung thay phieu THIEU DONG, khong co canh bao nao. Hau qua NANG HON ca dai ly",
+        deadParameterToday = "THAM SO CHET @Today: alParamsCoupleSql nap (@Today, DateTime.Today.ToString(yyyy-MM-dd)) nhung token @Today xuat hien DUNG 1 LAN trong toan ham — chinh dong khai bao (dem theo luat #669: 1 = khai bao ma KHONG CO diem dung) => khong cau SQL nao dung. Vo hai, nhung la dau vet mot bo loc theo ngay da bi go ma quen don",
+        clearForDebugCommentedSixthSample = "khoi ----- Clear for Debug: BI COMMENT CA HAI dong drop table — mau thu SAU cua ho nay (#698, #699, #703, #707, #709, day)",
+        positiveClientWhereClauseIsNotConcatenatedRaw = "DUONG TINH LON — MENH DE LOC DO CLIENT GUI KHONG BI GHEP THO: tham so strFt_WhereClause thoat nhin la tiem SQL toan phan, nhung no di qua CmUtils.SqlUtils.BuildWhere(htSpCols, strFt_WhereClause, @p_, ref alParamsCoupleSql) voi htSpCols dung tu SCHEMA THAT cua hai bang qua MyBuildHTSupportedColumns(_dbDealer, …) => cot phai nam trong danh sach cho phep, va gia tri thanh SqlParameter @p_…. DOI LAP HOAN TOAN voi #712/#713 (bake @DealerCode bang StringUtils.Replace). Cung mot tang biz, HAI CHUAN AN TOAN KHAC HAN NHAU — can ghi de KHONG ket luan ca tang deu bake. Van con no da biet ve BuildWhere: toan tu in khong boc nhay tung gay vo cau, isnull tung bi bo",
+        positivePagingIsProperlyParameterised = "AM TINH: phan trang CO tham so hoa that — @nFilterRecordStart/@nFilterRecordEnd la SqlParameter",
+        resultShapeIsThreeTables = "§12 hinh dang ket qua: nguon tra HAI bang roi (dau phieu + dong), moi bang kem MyIdxSeq de client tu ghep; VA mot bang Summary chi chua Count(0) MyCount = TONG SO BAN GHI TRUOC KHI CAT TRANG. Ban Mini truoc day KHONG tra tong => da va (total)",
+        remainingGap = "NO: nguon cho loc theo BAT KY cot nao cua Req_PartPrice/Req_PartPriceDtl qua BuildWhere; Mini moi mo reqNo + dealerCode ngoai dms/tst. Va Mini chua tra rieng hai bang theo dung hinh dang nguon (dang long dong trong dau phieu)",
+    });
 }).RequireAuthorization();
 
 // ===== 🔴 #241 SAVE BA VAI cho `Req_PartPrice_Save` + giải nợ cờ `FlagIsCheck` =====
