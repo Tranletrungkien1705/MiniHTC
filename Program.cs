@@ -46079,6 +46079,132 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #716 CỔNG ĐỐI TÁC GHI XE `ProcessCarCreate` + `ProcessCarUpdate` =====
+// `BizCarSv.Car.cs` — `Create` :1738-1975 md5 `85d56f7b` · `Update` :1977-2123 md5 `afe5845c`
+// (**cả hai KHỚP máy 150, cùng offset**). → `POST /api/partner/cars`, `PUT /api/partner/cars/{carID}`.
+// Anh em của #715 trong cùng cổng đối tác; đối chiếu cặp create/update theo luật #404.
+//
+// 🔴🔴🔴 **#404 — HAI GUARD ĐỐI CỰC, VÀ PHẠM VI LỆCH NHAU**:
+//   · `Create` → `CheckExistPlateNo` (`BizCarSv.**Customer**.cs:185`) — ném **KHI TÌM THẤY**
+//     (`if (dtTable != null && dtTable.Rows.Count > 0) throw Ser_PlateNo_Exist`), tra theo **BỘ BA**
+//     `PlateNo` + **`DealerCode`** + `IsActive="1"`.
+//   · `Update` → `CheckExistCarID` (`BizCarSv.Car.cs:52`) — ném **KHI KHÔNG TÌM THẤY**
+//     (`if (dtCar == null || dtCar.Rows.Count == 0) throw Ser_CarID_NotFound`), tra theo **BỘ ĐÔI**
+//     `CarID` + `IsActive` — **KHÔNG có `DealerCode`**.
+//   ⇒ 🔴 **Đại lý A SỬA ĐƯỢC XE CỦA ĐẠI LÝ B** nếu biết `CarID`: khi tạo thì phạm vi đại lý được kiểm, khi sửa
+//     thì **không**. Cùng dạng "thao tác xuyên đại lý" của #711, nhưng đây **chính luật #404 lôi ra** — đọc
+//     riêng từng hàm thì cả hai đều "có guard".
+// ⚪⚪ **DƯƠNG TÍNH LỚN — KHUÔN "HAI BẢNG SONG SONG" CỦA #715 ĐÃ ĐƯỢC SỬA Ở ĐÂY, VÀ CÒN NGUYÊN BẢN CŨ ĐỂ ĐỐI CHIẾU**:
+//   `ProcessCarCreate` **không** dựng bảng thứ hai. Nó ghi Main, lấy khoá, rồi **ĐỌC LẠI chính dòng vừa ghi**
+//     `select t.* from Ser_Car t where t.CarId = @CarId` → `dtDB_Ser_Car_Main`
+//   và dùng **đúng DataTable đó** để `_dbWH.SaveData` và `_dbDealer.SaveData` ⇒ **không thể lệch cột**.
+//   🔴 Và ngay bên dưới, **toàn bộ khối `dt_Car_WH` kiểu #715 vẫn nằm đó nhưng ĐÃ BỊ COMMENT TRỌN**
+//     (`//dt_Car_WH.Rows[0]["CreatedDate"] = strTDate;` … `//_dbWH.SaveData("Ser_Car", dt_Car_WH);`).
+//   ⇒ **Bằng chứng trực tiếp**: khuôn hai-bảng-song-song là **bản CŨ**, đã được thay bằng đọc-lại ở `Ser_Car`
+//     **nhưng chưa áp cho `Ser_Customer`** (#715). ⇒ Nâng kết luận #715 từ *"rủi ro cấu trúc chưa hiện thực hoá"*
+//     lên **"nợ kỹ thuật đã có sẵn bản sửa ở hàm anh em, chỉ chưa áp"** — kiểm chứng được, không phải suy đoán.
+// 🔴🔴 **`@@Identity` — SITE THỨ BA** (#714 `Email_Config`, #715 `Ser_Customer`, đây `Ser_Car`):
+//     `string strSqlGetCarID = @"select @@Identity CarID;";`
+//     `string strCarID = _dbMain.ExecQuery(strSqlGetCarID).Tables[0].**Rows[0]**[0].ToString();`
+//   ⚠️ **KHÁC hai site kia ở một điểm quan trọng**: câu này **không có `where`** nên **luôn trả đúng một dòng**
+//     ⇒ `Rows[0]` ở đây **an toàn**; chỉ **GIÁ TRỊ** mới sai khi có trigger. Ở #714/#715 câu có `where` nên
+//     giá trị sai kéo theo **0 dòng** rồi `Rows[0]` ném ngoại lệ. ⇒ Cùng một lỗi gốc, **hai mức hậu quả**.
+//   🔴 Nhưng hậu quả **giá trị sai** ở đây vẫn nặng: `strCarID` được dùng làm khoá để **đọc lại dòng vừa ghi**
+//     ⇒ trigger làm lệch `@@Identity` ⇒ `dtDB_Ser_Car_Main` **rỗng** ⇒ `_dbWH.SaveData` ghi **0 dòng**, im lặng
+//     ⇒ xe **có ở Main, KHÔNG có ở WH/Dealer** — đúng hậu quả đã mô tả ở #715, chỉ khác đường tới.
+// 🔴 **`IsActive` VIẾT HAI KIỂU TRONG HAI GUARD ANH EM**: `CheckExistPlateNo` dùng chuỗi **`"1"` gõ thẳng**,
+//   `CheckExistCarID` dùng **hằng `TConst.Flag.Active`** (bằng đúng `"1"`). Lặp lại quan sát ở #715.
+// 🔴 **CHỐNG TRÙNG BIỂN SỐ CHỈ ÁP CHO XE CÒN HOẠT ĐỘNG**: guard lọc `IsActive="1"` ⇒ xe **đã vô hiệu hoá** vẫn
+//   giữ biển số nhưng **không chặn** tạo mới ⇒ bảng có thể chứa **hai xe cùng biển số** (một active, một không).
+//   Có thể là chủ ý (tái sử dụng biển) — **không kết luận**, trả cờ.
+// ⚪ **DƯƠNG TÍNH — cả hai guard ĐỀU kiểm `Rows.Count`** rồi mới dùng ⇒ không có `Rows[0]` trần như #709/#711/#714.
+// §12 GAP đã vá: `ServiceCar` **thiếu bốn cột nhật ký** `CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy`
+//   — **đúng bốn cột** vừa vá cho `ServiceCustomer` ở #715 ⇒ thiếu sót **có hệ thống**, không phải lẻ tẻ.
+// §12 ánh xạ tên: nguồn `ModelID` → Mini `ModelCode`; `TradeMarkCode` → `TradeMark`; `IsActive` → `FlagActive`.
+app.MapPost("/api/partner/cars", async (PartnerCarDto dto, AppDbContext db, ITenantContext t) =>
+{
+    const string FlagActiveValue = "1";      // TConst.Flag.Active
+    var dlr = (dto.DealerCode ?? "").Trim();
+    var plate = (dto.PlateNo ?? "").Trim();
+
+    // === CheckExistPlateNo — ném KHI TÌM THẤY; tra theo BỘ BA (PlateNo + DealerCode + IsActive) ===
+    var dup = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.PlateNo == plate
+            && x.DealerCode == dlr && x.FlagActive == FlagActiveValue)
+        .OrderBy(x => x.Id).FirstOrDefaultAsync();      // nguồn `top 1 *` KHÔNG ORDER BY
+    if (dup is not null)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_PlateNo_Exist", plateNo = plate, dealerCode = dlr });
+
+    var stamp = DateTime.Now;
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    var row = new ServiceCar
+    {
+        OrgId = t.OrgId, DealerCode = dlr, PlateNo = plate, CusID = OrNull(dto.CusID),
+        FrameNo = OrNull(dto.FrameNo), EngineNo = OrNull(dto.EngineNo), ColorCode = OrNull(dto.ColorCode),
+        ModelCode = OrNull(dto.ModelID), TradeMark = OrNull(dto.TradeMarkCode),
+        ProductYear = int.TryParse(dto.ProductYear, out var py) ? py : null,
+        CurrentKm = decimal.TryParse(dto.CurrentKm, out var ckm) ? ckm : 0m,
+        InsNo = OrNull(dto.InsNo), InsContractNo = OrNull(dto.InsContractNo),
+        SalesCarID = OrNull(dto.SalesCarID), Note = OrNull(dto.Note),
+        FlagActive = FlagActiveValue,
+        CreatedDate = stamp, CreatedBy = dto.PartnerUserCode,
+        LogLUDateTime = stamp, LogLUBy = dto.PartnerUserCode,
+    };
+    // Ba cot ngay nay Mini luu dang CHUOI (dung nhu nguon) — giu nguyen van, khong ep kieu.
+    row.DateBuyCar = string.IsNullOrEmpty(dto.DateBuyCar) ? null : dto.DateBuyCar;
+    row.InsStartDate = string.IsNullOrEmpty(dto.InsStartDate) ? null : dto.InsStartDate;
+    row.InsFinishedDate = string.IsNullOrEmpty(dto.InsFinishedDate) ? null : dto.InsFinishedDate;
+    if (!string.IsNullOrWhiteSpace(dto.WarrantyRegistrationDate) && DateTime.TryParse(dto.WarrantyRegistrationDate, out var wrd)) row.WarrantyRegistrationDate = wrd;
+    db.ServiceCars.Add(row);
+    await db.SaveChangesAsync();
+    if (string.IsNullOrWhiteSpace(row.CarID)) { row.CarID = row.Id.ToString(); await db.SaveChangesAsync(); }
+
+    return Results.Ok(new
+    {
+        row.Id, row.CarID, row.PlateNo, row.DealerCode, row.FlagActive, row.CreatedDate,
+        // ===== #716 =====
+        twoOppositeGuardsWithMismatchedScope = "#404 — HAI GUARD DOI CUC, VA PHAM VI LECH NHAU: Create -> CheckExistPlateNo (BizCarSv.Customer.cs:185) nem KHI TIM THAY (Rows.Count > 0 -> Ser_PlateNo_Exist), tra theo BO BA PlateNo + DealerCode + IsActive=1; Update -> CheckExistCarID (BizCarSv.Car.cs:52) nem KHI KHONG TIM THAY (Rows.Count == 0 -> Ser_CarID_NotFound), tra theo BO DOI CarID + IsActive, KHONG CO DealerCode => DAI LY A SUA DUOC XE CUA DAI LY B neu biet CarID: khi tao thi pham vi dai ly duoc kiem, khi sua thi KHONG. Cung dang thao-tac-xuyen-dai-ly cua #711, nhung day CHINH LUAT #404 LOI RA — doc rieng tung ham thi ca hai deu co guard",
+        parallelTableFormWasFixedHereButNotInCustomer = "DUONG TINH LON — KHUON HAI BANG SONG SONG CUA #715 DA DUOC SUA O DAY, VA CON NGUYEN BAN CU DE DOI CHIEU: ProcessCarCreate KHONG dung bang thu hai. No ghi Main, lay khoa, roi DOC LAI chinh dong vua ghi (select t.* from Ser_Car t where t.CarId = @CarId -> dtDB_Ser_Car_Main) va dung DUNG DataTable do de _dbWH.SaveData va _dbDealer.SaveData => KHONG THE LECH COT. Va ngay ben duoi, TOAN BO khoi dt_Car_WH kieu #715 van nam do nhung DA BI COMMENT TRON => BANG CHUNG TRUC TIEP: khuon hai-bang-song-song la BAN CU, da duoc thay bang doc-lai o Ser_Car NHUNG CHUA AP CHO Ser_Customer (#715). Nang ket luan #715 tu rui-ro-cau-truc-chua-hien-thuc-hoa len NO KY THUAT DA CO SAN BAN SUA O HAM ANH EM, CHI CHUA AP",
+        atAtIdentityThirdSiteButDifferentSeverity = "@@Identity — SITE THU BA (#714 Email_Config, #715 Ser_Customer, day Ser_Car): select @@Identity CarID; roi .Tables[0].Rows[0][0].ToString(). KHAC hai site kia o mot diem quan trong: cau nay KHONG CO where nen LUON tra dung mot dong => Rows[0] o day AN TOAN; chi GIA TRI moi sai khi co trigger. O #714/#715 cau co where nen gia tri sai keo theo 0 DONG roi Rows[0] nem ngoai le => cung mot loi goc, HAI MUC HAU QUA. Nhung hau qua gia-tri-sai o day van nang: strCarID duoc dung lam khoa de DOC LAI dong vua ghi => trigger lam lech @@Identity => dtDB_Ser_Car_Main RONG => _dbWH.SaveData ghi 0 dong, im lang => xe CO o Main, KHONG co o WH/Dealer",
+        isActiveWrittenTwoWaysInSiblingGuards = "IsActive VIET HAI KIEU TRONG HAI GUARD ANH EM: CheckExistPlateNo dung chuoi 1 GO THANG, CheckExistCarID dung HANG TConst.Flag.Active (bang dung 1). Lap lai quan sat o #715",
+        duplicatePlateGuardOnlyCoversActiveCars = "CHONG TRUNG BIEN SO CHI AP CHO XE CON HOAT DONG: guard loc IsActive=1 => xe DA VO HIEU HOA van giu bien so nhung KHONG CHAN tao moi => bang co the chua HAI XE CUNG BIEN SO (mot active, mot khong). Co the la chu y (tai su dung bien) — KHONG KET LUAN, tra co",
+        positiveBothGuardsCheckRowsCount = "DUONG TINH: ca hai guard DEU kiem Rows.Count roi moi dung => khong co Rows[0] tran nhu #709/#711/#714",
+        gapSameFourAuditColumns = "§12 GAP da va: ServiceCar THIEU BON COT NHAT KY CreatedDate/CreatedBy/LogLUDateTime/LogLUBy — DUNG BON COT vua va cho ServiceCustomer o #715 => thieu sot CO HE THONG, khong phai le te",
+        columnNameMapping = "§12 anh xa ten: nguon ModelID -> Mini ModelCode; TradeMarkCode -> TradeMark; IsActive -> FlagActive",
+    });
+}).RequireAuthorization();
+
+// #716 `ProcessCarUpdate` (:1977). Guard `CheckExistCarID` KHÔNG có `DealerCode` ⇒ sửa được xe đại lý khác.
+app.MapPut("/api/partner/cars/{carID}", async (string carID, PartnerCarDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var key = (carID ?? "").Trim();
+    // 1:1 với nguồn: KHÔNG lọc theo DealerCode (đó chính là lỗ hổng phạm vi ở trên).
+    var row = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.CarID == key && x.FlagActive == "1")
+        .OrderBy(x => x.Id).FirstOrDefaultAsync();
+    if (row is null) return Results.BadRequest(new { error = "ErrCarSv.Ser_CarID_NotFound", carID = key });
+
+    var callerDealer = (dto.DealerCode ?? "").Trim();
+    var crossDealerEdit = !string.IsNullOrEmpty(callerDealer) && row.DealerCode != callerDealer;
+
+    string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
+    var stamp = DateTime.Now;
+    if (!string.IsNullOrEmpty(callerDealer)) row.DealerCode = callerDealer;
+    row.PlateNo = (dto.PlateNo ?? row.PlateNo)?.Trim();
+    row.CusID = OrNull(dto.CusID); row.FrameNo = OrNull(dto.FrameNo); row.EngineNo = OrNull(dto.EngineNo);
+    row.ColorCode = OrNull(dto.ColorCode); row.ModelCode = OrNull(dto.ModelID);
+    row.TradeMark = OrNull(dto.TradeMarkCode); row.ProductYear = int.TryParse(dto.ProductYear, out var py2) ? py2 : row.ProductYear;
+    row.CurrentKm = decimal.TryParse(dto.CurrentKm, out var ckm2) ? ckm2 : row.CurrentKm; row.InsNo = OrNull(dto.InsNo);
+    row.InsContractNo = OrNull(dto.InsContractNo); row.Note = OrNull(dto.Note);
+    row.LogLUDateTime = stamp; row.LogLUBy = dto.PartnerUserCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.CarID, row.PlateNo, row.DealerCode, row.LogLUDateTime, updated = true,
+        crossDealerEdit,
+        crossDealerEditIsPossibleBecauseGuardLacksDealerScope = "CheckExistCarID tra theo CarID + IsActive, KHONG co DealerCode => loi goi tu dai ly khac VAN SUA DUOC. Da do bang co crossDealerEdit",
+        sourceHasNoOrderBy = true,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #715 CỔNG ĐỐI TÁC GHI KHÁCH HÀNG `ProcessCustomerCreate` + `ProcessCustomerUpdate` =====
 // `BizCarSv.Customer.cs` — `Create` :9058-9537 md5 `b5f823df` · `Update` :9539-9849 md5 `44dbe354`
 // (**cả hai KHỚP máy 150, cùng offset**). → `POST /api/partner/customers`, `PUT /api/partner/customers/{cusID}`.
@@ -63959,6 +64085,13 @@ record EmailTemplateSourceDto(string? DealerCode = null, string? TempIDEmail = n
     string? TempSubject = null, string? TempBody = null, string? TempTypeEmail = null,
     string? FileAttachment = null, long? TempFileBytes = null);
 /// <summary>#715 `ProcessCustomerCreate/_Update` — cổng đối tác ghi khách hàng (tên trường theo nguồn).</summary>
+/// <summary>#716 `ProcessCarCreate/_Update` — cổng đối tác ghi xe (tên trường theo nguồn).</summary>
+record PartnerCarDto(string? DealerCode = null, string? PlateNo = null, string? CusID = null,
+    string? FrameNo = null, string? EngineNo = null, string? ColorCode = null, string? ModelID = null,
+    string? TradeMarkCode = null, string? ProductYear = null, string? CurrentKm = null,
+    string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null,
+    string? InsFinishedDate = null, string? WarrantyRegistrationDate = null, string? DateBuyCar = null,
+    string? SalesCarID = null, string? Note = null, string? PartnerUserCode = null);
 record PartnerCustomerDto(string? DealerCode = null, string? CusName = null, string? CusTypeID = null,
     string? IsNormal = null, string? Sex = null, string? Address = null, string? Tel = null,
     string? Mobile = null, string? Fax = null, string? Email = null, string? TaxCode = null,

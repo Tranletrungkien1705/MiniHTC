@@ -13927,6 +13927,13 @@ public sealed class ServicePartOO
 /// <summary>Xe khách trong hệ thống dịch vụ (biển số/khung/máy/km/bảo hành) — port 1:1 FrmCarInfo (TblSerCar, TCMotor).</summary>
 public sealed class ServiceCar
 {
+    // ===== 🔴 #716 §12 — BỐN CỘT NHẬT KÝ `ProcessCarCreate/_Update` ghi mà bản port thiếu hẳn.
+    //   ĐÚNG bốn cột vừa vá cho `ServiceCustomer` ở #715 ⇒ thiếu sót CÓ HỆ THỐNG.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string FrameNo { get; set; } = "";   // VIN — khóa
