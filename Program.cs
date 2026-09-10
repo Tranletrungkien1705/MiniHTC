@@ -27678,6 +27678,57 @@ app.MapPost("/api/maintworkcontents/{code}/toggle", async (string code, AppDbCon
 //     SLN/TGN = lượng & giá trị NHẬP TRONG KỲ; TGN ĐÃ GỒM THUẾ:
 //               sum(Price*Qty + VAT*0.01*Price*Qty)
 // Bỏ trống FromDate ⇒ nguồn mặc định 1990-01-01 (tính từ đầu, coi như không có tồn đầu kỳ).
+// ===== 🔴🔴🔴 #751 `SerGetToCCare` + `SerAverageCost` — HAI HÀM MÀ TÊN NÓI DỐI =====
+// `SerGetToCCare` (`BizCarSv.Customer.cs:12916-13044` md5 `2d6c4dc2`, 116 dòng active) ·
+// `SerAverageCost` (`BizCarSv.Inventory.Stock.cs:4225-4339` md5 `04aa6aba`) → vỏ bọc, thân thật ở
+// `ProcessSaveAverageCost02` (`:3992-4153` md5 `98d106d7`).
+//
+// 🔴🔴🔴 **`SerGetToCCare` TÊN LÀ "GET" NHƯNG LÀ MỘT HÀM GHI, VÀ TRẢ VỀ RỖNG**
+//   Toàn bộ phần "Save data" của nó đúng bốn dòng SQL:
+//     `--Update to dob`  /  `exec dbo.ProcCusToCareDoB @DealerCode=@@DealerCode ;`
+//   rồi `DataSet dsGetData = **new DataSet()**;` (rỗng) → `MoveDataTable` → `CommitSafety` → return.
+//   ⇒ **Ba tầng gọi sai tên cùng lúc**: tên hàm nói "Get" · biến chứa câu lệnh tên `strSql**Delete**`
+//     (chép từ một hàm xoá) · còn việc thật là **chạy thủ tục cập nhật ngày sinh khách cần chăm sóc**.
+//   ⇒ Người gọi nào chờ dữ liệu trả về sẽ nhận DataSet rỗng và hiểu là "không có khách nào cần chăm sóc",
+//     trong khi hàm vừa **ghi** xong. Đây là dạng nguy hiểm hơn #741/#744 (ở đó chỉ nhãn log sai).
+//   🔴 **NỢ KHÔNG THỂ PORT 1:1**: toàn bộ nghiệp vụ nằm trong **stored procedure `dbo.ProcCusToCareDoB`**,
+//     không có trong mã C# ⇒ MiniHTC **không thể tái hiện**. Ghi nợ, không đoán nội dung proc (#738).
+//   ⚠️ **Tham số viết `@DealerCode=@@DealerCode`** — hai dấu `@`, và DAL được truyền cặp `"@@DealerCode", strDealerCode`.
+//     Trong T-SQL `@@` là tiền tố **biến hệ thống**, nên nếu DAL bind bằng `SqlParameter` thì tên này không hợp lệ;
+//     nó chỉ chạy được nếu DAL **thay chuỗi** trước khi gửi. Đúng họ bẫy "trộn placeholder với tham số runtime".
+//     Cách kiểm chứng: bật `_bDebugMode` và đọc `strSql_SerGetToCCare` mà `myDebug_SaveSql` ghi lại.
+//   ⚪ `#region // Check` **rỗng hoàn toàn** — trích trọn region chỉ ra hai dòng `#region`/`#endregion`
+//     (đủ điều kiện #403 để tuyên bố). Dạng (d) của #728.
+//
+// 🔴🔴 **`SerAverageCost`: BA BẢN, MỘT BẢN CHẾT — ĐẾM NGƯỜI GỌI CHỨ ĐỪNG ĐOÁN THEO TÊN**
+//   `grep -rnoE "ProcessSaveAverageCost[0-9]*\("` toàn tầng cho:
+//     `…**01**` (`:3953`, 36 dòng): **6 nơi gọi**, tất cả từ `BizCarSv.Inventory.StockIn.cs` (đường nhập kho) ⇒ SỐNG
+//     `…**02**` (`:3992`, 154 dòng): **1 nơi gọi** — chính `SerAverageCost` (`:4286`) ⇒ SỐNG
+//     `…` **bản trần** (`:4154`, 62 dòng active): **KHÔNG AI GỌI** ⇒ **CHẾT** (vẫn biên dịch, vẫn nằm trong DLL).
+//   ⇒ Bản trần không có hậu tố lại là bản chết — ngược với trực giác "bản gốc là bản chính". Cùng bài học với
+//     `Ser_App_GetForTab` (hàng đợi ghi hai bản ngày, bản LIVE lại là bản thứ ba).
+//   ⚪ **HAI BẢN SỐNG KHÔNG GHI DB KHO, VÀ CHÚNG NHẤT QUÁN VỚI NHAU** ⇒ chủ ý, không phải bỏ sót:
+//     `01` có `#region // Insert Ser_PartCost In Data WH` mà **thân chỉ là một dòng comment cụt `// k Update Vi`**;
+//     `02` thì `_dbWH` = **0 lần**. Hai hàm, hai cách viết, cùng một kết quả ⇒ áp đúng lập luận #749
+//     (bằng chứng là **tính đối xứng**, không phải dấu `//`). Nhưng ghi lại vì lời giải thích **bị cắt cụt giữa chừng**
+//     — người sau đọc `// k Update Vi` sẽ không biết "vì" cái gì.
+// 📌 `/api/partcosts/calculate` (port từ Form) đã có ⇒ phần giá vốn chỉ vá cờ, KHÔNG viết endpoint thứ hai.
+app.MapPost("/api/customercare/refresh-dob", async (AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    // 📌 NỢ #751: nguồn chỉ `exec dbo.ProcCusToCareDoB @DealerCode=…` — nghiệp vụ nằm TRỌN trong stored procedure,
+    //   không có trong mã C#. Không bịa nội dung proc; endpoint này công bố đúng tình trạng đó.
+    await Task.CompletedTask;
+    return Results.Ok(new
+    {
+        dealer = dealer!.Trim().ToUpperInvariant(),
+        applied = false,
+        notPortable = "NO: nghiep vu nam tron trong stored procedure dbo.ProcCusToCareDoB, khong co trong ma C# => MiniHTC chua tai hien duoc",
+        sourceNameSaysGetButItWrites = "SerGetToCCare ten la Get nhung chi exec mot proc CAP NHAT roi tra DataSet RONG; bien chua cau lenh con ten strSqlDelete",
+        sourceParamHasDoubleAt = "nguon viet @DealerCode=@@DealerCode va bind cap \"@@DealerCode\" => chi chay duoc neu DAL THAY CHUOI, khong phai bind SqlParameter",
+        sourceCheckRegionEmpty = "#region // Check rong hoan toan (dang d cua #728)",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/partcosts/calculate", async (
     PartCostCalculateDto? dto, AppDbContext db, ITenantContext t) =>
 {
