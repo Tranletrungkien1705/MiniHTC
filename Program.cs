@@ -59102,6 +59102,56 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 // 🔴 Hai bản dùng **hai cơ chế ghi log khác nhau**: bản trần `_log.WriteLogAsync(...)` + `CProcessException.Process`,
 //   bản mới `ProcessBizReq(...)` + `ProcessBizReturn(...)` (có đo `dblAppTotalMs`) ⇒ nhật ký của hai đường **không cùng dạng**.
 // 📌 Mini: `GET /api/servicemodels/catalog` — lọc **đúng** hai ô riêng biệt, và **đếm** số dòng mà lỗi nguồn sẽ nuốt.
+// ===== ⚪🔴 #809 QUÉT TOÀN TẦNG TÌM CA THỨ HAI CỦA "BAKE NHẦM BIẾN" (#808) — **KHÔNG CÓ** =====
+// #808 tìm ra một lỗi nặng: `zzzzClauseWhereModelCodeList` được dựng bằng **`strIsActiveList`** thay vì
+// `strModelCodeList`. Trước khi coi đó là **khuôn**, phải đi tìm ca thứ hai (đúng luật "đừng tổng quát hoá").
+//
+// **Phương pháp**: trích **2513** site `string zzzzClauseWhere<X> = SqlUtils.BuildClause*(…, str<Y>, …)` trong
+// `TERP.BizCarSv/*.cs`, rồi soi hai hướng:
+//   ① **cùng một biến** dùng cho **hai clause tên khác nhau, cách nhau < 40 dòng** (khuôn của #808);
+//   ② tên clause **không chứa** tên biến (`<X>` không xuất hiện trong `<Y>`) — **189** site.
+//
+// ⚪ **KẾT QUẢ: KHÔNG CÓ CA THỨ HAI.** Mọi ứng viên đều có giải thích:
+//   · `DealerCodeList**1**` / `DealerCodeList**2**` và `**Tel**Pattern` / `**Mobile**Pattern`
+//     (`Customer.cs:560/561`, `564/565`, và 4 hàm nữa) — **cùng một giá trị áp cho HAI CỘT**, có chủ ý
+//     (một số điện thoại tìm trên cả `Tel` lẫn `Mobile`).
+//   · `Customer.cs:17703-17705` — biến `strContactDateConditionList` dùng cho **BA** clause `t.MaceRecomentDate`,
+//     `t.Datebth`, `DATEADD(day, 1, ro.ActualDeliveryDate)`. Thoạt nhìn giống hệt #808 (một ô lọc, ba cột khác
+//     nghĩa — kể cả **ngày sinh**!). **Đọc SQL thì hoá ra ĐÚNG**: ba placeholder nằm ở **ba bảng tạm KHÁC NHAU**
+//     (`#tblCustomerCareMace` · `#tblCustomerCareBth` · `#tblCustomerCare72h`), mỗi bảng lọc **cột ngày riêng
+//     của mình** bằng **cùng một khoảng ngày người dùng chọn** ⇒ đúng nghiệp vụ màn "khách cần chăm sóc
+//     trong khoảng ngày X". ⇒ Nếu chỉ nhìn ba dòng `BuildClause` mà không mở SQL thì **đã báo oan**.
+//   · `Customer.cs:12527` và `:17186` — clause `zzzzClauseWhere**Cus**CareIDConditionList` dựng từ biến
+//     `str**Car**CareIDConditionList` (lệch đúng một chữ), cột là `tt.CusCareID`. Kiểm chữ ký hàm
+//     (`Ser_CustomerCare_GetNew` `:12288` và `:17055`): tham số **thật sự tên** `strCarCareIDConditionList`
+//     và **không tồn tại** biến `strCusCareIDConditionList` nào để mà nhầm ⇒ **không phải bake nhầm biến**,
+//     chỉ là **tên tham số đặt sai** (`Car` trong khi nghiệp vụ là `Cus`) — gây nhầm khi đọc, không gây sai kết quả.
+//
+// 📌 **Kết luận**: lỗi ở #808 là **CÁ BIỆT**, không phải khuôn của tầng ⇒ càng đáng vá dứt điểm, và **không**
+//   được suy rộng thành "bộ lọc ở tầng này hay bake nhầm biến".
+// 📌 Bài học đo lường kèm theo: **189/2513** site có tên clause không khớp tên biến, và **tất cả** đều lành.
+//   ⇒ Chỉ riêng "tên không khớp" **không phải** dấu hiệu lỗi; phải mở SQL xem placeholder **nằm ở đâu**
+//   (cùng một `WHERE` hay ở các bảng tạm/nhánh `union` khác nhau) rồi mới kết luận.
+app.MapGet("/api/_meta/wrong-variable-bake-sweep", () => Results.Ok(new
+{
+    trigger = "#808: zzzzClauseWhereModelCodeList duoc dung bang strIsActiveList thay vi strModelCodeList",
+    sitesScanned = 2513,
+    scope = "TERP.BizCarSv/*.cs — moi site string zzzzClauseWhere<X> = SqlUtils.BuildClause*(..., str<Y>, ...)",
+    heuristics = new[]
+    {
+        "① cung mot bien dung cho HAI clause ten khac nhau, cach nhau < 40 dong (khuon #808)",
+        "② ten clause KHONG chua ten bien — 189 site",
+    },
+    secondOccurrenceFound = false,
+    explainedCandidates = new[]
+    {
+        "DealerCodeList1/DealerCodeList2 va TelPattern/MobilePattern (Customer.cs:560/561, 564/565 va 4 ham nua): CUNG MOT GIA TRI ap cho HAI COT, co chu y (mot so dien thoai tim tren ca Tel lan Mobile)",
+        "Customer.cs:17703-17705: strContactDateConditionList dung cho BA clause t.MaceRecomentDate / t.Datebth / DATEADD(day,1,ro.ActualDeliveryDate). Thoat nhin giong het #808 nhung DOC SQL thi ba placeholder nam o BA BANG TAM KHAC NHAU (#tblCustomerCareMace, #tblCustomerCareBth, #tblCustomerCare72h), moi bang loc cot ngay rieng cua minh bang cung mot khoang ngay nguoi dung chon => DUNG nghiep vu man khach can cham soc trong khoang ngay X",
+        "Customer.cs:12527 va :17186: clause CusCareIDConditionList dung tu bien CarCareIDConditionList (lech dung mot chu), cot la tt.CusCareID. Chu ky ham Ser_CustomerCare_GetNew (:12288, :17055) cho thay tham so THAT SU ten strCarCareIDConditionList va KHONG ton tai bien strCusCareIDConditionList nao de ma nham => ten tham so DAT SAI chu khong phai bake nham bien",
+    },
+    conclusion = "loi #808 la CA BIET, khong phai khuon cua tang => cang dang va dut diem, va KHONG duoc suy rong thanh bo loc o tang nay hay bake nham bien",
+    measurementLesson = "189/2513 site co ten clause khong khop ten bien va TAT CA deu lanh => rieng ten khong khop KHONG phai dau hieu loi; phai mo SQL xem placeholder nam o dau (cung mot WHERE hay o cac bang tam / nhanh union khac nhau) roi moi ket luan",
+})).RequireAuthorization();
 app.MapGet("/api/servicemodels/catalog", async (AppDbContext db, ITenantContext t,
     string? modelCodes, string? isActive, string? dealerCode) =>
 {
