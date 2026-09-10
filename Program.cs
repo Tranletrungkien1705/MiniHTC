@@ -11410,6 +11410,64 @@ app.MapPost("/api/smsaccounts/{accountCode}/reset-password", async (string accou
 //
 // 📌 Mini: endpoint dưới đây công bố bảng trên để các lượt sau khỏi quét lại, và để khi port thêm một cụm
 //   `Ser_MST_*` thì biết ngay phải kiểm gì.
+// ===== 🔴🔴🔴 #788 `Ser_RO_Statistic_Service_ByGroup` ↔ `_WH` — THỐNG KÊ DỊCH VỤ THEO NHÓM SỬA CHỮA =====
+// `BizCarSv.Service.Report.cs:663-841` md5 `29ae9ae8` (169 dòng) ↔ `BizCarSv.WH.cs:12134-12309` md5 `c5dd6e24` (166 dòng).
+// DIFF trọn hàm: khác **handle** (`_dbDealer` vs `_dbWH`), **nguồn `Ser_groupRepair`** (CommonCenter vs cục bộ),
+// **hoa/thường của từ khoá SQL** (`SELECT/FROM/INNER JOIN` vs `select/from/inner join`) và **lớp mã lỗi**
+// ⇒ **cặp LÀNH về nghiệp vụ** (như #779, khác #771).
+//
+// 🔴 **BẢN `_WH` DÙNG LỚP HẰNG MÃ LỖI KHÁC**: `TError.ErrCarSv**_WH**.Ser_RO_Statistic_Service_ByGroup_WH`
+//   trong khi bản đại lý dùng `TError.**ErrCarSv**.…`. Đếm toàn `TERP.BizCarSv`: `TError.ErrCarSv_WH.` xuất hiện
+//   **128** lần ⇒ đây là **lớp mã lỗi riêng cho nhánh kho**, không phải cá biệt của cặp này.
+//   ⇒ Hệ quả khi tra sự cố: cùng một nghiệp vụ nhưng **hai không gian mã lỗi**; grep một tên mã sẽ **bỏ sót nhánh kia**.
+//
+// 🔴🔴🔴 **BỐN PHÉP NỐI TRONG — VÀ MỘT TRONG SỐ ĐÓ LÀM THIẾU SỐ LIỆU THỐNG KÊ**
+//   Bảng tạm: `from Ser_RO ro **inner join** Ser_Customer cus … **JOIN** Ser_Car car on ro.CarID = car.CarID
+//   **and ro.CusID = car.CusID** and ro.DealerCode = car.DealerCode`
+//   ⚠️ `JOIN` viết trần **chính là INNER JOIN** — dễ đọc lướt thành "join thường, chắc không sao".
+//   ⇒ (a) khách bị xoá ⇒ mất RO; (b) **xe đổi chủ** ⇒ `ro.CusID` (chủ lúc lập lệnh) ≠ `car.CusID` (chủ hiện tại)
+//     ⇒ **RO cũ rơi khỏi thống kê** — **đúng bệnh đã bắt ở #752** (`DMSWROGet`), nay gặp lần thứ hai ở một báo cáo.
+//   Câu trả về còn `**inner join** Ser_Mst_Service ss` ⇒ (c) **dịch vụ đã xoá khỏi danh mục thì dòng dịch vụ biến mất**
+//     ⇒ **tổng thống kê thiếu**, và thiếu **im lặng** vì báo cáo vẫn ra số.
+//   ⚪ `left join Ser_groupRepair r` ⇒ dịch vụ **chưa gắn nhóm** vẫn được đếm — đúng ý (nhóm là thông tin phụ).
+// 📌 Mini: `GET /api/report/service-statistic-by-group` — **đếm riêng** ba nguyên nhân mất dòng thay vì để im lặng.
+app.MapGet("/api/report/service-statistic-by-group", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode, string? scope) =>
+{
+    var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+    var roQ = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
+    if (fromDate.HasValue) roQ = roQ.Where(r => r.CheckInDate >= fromDate.Value);
+    if (toDate.HasValue) roQ = roQ.Where(r => r.CheckInDate <= toDate.Value);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) roQ = roQ.Where(r => r.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    var ros = await roQ.Take(5000).ToListAsync();
+    var roIds = ros.Select(r => r.Id).ToList();
+    var items = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    // Ba nguyên nhân nuốt dòng của nguồn — Mini ĐẾM thay vì bỏ im lặng.
+    var cusCodes = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId).Select(c => c.CusCode).ToListAsync();
+    var droppedNoCustomer = ros.Count(r => r.CusID == null || !cusCodes.Contains(r.CusID));
+    var carPairs = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.CarID, c.CusID }).ToListAsync();
+    var carSet = carPairs.Where(c => c.CarID != null).Select(c => c.CarID + "|" + (c.CusID ?? "")).ToHashSet();
+    var droppedCarOwnerChanged = ros.Count(r => r.CarID != null && !carSet.Contains(r.CarID + "|" + (r.CusID ?? "")));
+    var serCodes = await db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId).Select(x => x.SerCode).ToListAsync();
+    var droppedServiceNotInCatalog = items.Count(i => !serCodes.Contains(i.SerCode));
+    var groups = items.Where(i => serCodes.Contains(i.SerCode))
+        .GroupBy(i => i.SerCode)
+        .Select(g => new { serCode = g.Key, lines = g.Count(), amount = g.Sum(x => x.Amount) })
+        .OrderByDescending(x => x.amount).ToList();
+    return Results.Ok(new
+    {
+        scope = isWh ? "wh" : "dealer", roCount = ros.Count, itemCount = items.Count,
+        groupCount = groups.Count, groups,
+        droppedNoCustomer, droppedCarOwnerChanged, droppedServiceNotInCatalog,
+        sourceJoinKeywordIsInnerJoin = "nguon viet JOIN Ser_Car car (tran) — JOIN tran CHINH LA INNER JOIN, de doc luot thanh join thuong",
+        sourceDropsRoWhenCarOwnerChanged = "join theo ro.CarID = car.CarID AND ro.CusID = car.CusID => xe doi chu thi RO cu roi khoi thong ke (benh da bat o #752, nay lan thu hai o mot BAO CAO)",
+        sourceDropsLinesWhenServiceDeleted = "cau tra ve inner join Ser_Mst_Service => dich vu da xoa khoi danh muc thi dong bien mat => TONG THONG KE THIEU, va thieu IM LANG vi bao cao van ra so",
+        sourceLeftJoinsGroupRepair = "AM TINH: left join Ser_groupRepair => dich vu chua gan nhom VAN duoc dem — dung y",
+        sourceWhUsesSeparateErrorClass = "ban _WH dung TError.ErrCarSv_WH.* (128 lan toan tang) trong khi ban dai ly dung TError.ErrCarSv.* => HAI khong gian ma loi cho cung mot nghiep vu, grep mot ten se bo sot nhanh kia",
+        pairIsCleanOtherwise = "DIFF tron ham chi khac handle, nguon Ser_groupRepair (CommonCenter vs cuc bo), hoa/thuong tu khoa SQL va lop ma loi => LANH ve nghiep vu",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/assignmentofwork-guard-audit", () => Results.Ok(new
 {
     file = "TERP.BizCarSv/BizCarSv.AssignmentOfWork.cs",
