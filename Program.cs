@@ -11620,6 +11620,49 @@ app.MapPost("/api/emailautotemps/load-batch/{batchId}", async (string batchId, L
 }).RequireAuthorization();
 
 // ===== #300 HÀNG ĐỢI NGƯỜI NHẬN của lô gửi tự động (Email_SendEmailAutoTemp) =====
+// ===== 🔴🔴 #744 BỐN HÀM `Email_SendEmailAutoTemp_*` (`BizCarSv.SendMail.cs`) — VÒNG ĐỐI CHIẾU =====
+// `_Create` :3829-4051 md5 `6b6c8668` · `_Update` :4052-4276 md5 `db5db4ed` ·
+// `_Delete` :4277-4400 md5 `beae4d8c` · `_Get` :4401-4561 md5 `b91d27b6`.
+// BƯỚC 3B: `md5sum BizCarSv.SendMail.cs` = `820f15d7…`, 5631 dòng — **giống hệt trên máy 150**.
+// Endpoint `/api/emailautotemps` đã có GET/POST/PUT ⇒ vòng này vá + bổ sung DELETE, KHÔNG tính màn mới.
+//
+// 🔴🔴 **NHÃN LOG MANG GIÁ TRỊ CỦA THAM SỐ KHÁC — `_Get` CHÉP NHÃN TỪ `Email_TempEmail_Get`**:
+//   `alParamsCoupleError` của `_Get` ghép cặp (nhãn, giá trị) như sau:
+//     `"strTempIDEmailConditionList"` ← `strAutoTempIDConditionList`
+//     `"strTempSubjectConditionList"` ← **`strCusIDConditionList`**  ← lệch HẲN sang tham số khác
+//     `"strTempBodyConditionList"`    ← `strBodyConditionList`
+//   Ba nhãn `strTemp*` là từ vựng của **`Email_TempEmail_*`** (bảng mẫu email, có `TempIDEmail`/`TempSubject`/`TempBody`),
+//   **không tồn tại** trong hàng đợi `Email_SendEmailAutoTemp`. ⇒ đúng luật "TỪ VỰNG LẠ = khối chép từ hàm khác".
+//   ⚠️ Nặng hơn #741 (ở đó chỉ **thiếu** một nhãn): ở đây nhãn **nói sai** — người đọc log thấy
+//   `strTempSubjectConditionList = "KH0001"` sẽ tưởng đang lọc theo TIÊU ĐỀ trong khi thực tế lọc theo **MÃ KHÁCH**.
+//
+// 🔴🔴 **BẤT ĐỐI XỨNG PHẠM VI ĐỌC vs XOÁ** (mở rộng luật #404 sang cặp Get/Delete):
+//   `_Delete` bắt buộc **cả hai** khoá: `where (1=1) and DealerCode = @DealerCode and AutoTempID = @AutoTempID`.
+//   `_Get` thì `DealerCode` đi qua `BuildClause` ⇒ client **bỏ trống là điều kiện biến mất** (#410) ⇒ trả
+//   hàng đợi email của **mọi đại lý**, kèm nguyên `Body` + `CusEmail`. ⇒ **xoá thì khoá chặt, đọc thì mở toang**.
+// 🔴 **`_Get` = `select *` KHÔNG `TOP`, KHÔNG `ORDER BY`, KHÔNG THAM SỐ PHÂN TRANG** (chữ ký không hề có
+//   `strFt_RecordStart`/`strFt_RecordCount`) ⇒ trả **trọn bảng hàng đợi**. Đây là bảng sinh **một dòng cho mỗi
+//   khách mỗi đợt gửi** nên nó là bảng lớn nhất cụm email (#415: không ORDER BY ⇒ thứ tự không xác định).
+// 🔴 **Có bộ lọc theo `Body`** — cột NỘI DUNG email — nhưng **không có bộ lọc theo `Status`**: lọc được thứ
+//   vô nghĩa nghiệp vụ (và quét toàn bảng trên cột dài), còn thứ cần nhất (hàng chờ gửi `Status`) thì không.
+// 🔴 **`_Create` lấy ID vừa tạo bằng `select @ID = @@Identity`** (không phải `SCOPE_IDENTITY()`), lại nằm ở
+//   **lần gọi DAL THỨ HAI** (`SaveData` rồi mới `ExecQuery`). Hai rủi ro: (a) `@@IDENTITY` là phạm vi **phiên**,
+//   nên một trigger insert sang bảng khác sẽ khiến nó trả identity của **bảng trigger** ⇒ `where AutoTempID = @ID`
+//   trỏ nhầm bản ghi; (b) nếu DAL không giữ nguyên connection giữa hai lần gọi thì `@ID` là NULL ⇒ trả **0 dòng**
+//   ⇒ client tưởng tạo hỏng. Mini dùng khoá tự sinh của EF nên không tái hiện.
+// 🔴 **CẢ BỐN HÀM `CMyException.Raise` = 0** ⇒ không guard nào: tạo trùng thoải mái, xoá mã không tồn tại vẫn
+//   báo thành công (họ #710/#712/#736/#742).
+// 🔴 **CRUD ghi Main, còn job gửi mail chép sang WH**: bốn hàm này `_dbWH` = **0**, trong khi #300 đã ghi
+//   `Email_SendEmailCreate` có `_dbWH.SaveData("Email_SendEmailAutoTemp", …)` ⇒ sửa/xoá **không lan sang kho**
+//   (cùng bệnh #726/#742 nhưng bắt được từ hướng ngược: từ hàm GHI WH tìm ra cụm CRUD không ghi WH).
+// ⚪ **ÂM TÍNH 1 — `alEffectiveColumn` của `_Update` KHÔNG thiếu cột**: thoạt đếm tôi thấy 9 mục vs 10 cột được
+//   gán và suýt báo "sửa `SendType` không lưu". Đếm lại bằng `grep -c` cho **10** — mục thứ 10 là `SendType`,
+//   nó bị `| head` cắt mất. Create/Update **khớp đủ 10 cột**. (Bài học ghi ở sổ: `head` khi đối chiếu danh sách
+//   là cách tự tạo ra gap giả.)
+// ⚪ **ÂM TÍNH 2 — `BuildClause("and ", …)` cho `Subject` thừa dấu cách**: đã chứng minh ở #461 rằng `BuildClause`
+//   `Trim()` toán tử trước khi so ⇒ **điều kiện không chết**. Không báo lại.
+// 📌 Mini bổ sung `DELETE /api/emailautotemps/{id}` **giữ đúng phạm vi hai khoá của nguồn** (bắt buộc `dealer`),
+//   và trả cờ trên GET để không ai tưởng nguồn có phân trang.
 app.MapGet("/api/emailautotemps", async (AppDbContext db, ITenantContext t,
     string? batchId, string? dealer, string? typeEmail, string? status) =>
 {
@@ -11637,7 +11680,27 @@ app.MapGet("/api/emailautotemps", async (AppDbContext db, ITenantContext t,
         statusText = EmailAutoTempStatusLabel(emailAutoTempStatusNames, x.Status),
         createdDate = x.CreatedDate,
     }).ToList();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        sourceHasNoPaging = "nguon Email_SendEmailAutoTemp_Get la select * khong TOP/ORDER BY va chu ky khong co RecordStart/RecordCount => tra tron bang",
+        sourceFiltersBodyNotStatus = "nguon co bo loc theo Body (noi dung email) nhung KHONG co bo loc theo Status",
+        sourceReadScopeWiderThanDelete = "nguon: _Delete bat buoc DealerCode + AutoTempID, con _Get de DealerCode qua BuildClause => bo trong la doc het moi dai ly",
+    });
+}).RequireAuthorization();
+
+// #744 Nguồn `Email_SendEmailAutoTemp_Delete` xoá theo **hai** khoá `DealerCode` + `AutoTempID`.
+// Mini giữ nguyên phạm vi đó: thiếu `dealer` là từ chối, KHÔNG cho xoá theo mỗi id.
+app.MapDelete("/api/emailautotemps/{id:long}", async (long id, AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Cần mã đại lý (nguồn xoá theo DealerCode + AutoTempID)." });
+    var dlr = dealer!.Trim().ToUpperInvariant();
+    var row = await db.EmailSendAutoTemps.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id && x.DealerCode == dlr);
+    // Nguồn `Raise` = 0 ⇒ xoá mã không tồn tại vẫn báo thành công. Mini trả 404 — khác biệt CÓ CHỦ Ý.
+    if (row is null) return Results.NotFound(new { id, dealer = dlr, sourceWouldReportSuccess = true });
+    db.EmailSendAutoTemps.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id, dealer = dlr, notPropagatedToWarehouse = "nguon: 4 ham CRUD deu khong ghi _dbWH trong khi job Email_SendEmailCreate co chep sang WH" });
 }).RequireAuthorization();
 
 app.MapPost("/api/emailautotemps", async (EmailAutoTempDto dto, AppDbContext db, ITenantContext t) =>
