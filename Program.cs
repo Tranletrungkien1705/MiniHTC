@@ -35488,12 +35488,52 @@ app.MapDelete("/api/carmodelstds/{code}", async (string code, AppDbContext db, I
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #736 ĐỐI CHIẾU BỐN HÀM BIZ `Ser_Mst_FilePathVideo_*` — VÒNG PARITY =====
+// `Tab/BizCarSv.Tab.cs` — `_Get` :1921-2047 md5 `a7448216` · `_Add` :2172-2429 md5 `06b5c35c` ·
+// `_Update` :2431-2729 md5 `a2b3b895` · `_Delete` :2731-2900 md5 `8c0e1149`.
+// BƯỚC 2: endpoint `/api/serfilepathvideos` **đã có** (port từ Form), nhưng **bốn hàm biz chưa từng được đọc**
+// ⇒ vá ghi chú + cờ vào endpoint sẵn có, **KHÔNG tính màn mới**.
+//
+// 🔴🔴🔴 **DẠNG THỨ NĂM CỦA "GUARD VẮNG MẶT": REGION CÓ TÊN ĐÚNG, NỘI DUNG BỊ COMMENT TRỌN**
+//   `_Update` có `#region // **Check IdxView không được trùng:**` — đọc tên là tưởng có guard chống trùng thứ tự
+//   hiển thị. Trích trọn region rồi **lọc bỏ dòng `//`** thì còn lại **đúng 4 dòng**:
+//     `#region // Check IdxView không được trùng:` / `{` / `}` / `#endregion`
+//   ⇒ **Toàn bộ thân là mã đã comment** (câu `select … group by t.IdxView having count(*) > 1`).
+//   ⇒ **KHÔNG PHẢI** "Update có guard còn Add không có" như thoạt đọc — **cả hai đều không có**.
+//   📌 Bổ sung vào bốn dạng đã liệt kê ở #728: (a) không có region · (b) guard chết vì toán tử (#725) ·
+//     (c) guard bị guard trước nuốt (#726) · (d) region rỗng hoàn toàn (#728) · **(e) region có tên đúng nhưng
+//     thân bị comment trọn** (đây) — dạng **dễ nhầm nhất** vì tên region **mô tả đúng ý định**.
+//   ⚠️ Đây là **lần thứ BA** luật #719 ("khối comment không chứng minh tính năng đã chết — nhưng cũng không
+//     chứng minh nó còn sống") chặn được một kết luận sai của tôi.
+// 🔴🔴 **`IdxView` TRÙNG ⇒ THỨ TỰ VIDEO KHÔNG XÁC ĐỊNH**: `IdxView` là **thứ tự hiển thị**; không guard nào
+//   chống trùng ⇒ hai video cùng `IdxView` ⇒ thứ tự hiện ra phụ thuộc `ORDER BY` tầng dưới (họ #411).
+//   ⚪ Bản port Mini **đã** `OrderBy(x => x.IdxView).**ThenBy(x => x.FilePathVideoCode)**` ⇒ **xác định** —
+//     tình cờ chặt hơn nguồn. Giữ nguyên, và ghi rõ đó là **khác biệt có chủ ý**.
+// 🔴 **`_Delete` KHÔNG CÓ GUARD NÀO**: `CMyException.Raise` = **0** (so với `_Add` = 1, `_Update` = 1)
+//   ⇒ xoá mã không tồn tại vẫn **báo thành công** (họ #710/#712/#728).
+// ⚪⚪ **DƯƠNG TÍNH — GHI MAIN VÀ WH CÂN NHAU Ở CẢ BA HÀM GHI** (đếm theo luật
+//   `C0-ducentesimusquadragesimusquintus`, tách riêng loại thao tác):
+//     `_Add`   : `_dbMain` Exec=**1** · `_dbWH` Exec=**1**
+//     `_Update`: `_dbMain` Exec=**2** (1 kiểm + 1 ghi) · `_dbWH` Exec=**1** (ghi)
+//     `_Delete`: `_dbMain` Exec=**1** · `_dbWH` Exec=**1**
+//   ⇒ **Không** dính bệnh #726 (bỏ quên WH) **cũng không** dính #735 (chèn-mà-không-xoá). `_dbDealer` **0/0**
+//     ở cả ba — nhất quán, và hợp lý vì đây là **danh mục dùng chung**, không phải dữ liệu đại lý.
+//   📌 Đây là **mẫu ngược thứ NĂM** cho #726, và là bộ hàm **cân nhất** gặp tới giờ.
+// ⚪ **ÂM TÍNH — region `#region // Mst_CarModelStd:` ở CUỐI `_Delete` KHÔNG thuộc hàm này**: nó ở **dòng 159**
+//   trong khi vùng trích dài **159** dòng ⇒ region **mở đầu hàm kế tiếp**. Áp đúng luật
+//   `C0-ducentesimusquadragesimusquartus` (so vị trí dòng với độ dài vùng trích) — **không** báo "từ vựng lạ".
+// 📌 Cả ba hàm ghi đều theo khuôn `#region //// SaveTemp …: **Main.**` + `#region //// SaveTemp …: **WH.**`
+//   rồi `#region //// Save:` ⇒ dựng **bảng tạm riêng cho từng CSDL** trước khi ghi — khuôn sạch, khác hẳn
+//   kiểu "hai DataTable song song gán tay" đã bắt ở #715.
 // ===== Video tư vấn dịch vụ (SerFilePathVideo — port 1:1 FrmSerMstFilePathVideoCreate/Search, TCMotor DMSCarSv/Admin) =====
 app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
     var qry = db.SerFilePathVideos.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.FilePathVideoCode.Contains(q!) || x.FilePathVideoName!.Contains(q!));
     if (!string.IsNullOrWhiteSpace(active)) qry = qry.Where(x => x.FlagActive == active);
+    // 🔴 #736 Nguồn KHÔNG có guard chống trùng `IdxView` (region kiểm tồn tại nhưng thân bị comment trọn)
+    //   ⇒ hai video cùng `IdxView` là hợp lệ ở nguồn. `ThenBy(FilePathVideoCode)` dưới đây làm thứ tự
+    //   **xác định** — chặt hơn nguồn một cách CÓ CHỦ Ý, không phải port sai.
     var items = await qry.OrderBy(x => x.IdxView).ThenBy(x => x.FilePathVideoCode).Take(500)
         .Select(x => new { x.FilePathVideoCode, x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.IdxView, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
