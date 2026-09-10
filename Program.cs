@@ -11151,6 +11151,93 @@ app.MapGet("/api/smsbrandnames", async (AppDbContext db, ITenantContext t, strin
 //    `Acc_Balance_Get` (dòng 551) — không có lệnh ghi nào cho hai bảng này. Số dư chỉ đổi qua
 //    `Acc_Transaction` (đã có `POST /api/smsaccounts/{name}/tx`).
 
+// ===== 🔴🔴🔴 #782 `Ser_MST_ROWarrantyRenewal_Get` / `_Save` / `_Delete` — GIA HẠN BẢO HÀNH THEO VIN =====
+// `BizCarSv.AssignmentOfWork.cs`: `_Get` `:8426-8562` md5 `4ebaae7e` (122 dòng) · `_Save` `:8563-8865` md5 `c223bd03`
+// (263 dòng) · `_Delete` `:8866-9010` md5 `ccfd9887` (134 dòng). #541 đã port cụm `…RenewalCategory_*`.
+//
+// 🔴🔴🔴 **CHUỖI NHÂN-QUẢ KHÉP KÍN VỚI #541: XOÁ MỘT LOẠI GIA HẠN LÀ CÁC BẢN GHI DÙNG NÓ BIẾN MẤT**
+//   `_Get` dựng bảng tạm bằng:
+//     `from […].Ser_MST_ROWarrantyRenewal smrowr **inner join** […].Ser_MST_ROWarrantyRenewalCategory smrowrc`
+//     `on smrowr.WrtReneCateCode = smrowrc.WrtReneCateCode`
+//   ⇒ bản ghi gia hạn trỏ tới **loại đã bị xoá khỏi danh mục** thì **rơi khỏi kết quả** (#410).
+//   Và #541 đã ghi cho `…RenewalCategory_Delete`: **KHÔNG chặn xoá loại đang được dùng**.
+//   ⇒ Ghép hai vòng: **xoá loại ⇒ mọi bản gia hạn dùng loại đó biến mất khỏi màn**, dữ liệu vẫn nằm trong bảng
+//     nhưng **không đường nào nhìn thấy** — không cảnh báo ở bước xoá, không thông báo ở bước xem.
+//   📌 Cùng lối lập luận đã dùng ở #750↔#752 và #760↔#763: một mình mỗi hàm đều "hợp lý", ghép lại mới thành lỗ hổng.
+//
+// 🔴🔴 **`_Save` KHÔNG CÓ GUARD NÀO — ĐẾM ĐỦ BA NGUỒN (#747 + #760)**: `CMyException.Raise` = **0** ·
+//   `this.Check*` = **0** · `my*_Check*` = **0**. Trích trọn `#region // Check Input Detail:` (luật #403) ra **4 dòng**:
+//     `// Refine :` / `ds_ListROWarrantyRenewal.AcceptChanges();` /
+//     `DataTable dt_… = ds_ListROWarrantyRenewal.Tables["Ser_MST_ROWarrantyRenewal"];` / `#endregion`
+//   ⇒ **Dạng thứ TÁM lặp lại** (#774): region tên "Check" nhưng chứa **mã lấy dữ liệu**, không kiểm gì.
+//   ⇒ Hệ quả cụ thể: `Tables["…"]` **không kiểm null** ⇒ client gửi DataSet thiếu bảng là **NullReference** ngay
+//     vòng `for` bên dưới. Trong khi `_Delete` cùng cụm **có** `Raise` = 1 và `this.Check*` = 1 ⇒ **save mở, delete chặt**.
+//
+// 🔴🔴 **`select @@Identity ROWRID` + `Rows[0][0]` — LẦN THỨ TƯ** (sau #744 · #745 · #747).
+//   Mẫu đúng đã tìm được ở #747 (`Ser_Inv_QuoteStockOutOrderUpdate` dùng `SCOPE_IDENTITY()` **cùng batch**),
+//   nên lần này **không cần tìm lại** — chỉ ghi nhận tần suất: bốn lần, ở bốn file khác nhau.
+// 🔴 **TỪ VỰNG LẠ**: khối lấy `@@Identity` nằm trong `#region // **dt_Ser_RO_WH**` — tên chẳng liên quan gì tới
+//   `ROWarrantyRenewal` ⇒ khối chép từ hàm xử lý `Ser_RO` (họ #744/#745/#754/#772).
+// 🔴 **HAI LỐI GHI WH TRONG CÙNG MỘT HÀM**: nhánh cập nhật dùng `_dbWH.SaveData("Ser_MST_ROWarrantyRenewal", …)`
+//   còn nhánh thêm mới dùng `_dbWH.ExecQuery("insert into Ser_MST_ROWarrantyRenewal …")` ⇒ hai cơ chế khác nhau
+//   cho cùng một bảng, cùng một hàm (khuôn "hai DataTable song song" đã bắt ở #715).
+// 📌 §12: Mini chưa có bảng này ⇒ đã thêm **entity + DbSet + Seeder CREATE TABLE** và ba endpoint dưới đây,
+//   trong đó `GET` **đếm** số dòng sẽ bị `inner join` nuốt thay vì lặng lẽ bỏ.
+app.MapGet("/api/rowarrantyrenewals", async (AppDbContext db, ITenantContext t, string? vin) =>
+{
+    var qy = db.RoWarrantyRenewals.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(x => x.VIN == vin!.Trim().ToUpperInvariant());
+    var rows = await qy.OrderBy(x => x.VIN).Take(500).ToListAsync();
+    var cateCodes = rows.Select(x => x.WrtReneCateCode ?? "").Distinct().ToList();
+    var known = await db.WarrantyRenewalCategoryMsts
+        .Where(c => c.OrgId == t.OrgId && cateCodes.Contains(c.WrtReneCateCode))
+        .Select(c => c.WrtReneCateCode).ToListAsync();
+    var droppedByInnerJoin = rows.Count(x => !known.Contains(x.WrtReneCateCode ?? ""));
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows, droppedByInnerJoin,
+        sourceInnerJoinsCategory = "nguon _Get: inner join Ser_MST_ROWarrantyRenewalCategory on WrtReneCateCode => ban ghi tro toi loai da xoa se BIEN MAT",
+        chainWithCategoryDelete = "#541 da ghi: ...RenewalCategory_Delete KHONG chan xoa loai dang duoc dung => xoa loai la moi ban gia han dung no bien mat khoi man, du lieu van con trong bang",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/rowarrantyrenewals", async (List<RoWarrantyRenewalDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn _Save không guard gì (Raise/this.Check/my*_Check đều 0).
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Danh sách rỗng.", sourceWouldThrowNullReference = "nguon lay Tables[\"Ser_MST_ROWarrantyRenewal\"] khong kiem null => thieu bang la NullReference o vong for" });
+    for (var i = 0; i < rows.Count; i++)
+        if (string.IsNullOrWhiteSpace(rows[i].VIN))
+            return Results.BadRequest(new { error = "Chưa nhập VIN.", line = i + 1 });
+    var saved = 0;
+    foreach (var r in rows)
+    {
+        var vin = r.VIN!.Trim().ToUpperInvariant();
+        var cate = r.WrtReneCateCode?.Trim();
+        var row = await db.RoWarrantyRenewals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.WrtReneCateCode == cate);
+        if (row is null) { row = new RoWarrantyRenewal { OrgId = t.OrgId, VIN = vin, WrtReneCateCode = cate }; db.RoWarrantyRenewals.Add(row); }
+        row.Remark = r.Remark; row.LogLUDateTime = DateTime.Now; row.LogLUBy = "api";
+        saved++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        saved,
+        sourceSaveHasNoGuard = "nguon _Save: Raise=0, this.Check*=0, my*_Check*=0; region // Check Input Detail chi co AcceptChanges + lay Tables[...] => DANG THU TAM (#774) lap lai",
+        sourceUsesAtAtIdentityFourthTime = "select @@Identity ROWRID + Rows[0][0] — lan thu TU sau #744/#745/#747; mau dung la SCOPE_IDENTITY cung batch (#747)",
+        sourceTwoWriteMechanismsForWh = "nhanh cap nhat dung _dbWH.SaveData con nhanh them moi dung _dbWH.ExecQuery(insert into ...) => hai co che cho cung mot bang trong cung mot ham",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/rowarrantyrenewals/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.RoWarrantyRenewals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    // Nguồn _Delete CÓ guard (Raise=1 + this.Check*=1) — ngược với _Save.
+    if (row is null) return Results.NotFound(new { id, sourceDeleteHasGuardUnlikeSave = true });
+    db.RoWarrantyRenewals.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
 // ===== 🔴🔴🔴 #781 `SmsAccountPassword_ResetCache` + `Cm_GetDTime` — TÊN HÀM NÓI DỐI, VÀ NGUỒN THỜI GIAN THỨ TƯ =====
 // `SmsAccountPassword_ResetCache` (`BizCarSv.Master.cs:8461-8587` md5 `8836730b`, 115 dòng, `Raise` = **0**) ·
 // `Cm_GetDTime` (`BizCarSv.Common.cs:1631-1645` md5 `1308bcf8`, **13 dòng**). Cả hai đều được WS gọi.
@@ -68259,6 +68346,7 @@ record WarrantyClaimUpdateDto(string? CusName = null, string? CusAddress = null,
     string? ModelID = null, string? BatteryNo = null, string? SerialNo = null,
     DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null, decimal? WarrantyKM = null);
 record SmsResetPwdDto(string? PasswordNew = null);
+record RoWarrantyRenewalDto(string? VIN = null, string? WrtReneCateCode = null, string? Remark = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
