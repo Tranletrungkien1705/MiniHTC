@@ -19000,6 +19000,86 @@ var warrantyClaimStatusNames = warrantyClaimStatusNamesByScreen["biz"];
 //   `Ser_ROAttachment` (alias `swa`) · `Ser_ROWarrantyReport` — cùng một chuỗi SQL chạy lần lượt trên `_dbMain`,
 //   `_dbWH`, `_dbDealer` ⇒ không sót bảng con, không lệch CSDL. Khuôn sạch nhất của cụm bảo hành.
 // 📌 Mini: `DELETE /api/warrantyclaims/{id}` giữ **đúng thứ tự guard-trước-xoá-sau** và xoá đủ các bảng con.
+// ===== 🔴🔴🔴 #780 `Ser_ROWarrantyReport_HTCConfirm` vs `_HTCReject` — CẶP DUYỆT/TỪ CHỐI LỆCH PHẠM VI =====
+// `WarrantyReport.cs:8905-9148` md5 `d289dc02` (221 dòng) · `:11822-12061` md5 `d9e1d44f` (218 dòng).
+// Cả hai: `Raise` = 1, `this.Check*` = 1 (`CheckExistROWarrantyReport(… //Nghiệp vụ HTC)`), ghi trên **ba** CSDL.
+//
+// 🔴🔴🔴 **PHẠM VI TRẠNG THÁI ĐẦU VÀO LỆCH NHAU — VÀ LỆCH THEO CHIỀU KHÔNG QUAY LẠI ĐƯỢC** (luật #404)
+//   `_HTCConfirm`: `if (!StringEqual(strWarrantyStatus, Status.**Sent**)) throw …_HTCConfirm_InvalidWarrantyStatus;`
+//     ⇒ **chỉ** duyệt được khi đang `SENT`.
+//   `_HTCReject` : `if (!strStatus.Equals(Status.**Sent**) && !strStatus.Equals(Status.**Confirmed**)) throw …;`
+//     ⇒ từ chối được khi `SENT` **hoặc** `CONF`.
+//   ⇒ Ghép lại thành sơ đồ chuyển trạng thái:
+//       `SENT → CONF` (duyệt)  ·  `SENT → REJ` (từ chối)  ·  `CONF → REJ` (**huỷ duyệt** — cố ý cho phép)
+//     nhưng **`REJ → CONF` KHÔNG có**: `_HTCConfirm` không nhận `REJ`.
+//   ⇒ **Sau khi HTC từ chối, hai hàm này không cho quay lại.** Nếu từ chối nhầm thì phải đi đường khác
+//     (hoặc sửa tay CSDL) — và trong phạm vi cặp hàm này thì **không có đường nào**.
+//   📌 Đây là kiểu lệch phạm vi **có chủ ý một nửa**: mở thêm `CONF` cho nhánh từ chối là quyết định rõ ràng,
+//     nhưng chiều ngược lại thì không ai mở ⇒ cần đọc **cả cặp** mới thấy, đọc riêng từng hàm thì cả hai đều "hợp lý".
+//
+// ⚪⚪ **KIỂM TRA ÂM TÍNH — HAI LỐI VIẾT SO SÁNH LÀ TƯƠNG ĐƯƠNG**
+//   `_HTCConfirm` dùng `StringUtils.StringEqual(a, b)`, `_HTCReject` dùng `strStatus.Equals(...)` ⇒ thoạt nghĩ
+//   một bên phân biệt hoa/thường một bên không ⇒ dữ liệu lưu `'sent'` thường sẽ lệch nhau.
+//   Mở thân (`CommonUtils/CommonUtils.cs:372`): `StringEqual(obj1, obj2)` = `string.Equals(Convert.ToString(obj1),
+//   Convert.ToString(obj2))` ⇒ **cũng phân biệt hoa/thường**, chỉ khác ở chỗ an toàn với `DBNull`.
+//   ⇒ **Tương đương**. (Bản có `bIgnoreCase` là overload khác, không được dùng ở đây.) Không phải bug.
+//
+// 🔴🔴 **CẢ HAI ĐỀU KHÔNG CẬP NHẬT TRẠNG THÁI HẠNG MỤC CON**
+//   Trong cả hai hàm, khối cập nhật `Ser_ROWarrantyReportServiceItems` **bị comment trọn**:
+//     `-- set WarrantyStatus = N'CONF'` / `-- update Ser_ROWarrantyReportServiceItems`   (bản Confirm)
+//     `--set WarrantyStatus = N'REJ'`  / `--update Ser_ROWarrantyReportServiceItems`     (bản Reject)
+//   ⇒ Duyệt/từ chối **chỉ đổi trạng thái ở BÁO CÁO**, các **hạng mục dịch vụ vẫn giữ trạng thái cũ**.
+//   ⚪ Hai bản comment **giống nhau** ⇒ theo lập luận đối xứng (#749) là **chủ ý**, không phải bỏ sót một phía.
+//     Nhưng nó giải thích một điều quan trọng: **trạng thái hạng mục và trạng thái báo cáo có thể lệch nhau**,
+//     nên mọi báo cáo đọc theo `WarrantyStatus` của **hạng mục** sẽ không khớp với trạng thái báo cáo.
+// 🔴 Ghi chú `// Update in **DatA** WH` / `// Update in **DatA** Dealer` ở bản Confirm (bản Reject viết `Data`)
+//   — chép tay, giữ nguyên văn.
+// 📌 Mini: hai endpoint dưới đây giữ **đúng phạm vi trạng thái của từng nhánh** và **nói rõ** rằng `REJ` là ngõ cụt.
+app.MapPost("/api/warrantyclaims/{id:long}/htc-confirm", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (claim is null) return Results.NotFound(new { id });
+    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
+    if (st != "SENT")
+        return Results.BadRequest(new
+        {
+            error = "Ser_ROWarrantyReport_HTCConfirm_InvalidWarrantyStatus",
+            currentStatus = st, allowed = new[] { "SENT" },
+            rejectedIsDeadEnd = st == "REJ" ? "Da bi tu choi: cap ham nguon KHONG co duong dua REJ ve CONF" : null,
+        });
+    claim.Status = "CONF"; claim.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        id, status = claim.Status,
+        sourceConfirmOnlyFromSent = "nguon: if (!StringEqual(WarrantyStatus, Sent)) throw => CHI duyet duoc tu SENT",
+        sourceRejectAlsoAcceptsConfirmed = "nhanh tu choi nhan CA SENT lan CONF => CONF -> REJ duoc (huy duyet) nhung REJ -> CONF KHONG => sau khi tu choi la NGO CUT trong pham vi cap ham nay",
+        sourceDoesNotUpdateServiceItems = "khoi update Ser_ROWarrantyReportServiceItems bi comment tron o CA HAI ham => trang thai HANG MUC giu nguyen, co the lech voi trang thai BAO CAO",
+        stringEqualIsCaseSensitive = "AM TINH: StringUtils.StringEqual = string.Equals(Convert.ToString(...)) => CUNG phan biet hoa/thuong nhu .Equals; hai loi viet TUONG DUONG",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyclaims/{id:long}/htc-reject", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (claim is null) return Results.NotFound(new { id });
+    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
+    // Nguồn nhận CẢ SENT lẫn CONF — rộng hơn nhánh duyệt đúng một trạng thái.
+    if (st != "SENT" && st != "CONF")
+        return Results.BadRequest(new
+        {
+            error = "Ser_ROWarrantyReport_HTCReject_InvalidWarrantyStatus",
+            currentStatus = st, allowed = new[] { "SENT", "CONF" },
+        });
+    claim.Status = "REJ"; claim.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        id, status = claim.Status,
+        rejectIsOneWay = "Cap ham nguon khong co duong dua REJ ve CONF: _HTCConfirm chi nhan SENT",
+        sourceDoesNotUpdateServiceItems = "khoi update Ser_ROWarrantyReportServiceItems bi comment tron (--set WarrantyStatus = N'REJ')",
+    });
+}).RequireAuthorization();
 app.MapDelete("/api/warrantyclaims/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
