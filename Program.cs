@@ -11151,6 +11151,73 @@ app.MapGet("/api/smsbrandnames", async (AppDbContext db, ITenantContext t, strin
 //    `Acc_Balance_Get` (dòng 551) — không có lệnh ghi nào cho hai bảng này. Số dư chỉ đổi qua
 //    `Acc_Transaction` (đã có `POST /api/smsaccounts/{name}/tx`).
 
+// ===== 🔴🔴🔴 #781 `SmsAccountPassword_ResetCache` + `Cm_GetDTime` — TÊN HÀM NÓI DỐI, VÀ NGUỒN THỜI GIAN THỨ TƯ =====
+// `SmsAccountPassword_ResetCache` (`BizCarSv.Master.cs:8461-8587` md5 `8836730b`, 115 dòng, `Raise` = **0**) ·
+// `Cm_GetDTime` (`BizCarSv.Common.cs:1631-1645` md5 `1308bcf8`, **13 dòng**). Cả hai đều được WS gọi.
+// 🔴 BƯỚC 3B (`Common.cs` **khác nhau giữa hai máy**, +666 dòng ở 150): `Cm_GetDTime` ở laptop `:1631`, ở 150
+//   `:2297` — lệch 666 đúng bằng chênh lệch file, và md5 **chuẩn hoá** hai bên đều `d3a2c2ef…` ⇒ **giống hệt**.
+//
+// 🔴🔴🔴 **`SmsAccountPassword_ResetCache` KHÔNG ĐỘNG ĐẾN CACHE — NÓ ĐỔI MẬT KHẨU TRONG CSDL**
+//   Toàn bộ phần việc của hàm là một câu:
+//     `update t set **SmsAccountPassword = @strPasswordNew** from **Sms_Account** t where (1=1) and SmsAccountCode = @strAccountCode;`
+//   ⇒ Tên hàm nói "đặt lại **bộ nhớ đệm**" — một thao tác nghe vô hại, thường được cấp quyền rộng rãi — trong khi
+//     việc thật là **đổi mật khẩu tài khoản gửi SMS**. Cùng họ #751 (`SerGetToCCare` tên Get nhưng là hàm ghi),
+//     nhưng nặng hơn vì **cái tên trực tiếp làm sai lệch đánh giá rủi ro khi phân quyền**.
+//   🔴 **Mật khẩu ghi thẳng chữ rõ** vào cột `SmsAccountPassword` — lặp lại đúng bệnh đã chứng minh ở #760
+//     (`Sys_User.UserPassword`). Hai hệ tài khoản khác nhau, cùng một cách lưu.
+//   🔴 **`#region // Check:` RỖNG HOÀN TOÀN** (trích trọn đúng 2 dòng `#region`/`#endregion` — đủ điều kiện #403)
+//     ⇒ không kiểm tài khoản tồn tại, không kiểm độ mạnh mật khẩu. Mã tài khoản sai ⇒ `nResult = 0`, **không lỗi**.
+//   🔴 **`myUtils_ValidateId(...)` bị comment trọn** ngay phía trên ⇒ **không chống gọi lặp** (khác đại đa số hàm khác).
+//   ⚪⚪ **HAI ĐIỂM LÀM ĐÚNG, phải ghi cho cân**: (1) câu lệnh **tham số hoá đầy đủ** (`@strPasswordNew`,
+//     `@strAccountCode`) — **không** bake chuỗi như #768; (2) `int nResult = _dbMain.ExecNonQuery(...)` rồi
+//     `CMyDataSet.SetRemark(ref mdsFinal, nResult)` ⇒ **số dòng ảnh hưởng được trả về cho client**, nên bên gọi
+//     **có thể** tự phát hiện "đổi 0 dòng" — thứ mà rất nhiều hàm xoá/sửa khác trong hệ không làm (#710/#736/#742).
+//
+// 🔴🔴 **`Cm_GetDTime` LÀ NGUỒN THỜI GIAN THỨ TƯ CỦA HỆ**
+//   Thân đúng một dòng có nghĩa: `SetRemark(ref mdsFinal, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.**ffffff**"))`.
+//   #752 đã liệt kê ba nguồn trong `CommonGetMixItem`: `GetTDate` (tham số cấu hình) · `GetTDateTime` (giờ **app**,
+//     định dạng `yyyy-MM-dd HH:mm:ss`) · `GetDateTimeDB` (giờ **CSDL**). `Cm_GetDTime` là nguồn **thứ tư**:
+//     vẫn giờ app **nhưng có 6 chữ số phần giây**.
+//   ⇒ Client lấy mốc từ `Cm_GetDTime` rồi đem so/ghép với mốc lấy từ `GetTDateTime` sẽ **lệch định dạng**
+//     (một bên có `.ffffff`, một bên không) ⇒ so chuỗi thì sai, và cắt chuỗi thì mất phần giây.
+//   ⚪ Không có guard, không transaction, không chạm CSDL ⇒ đúng bản chất một hàm tiện ích.
+// ⚪⚪ **`ProcessBizReturn_LogFile` ĐÃ CHẾT**: đếm toàn solution `grep -rho "ProcessBizReturn_LogFile("` = **1**
+//   ⇒ đúng dòng khai báo, **không ai gọi** (áp luật #758 — và ở đây chỉ 1 hit nên không dính bẫy `Web References/`).
+// 📌 Mini: `POST /api/smsaccounts/{accountCode}/reset-password` — **đặt đúng tên theo việc thật**, lưu **băm**,
+//   trả `affectedRows` như nguồn, và **thêm** guard tài khoản tồn tại (khác nguồn CÓ CHỦ Ý).
+app.MapPost("/api/smsaccounts/{accountCode}/reset-password", async (string accountCode, SmsResetPwdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = accountCode.Trim();
+    var pwd = dto.PasswordNew ?? "";
+    if (pwd.Length < 1) return Results.BadRequest(new { error = "Mật khẩu mới rỗng." });
+    var acc = await db.SmsAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountCode == code);
+    // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn có #region Check RỖNG ⇒ mã sai chỉ cho affectedRows = 0, không báo lỗi.
+    if (acc is null)
+        return Results.NotFound(new
+        {
+            accountCode = code, affectedRows = 0,
+            sourceWouldReturnZeroSilently = "nguon khong kiem tai khoan ton tai; ma sai chi cho nResult = 0 va KHONG bao loi",
+        });
+    acc.SmsAccountPasswordHash = HashPwd(pwd);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        accountCode = code, affectedRows = 1,
+        sourceFunctionNameLies = "ten nguon la SmsAccountPassword_ResetCache (dat lai bo nho dem) nhung than la update Sms_Account set SmsAccountPassword = ... => DOI MAT KHAU trong CSDL; ten lam sai lech danh gia rui ro khi phan quyen",
+        sourceStoresPlaintext = "nguon ghi thang chuoi ro vao cot SmsAccountPassword — cung benh #760 (Sys_User.UserPassword); Mini luu bam",
+        sourceCheckRegionEmpty = "#region // Check: rong hoan toan (dang d cua #728) va myUtils_ValidateId bi comment tron => khong chong goi lap",
+        sourceDoesTwoThingsRight = "AM TINH: cau lenh THAM SO HOA day du (khac #768) va tra ve so dong anh huong qua SetRemark(nResult) nen ben goi CO THE tu phat hien doi 0 dong",
+    });
+}).RequireAuthorization();
+
+// #781 `Cm_GetDTime` — nguồn thời gian THỨ TƯ của hệ (giờ app, 6 chữ số phần giây).
+app.MapGet("/api/_meta/dtime", () => Results.Ok(new
+{
+    value = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.ffffff"),
+    sourceIsFourthTimeSource = "#752 da liet ke 3 nguon trong CommonGetMixItem (GetTDate = tham so cau hinh, GetTDateTime = gio app dinh dang yyyy-MM-dd HH:mm:ss, GetDateTimeDB = gio CSDL); Cm_GetDTime la nguon THU TU: gio app nhung co 6 chu so phan giay",
+    formatMismatchRisk = "moc tu Cm_GetDTime co .ffffff con moc tu GetTDateTime thi khong => so chuoi se sai, cat chuoi thi mat phan giay",
+    twoMachinesVerified = "Common.cs lech 666 dong giua hai may nhung Cm_GetDTime md5 chuan hoa deu d3a2c2ef => giong het",
+})).RequireAuthorization();
 // ===== Tài khoản SMS trả trước + sổ giao dịch (SmsAccount — port 1:1 FrmSMSAccountMng, TCMotor) =====
 app.MapGet("/api/smsaccounts", async (AppDbContext db, ITenantContext t) =>
 {
@@ -68191,6 +68258,7 @@ record WarrantyClaimUpdateDto(string? CusName = null, string? CusAddress = null,
     string? Description = null, string? HtcNote = null, string? PlateNo = null, string? Vin = null,
     string? ModelID = null, string? BatteryNo = null, string? SerialNo = null,
     DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null, decimal? WarrantyKM = null);
+record SmsResetPwdDto(string? PasswordNew = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12

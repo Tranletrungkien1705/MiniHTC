@@ -13362,6 +13362,11 @@ public sealed class SmsPriceSend
 /// <summary>Tài khoản SMS trả trước (số dư) — port 1:1 FrmSMSAccountMng (TblSMS_Account, TCMotor).</summary>
 public sealed class SmsAccount
 {
+    /// <summary>🔴 #781 §12 `Sms_Account.SmsAccountPassword` — mật khẩu tài khoản SMS.
+    /// Nguồn `SmsAccountPassword_ResetCache` ghi **thẳng chuỗi rõ** vào cột này (cùng bệnh #760).
+    /// Mini lưu **băm** (`…Hash`) — khác nguồn CÓ CHỦ Ý.</summary>
+    public string? SmsAccountPasswordHash { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string AccountName { get; set; } = "";
