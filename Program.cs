@@ -27621,6 +27621,80 @@ app.MapGet("/api/rowarrantytypes", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { count = items.Count, notFound = items.Count == 0, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #774 `Ser_ROWarrantyReport_Create` vs `…_Create_20220218` — HAI BẢN TẠO BÁO CÁO BẢO HÀNH, CẢ HAI LIVE =====
+// `BizCarSv.WarrantyReport.cs`: bản trần `:1813-2223` md5 `fd19d9c6` (387 dòng) ·
+// bản `_20220218` `:2224-2849` md5 `8cdec080` (**585 dòng**). WS gọi **CẢ HAI** (`_biz.Ser_ROWarrantyReport_Create`
+// **và** `_biz.Ser_ROWarrantyReport_Create_20220218`) ⇒ **hai đường tạo song song, không phải bản cũ đã chết**.
+// 🔴 BƯỚC 3B (bắt buộc kỹ — `WarrantyReport.cs` **khác nhau giữa hai máy**: 23124 dòng ở laptop vs **23646** ở 150,
+//   chênh **522** dòng): hai hàm này ở **cùng vị trí** `:1813` và `:2224` trên cả hai máy, và md5 **chuẩn hoá**
+//   khớp từng hàm (`b2f08370…` / `f3aea483…`) ⇒ **chênh lệch nằm ở hàm khác, phía sau vùng này**. An toàn để port.
+//
+// 🔴🔴🔴 **BẢN CŨ KHÔNG CÓ MỘT GUARD NÀO — VÀ NÓ VẪN ĐANG NHẬN LỜI GỌI**
+//   Đếm theo luật ba nguồn (#747 + #760) trên **bản trần**: `CMyException.Raise` = **0** · `this.Check*` = **0** ·
+//   `my*_Check*` = **0**. Áp luật #403 (phải trích TRỌN region trước khi tuyên bố), region `Check` của nó **đủ 5 dòng**:
+//     `#region // Check` / `//` / `string strTDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");` / `//` / `#endregion`
+//   ⇒ Region mang tên "Check" nhưng nội dung là **một phép gán ngày** — không phải comment rỗng (dạng d ở #728),
+//     không phải mã bị comment trọn (dạng e ở #736), mà là **mã KHÁC được để nhầm chỗ**. Đây là **dạng thứ TÁM**
+//     của họ "guard vắng mặt", và là dạng **khó thấy nhất bằng grep** vì region không hề rỗng.
+//   Bản `_20220218` cùng chỗ đó có **6 `CMyException.Raise` + 2 `this.Check*`**, mở đầu bằng
+//     `this.CheckROExistROWarrantyReport(_dbDealer, ref alParamsCoupleError, strROID, out dt_WarrantyCceck)`
+//     (giữ nguyên lỗi chính tả `dt_WarrantyCceck`) ⇒ **chặn tạo trùng báo cáo bảo hành cho cùng một lệnh sửa chữa**.
+//   ⇒ **Tạo qua đường cũ thì bỏ qua toàn bộ kiểm tra, kể cả chống trùng.** Hai đường cùng ghi một bảng.
+//
+// 🔴🔴 **BỐN THAM SỐ CHỈ CÓ Ở BẢN MỚI**: `strROWTID` · `strErrorCodePN` · `strErrorCodeCD` · `strPartIDError`
+//   ⇒ bản cũ **không nhận** mã lỗi phụ tùng / mã lỗi chẩn đoán ⇒ báo cáo tạo bằng đường cũ **thiếu hẳn** những
+//     trường mà HMC dùng để xét duyệt. Sáu guard của bản mới đều xoay quanh bốn trường này:
+//       ① `dtDB_ROWTID.Rows.Count == 0` → `Ser_WarrantyReport_**Update**_InvalidROWTID` ← **mã lỗi mang chữ "Update"
+//          trong một hàm Create** (nhãn chép nhầm, họ #741/#744/#755/#770);
+//       ② `…Create_InvalidROWTID` · ③ `…InvalidErrorCodePN` · ④ `…InvalidErrorCodeCD` · ⑤⑥ `…InvalidPartIDError` (hai lần).
+//   ⚪ Ba guard ③④⑤ bọc trong `if (!StringUtils.IsEmpty(...))` ⇒ **chỉ kiểm khi có nhập** — đúng ý cho trường tuỳ chọn.
+// 🔴 **HẰNG ≠ GIÁ TRỊ**: guard cuối so `strROWTypeDtlCode` với `Constants.Ser_MST_ROWarrantyType_ROWTypeDtlCode.**A**`.
+//   Mở hằng (`TERP.Constants/Const.Main.cs:505-513`) ra bảng đầy đủ, **nguyên văn cả chú thích tiếng Việt**:
+//     `A` = Báo cáo bảo hành AVN · `B` = bình ắc quy · `P` = sơn · `W` = **thông thường** · `S` = bảo hành phụ tùng ·
+//     `R` = bảo hành thiện chí · `C` = bản tin/chiến dịch/Bản tin kỹ thuật.
+//   ⇒ Bảy loại báo cáo bảo hành; guard chỉ tách riêng loại **`A`** ⇒ sáu loại còn lại đi chung một nhánh.
+// 📌 Mini chưa có đường TẠO báo cáo bảo hành (chỉ có các endpoint đọc/báo cáo trên `ServiceWarrantyClaims`)
+//   ⇒ endpoint dưới đây port theo **bản CÓ guard** (`_20220218`), và nêu rõ bản cũ vẫn sống.
+app.MapPost("/api/servicewarrantyclaims", async (WarrantyClaimCreateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var roId = (dto.ROID ?? "").Trim();
+    if (roId.Length == 0) return Results.BadRequest(new { error = "Chưa nhập ROID." });
+    // Guard của bản _20220218: CheckROExistROWarrantyReport — chống TRÙNG báo cáo cho cùng một lệnh sửa chữa.
+    var existed = await db.ServiceWarrantyClaims.AnyAsync(x => x.OrgId == t.OrgId && x.ROID == roId);
+    if (existed)
+        return Results.BadRequest(new
+        {
+            error = "CheckROExistROWarrantyReport",
+            message = "Lệnh sửa chữa này đã có báo cáo bảo hành.",
+            sourceLegacyPathSkipsThis = "duong cu Ser_ROWarrantyReport_Create KHONG co guard nay va van dang LIVE",
+        });
+    var typeDtl = (dto.ROWTypeDtlCode ?? "").Trim().ToUpperInvariant();
+    var validTypes = new[] { "A", "B", "P", "W", "S", "R", "C" };
+    if (typeDtl.Length > 0 && !validTypes.Contains(typeDtl))
+        return Results.BadRequest(new { error = "ROWTypeDtlCode không hợp lệ.", validTypes });
+    var claim = new ServiceWarrantyClaim
+    {
+        OrgId = t.OrgId,
+        ClaimNo = "ROW" + DateTime.Now.ToString("yyMMddHHmmss"),
+        ROID = roId, RONo = dto.RONo, DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        ROWTypeCode = dto.ROWTypeCode, ROWTypeDtlCode = typeDtl.Length > 0 ? typeDtl : null,
+        ROWTID = dto.ROWTID, ErrorCodePN = dto.ErrorCodePN, ErrorCodeCD = dto.ErrorCodeCD,
+        PartIDError = dto.PartIDError, Description = dto.Description,
+        Status = "Pending", HMCApiStatus = "", CreatedBy = "api",
+    };
+    db.ServiceWarrantyClaims.Add(claim);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        claim.ClaimNo, claim.ROID, claim.ROWTypeDtlCode,
+        sourceHasTwoLivePaths = "WS goi CA HAI: Ser_ROWarrantyReport_Create (ban tran, 0 guard) va _Create_20220218 (6 Raise + 2 this.Check) => tao qua duong cu bo qua moi kiem tra, ke ca chong trung",
+        sourceLegacyCheckRegionHoldsUnrelatedCode = "dang thu TAM cua ho guard vang mat: region ten Check nhung noi dung la mot phep gan ngay (strTDate), khong phai comment rong (#728 dang d) cung khong phai ma bi comment tron (#736 dang e)",
+        sourceLegacyMissesFourFields = "ban cu KHONG nhan strROWTID / strErrorCodePN / strErrorCodeCD / strPartIDError => bao cao thieu han cac truong HMC dung de xet duyet",
+        sourceErrorLabelSaysUpdateInsideCreate = "guard dau tien cua ban moi nem Ser_WarrantyReport_Update_InvalidROWTID trong mot ham Create => nhan chep nham",
+        sourceSevenReportTypes = "Const.Main.cs:505-513 — A=AVN, B=binh ac quy, P=son, W=thong thuong, S=bao hanh phu tung, R=bao hanh thien chi, C=ban tin/chien dich; guard chi tach rieng loai A",
+        twoMachinesVerified = "WarrantyReport.cs lech 522 dong giua hai may (23124 vs 23646) nhung hai ham nay cung vi tri va md5 chuan hoa khop => chenh lech nam o ham khac",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/rowarrantytypes", async (
     ROWarrantyTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
@@ -67741,6 +67815,9 @@ record CareMaceOsUpdateDto(string? Status = null, DateTime? ApointDate = null, D
 record TstSendPartRowDto(string? PartID = null, string? VieName = null, decimal? VAT = null, string? Unit = null,
     string? PartTypeID = null, string? FlagInTST = null, decimal? MinQuantity = null);
 record UploadNameCheckDto(string? FileName = null);
+record WarrantyClaimCreateDto(string? ROID = null, string? RONo = null, string? DealerCode = null,
+    string? ROWTypeCode = null, string? ROWTypeDtlCode = null, string? ROWTID = null,
+    string? ErrorCodePN = null, string? ErrorCodeCD = null, string? PartIDError = null, string? Description = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
