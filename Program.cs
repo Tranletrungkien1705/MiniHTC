@@ -55025,6 +55025,71 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
 }).RequireAuthorization();
 
 // Gắn RO (kiểm tra RO tồn tại — tích hợp RepairOrder)
+// ===== 🔴🔴🔴 #772 `Ser_ReceptionF_Delete_New20180921` — XOÁ PHIẾU TIẾP NHẬN =====
+// Vỏ bọc `BizCarSv.ZTemp.cs:22960-23077` md5 `994a7f63` → thân thật **`Ser_ReceptionF_DeleteX_New20180921`**
+// (`:22748-22959` md5 `086997a4`, 193 dòng active). Xoá trên **cả ba** CSDL: `_dbMain` · `_dbWH` · `_dbDealer`.
+//
+// 🔴🔴🔴 **XOÁ TRƯỚC — HỎI "CÓ ĐƯỢC XOÁ KHÔNG" SAU**
+//   Thứ tự thật trong hàm X: ba câu `delete t …` chạy qua `_dbMain.ExecQuery` (`:147`), `_dbWH.ExecQuery` (`:151`),
+//   `_dbDealer.ExecQuery` (`:157`) — **rồi mới** tới khối cuối:
+//     `#region // Chỉ được xóa phiếu tiếp nhận khi phiếu tiếp nhận chưa làm báo giá:`
+//     `select top 1 * from Ser_RO t where 1=1 and t.ReceptionFNo = @strReceptionFNo;`
+//     `if (dtDB_Ser_RO.Rows.Count > 0) throw …Ser_ReceptionF_DeleteX_ExistRONotDeleter;`
+//   ⇒ **Nặng hơn #754**: ở đó guard kiểm *dữ liệu đầu vào*; ở đây guard trả lời đúng câu hỏi **"có được phép xoá
+//     hay không"** — và nó được hỏi **sau khi đã xoá xong ở ba CSDL**.
+//   ⚪ **Transaction cứu được**: vỏ bọc khai `bNeedTransaction_Main/_WH/_Dealer` **đều `= true`**, và `catch` gọi
+//     `RollbackSafety` cho cả ba ⇒ trong vận hành hiện tại dữ liệu được huỷ sạch.
+//   🕓 **Vỡ khi nào**: đúng lúc một cờ bị đặt `false` — chính là những gì đã xảy ra ở `JDPowerTerm_Update` (#742).
+//     Ghi đúng mức: **rủi ro có điều kiện**, không phải bug đang xảy ra.
+//
+// 🔴🔴 **GUARD ĐỌC MỘT CSDL NHƯNG XOÁ BA**: câu kiểm chạy trên `_dbDealer` (dòng active), trong khi lệnh xoá đánh
+//   vào cả ba. ⇒ Phiếu có báo giá **ở Main hoặc WH** nhưng **không có ở Dealer** thì guard **không thấy** ⇒ **vẫn xoá**.
+//   📌 Dòng ngay trên là bản cũ **bị comment kèm ngày**: `//DataTable dtDB_Ser_RO = _dbMain.ExecQuery(…); //**2021-06-24**`
+//     ⇒ trước đây guard đọc **Main**, ngày 2021-06-24 đổi sang **Dealer**. Port dòng ACTIVE (Dealer), nhưng phải
+//     ghi lại: việc đổi này **thu hẹp phạm vi guard** từ CSDL trung tâm xuống CSDL đại lý.
+//
+// 🔴 **`select top 1 * from Ser_RO` KHÔNG `ORDER BY`** (#415): chỉ dùng để kiểm tồn tại thì vô hại, **nhưng**
+//   thông báo lỗi lại nhét `dtDB_Ser_RO.Rows[0]["**RONo**"]` vào `alParamsCoupleError` ⇒ người dùng thấy **một số RO
+//   bất kỳ** trong nhóm và dễ tưởng đó là RO duy nhất chặn việc xoá.
+// 🔴 **TÊN HÀM TRONG LOG RỤNG HẬU TỐ**: `strFunctionName = "Ser_ReceptionF_Delete"` (thiếu `_New20180921`).
+//   ⚪ Nhẹ hơn #755: grep toàn `TERP.BizCarSv` cho thấy bản không hậu tố **chỉ tồn tại trong `Web References/`**
+//     (proxy của hệ khác) ⇒ **không trùng hàm thật nào trong CarSv**, nên log chỉ mờ chứ không lẫn.
+// 🔴 **TỪ VỰNG LẠ Ở TÊN REGION**: `#region // Se**D**_ReceptionF_**Delivery**X:` bọc lời gọi `Ser_ReceptionF_**Delete**X_…`
+//   ⇒ sai cả tiền tố (`SeD`) lẫn động từ (`Delivery` vs `Delete`) ⇒ khối chép từ hàm **giao xe** (họ #744/#745/#754).
+// ⚪⚪ **KIỂM TRA ÂM TÍNH KÈM THEO — cặp `SpSharePartGet` ↔ `SpSharePartGet_WH` thì LÀNH**:
+//   `PartOrder.cs:5554-5772` md5 `522a4b74` ↔ `WH.cs:30177-30390` md5 `45bfdc50`; DIFF trọn hàm chỉ ra **handle**
+//   (`_dbMain` vs `_dbWH`) và **một dòng comment**: `// lấy trên main. vì là nghiệp vụ chia sẻ`.
+//   ⇒ Bản thường **cố ý** đọc `_dbMain` (không phải `_dbDealer`) vì chia sẻ phụ tùng là **nghiệp vụ liên đại lý**.
+//     Không có bản `_Dealer` ⇒ đại lý muốn xem danh sách chia sẻ **phải đi qua bản Main**. Khác hẳn cặp ở #771.
+// 📌 Mini: `DELETE /api/receptions/{no}` — **kiểm TRƯỚC, xoá SAU** (khác nguồn CÓ CHỦ Ý) và **đếm** số RO chặn.
+app.MapDelete("/api/receptions/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var code = no.Trim();
+    var rec = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == code);
+    if (rec is null) return Results.NotFound(new { receptionNo = code });
+    // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn xoá ở ba CSDL rồi mới hỏi "đã có báo giá chưa". Mini hỏi trước.
+    var blockingRos = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.ReceptionFNo == code)
+        .Select(r => r.RONo).ToListAsync();
+    if (blockingRos.Count > 0)
+        return Results.BadRequest(new
+        {
+            error = "Ser_ReceptionF_DeleteX_ExistRONotDeleter",
+            message = "Phiếu tiếp nhận đã có lệnh sửa chữa/báo giá, không được xoá.",
+            blockingCount = blockingRos.Count, blockingRos,
+            sourceShowsOnlyOneRo = "nguon dung select top 1 * roi lay Rows[0][RONo] => nguoi dung chi thay MOT so RO bat ky",
+        });
+    db.Receptions.Remove(rec);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        deleted = code,
+        sourceDeletesBeforeChecking = "nguon chay 3 cau delete tren _dbMain + _dbWH + _dbDealer ROI MOI hoi da co bao gia chua; nang hon #754 vi day la guard tra loi CO DUOC XOA HAY KHONG",
+        sourceSafeOnlyBecauseTransaction = "ba co bNeedTransaction_Main/_WH/_Dealer deu = true va catch RollbackSafety ca ba => rui ro CO DIEU KIEN, vo khi ai do dat false (nhu #742)",
+        sourceGuardReadsDealerButDeletesThree = "cau kiem chay tren _dbDealer (dong active; ban cu doc _dbMain bi comment kem ngay 2021-06-24) trong khi xoa ca ba CSDL => bao gia chi co o Main/WH thi guard KHONG THAY",
+        sourceLogsNameWithoutSuffix = "strFunctionName = Ser_ReceptionF_Delete (rung _New20180921); ban khong hau to chi ton tai trong Web References/ nen log chi MO chu khong lan (nhe hon #755)",
+        sourceRegionVocabularyMismatch = "region ten SeD_ReceptionF_DeliveryX boc loi goi Ser_ReceptionF_DeleteX => khoi chep tu ham giao xe",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/receptions/{no}/linkro", async (string no, ReceptionLinkDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
