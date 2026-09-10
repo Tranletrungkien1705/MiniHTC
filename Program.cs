@@ -58548,6 +58548,108 @@ app.MapGet("/api/report/warranty-accept-getall-wh", async (AppDbContext db, ITen
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #738 VỊ TRÍ KHO `Ser_Mst_Location_Create/_Update/_Delete` — TRẢ NỢ #708 =====
+// `BizCarSv.Master.cs` — `_Create` :6725-6914 md5 `2fc721e9` · `_Delete` :6916-7158 md5 `c6e73f33` ·
+// `_Update` :7160-7331 md5 `12a89f6b`. WS LIVE `WSCarSv.asmx.cs:4561/4601/4637/4674` (tên **không** hậu tố).
+// → `POST|PUT /api/serlocations`, `DELETE /api/serlocations/{dealerCode}/{locationId}`.
+// 📌 Nợ #708 ghi `Ser_Mst_Location` **chưa mô hình hoá** ⇒ nay tạo entity, **trả nợ**.
+//
+// ⚪⚪⚪ **HÀM XOÁ CÓ GUARD TỐT NHẤT GẶP TỚI GIỜ — MẪU NGƯỢC MẠNH CHO CẢ HỌ "XOÁ KHÔNG GUARD"**
+//   (#710 `Email_Config_Delete` · #712 `Email_TempEmail_Delete` · #726 `Mst_VINModelOrginal_Delete` ·
+//    #728 `Mst_Param_Delete` · #736 `Ser_Mst_FilePathVideo_Delete` — **tất cả** đều `Raise` = 0).
+//   `Ser_Mst_Location_Delete` có **`Raise` = 3**, là **BA guard ràng buộc tham chiếu**:
+//     1. `#region // Check còn tồn kho tại vị trí đó thì k xóa` → `Ser_Inv_StockBalance`, ném
+//        `Ser_Location_AvaiableQuantityBalance` (giữ **nguyên văn** lỗi chính tả `Avaiable`).
+//     2. `#region // Check còn phiếu nhập ở trạng thái 1,2,3 thì k ddc xóa` → `Ser_Inv_StockInDetail`
+//        `inner join Ser_Inv_StockIn … and sisi.Status **not in ('4','5')**`.
+//     3. `#region // Check còn phiếu XUẤT ở trạng thái 1,2,3 thì k ddc xóa **20140221**` → tương tự phía xuất.
+//   ⇒ Chứng minh dứt điểm rằng "xoá không guard" ở năm hàm kia là **thiếu sót của từng hàm**, không phải quy ước.
+//
+// 🔴🔴🔴 **NHƯNG GUARD CHỐNG TỒN KHO CÓ HAI LỖ THẬT**:
+//   · **`"top 1 *"` KHÔNG `ORDER BY`** trên `Ser_Inv_StockBalance` lọc theo `(LocationID, DealerCode)`:
+//     một vị trí kho chứa **nhiều phụ tùng** ⇒ nhiều dòng tồn ⇒ guard chỉ đọc **MỘT dòng bất kỳ**.
+//     ⇒ Dòng đó tình cờ có `InStockQuantity = 0` ⇒ **cho xoá vị trí vẫn đang chứa hàng**. (#411/#415)
+//   · **KẾT QUẢ `TryParse` BỊ VỨT BỎ**:
+//       `bool isStock = double.TryParse(strInStockQuantity, out iStockQuantity);`
+//       `if (iStockQuantity > 0) throw …`
+//     Biến `isStock` **không được dùng ở đâu cả**. `TryParse` thất bại ⇒ `iStockQuantity` = **0** ⇒ guard
+//     **im lặng cho qua** ⇒ giá trị tồn kho **không đọc được** bị coi như **hết hàng**.
+//   📌 Đây là dạng "**biến giữ kết quả kiểm nhưng không ai đọc**" — họ hàng với `Capacity` thay `Count` (#721)
+//     và `isStock` ở đây còn **rõ ý định hơn**: người viết **đã** nghĩ tới việc parse có thể hỏng.
+// 🔴🔴 **GUARD ĐỌC CSDL ĐẠI LÝ NHƯNG XOÁ Ở MAIN + WH** (họ #704 `guard-DB ≠ write-DB`) — đếm **tách riêng
+//   đọc/ghi** (luật `C0-ducentesimusquadragesimusquintus`, và lần này phải tách thêm `ExecQuery`=**ĐỌC** với
+//   `ExecNonQuery`=**GHI**):
+//     `_dbDealer`: `ExecQuery` = **3** ⇒ **ba câu KIỂM** (không phải ba câu xoá — suýt đọc nhầm)
+//     `_dbMain` / `_dbWH`: `ExecQuery` = **1** mỗi bên ⇒ **hai câu XOÁ**
+//   ⇒ Vị trí kho bị xoá ở Main+WH nhưng **CSDL đại lý — nơi vừa được kiểm tồn kho — KHÔNG bị xoá**.
+// ⚪ **DƯƠNG TÍNH — `_Create` và `_Update` ghi ĐỦ BA CSDL**: `SaveData` = **1/1/1** ⇒ **mẫu ngược thứ SÁU**
+//   cho #726. Nhưng `_Delete` chỉ xoá **2/3** ⇒ **trong cùng một bộ CRUD, tạo/sửa ba nơi mà xoá chỉ hai nơi**
+//   ⇒ bản ghi ở CSDL đại lý **tồn tại mãi**.
+// 🔴 **`_Create`/`_Update` có `Raise` = 0** dù `#region // Check` **có mã chạy** (9 và 16 dòng active)
+//   ⇒ chúng gọi helper `…_CheckDB` (helper mới là nơi ném). ⚠️ Ghi rõ để **không** đếm `Raise` = 0 thành
+//   "không có guard" — đó là dạng **thứ sáu** cần phân biệt: **guard ủy quyền cho helper**.
+app.MapPost("/api/serlocations", async (SerLocationDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dlr = (dto.DealerCode ?? "").Trim();
+    var loc = (dto.LocationID ?? "").Trim();
+    if (loc.Length == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_Location_InvalidLocationID" });
+    if (await db.SerMstLocations.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dlr && x.LocationID == loc))
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_Location_Found", locationId = loc });
+
+    var row = new SerMstLocation
+    {
+        OrgId = t.OrgId, DealerCode = dlr, LocationID = loc, LocationCode = dto.LocationCode,
+        LocationName = dto.LocationName, StockNo = dto.StockNo, IsActive = dto.IsActive ?? "1",
+    };
+    db.SerMstLocations.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.LocationID, row.DealerCode, row.LocationCode, row.LocationName, row.IsActive,
+        createUpdateWriteAllThreeDatabases = "DUONG TINH: _Create va _Update ghi DU BA CSDL — SaveData = 1/1/1 => MAU NGUOC THU SAU cho #726. Nhung _Delete chi xoa 2/3 => TRONG CUNG MOT BO CRUD, tao/sua ba noi ma xoa chi hai noi => ban ghi o CSDL dai ly TON TAI MAI",
+        raiseZeroButGuardsDelegatedToHelper = "_Create/_Update co Raise = 0 du #region // Check CO MA CHAY (9 va 16 dong active) => chung goi helper …_CheckDB (helper moi la noi nem). Ghi ro de KHONG dem Raise = 0 thanh khong-co-guard — day la DANG THU SAU can phan biet: GUARD UY QUYEN CHO HELPER",
+    });
+}).RequireAuthorization();
+
+// #738 `Ser_Mst_Location_Delete` (`:6916`) — BA guard tham chiếu, nhưng guard tồn kho có hai lỗ.
+app.MapDelete("/api/serlocations/{dealerCode}/{locationId}", async (string dealerCode, string locationId,
+    AppDbContext db, ITenantContext t) =>
+{
+    var dlr = (dealerCode ?? "").Trim();
+    var loc = (locationId ?? "").Trim();
+
+    // GUARD 1 — nguồn: GetTableContents(_dbDealer, "Ser_Inv_StockBalance", "top 1 *", ORDER BY rỗng, …)
+    //   🔴 Port đọc TẤT CẢ dòng tồn của vị trí (nguồn chỉ đọc MỘT) và đo phần nguồn bỏ sót.
+    // 📌 Mini CHUA mo hinh hoa `Ser_Inv_StockBalance` => KHONG the tai hien guard ton kho.
+    //   Ghi NO thay vi bia du lieu; hai co duoi day de nguyen 0 va noi ro ly do.
+    var rowsWithStock = 0;
+    var sourceWouldOnlySeeFirstRow = false;
+    var balanceRowsUnknown = "Mini chua mo hinh hoa Ser_Inv_StockBalance => guard ton kho CHUA port duoc; ghi NO";
+    if (rowsWithStock > 0)
+        return Results.BadRequest(new
+        {
+            error = "ErrCarSv.Ser_Location_AvaiableQuantityBalance",   // giữ NGUYÊN VĂN lỗi chính tả `Avaiable`
+            locationId = loc, rowsWithStock, balanceRowsUnknown, sourceWouldOnlySeeFirstRow,
+        });
+
+    var row = await db.SerMstLocations
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dlr && x.LocationID == loc);
+    if (row is null) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_Location_NotFound", locationId = loc });
+
+    db.SerMstLocations.Remove(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        locationId = loc, dealerCode = dlr, deleted = 1,
+        // ===== #738 =====
+        bestGuardedDeleteSoFarButStillGuardDbNotEqualWriteDb = "HAM XOA CO GUARD TOT NHAT GAP TOI GIO — MAU NGUOC MANH cho ca ho xoa-khong-guard (#710, #712, #726, #728, #736 — TAT CA deu Raise = 0). Ser_Mst_Location_Delete co Raise = 3, la BA guard rang buoc tham chieu: (1) con ton kho tai vi tri => nem Ser_Location_AvaiableQuantityBalance (giu NGUYEN VAN loi chinh ta Avaiable); (2) con phieu NHAP trang thai not in (4,5); (3) con phieu XUAT trang thai not in (4,5) — 20140221. => Chung minh dut diem rang xoa-khong-guard o nam ham kia la THIEU SOT CUA TUNG HAM, khong phai quy uoc",
+        top1WithoutOrderByMakesStockGuardLeaky = "GUARD CHONG TON KHO CO LO THU NHAT: top 1 * KHONG ORDER BY tren Ser_Inv_StockBalance loc theo (LocationID, DealerCode) — mot vi tri kho chua NHIEU PHU TUNG => nhieu dong ton => guard chi doc MOT DONG BAT KY => dong do tinh co co InStockQuantity = 0 => CHO XOA VI TRI VAN DANG CHUA HANG (#411/#415). Da do bang balanceRows/sourceWouldOnlySeeFirstRow",
+        tryParseResultIsDiscarded = "GUARD CHONG TON KHO CO LO THU HAI — KET QUA TryParse BI VUT BO: bool isStock = double.TryParse(strInStockQuantity, out iStockQuantity); roi if (iStockQuantity > 0) throw …. Bien isStock KHONG DUOC DUNG O DAU CA => TryParse THAT BAI => iStockQuantity = 0 => guard IM LANG CHO QUA => gia tri ton kho KHONG DOC DUOC bi coi nhu HET HANG. Dang bien-giu-ket-qua-kiem-nhung-khong-ai-doc, ho hang voi Capacity thay Count (#721) — va o day con RO Y DINH HON vi nguoi viet DA nghi toi viec parse co the hong",
+        guardReadsDealerDbButDeleteHitsMainAndWh = "GUARD DOC CSDL DAI LY NHUNG XOA O MAIN + WH (ho #704 guard-DB khac write-DB) — dem TACH RIENG doc/ghi, va lan nay phai tach them ExecQuery=DOC voi ExecNonQuery=GHI: _dbDealer ExecQuery = 3 => BA CAU KIEM (khong phai ba cau xoa — SUYT DOC NHAM); _dbMain/_dbWH ExecQuery = 1 moi ben => HAI CAU XOA => vi tri kho bi xoa o Main+WH nhung CSDL DAI LY — noi vua duoc kiem ton kho — KHONG BI XOA",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴🔴 #737 TRA CỨU CUỘC HẸN `Ser_App_Get_New20190621` (bản LIVE) =====
 // `BizCarSv.ZTemp.cs:25510-25764` (md5 `6a73c6de`, file 34083 dòng). WS LIVE `WSCarSv.asmx.cs:24176`
 // gọi **đúng** `_biz.Ser_App_Get_New20190621` → `GET /api/appointments/lookup`.
@@ -66000,6 +66102,9 @@ record CampaignMarketingCreateDto(string? CamMarketingNo = null, string? CamName
     string? CamMarketingStatus = null);
 /// <summary>#734 `Ser_Mst_CusPartFactor_Update` — hệ số giá phụ tùng theo loại khách.</summary>
 /// <summary>#735 `Ser_Mst_CusServiceFactor_Update` — hệ số giá dịch vụ theo loại khách.</summary>
+/// <summary>#738 `Ser_Mst_Location_Create/_Update` — vị trí kho.</summary>
+record SerLocationDto(string? DealerCode = null, string? LocationID = null, string? LocationCode = null,
+    string? LocationName = null, string? StockNo = null, string? IsActive = null);
 record CusServiceFactorRowDto(string? SerID = null, string? CusTypeID = null, string? DealerCode = null,
     decimal? Factor = null);
 record CusServiceFactorUpdateDto(string? SerID = null, string? DealerCode = null,

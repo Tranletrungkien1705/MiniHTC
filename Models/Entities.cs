@@ -14901,6 +14901,21 @@ public sealed class DealerServiceOption
 /// <summary>🔴 #735 Hệ số giá **dịch vụ** theo loại khách (`Ser_Mst_CusServiceFactor`).
 /// ⚠️ Nguồn tra bảng này ở **CSDL TRUNG TÂM** (`[@strDBName_CommonCenter].[dbo].`), khác
 /// <see cref="CusPartFactor"/> vốn ở CSDL hiện hành.</summary>
+/// <summary>🔴 #738 Vị trí kho (`Ser_Mst_Location`) — trả nợ #708.
+/// Khoá nghiệp vụ là **cặp** `(DealerCode, LocationID)`; nguồn xoá có **ba** guard ràng buộc tham chiếu
+/// (tồn kho · phiếu nhập · phiếu xuất) — hàm xoá có guard tốt nhất trong tầng biz này.</summary>
+public sealed class SerMstLocation
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? LocationID { get; set; }
+    public string? LocationCode { get; set; }
+    public string? LocationName { get; set; }
+    public string? StockNo { get; set; }
+    public string IsActive { get; set; } = "1";
+}
+
 public sealed class CusServiceFactor
 {
     public long Id { get; set; }
