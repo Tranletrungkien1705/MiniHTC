@@ -57648,6 +57648,36 @@ app.MapGet("/api/reports/inventory-balance-by-location", async (AppDbContext db,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #771 DIFF TRỌN HÀM `Ser_ReportCustomerNotBack` ↔ `…_WH` — HAI KHÁC BIỆT NGHIỆP VỤ MỚI =====
+// `BizCarSv.Service.Report.cs:5878-6071` md5 `212ee439` (173 dòng) ↔ `:6072-6262` md5 `2c1d1f71` (171 dòng).
+// BƯỚC 3B: md5 file `b7ecca4c…` — **giống hệt máy 150**.
+// #486 đã ghi `whBranchStillInnerJoins`; DIFF chuẩn hoá **trọn hàm** (luật #414) nay lòi thêm **hai** điểm nữa.
+//
+// 🔴🔴🔴 **① HAI BẢN DÙNG HAI TOÁN TỬ MỐC NGÀY KHÁC NHAU**
+//   bản đại lý: `-- and t.CurrentServiceDate >= '@strDate'` (bị comment) rồi `and t.CurrentServiceDate **<** '@strDate'`
+//   bản kho   : `and t.CurrentServiceDate **<=** '@strDate'`
+//   ⇒ Khách có lần dịch vụ **rơi đúng vào mốc** thì bản đại lý **loại**, bản kho **giữ**.
+//   ⇒ Cùng một báo cáo "khách chưa quay lại", chạy ở hai nơi ra **hai con số khác nhau** — và chênh lệch đúng bằng
+//     số khách ở ranh giới, tức nhóm **dễ bị hỏi nhất** khi đối soát. Đúng họ #415 (mốc ngày).
+//
+// 🔴🔴🔴 **② BẢN KHO JOIN HUYỆN THIẾU MÃ TỈNH**
+//   bản đại lý: `left join …Mst_District md on f.**ProvinceCode = md.ProvinceCode** and f.DistrictCode = md.DistrictCode`
+//   bản kho   : `inner join Mst_District md on f.DistrictCode = md.DistrictCode`   ← **mất vế tỉnh**
+//   ⇒ `DistrictCode` chỉ duy nhất **trong phạm vi một tỉnh** (đó chính là lý do bản kia join cả hai vế)
+//     ⇒ bản kho **ghép nhầm huyện của tỉnh khác**, và vì là `inner join` nên còn **nhân dòng** khi mã huyện trùng
+//     ở nhiều tỉnh. Tên huyện hiển thị sai mà không có dấu hiệu nào.
+//
+// ⚪⚪ **VÀ COMMENT CỦA NGUỒN CHỨNG MINH `inner join` Ở BẢN KHO LÀ LỖI, KHÔNG PHẢI QUY ƯỚC**
+//   Bản đại lý ghi nguyên văn ở **bốn** danh mục (`Mst_Dealer`, `Mst_District`, `Mst_Province`, `Ser_MST_Model`):
+//     `--//[mylock] có khoảng 200 bản ghi nhưng phải sửa inner join thành **lefjoin** để tăng tốc mà vẫn đảm bảo kết quả đúng`
+//     (giữ nguyên văn cả lỗi chính tả `lefjoin`; con số đổi theo bảng: 200 · 700 · 200 · 2000)
+//   ⇒ Tác giả **đã nhận ra** `inner join` sai và **đã sửa** — nhưng **chỉ sửa một phía**. Bản kho là **bản chưa
+//     được đồng bộ bản vá**, không phải một lựa chọn khác. Đây là bằng chứng mạnh nhất kiểu này gặp tới giờ:
+//     không cần suy luận, **chính comment của nguồn nói ra ý định**.
+// 🔴 ③ Bản đại lý đọc bốn danh mục ở `[@strDBName_CommonCenter].[dbo]` (= `_strConfig_DBName_Main`), bản kho đọc
+//   **bảng cục bộ** ⇒ hai bản còn khác cả **nguồn danh mục**, nên chênh lệch không chỉ do toán tử join.
+// ⚪ #487 (`Ser_ReportHistoryCost` ↔ `_WH`) đã đối chiếu trước đó: khác **đúng hai dòng**, đều là dấu `--//[mylock]`
+//   có/không ⇒ **cặp đó lành**. Hai cặp báo cáo cạnh nhau, một cặp lệch nghiệp vụ một cặp không ⇒ không suy sang nhau.
 // ===== 🔴 #486 KHÁCH CHƯA QUAY LẠI — `Ser_ReportCustomerNotBack` (`BizCarSv.Service.Report.cs:5878`) =====
 // Ca lệch THẬT đầu tiên tìm được trong 23 cặp của #484 (main-only 5 / wh-only 5, macro=0).
 //
@@ -57746,6 +57776,12 @@ app.MapGet("/api/reports/customer-not-back", async (AppDbContext db, ITenantCont
         count = items.Count, items,
         droppedIfInnerJoined,
         whBranchStillInnerJoins = true,
+        // ===== #771: DIFF trọn hàm lòi thêm hai khác biệt NGHIỆP VỤ giữa bản đại lý và bản kho =====
+        whBranchUsesLessOrEqual = "#771: ban dai ly dung and t.CurrentServiceDate < @strDate con ban kho dung <= => khach co lan dich vu ROI DUNG VAO MOC thi mot ben loai mot ben giu => hai bao cao cung ten ra hai con so",
+        whBranchJoinsDistrictWithoutProvince = "#771: ban dai ly join Mst_District theo ProvinceCode + DistrictCode, ban kho CHI theo DistrictCode => ma huyen trung giua cac tinh se ghep nham tinh, va vi la inner join nen con NHAN DONG",
+        sourceCommentProvesInnerJoinIsABug = "#771: ban dai ly ghi nguyen van o 4 danh muc: co khoang N ban ghi nhung phai sua inner join thanh lefjoin de tang toc ma van dam bao ket qua dung (giu ca loi chinh ta lefjoin) => tac gia DA nhan ra inner join sai va DA sua, nhung chi sua mot phia",
+        whBranchReadsLocalCatalogs = "#771: ban dai ly doc 4 danh muc o [@strDBName_CommonCenter].[dbo] (= _strConfig_DBName_Main), ban kho doc bang CUC BO => khac ca NGUON danh muc",
+        historyCostPairIsClean = "#771: cap Ser_ReportHistoryCost <-> _WH (#487) khac DUNG HAI DONG, deu la dau --//[mylock] co/khong => cap do LANH; hai cap bao cao canh nhau, mot lech mot khong => khong suy sang nhau",
         monthIsThirtyDays = true,
         noLowerBound = true,
         allowedDateCounts = new[] { 6, 12, 24, 36 },
