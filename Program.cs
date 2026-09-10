@@ -22764,6 +22764,63 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #757 `OSVeloca_Ser_Inv_StockIn_GetByStockInID_New20240606` — CỔNG ĐỒNG BỘ PHIẾU NHẬP SANG VELOCA =====
+// `BizCarSv.Inventory.StockIn.cs:9167-9628` md5 `2673a035` (442 dòng active). Một câu SQL dài chạy trên
+// **`_dbDealer`** (`_dbMain` = 0 lần), trả về **năm** bảng: `Mst_Inventory` · `Mst_Product` · `Mst_Customer` ·
+// `InvF_InventoryIn` · `InvF_InventoryInDtl` — tên bảng là **từ vựng của Veloca**, không phải của DMSCarSv.
+//
+// 🔴🔴 **BỘ LỌC CHỐNG ĐỒNG BỘ HAI LẦN NẰM NGAY Ở BẢNG TẠM ĐẦU TIÊN**
+//     `and (t.FlagSyncVeloca is null or t.FlagSyncVeloca = '0')`
+//     `-- 20240511. HuongTTT: Chỉ cho get thông tin những PN chưa đồng bộ (trước phục vụ test nên mở cho 1 PN
+//      được đồng bộ nhiều lần)` ← nguyên văn
+//   ⇒ Gọi lại cho một phiếu **đã đồng bộ** thì trả về **năm bảng RỖNG**, **không** báo lỗi.
+//   ⇒ Ngữ nghĩa ẩn mà bên gọi buộc phải biết: **rỗng = "đã đồng bộ rồi"**, không phải "không tìm thấy phiếu".
+//   Hai tình huống hoàn toàn khác nhau cho ra **cùng một phản hồi** — đúng họ #710/#743 (im lặng), nhưng ở đây
+//   là **cố ý** và có ghi chú ngày tháng, nên phải port kèm lời giải thích chứ không phải "sửa cho đúng".
+//
+// 🕓🕓 **HAI PHIÊN BẢN CỦA CÙNG `Table1` NẰM CẠNH NHAU, MỘT BỊ COMMENT — VÀ HAI GHI CHÚ CHỈ NGƯỢC NHAU**
+//   Khối A (bị comment, `----- Return Mst_Inventory: (Table1)`):
+//     `-- 20240401. HuongTTT: Code này là **đúng** nhưng để bởi vì hiện phần tạo PN đang để mã kho là null nên
+//      rem phần này lại. **Bao giờ PN truyền vào mã kho thì dùng đoạn này.**`
+//   Khối B (**đang chạy**, `--- Return Mst_Inventory: (Table1)`):
+//     `-- 20240401. HuongTTT: Code này xử lý cho trường hợp PN **không** truyền vào Mã kho -> **Sau khi NC cho
+//      PN truyền vào mã kho thì rem đoạn này lại.**`
+//   ⇒ Đây là **nợ đóng băng có điều kiện kích hoạt viết sẵn**: khi hệ cho phép phiếu nhập mang mã kho, phải
+//     **hoán đổi hai khối**. Không làm ⇒ `Mst_Inventory` tiếp tục dựng theo lối tạm.
+//   ⚪⚪ **KIỂM TRA ÂM TÍNH — TÔI SUÝT BÁO "LỆCH NHÃN NĂM BẢNG"**: thấy khối `Table1` bị comment trong khi
+//     `dsGetData.Tables[nIdxTable++].TableName = "Mst_Inventory"` vẫn gán đủ **năm** tên, phản xạ đầu tiên là
+//     "SQL trả 4 bảng mà gán 5 tên ⇒ lệch hết nhãn hoặc `IndexOutOfRange`". Grep `^-+ *Return` trong trọn hàm
+//     cho thấy có **HAI** khối `Return Mst_Inventory: (Table1)` — khối thứ hai **đang chạy** ⇒ vẫn đủ năm bảng.
+//     Đúng luật #719 lần thứ tư: **grep tìm bản đang chạy TRƯỚC khi báo lỗ hổng**.
+// ⚪ Guard: `CMyException.Raise` = 0 và `this.Check*` = 0 (luật #747) ⇒ không guard — nhưng hợp lý cho một hàm đọc
+//   mà điều kiện lọc đã nằm trong SQL.
+// 📌 Mini: `GET /api/osveloca/stockin/{stockInId}` giữ **đúng** bộ lọc `FlagSyncVeloca` và phân biệt rõ ba trạng thái
+//   (không tồn tại · đã đồng bộ · trả dữ liệu) — **khác nguồn CÓ CHỦ Ý** ở chỗ tách "đã đồng bộ" khỏi "rỗng".
+app.MapGet("/api/osveloca/stockin/{stockInId}", async (string stockInId, AppDbContext db, ITenantContext t) =>
+{
+    var id = stockInId.Trim();
+    var head = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInID == id);
+    if (head is null) return Results.NotFound(new { stockInId = id, note = "Nguồn KHÔNG phân biệt được ca này với ca đã đồng bộ — cả hai đều trả rỗng." });
+    // Nguồn: and (t.FlagSyncVeloca is null or t.FlagSyncVeloca = '0')
+    var notSynced = string.IsNullOrEmpty(head.FlagSyncVeloca) || head.FlagSyncVeloca == "0";
+    if (!notSynced)
+        return Results.Ok(new
+        {
+            stockInId = id, alreadySynced = true, tables = (object?)null,
+            sourceReturnsEmptyTablesHere = "nguon tra NAM bang RONG va KHONG bao loi => ben goi phai tu hieu rong = da dong bo",
+        });
+    var lines = await db.PartStockInLines.Where(x => x.OrgId == t.OrgId && x.StockInId == head.Id).ToListAsync();
+    return Results.Ok(new
+    {
+        stockInId = id, alreadySynced = false,
+        InvF_InventoryIn = new { head.StockInNo, head.StockInDate, head.WarehouseCode, head.DealerCode, head.SupplierID, head.Status },
+        InvF_InventoryInDtl = lines,
+        sourceReadsOnDealerDbOnly = "nguon chay tren _dbDealer, _dbMain = 0 lan",
+        sourceReturnsFiveVelocaTables = "Mst_Inventory / Mst_Product / Mst_Customer / InvF_InventoryIn / InvF_InventoryInDtl — tu vung cua Veloca, khong phai cua DMSCarSv",
+        sourceHasTwoTable1Variants = "hai khoi Return Mst_Inventory (Table1): khoi bi comment la ban DUNG cho PN co ma kho, khoi dang chay la ban tam cho PN khong co ma kho; khi NC xong phai HOAN DOI hai khoi",
+        sourceSyncGuardInFirstTempTable = "and (t.FlagSyncVeloca is null or t.FlagSyncVeloca = 0) — chong dong bo hai lan, ghi chu 20240511 HuongTTT",
+    });
+}).RequireAuthorization();
 // ===== 🔴 #356 LỊCH CÔNG ĐOẠN CỦA LỆNH GỬI SANG VELOCA — `OSVeloca_Ser_RO_GetByROID` =====
 // (`BizCarSv.ZTemp.cs:15373`). Hệ **Veloca CHỈ có trên máy 150** (đúng cảnh báo 3B).
 // Toàn bộ dữ liệu **DẪN XUẤT**, không có bảng lưu riêng: loại công việc lấy từ dòng dịch vụ của lệnh,
