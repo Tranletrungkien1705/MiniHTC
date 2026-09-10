@@ -11381,6 +11381,53 @@ app.MapPost("/api/smsaccounts/{accountCode}/reset-password", async (string accou
 }).RequireAuthorization();
 
 // #781 `Cm_GetDTime` — nguồn thời gian THỨ TƯ của hệ (giờ app, 6 chữ số phần giây).
+// ===== 🔴🔴🔴 #787 QUÉT TOÀN NHÓM `Ser_MST_*_Save` TRONG `AssignmentOfWork.cs` — 3/6 KHÔNG CÓ GUARD NÀO =====
+// Thực hiện đúng "nơi cần soi tiếp" đã ghi ở #786. Cách làm: `grep -oE "TError\.ErrCarSv\.[A-Za-z0-9_]*Save_[A-Za-z0-9_]*NotExistInList"`
+// để lấy danh sách mã lỗi cùng khuôn, rồi **định vị số dòng của từng mã** và so với **ranh giới hàm** (`grep -nE`
+// mẫu khai báo), cuối cùng đếm guard theo **ba nguồn** (#747 + #760) cho từng `_Save`.
+//
+// **BẢNG ĐỐI CHIẾU 6 CỤM** (số dòng theo `BizCarSv.AssignmentOfWork.cs`):
+//   | cụm                            | `_Save`      | `_Delete`    | mã `…Save_…NotExistInList` nằm ở | guard của `_Save`        |
+//   |--------------------------------|--------------|--------------|----------------------------------|--------------------------|
+//   | `ROWarrantyWork`               | `:4111-5453` | `:5454-…`    | **cả hai** (4173 · 5514)         | ✅ `Raise` = 2           |
+//   | `ROWorkArising`                | `:6024-6349` | `:6350-6495` | **cả hai** (6084 · 6409)         | ✅ `Raise` = 1           |
+//   | `ROWorkArisingQuota`           | `:7242-7593` | `:7594-7909` | **chỉ `_Delete`** (7653)         | ✅ `Raise` = 1 + `Check` = 1 |
+//   | `PartExtra`                    | `:6616-6944` | `:6971-7120` | **chỉ `_Delete`**                | ❌ **0 / 0 / 0**         |
+//   | `ROComplaintDiagnosticError`   | `:7910-8228` | `:8229-…`    | **chỉ `_Delete`** (8289 · 8321)  | ❌ **0 / 0 / 0**         |
+//   | `ROWarrantyRenewal`            | `:8563-8865` | `:8866-9010` | **chỉ `_Delete`** (8925)         | ❌ **0 / 0 / 0**         |
+//
+// 🔴🔴🔴 **KẾT QUẢ: 3/6 hàm lưu danh mục của file này KHÔNG kiểm gì cả.** Ba cụm đó (`PartExtra` #786,
+//   `ROComplaintDiagnosticError` #784, `ROWarrantyRenewal` #782) đều là những cụm tôi đọc **theo hàng đợi**,
+//   không phải chọn vì nghi có lỗi ⇒ tỉ lệ 50% này **không phải do cách chọn mẫu**.
+//
+// ⚠️⚠️ **VÀ ĐÂY LÀ CHỖ TÔI SUÝT KẾT LUẬN SAI**: nhìn ba dòng đầu bảng rất dễ rút ra "mã lỗi có mặt trong `_Save`
+//   ⟺ `_Save` có guard" — một tương quan gọn và có vẻ giải thích được mọi thứ. **`ROWorkArisingQuota` bác bỏ nó**:
+//   mã `…QuotaSave_ROWTIDNotExistInList` **chỉ** xuất hiện ở `_Delete` (7653), **nhưng `_Save` vẫn có guard đầy đủ**
+//   (`Raise` = 1 **và** `this.Check*` = 1) — nó **dùng mã lỗi khác**.
+//   ⇒ **Vị trí của một mã lỗi KHÔNG phải proxy cho sự tồn tại của guard.** Muốn biết có guard hay không thì
+//     **phải đếm guard**, không được suy từ tên/vị trí hằng mã lỗi. (Cùng họ với luật "HẰNG ≠ GIÁ TRỊ".)
+//   📌 Nếu dừng ở tương quan đó, tôi đã xếp nhầm `ROWorkArisingQuota` vào nhóm hỏng và báo **4/6** thay vì 3/6.
+//
+// 📌 Mini: endpoint dưới đây công bố bảng trên để các lượt sau khỏi quét lại, và để khi port thêm một cụm
+//   `Ser_MST_*` thì biết ngay phải kiểm gì.
+app.MapGet("/api/_meta/assignmentofwork-guard-audit", () => Results.Ok(new
+{
+    file = "TERP.BizCarSv/BizCarSv.AssignmentOfWork.cs",
+    method = "grep ma loi ...Save_...NotExistInList -> dinh vi so dong -> so voi ranh gioi ham -> dem guard theo BA nguon (Raise / this.Check* / my*_Check*)",
+    clusters = new[]
+    {
+        new { cluster = "ROWarrantyWork",             save = "4111-5453", del = "5454-",     errorCodeIn = "save+delete", saveGuard = "Raise=2",            ok = true  },
+        new { cluster = "ROWorkArising",              save = "6024-6349", del = "6350-6495", errorCodeIn = "save+delete", saveGuard = "Raise=1",            ok = true  },
+        new { cluster = "ROWorkArisingQuota",         save = "7242-7593", del = "7594-7909", errorCodeIn = "delete",      saveGuard = "Raise=1+Check=1",    ok = true  },
+        new { cluster = "PartExtra",                  save = "6616-6944", del = "6971-7120", errorCodeIn = "delete",      saveGuard = "0/0/0",              ok = false },
+        new { cluster = "ROComplaintDiagnosticError", save = "7910-8228", del = "8229-",     errorCodeIn = "delete",      saveGuard = "0/0/0",              ok = false },
+        new { cluster = "ROWarrantyRenewal",          save = "8563-8865", del = "8866-9010", errorCodeIn = "delete",      saveGuard = "0/0/0",              ok = false },
+    },
+    headline = "3/6 ham Ser_MST_*_Save cua file nay KHONG co guard nao (dem du ba nguon)",
+    samplingNote = "ba cum hong deu duoc doc theo HANG DOI, khong phai chon vi nghi co loi => ti le 50% khong do cach chon mau",
+    nearMissWarning = "SUYT KET LUAN SAI: ba dong dau goi y tuong quan (ma loi co trong _Save tuong duong _Save co guard). ROWorkArisingQuota BAC BO: ma loi chi o _Delete nhung _Save VAN co guard day du (dung ma loi KHAC) => vi tri ma loi KHONG phai proxy cho guard, phai DEM guard",
+    relatedRounds = new[] { "#782 ROWarrantyRenewal", "#784 ROComplaintDiagnosticError", "#785 ROWorkArising (ban goc)", "#786 PartExtra" },
+})).RequireAuthorization();
 app.MapGet("/api/_meta/dtime", () => Results.Ok(new
 {
     value = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.ffffff"),
