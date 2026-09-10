@@ -58548,6 +58548,97 @@ app.MapGet("/api/report/warranty-accept-getall-wh", async (AppDbContext db, ITen
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #739 HAI DANH MỤC NHỎ: `Ser_Mst_Color_Get` + `Mst_DeliveryLocation_Update` =====
+// `BizCarSv.Master.cs` — `Ser_Mst_Color_Get` :5627-5741 md5 `1d9e14ce` · `Mst_DeliveryLocation_Update`
+// :11679-11938 md5 `7ae53385`. → `GET /api/sermstcolors`, `PUT /api/deliverylocations/{dealerCode}/{code}`.
+//
+// 🔴🔴🔴 **DANH SÁCH CỘT ĐƯỢC PHÉP CẬP NHẬT DÙNG `string.Contains`, KHÔNG PHẢI KIỂM PHẦN TỬ**:
+//     `string strFt_Cols_Upd = TUtils.CUtils.StandardizeParam(objFt_Cols_Upd);`
+//     `bool bUpd_DeliveryLocationName = strFt_Cols_Upd.**Contains**("Mst_DeliveryLocation.DeliveryLocationName".ToUpper());`
+//     `bool bUpd_FlagActive          = strFt_Cols_Upd.**Contains**("Mst_DeliveryLocation.FlagActive".ToUpper());`
+//   Hai hệ quả:
+//   · `strFt_Cols_Upd` **rỗng** ⇒ `"".Contains("MST_…NAME")` = **false** ⇒ **KHÔNG cột nào được cập nhật**
+//     ⇒ gọi `_Update` thành công nhưng **không đổi gì**, **im lặng**.
+//   · Client gửi tên cột **chứa** chuỗi kia như một phần (`…DELIVERYLOCATIONNAME2`) ⇒ **khớp nhầm**.
+//   📌 Đúng họ `C0-ducentesimustricesimussecundus` (#725 `strStatusListToCheck.Contains`) — nhưng ở đó là
+//     **danh sách trạng thái**, ở đây là **danh sách cột được ghi**, tức nó quyết định **dữ liệu nào bị sửa**.
+//   ⚠️ Khác #725 ở một điểm: chuỗi rỗng ở #725 làm guard **bỏ qua** (lỏng hơn), ở đây làm cập nhật **không xảy
+//     ra** (chặt hơn). **Cùng một sai lầm, hai hướng hậu quả ngược nhau** — đúng tinh thần #705/#707.
+// ⚪⚪ **DƯƠNG TÍNH — MẪU NGƯỢC CHO #727**: hàm này chuẩn hoá **đúng chỗ**:
+//     `strDeliveryLocationCode = SqlUtils.**StandardizeParam**(…)`  → mã: `.Trim().ToUpper()`
+//     `strDealerCode           = SqlUtils.**StandardizeParam**(…)`  → mã: `.Trim().ToUpper()`
+//     `strDeliveryLocationName = string.Format("{0}", …).**Trim()**` → **TÊN: chỉ Trim, KHÔNG viết hoa**
+//   ⇒ **Ngược hẳn #727** (`Mst_CarModelStd_Update` viết hoa cả `ModelName` lẫn `Remark`). Cùng tầng, cùng khuôn
+//     `_Update`, **một hàm làm đúng một hàm làm sai** ⇒ #727 là **lỗi của riêng hàm đó**, không phải quy ước.
+// 🔴 **`Raise` = 1 nhưng guard thật có HAI tầng**: `Mst_DeliveryLocation_CheckDB(…, Flag.**Yes**, …)` (helper ném)
+//   **+** kiểm `DeliveryLocationName` rỗng tại chỗ. ⇒ Lại là **dạng thứ sáu** (guard uỷ quyền helper) vừa ghi ở
+//   #738 — `Raise` = 1 mà thực chất **hai** guard.
+// ⚠️ **BƯỚC 3 SUÝT ĐẾM NHẦM**: `awk` của tôi tìm `#region // Check` ra **0 dòng active** ⇒ thoáng tưởng "không
+//   guard". Region ở đây tên là `#region // **Refine and Check Input:**` ⇒ đổi mẫu awk mới ra **32 dòng active**.
+//   📌 Tên region **không** cố định — phải grep mẫu **lỏng** (`Check`) rồi mới đọc, đừng khớp cứng `// Check`.
+// 🔴 **`Ser_Mst_Color_Get`: `select t.* … with (nolock)`** — **đọc bẩn** + `select *` (hợp đồng cột theo schema)
+//   + **không** `ORDER BY` + **không** phân trang; hai `BuildClauseConditionList` (bake, có `ProtectInjection`).
+//   ⇒ Gửi trần cả hai ⇒ **trả toàn bộ danh mục màu của mọi đại lý**. Port ép phân trang + sắp xác định.
+app.MapGet("/api/sermstcolors", async (AppDbContext db, ITenantContext t,
+    string? colorCodeList, string? dealerCodeList, int? recordStart, int? recordCount) =>
+{
+    var qy = db.MstCarColors.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(colorCodeList)) qy = qy.Where(x => x.ColorCode == colorCodeList!.Trim());
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 2000 ? recordCount!.Value : 500;
+    var items = await qy.OrderBy(x => x.ColorCode).ThenBy(x => x.Id).Skip(skip).Take(take).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, total, skip, take, items,
+        nolockAndSelectStarNoOrderByNoPaging = "Ser_Mst_Color_Get: select t.* from Ser_Mst_Color t with (nolock) — DOC BAN + select * (hop dong cot theo schema) + KHONG ORDER BY + KHONG phan trang; hai BuildClauseConditionList (bake, co ProtectInjection) => gui tran ca hai => TRA TOAN BO danh muc mau cua MOI dai ly. Port ep phan trang + sap xac dinh",
+    });
+}).RequireAuthorization();
+
+// #739 `Mst_DeliveryLocation_Update` (`:11679`) — danh sách cột được ghi kiểm bằng `string.Contains`.
+app.MapPut("/api/deliverylocations/{dealerCode}/{code}", async (string dealerCode, string code,
+    DeliveryLocationUpdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // Nguồn: SqlUtils.StandardizeParam(x) == x.Trim().ToUpper() cho MÃ; TÊN chỉ .Trim().
+    static string Std(string? v) => (v ?? "").Trim().ToUpperInvariant();
+    var codeStd = Std(code);
+    var dlrStd = Std(dealerCode);
+    var name = (dto.DeliveryLocationName ?? "").Trim();   // ⚪ KHÔNG viết hoa — đúng như nguồn
+
+    // `strFt_Cols_Upd` — danh sách cột được phép cập nhật, nguồn kiểm bằng string.Contains.
+    var cols = Std(dto.Ft_Cols_Upd);
+    var updName = cols.Contains("MST_DELIVERYLOCATION.DELIVERYLOCATIONNAME");
+    var updFlag = cols.Contains("MST_DELIVERYLOCATION.FLAGACTIVE");
+    var nothingWouldBeUpdated = !updName && !updFlag;
+
+    // Mst_DeliveryLocation_CheckDB(…, Flag.Yes, …) = PHẢI tồn tại (helper ném).
+    var row = await db.DeliveryLocations
+        .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dlrStd && x.DeliveryLocationCode == codeStd);
+    if (row is null)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_DeliveryLocation_NotFound", code = codeStd, dealerCode = dlrStd });
+
+    // Guard tại chỗ: tên không được rỗng (chạy SAU CheckDB).
+    if (name.Length == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_DeliveryLocation_Update_InvalidDeliveryLocationName" });
+
+    if (updName) row.DeliveryLocationName = name;
+    if (updFlag && !string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = dto.PartnerUserCode;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.DeliveryLocationCode, row.DealerCode, row.DeliveryLocationName, row.FlagActive,
+        updName, updFlag, nothingWouldBeUpdated,
+        // ===== #739 =====
+        columnWhitelistUsesStringContainsNotListMembership = "DANH SACH COT DUOC PHEP CAP NHAT DUNG string.Contains, KHONG PHAI KIEM PHAN TU: bool bUpd_DeliveryLocationName = strFt_Cols_Upd.Contains(Mst_DeliveryLocation.DeliveryLocationName.ToUpper()); tuong tu cho FlagActive. HAI HE QUA: (1) strFt_Cols_Upd RONG => .Contains(...) = false => KHONG COT NAO duoc cap nhat => goi _Update THANH CONG nhung KHONG DOI GI, IM LANG; (2) client gui ten cot CHUA chuoi kia nhu mot phan (…DELIVERYLOCATIONNAME2) => KHOP NHAM. Dung ho #725 (strStatusListToCheck.Contains) nhung o do la DANH SACH TRANG THAI, o day la DANH SACH COT DUOC GHI — tuc no quyet dinh DU LIEU NAO BI SUA. KHAC #725 o mot diem: chuoi rong o #725 lam guard BO QUA (long hon), o day lam cap nhat KHONG XAY RA (chat hon) — CUNG MOT SAI LAM, HAI HUONG HAU QUA NGUOC NHAU",
+        counterExampleToIssue727 = "DUONG TINH — MAU NGUOC CHO #727: ham nay chuan hoa DUNG CHO — strDeliveryLocationCode va strDealerCode dung SqlUtils.StandardizeParam (.Trim().ToUpper()), con strDeliveryLocationName dung string.Format({0}, …).Trim() (CHI Trim, KHONG viet hoa). NGUOC HAN #727 (Mst_CarModelStd_Update viet hoa ca ModelName lan Remark). Cung tang, cung khuon _Update, MOT HAM LAM DUNG MOT HAM LAM SAI => #727 la LOI CUA RIENG HAM DO, khong phai quy uoc",
+        raiseOneButTwoGuardTiers = "Raise = 1 nhung guard that co HAI TANG: Mst_DeliveryLocation_CheckDB(…, Flag.Yes, …) (helper nem) + kiem DeliveryLocationName rong tai cho => lai la DANG THU SAU (guard uy quyen helper) vua ghi o #738 — Raise = 1 ma thuc chat HAI guard",
+        regionNameIsNotFixed = "BUOC 3 SUYT DEM NHAM: awk tim #region // Check ra 0 dong active => thoang tuong khong-guard. Region o day ten la #region // Refine and Check Input: => doi mau awk moi ra 32 DONG ACTIVE. TEN REGION KHONG CO DINH — phai grep mau LONG (Check) roi moi doc, dung khop cung // Check",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #738 VỊ TRÍ KHO `Ser_Mst_Location_Create/_Update/_Delete` — TRẢ NỢ #708 =====
 // `BizCarSv.Master.cs` — `_Create` :6725-6914 md5 `2fc721e9` · `_Delete` :6916-7158 md5 `c6e73f33` ·
 // `_Update` :7160-7331 md5 `12a89f6b`. WS LIVE `WSCarSv.asmx.cs:4561/4601/4637/4674` (tên **không** hậu tố).
@@ -66103,6 +66194,10 @@ record CampaignMarketingCreateDto(string? CamMarketingNo = null, string? CamName
 /// <summary>#734 `Ser_Mst_CusPartFactor_Update` — hệ số giá phụ tùng theo loại khách.</summary>
 /// <summary>#735 `Ser_Mst_CusServiceFactor_Update` — hệ số giá dịch vụ theo loại khách.</summary>
 /// <summary>#738 `Ser_Mst_Location_Create/_Update` — vị trí kho.</summary>
+/// <summary>#739 `Mst_DeliveryLocation_Update` — `Ft_Cols_Upd` là **danh sách cột được phép ghi**,
+/// nguồn kiểm bằng `string.Contains` chứ không phải kiểm phần tử.</summary>
+record DeliveryLocationUpdDto(string? DeliveryLocationName = null, string? FlagActive = null,
+    string? Ft_Cols_Upd = null, string? PartnerUserCode = null);
 record SerLocationDto(string? DealerCode = null, string? LocationID = null, string? LocationCode = null,
     string? LocationName = null, string? StockNo = null, string? IsActive = null);
 record CusServiceFactorRowDto(string? SerID = null, string? CusTypeID = null, string? DealerCode = null,
