@@ -6513,6 +6513,16 @@ public sealed class GroupRepair
     public string GroupRName { get; set; } = "";
     public string? Note { get; set; }
     public string Status { get; set; } = "1";
+
+    /// <summary>🔴 #747 §12 DEALERCODE — nguồn `Ser_GroupRepair` **có** cột này: `_Get` lọc `sp.DealerCode`,
+    /// `_Create`/`_Update` đều ghi, và `CheckExistGroupRNo`/`…Modify` xét trùng mã **trong phạm vi một đại lý**.
+    /// Thiếu nó thì hai đại lý không thể trùng mã nhóm — sai nghiệp vụ.</summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>#747 LOGLUDATETIME / LOGLUBY — nguồn ghi ở cả `_Create` lẫn `_Update`.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

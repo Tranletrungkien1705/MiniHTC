@@ -46203,10 +46203,57 @@ app.MapPost("/api/campaigns/contacts/{id:long}/contacted", async (long id, AppDb
 }).RequireAuthorization();
 
 // ===== Nhóm sửa chữa (Ser_GroupRepair — port 1:1 FrmGroupRepairCreate) =====
-app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t) =>
+// ===== 🔴🔴 #747 BỐN HÀM `SerGroupRepair*` (`BizCarSv.Service.cs`) — VÒNG ĐỐI CHIẾU + VÁ =====
+// `_Create` :10460-10648 md5 `550b02eb` · `_Update` :10649-10804 md5 `45be63c4` ·
+// `_Delete` :10805-10929 md5 `6f02b2f8` · `_Get` :10930-11071 md5 `0a81d123`.
+// BƯỚC 3B: `md5sum BizCarSv.Service.cs` = `5e5d6f20…` — **giống hệt máy 150**.
+//
+// 🔴🔴🔴 **DẠNG THỨ BẢY CỦA "GUARD VẮNG MẶT" — VÀ LẦN NÀY LÀ TÔI SUÝT ĐỌC SAI THEO CHIỀU NGƯỢC LẠI**:
+//   Bảng đếm đầu tiên của tôi ghi `CMyException.Raise` = **0 ở cả bốn hàm** ⇒ suýt kết luận "cụm này không có
+//   guard nào" (như đã kết luận thật ở #736/#742/#744). Nhưng `_Update` mở đầu bằng `#region //Check` với **ba**
+//   lời gọi `this.CheckExistGroupR(...)` / `CheckGroupRFieldEmpty(...)` / `CheckExistGroupRNoModify(...)`.
+//   ⇒ **Guard nằm trong HÀM HELPER, `throw` xảy ra bên trong đó** — `grep CMyException.Raise` trên thân hàm
+//     trả 0 là **đúng về chữ, sai về nghĩa**. Đếm lại bằng `grep -cE "this\.Check[A-Za-z]+\("`:
+//       `_Create` = **2** (`CheckExistGroupRNo`, `CheckGroupRFieldEmpty`)
+//       `_Update` = **3** (thêm `CheckExistGroupR`, và bản `…NoModify` thay cho `…No`)
+//       `_Delete` = **1** (`CheckExistGroupR`)  ← ⇒ **xoá mã không tồn tại BỊ CHẶN**, khác hẳn #736/#742/#744
+//       `_Get`    = 0 (hợp lý)
+//   📌 Sáu dạng trước (#728 a-d, #736 e, #743 f) đều là "guard không chạy". Dạng thứ BẢY ngược lại:
+//     **guard CÓ chạy nhưng phép đếm của tôi không thấy**. Từ nay mọi vòng đếm guard phải cộng `this.Check*`.
+// ⚪ **DƯƠNG TÍNH #404 — cặp create/update chọn ĐÚNG hai guard khác nhau**: `_Create` xét trùng mã bằng
+//   `CheckExistGroupRNo`, `_Update` bằng `CheckExistGroupRNo**Modify**` (loại trừ chính bản ghi đang sửa).
+//   Cùng khuôn đúng đã gặp ở `Email_TempEmail` (#438). Cột ghi cũng khớp: `_Create` = 10 cột (thêm `GroupRID`,
+//   `CreatedDate`, `CreatedBy`), `_Update` = 7 cột và `alColumnEffective` liệt kê **đủ 7** — không thiếu cột nào.
+//
+// 🔴🔴 **BẤT ĐỐI XỨNG NGƯỢC VỚI #744 — ĐỌC THEO ĐẠI LÝ, XOÁ XUYÊN ĐẠI LÝ**:
+//   `_Get` lọc `BuildClause("and", "sp.**DealerCode**", …)`; `_Create`/`_Update` đều nhận và ghi `DealerCode`;
+//   `CheckExistGroupRNo`/`…Modify` xét trùng mã **trong phạm vi đại lý**. Nhưng `_Delete`:
+//     `delete from Ser_GroupRepair where (1=1) and GroupRID = @GroupRID`  ← **không một điều kiện đại lý nào**,
+//   và guard duy nhất của nó (`CheckExistGroupR(strGroupRID)`) **cũng chỉ nhận mỗi ID**. `GroupRID` là identity
+//   toàn cục ⇒ **biết số là xoá được nhóm sửa chữa của đại lý bất kỳ**, ở cả `_dbMain` lẫn `_dbWH`.
+//   📌 Ghép với #744 thành một cặp đối xứng đáng nhớ: `Email_SendEmailAutoTemp` **xoá chặt / đọc mở toang**;
+//     `Ser_GroupRepair` **đọc chặt / xoá mở toang**. Cùng một hệ, hai bảng, hai kiểu hở ngược nhau ⇒ không thể
+//     suy phạm vi của hàm này từ hàm kia, phải đọc từng hàm.
+//
+// 🔴🔴 **`Convert.ToInt32(_dbMain.ExecQuery("select @@Identity GroupRID").Tables[0].Rows[0][**0**])` — LẦN THỨ BA**
+//   (sau #744 `Email_SendEmailAutoTemp_Create` và #745 `CarSv_SerCarUpdate_*`), lần này còn lấy theo **chỉ số cột `[0]`**
+//   thay vì tên. Áp luật "lần thứ ba thì đi tìm một hàm làm ĐÚNG" — và **lần này TÌM ĐƯỢC**:
+//     `grep -rhoiE "@@identity|scope_identity"` toàn `TERP.BizCarSv` ⇒ **165 lần `@@IDENTITY` vs 3 lần `SCOPE_IDENTITY`**.
+//     Mẫu đúng: `Ser_Inv_QuoteStockOutOrderUpdate` (`BizCarSv.Inventory.Quote.cs:1176`) viết
+//     `insert … ; select @ID = SCOPE_IDENTITY() ; insert into [Ser_Inv_StockOutOrderDetail] … @ID …`
+//     — **cùng một batch SQL**, nên đúng cả hai mặt: đúng phạm vi *và* không phụ thuộc việc DAL có giữ connection.
+//   ⇒ Khác #746 (ở đó tìm mãi không ra ngoại lệ nào cho `Timeout`): ở đây **codebase tự có tiền lệ đúng**,
+//     nên `@@IDENTITY` là **thói quen chép tay**, không phải ràng buộc của EzDAL. Đó là lập luận cần khi đề xuất sửa.
+// 📌 §12 vá kèm: entity `GroupRepair` thiếu hẳn `DealerCode` (+ `LogLUDateTime`/`LogLUBy`) — đã thêm ở entity,
+//   Seeder ALTER, DTO, và **cả POST lẫn GET**. Thiếu `DealerCode` thì hai đại lý **không thể trùng mã nhóm**,
+//   trong khi nguồn cho phép — đây là loại lỗi §12 **không** bắt được nếu chỉ so tên cột đã có.
+app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, string? dealer) =>
 {
-    var items = await db.GroupRepairs.Where(g => g.OrgId == t.OrgId).OrderBy(g => g.GroupRCode)
-        .Select(g => new { g.GroupRCode, g.GroupRName, g.Note, g.Status, engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRCode) }).ToListAsync();
+    var qg = db.GroupRepairs.Where(g => g.OrgId == t.OrgId);
+    // #747 Nguồn `_Get` lọc `sp.DealerCode` qua BuildClause ⇒ bỏ trống là bỏ điều kiện. Giữ 1:1.
+    if (!string.IsNullOrWhiteSpace(dealer)) qg = qg.Where(g => g.DealerCode == dealer!.Trim().ToUpperInvariant());
+    var items = await qg.OrderBy(g => g.GroupRCode)
+        .Select(g => new { g.GroupRCode, g.GroupRName, g.Note, g.Status, g.DealerCode, g.LogLUDateTime, g.LogLUBy, engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRCode) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -46220,9 +46267,12 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
     var code = dto.GroupRCode.Trim().ToUpperInvariant();
     var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRCode == code);
     if (g is null) { g = new GroupRepair { OrgId = t.OrgId, GroupRCode = code }; db.GroupRepairs.Add(g); }
+    // #747 Nguồn `CheckExistGroupRNo` xét trùng mã **trong phạm vi một đại lý** ⇒ khoá thật là (DealerCode, GroupRNo).
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)) g.DealerCode = dto.DealerCode!.Trim().ToUpperInvariant();
     g.GroupRName = dto.GroupRName; g.Note = dto.Note; g.Status = dto.Status ?? "1"; g.UpdatedAt = DateTime.Now;
+    g.LogLUDateTime = DateTime.Now; g.LogLUBy = "api";
     await db.SaveChangesAsync();
-    return Results.Ok(new { g.GroupRCode, g.GroupRName });
+    return Results.Ok(new { g.GroupRCode, g.GroupRName, g.DealerCode });
 }).RequireAuthorization();
 
 // ===== Kỹ thuật viên (Ser_Engineer — port 1:1 FrmEngineerCreate) =====
@@ -66128,7 +66178,7 @@ record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = nu
     string? ReqPartPriceNo = null, string? FlagIsDelete = null, string? FlagIsCheck = null);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
-record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
+record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
 /// <summary>
