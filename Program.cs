@@ -58758,6 +58758,154 @@ app.MapGet("/api/ro/{roNo}/payment-precheck", async (AppDbContext db, ITenantCon
 //   ⇒ `_old` là khuôn **duy nhất tự nói mình đã cũ**; hai khuôn kia thì không — và `SerCarCreateX20220926`
 //     **dính liền không dấu phân cách** nên trượt cả mẫu `_[0-9]{8}`.
 // 📌 Mini: `GET /api/_meta/date-suffixed-naming-audit`.
+// ===== 🔴🔴🔴 #803 MÀN MỚI: NẠP DANH MỤC SAU ĐĂNG NHẬP — `SerMasterInitGet` (`BizCarSv.Master.cs`) =====
+// ⚠️ Manifest cũ ghi `Master.cs:**7811**`; khai báo thật ở **`:7750`** — đúng nghi ngờ của #800 (`Master.cs`
+//   có **73** khai báo thụt TAB / 31 thụt space). Đo lại bằng công thức đúng: `:7750-7981` md5 `158e0083`
+//   (220 dòng, `Raise` = **0**, `ExecQuery` = 1).
+// **Một bản duy nhất, nhưng CẢ BA đường vào đều gọi** — web `WSCarSv.asmx.cs:5977` · tablet
+//   `WSCarSvTab.asmx.cs:557` · ClientService `AuthService.cs:435` **và** `:514` (hai chỗ) ⇒ đây là hàm
+//   **nạp dữ liệu khởi tạo ngay sau đăng nhập** cho mọi loại client.
+//
+// **Một lần gọi trả về 12 bảng** (gán cứng `Tables[0]`…`Tables[11]`), tất cả `select **t.***` + `with(nolock)`:
+//   `Mst_Dealer` · `Mst_Param` · `Mst_ReportHeader` · `Ser_Mst_CustomerType` · `Ser_MST_Model` ·
+//   `Ser_Mst_TradeMark` · `Ser_Mst_PartType` · `Ser_Mst_PartGroup` · `Ser_Campaign` · `Ser_Insurance` ·
+//   `Ser_Mst_Location` · **`Sms_Account`**.
+//
+// 🔴🔴🔴 **`select t.*` TỪ `Sms_Account` — TOÀN BỘ TÀI KHOẢN SMS VỀ CLIENT NGAY SAU ĐĂNG NHẬP**
+//   Đúng họ #763 (`select t.*` kéo cả cột nhạy cảm) kết hợp #760 (mật khẩu lưu dạng đọc được). Ở đây nặng hơn
+//   vì nó nằm trong hàm **khởi tạo**, nghĩa là **mọi phiên đăng nhập** đều tải bảng này về, không cần thao tác gì.
+//
+// 🔴🔴 **TRANSACTION MỞ TRÊN HANDLE KHÔNG CHẠY TRUY VẤN** (lần thứ **hai** liên tiếp, sau #801)
+//   `_dbDealer.LogUserId = …` · `_dbDealer.BeginTransaction()` · `RollbackSafety(**_dbDealer**)`
+//   nhưng truy vấn thật là `**_dbMain**.ExecQuery(...)`.
+//   📌 Theo luật "đừng tổng quát hoá — đi tìm hàm làm ĐÚNG", tôi **đếm cả hai phía** trên `TERP.BizCarSv`:
+//     · `_dbDealer.BeginTransaction` **+** `_dbMain.ExecQuery` trong cùng hàm: **129**
+//     · `_dbMain.BeginTransaction` **+** `_dbMain.ExecQuery` (nhất quán): **351**
+//     ⇒ Khuôn **làm đúng là ĐA SỐ (73%)** ⇒ 129 hàm kia là **sai sót có hệ thống**, không phải quy ước nhà.
+//   ⚪ **Không over-claim**: ở **WS Main** thì `_dbDealer ≡ _dbMain` (`if (bIsWSMain) s_dbCache_Dealer = s_dbCache_Main;`
+//     — đã ghi ở #748) ⇒ 129 ca này **vô hại khi chạy ở WS Main**, chỉ lệch khi chạy ở **WS đại lý**.
+//
+// 🔴 **`select top 1` KHÔNG `ORDER BY`** (#415) cho `Mst_ReportHeader`:
+//   `select top 1 t.DealerCode, t.DealerName info1, … from Mst_ReportHeader t join Mst_Dealer dl on dl.DealerCode = t.DealerCode`
+//   ⇒ đại lý có **nhiều** dòng tiêu đề báo cáo thì lấy **dòng nào là tuỳ máy chủ**.
+//   Và đó là **inner join** ⇒ đại lý **chưa có trong `Mst_Dealer` của CommonCenter** thì **mất hẳn tiêu đề báo cáo**.
+//
+// 🔴 **MỘT THAM SỐ, HAI TÊN CỘT**: `strFlagActiveConditionList` được nối vào **hai** mệnh đề khác nhau —
+//   `BuildClause("and", "t.**FlagActive**", "=" + strFlagActiveConditionList, …)` và
+//   `BuildClause("and", "t.**IsActive**",   "=" + strFlagActiveConditionList, …)`
+//   ⇒ ba bảng `Ser_Campaign` / `Ser_Insurance` / `Ser_Mst_Location` dùng cột `IsActive`, các bảng còn lại dùng
+//   `FlagActive`. Có chủ ý, nhưng **một ô lọc điều khiển hai tên cột** ⇒ đổi tên cột ở một bảng là gãy im lặng.
+// 🔴 Cả ba `BuildClause` đều viết `"=" + strXxx` — **nối toán tử vào giá trị** (họ #779): tham số **rỗng** thì
+//   chuỗi thành `"="` chứ không phải rỗng ⇒ hành vi "bỏ lọc" không còn là bỏ lọc.
+// 🔴 **Gán cứng 12 chỉ số bảng**: `dsGetData.Tables[0..11].TableName = …` ⇒ chỉ cần một câu SELECT không trả bảng
+//   là **`IndexOutOfRangeException`** — không có kiểm số lượng bảng trước khi gán.
+// ⚪ `Raise` = 0 trên **toàn hàm** và **không có** `#region Check` nào ⇒ đây là hàm **thuần đọc**, không guard —
+//   đúng bản chất, không phải thiếu sót (đã trích trọn hàm để khẳng định, theo #403).
+// 📌 Mini: `GET /api/master/init` — trả **đúng thứ tự 12 khối** như nguồn, nhưng **KHÔNG** trả cột nhạy cảm của
+//   `Sms_Account`; thay vào đó nêu rõ nguồn có trả.
+app.MapGet("/api/master/init", async (AppDbContext db, ITenantContext t, string? dealerCode, string? flagActive) =>
+{
+    var dl = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var fa = (flagActive ?? "").Trim();
+    var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId)
+        .Where(x => dl == "" || x.DealerCode == dl)
+        .Select(x => new { x.DealerCode, x.DealerName, x.BUCode, x.ProvinceCode, x.Address }).ToListAsync();
+    var mstParams = await db.MstParams.Where(x => x.OrgId == t.OrgId).Take(2000).ToListAsync();
+    var customerTypes = await db.CustomerTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId).Take(2000).ToListAsync();
+    var tradeMarks = await db.ServiceTradeMarks.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var partTypes = await db.TstMstPartTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var campaigns = await db.Campaigns.Where(x => x.OrgId == t.OrgId).Take(1000).ToListAsync();
+    var insurances = await db.ServiceInsurances.Where(x => x.OrgId == t.OrgId).Take(1000).ToListAsync();
+    // Nguon tra select t.* tu Sms_Account — Mini CHI dem, khong tra cot nhay cam.
+    var smsAccountCount = await db.SmsAccounts.CountAsync(x => x.OrgId == t.OrgId);
+    return Results.Ok(new
+    {
+        dealerCode = dl.Length > 0 ? dl : null, flagActive = fa.Length > 0 ? fa : null,
+        dealers, mstParams, customerTypes, models, tradeMarks, partTypes, campaigns, insurances,
+        smsAccountCount,
+        sourceReturnsWholeSmsAccountTable = "NGUON: select t.* FROM Sms_Account => TOAN BO tai khoan SMS (ke ca cot mat khau) ve client NGAY SAU DANG NHAP, moi phien deu tai. Ho #763 (select t.*) + #760 (mat khau doc duoc). Mini CHI tra so luong",
+        sourceOpensTransactionOnWrongHandle = "_dbDealer.LogUserId + _dbDealer.BeginTransaction + RollbackSafety(_dbDealer) nhung truy van chay tren _dbMain.ExecQuery. Dem toan tang: 129 ham co _dbDealer.BeginTransaction + _dbMain.ExecQuery, trong khi 351 ham dung _dbMain ca hai => khuon LAM DUNG la DA SO (73%), 129 ham kia la sai sot co he thong",
+        notOverclaimed = "o WS Main thi _dbDealer TRUNG _dbMain (if (bIsWSMain) s_dbCache_Dealer = s_dbCache_Main, #748) => 129 ca do VO HAI khi chay o WS Main, chi lech khi chay o WS dai ly",
+        sourceTopOneWithoutOrderBy = "select top 1 ... from Mst_ReportHeader join Mst_Dealer — KHONG co ORDER BY (#415) => dai ly co nhieu dong tieu de bao cao thi lay dong nao la tuy may chu",
+        sourceReportHeaderInnerJoin = "join (INNER) Mst_Dealer => dai ly chua co trong Mst_Dealer cua CommonCenter thi MAT HAN tieu de bao cao",
+        oneParamTwoColumnNames = "strFlagActiveConditionList duoc noi vao CA t.FlagActive LAN t.IsActive: Ser_Campaign / Ser_Insurance / Ser_Mst_Location dung IsActive, cac bang con lai dung FlagActive => mot o loc dieu khien hai ten cot",
+        sourceConcatenatesOperator = "ca ba BuildClause deu viet \"=\" + strXxx (ho #779): tham so RONG thi chuoi thanh = chu khong phai rong => hanh vi bo loc khong con la bo loc",
+        sourceHardcodesTwelveTableIndexes = "dsGetData.Tables[0..11].TableName duoc gan cung => chi can mot cau SELECT khong tra bang la IndexOutOfRangeException, khong co kiem so luong bang truoc khi gan",
+        sourceHasNoGuardByNature = "Raise = 0 va KHONG co #region Check nao tren toan ham — da trich tron ham de khang dinh (#403). Day la ham THUAN DOC nen dung ban chat, khong phai thieu sot",
+        sourceAllTablesNolock = "ca 12 cau deu with(nolock) => doc ban tren toan bo danh muc khoi tao",
+        lineNumberCorrection = "manifest cu ghi Master.cs:7811; khai bao that o :7750 — Master.cs co 73 khai bao thut TAB / 31 thut space, dung nghi ngo cua #800",
+    });
+}).RequireAuthorization();
+// ===== 🔴🔴 #802 ĐIỀU CHỈNH PHIẾU NHẬP KHO — `ProcessStockIn01` vs `ProcessStockIn` (`Inventory.Stock.cs`) =====
+// Ba bản helper nhập kho (đo bằng công thức đúng của #800):
+//   `ProcessStockIn**xxx**` `:1168-1215` md5 `6d2d4939` (45 dòng) — hậu tố `xxx` = khuôn **chết** đã gặp
+//     (`CheckExistPartInstancexxx`); **không** lời gọi nào.
+//   `ProcessStockIn`      `:1216-1272` md5 `82e8b4f4` (**54** dòng, 0 `Raise`, 0 `SaveData`) — **4 lời gọi sống**
+//     (`Stock.cs:1114`, `StockIn.cs:5110/5498/5885`) ⇒ **đường nhập kho CHÍNH**; nó chỉ uỷ quyền cho
+//     `ProcessSaveStockInPb`.
+//   `ProcessStockIn**01**`  `:1833-2081` md5 `c505315a` (**232** dòng, 1 `Raise`, **7** `SaveData`) —
+//     **1 lời gọi** (`StockIn.cs:7039`) ⇒ đường **ĐIỀU CHỈNH** phiếu nhập.
+//
+// ⚪ **ÂM TÍNH QUAN TRỌNG — SUÝT KẾT LUẬN SAI**: `ProcessStockIn` có `Raise` = **0**, nhìn qua tưởng
+//   "đường nhập chính không kiểm số lượng âm". Áp #403 (đọc tiếp xuống tầng dưới): `ProcessSaveStockInPb`
+//   (`:1547-1832`, 278 dòng) **CÓ** `Raise` và dòng `:1579` chính là `Ser_Inv_PartInstance_NegativeQuantity`.
+//   ⇒ **Đường chính KHÔNG thiếu guard** — guard sống ở **helper tầng dưới**, đúng khuôn #747/#760.
+//   Đếm toàn tầng: `Ser_Inv_PartInstance_NegativeQuantity` xuất hiện ở **5** chỗ trong `Inventory.Stock.cs`.
+//
+// 🔴🔴 **KHÁC BIỆT THẬT — GUARD CHỈ CÓ Ở ĐƯỜNG ĐIỀU CHỈNH**: `ProcessStockIn01` có `#region // Check` với
+//   `this.CheckStockInAdjustmentQuantityOut(ref alParamsCoupleError, strDealerCodeList, strOldStockInID,`
+//   `                                       strLocationID, strPartID, double.Parse(strQuantity));`
+//   kèm chú thích nguyên văn: `//Check số lượng nhập mới không được nhỏ hơn số lượng đã xuất`.
+//   Hàm này có **đúng 1** lời gọi trong toàn tầng ⇒ **chỉ đường điều chỉnh mới kiểm**. ⚪ Điều đó **hợp lý**
+//   (nhập mới thì chưa có gì để xuất) — ghi là **âm tính có giải thích**, không phải lỗ hổng.
+//
+// 🔴🔴 **`Double.Parse` CHỨ KHÔNG `TryParse` — Ở NGAY TRONG GUARD**
+//   `if (Double.Parse(strQuantity) < 0.0) throw … Ser_Inv_PartInstance_NegativeQuantity`
+//   và ngay dưới lại `double.Parse(strQuantity)` lần nữa. ⇒ Ô số lượng **rỗng hoặc có chữ** thì ném
+//   **`FormatException` thô**, không phải mã lỗi nghiệp vụ — người dùng thấy lỗi hệ thống thay vì lời nhắc.
+//   Và `Double.Parse` **phụ thuộc culture** ⇒ dấu thập phân `,` / `.` đổi nghĩa theo cấu hình máy chủ.
+//   Đếm toàn `TERP.BizCarSv`: `Double.Parse` **5** · `double.Parse` **21** · `TryParse` **9** ⇒ 26 vs 9.
+//   📌 **Có hàm làm ĐÚNG** (luật "tìm bản làm đúng"): `BizCarSv.Debit.cs:48` và `:97` —
+//     `if (!double.TryParse(strDebitAmount, out result) && !double.IsPositiveInfinity(...))` — kiểm **cả**
+//     parse hỏng **lẫn** vô cực, đúng nơi xử lý **tiền công nợ**. ⇒ Không phải "cả tầng đều ẩu".
+// 📌 Mini: `POST /api/stockin/adjust-precheck` — chạy **cả hai** guard và trả lý do từng dòng.
+app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var oldId = dto.OldStockInId;
+    var oldLines = await db.PartStockInLines
+        .Where(l => l.OrgId == t.OrgId && l.StockInId == oldId).ToListAsync();
+    // Nguồn: so luong da XUAT cua chinh phieu nhap do, theo PartCode.
+    var outLines = await db.PartStockOutLines
+        .Where(l => l.OrgId == t.OrgId).ToListAsync();
+    var issuedByPart = outLines.GroupBy(l => l.PartCode)
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity));
+    var rows = (dto.Lines ?? new List<StockInAdjustLineDto>()).Select(l =>
+    {
+        // Guard 1 — nguon: if (Double.Parse(strQuantity) < 0.0) throw Ser_Inv_PartInstance_NegativeQuantity
+        var negative = l.Quantity < 0m;
+        // Guard 2 — nguon: CheckStockInAdjustmentQuantityOut, "so luong nhap moi khong duoc nho hon so luong da xuat"
+        issuedByPart.TryGetValue(l.PartCode ?? "", out var issued);
+        var belowIssued = !negative && l.Quantity < issued;
+        var oldQty = oldLines.Where(o => o.PartCode == l.PartCode).Sum(o => o.Quantity);
+        return new { l.PartCode, newQuantity = l.Quantity, oldQuantity = oldQty, issuedQuantity = issued,
+            negative, belowIssued,
+            reason = negative ? "Ser_Inv_PartInstance_NegativeQuantity"
+                   : belowIssued ? "so luong nhap moi nho hon so luong da xuat" : null };
+    }).ToList();
+    var blocked = rows.Where(r => r.negative || r.belowIssued).ToList();
+    return Results.Ok(new
+    {
+        oldStockInId = oldId, lineCount = rows.Count, canAdjust = blocked.Count == 0,
+        blocked, items = rows,
+        sourceGuardOnlyOnAdjustPath = "CheckStockInAdjustmentQuantityOut co DUNG 1 loi goi trong toan tang (ProcessStockIn01) => chi duong DIEU CHINH moi kiem. Duong nhap chinh khong kiem — hop ly vi nhap moi thi chua co gi de xuat",
+        sourceMainPathGuardLivesInHelper = "AM TINH: ProcessStockIn co Raise=0 nhung ProcessSaveStockInPb (:1547-1832) MOI la noi nem Ser_Inv_PartInstance_NegativeQuantity (:1579) => duong chinh KHONG thieu guard, guard song o helper tang duoi (khuon #747/#760)",
+        sourceUsesParseNotTryParse = "nguon: if (Double.Parse(strQuantity) < 0.0) ... roi double.Parse(strQuantity) lan nua => o so luong rong/co chu se nem FormatException THO chu khong phai ma loi nghiep vu; va Double.Parse PHU THUOC CULTURE nen dau thap phan , va . doi nghia theo cau hinh may chu",
+        parseVsTryParseCount = "toan TERP.BizCarSv: Double.Parse 5 + double.Parse 21 = 26, TryParse 9",
+        theFunctionDoingItRight = "BizCarSv.Debit.cs:48 va :97 — if (!double.TryParse(strDebitAmount, out result) && !double.IsPositiveInfinity(...)) kiem CA parse hong LAN vo cuc, dung noi xu ly tien cong no => khong phai ca tang deu au",
+        deadXxxVariant = "ProcessStockInxxx (:1168-1215 md5 6d2d4939) khong loi goi nao — hau to xxx la khuon CHET da gap o CheckExistPartInstancexxx",
+    });
+}).RequireAuthorization();
 // ===== 🔴🔴🔴 #800 ĐO PHẠM VI THIỆT HẠI CỦA BẪY THỤT-TAB (#799) — 101 HÀM CÓ THỂ ĐÃ TRÍCH TRÀN =====
 // #799 phát hiện công thức trích vùng dùng `awk '/^        (public|…) /'` (**tám dấu cách cứng**) không dừng
 // được ở hàm thụt **TAB**. Câu hỏi tiếp theo bắt buộc phải hỏi: **bao nhiêu vòng trước đây đã dính?**
