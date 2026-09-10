@@ -23637,6 +23637,13 @@ app.MapGet("/api/ro-invoice-bill/{roNo}", async (AppDbContext db, ITenantContext
         checkRegionIsEmptyInSource = true,
         twoGatewaysCallDifferentFunctions = "cong kho goi _biz.SerROInvoiceBill_WH (khong hau to ngay), cong dai ly goi _biz.SerROInvoiceBill_New20180624 => KHONG phai cap _WH/khong-_WH cua cung mot ban",
         readOnlyButOpensTransaction = "bNeedTransaction_WH = true => mo transaction tren _dbWH trong khi _dbMain.LogUserId moi la cho gan nguoi dung",
+        // ===== 🔴 #801 TRẢ NỢ #800 + TRUY RA NGUỒN GỐC CÁI BẤT THƯỜNG MÀ #620 CHỈ MÔ TẢ =====
+        remeasuredWithCorrectFormula = "#801 (tra no #800): SerROInvoiceBill nam trong 41 ten rui ro thut-TAB. Do lai bang cong thuc dung: ban TRAN Service01.cs:13639-13875 md5 fdba352c (217 dong) | ban LIVE dai ly _New20180624 :13876-14118 md5 c3791085 (222 dong) | ban LIVE kho _WH WH.cs:726-974 md5 2a432677 (229 dong). Ca ba deu Raise=0, SaveData=0, ExecQuery=1",
+        plainVariantIsDeadAndIsTheCopySource = "#801: ban TRAN SerROInvoiceBill (Service01.cs:13639) KHONG duong nao goi => CHET. Va no chinh la NGUON CHEP: no dung _dbMain NHAT QUAN (_dbMain.LogUserId VA _dbMain.BeginTransaction) cung voi _log.WriteLogAsync. Ban _WH chep tu no, doi cac thao tac sang _dbWH (6 cho) nhung QUEN doi dong _dbMain.LogUserId => day la LY DO cua cai bat thuong #620 ghi nhan",
+        logUserIdOnWrongHandle = "#801 hau qua that: _dbMain.LogUserId duoc gan trong khi CA 6 thao tac (BeginTransaction + ExecQuery) deu tren _dbWH => ket noi THUC SU chay truy van khong co danh tinh nguoi dung; nhat ky DAL cua _dbWH mat user, con _dbMain thi duoc gan user ma khong dung",
+        dealerLiveUsesAnotherFunctionsErrorCode = "#801 khuon #792 lap lai: ban LIVE dai ly co strFunctionName = SerROInvoiceBill nhung strErrorCodeDefault = TError.ErrCarSv.Ser_RO_ReportInvoiceBill — MA LOI CUA HAM KHAC. Ban _WH dung DUNG (ErrCarSv_WH.SerROInvoiceBill_WH)",
+        whVariantIsTheOneDoingItRight = "#801: day la ca BAN KHO LAM DUNG con ban dai ly sai — nguoc voi #792 (ca hai cung sai). Ghi lai de khong tong quat hoa nhanh kho luon tut hau",
+        dealerLiveRewrittenNotCopied = "#801: ban LIVE dai ly _New20180624 dung ProcessBizReq + _dbDealer (6 cho, nhat quan) thay vi _log.WriteLogAsync + _dbMain => no duoc VIET LAI theo khuon moi, khong phai chep tu ban tran nhu ban _WH",
     });
 }).RequireAuthorization();
 
