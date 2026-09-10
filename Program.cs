@@ -5735,19 +5735,70 @@ app.MapPost("/api/performanceinvoices/create", async (OrdPiCreateDto dto, AppDbC
 // 🔴 `ObjectCodeParent` tạo cây APP → MENU → SCR → BTN.
 string[] SysObjectTypes = { "WS", "WSFUNC", "APP", "MENU", "SCR", "BTN" };
 
-app.MapGet("/api/sysobjects", async (AppDbContext db, ITenantContext t, string? objectCode, string? objectType, string? parent, string? flagActive) =>
+// ===== 🔴🔴🔴 #765 `Ser_SysGetObject` / `Ser_SysGetObjectType` / `Ser_SysGetPartner` — BA HÀM ĐỌC DANH MỤC RBAC =====
+// `Ser_SysGetObject` (`BizCarSv.System.cs:1119-1258` md5 `6a030478`) · `…ObjectType` (`:989-1118` md5 `e9faf608`) ·
+// `…Partner` (`:859-988` md5 `60ed92b1`). Endpoint `/api/sysobjects` đã có ⇒ vá tại chỗ, KHÔNG tính màn mới.
+//
+// 🔴🔴🔴 **TẦNG NUỐT DÒNG THỨ BA TRÊN CÙNG MỘT CỤM PHÂN QUYỀN**
+//   `Ser_SysGetObject` mở đầu bằng **hai `inner join` sang danh mục**:
+//     `from Sys_Object t inner join **Sys_ObjectType** sot on t.ObjectType = sot.ObjectType`
+//     `             inner join **Sys_Partner**    sp  on t.PartnerCode = sp.PartnerCode`
+//   ⇒ Một màn hình khai `ObjectType` chưa có trong `Sys_ObjectType`, hoặc `PartnerCode` chưa có trong
+//     `Sys_Partner`, thì **biến mất khỏi danh sách đối tượng** — im lặng, không lỗi.
+//   📌 Ghép ba vòng gần đây lại thì ra một chuỗi hỏng khép kín của **màn cấp quyền**:
+//     · #761 — `Sys_Object` **nhân bản theo từng đại lý**: thiếu bản ghi cho đại lý nào thì đại lý đó không thấy màn;
+//     · #764 — `Ser_SysGetGroup` lọc `IsReadOnly **is null**`: nhóm điền `'0'` biến mất khỏi màn quản lý nhóm;
+//     · #765 (đây) — hai `inner join` danh mục: đối tượng thiếu loại/đối tác thì biến mất khỏi màn chọn đối tượng.
+//     ⇒ Quản trị viên **không thấy thứ cần cấp** ⇒ không cấp được ⇒ người dùng **không có quyền**, và
+//       **không tầng nào báo gì**. Ba nguyên nhân khác nhau, cùng một triệu chứng "màn hình trắng".
+//
+// 🔴🔴 **`'WEBHTC'` — LẦN THỨ BA ⇒ ĐI TÌM HÀM LÀM ĐÚNG, VÀ KẾT QUẢ LÀ ÂM TÍNH**
+//   Theo luật "anti-pattern lần thứ ba thì đi tìm một hàm làm ĐÚNG", tôi đếm toàn `TERP.BizCarSv`:
+//     `grep -rn "WEBHTC" --include=*.cs .` (bỏ `Web References/`) ⇒ **5 lần, TẤT CẢ trong `BizCarSv.System.cs`**,
+//     tất cả là chuỗi đóng cứng trong SQL, và `grep -rn "WEBHTC" TERP.Constants/*.cs` ⇒ **KHÔNG có hằng nào**.
+//   ⇒ **Không tìm được bản làm đúng** (giống #746 với `Timeout = 123456000`): đây là **quy ước toàn cụm**,
+//     muốn đổi mã đối tác bị loại phải sửa **5 chỗ** trong mã nguồn rồi build lại.
+//   Năm chỗ đó ở `:150` (helper `mySys_GetMapSysUserSysObject` — #761) · `:490` (`Ser_SysGetUser`) ·
+//     `:652` (`Ser_SysGetGroup` — #764) · `:783` (`Ser_SysGetMapSysGroupSysUser`) · `:1179` (hàm này).
+//     ⇒ **cả năm đều là hàm ĐỌC** — khớp đúng kết luận định lượng của #764 (guard/luật chỉ tập trung ở một phía).
+//
+// 🔴 **BẤT NHẤT GIỮA DANH MỤC VÀ THỨ GẮN VỚI DANH MỤC**: `Ser_SysGetPartner` (`select t.PartnerCode, t.PartnerName
+//   from Sys_Partner where (1=1)`) và `Ser_SysGetObjectType` **KHÔNG** có `not in ('WEBHTC')`.
+//   ⇒ Ô chọn đối tác **vẫn hiện `WEBHTC`**, nhưng chọn nó xong thì `Ser_SysGetObject` trả **rỗng** vì chính nó lọc bỏ.
+//     Người dùng thấy một lựa chọn hợp lệ dẫn tới danh sách trống — không có cách nào biết vì sao.
+// ⚪ Hai hàm danh mục kia đều là `select` hai cột, một mệnh đề `BuildClause`, **không guard** (`Raise` = 0,
+//   `StartsWith("and")` = 0) ⇒ tham số rỗng là **trả trọn danh mục** — với danh mục thì đó là hành vi bình thường,
+//   khác hẳn `Ser_SysGetCurentUser` (#763) nơi cùng một thiếu sót làm lộ bảng người dùng. **Cùng khuôn, khác hậu quả.**
+// 📌 NỢ: MiniHTC chưa mô hình hoá `Sys_ObjectType` và `Sys_Partner` ⇒ **không** tái hiện được hai `inner join`;
+//   endpoint dưới đây **đếm** số đối tượng sẽ bị nuốt nếu áp luật đó, thay vì bịa hai bảng rỗng (#738).
+app.MapGet("/api/sysobjects", async (AppDbContext db, ITenantContext t, string? objectCode, string? objectType, string? parent, string? flagActive, string? partnerCode) =>
 {
     var qy = db.SysObjects.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(objectCode)) qy = qy.Where(x => x.ObjectCode == objectCode);
     if (!string.IsNullOrWhiteSpace(objectType)) qy = qy.Where(x => x.ObjectType == objectType);
     if (!string.IsNullOrWhiteSpace(parent)) qy = qy.Where(x => x.ObjectCodeParent == parent);
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    if (!string.IsNullOrWhiteSpace(partnerCode)) qy = qy.Where(x => x.PartnerCode == partnerCode!.Trim().ToUpperInvariant());
+    // #765 Nguồn loại cứng đối tác "WEBHTC" ngay trong SQL. Giữ 1:1 nhưng ĐẾM ra thay vì lặng lẽ bỏ.
+    var excludedWebHtc = await qy.CountAsync(x => x.PartnerCode == "WEBHTC");
+    qy = qy.Where(x => x.PartnerCode != "WEBHTC");
     var items = await qy.OrderBy(x => x.ObjectType).ThenBy(x => x.ObjectCode).Select(x => new
     {
         x.ObjectCode, x.ObjectType, x.ObjectName, x.ObjectCodeParent, x.ObjectCodeExec,
         x.PhysicalAssembly, x.PhysicalClass, x.FlagExecModal, x.PartnerCode, x.FlagActive,
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // Nguồn inner join Sys_ObjectType + Sys_Partner: đối tượng thiếu một trong hai sẽ BIẾN MẤT.
+    var missingObjectType = items.Count(x => string.IsNullOrWhiteSpace(x.ObjectType));
+    var missingPartnerCode = items.Count(x => string.IsNullOrWhiteSpace(x.PartnerCode));
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        excludedWebHtc, missingObjectType, missingPartnerCode,
+        sourceInnerJoinsTwoCatalogs = "nguon: inner join Sys_ObjectType + inner join Sys_Partner => doi tuong thieu loai hoac thieu doi tac BIEN MAT khoi man chon doi tuong, khong bao gi",
+        sourceHardcodesWebHtcFiveTimes = "WEBHTC dong cung 5 lan, tat ca trong BizCarSv.System.cs, KHONG co hang trong TERP.Constants => doi phai sua 5 cho va build lai; ca 5 deu o ham DOC",
+        sourceCatalogsDoNotFilterWebHtc = "Ser_SysGetPartner va Ser_SysGetObjectType KHONG loc WEBHTC => o chon doi tac VAN hien WEBHTC nhung chon xong thi danh sach doi tuong RONG",
+        miniCannotReplicateJoins = "NO: Mini chua mo hinh hoa Sys_ObjectType / Sys_Partner => dem so dong se bi nuot thay vi bia hai bang rong (#738)",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/sysobjects/save", async (SysObjectSaveDto dto, AppDbContext db, ITenantContext t) =>
