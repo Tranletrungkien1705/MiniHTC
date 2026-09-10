@@ -5861,6 +5861,70 @@ app.MapPost("/api/sysgroupobjects/save", async (MapSgSoSaveDto dto, AppDbContext
 }).RequireAuthorization();
 
 // Tiện tra cứu: quyền màn hình HIỆU LỰC của một người dùng = hợp của mọi nhóm người đó thuộc về.
+// ===== 🔴🔴🔴 #761 `Ser_SysGetMapSysUserSysObjectForCurrentUser` — QUYỀN HIỆU LỰC CỦA NGƯỜI DÙNG =====
+// Vỏ bọc `BizCarSv.System.cs:1404-1504` md5 `3a062713` (92 dòng, **không chạm CSDL**) → thân thật là helper
+// **`mySys_GetMapSysUserSysObject`** (`:115-228`, 109 dòng active) — lại một guard/logic núp dưới tiền tố `my…_`
+// đúng như luật vừa mở rộng ở #760.
+//
+// ⚪⚪ **KIỂM TRA ÂM TÍNH TRƯỚC ĐÃ — "quyền cấp qua NHÓM bị bỏ sót" là SAI**
+//   Vỏ bọc truyền `strGroupCodeList = ""` ⇒ thoạt đọc tưởng hàm chỉ lấy map **trực tiếp** user→object và
+//   **bỏ qua** quyền cấp qua nhóm. Mở helper ra thì ngược lại: đường duy nhất **đi qua nhóm**:
+//     `Sys_User t → inner join **Map_SG_SU** msgsu (nhóm↔người) → inner join **Map_SG_SO** msgso (nhóm↔đối tượng)`
+//   ⇒ `strGroupCodeList = ""` chỉ nghĩa là **không lọc theo một nhóm cụ thể**, tức lấy **mọi nhóm** của người đó.
+//   Tên hàm (`MapSysUserSysObject`) gợi ý một bảng map trực tiếp **không tồn tại trong câu này**.
+//
+// 🔴🔴🔴 **BỐN `inner join` NỐI TIẾP ⇒ ĐỨT MỘT MẮT XÍCH LÀ MẤT SẠCH QUYỀN**
+//     `Sys_User` → `**Mst_Dealer**` → `Map_SG_SU` → `Map_SG_SO` → `**Sys_Object**`   (tất cả đều `inner`)
+//   Nguy hiểm nhất là `inner join Mst_Dealer md on t.DealerCode = md.DealerCode`: người dùng thuộc một đại lý
+//   **đã ngưng hoạt động** (hoặc mã đại lý gõ sai) sẽ **không khớp** ⇒ **không có quyền nào**. Người đó vẫn
+//   **đăng nhập được** nhưng thấy màn hình trắng, và thông báo lỗi thì không có. Đúng bệnh #410 "join sang bảng
+//   danh mục = mất dữ liệu lúc ĐỌC", nhưng hậu quả là **mất quyền**, không phải mất dòng báo cáo.
+//
+// 🔴🔴 **MÃ ĐỐI TÁC ĐÓNG CỨNG TRONG SQL PHÂN QUYỀN**: `and t.PartnerCode **not in ('WEBHTC')**`
+//   ⇒ mọi người dùng thuộc đối tác `WEBHTC` **không bao giờ nhận được quyền** qua đường này, và luật đó
+//   **không cấu hình được** — muốn đổi phải sửa mã và build lại. Đây là **lần thứ hai** gặp mã đóng cứng trong
+//   SQL sản xuất (sau `not in ('VN101')` ở #756) ⇒ ghi nhận thành cặp; chưa đủ ba lần để đi tìm "hàm làm đúng".
+//
+// 🔴🔴 **`Sys_Object` ĐƯỢC NHÂN BẢN THEO TỪNG ĐẠI LÝ**:
+//     `inner join Sys_Object so on msgso.PartnerCode = so.PartnerCode and msgso.ObjectCode = so.ObjectCode
+//      and (t.DealerCode = so.DealerCode) --DatNL - 12/11/2010 - Update cho rieng Service`
+//   ⇒ Danh mục màn hình/chức năng **không dùng chung**, mỗi đại lý một bộ bản ghi. Thêm một màn mới phải chèn
+//     `Sys_Object` cho **mọi đại lý**; thiếu đại lý nào thì đại lý đó **không thấy màn** — im lặng, không lỗi.
+//   ⚠️ Chú thích đề ngày **12/11/2010** ⇒ ràng buộc 15 năm tuổi, và là thứ giải thích vì sao cột `DealerCode`
+//     xuất hiện ở một bảng vốn nên là danh mục hệ thống.
+// 🔴 Câu thứ hai **join lại** `Sys_User` và `Sys_Object` dù `#tbl_Map_SU_SO_Filter` đã mang sẵn `UserCode`/
+//   `ObjectCode`/`DealerCode` ⇒ vừa dư thừa vừa **lặp lại đúng rủi ro inner join** một lần nữa.
+// 📌 Mini: `GET /api/sysusers/{userCode}/effective-objects` dựng lại đúng chuỗi nhóm→đối tượng, nhưng **đếm và báo**
+//   từng mắt xích bị đứt thay vì lặng lẽ trả rỗng (khác nguồn CÓ CHỦ Ý).
+app.MapGet("/api/sysusers/{userCode}/effective-objects", async (string userCode, AppDbContext db, ITenantContext t) =>
+{
+    var code = userCode.Trim();
+    var user = await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == code);
+    if (user is null) return Results.NotFound(new { userCode = code });
+    // Mắt xích 1: người dùng phải đang hoạt động (nguồn lọc FlagActive = "1").
+    var userActive = user.FlagActive == "1";
+    // Mắt xích 2: nhóm của người dùng.
+    var groups = await db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId && x.UserCode == code)
+        .Select(x => x.GroupCode).Distinct().ToListAsync();
+    // Mắt xích 3: đối tượng của các nhóm đó.
+    var objCodes = await db.MapSysGroupSysObjects.Where(x => x.OrgId == t.OrgId && groups.Contains(x.GroupCode))
+        .Select(x => x.ObjectCode).Distinct().ToListAsync();
+    // Mắt xích 4: đối tượng phải tồn tại và đang hoạt động trong Sys_Object.
+    var objs = await db.SysObjects.Where(x => x.OrgId == t.OrgId && objCodes.Contains(x.ObjectCode) && x.FlagActive == "1")
+        .Select(x => new { x.ObjectCode, x.ObjectName, x.ObjectType, x.PartnerCode }).ToListAsync();
+    var missingObjects = objCodes.Count - objs.Count;
+    return Results.Ok(new
+    {
+        userCode = code, count = objs.Count, items = objs,
+        // Bốn con số dưới đây là thứ nguồn KHÔNG cho biết: nó chỉ trả rỗng.
+        userActive, groupCount = groups.Count, objectCodesFromGroups = objCodes.Count, missingOrInactiveObjects = missingObjects,
+        sourceUsesFourInnerJoins = "nguon: Sys_User -> Mst_Dealer -> Map_SG_SU -> Map_SG_SO -> Sys_Object, TAT CA deu inner => dut mot mat xich la mat sach quyen, dang nhap duoc nhung man hinh trang",
+        sourceDropsUsersOfInactiveDealer = "inner join Mst_Dealer on t.DealerCode = md.DealerCode => nguoi dung thuoc dai ly da ngung se KHONG co quyen nao",
+        sourceHardcodesPartner = "and t.PartnerCode not in (WEBHTC) — ma doi tac dong cung trong SQL phan quyen, khong cau hinh duoc (lan thu hai sau VN101 o #756)",
+        sourceScopesSysObjectByDealer = "join Sys_Object ... and (t.DealerCode = so.DealerCode) --DatNL 12/11/2010 => danh muc man hinh nhan ban theo tung dai ly; them man moi phai chen cho MOI dai ly, thieu ai nguoi do khong thay man",
+        sourceGroupPathOnly = "AM TINH: strGroupCodeList = rong KHONG phai bo qua quyen theo nhom — duong duy nhat trong SQL la di QUA nhom (Map_SG_SU + Map_SG_SO); ten ham goi y mot bang map truc tiep khong ton tai o day",
+    });
+}).RequireAuthorization();
 // (Nguồn có hàm riêng `SysGetMapSysUserSysObjectForCurrentUser` — đây là bản rút gọn theo dữ liệu đã port.)
 // 🔴 Quyền HIỆU LỰC của một người dùng. Nguồn KHÔNG có bảng `Map_SU_SO` vật lý — quyền là **DẪN XUẤT**
 // qua chuỗi join `Sys_User → Map_SG_SU → Map_SG_SO → Sys_Object`
