@@ -14877,7 +14877,20 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
 //   **PlateNo**, bản khoá-biển cho sửa **FrameNo**) · và **một khác biệt khoảng trắng** `if(` vs `if (`
 //   ⇒ dấu hiệu **sinh đôi chép tay**, không phải sinh từ khuôn. KHÁC `SerCarUpdate` (#399) — đó là đường của form.
 //
-// 🔴🔴🔴 **CỜ TRANSACTION BỊ DÙNG LÀM CỜ "CÓ GHI HAY KHÔNG"**:
+// ⛔⛔ **#748 RÚT LẠI TOÀN BỘ MỤC NGAY DƯỚI ĐÂY — TÔI ĐÃ ĐỌC SÓT MỘT DÒNG.**
+//   Ở #748 (cụm `SerEngineer*`) tôi gặp lại đúng khuôn này và đọc kỹ hơn phần khai báo:
+//     `bool **bIsWSMain** = string.Equals(_strConfig_FlagIsWSMain, TConst.Flag.Yes);`
+//     `bool bNeedTransaction_Dealer = true;`
+//     `**if (bIsWSMain) bNeedTransaction_Dealer = false;**`   ← dòng tôi đã bỏ sót ở #745
+//   Grep lại chính hàm `CarSv_SerCarUpdate_KeyVIN`: ba dòng trên **CÓ ĐỦ** (dòng 32/35/36). Nghĩa là
+//   `bNeedTransaction_Dealer` **không phải** một cờ transaction thuần — nó là **"đang chạy ở WS đại lý hay WS Main"**.
+//   Và ở WS Main thì `_dbDealer` **CHÍNH LÀ** `_dbMain` (đã chứng minh ở #733: `if (bIsWSMain) s_dbCache_Dealer = s_dbCache_Main;`)
+//   ⇒ nếu vẫn `_dbDealer.SaveData(...)` thì **ghi trùng lần thứ hai lên cùng một CSDL**.
+//   ⇒ `if (bNeedTransaction_Dealer) _dbDealer.SaveData(...)` là **ĐÚNG VÀ CẦN THIẾT**, không phải mìn.
+//   📌 Lỗi của tôi: grep `bool bNeedTransaction` chỉ bắt dòng **khai báo** và thấy `= true`, nên bỏ mất dòng
+//     **gán lại** ngay bên dưới. Khuôn "khai báo `= true` rồi gán lại có điều kiện" làm mọi phép grep một-dòng nói dối.
+// (Giữ nguyên văn mục sai bên dưới để lượt sau đối chiếu được, KHÔNG xoá dấu vết.)
+// ``🔴🔴🔴 CỜ TRANSACTION BỊ DÙNG LÀM CỜ "CÓ GHI HAY KHÔNG"`` — SAI, xem đính chính trên:
 //     `_dbMain.SaveData("Ser_Car", …);`
 //     `_dbWH.SaveData("Ser_Car", …);`
 //     `**if (bNeedTransaction_Dealer)** _dbDealer.SaveData("Ser_Car", …);`   ← và y hệt cho `Ser_Customer`
@@ -46297,6 +46310,56 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
 //   Không mất dòng (LEFT còn sống — kiểm tra âm tính), nhưng thứ tự **không như người dùng đoán**.
 // ⚠️ Sáu bộ lọc còn lại đều qua `BuildClause` (bẫy #410): `EngineerID · GroupRID · DealerCode ·
 //   EngineerNo · EngineerName · IsActive · IsEngineer`. ⚠️ `with(nolock)` viết **thẳng** trên bảng chính.
+// ===== 🔴🔴🔴 #748 CỤM `SerEngineer*` (`BizCarSv.Service.cs`) — SÁU HÀM, HAI THẾ HỆ =====
+// `_Create` :11072-11271 md5 `6c506201` · `_Update` :11272-11452 `08be0129` · `_Delete` :11453-11600 `0a29f170` ·
+// `_Create01` :11773-11994 `41ef5667` · `_Update01` :11995-12188 `f41f6fd8` · `_Get01` :12189-12367 `8114f30e`.
+// Bản `…01` = thế hệ sau, thêm ba tham số `strIsEngineer` / `strStartWorkDate` / `strFinishWorkDate`.
+// Endpoint `/api/engineers` GET+POST đã có (#338/#543) ⇒ vòng này vá + bổ sung DELETE, KHÔNG tính màn mới.
+//
+// 🔴🔴🔴 **`_Create01` ĐÁNH DẤU NHẦM BẢNG ⇒ KỸ THUẬT VIÊN KHÔNG VÀO ĐƯỢC CSDL ĐẠI LÝ**
+//   Ba dòng cuối của `_Create01`, đúng theo thứ tự trong nguồn:
+//     `_dbWH.SaveData("Ser_Engineer", **dt_Engineer_WH**);`
+//     `DataTableUtils.SetDataRowStateOfAllRows(ref **dt_Engineer**, DataRowState.Added);`   ← SAI BẢNG
+//     `if (bNeedTransaction_Dealer) _dbDealer.SaveData("Ser_Engineer", **dt_Engineer_WH**);`
+//   `dt_Engineer_WH` vừa được `_dbWH.SaveData` ghi xong nên các dòng của nó **không còn ở trạng thái `Added`**;
+//   lệnh đặt lại trạng thái thì trỏ vào **`dt_Engineer`** (bảng của Main, không ai dùng nữa). ⇒ `_dbDealer.SaveData`
+//   nhận một DataTable **không có dòng nào cần chèn** ⇒ **không ghi gì**, và **không báo lỗi**.
+//   ⚪⚪ **PHẢN VÍ DỤ NẰM Ở HÀM ANH EM, CÁCH 500 DÒNG**: `_Create` (bản cũ) viết
+//     `SetDataRowStateOfAllRows(ref **dt_Engineer_WH**, DataRowState.Added);` rồi mới `_dbDealer.SaveData(…, dt_Engineer_WH)`
+//     ⇒ **đúng**. Hai hàm chỉ khác nhau **một hậu tố `_WH` trong tên biến** — và đó là toàn bộ khác biệt giữa
+//     "ghi được" và "im lặng không ghi". Họ #741/#742: sai một chữ, không ai thấy.
+//   ⇒ Hệ quả: đại lý dùng màn hình đời mới (đường `…01`, có ngày vào/nghỉ việc) **tạo kỹ thuật viên xong thì
+//     người đó không tồn tại trong CSDL đại lý** — chỉ có ở Main và WH. Mọi màn chạy tại WS đại lý sẽ không thấy.
+//
+// ⛔ **#748 ĐÍNH CHÍNH #745 (xem chi tiết tại chỗ, phía trên)**: `if (bNeedTransaction_Dealer) _dbDealer.SaveData(...)`
+//   **KHÔNG** phải "cờ transaction bị giao thêm việc". Cụm này khai `bIsWSMain` rồi `if (bIsWSMain) bNeedTransaction_Dealer = false;`
+//   ⇒ nó là cờ **"đang chạy ở WS đại lý"**, và ghi có điều kiện là để **không ghi trùng** khi `_dbDealer ≡ _dbMain` (#733).
+//   Sáu hàm của cụm này đều theo đúng khuôn đó ⇒ đây là **quy ước của tầng**, không phải sơ suất. Cùng bài học
+//   quy-mô như #746, nhưng theo hướng ngược: lần đó tôi báo **nhẹ** một lỗi hệ thống, lần này tôi báo **nặng** một khuôn đúng.
+//
+// 🔴 **HAI THẾ HỆ KHUÔN, LẦN THỨ BA** (sau #742 `JDPowerTerm`, #746 `GetMstCarModel`): `_Update` (cũ) dùng
+//   `bool bNeedTransaction` + `_log.WriteLogAsync` thủ công + `myUtils_ValidateId`; `_Update01` dùng
+//   `bNeedTransaction_Main`/`_Dealer` + `bIsWSMain` + `dtimeSys`. ⇒ **bản cũ không hề chạm `_dbDealer`**
+//   (`grep -n "_dbDealer" _Update` chỉ ra hai dòng, đều là **tham số truyền cho helper Check**, không phải ghi).
+//   ⇒ Ai còn gọi `SerEngineerUpdate` (không `01`) thì **sửa kỹ thuật viên không lan xuống CSDL đại lý**.
+// ⚪ Đếm guard theo luật mới (#747 — cộng cả `this.Check*`): `_Create`/`_Create01` = 2 · `_Update`/`_Update01` = 3 ·
+//   `_Delete` = 1 · `_Get01` = 0. Cặp create/update lại chọn đúng hai guard khác nhau (#404) — khuôn đúng lần thứ ba.
+// 📌 Mini: bổ sung `DELETE /api/engineers/{engineerNo}` (nguồn `_Delete` ghi cả Main lẫn WH; Mini một CSDL).
+app.MapDelete("/api/engineers/{engineerNo}", async (string engineerNo, AppDbContext db, ITenantContext t) =>
+{
+    var no = engineerNo.Trim().ToUpperInvariant();
+    var e = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
+    // Nguồn `_Delete` có guard `CheckExistEngineer` (đếm theo luật #747: `this.Check*` = 1) ⇒ mã lạ BỊ chặn.
+    if (e is null) return Results.NotFound(new { engineerNo = no });
+    db.ServiceEngineers.Remove(e);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        deleted = no,
+        sourceCreate01LosesDealerRow = "nguon _Create01 dat DataRowState.Added cho dt_Engineer nhung SaveData(dt_Engineer_WH) => CSDL dai ly KHONG nhan dong nao; ban _Create cu thi dung",
+        sourceUpdateOldGenSkipsDealer = "SerEngineerUpdate (khong 01) khong ghi _dbDealer lan nao",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? group, string? q,
     string? dealerCode, string? engineerNo, string? engineerName, string? engineerType,
     string? workingState) =>
