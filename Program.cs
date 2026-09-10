@@ -27713,6 +27713,108 @@ app.MapPost("/api/maintworkcontents/{code}/toggle", async (string code, AppDbCon
 //     (bằng chứng là **tính đối xứng**, không phải dấu `//`). Nhưng ghi lại vì lời giải thích **bị cắt cụt giữa chừng**
 //     — người sau đọc `// k Update Vi` sẽ không biết "vì" cái gì.
 // 📌 `/api/partcosts/calculate` (port từ Form) đã có ⇒ phần giá vốn chỉ vá cờ, KHÔNG viết endpoint thứ hai.
+// ===== 🔴🔴🔴 #752 `DMSWROGet` + `CommonGetMixItem` — CỔNG RA CHO DMS & BỘ TIỆN ÍCH CHUNG =====
+// `DMSWROGet` (`BizCarSv.Service01.cs:14633-14826` md5 `664661b9`, 177 dòng) ·
+// `CommonGetMixItem` (`BizCarSv.Common.cs:981-1098` md5 `9754c2f6`, 112 dòng).
+// BƯỚC 3B đặc biệt: `BizCarSv.Common.cs` **khác nhau giữa hai máy** (2408 dòng ở 150 vs 1742 ở laptop),
+//   nhưng trích riêng hàm `CommonGetMixItem` thì md5 **giống hệt** (`9754c2f6…`), cùng ở dòng 981-1098.
+//   ⇒ Chênh lệch 666 dòng nằm ở hàm khác; hàm này an toàn để port.
+//
+// 🔴🔴🔴 **`DMSWROGet` GHÉP XE THEO CẢ `CusID` ⇒ XE ĐỔI CHỦ LÀ MẤT SẠCH LỆNH SỬA CHỮA CŨ**
+//     `join ser_car car with(nolock) on r.CarID = car.CarID **and r.cusid = car.cusid**`
+//   `Ser_Car.CusID` là **chủ xe HIỆN TẠI**, còn `Ser_RO.CusID` là chủ xe **lúc lập lệnh**. Xe sang tên thì hai
+//   giá trị lệch nhau vĩnh viễn ⇒ mọi RO trước ngày sang tên **rơi khỏi kết quả** (join là INNER).
+//   ⇒ Đối tác DMS gọi API này sẽ thấy lịch sử sửa chữa của xe **cụt mất phần trước khi đổi chủ**.
+//
+// 🔴🔴🔴 **JOIN KHÔNG CÓ `DealerCode` — VÀ #750 CHỨNG MINH ĐÓ LÀ RỦI RO THẬT, KHÔNG PHẢI SUY DIỄN**
+//   Hai join `ser_customer` / `ser_car` chỉ khớp `CusID` / `CarID`, **không** kèm `DealerCode`.
+//   Câu hỏi: `CarID` có duy nhất toàn hệ không? **Có câu trả lời từ #750**: `SerCarDelete` xoá bằng
+//     `where DealerCode = @DealerCode **and** CarID = @CarID` — nếu `CarID` đã duy nhất toàn cục thì thêm
+//     `DealerCode` là thừa. Việc hàm xoá phải dùng **cả hai** khoá cho thấy `CarID` **chỉ duy nhất trong phạm vi
+//     một đại lý** ⇒ join ở đây **có thể ghép lệnh sửa chữa của đại lý A với xe/khách của đại lý B**.
+//   📌 Đây là kiểu kết luận chỉ rút ra được khi **đọc hai hàm ở hai file khác nhau rồi đối chiếu**; đọc riêng
+//     `DMSWROGet` thì chỉ thấy "thiếu điều kiện", không biết nó có hại hay không.
+//
+// 🔴🔴 **`top 100` KHÔNG `ORDER BY`** (#415): 100 dòng **bất kỳ** theo ý bộ tối ưu. Đây là API cho đối tác,
+//   nên đối tác nhận một tập **không xác định và không lặp lại được** giữa hai lần gọi cùng tham số.
+// 🔴 **Hai khối `if/else` giống hệt nhau, kiểm cùng một điều kiện**, chỉ khác chuỗi bị bóc:
+//     `if (rỗng) {} else strRONo… = strRONo….Replace("**LS-**", "");` rồi lặp lại y nguyên với `"**BG-**"`.
+//   `Replace` bóc **mọi** lần xuất hiện, không chỉ tiền tố ⇒ số lệnh chứa `LS-`/`BG-` ở giữa cũng bị cắt.
+// 🔴 `with(nolock)` viết **thô** trên cả bốn bảng (không qua marker `--//[mylock]` như phần còn lại của hệ)
+//   ⇒ đối tác DMS đọc được cả dữ liệu **chưa commit**. ⚪ `case … else N'Không xác định'` thì **không nuốt dòng** — đúng.
+// 🔴 `convert(nvarchar, r.CheckInDate, **23**)` ⇒ style 23 là `yyyy-mm-dd`: **mất phần giờ** của cả ba mốc thời gian.
+//
+// 🔴🔴 **`CommonGetMixItem` — BA NGUỒN THỜI GIAN KHÁC NHAU NÚP SAU BA CÁI TÊN GẦN GIỐNG NHAU**:
+//     `GetTDate`     → `myUtils_GetParamsRaw("TDate")`            ⇒ lấy từ **tham số cấu hình**
+//     `GetTDateTime` → `DateTime.Now`                              ⇒ đồng hồ **máy chủ ứng dụng**
+//     `GetDateTimeDB`→ `TDALUtils.DBUtils.GetDateTime(_dbMain)`    ⇒ đồng hồ **máy chủ CSDL**
+//   Tên gọi gợi ý "cùng nguồn, khác độ chi tiết" nhưng thực chất là **ba nguồn độc lập** có thể lệch nhau.
+//   Mã lạ thì `throw` (`CommonGetMixItem_InvalidMixCode`) ⇒ ⚪ có guard, đúng.
+// ⚪⚪ **ÂM TÍNH QUAN TRỌNG — `GetNewId` KHÔNG bị hỏng bởi `RollbackSafety`, dù nhìn rất giống lỗi**:
+//   Chuỗi gọi là `CommonGetMixItem` → `myCommon_GetNewId(**_dbMain**, "Seq_Id", "")` → `myUtils_GetSeqRaw`, mà
+//   `_dbMain` **đang trong transaction** và nhánh `Return Good` gọi **`RollbackSafety(_dbMain)`**. Tham số lại tên là
+//   `dbMain_**SeqAutoCommit**` ⇒ thoạt đọc là "truyền nhầm handle, số cấp ra bị rollback ⇒ trùng ID".
+//   Đọc tiếp thân `myUtils_GetSeqRaw` thì thấy nó chạy `insert into Seq_Id values (null); delete … where AutoID = @@Identity;`
+//   `select @@Identity Tid;` — tức **chỉ mượn bộ đếm IDENTITY** làm nguồn số. Mà **IDENTITY của SQL Server KHÔNG
+//   quay lại khi rollback** (đặc tính "identity gap"). ⇒ Rollback **không** cấp lại số cũ ⇒ **không trùng**.
+//   ⇒ Thiết kế này **cố ý dựa vào** tính chất đó, và `delete` giữ cho bảng luôn rỗng. **KHÔNG phải bug.**
+//   📌 Ghi ra vì đây là ca suýt over-claim rõ nhất trong loạt vừa qua: bốn tín hiệu đều chỉ về "lỗi"
+//     (tên tham số, transaction, rollback, `@@Identity`) mà kết luận đúng lại là "an toàn".
+// 🔴 **NHƯNG `strPrefix` THÌ CHẾT THẬT**: `myCommon_GetNewId` nhận `string strPrefix` rồi dựng chuỗi bằng
+//     `string.Format("{0}{1}.{2:000}", **""** /*strPrefix*/, DateTime.Now…, nSeq % 1000)`
+//   ⇒ tham số **bị thay bằng chuỗi rỗng ngay tại chỗ dùng**, chú thích `//strPrefix` nằm ngay cạnh. Mọi nơi
+//   truyền tiền tố đều bị bỏ im lặng (họ #461: tham số đi hết các tầng rồi không ai dùng).
+// ⚠️ Rủi ro còn lại của `GetNewId`: khoá là `yyyyMMdd.HHmmss` + `nSeq % 1000` ⇒ **trùng nếu trong CÙNG một giây
+//   có hai lời gọi mà số thứ tự lệch đúng bội 1000**. Ngưỡng an toàn ≈ 1000 lời gọi/giây.
+// 📌 Mini: `GET /api/dms/wro` giữ 1:1 cả bốn bẫy của nguồn và trả cờ cho từng cái.
+app.MapGet("/api/dms/wro", async (AppDbContext db, ITenantContext t, string? roNo, string? plateNo, string? dealer) =>
+{
+    var rn = (roNo ?? "").Trim();
+    // Nguồn bóc "LS-" rồi "BG-" bằng Replace (mọi vị trí, không chỉ tiền tố). Giữ nguyên hành vi.
+    if (rn.Length > 0) { rn = rn.Replace("LS-", "").Replace("BG-", ""); }
+    var qy = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
+    if (rn.Length > 0) qy = qy.Where(r => r.RONo == rn);
+    if (!string.IsNullOrWhiteSpace(dealer)) { var dl = dealer!.Trim().ToUpperInvariant(); qy = qy.Where(r => r.DealerCode == dl); }
+    // Nguồn: INNER join ser_customer + INNER join ser_car ON CarID **và** CusID ⇒ giữ 1:1 (kể cả việc nuốt dòng).
+    var joined = from r in qy
+                 join cu in db.ServiceCustomers.Where(x => x.OrgId == t.OrgId) on r.CusID equals cu.CusCode
+                 join ca in db.ServiceCars.Where(x => x.OrgId == t.OrgId)
+                     on new { C = r.CarID, U = r.CusID } equals new { C = ca.CarID, U = ca.CusID }
+                 select new { r, cu, ca };
+    if (!string.IsNullOrWhiteSpace(plateNo)) { var pl = plateNo!.Trim().ToUpperInvariant(); joined = joined.Where(z => z.ca.PlateNo == pl); }
+    var raw = await joined.Take(100).Select(z => new { z.r.RONo, cu = z.cu.CusName, z.ca.PlateNo, z.ca.ModelCode, z.r.CheckInDate, z.r.PlanedDeliveryDate, z.r.ActualDeliveryDate, z.r.Status }).ToListAsync();
+    var rows = raw.Select(z => new
+    {
+        z.RONo, cusName = z.cu, z.PlateNo, modelCode = z.ModelCode,
+        // Nguồn convert(...,23) ⇒ chỉ ngày, mất giờ. Giữ 1:1.
+        checkInDate = z.CheckInDate?.ToString("yyyy-MM-dd"),
+        planedDeliveryDate = z.PlanedDeliveryDate?.ToString("yyyy-MM-dd"),
+        actualDeliveryDate = z.ActualDeliveryDate?.ToString("yyyy-MM-dd"),
+        rawStatus = z.Status,
+        status = DmsWroStatusLabel(z.Status),
+    }).ToList();
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        sourceTop100WithoutOrderBy = "nguon SELECT top 100 ... khong ORDER BY => 100 dong BAT KY, khong lap lai duoc giua hai lan goi",
+        sourceJoinsCarByCusIdToo = "nguon join ser_car on r.CarID=car.CarID and r.cusid=car.cusid => xe doi chu thi RO cu BIEN MAT",
+        sourceJoinsWithoutDealerCode = "join khong kem DealerCode; #750 cho thay SerCarDelete phai dung DealerCode+CarID => CarID chi duy nhat trong pham vi dai ly => co the ghep cheo dai ly",
+        sourceUsesRawNolock = "with(nolock) tho tren ca 4 bang => doi tac DMS doc duoc du lieu chua commit",
+        sourceConvertStyle23DropsTime = "convert(nvarchar, ..., 23) => mat gio o ca ba moc thoi gian",
+    });
+}).RequireAuthorization();
+
+// #752 Bảng mã trạng thái của `DMSWROGet` — sáu nhóm, có `else` nên mã lạ KHÔNG bị nuốt dòng.
+static string DmsWroStatusLabel(string? st) => (st ?? "") switch
+{
+    "CRE" or "PRT" or "HRO" => "Chờ sửa",
+    "INGA" => "Đang sửa",
+    "RPRD" or "PAID" => "Sửa xong",
+    "FNS" => "Đã giao xe",
+    "REJ" => "Lệnh hủy",
+    "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+    _ => "Không xác định",
+};
 app.MapPost("/api/customercare/refresh-dob", async (AppDbContext db, ITenantContext t, string? dealer) =>
 {
     if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Cần mã đại lý." });
