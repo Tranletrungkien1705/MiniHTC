@@ -58674,6 +58674,63 @@ app.MapGet("/api/ro/{roNo}/payment-precheck", async (AppDbContext db, ITenantCon
         oldVersionDidNotLogPointTotal = "strPointTotal chi duoc dua vao alParamsCoupleError o ban moi => ban cu gap su co ve diem thuong ma KHONG ghi duoc so diem vao nhat ky loi",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #796 `Ser_ReceptionF_Reception` — BA ĐƯỜNG TIẾP NHẬN XE, BA TẬP CỘT KHÁC NHAU =====
+// ⛔ **Bổ khuyết cho #794/#795**: hai vòng đó chỉ quét **hai file WS**. Còn một đường vào thứ ba —
+//   `TERP.HTCService.ClientService/Services/*.cs` (**37 file**) gọi **thẳng** vào biz, không qua WS.
+//   Nó mang thêm **2** bản LIVE mà WS **không hề gọi** ⇒ tổng LIVE thật là **117**, không phải 115:
+//     `Ser_ReceptionF_Reception_New20210727` · `CarSv_Ser_CustomerCar_Create_New20220926`
+//   (cái thứ hai: WS gọi `_New20190924`, ClientService gọi `_New20220926` ⇒ **hai bản cách nhau ba năm cùng sống**).
+//   📌 Bài học: **danh sách "bản LIVE" phải quét CẢ BA đường vào**, không chỉ WS.
+//
+// Ba bản của `Ser_ReceptionF_Reception` (mỗi bản là **vỏ bọc**; thân thật nằm ở `…ReceptionX_<cùng hậu tố>`):
+//   web    `WSCarSv.asmx.cs:33238`            → `_New20210704`  · thân `BizCarSv.Tab.cs:10602-11297`  md5 `d1e75f26` (673 dòng, 3 `Raise`)
+//   tablet `WSCarSvTab.asmx.cs:2419`          → `_New20200118`  · thân `BizCarSv.**ZTemp**.cs:22048-22747` md5 `a2321086` (676 dòng, 3 `Raise`)
+//   CS     `Ser_ReceptionFService.cs:831`     → `_New20210727`  · thân `BizCarSv.**ZTemp**.cs:21199-22047` md5 `497810b2` (822 dòng, **4** `Raise`)
+//   📌 **Bản của tablet lại nằm trong `ZTemp.cs`** — đúng khuôn đã bắt ở #794 với `Ser_RO_Create`. Lần thứ **hai**
+//     ⇒ đây là **khuôn**, không phải cá biệt: *đường tablet chạy code trong file tên "temp"*.
+//
+// 🔴🔴🔴 **MA TRẬN CỘT — BA ĐƯỜNG GHI BA TẬP KHÁC NHAU VÀO CÙNG BẢNG `Ser_ReceptionF`**
+//     tham số / khối          | web `0704` | tablet `0118` | ClientService `0727`
+//     `strLevelOfInspection`  |   **13**   |     **0**     |        12
+//     `strCardNo`/`strMemberNo`/`strCardType` | **0** | 5 |         6
+//     `strAppId` + `Ser_App_CheckDB` |  **0**  |    12 / có   |      13 / có
+//     `bIsWSMain`             |     5      |     **0**     |         6
+//   ⇒ ① Tiếp nhận **qua web** thì **không bao giờ gắn được thẻ hội viên / mã lịch hẹn** — những cột đó
+//       đơn giản là **không có trong chữ ký hàm**.
+//     ② Tiếp nhận **qua tablet** thì **không có "mức độ kiểm tra"** (`LevelOfInspection`) và **không có**
+//       `bIsWSMain` ⇒ không phân biệt được đang chạy ở WS Main hay không, tức **mô hình transaction / chọn CSDL
+//       khác hẳn hai bản kia** (đúng khuôn `bNeedTransaction_Dealer` đã ghi ở #748).
+//     ③ **Bản ĐẦY ĐỦ NHẤT lại là bản KHÔNG WS nào gọi**: `_New20210727` có **cả hai** nhóm cột và thêm một
+//       `Raise` nữa — nhưng chỉ **ClientService** dùng nó.
+//   ⇒ Cùng một nghiệp vụ "tiếp nhận xe", hồ sơ sinh ra **khác nhau tuỳ người dùng bấm từ đâu**, và không có
+//     chỗ nào trong nguồn nói ra điều đó.
+// ⚪ **Đính chính ngay trong lượt**: thoạt nhìn tưởng chỉ CS mới có `Ser_App_CheckDB`; đếm lại thì **tablet cũng có**
+//   (1 lần). Khác biệt `Raise` 4-vs-3 nằm chỗ khác, **chưa truy ra** ⇒ ghi là **chưa xác định**, không đoán.
+// ✅ **Mini đang port từ `_New20210727`** (thấy ở `:55975`, `:61321`, `:68775`) — tức **bản đầy đủ nhất**, may là
+//   đúng; nhưng phải ghi rõ: **đó KHÔNG phải bản mà web dùng**. Ai đối chiếu Mini với màn web sẽ thấy Mini
+//   "thừa" cột thẻ/lịch hẹn — **thừa so với web, đúng so với ClientService**.
+app.MapGet("/api/_meta/reception-three-live-versions", () => Results.Ok(new
+{
+    functionName = "Ser_ReceptionF_Reception",
+    versions = new[]
+    {
+        new { path = "web WS", entry = "WSCarSv.asmx.cs:33238", version = "_New20210704",
+              body = "BizCarSv.Tab.cs:10602-11297", md5 = "d1e75f26", lines = 673, raiseGuards = 3,
+              levelOfInspection = true, cardMember = false, appIdCheck = false, isWsMainAware = true },
+        new { path = "tablet WS", entry = "WSCarSvTab.asmx.cs:2419", version = "_New20200118",
+              body = "BizCarSv.ZTemp.cs:22048-22747", md5 = "a2321086", lines = 676, raiseGuards = 3,
+              levelOfInspection = false, cardMember = true, appIdCheck = true, isWsMainAware = false },
+        new { path = "ClientService", entry = "Ser_ReceptionFService.cs:831", version = "_New20210727",
+              body = "BizCarSv.ZTemp.cs:21199-22047", md5 = "497810b2", lines = 822, raiseGuards = 4,
+              levelOfInspection = true, cardMember = true, appIdCheck = true, isWsMainAware = true },
+    },
+    webCannotRecordMembership = "tiep nhan QUA WEB khong bao gio gan duoc the hoi vien / ma lich hen — cac cot do KHONG CO trong chu ky ham _New20210704",
+    tabletHasNoLevelOfInspectionNorWsMainFlag = "tiep nhan QUA TABLET khong co LevelOfInspection va khong co bIsWSMain => khong phan biet duoc WS Main, tuc mo hinh transaction / chon CSDL khac han hai ban kia (khuon #748)",
+    mostCompleteVersionIsNotCalledByAnyWs = "_New20210727 co CA HAI nhom cot va them mot Raise, nhung chi ClientService dung => ban day du nhat lai la ban khong WS nao goi",
+    tabletLiveCodeLivesInZTempAgain = "ban cua tablet nam trong ZTemp.cs — dung khuon da bat o #794 voi Ser_RO_Create. Lan thu HAI => day la KHUON: duong tablet chay code trong file ten temp",
+    raiseCountDifferenceNotYetTraced = "CS co 4 Raise vs 3 cua hai ban kia; thoat nhin tuong do Ser_App_CheckDB nhung dem lai TABLET CUNG CO CheckDB => cho khac biet nam o dau CHUA TRUY RA, ghi la chua xac dinh",
+    miniPortedFromClientServiceVersion = "Mini port tu _New20210727 (bản day du nhat) — DUNG, nhung do KHONG phai ban web dung; ai doi chieu Mini voi man web se thay Mini thua cot the/lich hen: thua so voi web, dung so voi ClientService",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/dead-plain-variants-audit", () => Results.Ok(new
 {
     // ===== ⛔ #795 ĐÍNH CHÍNH SỐ LIỆU #794 — phép đếm cũ nhận cả DÒNG ĐÃ BỊ COMMENT =====
@@ -58696,6 +58753,11 @@ app.MapGet("/api/_meta/dead-plain-variants-audit", () => Results.Ok(new
         "Ser_ReceptionF_Reception: _New20200118 / _New20210704",
     },
     namesWithTwoLiveVersionsCount = 6,   // #794 ghi 7
+    // ===== 🔴🔴🔴 #796 CÓ ĐƯỜNG GỌI THỨ BA MÀ #794/#795 KHÔNG QUÉT =====
+    thirdCallPathExists = "#796: ngoai hai WS con TANG TERP.HTCService.ClientService/Services/*.cs (37 file) goi THANG vao biz, khong qua WS. No mang them 2 ban LIVE ma WS KHONG he goi: Ser_ReceptionF_Reception_New20210727 va CarSv_Ser_CustomerCar_Create_New20220926 => TONG LIVE THAT = 117, khong phai 115",
+    liveIncludingClientServicePath = 117,
+    receptionHasThreeLiveVersions = "#796: Ser_ReceptionF_Reception co BA ban cung song — web WS:33238 -> _New20210704 (Tab.cs:6600) · tablet WS:2419 -> _New20200118 (ZTemp.cs:19301) · ClientService/Ser_ReceptionFService.cs:831 -> _New20210727 (ZTemp.cs:19494)",
+    customerCarCreateAlsoSplit = "#796: CarSv_Ser_CustomerCar_Create — WS goi _New20190924 con ClientService goi _New20220926: hai ban cach nhau BA NAM cung song",
     serRoStatusUpdatePaidRemovedFromList = "#795: WSCarSv.asmx.cs:11428 goi _New20230220 nhung CA DONG DO BI COMMENT (//    return …); loi goi SONG duy nhat la :11483 -> _New20230228. Vay day KHONG phai ca hai-ban-cung-live, ma la ca CHUYEN BAN co do lech do duoc: xem roPaymentPrecheckSource",
     serRoCreateSplit = new
     {
