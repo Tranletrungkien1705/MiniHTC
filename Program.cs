@@ -59015,6 +59015,82 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 //   ⇒ Client dùng chung helper giải mã sẽ **hỏng** ở đúng 6 endpoint này (liên quan nợ #746 `MyDSDecodeForOSSale`).
 // 📌 Mini: `POST /api/repairorders/status-by-ids` — nhận **danh sách thật** (nguồn chỉ nhận một), và **đếm riêng**
 //   số id bị nguồn bỏ sót để chỉ ra khoảng cách.
+// ===== 🔴🔴🔴 #807 LỊCH HẸN: TABLET ĐẶT TRÙNG KHOANG ĐƯỢC, WEB THÌ KHÔNG — `Ser_App_Update` =====
+// Trace **cả ba** đường vào (đã loại dòng comment):
+//   web    `WSCarSv.asmx.cs:24038`        → `Ser_App_Update_**New20201230**` (`ZTemp.cs:24945-25323` md5 `6add144a`, 346 dòng)
+//   tablet `WSCarSvTab.asmx.cs:3714`      → `Ser_App_Update_**New20190621**` (`ZTemp.cs:24555-24944` md5 `3ba8f27f`, 363 dòng)
+//   CS     `Ser_AppService.cs:751`        → `Ser_App_Update_**New20190621**` (cùng bản với tablet)
+//   bản trần `Ser_App_Update` (`BizCarSv.**Appointment**.cs:515-893` md5 `12d94b3e`, 351 dòng) — **không ai gọi ⇒ CHẾT**.
+//   📌 **Đảo ngược trực giác**: bản nằm ở file "chính thức" (`Appointment.cs`) thì **chết**, còn hai bản đang chạy
+//     đều nằm trong `ZTemp.cs` — đúng khuôn đã đo ở #805.
+//
+// 🔴🔴🔴 **BẢN WEB CÓ GUARD CHỐNG TRÙNG KHOANG, BẢN TABLET KHÔNG**
+//   Chỉ bản `_New20201230` có khối (nguyên văn chú thích, giữ cả cách viết):
+//     `#region // Check`
+//     `// Check 1 khoang trong 1 khoảng thời gian chỉ có 1 xe (1 cuộc hẹn):`
+//     `MyCheck_DateTime_Cavity(_dbDealer, ref alParamsCoupleError, strAppId, strCavityID,`
+//     `    string.Format("{0} {1}", strAppDateTimeFrom, strAppTimeFrom),`
+//     `    string.Format("{0} {1}", strAppDateTime, strAppTime));`
+//   ⇒ **Sửa lịch hẹn từ TABLET (và từ ClientService) có thể đặt trùng khoang cùng khung giờ**; từ WEB thì bị chặn.
+//   Bản tablet cũng **không nhận** bốn tham số: `strAppDateTimeFrom` · `strAppTimeFrom` · `strCavityID` ·
+//   `strAppTypeCode` ⇒ nó **không biết khoang nào** để mà kiểm.
+//
+// 🔴 **HAI PHÉP ĐẾM QUEN THUỘC ĐỀU KHÔNG BẮT ĐƯỢC GUARD NÀY**: `Raise` = **2 vs 2**; **tập mã lỗi bằng nhau**
+//   (comm hai chiều đều rỗng). Vì guard nằm trong **helper** `MyCheck_DateTime_Cavity` ⇒ củng cố #747/#760 và
+//   xác nhận bài học "đếm `Raise` không phải đếm guard" (#799) theo hướng ngược lại: **tập mã lỗi bằng nhau
+//   cũng KHÔNG chứng minh guard giống nhau**.
+//
+// ⚪ **NGUỒN LÀM ĐÚNG MỘT CHỖ — CẶP CREATE/UPDATE (#404)**: `MyCheck_DateTime_Cavity` có **hai overload**
+//   trong `ZTemp.cs`: bản **5 tham số** (`:23125`, không có `strAppId`) dùng cho **tạo mới**, và bản **6 tham số**
+//   (`:23175`) thêm đúng một dòng `and t.AppId <> @strAppId` để **loại chính nó ra** khi **sửa**.
+//   ⇒ Đây là thiết kế **đúng**; ghi lại để không suy "cụm này ẩu toàn bộ". (Còn `MyCheck_DateTime_Cavity**xxx**`
+//     `:23078` là bản chết theo khuôn hậu tố `xxx`.) Toàn tầng có **5** lời gọi hai overload này.
+//
+// 🔴 **MÃ LỖI MANG CHỮ `Create` DÙNG CHUNG CHO CẢ `Update`**:
+//   `throw CMyException.Raise(TError.ErrCarSv.Ser_App_**Create**_InvalidAppDateTimeFromOrAppDateTimeTo, …)`
+//   nằm trong **cả hai** overload ⇒ **sửa** lịch hẹn bị trùng khoang vẫn nhận mã lỗi mang chữ **Create**.
+// 🔴🔴 **SO SÁNH THỜI GIAN BẰNG CHUỖI**: điều kiện trùng giờ viết
+//   `concat(t.AppDateTimeFrom, ' ', t.AppTimeFrom) < @strAppDateTimeFrom` (và ba vế tương tự) —
+//   **so sánh CHUỖI**, không phải `datetime`. Chỉ đúng nếu cột lưu dạng `yyyy-MM-dd`; nếu lưu `dd/MM/yyyy`
+//   thì **thứ tự so sánh sai hoàn toàn** và guard **im lặng cho qua**. ⇒ Phải **đo kiểu lưu thật của cột**
+//   trước khi tin guard này (đúng nguyên tắc "chọn `StdDate` vs `StdDTime` phải đo dữ liệu DB").
+// 🔴 `select top 1 … ` **không `ORDER BY`** (#415): dùng để kiểm tồn tại thì `top 1` chấp nhận được, nhưng thông báo
+//   lỗi lấy `Rows[0]["AppNo"]` ⇒ khi có **nhiều** lịch trùng, **báo trùng với lịch nào là tuỳ máy chủ**.
+// ⚪ `and t.AppStatus != '4' --Khác trạng thái: Hủy` ⇒ lịch **đã huỷ** không tính là trùng — đúng nghiệp vụ.
+// 📌 Mini: `POST /api/appointments/cavity-conflict-check` — áp đúng overload **6 tham số** (loại chính nó ra),
+//   trả **TẤT CẢ** lịch trùng chứ không chỉ `top 1`.
+app.MapPost("/api/appointments/cavity-conflict-check", async (CavityConflictDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var cavity = (dto.CavityID ?? "").Trim();
+    if (cavity.Length == 0)
+    {
+        return Results.Ok(new { conflict = false, reason = "khong co CavityID — dung y ban tablet: no KHONG nhan tham so nay nen khong the kiem" });
+    }
+    var from = dto.From;
+    var to = dto.To;
+    var rows = await db.ServiceAppointments
+        .Where(a => a.OrgId == t.OrgId && a.CavityID == cavity
+                 && a.Status != "4"                    // nguon: and t.AppStatus != 4 (Huy)
+                 && (dto.AppId == null || a.Id != dto.AppId))   // overload 6 tham so: and t.AppId <> @strAppId
+        .Select(a => new { a.Id, a.AppNo, a.AppFrom, a.AppTo, a.CavityID })
+        .ToListAsync();
+    // Nguon so sanh CHUOI concat(ngay, giờ); Mini so sanh tren kieu thoi gian that.
+    var conflicts = rows.Where(a => a.AppFrom < to && a.AppTo > from).ToList();
+    return Results.Ok(new
+    {
+        cavityID = cavity, from, to, excludedAppId = dto.AppId,
+        conflict = conflicts.Count > 0, conflictCount = conflicts.Count, conflicts,
+        tabletPathHasNoCavityGuard = "chi ban _New20201230 (WEB) co khoi #region // Check goi MyCheck_DateTime_Cavity. Ban _New20190621 — duoc CA tablet (WSCarSvTab:3714) LAN ClientService (Ser_AppService.cs:751) dung — KHONG co => sua lich hen tu tablet co the dat TRUNG KHOANG cung khung gio",
+        tabletPathLacksFourParams = new[] { "strAppDateTimeFrom", "strAppTimeFrom", "strCavityID", "strAppTypeCode" },
+        neitherRaiseCountNorErrorCodeSetDetectsIt = "Raise = 2 vs 2 va TAP MA LOI BANG NHAU (comm hai chieu deu rong) vi guard nam trong HELPER => tap ma loi bang nhau KHONG chung minh guard giong nhau (bo sung cho #799)",
+        sourceDoesCreateUpdatePairRight = "AM TINH (#404): MyCheck_DateTime_Cavity co HAI overload — ban 5 tham so (ZTemp:23125, khong co strAppId) cho TAO MOI, ban 6 tham so (:23175) them dung mot dong and t.AppId <> @strAppId de LOAI CHINH NO khi SUA. Thiet ke DUNG. Con MyCheck_DateTime_Cavityxxx (:23078) la ban chet theo khuon hau to xxx",
+        errorCodeSaysCreateInsideUpdate = "ca hai overload deu nem TError.ErrCarSv.Ser_App_Create_InvalidAppDateTimeFromOrAppDateTimeTo => SUA lich hen bi trung khoang van nhan ma loi mang chu Create",
+        sourceComparesTimeAsString = "dieu kien trung gio viet concat(t.AppDateTimeFrom, \" \", t.AppTimeFrom) < @strAppDateTimeFrom — SO SANH CHUOI chu khong phai datetime. Chi dung neu cot luu dang yyyy-MM-dd; neu luu dd/MM/yyyy thi thu tu so sanh SAI HOAN TOAN va guard IM LANG cho qua => phai do kieu luu that cua cot truoc khi tin guard nay",
+        sourceTopOneWithoutOrderBy = "select top 1 khong ORDER BY (#415): kiem ton tai thi chap nhan duoc, nhung thong bao loi lay Rows[0][AppNo] => khi co NHIEU lich trung, bao trung voi lich nao la tuy may chu. Mini tra TAT CA lich trung",
+        cancelledAppointmentsExcluded = "AM TINH: and t.AppStatus != 4 (Huy) => lich da huy khong tinh la trung, dung nghiep vu",
+        deadVariantLivesInOfficialFile = "ban tran Ser_App_Update nam o BizCarSv.Appointment.cs:515 (file chinh thuc) va DA CHET, con hai ban dang chay deu trong ZTemp.cs => dao nguoc truc giac, dung khuon #805",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/repairorders/status-by-ids", async (RoStatusByIdsDto dto, AppDbContext db, ITenantContext t) =>
 {
     var raw = (dto.RoIdList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
@@ -70018,6 +70094,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record CavityConflictDto(string? CavityID, DateTime From, DateTime To, long? AppId);
 record RoStatusByIdsDto(string? RoIdList);
 record StockInAdjustLineDto(string? PartCode, decimal Quantity);
 record StockInAdjustPrecheckDto(long OldStockInId, List<StockInAdjustLineDto>? Lines);
