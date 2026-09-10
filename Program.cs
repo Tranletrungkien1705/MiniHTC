@@ -54185,6 +54185,56 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴🔴 #733 TRẢ NỢ — BỘ HANDLE CSDL CỦA `TERP.BizCarSv` (giải thích được CẢ MỘT HỌ QUAN SÁT) =====
+// Nợ mở ở **#728** (`_dbWH_Sys` — "handle thứ ba, chưa truy") và **#732** (`_dbCarSv` — "handle thứ tư").
+// Đọc `BizCarSv.Common.cs:45-59` (khai báo) + `:285-326` (khởi tạo). **Vòng trả nợ, KHÔNG tính màn mới.**
+//
+// ✅ **KHÔNG CÓ CSDL THỨ BA HAY THỨ TƯ. Chỉ có BA CSDL, mỗi CSDL HAI handle**:
+//     `private TDAL.IEzDAL _dbMain;    _dbMain_Sys;`
+//     `private TDAL.IEzDAL _dbWH;      _dbWH_Sys;`
+//     `private TDAL.IEzDAL _dbDealer;  _dbDealer_Sys;`
+//   và khởi tạo: `_dbWH = s_dbCache_WH.Clone();   _dbWH_Sys = s_dbCache_WH.Clone(); **//???? Bỏ**`
+//   ⇒ `_dbWH_Sys` là **clone của CÙNG một cache** với `_dbWH` — **cùng chuỗi kết nối**
+//     `_strConfig_DBConnStr_CarSv_WH`, chỉ là **hai kết nối/transaction độc lập tới CÙNG một CSDL**.
+//   📌 Chính tác giả ghi `//???? Bỏ` và `//????` (ở `_dbDealer_Sys`) ⇒ **thừa nhận chúng nên bị bỏ**.
+//   ⇒ **ĐÍNH CHÍNH #728**: `ReleaseAllSemaphore(_dbWH_Sys, true)` **không** đụng tới CSDL nào khác — nó giải
+//     phóng semaphore trên một handle **thừa** của chính CSDL kho.
+// ✅ **ĐÍNH CHÍNH #732**: `_dbCarSv` **không được khai báo ở đâu cả** trong `TERP.BizCarSv`. Nó chỉ xuất hiện
+//   trong **ba** file của thư mục `BizCarSv.CampaignMarketing/` — và **bằng chứng dứt điểm**: `.csproj` chỉ
+//   `Include` thư mục `**CampaignMarketing\**` (bản LIVE), **không** có `BizCarSv.CampaignMarketing\`.
+//   ⇒ **Cả thư mục đó KHÔNG ĐƯỢC BIÊN DỊCH** — đó là lý do `_dbCarSv` không cần khai báo mà vẫn "hợp lệ",
+//     và là **bằng chứng mạnh nhất** cho việc bản không hậu tố ngày ở #732 là **mã chết thật sự**.
+//   📌 Đây là một cách kiểm "hàm này còn sống không?" **rẻ và chắc hơn** đọc WS: **grep `.csproj`**.
+//
+// 🔴🔴🔴🔴 **`_dbDealer` CHÍNH LÀ `_dbMain` KHI `bIsWSMain` — GIẢI THÍCH ĐƯỢC CẢ MỘT HỌ QUAN SÁT**:
+//     `if (bIsWSMain) { if (s_dbCache_Dealer == null) { s_dbCache_Dealer = **s_dbCache_Main**; } }`
+//     `_dbDealer = (TDAL.IEzDAL)s_dbCache_Dealer.Clone();`
+//   ⇒ Khi chạy ở **WS Main**, "CSDL đại lý" **là chính CSDL Main**, chỉ khác handle.
+//   Từ đó ba điều tôi đã ghi rải rác nay có **một lời giải chung**:
+//   · `if (bIsWSMain) bNeedTransaction_Dealer = false;` (#697/#701) — **không phải tuỳ tiện**: mở transaction
+//     thứ hai trên **cùng một CSDL** là **tự khoá chính mình** (deadlock/blocking), nên phải tắt.
+//   · `RollbackSafety(_dbDealer)` ở **lối ra THÀNH CÔNG** (#710/#711/#732) — **không** làm mất dữ liệu khi
+//     `bIsWSMain`, vì dữ liệu đã đi qua `_dbMain` và **đã commit** ở đó.
+//   · Các hàm "ghi ba CSDL" thực chất chỉ ghi **hai CSDL vật lý** khi chạy ở Main.
+//   ⚠️ **NHƯNG khi `bIsWSMain = false`** (bản chạy tại đại lý) thì `_dbDealer` **là CSDL riêng thật**,
+//     và lúc đó những chỗ `RollbackSafety(_dbDealer)` ở lối ra thành công **mới** đáng ngờ.
+//   ⇒ **Mức nghiêm trọng của #710/#711/#732 phụ thuộc `bIsWSMain` — chưa xác minh cấu hình thật ⇒ giữ nguyên
+//     mức "ghi cờ", KHÔNG hạ xuống "vô hại".**
+// 📌 Ba nợ liên quan **đã đóng**: `_dbWH_Sys` (#728) · `_dbCarSv` (#732) · và một phần nợ "ghi nhiều CSDL"
+//   (13 ca) — nay đã biết **cách đọc đúng** thay vì đếm mù.
+app.MapGet("/api/_meta/db-handles", (ITenantContext t) => Results.Ok(new
+{
+    note = "#733 — tai lieu hoa bo handle CSDL cua TERP.BizCarSv (khong truy van gi; endpoint tra hang so).",
+    physicalDatabases = new[] { "Main", "WH", "Dealer" },
+    handlesPerDatabase = new[] { "_dbMain / _dbMain_Sys", "_dbWH / _dbWH_Sys", "_dbDealer / _dbDealer_Sys" },
+    thereIsNoThirdOrFourthDatabase = "KHONG CO CSDL THU BA HAY THU TU. Chi co BA CSDL, moi CSDL HAI handle: _dbMain/_dbMain_Sys, _dbWH/_dbWH_Sys, _dbDealer/_dbDealer_Sys. Khoi tao: _dbWH = s_dbCache_WH.Clone(); _dbWH_Sys = s_dbCache_WH.Clone(); //???? Bo => _dbWH_Sys la CLONE CUA CUNG MOT CACHE voi _dbWH — CUNG CHUOI KET NOI _strConfig_DBConnStr_CarSv_WH, chi la HAI KET NOI/TRANSACTION DOC LAP toi CUNG MOT CSDL. Chinh tac gia ghi //???? Bo va //???? (o _dbDealer_Sys) => THUA NHAN chung nen bi bo",
+    retracted728ThirdHandle = "DINH CHINH #728: ReleaseAllSemaphore(_dbWH_Sys, true) KHONG dung toi CSDL nao khac — no giai phong semaphore tren mot handle THUA cua chinh CSDL kho. Ghi chu no-moi o #728 la SAI, nay dong",
+    retracted732FourthHandle = "DINH CHINH #732: _dbCarSv KHONG duoc khai bao o dau ca trong TERP.BizCarSv. No chi xuat hien trong BA file cua thu muc BizCarSv.CampaignMarketing/ — va BANG CHUNG DUT DIEM: .csproj chi Include thu muc CampaignMarketing (ban LIVE), KHONG co BizCarSv.CampaignMarketing => CA THU MUC DO KHONG DUOC BIEN DICH. Do la ly do _dbCarSv khong can khai bao ma van hop le, va la BANG CHUNG MANH NHAT cho viec ban khong hau to ngay o #732 la MA CHET THAT SU",
+    grepCsprojIsTheCheapestLivenessTest = "Grep .csproj la cach kiem ham-nay-con-song-khong RE VA CHAC HON doc WS: neu file khong duoc Include thi moi ham trong do deu chet, khong can truy tung loi goi",
+    dbDealerIsLiterallyDbMainWhenWsIsMain = "_dbDealer CHINH LA _dbMain KHI bIsWSMain — GIAI THICH DUOC CA MOT HO QUAN SAT: if (bIsWSMain) { if (s_dbCache_Dealer == null) { s_dbCache_Dealer = s_dbCache_Main; } } roi _dbDealer = s_dbCache_Dealer.Clone(). Tu do: (1) if (bIsWSMain) bNeedTransaction_Dealer = false (#697/#701) KHONG PHAI TUY TIEN — mo transaction thu hai tren CUNG MOT CSDL la TU KHOA CHINH MINH nen phai tat; (2) RollbackSafety(_dbDealer) o LOI RA THANH CONG (#710/#711/#732) KHONG lam mat du lieu khi bIsWSMain vi du lieu da di qua _dbMain va DA COMMIT o do; (3) cac ham ghi-ba-CSDL thuc chat chi ghi HAI CSDL VAT LY khi chay o Main",
+    severityStillDependsOnConfig = "NHUNG khi bIsWSMain = false (ban chay tai dai ly) thi _dbDealer LA CSDL RIENG THAT, va luc do nhung cho RollbackSafety(_dbDealer) o loi ra thanh cong MOI dang ngo => MUC NGHIEM TRONG cua #710/#711/#732 PHU THUOC bIsWSMain. CHUA XAC MINH cau hinh that => GIU NGUYEN muc ghi-co, KHONG ha xuong vo-hai",
+})).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #732 TẠO CHIẾN DỊCH MARKETING `Ser_CampaignMarketing_Create_20220926` =====
 // **LIVE** `CampaignMarketing/BizCarSv.CampaignMarketing.cs:3697-4582` (md5 `116046c1`) — WS `:1945` gọi
 // **đúng bản có hậu tố ngày** ⇒ bản không hậu tố (`BizCarSv.CampaignMarketing/…:607-1284`, md5 `3dca9b20`)
