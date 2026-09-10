@@ -50623,6 +50623,44 @@ app.MapGet("/api/supplierpayments/types", () => Results.Ok(new
     note = "TConst.PaymentType (Const.Main.cs:100) + TConst.SupplierPaymentStatus (:603).",
 })).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #766 `Ser_SupplierPayment_Get` → `…_GetX` — ĐƯỜNG ĐỌC PHIẾU THANH TOÁN NCC =====
+// Vỏ bọc `BizCarSv.Inventory.StockOut.cs:15312-15426` md5 `eccc105d` → thân thật **`Ser_SupplierPayment_GetX`**
+// (`:15427-15632` md5 `9474c81f`, 191 dòng). md5 file `8e73ba77` — đã xác nhận KHỚP hai máy ở #243/#759.
+// #237/#243 đã đối chiếu `_Save`/`_Appr`; **đường ĐỌC thì chưa** ⇒ vòng này vá cờ, KHÔNG tính màn mới.
+//
+// ⚪⚪ **KIỂM TRA ÂM TÍNH TRƯỚC — `strFt_WhereClause` KHÔNG phải bề mặt SQL injection**
+//   Chữ ký nhận thẳng `string strFt_WhereClause` và hai `strRt_Cols_*` (danh sách CỘT) từ client ⇒ phản xạ đầu
+//   tiên là "ghép chuỗi vào WHERE/SELECT ⇒ injection". Đọc tiếp thì thấy nó đi qua
+//     `CmUtils.SqlUtils.**BuildWhere**(htSpCols, strFt_WhereClause, "@p_", ref alParamsCoupleSql)`
+//   ⇒ **tham số hoá** (`@p_…`) và chỉ nhận cột có trong bảng ánh xạ `htSpCols` ⇒ **không phải injection**.
+//   ⚠️ Nhưng rủi ro đã biết vẫn còn: `BuildWhere` với toán tử `in` mà giá trị **không bọc nháy** thì **crash**
+//     (nợ cũ `dmssales-buildwhere-in-operator-unquoted-crash`) ⇒ nhắc lại, **không mở nợ mới**.
+//
+// 🔴🔴🔴 **`ORDER BY` TRÊN `SELECT … INTO` — ĐÚNG CA KINH ĐIỂN CỦA LUẬT #415, VÀ NÓ ĐANG CẤP SỐ PHÂN TRANG**
+//     `select distinct **identity(bigint, 0, 1) MyIdxSeq**, ssp.SupplierPaymentNo`
+//     `into #tbl_Ser_SupplierPayment_Draft`
+//     `from Ser_SupplierPayment ssp inner join Ser_SupplierPaymentDtl sspdtl on … where (1=1) <filter>`
+//     `**order by ssp.SupplierPaymentNo asc**;`
+//   `ORDER BY` trên một câu `SELECT … INTO` **không ràng buộc** thứ tự cấp `IDENTITY` — SQL Server được tự do
+//   sinh `MyIdxSeq` theo thứ tự bộ tối ưu chọn. Mà `MyIdxSeq` chính là thứ dùng để cắt trang ngay dưới:
+//     `where (t.MyIdxSeq >= @nFilterRecordStart) and (t.MyIdxSeq <= @nFilterRecordEnd)`
+//   ⇒ **Phân trang không ổn định**: cùng bộ lọc, hai lần gọi có thể cho hai cách đánh số khác nhau ⇒ trang 2
+//     lặp lại dòng của trang 1 hoặc **bỏ sót phiếu** — trên màn hình **tiền trả nhà cung cấp**.
+//   ⚪ Hai `order by t.MyIdxSeq asc` ở hai câu trả về thì **hợp lệ** (SELECT thường) ⇒ master và detail luôn
+//     khớp nhau về thứ tự; cái hỏng là **thứ tự nghiệp vụ theo số phiếu**, không phải sự nhất quán nội bộ.
+//
+// 🔴🔴 **BỐN `inner join` — VÀ MỘT TRONG SỐ ĐÓ LÀM LỆCH TIỀN**
+//   · `Ser_SupplierPayment` ⋈ **`Ser_SupplierPaymentDtl`** ngay ở bảng lọc ⇒ phiếu **chưa có dòng chi tiết nào**
+//     **không bao giờ hiện ra** (kể cả để người dùng vào bổ sung).
+//   · Câu master ⋈ **`Ser_Mst_Supplier`** ⇒ phiếu trỏ tới nhà cung cấp đã bị xoá khỏi danh mục ⇒ **biến mất**.
+//   · Câu chi tiết ⋈ **`Ser_Mst_Location`** ⇒ **dòng chi tiết** có `LocationID` không còn trong danh mục vị trí
+//     **bị loại**, trong khi **phiếu master vẫn hiện** ⇒ **tổng tiền ở đầu phiếu ≠ tổng các dòng chi tiết**.
+//     Người dùng thấy một phiếu "thiếu tiền" mà không có dấu hiệu nào cho biết dòng đã bị nuốt ở đâu.
+//   📌 Đây là dạng nặng nhất của #410 gặp tới giờ: hai bảng của **cùng một phiếu** bị lọc bằng **hai điều kiện
+//     khác nhau**, nên sai lệch không lộ ra bằng "mất phiếu" mà bằng **sai số tiền**.
+// 🔴 `ssp.*` và `sspdtl.*` — `select *` ở cả hai câu trả về (họ #750: đổi schema là đổi hợp đồng API).
+// 📌 Mini: `/api/supplierpayments` dưới đây **đếm** phiếu không có dòng chi tiết và **đối chiếu tổng đầu phiếu
+//   với tổng dòng**, thay vì để lệch im lặng như nguồn.
 app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, string? status, string? supplier,
     string? dealerCode, string? paymentType) =>
 {
@@ -50636,8 +50674,23 @@ app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, st
       // #237: 10 cột bổ sung của đầu phiếu
       p.SupplierID, p.Address, p.TSTRequestNo, p.PaymentType, p.Description,
       p.PaymentBy, p.CreateBy, p.ApprBy, p.LogLUDTime, p.LogLUBy,
-      lines = db.SupplierPaymentLines.Count(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo) }).ToListAsync();
-    return Results.Ok(new { count = items.Count, total = items.Sum(x => x.Amount), approved = items.Where(x => x.Status == "A").Sum(x => x.Amount), items });
+      lines = db.SupplierPaymentLines.Count(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo),
+      // #766 Nguồn inner join Dtl ở bảng lọc ⇒ phiếu chưa có dòng nào KHÔNG BAO GIỜ hiện ra.
+      lineTotal = db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo).Sum(l => (decimal?)l.Amount) ?? 0m,
+      }).ToListAsync();
+    var noLineRows = items.Count(x => x.lines == 0);
+    var headVsLineMismatch = items.Count(x => x.Amount != x.lineTotal);
+    return Results.Ok(new
+    {
+        count = items.Count, total = items.Sum(x => x.Amount),
+        approved = items.Where(x => x.Status == "A").Sum(x => x.Amount), items,
+        noLineRows, headVsLineMismatch,
+        sourceHidesPaymentsWithoutLines = "nguon inner join Ser_SupplierPaymentDtl ngay o bang loc => phieu chua co dong chi tiet nao KHONG hien ra, ke ca de vao bo sung",
+        sourceDropsLinesByLocationJoin = "cau chi tiet inner join Ser_Mst_Location => dong co LocationID khong con trong danh muc bi loai TRONG KHI master van hien => tong dau phieu khac tong dong chi tiet",
+        sourceDropsPaymentsBySupplierJoin = "cau master inner join Ser_Mst_Supplier => phieu tro toi NCC da xoa khoi danh muc thi bien mat",
+        sourceOrderByOnSelectInto = "select distinct identity(bigint,0,1) MyIdxSeq ... into #tbl ... order by ssp.SupplierPaymentNo asc — ORDER BY tren SELECT INTO KHONG rang buoc thu tu cap IDENTITY, ma MyIdxSeq chinh la thu dung de cat trang => phan trang khong on dinh (#415)",
+        sourceWhereClauseIsParameterized = "AM TINH: strFt_WhereClause di qua CmUtils.SqlUtils.BuildWhere(htSpCols, ..., @p_) => tham so hoa, KHONG phai injection; nhung no cu BuildWhere toan tu in khong boc nhay van con",
+    });
 }).RequireAuthorization();
 
 // ===== 🔴 #243 SAVE BA VAI cho `Ser_SupplierPayment_Save` + SỬA lỗi `PaymentDate` của #237 =====
