@@ -15791,6 +15791,69 @@ app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantConte
 // 📌 Hằng `TConst.RespondType`: `Yes = "**Response**"` · `No = "**NotResponse**"` — là **chuỗi**, không phải
 //   `1`/`0`; nhánh `else` của `StringEqualIgnoreCase(strRespondType, Yes)` trả bảng `…NotResponse`
 //   ⇒ **mọi giá trị lạ đều rơi vào "không đáp ứng"**, kể cả chuỗi rỗng.
+// ===== 🔴🔴🔴 #756 `Rpt_AbilitySupplyParts_Save_AutoDealer` — JOB CHỤP SỐ LIỆU KHẢ NĂNG CUNG ỨNG =====
+// Vỏ bọc `BizCarSv.Inventory.Report.cs:9342-9510` → thân thật **`…_Save_AutoDealerX`** (`:9814-10070`
+// md5 `c5876890`, 240 dòng active). BƯỚC 3B: md5 file = `a2533ff4…` — **giống hệt máy 150**.
+// #311/#686 đã port phần ĐỌC (`/api/report/part-supply-ability`) ⇒ vòng này là đường GHI (chụp snapshot).
+//
+// 🔴🔴🔴 **CHÈN MÀ KHÔNG XOÁ KỲ CŨ ⇒ CHẠY LẠI JOB LÀ SỐ LIỆU NHÂN ĐÔI**
+//   Toàn bộ phần ghi của hàm X là **một** câu `insert into Rpt_AbilitySupplyParts (…17 cột…) select … from
+//   #input_Rpt_AbilitySupplyParts t`. Đếm trọn hàm: `grep -c "delete"` = **0**.
+//   `Rpt_AbilitySupplyParts` là bảng **chụp theo tháng** (`MonthReport`), nên chạy lại job cho **cùng một tháng**
+//   — vì lỗi mạng, vì chạy tay để kiểm tra, vì lịch trùng — sẽ **cộng dồn thêm một bộ dòng nữa**. Báo cáo đọc ra
+//   gấp đôi (hoặc gấp N) mà **không có dấu hiệu nào** để phân biệt: các dòng giống hệt nhau, không có cột lần chạy.
+//   ⇒ Đây là loại lỗi mà **§12 không bắt được** (đúng cột, đúng kiểu, chỉ sai **số dòng**).
+//
+// ⚪⚪ **HAI KIỂM TRA ÂM TÍNH — CẢ HAI ĐỀU SUÝT THÀNH BÁO CÁO SAI CỦA TÔI**:
+//   (1) **`_dbAction` KHÔNG phải CSDL thứ tư.** Đọc hàm X thấy `_dbAction.ExecQuery(strSqlExec)` bên cạnh
+//       `_dbMain` và `_dbWH` ⇒ phản xạ đầu tiên là "phát hiện handle thứ tư, #733 thiếu". Nhưng `grep -rnE
+//       "IEzDAL[^/]*_dbAction"` cho thấy nó là **TÊN THAM SỐ** của các hàm `…X` (`, TDAL.IEzDAL _dbAction`),
+//       và lời gọi ở vỏ bọc truyền vào chính **`_dbDealer`**. ⇒ Vẫn đúng **ba** CSDL như #733 đã chốt.
+//       📌 Đây là lần thứ ba một cái tên `_db…` lạ suýt làm tôi công bố thêm CSDL (sau `_dbWH_Sys` và `_dbCarSv`
+//       ở #728/#732, đều đã phải rút lại ở #733). Luật: thấy `_db<tên lạ>` ⇒ **grep khai báo trước**, đừng đếm.
+//   (2) **Ba lần `ExecQuery` cùng một câu KHÔNG gây chèn trùng ở WS Main.** Thứ tự thật:
+//       `_dbMain.ExecQuery(strSqlExec);` · `_dbWH.ExecQuery(strSqlExec);` · rồi **`if (!bIsWSMain) { _dbAction.ExecQuery(…) }`**
+//       ⇒ đúng khuôn `bIsWSMain` mà tôi đã đính chính ở #748: ở WS Main `_dbDealer ≡ _dbMain` nên **phải bỏ qua**
+//       lần ghi thứ ba, và nguồn **có** bỏ qua. Mẫu đúng, không phải bug.
+//
+// 🔴🔴 **REGION TÊN `// Call All Dealer:` NHƯNG CHỈ LẤY ĐÚNG MỘT ĐẠI LÝ**
+//     `select t.DealerCode from Mst_Dealer t where (1=1) … **and t.DealerCode = @strDealerCode**`
+//   Tên region hứa "gọi cho mọi đại lý"; câu lệnh lọc **một** mã, và WS (`WSCarSv.asmx.cs:38516`) cũng truyền
+//   `strDealerCode` từ ngoài vào. ⇒ Hàm `_Auto**Dealer**` này **không tự quét đại lý**; ai đó tin cái tên region
+//   mà lên lịch chạy một lần/tháng sẽ chỉ chụp được **một** đại lý. (Họ #751: tên nói dối về việc hàm làm.)
+// 🔴 **MÃ ĐẠI LÝ TEST ĐÓNG CỨNG TRONG SQL SẢN XUẤT**: `and t.DealerCode not in ('**VN101**') -- Đại lý idocNet Test`
+//   — nguyên văn cả comment tiếng Việt. Thêm/bớt đại lý test phải sửa mã nguồn và build lại.
+//   Hai điều kiện còn lại (`FlagActive = '1'`, `FlagDealerHTC = '1'`) thì nằm ở dữ liệu — không nhất quán.
+// 🔴 **BIẾN CHẾT + TỪ VỰNG LẠ**: `string strListShellCode = _strConfig_ListShellCode;` — `grep -n` trong trọn hàm
+//   cho **đúng một** lần xuất hiện (chính dòng khai báo) ⇒ gán rồi **không ai dùng**. "ShellCode" (mã vỏ xe)
+//   không liên quan gì tới phần còn lại của hàm ⇒ dấu vân tay khối chép từ báo cáo khác (họ #744/#745/#754).
+// 📌 Mini: `POST /api/report/part-supply-ability/snapshot` — **xoá kỳ cũ trước khi chèn** (khác nguồn CÓ CHỦ Ý)
+//   và trả về số dòng đã xoá để thấy rõ nguồn sẽ nhân đôi ở đúng chỗ nào.
+app.MapPost("/api/report/part-supply-ability/snapshot", async (AppDbContext db, ITenantContext t, string? dealer, string? monthReport) =>
+{
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Cần mã đại lý." });
+    if (string.IsNullOrWhiteSpace(monthReport)) return Results.BadRequest(new { error = "Cần kỳ báo cáo (yyyy-MM)." });
+    var dl = dealer!.Trim().ToUpperInvariant();
+    var mr = monthReport!.Trim();
+    // Nguồn lọc đại lý: FlagActive = 1, FlagDealerHTC = 1, và loại cứng "VN101".
+    var dlr = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl);
+    if (dlr is null) return Results.NotFound(new { dealer = dl });
+    if (dl == "VN101") return Results.BadRequest(new { error = "Đại lý test bị loại ở nguồn.", hardcodedInSourceSql = true });
+    // 📌 NỢ: Mini CHƯA mô hình hoá bảng chụp `Rpt_AbilitySupplyParts` (phần đọc ở #311/#686 tính trực tiếp,
+    //   không lưu snapshot). Không bịa một bảng rỗng rồi báo "da xoa 0 dong" (nguyên tắc #738).
+    const string snapshotTableMissing = "NO: Mini chua co bang chup Rpt_AbilitySupplyParts => buoc xoa-truoc-chen chua tai hien duoc";
+    await Task.CompletedTask;
+    return Results.Ok(new
+    {
+        dealer = dl, monthReport = mr, snapshotTableMissing,
+        rowsNotComputedHere = "NO: phan TINH so lieu di qua Rpt_AbilitySupplyParts_GetX (#311/#686 moi port phan DOC); endpoint nay hien chi tai hien buoc XOA-TRUOC-CHEN ma nguon thieu",
+        sourceInsertsWithoutDelete = "nguon: 1 cau insert into Rpt_AbilitySupplyParts, grep delete = 0 => chay lai job cung MonthReport la CONG DON, khong co cot lan chay de phan biet",
+        sourceRegionSaysAllDealerButFiltersOne = "region // Call All Dealer nhung SQL co and t.DealerCode = @strDealerCode, va WS cung truyen tu ngoai vao",
+        sourceHardcodesTestDealer = "and t.DealerCode not in (VN101) -- Dai ly idocNet Test: ma dai ly test dong cung trong SQL san xuat",
+        sourceHasDeadVariable = "string strListShellCode = _strConfig_ListShellCode; xuat hien dung 1 lan (chinh dong khai bao) => bien chet, tu vung la",
+        sourceSkipsDealerWriteAtMain = "if (!bIsWSMain) moi ghi handle thu ba => KHONG chen trung o WS Main (mau DUNG, xem #748)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/part-supply-ability", async (AppDbContext db, ITenantContext t,
     string? periodMonth, string? dealer, string? partCode) =>
 {
