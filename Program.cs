@@ -33413,6 +33413,31 @@ app.MapGet("/api/report/insurance-debit", async (AppDbContext db, ITenantContext
 // ⚠️ Ba mốc ngày cùng lúc: `DateOut` trong khoảng, **và** `DateIn <= @ToDate` (lô nhập sau kỳ bị loại).
 // ⚠️ Giá lấy theo thứ tự dự phòng: dòng chi tiết phiếu trước, không có thì mới lấy giá lưu ở lô
 //   (`isnull(sidd.Price, isnull(pf.SIPrice,0))`) — **hai nguồn giá cho cùng một lô**.
+// ===== 🔴🔴🔴 #791 BỔ SUNG #417 — `Ser_InvReportPartTopRotate`: BAKE `@Top` **KHÔNG NHÁY** = INJECTION THẲNG =====
+// `BizCarSv.Inventory.Report.cs:6902-7124` md5 `da908026` (217 dòng) ↔ bản kho `BizCarSv.WH.cs:7357-7580`
+// md5 `809f0c53` (215 dòng). ⚪ **Cặp `_WH` LÀNH**: DIFF trọn hàm chỉ khác handle (`_dbDealer` vs `_dbWH`),
+//   tên hàm và **lớp mã lỗi** (`TError.ErrCarSv` vs `TError.**ErrCarSv_WH**`) ⇒ khác hẳn cặp bảo hiểm ở #790.
+//   ⇒ Ba cặp `_WH` đọc liên tiếp: #788 lành · #790 **không lành** · #791 lành ⇒ đúng như #790 đã cảnh báo,
+//     **phải diff từng cặp**, không suy sang nhau.
+//
+// 🔴🔴🔴 **`select @Top *` — BAKE MỘT TOKEN SQL, KHÔNG BỌC NHÁY**
+//   Câu cuối của hàm viết `select **@Top**` rồi `*` `from #tbl_Rotate …`, và cuối hàm:
+//     `strSqlGetData = StringUtils.Replace(strSqlGetData, …, "@FromDate", strFromDate, "@ToDate", strToDate,`
+//     `                                    "@DealerCode", strDealerCode, **"@Top", strTop**);`
+//   ⇒ `@Top` **không nằm trong cặp nháy** (khác ba cái kia) ⇒ giá trị client gửi được **ghép thẳng thành cú pháp SQL**.
+//     Người gọi bình thường truyền `"top 20"`; nhưng bất kỳ chuỗi nào cũng vào được vị trí đó.
+//   ⇒ **Nặng hơn #768**: ở đó chuỗi bị bake **bên trong nháy** (muốn thoát phải có dấu `'`); ở đây **không cần**
+//     dấu nháy nào cả. Đây là bake ở vị trí **cú pháp**, không phải vị trí **giá trị**.
+//
+// 🔴🔴 **BA THAM SỐ CÒN LẠI BAKE TRONG NHÁY** — `and p.dealercode = '@DealerCode'` (2 chỗ) ·
+//   `and spi.DateIn >= '@FromDate'` / `<= '@ToDate'` · `and spi.DateOut >= '@FromDate'` / `<= '@ToDate'`
+//   ⇒ cùng họ bake-chuỗi đã ghi ở #768, và **`<= '@ToDate'` trên cột DATETIME ⇒ mất trọn ngày cuối** (#415):
+//     phiếu nhập/xuất lúc 08:00 ngày `ToDate` **không được tính** vào báo cáo luân chuyển.
+//
+// 🔴 **HAI `ORDER BY` VÔ NGHĨA TRÊN `SELECT … INTO`** (#415): `select … into **#IN** … group by t.Partid`
+//   `**order by t.partid**;` và y hệt cho `into #OUT`. Bảng tạm **không giữ thứ tự**, và câu trả về đã có
+//   `order by` riêng ⇒ hai lần sắp xếp này **không đổi kết quả, chỉ tốn công**. (#417 đã kiểm `order by` của câu
+//   `@Top` và kết luận "không dính #415" — đúng cho câu ĐÓ; hai câu `INTO` này thì có, nay ghi bổ sung.)
 // ===== 🔴 #417 "PHỤ TÙNG LUÂN CHUYỂN NHANH" — thứ tự sắp xếp **MÂU THUẪN với chú thích của chính nó**
 //        và phép nối TRONG làm **biến mất đúng nhóm hàng cần cảnh báo** =====
 // TRACE: `FrmReportPartTopRotate` (`Views/PartReport`, 286 dòng) → `InventoryReportService` → WS
@@ -33826,6 +33851,12 @@ app.MapGet("/api/report/part-top-rotate", async (AppDbContext db, ITenantContext
         count = outRows.Count, fromDate = f, toDate = to, top = n > 0 ? n : (int?)null,
         sortSpec = "outQuantity desc, inQuantity ASC, soLanXuat ASC, soLanNhap desc (nguyên văn nguồn)",
         sortDirectionSuspect = true,
+        // ===== #791 bổ sung cho #417 =====
+        sourceBakesTopTokenWithoutQuotes = "#791: cau cuoi viet select @Top * from #tbl_Rotate va cuoi ham StringUtils.Replace(..., \"@Top\", strTop) — @Top KHONG nam trong cap nhay => gia tri client duoc ghep thang thanh CU PHAP SQL. Nang hon #768 vi o do chuoi bi bake BEN TRONG nhay",
+        sourceBakesThreeParamsInsideQuotes = "#791: and p.dealercode = @DealerCode (2 cho) va spi.DateIn/DateOut >= @FromDate / <= @ToDate deu bake TRONG nhay don — cung ho #768",
+        sourceLosesLastDay = "#791: <= @ToDate tren cot DATETIME => phieu nhap/xuat luc 08:00 ngay ToDate KHONG duoc tinh (#415)",
+        sourceHasTwoUselessOrderBy = "#791: select ... into #IN / #OUT ... group by t.Partid order by t.partid — ORDER BY tren SELECT INTO khong giu thu tu, va cau tra ve da co order by rieng => chi ton cong sap xep",
+        whPairIsClean = "#791: ban _WH (WH.cs:7357-7580 md5 809f0c53) khac DUNG handle + ten ham + lop ma loi ErrCarSv_WH => LANH; ba cap _WH doc lien tiep: #788 lanh, #790 KHONG lanh, #791 lanh => phai diff TUNG cap",
         sortNote = "Chú thích đầu hàm ghi thứ tự ưu tiên 1..4 nhưng câu ORDER BY đảo chiều xen kẽ; "
             + "riêng soLanXuat ASC xếp phụ tùng có ÍT lần xuất lên TRÊN — ngược nghĩa 'luân chuyển nhanh'. "
             + "Giữ nguyên 1:1, KHÔNG tự sửa; cần người nắm nghiệp vụ chốt hướng đúng.",
