@@ -13362,6 +13362,19 @@ public sealed class SmsPriceSend
 /// <summary>Tài khoản SMS trả trước (số dư) — port 1:1 FrmSMSAccountMng (TblSMS_Account, TCMotor).</summary>
 /// <summary>#782 Gia hạn bảo hành theo VIN (`Ser_MST_ROWarrantyRenewal`) — mỗi dòng gắn một loại gia hạn
 /// (`WrtReneCateCode` → `Ser_MST_ROWarrantyRenewalCategory`, đã port ở #541).</summary>
+/// <summary>#784 Danh mục lỗi khiếu nại / chẩn đoán (`Ser_MST_ROComplaintDiagnosticError`).</summary>
+public sealed class RoComplaintDiagnosticError
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ErrorCode { get; set; } = "";
+    public string? ErrorName { get; set; }
+    public string? ErrorTypeCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class RoWarrantyRenewal
 {
     public long Id { get; set; }

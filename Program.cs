@@ -11183,6 +11183,89 @@ app.MapGet("/api/smsbrandnames", async (AppDbContext db, ITenantContext t, strin
 //   cho cùng một bảng, cùng một hàm (khuôn "hai DataTable song song" đã bắt ở #715).
 // 📌 §12: Mini chưa có bảng này ⇒ đã thêm **entity + DbSet + Seeder CREATE TABLE** và ba endpoint dưới đây,
 //   trong đó `GET` **đếm** số dòng sẽ bị `inner join` nuốt thay vì lặng lẽ bỏ.
+// ===== 🔴🔴🔴 #784 `Ser_MST_ROComplaintDiagnosticError_Get` / `_Save` — DANH MỤC LỖI KHIẾU NẠI/CHẨN ĐOÁN =====
+// `BizCarSv.AssignmentOfWork.cs`: `_Get` `:7774-7909` md5 `97280bf1` (124 dòng) · `_Save` `:7910-8228` md5 `674f24fb`
+// (272 dòng). #538 đã port `_Delete` (`:8229`).
+//
+// 🔴🔴🔴 **MÃ LỖI MANG CHỮ "SAVE" NHƯNG CHỈ ĐƯỢC NÉM TRONG HÀM `_Delete`**
+//   `grep -rn "ROComplaintDiagnosticError**Save**_ROCDEIDNotExistInList"` toàn `TERP.BizCarSv` ⇒ **2 chỗ**, ở
+//   `:8289` và `:8321` — **cả hai nằm NGOÀI `_Save`** (`:7910-8228`), tức nằm trong `_Delete`.
+//   ⇒ Người tra log thấy mã lỗi có chữ `Save` sẽ đi tìm luồng **lưu**, trong khi sự cố xảy ra ở luồng **xoá**.
+//     Cùng họ nhãn-nói-dối #741/#755/#775, nhưng đây là dạng **mã lỗi bị đặt sai họ hàm ngay từ tên hằng**.
+//   ⇒ Và hệ quả thứ hai: `_Save` **thật sự không có guard nào** — đếm đủ ba nguồn (#747 + #760):
+//     `CMyException.Raise` = **0** · `this.Check*` = **0** · `my*_Check*` = **0**; mã lỗi mặc định của nó
+//     (`…_Save`) **không được ném ở đâu cả**.
+//
+// 🔴🔴 **TỪ VỰNG LẠ — LẦN NÀY LÀ CHÉP KHỐI THẬT** (áp bài học vừa rút ở #783: xác định BẢNG ĐÍCH trước)
+//   Trong `_Save`, biến chứa câu SQL tên là `strSql_Get_Ser_MST_**ROWorkArising**_Row`, còn bảng đích thì đúng là
+//   `from **Ser_MST_ROComplaintDiagnosticError** t`. ⇒ Bảng đích **khớp tên hàm**, chỉ **tên biến** lạc ⇒ khác #783
+//   (ở đó bảng đích mới là thứ khớp còn tên hàm sai) ⇒ **lần này đúng là khối chép từ `Ser_MST_ROWorkArising_Save`**.
+//   Bản `_Get` cũng dính: alias bảng là `smro**ww**` (viết tắt của `ROWarrantyWork`) trong một câu đọc
+//   `Ser_MST_ROComplaintDiagnosticError`.
+//
+// 🔴 **N+1 TRUY VẤN**: `_Save` chạy `for (int i = 0; i < dt_…_Input.Rows.Count; i++)` và **bên trong vòng lặp** gọi
+//   `_dbMain.ExecQuery(strSql_Get_…_Row, "@strErrorCode", …Rows[i]["ErrorCode"])` ⇒ nhập N dòng là **N lần round-trip**
+//   chỉ để hỏi "mã này đã có chưa". Với màn nhập danh mục hàng loạt thì đây là chi phí thấy rõ.
+// ⚪ **`_Get` KHÔNG join bảng nào** (`select smroww.* into #tmpsmroww from […].Ser_MST_ROComplaintDiagnosticError`)
+//   ⇒ **không nuốt dòng** — khác hẳn `_Get` của cụm gia hạn ở #782 vốn `inner join` sang danh mục loại.
+//   Bốn bộ lọc (`ErrorCode`/`ErrorName`/`ErrorTypeCode`/`FlagActive`) đều qua `BuildClause`, **không guard**
+//   `StartsWith("and")` ⇒ rỗng là trả trọn danh mục — bình thường với danh mục (lập luận #765).
+// 📌 §12: Mini chưa có bảng này ⇒ thêm **entity + DbSet + Seeder CREATE TABLE** + hai endpoint dưới đây;
+//   `POST` **gom một truy vấn** thay vì N+1, và **có** guard mã rỗng (khác nguồn CÓ CHỦ Ý).
+app.MapGet("/api/complaintdiagerrors", async (AppDbContext db, ITenantContext t,
+    string? errorCode, string? errorName, string? errorTypeCode, string? flagActive) =>
+{
+    var qy = db.RoComplaintDiagnosticErrors.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(errorCode)) qy = qy.Where(x => x.ErrorCode == errorCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(errorName)) qy = qy.Where(x => x.ErrorName!.Contains(errorName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(errorTypeCode)) qy = qy.Where(x => x.ErrorTypeCode == errorTypeCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.ErrorCode).Take(500)
+        .Select(x => new { x.ErrorCode, x.ErrorName, x.ErrorTypeCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        sourceGetJoinsNothing = "AM TINH: _Get chi select ... into #tmpsmroww tu mot bang, KHONG join => khong nuot dong (khac _Get cua cum gia han o #782)",
+        sourceAliasIsFromAnotherTable = "alias trong _Get la smroww (viet tat ROWarrantyWork) tren cau doc Ser_MST_ROComplaintDiagnosticError",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/complaintdiagerrors", async (List<ComplaintDiagErrorDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Danh sách rỗng." });
+    // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn _Save không guard gì (ba nguồn đếm đều = 0).
+    for (var i = 0; i < rows.Count; i++)
+        if (string.IsNullOrWhiteSpace(rows[i].ErrorCode))
+            return Results.BadRequest(new { error = "ErrorCode rỗng.", line = i + 1 });
+    var codes = rows.Select(r => r.ErrorCode!.Trim().ToUpperInvariant()).Distinct().ToList();
+    // Nguồn hỏi từng dòng một (N+1). Mini gom MỘT truy vấn.
+    var existing = await db.RoComplaintDiagnosticErrors
+        .Where(x => x.OrgId == t.OrgId && codes.Contains(x.ErrorCode)).ToListAsync();
+    var byCode = existing.GroupBy(x => x.ErrorCode).ToDictionary(g => g.Key, g => g.First());
+    var created = 0; var updated = 0;
+    foreach (var r in rows)
+    {
+        var code = r.ErrorCode!.Trim().ToUpperInvariant();
+        if (!byCode.TryGetValue(code, out var row))
+        {
+            row = new RoComplaintDiagnosticError { OrgId = t.OrgId, ErrorCode = code };
+            db.RoComplaintDiagnosticErrors.Add(row); byCode[code] = row; created++;
+        }
+        else updated++;
+        row.ErrorName = r.ErrorName; row.ErrorTypeCode = r.ErrorTypeCode;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!;
+        row.LogLUDateTime = DateTime.Now; row.LogLUBy = "api";
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        created, updated,
+        sourceSaveHasNoGuard = "_Save: Raise=0, this.Check*=0, my*_Check*=0; ma loi mac dinh cua no (..._Save) KHONG duoc nem o dau ca",
+        sourceErrorCodeNamedSaveButThrownInDelete = "ROComplaintDiagnosticErrorSave_ROCDEIDNotExistInList chi xuat hien o :8289 va :8321 — CA HAI nam trong _Delete, khong phai _Save => tra log se di nham luong",
+        sourceSqlVarNamedAfterAnotherTable = "bien SQL trong _Save ten la strSql_Get_Ser_MST_ROWorkArising_Row nhung bang dich dung la Ser_MST_ROComplaintDiagnosticError => chep khoi tu Ser_MST_ROWorkArising_Save (ap bai hoc #783: bang dich khop ten ham thi CAI TEN BIEN moi la thu lac)",
+        sourceDoesNPlusOneQueries = "_Save goi _dbMain.ExecQuery BEN TRONG vong for tren tung dong => nhap N dong la N round-trip; Mini gom MOT truy van",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/rowarrantyrenewals", async (AppDbContext db, ITenantContext t, string? vin) =>
 {
     var qy = db.RoWarrantyRenewals.Where(x => x.OrgId == t.OrgId);
@@ -68418,6 +68501,7 @@ record SmsResetPwdDto(string? PasswordNew = null);
 record RoWarrantyRenewalDto(string? VIN = null, string? WrtReneCateCode = null, string? Remark = null);
 record WarrantyWorkSyncRowDto(string? ROWWorkCode = null, string? ROWWorkName = null, decimal? RatePrice = null,
     decimal? Price = null, decimal? VAT = null, string? Remark = null, string? FlagActive = null);
+record ComplaintDiagErrorDto(string? ErrorCode = null, string? ErrorName = null, string? ErrorTypeCode = null, string? FlagActive = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
