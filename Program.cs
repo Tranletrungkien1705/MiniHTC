@@ -15372,6 +15372,24 @@ app.MapPost("/api/servicepartoos/import", async (
 }).RequireAuthorization();
 
 // ===== Phụ tùng nợ/chờ giao theo xe (ServicePartOO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor) =====
+// ===== ⛔ #789 ĐÍNH CHÍNH #491 (`Ser_Part_OO_Get` ↔ `_WH`) =====
+// `BizCarSv.Service.cs:14874-15112` md5 `a9c96b05` (225 dòng) ↔ `BizCarSv.WH.cs:27177-27414` md5 `d11b3b00` (222 dòng).
+// #491 ghi *"cặp `_WH` khác **đúng một dòng khoảng trắng**"*. DIFF chuẩn hoá trọn hàm cho thấy **không phải**:
+//   · nhiều dòng khác **khoảng trắng** (`,string` vs `, string`; `,"zzzz…"` vs `, "zzzz…"`), không phải một;
+//   · và một khác biệt **thật sự có nghĩa khi tra sự cố**: bản đại lý dùng `TError.**ErrCarSv**.Ser_Part_OO_Get`,
+//     bản kho dùng `TError.**ErrCarSv_WH**.Ser_Part_OO_Get_WH` — **hai lớp hằng mã lỗi khác nhau** (#788 đếm được
+//     `ErrCarSv_WH` xuất hiện **128** lần toàn tầng).
+// ⇒ Kết luận "tương đương về **nghiệp vụ**" vẫn đúng; câu chữ "khác đúng một dòng khoảng trắng" thì **sai** và đã sửa.
+//
+// 🔴🔴 **BỔ SUNG — Ô LỌC "CÒN NỢ KHÁCH" CHỈ CÓ TÁC DỤNG MỘT CHIỀU**
+//   `string zzzzClauseWhereIsConNoKhach = "";`
+//   `if (strIsConNoKhach == TConst.Flag.Active) zzzzClauseWhereIsConNoKhach = "and t.SoLuongConNoKhach > 0";`
+//   ⇒ Chọn **"Có"** (`"1"`) thì lọc đúng. Chọn **"Không"** (`"0"`) — hoặc bất kỳ giá trị nào khác — thì mệnh đề
+//     **rỗng** ⇒ **trả TẤT CẢ**, gồm cả dòng còn nợ. Người dùng tưởng đang xem "phụ tùng đã trả hết cho khách",
+//     thực tế đang xem **toàn bộ**.
+//   📌 #491 có ghi "chỉ bật khi = 1" nhưng **chưa nêu hệ quả**; đây là chỗ khác nhau giữa *mô tả cơ chế* và
+//     *nói ra cái người dùng nhìn thấy*. Ghi bổ sung, không phải phát hiện mới về cơ chế.
+// 🔴 Tên cột nguyên văn: `SoLuongConNoKhach` (tiếng Việt không dấu) — giữ đúng khi tra cứu.
 // ===== 🔴 #491 BỔ SUNG BỘ LỌC THẬT CỦA `Ser_Part_OO_Get` (`BizCarSv.Service.cs:14874`) =====
 // ⚪ Cặp `_WH` (`WH.cs:27177`) khác **đúng một dòng khoảng trắng** ⇒ tương đương; đóng thêm một ca của
 //   #484 (**còn 11**).
@@ -15439,7 +15457,11 @@ app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, stri
         patternParamsCarryOperator = true,      // GenLikeCondition2Percent tra "like %x%"
         deadForCallerFilters = new[] { "CVDV", "LoaiXe", "GhiChu" },
         listFiltersAreInNotOperator = new[] { "partCodes", "dealerCodes" },
-        whTwinEquivalent = true,
+        // ===== ⛔ #789 ĐÍNH CHÍNH #491 + bổ sung hệ quả của ô lọc "còn nợ khách" =====
+        whTwinEquivalent = true,   // vẫn đúng về NGHIỆP VỤ, nhưng xem hai cờ dưới
+        whTwinDiffIsNotOnlyWhitespace = "#789 DINH CHINH: #491 ghi cap _WH khac DUNG MOT dong khoang trang. DIFF chuan hoa tron ham cho thay con khac LOP HANG MA LOI (ban dai ly TError.ErrCarSv.Ser_Part_OO_Get vs ban kho TError.ErrCarSv_WH.Ser_Part_OO_Get_WH) va NHIEU dong khoang trang, chu khong phai mot. Nghiep vu van tuong duong",
+        whUsesSeparateErrorClass = "#789: lop TError.ErrCarSv_WH.* xuat hien 128 lan toan tang (dem o #788) => hai khong gian ma loi cho cung mot nghiep vu; grep mot ten ma se bo sot nhanh kia",
+        conNoKhachIsOneWayOnly = "#789: nguon viet zzzzClauseWhereIsConNoKhach = \"\" roi CHI gan \"and t.SoLuongConNoKhach > 0\" khi strIsConNoKhach == Flag.Active (=1). Moi gia tri khac — KE CA \"0\" (chi lay da tra het) — deu de menh de RONG => chon Khong thi tra TAT CA (ca con no lan het no), khong phai loc nguoc. O loc chi co tac dung MOT CHIEU",
     });
 }).RequireAuthorization();
 
