@@ -58973,6 +58973,76 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 // ⚪ Mini **đã port cả hai**: `Mst_BOM` xuất hiện 41 lần (`/api/bom*`), `TechnicalLibrary` có khối riêng
 //   (`:23481`, port 1:1 `FrmSer_Technical_Library`) ⇒ **không phải nợ mới**; giá trị của vòng này là **bản đồ**
 //   để lần sau không phải dò lại.
+// ===== 🔴🔴🔴 #806 MÀN MỚI: TRA TRẠNG THÁI LỆNH SỬA CHỮA THEO DANH SÁCH — `Ser_RO_Status_Get` =====
+// `BizCarSv.**ZTemp**.cs:11510-11621` md5 `3005b6cc` (102 dòng, `Raise` = **0**). Một bản duy nhất, LIVE qua
+// web WS `WSCarSv.asmx.cs:9572`. Đây là một trong **57 hàm production nằm trong file tên tạm** đã đo ở #805.
+// **BƯỚC 3B**: `ZTemp.cs` **34083** dòng (laptop) vs **34102** (máy 150) — chênh **19** dòng, nhưng hàm này
+//   **cùng vị trí `:11510`** trên cả hai máy và md5 chuẩn hoá **`3005b6cc` KHỚP** ⇒ chênh nằm ở **hàm khác**.
+//
+// 🔴🔴🔴 **TÊN THAM SỐ NÓI DỐI VỀ HÌNH DẠNG DỮ LIỆU**
+//   Chữ ký nhận `string str**ROIDList**` — hậu tố `List` là quy ước "danh sách ngăn bằng `|`" của chính tầng này
+//   (xem `BuildClauseConditionList(…, "|")` dùng khắp nơi). Nhưng SQL viết:
+//     `where (1=1) and ro.ROID = **@ROID**`   ← **so sánh BẰNG**, không phải `in`
+//   ⇒ Truyền `"1|2|3"` thì **không khớp dòng nào** ⇒ màn tra **nhiều** lệnh sửa chữa chỉ trả về được **một**.
+//
+// 🔴🔴🔴 **BAKE Ở VỊ TRÍ CÚ PHÁP — KHÔNG BỌC NHÁY** (khuôn nặng nhất, đã ghi ở #791 với `select @Top *`)
+//   `strSqlGetData = StringUtils.Replace(strSqlGetData, "@strDBName_CommonCenter", …, "**@ROID**", strROIDList);`
+//   trong khi SQL là `ro.ROID = @ROID` — **@ROID không nằm trong cặp nháy** ⇒ chuỗi client được ghép **thẳng
+//   thành cú pháp SQL**, không cần thoát dấu nháy nào cả.
+//   Và `alParamsCoupleSql` được khởi tạo **rỗng** rồi truyền vào `ExecQuery` ⇒ **không tham số hoá gì hết**.
+//   ⇒ Đây là kết hợp tệ nhất: **vị trí cú pháp + không tham số hoá + không guard**.
+//
+// 🔴🔴 **`#region // Check:` CHỈ CHỨA MỘT DÒNG GHI CHÚ VIỆC CHƯA LÀM** (nguyên văn, giữ cả lỗi chính tả):
+//     `#region // Check:`
+//     `//Kiem tra RONo va Quotatin`
+//     `#endregion`
+//   ⇒ **Dạng d** của họ "guard vắng mặt" (#728): region đúng tên, nội dung là **lời nhắc chưa làm**.
+//   Đếm cả ba nguồn theo #403: `CMyException.Raise` = 0 · `this.Check*` = 0 · `my*_Check*` = 0 ⇒ **không guard**.
+//
+// 🔴 **DÒNG `Replace` THỪA**: `"@strDBName_CommonCenter", _strConfig_DBName_Main` được thay nhưng **SQL không hề
+//   dùng** `@strDBName_CommonCenter` ⇒ dấu vết **chép từ hàm khác** (khuôn "từ vựng lạ").
+// ⚪ **Âm tính**: transaction và truy vấn **cùng trên `_dbDealer`** ⇒ **nhất quán**, khác hẳn 129 ca lệch handle
+//   đã đếm ở #803. Ghi lại để không suy "hàm nào trong ZTemp cũng ẩu".
+//
+// 🔴🔴 **PHÁT HIỆN KÈM — 20 ENDPOINT TRẢ DATASET THÔ, KHÔNG QUA `MyDSEncode`**
+//   `WSCarSv.asmx.cs`: **711** endpoint viết `return TERP.Utils.CUtils.MyDSEncode(_biz.…)`, nhưng **20** endpoint
+//   viết `return _biz.…` **thẳng**. `Ser_RO_Status_Get` là một trong 20.
+//   Phân loại 20 cái đó: **14 thuộc kênh NGOÀI** — 12 hàm `OSVeloca_*` + `OS_Ser_CarSalesUpd` +
+//   `SerCustomerCarSalesCreate_SBHOnline` ⇒ **có lý do** (đối tác ngoài không dùng codec nội bộ).
+//   Nhưng **6 cái còn lại là NỘI BỘ và không giải thích được**: `Ser_RO_Get_New20230220` ·
+//   `Ser_RO_Get_WH_New20230220` · `Ser_RO_Status_Get` · `Ser_Mst_Model_Get_New20200203` ·
+//   `SerCustomerCarSalesCreate_New20180817` · `SmsAccountPassword_ResetCache`.
+//   ⇒ Client dùng chung helper giải mã sẽ **hỏng** ở đúng 6 endpoint này (liên quan nợ #746 `MyDSDecodeForOSSale`).
+// 📌 Mini: `POST /api/repairorders/status-by-ids` — nhận **danh sách thật** (nguồn chỉ nhận một), và **đếm riêng**
+//   số id bị nguồn bỏ sót để chỉ ra khoảng cách.
+app.MapPost("/api/repairorders/status-by-ids", async (RoStatusByIdsDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var raw = (dto.RoIdList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+    var ids = new List<long>();
+    var unparsable = new List<string>();
+    foreach (var r in raw)
+    {
+        if (long.TryParse(r, out var v)) ids.Add(v); else unparsable.Add(r);   // nguon dung bake tho, khong parse
+    }
+    var rows = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && ids.Contains(x.Id))
+        .Select(x => new { roId = x.Id, x.Status }).ToListAsync();
+    var found = rows.Select(x => x.roId).ToHashSet();
+    return Results.Ok(new
+    {
+        requested = raw.Count, returned = rows.Count, items = rows,
+        notFound = ids.Where(i => !found.Contains(i)).ToList(),
+        unparsable,
+        sourceOnlyMatchesOneId = "TEN THAM SO NOI DOI: chu ky nhan strROIDList (hau to List = danh sach ngan bang | theo quy uoc BuildClauseConditionList cua chinh tang nay) nhung SQL viet and ro.ROID = @ROID — SO SANH BANG, khong phai in => truyen 1|2|3 thi KHONG khop dong nao; man tra NHIEU lenh sua chua chi tra ve duoc MOT",
+        sourceBakesAtSyntaxPosition = "StringUtils.Replace(..., @ROID, strROIDList) trong khi SQL la ro.ROID = @ROID — @ROID KHONG nam trong cap nhay => chuoi client ghep THANG thanh cu phap SQL, khong can thoat dau nhay. Va alParamsCoupleSql duoc khoi tao RONG roi truyen vao ExecQuery => KHONG tham so hoa gi het. Khuon nang nhat, cung ho #791 (select @Top *)",
+        sourceCheckRegionIsAToDoNote = "#region // Check: chi chua mot dong //Kiem tra RONo va Quotatin (nguyen van, ca loi chinh ta) => dang d cua ho guard vang mat (#728): region dung ten, noi dung la LOI NHAC CHUA LAM. Dem ca ba nguon (#403): Raise=0, this.Check*=0, my*_Check*=0",
+        sourceHasRedundantReplace = "@strDBName_CommonCenter duoc Replace nhung SQL KHONG he dung => dau vet chep tu ham khac",
+        sourceHandlesAreConsistent = "AM TINH: transaction va ExecQuery CUNG tren _dbDealer => nhat quan, khac han 129 ca lech handle dem o #803. Ghi lai de khong suy ham nao trong ZTemp cung au",
+        twentyEndpointsSkipMyDSEncode = "WSCarSv.asmx.cs: 711 endpoint bọc MyDSEncode nhung 20 endpoint tra thang _biz. 14/20 thuoc kenh NGOAI (12 ham OSVeloca_* + OS_Ser_CarSalesUpd + SerCustomerCarSalesCreate_SBHOnline) => co ly do. 6/20 la NOI BO va khong giai thich duoc: Ser_RO_Get_New20230220, Ser_RO_Get_WH_New20230220, Ser_RO_Status_Get, Ser_Mst_Model_Get_New20200203, SerCustomerCarSalesCreate_New20180817, SmsAccountPassword_ResetCache => client dung chung helper giai ma se HONG o dung 6 endpoint nay (lien quan no #746 MyDSDecodeForOSSale)",
+        twoMachinesVerified = "ZTemp.cs 34083 dong (laptop) vs 34102 (may 150) — chenh 19 dong, nhung ham nay CUNG vi tri :11510 tren ca hai may va md5 chuan hoa 3005b6cc KHOP => chenh nam o ham khac",
+        liveCodeInTempFile = "ham nay la mot trong 57 ham production nam trong file ten tam da do o #805",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/live-code-in-temp-files", () => Results.Ok(new
 {
     method = "quet toan bo ham public cua BizCarSv.ZTemp.cs va BizCarSv.zzzzCode.cs roi doi chieu voi loi goi tu CA BA duong vao (WSCarSv.asmx.cs + WSCarSvTab.asmx.cs + ClientService/Services/*.cs), da loai dong comment",
@@ -69948,6 +70018,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record RoStatusByIdsDto(string? RoIdList);
 record StockInAdjustLineDto(string? PartCode, decimal Quantity);
 record StockInAdjustPrecheckDto(long OldStockInId, List<StockInAdjustLineDto>? Lines);
 record SharePartLineDto(string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, decimal MinQuantity, string? Remark);
