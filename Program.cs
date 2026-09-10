@@ -33673,6 +33673,79 @@ app.MapGet("/api/hcc/noshow", async (AppDbContext db, ITenantContext t, string? 
 // ⚠️ Tên tham số nguồn viết SAI CHÍNH TẢ `strPartIDCondit**o**nList` (thiếu `i`) và sai nhất quán qua **cả ba**
 //   tầng ⇒ grep theo tên đúng chính tả sẽ TRƯỢT. Giữ nguyên văn khi tra cứu.
 // 📌 Nguồn đọc trên **DB Main** (chú thích *"lấy trên main. vì là nghiệp vụ chia sẻ"*), không phải DB đại lý.
+// ===== 🔴🔴🔴 #754 `SP_SharePartUpdate` (`BizCarSv.PartOrder.cs:5389-5553` md5 `17a22ab9`) =====
+// #420 đã port `SpSharePartGet` ⇒ vòng này đọc hàm SỬA và bổ sung `PUT`, KHÔNG tính màn mới.
+// Hàm không tự chạy SQL (`_dbMain`/`_dbWH`/`_dbDealer` ghi = 0/0/0) — nó điều phối **sáu** helper:
+//   `CheckExistSharePart` · `CheckSP_SharePartDetailEmpty` · `SPSharePartDetailDelete` ·
+//   `CheckPartIDEmpty` · `CheckQuantityEmpty` · `SP_SharePartDetailCreate`.
+//
+// 🔴🔴🔴 **XOÁ SẠCH CHI TIẾT CŨ RỒI MỚI KIỂM TỪNG DÒNG MỚI**
+//   Thứ tự thật trong hàm:
+//     1. `CheckSP_SharePartDetailEmpty(dtSharePartDetail)`      ← chỉ kiểm bảng gửi lên **có rỗng không**
+//     2. `**SPSharePartDetailDelete(strSharePartID)**`           ← **XOÁ TOÀN BỘ chi tiết đang có**
+//     3. `foreach (DataRow row in dtSharePartDetail.Rows)` → `CheckPartIDEmpty` / `CheckQuantityEmpty` ← **mới kiểm**
+//     4. `SP_SharePartDetailCreate(...)`
+//   ⇒ Dòng thứ N hỏng (thiếu `PartID` hoặc `QuantityShare`) thì lúc ném lỗi, **chi tiết cũ đã bị xoá sạch**
+//     và N-1 dòng mới đã được chèn. Kiểm-sau-khi-phá là thứ tự sai về nguyên tắc.
+//   ⚪ **NHƯNG TRANSACTION CỨU ĐƯỢC — và điều đó phải nói rõ, không được thổi phồng**: hàm khai
+//     `bNeedTransaction_Main = true` / `bNeedTransaction_WH = true`, có `BeginTransaction` cho cả hai và
+//     `RollbackSafety` ở **cả `catch` lẫn `finally`** ⇒ trong vận hành hiện tại, mọi thứ được huỷ sạch.
+//   🕓 **Vỡ khi nào**: đúng lúc ai đó đặt `bNeedTransaction_Main = false` — chính xác cái đã xảy ra ở
+//     `JDPowerTerm_Update` (#742), nơi guard hậu-ghi mất transaction và dữ liệu sai nằm lại vĩnh viễn.
+//     Cùng một khuôn "phá trước, kiểm sau", một hàm còn transaction thì lành, một hàm mất transaction thì hỏng.
+//     ⇒ Đây là **rủi ro có điều kiện**, không phải bug đang xảy ra. Ghi đúng mức đó.
+//
+// 🔴🔴 **HAI KIỂU CHỮ CHO CÙNG MỘT CỘT, TRONG CÙNG MỘT VÒNG LẶP**:
+//     guard  : `row["**PartID**"]`      · `row["**QuantityShare**"]`
+//     insert : `row["**PARTID**"]`      · `row["**QUANTITYSHARE**"]` · `row["**REMARK**"]`
+//   `DataTable` mặc định `CaseSensitive = false` nên hôm nay cả hai đều đọc trúng. Nhưng DataSet này đến từ
+//   client qua `MyDSDecode`; **nếu** bảng được dựng với `CaseSensitive = true` thì **một trong hai nhóm ném
+//   `ArgumentException`** — và không nhóm nào là "đúng" hơn nhóm nào. Cách kiểm chứng: log
+//   `dtSharePartDetail.CaseSensitive` khi nhận. Dù chạy được, nó vẫn là bằng chứng **hai khối được chép từ
+//   hai nguồn khác nhau** (họ #744/#745: dấu vân tay chép khối).
+// 🔴 `SP_SharePartDetailCreate(**Convert.ToInt32(strSharePartID)**, …)` — không kiểm rỗng trước khi ép kiểu;
+//   `Convert.ToInt32("")` ném `FormatException`, `Convert.ToInt32(null)` trả 0 ⇒ chuỗi rỗng và null cho ra
+//   **hai hành vi khác nhau**, cả hai đều không phải cái người dùng muốn.
+// ⚪ Guard đếm theo luật #747: **3** helper `Check*` + 0 `Raise` trực tiếp. `CheckExistSharePart` chạy **trước**
+//   mọi thao tác ⇒ sửa phiếu không tồn tại bị chặn đúng chỗ (khác `SerGroupRepairDelete` ở #747).
+// 📌 Mini gộp master+chi tiết vào **một** bảng `SharePart` (mỗi dòng = một phụ tùng của phiếu), nên `PUT` dưới đây
+//   tái hiện đúng ngữ nghĩa "thay toàn bộ danh sách" — nhưng **kiểm TRƯỚC, xoá SAU** (khác biệt CÓ CHỦ Ý).
+app.MapPut("/api/shareparts/{shareNo}", async (string shareNo, List<SharePartLineDto> lines, AppDbContext db, ITenantContext t) =>
+{
+    var no = shareNo.Trim().ToUpperInvariant();
+    var existing = await db.ShareParts.Where(x => x.OrgId == t.OrgId && x.ShareNo == no).ToListAsync();
+    // Nguồn `CheckExistSharePart` chạy đầu tiên — giữ nguyên vị trí đó.
+    if (existing.Count == 0) return Results.NotFound(new { shareNo = no });
+    // Nguồn `CheckSP_SharePartDetailEmpty`: bảng chi tiết gửi lên không được rỗng.
+    if (lines is null || lines.Count == 0) return Results.BadRequest(new { error = "Danh sách phụ tùng chia sẻ không được rỗng." });
+    // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn xoá hết rồi mới kiểm từng dòng; ở đây kiểm trọn TRƯỚC khi xoá.
+    for (var i = 0; i < lines.Count; i++)
+    {
+        if (string.IsNullOrWhiteSpace(lines[i].PartCode))   // DTO SharePartLineDto da co san (#420)
+            return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng.", line = i + 1 });
+        if (lines[i].QuantityShare <= 0)
+            return Results.BadRequest(new { error = "Số lượng chia sẻ phải > 0.", line = i + 1 });
+    }
+    var head = existing[0];
+    db.ShareParts.RemoveRange(existing);
+    foreach (var l in lines)
+        db.ShareParts.Add(new SharePart
+        {
+            OrgId = t.OrgId, ShareNo = no, DealerCode = head.DealerCode,
+            PartCode = l.PartCode!.Trim().ToUpperInvariant(), QuantityShare = l.QuantityShare,
+            Remark = l.Remark, Status = head.Status, FlagLatest = "1",
+            LogLUDateTime = DateTime.Now, LogLUBy = "api",
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        shareNo = no, replaced = existing.Count, inserted = lines.Count,
+        sourceDeletesBeforeValidating = "nguon goi SPSharePartDetailDelete TRUOC roi moi CheckPartIDEmpty/CheckQuantityEmpty trong vong lap => phai co transaction moi khong mat du lieu",
+        sourceSafeOnlyBecauseTransaction = "bNeedTransaction_Main/_WH = true + RollbackSafety o ca catch lan finally; neu ai do dat false (nhu JDPowerTerm_Update #742) thi mat sach chi tiet cu",
+        sourceMixesColumnNameCasing = "guard doc row[PartID]/row[QuantityShare] con insert doc row[PARTID]/row[QUANTITYSHARE]/row[REMARK] — chay duoc vi DataTable.CaseSensitive mac dinh false",
+        sourceConvertToInt32WithoutGuard = "Convert.ToInt32(strSharePartID) khong kiem rong: chuoi rong nem FormatException, null tra 0",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? dealer, string? part,
     string? status, string? shareNo, string? partCode, string? partName, string? createdBy,
     DateTime? createdDate, bool? includeZeroShare, string? dealerScope) =>
