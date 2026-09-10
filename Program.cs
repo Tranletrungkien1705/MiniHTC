@@ -46142,6 +46142,65 @@ app.MapPost("/api/serviceinvoices/{no}/pay", async (string no, AppDbContext db, 
 }).RequireAuthorization();
 
 // ===== Chiến dịch dịch vụ (Ser_Campaign — port 1:1 FrmCampaignCreate) =====
+// ===== ⚪⚪⚪ #749 CỤM `SerCampaign*` (`BizCarSv.Service.cs`) — MẪU NGƯỢC ĐẸP NHẤT VỀ PHÂN TÁCH CSDL =====
+// `_Create` :8922-9127 md5 `a8417239` · `_Update` :9128-9329 `cd9940fb` · `_Delete` :9330-9550 `3c06e65a` ·
+// `_Get` :9551-9693 `3e5aa9a7` · `_ListCustomerGet` :9721-9916 `8ae880bc`.
+// Endpoint `/api/campaigns` GET+POST đã có ⇒ vòng này vá + bổ sung PUT/DELETE, KHÔNG tính màn mới.
+//
+// ⚪⚪⚪ **KHÉP LẠI MỘT NGHI VẤN CŨ: "chiến dịch không đẩy xuống DB đại lý" KHÔNG PHẢI LỖ HỔNG**
+//   Một vòng trước tôi ghi (mục `campaignDealerWriteIsDisabled`): trong `SerCampaignCreate`, khối ghi DB đại lý
+//   **bị comment trọn** — `//if (bNeedTransaction_Dealer) { //_dbDealer.SaveData("Ser_Campaign", dt_Cam_WH);`
+//   ⇒ nhận xét đúng, nhưng **chưa đủ để kết luận**. Nay đọc nốt `_Delete` thì thấy **đối xứng hoàn hảo**:
+//     `_dbMain.ExecQuery(strSqlDelete, …)` · `_dbWH.ExecQuery(strSqlDelete, …)` · rồi
+//     `// Save in Data Dealer:` `//if (bNeedTransaction_Dealer)` `//{` `// _dbDealer.ExecQuery(…)` ← **cũng comment trọn**
+//   và `_Update` thì `_dbDealer` = **0 lần**. ⇒ Cả **tạo, sửa lẫn xoá** đều cắt đường đại lý theo **cùng một cách**.
+//   Không tạo ở đại lý thì không cần xoá ở đại lý ⇒ đây là **quyết định thiết kế nhất quán**, không phải sơ suất.
+//   📌 Đúng luật #719 theo chiều khó nhất: khối bị comment **không** chứng minh tính năng chết, nhưng **ba khối
+//     bị comment giống hệt nhau ở ba hàm khác nhau** thì chứng minh được **chủ ý**. Bằng chứng là **tính đối xứng**,
+//     không phải bản thân dấu `//`.
+//
+// ⚪⚪ **GUARD ĐỌC ĐÚNG NƠI CÓ DỮ LIỆU GIAO DỊCH** — mẫu ngược cho cả loạt "quên WH/quên đại lý" (#726/#742/#748):
+//   `_Delete` chặn xoá chiến dịch đã phát sinh lệnh sửa chữa, bằng **hai** truy vấn trên `**_dbDealer**`:
+//     `dtSer_ROServiceItems = _dbDealer.ExecQuery(…)` → `SerCampaignDelete_ExistROService`
+//     `dtSer_ROPartItems    = _dbDealer.ExecQuery(…)` → `SerCampaignDelete_ExistROPart`
+//   trong khi lệnh `delete from Ser_Campaign` chạy trên `_dbMain` + `_dbWH`. **Đọc ở nơi có RO, xoá ở nơi có danh mục.**
+//   Ở WS Main `_dbDealer ≡ _dbMain` (#733) nên vẫn đúng; ở WS đại lý thì đọc trúng CSDL chứa RO thật. Cả hai chiều đều đúng.
+// ⚪ **`Rows[0]` Ở ĐÂY LÀ AN TOÀN** (khác #743/#745): nó nằm **sau** `if (dt.Rows.Count > 0)` và chỉ dùng để
+//   nhét `ROID`/`RONo`/`PartCode` vào thông báo lỗi ⇒ đúng cách. Ghi ra để lượt sau khỏi báo nhầm theo mẫu.
+// ⚪ Guard đếm theo luật #747: `_Create` = 2 · `_Update` = 3 · `_Delete` = 1 helper **+ 2 `Raise` trực tiếp** ·
+//   `_Get` = 0 · `_ListCustomerGet` = 0. Cặp create/update lại lệch đúng một guard (#404) — khuôn đúng lần thứ tư.
+// 🔴 `_ListCustomerGet` đọc **duy nhất** trên `_dbDealer` (`_dbMain` = 0) ⇒ danh sách khách của chiến dịch
+//   **chỉ tồn tại ở CSDL đại lý**; gọi hàm này tại WS Main sẽ đọc `_dbMain` (do `_dbDealer ≡ _dbMain`) và
+//   **không thấy khách của đại lý nào cả**. Đây là hệ quả trực tiếp của kiến trúc trên — cần biết khi port.
+// 📌 Mini một CSDL nên không tái hiện được phân tách này; hai endpoint dưới trả cờ để giữ phát hiện.
+app.MapPut("/api/campaigns/{no}", async (string no, CampaignDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = no.Trim().ToUpperInvariant();
+    var c = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == code);
+    if (c is null) return Results.NotFound(new { camNo = code });
+    if (dto.FinishDate is DateTime fd2 && dto.StartDate is DateTime sd2 && fd2 < sd2)
+        return Results.BadRequest(new { error = "Ngày kết thúc phải ≥ ngày bắt đầu." });
+    if (!string.IsNullOrWhiteSpace(dto.CamName)) c.CamName = dto.CamName;
+    if (dto.StartDate.HasValue) c.StartDate = dto.StartDate.Value;
+    c.FinishDate = dto.FinishDate ?? c.FinishDate;
+    if (dto.Content != null) c.Content = dto.Content;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.CamNo, c.CamName, c.StartDate, c.FinishDate, notPushedToDealerDb = "nguon: khoi ghi _dbDealer bi comment tron o CA Create lan Delete, va _Update khong cham _dbDealer => CO CHU Y, khong phai thieu sot" });
+}).RequireAuthorization();
+
+app.MapDelete("/api/campaigns/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var code = no.Trim().ToUpperInvariant();
+    var c = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == code);
+    if (c is null) return Results.NotFound(new { camNo = code });
+    // #749 Nguồn chặn xoá khi chiến dịch đã phát sinh dòng dịch vụ / phụ tùng trong lệnh sửa chữa.
+    // 📌 NỢ: Mini chưa có cột `CamNo` trên `RoServiceItem`/`RoPartItem` ⇒ **KHÔNG tái hiện được** hai guard này.
+    //   Ghi nợ thay vì bịa một phép đếm luôn ra 0 rồi tưởng là đã chặn (nguyên tắc #738).
+    const string guardNotPortable = "NO: Mini chua co cot CamNo tren RoServiceItem/RoPartItem => guard chan xoa chien dich da phat sinh RO CHUA port duoc";
+    db.Campaigns.Remove(c);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code, guardNotPortable, sourceChecksOnDealerDbButDeletesOnMainAndWh = "nguon doc guard tren _dbDealer (noi co RO) nhung xoa tren _dbMain + _dbWH (noi co danh muc) — dung ca hai chieu" });
+}).RequireAuthorization();
 app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? active) =>
 {
     var q = db.Campaigns.Where(c => c.OrgId == t.OrgId);
