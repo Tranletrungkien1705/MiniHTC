@@ -19423,6 +19423,50 @@ static string ResendSuffixLetter(int resendCount)
 }
 
 // Ghi kết quả đồng bộ HMC (bộ đẩy API gọi lại sau khi có phản hồi của hãng).
+// ===== 🔴🔴🔴 #778 `Ser_ROWarrantyReport_SendHMC` / `_SendHMC_Auto` — HAI MÁY CHẠY HAI LOGIC KHÁC NHAU =====
+// Trả nợ mở ở #695 ("cặp `Ser_ROWarrantyReport_*` KHÔNG dùng cách bỏ bộ lọc ngày — phải kiểm riêng").
+// Vỏ bọc: `_SendHMC` `WarrantyReport.cs:22782-22911` md5 `6796f1ad` (119 dòng) · `_SendHMC_Auto` `:22912-23124`
+// md5 `7647e931` (191 dòng) — **hàm cuối file**, phải dùng công thức có fallback `[ -z "$E" ] && E=$((L+1))`
+// (không có fallback thì md5 ra `d41d8cd9` = md5 của chuỗi rỗng — bẫy đã gặp ở #724/#729).
+//
+// 🔴🔴🔴 **BƯỚC 3B LÒI RA CHÊNH LỆCH NGHIỆP VỤ THẬT GIỮA HAI MÁY — KHÔNG PHẢI KHOẢNG TRẮNG**
+//   `BizCarSv.WarrantyReport.cs`: laptop **23124** dòng · máy 150 **23646** dòng (chênh **522**).
+//   Định vị theo TÊN trên từng máy:
+//     laptop: `Ser_ROWarrantyReport_SendHMCX` `:9149` — và **chỉ có bản này**;
+//     150   : `…SendHMCX` `:9149` **và** `…SendHMCX_**20260227**` `:9659` ← **laptop KHÔNG có**.
+//   Quan trọng hơn là **ai gọi bản nào**:
+//     laptop `:22835` và `:23015` → gọi `Ser_ROWarrantyReport_SendHMCX(` (bản cũ)
+//     150    `:23356` và `:23537` → gọi `Ser_ROWarrantyReport_SendHMCX_**20260227**(` (bản mới)
+//   ⇒ **Cùng tên hàm public, cùng nghiệp vụ "đẩy báo cáo bảo hành sang HMC", nhưng thân thật KHÁC NHAU tuỳ máy.**
+//     Đây là chênh lệch **nghiệp vụ**, và nó nằm đúng ở đường gửi dữ liệu sang **hãng**.
+//   ⇒ 📌 **NỢ**: chưa biết bản nào đang chạy trên môi trường thật. Port dưới đây theo bản **150** (mới hơn, và
+//     máy 150 là máy dev chính), nhưng ghi cờ để không ai tưởng đã chốt.
+//
+// 🔴🔴🔴 **BẢN 150 (`…_20260227`): GUARD NGƯỢC HẲN VỚI COMMENT NGAY TRÊN NÓ**
+//     `//Nếu BCBH đã gửi HMC thành công thì **không cho gửi lại**`
+//     `if (!StringUtils.StringEqual(strHMCApiStatus, TConst.HMCApiStatus.**Success**))`
+//     `{ … throw …_SendHMCX_HMCApiStatusNotMatch; }`
+//   Đọc đúng: **ném lỗi khi trạng thái KHÁC `Success`** ⇒ **chặn đúng những ca cần gửi** (`Pending` = chưa gửi,
+//     `Fail` = gửi lỗi cần gửi lại), và **cho gửi lại** đúng ca đã thành công — tức **ngược hoàn toàn** ý định.
+//   ⚪⚪ **Chính thông báo lỗi của nó xác nhận điều đó**: khối `alParamsCoupleError` ngay trên `throw` ghi
+//     `"Check.HMCApiStatusListToCheck", string.Format("{0},{1}", TConst.HMCApiStatus.**Pending**, TConst.HMCApiStatus.**Fail**)`
+//     ⇒ **danh sách hợp lệ mà tác giả tự khai là `{Pending, Fail}`** ⇒ điều kiện đúng phải là
+//     `if (status NOT IN {Pending, Fail}) throw`. Không cần suy đoán: **guard và thông báo của chính nó mâu thuẫn nhau**.
+//
+// ⚪⚪ **ÂM TÍNH — `if (strHMCApiStatus != TConst.Stage.Approved)` ở BẢN LAPTOP KHÔNG phải bug hành vi**
+//   Thoạt đọc là so `HMCApiStatus` với hằng thuộc lớp **`Stage`** — hai miền giá trị khác nhau ⇒ tưởng điều kiện luôn đúng.
+//   Mở cả hai lớp hằng (`Const.Main.cs`): `HMCApiStatus.Pending = "**P**"` · `Success = "**A**"` · `Fail = "**R**"`;
+//     `Stage.Approved = "**A**"` ⇒ **tình cờ CÙNG giá trị "A"** ⇒ `!= Stage.Approved` **thực chất** là
+//     `!= HMCApiStatus.Success` ⇒ **đúng ý nghiệp vụ**.
+//   ⇒ Không phải bug hành vi, mà là **bug bảo trì**: đổi `Stage.Approved` sang giá trị khác là logic HMC vỡ câm.
+//     Đúng tinh thần "HẰNG ≠ GIÁ TRỊ" — mở ra mới biết hai lớp hằng khác nhau **tình cờ trùng giá trị**.
+// 🔴 **BẢN CŨ VÀ BẢN MỚI YÊU CẦU HAI TRẠNG THÁI ĐẦU VÀO KHÁC NHAU**:
+//     laptop: `CheckExistROWarrantyReport(…, Ser_WarrantyReport_Status.**Accepted**, …)`  (`ACCE`)
+//     150   : `CheckExistROWarrantyReport(…, Ser_WarrantyReport_Status.**Confirmed**, …)` (`CONF`)
+//   ⇒ Cùng một nút "gửi HMC": máy này đòi báo cáo **đã được chấp nhận**, máy kia đòi **đang chờ duyệt**.
+// ⚪ Bản laptop **không có** guard chặn gửi trùng — chỉ đọc `strHMCApiStatus` rồi ghi chú
+//   `//Nếu đã duyệt BCBH lần 1 và gửi thành công. thì các lần duyệt và gửi lại BCBH vẫn lưu thông tin lần 1`
+//   ⇒ bản cũ **cố ý cho gửi lại**; bản mới định thêm guard nhưng **viết ngược**.
 // TWIN: bản LIVE trên máy 150 là `Ser_ROWarrantyReport_SendHMCX_20260227` — bản laptop KHÔNG có hàm này.
 // 🔴 JOB QUÉT ứng viên đẩy HMC — port từ bản biz CHỈ CÓ TRÊN MÁY 150 (WarrantyReport.cs:23477-23505).
 // Bản laptop lọc `WarrantyStatus = 'ACCE'` (Accepted) và KHÔNG lọc hãng bảo hành; bản 150 đổi thành
@@ -31894,6 +31938,13 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         hmcSideEffectClaimRetracted = new { retracts = "#497",
             hmcCallsInsideHtmvGetFunctions = 0,
             actualOwner = "Sync_HMC (:22622) do Ser_ROWarrantyReport_SendHMC goi",
+        // ===== #778: trả nợ #695 — cặp SendHMC/_SendHMC_Auto của báo cáo bảo hành =====
+        twoMachinesRunDifferentLogic = "#778: WarrantyReport.cs laptop 23124 dong / may 150 23646 dong. Laptop CHI co Ser_ROWarrantyReport_SendHMCX (:9149); may 150 co THEM ...SendHMCX_20260227 (:9659). Va vo boc goi khac nhau: laptop -> SendHMCX, 150 -> SendHMCX_20260227 => THAN THAT khac nhau tuy may, o dung duong day du lieu sang HANG",
+        newVersionGuardIsInverted = "#778: ban 150 viet //Neu BCBH da gui HMC thanh cong thi khong cho gui lai roi lai if (!Equal(strHMCApiStatus, HMCApiStatus.Success)) throw => CHAN dung ca can gui (Pending/Fail) va CHO gui lai ca da Success",
+        errorPayloadProvesInversion = "#778: chinh khoi alParamsCoupleError ngay tren throw ghi Check.HMCApiStatusListToCheck = {Pending},{Fail} => danh sach hop le tac gia tu khai la P/R, nen dieu kien dung phai la NOT IN {P,R}",
+        stageApprovedCoincidence = "#778 AM TINH: ban laptop so strHMCApiStatus != TConst.Stage.Approved — lop hang KHAC, nhung Stage.Approved = A trung y het HMCApiStatus.Success = A => dung y nghiep vu; la bug BAO TRI (doi Stage.Approved la vo cam), khong phai bug hanh vi",
+        twoVersionsRequireDifferentInputStatus = "#778: laptop doi CheckExistROWarrantyReport(..., Status.Accepted) con 150 doi Status.Confirmed => cung mot nut gui HMC, may nay doi ACCE may kia doi CONF",
+        whichVersionIsDeployedIsUnknown = "#778 NO: chua biet ban nao chay tren moi truong that; port theo ban 150 (moi hon, 150 la may dev chinh) nhung CHUA CHOT",
             rootCause = "diffguard memberRe thieu dau '.' trong kieu tra ve => nuot ham hang xom",
             sweepBefore = "86/77/9", sweepAfter = "79/73/6",
             debtClosedAsNonexistent = true },
