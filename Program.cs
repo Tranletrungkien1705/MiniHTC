@@ -58751,6 +58751,37 @@ app.MapGet("/api/ro/{roNo}/payment-precheck", async (AppDbContext db, ITenantCon
 //   ⇒ `_old` là khuôn **duy nhất tự nói mình đã cũ**; hai khuôn kia thì không — và `SerCarCreateX20220926`
 //     **dính liền không dấu phân cách** nên trượt cả mẫu `_[0-9]{8}`.
 // 📌 Mini: `GET /api/_meta/date-suffixed-naming-audit`.
+// ===== ⛔⛔🔴 #799 ĐÍNH CHÍNH NẶNG #794 — `Ser_RO_Create` KHÔNG LỆCH NHƯ ĐÃ BÁO =====
+// #794 kết luận: *"tablet chỉ 13/33 guard, thiếu ba bảng ghi `Ser_CustomerCare` / `Ser_CustomerCareMace` /
+// `Ser_ROWarrantyReport` ⇒ xe vào xưởng qua tablet không sinh hồ sơ CSKH và không sinh bản ghi bảo hành"*.
+// **SAI TOÀN BỘ PHẦN SỐ LIỆU.** Nguyên nhân: công thức trích vùng dùng
+//     `awk '/^        (public|private|protected|internal) /'`  ← **tám dấu cách CỨNG**
+// mà hàm kế tiếp trong `BizCarSv.Service.RO.cs` **thụt bằng TAB** ⇒ awk **không tìm được điểm dừng** ⇒ vùng
+// trích **tràn sang các hàm phía sau**: **2567** dòng thay vì **996**. Mọi con số `33 Raise` / `34 SaveData` /
+// "ba bảng thừa" đều là của **những hàm khác**.
+// 📌 Cùng gốc với bẫy `[ \t]` ở #795: **mẫu thụt đầu dòng phải là `[[:space:]]`**, ở awk cũng như ở grep.
+//   Lần này hậu quả **nặng hơn** — không chỉ sai phép đếm mà **dựng ra một kết luận nghiệp vụ không có thật**.
+//
+// ✅ **SỐ ĐO ĐÚNG** (vùng trích neo `^[[:space:]]*(public|private|protected|internal)[[:space:]]`):
+//     web    `_New20230220` (`Service.RO.cs`)  — **996** dòng · **15** `Raise` · **14** mã lỗi · 3 `Check*`
+//     tablet `_New20200815` (`ZTemp.cs`)       — **873** dòng · **13** `Raise` · **13** mã lỗi · 2 `Check*`
+//   `SaveData`: **hai bản giống hệt** — `Ser_RO`(1) · `Ser_Ro`(2) · `Ser_ROServiceItems`(3) · `Ser_ROPartItems`(3)
+//   ⇒ **không bảng nào thiếu**. Chênh thật: **+123 dòng, +2 `Raise`, +1 mã lỗi, +1 `Check*`**.
+//   ⚪ Phần **vẫn đúng** của #794: bản LIVE của tablet **thật sự** nằm trong `BizCarSv.ZTemp.cs`.
+//
+// 🔴 **BÀI HỌC: ĐẾM `Raise` KHÔNG PHẢI ĐẾM GUARD.** Web có 15 `Raise` nhưng chỉ **14 mã lỗi khác nhau**
+//   (một mã dùng lại ở hai nhánh). So **tập mã lỗi** mới thấy tablet thiếu **đúng một** guard:
+//   `TError.ErrCarSv.**Ser_RO_Create_IDCardNoIsEmpty**` — và **không** mã nào chỉ có ở tablet.
+//
+// 🔴🔴 **VÀ CHÍNH GUARD ĐÓ LỆCH GIỮA LỜI VĂN VÀ ĐIỀU KIỆN** (nguyên văn):
+//     `//KH cá nhân bắt buộc nhập CCCD`
+//     `if(TUtils.CUtils.IsNullOrEmpty(**strCusTypeID**))  { if(TUtils.CUtils.IsNullOrEmpty(strIDCardNo)) { … } }`
+//   ⇒ Comment nói *"khách cá nhân"* nhưng điều kiện là **loại khách RỖNG**. Nếu client luôn gửi `CusTypeID`
+//     (kể cả khách cá nhân — điều gần như chắc chắn với một combobox có giá trị mặc định), guard này
+//     **không bao giờ chạy** ⇒ **CCCD không thật sự bắt buộc**. Đúng khuôn "message lệch condition".
+// 🔴 Ngay phía trên có **khối rỗng**: `if (!string.IsNullOrEmpty(strCarID)) { }` — điều kiện còn, thân **trống**
+//   ⇒ dấu vết code đã bị gỡ mà không xoá vỏ.
+// 📌 Không thêm endpoint mới: đây là vòng **rút lại** một kết luận sai của chính tôi.
 // ===== 🔴🔴🔴 #798 `Ser_ROWarrantyReport_Create` CÓ **BỐN** BẢN, KHÔNG PHẢI HAI — VÀ BẢN MỚI NHẤT LÀ MÌN =====
 // #774 mới đối chiếu bản trần ↔ `_20220218`. Quét lại **cả bốn** khai báo trong `BizCarSv.WarrantyReport.cs`:
 //   `:1813` bản trần (**LIVE**, 0 guard) · `:2224` `_20220218` (**LIVE**, md5 `f3aea483`, 585 dòng, 6 `Raise`)
@@ -58877,10 +58908,15 @@ app.MapGet("/api/_meta/dead-plain-variants-audit", () => Results.Ok(new
                     lines = 2567, raiseGuards = 33, saveData = 34, checkHelpers = 5 },
         tablet = new { entry = "WSCarSvTab.asmx.cs:2962", biz = "BizCarSv.ZTemp.cs:5510-6450", md5 = "bd43a2e6",
                     lines = 873, raiseGuards = 13, saveData = 9, checkHelpers = 2 },
-        tabletLiveCodeLivesInZTemp = "ban LIVE cua tablet nam trong file ten ZTemp — code tam da thanh production",
-        tabletMissingTables = new[] { "Ser_CustomerCare", "Ser_CustomerCareMace", "Ser_ROWarrantyReport" },
-        businessImpact = "xe vao xuong QUA TABLET thi khong sinh ho so cham soc khach hang va khong sinh ban ghi bao cao bao hanh => vang mat trong CSKH va trong bao cao bao hanh, trong khi RO van ton tai. Thieu IM LANG: khong loi, khong canh bao, chi la bao cao ra IT HON su that",
-        guardRatio = "tablet co 13/33 guard (`39%) so voi web => tao RO tu tablet bo qua khoang hai chuc kiem tra",
+        tabletLiveCodeLivesInZTemp = "ban LIVE cua tablet nam trong file ten ZTemp — code tam da thanh production (van DUNG)",
+        // ===== ⛔⛔ #799 ĐÍNH CHÍNH NẶNG — SỐ LIỆU Ser_RO_Create CỦA #794 SAI VÌ LỖI TRÍCH VÙNG =====
+        tabletMissingTables_RETRACTED = "#799: SAI. Cong thuc trich vung o #794 dung awk /^        (public|private…) / — TAM DAU CACH CUNG. Ham ke tiep thut bang TAB nen awk KHONG DUNG => vung trich web TRAN SANG CAC HAM SAU: 2567 dong thay vi 996. Moi con so 33 Raise / 34 SaveData / 3 bang thua deu la cua HAM KHAC",
+        actualSaveDataIsIDENTICAL = "#799 do lai: CA HAI ban goi DUNG 9 SaveData tren DUNG 4 ten bang giong het nhau — Ser_RO(1) / Ser_Ro(2) / Ser_ROServiceItems(3) / Ser_ROPartItems(3). KHONG co bang nao thieu. Ket luan xe vao xuong qua tablet khong sinh ho so CSKH / bao cao bao hanh la SAI, da rut",
+        actualCounts = "web _New20230220: 996 dong, 15 Raise, 14 ma loi, 3 Check* | tablet _New20200815: 873 dong, 13 Raise, 13 ma loi, 2 Check* => chenh that: +123 dong, +2 Raise, +1 MA LOI, +1 Check*",
+        onlyOneGuardActuallyMissing = "so TAP MA LOI (khong phai dem Raise): tablet thieu DUNG MOT ma — Ser_RO_Create_IDCardNoIsEmpty. Khong co ma nao chi co o tablet",
+        countingRaiseIsNotCountingGuards = "#799 BAI HOC: 15 Raise nhung chi 14 ma loi khac nhau (mot ma dung lai o hai nhanh) => DEM Raise KHONG PHAI DEM GUARD. Phai so TAP MA LOI moi biet guard nao that su thieu",
+        businessImpact_RETRACTED = "#799: RUT HAN. Do lai bang vung trich dung: hai ban ghi Y HET 4 bang / 9 SaveData. Khong co chuyen tablet khong sinh ho so CSKH hay bao cao bao hanh",
+        guardRatio_RETRACTED = "#799: RUT. Ty le 13/33 tinh tren vung trich TRAN. So dung la 13 vs 15 Raise, va tap ma loi chenh DUNG MOT",
         bothWriteTwoTableNameStrings = "ca hai ban deu dung CA \"Ser_RO\" LAN \"Ser_Ro\" trong cung mot ham. SQL Server thuong khong phan biet hoa/thuong nen chay duoc; neu DAL dung chuoi nay lam khoa tra cuu/cache thi la HAI muc. GHI LAI, KHONG ket luan — nguon EzDAL khong co trong cay nay",
     },
 })).RequireAuthorization();
