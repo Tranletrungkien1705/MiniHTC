@@ -69732,6 +69732,8 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record StockInAdjustLineDto(string? PartCode, decimal Quantity);
+record StockInAdjustPrecheckDto(long OldStockInId, List<StockInAdjustLineDto>? Lines);
 record SharePartLineDto(string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, decimal MinQuantity, string? Remark);
 // #272: kết quả một lượt đẩy NoShow sang HCC — "A" xong / "R" lỗi (lỗi BẮT BUỘC ghi lý do).
 record HccNoShowResultDto(string ToStatus, string? Note = null);
