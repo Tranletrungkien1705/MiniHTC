@@ -22796,6 +22796,82 @@ app.MapGet("/api/jdpowerterms/eligible", async (AppDbContext db, ITenantContext 
 //   mà điều kiện lọc đã nằm trong SQL.
 // 📌 Mini: `GET /api/osveloca/stockin/{stockInId}` giữ **đúng** bộ lọc `FlagSyncVeloca` và phân biệt rõ ba trạng thái
 //   (không tồn tại · đã đồng bộ · trả dữ liệu) — **khác nguồn CÓ CHỦ Ý** ở chỗ tách "đã đồng bộ" khỏi "rỗng".
+// ===== 🔴🔴🔴 #759 `OSVeloca_Ser_Inv_StockOut_GetByStockOutID_New20240606` — SONG SINH CỦA #757, NẶNG HƠN =====
+// `BizCarSv.Inventory.StockOut.cs:19346-20057` md5 `a2a55d60` (**682 dòng active**, gấp rưỡi bản nhập).
+// BƯỚC 3B: md5 file = `8e73ba77…` — **giống hệt máy 150**. Chạy trên `_dbDealer`, trả **SÁU** bảng
+// (`Mst_Inventory`/`Mst_Product`/`Mst_Customer`/`InvF_InventoryOut`/**`InvF_InventoryOutCover`**/`InvF_InventoryOutDtl`).
+// Hai đặc điểm đã ghi ở #757 lặp lại **y hệt**: guard `FlagSyncVeloca` (ghi chú `20240511. HuongTTT`, đổi "PN"→"PX")
+// và **hai phiên bản `Return Mst_Inventory`** (một comment, một chạy, hai ghi chú chỉ ngược nhau).
+//
+// 🔴 **HAI HÀM SINH ĐÔI ĐÁNH SỐ BẢNG LỆCH NHAU MỘT ĐƠN VỊ**: bản nhập (#757) chú thích `(Table1)`…`(Table5)`,
+//   bản xuất chú thích `(**Table0**)`…`(Table5)`. Cùng một tác giả, cùng một khuôn, hai hệ đánh số ⇒ ai đối chiếu
+//   tài liệu tích hợp giữa hai chiều nhập/xuất sẽ lệch đúng một bảng.
+//
+// 🔴🔴🔴 **BA `select top 1` KHÔNG `ORDER BY`, ĐỘC LẬP NHAU, LẤY BA CỘT TỪ BẢNG CHƯA GỘP**
+//   Bảng `InvF_InventoryOutCover` được dựng hai bước:
+//     `#tbl_..._Cover_**Filter**`  — **một dòng cho mỗi dòng chi tiết phiếu xuất** (`Ser_Inv_StockOutDetail`),
+//        nên **một mã phụ tùng có thể có NHIỀU dòng** (khác vị trí kho, khác `StockOutDetailIndex`, và giá có thể
+//        khác nhau vì `case when sisodro.PartID is not null then Factor*Price else sisod.Price end`).
+//     `#tbl_..._Cover_**GrpBy**` — `group by (IF_InvOutNo, ProductCodeRoot)` với `Sum(Qty)`, `Sum(ValOutAfterDesc)`, `Sum(ValVAT)`.
+//   Đến câu trả về, nguồn lấy `Qty`/`ValOutAfterDesc`/`ValVAT` từ **GrpBy** (đã tổng), nhưng lấy
+//     `VAT` · `UPOut` · `UnitCode` bằng **ba subquery `select top 1 … from #tbl_..._Cover_Filter`** — **bảng CHƯA gộp**,
+//     cả ba đều **không `ORDER BY`** và **độc lập với nhau**.
+//   ⇒ Hệ quả không phải "thứ tự không xác định" mà là **phá vỡ tính nhất quán của một hàng**:
+//     · `UPOut` là đơn giá của **một dòng bất kỳ**, còn `ValOutAfterDesc` là **tổng của cả nhóm**
+//       ⇒ đối tác **không thể kiểm `Qty × UPOut ≈ ValOutAfterDesc`** khi một mã có nhiều dòng khác giá;
+//     · `VAT` cũng lấy một dòng bất kỳ, trong khi `ValVAT` là tổng ⇒ hai dòng khác thuế suất là số không khớp;
+//     · ba subquery chạy độc lập ⇒ về lý thuyết có thể lấy từ **ba dòng khác nhau** của cùng nhóm.
+//   📌 Đây là biến thể nguy hiểm nhất của #415 gặp tới giờ: `top 1` không phải để "lấy dòng mới nhất" mà để
+//     **nhét một giá trị chi tiết vào một hàng đã tổng hợp**. Chỉ vô hại khi mọi dòng trong nhóm trùng giá/thuế/đơn vị.
+// 🔴 **HAI CỘT ĐÓNG CỨNG 0**: `, 0 UPOutDesc` và `, 0 UPInv` ⇒ đối tác Veloca luôn nhận **đơn giá sau giảm = 0**
+//   và **đơn giá tồn = 0**. Không có nhánh nào gán giá trị thật ở nơi khác.
+// ⚠️ `sisod.Quantity * sisod.Price * sisod.**VAT/100**` — nếu `VAT` là số nguyên thì đây là **chia nguyên** (#408).
+//   Nợ "VAT int-or-decimal" đã mở từ #705/#708 ⇒ **không mở nợ mới**, chỉ ghi thêm một điểm phát sinh.
+// 📌 Mini: `GET /api/osveloca/stockout/{stockOutId}` — tách rõ ba trạng thái như #757, và **tính `UPOut`/`VAT` từ
+//   chính nhóm đã gộp** thay vì bốc một dòng bất kỳ (khác nguồn CÓ CHỦ Ý, nêu ở cờ).
+app.MapGet("/api/osveloca/stockout/{stockOutId}", async (string stockOutId, AppDbContext db, ITenantContext t) =>
+{
+    var id = stockOutId.Trim();
+    var head = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == id);
+    if (head is null) return Results.NotFound(new { stockOutId = id, note = "Nguồn KHÔNG phân biệt ca này với ca đã đồng bộ — cả hai đều trả rỗng." });
+    var notSynced = string.IsNullOrEmpty(head.FlagSyncVeloca) || head.FlagSyncVeloca == "0";
+    if (!notSynced)
+        return Results.Ok(new { stockOutId = id, alreadySynced = true, tables = (object?)null,
+            sourceReturnsEmptyTablesHere = "nguon tra SAU bang RONG va KHONG bao loi" });
+    var lines = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && x.StockOutId == head.Id).ToListAsync();
+    // Nguồn: Filter = 1 dòng/chi tiết; GrpBy = gộp theo (phiếu, mã PT). Mini gộp tương đương.
+    var cover = lines.GroupBy(l => l.PartCode).Select(g =>
+    {
+        var qty = g.Sum(x => x.Quantity);
+        var valAfterDesc = g.Sum(x => x.Quantity * ((x.RoPrice ?? 0m) > 0m ? (x.RoFactor ?? 1m) * (x.RoPrice ?? 0m) : (x.Price ?? 0m)));
+        var valVat = g.Sum(x => x.Quantity * ((x.RoPrice ?? 0m) > 0m ? (x.RoFactor ?? 1m) * (x.RoPrice ?? 0m) : (x.Price ?? 0m)) * (x.Vat ?? 0m) / 100m);
+        var distinctVat = g.Select(x => x.Vat ?? 0m).Distinct().Count();
+        var distinctUnit = g.Select(x => x.UnitCode ?? "").Distinct().Count();
+        return new
+        {
+            productCodeRoot = g.Key, qty, valOutAfterDesc = valAfterDesc, valVAT = valVat,
+            valOutAfterVAT = valAfterDesc + valVat,
+            // KHÁC NGUỒN CÓ CHỦ Ý: đơn giá suy ra TỪ NHÓM ĐÃ GỘP, không bốc một dòng bất kỳ bằng top 1.
+            upOut = qty == 0m ? 0m : valAfterDesc / qty,
+            vat = distinctVat == 1 ? g.First().Vat ?? 0m : (decimal?)null,
+            unitCode = distinctUnit == 1 ? g.First().UnitCode : null,
+            rowsInGroup = g.Count(), vatIsAmbiguous = distinctVat > 1, unitIsAmbiguous = distinctUnit > 1,
+            upOutDesc = 0m, upInv = 0m,   // nguồn đóng cứng 0
+        };
+    }).ToList();
+    return Results.Ok(new
+    {
+        stockOutId = id, alreadySynced = false,
+        InvF_InventoryOut = new { head.StockOutNo, head.StockOutDate, head.WarehouseCode, head.DealerCode, head.CusID, head.Status },
+        InvF_InventoryOutCover = cover,
+        InvF_InventoryOutDtl = lines,
+        sourceUsesThreeIndependentTop1 = "nguon lay VAT/UPOut/UnitCode bang BA subquery select top 1 khong ORDER BY tren bang CHUA GOP, trong khi Qty/ValOutAfterDesc/ValVAT lay tu bang DA GOP => Qty x UPOut co the KHONG bang ValOutAfterDesc",
+        sourceHardcodesTwoZeroColumns = "0 UPOutDesc va 0 UPInv dong cung trong SQL",
+        sourceTableNumberingOffByOne = "ban xuat chu thich (Table0)..(Table5) con ban nhap #757 chu thich (Table1)..(Table5) => lech mot bang khi doi chieu tai lieu hai chieu",
+        miniDerivesUnitPriceFromGroup = "Mini tinh upOut = valOutAfterDesc / qty va bao vatIsAmbiguous/unitIsAmbiguous khi nhom co nhieu gia tri khac nhau",
+        vatIntDivisionDebt = "nguon: Quantity * Price * VAT/100 — neu VAT la int thi la CHIA NGUYEN; no da mo tu #705/#708",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/osveloca/stockin/{stockInId}", async (string stockInId, AppDbContext db, ITenantContext t) =>
 {
     var id = stockInId.Trim();
