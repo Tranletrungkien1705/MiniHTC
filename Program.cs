@@ -23563,12 +23563,68 @@ app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #742 BỐN HÀM GHI `JDPowerTerm_*` (`BizCarSv.Service01.cs`) — VÒNG PARITY =====
+// `_Create` :15841-16134 md5 `373341dc` · `_Delete` :16135-16276 md5 `a9d4d7e4` ·
+// `_Update` :16277-16510 md5 `6cca9c3a` · `_Update_Mst` :16511-16691 md5 `bc1e8348`.
+// #660 chỉ mới đọc `_Get_WH`; **bốn hàm GHI chưa từng được đọc**. Endpoint đã có ⇒ vá tại chỗ, KHÔNG tính màn mới.
+//
+// 🔴🔴🔴 **`_Update`: GUARD CHẠY SAU KHI ĐÃ GHI, VÀ KHÔNG CÓ TRANSACTION ĐỂ CỨU**
+//   Thứ tự thật trong hàm: dòng 71 `_dbMain.SaveData("JDP_Mst_JDPowerTerm", …)` → dòng 141 `SaveData(…Dtl…)`
+//   → **dòng 165** mới chạy câu kiểm `select … where jmjt.FlagActive = @strFlagActive` rồi
+//   `if (dt.Rows.Count > 1) throw CMyException.Raise(…JDPowerTerm_Update_ExistJDPActive)`.
+//   Ghi-trước-kiểm-sau vốn **vẫn an toàn NẾU** có transaction. Nhưng hàm mở đầu bằng:
+//     `bool bNeedTransaction = **false**;` … `if (bNeedTransaction) _dbMain.BeginTransaction();`
+//   ⇒ **hằng false ⇒ transaction KHÔNG BAO GIỜ mở** ⇒ `RollbackSafety` trong `catch` **không có gì để huỷ**.
+//   ⇒ Người dùng bật kỳ khảo sát thứ hai: **nhận thông báo lỗi "đã tồn tại kỳ Active"** nhưng bản ghi
+//     **đã nằm trong CSDL** ⇒ hệ thống rơi vào đúng trạng thái mà guard sinh ra để cấm. Guard **phản tác dụng**:
+//     nó tạo cảm giác an toàn trong khi thực tế còn tệ hơn không có (không có guard thì ít ra không ai tin là đã chặn).
+//   ⚪⚪ **PHẢN VÍ DỤ NẰM NGAY TRONG CÙNG FILE, CÙNG BẢNG** — ba hàm anh em đều `= true`:
+//     `_Create` / `_Delete` / `_Update_Mst`: `bool bNeedTransaction_**Main** = true; bool bNeedTransaction_**WH** = true;`
+//     `_Update` một mình: `bool bNeedTransaction = false;` — **tên biến cũng khác** (không có hậu tố `_Main`/`_WH`)
+//     ⇒ `_Update` là **bản CŨ chưa được nâng theo khuôn**, ba hàm kia đã nâng. Đây là **lỗi**, không phải chủ ý.
+//
+// 🔴🔴 **`_Update` KHÔNG CHẠM `_dbWH` MỘT LẦN NÀO** (`grep -c "_dbWH"` = **0** trên trọn 223 dòng active):
+//   `_Create`: `_dbWH` ExecQuery 1 + SaveData `JDP_Mst_JDPowerTerm` + SaveData `…Dtl` · `_Delete`: xoá cả Main lẫn WH
+//   · `_Update_Mst`: `_dbMain.SaveData(…)` **và** `_dbWH.SaveData(…)` **cùng một `dtDB_` + cùng `alEffectiveColumn`**.
+//   ⇒ **Tạo cân · Xoá cân · Sửa-master cân · riêng `_Update` LỆCH.** Hậu quả khép kín được vì phía WH **có hàm đọc**:
+//     `JDPowerTerm_Get_WH` (#660) đọc từ WH ⇒ sau khi sửa kỳ khảo sát, **màn tra cứu WH vẫn hiện giá trị cũ** mãi mãi.
+//   📌 Chi tiết `JDP_Mst_JDPowerTermDtl` (danh sách VIN) ở WH **chỉ được Create ghi và Delete xoá** — không đường nào sửa.
+//   Đây là mẫu #726 **rõ nhất từ trước tới nay** vì đủ cả ba: hai hàm ghi cân, một hàm ghi lệch, và một hàm đọc phía WH.
+//
+// 🔴🔴 **SỬA LUẬT ĐẾM CỦA CHÍNH TÔI — `ExecQuery` KHÔNG PHẢI LÀ "ĐỌC"**:
+//   Ở #738 tôi đặt luật đếm tách `SaveData`/`ExecNonQuery` = GHI và `ExecQuery` = ĐỌC. `_Delete` **bác luật đó**:
+//   toàn bộ thân xoá là `_dbMain.ExecQuery(strSqlDelete, "@JDPTermCode", …)` + `_dbWH.ExecQuery(cùng SQL)` với
+//   `strSqlDelete` chứa **hai câu `delete t from …`**. Bảng đếm đầu tiên của tôi ghi `_Delete` = "Main 0 ghi / WH 0 ghi"
+//   ⇒ **SAI**: hàm này ghi cả hai CSDL và ghi **cân**. `ExecQuery` ở EzDAL chỉ nghĩa là "chạy SQL, trả DataSet" —
+//   **không bảo đảm read-only**. ⇒ Từ nay: đếm xong phải **mở SQL ra đọc động từ đầu tiên** (`select`/`delete`/`update`/`insert`),
+//   không suy tính chất thao tác từ **tên hàm DAL**. (Cùng họ với luật "HẰNG ≠ GIÁ TRỊ": tên ≠ hành vi.)
+//
+// 🔴 **`_Delete` KHÔNG CÓ GUARD NÀO** (`CMyException.Raise` = **0**, so với `_Create` = 6, `_Update` = 4, `_Update_Mst` = 2)
+//   ⇒ xoá mã không tồn tại vẫn **báo thành công** (họ #710/#712/#728/#736).
+// 🔴 **TỪ VỰNG LẠ — `dt_DLS_DealDetail`**: trong `_Update`, biến giữ schema `JDP_Mst_JDPowerTermDtl` lại tên là
+//   `DataTable dt_**DLS_DealDetail** = GetSchema(_dbMain, "JDP_Mst_JDPowerTermDtl")` rồi `SaveData("…Dtl", dt_DLS_DealDetail)`.
+//   `DLS`/`Deal` là từ vựng **bán xe**, không phải khảo sát JD Power ⇒ khối này **bê từ hàm khác sang** — khớp đúng
+//   nhóm hàm mà mọi lỗi trên đây tập trung vào. Không phải bug tự thân, nhưng là **dấu vân tay** giải thích vì sao
+//   riêng `_Update` lạc khuôn.
+// ⚪ **ÂM TÍNH — `#tbl` + tham số runtime ở `_Delete` KHÔNG dính bẫy bảng-tạm-bị-huỷ**: cả `select … into #tbl…`
+//   lẫn hai câu `delete` nằm trong **một chuỗi SQL duy nhất, một lần gọi** ⇒ cùng batch ⇒ `#tbl` còn sống. Bẫy đó chỉ
+//   xảy ra khi tạo bảng tạm ở lần gọi này rồi dùng ở lần gọi khác.
+// 📌 Mini vá bên dưới: thêm guard "chỉ một kỳ Active" **TRƯỚC khi ghi** cho cả `POST /api/jdpowerterms` lẫn `/toggle`
+//   (nguồn có guard nhưng đặt sai chỗ và mất transaction; Mini **không** tái hiện lỗi đó — ghi rõ là khác biệt CÓ CHỦ Ý).
 app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = (dto.JDPTermCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã kỳ khảo sát." });
     if (dto.StartDate.HasValue && dto.EndDate.HasValue && dto.EndDate < dto.StartDate) return Results.BadRequest(new { error = "Ngày kết thúc phải >= ngày bắt đầu." });
     var row = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == code);
+    // 🔴 #742 Nguồn kiểm "chỉ một kỳ Active" SAU khi đã `SaveData`, mà `bNeedTransaction = false` ⇒ ném lỗi nhưng
+    //   dữ liệu đã ghi. Mini kiểm TRƯỚC khi ghi — khác biệt CÓ CHỦ Ý, không phải port thiếu.
+    if ((dto.FlagActive ?? "") == "1")
+    {
+        var otherActive = await db.JDPowerTerms
+            .CountAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.JDPTermCode != code);
+        if (otherActive > 0) return Results.BadRequest(new { error = "Đã tồn tại kỳ khảo sát đang hiệu lực.", otherActive });
+    }
     if (row is null) { row = new JDPowerTerm { OrgId = t.OrgId, JDPTermCode = code }; db.JDPowerTerms.Add(row); }
     row.JDPTermName = dto.JDPTermName; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
@@ -23580,6 +23636,12 @@ app.MapPost("/api/jdpowerterms/{id}/toggle", async (long id, AppDbContext db, IT
 {
     var row = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
+    // #742 `/toggle` cũng có thể bật kỳ thứ hai ⇒ áp cùng guard, cũng đặt TRƯỚC khi ghi.
+    if (row.FlagActive != "1")
+    {
+        var otherActive = await db.JDPowerTerms.CountAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.Id != id);
+        if (otherActive > 0) return Results.BadRequest(new { error = "Đã tồn tại kỳ khảo sát đang hiệu lực.", otherActive });
+    }
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
