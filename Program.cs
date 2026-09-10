@@ -18940,6 +18940,73 @@ var warrantyClaimStatusNames = warrantyClaimStatusNamesByScreen["biz"];
 //   nhóm "top 1 không tất định"; cột `order` nằm trong danh sách select, chỉ không đứng đầu.
 // 📌 Đối chiếu 2 máy: md5 CẢ FILE **khác nhau** (laptop `ba1fb715` / 150 `19b741ca`) nhưng md5 **vùng
 //   7120-7440** giống hệt (`42a367f1`) ⇒ khác biệt nằm ngoài guard, port an toàn.
+// ===== 🔴🔴🔴 #776 BA BẢN `Ser_ROWarrantyReport_Update*` — BẢN MỚI NHẤT LẠI LÀ BẢN CHẾT =====
+// `BizCarSv.WarrantyReport.cs`: `_Update` `:3908-4173` md5 `3e19693a` (243 dòng, `Raise` = **0**) ·
+// `_Update_V2` `:4174-4615` md5 `b2b65bbc` (405 dòng, `Raise` = 7) ·
+// `_Update_V2_**New20230220**` `:4616-5101` md5 `1088d8d3` (**447 dòng**, `Raise` = 6).
+// WS gọi **`_Update`** và **`_Update_V2`** — **KHÔNG gọi** bản `_New20230220`.
+//
+// 🔴🔴🔴 **BẢN CÓ HẬU TỐ NGÀY MỚI NHẤT (2023-02-20) KHÔNG ĐƯỢC AI GỌI ⇒ CHẾT**
+//   Đây là **chiều ngược** của bài học ở #372 (ở đó `HTCMobileTVO_GetServiceReminders_**20210603**` mới là bản SỐNG
+//   còn bản trần đã chết). ⇒ **Hậu tố ngày KHÔNG cho biết bản nào sống** — chỉ `_biz.<tên>(` trong WS mới cho biết.
+//   Đã gặp cả hai chiều nên từ nay phải coi hậu tố ngày là **thông tin trung tính**.
+// 🔴🔴 **VÀ BẢN CHẾT KHAI TÊN CỦA BẢN SỐNG**: `strFunctionName = "Ser_ROWarrantyReport_Update_**V2**"` —
+//   **trùng y hệt** bản `_V2` đang chạy. ⇒ Nếu mai này ai repoint WS sang bản mới, **log không hề thay đổi**
+//   ⇒ không có cách nào biết hệ đang chạy bản nào. Cùng họ nhãn-log-nói-dối ở #741/#744/#755/#770/#775.
+//
+// 🕓🕓 **BẢN CHẾT ĐỊNH MỞ 13 TRƯỜNG MÀ HIỆN KHÔNG ĐƯỜNG NÀO GHI ĐƯỢC**
+//   DIFF `_V2` → `_V2_New20230220` cho thấy bản mới thêm **13 tham số**, chia hai nhóm có chú thích sẵn:
+//     `// // Khách Hàng` : `strCusMobile` · `strCusTaxCode`
+//     `// // Xe`         : `strModelID` · `strPlateNo` · `strFrameNo` · `strEngineNo` · `strColorCode` ·
+//                          `strTradeMarkCode` · `strBatteryNo` · `strSerialNo` ·
+//                          `strWarrantyRegistrationDate` · `strWarrantyExpiresDate` · `strWarrantyKM`
+//   ⇒ Ý định rõ ràng: cho phép **sửa thông tin xe và khách ngay trên báo cáo bảo hành**. Tính năng đã viết xong
+//     từ **2023-02-20** và **chưa bao giờ được bật** — chỉ thiếu đúng một dòng repoint ở tầng WS.
+//   ⇒ Ghi thành **nợ có điều kiện kích hoạt** (cùng loại với #757: hai khối `Table1` chờ hoán đổi).
+//
+// 🔴🔴 **BẢN `_Update` (KHÔNG V2) VẪN LIVE VÀ VẪN `Raise` = 0** — lặp lại đúng khuôn #774 (`_Create`) và #775
+//   (`_ItemStatus_Update`). Ba cặp liên tiếp trong **cùng một file**, cùng một hình dạng:
+//     bản trần **không guard** + bản `_V2`/`_20220218` **có guard**, và **cả hai đều nhận lời gọi**.
+//   📌 Ba lần ⇒ theo luật "lần thứ ba thì đi tìm một hàm làm ĐÚNG": trong `WarrantyReport.cs`, hàm làm đúng là
+//     **bản `_V2` của chính từng cặp** — tức bản vá đã tồn tại đủ ba lần, **nhưng chưa lần nào tắt đường cũ**.
+//     Vậy vấn đề của cụm bảo hành không phải "thiếu guard" mà là **không có ai đóng cửa sau**.
+// 📌 Mini: `PUT /api/warrantyclaims/{id}` port theo bản `_V2` (đường đang sống, có guard) và **mở sẵn 13 trường**
+//   của bản `_New20230220` — đánh dấu rõ là **vượt trước nguồn có chủ ý**, kèm cờ giải thích.
+app.MapPut("/api/warrantyclaims/{id:long}", async (long id, WarrantyClaimUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (claim is null) return Results.NotFound(new { id });
+    // Guard trạng thái: giống #775 — bản có guard chỉ cho sửa ở PEND / REVERT.
+    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
+    if (st != "PEND" && st != "REVERT")
+        return Results.BadRequest(new { error = "WarrantyStatus không cho phép sửa.", currentStatus = st, allowed = new[] { "PEND", "REVERT" } });
+    if (dto.CusName != null) claim.CusName = dto.CusName;
+    if (dto.CusAddress != null) claim.CusAddress = dto.CusAddress;
+    if (dto.CusTel != null) claim.CusTel = dto.CusTel;
+    if (dto.Description != null) claim.Description = dto.Description;
+    if (dto.HtcNote != null) claim.HtcNote = dto.HtcNote;
+    // 🕓 13 trường dưới đây chỉ có ở bản `_V2_New20230220` — bản CHẾT. Mini mở sẵn, CÓ CHỦ Ý.
+    var openedAhead = 0;
+    if (dto.PlateNo != null) { claim.PlateNo = dto.PlateNo; openedAhead++; }
+    if (dto.Vin != null) { claim.Vin = dto.Vin; openedAhead++; }
+    if (dto.ModelID != null) { claim.ModelID = dto.ModelID; openedAhead++; }
+    if (dto.BatteryNo != null) { claim.BatteryNo = dto.BatteryNo; openedAhead++; }
+    if (dto.SerialNo != null) { claim.SerialNo = dto.SerialNo; openedAhead++; }
+    if (dto.WarrantyRegistrationDate.HasValue) { claim.WarrantyRegistrationDate = dto.WarrantyRegistrationDate; openedAhead++; }
+    if (dto.WarrantyExpiresDate.HasValue) { claim.WarrantyExpiresDate = dto.WarrantyExpiresDate; openedAhead++; }
+    if (dto.WarrantyKM.HasValue) { claim.WarrantyKM = dto.WarrantyKM; openedAhead++; }
+    claim.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        claim.Id, claim.ClaimNo, claim.Status, fieldsFromDeadVersionUsed = openedAhead,
+        sourceNewestVersionIsDead = "WS goi _Update va _Update_V2 nhung KHONG goi _Update_V2_New20230220 (ban moi nhat, 447 dong) => hau to ngay KHONG cho biet ban nao song; #372 la chieu nguoc lai",
+        deadVersionLogsLiveVersionName = "ban chet khai strFunctionName = Ser_ROWarrantyReport_Update_V2 — trung ten ban dang chay => repoint WS xong thi log KHONG doi, khong biet dang chay ban nao",
+        deadVersionOpens13Fields = "ban chet them 13 tham so co chu thich san: // Khach Hang (CusMobile, CusTaxCode) va // Xe (ModelID, PlateNo, FrameNo, EngineNo, ColorCode, TradeMarkCode, BatteryNo, SerialNo, WarrantyRegistrationDate, WarrantyExpiresDate, WarrantyKM) => tinh nang viet xong tu 2023-02-20, chua bao gio duoc bat",
+        thirdLegacyPathWithoutGuard = "ban _Update (khong V2) van LIVE va van Raise=0 — lan thu BA trong cung file sau #774 (_Create) va #775 (_ItemStatus_Update): ban va da co du ba lan nhung CHUA LAN NAO tat duong cu",
+        miniOpensAhead = "Mini mo san cac truong cua ban chet — VUOT TRUOC nguon CO CHU Y, dem trong fieldsFromDeadVersionUsed",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -67888,6 +67955,10 @@ record WarrantyClaimCreateDto(string? ROID = null, string? RONo = null, string? 
     string? ErrorCodePN = null, string? ErrorCodeCD = null, string? PartIDError = null, string? Description = null);
 record WarrantyItemStatusDto(string? WarrantyStatus = null, string? Note = null,
     string? ErrorCodePN = null, string? ErrorCodeCD = null);
+record WarrantyClaimUpdateDto(string? CusName = null, string? CusAddress = null, string? CusTel = null,
+    string? Description = null, string? HtcNote = null, string? PlateNo = null, string? Vin = null,
+    string? ModelID = null, string? BatteryNo = null, string? SerialNo = null,
+    DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null, decimal? WarrantyKM = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
