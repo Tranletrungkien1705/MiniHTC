@@ -58548,6 +58548,94 @@ app.MapGet("/api/report/warranty-accept-getall-wh", async (AppDbContext db, ITen
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴🔴 #740 CHIẾN DỊCH ÁP CHO XE KHI TẠO/SỬA LSC `Ser_CampaignMarketing_GetForCus{Crt,Upd}RO` =====
+// `CampaignMarketing/BizCarSv.CampaignMarketing.cs` (file **LIVE**, xem #733) —
+// `…GetForCusCrtRO_New20220926` :1474-1742 md5 `25d0bdfa` · `…GetForCusUpdRO_New20220926` :2346-2647
+// md5 `49d6c2c3`. WS LIVE `WSCarSv.asmx.cs:1839`/`:1867` gọi **đúng** hai bản có hậu tố ngày.
+// → `GET /api/campaignmarketings/for-car`. **DIFF CHÉO** hai bản (luật #414 + `C0-…quadragesimussextus`).
+//
+// 🔴🔴🔴🔴 **THIẾU DẤU NGOẶC ⇒ `OR` NUỐT TOÀN BỘ `WHERE`** (khối *"Xét điều kiện biển số xe"*):
+//     `where(1=1)`
+//     `and (scm.ConditionPlateNo is null)`
+//     `**or** (f.PlateNo like (scmpn.StartPlateNo + '%') )`
+//   `AND` ưu tiên hơn `OR` ⇒ biểu thức thực tế là
+//     `((1=1) AND scm.ConditionPlateNo is null) **OR** (f.PlateNo like …)`
+//   ⇒ Chỉ cần **một** dòng trong `#tbl_Ser_Car_Filter` có biển số khớp mẫu là **cả dòng được lấy**, **bất kể**
+//     `ConditionPlateNo`. Đúng ra phải là `and ( (…is null) **or** (…like…) )`.
+//   🔴 **VÀ NÓ CỘNG HƯỞNG VỚI LỖI KẾ TIẾP**: cùng khối có `inner join #tbl_Ser_Car_Filter f **on (1=1)**`
+//     ⇒ **tích Descartes** — mỗi chiến dịch nhân với **mọi** xe trong bộ lọc. Ghép hai lỗi lại:
+//     **chiến dịch có điều kiện biển số vẫn khớp cho một chiếc xe KHÔNG thoả**, chỉ vì **xe khác** trong cùng
+//     lô có biển số khớp mẫu. ⇒ **Khuyến mại/chiến dịch áp NHẦM cho xe.**
+//   ⚪ **MẪU NGƯỢC NGAY TRONG CÙNG HÀM**: khối *"Xét điều kiện bảo hành"* ngay trên **CÓ ngoặc đúng**:
+//     `and ((scm.WarrantyDateStart is null and scm.WarrantyDateEnd is null) or ((…) and (…)))`
+//     ⇒ Cùng một hàm, cùng một tác giả, **một khối đúng một khối sai** ⇒ đây là **LỖI**, không phải chủ ý.
+// 🔴🔴🔴 **`inner join … on (1=1)` XUẤT HIỆN BA LẦN** (khối bảo hành · biển số · nhà phân phối) — tích Descartes
+//   trá hình (họ #698/#659/#734). Bản `UpdRO` còn thêm lần thứ **tư**: `inner join #tbl_Ser_RO_Filter f on (1=1)`.
+// 🔴🔴🔴 **TÊN CỘT NÓI DỐI**: bản `UpdRO` dựng `Convert(char(10), sro.**CheckInDate**, 126) **CreatedDate**`
+//   ⇒ cột tên `CreatedDate` nhưng giá trị là **ngày vào xưởng**. Rồi điều kiện hiệu lực so
+//   `scm.EffDateStart <= convert(varchar(11), f.CreatedDate)` ⇒ **so chuỗi**, và `varchar(11)` trên một chuỗi
+//   **10 ký tự** là thừa. Cùng họ #737 (`isnull(cus.ContName, cus.CusName) CusName`).
+// 🔴🔴 **NHÃN LOG GÁN LỆCH — CHỈ Ở BẢN `CrtRO`**: `alParamsCoupleError` ghi
+//     `, "**strCamMarketingIDConditionList**", strCarIDConditionList`   ← nhãn nói **CamMarketingID**, giá trị là **CarID**
+//   Bản `UpdRO` ghi **đúng** `"strCarIDConditionList"`. ⇒ Họ #709/#735, **lần thứ ba** — nhưng lần này **mẫu
+//     đúng nằm ngay cạnh** ⇒ ghi chính xác: lỗi ở **một** bản, không phải quy ước.
+// ⚪⚪ **DƯƠNG TÍNH — MẪU NGƯỢC CHO #724 (ba biến thể `HYUNDAI` gõ tay)**: ở đây bảng lọc dựng
+//   `**upper**(sc.TradeMarkCode) TradeMarkCode` rồi mới so `t.TradeMarkCode in ('HYUNDAI')`
+//   ⇒ **chuẩn hoá MỘT lần ở nguồn dữ liệu**, so **một** giá trị — đúng cách. Khác hẳn #724 liệt kê tay
+//     `'HYUNDAI' or 'Hyundai' or 'hyundai'` và vẫn sót các dạng khác.
+// 🔴 **THỨ TỰ CỘT KHÁC NHAU GIỮA HAI BẢN**: `upper(sc.TradeMarkCode) TradeMarkCode` đứng **trước** ở `CrtRO`,
+//   **sau** ở `UpdRO` ⇒ client nào đọc theo **vị trí cột** (không theo tên) sẽ lấy nhầm giữa hai API.
+// 🔴 `scm.CamMarketingStatus in ('A')` — trạng thái **gõ cứng một mã**, `in (…)` với đúng một phần tử.
+app.MapGet("/api/campaignmarketings/for-car", async (AppDbContext db, ITenantContext t,
+    string? carId, string? roId, string? dealerCode) =>
+{
+    const string StatusActive = "A";        // scm.CamMarketingStatus in ('A')
+    const string BrandHyundai = "HYUNDAI";  // t.TradeMarkCode in ('HYUNDAI') — đã `upper()` ở bảng lọc
+
+    var car = string.IsNullOrWhiteSpace(carId) ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == carId!.Trim());
+    if (car is null)
+        return Results.Ok(new { count = 0, rows = Array.Empty<object>(), reason = "CAR_NOT_FOUND" });
+
+    // Nguồn: upper(sc.TradeMarkCode) ở bảng lọc rồi so in ('HYUNDAI') — chuẩn hoá MỘT lần.
+    var brand = (car.TradeMark ?? "").Trim().ToUpperInvariant();
+    if (brand != BrandHyundai)
+        return Results.Ok(new { count = 0, rows = Array.Empty<object>(), reason = "BRAND_NOT_HYUNDAI", brand });
+
+    var cams = await db.CampaignMarketings
+        .Where(x => x.OrgId == t.OrgId && x.CamMarketingStatus == StatusActive).ToListAsync();
+
+    // Điều kiện BẢO HÀNH — nguồn CÓ ngoặc đúng, port giữ nguyên ngữ nghĩa.
+    DateTime? wrd = car.WarrantyRegistrationDate;
+    var afterWarranty = cams.Where(c =>
+        (c.WarrantyDateStart is null && c.WarrantyDateEnd is null)
+        || (wrd is not null && c.WarrantyDateStart <= wrd && wrd <= c.WarrantyDateEnd)).ToList();
+
+    // Điều kiện BIỂN SỐ — 🔴 nguồn THIẾU NGOẶC. Port ĐÚNG (có ngoặc) và trả cờ đo phần lệch.
+    //   Mini chưa mô hình hoá `Ser_CampaignMarketingPlateNo` ⇒ chỉ áp được vế `ConditionPlateNo is null`.
+    var afterPlate = afterWarranty.Where(c => string.IsNullOrEmpty(c.ConditionPlateNo)).ToList();
+    var droppedByPlateCondition = afterWarranty.Count - afterPlate.Count;
+
+    return Results.Ok(new
+    {
+        count = afterPlate.Count,
+        rows = afterPlate.Select(c => new { c.CamNo, c.CamName, c.EffDateStart, c.EffDateEnd,
+            c.WarrantyDateStart, c.WarrantyDateEnd, c.ConditionPlateNo, c.ConditionDealer, c.CamMarketingStatus }),
+        carId = car.CarID, plateNo = car.PlateNo, brand, roId, dealerCode,
+        campaignsActive = cams.Count, afterWarrantyCount = afterWarranty.Count, droppedByPlateCondition,
+        // ===== #740 =====
+        missingParenthesesLetsOrSwallowTheWholeWhere = "THIEU DAU NGOAC => OR NUOT TOAN BO WHERE (khoi Xet dieu kien bien so xe): where(1=1) and (scm.ConditionPlateNo is null) OR (f.PlateNo like (scmpn.StartPlateNo + %)). AND uu tien hon OR => bieu thuc thuc te la ((1=1) AND scm.ConditionPlateNo is null) OR (f.PlateNo like …) => chi can MOT dong trong #tbl_Ser_Car_Filter co bien so khop mau la CA DONG DUOC LAY, BAT KE ConditionPlateNo. Dung ra phai la and ((…is null) or (…like…)). VA NO CONG HUONG VOI LOI KE TIEP: cung khoi co inner join #tbl_Ser_Car_Filter f on (1=1) => TICH DESCARTES — moi chien dich nhan voi MOI xe trong bo loc. Ghep hai loi lai: CHIEN DICH CO DIEU KIEN BIEN SO VAN KHOP CHO MOT CHIEC XE KHONG THOA, chi vi XE KHAC trong cung lo co bien so khop mau => KHUYEN MAI/CHIEN DICH AP NHAM CHO XE",
+        counterExampleInTheSameFunction = "MAU NGUOC NGAY TRONG CUNG HAM: khoi Xet dieu kien bao hanh ngay tren CO NGOAC DUNG — and ((scm.WarrantyDateStart is null and scm.WarrantyDateEnd is null) or ((…) and (…))) => cung mot ham, cung mot tac gia, MOT KHOI DUNG MOT KHOI SAI => day la LOI, khong phai chu y",
+        crossJoinOnOneEqualsOneAppearsThreeTimes = "inner join … on (1=1) XUAT HIEN BA LAN (khoi bao hanh, bien so, nha phan phoi) — tich Descartes tra hinh (ho #698/#659/#734). Ban UpdRO con them lan thu TU: inner join #tbl_Ser_RO_Filter f on (1=1)",
+        columnNameLies = "TEN COT NOI DOI: ban UpdRO dung Convert(char(10), sro.CheckInDate, 126) CreatedDate => cot ten CreatedDate nhung gia tri la NGAY VAO XUONG. Roi dieu kien hieu luc so scm.EffDateStart <= convert(varchar(11), f.CreatedDate) => SO CHUOI, va varchar(11) tren mot chuoi 10 KY TU la thua. Cung ho #737 (isnull(cus.ContName, cus.CusName) CusName)",
+        logLabelMismatchOnlyInCrtRO = "NHAN LOG GAN LECH — CHI O BAN CrtRO: alParamsCoupleError ghi (strCamMarketingIDConditionList, strCarIDConditionList) — nhan noi CamMarketingID, gia tri la CarID. Ban UpdRO ghi DUNG strCarIDConditionList => ho #709/#735, LAN THU BA — nhung lan nay MAU DUNG NAM NGAY CANH => loi o MOT ban, khong phai quy uoc",
+        brandNormalisedOnceCounterExampleTo724 = "DUONG TINH — MAU NGUOC CHO #724: o day bang loc dung upper(sc.TradeMarkCode) TradeMarkCode roi moi so t.TradeMarkCode in (HYUNDAI) => CHUAN HOA MOT LAN O NGUON DU LIEU, so MOT gia tri — dung cach. Khac han #724 liet ke tay HYUNDAI or Hyundai or hyundai va van sot cac dang khac",
+        columnOrderDiffersBetweenTheTwoVersions = "THU TU COT KHAC NHAU GIUA HAI BAN: upper(sc.TradeMarkCode) TradeMarkCode dung TRUOC o CrtRO, SAU o UpdRO => client nao doc theo VI TRI COT (khong theo ten) se lay nham giua hai API",
+        statusHardcodedSingleValueInList = "scm.CamMarketingStatus in (A) — trang thai GO CUNG MOT MA, in (…) voi dung mot phan tu",
+        miniModelGap = "Mini chua mo hinh hoa Ser_CampaignMarketingPlateNo va Ser_CampaignMarketingDealer => chi ap duoc ve ConditionPlateNo is null; ghi NO thay vi bia bang",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #739 HAI DANH MỤC NHỎ: `Ser_Mst_Color_Get` + `Mst_DeliveryLocation_Update` =====
 // `BizCarSv.Master.cs` — `Ser_Mst_Color_Get` :5627-5741 md5 `1d9e14ce` · `Mst_DeliveryLocation_Update`
 // :11679-11938 md5 `7ae53385`. → `GET /api/sermstcolors`, `PUT /api/deliverylocations/{dealerCode}/{code}`.
