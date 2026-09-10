@@ -6393,6 +6393,75 @@ app.MapPost("/api/sysusers/change-password", async (SysUserChangePwdDto dto, App
 //   (khác #742 và #754). `for` duyệt từng dòng dùng `Rows[i]` chứ **không** `Rows[0]` ⇒ không dính bẫy #411.
 // 📌 Mini: `POST /api/tst/send-partinfo` giữ **đúng ba chính sách** của nguồn (bảng 1 chỉ update; hai bảng sau
 //   upsert) và **đếm** số dòng bị bỏ vì chưa có trong danh mục, thay vì im lặng như nguồn.
+// ===== 🔴🔴 #770 CỤM `UploadFile*` (`UploadFile/BizCarSv.UploadFile.cs`) — BA HÀM, BA CHÍNH SÁCH TÊN TỆP =====
+// `UploadFile` `:1538-1672` md5 `66eb4ec9` · `UploadFileV2` `:1673-1805` md5 `61656562` ·
+// `UploadFileV2_ForRO` `:1806-1985` md5 `da5473af` · `UploadFile20180803` `:1393-1537` md5 `03d3266c`.
+// WS chỉ gọi **ba** bản đầu (`_biz.UploadFile`, `…V2`, `…V2_ForRO`) ⇒ **`UploadFile20180803` CHẾT** — và nó mang
+// **hậu tố ngày** (#413), đúng khuôn "bản đóng băng bị bỏ lại" đã gặp ở #758 (`MoveFileNew_New20190529`).
+//
+// ⚪⚪ **DIFF `UploadFile` → `UploadFileV2`: BỎ MỘT GUARD, NHƯNG LÀ CẢI TIẾN CÓ CHỦ Ý (không phải hồi quy)**
+//   Bản cũ, sau khi đã gắn dấu thời gian vào tên, còn **đọc lại toàn bộ tệp trên đĩa để so từng byte**:
+//     `fileName = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + fileName;`
+//     `byte[] fileContent1 = System.IO.File.ReadAllBytes(path);`
+//     `if (fileContent.SequenceEqual(fileContent1) == false) { fileName = …ToString("yyyyMMdd_HHmmss_fff") + fileName; }`
+//   Bản V2 bỏ hẳn khối đó và đổi cách đặt tên:
+//     `strFileNameWithoutExtension + DateTime.Now.ToString("**_**yyyyMMdd_HHmmss_fff") + strFileTypeCode`
+//   ⇒ Đây **KHÔNG** phải mất guard: mốc thời gian đã có **mili-giây** (`fff`) nên trùng tên gần như không xảy ra,
+//     trong khi `ReadAllBytes` + `SequenceEqual` đọc lại **trọn tệp** mỗi lần tải lên — rất tốn I/O. Bỏ là đúng.
+//   🔴 **Nhưng hệ quả thật vẫn còn: HAI ĐỊNH DẠNG TÊN TỆP CÙNG TỒN TẠI TRÊN ĐĨA** —
+//     bản cũ đặt dấu thời gian ở **đầu** tên (`20240101_101010_123HoaDon.pdf`), V2 đặt ở **cuối, trước đuôi**
+//     (`HoaDon_20240101_101010_123.pdf`). Mã nào bóc tên tệp theo một quy ước sẽ **đọc sai** tệp của quy ước kia,
+//     và cả hai loại tệp **đang cùng nằm trong kho** vì bản cũ vẫn LIVE.
+//
+// 🔴🔴 **BA HÀM UPLOAD, BA CHÍNH SÁCH TÊN TỆP KHÁC HẲN NHAU** (`CMyException.Raise`: 0 · 0 · **4**):
+//   · `UploadFile` / `UploadFileV2`: **không kiểm tên gì cả** — tên nào cũng nhận.
+//   · `UploadFileV2_ForRO`: **bốn** guard liên tiếp trên `strFileNameWithoutExtension`:
+//       ① `StringUtils.IsUnicode(name)` → ném · ② `name.Contains(" ")` → ném ·
+//       ③ `regexRO.IsMatch(name)` với `patternRO = "**[^a-zA-Z0-9_]**"` → ném · ④ `name.Length > **45**` → ném.
+//   ⇒ Cùng một hệ, cùng một kho tệp: tải qua đường này thì **tên tiếng Việt/có dấu cách bị từ chối thẳng**,
+//     tải qua hai đường kia thì **nhận tuốt**. Người dùng gặp lỗi ở một màn và không gặp ở màn khác, cùng một tệp.
+// 🔴 **NHÃN MÃ LỖI NÓI NGƯỢC ĐIỀU KIỆN**: guard ① ném khi tên **LÀ** Unicode, nhưng mã lỗi tên là
+//   `UploadFileV2_ForRO_FileName_**IsNotUnicode**` ⇒ đọc log sẽ hiểu ngược hoàn toàn (họ #741/#744/#755).
+// ⚪ **ÂM TÍNH — `regexRO` KHÔNG làm mất phần mở rộng**: pattern `[^a-zA-Z0-9_]` loại cả dấu chấm, nhưng nó được
+//   áp lên `strFileNameWithoutExtension` (đã tách đuôi bằng `Path.GetFileNameWithoutExtension`) ⇒ đuôi tệp an toàn.
+// ⚠️ **NGHI VẤN CÓ CƠ SỞ — giới hạn 45 đo TRƯỚC khi nối dấu thời gian**: guard ④ chặn ở 45 ký tự, nhưng tên lưu
+//   thật là `name + "_yyyyMMdd_HHmmss_fff" (**20 ký tự**) + đuôi` ⇒ tối đa `**69** ký tự. Nếu cột lưu tên tệp trong
+//   CSDL khai `varchar(50)` (rất phổ biến ở hệ này) thì **tràn cột** dù đã qua guard. Cách kiểm chứng: đọc độ dài
+//   cột tên tệp trong bảng đính kèm. **Ghi nợ**, không đoán.
+// 📌 Mini chưa có tầng lưu tệp ⇒ endpoint dưới đây port **đúng phần port được**: chính sách tên tệp của cả ba
+//   đường, cho biết tên sẽ bị từ chối ở đường nào, và tên cuối cùng dài bao nhiêu.
+app.MapPost("/api/upload/check-filename", (UploadNameCheckDto dto) =>
+{
+    var fileName = (dto.FileName ?? "").Trim();
+    if (fileName.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên tệp." });
+    var ext = System.IO.Path.GetExtension(fileName) ?? "";
+    var bare = System.IO.Path.GetFileNameWithoutExtension(fileName) ?? "";
+    var isUnicode = bare.Any(c => c > 127);
+    var hasSpace = bare.Contains(' ');
+    var hasSpecial = System.Text.RegularExpressions.Regex.IsMatch(bare, "[^a-zA-Z0-9_]");
+    var tooLong = bare.Length > 45;
+    var rejectedForRO = isUnicode || hasSpace || hasSpecial || tooLong;
+    // V2 đặt dấu thời gian TRƯỚC đuôi; bản cũ đặt ở ĐẦU tên.
+    var stamp = DateTime.Now.ToString("_yyyyMMdd_HHmmss_fff");
+    var storedNameV2 = bare + stamp + ext;
+    var storedNameLegacy = DateTime.Now.ToString("yyyyMMdd_HHmmss_fff") + fileName;
+    return Results.Ok(new
+    {
+        fileName, bare, ext,
+        acceptedByUploadFile = true, acceptedByUploadFileV2 = true, acceptedByUploadFileV2ForRO = !rejectedForRO,
+        rejectReasons = new
+        {
+            isUnicode, hasSpace, hasSpecial, tooLong,
+            sourceErrorCodes = new[] { "UploadFileV2_ForRO_FileName_IsNotUnicode", "…_IsContainsSpace", "…_IsContainsSpecialcharacters", "…_IsMaxLength" },
+        },
+        storedNameV2, storedNameLegacy, storedNameV2Length = storedNameV2.Length,
+        sourceThreePolicies = "UploadFile va UploadFileV2 KHONG kiem ten gi ca (Raise=0); rieng UploadFileV2_ForRO co 4 guard => cung mot tep, mot man bao loi mot man khong",
+        sourceErrorLabelSaysOpposite = "guard nem khi ten LA Unicode nhung ma loi ten la ..._IsNotUnicode => doc log hieu nguoc",
+        sourceTwoNamePatternsOnDisk = "ban cu gan dau thoi gian o DAU ten, V2 gan o CUOI truoc duoi; ca hai deu LIVE nen hai loai ten cung nam trong kho",
+        sourceLengthGuardBeforeStamp = "NGHI VAN: guard chan 45 ky tu do TRUOC khi noi _yyyyMMdd_HHmmss_fff (20 ky tu) + duoi => ten luu that co the `69 ky tu; can doc do dai cot ten tep trong CSDL de xac minh",
+        sourceDeadFunction = "UploadFile20180803 (hau to ngay #413) khong duoc WS goi => CHET, cung khuon MoveFileNew_New20190529 o #758",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/tst/send-partinfo", async (List<TstSendPartRowDto> rows, AppDbContext db, ITenantContext t) =>
 {
     if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Danh sách phụ tùng rỗng." });
@@ -67518,6 +67587,7 @@ record CareMaceOsUpdateDto(string? Status = null, DateTime? ApointDate = null, D
     string? MaceType = null, string? ROID = null);
 record TstSendPartRowDto(string? PartID = null, string? VieName = null, decimal? VAT = null, string? Unit = null,
     string? PartTypeID = null, string? FlagInTST = null, decimal? MinQuantity = null);
+record UploadNameCheckDto(string? FileName = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
