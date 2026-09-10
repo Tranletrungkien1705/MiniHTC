@@ -58539,6 +58539,80 @@ app.MapGet("/api/reports/total-stockout", async (AppDbContext db, ITenantContext
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #794 ĐO QUY MÔ BẪY #668/#793 TRÊN TOÀN TẦNG — VÀ MỘT CA GHI DỮ LIỆU HẠNG NẶNG =====
+// #793 vừa rút bài học "**trace WS TRƯỚC KHI diff cặp `_WH`**". Vòng này đo xem bẫy đó **rộng đến đâu**,
+// bằng cách quét cả hai WS (`HTCWSCarSv/WSCarSv.asmx.cs` + `HTCWSCarSvTab/WSCarSvTab.asmx.cs`) tìm mọi
+// lời gọi `_biz.<Tên>_New<yyyymmdd>…`, rồi hỏi: bản **TRẦN** cùng tên có còn nằm trong biz không?
+//   · **116** bản có hậu tố đang được WS gọi (**LIVE**).
+//   · **106/116** trong số đó **vẫn còn bản TRẦN cùng tên** trong `TERP.BizCarSv` ⇒ **106 hàm trần đã CHẾT**
+//     mà vẫn nằm nguyên trong nguồn, sẵn sàng để người sau đọc nhầm là bản đang chạy.
+//   · Tổng số hàm mang hậu tố `_New<ngày>` khai báo trong biz: **221** ⇒ ngoài 116 bản LIVE còn **`105** bản
+//     hậu tố **cũng không ai gọi** ⇒ code chết chồng code chết.
+// ⇒ #668 và #793 không phải hai ca cá biệt; chúng là **hai mẫu của một khối 106 hàm**.
+//
+// 🔴🔴🔴 **BẢY TÊN CÓ *HAI* BẢN CÙNG LIVE** — không phải "cũ vs mới", mà **hai phiên bản chạy song song**:
+//     `Ser_RO_Create`            → `_New20230220` **và** `_New20200815`
+//     `Blt_Bulletin_Get_byVin`   → `_New20191104` / `_New20221114`
+//     `SerCarGet`                → `_New20200205` / `_New20210816`
+//     `SerROStatusUpdatePaid`    → `_New20230220` / `_New20230228`  (cách nhau **tám ngày**)
+//     `Ser_App_Update`           → `_New20190621` / `_New20201230`
+//     `Ser_ReceptionF_Get`       → `_New20180921` / `_New20210512`
+//     `Ser_ReceptionF_Reception` → `_New20200118` / `_New20210704`
+//
+// 🔴🔴🔴 **CA NẶNG NHẤT — `Ser_RO_Create`: TABLET TẠO LỆNH SỬA CHỮA BẰNG NGHIỆP VỤ NĂM 2020**
+//   Hai WS **cùng tên endpoint** `Ser_RO_Create`, gọi hai bản biz khác nhau:
+//     `WSCarSv.asmx.cs:10603`     (web)    → `_biz.Ser_RO_Create**_New20230220**`
+//     `WSCarSvTab.asmx.cs:2962`   (**tablet**) → `_biz.Ser_RO_Create**_New20200815**`
+//   Đo hai thân hàm:
+//     web    : `BizCarSv.Service.RO.cs:3001-5735` md5 `339543b2` — **2567** dòng · **33** `CMyException.Raise`
+//              · **34** `SaveData` · **5** `Check*`
+//     tablet : `BizCarSv.**ZTemp**.cs:5510-6450`  md5 `bd43a2e6` — **873** dòng · **13** `Raise`
+//              · **9** `SaveData` · **2** `Check*`
+//   ⇒ ① Bản LIVE của tablet nằm trong file tên **`ZTemp`** — "temp" đã thành **production**.
+//     ② Tablet chỉ có **13/33** guard (≈39%) ⇒ tạo RO từ tablet **bỏ qua khoảng hai chục kiểm tra** mà web có.
+//     ③ Danh sách bảng được ghi (`SaveData`) — **tablet THIẾU BA bảng**:
+//          web    : `Ser_RO` · `Ser_Ro` · `Ser_ROServiceItems` · `Ser_ROPartItems` ·
+//                   **`Ser_CustomerCare`** · **`Ser_CustomerCareMace`** · **`Ser_ROWarrantyReport`**
+//          tablet : `Ser_RO` · `Ser_Ro` · `Ser_ROServiceItems` · `Ser_ROPartItems`
+//       ⇒ Xe vào xưởng **qua tablet** thì **không sinh hồ sơ chăm sóc khách hàng** và **không sinh bản ghi
+//         báo cáo bảo hành** ⇒ **vắng mặt** trong CSKH và trong báo cáo bảo hành, trong khi RO vẫn tồn tại.
+//       📌 Đây là kiểu thiếu **im lặng**: không lỗi, không cảnh báo, chỉ là báo cáo ra **ít hơn sự thật**.
+// 🔴 **CẢ HAI BẢN ĐỀU GHI BẰNG *HAI CHUỖI* TÊN BẢNG**: `"Ser_RO"` **và** `"Ser_Ro"` (khác hoa/thường) trong
+//   cùng một hàm. SQL Server thường không phân biệt hoa/thường nên **chạy được**; nhưng nếu tầng DAL dùng
+//   chuỗi này làm **khoá tra cứu/cache** thì đó là **hai mục khác nhau**. Ghi lại, **không kết luận** —
+//   nguồn EzDAL không có trong cây này (cùng lý do đã nêu ở #793 về transaction).
+// 📌 Mini: `GET /api/_meta/dead-plain-variants-audit` — trả nguyên số liệu để lần sau audit **tra trước khi diff**.
+app.MapGet("/api/_meta/dead-plain-variants-audit", () => Results.Ok(new
+{
+    liveSuffixedFunctionsCalledByWs = 116,
+    ofWhichPlainTwinStillExistsInBiz = 106,
+    suffixedFunctionsDeclaredInBiz = 221,
+    unreferencedSuffixedFunctions = 221 - 116,
+    method = "quet _biz.<Ten>_New<yyyymmdd> trong HTCWSCarSv/WSCarSv.asmx.cs + HTCWSCarSvTab/WSCarSvTab.asmx.cs, roi hoi ban TRAN cung ten co con khai bao trong TERP.BizCarSv khong",
+    whyItMatters = "#668 va #793 KHONG phai ca ca biet — chung la hai mau cua mot khoi 106 ham tran DA CHET van nam nguyen trong nguon. Do la ly do phai TRACE WS TRUOC KHI DIFF cap _WH, neu khong se so ban song voi ban chet va phat minh ra gap khong ton tai",
+    namesWithTwoLiveVersions = new[]
+    {
+        "Ser_RO_Create: _New20230220 (web) VA _New20200815 (tablet)",
+        "Blt_Bulletin_Get_byVin: _New20191104 / _New20221114",
+        "SerCarGet: _New20200205 / _New20210816",
+        "SerROStatusUpdatePaid: _New20230220 / _New20230228 (cach nhau TAM ngay)",
+        "Ser_App_Update: _New20190621 / _New20201230",
+        "Ser_ReceptionF_Get: _New20180921 / _New20210512",
+        "Ser_ReceptionF_Reception: _New20200118 / _New20210704",
+    },
+    serRoCreateSplit = new
+    {
+        web = new { entry = "WSCarSv.asmx.cs:10603", biz = "BizCarSv.Service.RO.cs:3001-5735", md5 = "339543b2",
+                    lines = 2567, raiseGuards = 33, saveData = 34, checkHelpers = 5 },
+        tablet = new { entry = "WSCarSvTab.asmx.cs:2962", biz = "BizCarSv.ZTemp.cs:5510-6450", md5 = "bd43a2e6",
+                    lines = 873, raiseGuards = 13, saveData = 9, checkHelpers = 2 },
+        tabletLiveCodeLivesInZTemp = "ban LIVE cua tablet nam trong file ten ZTemp — code tam da thanh production",
+        tabletMissingTables = new[] { "Ser_CustomerCare", "Ser_CustomerCareMace", "Ser_ROWarrantyReport" },
+        businessImpact = "xe vao xuong QUA TABLET thi khong sinh ho so cham soc khach hang va khong sinh ban ghi bao cao bao hanh => vang mat trong CSKH va trong bao cao bao hanh, trong khi RO van ton tai. Thieu IM LANG: khong loi, khong canh bao, chi la bao cao ra IT HON su that",
+        guardRatio = "tablet co 13/33 guard (`39%) so voi web => tao RO tu tablet bo qua khoang hai chuc kiem tra",
+        bothWriteTwoTableNameStrings = "ca hai ban deu dung CA \"Ser_RO\" LAN \"Ser_Ro\" trong cung mot ham. SQL Server thuong khong phan biet hoa/thuong nen chay duoc; neu DAL dung chuoi nay lam khoa tra cuu/cache thi la HAI muc. GHI LAI, KHONG ket luan — nguon EzDAL khong co trong cay nay",
+    },
+})).RequireAuthorization();
 // ===== ⛔🔴🔴🔴 #793 ĐÍNH CHÍNH #469 — "NHÁNH KHO TỤT HẬU" LÀ **SAI**, TÔI ĐỌ NHẦM VỚI BẢN ĐÃ CHẾT =====
 // #469 viết: *"Bản `_WH` **chỉ có (1)** ⇒ xem theo kho sẽ thiếu toàn bộ hàng trả NCC… nhánh kho **tụt hậu**"*.
 // Trace WS (`HTCWSCarSv/WSCarSv.asmx.cs`) cho thấy **cả hai** endpoint mang tên trần đều gọi bản có hậu tố:
