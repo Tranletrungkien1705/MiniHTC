@@ -39203,6 +39203,34 @@ app.MapGet("/api/extraworks", async (AppDbContext db, ITenantContext t, string? 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #785 `Ser_MST_ROWorkArising_Save` / `_Delete` — BẢN GỐC CỦA KHUÔN MÀ #784 BẮT ĐƯỢC =====
+// `BizCarSv.AssignmentOfWork.cs`: `_Save` `:6024-6349` md5 `4ffbcf83` (288 dòng, `Raise` = 1) ·
+// `_Delete` `:6350-6495` md5 `9f94241b` (134 dòng, `Raise` = 1 + `this.Check*` = 1).
+// Master `Ser_MST_ROWorkArising` đã port dưới tên `ExtraWorkMst` (endpoint `/api/extraworks`); `_Get` đã đọc ở vòng
+// trước (bug alias `smroww.FlagActive`). Vòng này đọc nốt hai hàm ghi.
+//
+// 🔴🔴🔴 **`_Save` VÀ `_Delete` NÉM **CÙNG MỘT** MÃ LỖI — VÀ MÃ ĐÓ MANG CHỮ "SAVE"**
+//   Cả hai hàm đều `throw CMyException.Raise(TError.ErrCarSv.**Ser_MST_ROWorkArisingSave_ROWArisCodeNotExistInList**)`.
+//   ⇒ Ghép với #784: ở cụm `ROComplaintDiagnosticError`, mã `…**Save**_ROCDEIDNotExistInList` **chỉ** được ném trong
+//     `_Delete` (vì `_Save` bên đó **không có guard nào**). Ở đây — **bản gốc** — thì **cả hai** hàm đều ném.
+//   ⇒ Kết luận sắc hơn #784: đây là **khuôn đặt tên mã lỗi gắn cứng chữ "Save" cho cả họ hàm**, nên khi khối được
+//     chép sang hàm khác thì **mã lỗi đi theo**. Và điều thực sự mất trong lần chép ấy là **cái guard**:
+//     bản gốc `_Save` **CÓ** kiểm, bản chép (`ROComplaintDiagnosticError_Save`) **KHÔNG**.
+//   📌 Đây là ví dụ rõ nhất tới giờ cho việc **đọc bản gốc sau khi bắt được bản chép**: nếu chỉ dừng ở #784 thì
+//     kết luận sẽ là "mã lỗi đặt sai họ"; đọc thêm bản gốc mới thấy **cái bị đánh rơi là guard, không phải cái tên**.
+//
+// 🔴🔴 **TỪ VỰNG LẠ Ở THAM SỐ** (áp luật #783 — xác định bảng đích trước): `_Save` lấy đầu vào bằng
+//     `ds_List**ROWarrantyWork**.Tables["**Ser_MST_ROWorkArising**"]`
+//   ⇒ bảng lấy ra **khớp** tên hàm, còn **tên tham số** (`ds_ListROWarrantyWork`) là của cụm công bảo hành
+//   ⇒ **tên tham số mới là thứ lạc** ⇒ khối chép từ `Ser_MST_ROWarrantyWork_Save`. Cùng dạng với #784 (ở đó là
+//     tên **biến SQL** lạc), nên chuỗi chép là: `ROWarrantyWork_Save` → `ROWorkArising_Save` → `ROComplaintDiagnosticError_Save`.
+//
+// 🔴 **N+1 TRUY VẤN — VÀ ĐÂY LÀ NƠI NÓ BẮT ĐẦU**: `_Save` chạy `for (i…)` rồi **bên trong** gọi
+//   `_dbMain.ExecQuery(strSql_Get_Ser_MST_ROWorkArising_Row)` cho **từng dòng**. #784 đã ghi cùng hiện tượng ở bản chép
+//   ⇒ N+1 **được nhân bản cùng khối**, không phải hai lần viết ẩu độc lập.
+// ⚪ `_Save` ghi **cả `_dbMain` lẫn `_dbWH`** bằng `SaveData(..., alColumnEffective)` ⇒ **cân**, không dính #726.
+// ⚪ `_Delete` có **cả** `Raise` **và** `this.Check*` ⇒ chặt hơn `_Save` — cùng hình dạng "save mở, delete chặt"
+//   đã ghi ở #782.
 // Upsert theo mã công việc phát sinh.
 app.MapPost("/api/extraworks", async (ExtraWorkDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -39219,7 +39247,17 @@ app.MapPost("/api/extraworks", async (ExtraWorkDto dto, AppDbContext db, ITenant
     }
     var r = new ExtraWorkMst { OrgId = t.OrgId, ExtraWorkCode = code, ExtraWorkName = dto.ExtraWorkName, MaxPrice = dto.MaxPrice, Vat = dto.Vat, Remark = dto.Remark, FlagActive = "1" };
     db.ExtraWorkMsts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.ExtraWorkCode, updated = false });
+    return Results.Ok(new
+    {
+        r.ExtraWorkCode, updated = false,
+        // ===== #785: hai hàm ghi của `Ser_MST_ROWorkArising` =====
+        sourceSaveAndDeleteShareOneErrorCode = "#785: ca _Save lan _Delete deu nem Ser_MST_ROWorkArisingSave_ROWArisCodeNotExistInList => khuon dat ten ma loi gan cung chu Save cho CA HO ham",
+        sourceIsTheOriginalOfPatternIn784 = "#785: o cum ROComplaintDiagnosticError (#784) ma ...Save_... CHI duoc nem trong _Delete vi _Save ben do KHONG guard; ban goc nay thi CA HAI deu nem => thu bi danh roi khi chep la CAI GUARD, khong phai cai ten",
+        sourceParamNameIsFromAnotherCluster = "#785: _Save lay ds_ListROWarrantyWork.Tables[Ser_MST_ROWorkArising] — bang KHOP ten ham, ten THAM SO lac => chuoi chep: ROWarrantyWork_Save -> ROWorkArising_Save -> ROComplaintDiagnosticError_Save",
+        sourceNPlusOneStartsHere = "#785: _Save goi ExecQuery BEN TRONG vong for tung dong; #784 ghi cung hien tuong o ban chep => N+1 duoc nhan ban CUNG KHOI",
+        sourceWritesBothMainAndWh = "AM TINH: _Save ghi ca _dbMain lan _dbWH bang SaveData(..., alColumnEffective) => CAN, khong dinh #726",
+        sourceDeleteIsStricterThanSave = "_Delete co CA Raise lan this.Check* => chat hon _Save — cung hinh dang save mo, delete chat da ghi o #782",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/extraworks/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
