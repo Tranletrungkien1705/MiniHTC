@@ -46144,6 +46144,106 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #718 API CHUNG ĐỌC/GHI DANH MỤC `CommonGetMasterData` + `CommonSaveMasterData` =====
+// `BizCarSv.Common.cs` — `Get` :1323-1436 md5 `e86733cf` · `Save` :1438-1629 md5 `aad66ccf`
+// (**cả hai KHỚP máy 150, cùng offset**); whitelist `myCommon_GetSupportedTable` :687-739.
+// WS LIVE `WSCarSv.asmx.cs:470` / `:549`. → `GET|POST /api/common/masterdata`.
+// ⚠️ **BẪY #413 DẠNG FILE**: thư mục WS có **BA** bản — `WSCarSv.asmx.**20210208**.cs`, `…**20210412**.cs`,
+//   và `WSCarSv.asmx.cs`. Hai bản có hậu tố ngày là **đóng băng**; đã đọc **bản không hậu tố** (LIVE).
+//   Ở bản LIVE hai hàm nằm ở `:470`/`:549`, khác hẳn `:427`/`:493` của bản 2021 ⇒ đọc nhầm là lệch cả thân hàm.
+//
+// 🔴🔴🔴 **`Ser_Customer` NẰM TRONG DANH SÁCH "MASTER DATA"** — cùng chỗ với `Mst_Color`, `Mst_Port`…
+//   Nhưng nó **không phải danh mục**: đó là bảng **dữ liệu cá nhân khách hàng** (tên · điện thoại · email ·
+//   mã số thuế · **số tài khoản ngân hàng** — đúng bộ 29 cột đã đọc ở #715).
+//   Cộng với `"*"` (lấy **mọi** cột) + bộ lọc do **client tự đặt** + **cùng API cho phép GHI** ⇒ một endpoint
+//   duy nhất đọc/ghi được toàn bộ khách hàng. **Whitelist là guard DUY NHẤT** đứng giữa.
+// 🔴🔴 **BA BẢNG TỪNG NẰM TRONG WHITELIST NAY BỊ COMMENT**: `//"Mst_Param"` · `//"Sys_Group"` · `//"Map_SG_SU"`.
+//   Hai cái sau là **bảng PHÂN QUYỀN** (nhóm hệ thống và ánh xạ nhóm↔người dùng) ⇒ dấu vết cho thấy API chung
+//   **đã từng phơi bảng phân quyền**. Nay đã đóng — ghi lại vì nó cho biết **hướng tiến hoá** của guard
+//   (cùng cách đọc đã dùng ở #716). **Không kết luận** thời điểm hay hậu quả.
+// 🔴🔴🔴 **#404 — HAI ĐƯỜNG, HAI CHUẨN LỌC**: `Get` **CÓ** vòng
+//     `for (i…) arrobjParamsTriple[i] = SqlUtils.ProtectInjection(...)`
+//   còn `Save` **KHÔNG có** bước lọc nào tương đương. ⚠️ `Save` đi qua `_dbMain.SaveData(DataTable)` nên có thể
+//   đã tham số hoá bên trong ⇒ **ghi cờ, KHÔNG kết luận là lỗ hổng**; nhưng **bất đối xứng thì là thật**.
+// 🔴🔴 **`ProtectInjection` ÁP SAI HẠT**: `arrobjParamsTriple` là bộ **BA** (cột, toán tử, giá trị), mà vòng lặp
+//   chạy `i < Length` trên **toàn mảng** ⇒ **tên cột và toán tử cũng bị "protect"**, không riêng giá trị.
+//   Lọc chuỗi thay cho `SqlParameter` — đúng khuôn cũ mà DMS.Sales đã thay bằng `StdStr`/`StdDate`.
+// 🔴🔴🔴 **KHỐI CHUẨN HOÁ `.Trim()` BỊ COMMENT TRỌN** trong `Save`: đoạn duyệt mọi cột `string` của mọi dòng
+//   `Added`/`Modified` để cắt khoảng trắng **đã bị tắt** ⇒ `"HTV "` ghi thẳng vào danh mục và **không khớp**
+//   `"HTV"` khi tra. Nối thẳng với họ "tra danh mục **bằng TÊN**" (#701 · #715 · #686): guard làm sạch nằm ở
+//   đây thì đã tắt, còn bên tra thì so **bằng**.
+// 🔴🔴🔴 **KHỐI `SpecialRecheck` BỊ COMMENT TRỌN** (`/* … */`): nó kiểm **trùng `SpecCode` đang hoạt động**
+//     `select t.SpecCode, Count(0) from Mst_CarPrice t where t.FlagActive = '1' group by t.SpecCode having Count(0) > 1`
+//   ⇒ **guard chống trùng giá xe ĐÃ TẮT** ⇒ có thể tồn tại **hai dòng giá cùng `SpecCode` cùng đang hiệu lực**,
+//     và mọi màn tra giá dùng `top 1` sẽ lấy **dòng bất kỳ** — nối thẳng với chuỗi #411/#415 đã gặp liên tục.
+// 🔴🔴 **GHI BẢNG DO CLIENT CHỈ ĐỊNH**: `_dbMain.SaveData(arrstrTableNamesCouple[i], dtRefine)` — **tên bảng**
+//   và **toàn bộ `DataSet`** đều do client gửi; client quyết định cột nào được ghi trong **22** bảng đó.
+// 🔴 **`strTableName.ToUpper()` ĐI THẲNG VÀO SQL** ⇒ phụ thuộc **collation** của CSDL: collation phân biệt hoa
+//   thường (CS) thì `SER_CUSTOMER` ≠ `Ser_Customer` ⇒ **mọi lời gọi hỏng**. Đúng nợ đã mở ở #681.
+// ⚪ **DƯƠNG TÍNH — `RollbackSafety` ở lối ra THÀNH CÔNG của `Get` là ĐÚNG**, không phải bệnh #710/#711:
+//   đây là hàm **chỉ đọc**, rollback để **không giữ khoá**. Khác hẳn `Email_Config_Delete` (#710) nơi transaction
+//   được mở cho một CSDL **không hề dùng tới**.
+// ⚪ **DƯƠNG TÍNH — `Save` KIỂM ĐỦ HAI VẾ**: vừa kiểm `DataSet` **có** bảng đó (`CommonSaveMasterData_TableNotFound`),
+//   vừa kiểm bảng **nằm trong whitelist** (`…_TableNotSupported`) — hai mã lỗi **tách bạch**, khác thói quen
+//   gộp-hai-nguyên-nhân-một-mã đã ghi ở #587/#712.
+// 📌 Quan sát phụ (hàm kế bên, chưa port): `myCommon_GetAbilityOfUser` (`:717`) kết bằng `return dt.Rows[0];`
+//   **không kiểm `Rows.Count`** ⇒ mã người dùng không tồn tại ⇒ IndexOutOfRange (họ #709/#711/#714).
+app.MapGet("/api/common/masterdata", async (AppDbContext db, ITenantContext t, string? tableName) =>
+{
+    // Whitelist CHÉP NGUYÊN VĂN `myCommon_GetSupportedTable` — 22 tên đang sống.
+    string[] supported = {
+        "MST_AREA", "MST_CARPRICE", "MST_COLOR", "MST_DEALER", "MST_DEALERTYPE",
+        "SER_MST_MODEL", "SER_MST_TRADEMARK", "SER_MST_CUSTOMERTYPE", "MST_PAYMENTTYPE",
+        "MST_PORT", "MST_PORTTYPE", "MST_SALESORDERTYPE", "MST_STORAGE", "SER_MST_LOCATION",
+        "SER_CUSTOMER", "SER_MST_SERVICE", "SER_MST_PART", "MST_SER_APPTYPE",
+        "MST_STAFF", "MST_COMPARTMENT", "MST_PLATECOLOR",
+    };
+    // …và BA tên ĐÃ BỊ COMMENT trong nguồn — giữ lại để đo, KHÔNG cho phép.
+    string[] commentedOut = { "MST_PARAM", "SYS_GROUP", "MAP_SG_SU" };
+
+    var tn = (tableName ?? "").Trim().ToUpper();   // nguồn: strTableName.ToUpper()
+    if (tn.Length == 0 || !supported.Contains(tn))
+        return Results.BadRequest(new
+        {
+            error = "ErrCarSv.CommonGetMasterData_TableNameNotSupported", tableName = tn,
+            wasCommentedOutInSource = commentedOut.Contains(tn),
+            supportedCount = supported.Length,
+        });
+
+    // Ánh xạ sang DbSet Mini nào ĐÃ mô hình hoá; phần còn lại ghi nợ, không bịa.
+    object? rows = tn switch
+    {
+        "SER_CUSTOMER" => await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId).Take(500)
+            .Select(x => new { x.CusCode, x.CusName, x.DealerCode, x.Mobile, x.Email, x.FlagActive }).ToListAsync(),
+        "SER_MST_CUSTOMERTYPE" => await db.CustomerTypes.Where(x => x.OrgId == t.OrgId).Take(500)
+            .Select(x => new { x.CusTypeCode, x.CusTypeName, x.DealerCode, x.FlagActive }).ToListAsync(),
+        "MST_DEALER" => await db.Dealers.Where(x => x.OrgId == t.OrgId).Take(500)
+            .Select(x => new { x.DealerCode, x.DealerName, x.BUCode, x.ProvinceCode }).ToListAsync(),
+        _ => null,
+    };
+
+    return Results.Ok(new
+    {
+        tableName = tn,
+        modelled = rows is not null,
+        rows,
+        // ===== #718 =====
+        serCustomerIsInsideTheMasterDataWhitelist = "Ser_Customer NAM TRONG DANH SACH master data — cung cho voi Mst_Color, Mst_Port… Nhung no KHONG PHAI DANH MUC: do la bang DU LIEU CA NHAN KHACH HANG (ten, dien thoai, email, ma so thue, SO TAI KHOAN NGAN HANG — dung bo 29 cot da doc o #715). Cong voi * (lay MOI cot) + bo loc do CLIENT tu dat + CUNG API cho phep GHI => mot endpoint duy nhat doc/ghi duoc toan bo khach hang. WHITELIST LA GUARD DUY NHAT dung giua",
+        threeTablesWereCommentedOutOfWhitelist = "BA BANG TUNG NAM TRONG WHITELIST NAY BI COMMENT: //Mst_Param, //Sys_Group, //Map_SG_SU. Hai cai sau la BANG PHAN QUYEN (nhom he thong va anh xa nhom-nguoi dung) => dau vet cho thay API chung DA TUNG PHOI BANG PHAN QUYEN. Nay da dong — ghi lai vi no cho biet HUONG TIEN HOA cua guard (cung cach doc da dung o #716). KHONG KET LUAN thoi diem hay hau qua",
+        getFiltersButSaveDoesNot = "#404 — HAI DUONG, HAI CHUAN LOC: Get CO vong for (i…) arrobjParamsTriple[i] = SqlUtils.ProtectInjection(...) con Save KHONG co buoc loc nao tuong duong. Save di qua _dbMain.SaveData(DataTable) nen CO THE da tham so hoa ben trong => GHI CO, KHONG KET LUAN la lo hong; nhung BAT DOI XUNG thi la THAT",
+        protectInjectionAppliedAtWrongGranularity = "ProtectInjection AP SAI HAT: arrobjParamsTriple la bo BA (cot, toan tu, gia tri), ma vong lap chay i < Length tren TOAN MANG => TEN COT VA TOAN TU CUNG BI protect, khong rieng gia tri. Loc chuoi thay cho SqlParameter — dung khuon cu ma DMS.Sales da thay bang StdStr/StdDate",
+        trimBlockIsCommentedOut = "KHOI CHUAN HOA .Trim() BI COMMENT TRON trong Save: doan duyet moi cot string cua moi dong Added/Modified de cat khoang trang DA BI TAT => HTV-co-dau-cach ghi thang vao danh muc va KHONG KHOP HTV khi tra. Noi thang voi ho tra-danh-muc-bang-TEN (#701, #715, #686): guard lam sach nam o day thi da tat, con ben tra thi so BANG",
+        specialRecheckIsCommentedOut = "KHOI SpecialRecheck BI COMMENT TRON (/* … */): no kiem TRUNG SpecCode DANG HOAT DONG — select t.SpecCode, Count(0) from Mst_CarPrice t where t.FlagActive = 1 group by t.SpecCode having Count(0) > 1 => GUARD CHONG TRUNG GIA XE DA TAT => co the ton tai HAI DONG GIA cung SpecCode cung dang hieu luc, va moi man tra gia dung top 1 se lay DONG BAT KY — noi thang voi chuoi #411/#415",
+        saveWritesTableChosenByClient = "GHI BANG DO CLIENT CHI DINH: _dbMain.SaveData(arrstrTableNamesCouple[i], dtRefine) — TEN BANG va TOAN BO DataSet deu do client gui; client quyet dinh cot nao duoc ghi trong 22 bang do",
+        tableNameUpperCasedIntoSql = "strTableName.ToUpper() DI THANG VAO SQL => phu thuoc COLLATION cua CSDL: collation phan biet hoa thuong (CS) thi SER_CUSTOMER khac Ser_Customer => MOI LOI GOI HONG. Dung no da mo o #681",
+        positiveRollbackOnSuccessIsCorrectHere = "DUONG TINH: RollbackSafety o loi ra THANH CONG cua Get la DUNG, khong phai benh #710/#711 — day la ham CHI DOC, rollback de KHONG GIU KHOA. Khac han Email_Config_Delete (#710) noi transaction duoc mo cho mot CSDL KHONG HE DUNG TOI",
+        positiveSaveChecksBothSidesWithDistinctCodes = "DUONG TINH: Save KIEM DU HAI VE — vua kiem DataSet CO bang do (CommonSaveMasterData_TableNotFound), vua kiem bang NAM TRONG whitelist (…_TableNotSupported) — HAI MA LOI TACH BACH, khac thoi quen gop-hai-nguyen-nhan-mot-ma da ghi o #587/#712",
+        sideObservation = "Quan sat phu (ham ke ben, chua port): myCommon_GetAbilityOfUser (:717) ket bang return dt.Rows[0]; KHONG kiem Rows.Count => ma nguoi dung khong ton tai => IndexOutOfRange (ho #709/#711/#714)",
+        threeWsFilesTrap = "BAY #413 DANG FILE: thu muc WS co BA ban — WSCarSv.asmx.20210208.cs, …20210412.cs, va WSCarSv.asmx.cs. Hai ban co hau to ngay la DONG BANG; da doc BAN KHONG HAU TO (LIVE). O ban LIVE hai ham nam o :470/:549, khac han :427/:493 cua ban 2021 => doc nham la lech ca than ham",
+        miniModelGap = "Mini moi mo hinh hoa 3/22 bang trong whitelist (SER_CUSTOMER, SER_MST_CUSTOMERTYPE, MST_DEALER); 19 bang con lai tra modelled=false. Va Mini KHONG port duong GHI chung (CommonSaveMasterData) vi no ghi bang tuy y do client chon — ghi NO co chu dich",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #716 CỔNG ĐỐI TÁC GHI XE `ProcessCarCreate` + `ProcessCarUpdate` =====
 // `BizCarSv.Car.cs` — `Create` :1738-1975 md5 `85d56f7b` · `Update` :1977-2123 md5 `afe5845c`
 // (**cả hai KHỚP máy 150, cùng offset**). → `POST /api/partner/cars`, `PUT /api/partner/cars/{carID}`.
