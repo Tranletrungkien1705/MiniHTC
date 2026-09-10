@@ -54185,6 +54185,132 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴🔴 #735 HỆ SỐ GIÁ DỊCH VỤ `Ser_Mst_CusServiceFactor_Get` + `_Update` =====
+// `BizCarSv.Service.cs` — `_Get` :6026-6201 md5 `1185c7b3` · `_Update` :6203-6382 md5 `c99110b3`.
+// → `GET|PUT /api/cusservicefactors`. **Anh em NGAY CẠNH #734** trong cùng file ⇒ DIFF CHÉO hai hàm `_Get`
+// theo luật #414 (chứ không đọc lại từ đầu).
+//
+// 🔴🔴🔴🔴 **XOÁ MỘT NƠI, CHÈN HAI NƠI ⇒ CSDL KHO TÍCH LUỸ DÒNG CŨ VĨNH VIỄN**:
+//   Đếm ghi từng handle (luật `C0-ducentesimustricesimusquartus`):
+//     `_dbMain`  : `SaveData` = **1** · `ExecNonQuery` = **1** (câu `delete`)
+//     `_dbWH`    : `SaveData` = **1** · `ExecNonQuery` = **0**   ← **CHÈN mà KHÔNG XOÁ**
+//     `_dbDealer`: `SaveData` = **0** · `ExecNonQuery` = **0**   ← mở + commit transaction, **ghi 0 lần**
+//   ⇒ Mỗi lần sửa hệ số: Main **xoá-rồi-chèn**, còn WH **chỉ chèn** ⇒ **WH nhân bản dòng theo mỗi lần sửa**,
+//     và hệ số **cũ không bao giờ bị xoá** ở WH ⇒ báo cáo chạy trên WH sẽ thấy **nhiều hệ số cho cùng một cặp**
+//     `(SerID, CusTypeID, DealerCode)`.
+//   📌 **NẶNG HƠN #726**: ở #726 WH bị **bỏ quên hoàn toàn** (dễ thấy khi đối chiếu); ở đây WH được ghi **một
+//     nửa**, nên nhìn qua **tưởng đã đồng bộ**. Chỉ đếm **riêng `ExecNonQuery`** mới lộ.
+// 🔴🔴🔴 **BA HÀM ANH EM CẠNH NHAU, BA MÔ HÌNH GHI KHÁC NHAU** — trong **cùng một file**, cùng vai trò
+//   "hệ số giá theo loại khách":
+//     · **#734** `CusPartFactor_Update`   : xoá **3** CSDL (`_dbDealer` bọc `if (bNeedTransaction_Dealer)`),
+//       chèn **3** ⇒ **cân**.
+//     · **#735** `CusServiceFactor_Update`: xoá **1** (`_dbMain`), chèn **2** (`_dbMain` + `_dbWH`) ⇒ **lệch**.
+//     · **#732** `CampaignMarketing_Create`: `_dbDealer` mở transaction, ghi **0**, rollback ở lối ra thành công.
+//   ⇒ Không có quy ước chung; **mỗi hàm một kiểu**. Đây là lý do luật "đếm ghi cho TỪNG handle" phải chạy
+//     **ở mọi màn ghi**, không suy từ màn trước.
+// 🔴🔴🔴 **HAI BẢNG HỆ SỐ NẰM Ở HAI CSDL KHÁC NHAU**:
+//     hệ số **phụ tùng** (#734): `left join **Ser_Mst_CusPartFactor** cpf`            ← CSDL hiện hành
+//     hệ số **dịch vụ** (đây)  : `left join **[@strDBName_CommonCenter].[dbo]**.Ser_Mst_CusServiceFactor csf`
+//   ⇒ Cùng vai trò nghiệp vụ nhưng **một bảng ở CSDL địa phương, một bảng ở CSDL trung tâm**.
+//     Điều đó giải thích vì sao `_Update` của hai hàm ghi khác nhau — nhưng **không** giải thích được vì sao
+//     WH bị chèn-mà-không-xoá. **Ghi cờ, không kết luận.**
+// 🔴🔴 **NHÃN LOG GÁN LỆCH — TỪ VỰNG LẠ**: `alParamsCoupleError` của bản dịch vụ ghi
+//     `, "**strPlateNo**", strIsActiveList`
+//   — nhãn nói **"biển số xe"** nhưng giá trị là **danh sách cờ hoạt động**; bản phụ tùng (#734) ghi **đúng**
+//   `"strIsActiveList"`. ⇒ Log sự cố sẽ chỉ sai tên tham số (họ #709), và "biển số xe" là **từ vựng của màn xe**
+//   lọt vào hàm hệ số giá dịch vụ.
+// 🔴 **MẤT TIỀN TỐ `N` TRÊN CHUỖI**: bản dịch vụ `and (s.DealerCode = 'zzzzHTCDealerCode')` trong khi bản phụ
+//   tùng `= N'zzzzHTCDealerCode'` ⇒ so **varchar** thay vì **nvarchar** ⇒ ép kiểu ngầm. Mã `"HTC"` toàn ASCII
+//   nên **vô hại**, nhưng là bất nhất trong cặp hàm sinh đôi.
+// ⚪ **ÂM TÍNH — cùng công thức `COALESCE(csf.Factor, ct.CusFactor, 1)`** và cùng bẫy `in (N'zzzz…')` như #734
+//   ⇒ **không** lặp lại phân tích, chỉ trỏ về #734.
+// ⚪ **ÂM TÍNH — thứ tự mệnh đề `WHERE` khác nhau** giữa hai bản (`SerID`→`CusTypeID`→`IsActive` vs
+//   `PartID`→`IsActive`→`CusTypeID`) ⇒ **không đổi kết quả**, chỉ là dấu vết chép tay.
+app.MapGet("/api/cusservicefactors", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? serIdList, string? cusTypeId) =>
+{
+    const string HTCDealerCode = "HTC";
+    var dealerRaw = (dealerCodeList ?? "").Trim();
+    var callerSentCommaList = dealerRaw.Contains(',') && !dealerRaw.Contains('\'');
+    var dealers = dealerRaw.Length == 0 ? new List<string>()
+        : dealerRaw.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+
+    var types = await db.CustomerTypes.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1"
+            && c.DealerCode != null && dealers.Contains(c.DealerCode))
+        .Select(c => new { c.CusTypeCode, c.CusTypeName, c.CusFactor }).ToListAsync();
+
+    var svcQ = db.ServiceMstServices.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(serIdList)) svcQ = svcQ.Where(x => x.SerCode == serIdList!.Trim());
+    var services = await svcQ.Select(x => new { x.SerCode, x.SerName, x.Price, x.DealerCode }).ToListAsync();
+    services = services.Where(x => x.DealerCode == HTCDealerCode
+        || (x.DealerCode != null && dealers.Contains(x.DealerCode))).ToList();
+
+    var factors = await db.CusServiceFactors.Where(f => f.OrgId == t.OrgId).ToListAsync();
+
+    var factorFellBackToOne = 0;
+    var rows = new List<object>();
+    foreach (var s in services)
+        foreach (var ct in types)
+        {
+            if (!string.IsNullOrWhiteSpace(cusTypeId) && ct.CusTypeCode != cusTypeId!.Trim()) continue;
+            var own = factors.FirstOrDefault(f => f.SerID == s.SerCode && f.CusTypeID == ct.CusTypeCode
+                && f.DealerCode != null && dealers.Contains(f.DealerCode));
+            decimal factor;
+            if (own?.Factor is not null) factor = own.Factor!.Value;
+            else if (ct.CusFactor != 0) factor = ct.CusFactor;
+            else { factor = 1m; factorFellBackToOne++; }
+            rows.Add(new
+            {
+                SerID = s.SerCode, s.SerName, CusTypeID = ct.CusTypeCode, ct.CusTypeName,
+                Factor = factor, Price = s.Price * factor, BasePrice = s.Price,
+            });
+        }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows, factorFellBackToOne, callerSentCommaList,
+        // ===== #735 =====
+        twoFactorTablesLiveInTwoDifferentDatabases = "HAI BANG HE SO NAM O HAI CSDL KHAC NHAU: he so PHU TUNG (#734) dung left join Ser_Mst_CusPartFactor cpf (CSDL hien hanh); he so DICH VU (day) dung left join [@strDBName_CommonCenter].[dbo].Ser_Mst_CusServiceFactor csf (CSDL TRUNG TAM) => cung vai tro nghiep vu nhung MOT BANG O CSDL DIA PHUONG, MOT BANG O CSDL TRUNG TAM. Dieu do giai thich vi sao _Update cua hai ham ghi khac nhau — nhung KHONG giai thich duoc vi sao WH bi chen-ma-khong-xoa. GHI CO, KHONG KET LUAN",
+        logLabelSaysPlateNoButValueIsActiveFlagList = "NHAN LOG GAN LECH — TU VUNG LA: alParamsCoupleError cua ban dich vu ghi (strPlateNo, strIsActiveList) — nhan noi BIEN SO XE nhung gia tri la DANH SACH CO HOAT DONG; ban phu tung (#734) ghi DUNG strIsActiveList => log su co se chi sai ten tham so (ho #709), va bien-so-xe la TU VUNG CUA MAN XE lot vao ham he so gia dich vu",
+        missingNPrefixOnStringLiteral = "MAT TIEN TO N TREN CHUOI: ban dich vu and (s.DealerCode = zzzzHTCDealerCode) trong khi ban phu tung = N zzzzHTCDealerCode => so varchar thay vi nvarchar => ep kieu ngam. Ma HTC toan ASCII nen VO HAI, nhung la bat nhat trong cap ham sinh doi",
+        sameCoalesceAndInListTrapAsIssue734 = "AM TINH: cung cong thuc COALESCE(csf.Factor, ct.CusFactor, 1) va cung bay in (N zzzz…) nhu #734 => khong lap lai phan tich, tro ve #734",
+    });
+}).RequireAuthorization();
+
+// #735 `Ser_Mst_CusServiceFactor_Update` (`:6203`) — xoá 1 CSDL, chèn 2 CSDL.
+app.MapPut("/api/cusservicefactors", async (CusServiceFactorUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_CusServiceFactor_Update_WithoutService" });
+
+    var serId = (dto.SerID ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var filterIsEmpty = serId.Length == 0 && dealer.Length == 0;
+
+    var qy = db.CusServiceFactors.Where(f => f.OrgId == t.OrgId);
+    if (serId.Length > 0) qy = qy.Where(f => f.SerID == serId);
+    if (dealer.Length > 0) qy = qy.Where(f => f.DealerCode == dealer);
+    var old = await qy.ToListAsync();
+    var deleted = old.Count;
+    db.CusServiceFactors.RemoveRange(old);
+
+    foreach (var r in dto.Rows)
+        db.CusServiceFactors.Add(new CusServiceFactor
+        {
+            OrgId = t.OrgId, SerID = r.SerID, CusTypeID = r.CusTypeID,
+            DealerCode = r.DealerCode ?? dealer, Factor = r.Factor,
+        });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted, inserted = dto.Rows.Count, filterIsEmpty,
+        deletesInOnePlaceButInsertsInTwo = "XOA MOT NOI, CHEN HAI NOI => CSDL KHO TICH LUY DONG CU VINH VIEN. Dem ghi tung handle: _dbMain SaveData=1 ExecNonQuery=1 (cau delete); _dbWH SaveData=1 ExecNonQuery=0 (CHEN MA KHONG XOA); _dbDealer SaveData=0 ExecNonQuery=0 (mo + commit transaction, GHI 0 LAN). => Moi lan sua he so: Main xoa-roi-chen, con WH CHI CHEN => WH NHAN BAN DONG theo moi lan sua, he so CU KHONG BAO GIO BI XOA o WH => bao cao chay tren WH se thay NHIEU HE SO cho cung mot cap (SerID, CusTypeID, DealerCode). NANG HON #726: o do WH bi BO QUEN HOAN TOAN (de thay khi doi chieu); o day WH duoc ghi MOT NUA nen nhin qua TUONG DA DONG BO. Chi dem RIENG ExecNonQuery moi lo",
+        threeSiblingsThreeWriteModels = "BA HAM ANH EM CANH NHAU, BA MO HINH GHI KHAC NHAU trong CUNG MOT FILE, cung vai tro he-so-gia-theo-loai-khach: #734 CusPartFactor_Update xoa 3 CSDL (_dbDealer boc if (bNeedTransaction_Dealer)), chen 3 => CAN; #735 CusServiceFactor_Update xoa 1 (_dbMain), chen 2 (_dbMain + _dbWH) => LECH; #732 CampaignMarketing_Create _dbDealer mo transaction, ghi 0, rollback o loi ra thanh cong. KHONG CO QUY UOC CHUNG, moi ham mot kieu => luat dem-ghi-cho-TUNG-handle phai chay O MOI MAN GHI, khong suy tu man truoc",
+        emptyFilterRiskSameAs734 = "Bo loc rong van dung BuildClauseConditionList nhu #734 => menh de rong => delete … where (1=1) tren _dbMain. Guard duy nhat cung chi kiem DataSet co dong => cung lo hong nhu #734, KHONG co gi chan",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴🔴 #734 HỆ SỐ GIÁ PHỤ TÙNG THEO LOẠI KHÁCH `Ser_Mst_CusPartFactor_Get` + `_Update` =====
 // `BizCarSv.Service.cs` — `_Get` :6384-6562 md5 `78b9da54` · `_Update` :6564-6792 md5 `b65fbede`
 // (file 19588 dòng). → `GET /api/cuspartfactors`, `PUT /api/cuspartfactors`.
@@ -65732,6 +65858,11 @@ record CampaignMarketingCreateDto(string? CamMarketingNo = null, string? CamName
     string? ConditionVin = null, string? ConditionPlateNo = null, string? ConditionDealer = null,
     string? CamMarketingStatus = null);
 /// <summary>#734 `Ser_Mst_CusPartFactor_Update` — hệ số giá phụ tùng theo loại khách.</summary>
+/// <summary>#735 `Ser_Mst_CusServiceFactor_Update` — hệ số giá dịch vụ theo loại khách.</summary>
+record CusServiceFactorRowDto(string? SerID = null, string? CusTypeID = null, string? DealerCode = null,
+    decimal? Factor = null);
+record CusServiceFactorUpdateDto(string? SerID = null, string? DealerCode = null,
+    List<CusServiceFactorRowDto>? Rows = null);
 record CusPartFactorRowDto(string? PartID = null, string? CusTypeID = null, string? DealerCode = null,
     decimal? Factor = null);
 record CusPartFactorUpdateDto(string? PartID = null, string? DealerCode = null,

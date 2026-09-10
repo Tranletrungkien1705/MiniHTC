@@ -14898,6 +14898,19 @@ public sealed class DealerServiceOption
 /// <summary>Loại khách hàng dịch vụ (hệ số giá, cá nhân/tổ chức) — port 1:1 FrmCusTypeCreate (Ser_CusType, TCMotor).</summary>
 /// <summary>🔴 #734 Hệ số giá phụ tùng theo loại khách (`Ser_Mst_CusPartFactor`).
 /// Nguồn dùng `COALESCE(cpf.Factor, ct.CusFactor, 1)` ⇒ **ba tầng dự phòng**, tầng cuối là `1`.</summary>
+/// <summary>🔴 #735 Hệ số giá **dịch vụ** theo loại khách (`Ser_Mst_CusServiceFactor`).
+/// ⚠️ Nguồn tra bảng này ở **CSDL TRUNG TÂM** (`[@strDBName_CommonCenter].[dbo].`), khác
+/// <see cref="CusPartFactor"/> vốn ở CSDL hiện hành.</summary>
+public sealed class CusServiceFactor
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? SerID { get; set; }
+    public string? CusTypeID { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal? Factor { get; set; }
+}
+
 public sealed class CusPartFactor
 {
     public long Id { get; set; }
