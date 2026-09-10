@@ -15160,6 +15160,10 @@ public sealed class DelayTransport
 /// mã model + tên, dùng làm danh mục model tham chiếu cho các màn dịch vụ khác.</summary>
 public sealed class CarModelStd
 {
+    /// <summary>🔴 #727 §12 `Mst_CarModelStd.Remark` — `_Add` và `_Update` đều ghi cột này;
+    /// ⚠️ `_Update` còn **VIẾT HOA** nó qua `StandardizeParam` trong khi `_Add` chỉ `.Trim()`.</summary>
+    public string? Remark { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string ModelCode { get; set; } = "";

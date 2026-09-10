@@ -35433,6 +35433,36 @@ app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #727 ĐỐI CHIẾU BA HÀM GHI `Mst_CarModelStd_Add/_Update/_Delete` — VÒNG PARITY =====
+// `Tab/BizCarSv.Tab.cs` — `_Add` :3390-3644 md5 `e1c01163` · `_Update` :3646-3902 md5 `ef9c6a15` ·
+// `_Delete` :3904-4084 md5 `99247c02`. BƯỚC 2: route `/api/carmodelstds` **đã có** từ #678 (bản `_Get_WH`)
+// nhưng **ba hàm GHI thì chưa từng được đọc** ⇒ vá vào endpoint sẵn có, **KHÔNG tính màn mới**.
+// Đối chiếu cặp create/update theo luật #404 — và lệch ở **ba** điểm, điểm đầu là lỗi dữ liệu thật.
+//
+// 🔴🔴🔴 **`ModelName` VÀ `Remark` BỊ VIẾT HOA KHI **SỬA** NHƯNG GIỮ NGUYÊN KHI **THÊM****:
+//   · `_Add`:    `strModelName = string.Format("{0}", objModelName).**Trim()**;`        ⇒ giữ nguyên chữ
+//   · `_Update`: `strModelName = SqlUtils.**StandardizeParam**(objModelName);`          ⇒ `.Trim().**ToUpper()**`
+//   Đã mở định nghĩa (**cả hai** bản đều giống nhau: `CommonUtils/DataUtils.cs:1200` và `TERP.Utils/Utils.cs:222`
+//   ⇒ `return Convert.ToString(objParam).Trim().ToUpper();`).
+//   ⇒ Thêm *"Santa Fe"* thì lưu **"Santa Fe"**; sau đó **sửa bất kỳ trường nào** ⇒ `ModelName` thành **"SANTA FE"**
+//     và `Remark` (câu ghi chú tiếng Việt) **cũng bị viết hoa toàn bộ**.
+//   ⇒ **Mất dữ liệu hiển thị, im lặng, do chính thao tác sửa** — người dùng không hề đụng vào ô đó.
+//   ⚪ `ModelCode` thì **cả hai** hàm đều dùng `StandardizeParam` ⇒ **nhất quán** (mã vốn nên viết hoa).
+//   📌 Đây là mặt trái của họ "chuẩn hoá không đồng đều" đã gặp ở #718 (khối `.Trim()` bị comment) và #726
+//     (`VINCode` có `.Trim()`, hai cột kia không) — nhưng nặng hơn vì nó **biến đổi** dữ liệu chứ không chỉ bỏ sót.
+// 🔴🔴 **#404 — SỐ GUARD LỆCH HẲN GIỮA BA HÀM** (đếm `CMyException.Raise`): `_Add` = **2** · `_Update` = **1** ·
+//   `_Delete` = **0**.
+//   · `_Add`: kiểm `ModelCode` rỗng **và** `ModelName` rỗng, rồi `CheckDB(Flag.**No**)` = **không được tồn tại**.
+//   · `_Update`: **chỉ** kiểm `ModelName` rỗng, rồi `CheckDB(Flag.**Yes**)` = **phải tồn tại**.
+//     ⚪ `ModelCode` rỗng **không lọt**: `CheckDB(Flag.Yes)` sẽ không tìm thấy ⇒ ném *NotFound*. **Tình cờ an toàn**,
+//       chỉ khác **thông điệp** (đúng khuôn đã ghi ở #689 cho `Mst_BOM`).
+//   · `_Delete`: **không có validate riêng nào**, chỉ `CheckDB(Flag.Yes)` với `strFlagActiveListToCheck = ""`
+//     ⇒ **xoá được cả bản ghi đang ngưng hoạt động lẫn đang hoạt động**, không phân biệt.
+// 🔴 **`_Update` NHẬN THÊM `objFt_Cols_Upd`** (danh sách cột được phép cập nhật) mà `_Add` không có — cùng khuôn
+//   "chỉ ghi cột được chỉ định" đã thấy ở #714 (`alEffectiveColumn`). `_Update` cũng nhận thêm `objFlagActive`
+//   ⇒ **chỉ sửa mới đổi được trạng thái hoạt động**, giống hệt kết luận #715 cho `ProcessCustomer*`.
+// ⚪ **ÂM TÍNH — khối `dsData` bị comment trong `_Update`** (`//DataSet dsData = TUtils.CUtils.StdDS(...)` …)
+//   là **tàn dư**, không phải tính năng bị tắt: đếm `dsData` trong toàn hàm = chỉ các dòng đã comment.
 app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
@@ -35446,6 +35476,8 @@ app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITe
     return Results.Ok(new { row.ModelCode, row.ModelName, row.FlagActive, isNew });
 }).RequireAuthorization();
 
+// #727 `Mst_CarModelStd_Delete` (`:3904`): **0** guard riêng; `CheckDB(Flag.Yes, strFlagActiveListToCheck = "")`
+//   ⇒ xoá được **cả** bản ghi đang ngưng lẫn đang hoạt động.
 app.MapDelete("/api/carmodelstds/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -46142,6 +46174,50 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
         });
     await db.SaveChangesAsync();
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
+}).RequireAuthorization();
+
+// #727 `Mst_CarModelStd_Update` (`:3646`) — port 1:1 kể cả việc **viết hoa** `ModelName`/`Remark`.
+app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // Nguồn: SqlUtils.StandardizeParam(x) == Convert.ToString(x).Trim().ToUpper()
+    static string StandardizeParam(object? v) => Convert.ToString(v ?? "")!.Trim().ToUpperInvariant();
+
+    var modelCode = StandardizeParam(code);      // giống `_Add`: mã luôn viết hoa ⇒ nhất quán
+    var modelName = StandardizeParam(dto.ModelName);   // 🔴 KHÁC `_Add` (`_Add` chỉ `.Trim()`)
+    var remark = StandardizeParam(dto.Remark);         // 🔴 KHÁC `_Add`
+
+    // Nguồn `_Update` CHỈ kiểm ModelName rỗng (không kiểm ModelCode rỗng — CheckDB bắt hộ).
+    if (modelName.Length == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_CarModelStd_Update_InvalidModelName" });
+
+    var row = await db.CarModelStds.Where(x => x.OrgId == t.OrgId && x.ModelCode == modelCode)
+        .OrderBy(x => x.Id).FirstOrDefaultAsync();
+    if (row is null)
+        return Results.BadRequest(new
+        {
+            error = "ErrCarSv.Mst_CarModelStd_NotFound", modelCode,
+            emptyModelCodeIsCaughtHereNotByItsOwnGuard = modelCode.Length == 0,
+        });
+
+    var nameChangedOnlyByCasing = row.ModelName != null
+        && !string.Equals(row.ModelName, modelName, StringComparison.Ordinal)
+        && string.Equals(row.ModelName, modelName, StringComparison.OrdinalIgnoreCase);
+
+    row.ModelName = modelName;
+    row.Remark = remark;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.ModelCode, row.ModelName, row.Remark, row.FlagActive, updated = true,
+        nameChangedOnlyByCasing,
+        // ===== #727 =====
+        updateUppercasesNameButAddDoesNot = "ModelName VA Remark BI VIET HOA KHI SUA NHUNG GIU NGUYEN KHI THEM: _Add dung string.Format({0}, objModelName).Trim() (giu nguyen chu), _Update dung SqlUtils.StandardizeParam(objModelName) = Convert.ToString(x).Trim().ToUpper(). Da mo dinh nghia CA HAI ban (CommonUtils/DataUtils.cs:1200 va TERP.Utils/Utils.cs:222) — GIONG HET NHAU. => them Santa Fe thi luu Santa Fe; sau do SUA BAT KY TRUONG NAO => ModelName thanh SANTA FE va Remark (cau ghi chu tieng Viet) CUNG BI VIET HOA TOAN BO => MAT DU LIEU HIEN THI, IM LANG, DO CHINH THAO TAC SUA. ModelCode thi CA HAI ham deu StandardizeParam => nhat quan. Da do bang nameChangedOnlyByCasing",
+        guardCountsDifferAcrossThreeWriters = "#404 — SO GUARD LECH HAN (dem CMyException.Raise): _Add = 2, _Update = 1, _Delete = 0. _Add kiem ModelCode rong VA ModelName rong roi CheckDB(Flag.No) = khong duoc ton tai; _Update CHI kiem ModelName rong roi CheckDB(Flag.Yes) = phai ton tai (ModelCode rong KHONG LOT vi CheckDB se khong tim thay => nem NotFound, TINH CO AN TOAN, chi khac THONG DIEP — dung khuon #689); _Delete KHONG co validate rieng nao, chi CheckDB(Flag.Yes) voi strFlagActiveListToCheck = '' => XOA DUOC CA ban ghi dang ngung lan dang hoat dong",
+        updateTakesExtraParams = "_Update nhan them objFt_Cols_Upd (danh sach cot duoc phep cap nhat) va objFlagActive ma _Add khong co => cung khuon chi-ghi-cot-duoc-chi-dinh o #714 (alEffectiveColumn), va CHI SUA MOI DOI DUOC TRANG THAI HOAT DONG — giong het ket luan #715 cho ProcessCustomer*",
+        negativeCommentedDsDataIsResidue = "AM TINH: khoi dsData bi comment trong _Update (//DataSet dsData = TUtils.CUtils.StdDS(...)) la TAN DU, khong phai tinh nang bi tat — dem dsData trong toan ham chi ra cac dong da comment (dung luat #719)",
+    });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #726 DANH MỤC VIN↔MODEL `Mst_VINModelOrginal_Get/_Import/_Delete/_Update` — TRẢ NỢ #691 =====
@@ -64830,7 +64906,8 @@ record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, s
 record CavityUpdateDto(string? CavityName = null, string? CavityType = null, string? DealerCode = null,
     string? Note = null, string? IsActive = null, string? Status = null,
     string? StartUseDate = null, string? FinishUseDate = null, string? LogLUBy = null);
-record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
+// #727: them Remark — nguon _Add/_Update deu ghi cot nay (va _Update VIET HOA no).
+record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive, string? Remark = null);
 record MstParamDto(string? DealerCode, string? ParamType, string? ParamCode, string? ParamValue, string? Description);
 record MstVinModelOrginalDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive, string? Remark);
 record OsVelocaCustomerDto(string? SalesCusID, string? CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex);
