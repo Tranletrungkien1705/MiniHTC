@@ -28738,6 +28738,75 @@ string? ValidateWarrantyWorkLine(
     return null;
 }
 
+// ===== 🔴🔴🔴 #783 `Ser_MST_ROWarrantyWork_Update` vs `_Update_Dealer` — TÊN NÓI MỘT ĐẰNG, BẢNG GHI MỘT NẺO =====
+// `BizCarSv.AssignmentOfWork.cs`: `_Update` `:4806-5285` md5 `8ac5b066` (**433 dòng**, `Raise` = 2) ·
+// `_Update_Dealer` `:4649-4805` md5 `a0c54a02` (**143 dòng**, `Raise` = **0**). #… đã port cặp `_Save`/`_Save_Dealer`.
+// Hai bản còn khác cả **chữ ký**: bản CmCenter nhận `object[] arrobjDSData`, bản Dealer nhận `DataSet` trực tiếp.
+//
+// 🔴🔴🔴 **`_Update_Dealer` KHÔNG CẬP NHẬT `Ser_MST_ROWarrantyWork` — NÓ CẬP NHẬT `Ser_MST_Service`**
+//   Toàn bộ phần ghi của nó là một câu:
+//     `update t set t.SerName = f.ROWWorkName, t.Cost = f.RatePrice, t.Price = f.Price, t.VAT = f.VAT,`
+//     `             t.Note = f.Remark, t.IsActive = f.FlagActive, t.LogLUDateTime = …, t.LogLUBy = …`
+//     `from **Ser_MST_Service** t inner join #input_Ser_MST_ROWarrantyWork f **on t.SerCode = f.ROWWorkCode**;`
+//   ⇒ Tên hàm hứa "cập nhật **công bảo hành** ở đại lý"; việc thật là **đồng bộ công bảo hành xuống danh mục
+//     DỊCH VỤ của đại lý**, khớp theo `SerCode = ROWWorkCode`. Bảng `Ser_MST_ROWarrantyWork` **không bị đụng tới**.
+//   ⇒ Cùng họ #751 (`SerGetToCCare`) và #781 (`SmsAccountPassword_ResetCache`): **tên hàm mô tả sai việc thật**.
+//     Ở đây hệ quả là người bảo trì tìm nguyên nhân "giá dịch vụ ở đại lý tự đổi" sẽ **không nghĩ tới hàm này**.
+//
+// ⚪⚪ **KIỂM TRA ÂM TÍNH — "TỪ VỰNG LẠ" Ở ĐÂY KHÔNG PHẢI DẤU HIỆU CHÉP KHỐI**
+//   Tham số tên `ds_Ser_Mst_Service`, biến `dt_Ser_Mst_Service_Input`, nhãn SQL `---- Ser_MST_Service:` — trong một
+//   hàm mang tên `…ROWarrantyWork…` ⇒ phản xạ đầu tiên (luật "từ vựng lạ = khối chép từ hàm khác") là báo chép nhầm.
+//   Nhưng đọc câu `update` thì **bảng đích ĐÚNG là `Ser_MST_Service`** ⇒ **từ vựng khớp với việc hàm làm**;
+//   thứ sai lệch là **TÊN HÀM**, không phải thân hàm. ⇒ Rút lại nghi ngờ, và ghi lại để lượt sau không báo trùng.
+//   📌 Bài học: "từ vựng lạ" chỉ là **dấu hiệu**; phải xác định **bảng đích thật** rồi mới kết luận bên nào lạ —
+//     thân hàm hay cái tên.
+//
+// 🔴🔴 **`_Update_Dealer` KHÔNG CÓ GUARD NÀO** (đếm ba nguồn #747+#760: `Raise` = 0 · `this.Check*` = 0 ·
+//   `my*_Check*` = 0), trong khi bản CmCenter có **hai**: `…_Ser_MST_ROWarrantyWorkTblNotFound` và `…TblInvalid`.
+//   ⇒ Bên đại lý: `ds_Ser_Mst_Service.Tables["**Ser_MST_ROWarrantyWork_Input**"]` **không kiểm null** — và lưu ý
+//     tên bảng đầu vào (`…_Input`) **khác** tên tham số lẫn tên hàm ⇒ client gửi sai tên bảng là **NullReference**.
+// 🔴 **`inner join` ⇒ CÔNG BẢO HÀNH CHƯA CÓ DỊCH VỤ TƯƠNG ỨNG THÌ BỎ IM LẶNG**: không `insert`, không báo lỗi,
+//   không đếm dòng khớp. Đại lý mới (chưa có mã dịch vụ) đồng bộ xong vẫn **không có gì thay đổi**.
+// 🔴 **NHÃN REGION SAI**: `#region //// SaveTemp Ser_MST_ROWarrantyWork: **Main.**` nhưng bảng tạm được dựng trên
+//   `_dbDealer` (`MyBuildDBDT_Common(**_dbDealer**, "#input_Ser_MST_ROWarrantyWork", …)`).
+// ⚪ Dòng ghi WH **bị comment** (`//DataSet dsExec_WH = _dbWH.ExecQuery(...)`) ⇒ bản Dealer chỉ ghi đại lý, bản
+//   CmCenter ghi Main + WH ⇒ **phân vai hợp lý**, không phải bỏ sót (khác #742/#748).
+// 📌 Mini: `POST /api/warrantyworkmsts/sync-to-service` — **đặt tên theo việc thật**, và **đếm** số mã không khớp
+//   thay vì bỏ im lặng như nguồn.
+app.MapPost("/api/warrantyworkmsts/sync-to-service", async (List<WarrantyWorkSyncRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "Danh sách rỗng.", sourceWouldThrowNullReference = "nguon lay Tables[\"Ser_MST_ROWarrantyWork_Input\"] khong kiem null" });
+    var codes = rows.Where(r => !string.IsNullOrWhiteSpace(r.ROWWorkCode))
+        .Select(r => r.ROWWorkCode!.Trim().ToUpperInvariant()).Distinct().ToList();
+    var services = await db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.SerCode)).ToListAsync();
+    var byCode = services.GroupBy(x => x.SerCode).ToDictionary(g => g.Key, g => g.First());
+    var updated = 0; var notMatched = new List<string>();
+    foreach (var r in rows)
+    {
+        var code = (r.ROWWorkCode ?? "").Trim().ToUpperInvariant();
+        if (code.Length == 0) continue;
+        // Nguồn: inner join ⇒ mã chưa có trong danh mục dịch vụ thì BỎ IM LẶNG (không insert).
+        if (!byCode.TryGetValue(code, out var sv)) { notMatched.Add(code); continue; }
+        if (r.ROWWorkName != null) sv.SerName = r.ROWWorkName;
+        if (r.RatePrice.HasValue) sv.Cost = r.RatePrice.Value;
+        if (r.Price.HasValue) sv.Price = r.Price.Value;
+        if (r.VAT.HasValue) sv.Vat = r.VAT.Value;
+        if (r.Remark != null) sv.Note = r.Remark;
+        if (!string.IsNullOrWhiteSpace(r.FlagActive)) sv.FlagActive = r.FlagActive!;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        received = rows.Count, updated, notMatched = notMatched.Count, notMatchedCodes = notMatched,
+        sourceNameSaysWarrantyWorkButWritesService = "nguon Ser_MST_ROWarrantyWork_Update_Dealer thuc chat chay update Ser_MST_Service ... inner join #input_Ser_MST_ROWarrantyWork on t.SerCode = f.ROWWorkCode => bang Ser_MST_ROWarrantyWork KHONG bi dung toi",
+        sourceDealerVersionHasNoGuard = "ban _Update_Dealer: Raise=0, this.Check*=0, my*_Check*=0; ban CmCenter co 2 guard (...TblNotFound va ...TblInvalid)",
+        sourceSilentlySkipsUnmatched = "inner join => cong bao hanh chua co dich vu tuong ung thi bo im lang, khong insert, khong dem",
+        sourceRegionLabelSaysMain = "#region //// SaveTemp Ser_MST_ROWarrantyWork: Main. nhung bang tam dung tren _dbDealer",
+        vocabularyIsNotCopyPaste = "AM TINH: ten tham so ds_Ser_Mst_Service va nhan SQL ---- Ser_MST_Service KHONG phai chep khoi — chung KHOP voi bang dich that; cai sai lech la TEN HAM",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/warrantyworkmsts", async (WarrantyWorkMstDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = (dto.ROWWorkCode ?? "").Trim().ToUpperInvariant();
@@ -68347,6 +68416,8 @@ record WarrantyClaimUpdateDto(string? CusName = null, string? CusAddress = null,
     DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null, decimal? WarrantyKM = null);
 record SmsResetPwdDto(string? PasswordNew = null);
 record RoWarrantyRenewalDto(string? VIN = null, string? WrtReneCateCode = null, string? Remark = null);
+record WarrantyWorkSyncRowDto(string? ROWWorkCode = null, string? ROWWorkName = null, decimal? RatePrice = null,
+    decimal? Price = null, decimal? VAT = null, string? Remark = null, string? FlagActive = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
