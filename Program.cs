@@ -59059,6 +59059,81 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 // ⚪ `and t.AppStatus != '4' --Khác trạng thái: Hủy` ⇒ lịch **đã huỷ** không tính là trùng — đúng nghiệp vụ.
 // 📌 Mini: `POST /api/appointments/cavity-conflict-check` — áp đúng overload **6 tham số** (loại chính nó ra),
 //   trả **TẤT CẢ** lịch trùng chứ không chỉ `top 1`.
+// ===== 🔴🔴🔴 #808 MÀN MỚI: DANH MỤC DÒNG XE — `Ser_Mst_Model_Get` / `_New20200203` (BAKE NHẦM BIẾN) =====
+// Trace **cả ba** đường (đã loại dòng comment):
+//   web    `WSCarSv.asmx.cs:2323 Ser_Mst_Model_Get` → `_biz.Ser_Mst_Model_Get_**New20200203**` (có `MyDSEncode`)
+//   web    `WSCarSv.asmx.cs:2367 **NoEnCode_**Ser_Mst_Model_Get` → **cùng** `_New20200203` (**không** `MyDSEncode`)
+//   tablet `WSCarSvTab.asmx.cs:2770` → `_biz.Ser_Mst_Model_Get` (**bản trần**)
+//   CS     `Ser_Mst_ModelService.cs:89` → `_biz.Ser_Mst_Model_Get` (**bản trần**)
+//   `Master.cs:2062-2207` md5 `e023ca25` (141 dòng, `Raise`=0) ↔ `:2208-2348` md5 `bd89e04f` (132 dòng, `Raise`=0).
+//   **BƯỚC 3B**: `Master.cs` **12871** dòng trên **cả hai** máy; md5 chuẩn hoá trên 150 = `bd89e04f` **KHỚP**.
+//
+// ⛔ **ĐÍNH CHÍNH #806 (một phần)**: #806 xếp `Ser_Mst_Model_Get_New20200203` vào nhóm "6 ca nội bộ trả DataSet
+//   thô **không giải thích được**". **Sai với ca này**: nó có hẳn một endpoint riêng tên **`NoEnCode_`**`Ser_Mst_Model_Get`
+//   ⇒ **cố ý**, và tên endpoint tự nói ra điều đó. Cùng một hàm biz phục vụ **hai cổng, hai định dạng trả về**.
+//   ⚪ Nhưng kết luận **vẫn đúng cho 5 ca còn lại**: toàn `WSCarSv.asmx.cs` chỉ có **đúng 1** endpoint mang tiền tố
+//     `NoEnCode_`; năm ca kia (`Ser_RO_Get`, `Ser_RO_Status_Get`, `SerCustomerCarSalesCreate`,
+//     `SmsAccountPassword_ResetCache`, `Ser_RO_Get_WH`) mang **tên bình thường** mà vẫn trả thô.
+//
+// 🔴🔴🔴 **BAKE NHẦM BIẾN — Ô LỌC "MÃ DÒNG XE" THỰC CHẤT LỌC BẰNG GIÁ TRỊ Ô "ĐANG HOẠT ĐỘNG"**
+//   Hai dòng liền nhau trong bản `_New20200203` (nguyên văn):
+//     `string zzzzClauseWhereIsActiveList   = SqlUtils.BuildClauseConditionList("and", "t.IsActive",  **strIsActiveList**, "|");`
+//     `string zzzzClauseWhereModelCodeList = SqlUtils.BuildClauseConditionList("and", "t.ModelCode", **strIsActiveList**, "|");`
+//   Dòng dưới **phải** là `strModelCodeList` — tham số đó **có tồn tại** (chữ ký dòng 13) và **có** được đưa vào
+//   `alParamsCoupleError`, nhưng **không bao giờ vào SQL**.
+//   ⇒ Hệ quả thật: client lọc *"đang hoạt động = 1"* ⇒ SQL thành
+//     `and t.IsActive in ('1') **and t.ModelCode in ('1')**` ⇒ **0 dòng** (trừ khi có dòng xe mã đúng bằng `"1"`)
+//     ⇒ **danh mục dòng xe trên WEB trả RỖNG khi lọc trạng thái**. Còn lọc theo mã dòng xe thì **không có tác dụng**.
+//   📌 Đây đúng loại lỗi mà **§12 không bắt được** ("LỌC SAI CỘT"): cột có đủ, DTO có đủ, POST/GET có đủ —
+//     chỉ **giá trị đổ vào mệnh đề là của ô khác**.
+//
+// 🔴🔴 **GUARD PHÂN BỐ HAI CHIỀU — NGƯỢC VỚI #807**
+//   Bản **TRẦN** (tablet + ClientService) **CÓ** `myUtils_ValidateId(ref alParamsCoupleError, strTid,`
+//   `TError.ErrCarSv.**CommonInvalidTid**, …)`; bản **`_New20200203`** (web) **KHÔNG có**.
+//   ⇒ Ở #807 thì **web** có guard mà tablet không; ở đây **ngược lại**. ⇒ **Không nhánh nào "luôn đầy đủ"** —
+//     phải đối chiếu **từng cặp**, không suy từ nhánh.
+//
+// 🔴 **BẢN TRẦN THIẾU HAI CỘT CHUẨN HOÁ**: bản mới thêm `left join Mst_CarModelStd mcmstd on t.ModelCode = mcmstd.ModelCode`
+//   và trả `mcmstd.ModelCode mcmstd_ModelCode` / `mcmstd.ModelName mcmstd_ModelName` ⇒ **tablet và ClientService
+//   không thấy tên dòng xe CHUẨN của hãng**. ⚪ Là `left join` ⇒ **không nuốt dòng** ở bản web.
+// 🔴 Bản trần đặt `bNeedTransaction = **false**` (đúng cho hàm đọc) còn bản mới đặt `bNeedTransaction_Main = **true**`
+//   ⇒ **bản mới mở transaction cho một hàm chỉ đọc**; và kết thúc bằng `RollbackSafety` trong khi bản trần dùng
+//   `CommitSafety` ⇒ **hai bản kết thúc giao dịch theo hai kiểu khác nhau**.
+// 🔴 Hai bản dùng **hai cơ chế ghi log khác nhau**: bản trần `_log.WriteLogAsync(...)` + `CProcessException.Process`,
+//   bản mới `ProcessBizReq(...)` + `ProcessBizReturn(...)` (có đo `dblAppTotalMs`) ⇒ nhật ký của hai đường **không cùng dạng**.
+// 📌 Mini: `GET /api/servicemodels/catalog` — lọc **đúng** hai ô riêng biệt, và **đếm** số dòng mà lỗi nguồn sẽ nuốt.
+app.MapGet("/api/servicemodels/catalog", async (AppDbContext db, ITenantContext t,
+    string? modelCodes, string? isActive, string? dealerCode) =>
+{
+    var codes = (modelCodes ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+    var act = (isActive ?? "").Trim();
+    var dl = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var qy = db.ServiceModels.Where(x => x.OrgId == t.OrgId);
+    if (dl.Length > 0) qy = qy.Where(x => x.DealerCode == dl);
+    if (act.Length > 0) qy = qy.Where(x => x.FlagActive == act);
+    if (codes.Count > 0) qy = qy.Where(x => codes.Contains(x.ModelCode));
+    var rows = await qy.Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode,
+        x.DealerCode, x.FlagActive }).ToListAsync();
+    // Mo phong loi nguon: mo hinh nhung gi xay ra khi ModelCode bi loc bang GIA TRI cua o IsActive.
+    var asSourceWouldFilter = act.Length > 0
+        ? rows.Where(x => x.ModelCode == act).ToList()
+        : rows;
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        countIfSourceBugApplied = asSourceWouldFilter.Count,
+        rowsSwallowedBySourceBug = rows.Count - asSourceWouldFilter.Count,
+        sourceBakesWrongVariable = "BUG THAT: zzzzClauseWhereModelCodeList = BuildClauseConditionList(and, t.ModelCode, strIsActiveList, |) — phai la strModelCodeList. Tham so strModelCodeList CO trong chu ky va CO trong alParamsCoupleError nhung KHONG BAO GIO vao SQL => loc trang thai lam SQL thanh and t.IsActive in (1) and t.ModelCode in (1) => 0 dong; con loc theo ma dong xe thi VO TAC DUNG",
+        sourceBugIsExactlyWhatSection12Misses = "cot du, DTO du, POST/GET du — chi GIA TRI do vao menh de la cua o khac => dung loai LOC SAI COT ma §12 khong bat duoc",
+        guardsGoBothWays = "ban TRAN (tablet + ClientService) CO myUtils_ValidateId(..., TError.ErrCarSv.CommonInvalidTid, ...); ban _New20200203 (web) KHONG co. Nguoc voi #807 (web co guard, tablet khong) => KHONG nhanh nao luon day du, phai doi chieu TUNG CAP",
+        plainVariantMissesStandardColumns = "ban moi them left join Mst_CarModelStd va tra mcmstd_ModelCode / mcmstd_ModelName; ban tran KHONG => tablet va ClientService khong thay ten dong xe CHUAN cua hang. La left join nen khong nuot dong o ban web",
+        transactionModelDiffers = "ban tran bNeedTransaction = false (dung cho ham doc) va ket thuc bang CommitSafety; ban moi bNeedTransaction_Main = true (mo transaction cho ham CHI DOC) va ket thuc bang RollbackSafety",
+        loggingMechanismDiffers = "ban tran dung _log.WriteLogAsync + CProcessException.Process; ban moi dung ProcessBizReq + ProcessBizReturn (co do dblAppTotalMs) => nhat ky hai duong KHONG cung dang",
+        noEnCodeEndpointIsIntentional = "DINH CHINH #806 mot phan: WSCarSv.asmx.cs:2367 co endpoint rieng ten NoEnCode_Ser_Mst_Model_Get goi CUNG ham biz nhung KHONG boc MyDSEncode => CO Y, ten endpoint tu noi ra. Toan file chi co DUNG 1 endpoint tien to NoEnCode_; nam ca con lai (Ser_RO_Get, Ser_RO_Status_Get, SerCustomerCarSalesCreate, SmsAccountPassword_ResetCache, Ser_RO_Get_WH) mang ten BINH THUONG ma van tra tho => ket luan #806 GIU NGUYEN cho 5 ca do",
+        twoMachinesVerified = "Master.cs 12871 dong tren CA HAI may; md5 chuan hoa vung ham tren 150 = bd89e04f KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/appointments/cavity-conflict-check", async (CavityConflictDto dto, AppDbContext db, ITenantContext t) =>
 {
     var cavity = (dto.CavityID ?? "").Trim();
