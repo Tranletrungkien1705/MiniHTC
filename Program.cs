@@ -14953,6 +14953,84 @@ app.MapPut("/api/carsv/servicecars", async (CarSvSerCarUpdateDto dto, AppDbConte
         sourceProvinceOnDealerDistrictOnMain = "nguon tra tinh o _dbDealer nhung tra huyen o _dbMain",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #750 `SerCarGet_FromMemberNo` + `SerCarDelete` (`BizCarSv.Car.cs`) =====
+// `_FromMemberNo` :1582-1737 md5 `38a4dae8` (144 dòng) · `SerCarDelete` :602-747 md5 `3898ee7a` (136 dòng).
+// BƯỚC 3B: `md5sum BizCarSv.Car.cs` = `f6d4e8ad…` — **giống hệt máy 150**.
+//
+// ⚪⚪⚪ **`SerCarDelete` LÀ MẪU XOÁ ĐÚNG NHẤT GẶP TỚI GIỜ — VÀ NÓ CHỨNG MINH #747 LÀ LỖI THẬT**:
+//     guard `this.CheckExistCarID(...)` · `delete from Ser_Car where (1=1) and **DealerCode = @DealerCode** and CarID = @CarID`
+//     chạy trên **`_dbMain`** + **`_dbWH`** + `if (bNeedTransaction_Dealer) { _dbDealer.ExecQuery(…) }`.
+//   ⇒ Đủ cả bốn: có guard · có phạm vi đại lý · xoá đủ ba CSDL · và dùng đúng khuôn `bIsWSMain` (#748).
+//   📌 Ở #747 tôi báo `SerGroupRepairDelete` xoá **không có điều kiện đại lý**. Câu hỏi còn treo khi đó là
+//     "hay đó là quy ước của tầng?". Hàm này trả lời dứt điểm: **cùng tầng, cùng kiểu bảng, mà viết đủ `DealerCode`**
+//     ⇒ thiếu ở `SerGroupRepairDelete` là **lỗi**, không phải quy ước. Đây là "đi tìm một hàm làm ĐÚNG" ra kết quả DƯƠNG.
+//
+// 🔴🔴 **`SerCarGet_FromMemberNo`: `select sc.*, cus.*` — HAI DẤU SAO CHỒNG NHAU**
+//   `Ser_Car` và `Ser_Customer` **cùng có** `DealerCode`, `IsActive`, `CusID`, `LogLUDateTime`, `LogLUBy`…
+//   ⇒ DataTable trả về có **cột trùng tên**, ADO.NET tự đặt lại thành `DealerCode1`, `IsActive1`… ⇒ client đọc
+//   theo tên **không biết mình đang lấy cột của bảng nào**. Tác giả **có nhận ra** vấn đề — bằng chứng là ba dòng
+//   thêm tay ngay dưới: `cus.Address **CusAddress**`, `cus.Tel **CusTel**`, `cus.Mobile **CusMobile**` — nhưng chỉ
+//   đặt bí danh cho **ba** cột, còn hàng chục cột trùng khác để nguyên. **Vá nửa vời**, và phần chưa vá là phần
+//   nguy hiểm nhất (`IsActive`, `DealerCode`).
+//
+// 🔴🔴 **`inner join Ser_Customer` + `and cus.IsActive = '1'` ⇒ XE BIẾN MẤT KHỎI KẾT QUẢ** (họ #410):
+//   Hàm tra cứu xe **theo số thẻ hội viên**. Nhưng xe chỉ hiện ra nếu **khách hàng gắn với nó còn tồn tại VÀ
+//   đang hoạt động**. Xe chưa gán khách, hoặc khách bị đánh `IsActive = 0`, thì **tra số thẻ ra rỗng** —
+//   người dùng kết luận "thẻ này không có xe" thay vì "khách của xe đã bị khoá". Đúng bệnh "join sang bảng
+//   danh mục = mất dữ liệu lúc ĐỌC"; ba `left join` còn lại (`Ser_Insurance`, `Mst_Province`, `Mst_District`)
+//   thì viết đúng là `left` ⇒ **chỉ mình `Ser_Customer` bị nâng lên `inner`**.
+//
+// 🔴 **LEFT JOIN CHẾT CÓ ĐIỀU KIỆN (trạng thái thứ ba của #414)**:
+//     `left join [@strDBName_CommonCenter].[dbo].ser_mst_model smm on sc.ModelID = smm.ModelID **and sc.DealerCode = smm.DealerCode**`
+//   `ser_mst_model` nằm ở CSDL **dùng chung**; nếu bản ghi model dùng chung mang `DealerCode` khác (hoặc NULL)
+//   thì điều kiện thứ hai **không bao giờ khớp** ⇒ `ModelName` luôn NULL cho đúng những đại lý đó.
+// 🔴 **`( smm.TradeMarkCode + ' - ' + smm.ModelName ) ModelName`**: nối chuỗi SQL — **một vế NULL là cả biểu thức NULL**
+//   (không phải chuỗi rỗng). Cộng với gạch đầu trên: mất `TradeMarkCode` là mất luôn tên model.
+// 🔴 **MARKER KHOÁ BỊ HỎNG Ở HAI BẢNG**: house-style của hệ là `--//[mylock]` sau mỗi tham chiếu bảng, nhưng
+//   `inner join Ser_Customer cus --//[mylock]**)**` và `left join … ser_mst_model smm --//[mylock]**)**` có
+//   **dấu `)` thừa dính đuôi** ⇒ marker **không còn khớp mẫu** ⇒ hai bảng này **không được gắn rowlock** trong khi
+//   bốn bảng còn lại thì có. Một ký tự, và nó chỉ lộ ra khi đọc từng dòng chứ không phải khi đọc nghĩa câu SQL.
+// 🔴 `@strDBName_CommonCenter` ← `_strConfig_DBName_**Main**` — lặp lại đúng phát hiện #745: **tên tham số nói dối**
+//   ("CommonCenter") trong khi giá trị là DB Main. Lần thứ hai gặp ⇒ là **khuôn của tầng**, không phải cá biệt.
+// 📌 Mini: `GET /api/servicecars/by-memberno` (giữ 1:1 cả hai bẫy: chỉ trả xe có khách còn hoạt động) và
+//   `DELETE /api/servicecars/{carId}` (giữ phạm vi hai khoá `DealerCode` + `CarID` như nguồn).
+app.MapGet("/api/servicecars/by-memberno", async (AppDbContext db, ITenantContext t, string? memberNo, string? dealer) =>
+{
+    var qy = from c in db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1")
+             join cu in db.ServiceCustomers.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1")
+                 on new { c.OrgId, Cus = c.CusID } equals new { cu.OrgId, Cus = cu.CusCode }
+             select new { c, cu };
+    if (!string.IsNullOrWhiteSpace(memberNo)) { var mn = memberNo!.Trim(); qy = qy.Where(z => z.c.MemberCarID == mn); }
+    if (!string.IsNullOrWhiteSpace(dealer)) { var dl = dealer!.Trim().ToUpperInvariant(); qy = qy.Where(z => z.c.DealerCode == dl); }
+    var rows = await qy.Take(500).Select(z => new
+    {
+        z.c.FrameNo, z.c.PlateNo, z.c.MemberCarID, z.c.ModelCode, z.c.TradeMark, z.c.DealerCode,
+        cusCode = z.cu.CusCode, cusName = z.cu.CusName, // nguon: IsActive -> entity FlagActive
+        // Nguồn đặt bí danh đúng BA cột này (Cus*) và bỏ mặc hàng chục cột trùng tên khác.
+        cusAddress = z.cu.Address, cusTel = z.cu.Tel, cusMobile = z.cu.Mobile,
+    }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        sourceInnerJoinsCustomer = "nguon dung INNER JOIN Ser_Customer + and cus.IsActive=1 => xe chua gan khach hoac khach bi khoa se BIEN MAT khoi ket qua tra theo so the",
+        sourceSelectsTwoStars = "nguon select sc.*, cus.* => cot trung ten bi ADO.NET doi thanh DealerCode1/IsActive1; chi 3 cot duoc dat bi danh Cus*",
+        sourceModelJoinCanDieByDealerCode = "left join ser_mst_model ... and sc.DealerCode = smm.DealerCode tren CSDL dung chung => ModelName luon NULL neu ban ghi model khong mang dung DealerCode",
+        sourceLockMarkerBrokenOnTwoTables = "--//[mylock]) co dau ) thua o Ser_Customer va ser_mst_model => hai bang nay khong duoc gan rowlock",
+    });
+}).RequireAuthorization();
+
+// #750 Nguồn `SerCarDelete` xoá theo **hai** khoá `DealerCode` + `CarID`, có guard `CheckExistCarID`,
+//   và xoá trên cả ba CSDL. Mini một CSDL, giữ nguyên phạm vi hai khoá.
+app.MapDelete("/api/servicecars/by-carid/{carId}", async (string carId, AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Cần mã đại lý (nguồn xoá theo DealerCode + CarID)." });
+    var id = carId.Trim(); var dl = dealer!.Trim().ToUpperInvariant();
+    var car = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == id && x.DealerCode == dl);
+    if (car is null) return Results.NotFound(new { carId = id, dealer = dl });
+    db.ServiceCars.Remove(car);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id, dealer = dl, sourceDeletesOnThreeDbs = "nguon xoa _dbMain + _dbWH + _dbDealer (co dieu kien bIsWSMain) — mau xoa DAY DU nhat gap toi gio" });
+}).RequireAuthorization();
 app.MapPost("/api/servicecars/{frameNo}/membercar", async (
     string frameNo, ServiceCarMemberDto dto, AppDbContext db, ITenantContext t) =>
 {
