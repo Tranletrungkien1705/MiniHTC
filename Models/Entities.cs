@@ -493,6 +493,13 @@ public sealed class Bom
 /// <summary>Dòng BOM: 1 phụ tùng + số lượng định mức.</summary>
 public sealed class BomLine
 {
+    // ===== 🔴 #720 §12 — hai cột nguồn `Mst_BOMDtl` dùng để nối, mà bản port thiếu.
+    //   Nguồn: `inner join Mst_BOMDtl mbdt on mb.**BOMCode** = mbdt.BOMCode`
+    //          `inner join Ser_MST_Part smp on mbdt.**PartCode** = smp.PartCode`
+    //   ⚠️ `BomId` (khoá ngoại số) KHÔNG thay được `BOMCode`: nguồn nối bằng **mã chuỗi** giữa hai CSDL.
+    public string? BOMCode { get; set; }
+    public string? PartCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long BomId { get; set; }

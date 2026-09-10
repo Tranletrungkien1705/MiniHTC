@@ -46144,6 +46144,76 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #720 TRẢ NỢ `Mst_BOMDtl` — TỒN TỐI THIỂU THEO ĐỊNH MỨC BOM (`StationInvQtyMin`) =====
+// Nợ mở ở #689 (`miniModelGap`: *"Mini chưa mô hình hoá `Mst_BOMDtl` theo `PartCode` ⇒ nhánh
+// `StationInvQtyMin` chưa port được đầy đủ"*). Nguồn `BizCarSv.ZTemp.cs:1395-1480`.
+// → `GET /api/report/station-inv-qtymin-bom`.
+// 📌 Một nửa nợ **đã tự đóng**: `ServicePart` **nay đã có** `DealerCode` (kiểm lại thực tế, không nhớ theo đầu).
+//   Nửa còn lại — `Mst_BOMDtl` — vá ở lượt này.
+//
+// 🔴🔴🔴 **PHÁT HIỆN MỚI — BỘ LỌC ĐẠI LÝ CHUYỂN TỪ `WHERE` SANG `inner join` ⇒ MẤT DÒNG LÚC ĐỌC** (#410):
+//     `--and (N'@strDealerCode' = '' or smp.DealerCode = N'@strDealerCode')`   ← **đã bị comment**
+//     `inner join #tbl_Mst_Dealer_Filter f on smp.DealerCode = f.DealerCode`      ← **thay bằng dòng này**
+//   Bảng `#tbl_Mst_Dealer_Filter` dựng từ `Mst_Dealer`, nên phụ tùng của một đại lý **không có trong danh mục
+//   `Mst_Dealer`** sẽ **biến mất khỏi báo cáo** — trong khi bản `WHERE` cũ (đang bị comment) thì **không** loại.
+//   ⇒ Đổi chỗ một điều kiện từ `WHERE` sang `JOIN` **đổi luôn ngữ nghĩa**; không ai đánh dấu là thay đổi nghiệp vụ.
+//   ⚠️ Và khi `@strDealerCode` rỗng, bảng lọc chứa **mọi** đại lý ⇒ join **vẫn** loại phụ tùng có `DealerCode`
+//     mồ côi. Tức tác dụng phụ **không biến mất** kể cả khi người dùng không lọc gì.
+// 🔴🔴🔴 **NỐI BẢNG VỚI CHÍNH NÓ ⇒ BỘ LỌC BOM BỊ VÔ HIỆU** (đã ghi ở #689, nay **đọc lại xác nhận nguyên văn**):
+//     `inner join #tbl_Mst_BOM_Filter t on **t.BOMCode = t.BOMCode**`   ← lẽ ra `mb.BOMCode = t.BOMCode`
+//   ⇒ `mb` không bị ràng buộc ⇒ lấy **mọi** `Mst_BOM`, rồi `inner join Mst_BOMDtl on mb.BOMCode = mbdt.BOMCode`
+//     ⇒ **toàn bộ định mức của mọi BOM**; bảng `#tbl_Mst_BOM_Filter` dựng công phu rồi **vứt đi**.
+// 🔴 **MÃ ĐẠI LÝ TEST BỊ BỎ QUÊN**: `--and (N'VC048' = '' or t.DealerCode = N'VC048')` nằm ngay trên dòng
+//   đang chạy. Port dòng ACTIVE; ghi lại như **mùi**.
+// ⚪ **ÂM TÍNH — `into objTableName_Ser_Mst_Part` KHÔNG phải bảng thật**: thoạt nhìn giống placeholder chưa thay
+//   ⇒ sẽ tạo **bảng vĩnh viễn dùng chung giữa các phiên**. Đã kiểm: `:1395` khai báo
+//   `object objTableName_Ser_Mst_Part = "#tbl_Ser_MST_Part";` và `:1474` **có** dòng `Replace` tương ứng
+//   (đếm token theo #669: **9** lần = khai báo ×2 + SQL ×3 + Replace ×2 + template ×1 + comment ×1 — bình thường).
+//   ⇒ **Đúng là bảng tạm.** Ghi ⚪ vì suýt báo nhầm một lỗi nặng (đúng luật vừa rút ở #719).
+app.MapGet("/api/report/station-inv-qtymin-bom", async (AppDbContext db, ITenantContext t,
+    string? bomCode, string? dealerCode) =>
+{
+    var bc = (bomCode ?? "").Trim();
+    var dc = (dealerCode ?? "").Trim();
+
+    // Nguồn dựng #tbl_Mst_BOM_Filter (lọc theo bomCode) rồi NỐI SAI nên vứt đi.
+    // Port: tính CẢ HAI để đo đúng phần nguồn đang lấy thừa.
+    var linesAll = await db.BomLines.Where(x => x.OrgId == t.OrgId && x.PartCode != null).ToListAsync();
+    var linesFiltered = bc.Length == 0 ? linesAll
+        : linesAll.Where(x => x.BOMCode == bc).ToList();
+
+    var partCodes = linesFiltered.Select(x => x.PartCode!).Distinct().ToList();
+    var partsQ = db.ServiceParts.Where(p => p.OrgId == t.OrgId && partCodes.Contains(p.PartCode));
+    var parts = await partsQ.Select(p => new { p.PartCode, p.DealerCode, p.PartID, p.Quantity, p.MinQuantity })
+        .ToListAsync();
+
+    // Nguồn nối `inner join #tbl_Mst_Dealer_Filter` ⇒ phụ tùng có DealerCode KHÔNG có trong Mst_Dealer bị LOẠI.
+    var dealerCodes = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => d.DealerCode).ToListAsync();
+    var scoped = dc.Length == 0 ? dealerCodes : dealerCodes.Where(x => x == dc).ToList();
+    var kept = parts.Where(p => p.DealerCode != null && scoped.Contains(p.DealerCode)).ToList();
+    var droppedByDealerJoin = parts.Count - kept.Count;
+    var orphanDealerCodes = parts.Where(p => p.DealerCode == null || !dealerCodes.Contains(p.DealerCode))
+        .Select(p => p.DealerCode).Distinct().ToList();
+
+    return Results.Ok(new
+    {
+        bomCode = bc, dealerCode = dc,
+        count = kept.Count, items = kept,
+        // Đo đúng phần nguồn lấy THỪA vì nối bảng với chính nó.
+        bomLinesIfFilterWorked = linesFiltered.Count,
+        bomLinesSourceActuallyUses = linesAll.Count,
+        extraLinesFromBrokenSelfJoin = linesAll.Count - linesFiltered.Count,
+        droppedByDealerJoin, orphanDealerCodes,
+        // ===== #720 =====
+        dealerFilterMovedFromWhereToInnerJoin = "PHAT HIEN MOI — BO LOC DAI LY CHUYEN TU WHERE SANG inner join => MAT DONG LUC DOC (#410): dong --and (N@strDealerCode = '' or smp.DealerCode = N@strDealerCode) DA BI COMMENT, thay bang inner join #tbl_Mst_Dealer_Filter f on smp.DealerCode = f.DealerCode. Bang loc dung tu Mst_Dealer nen phu tung cua mot dai ly KHONG CO trong danh muc Mst_Dealer se BIEN MAT khoi bao cao — trong khi ban WHERE cu (dang bi comment) thi KHONG loai. Doi cho mot dieu kien tu WHERE sang JOIN DOI LUON NGU NGHIA, khong ai danh dau la thay doi nghiep vu. Va khi @strDealerCode rong, bang loc chua MOI dai ly => join VAN loai phu tung co DealerCode mo coi => tac dung phu KHONG bien mat ke ca khi nguoi dung khong loc gi",
+        selfJoinDisablesBomFilterConfirmed = "NOI BANG VOI CHINH NO => BO LOC BOM BI VO HIEU (da ghi o #689, nay doc lai xac nhan nguyen van): inner join #tbl_Mst_BOM_Filter t on t.BOMCode = t.BOMCode — le ra mb.BOMCode = t.BOMCode => mb khong bi rang buoc => lay MOI Mst_BOM roi inner join Mst_BOMDtl on mb.BOMCode = mbdt.BOMCode => TOAN BO dinh muc cua moi BOM; bang #tbl_Mst_BOM_Filter dung cong phu roi VUT DI. Da do bang extraLinesFromBrokenSelfJoin",
+        testDealerCodeLeftBehind = "MA DAI LY TEST BI BO QUEN: --and (NVC048 = '' or t.DealerCode = NVC048) nam ngay tren dong dang chay. Port dong ACTIVE; ghi lai nhu MUI",
+        negativeTempTableIsReallyTemp = "AM TINH: into objTableName_Ser_Mst_Part KHONG phai bang that. Thoat nhin giong placeholder chua thay => se tao BANG VINH VIEN dung chung giua cac phien. Da kiem: :1395 khai bao object objTableName_Ser_Mst_Part = #tbl_Ser_MST_Part; va :1474 CO dong Replace tuong ung (dem token theo #669: 9 lan = khai bao x2 + SQL x3 + Replace x2 + template x1 + comment x1 — binh thuong) => DUNG la bang tam. Ghi vi suyt bao nham mot loi nang (dung luat vua rut o #719)",
+        debtHalfClosedByItself = "Mot nua no da tu dong: ServicePart NAY DA CO DealerCode (kiem lai thuc te, khong nho theo dau). Nua con lai — Mst_BOMDtl — va o luot nay bang cach them BOMCode + PartCode vao BomLine (§12 bon cho)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #718 API CHUNG ĐỌC/GHI DANH MỤC `CommonGetMasterData` + `CommonSaveMasterData` =====
 // `BizCarSv.Common.cs` — `Get` :1323-1436 md5 `e86733cf` · `Save` :1438-1629 md5 `aad66ccf`
 // (**cả hai KHỚP máy 150, cùng offset**); whitelist `myCommon_GetSupportedTable` :687-739.
