@@ -58939,6 +58939,63 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 //     `S=$(grep -nE "^[[:space:]]*(public|private|protected|internal)[[:space:]].*TenHam\(" $F | head -1 | cut -d: -f1)`
 //     `E=$(awk -v s=$S 'NR>s && /^[[:space:]]*(public|private|protected|internal)[[:space:]]/{print NR; exit}' $F)`
 //     `[ -z "$E" ] && E=$((L+1))`   ← vẫn cần nhánh dự phòng cho **hàm cuối file** (md5 rỗng `d41d8cd9`).
+// ===== 🔴🔴🔴 #805 "CODE LIVE TRONG FILE TÊN TẠM" — ĐO ĐỊNH LƯỢNG: **57 HÀM**, 42.779 DÒNG =====
+// Khuôn này đã ghi **ba** lần (#794 `Ser_RO_Create` tablet · #796 `Ser_ReceptionF_Reception` tablet+ClientService ·
+// #804 `…_GetClaim*_New20190710` **kể cả đường WEB**). Theo luật "lần thứ ba trở đi thì đi đo cho hết", quét
+// toàn bộ hàm `public` của hai file mang tên tạm rồi đối chiếu với lời gọi từ **cả ba** đường vào
+// (2 WS + `ClientService/Services/*.cs`, đã loại dòng comment):
+//   · `BizCarSv.**ZTemp**.cs`     — **34.083** dòng · **88** hàm `public` · **44 ĐANG ĐƯỢC GỌI**
+//   · `BizCarSv.**zzzzCode**.cs`  — **8.696** dòng · **19** hàm `public` · **13 ĐANG ĐƯỢC GỌI**
+//   ⇒ **57 hàm production** sống trong hai file mà tên tự nhận là *tạm* / *rác*, tổng **42.779** dòng.
+//   ⇒ Đây **không phải "vài hàm sót lại"**: nó là **một nửa** `ZTemp` và **hai phần ba** `zzzzCode`.
+//
+// 🔴🔴🔴 **CẢ CỤM NGHIỆP VỤ SỐNG TRONG `ZTemp`, KHÔNG PHẢI HÀM LẺ**
+//   · **Định mức vật tư** — `Mst_BOM_Get` / `_Add` / `_Update` / `_Delete` (**đủ bộ CRUD**)
+//   · **Thư viện kỹ thuật** — `Ser_Technical_Library_Get` / `_GetWH` / `_Add` / `_Update` / `_Save` /
+//     `_Approve` / `_Delete` (**7 hàm, gồm cả duyệt và xoá**)
+//   · **Lịch hẹn** — 9 hàm `Ser_App_*` (`_Create_New20201230`, `_Update_New20190621` **và** `_Update_New20201230`,
+//     `_GetStatusList01(_WH)_New20201230`, `_GetNew(_WH)_New20190624`, `_UpdateStatus_New20190710`, …)
+//   · **Tích hợp Veloca** — 5 hàm `OSVeloca_Ser_RO_*` · **iCIC** — `iCIC_ListClaimByPlateNo`,
+//     `iCIC_DmsClaimReportByTypeAndDate` · **Báo cáo tồn** — `Rpt_InventoryBalance_GroupByPart`,
+//     `_StationInvQtyMin` · **KPI** — `Report_KPICreate_Auto*`, `Report_DashboardCreate_AutoDealer`
+//   · `Ser_RO_Status_Get` · `idocNet_Support_Ser_App_Get(WH)`
+//   Còn `zzzzCode.cs` giữ **màn tra trạng thái lệnh sửa chữa** (`Ser_RO_GetStatusList_New20230220`,
+//   `_WH_New20230220`, `_ForStatusRealTime_WH_New20230220`, `Ser_RO_Get_WH_New20230220`) và **toàn bộ cụm KPI**
+//   (`Report_KPIGet` / `_Real_New20221101` / `_Approved` / `_Update` / `FormattedReport_KPIGet_ByYear`),
+//   cùng `SequenceGetForDMS` và `Ser_Customer_Update01_New20220926`.
+//
+// 🔴🔴 **`Mst_BOM_*` VÀ `Ser_Technical_Library_*` KHÔNG CÓ BẢN NÀO Ở FILE "CHÍNH THỨC"**
+//   `grep -rl` khai báo `Mst_BOM_Get` / `Ser_Technical_Library_Get` trên toàn `TERP.BizCarSv/*.cs` ⇒ **chỉ**
+//   `BizCarSv.ZTemp.cs`. ⇒ Đây **không phải bản nháp song song** với một bản chính thức nào cả —
+//   `ZTemp` là **NHÀ DUY NHẤT** của hai nghiệp vụ đó.
+//   📌 Hệ quả cho việc port: ai tìm nghiệp vụ "định mức vật tư" hay "thư viện kỹ thuật" trong các file
+//     `BizCarSv.Master.cs` / `.Service.cs` sẽ **không thấy gì** và dễ kết luận nhầm là **chưa có**.
+// ⚪ Mini **đã port cả hai**: `Mst_BOM` xuất hiện 41 lần (`/api/bom*`), `TechnicalLibrary` có khối riêng
+//   (`:23481`, port 1:1 `FrmSer_Technical_Library`) ⇒ **không phải nợ mới**; giá trị của vòng này là **bản đồ**
+//   để lần sau không phải dò lại.
+app.MapGet("/api/_meta/live-code-in-temp-files", () => Results.Ok(new
+{
+    method = "quet toan bo ham public cua BizCarSv.ZTemp.cs va BizCarSv.zzzzCode.cs roi doi chieu voi loi goi tu CA BA duong vao (WSCarSv.asmx.cs + WSCarSvTab.asmx.cs + ClientService/Services/*.cs), da loai dong comment",
+    zTemp = new { file = "BizCarSv.ZTemp.cs", lines = 34083, publicMethods = 88, liveMethods = 44 },
+    zzzzCode = new { file = "BizCarSv.zzzzCode.cs", lines = 8696, publicMethods = 19, liveMethods = 13 },
+    totalLiveMethodsInTempNamedFiles = 57,
+    totalLinesInTempNamedFiles = 42779,
+    notStragglersButWholeDomains = new[]
+    {
+        "Dinh muc vat tu: Mst_BOM_Get/_Add/_Update/_Delete (du bo CRUD)",
+        "Thu vien ky thuat: Ser_Technical_Library_Get/_GetWH/_Add/_Update/_Save/_Approve/_Delete (7 ham, gom ca duyet va xoa)",
+        "Lich hen: 9 ham Ser_App_* (co CA _Update_New20190621 LAN _Update_New20201230)",
+        "Tich hop Veloca: 5 ham OSVeloca_Ser_RO_*",
+        "iCIC: iCIC_ListClaimByPlateNo, iCIC_DmsClaimReportByTypeAndDate",
+        "Bao cao ton: Rpt_InventoryBalance_GroupByPart, Rpt_InventoryBalance_StationInvQtyMin",
+        "KPI (zzzzCode): Report_KPIGet/_Real_New20221101/_Approved/_Update, FormattedReport_KPIGet_ByYear, Report_KPICreate_Auto*",
+        "Man tra trang thai lenh sua chua (zzzzCode): Ser_RO_GetStatusList_New20230220, _WH_New20230220, _ForStatusRealTime_WH_New20230220, Ser_RO_Get_WH_New20230220",
+    },
+    zTempIsTheOnlyHomeFor = new[] { "Mst_BOM_*", "Ser_Technical_Library_*" },
+    onlyHomeEvidence = "grep -rl khai bao Mst_BOM_Get / Ser_Technical_Library_Get tren toan TERP.BizCarSv/*.cs chi ra DUY NHAT BizCarSv.ZTemp.cs => khong phai ban nhap song song voi mot ban chinh thuc, ZTemp la NHA DUY NHAT",
+    portingConsequence = "ai tim nghiep vu dinh muc vat tu hay thu vien ky thuat trong BizCarSv.Master.cs / .Service.cs se KHONG THAY GI va de ket luan nham la CHUA CO",
+    miniAlreadyPortedBoth = "Mini da co /api/bom* (Mst_BOM xuat hien 41 lan) va khoi TechnicalLibrary port 1:1 FrmSer_Technical_Library (:23481) => KHONG phai no moi; gia tri cua vong nay la BAN DO de lan sau khoi do lai",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/tab-indent-extraction-risk", () => Results.Ok(new
 {
     scope = "TERP.BizCarSv/*.cs (40 file)",
