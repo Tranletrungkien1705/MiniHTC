@@ -5992,6 +5992,47 @@ app.MapPost("/api/sysusers/delete", async (SysUserKeyDto dto, AppDbContext db, I
     return Results.Ok(new { deleted = code, mode = "hard (2010.HTC)" });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #760 CỤM `Ser_Sys*` PHÍA CarSv (`BizCarSv.System.cs`) — VÒNG ĐỐI CHIẾU =====
+// `Ser_SysGetUser` :421-598 md5 `657b321b` · `Ser_SysResetUserPassword` :1629-1750 md5 `59d8f044` ·
+// `Ser_SysSaveUser` :1751-2028 md5 `41e5212d`. Đây là **bản CarSv**, khác `SysResetUserPassword`/
+// `CommonChangeUserPassword` mà endpoint dưới đây đã port ⇒ vòng này vá cờ, KHÔNG tính màn mới.
+//
+// 🔴🔴🔴 **MẬT KHẨU ĐI SUỐT BA TẦNG MÀ KHÔNG QUA MỘT BƯỚC BĂM NÀO**
+//   WS (`WSCarSv.asmx.cs:1151`) nhận `string strPasswordReset` → truyền **nguyên xi** xuống biz →
+//   biz gán thẳng `dt_Sys_User.Rows[0]["**UserPassword**"] = strPasswordReset;` rồi
+//   `_dbMain.SaveData("Sys_User", …)` + `_dbWH.SaveData("Sys_User", …)`.
+//   Grep cả đoạn WS quanh lời gọi: **không** `Encrypt`/`Hash`/`MD5`/`MyEncode` nào chạm vào tham số này.
+//   ⇒ Trên toàn tuyến WS→biz→CSDL **không có bước băm**; cột lưu tên là `UserPassword`, không phải `…Hash`.
+//
+// 🔴🔴🔴 **VÀ SENTINEL `"********"` CHỨNG MINH ĐIỀU ĐÓ LÀ CỐ Ý, KHÔNG PHẢI SƠ SUẤT**
+//   `Ser_SysSaveUser` phân loại người dùng sửa thành hai nhóm bằng:
+//     `if (StringUtils.StringEqual(dtModified.Rows[i]["UserPassword"], TConst.HTCConst.**PasswordTemplate**))`
+//     → nhóm "không đổi mật khẩu" (cột `UserPassword` **không** nằm trong `alColumnEffective`)
+//     → ngược lại là nhóm "có đổi mật khẩu".
+//   Mở hằng (`TERP.Constants/Const.Main.cs:127`): `public const string PasswordTemplate = "**********"` —
+//   **tám dấu sao**, đúng chuỗi mà form hiển thị để che mật khẩu cũ.
+//   ⇒ Hai hệ quả nối nhau:
+//     (a) Phép so sánh này **chỉ hoạt động được khi `UserPassword` là chữ rõ** — nếu băm thì so với "********"
+//         là vô nghĩa. ⇒ Việc **không băm** không phải bỏ quên: **cả cơ chế phân nhóm dựa vào nó**.
+//     (b) `"********"` trở thành **mật khẩu không thể đặt được**: ai đặt đúng tám dấu sao thì hệ hiểu là
+//         "giữ nguyên mật khẩu cũ" và **âm thầm không đổi**, trong khi người dùng tin là đã đổi.
+//   📌 Đây là mẫu "sentinel nằm trong chính trường dữ liệu" — cùng họ với các cờ `''`/`0` đã gặp, nhưng hệ quả
+//     bảo mật: giá trị canh chừng lại là **một giá trị hợp lệ của miền dữ liệu**.
+//
+// 🔴🔴 **LUẬT ĐẾM GUARD #747 CỦA TÔI CÒN THIẾU — GUARD CÒN NÚP DƯỚI TIỀN TỐ `my…_`**
+//   Bảng đếm đầu tiên: `Ser_SysResetUserPassword` có `CMyException.Raise` = 0 **và** `this.Check*` = 0
+//   ⇒ theo luật #747 thì kết luận "không guard". SAI: hàm mở đầu bằng `#region // Check:` gọi
+//     `**mySys_CheckUser**(ref alParamsCoupleError, strDealerCodeList, strUserCodeReset, TConst.Flag.Active, …)`
+//   ⇒ guard tồn tại, chỉ mang tiền tố `mySys_` thay vì `this.Check`. Đếm lại bằng
+//     `grep -cE "\bmy[A-Za-z]+_Check[A-Za-z]*\("` ⇒ `_ResetUserPassword` = **1** · `_GetUser` = 0 · `_SaveUser` = 0.
+//   ⇒ **Luật đếm guard nay có BA nguồn**: `CMyException.Raise` · `this.Check*` · `my<gì đó>_Check*`.
+// ⚪⚪ **ÂM TÍNH — `Ser_SysSaveUser` Main 5 / WH 4 KHÔNG lệch**: 5 = **1 `ExecQuery` (đọc)** + 4 `SaveData`,
+//   còn WH = 4 `SaveData` ⇒ **cân đủ bốn đường ghi** (xoá · sửa-không-đổi-mật-khẩu · sửa-có-đổi · thêm mới).
+//   Đúng luật tách READ/WRITE (#742): đừng so tổng, phải so **số lệnh GHI**.
+// 🔴 `strUserCodeReset = strUserCodeReset.**ToUpper()**` — ép hoa mã người dùng trước khi tra. Liên quan nợ
+//   `VC079.UserCode` casing (#719): nếu CSDL phân biệt hoa/thường thì đây là điểm ép chuẩn duy nhất trên tuyến này.
+// 📌 Mini **đã** lưu `UserPasswordHash` (băm) từ trước — **khác nguồn CÓ CHỦ Ý**, và vì thế **không** tái hiện
+//   được sentinel `"********"`; cờ dưới đây ghi rõ để không ai tưởng Mini bỏ sót một nhánh nghiệp vụ.
 // Đặt lại mật khẩu (nguồn `SysResetUserPassword`) — quản trị đặt mật khẩu mới cho người khác.
 app.MapPost("/api/sysusers/reset-password", async (SysUserResetPwdDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -6002,7 +6043,14 @@ app.MapPost("/api/sysusers/reset-password", async (SysUserResetPwdDto dto, AppDb
     if (row is null) return Results.NotFound(new { error = $"Không có người dùng {code}." });
     row.UserPasswordHash = HashPwd(pwd);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.UserCode, reset = true });
+    return Results.Ok(new
+    {
+        row.UserCode, reset = true,
+        sourceStoresPlaintextPassword = "#760: WS Ser_SysResetUserPassword nhan strPasswordReset roi biz gan thang vao Sys_User.UserPassword; khong co buoc bam nao tren toan tuyen WS->biz->CSDL",
+        sourceUsesPasswordSentinel = "#760: Ser_SysSaveUser coi UserPassword == TConst.HTCConst.PasswordTemplate (= tam dau sao) la KHONG doi mat khau => co che nay CHI chay duoc vi mat khau luu chu ro, va tam dau sao tro thanh mat khau khong the dat duoc",
+        miniHashesInstead = "Mini luu UserPasswordHash nen KHONG tai hien sentinel — khac biet CO CHU Y",
+        sourceUppercasesUserCode = "nguon: strUserCodeReset.ToUpper() truoc khi tra (lien quan no VC079.UserCode casing #719)",
+    });
 }).RequireAuthorization();
 
 // Tự đổi mật khẩu (nguồn `CommonChangeUserPassword`): phải khớp mật khẩu CŨ mới cho đổi.
