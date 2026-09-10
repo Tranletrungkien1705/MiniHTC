@@ -46144,6 +46144,109 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #724 BÁO CÁO TỔNG HỢP DỊCH VỤ `Rpt_BCTH_CarSvGet_New20230406` =====
+// `BizCarSv.HTC.BaoCaoTongHop.cs:453-887` (md5 `9a2ac965` — **hàm CUỐI file**). WS LIVE
+// `WSCarSv.asmx.cs:28051` **tên `Rpt_BCTH_CarSvGet`** nhưng gọi `_biz.Rpt_BCTH_CarSvGet_**New20230406**`
+// ⇒ **bản CÓ hậu tố ngày là bản SỐNG**, bản không hậu tố (`:24-452`, md5 `3d8416c2`) là **bản CHẾT**.
+// → `GET /api/report/bcth-carsv`.
+//
+// **DIFF TRỌN HÀM chết ↔ LIVE** (luật #414) — kết quả **cực gọn**, và đúng dự đoán của luật:
+//   khác biệt thật nằm **ở DANH SÁCH CỘT**, không ở `WHERE`. Toàn bộ thay đổi giữa hai bản là:
+//     `car.TradeMarkCode` → `**--**car.TradeMarkCode` (comment) ở **hai** câu `SELECT`, và bỏ dấu phẩy đầu dòng kế.
+//   ⇒ Bản 2023 **thôi trả cột hãng xe** ra bảng tạm; mọi thứ khác giữ nguyên.
+//
+// 🔴🔴🔴 **HAI NHÁNH GẦN NHƯ Y HỆT — MỘT BÊN `left join` SỐNG, MỘT BÊN CHẾT** (luật #414 câu 3):
+//   · `#tbl_Ser_Ro` (lượt xe DV): `where` **không** đụng tới `car` ⇒ `left join ser_car` **CÒN SỐNG**
+//     ⇒ lệnh của xe **không có** trong `Ser_Car` **vẫn được đếm**.
+//   · `#tbl_Ser_Ro_Hyundai`: `where … and (car.TradeMarkCode = …)` — điều kiện đặt **trên bảng LEFT** và
+//     **KHÔNG** bọc guard rỗng ⇒ `left join` **hoá `inner join`** ⇒ xe không có trong `Ser_Car` **bị loại hẳn**.
+//   ⇒ Hai bảng tạm cạnh nhau, cùng khuôn, **mẫu số khác nhau**. Tỷ lệ "lượt xe Hyundai / lượt xe DV" vì thế
+//     **không cùng một tập gốc** — không ai đánh dấu điều đó.
+// 🔴🔴🔴 **SO HÃNG XE BẰNG BA BIẾN THỂ HOA/THƯỜNG GÕ TAY**:
+//     `and ( car.TradeMarkCode = 'HYUNDAI' or car.TradeMarkCode = 'Hyundai' or car.TradeMarkCode = 'hyundai')`
+//   ⇒ Tác giả **tự biết** so sánh có thể phân biệt hoa/thường nên liệt kê tay **ba** dạng — nhưng **thiếu** mọi
+//     dạng còn lại (`HyunDai`, `hYUNDAI`, có khoảng trắng thừa…) ⇒ xe Hyundai lưu kiểu khác **không được đếm**,
+//     im lặng. Cách đúng là `upper(ltrim(rtrim(...))) = 'HYUNDAI'` hoặc ép collation.
+//   📌 **MẪU THỨ BA của cùng một bệnh**, sau nợ #681 (collation) và #719 (`SYSADMIN` vs `sysadmin`) —
+//     và là **lần đầu** thấy nó trên **dữ liệu nghiệp vụ**, không phải mã người dùng.
+// 🔴🔴 **MẤT TRỌN NGÀY CUỐI** (#415): `sr.ActualDeliveryDate <= @strTDate_To` trên cột **DATETIME**
+//   ⇒ lệnh giao xe **trong ngày cuối kỳ** bị loại khỏi **cả hai** bảng tạm. Đã đếm phần bị loại.
+// 🔴 **`Status = 'FNS'` GÕ CỨNG** ở cả hai nhánh ⇒ chỉ đếm lệnh **đã giao xe**; mã trạng thái mới **bị loại**
+//   (kiểu `in`/`=` — đối lập với `not in` của #705 vốn **kết nạp** mã mới).
+// 🔴 **`sr.*` vào bảng tạm** ⇒ hợp đồng cột phụ thuộc schema `Ser_Ro` (họ #677/#700/#702/#708).
+// ⚪ **ÂM TÍNH — join xe theo CẶP KHOÁ**: `on car.CarID = sr.CarID **and sr.DealerCode = car.DealerCode**`
+//   ⇒ cùng một `CarID` ở hai đại lý là **hai xe**; đúng khuôn đã thấy ở #703 (`Sys_User` theo cặp).
+// ⚪ **ÂM TÍNH — tham số hoá THẬT**: `@strTDate_From`/`@strTDate_To` nạp qua `alParamsCoupleSql`, **không** bake
+//   (đối lập #712/#713).
+// ⚠️ **BƯỚC 3B — lại gặp `d41d8cd9`**: lần đầu trích ra md5 của **chuỗi rỗng** vì hàm này là **hàm CUỐI FILE**
+//   nên `awk` không tìm được ranh giới sau ⇒ `E` rỗng ⇒ `E-1 = -1`. Đã sửa: **không có ranh giới thì lấy cuối
+//   file** (`E = wc -l + 1`). Đúng luật vừa rút ở #721 — thấy `d41d8cd9` là **dừng, sửa lệnh trích**.
+app.MapGet("/api/report/bcth-carsv", async (AppDbContext db, ITenantContext t,
+    DateTime? tDateFrom, DateTime? tDateTo) =>
+{
+    // Nguồn gõ cứng ba biến thể — CHÉP NGUYÊN VĂN, không tự thêm dạng khác.
+    string[] hyundaiVariants = { "HYUNDAI", "Hyundai", "hyundai" };
+
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Status == "FNS");
+    if (tDateFrom is not null) qr = qr.Where(x => x.ActualDeliveryDate >= tDateFrom!.Value);
+    // GIỮ 1:1 mốc `<=` của nguồn (mất ngày cuối) — đo phần bị loại bên dưới.
+    if (tDateTo is not null) qr = qr.Where(x => x.ActualDeliveryDate <= tDateTo!.Value);
+    var ros = await qr.Select(x => new { x.Id, x.RONo, x.DealerCode, x.CarID }).ToListAsync();
+
+    var carIds = ros.Where(r => r.CarID != null).Select(r => r.CarID!).Distinct().ToList();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && c.CarID != null && carIds.Contains(c.CarID))
+        .Select(c => new { c.CarID, c.DealerCode, c.TradeMark }).ToListAsync();
+    // Nguồn nối theo CẶP (CarID, DealerCode).
+    string? BrandOf(string? carId, string? dlr) =>
+        cars.FirstOrDefault(c => c.CarID == carId && c.DealerCode == dlr)?.TradeMark;
+
+    // Nhánh 1 — left join CÒN SỐNG: đếm MỌI lệnh, kể cả lệnh không tìm thấy xe.
+    var luotXeDV = ros.GroupBy(r => r.DealerCode)
+        .Select(g => new { DealerCode = g.Key, CarSv_LuotXeDV = g.Count() }).ToList();
+
+    // Nhánh 2 — left join CHẾT: điều kiện trên bảng LEFT ⇒ lệnh không tìm thấy xe bị LOẠI.
+    var hyundaiRos = ros.Where(r => hyundaiVariants.Contains(BrandOf(r.CarID, r.DealerCode) ?? "")).ToList();
+    var luotXeHyundai = hyundaiRos.GroupBy(r => r.DealerCode)
+        .Select(g => new { DealerCode = g.Key, CarSv_LuotXeHyundai = g.Count() }).ToList();
+
+    // Đo đúng ba chỗ nguồn đang nuốt dữ liệu.
+    var rosWithoutCar = ros.Count(r => BrandOf(r.CarID, r.DealerCode) is null);
+    var brandsSeen = cars.Select(c => c.TradeMark).Where(b => b != null).Distinct().ToList();
+    var hyundaiLikeButNotMatched = brandsSeen
+        .Where(b => b!.Trim().Equals("HYUNDAI", StringComparison.OrdinalIgnoreCase) && !hyundaiVariants.Contains(b))
+        .ToList();
+    var lostByEndDateInclusive = 0;
+    if (tDateTo is not null)
+        lostByEndDateInclusive = await db.RepairOrders.CountAsync(x => x.OrgId == t.OrgId && x.Status == "FNS"
+            && x.ActualDeliveryDate > tDateTo!.Value
+            && x.ActualDeliveryDate < tDateTo!.Value.Date.AddDays(1));
+
+    var dealers = luotXeDV.Select(x => x.DealerCode).Union(luotXeHyundai.Select(x => x.DealerCode)).Distinct();
+    var rows = dealers.Select(d => new
+    {
+        DealerCode = d,
+        CarSv_LuotXeDV = luotXeDV.FirstOrDefault(x => x.DealerCode == d)?.CarSv_LuotXeDV ?? 0,
+        CarSv_LuotXeHyundai = luotXeHyundai.FirstOrDefault(x => x.DealerCode == d)?.CarSv_LuotXeHyundai ?? 0,
+    }).OrderBy(x => x.DealerCode).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        rosWithoutCar, hyundaiLikeButNotMatched, brandsSeen, lostByEndDateInclusive,
+        // ===== #724 =====
+        liveVersionIsTheDateSuffixedOne = "WS Rpt_BCTH_CarSvGet (:28051) goi _biz.Rpt_BCTH_CarSvGet_New20230406 => BAN CO HAU TO NGAY LA BAN SONG, ban khong hau to (:24-452, md5 3d8416c2) la BAN CHET. Phai grep NOI GOI moi biet (#413)",
+        diffBetweenDeadAndLiveIsOnlyAColumn = "DIFF TRON HAM chet <-> LIVE (luat #414) — ket qua CUC GON va DUNG DU DOAN cua luat: khac biet that nam O DANH SACH COT, khong o WHERE. Toan bo thay doi giua hai ban la car.TradeMarkCode -> --car.TradeMarkCode (comment) o HAI cau SELECT, va bo dau phay dau dong ke => ban 2023 THOI TRA COT HANG XE ra bang tam; moi thu khac giu nguyen",
+        oneLeftJoinAliveOneDead = "HAI NHANH GAN NHU Y HET — MOT BEN left join SONG, MOT BEN CHET (luat #414 cau 3): #tbl_Ser_Ro (luot xe DV) co where KHONG dung toi car => left join ser_car CON SONG => lenh cua xe KHONG CO trong Ser_Car VAN DUOC DEM; #tbl_Ser_Ro_Hyundai co where … and (car.TradeMarkCode = …) — dieu kien dat TREN BANG LEFT va KHONG boc guard rong => left join HOA inner join => xe khong co trong Ser_Car BI LOAI HAN. Hai bang tam canh nhau, cung khuon, MAU SO KHAC NHAU => ty le luot-xe-Hyundai / luot-xe-DV KHONG cung mot tap goc, khong ai danh dau. Da dem bang rosWithoutCar",
+        threeHandTypedCaseVariantsForBrand = "SO HANG XE BANG BA BIEN THE HOA/THUONG GO TAY: and (car.TradeMarkCode = HYUNDAI or car.TradeMarkCode = Hyundai or car.TradeMarkCode = hyundai) => tac gia TU BIET so sanh co the phan biet hoa/thuong nen liet ke tay BA dang — nhung THIEU moi dang con lai (HyunDai, hYUNDAI, co khoang trang thua…) => xe Hyundai luu kieu khac KHONG DUOC DEM, im lang. Cach dung la upper(ltrim(rtrim(...))) = HYUNDAI hoac ep collation. MAU THU BA cua cung mot benh, sau no #681 (collation) va #719 (SYSADMIN vs sysadmin) — va la LAN DAU thay no tren DU LIEU NGHIEP VU, khong phai ma nguoi dung. Da do bang hyundaiLikeButNotMatched",
+        endDateInclusiveLosesLastDay = "MAT TRON NGAY CUOI (#415): sr.ActualDeliveryDate <= @strTDate_To tren cot DATETIME => lenh giao xe TRONG NGAY CUOI KY bi loai khoi CA HAI bang tam. Da dem bang lostByEndDateInclusive",
+        statusHardcodedFNS = "Status = FNS GO CUNG o ca hai nhanh => chi dem lenh DA GIAO XE; ma trang thai moi BI LOAI (kieu in/= — doi lap voi not in cua #705 von KET NAP ma moi)",
+        selectStarIntoTempTable = "sr.* vao bang tam => hop dong cot phu thuoc schema Ser_Ro (ho #677/#700/#702/#708)",
+        negativeCarJoinUsesCompositeKey = "AM TINH: join xe theo CAP KHOA — on car.CarID = sr.CarID and sr.DealerCode = car.DealerCode => cung mot CarID o hai dai ly la HAI XE; dung khuon da thay o #703 (Sys_User theo cap)",
+        negativeProperlyParameterised = "AM TINH: @strTDate_From/@strTDate_To nap qua alParamsCoupleSql, KHONG bake (doi lap #712/#713)",
+        step3bEmptyMd5Again = "BUOC 3B — lai gap d41d8cd9: lan dau trich ra md5 cua CHUOI RONG vi ham nay la HAM CUOI FILE nen awk khong tim duoc ranh gioi sau => E rong => E-1 = -1. Da sua: khong co ranh gioi thi lay CUOI FILE (E = wc -l + 1). Dung luat vua rut o #721",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #723 BÁO CÁO KPI THEO NĂM `FormattedReport_KPIGet_ByYear` =====
 // Vỏ bọc `BizCarSv.zzzzCode.cs:4491-4567` (md5 `8f71e7dd`) → thân thật
 // `Report_KPIGet_WithParams_**New20221101**` (`:4132-4458`, md5 `568510f2`). WS LIVE `WSCarSv.asmx.cs:28018`.
