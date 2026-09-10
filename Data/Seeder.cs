@@ -73,6 +73,7 @@ public static class Seeder
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                "ALTER TABLE public.\"MapSysGroupSysUsers\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"AppId\" text NULL",
                 // #704: moc thoi gian di kem SyncVelocaFlag.
                 "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"SyncVelocaDTime\" timestamptz NULL",

@@ -7473,6 +7473,11 @@ public sealed class SysObject
 /// </summary>
 public sealed class MapSysGroupSysUser
 {
+    /// <summary>🔴 #762 §12 DEALERCODE — nguồn `Ser_SysSaveMapSysGroupSysUser` xoá theo
+    /// `where t.DealerCode = @DealerCode` và chuẩn hoá cột này cùng `GroupCode`/`UserCode`.
+    /// Thiếu nó thì không thể tách ánh xạ nhóm↔người theo đại lý.</summary>
+    public string? DealerCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string GroupCode { get; set; } = "";

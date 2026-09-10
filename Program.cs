@@ -5791,13 +5791,55 @@ app.MapPost("/api/sysobjects/save", async (SysObjectSaveDto dto, AppDbContext db
 //    Map_SG_SU dùng `BuildClauseConditionList` an toàn. MiniHTC tham số hoá qua EF, không nhân bản.
 string SysPartnerDesktop = "DESKTOPAPPHTC"; // TConst.Sys_Partner.Desktop
 
-app.MapGet("/api/sysgroupusers", async (AppDbContext db, ITenantContext t, string? groupCode, string? userCode) =>
+// ===== 🔴🔴🔴 #762 `Ser_SysSaveMapSysGroupSysUser` (`BizCarSv.System.cs:2225-2385` md5 `9849d041`) =====
+// BƯỚC 3B: md5 `BizCarSv.System.cs` = `5eda319a…` — **giống hệt máy 150**.
+// Endpoint `/api/sysgroupusers/save` đã có (port từ bản phía HTC) ⇒ vòng này đối chiếu bản **CarSv** + vá §12.
+//
+// 🔴🔴🔴 **THAM SỐ TÊN LÀ "LIST" NHƯNG BIND VÀO MỘT PHÉP SO BẰNG ⇒ XOÁ HỤT, QUYỀN PHÌNH RA**
+//   Hàm nhận `strDealerCode**List**` và `strGroupCode**List**` — cùng quy ước "danh sách ngăn bằng `|`".
+//   `strGroupCodeList` được xử lý **đúng**:
+//     `SqlUtils.BuildClauseConditionList("and", "t.GroupCode", strGroupCodeList, "**|**")`
+//   nhưng `strDealerCodeList` thì bị nhét thẳng vào một phép so bằng:
+//     `delete t from Map_SG_SU t where (1=1) **and t.DealerCode = @DealerCode** …` + `ExecQuery(…, "@DealerCode", **strDealerCodeList**)`
+//   ⇒ Gửi một mã (`"D01"`) thì chạy đúng; gửi **nhiều** mã (`"D01|D02"`) thì `t.DealerCode` **không khớp gì**
+//     ⇒ **xoá 0 dòng**, rồi phần dưới vẫn `SaveData` chèn toàn bộ dòng mới ⇒ **ánh xạ cũ còn nguyên, ánh xạ mới
+//     cộng thêm** ⇒ **quyền phình ra thay vì bị thay thế**. Đây là màn "gán người dùng vào nhóm quyền".
+//   ⚪⚪ **Phản ví dụ nằm cách đó ĐÚNG 10 DÒNG**: cùng hàm, cùng tác giả, `strGroupCodeList` **có** dùng
+//     `BuildClauseConditionList(..., "|")` ⇒ tác giả **biết** quy ước `|` ⇒ chỗ `DealerCode` là **LỖI**, không phải chủ ý.
+//
+// ⚪⚪⚪ **MẪU ĐÚNG HIẾM GẶP — GUARD KIỂM CHÍNH MỆNH ĐỀ DO `BuildClause` SINH RA**
+//     `string zzzz… = SqlUtils.BuildClauseConditionList("and", "t.GroupCode", strGroupCodeList, "|");`
+//     `if (!zzzz….**StartsWith("and")**) throw CMyException.Raise(…_InvalidGroupCodeList…);`
+//   ⇒ Đúng thứ mà cả loạt phát hiện #410 kêu ca: `BuildClause` **bỏ im lặng** điều kiện khi đầu vào rỗng/sai
+//     dạng, và ở đây tác giả **bắt đúng cái im lặng đó** bằng cách soi chuỗi kết quả. Nhờ guard này,
+//     `strGroupCodeList` rỗng **không** biến câu xoá thành "xoá sạch mọi nhóm của đại lý".
+//   📌 Đây là **hàm làm ĐÚNG** đầu tiên tìm được cho họ #410 — ghi lại để lần sau có mẫu mà đối chiếu.
+//   ⚠️ Nhưng guard này **chỉ che `GroupCode`**; `DealerCode` không có guard tương ứng — đúng chỗ đang hỏng ở trên.
+//
+// 🔴🔴 **`PartnerCode` CỦA CLIENT BỊ VỨT VÀ GHI ĐÈ BẰNG HẰNG**:
+//     `if (CheckExistsColumnName(dt_Map_SG_SU, "PartnerCode")) dt_Map_SG_SU.Columns.**Remove**("PartnerCode");`
+//     `dt_Map_SG_SU.Columns.Add("PartnerCode", typeof(string));`
+//     `for (…) dt_Map_SG_SU.Rows[iScan]["PartnerCode"] = TConst.SysPartner.**DesktopAppHTC**;`
+//   Mở hằng (`TERP.Constants/Const.Main.cs:50`): `DesktopAppHTC = "**DESKTOPAPPHTC**"`.
+//   ⇒ Mọi ánh xạ nhóm↔người ghi qua đường này **luôn** mang đối tác `DESKTOPAPPHTC`, bất kể client gửi gì.
+//     Ghép với #761 (`and t.PartnerCode not in ('WEBHTC')`): hai đầu của cùng một hệ phân quyền đều **đóng cứng**
+//     mã đối tác — một đầu ghi cứng, một đầu loại cứng.
+// 🔴 `DataUtils.StandardizeValuesOfColumns(ref dt, "GroupCode", "UserCode", "DealerCode")` →
+//   `SqlUtils.StandardizeParam` = `Trim().ToUpper()` (xem #753) ⇒ **ba khoá đều bị ép HOA** trước khi ghi,
+//   trong khi câu `delete` so `t.DealerCode = @DealerCode` với giá trị **chưa** ép ⇒ nếu client gửi mã thường,
+//   dòng xoá và dòng chèn dùng **hai dạng chữ khác nhau**.
+// ⚪ Guard đếm theo luật ba nguồn (#747 + #760): `Raise` = **2** · `this.Check*` = 0 · `my*_Check*` = 0.
+//   Hai guard là `…_TableNotFound` (thiếu bảng `Map_SG_SU` trong DataSet) và `…_InvalidGroupCodeList` (nói trên).
+// 📌 §12: entity `MapSysGroupSysUser` **thiếu hẳn `DealerCode`** ⇒ đã thêm ở entity + Seeder ALTER + DTO +
+//   **cả POST lẫn GET**; endpoint lọc/ghi theo đại lý và **từ chối** khi nhận nhiều mã ngăn bằng `|`.
+app.MapGet("/api/sysgroupusers", async (AppDbContext db, ITenantContext t, string? groupCode, string? userCode, string? dealerCode) =>
 {
     var qy = db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(groupCode)) qy = qy.Where(x => x.GroupCode == groupCode);
     if (!string.IsNullOrWhiteSpace(userCode)) qy = qy.Where(x => x.UserCode == userCode);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
     var items = await qy.OrderBy(x => x.GroupCode).ThenBy(x => x.UserCode)
-        .Select(x => new { x.GroupCode, x.UserCode, x.PartnerCode }).ToListAsync();
+        .Select(x => new { x.GroupCode, x.UserCode, x.PartnerCode, x.DealerCode }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -5813,7 +5855,15 @@ app.MapPost("/api/sysgroupusers/save", async (MapSgSuSaveDto dto, AppDbContext d
     if (stray.Count > 0)
         return Results.BadRequest(new { error = $"Có dòng thuộc nhóm ngoài danh sách lưu: {string.Join(", ", stray)}." });
 
-    var old = await db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId && groups.Contains(x.GroupCode)).ToListAsync();
+    // 🔴 #762 Nguồn bind `strDealerCodeList` (tên là LIST) vào `t.DealerCode = @DealerCode` ⇒ gửi nhiều mã là
+    //   xoá hụt rồi chèn thêm ⇒ quyền PHÌNH RA. Mini từ chối thẳng đầu vào nhiều mã thay vì im lặng xoá hụt.
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealer.Contains('|'))
+        return Results.BadRequest(new { error = "DealerCode chỉ nhận MỘT mã (nguồn so bằng, không tách theo |).",
+            sourceWouldDeleteNothingAndInsertAnyway = true });
+    var oldQ = db.MapSysGroupSysUsers.Where(x => x.OrgId == t.OrgId && groups.Contains(x.GroupCode));
+    if (dealer.Length > 0) oldQ = oldQ.Where(x => x.DealerCode == dealer);
+    var old = await oldQ.ToListAsync();
     db.MapSysGroupSysUsers.RemoveRange(old);
     var seen = new HashSet<string>();
     var added = 0;
@@ -5823,13 +5873,23 @@ app.MapPost("/api/sysgroupusers/save", async (MapSgSuSaveDto dto, AppDbContext d
         if (!seen.Add(key)) continue; // bỏ trùng trong chính bảng đầu vào
         db.MapSysGroupSysUsers.Add(new MapSysGroupSysUser
         {
-            OrgId = t.OrgId, GroupCode = r.GroupCode!.Trim(), UserCode = r.UserCode!.Trim(),
+            OrgId = t.OrgId, GroupCode = r.GroupCode!.Trim().ToUpperInvariant(), UserCode = r.UserCode!.Trim().ToUpperInvariant(),
+            // #762 Nguồn StandardizeValuesOfColumns ép HOA cả ba khoá trước khi ghi.
+            DealerCode = string.IsNullOrWhiteSpace(r.DealerCode) ? (dealer.Length > 0 ? dealer : null) : r.DealerCode!.Trim().ToUpperInvariant(),
             PartnerCode = SysPartnerDesktop, // nguồn ép giá trị này, không lấy từ đầu vào
         });
         added++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { groups, removed = old.Count, added, note = "Thay thế trọn bộ thành viên của các nhóm nêu trên." });
+    return Results.Ok(new
+    {
+        groups, dealerCode = dealer.Length > 0 ? dealer : null, removed = old.Count, added,
+        note = "Thay thế trọn bộ thành viên của các nhóm nêu trên.",
+        sourceBindsListParamToEquality = "nguon: @DealerCode nhan strDealerCodeList (ten la LIST) trong khi where la t.DealerCode = @DealerCode => nhieu ma la xoa 0 dong roi van chen => quyen PHINH RA; cung ham thi strGroupCodeList lai dung BuildClauseConditionList voi dau |",
+        sourceGuardsGeneratedClause = "MAU DUNG: if (!clause.StartsWith(and)) throw ..._InvalidGroupCodeList — bat dung cai im lang cua BuildClause (#410); nhung chi che GroupCode, khong che DealerCode",
+        sourceForcesPartnerCode = "PartnerCode cua client bi Columns.Remove roi ghi de bang TConst.SysPartner.DesktopAppHTC = DESKTOPAPPHTC",
+        sourceUppercasesThreeKeys = "StandardizeValuesOfColumns(GroupCode, UserCode, DealerCode) = Trim().ToUpper(), nhung cau delete so voi gia tri CHUA ep",
+    });
 }).RequireAuthorization();
 
 app.MapGet("/api/sysgroupobjects", async (AppDbContext db, ITenantContext t, string? groupCode, string? objectCode) =>
@@ -67400,8 +67460,8 @@ record SysUserResetPwdDto(string? UserCode, string? PasswordReset);
 record SysUserChangePwdDto(string? UserCode, string? PasswordOld, string? PasswordNew);
 record SysGroupSaveDto(string? GroupCode, string? GroupName, string? PartnerCode, string? FlagActive);
 // Map phân quyền — lưu theo kiểu THAY THẾ TRỌN BỘ theo nhóm, không phải thêm dần.
-record MapSgSuRowDto(string? GroupCode, string? UserCode);
-record MapSgSuSaveDto(List<string>? GroupCodes, List<MapSgSuRowDto>? Rows);
+record MapSgSuRowDto(string? GroupCode, string? UserCode, string? DealerCode = null);
+record MapSgSuSaveDto(List<string>? GroupCodes, List<MapSgSuRowDto>? Rows, string? DealerCode = null);
 record MapSgSoSaveDto(string? GroupCode, List<string>? ObjectCodes);
 // Danh mục màn hình/chức năng. ObjectType: WS | WSFUNC | APP | MENU | SCR | BTN.
 record SysObjectSaveDto(string? ObjectCode, string? ObjectType, string? ObjectName, string? ObjectCodeParent, string? ObjectCodeExec, string? PhysicalAssembly, string? PhysicalClass, string? FlagExecModal, string? PartnerCode, string? FlagActive);
