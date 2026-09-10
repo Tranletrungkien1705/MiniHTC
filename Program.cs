@@ -58709,6 +58709,61 @@ app.MapGet("/api/ro/{roNo}/payment-precheck", async (AppDbContext db, ITenantCon
 // ✅ **Mini đang port từ `_New20210727`** (thấy ở `:55975`, `:61321`, `:68775`) — tức **bản đầy đủ nhất**, may là
 //   đúng; nhưng phải ghi rõ: **đó KHÔNG phải bản mà web dùng**. Ai đối chiếu Mini với màn web sẽ thấy Mini
 //   "thừa" cột thẻ/lịch hẹn — **thừa so với web, đúng so với ClientService**.
+// ===== 🔴🔴🔴 #797 KHUÔN ĐẶT TÊN THỨ HAI VÀ THỨ BA — PHÉP QUÉT `_New<ngày>` BỎ SÓT 24 HÀM =====
+// ⛔ **Tự ghi nhận trước**: #796 tường thuật "phát hiện đường gọi ClientService" như điều mới. **Không mới** —
+//   **#332 đã ghi đúng điều đó** cho chính `CarSv_Ser_CustomerCar_Create`: *"`Ser_CustomerService.cs:54` đi qua WS
+//   → `_New20190924`; `:142` gọi `biz` **trực tiếp, tại chỗ** → `_New20220926`"*, và đã đo độ lệch **đúng một cột**
+//   `PlateColorCode`. Tôi đã **không grep manifest theo từ khoá nghiệp vụ trước khi đo lại** — đúng thứ mà
+//   BƯỚC 7 bắt phải làm. Đóng góp thật của #796 vì thế hẹp hơn nó tự nhận: nó **định lượng** đường thứ ba
+//   (37 file, +2 bản LIVE ⇒ 117) chứ không **phát hiện** ra đường đó.
+//
+// ⚪ **Kiểm lại `CarSv_Ser_CustomerCar_Create` (đơn vị này) — không có gap mới**: diff hai bản LIVE
+//   `_New20190924` (`Tab.cs:12778-13122` md5 `983e1502`, 323 dòng) ↔ `_New20220926` (`:12431-12777` md5
+//   `a39dac10`, 325 dòng) khác **đúng** `PlateColorCode` + đổi helper `SerCarCreateX` → `SerCarCreateX20220926`;
+//   diff hai helper (`:13664-13843` md5 `fc346c20` ↔ `:13480-13663` md5 `9b5b20fd`) cũng **đúng** cột đó, có guard
+//   `if (!StringUtils.IsEmpty(strPlateColorCode))`. ⇒ **Xác nhận lại #332**, không phát hiện thêm.
+//   📌 Kết luận nghiệp vụ giữ nguyên: **tạo xe khách hàng qua WS không ghi được MÀU BIỂN SỐ**; chỉ đường
+//     ClientService ghi được. (Màu biển phân biệt xe cá nhân / kinh doanh vận tải.)
+// ⚪ **Âm tính đáng ghi**: cả hai **thân thật** (`SerCarCreateX*`) có **0** `CMyException.Raise`; toàn bộ 2 guard
+//   nằm ở **vỏ bọc**. ⇒ Đếm guard trên vỏ bọc **không** đại diện cho thân, và ngược lại — phải đếm ở **cả hai**.
+//
+// 🔴🔴🔴 **PHÁT HIỆN THẬT CỦA LƯỢT NÀY: CÓ ÍT NHẤT BA KHUÔN ĐẶT TÊN PHIÊN BẢN, PHÉP QUÉT MỚI BẮT MỘT**
+//   #794/#795/#796 đều quét `_New[0-9]{8}`. Quét thêm khuôn **dấu ngày KHÔNG có `_New`** ra **24** hàm nữa:
+//     `SerCarCreateX**20220926**` (dính liền, không gạch) · `ProcessSaveCar20220926` · `SerROReport20220926` ·
+//     `SerROReport_WH20220926` · `Ser_CustomerUpdateCarCreate20220926` · `Ser_Customer_CreateForDMS20220926` ·
+//     `Ser_CustomerCar_Get20220626` · `Ser_CustomerCar_GetDL20220626` ·
+//     `Blt_BulletinCreate**_20210224**` / `Blt_BulletinUpdate_20210224` / `Blt_Bulletin_Get_20210224` /
+//     `UpdateBulletin_20210224` (gạch dưới + ngày) · `Ser_Mst_Part_Create_20210303` ·
+//     `Ser_ROWarrantyReport_Create_20220218` **và** `…_Create_20230220` (hai bản của cùng tên!) ·
+//     `ProcessSaveROWarrantyReportItems_20220218` · `HTCMobileTVO_GetServiceReminders_20210603` ·
+//     `MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007` / `MyCheckUpdate_…_20211007` ·
+//     `Rpt_DMSSer_ThongKeBaoHanhTheoModel_20180330` · `Rpt_DMSSer_XeConHanBaoHanh_20180507`
+//   và **khuôn thứ ba — `_old<ngày>`**: `Ser_RO_Create**_old20170921**` · `Ser_RO_Get_old20170922` ·
+//     `Rpt_DMSSer_ThongKeBaoHanhTheoModel_**old**20180508`.
+//   ⇒ Tổng khối "hàm mang dấu ngày" = **219** (`_New`) **+ 24** = **243**, không phải 219.
+//   ⇒ `_old` là khuôn **duy nhất tự nói mình đã cũ**; hai khuôn kia thì không — và `SerCarCreateX20220926`
+//     **dính liền không dấu phân cách** nên trượt cả mẫu `_[0-9]{8}`.
+// 📌 Mini: `GET /api/_meta/date-suffixed-naming-audit`.
+app.MapGet("/api/_meta/date-suffixed-naming-audit", () => Results.Ok(new
+{
+    patternScanned = "_New[0-9]{8}",
+    countWithNewPrefix = 219,
+    countDateWithoutNew = 24,
+    totalDateStamped = 243,
+    namingShapes = new[]
+    {
+        "_New20230228  — khuon duoc quet o #794/#795/#796",
+        "SerCarCreateX20220926 — ngay DINH LIEN, khong dau phan cach => truot ca mau _[0-9]{8}",
+        "Blt_BulletinCreate_20210224 — gach duoi + ngay, khong co chu New",
+        "Ser_RO_Create_old20170921 — khuon _old<ngay>: khuon DUY NHAT tu noi minh da cu",
+    },
+    sameNameTwoDateStampedVersions = new[] { "Ser_ROWarrantyReport_Create_20220218", "Ser_ROWarrantyReport_Create_20230220" },
+    whyItMatters = "moi phep dem ban LIVE / ban chet o #794-#796 deu dua tren mau _New[0-9]{8} nen BO SOT 24 ham. Truoc khi ket luan mot ham la doc nhat hay da chet, phai quet CA BA khuon dat ten",
+    selfCorrection796 = "#796 tuong thuat phat hien duong goi ClientService nhu dieu moi — KHONG MOI: #332 da ghi dung dieu do cho CarSv_Ser_CustomerCar_Create (Ser_CustomerService.cs:54 qua WS vs :142 goi biz truc tiep) va da do do lech dung mot cot PlateColorCode. Toi da khong grep manifest theo tu khoa nghiep vu truoc khi do lai. Dong gop that cua #796 la DINH LUONG duong thu ba (37 file, +2 ban LIVE => 117), khong phai PHAT HIEN ra no",
+    customerCarCreateRecheck = "diff lai hai ban LIVE (_New20190924 md5 983e1502 / _New20220926 md5 a39dac10) va hai helper (SerCarCreateX md5 fc346c20 / SerCarCreateX20220926 md5 9b5b20fd): khac DUNG PlateColorCode, co guard if (!StringUtils.IsEmpty(...)). XAC NHAN LAI #332, khong co gap moi",
+    plateColorBusinessImpact = "tao xe khach hang QUA WS khong ghi duoc MAU BIEN SO; chi duong ClientService ghi duoc. Mau bien phan biet xe ca nhan / kinh doanh van tai",
+    guardsLiveInWrapperNotBody = "ca hai than that SerCarCreateX* co 0 CMyException.Raise; toan bo 2 guard nam o VO BOC => dem guard tren vo boc KHONG dai dien cho than, va nguoc lai — phai dem o CA HAI",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/reception-three-live-versions", () => Results.Ok(new
 {
     functionName = "Ser_ReceptionF_Reception",
