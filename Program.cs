@@ -14870,6 +14870,76 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
 
 // 🔴 GÁN MÃ XE HỘI VIÊN (Loyalty) cho xe dịch vụ — port `CarSv_SerCarUpdate_MemberCarID`
 // (`DMS-Loyalty/DMS/TERP.BizDMS/Biz.zzzz.iNOS.CarSv.cs:2630-2770`, hệ CHỈ có trên máy 150).
+// ===== 🔴🔴🔴 #745 `CarSv_SerCarUpdate_KeyVIN` / `_KeyPlateNo` — API NGOÀI SỬA XE + CHỦ XE =====
+// `BizCarSv.Customer.cs` :18910-19455 md5 `c4431620` và :18364-18909 md5 `55393b96` — **cùng 506 dòng active**.
+// DIFF chuẩn hoá trọn hàm ra **đúng 8 cụm**, tất cả hợp lý: tên hàm · mã lỗi · vị trí `strFrameNo` trong chữ ký ·
+//   khoá tra (`sc.FrameNo = @FrameNo` vs `sc.PlateNo = @PlateNo`) · cột được phép sửa (bản khoá-VIN cho sửa
+//   **PlateNo**, bản khoá-biển cho sửa **FrameNo**) · và **một khác biệt khoảng trắng** `if(` vs `if (`
+//   ⇒ dấu hiệu **sinh đôi chép tay**, không phải sinh từ khuôn. KHÁC `SerCarUpdate` (#399) — đó là đường của form.
+//
+// 🔴🔴🔴 **CỜ TRANSACTION BỊ DÙNG LÀM CỜ "CÓ GHI HAY KHÔNG"**:
+//     `_dbMain.SaveData("Ser_Car", …);`
+//     `_dbWH.SaveData("Ser_Car", …);`
+//     `**if (bNeedTransaction_Dealer)** _dbDealer.SaveData("Ser_Car", …);`   ← và y hệt cho `Ser_Customer`
+//   `bNeedTransaction_Dealer` sinh ra để trả lời "có mở transaction không", **không phải** "có ghi DB đại lý không".
+//   Hôm nay cả ba cờ đều `true` nên chưa lộ; nhưng ai đó tắt transaction đại lý vì khoá/hiệu năng sẽ **im lặng
+//   ngắt luôn đường ghi xuống DB đại lý** — xe và chủ xe chỉ còn ở Main + WH. Đây là **mìn hẹn giờ**, và là mặt
+//   trái của #742: ở đó cờ transaction bị bỏ quên, ở đây nó bị **giao thêm việc không phải của nó**.
+//
+// 🔴🔴 **`Convert.ToInt32(_dbMain.ExecQuery("select @@Identity ModelID").Tables[0].Rows[0]["ModelID"])`**
+//   — ba lỗi chồng nhau trên MỘT dòng: (a) `@@IDENTITY` chứ không `SCOPE_IDENTITY()` ⇒ trigger trên bảng khác
+//   sẽ trả identity của bảng đó (giống #744); (b) `Rows[0]` **không kiểm rỗng** (#411); (c) khi `@@IDENTITY`
+//   là NULL thì `Convert.ToInt32(DBNull)` **ném `InvalidCastException`** chứ không trả 0 ⇒ hàm chết **giữa**
+//   transaction ⇒ rollback **cả phần cập nhật xe vốn hợp lệ**. Người dùng mất trắng thao tác vì một mã model mới.
+//
+// 🔴🔴 **TỈNH TRA DB ĐẠI LÝ, HUYỆN TRA DB MAIN** — hai danh mục cùng cấp, hai CSDL khác nhau:
+//     `dtDB_Mst_Province = **_dbDealer**.ExecQuery(strSqlCheck_Province …)`
+//     `dtDB_Mst_District = **_dbMain**.ExecQuery(strSqlCheck_**Distrinct** …)`  ← tên biến sai chính tả, giữ nguyên văn
+//   Ở WS Main thì `_dbDealer` **chính là** `_dbMain` (#733) nên không lộ; chạy tại WS đại lý mà hai CSDL lệch
+//   danh mục thì hồ sơ hợp lệ vẫn bị chặn với lỗi "huyện không tồn tại" — và người dùng không có cách nào sửa.
+//
+// 🔴 **GIỚI TÍNH KIỂM BẰNG HẰNG CỜ HOẠT ĐỘNG**: `if (!IsNullOrEmpty(strGender) && strGender != TERP.Constants.Flag.Active
+//   && strGender != TERP.Constants.Flag.Inactive)`. Mở hằng (`Const.Main.cs:28-29`): `Active = "1"`, `Inactive = "0"`
+//   ⇒ giới tính hợp lệ là **"1"/"0"**, mượn nguyên bộ cờ hoạt động. Mã lỗi ném ra lại là
+//   `CarSv_**Ser_CustomerCar_SalesCreate**_InvalidGender` — **mã lỗi của hàm khác** ⇒ khối chép từ hàm tạo xe (họ #744).
+// 🔴 `alColumnEffective` được **`Clear()` rồi dùng lại** cho `Ser_Customer` sau khi đã ghi `Ser_Car` (5 cột:
+//   `PlateNo`/`ModelID`/`TradeMarkCode`/`LogLUDateTime`/`LogLUBy`) ⇒ chèn một dòng gán sai chỗ là ghi nhầm bảng.
+// ⚪ **ÂM TÍNH — `//_dbWH.InsertHuge("#tbl_Ser_MST_Model", …)` bị comment KHÔNG phải lỗ hổng**: bảng tạm chỉ
+//   phục vụ câu insert model trên `_dbMain`; bản sao sang kho đi bằng đường khác — `_dbWH.SaveData("Ser_MST_Model", …)`
+//   **có chạy** ngay bên dưới. Áp luật #719: đã grep trọn hàm tìm bản đang chạy TRƯỚC khi báo thiếu.
+// 📌 Mini: `PUT /api/carsv/servicecars` nhận `key=vin|plate` — **một endpoint cho cả hai hàm sinh đôi**, giữ đúng
+//   5 cột `Ser_Car` của nguồn và ghi vô điều kiện (không tái hiện cờ transaction-làm-cờ-ghi).
+app.MapPut("/api/carsv/servicecars", async (CarSvSerCarUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var key = (dto.Key ?? "vin").Trim().ToLowerInvariant();
+    if (key != "vin" && key != "plate") return Results.BadRequest(new { error = "key phải là vin hoặc plate." });
+    var vin = (dto.FrameNo ?? "").Trim().ToUpperInvariant();
+    var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
+    if (key == "vin" && vin.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số khung." });
+    if (key == "plate" && plate.Length == 0) return Results.BadRequest(new { error = "Chưa nhập biển số." });
+    // Nguồn: giới tính hợp lệ là "1"/"0" (mượn Flag.Active/Inactive) — giữ 1:1.
+    if (!string.IsNullOrWhiteSpace(dto.Sex) && dto.Sex != "1" && dto.Sex != "0")
+        return Results.BadRequest(new { error = "Giới tính chỉ nhận \"1\" hoặc \"0\".", sourceReusesActiveFlagConstants = true });
+    if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Chưa nhập tên khách hàng." });
+    var car = key == "vin"
+        ? await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FrameNo == vin)
+        : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate);
+    if (car is null) return Results.NotFound(new { key, vin, plate });
+    // 5 cột của nguồn — bản khoá-VIN sửa PlateNo, bản khoá-biển sửa FrameNo.
+    if (key == "vin") { if (plate.Length > 0) car.PlateNo = plate; }
+    else { if (vin.Length > 0) car.FrameNo = vin; }
+    if (!string.IsNullOrWhiteSpace(dto.TradeMarkCode)) car.TradeMark = dto.TradeMarkCode; // nguon: cot Ser_Car.TradeMarkCode, Mini dat ten TradeMark
+    car.LogLUDateTime = DateTime.Now;
+    car.LogLUBy = "carsv-api";
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        key, car.FrameNo, car.PlateNo, tradeMarkCode = car.TradeMark,
+        sourceDealerWriteGatedByTransactionFlag = "nguon: if (bNeedTransaction_Dealer) _dbDealer.SaveData(...) => tat transaction dai ly la im lang ngat duong ghi",
+        sourceIdentityCastCanThrow = "nguon: Convert.ToInt32(select @@Identity) nem InvalidCastException khi NULL => rollback ca thao tac hop le",
+        sourceProvinceOnDealerDistrictOnMain = "nguon tra tinh o _dbDealer nhung tra huyen o _dbMain",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/servicecars/{frameNo}/membercar", async (
     string frameNo, ServiceCarMemberDto dto, AppDbContext db, ITenantContext t) =>
 {
@@ -66529,6 +66599,8 @@ record PartnerCustomerDto(string? DealerCode = null, string? CusName = null, str
     string? OrgTypeID = null, string? ContName = null, string? ContSex = null, string? ContTel = null,
     string? ContMobile = null, string? ContFax = null, string? ContEmail = null, string? ContAddress = null,
     string? IsContact = null, string? DOB = null, string? IsActive = null, string? PartnerUserCode = null);
+record CarSvSerCarUpdateDto(string? Key = null, string? FrameNo = null, string? PlateNo = null,
+    string? TradeMarkCode = null, string? CusName = null, string? Sex = null);
 record EmailAutoTempDto(string? BatchId = null, string? DealerCode = null, string? CusID = null,
     string? AutoTempID = null,
     string? CusEmail = null, string? Subject = null, string? Body = null, string? CurrentDate = null,
