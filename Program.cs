@@ -66149,6 +66149,12 @@ app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContex
     {
         count = rows.Count, created, updated,
         emptyMeansClear = true,
+        // ===== #786: đời thứ TƯ của chuỗi chép (#783 → #784 → #785) =====
+        saveHasNoGuardAtAll = "#786: Ser_MST_PartExtra_Save co Raise=0, this.Check*=0, my*_Check*=0 => KHONG guard nao",
+        deleteThrowsErrorCodeNamedSave = "#786: _Delete nem Ser_MST_PartExtraSave_PartExIDNotExistInList — ma loi mang chu Save nhung nam trong _Delete, y het khuon #784",
+        copyChainLosesGuardTwoOfThree = "#786 DINH LUONG: ban goc ROWorkArising (#785) _Save CO guard; hai ban chep ROComplaintDiagnosticError (#784) va PartExtra (day) deu KHONG => 2/3 ban chep danh roi guard trong khi ma loi mang chu Save thi ban nao cung giu => loi HE THONG cua thao tac chep khoi",
+        whereToLookNext = "#786: grep ma loi ...Save_...NotExistInList trong AssignmentOfWork.cs roi doi chieu tung ham _Save tuong ung xem co guard khong",
+        saveOpenDeleteStrictAgain = "#786: _Delete van du Raise + this.Check* o ca ba cum => hinh dang save mo, delete chat (lan thu ba sau #782/#785)",
         inputTableNameInSource = "Ser_MST_PartExtra",
         noTablesContainsGuardInSource = true,
     });
@@ -66169,6 +66175,26 @@ app.MapPost("/api/partextramsts/delete", async (List<string> partCodes, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #786 `Ser_MST_PartExtra_Save` / `_Delete` — ĐỜI THỨ TƯ CỦA CHUỖI CHÉP, VÀ MẤT GUARD LẦN THỨ HAI =====
+// `AssignmentOfWork.cs`: `_Save` `:6616-6944` md5 `997aa1b9` (287 dòng) · `_Delete` `:6971-7120` md5 `42227982` (134 dòng).
+// Endpoint `/api/partextramsts` (+ `/delete`) đã có ⇒ vòng này vá cờ, KHÔNG tính màn mới.
+//
+// 🔴🔴🔴 **KHUÔN #784 LẶP LẠI Y HỆT — VÀ NAY ĐỦ SỐ ĐỂ KẾT LUẬN LÀ LỖI HỆ THỐNG**
+//   `_Save`: `CMyException.Raise` = **0** · `this.Check*` = **0** · `my*_Check*` = **0** ⇒ **không guard nào**.
+//   `_Delete`: `Raise` = 1 + `this.Check*` = 1, và mã lỗi nó ném là
+//     `TError.ErrCarSv.Ser_MST_PartExtra**Save**_PartExIDNotExistInList` — **mang chữ "Save" nhưng nằm trong `_Delete`**.
+//   ⇒ Ghép ba cụm cùng khuôn đã đọc (bản gốc + hai bản chép):
+//     · `Ser_MST_ROWorkArising`            (#785, **bản gốc**) — `_Save` **CÓ** guard ✅
+//     · `Ser_MST_ROComplaintDiagnosticError` (#784, bản chép) — `_Save` **KHÔNG** guard ❌
+//     · `Ser_MST_PartExtra`                (đây, bản chép)   — `_Save` **KHÔNG** guard ❌
+//   ⇒ **2/3 bản chép đánh rơi guard**, trong khi **mã lỗi mang chữ "Save" thì bản nào cũng giữ**.
+//     Tức: khi chép khối, **cái tên đi theo còn cái kiểm thì rơi lại** — đây là **lỗi hệ thống của thao tác chép**,
+//     không phải ba lần cẩu thả độc lập. (Định lượng theo cách #764; xác nhận bài học "đọc bản gốc" ở #785.)
+//   ⇒ 🔎 **Nơi cần soi tiếp**: mọi hàm `Ser_MST_*_Save` khác trong `AssignmentOfWork.cs` — grep mã lỗi
+//     `…**Save**_…NotExistInList` rồi đối chiếu xem `_Save` tương ứng có guard không.
+//
+// ⚪ `_Delete` vẫn giữ đủ `Raise` + `this.Check*` ở cả ba cụm ⇒ hình dạng **"save mở, delete chặt"** (đã ghi ở
+//   #782 và #785) nay lặp lần thứ ba ⇒ ổn định thành đặc điểm của cả nhóm hàm master trong file này.
 // ===== 🔴 #539 ĐỊNH MỨC CÔNG PHÁT SINH THEO LOẠI BẢO HÀNH — **GUARD CHỈ CÓ Ở NHÁNH THÊM** =====
 // Nguồn: `BizCarSv.AssignmentOfWork.cs:7121 Ser_MST_ROWorkArisingQuota_Get` · `:7242 …_Save`
 //   · `:7594 …_Delete`. Endpoint: `GET`/`POST /api/roworkarisingquotamsts` + `POST …/delete`.
