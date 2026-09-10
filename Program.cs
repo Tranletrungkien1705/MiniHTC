@@ -44634,6 +44634,69 @@ app.MapPost("/api/dealerdeals/todealer", async (DealToDealerDto dto, AppDbContex
 // 📌 Mini **không có** kết nối DMS Sales thật ⇒ endpoint dưới đây phục vụ đúng **hình dạng hợp đồng** (hai bảng
 //   `Dlr_PDIRequest` + `Dlr_PDIRequestDtl`) từ dữ liệu Mini và **nói thẳng** là không gọi DMS Sales — KHÔNG bịa
 //   một tầng proxy giả (cùng nguyên tắc "ghi NỢ thay vì bịa dữ liệu" ở #738).
+// ===== 🔴🔴 #746 `GetMstDealer_FromDMSsales` / `GetMstCarModel_FromDMSsales` — KÉO DANH MỤC TỪ DMS SALES =====
+// `BizCarSv.Report.Special.Warranty.cs` :49-185 md5 `edf285c2` · :186-334 md5 `0919dd43`. Cùng họ #743:
+// proxy gọi `WSHTC64.MstDealerGetAll_ForDMSDV` / `MstCarModelGetAll_ForDMSDV`, **không ghi CSDL nào**
+// (`_dbMain` chỉ có `LogUserId` + `BeginTransaction`).
+//
+// 🔴🔴 **TINH CHỈNH PHÁT HIỆN #743 VỀ `Timeout = 123456000` — KHÔNG PHẢI SƠ SUẤT MỘT CHỖ**:
+//   Ở #743 tôi mô tả nó như "dãy gõ bừa" của riêng hàm đó. Đếm lại toàn `TERP.BizCarSv`:
+//     `grep -rhoE "Timeout = [0-9]+" --include=*.cs . | sort | uniq -c` ⇒ **39 lần, TẤT CẢ đều là `123456000`**,
+//     **không một ngoại lệ nào**. ⇒ Đây là **hằng số mặc định của cả tầng**, được sao chép 39 lần, chứ không phải
+//     một người gõ bừa một lần. Hệ quả thực tế **nặng hơn** chứ không nhẹ đi: mọi cổng ra DMS Sales đều
+//     "không bao giờ hết giờ" (`34,3 giờ), và sửa đúng phải sửa **cả 39 chỗ** chứ không vá một hàm.
+//   📌 Đây là lần áp luật "ghi anti-pattern lần thứ ba trở đi thì đi tìm một hàm làm ĐÚNG" — và kết quả là
+//     **không tìm được hàm nào làm đúng**. Ghi lại kết quả tìm kiếm âm tính đó thay vì im lặng.
+//
+// 🔴🔴 **CÙNG MỘT WEB SERVICE, HAI HÀM GIẢI MÃ KHÁC NHAU** (nghi vấn có cơ sở, chưa kết luận):
+//     `GetMstDealer…`  → `TERP.Utils.CUtils.**MyDSDecodeForOSSale**(mds_DMSSale)`
+//     `GetMstCarModel…`→ `TERP.Utils.CUtils.**MyDSDecode**(mds_DMSSale)`
+//   Hai hàm dùng **chung** `WSDMSSale.WSHTC64` và **chung** `_strConfig_DMSSale_Url` ⇒ cùng một đối tác, cùng một
+//   kiểu đóng gói. Một trong hai lối giải mã phải sai, **trừ khi** DMS Sales cố ý mã hoá hai bảng theo hai cách.
+//   Cách kiểm chứng khi có môi trường thật: gọi cả hai, đếm `Tables["Mst_CarModel"].Rows.Count`; nếu bảng model
+//   về **rỗng hoặc cột lệch** trong khi bảng dealer bình thường thì `MyDSDecode` là bên sai. **Ghi NỢ**, không đoán.
+//
+// 🔴 **HAI THẾ HỆ KHUÔN NẰM KỀ NHAU** (giống #742): `GetMstDealer` dùng khuôn MỚI (`ProcessBizReq` /
+//   `ProcessBizReturn` / `bNeedTransaction_**Main**` / `dtimeSys`); `GetMstCarModel` ngay dưới vẫn dùng khuôn CŨ
+//   (`_log.WriteLogAsync` thủ công + `myUtils_ValidateId` + `bNeedTransaction`). ⇒ hàm dưới **chưa được nâng**.
+//   Kèm nhãn comment sai `// strAppU**Part**Code` cho tham số `strPartnerUserCode` — dấu vân tay chép khối (họ #744/#745).
+// 🔴 **`catch` lại nuốt lỗi rồi đi tiếp** y như #743, và guard `HasError` + `throw` lại nằm **trong `try`** ⇒
+//   dạng thứ SÁU của "guard vắng mặt" lặp lần thứ hai. Cùng `Tables["c_K_DT_SysInfo"].Rows[0]` không kiểm rỗng.
+// ⚪ **ÂM TÍNH — `Return Good` một bên `RollbackSafety`, một bên `CommitSafety`**: khác nhau nhưng **vô hại**,
+//   vì cả hai hàm không ghi gì. Cùng dấu hiệu, kết luận khác #742 — vẫn phải xét "hàm này có ghi không" trước.
+// ⚪ **ÂM TÍNH — dòng `//Url = @"http://14.238.1.12:11208/Test.DMS.HTC.Sales.WH.WS/WSHTC.asmx"` bị comment**:
+//   có dòng active thay thế ngay trên (`Url = _strConfig_DMSSale_Url`) ⇒ **đúng luật port dòng ACTIVE**, không phải
+//   tính năng chết. Ghi ra vì nó để lộ **IP + cổng + tên site nội bộ** ngay trong mã nguồn.
+// 📌 Mini không có kết nối DMS Sales ⇒ endpoint dưới đây phục vụ đúng hình dạng hợp đồng từ dữ liệu Mini và
+//   nói thẳng điều đó (nguyên tắc "ghi NỢ thay vì bịa" — #738/#743).
+app.MapGet("/api/masterdata/from-dmssales", async (AppDbContext db, ITenantContext t, string? what) =>
+{
+    var w = (what ?? "dealer").Trim().ToLowerInvariant();
+    if (w != "dealer" && w != "carmodel") return Results.BadRequest(new { error = "what phải là dealer hoặc carmodel." });
+    object payload;
+    if (w == "dealer")
+    {
+        var rows = await db.Dealers.Where(x => x.OrgId == t.OrgId)
+            .OrderBy(x => x.DealerCode).Take(2000)
+            .Select(x => new { x.DealerCode, x.DealerName, x.BUCode, x.ProvinceCode, x.Address }).ToListAsync();
+        payload = new { table = "Mst_Dealer", count = rows.Count, rows };
+    }
+    else
+    {
+        var rows = await db.CarModelStds.Where(x => x.OrgId == t.OrgId)
+            .OrderBy(x => x.Id).Take(2000).ToListAsync();
+        payload = new { table = "Mst_CarModel", count = rows.Count, rows };
+    }
+    return Results.Ok(new
+    {
+        what = w, data = payload,
+        sourceTimeoutMs = 123456000,
+        sourceTimeoutIsLayerWide = "dem toan TERP.BizCarSv: 39/39 cho deu la 123456000, khong mot ngoai le => hang so mac dinh ca tang, khong phai so suat mot cho",
+        sourceDecoderMismatch = "GetMstDealer dung MyDSDecodeForOSSale con GetMstCarModel dung MyDSDecode tren CUNG mot WS => NO, can moi truong that de xac minh",
+        sourceSwallowsWsFailure = "catch khong throw lai va guard HasError nam trong try => giong het #743",
+        notProxiedHere = "Mini khong goi WS DMS Sales; du lieu lay tu chinh Mini, chi giu dung hinh dang hop dong",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/dlrpdirequests/from-dmssales", async (AppDbContext db, ITenantContext t, string? dealer, string? scope) =>
 {
     var wh = string.Equals(scope, "wh", StringComparison.OrdinalIgnoreCase);
