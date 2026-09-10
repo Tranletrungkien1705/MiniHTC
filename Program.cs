@@ -59211,6 +59211,83 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 //   phải DataSet mã hoá. `HTCMobileTVO_GetSer_App` dùng khuôn này. (WS web thì có `MyDSEncode` 711 / trả thẳng 20,
 //   xem #806/#808.) ⇒ **Ba định dạng trả về khác nhau trên hai WS** — client phải biết dùng đúng bộ giải mã.
 // 📌 Mini: `GET /api/tvo/appointments` — **lọc đủ sáu ô**, và `GET /api/_meta/commented-placeholder-sweep`.
+// ===== 🔴🔴🔴 #812 MÀN MỚI: CẬP NHẬT XE THEO BIỂN SỐ / SỐ KHUNG — `CarSv_SerCarUpdate_Key*` =====
+// Ba hàm cùng cụm trong `BizCarSv.Customer.cs`, **cả ba LIVE** qua web WS (đều dùng `WSReturn`):
+//   `:17953 _New20180622` md5 `75313c45` (381 dòng, 5 `Raise`, 6 `SaveData`) — `WS:36726`
+//   `:18364 _**KeyPlateNo**` md5 `051be1e0` (506 dòng, 5 `Raise`, **7** `SaveData`) — `WS:36911`
+//   `:18910 _**KeyVIN**`     md5 `77505428` (506 dòng, 5 `Raise`, **7** `SaveData`) — `WS:36817`
+//
+// ⛔ **ĐÍNH CHÍNH #811**: tôi đếm `WSReturn` **chỉ trên WS tablet** rồi viết "ba định dạng trả về trên **hai** WS".
+//   Đếm lại trên WS **web**: `MyDSEncode` **711** · `WSReturn` **21** · trả thẳng **20** ⇒ **cả ba khuôn đều nằm
+//   trên CÙNG một WS web**, không phải mỗi WS một kiểu. (WS tablet: `MyDSEncode` 82 · `WSReturn` 9 · trả thẳng 0.)
+//
+// ⚪ **CẶP ĐỐI XỨNG — NGUỒN LÀM ĐÚNG**: DIFF chuẩn hoá `_KeyPlateNo` ↔ `_KeyVIN` khác **đúng bốn ý**:
+//   tên hàm · `strFunctionName`/`strErrorCodeDefault` · điều kiện tra cứu (`and sc.PlateNo = @PlateNo` vs
+//   `and sc.FrameNo = @FrameNo`) · và **cột được ghi**: tra theo **biển số** thì cập nhật **`FrameNo`**,
+//   tra theo **số khung** thì cập nhật **`PlateNo`**. ⇒ Đối xứng nhất quán, không có nhánh nào bị bỏ quên.
+//
+// 🔴🔴🔴 **KHÔNG GUARD KẾT QUẢ TRA CỨU XE — `Rows[0]` DÙNG THẲNG** (#403: đã liệt kê **trọn** danh sách guard)
+//   Năm `Raise` của hàm kiểm: tỉnh (`…SalesCreate_InvalidProvinceCode`) · huyện (`…InvalidDistrictCode`) ·
+//   tên khách (`CarSv_SerCarUpdate_InvalidCusName`) · khách hàng (`…Ser_CustomerNotFound`) ·
+//   giới tính (`…InvalidGender`); thêm hai nhánh `Rows.Count` cho `Ser_MST_Model`.
+//   **Không có** bất kỳ kiểm nào cho `dtDB_Ser_Car`. Nhưng ngay sau đó:
+//     `dtDB_Ser_Car.Rows[0]["FrameNo"] = strFrameNo; …Rows[0]["ModelID"] = …; …Rows[0]["LogLUBy"] = …`
+//   ⇒ ① **Không tìm thấy xe** (sai biển số / sai `CusID` / sai đại lý) ⇒ **`IndexOutOfRangeException` thô**,
+//       không phải mã lỗi nghiệp vụ ⇒ client nhận lỗi hệ thống.
+//   ⇒ ② Câu tra cứu **không có `top 1`**: `from ser_car sc where sc.DealerCode = @DealerCode and sc.PlateNo = @PlateNo`
+//       `and sc.CusID = @CusID` — nếu dữ liệu lịch sử có **nhiều xe cùng biển, cùng chủ, cùng đại lý** thì hàm
+//       **chỉ sửa `Rows[0]`** và **im lặng bỏ qua** phần còn lại.
+//
+// 🔴🔴 **GHI VÀO BA CSDL, KHÔNG BÙ TRỪ**:
+//     `_dbMain.SaveData("Ser_Car", …)` · `_dbWH.SaveData("Ser_Car", …)` ·
+//     `if (bNeedTransaction_Dealer) _dbDealer.SaveData("Ser_Car", …)`
+//   ⇒ ba lần ghi **độc lập**; hỏng ở lần thứ hai thì Main **đã** đổi số khung còn WH thì chưa.
+//   ⚪ Nhánh `_dbDealer` có gác `bNeedTransaction_Dealer` — đúng khuôn #748 (ở WS Main thì cờ = false nên
+//     **không ghi đôi** vì `_dbDealer ≡ _dbMain`), **không** phải bug.
+// 📌 Mini: `POST /api/servicecars/update-by-key` — guard **kết quả tra cứu** trước khi ghi, và **báo rõ** khi
+//   khoá tra cứu khớp **nhiều hơn một** xe thay vì lặng lẽ sửa dòng đầu.
+app.MapPost("/api/servicecars/update-by-key", async (CarUpdateByKeyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var key = (dto.KeyType ?? "").Trim().ToUpperInvariant();
+    if (key != "PLATENO" && key != "FRAMENO")
+    {
+        return Results.BadRequest(new { error = "keyType phai la PLATENO hoac FRAMENO" });
+    }
+    var qy = db.ServiceCars.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)) qy = qy.Where(c => c.DealerCode == dto.DealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(dto.CusID)) qy = qy.Where(c => c.CusID == dto.CusID!.Trim());
+    qy = key == "PLATENO"
+        ? qy.Where(c => c.PlateNo == (dto.PlateNo ?? "").Trim())
+        : qy.Where(c => c.FrameNo == (dto.FrameNo ?? "").Trim());
+    var matches = await qy.ToListAsync();
+    if (matches.Count == 0)
+    {
+        // Nguon KHONG co guard nay — no se nem IndexOutOfRangeException.
+        return Results.NotFound(new { error = "khong tim thay xe theo khoa tra cuu",
+            sourceWouldThrowIndexOutOfRange = true });
+    }
+    if (matches.Count > 1)
+    {
+        return Results.Conflict(new { error = "khoa tra cuu khop nhieu hon mot xe", matchCount = matches.Count,
+            carIds = matches.Select(c => c.Id).ToList(),
+            sourceWouldSilentlyUpdateFirstRowOnly = true });
+    }
+    var car = matches[0];
+    // Doi xung nhu nguon: tra theo bien so thi cap nhat SO KHUNG; tra theo so khung thi cap nhat BIEN SO.
+    if (key == "PLATENO") { if (!string.IsNullOrWhiteSpace(dto.FrameNo)) car.FrameNo = dto.FrameNo!.Trim(); }
+    else                  { if (!string.IsNullOrWhiteSpace(dto.PlateNo)) car.PlateNo = dto.PlateNo!.Trim(); }
+    if (!string.IsNullOrWhiteSpace(dto.TradeMarkCode)) car.TradeMark = dto.TradeMarkCode!.Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        car.Id, car.PlateNo, car.FrameNo, car.TradeMark, car.DealerCode, car.CusID,
+        sourceHasNoGuardOnCarLookup = "da liet ke TRON danh sach guard cua nguon (#403): tinh, huyen, ten khach, khach hang, gioi tinh + hai nhanh Rows.Count cho Ser_MST_Model. KHONG co bat ky kiem nao cho dtDB_Ser_Car, nhung ngay sau do dung dtDB_Ser_Car.Rows[0][FrameNo] = ... => khong tim thay xe se nem IndexOutOfRangeException THO chu khong phai ma loi nghiep vu",
+        sourceLookupHasNoTopOne = "cau tra cuu from ser_car sc where sc.DealerCode = @DealerCode and sc.PlateNo = @PlateNo and sc.CusID = @CusID KHONG co top 1 => du lieu lich su co nhieu xe cung bien cung chu cung dai ly thi ham chi sua Rows[0] va IM LANG bo qua phan con lai",
+        symmetricPairIsCorrect = "AM TINH: diff chuan hoa _KeyPlateNo vs _KeyVIN khac DUNG BON y — ten ham, strFunctionName/strErrorCodeDefault, dieu kien tra cuu, va COT DUOC GHI: tra theo bien so thi cap nhat FrameNo, tra theo so khung thi cap nhat PlateNo => doi xung nhat quan",
+        sourceWritesThreeDatabases = "_dbMain.SaveData(Ser_Car) + _dbWH.SaveData(Ser_Car) + if (bNeedTransaction_Dealer) _dbDealer.SaveData(Ser_Car) => ba lan ghi DOC LAP, hong o lan thu hai thi Main DA doi so khung con WH thi chua. Nhanh _dbDealer co gac bNeedTransaction_Dealer — dung khuon #748, KHONG phai bug",
+        returnShapeCorrectionOf811 = "DINH CHINH #811: toi dem WSReturn CHI tren WS tablet roi viet ba dinh dang tra ve tren HAI WS. Dem lai tren WS WEB: MyDSEncode 711, WSReturn 21, tra thang 20 => CA BA khuon deu nam tren CUNG mot WS web (WS tablet: 82 / 9 / 0)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/tvo/appointments", async (AppDbContext db, ITenantContext t,
     string? dealerCodes, string? statuses, string? plateNo, string? cusName, string? creator,
     DateTime? fromDate, DateTime? toDate) =>
@@ -70376,6 +70453,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record CarUpdateByKeyDto(string? KeyType, string? PlateNo, string? FrameNo, string? DealerCode, string? CusID, string? TradeMarkCode);
 record CavityConflictDto(string? CavityID, DateTime From, DateTime To, long? AppId);
 record RoStatusByIdsDto(string? RoIdList);
 record StockInAdjustLineDto(string? PartCode, decimal Quantity);
