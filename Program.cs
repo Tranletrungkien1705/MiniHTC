@@ -28411,6 +28411,13 @@ app.MapPost("/api/servicewarrantyclaims", async (WarrantyClaimCreateDto dto, App
         sourceErrorLabelSaysUpdateInsideCreate = "guard dau tien cua ban moi nem Ser_WarrantyReport_Update_InvalidROWTID trong mot ham Create => nhan chep nham",
         sourceSevenReportTypes = "Const.Main.cs:505-513 — A=AVN, B=binh ac quy, P=son, W=thong thuong, S=bao hanh phu tung, R=bao hanh thien chi, C=ban tin/chien dich; guard chi tach rieng loai A",
         twoMachinesVerified = "WarrantyReport.cs lech 522 dong giua hai may (23124 vs 23646) nhung hai ham nay cung vi tri va md5 chuan hoa khop => chenh lech nam o ham khac",
+        // ===== 🔴🔴🔴 #798 CÒN BẢN THỨ BA VÀ THỨ TƯ — CẢ HAI ĐỀU CHẾT =====
+        fourVariantsNotTwo = "#798: ngoai ban tran (LIVE) va _20220218 (LIVE) con Ser_ROWarrantyReport_Create_20230220 (:2850-3547 md5 eaccd415, 657 dong) va Ser_ROWarrantyReport_Create_Old (:3548-3907 md5 21ac9a8e, 337 dong). Quet ca ba duong vao (2 WS + ClientService, loai dong comment): KHONG AI GOI hai ban nay => CHET",
+        deadNewestVersionIsATimeBomb = "#798: ban _20230220 la ban MOI NHAT ma lai CHET. No BO dong dt_Warranty.Rows[0][HMCApiStatus] = TConst.HMCApiStatus.Pending (= P) — dong nay CHI co o ban _20220218 dang LIVE. Neu ai do repoint WS sang ban 2023 vi thay no day du hon, bao cao bao hanh se KHONG duoc danh dau cho gui HMC => KHONG BAO GIO GUI LEN HANG. Min hen gio",
+        deadVersionSnapshotsCarAndCustomer = "#798: ban _20230220 them 13 cot chup anh tai thoi diem lap: xe (ModelID, PlateNo, FrameNo, EngineNo, ColorCode, TradeMarkCode, BatteryNo, SerialNo, WarrantyRegistrationDate, WarrantyExpiresDate, WarrantyKM) va khach (CusMobile, CusTaxCode). Nghiep vu DONG BANG thong tin xe da viet xong nhung KHONG CHAY => ban LIVE van phai doc sang Ser_Car, nen xe doi bien/doi chu thi bao cao bao hanh CU hien thong tin MOI",
+        deadVersionShrinksTwoColumns = "#798 HANG khac GIA TRI: ban LIVE chi dinh CusRequest va CarStatus la nvarchar(1500) (co comment //TConst.BizMix.Default_DBColType ngay canh => tac gia DA CAN NHAC va bo mac dinh). Ban _20230220 quay lai dung Default_DBColType = nvarchar(400) (TERP.Constants/CampaignMarketing/Const.Main.BE.cs:11) => CAT CUT 1100 ky tu yeu cau khach hang va tinh trang xe. Ban 2023 QUAY NGUOC mot sua loi da co",
+        deadVersionHasDuplicatedParams = "#798: trong alParamsCoupleError cua ban _20230220, strCusName / strCusAddress / strCusTel xuat hien HAI lan (khoi Khach Hang moi + khoi cu chua xoa) => dau vet chep-dan chua don",
+        fourthNamingShape = "#798: _Create_Old — chu Old viet hoa, KHONG co ngay. Day la khuon dat ten THU TU ngoai ba khuon da dem o #797 (_New<ngay> / <ngay> dinh lien / _<ngay> / _old<ngay>); ban nay 337 dong, Raise=0, SaveData=2 va cung CHET",
     });
 }).RequireAuthorization();
 app.MapPost("/api/rowarrantytypes", async (
@@ -58744,6 +58751,56 @@ app.MapGet("/api/ro/{roNo}/payment-precheck", async (AppDbContext db, ITenantCon
 //   ⇒ `_old` là khuôn **duy nhất tự nói mình đã cũ**; hai khuôn kia thì không — và `SerCarCreateX20220926`
 //     **dính liền không dấu phân cách** nên trượt cả mẫu `_[0-9]{8}`.
 // 📌 Mini: `GET /api/_meta/date-suffixed-naming-audit`.
+// ===== 🔴🔴🔴 #798 `Ser_ROWarrantyReport_Create` CÓ **BỐN** BẢN, KHÔNG PHẢI HAI — VÀ BẢN MỚI NHẤT LÀ MÌN =====
+// #774 mới đối chiếu bản trần ↔ `_20220218`. Quét lại **cả bốn** khai báo trong `BizCarSv.WarrantyReport.cs`:
+//   `:1813` bản trần (**LIVE**, 0 guard) · `:2224` `_20220218` (**LIVE**, md5 `f3aea483`, 585 dòng, 6 `Raise`)
+//   `:2850` `_20230220` (md5 `eaccd415`, **657 dòng**, 6 `Raise`) · `:3548` `_Create_**Old**` (md5 `21ac9a8e`, 337 dòng, **0** `Raise`)
+// Quét **cả ba đường vào** (2 WS + ClientService, đã loại dòng comment): **không ai gọi** hai bản sau ⇒ **CHẾT**.
+// 📌 `_Create_Old` là **khuôn đặt tên thứ TƯ** — chữ `Old` viết hoa, **không có ngày** — ngoài ba khuôn đếm ở #797.
+//
+// 🔴🔴🔴 **BẢN MỚI NHẤT LÀ BẢN CHẾT, VÀ NÓ LÀ MÌN HẸN GIỜ**
+//   `_20230220` **bỏ** dòng `dt_Warranty.Rows[0]["HMCApiStatus"] = TConst.HMCApiStatus.Pending;`
+//   (mở hằng: `Const.Main.cs:620-625` — `Pending = "P"` · `Success = "A"` · `Fail = "R"`). Dòng đó **chỉ có**
+//   ở bản `_20220218` đang LIVE.
+//   ⇒ Nếu ai đó repoint WS sang bản 2023 **vì thấy nó đầy đủ hơn**, báo cáo bảo hành sẽ **không được đánh dấu
+//     chờ gửi HMC** ⇒ **không bao giờ gửi lên hãng**. Bản trông "tiến bộ hơn" lại **mất một side-effect sống còn**.
+//
+// 🔴🔴 **NGHIỆP VỤ ĐÃ VIẾT XONG NHƯNG KHÔNG CHẠY**: `_20230220` thêm **13 cột chụp ảnh tại thời điểm lập** —
+//   xe (`ModelID`, `PlateNo`, `FrameNo`, `EngineNo`, `ColorCode`, `TradeMarkCode`, `BatteryNo`, `SerialNo`,
+//   `WarrantyRegistrationDate`, `WarrantyExpiresDate`, `WarrantyKM`) và khách (`CusMobile`, `CusTaxCode`).
+//   ⇒ Bản LIVE **không lưu** những cột này nên vẫn phải đọc sang `Ser_Car` lúc xem ⇒ **xe đổi biển / đổi chủ thì
+//     báo cáo bảo hành CŨ hiện thông tin MỚI**. Bản vá cho đúng chuyện đó **nằm sẵn trong nguồn, không chạy**.
+//
+// 🔴🔴 **HẰNG ≠ GIÁ TRỊ — VÀ Ở ĐÂY GIÁ TRỊ LÀ BẰNG CHỨNG**: bản LIVE viết
+//     `"CusRequest", "nvarchar(1500)",//TConst.BizMix.Default_DBColType,`  (và `CarStatus` y hệt)
+//   — comment ngay cạnh cho thấy tác giả **đã cân nhắc rồi CỐ Ý bỏ mặc định**. Bản `_20230220` **quay lại**
+//   `TConst.BizMix.Default_DBColType`, mà giá trị thật là **`"nvarchar(400)"`**
+//   (`TERP.Constants/CampaignMarketing/Const.Main.BE.cs:11`) ⇒ **cắt cụt 1100 ký tự** yêu cầu khách hàng và
+//   tình trạng xe. ⇒ Bản 2023 **quay ngược một sửa lỗi đã có** — một lý do rất hợp lý để nó không được repoint.
+// 🔴 **Dấu vết chép-dán chưa dọn**: trong `alParamsCoupleError` của bản 2023, `strCusName` / `strCusAddress` /
+//   `strCusTel` xuất hiện **hai lần** (khối "Khách Hàng" mới thêm + khối cũ chưa xoá).
+// 📌 Mini: `GET /api/_meta/warrantyreport-create-four-variants`.
+app.MapGet("/api/_meta/warrantyreport-create-four-variants", () => Results.Ok(new
+{
+    functionName = "Ser_ROWarrantyReport_Create",
+    variants = new[]
+    {
+        new { name = "Ser_ROWarrantyReport_Create", at = "WarrantyReport.cs:1813", live = true, lines = 387, raiseGuards = 0 },
+        new { name = "Ser_ROWarrantyReport_Create_20220218", at = ":2224", live = true, lines = 585, raiseGuards = 6 },
+        new { name = "Ser_ROWarrantyReport_Create_20230220", at = ":2850", live = false, lines = 657, raiseGuards = 6 },
+        new { name = "Ser_ROWarrantyReport_Create_Old", at = ":3548", live = false, lines = 337, raiseGuards = 0 },
+    },
+    deadNewestDropsHmcPending = "ban _20230220 (moi nhat, DA CHET) BO dong HMCApiStatus = Pending (P). Repoint WS sang no => bao cao bao hanh khong bao gio duoc gui len hang. MIN HEN GIO",
+    hmcApiStatusValues = new { Pending = "P", Success = "A", Fail = "R", source = "Const.Main.cs:620-625" },
+    deadNewestAddsThirteenSnapshotColumns = new[] { "ModelID", "PlateNo", "FrameNo", "EngineNo", "ColorCode",
+        "TradeMarkCode", "BatteryNo", "SerialNo", "WarrantyRegistrationDate", "WarrantyExpiresDate", "WarrantyKM",
+        "CusMobile", "CusTaxCode" },
+    snapshotConsequence = "ban LIVE khong luu 13 cot nay nen phai doc sang Ser_Car luc xem => xe doi bien / doi chu thi bao cao bao hanh CU hien thong tin MOI. Ban va cho dung chuyen do nam san trong nguon, KHONG CHAY",
+    deadNewestShrinksColumns = "LIVE: CusRequest / CarStatus = nvarchar(1500) voi comment //TConst.BizMix.Default_DBColType ngay canh (co y bo mac dinh). Ban 2023 quay lai Default_DBColType = nvarchar(400) => cat cut 1100 ky tu. QUAY NGUOC mot sua loi da co",
+    defaultDbColTypeValue = "nvarchar(400) — TERP.Constants/CampaignMarketing/Const.Main.BE.cs:11",
+    duplicatedErrorParams = new[] { "strCusName", "strCusAddress", "strCusTel" },
+    fourthNamingShape = "_Create_Old — chu Old viet hoa, KHONG co ngay: khuon dat ten thu TU ngoai ba khuon dem o #797",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/date-suffixed-naming-audit", () => Results.Ok(new
 {
     patternScanned = "_New[0-9]{8}",
