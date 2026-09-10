@@ -35525,6 +35525,32 @@ app.MapDelete("/api/carmodelstds/{code}", async (string code, AppDbContext db, I
 // 📌 Cả ba hàm ghi đều theo khuôn `#region //// SaveTemp …: **Main.**` + `#region //// SaveTemp …: **WH.**`
 //   rồi `#region //// Save:` ⇒ dựng **bảng tạm riêng cho từng CSDL** trước khi ghi — khuôn sạch, khác hẳn
 //   kiểu "hai DataTable song song gán tay" đã bắt ở #715.
+// ===== 🔴 #741 `Ser_Mst_FilePathVideo_GetForTab` — HÀM THỨ NĂM, LÀ BẢN SAO Y HỆT `_Get` =====
+// `Tab/BizCarSv.Tab.cs` :2049-2171 md5 `ea3f8b8f` (117 dòng active) vs `_Get` :1921-2047 md5 `a7448216`.
+// #736 đã đối chiếu BỐN hàm `_Get/_Add/_Update/_Delete` nhưng **bỏ sót hàm thứ năm này** — nó nằm ngay
+// giữa `_Get` và `_Add` trong cùng file, tên chỉ khác hậu tố `ForTab`.
+//
+// ⚪⚪ **DIFF CHUẨN HOÁ TRỌN HÀM = ĐÚNG 6 CỤM, KHÔNG CỤM NÀO LÀ SQL**:
+//   (1) tên hàm · (2) `strFunctionName` · (3) `TError.ErrCarSv.<tên>` · (4) `_Get` có thêm `int nTidSeq = 0;`
+//   (5) `_Get` có comment `// Hàm CmCenter` · (6) **thiếu một nhãn log** (xem dưới).
+//   ⇒ Thân SQL **giống hệt từng byte** sau chuẩn hoá: cả hai chỉ gọi `Ser_Mst_FilePathVideo_GetX(...)` với
+//     **cùng bộ tham số** (`strFilePathVideoCodeList`, `strFilePathVideoNameList`, `strFlagActiveList`,
+//     `strFt_RecordStart/Count`, `strIsGet_Ser_Mst_FilePathVideo`) trên **cùng handle `_dbMain`**.
+//   📌 Vậy "bản cho máy tính bảng" **không hề khác** bản CmCenter — đây là **nhân bản mã 100%**, không phải
+//     một biến thể nghiệp vụ. Port đúng = **alias**, KHÔNG viết lại truy vấn thứ hai (viết lại sẽ đẻ ra
+//     twin lệch nhau về sau — đúng bệnh đã bắt ở #715/#733).
+//
+// 🔴 **NHÃN LOG RƠI — `strFilePathVideoNameList` KHÔNG VÀO `alParamsCoupleError` ở bản ForTab**:
+//   `_Get` nạp ba cặp nhãn (`CodeList` + **`NameList`** + `FlagActiveList`), `_GetForTab` chỉ nạp **hai**
+//   (thiếu đúng dòng `, "strFilePathVideoNameList", strFilePathVideoNameList`).
+//   ⚠️ **Tham số vẫn được TRUYỀN xuống `GetX` và vẫn LỌC bình thường** — đây KHÔNG phải mất bộ lọc.
+//   Hệ quả nằm ở tầng **chẩn đoán**: `alParamsCoupleError` là thứ `ProcessBizReq` ghi vào log request và là
+//   thứ đính kèm khi ném lỗi ⇒ khi tab báo "lọc theo tên ra sai", **log không lưu giá trị tên đã lọc** ⇒
+//   không tái hiện được. Bản CmCenter cùng sự cố thì tra được. Họ #737 (mất dấu vết, không mất chức năng).
+//   ⚪ Đây là **mẫu ngược** cho thói quen đọc lướt: hai hàm md5 khác nhau **không** có nghĩa nghiệp vụ khác —
+//     ở đây 6/6 cụm khác biệt đều là **vỏ**, và cụm DUY NHẤT đáng báo lại là cụm dễ lướt qua nhất.
+// 📌 Mini: `/api/filepathvideos/for-tab` dưới đây **dùng lại đúng một truy vấn** với bản CmCenter và trả cờ
+//   `logParamsMissingNameAtSource` để giữ phát hiện, thay vì im lặng nhân bản mã.
 // ===== Video tư vấn dịch vụ (SerFilePathVideo — port 1:1 FrmSerMstFilePathVideoCreate/Search, TCMotor DMSCarSv/Admin) =====
 app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
@@ -35539,6 +35565,17 @@ app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #741 Bản cho máy tính bảng — nguồn là BẢN SAO Y HỆT `_Get`, nên Mini gọi lại đúng cùng truy vấn.
+app.MapGet("/api/filepathvideos/for-tab", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
+{
+    var qry = db.SerFilePathVideos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.FilePathVideoCode.Contains(q!) || x.FilePathVideoName!.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(active)) qry = qry.Where(x => x.FlagActive == active);
+    var items = await qry.OrderBy(x => x.IdxView).ThenBy(x => x.FilePathVideoCode).Take(500)
+        .Select(x => new { x.FilePathVideoCode, x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.IdxView, x.FlagActive }).ToListAsync();
+    // Cờ giữ phát hiện #741: ở NGUỒN, bản ForTab quên đưa `strFilePathVideoNameList` vào nhãn log lỗi.
+    return Results.Ok(new { count = items.Count, items, sameQueryAsCmCenter = true, logParamsMissingNameAtSource = true });
+}).RequireAuthorization();
 app.MapPost("/api/filepathvideos", async (SerFilePathVideoDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = (dto.FilePathVideoCode ?? "").Trim();
