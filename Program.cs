@@ -6359,6 +6359,74 @@ app.MapPost("/api/sysusers/change-password", async (SysUserChangePwdDto dto, App
 //   ⇒ rỗng là trả trọn danh mục — với danh mục thì bình thường (cùng lập luận đã dùng ở #765).
 // 📌 §12: MiniHTC chưa có `TST_Mst_PartGroup`/`TST_Mst_PartType` ⇒ đã thêm **entity + DbSet + Seeder CREATE TABLE**
 //   và hai endpoint dưới đây, **có `OrderBy` tường minh** (khác nguồn CÓ CHỦ Ý).
+// ===== 🔴🔴🔴 #768 `TST_SendPartInfo_DMSDealer` — ĐẨY DANH MỤC PHỤ TÙNG TỪ HTC XUỐNG ĐẠI LÝ =====
+// `BizCarSv.Service.cs:16467-16844` md5 `db1c61a7` (333 dòng active). md5 file `5e5d6f20` — đã xác nhận
+// khớp hai máy ở #747. Ghi **duy nhất** trên `_dbDealer` (4 lần `ExecQuery`, `_dbMain`/`_dbWH` = 0).
+// Ba khối hợp nhất: `Ser_MST_Part` (**chỉ update**) · `Ser_Inv_PartPrice` (update + insert) ·
+// `Ser_ServicePackagePartItems` (update + insert).
+//
+// 🔴🔴🔴 **BAKE CHUỖI TỪ NGƯỜI DÙNG VÀO CÂU `UPDATE` — SÁU CHỖ**
+//   Cả ba khối đều viết:
+//     `, msp.LogLUDateTime = '**@LogLUDateTime**'`
+//     `, msp.LogLUBy       = '**@LogLUBy**'`
+//   rồi thay bằng `StringUtils.Replace(sql, "@LogLUDateTime", dtimeSys.ToString(...), "@LogLUBy", **strPartnerUserCode**)`.
+//   ⇒ `@LogLUDateTime` lấy từ **đồng hồ máy chủ** nên vô hại; nhưng `@LogLUBy` là **`strPartnerUserCode` đến từ
+//     lời gọi**, được **nối thẳng vào trong cặp nháy đơn** của câu SQL — **không** `SqlParameter`, **không** escape.
+//   ⇒ Một mã người dùng chứa dấu `'` là thoát chuỗi ngay giữa câu `update` đang chạy trên CSDL đại lý.
+//   ⚠️ Đây **khác hẳn** #766: ở đó `strFt_WhereClause` (nghe còn đáng ngờ hơn) lại **được tham số hoá** qua
+//     `BuildWhere(htSpCols, …, "@p_")`. Cùng một tầng, cùng một tác giả: chỗ *trông* nguy hiểm thì an toàn,
+//     chỗ *trông* vô hại (ghi nhật ký ai sửa) thì lại là chỗ hở. **Không suy an toàn theo cảm giác về tên tham số.**
+//   📌 Hàm **có** chuẩn hoá đầu vào — `CUtils.StdDataInTable(dt, "StdParam", "PartID")` — nhưng chỉ cho `PartID`
+//     trong bảng dữ liệu; `strPartnerUserCode` **không** đi qua bước đó.
+//
+// 🔴🔴 **`Ser_MST_Part` CHỈ UPDATE, KHÔNG THÊM MỚI — VÀ BỎ IM LẶNG PHẦN KHÔNG KHỚP**
+//   Khối một mở đầu bằng chú thích nguyên văn `#region // Ser_MST_Part Chỉ có update không có thêm mới`, và dựng
+//   bảng tạm bằng `**inner join** [@strDBName_CommonCenter].[dbo].Ser_MST_Part mmsp on t.PartID = mmsp.PartID`.
+//   ⇒ Phụ tùng có trong gói gửi xuống **nhưng chưa tồn tại ở danh mục Main** thì **rơi khỏi bảng tạm** ⇒ không
+//     update, không insert, **không báo lỗi** ⇒ đại lý thiếu phụ tùng đó mà cả hai đầu đều tưởng đã đồng bộ xong.
+//   Hai khối sau (`Ser_Inv_PartPrice`, `Ser_ServicePackagePartItems`) thì **có** nhánh insert ⇒ **ba bảng, hai chính
+//     sách khác nhau** trong cùng một lần gọi.
+// 🔴 **ĐỌC Ở DB MAIN, GHI Ở DB ĐẠI LÝ TRONG CÙNG MỘT CÂU**: `from #tblSer_MST_PartInserOrUpd_Info t inner join
+//   **Ser_MST_Part** msp` (không nêu tên CSDL ⇒ cục bộ đại lý) trong khi bảng tạm lấy từ `[@strDBName_CommonCenter]`
+//   ← `_strConfig_DBName_**Main**` — **lần thứ tư** gặp tên hằng nói dối này (sau #745, #750, #763).
+// ⚪ Guard: `CMyException.Raise` = **6**, đủ ba bảng × (bảng thiếu / khoá rỗng) và đều **ném trước khi ghi**
+//   (khác #742 và #754). `for` duyệt từng dòng dùng `Rows[i]` chứ **không** `Rows[0]` ⇒ không dính bẫy #411.
+// 📌 Mini: `POST /api/tst/send-partinfo` giữ **đúng ba chính sách** của nguồn (bảng 1 chỉ update; hai bảng sau
+//   upsert) và **đếm** số dòng bị bỏ vì chưa có trong danh mục, thay vì im lặng như nguồn.
+app.MapPost("/api/tst/send-partinfo", async (List<TstSendPartRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Danh sách phụ tùng rỗng." });
+    // Nguồn kiểm từng dòng: PartID rỗng thì NÉM (không bỏ qua dòng).
+    for (var i = 0; i < rows.Count; i++)
+        if (string.IsNullOrWhiteSpace(rows[i].PartID))
+            return Results.BadRequest(new { error = "PartID rỗng.", line = i + 1, sourceError = "TST_SendPartInfo_DMSDealer_Ser_MST_Part_InvalidPartID" });
+    var ids = rows.Select(r => r.PartID!.Trim()).Distinct().ToList();
+    var existing = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && ids.Contains(x.PartID!)).ToListAsync();
+    var byId = existing.GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+    var updated = 0;
+    var skippedNotInCatalog = new List<string>();
+    foreach (var r in rows)
+    {
+        var pid = r.PartID!.Trim();
+        if (!byId.TryGetValue(pid, out var p)) { skippedNotInCatalog.Add(pid); continue; }   // nguồn: inner join ⇒ rơi im lặng
+        if (!string.IsNullOrWhiteSpace(r.VieName)) p.PartName = r.VieName;
+        if (r.VAT.HasValue) p.VAT = r.VAT;
+        if (!string.IsNullOrWhiteSpace(r.Unit)) p.Unit = r.Unit;
+        if (!string.IsNullOrWhiteSpace(r.PartTypeID)) p.PartTypeID = r.PartTypeID;
+        if (!string.IsNullOrWhiteSpace(r.FlagInTST)) p.FlagInTST = r.FlagInTST;
+        if (r.MinQuantity.HasValue) p.MinQuantity = r.MinQuantity.Value;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        received = rows.Count, updated, skippedNotInCatalog = skippedNotInCatalog.Count, skippedPartIds = skippedNotInCatalog,
+        sourceBakesUserCodeIntoSql = "nguon: msp.LogLUBy = @LogLUBy duoc thay bang StringUtils.Replace voi strPartnerUserCode => noi chuoi tran trong cap nhay don, 6 cho tren 3 khoi; khac #766 noi strFt_WhereClause LAI duoc tham so hoa",
+        sourceUpdatesOnlyForPartMaster = "khoi Ser_MST_Part CHI update (chu thich nguyen van) + inner join danh muc Main => phu tung chua co o Main roi im lang, khong bao loi; hai bang con lai thi CO nhanh insert",
+        sourceReadsMainWritesDealer = "bang tam lay tu [@strDBName_CommonCenter] (= _strConfig_DBName_Main) nhung update vao Ser_MST_Part cuc bo cua CSDL dai ly",
+        sourceGuardsBeforeWriting = "AM TINH: 6 CMyException.Raise deu nem TRUOC khi ghi, va vong lap dung Rows[i] khong phai Rows[0]",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/tst/partgroups", async (AppDbContext db, ITenantContext t, string? groupCode, string? groupName, string? flagActive) =>
 {
     var qy = db.TstMstPartGroups.Where(x => x.OrgId == t.OrgId);
@@ -67405,6 +67473,8 @@ record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record CareMaceOsUpdateDto(string? Status = null, DateTime? ApointDate = null, DateTime? ContactDate = null,
     string? Remark = null, DateTime? MaceRecomentDate = null, string? CarID = null, string? CusID = null,
     string? MaceType = null, string? ROID = null);
+record TstSendPartRowDto(string? PartID = null, string? VieName = null, decimal? VAT = null, string? Unit = null,
+    string? PartTypeID = null, string? FlagInTST = null, decimal? MinQuantity = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
