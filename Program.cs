@@ -6024,6 +6024,64 @@ string PasswordTemplate = "********"; // TConst.HTCConst.PasswordTemplate
 static string HashPwd(string raw) =>
     Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(raw)));
 
+// ===== 🔴🔴🔴 #763 `Ser_SysGetCurentUser` (`BizCarSv.System.cs:303-420` md5 `0fbddb0a`) =====
+// Tên hàm thiếu một chữ "r" — **`Cur**e**ntUser`** — giữ nguyên văn theo luật copy y nguyên cả lỗi chính tả.
+// Toàn bộ thân là **một** câu: `select **t.\*** from [@strDBName_CommonCenter].[dbo].Sys_User t where (1=1)`
+// + hai mệnh đề do `BuildClauseConditionList(..., "|")` sinh ra, chạy trên `_dbDealer`.
+//
+// 🔴🔴🔴 **`select t.*` TRÊN `Sys_User` — VÀ #760 ĐÃ CHỨNG MINH BẢNG NÀY LƯU MẬT KHẨU CHỮ RÕ**
+//   #760 đọc `Ser_SysResetUserPassword`/`Ser_SysSaveUser` và xác định: cột `Sys_User.**UserPassword**` được ghi
+//   **thẳng, không băm** (và sentinel `"********"` chứng minh đó là cố ý). Hàm này `select t.*` ⇒ **mật khẩu**
+//   **chữ rõ đi thẳng ra DataSet trả về cho client**.
+//   📌 Kết luận này **không đọc được từ riêng hàm nào**: #760 cho biết cột lưu gì, #763 cho biết ai đọc nó ra.
+//     Đây là lý do phải giữ log các vòng trước và đối chiếu chéo (cùng lối lập luận đã dùng ở #752 ↔ #750).
+//
+// 🔴🔴🔴 **KHÔNG CÓ GUARD `StartsWith("and")` ⇒ THAM SỐ RỖNG LÀ DUMP TRỌN BẢNG NGƯỜI DÙNG**
+//     `zzzzClauseWhere_strUserCode   = BuildClauseConditionList("and", "t.UserCode",   **strPartnerUserCode**, "|");`
+//     `zzzzClauseWhere_strDealerCode = BuildClauseConditionList("and", "t.DealerCode", **strDealerCode**,      "|");`
+//   `BuildClause*` **bỏ im lặng** mệnh đề khi đầu vào rỗng/sai dạng (#410). Cả hai rỗng ⇒ câu còn lại đúng là
+//     `select t.* from Sys_User t where (1=1)` ⇒ **toàn bộ bảng người dùng**, kèm cột mật khẩu.
+//   ⚪⚪ **VÀ MẪU ĐÚNG NẰM TRONG CHÍNH FILE NÀY**: `Ser_SysSaveMapSysGroupSysUser` (#762, cùng
+//     `BizCarSv.System.cs`) có `if (!clause.**StartsWith("and")**) throw …_InvalidGroupCodeList;`.
+//     ⇒ Cùng file, cùng tác giả, cùng hàm `BuildClauseConditionList` — một chỗ chặn, một chỗ không.
+//     Vậy đây là **LỖI**, không phải quy ước của tầng. (Luật "đi tìm một hàm làm ĐÚNG" cho kết quả DƯƠNG.)
+//
+// 🔴 **ĐỌC CHÉO CSDL**: hàm chạy trên `_dbDealer` nhưng bảng lại được nêu tên đầy đủ
+//   `[@strDBName_CommonCenter].[dbo].Sys_User`, và `@strDBName_CommonCenter` ← `_strConfig_DBName_**Main**`
+//   ⇒ **lần thứ ba** gặp tên tham số nói dối này (sau #745 và #750) ⇒ đã thành khuôn của tầng, không phải cá biệt.
+// ⚪ Guard đếm theo luật ba nguồn (#747 + #760): `Raise` = 0 · `this.Check*` = 0 · `my*_Check*` = 0 —
+//   helper duy nhất là `myDebug_SaveSql` (ghi log SQL, không phải guard) ⇒ **thật sự không có guard nào**.
+// 📌 Mini: `GET /api/sysusers/current` — **bắt buộc** `userCode`, **không bao giờ** trả trường mật khẩu,
+//   và nói rõ hai điều trên bằng cờ (khác nguồn CÓ CHỦ Ý).
+app.MapGet("/api/sysusers/current", async (AppDbContext db, ITenantContext t, string? userCode, string? dealerCode) =>
+{
+    // 🔴 #763 Nguồn để rỗng là dump trọn bảng. Mini CHẶN ở đây thay vì tái hiện.
+    if (string.IsNullOrWhiteSpace(userCode))
+        return Results.BadRequest(new
+        {
+            error = "Cần userCode.",
+            sourceWouldDumpWholeTable = "nguon: BuildClauseConditionList bo im lang menh de khi rong => select t.* from Sys_User where (1=1) => tra TOAN BO nguoi dung",
+        });
+    var code = userCode!.Trim();
+    var qy = db.SysUsers.Where(x => x.OrgId == t.OrgId && x.UserCode == code);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    // Nguồn `select t.*` kéo theo cả cột mật khẩu; Mini liệt kê cột TƯỜNG MINH và bỏ hẳn trường mật khẩu.
+    var row = await qy.Select(x => new
+    {
+        x.UserCode, x.UserName, x.PartnerCode, x.DealerCode, x.BankCode, x.TransporterCode,
+        x.InsCompanyCode, x.FlagSysAdmin, x.FlagSysViewer, x.FlagActive,
+    }).FirstOrDefaultAsync();
+    if (row is null) return Results.NotFound(new { userCode = code });
+    return Results.Ok(new
+    {
+        user = row,
+        sourceSelectsStarIncludingPassword = "nguon select t.* tren Sys_User; #760 da chung minh cot UserPassword luu CHU RO (khong bam) => mat khau di thang ra client",
+        sourceHasNoClauseGuard = "nguon KHONG co if (!clause.StartsWith(and)) throw, trong khi Ser_SysSaveMapSysGroupSysUser cung file thi CO (#762) => la LOI, khong phai quy uoc",
+        sourceReadsMainDbFromDealerHandle = "chay tren _dbDealer nhung doc [@strDBName_CommonCenter].[dbo].Sys_User voi @strDBName_CommonCenter = _strConfig_DBName_Main (lan thu ba sau #745, #750)",
+        sourceFunctionNameTypo = "ten ham nguon la Ser_SysGetCurentUser — thieu mot chu r",
+        miniNeverReturnsPassword = true,
+    });
+}).RequireAuthorization();
 app.MapGet("/api/sysusers", async (AppDbContext db, ITenantContext t, string? userCode, string? dealerCode, string? flagActive) =>
 {
     var qy = db.SysUsers.Where(x => x.OrgId == t.OrgId);
