@@ -29288,6 +29288,36 @@ app.MapGet("/api/report/warranty-accept", async (AppDbContext db, ITenantContext
 // ⚠️ Dùng `with(nolock)` **viết thẳng**, không phải dấu `--//[mylock]` ⇒ chấp nhận đọc bẩn.
 // ⚠️ Tên hàm WH là `_GetWH` (**không** phải `_Get_WH`) — lại một quy ước đặt tên nữa trong cùng file.
 //   Diff hai thân: chỉ đổi CSDL, **không lệch nghiệp vụ** ⇒ không cần `scope`.
+// ===== 🔴🔴🔴 #779 `Ser_ROWarrantyReportHTCDealer_Get` ↔ `_GetWH` — TOÁN TỬ "=" NỐI CỨNG LÀM MẤT LỰA CHỌN "MỌI THÁNG" =====
+// `WarrantyReport.cs:18448-18572` md5 `536f931f` (116 dòng) ↔ `:18573-18698` md5 `33303d14` (117 dòng).
+// DIFF trọn hàm: chỉ khác **handle** (`_dbDealer` vs `_dbWH`), **nguồn `Mst_Dealer`** (CommonCenter vs cục bộ),
+// tên hàm/mã lỗi và **một khác biệt khoảng trắng** ⇒ cặp này **lành về nghiệp vụ** (khác cặp ở #771).
+//
+// 🔴🔴🔴 **`"=" + strMonthConditionList` — BỎ TRỐNG THÁNG THÌ BÁO CÁO RỖNG, KHÔNG PHẢI "MỌI THÁNG"**
+//   Cả hai bản viết:
+//     `BuildClause("and", "convert(char(7), td.CreatedDate, 120)", **"=" + strMonthConditionList**, "@p", ref alParamsCoupleSql)`
+//   Nối cứng toán tử `=` vào **trước** giá trị là cách quen thuộc để `BuildClause` **không bỏ im lặng** điều kiện (#410).
+//   Nhưng đọc thân `BuildClause` (`CommonUtils/DataUtils.cs:1074`) mới thấy hệ quả thật:
+//     `if (strConditionList == null) return "";`
+//     `strConditionList = strConditionList.Trim().ToUpper();`
+//     `if (strConditionList.Length < 1) return "";`   ← **chỉ bỏ điều kiện khi chuỗi RỖNG**
+//   Với `"=" + ""` (hoặc `"=" + null`, C# nối `null` thành `""`) thì chuỗi là `"="` ⇒ **Length = 1**, **không rỗng**
+//   ⇒ đi tiếp, `StartsWith("=")` ⇒ sinh `and convert(char(7), td.CreatedDate, 120) = @p0` với **`@p0` là chuỗi rỗng**
+//   ⇒ **không tháng nào khớp** ⇒ **báo cáo trả RỖNG**.
+//   ⇒ Và vì `"="` **luôn** được nối vào, **không có cách nào** xin "mọi tháng" qua tham số này — kể cả bỏ trống.
+//   📌 Đây là mặt trái của thủ thuật chống-bỏ-im-lặng: nó **đổi im lặng "trả hết" thành im lặng "trả rỗng"**.
+//     Cùng họ nợ `zonecode-null-vs-empty-filter` đã ghi trong sổ, nhưng lần này **xác minh bằng cách đọc thân
+//     `BuildClause`**, không suy đoán.
+//
+// 🔴 **LỌC THÁNG BẰNG CHUỖI**: `convert(char(7), td.CreatedDate, 120)` cho ra `yyyy-MM` ⇒ so **chuỗi** trên một
+//   biểu thức của cột ⇒ **không dùng được index** trên `CreatedDate` ⇒ quét bảng mỗi lần mở báo cáo.
+// 🔴 **`inner join Mst_Dealer` ở CẢ HAI BẢN, nhưng LẤY TỪ HAI NƠI**: bản đại lý đọc
+//   `[@strDBName_CommonCenter].[dbo].Mst_Dealer` (`_strConfig_DBName_**Main**` — lần thứ **năm** gặp tên hằng nói dối,
+//   sau #745/#750/#763/#768), bản kho đọc `Mst_Dealer` **cục bộ** ⇒ nếu danh mục đại lý ở kho thiếu một mã thì
+//   bản `_GetWH` **nuốt dòng** trong khi bản kia vẫn hiện (khuôn đã gặp ở #771).
+// 🔴 `with(nolock)` viết **thô** (không qua marker `--//[mylock]`) ⇒ đọc được dữ liệu chưa commit (họ #752).
+// 📌 Mini: endpoint dưới đây bổ sung cờ, và **cho phép bỏ trống `month` để lấy MỌI tháng** — khác nguồn CÓ CHỦ Ý,
+//   vì ở nguồn lựa chọn đó **không tồn tại**.
 app.MapGet("/api/report/warranty-accept/dealers", async (AppDbContext db, ITenantContext t,
     string? month) =>
 {
@@ -29326,6 +29356,12 @@ app.MapGet("/api/report/warranty-accept/dealers", async (AppDbContext db, ITenan
     return Results.Ok(new
     {
         month = m, count = rows.Count, rows,
+        // ===== #779: cặp `Ser_ROWarrantyReportHTCDealer_Get` ↔ `_GetWH` =====
+        sourceHardcodesEqualsOperator = "#779: nguon goi BuildClause(..., \"=\" + strMonthConditionList, ...). Doc than BuildClause (DataUtils.cs:1074): chi return rong khi chuoi RONG; \"=\" + \"\" = \"=\" co Length=1 nen KHONG rong => sinh and convert(char(7),CreatedDate,120) = @p0 voi @p0 rong => bao cao RONG chu khong phai moi thang",
+        sourceHasNoAllMonthsOption = "#779: vi \"=\" LUON duoc noi vao, KHONG co cach nao xin moi thang qua tham so nay; Mini cho bo trong month = lay tat ca (KHAC NGUON CO CHU Y)",
+        sourceFiltersMonthAsString = "#779: convert(char(7), td.CreatedDate, 120) => so CHUOI tren bieu thuc cua cot => khong dung duoc index, quet bang moi lan mo bao cao",
+        sourceTwoVersionsReadDealerFromDifferentDb = "#779: ban dai ly doc [@strDBName_CommonCenter].[dbo].Mst_Dealer (= _strConfig_DBName_Main — lan thu NAM sau #745/#750/#763/#768), ban kho doc Mst_Dealer CUC BO => thieu ma o kho thi ban _GetWH nuot dong (khuon #771)",
+        sourcePairIsCleanOtherwise = "#779: DIFF tron ham cap Get/_GetWH chi khac handle, nguon Mst_Dealer, ten ham/ma loi va mot khac biet khoang trang => LANH ve nghiep vu, khac cap o #771",
         filterColumnNote = "Danh sách này lọc theo NGÀY TẠO (CreatedDate), trong khi báo cáo lọc theo "
             + "NGÀY DUYỆT (ApprovedDate) — hai cột khác nhau trên cùng một ô nhập.",
         dealersByApprovedDate = byApproved.OrderBy(x => x),
