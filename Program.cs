@@ -44466,6 +44466,62 @@ app.MapPost("/api/dealerdeals/todealer", async (DealToDealerDto dto, AppDbContex
 }).RequireAuthorization();
 
 // ===== Yêu cầu PDI của đại lý (DlrPdiRequest — port 1:1 FrmNewDlr_PDIRequest, DMSales.Foton/SalesDealer) =====
+// ===== 🔴🔴🔴 #743 `DlrPDIRequest_Get_FromDMSSales` / `_GetWH_FromDMSSales` — CỔNG KÉO YÊU CẦU PDI TỪ DMS SALES =====
+// `BizCarSv.DMSSales.cs` :19-177 md5 `a5a77066` (144 dòng active) và :178-335 md5 `92dffb61` (146 dòng).
+// Cả hai **không chạy một câu SQL nào** (`SaveData`/`ExecNonQuery`/`ExecQuery` = 0/0/0) — chúng là **proxy**
+// gọi web service DMS Sales `WSHTC64.DlrPDIRequest_Get_OS` / `…_GetWH_OS` rồi bê nguyên hai bảng
+// `Dlr_PDIRequest` + `Dlr_PDIRequestDtl` về. Diff hai bản = **đúng 4 cụm**: tên hàm · mã lỗi · tên method WS
+// (`_Get_OS` vs `_GetWH_OS`) · `bNeedTransaction_Main` **false vs true**.
+//
+// 🔴🔴🔴 **`catch` NUỐT LỖI RỒI ĐI THẲNG VÀO NHÁNH "Return Good"**
+//   `catch (Exception ex) { TUtils.CProcessException.Process(ref mdsFinal, ex, …); }` — **không `throw` lại**,
+//   và ngay sau khối `try/catch` là `// Return Good:` → `mdsFinal.AcceptChanges(); return mdsFinal;`.
+//   ⇒ DMS Sales **chết, treo, đổi schema hay trả lỗi** thì hàm vẫn **trả về bình thường**, chỉ khác là
+//     **không có bảng dữ liệu nào**. Client nào không tự gọi `HasError` sẽ đọc thành **"đại lý không có
+//     yêu cầu PDI nào"** — tức **im lặng biến sự cố hệ thống thành kết quả rỗng hợp lệ** (họ #710/#736).
+//   🔴 **Tinh vi hơn**: chính hàm này **có** guard `if (CMyDataSet.HasError(mds_DMSSale)) throw CMyException.Raise(…_01)`,
+//     nhưng guard đó nằm **BÊN TRONG `try`** ⇒ cú `throw` của nó **rơi vào đúng cái `catch` đang nuốt**.
+//     ⇒ guard không làm hàm thất bại, nó chỉ **ghi thêm mã lỗi vào log**. Đây là dạng thứ SÁU của
+//     "guard vắng mặt" (nối tiếp năm dạng ở #736): **guard đầy đủ, đúng chỗ, nhưng bị `catch` của chính hàm vô hiệu hoá.**
+//
+// 🔴🔴 **`Timeout = 123456000` — 123.456.000 ms ≈ 34,3 GIỜ**: đây không phải hạn chờ mà là "không bao giờ hết giờ",
+//   và con số là **dãy gõ bừa 1-2-3-4-5-6** chứ không phải một giá trị được cân nhắc. Một request DMS Sales treo sẽ
+//   **giữ luồng IIS suốt hơn một ngày**; vài request như vậy là đủ làm cạn pool. Cộng với lỗi nuốt ở trên: người dùng
+//   **không thấy lỗi, chỉ thấy màn hình quay mãi**.
+//
+// 🔴 **`Rows[0]` KHÔNG KIỂM RỖNG NGAY TRONG NHÁNH XỬ LÝ LỖI** (họ #411):
+//   `mds_DMSSale.Tables["c_K_DT_SysInfo"].**Rows[0]**["ErrorCode"]` — nếu DMS Sales trả về DataSet lỗi mà thiếu
+//   bảng `c_K_DT_SysInfo` hoặc bảng rỗng thì dòng này ném `NullReference`/`IndexOutOfRange`, **đè mất lỗi gốc**,
+//   rồi lại bị `catch` nuốt ⇒ mã lỗi thật của DMS Sales **không bao giờ tới được log**.
+// 🔴 Hai bảng lấy theo tên cứng `Tables["Dlr_PDIRequest"]` / `["Dlr_PDIRequestDtl"]` **không kiểm null** ⇒ DMS Sales
+//   đổi tên bảng là NRE ⇒ cũng bị nuốt ⇒ **rỗng im lặng**. Ba lỗi trên **cộng dồn về cùng một triệu chứng**.
+// ⚪ **ÂM TÍNH — `bNeedTransaction_Main` false/true lệch nhau KHÔNG gây hại ở đây**: khác #742, hai hàm này
+//   **không ghi gì**, nên bản `false` chỉ là lạc khuôn chứ không mất khả năng rollback. Ghi ra để lượt sau khỏi
+//   báo trùng — và để thấy **cùng một dấu hiệu có thể là bug ở hàm này, vô hại ở hàm kia**: phải xét theo có ghi hay không.
+// 📌 Mini **không có** kết nối DMS Sales thật ⇒ endpoint dưới đây phục vụ đúng **hình dạng hợp đồng** (hai bảng
+//   `Dlr_PDIRequest` + `Dlr_PDIRequestDtl`) từ dữ liệu Mini và **nói thẳng** là không gọi DMS Sales — KHÔNG bịa
+//   một tầng proxy giả (cùng nguyên tắc "ghi NỢ thay vì bịa dữ liệu" ở #738).
+app.MapGet("/api/dlrpdirequests/from-dmssales", async (AppDbContext db, ITenantContext t, string? dealer, string? scope) =>
+{
+    var wh = string.Equals(scope, "wh", StringComparison.OrdinalIgnoreCase);
+    var q = db.DlrPdiRequests.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    var heads = await q.OrderByDescending(p => p.Id).Take(500).ToListAsync();
+    var ids = heads.Select(h => h.Id).ToList();
+    var lines = await db.DlrPdiRequestDetails.Where(c => c.OrgId == t.OrgId && ids.Contains(c.DlrPdiReqId))
+        .Select(c => new { c.DlrPdiReqId, c.RONo, c.ROCreatedDate, c.ROStatus, c.DlrPDIReqDtlStatus }).ToListAsync();
+    return Results.Ok(new
+    {
+        scope = wh ? "GetWH_OS" : "Get_OS",
+        Dlr_PDIRequest = heads.Select(h => new { h.DlrPdiReqNo, h.DealerCode, h.Status, h.CreatedAt, h.DoneAt }),
+        Dlr_PDIRequestDtl = lines,
+        // Ba cờ dưới giữ nguyên phát hiện #743 để không ai đọc endpoint này mà tưởng nguồn đã an toàn.
+        sourceSwallowsWsFailure = "catch(...) khong throw lai va di thang vao nhanh Return Good => DMS Sales chet van tra ve RONG hop le",
+        sourceGuardDisabledByOwnCatch = "guard HasError + throw nam TRONG try nen roi vao dung cai catch dang nuot => chi ghi log, khong lam ham that bai",
+        sourceTimeoutMs = 123456000,
+        notProxiedHere = "Mini khong goi WS DMS Sales; du lieu lay tu chinh Mini, chi giu dung hinh dang hop dong 2 bang",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/dlrpdirequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
     var q = db.DlrPdiRequests.Where(p => p.OrgId == t.OrgId);
