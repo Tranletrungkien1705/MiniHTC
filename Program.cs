@@ -59132,6 +59132,79 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 // 📌 Bài học đo lường kèm theo: **189/2513** site có tên clause không khớp tên biến, và **tất cả** đều lành.
 //   ⇒ Chỉ riêng "tên không khớp" **không phải** dấu hiệu lỗi; phải mở SQL xem placeholder **nằm ở đâu**
 //   (cùng một `WHERE` hay ở các bảng tạm/nhánh `union` khác nhau) rồi mới kết luận.
+// ===== 🔴🔴🔴 #810 MÀN MỚI: GỬI GIÁ BẢO HÀNH PHỤ TÙNG LÊN HÃNG — `Rpt_DMSSer_DealerNetPrice_*` =====
+// Chọn từ **272** hàm LIVE chưa hề được nhắc trong Mini (quét 800 hàm biz được gọi từ ba đường vào).
+// Cụm bốn hàm trong `BizCarSv.Report.Special.Warranty.cs`, cả bốn LIVE qua web WS:
+//   `:4415 _LastGet` (`WS:33794`) · `:4597 _PartGet` (`WS:33823`) · `:4961 _SendHMC` (`WS:33853`)
+//   · `:5070 _SendHMC_Auto` (`WS:33932`). Thân thật: `:4700 _SendHMC**X**` md5 `0071c354` (237 dòng,
+//   2 `Raise`, **4** `SaveData`); hai vỏ bọc `_SendHMC` / `_SendHMC_Auto` đều 102 dòng, `Raise`=0, `SaveData`=0.
+//   **BƯỚC 3B**: file **5891** dòng trên **cả hai** máy; md5 chuẩn hoá `SendHMCX` trên 150 = `0071c354` **KHỚP**.
+//
+// 🔴🔴🔴 **BỘ LỌC KỲ BÁO CÁO CHẾT VÌ PLACEHOLDER NẰM SAU DẤU `--`** (khuôn mới)
+//   Trong chuỗi SQL của `SendHMCX`:
+//     `where (1=1)`
+//     `**--**zzzzClauseWhere_strReportDateConditionList`      ← placeholder nằm **SAU dấu comment SQL**
+//     `and (f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice)`
+//   nhưng bên dưới **vẫn** dựng và **vẫn** thay:
+//     `string zzzzClauseWhere_strReportDateConditionList = SqlUtils.BuildClause("and", "t.LUDTime", strReportDateConditionList, "@p", ref alParamsCoupleSql);`
+//     `… Replace(…, "zzzzClauseWhere_strReportDateConditionList", zzzzClauseWhere_strReportDateConditionList)`
+//   ⇒ Mệnh đề `and t.LUDTime …` được thay vào **đúng chỗ nằm trong dòng comment** ⇒ **KHÔNG có tác dụng**.
+//   ⇒ **Lọc theo kỳ CHẾT cho CẢ HAI đường** (thủ công lẫn tự động) ⇒ mỗi lần gửi là **gửi toàn bộ** phụ tùng
+//     có giá đổi, không giới hạn kỳ.
+//   🔴 Và `BuildClause` **vẫn đẩy tham số vào `alParamsCoupleSql`** (`ref`) ⇒ **tham số được truyền vào
+//     `ExecQuery` mà SQL không hề dùng** — tuỳ tầng DAL mà bị bỏ qua hay báo lỗi thừa tham số.
+//   📌 Đây là **dạng thứ CHÍN** của họ "điều kiện biến mất": không phải `BuildClause` bỏ im lặng (#410), không
+//     phải bake sai vị trí (#791), mà là **placeholder bị comment ở phía SQL trong khi phía C# vẫn chạy đủ**.
+//
+// 🔴🔴 **BẢN TỰ ĐỘNG CÒN TRUYỀN THẲNG CHUỖI RỖNG**: diff hai vỏ bọc cho thấy `_SendHMC_Auto` **không có**
+//   tham số `strReportDateConditionList` và truyền `"" // strReportDateConditionList` vào `SendHMCX`.
+//   ⇒ Ngay cả khi ai đó **bỏ dấu `--`** để cứu bộ lọc, đường **tự động** vẫn gửi tất cả.
+//
+// 🔴🔴 **GIÁ GỬI HÃNG BỊ CHIA 100 RỒI LÀM TRÒN VỀ SỐ NGUYÊN** (#408)
+//   `cast(isnull(ROUND(t.TSTWarrantyPrice / 100, 0), 0) as int) TSTPrice`
+//   ⚪ `TSTWarrantyPrice` là kiểu thập phân (chứng cứ tại chỗ: `isnull(t.TSTWarrantyPrice, **0.0**)` ở mệnh đề
+//     kế bên) ⇒ `/100` là **chia thực**, **không** phải chia nguyên ⇒ không dính bẫy `VAT/100` của #408.
+//   🔴 Nhưng `ROUND(…, 0)` (làm tròn nửa-ra-xa-số-0 của SQL Server) rồi `cast as int` ⇒ **giá gửi lên hãng là
+//     số nguyên của đơn vị “trăm”** ⇒ mỗi phụ tùng **mất tới 50 đồng** so với giá gốc, và **không có chỗ nào
+//     ghi lại phần dư**. Đây là con số **rời khỏi hệ thống** nên sai lệch không tự phát hiện được.
+//
+// 🔴 **GHI VÀO HAI CSDL, KHÔNG CÓ BÙ TRỪ**: `SendHMCX` gọi `SaveData` **bốn** lần —
+//   `_dbMain.SaveData("Rpt_DealerNetPrice", …)` · `_dbWH.SaveData("Rpt_DealerNetPrice", …)` ·
+//   `_dbMain.SaveData("TST_Mst_Part_DNP", …)` · `_dbWH.SaveData("TST_Mst_Part_DNP", …)`
+//   ⇒ hai CSDL **độc lập**; nếu lần ghi thứ hai hỏng thì bản Main **đã** đánh dấu là đã gửi còn bản WH thì chưa.
+// 📌 Mini: `GET /api/report/dealernetprice/send-preview` — lọc kỳ **thật sự có tác dụng**, và **đếm riêng**
+//   số dòng mà nguồn sẽ gửi thừa do bộ lọc chết.
+app.MapGet("/api/report/dealernetprice/send-preview", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate) =>
+{
+    var all = await db.TstParts.Where(x => x.OrgId == t.OrgId && (x.TSTWarrantyPrice ?? 0m) > 0m)
+        .Select(x => new { x.TSTPartCode, x.EngName, x.TSTWarrantyPrice, x.LUDTime }).ToListAsync();
+    // Nguon: and isnull(t.TSTWarrantyPrice, 0.0) > 0  (da ap o tren)
+    var inPeriod = all.Where(x => (!fromDate.HasValue || (x.LUDTime.HasValue && x.LUDTime.Value >= fromDate.Value))
+                               && (!toDate.HasValue   || (x.LUDTime.HasValue && x.LUDTime.Value <= toDate.Value))).ToList();
+    var rows = inPeriod.Select(x =>
+    {
+        var raw = x.TSTWarrantyPrice ?? 0m;
+        var sent = (int)Math.Round(raw / 100m, 0, MidpointRounding.AwayFromZero);   // nguon: ROUND(x/100,0) roi cast as int
+        return new { x.TSTPartCode, x.EngName, warrantyPrice = raw, priceSentToHmc = sent,
+            residualLost = raw - sent * 100m, x.LUDTime };
+    }).ToList();
+    return Results.Ok(new
+    {
+        fromDate, toDate,
+        candidateCount = all.Count, inPeriodCount = inPeriod.Count, items = rows,
+        rowsSourceWouldSendExtra = all.Count - inPeriod.Count,
+        totalResidualLost = rows.Sum(x => x.residualLost),
+        sourcePeriodFilterIsCommentedOut = "BUG THAT: trong SQL cua SendHMCX, placeholder nam SAU dau comment — --zzzzClauseWhere_strReportDateConditionList — trong khi phia C# VAN dung clause (BuildClause and t.LUDTime ...) va VAN Replace => menh de duoc thay vao dung cho nam TRONG DONG COMMENT => loc theo ky CHET cho CA HAI duong (thu cong lan tu dong); moi lan gui la GUI TOAN BO",
+        sourceLeaksParamsForUnusedClause = "BuildClause van day tham so vao alParamsCoupleSql (ref) => tham so duoc truyen vao ExecQuery ma SQL khong he dung — tuy tang DAL ma bi bo qua hay bao loi thua tham so",
+        ninthShapeOfVanishingCondition = "dang thu CHIN cua ho dieu kien bien mat: khong phai BuildClause bo im lang (#410), khong phai bake sai vi tri (#791), ma la PLACEHOLDER BI COMMENT o phia SQL trong khi phia C# van chay du",
+        autoVariantPassesEmptyPeriod = "diff hai vo boc: _SendHMC_Auto KHONG co tham so strReportDateConditionList va truyen \"\" vao SendHMCX => ngay ca khi ai do bo dau -- de cuu bo loc, duong TU DONG van gui tat ca",
+        sourceDividesPriceByHundredThenRounds = "cast(isnull(ROUND(t.TSTWarrantyPrice / 100, 0), 0) as int) TSTPrice. TSTWarrantyPrice la kieu thap phan (chung cu tai cho: isnull(t.TSTWarrantyPrice, 0.0) o menh de ke ben) nen /100 la CHIA THUC, khong dinh bay VAT/100 cua #408. Nhung ROUND(...,0) roi cast as int => gia gui len hang la SO NGUYEN cua don vi tram => moi phu tung mat toi 50 dong, va KHONG co cho nao ghi lai phan du. Day la con so ROI KHOI he thong nen sai lech khong tu phat hien duoc",
+        sourceWritesTwoDatabasesWithoutCompensation = "SendHMCX goi SaveData BON lan: _dbMain va _dbWH cho Rpt_DealerNetPrice, roi _dbMain va _dbWH cho TST_Mst_Part_DNP => hai CSDL DOC LAP; neu lan ghi thu hai hong thi ban Main DA danh dau la da gui con ban WH thi chua",
+        dnpTableNotModelled = "Mini CHUA co bang TST_Mst_Part_DNP (ban da gui lan truoc) nen KHONG mo phong duoc dieu kien nguon f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice (chi gui phan DOI GIA). Ghi la NO, khong bia bang",
+        twoMachinesVerified = "BizCarSv.Report.Special.Warranty.cs 5891 dong tren CA HAI may; md5 chuan hoa SendHMCX tren 150 = 0071c354 KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/wrong-variable-bake-sweep", () => Results.Ok(new
 {
     trigger = "#808: zzzzClauseWhereModelCodeList duoc dung bang strIsActiveList thay vi strModelCodeList",
