@@ -7714,6 +7714,29 @@ public sealed class RptKpiLegacy
     public decimal? HourGJ { get; set; }
     public decimal? HourBP { get; set; }
 }
+/// <summary>🔴 #730 Dashboard hàng ngày theo đại lý (`Report_Dashboard`) — sinh bởi
+/// `Report_DashboardCreate_AutoDealer` (`BizCarSv.ZTemp.cs:33738`) qua **anti-join** trên cặp
+/// `(DealerCode, DateReport)`. `DateReport` lưu **dạng chuỗi** đúng như nguồn (bị bake vào SQL).</summary>
+public sealed class ReportDashboard
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? DateReport { get; set; }
+    public decimal? QtyROCreated { get; set; }
+    public decimal? QtyROFinished { get; set; }
+    public decimal? TotalAmountService { get; set; }
+    public decimal? TotalAmountServiceVAT { get; set; }
+    public decimal? TotalAmountPart { get; set; }
+    public decimal? TotalAmountPartVAT { get; set; }
+    public decimal? TotalAmountPartQuote { get; set; }
+    public decimal? TotalAmountPartQuoteVAT { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class ReportKpi
 {
     // ===== 🔴 #403 §12 KỲ BÁO CÁO — ba cột khung mà bản port cũ THIẾU HẲN =====

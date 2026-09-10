@@ -54185,6 +54185,76 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #730 SINH DASHBOARD HÀNG NGÀY CHO MỌI ĐẠI LÝ `Report_DashboardCreate_AutoDealer` =====
+// `BizCarSv.ZTemp.cs:33738-34082` (md5 `a993e684` — **hàm CUỐI file**, đã dùng fallback `E = wc -l + 1`
+// theo luật `C0-ducentesimustricesimus`). → `POST /api/report/dashboard/auto-create`.
+//
+// ⚪⚪ **DƯƠNG TÍNH LỚN — ANTI-JOIN VIẾT ĐÚNG, MẪU NGƯỢC QUÝ CHO LUẬT #414**:
+//     `from Mst_Dealer t left join Report_Dashboard f on t.DealerCode = f.DealerCode`
+//     `   **and f.DateReport = '@strDateReport'**`          ← điều kiện nằm trong **`ON`**
+//     `where (1=1) and t.FlagActive = '1' and t.FlagDealerHTC = '1' **and f.DealerCode is null**`
+//   ⇒ Đây là **anti-join** đúng chuẩn: tìm đại lý **chưa có** dashboard cho ngày đó.
+//   🔴 Nếu ai "dọn dẹp" bằng cách đẩy `f.DateReport = …` xuống `WHERE` thì `left join` **chết** (#414) và
+//     anti-join **hỏng hoàn toàn** — `f.DealerCode is null` sẽ luôn đúng ⇒ **tạo trùng dashboard mỗi lần chạy**.
+//   📌 Ghi ⚪ này để lần sau gặp cặp `left join` + `is null` thì biết **vị trí của điều kiện là phần của thuật
+//     toán**, không phải tuỳ chọn. Cùng tinh thần #721 (`ORDER BY` chống lưng cho logic C#).
+// ⚪ **DƯƠNG TÍNH — GHI CẢ HAI CSDL THẬT**: `_dbMain.SaveData("Report_Dashboard", dt_Report_Dashboard);` và
+//   `_dbWH.SaveData("Report_Dashboard", dt_Report_Dashboard);` ⇒ **mẫu ngược thứ hai** cho #726
+//   (sau #728 `Mst_Param_Delete`) ⇒ càng chắc rằng #726 là **thiếu sót của riêng hàm đó**.
+// ⚪ **DƯƠNG TÍNH — IDEMPOTENT theo `(DealerCode, DateReport)`**: nhờ anti-join, chạy lại cùng ngày **không**
+//   sinh bản ghi trùng. Khác hẳn loạt hàm ghi không guard đã gặp (#709/#710/#728).
+// 🔴🔴 **BAKE NGÀY BÁO CÁO VÀO NHÁY**: `and f.DateReport = '@strDateReport'` thay bằng `StringUtils.Replace`
+//   ⇒ **bề mặt tiêm SQL** (họ #712/#713/#699). `alParamsCoupleSql` không được dùng cho giá trị này.
+// 🔴 **HAI CỜ ĐẠI LÝ GÕ CỨNG**: `t.FlagActive = '1'` và `t.FlagDealerHTC = '1'` ⇒ đại lý **không phải HTC**
+//   **không bao giờ** có dashboard — cùng bộ lọc đã thấy ở #721 (`--20160126`).
+// 🔴 **`Rows[idx]` TRONG VÒNG LẶP `for`** trên `dtDB_Report_Dashboard_Get` — ⚪ **an toàn** ở đây vì có
+//   `if (dtDB_… != null && dtDB_….Rows.Count > 0)` bọc ngoài **và** dùng `idx` chứ không phải `Rows[0]`.
+//   📌 Ghi để đối lập với #712 (`Rows[0]` **bên trong** vòng lặp trên chính tập dòng đó = lỗi sao chép).
+// §12: Mini **chưa mô hình hoá** bảng `Report_Dashboard` ⇒ tạo entity mới với **đúng 14 cột** nguồn gán:
+//   `DealerCode` · `DateReport` · `QtyROCreated` · `QtyROFinished` · `TotalAmountService` ·
+//   `TotalAmountServiceVAT` · `TotalAmountPart` · `TotalAmountPartVAT` · `TotalAmountPartQuote` ·
+//   `TotalAmountPartQuoteVAT` · `CreatedDate` · `CreatedBy` · `LogLUDateTime` · `LogLUBy`.
+app.MapPost("/api/report/dashboard/auto-create", async (AppDbContext db, ITenantContext t,
+    string? dateReport, string? partnerUserCode) =>
+{
+    var dr = (dateReport ?? "").Trim();
+    if (dr.Length == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Report_DashboardCreate_AutoDealer_InvalidDateReport" });
+
+    // Nguồn: Mst_Dealer với FlagActive = 1 AND FlagDealerHTC = 1 (hai cờ gõ cứng).
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => d.DealerCode).ToListAsync();
+
+    // ANTI-JOIN: chỉ lấy đại lý CHƯA có dashboard cho đúng ngày đó.
+    var already = await db.ReportDashboards.Where(x => x.OrgId == t.OrgId && x.DateReport == dr)
+        .Select(x => x.DealerCode).ToListAsync();
+    var missing = dealers.Where(d => !already.Contains(d)).ToList();
+
+    var stamp = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
+    foreach (var d in missing)
+    {
+        db.ReportDashboards.Add(new ReportDashboard
+        {
+            OrgId = t.OrgId, DealerCode = d, DateReport = dr,
+            CreatedDate = stamp, CreatedBy = by, LogLUDateTime = stamp, LogLUBy = by,
+        });
+    }
+    if (missing.Count > 0) await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        dateReport = dr, dealersTotal = dealers.Count,
+        alreadyHadDashboard = already.Count, created = missing.Count, createdFor = missing,
+        // ===== #730 =====
+        antiJoinIsWrittenCorrectlyHere = "DUONG TINH LON — ANTI-JOIN VIET DUNG, MAU NGUOC QUY CHO LUAT #414: from Mst_Dealer t left join Report_Dashboard f on t.DealerCode = f.DealerCode AND f.DateReport = @strDateReport (dieu kien nam trong ON) roi where … and f.DealerCode is null => tim dai ly CHUA CO dashboard cho ngay do. Neu ai don dep bang cach day f.DateReport xuong WHERE thi left join CHET (#414) va anti-join HONG HOAN TOAN — f.DealerCode is null se luon dung => TAO TRUNG DASHBOARD MOI LAN CHAY. VI TRI CUA DIEU KIEN LA PHAN CUA THUAT TOAN, khong phai tuy chon (cung tinh than #721: ORDER BY chong lung cho logic C#)",
+        writesBothDatabasesForReal = "DUONG TINH: _dbMain.SaveData(Report_Dashboard, …) VA _dbWH.SaveData(Report_Dashboard, …) => MAU NGUOC THU HAI cho #726 (sau #728 Mst_Param_Delete) => cang chac rang #726 la THIEU SOT CUA RIENG HAM DO, khong phai quy uoc cua tang",
+        idempotentByDealerAndDate = "DUONG TINH: nho anti-join, chay lai cung ngay KHONG sinh ban ghi trung — khac han loat ham ghi khong guard da gap (#709/#710/#728)",
+        dateReportBakedIntoQuotes = "BAKE NGAY BAO CAO VAO NHAY: and f.DateReport = @strDateReport thay bang StringUtils.Replace => BE MAT TIEM SQL (ho #712/#713/#699); alParamsCoupleSql khong duoc dung cho gia tri nay",
+        twoDealerFlagsHardcoded = "HAI CO DAI LY GO CUNG: t.FlagActive = 1 va t.FlagDealerHTC = 1 => dai ly KHONG PHAI HTC KHONG BAO GIO co dashboard — cung bo loc da thay o #721 (--20160126)",
+        rowsIndexInLoopIsSafeHere = "Rows[idx] TRONG VONG LAP for tren dtDB_Report_Dashboard_Get — AN TOAN o day vi co if (dtDB_… != null && dtDB_….Rows.Count > 0) boc ngoai VA dung idx chu khong phai Rows[0]. Ghi de doi lap voi #712 (Rows[0] BEN TRONG vong lap tren chinh tap dong do = loi sao chep)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #729 XUẤT CHI TIẾT LSC CHO HTC `Report_HTC_SerRO` =====
 // `BizCarSv.Inventory.Report.cs:8072-8301` (md5 `7c05195b`) → `GET /api/report/htc-serro`.
 // Hai nhánh SQL gần như y hệt (phụ tùng / công việc) ⇒ **DIFF HAI NHÁNH VỚI NHAU** theo luật #414.

@@ -113,6 +113,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstKpi> MstKpis => Set<MstKpi>();
     // #329: ban ghi BAO CAO KPI xuong dich vu (Report_KPI)
     public DbSet<ReportKpi> ReportKpis => Set<ReportKpi>();
+    public DbSet<ReportDashboard> ReportDashboards => Set<ReportDashboard>();   // #730
     // #722: bang KPI the he CU (Rpt_KPI, bo GJ/BP) — KHAC ReportKpi (Report_KPI, bo BDD/SCC/SCD/SCS).
     public DbSet<RptKpiLegacy> RptKpiLegacies => Set<RptKpiLegacy>();
     public DbSet<MstKpiType> MstKpiTypes => Set<MstKpiType>();
