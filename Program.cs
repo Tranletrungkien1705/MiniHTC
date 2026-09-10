@@ -5943,14 +5943,66 @@ app.MapPost("/api/sysgroupusers/save", async (MapSgSuSaveDto dto, AppDbContext d
     });
 }).RequireAuthorization();
 
-app.MapGet("/api/sysgroupobjects", async (AppDbContext db, ITenantContext t, string? groupCode, string? objectCode) =>
+// ===== 🔴🔴 #773 `Ser_SysGetMapSysGroupSysObject` / `…GroupSysUser` / `…UserSysObject` — BA HÀM ĐỌC ÁNH XẠ =====
+// `BizCarSv.System.cs`: `…GroupSysObject` `:1259-1403` md5 `d6fd4e4d` · `…GroupSysUser` `:723-858` md5 `dad4f960` ·
+// `…UserSysObject` `:1505-1628` md5 `70b43b09`. md5 file `5eda319a` — khớp hai máy (xác nhận ở #762).
+//
+// 🔴🔴🔴 **`WEBHTC` KHÔNG PHẢI QUY ƯỚC NHẤT QUÁN — NÓ RẢI RÁC** (tinh chỉnh kết luận #765)
+//   #765 đếm được **5** chỗ `not in ('WEBHTC')`, tất cả ở hàm ĐỌC, và kết luận "quy ước toàn cụm".
+//   Đếm tiếp **ba hàm đọc ánh xạ** này: `…GroupSys**User**` = **1** · `…GroupSys**Object**` = **0** ·
+//     `…UserSys**Object**` = **0**.
+//   ⇒ Trong cùng một cụm map, đọc "nhóm↔người" thì **lọc bỏ** đối tác `WEBHTC`, còn đọc "nhóm↔đối tượng" và
+//     "người↔đối tượng" thì **thấy hết**. ⇒ Không phải quy ước; là **luật rải rác từng hàm** — và vì thế hai màn
+//     quản trị cạnh nhau cho ra hai bức tranh phân quyền khác nhau cho cùng một đối tác.
+//   📌 Sửa cách diễn đạt của #765: đúng là "5/5 chỗ đóng cứng, không có hằng", **nhưng mẫu số không phải là
+//     tất cả hàm đọc** — có ít nhất **hai** hàm đọc cùng họ không hề có điều kiện đó.
+//
+// ⚪⚪ **AN TOÀN SQL CHIA THEO CHIỀU ĐỌC/GHI — VÀ NGƯỢC CHIỀU VỚI GUARD (#764)**
+//   Cả **sáu** mệnh đề lọc của `Ser_SysGetMapSysGroupSysObject` đều qua `BuildClauseConditionList(..., "|")`
+//   ⇒ **không** nối chuỗi. Trong khi ghi chú `C0-bug10` (ngay phía trên, cho nhánh **GHI** `SysSaveMapSysGroupSysObject`)
+//   nói nhánh `Map_SG_SO` **dựng WHERE bằng nối chuỗi**.
+//   ⇒ Cùng một bảng `Map_SG_SO`: **đường ĐỌC tham số hoá đầy đủ, đường GHI nối chuỗi**.
+//   Ghép với #764 (guard `StartsWith("and")` **chỉ** có ở hàm GHI, vắng ở mọi hàm ĐỌC) ra một bức tranh gọn:
+//     · phía **GHI**: có guard mệnh đề rỗng, nhưng nối chuỗi;
+//     · phía **ĐỌC**: tham số hoá, nhưng không guard mệnh đề rỗng.
+//   ⇒ **Không phía nào được bảo vệ đủ** — mỗi phía mạnh đúng thứ phía kia yếu. Đây là lý do không thể suy
+//     "tầng này an toàn/không an toàn" theo một mẫu duy nhất.
+//
+// 🔴🔴 **LỌC ĐẠI LÝ ÁP TRÊN BẢNG SAI**: câu SQL là
+//     `from Map_SG_SO t inner join Sys_Group sg on t.GroupCode = sg.GroupCode **and t.DealerCode = sg.DealerCode**`
+//     `             inner join Sys_Object so on t.ObjectCode = so.ObjectCode and t.PartnerCode = so.PartnerCode`
+//     `                                     **and so.DealerCode = sg.DealerCode**`
+//   nhưng bộ lọc đại lý lại là `BuildClauseConditionList("and", "**sg**.DealerCode", strDealerCodeList, "|")`
+//   ⇒ lọc theo đại lý của **NHÓM**, không phải của **ánh xạ** (`t.DealerCode`). Hai giá trị này được ràng bằng
+//     điều kiện join nên hôm nay trùng nhau; nhưng `Sys_Object` thì lại buộc theo `sg.DealerCode` chứ không
+//     theo `t.DealerCode` ⇒ nếu dữ liệu lệch, kết quả **im lặng nghiêng về phía nhóm**.
+// 🔴 Ba `inner join` (`Sys_Group`, `Sys_Object`) ⇒ **tầng nuốt dòng thứ tư** của cụm phân quyền, nối tiếp
+//   #761/#764/#765: ánh xạ trỏ tới nhóm hoặc đối tượng đã bị xoá thì **biến mất khỏi màn xem quyền**.
+// ⚪ Guard đếm theo luật ba nguồn (#747+#760): cả ba hàm `Raise` = 0, `this.Check*` = 0, `my*_Check*` = 0
+//   ⇒ **không guard** — nhưng đều là hàm đọc danh mục, cùng lập luận đã dùng ở #765.
+app.MapGet("/api/sysgroupobjects", async (AppDbContext db, ITenantContext t, string? groupCode, string? objectCode, string? dealerCode) =>
 {
     var qy = db.MapSysGroupSysObjects.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(groupCode)) qy = qy.Where(x => x.GroupCode == groupCode);
     if (!string.IsNullOrWhiteSpace(objectCode)) qy = qy.Where(x => x.ObjectCode == objectCode);
     var items = await qy.OrderBy(x => x.GroupCode).ThenBy(x => x.ObjectCode)
         .Select(x => new { x.GroupCode, x.ObjectCode, x.PartnerCode }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // #773 Nguồn KHÔNG lọc WEBHTC ở nhánh này (khác nhánh nhóm↔người). Đếm ra để thấy chênh lệch.
+    var webHtcRows = items.Count(x => x.PartnerCode == "WEBHTC");
+    // Nguồn inner join Sys_Group + Sys_Object ⇒ ánh xạ trỏ tới bản ghi đã xoá sẽ biến mất.
+    var groupCodes = items.Select(x => x.GroupCode).Distinct().ToList();
+    var objectCodes = items.Select(x => x.ObjectCode).Distinct().ToList();
+    var missingGroups = groupCodes.Count - await db.SysGroups.CountAsync(g => g.OrgId == t.OrgId && groupCodes.Contains(g.GroupCode));
+    var missingObjects = objectCodes.Count - await db.SysObjects.CountAsync(o => o.OrgId == t.OrgId && objectCodes.Contains(o.ObjectCode));
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        webHtcRows, missingGroups, missingObjects,
+        sourceDoesNotFilterWebHtcHere = "#773: nhanh nhom<->doi tuong KHONG co not in (WEBHTC) trong khi nhanh nhom<->nguoi thi CO => luat RAI RAC tung ham, khong phai quy uoc; sua cach dien dat cua #765",
+        sourceFiltersDealerOnGroupNotMapping = "#773: bo loc dai ly ap tren sg.DealerCode (bang Sys_Group) chu khong phai t.DealerCode (bang Map_SG_SO); Sys_Object cung buoc theo sg.DealerCode",
+        sourceInnerJoinsGroupAndObject = "#773: inner join Sys_Group + Sys_Object => anh xa tro toi nhom/doi tuong da xoa BIEN MAT khoi man xem quyen (tang nuot dong thu TU sau #761/#764/#765)",
+        readPathIsParameterizedWritePathIsNot = "#773: ca 6 menh de cua nhanh DOC deu qua BuildClauseConditionList; nhanh GHI (C0-bug10) thi noi chuoi. Ghep voi #764 (guard chi o phia GHI): moi phia manh dung thu phia kia yeu",
+    });
 }).RequireAuthorization();
 
 // 🔴 THAY THẾ TRỌN BỘ quyền màn hình của MỘT nhóm (nguồn nhận đúng một `strGroupCodeList` cho nhánh này).
