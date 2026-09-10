@@ -18972,6 +18972,71 @@ var warrantyClaimStatusNames = warrantyClaimStatusNamesByScreen["biz"];
 //     Vậy vấn đề của cụm bảo hành không phải "thiếu guard" mà là **không có ai đóng cửa sau**.
 // 📌 Mini: `PUT /api/warrantyclaims/{id}` port theo bản `_V2` (đường đang sống, có guard) và **mở sẵn 13 trường**
 //   của bản `_New20230220` — đánh dấu rõ là **vượt trước nguồn có chủ ý**, kèm cờ giải thích.
+// ===== ⚪⚪⚪ #777 `Ser_ROWarrantyReport_Delete_New20191121` — HÀM XOÁ LÀM ĐÚNG TOÀN DIỆN =====
+// `BizCarSv.WarrantyReport.cs:12062-12317` md5 `387720ce` (233 dòng active). `Raise` = **3**, `this.Check*` = **1**.
+//
+// ⚪⚪⚪ **PHẢN VÍ DỤ DỨT ĐIỂM CHO #754 VÀ #772: "XOÁ TRƯỚC — KIỂM SAU" LÀ LỖI, KHÔNG PHẢI KHUÔN CỦA TẦNG**
+//   Thứ tự thật trong hàm này: `this.CheckExistROWarrantyReport(...)` (**dòng 48**) → ba `throw` (dòng 56/66/74)
+//   → **rồi mới** năm câu `delete` (dòng 123-151) → ba `ExecQuery` trên `_dbMain`/`_dbWH`/`_dbDealer` (170/175/182).
+//   ⇒ **Guard chạy TRƯỚC mọi thao tác ghi.** Cùng tầng, cùng file họ hàng, cùng kiểu "xoá bản ghi có ràng buộc
+//     nghiệp vụ" — mà `Ser_ReceptionF_DeleteX` (#772) và `SP_SharePartUpdate` (#754) lại **xoá xong mới hỏi**.
+//   ⇒ Áp luật "đi tìm một hàm làm ĐÚNG": **tìm được**, và nó nằm ngay trong cùng hệ ⇒ hai hàm kia là **LỖI**.
+//
+// ⚪⚪ **GUARD TRẠNG THÁI ĐẦY ĐỦ — VÀ TÔI SUÝT BÁO THIẾU**
+//   Đọc lướt danh sách mã lỗi (`…_NotDelete_**Sent**`, `…_NotDelete_**Accept**`) thì tưởng chỉ chặn hai trạng thái,
+//   và `CONF` (*"Chờ duyệt // Đã gửi HMC, chờ HMC duyệt"* — bảng hằng ở #775) **bị bỏ lọt**. Đọc điều kiện thật:
+//     `if (strStatus.Equals(…Status.**Sent**) || strStatus.Equals(…Status.**Confirmed**)) throw …_NotDelete_Sent;`
+//     `if (strStatus.Equals(…Status.**Accepted**)) throw …_NotDelete_Accept;`
+//   ⇒ **CÓ** chặn `CONF`. Ba trạng thái bị chặn: `SENT` · `CONF` · `ACCE`. Hai trạng thái cho xoá: `REJ` (bị HMC
+//     từ chối — xoá để làm lại) và `REVERT` ⇒ **hợp lý về nghiệp vụ**.
+//   🔴 Điểm thật còn lại: **một mã lỗi gánh hai trạng thái** — `…_NotDelete_**Sent**` ném cho cả `CONF` ⇒ người dùng
+//     ở trạng thái "đã gửi HMC chờ duyệt" nhận thông báo nói là "đã gửi" ⇒ nhãn **hẹp hơn** điều kiện (nhẹ hơn
+//     #741/#755 nhưng cùng họ).
+//
+// 🔴 **`strFunctionName = "Ser_ROWarrantyReport_Delete"` — RỤNG HẬU TỐ `_New20191121`** (họ #772). Nhẹ: grep cho thấy
+//   **không có** hàm nào tên trần như vậy trong `TERP.BizCarSv` ⇒ log **mờ** chứ không lẫn (khác #775 — ở đó tên
+//   trùng một hàm có thật).
+// ⚪ **XOÁ ĐỦ NĂM BẢNG, TRÊN CẢ BA CSDL**: `Ser_ROWarrantyReportTransaction` · `…ServiceItems` · `…PartItems` ·
+//   `Ser_ROAttachment` (alias `swa`) · `Ser_ROWarrantyReport` — cùng một chuỗi SQL chạy lần lượt trên `_dbMain`,
+//   `_dbWH`, `_dbDealer` ⇒ không sót bảng con, không lệch CSDL. Khuôn sạch nhất của cụm bảo hành.
+// 📌 Mini: `DELETE /api/warrantyclaims/{id}` giữ **đúng thứ tự guard-trước-xoá-sau** và xoá đủ các bảng con.
+app.MapDelete("/api/warrantyclaims/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    // Guard 1 — nguồn: Ser_WarrantyReport_ROWID_NotFound.
+    if (claim is null) return Results.NotFound(new { id, sourceError = "Ser_WarrantyReport_ROWID_NotFound" });
+    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
+    // Guard 2 — nguồn chặn SENT **và** CONF bằng CÙNG một mã lỗi.
+    if (st == "SENT" || st == "CONF")
+        return Results.BadRequest(new
+        {
+            error = "Ser_WarrantyReport_NotDelete_Sent", currentStatus = st,
+            sourceOneErrorCodeForTwoStatuses = "nguon nem ..._NotDelete_Sent cho CA SENT lan CONF (da gui HMC cho duyet) => nhan HEP hon dieu kien",
+        });
+    // Guard 3 — nguồn: Ser_WarrantyReport_NotDelete_Accept.
+    if (st == "ACCE")
+        return Results.BadRequest(new { error = "Ser_WarrantyReport_NotDelete_Accept", currentStatus = st });
+    // Chỉ tới đây mới xoá — đúng thứ tự của nguồn.
+    var svcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync();
+    var partItems = await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync();
+    var trans = await db.ServiceWarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync();
+    var attachs = await db.WarrantyAttachments.Where(x => x.OrgId == t.OrgId && x.ServiceWarrantyClaimId == id).ToListAsync();
+    db.WarrantyClaimServiceItems.RemoveRange(svcItems);
+    db.WarrantyClaimPartItems.RemoveRange(partItems);
+    db.ServiceWarrantyClaimTransactions.RemoveRange(trans);
+    db.WarrantyAttachments.RemoveRange(attachs);
+    db.ServiceWarrantyClaims.Remove(claim);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        deleted = id, status = st,
+        removed = new { serviceItems = svcItems.Count, partItems = partItems.Count, transactions = trans.Count, attachments = attachs.Count },
+        sourceChecksBeforeDeleting = "AM TINH quan trong: ham nay guard TRUOC roi moi xoa (Check o dong 48, delete tu dong 123) => PHAN VI DU dut diem cho #754 va #772 von xoa xong moi hoi",
+        sourceBlocksThreeStatuses = "chan SENT + CONF + ACCE; cho xoa o REJ (bi HMC tu choi, xoa de lam lai) va REVERT",
+        sourceDeletesFiveTablesOnThreeDbs = "Ser_ROWarrantyReportTransaction / ...ServiceItems / ...PartItems / Ser_ROAttachment / Ser_ROWarrantyReport — cung mot chuoi SQL chay tren _dbMain, _dbWH, _dbDealer",
+        sourceLogsNameWithoutSuffix = "strFunctionName = Ser_ROWarrantyReport_Delete (rung _New20191121); khong co ham tran cung ten nen log MO chu khong lan",
+    });
+}).RequireAuthorization();
 app.MapPut("/api/warrantyclaims/{id:long}", async (long id, WarrantyClaimUpdateDto dto, AppDbContext db, ITenantContext t) =>
 {
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
