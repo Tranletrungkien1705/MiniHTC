@@ -15607,6 +15607,10 @@ public sealed class LoyaltyCard
 /// `on (left(VIN,4) = VINCode or left(VIN,5) = VINCode)` — nguồn gốc của bẫy nở dòng đã ghi ở #651/#655.</summary>
 public sealed class MstVinModelOrginal
 {
+    // ===== 🔴 #726 §12 — hai cột nhật ký `Mst_VINModelOrginal_Import`/`_Update` GHI mà bản port thiếu.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     /// <summary>Đầu số VIN — 4 hoặc 5 ký tự, chỉ chữ và số (giữ nguyên chính tả cột nguồn).</summary>

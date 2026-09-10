@@ -46144,6 +46144,157 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #726 DANH MỤC VIN↔MODEL `Mst_VINModelOrginal_Get/_Import/_Delete/_Update` — TRẢ NỢ #691 =====
+// `BizCarSv.Master.cs` — `_Get` :9113-9237 md5 `3235b1dc` · `_Delete` :9384-9507 md5 `429708dc` ·
+// `_Import` :9509-9736 md5 `62e8c2df` · `_Update` :9738-9865 md5 `5289191d`.
+// → `GET /api/mstvinmodelorginals/search`, `POST /api/mstvinmodelorginals/import`,
+//   `DELETE /api/mstvinmodelorginals/{vinCode}`.
+// 📌 Bảng đã được tạo ở lượt trước (entity `MstVinModelOrginal`, giữ nguyên **lỗi chính tả** `Orginal`),
+//   nhưng **bốn hàm CRUD thì chưa port** — grep cả bốn tên đều **0 hit**.
+//
+// 🔴🔴🔴 **TRẢ NỢ #691 — "hai bản `Mst_VINModelOrginal` Main vs WH có lệch không?" ⇒ CÓ, VÀ ĐÂY LÀ CƠ CHẾ**:
+//   `_Delete` **mở transaction `_dbWH`** (`BeginTransaction`) và **commit `_dbWH`** (`CommitSafety`), nhưng câu
+//   `delete t from Mst_VINModelOrginal t …` chỉ chạy qua **`_dbMain.ExecQuery`** — `_dbWH` **không hề được ghi**.
+//   ⇒ Xoá một mã VIN ⇒ **mất ở Main, CÒN NGUYÊN ở WH** ⇒ hai bản danh mục **lệch dần theo mỗi lần xoá**.
+//   🔴 `_Import` cũng vậy: mở transaction cả `_dbMain` lẫn `_dbWH`, commit cả hai, nhưng đếm
+//     `_dbWH.SaveData|ExecQuery` trong toàn hàm = **0** ⇒ **chỉ ghi Main**.
+//   ⇒ **Cả hai đường ghi đều bỏ quên WH**, trong khi transaction WH vẫn được mở/commit ⇒ **trông như có đồng bộ**.
+//     Cùng họ #710/#711 (transaction mở rồi bỏ) nhưng ở đây hậu quả là **dữ liệu danh mục lệch thật**.
+// 🔴🔴🔴 **THỨ TỰ GUARD SAI ⇒ MÃ LỖI "KHÔNG ĐƯỢC ĐỂ TRỐNG" LÀ GUARD CHẾT** (`_Import`):
+//     `if (strVINCode.Length != 4 && strVINCode.Length != 5) throw …**InvalidVINCode_Length**;`   ← chạy TRƯỚC
+//     … `if (StringUtils.IsEmpty(strVINCode))              throw …**VinCodeNotEmty**;`          ← không bao giờ tới
+//   Chuỗi rỗng có `Length = 0` ⇒ `0 != 4 && 0 != 5` ⇒ **true** ⇒ ném lỗi **độ dài** ngay.
+//   ⇒ `Mst_VINModelOrginal_Import_VinCodeNotEmty` **không bao giờ được ném**; người để trống mã VIN nhận thông
+//     báo *"độ dài không hợp lệ"*. Cùng họ #725 (mã lỗi không bao giờ ném) nhưng nguyên nhân là **THỨ TỰ GUARD**,
+//     không phải toán tử. ⚠️ Hai guard `ModelCode`/`OrginalCode` thì **không** dính vì không có kiểm độ dài.
+// 🔴🔴🔴 **KIỂM TRÙNG CHỈ THEO `VINCode` TRONG KHI KHOÁ NGHIỆP VỤ LÀ BỘ BA**:
+//     `GetTableContents(_dbMain, "Mst_VINModelOrginal", **"top 1 *"**, "", "VINCode", "=", strVINCode)`
+//   ⇒ Nhập dòng **cùng `VINCode` nhưng khác `ModelCode`/`OrginalCode`** sẽ **GHI ĐÈ** dòng cũ thay vì thêm mới
+//     ⇒ **mất ánh xạ cũ, im lặng**. Và `"top 1 *"` **không `ORDER BY`** ⇒ nếu đã lỡ có nhiều dòng cùng `VINCode`
+//     thì ghi đè **dòng bất kỳ** (#411/#415).
+// 🔴🔴 **`throw` GIỮA VÒNG LẶP ⇒ IMPORT DỞ DANG NHƯNG CÓ TRANSACTION CỨU**: mỗi dòng hỏng là `throw` ngay, trong
+//   khi `SaveData` đã chạy cho các dòng **trước đó**. ⚪ `bNeedTransaction_Main = true` ⇒ `RollbackSafety` ở
+//   `catch` **cứu được** — nhưng người dùng **không biết dòng nào hỏng** vì thông báo chỉ có mã VIN.
+// 🔴🔴 **BẤT ĐỐI XỨNG `Trim()`**: `itemrow["VINCode"].ToString().**Trim()**` nhưng `ModelCode` và `OrginalCode`
+//   **không** `.Trim()` ⇒ khoảng trắng thừa đi thẳng vào danh mục. Đúng họ #718 (khối `.Trim()` bị comment).
+// 🔴 **HẰNG ≠ GIÁ TRỊ (đã mở)**: `regex` không khai báo trong hàm — nó là **field của lớp**
+//   (`BizCarSv.Master.cs:9236-9237`): `static string pattern = "**[^a-zA-Z0-9]**"; public Regex regex = new Regex(pattern);`
+//   ⇒ `regex.IsMatch(strVINCode)` ném khi mã VIN chứa **bất kỳ ký tự nào ngoài chữ/số** (kể cả khoảng trắng,
+//     gạch nối). Kết hợp với `.Trim()` ở trên thì khoảng trắng **hai đầu** được cắt, còn khoảng trắng **giữa**
+//     vẫn bị chặn — nhất quán.
+// 🔴 **`Mst_VINModelOrginal_Get`: BỐN `BuildClause` ĐỀU ĐÒI TOÁN TỬ** (#410) và **không phân trang, không
+//   `ORDER BY`** ⇒ gửi trần cả bốn ⇒ `where (1=1)` ⇒ **trả toàn bộ danh mục VIN**. Port ép phân trang.
+//   ⚠️ Chú ý tên tham số nguồn **sai chính tả không đồng đều**: `strOrginalCodeCondition**Lis**t` và
+//     `strFlagActiveCondition**Lis**t` (thiếu chữ `t`) so với hai cái đầu `…Condition**List**`. Giữ nguyên văn.
+// ⚪ **ÂM TÍNH — cả bốn `BuildClause` truyền `ref alParamsCoupleSql`** ⇒ SqlParameter thật, **không bake**.
+app.MapGet("/api/mstvinmodelorginals/search", async (AppDbContext db, ITenantContext t,
+    string? vinCode, string? modelCode, string? orginalCode, string? flagActive,
+    int? recordStart, int? recordCount) =>
+{
+    var qy = db.MstVinModelOrginals.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(vinCode)) qy = qy.Where(x => x.VINCode == vinCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(modelCode)) qy = qy.Where(x => x.ModelCode == modelCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(orginalCode)) qy = qy.Where(x => x.OrginalCode == orginalCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
+
+    var total = await qy.CountAsync();
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 5000 ? recordCount!.Value : 1000;
+    var items = await qy.OrderBy(x => x.VINCode).ThenBy(x => x.Id).Skip(skip).Take(take).ToListAsync();
+    // Đo đúng rủi ro khoá: cùng VINCode nhưng khác ModelCode/OrginalCode.
+    var dupVin = items.GroupBy(x => x.VINCode).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, total, skip, take, items, duplicateVinCodes = dupVin,
+        // ===== #726 =====
+        fourClausesAllNeedOperatorNoPagingNoOrderBy = "Mst_VINModelOrginal_Get: BON BuildClause DEU DOI TOAN TU (#410) va KHONG phan trang, KHONG ORDER BY => gui tran ca bon => where (1=1) => TRA TOAN BO danh muc VIN. Port ep phan trang + sap theo VINCode",
+        parameterNamesMisspeltUnevenly = "Ten tham so nguon SAI CHINH TA KHONG DONG DEU: strOrginalCodeConditionLis(t) va strFlagActiveConditionLis(t) THIEU CHU t so voi hai cai dau …ConditionList. Giu nguyen van",
+        negativeProperlyParameterised = "AM TINH: ca bon BuildClause truyen ref alParamsCoupleSql => SqlParameter that, KHONG bake",
+    });
+}).RequireAuthorization();
+
+// #726 `Mst_VINModelOrginal_Import` (:9509). Guard rỗng CHẾT vì kiểm độ dài chạy trước.
+app.MapPost("/api/mstvinmodelorginals/import", async (List<MstVinModelOrginalDto> rows,
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var badPattern = new System.Text.RegularExpressions.Regex("[^a-zA-Z0-9]");   // nguồn: static pattern
+    var stamp = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
+    var overwritten = new List<string>();
+    var added = 0;
+
+    for (var i = 0; i < rows.Count; i++)
+    {
+        var vin = (rows[i].VINCode ?? "").Trim();      // nguồn CÓ .Trim() ở cột này…
+        var model = rows[i].ModelCode ?? "";           // …nhưng KHÔNG có ở hai cột này
+        var orginal = rows[i].OrginalCode ?? "";
+
+        // 🔴 GIỮ 1:1 THỨ TỰ GUARD CỦA NGUỒN: kiểm ĐỘ DÀI trước ⇒ chuỗi rỗng ném lỗi ĐỘ DÀI, không phải "rỗng".
+        if (vin.Length != 4 && vin.Length != 5)
+            return Results.BadRequest(new
+            {
+                error = "ErrCarSv.Mst_VINModelOrginal_Import_InvalidVINCode_Length",
+                rowIndex = i, strVINCode = vin, expectedLength = "4,5",
+                emptyVinGuardIsUnreachableBecauseLengthCheckRunsFirst = vin.Length == 0,
+            });
+        if (badPattern.IsMatch(vin))
+            return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Import_InvalidVINCode", rowIndex = i, strVINCode = vin });
+        if (model.Length == 0)
+            return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Import_ModelCodeNotEmty", rowIndex = i });
+        if (orginal.Length == 0)
+            return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Import_OrginalNotEmty", rowIndex = i });
+
+        // 🔴 Nguồn tra trùng CHỈ theo VINCode (không theo bộ ba) và `top 1 *` không ORDER BY.
+        var hit = await db.MstVinModelOrginals.Where(x => x.OrgId == t.OrgId && x.VINCode == vin)
+            .OrderBy(x => x.Id).FirstOrDefaultAsync();
+        if (hit is null)
+        {
+            db.MstVinModelOrginals.Add(new MstVinModelOrginal
+            {
+                OrgId = t.OrgId, VINCode = vin, ModelCode = model, OrginalCode = orginal,
+                FlagActive = "1", CreatedDate = stamp, CreatedBy = by, LogLUDateTime = stamp, LogLUBy = by,
+            });
+            added++;
+        }
+        else
+        {
+            // Ghi đè: nếu ModelCode/OrginalCode khác thì ĐÂY LÀ MẤT ÁNH XẠ CŨ.
+            if (hit.ModelCode != model || hit.OrginalCode != orginal) overwritten.Add(vin);
+            hit.ModelCode = model; hit.OrginalCode = orginal;
+            hit.LogLUDateTime = stamp; hit.LogLUBy = by;
+        }
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        rowCount = rows.Count, added, updated = rows.Count - added, overwrittenMappings = overwritten,
+        emptyVinGuardIsUnreachableBecauseLengthCheckRunsFirst = "THU TU GUARD SAI => MA LOI khong-duoc-de-trong LA GUARD CHET: if (strVINCode.Length != 4 && strVINCode.Length != 5) throw …InvalidVINCode_Length chay TRUOC; if (StringUtils.IsEmpty(strVINCode)) throw …VinCodeNotEmty KHONG BAO GIO TOI vi chuoi rong co Length = 0 => 0 != 4 && 0 != 5 => true. Ma loi Mst_VINModelOrginal_Import_VinCodeNotEmty KHONG BAO GIO duoc nem. Cung ho #725 nhung nguyen nhan la THU TU GUARD, khong phai toan tu. Hai guard ModelCode/OrginalCode KHONG dinh vi khong co kiem do dai",
+        duplicateCheckOnlyByVinCode = "KIEM TRUNG CHI THEO VINCode TRONG KHI KHOA NGHIEP VU LA BO BA: GetTableContents(_dbMain, Mst_VINModelOrginal, top 1 *, '', VINCode, =, strVINCode) => nhap dong cung VINCode nhung khac ModelCode/OrginalCode se GHI DE dong cu thay vi them moi => MAT ANH XA CU, IM LANG. Va top 1 * KHONG ORDER BY => neu da lo co nhieu dong cung VINCode thi ghi de DONG BAT KY (#411/#415). Da do bang overwrittenMappings",
+        importWritesMainOnlyThoughWhIsCommitted = "TRA NO #691: _Import mo transaction ca _dbMain lan _dbWH va COMMIT ca hai, nhung dem _dbWH.SaveData|ExecQuery trong toan ham = 0 => CHI GHI MAIN. Transaction WH duoc mo/commit lam no TRONG NHU CO DONG BO",
+        throwInsideLoopButTransactionSaves = "throw GIUA VONG LAP => IMPORT DO DANG nhung bNeedTransaction_Main = true nen RollbackSafety o catch CUU DUOC; doi lai nguoi dung KHONG BIET DONG NAO HONG vi thong bao chi co ma VIN (port tra them rowIndex)",
+        trimAsymmetry = "BAT DOI XUNG Trim(): itemrow[VINCode].ToString().Trim() nhung ModelCode va OrginalCode KHONG .Trim() => khoang trang thua di thang vao danh muc. Dung ho #718",
+        regexIsAClassFieldNotLocal = "HANG KHAC GIA TRI: regex khong khai bao trong ham — no la FIELD CUA LOP (BizCarSv.Master.cs:9236-9237): static string pattern = [^a-zA-Z0-9]; public Regex regex = new Regex(pattern); => regex.IsMatch(strVINCode) nem khi ma VIN chua BAT KY ky tu nao ngoai chu/so",
+    });
+}).RequireAuthorization();
+
+// #726 `Mst_VINModelOrginal_Delete` (:9384). Xoá Main, KHÔNG xoá WH — nhưng vẫn commit WH.
+app.MapDelete("/api/mstvinmodelorginals/{vinCode}", async (string vinCode, AppDbContext db, ITenantContext t) =>
+{
+    var vin = (vinCode ?? "").Trim();
+    var rows = await db.MstVinModelOrginals.Where(x => x.OrgId == t.OrgId && x.VINCode == vin).ToListAsync();
+    if (rows.Count == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Delete_NotFound", vinCode = vin });
+    db.MstVinModelOrginals.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        vinCode = vin, deleted = rows.Count,
+        deletesMainButCommitsWhWithoutWriting = "TRA NO #691 — CO LECH, VA DAY LA CO CHE: _Delete MO transaction _dbWH (BeginTransaction) va COMMIT _dbWH (CommitSafety), nhung cau delete t from Mst_VINModelOrginal t … chi chay qua _dbMain.ExecQuery — _dbWH KHONG HE DUOC GHI => xoa mot ma VIN => MAT O MAIN, CON NGUYEN O WH => hai ban danh muc LECH DAN theo moi lan xoa. Cung ho #710/#711 (transaction mo roi bo) nhung o day hau qua la DU LIEU DANH MUC LECH THAT",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴🔴 #725 SỬA BÁO CÁO KPI `Report_KPIUpdate` + guard `myCheckReport_KPI` =====
 // `BizCarSv.zzzzCode.cs:1387-1633` (md5 `426b7b63`). WS LIVE `WSCarSv.asmx.cs:27823`.
 // → `PUT /api/report/kpi/{dealerCode}/{dateReport}`. Đối chiếu cặp với `Report_KPICreate` (`:956`) — luật #404.
