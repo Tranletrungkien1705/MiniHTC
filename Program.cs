@@ -54185,6 +54185,42 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #728 THAM SỐ HỆ THỐNG `Mst_Param_Delete` + `Mst_Param_GetParamType` =====
+// `BizCarSv.Master.cs` — `_Delete` :1367-1513 md5 `ffeb5dae` · `_GetParamType` :768-897 md5 `854d5d23`.
+// → `DELETE /api/mstparams/{dealerCode}/{paramCode}`, `GET /api/mstparams/paramtypes`.
+// BƯỚC 2: `GET|POST /api/mstparams` **đã có**, nhưng **hai hàm này chưa port** (grep tên đều **0 hit**).
+//
+// 🔴🔴🔴 **`#region //Check` TỒN TẠI NHƯNG HOÀN TOÀN RỖNG** — trích nguyên văn, đúng luật #403:
+//     `#region //Check`
+//     `#endregion`
+//   Không một dòng nào bên trong; `CMyException.Raise` trong toàn hàm = **0**.
+//   ⇒ Tác giả **đã tạo chỗ cho guard rồi không viết**. Đây là **dạng thứ TƯ** của "guard vắng mặt" trong sổ:
+//     (a) **không có** region (#709/#710) · (b) region có nhưng **guard chết** vì toán tử (#725) ·
+//     (c) guard **bị guard đứng trước nuốt** (#726) · (d) **region rỗng hoàn toàn** (đây).
+// 🔴🔴🔴 **XOÁ THAM SỐ HỆ THỐNG MÀ KHÔNG KIỂM GÌ**: `delete from Mst_Param where DealerCode = @ and ParamCode = @`
+//   — không kiểm tồn tại, không kiểm quyền, **không đọc số dòng ảnh hưởng** ⇒ xoá mã không tồn tại vẫn **báo
+//   thành công** (họ #710/#712).
+//   🔴 **HẬU QUẢ CỤ THỂ, NỐI THẲNG VỚI #712**: `Mst_Param` chính là bảng chứa `MaxAttachmentSize` và
+//     `MaxAttachmentNumber`. Guard `CheckTempAttachmentLimit` (#712) đòi **đúng 2 dòng** (`Rows.Count != 2`)
+//     ⇒ xoá **một** trong hai tham số đó ⇒ **toàn bộ tính năng đính kèm email bị chặn** với mã
+//     `Email_AttachmentNotAllowed`, và người quản trị sẽ đi tìm **quyền** chứ không tìm **danh mục bị xoá**.
+//   📌 Và `Mst_Param` là bảng **đã bị comment khỏi whitelist** của API chung (#718) — tức người ta **đã** thấy nó
+//     nhạy cảm ở đường đọc/ghi chung, **nhưng vẫn để một API xoá riêng không guard**.
+// ⚪⚪ **DƯƠNG TÍNH LỚN — `_dbWH` ĐƯỢC GHI THẬT, ĐỐI LẬP TRỰC TIẾP VỚI #726**:
+//     `_dbMain.ExecQuery(strSqlDelete, "@DealerCode", …, "@ParamCode", …);`
+//     `_dbWH.ExecQuery(strSqlDelete, "@DealerCode", …, "@ParamCode", …);`
+//   ⇒ Xoá **cả hai** CSDL. Trong khi `Mst_VINModelOrginal_Delete` (#726) — **cùng file `BizCarSv.Master.cs`**,
+//     cùng là xoá danh mục — chỉ ghi Main dù vẫn commit `_dbWH`.
+//   📌 Đây đúng là **"đi tìm một hàm làm ĐÚNG"** mà luật yêu cầu khi ghi anti-pattern lần thứ N:
+//     nó chứng minh #726 là **THIẾU SÓT của riêng hàm đó**, **không** phải quy ước của tầng.
+// 🔴 **CHÚ THÍCH `-- PK` SAI**: SQL ghi `and ParamCode = @ParamCode **-- PK**` nhưng `where` dùng **CẶP**
+//   `(DealerCode, ParamCode)` ⇒ khoá thật là **cặp**, chú thích chỉ ghi một nửa. Ai tin chú thích mà tra theo
+//   một mình `ParamCode` sẽ đụng nhầm tham số của **đại lý khác**.
+// 🔴 **`_GetParamType`: MỘT `BuildClause` DUY NHẤT, ĐÒI TOÁN TỬ** (#410) trên `t.DealerCode`, **không** phân trang,
+//   **không** `ORDER BY`: `select distinct t.ParamType from Mst_Param t where (1=1) zzzz…`
+//   ⇒ gửi trần ⇒ mệnh đề **bị bỏ im lặng** ⇒ **trả mọi loại tham số của MỌI đại lý**.
+// 📌 Hàm `_Delete` còn giải phóng `ReleaseAllSemaphore(**_dbWH_Sys**, true)` — một handle CSDL **thứ ba** ngoài
+//   `_dbMain`/`_dbWH`, chưa gặp ở các màn trước. Ghi nhận, **chưa** truy nó ghi gì.
 app.MapGet("/api/mstparams", async (AppDbContext db, ITenantContext t,
     string? dealerCode, string? paramType, string? paramCode) =>
 {
@@ -54212,6 +54248,53 @@ app.MapGet("/api/mstparams", async (AppDbContext db, ITenantContext t,
         negativeDeleteIsParameterised = "AM TINH: lenh xoa cua Save tham so hoa dung (ExecQuery(sql, @DealerCode, …, @ParamType, …))",
         negativeUpdateUsesEffectiveColumns = "AM TINH: Mst_Param_Update dung alColumnEffective (chi ghi dung cac cot liet ke) => khong de cot la; khac Create goi SaveData KHONG truyen danh sach cot",
         threeWriteFunctionsForOneMaster = "nguon co BA ham ghi cho mot danh muc (Create / Save / Update) cong Delete — Save la thay-ca-nhom, Create la them-mot-dong, Update la sua-mot-dong; ba duong ghi voi ba pham vi CSDL/khoa khac nhau tren cung mot bang",
+    });
+}).RequireAuthorization();
+
+// #728 `Mst_Param_GetParamType` (`:768`) — `select distinct t.ParamType`, một bộ lọc, không `ORDER BY`.
+app.MapGet("/api/mstparams/paramtypes", async (AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var qy = db.MstParams.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    var types = await qy.Select(x => x.ParamType).Distinct().OrderBy(x => x).ToListAsync();
+    return Results.Ok(new
+    {
+        count = types.Count, paramTypes = types,
+        dealerFilterOmittedReturnsEveryDealer = string.IsNullOrWhiteSpace(dealerCode),
+        singleClauseNeedsOperator = "MOT BuildClause DUY NHAT, DOI TOAN TU (#410) tren t.DealerCode, KHONG phan trang, KHONG ORDER BY: select distinct t.ParamType from Mst_Param t where (1=1) zzzz… => gui tran => menh de BI BO IM LANG => TRA MOI LOAI THAM SO CUA MOI DAI LY",
+    });
+}).RequireAuthorization();
+
+// #728 `Mst_Param_Delete` (`:1367`) — `#region //Check` RỖNG HOÀN TOÀN; xoá cả `_dbMain` lẫn `_dbWH`.
+app.MapDelete("/api/mstparams/{dealerCode}/{paramCode}", async (string dealerCode, string paramCode,
+    AppDbContext db, ITenantContext t) =>
+{
+    var dlr = (dealerCode ?? "").Trim();
+    var code = (paramCode ?? "").Trim();
+    // Nguồn tra theo CẶP (DealerCode, ParamCode) — dù chú thích `-- PK` chỉ ghi ParamCode.
+    var rows = await db.MstParams.Where(x => x.OrgId == t.OrgId && x.DealerCode == dlr && x.ParamCode == code)
+        .ToListAsync();
+
+    // 🔴 Nguồn KHÔNG kiểm tồn tại và KHÔNG đọc số dòng ⇒ luôn báo thành công. Port giữ hành vi, trả số thật.
+    var deleted = rows.Count;
+    if (deleted > 0) { db.MstParams.RemoveRange(rows); await db.SaveChangesAsync(); }
+
+    // Đo đúng hậu quả đã mô tả ở #712: guard đính kèm đòi ĐÚNG hai tham số.
+    var attachmentParamsLeft = await db.MstParams.CountAsync(x => x.OrgId == t.OrgId && x.DealerCode == dlr
+        && (x.ParamCode == "MaxAttachmentSize" || x.ParamCode == "MaxAttachmentNumber"));
+
+    return Results.Ok(new
+    {
+        dealerCode = dlr, paramCode = code, deleted,
+        deletedNothingButSourceWouldStillReportSuccess = deleted == 0,
+        attachmentParamsLeft,
+        wouldBreakEmailAttachment = attachmentParamsLeft != 2,
+        // ===== #728 =====
+        checkRegionExistsButIsCompletelyEmpty = "#region //Check TON TAI NHUNG HOAN TOAN RONG — trich nguyen van (luat #403): #region //Check roi #endregion, khong mot dong nao ben trong; CMyException.Raise trong toan ham = 0. Tac gia DA TAO CHO CHO GUARD ROI KHONG VIET. Day la DANG THU TU cua guard-vang-mat trong so: (a) khong co region (#709/#710), (b) region co nhung guard chet vi toan tu (#725), (c) guard bi guard dung truoc nuot (#726), (d) region RONG HOAN TOAN (day)",
+        deletesSystemParamWithNoCheckAtAll = "XOA THAM SO HE THONG MA KHONG KIEM GI: delete from Mst_Param where DealerCode = @ and ParamCode = @ — khong kiem ton tai, khong kiem quyen, KHONG doc so dong anh huong => xoa ma khong ton tai van BAO THANH CONG (ho #710/#712). HAU QUA CU THE, NOI THANG VOI #712: Mst_Param chinh la bang chua MaxAttachmentSize va MaxAttachmentNumber; guard CheckTempAttachmentLimit doi DUNG 2 DONG (Rows.Count != 2) => xoa MOT trong hai tham so do => TOAN BO TINH NANG DINH KEM EMAIL BI CHAN voi ma Email_AttachmentNotAllowed, va nguoi quan tri se di tim QUYEN chu khong tim DANH MUC BI XOA. Va Mst_Param la bang DA BI COMMENT khoi whitelist cua API chung (#718) — tuc nguoi ta DA thay no nhay cam o duong doc/ghi chung, NHUNG VAN de mot API xoa rieng khong guard",
+        whIsActuallyWrittenHereUnlikeIssue726 = "DUONG TINH LON — _dbWH DUOC GHI THAT, DOI LAP TRUC TIEP VOI #726: _dbMain.ExecQuery(strSqlDelete, …) VA _dbWH.ExecQuery(strSqlDelete, …) => xoa CA HAI CSDL. Trong khi Mst_VINModelOrginal_Delete (#726) — CUNG FILE BizCarSv.Master.cs, cung la xoa danh muc — chi ghi Main du van commit _dbWH. Day dung la di-tim-mot-ham-lam-DUNG ma luat yeu cau: no chung minh #726 la THIEU SOT CUA RIENG HAM DO, KHONG phai quy uoc cua tang",
+        pkCommentIsHalfWrong = "CHU THICH -- PK SAI: SQL ghi and ParamCode = @ParamCode -- PK nhung where dung CAP (DealerCode, ParamCode) => khoa that la CAP, chu thich chi ghi mot nua. Ai tin chu thich ma tra theo mot minh ParamCode se dung nham tham so cua DAI LY KHAC",
+        thirdDbHandleSeen = "Ham _Delete con giai phong ReleaseAllSemaphore(_dbWH_Sys, true) — mot handle CSDL THU BA ngoai _dbMain/_dbWH, chua gap o cac man truoc. Ghi nhan, CHUA truy no ghi gi",
     });
 }).RequireAuthorization();
 
