@@ -54185,6 +54185,132 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴🔴 #731 LIÊN HỆ CHIẾN DỊCH `Ser_CamContactCreate` + `Ser_CamContactUpdate` =====
+// `BizCarSv.Service.cs` — `Create` :9917-10173 md5 `972250b6` · `Update` :10175-10458 md5 `209ac296`.
+// WS LIVE `WSCarSv.asmx.cs:25600` / `:25630`. → `POST /api/campaigns/{camId}/contacts`,
+// `PUT /api/campaigns/{camId}/contacts`. Đối chiếu cặp theo luật #404 — lệch ở **năm** điểm.
+//
+// 🔴🔴🔴 **#404 NGƯỢC ĐỜI — `Create` KHÔNG kiểm chiến dịch tồn tại, `Update` thì CÓ**:
+//   `Update` mở bằng `#region //Check` gọi `this.CheckExistCam(_dbMain, …, strCamID, out dtCam)`;
+//   `Create` **không có** khối đó (đã diff trọn hàm, không phải suy đoán).
+//   ⇒ **Tạo liên hệ cho một `CamID` KHÔNG TỒN TẠI thì lọt** — sinh dữ liệu mồ côi; còn sửa thì bị chặn.
+//   📌 Thường guard "phải tồn tại" nằm ở Update là đúng; nhưng ở đây `CamID` là **chiến dịch CHA**, nên
+//     `Create` mới là chỗ cần nó nhất. Guard có mặt ở **đúng một nửa** số đường ghi.
+// 🔴🔴🔴🔴 **`Update` = XOÁ SẠCH RỒI CHÈN LẠI, VÀ CÂU XOÁ KHÔNG THAM SỐ HOÁ**:
+//     `delete Ser_CamContact where (1=1) zzzzClauseWhereCamIDList`
+//     `zzzzClauseWhereCamIDList = SqlUtils.BuildClauseConditionList("and", "CamID", strCamID, "|");`
+//     `_dbMain.ExecNonQuery(strSQLDelete);   _dbWH.ExecNonQuery(strSQLDelete);`
+//   · **Xoá toàn bộ liên hệ của chiến dịch** rồi insert lại theo `DataSet` client gửi ⇒ client gửi **thiếu**
+//     dòng nào là **mất vĩnh viễn** dòng đó, không có bản ghi lịch sử.
+//   · `ExecNonQuery` gọi **không kèm tham số nào** ⇒ giá trị **bake thẳng** vào câu SQL.
+//   ⚠️ **ĐÍNH CHÍNH DỰ ĐOÁN CỦA CHÍNH TÔI**: thoạt nhìn đây là **tiêm SQL toàn phần trên một câu DELETE**.
+//     Mở `BuildClauseConditionList` (`CommonUtils/DataUtils.cs:1015`) thì nó **CÓ** gọi
+//     `SqlUtils.ProtectInjection(strParamList)` ⇒ **có phòng vệ**, chỉ là khuôn **lọc chuỗi** (yếu hơn
+//     `SqlParameter`), **không** phải hở toang. Ghi đúng mức đó — suýt over-claim.
+// 🔴🔴🔴 **NẾU MỆNH ĐỀ RỖNG ⇒ `delete … where (1=1)` ⇒ XOÁ TRẮNG CẢ BẢNG**: `BuildClauseConditionList` trả
+//   **chuỗi rỗng** khi `strParamList` null hoặc rỗng (`if (strParamList.Length < 1) return "";`).
+//   ⚪ Ở đây **tình cờ an toàn** vì `CheckExistCam` chạy **trước** và ném `Ser_CamNo_NotFound` khi không tìm
+//     thấy — với `CamID` rỗng thì `GetTableContents(…, "CamID", "=", "")` cũng không thấy ⇒ chặn được.
+//   🔴 Nhưng an toàn ấy **hoàn toàn phụ thuộc guard đứng trước**: bỏ `CheckExistCam` đi là câu `delete` thành
+//     **"xoá sạch bảng"**. Và `Create` — hàm **không có** guard đó — may là **không** có câu delete.
+// 🔴🔴🔴 **HAI PHÉP TRA CÙNG MỘT KHOÁ DÙNG HAI DẠNG CHỮ KHÁC NHAU**:
+//   · `CheckExistCam` tra `"CamID", "=", strCamID` — **nguyên văn**.
+//   · `BuildClauseConditionList` làm `strParamList.Trim().**ToUpper()**` trước khi dựng mệnh đề `delete`.
+//   ⇒ `CamID` = `"cam001"`: guard **tìm thấy** (khớp nguyên văn) ⇒ qua; câu `delete` tra `"CAM001"` ⇒ nếu
+//     collation **phân biệt hoa/thường** thì **xoá 0 dòng**, rồi insert lại ⇒ **LIÊN HỆ BỊ NHÂN ĐÔI**.
+//   📌 Nợ collation (#681) nay có **hậu quả cụ thể thứ ba**, sau #719 (`SYSADMIN`/`sysadmin`) và #724
+//     (ba biến thể `HYUNDAI` gõ tay). Chưa xác minh collation ⇒ **ghi cờ, không kết luận**.
+// 🔴🔴 **MÃ LỖI CHÉP TỪ HÀM KHÁC**: cùng một guard "thiếu `CarID`", `Create` ném
+//   `Ser_CamContactCreate_ServiceNotInList` (đúng hàm) còn `Update` ném **`Ser_RO_Check_ServiceNotInList`**
+//   — mã lỗi của **LỆNH SỬA CHỮA**, không phải chiến dịch. Đúng họ #711.
+// 🔴 **TÊN BIẾN CHÉP TỪ HÀM KHÁC**: `Update` dùng `dt_Ser_**CustomerCar**_Input` / `dt_Ser_**CustomerCar**`
+//   trong khi bảng là `Ser_CamContact` (`Create` đặt đúng `dt_Ser_CamContact`) ⇒ "từ vựng lạ", họ
+//   #703/#707/#709/#714. Vô hại khi chạy, nhưng là dấu vết `Update` **chép từ màn khách-hàng/xe**.
+// ⚪ **ÂM TÍNH — `Update` xoá ở CẢ HAI CSDL**: `_dbMain.ExecNonQuery` **và** `_dbWH.ExecNonQuery`
+//   ⇒ **mẫu ngược thứ BA** cho #726 (sau #728, #730).
+app.MapPost("/api/campaigns/{camId}/contacts", async (string camId, List<CamContactRowDto> rows,
+    AppDbContext db, ITenantContext t) =>
+{
+    var cam = (camId ?? "").Trim();
+    // 🔴 Nguồn `Create` KHÔNG kiểm chiến dịch tồn tại. Giữ 1:1 nhưng TRẢ CỜ để lộ dữ liệu mồ côi.
+    var campaign = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == cam);
+    var wouldBeOrphan = campaign is null;
+
+    for (var i = 0; i < rows.Count; i++)
+    {
+        if (string.IsNullOrEmpty(rows[i].CarID))
+            return Results.BadRequest(new { error = "ErrCarSv.Ser_CamContactCreate_ServiceNotInList", rowIndex = i });
+        if (string.IsNullOrEmpty(rows[i].CusID))
+            return Results.BadRequest(new { error = "ErrCarSv.Ser_CamContactCreate_CusIDNotInList", rowIndex = i });
+    }
+
+    foreach (var r in rows)
+    {
+        db.CampaignContacts.Add(new CampaignContact
+        {
+            OrgId = t.OrgId, CampaignId = campaign?.Id ?? 0,
+            CusID = r.CusID, CarID = r.CarID,
+            ContactStatus = r.Status ?? "", ContactDate = r.ContactDate, Remark = r.Remark,
+        });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        camId = cam, created = rows.Count, wouldBeOrphan,
+        createHasNoCheckExistCamButUpdateDoes = "#404 NGUOC DOI — Create KHONG kiem chien dich ton tai, Update thi CO: Update mo bang #region //Check goi this.CheckExistCam(_dbMain, …, strCamID, out dtCam); Create KHONG CO khoi do (da diff tron ham, khong phai suy doan) => TAO lien he cho mot CamID KHONG TON TAI THI LOT — sinh du lieu mo coi; con SUA thi bi chan. Thuong guard phai-ton-tai nam o Update la dung, nhung o day CamID la CHIEN DICH CHA nen Create moi la cho can no nhat. Guard co mat o DUNG MOT NUA so duong ghi",
+    });
+}).RequireAuthorization();
+
+// #731 `Ser_CamContactUpdate` (`:10175`) — XOÁ SẠCH theo `CamID` rồi CHÈN LẠI.
+app.MapPut("/api/campaigns/{camId}/contacts", async (string camId, List<CamContactRowDto> rows,
+    AppDbContext db, ITenantContext t) =>
+{
+    var cam = (camId ?? "").Trim();
+    // Nguồn: CheckExistCam TRƯỚC (tra nguyên văn) — chính guard này chặn ca `where (1=1)` xoá trắng bảng.
+    var campaign = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == cam);
+    if (campaign is null)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_CamNo_NotFound", camId = cam });
+
+    for (var i = 0; i < rows.Count; i++)
+        if (string.IsNullOrEmpty(rows[i].CarID))
+            // 🔴 Nguồn ném mã lỗi CỦA HÀM KHÁC ở đúng chỗ này. Giữ nguyên văn.
+            return Results.BadRequest(new { error = "ErrCarSv.Ser_RO_Check_ServiceNotInList", rowIndex = i });
+
+    // 🔴 Nguồn `.ToUpper()` mã chiến dịch TRƯỚC khi dựng mệnh đề delete, trong khi guard tra NGUYÊN VĂN.
+    var camUpper = cam.ToUpperInvariant();
+    var casingWouldDiffer = !string.Equals(cam, camUpper, StringComparison.Ordinal);
+
+    var old = await db.CampaignContacts.Where(x => x.OrgId == t.OrgId && x.CampaignId == campaign.Id).ToListAsync();
+    var deleted = old.Count;
+    db.CampaignContacts.RemoveRange(old);
+    foreach (var r in rows)
+    {
+        db.CampaignContacts.Add(new CampaignContact
+        {
+            OrgId = t.OrgId, CampaignId = campaign.Id,
+            CusID = r.CusID, CarID = r.CarID,
+            ContactStatus = r.Status ?? "", ContactDate = r.ContactDate, Remark = r.Remark,
+        });
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        camId = cam, deleted, inserted = rows.Count,
+        rowsLostIfClientSentFewer = Math.Max(0, deleted - rows.Count),
+        casingWouldDiffer,
+        // ===== #731 =====
+        updateIsDeleteAllThenReinsert = "Update = XOA SACH ROI CHEN LAI: delete Ser_CamContact where (1=1) zzzzClauseWhereCamIDList roi insert lai theo DataSet client gui => client gui THIEU dong nao la MAT VINH VIEN dong do, khong co ban ghi lich su. Da do bang rowsLostIfClientSentFewer",
+        deleteIsBakedButProtectInjectionIsPresent = "DINH CHINH DU DOAN CUA CHINH TOI: cau delete goi _dbMain.ExecNonQuery(strSQLDelete) KHONG KEM THAM SO NAO => gia tri BAKE thang vao SQL, thoat nhin la TIEM SQL TOAN PHAN TREN MOT CAU DELETE. Nhung mo BuildClauseConditionList (CommonUtils/DataUtils.cs:1015) thi no CO goi SqlUtils.ProtectInjection(strParamList) => CO PHONG VE, chi la khuon LOC CHUOI (yeu hon SqlParameter), KHONG phai ho toang. Ghi dung muc do — suyt over-claim",
+        emptyClauseWouldWipeTheTable = "NEU MENH DE RONG => delete … where (1=1) => XOA TRANG CA BANG: BuildClauseConditionList tra CHUOI RONG khi strParamList null hoac rong (if (strParamList.Length < 1) return ''). O day TINH CO AN TOAN vi CheckExistCam chay TRUOC va nem Ser_CamNo_NotFound khi khong tim thay — voi CamID rong thi GetTableContents cung khong thay => chan duoc. NHUNG an toan ay HOAN TOAN PHU THUOC GUARD DUNG TRUOC: bo CheckExistCam di la cau delete thanh xoa-sach-bang",
+        guardAndDeleteUseDifferentCasing = "HAI PHEP TRA CUNG MOT KHOA DUNG HAI DANG CHU KHAC NHAU: CheckExistCam tra CamID, =, strCamID NGUYEN VAN; BuildClauseConditionList lam strParamList.Trim().ToUpper() truoc khi dung menh de delete => CamID = cam001: guard TIM THAY (khop nguyen van) => qua; cau delete tra CAM001 => neu collation PHAN BIET HOA/THUONG thi XOA 0 DONG, roi insert lai => LIEN HE BI NHAN DOI. No collation (#681) nay co hau qua cu the THU BA, sau #719 (SYSADMIN/sysadmin) va #724 (ba bien the HYUNDAI go tay). Chua xac minh collation => GHI CO, KHONG KET LUAN. Da do bang casingWouldDiffer",
+        errorCodeCopiedFromAnotherFunction = "MA LOI CHEP TU HAM KHAC: cung mot guard thieu CarID, Create nem Ser_CamContactCreate_ServiceNotInList (dung ham) con Update nem Ser_RO_Check_ServiceNotInList — ma loi cua LENH SUA CHUA, khong phai chien dich. Dung ho #711",
+        variableNamesCopiedFromAnotherFunction = "TEN BIEN CHEP TU HAM KHAC: Update dung dt_Ser_CustomerCar_Input / dt_Ser_CustomerCar trong khi bang la Ser_CamContact (Create dat dung dt_Ser_CamContact) => tu vung la, ho #703/#707/#709/#714. Vo hai khi chay nhung la dau vet Update CHEP TU MAN KHACH-HANG/XE",
+        negativeDeletesBothDatabases = "AM TINH: Update xoa o CA HAI CSDL — _dbMain.ExecNonQuery VA _dbWH.ExecNonQuery => MAU NGUOC THU BA cho #726 (sau #728, #730)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #730 SINH DASHBOARD HÀNG NGÀY CHO MỌI ĐẠI LÝ `Report_DashboardCreate_AutoDealer` =====
 // `BizCarSv.ZTemp.cs:33738-34082` (md5 `a993e684` — **hàm CUỐI file**, đã dùng fallback `E = wc -l + 1`
 // theo luật `C0-ducentesimustricesimus`). → `POST /api/report/dashboard/auto-create`.
@@ -65311,6 +65437,11 @@ record ReportKpiUpdateDto(decimal? AdvisoryNumber = null, decimal? EnginerNumber
     decimal? EnginerBP = null, decimal? StaffOrther = null, decimal? CavityRONumber = null,
     decimal? CavityBPNumber = null, decimal? CavityParkingNumber = null,
     decimal? WorkDayQty = null, decimal? WorkHourQty = null, string? PartnerUserCode = null);
+/// <summary>#731 `Ser_CamContact` — mot dong lien he trong chien dich (nguon nhan ca DataSet).
+/// ⚠️ KHONG dung lai CampaignContactDto (:64954) vi DTO do la cua man DANH SACH (PlateNo/CusName/Address…),
+/// con nguon Ser_CamContactCreate/Update chi doc CusID · CarID · Status · ContactDate.</summary>
+record CamContactRowDto(string? CusID = null, string? CarID = null, string? Status = null,
+    DateTime? ContactDate = null, string? Remark = null);
 record PartnerCarDto(string? DealerCode = null, string? PlateNo = null, string? CusID = null,
     string? FrameNo = null, string? EngineNo = null, string? ColorCode = null, string? ModelID = null,
     string? TradeMarkCode = null, string? ProductYear = null, string? CurrentKm = null,
