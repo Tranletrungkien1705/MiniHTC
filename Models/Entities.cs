@@ -7551,6 +7551,13 @@ public sealed class SysUser
 /// </summary>
 public sealed class SysGroup
 {
+    /// <summary>🔴 #764 §12 ISREADONLY — nguồn `Ser_SysGetGroup` lọc `and t.IsReadOnly **is null**`
+    /// (không phải `= '0'`) ⇒ nhóm có giá trị `'0'` cũng bị loại. Cột PHẢI có để tái hiện được luật đó.</summary>
+    public string? IsReadOnly { get; set; }
+
+    /// <summary>#764 §12 DEALERCODE — nguồn lọc `t.DealerCode` qua `BuildClauseConditionList(..., "|")`.</summary>
+    public string? DealerCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string GroupCode { get; set; } = "";

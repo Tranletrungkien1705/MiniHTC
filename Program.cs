@@ -6252,14 +6252,56 @@ app.MapPost("/api/sysusers/change-password", async (SysUserChangePwdDto dto, App
     return Results.Ok(new { row.UserCode, changed = true });
 }).RequireAuthorization();
 
-app.MapGet("/api/sysgroups", async (AppDbContext db, ITenantContext t, string? groupCode, string? flagActive) =>
+// ===== 🔴🔴 #764 `Ser_SysGetGroup` + QUÉT TỈ LỆ GUARD TOÀN `BizCarSv.System.cs` =====
+// `Ser_SysGetGroup` (`:599-722` md5 `d422c4ee`, 118 dòng active). Endpoint `/api/sysgroups` đã có ⇒ vá + §12.
+//
+// 🔴🔴🔴 **`and t.IsReadOnly is null` — GUARD LỌC KIỂU #407, CHỈ NULL MỚI LỌT**
+//   Câu lọc nhóm chỉ-đọc được viết là `is null`, **không** phải `= '0'` hay `isnull(t.IsReadOnly,'0') = '0'`.
+//   ⇒ Nhóm có `IsReadOnly = '**0**'` — nghĩa là **KHÔNG** chỉ đọc, tức nhóm bình thường — **cũng bị loại khỏi kết quả**.
+//   ⇒ Chỉ cần ai đó điền `'0'` thay vì để trống (một thao tác hoàn toàn hợp lý khi nhập liệu) là nhóm đó
+//     **biến mất khỏi màn quản lý nhóm quyền**, và không có cách nào thấy lại nó qua giao diện.
+//   Cùng họ #407 ("`isnull` trên giá trị được gán `''` ở nhánh khác = guard chết"), nhưng ở đây là chiều ngược:
+//     điều kiện **quá hẹp** nên nuốt dòng hợp lệ, thay vì quá rộng nên bỏ lọt.
+//
+// 🔴🔴 **QUÉT TOÀN FILE — GUARD CHỈ ĐƯỢC ĐẶT Ở PHÍA GHI, KHÔNG Ở PHÍA ĐỌC** (tinh chỉnh kết luận #763)
+//   Đếm trong `BizCarSv.System.cs`:
+//     · số lần dùng `BuildClauseConditionList` / `BuildClause(` : **56**
+//     · số guard `if (!clause.**StartsWith("and")**) throw`      : **2**
+//   Và cả hai guard nằm ở dòng `:2289` và `:2451` — tức `Ser_SysSaveMapSysGroupSysUser` (#762) và
+//   `Ser_SysSaveMapSysGroupSysObject`, **cả hai đều là hàm XOÁ-rồi-CHÈN**.
+//   ⇒ Kết luận sắc hơn #763: tác giả **có ý thức** về việc `BuildClause` bỏ im lặng mệnh đề, nhưng **chỉ phòng
+//     ở phía GHI** (nơi mệnh đề rỗng = *xoá sạch*), **không phòng ở phía ĐỌC** (nơi mệnh đề rỗng = *trả hết*).
+//   ⇒ Nên `Ser_SysGetCurentUser` (#763) không phải một sơ suất lẻ mà là **lỗ hổng có hệ thống của cả nhóm hàm đọc**
+//     — 54/56 chỗ dùng `BuildClause` không có lưới an toàn nào.
+//   📌 Đây là cách "đi tìm hàm làm ĐÚNG" cho câu trả lời **định lượng** thay vì nhị phân: không phải "có/không có
+//     mẫu đúng", mà là "mẫu đúng tồn tại ở đâu, và **vắng mặt ở đâu**".
+//
+// 🔴 `and t.PartnerCode not in ('WEBHTC')` — **lần thứ hai trong chính cụm phân quyền** (sau #761) ⇒ cùng một
+//   mã đối tác bị loại cứng ở **hai** hàm khác nhau, xác nhận đây là khuôn chứ không phải gõ nhầm một chỗ.
+// ⚪ `BuildClauseConditionSingle("and", "t.GroupName", "**like**", "@strGroupNamePattern", …)` — lọc tên nhóm bằng
+//   `like`, tham số hoá đàng hoàng (khác nhánh nối chuỗi đã ghi ở C0-bug10). Không phải bộ lọc trá hình (#412).
+// 📌 §12: entity `SysGroup` **thiếu hẳn `IsReadOnly` và `DealerCode`** ⇒ đã thêm entity + Seeder ALTER + GET.
+//   `GET /api/sysgroups` nay tái hiện **đúng** luật `is null` của nguồn và **đếm riêng** số nhóm bị nó nuốt.
+app.MapGet("/api/sysgroups", async (AppDbContext db, ITenantContext t, string? groupCode, string? flagActive, string? dealerCode, string? applySourceReadOnlyFilter) =>
 {
     var qy = db.SysGroups.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(groupCode)) qy = qy.Where(x => x.GroupCode == groupCode);
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    // #764 Nguồn lọc `and t.IsReadOnly is null` — CHỈ NULL mới lọt, giá trị "0" cũng bị loại.
+    //   Mặc định Mini KHÔNG áp luật đó (tránh nuốt dòng); bật bằng applySourceReadOnlyFilter=1 để đối chiếu.
+    var swallowedByReadOnlyRule = await qy.CountAsync(x => x.IsReadOnly != null);
+    if (applySourceReadOnlyFilter == "1") qy = qy.Where(x => x.IsReadOnly == null);
     var items = await qy.OrderBy(x => x.GroupCode).Select(x => new
-    { x.GroupCode, x.GroupName, x.PartnerCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    { x.GroupCode, x.GroupName, x.PartnerCode, x.FlagActive, x.DealerCode, x.IsReadOnly, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        swallowedByReadOnlyRule,
+        sourceFiltersIsReadOnlyIsNull = "nguon: and t.IsReadOnly is null (KHONG phai = 0) => nhom co IsReadOnly = 0 (tuc KHONG chi doc) cung bi loai khoi man quan ly nhom",
+        sourceHardcodesPartnerAgain = "and t.PartnerCode not in (WEBHTC) — lan thu hai trong cum phan quyen sau #761",
+        sourceGuardRatioInThisFile = "BizCarSv.System.cs: 56 cho dung BuildClause* nhung chi 2 guard StartsWith(and), ca hai o ham XOA-roi-CHEN => guard chi dat o phia GHI, khong o phia DOC (xem #763)",
+    });
 }).RequireAuthorization();
 
 // 🔴 Nguồn lưu nhóm bằng `SaveData("Sys_Group", dt)` KHÔNG truyền alColumnEffective ⇒ ghi TOÀN BỘ cột.
