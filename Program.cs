@@ -58525,10 +58525,61 @@ app.MapGet("/api/reports/total-stockout", async (AppDbContext db, ITenantContext
         redundantStatusGuard = true,
         typeLabelHasNoElse = true,
         bakedParamsInSource = true,
-        whVariantMissesSupplierPaymentHalf = true,
+        // ===== ⛔ #793 ĐÍNH CHÍNH #469 — TÔI ĐÃ ĐỌ BẢN LIVE VỚI BẢN ĐÃ CHẾT =====
+        whVariantMissesSupplierPaymentHalf = false,
+        whVariantMissesSupplierPaymentHalf_RETRACTED = "#793 DINH CHINH #469: cai THIEU khoi tra NCC la ban TRAN Ser_InvReportTotalStockOutRpt_WH (WH.cs:10495) — ban DA CHET. Ban kho LIVE la Ser_InvReportTotalStockOutRpt_WH_New20230623 (WH.cs:10313) va no CO DU ca hai nua. Ket luan nhanh kho tut hau la SAI",
+        whLivePairIsClean = "#793: diff chuan hoa ban dai ly LIVE (Inventory.Report.cs:1609-1790 md5 172a0713, 169 dong) vs ban kho LIVE (WH.cs:10313-10494 md5 64b8d12f, 170 dong) chi khac: ten bien bNeedTransaction_Dealer vs bNeedTransaction, Convert vs CONVERT, va MOT dong comment //// => cap LANH",
+        bothPlainVariantsAreDead = "#793: WSCarSv.asmx.cs:13944 va :31209 — CA HAI endpoint (ten TRAN) deu goi vao biz ban _New20230623 => hai ham tran Inventory.Report.cs:1791 (md5 ed704170, 123 dong) va WH.cs:10495 deu CHET. Khuon #668 lan thu HAI, va lan nay CA HAI nhanh",
+        deadVariantMakesTheTrapDurable = "#793: strFunctionName trong ban LIVE ghi Ser_InvReportTotalStockOutRpt (KHONG co hau to) => log ghi ten cua ham DA CHET; ai grep ten tran se tuong ban tran dang chay. Day la co che lam bay #668 song dai",
+        frozenDebtInDeadVariant = "#793: ban chet 123 dong vs live 169 — thieu HAN nguon Xuat tra NCC (#input_Ser_SupplierPayment_Filter) VA thieu han region chuan hoa ngay (dtfi + 00:00:00/23:59:59). Do la thu no dong bang neu ai do repoint WS ve ten tran",
+        twoDateStandardsInOneFunction = "#793 NANG: ban LIVE Replace NAM cap — @FromDate/@ToDate (chuoi client THO) cho nhanh Ser_Inv_StockOut, va @strDateFrom/@strDateTo (DA chuan hoa 00:00:00/23:59:59) cho nhanh SupplierPayment => TRONG CUNG MOT BAO CAO, dong Xuat tra NCC tinh TRON ngay cuoi con dong Xuat dich vu/Xuat thuong MAT tron ngay cuoi (#415). Lech ngay giua cac DONG cua cung mot bang",
+        unionMixesColumnTypes = "#793: union all — nhanh 1 lay so.StockOutTime (datetime, co gio), nhanh 2 lay Convert(varchar, CONVERT(date, ApprDTime)) (da cat gio). Cung mot cot StockOutTime nhung HAI do chinh xac; datetime co precedence cao hon nen chuoi bi ep nguoc ve datetime",
+        reportOpensTransaction = "#793: ham BAO CAO nay chi co ExecQuery (khong SaveData/ExecNonQuery) nhung van bNeedTransaction_Dealer = true; _dbDealer.BeginTransaction(). Dem toan TERP.BizCarSv: 1714 BeginTransaction(), 0 CommitTransaction, 0 RollbackTransaction, chi 3 cho _dbDealer.Rollback() (deu trong PushToHyundaiMe.cs) => viec dong transaction nam o tang DAL (EzDAL, khong co nguon trong cay nay). KHONG ket luan ro ri — ghi la CAN XAC MINH o EzDAL",
+        checkRegionHoldsUnrelatedCode = "#793: #region // Refine and Check Input: chi chua DateTimeFormatInfo + Convert.ToDateTime, khong co CMyException.Raise / this.Check* / my*_Check* nao => guard THAT = 0 tren ca ba nguon (ho #774: region ten Check chua code khong lien quan)",
     });
 }).RequireAuthorization();
 
+// ===== ⛔🔴🔴🔴 #793 ĐÍNH CHÍNH #469 — "NHÁNH KHO TỤT HẬU" LÀ **SAI**, TÔI ĐỌ NHẦM VỚI BẢN ĐÃ CHẾT =====
+// #469 viết: *"Bản `_WH` **chỉ có (1)** ⇒ xem theo kho sẽ thiếu toàn bộ hàng trả NCC… nhánh kho **tụt hậu**"*.
+// Trace WS (`HTCWSCarSv/WSCarSv.asmx.cs`) cho thấy **cả hai** endpoint mang tên trần đều gọi bản có hậu tố:
+//   `:13944  return … MyDSEncode(_biz.Ser_InvReportTotalStockOutRpt**_New20230623**(…))`
+//   `:31209  return … MyDSEncode(_biz.Ser_InvReportTotalStockOutRpt_WH**_New20230623**(…))`
+// ⇒ Bản kho LIVE là `WH.cs:10313` (md5 `64b8d12f`, 170 dòng) — **CÓ ĐỦ cả hai nửa**. Cái tôi đọ ở #469 là
+//   `WH.cs:10495`, tức bản **TRẦN đã CHẾT**. DIFF chuẩn hoá hai bản LIVE chỉ khác: tên biến
+//   (`bNeedTransaction_Dealer` vs `bNeedTransaction`), `Convert` vs `CONVERT`, và **một** dòng `////` ⇒ **cặp LÀNH**.
+// 📌 Khuôn #668 (bản live là bản có hậu tố, bản trần chết) nay gặp **lần thứ hai** — và lần này **cả hai nhánh**.
+//   Bài học đo lường: **trace WS TRƯỚC KHI diff cặp `_WH`**, nếu không sẽ so bản sống với bản chết và
+//   phát minh ra một "gap nghiệp vụ" không tồn tại.
+//
+// 🔴 **VÌ SAO BẪY NÀY SỐNG DAI**: trong bản LIVE, `strFunctionName = "Ser_InvReportTotalStockOutRpt"` —
+//   **không mang hậu tố**. Log sự cố vì thế ghi tên của **hàm đã chết**; ai grep tên đó sẽ tin bản trần đang chạy.
+//
+// 🔴🔴🔴 **HAI CHUẨN NGÀY TRONG CÙNG MỘT BÁO CÁO** (phát hiện mới, không có ở #469)
+//   Cuối hàm LIVE `StringUtils.Replace` có **năm** cặp:
+//     `"@FromDate", strFromDate` · `"@ToDate", strToDate`   ← **chuỗi client THÔ**
+//     `"@strDateFrom", strDateFrom` · `"@strDateTo", strDateTo` ← **đã chuẩn hoá** `00:00:00`/`23:59:59`
+//   Nhánh `Ser_Inv_StockOut` dùng bộ **thô** (`and so.StockOutTime <= '@ToDate'`), còn nhánh
+//   `Ser_SupplierPayment` (khối thêm năm 2023) dùng bộ **đã chuẩn hoá** (`<= '@strDateTo'`).
+//   ⇒ Trong **cùng một bảng kết quả**: dòng *"Xuất trả nhà cung cấp"* tính **trọn ngày cuối**, còn dòng
+//     *"Xuất dịch vụ"* / *"Xuất thường"* **mất trọn ngày cuối** (#415). Lệch ngày **giữa các DÒNG**, không phải
+//     giữa hai báo cáo — kiểu lệch khó thấy nhất vì tổng vẫn ra số và vẫn "gần đúng".
+//   📌 Nguyên nhân: khối mới được viết cẩn thận hơn khối cũ, nhưng **không ai sửa khối cũ theo**.
+//
+// 🔴🔴 **`union all` TRỘN HAI KIỂU CỘT `StockOutTime`**: nhánh 1 trả `so.StockOutTime` (**datetime**, có giờ);
+//   nhánh 2 trả `Convert(varchar, CONVERT(date, ApprDTime))` (**đã cắt giờ**). Cùng một cột, **hai độ chính xác**.
+//
+// 🔴 **HÀM BÁO CÁO VẪN MỞ TRANSACTION**: thân hàm chỉ có `_dbDealer.ExecQuery` (không `SaveData`/`ExecNonQuery`)
+//   nhưng vẫn `bNeedTransaction_Dealer = true; … _dbDealer.BeginTransaction();`. Đếm toàn `TERP.BizCarSv`:
+//   **1714** `BeginTransaction()` · **0** `CommitTransaction` · **0** `RollbackTransaction` · chỉ **3** chỗ
+//   `_dbDealer.Rollback()` (đều trong `BizCarSv.PushToHyundaiMe.cs`).
+//   ⇒ Việc đóng transaction nằm ở **tầng DAL (EzDAL)** — **không có nguồn trong cây này** ⇒ **KHÔNG kết luận
+//     "rò rỉ transaction"**; ghi là **cần xác minh ở EzDAL**. (Đi tìm hàm làm ĐÚNG như quy tắc yêu cầu:
+//     `PushToHyundaiMe` là nơi duy nhất đóng tay, và nó cũng chỉ `Rollback` chứ không `Commit` ⇒ củng cố
+//     giả thuyết commit tự động ở DAL.)
+// 🔴 **GUARD THẬT = 0 trên cả ba nguồn**: `#region // Refine and Check Input:` chỉ chứa `DateTimeFormatInfo`
+//   + `Convert.ToDateTime` — không `CMyException.Raise`, không `this.Check*`, không `my*_Check*`
+//   ⇒ đúng họ **#774** (region mang tên `Check` nhưng bên trong là code không liên quan). Hệ quả thật:
+//   `strFromDate` rỗng/sai định dạng ⇒ `Convert.ToDateTime` **ném FormatException thô**, không phải mã lỗi nghiệp vụ.
 // ===== 🔴 #472 BÁO CÁO TỒN KHO (bản KHO) — `Ser_InvReportBalanceRpt_WH_New20221011` =====
 // 🔴🔴 #475 RÚT KẾT LUẬN "BẢN KHO LÀM THÊM" CỦA #472/#473 — **TÔI SO NHẦM VĂN BẢN VỚI NGỮ NGHĨA**.
 //   #472/#473 nói bản kho là "TẬP CHA", làm thêm `#tbl_sd`/`#tbl_sdo`/`#tbl_Open`. **SAI.**
