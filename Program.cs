@@ -58582,12 +58582,107 @@ app.MapGet("/api/reports/total-stockout", async (AppDbContext db, ITenantContext
 //   chuỗi này làm **khoá tra cứu/cache** thì đó là **hai mục khác nhau**. Ghi lại, **không kết luận** —
 //   nguồn EzDAL không có trong cây này (cùng lý do đã nêu ở #793 về transaction).
 // 📌 Mini: `GET /api/_meta/dead-plain-variants-audit` — trả nguyên số liệu để lần sau audit **tra trước khi diff**.
+// ===== 🔴🔴🔴 #795 `SerROStatusUpdatePaid` — TÁM NGÀY THÊM 645 DÒNG, TRONG ĐÓ CÓ MỘT GUARD TIỀN =====
+// ⛔ Trước hết **đính chính #794**: `SerROStatusUpdatePaid` **không** có hai bản cùng live.
+//   `WSCarSv.asmx.cs:11428` gọi `_New20230220` nhưng **cả dòng đó bị comment** (`//    return …`);
+//   lời gọi sống duy nhất là `:11483` → `_New20230228`. Phép đếm ở #794 không loại dòng comment ⇒ đếm nhầm.
+//   Sửa lại: **115** bản LIVE · **105** còn bản trần · **219** hàm hậu tố · **6** tên hai-bản-live.
+// 🔴 **BẪY ĐO LƯỜNG (mới)**: mẫu `^[ \t]*` trong ERE **không** khớp TAB — `[ \t]` chỉ là *space*, *backslash*,
+//   *chữ t*. Mã thụt bằng TAB **im lặng lọt lưới**: lần đếm đầu ra **85/115**, đổi sang `^[[:space:]]*` ra
+//   **105/115** ⇒ **bỏ sót 20 hàm**. Luật "cấm `grep -F 'TenHam('`" chưa đủ — mẫu phải neo `[[:space:]]`.
+//
+// So hai bản (cùng file `BizCarSv.Service.RO.cs`, cách nhau **tám ngày**):
+//   `_New20230220` `:5311-5735` md5 `fe3fa633` — **394** dòng · **9** `Raise` · 3 `SaveData` · 8 lần gọi API Loyalty
+//   `_New20230228` `:5736-6867` md5 `61177336` — **1039** dòng · **22** `Raise` · 3 `SaveData` · **32** lần gọi API
+//   ⇒ **+645 dòng, +13 guard, +24 lời gọi API trong tám ngày** — không phải sửa lỗi nhỏ mà là **viết lại**.
+//
+// 🔴🔴🔴 **GUARD TIỀN MỚI: KHÔNG CHO THANH TOÁN KHI PHỤ TÙNG CHƯA XUẤT ĐỦ**
+//   Bản LIVE thêm hẳn một khối SQL dựng `#tblStockOutOrder`:
+//     `from #tbl_Ser_RO t inner join Ser_Inv_StockOutOrder sisoo … inner join …OrderDetail sisoodtl`
+//     `left join Ser_Inv_StockOutOrderStockOut sisooso … left join Ser_Inv_StockOut siso **and siso.Status = '3'**`
+//     `left join Ser_Inv_StockOutDetail sisodtl … group by … ; select … **where t.Quantity <> t.QuantitySO**`
+//   rồi:
+//     `if (dtDB_Ser_RO_StockOutOrder != null && …Rows.Count > 0) throw CMyException.Raise(`
+//     `      TError.ErrCarSv.**SerROStatusUpdatePaid_QuantitySONotMatch**, …);`
+//   ⇒ Bản `_New20230220` **không có khối này** ⇒ trong tám ngày đó, RO **được phép chuyển sang ĐÃ THANH TOÁN**
+//     dù phụ tùng **chưa xuất kho đủ**. Đây là guard **tiền**, không phải guard hình thức.
+//   ⚪ `and siso.Status = '3'` đặt **trên JOIN** (không phải WHERE) ⇒ đúng: phiếu chưa duyệt không bị loại dòng
+//     mà làm `QuantitySO` = 0 ⇒ vẫn lệch ⇒ vẫn chặn. Đây là một chỗ nguồn làm **ĐÚNG** (#414).
+//
+// 🔴🔴 **GUARD CÓ LỖ: CHỈ XÉT LỆNH XUẤT LOẠI `1`** — `where … and sisoo.StockOutType = '1'`.
+//   Mở hằng (`TERP.Constants/Const.Main.cs`, đã đọc ở #792): `Ser_StockOutType.StockService = "1"`,
+//   `StockNormal = "2"`. ⇒ Lệnh xuất **loại 2 hoàn toàn không được kiểm** ⇒ vẫn thanh toán được khi thiếu hàng.
+// 🔴 **THÔNG BÁO LỖI CHỈ NÊU MỘT PHỤ TÙNG**: câu SQL trả về **mọi** dòng lệch, nhưng guard chỉ đưa
+//   `Rows[0]["PartCode"]` / `Rows[0]["Quantity"]` / `Rows[0]["QuantitySO"]` vào thông báo ⇒ người dùng sửa xong
+//   phụ tùng đầu, chạy lại, **lại lỗi phụ tùng thứ hai** ⇒ **vòng thử-sai**. (Họ #411 `Rows[0]`, nhưng ở đây
+//   không nằm trong vòng lặp — nó là **mất thông tin trong thông báo lỗi**, không phải lỗi sao chép.)
+// 🔴 Bản LIVE còn thêm nguồn `Ser_RO_MemberVoucher` và ba tham số `strPointConsumptionPrm` · `strPlateNo` ·
+//   `strVIN`; và **`strPointTotal` chỉ được đưa vào `alParamsCoupleError` ở bản mới** ⇒ trong bản cũ, sự cố
+//   liên quan điểm thưởng **không ghi được số điểm** vào nhật ký lỗi.
+// 📌 Mini: `GET /api/ro/{roNo}/payment-precheck` — trả **TOÀN BỘ** dòng lệch (không chỉ dòng đầu) và **đếm riêng**
+//   phần loại `2` mà nguồn bỏ sót.
+app.MapGet("/api/ro/{roNo}/payment-precheck", async (AppDbContext db, ITenantContext t, string roNo) =>
+{
+    var orders = await db.SerStockOutOrders
+        .Where(o => o.OrgId == t.OrgId && o.RONo == roNo).ToListAsync();
+    if (orders.Count == 0)
+    {
+        return Results.Ok(new { roNo, orderCount = 0, mismatches = Array.Empty<object>(), canPay = true,
+            note = "khong co lenh xuat kho nao gan voi RO nay" });
+    }
+    var orderIds = orders.Select(o => o.Id).ToList();
+    var lines = await db.SerStockOutOrderLines
+        .Where(l => l.OrgId == t.OrgId && orderIds.Contains(l.OrderId)).ToListAsync();
+    var links = await db.SerStockOutOrderStockOuts
+        .Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.StockOutOrderId)).ToListAsync();
+    var stockOutIds = links.Select(x => x.StockOutId).Distinct().ToList();
+    // Nguồn đặt Status = 3 TREN JOIN (khong phai WHERE) => phieu chua duyet lam QuantitySO = 0 chu khong loai dong.
+    var postedIds = await db.PartStockOuts
+        .Where(x => x.OrgId == t.OrgId && stockOutIds.Contains(x.Id) && x.Status == "3")
+        .Select(x => x.Id).ToListAsync();
+    var outLines = await db.PartStockOutLines
+        .Where(l => l.OrgId == t.OrgId && postedIds.Contains(l.StockOutId)).ToListAsync();
+    var orderById = orders.ToDictionary(o => o.Id);
+    var linkByOrder = links.GroupBy(x => x.StockOutOrderId)
+        .ToDictionary(g => g.Key, g => g.Select(x => x.StockOutId).ToHashSet());
+    var rows = lines.Select(l =>
+    {
+        var ordered = l.OrderQuantity;
+        var ids = linkByOrder.TryGetValue(l.OrderId, out var set) ? set : new HashSet<long>();
+        var issued = outLines.Where(o => ids.Contains(o.StockOutId) && o.PartCode == l.PartCode)
+            .Sum(o => o.Quantity);
+        var srcType = orderById.TryGetValue(l.OrderId, out var o2) ? o2.SourceType : null;
+        return new { l.OrderId, orderNo = orderById.TryGetValue(l.OrderId, out var o3) ? o3.OrderNo : null,
+            l.PartCode, orderedQty = ordered, issuedQty = issued, sourceType = srcType,
+            mismatch = ordered != issued };
+    }).ToList();
+    // Nguồn chỉ xét StockOutType = 1 (Ser_StockOutType.StockService) => tach rieng phan loai 2 bi bo sot.
+    var checkedBySource = rows.Where(r => r.mismatch && r.sourceType == "1").ToList();
+    var missedBySource = rows.Where(r => r.mismatch && r.sourceType != "1").ToList();
+    return Results.Ok(new
+    {
+        roNo, orderCount = orders.Count, lineCount = lines.Count,
+        mismatches = checkedBySource,
+        mismatchesSourceWouldMiss = missedBySource,
+        canPay = checkedBySource.Count == 0,
+        canPayIfAllTypesChecked = checkedBySource.Count == 0 && missedBySource.Count == 0,
+        sourceGuardAddedOnlyOn20230228 = "guard SerROStatusUpdatePaid_QuantitySONotMatch chi co trong ban _New20230228; ban _New20230220 (song 8 ngay truoc do) KHONG co => RO duoc chuyen sang DA THANH TOAN du phu tung chua xuat du",
+        sourceGuardOnlyChecksTypeOne = "nguon: and sisoo.StockOutType = 1 (Ser_StockOutType.StockService). Lenh xuat loai 2 (StockNormal) HOAN TOAN khong duoc kiem => van thanh toan duoc khi thieu hang",
+        sourceErrorMessageNamesOnlyFirstPart = "guard lay Rows[0][PartCode]/[Quantity]/[QuantitySO] trong khi SQL tra ve MOI dong lech => nguoi dung sua xong phu tung dau lai loi phu tung thu hai => vong thu-sai. Mini tra TOAN BO dong lech",
+        sourceStatusThreeIsOnJoinNotWhere = "AM TINH: and siso.Status = 3 dat TREN JOIN nen phieu chua duyet lam QuantitySO = 0 chu khong loai dong => van chan. Day la mot cho nguon lam DUNG",
+        eightDayRewrite = "_New20230220 (394 dong, 9 Raise, 8 loi goi API Loyalty) -> _New20230228 (1039 dong, 22 Raise, 32 loi goi API) trong TAM ngay: +645 dong, +13 guard, +24 loi goi API",
+        oldVersionDidNotLogPointTotal = "strPointTotal chi duoc dua vao alParamsCoupleError o ban moi => ban cu gap su co ve diem thuong ma KHONG ghi duoc so diem vao nhat ky loi",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/dead-plain-variants-audit", () => Results.Ok(new
 {
-    liveSuffixedFunctionsCalledByWs = 116,
-    ofWhichPlainTwinStillExistsInBiz = 106,
-    suffixedFunctionsDeclaredInBiz = 221,
-    unreferencedSuffixedFunctions = 221 - 116,
+    // ===== ⛔ #795 ĐÍNH CHÍNH SỐ LIỆU #794 — phép đếm cũ nhận cả DÒNG ĐÃ BỊ COMMENT =====
+    liveSuffixedFunctionsCalledByWs = 115,        // #794 ghi 116
+    ofWhichPlainTwinStillExistsInBiz = 105,       // #794 ghi 106
+    suffixedFunctionsDeclaredInBiz = 219,         // #794 ghi 221
+    unreferencedSuffixedFunctions = 219 - 115,
+    correctionOfIssue794 = "#795: phep dem o #794 grep _biz.<Ten>_New… ma KHONG loai dong bi comment => nhan ca loi goi da tat. Sau khi loai: 115 (khong phai 116), 105 (khong phai 106), 219 (khong phai 221). BAN CHAT KET LUAN GIU NGUYEN — van la mot khoi ham chet co lon",
+    tabIndentTrapInGrep = "#795 BAY DO LUONG: mau ^[ \\t]* trong ERE KHONG phai tab — [ \\t] chi la space, backslash, chu t. Ma thut bang TAB IM LANG lot luoi: lan dem dau ra 85/115, dung ^[[:space:]]* moi ra 105/115 => bo sot 20 ham. Luat CAM grep -F TenHam( chua du: mau co tu khoa truy cap PHAI neo dau dong bang [[:space:]], khong phai [ \\t]",
     method = "quet _biz.<Ten>_New<yyyymmdd> trong HTCWSCarSv/WSCarSv.asmx.cs + HTCWSCarSvTab/WSCarSvTab.asmx.cs, roi hoi ban TRAN cung ten co con khai bao trong TERP.BizCarSv khong",
     whyItMatters = "#668 va #793 KHONG phai ca ca biet — chung la hai mau cua mot khoi 106 ham tran DA CHET van nam nguyen trong nguon. Do la ly do phai TRACE WS TRUOC KHI DIFF cap _WH, neu khong se so ban song voi ban chet va phat minh ra gap khong ton tai",
     namesWithTwoLiveVersions = new[]
@@ -58595,11 +58690,13 @@ app.MapGet("/api/_meta/dead-plain-variants-audit", () => Results.Ok(new
         "Ser_RO_Create: _New20230220 (web) VA _New20200815 (tablet)",
         "Blt_Bulletin_Get_byVin: _New20191104 / _New20221114",
         "SerCarGet: _New20200205 / _New20210816",
-        "SerROStatusUpdatePaid: _New20230220 / _New20230228 (cach nhau TAM ngay)",
+        // ⛔ #795: SerROStatusUpdatePaid DA BI GO khoi danh sach nay — xem co ben duoi.
         "Ser_App_Update: _New20190621 / _New20201230",
         "Ser_ReceptionF_Get: _New20180921 / _New20210512",
         "Ser_ReceptionF_Reception: _New20200118 / _New20210704",
     },
+    namesWithTwoLiveVersionsCount = 6,   // #794 ghi 7
+    serRoStatusUpdatePaidRemovedFromList = "#795: WSCarSv.asmx.cs:11428 goi _New20230220 nhung CA DONG DO BI COMMENT (//    return …); loi goi SONG duy nhat la :11483 -> _New20230228. Vay day KHONG phai ca hai-ban-cung-live, ma la ca CHUYEN BAN co do lech do duoc: xem roPaymentPrecheckSource",
     serRoCreateSplit = new
     {
         web = new { entry = "WSCarSv.asmx.cs:10603", biz = "BizCarSv.Service.RO.cs:3001-5735", md5 = "339543b2",
