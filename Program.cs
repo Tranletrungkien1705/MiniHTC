@@ -52920,7 +52920,15 @@ var appLoginBlockedWithException = new Dictionary<string, string[]>
     ["VN063"] = new[] { "GIANGLN", "NGUYENDH" },
     ["VC062"] = new[] { "THUONGNTH" },
     ["VC077"] = new[] { "PHUONGH" },
-    ["VC079"] = new[] { "SYSADMIN" },
+    // ===== 🔴🔴 #719 ĐỌC LẠI ĐỘC LẬP `CommonSignIn` LIVE — `VC079` LÀ CA DUY NHẤT CHỈ CÓ BIẾN THỂ CHỮ HOA =====
+    //   Đã đếm trên vùng lệch của máy 150: `"SYSADMIN"` xuất hiện ở **10** dòng, `"sysadmin"` ở **8** dòng.
+    //   Chênh lệch nằm trọn ở `VC079` — mọi đại lý khác trong nhóm (A) đều liệt kê **CẢ HAI** dạng chữ.
+    //   Và `StringUtils.StringEqual(a, b)` (bản **hai** tham số) = `string.Equals(...)` ⇒ **PHÂN BIỆT HOA THƯỜNG**
+    //   (`CommonUtils/CommonUtils.cs:372`; bản ba tham số và `StringEqualIgnoreCase` mới bỏ qua hoa thường).
+    //   ⇒ Nếu `Sys_User.UserCode` của `VC079` lưu là `sysadmin` (chữ thường) thì **ngoại lệ DUY NHẤT của đại lý
+    //     này không khớp** ⇒ **toàn bộ đại lý bị chặn đăng nhập, kể cả tài khoản đáng lẽ được miễn**.
+    //   Chưa truy được giá trị thật trong DB ⇒ **ghi cờ, KHÔNG kết luận**.
+    ["VC079"] = new[] { "SYSADMIN" },   // 🔴 KHÔNG có biến thể "sysadmin" — khác 8 đại lý còn lại
     // ⚠️ nguồn liệt kê CẢ HAI dạng chữ vì so sánh phân biệt hoa/thường ở nhánh này
     ["VS065"] = new[] { "SYSADMIN", "sysadmin" },
     // ===== #455 BỐN ĐẠI LÝ CHỈ CÓ Ở HÀM LIVE `CommonSignIn` (#318 đọc nhầm hàm chết nên thiếu) =====
@@ -52929,8 +52937,25 @@ var appLoginBlockedWithException = new Dictionary<string, string[]>
     ["VN029"] = new[] { "SYSADMIN", "sysadmin" },
     // ⚠️ ba ngoại lệ; `HAU.DTP` có DẤU CHẤM trong mã người dùng — đừng cắt theo dấu chấm.
     ["VS089"] = new[] { "SYSADMIN", "sysadmin", "HAU.DTP" },
+    // #719 cờ đo: xem chú thích `vc079IsTheOnlyUppercaseOnlyException` ở khối ghi chú bên dưới.
 };
 
+// ===== #719 — kết quả ĐỌC LẠI ĐỘC LẬP (vòng trả nợ, KHÔNG tăng bộ đếm màn) =====
+// Nợ mở ở #718 ("`BizCarSv.Common.cs` lệch +666 dòng giữa hai máy, CHƯA ĐỌC") — nay **đã đọc và đóng**.
+// ✅ Diff chuẩn hoá vùng `CommonSignIn` (laptop 207 dòng ↔ máy 150 **836** dòng) **xác nhận #455 đã port ĐÚNG**:
+//   26 khối chặn, 29 mã đại lý, hai nhóm (A)/(B), và các dòng nhóm (B) bị comment đều đã được phản ánh.
+//   ⇒ Đây là **kiểm chứng chéo**, không phải phát hiện mới. Bộ đếm màn **giữ nguyên**.
+// 🔴 Bổ sung THẬT so với #455: `VC079` là **ca DUY NHẤT** chỉ có biến thể chữ HOA (xem chú thích ở trên).
+// 🔴 **26/26 khối dùng CÙNG mã lỗi `CommonAppData_SysUserInvalidFlagActive`** — nghĩa gốc "tài khoản bị khoá",
+//   dùng lại cho "đại lý đã lên web" ⇒ người dùng và tổng đài **đi tìm sai hướng**. Cùng họ #711 (mã lỗi trỏ
+//   sang hàm khác) và #587/#712 (gộp nhiều nguyên nhân vào một mã). #455 đã ghi; nay **đếm được 26/26**.
+// ⚠️ **SUÝT BÁO SAI MỘT LỖ HỔNG NGHIÊM TRỌNG**: ở dòng 64 của vùng lệch có
+//     `//if (StringUtils.StringEqual("WAVersion_App_idocNet2024", strVersion_App))` … `//HCCService.Login(`
+//   **bị comment trọn**. Nếu dừng ở đó thì kết luận "đăng nhập từ WA KHÔNG xác thực gì cả".
+//   Đọc tiếp mới thấy dòng **480-490 ĐANG CHẠY**: nhánh WA **có** gọi `HCCService.Login` và **có** kiểm
+//   `objRT_Login == null || IsNullOrEmpty(objRT_Login.AccessToken)`. ⇒ Khối ở dòng 64 chỉ là **bản nháp cũ**.
+//   📌 Bài học: một khối bị comment **không** chứng minh tính năng đã chết — phải **grep toàn hàm** xem có bản
+//     đang chạy ở chỗ khác không, **trước khi** báo lỗ hổng.
 var appLoginBlockedAll = new HashSet<string>
 {
     "VN054", "VN071", "VN040", "VN059", "VN042", "VN098", "VN041",
