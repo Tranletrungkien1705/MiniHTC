@@ -46144,6 +46144,130 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #721 BÁO CÁO KPI THÁNG `FormattedRptKPIGet` → `RptKPIGetWithParams` =====
+// Vỏ bọc `BizCarSv.Service.Report.cs:4425-4525` (md5 `45400f2b`) → thân thật `RptKPIGetWithParams`
+// (`:4527-4756`, md5 `e6ae80d1`). WS LIVE `WSCarSv.asmx.cs:13542`. → `GET /api/report/kpi-formatted`.
+//
+// 🔴🔴🔴 **HAI `inner join` LÀM MẤT TRỌN THÁNG DỮ LIỆU** (luật #410) — và cái thứ hai còn **làm sai cả TỔNG**:
+//   · `FROM Rpt_KPI t **join** mst_Dealer dl on t.DealerCode=dl.DealerCode **and dl.FlagDealerHTC = '1'**`
+//     (`--20160126`) ⇒ đại lý **không phải HTC** hoặc **không có** trong `Mst_Dealer` ⇒ KPI **không bao giờ hiện**.
+//   · `select t.*, u.UserName from #tbl_Rpt_KPI t **join** sys_user u on t.RptBy = u.UserCode **and t.DealerCode
+//     = u.DealerCode**` ⇒ người lập báo cáo **nghỉ việc / đổi mã / chuyển đại lý** ⇒ **DÒNG BÁO CÁO BIẾN MẤT**
+//     khỏi kết quả cuối, dù bảng tạm đã có nó.
+//     🔴 **Và vòng lặp tổng của C# chạy TRÊN KẾT QUẢ SAU JOIN** ⇒ dòng `TOTAL` **thiếu luôn tháng đó**.
+//     ⇒ Đây không phải "mất một dòng hiển thị" mà là **tổng năm sai, im lặng**.
+// 🔴🔴🔴 **`listMonthsInYear.Capacity > 0` — DÙNG `Capacity` THAY VÌ `Count`**:
+//   `List<string>.Capacity` là **dung lượng bộ đệm**, không phải số phần tử; sau 12 lần `Add` nó là **16** và
+//   **KHÔNG BAO GIỜ giảm** khi `Remove` ⇒ điều kiện **LUÔN TRUE**, kể cả khi danh sách đã rỗng.
+//   ⚠️ **Hậu quả thực tế: VÔ HẠI** — `foreach` trên danh sách rỗng không làm gì. Nhưng **ý định của guard đã
+//     chết** (họ #407). Ghi đúng mức đó: sai về ý định, **không** sai về kết quả.
+// 🔴🔴 **HAI CỘT DÙNG `=` THAY VÌ `+=` GIỮA VÒNG LẶP TỔNG** — và đây là chỗ **rất dễ port sai thành `+=`**:
+//     `iSumEmployeeNumber **=** Convert.ToInt32(row["EmployeeNumber"]);`
+//     `iSumCavityNumber   **=** Convert.ToInt32(row["CavityNumber"]);`
+//   trong khi **tám** cột còn lại đều `+=`. ⚪ **KIỂM RA LÀ CÓ CHỦ Ý VÀ XÁC ĐỊNH**: số nhân viên và số khoang
+//     **không cộng dồn theo tháng** được (cộng 12 tháng ra số vô nghĩa), nên phải lấy **giá trị của một tháng**.
+//     Và câu SQL trả về **CÓ** `order by t.RptYear, CAST(t.rptMonth AS INT)` ⇒ vòng lặp duyệt **đúng thứ tự**
+//     ⇒ giá trị giữ lại là của **tháng lớn nhất** — **xác định**, không phải "dòng bất kỳ" của luật #411.
+//   📌 Nếu SQL kia **không** có `ORDER BY` thì hai dòng này lập tức thành lỗi #411. Ghi để lần sau đụng vào
+//     `ORDER BY` đó thì biết là **đang chống lưng cho logic C#**, không phải trang trí.
+// 🔴🔴 **BA `with(nolock)`** (`Rpt_KPI`, `mst_Dealer`, `#tbl_Rpt_KPI`, `sys_user`) ⇒ **đọc bẩn** — báo cáo KPI
+//   có thể lấy cả dòng đang trong transaction chưa commit.
+// 🔴 **HẰNG SAI CHÍNH TẢ — GIỮ NGUYÊN VĂN**: cột `Amount**Oill**` (đúng phải là `Oil`) và `Count**Orther**BP` /
+//   `Staff**Orther**` (đúng phải là `Other`). Sửa cho đúng chính tả = **hỏng khớp dữ liệu**.
+// 🔴 **BẤT NHẤT CÁCH ĐỌC Ô**: **duy nhất** `CountCarGJ` đi qua `row["CountCarGJ"].**ToString()**` rồi
+//   `Convert.ToInt32`, chín cột kia đọc thẳng `Convert.ToInt32(row[...])`. Hai đường này ném **hai loại ngoại lệ
+//   khác nhau** khi gặp `DBNull` (`FormatException` vs `InvalidCastException`).
+//   ⚪ Ở đây **vô hại** vì SQL đã bọc `isnull(t.<cột>, 0)` cho **mọi** cột nguồn ⇒ không có `DBNull`.
+// 🔴 **`'Tháng '+t.RptMonth` phụ thuộc CÁCH LƯU THÁNG**: `CAST(t.rptMonth AS INT)` ở `ORDER BY` cho thấy cột là
+//   **chuỗi**. Nếu DB lưu `'01'` thay vì `'1'` thì `listMonthsInYear.Contains("1")` **không khớp** ⇒ tháng đó bị
+//   coi là **thiếu** và **chèn thêm một dòng trùng**. Chưa truy được cách lưu ⇒ **ghi cờ, không kết luận**.
+// §12 GAP đã vá: entity `ReportKpi` **thiếu HẲN 27 cột thế hệ GJ/BP**. Bản port cũ chỉ có bộ
+//   BDD/SCC/SCD/SCS/PDI/SPK — **schema KHÁC**. Đã đối chứng: `CountSCC` và `ServiceAmountSCCRoRepair` xuất hiện
+//   **0 lần** trong `BizCarSv.Service.Report.cs`, còn `CountPaymentGJ`/`AmountOill`/`EnginerNumber` có **12-14**
+//   lần và **`RptKPICreate` ghi đúng bộ GJ/BP** ⇒ **hai thế hệ schema KPI cùng tên bảng `Rpt_KPI`**.
+app.MapGet("/api/report/kpi-formatted", async (AppDbContext db, ITenantContext t,
+    string? autoID, string? dealerCode, string? rptYear, string? rptMonth, string? status) =>
+{
+    var qy = db.ReportKpis.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(autoID)) qy = qy.Where(x => x.AutoID == autoID!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(rptYear)) qy = qy.Where(x => x.RptYear == rptYear!.Trim());
+    if (!string.IsNullOrWhiteSpace(rptMonth)) qy = qy.Where(x => x.RptMonth == rptMonth!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status!.Trim());
+
+    var raw = await qy.ToListAsync();
+
+    // === inner join mst_Dealer + FlagDealerHTC = 1 (nguồn) ===
+    var htcDealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => d.DealerCode).ToListAsync();
+    var afterDealerJoin = raw.Where(x => x.DealerCode != null && htcDealers.Contains(x.DealerCode)).ToList();
+    var droppedByDealerJoin = raw.Count - afterDealerJoin.Count;
+
+    // === inner join sys_user on (RptBy, DealerCode) — cặp khoá, không chỉ UserCode ===
+    var users = await db.SysUsers.Where(u => u.OrgId == t.OrgId)
+        .Select(u => new { u.UserCode, u.DealerCode, u.UserName }).ToListAsync();
+    string? UserNameOf(string? by, string? dlr) =>
+        users.FirstOrDefault(u => u.UserCode == by && u.DealerCode == dlr)?.UserName;
+    var kept = afterDealerJoin.Where(x => UserNameOf(x.RptBy, x.DealerCode) != null).ToList();
+    var droppedByUserJoin = afterDealerJoin.Count - kept.Count;
+
+    decimal D(decimal? v) => v ?? 0m;
+    // Nguồn cộng các cột thành phần NGAY TRONG SQL — giữ đúng công thức, không rút gọn.
+    var rows = kept.Select(x => new
+    {
+        x.AutoID, x.DealerCode, x.RptYear, x.RptMonth, x.RptBy, x.Status,
+        RptMonthText = "Tháng " + x.RptMonth,
+        UserName = UserNameOf(x.RptBy, x.DealerCode),
+        EmployeeNumber = D(x.EnginerNumber) + D(x.AdvisoryNumber) + D(x.EnginerBP) + D(x.StaffOrther),
+        CavityNumber = D(x.CavityRONumber) + D(x.CavityBPNumber) + D(x.CavityParkingNumber),
+        CountCarGJ = D(x.CountPaymentGJ) + D(x.CountWarrantyGJ) + D(x.CountLocalGJ),
+        CountCarBP = D(x.CountPaymentBP) + D(x.CountWarrantyBP) + D(x.CountLocalBP) + D(x.CountInsurancePaymentBP),
+        CountCarService = D(x.CountPaymentGJ) + D(x.CountWarrantyGJ) + D(x.CountLocalGJ)
+                        + D(x.CountPaymentBP) + D(x.CountWarrantyBP) + D(x.CountLocalBP) + D(x.CountInsurancePaymentBP),
+        AmountGJ = D(x.AmountGJWarranty) + D(x.AmountGJLocal) + D(x.AmountGJPayment),
+        AmountBP = D(x.AmountBPPayment) + D(x.AmountBPWarranty) + D(x.AmountBPPaymentInsurance) + D(x.AmountBPLocal),
+        AmountService = D(x.AmountGJWarranty) + D(x.AmountGJLocal) + D(x.AmountGJPayment)
+                      + D(x.AmountBPPayment) + D(x.AmountBPWarranty) + D(x.AmountBPPaymentInsurance) + D(x.AmountBPLocal),
+        AmountPart = D(x.AmountPartRO) + D(x.AmountPartSO) + D(x.AmountOill),
+        AmountWork = D(x.AmountServiceGJ) + D(x.AmountServiceBP),
+        HourWork = D(x.HourGJ) + D(x.HourBP),
+    })
+    // Nguồn: order by t.RptYear, CAST(t.rptMonth AS INT) — chính ORDER BY này CHỐNG LƯNG cho logic C# bên dưới.
+    .OrderBy(x => x.RptYear).ThenBy(x => int.TryParse(x.RptMonth, out var m) ? m : 0).ToList();
+
+    // === vòng tổng của nguồn: TÁM cột `+=`, HAI cột `=` (lấy tháng cuối — có chủ ý) ===
+    var total = new
+    {
+        RptMonthText = "TOTAL",
+        EmployeeNumber = rows.Count == 0 ? 0m : rows[^1].EmployeeNumber,   // `=` chứ không `+=`
+        CavityNumber = rows.Count == 0 ? 0m : rows[^1].CavityNumber,       // `=` chứ không `+=`
+        CountCarGJ = rows.Sum(r => r.CountCarGJ), CountCarBP = rows.Sum(r => r.CountCarBP),
+        CountCarService = rows.Sum(r => r.CountCarService),
+        AmountGJ = rows.Sum(r => r.AmountGJ), AmountBP = rows.Sum(r => r.AmountBP),
+        AmountService = rows.Sum(r => r.AmountService), AmountPart = rows.Sum(r => r.AmountPart),
+        AmountWork = rows.Sum(r => r.AmountWork), HourWork = rows.Sum(r => r.HourWork),
+    };
+
+    // Nguồn chèn dòng RỖNG cho tháng thiếu, đúng vị trí `InsertAt(month - 1)`.
+    var present = rows.Select(r => r.RptMonth).ToHashSet();
+    var missingMonths = Enumerable.Range(1, 12).Select(i => i.ToString())
+        .Where(m => !present.Contains(m)).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows, total, missingMonths,
+        droppedByDealerJoin, droppedByUserJoin,
+        // ===== #721 =====
+        twoInnerJoinsDropWholeMonthsAndBreakTheTotal = "HAI inner join LAM MAT TRON THANG DU LIEU (#410) — va cai thu hai con LAM SAI CA TONG: (1) FROM Rpt_KPI t join mst_Dealer dl on t.DealerCode=dl.DealerCode AND dl.FlagDealerHTC = 1 (--20160126) => dai ly KHONG phai HTC hoac KHONG CO trong Mst_Dealer => KPI khong bao gio hien. (2) select t.*, u.UserName from #tbl_Rpt_KPI t join sys_user u on t.RptBy = u.UserCode and t.DealerCode = u.DealerCode => nguoi lap bao cao nghi viec/doi ma/chuyen dai ly => DONG BAO CAO BIEN MAT khoi ket qua cuoi du bang tam da co no. VA VONG LAP TONG CUA C# CHAY TREN KET QUA SAU JOIN => dong TOTAL THIEU LUON THANG DO => khong phai mat mot dong hien thi ma la TONG NAM SAI, IM LANG",
+        capacityUsedInsteadOfCount = "listMonthsInYear.Capacity > 0 — DUNG Capacity THAY VI Count: List<string>.Capacity la DUNG LUONG BO DEM, khong phai so phan tu; sau 12 lan Add no la 16 va KHONG BAO GIO giam khi Remove => dieu kien LUON TRUE ke ca khi danh sach da rong. HAU QUA THUC TE: VO HAI — foreach tren danh sach rong khong lam gi. Nhung Y DINH cua guard DA CHET (ho #407). Ghi dung muc do: sai ve y dinh, KHONG sai ve ket qua",
+        twoColumnsAssignNotAccumulateIsIntentional = "HAI COT DUNG = THAY VI += GIUA VONG LAP TONG: iSumEmployeeNumber = Convert.ToInt32(row[EmployeeNumber]); iSumCavityNumber = Convert.ToInt32(row[CavityNumber]); trong khi TAM cot con lai deu +=. KIEM RA LA CO CHU Y VA XAC DINH: so nhan vien va so khoang KHONG cong don theo thang duoc (cong 12 thang ra so vo nghia) nen phai lay gia tri cua MOT thang; va cau SQL tra ve CO order by t.RptYear, CAST(t.rptMonth AS INT) => vong lap duyet DUNG THU TU => gia tri giu lai la cua THANG LON NHAT — XAC DINH, khong phai dong-bat-ky cua luat #411. Neu SQL kia KHONG co ORDER BY thi hai dong nay lap tuc thanh loi #411 => ORDER BY do DANG CHONG LUNG cho logic C#, khong phai trang tri",
+        threeNolockDirtyRead = "BA with(nolock) (Rpt_KPI, mst_Dealer, #tbl_Rpt_KPI, sys_user) => DOC BAN — bao cao KPI co the lay ca dong dang trong transaction chua commit",
+        misspeltColumnsKeptVerbatim = "HANG SAI CHINH TA — GIU NGUYEN VAN: cot AmountOill (dung phai la Oil) va CountOrtherBP / StaffOrther (dung phai la Other). Sua cho dung chinh ta = HONG KHOP DU LIEU",
+        inconsistentCellRead = "BAT NHAT CACH DOC O: DUY NHAT CountCarGJ di qua row[CountCarGJ].ToString() roi Convert.ToInt32, chin cot kia doc thang Convert.ToInt32(row[...]). Hai duong nay nem HAI LOAI NGOAI LE KHAC NHAU khi gap DBNull (FormatException vs InvalidCastException). O day VO HAI vi SQL da boc isnull(t.<cot>, 0) cho MOI cot nguon",
+        monthTextDependsOnStorageFormat = "Thang + t.RptMonth PHU THUOC CACH LUU THANG: CAST(t.rptMonth AS INT) o ORDER BY cho thay cot la CHUOI. Neu DB luu 01 thay vi 1 thi listMonthsInYear.Contains(1) KHONG KHOP => thang do bi coi la THIEU va CHEN THEM MOT DONG TRUNG. Chua truy duoc cach luu => GHI CO, KHONG KET LUAN",
+        twoGenerationsOfKpiSchema = "§12 GAP: entity ReportKpi THIEU HAN 27 cot the he GJ/BP. Ban port cu chi co bo BDD/SCC/SCD/SCS/PDI/SPK — SCHEMA KHAC. Da doi chung: CountSCC va ServiceAmountSCCRoRepair xuat hien 0 LAN trong BizCarSv.Service.Report.cs, con CountPaymentGJ/AmountOill/EnginerNumber co 12-14 lan VA RptKPICreate ghi dung bo GJ/BP => HAI THE HE SCHEMA KPI CUNG TEN BANG Rpt_KPI",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #720 TRẢ NỢ `Mst_BOMDtl` — TỒN TỐI THIỂU THEO ĐỊNH MỨC BOM (`StationInvQtyMin`) =====
 // Nợ mở ở #689 (`miniModelGap`: *"Mini chưa mô hình hoá `Mst_BOMDtl` theo `PartCode` ⇒ nhánh
 // `StationInvQtyMin` chưa port được đầy đủ"*). Nguồn `BizCarSv.ZTemp.cs:1395-1480`.

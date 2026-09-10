@@ -7666,6 +7666,38 @@ public sealed class SeqCounter
 /// </summary>
 public sealed class ReportKpi
 {
+    // ===== 🔴 #721 §12 — 27 CỘT THẾ HỆ GJ/BP mà `FormattedRptKPIGet` ĐỌC và `RptKPICreate` GHI,
+    //   nhưng bản port thiếu HẲN. Entity cũ chỉ có bộ BDD/SCC/SCD/SCS/PDI/SPK — **schema KHÁC**.
+    //   ⚠️ Giữ NGUYÊN VĂN hai lỗi chính tả của nguồn: `AmountO**ill**` (đúng phải là Oil) và
+    //     `Count**Orther**BP` / `Staff**Orther**` (đúng phải là Other) — sửa là hỏng khớp dữ liệu.
+    public string? AutoID { get; set; }
+    public decimal? CountPaymentGJ { get; set; }
+    public decimal? CountWarrantyGJ { get; set; }
+    public decimal? CountLocalGJ { get; set; }
+    public decimal? CountRepairedGJ { get; set; }
+    public decimal? CountOtherGJ { get; set; }
+    public decimal? CountPaymentBP { get; set; }
+    public decimal? CountWarrantyBP { get; set; }
+    public decimal? CountLocalBP { get; set; }
+    public decimal? CountRepairedBP { get; set; }
+    public decimal? CountOrtherBP { get; set; }
+    public decimal? CountInsurancePaymentBP { get; set; }
+    public decimal? AmountGJWarranty { get; set; }
+    public decimal? AmountGJLocal { get; set; }
+    public decimal? AmountGJPayment { get; set; }
+    public decimal? AmountBPPayment { get; set; }
+    public decimal? AmountBPWarranty { get; set; }
+    public decimal? AmountBPLocal { get; set; }
+    public decimal? AmountBPPaymentInsurance { get; set; }
+    public decimal? AmountPartRO { get; set; }
+    public decimal? AmountPartSO { get; set; }
+    public decimal? AmountOill { get; set; }
+    public decimal? AmountServiceGJ { get; set; }
+    public decimal? AmountServiceBP { get; set; }
+    public decimal? HourGJ { get; set; }
+    public decimal? HourBP { get; set; }
+    public DateTime? CreatedDate { get; set; }
+
     // ===== 🔴 #403 §12 KỲ BÁO CÁO — ba cột khung mà bản port cũ THIẾU HẲN =====
     //   Nguồn `RptKPICreate` **luôn** gán `RptYear` · `RptMonth` · `RptBy` (cùng `DealerCode`,
     //   `Status`), và guard `CheckExistRptKPIYearMonth` dựa trên đúng bộ ba (đại lý, năm, tháng).
