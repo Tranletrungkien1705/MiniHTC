@@ -47150,6 +47150,56 @@ app.MapPost("/api/mstvinmodelorginals/import", async (List<MstVinModelOrginalDto
 }).RequireAuthorization();
 
 // #726 `Mst_VINModelOrginal_Delete` (:9384). Xoá Main, KHÔNG xoá WH — nhưng vẫn commit WH.
+// ===== 🔴🔴 #753 `Mst_VINModelOrginal_Update` (`BizCarSv.Master.cs:9738-9866` md5 `5289191d`) — VÒNG VÁ =====
+// #739 đã port `_Get`/`_Import`/`_Delete` ⇒ vòng này đọc nốt `_Update` và bổ sung `PUT`, KHÔNG tính màn mới.
+//
+// 🔴🔴 **HÀM DUY NHẤT TRONG HỌ MỞ TRANSACTION TRÊN CSDL KHO MÀ KHÔNG GHI GÌ VÀO ĐÓ**
+//   `_Update` khai `bNeedTransaction_WH = true`, chạy `_dbWH.LogUserId = …` + `_dbWH.BeginTransaction()`,
+//   rồi `CommitSafety(_dbWH)` ở `Return Good` và `RollbackSafety(_dbWH)` ở cả `catch` lẫn `finally` —
+//   nhưng **không có một lệnh ghi/đọc nào trên `_dbWH`** (`grep -cE "_dbWH\.(SaveData|ExecQuery|ExecNonQuery)"` = **0**).
+//   ⇒ Mỗi lần sửa một dòng VIN-model, hệ **mở và đóng thừa một transaction trên CSDL kho**: tốn kết nối,
+//     giữ khoá vô ích, và làm log transaction của kho phình ra vì những giao dịch rỗng.
+//   ⚪⚪ **PHÂN BIỆT LỖI vs CHỦ Ý bằng đối xứng (lập luận #749/#751) — VÀ LẦN NÀY RA HAI KẾT LUẬN KHÁC NHAU**:
+//     (a) **Không ghi WH là CHỦ Ý**: đếm cả bốn hàm ghi của họ — `_Create` (:9239) · `_Import` (:9509) ·
+//         `_Delete` (:9384) · `_Update` — **cả bốn đều có `_dbWH` ghi = 0** ⇒ bảng `Mst_VINModelOrginal`
+//         **chỉ sống ở DB Main**. Không phải bỏ sót đồng bộ.
+//     (b) **Mở transaction WH thì là LỖI của riêng `_Update`**: `_Create` **không hề** mở transaction WH
+//         (`grep -cE "_dbWH.BeginTransaction|CommitSafety\(_dbWH\)"` trên `_Create` = **0**).
+//         ⇒ Cùng một họ, cùng một bảng, ba hàm kia sạch, mình `_Update` lạc khuôn ⇒ **chép từ một hàm có ghi WH**.
+//   📌 Bài học rút ra: cùng một dấu hiệu ("đụng `_dbWH` mà không ghi") tách thành **hai kết luận trái nhau**
+//     tuỳ theo so với **hàm nào**. So với cả họ ⇒ chủ ý; so với hàm anh em gần nhất ⇒ lỗi. Phải làm **cả hai phép so**.
+//
+// 🔴 **CHỈ GHI HAI CỘT, KHÔNG GHI DẤU VẾT SỬA**: `alColumnEffective` đúng hai mục — `ModelCode`, `OrginalCode`.
+//   Bảng **có** `LogLUDateTime`/`LogLUBy` (MiniHTC đã mô hình hoá từ #739) nhưng `_Update` **không đụng tới** ⇒
+//   sửa ánh xạ VIN→model xong thì **không biết ai sửa, sửa lúc nào**. Với bảng quyết định model của một VIN,
+//   đây là mất khả năng truy vết chứ không chỉ thiếu cột.
+// 🔴 **HAI THAM SỐ BỊ ÉP HOA**: `strModelCode = Utils.CUtils.StandardizeParam(strModelCode);` và tương tự cho
+//   `strOrginalCode`. Mở hàm (`TERP.Utils/Utils.cs:222`): `return Convert.ToString(objParam).Trim().**ToUpper()**;`
+//   ⇒ **ép chữ HOA**, không chỉ cắt khoảng trắng như cái tên "Standardize" gợi ý. `VINCode` thì **không** đi qua
+//   hàm này ⇒ ba tham số của cùng một hàm được chuẩn hoá theo **hai luật khác nhau** (họ #724).
+// ⚪ Guard: đúng một — `Mst_VINModelOrginal_Update_TableNotFound` khi VIN không tồn tại (`Rows[0]` dùng **sau** guard
+//   nên an toàn, khác #743/#745). Không có guard trùng, nhưng đây là sửa theo khoá nên không cần.
+// 📌 Mini: `PUT /api/mstvinmodelorginals/{vinCode}` giữ 1:1 (ép HOA đúng hai cột, không ghi LogLU) + cờ.
+app.MapPut("/api/mstvinmodelorginals/{vinCode}", async (string vinCode, MstVinModelOrginalDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var vin = vinCode.Trim();
+    var row = await db.MstVinModelOrginals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vin);
+    // Nguồn: guard duy nhất — VIN không tồn tại thì ném `Mst_VINModelOrginal_Update_TableNotFound`.
+    if (row is null) return Results.NotFound(new { vinCode = vin, sourceError = "Mst_VINModelOrginal_Update_TableNotFound" });
+    // Nguồn ép HOA ĐÚNG hai cột này qua StandardizeParam = Trim().ToUpper(); VINCode thì không.
+    row.ModelCode = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    row.OrginalCode = (dto.OrginalCode ?? "").Trim().ToUpperInvariant();
+    // 📌 KHÔNG chạm LogLUDateTime/LogLUBy — giữ 1:1 với nguồn (xem cờ bên dưới), dù bảng CÓ hai cột đó.
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.VINCode, row.ModelCode, row.OrginalCode,
+        sourceUpdatesOnlyTwoColumns = "nguon alColumnEffective chi co ModelCode + OrginalCode => KHONG ghi LogLUDateTime/LogLUBy du bang co hai cot nay => mat truy vet ai sua VIN->model",
+        sourceUppercasesTwoParamsOnly = "StandardizeParam = Trim().ToUpper() ap cho ModelCode va OrginalCode; VINCode KHONG di qua => hai luat chuan hoa trong cung mot ham",
+        sourceOpensEmptyWarehouseTransaction = "chi rieng _Update mo _dbWH.BeginTransaction + CommitSafety(_dbWH) ma khong ghi gi vao WH; _Create/_Import/_Delete deu khong mo => lac khuon",
+        tableLivesOnMainOnly = "ca BON ham ghi cua ho deu co _dbWH ghi = 0 => bang Mst_VINModelOrginal chi song o DB Main, CO CHU Y",
+    });
+}).RequireAuthorization();
 app.MapDelete("/api/mstvinmodelorginals/{vinCode}", async (string vinCode, AppDbContext db, ITenantContext t) =>
 {
     var vin = (vinCode ?? "").Trim();
