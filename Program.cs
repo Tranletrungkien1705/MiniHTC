@@ -46144,6 +46144,103 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #723 BÁO CÁO KPI THEO NĂM `FormattedReport_KPIGet_ByYear` =====
+// Vỏ bọc `BizCarSv.zzzzCode.cs:4491-4567` (md5 `8f71e7dd`) → thân thật
+// `Report_KPIGet_WithParams_**New20221101**` (`:4132-4458`, md5 `568510f2`). WS LIVE `WSCarSv.asmx.cs:28018`.
+// → `GET /api/report/kpi-by-year`. Anh em của #721 — **DIFF TRỌN HÀM** theo luật #414.
+// 🔴 Tên thân thật có **hậu tố ngày** `_New20221101` (#413) ⇒ phải grep nơi gọi mới biết bản nào LIVE;
+//   ở đây vỏ bọc gọi **đúng** bản có hậu tố ⇒ bản có ngày **là bản sống** (ngược trực giác thường gặp).
+//
+// 🔴🔴🔴 **HÀM ANH EM XÁC NHẬN Y HỆT ĐIỀU #721 ĐÃ CẢNH BÁO — VÀ Ở ĐÂY NÓ LÀ LỖI THẬT**:
+//   #721 có `iSumEmployeeNumber **=** …` / `iSumCavityNumber **=** …` (gán, không cộng) và tôi kết luận là
+//   **có chủ ý + xác định**, vì SQL của nó **CÓ** `order by t.RptYear, CAST(t.rptMonth AS INT)`.
+//   Hàm này dùng **đúng hai dòng gán đó**, nhưng câu SQL của nó **KHÔNG CÓ `ORDER BY` NÀO** (đếm: `order by`
+//   xuất hiện **0 lần** trong toàn thân `Report_KPIGet_WithParams_New20221101`).
+//   ⇒ Dòng `TOTAL` của **"số nhân viên"** và **"số khoang"** lấy giá trị của **MỘT DÒNG BẤT KỲ** — đúng luật
+//     #411, và **không tái hiện đều** giữa hai lần chạy.
+//   📌 Đây là lý do #721 phải ghi rõ *"nếu `ORDER BY` đó bị bỏ thì hai dòng này lập tức thành lỗi #411"*:
+//     **hàm anh em cho bằng chứng ngay lượt sau**. Cùng một hình dạng mã, **một bên đúng một bên sai**, và
+//     thứ phân xử nằm ở **tầng SQL** chứ không ở đoạn C#.
+// 🔴🔴 **THÁNG ĐƯỢC CẮT THEO VỊ TRÍ KÝ TỰ**: `CONVERT(INT, **SUBSTRING(rk.DateReport, 6, 2)**) RptMonth`
+//   ⇒ `DateReport` là **chuỗi**, và mã giả định định dạng `yyyy-MM-…`. Lưu `dd/MM/yyyy` thì vị trí 6-2 lấy
+//     **sai hoàn toàn**. Cùng họ guard-theo-vị-trí-ký-tự đã gặp ở `Substring(3)` (#720).
+//   ⚪ **ÂM TÍNH kèm theo**: vì có `CONVERT(INT, …)` nên `RptMonth` ra **số** ⇒ `row["RptMonth"].ToString()` cho
+//     `"1".."12"` ⇒ **khớp** `listMonthsInYear`. **Khác #721**, nơi `RptMonth` là chuỗi thô nên còn rủi ro `'01'`.
+// 🔴🔴 **`listMonthsInYear.Capacity > 0`** — lặp lại **y nguyên** lỗi `Capacity` thay `Count` của #721
+//   ⇒ **luôn TRUE**; vô hại về kết quả, chết về ý định. Hai hàm **cùng chép một khuôn**.
+// 🔴 **LỌC ĐẠI LÝ ĐẶT TRÊN BẢNG DANH MỤC, KHÔNG TRÊN BẢNG DỮ LIỆU**:
+//   `BuildClause("and", "**md**.DealerCode", strDealerCodeConditionList, …)` — `md` là `Mst_Dealer`, không phải
+//   `rk` (`Report_KPI`). Cộng với `inner join #tbl_Mst_Dealer md` ⇒ KPI của đại lý **không có trong danh mục**
+//   **biến mất** (#410) — cùng bệnh #721 nhưng ở đây điều kiện lọc **cũng** nằm trên bảng danh mục.
+// 🔴 **TỔNG CHỈ CÒN BA CỘT**, trong đó **HAI dùng `=`** và **chỉ MỘT** dùng `+=` (`CountCarService`).
+//   Tỷ lệ ngược hẳn #721 (2 gán / 8 cộng) ⇒ càng ít cột cộng dồn thì lỗi thiếu `ORDER BY` càng **chi phối**.
+// 🔴 `//decimal decSumAmountGJ = 0;` **bị comment** — dấu vết hàm này **tách ra từ bản GJ/BP** (#721),
+//   đúng họ "khối chép từ hàm khác" nhưng ở đây là **chép rồi cắt bớt**.
+// 📌 `totalRow["RptMonth"] = "0"` ⇒ dòng tổng mang tháng `0`; client sắp theo tháng sẽ đẩy nó lên **đầu**.
+app.MapGet("/api/report/kpi-by-year", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? dateReport, string? status) =>
+{
+    var qy = db.ReportKpis.Where(x => x.OrgId == t.OrgId);   // #723 dùng ĐÚNG `Report_KPI` (bộ BDD/SCC/SCD/SCS)
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status!.Trim());
+    var raw = await qy.ToListAsync();
+
+    // inner join Mst_Dealer + BuildClause đặt trên md.DealerCode ⇒ lọc VÀ loại đều qua bảng danh mục.
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => d.DealerCode).ToListAsync();
+    var scoped = string.IsNullOrWhiteSpace(dealerCode) ? dealers
+        : dealers.Where(d => d == dealerCode!.Trim()).ToList();
+    var kept = raw.Where(x => x.DealerCode != null && scoped.Contains(x.DealerCode)).ToList();
+    var droppedByDealerJoin = raw.Count - kept.Count;
+
+    // Nguồn: CONVERT(INT, SUBSTRING(rk.DateReport, 6, 2)) — cắt theo VỊ TRÍ KÝ TỰ, giả định `yyyy-MM-…`.
+    static int? MonthFromDateReport(DateTime? d) => d?.Month;
+    var withMonth = kept.Select(x => new
+    {
+        x.DealerCode, x.RptYear, x.RptBy, x.Status, x.DateReport,
+        RptMonth = MonthFromDateReport(x.DateReport),
+        EmployeeNumber = (x.EnginerNumber ?? 0) + (x.AdvisoryNumber ?? 0) + (x.EnginerBP ?? 0) + (x.StaffOrther ?? 0),
+        CavityNumber = (x.CavityRONumber ?? 0) + (x.CavityBPNumber ?? 0) + (x.CavityParkingNumber ?? 0),
+        CountCarService = x.CountCarService ?? 0,
+    }).ToList();
+
+    // 🔴 Nguồn KHÔNG có ORDER BY ⇒ hai cột gán lấy DÒNG BẤT KỲ. Port sắp XÁC ĐỊNH rồi mới lấy dòng cuối,
+    //   và trả kèm cờ để lộ đúng chỗ nguồn không xác định.
+    var rows = withMonth.OrderBy(x => x.RptMonth ?? 0).ThenBy(x => x.DateReport).ToList();
+    var distinctEmployee = rows.Select(r => r.EmployeeNumber).Distinct().Count();
+    var distinctCavity = rows.Select(r => r.CavityNumber).Distinct().Count();
+
+    var total = new
+    {
+        RptMonthText = "TOTAL", RptMonth = "0",
+        EmployeeNumber = rows.Count == 0 ? 0m : rows[^1].EmployeeNumber,   // nguồn: `=`, KHÔNG có ORDER BY
+        CavityNumber = rows.Count == 0 ? 0m : rows[^1].CavityNumber,       // nguồn: `=`, KHÔNG có ORDER BY
+        CountCarService = rows.Sum(r => r.CountCarService),                // nguồn: `+=`
+    };
+
+    var present = rows.Where(r => r.RptMonth is not null).Select(r => r.RptMonth!.Value).ToHashSet();
+    var missingMonths = Enumerable.Range(1, 12).Where(m => !present.Contains(m)).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        rows = rows.Select(r => new { r.DealerCode, r.RptYear, r.RptMonth,
+            RptMonthText = "Tháng " + r.RptMonth, r.EmployeeNumber, r.CavityNumber, r.CountCarService,
+            r.DateReport, r.Status, r.RptBy }),
+        total, missingMonths, droppedByDealerJoin,
+        sourceHasNoOrderBy = true,
+        totalIsAmbiguous = distinctEmployee > 1 || distinctCavity > 1,
+        distinctEmployeeNumberValues = distinctEmployee, distinctCavityNumberValues = distinctCavity,
+        // ===== #723 =====
+        siblingHasNoOrderBySoTheAssignIsReallyBugNow = "HAM ANH EM XAC NHAN Y HET DIEU #721 DA CANH BAO — VA O DAY NO LA LOI THAT: #721 co iSumEmployeeNumber = … / iSumCavityNumber = … (gan, khong cong) va toi ket luan la CO CHU Y + XAC DINH vi SQL cua no CO order by t.RptYear, CAST(t.rptMonth AS INT). Ham nay dung DUNG HAI DONG GAN DO, nhung cau SQL cua no KHONG CO ORDER BY NAO (dem: order by xuat hien 0 LAN trong toan than Report_KPIGet_WithParams_New20221101) => dong TOTAL cua so nhan vien va so khoang lay gia tri cua MOT DONG BAT KY — dung luat #411, va KHONG TAI HIEN DEU giua hai lan chay. Cung mot hinh dang ma, MOT BEN DUNG MOT BEN SAI, va thu phan xu nam o TANG SQL chu khong o doan C#. Da do bang totalIsAmbiguous / distinctEmployeeNumberValues",
+        monthCutByCharacterPosition = "THANG DUOC CAT THEO VI TRI KY TU: CONVERT(INT, SUBSTRING(rk.DateReport, 6, 2)) RptMonth => DateReport la CHUOI va ma gia dinh dinh dang yyyy-MM-…. Luu dd/MM/yyyy thi vi tri 6-2 lay SAI HOAN TOAN. Cung ho guard-theo-vi-tri-ky-tu da gap o Substring(3) (#720). AM TINH kem theo: vi co CONVERT(INT, …) nen RptMonth ra SO => row[RptMonth].ToString() cho 1..12 => KHOP listMonthsInYear. KHAC #721 noi RptMonth la chuoi tho nen con rui ro 01",
+        capacityBugRepeatedVerbatim = "listMonthsInYear.Capacity > 0 — lap lai Y NGUYEN loi Capacity thay Count cua #721 => LUON TRUE; vo hai ve ket qua, chet ve y dinh. Hai ham CUNG CHEP MOT KHUON",
+        dealerFilterSitsOnCatalogueTable = "LOC DAI LY DAT TREN BANG DANH MUC, KHONG TREN BANG DU LIEU: BuildClause(and, md.DealerCode, strDealerCodeConditionList, …) — md la Mst_Dealer, khong phai rk (Report_KPI). Cong voi inner join #tbl_Mst_Dealer md => KPI cua dai ly KHONG CO trong danh muc BIEN MAT (#410) — cung benh #721 nhung o day dieu kien loc CUNG nam tren bang danh muc",
+        onlyThreeSummedColumnsTwoOfThemAssign = "TONG CHI CON BA COT, trong do HAI dung = va chi MOT dung += (CountCarService). Ty le nguoc han #721 (2 gan / 8 cong) => cang it cot cong don thi loi thieu ORDER BY cang CHI PHOI",
+        commentedGjVariableShowsItWasForkedFrom721 = "//decimal decSumAmountGJ = 0; BI COMMENT — dau vet ham nay TACH RA TU BAN GJ/BP (#721), dung ho khoi-chep-tu-ham-khac nhung o day la CHEP ROI CAT BOT",
+        liveVersionCarriesTheDateSuffix = "Ten than that co HAU TO NGAY _New20221101 (#413) => phai grep noi goi moi biet ban nao LIVE; o day vo boc goi DUNG ban co hau to => BAN CO NGAY LA BAN SONG (nguoc truc giac thuong gap)",
+        totalRowCarriesMonthZero = "totalRow[RptMonth] = 0 => dong tong mang thang 0; client sap theo thang se day no len DAU",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #721 BÁO CÁO KPI THÁNG `FormattedRptKPIGet` → `RptKPIGetWithParams` =====
 // Vỏ bọc `BizCarSv.Service.Report.cs:4425-4525` (md5 `45400f2b`) → thân thật `RptKPIGetWithParams`
 // (`:4527-4756`, md5 `e6ae80d1`). WS LIVE `WSCarSv.asmx.cs:13542`. → `GET /api/report/kpi-formatted`.
@@ -46188,7 +46285,8 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
 app.MapGet("/api/report/kpi-formatted", async (AppDbContext db, ITenantContext t,
     string? autoID, string? dealerCode, string? rptYear, string? rptMonth, string? status) =>
 {
-    var qy = db.ReportKpis.Where(x => x.OrgId == t.OrgId);
+    // 🔴 #722 ĐÍNH CHÍNH #721: dùng `RptKpiLegacy` (bảng `Rpt_KPI`), KHÔNG phải `ReportKpi` (`Report_KPI`).
+    var qy = db.RptKpiLegacies.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(autoID)) qy = qy.Where(x => x.AutoID == autoID!.Trim());
     if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
     if (!string.IsNullOrWhiteSpace(rptYear)) qy = qy.Where(x => x.RptYear == rptYear!.Trim());
@@ -46264,6 +46362,7 @@ app.MapGet("/api/report/kpi-formatted", async (AppDbContext db, ITenantContext t
         misspeltColumnsKeptVerbatim = "HANG SAI CHINH TA — GIU NGUYEN VAN: cot AmountOill (dung phai la Oil) va CountOrtherBP / StaffOrther (dung phai la Other). Sua cho dung chinh ta = HONG KHOP DU LIEU",
         inconsistentCellRead = "BAT NHAT CACH DOC O: DUY NHAT CountCarGJ di qua row[CountCarGJ].ToString() roi Convert.ToInt32, chin cot kia doc thang Convert.ToInt32(row[...]). Hai duong nay nem HAI LOAI NGOAI LE KHAC NHAU khi gap DBNull (FormatException vs InvalidCastException). O day VO HAI vi SQL da boc isnull(t.<cot>, 0) cho MOI cot nguon",
         monthTextDependsOnStorageFormat = "Thang + t.RptMonth PHU THUOC CACH LUU THANG: CAST(t.rptMonth AS INT) o ORDER BY cho thay cot la CHUOI. Neu DB luu 01 thay vi 1 thi listMonthsInYear.Contains(1) KHONG KHOP => thang do bi coi la THIEU va CHEN THEM MOT DONG TRUNG. Chua truy duoc cach luu => GHI CO, KHONG KET LUAN",
+        retracted721WroteColumnsIntoTheWrongEntity = "TU SUA (#722). O #721 toi ket luan dung (co HAI the he schema KPI) nhung SUA SAI CHO: toi them 27 cot GJ/BP vao entity ReportKpi — trong khi ReportKpi map bang Report_KPI (bo BDD/SCC/SCD/SCS) chu KHONG phai Rpt_KPI. Doc FormattedReport_KPIGet_ByYear moi lo ra: no doc ds.Tables[Report_KPI] con #721 doc ds.Tables[Rpt_KPI] — HAI BANG KHAC NHAU. Doi chung: trong Report_KPIGet_WithParams_New20221101, rk.CountPaymentGJ / rk.AmountOill / rk.AmountGJWarranty deu 0 LAN, con rk.EnginerNumber / rk.CavityRONumber / rk.StaffOrther co 2 LAN => hai bang CHIA SE nhom cot nhan su/khoang nhung KHAC HAN o phan chi tieu. Da sua: tao entity RIENG RptKpiLegacy (32 cot) + DbSet + CREATE TABLE, go 27 cot khoi ReportKpi, va tro endpoint nay sang entity dung",
         twoGenerationsOfKpiSchema = "§12 GAP: entity ReportKpi THIEU HAN 27 cot the he GJ/BP. Ban port cu chi co bo BDD/SCC/SCD/SCS/PDI/SPK — SCHEMA KHAC. Da doi chung: CountSCC va ServiceAmountSCCRoRepair xuat hien 0 LAN trong BizCarSv.Service.Report.cs, con CountPaymentGJ/AmountOill/EnginerNumber co 12-14 lan VA RptKPICreate ghi dung bo GJ/BP => HAI THE HE SCHEMA KPI CUNG TEN BANG Rpt_KPI",
     });
 }).RequireAuthorization();

@@ -7664,13 +7664,30 @@ public sealed class SeqCounter
 /// **BDD** · **BDN**; mỗi loại lại chia theo NGUỒN TIỀN: `…RoRepair` (sửa chữa) · `…RoInsurance`
 /// (bảo hiểm) · `…RoWarranty` (bảo hành) · `…Local` (nội bộ). Đừng gộp bốn nguồn tiền làm một.
 /// </summary>
-public sealed class ReportKpi
+/// <summary>🔴 #722 Báo cáo KPI **THẾ HỆ CŨ** — bảng `Rpt_KPI` (bộ cột **GJ/BP**).
+/// ⚠️ **KHÁC HẲN** <see cref="ReportKpi"/> vốn map bảng `Report_KPI` (bộ **BDD/SCC/SCD/SCS/PDI/SPK**).
+/// Hai bảng **cùng tồn tại**, chỉ chia sẻ nhóm cột nhân sự/khoang (`EnginerNumber`, `CavityRONumber`,
+/// `StaffOrther`…). Đối chứng: `Report_KPI` **không có** `CountPaymentGJ`/`AmountOill`/`AmountGJWarranty`.
+/// Nguồn đọc: `RptKPIGetWithParams`; nguồn ghi: `RptKPICreate`/`RptKPIUpdate`.
+/// ⚠️ Giữ NGUYÊN VĂN lỗi chính tả của nguồn: `AmountOill` (đúng là Oil), `CountOrtherBP`/`StaffOrther` (đúng là Other).</summary>
+public sealed class RptKpiLegacy
 {
-    // ===== 🔴 #721 §12 — 27 CỘT THẾ HỆ GJ/BP mà `FormattedRptKPIGet` ĐỌC và `RptKPICreate` GHI,
-    //   nhưng bản port thiếu HẲN. Entity cũ chỉ có bộ BDD/SCC/SCD/SCS/PDI/SPK — **schema KHÁC**.
-    //   ⚠️ Giữ NGUYÊN VĂN hai lỗi chính tả của nguồn: `AmountO**ill**` (đúng phải là Oil) và
-    //     `Count**Orther**BP` / `Staff**Orther**` (đúng phải là Other) — sửa là hỏng khớp dữ liệu.
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
     public string? AutoID { get; set; }
+    public string? DealerCode { get; set; }
+    public string? RptYear { get; set; }
+    public string? RptMonth { get; set; }
+    public string? RptBy { get; set; }
+    public string? Status { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public decimal? EnginerNumber { get; set; }
+    public decimal? AdvisoryNumber { get; set; }
+    public decimal? EnginerBP { get; set; }
+    public decimal? StaffOrther { get; set; }
+    public decimal? CavityRONumber { get; set; }
+    public decimal? CavityBPNumber { get; set; }
+    public decimal? CavityParkingNumber { get; set; }
     public decimal? CountPaymentGJ { get; set; }
     public decimal? CountWarrantyGJ { get; set; }
     public decimal? CountLocalGJ { get; set; }
@@ -7696,8 +7713,9 @@ public sealed class ReportKpi
     public decimal? AmountServiceBP { get; set; }
     public decimal? HourGJ { get; set; }
     public decimal? HourBP { get; set; }
-    public DateTime? CreatedDate { get; set; }
-
+}
+public sealed class ReportKpi
+{
     // ===== 🔴 #403 §12 KỲ BÁO CÁO — ba cột khung mà bản port cũ THIẾU HẲN =====
     //   Nguồn `RptKPICreate` **luôn** gán `RptYear` · `RptMonth` · `RptBy` (cùng `DealerCode`,
     //   `Status`), và guard `CheckExistRptKPIYearMonth` dựa trên đúng bộ ba (đại lý, năm, tháng).
