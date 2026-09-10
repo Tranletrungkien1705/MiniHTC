@@ -58751,6 +58751,58 @@ app.MapGet("/api/ro/{roNo}/payment-precheck", async (AppDbContext db, ITenantCon
 //   ⇒ `_old` là khuôn **duy nhất tự nói mình đã cũ**; hai khuôn kia thì không — và `SerCarCreateX20220926`
 //     **dính liền không dấu phân cách** nên trượt cả mẫu `_[0-9]{8}`.
 // 📌 Mini: `GET /api/_meta/date-suffixed-naming-audit`.
+// ===== 🔴🔴🔴 #800 ĐO PHẠM VI THIỆT HẠI CỦA BẪY THỤT-TAB (#799) — 101 HÀM CÓ THỂ ĐÃ TRÍCH TRÀN =====
+// #799 phát hiện công thức trích vùng dùng `awk '/^        (public|…) /'` (**tám dấu cách cứng**) không dừng
+// được ở hàm thụt **TAB**. Câu hỏi tiếp theo bắt buộc phải hỏi: **bao nhiêu vòng trước đây đã dính?**
+//
+// **Đo trên `TERP.BizCarSv/*.cs` (40 file):**
+//   · khai báo thụt **TAB**: **380** · khai báo thụt **8 dấu cách**: **1378** ⇒ **21,6%** khai báo là
+//     "vô hình" với mẫu 8-space. Có TAB ở **23/40** file.
+//   · Nặng nhất: `BizCarSv.Common.cs` (82 TAB / 41 space) · `Master.cs` (73/31) · `Customer.cs` (53/48) ·
+//     `PartOrder.cs` (28/13) · `Bulletin.cs` (23/16) · `Inventory.Stock.cs` (20/38) · `System.cs` (17/3).
+//     ⇒ Ở **`Common.cs`, `Master.cs`, `PartOrder.cs`, `System.cs`** thì TAB là **đa số**, không phải ngoại lệ.
+//   · **Số hàm thực sự bị tràn** = số cặp (hàm thụt space **liền trước** một hàm thụt TAB): **101**.
+//     Đó chính xác là tập hàm mà công thức cũ trích **quá điểm dừng**.
+//   · Đối chiếu 101 tên đó với `Program.cs`: **43** tên đã từng được nhắc trong các vòng trước
+//     ⇒ **43 vòng cần soát lại** (không phải cả 43 đều sai — nhiều vòng chỉ nhắc tên, không đo md5/đếm guard;
+//     nhưng vòng nào có **md5 / số dòng / số `Raise` / danh sách bảng** thì phải **đo lại**).
+//   ⚠️ Trong 43 tên đó có `Ser_RO_Create_New20230220` — **đúng cái đã sai ở #794 và được sửa ở #799**.
+//     ⇒ Danh sách này **tự kiểm chứng**: nó bắt được ca đã biết là sai.
+//
+// 📌 **Công thức trích vùng ĐÚNG** (dùng từ nay):
+//     `S=$(grep -nE "^[[:space:]]*(public|private|protected|internal)[[:space:]].*TenHam\(" $F | head -1 | cut -d: -f1)`
+//     `E=$(awk -v s=$S 'NR>s && /^[[:space:]]*(public|private|protected|internal)[[:space:]]/{print NR; exit}' $F)`
+//     `[ -z "$E" ] && E=$((L+1))`   ← vẫn cần nhánh dự phòng cho **hàm cuối file** (md5 rỗng `d41d8cd9`).
+app.MapGet("/api/_meta/tab-indent-extraction-risk", () => Results.Ok(new
+{
+    scope = "TERP.BizCarSv/*.cs (40 file)",
+    declarationsIndentedWithTab = 380,
+    declarationsIndentedWithEightSpaces = 1378,
+    tabShareOfDeclarations = "21,6%",
+    filesContainingTabIndent = "23/40",
+    tabMajorityFiles = new[] { "BizCarSv.Common.cs 82/41", "BizCarSv.Master.cs 73/31", "BizCarSv.PartOrder.cs 28/13", "BizCarSv.System.cs 17/3" },
+    functionsWhoseExtractionOverran = 101,
+    ofWhichAlreadyMentionedInMini = 43,
+    selfValidating = "trong 43 ten do co Ser_RO_Create_New20230220 — dung ca da sai o #794 va duoc sua o #799 => danh sach nay bat duoc ca da biet la sai",
+    auditedRiskyNames = new[]
+    {
+        "Blt_BulletinCreate_20210224", "Blt_BulletinDtlDelete", "Blt_BulletinUpdate_20210224",
+        "Blt_Bulletin_Get_byVin_ForTab", "CheckExistConfirmNo", "CheckExistInsDebit",
+        "CheckExistOrderNoUser", "CheckExistOrderNoUser_Update", "CheckExistPartOrder",
+        "CheckExistPlateNo", "CheckExistPlateNoModify", "CheckNotExistStockBalance",
+        "CheckROExistROWarrantyReport", "Cm_GetDTime", "Email_SendEmail_Update",
+        "GetMstDealer_FromDMSsales", "Mst_OrderComplainImageType_GetX", "Mst_Staff_Get",
+        "Mst_VINModelOrginal_Get", "OS_Ser_CustomerCareMace_Update", "ProcessServicePackagePartItemDelete",
+        "ProcessStockIn", "SerCarGet_FromMemberNo", "SerCustomerGroupDelete", "SerMasterInitGet",
+        "SerOrderPartGetMaxOrderNo_V2", "SerROAttachmentGetFull", "SerROInvoiceBill", "SerStockOutSearch",
+        "Ser_CustomerUpdateCarCreate20220926", "Ser_InvReportPartTopVariationPrice",
+        "Ser_Part_OrderGet_StatusList", "Ser_RO_Create_New20230220",
+        "Ser_RO_GetStatusList02_GetClaimX_New20230220", "Ser_RO_Sumary", "Ser_RO_UpdateFlagPause",
+        "Ser_SysGetUser", "UpdateBulletin_20210224", "checkROForChangeStatus", "myCommon_GetNewId",
+    },
+    whatToRecheck = "vong nao co ghi md5 / so dong / so Raise / danh sach bang cho mot trong nhung ten tren thi PHAI do lai bang cong thuc dung. Vong chi NHAC ten thi khong anh huong",
+    correctExtractionFormula = "S=grep -nE ^[[:space:]]*(public|private|protected|internal)[[:space:]].*TenHam\\( ; E=awk NR>s && /^[[:space:]]*(public|private|protected|internal)[[:space:]]/ {print NR; exit} ; [ -z $E ] && E=L+1 (nhanh du phong cho HAM CUOI FILE, neu khong md5 se ra d41d8cd9 = md5 cua chuoi rong)",
+})).RequireAuthorization();
 // ===== ⛔⛔🔴 #799 ĐÍNH CHÍNH NẶNG #794 — `Ser_RO_Create` KHÔNG LỆCH NHƯ ĐÃ BÁO =====
 // #794 kết luận: *"tablet chỉ 13/33 guard, thiếu ba bảng ghi `Ser_CustomerCare` / `Ser_CustomerCareMace` /
 // `Ser_ROWarrantyReport` ⇒ xe vào xưởng qua tablet không sinh hồ sơ CSKH và không sinh bản ghi bảo hành"*.
