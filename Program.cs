@@ -59351,6 +59351,94 @@ app.MapGet("/api/reports/care-mace", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #792 `Ser_Inv_StockOutOrderStockOut` ↔ `_WH` — CỘT `varianceCost` TỰ TRIỆT TIÊU PHẦN TIỀN HÀNG =====
+// `BizCarSv.Service.Report.cs:5505-5685` md5 `4eab894d` (165 dòng) ↔ `BizCarSv.WH.cs:7028-7190` md5 `08f323d1` (147).
+// ⚪ **Chênh 18 dòng KHÔNG phải khác nghiệp vụ**: phần lớn là **XML doc comment của hàm KẾ TIẾP** bị hút vào vùng
+//   trích (công thức lấy vùng dừng ở khai báo hàm sau, mà comment `/// <summary>` nằm TRƯỚC khai báo đó).
+//   ⇒ Lưu ý khi so số dòng hai bản: chênh lệch có thể nằm ở **comment của hàm khác**, không phải thân hàm.
+//
+// 🔴🔴🔴 **CỘT `varianceCost` — PHẦN TIỀN HÀNG TỰ TRIỆT TIÊU, CHỈ CÒN CHÊNH LỆCH THUẾ**
+//   Nguyên văn (đã bỏ `isnull` cho gọn, giữ nguyên `* 1` thừa của nguồn):
+//     `( P*Q*1 + (P*Q*1)*V*0.01 )  −  ( P*Q + (pa.P*Q)*pa.V*0.01 )`   với `P = sisod.Price`, `V = sisod.Vat`,
+//     `pa.P = Ser_MST_Part.Price` (giá chuẩn), `pa.V = Ser_MST_Part.Vat`.
+//   Khai triển: số hạng `P*Q` xuất hiện ở **cả hai vế** ⇒ **triệt tiêu hoàn toàn**, còn lại đúng:
+//     `varianceCost = (P*Q)*V*0.01 − (pa.P*Q)*pa.V*0.01`
+//   ⇒ Cột mang tên "chênh lệch chi phí" nhưng **KHÔNG chứa chênh lệch giá bán vs giá chuẩn** — nó chỉ là
+//     **chênh lệch phần THUẾ**. Bán sai giá bao nhiêu cũng **không hiện ra** ở cột này.
+//   📌 Dấu vết cho thấy công thức bị sửa dở: vế đầu nhân `* 1` **hai lần** (vô nghĩa), còn vế sau thì không.
+//     ⇒ Nhiều khả năng vế sau **đáng lẽ** là `pa.P*Q + (pa.P*Q)*pa.V*0.01` (toàn giá chuẩn), ai đó sửa `pa.Price`
+//     thành `sisod.Price` ở số hạng đầu rồi dừng. **Không tự sửa** — ghi nguyên văn + nêu công thức rút gọn.
+//
+// 🔴🔴 **VẾ "BỎ LỌC ĐẠI LÝ" CHẾT VÌ BAKE**: `and ('@DealerCode' is null or siso.DealerCode = '@DealerCode')`
+//   `@DealerCode` được thay bằng `StringUtils.Replace(…, "@DealerCode", strDealerCode)` ⇒ sau khi thay, vế đầu là
+//   một **chuỗi literal** (`'' is null` hoặc `'D01' is null`) ⇒ **luôn FALSE** ⇒ nhánh "không truyền thì lấy hết"
+//   **không bao giờ chạy**; truyền rỗng thì thành `siso.DealerCode = ''` ⇒ **0 dòng**.
+//   ⇒ Cùng họ #779 (`"=" + …` biến "trả hết" thành "trả rỗng"), nhưng ở đây tác giả **có viết** nhánh bỏ lọc —
+//     nó chỉ **chết vì cách bake**. `@FromDate`/`@ToDate` cũng bake trong nháy, và `<= '@ToDate'` trên
+//     `StockOutTime` (datetime) ⇒ **mất trọn ngày cuối** (#415).
+//
+// 🔴🔴 **MÃ LỖI MẶC ĐỊNH LÀ CỦA MỘT HÀM HOÀN TOÀN KHÁC**:
+//     bản đại lý: `strErrorCodeDefault = TError.ErrCarSv.**Ser_ReportRoVarianceCost**;`
+//     bản kho   : `strErrorCodeDefault = TError.ErrCarSv_WH.**Ser_ReportRoVarianceCost_WH**;`
+//   trong khi `strFunctionName` thì đúng tên hàm. ⇒ Hàm này lỗi thì log ghi mã của **báo cáo chênh lệch chi phí RO**
+//     ⇒ tra sự cố đi **nhầm hẳn nghiệp vụ**. Nặng hơn #755/#775 (tên gần giống); đây là tên **khác hẳn**.
+//     Và **cả hai bản sai giống nhau** ⇒ chép từ `Ser_ReportRoVarianceCost` (và đó cũng là nguồn gốc cái tên cột
+//     `varianceCost` trong câu SQL trên).
+// 🔴 **HẰNG ≠ GIÁ TRỊ + CHÚ THÍCH MÂU THUẪN**: hàm lọc `and siso.StockOutType = '2'`. Mở hằng
+//   (`TERP.Constants/Const.Main.cs:268-271`), **nguyên văn cả lỗi chính tả**:
+//     `public const string StockService = "1";//Nhập, còn số lượng`
+//     `public const string StockNormal  = "2"; //Đã xuất hết(Cả những phiếu nhâp)`
+//   ⇒ Đây là lớp **`Ser_StockOutType`** (loại phiếu **XUẤT**) nhưng **cả hai chú thích đều nói về NHẬP** ⇒ chú thích
+//     chép từ lớp hằng khác. Tên hằng (`StockService`/`StockNormal`) cũng không gợi ra ý "còn số lượng"/"đã xuất hết".
+// 🔴 Bản đại lý còn một dòng bị comment **sáu dấu gạch**: `//////string zzzzClauseWhereRoNoConditionList =`
+//   `BuildClause("and", "'BG-'+Ro.RoNo", strRoNo, …)` ⇒ bộ lọc **số báo giá** từng tồn tại rồi bị tắt; bản kho
+//   **không có** dòng này. Và bản kho lại có nhãn `-----------------------thống kê Báo cáo danh sách báo giá -----`
+//   ⇒ hai bản giữ **hai mảnh dấu vết khác nhau** của cùng một quá khứ "báo giá".
+// 📌 Mini: `GET /api/report/stockout-variance` — tính **cả hai** con số: `varianceCostAsSource` (đúng 1:1, chỉ chênh
+//   thuế) và `varianceCostFullIfIntended` (nếu vế sau dùng toàn giá chuẩn), để người nghiệp vụ chốt.
+app.MapGet("/api/report/stockout-variance", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var f = fromDate ?? DateTime.Today.AddMonths(-1);
+    var to = toDate ?? DateTime.Today;
+    var q = db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.StockOutDate >= f && x.StockOutDate <= to);
+    // Nguồn: and siso.StockOutType = 2 (hằng Ser_StockOutType.StockNormal).
+    q = q.Where(x => x.StockOutType == "2");
+    var dl = (dealerCode ?? "").Trim().ToUpperInvariant();
+    if (dl.Length > 0) q = q.Where(x => x.DealerCode == dl);
+    var heads = await q.Take(2000).ToListAsync();
+    var ids = heads.Select(h => h.Id).ToList();
+    var lines = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && ids.Contains(x.StockOutId)).ToListAsync();
+    var partCodes = lines.Select(l => l.PartCode).Distinct().ToList();
+    var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && partCodes.Contains(x.PartCode))
+        .Select(x => new { x.PartCode, x.Price, x.VAT }).ToListAsync();
+    var byPart = parts.GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var rows = lines.Select(l =>
+    {
+        var p = l.Price ?? 0m; var v = l.Vat ?? 0m; var qty = l.Quantity;
+        byPart.TryGetValue(l.PartCode, out var std);
+        var stdP = std?.Price ?? 0m; var stdV = std?.VAT ?? 0m;
+        // 1:1 với nguồn — phần P*Q triệt tiêu, chỉ còn chênh lệch thuế.
+        var asSource = (p * qty + p * qty * v * 0.01m) - (p * qty + (stdP * qty) * stdV * 0.01m);
+        // Nếu vế sau đáng lẽ dùng TOÀN giá chuẩn (giả thuyết, KHÔNG áp mặc định).
+        var ifIntended = (p * qty + p * qty * v * 0.01m) - (stdP * qty + (stdP * qty) * stdV * 0.01m);
+        return new { l.PartCode, quantity = qty, price = p, vat = v, stdPrice = stdP, stdVat = stdV,
+            varianceCostAsSource = asSource, varianceCostFullIfIntended = ifIntended };
+    }).ToList();
+    return Results.Ok(new
+    {
+        count = rows.Count, fromDate = f, toDate = to, dealerCode = dl.Length > 0 ? dl : null, items = rows,
+        totalAsSource = rows.Sum(x => x.varianceCostAsSource),
+        totalIfIntended = rows.Sum(x => x.varianceCostFullIfIntended),
+        sourceVarianceCancelsGoodsAmount = "cong thuc nguon: (P*Q + P*Q*V*0.01) - (P*Q + (pa.P*Q)*pa.V*0.01) => so hang P*Q trong o CA HAI ve nen TRIET TIEU; con lai chi la chenh lech THUE, KHONG co chenh lech gia ban vs gia chuan",
+        sourceHasLeftoverTimesOne = "ve dau nhan * 1 hai lan (vo nghia) con ve sau khong => dau vet cong thuc bi sua do; nhieu kha nang ve sau dang le la pa.Price*Q + (pa.Price*Q)*pa.Vat*0.01",
+        sourceDealerFilterFallbackIsDead = "and (@DealerCode is null or siso.DealerCode = @DealerCode) — @DealerCode bi BAKE nen ve dau thanh chuoi literal, LUON FALSE => nhanh bo loc khong bao gio chay; truyen rong thi = rong => 0 dong (ho #779)",
+        sourceLosesLastDay = "<= @ToDate tren StockOutTime (datetime) => mat tron ngay cuoi (#415)",
+        sourceErrorCodeBelongsToAnotherFunction = "strErrorCodeDefault = TError.ErrCarSv.Ser_ReportRoVarianceCost trong khi strFunctionName dung ten that; ban _WH cung sai giong het => log ghi ma cua BAO CAO KHAC, tra su co di nham nghiep vu",
+        sourceStockOutTypeConstantComments = "Ser_StockOutType: StockService = 1 //Nhap, con so luong; StockNormal = 2 //Da xuat het(Ca nhung phieu nhap) — lop LOAI PHIEU XUAT nhung CA HAI chu thich noi ve NHAP (giu nguyen van ca loi chinh ta)",
+        whPairDiffIsMostlyXmlDoc = "chenh 18 dong giua hai ban chu yeu la XML doc comment cua HAM KE TIEP bi hut vao vung trich, khong phai khac nghiep vu",
+    });
+}).RequireAuthorization();
 // ===== 🔴 #493 PHỤ TÙNG CHẬM LUÂN CHUYỂN — `Ser_Mst_Part_SP_Get` (`BizCarSv.PartOrder.cs:4196`) =====
 // ===== #671 SỬA ghi chép #493 về khác biệt của cặp `_WH` =====
 // #493 ghi *"khác đúng một dòng và chỉ là khoảng trắng cuối dòng"* — **không chính xác**. Diff lại sau khi
