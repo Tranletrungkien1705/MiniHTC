@@ -19548,6 +19548,74 @@ app.MapDelete("/api/warrantyclaims/{id}/parts/{lineId}", async (
 //   sẽ làm hỏng biểu thức lọc.
 // 📌 MiniHTC chưa có tầng gọi WS ⇒ gom nhóm + guard đầy đủ, trả `dealerBatches` để thấy rõ số lời gọi
 //   mà nguồn sẽ thực hiện.
+// ===== 🔴🔴🔴 #775 `Ser_ROWarrantyReport_ItemStatus_Update` vs `…_V2` — SỬA TRẠNG THÁI HẠNG MỤC BẢO HÀNH =====
+// `BizCarSv.WarrantyReport.cs`: bản cũ `:5192-5391` md5 `2f57074d` (176 dòng, `Raise` = **0**) ·
+// bản `_V2` `:8297-8544` md5 `3e9ca064` (222 dòng, `Raise` = **3**). **WS gọi CẢ HAI** — lặp đúng khuôn #774.
+//
+// 🔴🔴🔴 **BẢN CŨ GHI TÊN HÀM KHÁC VÀO LOG — VÀ HÀM ĐÓ CÓ THẬT**
+//   Bản cũ khai `string strFunctionName = "**Ser_WarrantyReport_UpdateStatus**";` và
+//   `strErrorCodeDefault = TError.ErrCarSv.**Ser_WarrantyReport_UpdateStatus**` — trong khi tên thật của nó là
+//   `Ser_ROWarrantyReport_ItemStatus_Update`. Mà `Ser_ROWarrantyReport**UpdateStatus**` là **một hàm khác có thật**
+//   (`:8671-8904` md5 `7a5944cc`, 219 dòng).
+//   ⇒ Hai hàm khác nhau ghi **cùng một tên** vào log request/log lỗi ⇒ tra sự cố **không phân biệt được**
+//     "sửa trạng thái HẠNG MỤC" với "sửa trạng thái BÁO CÁO". Nặng đúng bằng #755 (`OS_Ser_CustomerCareMace_Update`).
+//   ⚪ Bản `_V2` thì khai đúng tên của chính nó ⇒ **bản mới đã sửa, bản cũ vẫn sai và vẫn LIVE**.
+//
+// 🔴🔴🔴 **HAI BỘ MÃ LỖI KHÁC NHAU CHO CÙNG MỘT NGHIỆP VỤ**
+//   bản cũ nhận `strNaturalCode` + `strCauseCode`; bản `_V2` nhận `str**ErrorCodePN**` + `str**ErrorCodeCD**`.
+//   ⇒ Khớp đúng phát hiện #774: bản `_Create_20220218` cũng là bản **thêm** `ErrorCodePN`/`ErrorCodeCD`.
+//     ⇒ Hệ đang **chuyển từ cặp `NaturalCode`/`CauseCode` sang cặp `ErrorCodePN`/`ErrorCodeCD`**, nhưng đường cũ
+//     **chưa bị tắt** ⇒ cùng một hạng mục có thể được cập nhật bằng **hai hệ mã lỗi khác nhau**, tuỳ màn hình nào gọi.
+//   📌 Đây là lý do đọc riêng một hàm không đủ: chỉ khi đặt `_Create` (#774) và `_ItemStatus_Update` (đây) cạnh nhau
+//     mới thấy đó là **một cuộc di trú dở dang**, không phải hai hàm lệch nhau ngẫu nhiên.
+//
+// 🔴🔴 **BẢN CŨ KHÔNG KIỂM TRẠNG THÁI TRƯỚC KHI SỬA**
+//   Bản `_V2` có guard:
+//     `if (!Equals(dt_Warranty.Rows[0]["WarrantyStatus"], TConst.Ser_WarrantyReport_Status.**Pending**)`
+//     ` && !Equals(…, TConst.Ser_WarrantyReport_Status.**HTCRevert**)) { … throw … }`
+//   Bản cũ: `Raise` = 0, `this.Check*` = 1 (chỉ tra tồn tại) ⇒ **sửa được hạng mục ở BẤT KỲ trạng thái nào**,
+//     kể cả báo cáo **đã gửi HMC** hoặc **đã được chấp nhận**.
+//   🔴 **HẰNG ≠ GIÁ TRỊ** (`TERP.Constants/Const.Main.cs:298-306`, nguyên văn cả chú thích tiếng Việt):
+//     `Pending = "**PEND**"` · `Sent = "**SENT**"` *(Chờ xem xét)* · `Confirmed = "**CONF**"` *(Chờ duyệt // Đã gửi HMC,
+//     chờ HMC duyệt)* · `Accepted = "**ACCE**"` · `Rejected = "**REJ**"` · `HTCRevert = "**REVERT**"`.
+//     ⇒ Sáu trạng thái; guard của `_V2` chỉ cho sửa ở **hai** (`PEND`, `REVERT`) ⇒ bốn trạng thái còn lại bị chặn
+//       ở đường mới nhưng **mở toang ở đường cũ**.
+// 📌 Mini: `POST /api/warrantyclaims/{claimId}/items/{itemId}/status` port theo **bản `_V2`** (có guard trạng thái,
+//   dùng cặp mã lỗi mới) và nêu rõ đường cũ vẫn sống.
+app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", async (long claimId, long itemId,
+    WarrantyItemStatusDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == claimId);
+    if (claim is null) return Results.NotFound(new { claimId });
+    var item = await db.WarrantyClaimServiceItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == itemId && x.ClaimId == claimId);
+    if (item is null) return Results.NotFound(new { claimId, itemId });
+    // Guard của bản _V2: chỉ sửa được khi báo cáo ở PEND hoặc REVERT.
+    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
+    if (st != "PEND" && st != "REVERT")
+        return Results.BadRequest(new
+        {
+            error = "Ser_ROWarrantyReport_ItemStatus_Update_V2: WarrantyStatus không cho phép sửa.",
+            currentStatus = st,
+            allowed = new[] { "PEND", "REVERT" },
+            allStatuses = new { PEND = "Pending", SENT = "Chờ xem xét", CONF = "Chờ duyệt / đã gửi HMC", ACCE = "Accepted", REJ = "Rejected", REVERT = "HTCRevert" },
+            sourceLegacyPathHasNoStatusGuard = "duong cu Ser_ROWarrantyReport_ItemStatus_Update (Raise=0) van LIVE va sua duoc o BAT KY trang thai nao",
+        });
+    if (!string.IsNullOrWhiteSpace(dto.WarrantyStatus)) item.WarrantyStatus = dto.WarrantyStatus!.Trim().ToUpperInvariant();
+    if (dto.Note != null) item.Note = dto.Note;
+    // Bản _V2 dùng cặp mã lỗi MỚI (ErrorCodePN/ErrorCodeCD); bản cũ dùng NaturalCode/CauseCode.
+    if (!string.IsNullOrWhiteSpace(dto.ErrorCodePN)) claim.ErrorCodePN = dto.ErrorCodePN;
+    if (!string.IsNullOrWhiteSpace(dto.ErrorCodeCD)) claim.ErrorCodeCD = dto.ErrorCodeCD;
+    item.LogLUDateTime = DateTime.Now; item.LogLUBy = "api";
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        claimId, itemId, item.WarrantyStatus, claim.ErrorCodePN, claim.ErrorCodeCD,
+        sourceHasTwoLivePaths = "WS goi CA HAI ban: ban cu (Raise=0, khong kiem trang thai) va _V2 (3 Raise + guard PEND/REVERT)",
+        sourceLegacyLogsAnotherFunctionName = "ban cu khai strFunctionName = Ser_WarrantyReport_UpdateStatus — trung ten voi ham Ser_ROWarrantyReportUpdateStatus CO THAT (:8671) => log khong phan biet duoc sua trang thai HANG MUC voi sua trang thai BAO CAO",
+        sourceMigratesErrorCodePair = "ban cu nhan NaturalCode + CauseCode, ban _V2 nhan ErrorCodePN + ErrorCodeCD; #774 cho thay _Create_20220218 cung la ban THEM cap moi => mot cuoc di tru DO DANG, duong cu chua tat",
+        sourceSixStatusesOnlyTwoEditable = "Const.Main.cs:298-306 co SAU trang thai (PEND/SENT/CONF/ACCE/REJ/REVERT); _V2 chi cho sua o PEND va REVERT",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/warrantyclaims/approve-auto", async (WarrantyClaimAutoDto dto, AppDbContext db, ITenantContext t) =>
 {
     var rows = dto.Claims ?? new();
@@ -67818,6 +67886,8 @@ record UploadNameCheckDto(string? FileName = null);
 record WarrantyClaimCreateDto(string? ROID = null, string? RONo = null, string? DealerCode = null,
     string? ROWTypeCode = null, string? ROWTypeDtlCode = null, string? ROWTID = null,
     string? ErrorCodePN = null, string? ErrorCodeCD = null, string? PartIDError = null, string? Description = null);
+record WarrantyItemStatusDto(string? WarrantyStatus = null, string? Note = null,
+    string? ErrorCodePN = null, string? ErrorCodeCD = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
