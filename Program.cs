@@ -55585,6 +55585,59 @@ app.MapPut("/api/cuspartfactors", async (CusPartFactorUpdateDto dto, AppDbContex
 //     mức "ghi cờ", KHÔNG hạ xuống "vô hại".**
 // 📌 Ba nợ liên quan **đã đóng**: `_dbWH_Sys` (#728) · `_dbCarSv` (#732) · và một phần nợ "ghi nhiều CSDL"
 //   (13 ca) — nay đã biết **cách đọc đúng** thay vì đếm mù.
+// ===== 🔴 #758 CỤM TIỆN ÍCH `Cm_GetCarSvWSUrl*` + XÁC MINH BỐN HÀM CHẾT =====
+// `Cm_GetCarSvWSUrl` (`BizCarSv.Tab.cs:15295-15307` md5 `9bcfc7b9`, **11 dòng**) ·
+// `Cm_GetCarSvWSUrl_Desktop` (`:15308-15323` md5 `9954b879`, 14 dòng). DIFF trọn hàm = **đúng hai cụm**:
+// tên hàm và tên hằng config (`_strConfig_DMS_CarSv_WSUrl` vs `…_WSUrl_**Desktop**`). Thân còn lại y hệt.
+// Cả hai chỉ `SetRemark(ref mdsFinal, <config>)` — **không CSDL, không transaction, không log, không guard**.
+//
+// ⚪⚪ **KIỂM TRA ÂM TÍNH — "endpoint trần trả URL nội bộ" KHÔNG phải lỗ hổng**
+//   Hàm biz nhận **duy nhất** `string strTid` — không `strGwUserCode`/`strGwPassword`, không `ProcessBizReq`,
+//   không `myUtils_ValidateId`. Đọc riêng nó thì giống một cổng công khai phát tán URL hạ tầng.
+//   Nhưng đọc tầng WS (`HTCWSCarSvTab/WSCarSvTab.asmx.cs:404`) thì **trước** lời gọi có:
+//     `TBiz.CConfig.s_cmManager.**CheckGatewayAuthentication_OS**(ref alParamsCoupleError, strGwUserCode, strGwPassword);`
+//   ⇒ **có gác cổng**, chỉ là gác ở tầng trên. Đây là lần thứ tư trong lượt này một "phát hiện" tan khi đọc
+//     thêm một tầng — nhắc lại luật: **đọc thân WS trước khi kết luận về hàm biz**.
+//   🔴 Khác biệt còn lại **có thật nhưng nhẹ**: WS này chỉ kiểm **gateway**, **không** gọi `myUtils_ValidateId(strTid)`
+//     như đại đa số hàm khác ⇒ không có bản ghi `Sys_ValidateId` ⇒ **không chống gọi lặp (replay)**. Với một hàm
+//     chỉ đọc config thì chấp nhận được, nhưng nó lý giải vì sao hàm này **không** có `ProcessBizReq`: cả cụm
+//     được cố tình để "nhẹ", không phải bỏ sót.
+// 🔴 **GIÁ TRỊ CONFIG TRONG REPO ĐANG TRỎ MÔI TRƯỜNG TEST**: `HTCWSCarSv/Web.config:111` và
+//   `HTCWSCarSvTab/Web.config:76` đều là
+//   `https://devsyscm.inos.vn:12189/idocNet.**Test**.HTC.Service.Tab.WS/WSCarSvTab.asmx`.
+//   Hàm này là thứ **máy tính bảng hỏi để biết gọi WS ở đâu** ⇒ deploy nhầm Web.config là **toàn bộ tablet
+//   trỏ về hệ TEST** mà không báo lỗi gì. Cùng họ với URL test bị comment ở #746, nhưng ở đây nó **đang chạy**.
+//
+// ⚪⚪⚪ **XÁC MINH CODE CHẾT — BỐN HÀM, VÀ MỘT BẪY GREP SUÝT LÀM SAI KẾT QUẢ**
+//   Đếm số lần tên hàm xuất hiện **trên toàn solution** (`grep -rho "<Ten>(" --include=*.cs .`):
+//     `CheckFileExist` = **1** · `MoveFileNew_New20190529` = **1** · `SequenceGetForService` = **1**
+//     ⇒ đúng một lần = **chính dòng khai báo** ⇒ **không ai gọi ⇒ CODE CHẾT** (vẫn biên dịch vào DLL).
+//     Ba hàm này cũng **không** có mặt trong bất kỳ `_biz.<Ten>(` nào của WS.
+//     🔴 `SequenceGetForService` chết là đáng chú ý: cấp số cho dịch vụ là chức năng cốt lõi ⇒ nó đã bị thay
+//       bằng đường khác (`myCommon_GetNewId` ở #752) mà **không ai xoá bản cũ**.
+//     🔴 `MoveFileNew_New20190529` mang **hậu tố ngày** (#413) và chết ⇒ nợ đóng băng của một nợ đóng băng.
+//   ⚠️ **`DeleteFolderCurrent` = 2 hit — VÀ ĐÂY LÀ BẪY**: thoạt nhìn là "khai báo + một lời gọi ⇒ còn sống".
+//     Mở ra thì hit thứ hai là `./TERP.BizCarSv/**Web References/WSDMSSale/Reference.cs**:25061` —
+//     **hàm proxy CÙNG TÊN của một hệ khác** (DMS Sale), không phải lời gọi hàm này.
+//     ⇒ `DeleteFolderCurrent` trong CarSv **cũng chết**. Đúng cảnh báo "grep trúng lời gọi chứ không phải khai báo",
+//     nhưng theo chiều ngược: ở đây grep trúng **một khai báo khác** và suýt cứu nhầm một hàm chết.
+//   📌 Luật rút ra: đếm hit xong phải **mở từng hit ra xem nó là khai báo, lời gọi, hay proxy của hệ khác** —
+//     đặc biệt cảnh giác mọi đường dẫn chứa `Web References/`, vì đó là mã sinh tự động cho WS **bên ngoài**.
+// 📌 Mini: `GET /api/_meta/carsv-ws-url` trả đúng hình dạng của cặp hàm (một giá trị cấu hình + biến thể Desktop).
+app.MapGet("/api/_meta/carsv-ws-url", (string? target) =>
+{
+    var isDesktop = string.Equals(target, "desktop", StringComparison.OrdinalIgnoreCase);
+    return Results.Ok(new
+    {
+        target = isDesktop ? "desktop" : "tab",
+        configKey = isDesktop ? "_strConfig_DMS_CarSv_WSUrl_Desktop" : "_strConfig_DMS_CarSv_WSUrl",
+        value = (string?)null,
+        notConfiguredInMini = "Mini khong co WS CarSv de tro toi; endpoint giu dung hinh dang hop dong cua cap ham nguon",
+        sourceRepoConfigPointsToTestEnv = "Web.config trong repo: https://devsyscm.inos.vn:12189/idocNet.Test.HTC.Service.Tab.WS/WSCarSvTab.asmx => deploy nham config la toan bo tablet tro ve he TEST",
+        sourceHasNoTidValidation = "ham biz chi nhan strTid; tang WS co CheckGatewayAuthentication_OS nhung KHONG goi myUtils_ValidateId => khong chong goi lap",
+        deadFunctionsVerified = "CheckFileExist / MoveFileNew_New20190529 / SequenceGetForService moi cai chi 1 hit toan solution (= dong khai bao) => CHET; DeleteFolderCurrent 2 hit nhung hit thu hai la proxy cung ten trong Web References/WSDMSSale/Reference.cs => CUNG CHET",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/db-handles", (ITenantContext t) => Results.Ok(new
 {
     note = "#733 — tai lieu hoa bo handle CSDL cua TERP.BizCarSv (khong truy van gi; endpoint tra hang so).",
