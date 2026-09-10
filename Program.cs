@@ -54185,6 +54185,141 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴🔴 #734 HỆ SỐ GIÁ PHỤ TÙNG THEO LOẠI KHÁCH `Ser_Mst_CusPartFactor_Get` + `_Update` =====
+// `BizCarSv.Service.cs` — `_Get` :6384-6562 md5 `78b9da54` · `_Update` :6564-6792 md5 `b65fbede`
+// (file 19588 dòng). → `GET /api/cuspartfactors`, `PUT /api/cuspartfactors`.
+// Đối chiếu cặp theo #404. **Áp ngay kết luận #733** để đọc đúng phần `_dbDealer`.
+//
+// 🔴🔴🔴🔴 **BỘ LỌC RỖNG ⇒ XOÁ SẠCH BẢNG HỆ SỐ — VÀ Ở ĐÂY KHÔNG CÓ GUARD NÀO CHẶN**:
+//     `select t.CusTypeID, t.DealerCode, t.PartID **into #tblSer_Mst_CusPartFactor_Filter**`
+//     `from Ser_Mst_CusPartFactor t where (1=1) zzzzClauseWherePartID zzzzClauseWhereDealerCode;`
+//     `delete t from Ser_Mst_CusPartFactor t inner join #tbl…_Filter f on …;`
+//   Hai mệnh đề đều do `SqlUtils.BuildClauseConditionList(…, strPartID/strDealerCode, "|")` sinh, mà helper đó
+//   **trả chuỗi RỖNG** khi tham số rỗng ⇒ bảng lọc chứa **TOÀN BỘ** bảng ⇒ `delete` **xoá sạch bảng hệ số**.
+//   🔴 **KHÁC #731 Ở CHỖ QUYẾT ĐỊNH**: ở #731 `CheckExistCam` chặn hộ trước khi tới câu `delete`. Ở đây guard
+//     duy nhất là `#region // Check Input Detail` — và nó **chỉ kiểm `ds_CusPartFactor` có dòng không**
+//     (`if (Tables.Count < 1 || Tables[0].Rows.Count < 1) throw …_WithoutService`), **KHÔNG** kiểm `strPartID`
+//     hay `strDealerCode` rỗng.
+//   ⇒ Gọi với `PartID=""`, `DealerCode=""` **nhưng DataSet có dòng** ⇒ **xoá sạch toàn bộ hệ số giá của mọi đại
+//     lý, mọi phụ tùng**, rồi chèn lại vài dòng. **Không có gì chặn.**
+// ⚪⚪ **DƯƠNG TÍNH — ÁP DỤNG ĐÚNG KẾT LUẬN #733**: câu xoá ở CSDL đại lý được bọc
+//     `if (bNeedTransaction_Dealer) { _dbDealer.ExecNonQuery(strSQLDelete); }`
+//   ⇒ khi `bIsWSMain` (lúc `_dbDealer` **chính là** `_dbMain`) thì **không** xoá lần hai trên cùng CSDL.
+//   ⇒ **Đây là cách viết ĐÚNG**, và là **đối lập trực tiếp** với #732 (`_dbDealer` mở transaction rồi rollback,
+//     ghi 0 lần). Cùng một cấu hình hạ tầng, **hai cách xử lý khác hẳn nhau**.
+//   📌 Đếm ghi từng handle: `_dbMain.SaveData`=**1** · `_dbWH.SaveData`=**1** · `_dbDealer.SaveData`=**1**
+//     ⇒ **mẫu ngược thứ TƯ** cho #726 (sau #728/#730/#731).
+// 🔴🔴🔴 **`in (N'zzzzDealerCodeList')` — DANH SÁCH PHẢI TỰ MANG DẤU NHÁY**:
+//     `on (ct.DealerCode in (N'zzzzDealerCodeList'))` và `zzzzDealerCodeList` ← `strDealerCodeList` **bake**
+//     thẳng qua `StringUtils.Replace`.
+//   ⇒ Gửi **một** mã (`VN029`) thì thành `in (N'VN029')` — đúng. Gửi **danh sách** `VN029,VN030` thì thành
+//     `in (N'VN029,VN030')` = **MỘT chuỗi** ⇒ **không khớp gì, trả rỗng im lặng**.
+//   ⇒ Muốn nhiều mã thì client phải tự gửi `VN029',N'VN030` — **hợp đồng API ngầm**, và đồng thời là **bề mặt
+//     tiêm SQL**. Cùng họ "tên tham số nói dối về hình dạng dữ liệu" (#713) nhưng ở dạng `in (…)`.
+// 🔴🔴 **`join Ser_Mst_CustomerType ct on (ct.DealerCode in (…))` — ĐIỀU KIỆN NỐI CHỈ LỌC MỘT BẢNG**
+//   ⇒ **tích Descartes trá hình** (họ #698/#659): mỗi phụ tùng nhân với **mọi** loại khách của đại lý.
+//   ⚠️ Ở đây **rất có thể là chủ ý** (sinh ma trận giá theo loại khách) — **ghi cờ, không kết luận**; nhưng nó
+//     giải thích vì sao phải có `select **distinct**` ở đầu.
+// 🔴🔴 **`COALESCE(cpf.Factor, ct.CusFactor, **1**)` — BA TẦNG DỰ PHÒNG, TẦNG CUỐI LÀ `1`**, và giá bán tính
+//   ngay trong SQL: `p.Price * COALESCE(cpf.Factor, ct.CusFactor, 1) Price`.
+//   ⇒ Thiếu **cả** hệ số riêng lẫn hệ số loại khách ⇒ nhân `1` ⇒ **bán đúng giá gốc, im lặng**.
+//   ⇒ Không phân biệt được *"cố ý hệ số 1"* với *"quên khai hệ số"* — port trả cờ `factorFellBackToOne`.
+// 🔴 **HẰNG ≠ GIÁ TRỊ (đã mở)**: `Constants.HTCConst.HTCDealerCode` = **`"HTC"`** (`Const.Main.cs:124`);
+//   `ct.IsActive = **1**` so **số** (không nháy), khác các cờ chuỗi `'1'` ở màn khác.
+// 🔴 **Khối `--delete Ser_Mst_CusPartFactor where …` BỊ COMMENT** ngay trên, thay bằng `select into #tbl` +
+//   `delete … inner join`, kèm chú thích `-- 20210527.ToanNH: Không nên Index …`. Port **dòng ACTIVE**.
+// ⚪ **ÂM TÍNH — hai region `SerInsuranceAttachment`/`DeleteInsuranceAttachment` KHÔNG thuộc hàm này**: chúng ở
+//   **dòng 205-206** trong khi vùng trích dài **206** dòng ⇒ đó là region **mở đầu hàm KẾ TIẾP**. Suýt báo
+//   "từ vựng lạ" (họ #703/#709/#731) — **so số dòng mới chặn được**.
+app.MapGet("/api/cuspartfactors", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? partIdList, string? cusTypeId, string? isActiveList) =>
+{
+    const string HTCDealerCode = "HTC";        // Constants.HTCConst.HTCDealerCode
+    var dealerRaw = (dealerCodeList ?? "").Trim();
+    // 🔴 Nguồn bake thẳng vào `in (N'…')` ⇒ danh sách nhiều mã phải TỰ mang nháy.
+    var callerSentCommaList = dealerRaw.Contains(',') && !dealerRaw.Contains('\'');
+    var dealers = dealerRaw.Length == 0 ? new List<string>()
+        : dealerRaw.Split(',').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+
+    var types = await db.CustomerTypes.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1"
+            && c.DealerCode != null && dealers.Contains(c.DealerCode))
+        .Select(c => new { c.CusTypeCode, c.CusTypeName, c.CusFactor, c.DealerCode }).ToListAsync();
+
+    var partsQ = db.ServiceParts.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(partIdList)) partsQ = partsQ.Where(p => p.PartID == partIdList!.Trim());
+    // Nhánh 1 của `union`: phụ tùng CỦA HTC; nhánh 2: phụ tùng của chính đại lý.
+    var parts = await partsQ.Where(p => p.DealerCode == HTCDealerCode || (p.DealerCode != null && dealers.Contains(p.DealerCode)))
+        .Select(p => new { p.PartID, p.PartCode, p.Price, p.DealerCode }).ToListAsync();
+
+    var factors = await db.CusPartFactors.Where(f => f.OrgId == t.OrgId).ToListAsync();
+
+    var factorFellBackToOne = 0;
+    var rows = new List<object>();
+    foreach (var p in parts)
+        foreach (var ct in types)
+        {
+            if (!string.IsNullOrWhiteSpace(cusTypeId) && ct.CusTypeCode != cusTypeId!.Trim()) continue;
+            var own = factors.FirstOrDefault(f => f.PartID == p.PartID && f.CusTypeID == ct.CusTypeCode
+                && f.DealerCode != null && dealers.Contains(f.DealerCode));
+            // COALESCE(cpf.Factor, ct.CusFactor, 1)
+            decimal factor;
+            if (own?.Factor is not null) factor = own.Factor!.Value;
+            else if (ct.CusFactor != 0) factor = ct.CusFactor;
+            else { factor = 1m; factorFellBackToOne++; }
+            rows.Add(new
+            {
+                p.PartID, p.PartCode, CusTypeID = ct.CusTypeCode, ct.CusTypeName,
+                Factor = factor, Price = p.Price * factor, BasePrice = p.Price,
+            });
+        }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows, factorFellBackToOne, callerSentCommaList,
+        // ===== #734 =====
+        inListMustCarryItsOwnQuotes = "in (N zzzzDealerCodeList) — DANH SACH PHAI TU MANG DAU NHAY: on (ct.DealerCode in (N zzzzDealerCodeList)) va zzzzDealerCodeList <- strDealerCodeList BAKE thang qua StringUtils.Replace => gui MOT ma (VN029) thi thanh in (N VN029) — dung; gui DANH SACH VN029,VN030 thi thanh in (N VN029,VN030) = MOT CHUOI => KHONG KHOP GI, TRA RONG IM LANG. Muon nhieu ma thi client phai tu gui VN029 ,N VN030 — HOP DONG API NGAM, va dong thoi la BE MAT TIEM SQL. Cung ho ten-tham-so-noi-doi (#713) nhung o dang in (…). Da do bang callerSentCommaList",
+        joinConditionFiltersOnlyOneTable = "join Ser_Mst_CustomerType ct on (ct.DealerCode in (…)) — DIEU KIEN NOI CHI LOC MOT BANG => TICH DESCARTES TRA HINH (ho #698/#659): moi phu tung nhan voi MOI loai khach cua dai ly. RAT CO THE LA CHU Y (sinh ma tran gia theo loai khach) — GHI CO, KHONG KET LUAN; nhung no giai thich vi sao phai co select distinct o dau",
+        coalesceFallsBackToOne = "COALESCE(cpf.Factor, ct.CusFactor, 1) — BA TANG DU PHONG, TANG CUOI LA 1, va gia ban tinh ngay trong SQL: p.Price * COALESCE(cpf.Factor, ct.CusFactor, 1) Price => thieu CA hai he so => nhan 1 => BAN DUNG GIA GOC, IM LANG => khong phan biet duoc co-y-he-so-1 voi quen-khai-he-so. Da do bang factorFellBackToOne",
+        constantsOpened = "HANG KHAC GIA TRI (da mo): Constants.HTCConst.HTCDealerCode = HTC (Const.Main.cs:124); ct.IsActive = 1 so SO (khong nhay), khac cac co chuoi 1 o man khac",
+        negativeStrangeRegionsBelongToNextFunction = "AM TINH: hai region SerInsuranceAttachment/DeleteInsuranceAttachment KHONG thuoc ham nay — chung o DONG 205-206 trong khi vung trich dai 206 dong => do la region MO DAU HAM KE TIEP. Suyt bao tu-vung-la (ho #703/#709/#731) — SO SO DONG moi chan duoc",
+    });
+}).RequireAuthorization();
+
+// #734 `Ser_Mst_CusPartFactor_Update` (`:6564`) — XOÁ theo bộ lọc rồi CHÈN LẠI.
+app.MapPut("/api/cuspartfactors", async (CusPartFactorUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    // 🔴 Guard DUY NHẤT của nguồn: DataSet đầu vào phải có dòng. KHÔNG kiểm PartID/DealerCode rỗng.
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_CusPartFactor_Update_WithoutService" });
+
+    var partId = (dto.PartID ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var filterIsEmpty = partId.Length == 0 && dealer.Length == 0;
+
+    var q = db.CusPartFactors.Where(f => f.OrgId == t.OrgId);
+    if (partId.Length > 0) q = q.Where(f => f.PartID == partId);
+    if (dealer.Length > 0) q = q.Where(f => f.DealerCode == dealer);
+    var old = await q.ToListAsync();
+    var deleted = old.Count;
+    db.CusPartFactors.RemoveRange(old);
+
+    foreach (var r in dto.Rows)
+        db.CusPartFactors.Add(new CusPartFactor
+        {
+            OrgId = t.OrgId, PartID = r.PartID, CusTypeID = r.CusTypeID,
+            DealerCode = r.DealerCode ?? dealer, Factor = r.Factor,
+        });
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        deleted, inserted = dto.Rows.Count, filterIsEmpty,
+        emptyFilterWouldWipeTheWholeFactorTable = "BO LOC RONG => XOA SACH BANG HE SO — VA O DAY KHONG CO GUARD NAO CHAN: select … into #tblSer_Mst_CusPartFactor_Filter from Ser_Mst_CusPartFactor t where (1=1) zzzzClauseWherePartID zzzzClauseWhereDealerCode; roi delete t from Ser_Mst_CusPartFactor t inner join #tbl…_Filter f. Hai menh de deu do SqlUtils.BuildClauseConditionList sinh, ma helper do TRA CHUOI RONG khi tham so rong => bang loc chua TOAN BO bang => delete XOA SACH. KHAC #731 O CHO QUYET DINH: o #731 CheckExistCam chan ho truoc khi toi cau delete; o day guard duy nhat la #region // Check Input Detail va no CHI kiem ds_CusPartFactor co dong khong, KHONG kiem strPartID hay strDealerCode rong => goi voi PartID='', DealerCode='' nhung DataSet co dong => XOA SACH TOAN BO HE SO GIA CUA MOI DAI LY, MOI PHU TUNG roi chen lai vai dong. KHONG CO GI CHAN",
+        dealerDeleteIsCorrectlyGuardedHere = "DUONG TINH — AP DUNG DUNG KET LUAN #733: cau xoa o CSDL dai ly duoc boc if (bNeedTransaction_Dealer) { _dbDealer.ExecNonQuery(strSQLDelete); } => khi bIsWSMain (luc _dbDealer CHINH LA _dbMain) thi KHONG xoa lan hai tren cung CSDL. DAY LA CACH VIET DUNG, va la DOI LAP TRUC TIEP voi #732 (_dbDealer mo transaction roi rollback, ghi 0 lan). Dem ghi tung handle: _dbMain.SaveData=1, _dbWH.SaveData=1, _dbDealer.SaveData=1 => MAU NGUOC THU TU cho #726 (sau #728/#730/#731)",
+        commentedDeleteReplacedByJoinDelete = "Khoi --delete Ser_Mst_CusPartFactor where … BI COMMENT ngay tren, thay bang select into #tbl + delete … inner join, kem chu thich -- 20210527.ToanNH: Khong nen Index …. Port dong ACTIVE",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴🔴 #733 TRẢ NỢ — BỘ HANDLE CSDL CỦA `TERP.BizCarSv` (giải thích được CẢ MỘT HỌ QUAN SÁT) =====
 // Nợ mở ở **#728** (`_dbWH_Sys` — "handle thứ ba, chưa truy") và **#732** (`_dbCarSv` — "handle thứ tư").
 // Đọc `BizCarSv.Common.cs:45-59` (khai báo) + `:285-326` (khởi tạo). **Vòng trả nợ, KHÔNG tính màn mới.**
@@ -65596,6 +65731,11 @@ record CampaignMarketingCreateDto(string? CamMarketingNo = null, string? CamName
     string? WarrantyDateStart = null, string? WarrantyDateEnd = null,
     string? ConditionVin = null, string? ConditionPlateNo = null, string? ConditionDealer = null,
     string? CamMarketingStatus = null);
+/// <summary>#734 `Ser_Mst_CusPartFactor_Update` — hệ số giá phụ tùng theo loại khách.</summary>
+record CusPartFactorRowDto(string? PartID = null, string? CusTypeID = null, string? DealerCode = null,
+    decimal? Factor = null);
+record CusPartFactorUpdateDto(string? PartID = null, string? DealerCode = null,
+    List<CusPartFactorRowDto>? Rows = null);
 record CamContactRowDto(string? CusID = null, string? CarID = null, string? Status = null,
     DateTime? ContactDate = null, string? Remark = null);
 record PartnerCarDto(string? DealerCode = null, string? PlateNo = null, string? CusID = null,

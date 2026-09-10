@@ -14896,6 +14896,18 @@ public sealed class DealerServiceOption
 }
 
 /// <summary>Loại khách hàng dịch vụ (hệ số giá, cá nhân/tổ chức) — port 1:1 FrmCusTypeCreate (Ser_CusType, TCMotor).</summary>
+/// <summary>🔴 #734 Hệ số giá phụ tùng theo loại khách (`Ser_Mst_CusPartFactor`).
+/// Nguồn dùng `COALESCE(cpf.Factor, ct.CusFactor, 1)` ⇒ **ba tầng dự phòng**, tầng cuối là `1`.</summary>
+public sealed class CusPartFactor
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? PartID { get; set; }
+    public string? CusTypeID { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal? Factor { get; set; }
+}
+
 public sealed class CustomerType
 {
     /// <summary>🔴 #715 §12 `Ser_MST_CustomerType.DealerCode` — `CheckExistCusType` tra danh mục theo BỘ BA
