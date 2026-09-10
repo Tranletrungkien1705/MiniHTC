@@ -17640,6 +17640,31 @@ app.MapPost("/api/partgroups/{code}/toggle", async (string code, AppDbContext db
 
 // ===== Công nợ khách hàng dịch vụ + thu tiền (CusDebit — port 1:1 FrmCusDebitCreate/FrmCusPaymentCreate, TCMotor) =====
 // ===== 🔴 #555 CÔNG NỢ **BẢO HIỂM** VÀ **NHÀ CUNG CẤP** — MỘT BẢNG, BA LOẠI =====
+// ===== 🔴🔴🔴 #790 `SerInsuranceDebitDetailGet` ↔ `_WH` — CẶP NÀY **KHÔNG** LÀNH: KHÁC CHÍNH SÁCH KHOÁ VÀ KHÁC CSDL =====
+// `BizCarSv.Debit.cs:1314-1474` md5 `2a156e2f` (149 dòng) ↔ `BizCarSv.WH.cs:4814-4969` md5 `15480e2b` (145 dòng).
+// #625 đã đối chiếu cặp **nhà cung cấp** (`SerSupplierDebitDetailGet` ↔ `_WH`); đây là cặp **bảo hiểm**.
+//
+// 🔴🔴🔴 **HAI BẢN DÙNG HAI CHÍNH SÁCH KHOÁ KHÁC NHAU TRÊN CÙNG MỘT CÂU**
+//     bản đại lý: `FROM Ser_Insurance d **with(nolock)**` · `FROM Ser_CusDebit d **with(nolock)**` ·
+//                 `LEFT JOIN Ser_RO r **with(nolock)**` · `left join ser_car car **with(nolock)**` ·
+//                 `FROM […].Ser_Payment d **with(nolock)**`
+//     bản kho   : cùng những bảng đó nhưng viết `--//[mylock]` (marker house-style, để tầng DAL quyết định)
+//   ⇒ Cùng một báo cáo **công nợ bảo hiểm**: chạy ở **đại lý** thì **luôn đọc bẩn** (thấy được dữ liệu chưa commit),
+//     chạy ở **kho** thì không. Đây là khác biệt **hành vi**, không phải khoảng trắng.
+//   📌 Ngược chiều với #779/#788 (hai cặp đó lành) ⇒ **không được suy "cặp `_WH` nào cũng chỉ khác vỏ"**.
+//     Mỗi cặp phải diff riêng — đây là cặp thứ ba trong loạt và là cặp **đầu tiên lệch về chính sách khoá**.
+//
+// 🔴🔴 **`Ser_Payment` LẤY TỪ HAI CSDL KHÁC NHAU — VÀ ĐÂY LÀ SỐ TIỀN**
+//     bản đại lý: `FROM **[@strDBName_CommonCenter].[dbo]**.Ser_Payment d` (`@strDBName_CommonCenter` ←
+//                 `_strConfig_DBName_**Main**` — **lần thứ SÁU** gặp tên hằng nói dối này, sau #745/#750/#763/#768/#779)
+//     bản kho   : `from **Ser_Payment** d` (**cục bộ**)
+//   ⇒ Bảng phiếu thu của hai bản là **hai bảng vật lý khác nhau** ⇒ **số tiền đã thu có thể lệch nhau**
+//     giữa màn đại lý và màn kho, trong khi phần công nợ (`Ser_CusDebit`) thì cùng nguồn.
+//   ⚪ `and PaymentType = '2'` — mở hằng: `InsurancePayment = "2"` ⇒ **đúng** loại bảo hiểm (đã ghi ở #…).
+// 🔴 `left join ser_car car on r.CarID = car.carID **and r.CusID = car.CusID** and r.DealerCode = car.DealerCode`
+//   ⇒ lại là khuôn "join xe theo cả chủ xe" (#752, #788). ⚪ Nhưng ở đây là **LEFT** join ⇒ **không nuốt dòng nợ**,
+//     chỉ **mất thông tin xe** khi xe đã đổi chủ ⇒ nhẹ hơn hai ca kia, ghi đúng mức đó.
+// 🔴 Lớp mã lỗi: bản kho dùng `TError.**ErrCarSv_WH**.…` (khuôn đã đếm 128 lần ở #788, đính chính #491 ở #789).
 // Nguồn: `BizCarSv.Debit.cs:1314 SerInsuranceDebitDetailGet` · `:1475 SerSupplierDebitDetailGet`.
 // Endpoint: `GET /api/debits/detail?debitType=1|2|3`. **§12**: thêm `DebitType` · `InsNo` ·
 //   `SupplierCode` · `StockInID` vào `CusDebit`.
@@ -17786,6 +17811,11 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
         catalogColumnsPerType = "bao hiem: Address/TelePhone/Email; NCC: Phone/ContactName/ContactPhone",
         docTableJoinedPerType = "1,2 -> Ser_RO (ban bao hiem noi them ser_car lay PlateNo); 3 -> Ser_Inv_stockIn (StockInNo)",
         oneClauseInjectedIntoThreeSelects = "zzzzClauseWhere_str...ConditionList xuat hien o CA BA cau (danh muc, no, phieu thu) va ca ba deu dat alias d",
+        // ===== #790 PARITY bản kho `SerInsuranceDebitDetailGet_WH` (`BizCarSv.WH.cs:4814`) =====
+        insurancePairIsNotClean = "#790: cap BAO HIEM KHONG lanh nhu cap NCC (#625). Ban dai ly dung with(nolock) THO tren ca 5 bang, ban kho dung marker --//[mylock] => chay o dai ly thi LUON doc ban, chay o kho thi khong",
+        insurancePaymentTableFromDifferentDb = "#790: ban dai ly doc [@strDBName_CommonCenter].[dbo].Ser_Payment (= _strConfig_DBName_Main — lan thu SAU sau #745/#750/#763/#768/#779), ban kho doc Ser_Payment CUC BO => so tien DA THU co the lech nhau giua man dai ly va man kho",
+        insuranceCarJoinIsLeftNotInner = "#790 AM TINH: left join ser_car ... and r.CusID = car.CusID — cung khuon join xe theo chu xe (#752/#788) NHUNG la LEFT => khong nuot dong no, chi mat thong tin xe khi xe doi chu",
+        insurancePaymentTypeConstantVerified = "#790: and PaymentType = 2 khop hang InsurancePayment = 2",
         // ===== #625 PARITY bản kho `SerSupplierDebitDetailGet_WH` (`BizCarSv.WH.cs:4661`) =====
         whVariantMd5Verified = "3B: ban _WH md5 2b9b2746 va ban dai ly md5 e38039b0 — CA HAI khop 2 may",
         fourthEvidenceOfPerGatewayCatalogSplit = "DIFF hai ban: ban dai ly doc [CommonCenter].[dbo].Ser_Payment, ban _WH doc Ser_Payment CUC BO; ngoai ra khong con khac biet nghia nao (chi khac hoa/thuong SELECT/select va khoang trang) => ca thu TU sau #619 sys_user, #621 ser_mst_Model, #624 Ser_GroupRepair",
