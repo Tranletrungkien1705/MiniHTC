@@ -52579,6 +52579,71 @@ app.MapGet("/api/customercaremaces/appointments", async (AppDbContext db, ITenan
         skipped = "Nguồn còn join Ser_Car (FrameNo) + ser_mst_model + ser_ro để hiện khung/model/lệnh sửa chữa — MiniHTC lưu Vin trên chính dòng, chưa nối các bảng đó, KHÔNG bịa." });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #755 `OS_Ser_CustomerCareMace_Update` — CỔNG NGOÀI SỬA PHIẾU CHĂM SÓC MACE =====
+// `BizCarSv.Customer.cs:13901-14024` md5 `ddd73925` (115 dòng) · song sinh không-`OS_` ở **:13766-13900**.
+// Cả hai đều là vỏ điều phối: `foreach (row)` → `this.ProcessUpdateCareMace(_dbDealer, …)` (`:14318`).
+//
+// 🔴🔴 **SÁU THAM SỐ BỊ THAY BẰNG CHUỖI RỖNG, GIÁ TRỊ THẬT NẰM NGAY TRONG COMMENT KẾ BÊN**
+//   Bản `OS_` truyền: `"" //row["DealerCode"]` · `"" // CreatedDate` · `""//row["MaceRecomentDate"]` ·
+//     `""//row["CarId"]` · `""//row["CusId"]` · `"" //row["MaceType"]` · `""//row["ROID"]`.
+//   DIFF chuẩn hoá trọn hàm với bản không-`OS_` cho thấy **bản kia truyền giá trị THẬT** ở đúng những chỗ đó
+//   ⇒ đây không phải "code cũ bỏ quên", mà là **cắt bớt quyền của kênh ngoài** một cách có chủ đích.
+//   Theo luật "port dòng ACTIVE": dòng đang chạy là `""`, nên câu hỏi đúng phải là **helper xử lý rỗng thế nào**.
+//
+// 🔴🔴🔴 **ĐỌC HELPER MỚI THẤY: RỖNG CÓ HAI NGHĨA KHÁC NHAU, VÀ ĐÚNG MỘT CỘT BỊ XOÁ TRẮNG**
+//   `ProcessUpdateCareMace` chia các cột thành hai nhóm:
+//     **Nhóm A — rỗng thì BỎ QUA** (chỉ `alColumnEffective.Add(...)` **bên trong** nhánh `if (!IsEmpty)`):
+//       `MaceRecomentDate` · `Status` · `CarId` · `CusId` · `MaceType` · `ROID`
+//       ⇒ năm trường mà kênh `OS_` truyền rỗng đều rơi vào đây ⇒ **giữ nguyên giá trị cũ** ⇒ **AN TOÀN, đúng chủ ý**.
+//     **Nhóm B — rỗng thì GHI `DBNull`**, và tên cột được `Add` **VÔ ĐIỀU KIỆN ở cuối hàm**:
+//       `CreatedDate` · `ContactDate` · `ApointDate` · `Remark`
+//       `if (!IsEmpty(strCreatedDate)) { …= strCreatedDate; } **else { …= DBNull.Value; }**`  …rồi cuối hàm:
+//       `alColumnEffective.Add("**CreatedDate**"); Add("ContactDate"); Add("ApointDate"); Add("Remark");`
+//   ⇒ **`CreatedDate` bị XOÁ TRẮNG mỗi lần cập nhật**: kênh `OS_` luôn truyền `""` cho nó (`, "" // CreatedDate`),
+//     rỗng ⇒ `DBNull`, mà cột lại **luôn** nằm trong danh sách cột hiệu lực ⇒ `SaveData` ghi NULL đè lên ngày tạo.
+//   ⚠️ Bản **không-`OS_` cũng truyền `""`** ở đúng vị trí đó ⇒ **cả hai kênh đều xoá `CreatedDate`** ⇒ nhất quán,
+//     nhưng lần này nhất quán **không** chứng minh chủ ý (khác #749/#751/#753): mâu thuẫn nằm **bên trong chính helper**
+//     — nó viết `if (!IsEmpty)` cho `CreatedDate` (ngụ ý "rỗng thì đừng động vào") rồi lại `Add` cột đó vô điều kiện.
+//     Hai câu lệnh cách nhau `55 dòng, phủ định lẫn nhau. **Đây là lỗi thật.**
+//   📌 Bài học đọc: "truyền chuỗi rỗng" **không tự nó** là bug hay không-bug — nghĩa của nó do **helper** quyết định,
+//     và helper có thể dùng **hai quy ước khác nhau cho các cột khác nhau trong cùng một hàm**.
+//
+// 🔴 **TÊN HÀM TRONG LOG BỊ MẤT TIỀN TỐ `OS_`**: `string strFunctionName = "**Ser_CustomerCareMace_Update**";`
+//   trong khi `strErrorCodeDefault = TError.ErrCarSv.**OS_**Ser_CustomerCareMace_Update`. Mà hàm không-`OS_`
+//   **có thật** (`:13766`) và dùng đúng cái tên đó ⇒ hai hàm khác nhau ghi **cùng một `strFunctionName`** vào log
+//   ⇒ tra log sự cố không phân biệt được kênh nội bộ với kênh đối tác. Nặng hơn #741 (thiếu nhãn) và #744 (nhãn sai).
+// ⚪ Guard: `CMyException.Raise` = 0 **và** `this.Check*` = 0 (đếm theo luật #747) ⇒ lần này **thật sự không có guard**:
+//   phiếu không tồn tại, `MaceType` lạ, `Status` ngoài `0/1/2` đều đi thẳng vào `SaveData`.
+// 📌 Mini: `PUT /api/customercaremaces/{careNo}` giữ **đúng phân nhóm A/B của helper** — năm trường nhóm A bỏ qua
+//   khi rỗng, còn `CreatedDate` thì **KHÔNG xoá trắng** (khác biệt CÓ CHỦ Ý, nêu rõ ở cờ).
+app.MapPut("/api/customercaremaces/{careNo}", async (string careNo, CareMaceOsUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var no = careNo.Trim();
+    var row = await db.CustomerCareMaces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
+    // Nguồn KHÔNG có guard nào (Raise = 0 và this.Check* = 0) — Mini trả 404, khác biệt CÓ CHỦ Ý.
+    if (row is null) return Results.NotFound(new { careNo = no, sourceHasNoGuardAtAll = true });
+    // Nhóm B của helper: rỗng ⇒ ghi DBNull (cột luôn nằm trong alColumnEffective).
+    row.Status = string.IsNullOrWhiteSpace(dto.Status) ? row.Status : dto.Status!;   // Status thuộc nhóm A
+    row.ApointDate = dto.ApointDate;
+    row.ContactDate = dto.ContactDate;
+    row.Remark = dto.Remark;
+    // 📌 `CreatedDate`: nguồn ghi DBNull khi rỗng ⇒ XOÁ TRẮNG ngày tạo. Mini KHÔNG tái hiện lỗi này.
+    // Nhóm A (bỏ qua khi rỗng): MaceRecomentDate · CarID · CusID · MaceType · ROID.
+    if (dto.MaceRecomentDate.HasValue) row.MaceRecomentDate = dto.MaceRecomentDate;
+    if (!string.IsNullOrWhiteSpace(dto.CarID)) row.CarID = dto.CarID;
+    if (!string.IsNullOrWhiteSpace(dto.CusID)) row.CusID = dto.CusID;
+    if (!string.IsNullOrWhiteSpace(dto.MaceType)) row.MaceType = dto.MaceType!;
+    if (!string.IsNullOrWhiteSpace(dto.ROID)) row.ROID = dto.ROID;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.CareNo, row.Status, row.ApointDate, row.ContactDate, row.Remark, row.CreatedDate,
+        sourceWipesCreatedDate = "nguon: helper ghi DBNull khi strCreatedDate rong VA luon alColumnEffective.Add(CreatedDate) => moi lan cap nhat la XOA TRANG ngay tao; ca kenh OS lan kenh noi bo deu truyen rong",
+        sourceEmptyMeansSkipForFiveFields = "MaceRecomentDate/CarId/CusId/MaceType/ROID thuoc nhom bo-qua-khi-rong => kenh OS truyen rong la CO CHU Y, giu nguyen gia tri cu",
+        sourceLogsWrongFunctionName = "strFunctionName = Ser_CustomerCareMace_Update (thieu tien to OS_) trung ten voi ham khong-OS co that o :13766 => log khong phan biet duoc hai kenh",
+        miniDoesNotWipeCreatedDate = true,
+    });
+}).RequireAuthorization();
 app.MapPost("/api/customercaremaces", async (CustomerCareMaceDto dto, AppDbContext db, ITenantContext t) =>
 {
     var maceType = (dto.MaceType ?? "").Trim();
@@ -66654,6 +66719,9 @@ record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = nu
     string? ReqPartPriceNo = null, string? FlagIsDelete = null, string? FlagIsCheck = null);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
+record CareMaceOsUpdateDto(string? Status = null, DateTime? ApointDate = null, DateTime? ContactDate = null,
+    string? Remark = null, DateTime? MaceRecomentDate = null, string? CarID = null, string? CusID = null,
+    string? MaceType = null, string? ROID = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null);   // #338 §12
