@@ -29603,6 +29603,42 @@ app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantCon
 // ⚪ `left join sys_user su on Creator = UserCode and DealerCode = DealerCode` — **không cột nào của `su`**
 //   được select, **không** điều kiện WHERE nào trên `su` ⇒ LEFT **còn sống nhưng THỪA** (họ #414
 //   "khai báo rồi không dùng"): chỉ tốn một phép nối cross-DB mỗi lần tra.
+// ===== 🔴🔴🔴 #769 `idocNet_Support_Ser_App_Get` / `_GetWH` — HÀM ĐỌC LỊCH HẸN **THỨ BA** =====
+// `BizCarSv.ZTemp.cs:33051-33203` md5 `49cf7f3a` và `:33204-33356` md5 `f4a9e61e` — hai vỏ bọc gọi **CÙNG MỘT**
+// thân `idocNet_Support_Ser_App_GetX` (`:33357-33671`), chỉ khác handle truyền vào (`_dbMain` vs `_dbWH`).
+// 🔴 BƯỚC 3B (bắt buộc kỹ vì `ZTemp.cs` **khác nhau giữa hai máy**, +19 dòng ở 150): hàm X ở laptop `:33357-33671`,
+//   ở máy 150 `:33376-33690` — **lệch đúng 19 dòng**, nhưng md5 **chuẩn hoá** của cả hai đều là `cefec818…`
+//   ⇒ **nội dung giống hệt**. Đây là lý do phải so md5 của **vùng đã chuẩn hoá**, không so số dòng.
+//
+// ⚪⚪⚪ **PHẢN VÍ DỤ ĐÓNG LẠI MỘT PHÁT HIỆN CŨ (#542): `left join sys_user` KHÔNG phải join chết cố hữu**
+//   #542 ghi cho `Ser_App_Get…`: *"`left join sys_user su` — không select cột nào, không điều kiện nào"* (join chết).
+//   Hàm thứ ba này join **y hệt** nhưng **có dùng**:
+//     `left join sys_user u on ro.creator = u.Usercode **and** ro.dealercode = u.dealercode` … và `select … **u.UserName**`
+//   ⇒ Cùng một bảng, cùng một khoá, một hàm lấy tên người tạo, một hàm bỏ không ⇒ join chết ở #542 là **LỖI**
+//     (bỏ sót cột khi chép), **không phải** quy ước "join thừa cho vui". Ba hàm đọc cùng nghiệp vụ mới đủ để chốt.
+//
+// 🔴🔴🔴 **PHÂN TRANG: `identity(bigint,0,1)` MÀ KHÔNG CÓ CẢ `ORDER BY` VÔ NGHĨA**
+//   `select identity(bigint, 0, 1) MyIdxSeq, ro.*, … into #tmpro from Ser_App ro … where (1=1) <9 mệnh đề>;`
+//   — **không một `order by` nào**, rồi cắt trang `where (t.MyIdxSeq >= @nFilterRecordStart) and (… <= @nFilterRecordEnd)`.
+//   ⇒ Nặng hơn #766 (ở đó ít nhất có `order by` dù vô nghĩa) và ngang #767: **đánh số hoàn toàn tuỳ ý**.
+// 🔴🔴 **HAI TẦNG GIỚI HẠN CHỒNG NHAU, THEO HAI THỨ TỰ KHÁC NHAU**
+//   Sau khi đã cắt `[RecordStart..RecordEnd]` bằng `MyIdxSeq`, câu trả về còn:
+//     `select **top 500** tpro.*, … from #tbl_Ser_App_Filter tpro … **order by tpro.AppDateTime asc**;`
+//   ⇒ (a) xin trang > 500 dòng thì **500 dòng cuối biến mất im lặng**; (b) trang được **cắt** theo `MyIdxSeq`
+//     nhưng **hiển thị** theo `AppDateTime` ⇒ nội dung các trang **không liên tục theo thời gian**: cùng một
+//     ngày có thể nằm rải ở nhiều trang, và không trang nào cho biết điều đó.
+//   ⚪ Riêng cặp `top 500` + `order by` này thì **đúng luật #415** (TOP có ORDER BY trong chính câu) — cái sai
+//     nằm ở chỗ **thứ tự cắt ≠ thứ tự hiện**, không phải ở bản thân `top`.
+//
+// 🔴🔴 **BA `inner join` — MẤT THƯƠNG HIỆU LÀ MẤT LỊCH HẸN**: `ser_Customer`, `ser_car`, và
+//     `inner join ser_mst_TradeMark tm on car.TradeMarkCode = tm.TradeMarkCode **and ro.DealerCode = tm.DealerCode**`
+//   ⇒ danh mục thương hiệu **theo từng đại lý** (đúng khuôn `Sys_Object` ở #761) ⇒ đại lý **chưa khai** thương hiệu
+//     nào thì **toàn bộ lịch hẹn của xe hiệu đó biến mất** khỏi màn — không thông báo.
+// 🔴 `(tm.TradeMarkName + ' - ' + mdl.ModelName) as TradeMarkNameModel` — `mdl` là **left join** ⇒ xe chưa gắn model
+//   ⇒ **cả chuỗi NULL** (không phải chỉ thiếu vế sau). Cùng bệnh nối chuỗi SQL đã ghi ở #750.
+// 🔴 **Bảng mã `AppStatus` viết HAI lần trong cùng một hàm** (một ở `#tmpro` → `StatusName`, một ở câu trả về
+//   → `NewAppStatus`), **cả hai đều không có `else`** ⇒ mã lạ cho ra NULL, và sửa một chỗ thì quên chỗ kia.
+// ⚪ `isnull(cus.Tel, isnull(cus.mobile, cus.contTel)) as CusTel` — dự phòng ba cấp, viết đúng.
 app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string? plate, string? status,
     DateTime? date, string? cusName, string? creator, string? appTypeCodes,
     DateTime? appDateTimeFrom, DateTime? timeline, string? scope,
@@ -29672,6 +29708,13 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
         timelineRangeIsFourWayOverlap = "AppDateTime trong / AppDateTimeFrom trong / nam trong / bao trum",
         timelineValuesConcatenatedInSource = "'\" + strDateTimelineFrom + \"' — khong tham so hoa",
         sourceHasNoOrderBy = "identity() tren select distinct khong order by => trang khong on dinh",
+        // ===== #769: hàm đọc lịch hẹn THỨ BA (`idocNet_Support_Ser_App_Get`/`_GetWH`) =====
+        thirdReaderPagingWorse = "#769: idocNet_Support_Ser_App_GetX dung identity(bigint,0,1) MA KHONG CO CA order by vo nghia, roi cat trang bang MyIdxSeq",
+        thirdReaderDoubleLimit = "#769: sau khi cat [RecordStart..RecordEnd] con them top 500 + order by tpro.AppDateTime asc => xin trang >500 dong thi mat im lang, va thu tu CAT (MyIdxSeq) khac thu tu HIEN (AppDateTime) => trang khong lien tuc",
+        thirdReaderInnerJoinTradeMark = "#769: inner join ser_mst_TradeMark on car.TradeMarkCode = tm.TradeMarkCode AND ro.DealerCode = tm.DealerCode => danh muc thuong hieu theo tung dai ly; dai ly chua khai thi MAT SACH lich hen cua xe hieu do",
+        deadLeftJoinIsABugNotConvention = "#769 DONG LAI #542: cung left join sys_user voi cung khoa (creator + dealercode), ham thu ba CO select u.UserName => join chet o #542 la LOI bo sot cot, khong phai quy uoc",
+        thirdReaderStatusMapTwice = "#769: bang ma AppStatus viet HAI lan trong cung mot ham (StatusName va NewAppStatus), ca hai KHONG co else",
+        thirdReaderTwoMachinesVerified = "#769 BUOC 3B: ZTemp.cs lech 19 dong giua hai may nhung md5 CHUAN HOA cua ham X deu la cefec818 => noi dung giong het",
         sourceInnerJoinsDropUnlinkedAppointments = "inner join ser_Customer + ser_car",
         deadLeftJoinInSource = "left join sys_user su — khong select cot nao, khong dieu kien nao",
         // ===== #474 =====
