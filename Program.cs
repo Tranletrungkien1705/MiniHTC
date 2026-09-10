@@ -46144,6 +46144,121 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
     return Results.Ok(new { r.ReqNo, lines = lines.Count, dmsStatus = r.DMSStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴🔴 #725 SỬA BÁO CÁO KPI `Report_KPIUpdate` + guard `myCheckReport_KPI` =====
+// `BizCarSv.zzzzCode.cs:1387-1633` (md5 `426b7b63`). WS LIVE `WSCarSv.asmx.cs:27823`.
+// → `PUT /api/report/kpi/{dealerCode}/{dateReport}`. Đối chiếu cặp với `Report_KPICreate` (`:956`) — luật #404.
+//
+// 🔴🔴🔴🔴 **GUARD RỖNG DÙNG `&&` THAY VÌ `||` ⇒ KHÔNG BAO GIỜ NÉM ĐÚNG LỖI NGHIỆP VỤ**:
+//     `if (dtDB_Report_KPI_Input == null **&&** dtDB_Report_KPI_Input.Rows.Count == 0)`
+//     `    throw … Ser_RptKPI_Create_TableBlank;`
+//   Hai đường, **cả hai đều hỏng**:
+//   · `dt == null` ⇒ vế 1 **true** ⇒ C# đánh giá tiếp vế 2 ⇒ `null.Rows` ⇒ **NullReferenceException** **ngay tại
+//     chính dòng guard**.
+//   · `dt != null` ⇒ vế 1 **false** ⇒ short-circuit ⇒ guard **không chạy** ⇒ bảng **rỗng lọt qua** ⇒ dòng ngay
+//     sau `DataRow drDB_… = dtDB_Report_KPI_Input.Rows[0];` ⇒ **IndexOutOfRangeException**.
+//   ⇒ Mã lỗi `Ser_RptKPI_Create_TableBlank` **không bao giờ được ném**; người dùng luôn nhận **ngoại lệ hệ thống**.
+//   📌 **NẶNG HƠN #708**: ở #708 (`ro.ROID is not null **or** ro.ROID <> ''`) dùng sai toán tử nhưng **tình cờ
+//     vẫn đúng** nhờ UNKNOWN; ở đây **không có đường nào đúng**.
+//   📌 **KHUÔN LẶP TOÀN TẦNG, KHÔNG PHẢI LẺ**: đếm `== null && <dt>.Rows.Count == 0` toàn `TERP.BizCarSv` được
+//     **15** chỗ trên **6** file: `AssignmentOfWork` 4 · `Service01` 3 · `zzzzCode` 3 · `PartOrder` 2 ·
+//     `ZTemp` 2 · `Inventory.StockOut` 1.
+// 🔴🔴🔴 **#404 — CẶP CREATE/UPDATE LỆCH Ở BƯỚC CHUẨN HOÁ NGÀY**:
+//   · `Report_KPICreate` (`:956`) **CÓ** `strDateReport = TUtils.CUtils.StandardizeDate(strDateReport);` ngay
+//     đầu `#region // Check`.
+//   · `Report_KPIUpdate` (đây) **KHÔNG có** dòng đó (đếm `StandardizeDate` trong toàn hàm = **0**).
+//   ⇒ Cả hai đều tra `Report_KPI` theo cặp `(DealerCode, **DateReport**)`. Client gửi `01/09/2026` khi tạo thì
+//     được chuẩn hoá, nhưng khi **sửa** thì so **nguyên văn** ⇒ **không tìm thấy chính bản ghi vừa tạo**
+//     ⇒ ném `CommonAppData_Report_KPINotFound`, người dùng tưởng báo cáo **biến mất**.
+// 🔴🔴🔴 **`myCheckReport_KPI` — "DANH SÁCH TRẠNG THÁI" THỰC RA LÀ SO CHUỖI CON**:
+//     `if (strStatusListToCheck.Length > 0 && !strStatusList**ToCheck.Contains**(Convert.ToString(dt.Rows[0]["Status"])))`
+//   `Contains` ở đây là **`string.Contains`**, không phải kiểm phần tử danh sách:
+//   · Trạng thái **rỗng** ⇒ `"P".Contains("")` = **true** ⇒ **guard bị bỏ qua hoàn toàn**.
+//   · Danh sách `"PA"` ⇒ trạng thái `"A"` **cũng khớp** dù không phải một phần tử.
+//   ⇒ Cùng họ "danh sách gõ cứng" (#698/#705/#707) nhưng ở dạng **giả danh sách**.
+// 🔴🔴 **`myCheckReport_KPI` DÙNG `Rows[0]` KHÔNG GUARD Ở NHÁNH CUỐI**: khi `strFlagExistToCheck` **rỗng**
+//   (không kiểm tồn tại) mà bảng rỗng ⇒ `dt.Rows[0]["Status"]` ⇒ **IndexOutOfRange**.
+//   ⚪ Ở `Report_KPIUpdate` **an toàn** vì truyền `Flag.Active` ⇒ đã ném trước nếu rỗng. Nhưng guard **tự nó**
+//     không tự vệ ⇒ lời gọi khác với cờ rỗng sẽ vỡ. Ghi cờ.
+// 🔴 **`"top 1 *"` KHÔNG `ORDER BY`** trong `myCheckReport_KPI` — lặp lại khuôn #711/#714/#715.
+// 🔴 **MỌI CHỈ TIÊU KPI BỊ ÉP VỀ SỐ NGUYÊN**: `Utils.CUtils.StandardizeInt(drDB_…["<cột>"], i)` với `i = 0`
+//   (`TERP.Utils/Utils.cs:306` trả `int`) ⇒ **mất phần thập phân** của các chỉ tiêu vốn có số lẻ
+//   (giờ công, tỷ lệ, năng suất). Mini để `decimal?` ⇒ port **giữ decimal** nhưng trả cờ đo phần bị cắt.
+// 🔴 **HẰNG ≠ GIÁ TRỊ (đã mở)**: `TERP.Constants.Flag.Active` = **`"1"`** (`Const.Main.cs:28`);
+//   trạng thái cho phép sửa là **`"P"`** — **gõ thẳng**, không qua hằng có tên.
+// ⚪ **ÂM TÍNH — bản `myCheckReport_KPI` bị comment ở `:825` KHÔNG phải bản đang chạy**: grep toàn file thấy bản
+//   **LIVE** ở `:890` (`private void myCheckReport_KPI( // dbAction`), khác bản chết ở chỗ nhận `dbAction` thay vì
+//   gõ cứng `_dbMain`. Đúng luật #719 — **khối comment không chứng minh tính năng đã chết**.
+app.MapPut("/api/report/kpi/{dealerCode}/{dateReport}", async (string dealerCode, string dateReport,
+    ReportKpiUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    const string FlagActive = "1";        // TERP.Constants.Flag.Active
+    const string StatusAllowed = "P";     // gõ thẳng trong nguồn
+    var dlr = (dealerCode ?? "").Trim();
+
+    // 🔴 Nguồn KHÔNG chuẩn hoá ngày ở nhánh Update (Create thì CÓ). Giữ 1:1 và đo hệ quả.
+    var rawDate = (dateReport ?? "").Trim();
+    DateTime? parsed = DateTime.TryParse(rawDate, out var d0) ? d0.Date : null;
+    var normalisedWouldDiffer = parsed is not null && parsed!.Value.ToString("yyyy-MM-dd") != rawDate;
+
+    // myCheckReport_KPI: GetTableContents("Report_KPI", "top 1 *", ORDER BY rỗng, DealerCode=, DateReport=)
+    var row = await db.ReportKpis.Where(x => x.OrgId == t.OrgId && x.DealerCode == dlr
+            && x.DateReport == parsed)
+        .OrderBy(x => x.Id).FirstOrDefaultAsync();
+
+    if (row is null)
+        return Results.BadRequest(new
+        {
+            error = "ErrCarSv.CommonAppData_Report_KPINotFound", dealerCode = dlr, dateReport = rawDate,
+            normalisedWouldDiffer,
+            createUpdateDiffer = "#404: Report_KPICreate CO StandardizeDate(strDateReport) truoc guard, Report_KPIUpdate KHONG CO (dem StandardizeDate trong toan ham = 0) => client gui 01/09/2026 khi TAO thi duoc chuan hoa, khi SUA thi so NGUYEN VAN => KHONG TIM THAY chinh ban ghi vua tao",
+        });
+
+    // strStatusListToCheck.Contains(status) — so CHUOI CON, không phải phần tử danh sách.
+    var st = row.Status ?? "";
+    var guardSkippedByEmptyStatus = st.Length == 0;      // "P".Contains("") == true ⇒ guard bỏ qua
+    if (!guardSkippedByEmptyStatus && !StatusAllowed.Contains(st))
+        return Results.BadRequest(new
+        {
+            error = "ErrCarSv.CommonAppData_InvalidStatus_Report_KPI",
+            statusCurrent = st, statusListToCheck = StatusAllowed,
+        });
+
+    // Nguồn ép MỌI chỉ tiêu về int qua StandardizeInt(value, 0). Mini giữ decimal — đo phần bị cắt.
+    var truncatedByStandardizeInt = new List<string>();
+    decimal? Keep(decimal? v, string name)
+    {
+        if (v is not null && v.Value != decimal.Truncate(v.Value)) truncatedByStandardizeInt.Add(name);
+        return v;
+    }
+    row.AdvisoryNumber = Keep(dto.AdvisoryNumber, "AdvisoryNumber");
+    row.EnginerNumber = Keep(dto.EnginerNumber, "EnginerNumber");
+    row.EnginerBP = Keep(dto.EnginerBP, "EnginerBP");
+    row.StaffOrther = Keep(dto.StaffOrther, "StaffOrther");            // sai chính tả của nguồn, giữ nguyên
+    row.CavityRONumber = Keep(dto.CavityRONumber, "CavityRONumber");
+    row.CavityBPNumber = Keep(dto.CavityBPNumber, "CavityBPNumber");
+    row.CavityParkingNumber = Keep(dto.CavityParkingNumber, "CavityParkingNumber");
+    row.WorkDayQty = Keep(dto.WorkDayQty, "WorkDayQty");
+    row.WorkHourQty = Keep(dto.WorkHourQty, "WorkHourQty");
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = dto.PartnerUserCode;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.DealerCode, row.DateReport, row.Status, row.LogLUDateTime,
+        updated = true, truncatedByStandardizeInt, guardSkippedByEmptyStatus, normalisedWouldDiffer,
+        sourceHasNoOrderBy = true,
+        // ===== #725 =====
+        nullGuardUsesAndSoItCanNeverFireCorrectly = "GUARD RONG DUNG && THAY VI || => KHONG BAO GIO NEM DUNG LOI NGHIEP VU: if (dtDB_Report_KPI_Input == null && dtDB_Report_KPI_Input.Rows.Count == 0) throw Ser_RptKPI_Create_TableBlank. HAI DUONG DEU HONG: dt == null => ve 1 true => C# danh gia tiep ve 2 => null.Rows => NullReferenceException NGAY TAI CHINH DONG GUARD; dt != null => ve 1 false => short-circuit => guard KHONG CHAY => bang RONG LOT QUA => dong ngay sau DataRow drDB_… = dt.Rows[0] => IndexOutOfRangeException. Ma loi Ser_RptKPI_Create_TableBlank KHONG BAO GIO duoc nem. NANG HON #708: o do dung sai toan tu nhung TINH CO VAN DUNG nho UNKNOWN; o day KHONG CO DUONG NAO DUNG",
+        sameBrokenGuardCountedAcrossTheLayer = "KHUON LAP TOAN TANG, KHONG PHAI LE: dem == null && <dt>.Rows.Count == 0 toan TERP.BizCarSv duoc 15 cho tren 6 file: AssignmentOfWork 4, Service01 3, zzzzCode 3, PartOrder 2, ZTemp 2, Inventory.StockOut 1",
+        statusListIsReallySubstringMatch = "myCheckReport_KPI — DANH SACH TRANG THAI THUC RA LA SO CHUOI CON: if (strStatusListToCheck.Length > 0 && !strStatusListToCheck.Contains(Convert.ToString(dt.Rows[0][Status]))). Contains o day la string.Contains, khong phai kiem phan tu: trang thai RONG => P.Contains() = true => GUARD BI BO QUA HOAN TOAN; danh sach PA => trang thai A CUNG KHOP du khong phai mot phan tu. Cung ho danh-sach-go-cung (#698/#705/#707) nhung o dang GIA DANH SACH",
+        helperRowsZeroUnguardedOnLastBranch = "myCheckReport_KPI DUNG Rows[0] KHONG GUARD O NHANH CUOI: khi strFlagExistToCheck RONG (khong kiem ton tai) ma bang rong => dt.Rows[0][Status] => IndexOutOfRange. O Report_KPIUpdate AN TOAN vi truyen Flag.Active => da nem truoc neu rong; nhung guard TU NO khong tu ve => loi goi khac voi co rong se vo",
+        everyKpiFigureCoercedToInt = "MOI CHI TIEU KPI BI EP VE SO NGUYEN: Utils.CUtils.StandardizeInt(drDB_…[<cot>], i) voi i = 0 (TERP.Utils/Utils.cs:306 tra int) => MAT PHAN THAP PHAN cua cac chi tieu von co so le (gio cong, ty le, nang suat). Mini de decimal? => port GIU decimal nhung tra co truncatedByStandardizeInt de do phan bi cat",
+        constantsOpened = "HANG KHAC GIA TRI (da mo): TERP.Constants.Flag.Active = 1 (Const.Main.cs:28); trang thai cho phep sua la P — GO THANG, khong qua hang co ten",
+        negativeCommentedHelperIsNotTheLiveOne = "AM TINH: ban myCheckReport_KPI bi comment o :825 KHONG phai ban dang chay; grep toan file thay ban LIVE o :890 (private void myCheckReport_KPI( // dbAction), khac ban chet o cho nhan dbAction thay vi go cung _dbMain. Dung luat #719 — khoi comment khong chung minh tinh nang da chet",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #724 BÁO CÁO TỔNG HỢP DỊCH VỤ `Rpt_BCTH_CarSvGet_New20230406` =====
 // `BizCarSv.HTC.BaoCaoTongHop.cs:453-887` (md5 `9a2ac965` — **hàm CUỐI file**). WS LIVE
 // `WSCarSv.asmx.cs:28051` **tên `Rpt_BCTH_CarSvGet`** nhưng gọi `_biz.Rpt_BCTH_CarSvGet_**New20230406**`
@@ -64672,6 +64787,11 @@ record EmailTemplateSourceDto(string? DealerCode = null, string? TempIDEmail = n
     string? FileAttachment = null, long? TempFileBytes = null);
 /// <summary>#715 `ProcessCustomerCreate/_Update` — cổng đối tác ghi khách hàng (tên trường theo nguồn).</summary>
 /// <summary>#716 `ProcessCarCreate/_Update` — cổng đối tác ghi xe (tên trường theo nguồn).</summary>
+/// <summary>#725 `Report_KPIUpdate` — chỉ tiêu KPI (nguồn ép về int qua `StandardizeInt`; Mini giữ decimal).</summary>
+record ReportKpiUpdateDto(decimal? AdvisoryNumber = null, decimal? EnginerNumber = null,
+    decimal? EnginerBP = null, decimal? StaffOrther = null, decimal? CavityRONumber = null,
+    decimal? CavityBPNumber = null, decimal? CavityParkingNumber = null,
+    decimal? WorkDayQty = null, decimal? WorkHourQty = null, string? PartnerUserCode = null);
 record PartnerCarDto(string? DealerCode = null, string? PlateNo = null, string? CusID = null,
     string? FrameNo = null, string? EngineNo = null, string? ColorCode = null, string? ModelID = null,
     string? TradeMarkCode = null, string? ProductYear = null, string? CurrentKm = null,
