@@ -54185,6 +54185,106 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #732 TẠO CHIẾN DỊCH MARKETING `Ser_CampaignMarketing_Create_20220926` =====
+// **LIVE** `CampaignMarketing/BizCarSv.CampaignMarketing.cs:3697-4582` (md5 `116046c1`) — WS `:1945` gọi
+// **đúng bản có hậu tố ngày** ⇒ bản không hậu tố (`BizCarSv.CampaignMarketing/…:607-1284`, md5 `3dca9b20`)
+// là **bản CHẾT** (#413). → `POST /api/campaignmarketings/create-full`.
+//
+// ⚠️ **BẪY MỚI — HAI FILE TRÙNG TÊN Ở HAI THƯ MỤC KHÁC NHAU**:
+//     bản CHẾT: `./**BizCarSv.CampaignMarketing**/BizCarSv.CampaignMarketing.cs`
+//     bản LIVE: `./**CampaignMarketing**/BizCarSv.CampaignMarketing.cs`
+//   Cùng **tên file**, khác **thư mục** ⇒ `grep -rl … | head -1` có thể lấy **nhầm file**, và md5 sẽ là của
+//   artefact sai mà **không** có dấu hiệu nào (khác `d41d8cd9` vốn lộ ngay). Phải in **đường dẫn đầy đủ** cạnh md5.
+//
+// 🔴🔴🔴 **`EffDateStart`/`EffDateEnd` GỌI `StandardizeDate` MÀ KHÔNG GUARD RỖNG — `WarrantyDate*` THÌ CÓ**:
+//     dòng 88-89: `strEffDateStart = TUtils.CUtils.StandardizeDate(strEffDateStart);`  ← **gọi thẳng**
+//     dòng 144-146: `if (!StringUtils.IsEmpty(strWarrantyDateStart)) { strWarrantyDateStart = …Standardize… }`
+//   Mở `StandardizeDate` (`TERP.Utils/Utils.cs`): `DateTime dtime = Convert.ToDateTime(strDate);`
+//   ⇒ **chuỗi rỗng ⇒ `FormatException`**. Vậy client **không gửi ngày hiệu lực** ⇒ **ngoại lệ hệ thống**,
+//     không phải lỗi nghiệp vụ; còn **không gửi ngày bảo hành** thì **an toàn**.
+//   ⇒ **Bất đối xứng NGAY TRONG CÙNG MỘT HÀM, và bên thiếu guard lại là bên BẮT BUỘC.**
+//   📌 Và `TERP.Utils` **đã có sẵn** `StandardizeDateOrDBNull` — đúng hàm cho ngày tuỳ chọn — **không được dùng**.
+// 🔴🔴 **`StandardizeDate` NÉM `Exception` TRẦN, KHÔNG PHẢI `CMyException`**:
+//     `if (dtime < "1900-01-01" || dtime > "2100-01-01") throw new **Exception**("DateTime out of MyBizRange");`
+//   ⇒ Tầng trên bắt bằng `catch (Exception)` rồi `CProcessException.Process(…, **strErrorCodeDefault**)`
+//     ⇒ trả về **mã lỗi mặc định của hàm**, **không** nói gì về việc ngày nằm ngoài phạm vi.
+//   ⇒ Người dùng nhập nhầm năm `1899` sẽ thấy *"lỗi tạo chiến dịch"*, không thấy *"ngày không hợp lệ"*.
+// 🔴🔴🔴 **`_dbDealer`: MỞ TRANSACTION, GHI 0 LẦN, ROLLBACK Ở LỐI RA THÀNH CÔNG** — đếm chính xác theo luật
+//   `C0-ducentesimustricesimusquartus`: `_dbMain.SaveData` = **6** · `_dbWH.SaveData` = **6** ·
+//   `_dbDealer.SaveData` = **0**; lối ra thành công là `CommitSafety(_dbMain)` + `CommitSafety(_dbWH)` +
+//   `**RollbackSafety(_dbDealer)**`. Đúng họ #710/#711 — transaction mở rồi bỏ.
+//   ⚪ Nhưng **Main và WH thì cân nhau tuyệt đối (6/6)** ⇒ **không** dính bệnh bỏ quên WH của #726.
+// ⚠️ **ĐÍNH CHÍNH DỰ ĐOÁN CỦA CHÍNH TÔI (lần thứ hai luật #719 cứu)**: dòng 123-128 có
+//   `//strEffDateStart = TUtils.CUtils.StandardizeDate(strEffDateStart);` **bị comment**, tôi suýt kết luận
+//   *"chuẩn hoá ngày hiệu lực đã bị tắt — thoái lui so với bản chết"*. Grep toàn hàm thì bản **đang chạy** nằm ở
+//   **dòng 88-89**, trước khối comment. ⇒ Khối comment là **bản trùng cũ**. **Cả BỐN** ngày đều được chuẩn hoá.
+// 🔴 **NĂM BẢNG CON, MỖI BẢNG MỘT CẶP `Refine and Check` + `Check`**: `…VIN` · `…PlateNo` · `…Dealer` ·
+//   `…FullVIN` · `…Part`; tổng **16** `CMyException.Raise`. Bản LIVE nhận thêm `ds_Ser_CampaignMarketingPart`
+//   mà bản chết **không có** ⇒ thay đổi nghiệp vụ thật giữa hai bản, không chỉ đổi handle CSDL.
+// 📌 Bản CHẾT dùng handle `_dbCarSv` — **handle thứ TƯ** (sau `_dbMain`/`_dbWH`/`_dbDealer`, và `_dbWH_Sys`
+//   thấy ở #728). Bản LIVE đã chuyển sang bộ ba chuẩn. Ghi nhận, **chưa** truy `_dbCarSv` trỏ vào đâu.
+app.MapPost("/api/campaignmarketings/create-full", async (CampaignMarketingCreateDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    // Nguồn: StandardizeDate(x) = Convert.ToDateTime(x) + kiểm phạm vi 1900-01-01 .. 2100-01-01.
+    static (DateTime? val, string? err) StandardizeDate(string? v, bool guardEmpty)
+    {
+        if (string.IsNullOrWhiteSpace(v))
+            // 🔴 Nguồn: EffDate* KHÔNG guard ⇒ Convert.ToDateTime("") ném FormatException.
+            return guardEmpty ? (null, null) : (null, "FORMAT_EXCEPTION_ON_EMPTY");
+        if (!DateTime.TryParse(v, out var d)) return (null, "FORMAT_EXCEPTION");
+        if (d < new DateTime(1900, 1, 1) || d > new DateTime(2100, 1, 1))
+            return (null, "DateTime out of MyBizRange");   // nguồn ném Exception TRẦN
+        return (d.Date, null);
+    }
+
+    var (effStart, e1) = StandardizeDate(dto.EffDateStart, guardEmpty: false);   // như nguồn: KHÔNG guard
+    var (effEnd, e2) = StandardizeDate(dto.EffDateEnd, guardEmpty: false);       // như nguồn: KHÔNG guard
+    var (warStart, e3) = StandardizeDate(dto.WarrantyDateStart, guardEmpty: true);  // như nguồn: CÓ guard
+    var (warEnd, e4) = StandardizeDate(dto.WarrantyDateEnd, guardEmpty: true);      // như nguồn: CÓ guard
+    var dateErr = e1 ?? e2 ?? e3 ?? e4;
+    if (dateErr is not null)
+        return Results.BadRequest(new
+        {
+            error = dateErr,
+            effDatesLackTheIsEmptyGuardThatWarrantyDatesHave = e1 == "FORMAT_EXCEPTION_ON_EMPTY" || e2 == "FORMAT_EXCEPTION_ON_EMPTY",
+            sourceWouldThrowRawException = dateErr == "DateTime out of MyBizRange",
+        });
+
+    var camNo = (dto.CamMarketingNo ?? "").Trim();
+    if (camNo.Length == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_CampaignMarketing_Create_InvalidCamMarketingNo" });
+
+    // Ser_CampaignMarketing_CheckDB(…, Flag.No, …) = KHÔNG được tồn tại.
+    if (await db.CampaignMarketings.AnyAsync(x => x.OrgId == t.OrgId && x.CamNo == camNo))
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_CampaignMarketing_Found", camNo });
+
+    var row = new CampaignMarketing
+    {
+        OrgId = t.OrgId, CamNo = camNo, CamName = dto.CamName ?? "", CamDesc = dto.CamDesc,
+        EffDateStart = effStart!.Value, EffDateEnd = effEnd!.Value,
+        WarrantyDateStart = warStart, WarrantyDateEnd = warEnd,
+        ConditionVin = dto.ConditionVin, ConditionPlateNo = dto.ConditionPlateNo,
+        ConditionDealer = dto.ConditionDealer,
+        CamMarketingStatus = dto.CamMarketingStatus ?? "",
+    };
+    db.CampaignMarketings.Add(row);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        row.Id, row.CamNo, row.EffDateStart, row.EffDateEnd, row.WarrantyDateStart, row.WarrantyDateEnd,
+        // ===== #732 =====
+        twoFilesSameNameDifferentFolders = "BAY MOI — HAI FILE TRUNG TEN O HAI THU MUC KHAC NHAU: ban CHET o ./BizCarSv.CampaignMarketing/BizCarSv.CampaignMarketing.cs, ban LIVE o ./CampaignMarketing/BizCarSv.CampaignMarketing.cs. Cung TEN FILE, khac THU MUC => grep -rl … | head -1 co the lay NHAM FILE, va md5 se la cua artefact sai ma KHONG co dau hieu nao (khac d41d8cd9 von lo ngay). Phai in DUONG DAN DAY DU canh md5",
+        effDatesLackTheIsEmptyGuardThatWarrantyDatesHave = "EffDateStart/EffDateEnd GOI StandardizeDate MA KHONG GUARD RONG — WarrantyDate* THI CO: dong 88-89 goi thang strEffDateStart = StandardizeDate(strEffDateStart); dong 144-146 co if (!StringUtils.IsEmpty(strWarrantyDateStart)) boc ngoai. Mo StandardizeDate (TERP.Utils/Utils.cs): DateTime dtime = Convert.ToDateTime(strDate) => CHUOI RONG => FormatException. Vay client KHONG GUI ngay hieu luc => NGOAI LE HE THONG, khong phai loi nghiep vu; con khong gui ngay bao hanh thi AN TOAN. BAT DOI XUNG NGAY TRONG CUNG MOT HAM, va ben thieu guard lai la ben BAT BUOC. Va TERP.Utils DA CO SAN StandardizeDateOrDBNull — dung ham cho ngay tuy chon — KHONG DUOC DUNG",
+        standardizeDateThrowsRawException = "StandardizeDate NEM Exception TRAN, KHONG PHAI CMyException: if (dtime < 1900-01-01 || dtime > 2100-01-01) throw new Exception(DateTime out of MyBizRange) => tang tren bat bang catch (Exception) roi CProcessException.Process(…, strErrorCodeDefault) => tra ve MA LOI MAC DINH CUA HAM, KHONG noi gi ve viec ngay nam ngoai pham vi => nguoi dung nhap nham nam 1899 se thay loi-tao-chien-dich, khong thay ngay-khong-hop-le",
+        dealerHandleOpenedNeverWrittenRolledBack = "_dbDealer: MO TRANSACTION, GHI 0 LAN, ROLLBACK O LOI RA THANH CONG — dem chinh xac: _dbMain.SaveData = 6, _dbWH.SaveData = 6, _dbDealer.SaveData = 0; loi ra thanh cong la CommitSafety(_dbMain) + CommitSafety(_dbWH) + RollbackSafety(_dbDealer). Dung ho #710/#711. NHUNG Main va WH CAN NHAU TUYET DOI (6/6) => KHONG dinh benh bo quen WH cua #726",
+        retractedCommentedBlockWasNotADisabledFeature = "DINH CHINH DU DOAN CUA CHINH TOI (lan thu hai luat #719 cuu): dong 123-128 co //strEffDateStart = StandardizeDate(strEffDateStart) BI COMMENT, toi suyt ket luan chuan-hoa-ngay-hieu-luc-da-bi-tat, thoai lui so voi ban chet. Grep toan ham thi ban DANG CHAY nam o DONG 88-89, TRUOC khoi comment => khoi comment la BAN TRUNG CU. CA BON ngay deu duoc chuan hoa",
+        fiveChildTablesSixteenGuards = "NAM BANG CON, MOI BANG MOT CAP Refine-and-Check + Check: …VIN, …PlateNo, …Dealer, …FullVIN, …Part; tong 16 CMyException.Raise. Ban LIVE nhan THEM ds_Ser_CampaignMarketingPart ma ban chet KHONG CO => thay doi nghiep vu that giua hai ban, khong chi doi handle CSDL",
+        deadVersionUsedAFourthDbHandle = "Ban CHET dung handle _dbCarSv — handle THU TU (sau _dbMain/_dbWH/_dbDealer, va _dbWH_Sys thay o #728). Ban LIVE da chuyen sang bo ba chuan. Ghi nhan, CHUA truy _dbCarSv tro vao dau",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴🔴 #731 LIÊN HỆ CHIẾN DỊCH `Ser_CamContactCreate` + `Ser_CamContactUpdate` =====
 // `BizCarSv.Service.cs` — `Create` :9917-10173 md5 `972250b6` · `Update` :10175-10458 md5 `209ac296`.
 // WS LIVE `WSCarSv.asmx.cs:25600` / `:25630`. → `POST /api/campaigns/{camId}/contacts`,
@@ -65440,6 +65540,12 @@ record ReportKpiUpdateDto(decimal? AdvisoryNumber = null, decimal? EnginerNumber
 /// <summary>#731 `Ser_CamContact` — mot dong lien he trong chien dich (nguon nhan ca DataSet).
 /// ⚠️ KHONG dung lai CampaignContactDto (:64954) vi DTO do la cua man DANH SACH (PlateNo/CusName/Address…),
 /// con nguon Ser_CamContactCreate/Update chi doc CusID · CarID · Status · ContactDate.</summary>
+/// <summary>#732 `Ser_CampaignMarketing_Create_20220926` — đầu chiến dịch marketing.</summary>
+record CampaignMarketingCreateDto(string? CamMarketingNo = null, string? CamName = null,
+    string? CamDesc = null, string? EffDateStart = null, string? EffDateEnd = null,
+    string? WarrantyDateStart = null, string? WarrantyDateEnd = null,
+    string? ConditionVin = null, string? ConditionPlateNo = null, string? ConditionDealer = null,
+    string? CamMarketingStatus = null);
 record CamContactRowDto(string? CusID = null, string? CarID = null, string? Status = null,
     DateTime? ContactDate = null, string? Remark = null);
 record PartnerCarDto(string? DealerCode = null, string? PlateNo = null, string? CusID = null,
