@@ -54185,6 +54185,144 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #729 XUẤT CHI TIẾT LSC CHO HTC `Report_HTC_SerRO` =====
+// `BizCarSv.Inventory.Report.cs:8072-8301` (md5 `7c05195b`) → `GET /api/report/htc-serro`.
+// Hai nhánh SQL gần như y hệt (phụ tùng / công việc) ⇒ **DIFF HAI NHÁNH VỚI NHAU** theo luật #414.
+//
+// 🔴🔴🔴 **`select top 100000` + `order by` CHỈ THEO `DealerCode` ⇒ CẮT TRẦN KHÔNG XÁC ĐỊNH** (#415):
+//   `ORDER BY sr.DealerCode` **không** đủ xác định thứ tự **bên trong** một đại lý ⇒ khi kỳ báo cáo vượt
+//   **100.000** dòng, **dòng nào bị cắt là ngẫu nhiên**, và **không có cảnh báo nào** khi chạm trần.
+//   ⇒ Báo cáo âm thầm **mất dữ liệu** đúng lúc dữ liệu nhiều nhất. Port sắp xác định + trả cờ `hitRowCap`.
+// 🔴🔴🔴 **XOÁ DẤU NHÁY ĐƠN KHỎI CHÍNH DỮ LIỆU TRẢ VỀ** — `replace(<cột>, N'''', '')` áp cho **SÁU** cột:
+//   `CusRequest` · `CusName` · `CusAddress` · `CusTel` · `FrameNo` · `VieName` (tên phụ tùng).
+//   ⇒ Đây là cách **né tiêm SQL bằng cách cắt ký tự khỏi DỮ LIỆU** (vì kết quả nhiều khả năng được ghép chuỗi ở
+//     tầng trên). Hệ quả: tên khách *"Nguyễn Văn A's"* và địa chỉ có dấu nháy **bị biến dạng khi xuất**.
+//   📌 Cùng họ #727 (`StandardizeParam` viết hoa dữ liệu khi GHI) nhưng ở **chiều ĐỌC**: **dữ liệu bị biến đổi
+//     trên đường ra**, không ai đánh dấu là mất mát.
+// 🔴🔴🔴 **HAI `join` DÙNG HAI NGUỒN `DealerCode` KHÁC NHAU TRONG CÙNG MỘT CÂU**:
+//   · model: `left join Ser_MST_Model smm on sc.ModelID = smm.ModelID and **sc**.DealerCode = smm.DealerCode`
+//     — `sc` là **XE**, tức đại lý **sở hữu xe**.
+//   · phụ tùng: `left join Ser_MST_Part smp on smp.PartID = sri.PartID and smp.DealerCode = **sr**.DealerCode`
+//     — `sr` là **LỆNH**, tức đại lý **thực hiện sửa**.
+//   ⇒ Xe của đại lý A đem sửa ở đại lý B: `ModelName` tra theo A, tên phụ tùng tra theo B.
+//     Nếu danh mục model của A không có dòng tương ứng ⇒ **`ModelName` NULL trong khi tên phụ tùng vẫn có**.
+//   📌 Không có gì trong mã cho biết đây là chủ ý; **ghi cờ, không kết luận**.
+// 🔴🔴 **`strROType` NGOÀI HAI GIÁ TRỊ HỢP LỆ ⇒ TRẢ RỖNG, KHÔNG LỖI**: hai biến khởi tạo
+//   `string zzzzzSqlSerROParts = "----Nothing-----";` và `…Services` tương tự; chỉ được thay khi
+//   `strROType` khớp `"PART"` hoặc `"SERVICE"` — **không có nhánh `else`** ⇒ giá trị lạ ⇒ câu SQL còn nguyên
+//   hai chuỗi placeholder ⇒ **không câu nào chạy** ⇒ trả **0 bảng, không thông báo**.
+//   **HẰNG ≠ GIÁ TRỊ (đã mở)**: `TERP.Constants.Ser_ROTypeDetail.Part` = **`"PART"`**, `.Service` = **`"SERVICE"`**
+//   (`Const.Main.cs:451-452`). ⚪ So sánh dùng `StringEqualIgnoreCase` ⇒ **không** dính bẫy hoa/thường của #724/#719.
+// 🔴 **`isnull(Price,0) * isnull(Factor,0) * isnull(Quantity,0)`** ⇒ dòng **thiếu giá** ra **thành tiền 0**, không
+//   phải NULL ⇒ tổng **hụt im lặng** thay vì lộ ra là thiếu dữ liệu (đối lập #705, nơi `Sum` không `isnull` ra NULL).
+// ⚪ **ÂM TÍNH — bốn `left join` đều CÒN SỐNG**: `WHERE` chỉ đụng `sr` (`CheckInDate`, `DealerCode`) ⇒ lệnh có
+//   xe/model/phụ tùng **không có trong danh mục vẫn hiện** (chỉ trống tên). Trả lời đủ ba câu của #414.
+// ⚪ **ÂM TÍNH — hai `BuildClause` truyền `ref alParamsCoupleSql`** ⇒ SqlParameter thật, **không bake**.
+app.MapGet("/api/report/htc-serro", async (AppDbContext db, ITenantContext t,
+    string? roType, string? dealerCode, DateTime? checkInFrom, DateTime? checkInTo) =>
+{
+    const int RowCap = 100000;                      // nguồn: select top 100000
+    var rt = (roType ?? "").Trim();
+    var isPart = string.Equals(rt, "PART", StringComparison.OrdinalIgnoreCase);
+    var isService = string.Equals(rt, "SERVICE", StringComparison.OrdinalIgnoreCase);
+    if (!isPart && !isService)
+        // 🔴 Nguồn KHÔNG có nhánh else ⇒ trả rỗng không lỗi. Port trả rỗng NHƯNG nói rõ lý do.
+        return Results.Ok(new
+        {
+            count = 0, rows = Array.Empty<object>(),
+            unknownRoTypeReturnsEmptySilently = "strROType NGOAI HAI GIA TRI HOP LE => TRA RONG, KHONG LOI: hai bien khoi tao la ----Nothing----- va chi duoc thay khi strROType khop PART hoac SERVICE — KHONG CO NHANH else => gia tri la => cau SQL con nguyen hai chuoi placeholder => KHONG CAU NAO CHAY => tra 0 BANG, KHONG THONG BAO. HANG: Ser_ROTypeDetail.Part = PART, .Service = SERVICE (Const.Main.cs:451-452)",
+            roType = rt,
+        });
+
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (checkInFrom is not null) qr = qr.Where(x => x.CheckInDate >= checkInFrom!.Value);
+    if (checkInTo is not null) qr = qr.Where(x => x.CheckInDate <= checkInTo!.Value);
+    var ros = await qr.Select(x => new { x.Id, x.RONo, x.DealerCode, x.CheckInDate, x.StartDate,
+        x.FinishedDate, x.ActualDeliveryDate, x.CusRequest, x.Status, x.CusName, x.CusAddress,
+        x.CusTel, x.CarID, x.Km }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.CarID, c.DealerCode, c.PlateNo, c.ModelCode, c.FrameNo }).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync();
+
+    // 🔴 Nguồn xoá dấu nháy đơn khỏi SÁU cột. Giữ 1:1 và ĐẾM số ô bị biến đổi.
+    var quotesStripped = 0;
+    string? Strip(string? v)
+    {
+        if (v is null || !v.Contains('\'')) return v;
+        quotesStripped++;
+        return v.Replace("'", "");
+    }
+
+    var rows = new List<object>();
+    if (isPart)
+    {
+        var lines = await db.RoPartItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+            .Select(i => new { i.RoId, i.PartCode, i.PartName, i.UnitPrice, i.Factor, i.NeedQty }).ToListAsync();
+        foreach (var l in lines)
+        {
+            var r = ros.First(x => x.Id == l.RoId);
+            var car = cars.FirstOrDefault(c => c.CarID == r.CarID);
+            rows.Add(new
+            {
+                r.DealerCode,
+                DealerName = dealers.FirstOrDefault(d => d.DealerCode == r.DealerCode)?.DealerName,
+                r.RONo, r.CheckInDate, r.StartDate, r.FinishedDate, r.ActualDeliveryDate,
+                CusRequest = Strip(r.CusRequest), r.Status, CusName = Strip(r.CusName),
+                CusAddress = Strip(r.CusAddress), CusTel = Strip(r.CusTel),
+                r.CarID, car?.PlateNo, ModelID = car?.ModelCode, FrameNo = Strip(car?.FrameNo), r.Km,
+                l.PartCode, VieName = Strip(l.PartName),
+                Price = l.UnitPrice, l.Factor,
+                // isnull(...,0) ba lớp ⇒ thiếu giá thành 0, không phải NULL.
+                ThanhTien = l.UnitPrice * l.Factor * l.NeedQty,
+            });
+        }
+    }
+    else
+    {
+        var lines = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId && roIds.Contains(i.RoId))
+            .Select(i => new { i.RoId, i.SerCode, i.SerName, i.Price, i.Factor }).ToListAsync();
+        foreach (var l in lines)
+        {
+            var r = ros.First(x => x.Id == l.RoId);
+            var car = cars.FirstOrDefault(c => c.CarID == r.CarID);
+            rows.Add(new
+            {
+                r.DealerCode,
+                DealerName = dealers.FirstOrDefault(d => d.DealerCode == r.DealerCode)?.DealerName,
+                r.RONo, r.CheckInDate, r.StartDate, r.FinishedDate, r.ActualDeliveryDate,
+                CusRequest = Strip(r.CusRequest), r.Status, CusName = Strip(r.CusName),
+                CusAddress = Strip(r.CusAddress), CusTel = Strip(r.CusTel),
+                r.CarID, car?.PlateNo, ModelID = car?.ModelCode, FrameNo = Strip(car?.FrameNo), r.Km,
+                SerCode = l.SerCode, VieName = Strip(l.SerName),
+                Price = l.Price, l.Factor,
+                ThanhTien = l.Price * l.Factor,
+            });
+        }
+    }
+
+    var total = rows.Count;
+    var capped = rows.Take(RowCap).ToList();
+
+    return Results.Ok(new
+    {
+        count = capped.Count, total, rowCap = RowCap, hitRowCap = total > RowCap,
+        droppedByRowCap = Math.Max(0, total - RowCap),
+        quotesStripped, roType = rt, rows = capped,
+        // ===== #729 =====
+        topCapWithWeakOrderBy = "select top 100000 + order by CHI THEO DealerCode => CAT TRAN KHONG XAC DINH (#415): ORDER BY sr.DealerCode KHONG du xac dinh thu tu BEN TRONG mot dai ly => khi ky bao cao vuot 100.000 dong, DONG NAO BI CAT LA NGAU NHIEN, va KHONG CO CANH BAO NAO khi cham tran => bao cao am tham MAT DU LIEU dung luc du lieu nhieu nhat. Da do bang hitRowCap/droppedByRowCap",
+        singleQuotesStrippedFromDataOnRead = "XOA DAU NHAY DON KHOI CHINH DU LIEU TRA VE — replace(<cot>, N'''', '') ap cho SAU cot: CusRequest, CusName, CusAddress, CusTel, FrameNo, VieName => ne tiem SQL bang cach CAT KY TU KHOI DU LIEU (vi ket qua nhieu kha nang duoc ghep chuoi o tang tren). He qua: ten khach Nguyen Van As va dia chi co dau nhay BI BIEN DANG KHI XUAT. Cung ho #727 (StandardizeParam viet hoa du lieu khi GHI) nhung o CHIEU DOC: DU LIEU BI BIEN DOI TREN DUONG RA. Da dem bang quotesStripped",
+        twoJoinsUseTwoDifferentDealerCodeSources = "HAI join DUNG HAI NGUON DealerCode KHAC NHAU TRONG CUNG MOT CAU: model dung left join Ser_MST_Model smm on sc.ModelID = smm.ModelID and sc.DealerCode = smm.DealerCode (sc = XE, dai ly SO HUU XE); phu tung dung left join Ser_MST_Part smp on smp.PartID = sri.PartID and smp.DealerCode = sr.DealerCode (sr = LENH, dai ly THUC HIEN SUA) => xe cua dai ly A dem sua o dai ly B: ModelName tra theo A, ten phu tung tra theo B; neu danh muc model cua A khong co dong tuong ung => ModelName NULL trong khi ten phu tung van co. Khong co gi trong ma cho biet day la chu y; GHI CO, KHONG KET LUAN",
+        isnullTripleMakesMissingPriceZero = "isnull(Price,0) * isnull(Factor,0) * isnull(Quantity,0) => dong THIEU GIA ra THANH TIEN 0, khong phai NULL => tong HUT IM LANG thay vi lo ra la thieu du lieu (doi lap #705, noi Sum khong isnull ra NULL)",
+        negativeAllFourLeftJoinsAlive = "AM TINH: bon left join deu CON SONG — WHERE chi dung sr (CheckInDate, DealerCode) => lenh co xe/model/phu tung khong co trong danh muc VAN HIEN (chi trong ten). Tra loi du ba cau cua #414",
+        negativeProperlyParameterised = "AM TINH: hai BuildClause truyen ref alParamsCoupleSql => SqlParameter that, KHONG bake",
+        negativeCaseInsensitiveCompare = "AM TINH: so strROType bang StringEqualIgnoreCase => KHONG dinh bay hoa/thuong cua #724/#719",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #728 THAM SỐ HỆ THỐNG `Mst_Param_Delete` + `Mst_Param_GetParamType` =====
 // `BizCarSv.Master.cs` — `_Delete` :1367-1513 md5 `ffeb5dae` · `_GetParamType` :768-897 md5 `854d5d23`.
 // → `DELETE /api/mstparams/{dealerCode}/{paramCode}`, `GET /api/mstparams/paramtypes`.
