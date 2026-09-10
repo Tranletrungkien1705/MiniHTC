@@ -6333,6 +6333,64 @@ app.MapPost("/api/sysusers/change-password", async (SysUserChangePwdDto dto, App
 //   `like`, tham số hoá đàng hoàng (khác nhánh nối chuỗi đã ghi ở C0-bug10). Không phải bộ lọc trá hình (#412).
 // 📌 §12: entity `SysGroup` **thiếu hẳn `IsReadOnly` và `DealerCode`** ⇒ đã thêm entity + Seeder ALTER + GET.
 //   `GET /api/sysgroups` nay tái hiện **đúng** luật `is null` của nguồn và **đếm riêng** số nhóm bị nó nuốt.
+// ===== 🔴🔴🔴 #767 `TST_Mst_PartGroup_Get` + `TST_Mst_PartType_Get` — CẶP SINH ĐÔI DANH MỤC HỆ TST =====
+// Vỏ bọc `BizCarSv.Service.cs:18136-18261` md5 `b8bf6e3e` và `:17862-17987` md5 `a8036919` — **cùng 119 dòng**;
+// DIFF chuẩn hoá trọn hàm chỉ ra **tên hàm · tên ba tham số · tên mã lỗi**, không một khác biệt nghĩa nào.
+// Thân thật: `TST_Mst_PartGroup_GetX` (`:18262-18408` md5 `e2bc5f8a`) / `TST_Mst_PartType_GetX` (`:17988-18135` md5 `04598f9e`).
+//
+// 🔴🔴🔴 **CÙNG LỖI PHÂN TRANG #415 VỚI #766 — VÀ LẦN NÀY NẶNG HƠN VÌ MẤT LUÔN `ORDER BY` Ở CÂU TRẢ VỀ**
+//   Bước dựng số thứ tự y hệt `Ser_SupplierPayment_GetX`:
+//     `select distinct identity(bigint, 0, 1) MyIdxSeq, tmpg.GroupCode into #tbl_…_Draft from TST_Mst_PartGroup tmpg`
+//     `where(1=1) <ba mệnh đề BuildClause> **order by tmpg.GroupCode**;`
+//   rồi cắt trang bằng `where (t.MyIdxSeq >= @nFilterRecordStart) and (t.MyIdxSeq <= @nFilterRecordEnd)`.
+//   `ORDER BY` trên `SELECT … INTO` **không ràng buộc** thứ tự cấp `IDENTITY` ⇒ đánh số không xác định (#415).
+//   🔴 **Và câu trả về thì KHÔNG có `order by` nào**:
+//     `select t.MyIdxSeq, tmpt.* from #tbl_…_Filter t inner join TST_Mst_PartGroup tmpt on t.GroupCode = tmpt.GroupCode where(1=1);`
+//   ⇒ Không những thứ tự **nghiệp vụ** không đảm bảo (như #766), mà **ngay cả thứ tự theo `MyIdxSeq` cũng không**.
+//   ⚪⚪ **PHẢN VÍ DỤ LÀ CHÍNH #766**: `Ser_SupplierPayment_GetX` (file khác) **có** `order by t.MyIdxSeq asc` ở
+//     cả hai câu trả về ⇒ việc thiếu ở đây là **LỖI**, không phải quy ước của khuôn phân trang.
+//
+// 🔴🔴 **ĐỊNH LƯỢNG TOÀN TẦNG (theo cách làm ở #764)**: `grep -rho "identity(bigint" --include=*.cs .` ⇒ **49** chỗ
+//   dùng khuôn phân trang này, trải **8 file**. Đếm câu trả về có `t.MyIdxSeq asc`: `A.02.OrderPart` 2 ·
+//   `CampaignMarketing` 1+8 · `Inventory.StockOut` 2 · `SuggestPrice` 4 · `TVO` 3 · `WH` 2 = **22**, và
+//   **`BizCarSv.Service.cs` không có dòng nào** ⇒ **toàn bộ hàm phân trang trong `Service.cs` đều thiếu `order by`
+//   ở câu trả về**. Không phải một hàm lỗi, mà là **một file lỗi**.
+// ⚪ Ba bộ lọc (`GroupCode`/`GroupName`/`FlagActive`) đều qua `BuildClause` **không guard `StartsWith("and")`**
+//   ⇒ rỗng là trả trọn danh mục — với danh mục thì bình thường (cùng lập luận đã dùng ở #765).
+// 📌 §12: MiniHTC chưa có `TST_Mst_PartGroup`/`TST_Mst_PartType` ⇒ đã thêm **entity + DbSet + Seeder CREATE TABLE**
+//   và hai endpoint dưới đây, **có `OrderBy` tường minh** (khác nguồn CÓ CHỦ Ý).
+app.MapGet("/api/tst/partgroups", async (AppDbContext db, ITenantContext t, string? groupCode, string? groupName, string? flagActive) =>
+{
+    var qy = db.TstMstPartGroups.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(groupCode)) qy = qy.Where(x => x.GroupCode == groupCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(groupName)) qy = qy.Where(x => x.GroupName!.Contains(groupName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    // Nguồn đánh số bằng identity trên SELECT INTO rồi cắt trang ⇒ thứ tự không xác định. Mini sắp tường minh.
+    var items = await qy.OrderBy(x => x.GroupCode).Take(500)
+        .Select(x => new { x.GroupCode, x.GroupName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        sourcePagingUnstable = "nguon: identity(bigint,0,1) MyIdxSeq tren SELECT ... INTO co ORDER BY (vo nghia #415) roi cat trang bang MyIdxSeq",
+        sourceResultHasNoOrderBy = "cau tra ve cua nguon KHONG co order by nao — ke ca theo MyIdxSeq; #766 cung khuon thi CO => day la LOI",
+        sourceFileWideDefect = "dem toan tang: 49 cho dung identity(bigint) tren 8 file, 22 cau tra ve co t.MyIdxSeq asc, nhung BizCarSv.Service.cs KHONG co dong nao => ca FILE thieu order by",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/tst/parttypes", async (AppDbContext db, ITenantContext t, string? typeCode, string? typeName, string? flagActive) =>
+{
+    var qy = db.TstMstPartTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(typeCode)) qy = qy.Where(x => x.TypeCode == typeCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(typeName)) qy = qy.Where(x => x.TypeName!.Contains(typeName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    var items = await qy.OrderBy(x => x.TypeCode).Take(500)
+        .Select(x => new { x.TypeCode, x.TypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        twinOfPartGroups = "ham nguon la ban sinh doi cua TST_Mst_PartGroup_Get: DIFF tron ham chi khac ten ham, ten 3 tham so va ten ma loi",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/sysgroups", async (AppDbContext db, ITenantContext t, string? groupCode, string? flagActive, string? dealerCode, string? applySourceReadOnlyFilter) =>
 {
     var qy = db.SysGroups.Where(x => x.OrgId == t.OrgId);

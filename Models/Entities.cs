@@ -7549,6 +7549,26 @@ public sealed class SysUser
 /// Việc gán người dùng vào nhóm và gán quyền nằm ở các bảng map riêng
 /// (`SysSaveMapSysGroupSysUser`, `SysSaveMapSysGroupSysObject`) — **chưa port**, ghi nợ.
 /// </summary>
+/// <summary>#767 Nhóm phụ tùng của hệ TST (`TST_Mst_PartGroup`) — danh mục đọc qua `TST_Mst_PartGroup_Get`.</summary>
+public sealed class TstMstPartGroup
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GroupCode { get; set; } = "";
+    public string? GroupName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>#767 Loại phụ tùng của hệ TST (`TST_Mst_PartType`) — hàm đọc là bản sinh đôi của `…PartGroup_Get`.</summary>
+public sealed class TstMstPartType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TypeCode { get; set; } = "";
+    public string? TypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 public sealed class SysGroup
 {
     /// <summary>🔴 #764 §12 ISREADONLY — nguồn `Ser_SysGetGroup` lọc `and t.IsReadOnly **is null**`

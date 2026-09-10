@@ -104,6 +104,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<OrdPerformanceInvoiceDetail> OrdPerformanceInvoiceDetails => Set<OrdPerformanceInvoiceDetail>();
     public DbSet<MapSysGroupSysUser> MapSysGroupSysUsers => Set<MapSysGroupSysUser>();
     public DbSet<MapSysGroupSysObject> MapSysGroupSysObjects => Set<MapSysGroupSysObject>();
+    public DbSet<TstMstPartGroup> TstMstPartGroups => Set<TstMstPartGroup>();   // #767
+    public DbSet<TstMstPartType> TstMstPartTypes => Set<TstMstPartType>();      // #767
     public DbSet<SysGroup> SysGroups => Set<SysGroup>();
     public DbSet<VatTcgInvoice> VatTcgInvoices => Set<VatTcgInvoice>();
     public DbSet<VatTcgInvoiceDetail> VatTcgInvoiceDetails => Set<VatTcgInvoiceDetail>();
