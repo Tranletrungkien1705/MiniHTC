@@ -58548,6 +58548,107 @@ app.MapGet("/api/report/warranty-accept-getall-wh", async (AppDbContext db, ITen
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴🔴 #737 TRA CỨU CUỘC HẸN `Ser_App_Get_New20190621` (bản LIVE) =====
+// `BizCarSv.ZTemp.cs:25510-25764` (md5 `6a73c6de`, file 34083 dòng). WS LIVE `WSCarSv.asmx.cs:24176`
+// gọi **đúng** `_biz.Ser_App_Get_New20190621` → `GET /api/appointments/lookup`.
+// ⚠️ **HÀNG ĐỢI CỦA TÔI GHI SAI BẢN**: tôi liệt kê `Ser_App_Create_New20190621`/`_Update_New20190621`, nhưng WS
+//   gọi `Ser_App_**Create_New20201230**`/`_Update_New20201230` ⇒ hai bản `_New20190621` của create/update là
+//   **mã CHẾT**. Chỉ hàm **`_Get`** mới còn bản `_New20190621` là LIVE. ⇒ Trong một họ hàm có hậu tố ngày,
+//   **mỗi thao tác có thể dừng ở một mốc ngày khác nhau** — không suy từ hàm anh em.
+//
+// 🔴🔴🔴🔴 **GÁN BIẾN VÔ HƯỚNG TỪ MỘT TẬP NHIỀU DÒNG ⇒ TRẢ VỀ MỘT CUỘC HẸN BẤT KỲ**:
+//     `declare @ROID_App int`
+//     `select @ROID_App = ro0.AppId from Ser_App ro0 where exists ( … zzzzClauseWhere_str…List … )`
+//   Không `TOP`, không `ORDER BY`. Trong SQL Server, `SELECT @var = col FROM …` khớp **nhiều dòng** thì biến
+//   giữ giá trị của **dòng cuối cùng theo thứ tự thực thi** — **không xác định**.
+//   Rồi **cả BA** câu `SELECT` kết quả đều lọc `and ro.AppId = **@ROID_App**`.
+//   ⇒ Người dùng tra theo **tên khách** hoặc **biển số** mà có **nhiều lịch hẹn** ⇒ màn hiện **một cuộc hẹn
+//     ngẫu nhiên**, không phải danh sách, **không cảnh báo**.
+//   📌 Đây là #411/#415 ở dạng **gán biến vô hướng** — **chưa gặp trong sổ**: các ca trước là `top 1`/`Rows[0]`,
+//     ở đây thứ "chọn bừa" nằm ngay trong phép **gán biến T-SQL**.
+// 🔴🔴🔴 **SÁU BỘ LỌC CHỈ DÙNG ĐỂ CHỌN RA MỘT `AppId`, KHÔNG LỌC KẾT QUẢ**: cả sáu
+//   `BuildClauseConditionList` (`ro.AppId`·`ro.DealerCode`·`car.PlateNo`·`ro.AppNo`·`ro.AppDateTime`·`ro.CusName`)
+//   nằm **bên trong `EXISTS`**. Kết quả cuối chỉ lọc bằng `@ROID_App` ⇒ **bộ lọc không có mặt ở câu trả về**.
+// 🔴🔴🔴 **BA CÁCH NỐI KHÁC NHAU CHO CÙNG HAI BẢNG, TRONG CÙNG MỘT CÂU SQL**:
+//   · trong `EXISTS`: `join ser_Customer cus **on ro.CusID = cus.CusID**` — **THIẾU** `DealerCode`
+//   · câu chính  : `inner join ser_Customer cus on ro.CusID = cus.CusID **and ro.DealerCode = cus.DealerCode**`
+//   · trong `EXISTS`: `join ser_car car on ro.carid=car.carid **and ro.cusid=car.cusid**`
+//   · câu chính  : `inner join ser_car car on ro.CarID=car.CarID **and ro.DealerCode=car.DealerCode**`
+//   ⇒ `EXISTS` có thể khớp qua khách/xe của **đại lý KHÁC** ⇒ chọn được `@ROID_App`, nhưng câu chính (chặt hơn)
+//     **không trả dòng nào** ⇒ **kết quả rỗng im lặng**. Cùng họ #729 (hai nguồn `DealerCode`) nhưng ở đây là
+//     **thiếu hẳn một vế khoá**.
+// 🔴🔴🔴 **NHÁNH "KHÔNG TỒN TẠI" TRẢ SAI HÌNH DẠNG**: `--Trường hợp không tồn tại => select nothing`
+//   `select 1 where (1 = 0);` ⇒ trả **MỘT** bảng, **một cột không tên**, 0 dòng — thay vì **BA** bảng rỗng đúng
+//   hình dạng (đầu cuộc hẹn · hạng mục dịch vụ · hạng mục phụ tùng).
+//   ⇒ Client đọc `Tables[1]`/`Tables[2]` sẽ **IndexOutOfRange**. Đúng loại "**KẾT QUẢ sai hình dạng**" mà §12
+//     **không bắt được** — phải hỏi tay.
+// 🔴🔴 **`#region // Check:` CHỈ CÓ MỘT DÒNG COMMENT** — `//Kiem tra RONo va Quotatin` rồi `#endregion`.
+//   ⇒ **Dạng (d)** guard-vắng-mặt (#728: region rỗng). Và comment nói **"RONo và Quotation"** trong khi hàm là
+//     **cuộc hẹn** (`Ser_App`) ⇒ **từ vựng lạ**, khối chép từ màn báo giá (họ #703/#709/#731/#735).
+// 🔴 **TÊN HIỂN THỊ ƯU TIÊN NGƯỜI LIÊN HỆ**: `isnull(cus.ContName, cus.CusName) **CusName**` ⇒ cột trả về tên
+//   `CusName` nhưng giá trị có thể là **tên người liên hệ**. Đổi tên cột làm mất dấu vết nguồn gốc dữ liệu.
+// 🔴 **BẢNG PHỤ TÙNG NỐI SANG VIEW Ở CSDL KHÁC**: `left join [@strDBName_CommonCenter].[dbo].**vwSer_inv_stockbalancebypart** sb`
+//   ⇒ tồn kho lấy từ **view** ở CSDL trung tâm; view đổi định nghĩa là **đổi số tồn** mà không ai thấy.
+// ⚪ **ÂM TÍNH — `BuildClauseConditionList` CÓ `ProtectInjection`** (đã mở ở #731) ⇒ bake nhưng **có phòng vệ**.
+app.MapGet("/api/appointments/lookup", async (AppDbContext db, ITenantContext t,
+    string? appId, string? dealerCode, string? plateNo, string? appNo, string? appDateTime, string? cusName) =>
+{
+    // Nguồn: bộ lọc nằm trong EXISTS, chỉ để CHỌN RA MỘT AppId.
+    var qy = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(appId)) qy = qy.Where(x => x.AppNo == appId!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.PlateNo == plateNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(appNo)) qy = qy.Where(x => x.AppNo == appNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(appDateTime)) qy = qy.Where(x => x.AppDateTime == appDateTime!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(x => x.CusName == cusName!.Trim());
+
+    // 🔴 Nguồn gán `@ROID_App` từ tập nhiều dòng, KHÔNG TOP/ORDER BY ⇒ dòng nào cũng có thể trúng.
+    //   Port: SẮP XÁC ĐỊNH rồi lấy dòng đầu, và ĐẾM số ứng viên để lộ đúng chỗ nguồn chọn bừa.
+    var candidates = await qy.OrderBy(x => x.Id).Select(x => new { x.Id, x.AppNo }).ToListAsync();
+    var picked = candidates.FirstOrDefault();
+
+    if (picked is null)
+        // 🔴 Nguồn trả `select 1 where (1=0)` = MỘT bảng sai hình dạng. Port trả BA bảng rỗng ĐÚNG hình dạng.
+        return Results.Ok(new
+        {
+            found = false, matchedCount = 0,
+            appointment = (object?)null,
+            serviceItems = Array.Empty<object>(), partItems = Array.Empty<object>(),
+            sourceReturnsWrongShapeWhenNotFound = "NHANH khong-ton-tai TRA SAI HINH DANG: --Truong hop khong ton tai => select nothing / select 1 where (1 = 0); => tra MOT bang, MOT COT KHONG TEN, 0 dong — thay vi BA bang rong dung hinh dang (dau cuoc hen, hang muc dich vu, hang muc phu tung) => client doc Tables[1]/Tables[2] se IndexOutOfRange. Dung loai KET QUA SAI HINH DANG ma §12 KHONG bat duoc",
+        });
+
+    var app = await db.ServiceAppointments.FirstAsync(x => x.Id == picked.Id);
+    var svc = await db.AppointmentServiceItems.Where(i => i.OrgId == t.OrgId && i.AppNo == app.AppNo).ToListAsync();
+
+    return Results.Ok(new
+    {
+        found = true,
+        matchedCount = candidates.Count,
+        // Đo đúng chỗ nguồn chọn bừa: nhiều ứng viên ⇒ nguồn trả MỘT cái không xác định.
+        sourceWouldPickArbitrarily = candidates.Count > 1,
+        otherMatchedAppNos = candidates.Skip(1).Select(x => x.AppNo).ToList(),
+        appointment = new
+        {
+            app.AppNo, app.DealerCode, app.PlateNo, app.CarID, app.CusID,
+            // 🔴 nguồn: isnull(cus.ContName, cus.CusName) trả dưới TÊN CỘT `CusName`.
+            CusName = app.CusName, app.Mobile, app.CusTel, app.CusAddress,
+            app.ModelName, app.AppType, app.AppDateTime, app.AppFrom, app.AppTo,
+            app.Status, app.CusRequest, app.Note, app.Creator,
+        },
+        serviceItems = svc.Select(i => new { i.SerCode, i.SerName, i.StdManHour, i.Note }),
+        partItems = Array.Empty<object>(),   // Mini chưa mô hình hoá `Ser_AppPartItems` ⇒ ghi NỢ
+        // ===== #737 =====
+        scalarAssignFromMultiRowSetPicksAnArbitraryAppointment = "GAN BIEN VO HUONG TU MOT TAP NHIEU DONG => TRA VE MOT CUOC HEN BAT KY: declare @ROID_App int; select @ROID_App = ro0.AppId from Ser_App ro0 where exists ( … ) — KHONG TOP, KHONG ORDER BY. Trong SQL Server, SELECT @var = col FROM … khop NHIEU DONG thi bien giu gia tri cua DONG CUOI CUNG THEO THU TU THUC THI — KHONG XAC DINH. Roi CA BA cau SELECT ket qua deu loc and ro.AppId = @ROID_App => nguoi dung tra theo TEN KHACH hoac BIEN SO ma co NHIEU lich hen => man hien MOT CUOC HEN NGAU NHIEN, khong phai danh sach, KHONG CANH BAO. Day la #411/#415 o dang GAN BIEN VO HUONG — CHUA GAP trong so (cac ca truoc la top 1/Rows[0]). Da do bang matchedCount/sourceWouldPickArbitrarily",
+        sixFiltersOnlyChooseAnIdTheyDoNotFilterOutput = "SAU BO LOC CHI DUNG DE CHON RA MOT AppId, KHONG LOC KET QUA: ca sau BuildClauseConditionList (ro.AppId, ro.DealerCode, car.PlateNo, ro.AppNo, ro.AppDateTime, ro.CusName) nam BEN TRONG EXISTS; ket qua cuoi chi loc bang @ROID_App => BO LOC KHONG CO MAT O CAU TRA VE",
+        threeDifferentJoinKeysForTheSameTwoTables = "BA CACH NOI KHAC NHAU CHO CUNG HAI BANG, TRONG CUNG MOT CAU SQL: trong EXISTS join ser_Customer cus on ro.CusID = cus.CusID (THIEU DealerCode); cau chinh inner join ser_Customer cus on ro.CusID = cus.CusID AND ro.DealerCode = cus.DealerCode; trong EXISTS join ser_car car on ro.carid=car.carid AND ro.cusid=car.cusid; cau chinh inner join ser_car car on ro.CarID=car.CarID AND ro.DealerCode=car.DealerCode => EXISTS co the khop qua khach/xe cua DAI LY KHAC => chon duoc @ROID_App, nhung cau chinh (chat hon) KHONG TRA DONG NAO => KET QUA RONG IM LANG. Cung ho #729 nhung o day la THIEU HAN MOT VE KHOA",
+        checkRegionIsOneCommentFromAnotherScreen = "#region // Check: CHI CO MOT DONG COMMENT — //Kiem tra RONo va Quotatin roi #endregion => DANG (d) guard-vang-mat (#728: region rong). Va comment noi RONo va Quotation trong khi ham la CUOC HEN (Ser_App) => TU VUNG LA, khoi chep tu man bao gia (ho #703/#709/#731/#735)",
+        displayNamePrefersContactName = "TEN HIEN THI UU TIEN NGUOI LIEN HE: isnull(cus.ContName, cus.CusName) CusName => cot tra ve ten CusName nhung gia tri co the la TEN NGUOI LIEN HE. Doi ten cot lam mat dau vet nguon goc du lieu",
+        stockJoinsAViewInAnotherDatabase = "BANG PHU TUNG NOI SANG VIEW O CSDL KHAC: left join [@strDBName_CommonCenter].[dbo].vwSer_inv_stockbalancebypart sb => ton kho lay tu VIEW o CSDL trung tam; view doi dinh nghia la DOI SO TON ma khong ai thay",
+        wrongVersionInMyQueue = "HANG DOI CUA TOI GHI SAI BAN: toi liet ke Ser_App_Create_New20190621/_Update_New20190621, nhung WS goi Ser_App_Create_New20201230/_Update_New20201230 => hai ban _New20190621 cua create/update la MA CHET. Chi ham _Get moi con ban _New20190621 la LIVE => trong mot HO ham co hau to ngay, MOI THAO TAC CO THE DUNG O MOT MOC NGAY KHAC NHAU — khong suy tu ham anh em",
+        miniModelGap = "Mini chua mo hinh hoa Ser_AppPartItems => partItems tra rong; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #684 TRA CỨU CUỘC HẸN BẢN KHO `Ser_App_GetNew_WH_New20190624` =====
 // Vỏ bọc `BizCarSv.ZTemp.cs` (laptop `:25766-25904`, **máy 150 `:25785-25923`** — lệch **+19 dòng** đúng như ghi
 // chú "ZTemp.cs lệch 19 dòng"; md5 **cả file** khác nhau `5cd7ccab` ↔ `84d2c52d`, nhưng md5 **vùng hàm**
