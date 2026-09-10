@@ -59174,6 +59174,90 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 //   ⇒ hai CSDL **độc lập**; nếu lần ghi thứ hai hỏng thì bản Main **đã** đánh dấu là đã gửi còn bản WH thì chưa.
 // 📌 Mini: `GET /api/report/dealernetprice/send-preview` — lọc kỳ **thật sự có tác dụng**, và **đếm riêng**
 //   số dòng mà nguồn sẽ gửi thừa do bộ lọc chết.
+// ===== 🔴🔴🔴 #811 QUÉT KHUÔN "PLACEHOLDER BỊ COMMENT" (#810) — **25 BỘ LỌC CHẾT IM LẶNG** =====
+// #810 tìm ra dạng thứ chín của họ "điều kiện biến mất". Đo cho hết trên `TERP.BizCarSv/*.cs`:
+//   · **28** dòng SQL có placeholder nằm sau dấu `--`;
+//   · trong đó **25** dòng mà phía C# **vẫn khai báo VÀ vẫn `Replace`** placeholder đó ⇒ **25 bộ lọc chết im lặng**,
+//     trải trên **10 file**. (3 dòng còn lại không còn khai báo ⇒ vô hại.)
+//
+// 🔴🔴🔴 **CA NẶNG NHẤT — `HTCMobileTVO_GetSer_App` (`BizCarSv.TVO.cs:888`): SÁU BỘ LỌC LIÊN TIẾP ĐỀU CHẾT**
+//   Nguyên văn khối `where` (giữ cả lỗi chính tả `Parttern`):
+//     `where (1=1)`
+//     `--zzzzClauseWhere_str**DealerCodeList**` · `--zzzzClauseWhere_strStatusList` ·
+//     `--zzzzClauseWhere_strPlateNoParttern` · `--zzzzClauseWhere_CusNameConditionList` ·
+//     `--zzzzClauseWhere_AppDateTimeConditionList` · `--zzzzClauseWhere_CreatorConditionList`
+//     `and ro.AppStatus in ('2')`
+//     `and (ro.LogLUDateTime >= @strFromDate) and (ro.LogLUDateTime <= @strToDate)`
+//   ⇒ Chỉ còn **trạng thái** và **khoảng thời gian** là thật. Sáu ô lọc kia **không có tác dụng nào**.
+//   🔴🔴🔴 **Trong đó có `strDealerCodeList`** ⇒ app di động TVO lấy lịch hẹn mà **KHÔNG lọc theo đại lý**
+//     ⇒ **thấy lịch hẹn của MỌI đại lý**. Đây không chỉ là "lọc hỏng" mà là **rò rỉ dữ liệu chéo đại lý**.
+//   LIVE qua **tablet** `WSCarSvTab.asmx.cs:4812`.
+//
+// 🔴🔴 **XÁC NHẬN CƠ CHẾ CHO #645/#646 (`RLUZ`)**: `zzzzClauseWhere_FrameNoFix_**RLUZ**ConditionList` bị comment ở
+//   **bốn** chỗ (`WH.cs:15305`, `:15806`, `WarrantyReport.cs:21702`, `:22203`) trong khi C# vẫn dựng + Replace.
+//   #646 từng kết luận "HTMV loại `RLUU` nhưng **không** loại `RLUZ` dù đã viết sẵn ở cả ba tầng" — **nay có
+//   bằng chứng cơ chế**: nó không bị xoá, nó **bị comment ngay tại chỗ ghép trong SQL**.
+//
+// 🔴 **Tìm lệnh sửa chữa theo biển số / số khung cũng chết**: `zzzzClauseWhere_strPlateNoParttern` và
+//   `_strFrameNoParttern` bị comment ở **ba** hàm của `BizCarSv.Service.RO.cs` (`:567/568`, `:909/910`,
+//   `:1756/1757`). Cộng thêm `zzzzClauseWhere_sc_strDealerCodeList` (`:1216`) — chính là dòng mà #804 đã đọc
+//   trong khối `#tbl_car` bị bỏ.
+// 🔴 Các file còn lại: `Service.cs:6659/6660` (`PartID`, `DealerCode`) · `ServicePackage.cs:1657/1659`
+//   (`Creator`, `IsPublicFlag`) · `System.cs:257/258` (`PartnerCodeList`, `FlagActiveListForObject`) ·
+//   `Tab.cs:714` (`QuotationNoList`).
+//
+// 🔴 **KHUÔN TRẢ VỀ THỨ BA Ở WS TABLET**: ngoài `MyDSEncode` (**82** endpoint) còn `WSReturn` (**9** endpoint),
+//   mà `private object[] WSReturn(DataSet ds) { return ConvertUtils.DataSet2Array(ds); }` ⇒ **trả MẢNG**, không
+//   phải DataSet mã hoá. `HTCMobileTVO_GetSer_App` dùng khuôn này. (WS web thì có `MyDSEncode` 711 / trả thẳng 20,
+//   xem #806/#808.) ⇒ **Ba định dạng trả về khác nhau trên hai WS** — client phải biết dùng đúng bộ giải mã.
+// 📌 Mini: `GET /api/tvo/appointments` — **lọc đủ sáu ô**, và `GET /api/_meta/commented-placeholder-sweep`.
+app.MapGet("/api/tvo/appointments", async (AppDbContext db, ITenantContext t,
+    string? dealerCodes, string? statuses, string? plateNo, string? cusName, string? creator,
+    DateTime? fromDate, DateTime? toDate) =>
+{
+    var qy = db.ServiceAppointments.Where(a => a.OrgId == t.OrgId);
+    // Nguon chi con HAI dieu kien nay la that:
+    qy = qy.Where(a => a.Status == "2");                       // and ro.AppStatus in (2)
+    if (fromDate.HasValue) qy = qy.Where(a => a.AppFrom >= fromDate.Value);
+    if (toDate.HasValue) qy = qy.Where(a => a.AppFrom <= toDate.Value);
+    var beforeDeadFilters = await qy.CountAsync();
+    // SAU o duoi day la nhung o NGUON DA COMMENT — Mini ap DUNG.
+    var dls = (dealerCodes ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).ToList();
+    if (dls.Count > 0) qy = qy.Where(a => a.DealerCode != null && dls.Contains(a.DealerCode));
+    var sts = (statuses ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).ToList();
+    if (sts.Count > 0) qy = qy.Where(a => sts.Contains(a.Status));
+    var pn = (plateNo ?? "").Trim();
+    if (pn.Length > 0) qy = qy.Where(a => a.PlateNo != null && a.PlateNo.Contains(pn));
+    var cn = (cusName ?? "").Trim();
+    if (cn.Length > 0) qy = qy.Where(a => a.CusName != null && a.CusName.Contains(cn));
+    var cr = (creator ?? "").Trim();
+    if (cr.Length > 0) qy = qy.Where(a => a.Creator == cr);
+    var rows = await qy.Select(a => new { a.AppNo, a.DealerCode, a.Status, a.PlateNo, a.CusName,
+        a.Creator, a.AppFrom, a.AppTo, a.CavityID }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        countIfSourceFiltersApplied = beforeDeadFilters,
+        rowsSourceWouldReturnExtra = beforeDeadFilters - rows.Count,
+        sourceSixFiltersAreCommentedOut = "NGUON HTCMobileTVO_GetSer_App (BizCarSv.TVO.cs:888, LIVE qua tablet WSCarSvTab:4812) co SAU placeholder lien tiep nam sau dau -- : strDealerCodeList, strStatusList, strPlateNoParttern (nguyen van loi chinh ta), CusNameConditionList, AppDateTimeConditionList, CreatorConditionList — trong khi phia C# VAN khai bao va VAN Replace ca sau => sau o loc KHONG co tac dung nao; chi con AppStatus in (2) va khoang LogLUDateTime la that",
+        crossDealerLeak = "trong sau o do co strDealerCodeList => app di dong TVO lay lich hen ma KHONG LOC THEO DAI LY => thay lich hen cua MOI dai ly. Day khong chi la loc hong ma la RO RI DU LIEU CHEO DAI LY",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/_meta/commented-placeholder-sweep", () => Results.Ok(new
+{
+    trigger = "#810: placeholder nam sau dau -- trong SQL nhung phia C# van BuildClause va van Replace",
+    linesWithCommentedPlaceholder = 28,
+    ofWhichStillDeclaredAndReplaced = 25,
+    filesAffected = 10,
+    worstCase = "BizCarSv.TVO.cs:1000-1005 — HTCMobileTVO_GetSer_App co SAU bo loc lien tiep deu chet, trong do co bo loc DAI LY",
+    confirmsMechanismFor645 = "zzzzClauseWhere_FrameNoFix_RLUZConditionList bi comment o BON cho (WH.cs:15305, :15806, WarrantyReport.cs:21702, :22203) trong khi C# van dung + Replace => #646 ket luan HTMV khong loai RLUZ du da viet san; NAY co bang chung co che: no khong bi xoa, no BI COMMENT ngay tai cho ghep trong SQL",
+    repairOrderSearchBroken = "zzzzClauseWhere_strPlateNoParttern va _strFrameNoParttern bi comment o BA ham cua BizCarSv.Service.RO.cs (:567/568, :909/910, :1756/1757) => tim lenh sua chua theo bien so / so khung chet. Cong them zzzzClauseWhere_sc_strDealerCodeList (:1216) — chinh dong ma #804 doc trong khoi #tbl_car bi bo",
+    otherSites = new[] { "Service.cs:6659/6660 (PartID, DealerCode)", "ServicePackage.cs:1657/1659 (Creator, IsPublicFlag)", "System.cs:257/258 (PartnerCodeList, FlagActiveListForObject)", "Tab.cs:714 (QuotationNoList)" },
+    thirdReturnShapeOnTabletWs = "WSCarSvTab.asmx.cs: MyDSEncode 82 endpoint, WSReturn 9 endpoint, tra thang 0. private object[] WSReturn(DataSet ds) => ConvertUtils.DataSet2Array(ds) => TRA MANG, khong phai DataSet ma hoa. Cong voi WS web (MyDSEncode 711 / tra thang 20) => BA dinh dang tra ve khac nhau tren hai WS",
+})).RequireAuthorization();
 app.MapGet("/api/report/dealernetprice/send-preview", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate) =>
 {
