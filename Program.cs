@@ -39816,6 +39816,77 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
 // ⚪ `inner JOIN` / `inner join` viết hoa-thường lẫn lộn trong cùng câu — vô hại, ghi để khỏi ai tưởng khác nghĩa.
 // 📌 Mini: `GET /api/report/ro-not-responding` — lọc theo **hằng** (không literal), **không** cắt dòng bằng join câm,
 //   nối khách **có** chiều đại lý, và **báo rõ** khi tập kết quả rỗng vì trạng thái chưa từng được dùng.
+// ===== 🔴🔴🔴 #863 PARITY: CHUYỂN TRẠNG THÁI PHIẾU NHẬP — `SerStockInStatusUpdateTo*` =====
+// Mini đã có `POST /api/stockins/{stockInId}/status` ⇒ **vòng parity, KHÔNG tăng bộ đếm màn**.
+//   `Inventory.StockIn.cs:3429 …ToExecuting` md5 `ef308486` (160 dòng) · `:3589 …ToPending` `b76f3f18` (158)
+//   · `:3747 …ToFinished` `a1d99202` (**400**) · `:4147 …ToFinished_New20200118` `47c64b4a` (388)
+//   · helper `UpdateStockInStatus` `:3349` `dce7c406`.
+//
+// 🔴🔴 **ĐỊNH TUYẾN TÁCH ĐÔI — LẦN THỨ BA CỦA KHUÔN #333/#845**
+//   `HTCWSCarSv/WSCarSv.asmx.cs` + `.20210208` + `.20210412` → `_biz.SerStockInStatusUpdateToFinished**_New20200118**`
+//   `TERP.WSCarSv/App_Code/WSCarSv.cs`                        → `_biz.SerStockInStatusUpdateToFinished` (**bản thường**)
+//   (cả bốn vỏ bọc đều trỏ `…ToFinishedAdjustment` chung).
+//   ⇒ Ba cụm đã gặp khuôn này: `Ser_Mst_Model_*` (#845) · `SerEngineer*` (#849) · **`SerStockInStatusUpdateToFinished`**
+//     (đây) ⇒ **đủ ba** ⇒ đây **là** khuôn của tầng, không còn là cá biệt: **`TERP.WSCarSv` bị bỏ lại ở thế hệ cũ**.
+//
+// 🔴🔴🔴 **"ĐỔI TRẠNG THÁI" THỰC RA GHI ĐÈ TOÀN BỘ PHIẾU**
+//   Cả `…ToExecuting` lẫn `…ToPending` gọi `UpdateStockIn(_dbDealer, strSupplierID, strDealerCode, strStockInID,`
+//   `strStockInNo, strStockInType, strStockInDate, strStatus, strDescription, strStaffID, strDriverName,`
+//   `strDrivingLicense, strDriverID, strTruckNo, strBillNo, strAdjustmentBy, strAdjustmentDate,`
+//   `strAdjustmentNote, strOldStockInID, **dsStockInDetail**, …)` **trước** khi đổi trạng thái.
+//   ⇒ Một lời gọi mang tên *"chuyển sang Đang thực hiện"* **ghi lại toàn bộ `19 trường + cả DataSet chi tiết**
+//     bằng dữ liệu client gửi lên. Client gửi thiếu trường nào ⇒ trường đó bị **ghi đè theo giá trị gửi lên**
+//     (họ #852: mọi cột luôn nằm trong danh sách ghi).
+//   ⇒ Đây là lý do `Raise`=0/`SaveData`=0 đo được trong thân hai hàm ấy **không** nói lên điều gì — **toàn bộ**
+//     việc ghi và guard nằm trong hai helper (`UpdateStockIn`, `UpdateStockInStatus`) ⇒ đúng họ #328.
+//
+// 🔴🔴 **HẰNG DÙNG SAI HỌ — LẦN THỨ HAI SAU #842**
+//   `private ArrayList UpdateStockInStatus(…, string strStatus, string **strIsRevert**, …)`
+//     `…ToExecuting` truyền `UpdateStockInStatus(…, TConst.Ser_Inv_StockIn.Executing, **TConst.Flag.Inactive**, …)`
+//     `…ToPending`   truyền `UpdateStockInStatus(…, TConst.Ser_Inv_StockIn.Pending,   **TConst.Flag.Active**,   …)`
+//   ⇒ Tham số tên `strIsRevert` là một **cờ đúng/sai** (*có phải lùi trạng thái không*), nhưng giá trị truyền vào
+//     lấy từ họ hằng của **cột trạng thái** `Flag.Active`/`Flag.Inactive` — **đúng y bẫy #842**
+//     (`strFlagExistToCheck` nhận `Flag.Active`). Mở hằng: `Active = "1"`, `Inactive = "0"`, và `Yes = Active`,
+//     `No = Inactive` ⇒ **bốn tên, hai giá trị**; đọc chữ ký sẽ tưởng đang bật/tắt một trạng thái.
+//   ⇒ **Hai ca** ⇒ chưa đủ ba để gọi là khuôn tầng, nhưng đã đủ để **luôn mở hằng ra khi thấy tham số cờ**.
+//
+// 🔴🔴 **KHÁC BIỆT NGHIỆP VỤ THẬT THỨ SÁU GIỮA HAI CÂY — CÓ CHỮ KÝ VÀ NGÀY**
+//   `UpdateStockInStatus` lệch md5 (`dce7c406` laptop vs `858a171e` máy 150); diff chuẩn hoá cho thấy bản
+//   `V20.2023.Release` **thêm**:
+//     `//2025-01-24: dongnt: StockInDate lấy theo thời gian duyệt F`
+//     `if (StringEqual(TConst.Ser_Inv_StockIn.Finished, strStatus))`
+//     `{ dt_Inv_StockIn.Rows[0]["StockInDate"] = DateTime.Now.ToString("yyyy-MM-dd"); }`
+//   và `alColumnEffective.Add("**StockInDate**");` (**vô điều kiện**).
+//   ⇒ Trên bản mới, **ngày nhập kho bị ghi đè thành ngày DUYỆT** khi phiếu chuyển sang `Finished`.
+//     Mọi báo cáo lọc/nhóm theo `StockInDate` **đổi kết quả** giữa hai bản. Đây là **thay đổi nghiệp vụ có chủ ý**
+//     (có chú thích, có ngày, có tên người) — không phải lỗi — nhưng **phải biết bản nào đang chạy** mới đọc
+//     đúng số liệu.
+//   🔴 `alColumnEffective.Add("StockInDate")` nằm **ngoài** `if` ⇒ kể cả chuyển sang trạng thái **khác**,
+//     cột ấy vẫn nằm trong danh sách ghi (ghi lại giá trị cũ — vô hại hôm nay, là mìn nếu ai sửa nhánh).
+// ⚠️ **CÒN NỢ**: hai hàm `…ToFinished` (thường `a1d99202` vs `675b6437`; `_New20200118` `47c64b4a` vs `e26f7b17`)
+//   **cũng lệch md5 giữa hai cây** — **chưa diff, chưa kết luận gì về chúng**.
+// ⚪ Guard thật nằm trong `UpdateStockInStatus`: `CheckExistStockIn(dbAction, …)` rồi
+//   `CheckStockInNotPendingExecuting(currentStatus)` và, nếu đang `Pending`, thêm `CheckStockInNotExecuting(…)`
+//   ⇒ **có** kiểm trạng thái hiện tại trước khi chuyển — khác hẳn #858 (`Ser_Inv_Quote_Update` ghi `Status` vô điều kiện).
+// 📌 Mini: thêm endpoint tra cứu định tuyến + bảng chuyển trạng thái để không ai port nhầm thế hệ.
+app.MapGet("/api/_meta/stockin-status-routing", () => Results.Ok(new
+{
+    routing = new[]
+    {
+        "HTCWSCarSv/WSCarSv.asmx.cs + .20210208 + .20210412 -> _biz.SerStockInStatusUpdateToFinished_New20200118",
+        "TERP.WSCarSv/App_Code/WSCarSv.cs -> _biz.SerStockInStatusUpdateToFinished (ban thuong)",
+        "ca bon vo boc -> _biz.SerStockInStatusUpdateToFinishedAdjustment (chung)",
+    },
+    thirdOccurrenceMakesItAPattern = "#863: BA cum da gap khuon dinh tuyen tach doi nay — Ser_Mst_Model_* (#845), SerEngineer* (#849), SerStockInStatusUpdateToFinished (day) => DU BA => day LA khuon cua tang, khong con la ca biet: TERP.WSCarSv bi BO LAI o the he cu trong khi HTCWSCarSv da chuyen sang ban _New",
+    statusChangeRewritesWholeRecord = "DOI TRANG THAI THUC RA GHI DE TOAN BO PHIEU: ca ...ToExecuting lan ...ToPending goi UpdateStockIn(_dbDealer, strSupplierID, strDealerCode, strStockInID, strStockInNo, strStockInType, strStockInDate, strStatus, strDescription, strStaffID, strDriverName, strDrivingLicense, strDriverID, strTruckNo, strBillNo, strAdjustmentBy, strAdjustmentDate, strAdjustmentNote, strOldStockInID, dsStockInDetail, ...) TRUOC khi doi trang thai => mot loi goi mang ten chuyen sang Dang thuc hien ghi lai toan bo `19 truong + ca DataSet chi tiet bang du lieu client gui len (ho #852)",
+    whyRaiseCountIsMisleadingHere = "day la ly do Raise=0 / SaveData=0 do duoc trong than hai ham ay KHONG noi len dieu gi — toan bo viec ghi va guard nam trong hai helper (UpdateStockIn, UpdateStockInStatus) => dung ho #328",
+    constantFromWrongFamilySecondCase = "HANG DUNG SAI HO — LAN THU HAI SAU #842: UpdateStockInStatus(..., string strStatus, string strIsRevert, ...) nhung ...ToExecuting truyen TConst.Flag.Inactive va ...ToPending truyen TConst.Flag.Active cho tham so strIsRevert. Tham so do la mot CO dung/sai (co phai lui trang thai khong) nhung gia tri lay tu ho hang cua COT TRANG THAI — dung y bay #842 (strFlagExistToCheck nhan Flag.Active). Mo hang: Active = 1, Inactive = 0, va Yes = Active, No = Inactive => BON TEN, HAI GIA TRI; doc chu ky se tuong dang bat/tat mot trang thai. HAI ca — chua du ba de goi la khuon tang nhung du de LUON MO HANG RA khi thay tham so co",
+    sixthRealTreeDivergenceWithSignature = "KHAC BIET NGHIEP VU THAT THU SAU giua hai cay, CO CHU KY VA NGAY: UpdateStockInStatus lech md5 (dce7c406 laptop vs 858a171e may 150); diff chuan hoa cho thay ban V20.2023.Release THEM //2025-01-24: dongnt: StockInDate lay theo thoi gian duyet F roi if (StringEqual(TConst.Ser_Inv_StockIn.Finished, strStatus)) { dt_Inv_StockIn.Rows[0][StockInDate] = DateTime.Now.ToString(yyyy-MM-dd); } va alColumnEffective.Add(StockInDate) VO DIEU KIEN => tren ban moi, NGAY NHAP KHO BI GHI DE THANH NGAY DUYET khi phieu chuyen sang Finished. Moi bao cao loc/nhom theo StockInDate DOI KET QUA giua hai ban. Day la thay doi nghiep vu CO CHU Y (co chu thich, co ngay, co ten nguoi) — khong phai loi — nhung PHAI BIET BAN NAO DANG CHAY moi doc dung so lieu",
+    effectiveColumnAddedOutsideIf = "alColumnEffective.Add(StockInDate) nam NGOAI if => ke ca chuyen sang trang thai KHAC, cot ay van nam trong danh sach ghi (ghi lai gia tri cu — vo hai hom nay, la min neu ai sua nhanh)",
+    stillOwedDiff = "CON NO: hai ham ...ToFinished (thuong a1d99202 vs 675b6437; _New20200118 47c64b4a vs e26f7b17) CUNG LECH md5 giua hai cay — CHUA DIFF, CHUA KET LUAN gi ve chung",
+    positiveStatusGuardsExist = "AM TINH: guard that nam trong UpdateStockInStatus — CheckExistStockIn(dbAction, ...) roi CheckStockInNotPendingExecuting(currentStatus) va, neu dang Pending, them CheckStockInNotExecuting(...) => CO kiem trang thai hien tai truoc khi chuyen, khac han #858 (Ser_Inv_Quote_Update ghi Status vo dieu kien)",
+    twoMachinesVerified863 = "md5 KHOP may 150: ...ToExecuting ef308486, ...ToPending b76f3f18; UpdateStockInStatus LECH va da diff (xem tren)",
+})).RequireAuthorization();
 app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
 {
