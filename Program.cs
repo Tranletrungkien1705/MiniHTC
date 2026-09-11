@@ -39900,6 +39900,85 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
 //     cũng **không** — chỉ `WSCarSv.asmx.cs` có. **Chưa đọc thân hàm 526 dòng** nên **chưa** kết luận chi tiết
 //     nó đổi cờ nào; ghi làm **đầu mối cần đọc riêng**.
 // 📌 Mini: endpoint tra cứu ba thế hệ, thay cho bảng hai thế hệ đã ghi ở #863.
+// ===== 🔴🔴🔴 #865 TRẢ NỢ #864: ĐỌC KHỐI MỚI CỦA `SerStockInStatusUpdateToFinished_New20230721` =====
+// **Vòng trả nợ/parity ⇒ KHÔNG tăng bộ đếm màn.** Diff `_New20200118` (387 dòng) → `_New20230721` (526 dòng)
+// trên **cùng cây** `V20.2023.Release`: khác biệt là **một khối 138 dòng** thêm vào cuối, đúng như chú thích
+// `// 2023-07-21: HungLD. Đổi cờ khi đã nhập hết số lượng trong đơn hàng TST`.
+//
+// **Khối mới làm gì** (tóm tắt trung thực):
+//   `strOrderPartNo = StandardizeParam(dt_StockInOrder.Rows[0]["OrderPartNo"]);`  → nếu rỗng thì **bỏ qua**
+//   `Ser_Order_Part_CheckDB(ref …, strOrderPartNo, "", "", "", out dtDB_Ser_Order_Part);`
+//   nếu `OrderPartType == TConst.OrderPartType.**TST**` (`= "TST"`) thì chạy một lô SQL:
+//     `#tbl_QtyStockIn` = tổng `Quantity` đã nhập theo `(OrderPartNo, PartID)` **chỉ lấy phiếu `f.Status = '3'`**
+//     `#tbl_QtyOrd`     = `t.QtyAppr * ISNULL(g.ExchangeRate, 1.0)` từ `Ser_Order_PartDtl` ⋈ `TST_Mst_Exchange_Unit`
+//     `#tbl_Final`      = `QtyOrd - QtyStockIn` → `QtyRemain`
+//     trả **hai** bảng: **toàn bộ** dòng, và dòng có `QtyRemain = '0'`
+//   `if (dtCheckAll.Rows.Count == dtCheckCondition.Rows.Count)` ⇒ `update Ser_Order_Part set OrderPartStatus =`
+//     `TConst.OrderPartStatus.**Finished**` (`= "F"`) trên `_dbMain` + `_dbWH` + (nếu không phải WS chính) `_dbDealer`.
+//
+// 🔴🔴🔴 **NHẬP THỪA THÌ ĐƠN HÀNG KHÔNG BAO GIỜ ĐƯỢC ĐÓNG**
+//   Điều kiện đóng là `and t.QtyRemain = '0'` — **bằng đúng 0**. Nếu kho nhập **nhiều hơn** số đặt
+//   (`QtyStockIn > QtyOrd`) thì `QtyRemain` **âm** ⇒ dòng đó **không** vào `dtCheckCondition` ⇒ hai `Count`
+//   **khác nhau** ⇒ **không đổi cờ**. ⇒ Đơn TST nhập thừa **treo mãi ở trạng thái chưa hoàn thành**.
+//   ⇒ Viết đúng phải là `QtyRemain **<=** 0`.
+//
+// 🔴🔴 **PHÉP TRỪ DÙNG CỘT THÔ TRONG KHI NGAY BÊN CẠNH ĐÃ `ISNULL`**
+//     `, ISNULL(f.QtyStockIn, 0.0) QtyStockIn`
+//     `, (t.QtyOrd - **f.QtyStockIn**) QtyRemain`   ← **không** dùng bản đã `ISNULL`
+//   với `f` là `left join #tbl_QtyStockIn` ⇒ phụ tùng **chưa nhập dòng nào** cho `QtyRemain` = **NULL**.
+//   ⚠️ Hệ quả **hiện tại lại đúng ý**: `NULL` không thoả `= '0'` ⇒ không đếm ⇒ không đóng đơn. Nhưng nó **đúng
+//     một cách tình cờ** — hai cột cạnh nhau, một có `ISNULL` một không; ai "dọn dẹp" cho nhất quán sẽ **đổi hành vi**.
+//
+// 🔴🔴 **`left join TST_Mst_Exchange_Unit` KHÔNG `group by` ⇒ NGUY CƠ NHÂN DÒNG**
+//     `from Ser_Order_PartDtl t left join Ser_MST_Part f on t.PartID = f.PartID`
+//     `left join TST_Mst_Exchange_Unit g on **f.PartCode = g.TSTPartCode**`
+//   Nếu bảng quy đổi có **nhiều dòng** cho một `TSTPartCode`, `#tbl_QtyOrd` **nở dòng** cho cùng `PartID`
+//   ⇒ `dtCheckAll.Rows.Count` **phồng lên** trong khi `#tbl_QtyStockIn` đã `group by` ⇒ hai `Count` lệch
+//   ⇒ **không bao giờ đóng đơn**. (Chưa đo được bảng quy đổi có trùng khoá hay không ⇒ ghi là **nguy cơ**.)
+//
+// 🔴🔴 **`with(nolock)` TRÊN CHÍNH CÂU `UPDATE`**
+//     `update t set t.OrderPartStatus = @strOrderPartStatus from Ser_Order_Part t **with(nolock)** where …`
+//   ⇒ Đặt hint đọc-bẩn lên bảng **đang được ghi**. Cả lô SQL của khối này dùng `with(nolock)` ở **mọi** bảng,
+//     trong khi phần còn lại của tầng dùng `--//[mylock]` ⇒ lại đúng bài học **#349**, lần này **trong cùng một hàm**.
+//
+// 🔴 **MỘT CÂU SQL, HAI KIỂU VIẾT HẰNG**: `and f.Status = '**3**'` (literal) trong khi cùng khối lại dùng
+//   `TConst.OrderPartStatus.Finished` cho cờ kia. Mở hằng: `Ser_Inv_StockIn.Finished = "3"` — **có sẵn hằng**
+//   mà không dùng.
+// 🔴 **GỌI HÀM `…_CheckDB` VỚI MỌI ĐIỀU KIỆN KIỂM ĐỂ RỖNG**: `Ser_Order_Part_CheckDB(ref …, strOrderPartNo,`
+//   `"", "", "", out dtDB_Ser_Order_Part)` ⇒ ba tham số `strFlagExistToCheck` / `strSupplierStatusListToCheck` /
+//   `strStatusListToCheck` đều **rỗng** ⇒ helper **không kiểm gì**, chỉ còn tác dụng **lấy dữ liệu**.
+//   ⇒ Dạng mới: **hàm hình dáng guard được dùng làm getter** — ai đếm `Check*` để suy ra "có guard" sẽ **đếm nhầm**
+//     (bổ sung #328: guard nằm trong helper ⇒ đếm thiếu; **ở đây** gọi helper mà **tắt hết** guard ⇒ đếm thừa).
+//
+// 🔴🔴 **CHÚ THÍCH HẰNG NÓI SAI — ĐỌC THẲNG TỪ `Const.Main.cs`**
+//   `Ser_Inv_StockIn`: `Finished = "3"; // Kết thúc` và `**Reject = "5"; // Kết thúc**` ← `Reject` mà chú thích
+//     ghi *"Kết thúc"*; đúng ra phải là *"Huỷ"*.
+//   `Ser_Inv_StockIn**Type**`: `**Nomarl** = "1"; // Mới tạo` · `StockInAdj = "2"; // Tiến hành` ← đây là lớp
+//     **KIỂU phiếu**, nhưng chú thích **chép nguyên** từ lớp **TRẠNG THÁI** ở trên ⇒ sai hoàn toàn;
+//     và tên hằng `Nomarl` **sai chính tả** (`Normal`), nguyên văn nguồn.
+// 📌 Mini: endpoint tra cứu khối mới + hai cờ liên quan, để ai port `Finished` biết phải kéo theo logic TST.
+app.MapGet("/api/_meta/stockin-finished-tst-orderflag", () => Results.Ok(new
+{
+    paysDebtOf864 = "#865 TRA NO #864: da doc khoi moi cua SerStockInStatusUpdateToFinished_New20230721 (diff _New20200118 387 dong -> _New20230721 526 dong tren CUNG cay V20.2023.Release) — khac biet la MOT KHOI 138 DONG them vao cuoi",
+    whatTheNewBlockDoes = new[]
+    {
+        "strOrderPartNo = StandardizeParam(dt_StockInOrder.Rows[0][OrderPartNo]) — neu rong thi BO QUA",
+        "Ser_Order_Part_CheckDB(ref ..., strOrderPartNo, rong, rong, rong, out dtDB_Ser_Order_Part)",
+        "neu OrderPartType == TConst.OrderPartType.TST (= chuoi TST) thi chay mot lo SQL",
+        "#tbl_QtyStockIn = tong Quantity da nhap theo (OrderPartNo, PartID), CHI lay phieu f.Status = 3",
+        "#tbl_QtyOrd = t.QtyAppr * ISNULL(g.ExchangeRate, 1.0) tu Ser_Order_PartDtl join TST_Mst_Exchange_Unit",
+        "#tbl_Final = QtyOrd - QtyStockIn -> QtyRemain; tra HAI bang: toan bo dong, va dong co QtyRemain = 0",
+        "if (dtCheckAll.Rows.Count == dtCheckCondition.Rows.Count) => update Ser_Order_Part set OrderPartStatus = OrderPartStatus.Finished (= F) tren _dbMain + _dbWH + (neu khong phai WS chinh) _dbDealer",
+    },
+    overReceiptNeverClosesOrder = "#865 NHAP THUA THI DON HANG KHONG BAO GIO DUOC DONG: dieu kien dong la and t.QtyRemain = chuoi 0 — BANG DUNG 0. Neu kho nhap NHIEU HON so dat (QtyStockIn > QtyOrd) thi QtyRemain AM => dong do khong vao dtCheckCondition => hai Count KHAC NHAU => KHONG doi co => don TST nhap thua TREO MAI o trang thai chua hoan thanh. Viet dung phai la QtyRemain <= 0",
+    subtractionUsesRawColumnNextToIsnull = "PHEP TRU DUNG COT THO TRONG KHI NGAY BEN CANH DA ISNULL: , ISNULL(f.QtyStockIn, 0.0) QtyStockIn va , (t.QtyOrd - f.QtyStockIn) QtyRemain — KHONG dung ban da ISNULL; f la left join #tbl_QtyStockIn nen phu tung CHUA NHAP DONG NAO cho QtyRemain = NULL. He qua HIEN TAI lai dung y (NULL khong thoa = 0 nen khong dem, khong dong don) nhung DUNG MOT CACH TINH CO — hai cot canh nhau, mot co ISNULL mot khong; ai don dep cho nhat quan se DOI HANH VI",
+    exchangeUnitJoinMayMultiplyRows = "left join TST_Mst_Exchange_Unit g on f.PartCode = g.TSTPartCode KHONG group by => neu bang quy doi co NHIEU DONG cho mot TSTPartCode thi #tbl_QtyOrd NO DONG cho cung PartID, trong khi #tbl_QtyStockIn da group by => hai Count lech => KHONG BAO GIO dong don. Chua do duoc bang quy doi co trung khoa hay khong nen ghi la NGUY CO",
+    nolockOnTheUpdateStatement = "with(nolock) TREN CHINH CAU UPDATE: update t set t.OrderPartStatus = @strOrderPartStatus from Ser_Order_Part t with(nolock) where ... => dat hint doc-ban len bang DANG DUOC GHI. Ca lo SQL cua khoi nay dung with(nolock) o MOI bang trong khi phan con lai cua tang dung --//[mylock] => lai dung bai hoc #349, lan nay TRONG CUNG MOT HAM",
+    oneStatementTwoConstantStyles = "MOT CAU SQL HAI KIEU VIET HANG: and f.Status = chuoi 3 (literal) trong khi cung khoi lai dung TConst.OrderPartStatus.Finished cho co kia. Mo hang: Ser_Inv_StockIn.Finished = 3 — CO SAN HANG ma khong dung",
+    checkDbCalledWithAllChecksDisabled = "GOI HAM ..._CheckDB VOI MOI DIEU KIEN KIEM DE RONG: Ser_Order_Part_CheckDB(ref ..., strOrderPartNo, rong, rong, rong, out dt) => ba tham so strFlagExistToCheck / strSupplierStatusListToCheck / strStatusListToCheck deu RONG => helper KHONG KIEM GI, chi con tac dung LAY DU LIEU. DANG MOI: ham hinh dang guard duoc dung lam GETTER — ai dem Check* de suy ra co-guard se DEM NHAM (bo sung #328: guard nam trong helper => dem THIEU; o day goi helper ma TAT HET guard => dem THUA)",
+    constantCommentsLie = "CHU THICH HANG NOI SAI (doc thang tu Const.Main.cs): Ser_Inv_StockIn co Finished = 3 // Ket thuc VA Reject = 5 // Ket thuc — Reject ma chu thich ghi Ket thuc, dung ra phai la Huy. Ser_Inv_StockInType co Nomarl = 1 // Moi tao va StockInAdj = 2 // Tien hanh — day la lop KIEU PHIEU nhung chu thich CHEP NGUYEN tu lop TRANG THAI o tren nen sai hoan toan; va ten hang Nomarl SAI CHINH TA (Normal), nguyen van nguon",
+    constantsOpened = new[] { "OrderPartType.TST = TST", "OrderPartType.Other = OTHER", "OrderPartStatus.Pending = P", "OrderPartStatus.Approved = A", "OrderPartStatus.Finished = F", "OrderPartStatus.Rejected = R", "Ser_Inv_StockIn.Finished = 3" },
+})).RequireAuthorization();
 app.MapGet("/api/_meta/stockin-finished-generations", () => Results.Ok(new
 {
     paysDebtOf863 = "#864 TRA NO #863: da diff chuan hoa hai ham ...ToFinished giua hai cay",
