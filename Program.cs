@@ -59407,6 +59407,83 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 //     **bề mặt dễ gãy** nếu sau này có ai gọi từ nhánh WH.
 // 📌 Mini: `POST /api/stockouts/{stockOutId}/status` — áp đúng máy trạng thái **và** bắt khai báo `runSideEffects`,
 //   để không lặng lẽ đổi trạng thái mà bỏ bước kho như bản trần.
+// ===== 🔴🔴🔴 #817 MÀN MỚI: MÁY TRẠNG THÁI PHIẾU NHẬP KHO — `SerStockInStatusUpdate*` =====
+// **Bảy** hàm trong `BizCarSv.Inventory.StockIn.cs`; **năm** đường LIVE qua web WS. Đo bằng công thức đúng:
+//   `:4362 SerStockInStatusUpdate`                 md5 `eb2da770` (102 dòng) — `WS:14790`
+//   `:4631 …ToExecuting`                           md5 `81ce644b` (150)      — `WS:14841`
+//   `:4791 …ToPending`                             md5 `75e1ea91` (150)      — `WS:14906`
+//   `:4949 …ToFinished` (trần)                     md5 `6827179a` (371)      — **KHÔNG ai gọi ⇒ CHẾT**
+//   `:5349 …ToFinished_New20200118`                md5 `2fd7765a` (357)      — **CHẾT**
+//   `:5736 …ToFinished_**New20230721**`            md5 `8e8b5ab2` (**482**)  — `WS:14971` ⇒ **LIVE**
+//   `:6857 …ToFinishedAdjustment`                  — `WS:15108` (đã chạm ở #450/#387)
+//   **BƯỚC 3B**: `Inventory.StockIn.cs` **9803** dòng trên **cả hai** máy; md5 bản LIVE trên 150 = `8e8b5ab2` **KHỚP**.
+//
+// 🔴 **HẰNG ≠ GIÁ TRỊ, VÀ CHÚ THÍCH SAI** — `Const.Main.cs:203-210`, nguyên văn:
+//     `Pending = "1"; // Mới tạo` · `Executing = "2"; // Tiến hành` · `Finished = "3"; // Kết thúc`
+//     `Adjustment = "4"; // Điều chỉnh` · `Reject = "5"; // **Kết thúc**`   ← **trùng chú thích của `Finished`**
+//   Lớp song sinh `Ser_Inv_StockOut` (#816) cùng dải giá trị nhưng ghi `Reject = "5"; // **Hủy**`.
+//   ⇒ **Bằng chứng chép-dán**: một trong hai lớp đã sửa chú thích, lớp kia thì không. Ai đọc `Ser_Inv_StockIn`
+//     sẽ tưởng `"5"` cũng là *kết thúc*.
+//
+// 🔴🔴🔴 **BẢN LIVE 2023 THÊM 125 DÒNG: TỰ ĐỘNG ĐÓNG ĐƠN ĐẶT PHỤ TÙNG TST KHI NHẬP ĐỦ**
+//   Khối mới chỉ chạy khi `OrderPartType == TConst.OrderPartType.**TST**` (mở hằng: `TST = "TST"`, `Other = "OTHER"`).
+//   Nó dựng ba bảng tạm rồi so **số dòng**: `if (dtCheckAll.Rows.Count == dtCheckCondition.Rows.Count)` thì mới
+//   `update` đóng đơn.
+//   🔴 **`ISNULL` KHÔNG NHẤT QUÁN TRONG CÙNG MỘT CÂU**:
+//     `, ISNULL(f.QtyStockIn, 0.0) QtyStockIn`      ← cột hiển thị **có** `ISNULL`
+//     `, (t.QtyOrd - **f.QtyStockIn**) QtyRemain`    ← phép trừ dùng cột **trần**
+//   với `f` là `**left join** #tbl_QtyStockIn` ⇒ phụ tùng **chưa nhập lần nào** thì `f.QtyStockIn` là **NULL**
+//   ⇒ `QtyRemain` = **NULL**, không phải `QtyOrd`.
+//   ⚪ **Và may là đúng ý**: câu lọc `where t.QtyRemain = '0'` — `NULL = '0'` **không khớp** ⇒ dòng chưa nhập
+//     **không** vào `dtCheckCondition` ⇒ số dòng lệch ⇒ **đơn không bị đóng sớm**. Nhưng kết quả đúng đang dựa
+//     vào **NULL lan truyền**, không phải vào ý định viết ra; ai "dọn dẹp" bằng cách thêm `ISNULL` vào phép trừ
+//     sẽ **đóng đơn khi chưa nhập gì**.
+//   🔴 `where t.QtyRemain = '0'` — **so sánh số với chuỗi**; SQL Server ép kiểu nên chạy, nhưng kiểu lệch.
+//   🔴 `(t.QtyAppr * ISNULL(g.ExchangeRate, 1.0)) QtyOrd` với `left join TST_Mst_Exchange_Unit g on f.PartCode = g.TSTPartCode`
+//     ⇒ một `PartCode` có **nhiều** dòng quy đổi thì **nở dòng** ⇒ `#tbl_QtyOrd` nhiều hơn thực tế ⇒ `dtCheckAll`
+//     phình ⇒ điều kiện đếm-bằng-nhau **khó khớp** ⇒ đơn **không bao giờ tự đóng**. Chưa đo được số dòng trùng
+//     (không có DB) ⇒ ghi là **cần xác minh**, không kết luận.
+//
+// ⚪ **Ba hàm `ToFinished` cùng gọi một bộ helper**: `CheckActualLocationCodeEmpty` · `BuildGetAverageCost01` ·
+//   `ProcessSaveAverageCost01` (**giá vốn bình quân** — nghiệp vụ tiền) · `UpdatePurchaseOrderStatus`.
+//   ⇒ Phần lõi **không đổi** giữa ba bản; khác biệt 2023 nằm trọn ở khối đóng đơn TST.
+// 🔴 Hai bản `…ToFinished` (trần và `_New20200118`) **đều chết** nhưng vẫn nằm nguyên — cùng khối 105 bản hậu tố
+//   không ai gọi đã đo ở #795.
+// 📌 Mini: `POST /api/stockins/{stockInId}/status` — máy trạng thái `1 → 2 → 3` (và `2 → 1`), kèm cờ cảnh báo
+//   về khối đóng đơn TST.
+app.MapPost("/api/stockins/{stockInId}/status", async (long stockInId, StockInStatusDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var si = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == stockInId);
+    if (si == null) return Results.NotFound(new { error = "khong tim thay phieu nhap" });
+    var cur = (si.Status ?? "").Trim();
+    var next = (dto.NewStatus ?? "").Trim();
+    if (cur != "1" && cur != "2")
+    {
+        return Results.BadRequest(new { error = "trang thai hien tai phai la 1 (Moi tao) hoac 2 (Tien hanh)", currentStatus = cur });
+    }
+    var want = cur == "1" ? "2" : (dto.IsRevert ? "1" : "3");
+    if (next != want)
+    {
+        return Results.BadRequest(new { error = "buoc chuyen khong hop le", currentStatus = cur, newStatus = next, expected = want });
+    }
+    si.Status = next;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        stockInId, oldStatus = cur, newStatus = next, dto.IsRevert,
+        statusConstants = new { Pending = "1", Executing = "2", Finished = "3", Adjustment = "4", Reject = "5" },
+        constantCommentIsWrong = "Const.Main.cs:203-210 ghi Reject = 5; // Ket thuc — TRUNG chu thich cua Finished = 3. Lop song sinh Ser_Inv_StockOut (#816) cung dai gia tri nhung ghi Reject = 5; // Huy => bang chung chep-dan: mot lop da sua chu thich, lop kia thi khong",
+        liveVersionIs20230721 = "WS:14971 goi SerStockInStatusUpdateToFinished_New20230721 (:5736-6261 md5 8e8b5ab2, 482 dong). Hai ban …ToFinished tran (:4949 md5 6827179a) va _New20200118 (:5349 md5 2fd7765a) KHONG ai goi => CHET, cung khoi 105 ban hau to khong ai goi da do o #795",
+        newBlockClosesTstOrder = "ban 2023 them 125 dong: tu dong dong don dat phu tung khi OrderPartType == TConst.OrderPartType.TST (hang: TST = TST, Other = OTHER). No dung ba bang tam roi so SO DONG — if (dtCheckAll.Rows.Count == dtCheckCondition.Rows.Count) thi moi update dong don",
+        isnullInconsistentInSameStatement = "ISNULL(f.QtyStockIn, 0.0) QtyStockIn o cot hien thi NHUNG (t.QtyOrd - f.QtyStockIn) QtyRemain dung cot TRAN, voi f la LEFT JOIN #tbl_QtyStockIn => phu tung chua nhap lan nao thi QtyRemain = NULL chu khong phai QtyOrd",
+        nullPropagationAccidentallyCorrect = "AM TINH CO DIEU KIEN: cau loc where t.QtyRemain = 0 — NULL = 0 KHONG khop => dong chua nhap khong vao dtCheckCondition => so dong lech => don KHONG bi dong som. Ket qua dung dang dua vao NULL LAN TRUYEN chu khong phai y dinh viet ra; ai don dep bang cach them ISNULL vao phep tru se DONG DON KHI CHUA NHAP GI",
+        comparesNumberToString = "where t.QtyRemain = 0 — so sanh so voi CHUOI; SQL Server ep kieu nen chay, nhung kieu lech",
+        exchangeUnitJoinMayMultiplyRows = "CAN XAC MINH: (t.QtyAppr * ISNULL(g.ExchangeRate, 1.0)) QtyOrd voi left join TST_Mst_Exchange_Unit g on f.PartCode = g.TSTPartCode — mot PartCode co NHIEU dong quy doi thi NO DONG => dtCheckAll phinh => dieu kien dem-bang-nhau kho khop => don khong bao gio tu dong. Chua do duoc so dong trung (khong co DB) nen KHONG ket luan",
+        threeFinishedVariantsShareHelpers = "AM TINH: ca ba ban ToFinished deu goi CheckActualLocationCodeEmpty, BuildGetAverageCost01, ProcessSaveAverageCost01 (gia von binh quan — nghiep vu tien), UpdatePurchaseOrderStatus => phan loi KHONG doi, khac biet 2023 nam tron o khoi dong don TST",
+        twoMachinesVerified = "Inventory.StockIn.cs 9803 dong tren CA HAI may; md5 ban LIVE tren 150 = 8e8b5ab2 KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/stockouts/{stockOutId}/status", async (long stockOutId, StockOutStatusDto dto,
     AppDbContext db, ITenantContext t) =>
 {
@@ -70781,6 +70858,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record StockInStatusDto(string? NewStatus, bool IsRevert);
 record StockOutStatusDto(string? NewStatus, bool IsRevert, bool RunSideEffects);
 record RoStatusChangeDto(string? NewStatus, bool AllowUnguardedNotResponding);
 record EmailTemplateUpdateDto(string? DealerCode, string? TempSubject, string? TempBody, string? TempTypeEmail, string? TempFileAttachment);
