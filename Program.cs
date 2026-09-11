@@ -56024,6 +56024,83 @@ app.MapGet("/api/servicecustomers/search", async (AppDbContext db, ITenantContex
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #855 MÀN MỚI: XOÁ KHÁCH HÀNG DỊCH VỤ — `Ser_Customer_Delete` (`Customer.cs`) =====
+// laptop `V20:5259-5377` md5 `e301df1f` (119 dòng) · máy 150 `V20.2023.Release` md5 `af7582c3`. LIVE (4 vỏ bọc).
+// Mini có `GET`/`POST /api/servicecustomers` nhưng **không có `DELETE`** ⇒ màn mới.
+//
+// 🔴🔴🔴 **GHI `IsActive = "False"` — GIÁ TRỊ DUY NHẤT KIỂU NÀY TRONG CẢ TẦNG**
+//     `dt_Ser_Customer.Rows[0]["IsActive"] = **"False"**; alEffectiveColumn.Add("IsActive");`
+//   Đếm **toàn bộ** các chỗ gán `["IsActive"] = …` trong `TERP.BizCarSv` (bỏ `Web References`) — **174 chỗ**,
+//   nhóm theo giá trị:
+//     `strIsActive` **52** · `Constants.Flag.Active` **29** · `true` **27** · `TERP.Constants.Flag.Active` **23**
+//     · `TConst.Flag.Active` **17** · `DBNull.Value` **15** · `1` **4** · `Flag.Inactive` **2** · `"0"` **2**
+//     · `strSMSIsActive` 1 · `strSMSIsAcitve` 1 (#852) · `false` 1 · **`"False"` 1 ← CHÍNH LÀ ĐÂY**
+//   ⇒ `"False"` xuất hiện **đúng một lần trong toàn tầng**, và có mặt ở **cả hai** cây nguồn ⇒ **chưa ai vá**.
+//   ⇒ Nếu cột là `varchar`: giá trị lưu là chuỗi `'False'` — **không phải `'1'` cũng không phải `'0'`**.
+//     Mọi bộ lọc đã gặp đều so **chuỗi**: `cus.Isactive = '1'` (#837), `"IsActive","=","1"` (#844, #847),
+//     `f.FlagActive = '1'` (#850) ⇒ khách bị xoá **biến mất khỏi danh sách đang hoạt động** (đúng ý) **nhưng
+//     cũng không lọt vào danh sách `IsActive = '0'`** ⇒ **rơi khỏi CẢ HAI danh sách**, không màn nào tìm lại được.
+//   ⇒ Nếu cột là `bit`: SQL Server ép `'False'` → `0`, hành vi **đúng** — nhưng khi đó **27 chỗ gán `true`**
+//     và **4 chỗ gán `1`** và **2 chỗ gán `"0"`** cũng đang ghi **ba kiểu dữ liệu C# khác nhau** vào cùng một cột.
+//   ⇒ Dù nhánh nào đúng, đây vẫn là **một cột, bảy cách viết giá trị** — và đúng luật HẰNG ≠ GIÁ TRỊ:
+//     tầng **có** `Flag.Inactive`, chỗ này **không dùng**.
+//
+// 🔴🔴🔴 **KHÁC BIỆT NGHIỆP VỤ THẬT THỨ TƯ GIỮA HAI CÂY NGUỒN — VÀ LÀ CÁI LỚN NHẤT**
+//   md5 lệch ⇒ diff chuẩn hoá: bản `V20.2023.Release` có **thêm nguyên một region** `#region // Refine and Check Input`:
+//     `strCusId = TUtils.CUtils.StandardizeParam(strCusId);`
+//     `this.CheckExistCusID(_dbDealer, ref alParamsCoupleError, strCusId, out dt_Ser_Customer);`
+//     `if (StringUtils.StringEqual(dt_Ser_Customer.Rows[0]["IsActive"], TConst.Flag.Inactive))`
+//     `    throw …Ser_Customer_Delete_**IsActiveNotMatched**;`
+//   Bản `V20` **không có gì cả** — chỉ `GetTableContents` rồi đọc `Rows[0]` **trần**.
+//   ⇒ Nghĩa là phép đếm `Raise`=0 / `Check`=0 tôi đo **chỉ đúng cho bản `V20`**; bản 2023 có `Raise`=1, `Check`=1,
+//     **cộng thêm** guard chống xoá lại khách **đã bị xoá** (idempotency) và chuẩn hoá tham số.
+//   ⇒ **Bài học đo lường**: mọi con số `Raise`/`SaveData`/`Check` phải ghi kèm **đo trên cây nào**.
+//     Bốn khác biệt thật đã gặp: **thiếu khối ghi** (#844, #852) · **đảo toán tử** (#849) · **cột vô hại trong
+//     `select distinct`** (#848) · **thiếu HẲN một region guard** (đây).
+//
+// 🔴 **TÊN HÀM `_Delete` NHƯNG REGION TÊN `Update` — XOÁ MỀM** (ca thứ HAI sau #848 `Ser_Mst_Location_Delete`):
+//   không một câu `delete` nào; chỉ `SaveData` ba CSDL với `alEffectiveColumn = {IsActive, LogLUDateTime, LogLUBy}`.
+// 🔴 **`Rows[0]` trần + đọc `_dbDealer` nhưng ghi cả ba CSDL** — **ca thứ BA** của kiểu "guard hẹp hơn phạm vi ghi"
+//   (#851 `SerMstPartUpdateActive`, #854 `Ser_RO_UpdateAppId`, đây) ⇒ **đủ ba** ⇒ theo luật "lần thứ ba thì đi
+//   tìm hàm làm ĐÚNG": phản ví dụ là **#848 `Ser_Mst_Location_Delete`** — ba guard chạy trên `_dbDealer` và lệnh
+//   `update` chạy trên **cả ba** CSDL ⇒ **guard bao trùm phạm vi ghi**. Đó là khuôn đúng để đối chiếu.
+// 📌 Mini: `DELETE /api/servicecustomers/{cusCode}` — **xoá mềm** đúng như nguồn nhưng ghi `"0"` (hằng của tầng,
+//   không phải `"False"`), có **guard tồn tại** và **guard đã-xoá-rồi** như bản 2023.
+app.MapDelete("/api/servicecustomers/{cusCode}", async (string cusCode, AppDbContext db, ITenantContext t) =>
+{
+    var code = (cusCode ?? "").Trim();
+    var cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
+    if (cus is null)
+    {
+        return Results.NotFound(new
+        {
+            error = "Ser_Customer_NotFound", cusCode = code,
+            onlyNewTreeHasThisGuard = "ban V20 KHONG co guard nay — no doc Rows[0] TRAN nen truong hop nay la IndexOutOfRange tho; ban V20.2023.Release goi CheckExistCusID",
+        });
+    }
+    if (cus.FlagActive == "0")
+    {
+        return Results.Conflict(new
+        {
+            error = "Ser_Customer_Delete_IsActiveNotMatched", cusCode = code,
+            note = "khach da bi xoa truoc do — guard nay CHI co o ban V20.2023.Release",
+        });
+    }
+    cus.FlagActive = "0";   // HANG cua tang (Flag.Inactive), KHONG phai chuoi "False" nhu nguon
+    cus.LogLUDateTime = DateTime.UtcNow;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        cusCode = code, flagActive = cus.FlagActive, softDeleted = true,
+        sourceWritesStringFalse = "#855: nguon ghi dt_Ser_Customer.Rows[0][IsActive] = \"False\". Dem TOAN BO cac cho gan [IsActive] = ... trong TERP.BizCarSv (bo Web References) duoc 174 cho, nhom theo gia tri: strIsActive 52, Constants.Flag.Active 29, true 27, TERP.Constants.Flag.Active 23, TConst.Flag.Active 17, DBNull.Value 15, so 1 bon cho, Flag.Inactive 2, chuoi 0 hai cho, strSMSIsActive 1, strSMSIsAcitve 1 (#852), false 1, va CHUOI False DUNG MOT LAN — chinh la day. Gia tri nay co mat o CA HAI cay nguon => chua ai va",
+        twoBranchesBothBad = "neu cot la varchar: gia tri luu la chuoi False — KHONG phai 1 cung khong phai 0; moi bo loc da gap deu so CHUOI (cus.Isactive = 1 o #837, IsActive = 1 o #844 va #847, f.FlagActive = 1 o #850) => khach bi xoa bien mat khoi danh sach dang hoat dong (dung y) NHUNG cung khong lot vao danh sach IsActive = 0 => roi khoi CA HAI danh sach, khong man nao tim lai duoc. Neu cot la bit: SQL Server ep False thanh 0, hanh vi dung — nhung khi do 27 cho gan true, 4 cho gan so 1, 2 cho gan chuoi 0 dang ghi BA KIEU DU LIEU C# khac nhau vao cung mot cot. Du nhanh nao dung, day van la MOT COT BAY CACH VIET GIA TRI, va tang CO Flag.Inactive ma cho nay KHONG dung",
+        fourthRealTreeDivergenceAndLargest = "KHAC BIET NGHIEP VU THAT THU TU giua hai cay nguon va la cai LON NHAT: ban V20.2023.Release co THEM NGUYEN MOT REGION #region // Refine and Check Input — StandardizeParam(strCusId); this.CheckExistCusID(_dbDealer, ref alParamsCoupleError, strCusId, out dt_Ser_Customer); if (StringEqual(dt_Ser_Customer.Rows[0][IsActive], TConst.Flag.Inactive)) throw Ser_Customer_Delete_IsActiveNotMatched. Ban V20 KHONG co gi ca, chi GetTableContents roi doc Rows[0] TRAN => phep dem Raise=0 / Check=0 CHI DUNG cho ban V20; ban 2023 co Raise=1, Check=1, cong guard chong xoa lai khach DA BI XOA (idempotency) va chuan hoa tham so",
+        measurementLesson855 = "BAI HOC DO LUONG: moi con so Raise/SaveData/Check phai ghi kem DO TREN CAY NAO. Bon khac biet that da gap: thieu khoi ghi (#844, #852), dao toan tu (#849), cot vo hai trong select distinct (#848), thieu HAN mot region guard (day)",
+        nameSaysDeleteRegionSaysUpdate = "ten ham _Delete nhung region ten Update — XOA MEM, ca thu HAI sau #848 Ser_Mst_Location_Delete: khong mot cau delete nao, chi SaveData ba CSDL voi alEffectiveColumn = {IsActive, LogLUDateTime, LogLUBy}",
+        thirdOccurrenceOfNarrowGuard = "Rows[0] tran + doc _dbDealer nhung ghi ca ba CSDL — CA THU BA cua kieu guard hep hon pham vi ghi (#851 SerMstPartUpdateActive, #854 Ser_RO_UpdateAppId, day) => DU BA => theo luat lan-thu-ba-di-tim-ham-lam-DUNG: phan vi du la #848 Ser_Mst_Location_Delete, noi ba guard chay tren _dbDealer va lenh update chay tren CA BA CSDL => guard BAO TRUM pham vi ghi. Do la khuon dung de doi chieu",
+        twoMachinesDiffed855 = "md5 lech (e301df1f laptop vs af7582c3 may 150) => da diff chuan hoa, ket qua o tren",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Cần CusName." });
