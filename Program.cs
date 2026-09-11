@@ -64611,6 +64611,97 @@ app.MapGet("/api/_meta/commented-placeholder-sweep", () => Results.Ok(new
 //   nguyên văn nguồn, ghi lại theo luật "chép sai chính tả y nguyên".
 // 📌 Mini: `POST /api/report/dealernetprice/build-file` — sinh **nội dung** theo đúng layout, **ghi đè** thay vì
 //   nối, **cảnh báo** mọi mã bị cắt, và **không** ép `Int32` (dùng `decimal` rồi kiểm độ dài trước khi đệm).
+// ===== 🔴🔴🔴 #884 MÀN MỚI (chỉ có trên cây 150): SINH FILE ĐƠN ĐẶT PT GỬI HMC — `CreatFilePODSendHMC` =====
+// `UploadFile/BizCarSv.UploadFile.cs:2711`, md5 `fe6fe3ed` (185 dòng). **3B**: laptop **KHÔNG CÓ**.
+// Áp **năm điểm kiểm của #374** rồi đối chiếu với `CreatFileDNPSendHMC` (#883).
+//
+// 🔴🔴🔴 **LẶP Y HỆT CẢ NĂM BẪY CỦA #883** ⇒ **khuôn chép-dán của CẶP hàm sinh file**:
+//   ① `System.IO.File.**AppendAllText**(pathFile, strFileContent, **Encoding.UTF8**)` — ghi **nối** + **BOM 3 byte**
+//   ② ngăn dòng bằng `**"\r"** đơn` (`else strFileContent += "\r" + …`)
+//   ③ mã phụ tùng **> 20 ký tự cắt cụt im lặng** — **bốn nhánh y hệt** (`<=5` · `>5..10` · `>10..20` · `>20`)
+//   ④ `Convert.ToInt32` + `ToString("D11")`/`("D5")` — **đệm mà không cắt**
+//   ⑤ hằng lỗi **sai chính tả** `…_FileContent**Emty**` (hằng khác nhau, **cùng** lỗi typo)
+//   ⚠️ **Hai ca ⇒ chưa gọi là khuôn của TẦNG** (luật "lần thứ ba"). Ghi ở mức: **khuôn chép-dán của cặp hàm này**.
+//
+// 🔴🔴🔴 **`Append(strDealerCode)` KHÔNG ĐỆM — TRƯỜNG DUY NHẤT TRONG FILE CỘT CỐ ĐỊNH KHÔNG `PadRight`**
+//     `stringBuilder.Append(**strDealerCode**);//DLR_CD`
+//   Mọi trường khác đều có `PadRight(5)` / `PadRight(15)` / `ToString("D11")` / `ToString("D5")`.
+//   ⇒ Mã đại lý dài ngắn khác nhau ⇒ **mọi trường phía sau lệch cột**, và lệch **khác nhau theo từng dòng**
+//     ⇒ HMC đọc sai từ bản ghi đó trở đi. Đây là lỗi **riêng của POD**, `CreatFileDNPSendHMC` không có.
+//
+// 🔴🔴 **`ToString("D5")` CHO SỐ LƯỢNG**: `Int32 iQuantity = Convert.ToInt32(dtr["Quantity"]);`
+//   `Append(iQuantity.ToString("**D5**")); //ORDR_QTY` ⇒ số lượng **> 99 999** ghi **6 chữ số** ⇒ lệch cột.
+//   Cùng bệnh "đệm mà không cắt" của #883 nhưng **ngưỡng thấp hơn nhiều** (99 999 so với `100 tỷ).
+// 🔴 **`strPartOrderNo.Length > 15` ⇒ cắt 15 ký tự, cũng IM LẶNG** — có kiểm độ dài nhưng **không** báo mất dữ liệu.
+//
+// ⚪⚪ **POD VALIDATE NHIỀU HƠN DNP**: ngoài `…_FileContentEmty`, nó còn `throw` riêng cho **`PartCode` rỗng**,
+//   **`DealerCode` rỗng**, **`PartOrderNo` rỗng**, `ApprovedDate` rỗng, `PriceVAT` rỗng/không phải số,
+//   `Quantity` rỗng/không phải số ⇒ **sáu** guard đầu vào. `CreatFileDNPSendHMC` chỉ có **ba**.
+//   ⇒ Hai hàm cùng khuôn nhưng **mức validate khác nhau** — lại đúng #359 (đừng suy hàm này từ hàm kia).
+//
+// ⚪ **KIỂM RỒI MỚI BÁO**: tôi định báo `strDC_RATE = "00000"` là **biến chết** (khai báo đầu hàm, không thấy
+//   trong danh sách `Append` khi grep lần đầu). Grep lại **cả vùng hàm** thì nó **CÓ** được dùng:
+//   `stringBuilder.Append(strDC_RATE); //DC_RATE`. ⇒ **Không** phải biến chết. Ghi lại đúng tinh thần #362/#364.
+// ⚪ Ba hằng định dạng hard-code: `strDNPDST = "A26AX"` (**trùng** hằng của #883) · `strORDR_TYP = "H"`
+//   (rồi `.PadRight(5)`) · `strDC_RATE = "00000"`.
+// 📌 Mini: `POST /api/report/partsorderdetail/build-file` — **đệm `DLR_CD`**, `CRLF`, UTF-8 **không BOM**,
+//   ghi đè, và **báo lại** mọi trường bị cắt/tràn thay vì im lặng.
+app.MapPost("/api/report/partsorderdetail/build-file", (PodFileBuildDto dto) =>
+{
+    var lines = dto.Items ?? new List<PodFileLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Rpt_DMSSer_PartsOrderDetail_SendHMC_FileContentEmty" });
+    const string DNPDST = "A26AX";
+    const string ORDR_TYP = "H";
+    const string DC_RATE = "00000";
+    var sb = new System.Text.StringBuilder();
+    var truncated = new List<string>();
+    var overflow = new List<string>();
+    var n = 0;
+    foreach (var l in lines)
+    {
+        var code = (l.PartCode ?? "").Trim();
+        var dealer = (l.DealerCode ?? "").Trim();
+        var orderNo = (l.PartOrderNo ?? "").Trim();
+        if (code.Length == 0) return Results.BadRequest(new { error = "PartCode rong", rowIndex = n });
+        if (dealer.Length == 0) return Results.BadRequest(new { error = "DealerCode rong", rowIndex = n });
+        if (orderNo.Length == 0) return Results.BadRequest(new { error = "PartOrderNo rong", rowIndex = n });
+        if (l.ApprovedDate == null) return Results.BadRequest(new { error = "ApprovedDate rong", partCode = code });
+        if (l.PriceVAT == null) return Results.BadRequest(new { error = "PriceVAT rong", partCode = code });
+        if (l.Quantity == null) return Results.BadRequest(new { error = "Quantity rong", partCode = code });
+        if (n > 0) sb.Append("\r\n");
+        sb.Append(DNPDST);
+        sb.Append(dealer.PadRight(10));                 // DLR_CD — NGUON KHONG DEM
+        if (orderNo.Length > 15) { sb.Append(orderNo[..15]); truncated.Add(orderNo + " (ORDR_NO)"); }
+        else sb.Append(orderNo.PadRight(15));
+        sb.Append(ORDR_TYP.PadRight(5));
+        sb.Append(l.ApprovedDate!.Value.ToString("yyyyMMdd"));
+        if (code.Length <= 5) { sb.Append(code.PadRight(5)).Append("     ").Append("          "); }
+        else if (code.Length <= 10) { sb.Append(code[..5]).Append(code[5..].PadRight(5)).Append("          "); }
+        else if (code.Length <= 20) { sb.Append(code[..5]).Append(code.Substring(5, 5)).Append(code[10..].PadRight(10)); }
+        else { sb.Append(code[..5]).Append(code.Substring(5, 5)).Append(code.Substring(10, 10)); truncated.Add(code + " (PartCode)"); }
+        var priceText = ((long)decimal.Truncate(l.PriceVAT!.Value)).ToString("D11");
+        if (priceText.Length > 11) overflow.Add(code + " (PriceVAT)");
+        sb.Append(priceText);   // RETL_PART_PRC
+        sb.Append(priceText);   // NET_PART_PRC — nguon ghi CUNG gia tri
+        sb.Append(DC_RATE);
+        var qtyText = ((long)decimal.Truncate(l.Quantity!.Value)).ToString("D5");
+        if (qtyText.Length > 5) overflow.Add(code + " (ORDR_QTY)");
+        sb.Append(qtyText);
+        n++;
+    }
+    return Results.Ok(new
+    {
+        lineCount = n, content = sb.ToString(), truncated, overflow,
+        onlyExistsOnMachine150_884 = "#884: CreatFilePODSendHMC — UploadFile/BizCarSv.UploadFile.cs:2711 tren V20.2023.Release, md5 fe6fe3ed (185 dong); cay laptop KHONG CO",
+        repeatsAllFiveTrapsOf883 = "LAP Y HET CA NAM BAY CUA #883 => khuon chep-dan cua CAP ham sinh file: (1) File.AppendAllText + Encoding.UTF8 (ghi noi + BOM 3 byte); (2) ngan dong bang CR don; (3) ma phu tung > 20 ky tu cat cut im lang voi BON NHANH y het; (4) Convert.ToInt32 + ToString(D11)/(D5) dem ma khong cat; (5) hang loi SAI CHINH TA ..._FileContentEmty (hang khac nhau, CUNG loi typo). HAI ca nen CHUA goi la khuon cua TANG (luat lan-thu-ba) — ghi o muc khuon chep-dan cua CAP ham nay",
+        dealerCodeNotPadded = "#884 Append(strDealerCode) KHONG DEM — TRUONG DUY NHAT trong file cot co dinh khong PadRight: stringBuilder.Append(strDealerCode);//DLR_CD trong khi MOI truong khac deu co PadRight(5)/PadRight(15)/ToString(D11)/ToString(D5) => ma dai ly dai ngan khac nhau thi MOI TRUONG PHIA SAU LECH COT, va lech KHAC NHAU THEO TUNG DONG => HMC doc sai tu ban ghi do tro di. Loi RIENG cua POD, CreatFileDNPSendHMC khong co",
+        quantityD5Overflow = "ToString(D5) CHO SO LUONG: Int32 iQuantity = Convert.ToInt32(dtr[Quantity]); Append(iQuantity.ToString(D5)); //ORDR_QTY => so luong > 99999 ghi 6 chu so => LECH COT. Cung benh dem-ma-khong-cat cua #883 nhung NGUONG THAP HON NHIEU (99.999 so voi `100 ty)",
+        orderNoTruncatedSilently = "strPartOrderNo.Length > 15 => cat 15 ky tu, CUNG IM LANG — co kiem do dai nhung KHONG bao mat du lieu",
+        podValidatesMoreThanDnp = "AM TINH — POD VALIDATE NHIEU HON DNP: ngoai ..._FileContentEmty no con throw rieng cho PartCode rong, DealerCode rong, PartOrderNo rong, ApprovedDate rong, PriceVAT rong/khong phai so, Quantity rong/khong phai so => SAU guard dau vao; CreatFileDNPSendHMC chi co BA. Hai ham cung khuon nhung MUC VALIDATE KHAC NHAU — lai dung #359",
+        checkedBeforeReporting884 = "AM TINH — KIEM ROI MOI BAO: toi dinh bao strDC_RATE = 00000 la BIEN CHET (khai bao dau ham, khong thay trong danh sach Append khi grep lan dau). Grep lai CA VUNG HAM thi no CO duoc dung: stringBuilder.Append(strDC_RATE); //DC_RATE => KHONG phai bien chet. Ghi lai dung tinh than #362/#364",
+        threeHardcodedConstants884 = "Ba hang dinh dang hard-code: strDNPDST = A26AX (TRUNG hang cua #883), strORDR_TYP = H (roi PadRight(5)), strDC_RATE = 00000",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/report/dealernetprice/build-file", (DnpFileBuildDto dto) =>
 {
     var lines = dto.Items ?? new List<DnpFileLineDto>();
@@ -75785,6 +75876,8 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record PodFileLineDto(string? PartCode, string? DealerCode, string? PartOrderNo, DateTime? ApprovedDate, decimal? PriceVAT, decimal? Quantity);
+record PodFileBuildDto(List<PodFileLineDto>? Items);
 record DnpFileLineDto(string? TSTPartCode, DateTime? UpdateDateTime, decimal? TSTPrice, string? EngName);
 record DnpFileBuildDto(List<DnpFileLineDto>? Items);
 record ServicePartSyncLineDto(string? PartID, string? VieName, decimal? VAT, string? Unit, string? FlagInTST, decimal? MinQuantity, string? PartTypeID, string? Note, string? PartGroupCode);
