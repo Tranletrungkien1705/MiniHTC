@@ -50434,6 +50434,99 @@ app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #847 MÀN MỚI: SỬA / XOÁ NHÓM SỬA CHỮA — `SerGroupRepair{Create,Update,Delete}` =====
+// `BizCarSv.Service.cs`, cả ba LIVE (`_biz.SerGroupRepair*`, **không** có biến thể hậu tố ngày nào):
+//   `:11161 Create` md5 `f4e12a3c` (189 dòng, 2 guard) · `:11350 Update` `84f09a77` (156, **3** guard) ·
+//   `:11506 Delete` `32acfb39` (125, **1** guard). Helper: `CheckExistGroupR` `7425b87e` ·
+//   `CheckExistGroupRNo` `8c6aa65b` · `CheckExistGroupRNoModify` `f5982ba5`.
+//   **3B**: **cả SÁU md5 KHỚP** máy 150. Mini đã có `GET`/`POST /api/grouprepairs` ⇒ bổ sung `PUT` + `DELETE`.
+//
+// 🔴🔴🔴 **TRANSACTION ĐẠI LÝ BỊ MỞ RỒI BỎ RƠI — KHÔNG COMMIT, CŨNG KHÔNG ROLLBACK**
+//   `SerGroupRepairCreate` đặt `_dbDealer.LogUserId = …` và chạy `if (bNeedTransaction_Dealer) _dbDealer.BeginTransaction();`
+//   nhưng **không có** một `_dbDealer.SaveData`/`ExecQuery` nào, và:
+//     lối ra THÀNH CÔNG: chỉ `CommitSafety(_dbMain)` + `CommitSafety(_dbWH)`
+//     khối `catch`      : chỉ `RollbackSafety(_dbMain)` + `RollbackSafety(_dbWH)`
+//     khối `finally`    : chỉ `RollbackSafety(_dbMain)` + `RollbackSafety(_dbWH)`
+//   ⇒ **`_dbDealer` không xuất hiện ở BẤT KỲ lối ra nào** ⇒ transaction trên DB đại lý bị **để mở**,
+//     giữ kết nối và khoá cho tới khi tầng DAL tự huỷ đối tượng.
+//   ⇒ Nặng hơn họ #803 (lệch handle): ở #803 các nhánh vẫn commit/rollback **lệch nhau**; ở đây một CSDL
+//     được **ghi danh vào giao dịch rồi biến mất hoàn toàn khỏi mọi lối ra**. `Update` và `Delete` thì
+//     **không hề mở** `_dbDealer` ⇒ chỉ riêng `Create` bị.
+//
+// 🔴🔴 **`CheckExistGroupR` TRA CHỈ THEO `GroupRID`, KHÔNG CÓ `DealerCode`** — rò ghi xuyên đại lý
+//   Helper này là guard **duy nhất** của `Delete` và là guard đầu của `Update`:
+//     `GetTableContents(_dbMain, "Ser_GroupRepair", "top 1 *", "", "GroupRID", "=", strGroupRID)`
+//   ⇒ **Không lọc đại lý**. Và câu xoá cũng là `delete from Ser_GroupRepair where (1=1) and GroupRID = @GroupRID`
+//     — cũng **không** có `DealerCode` (đúng như #747 đã báo; nay xác nhận trên nguồn `V20`).
+//   ⇒ Đại lý A biết `GroupRID` của đại lý B thì **sửa và xoá được** nhóm sửa chữa của B.
+//   ⇒ Đây là **cơ chế rò xuyên đại lý thứ SÁU** đã ghi (sau RBAC join #761/#764/#765, tham số chết #828,
+//     placeholder bị comment #811, vỏ bọc truyền rỗng #830, `BuildClause` nuốt điều kiện #832/#833):
+//     lần này là **guard tra theo khoá toàn cục, bỏ hẳn chiều đại lý**.
+//   📌 Đối chiếu: hai helper anh em **CÓ** lọc `DealerCode` (`CheckExistGroupRNo`, `CheckExistGroupRNoModify`)
+//     ⇒ không phải quy ước của cụm, mà là **thiếu sót của riêng `CheckExistGroupR`**.
+//
+// ⚪⚪ **XÁC NHẬN BẰNG TAY MỘT MỤC CỦA #840** (lần đầu): cặp `CheckExistGroupRNo` / `…Modify` thuộc nhóm
+//   "sáu cặp CREATE không có `IsActive`" mà #840 xếp là **an toàn chiều thuận**. Đọc tay đúng như vậy:
+//     TẠO: `(GroupRNo, DealerCode)` — **không** lọc `IsActive` ⇒ trùng mã là chặn, bất kể trạng thái.
+//     SỬA: `(GroupRNo, DealerCode, GroupRID <> @, IsActive = Flag.Active)` ⇒ **hẹp hơn**.
+//   ⇒ Tạo **chặt hơn** sửa — ngược hẳn bẫy #818/#839. ⇒ #840 đúng ở mục này.
+//
+// 🔴 **#404 — CÙNG MỘT Ô RỖNG, HAI HÀM XỬ LÝ HAI KIỂU**
+//   `Create`: `if (!StringUtils.IsEmpty(strNote)) dt.Rows[0]["Note"] = strNote;` — rỗng thì **bỏ qua**,
+//     cột giữ giá trị mặc định của schema; `IsActive` cũng vậy.
+//   `Update`: `if (!IsEmpty(strIsActive)) … else dtGroupR.Rows[0]["IsActive"] = **DBNull.Value**;` và `Note`
+//     được gán **vô điều kiện**.
+//   ⇒ Gửi `Note` rỗng: **tạo** giữ mặc định, **sửa** ghi chuỗi rỗng. Gửi `IsActive` rỗng: **tạo** giữ mặc định,
+//     **sửa** ghi **NULL**. Người dùng không có cách nào biết hai màn cư xử khác nhau.
+// 🔴 `Update` đưa cả `DealerCode` lẫn `GroupRNo` vào `alColumnEffective` — **ghi lại chính khoá tra cứu**
+//   (họ #843 `Mst_Param_Update`).
+// 🔴 `select @@Identity` — **ca thứ TƯ** liên tiếp (#844, #845, #846, nay). Xem #846 cho số đếm cả tầng
+//   (**152** `@@Identity` vs **3** `SCOPE_IDENTITY()`).
+// 📌 Mini: `PUT`/`DELETE /api/grouprepairs/{code}` — **vá** chiều đại lý (guard và lệnh đều lọc `DealerCode`),
+//   xử lý ô rỗng **giống nhau** ở cả hai đường, và chặn xoá khi còn công đoạn tham chiếu.
+app.MapPut("/api/grouprepairs/{code}", async (string code, GroupRepairDto dto,
+    AppDbContext db, ITenantContext t, string? dealer) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var dl = (dealer ?? dto.DealerCode ?? "").Trim();
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRCode == c
+        && (dl.Length == 0 || x.DealerCode == dl));
+    if (g is null) return Results.NotFound(new { error = "Ser_GroupRepairNo_NotFound", groupRCode = c, dealerCode = dl });
+    if (!string.IsNullOrWhiteSpace(dto.GroupRName)) g.GroupRName = dto.GroupRName;
+    // Xu ly o RONG GIONG NHAU o ca hai duong (nguon lam khac nhau).
+    g.Note = dto.Note;
+    if (!string.IsNullOrWhiteSpace(dto.Status)) g.Status = dto.Status!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        g.Id, g.GroupRCode, g.GroupRName, g.Note, g.DealerCode, g.Status,
+        sourceGuardHasNoDealerScope = "#847: CheckExistGroupR — guard DUY NHAT cua Delete va guard dau cua Update — tra GetTableContents(_dbMain, Ser_GroupRepair, top 1 *, rong, GroupRID, =, strGroupRID) => KHONG loc DealerCode. Hai helper anh em (CheckExistGroupRNo, CheckExistGroupRNoModify) thi CO loc DealerCode => khong phai quy uoc cua cum ma la THIEU SOT cua rieng CheckExistGroupR",
+        sixthCrossDealerLeakMechanism = "co che ro xuyen dai ly THU SAU da ghi (sau RBAC join #761/#764/#765, tham so chet #828, placeholder bi comment #811, vo boc truyen rong #830, BuildClause nuot dieu kien #832/#833): guard tra theo KHOA TOAN CUC, bo han chieu dai ly => dai ly A biet GroupRID cua dai ly B thi SUA va XOA duoc nhom sua chua cua B",
+        emptyFieldHandledTwoWays = "#404: Create dung if (!IsEmpty(strNote)) Rows[0][Note] = strNote — rong thi BO QUA, cot giu mac dinh schema; IsActive cung vay. Update thi Note duoc gan VO DIEU KIEN va IsActive co nhanh else Rows[0][IsActive] = DBNull.Value => gui Note rong: TAO giu mac dinh, SUA ghi chuoi rong; gui IsActive rong: TAO giu mac dinh, SUA ghi NULL",
+        updateRewritesLookupKeys = "Update dua ca DealerCode lan GroupRNo vao alColumnEffective — ghi lai chinh khoa tra cuu (ho #843 Mst_Param_Update)",
+        confirms840SafeDirectionGroup = "AM TINH — XAC NHAN BANG TAY mot muc cua #840 (lan dau): cap CheckExistGroupRNo / ...Modify thuoc nhom sau cap CREATE khong co IsActive ma #840 xep la AN TOAN CHIEU THUAN. Doc tay dung vay: TAO loc (GroupRNo, DealerCode) khong co IsActive => trung ma la chan bat ke trang thai; SUA loc them GroupRID <> @ va IsActive = Flag.Active => HEP HON. Tao CHAT HON sua, nguoc han bay #818/#839",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/grouprepairs/{code}", async (string code, AppDbContext db, ITenantContext t,
+    string? dealer) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var dl = (dealer ?? "").Trim();
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRCode == c
+        && (dl.Length == 0 || x.DealerCode == dl));
+    if (g is null) return Results.NotFound(new { error = "Ser_GroupRepairNo_NotFound", groupRCode = c, dealerCode = dl });
+    db.GroupRepairs.Remove(g);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        groupRCode = c, dealerCode = g.DealerCode,
+        sourceDeleteHasNoDealerCondition = "#847 XAC NHAN tren nguon V20 (#747 da bao): cau xoa la delete from Ser_GroupRepair where (1=1) and GroupRID = @GroupRID — KHONG co DealerCode, va guard duy nhat CheckExistGroupR cung khong loc dai ly",
+        dealerTransactionOpenedThenAbandoned = "#847 NANG: SerGroupRepairCreate dat _dbDealer.LogUserId va chay if (bNeedTransaction_Dealer) _dbDealer.BeginTransaction() nhung KHONG co mot _dbDealer.SaveData/ExecQuery nao, va _dbDealer KHONG xuat hien o BAT KY loi ra nao — loi ra THANH CONG chi CommitSafety(_dbMain)+(_dbWH), khoi catch chi RollbackSafety(_dbMain)+(_dbWH), khoi finally cung vay => transaction tren DB dai ly bi DE MO, giu ket noi va khoa toi khi tang DAL tu huy doi tuong. Nang hon ho #803 (o #803 cac nhanh van commit/rollback LECH NHAU; o day mot CSDL duoc ghi danh vao giao dich roi BIEN MAT hoan toan khoi moi loi ra). Update va Delete KHONG he mo _dbDealer => chi rieng Create bi",
+        atAtIdentityFourthOccurrence = "select @@Identity — ca thu TU lien tiep (#844, #845, #846, nay). Xem #846 cho so dem ca tang: 152 @@Identity vs 3 SCOPE_IDENTITY()",
+        twoMachinesVerified847 = "CA SAU md5 chuan hoa KHOP may 150: Create f4e12a3c, Update 84f09a77, Delete 32acfb39, CheckExistGroupR 7425b87e, CheckExistGroupRNo 8c6aa65b, CheckExistGroupRNoModify f5982ba5",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.GroupRCode) || string.IsNullOrWhiteSpace(dto.GroupRName))
