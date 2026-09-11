@@ -23770,6 +23770,75 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 // ⚪ `ExecQuery` chạy câu `delete` — lại một lần nữa đúng **#742** (`ExecQuery` **không** read-only).
 // 📌 Mini: `PUT /api/insurances/{insNo}` (kiểm tồn tại + trùng mã) và `DELETE /api/insurances/{insNo}`
 //   (**đếm** khách hàng sẽ bị xoá theo và **bắt xác nhận** thay vì cascade im lặng).
+// ===== 🔴🔴 #825 QUÉT GUARD CỦA MỌI HÀM `Delete` LIVE — VÀ MỘT DẠNG GUARD MỚI: **CÓ NHƯNG IM LẶNG** =====
+// Khuôn "Delete không kiểm ràng buộc" đã gặp **ba** lần (#818 `SerSupplierDelete` **CÓ** guard · #819
+// `SerEngineerDelete` **không** · #824 `SerInsuranceDelete` **không**) ⇒ đo cho hết.
+//
+// **Bước 1** — liệt kê mọi hàm `*Delete*`/`*Remove*` được gọi từ **cả ba** đường vào: **60** tên; tìm được
+//   khai báo `public DataSet` cho **56**.
+// **Bước 2** — đếm guard (`CMyException.Raise` + `this.*Check*` + `my*_Check*`):
+//   · **24/56** có ít nhất một `Raise`;
+//   · **16/56** có **cả hai đếm = 0**: `Email_ConfigSendAuto_Delete` · `Email_Config_Delete` ·
+//     `Email_SendEmailAutoTemp_Delete` · `Email_TempEmail_Delete` · `JDPowerTerm_Delete` · `Mst_BOM_Delete` ·
+//     `Mst_DeliveryLocation_Delete` · `Mst_Param_Delete` · `SerCustomerGroupDelete` · **`SerInsuranceDelete`** ·
+//     `Ser_CustomerCareBth_Delete` · **`Ser_Email_Attachment_Delete`** · `Ser_MST_PartGroup_Delete` ·
+//     `Ser_MST_ROWarrantyWork_Delete_Dealer` · **`Ser_Mst_Service_Delete`** · `Ser_ReceptionF_Delete_New20180921`.
+//   ⚠️ Hai cái in đậm đã xác thực ở #824/#821; cái thứ ba thì **KHÔNG** như phép đếm nói —
+//
+// ⚪🔴 **`Ser_Mst_Service_Delete` (`Service.cs:1613-1814` md5 `ad306357`) — SUÝT BÁO OAN**
+//   Phép đếm ra `Raise`=0, `Check*`=0. Nhưng mở ra thì **CÓ** `#region // Check` và nó tra **ba** bảng:
+//     `select t.SerID into #tbl_Temp from ser_mst_Service t where t.SerID = @SerID ;`
+//     `select t.SerID from **Ser_ROServiceItems** t join #tbl_Temp tp on t.SerID = tp.SerID ;`
+//     `select t.SerID from **Ser_ServicePackageServiceItems** t join #tbl_Temp tp with(nolock) on … ;`
+//   rồi:
+//     `if ((dtROServiceItems == null || dtROServiceItems.Rows.Count == 0)`
+//     `    && (dtROServicePackageServiceItems == null || dtROServicePackageServiceItems.Rows.Count == 0))`
+//     `{ #region // Delete: … }`
+//   ⇒ **Guard CÓ THẬT** và đúng nghiệp vụ (chỉ xoá khi không còn dòng dịch vụ nào tham chiếu).
+//
+// 🔴🔴 **NHƯNG ĐÓ LÀ "GUARD IM LẶNG"**: nếu **có** ràng buộc thì hàm **chỉ không xoá** — **không** `Raise`,
+//   **không** trả mã lỗi, **không** báo gì. Người dùng bấm Xoá, hệ thống **im lặng không làm gì**, màn hình
+//   không có thông báo ⇒ **tưởng đã xoá**, đến khi mở lại mới thấy còn.
+//   ⇒ Đây là **dạng riêng**, khác hẳn tám dạng "guard vắng mặt" đã ghi (#728/#736/#743/#747/#760/#774):
+//     guard **hiện diện và chạy đúng**, chỉ **không phản hồi**.
+//   📌 **Hệ quả cho phép đo**: `Raise`=0 + `Check*`=0 **không kết luận được gì** — phải **mở ra đọc**.
+//     Trong 16 hàm trên, ít nhất **một** cái là guard-im-lặng chứ không phải không-guard.
+//
+// ⚪ **HÀM LÀM ĐÚNG (có guard VÀ có báo lỗi)** — 9 mã `*NotDelete*` trong `TERP.Constants`:
+//     `Ser_Part_NotDelete` ← `Ser_Mst_Part_Delete` · `Ser_Inv_StockOut_NotDelete` ← `CheckStockOutForDelete` ·
+//     `Blt_Bulletin_NotDelete` ← `Blt_Bullentin_Delete` (**sai chính tả `Bullentin` ở tên hàm**) ·
+//     `Ser_Inv_Quote_SOONotDelete` ← `Ser_Inv_Quote_Delete` · `Ser_Inv_StockIn_Exist_NotDelete_Supplier` ←
+//     `SerSupplierDelete` (#818) · `Ser_Inv_Stock_NotDeleteOnlyOneStock` · `Ser_Part_NotDelete` ·
+//     `Ser_ReceptionF_DeleteX_ExistRONotDeleter` (**sai chính tả `NotDeleter`**) ·
+//     `Ser_WarrantyReport_NotDelete_Accept` · `Ser_WarrantyReport_NotDelete_Sent`.
+//   ⇒ **Không phải cả tầng đều thiếu** — có hẳn một quy ước đặt tên mã lỗi cho việc này.
+//
+// 🔗 **CHUỖI NHÂN QUẢ NỐI VỚI #788**: #788 đã ghi `Ser_RO_Statistic_Service_ByGroup` dùng `**inner join**
+//   Ser_Mst_Service` ⇒ **dịch vụ bị xoá khỏi danh mục thì dòng RO biến mất khỏi thống kê, im lặng**.
+//   Nay thấy đầu kia: `Ser_Mst_Service_Delete` **có** chặn xoá khi còn `Ser_ROServiceItems` ⇒ ⚪ **hai đầu khớp nhau**,
+//   dữ liệu cũ khó rơi vào cảnh đó — **trừ khi** ai xoá thẳng bằng SQL, hoặc `Ser_ROServiceItems` đã bị dọn trước.
+app.MapGet("/api/_meta/delete-guard-sweep", () => Results.Ok(new
+{
+    trigger = "khuon Delete khong kiem rang buoc gap BA lan: #818 (co guard), #819 (khong), #824 (khong)",
+    deleteFunctionsCalledByAllThreePaths = 60,
+    declarationsFound = 56,
+    withAtLeastOneRaise = 24,
+    withZeroRaiseAndZeroCheck = 16,
+    zeroGuardList = new[] { "Email_ConfigSendAuto_Delete", "Email_Config_Delete", "Email_SendEmailAutoTemp_Delete",
+        "Email_TempEmail_Delete", "JDPowerTerm_Delete", "Mst_BOM_Delete", "Mst_DeliveryLocation_Delete",
+        "Mst_Param_Delete", "SerCustomerGroupDelete", "SerInsuranceDelete", "Ser_CustomerCareBth_Delete",
+        "Ser_Email_Attachment_Delete", "Ser_MST_PartGroup_Delete", "Ser_MST_ROWarrantyWork_Delete_Dealer",
+        "Ser_Mst_Service_Delete", "Ser_ReceptionF_Delete_New20180921" },
+    silentGuardDiscovery = "Ser_Mst_Service_Delete (Service.cs:1613-1814 md5 ad306357) co Raise=0 va Check*=0 nhung MO RA thi CO #region // Check tra BA bang (ser_mst_Service -> #tbl_Temp, Ser_ROServiceItems, Ser_ServicePackageServiceItems) roi if (ca hai rong) { delete } => GUARD CO THAT va dung nghiep vu",
+    silentGuardIsItsOwnShape = "NHUNG do la GUARD IM LANG: neu CO rang buoc thi ham CHI KHONG XOA — khong Raise, khong tra ma loi, khong bao gi => nguoi dung bam Xoa, he thong im lang khong lam gi, TUONG DA XOA. Day la dang RIENG, khac han tam dang guard-vang-mat da ghi (#728/#736/#743/#747/#760/#774): guard HIEN DIEN va CHAY DUNG, chi KHONG PHAN HOI",
+    measurementConsequence = "Raise=0 + Check*=0 KHONG ket luan duoc gi — phai MO RA DOC. Trong 16 ham tren, it nhat MOT cai la guard-im-lang chu khong phai khong-guard",
+    functionsDoingItRight = new[] { "Ser_Mst_Part_Delete -> Ser_Part_NotDelete", "CheckStockOutForDelete -> Ser_Inv_StockOut_NotDelete",
+        "Blt_Bullentin_Delete -> Blt_Bulletin_NotDelete (sai chinh ta Bullentin o TEN HAM)", "Ser_Inv_Quote_Delete -> Ser_Inv_Quote_SOONotDelete",
+        "SerSupplierDelete -> Ser_Inv_StockIn_Exist_NotDelete_Supplier (#818)", "Ser_Inv_Stock_NotDeleteOnlyOneStock",
+        "Ser_ReceptionF_DeleteX_ExistRONotDeleter (sai chinh ta NotDeleter)", "Ser_WarrantyReport_NotDelete_Accept", "Ser_WarrantyReport_NotDelete_Sent" },
+    notAllLayerIsMissingIt = "co han mot quy uoc dat ten ma loi cho viec nay (9 ma *NotDelete*) => KHONG phai ca tang deu thieu",
+    causalChainWith788 = "#788 ghi Ser_RO_Statistic_Service_ByGroup dung INNER JOIN Ser_Mst_Service => dich vu bi xoa khoi danh muc thi dong RO bien mat khoi thong ke, IM LANG. Nay thay dau kia: Ser_Mst_Service_Delete CO chan xoa khi con Ser_ROServiceItems => HAI DAU KHOP NHAU, du lieu cu kho roi vao canh do — TRU KHI ai xoa thang bang SQL hoac Ser_ROServiceItems da bi don truoc",
+})).RequireAuthorization();
 app.MapPut("/api/insurances/{insNo}", async (string insNo, InsuranceEditDto dto,
     AppDbContext db, ITenantContext t) =>
 {
