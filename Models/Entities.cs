@@ -2465,6 +2465,9 @@ public sealed class RoAttachment
     public string RONo { get; set; } = "";
     public string ImageName { get; set; } = "";   // IMAGENAME — tên file, bị 4 guard (xem endpoint)
     public string? ImagePath { get; set; }        // IMAGEPATH (thêm 2016-07-16 theo comment nguồn)
+    /// <summary>#879 §12 FLAGHMC — cờ "ảnh này có gửi lên HMC không". Nguồn `Ser_ROAttachment_UpdateFlagHMC`
+    /// (chỉ có trên cây `V20.2023.Release`) chỉ nhận đúng hai giá trị `Flag.Active`/`Flag.Inactive`.</summary>
+    public string? FlagHMC { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

@@ -40610,6 +40610,97 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 //     gửi **tất cả**, còn màn tra "đã gửi chưa" lại nhìn **bản của người khác**. Hai lỗi **cùng một luồng**.
 //
 // 📌 Mini: `GET /api/report/hmc-last-sent` — trả "lần gửi gần nhất" **CÓ lọc đại lý**, và nêu rõ nguồn không lọc.
+// ===== ⚪⚪🔴 #879 MÀN MỚI (chỉ có trên cây 150): ĐẶT CỜ GỬI HMC CHO ẢNH ĐÍNH KÈM =====
+// `Ser_ROAttachment_UpdateFlagHMC` — `BizCarSv.Service01.cs:12701` trên `V20.2023.Release`, md5 `d52f7adc`
+// (233 dòng), **1** vỏ bọc. **3B**: cây laptop **KHÔNG CÓ**. Lấy từ hàng đợi **60** (#874).
+// BƯỚC 2 theo **bốn** phép grep (#357 + #368): tên đầy đủ · hậu tố `UpdateFlagHMC` · cột `FlagHMC` · đường dẫn
+// `roattachments/flag` ⇒ chỉ khớp hai ghi chú của #874 ⇒ **chưa port**.
+//
+// ⚪⚪⚪ **HÀM VALIDATE ĐẦU VÀO CHẶT NHẤT ĐÃ GẶP — VÀ LÀ MẪU ĐÚNG CHO THỨ #866 THIẾU**
+//   Sáu `Raise` **riêng biệt** trước khi ghi:
+//     `_InvalidDataSetAttachment` (DataSet rỗng) · `_InvalidDataTableAttachment` (thiếu bảng)
+//     · `_InvalidID` (ID rỗng) · `_FlagHMCisnull` (cờ rỗng)
+//     · `_**InvalidFlagHMC**` ← `if (!Rows[i]["FlagHMC"].Equals(Flag.Active) && !…Equals(Flag.Inactive)) throw`
+//     · `_InvalidID` lần hai (tra DB không thấy bản ghi)
+//   ⇒ **Kiểm MIỀN GIÁ TRỊ của cờ** — đúng thứ `SerStockOutOrderStatusUpdate` (#866) **không có** (ở đó
+//     `strStatus` được ghi thẳng, nhận **bất kỳ** giá trị nào). ⇒ Khi cần mẫu đúng cho "kiểm trạng thái đích",
+//     dùng **hàm này**.
+// ⚪ `DataUtils.ResetAllDataRowState(ref dtAttachment, Modified)` rồi `alColumnEffective.Add("**FlagHMC**")`
+//   — **chỉ đúng một cột** ⇒ không ghi đè cột khác, trái hẳn #852 (mọi cột luôn vào danh sách) và #863
+//   (đổi trạng thái ghi đè `19 trường).
+//
+// 🔴🔴 **CHÚ THÍCH NÓI "KHÔNG ĐƯỢC XOÁ ẢNH" — NHƯNG HÀM KHÔNG XOÁ GÌ, VÀ CHẶN ÍT HƠN CHÚ THÍCH NÓI**
+//     `#region // Check nếu báo cáo bảo hành thuộc trạng thái **đã gửi HTC, chờ xem xét và đã duyệt** thì`
+//     `           **không được xóa ảnh**`
+//   ⇒ ① Hàm này **cập nhật cờ**, **không xoá** — chú thích chép từ hàm xoá ảnh.
+//   ⇒ ② Chú thích liệt kê **ba** trạng thái, nhưng code chỉ chặn **một**:
+//     `if (strWarrantyStatus.Equals(TERP.Constants.Ser_WarrantyReport_Status.**Accepted**)) throw …`
+//     ⇒ "đã gửi HTC" và "chờ xem xét" **không bị chặn** ⇒ vẫn đổi được cờ gửi HMC của ảnh thuộc BCBH
+//     **đang chờ hãng xem xét**.
+//
+// 🔴 **MÃ LỖI MƯỢN TỪ HÀM KHÁC**: nhánh ấy ném `TError.ErrCarSv.**Ser_RO_UpdateStatus**_InvalidWarrantyStatus`
+//   — mã của `Ser_RO_UpdateStatus`, **không** phải của hàm này ⇒ log/telemetry quy **sai hàm**.
+//   (Cùng bệnh đã ghi: *"mã lỗi mặc định chỉ sang một hàm hoàn toàn khác"*.)
+// 🔴🔴 **`with(nolock)` TRONG CHÍNH CÂU GUARD**: `from Ser_ROAttachment t **with(nolock)** inner join Ser_RO sr`
+//   `**with(nolock)** left join Ser_ROWarrantyReport f **with(nolock)**` ⇒ **đọc bẩn để quyết định chặn hay cho ghi**
+//   — nguy hiểm hơn `nolock` trên báo cáo (#861/#349): một `WarrantyStatus` **chưa commit** có thể cho qua guard.
+// 🔴 **Truy vấn kiểm nằm TRONG vòng lặp**: mỗi dòng ảnh một lần `_dbDealer.ExecQuery(…, "@ID", …)` ⇒ **N+1**;
+//   gửi 50 ảnh là 50 lượt round-trip, tất cả trong **một** transaction đang mở trên ba CSDL.
+// 🔴 **Đọc `_dbDealer` nhưng ghi cả ba** ⇒ **ca thứ NĂM** của họ #338/#351 (sau #851, #854, #855, #875).
+// 📌 Mini: `POST /api/roattachments/flag-hmc` — §12 đủ bốn chỗ (**entity** `FlagHMC` + **Seeder `ALTER … ADD COLUMN
+//   IF NOT EXISTS`** + **DTO** + **endpoint**); giữ **kiểm miền giá trị** của nguồn, chặn **đủ ba** trạng thái
+//   mà chú thích nguồn nói, và kiểm **một lượt** thay vì N+1.
+app.MapPost("/api/roattachments/flag-hmc", async (RoAttachmentFlagHmcDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var lines = dto.Items ?? new List<RoAttachmentFlagHmcLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Ser_ROAttachment_UpdateFlagHMC_InvalidDataSetAttachment" });
+    // Kiem MIEN GIA TRI nhu nguon: chi nhan "1" hoac "0".
+    var badFlag = lines.Where(x => x.FlagHMC != "1" && x.FlagHMC != "0").Select(x => x.Id).ToList();
+    if (badFlag.Count > 0)
+    {
+        return Results.BadRequest(new
+        {
+            error = "Ser_ROAttachment_UpdateFlagHMC_InvalidFlagHMC", ids = badFlag,
+            rule = "FlagHMC chi nhan Flag.Active (1) hoac Flag.Inactive (0) — giu dung kiem mien gia tri cua nguon",
+        });
+    }
+    var ids = lines.Select(x => x.Id).Distinct().ToList();
+    var rows = await db.RoAttachments.Where(x => x.OrgId == t.OrgId && ids.Contains(x.Id)).ToListAsync();
+    var missing = ids.Where(i => rows.All(r => r.Id != i)).ToList();
+    if (missing.Count > 0) return Results.NotFound(new { error = "Ser_ROAttachment_UpdateFlagHMC_InvalidID", ids = missing });
+    // Guard trang thai BCBH — KIEM MOT LUOT (nguon kiem trong VONG LAP, N+1).
+    var roNos = rows.Select(r => r.RONo).Distinct().ToList();
+    var blocked = await db.ServiceWarrantyClaims
+        .Where(w => w.OrgId == t.OrgId && w.RONo != null && roNos.Contains(w.RONo))
+        .Where(w => w.Status == "Accepted" || w.Status == "SentHTC" || w.Status == "WaitReview")
+        .Select(w => w.RONo).ToListAsync();
+    var blockedRows = rows.Where(r => blocked.Contains(r.RONo)).Select(r => r.Id).ToList();
+    if (blockedRows.Count > 0)
+    {
+        return Results.Conflict(new
+        {
+            error = "Ser_ROAttachment_UpdateFlagHMC_InvalidWarrantyStatus", ids = blockedRows,
+            sourceBlocksOnlyAccepted = "NGUON chi chan Accepted du chu thich noi ca da-gui-HTC va cho-xem-xet",
+        });
+    }
+    var map = lines.GroupBy(x => x.Id).ToDictionary(g => g.Key, g => g.Last().FlagHMC);
+    foreach (var r in rows) if (map.TryGetValue(r.Id, out var f)) r.FlagHMC = f;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated = rows.Count,
+        items = rows.Select(r => new { r.Id, r.RONo, r.ImageName, r.FlagHMC }),
+        onlyExistsOnMachine150_879 = "#879: Ser_ROAttachment_UpdateFlagHMC — BizCarSv.Service01.cs:12701 tren V20.2023.Release, md5 d52f7adc (233 dong), 1 vo boc; cay laptop KHONG CO. Lay tu hang doi 60 cua #874",
+        sourceHasStrictestInputValidation = "AM TINH — HAM VALIDATE DAU VAO CHAT NHAT DA GAP, va la MAU DUNG cho thu #866 THIEU: sau Raise rieng biet truoc khi ghi — _InvalidDataSetAttachment, _InvalidDataTableAttachment, _InvalidID (ID rong), _FlagHMCisnull, _InvalidFlagHMC (if (!Rows[i][FlagHMC].Equals(Flag.Active) && !...Equals(Flag.Inactive)) throw) va _InvalidID lan hai (tra DB khong thay). KIEM MIEN GIA TRI cua co — dung thu SerStockOutOrderStatusUpdate (#866) KHONG CO (o do strStatus duoc ghi thang, nhan BAT KY gia tri nao)",
+        sourceWritesOnlyOneColumn = "AM TINH: DataUtils.ResetAllDataRowState(ref dtAttachment, Modified) roi alColumnEffective.Add(FlagHMC) — CHI DUNG MOT COT => khong ghi de cot khac, trai han #852 (moi cot luon vao danh sach) va #863 (doi trang thai ghi de `19 truong)",
+        commentSaysDeleteButFunctionUpdates = "CHU THICH NOI KHONG DUOC XOA ANH NHUNG HAM KHONG XOA GI: #region // Check neu bao cao bao hanh thuoc trang thai da gui HTC, cho xem xet va da duyet thi khong duoc xoa anh — (1) ham nay CAP NHAT CO, khong xoa, chu thich chep tu ham xoa anh; (2) chu thich liet ke BA trang thai nhung code chi chan MOT: if (strWarrantyStatus.Equals(Ser_WarrantyReport_Status.Accepted)) throw => da-gui-HTC va cho-xem-xet KHONG bi chan nen van doi duoc co gui HMC cua anh thuoc BCBH dang cho hang xem xet",
+        errorCodeBorrowedFromAnotherFunction = "MA LOI MUON TU HAM KHAC: nhanh ay nem TError.ErrCarSv.Ser_RO_UpdateStatus_InvalidWarrantyStatus — ma cua Ser_RO_UpdateStatus, KHONG phai cua ham nay => log/telemetry quy SAI HAM",
+        nolockInsideTheGuardQuery = "with(nolock) TRONG CHINH CAU GUARD: from Ser_ROAttachment t with(nolock) inner join Ser_RO sr with(nolock) left join Ser_ROWarrantyReport f with(nolock) => DOC BAN DE QUYET DINH CHAN HAY CHO GHI — nguy hiem hon nolock tren bao cao (#861/#349): mot WarrantyStatus CHUA COMMIT co the cho qua guard",
+        guardQueryInsideLoop = "TRUY VAN KIEM NAM TRONG VONG LAP: moi dong anh mot lan _dbDealer.ExecQuery(..., @ID, ...) => N+1; gui 50 anh la 50 luot round-trip, tat ca trong MOT transaction dang mo tren ba CSDL. Mini kiem MOT LUOT",
+        readsDealerWritesThree879 = "doc _dbDealer nhung ghi ca ba CSDL => CA THU NAM cua ho #338/#351 (sau #851, #854, #855, #875)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/hmc-last-sent", (string? dealerCode) => Results.Ok(new
 {
     dealerCode = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode!.Trim(),
@@ -75367,6 +75458,8 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record RoAttachmentFlagHmcLineDto(long Id, string? FlagHMC);
+record RoAttachmentFlagHmcDto(List<RoAttachmentFlagHmcLineDto>? Items);
 record RoAppointmentDto(string? AppId, bool? AllowOverwrite);
 record RoWarrantyPhotoTypeDto(string? ROWPTCode, string? ROWPTName, string? FlagActive);
 record SerMstLocationDto(string? LocationID, string? LocationCode, string? LocationName, string? StockNo, string? DealerCode, string? IsActive);
