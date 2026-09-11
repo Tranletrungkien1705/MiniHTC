@@ -23845,6 +23845,68 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   — **không** có `ROID` trong điều kiện join. Nếu cùng cặp (`EngineerID`,`ItemID`) xuất hiện ở RO khác thì
 //   **xoá nhầm**. Chưa có DB để đo tính duy nhất của `ItemID` ⇒ **không kết luận**.
 // 📌 §12: `RoHistory` đủ **4 chỗ** — entity + DbSet + Seeder `CREATE TABLE IF NOT EXISTS` + **cả GET lẫn POST**.
+// ===== 🔴🔴🔴 #828 QUÉT "THAM SỐ CHẾT" TOÀN TẦNG (#806, #808, #827) — **18 CA THẬT** =====
+// Khuôn "hàm nhận tham số rồi không dùng" đã gặp **ba** lần ⇒ đo cho hết `TERP.BizCarSv/*.cs`.
+// **Phương pháp**: với mỗi `public DataSet`, đọc **trọn chữ ký nhiều dòng** (tới dấu `)`), lấy tập tham số `str*`,
+// rồi đếm số lần mỗi tham số xuất hiện **trong thân**; bằng **0** ⇒ ứng viên.
+//   · thô: **2532** ca ⇒ bỏ tham số **hạ tầng** (`strGwUserCode`/`strGwPassword`/`strTid`/`strPartnerCode`/
+//     `strPartnerUserCode`/`strLanguageCode` — WS đã xác thực nên biz không dùng) ⇒ **53**;
+//   · bỏ `strFOSUserCode`/`strFOSPassword` và nhiễu regex ⇒ **24**;
+//   · ⚠️ **bỏ tham số ĐÃ BỊ COMMENT ngay trong chữ ký** (`//, string strTotalActHours`) — **6** ca:
+//     `CarSv_SerCarUpdate_KeyPlateNo`/`_KeyVIN`/`CarSv_Ser_CustomerCar_SalesCreate_New20180622`/`…_MBSCreate`
+//     (`strPrjCode`) · `SerStockInStatusUpdateToFinishedAdjustment` (`strIsAdjustment`) ·
+//     `SerROToRepaireStatus` (`strTotalActHours`). ⇒ Đó là tham số **đã gỡ**, không phải **chết**.
+//   ⇒ **CÒN 18 CA THẬT.**
+//
+// 🔴🔴🔴 **NHÓM RBAC / HỆ THỐNG — `strDealerCodeList` CHẾT Ở BA HÀM**
+//   `Ser_SysGetPartner` · `Ser_SysGetObjectType` · `Ser_SysGetMapSysUserSysObjectForCurrentUser` (`System.cs`)
+//   ⇒ Ô lọc **đại lý** được truyền vào nhưng **không bao giờ vào SQL** ⇒ ba màn hệ thống trả về **toàn bộ**
+//     đối tác / loại đối tượng / ánh xạ người dùng-đối tượng. Nối thẳng chuỗi **#761/#764/#765** (rò dữ liệu
+//     chéo đại lý ở tầng phân quyền) — nay có thêm **cơ chế thứ tư**: tham số lọc **chết ngay ở biz**.
+//
+// 🔴🔴🔴 **`SP_SharePartCreate` (`PartOrder.cs`) — BỐN tham số vô hướng bị bỏ**
+//   Chữ ký (nguyên văn): `… , string strDealerCode , string **strCreatedDate** , string **strCreatedBy** ,`
+//   `string **strPartID** , string **strQuantityShare** , **DataSet dsSPDetail** )`
+//   ⇒ Dữ liệu thật lấy **hoàn toàn** từ `dsSPDetail`; bốn tham số vô hướng **bị lờ**.
+//   ⇒ Client gửi `strPartID`/`strQuantityShare` mà **không** gửi `dsSPDetail` thì **không tạo gì** — và
+//     `strCreatedBy`/`strCreatedDate` gửi lên cũng **không được dùng** (người tạo thực tế lấy từ nơi khác).
+//
+// 🔴🔴 **ĐƠN ĐẶT PHỤ TÙNG — lọc NGƯỜI TẠO chết ở CẢ HAI nhánh**:
+//   `Ser_Part_OrderGet_StatusList` (`PartOrder.cs`) **và** `Ser_Part_OrderGet_StatusList_WH` (`WH.cs`) đều có
+//   `strOrderCreatorCodeConditionList` **không vào thân** ⇒ ô "người tạo đơn" **vô tác dụng** ở cả đại lý lẫn kho.
+//   ⚪ Đây là cặp `_WH` **lệch giống nhau** — khác #801 (một bản đúng một bản sai).
+//
+// 🔴🔴 **BÁO CÁO BẢO HÀNH — 4 ca**: `Ser_ROWarrantyReport_Create_20230220` và `…_Update_V2_New20230220` bỏ
+//   `strModelID`; `Ser_ROWarrantyReport_ItemStatus_Update` và `…_V2` bỏ `strROID`.
+//   📌 `strModelID` nằm đúng trong **13 cột chụp ảnh** mà #798 phát hiện bản `_20230220` thêm vào —
+//     nghĩa là cột đó **có** trong danh sách ghi nhưng **giá trị lấy từ nơi khác**, không phải tham số.
+//
+// 🔴 **Còn lại (5)**: `Ser_Inv_Quote_Create` bỏ `strIsActive` · `SerAverageCost` bỏ `strPartId` ·
+//   `Ser_Inv_StockIn_Save` bỏ `strOrderPartId` · `SerStockOutStatusUpdateToFinished` bỏ `strOldStockOutID` ·
+//   `SerROHistoryGet` bỏ `strStatus` (#827).
+//   ⚠️ `SerAverageCost` bỏ `strPartId` đáng soi nhất trong nhóm này — **giá vốn bình quân** mà không nhận mã
+//     phụ tùng thì tính cho **cái gì**? Chưa đọc thân hàm ⇒ ghi là **cần đọc tiếp**, không kết luận.
+// 📌 **Bài học đo lường**: khuôn này cần **ba** tầng lọc (tham số hạ tầng · nhiễu regex · **tham số đã comment**).
+//   Thô **2532** → lọc đủ **18**. Riêng tầng "đã comment" loại **6/24** — nếu bỏ qua sẽ báo oan 25%.
+app.MapGet("/api/_meta/dead-parameter-sweep", () => Results.Ok(new
+{
+    trigger = "#806 (strROIDList sai toan tu), #808 (strModelCodeList bake nham bien), #827 (strStatus khong vao SQL)",
+    method = "voi moi public DataSet, doc TRON chu ky nhieu dong (toi dau dong ngoac dong), lay tap tham so str*, roi dem so lan xuat hien trong THAN; bang 0 => ung vien",
+    rawCandidates = 2532,
+    afterDroppingInfraParams = 53,
+    afterDroppingFosAndRegexNoise = 24,
+    afterDroppingCommentedOutParams = 18,
+    commentedOutNotDead = new[] { "CarSv_SerCarUpdate_KeyPlateNo/_KeyVIN/CarSv_Ser_CustomerCar_SalesCreate_New20180622/_MBSCreate: strPrjCode",
+        "SerStockInStatusUpdateToFinishedAdjustment: strIsAdjustment", "SerROToRepaireStatus: strTotalActHours (//, string strTotalActHours)" },
+    rbacGroup = "strDealerCodeList CHET o BA ham System.cs: Ser_SysGetPartner, Ser_SysGetObjectType, Ser_SysGetMapSysUserSysObjectForCurrentUser => o loc DAI LY khong bao gio vao SQL => ba man he thong tra ve TOAN BO doi tac / loai doi tuong / anh xa nguoi dung-doi tuong. Noi chuoi #761/#764/#765 (ro du lieu cheo dai ly o tang phan quyen) — CO CHE THU TU: tham so loc chet ngay o biz",
+    sharePartCreate = "SP_SharePartCreate (PartOrder.cs) bo BON tham so vo huong: strCreatedDate, strCreatedBy, strPartID, strQuantityShare — du lieu that lay HOAN TOAN tu DataSet dsSPDetail => client gui strPartID/strQuantityShare ma khong gui dsSPDetail thi KHONG TAO GI; strCreatedBy/strCreatedDate gui len cung khong duoc dung",
+    partOrderCreatorFilter = "Ser_Part_OrderGet_StatusList (PartOrder.cs) VA Ser_Part_OrderGet_StatusList_WH (WH.cs) deu co strOrderCreatorCodeConditionList khong vao than => o NGUOI TAO DON vo tac dung o CA dai ly lan kho. Cap _WH LECH GIONG NHAU — khac #801 (mot ban dung mot ban sai)",
+    warrantyReportGroup = "Ser_ROWarrantyReport_Create_20230220 va _Update_V2_New20230220 bo strModelID; Ser_ROWarrantyReport_ItemStatus_Update va _V2 bo strROID. strModelID nam dung trong 13 cot chup anh ma #798 phat hien ban _20230220 them vao => cot CO trong danh sach ghi nhung GIA TRI lay tu noi khac, khong phai tham so",
+    remainingFive = new[] { "Ser_Inv_Quote_Create: strIsActive", "SerAverageCost: strPartId", "Ser_Inv_StockIn_Save: strOrderPartId",
+        "SerStockOutStatusUpdateToFinished: strOldStockOutID", "SerROHistoryGet: strStatus (#827)" },
+    needsReading = "SerAverageCost bo strPartId dang soi nhat: GIA VON BINH QUAN ma khong nhan ma phu tung thi tinh cho CAI GI? Chua doc than ham => CAN DOC TIEP, khong ket luan",
+    measurementLesson = "khuon nay can BA tang loc (tham so ha tang / nhieu regex / THAM SO DA COMMENT trong chu ky). Tho 2532 -> loc du 18. Rieng tang da-comment loai 6/24 — bo qua se bao oan 25%",
+})).RequireAuthorization();
 app.MapGet("/api/rohistories", async (AppDbContext db, ITenantContext t, string? roId, string? status) =>
 {
     var qy = db.RoHistories.Where(x => x.OrgId == t.OrgId);
