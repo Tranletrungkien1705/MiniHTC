@@ -39742,6 +39742,93 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
 //   `#tbl_Ser_ROPartItems_SumTotal` / `#tbl_Ser_ROServiceItems_SumTotal` ⇒ port **dòng ACTIVE**.
 // 📌 Mini: `GET /api/report/ro-revenue-summary` — tính thuế bằng `decimal` (không chia nguyên), **nhân số lượng**
 //   cho cả dịch vụ, lấy biển số **từ phiếu** (`RepairOrder.LicensePlate`), và **không** cắt dòng bằng inner join.
+// ===== 🔴🔴 #861 MÀN MỚI: THỐNG KÊ PHỤ TÙNG THEO PHIẾU — `Ser_RO_Statistic_Part` =====
+// `Service.Report.cs:842-1000` md5 `3a905f13` (159 dòng), LIVE (4 vỏ bọc). **3B**: **KHỚP** máy 150
+// (và `Ser_RO_Statistic_Service` `:491` md5 `4adab057` cũng khớp). Mini **chưa có** ⇒ màn mới.
+//
+// ⚪⚪⚪ **ĐÂY LÀ HÀM LÀM ĐÚNG HAI THỨ MÀ #860 LÀM SAI — VÀ NÓ NẰM CÙNG FILE**
+//   ① **Thuế**: `… + (isnull(si.Factor,0)*isnull(si.Price,0)*isnull(si.Quantity,0)*isnull(si.VAT,0)***0.01**)`
+//      ⇒ nhân `0.01` (**literal thập phân**) thay vì `VAT/**100**` ⇒ **không dính chia nguyên** (#408).
+//      `Ser_RO_Sumary_Revenue` (#860) cách đó `200 dòng lại viết `(1+VAT/100)` ⇒ **cùng một file, hai cách**,
+//      một cách an toàn và một cách nuốt thuế.
+//   ② **Biển số**: `**car**.PlateNo` — lấy từ bảng **XE**, đúng chiếc xe trong phiếu; còn #860 lấy `cus.PlateNo`
+//      từ bảng **khách**. ⇒ Khi cần mẫu đúng cho hai bẫy ấy, dùng **hàm này** làm mốc.
+//   📌 Đúng tinh thần "lần thứ ba thì đi tìm hàm làm ĐÚNG": phản ví dụ **không** ở đâu xa mà ở **ngay cùng file**.
+//
+// 🔴🔴 **`with(nolock)` Ở MỌI BẢNG — BÁO CÁO TÀI CHÍNH ĐỌC BẨN**
+//   Bảy tham chiếu bảng trong hàm đều `with(nolock)`; **cả file có 61 chỗ**.
+//   ⇒ Đọc bẩn (dirty read): thống kê có thể **đếm cả dòng chưa commit** và **bỏ sót/đếm trùng** dòng đang
+//     bị page-split. Với báo cáo **tiền** thì đây là rủi ro thật, không phải chuyện phong cách.
+//   ⇒ Đối chiếu #860 (`Ser_RO_Sumary_Revenue`) trong **cùng file** lại dùng `--//[mylock]` ⇒ **hai báo cáo,
+//     hai kỷ luật khoá đối lập**. Bổ sung #850 (trộn `nolock`/`[mylock]` trong **cùng một lô lệnh**).
+//
+// 🔴🔴 **`INNER JOIN Ser_Mst_Part` — MẤT DÒNG TRÊN CHÍNH BÁO CÁO PHỤ TÙNG** (luật #410)
+//     `INNER JOIN Ser_ROPartItems si on tsr.ROID = si.ROID`
+//     `INNER JOIN Ser_Mst_Part ss on si.PartID = ss.PartID`
+//   ⇒ Dòng phụ tùng có `PartID` **không còn** trong danh mục (đã xoá — mà `Ser_MST_PartGroup_Delete` ở #839
+//     xoá **không kiểm ràng buộc**) sẽ **biến mất khỏi thống kê**. Đây là báo cáo **thống kê phụ tùng**,
+//     nên mất dòng = **sai tổng**, không chỉ thiếu thông tin.
+//
+// 🔴 **`Quantity` ĐƯỢC DÙNG ĐỂ TÍNH TIỀN NHƯNG KHÔNG ĐƯỢC TRẢ VỀ**: danh sách cột có `si.PartID`, `si.Factor`,
+//   `si.Price`, `si.VAT`, `ss.PartCode`, `ss.VieName`, `Amount` — **không có** `si.Quantity`, dù `Quantity`
+//   nằm trong công thức `Amount`. ⇒ Người dùng thấy **tiền** mà **không thấy số lượng** ⇒ không tự kiểm được.
+// 🔴 **Lặp lại hai lỗi của #860**: `'@FromDate'`/`'@ToDate'` **bake trong nháy** qua `StringUtils.Replace`
+//   (**injection**) và `datediff(day, …, ro.CheckInDate)` đặt **hàm lên cột** (**non-sargable**);
+//   cùng với tiền tố cứng `'**LS-**' + ro.RONO AS RONO`.
+// ⚪ `JOIN Ser_Car` viết thiếu chữ `INNER` trong khi các join khác ghi đủ — **tương đương về ngữ nghĩa**,
+//   chỉ là không nhất quán; ghi để khỏi ai đó tưởng là `LEFT`.
+// 📌 Mini: `GET /api/report/ro-part-statistic` — giữ cách tính thuế **đúng** của nguồn, **trả thêm `quantity`**,
+//   và **không** cắt dòng khi phụ tùng vắng danh mục (đếm riêng số dòng nguồn sẽ bỏ).
+app.MapGet("/api/report/ro-part-statistic", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? partCode) =>
+{
+    var pc = (partCode ?? "").Trim();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        .Select(x => new { x.Id, x.RONo, x.CheckInDate, x.LicensePlate, x.CusName })
+        .ToListAsync();
+    var ids = ros.Select(x => x.Id).ToList();
+    var roMap = ros.ToDictionary(x => x.Id, x => x);
+    var lines = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Where(x => pc.Length == 0 || x.PartCode == pc)
+        .Select(x => new { x.RoId, x.PartCode, x.PartName, x.NeedQty, x.UnitPrice, x.Factor, x.Vat })
+        .ToListAsync();
+    var catalog = (await db.ServiceParts.Where(x => x.OrgId == t.OrgId)
+        .Select(x => x.PartCode).ToListAsync()).ToHashSet();
+    var items = lines.Select(l =>
+    {
+        var ro = roMap[l.RoId];
+        var f = l.Factor == 0m ? 1m : l.Factor;
+        // Giu DUNG cach tinh cua nguon: base + base * VAT * 0.01 (KHONG chia nguyen).
+        var base_ = f * l.UnitPrice * l.NeedQty;
+        return new
+        {
+            roNo = ro.RONo, ro.CheckInDate,
+            plateNo = ro.LicensePlate,      // tu bang XE/phieu, giong nguon (car.PlateNo)
+            ro.CusName,
+            l.PartCode, l.PartName,
+            quantity = l.NeedQty,           // NGUON KHONG TRA VE cot nay
+            factor = f, price = l.UnitPrice, vat = l.Vat,
+            amount = base_ + base_ * l.Vat * 0.01m,
+            inCatalog = catalog.Contains(l.PartCode),
+        };
+    }).OrderBy(x => x.roNo).ToList();
+    return Results.Ok(new
+    {
+        fromDate, toDate, partCode = pc.Length > 0 ? pc : null,
+        count = items.Count, totalAmount = items.Sum(x => x.amount),
+        rowsSourceWouldDrop = items.Count(x => !x.inCatalog),
+        items,
+        thisIsTheCorrectExampleForTwoTraps = "#861 AM TINH — HAM LAM DUNG HAI THU MA #860 LAM SAI, va no NAM CUNG FILE: (1) THUE: ... + (isnull(si.Factor,0)*isnull(si.Price,0)*isnull(si.Quantity,0)*isnull(si.VAT,0)*0.01) — nhan 0.01 (literal thap phan) thay vi VAT/100 => KHONG dinh chia nguyen (#408), trong khi Ser_RO_Sumary_Revenue (#860) cach do `200 dong viet (1+VAT/100); (2) BIEN SO: car.PlateNo lay tu bang XE, dung chiec xe trong phieu, con #860 lay cus.PlateNo tu bang KHACH. Khi can mau dung cho hai bay ay, dung HAM NAY lam moc",
+        sourceUsesNolockEverywhere = "with(nolock) o MOI BANG: bay tham chieu bang trong ham deu co, CA FILE co 61 cho => doc ban (dirty read): thong ke co the dem ca dong CHUA COMMIT va bo sot/dem trung dong dang bi page-split. Voi bao cao TIEN thi day la rui ro that. Doi chieu #860 trong CUNG FILE lai dung --//[mylock] => HAI BAO CAO, HAI KY LUAT KHOA DOI LAP (bo sung #850 noi tron nolock va mylock trong CUNG MOT LO LENH)",
+        innerJoinCatalogLosesRows = "INNER JOIN Ser_ROPartItems si on tsr.ROID = si.ROID roi INNER JOIN Ser_Mst_Part ss on si.PartID = ss.PartID => dong phu tung co PartID KHONG CON trong danh muc (da xoa — ma Ser_MST_PartGroup_Delete o #839 xoa KHONG kiem rang buoc) se BIEN MAT khoi thong ke. Day la bao cao THONG KE PHU TUNG nen mat dong = SAI TONG, khong chi thieu thong tin. Mini dem rowsSourceWouldDrop thay vi cat dong",
+        quantityUsedButNotReturned = "Quantity duoc dung de TINH TIEN nhung KHONG duoc tra ve: danh sach cot co si.PartID, si.Factor, si.Price, si.VAT, ss.PartCode, ss.VieName, Amount — KHONG co si.Quantity du Quantity nam trong cong thuc Amount => nguoi dung thay TIEN ma khong thay SO LUONG nen khong tu kiem duoc. Mini tra them quantity",
+        repeatsTwoBugsOf860 = "lap lai hai loi cua #860: (nhay)@FromDate(nhay) va (nhay)@ToDate(nhay) BAKE TRONG NHAY qua StringUtils.Replace (injection) va datediff(day, ..., ro.CheckInDate) dat HAM LEN COT (non-sargable); cung voi tien to cung LS- + ro.RONO AS RONO",
+        joinKeywordInconsistent = "AM TINH: JOIN Ser_Car viet thieu chu INNER trong khi cac join khac ghi du — TUONG DUONG ve ngu nghia, chi la khong nhat quan; ghi de khoi ai do tuong la LEFT",
+        twoMachinesVerified861 = "md5 chuan hoa KHOP may 150: Ser_RO_Statistic_Part 3a905f13, Ser_RO_Statistic_Service 4adab057; so luong with(nolock) trong file cung la 61",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/ro-revenue-summary", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? dealerCode, string? status) =>
 {
