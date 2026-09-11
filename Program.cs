@@ -23971,6 +23971,92 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 // 📌 **Luật quét để lại**: `grep -noE "SqlUtils\.BuildClause\([^;]{0,200}"` rồi lấy **đối số thứ ba**; nếu nó là
 //   biến `str*` **không** có hậu tố `ConditionList`/`List`/`Pattern` và **không** bắt đầu bằng `"=" +` ⇒ **nghi ngay**,
 //   rồi lọc tiếp bằng **LIVE/CHẾT** (bài học #820) trước khi báo.
+// ===== 🔴🔴🔴 #834 MÀN MỚI: TRA PHIẾU GIAO VIỆC (bản WEB) — `Ser_AssignmentWork_Get` =====
+// `BizCarSv.AssignmentOfWork.cs:1908-2117` md5 `6d69608a` (194 dòng, `Raise`=**0**), LIVE qua web WS.
+// Mini đã port bản **tablet** `…_Get_**ForTab**` (`:2118-2472` md5 `0c8da630`, 332 dòng, **2** `Raise`) nhưng
+// **chưa** có bản web ⇒ đây là cặp "hai đường, hai hàm" quen thuộc.
+// **BƯỚC 3B**: md5 trên máy 150 = `6d69608a` **KHỚP**.
+//
+// ⚪ **NGƯỢC KHUÔN THƯỜNG GẶP: BẢN TABLET GIÀU HƠN BẢN WEB**
+//   `_ForTab` có **phân trang** (`strFt_RecordStart`/`strFt_RecordCount`) và **sáu** bộ lọc mà bản web không có:
+//   `strROCreator` · `strROCreatedBy` · `strEngineerID` · `strROStatusList` · `strWorkTypeStart` · `strWorkTypeFinish`;
+//   nó cũng có **2** `Raise` trong khi bản web có **0**. ⇒ Không phải lúc nào "tablet cũng là bản cũ" (#794/#796).
+//   🔴 Nhưng `_ForTab` dùng `Convert.ToInt64(strFt_RecordStart)` — **không `TryParse`** ⇒ chuỗi rỗng/chữ ném
+//     **`FormatException` thô** (khuôn #802).
+//
+// 🔴🔴🔴 **`select top 500 … INTO #tmpsaw` KHÔNG CÓ `ORDER BY`** (#415)
+//   Câu đầu gom `Ser_AssignmentWork` + `Ser_RO` + `ser_car` + `Ser_MST_Model` vào bảng tạm với `top 500`.
+//   ⇒ Quá 500 phiếu thì **cắt 500 dòng BẤT KỲ** — và vì là `SELECT … INTO`, thêm `ORDER BY` cũng **vô nghĩa**.
+//   ⇒ Màn giao việc **mất dữ liệu im lặng** ở đại lý đông việc; không có tham số phân trang nào để lấy phần còn lại
+//     (bản `_ForTab` **có**, bản web **không**).
+//
+// 🔴🔴 **`inner join ser_car car on ro.CarID=car.CarID AND ro.CusID=car.CusID AND ro.DealerCode=car.DealerCode`**
+//   ⇒ đúng khuôn đã bắt ở **#752** (`DMSWROGet`) và **#788** (thống kê dịch vụ): **xe đổi chủ** thì `ro.CusID`
+//     (chủ lúc lập lệnh) ≠ `car.CusID` (chủ hiện tại) ⇒ **phiếu giao việc biến mất khỏi màn tra**. Lần thứ **ba**.
+//
+// 🔴🔴🔴 **`inner join Ser_Engineer se` — NỐI THẲNG VỚI #819**
+//   Câu thứ ba lấy danh sách kỹ thuật viên của phiếu:
+//     `from Ser_AssignmentWorkEngineer sawe inner join #tmpsaw … **inner join Ser_Engineer se** on sawe.EngineerID = se.EngineerID`
+//   ⇒ **Kỹ thuật viên bị xoá khỏi danh mục thì dòng phân công biến mất** khỏi màn.
+//   🔗 Mà **#819** đã chứng minh `SerEngineerDelete` **xoá cứng** (`delete from Ser_Engineer`), guard duy nhất là
+//     `CheckExistEngineer` (**tồn tại**), **không** kiểm ràng buộc — và nó **không xoá** ở CSDL đại lý.
+//   ⇒ **Chuỗi nhân quả hoàn chỉnh**: xoá KTV ⇒ `inner join` nuốt dòng ⇒ phiếu giao việc **mất người thực hiện**
+//     mà **không có lỗi nào báo**. Đây là cặp "đầu ghi thiếu guard + đầu đọc dùng inner join" thứ **hai**
+//     sau cặp `Ser_Mst_Service_Delete` ↔ #788 (ở đó đầu ghi **có** guard nên hai đầu khớp — xem #825).
+//
+// 🔴 `zzzzClauseWhere_str**DealerCode**` — biến **trần**, đúng **161 site** đã đếm ở #833 ⇒ lọc đại lý chỉ sống
+//   nếu client tự ghép toán tử.
+// 🔴 **Join chéo CSDL**: `Ser_AssignmentWork` và `Ser_AssignmentWorkEngineer` đọc từ `[@strDBName_CommonCenter]`
+//   còn `Ser_RO` / `ser_car` / `Ser_Engineer` đọc **cục bộ** ⇒ một câu `inner join` bắc qua **hai CSDL**.
+// ⚪ `left join Ser_MST_Model` và `left join Ser_GroupRepair` ⇒ **không** nuốt dòng khi thiếu model/nhóm thợ.
+// 📌 Mini: `GET /api/assignmentworks/search` — **đếm riêng** ba nguyên nhân mất dòng thay vì để im lặng, và
+//   **có phân trang** (điều bản web thiếu).
+app.MapGet("/api/assignmentworks/search", async (AppDbContext db, ITenantContext t,
+    string? roId, string? roNo, string? dealerCode, int? skip, int? take) =>
+{
+    var qy = db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId);
+    var rid = (roId ?? "").Trim();
+    if (rid.Length > 0) qy = qy.Where(x => x.ROID == rid);
+    var rno = (roNo ?? "").Trim();
+    if (rno.Length > 0) qy = qy.Where(x => x.RONo == rno);
+    var totalBeforeTop = await qy.CountAsync();
+    var rows = await qy.OrderBy(x => x.Id).Skip(skip ?? 0).Take(Math.Min(take ?? 500, 2000))
+        .Select(x => new { x.Id, x.ROID, x.RONo, x.WorkTypeStart, x.WorkTypeFinish,
+            x.SCCPlanStartDTime, x.SCCPlanFinishDTime, x.SCCActualStartDTime, x.SCCActualFinishDTime,
+            x.CreateDTime, x.CreateBy })
+        .ToListAsync();
+    var awIds = rows.Select(r => r.Id).ToList();
+    var roNos = rows.Select(r => r.RONo).Distinct().ToList();
+    var engs = await db.SerAssignmentWorkEngineers
+        .Where(e => e.OrgId == t.OrgId && awIds.Contains(e.AssignmentWorkId)).ToListAsync();
+    // Ba nguyen nhan mat dong cua nguon — Mini DEM thay vi bo im lang.
+    var engineerNos = await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId)
+        .Select(e => e.EngineerNo).ToListAsync();
+    var droppedEngineerNotInCatalog = engs.Count(e => !engineerNos.Contains(e.EngineerNo));
+    var carPairs = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.CarID, c.CusID }).ToListAsync();
+    var roList = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && roNos.Contains(r.RONo))
+        .Select(r => new { r.RONo, r.CarID, r.CusID }).ToListAsync();
+    var carSet = carPairs.Where(c => c.CarID != null).Select(c => c.CarID + "|" + (c.CusID ?? "")).ToHashSet();
+    var droppedCarOwnerChanged = roList.Count(r => r.CarID != null && !carSet.Contains(r.CarID + "|" + (r.CusID ?? "")));
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows, engineerRowCount = engs.Count,
+        totalBeforeTop, skip = skip ?? 0, take = Math.Min(take ?? 500, 2000),
+        rowsSourceWouldCutOff = Math.Max(0, totalBeforeTop - 500),
+        droppedEngineerNotInCatalog, droppedCarOwnerChanged,
+        sourceTopFiveHundredWithoutOrderBy = "select top 500 ... INTO #tmpsaw KHONG co ORDER BY (#415): qua 500 phieu thi cat 500 dong BAT KY, va vi la SELECT ... INTO nen them ORDER BY cung VO NGHIA. Ban web KHONG co tham so phan trang de lay phan con lai (ban _ForTab thi CO)",
+        sourceInnerJoinCarByOwner = "inner join ser_car car on ro.CarID=car.CarID AND ro.CusID=car.CusID AND ro.DealerCode=car.DealerCode => xe DOI CHU thi ro.CusID (chu luc lap lenh) khac car.CusID (chu hien tai) => phieu giao viec BIEN MAT khoi man tra. Khuon da bat o #752 va #788 — lan thu BA",
+        sourceInnerJoinEngineerChainsWith819 = "cau thu ba: from Ser_AssignmentWorkEngineer sawe inner join #tmpsaw ... INNER JOIN Ser_Engineer se on sawe.EngineerID = se.EngineerID => ky thuat vien bi XOA khoi danh muc thi dong phan cong bien mat. Ma #819 da chung minh SerEngineerDelete XOA CUNG (delete from Ser_Engineer), guard duy nhat la CheckExistEngineer (ton tai), KHONG kiem rang buoc => CHUOI NHAN QUA HOAN CHINH: xoa KTV => inner join nuot dong => phieu giao viec mat nguoi thuc hien ma KHONG co loi nao bao",
+        secondPairOfWriteGuardAndReadJoin = "day la cap (dau ghi thieu guard + dau doc dung inner join) thu HAI, sau cap Ser_Mst_Service_Delete <-> #788 — o do dau ghi CO guard nen hai dau khop (xem #825)",
+        sourceDealerFilterIsBareVariable = "zzzzClauseWhere_strDealerCode dung bien TRAN — dung 161 site da dem o #833 => loc dai ly chi song neu client tu ghep toan tu",
+        sourceJoinsAcrossTwoDatabases = "Ser_AssignmentWork va Ser_AssignmentWorkEngineer doc tu [@strDBName_CommonCenter] con Ser_RO / ser_car / Ser_Engineer doc CUC BO => mot cau inner join bac qua HAI CSDL",
+        tabletVersionIsRicherThanWeb = "AM TINH — NGUOC khuon #794/#796: ban _ForTab co PHAN TRANG (strFt_RecordStart/strFt_RecordCount) va SAU bo loc ma ban web khong co (strROCreator, strROCreatedBy, strEngineerID, strROStatusList, strWorkTypeStart, strWorkTypeFinish), lai co 2 Raise trong khi ban web co 0",
+        tabletUsesConvertNotTryParse = "ban _ForTab dung Convert.ToInt64(strFt_RecordStart) — khong TryParse => chuoi rong/chu nem FormatException THO (khuon #802)",
+        leftJoinsAreSafe = "AM TINH: left join Ser_MST_Model va left join Ser_GroupRepair => khong nuot dong khi thieu model / nhom tho",
+        twoMachinesVerified = "md5 chuan hoa Ser_AssignmentWork_Get tren may 150 = 6d69608a KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/buildclause-missing-operator-sweep", () => Results.Ok(new
 {
     trigger = "#832 chung minh bang ma nguon: CommonUtils/DataUtils.cs:1074 BuildClause tra chuoi RONG neu gia tri khong bat dau bang toan tu (#410)",
