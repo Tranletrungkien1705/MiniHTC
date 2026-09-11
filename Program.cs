@@ -23736,6 +23736,106 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   ⇒ **trạng thái người dùng chọn không được lưu**. Mini lưu **đúng** cột đó.
 //   ⚠️ Nhưng **giữ máy trạng thái của #816**: chỉ cho `1→2`, `2→3`, `2→1` (revert). Nguồn ở nhánh này
 //     **không** đi qua `UpdateStockOutStatus` nên **cũng không có guard nào** — Mini **thêm** guard và nói rõ.
+// ===== 🔴🔴🔴 #824 MÀN MỚI: SỬA / XOÁ HÃNG BẢO HIỂM — `SerInsurance{Get,Create,Update,Delete}` =====
+// Bốn hàm trong `BizCarSv.Service.cs`, **cả bốn LIVE** qua web WS (Mini mới có `GET`/`POST /api/insurances`
+// port **từ FORM**, chưa có sửa/xoá và chưa đối chiếu biz):
+//   `:8180 Get`    md5 `80a591a8` (181 dòng, `Raise`=0, `SaveData`=0)
+//   `:8371 Update` md5 `22ff2fe7` (151, `SaveData`=**3**) → guard `this.checkExistSerIns(...)`
+//   `:8532 Create` md5 `cdaa23dc` (155, `SaveData`=**3**) → guard `this.checkCreateExistSerIns(...)`
+//   `:8699 Delete` md5 `30a4282d` (134, `SaveData`=0)     → **KHÔNG guard nào**
+//   **BƯỚC 3B**: md5 `Delete` trên máy 150 = `30a4282d` **KHỚP** (`Service.cs` 19588 dòng cả hai máy, đo ở #819).
+//
+// ⚪ **ĐỐI CHỨNG VỚI #818 — Ở ĐÂY PHẠM VI LỌC NHẤT QUÁN**: cả hai guard đều tra
+//     `GetTableContents(dbAction, "Ser_Insurance", "top 1 *", "", "InsNo","=",…, "DealerCode","=",…, "IsActive","=",**"1"**)`
+//   — **cùng** `IsActive = "1"` cứng; chỉ khác **chiều kiểm**: `checkCreateExistSerIns` ném `Ser_Insurance_**Exist**`
+//   khi **tìm thấy**, `checkExistSerIns` ném `Ser_Insurance_**NotExist**` khi **không** tìm thấy.
+//   ⇒ Đúng khuôn cặp create/update (#404). **Không** lặp lại lỗi lệch phạm vi của `SerSupplier*` (#818).
+//
+// 🔴🔴🔴 **`SerInsuranceDelete` KHÔNG CÓ GUARD NÀO — VÀ NÓ XOÁ CASCADE THỦ CÔNG**
+//   Áp **#403**, trích **trọn** danh sách region của hàm: `#region // temp` · `#region // Init:` ·
+//   `#region // Save data` — **không có** `#region Check`; `CMyException.Raise` = 0, `this.Check*` = 0,
+//   `my*_Check*` = 0. ⇒ **Không guard thật.**
+//   Thân hàm là **hai câu `delete` liền nhau** (nguyên văn):
+//     `delete from **Ser_InsuranceCustomer** where (1=1) and InsNo = @InsNo and DealerCode=@DealerCode ;`
+//     `delete from **Ser_Insurance**         where (1=1) and InsNo = @InsNo and DealerCode=@DealerCode ;`
+//   chạy trên **BA** CSDL: `_dbMain.ExecQuery(...)` · `_dbWH.ExecQuery(...)` · `_dbDealer.ExecQuery(...)`.
+//   ⇒ ① **Xoá một hãng bảo hiểm là xoá luôn TOÀN BỘ danh sách khách hàng đã mua** của hãng đó —
+//      không đếm, không cảnh báo, không hỏi lại.
+//   ⇒ ② **Không kiểm tồn tại** (trong khi `Update` **có** `checkExistSerIns`) ⇒ xoá mã không có thật thì
+//      **im lặng thành công** (`delete` khớp 0 dòng).
+//   ⇒ ③ **Không kiểm ràng buộc công nợ**: #790 đã đọc `SerInsuranceDebitDetailGet` — **có** công nợ bảo hiểm
+//      (`Ser_CusDebit` + `Ser_Payment` với `PaymentType = '2'`) ⇒ xoá hãng để lại **dòng công nợ mồ côi**.
+//   📌 Cùng khuôn `SerEngineerDelete` (#819, cũng không kiểm ràng buộc) nhưng **nặng hơn**: ở đây thiếu **cả**
+//     guard tồn tại **lẫn** guard ràng buộc, **và** có cascade.
+// ⚪ `ExecQuery` chạy câu `delete` — lại một lần nữa đúng **#742** (`ExecQuery` **không** read-only).
+// 📌 Mini: `PUT /api/insurances/{insNo}` (kiểm tồn tại + trùng mã) và `DELETE /api/insurances/{insNo}`
+//   (**đếm** khách hàng sẽ bị xoá theo và **bắt xác nhận** thay vì cascade im lặng).
+app.MapPut("/api/insurances/{insNo}", async (string insNo, InsuranceEditDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var no = (insNo ?? "").Trim();
+    var row = await db.ServiceInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no);
+    if (row is null) return Results.NotFound(new { error = "Ser_Insurance_NotExist", insNo = no });
+    var newNo = (dto.InsNo ?? no).Trim();
+    if (!string.Equals(newNo, no, StringComparison.OrdinalIgnoreCase))
+    {
+        var dup = await db.ServiceInsurances.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.InsNo == newNo);
+        if (dup) return Results.Conflict(new { error = "Ser_Insurance_Exist", insNo = newNo });
+        row.InsNo = newNo;
+    }
+    if (!string.IsNullOrWhiteSpace(dto.InsVieName)) row.InsVieName = dto.InsVieName!;
+    if (dto.InsEngName != null) row.InsEngName = dto.InsEngName;
+    if (!string.IsNullOrWhiteSpace(dto.Address)) row.Address = dto.Address!;
+    if (dto.Email != null) row.Email = dto.Email;
+    if (dto.Telephone != null) row.Telephone = dto.Telephone;
+    if (dto.Taxcode != null) row.Taxcode = dto.Taxcode;
+    if (!string.IsNullOrWhiteSpace(dto.Status)) row.Status = dto.Status!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.InsNo, row.InsVieName, row.Address, row.Status,
+        sourceGuardScopesAreConsistent = "AM TINH (doi chung voi #818): checkCreateExistSerIns va checkExistSerIns deu tra GetTableContents(..., InsNo, =, ..., DealerCode, =, ..., IsActive, =, 1) — CUNG IsActive = 1 cung; chi khac CHIEU kiem (Exist khi tim thay vs NotExist khi khong tim thay) => dung khuon cap create/update (#404), KHONG lap lai loi lech pham vi cua SerSupplier* (#818)",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/insurances/{insNo}", async (string insNo, AppDbContext db, ITenantContext t,
+    bool? confirmCascade) =>
+{
+    var no = (insNo ?? "").Trim();
+    var row = await db.ServiceInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no);
+    if (row is null)
+    {
+        // Nguon KHONG kiem ton tai: delete khop 0 dong => IM LANG THANH CONG.
+        return Results.NotFound(new { error = "Ser_Insurance_NotExist", insNo = no,
+            sourceWouldSilentlySucceed = true });
+    }
+    var cusCount = await db.ServiceInsuranceCustomers.CountAsync(x => x.OrgId == t.OrgId && x.ServiceInsuranceId == row.Id);
+    if (cusCount > 0 && confirmCascade != true)
+    {
+        return Results.Conflict(new
+        {
+            error = "xoa hang bao hiem se xoa luon danh sach khach hang da mua",
+            insNo = no, customerRowsToDelete = cusCount,
+            hint = "goi lai voi confirmCascade=true neu that su muon xoa",
+            sourceCascadesSilently = true,
+        });
+    }
+    var cus = await db.ServiceInsuranceCustomers.Where(x => x.OrgId == t.OrgId && x.ServiceInsuranceId == row.Id).ToListAsync();
+    db.ServiceInsuranceCustomers.RemoveRange(cus);
+    db.ServiceInsurances.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        insNo = no, deletedCustomerRows = cus.Count,
+        sourceDeleteHasNoGuardAtAll = "AP #403 — trich TRON danh sach region cua SerInsuranceDelete: #region // temp, #region // Init:, #region // Save data — KHONG co #region Check; CMyException.Raise = 0, this.Check* = 0, my*_Check* = 0 => KHONG guard that",
+        sourceDeletesCascadeManually = "than ham la HAI cau delete lien nhau: delete from Ser_InsuranceCustomer where InsNo = @InsNo and DealerCode = @DealerCode; roi delete from Ser_Insurance ... — chay tren BA CSDL (_dbMain.ExecQuery, _dbWH.ExecQuery, _dbDealer.ExecQuery) => xoa mot hang bao hiem la xoa luon TOAN BO danh sach khach hang da mua, khong dem khong canh bao",
+        sourceDeleteSkipsExistenceCheck = "Update CO checkExistSerIns nhung Delete KHONG => xoa ma khong co that thi delete khop 0 dong va IM LANG THANH CONG",
+        sourceDeleteSkipsDebtCheck = "#790 da doc SerInsuranceDebitDetailGet — CO cong no bao hiem (Ser_CusDebit + Ser_Payment voi PaymentType = 2) => xoa hang de lai dong cong no MO COI",
+        comparedToEngineerDelete = "cung khuon SerEngineerDelete (#819, cung khong kiem rang buoc) nhung NANG HON: o day thieu CA guard ton tai LAN guard rang buoc, VA co cascade",
+        execQueryRunsDelete = "AM TINH: ExecQuery chay cau delete — lai dung #742 (ExecQuery KHONG read-only)",
+        twoMachinesVerified = "md5 chuan hoa SerInsuranceDelete tren may 150 = 30a4282d KHOP laptop (Service.cs 19588 dong ca hai may, do o #819)",
+    });
+}).RequireAuthorization();
 app.MapPut("/api/stockouts/{stockOutId}/edit", async (long stockOutId, StockOutEditDto dto,
     AppDbContext db, ITenantContext t) =>
 {
@@ -71290,6 +71390,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status);
 record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
 record StockInAdjustFinishDto(string? NewStockInNo, string? AdjustmentBy, DateTime? AdjustmentDate, string? AdjustmentNote, string? OldStockInNo);
 record StockInStatusDto(string? NewStatus, bool IsRevert);
