@@ -40495,6 +40495,76 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 //   `CommonSignIn2026NC`, `CarSv_SerCarUpdate_Key*`, `UploadFileV2_ForRO`, `Ser_SupplierPayment_*`
 //   đều đã xuất hiện trong `Program.cs` ⇒ **không** phải "chỉ đọc cây laptop" như #873 ngụ ý.
 //   ⇒ Phát biểu đúng là: **hàng đợi lấy từ cây laptop bỏ sót 60 đầu việc**, chứ không phải cả 168.
+// ===== 🔴🔴🔴 #876 MÀN MỚI (chỉ có trên cây 150): CHỌN PHIẾU SỬA CHỮA ĐỂ LẬP ĐƠN XUẤT KHO =====
+// `Ser_RO_GetForStockOutOrder` — `BizCarSv.Service.RO.cs:7230` trên `V20.2023.Release`, md5 `ad4dfc95`
+// (166 dòng), **1** vỏ bọc. **3B**: cây laptop `V20` **KHÔNG CÓ** (grep = rỗng). Lấy từ hàng đợi **60** (#874).
+//
+// 🔴🔴🔴 **`ORDER BY` ĐẶT TRÊN `SELECT … INTO` ⇒ VÔ NGHĨA, VÀ CÂU TRẢ VỀ KHÔNG SẮP XẾP** (luật #415)
+//     `select ro.ROID **into #tbl_ro** from Ser_RO ro where 1=1 … **order by ro.CheckInDate desc** ;`
+//     `--Return`
+//     `select ro.ROID, ro.RONo, … from #tbl_ro t inner join ser_RO ro … where (1=1) ;`  ← **KHÔNG có `order by`**
+//   ⇒ Bảng tạm **không giữ thứ tự**; `order by` ở câu `into` chỉ ảnh hưởng cách SQL Server chèn, **không**
+//     ảnh hưởng thứ tự đọc ra. ⇒ Màn **chọn phiếu để lập đơn xuất kho** trả danh sách **thứ tự tuỳ ý**,
+//     dù tác giả rõ ràng muốn **mới nhất trước**.
+//   ⇒ Đây là ca đầu của đợt grind gặp bẫy #415 **có hậu quả nhìn thấy được ở màn hình người dùng**.
+//
+// 🔴🔴 **DANH SÁCH ĐEN — VÀ LỆCH VỚI DANH SÁCH ĐEN CỦA MÀN KHÁC**
+//     đây: `and ro.Status **not in ('CRE','W4P','REJ','NORE')`**  (loại **4** mã)
+//     đã ghi ở khối trước (`Program.cs:25983`): `RO.Status **NOT IN ('CRE','PRT','HPA','NORE','REJ')`**  (loại **5** mã)
+//   ⇒ Hai màn dùng **hai danh sách đen khác nhau**: màn này **KHÔNG loại** `PRT`/`HPA` (chờ phụ tùng / có phụ tùng)
+//     nhưng **loại thêm** `W4P`. ⇒ Cùng câu hỏi *"phiếu nào còn dùng được?"*, hai câu trả lời.
+//   ⇒ Và vì là **danh sách ĐEN**, mọi trạng thái **mới thêm về sau tự động LỌT vào** cả hai màn — không ai phải sửa gì.
+//     Bảng trạng thái đầy đủ đã đếm ở #869: `CRE, PRT, HRO, INGA, RPRD, CEND, PAID, FNS, REJ, W4P, HPA, NORE`.
+//     ⇒ Màn này giữ lại: `PRT, HRO, INGA, RPRD, CEND, PAID, FNS, HPA` (**8**); màn kia giữ `HRO, INGA, RPRD, CEND, PAID, FNS` (**6**).
+//
+// 🔴 **ĐỔI TỪ LỌC DANH SÁCH SANG LỌC `like`, DÒNG CŨ CÒN NGUYÊN** (port dòng ACTIVE):
+//     `//string zzzzClauseWhere_strCusNameList = SqlUtils.BuildClauseConditionList("and", "ro.CusName", strCusNameList, "|");`
+//     `string zzzzClauseWhere_strCusNameList = SqlUtils.BuildClauseConditionSingle("and", "ro.CusName", **"like"**,`
+//     `        "@strCusNameList", strCusNameList, ref alParamsCoupleSql);`
+//   ⇒ Tên biến vẫn là `…**List**` nhưng nay nhận **một** giá trị và so bằng `like` ⇒ **tên nói dối** (họ #850/#872).
+//   ⇒ `BuildClauseConditionSingle` **có** tham số hoá (`@strCusNameList`) ⇒ ⚪ không injection.
+//
+// ⚪⚪ **MÀN NÀY TRÁNH ĐƯỢC ĐÚNG HAI BẪY CỦA #860/#862**: nó lọc và hiển thị `ro.PlateNo`, `ro.CusName`,
+//   `ro.FrameNo`, `ro.CusAddress` **lấy thẳng từ `Ser_RO`** — không join sang `Ser_Customer`/`ser_car`
+//   ⇒ **không** có join câm, **không** lấy biển số từ bảng khách. (Phiếu sửa chữa lưu **bản sao** các trường này.)
+// ⚪ `left join [@strDBName_CommonCenter].[dbo].Ser_MST_Model` ⇒ danh mục model từ **DB trung tâm** (họ #853),
+//   nhưng là `left join` ⇒ **không** mất dòng khi model vắng danh mục — **đúng**.
+// ⚪ `strCheckInDate` đi qua `BuildClause(…, "@p", ref alParamsCoupleSql)` ⇒ **tham số hoá**.
+// 📌 Mini: `GET /api/repairorders/for-stockout-order` — **có `ORDER BY` ở câu trả về** (vá bẫy #415), giữ đúng
+//   danh sách đen 4 mã của nguồn, và **trả kèm** tập trạng thái mà màn kia loại để thấy rõ hai màn lệch nhau.
+app.MapGet("/api/repairorders/for-stockout-order", async (AppDbContext db, ITenantContext t,
+    DateTime? checkInDate, string? plateNo, string? roNo, string? cusName) =>
+{
+    var pn = (plateNo ?? "").Trim();
+    var rn = (roNo ?? "").Trim();
+    var cn = (cusName ?? "").Trim();
+    // Danh sach DEN cua nguon: not in (CRE, W4P, REJ, NORE) — anh xa sang ma trang thai cua MiniHTC.
+    var excluded = new[] { "Created", "Wait4Part", "Rejected", "NotResponding" };
+    var rows = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => !excluded.Contains(x.Status))
+        .Where(x => checkInDate == null || (x.CheckInDate != null && x.CheckInDate >= checkInDate))
+        .Where(x => pn.Length == 0 || (x.LicensePlate != null && x.LicensePlate.Contains(pn)))
+        .Where(x => rn.Length == 0 || x.RONo == rn)
+        .Where(x => cn.Length == 0 || (x.CusName != null && x.CusName.Contains(cn)))
+        .OrderByDescending(x => x.CheckInDate)        // VA BAY #415: nguon dat order by o cau INTO nen mat
+        .Select(x => new
+        {
+            x.RONo, x.CusName, x.LicensePlate, x.Vin, x.CheckInDate, x.Creator, x.Status, x.CreatedAt,
+        })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        onlyExistsOnMachine150_876 = "#876: Ser_RO_GetForStockOutOrder — BizCarSv.Service.RO.cs:7230 tren V20.2023.Release, md5 ad4dfc95 (166 dong), 1 vo boc; cay laptop V20 KHONG CO (grep = rong). Lay tu hang doi 60 cua #874",
+        sourceOrderByOnSelectIntoIsUseless = "ORDER BY DAT TREN SELECT ... INTO => VO NGHIA, VA CAU TRA VE KHONG SAP XEP (luat #415): select ro.ROID into #tbl_ro from Ser_RO ro where 1=1 ... order by ro.CheckInDate desc; roi --Return select ... from #tbl_ro t inner join ser_RO ro ... where (1=1); KHONG co order by. Bang tam KHONG giu thu tu => man chon phieu de lap don xuat kho tra danh sach THU TU TUY Y du tac gia ro rang muon MOI NHAT TRUOC. Mini them OrderByDescending(CheckInDate) o cau tra ve",
+        blacklistDiffersFromOtherScreen = "DANH SACH DEN — VA LECH VOI DANH SACH DEN CUA MAN KHAC: day dung and ro.Status not in (CRE, W4P, REJ, NORE) tuc loai 4 ma; khoi da ghi o Program.cs:25983 dung RO.Status NOT IN (CRE, PRT, HPA, NORE, REJ) tuc loai 5 ma => man nay KHONG loai PRT/HPA (cho phu tung / co phu tung) nhung LOAI THEM W4P. Cung cau hoi phieu-nao-con-dung-duoc, HAI cau tra loi",
+        blacklistLetsNewStatusesThrough = "va vi la danh sach DEN, moi trang thai MOI THEM VE SAU TU DONG LOT VAO ca hai man — khong ai phai sua gi. Bang trang thai day du da dem o #869: CRE, PRT, HRO, INGA, RPRD, CEND, PAID, FNS, REJ, W4P, HPA, NORE => man nay giu lai 8 ma (PRT, HRO, INGA, RPRD, CEND, PAID, FNS, HPA); man kia giu 6 ma (HRO, INGA, RPRD, CEND, PAID, FNS)",
+        switchedFromListToLikeOldLineKept = "DOI TU LOC DANH SACH SANG LOC LIKE, DONG CU CON NGUYEN (port dong ACTIVE): dong //string ...= BuildClauseConditionList(and, ro.CusName, strCusNameList, |) BI COMMENT, dong active la BuildClauseConditionSingle(and, ro.CusName, like, @strCusNameList, strCusNameList, ref alParamsCoupleSql) => ten bien van la ...List nhung nay nhan MOT gia tri va so bang like => TEN NOI DOI (ho #850/#872). BuildClauseConditionSingle CO tham so hoa (@strCusNameList) nen khong injection",
+        positiveAvoidsTwoTrapsOf860 = "AM TINH: man nay TRANH duoc dung hai bay cua #860/#862 — no loc va hien thi ro.PlateNo, ro.CusName, ro.FrameNo, ro.CusAddress LAY THANG TU Ser_RO, khong join sang Ser_Customer/ser_car => KHONG co join cam, KHONG lay bien so tu bang khach (phieu sua chua luu BAN SAO cac truong nay)",
+        positiveLeftJoinModelCatalog = "AM TINH: left join [@strDBName_CommonCenter].[dbo].Ser_MST_Model => danh muc model tu DB TRUNG TAM (ho #853) nhung la LEFT JOIN nen KHONG mat dong khi model vang danh muc — DUNG",
+        positiveCheckInDateParameterised = "AM TINH: strCheckInDate di qua BuildClause(..., @p, ref alParamsCoupleSql) => THAM SO HOA",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/source-tree-gap-measured", () => Results.Ok(new
 {
     corrects873 = "#874 SUA LAI #873: o do toi viet danh sach man can port dang thieu dung chung ay (168) dau viec — do la SUY RA tu con so lech danh muc, KHONG PHAI DO",
