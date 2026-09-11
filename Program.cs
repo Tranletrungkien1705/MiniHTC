@@ -23650,6 +23650,69 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   `SerEngineerUpdate` — ca đã biết từ #819.
 // 📌 **Bài học đo lường**: "thiếu nhánh ghi" **phải lọc LIVE/CHẾT trước khi báo**. Nếu dừng ở bước 2 thì đã báo
 //   **8 lỗi** trong khi thật sự chỉ có **1** — bảy cái kia nằm trong khối hàm chết đã đo ở #795/#800.
+// ===== 🔴🔴🔴 #821 MÀN MỚI: XOÁ TỆP ĐÍNH KÈM ĐỢT GỬI MAIL — `Ser_Email_Attachment_Delete` =====
+// `BizCarSv.SendMail.cs:5137-5249` md5 `48642cf5` (105 dòng, `Raise`=**0**, `SaveData`=1). LIVE qua web WS.
+// **BƯỚC 3B**: md5 chuẩn hoá trên máy 150 = `48642cf5` **KHỚP** (file 5631 dòng cả hai máy, đã đo ở #813).
+// Chọn từ **44 site `Rows[0]` trần trụi** của #814 — `SendMail.cs` đứng đầu với **10** site; lọc LIVE:
+//   **8/9** site trong file này thuộc hàm **đang LIVE** (`Email_SendEmail_Update` · `EmailSendEmailUpdateStatus` ·
+//   `Email_ConfigSendAuto_Update` · `Email_ConfigSendAuto_Cancel` · `Email_Config_Update` · `Email_TempEmail_Cancel` ·
+//   `Email_SendEmailAutoTemp_Update` · `Ser_Email_Attachment_Delete`), chỉ `ProcessSaveSendEmail` là helper nội bộ.
+//   ⇒ **Khác hẳn #820**: ổ này **không** nằm trong nhánh chết.
+//
+// 🔴🔴🔴 **BA LỖI CHỒNG NHAU TRONG ĐÚNG BA DÒNG** — nguyên văn:
+//     `DataTable dt_Email_BatchSendEmail = TDALUtils.DBUtils.GetTableContents(`
+//     `    _dbMain, "Email_BatchSendEmail", **"Attachment"**, "", "BatchId", "=", strBatchSendEmailId);`
+//     `dt_Email_BatchSendEmail.**Rows[0]**["Attachment"] = DBNull.Value; alEffectiveColumn.Add(**"AppStatus"**);`
+//     `_dbMain.SaveData("Email_BatchSendEmail", dt_Email_BatchSendEmail, alEffectiveColumn.ToArray());`
+//   ① **`strColumnList = "Attachment"`** ⇒ `DataTable` trả về **chỉ một cột**, **không có khoá `BatchId`**
+//      ⇒ `SaveData` không có gì để định danh dòng cần cập nhật.
+//   ② **`alEffectiveColumn.Add("AppStatus")`** trong khi cột vừa gán là **`Attachment`** ⇒ danh sách cột được ghi
+//      trỏ vào **một cột KHÁC**, và cột đó **thậm chí không có** trong `DataTable` (vì ① chỉ lấy `Attachment`).
+//   ③ **`Rows[0]` không guard** ⇒ `BatchId` không tồn tại ⇒ **`IndexOutOfRangeException` thô**.
+//   ⇒ **Hàm "xoá tệp đính kèm" gần như chắc chắn không xoá được gì**: hoặc ném lỗi ở ②/③, hoặc `SaveData`
+//     không tìm thấy cột/khoá nên **im lặng không làm gì**. Trong cả hai trường hợp, **tệp đính kèm vẫn còn**.
+//
+// 📌 **CÙNG HỌ #813 NHƯNG NẶNG HƠN**: ở #813 (`Email_TempEmail_Update`) cột `IsActive` được gán mà **quên** đưa
+//   vào `alEffectiveColumn`; ở đây thì **có** đưa vào — nhưng **đưa nhầm tên cột**. ⇒ Đây là **lần thứ hai**
+//   trong **cùng một file** `SendMail.cs` mà danh sách `alEffectiveColumn` lệch khỏi cột thực sự được gán.
+//   ⇒ Dạng lỗi này **§12 không bắt được**: cột có trong bảng, có trong entity, có trong DTO — chỉ **danh sách
+//     cột được ghi** là sai.
+// 🔴 Hàm chỉ ghi `_dbMain` (`M--`), không có `_dbWH`/`_dbDealer` — nằm trong nhóm **67** hàm `M--` đã đếm ở #820.
+//   ⚪ Ở đây **không kết luận** là thiếu: `Email_BatchSendEmail` là bảng cấu hình gửi mail, có thể chỉ sống ở Main.
+// 📌 Mini: `DELETE /api/emailbatches/{batchNo}/attachment` — xoá **đúng cột đã gán**, tra cứu **có khoá**,
+//   và guard kết quả trước khi ghi.
+app.MapDelete("/api/emailbatches/{batchNo}/attachment", async (string batchNo, AppDbContext db, ITenantContext t) =>
+{
+    var no = (batchNo ?? "").Trim();
+    var rows = await db.EmailBatches.Where(x => x.OrgId == t.OrgId && x.BatchNo == no).ToListAsync();
+    if (rows.Count == 0)
+    {
+        return Results.NotFound(new { error = "khong tim thay dot gui mail", batchNo = no,
+            sourceWouldThrowIndexOutOfRange = true });
+    }
+    if (rows.Count > 1)
+    {
+        return Results.Conflict(new { error = "BatchNo khop nhieu hon mot dot", matchCount = rows.Count });
+    }
+    var batch = rows[0];
+    var had = batch.AttachmentName;
+    batch.AttachmentName = null;                       // nguon gan Attachment = DBNull.Value
+    // Nguon chi dong den cot Attachment cua header; cac dong file dinh kem rieng thi Mini danh dau luon.
+    var files = await db.EmailBatchFileAttaches.Where(x => x.OrgId == t.OrgId && x.BatchNo == no).ToListAsync();
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        batchNo = no, clearedAttachmentName = had, attachedFileRowCount = files.Count,
+        sourceSelectsOnlyOneColumnWithoutKey = "NGUON: GetTableContents(_dbMain, Email_BatchSendEmail, \"Attachment\", \"\", BatchId, =, strBatchSendEmailId) — strColumnList chi la Attachment nen DataTable tra ve CHI MOT COT, KHONG co khoa BatchId => SaveData khong co gi de dinh danh dong can cap nhat",
+        sourceAddsWrongColumnToEffectiveList = "NGUON: Rows[0][\"Attachment\"] = DBNull.Value; alEffectiveColumn.Add(\"AppStatus\") — gan cot Attachment nhung dua vao danh sach cot duoc ghi la AppStatus, va cot do THAM CHI KHONG CO trong DataTable => ham xoa tep dinh kem gan nhu chac chan KHONG XOA DUOC GI: hoac nem loi, hoac SaveData im lang khong lam gi. Ca hai truong hop tep dinh kem VAN CON",
+        sourceUsesFirstRowWithoutGuard = "Rows[0] dung ngay sau GetTableContents, khong kiem Rows.Count => BatchId khong ton tai se nem IndexOutOfRangeException tho (site nam trong 44 ca tran trui cua #814)",
+        sameFamilyAs813ButWorse = "CUNG HO #813 (Email_TempEmail_Update quen dua IsActive vao alEffectiveColumn) NHUNG NANG HON: o day CO dua vao — chi la DUA NHAM TEN COT. Lan thu HAI trong CUNG MOT FILE SendMail.cs ma alEffectiveColumn lech khoi cot thuc su duoc gan",
+        section12CannotCatchThis = "cot co trong bang, co trong entity, co trong DTO — chi DANH SACH COT DUOC GHI la sai => §12 khong bat duoc",
+        liveFilterOfSendMailSites = "SendMail.cs dung dau danh sach 44 site Rows[0] tran trui (#814) voi 10 site; loc LIVE: 8/9 thuoc ham DANG LIVE (Email_SendEmail_Update, EmailSendEmailUpdateStatus, Email_ConfigSendAuto_Update, Email_ConfigSendAuto_Cancel, Email_Config_Update, Email_TempEmail_Cancel, Email_SendEmailAutoTemp_Update, Ser_Email_Attachment_Delete), chi ProcessSaveSendEmail la helper noi bo => KHAC HAN #820, o nay KHONG nam trong nhanh chet",
+        sourceWritesMainOnly = "ham chi ghi _dbMain (M--), nam trong nhom 67 ham M-- da dem o #820. KHONG ket luan la thieu: Email_BatchSendEmail la bang cau hinh gui mail, co the chi song o Main",
+        twoMachinesVerified = "md5 chuan hoa tren may 150 = 48642cf5 KHOP laptop (SendMail.cs 5631 dong ca hai may, da do o #813)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/missing-dealer-write-sweep", () => Results.Ok(new
 {
     trigger = "#819: SerEngineerUpdate va SerEngineerDelete bo han nhanh _dbDealer trong khi Create/Create01/Update01 deu co",
