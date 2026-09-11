@@ -37514,6 +37514,167 @@ app.MapGet("/api/calendar/workday-offset", async (AppDbContext db, ITenantContex
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #843 MÀN MỚI: THAM SỐ HỆ THỐNG — `Mst_Param_{Create,Save,Update,Delete}` (`Master.cs`) =====
+// **BỐN** đường ghi cho **một** bảng (chưa kể 2 hàm đọc), **cả bốn LIVE** (19/22/21/19 lời gọi):
+//   `:899  Create` md5 `575985ff` (144 dòng, `SaveData`=2, `Check`=**0**)
+//   `:1043 Save`   md5 `51920579` (171, `SaveData`=3, `ExecQuery`=**3**)
+//   `:1214 Update` md5 `c5a1e5f0` (153, `SaveData`=2, `Check`=**1** → `this.CheckExistParam`)
+//   `:1367 Delete` md5 `c39f8d00` (148, `Raise`=**0**, `SaveData`=0)
+//   Helper `CheckExistParam` `:501` md5 `58acf006`. **3B**: **cả năm md5 KHỚP** máy 150.
+//
+// 🔴🔴🔴 **`Mst_Param_Save` XOÁ SẠCH CẢ NHÓM THAM SỐ RỒI CHÈN LẠI — THEO `ParamType`**
+//   Trong vòng lặp từng dòng của `DataSet` gửi lên, nguồn chạy
+//     `delete … where (1=1) and DealerCode = @DealerCode **and ParamType = @ParamType**`
+//   rồi cuối vòng lặp mới `SaveData("Mst_Param", dt_Mst_Param)` **cả lô**.
+//   ⇒ Câu xoá **không** lọc theo `ParamCode` ⇒ **toàn bộ tham số cùng `ParamType` của đại lý bị xoá**,
+//     và chỉ những dòng **có trong gói gửi lên** được chèn lại.
+//   ⇒ Client gửi **thiếu** một tham số của nhóm ⇒ tham số đó **biến mất không một lời báo**.
+//     Đây là ngữ nghĩa **"thay cả nhóm"** nhưng tên hàm chỉ là `Save` — không có gì trong tên hay chữ ký
+//     nói rằng gói phải **đầy đủ**.
+//   🔴 Câu xoá còn nằm **trong vòng lặp**: N dòng ⇒ chạy delete **N lần** trên cùng phạm vi (lần 2 trở đi
+//     xoá 0 dòng) — vô hại về kết quả nhưng cho thấy khối này vốn được viết cho **một** dòng.
+//
+// 🔴🔴🔴 **BỐN HÀM GHI, HAI PHẠM VI CSDL KHÁC NHAU**
+//   `Save`  : `_dbMain` + `_dbWH` + **`_dbDealer`** (cả xoá lẫn chèn, có gác `bNeedTransaction_Dealer`)
+//   `Create`/`Update`/`Delete`: **chỉ** `_dbMain` + `_dbWH` — **không hề** khai `_dbDealer`.
+//   ⇒ `Mst_Param` ở **DB đại lý** chỉ được cập nhật qua **đúng một** trong bốn đường. Thêm/sửa/xoá lẻ một
+//     tham số ⇒ DB đại lý **giữ nguyên giá trị cũ**; chỉ khi ai đó bấm "lưu cả nhóm" nó mới đồng bộ lại.
+//   ⇒ Cùng họ #841 (`Ser_CustomerCareBth`: Create 3 CSDL / Delete 1) nhưng **rộng hơn** — ở đây lệch trên
+//     **ba** hàm chứ không phải một.
+//
+// 🔴🔴 **#404 — `Create` KHÔNG CÓ GUARD, `Update` THÌ CÓ**
+//   Áp **#403**, trích **trọn** danh sách region của `Mst_Param_Create`: `#region // temp` · `#region // Init:` ·
+//   `#region // Save data` · `#region // Return` · catch · finally — **không có `#region Check`**; `Raise`=0.
+//   `Mst_Param_Update` thì có `#region //Check` gọi `this.CheckExistParam(…)` (ném `Mst_Param_NotExist`).
+//   ⚠️ **Đừng suy vội thành "tạo trùng được"**: câu xoá của `Mst_Param_Delete` chú thích thẳng
+//     `and ParamCode = @ParamCode **-- PK**` ⇒ khoá chính là `(DealerCode, ParamCode)`, nên DB **vẫn chặn** trùng.
+//     Hậu quả thật là **hình thức lỗi**: người dùng nhận ngoại lệ SQL/.NET thô thay vì mã lỗi nghiệp vụ
+//     `Mst_Param_Exist` — đúng kiểu #824. Ghi đúng mức đó, không hơn.
+//
+// 🔴 **`Mst_Param_Delete` — `#region //Check` RỖNG**: `#region //Check` rồi `#endregion` **ngay dòng kế tiếp**.
+//   ⇒ **Xác nhận** nhãn "zero guard" mà #825 gán cho hàm này là **ĐÚNG** — khác `JDPowerTerm_Delete` (#842)
+//     nơi nhãn ấy sai. ⇒ Danh sách 16 của #825 hiện **đã đọc tay 3**: 1 sai (#842), 2 đúng.
+//   ⇒ Xoá tham số không tồn tại vẫn **báo thành công** (delete khớp 0 dòng).
+//
+// 🔴 **`CheckExistParam` tra `(ParamCode, DealerCode)` nhưng `Update` GHI LẠI chính hai cột ấy**:
+//   `dt_Param.Rows[0]["DealerCode"] = strDealerCode; alColumnEffective.Add("DealerCode");`
+//   `dt_Param.Rows[0]["ParamCode"]  = strParamCode;  alColumnEffective.Add("ParamCode");`
+//   Hai giá trị này **chính là** thứ vừa dùng để tìm ra dòng ⇒ **gán lại đúng giá trị cũ**, và vẫn được
+//   đưa vào `alColumnEffective` ⇒ **hai cột thừa trong câu UPDATE**, trong đó có **cột khoá chính**.
+// 🔴 `CheckExistParam` dùng `"top 1 *"` với `strClauseOrderBy = ""` — `top 1` **không `ORDER BY`** (#415).
+// ⚪ `ParamType` **không** thuộc khoá ⇒ `Update` có thể đổi `ParamType` của một tham số, và sau đó
+//   `Mst_Param_Save` của nhóm **cũ** sẽ không còn thấy nó — hai đường ghi nhìn bảng bằng hai khoá khác nhau.
+// 📌 Mini: `POST`/`PUT`/`DELETE /api/params` + `POST /api/params/save-by-type` — bản `save-by-type` **đếm và
+//   trả về** đúng những tham số sẽ bị xoá vì vắng mặt trong gói (nguồn xoá im lặng), và `POST` **thêm** guard
+//   trùng mã để trả mã lỗi nghiệp vụ thay vì ngoại lệ SQL.
+app.MapPost("/api/params", async (MstParamDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.ParamCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "thieu ParamCode" });
+    var dup = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param" && m.Code == code);
+    if (dup)
+    {
+        return Results.Conflict(new
+        {
+            error = "Mst_Param_Exist", paramCode = code,
+            sourceHasNoSuchGuard = "nguon Mst_Param_Create KHONG co #region Check nao => trung ma bat ra ngoai le SQL/.NET tho (PK la DealerCode+ParamCode) thay vi ma loi nghiep vu",
+        });
+    }
+    var row = new MasterItem
+    {
+        OrgId = t.OrgId, Category = "Mst_Param", Code = code,
+        Name = dto.ParamValue ?? "", ParentCode = dto.ParamType, Status = "1",
+    };
+    db.Masters.Add(row); await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, paramCode = row.Code, paramValue = row.Name, paramType = row.ParentCode });
+}).RequireAuthorization();
+
+app.MapPut("/api/params/{code}", async (string code, MstParamDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var row = await db.Masters.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param" && m.Code == c);
+    if (row is null) return Results.NotFound(new { error = "Mst_Param_NotExist", paramCode = c });
+    if (dto.ParamValue != null) row.Name = dto.ParamValue;
+    var typeChanged = dto.ParamType != null && dto.ParamType != row.ParentCode;
+    if (dto.ParamType != null) row.ParentCode = dto.ParamType;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, paramCode = row.Code, paramValue = row.Name, paramType = row.ParentCode,
+        typeChanged,
+        sourceRewritesItsOwnLookupKeys = "NGUON Mst_Param_Update ghi lai DUNG HAI COT vua dung de tim ra dong: dt_Param.Rows[0][DealerCode] = strDealerCode va [ParamCode] = strParamCode, ca hai van duoc them vao alColumnEffective => HAI COT THUA trong cau UPDATE, trong do co COT KHOA CHINH",
+        typeChangeSplitsTheTwoWritePaths = "ParamType KHONG thuoc khoa => Update co the doi ParamType cua mot tham so, va sau do Mst_Param_Save cua nhom CU se khong con thay no — hai duong ghi nhin bang bang HAI KHOA khac nhau",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/params/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var row = await db.Masters.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param" && m.Code == c);
+    if (row is null)
+    {
+        return Results.NotFound(new
+        {
+            error = "Mst_Param_NotExist", paramCode = c,
+            confirms825ZeroGuardLabel = "#843 XAC NHAN nhan zero-guard ma #825 gan cho Mst_Param_Delete la DUNG: #region //Check roi #endregion NGAY DONG KE TIEP => region RONG (dang d cua #728), Raise=0 => xoa tham so khong ton tai van bao THANH CONG. Khac JDPowerTerm_Delete (#842) noi nhan ay SAI => danh sach 16 cua #825 hien da doc tay 3: 1 sai, 2 dung",
+        });
+    }
+    db.Masters.Remove(row); await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        paramCode = c,
+        sourceDeleteTouchesTwoDbsOnly = "nguon Mst_Param_Delete chi chay tren _dbMain + _dbWH, KHONG khai _dbDealer => DB dai ly giu nguyen gia tri cu sau khi xoa",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/params/save-by-type", async (MstParamSaveByTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var type = (dto.ParamType ?? "").Trim();
+    if (type.Length == 0) return Results.BadRequest(new { error = "thieu ParamType" });
+    var incoming = (dto.Items ?? new List<MstParamDto>())
+        .Where(x => !string.IsNullOrWhiteSpace(x.ParamCode))
+        .GroupBy(x => x.ParamCode!.Trim()).ToDictionary(g => g.Key, g => g.Last());
+    var existing = await db.Masters
+        .Where(m => m.OrgId == t.OrgId && m.Category == "Mst_Param" && m.ParentCode == type).ToListAsync();
+    // NGUON xoa SACH ca nhom roi chen lai => tham so vang mat trong goi bi MAT IM LANG. Mini DEM va TRA VE.
+    var wouldBeWiped = existing.Where(e => !incoming.ContainsKey(e.Code))
+        .Select(e => new { e.Code, e.Name }).ToList();
+    if (wouldBeWiped.Count > 0 && dto.AllowWipe != true)
+    {
+        return Results.Conflict(new
+        {
+            error = "goi gui len THIEU tham so cua nhom", paramType = type,
+            wouldBeWipedCount = wouldBeWiped.Count, wouldBeWiped,
+            hint = "goi lai voi allowWipe=true neu that su muon xoa chung",
+            sourceWipesSilently = "NGUON Mst_Param_Save xoa ca nhom roi chen lai ma KHONG canh bao",
+        });
+    }
+    foreach (var e in existing.Where(e => !incoming.ContainsKey(e.Code))) db.Masters.Remove(e);
+    foreach (var kv in incoming)
+    {
+        var cur = existing.FirstOrDefault(e => e.Code == kv.Key);
+        if (cur is null)
+        {
+            db.Masters.Add(new MasterItem
+            {
+                OrgId = t.OrgId, Category = "Mst_Param", Code = kv.Key,
+                Name = kv.Value.ParamValue ?? "", ParentCode = type, Status = "1",
+            });
+        }
+        else cur.Name = kv.Value.ParamValue ?? cur.Name;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        paramType = type, saved = incoming.Count, wipedCount = wouldBeWiped.Count, wiped = wouldBeWiped,
+        sourceDeletesWholeTypeNotOneCode = "NGUON: trong vong lap tung dong, delete ... where (1=1) and DealerCode = @DealerCode and ParamType = @ParamType — KHONG loc theo ParamCode => TOAN BO tham so cung ParamType cua dai ly bi xoa, chi nhung dong CO trong goi duoc chen lai => client gui THIEU mot tham so thi tham so do BIEN MAT khong mot loi bao. Ten ham chi la Save, khong co gi noi rang goi phai DAY DU",
+        sourceDeleteSitsInsideTheLoop = "cau xoa nam TRONG vong lap: N dong => chay delete N lan tren cung pham vi (lan 2 tro di xoa 0 dong) — vo hai ve ket qua nhung cho thay khoi nay von duoc viet cho MOT dong",
+        fourWritePathsTwoDbScopes = "BON HAM GHI, HAI PHAM VI CSDL: Save chay _dbMain + _dbWH + _dbDealer (ca xoa lan chen, co gac bNeedTransaction_Dealer) con Create/Update/Delete CHI _dbMain + _dbWH, khong he khai _dbDealer => Mst_Param o DB dai ly chi duoc cap nhat qua DUNG MOT trong bon duong; them/sua/xoa le mot tham so thi DB dai ly GIU NGUYEN gia tri cu. Cung ho #841 nhung rong hon — lech tren BA ham chu khong phai mot",
+        createHasNoGuardButPkStillBlocks = "#404: Mst_Param_Create KHONG co #region Check nao (trich tron danh sach region theo #403: temp / Init / Save data / Return / catch / finally), Raise=0; con Mst_Param_Update CO CheckExistParam. NHUNG dung suy voi thanh tao-trung-duoc: cau xoa cua Delete chu thich thang and ParamCode = @ParamCode -- PK => khoa chinh la (DealerCode, ParamCode) nen DB VAN chan trung. Hau qua that la HINH THUC LOI: nguoi dung nhan ngoai le SQL/.NET tho thay vi ma loi nghiep vu Mst_Param_Exist (kieu #824)",
+        checkExistParamTopOneNoOrderBy = "CheckExistParam dung top 1 * voi strClauseOrderBy rong — top 1 KHONG ORDER BY (#415)",
+        twoMachinesVerified843 = "md5 chuan hoa CA NAM ham tren may 150 KHOP laptop: Create 575985ff, Save 51920579, Update c5a1e5f0, Delete c39f8d00, CheckExistParam 58acf006",
+    });
+}).RequireAuthorization();
 // Tham số hệ thống đọc thô (`myUtils_GetParamsRaw`) — nguồn CRASH khi thiếu bản ghi.
 app.MapGet("/api/params/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
@@ -72422,6 +72583,7 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
 record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);
+record MstParamSaveByTypeDto(string? ParamType, List<MstParamDto>? Items, bool? AllowWipe);
 record RoHistoryDto(string? ROHID, string? ROID, string? Status, string? Reason, string? LogLUBy);
 record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status);
 record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
