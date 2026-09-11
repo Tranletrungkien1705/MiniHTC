@@ -17637,6 +17637,95 @@ app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenant
     return Results.Ok(new { r.GroupCode, updated = false });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #839 MÀN MỚI: SỬA / XOÁ NHÓM PHỤ TÙNG — `Ser_MST_PartGroup_{Create,Update,Delete}` =====
+// `BizCarSv.Master.cs`, **cả ba LIVE** qua web WS (Mini mới có `GET`/`POST /api/partgroups` + `/toggle`):
+//   `:3839 Create` md5 `4edf08ca` (207 dòng, `SaveData`=**6**) → `this.checkExistPartGroupCode(...)`
+//   `:4189 Update` md5 `ec8846f5` (198, `SaveData`=**6**) → `this.checkExistPartGroupCodeModify(...)`
+//   `:4063 Delete` md5 `6628b66b` (117, `Raise`=**0**, `SaveData`=0) → **KHÔNG guard nào**
+//   **BƯỚC 3B**: md5 `Delete` trên máy 150 = `6628b66b` **KHỚP**.
+//
+// 🔴🔴🔴 **LẶP LẠI CHÍNH XÁC BẪY #818 — LẦN THỨ HAI ⇒ ĐÂY LÀ KHUÔN CHÉP-DÁN**
+//   `checkExistPartGroupCode` (dùng khi **TẠO**):
+//     `… "GroupCode","=",strGroupCode, "DealerCode","=",strDealerCode, "IsActive","=",**strIsActive**`
+//   `checkExistPartGroupCodeModify` (dùng khi **SỬA**):
+//     `… "PartGroupID","<>",strPartGroup**D**, "GroupCode","=",…, "DealerCode","=",…, "IsActive","=",**"1"**`
+//   ⇒ **Y hệt** cặp `checkExistSupplierCode` / `…Modify` ở **#818**: nhánh **TẠO** lọc theo `IsActive` **của chính
+//     bản ghi sắp tạo**, nhánh **SỬA** lọc cứng `"1"`.
+//   ⇒ Tạo nhóm phụ tùng với `IsActive = "0"` thì guard **chỉ tìm trong nhóm đã vô hiệu hoá** ⇒ **trùng mã với
+//     một nhóm ĐANG HOẠT ĐỘNG vẫn lọt**.
+//   📌 Gặp **hai lần với hai màn master khác nhau** (`SerSupplier*` ở `Inventory.Master.cs`, `Ser_MST_PartGroup_*`
+//     ở `Master.cs`) ⇒ **không còn là cá biệt**: đây là **khuôn chép-dán** của cặp helper `checkExist…Code` /
+//     `checkExist…CodeModify`. ⇒ Mọi màn master khác dùng cặp tên này **phải soi lại**.
+//   🔴 Và biến trong helper sửa tên là `strPartGroup**D**` — **thiếu chữ `I`** (đáng lẽ `strPartGroupID`),
+//     nguyên văn nguồn.
+//
+// 🔴🔴 **`Ser_MST_PartGroup_Delete` KHÔNG CÓ GUARD NÀO** — áp **#403**, trích **trọn** danh sách region:
+//   `#region // Temp:` · `#region // Init:` · `#region // **Delete:**` · catch · finally — **không** `#region Check`;
+//   `Raise` = 0, `this.Check*` = 0, `my*_Check*` = 0.
+//   Thân xoá là `delete t from Ser_MST_PartGroup t …` chạy trên **ba** CSDL
+//   (`_dbMain.ExecQuery` · `_dbWH.ExecQuery` · `_dbDealer.ExecQuery` — lại đúng **#742**).
+//   ⇒ **Xoá một nhóm phụ tùng không kiểm ràng buộc**: phụ tùng đang thuộc nhóm đó thành **mồ côi**, và
+//     nhóm con (`ParentCode`) cũng mất cha.
+//   ⇒ Đây là ca **thứ tư** trong nhóm 16 hàm `Delete` không guard của **#825** được đọc tay (sau `SerInsuranceDelete`
+//     #824, `Ser_Email_Attachment_Delete` #821, `Ser_Mst_Service_Delete` #825 — cái cuối hoá ra là **guard im lặng**).
+// 📌 Mini: `PUT /api/partgroups/{code}` và `DELETE /api/partgroups/{code}` — kiểm trùng mã **không phân biệt**
+//   `FlagActive` (vá bẫy #818), và **chặn xoá** khi còn phụ tùng/nhóm con tham chiếu (nguồn không kiểm).
+app.MapPut("/api/partgroups/{code}", async (string code, PartGroupDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var gc = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == gc);
+    if (row is null) return Results.NotFound(new { error = "khong tim thay nhom phu tung", groupCode = gc });
+    var newCode = (dto.GroupCode ?? gc).Trim().ToUpperInvariant();
+    if (!string.Equals(newCode, gc, StringComparison.OrdinalIgnoreCase))
+    {
+        // Va bay #818/#839: kiem trung ma KHONG phan biet FlagActive.
+        var dup = await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.GroupCode == newCode);
+        if (dup) return Results.Conflict(new { error = "Ser_Mst_PartGroupCode_Exist", groupCode = newCode });
+        row.GroupCode = newCode;
+    }
+    if (dto.GroupName != null) row.GroupName = dto.GroupName;
+    if (dto.ParentCode != null) row.ParentCode = dto.ParentCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.GroupCode, row.GroupName, row.ParentCode, row.FlagActive,
+        sourceRepeatsBug818 = "LAP LAI CHINH XAC BAY #818: checkExistPartGroupCode (TAO) loc IsActive = strIsActive — gia tri cua chinh ban ghi sap tao; checkExistPartGroupCodeModify (SUA) loc IsActive = 1 CUNG. Y het cap checkExistSupplierCode/...Modify o #818 => tao nhom voi IsActive = 0 thi TRUNG MA voi nhom DANG HOAT DONG van lot",
+        twoOccurrencesMakeItAPattern = "gap HAI lan voi HAI man master khac nhau (SerSupplier* o Inventory.Master.cs, Ser_MST_PartGroup_* o Master.cs) => KHONG con la ca biet, day la KHUON CHEP-DAN cua cap helper checkExist...Code / checkExist...CodeModify => moi man master khac dung cap ten nay PHAI SOI LAI",
+        typoInHelperVariable = "bien trong helper sua ten la strPartGroupD — THIEU chu I (dang le strPartGroupID), nguyen van nguon",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/partgroups/{code}", async (string code, AppDbContext db, ITenantContext t,
+    bool? force) =>
+{
+    var gc = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == gc);
+    if (row is null) return Results.NotFound(new { error = "khong tim thay nhom phu tung", groupCode = gc });
+    // Guard NGUON KHONG CO — Mini them: phu tung dang thuoc nhom, va nhom con.
+    var partCount = await db.ServiceParts.CountAsync(x => x.OrgId == t.OrgId && x.PartGroupCode == gc);
+    var childCount = await db.PartGroups.CountAsync(x => x.OrgId == t.OrgId && x.ParentCode == gc);
+    if ((partCount > 0 || childCount > 0) && force != true)
+    {
+        return Results.Conflict(new
+        {
+            error = "nhom phu tung con duoc tham chieu",
+            groupCode = gc, partCount, childGroupCount = childCount,
+            hint = "goi lai voi force=true neu that su muon xoa",
+            sourceHasNoSuchGuard = true,
+        });
+    }
+    db.PartGroups.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        groupCode = gc, orphanedParts = partCount, orphanedChildGroups = childCount,
+        sourceDeleteHasNoGuardAtAll = "AP #403 — trich TRON danh sach region cua Ser_MST_PartGroup_Delete: #region // Temp:, #region // Init:, #region // Delete:, catch, finally — KHONG co #region Check; Raise=0, this.Check*=0, my*_Check*=0 => KHONG guard that",
+        sourceDeletesThreeDatabases = "than xoa la delete t from Ser_MST_PartGroup t ... chay tren BA CSDL (_dbMain.ExecQuery, _dbWH.ExecQuery, _dbDealer.ExecQuery) — lai dung #742 (ExecQuery KHONG read-only)",
+        consequenceOrphans = "xoa mot nhom phu tung KHONG kiem rang buoc: phu tung dang thuoc nhom do thanh MO COI, va nhom con (ParentCode) cung mat cha",
+        fourthOfTheSixteen = "ca THU TU trong nhom 16 ham Delete khong guard cua #825 duoc doc tay — sau SerInsuranceDelete (#824), Ser_Email_Attachment_Delete (#821), Ser_Mst_Service_Delete (#825, hoa ra la GUARD IM LANG)",
+        twoMachinesVerified = "md5 chuan hoa Ser_MST_PartGroup_Delete tren may 150 = 6628b66b KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/partgroups/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
