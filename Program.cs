@@ -40157,6 +40157,98 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 //   khỏi báo cáo (#410), đúng như #861 với `Ser_Mst_Part`.
 // 📌 Mini: `GET /api/report/revenue-by-engineer` — **không** `distinct`, **chia** tiền theo số KTV của hạng mục,
 //   tính thuế bằng `decimal`, và trả kèm số dòng mà `distinct` của nguồn sẽ nuốt.
+// ===== 🔴🔴🔴 #868 MÀN MỚI: LÃI/LỖ THEO PHIẾU SỬA CHỮA — `Ser_RO_ReportResult_Revenue_ByRO` =====
+// `Service.Report.cs:1614-1922` md5 `e7b37b93` (309 dòng), LIVE (4 vỏ bọc). **3B**: **KHỚP** máy 150.
+// BƯỚC 2 (luật #357): tên hàm **0** hit thật (2 hit kia là ghi chú của #675 về bản `_WH`), đường dẫn
+// `revenue-by-ro` / `result-revenue` = **0** ⇒ màn mới.
+// Công thức cuối: `(SerPrice + PartOut − **PartIn** − **SumCost**) Profit`.
+//
+// 🔴🔴🔴 **GIÁ VỐN = 0 KHI ĐẠI LÝ KHÔNG DÙNG FIFO — DÒNG TÍNH THẬT BỊ COMMENT**
+//     `case when (select paramvalue from mst_param where dealercode='@DealerCode'`
+//     `          and paramcode='MCC' and paramtype='MCC') = 'FIFO'`
+//     `     then isnull(sidd.Price, 0)`
+//     `     Else **'0'** -- isnull(dbo.**GetAverageCost**('@DealerCode', sidd.PartID, isnull(spp.StockOutDateTime, spp.StockOutTime)), 0)`
+//   ⇒ Nhánh `Else` trả **`'0'`**, còn lời gọi `GetAverageCost` — thứ **thực sự** tính giá vốn bình quân —
+//     **đang bị comment**. Port **dòng ACTIVE** ⇒ đại lý cấu hình phương pháp **bình quân** (không FIFO) có
+//     **giá vốn phụ tùng = 0** ⇒ `Profit` = **toàn bộ doanh thu**.
+//   ⇒ Đây là **tham số `Mst_Param` `ParamType='MCC'`** mà MiniHTC đã ghi ở khối `#…` trước đó
+//     (`SerMethodCostCapital.Average` / `.FIFO`) ⇒ **một dòng comment quyết định toàn bộ con số lãi/lỗ**.
+//   🔴 `Else '0'` còn là **chuỗi** trong biểu thức số (`then isnull(sidd.Price,0)` là numeric) ⇒ `case` trả kiểu
+//     hỗn hợp, SQL Server phải ép kiểu.
+//
+// 🔴🔴 **`SumCost` LÀ HẰNG SỐ 0 NHƯNG VẪN NẰM TRONG CÔNG THỨC**: `, **0 SumCost**` rồi `… − SumCost` ⇒
+//   **phép trừ vô nghĩa**. Khác #867 ở chỗ: ở đó `SumCost` chỉ là cột thừa; ở đây nó **tham gia công thức lãi**,
+//   nên người đọc tưởng giá vốn đã được trừ **hai lần** (`PartIn` và `SumCost`) trong khi thực tế chỉ **một**.
+//
+// ⚪⚪ **THUẾ Ở ĐÂY TÍNH ĐÚNG — VÀ TRÁI HẲN ANH EM CÙNG HỌ**
+//   Cả ba chỗ đều dùng `**VAT*0.01**`:
+//     `sum(Price*Factor + Price*Factor***VAT*0.01**)` (dịch vụ) ·
+//     `sum(p.ROPAPrice*p.ROPAQuantity*p.Factor + p.ROPAPrice*p.ROPAQuantity***p.ROPAVAT*0.01***p.Factor)` (phụ tùng ra) ·
+//     `sum(p.Price*p.SOQuantity + p.Price*p.SOQuantity***p.VAT*0.01**)` (phụ tùng vào)
+//   ⇒ Trong **cùng một họ** `Ser_RO_ReportResult_Revenue_*`: **anh em `_ByEngineer` (#867) dùng `VAT/100`**
+//     (**chia nguyên, mất thuế**) còn **`_ByRO` (đây) dùng `*0.01`** (đúng). ⇒ Hai báo cáo cùng họ, cùng file,
+//     **hai công thức thuế khác nhau** ⇒ số liệu không thể đối chiếu.
+//
+// 🔴🔴 **DỊCH VỤ KHÔNG NHÂN SỐ LƯỢNG, PHỤ TÙNG THÌ CÓ** — lặp lại đúng bất đối xứng của #860:
+//   dịch vụ `Price*Factor*(…)` **thiếu `Quantity`**; phụ tùng có `ROPAQuantity` / `SOQuantity`.
+//
+// 🔴🔴 **BAKE `'@DealerCode'` — VÀ CHỈ MỘT ĐẠI LÝ MỖI LẦN GỌI**
+//   `and ro.DealerCode=**'@DealerCode'**` (4 chỗ trong hàm) cùng `'@FromDate'`/`'@ToDate'` ⇒ **bake trong nháy**
+//   ⇒ **injection** (họ #846/#860); và `datediff(day, …, ro.PaidCreatedDate)` ⇒ **non-sargable**.
+//   ⇒ Khác `_ByEngineer` (#867) dùng `BuildClause("and", "ro.DealerCode", strDealerCodeList, "@p", …)` — **danh sách**
+//     và **tham số hoá**. ⇒ **Hai anh em, hai kiểu lọc đại lý**: một cái nhận **nhiều** đại lý an toàn,
+//     một cái nhận **một** đại lý bằng cách nhúng chuỗi.
+//
+// 🔴 **`and so.Status = '3'`** literal (`Ser_Inv_StockOut.Finished = "3"` có sẵn hằng) — lặp lại #865.
+// 🔴 `inner join Ser_ROPartItems ropa on spp.Roid = ropa.Roid and spp.Partid = ropa.Partid` — **không** nối
+//   `LocationID` trong khi các join lân cận đều có ⇒ cùng phụ tùng ở **nhiều vị trí** có thể **nở dòng** ở `#tbl_partOut`.
+// ⚪ Chú thích nghiệp vụ có thật trong nguồn: `and ro.Status in ('FNS','PAID') ---- issue 980 - báo cáo kết quả`
+//   `kinh doanh hiển thị những báo giá Thanh toán xong, đã giao xe` ⇒ tập trạng thái **giống `_ByEngineer`**,
+//   **khác** `Ser_RO_Sumary_Revenue` (#860, chỉ `'FNS'`).
+// 📌 Mini: `GET /api/report/ro-profit` — tính thuế `decimal`, **nhân số lượng cho cả dịch vụ**, và **nêu rõ**
+//   giá vốn có được tính hay không theo tham số `MCC` (nguồn trả 0 khi không phải FIFO).
+app.MapGet("/api/report/ro-profit", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate) =>
+{
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        .Where(x => x.Status == "Finished" || x.Status == "Paid")
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CusRequest, x.CheckInDate })
+        .ToListAsync();
+    var ids = ros.Select(x => x.Id).ToList();
+    var ser = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Price, x.Factor, x.Vat }).ToListAsync();
+    var part = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.UnitPrice, x.NeedQty, x.Factor, x.Vat }).ToListAsync();
+    var mccFifo = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param"
+        && m.Code == "MCC" && m.Name == "FIFO");
+    var serSum = ser.GroupBy(x => x.RoId).ToDictionary(g => g.Key,
+        g => g.Sum(x => x.Price * (x.Factor == 0m ? 1m : x.Factor) * (1m + x.Vat * 0.01m)));
+    var partSum = part.GroupBy(x => x.RoId).ToDictionary(g => g.Key,
+        g => g.Sum(x => x.UnitPrice * x.NeedQty * (x.Factor == 0m ? 1m : x.Factor) * (1m + x.Vat * 0.01m)));
+    var items = ros.Select(r => new
+    {
+        roNo = r.RONo, plateNo = r.LicensePlate, r.CusName, r.CusRequest, r.CheckInDate,
+        serPrice = serSum.TryGetValue(r.Id, out var sv) ? sv : 0m,
+        partOut = partSum.TryGetValue(r.Id, out var pv) ? pv : 0m,
+    }).ToList();
+    return Results.Ok(new
+    {
+        fromDate, toDate, costMethodIsFifo = mccFifo,
+        count = items.Count, items,
+        costSideNotModelled = "Mini chua mo hinh hoa chuoi Ser_Inv_StockOutOrder + StockOutDetail + PartInstance + StockInDetail nen KHONG tinh PartIn — tra ve doanh thu (serPrice, partOut) va co costMethodIsFifo de biet nguon co tinh gia von hay khong",
+        sourceCostIsZeroWhenNotFifo = "#868 GIA VON = 0 KHI DAI LY KHONG DUNG FIFO: case when (select paramvalue from mst_param where dealercode=@DealerCode and paramcode=MCC and paramtype=MCC) = FIFO then isnull(sidd.Price, 0) Else (chuoi 0) -- isnull(dbo.GetAverageCost(@DealerCode, sidd.PartID, isnull(spp.StockOutDateTime, spp.StockOutTime)), 0). Nhanh Else tra chuoi 0 con loi goi GetAverageCost — thu THUC SU tinh gia von binh quan — DANG BI COMMENT. Port dong ACTIVE => dai ly cau hinh phuong phap BINH QUAN co GIA VON PHU TUNG = 0 => Profit = TOAN BO doanh thu. Mot dong comment quyet dinh toan bo con so lai/lo",
+        sourceElseReturnsStringInNumericCase = "Else chuoi 0 con la CHUOI trong bieu thuc so (then isnull(sidd.Price,0) la numeric) => case tra kieu hon hop, SQL Server phai ep kieu",
+        sumCostIsZeroButStillInFormula = "SumCost LA HANG SO 0 NHUNG VAN NAM TRONG CONG THUC: , 0 SumCost roi (SerPrice + PartOut - PartIn - SumCost) Profit => PHEP TRU VO NGHIA. Khac #867 o cho: o do SumCost chi la cot thua; o day no THAM GIA cong thuc lai nen nguoi doc tuong gia von da duoc tru HAI LAN (PartIn va SumCost) trong khi thuc te chi MOT",
+        vatIsCorrectHereUnlikeSibling = "AM TINH: ca ba cho deu dung VAT*0.01 (dich vu, phu tung ra, phu tung vao) => DUNG. Trong CUNG MOT HO Ser_RO_ReportResult_Revenue_*: anh em _ByEngineer (#867) dung VAT/100 (CHIA NGUYEN, MAT THUE) con _ByRO (day) dung *0.01 => hai bao cao cung ho, cung file, HAI CONG THUC THUE KHAC NHAU => so lieu khong the doi chieu",
+        serviceMissesQuantityAgain = "DICH VU KHONG NHAN SO LUONG, PHU TUNG THI CO — lap lai dung bat doi xung cua #860: dich vu Price*Factor*(...) THIEU Quantity; phu tung co ROPAQuantity / SOQuantity",
+        bakesDealerCodeAndOnlyOneDealer = "BAKE @DealerCode TRONG NHAY (4 cho) cung @FromDate/@ToDate => INJECTION (ho #846/#860); va datediff(day, ..., ro.PaidCreatedDate) => NON-SARGABLE. Khac _ByEngineer (#867) dung BuildClause(and, ro.DealerCode, strDealerCodeList, @p, ...) — DANH SACH va THAM SO HOA => HAI ANH EM, HAI KIEU LOC DAI LY: mot cai nhan NHIEU dai ly an toan, mot cai nhan MOT dai ly bang cach nhung chuoi",
+        statusLiteralAndJoinWithoutLocation = "and so.Status = chuoi 3 literal (Ser_Inv_StockOut.Finished = 3 co san hang) — lap lai #865. Va inner join Ser_ROPartItems ropa on spp.Roid = ropa.Roid and spp.Partid = ropa.Partid KHONG noi LocationID trong khi cac join lan can deu co => cung phu tung o NHIEU VI TRI co the NO DONG o #tbl_partOut",
+        sourceIssueCommentOnStatusSet = "AM TINH: chu thich nghiep vu co that trong nguon — and ro.Status in (FNS, PAID) ---- issue 980 - bao cao ket qua kinh doanh hien thi nhung bao gia Thanh toan xong, da giao xe => tap trang thai GIONG _ByEngineer, KHAC Ser_RO_Sumary_Revenue (#860, chi FNS)",
+        twoMachinesVerified868 = "md5 chuan hoa e7b37b93 KHOP may 150",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/revenue-by-engineer", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? engineerNo) =>
 {
