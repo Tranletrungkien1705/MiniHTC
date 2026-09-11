@@ -59290,6 +59290,60 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 // 🔴 Cuối hàm `select tmp.*` ⇒ trả **cả cột `TempFileAttachment`** (có thể là `byte[]` lớn) về client.
 // 📌 Mini: `PUT /api/emailtemplates/{tempId}` — ghi **đủ cả `FlagActive`**, tách **tên tệp** khỏi **nội dung tệp**,
 //   và guard kết quả tra cứu trước khi sửa.
+// ===== 🔴🔴🔴 #814 QUÉT KHUÔN `GetTableContents(...)` → `Rows[0]` KHÔNG GUARD (#812, #813) =====
+// Hai lượt liên tiếp gặp cùng một khuôn ⇒ đo cho hết trên `TERP.BizCarSv/*.cs`:
+//   · **214** site `DataTable <v> = TDALUtils.DBUtils.GetTableContents(…)`
+//   · **69** site trong đó dùng `<v>.Rows[0]` **mà không** có `<v>.Rows.Count` ở giữa (cửa sổ 30 dòng)
+//   · trong 69 đó, **25** site **có** gọi một hàm `Check*(` trong 40 dòng trước ⇒ **có thể** đã kiểm tồn tại
+//     gián tiếp (khuôn `*_CheckDB` với `strFlagExistToCheck`, đã thấy ở #796) ⇒ **không tính là lỗi**;
+//   · còn lại **44** site **không có bảo vệ nào** ⇒ **21% tổng số site** là ứng viên **crash thật**.
+// 📌 **Không over-claim**: con số là **44 site không có bảo vệ TRỰC TIẾP lẫn GIÁN TIẾP trong cửa sổ đã quét**,
+//   không phải "44 lỗi đã chứng minh". Mỗi ca vẫn phải đọc tay — hai ca dưới đây đã đọc và **xác thực**.
+//
+// ✅ **CA ĐÃ XÁC THỰC 1 — `Ser_App_Update` (`BizCarSv.Appointment.cs:630`)**
+//     `DataTable dt_Ser_App = TDALUtils.DBUtils.GetTableContents(_dbMain, "Ser_App", "top 1 *", "",`
+//     `                                                          "AppId", "=", strAppId);`
+//     `dt_Ser_App.Rows[0]["AppNo"] = strAppNo;`      ← dùng ngay, không kiểm
+//   ⇒ `AppId` không tồn tại ⇒ **`IndexOutOfRangeException` thô** khi sửa lịch hẹn.
+//
+// ✅ **CA ĐÃ XÁC THỰC 2 — `StockBalanceAlter` (`BizCarSv.Inventory.Stock.cs:179`), NẶNG NHẤT**
+//   Chú thích nguyên văn của chính tác giả ở dòng khai báo: `private void StockBalanceAlter( // _dbAction ????`
+//     `DataTable dtPartBalance = GetTableContents(_dbMain, "Ser_Mst_Part", "top 1 *", "",`
+//     `                                           "DealerCode","=",strDealerCode, "PartID","=",strPartID);`
+//     `string strPartCode = dtPartBalance.Rows[0]["PartCode"].ToString();`
+//   và ngay dưới là `dtLocationBalance` (`Ser_Mst_Location`) cũng y hệt.
+//   ⇒ **Phụ tùng (hoặc vị trí kho) không có trong danh mục của đại lý đó ⇒ CRASH khi cập nhật tồn kho.**
+//   Đây là hàm **điều chỉnh số dư tồn**, tức nằm trên đường ghi của mọi nghiệp vụ nhập/xuất.
+//
+// 🔴 **Phân bố theo file** (top): `SendMail.cs` **10** · `Service01.cs` **9** · `Master.cs` **8** ·
+//   `Customer.cs` **6** · `ZTemp.cs` **5** · `Inventory.StockIn.cs` **5** · `Inventory.Stock.cs` **4** ·
+//   `zzzzCode.cs` **3** · `Service.cs` **3** · `Inventory.cs` **3**.
+//   ⇒ `SendMail.cs` đứng đầu — đúng file của #813, nên #813 **không phải ca lẻ trong file đó**.
+//
+// ⚠️ **BÀI HỌC ĐO LƯỜNG (tự vấp trong lượt này)**: bản quét đầu dùng `NR` của awk trên **nhiều file** ⇒ `NR` là
+//   số dòng **tích luỹ toàn bộ đầu vào**, không phải số dòng trong file ⇒ mọi vị trí báo ra **sai**, và trạng thái
+//   `pend[]` **rò rỉ chéo file**. Phát hiện vì `sed -n` tại dòng báo ra **không in được gì**. Sửa: dùng **`FNR`**
+//   và xoá `pend[]` khi `FNR==1`. ⇒ **Với awk nhiều file: luôn `FNR`, và reset trạng thái ở `FNR==1`.**
+app.MapGet("/api/_meta/rows0-without-guard-sweep", () => Results.Ok(new
+{
+    trigger = "#812 (CarSv_SerCarUpdate_Key*) va #813 (Email_TempEmail_Update) — hai luot lien tiep cung khuon",
+    scope = "TERP.BizCarSv/*.cs",
+    getTableContentsSites = 214,
+    rows0WithoutDirectCountCheck = 69,
+    ofWhichHaveNearbyCheckCall = 25,
+    withNoProtectionAtAll = 44,
+    shareOfAllSites = "21%",
+    notOverclaimed = "44 la so site KHONG co bao ve truc tiep lan gian tiep TRONG CUA SO DA QUET (Rows.Count trong 30 dong sau, hoac Check*( trong 40 dong truoc) — KHONG phai 44 loi da chung minh. Moi ca van phai doc tay",
+    verifiedCases = new[]
+    {
+        "Ser_App_Update (BizCarSv.Appointment.cs:630): GetTableContents(_dbMain, Ser_App, top 1 *, , AppId, =, strAppId) roi dt_Ser_App.Rows[0][AppNo] = strAppNo NGAY => AppId khong ton tai se nem IndexOutOfRangeException tho khi sua lich hen",
+        "StockBalanceAlter (BizCarSv.Inventory.Stock.cs:179, chu thich nguyen van cua tac gia: private void StockBalanceAlter( // _dbAction ????): dtPartBalance.Rows[0][PartCode] va dtLocationBalance.Rows[0] deu dung ngay => phu tung hoac vi tri kho khong co trong danh muc cua dai ly do se CRASH khi cap nhat ton kho. Day la ham dieu chinh so du ton, nam tren duong ghi cua moi nghiep vu nhap/xuat",
+    },
+    topFiles = new[] { "SendMail.cs 10", "Service01.cs 9", "Master.cs 8", "Customer.cs 6", "ZTemp.cs 5",
+        "Inventory.StockIn.cs 5", "Inventory.Stock.cs 4", "zzzzCode.cs 3", "Service.cs 3", "Inventory.cs 3" },
+    sendMailIsWorst = "SendMail.cs dung dau voi 10 site — dung file cua #813 => #813 KHONG phai ca le trong file do",
+    awkMeasurementTrap = "BAI HOC: ban quet dau dung NR cua awk tren NHIEU file — NR la so dong TICH LUY toan bo dau vao, khong phai so dong trong file => moi vi tri bao ra SAI va trang thai pend[] RO RI CHEO FILE. Phat hien vi sed -n tai dong bao ra khong in duoc gi. Sua: dung FNR va xoa pend[] khi FNR==1",
+})).RequireAuthorization();
 app.MapPut("/api/emailtemplates/{tempId}", async (string tempId, EmailTemplateUpdateDto dto,
     AppDbContext db, ITenantContext t) =>
 {
