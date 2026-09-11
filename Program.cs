@@ -40302,6 +40302,50 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 // ⚪ Khối tính `Revenue` bằng **truy vấn con** nằm ngay đó nhưng **đã bị comment**; bản ACTIVE dùng bảng tạm.
 // 📌 Mini: `GET /api/report/ro-summary` — lọc ngày **vừa sargable vừa đúng biên** (`< ToDate + 1 ngày`),
 //   thuế `decimal`, nối chuỗi có phòng `null`, và **không** join lại bảng xe bằng khoá hẹp hơn.
+// ===== ⛔⚪ #871 QUÉT TRẢ NỢ #360: **ĐO** 21 BẢN SAO `case … StatusName` — CHÚNG **GIỐNG HỆT NHAU** =====
+// **Vòng quét/trả nợ ⇒ KHÔNG tăng bộ đếm màn.**
+//
+// ⛔ **RÚT LẠI DỰ ĐOÁN CỦA CHÍNH #360.** Ở đó tôi viết *"khả năng 21 bản đã lệch nhau là **cao**"*.
+//   Nay **đo thật**: trích 22 dòng sau mỗi site, rút chữ ký `when ro.Status in (…) then N'…'` + nhánh `else`,
+//   rồi `sort | uniq -c`:
+//     laptop `V20`            → **21/21 chữ ký GIỐNG HỆT** (1 nhóm duy nhất)
+//     máy 150 `V20.2023.Release` → **31/31 chữ ký GIỐNG HỆT** (1 nhóm duy nhất)
+//   ⇒ **0 bản lệch.** Dự đoán sai; ghi lại để không ai trích dẫn phần ấy của #360.
+//   📌 Bài học tự soi: câu *"khả năng … là cao"* là **suy đoán**, và luật của chính đợt grind này là **đếm trước**.
+//     Lần này chi phí đếm chỉ là **một vòng lặp shell**.
+//
+// ⚪ **NHƯNG KẾT LUẬN CHÍNH CỦA #869 VẪN NGUYÊN**: hàm SQL `dbo.ROStatus_GetStatusNameByCode` **không nơi nào
+//   gọi thật** — **0/21** trên laptop và **0/31** trên máy 150; mọi site đều là dòng bị comment.
+//   ⇒ Nợ kỹ thuật vẫn thật: đổi **một** trạng thái = sửa **21** (hoặc **31**) chỗ. Chỉ là **hiện tại chúng chưa lệch**.
+//
+// 🔴🔴 **HAI CÂY NGUỒN KHÁC NHAU VỀ QUY MÔ NHÂN BẢN** (bổ sung #352):
+//     laptop `V20`: **21** site / **4** file — `WH.cs` 7 · `ZTemp.cs` 6 · `Service01.cs` 5 · `Service.Report.cs` 3
+//     máy 150      : **31** site / **6** file — `WH.cs` 8 · `ZTemp.cs` 6 · `Service01.cs` 6 · **`Service.RO.cs` 5**
+//                    · **`zzzzCode.cs` 3** · `Service.Report.cs` 3
+//   ⇒ Cây mới có thêm **10** bản sao và **2 file mới** mang khuôn này ⇒ **nhân bản vẫn đang TIẾP DIỄN**,
+//     không phải di sản đóng băng.
+//
+// 📋 **CHỮ KÝ CHUẨN (giống nhau ở cả 52 site của hai cây)** — 8 nhánh + `else`:
+//   `CRE, PRT, HRO → Chờ sửa` · `INGA → Đang sửa` · `RPRD → Sửa xong` · `CEND → Kiểm tra cuối cùng`
+//   · `PAID → Thanh toán xong` · `FNS → Đã giao xe` · `REJ → Lệnh hủy` · `W4P, HPA, NORE → Hủy, Hẹn lại`
+//   · `else → Không xác định`
+//   ⇒ MiniHTC dùng **đúng một** bảng ánh xạ này cho mọi báo cáo (đã áp ở #869/#870), **không** chép lại.
+app.MapGet("/api/_meta/ro-status-name-copies", () => Results.Ok(new
+{
+    retracts360Prediction = "#871 RUT LAI DU DOAN CUA CHINH #360: o do toi viet kha nang 21 ban da lech nhau la CAO. Nay DO THAT bang cach trich 22 dong sau moi site, rut chu ky when ro.Status in (...) then N(...) + nhanh else roi sort | uniq -c: laptop V20 cho 21/21 chu ky GIONG HET (1 nhom duy nhat), may 150 cho 31/31 GIONG HET (1 nhom duy nhat) => 0 BAN LECH. Du doan SAI",
+    selfLesson = "BAI HOC TU SOI: cau kha nang ... la cao la SUY DOAN, trong khi luat cua chinh dot grind nay la DEM TRUOC. Lan nay chi phi dem chi la MOT VONG LAP SHELL",
+    mainConclusionOf869Stands = "KET LUAN CHINH CUA #869 VAN NGUYEN: ham SQL dbo.ROStatus_GetStatusNameByCode KHONG NOI NAO GOI THAT — 0/21 tren laptop va 0/31 tren may 150; moi site deu la dong bi comment => no ky thuat van that (doi MOT trang thai = sua 21 hoac 31 cho), chi la HIEN TAI CHUNG CHUA LECH",
+    laptopDistribution = new[] { "BizCarSv.WH.cs: 7", "BizCarSv.ZTemp.cs: 6", "BizCarSv.Service01.cs: 5", "BizCarSv.Service.Report.cs: 3", "TONG: 21 site / 4 file / 0 goi that" },
+    machine150Distribution = new[] { "BizCarSv.WH.cs: 8", "BizCarSv.ZTemp.cs: 6", "BizCarSv.Service01.cs: 6", "BizCarSv.Service.RO.cs: 5", "BizCarSv.zzzzCode.cs: 3", "BizCarSv.Service.Report.cs: 3", "TONG: 31 site / 6 file / 0 goi that" },
+    duplicationIsStillGrowing = "HAI CAY NGUON KHAC NHAU VE QUY MO NHAN BAN (bo sung #352): cay moi co THEM 10 ban sao va 2 FILE MOI mang khuon nay (Service.RO.cs, zzzzCode.cs) => NHAN BAN VAN DANG TIEP DIEN, khong phai di san dong bang",
+    canonicalSignature = new[]
+    {
+        "CRE, PRT, HRO -> Cho sua", "INGA -> Dang sua", "RPRD -> Sua xong",
+        "CEND -> Kiem tra cuoi cung", "PAID -> Thanh toan xong", "FNS -> Da giao xe",
+        "REJ -> Lenh huy", "W4P, HPA, NORE -> Huy, Hen lai", "else -> Khong xac dinh",
+    },
+    miniUsesOneSharedMap = "MiniHTC dung DUNG MOT bang anh xa nay cho moi bao cao (da ap o #869/#870), KHONG chep lai",
+})).RequireAuthorization();
 app.MapGet("/api/report/ro-summary", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? status) =>
 {
