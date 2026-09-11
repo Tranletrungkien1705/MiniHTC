@@ -23540,6 +23540,89 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
     return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #818 PARITY NHÀ CUNG CẤP PHỤ TÙNG — `SerSupplier{Create,Update,Delete,Get,GetForCode}` =====
+// Mini port khối này **từ FORM** (`FrmMstSupplierCreate/Search`) chứ chưa đối chiếu **biz**. Năm hàm trong
+// `BizCarSv.Inventory.Master.cs`, **cả năm LIVE** qua web WS:
+//   `:259 Create` md5 `c17495d0` (183 dòng, `Raise`=0, `SaveData`=**3**) — `WS:14181`
+//   `:451 Update` md5 `2480a044` (170, `Raise`=0, `SaveData`=**3**)      — `WS:14227`
+//   `:629 Delete` md5 `1587e0a9` (151, `Raise`=**1**)                     — `WS:14266`
+//   `:787 Get`    md5 `e385fb2c` (137)                                    — `WS:14301`
+//   `:934 GetForCode` md5 `05332814` (119)                                — `WS:14336`
+//   **BƯỚC 3B**: `Inventory.Master.cs` **2104** dòng trên **cả hai** máy; md5 `Update` trên 150 = `2480a044` **KHỚP**.
+//
+// ⚪ **`Raise`=0 KHÔNG có nghĩa là không guard** (#403, khuôn #747/#760): trích trọn `#region // Check`:
+//   Create → `checkExistSupplierCode(...)` + `checkSupplierFieldEmpty(...)`
+//   Update → `checkExistSupplier(...)` + `checkExistSupplierCodeModify(...)`
+//   Delete → `Ser_Inv_StockIn_Exist_NotDelete_Supplier` (không xoá được NCC **đã có phiếu nhập**).
+//
+// 🔴🔴🔴 **GAP 1 — PHẠM VI LỌC CỦA GUARD TRÙNG MÃ LỆCH GIỮA CREATE VÀ UPDATE** (đúng chỗ #404 cảnh báo)
+//   `checkExistSupplierCode` (dùng khi **TẠO**):
+//     `GetTableContents(dbAction, "Ser_MST_Supplier", "top 1 *", "",`
+//     `    "SupplierCode","=",strSupplierCode, "DealerCode","=",strDealerCode, "IsActive","=",**strIsActive**)`
+//   `checkExistSupplierCodeModify` (dùng khi **SỬA**):
+//     `… "SupplierID","<>",strSupplierID, "SupplierCode","=",…, "DealerCode","=",…, "IsActive","=",**"1"**)`
+//   ⇒ Bản **TẠO** kiểm trùng **trong cùng nhóm `IsActive` của bản ghi sắp tạo** (lời gọi truyền thẳng
+//     `strIsActive`), còn bản **SỬA** kiểm cứng `"1"`.
+//   ⇒ **Hệ quả**: tạo NCC mới với `IsActive = "0"` thì guard **chỉ tìm trong nhóm đã vô hiệu hoá** ⇒ **trùng mã
+//     với một NCC ĐANG HOẠT ĐỘNG vẫn tạo được**. Chiều ngược lại cũng vậy.
+//     ⇒ `Ser_MST_Supplier` có thể có **nhiều dòng cùng `SupplierCode` + `DealerCode`**, khác nhau `IsActive`.
+//   ⚪ Phần **đúng** của bản sửa: `"SupplierID","<>",strSupplierID` ⇒ **loại chính nó ra** (cùng khuôn đúng ở #807).
+//
+// 🔴🔴🔴 **GAP 2 — SỬA KHÔNG KIỂM TRƯỜNG BẮT BUỘC**
+//   Create gọi `checkSupplierFieldEmpty(ref alParamsCoupleError, strSupplierCode, strDealerCode,`
+//   `strSupplierName, strAddress, strIsActive)`. **Update KHÔNG gọi hàm này.**
+//   ⇒ **Sửa một NCC có thể xoá trắng tên và địa chỉ** trong khi **tạo mới** thì bắt buộc phải nhập.
+//   📌 Đây đúng dạng #404: "cặp create/update — phạm vi lọc lệch nhau là lỗ hổng hay gặp nhất", ở đây lệch
+//     **cả hai** chiều: một guard **khác phạm vi**, một guard **vắng hẳn**.
+//
+// 🔴 **GHI BA CSDL**: `_dbMain.SaveData("Ser_MST_Supplier", …)` · `_dbWH.SaveData(…)` ·
+//   `if (bNeedTransaction_Dealer) _dbDealer.SaveData(…)` ⇒ ba lần ghi độc lập (khuôn #812; nhánh `_dbDealer`
+//   có gác cờ nên **đúng** theo #748).
+// 🔴 **Tên cột nguồn là `IsActive`, Mini đang dùng `FlagActive`** trên entity `SerMstSupplier` ⇒ khi đối chiếu
+//   dữ liệu thật phải nhớ ánh xạ này (nguồn cũng có chỗ dùng `FlagActive` cho bảng khác — dễ lẫn).
+// 📌 Mini: bổ sung `PUT /api/sersuppliers/{supplierCode}` — **áp CẢ HAI** guard mà nguồn thiếu ở nhánh sửa,
+//   và kiểm trùng mã **không phân biệt `IsActive`**.
+app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSupplierDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var code = (supplierCode ?? "").Trim();
+    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
+    if (row is null) return Results.NotFound(new { error = "Ser_Mst_Supplier_NotFound", supplierCode = code });
+    // GAP 2 — nguon chi kiem o CREATE, Mini kiem ca o UPDATE.
+    var newName = dto.SupplierName ?? row.SupplierName;
+    var newAddr = dto.Address ?? row.Address;
+    if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newAddr))
+    {
+        return Results.BadRequest(new { error = "checkSupplierFieldEmpty: ten va dia chi bat buoc",
+            sourceOnlyChecksOnCreate = true });
+    }
+    // GAP 1 — kiem trung ma KHONG phan biet IsActive (nguon: Create theo strIsActive, Update cung '1').
+    var newCode = (dto.SupplierCode ?? code).Trim();
+    if (!string.Equals(newCode, code, StringComparison.OrdinalIgnoreCase))
+    {
+        var dup = await db.SerMstSuppliers.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id
+            && x.SupplierCode == newCode);
+        if (dup) return Results.Conflict(new { error = "Ser_Mst_Supplier_Exist", supplierCode = newCode });
+        row.SupplierCode = newCode;
+    }
+    row.SupplierName = newName; row.Address = newAddr;
+    if (dto.Phone != null) row.Phone = dto.Phone;
+    if (dto.Fax != null) row.Fax = dto.Fax;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.SupplierCode, row.SupplierName, row.Address, row.Phone, row.Fax, row.FlagActive,
+        sourceDuplicateGuardScopeDiffers = "GAP 1 (#404): checkExistSupplierCode (TAO) loc IsActive = strIsActive — gia tri cua chinh ban ghi sap tao; checkExistSupplierCodeModify (SUA) loc IsActive = 1 CUNG. => tao NCC moi voi IsActive = 0 thi guard CHI tim trong nhom da vo hieu hoa => TRUNG MA voi mot NCC DANG HOAT DONG van tao duoc; chieu nguoc lai cung vay => Ser_MST_Supplier co the co NHIEU dong cung SupplierCode + DealerCode khac nhau IsActive",
+        sourceUpdateSkipsFieldEmptyCheck = "GAP 2: Create goi checkSupplierFieldEmpty(..., strSupplierName, strAddress, strIsActive) nhung Update KHONG goi => SUA mot NCC co the XOA TRANG ten va dia chi trong khi TAO MOI thi bat buoc phai nhap",
+        sourceModifyGuardExcludesItself = "AM TINH: checkExistSupplierCodeModify co SupplierID <> strSupplierID => loai chinh no ra, dung khuon da thay o #807",
+        raiseZeroDoesNotMeanNoGuard = "AM TINH (#403): Create va Update deu co Raise=0 nhung guard nam trong helper — Create: checkExistSupplierCode + checkSupplierFieldEmpty; Update: checkExistSupplier + checkExistSupplierCodeModify; Delete: Ser_Inv_StockIn_Exist_NotDelete_Supplier (khong xoa duoc NCC da co phieu nhap)",
+        sourceWritesThreeDatabases = "_dbMain.SaveData(Ser_MST_Supplier) + _dbWH.SaveData + if (bNeedTransaction_Dealer) _dbDealer.SaveData => ba lan ghi doc lap (khuon #812); nhanh _dbDealer co gac co nen DUNG theo #748",
+        columnNameMapping = "nguon dung cot IsActive, Mini dung FlagActive tren entity SerMstSupplier — nho anh xa nay khi doi chieu du lieu that",
+        twoMachinesVerified = "Inventory.Master.cs 2104 dong tren CA HAI may; md5 chuan hoa SerSupplierUpdate tren 150 = 2480a044 KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
