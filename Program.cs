@@ -40701,6 +40701,64 @@ app.MapPost("/api/roattachments/flag-hmc", async (RoAttachmentFlagHmcDto dto,
         readsDealerWritesThree879 = "doc _dbDealer nhung ghi ca ba CSDL => CA THU NAM cua ho #338/#351 (sau #851, #854, #855, #875)",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #880 TRẢ NỢ #878: MỔ **THÂN THẬT** `…_SendHMCX` CỦA HAI CỤM GỬI HMC =====
+// **Vòng parity/GAP ⇒ KHÔNG tăng bộ đếm màn.** Áp luật #369 (đọc vỏ bọc ≠ đọc thân thật).
+//   `Rpt_DMSSer_PartsOrderDetail_SendHMC**X**` `:5487` md5 `0e0c36b0` (187 dòng)
+//   `Rpt_DMSSer_DealerNetPrice_SendHMC**X**`   `:4700` md5 `bf74658f` (261 dòng)
+//   Cả hai **chỉ có trên cây `V20.2023.Release`**.
+//
+// 🔴🔴🔴 **`f.QtyAppr = f.QtyOrd` — SO BẰNG ĐÚNG ⇒ ĐƠN DUYỆT THỪA KHÔNG BAO GIỜ ĐƯỢC GỬI HMC**
+//   Bộ lọc của `PartsOrderDetail_SendHMCX`:
+//     `and t.OrderPartType = 'TST'`  ·  `and t.DeliveryFormCode = '2'`  ·  `and t.SupplierStatus in ('2','4')`
+//     `and **f.QtyAppr = f.QtyOrd**`  ·  `and rpodp.OrderPartNo is null -- Chưa tùng gửi HMC`
+//   ⇒ Dòng đơn hàng được **duyệt nhiều hơn** số đặt (`QtyAppr > QtyOrd`) **không lọt bộ lọc** ⇒ **không bao giờ**
+//     có mặt trong file gửi HMC. Đúng khuôn **#355** (`= 0` thay vì `<= 0`) — **ca thứ HAI**, ở luồng khác.
+//     Viết đúng phải là `f.QtyAppr >= f.QtyOrd`.
+//   ⚪ **Không tổng quát hoá**: hàm anh em `DealerNetPrice_SendHMCX` **không** dính bẫy này — nó dùng
+//     `and (f.TSTPartCode **is null** or t.TSTWarrantyPrice **<>** f.TSTWarrantyPrice)` (giá đổi **hoặc** phụ tùng mới)
+//     ⇒ `=`-cứng là **cá biệt của cụm PartsOrderDetail**, không phải khuôn của tầng.
+//
+// 🔴🔴 **BỐN ĐIỀU KIỆN LỌC ĐỀU LÀ LITERAL TRONG KHI TẦNG CÓ SẴN HẰNG** (HẰNG ≠ GIÁ TRỊ)
+//     `'TST'`     ⇐ `TConst.OrderPartType.**TST** = "TST"` (đã mở ở #865)
+//     `'2','4'`  ⇐ `TConst.SupplierStatus.**SS_2** = "2"` (*Đã duyệt, chờ hoàn thiện*) và
+//                    `**SS_4** = "4"` (*Đã hoàn thiện*) — lớp ấy **còn có** `SS_1 = "1"` (*Chờ duyệt*)
+//                    và `SS_7 = "7"` (*Đơn lỗi, chờ kinh doanh điều chỉnh*).
+//     `'2'` cho `DeliveryFormCode` ⇒ **chưa mở được hằng** tương ứng (cây 150 có `Mst_DeliveryForm_GetAsync`
+//       nhưng chưa đọc) ⇒ ghi là **chưa xác định**, không đoán.
+//   ⇒ Nghĩa nghiệp vụ thật của bộ lọc: **chỉ** đơn **TST**, hình thức giao **"2"**, nhà cung cấp ở trạng thái
+//     *đã duyệt* hoặc *đã hoàn thiện*, và **duyệt đúng bằng đặt**, và **chưa từng gửi**.
+//
+// 🔴🔴 **XÁC NHẬN #695 TỪ THÂN THẬT — CỘT `PriceVAT` KHÔNG CÓ VAT**
+//     `--, cast(isnull(ROUND(f.UPAfterDc **/ 100**, 0), 0) as int) * **(1 + isnull(f.VAT, 0))** * 0.01 PriceVAT`  ← **comment**
+//     `,   cast(ROUND(isnull(f.UPAfterDc, 0) ***0.01**, 0) as int) PriceVAT`                                    ← **ĐANG CHẠY**
+//   ⇒ Dòng **có** VAT nằm ở bản **bị comment**; bản ACTIVE **không** nhân VAT. #695 kết luận đúng, nay có
+//     **bằng chứng từ thân thật** thay vì từ vỏ bọc.
+//
+// 🔴🔴 **`select @@Identity RptID` RỒI GÁN VÀO BẢN WH** — ở **cả hai** hàm (`:5627` và `:4869` tương ứng)
+//   ⇒ Họ #335 (152 chỗ `@@Identity` vs 3 chỗ `SCOPE_IDENTITY()`), nhưng ở đây hậu quả **cộng hưởng với #878**:
+//     `RptID` sai ⇒ bản `Rpt_*` ở WH mang khoá sai ⇒ `LastGetX` (lấy `MAX(RptID)`, **không `where`**)
+//     lấy nhầm bản ⇒ **màn "đã gửi chưa" báo sai**.
+// 🔴 Cả hai `SendHMCX` chỉ ghi `_dbMain` + `_dbWH` — **không** `_dbDealer`.
+// ⚪ `DealerNetPrice_SendHMCX` còn ghi `TST_Mst_Part_DNP` (`SaveData` + `InsertHuge`) — **đúng bảng mà #810
+//   đã ghi nợ "chưa mô hình hoá"**; nay xác nhận nó là **bảng snapshot giá net đã gửi**, ghi trên cả Main và WH.
+// 📌 Mini: endpoint tra cứu bộ lọc thật của luồng gửi HMC, để ai port `SendHMC` biết đủ 5 điều kiện.
+app.MapGet("/api/_meta/hmc-send-filters", () => Results.Ok(new
+{
+    paysDebtOf878 = "#880 TRA NO #878: mo THAN THAT ..._SendHMCX cua hai cum (PartsOrderDetail :5487 md5 0e0c36b0 187 dong; DealerNetPrice :4700 md5 bf74658f 261 dong) — ca hai CHI CO tren cay V20.2023.Release. Ap luat #369",
+    partsOrderDetailFilters = new[]
+    {
+        "and t.OrderPartType = TST", "and t.DeliveryFormCode = 2", "and t.SupplierStatus in (2,4)",
+        "and f.QtyAppr = f.QtyOrd", "and rpodp.OrderPartNo is null -- Chua tung gui HMC",
+    },
+    qtyApprEqualsQtyOrdBlocksOverApproved = "#880 f.QtyAppr = f.QtyOrd — SO BANG DUNG => dong don hang duoc DUYET NHIEU HON so dat (QtyAppr > QtyOrd) KHONG LOT bo loc => KHONG BAO GIO co mat trong file gui HMC. Dung khuon #355 (= 0 thay vi <= 0) — CA THU HAI, o luong khac. Viet dung phai la f.QtyAppr >= f.QtyOrd",
+    doNotGeneralise880 = "AM TINH — KHONG TONG QUAT HOA: ham anh em DealerNetPrice_SendHMCX KHONG dinh bay nay, no dung and (f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice) tuc gia doi HOAC phu tung moi => dau bang cung la CA BIET cua cum PartsOrderDetail, khong phai khuon cua tang",
+    literalsWhereConstantsExist = "BON DIEU KIEN LOC DEU LA LITERAL TRONG KHI TANG CO SAN HANG: TST <= TConst.OrderPartType.TST = TST (da mo o #865); 2 va 4 <= TConst.SupplierStatus.SS_2 = 2 (Da duyet, cho hoan thien) va SS_4 = 4 (Da hoan thien) — lop ay CON CO SS_1 = 1 (Cho duyet) va SS_7 = 7 (Don loi, cho kinh doanh dieu chinh); rieng 2 cua DeliveryFormCode CHUA MO DUOC hang tuong ung (cay 150 co Mst_DeliveryForm_GetAsync nhung chua doc) nen ghi la CHUA XAC DINH, khong doan",
+    businessMeaningOfFilter = "Nghia nghiep vu that cua bo loc: CHI don TST, hinh thuc giao 2, nha cung cap o trang thai da-duyet hoac da-hoan-thien, VA duyet DUNG BANG dat, VA chua tung gui",
+    confirms695FromRealBody = "XAC NHAN #695 TU THAN THAT — COT PriceVAT KHONG CO VAT: dong --, cast(isnull(ROUND(f.UPAfterDc / 100, 0), 0) as int) * (1 + isnull(f.VAT, 0)) * 0.01 PriceVAT BI COMMENT (dong nay CO VAT), con dong DANG CHAY la , cast(ROUND(isnull(f.UPAfterDc, 0) * 0.01, 0) as int) PriceVAT KHONG nhan VAT. #695 ket luan dung, nay co BANG CHUNG TU THAN THAT thay vi tu vo boc",
+    atAtIdentityCompoundsWith878 = "select @@Identity RptID roi gan vao ban WH o CA HAI ham => ho #335, nhung o day hau qua CONG HUONG VOI #878: RptID sai => ban Rpt_* o WH mang khoa sai => LastGetX (lay MAX(RptID), KHONG where) lay nham ban => man da-gui-chua BAO SAI",
+    bothWriteOnlyMainAndWh = "ca hai SendHMCX chi ghi _dbMain + _dbWH — KHONG _dbDealer",
+    tstMstPartDnpIdentified = "AM TINH: DealerNetPrice_SendHMCX con ghi TST_Mst_Part_DNP (SaveData + InsertHuge) — DUNG BANG ma #810 da ghi no chua-mo-hinh-hoa; nay xac nhan no la BANG SNAPSHOT GIA NET DA GUI, ghi tren ca Main va WH",
+})).RequireAuthorization();
 app.MapGet("/api/report/hmc-last-sent", (string? dealerCode) => Results.Ok(new
 {
     dealerCode = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode!.Trim(),
