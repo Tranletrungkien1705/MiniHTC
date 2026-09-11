@@ -40576,6 +40576,58 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 // ⚪ `CusName`/`Address`/`Tel`/`Mobile` lọc qua `BuildClauseConditionSingle(… "like" … @param …)` ⇒ **tham số hoá**.
 // 📌 Mini: `GET /api/servicecustomers/all-dl` — phân trang **có `ORDER BY` ổn định**, trả `totalCount` như nguồn,
 //   đếm số lần vào xưởng, và **cờ `includesInactive`** để người gọi biết nguồn không lọc khách đã xoá.
+// ===== ⛔🔴🔴 #878 ĐÍNH CHÍNH #874 LẦN NỮA + ĐỌC 5 HÀM CÒN THIẾU CỦA HAI CỤM GỬI HMC =====
+// **Vòng parity/GAP ⇒ KHÔNG tăng bộ đếm màn.**
+//
+// ⛔ **#874 xếp `Rpt_DMSSer_{DealerNetPrice,PartsOrderDetail}_*` (14 hàm) vào "PHÂN HỆ THẬT SỰ CHƯA CÓ" —
+//   SAI.** Hai cụm ấy **đã được audit** ở **#694** (DealerNetPrice) và **#695** (PartsOrderDetail), cộng **#810**.
+//   ⇒ **Vì sao grep của #874 trượt**: các khối chú thích ghi tên **RÚT GỌN** (`_LastGet`, `_PartGetX`,
+//     `_SendHMC`) hoặc gộp (`{LastGet,PartGet,SendHMC}`), còn tôi grep **tên đầy đủ** `Rpt_DMSSer_…_LastGet`
+//     ⇒ **0 hit** cho cả 14 tên dù nội dung đã có.
+//   ⇒ **Dạng dương-tính-giả thứ hai của BƯỚC 2** (bổ sung #357): grep **tên đầy đủ** trượt khi tài liệu ghi
+//     **tên rút gọn**. Phải grep thêm **hậu tố đặc trưng** (`_SendHMC_Auto`, `_PartGetX`) và **tên bảng nguồn**
+//     (`Rpt_DealerNetPrice`, `Rpt_PartsOrderDetail`).
+//
+// ✅ **ĐO LẠI CHÍNH XÁC — còn ĐÚNG 5 hàm chưa đọc** (không phải 14):
+//   `Rpt_DMSSer_**DealerNetPrice**_SendHMC**X**`   `:4700` md5 `bf74658f` (261 dòng)
+//   `Rpt_DMSSer_**PartsOrderDetail**_LastGet`      `:5218` `cadf0dc6` (98)
+//   `Rpt_DMSSer_**PartsOrderDetail**_LastGet**X**` `:5179` `1cc6b0c6` (**39**)
+//   `Rpt_DMSSer_**PartsOrderDetail**_PartGet`      `:5384` `67b1ab6a` (103)
+//   `Rpt_DMSSer_**PartsOrderDetail**_SendHMC**X**` `:5487` `0e0c36b0` (187)
+//   📌 Đáng chú ý: #694 đã đọc `_SendHMC` và `_SendHMC_Auto` (hai **vỏ bọc**) nhưng **chưa** `_SendHMCX`
+//     — tức **thân thật** chưa được đọc. Khuôn `X` = worker đã biết từ lâu; đây là lần nó làm tôi bỏ sót.
+//
+// 🔴🔴🔴 **"LẦN GỬI GẦN NHẤT" KHÔNG LỌC ĐẠI LÝ — VÀ ĐÂY LÀ KHUÔN, KHÔNG PHẢI CÁ BIỆT**
+//   `Rpt_DMSSer_PartsOrderDetail_LastGetX` (**cả thân hàm chỉ 39 dòng**):
+//     `select **MAX(t.RptID)** RptID into #tbl_Rpt_PartsOrderDetail from Rpt_PartsOrderDetail t --//[mylock] ;`
+//     `select t.* from Rpt_PartsOrderDetail t inner join #tbl_Rpt_PartsOrderDetail f on t.RptID = f.RptID ;`
+//     ⇒ **KHÔNG một mệnh đề `where` nào** — không `DealerCode`, không kỳ báo cáo.
+//   Kiểm hàm anh em `Rpt_DMSSer_**DealerNetPrice**_LastGetX` (`:4376`, #694 đã liệt md5 nhưng chưa mổ):
+//     `select MAX(t.RptID) RptID … from **Rpt_DealerNetPrice** t --//[mylock]` — **cũng không `where`**.
+//   ⇒ **Cả hai cụm gửi HMC báo "lần gửi gần nhất" theo TOÀN HỆ THỐNG**, không theo đại lý đang hỏi.
+//     Đại lý A mở màn sẽ thấy bản ghi mà đại lý B vừa gửi ⇒ tưởng mình đã gửi rồi ⇒ **bỏ gửi kỳ đó**.
+//   ⇒ Ghép với phát hiện #694 (bản `_Auto` bỏ trống bộ lọc ngày ⇒ gửi **toàn bộ lịch sử**): luồng tự động
+//     gửi **tất cả**, còn màn tra "đã gửi chưa" lại nhìn **bản của người khác**. Hai lỗi **cùng một luồng**.
+//
+// 📌 Mini: `GET /api/report/hmc-last-sent` — trả "lần gửi gần nhất" **CÓ lọc đại lý**, và nêu rõ nguồn không lọc.
+app.MapGet("/api/report/hmc-last-sent", (string? dealerCode) => Results.Ok(new
+{
+    dealerCode = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode!.Trim(),
+    corrects874Again = "#878 DINH CHINH #874 LAN NUA: #874 xep Rpt_DMSSer_{DealerNetPrice,PartsOrderDetail}_* (14 ham) vao PHAN HE THAT SU CHUA CO — SAI. Hai cum ay DA duoc audit o #694 (DealerNetPrice) va #695 (PartsOrderDetail), cong #810",
+    whyTheGrepMissed = "VI SAO GREP CUA #874 TRUOT: cac khoi chu thich ghi ten RUT GON (_LastGet, _PartGetX, _SendHMC) hoac gop ({LastGet,PartGet,SendHMC}), con toi grep TEN DAY DU Rpt_DMSSer_..._LastGet => 0 hit cho ca 14 ten du noi dung DA CO. Day la DANG DUONG-TINH-GIA THU HAI cua BUOC 2 (bo sung #357): grep TEN DAY DU truot khi tai lieu ghi TEN RUT GON. Phai grep them HAU TO DAC TRUNG (_SendHMC_Auto, _PartGetX) va TEN BANG NGUON (Rpt_DealerNetPrice, Rpt_PartsOrderDetail)",
+    fiveFunctionsActuallyMissing = new[]
+    {
+        "Rpt_DMSSer_DealerNetPrice_SendHMCX :4700 md5 bf74658f (261 dong)",
+        "Rpt_DMSSer_PartsOrderDetail_LastGet :5218 md5 cadf0dc6 (98)",
+        "Rpt_DMSSer_PartsOrderDetail_LastGetX :5179 md5 1cc6b0c6 (39)",
+        "Rpt_DMSSer_PartsOrderDetail_PartGet :5384 md5 67b1ab6a (103)",
+        "Rpt_DMSSer_PartsOrderDetail_SendHMCX :5487 md5 0e0c36b0 (187)",
+    },
+    wrapperReadBodyNot = "DANG CHU Y: #694 da doc _SendHMC va _SendHMC_Auto (hai VO BOC) nhung CHUA _SendHMCX — tuc THAN THAT chua duoc doc. Khuon X = worker da biet tu lau; day la lan no lam toi bo sot",
+    lastSentIgnoresDealer = "#878 LAN GUI GAN NHAT KHONG LOC DAI LY — VA DAY LA KHUON: Rpt_DMSSer_PartsOrderDetail_LastGetX (ca than ham chi 39 dong) chay select MAX(t.RptID) RptID into #tbl_Rpt_PartsOrderDetail from Rpt_PartsOrderDetail t; roi select t.* from Rpt_PartsOrderDetail t inner join #tbl... on t.RptID = f.RptID; — KHONG mot menh de where nao: khong DealerCode, khong ky bao cao. Ham anh em Rpt_DMSSer_DealerNetPrice_LastGetX (:4376) CUNG KHONG co where => CA HAI cum gui HMC bao lan-gui-gan-nhat theo TOAN HE THONG, khong theo dai ly dang hoi",
+    businessConsequence878 = "Dai ly A mo man se thay ban ghi ma dai ly B vua gui => tuong minh da gui roi => BO GUI KY DO. Ghep voi phat hien #694 (ban _Auto bo trong bo loc ngay nen gui TOAN BO LICH SU): luong tu dong gui TAT CA, con man tra da-gui-chua lai nhin BAN CUA NGUOI KHAC — hai loi CUNG MOT LUONG",
+    miniBehaviour = "Mini: endpoint nay tra lan gui gan nhat CO LOC DAI LY (khi Mini mo hinh hoa hai bang Rpt_DealerNetPrice / Rpt_PartsOrderDetail); hien tai chua mo hinh hoa hai bang do nen chi cong bo ket luan audit",
+})).RequireAuthorization();
 app.MapGet("/api/servicecustomers/all-dl", async (AppDbContext db, ITenantContext t,
     string? cusName, string? address, string? phone, int? start, int? count, bool? onlyActive) =>
 {
