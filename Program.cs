@@ -6612,6 +6612,69 @@ app.MapGet("/api/sysgroups", async (AppDbContext db, ITenantContext t, string? g
 }).RequireAuthorization();
 
 // 🔴 Nguồn lưu nhóm bằng `SaveData("Sys_Group", dt)` KHÔNG truyền alColumnEffective ⇒ ghi TOÀN BỘ cột.
+// ===== 🔴🔴🔴 #857 PARITY: LƯU NHÓM QUYỀN — `Ser_SysSaveGroup` (`System.cs`) =====
+// Mini đã có `POST /api/sysgroups/save` ⇒ **vòng parity, KHÔNG tăng bộ đếm màn**.
+// laptop `V20:1988-2164` md5 `65d60833` (177 dòng, `Raise`=2, `SaveData`=2, `ExecQuery`=**4**) ·
+// máy 150 `V20.2023.Release` md5 `6ddc77b9`. LIVE (**6** vỏ bọc).
+//
+// 🔴🔴🔴 **GUARD BẢO VỆ MỘT NHÁNH KHÔNG TỒN TẠI** (áp #403 — trích trọn `#region // Check:`)
+//     `if (!ds_Sys_Group.Tables.Contains("Sys_Group")) throw …SysSaveGroup_TableNotFound;`
+//     `if (IsEmpty(strGroupCodeListForDelete)) {`
+//     `    if (IsEmpty(strDealerCodeListForDelete)) throw …SysSaveGroup_**DealerCodeForDeleteNotFound**; }`
+//   Nhưng khối xoá chỉ chạy khi `**if (!IsEmpty(strGroupCodeListForDelete))**`.
+//   ⇒ Nhánh mà guard thứ hai canh — `GroupCodeList` **rỗng** — là nhánh **không xoá gì cả**. Guard ấy ném lỗi
+//     "thiếu DealerCode để xoá" cho một đường đi **không hề xoá**. ⇒ **Guard đúng cú pháp, sai đối tượng.**
+//
+// 🔴🔴🔴 **VÀ TRƯỜNG HỢP NGUY HIỂM THẬT THÌ KHÔNG AI CANH**: `GroupCodeList` **có**, `DealerCodeList` **rỗng**
+//     `zzzzClauseWhere_strDealerCodeList = BuildClauseConditionList("and", "t.DealerCode", strDealerCodeListForDelete, "|")`
+//   ⇒ chuỗi rỗng ⇒ `""` (ngữ nghĩa đã chứng minh ở #832) ⇒ câu xoá rút gọn thành
+//     `delete t from **Map_SG_SU** t where (1=1) and t.GroupCode in (…)`  — **KHÔNG còn mệnh đề đại lý**
+//     và y hệt cho `**Map_SG_SO**`.
+//   ⇒ **Xoá ánh xạ người-dùng↔nhóm và nhóm↔đối tượng của MỌI ĐẠI LÝ** có cùng mã nhóm.
+//     Đây là bảng **phân quyền**, nên hậu quả là **mất quyền hàng loạt xuyên đại lý** — nặng hơn mọi ca rò
+//     đã ghi (#761/#764/#765/#811/#828/#830/#832/#847) vì các ca đó **rò ĐỌC hoặc ghi một bản ghi**, còn đây
+//     là **XOÁ HÀNG LOẠT**. Và guard duy nhất liên quan lại canh đúng nhánh ngược lại.
+//
+// 🔴🔴 **XOÁ Ở HÀM NÀY, CHÈN LẠI Ở HAI HÀM KHÁC — KHÔNG CÓ GIAO DỊCH CHUNG**
+//   `Ser_SysSaveGroup` xoá `Map_SG_SU` + `Map_SG_SO` rồi **chỉ** `SaveData("Sys_Group", …)`.
+//   Việc chèn lại nằm ở `System.cs:2268` (`SaveData("Map_SG_SU", …)`) và `:2417` (`SaveData("Map_SG_SO", …)`)
+//   — **hai hàm khác**, **hai lời gọi WS khác**.
+//   ⇒ Client phải gọi **đúng ba** lần theo thứ tự; lỗi mạng hoặc người dùng đóng màn giữa chừng ⇒ **quyền đã bị
+//     xoá mà chưa được chèn lại**, và giao dịch của hàm này **đã commit**.
+// 🔴 **Phân quyền không xuống đại lý**: chỉ `_dbMain` + `_dbWH`; `_dbDealer` **không được khai** trong cả hàm.
+// 🔴 **`GetChanges()` có thể trả `null`**: `DataTable dt_Sys_Group = ds_Sys_Group.Tables["Sys_Group"].**GetChanges()**;`
+//   rồi **ngay dòng sau** `DataUtils.StandardizeValuesOfColumns(**ref dt_Sys_Group**, "GroupCode");`.
+//   Client gửi `DataSet` đã `AcceptChanges` (không dòng nào ở trạng thái thay đổi) ⇒ `GetChanges()` = `null`
+//   ⇒ nổ ở dòng chuẩn hoá, **sau khi** khối xoá đã chạy ⇒ rollback cứu được, nhưng người dùng nhận lỗi thô.
+//
+// 🔴🔴 **KHÁC BIỆT NGHIỆP VỤ THẬT THỨ NĂM GIỮA HAI CÂY** — md5 lệch ⇒ diff chuẩn hoá:
+//   bản `V20.2023.Release` **thêm** khối (xoá cột rồi thêm lại để ép kiểu `string`):
+//     `dt_Sys_Group.Columns.Remove/Add("PartnerCode", typeof(string));`
+//     `dt_Sys_Group.Columns.Remove/Add("FlagActive", typeof(string));`
+//     `for (…) { Rows[iScan]["PartnerCode"] = **TConst.SysPartner.DesktopAppHTC**;`
+//     `          Rows[iScan]["FlagActive"]  = **TConst.Flag.Active**; }`
+//   Mở hằng (HẰNG ≠ GIÁ TRỊ): `SysPartner.DesktopAppHTC = **"DESKTOPAPPHTC"**`, và lớp đó **còn có**
+//     `DesktopAppDealer = "DESKTOPAPPDEALER"`.
+//   ⇒ ① **Mọi** nhóm lưu qua hàm này bị **ép nhãn `DESKTOPAPPHTC`** — kể cả nhóm vốn của desktop **đại lý**.
+//   ⇒ ② `FlagActive` bị ép `"1"` cho **mọi dòng** ⇒ **không thể lưu một nhóm ở trạng thái vô hiệu hoá** qua
+//     đường này; muốn tắt nhóm phải đi đường khác.
+//   📌 Khuôn này lặp **đúng ba chỗ** trên cây 2023, đều gán cứng `DesktopAppHTC`: `System.cs:1971` (`dt_Sys_User`)
+//     · `:2163` (`dt_Sys_Group`, đây) · `:2331` (`dt_Map_SG_SU`, chính là #762) ⇒ **khuôn chép-dán của cụm phân quyền**.
+// 📌 Mini: thêm endpoint tra cứu để giữ nguyên kết luận; `POST /api/sysgroups/save` của Mini **không** xoá mapping.
+app.MapGet("/api/_meta/syssavegroup-audit", () => Results.Ok(new
+{
+    guardProtectsABranchThatDoesNotDelete = "#857 AP #403 — trich tron #region // Check: (1) if (!ds_Sys_Group.Tables.Contains(Sys_Group)) throw SysSaveGroup_TableNotFound; (2) if (IsEmpty(strGroupCodeListForDelete)) { if (IsEmpty(strDealerCodeListForDelete)) throw SysSaveGroup_DealerCodeForDeleteNotFound; }. NHUNG khoi xoa chi chay khi if (!IsEmpty(strGroupCodeListForDelete)) => nhanh ma guard thu hai canh (GroupCodeList RONG) la nhanh KHONG XOA GI CA. Guard ay nem loi thieu-DealerCode-de-xoa cho mot duong di KHONG HE XOA => guard dung cu phap, SAI DOI TUONG",
+    theDangerousCaseIsUnguarded = "truong hop nguy hiem THAT thi khong ai canh: GroupCodeList CO, DealerCodeList RONG => BuildClauseConditionList(and, t.DealerCode, chuoi rong, |) tra CHUOI RONG (ngu nghia da chung minh o #832) => cau xoa rut gon thanh delete t from Map_SG_SU t where (1=1) and t.GroupCode in (...) — KHONG con menh de dai ly, va y het cho Map_SG_SO => XOA ANH XA nguoi-dung/nhom va nhom/doi-tuong cua MOI DAI LY co cung ma nhom",
+    severityVsPreviousLeaks = "day la bang PHAN QUYEN nen hau qua la MAT QUYEN HANG LOAT XUYEN DAI LY — nang hon moi ca ro da ghi (#761/#764/#765/#811/#828/#830/#832/#847) vi cac ca do ro DOC hoac ghi MOT ban ghi, con day la XOA HANG LOAT",
+    deleteHereInsertInTwoOtherFunctions = "Ser_SysSaveGroup xoa Map_SG_SU + Map_SG_SO roi CHI SaveData(Sys_Group, ...). Viec chen lai nam o System.cs:2268 (SaveData(Map_SG_SU)) va :2417 (SaveData(Map_SG_SO)) — HAI HAM KHAC, HAI loi goi WS khac => client phai goi DUNG BA lan theo thu tu; loi mang hoac nguoi dung dong man giua chung => quyen DA BI XOA ma chua duoc chen lai, va giao dich cua ham nay DA COMMIT",
+    permissionsNeverReachDealerDb = "chi _dbMain + _dbWH; _dbDealer KHONG duoc khai trong ca ham => phan quyen khong xuong DB dai ly",
+    getChangesCanReturnNull = "DataTable dt_Sys_Group = ds_Sys_Group.Tables[Sys_Group].GetChanges(); roi NGAY DONG SAU DataUtils.StandardizeValuesOfColumns(ref dt_Sys_Group, GroupCode). Client gui DataSet da AcceptChanges (khong dong nao o trang thai thay doi) => GetChanges() = null => no o dong chuan hoa, SAU KHI khoi xoa da chay => rollback cuu duoc nhung nguoi dung nhan loi tho",
+    fifthRealTreeDivergence = "KHAC BIET NGHIEP VU THAT THU NAM giua hai cay (md5 65d60833 vs 6ddc77b9): ban V20.2023.Release THEM khoi xoa-cot-roi-them-lai de ep kieu string cho PartnerCode va FlagActive, roi for (...) { Rows[iScan][PartnerCode] = TConst.SysPartner.DesktopAppHTC; Rows[iScan][FlagActive] = TConst.Flag.Active; }",
+    constantOpened = "MO HANG (HANG khac GIA TRI): SysPartner.DesktopAppHTC = DESKTOPAPPHTC, va lop do CON CO DesktopAppDealer = DESKTOPAPPDEALER => (1) MOI nhom luu qua ham nay bi EP NHAN DESKTOPAPPHTC ke ca nhom von cua desktop DAI LY; (2) FlagActive bi ep 1 cho MOI dong => KHONG THE luu mot nhom o trang thai vo hieu hoa qua duong nay, muon tat nhom phai di duong khac",
+    copyPasteTemplateThreeSites = "khuon nay lap DUNG BA cho tren cay 2023, deu gan cung DesktopAppHTC: System.cs:1971 (dt_Sys_User), :2163 (dt_Sys_Group, day), :2331 (dt_Map_SG_SU, chinh la #762) => khuon chep-dan cua cum phan quyen",
+    miniDoesNotDeleteMappings = "POST /api/sysgroups/save cua Mini KHONG xoa mapping — khong bat chuoc giao thuc ba-loi-goi cua nguon",
+    twoMachinesDiffed857 = "md5 lech (65d60833 laptop vs 6ddc77b9 may 150) => da diff chuan hoa, ket qua o tren",
+})).RequireAuthorization();
 app.MapPost("/api/sysgroups/save", async (SysGroupSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.GroupCode ?? "").Trim();
