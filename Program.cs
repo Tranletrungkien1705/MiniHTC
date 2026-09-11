@@ -23621,6 +23621,58 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   (`ExecQuery` **không** read-only, nó chỉ nghĩa là "chạy SQL, trả DataSet").
 // 📌 Mini: `PUT /api/engineers/{engineerNo}` — cập nhật **đủ cả ba phạm vi** như bộ `01`, và **chặn xoá** khi
 //   KTV còn được tham chiếu (điều nguồn không làm).
+// ===== ⚪🔴 #820 QUÉT KHUÔN "HÀM GHI BỎ NHÁNH `_dbDealer`" (#819) — CHỈ CÒN **MỘT** CA LIVE =====
+// #819 tìm ra `SerEngineerUpdate`/`Delete` bỏ hẳn nhánh CSDL đại lý. Trước khi coi đó là **khuôn**, đo cho hết
+// trên `TERP.BizCarSv/*.cs`.
+//
+// **Bước 1 — tổ hợp handle của mọi hàm có `SaveData`** (`M` = `_dbMain`, `W` = `_dbWH`, `D` = `_dbDealer`):
+//   **367** hàm — `MWD` **203** · `MW-` **91** · `M--` **67** · `M-D` 2 · `-W-` 2 · `-WD` 1 · `--D` 1.
+//   ⚠️ `MW-` **tự nó không phải lỗi**: rất nhiều bảng chỉ sống ở Main+WH. Cần tiêu chí chặt hơn.
+//
+// **Bước 2 — so theo BẢNG**: bảng nào có **cả** hàm ghi `_dbDealer` **lẫn** hàm không ghi? Ra một loạt
+//   (`Ser_RO` 23/20 · `Ser_Customer` 27/4 · `Ser_Car` 22/3 · `Ser_ROWarrantyReport` 15/4 · `Ser_Engineer` **3/1** …).
+//   Ba bảng có tỉ lệ lệch rõ nhất (`Ser_Car`, `Ser_Customer`, `Ser_Engineer`) cho **tám** hàm "thiếu `D`":
+//     `ProcessSaveCar01` · `ProcessUpdateCar` · `HTCMobileTVO_Ser_App_Create` · `SerCustomerCarSalesCreate` ·
+//     `Ser_Customer_Update01` · `CarSv_Ser_CustomerCar_Create` · `SerEngineerUpdate`.
+//
+// **Bước 3 — lọc LIVE/CHẾT (bước quyết định)**: đếm lời gọi từ **cả ba** đường vào:
+//     `SerEngineerUpdate`            → **WS gọi 1** ⇒ **LIVE**
+//     `HTCMobileTVO_Ser_App_Create`  → WS gọi 0, nội bộ 1 (**chỉ khai báo**) ⇒ **CHẾT**
+//       (cả hai WS gọi `…_Create_**New20210423**`, không gọi bản trần)
+//     `SerCustomerCarSalesCreate` · `Ser_Customer_Update01` · `CarSv_Ser_CustomerCar_Create` → **CHẾT** (y hệt)
+//     `ProcessSaveCar01` → chỉ được gọi từ `SerCustomerCarSalesCreate` (**chết**) ⇒ **nằm trong nhánh chết**
+//     `ProcessUpdateCar` → chỉ được gọi từ `Ser_Customer_Update01` (**chết**) ⇒ **nằm trong nhánh chết**
+//
+// ⚪ **KẾT LUẬN: khuôn này chỉ còn ĐÚNG MỘT ca LIVE — `SerEngineerUpdate`** (cộng `SerEngineerDelete`, mà phép
+//   quét **không** bắt được vì nó xoá bằng `ExecQuery` chứ không `SaveData`). ⇒ #819 là **cá biệt**, không phải
+//   bệnh của tầng ⇒ **càng đáng vá dứt điểm**, và **không** được suy rộng.
+// 📌 **Danh sách tự kiểm chứng**: phép quét độc lập tìm ra đúng `Ser_Engineer` 3-có/1-không và đúng tên
+//   `SerEngineerUpdate` — ca đã biết từ #819.
+// 📌 **Bài học đo lường**: "thiếu nhánh ghi" **phải lọc LIVE/CHẾT trước khi báo**. Nếu dừng ở bước 2 thì đã báo
+//   **8 lỗi** trong khi thật sự chỉ có **1** — bảy cái kia nằm trong khối hàm chết đã đo ở #795/#800.
+app.MapGet("/api/_meta/missing-dealer-write-sweep", () => Results.Ok(new
+{
+    trigger = "#819: SerEngineerUpdate va SerEngineerDelete bo han nhanh _dbDealer trong khi Create/Create01/Update01 deu co",
+    scope = "TERP.BizCarSv/*.cs",
+    functionsWithSaveData = 367,
+    handleCombinations = new { MWD = 203, MW_ = 91, M__ = 67, M_D = 2, _W_ = 2, _WD = 1, __D = 1 },
+    mwIsNotItselfABug = "MW- (91 ham) TU NO khong phai loi: rat nhieu bang chi song o Main+WH. Phai so THEO BANG: bang nao co CA ham ghi _dbDealer LAN ham khong ghi",
+    tablesWithBothShapes = new[] { "Ser_RO 23/20", "Ser_Customer 27/4", "Ser_Car 22/3", "Ser_ROWarrantyReport 15/4", "Ser_Engineer 3/1", "Ser_Mst_Part 5/1", "Ser_Part_OrderDetail 4/1" },
+    candidatesFromThreeSkewedTables = new[] { "ProcessSaveCar01", "ProcessUpdateCar", "HTCMobileTVO_Ser_App_Create",
+        "SerCustomerCarSalesCreate", "Ser_Customer_Update01", "CarSv_Ser_CustomerCar_Create", "SerEngineerUpdate" },
+    liveFilterResult = new[]
+    {
+        "SerEngineerUpdate: WS goi 1 => LIVE (dung ca #819)",
+        "HTCMobileTVO_Ser_App_Create: WS goi 0, noi bo 1 (chi khai bao) => CHET — ca hai WS goi …_Create_New20210423",
+        "SerCustomerCarSalesCreate / Ser_Customer_Update01 / CarSv_Ser_CustomerCar_Create: CHET (y het)",
+        "ProcessSaveCar01: chi duoc goi tu SerCustomerCarSalesCreate (chet) => nam trong nhanh chet",
+        "ProcessUpdateCar: chi duoc goi tu Ser_Customer_Update01 (chet) => nam trong nhanh chet",
+    },
+    liveCasesRemaining = 1,
+    conclusion = "khuon nay chi con DUNG MOT ca LIVE — SerEngineerUpdate (cong SerEngineerDelete, ma phep quet KHONG bat duoc vi no xoa bang ExecQuery chu khong SaveData) => #819 la CA BIET, khong phai benh cua tang => cang dang va dut diem va KHONG suy rong",
+    selfValidating = "phep quet doc lap tim ra dung Ser_Engineer 3-co/1-khong va dung ten SerEngineerUpdate — ca da biet tu #819",
+    measurementLesson = "thieu nhanh ghi PHAI loc LIVE/CHET truoc khi bao. Neu dung o buoc 2 thi da bao 8 loi trong khi that su chi co 1 — bay cai kia nam trong khoi ham chet da do o #795/#800",
+})).RequireAuthorization();
 app.MapPut("/api/engineers/{engineerNo}", async (string engineerNo, EngineerUpdateDto dto,
     AppDbContext db, ITenantContext t) =>
 {
