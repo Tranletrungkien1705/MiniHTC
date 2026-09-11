@@ -40256,6 +40256,102 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 // 🔴 `'LS-'+ro.RONO AS RONO` — tiền tố cứng, lặp lại #860/#861/#862.
 // 📌 Mini: `GET /api/report/ro-service-statistic` (bản đại lý) — thuế `decimal`, lọc ngày **sargable**,
 //   ánh xạ trạng thái dùng **một** bảng dùng chung (không chép), và **không** cắt dòng khi dịch vụ vắng danh mục.
+// ===== 🔴🔴🔴 #870 MÀN MỚI: TỔNG HỢP LỆNH SỬA CHỮA (bản ĐẠI LÝ) — `Ser_RO_Sumary` =====
+// `Service.Report.cs:271-490` md5 `b23eaa7d` (220 dòng), LIVE. **3B**: **KHỚP** máy 150.
+// Mini **chỉ có** `/api/report/ro-summary-**wh**` ⇒ bản đại lý là màn mới (luật #357).
+//
+// ⚪⚪⚪ **LỌC NGÀY Ở ĐÂY LÀ SARGABLE — HÀM DUY NHẤT LÀM ĐÚNG CHUYỆN NÀY TRONG FILE**
+//     `AND ro.CheckInDate >= '@FromDate'`
+//     `AND ro.CheckInDate <= '@ToDate'`
+//   ⇒ **Không** `datediff(day, …, ro.CheckInDate)` ⇒ SQL Server **dùng được index** trên `CheckInDate`.
+//     Trái hẳn #860/#861/#862/#868/#869 — tất cả đều bọc cột trong `datediff`.
+//
+// 🔴🔴🔴 **NHƯNG `<= '@ToDate'` TRÊN CỘT DATETIME ⇒ MẤT NGÀY CUỐI** (luật #415)
+//   `CheckInDate` là `datetime`; `'@ToDate'` được bake dạng `yyyy-MM-dd` ⇒ so sánh thành `<= 2026-09-11 00:00:00`
+//   ⇒ **mọi phiếu tiếp nhận trong ngày cuối** (bất kỳ giờ nào sau nửa đêm) **bị loại khỏi báo cáo**.
+//   ⇒ Viết đúng là `< dateadd(day, 1, @ToDate)`. ⇒ Hàm này **đúng về index nhưng sai về biên** —
+//     còn các hàm `datediff` kia thì **sai về index nhưng đúng về biên** (vì `datediff(day,…)` cắt phần giờ).
+//     **Không hàm nào trong file làm đúng cả hai.**
+//   🔴 Và `'@FromDate'`/`'@ToDate'` vẫn **bake trong nháy** qua `StringUtils.Replace` ⇒ **injection** (họ #846).
+//
+// 🔴🔴🔴 **`VAT/100` — CA THỨ BA TRONG FILE; ĐẾM ĐƯỢC CẢ FILE**
+//     `sum(Price*Quantity*Factor*(1+**VAT/100**)) ROPartItems_SumTotal`
+//     `sum(Price*Factor*(1+**VAT/100**)) ROServiceItems_SumTotal`
+//   Đếm toàn `BizCarSv.Service.Report.cs`: **`VAT/100` = 9 chỗ** · **`VAT*0.01` = 35 chỗ**
+//   (**giống hệt** trên máy 150). ⇒ Cách viết **đúng** áp đảo 35:9, nhưng **9 chỗ vẫn âm thầm mất thuế**
+//     nếu cột `VAT` là kiểu nguyên. Ba hàm đã đọc dùng `/100`: #860, #867, **đây**; ba hàm dùng `*0.01`: #861, #868, #869.
+//
+// 🔴🔴 **TÊN CỘT NÓI DỐI**: `, **Ro.RoNo as SoPhieuThanhToan**` — cột *"Số phiếu thanh toán"* thực ra là
+//   **số phiếu sửa chữa**. Và ngay dòng đầu đã có `'LS-'+ro.RONo RONo` ⇒ **cùng một giá trị xuất hiện HAI LẦN
+//   dưới HAI TÊN**, một bản có tiền tố `LS-`, một bản không ⇒ người dùng đối chiếu hai cột sẽ thấy "khác nhau".
+//
+// 🔴🔴 **BẢNG `Ser_Car` ĐƯỢC JOIN HAI LẦN VỚI HAI BỘ KHOÁ KHÁC NHAU**
+//   ở `#tbl_ro`: `inner join ser_car car on ro.CarID=car.CarID **and ro.CusID=car.CusID and ro.DealerCode=car.DealerCode**`
+//   ở câu chính: `left join Ser_Car **scar** on ro.CarID = scar.CarID`  ← **chỉ** `CarID`
+//   ⇒ Hai lần join cùng một bảng, một lần **bộ ba khoá**, một lần **một khoá**. Nếu `CarID` không duy nhất
+//     xuyên đại lý thì lần join thứ hai **nở dòng**; và các cột `scar_*`, `smm_*`, `TradeMarkNameModel`
+//     có thể thuộc **chiếc xe của đại lý khác**.
+//
+// 🔴 **NỐI CHUỖI KHÔNG `isnull`**: `(tm.TradeMarkName + ' - ' + smm.ModelName) as TradeMarkNameModel`
+//   ⇒ `NULL` ở **một** vế làm **cả chuỗi** thành `NULL` ⇒ xe thiếu nhãn hiệu **hoặc** thiếu model ra **ô trống**,
+//     thay vì hiện phần còn có. Hai `left join` ngay trên đó **cố tình** cho phép NULL, rồi dòng này **phá** ý đó.
+// 🔴 `left join [@strDBName_CommonCenter].[dbo].Ser_MST_Model` ⇒ danh mục model đọc từ **DB trung tâm** (họ #853).
+// ⚪ `case` trạng thái **có `else`** và là **bản sao thứ HAI** của bảng ánh xạ đã đếm ở #869 (21 bản);
+//   chú thích `-------issue 1040` cho biết vì sao `ROStatus_GetStatusNameByCode` bị comment ở chỗ này.
+// ⚪ Hai `left join` vào bảng tạm tổng tiền + `IsNull(…, 0)` ⇒ phiếu không có dòng vẫn ra `Revenue = 0` — **đúng**.
+// ⚪ Khối tính `Revenue` bằng **truy vấn con** nằm ngay đó nhưng **đã bị comment**; bản ACTIVE dùng bảng tạm.
+// 📌 Mini: `GET /api/report/ro-summary` — lọc ngày **vừa sargable vừa đúng biên** (`< ToDate + 1 ngày`),
+//   thuế `decimal`, nối chuỗi có phòng `null`, và **không** join lại bảng xe bằng khoá hẹp hơn.
+app.MapGet("/api/report/ro-summary", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? status) =>
+{
+    var st = (status ?? "").Trim();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        // DUNG BIEN: < ToDate + 1 ngay (nguon dung <= ToDate nen mat ca ngay cuoi)
+        .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        .Where(x => st.Length == 0 || x.Status == st)
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusRequest, x.CheckInDate, x.Km, x.Status, x.Vin })
+        .ToListAsync();
+    var ids = ros.Select(x => x.Id).ToList();
+    var partRows = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.UnitPrice, x.NeedQty, x.Factor, x.Vat }).ToListAsync();
+    var serRows = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Price, x.Factor, x.Vat }).ToListAsync();
+    var partSum = partRows.GroupBy(x => x.RoId).ToDictionary(g => g.Key,
+        g => g.Sum(x => x.UnitPrice * x.NeedQty * (x.Factor == 0m ? 1m : x.Factor) * (1m + x.Vat * 0.01m)));
+    var serSum = serRows.GroupBy(x => x.RoId).ToDictionary(g => g.Key,
+        g => g.Sum(x => x.Price * (x.Factor == 0m ? 1m : x.Factor) * (1m + x.Vat * 0.01m)));
+    var statusText = new Dictionary<string, string>
+    {
+        ["Created"] = "Chờ sửa", ["HasRO"] = "Chờ sửa", ["InGarage"] = "Đang sửa",
+        ["Repaired"] = "Sửa xong", ["CheckEnd"] = "Kiểm tra cuối cùng", ["Paid"] = "Thanh toán xong",
+        ["Finished"] = "Đã giao xe", ["Rejected"] = "Lệnh hủy",
+    };
+    var items = ros.Select(r => new
+    {
+        roNo = r.RONo, plateNo = r.LicensePlate, r.CusRequest, r.CheckInDate, r.Km, r.Vin,
+        roStatus = r.Status,
+        statusName = statusText.TryGetValue(r.Status, out var sn) ? sn : "Không xác định",
+        revenue = (partSum.TryGetValue(r.Id, out var pv) ? pv : 0m) + (serSum.TryGetValue(r.Id, out var sv) ? sv : 0m),
+    }).OrderByDescending(x => x.CheckInDate).ToList();
+    return Results.Ok(new
+    {
+        fromDate, toDate, status = st.Length > 0 ? st : null,
+        count = items.Count, totalRevenue = items.Sum(x => x.revenue), items,
+        positiveDateFilterIsSargable = "#870 AM TINH: AND ro.CheckInDate >= @FromDate AND ro.CheckInDate <= @ToDate — KHONG datediff(day, ..., ro.CheckInDate) => SQL Server DUNG DUOC INDEX tren CheckInDate. Trai han #860/#861/#862/#868/#869 deu boc cot trong datediff",
+        butUpperBoundLosesLastDay = "NHUNG <= @ToDate TREN COT DATETIME => MAT NGAY CUOI (luat #415): CheckInDate la datetime, @ToDate bake dang yyyy-MM-dd nen so sanh thanh <= ngay-do 00:00:00 => MOI PHIEU tiep nhan trong NGAY CUOI bi loai khoi bao cao. Viet dung la < dateadd(day, 1, @ToDate). Ham nay DUNG VE INDEX nhung SAI VE BIEN, con cac ham datediff kia SAI VE INDEX nhung DUNG VE BIEN (vi datediff(day,...) cat phan gio) => KHONG ham nao trong file lam dung CA HAI",
+        datesStillBaked = "@FromDate/@ToDate van BAKE TRONG NHAY qua StringUtils.Replace => INJECTION (ho #846)",
+        vatDivisionThirdCaseWithFileCount = "VAT/100 — CA THU BA TRONG FILE. Dem toan BizCarSv.Service.Report.cs: VAT/100 = 9 cho, VAT*0.01 = 35 cho (GIONG HET tren may 150) => cach viet DUNG ap dao 35:9 nhung 9 cho VAN AM THAM MAT THUE neu cot VAT kieu nguyen. Ba ham dung /100: #860, #867, day; ba ham dung *0.01: #861, #868, #869",
+        columnNameLies = "TEN COT NOI DOI: , Ro.RoNo as SoPhieuThanhToan — cot So phieu thanh toan thuc ra la SO PHIEU SUA CHUA. Va ngay dong dau da co LS-+ro.RONo RONo => CUNG MOT GIA TRI xuat hien HAI LAN duoi HAI TEN, mot ban co tien to LS- mot ban khong => nguoi dung doi chieu hai cot se thay khac nhau",
+        carTableJoinedTwiceWithDifferentKeys = "BANG Ser_Car DUOC JOIN HAI LAN VOI HAI BO KHOA KHAC NHAU: o #tbl_ro dung inner join ser_car car on ro.CarID=car.CarID and ro.CusID=car.CusID and ro.DealerCode=car.DealerCode (BO BA); o cau chinh dung left join Ser_Car scar on ro.CarID = scar.CarID (CHI CarID) => neu CarID khong duy nhat xuyen dai ly thi lan join thu hai NO DONG, va cac cot scar_*, smm_*, TradeMarkNameModel co the thuoc CHIEC XE CUA DAI LY KHAC",
+        concatWithoutIsnull = "NOI CHUOI KHONG ISNULL: (tm.TradeMarkName + chuoi - + smm.ModelName) as TradeMarkNameModel => NULL o MOT ve lam CA CHUOI thanh NULL => xe thieu nhan hieu HOAC thieu model ra O TRONG thay vi hien phan con co. Hai left join ngay tren do CO Y cho phep NULL, roi dong nay PHA y do",
+        modelCatalogFromCentralDb = "left join [@strDBName_CommonCenter].[dbo].Ser_MST_Model => danh muc model doc tu DB TRUNG TAM (ho #853)",
+        positiveCaseElseAndSecondCopy = "AM TINH: case trang thai CO else, va day la BAN SAO THU HAI cua bang anh xa da dem o #869 (21 ban); chu thich -------issue 1040 cho biet vi sao ROStatus_GetStatusNameByCode bi comment o cho nay",
+        positiveLeftJoinTotalsAndActiveLines = "AM TINH: hai left join vao bang tam tong tien + IsNull(..., 0) => phieu khong co dong van ra Revenue = 0 (DUNG). Va khoi tinh Revenue bang TRUY VAN CON nam ngay do nhung DA BI COMMENT; ban ACTIVE dung bang tam => port dong ACTIVE",
+        twoMachinesVerified870 = "md5 chuan hoa b23eaa7d KHOP may 150; so dem VAT/100 = 9 va VAT*0.01 = 35 cung khop hai may",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/ro-service-statistic", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? status) =>
 {
