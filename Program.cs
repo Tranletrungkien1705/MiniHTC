@@ -39690,6 +39690,104 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
 //   vào `dtTempPart` **trước** khi gán trong `foreach` ⇒ thứ tự **đúng**, và `dtTempPart` chỉ có `PartID`+`Quantity`
 //   nên **không** đụng `DuplicateNameException` như #836. Ghi âm tính để khỏi báo nhầm.
 // 📌 Mini: endpoint tra cứu bảng nhánh + cảnh báo hai hằng trùng giá trị.
+// ===== 🔴🔴🔴 #860 MÀN MỚI: BÁO CÁO DOANH THU TỔNG HỢP — `Ser_RO_Sumary_Revenue` =====
+// `BizCarSv.Service.Report.cs:1134-1315` md5 `41102830` (182 dòng), LIVE (4 vỏ bọc). **3B**: **KHỚP** máy 150.
+// Mini **chưa có** báo cáo này (grep `Sumary_Revenue` = 0) ⇒ màn mới.
+//
+// 🔴🔴🔴 **`VAT/100` — PHÉP CHIA NGUYÊN NUỐT SẠCH THUẾ** (luật #408)
+//     phụ tùng: `sum(Price*Quantity*Factor*(1+**VAT/100**)) ROPartItems_SumTotal`
+//     dịch vụ : `sum(Price*Factor*(1+**VAT/100**)) ROServiceItems_SumTotal`
+//   ⇒ Nếu cột `VAT` là **kiểu nguyên** (int/tinyint — rất thường gặp vì lưu `10` nghĩa là 10%),
+//     `VAT/100` = `10/100` = **0** trong T-SQL ⇒ `(1+0)` = **1** ⇒ **doanh thu báo cáo KHÔNG có thuế**,
+//     và **không một cảnh báo nào**. Chỉ khi `VAT` là `decimal/float` thì công thức mới đúng.
+//   ⇒ Đây là bẫy đã thành luật; ghi ở mức điều kiện: **phụ thuộc kiểu cột**, nhưng cả hai câu đều dùng
+//     đúng cách viết nguy hiểm ấy.
+//
+// 🔴🔴 **DỊCH VỤ KHÔNG NHÂN SỐ LƯỢNG, PHỤ TÙNG THÌ CÓ**
+//     phụ tùng: `Price * **Quantity** * Factor * (1+VAT/100)`
+//     dịch vụ : `Price *              Factor * (1+VAT/100)`   ← **thiếu `Quantity`**
+//   ⇒ Một hạng mục dịch vụ làm **nhiều lần** trên cùng phiếu chỉ được tính **một lần** vào doanh thu.
+//     Có thể là **cố ý** (công tính theo lần), nhưng hai công thức nằm cạnh nhau, **cùng một khuôn**, và
+//     chỉ khác đúng một thừa số ⇒ **phải ghi lại để người sau không sửa nhầm chiều**.
+//
+// 🔴🔴🔴 **NGÀY ĐƯỢC NHÚNG THẲNG VÀO SQL TRONG DẤU NHÁY** (cùng họ #846, `bake` thuần)
+//     `and datediff(day, convert(datetime, '**@FromDate**', 20), ro.CheckInDate) >= 0`
+//     `and datediff(day, ro.CheckInDate, convert(datetime, '**@ToDate**', 20)) >= 0`
+//   và cuối hàm: `StringUtils.Replace(strSqlGetData, …, "@FromDate", strFromDate, "@ToDate", strToDate)`
+//   ⇒ **Không phải tham số** — hai mốc ngày do client gửi bị `Replace` vào **giữa cặp nháy đơn**
+//     ⇒ **bề mặt SQL injection**.
+//   🔴 Và `datediff(day, …, ro.CheckInDate)` đặt **hàm lên cột** ⇒ **non-sargable**: SQL Server không dùng
+//     được index trên `CheckInDate`, phải quét toàn bảng `Ser_RO`. Viết đúng là `ro.CheckInDate >= @From`
+//     `and ro.CheckInDate < dateadd(day,1,@To)`.
+//
+// 🔴🔴 **BIỂN SỐ LẤY TỪ BẢNG KHÁCH HÀNG, KHÔNG PHẢI TỪ XE**
+//     `select … , **cus.PlateNo** , cus.CusName …`  với `inner join Ser_Customer **cus** on cus.CusID = ro.CusID`
+//   trong khi bảng xe **có** được join: `inner join ser_car car on ro.carID = car.CarID and ro.CusID = car.CusID`
+//   `and ro.DealerCode = car.DealerCode` — nhưng **không một cột nào của `car` được dùng**.
+//   ⇒ Hai khả năng, **cả hai đều đáng ghi**: ① `Ser_Customer` **có** cột `PlateNo` ⇒ đó là biển **của khách**
+//     (thường là xe đăng ký đầu tiên), **không phải** biển của chiếc xe trong phiếu ⇒ khách nhiều xe sẽ ra
+//     **sai biển**; ② `Ser_Customer` **không** có cột ấy ⇒ câu lỗi `Invalid column name`.
+//   📌 `cus.PlateNo` chỉ xuất hiện **2 lần** trong cả tầng ⇒ không phải cách viết phổ biến.
+//   🔴 `inner join ser_car` **không dùng cột nào** ⇒ join **câm**: người đọc tưởng để lấy dữ liệu, thực ra
+//     chỉ để **lọc** — phiếu nào không khớp **bộ ba** `(CarID, CusID, DealerCode)` sẽ **biến mất khỏi báo cáo**
+//     (luật #410: `inner join` = mất dòng khi ĐỌC). Xe sang tên đổi chủ là mất doanh thu của phiếu cũ.
+//
+// 🔴 **TIỀN TỐ CỨNG GẮN VÀO MÃ PHIẾU**: `'**LS-**' + ro.RONo RONo` ⇒ mã trả về **không khớp** mã trong DB;
+//   người dùng copy mã từ báo cáo đi tra cứu sẽ **không tìm thấy**.
+// 🔴 **`and ro.status = 'FNS'`** — literal thay vì hằng (HẰNG ≠ GIÁ TRỊ); và chỉ phiếu **đã kết thúc** mới
+//   vào báo cáo, nên doanh thu phiếu **đang dở** không được thể hiện ở đâu cả.
+// ⚪ Hai `left join` vào bảng tạm tổng tiền + `IsNull(…, 0)` ⇒ phiếu **không có** dòng phụ tùng/dịch vụ vẫn
+//   ra `Revenue = 0` thay vì `NULL` ⇒ **làm đúng** (đối lập với các `inner join` ở trên).
+// ⚪ Khối tính doanh thu bằng **truy vấn con** nằm ngay đó nhưng **đã bị comment**; bản ACTIVE dùng bảng tạm
+//   `#tbl_Ser_ROPartItems_SumTotal` / `#tbl_Ser_ROServiceItems_SumTotal` ⇒ port **dòng ACTIVE**.
+// 📌 Mini: `GET /api/report/ro-revenue-summary` — tính thuế bằng `decimal` (không chia nguyên), **nhân số lượng**
+//   cho cả dịch vụ, lấy biển số **từ phiếu** (`RepairOrder.LicensePlate`), và **không** cắt dòng bằng inner join.
+app.MapGet("/api/report/ro-revenue-summary", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode, string? status) =>
+{
+    var st = string.IsNullOrWhiteSpace(status) ? "Finished" : status!;
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        .Where(x => x.Status == st)
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CusRequest, x.CheckInDate, x.CreatedAt })
+        .ToListAsync();
+    var ids = ros.Select(x => x.Id).ToList();
+    var partRows = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.UnitPrice, x.NeedQty, x.Factor, x.Vat }).ToListAsync();
+    var serRows = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Price, x.Factor, x.Vat }).ToListAsync();
+    // decimal: KHONG chia nguyen nhu nguon (VAT/100 trong T-SQL).
+    var partSum = partRows.GroupBy(x => x.RoId).ToDictionary(g => g.Key,
+        g => g.Sum(x => x.UnitPrice * x.NeedQty * (x.Factor == 0m ? 1m : x.Factor) * (1m + x.Vat / 100m)));
+    var serSum = serRows.GroupBy(x => x.RoId).ToDictionary(g => g.Key,
+        g => g.Sum(x => x.Price * (x.Factor == 0m ? 1m : x.Factor) * (1m + x.Vat / 100m)));
+    var items = ros.Select(r => new
+    {
+        roNo = r.RONo,
+        plateNo = r.LicensePlate,          // tu PHIEU, khong phai tu bang khach hang
+        r.CusName, r.CusRequest, r.CheckInDate, createdDate = r.CreatedAt,
+        partTotal = partSum.TryGetValue(r.Id, out var pv) ? pv : 0m,
+        serviceTotal = serSum.TryGetValue(r.Id, out var sv) ? sv : 0m,
+        revenue = (partSum.TryGetValue(r.Id, out var pv2) ? pv2 : 0m) + (serSum.TryGetValue(r.Id, out var sv2) ? sv2 : 0m),
+    }).OrderByDescending(x => x.CheckInDate).ToList();
+    return Results.Ok(new
+    {
+        fromDate, toDate, status = st, dealerCode,
+        count = items.Count, totalRevenue = items.Sum(x => x.revenue), items,
+        sourceIntegerDivisionEatsVat = "#860 (luat #408): nguon tinh sum(Price*Quantity*Factor*(1+VAT/100)) cho phu tung va sum(Price*Factor*(1+VAT/100)) cho dich vu. Neu cot VAT la KIEU NGUYEN (int/tinyint — rat thuong gap vi luu 10 nghia la 10%) thi VAT/100 = 10/100 = 0 trong T-SQL => (1+0) = 1 => DOANH THU BAO CAO KHONG CO THUE, va khong mot canh bao nao. Chi khi VAT la decimal/float thi cong thuc moi dung. Mini tinh bang decimal",
+        serviceMissesQuantity = "DICH VU KHONG NHAN SO LUONG, PHU TUNG THI CO: phu tung Price*Quantity*Factor*(1+VAT/100) con dich vu Price*Factor*(1+VAT/100) — THIEU Quantity => mot hang muc dich vu lam NHIEU LAN tren cung phieu chi duoc tinh MOT LAN vao doanh thu. Co the la CO Y (cong tinh theo lan) nhung hai cong thuc nam canh nhau, cung mot khuon, chi khac dung mot thua so => ghi lai de nguoi sau khong sua nham chieu",
+        sourceBakesDatesIntoSql = "NGAY NHUNG THANG VAO SQL TRONG DAU NHAY (cung ho #846, bake thuan): and datediff(day, convert(datetime, (nhay)@FromDate(nhay), 20), ro.CheckInDate) >= 0 va tuong tu cho @ToDate; cuoi ham StringUtils.Replace(strSqlGetData, ..., @FromDate, strFromDate, @ToDate, strToDate) => KHONG phai tham so, hai moc ngay do client gui bi Replace vao GIUA CAP NHAY DON => BE MAT SQL INJECTION",
+        sourceFilterIsNonSargable = "datediff(day, ..., ro.CheckInDate) dat HAM LEN COT => NON-SARGABLE: SQL Server khong dung duoc index tren CheckInDate, phai quet toan bang Ser_RO. Viet dung la ro.CheckInDate >= @From and ro.CheckInDate < dateadd(day,1,@To) — chinh la cach Mini lam",
+        plateNoComesFromCustomerNotCar = "BIEN SO LAY TU BANG KHACH HANG: select ..., cus.PlateNo, cus.CusName ... voi inner join Ser_Customer cus on cus.CusID = ro.CusID, trong khi bang xe CO duoc join (inner join ser_car car on ro.carID = car.CarID and ro.CusID = car.CusID and ro.DealerCode = car.DealerCode) nhung KHONG MOT COT NAO cua car duoc dung. Hai kha nang, ca hai deu dang ghi: (1) Ser_Customer CO cot PlateNo => do la bien CUA KHACH, khong phai bien cua chiec xe trong phieu => khach nhieu xe se ra SAI BIEN; (2) Ser_Customer KHONG co cot ay => cau loi Invalid column name. cus.PlateNo chi xuat hien 2 lan trong ca tang nen khong phai cach viet pho bien. Mini lay tu PHIEU (RepairOrder.LicensePlate)",
+        silentInnerJoinOnCar = "inner join ser_car KHONG dung cot nao => JOIN CAM: nguoi doc tuong de lay du lieu, thuc ra chi de LOC — phieu nao khong khop BO BA (CarID, CusID, DealerCode) se BIEN MAT KHOI BAO CAO (luat #410: inner join = mat dong khi DOC). Xe sang ten doi chu la mat doanh thu cua phieu cu",
+        hardcodedPrefixOnRoNo = "TIEN TO CUNG GAN VAO MA PHIEU: (nhay)LS-(nhay) + ro.RONo RONo => ma tra ve KHONG KHOP ma trong DB; nguoi dung copy ma tu bao cao di tra cuu se KHONG TIM THAY",
+        statusLiteralAndScope = "and ro.status = (nhay)FNS(nhay) — literal thay vi hang (HANG khac GIA TRI); va chi phieu DA KET THUC moi vao bao cao nen doanh thu phieu DANG DO khong duoc the hien o dau ca",
+        positiveLeftJoinOnTotals = "AM TINH: hai left join vao bang tam tong tien + IsNull(..., 0) => phieu KHONG CO dong phu tung/dich vu van ra Revenue = 0 thay vi NULL => LAM DUNG, doi lap voi cac inner join o tren",
+        positivePortActiveLines = "AM TINH: khoi tinh doanh thu bang TRUY VAN CON nam ngay do nhung DA BI COMMENT; ban ACTIVE dung bang tam #tbl_Ser_ROPartItems_SumTotal / #tbl_Ser_ROServiceItems_SumTotal => port DONG ACTIVE",
+        twoMachinesVerified860 = "md5 chuan hoa 41102830 KHOP may 150",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/quote-stockout-branches", () => Results.Ok(new
 {
     paysDebtOf858 = "#859 TRA NO #858: helper ProcessCreateAdditionalStockOutOrderPartQuote KHONG sinh them lenh xuat kho moi lan Update — da doc tron ca nam nhanh",
