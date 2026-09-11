@@ -15050,6 +15050,115 @@ app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext
 //   ⇒ Không chỉ cần **công thức chuẩn hoá đúng**, mà phải là **đúng cùng MỘT đường ống** ở cả hai máy.
 // 📌 Mini: `DELETE /api/servicemodels/{code}` — guard tham chiếu chạy trên **cùng** nguồn dữ liệu với lệnh xoá
 //   (vá lỗi trỏ sai DB của nguồn), và **bắt buộc** `ModelCode` như thế hệ `_New20200203`.
+// ===== 🔴🔴 #848 MÀN MỚI: VỊ TRÍ KHO — `Ser_Mst_Location_{Get,Create,Update,Delete,Import}` =====
+// `BizCarSv.Master.cs`, **cả năm LIVE** (mỗi hàm 4 vỏ bọc). Mini đã có entity `SerMstLocation` (#738)
+// nhưng **chưa có endpoint nào** ⇒ màn mới.
+//   `:6630 Get` `a035214a` · `:6764 Create` `b9707928` (3 SaveData, 1 guard) · `:6955 Delete` `7d061b40`
+//   (**3 Raise, 5 ExecQuery**) · `:7198 Update` `ad4d8c4e` (3 SaveData, 2 guard) · `:7371 Import` `86a07532`
+//   (**6 SaveData**).
+//   **3B**: bốn hàm **KHỚP**; `Delete` lệch (`7d061b40` vs `b3370ddd`) ⇒ **diff chuẩn hoá** theo luật mới:
+//     khác **đúng một dòng** — bản `V20.2023.Release` có thêm `, siso.StockOutNo` trong `select distinct`
+//     của guard phiếu xuất. Cột ấy chỉ nằm trong câu dùng để **đếm sự tồn tại** (`Rows.Count > 0`)
+//     ⇒ **không đổi hành vi**. Ghi đúng mức đó, không phóng đại.
+//
+// ⚪⚪ **`_Delete` Ở ĐÂY LÀ XOÁ MỀM — TÊN HÀM NÓI KHÔNG ĐÚNG VIỆC NÓ LÀM**
+//     `update Ser_MST_Location set IsActive = 0 where (1=1) and LocationID = @LocationID`
+//   ⇒ **Không** có `delete` nào. Suốt các vòng trước, mọi `…_Delete` đọc được (#819, #821, #824, #825, #839,
+//     #841, #843, #847) đều là **xoá cứng**; đây là ca **xoá mềm** đầu tiên. ⇒ Đừng suy nghĩa từ hậu tố tên.
+//   🔴 Và hằng bị viết thành **literal**: `set IsActive = **0**` (số, không nháy) trong khi cả tầng dùng
+//     `TConst.Flag.Inactive = **"0"**` (chuỗi). Cột là kiểu chuỗi ⇒ SQL Server ép ngầm; đúng luật HẰNG ≠ GIÁ TRỊ.
+//
+// 🔴🔴 **THAM SỐ `@DealerCode` ĐƯỢC TRUYỀN NHƯNG CÂU LỆNH KHÔNG HỀ DÙNG**
+//   Cả ba lời gọi (`_dbMain`, `_dbWH`, `_dbDealer`) đều truyền `"@DealerCode", strDealerCode` trong khi
+//   `strSqlDelete` chỉ có `and LocationID = @LocationID`.
+//   ⇒ Tham số **chết** (họ #828), **và** lệnh ghi **không có chiều đại lý** — y như #847 (`SerGroupRepair`).
+//     Khác #847 ở chỗ: ở đây người viết **có ý định** lọc đại lý (đã truyền tham số) nhưng **quên viết mệnh đề**;
+//     ở #847 thì cả guard lẫn lệnh đều không nhắc tới đại lý.
+//
+// 🔴🔴🔴 **GUARD TỒN KHO CHỈ KIỂM ĐÚNG MỘT DÒNG** — `top 1` + `Rows[0]`
+//     `GetTableContents(_dbDealer, "Ser_Inv_StockBalance", "**top 1 ***", "", "LocationID","=",…, "DealerCode","=",…)`
+//     `if (… Rows.Count > 0) { … Convert(dtStockBalance.**Rows[0]**["InStockQuantity"]) … if (> 0) throw }`
+//   ⇒ `Ser_Inv_StockBalance` là tồn kho **theo từng phụ tùng tại từng vị trí** ⇒ một `LocationID` có **nhiều**
+//     dòng. Câu lấy `top 1` **không `ORDER BY`** (#415) rồi chỉ đọc `Rows[0]`.
+//   ⇒ Nếu dòng đầu tiên tình cờ có `InStockQuantity = 0` còn các phụ tùng khác **vẫn còn tồn**, guard **đi qua**
+//     và vị trí bị vô hiệu hoá **dù đang chứa hàng**. Đúng ra phải là `sum(InStockQuantity) > 0` hoặc
+//     `exists (… where InStockQuantity > 0)`.
+//   ⇒ Khác hẳn hai guard anh em ngay bên dưới (phiếu nhập / phiếu xuất) — chúng dùng `select distinct … where`
+//     rồi chỉ xét `Rows.Count > 0` nên **đúng**. ⇒ Trong **cùng một hàm**, hai guard đúng và một guard hỏng.
+//
+// ⚪ **Guard và lệnh ghi NHÌN CÙNG TẬP CSDL**: cả ba guard chạy trên `_dbDealer` (nơi thật sự giữ tồn kho và
+//   phiếu nhập/xuất), còn lệnh `update` chạy trên `_dbMain` + `_dbWH` + `_dbDealer` ⇒ **bao trùm**.
+//   ⇒ Trái với #845 (`Ser_Mst_Model_Delete` guard đọc `_dbDealer` nhưng xoá ở Main+WH, **không** chạm Dealer).
+// 📌 Mini: `GET`/`POST`/`PUT`/`DELETE /api/sermstlocations` — `DELETE` là **xoá mềm** đúng như nguồn, có **lọc**
+//   `DealerCode` (vá tham số chết), và guard tồn kho **cộng gộp mọi dòng** thay vì chỉ đọc dòng đầu.
+app.MapGet("/api/sermstlocations", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? stockNo, bool? all) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var sn = (stockNo ?? "").Trim();
+    var items = await db.SerMstLocations.Where(x => x.OrgId == t.OrgId)
+        .Where(x => dl.Length == 0 || x.DealerCode == dl)
+        .Where(x => sn.Length == 0 || x.StockNo == sn)
+        .Where(x => all == true || x.IsActive == "1")
+        .OrderBy(x => x.LocationCode)
+        .Select(x => new { x.Id, x.LocationID, x.LocationCode, x.LocationName, x.StockNo, x.DealerCode, x.IsActive })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var lc = (dto.LocationCode ?? "").Trim().ToUpperInvariant();
+    if (lc.Length == 0) return Results.BadRequest(new { error = "thieu LocationCode" });
+    var dl = (dto.DealerCode ?? "").Trim();
+    var dup = await db.SerMstLocations.AnyAsync(x => x.OrgId == t.OrgId && x.LocationCode == lc && x.DealerCode == dl);
+    if (dup) return Results.Conflict(new { error = "Ser_Location_Exist", locationCode = lc, dealerCode = dl });
+    var row = new SerMstLocation
+    {
+        OrgId = t.OrgId, LocationCode = lc, LocationName = dto.LocationName,
+        StockNo = dto.StockNo, DealerCode = dl, IsActive = "1",
+        LocationID = (dto.LocationID ?? lc),
+    };
+    db.SerMstLocations.Add(row); await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive });
+}).RequireAuthorization();
+
+app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMstLocationDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var id = (locationId ?? "").Trim();
+    var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id);
+    if (row is null) return Results.NotFound(new { error = "Ser_Location_NotExist", locationId = id });
+    if (!string.IsNullOrWhiteSpace(dto.LocationName)) row.LocationName = dto.LocationName;
+    if (!string.IsNullOrWhiteSpace(dto.StockNo)) row.StockNo = dto.StockNo;
+    if (!string.IsNullOrWhiteSpace(dto.IsActive)) row.IsActive = dto.IsActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive });
+}).RequireAuthorization();
+
+app.MapDelete("/api/sermstlocations/{locationId}", async (string locationId, AppDbContext db,
+    ITenantContext t, string? dealerCode) =>
+{
+    var id = (locationId ?? "").Trim();
+    var dl = (dealerCode ?? "").Trim();
+    // Va THAM SO CHET cua nguon: loc CA DealerCode, khong chi LocationID.
+    var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id
+        && (dl.Length == 0 || x.DealerCode == dl));
+    if (row is null) return Results.NotFound(new { error = "Ser_Location_NotExist", locationId = id, dealerCode = dl });
+    row.IsActive = "0";   // XOA MEM, dung nhu nguon (update set IsActive = 0)
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        locationId = id, isActive = row.IsActive, softDeleted = true,
+        sourceDeleteIsActuallySoftDelete = "#848: than ham Ser_Mst_Location_Delete la update Ser_MST_Location set IsActive = 0 where (1=1) and LocationID = @LocationID — KHONG co delete nao. Suot cac vong truoc, moi ..._Delete doc duoc (#819, #821, #824, #825, #839, #841, #843, #847) deu la XOA CUNG; day la ca XOA MEM dau tien => dung suy nghia tu hau to ten ham",
+        sourceUsesLiteralInsteadOfConstant = "set IsActive = 0 (SO, khong nhay) trong khi ca tang dung TConst.Flag.Inactive = chuoi 0; cot la kieu chuoi nen SQL Server ep ngam — dung luat HANG khac GIA TRI",
+        sourcePassesDeadDealerParam = "CA BA loi goi (_dbMain, _dbWH, _dbDealer) deu truyen @DealerCode, strDealerCode trong khi strSqlDelete CHI co and LocationID = @LocationID => tham so CHET (ho #828) VA lenh ghi KHONG co chieu dai ly. Khac #847 o cho: o day nguoi viet CO Y DINH loc dai ly (da truyen tham so) nhung QUEN viet menh de; o #847 ca guard lan lenh deu khong nhac toi dai ly",
+        stockGuardChecksOnlyOneRow = "GUARD TON KHO CHI KIEM DUNG MOT DONG: GetTableContents(_dbDealer, Ser_Inv_StockBalance, top 1 *, rong, LocationID, =, ..., DealerCode, =, ...) roi chi doc Rows[0][InStockQuantity]. Ser_Inv_StockBalance la ton kho THEO TUNG PHU TUNG tai tung vi tri => mot LocationID co NHIEU dong; top 1 KHONG ORDER BY (#415). Neu dong dau tinh co co InStockQuantity = 0 con cac phu tung khac VAN CON TON thi guard DI QUA va vi tri bi vo hieu hoa du dang chua hang. Dung ra phai la sum(InStockQuantity) > 0 hoac exists (... where InStockQuantity > 0)",
+        twoSiblingGuardsInSameFunctionAreCorrect = "AM TINH: hai guard anh em ngay ben duoi (phieu nhap / phieu xuat) dung select distinct ... where roi chi xet Rows.Count > 0 nen DUNG => trong CUNG MOT HAM, hai guard dung va mot guard hong",
+        guardsAndWriteSeeSameDbSet = "AM TINH: ca ba guard chay tren _dbDealer (noi that su giu ton kho va phieu nhap/xuat), con lenh update chay tren _dbMain + _dbWH + _dbDealer => BAO TRUM. Trai voi #845 (Ser_Mst_Model_Delete guard doc _dbDealer nhung xoa o Main+WH, KHONG cham Dealer)",
+        twoMachinesDiffOneLine848 = "3B: bon ham KHOP; Delete lech (7d061b40 vs b3370ddd) nen DIFF CHUAN HOA theo luat #331: khac DUNG MOT DONG — ban V20.2023.Release co them , siso.StockOutNo trong select distinct cua guard phieu xuat. Cot ay chi nam trong cau dung de DEM SU TON TAI (Rows.Count > 0) => KHONG doi hanh vi",
+    });
+}).RequireAuthorization();
 // ===== 🔴🔴🔴 #846 MÀN MỚI: THIẾT LẬP MỐC BẢO DƯỠNG THEO KM — `Ser_MST_ROMaintanceSetting_{Get,Save}` =====
 // `BizCarSv.Master.cs:10121 Get` md5 `0fff7da7` (121 dòng) · `:10242 Save` md5 `2cbe74b7` (**312 dòng**,
 // `Raise`=2, `SaveData`=3, `ExecQuery`=4). Vỏ bọc LIVE: `HTCWSCarSv/WSCarSv.asmx.cs:27725` và `:27755`.
@@ -72970,6 +73079,7 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record SerMstLocationDto(string? LocationID, string? LocationCode, string? LocationName, string? StockNo, string? DealerCode, string? IsActive);
 record RoMaintanceSettingDto(long? ROMSID, decimal? Km, string? Maintances, string? FlagActive);
 record RoMaintanceSettingSaveDto(string? DealerCode, List<RoMaintanceSettingDto>? Items);
 record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);
