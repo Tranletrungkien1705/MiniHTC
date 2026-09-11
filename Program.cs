@@ -14740,6 +14740,81 @@ app.MapPost("/api/smstemplates", async (SmsTemplateDto dto, AppDbContext db, ITe
         newIsActive = SmsTemplateActiveLabel(r.FlagActive), length = body.Length, multipart = body.Length > 160 });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #852 MÀN MỚI: SỬA MẪU TIN NHẮN — `SerSMSTemplate{Create,Update,Get}` (`Master.cs`) =====
+//   `:8020 Create` md5 `e84b03b9` (169 dòng) · `:8189 Update` `69c89de7` (160) · `:8349 Get` `0da59769` (145).
+//   **Cả ba đều `Raise`=0 và `Check`=0** — không hàm nào chống trùng `SMSType` trong một đại lý.
+//   Mini đã có `GET`/`POST`/`toggle` nhưng **chưa có `PUT`** ⇒ bổ sung.
+//
+// 🔴🔴 **KHÁC BIỆT NGHIỆP VỤ THẬT THỨ BA GIỮA HAI CÂY NGUỒN** (sau #844 và #849)
+//   `Create` lệch md5 (`e84b03b9` vs `4474aec7`) ⇒ diff chuẩn hoá: bản `V20.2023.Release` có **thêm** khối
+//     `if (bNeedTransaction_Dealer) { SetDataRowStateOfAllRows(ref dt_SMS_Template, DataRowState.Added);`
+//     `                              _dbDealer.SaveData("Ser_SMSTemplate", dt_SMS_Template); }`
+//   ⇒ Bản `V20` **không ghi mẫu SMS xuống DB đại lý**. Cùng khuôn #844 (`Ser_MST_CustomerType_Delete`).
+//   ⇒ Ba loại khác biệt giữa hai cây đã gặp: **thiếu khối ghi** (#844, đây) · **đảo toán tử** (#849) ·
+//     **thêm cột vô hại trong `select distinct`** (#848).
+//
+// 🔴🔴🔴 **Ô RỖNG ⇒ GHI `NULL`, VÀ MỌI CỘT LUÔN NẰM TRONG `alEffectiveColumn`**
+//   `Update` (và `Create` cùng khuôn):
+//     `if (string.IsNullOrEmpty(strSMSBody)) Rows[0]["SMSBody"] = **DBNull.Value**; else … = strSMSBody;`
+//     `if (string.IsNullOrEmpty(strSMSIsAcitve)) Rows[0]["IsActive"] = **DBNull.Value**; else …;`
+//     rồi **vô điều kiện**: `alEffectiveColumn.Add("DealerCode"); Add("SMSBody"); Add("IsActive");`
+//   ⇒ Gọi `Update` chỉ để đổi **một** thứ (ví dụ `DealerCode`) mà không gửi lại `SMSBody`
+//     ⇒ **nội dung mẫu bị XOÁ thành NULL**, im lặng. `IsActive` cũng vậy ⇒ mẫu rơi vào trạng thái
+//     **không phải `"1"` cũng không phải `"0"`**, nên mọi bộ lọc `IsActive = '1'`/`'0'` đều **trượt**.
+//   📌 Đối chiếu #847 (`SerGroupRepair`): ở đó `Create` **bỏ qua** ô rỗng còn `Update` **ghi đè** ⇒ hai hàm
+//     lệch nhau; ở đây **cả hai cùng ghi NULL** ⇒ **nhất quán nhưng nguy hiểm**. Nhất quán ≠ đúng.
+//
+// 🔴🔴 **`Rows[0]` TRẦN — VÀ GUARD ĐỌC CSDL MÀ HÀM KHÔNG HỀ GHI**
+//   `Update`: `dt_SMS_Template = GetTableContents(**_dbDealer**, "Ser_SMSTemplate", "top 1 *", "", "TempID","=",strTempID);`
+//   rồi **ngay dòng sau**: `dt_SMS_Template.**Rows[0]**["DealerCode"] = strDealerCode;` — **không** kiểm `Rows.Count`.
+//   ⇒ `TempID` không có (hoặc **chưa đồng bộ xuống Dealer**) ⇒ `IndexOutOfRange` thô. Nhóm **44 site trần trụi** (#814).
+//   ⇒ Và `Update` chỉ `SaveData` lên `_dbMain` + `_dbWH` — **không ghi `_dbDealer`**. Vậy nó **đọc từ CSDL mà nó
+//     không bao giờ ghi**: bản Dealer cũ vĩnh viễn là **nguồn sự thật đầu vào** cho mọi lần sửa.
+//   ⇒ Ba biến thể của cùng một lỗi đã gặp: #845 guard **rộng hơn** phạm vi ghi (bỏ sót) · #851 guard **hẹp hơn**
+//     (chặn nhầm) · **đây**: guard đọc một CSDL **nằm ngoài** phạm vi ghi.
+//
+// ⚪⚪ **PHẢN VÍ DỤ CHO #847 — transaction đại lý ở đây ĐƯỢC ĐÓNG ĐÚNG**
+//   Cả `Create` lẫn `Update` đều có `if (bNeedTransaction_Dealer) CommitSafety(_dbDealer)` ở lối ra thành công
+//   và `RollbackSafety(_dbDealer)` trong **cả** `catch` lẫn `finally`.
+//   ⇒ Vậy chuyện `SerGroupRepairCreate` (#847) mở transaction đại lý rồi **bỏ rơi** là **lỗi riêng của hàm đó**,
+//     **không phải** thói quen của tầng. Ghi lại để lần sau đừng tổng quát hoá.
+//
+// 🔴 **SAI CHÍNH TẢ NGUYÊN VĂN**: tham số của `Update` tên `str**SMSIsAcitve**` (thiếu/đảo chữ) trong khi
+//   `Create` dùng `strSMSIsActive` **đúng chính tả** — hai hàm anh em, một cái sai.
+// 🔴 **`Update` KHÔNG nhận/ghi `SMSType`** dù `Create` có ⇒ **không đổi được loại mẫu** sau khi tạo.
+// 🔴 `select @ID = **@@Identity**` — **ca thứ NĂM** (xem #846 cho số đếm cả tầng: 152 vs 3).
+// 📌 Mini: `PUT /api/smstemplates/{id}` — **chỉ ghi cột nào client thực sự gửi** (vá lỗi xoá-thành-NULL),
+//   giữ nguyên cột vắng mặt, và **cảnh báo** nếu `IsActive` gửi lên không thuộc {"1","0"}.
+app.MapPut("/api/smstemplates/{id:long}", async (long id, SmsTemplateDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SmsTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { error = "Ser_SMSTemplate_NotFound", tempId = id });
+    var changed = new List<string>();
+    // KHAC NGUON: chi ghi cot nao client THUC SU gui; cot vang mat GIU NGUYEN (nguon ghi NULL).
+    if (dto.SmsBody != null) { row.SmsBody = dto.SmsBody; changed.Add("SmsBody"); }
+    if (dto.SmsName != null) { row.SmsName = dto.SmsName; changed.Add("SmsName"); }
+    if (dto.DealerCode != null) { row.DealerCode = dto.DealerCode; changed.Add("DealerCode"); }
+    if (dto.IsActive != null) { row.FlagActive = dto.IsActive; changed.Add("FlagActive"); }
+    var oddFlag = dto.IsActive != null && dto.IsActive != "1" && dto.IsActive != "0";
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.SmsType, row.SmsName, row.SmsBody, row.DealerCode, row.FlagActive,
+        changedColumns = changed, flagValueIsUnexpected = oddFlag,
+        sourceNullsOutOmittedColumns = "#852: Update (va Create cung khuon) dung if (string.IsNullOrEmpty(strSMSBody)) Rows[0][SMSBody] = DBNull.Value; else = strSMSBody; tuong tu cho IsActive; roi VO DIEU KIEN alEffectiveColumn.Add(DealerCode); Add(SMSBody); Add(IsActive) => goi Update chi de doi MOT thu (vi du DealerCode) ma khong gui lai SMSBody thi NOI DUNG MAU BI XOA THANH NULL, im lang. IsActive cung vay => mau roi vao trang thai khong phai 1 cung khong phai 0, nen moi bo loc IsActive = 1 hoac 0 deu TRUOT",
+        contrastWith847EmptyFieldHandling = "doi chieu #847 (SerGroupRepair): o do Create BO QUA o rong con Update GHI DE => hai ham lech nhau; o day CA HAI cung ghi NULL => NHAT QUAN NHUNG NGUY HIEM. Nhat quan khong bang dung",
+        bareRows0AndGuardReadsDbItNeverWrites = "Update: dt_SMS_Template = GetTableContents(_dbDealer, Ser_SMSTemplate, top 1 *, rong, TempID, =, strTempID) roi NGAY DONG SAU dt_SMS_Template.Rows[0][DealerCode] = strDealerCode — KHONG kiem Rows.Count => TempID khong co (hoac chua dong bo xuong Dealer) thi IndexOutOfRange tho (nhom 44 site #814). Va Update chi SaveData len _dbMain + _dbWH, KHONG ghi _dbDealer => no DOC TU CSDL MA NO KHONG BAO GIO GHI: ban Dealer cu vinh vien la nguon su that dau vao cho moi lan sua",
+        threeVariantsOfGuardDbMismatch = "ba bien the cua cung mot loi: #845 guard RONG HON pham vi ghi (bo sot) · #851 guard HEP HON (chan nham) · day: guard doc mot CSDL NAM NGOAI pham vi ghi",
+        counterExampleTo847 = "AM TINH — PHAN VI DU CHO #847: ca Create lan Update o day deu co if (bNeedTransaction_Dealer) CommitSafety(_dbDealer) o loi ra thanh cong va RollbackSafety(_dbDealer) trong CA catch lan finally => chuyen SerGroupRepairCreate (#847) mo transaction dai ly roi BO ROI la LOI RIENG CUA HAM DO, khong phai thoi quen cua tang",
+        thirdRealTreeDivergence = "KHAC BIET NGHIEP VU THAT THU BA giua hai cay nguon (sau #844 va #849): Create lech md5 (e84b03b9 vs 4474aec7), diff chuan hoa cho thay ban V20.2023.Release co THEM khoi if (bNeedTransaction_Dealer) { SetDataRowStateOfAllRows(ref dt_SMS_Template, DataRowState.Added); _dbDealer.SaveData(Ser_SMSTemplate, dt_SMS_Template); } => ban V20 KHONG ghi mau SMS xuong DB dai ly. Ba loai khac biet da gap: thieu khoi ghi (#844, day), dao toan tu (#849), them cot vo hai trong select distinct (#848)",
+        misspelledParamVerbatim = "tham so cua Update ten strSMSIsAcitve (sai chinh ta, nguyen van nguon) trong khi Create dung strSMSIsActive DUNG chinh ta — hai ham anh em, mot cai sai",
+        updateCannotChangeSmsType = "Update KHONG nhan/ghi SMSType du Create co => khong doi duoc loai mau sau khi tao",
+        atAtIdentityFifthOccurrence = "select @ID = @@Identity — ca thu NAM; xem #846 cho so dem ca tang (152 @@Identity vs 3 SCOPE_IDENTITY)",
+        noDuplicateGuardOnEitherPath = "ca ba ham deu Raise=0 va Check=0 — khong ham nao chong trung SMSType trong mot dai ly",
+        twoMachinesVerified852 = "Update 69c89de7 va Get 0da59769 KHOP; Create lech va da diff (xem tren)",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/smstemplates/{type}/toggle", async (string type, AppDbContext db, ITenantContext t, string? dealer) =>
 {
     type = type.Trim().ToUpperInvariant();
