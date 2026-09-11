@@ -59246,6 +59246,89 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 //     **không ghi đôi** vì `_dbDealer ≡ _dbMain`), **không** phải bug.
 // 📌 Mini: `POST /api/servicecars/update-by-key` — guard **kết quả tra cứu** trước khi ghi, và **báo rõ** khi
 //   khoá tra cứu khớp **nhiều hơn một** xe thay vì lặng lẽ sửa dòng đầu.
+// ===== 🔴🔴🔴 #813 MÀN MỚI: SỬA MẪU EMAIL — `Email_TempEmail_Update` (`BizCarSv.SendMail.cs:3188-3405`) =====
+// md5 `9de9b3b1` (201 dòng, `Raise` = **0**, `SaveData` = **2**). LIVE qua web WS `:22085`.
+// **BƯỚC 3B**: `SendMail.cs` **5631** dòng trên **cả hai** máy; md5 chuẩn hoá trên 150 = `9de9b3b1` **KHỚP**.
+//
+// 🔴🔴🔴 **`IsActive` ĐƯỢC GÁN NHƯNG KHÔNG BAO GIỜ ĐƯỢC GHI**
+//   `dt_Email_TempEmail.Rows[0]["**IsActive**"] = Constants.Flag.Active;`
+//   rồi ngay dưới:
+//     `alEffectiveColumn.Add("DealerCode"); .Add("TempSubject"); .Add("TempBody");`
+//     `.Add("TempTypeEmail"); .Add("TempFileAttachment");`   ← **năm** cột, **không có `IsActive`**
+//     `_dbMain.SaveData("Email_TempEmail", dt_Email_TempEmail, **alEffectiveColumn.ToArray()**);`
+//   Đếm trong trọn hàm: `alEffectiveColumn.Add("IsActive")` = **0** lần.
+//   ⇒ Dòng gán là **vô nghĩa**: mẫu email đã bị vô hiệu hoá thì **sửa xong vẫn không bật lại được**.
+//   📌 Đây là dạng "cột thiếu hẳn" mà **§12 không bắt được** — cột **có** trong bảng, **có** được gán trong code,
+//     chỉ **không nằm trong danh sách cột được ghi**.
+//
+// 🔴🔴🔴 **MỘT CỘT NHẬN HAI KIỂU DỮ LIỆU**: `TempFileAttachment` được gán **hai lần, hai kiểu khác nhau**:
+//     `Rows[0]["TempFileAttachment"] = **strTempFileAttachment**;`   ← **chuỗi** (tên tệp)
+//   rồi sau đó, nếu có dữ liệu nhị phân:
+//     `if (!StringUtils.IsEmpty(strTempFileAttachment) && fTempAttachment != null)`
+//     `{ Rows[0]["TempFileAttachment"] = **fTempAttachment**; }`                 ← **`byte[]`** (nội dung tệp)
+//   ⇒ Cùng một cột, khi thì lưu **tên tệp**, khi thì lưu **nội dung nhị phân**; nhánh sau **ghi đè** nhánh trước.
+//     Người đọc bảng **không có cách nào biết** giá trị đang là gì nếu không đoán theo kiểu runtime.
+//
+// 🔴🔴 **`Rows[0]` KHÔNG GUARD — LẦN THỨ HAI LIÊN TIẾP (sau #812)**
+//     `DataTable dt_Email_TempEmail = TDALUtils.DBUtils.GetTableContents(_dbMain, "Email_TempEmail",`
+//     `    "top 1 *", "", "TempIDEmail", "=", strTempIDEmail);`
+//     `dt_Email_TempEmail.Rows[0]["DealerCode"] = strDealerCode;`   ← dùng ngay, **không** kiểm `Rows.Count`
+//   ⇒ `TempIDEmail` không tồn tại ⇒ **`IndexOutOfRangeException` thô**, không phải mã lỗi nghiệp vụ.
+//
+// 🔴🔴 **GUARD KIỂM TRÊN MỘT CSDL, GHI TRÊN CSDL KHÁC**
+//     `#region //Check` → `CheckTempAttachmentLimit(**_dbDealer**, ref alParamsCoupleError, strDealerCode,`
+//     `                                            strTempIDEmail, fTempAttachment);`
+//   nhưng bản ghi lại đọc/ghi trên `**_dbMain**` (`GetTableContents(_dbMain, …)`, `_dbMain.SaveData(…)`)
+//   và `_dbWH.SaveData(…)`. ⇒ **Giới hạn dung lượng đính kèm được kiểm trên CSDL đại lý còn dữ liệu thật ghi
+//     vào Main/WH** — hai bên lệch thì guard kiểm sai chỗ.
+//   ⚪ Áp #403: `#region //Check` **có nội dung thật** (không rỗng, không comment) — `Raise`=0 trong thân hàm
+//     là vì guard sống trong **helper** `CheckTempAttachmentLimit` (khuôn #747/#760, đúng bài học ở #807).
+//
+// 🔴 **GHI HAI CSDL, KHÔNG BÙ TRỪ**: `_dbMain.SaveData` → `AcceptChanges()` →
+//   `SetDataRowStateOfAllRows(ref dt, DataRowState.Modified)` → `_dbWH.SaveData`. Thủ thuật **đặt lại trạng thái
+//   dòng** để ghi lần hai là cố ý, nhưng nếu lần hai hỏng thì Main **đã** đổi còn WH thì chưa.
+// 🔴 Cuối hàm `select tmp.*` ⇒ trả **cả cột `TempFileAttachment`** (có thể là `byte[]` lớn) về client.
+// 📌 Mini: `PUT /api/emailtemplates/{tempId}` — ghi **đủ cả `FlagActive`**, tách **tên tệp** khỏi **nội dung tệp**,
+//   và guard kết quả tra cứu trước khi sửa.
+app.MapPut("/api/emailtemplates/{tempId}", async (string tempId, EmailTemplateUpdateDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var rows = await db.EmailTemplates.Where(x => x.OrgId == t.OrgId && x.TempIDEmail == tempId).ToListAsync();
+    if (rows.Count == 0)
+    {
+        return Results.NotFound(new { error = "khong tim thay mau email theo TempIDEmail",
+            sourceWouldThrowIndexOutOfRange = true });
+    }
+    if (rows.Count > 1)
+    {
+        return Results.Conflict(new { error = "TempIDEmail khop nhieu hon mot mau", matchCount = rows.Count,
+            sourceUsesTopOneAndFirstRow = true });
+    }
+    var tpl = rows[0];
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)) tpl.DealerCode = dto.DealerCode!.Trim().ToUpperInvariant();
+    // Nguon: chuoi rong => DBNull; Mini giu dung ngu nghia do bang chuoi rong -> null.
+    tpl.TempBody = string.IsNullOrEmpty(dto.TempBody) ? "" : dto.TempBody!;
+    tpl.TempSubject = string.IsNullOrEmpty(dto.TempSubject) ? null : dto.TempSubject;
+    if (!string.IsNullOrEmpty(dto.TempTypeEmail)) tpl.TempType = dto.TempTypeEmail!;
+    // TACH ro TEN TEP khoi NOI DUNG TEP — nguon nhet ca hai vao MOT cot.
+    tpl.FileAttachment = string.IsNullOrEmpty(dto.TempFileAttachment) ? null : dto.TempFileAttachment;
+    // Nguon gan IsActive nhung KHONG dua vao danh sach cot ghi => Mini ghi that.
+    tpl.FlagActive = "1";
+    tpl.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        tpl.TempIDEmail, tpl.DealerCode, tpl.TempType, tpl.TempSubject, tpl.FileAttachment, tpl.FlagActive,
+        sourceAssignsIsActiveButNeverWritesIt = "nguon gan Rows[0][IsActive] = Constants.Flag.Active nhung alEffectiveColumn chi co NAM cot (DealerCode, TempSubject, TempBody, TempTypeEmail, TempFileAttachment) va SaveData nhan alEffectiveColumn.ToArray(); dem trong tron ham: alEffectiveColumn.Add(IsActive) = 0 lan => dong gan VO NGHIA, mau email da bi vo hieu hoa thi sua xong VAN KHONG BAT LAI DUOC. Day la dang cot-thieu-han ma §12 khong bat duoc: cot CO trong bang, CO duoc gan trong code, chi KHONG nam trong danh sach cot duoc ghi",
+        sourceStoresTwoTypesInOneColumn = "TempFileAttachment duoc gan HAI lan hai KIEU: = strTempFileAttachment (chuoi, ten tep) roi neu co du lieu nhi phan thi = fTempAttachment (byte[]) GHI DE => cung mot cot khi thi ten tep khi thi noi dung nhi phan; nguoi doc bang khong co cach nao biet gia tri dang la gi",
+        sourceUsesFirstRowWithoutGuard = "GetTableContents(_dbMain, Email_TempEmail, top 1 *, , TempIDEmail, =, strTempIDEmail) roi dung Rows[0] NGAY, khong kiem Rows.Count => TempIDEmail khong ton tai se nem IndexOutOfRangeException THO. Lan thu HAI lien tiep sau #812",
+        sourceChecksOnOneDbWritesToAnother = "#region //Check goi CheckTempAttachmentLimit(_dbDealer, ...) nhung doc va ghi lai tren _dbMain (GetTableContents + SaveData) va _dbWH => gioi han dung luong dinh kem duoc kiem tren CSDL DAI LY con du lieu that ghi vao Main/WH",
+        sourceCheckRegionIsRealButGuardLivesInHelper = "AM TINH (#403): #region //Check co noi dung that (khong rong, khong comment); Raise=0 trong than ham la vi guard song trong helper CheckTempAttachmentLimit — khuon #747/#760",
+        sourceWritesTwoDatabases = "_dbMain.SaveData -> AcceptChanges() -> SetDataRowStateOfAllRows(ref dt, DataRowState.Modified) -> _dbWH.SaveData. Thu thuat dat lai trang thai dong de ghi lan hai la CO Y, nhung lan hai hong thi Main DA doi con WH chua",
+        sourceSelectsStarIncludingBlob = "cuoi ham select tmp.* => tra ca cot TempFileAttachment (co the la byte[] lon) ve client",
+        twoMachinesVerified = "SendMail.cs 5631 dong tren CA HAI may; md5 chuan hoa tren 150 = 9de9b3b1 KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/servicecars/update-by-key", async (CarUpdateByKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
     var key = (dto.KeyType ?? "").Trim().ToUpperInvariant();
@@ -70453,6 +70536,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record EmailTemplateUpdateDto(string? DealerCode, string? TempSubject, string? TempBody, string? TempTypeEmail, string? TempFileAttachment);
 record CarUpdateByKeyDto(string? KeyType, string? PlateNo, string? FrameNo, string? DealerCode, string? CusID, string? TradeMarkCode);
 record CavityConflictDto(string? CavityID, DateTime From, DateTime To, long? AppId);
 record RoStatusByIdsDto(string? RoIdList);
