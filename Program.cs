@@ -40420,6 +40420,70 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 //   · `PAID → Thanh toán xong` · `FNS → Đã giao xe` · `REJ → Lệnh hủy` · `W4P, HPA, NORE → Hủy, Hẹn lại`
 //   · `else → Không xác định`
 //   ⇒ MiniHTC dùng **đúng một** bảng ánh xạ này cho mọi báo cáo (đã áp ở #869/#870), **không** chép lại.
+// ===== 🔴🔴🔴 #873 QUÉT: SO **DANH MỤC HÀM PUBLIC** GIỮA HAI CÂY — LỆCH **168 / 9** =====
+// **Vòng quét ⇒ KHÔNG tăng bộ đếm màn.** Xuất phát từ luật #363 (md5 lệch ⇒ diff đáng làm) và #352
+// (hàm có thể **chỉ tồn tại ở một cây**): thay vì diff từng hàm, **so cả danh mục**.
+// Phương pháp: `grep -rhoE '^[[:space:]]*public[[:space:]]+(DataSet|void|ArrayList|string|int|bool)[[:space:]]+[A-Za-z0-9_]+\('`
+// trên `TERP.BizCarSv` của **cả hai** cây → rút tên → `sort -u` → `comm`.
+//   laptop `V20`               : **2859** hàm
+//   máy 150 `V20.2023.Release` : **3018** hàm
+//   **168** hàm chỉ có trên **150** · **9** hàm chỉ có trên **laptop**
+//
+// 🔴🔴🔴 **CẢ MỘT SỐ PHÂN HỆ VẮNG MẶT TRÊN CÂY LAPTOP** (nhóm theo tiền tố, 168 hàm):
+//   `Ser_*` **98** — lớn nhất là đợt **`_New20230220`** (`13 hàm: `Ser_RO_Get_New20230220`,
+//     `Ser_RO_GetStatusList{,02}_…_New20230220`, `Ser_RO_Update_New20230220`,
+//     `Ser_RO_UpdateAmountFromMC_New20230220`, kèm bản `_WH` và `…GetClaimX`) ⇒ **một đợt nâng cấp trọn gói**
+//     mà cây laptop **không hề có**; cộng `Ser_RO_GetWarranty_V2_New20230417`, `Ser_RO_UpdateMemberVoucher`,
+//     `Ser_SupplierPayment_{Get,Save,Appr}Async`.
+//   `OSVeloca_*` **15** — **toàn bộ** phân hệ đồng bộ sang hệ **Veloca** (`…Ser_RO_Get`, `…Ser_Inv_StockIn/Out_*`,
+//     `…UpdFlagSyncVeloca`, kèm hai bản `_New20240606`). ⇒ Khớp với ghi chú đã có: *Veloca/iDealer chỉ ở 150*.
+//   `Rpt_DMSSer_*` — hai cụm gửi HMC (`DealerNetPrice` và `PartsOrderDetail`: `_LastGet`, `_PartGet`,
+//     `_SendHMC`, `…X`, `…_Auto`) + `Rpt_DMSSer_Warranty_MainPart…_New20230417`.
+//   **Tầng `*Async` gần như không tồn tại trên laptop**: `Mst_DeliveryLocation_{Get,Add,Update,Delete}Async`,
+//     `Mst_{DeliveryForm,OrderComplainType,OrderComplainImageType}_GetAsync`, `Req_PartPrice_*Async`,
+//     `TST_Mst_*Async`, `Rpt_{SlowRotationParts,AbilitySupplyParts}{,_WH}Async`, `UploadFileV2_ForRO{,Async}`.
+//   `CarSv_SerCarUpdate_Key{PlateNo,VIN}{,Async}` · `CarSv_Ser_CustomerCar_MBSCreate{,Async}` ·
+//     `CommonSignIn**2026**NC` · `HCC_NoShow_CreateOS` · `CreatFile{DNP,POD}SendHMC` · `Report_KPI*_New20221101`.
+//   🔴 **`Blt_Bulletin_Get_byVin_New20221114`** ⇒ **thế hệ THỨ TƯ** của `byVin`, bổ sung cho #853
+//     (ở đó tôi liệt kê 9 hàm/4 biến thể **trên cây laptop**; cây 150 còn nhiều hơn).
+//
+// 🔴 **9 HÀM CHỈ CÓ TRÊN LAPTOP ⇒ CÂY MỚI ĐÃ XOÁ HẲN**:
+//   `SerROStatusUpdatePaid_New20160628` · `SerROStatusUpdatePaid_New20220926` · `SerStockInGet_New20221013`
+//   · `Ser_Order_Part_CreateTST` · `Ser_Suggest_Price_Get` · `Ser_Suggest_Price_SaveTST`
+//   · `TST_Mst_Part_Bravo_Get` · `Sync_HMC` · `SequenceGetForPXNCC`
+//   ⇒ Đây là **bằng chứng cây laptop KHÔNG phải tập con** của cây 150: mỗi cây có thứ cây kia không có.
+//
+// ⚠️ **HỆ QUẢ CHO CHÍNH ĐỢT GRIND NÀY** (ghi thẳng, không tô hồng):
+//   Mọi vòng từ trước tới nay đều **chọn màn từ cây laptop** rồi mới đối chiếu 150. Với **168** hàm chỉ có ở 150,
+//   **danh sách màn cần port đang thiếu** đúng chừng ấy đầu việc — trong đó có cả phân hệ **Veloca** và toàn bộ
+//   tầng **Async**. ⇒ Mẫu số ``2800` **không** bao gồm chúng.
+//   ⇒ Từ nay, khi lập hàng đợi phải quét **cả hai** cây rồi hợp nhất, và ghi rõ màn thuộc **cây nào**.
+// 📌 Mini: endpoint tra cứu bảng chênh lệch để các vòng sau lấy hàng đợi từ đây.
+app.MapGet("/api/_meta/source-tree-function-gap", () => Results.Ok(new
+{
+    method = "grep -rhoE ^[[:space:]]*public[[:space:]]+(DataSet|void|ArrayList|string|int|bool)[[:space:]]+[A-Za-z0-9_]+\\( tren TERP.BizCarSv cua CA HAI cay, rut ten, sort -u, roi comm",
+    laptopV20FunctionCount = 2859,
+    machine150FunctionCount = 3018,
+    only150Count = 168,
+    onlyLaptopCount = 9,
+    only150ByPrefix = new[]
+    {
+        "Ser_* : 98 (lon nhat la dot _New20230220 khoang 13 ham: Ser_RO_Get_New20230220, Ser_RO_GetStatusList{,02}_..._New20230220, Ser_RO_Update_New20230220, Ser_RO_UpdateAmountFromMC_New20230220, kem ban _WH va ...GetClaimX; cong Ser_RO_GetWarranty_V2_New20230417, Ser_RO_UpdateMemberVoucher, Ser_SupplierPayment_{Get,Save,Appr}Async)",
+        "OSVeloca_* : 15 (TOAN BO phan he dong bo sang he Veloca — ...Ser_RO_Get, ...Ser_Inv_StockIn/Out_*, ...UpdFlagSyncVeloca, kem hai ban _New20240606). Khop ghi chu da co: Veloca/iDealer chi o 150",
+        "Rpt_DMSSer_* : hai cum gui HMC (DealerNetPrice va PartsOrderDetail: _LastGet, _PartGet, _SendHMC, ...X, ..._Auto) + Rpt_DMSSer_Warranty_MainPart..._New20230417",
+        "Tang *Async gan nhu KHONG TON TAI tren laptop: Mst_DeliveryLocation_{Get,Add,Update,Delete}Async, Mst_{DeliveryForm,OrderComplainType,OrderComplainImageType}_GetAsync, Req_PartPrice_*Async, TST_Mst_*Async, Rpt_{SlowRotationParts,AbilitySupplyParts}{,_WH}Async, UploadFileV2_ForRO{,Async}",
+        "CarSv_SerCarUpdate_Key{PlateNo,VIN}{,Async}, CarSv_Ser_CustomerCar_MBSCreate{,Async}, CommonSignIn2026NC, HCC_NoShow_CreateOS, CreatFile{DNP,POD}SendHMC, Report_KPI*_New20221101",
+        "Blt_Bulletin_Get_byVin_New20221114 => THE HE THU TU cua byVin, bo sung cho #853 (o do liet ke 9 ham/4 bien the TREN CAY LAPTOP)",
+    },
+    onlyLaptop = new[]
+    {
+        "SerROStatusUpdatePaid_New20160628", "SerROStatusUpdatePaid_New20220926", "SerStockInGet_New20221013",
+        "Ser_Order_Part_CreateTST", "Ser_Suggest_Price_Get", "Ser_Suggest_Price_SaveTST",
+        "TST_Mst_Part_Bravo_Get", "Sync_HMC", "SequenceGetForPXNCC",
+    },
+    neitherTreeIsASubsetOfTheOther = "9 ham CHI CO tren laptop => bang chung cay laptop KHONG PHAI TAP CON cua cay 150: moi cay co thu cay kia khong co",
+    consequenceForThisGrind = "HE QUA CHO CHINH DOT GRIND NAY (ghi thang, khong to hong): moi vong tu truoc toi nay deu CHON MAN TU CAY LAPTOP roi moi doi chieu 150. Voi 168 ham chi co o 150, DANH SACH MAN CAN PORT DANG THIEU dung chung ay dau viec — trong do co ca phan he Veloca va toan bo tang Async. Mau so `2800 KHONG bao gom chung. Tu nay khi lap hang doi phai quet CA HAI cay roi hop nhat, va ghi ro man thuoc CAY NAO",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/ro-status-name-copies", () => Results.Ok(new
 {
     retracts360Prediction = "#871 RUT LAI DU DOAN CUA CHINH #360: o do toi viet kha nang 21 ban da lech nhau la CAO. Nay DO THAT bang cach trich 22 dong sau moi site, rut chu ky when ro.Status in (...) then N(...) + nhanh else roi sort | uniq -c: laptop V20 cho 21/21 chu ky GIONG HET (1 nhom duy nhat), may 150 cho 31/31 GIONG HET (1 nhom duy nhat) => 0 BAN LECH. Du doan SAI",
