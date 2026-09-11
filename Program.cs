@@ -40459,6 +40459,73 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 //   tầng **Async**. ⇒ Mẫu số ``2800` **không** bao gồm chúng.
 //   ⇒ Từ nay, khi lập hàng đợi phải quét **cả hai** cây rồi hợp nhất, và ghi rõ màn thuộc **cây nào**.
 // 📌 Mini: endpoint tra cứu bảng chênh lệch để các vòng sau lấy hàng đợi từ đây.
+// ===== ⛔ #874 SỬA LẠI CHÍNH #873: KHÔNG PHẢI 168 ĐẦU VIỆC THIẾU — ĐO RA **60** =====
+// **Vòng sửa/đo ⇒ KHÔNG tăng bộ đếm màn.**
+//
+// ⛔ Ở #873 tôi viết *"danh sách màn cần port **đang thiếu đúng chừng ấy (168) đầu việc**"*. Đó là **suy ra**
+//   từ con số lệch danh mục, **không phải đo**. Nay đo thật, ba tầng lọc:
+//     ① 168 tên "chỉ có ở 150" → grep từng tên trong `Program.cs`:
+//        **72 đã có tên** trong MiniHTC · **96 chưa**.
+//     ② Trong 96 chưa có: **46** là bản `*Async`, và **36** trong số đó **có bản KHÔNG-`Async` đã port**
+//        ⇒ chỉ là **cặp đồng bộ/bất đồng bộ** của cùng một nghiệp vụ, không phải màn mới.
+//     ③ **Còn lại thật sự: 60**.
+//   ⇒ Con số đúng là **60**, không phải 168. Lệch **2,8 lần**. ⛔ Rút lại phát biểu của #873.
+//   📌 Lặp lại đúng bài học #362 (đo trước khi viết) — và lần này tôi vi phạm **ngay ở vòng kế tiếp**.
+//     Ghi lại để nhớ: con số **lệch danh mục** ≠ con số **việc còn phải làm**; giữa chúng có ít nhất ba tầng lọc.
+//
+// ⚪ **Và phần lớn trong 60 ấy là PARITY, không phải màn mới** — chúng là **thế hệ có hậu tố ngày** của hàm
+//   MiniHTC **đã port**: `Ser_ROWarrantyReportHTC_*_**New20230417**` (7) · `Ser_RO_GetStatusList*_**New20230220/23**` (4)
+//   · `SerStockInGet_**New20240115**` / `_WH_…` / `_**New20230620**` · `SerStockOutSearch{,_WH}_**New20240115**`
+//   · `SerStockOutCreate_**New20240115**` · `SerStockBalanceQuantityGet_**New20240115**`
+//   · `SerROStatusUpdatePaid_**New20230220**` · `Ser_CustomerCareStatusUpdate_**New20240530**`
+//   · `Ser_ROWarrantyReport_{Get,Update_V2}_**New20230220**` · `SerWarrantyRepairRpt_**New20230417**`
+//   · `Ser_InvReportRevenueRpt_**New20230417**` · `Ser_InvReportTotalStockOutDetailRpt_**New20230623**`
+//   ⇒ Đây là **hàng đợi PARITY** (so thế hệ mới với bản đã port), đúng khuôn #333/#350/#352.
+//
+// 🔴 **PHÂN HỆ THẬT SỰ CHƯA CÓ** (màn mới, ưu tiên cho các vòng sau):
+//   `Rpt_DMSSer_**DealerNetPrice**_{LastGet,PartGet,SendHMC}{,X,_Auto}` (7) và
+//   `Rpt_DMSSer_**PartsOrderDetail**_{LastGet,PartGet,SendHMC}{,X,_Auto}` (7) ⇒ **hai cụm gửi HMC**
+//   · `CreatFile**DNP**SendHMC` + `CreatFile**POD**SendHMC` (sinh file gửi HMC)
+//   · `TST_Mst_Part_SyncPartInfo_DMSDealer{,Async}` · `Ser_CampaignMarketing_GetSpecial`
+//   · `Ser_Customer_**Active**` · `Ser_Customer_**GetAllDL**` · `Ser_RO_**GetForStockOutOrder**`
+//   · `Ser_ROAttachment_**UpdateFlagHMC**` · `Ser_ROWarrantyReportHTCDealer_**GetWH**`
+//   · `Report_KPIGet_Real_WHX_New20221101`.
+//
+// ⚪ **Phần đã có (72/168) chứng minh các vòng trước ĐÃ đọc cây 150**: `OSVeloca_*`, `HCC_NoShow_*`,
+//   `CommonSignIn2026NC`, `CarSv_SerCarUpdate_Key*`, `UploadFileV2_ForRO`, `Ser_SupplierPayment_*`
+//   đều đã xuất hiện trong `Program.cs` ⇒ **không** phải "chỉ đọc cây laptop" như #873 ngụ ý.
+//   ⇒ Phát biểu đúng là: **hàng đợi lấy từ cây laptop bỏ sót 60 đầu việc**, chứ không phải cả 168.
+app.MapGet("/api/_meta/source-tree-gap-measured", () => Results.Ok(new
+{
+    corrects873 = "#874 SUA LAI #873: o do toi viet danh sach man can port dang thieu dung chung ay (168) dau viec — do la SUY RA tu con so lech danh muc, KHONG PHAI DO",
+    threeFilterLayers = new[]
+    {
+        "(1) 168 ten chi-co-o-150 -> grep tung ten trong Program.cs: 72 DA CO TEN trong MiniHTC, 96 chua",
+        "(2) trong 96 chua co: 46 la ban *Async, va 36 trong so do CO ban KHONG-Async DA PORT => chi la cap dong bo/bat dong bo cua cung mot nghiep vu",
+        "(3) CON LAI THAT SU: 60",
+    },
+    correctNumberIs60Not168 = "Con so dung la 60, khong phai 168. Lech 2,8 lan",
+    repeatsLesson362 = "Lap lai dung bai hoc #362 (do truoc khi viet) — va lan nay toi vi pham NGAY O VONG KE TIEP. Ghi lai de nho: con so LECH DANH MUC khong bang con so VIEC CON PHAI LAM; giua chung co it nhat BA TANG LOC",
+    mostOf60IsParityNotNewScreens = new[]
+    {
+        "Ser_ROWarrantyReportHTC_*_New20230417 (7)", "Ser_RO_GetStatusList*_New20230220/23 (4)",
+        "SerStockInGet_New20240115 / _WH_... / _New20230620", "SerStockOutSearch{,_WH}_New20240115",
+        "SerStockOutCreate_New20240115", "SerStockBalanceQuantityGet_New20240115",
+        "SerROStatusUpdatePaid_New20230220", "Ser_CustomerCareStatusUpdate_New20240530",
+        "Ser_ROWarrantyReport_{Get,Update_V2}_New20230220", "SerWarrantyRepairRpt_New20230417",
+        "Ser_InvReportRevenueRpt_New20230417", "Ser_InvReportTotalStockOutDetailRpt_New20230623",
+    },
+    genuinelyNewSubsystems = new[]
+    {
+        "Rpt_DMSSer_DealerNetPrice_{LastGet,PartGet,SendHMC}{,X,_Auto} (7)",
+        "Rpt_DMSSer_PartsOrderDetail_{LastGet,PartGet,SendHMC}{,X,_Auto} (7)",
+        "CreatFileDNPSendHMC + CreatFilePODSendHMC", "TST_Mst_Part_SyncPartInfo_DMSDealer{,Async}",
+        "Ser_CampaignMarketing_GetSpecial", "Ser_Customer_Active", "Ser_Customer_GetAllDL",
+        "Ser_RO_GetForStockOutOrder", "Ser_ROAttachment_UpdateFlagHMC",
+        "Ser_ROWarrantyReportHTCDealer_GetWH", "Report_KPIGet_Real_WHX_New20221101",
+    },
+    previousRoundsDidReadThe150Tree = "AM TINH: phan da co (72/168) chung minh cac vong truoc DA doc cay 150 — OSVeloca_*, HCC_NoShow_*, CommonSignIn2026NC, CarSv_SerCarUpdate_Key*, UploadFileV2_ForRO, Ser_SupplierPayment_* deu da xuat hien trong Program.cs => KHONG phai chi doc cay laptop nhu #873 ngu y. Phat bieu dung la: hang doi lay tu cay laptop BO SOT 60 dau viec, chu khong phai ca 168",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/source-tree-function-gap", () => Results.Ok(new
 {
     method = "grep -rhoE ^[[:space:]]*public[[:space:]]+(DataSet|void|ArrayList|string|int|bool)[[:space:]]+[A-Za-z0-9_]+\\( tren TERP.BizCarSv cua CA HAI cay, rut ten, sort -u, roi comm",
