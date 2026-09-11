@@ -25945,7 +25945,17 @@ app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITe
     row.JDPTermName = dto.JDPTermName; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.JDPTermCode, row.JDPTermName, row.FlagActive });
+    return Results.Ok(new
+    {
+        row.Id, row.JDPTermCode, row.JDPTermName, row.FlagActive,
+        // ===== 🔴🔴🔴 #826 CREATE VÀ UPDATE THI HÀNH CÙNG MỘT LUẬT BẰNG HAI HÀNH VI TRÁI NGƯỢC =====
+        createAndUpdateEnforceSameRuleOppositeWays = "#826: luat nghiep vu CHI MOT KY ACTIVE duoc hai nhanh thi hanh KHAC HAN nhau. JDPowerTerm_Update va JDPowerTerm_Update_Mst NEM LOI JDPowerTerm_Update_ExistJDPActive khi da co ky active. Con JDPowerTerm_Create (Service01.cs:15841-16134 md5 83eefe19, 6 Raise) KHONG he co ma do (grep = 0) — thay vao do no co han mot khoi #region // Update All JDPower Old : FlagActive = 0 TU DONG TAT HET ky cu roi bat ky moi => TAO ky moi thi IM LANG CAT NGANG ky khao sat DANG CHAY, con SUA thi bi TU CHOI",
+        createTurnsOffEveryTermNotJustActiveOnes = "#826: khoi do viet select t.JDPTermCode into #tbl_JDP_Mst_JDPowerTerm from JDP_Mst_JDPowerTerm t where (1=1); roi update t set t.FlagActive = 0 ... inner join #tbl ... => where (1=1) KHONG loc gi nen no tat TOAN BO ky (ke ca ky da inactive). Bang tam + inner join la THUA hoan toan — tuong duong update JDP_Mst_JDPowerTerm set FlagActive = 0; no chi ton tai de co cho dat marker --//[mylock]",
+        createRollbackIsSafe = "#826 AM TINH: bNeedTransaction_Main = true va bNeedTransaction_WH = true, ca hai BeginTransaction truoc khoi do => neu SaveData sau do loi thi rollback, KHONG roi vao canh tat het ky cu ma chua co ky moi (tuc khong co ky nao active). Rui ro do duoc transaction che",
+        consequenceIfManyActive = "#826 noi voi #355: Ser_Customer_GetByJDPowerTerm doc SELECT TOP 1 JDPStartDate FROM JDP_Mst_JDPowerTerm WHERE FlagActive = 1 — KHONG ORDER BY. Nhanh Create tu tat het ky cu nen thuc te kho co hai ky active cung luc; nhung neu ai bat FlagActive thang bang SQL thi TOP 1 se lay ky nao la TUY MAY CHU",
+        updateLacksCodeLengthGuard = "#826: JDPowerTerm_Create co CA HAI guard do dai — JDPowerTerm_Create_InvalidJDPTermCodeLength va _InvalidJDPTermNameLength. JDPowerTerm_Update_Mst chi co JDPowerTerm_Update_IvalidJDPTermNameLength (NGUYEN VAN sai chinh ta Ivalid) va KHONG co guard do dai MA => sua ten thi bi kiem do dai, sua ma thi khong",
+        twoMachinesVerified826 = "md5 chuan hoa JDPowerTerm_Create tren may 150 = 83eefe19 KHOP laptop",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/jdpowerterms/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
