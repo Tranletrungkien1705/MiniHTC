@@ -23681,6 +23681,79 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   ⚪ Ở đây **không kết luận** là thiếu: `Email_BatchSendEmail` là bảng cấu hình gửi mail, có thể chỉ sống ở Main.
 // 📌 Mini: `DELETE /api/emailbatches/{batchNo}/attachment` — xoá **đúng cột đã gán**, tra cứu **có khoá**,
 //   và guard kết quả trước khi ghi.
+// ===== 🔴🔴🔴 #822 QUÉT KHUÔN "CỘT ĐƯỢC GÁN NHƯNG KHÔNG NẰM TRONG DANH SÁCH GHI" (#813, #821) =====
+// Hai lượt đã gặp cùng khuôn trong **cùng file** `SendMail.cs` ⇒ đo cho hết `TERP.BizCarSv/*.cs`.
+// **Phương pháp**: với mỗi hàm, dựng hai tập — tập cột được gán (`Rows[0]["X"] = …`) và tập cột trong
+// `alEffectiveColumn.Add("Y")` / `alColumnEffective.Add("Y")` — rồi so hai tập.
+//   · **82** hàm có lệch; bỏ nhóm `assigned=0` (hàm gán cột bằng cách khác, heuristic không thấy) ⇒ **50** hàm
+//     có **cột được gán mà KHÔNG nằm trong danh sách ghi**.
+//
+// ⚠️ **50 KHÔNG PHẢI 50 LỖI** — ba tầng lọc tay đã loại gần hết:
+//   ① **Cột chỉ gán khi TẠO MỚI** (`CreatedBy`, `CreatedDate`, `<Bảng>ID` là khoá) — các hàm `*_Import`,
+//      `*_Create`, `Ser_Customer_Update`… ⇒ `SaveData` bản insert **không cần** danh sách cột ⇒ **không phải lỗi**.
+//   ② **Cột được ghi bởi MỘT HÀM KHÁC gọi kèm**. Ca điển hình: `UpdateStockOut` gán `Status` mà không `Add`,
+//      nhưng **7/8** caller của nó **đều gọi kèm** `UpdateStockOutStatus` — và hàm đó **CÓ** `Add("Status")`.
+//      ⇒ Nếu dừng ở phép quét thì đã báo oan cả 8 nhánh.
+//   ③ **Nhánh CHẾT**: `UpdateStockOut_New20240115` chỉ được gọi từ `SerStockOutUpdate_New20240115` — WS gọi **0**.
+//
+// ✅ **CÒN LẠI HAI CA LIVE THẬT** (cộng hai ca đã biết ở #813 và #821 ⇒ **bốn**):
+//
+// 🔴🔴🔴 **CA 1 — `SerStockInStatusUpdateToFinishedAdjustment` (`Inventory.StockIn.cs:6857-7092` md5 `2a39949a`)**
+//   LIVE qua `WS:15108`. Nguyên văn:
+//     `dt_Inv_StockIn**Old**.Rows[0]["Status"] = TConst.Ser_Inv_StockIn.Adjustment;`   ← **không** `.Add("Status")`
+//     `…Rows[0]["AdjustmentBy"] = …; alColumnEffective.Add("AdjustmentBy");`           ← bốn dòng dưới **đều có**
+//     `…["AdjustmentDate"] … ["AdjustmentNote"] … ["OldStockInID"] …`
+//     `_dbMain.SaveData("Ser_Inv_StockIn", dt_Inv_StockInOld, alColumnEffective.ToArray());`
+//   Và hàm `UpdateStockInStatus` gọi ở dưới **KHÔNG cứu** được: nó nhận `str**StockInNo**` (phiếu **MỚI**) với
+//   `TConst.Ser_Inv_StockIn.**Finished**`, chứ không phải phiếu cũ.
+//   ⇒ **Phiếu nhập CŨ không bao giờ được đánh dấu `Adjustment` ("4")** ⇒ nó **vẫn ở `Finished` ("3")**
+//     ⇒ ① có thể bị điều chỉnh **lại nhiều lần**; ② mọi báo cáo lọc `Status = '3'` sẽ tính **cả phiếu cũ lẫn
+//     phiếu mới** ⇒ **nhân đôi số liệu nhập kho**.
+//
+// 🔴🔴🔴 **CA 2 — `UpdateStockOut` qua đường `SerStockOutUpdate`** (`Inventory.StockOut.cs:2183-2364`)
+//   `dt_Inv_StockOut.Rows[0]["Status"] = strStatus;` — **không** `Add("Status")`; rồi
+//   `_dbMain.SaveData(…, alColumnEffective.ToArray())` + `_dbWH.SaveData(…)`.
+//   Trong **8** caller, **duy nhất `SerStockOutUpdate`** (LIVE, WS gọi 1) **không** gọi kèm `UpdateStockOutStatus`
+//   — mà nó **có** truyền `strStatus` xuống. ⇒ **Sửa phiếu xuất kho thì trạng thái người dùng chọn KHÔNG được lưu.**
+//
+// ⚪ **HÀM LÀM ĐÚNG (đối chứng bắt buộc)**: `UpdateStockOutStatus` — cùng file — viết
+//   `dt_Inv_StockOut.Rows[0]["Status"] = strStatus; alColumnEffective.Add("Status");` ⇒ chứng minh hai ca trên
+//   là **thiếu sót**, không phải quy ước nhà.
+// 📌 **Bài học đo lường**: khuôn này cần **ba** tầng lọc (cột-tạo-mới · helper-ghi-kèm · nhánh-chết). Dừng ở
+//   phép quét thô sẽ báo **50**; lọc đủ còn **2**.
+app.MapGet("/api/_meta/effective-column-mismatch-sweep", () => Results.Ok(new
+{
+    trigger = "#813 (IsActive khong duoc dua vao alEffectiveColumn) va #821 (dua NHAM ten cot) — hai lan trong cung file SendMail.cs",
+    method = "voi moi ham, dung hai tap: cot duoc gan (Rows[0][X] = ...) va cot trong alEffectiveColumn.Add(Y) / alColumnEffective.Add(Y), roi so hai tap",
+    functionsWithMismatch = 82,
+    afterDroppingAssignedZero = 50,
+    filtersApplied = new[]
+    {
+        "① cot chi gan khi TAO MOI (CreatedBy, CreatedDate, <Bang>ID la khoa) — cac ham *_Import, *_Create: SaveData ban insert KHONG can danh sach cot => khong phai loi",
+        "② cot duoc ghi boi MOT HAM KHAC goi kem: UpdateStockOut gan Status ma khong Add, nhung 7/8 caller deu goi kem UpdateStockOutStatus — ham do CO Add(Status) => dung o phep quet thi da bao oan ca 8 nhanh",
+        "③ nhanh CHET: UpdateStockOut_New20240115 chi duoc goi tu SerStockOutUpdate_New20240115 — WS goi 0",
+    },
+    liveCasesRemaining = 2,
+    plusKnownCases = new[] { "#813 Email_TempEmail_Update — IsActive", "#821 Ser_Email_Attachment_Delete — Attachment/AppStatus" },
+    case1 = new
+    {
+        fn = "SerStockInStatusUpdateToFinishedAdjustment",
+        at = "Inventory.StockIn.cs:6857-7092", md5 = "2a39949a", live = "WS:15108",
+        detail = "dt_Inv_StockInOld.Rows[0][Status] = TConst.Ser_Inv_StockIn.Adjustment KHONG co .Add(Status), trong khi BON dong duoi (AdjustmentBy/AdjustmentDate/AdjustmentNote/OldStockInID) deu co",
+        notRescuedByHelper = "UpdateStockInStatus goi o duoi nhan strStockInNo (phieu MOI) voi TConst.Ser_Inv_StockIn.Finished, KHONG phai phieu cu",
+        impact = "phieu nhap CU khong bao gio duoc danh dau Adjustment (4) => van o Finished (3) => (1) co the bi dieu chinh LAI nhieu lan; (2) moi bao cao loc Status = 3 se tinh CA phieu cu lan phieu moi => NHAN DOI so lieu nhap kho",
+    },
+    case2 = new
+    {
+        fn = "UpdateStockOut (qua duong SerStockOutUpdate)",
+        at = "Inventory.StockOut.cs:2183-2364",
+        detail = "Rows[0][Status] = strStatus KHONG co Add(Status); roi _dbMain.SaveData + _dbWH.SaveData voi alColumnEffective.ToArray()",
+        onlyOneCallerAffected = "trong 8 caller, DUY NHAT SerStockOutUpdate (LIVE, WS goi 1) khong goi kem UpdateStockOutStatus — ma no CO truyen strStatus xuong",
+        impact = "sua phieu xuat kho thi TRANG THAI nguoi dung chon KHONG DUOC LUU",
+    },
+    theFunctionDoingItRight = "UpdateStockOutStatus — cung file — viet dt_Inv_StockOut.Rows[0][Status] = strStatus; alColumnEffective.Add(Status); => chung minh hai ca tren la THIEU SOT, khong phai quy uoc nha",
+    measurementLesson = "khuon nay can BA tang loc (cot-tao-moi / helper-ghi-kem / nhanh-chet). Dung o phep quet tho se bao 50; loc du con 2",
+})).RequireAuthorization();
 app.MapDelete("/api/emailbatches/{batchNo}/attachment", async (string batchNo, AppDbContext db, ITenantContext t) =>
 {
     var no = (batchNo ?? "").Trim();
