@@ -57481,6 +57481,73 @@ app.MapGet("/api/servicecustomers/search", async (AppDbContext db, ITenantContex
 //   `update` chạy trên **cả ba** CSDL ⇒ **guard bao trùm phạm vi ghi**. Đó là khuôn đúng để đối chiếu.
 // 📌 Mini: `DELETE /api/servicecustomers/{cusCode}` — **xoá mềm** đúng như nguồn nhưng ghi `"0"` (hằng của tầng,
 //   không phải `"False"`), có **guard tồn tại** và **guard đã-xoá-rồi** như bản 2023.
+// ===== 🔴🔴🔴 #875 MÀN MỚI (chỉ có trên cây 150): KÍCH HOẠT LẠI KHÁCH HÀNG — `Ser_Customer_Active` =====
+// Lấy từ hàng đợi **60** vừa đo ở #874. `BizCarSv.Customer.cs:6437` **trên cây `V20.2023.Release`**,
+// md5 `d59d8670` (140 dòng), **1** vỏ bọc. **3B**: cây laptop `V20` **KHÔNG CÓ hàm này** (grep = rỗng)
+// ⇒ đây là ca đầu tiên port một màn **chỉ tồn tại ở một cây**, đúng luật #352/#873.
+//
+// 🔴🔴🔴 **GUARD BỊ CHÉP NGUYÊN TỪ `Ser_Customer_Delete` — NÊN NÓ TỪ CHỐI ĐÚNG CA DUY NHẤT CẦN PHỤC VỤ**
+//   `Ser_Customer_**Active**` (hàm **kích hoạt lại**):
+//     `if (StringEqual(dt_Ser_Customer.Rows[0]["IsActive"], TConst.Flag.**Inactive**))`
+//     `    throw …Ser_Customer_**Active**_IsActiveNotMatched;`
+//   `Ser_Customer_**Delete**` (#855, bản 2023) có **y hệt** khối ấy, chỉ khác mã lỗi `…_**Delete**_IsActiveNotMatched`.
+//   ⇒ Với `Delete`, *"đang inactive thì ném"* là **đúng** (không xoá lại khách đã xoá).
+//   ⇒ Với `Active`, *"đang inactive thì ném"* là **NGƯỢC**: khách **đang bị vô hiệu hoá** chính là **ca duy nhất**
+//     mà hàm kích hoạt tồn tại để phục vụ — vậy mà guard **cấm** đúng ca đó.
+//   ⇒ Đây là **chép-dán guard giữa hai hàm ngược chiều**, chỉ đổi mã lỗi.
+//
+// 🔴🔴🔴 **VÀ HAI LỖI TRIỆT TIÊU NHAU — NÊN HÀM VẪN CHẠY "ĐÚNG"**
+//   Guard so `IsActive` với `TConst.Flag.Inactive` = **`"0"`**, nhưng cặp hàm này **ghi chuỗi Anh ngữ**:
+//     `Ser_Customer_Delete` : `Rows[0]["IsActive"] = **"False"**`  (đã ghi ở #855 — **duy nhất** trong cả tầng)
+//     `Ser_Customer_Active` : `Rows[0]["IsActive"] = **"True"**`   ← **ca thứ hai**, nay mới lộ
+//   ⇒ Khách bị vô hiệu hoá mang giá trị `"False"`, **không** phải `"0"` ⇒ guard `== "0"` **không bao giờ khớp**
+//     ⇒ hàm kích hoạt **vẫn chạy**. **Guard sai chiều** bị **hằng sai giá trị** vô hiệu hoá.
+//   ⇒ Nghĩa là: **sửa một trong hai lỗi mà không sửa lỗi kia sẽ LÀM HỎNG hàm.**
+//     · Sửa hằng (`"False"`→`"0"`, `"True"`→`"1"`) mà giữ guard ⇒ **không kích hoạt lại được khách nào**.
+//     · Sửa guard (đổi thành *"phải đang inactive"*) mà giữ hằng ⇒ **không kích hoạt lại được khách nào**.
+//     ⇒ Phải sửa **đồng thời cả hai**. Ghi rõ để người sau không "dọn dẹp" từng phần.
+//
+// ⚪ **Cặp bật/tắt nay đã đủ đôi** (bổ sung #855): `"False"` ở `_Delete` **và** `"True"` ở `_Active`
+//   ⇒ không còn là "giá trị duy nhất kiểu này trong tầng" mà là **một cặp nhất quán với nhau nhưng lệch cả tầng**
+//     (`Flag.Active="1"` / `Flag.Inactive="0"`). ⛔ **Chỉnh lại phát biểu của #855**: ở đó tôi đếm `"False"`
+//     xuất hiện **đúng một lần** — điều đó vẫn đúng **trên cây laptop**; trên cây 150 còn có `"True"` đi kèm.
+// ⚪ Guard tồn tại dùng `this.CheckExistCusID(**_dbDealer**, …)` rồi `Rows[0]` ⇒ helper ném khi không thấy
+//   ⇒ thuộc nhóm **guard gián tiếp** của #814, không phải `Rows[0]` trần.
+// 🔴 Đọc `_dbDealer` nhưng ghi `_dbMain` + `_dbWH` + `_dbDealer` ⇒ **guard hẹp hơn phạm vi ghi** — ca thứ **TƯ**
+//   của họ #338/#351 (sau #851, #854, #855); khách có ở Main mà chưa đồng bộ Dealer sẽ **không kích hoạt được**.
+// 📌 Mini: `POST /api/servicecustomers/{cusCode}/activate` — guard **đúng chiều** (*phải đang vô hiệu hoá*)
+//   và ghi **hằng của tầng** (`"1"`), khớp với `DELETE` đã port ở #855 (ghi `"0"`).
+app.MapPost("/api/servicecustomers/{cusCode}/activate", async (string cusCode,
+    AppDbContext db, ITenantContext t) =>
+{
+    var code = (cusCode ?? "").Trim();
+    var cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
+    if (cus is null) return Results.NotFound(new { error = "Ser_Customer_NotFound", cusCode = code });
+    if (cus.FlagActive == "1")
+    {
+        // Guard DUNG CHIEU: dang HOAT DONG thi khong co gi de kich hoat.
+        return Results.Conflict(new
+        {
+            error = "Ser_Customer_Active_IsActiveNotMatched", cusCode = code, flagActive = cus.FlagActive,
+            note = "khach dang hoat dong roi",
+            sourceGuardIsReversed = "NGUON lam NGUOC: no nem khi khach dang INACTIVE",
+        });
+    }
+    cus.FlagActive = "1";   // HANG cua tang (Flag.Active), KHONG phai chuoi "True" nhu nguon
+    cus.LogLUDateTime = DateTime.UtcNow;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        cusCode = code, flagActive = cus.FlagActive, activated = true,
+        onlyExistsOnMachine150 = "#875: BizCarSv.Customer.cs:6437 tren cay V20.2023.Release, md5 d59d8670 (140 dong), 1 vo boc. Cay laptop V20 KHONG CO ham nay (grep = rong) => ca dau tien port mot man CHI TON TAI O MOT CAY, dung luat #352/#873; lay tu hang doi 60 vua do o #874",
+        sourceGuardCopiedFromDeleteSoItRejectsTheOnlyCaseItServes = "GUARD BI CHEP NGUYEN TU Ser_Customer_Delete: if (StringEqual(dt_Ser_Customer.Rows[0][IsActive], TConst.Flag.Inactive)) throw Ser_Customer_Active_IsActiveNotMatched — Ser_Customer_Delete (#855, ban 2023) co Y HET khoi ay chi khac ma loi. Voi Delete, dang-inactive-thi-nem la DUNG (khong xoa lai khach da xoa). Voi Active, dang-inactive-thi-nem la NGUOC: khach DANG BI VO HIEU HOA chinh la CA DUY NHAT ma ham kich hoat ton tai de phuc vu, vay ma guard CAM dung ca do => chep-dan guard giua HAI HAM NGUOC CHIEU, chi doi ma loi",
+        twoBugsCancelEachOther = "HAI LOI TRIET TIEU NHAU NEN HAM VAN CHAY DUNG: guard so IsActive voi TConst.Flag.Inactive = chuoi 0, nhung cap ham nay GHI CHUOI ANH NGU — Ser_Customer_Delete ghi False (da ghi o #855, duy nhat trong ca tang laptop) va Ser_Customer_Active ghi True (ca thu hai, nay moi lo). Khach bi vo hieu hoa mang gia tri False chu KHONG phai 0 => guard == 0 KHONG BAO GIO KHOP => ham kich hoat VAN CHAY. Guard sai chieu bi hang sai gia tri VO HIEU HOA",
+        fixingOnlyOneOfThemBreaksIt = "SUA MOT TRONG HAI MA KHONG SUA LOI KIA SE LAM HONG HAM: (a) sua hang (False thanh 0, True thanh 1) ma giu guard => KHONG kich hoat lai duoc khach nao; (b) sua guard (doi thanh phai-dang-inactive) ma giu hang => cung KHONG kich hoat lai duoc khach nao. Phai sua DONG THOI CA HAI — ghi ro de nguoi sau khong don dep tung phan",
+        correctsCountOf855 = "CHINH LAI phat bieu cua #855: o do toi dem chuoi False xuat hien DUNG MOT LAN — dieu do van DUNG TREN CAY LAPTOP; tren cay 150 con co True di kem o Ser_Customer_Active => cap bat/tat nhat quan VOI NHAU nhung lech CA TANG (Flag.Active=1 / Flag.Inactive=0)",
+        positiveIndirectGuard = "AM TINH: guard ton tai dung this.CheckExistCusID(_dbDealer, ...) roi Rows[0] — helper nem khi khong thay => thuoc nhom GUARD GIAN TIEP cua #814, khong phai Rows[0] tran",
+        readsDealerWritesThree = "doc _dbDealer nhung ghi _dbMain + _dbWH + _dbDealer => GUARD HEP HON PHAM VI GHI, ca thu TU cua ho #338/#351 (sau #851, #854, #855): khach co o Main ma chua dong bo Dealer se KHONG KICH HOAT DUOC",
+    });
+}).RequireAuthorization();
 app.MapDelete("/api/servicecustomers/{cusCode}", async (string cusCode, AppDbContext db, ITenantContext t) =>
 {
     var code = (cusCode ?? "").Trim();
