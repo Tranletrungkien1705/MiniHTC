@@ -3736,6 +3736,19 @@ public sealed class JDPowerTerm
     public DateTime UpdatedAt { get; set; }
 }
 
+/// <summary>Chi tiết kỳ khảo sát JD Power (JDP_Mst_JDPowerTermDtl) — #842 TRẢ NỢ ghi ở #26657: danh sách VIN thuộc một kỳ. Nguồn chỉ Create ghi và Delete xoá, không đường nào SỬA.</summary>
+public sealed class JDPowerTermDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string JDPTermCode { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? PlateNo { get; set; }
+    public string? CusCode { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Chi tiết thanh toán PDI theo xe (Pmt_PaymentPDIDetail) — port 1:1 FrmSuaThanhToanPDI (2010.HTC). Sửa ngày nhập kho/xuất kho từng VIN; StorageDays = xuất - nhập. Upsert theo VIN.</summary>
 public sealed class PdiStoragePayment
 {

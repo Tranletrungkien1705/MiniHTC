@@ -26755,6 +26755,117 @@ app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITe
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #842 MÀN MỚI: XOÁ KỲ KHẢO SÁT JD POWER — `JDPowerTerm_Delete` (+ TRẢ NỢ bảng chi tiết) =====
+// `BizCarSv.Service01.cs:15239-15380` md5 `5f86a29a` (142 dòng), LIVE (14 lời gọi). Helper
+// `JDP_Mst_JDPowerTerm_CheckDB` `:14648-14712` md5 `734f10b4`. **3B**: cả hai md5 **KHỚP** máy 150
+// (ở đó chỉ có `V20.2023.Release`, không có `V20` — đúng cảnh báo `source-khac-nhau-giua-laptop-va-150`).
+//
+// ⛔ **SỬA LẠI CHÍNH #825 — `JDPowerTerm_Delete` KHÔNG PHẢI "ZERO GUARD"**
+//   #825 xếp nó vào danh sách **16/56** hàm `Delete` có `Raise`=0 **và** `SaveData`=0. Hai con số đó **đúng**,
+//   nhưng hàm **CÓ** guard: `#region // Check` gọi
+//     `JDP_Mst_JDPowerTerm_CheckDB(ref alParamsCoupleError, strJDPTermCode, **TConst.Flag.Active**, "", out dt…)`
+//   và helper ném `JDP_Mst_JDPowerTerm_CheckDB_JDPTermCode**NotFound**` khi không có dòng.
+//   ⇒ Đây là **ca thứ HAI** trong đúng danh sách 16 ấy hoá ra là **guard im lặng** (ca thứ nhất:
+//     `Ser_Mst_Service_Delete`, đã sửa ngay tại #825). ⇒ Phép đếm `Raise`/`SaveData` **trong thân hàm** bỏ sót
+//     mọi guard **nằm trong helper** — tỷ lệ dương-tính-giả của danh sách #825 hiện đã đo được là **2/16**,
+//     và **14 hàm còn lại vẫn CHƯA được đọc tay** nên con số ấy chỉ có thể **tăng**.
+//
+// 🔴🔴 **HẰNG DÙNG SAI HỌ — `Flag.Active` LÀM CỜ "PHẢI TỒN TẠI"**
+//   Tham số helper tên `strFlagExistToCheck` (nghĩa: *phải tồn tại / phải KHÔNG tồn tại*), nhưng giá trị truyền vào
+//   là `TConst.Flag.**Active**` / `TConst.Flag.**Inactive**` — họ hằng của cột **trạng thái**, không phải của
+//   một cờ đúng/sai. Mở hằng ra (luật HẰNG ≠ GIÁ TRỊ): `Flag.Active = "1"`, `Flag.Inactive = "0"`, và
+//   `Flag.Yes = Active`, `Flag.No = Inactive` ⇒ **bốn tên, hai giá trị**. Nên `Mst_BOM_CheckDB` (#689) truyền
+//   `Flag.Yes/No` còn hàm này truyền `Flag.Active/Inactive` mà **chạy y hệt nhau** — khác biệt thuần đọc hiểu.
+//   ⚪ Không phóng đại: lớp `RespondType` ở `Const.Main.cs:590` cũng có `Yes = "Response"` / `No = "NotResponse"`
+//     nhưng **khác lớp**, nên không có chuyện lẫn ngầm — chỉ nhắc rằng tên `Yes/No` **không duy nhất** trong tầng hằng.
+//
+// 🔴 **`Rows[0]` TRẦN — SỐNG CÓ ĐIỀU KIỆN** (họ #814): nhánh thứ ba của helper là
+//     `if (strFlagActiveListToCheck.Length > 0 && !strFlagActiveListToCheck.Contains(Convert.ToString(dt….Rows[0]["FlagActive"])))`
+//   ⇒ khi gọi với `strFlagExistToCheck = ""` (bỏ kiểm tồn tại) **và** `strFlagActiveListToCheck` khác rỗng, mã kỳ
+//     không có thật sẽ nổ `IndexOutOfRange` thay vì trả mã lỗi nghiệp vụ. `JDPowerTerm_Delete` truyền `""` cho
+//     tham số thứ hai nên **an toàn tại chỗ gọi này** — nhưng nhánh vẫn là mìn cho lời gọi khác.
+//
+// 🔴 **BẢNG TẠM VÒNG VO KHÔNG LÀM GÌ**: câu xoá chi tiết `select t.JDPTermCode, t.VIN into #tbl_… from
+//   JDP_Mst_JDPowerTermDtl where JDPTermCode = @…` rồi `delete t … inner join #tbl_… q on t.JDPTermCode =
+//   q.JDPTermCode and t.VIN = q.VIN` ⇒ nối lại **đúng khoá vừa lọc ra**, tương đương y hệt
+//   `delete from … where JDPTermCode = @JDPTermCode`.
+//   ⚪ Dấu `--//[mylock]` đặt **sau tham chiếu bảng** (đúng chỗ, theo luật đã ghi), không phải trên cột `SELECT`.
+//
+// ⚪ **Hai CSDL là CỐ Ý, không phải bỏ sót đại lý**: hàm ghi chú `// Hàm CmCenter`, khối `#region // Temp:`
+//   **không khai báo** `bNeedTransaction_Dealer`, không đặt `_dbDealer.LogUserId`, và `alParamsCoupleError`
+//   **không có** `strDealerCode` ⇒ JD Power là nghiệp vụ **cấp hãng**, chỉ `_dbMain` + `_dbWH`.
+//   ⇒ Khác hẳn #841 (`Ser_CustomerCareBth`) nơi Create ghi ba CSDL còn Delete chỉ xoá một — **ở đây cả hai phía
+//     đều là hai CSDL** nên cân. Đừng đọc "thiếu `_dbDealer`" thành lỗi khi chưa xem hàm ghi tương ứng.
+// 🔴 `select **top 1** t.* … where t.JDPTermCode = @…` — `top 1` **không `ORDER BY`** (#415).
+// 📌 Mini: **TRẢ NỢ** đã ghi ở dòng `26657` — mô hình hoá `JDP_Mst_JDPowerTermDtl` thành `JDPowerTermDtls`
+//   (§12 đủ bốn chỗ), thêm `GET`/`POST /api/jdpowerterms/{code}/details` và `DELETE /api/jdpowerterms/{code}`
+//   xoá **cả chi tiết lẫn master** trong một thao tác (nguồn cũng xoá cả hai).
+app.MapGet("/api/jdpowerterms/{code}/details", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var term = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == c);
+    if (term is null) return Results.NotFound(new { error = "JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeNotFound", jdpTermCode = c });
+    var items = await db.JDPowerTermDtls.Where(x => x.OrgId == t.OrgId && x.JDPTermCode == c)
+        .OrderBy(x => x.VIN)
+        .Select(x => new { x.Id, x.VIN, x.PlateNo, x.CusCode, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { jdpTermCode = c, term.JDPTermName, count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/jdpowerterms/{code}/details", async (string code, JDPowerTermDtlDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var term = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == c);
+    if (term is null) return Results.NotFound(new { error = "JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeNotFound", jdpTermCode = c });
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    if (vin.Length == 0) return Results.BadRequest(new { error = "thieu VIN" });
+    var dup = await db.JDPowerTermDtls.AnyAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == c && x.VIN == vin);
+    if (dup) return Results.Conflict(new { error = "VIN da co trong ky nay", jdpTermCode = c, vin });
+    var row = new JDPowerTermDtl
+    {
+        OrgId = t.OrgId, JDPTermCode = c, VIN = vin,
+        PlateNo = dto.PlateNo, CusCode = dto.CusCode,
+        LogLUDateTime = DateTime.UtcNow,
+    };
+    db.JDPowerTermDtls.Add(row); await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.JDPTermCode, row.VIN, row.PlateNo, row.CusCode,
+        paysDebtOf26657 = "#842 TRA NO ghi o dong 26657: JDP_Mst_JDPowerTermDtl truoc day CHUA duoc mo hinh hoa. Nguon chi Create ghi va Delete xoa — KHONG duong nao SUA chi tiet; Mini them GET/POST de co the sua tung dong",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/jdpowerterms/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    // Guard cua NGUON nam TRONG HELPER: JDP_Mst_JDPowerTerm_CheckDB(..., Flag.Active, ...)
+    var term = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == c);
+    if (term is null)
+    {
+        return Results.NotFound(new
+        {
+            error = "JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeNotFound", jdpTermCode = c,
+            guardLivesInHelperNotInBody = "guard cua nguon nam TRONG HELPER nen phep dem Raise/SaveData trong than ham khong thay",
+        });
+    }
+    var details = await db.JDPowerTermDtls.Where(x => x.OrgId == t.OrgId && x.JDPTermCode == c).ToListAsync();
+    db.JDPowerTermDtls.RemoveRange(details);
+    db.JDPowerTerms.Remove(term);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        jdpTermCode = c, deletedDetails = details.Count,
+        retracts825ZeroGuardLabel = "#842 SUA LAI #825: JDPowerTerm_Delete bi xep vao danh sach 16/56 ham Delete co Raise=0 VA SaveData=0. Hai con so do DUNG nhung ham CO guard — #region // Check goi JDP_Mst_JDPowerTerm_CheckDB(..., TConst.Flag.Active, chuoi rong, out dt) va helper nem JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeNotFound khi khong co dong. Day la ca THU HAI trong dung danh sach 16 ay hoa ra la GUARD IM LANG (ca thu nhat: Ser_Mst_Service_Delete, da sua ngay tai #825) => ty le duong-tinh-gia do duoc hien la 2/16, va 14 ham con lai VAN CHUA doc tay nen con so do chi co the TANG",
+        constantFromWrongFamily = "HANG DUNG SAI HO: tham so helper ten strFlagExistToCheck (nghia: phai ton tai / phai KHONG ton tai) nhung gia tri truyen vao la TConst.Flag.Active / Flag.Inactive — ho hang cua cot TRANG THAI. Mo hang ra: Flag.Active = 1, Flag.Inactive = 0, va Flag.Yes = Active, Flag.No = Inactive => BON TEN, HAI GIA TRI. Nen Mst_BOM_CheckDB (#689) truyen Flag.Yes/No con ham nay truyen Flag.Active/Inactive ma CHAY Y HET NHAU — khac biet thuan doc hieu",
+        constantNameNotUniqueButNoRealClash = "AM TINH, khong phong dai: lop RespondType o Const.Main.cs:590 cung co Yes = Response / No = NotResponse nhung KHAC LOP nen khong co chuyen lan ngam — chi nhac rang ten Yes/No KHONG duy nhat trong tang hang",
+        bareRows0ConditionallyLive = "ho #814: nhanh thu ba cua helper doc dt.Rows[0][FlagActive] trong dieu kien chi kiem strFlagActiveListToCheck.Length > 0 => khi goi voi strFlagExistToCheck rong VA strFlagActiveListToCheck khac rong, ma ky khong co that se no IndexOutOfRange thay vi tra ma loi nghiep vu. JDPowerTerm_Delete truyen chuoi rong cho tham so thu hai nen AN TOAN TAI CHO GOI NAY — nhung nhanh van la min cho loi goi khac",
+        pointlessTempTableRoundTrip = "cau xoa chi tiet: select t.JDPTermCode, t.VIN into #tbl_... from JDP_Mst_JDPowerTermDtl where JDPTermCode = @... roi delete t from JDP_Mst_JDPowerTermDtl t inner join #tbl_... q on t.JDPTermCode = q.JDPTermCode and t.VIN = q.VIN => noi lai DUNG KHOA VUA LOC RA, tuong duong y het delete from ... where JDPTermCode = @JDPTermCode",
+        mylockMarkerPlacedCorrectly = "AM TINH: dau --//[mylock] dat SAU tham chieu bang (dung cho theo luat da ghi), khong phai tren cot SELECT",
+        twoDatabasesIsIntentional = "AM TINH: ham ghi chu // Ham CmCenter, khoi #region // Temp: KHONG khai bao bNeedTransaction_Dealer, khong dat _dbDealer.LogUserId, va alParamsCoupleError KHONG co strDealerCode => JD Power la nghiep vu CAP HANG, chi _dbMain + _dbWH. Khac han #841 (Ser_CustomerCareBth) noi Create ghi ba CSDL con Delete chi xoa mot — o day CA HAI phia deu la hai CSDL nen can. Dung doc thieu _dbDealer thanh loi khi chua xem ham ghi tuong ung",
+        topOneWithoutOrderBy = "select top 1 t.* ... where t.JDPTermCode = @... — top 1 KHONG ORDER BY (#415)",
+        twoMachinesVerified842 = "md5 chuan hoa tren may 150 = 5f86a29a (Delete) va 734f10b4 (CheckDB) KHOP laptop, du 150 chi co thu muc V20.2023.Release con laptop co V20",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/jdpowerterms/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -72310,6 +72421,7 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);
 record RoHistoryDto(string? ROHID, string? ROID, string? Status, string? Reason, string? LogLUBy);
 record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status);
 record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
