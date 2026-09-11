@@ -39647,6 +39647,77 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
 // 📌 Cặp `xxx`: `…PartQuote**xxx**` (`:11742`, đọc `_dbMain`) là bản **chết**; bản sống `…PartQuote` (`:11876`)
 //   nhận `TDAL.IEzDAL dbAction`. ⇒ **Lần thứ HAI** gặp khuôn "clone một bản `xxx` chỉ để tham số hoá CSDL ĐỌC"
 //   (lần đầu: `Ser_CustomerCareStatusUpdatexxx` ở #856). **Hai** ca — chưa đủ ba để gọi là khuôn của tầng.
+// ===== 🔴🔴🔴 #859 TRẢ NỢ #858: ĐỌC TRỌN 5 NHÁNH CỦA `ProcessCreateAdditionalStockOutOrderPartQuote` =====
+// `Inventory.StockOut.cs:11876-12022` md5 `a84995a3` (147 dòng) · bản chết `…**xxx**` `:11742` md5 `1f9562b6`
+// · `ProcessTypeAddStockOutOrderPartQuote` md5 `f412bc5a`. **3B**: **cả ba KHỚP** máy 150.
+// **Vòng trả nợ/parity ⇒ KHÔNG tăng bộ đếm màn.**
+//
+// ✅ **TRẢ LỜI CÂU HỎI TREO Ở #858**: helper này **KHÔNG** sinh thêm lệnh xuất kho mỗi lần `Update`.
+//   Cấu trúc thật (`type = this.ProcessTypeAddStockOutOrderPartQuote(_dbDealer, …)`):
+//     `if (dtTempPart.Rows.Count > 0) {`
+//     `    if (type == NoSOO) { }                         ← **KHỐI RỖNG**`
+//     `    else {  … xoá SOO chưa có SO (Main + WH + Dealer) …`
+//     `        if (type == SOOHasSO) { xoá sạch Ser_Inv_StockOutDetail rồi TẠO LẠI từ dtTempPart }`
+//     `        if (type == SOIsSO)   { ProcessCheckUpdateROSO(dbAction, …) }`
+//     `    } }`
+//
+// 🔴🔴🔴 **HAI LOẠI `type` RƠI VÀO `else` MÀ KHÔNG CÓ NHÁNH XỬ LÝ — CHỈ XOÁ, KHÔNG TẠO LẠI**
+//   Mở hằng (`TConst.Ser_Inv_StockOut`, luật HẰNG ≠ GIÁ TRỊ):
+//     `NoSOO = **1**` (không có SOO mới) · `SOONoSO = **2**` (có SOO **chưa** tạo SO) · `SOOHasSO = **3**`
+//     · `SOIsSO = **4**` (SO **đã xuất**) · `SOOHasSORej = **5**` · `SOOHasSOEXC = **5**`
+//   ⇒ `type` = **2** hoặc **5** ⇒ vào `else` ⇒ **xoá SOO chưa có SO** trên cả ba CSDL, rồi **không nhánh nào**
+//     `if (type == …)` khớp ⇒ **không tạo lại gì**. Đúng trường hợp `SOONoSO` — *"có SOO nhưng chưa tạo SO"* —
+//     tức phiếu xuất vừa lập xong mà **chưa** sinh phiếu kho, thì bị **xoá mất** khi người dùng sửa báo giá.
+//
+// 🔴🔴🔴 **HAI HẰNG TRÙNG GIÁ TRỊ, KHÁC NGHĨA** (có ở **cả hai** cây nguồn):
+//     `public const int SOOHasSO**Rej** = 5;  // Có SOO và có SO, SO **huỷ hoặc bị xoá**`
+//     `public const int SOOHasSO**EXC** = 5;  // Có SOO và có SO (ở trạng thái **tiến hành**)  //20121210 - Issue 933`
+//   ⇒ **Hai tên, một giá trị**, hai nghĩa **loại trừ nhau**. Mọi `if (type == …)` so với `5` **không thể phân biệt**
+//     "SO đã huỷ" với "SO đang tiến hành" ⇒ hai tình huống nghiệp vụ ngược nhau bị gộp làm một.
+//   📌 Cùng lớp hằng ấy còn có `Reject = **"5"**` (**chuỗi**, trạng thái phiếu) — cùng số 5, **khác kiểu**,
+//     **khác nghĩa**. Ba thứ khác nhau mang số 5 trong một lớp.
+//
+// 🔴 **TÊN HÀM NÓI `Create`, NHÁNH MẶC ĐỊNH LẠI LÀ KHỐI RỖNG**: `ProcessCreate…StockOutOrder…` với
+//   `if (type == NoSOO) { }` ⇒ ở đúng trường hợp *"chưa có SOO"* — trường hợp **duy nhất** thật sự cần **tạo mới** —
+//   hàm **không làm gì cả**. ⇒ Đây là dạng (d) của #728 xuất hiện ở **nhánh `if`** chứ không phải ở `#region`.
+//
+// 🔴🔴 **`dbAction` LẠI CHỈ ĐIỀU KHIỂN MỘT PHẦN** (ca thứ HAI sau #856):
+//   nhận `TDAL.IEzDAL dbAction`; dùng `**dbAction**.ExecQuery(…)` để **đọc** danh sách phụ tùng và
+//   `ProcessCheckUpdateROSO(**dbAction**, …)`, nhưng `ProcessTypeAddStockOutOrderPartQuote(**_dbDealer**, …)`
+//   và câu **xoá** thì hardcode `_dbMain` / `_dbWH` / `if (!bIsWSMain) _dbDealer`.
+//   ⇒ Một tham số, **ba** cách xử lý CSDL trong cùng một hàm.
+// ⚪ Nhánh `SOOHasSO` thêm 4 cột (`StockOutOrderID`, `StockOutOrderNo`, `PlanLocationID`, `ActualLocationID`)
+//   vào `dtTempPart` **trước** khi gán trong `foreach` ⇒ thứ tự **đúng**, và `dtTempPart` chỉ có `PartID`+`Quantity`
+//   nên **không** đụng `DuplicateNameException` như #836. Ghi âm tính để khỏi báo nhầm.
+// 📌 Mini: endpoint tra cứu bảng nhánh + cảnh báo hai hằng trùng giá trị.
+app.MapGet("/api/_meta/quote-stockout-branches", () => Results.Ok(new
+{
+    paysDebtOf858 = "#859 TRA NO #858: helper ProcessCreateAdditionalStockOutOrderPartQuote KHONG sinh them lenh xuat kho moi lan Update — da doc tron ca nam nhanh",
+    typeConstants = new[]
+    {
+        "NoSOO = 1 — khong co SOO moi",
+        "SOONoSO = 2 — co SOO nhung CHUA tao SO cho SOO do",
+        "SOOHasSO = 3 — co SOO va co SO cho SOO do",
+        "SOIsSO = 4 — co SOO va co SO, SO DA XUAT",
+        "SOOHasSORej = 5 — co SOO va co SO, SO HUY hoac bi XOA",
+        "SOOHasSOEXC = 5 — co SOO va co SO (o trang thai TIEN HANH) //20121210 - Issue 933",
+    },
+    branchTable = new[]
+    {
+        "type 1 (NoSOO) -> if (type == NoSOO) { } — KHOI RONG, khong lam gi",
+        "type 2 (SOONoSO) -> vao else: XOA SOO chua co SO tren Main+WH+Dealer, roi KHONG nhanh nao khop => KHONG tao lai gi",
+        "type 3 (SOOHasSO) -> vao else: xoa SOO, roi SerStockOutDetailDelete + SerStockOutDetailCreate tu dtTempPart",
+        "type 4 (SOIsSO) -> vao else: xoa SOO, roi ProcessCheckUpdateROSO(dbAction, ...)",
+        "type 5 (SOOHasSORej / SOOHasSOEXC) -> vao else: XOA SOO, roi KHONG nhanh nao khop => KHONG tao lai gi",
+    },
+    twoTypesDeleteWithoutRecreate = "#859: type 2 va type 5 roi vao else (XOA SOO chua co SO tren ca ba CSDL) roi KHONG nhanh if (type == ...) nao khop => CHI XOA, KHONG TAO LAI. Dung truong hop SOONoSO — co SOO nhung chua tao SO — tuc phieu xuat vua lap xong ma chua sinh phieu kho, thi bi XOA MAT khi nguoi dung sua bao gia",
+    twoConstantsSameValueOppositeMeaning = "HAI HANG TRUNG GIA TRI, KHAC NGHIA (co o CA HAI cay nguon): public const int SOOHasSORej = 5 (SO HUY hoac bi XOA) va public const int SOOHasSOEXC = 5 (SO o trang thai TIEN HANH). HAI TEN, MOT GIA TRI, hai nghia LOAI TRU NHAU => moi if (type == ...) so voi 5 KHONG THE phan biet SO da huy voi SO dang tien hanh => hai tinh huong nghiep vu nguoc nhau bi gop lam mot",
+    thirdThingNumberedFive = "cung lop hang ay con co Reject = chuoi 5 (trang thai phieu) — cung so 5, KHAC KIEU, KHAC NGHIA => BA thu khac nhau mang so 5 trong mot lop",
+    nameSaysCreateButDefaultBranchIsEmpty = "ten ham noi Create nhung if (type == NoSOO) { } la KHOI RONG — o dung truong hop chua co SOO, truong hop DUY NHAT that su can TAO MOI, ham KHONG LAM GI CA. Day la dang (d) cua #728 xuat hien o NHANH IF chu khong phai o #region",
+    dbActionControlsOnlyPartOfIt = "ca thu HAI sau #856: ham nhan TDAL.IEzDAL dbAction; dung dbAction.ExecQuery(...) de DOC danh sach phu tung va ProcessCheckUpdateROSO(dbAction, ...), nhung ProcessTypeAddStockOutOrderPartQuote(_dbDealer, ...) va cau XOA thi hardcode _dbMain / _dbWH / if (!bIsWSMain) _dbDealer => MOT tham so, BA cach xu ly CSDL trong cung mot ham",
+    positiveNoDuplicateColumnException = "AM TINH: nhanh SOOHasSO them 4 cot (StockOutOrderID, StockOutOrderNo, PlanLocationID, ActualLocationID) vao dtTempPart TRUOC khi gan trong foreach => thu tu DUNG; va dtTempPart chi co PartID + Quantity nen KHONG dung DuplicateNameException nhu #836",
+    twoMachinesVerified859 = "md5 chuan hoa KHOP may 150: helper a84995a3, ban chet xxx 1f9562b6, ProcessTypeAdd... f412bc5a; hai hang trung gia tri cung co tren 150",
+})).RequireAuthorization();
 app.MapPut("/api/partquotes/{no}", async (string no, PartQuoteDto dto, AppDbContext db, ITenantContext t) =>
 {
     var qn = (no ?? "").Trim();
