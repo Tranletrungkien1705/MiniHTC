@@ -39018,6 +39018,71 @@ app.MapGet("/api/stockins/paper-report", async (AppDbContext db, ITenantContext 
 //   không phải lọc nhầm bảng. (Alias `bb` ở các câu sau là bảng khác, không dính bộ lọc này.)
 // ⚠️ Bản Tab còn dùng **thế hệ log cũ** (`_log.WriteLogAsync` + `nTidSeq`), bản Main dùng `ProcessBizReq` —
 //   lại một ca "kiểu cũ mà vẫn sống" (đã ghi ở #579).
+// ===== 🔴🔴🔴 #853 PARITY: `Blt_Bulletin_Get*` — **CHÍN** HÀM, **BỐN** CỔNG VÀO, **BỐN** HÀNH VI =====
+// Mini đã có `/api/bulletins/by-vin` ⇒ **vòng parity, KHÔNG tăng bộ đếm màn**.
+// `BizCarSv.Bulletin.cs` có **chín** hàm `Blt_Bulletin_Get*`. Grep `_biz.Blt_Bulletin_Get` ở **mọi** vỏ bọc
+// (luật #333) cho bảng định tuyến **thật**:
+//   `HTCWSCarSv/WSCarSv.asmx.cs` (bản hiện hành) → `_20210224` · `_byVin_**New20210618**` · `_OnlyByBulletinID`
+//   `HTCWSCarSv/WSCarSv.asmx.**20210208**.cs` và `.**20210412**.cs` → bản **thường** · `_byVin_**New20180625**`
+//   `HTCWSCarSvTab/WSCarSvTab.asmx.cs` (+ `.20210412`) → **chỉ** `_byVin_**New20191104**`
+//   `TERP.WSCarSv/App_Code/WSCarSv.cs` → bản **thường** · `_byVin` **thường**
+//   ⇒ **Bốn** biến thể `byVin` cùng sống, mỗi cổng vào một bản. Và **hai** hàm **KHÔNG vỏ bọc nào gọi**:
+//     `Blt_Bulletin_Get_**New20191104**` (`:2715` md5 `f015024a`) · `Blt_Bulletin_Get_byVin_**ForTab**`
+//     (`:3891` md5 `9cb39738`) ⇒ **CHẾT**, dù tên `ForTab` gợi ý nó mới là bản cho máy tính bảng.
+//   **3B**: `_New20180625` `60c01c50` · `_New20191104` `c68b6f05` · `_New20210618` `41432aca` — **KHỚP** máy 150;
+//     `_20210224` lệch (`5211a76a` vs `07669279`) ⇒ còn nợ diff, **chưa kết luận**.
+//
+// 🔴🔴🔴 **MÁY TÍNH BẢNG VÀ WEB ĐỌC HAI KHO DỮ LIỆU KHÁC NHAU**
+//   `_byVin_New20191104` (tablet): `from **Btl_Bulletin** b … inner join **Btl_Bulletin_VIN** bv` — bảng **cục bộ**.
+//   `_byVin_New20210618` (web)   : `from **[@strDBName_CommonCenter].[dbo].Btl_Bulletin** b …` — **DB trung tâm**
+//     (`_strConfig_DBName_Main` được bơm vào qua `Replace`).
+//   ⇒ Cùng một VIN, cùng một API, **hai nguồn sự thật**. Bản tin phát ở trung tâm mà chưa đồng bộ xuống DB
+//     cục bộ thì **máy tính bảng không thấy**; ngược lại bản tin cũ còn sót ở cục bộ thì tablet **vẫn thấy**.
+//
+// 🔴🔴 **SỐ BẢNG TRẢ VỀ KHÁC NHAU**: bản `_New20210618` có thêm hẳn một câu `----: Btl_BulletinDtl` và
+//   `dsGetData.Tables[**2**].TableName = "Btl_BulletinDtl";` ⇒ web nhận **ba** bảng, tablet nhận **hai**.
+//   ⇒ Client tablet **không bao giờ nhận chi tiết bản tin** — không phải vì quyền, mà vì **gọi nhầm thế hệ**.
+//
+// 🔴🔴 **CỘT `DateExpired` MẤT RỒI QUAY LẠI**: có ở `_New20180625`, **biến mất** ở `_New20191104`,
+//   **quay lại** ở `_New20210618` (`, bb.DateExpired`).
+//   ⇒ Máy tính bảng **không có hạn bản tin** ⇒ không lọc/hiển thị được bản tin đã hết hạn.
+//   ⇒ Đây là bằng chứng rõ nhất cho luật #333: **thứ tự thời gian của hậu tố KHÔNG phải thứ tự tiến hoá**
+//     — bản giữa **thụt lùi** so với bản trước nó.
+//
+// 🔴🔴🔴 **DANH SÁCH CỘT LẶP TRONG CÙNG MỘT `SELECT`** (`_New20191104`, bản **tablet đang chạy**):
+//     `select bb.BulletinID, bb.CreateDate, bb.FileNameAttachment, bb.IsActive, bb.Remark,`
+//     `       bb.LogLUDateTime, bb.LogLUBy, bb.UserCreate, bb.**BulletinID**, bb.**CreateDate**, bb.CreatedBy`
+//   ⇒ `BulletinID` và `CreateDate` **xuất hiện HAI LẦN**. ADO.NET không lỗi, nó **tự đổi tên** cột thứ hai
+//     thành `BulletinID1` / `CreateDate1` ⇒ client đọc theo tên cột nhận thêm hai cột rác, và bất kỳ vòng lặp
+//     `foreach (DataColumn …)` nào cũng đếm thừa.
+//
+// ⚪ **`RollbackSafety(_dbMain)` Ở LỐI RA THÀNH CÔNG CỦA BẢN MỚI LÀ ĐÚNG, KHÔNG PHẢI BỆNH #710**
+//   `_New20191104` dùng `CommitSafety(_dbMain)`; `_New20210618` đổi thành `RollbackSafety(_dbMain)`.
+//   Đây là hàm **chỉ đọc** ⇒ rollback để **nhả khoá sớm** là đúng (đã ghi ở ghi chú `positiveRollbackOnSuccessIsCorrectHere`).
+//   ⇒ Ghi lại như **một cải tiến thật** của thế hệ mới, đừng đếm nhầm thành lỗi.
+// ⚪ **HAI THẾ HỆ KHUÔN HẠ TẦNG**: `_New20191104` tự gọi `_log.WriteLogAsync(…)` + `myUtils_ValidateId(…)`;
+//   `_New20210618` dùng `ProcessBizReq(…)` / `ProcessBizReturn(…)`. Cùng việc, hai cách — không phải lỗi,
+//   nhưng giải thích vì sao `Raise`/`SaveData` đếm khác nhau giữa các thế hệ.
+// 📌 Mini: `/api/bulletins/by-vin` đã có ⇒ vòng này **chỉ ghi cờ**; thêm endpoint tra cứu định tuyến bốn cổng.
+app.MapGet("/api/_meta/bulletin-generation-routing", () => Results.Ok(new
+{
+    totalGetFunctions = 9,
+    routing = new[]
+    {
+        "HTCWSCarSv/WSCarSv.asmx.cs (ban hien hanh) -> Blt_Bulletin_Get_20210224, Blt_Bulletin_Get_byVin_New20210618, Blt_Bulletin_Get_OnlyByBulletinID",
+        "HTCWSCarSv/WSCarSv.asmx.20210208.cs va .20210412.cs -> Blt_Bulletin_Get (thuong), Blt_Bulletin_Get_byVin_New20180625",
+        "HTCWSCarSvTab/WSCarSvTab.asmx.cs (+ .20210412) -> CHI Blt_Bulletin_Get_byVin_New20191104",
+        "TERP.WSCarSv/App_Code/WSCarSv.cs -> Blt_Bulletin_Get (thuong), Blt_Bulletin_Get_byVin (thuong)",
+    },
+    deadDespiteSuggestiveName = "HAI ham KHONG vo boc nao goi: Blt_Bulletin_Get_New20191104 (:2715 md5 f015024a) va Blt_Bulletin_Get_byVin_ForTab (:3891 md5 9cb39738) => CHET, du ten ForTab goi y no moi la ban cho may tinh bang",
+    tabletAndWebReadDifferentDatabases = "#853: _byVin_New20191104 (tablet) doc from Btl_Bulletin b ... inner join Btl_Bulletin_VIN bv — bang CUC BO; _byVin_New20210618 (web) doc from [@strDBName_CommonCenter].[dbo].Btl_Bulletin b ... — DB TRUNG TAM (_strConfig_DBName_Main bom vao qua Replace). Cung mot VIN, cung mot API, HAI NGUON SU THAT: ban tin phat o trung tam ma chua dong bo xuong cuc bo thi may tinh bang KHONG THAY; nguoc lai ban tin cu con sot o cuc bo thi tablet VAN THAY",
+    differentNumberOfResultTables = "ban _New20210618 co them han mot cau ----: Btl_BulletinDtl va dsGetData.Tables[2].TableName = Btl_BulletinDtl => web nhan BA bang, tablet nhan HAI => client tablet KHONG BAO GIO nhan chi tiet ban tin, khong phai vi quyen ma vi GOI NHAM THE HE",
+    dateExpiredLostThenRestored = "cot DateExpired co o _New20180625, BIEN MAT o _New20191104, QUAY LAI o _New20210618 (, bb.DateExpired) => may tinh bang KHONG co han ban tin nen khong loc/hien thi duoc ban tin het han. Day la bang chung ro nhat cho luat #333: THU TU THOI GIAN CUA HAU TO KHONG PHAI THU TU TIEN HOA — ban giua THUT LUI so voi ban truoc no",
+    duplicateColumnsInSelect = "DANH SACH COT LAP TRONG CUNG MOT SELECT o _New20191104 (ban TABLET DANG CHAY): select bb.BulletinID, bb.CreateDate, bb.FileNameAttachment, bb.IsActive, bb.Remark, bb.LogLUDateTime, bb.LogLUBy, bb.UserCreate, bb.BulletinID, bb.CreateDate, bb.CreatedBy => BulletinID va CreateDate xuat hien HAI LAN. ADO.NET khong loi, no TU DOI TEN cot thu hai thanh BulletinID1 / CreateDate1 => client doc theo ten cot nhan them hai cot rac, va moi vong lap foreach (DataColumn ...) deu dem thua",
+    rollbackOnSuccessIsAnImprovementHere = "AM TINH: _New20191104 dung CommitSafety(_dbMain) con _New20210618 doi thanh RollbackSafety(_dbMain) o loi ra THANH CONG. Day la ham CHI DOC nen rollback de NHA KHOA SOM la DUNG (da ghi o positiveRollbackOnSuccessIsCorrectHere), KHONG phai benh #710 => ghi lai nhu MOT CAI TIEN THAT cua the he moi, dung dem nham thanh loi",
+    twoGenerationsOfInfrastructureTemplate = "AM TINH: _New20191104 tu goi _log.WriteLogAsync(...) + myUtils_ValidateId(...); _New20210618 dung ProcessBizReq(...) / ProcessBizReturn(...). Cung viec, hai cach — khong phai loi, nhung giai thich vi sao phep dem Raise/SaveData khac nhau giua cac the he",
+    twoMachinesVerified853 = "3B: _New20180625 60c01c50, _New20191104 c68b6f05, _New20210618 41432aca KHOP may 150; _20210224 LECH (5211a76a vs 07669279) => CON NO DIFF, chua ket luan",
+})).RequireAuthorization();
 app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
     string? vins, string? dealers, string? status, string? active,
     string? bulletinNo, string? remark, string? userCreate,
