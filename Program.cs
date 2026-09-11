@@ -39100,6 +39100,125 @@ app.MapPost("/api/customertypes", async (CustomerTypeDto dto, AppDbContext db, I
     return Results.Ok(new { r.CusTypeCode, updated = false });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #844 MÀN MỚI: SỬA / XOÁ LOẠI KHÁCH HÀNG — `Ser_MST_CustomerType_{Create,Update,Delete}` =====
+// `BizCarSv.Master.cs`, **cả ba LIVE** (10 lời gọi mỗi hàm). Mini mới có `GET`/`POST`/`toggle`.
+//   `:6146 Create` (176 dòng) → `this.CheckExistCustomerTypeName(…)`
+//   `:6322 Delete` (144) → `this.CheckCustomerTypeForDelete(…)`   ⚠️ **Delete nằm GIỮA Create và Update** trong file
+//   `:6466 Update` (164) → `this.CheckExistCusTypeNameModify(…)`
+//
+// ⛔⛔ **LỖI ĐO CỦA CHÍNH TÔI — `tr -d ' \t\r' ` KHÔNG XOÁ TAB HAY CR**
+//   Công thức md5 tôi dùng suốt các vòng trước là `… | tr -d ' \t\r' | md5sum`. Trong shell, `'\t\r'` là
+//   **chuỗi bốn ký tự** `\`, `t`, `\`, `r` — nên `tr` xoá **dấu gạch chéo ngược và hai CHỮ CÁI `t`, `r`**,
+//   còn **TAB (0x09) và CR (0x0D) thì không hề bị xoá**. Đây đúng họ bẫy **C0-#795** (`[ \t]` trong ERE
+//   không phải tab) — lần này ở `tr` thay vì `grep`.
+//   ⇒ Hậu quả **đo được ngay tại vòng này**: `Ser_MST_CustomerType_Create` cho md5 `3c1342b1` (laptop) vs
+//     `22bdfc96` (máy 150) ⇒ tôi suýt báo "hai máy LỆCH". Chạy diff chuẩn hoá bằng `sed 's/[[:space:]]//g'`
+//     thì **KHÔNG có một dòng khác biệt nào** — toàn bộ chênh lệch là **CRLF vs LF**.
+//   ⇒ **Mọi kết luận "md5 KHỚP" trước đây vẫn đúng** (cùng một phép biến đổi áp cho cả hai phía), nhưng
+//     **mọi kết luận "md5 LỆCH" đều phải diff lại** — nó có thể chỉ là kết thúc dòng.
+//   ⇒ Công thức đúng: `sed 's/[[:space:]]//g'` (hoặc `tr -d '[:space:]'`), **không** dùng `tr -d ' \t\r'`.
+//
+// 🔴🔴 **HAI CÂY NGUỒN THẬT SỰ KHÁC NHAU Ở `_Delete`** (sau khi diff đúng cách):
+//   laptop `V20` xoá trên **`_dbMain` + `_dbWH`**; máy 150 `V20.2023.Release` có **thêm nguyên một khối**
+//     `if (bNeedTransaction_Dealer) { _dbDealer.ExecQuery(strSqlDelete_WH, "@CusTypeID", strCusTypeID); }`
+//   cùng `CommitSafety(_dbDealer)` / `RollbackSafety(_dbDealer)` / `ReleaseAllSemaphore(_dbDealer_Sys, true)`.
+//   ⇒ `Create` và `Update` ở **cả hai** cây đều ghi **ba** CSDL; chỉ `Delete` ở **bản cũ** bỏ sót đại lý.
+//   ⇒ Nên khoảng trống "xoá xong đại lý vẫn giữ dòng" là **lỗi của bản V20, đã được vá ở V20.2023.Release**.
+//     📌 Không được báo nó thành lỗi hiện hành khi chưa biết bản nào đang chạy — đây là lần đầu trong cả đợt
+//     grind tìm được **một khác biệt nghiệp vụ thật** giữa hai cây nguồn, chứ không phải lệch offset.
+//
+// 🔴🔴🔴 **`select @@Identity` — KHÔNG AN TOÀN PHẠM VI, VÀ ID ẤY ĐƯỢC DÙNG ĐỂ CHÈN BẢN WH**
+//   `Create` lưu bản Main rồi chạy `string strSqlGetID = "select @@Identity ID"` và
+//   `Int32 iID = Convert.ToInt32(_dbMain.ExecQuery(strSqlGetID).Tables[0].Rows[0][0]);`
+//   rồi **gán chính `iID` đó** vào `dt_MST_CustomerType_WH.Rows[0]["CusTypeID"]` trước khi `_dbWH.SaveData(…)`.
+//   ⇒ `@@IDENTITY` trả về identity **cuối cùng sinh ra trong phiên**, **kể cả do TRIGGER** sinh ở bảng khác
+//     (`SCOPE_IDENTITY()` mới là hàm đúng). Bảng master ở hệ này có tầng đồng bộ WH/Dealer ⇒ nếu có bất kỳ
+//     trigger insert nào, `iID` là id của **dòng trigger**, và bản WH được chèn với **`CusTypeID` SAI**.
+//   ⇒ Khác hẳn các hàm dùng khoá **do người dùng nhập** (mã kho, mã nhóm) — ở đây khoá là **identity tự tăng**,
+//     nên sai id **không lộ ra** cho tới khi ai đó join Main↔WH.
+//
+// 🔴🔴 **CÙNG MỘT Ô NHẬP, HAI CÁCH HIỂU SỐ, TRONG CÙNG MỘT HÀM**
+//   Ghi xuống DB: `dt_MST_CustomerType.Rows[0]["CusFactor"] = **strCusFactor**` — **chuỗi thô**, để SQL Server
+//     tự ép theo quy ước bất biến.
+//   Dội về client: `dr["CusFactor"] = **double.Parse(strCusFactor)**` — `double.Parse` **theo culture của
+//     tiến trình**; trên máy chủ `vi-VN`, `"1.5"` thành **15**, và chuỗi rỗng thì ném `FormatException`.
+//   ⇒ Giá trị **lưu** và giá trị **trả về** có thể khác nhau cho cùng một đầu vào.
+// 🔴 **Kiểu `IsActive` cũng lệch giữa ghi và dội**: ghi DB là `TConst.Flag.Active` (**chuỗi `"1"`**), còn bảng
+//   trả về khai `new DataColumn("IsActive", typeof(System.**Boolean**))` và gán `dr["IsActive"] = **true**`.
+//
+// ⚪⚪ **ĐÂY LÀ CỤM LÀM ĐÚNG — đi tìm phản ví dụ như luật "lần thứ ba" yêu cầu**
+//   · Cặp `CheckExistCustomerTypeName` (TẠO) / `CheckExistCusTypeNameModify` (SỬA): **cả hai** lọc đúng
+//     `(CusTypeName, DealerCode)`, bản SỬA thêm `CusTypeID <> @` — **không bên nào** đụng tới `IsActive`.
+//     ⇒ **Nhất quán**, trái hẳn bẫy #818/#839 (TẠO lọc `IsActive = strIsActive`, SỬA lọc cứng `"1"`).
+//   · `CheckCustomerTypeForDelete` tra **`Ser_Customer`** theo `(CusTypeID, DealerCode)` và ném
+//     `Ser_CustomerType_Delete_UserAnother` ⇒ **chính là guard tham chiếu mà `SerEngineerDelete` (#819) THIẾU**.
+//   ⇒ Ghi lại làm mốc: khi gặp cụm master tiếp theo, so với cụm **này**, đừng so với #818.
+//
+// 🔴 **BỐN helper tên quanh `CusType`, BỐN ngữ nghĩa khác nhau** — rất dễ gọi nhầm:
+//   `CheckExistCusType` (`Customer.cs:331`): **phải TỒN TẠI và `IsActive="1"`** (dùng khi tạo KHÁCH) ·
+//   `CheckExistCusType**xxx**` (`:304`): bản chết hậu tố `xxx` · `CheckExistCustomerTypeName`: **phải KHÔNG
+//   tồn tại**, không lọc `IsActive` · `CheckExistCusTypeNameModify`: như trên, trừ chính mình.
+// 🔴 **Tên bảng lệch hoa/thường**: helper dùng `"Ser_**Mst**_CustomerType"` còn `SaveData` dùng
+//   `"Ser_**MST**_CustomerType"` — vô hại với collation mặc định, là mìn nếu DB đổi sang phân biệt hoa thường.
+// 📌 Mini: `PUT /api/customertypes/{code}` và `DELETE /api/customertypes/{code}` — **giữ** guard tham chiếu của
+//   nguồn, **thêm** cảnh báo khi `CusFactor` gửi lên không phân tích được, và trả `isActive` **đúng kiểu chuỗi**.
+app.MapPut("/api/customertypes/{code}", async (string code, CustomerTypeDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var row = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "Ser_MST_CustomerType_NotFound", cusTypeCode = c });
+    var newName = (dto.CusTypeName ?? row.CusTypeName ?? "").Trim();
+    if (newName.Length > 0 && newName != row.CusTypeName)
+    {
+        // Guard cua NGUON: CheckExistCusTypeNameModify — trung TEN trong cung dai ly, tru chinh minh.
+        var dup = await db.CustomerTypes.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id
+            && x.CusTypeName == newName && x.DealerCode == row.DealerCode);
+        if (dup) return Results.Conflict(new { error = "Ser_CustomerType_Exist", cusTypeName = newName });
+        row.CusTypeName = newName;
+    }
+    if (dto.CusFactor != 0m) row.CusFactor = dto.CusFactor;
+    if (!string.IsNullOrWhiteSpace(dto.CusPersonType)) row.CusPersonType = dto.CusPersonType!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.CusTypeCode, row.CusTypeName, row.CusFactor, row.CusPersonType,
+        isActive = row.FlagActive,   // CHUOI, dung nhu cot DB — nguon doi ve kieu Boolean
+        guardPairIsConsistentHere = "AM TINH — CUM LAM DUNG: CheckExistCustomerTypeName (TAO) va CheckExistCusTypeNameModify (SUA) CA HAI loc dung (CusTypeName, DealerCode), ban SUA them CusTypeID <> @, KHONG ben nao dung toi IsActive => nhat quan, trai han bay #818/#839 noi TAO loc IsActive = strIsActive con SUA loc cung 1. Khi gap cum master tiep theo, so voi cum NAY, dung so voi #818",
+        sourceParsesNumberTwoDifferentWays = "CUNG MOT O NHAP, HAI CACH HIEU SO, TRONG CUNG MOT HAM: ghi xuong DB la CHUOI THO (Rows[0][CusFactor] = strCusFactor, de SQL Server tu ep theo quy uoc bat bien) nhung doi ve client lai la double.Parse(strCusFactor) — THEO CULTURE cua tien trinh; tren may chu vi-VN thi 1.5 thanh 15, va chuoi rong nem FormatException => gia tri LUU va gia tri TRA VE co the khac nhau cho cung mot dau vao",
+        sourceIsActiveTypeMismatch = "kieu IsActive lech giua ghi va doi: ghi DB la TConst.Flag.Active (CHUOI 1) con bang tra ve khai new DataColumn(IsActive, typeof(System.Boolean)) va gan dr[IsActive] = true",
+        fourHelpersNamedAroundCusType = "BON helper ten quanh CusType, BON ngu nghia: CheckExistCusType (Customer.cs:331) phai TON TAI va IsActive=1 (dung khi tao KHACH); CheckExistCusTypexxx (:304) ban chet hau to xxx; CheckExistCustomerTypeName phai KHONG ton tai, khong loc IsActive; CheckExistCusTypeNameModify nhu tren tru chinh minh",
+        tableNameCaseMismatch = "helper dung Ser_Mst_CustomerType con SaveData dung Ser_MST_CustomerType — vo hai voi collation mac dinh, la min neu DB doi sang phan biet hoa thuong",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/customertypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var row = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "Ser_MST_CustomerType_NotFound", cusTypeCode = c });
+    // Guard cua NGUON (CheckCustomerTypeForDelete): con KHACH dang dung loai nay thi CAM xoa.
+    var inUse = await db.ServiceCustomers.CountAsync(x => x.OrgId == t.OrgId && x.CusTypeID == c);
+    if (inUse > 0)
+    {
+        return Results.Conflict(new
+        {
+            error = "Ser_CustomerType_Delete_UserAnother", cusTypeCode = c, customerCount = inUse,
+            sourceHasThisGuard = "AM TINH: CheckCustomerTypeForDelete tra Ser_Customer theo (CusTypeID, DealerCode) va nem Ser_CustomerType_Delete_UserAnother => CHINH LA guard tham chieu ma SerEngineerDelete (#819) THIEU",
+        });
+    }
+    db.CustomerTypes.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        cusTypeCode = c,
+        myOwnMeasurementBugFound = "#844 LOI DO CUA CHINH TOI: cong thuc md5 dung suot cac vong truoc la tr -d (space)(backslash)t(backslash)r — trong shell do la CHUOI BON KY TU backslash, t, backslash, r nen tr xoa DAU GACH CHEO NGUOC va hai CHU CAI t, r, con TAB (0x09) va CR (0x0D) KHONG he bi xoa. Dung ho bay C0-795 ([ tab ] trong ERE khong phai tab), lan nay o tr thay vi grep. Cong thuc dung: sed s/[[:space:]]//g hoac tr -d [:space:]",
+        measurementBugConsequenceMeasuredHere = "do duoc NGAY tai vong nay: Ser_MST_CustomerType_Create cho md5 3c1342b1 (laptop) vs 22bdfc96 (may 150) => suyt bao hai may LECH. Chay diff chuan hoa bang sed s/[[:space:]]//g thi KHONG co mot dong khac biet nao — toan bo chenh lech la CRLF vs LF. Moi ket luan md5 KHOP truoc day VAN DUNG (cung mot phep bien doi ap cho ca hai phia) nhung moi ket luan md5 LECH deu phai DIFF LAI",
+        realSourceTreeDivergenceAtDelete = "SAU KHI DIFF DUNG CACH: laptop V20 xoa tren _dbMain + _dbWH; may 150 V20.2023.Release co THEM nguyen mot khoi if (bNeedTransaction_Dealer) { _dbDealer.ExecQuery(strSqlDelete_WH, @CusTypeID, strCusTypeID); } cung CommitSafety/RollbackSafety/ReleaseAllSemaphore cho _dbDealer. Create va Update o CA HAI cay deu ghi BA CSDL; chi Delete o ban CU bo sot dai ly => khoang trong xoa-xong-dai-ly-van-giu-dong la LOI CUA BAN V20, DA DUOC VA o V20.2023.Release. Day la lan dau ca dot grind tim duoc mot KHAC BIET NGHIEP VU THAT giua hai cay nguon, chu khong phai lech offset",
+        atAtIdentityIsNotScopeSafe = "Create luu ban Main roi chay select @@Identity ID va gan CHINH iID do vao dt_MST_CustomerType_WH.Rows[0][CusTypeID] truoc khi _dbWH.SaveData => @@IDENTITY tra ve identity CUOI CUNG sinh ra trong phien KE CA DO TRIGGER o bang khac (SCOPE_IDENTITY() moi la ham dung). Neu co bat ky trigger insert nao thi iID la id cua dong TRIGGER va ban WH duoc chen voi CusTypeID SAI. Khac han cac ham dung khoa do NGUOI DUNG NHAP — o day khoa la identity tu tang nen sai id KHONG LO RA cho toi khi ai do join Main voi WH",
+        deleteSitsBetweenCreateAndUpdate = "thu tu trong file: Create :6146, Delete :6322, Update :6466 — Delete nam GIUA, de doc nham vung khi trich tay",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/customertypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
