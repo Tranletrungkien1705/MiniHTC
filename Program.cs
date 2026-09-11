@@ -55327,7 +55327,19 @@ app.MapDelete("/api/customercarebirthdays/{careBthId}", async (string careBthId,
     if (row is null) return Results.NotFound(new { careBthId });
     db.CustomerCareBirthdays.Remove(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = careBthId });
+    return Results.Ok(new
+    {
+        deleted = careBthId,
+        // ===== 🔴🔴🔴 #841 (TRẢ NỢ #825) CẢ BA HÀM CRUD ĐỀU CÓ `#region // Check` **RỖNG** =====
+        allThreeHaveEmptyCheckRegion = "#841: ap #403, trich TRON danh sach region cua ca ba ham — Ser_CustomerCareBth_Delete (Customer.cs:14732-14859 md5 3f9be3aa), _Create (:14860-14981 md5 e4fe33cd), _Update (:14982-15114 md5 d4f5b59d): ca ba deu co #region // Check roi #endregion NGAY DONG KE TIEP => REGION RONG HOAN TOAN. Raise=0, this.Check*=0, my*_Check*=0 tren ca ba. Day la dang (d) cua #728, va la lan dau gap BA HAM LIEN TIEP trong CUNG MOT CUM deu bo trong",
+        createRegionNamesLie = "#841: trong _Create, #region // Save data co than dung hai dong — ArrayList alColumnEffective = new ArrayList(); alColumnEffective.Clear(); — roi #endregion => KHOI SAVE DATA KHONG LUU GI. Viec ghi that nam o #region // Process save detail goi this.ProcessSaveCareBth(ds_careBth, strPartnerUserCode). Va #region // Process delete detail thi RONG",
+        noDetailTableExists = "#841: grep toan tang chi co DUNG MOT bang ten Ser_CustomerCareBth — KHONG co bang chi tiet nao => cac region Process save detail / Process delete detail la TEN CHEP TU KHUON KHAC (cum CRUD co bang con). Nghia la region ten -detail- that ra luu ban ghi CHINH",
+        createWritesThreeDbsDeleteOnlyOne = "#841 BAT DOI XUNG NANG: ProcessSaveCareBth (Customer.cs:15115-15248) ghi BA CSDL — _dbMain.SaveData(Ser_CustomerCareBth) roi ExecQuery insert vao _dbWH VA _dbDealer. Nhung Ser_CustomerCareBth_Delete chi chay delete from Ser_CustomerCareBth tren _dbMain.ExecQuery => BAN GHI CSKH SINH NHAT DA XOA VAN CON o WH va Dealer. Cung khuon #819 (SerEngineerUpdate/Delete bo nhanh dealer) nhung NANG HON: bo HAI nhanh",
+        deleteHasNoExistenceCheck = "#841: _Delete khong kiem ton tai truoc khi xoa => xoa CareBthId khong co that van bao THANH CONG (delete khop 0 dong) — cung ho #824 (SerInsuranceDelete)",
+        createReturnsEmptyDataSet = "#841: _Create ket thuc bang DataSet dsGetData = new DataSet(); MoveDataTable(...) => TRA VE RONG, nguoi goi khong nhan lai ban ghi vua tao (ho #751 SerGetToCCare)",
+        thirdStatusVocabulary = "#841: luong sinh nhat dung 0=Chua lien he / 1=Da lien he / 2=Khong lien he; luong CSKH sau dich vu dung PEND/CINFB/CIFB/REJ; va #837 (SerCampaign_ListCustomerGet) dung 1=Da lien he / 2=Chua lien he — BA bang ma trang thai KHAC NHAU cho cung mot khai niem da-lien-he-chua, trong do hai bang dung CUNG ky tu 1 va 2 voi Y NGHIA NGUOC NHAU",
+        twoMachinesVerified841 = "#841 BUOC 3B: md5 chuan hoa Ser_CustomerCareBth_Delete tren may 150 = 3f9be3aa KHOP laptop",
+    });
 }).RequireAuthorization();
 
 // ===== Khảo sát CSKH sau dịch vụ (Ser_CustomerCare24h/72h — port 1:1 FrmCSCCustomerCare24h/72h, TCMotor DMSCarSv/Customer) =====
