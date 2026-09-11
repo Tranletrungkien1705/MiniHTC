@@ -24041,6 +24041,93 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   ⚠️ `JOIN` viết trần chính là `INNER JOIN` — đã cảnh báo ở #788, nay là bằng chứng thứ hai rằng nó **dễ đọc lướt**.
 // 📌 **Không over-claim**: 59 là số hàm **LIVE có khuôn đó**, không phải 59 lỗi đã chứng minh — mức độ ảnh hưởng
 //   tuỳ tần suất xe đổi chủ trong dữ liệu thật, thứ **chưa đo được** vì không có DB.
+// ===== 🔴🔴🔴 #836 MÀN MỚI: NHẬP TEM PHỤ TÙNG TỪ FILE — `SerImpPartInstance` =====
+// `BizCarSv.Inventory.Stock.cs:1038-1167` md5 `414678c1` (120 dòng, `Raise`=**0**, `SaveData`=0 — uỷ quyền cho
+// `ProcessStockIn`, chính hàm đã đọc ở **#802**). LIVE qua web WS. **3B**: md5 trên 150 = `414678c1` **KHỚP**.
+// Đầu vào là **`DataSet dsPartInstance`**, lấy bảng theo **tên cứng** `dsPartInstance.Tables["Ser_Inv_StockInDetail"]`.
+//
+// ⚪ **KIỂM TRƯỚC KHI BÁO — `Rows[0]` Ở ĐÂY AN TOÀN** (tránh lặp bẫy #818 về **chiều** kiểm):
+//   `this.CheckExistPart(...)` và `this.CheckExistLocation(...)` đều ném khi **KHÔNG** tìm thấy
+//   (`TError.ErrCarSv.**Ser_Part_NotFound**` / `**Ser_Location_NotFound**`, mẫu `if (dt == null || dt.Rows.Count == 0) throw`)
+//   ⇒ `dtPart.Rows[0]` / `dtLocation.Rows[0]` ngay sau đó **có bảo đảm**. Đây là nhóm **25 site có guard gián tiếp**
+//   của #814, **không** thuộc nhóm 44 ca trần trụi. `CheckExistLocation` còn lọc thêm `IsActive = Flag.Active`.
+//
+// 🔴🔴🔴 **CỘT `STOCKNO` VỪA ĐƯỢC THÊM MỚI, VỪA ĐƯỢC ĐỌC — RỒI BỊ GHI ĐÈ**
+//   Ba việc xảy ra trong **cùng một khối** `#region // Add ID fields` (nguyên văn):
+//     `dtPartInstance.Columns.AddRange(new DataColumn[]{ new DataColumn("PARTID",…), new DataColumn("LOCATIONID",…),`
+//     `                                                  new DataColumn(**"STOCKNO"**, typeof(System.String)) });`
+//     `foreach (DataRow row in dtPartInstance.Rows) {`
+//     `    … string strStockNo = row[**"STOCKNO"**].ToString();`      ← đọc **chính cột vừa thêm**
+//     `    … row[**"STOCKNO"**] = dtLocation.Rows[0]["STOCKNO"]; }`   ← rồi **ghi đè** bằng kho của **VỊ TRÍ**
+//   ⇒ ① Nếu `DataSet` client **chưa có** cột `STOCKNO`: `AddRange` tạo cột **rỗng**, nên `strStockNo` **luôn rỗng**
+//      ⇒ **biến chết** (khai báo, gán, không ai dùng).
+//   ⇒ ② Nếu client **đã có** cột `STOCKNO` trong file nhập: `Columns.AddRange` ném **`DuplicateNameException`**
+//      ⇒ **toàn bộ lần nhập hỏng** với lỗi .NET thô, không phải mã lỗi nghiệp vụ.
+//   ⇒ ③ Trong **cả hai** trường hợp, giá trị cuối cùng ghi xuống là `dtLocation.Rows[0]["STOCKNO"]` —
+//      **kho suy ra từ VỊ TRÍ**, không phải kho người dùng khai trong file. Nếu file nhập có cột kho thì
+//      **giá trị đó bị bỏ, im lặng**.
+//   📌 Đây là biến thể mới của họ "cột bị ghi đè": #813 (`TempFileAttachment` nhận hai kiểu) và #821
+//     (`alEffectiveColumn` trỏ nhầm cột) đều ở tầng **ghi**; ca này ở tầng **chuẩn bị dữ liệu đầu vào**.
+//
+// 🔴 **TÊN BẢNG CỨNG TRONG DATASET**: `dsPartInstance.Tables["Ser_Inv_StockInDetail"]` — client gửi sai tên bảng
+//   ⇒ `dtPartInstance` là **null** ⇒ `NullReferenceException` ở dòng `Columns.AddRange` ngay sau đó, **không guard**.
+// 🔴 **Chú thích nghi ngờ của chính tác giả**: `alParamsCoupleError = ProcessStockIn(_dbDealer, **//Check lại**`
+//   — và `ProcessStockIn` chính là đường nhập kho chính đã đọc ở #802 (guard số lượng âm sống ở
+//   `ProcessSaveStockInPb`, không ở đây).
+// ⚪ Mô hình giao dịch **nhất quán**: `bNeedTransaction_Main/WH/Dealer` đủ ba, `if (bIsWSMain) bNeedTransaction_Dealer = false`
+//   (khuôn #748) và `CommitSafety` cho cả ba ⇒ không thuộc nhóm lệch handle của #803.
+// 📌 Mini: `POST /api/stockins/import-partinstance` — **giữ** kho người dùng khai nếu có, **báo rõ** khi nó khác
+//   kho suy từ vị trí (nguồn ghi đè im lặng), và guard tên bảng/khoá tra cứu.
+app.MapPost("/api/stockins/import-partinstance", async (PartInstanceImportDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var lines = dto.Lines ?? new List<PartInstanceImportLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "khong co dong nao de nhap" });
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var partCodes = lines.Select(l => (l.PartCode ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    var locCodes = lines.Select(l => (l.LocationCode ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && partCodes.Contains(p.PartCode))
+        .Select(p => p.PartCode).ToListAsync();
+    // Nguon loc them IsActive = Flag.Active trong CheckExistLocation — Mini giu dung.
+    var locs = await db.SerMstLocations
+        .Where(l => l.OrgId == t.OrgId && l.IsActive == "1" && l.LocationCode != null && locCodes.Contains(l.LocationCode))
+        .Select(l => new { l.LocationCode, l.StockNo }).ToListAsync();
+    var locMap = locs.GroupBy(x => x.LocationCode!).ToDictionary(g => g.Key, g => g.First().StockNo);
+    var rows = lines.Select((l, i) =>
+    {
+        var pc = (l.PartCode ?? "").Trim();
+        var lc = (l.LocationCode ?? "").Trim();
+        var partOk = parts.Contains(pc);
+        var locOk = locMap.ContainsKey(lc);
+        var stockFromLocation = locOk ? locMap[lc] : null;
+        var declared = (l.StockNo ?? "").Trim();
+        return new
+        {
+            rowIndex = i, partCode = pc, locationCode = lc,
+            partFound = partOk, locationFound = locOk,
+            stockNoDeclared = declared.Length > 0 ? declared : null,
+            stockNoFromLocation = stockFromLocation,
+            stockNoOverwritten = declared.Length > 0 && stockFromLocation != null && declared != stockFromLocation,
+            error = !partOk ? "Ser_Part_NotFound" : (!locOk ? "Ser_Location_NotFound" : null),
+        };
+    }).ToList();
+    var bad = rows.Where(r => r.error != null).ToList();
+    var overwritten = rows.Count(r => r.stockNoOverwritten);
+    return Results.Ok(new
+    {
+        lineCount = rows.Count, invalidCount = bad.Count, invalid = bad,
+        stockNoOverwrittenCount = overwritten, items = rows,
+        canImport = bad.Count == 0,
+        sourceAddsAndReadsSameColumn = "NGUON: trong cung mot khoi #region // Add ID fields, Columns.AddRange them cot STOCKNO roi vong lap doc chinh cot do (string strStockNo = row[STOCKNO].ToString()) va sau do GHI DE bang dtLocation.Rows[0][STOCKNO]. (1) Neu client CHUA co cot STOCKNO: cot vua them RONG nen strStockNo LUON RONG => bien chet. (2) Neu client DA co cot do: Columns.AddRange nem DuplicateNameException => toan bo lan nhap hong voi loi .NET tho",
+        sourceOverwritesDeclaredStockNo = "trong CA HAI truong hop, gia tri cuoi cung ghi xuong la kho suy ra tu VI TRI (dtLocation.Rows[0][STOCKNO]) chu khong phai kho nguoi dung khai trong file => neu file nhap co cot kho thi gia tri do bi BO IM LANG. Mini GIU kho nguoi dung khai va BAO RO khi no khac kho suy tu vi tri (stockNoOverwritten)",
+        newVariantOfOverwriteFamily = "bien the moi cua ho cot-bi-ghi-de: #813 (TempFileAttachment nhan hai kieu) va #821 (alEffectiveColumn tro nham cot) deu o tang GHI; ca nay o tang CHUAN BI DU LIEU DAU VAO",
+        rows0IsSafeHere = "AM TINH (tranh lap bay #818 ve CHIEU kiem): CheckExistPart va CheckExistLocation deu nem khi KHONG tim thay (Ser_Part_NotFound / Ser_Location_NotFound, mau if (dt == null || dt.Rows.Count == 0) throw) => dtPart.Rows[0] / dtLocation.Rows[0] ngay sau do CO bao dam. Thuoc nhom 25 site co guard gian tiep cua #814, KHONG phai nhom 44 ca tran trui. CheckExistLocation con loc them IsActive = Flag.Active",
+        sourceHardcodesTableName = "dsPartInstance.Tables[\"Ser_Inv_StockInDetail\"] — client gui sai ten bang thi dtPartInstance la NULL => NullReferenceException ngay o dong Columns.AddRange, KHONG guard",
+        authorsOwnDoubtComment = "alParamsCoupleError = ProcessStockIn(_dbDealer, //Check lai — chu thich nghi ngo cua chinh tac gia; va ProcessStockIn chinh la duong nhap kho chinh da doc o #802 (guard so luong am song o ProcessSaveStockInPb, khong o day)",
+        transactionModelIsConsistent = "AM TINH: bNeedTransaction_Main/WH/Dealer du ba, if (bIsWSMain) bNeedTransaction_Dealer = false (khuon #748), CommitSafety cho ca ba => khong thuoc nhom lech handle cua #803",
+        twoMachinesVerified = "md5 chuan hoa tren may 150 = 414678c1 KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/car-owner-join-sweep", () => Results.Ok(new
 {
     trigger = "khuon join ser_car ... on ro.CarID = car.CarID AND ro.CusID = car.CusID gap BA lan: #752 (DMSWROGet), #788 (thong ke dich vu), #834 (phieu giao viec)",
@@ -71918,6 +72005,8 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
+record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
 record RoHistoryDto(string? ROHID, string? ROID, string? Status, string? Reason, string? LogLUBy);
 record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status);
 record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
