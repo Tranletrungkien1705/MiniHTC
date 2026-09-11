@@ -17670,6 +17670,50 @@ app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenant
 //     #824, `Ser_Email_Attachment_Delete` #821, `Ser_Mst_Service_Delete` #825 — cái cuối hoá ra là **guard im lặng**).
 // 📌 Mini: `PUT /api/partgroups/{code}` và `DELETE /api/partgroups/{code}` — kiểm trùng mã **không phân biệt**
 //   `FlagActive` (vá bẫy #818), và **chặn xoá** khi còn phụ tùng/nhóm con tham chiếu (nguồn không kiểm).
+// ===== ⚪🔴 #840 QUÉT TRỌN CẶP `checkExist…Code` / `…CodeModify` (#818, #839) — **ĐÚNG HAI CA** =====
+// ⛔ **Thu hẹp phát biểu của chính #839**: ở đó tôi viết *"đây là khuôn chép-dán ⇒ mọi màn master khác dùng
+//   cặp tên này phải soi lại"*. Nay **soi hết** rồi: khuôn chỉ có **đúng hai** ca, và **cả hai đã được ghi**.
+//
+// **Phương pháp**: liệt kê mọi helper `…Modify` trong `TERP.BizCarSv/*.cs` (**13** cái), rồi với từng cái tìm
+// bản **CREATE** cùng tên (bỏ hậu tố `Modify`) và so **đối số thứ ba của mệnh đề `"IsActive"`**.
+//
+// 🔴 **HAI ca dùng BIẾN ở nhánh CREATE** (⇒ lỗ hổng đã ghi):
+//   `checkExistSupplierCode`  → `"IsActive","=",**strIsActive**`  (#818, `Inventory.Master.cs`)
+//   `checkExistPartGroupCode` → `"IsActive","=",**strIsActive**`  (#839, `Master.cs`)
+//   ⇒ Nhánh **SỬA** của cả hai đều lọc **cứng** `"1"` ⇒ bất đối xứng.
+//
+// ⚪ **BA cặp làm ĐÚNG — cứng `"1"` ở CẢ HAI nhánh**:
+//   `CheckExistPlateNo` (`Customer.cs`) · `checkExistLocationCode` (`Master.cs`) · `CheckExistPartCode` (`Service.cs`)
+//   ⇒ Tạo mới **luôn** so với nhóm **đang hoạt động** — đúng ý nghiệp vụ.
+//
+// ⚪ **SÁU cặp CREATE KHÔNG có `IsActive` chút nào** ⇒ kiểm **chặt hơn** (trùng mã là chặn, bất kể trạng thái):
+//   `CheckExistCamNo` · `CheckExistGroupRNo` · `CheckExistEngineerNo` (#819) · `CheckExistCavityNo` ·
+//   `CheckExistInsContractNo` · `CheckExistServicePackageNo`.
+//   Nhánh `Modify` của chúng lọc `TConst.Flag.Active` ⇒ **vẫn bất đối xứng nhưng theo chiều AN TOÀN**
+//   (tạo chặt hơn sửa), ngược hẳn hai ca lỗi ở trên.
+//
+// ⚪ **HAI cặp không có bản CREATE**: `CheckExistCusTypeName` · `CheckExistServiceCode` — chỉ tồn tại nhánh `Modify`.
+//
+// 📌 **Bài học đo lường**: hai lần gặp **chưa đủ** để gọi là "khuôn của tầng". Ở #820 phép lọc LIVE/CHẾT hạ
+//   8 ứng viên xuống 1; ở đây phép **liệt kê trọn họ** cho thấy 2/13 — và **11 cái còn lại làm đúng hoặc chặt hơn**.
+//   ⇒ Khi đã ghi "phải soi lại toàn bộ", **hãy soi ngay trong lượt kế tiếp** rồi chốt con số, đừng để lời cảnh báo
+//     treo lơ lửng — nó sẽ thành nợ mà người sau phải trả lại từ đầu.
+app.MapGet("/api/_meta/checkexist-code-pair-sweep", () => Results.Ok(new
+{
+    trigger = "#818 (SerSupplier*) va #839 (Ser_MST_PartGroup_*) deu co checkExist...Code (TAO) loc IsActive = strIsActive trong khi ...CodeModify (SUA) loc cung 1",
+    modifyHelpersFound = 13,
+    narrowsClaimOf839 = "THU HEP phat bieu cua #839: o do viet day la khuon chep-dan => moi man master khac dung cap ten nay phai soi lai. Nay SOI HET: khuon chi co DUNG HAI ca, va ca hai DA duoc ghi",
+    twoBuggyPairs = new[] { "checkExistSupplierCode -> IsActive = strIsActive (#818, Inventory.Master.cs)",
+        "checkExistPartGroupCode -> IsActive = strIsActive (#839, Master.cs)" },
+    threeCorrectPairs = new[] { "CheckExistPlateNo (Customer.cs)", "checkExistLocationCode (Master.cs)",
+        "CheckExistPartCode (Service.cs)" },
+    correctPairsExplanation = "cung 1 o CA HAI nhanh => tao moi LUON so voi nhom dang hoat dong, dung y nghiep vu",
+    sixCreateHelpersWithoutIsActive = new[] { "CheckExistCamNo", "CheckExistGroupRNo", "CheckExistEngineerNo (#819)",
+        "CheckExistCavityNo", "CheckExistInsContractNo", "CheckExistServicePackageNo" },
+    sixExplanation = "CREATE khong co IsActive chut nao => kiem CHAT HON (trung ma la chan, bat ke trang thai). Nhanh Modify cua chung loc TConst.Flag.Active => van bat doi xung NHUNG theo chieu AN TOAN (tao chat hon sua), nguoc han hai ca loi",
+    twoWithoutCreateCounterpart = new[] { "CheckExistCusTypeName", "CheckExistServiceCode" },
+    measurementLesson = "HAI lan gap CHUA DU de goi la khuon cua tang. O #820 phep loc LIVE/CHET ha 8 ung vien xuong 1; o day phep LIET KE TRON HO cho thay 2/13 — va 11 cai con lai lam dung hoac chat hon. Khi da ghi phai soi lai toan bo thi HAY SOI NGAY o luot ke tiep roi chot con so, dung de loi canh bao treo lo lung",
+})).RequireAuthorization();
 app.MapPut("/api/partgroups/{code}", async (string code, PartGroupDto dto, AppDbContext db, ITenantContext t) =>
 {
     var gc = (code ?? "").Trim().ToUpperInvariant();
