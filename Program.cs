@@ -40207,6 +40207,107 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 //   **khác** `Ser_RO_Sumary_Revenue` (#860, chỉ `'FNS'`).
 // 📌 Mini: `GET /api/report/ro-profit` — tính thuế `decimal`, **nhân số lượng cho cả dịch vụ**, và **nêu rõ**
 //   giá vốn có được tính hay không theo tham số `MCC` (nguồn trả 0 khi không phải FIFO).
+// ===== 🔴🔴🔴 #869 MÀN MỚI: THỐNG KÊ DỊCH VỤ (bản ĐẠI LÝ) — `Ser_RO_Statistic_Service` =====
+// `Service.Report.cs:491-662` md5 `4adab057` (172 dòng), LIVE. **3B**: **KHỚP** máy 150.
+// BƯỚC 2 (luật #357): Mini **chỉ có** `/api/report/ro-service-statistic-**wh**` ⇒ bản **đại lý** là màn mới.
+//
+// 🔴🔴🔴 **HÀM SQL CHUẨN HOÁ TÊN TRẠNG THÁI BỊ COMMENT Ở **CẢ 21 CHỖ** TRONG TẦNG**
+//   Trong báo cáo này: `--, dbo.**ROStatus_GetStatusNameByCode**(ro.Status) StatusName` (bị comment), thay bằng
+//   một `case … when ro.Status in ('CRE','PRT','HRO') then N'Chờ sửa' … end StatusName` **viết thẳng**.
+//   Đếm cả `TERP.BizCarSv`: tên hàm ấy xuất hiện **21 lần** — và **cả 21 lần đều nằm trên dòng bị comment**
+//   (`--, dbo.ROStatus_GetStatusNameByCode(...)`), **0 lần** được gọi thật.
+//   ⇒ Tầng **có** một hàm SQL chuẩn hoá tên trạng thái nhưng **không nơi nào dùng**; mỗi báo cáo **tự chép**
+//     một bảng ánh xạ `case` riêng ⇒ **21 bản sao** của cùng một tri thức nghiệp vụ.
+//   ⇒ Thêm/đổi **một** trạng thái phải sửa **21 chỗ**, và không có gì bảo đảm 21 bản ấy giống nhau.
+//   📌 Đây chính là luật **#358** (dòng comment cạnh dòng active) áp ở **quy mô cả tầng**, và nó **đo được**.
+//
+// ⚪⚪ **`case` Ở ĐÂY CÓ `else` — LÀM ĐÚNG**: `else N'Không xác định'` ⇒ mã lạ vẫn ra chữ, không ra `NULL`.
+//   ⇒ Trái hẳn #837 (`SerCampaign_ListCustomerGet`) nơi `case` **không** có `else` nên mã ngoài {1,2,3} ra `NULL`.
+//   ⇒ **Mẫu đúng** cho việc ánh xạ trạng thái: dùng **hàm này**.
+//
+// 🔴 **BẢNG ÁNH XẠ TRẠNG THÁI ĐẦY ĐỦ Ở ĐÂY** (nguyên văn, port dòng ACTIVE):
+//   `CRE, PRT, HRO → "Chờ sửa"` · `INGA → "Đang sửa"` · `RPRD → "Sửa xong"` · `CEND → "Kiểm tra cuối cùng"`
+//   · `PAID → "Thanh toán xong"` (kèm chú thích `----Issue 981`) · `FNS → "Đã giao xe"` · `REJ → "Lệnh hủy"`
+//   · `**W4P, HPA, NORE** → "Hủy, Hẹn lại"` · `else → "Không xác định"`
+//   ⇒ **Xác nhận #862**: `NORE` ở đây được gộp vào nhóm **huỷ**, đúng như hằng `Cancel = "W4P,HPA,NORE"`.
+//     ⇒ Cùng một mã `NORE` nay đã thấy **ba** cách đối xử: trạng thái riêng (#862 `Ser_RO_Sumary_NotResponding`),
+//     nhóm huỷ (đây + hằng `Cancel`), và **bị loại** khỏi danh sách đen (`Program.cs:25983`).
+//
+// ⚪⚪ **BẢN `_WH` GẦN NHƯ GIỐNG HỆT — VÀ ĐÓ LÀ THÔNG TIN**
+//   Diff chuẩn hoá (bỏ hoa/thường) `Ser_RO_Statistic_Service` ↔ `Ser_RO_Statistic_Service_WH` (`WH.cs:10820`,
+//   md5 `34549d8d`): khác **duy nhất** ở tên hàm/mã lỗi, `_dbDealer` ↔ `_dbWH`, **và một khối**:
+//     bản thường có `---- Clear For Debug:` + `**drop table #tbl_Ser_RO;**`
+//     bản `_WH` **không có** khối đó.
+//   ⚠️ Hệ quả: bảng tạm **không được dọn tường minh** ở bản `_WH`. `#temp` sống theo **phiên**; ADO.NET pooling
+//     thường gửi `sp_reset_connection` khi trả kết nối về pool nên nó **được dọn** — nhưng nếu cùng **một** kết nối
+//     đang mở chạy lô này **hai lần** (ví dụ trong cùng một transaction) thì lần thứ hai gặp
+//     *"There is already an object named '#tbl_Ser_RO'"*. ⇒ Ghi là **rủi ro có điều kiện**, không phải lỗi chắc chắn.
+//   📌 Và đây là **thông tin ngược** đáng giá: `Rpt_Correct_Repair_Rate` vs `_WH` có **ba** khác biệt nghiệp vụ
+//     (đã ghi ở khối `#…` trước), còn cặp này **không có khác biệt nghiệp vụ nào** ⇒ **không phải cặp `_WH` nào
+//     cũng lệch**; phải diff từng cặp.
+//
+// 🔴 **Bốn phép kiểm bắt buộc của #359** cho báo cáo này:
+//   ① **Thuế**: `…*isnull(si.VAT,0)***0.01**` ⇒ **ĐÚNG** (không chia nguyên).
+//   ② **Số lượng**: `isnull(si.Factor,0)*isnull(si.Price,0)` — **không nhân `Quantity`** (giống #860/#868 cho dịch vụ).
+//   ③ **Lọc ngày**: `'@FromDate'`/`'@ToDate'` **bake trong nháy** + `datediff` trên cột ⇒ **injection + non-sargable**.
+//   ④ **Lọc đại lý**: `BuildClauseConditionList("and", "ro.DealerCode", strDealerCodeList, "|")` ⇒ **danh sách**, ổn.
+//   ⇒ Hai đúng, hai sai — **không** giống bất kỳ hàm nào đã đọc trong cùng file, đúng như #359 dự báo.
+// 🔴 `INNER JOIN Ser_Mst_Service ss` ⇒ dịch vụ bị xoá khỏi danh mục làm **mất dòng** (#410), như #861/#867.
+// 🔴 `'LS-'+ro.RONO AS RONO` — tiền tố cứng, lặp lại #860/#861/#862.
+// 📌 Mini: `GET /api/report/ro-service-statistic` (bản đại lý) — thuế `decimal`, lọc ngày **sargable**,
+//   ánh xạ trạng thái dùng **một** bảng dùng chung (không chép), và **không** cắt dòng khi dịch vụ vắng danh mục.
+app.MapGet("/api/report/ro-service-statistic", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? status) =>
+{
+    var st = (status ?? "").Trim();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        .Where(x => st.Length == 0 || x.Status == st)
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CheckInDate, x.Status })
+        .ToListAsync();
+    var ids = ros.Select(x => x.Id).ToList();
+    var roMap = ros.ToDictionary(x => x.Id, x => x);
+    var items = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.SerCode, x.SerName, x.Price, x.Factor, x.Vat }).ToListAsync();
+    var catalog = (await db.Masters.Where(x => x.OrgId == t.OrgId && x.Category == "Ser_Mst_Service")
+        .Select(x => x.Code).ToListAsync()).ToHashSet();
+    var rows = items.Select(i =>
+    {
+        var ro = roMap[i.RoId];
+        var f = i.Factor == 0m ? 1m : i.Factor;
+        var baseAmt = f * i.Price;
+        return new
+        {
+            roNo = ro.RONo, plateNo = ro.LicensePlate, ro.CheckInDate,
+            i.SerCode, i.SerName, factor = f, price = i.Price, vat = i.Vat,
+            amount = baseAmt + baseAmt * i.Vat * 0.01m,
+            roStatus = ro.Status,
+            inCatalog = catalog.Count == 0 || catalog.Contains(i.SerCode),
+        };
+    }).OrderBy(x => x.roNo).ToList();
+    return Results.Ok(new
+    {
+        fromDate, toDate, status = st.Length > 0 ? st : null,
+        count = rows.Count, totalAmount = rows.Sum(x => x.amount),
+        rowsSourceWouldDrop = rows.Count(x => !x.inCatalog), items = rows,
+        sourceStatusNameFunctionIsCommentedEverywhere = "#869: trong bao cao nay --, dbo.ROStatus_GetStatusNameByCode(ro.Status) StatusName BI COMMENT, thay bang mot case ... end StatusName viet thang. Dem ca TERP.BizCarSv: ten ham ay xuat hien 21 LAN va CA 21 LAN deu nam tren dong BI COMMENT, 0 lan duoc goi that => tang CO mot ham SQL chuan hoa ten trang thai nhung KHONG NOI NAO DUNG; moi bao cao TU CHEP mot bang anh xa case rieng => 21 BAN SAO cua cung mot tri thuc nghiep vu. Them/doi MOT trang thai phai sua 21 CHO, va khong gi bao dam 21 ban ay giong nhau. Day la luat #358 ap o QUY MO CA TANG, va no DO DUOC",
+        positiveCaseHasElse = "AM TINH: case o day CO else N(Khong xac dinh) => ma la van ra chu, khong ra NULL. Trai han #837 (SerCampaign_ListCustomerGet) noi case KHONG co else nen ma ngoai {1,2,3} ra NULL => MAU DUNG cho viec anh xa trang thai la ham nay",
+        statusMapFromSource = new[]
+        {
+            "CRE, PRT, HRO -> Cho sua", "INGA -> Dang sua", "RPRD -> Sua xong",
+            "CEND -> Kiem tra cuoi cung", "PAID -> Thanh toan xong (chu thich ----Issue 981)",
+            "FNS -> Da giao xe", "REJ -> Lenh huy", "W4P, HPA, NORE -> Huy, Hen lai", "else -> Khong xac dinh",
+        },
+        confirmsNoreIsCancelHere = "XAC NHAN #862: NORE o day duoc gop vao nhom HUY, dung nhu hang Cancel = W4P,HPA,NORE => cung mot ma NORE nay da thay BA cach doi xu: trang thai rieng (#862 Ser_RO_Sumary_NotResponding), nhom huy (day + hang Cancel), va BI LOAI khoi danh sach den (Program.cs:25983)",
+        whVersionDiffersOnlyByMissingDrop = "AM TINH + rui ro co dieu kien: diff chuan hoa (bo hoa/thuong) Ser_RO_Statistic_Service vs Ser_RO_Statistic_Service_WH (WH.cs:10820, md5 34549d8d) khac DUY NHAT o ten ham/ma loi, _dbDealer vs _dbWH, VA mot khoi: ban thuong co ---- Clear For Debug: + drop table #tbl_Ser_RO; con ban _WH KHONG co. #temp song theo PHIEN; ADO.NET pooling thuong gui sp_reset_connection khi tra ket noi ve pool nen no DUOC DON — nhung neu cung MOT ket noi dang mo chay lo nay HAI LAN (vi du trong cung mot transaction) thi lan thu hai gap There is already an object named #tbl_Ser_RO. Ghi la RUI RO CO DIEU KIEN, khong phai loi chac chan",
+        notAllWhPairsDiffer = "THONG TIN NGUOC dang gia: Rpt_Correct_Repair_Rate vs _WH co BA khac biet nghiep vu (da ghi truoc do), con cap nay KHONG co khac biet nghiep vu nao => KHONG phai cap _WH nao cung lech; phai DIFF TUNG CAP",
+        fourChecksOf359 = "BON PHEP KIEM BAT BUOC cua #359: (1) THUE: ...*isnull(si.VAT,0)*0.01 => DUNG, khong chia nguyen; (2) SO LUONG: isnull(si.Factor,0)*isnull(si.Price,0) — KHONG nhan Quantity (giong #860/#868 cho dich vu); (3) LOC NGAY: @FromDate/@ToDate BAKE TRONG NHAY + datediff tren cot => injection + non-sargable; (4) LOC DAI LY: BuildClauseConditionList(and, ro.DealerCode, strDealerCodeList, |) => DANH SACH, on. Hai dung hai sai — KHONG giong bat ky ham nao da doc trong cung file, dung nhu #359 du bao",
+        innerJoinServiceCatalog = "INNER JOIN Ser_Mst_Service ss => dich vu bi xoa khoi danh muc lam MAT DONG (#410), nhu #861/#867. Mini dem rowsSourceWouldDrop thay vi cat dong",
+        hardcodedPrefix869 = "LS- + ro.RONO AS RONO — tien to cung, lap lai #860/#861/#862",
+        twoMachinesVerified869 = "md5 chuan hoa 4adab057 KHOP may 150",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/ro-profit", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate) =>
 {
