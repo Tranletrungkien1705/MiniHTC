@@ -15091,6 +15091,105 @@ app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext
 //   ⇒ Trái với #845 (`Ser_Mst_Model_Delete` guard đọc `_dbDealer` nhưng xoá ở Main+WH, **không** chạm Dealer).
 // 📌 Mini: `GET`/`POST`/`PUT`/`DELETE /api/sermstlocations` — `DELETE` là **xoá mềm** đúng như nguồn, có **lọc**
 //   `DealerCode` (vá tham số chết), và guard tồn kho **cộng gộp mọi dòng** thay vì chỉ đọc dòng đầu.
+// ===== 🔴🔴🔴 #850 MÀN MỚI: DANH MỤC LOẠI ẢNH BẢO HÀNH — `Ser_MST_ROWarrantyPhotoType_{Get, PhotoType_Get}` =====
+// `BizCarSv.Master.cs:10554 _Get` md5 `85d4a7e1` (118 dòng) · `:10672 _PhotoType_Get` md5 `745ba88b` (127).
+// Mỗi hàm **đúng một** vỏ bọc ⇒ LIVE nhưng hẹp. **3B**: cả hai md5 **KHỚP** máy 150.
+// MiniHTC trước đây chỉ có bảng **chi tiết** `ROWarrantyTypePhoto`, **thiếu hẳn danh mục gốc** ⇒ §12 đủ bốn chỗ.
+//
+// 🔴🔴🔴 **`BuildClause` LỌC SAI CỘT — VÀ HÀM ANH EM CHỨNG MINH ĐIỀU ĐÓ**
+//   `Ser_MST_ROWarrantyPhotoType_Get`:
+//     `BuildClause("and", "t.**ROMSID**", str**ROWPTCode**List, "@p", ref alParamsCoupleSql)`
+//   `Ser_MST_ROWarrantyPhotoType_PhotoType_Get` (ngay dưới, **cùng tên biến**):
+//     `BuildClause("and", "t.**ROWPTCode**", str**ROWPTCode**List, "@p", ref alParamsCoupleSql)`
+//   ⇒ Tham số tên `strROWPTCodeList` (danh sách **mã loại ảnh**) nhưng hàm thứ nhất đem lọc cột `ROMSID` —
+//     **`ROMSID` là khoá của `Ser_MST_ROMaintanceSetting`** (bảng mốc bảo dưỡng, chính là màn #846),
+//     **không** thuộc nghiệp vụ loại ảnh. Đây là **tên cột chép từ hàm khác**.
+//   ⇒ Hai kết cục, **không có kết cục nào là hành vi mong muốn**:
+//     · caller truyền danh sách **rỗng** ⇒ `BuildClause` trả `""` (đúng ngữ nghĩa đã chứng minh ở #832) ⇒
+//       **bộ lọc biến mất**, câu trả về **toàn bộ danh mục**;
+//     · caller truyền danh sách **khác rỗng** ⇒ SQL tham chiếu cột `ROMSID` trên bảng loại ảnh ⇒ **lỗi thô**
+//       `Invalid column name` (nếu bảng không có cột đó), hoặc lọc theo **một cột hoàn toàn khác nghĩa**.
+//   ⇒ Cùng họ #410 (`BuildClause` nuốt điều kiện) nhưng **nặng hơn**: ở #410 điều kiện **mất**; ở đây nó **trỏ nhầm bảng**.
+//
+// 🔴🔴 **`inner join` VÀO DANH MỤC + LỌC `FlagActive` ⇒ MẤT DÒNG KHI ĐỌC** (#410)
+//   `_PhotoType_Get` gom `Ser_MST_ROWarrantyType_PhotoType` vào `#tmpsmrowpt` rồi:
+//     `inner join Ser_MST_ROWarrantyPhotoType f on tmpsmrowpt.ROWPTCode = f.ROWPTCode`
+//     `where (1=1) and f.FlagActive = '1'`
+//   ⇒ Một loại ảnh **bắt buộc** đã cấu hình cho loại bảo hành sẽ **biến mất khỏi checklist** nếu mã của nó
+//     bị **vô hiệu hoá** (hoặc bị xoá) trong danh mục. Danh sách yêu cầu **tự ngắn lại, im lặng** —
+//     kỹ thuật viên không bị đòi tấm ảnh đó nữa, và hồ sơ bảo hành vẫn "đủ".
+//   ⇒ Đúng luật "`join` vào bảng danh mục = mất dữ liệu khi ĐỌC"; đúng ra là `left join` + hiển thị mã trần.
+//
+// 🔴 **BẢNG TẠM VÒNG VO KHÔNG LÀM GÌ** (giống #842): `select t.* into #tmpsmrowpt … ; select tmpsmrowpt.*`
+//   `from #tmpsmrowpt where (1=1);` ở hàm `_Get` — bảng tạm được tạo rồi đọc lại **nguyên vẹn, không lọc thêm**,
+//   tương đương một câu `select` duy nhất.
+// 🔴 **KỶ LUẬT KHOÁ TRỘN LẪN TRONG CÙNG MỘT LÔ LỆNH**: câu đọc bảng gốc dùng `with (nolock)` (**đọc bẩn**),
+//   câu đọc bảng tạm lại mang dấu `--//[mylock]`. Hai chế độ khoá đối lập cách nhau bốn dòng.
+// 🔴 `and f.FlagActive = '1'` — **literal**, trong khi tầng có `TConst.Flag.Active` (HẰNG ≠ GIÁ TRỊ).
+// 📌 Mini: `GET`/`POST /api/rowarrantyphototypes` (danh mục gốc) và `GET /api/rowarrantytypes/{id}/phototypes`
+//   dùng **`left join`** để **không nuốt** loại ảnh vắng danh mục, và lọc **đúng cột** `ROWPTCode`.
+app.MapGet("/api/rowarrantyphototypes", async (AppDbContext db, ITenantContext t, string? code, bool? all) =>
+{
+    var c = (code ?? "").Trim();
+    var items = await db.RoWarrantyPhotoTypes.Where(x => x.OrgId == t.OrgId)
+        .Where(x => c.Length == 0 || x.ROWPTCode == c)
+        .Where(x => all == true || x.FlagActive == "1")
+        .OrderBy(x => x.ROWPTCode)
+        .Select(x => new { x.Id, x.ROWPTCode, x.ROWPTName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        sourceFiltersWrongColumn = "#850: Ser_MST_ROWarrantyPhotoType_Get goi BuildClause(and, t.ROMSID, strROWPTCodeList, @p, ref alParamsCoupleSql) — tham so ten strROWPTCodeList (danh sach MA LOAI ANH) nhung dem loc cot ROMSID, von la khoa cua Ser_MST_ROMaintanceSetting (bang moc bao duong, chinh la man #846). Ham ANH EM ngay duoi dung CUNG TEN BIEN nhung loc t.ROWPTCode => chung minh day la TEN COT CHEP TU HAM KHAC",
+        twoOutcomesNeitherIsIntended = "hai ket cuc, KHONG co ket cuc nao la hanh vi mong muon: (1) caller truyen danh sach RONG => BuildClause tra chuoi rong (ngu nghia da chung minh o #832) => BO LOC BIEN MAT, cau tra ve TOAN BO danh muc; (2) caller truyen danh sach khac rong => SQL tham chieu cot ROMSID tren bang loai anh => loi tho Invalid column name, hoac loc theo MOT COT HOAN TOAN KHAC NGHIA. Cung ho #410 nhung NANG HON: o #410 dieu kien MAT, o day no TRO NHAM BANG",
+        pointlessTempTable850 = "select t.* into #tmpsmrowpt ... ; select tmpsmrowpt.* from #tmpsmrowpt where (1=1); — bang tam duoc tao roi doc lai NGUYEN VEN, khong loc them, tuong duong mot cau select duy nhat (giong #842)",
+        mixedLockingDiscipline = "KY LUAT KHOA TRON LAN TRONG CUNG MOT LO LENH: cau doc bang goc dung with (nolock) (DOC BAN) con cau doc bang tam lai mang dau --//[mylock]. Hai che do khoa doi lap cach nhau bon dong",
+        twoMachinesVerified850 = "md5 chuan hoa KHOP may 150: _Get 85d4a7e1, _PhotoType_Get 745ba88b",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/rowarrantyphototypes", async (RoWarrantyPhotoTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = (dto.ROWPTCode ?? "").Trim().ToUpperInvariant();
+    if (c.Length == 0) return Results.BadRequest(new { error = "thieu ROWPTCode" });
+    var row = await db.RoWarrantyPhotoTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWPTCode == c);
+    if (row is null) { row = new RoWarrantyPhotoType { OrgId = t.OrgId, ROWPTCode = c }; db.RoWarrantyPhotoTypes.Add(row); }
+    if (dto.ROWPTName != null) row.ROWPTName = dto.ROWPTName;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ROWPTCode, row.ROWPTName, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapGet("/api/rowarrantytypes/{id:long}/phototypes", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var links = await db.ROWarrantyTypePhotos
+        .Where(x => x.OrgId == t.OrgId && x.ROWarrantyTypeId == id)
+        .Select(x => new { x.Id, x.ROWPTCode, x.ROWPTName }).ToListAsync();
+    var codes = links.Select(x => x.ROWPTCode).Distinct().ToList();
+    var cat = await db.RoWarrantyPhotoTypes
+        .Where(x => x.OrgId == t.OrgId && codes.Contains(x.ROWPTCode))
+        .Select(x => new { x.ROWPTCode, x.ROWPTName, x.FlagActive }).ToListAsync();
+    var map = cat.GroupBy(x => x.ROWPTCode).ToDictionary(g => g.Key, g => g.First());
+    // LEFT JOIN: khong nuot loai anh vang danh muc hoac da vo hieu hoa (nguon dung inner join + FlagActive = 1).
+    var items = links.Select(l =>
+    {
+        map.TryGetValue(l.ROWPTCode, out var m);
+        return new
+        {
+            l.Id, l.ROWPTCode,
+            name = m?.ROWPTName ?? l.ROWPTName,
+            inCatalog = m != null,
+            catalogFlagActive = m?.FlagActive,
+            sourceWouldDrop = m == null || m.FlagActive != "1",
+        };
+    }).ToList();
+    return Results.Ok(new
+    {
+        roWarrantyTypeId = id, count = items.Count, items,
+        rowsSourceWouldDrop = items.Count(x => x.sourceWouldDrop),
+        sourceInnerJoinsCatalogAndFiltersActive = "#850: _PhotoType_Get gom Ser_MST_ROWarrantyType_PhotoType vao #tmpsmrowpt roi inner join Ser_MST_ROWarrantyPhotoType f on tmpsmrowpt.ROWPTCode = f.ROWPTCode where (1=1) and f.FlagActive = 1 => mot loai anh BAT BUOC da cau hinh cho loai bao hanh se BIEN MAT khoi checklist neu ma cua no bi vo hieu hoa (hoac bi xoa) trong danh muc. Danh sach yeu cau TU NGAN LAI, IM LANG — ky thuat vien khong bi doi tam anh do nua va ho so bao hanh van du. Dung luat join vao bang danh muc = mat du lieu khi DOC (#410); dung ra la left join + hien thi ma tran",
+        literalInsteadOfConstant850 = "and f.FlagActive = 1 la LITERAL trong khi tang co TConst.Flag.Active (HANG khac GIA TRI)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/sermstlocations", async (AppDbContext db, ITenantContext t,
     string? dealerCode, string? stockNo, bool? all) =>
 {
@@ -73143,6 +73242,7 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record RoWarrantyPhotoTypeDto(string? ROWPTCode, string? ROWPTName, string? FlagActive);
 record SerMstLocationDto(string? LocationID, string? LocationCode, string? LocationName, string? StockNo, string? DealerCode, string? IsActive);
 record RoMaintanceSettingDto(long? ROMSID, decimal? Km, string? Maintances, string? FlagActive);
 record RoMaintanceSettingSaveDto(string? DealerCode, List<RoMaintanceSettingDto>? Items);

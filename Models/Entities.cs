@@ -5003,6 +5003,17 @@ public sealed class ROWarrantyTypePhoto
     public string? ROWPTName { get; set; }
 }
 
+/// <summary>Danh mục LOẠI ẢNH chứng minh bảo hành (Ser_MST_ROWarrantyPhotoType, nằm ở DB CommonCenter) — #850.
+/// Trước đây MiniHTC chỉ mô hình hoá bảng CHI TIẾT <see cref="ROWarrantyTypePhoto"/>, thiếu hẳn danh mục gốc.</summary>
+public sealed class RoWarrantyPhotoType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROWPTCode { get; set; } = "";
+    public string? ROWPTName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 /// <summary>
 /// Hạng mục công bảo hành theo model — port 1:1 FrmMstWarrantyWorkMng (TCMotor DMSCarSv/Admin).
 /// ⚠️ Tên bảng THẬT ở nguồn là <c>Ser_MST_ROWarrantyWork</c> (biz Ser_MST_ROWarrantyWork_Get);

@@ -276,6 +276,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ComplaintErrorCode> ComplaintErrorCodes => Set<ComplaintErrorCode>();
     public DbSet<ROWarrantyType> ROWarrantyTypes => Set<ROWarrantyType>();
     public DbSet<ROWarrantyTypePhoto> ROWarrantyTypePhotos => Set<ROWarrantyTypePhoto>();
+    public DbSet<RoWarrantyPhotoType> RoWarrantyPhotoTypes => Set<RoWarrantyPhotoType>();   // #850
     public DbSet<WarrantyWorkMst> WarrantyWorkMsts => Set<WarrantyWorkMst>();
     public DbSet<CompartmentMst> CompartmentMsts => Set<CompartmentMst>();
     public DbSet<HyundaiMeOutbox> HyundaiMeOutboxes => Set<HyundaiMeOutbox>();   // #586
