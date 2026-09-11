@@ -25130,6 +25130,88 @@ app.MapPost("/api/serstocks", async (SerStockDto dto, AppDbContext db, ITenantCo
     return Results.Ok(new { row.Id, row.StockNo, row.StockName, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #838 MÀN MỚI: SỬA / XOÁ KHO — `SerStock{Get,Create,Update,Delete}` (`Inventory.Master.cs`) =====
+// Bốn hàm, **cả bốn LIVE** qua web WS (Mini mới có `GET`/`POST /api/serstocks` + `/toggle`, port **từ FORM**):
+//   `:1483 Get`    md5 `3ee77869` (129 dòng, `Raise`=0)
+//   `:1622 Update` md5 `06c994ad` (148, `SaveData`=**3**) → guard `this.checkExistStockCode(...)`
+//   `:1779 Create` md5 `30ad7f6c` (147, `SaveData`=**3**) → **KHÔNG guard nào**
+//   `:1933 Delete` md5 `abeb16f7` (163, `Raise`=**2**)
+//   ⚠️ `Delete` là **hàm cuối file** (file 2104 dòng) ⇒ lại phải dùng nhánh dự phòng `E=$((L+1))` — bẫy **C0-310**
+//     vấp lần thứ **hai** (sau #832). **3B**: md5 `Delete` trên 150 = `abeb16f7` **KHỚP**.
+//
+// 🔴🔴🔴 **CẢ `Create` LẪN `Update` ĐỀU KHÔNG CHỐNG TRÙNG MÃ KHO**
+//   Áp **#403**, trích **trọn** danh sách region của `SerStockCreate`: `#region // temp` · `#region // Init:` ·
+//   `#region // Save data` · catch · finally — **không có `#region Check`**; `Raise`=0, `this.Check*`=0.
+//   Còn `SerStockUpdate` **có** gọi `checkExistStockCode`, nhưng mở helper ra thì nó tra
+//     `GetTableContents(…, "StockNo","=",strStockNo, "DealerCode","=",strDealerCode, "IsActive","=","1")`
+//     `if (dtStock == null || dtStock.Rows.Count == 0) throw … **Ser_Inv_Stock_NotExist**`
+//   ⇒ Nó là guard **"phải TỒN TẠI"** cho nhánh sửa, **KHÔNG** phải guard chống trùng.
+//   ⇒ **Không nhánh nào chặn tạo hai kho cùng `StockNo` trong một đại lý.**
+//   📌 **Đừng đọc vội thành "ngược chiều #818"**: ở #818 (`SerSupplier*`) Create **có** `checkExistSupplierCode`
+//     (ném khi **tìm thấy**) còn Update lọc sai phạm vi; ở #824 (`SerInsurance*`) **cả hai** đều có và nhất quán.
+//     Ở đây là trường hợp **thứ ba**: **cả hai đều thiếu**. ⇒ Ba màn master **trong cùng một file**
+//     `Inventory.Master.cs` + `Service.cs` có **ba mức bảo vệ khác nhau** cho cùng một loại nghiệp vụ.
+//
+// ⚪🔴 **NGHỊCH LÝ: `Delete` ĐƯỢC BẢO VỆ TỐT HƠN `Create`**
+//   `SerStockDelete` có **2** `Raise`: `Ser_Inv_Stock_**NotExist**` và
+//   `Ser_Inv_Stock_**NotDeleteOnlyOneStock**` — **không cho xoá kho cuối cùng** của đại lý.
+//   ⇒ Thuộc nhóm **9 mã `*NotDelete*`** đã đếm ở **#825** (các hàm `Delete` làm đúng).
+//   ⇒ Tức là: **xoá thì có hai lớp chặn, còn tạo thì không có lớp nào** — trái hẳn trực giác về rủi ro.
+//   Thân xoá: `delete from Ser_Inv_Stock …` chạy trên **ba** CSDL (`_dbMain` · `_dbWH` · `_dbDealer`, đều qua
+//   `ExecQuery` — lại đúng **#742**).
+// 📌 Mini: `PUT /api/serstocks/{stockNo}` và `DELETE /api/serstocks/{stockNo}` — **thêm** guard chống trùng mã
+//   (nguồn thiếu ở cả hai nhánh) và **giữ** guard "không xoá kho cuối cùng" của nguồn.
+app.MapPut("/api/serstocks/{stockNo}", async (string stockNo, SerStockDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var no = (stockNo ?? "").Trim();
+    var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
+    if (row is null) return Results.NotFound(new { error = "Ser_Inv_Stock_NotExist", stockNo = no });
+    var newNo = (dto.StockNo ?? no).Trim();
+    if (!string.Equals(newNo, no, StringComparison.OrdinalIgnoreCase))
+    {
+        // Guard NGUON THIEU o ca hai nhanh — Mini them.
+        var dup = await db.SerStocks.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.StockNo == newNo);
+        if (dup) return Results.Conflict(new { error = "trung ma kho", stockNo = newNo, sourceHasNoSuchGuard = true });
+        row.StockNo = newNo;
+    }
+    if (dto.StockName != null) row.StockName = dto.StockName;
+    if (dto.Contact != null) row.Contact = dto.Contact;
+    if (dto.Address != null) row.Address = dto.Address;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.StockNo, row.StockName, row.FlagActive,
+        sourceNeitherBranchGuardsDuplicate = "NGUON: SerStockCreate KHONG co #region Check nao (trich TRON danh sach region theo #403: temp / Init / Save data / catch / finally), Raise=0, Check*=0. SerStockUpdate CO goi checkExistStockCode nhung helper do nem khi KHONG tim thay (Ser_Inv_Stock_NotExist) => guard PHAI TON TAI cho nhanh sua, KHONG phai chong trung => khong nhanh nao chan tao hai kho cung StockNo trong mot dai ly",
+        threeMasterScreensThreeLevels = "KHONG doc voi thanh nguoc chieu #818: #818 (SerSupplier*) Create CO checkExistSupplierCode (nem khi TIM THAY) con Update loc sai pham vi; #824 (SerInsurance*) CA HAI deu co va nhat quan; day la truong hop THU BA — CA HAI deu thieu => ba man master co BA MUC BAO VE khac nhau cho cung mot loai nghiep vu",
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/serstocks/{stockNo}", async (string stockNo, AppDbContext db, ITenantContext t) =>
+{
+    var no = (stockNo ?? "").Trim();
+    var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
+    if (row is null) return Results.NotFound(new { error = "Ser_Inv_Stock_NotExist", stockNo = no });
+    // Guard cua NGUON: Ser_Inv_Stock_NotDeleteOnlyOneStock — khong cho xoa kho CUOI CUNG.
+    var total = await db.SerStocks.CountAsync(x => x.OrgId == t.OrgId);
+    if (total <= 1)
+    {
+        return Results.Conflict(new { error = "Ser_Inv_Stock_NotDeleteOnlyOneStock",
+            message = "khong duoc xoa kho cuoi cung", remaining = total });
+    }
+    db.SerStocks.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        stockNo = no, remaining = total - 1,
+        sourceDeleteIsBetterGuardedThanCreate = "NGHICH LY: SerStockDelete co HAI Raise (Ser_Inv_Stock_NotExist va Ser_Inv_Stock_NotDeleteOnlyOneStock — khong cho xoa kho CUOI CUNG cua dai ly) trong khi SerStockCreate khong co lop nao => XOA thi hai lop chan, TAO thi khong lop nao, trai han truc giac ve rui ro",
+        deleteBelongsToNotDeleteFamily = "Ser_Inv_Stock_NotDeleteOnlyOneStock thuoc nhom 9 ma *NotDelete* da dem o #825 (cac ham Delete lam DUNG)",
+        sourceDeletesThreeDatabases = "than xoa: delete from Ser_Inv_Stock ... chay tren BA CSDL (_dbMain, _dbWH, _dbDealer) deu qua ExecQuery — lai dung #742 (ExecQuery KHONG read-only)",
+        lastFunctionInFileTrapAgain = "SerStockDelete la HAM CUOI FILE (file 2104 dong) => phai dung nhanh du phong E=L+1; bay C0-310 vap lan thu HAI sau #832",
+        twoMachinesVerified = "md5 chuan hoa SerStockDelete tren may 150 = abeb16f7 KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/serstocks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
