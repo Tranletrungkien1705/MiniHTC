@@ -59324,6 +59324,102 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 //   số dòng **tích luỹ toàn bộ đầu vào**, không phải số dòng trong file ⇒ mọi vị trí báo ra **sai**, và trạng thái
 //   `pend[]` **rò rỉ chéo file**. Phát hiện vì `sed -n` tại dòng báo ra **không in được gì**. Sửa: dùng **`FNR`**
 //   và xoá `pend[]` khi `FNR==1`. ⇒ **Với awk nhiều file: luôn `FNR`, và reset trạng thái ở `FNR==1`.**
+// ===== 🔴🔴🔴 #815 MÀN MỚI: MÁY TRẠNG THÁI LỆNH SỬA CHỮA — `SerROTo*Status` → `SerROStatusUpdate` =====
+// **Năm vỏ bọc mỏng** (25-28 dòng mỗi cái) trong `BizCarSv.Service01.cs`, **tất cả LIVE** qua web WS,
+// đều gọi **cùng một thân** `SerROStatusUpdate` với một hằng trạng thái khác nhau:
+//   `:11279 SerROToInGarageStatus` (`WS:11297`, chú thích nguyên văn `// Bat dau sua chua`) → `Ser_RO_Stage.InGarage`
+//   `:11310 SerROToCheckEndStatus` (`WS:11329`)        → `Ser_RO_Stage.CheckEnd`
+//   `:11338 SerROToRepaireStatus`  (`WS:11641`, sai chính tả `Repaire`) → `Ser_RO_Stage.Repaired`
+//   `:11367 SerROToNotRespondingStatus` (`WS:11386`)   → `Ser_RO_Stage.NotResponding`
+//   `:11394 SerROToFinishedStatus` (`WS:11358`)        → `Ser_RO_Stage.Finished`
+// Thân thật: `BizCarSv.Service01.cs:9415-9804` md5 `5f863e0c` (361 dòng, **6** `Raise`, **3** `SaveData`).
+// **BƯỚC 3B**: `Service01.cs` **17458** dòng trên **cả hai** máy; md5 trên 150 = `5f863e0c` **KHỚP**.
+//
+// **HẰNG ≠ GIÁ TRỊ** — mở `TERP.Constants/Const.Main.cs:172-186` (giữ nguyên chú thích, cả khoảng trắng thừa):
+//   `Create="CRE"` *Lập báo giá* · `Print="PRT"` *In báo giá* · `Wait4Part="W4P"` *Đợi phụ tùng* ·
+//   `HasPart="HPA"` *Đã có phụ tùng* · `HasRO="HRO"` *Lập lệnh sửa chữa* · `RejectRO="REJ"` *Hủy* ·
+//   `InGarage="**INGA**"` *Vào sửa chữa* · `CheckEnd="**CEND**"` *Kiểm tra cuối cùng* · `Repaired="**RPRD**"` *Sửa xong* ·
+//   `Paid="**PAID**"` *Đã thanh toán* · `Finished="**FNS**"` *Đã hoàn thành* · `NotResponding="**NORE**"` — **`// Chưa dùng`**
+//
+// ✅ **MÁY TRẠNG THÁI THẬT** (đọc từ các `case` trong thân):
+//     `INGA` ⟵ **CRE** hoặc **PRT** hoặc **HRO**   · `RPRD` ⟵ **INGA** · `CEND` ⟵ **RPRD**
+//     `PAID` ⟵ **CEND**                            · `FNS`  ⟵ **PAID**
+//   ⇒ Chuỗi bắt buộc: `CRE/PRT/HRO → INGA → RPRD → CEND → PAID → FNS`. Mỗi bước sai ném một mã riêng
+//     (`Ser_RO_UpdateStatus_InvalidStatusInGarage` / `…Repaired` / `…CheckEnd` / `…Paid` / `…Finished`).
+//
+// 🔴🔴🔴 **`NotResponding` KHÔNG CÓ `case` NÀO — CHUYỂN TRẠNG THÁI KHÔNG QUA GUARD**
+//   Thân hàm có `case` cho `InGarage`, `Repaired`, `CheckEnd`, `Paid`, `Finished` — **không** có cho
+//   `NotResponding`. ⇒ `SerROToNotRespondingStatus` đẩy lệnh sửa chữa sang `NORE` **từ BẤT KỲ trạng thái nào**,
+//   kể cả `FNS` (đã hoàn thành) hay `PAID` (đã thanh toán).
+//   🔴 Và chính hằng đó mang chú thích **`// Chưa dùng`** trong khi **WS vẫn công bố endpoint** (`:11386`)
+//     ⇒ **lời chú thích và thực tế triển khai mâu thuẫn**; nếu client gọi nhầm thì không có gì chặn.
+//
+// 🔴 **`Rows[0]` ngay sau helper** (họ #812/#813/#814): `this.checkROForChangeStatus(_dbDealer, ref alParamsCoupleError,`
+//   `strROID, strNewStatus, out dtRO);` rồi `dtRO.Rows[0]["Status"]` / `["RONo"]` / `["FlagPause"]` **ngay**.
+//   ⚪ Ở đây guard **có thật** — `checkROForChangeStatus` là helper kiểm tồn tại (nó nằm trong danh sách 41 tên
+//     rủi ro thụt-TAB của #800) ⇒ đây là ca thuộc nhóm **25 site có `Check*` gần đó** trong phép đo #814,
+//     **không** thuộc nhóm 44 ca trần trụi. Ghi rõ để không đếm trùng.
+// 🔴 Guard thứ sáu là `Ser_RO_UpdateStatus_**InvalidFlagPause**` ⇒ lệnh đang **tạm dừng** thì không đổi trạng thái được.
+// 📌 Mini: `POST /api/repairorders/{roId}/status` — áp **đúng** máy trạng thái, và **chặn** `NORE` bằng cách bắt
+//   khai báo `allowUnguardedNotResponding` thay vì để nó đi qua im lặng như nguồn.
+app.MapPost("/api/repairorders/{roId}/status", async (long roId, RoStatusChangeDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.Id == roId);
+    if (ro == null) return Results.NotFound(new { error = "khong tim thay lenh sua chua" });
+    var oldStatus = (ro.Status ?? "").Trim().ToUpperInvariant();
+    var newStatus = (dto.NewStatus ?? "").Trim().ToUpperInvariant();
+    // Bang chuyen doi 1:1 voi cac case cua nguon.
+    var allowed = new Dictionary<string, string[]>
+    {
+        ["INGA"] = new[] { "CRE", "PRT", "HRO" },
+        ["RPRD"] = new[] { "INGA" },
+        ["CEND"] = new[] { "RPRD" },
+        ["PAID"] = new[] { "CEND" },
+        ["FNS"]  = new[] { "PAID" },
+    };
+    if (newStatus == "NORE")
+    {
+        if (!dto.AllowUnguardedNotResponding)
+        {
+            return Results.BadRequest(new
+            {
+                error = "NORE khong co case nao trong nguon => chuyen duoc tu BAT KY trang thai nao",
+                sourceHasNoGuardForNotResponding = true,
+                constantSaysUnused = "Ser_RO_Stage.NotResponding = NORE // Chua dung",
+                hint = "dat allowUnguardedNotResponding = true neu that su muon lam dung nhu nguon",
+            });
+        }
+    }
+    else if (allowed.TryGetValue(newStatus, out var froms))
+    {
+        if (!froms.Contains(oldStatus))
+        {
+            return Results.BadRequest(new { error = "Ser_RO_UpdateStatus_InvalidStatus" + newStatus,
+                oldStatus, newStatus, allowedFrom = froms });
+        }
+    }
+    else
+    {
+        return Results.BadRequest(new { error = "trang thai dich khong nam trong may trang thai", newStatus });
+    }
+    ro.Status = newStatus;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        roId, oldStatus, newStatus,
+        stageConstants = new { Create = "CRE", Print = "PRT", Wait4Part = "W4P", HasPart = "HPA",
+            HasRO = "HRO", RejectRO = "REJ", InGarage = "INGA", CheckEnd = "CEND", Repaired = "RPRD",
+            Paid = "PAID", Finished = "FNS", NotResponding = "NORE" },
+        sourceStateMachine = "CRE/PRT/HRO -> INGA -> RPRD -> CEND -> PAID -> FNS (doc tu cac case trong SerROStatusUpdate, Service01.cs:9415-9804 md5 5f863e0c)",
+        sourceHasNoCaseForNotResponding = "than ham co case cho InGarage, Repaired, CheckEnd, Paid, Finished — KHONG co cho NotResponding => SerROToNotRespondingStatus (LIVE qua WS:11386) day RO sang NORE tu BAT KY trang thai nao, ke ca FNS (da hoan thanh) hay PAID (da thanh toan)",
+        constantSaysUnusedButEndpointIsLive = "hang Ser_RO_Stage.NotResponding = NORE mang chu thich // Chua dung trong khi WS VAN cong bo endpoint => loi chu thich va thuc te trien khai MAU THUAN",
+        fiveThinWrappersOneBody = "nam vo boc 25-28 dong (SerROToInGarageStatus // Bat dau sua chua, SerROToCheckEndStatus, SerROToRepaireStatus — sai chinh ta Repaire, SerROToNotRespondingStatus, SerROToFinishedStatus) deu goi cung than SerROStatusUpdate voi mot hang khac nhau",
+        sixthGuardIsFlagPause = "guard thu sau la Ser_RO_UpdateStatus_InvalidFlagPause => lenh dang TAM DUNG thi khong doi trang thai duoc",
+        rows0AfterHelperButGuardIsReal = "AM TINH: checkROForChangeStatus(_dbDealer, ref alParamsCoupleError, strROID, strNewStatus, out dtRO) roi dtRO.Rows[0] NGAY — nhung helper do CHINH LA guard kiem ton tai => ca nay thuoc nhom 25 site co Check* gan do trong phep do #814, KHONG thuoc nhom 44 ca tran trui. Ghi ro de khong dem trung",
+        twoMachinesVerified = "Service01.cs 17458 dong tren CA HAI may; md5 chuan hoa tren 150 = 5f863e0c KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/rows0-without-guard-sweep", () => Results.Ok(new
 {
     trigger = "#812 (CarSv_SerCarUpdate_Key*) va #813 (Email_TempEmail_Update) — hai luot lien tiep cung khuon",
@@ -70590,6 +70686,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record RoStatusChangeDto(string? NewStatus, bool AllowUnguardedNotResponding);
 record EmailTemplateUpdateDto(string? DealerCode, string? TempSubject, string? TempBody, string? TempTypeEmail, string? TempFileAttachment);
 record CarUpdateByKeyDto(string? KeyType, string? PlateNo, string? FrameNo, string? DealerCode, string? CusID, string? TradeMarkCode);
 record CavityConflictDto(string? CavityID, DateTime From, DateTime To, long? AppId);
