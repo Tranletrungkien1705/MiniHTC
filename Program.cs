@@ -6112,7 +6112,16 @@ app.MapGet("/api/sysusers/{userCode}/objects", async (string userCode, AppDbCont
     }).ToListAsync();
     // Mã có trong map nhưng KHÔNG có trong danh mục — dấu hiệu danh mục thiếu dòng.
     var orphan = codes.Except(objects.Select(o => o.ObjectCode)).ToList();
-    return Results.Ok(new { userCode, groups, count = objects.Count, objects, orphanCodes = orphan });
+    return Results.Ok(new
+    {
+        userCode, groups, count = objects.Count, objects, orphanCodes = orphan,
+        // ===== 🔴🔴🔴 #830 TRẢ NỢ #828 — VỎ BỌC TRUYỀN CHUỖI RỖNG CHO **MƯỜI** THAM SỐ LỌC =====
+        wrapperPassesEmptyForDealerFilter = "#830: vo boc Ser_SysGetMapSysUserSysObjectForCurrentUser CO nhan strDealerCodeList tu client nhung khi goi helper mySys_GetMapSysUserSysObject no truyen \"\" // strDealerCode — CHUOI RONG, kem comment noi ro do la vi tri strDealerCode. Tham so client gui len bi BO hoan toan (day la ly do #828 dem no la tham so chet)",
+        onlyThreeOfThirteenFiltersAreReal = "#830: helper nhan 13 doi so loc; vo boc truyen THAT chi BA: strUserCodeList = strPartnerUserCode, strPartnerCodeList = strPartnerCode, va ba co FlagActive (User/Dealer/Object) = TConst.Flag.Active. Muoi doi so con lai deu la chuoi RONG: strDealerCode, strUserNamePattern, strFlagSysAdminList, strBUCodeList, strBUCodePattern, strGroupCodeList, strObjectCodeList, strObjectTypeList",
+        scopeClaimIsBounded830 = "KHONG over-claim: pham vi VAN bi gioi han theo NGUOI DUNG (strPartnerUserCode) va DOI TAC (strPartnerCode). Rui ro that chi xuat hien khi CUNG MOT UserCode duoc dung o NHIEU DAI LY trong cung mot partner — khi do quyen hieu luc tra ve KHONG duoc loc theo dai ly",
+        catalogPairHasNoDealerPlaceholderAtAll = "#830: hai ham cung nhom — Ser_SysGetPartner (System.cs:859-988 md5 494f6a1f) va Ser_SysGetObjectType (:989-1118 md5 b7c5e096) — co strDealerCodeList o CHU KY nhung trong SQL KHONG he co placeholder zzzzClauseWhere…DealerCode nao. Khac #810 (placeholder BI COMMENT nhung C# van Replace): o day khong co placeholder de ma comment",
+        md5CorrectionOf761 = "⛔ #830 DINH CHINH #761: o do ghi md5 3a062713 cho Ser_SysGetMapSysUserSysObjectForCurrentUser. Do lai bang cong thuc dung (neo ^[[:space:]]*, sau bay awk 8-space cua #799/#800) ra 47bc7824 — va may 150 CUNG ra 47bc7824. So dong 92 thi khop. BizCarSv.System.cs la file TAB-nang (17 khai bao TAB / 3 space, xem #800) nen dung la ca de dinh bay do",
+    });
 }).RequireAuthorization();
 
 // ===== Người dùng / nhóm hệ thống (Sys_User, Sys_Group — port 1:1 `SysSaveUser`(16095) /
