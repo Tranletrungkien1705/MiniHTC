@@ -39064,6 +39064,90 @@ app.MapGet("/api/stockins/paper-report", async (AppDbContext db, ITenantContext 
 //   `_New20210618` dùng `ProcessBizReq(…)` / `ProcessBizReturn(…)`. Cùng việc, hai cách — không phải lỗi,
 //   nhưng giải thích vì sao `Raise`/`SaveData` đếm khác nhau giữa các thế hệ.
 // 📌 Mini: `/api/bulletins/by-vin` đã có ⇒ vòng này **chỉ ghi cờ**; thêm endpoint tra cứu định tuyến bốn cổng.
+// ===== 🔴🔴🔴 #854 MÀN MỚI: GẮN LỊCH HẸN VÀO PHIẾU SỬA CHỮA — `Ser_RO_UpdateAppId` =====
+// `BizCarSv.Appointment.cs:1955-2085` md5 `35f225c2` (131 dòng), LIVE (**4** vỏ bọc). **3B**: **KHỚP** máy 150.
+// Mini có cột `RepairOrder.AppId` (#271) nhưng **không endpoint nào ghi nó** ⇒ màn mới.
+//
+// 🔴🔴🔴 **`Rows[0]` TRẦN, VÀ TOÀN HÀM KHÔNG MỘT `Raise`**
+//   `dt_Ser_RO = GetTableContents(_dbDealer, "Ser_RO", "top 1 *", "", "ROID","=",strROID);`
+//   `dt_Ser_RO.**Rows[0]**["AppId"] = strAppId;`  ← **dòng ngay sau**, không kiểm `Rows.Count`
+//   ⇒ `strROID` sai (hoặc phiếu **chưa đồng bộ xuống DB đại lý**) ⇒ `IndexOutOfRange` thô, không mã lỗi.
+//   ⇒ Thuộc nhóm **44 site trần trụi** của #814. Áp **#403** — trích trọn danh sách region:
+//     `#region // Temp:` · `#region // Init:` · `#region // **Check Input Detail:**` · `#region // Update:`
+//     · `#region // Ser_RO:` · catch · finally. Region tên `Check Input Detail` **chỉ chứa**
+//     `string strTDate = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");` ⇒ **rỗng về nghiệp vụ**.
+//   ⇒ **Lần thứ NĂM** gặp region-Check-rỗng (#841, #843, #845, #851, đây); và đây thuộc **trường hợp con (i)**
+//     của #851 — **không có guard ở bất kỳ region nào**, chứ không phải guard đặt nhầm chỗ.
+//
+// 🔴🔴 **ĐỌC `_dbDealer` NHƯNG GHI CẢ BA CSDL** — ca thứ HAI của kiểu "guard hẹp hơn phạm vi ghi"
+//   `_dbMain.SaveData("Ser_RO", …)` · `_dbWH.SaveData(…)` · `if (bNeedTransaction_Dealer) _dbDealer.SaveData(…)`
+//   ⇒ Phiếu **có ở Main/WH nhưng chưa xuống Dealer** ⇒ nổ ngay ở `Rows[0]`, dù bản Main hoàn toàn hợp lệ.
+//   ⇒ Đúng kiểu #851 (`SerMstPartUpdateActive`) ⇒ **hai ca** ⇒ củng cố #338, **chưa đủ ba để gọi là khuôn tầng**.
+//   ⇒ Và `DataTable` mang **schema của Dealer** lại được `SaveData` lên Main/WH.
+//
+// 🔴🔴 **KHÔNG KIỂM LỊCH HẸN CÓ THẬT, CŨNG KHÔNG KIỂM PHIẾU ĐÃ GẮN LỊCH KHÁC**
+//   `strAppId` được gán thẳng vào cột `AppId` — **không** một truy vấn nào tra bảng lịch hẹn.
+//   ⇒ ① Gắn `AppId` **không tồn tại** ⇒ phiếu trỏ tới lịch hẹn **ma**; màn lịch hẹn lọc
+//       `BuildClauseConditionList("and", "ro.AppId", …)` (`Ser_RO_Get_ByAppId`) sẽ **không bao giờ** tìm ra nó,
+//       nhưng phiếu vẫn mang giá trị rác.
+//   ⇒ ② Phiếu **đã có** `AppId` khác ⇒ bị **ghi đè im lặng**, liên kết cũ mất, **không** có bản ghi lịch sử.
+//   ⇒ Hệ quả nghiệp vụ đã ghi ở #271: `AppId` khác rỗng ⇒ **khách có hẹn** ⇒ đẩy dữ liệu sang HCC;
+//     `AppId` rỗng ⇒ khách vãng lai, **không đẩy gì**. Vậy một `AppId` rác **bật nhầm** cả luồng gửi HCC.
+// 📌 Mini: `POST /api/repairorders/{roNo}/appointment` — **kiểm lịch hẹn tồn tại**, **báo** khi ghi đè liên kết cũ
+//   (nguồn im lặng), và trả `willPushToHcc` để thấy rõ hệ quả của việc đặt `AppId`.
+app.MapPost("/api/repairorders/{roNo}/appointment", async (string roNo, RoAppointmentDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var no = (roNo ?? "").Trim();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null)
+    {
+        return Results.NotFound(new
+        {
+            error = "Ser_RO_NotFound", roNo = no,
+            sourceWouldCrashHere = "NGUON khong co guard nao: dt_Ser_RO.Rows[0] duoc doc NGAY sau GetTableContents nen truong hop nay la IndexOutOfRange tho",
+        });
+    }
+    var appId = (dto.AppId ?? "").Trim();
+    var clearing = appId.Length == 0;
+    if (!clearing)
+    {
+        // Guard NGUON THIEU: lich hen phai co that.
+        var appExists = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.AppNo == appId);
+        if (!appExists)
+        {
+            return Results.NotFound(new
+            {
+                error = "Ser_Appointment_NotFound", appId,
+                sourceHasNoSuchGuard = "nguon gan strAppId thang vao cot AppId, KHONG mot truy van nao tra bang lich hen",
+            });
+        }
+    }
+    var previous = ro.AppId;
+    var overwriting = !string.IsNullOrWhiteSpace(previous) && previous != appId;
+    if (overwriting && dto.AllowOverwrite != true)
+    {
+        return Results.Conflict(new
+        {
+            error = "phieu da gan lich hen khac", roNo = no, currentAppId = previous, newAppId = appId,
+            hint = "goi lai voi allowOverwrite=true neu that su muon doi",
+            sourceOverwritesSilently = true,
+        });
+    }
+    ro.AppId = clearing ? null : appId;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        roNo = no, previousAppId = previous, appId = ro.AppId, overwritten = overwriting,
+        willPushToHcc = !string.IsNullOrWhiteSpace(ro.AppId),
+        sourceBareRows0NoRaiseAtAll = "#854: dt_Ser_RO = GetTableContents(_dbDealer, Ser_RO, top 1 *, rong, ROID, =, strROID) roi DONG NGAY SAU la dt_Ser_RO.Rows[0][AppId] = strAppId — khong kiem Rows.Count, va TOAN HAM khong mot Raise => strROID sai (hoac phieu chua dong bo xuong DB dai ly) thi IndexOutOfRange tho. Thuoc nhom 44 site tran trui cua #814",
+        emptyCheckRegionFifthTime = "AP #403 — trich TRON danh sach region: Temp / Init / Check Input Detail / Update / Ser_RO / catch / finally. Region ten Check Input Detail CHI chua string strTDate = DateTime.Now.ToString(...) => RONG ve nghiep vu. LAN THU NAM gap region-Check-rong (#841, #843, #845, #851, day), va day thuoc TRUONG HOP CON (i) cua #851 — KHONG co guard o bat ky region nao, chu khong phai guard dat nham cho",
+        readsDealerButWritesAllThree = "doc _dbDealer nhung ghi _dbMain.SaveData + _dbWH.SaveData + _dbDealer.SaveData => phieu CO o Main/WH nhung chua xuong Dealer thi no ngay o Rows[0] du ban Main hoan toan hop le. Dung kieu #851 (SerMstPartUpdateActive) => HAI ca, cung co #338, CHUA du ba de goi la khuon tang. Va DataTable mang SCHEMA CUA DEALER lai duoc SaveData len Main/WH",
+        noAppointmentExistenceCheckNoOverwriteCheck = "strAppId duoc gan THANG vao cot AppId — KHONG mot truy van nao tra bang lich hen. (1) Gan AppId khong ton tai => phieu tro toi lich hen MA; man lich hen loc BuildClauseConditionList(and, ro.AppId, ...) trong Ser_RO_Get_ByAppId se KHONG BAO GIO tim ra no nhung phieu van mang gia tri rac. (2) Phieu DA CO AppId khac => bi GHI DE IM LANG, lien ket cu mat, KHONG co ban ghi lich su",
+        businessConsequenceViaHcc = "he qua nghiep vu da ghi o #271: AppId khac rong => khach CO HEN => day du lieu sang HCC; AppId rong => khach vang lai, KHONG day gi. Vay mot AppId rac BAT NHAM ca luong gui HCC",
+        twoMachinesVerified854 = "md5 chuan hoa 35f225c2 KHOP may 150",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/bulletin-generation-routing", () => Results.Ok(new
 {
     totalGetFunctions = 9,
@@ -73442,6 +73526,7 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record RoAppointmentDto(string? AppId, bool? AllowOverwrite);
 record RoWarrantyPhotoTypeDto(string? ROWPTCode, string? ROWPTName, string? FlagActive);
 record SerMstLocationDto(string? LocationID, string? LocationCode, string? LocationName, string? StockNo, string? DealerCode, string? IsActive);
 record RoMaintanceSettingDto(long? ROMSID, decimal? Km, string? Maintances, string? FlagActive);
