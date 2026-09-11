@@ -56431,6 +56431,81 @@ app.MapGet("/api/customercares/search", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #856 PARITY: CSKH THƯỜNG — **CẢ BA HÀM GHI CRUD ĐỀU CHẾT**, LUỒNG GHI THẬT NẰM CHỖ KHÁC =====
+// Mini đã có `/api/customercares` (+ `/contact`, `/close`, `/survey`) ⇒ **vòng parity, KHÔNG tăng bộ đếm màn**.
+//   `Customer.cs:10525 Ser_CustomerCare_Create` md5 `91f7284c` (193 dòng)
+//   `:10718 Ser_CustomerCare_Update` md5 `9d6ceefd` (200) · `:10918 Ser_Customer_**Care**_Delete` md5 `d70068e8` (130)
+//   **3B**: cả ba **KHỚP** máy 150.
+//
+// 🔴🔴🔴 **BA HÀM GHI NÀY KHÔNG VỎ BỌC NÀO GỌI — CHÚNG CHẾT**
+//   Grep toàn cây (bỏ `Web References`, bỏ dòng comment) cho mỗi tên:
+//     `Ser_CustomerCare_Create`  → chỉ **thân hàm** + hằng `Error.CarSv.cs:456`
+//     `Ser_CustomerCare_Update`  → chỉ **thân hàm** + hằng `:457`
+//     `Ser_Customer_Care_Delete` → chỉ **thân hàm** + hằng `:458`
+//   Đối chứng (cùng phép grep, cùng file): `Ser_CustomerCareDOB_Create` và `Ser_CustomerCare_GetNew` **có đủ**
+//     `[WebMethod]` ở `HTCWSCarSv/WSCarSv.asmx.cs` + `.20210208` + `.20210412` + `TERP.WSCarSv`, **và** màn
+//     WinForm gọi (`Views/Customer/FrmCSCCustomerCareDOB.cs`, `FrmCustomerCare.cs`) ⇒ **SỐNG**.
+//   ⇒ Vậy phép grep của tôi **có bắt được** lời gọi khi chúng tồn tại ⇒ kết luận "chết" **không phải âm tính giả**.
+//   **Máy 150 cũng đếm 0 vỏ bọc** cho `Ser_CustomerCare_Create`.
+//   🔴 **Hằng lỗi vẫn được khai báo đủ ba** (`Error.CarSv.cs:456/457/458`) ⇒ dấu vết duy nhất còn lại;
+//     ai grep theo **hằng** sẽ tưởng ba hàm còn sống.
+//
+// 🔴🔴 **VẬY BẢN GHI CSKH ĐƯỢC SINH RA Ở ĐÂU?** — grep mọi chỗ ghi bảng `Ser_CustomerCare`:
+//   `Customer.cs:11840` (`Ser_CustomerCareStatusUpdate**xxx**` — bản **chết**) · `:11887` (`…StatusUpdate` — **SỐNG**)
+//   · `:11961` · `:15187` (`Ser_CustomerCareMaintance`) · `Service01.cs:7497/8222/10924/11046`
+//   · `ZTemp.cs:11102/11263/13038/14037`
+//   ⇒ **Không một chỗ nào** trong số đó là `Ser_CustomerCare_Create`. Bản ghi CSKH được **sinh tự động** từ
+//     luồng đóng phiếu sửa chữa (`Service01.cs`, `ZTemp.cs`) và từ `Ser_CustomerCareMaintance`, **không phải**
+//     do người dùng tạo tay qua WS.
+//   ⇒ **GAP cần biết cho MiniHTC**: `POST /api/customercares` của Mini là **tạo tay** — nguồn **không có** đường
+//     tương ứng đang sống. Không gỡ endpoint (nó vẫn hữu ích để nạp dữ liệu), nhưng **không được coi nó là**
+//     **bản port 1:1** của `Ser_CustomerCare_Create`.
+//
+// 🔴🔴🔴 **`Ser_CustomerCareStatusUpdate` — THAM SỐ `dbAction` CHỈ ĐIỀU KHIỂN VẾ ĐỌC, VẾ GHI HARDCODE**
+//   Chữ ký: `public void Ser_CustomerCareStatusUpdate(**TDAL.IEzDAL dbAction**, string strCusCareID, …)`
+//   Đọc : `GetTableContents(**dbAction**, "Ser_CustomerCare", "top 1 *", "", "CusCareID","=",strCusCareID)`
+//   Ghi  : `**_dbMain**.SaveData(…)` · `**_dbWH**.SaveData(…)` · `if (!bIsWSMain) **_dbDealer**.SaveData(…)`
+//   Cả **bốn** lời gọi (`Customer.cs:14208 / 14427 / 15305 / 16204`) đều truyền `_dbDealer`.
+//   ⇒ Người gọi **tưởng** mình chọn được CSDL, thực ra chỉ đổi **chỗ đọc**; vế ghi **luôn là cả ba**.
+//   ⇒ Đây là **ca thứ TƯ** của họ "guard/đọc hẹp hơn phạm vi ghi" (#851, #854, #855, đây) — và là ca **mạnh nhất**:
+//     tham số **tồn tại** nhưng **không điều khiển được vế ghi**, nên đọc chữ ký sẽ hiểu sai hoàn toàn.
+//   ⚪ Khác ba ca kia ở một điểm **tốt**: hàm này **CÓ** kiểm `if (dtCustomerCare != null && Rows.Count > 0)`
+//     trước khi đọc `Rows[0]` ⇒ không thuộc nhóm 44 site trần trụi của #814.
+//
+// 🔴 **MÌN ĐỊNH DẠNG — `else` KHÔNG NGOẶC, BA CÂU LỆNH TRÊN MỘT DÒNG** (luật #411):
+//     `else dtCustomerCare.Rows[0]["ContactDate"] = DBNull.Value;alColumnEffective.Add("ContactDate");`
+//   `else` không có `{}` nên **chỉ ăn câu lệnh đầu**; `Add("ContactDate")` là câu **riêng biệt**, chạy ở **cả hai**
+//   nhánh — **đúng ý định, nhưng đúng một cách tình cờ**. Thêm bất kỳ dòng nào vào nhánh `else`, hoặc
+//   auto-format tách dòng, là hành vi **đổi ngay**. Bản chết `…Updatexxx` có **y hệt** lỗi định dạng này.
+// ⚪ Lý do clone ra bản `xxx`: bản chết đọc `_dbMain`, bản sống đọc `dbAction` ⇒ clone **chỉ sửa vế đọc**,
+//   vế ghi giữ nguyên hardcode ⇒ **sửa được nửa vấn đề**.
+// 📌 Mini: thêm endpoint tra cứu để không ai nhầm `POST /api/customercares` là port của hàm đã chết.
+app.MapGet("/api/_meta/customercare-write-paths", () => Results.Ok(new
+{
+    deadWriteFunctions = new[]
+    {
+        "Ser_CustomerCare_Create (Customer.cs:10525, md5 91f7284c) — chi than ham + hang Error.CarSv.cs:456",
+        "Ser_CustomerCare_Update (Customer.cs:10718, md5 9d6ceefd) — chi than ham + hang :457",
+        "Ser_Customer_Care_Delete (Customer.cs:10918, md5 d70068e8) — chi than ham + hang :458",
+    },
+    controlGroupProvesGrepWorks = "doi chung cung phep grep cung file: Ser_CustomerCareDOB_Create va Ser_CustomerCare_GetNew CO DU WebMethod o HTCWSCarSv/WSCarSv.asmx.cs + .20210208 + .20210412 + TERP.WSCarSv, VA man WinForm goi (Views/Customer/FrmCSCCustomerCareDOB.cs, FrmCustomerCare.cs) => SONG. Vay phep grep CO bat duoc loi goi khi chung ton tai => ket luan chet KHONG phai am tinh gia. May 150 cung dem 0 vo boc cho Ser_CustomerCare_Create",
+    errorConstantsStillDeclared = "hang loi van duoc khai bao du ba (Error.CarSv.cs:456/457/458) => dau vet duy nhat con lai; ai grep theo HANG se tuong ba ham con song",
+    realWritePaths = new[]
+    {
+        "Customer.cs:11840 — Ser_CustomerCareStatusUpdatexxx (ban CHET)",
+        "Customer.cs:11887 — Ser_CustomerCareStatusUpdate (SONG, 4 loi goi)",
+        "Customer.cs:11961, :15187 — Ser_CustomerCareMaintance",
+        "Service01.cs:7497, :8222, :10924, :11046 — luong dong phieu sua chua",
+        "ZTemp.cs:11102, :11263, :13038, :14037 — luong dong phieu sua chua (ban ZTemp)",
+    },
+    conclusionOnRecordOrigin = "KHONG mot cho nao trong so do la Ser_CustomerCare_Create => ban ghi CSKH duoc SINH TU DONG tu luong dong phieu sua chua (Service01.cs, ZTemp.cs) va tu Ser_CustomerCareMaintance, KHONG phai do nguoi dung tao tay qua WS",
+    miniGap = "GAP can biet cho MiniHTC: POST /api/customercares cua Mini la TAO TAY — nguon KHONG co duong tuong ung dang song. Khong go endpoint (van huu ich de nap du lieu) nhung KHONG duoc coi no la ban port 1:1 cua Ser_CustomerCare_Create",
+    dbActionParamOnlyControlsRead = "#856: Ser_CustomerCareStatusUpdate co chu ky nhan TDAL.IEzDAL dbAction; DOC thi GetTableContents(dbAction, Ser_CustomerCare, top 1 *, rong, CusCareID, =, strCusCareID) nhung GHI thi _dbMain.SaveData + _dbWH.SaveData + if (!bIsWSMain) _dbDealer.SaveData — HARDCODE. Ca BON loi goi (Customer.cs:14208/14427/15305/16204) deu truyen _dbDealer => nguoi goi TUONG minh chon duoc CSDL, thuc ra chi doi CHO DOC; ve ghi LUON la ca ba. Ca thu TU cua ho guard/doc hep hon pham vi ghi (#851, #854, #855, day) va la ca MANH NHAT: tham so TON TAI nhung KHONG dieu khien duoc ve ghi nen doc chu ky se hieu sai hoan toan",
+    positiveRowsCountChecked = "AM TINH: khac ba ca kia o mot diem TOT — ham nay CO kiem if (dtCustomerCare != null && dtCustomerCare.Rows.Count > 0) truoc khi doc Rows[0] => khong thuoc nhom 44 site tran trui cua #814",
+    formattingLandmineElseWithoutBraces = "MIN DINH DANG (luat #411): else dtCustomerCare.Rows[0][ContactDate] = DBNull.Value;alColumnEffective.Add(ContactDate); — else KHONG co ngoac nen CHI an cau lenh dau; Add(ContactDate) la cau RIENG BIET, chay o CA HAI nhanh => DUNG Y DINH NHUNG DUNG MOT CACH TINH CO. Them bat ky dong nao vao nhanh else, hoac auto-format tach dong, la hanh vi DOI NGAY. Ban chet ...Updatexxx co Y HET loi dinh dang nay",
+    whyTheXxxCloneExists = "AM TINH: ban chet doc _dbMain, ban song doc dbAction => clone CHI SUA VE DOC, ve ghi giu nguyen hardcode => sua duoc nua van de",
+    twoMachinesVerified856 = "md5 chuan hoa KHOP may 150: _Create 91f7284c, _Update 9d6ceefd, _Care_Delete d70068e8, StatusUpdate 3739ee2f",
+})).RequireAuthorization();
 app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, ITenantContext t) =>
 {
     // #220: mã nguồn viết thường ⇒ chuẩn hoá về LOWER, không phải UPPER.
