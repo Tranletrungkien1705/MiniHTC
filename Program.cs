@@ -15050,6 +15050,101 @@ app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext
 //   ⇒ Không chỉ cần **công thức chuẩn hoá đúng**, mà phải là **đúng cùng MỘT đường ống** ở cả hai máy.
 // 📌 Mini: `DELETE /api/servicemodels/{code}` — guard tham chiếu chạy trên **cùng** nguồn dữ liệu với lệnh xoá
 //   (vá lỗi trỏ sai DB của nguồn), và **bắt buộc** `ModelCode` như thế hệ `_New20200203`.
+// ===== 🔴🔴🔴 #846 MÀN MỚI: THIẾT LẬP MỐC BẢO DƯỠNG THEO KM — `Ser_MST_ROMaintanceSetting_{Get,Save}` =====
+// `BizCarSv.Master.cs:10121 Get` md5 `0fff7da7` (121 dòng) · `:10242 Save` md5 `2cbe74b7` (**312 dòng**,
+// `Raise`=2, `SaveData`=3, `ExecQuery`=4). Vỏ bọc LIVE: `HTCWSCarSv/WSCarSv.asmx.cs:27725` và `:27755`.
+// **3B**: cả hai md5 **KHỚP** máy 150. Mini **chưa hề có** bảng này ⇒ §12 đủ bốn chỗ.
+//
+// 🔴🔴🔴 **GIÁ TRỊ CỦA CLIENT ĐƯỢC NHÚNG THẲNG VÀO SQL, TRONG DẤU NHÁY**
+//     `… where (1=1) and t.ROMSID = '**@strROMSID**'` + `StringUtils.Replace(…, "@strROMSID",`
+//     `    dt_…_Input.Rows[i]["ROMSID"].ToString())`
+//   ⇒ Đây **không** phải tham số: `@strROMSID` nằm **trong cặp nháy đơn** và bị thay bằng `Replace` chuỗi.
+//     Giá trị đến từ **DataSet do client gửi lên** ⇒ **bề mặt SQL injection**.
+//   ⇒ Cùng họ cảnh báo `[BAKE-PARAM-MIX]` đã ghi, nhưng ở đây **không có** trộn param — là **bake thuần**,
+//     nên không có guard nào chết câm; thứ hỏng là **ranh giới dữ liệu/mã lệnh**.
+//   📌 Đối chiếu: chính hàm này ở khối sau lại dùng **đúng** tham số — `_dbMain.ExecQuery(strSql_Get_Ser_ROWW_Main,`
+//     `"@ROMSID", iROMSID)` ⇒ **hai cách viết đối lập cách nhau chưa tới 100 dòng trong CÙNG một hàm**.
+//
+// 🔴🔴 **`Rows[0]` TRẦN, VÀ NHÁNH ĐƯỢC CHỌN CHỈ BẰNG SỰ TỒN TẠI CỦA CỘT**
+//   Nhánh SỬA được chọn bởi `if (dt_…_Input.Columns.Contains("ROMSID"))` — tức chỉ cần **CÓ CỘT**, bất kể
+//   giá trị rỗng hay không tồn tại trong DB. Ngay trong nhánh đó: `DataRow dr = dt_…_Get.**Rows[0]**;`
+//   **không** kiểm `Rows.Count`.
+//   ⇒ Client gửi một dòng **mới** trong `DataSet` vốn có sẵn cột `ROMSID` ⇒ câu `select` trả **0 dòng** ⇒
+//     `IndexOutOfRangeException` thô, không phải mã lỗi nghiệp vụ. Thuộc nhóm **44 site trần trụi** của #814.
+//
+// 🔴🔴🔴 **`select @@Identity` — CA THỨ BA, VÀ LẦN NÀY ĐẾM ĐƯỢC CẢ TẦNG**
+//   `string strSqlGetROMSID = @"select @@Identity ROMSID;"` rồi `iROMSID` được dùng để `select` lại dòng vừa
+//   chèn, và **chính dòng đó** cung cấp mọi giá trị cho câu `insert … into` DB kho (`_dbWH.ExecQuery(…,`
+//   `"@Km", dtDB_…_Main.**Rows[0]**["Km"], …)`).
+//   ⇒ Nếu `@@IDENTITY` trả id của một **trigger** (nó không an toàn phạm vi), câu `select` lại trả **0 dòng**
+//     ⇒ `Rows[0]` **nổ**. Hai lỗi **cộng hưởng**: id sai + `Rows[0]` trần.
+//   ⇒ Theo luật "lần thứ ba thì đi tìm hàm làm ĐÚNG", **đã đếm cả tầng**:
+//     **`@@Identity` = 152 chỗ** (bỏ dòng comment) · **`SCOPE_IDENTITY()` = 3 chỗ**
+//       (`Inventory.Quote.cs:1282` · `Service01.cs:6927` · `Service01.cs:7844`).
+//     ⇒ Tầng **biết** hàm đúng, chỉ dùng ở **3/155** chỗ. Con số này giống hệt trên máy 150 (**3**).
+//   🔴 Đáng chú ý nhất trong 152: `BizCarSv.Common.cs:469` và `CampaignMarketing/BizCarSv.Seq.cs:26` dùng
+//     `delete {0} where AutoID = **@@Identity**; select @@Identity Tid;` — **xoá theo `@@Identity`** trong bộ
+//     sinh `Tid`. Ghi làm **đầu mối cần đọc riêng**, chưa đọc trọn nên **chưa kết luận**.
+// ⚪ `--//[mylock]` đặt sau tham chiếu bảng ở cả hai câu (đúng chỗ).
+// 📌 Mini: `GET`/`POST /api/romaintancesettings` — upsert theo `ROMSID` **có kiểm tồn tại** (nguồn không kiểm),
+//   chọn nhánh theo **giá trị** `ROMSID` chứ không theo sự tồn tại của cột, và không nhúng chuỗi vào SQL.
+app.MapGet("/api/romaintancesettings", async (AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var items = await db.RoMaintanceSettings.Where(x => x.OrgId == t.OrgId)
+        .Where(x => dl.Length == 0 || x.DealerCode == dl)
+        .OrderBy(x => x.Km)
+        .Select(x => new { x.Id, x.ROMSID, x.Km, x.Maintances, x.DealerCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var lines = dto.Items ?? new List<RoMaintanceSettingDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "khong co dong nao de luu" });
+    var updated = 0; var inserted = 0; var notFound = new List<long>();
+    foreach (var l in lines)
+    {
+        // Guard NGUON THIEU: nguon chon nhanh SUA chi bang Columns.Contains(ROMSID) roi doc Rows[0] khong kiem.
+        if (l.ROMSID is > 0)
+        {
+            var cur = await db.RoMaintanceSettings
+                .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROMSID == l.ROMSID!.Value);
+            if (cur is null) { notFound.Add(l.ROMSID!.Value); continue; }
+            cur.Km = l.Km; cur.Maintances = l.Maintances;
+            if (!string.IsNullOrWhiteSpace(l.FlagActive)) cur.FlagActive = l.FlagActive!;
+            cur.LogLUDateTime = DateTime.UtcNow;
+            updated++;
+        }
+        else
+        {
+            var next = await db.RoMaintanceSettings.Where(x => x.OrgId == t.OrgId)
+                .Select(x => (long?)x.ROMSID).MaxAsync() ?? 0L;
+            db.RoMaintanceSettings.Add(new RoMaintanceSetting
+            {
+                OrgId = t.OrgId, ROMSID = next + 1, Km = l.Km, Maintances = l.Maintances,
+                DealerCode = dto.DealerCode, FlagActive = l.FlagActive ?? "1",
+                LogLUDateTime = DateTime.UtcNow,
+            });
+            inserted++;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated, inserted, notFoundCount = notFound.Count, notFound,
+        sourceBakesClientValueIntoSql = "#846: nguon dung ... where (1=1) and t.ROMSID = (nhay don)@strROMSID(nhay don) roi StringUtils.Replace(..., @strROMSID, dt_Input.Rows[i][ROMSID].ToString()) => KHONG phai tham so: placeholder nam TRONG CAP NHAY DON va bi thay bang Replace chuoi, gia tri den tu DataSet do CLIENT gui len => BE MAT SQL INJECTION. Cung ho canh bao BAKE-PARAM-MIX nhung o day KHONG co tron param — la BAKE THUAN, nen khong guard nao chet cam; thu hong la RANH GIOI du-lieu/ma-lenh",
+        sameFunctionAlsoDoesItRight = "doi chieu: CHINH ham nay o khoi sau lai dung DUNG tham so — _dbMain.ExecQuery(strSql_Get_Ser_ROWW_Main, @ROMSID, iROMSID) => HAI CACH VIET DOI LAP cach nhau chua toi 100 dong trong CUNG MOT HAM",
+        branchChosenByColumnExistenceNotValue = "nhanh SUA duoc chon boi if (dt_Input.Columns.Contains(ROMSID)) — tuc chi can CO COT, bat ke gia tri rong hay khong ton tai trong DB. Ngay trong nhanh do: DataRow dr = dt_Get.Rows[0] KHONG kiem Rows.Count => client gui mot dong MOI trong DataSet von co san cot ROMSID thi cau select tra 0 dong => IndexOutOfRangeException tho. Thuoc nhom 44 site tran trui cua #814",
+        atAtIdentityThirdOccurrenceWithLayerCount = "select @@Identity ROMSID — CA THU BA (sau #844, #845). Lan nay DEM CA TANG: @@Identity = 152 cho (bo dong comment) con SCOPE_IDENTITY() = 3 cho (Inventory.Quote.cs:1282, Service01.cs:6927, Service01.cs:7844) => tang BIET ham dung, chi dung o 3/155 cho. Con so nay giong het tren may 150 (3)",
+        identityBugCompoundsWithBareRows0 = "hai loi CONG HUONG: iROMSID duoc dung de select lai dong vua chen, va CHINH dong do cung cap moi gia tri cho cau insert sang DB kho (_dbWH.ExecQuery(..., @Km, dtDB_Main.Rows[0][Km], ...)). Neu @@IDENTITY tra id cua mot TRIGGER thi cau select tra 0 dong => Rows[0] NO",
+        seqGeneratorDeletesByAtAtIdentity = "DAU MOI CAN DOC RIENG (chua doc tron nen CHUA ket luan): BizCarSv.Common.cs:469 va CampaignMarketing/BizCarSv.Seq.cs:26 dung delete {0} where AutoID = @@Identity; select @@Identity Tid; — XOA THEO @@Identity trong bo sinh Tid",
+        mylockPlacedCorrectly846 = "AM TINH: --//[mylock] dat sau tham chieu bang o ca hai cau (dung cho)",
+        twoMachinesVerified846 = "md5 chuan hoa KHOP may 150: Get 0fff7da7, Save 2cbe74b7",
+    });
+}).RequireAuthorization();
 app.MapDelete("/api/servicemodels/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
     var c = (code ?? "").Trim();
@@ -72782,6 +72877,8 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record RoMaintanceSettingDto(long? ROMSID, decimal? Km, string? Maintances, string? FlagActive);
+record RoMaintanceSettingSaveDto(string? DealerCode, List<RoMaintanceSettingDto>? Items);
 record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);
 record MstParamSaveByTypeDto(string? ParamType, List<MstParamDto>? Items, bool? AllowWipe);
 record RoHistoryDto(string? ROHID, string? ROID, string? Status, string? Reason, string? LogLUBy);

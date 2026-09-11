@@ -13989,6 +13989,20 @@ public sealed class ServiceModel
 }
 
 /// <summary>Phiếu xuất kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockOut01 (TblSerInvStockOut, TCMotor).</summary>
+/// <summary>Thiết lập mốc bảo dưỡng theo số km (Ser_MST_ROMaintanceSetting) — #846 port 1:1 màn thiết lập bảo dưỡng, TCMotor DMSCarSv. Mỗi dòng = một mốc Km + danh sách hạng mục.</summary>
+public sealed class RoMaintanceSetting
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ROMSID { get; set; }
+    public decimal? Km { get; set; }
+    public string? Maintances { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class ServiceStockOut
 {
     public long Id { get; set; }
