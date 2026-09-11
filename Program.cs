@@ -17971,14 +17971,74 @@ app.MapPost("/api/serviceparts/update-bo", async (PartUpdateBoDto dto, AppDbCont
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #851 PARITY: BẬT / TẮT PHỤ TÙNG — `SerMstPartUpdateActive` (`Service.cs:5674`) =====
+// md5 `a07f2f19` (169 dòng), LIVE (4 vỏ bọc). **3B**: **KHỚP** máy 150. Mini đã có `/toggle` từ trước
+// nhưng **chưa hề có** luật "không cho hai phụ tùng cùng mã cùng hoạt động" ⇒ **vòng parity**, không tăng bộ đếm.
+//
+// 🔴🔴🔴 **`top 2` NHƯNG NGƯỠNG LẠI LÀ `>= 1` — HAI THIẾT KẾ TRỘN LẪN, KHÔNG CÁI NÀO CHẠY ĐÚNG**
+//   Khi bật (`strIsActive == Flag.Active`), nguồn tra:
+//     `GetTableContents(_dbDealer, "Ser_Mst_Part", "**top 2** *", "", "PartCode","=",…, "IsActive","=",Flag.Active, "DealerCode","=",…)`
+//     `if (dt_PartActiveCheck != null && dt_PartActiveCheck.Rows.Count **>= 1**) throw …Ser_Part_ActiveMuti;`
+//   ⇒ Lấy **2** dòng chỉ có nghĩa nếu ngưỡng là **`>= 2`** (để **loại chính mình** ra). Ngưỡng `>= 1` thì
+//     `top 1` là đủ. ⇒ Con số `2` là **tàn dư của thiết kế loại-chính-mình** chưa bao giờ được viết nốt.
+//   ⇒ Hệ quả thật: câu tra **không loại dòng đang thao tác** (`PartID <> @` **không có**). Nếu phụ tùng
+//     **đang hoạt động** mà gọi bật lại (thao tác **vô hại, idempotent**), câu tra **tìm thấy chính nó**
+//     ⇒ ném `Ser_Part_ActiveMuti` ⇒ **bật lại một phụ tùng đang bật thì báo lỗi "trùng"**.
+//   ⇒ Hai cách viết đúng: `top 1` + thêm `"PartID","<>",strPartID` + `>= 1`; **hoặc** `top 2` + `>= 2`.
+//     Nguồn **không** dùng cách nào trong hai.
+//   📌 Chú thích của chính tác giả ngay trên khối (“nếu PT đó đang ở trạng thái KHÔNG kích hoạt → chuyển sang
+//     kích hoạt thì check điều kiện bên dưới”) cho thấy **tiền đề** là "đang tắt" — nhưng **không dòng nào
+//     kiểm tiền đề đó**, nên nó chỉ là mong đợi, không phải ràng buộc.
+//
+// 🔴🔴 **GUARD TỒN TẠI ĐỌC `_dbDealer`, NHƯNG LỆNH GHI CHẠY TRÊN CẢ BA CSDL**
+//   `dt_Ser_Mst_Part = GetTableContents(**_dbDealer**, "Ser_Mst_Part", "top 1 *", "", "PartID","=",strPartID)`
+//   `if (… Rows.Count == 0) throw …Ser_PartCode_NotFound;`  rồi
+//   `_dbMain.SaveData(…)` · `_dbWH.SaveData(…)` · `if (bNeedTransaction_Dealer) _dbDealer.SaveData(…)`
+//   ⇒ Phụ tùng **có ở Main nhưng chưa đồng bộ xuống Dealer** ⇒ báo **`Ser_PartCode_NotFound`** dù Main **có**.
+//   ⇒ Biến thể của #845 (guard đọc một CSDL, ghi ở CSDL khác) nhưng **ngược chiều**: ở #845 guard **rộng hơn**
+//     phạm vi ghi nên bỏ sót; ở đây guard **hẹp hơn** nên **chặn nhầm**. Và `DataTable` mang **schema của Dealer**
+//     lại được `SaveData` lên Main/WH.
+//
+// 🔴 **`#region // Check` RỖNG — NHƯNG GUARD CÓ THẬT, CHỈ NẰM SAI CHỖ** (lần thứ TƯ gặp region rỗng
+//   sau #841, #843, #845): ở đây `#region // Check` chỉ chứa `string strTDate = …`, còn **cả hai** `throw`
+//   nằm trong `#region // **Update:**`.
+//   ⇒ Tinh chỉnh dấu hiệu "region Check rỗng": có **hai** trường hợp con — (i) **không có guard nào**
+//     (#841 `Ser_CustomerCareBth`, #843 `Mst_Param_Delete`, #845 `Ser_Mst_Model_Create`), và (ii) **guard có**
+//     nhưng **đặt trong region khác** (ca này). ⇒ Vẫn phải đọc trọn thân hàm, đừng kết luận từ tên region.
+// 📌 Mini: `/toggle` **giữ nguyên đường dẫn cũ** nhưng nay áp luật `Ser_Part_ActiveMuti` **có loại chính mình**,
+//   và khi bật lại một phụ tùng **đang bật** thì trả về **không đổi** thay vì báo lỗi như nguồn.
 app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ServiceParts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.PartCode == code);
     if (x is null) return Results.NotFound(new { code });
+    var turningOn = x.FlagActive != "1";
+    if (turningOn)
+    {
+        // Luat Ser_Part_ActiveMuti cua nguon — NHUNG co LOAI CHINH MINH (nguon khong loai).
+        var otherActive = await db.ServiceParts.CountAsync(v => v.OrgId == t.OrgId
+            && v.PartCode == code && v.Id != x.Id && v.FlagActive == "1");
+        if (otherActive > 0)
+        {
+            return Results.Conflict(new
+            {
+                error = "Ser_Part_ActiveMuti", partCode = code, otherActiveCount = otherActive,
+                rule = "khong cho hai phu tung cung PartCode trong cung dai ly cung o trang thai hoat dong",
+            });
+        }
+    }
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.PartCode, flagActive = x.FlagActive });
+    return Results.Ok(new
+    {
+        x.PartCode, flagActive = x.FlagActive, turnedOn = turningOn,
+        sourceFetchesTwoButTestsOne = "#851: khi bat, nguon tra GetTableContents(_dbDealer, Ser_Mst_Part, top 2 *, rong, PartCode, IsActive = Flag.Active, DealerCode) roi if (Rows.Count >= 1) throw Ser_Part_ActiveMuti. Lay 2 dong CHI co nghia neu nguong la >= 2 (de LOAI CHINH MINH); nguong >= 1 thi top 1 la du => con so 2 la TAN DU cua thiet ke loai-chinh-minh chua bao gio duoc viet not",
+        sourceDoesNotExcludeItself = "cau tra KHONG loai dong dang thao tac (khong co PartID <> @) => neu phu tung DANG HOAT DONG ma goi bat lai (thao tac VO HAI, idempotent) thi cau tra TIM THAY CHINH NO => nem Ser_Part_ActiveMuti => bat lai mot phu tung dang bat thi bao loi trung. Hai cach viet dung: top 1 + PartID <> @ + >= 1, HOAC top 2 + >= 2; nguon khong dung cach nao trong hai",
+        authorsCommentStatesUncheckedPremise = "chu thich cua chinh tac gia ngay tren khoi (neu PT do dang o trang thai KHONG kich hoat -> chuyen sang kich hoat thi check dieu kien ben duoi) cho thay TIEN DE la dang tat — nhung KHONG dong nao kiem tien de do, nen no chi la mong doi, khong phai rang buoc",
+        existenceGuardReadsDealerButWritesThreeDbs = "guard ton tai doc _dbDealer (GetTableContents(_dbDealer, Ser_Mst_Part, top 1 *, rong, PartID, =, strPartID) roi if Rows.Count == 0 throw Ser_PartCode_NotFound) nhung lenh ghi chay _dbMain.SaveData + _dbWH.SaveData + _dbDealer.SaveData => phu tung CO o Main nhung chua dong bo xuong Dealer se bao Ser_PartCode_NotFound du Main CO. Bien the cua #845 nhung NGUOC CHIEU: o #845 guard RONG HON pham vi ghi nen bo sot; o day guard HEP HON nen CHAN NHAM. Va DataTable mang SCHEMA CUA DEALER lai duoc SaveData len Main/WH",
+        emptyCheckRegionButGuardsExistElsewhere = "#region // Check chi chua string strTDate = ..., con CA HAI throw nam trong #region // Update: => TINH CHINH dau hieu region-Check-rong: co HAI truong hop con — (i) KHONG co guard nao (#841 Ser_CustomerCareBth, #843 Mst_Param_Delete, #845 Ser_Mst_Model_Create), (ii) guard CO nhung dat trong REGION KHAC (ca nay). Van phai doc tron than ham, dung ket luan tu ten region",
+        twoMachinesVerified851 = "md5 chuan hoa a07f2f19 KHOP may 150",
+    });
 }).RequireAuthorization();
 
 // ===== Nhóm phụ tùng phân cấp (PartGroup — port 1:1 FrmPartGroup, TCMotor) =====
