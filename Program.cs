@@ -30284,7 +30284,16 @@ app.MapPost("/api/partcosts/calculate", async (
         updated++; calculated++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { calculated, partsUpdated = updated, fromDate, toDate });
+    return Results.Ok(new
+    {
+        calculated, partsUpdated = updated, fromDate, toDate,
+        // ===== 🔴🔴🔴 #829 TRẢ LỜI CÂU HỎI BỎ NGỎ Ở #828: `strPartId` CHẾT VÌ HÀM TÍNH CHO **TẤT CẢ** =====
+        sourcePartIdIsAcceptedButNeverPassedDown = "#829: SerAverageCost (Inventory.Stock.cs:4225-4339 md5 4e550368) nhan string strPartId trong chu ky nhung loi goi than that la ProcessSaveAverageCost02(ref alParamsCoupleError, strFromDate, strToDate, strDealerCode, strCreatedDate) — KHONG co strPartId. #751 da xac dinh day la VO BOC; nay biet them: tham so ma phu tung KHONG duoc truyen xuong",
+        realScopeIsAllPartsOfDealer = "#829 HE QUA THAT: ham tinh lai gia von binh quan cho TOAN BO phu tung cua dai ly trong khoang ngay, KHONG phai cho mot ma. Man hinh cho nguoi dung chon MOT phu tung roi bam Tinh gia von => he thong tinh lai gia von cho TAT CA phu tung trong ky. Voi nghiep vu TIEN, tac dong rong hon nhieu so voi dieu nguoi dung tuong",
+        partIdNotEvenInErrorLog = "#829: strPartId cung KHONG vao alParamsCoupleError => khi loi, nhat ky khong ghi ma phu tung nguoi dung chon",
+        legacyRemnantOfOlderDesign = "#829: strPartId la TAN DU cua thiet ke cu (tinh theo tung ma). Chu ky con giu, than thi da chuyen sang tinh theo ky + dai ly — khong ai go tham so di",
+        twoMachinesVerified829 = "#829 BUOC 3B: md5 chuan hoa SerAverageCost tren may 150 = 4e550368 KHOP laptop",
+    });
 }).RequireAuthorization();
 
 // Giá vốn hiện tại theo mã PT (snapshot mới nhất mỗi mã).
