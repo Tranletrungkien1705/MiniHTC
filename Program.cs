@@ -59362,6 +59362,101 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 // 🔴 Guard thứ sáu là `Ser_RO_UpdateStatus_**InvalidFlagPause**` ⇒ lệnh đang **tạm dừng** thì không đổi trạng thái được.
 // 📌 Mini: `POST /api/repairorders/{roId}/status` — áp **đúng** máy trạng thái, và **chặn** `NORE` bằng cách bắt
 //   khai báo `allowUnguardedNotResponding` thay vì để nó đi qua im lặng như nguồn.
+// ===== 🔴🔴🔴 #816 MÀN MỚI: MÁY TRẠNG THÁI PHIẾU XUẤT KHO — `SerStockOutStatusUpdate*` =====
+// **Tám** hàm trong `BizCarSv.Inventory.StockOut.cs`, **cả tám LIVE** qua web WS. Hai cái `…ToFinishedAdjusmnet*`
+// đã port ở #387; **sáu** cái còn lại là màn này (tất cả `Raise`=0, `SaveData`=0 ⇒ **đều là vỏ bọc**):
+//   `:5141 SerStockOutStatusUpdate`            md5 `5b2b454f` (98 dòng)  — `WS:16554`
+//   `:5397 …ToExecuting`                       md5 `2f10f347` (159)      — `WS:16601`
+//   `:5567 …ToPending`                         md5 `8d3d1945` (148)      — `WS:16661`
+//   `:5724 …ToFinished`                        md5 `96bc30db` (148)      — `WS:16721`
+//   `:6293 …ToFinished**01**`                  md5 `036715fd` (171)      — `WS:16809`
+//   `:6475 …ToFinished**02**`                  md5 `0f4bee74` (167)      — `WS:16906`
+//
+// **HẰNG ≠ GIÁ TRỊ** — `TERP.Constants/Const.Main.cs:233-244` (giữ nguyên chú thích):
+//   `Pending="**1**"` *Mới tạo* · `Executing="**2**"` *Tiến hành* · `Finished="**3**"` *Kết thúc* ·
+//   `Adjustment="4"` *Điều chỉnh* · `Reject="5"` *Hủy*; và **năm hằng `int`** cùng lớp mô tả quan hệ SOO/SO
+//   (`NoSO=1` … `SOOHasSORej=5`) — **trùng dải giá trị với nhóm trạng thái** nhưng khác ý nghĩa hoàn toàn.
+//
+// ⚪ **SUÝT KẾT LUẬN SAI — ĐỌC HELPER MỚI RÕ (#403)**: bản **trần** `SerStockOutStatusUpdate` nhận `strStatus`
+//   **tự do** rồi gọi `UpdateStockOutStatus(strStockOutID, strStatus, strIsRevert, …)`. Nhìn chữ ký thì tưởng
+//   "đặt trạng thái tuỳ ý". Mở helper (`:5247-5317` md5 `05faaefe`) thì **guard CÓ THẬT**:
+//     `CheckExistStockOut(...)` → `CheckStockOutNotPendingExecuting(strCurrentStatus)` ⇒ hiện tại **phải** là 1 hoặc 2;
+//     nếu hiện tại `Pending` ⇒ `CheckStockOutNotExecuting(strStatus)` ⇒ đích **phải** là `Executing`;
+//     nếu hiện tại `Executing` ⇒ revert thì đích **phải** `Pending`, ngược lại đích **phải** `Finished`.
+//   ⇒ Máy trạng thái **đúng**: `1 → 2 → 3`, và `2 → 1` khi `strIsRevert = Flag.Active`.
+//
+// 🔴🔴🔴 **LỖ THẬT: BẢN TRẦN ĐỔI TRẠNG THÁI MÀ KHÔNG CHẠY SIDE-EFFECT KHO**
+//   Năm hàm chuyên biệt mỗi cái kèm một bước xử lý kho:
+//     `…ToExecuting` → `CheckPlanLocationCodeEmpty` + `**ProcessExecuteStockOut**` (xuất kho thật)
+//     `…ToPending`   → `**ProcessRevertStockOut**` (hoàn kho)
+//     `…ToFinished`  → `**ProcessFinishStockOut**` + `**ProcessFinishOrderByStockOut**` (kết thúc đơn)
+//     `…ToFinished01` = **gộp** cả hai bước Executing **và** Finished
+//     `…ToFinished02` = như `01` **cộng** `**ProcessFinishStockInAdj**` (điều chỉnh nhập kho)
+//   Bản **trần** thì **không gọi bất kỳ hàm nào trong số đó** — nó chỉ `UpdateStockOutStatus` (đổi cột `Status`).
+//   ⇒ Gọi `WS:16554` đưa phiếu từ `1→2` hoặc `2→3` mà **tồn kho không bị trừ / không được hoàn**.
+//   ⇒ Trạng thái nói "đã xuất" nhưng **số dư tồn vẫn nguyên** — sai lệch **im lặng** giữa chứng từ và tồn kho.
+//
+// 🔴🔴 **`…ToFinished02` KHÔNG GHI NHẬT KÝ REQUEST/RESPONSE**: bốn hàm kia đều có `ProcessBizReq(...)` và
+//   `ProcessBizReturn(...)`; riêng `…ToFinished02` **không có cái nào** (nó chỉ có `myUtils_ValidateId`).
+//   ⇒ Nhánh **điều chỉnh nhập kho** — nhánh động vào số liệu nhiều nhất — lại là nhánh **không để lại dấu vết**.
+//
+// 🔴 **HAI CHÚ THÍCH NGHI NGỜ CỦA CHÍNH TÁC GIẢ** (nguyên văn): `private ArrayList UpdateStockOutStatus(  //dbDealer ????`
+//   và bên trong `this.CheckExistStockOut(_dbDealer // Chú ý check lại`. Hàm có **hai overload** — một bản dùng
+//   `_dbDealer` **cứng**, một bản nhận `TDAL.IEzDAL dbAction`; **11** lời gọi trộn cả hai.
+//   ⚪ Ở các ca đã đọc, bên gọi đều truyền đúng `_dbDealer` ⇒ **cùng kết quả** ⇒ không phải bug, nhưng là
+//     **bề mặt dễ gãy** nếu sau này có ai gọi từ nhánh WH.
+// 📌 Mini: `POST /api/stockouts/{stockOutId}/status` — áp đúng máy trạng thái **và** bắt khai báo `runSideEffects`,
+//   để không lặng lẽ đổi trạng thái mà bỏ bước kho như bản trần.
+app.MapPost("/api/stockouts/{stockOutId}/status", async (long stockOutId, StockOutStatusDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var so = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == stockOutId);
+    if (so == null) return Results.NotFound(new { error = "khong tim thay phieu xuat" });
+    var cur = (so.Status ?? "").Trim();
+    var next = (dto.NewStatus ?? "").Trim();
+    var isRevert = dto.IsRevert;
+    // CheckStockOutNotPendingExecuting: hien tai PHAI la 1 hoac 2
+    if (cur != "1" && cur != "2")
+    {
+        return Results.BadRequest(new { error = "CheckStockOutNotPendingExecuting", currentStatus = cur });
+    }
+    if (cur == "1" && next != "2")
+    {
+        return Results.BadRequest(new { error = "CheckStockOutNotExecuting", currentStatus = cur, newStatus = next });
+    }
+    if (cur == "2")
+    {
+        var want = isRevert ? "1" : "3";
+        if (next != want)
+        {
+            return Results.BadRequest(new { error = isRevert ? "CheckStockOutNotPending" : "CheckStockOutNotFinished",
+                currentStatus = cur, newStatus = next, expected = want });
+        }
+    }
+    if (!dto.RunSideEffects)
+    {
+        return Results.BadRequest(new
+        {
+            error = "doi trang thai ma KHONG chay buoc kho la hanh vi cua ban TRAN (WS:16554) — ton kho se khong bi tru/hoan",
+            hint = "dat runSideEffects = true de lam nhu cac ham chuyen biet, hoac chap nhan 1:1 voi ban tran",
+            sideEffectByTarget = next == "2" ? "ProcessExecuteStockOut" : next == "1" ? "ProcessRevertStockOut" : "ProcessFinishStockOut + ProcessFinishOrderByStockOut",
+        });
+    }
+    so.Status = next;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        stockOutId, oldStatus = cur, newStatus = next, isRevert,
+        statusConstants = new { Pending = "1", Executing = "2", Finished = "3", Adjustment = "4", Reject = "5" },
+        sourceStateMachine = "1(Pending) -> 2(Executing) -> 3(Finished), va 2 -> 1 khi strIsRevert = Flag.Active. Doc tu helper UpdateStockOutStatus (Inventory.StockOut.cs:5247-5317 md5 05faaefe)",
+        almostConcludedWrong = "AM TINH (#403): ban TRAN SerStockOutStatusUpdate nhan strStatus TU DO nen nhin chu ky tuong dat trang thai tuy y. Mo helper moi thay guard CO THAT: CheckExistStockOut, CheckStockOutNotPendingExecuting, roi CheckStockOutNotExecuting / CheckStockOutNotPending / CheckStockOutNotFinished tuy nhanh",
+        realGapIsMissingSideEffects = "LO THAT: nam ham chuyen biet moi cai kem mot buoc kho — ToExecuting goi CheckPlanLocationCodeEmpty + ProcessExecuteStockOut; ToPending goi ProcessRevertStockOut; ToFinished goi ProcessFinishStockOut + ProcessFinishOrderByStockOut; ToFinished01 GOP ca hai buoc; ToFinished02 nhu 01 CONG ProcessFinishStockInAdj. Ban TRAN KHONG goi cai nao => doi 1->2 hoac 2->3 ma ton kho KHONG bi tru / khong duoc hoan => trang thai noi da xuat nhung so du ton van nguyen",
+        finished02HasNoRequestLog = "ToFinished02 KHONG co ProcessBizReq/ProcessBizReturn trong khi bon ham kia deu co => nhanh DIEU CHINH NHAP KHO, nhanh dong vao so lieu nhieu nhat, lai la nhanh KHONG de lai dau vet nhat ky",
+        authorsOwnDoubtComments = "nguyen van: private ArrayList UpdateStockOutStatus( //dbDealer ???? va ben trong this.CheckExistStockOut(_dbDealer // Chu y check lai. Ham co HAI overload (mot dung _dbDealer cung, mot nhan TDAL.IEzDAL dbAction), 11 loi goi tron ca hai — cac ca da doc deu truyen dung _dbDealer nen KHONG phai bug, nhung la be mat de gay neu sau nay goi tu nhanh WH",
+        constantsShareValueRangeWithUnrelatedGroup = "cung lop Ser_Inv_StockOut con co NAM hang int mo ta quan he SOO/SO (NoSO=1 ... SOOHasSORej=5) — TRUNG DAI GIA TRI voi nhom trang thai nhung khac y nghia hoan toan",
+        twoMachinesVerified = "Inventory.StockOut.cs 20422 dong tren CA HAI may; md5 chuan hoa UpdateStockOutStatus tren 150 = 05faaefe KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/repairorders/{roId}/status", async (long roId, RoStatusChangeDto dto,
     AppDbContext db, ITenantContext t) =>
 {
@@ -70686,6 +70781,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record StockOutStatusDto(string? NewStatus, bool IsRevert, bool RunSideEffects);
 record RoStatusChangeDto(string? NewStatus, bool AllowUnguardedNotResponding);
 record EmailTemplateUpdateDto(string? DealerCode, string? TempSubject, string? TempBody, string? TempTypeEmail, string? TempFileAttachment);
 record CarUpdateByKeyDto(string? KeyType, string? PlateNo, string? FrameNo, string? DealerCode, string? CusID, string? TradeMarkCode);
