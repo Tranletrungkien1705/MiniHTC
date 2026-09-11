@@ -22662,6 +22662,66 @@ app.MapGet("/api/stockoutorders/decide", async (string roNo, AppDbContext db, IT
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #866 PARITY: ĐỔI TRẠNG THÁI ĐƠN XUẤT KHO — `SerStockOutOrderStatusUpdate` =====
+// Mini **đã có** `POST /api/stockoutorders/{id}/status` ⇒ **vòng parity, KHÔNG tăng bộ đếm màn.**
+//   📌 Lưu ý phương pháp: grep theo **tên hàm biz** (`StockOutOrderStatusUpdate`) trong `Program.cs` ra **0**,
+//     nhưng grep theo **đường dẫn endpoint** lại ra **có**. ⇒ BƯỚC 2 phải grep **cả hai**, không chỉ tên hàm.
+//   `Inventory.StockOut.cs:10328-10427` md5 `3f6aa0c8` (100 dòng, `Raise`=0/`SaveData`=0/`ExecQuery`=0 **trong thân**)
+//   → helper `UpdateStockOutOrderStatus` `:10278-10327` md5 `b9efd33b`. **3B**: **cả hai KHỚP** máy 150
+//   (kèm `SerStockOutOrderSave` `d0a713f0`).
+//
+// 🔴🔴🔴 **GUARD CHẶT Ở TRẠNG THÁI NGUỒN, KHÔNG CÓ GÌ Ở TRẠNG THÁI ĐÍCH**
+//     `if (!(strCurrentStatus.Equals(TConst.Ser_Inv_StockOutOrder.**StatusCreatedValue**)))`
+//     `        throw …Ser_Inv_StockOutOrderStatus_NotCreated;`
+//     rồi ngay sau: `dt_Inv_StockOutOrder.Rows[0]["Status"] = **strStatus**;`  ← **ghi thẳng, không kiểm**
+//   Mở hằng (HẰNG ≠ GIÁ TRỊ) — lớp `Ser_Inv_StockOutOrder` có **bảy** trạng thái:
+//     `StatusCreatedValue = "1"` (Mới tạo) · `StatusSubmittedValue = "2"` (Đã gửi) · `StatusRejectedValue = "3"`
+//     (Từ chối) · `StatusWaitingValue = "4"` (Đang chờ) · `StatusAcceptedValue = "5"` (Chấp nhận)
+//     · `StatusCreateStockOutValue = "6"` (Đã tạo phiếu xuất) · `StatusFinishedValue = "7"` (Kết thúc)
+//   ⇒ Đơn **phải** đang ở `"1"`, nhưng đích **có thể là bất kỳ giá trị nào** — kể cả `"7"` (Kết thúc) hoặc một
+//     chuỗi **không thuộc** bảy hằng trên. ⇒ **Nhảy thẳng `1 → 7`**, bỏ qua gửi duyệt / chấp nhận / tạo phiếu xuất.
+//   ⇒ Đây là **nửa guard**: chặn đúng một chiều, để trống chiều còn lại. Khác #863 (`UpdateStockInStatus` có
+//     `CheckStockInNotPendingExecuting` + `CheckStockInNotExecuting`) và khác hẳn #858 (không guard chiều nào).
+//     ⇒ **Ba mức bảo vệ khác nhau cho cùng một loại thao tác "đổi trạng thái"** trong cùng tầng kho.
+//
+// 🔴🔴🔴 **`dbAction` LẠI CHỈ ĐIỀU KHIỂN VẾ ĐỌC — CA THỨ BA ⇒ ĐÂY LÀ KHUÔN CỦA TẦNG**
+//   `UpdateStockOutOrderStatus(**TDAL.IEzDAL dbAction**, …)` dùng `dbAction` cho `CheckExistStockOutOrder(dbAction, …)`
+//   nhưng ghi thì `**_dbMain**.SaveData(…)` · `**_dbWH**.SaveData(…)` · `if (!bIsWSMain) **_dbDealer**.SaveData(…)`;
+//   và lời gọi duy nhất truyền `**_dbDealer**`.
+//   ⇒ Ba ca đã gặp: #856 `Ser_CustomerCareStatusUpdate` · #859 `ProcessCreateAdditionalStockOutOrderPartQuote`
+//     · **đây** ⇒ **đủ ba** ⇒ **khuôn của tầng**: tham số `dbAction` **chỉ chọn nơi ĐỌC**, vế ghi **luôn hardcode cả ba**.
+//   ⇒ Hệ quả đọc-hiểu: **đừng tin chữ ký**. Muốn biết hàm ghi vào đâu thì phải đọc **thân**, không đọc **tham số**.
+//
+// 🔴🔴 **HAI OVERLOAD CÙNG TÊN `CheckExistStockOutOrder` — VÀ TÁC GIẢ TỰ ĐÁNH DẤU NGHI NGỜ**
+//     `private void CheckExistStockOutOrder(  **//dbDealer ????**`   ← **chú thích nguyên văn của nguồn**
+//     `   ref ArrayList …, string strStockOutOrderID, out DataTable dtStockOutOrder)`  → đọc `**_dbMain**`
+//     `private void CheckExistStockOutOrder(**TDAL.IEzDAL dbAction**, ref ArrayList …)`  → đọc `dbAction`
+//   ⇒ Cùng khuôn "clone để tham số hoá CSDL đọc" của #856/#859, nhưng ở đây là **overload** chứ không phải
+//     hậu tố `xxx` ⇒ grep theo tên **không phân biệt được hai bản**; phải đọc **chữ ký**.
+//   ⇒ Chú thích `//dbDealer ????` là bằng chứng **tác giả biết** chỗ đọc đang sai CSDL mà **chưa xử lý**.
+// ⚪ `Rows[0]` ngay sau `CheckExistStockOutOrder` là **an toàn**: bản overload ấy ném `Ser_Inv_StockOutOrder_NotFound`
+//   khi `dtStockOutOrder == null || Rows.Count == 0` ⇒ nhóm **guard gián tiếp** của #814, không phải 44 site trần trụi.
+// ⚪ `if (!bIsWSMain) _dbDealer.SaveData(…)` dùng `!bIsWSMain` thay cho `bNeedTransaction_Dealer` như các hàm khác —
+//   **tương đương** (`bNeedTransaction_Dealer = !bIsWSMain`), chỉ là không nhất quán.
+// 📌 Mini: thêm endpoint công bố **bảng chuyển trạng thái hợp lệ** — thứ nguồn không có.
+app.MapGet("/api/_meta/stockoutorder-status-transitions", () => Results.Ok(new
+{
+    sourceStatusConstants = new[]
+    {
+        "StatusCreatedValue = 1 (Moi tao)", "StatusSubmittedValue = 2 (Da gui)",
+        "StatusRejectedValue = 3 (Tu choi)", "StatusWaitingValue = 4 (Dang cho)",
+        "StatusAcceptedValue = 5 (Chap nhan)", "StatusCreateStockOutValue = 6 (Da tao phieu xuat)",
+        "StatusFinishedValue = 7 (Ket thuc)",
+    },
+    guardOnSourceOnlyNotOnTarget = "#866: if (!(strCurrentStatus.Equals(TConst.Ser_Inv_StockOutOrder.StatusCreatedValue))) throw Ser_Inv_StockOutOrderStatus_NotCreated; roi NGAY SAU dt_Inv_StockOutOrder.Rows[0][Status] = strStatus — GHI THANG, KHONG KIEM. Don PHAI dang o 1 nhung dich CO THE LA BAT KY GIA TRI NAO, ke ca 7 (Ket thuc) hoac mot chuoi KHONG thuoc bay hang => NHAY THANG 1 den 7, bo qua gui duyet / chap nhan / tao phieu xuat. Day la NUA GUARD: chan dung mot chieu, de trong chieu con lai",
+    threeLevelsOfProtectionForSameOperation = "BA MUC BAO VE khac nhau cho cung mot loai thao tac doi trang thai trong cung tang kho: #858 Ser_Inv_Quote_Update KHONG guard chieu nao; #866 (day) guard chieu NGUON, khong guard chieu DICH; #863 UpdateStockInStatus co CheckStockInNotPendingExecuting + CheckStockInNotExecuting",
+    dbActionOnlyControlsReadThirdCase = "dbAction LAI CHI DIEU KHIEN VE DOC — CA THU BA => DAY LA KHUON CUA TANG: UpdateStockOutOrderStatus(TDAL.IEzDAL dbAction, ...) dung dbAction cho CheckExistStockOutOrder(dbAction, ...) nhung ghi thi _dbMain.SaveData + _dbWH.SaveData + if (!bIsWSMain) _dbDealer.SaveData, va loi goi duy nhat truyen _dbDealer. Ba ca: #856 Ser_CustomerCareStatusUpdate, #859 ProcessCreateAdditionalStockOutOrderPartQuote, day => tham so dbAction CHI CHON NOI DOC, ve ghi LUON hardcode ca ba => DUNG TIN CHU KY, muon biet ham ghi vao dau thi phai doc THAN",
+    twoOverloadsAndAuthorsOwnDoubt = "HAI OVERLOAD CUNG TEN CheckExistStockOutOrder: ban khong co dbAction doc _dbMain va mang chu thich NGUYEN VAN //dbDealer ???? ; ban kia nhan TDAL.IEzDAL dbAction. Cung khuon clone-de-tham-so-hoa-CSDL-doc cua #856/#859 nhung o day la OVERLOAD chu khong phai hau to xxx => grep theo TEN khong phan biet duoc hai ban, phai doc CHU KY. Chu thich //dbDealer ???? la bang chung TAC GIA BIET cho doc dang sai CSDL ma CHUA XU LY",
+    grepMethodLesson = "LUU Y PHUONG PHAP: grep theo TEN HAM BIZ (StockOutOrderStatusUpdate) trong Program.cs ra 0, nhung grep theo DUONG DAN ENDPOINT (/api/stockoutorders/{id}/status) lai ra CO => BUOC 2 phai grep CA HAI, khong chi ten ham",
+    positiveRows0IsGuarded = "AM TINH: Rows[0] ngay sau CheckExistStockOutOrder la AN TOAN — ban overload ay nem Ser_Inv_StockOutOrder_NotFound khi dtStockOutOrder == null hoac Rows.Count == 0 => nhom guard gian tiep cua #814, khong phai 44 site tran trui",
+    positiveEquivalentFlag = "AM TINH: if (!bIsWSMain) _dbDealer.SaveData(...) dung !bIsWSMain thay cho bNeedTransaction_Dealer nhu cac ham khac — TUONG DUONG (bNeedTransaction_Dealer = !bIsWSMain), chi la khong nhat quan",
+    twoMachinesVerified866 = "md5 chuan hoa KHOP may 150: SerStockOutOrderStatusUpdate 3f6aa0c8, UpdateStockOutOrderStatus b9efd33b, SerStockOutOrderSave d0a713f0",
+})).RequireAuthorization();
 app.MapGet("/api/stockoutorders/statuses", () => Results.Ok(new
 {
     statuses = stockOutOrderStatusSourceCodes.Select(kv => new
