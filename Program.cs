@@ -36353,6 +36353,27 @@ app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? 
 //   (Hai block còn khác nhau ở CASE: bản chạy thêm `AND trần >= 0` / `and yêu-cầu >= 0`.)
 //
 // 📌 NỢ: nguồn `ExecNonQuery` **hai lần** — `_dbMain` rồi `_dbWH` (ghi kép Main/WH). MiniHTC một DB.
+//
+// ===== ⚪🔴 #831 (TRẢ NỢ #828) BỐN "THAM SỐ CHẾT" — HAI CÁI LÀ **CHỦ Ý BẢO MẬT**, HAI CÁI LÀ TÀN DƯ =====
+// `SP_SharePartCreate` (`PartOrder.cs:4702-5388` md5 `d57bca58`, 654 dòng). **BƯỚC 3B**: md5 trên máy 150
+// = `d57bca58` **KHỚP**. #828 đếm **bốn** tham số chữ ký không xuất hiện trong thân:
+//   `strCreatedDate` · `strCreatedBy` · `strPartID` · `strQuantityShare`.
+// Đọc thân mới thấy **hai loại khác hẳn nhau**:
+//
+// ⚪ **HAI CÁI ĐẦU LÀ THIẾT KẾ ĐÚNG — NGUỒN KHÔNG TIN CLIENT** (nguyên văn):
+//     `string strTDate = dtimeSys.ToString("yyyy-MM-dd HH:mm:ss");`  ← `dtimeSys = DateTime.Now` (giờ **máy chủ**)
+//     `strFN = "CreatedDate"; drMaster[strFN] = **strTDate**;`
+//     `strFN = "CreatedBy";   drMaster[strFN] = **strPartnerUserCode**;`  ← lấy từ **phiên WS**
+//   ⇒ `strCreatedBy`/`strCreatedDate` client gửi lên bị **cố ý bỏ qua**: người tạo và ngày tạo **do máy chủ
+//     quyết định**. Đây là chỗ nguồn **làm ĐÚNG** — cùng loại với việc Mini "kẹp số lượng ở server" đã ghi trên.
+//   📌 ⇒ **Điều chỉnh cách đọc #828**: "tham số chết" **không mặc nhiên là lỗi**; hai trong bốn ca ở hàm này là
+//     **biện pháp bảo mật**. Trước khi báo, phải hỏi: *giá trị đó được lấy từ nguồn nào thay thế?*
+//
+// 🔴 **HAI CÁI SAU MỚI LÀ TÀN DƯ**: `strPartID` và `strQuantityShare` — dữ liệu thật nằm trọn trong
+//   `DataSet dsSPDetail` (đúng như khối port ở trên đã nhận ra: *"nguồn luôn gửi cả bảng chi tiết"*).
+//   ⇒ Client gửi hai tham số đó mà **không** gửi `dsSPDetail` thì **không tạo gì** — và không có lỗi nào báo lại.
+// ⚪ Hàm **có** RBAC: `DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);` cùng **2**
+//   `CMyException.Raise` ⇒ không thuộc nhóm "không guard".
 app.MapPost("/api/shareparts", async (SharePartDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
