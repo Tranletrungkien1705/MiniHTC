@@ -14998,6 +14998,87 @@ app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext
 }).RequireAuthorization();
 
 // Nhập model hàng loạt từ Excel (port 1:1 FrmImportModel) — cùng entity.
+// ===== 🔴🔴🔴 #845 MÀN MỚI: XOÁ MODEL XE DỊCH VỤ — `Ser_Mst_Model_*` (`Master.cs`), HAI THẾ HỆ CÙNG SỐNG =====
+// Bảy hàm, đo bằng công thức **đã sửa** của #844 (`sed 's/[[:space:]]//g'`):
+//   `:2349 Create` `29a74da8` (169 dòng, Raise=0, Save=2) · `:2518 Create_New20200203` `02259bf8` (199, Raise=1, Save=3)
+//   `:2843 Update` `37a53945` (151, Raise=0)            · `:2994 Update_New20200203` `7e2bb432` (188, Raise=1, Save=3)
+//   `:3182 Import` `cb5f2746` (246, Raise=3, Save=4)    · `:3428 Import_New20200203` `bff67677` (285, Raise=5, Save=6)
+//   `:2717 Delete` `b8730c17` (126) → `this.CheckModelForDelete(…)`
+//   **3B**: `Delete` và `CheckModelForDelete` (`7f421dc0`) **KHỚP**; `Create`/`Create_New` cho md5 khác nhưng
+//   **diff chuẩn hoá = 0 dòng** ⇒ vẫn là **lệch cách đo**, xem mục ⛔ bên dưới.
+//
+// 🔴🔴🔴 **HAI WEB SERVICE CÙNG TÊN `[WebMethod]`, TRỎ VÀO HAI THÂN HÀM KHÁC NHAU**
+//   `HTCWSCarSv/WSCarSv.asmx.cs:2419` → `_biz.Ser_Mst_Model_Create**_New20200203**`
+//   `HTCWSCarSv/WSCarSv.asmx.cs:2495` → `_biz.Ser_Mst_Model_Update**_New20200203**`
+//   `HTCWSCarSv/WSCarSv.asmx.cs:2533` → `_biz.Ser_Mst_Model_Import**_New20200203**`
+//   `TERP.WSCarSv/App_Code/WSCarSv.cs:2882 / :3136 / :3265` → `_biz.Ser_Mst_Model_{Create,Update,Import}` **bản thường**
+//   ⇒ **Cùng một tên dịch vụ, hai máy chủ WS, hai hành vi khác nhau.** Đây **không** phải "bản cũ chết":
+//     cả hai đều LIVE, chỉ khác **cổng vào**. ⇒ Client gọi vào `TERP.WSCarSv` nhận thế hệ **cũ**.
+//   📌 Khác hẳn khuôn đã biết ở TVAN ("nâng version = clone hàm mới + repoint controller"): ở đó **một** vỏ bọc
+//     được trỏ lại; ở đây **hai vỏ bọc song song** và chỉ **một** được trỏ lại ⇒ bản cũ **không hề chết**.
+//
+// 🔴🔴 **BẢN THƯỜNG THIẾU MỘT CỘT VÀ MỘT GUARD SO VỚI BẢN MỚI**
+//   `Create_New20200203` ghi thêm `dt_Ser_Mst_Model.Rows[0]["**ModelCode**"] = strModelCode` và có cả
+//     `throw CMyException.Raise(…)` khi thiếu `strModelCode`, cộng `Mst_CarModelStd_CheckDB(…, Flag.Yes, Flag.Active)`
+//     (model phải có trong **danh mục chuẩn**).
+//   `Create` bản thường **không ghi `ModelCode`** và **không có guard nào** ⇒ model tạo qua `TERP.WSCarSv`
+//     nằm trong bảng với **`ModelCode` rỗng/NULL** và **không được đối chiếu danh mục chuẩn**.
+//   Bản mới còn mở `_dbDealer` (3 CSDL); bản thường chỉ `_dbMain` + `_dbWH`.
+//
+// 🔴 **`#region // Check:` CỦA BẢN THƯỜNG CHỈ CHỨA `strTDate`** ⇒ rỗng về nghiệp vụ.
+//   ⇒ Đây là **lần thứ BA** liên tiếp gặp khuôn này (#841 `Ser_CustomerCareBth`, #843 `Mst_Param_Create`, nay
+//     `Ser_Mst_Model_Create`). Theo luật "lần thứ ba thì đi tìm hàm làm ĐÚNG" — **đã tìm được ở #844**
+//     (`Ser_MST_CustomerType_*`: cả ba hàm đều có guard thật, và guard xoá tra bảng tham chiếu).
+//     ⇒ Từ nay so cụm master mới với **#844**, không so với cụm rỗng.
+//
+// 🔴🔴 **GUARD ĐỌC MỘT CSDL, LỆNH XOÁ CHẠY TRÊN HAI CSDL KHÁC** — dạng mới, chưa gặp
+//   `Ser_Mst_Model_Delete` gọi `this.CheckModelForDelete(**_dbDealer**, ref …, strModelID, strDealerCode)`
+//   — helper tra `Ser_Car` theo `(ModelID, DealerCode)` **trên DB ĐẠI LÝ** rồi ném `Ser_Mst_Model_Delete_UserAnother`.
+//   Nhưng thân xoá chạy `_dbMain.ExecQuery(…)` và `_dbWH.ExecQuery(…)` — **không hề đụng `_dbDealer`**.
+//   ⇒ Nếu DB đại lý **rỗng / chưa đồng bộ / là đại lý khác**, guard **đi qua**, còn xe đang tham chiếu model
+//     ở Main và WH thành **mồ côi**. Guard và hành động **nhìn hai nguồn dữ liệu khác nhau**.
+//   ⇒ Khác #819 (`SerEngineerDelete` **không có** guard) và khác #844 (`CheckCustomerTypeForDelete` cũng nhận
+//     `dbAction` nhưng **được truyền đúng DB**) — ở đây guard **có mặt nhưng trỏ sai nguồn**.
+// 🔴 **`select @@Identity ModelID`** — **ca thứ HAI** sau #844, cùng khuôn: id lấy xong được gán thẳng vào
+//   `dt_Ser_Mst_Model_WH.Rows[0]["ModelID"]` ⇒ trigger bất kỳ là bản WH lệch id.
+// 🔴 **Từ vựng lạ**: trong `CheckModelForDelete`, biến giữ kết quả `Ser_Car` lại tên `**dtCusType**` —
+//   chép nguyên từ `CheckCustomerTypeForDelete` (#844), quên đổi tên.
+//
+// ⛔ **Tinh chỉnh luật đo của #331**: lần này cả hai phía đều dùng `sed 's/[[:space:]]//g'` mà md5 vẫn khác
+//   (`29a74da8` vs `4c74c50d`) trong khi diff **rỗng**. Nguyên nhân: phía laptop tôi chạy `echo "$B" | sed | md5sum`
+//   (command substitution **cắt newline cuối**), phía 150 chạy `sed -n … | sed | md5sum` (**giữ**).
+//   ⇒ Không chỉ cần **công thức chuẩn hoá đúng**, mà phải là **đúng cùng MỘT đường ống** ở cả hai máy.
+// 📌 Mini: `DELETE /api/servicemodels/{code}` — guard tham chiếu chạy trên **cùng** nguồn dữ liệu với lệnh xoá
+//   (vá lỗi trỏ sai DB của nguồn), và **bắt buộc** `ModelCode` như thế hệ `_New20200203`.
+app.MapDelete("/api/servicemodels/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var row = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == c);
+    if (row is null) return Results.NotFound(new { error = "Ser_Mst_Model_NotFound", modelCode = c });
+    // Guard cua NGUON (CheckModelForDelete) — NHUNG chay tren CUNG nguon voi lenh xoa, khac nguon.
+    var inUse = await db.ServiceCars.CountAsync(x => x.OrgId == t.OrgId && x.ModelCode == c);
+    if (inUse > 0)
+    {
+        return Results.Conflict(new
+        {
+            error = "Ser_Mst_Model_Delete_UserAnother", modelCode = c, carCount = inUse,
+            guardReadsDifferentDbThanDelete = "#845 DANG MOI: nguon goi CheckModelForDelete(_dbDealer, ...) — helper tra Ser_Car theo (ModelID, DealerCode) tren DB DAI LY — nhung than xoa chay _dbMain.ExecQuery va _dbWH.ExecQuery, KHONG he dung _dbDealer. Neu DB dai ly rong / chua dong bo / la dai ly khac thi guard DI QUA, con xe dang tham chieu model o Main va WH thanh MO COI. Guard va hanh dong NHIN HAI NGUON DU LIEU KHAC NHAU. Khac #819 (khong co guard) va khac #844 (helper cung nhan dbAction nhung duoc truyen DUNG DB) — o day guard CO MAT nhung TRO SAI NGUON",
+        });
+    }
+    db.ServiceModels.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        modelCode = c,
+        twoWebServicesPointAtTwoGenerations = "#845: HTCWSCarSv/WSCarSv.asmx.cs:2419/:2495/:2533 tro vao _biz.Ser_Mst_Model_{Create,Update,Import}_New20200203 con TERP.WSCarSv/App_Code/WSCarSv.cs:2882/:3136/:3265 tro vao ban THUONG. CUNG MOT TEN WebMethod, HAI MAY CHU WS, HAI HANH VI. Day KHONG phai ban cu chet: ca hai deu LIVE, chi khac CONG VAO => client goi vao TERP.WSCarSv nhan the he CU. Khac khuon TVAN (nang version = clone + repoint controller) vi o do MOT vo boc duoc tro lai, con o day HAI vo boc song song va chi MOT duoc tro lai",
+        plainGenerationMissesColumnAndGuard = "ban thuong THIEU mot cot va mot guard: Create_New20200203 ghi them Rows[0][ModelCode] = strModelCode, co throw Raise khi thieu strModelCode, va goi Mst_CarModelStd_CheckDB(..., Flag.Yes, Flag.Active) (model phai co trong DANH MUC CHUAN). Ban Create thuong KHONG ghi ModelCode va KHONG co guard nao => model tao qua TERP.WSCarSv nam trong bang voi ModelCode rong/NULL va khong duoc doi chieu danh muc chuan. Ban moi con mo _dbDealer (3 CSDL); ban thuong chi _dbMain + _dbWH",
+        emptyCheckRegionThirdTimeInARow = "#region // Check: cua ban thuong CHI chua string strTDate = ... => rong ve nghiep vu. LAN THU BA lien tiep gap khuon nay (#841 Ser_CustomerCareBth, #843 Mst_Param_Create, nay Ser_Mst_Model_Create). Theo luat lan-thu-ba-di-tim-ham-lam-DUNG: DA TIM DUOC o #844 (Ser_MST_CustomerType_* — ca ba ham deu co guard that, guard xoa tra bang tham chieu). Tu nay so cum master moi voi #844",
+        atAtIdentitySecondOccurrence = "select @@Identity ModelID — CA THU HAI sau #844, cung khuon: id lay xong duoc gan thang vao dt_Ser_Mst_Model_WH.Rows[0][ModelID] => trigger bat ky la ban WH lech id",
+        strangeVocabularyInGuardHelper = "trong CheckModelForDelete, bien giu ket qua Ser_Car lai ten dtCusType — chep nguyen tu CheckCustomerTypeForDelete (#844), quen doi ten",
+        refines331MeasurementRule = "TINH CHINH luat do cua #331: lan nay CA HAI phia deu dung sed s/[[:space:]]//g ma md5 van khac (29a74da8 vs 4c74c50d) trong khi diff RONG. Nguyen nhan: phia laptop chay echo \"$B\" | sed | md5sum (command substitution CAT newline cuoi), phia 150 chay sed -n ... | sed | md5sum (GIU). Khong chi can CONG THUC chuan hoa dung, ma phai la dung CUNG MOT DUONG ONG o ca hai may",
+        twoMachinesVerified845 = "Delete b8730c17 va CheckModelForDelete 7f421dc0 KHOP; Create va Create_New20200203 diff chuan hoa = 0 dong",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDbContext db, ITenantContext t) =>
 {
     var rows = dto.Rows ?? new();
