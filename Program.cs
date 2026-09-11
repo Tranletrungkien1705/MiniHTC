@@ -23582,6 +23582,82 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   dữ liệu thật phải nhớ ánh xạ này (nguồn cũng có chỗ dùng `FlagActive` cho bảng khác — dễ lẫn).
 // 📌 Mini: bổ sung `PUT /api/sersuppliers/{supplierCode}` — **áp CẢ HAI** guard mà nguồn thiếu ở nhánh sửa,
 //   và kiểm trùng mã **không phân biệt `IsActive`**.
+// ===== 🔴🔴🔴 #819 PARITY KỸ THUẬT VIÊN — `SerEngineer*`: SỬA/XOÁ KHÔNG CHẠM CSDL ĐẠI LÝ =====
+// **Tám** hàm trong `BizCarSv.Service.cs` (+1 ở `ZTemp.cs`), **cả tám LIVE**. Có **hai bộ song song**:
+//   bộ thường: `:11072 Create` md5 `362087d3` · `:11272 Update` `408853bf` · `:11453 Delete` `117de396` · `:11601 Get`
+//   bộ `01`:   `:11773 Create01` `6da03fad` · `:11995 Update01` `558df1f5` · `:12189 Get01`
+//   thêm `SerEngineerGet_New20190625` (`ZTemp.cs:28186`) — **2** lời gọi.
+//   **BƯỚC 3B**: `Service.cs` **19588** dòng trên **cả hai** máy; md5 `Update` trên 150 = `408853bf` **KHỚP**.
+//
+// ⚪ **NGƯỢC VỚI #818 — ĐÂY LÀ CHỖ NGUỒN LÀM ĐÚNG CẶP CREATE/UPDATE (#404)**
+//   Create   → `CheckEngineerFieldEmpty` + `CheckExistEngineerNo`
+//   Update   → `CheckEngineerFieldEmpty` + `CheckExistEngineer` + `CheckExistEngineerNoModify`
+//   Create01 → `CheckEngineerFieldEmpty` + `CheckExistEngineerNo`
+//   Update01 → `CheckEngineerFieldEmpty` + `CheckExistEngineer` + `CheckExistEngineerNoModify`
+//   ⇒ **Cả bốn** đều kiểm trường bắt buộc; nhánh sửa còn **thêm** guard tồn tại. Đúng đối xứng —
+//     trái hẳn `SerSupplierUpdate` ở #818 (bỏ hẳn `checkSupplierFieldEmpty`). ⇒ **Không phải cả tầng đều lệch.**
+//
+// 🔴🔴🔴 **GAP THẬT: `Update` VÀ `Delete` BỎ HẲN NHÁNH CSDL ĐẠI LÝ**
+//   Đếm `SaveData` theo handle:
+//     `Create`    → `_dbMain` · `_dbWH` · **`_dbDealer`**   (3)
+//     `Create01`  → `_dbMain` · `_dbWH` · **`_dbDealer`**   (3)
+//     `Update01`  → `_dbMain` · `_dbWH` · **`_dbDealer`**   (3)  — có đủ `bNeedTransaction_Dealer`,
+//                   `_dbDealer.BeginTransaction()`, `CommitSafety/RollbackSafety(_dbDealer)`
+//     `Update`    → `_dbMain` · `_dbWH`                      (**2**) — **không có** `bNeedTransaction_Dealer`,
+//                   **không có** `_dbDealer.SaveData`; `_dbDealer` chỉ xuất hiện làm **tham số cho guard**
+//     `Delete`    → câu `delete from Ser_Engineer where EngineerID = @EngineerID` chạy qua
+//                   `_dbMain.ExecQuery(...)` và `_dbWH.ExecQuery(...)` — **không có** nhánh `_dbDealer`
+//   ⇒ **Sửa hoặc xoá kỹ thuật viên qua bộ không-`01` thì CSDL đại lý KHÔNG đổi**: tên KTV ở đại lý **đứng yên**,
+//     và **KTV đã xoá vẫn còn** ở đại lý ⇒ vẫn chọn được khi giao việc.
+//   📌 Đây **không phải** khuôn `bNeedTransaction_Dealer = false` ở WS Main (#748) — ở đó cờ **có tồn tại**
+//     và dòng `SaveData` **có mặt**, chỉ không chạy. Ở `Update`/`Delete` thì **dòng đó không được viết ra**.
+//     Bằng chứng nó là **thiếu sót** chứ không phải chủ ý: `Create` **cùng bộ** và `Update01` **đều có**.
+//
+// 🔴🔴 **`Delete` XOÁ CỨNG VÀ KHÔNG KIỂM RÀNG BUỘC**: guard duy nhất là `CheckExistEngineer` (tồn tại).
+//   So với `SerSupplierDelete` (#818) **có** `Ser_Inv_StockIn_Exist_NotDelete_Supplier` (không xoá NCC đã có
+//   phiếu nhập) ⇒ **hai màn master, hai mức bảo vệ khác nhau**: KTV **đang gắn lệnh sửa chữa / phiếu giao việc**
+//   vẫn xoá được, để lại khoá mồ côi.
+// ⚪ Câu `delete` chạy bằng **`ExecQuery`** chứ không phải `ExecNonQuery` — đúng bài học #742
+//   (`ExecQuery` **không** read-only, nó chỉ nghĩa là "chạy SQL, trả DataSet").
+// 📌 Mini: `PUT /api/engineers/{engineerNo}` — cập nhật **đủ cả ba phạm vi** như bộ `01`, và **chặn xoá** khi
+//   KTV còn được tham chiếu (điều nguồn không làm).
+app.MapPut("/api/engineers/{engineerNo}", async (string engineerNo, EngineerUpdateDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var no = (engineerNo ?? "").Trim();
+    var row = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
+    if (row is null) return Results.NotFound(new { error = "CheckExistEngineer: khong tim thay ky thuat vien", engineerNo = no });
+    // CheckEngineerFieldEmpty — nguon CO kiem o CA Create lan Update (khac #818).
+    var newName = dto.EngineerName ?? row.EngineerName;
+    if (string.IsNullOrWhiteSpace(newName))
+    {
+        return Results.BadRequest(new { error = "CheckEngineerFieldEmpty: ten ky thuat vien bat buoc" });
+    }
+    // CheckExistEngineerNoModify — loai chinh no ra.
+    var newNo = (dto.EngineerNo ?? no).Trim();
+    if (!string.Equals(newNo, no, StringComparison.OrdinalIgnoreCase))
+    {
+        var dup = await db.ServiceEngineers.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.EngineerNo == newNo);
+        if (dup) return Results.Conflict(new { error = "CheckExistEngineerNoModify: trung ma ky thuat vien", engineerNo = newNo });
+        row.EngineerNo = newNo;
+    }
+    row.EngineerName = newName;
+    if (dto.DealerCode != null) row.Note = dto.DealerCode;   // entity Mini khong co DealerCode — giu o Note
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.Status = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.EngineerNo, row.EngineerName, row.GroupRCode, row.Status,
+        sourceUpdateSkipsDealerDatabase = "GAP THAT: dem SaveData theo handle — Create/Create01/Update01 deu ghi _dbMain + _dbWH + _dbDealer (3), rieng Update chi ghi _dbMain + _dbWH (2) va KHONG co bNeedTransaction_Dealer, KHONG co _dbDealer.SaveData (_dbDealer chi xuat hien lam THAM SO cho guard) => sua ky thuat vien qua bo khong-01 thi CSDL DAI LY KHONG DOI",
+        sourceDeleteSkipsDealerDatabase = "cau delete from Ser_Engineer where EngineerID = @EngineerID chay qua _dbMain.ExecQuery va _dbWH.ExecQuery — KHONG co nhanh _dbDealer => KTV DA XOA VAN CON o dai ly, van chon duoc khi giao viec",
+        notTheWsMainPattern = "KHONG phai khuon bNeedTransaction_Dealer = false o WS Main (#748): o do co TON TAI va dong SaveData CO MAT, chi khong chay. O Update/Delete thi dong do KHONG DUOC VIET RA. Bang chung la thieu sot: Create CUNG BO va Update01 deu co",
+        createUpdatePairIsCorrectHere = "AM TINH — NGUOC VOI #818: ca bon ham Create/Update/Create01/Update01 deu goi CheckEngineerFieldEmpty; nhanh sua con THEM CheckExistEngineer + CheckExistEngineerNoModify => doi xung dung (#404). Trai han SerSupplierUpdate o #818 (bo han checkSupplierFieldEmpty) => KHONG phai ca tang deu lech",
+        deleteHasNoReferentialGuard = "SerEngineerDelete guard duy nhat la CheckExistEngineer (ton tai). So voi SerSupplierDelete (#818) CO Ser_Inv_StockIn_Exist_NotDelete_Supplier => hai man master hai muc bao ve khac nhau: KTV dang gan lenh sua chua / phieu giao viec van xoa duoc, de lai khoa mo coi",
+        deleteRunsThroughExecQuery = "AM TINH: cau delete chay bang ExecQuery chu khong phai ExecNonQuery — dung bai hoc #742 (ExecQuery KHONG read-only)",
+        twoParallelSets = "hai bo song song cung LIVE: Create/Update/Get va Create01/Update01/Get01, cong SerEngineerGet_New20190625 (ZTemp.cs:28186, 2 loi goi)",
+        twoMachinesVerified = "Service.cs 19588 dong tren CA HAI may; md5 chuan hoa SerEngineerUpdate tren 150 = 408853bf KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSupplierDto dto,
     AppDbContext db, ITenantContext t) =>
 {
@@ -71244,6 +71320,7 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     decimal? TSTWarrantyPrice = null, decimal? TSTUrgentPrice = null,
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
+record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? DealerCode, string? FlagActive);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
 record MstDeliveryFormDto(string? DeliveryFormCode, string? DeliveryFormName, string? FlagActive);   // #634
 record MstOrderComplainTypeDto(string? OrderComplainType, string? OrderComplainTypeName, string? FlagActive);   // #633
