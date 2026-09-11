@@ -40532,6 +40532,91 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
 // ⚪ `strCheckInDate` đi qua `BuildClause(…, "@p", ref alParamsCoupleSql)` ⇒ **tham số hoá**.
 // 📌 Mini: `GET /api/repairorders/for-stockout-order` — **có `ORDER BY` ở câu trả về** (vá bẫy #415), giữ đúng
 //   danh sách đen 4 mã của nguồn, và **trả kèm** tập trạng thái mà màn kia loại để thấy rõ hai màn lệch nhau.
+// ===== 🔴🔴🔴 #877 MÀN MỚI (chỉ có trên cây 150): DANH SÁCH KHÁCH CÓ PHÂN TRANG — `Ser_Customer_GetAllDL` =====
+// `BizCarSv.Customer.cs:630` trên `V20.2023.Release`, md5 `3198bcd3` (209 dòng), **1** vỏ bọc.
+// **3B**: cây laptop **KHÔNG CÓ**. Lấy từ hàng đợi **60** (#874).
+// ⚠️ **Đừng nhầm với `Ser_CustomerCar_GetAllDL`** — hàm **khác**, đã port (ghi chú ở `Program.cs:57327`).
+//   Hai tên chỉ khác chữ `Car`; đúng loại nhầm mà luật #357 sinh ra để chặn.
+//
+// 🔴🔴🔴 **BỘ LỌC "CHỈ KHÁCH ĐANG HOẠT ĐỘNG" BỊ COMMENT — VÀ NẾU BẬT LẠI CŨNG SAI**
+//     `from Ser_Customer t --//[mylock]`
+//     `where (1=1)`
+//     `    **--and t.IsActive = 1**`      ← dòng **bị comment**
+//   ⇒ Danh sách khách trả về **gồm cả khách đã bị xoá mềm**. Port **dòng ACTIVE** ⇒ Mini phải biết điều này.
+//   ⇒ Và nếu ai bật lại dòng ấy thì **vẫn sai**: nó so với **số `1`** (không nháy), trong khi cặp hàm bật/tắt
+//     ghi **chuỗi** `"True"`/`"False"` (#855 + #875).
+//   ⇒ Vậy **cột `IsActive` của `Ser_Customer` đang có BA cách hiểu trong cùng một cụm**:
+//     ① ghi `"True"`/`"False"` (`Ser_Customer_Active`/`_Delete`) · ② guard so `Flag.Inactive = "0"`
+//     · ③ bộ lọc so `= 1` (số). **Không cách nào khớp cách nào.**
+//
+// 🔴🔴 **PLACEHOLDER CHẾT — DỰNG, TRUYỀN VÀO `Replace`, NHƯNG SQL KHÔNG CÓ CHỖ CẮM**
+//     `string zzzzClauseWhereDealerCodeList**2** = BuildClauseConditionList("and", "**rt**.DealerCode", strDealerCodeList, "|");`
+//     `strSqlGetData = StringUtils.Replace(strSqlGetData, …, "zzzzClauseWhereDealerCodeList2", zzzzClauseWhereDealerCodeList2 …)`
+//   Nhưng chuỗi SQL **không hề chứa** `zzzzClauseWhereDealerCodeList2`, và alias `rt` **không tồn tại** trong câu nào
+//   (grep vùng hàm: `rt.` chỉ khớp ở **chính dòng khai báo** — hai hit còn lại là `nResultRecordSta**rt.**`,
+//    dương tính giả của chính phép grep; đã kiểm lại từng dòng).
+//   ⇒ **Bộ lọc đại lý thứ hai không bao giờ được áp.** Cùng họ #811 (placeholder bị comment) và #828 (tham số chết),
+//     nhưng đây là dạng **placeholder không có chỗ cắm** — `Replace` chạy, không thay gì, **không báo lỗi**.
+//
+// 🔴🔴 **PHÂN TRANG BẰNG `Row_Number()` NHƯNG CÂU TRẢ VỀ KHÔNG `ORDER BY`** (lại #415, y như #876)
+//     `select *, **Row_Number() over (order by t.CusID desc) MyRowIdx** into #tbl_customer_tmp …`
+//     `select t.* into #tbl_customer_Filter from #tbl_customer_tmp where t.MyRowIdx between @Start and @End;`
+//     `---- Return:  select t.*, IsNull(t_ro.CheckInCount,0) …  from #tbl_customer_Filter t … ;`  ← **không `order by`**
+//   ⇒ Trang được cắt **đúng**, nhưng **thứ tự trong trang không đảm bảo** ⇒ người dùng lật trang có thể thấy
+//     danh sách **nhảy lung tung** dù dữ liệu không đổi.
+//   🔴 Và khoá sắp xếp là `t.CusID desc` — **khoá kỹ thuật**, không phải thứ tự nghiệp vụ (tên/ngày tạo).
+//
+// ⚪ **KIỂM RỒI MỚI BÁO — hai thứ tôi suýt báo nhầm**:
+//   ① *"chỉ `drop` một trong ba bảng tạm"* — **SAI**: đọc tiếp thì có đủ ba `drop table` (`_tmp`, `_Filter`,
+//      `_Ser_RO_Count;`). Lần đọc đầu bị cắt vùng.
+//   ② *"mệnh đề `(1=1 …Tel…) OR (1=1 …Mobile…)` luôn TRUE khi một vế rỗng"* — **SAI**: cả hai vế đều dựng từ
+//      **cùng** `strPhonePattern` ⇒ hoặc cùng rỗng, hoặc cùng có ⇒ không có ca một-rỗng-một-có.
+//   📌 Ghi lại vì đúng tinh thần #362/#364: **đọc đủ vùng rồi mới kết luận**.
+// ⚪ `left join Ser_mst_customertype` và `left join #tbl_Ser_RO_Count` + `IsNull(…,0)` ⇒ **không** nuốt dòng — đúng.
+// ⚪ `CusName`/`Address`/`Tel`/`Mobile` lọc qua `BuildClauseConditionSingle(… "like" … @param …)` ⇒ **tham số hoá**.
+// 📌 Mini: `GET /api/servicecustomers/all-dl` — phân trang **có `ORDER BY` ổn định**, trả `totalCount` như nguồn,
+//   đếm số lần vào xưởng, và **cờ `includesInactive`** để người gọi biết nguồn không lọc khách đã xoá.
+app.MapGet("/api/servicecustomers/all-dl", async (AppDbContext db, ITenantContext t,
+    string? cusName, string? address, string? phone, int? start, int? count, bool? onlyActive) =>
+{
+    var cn = (cusName ?? "").Trim();
+    var ad = (address ?? "").Trim();
+    var ph = (phone ?? "").Trim();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 500 ? count!.Value : 50;
+    var qy = db.ServiceCustomers.Where(x => x.OrgId == t.OrgId)
+        .Where(x => cn.Length == 0 || (x.CusName != null && x.CusName.Contains(cn)))
+        .Where(x => ad.Length == 0 || (x.Address != null && x.Address.Contains(ad)))
+        .Where(x => ph.Length == 0 || (x.Mobile != null && x.Mobile.Contains(ph)))
+        // Nguon KHONG loc IsActive (dong bi comment) — Mini cho chon, mac dinh GIONG NGUON.
+        .Where(x => onlyActive != true || x.FlagActive == "1");
+    var total = await qy.CountAsync();
+    var page = await qy
+        .OrderByDescending(x => x.CusCode)   // ON DINH; nguon danh Row_Number roi QUEN order by o cau tra ve
+        .Skip(skip).Take(take)
+        .Select(x => new { x.Id, x.CusCode, x.CusName, x.Address, x.Mobile, x.CusTypeID, x.FlagActive })
+        .ToListAsync();
+    var codes = page.Select(x => x.CusCode).ToList();
+    var roCount = (await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+            .Select(x => new { x.CusName }).ToListAsync())
+        .GroupBy(x => x.CusName ?? "").ToDictionary(g => g.Key, g => g.Count());
+    var items = page.Select(x => new
+    {
+        x.CusCode, x.CusName, x.Address, x.Mobile, x.CusTypeID, x.FlagActive,
+        checkInCount = roCount.TryGetValue(x.CusName ?? "", out var c) ? c : 0,
+    }).ToList();
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = items.Count, items,
+        includesInactive = onlyActive != true,
+        onlyExistsOnMachine150_877 = "#877: Ser_Customer_GetAllDL — BizCarSv.Customer.cs:630 tren V20.2023.Release, md5 3198bcd3 (209 dong), 1 vo boc; cay laptop KHONG CO. Lay tu hang doi 60 cua #874. DUNG NHAM voi Ser_CustomerCar_GetAllDL (ham KHAC, da port, ghi chu o Program.cs:57327) — hai ten chi khac chu Car",
+        activeFilterCommentedAndWouldBeWrongAnyway = "BO LOC CHI-KHACH-DANG-HOAT-DONG BI COMMENT: from Ser_Customer t where (1=1) --and t.IsActive = 1 => danh sach tra ve GOM CA KHACH DA BI XOA MEM. Va neu ai bat lai dong ay thi VAN SAI: no so voi SO 1 (khong nhay) trong khi cap ham bat/tat ghi CHUOI True/False (#855 + #875) => cot IsActive cua Ser_Customer dang co BA cach hieu trong cung mot cum: (1) ghi True/False, (2) guard so Flag.Inactive = chuoi 0, (3) bo loc so = so 1. KHONG cach nao khop cach nao",
+        deadPlaceholderNoSlotInSql = "PLACEHOLDER CHET — DUNG, TRUYEN VAO Replace, NHUNG SQL KHONG CO CHO CAM: zzzzClauseWhereDealerCodeList2 = BuildClauseConditionList(and, rt.DealerCode, strDealerCodeList, |) va duoc truyen vao StringUtils.Replace, nhung chuoi SQL KHONG he chua ten placeholder do va alias rt KHONG ton tai trong cau nao (grep vung ham: rt. chi khop o CHINH DONG KHAI BAO; hai hit con lai la nResultRecordStart. — duong tinh gia cua phep grep, da kiem lai tung dong) => BO LOC DAI LY THU HAI KHONG BAO GIO DUOC AP. Cung ho #811 va #828 nhung day la dang placeholder KHONG CO CHO CAM: Replace chay, khong thay gi, KHONG BAO LOI",
+        pagingWithoutOrderByOnReturn = "PHAN TRANG BANG Row_Number() NHUNG CAU TRA VE KHONG ORDER BY (lai #415, y nhu #876): select *, Row_Number() over (order by t.CusID desc) MyRowIdx into #tbl_customer_tmp ...; roi cat trang bang MyRowIdx between @Start and @End; roi ---- Return: select t.*, IsNull(t_ro.CheckInCount,0) ... from #tbl_customer_Filter t ... ; KHONG co order by => trang duoc cat DUNG nhung THU TU TRONG TRANG khong dam bao => nguoi dung lat trang co the thay danh sach nhay lung tung du du lieu khong doi. Va khoa sap xep la t.CusID desc — KHOA KY THUAT, khong phai thu tu nghiep vu",
+        twoThingsIAlmostReportedWrongly = "KIEM ROI MOI BAO — hai thu toi suyt bao nham: (1) chi drop mot trong ba bang tam — SAI, doc tiep thi co du ba drop table (_tmp, _Filter, _Ser_RO_Count;), lan doc dau bi cat vung; (2) menh de (1=1 ...Tel...) OR (1=1 ...Mobile...) luon TRUE khi mot ve rong — SAI, ca hai ve deu dung tu CUNG strPhonePattern nen hoac cung rong hoac cung co. Ghi lai vi dung tinh than #362/#364: DOC DU VUNG ROI MOI KET LUAN",
+        positiveLeftJoinsAndParameterisation = "AM TINH: left join Ser_mst_customertype va left join #tbl_Ser_RO_Count + IsNull(...,0) => KHONG nuot dong. CusName/Address/Tel/Mobile loc qua BuildClauseConditionSingle(... like ... @param ...) => THAM SO HOA",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/repairorders/for-stockout-order", async (AppDbContext db, ITenantContext t,
     DateTime? checkInDate, string? plateNo, string? roNo, string? cusName) =>
 {
