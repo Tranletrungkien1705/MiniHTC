@@ -23933,6 +23933,66 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 // 🔴 `SELECT t.*` **hai lần** + `select * from #tbl_Inv_Quote` ⇒ trả toàn bộ cột (họ #763).
 // ⚪ `drop table #tbl_Inv_Quote` ở cuối — và `select` lấy dữ liệu **trước** khi drop ⇒ đúng thứ tự, không lỗi.
 // 📌 Mini: `GET /api/partquotes/part-report` — lọc **thật sự có tác dụng** và **đếm** số dòng mà nguồn sẽ trả thừa.
+// ===== 🔴🔴🔴 #833 QUÉT "BUILDCLAUSE THIẾU TOÁN TỬ" TOÀN TẦNG (#832 / #410) — **161 SITE** =====
+// #832 chứng minh bằng mã nguồn: `BuildClause` **trả chuỗi rỗng** nếu giá trị không bắt đầu bằng toán tử.
+// Quét `TERP.BizCarSv/*.cs`: **1812** site `SqlUtils.BuildClause(` + **579** site `BuildClauseConditionList(`.
+//
+// **Hợp đồng ngầm lộ ra khi phân loại đối số thứ ba**: đại đa số mang hậu tố **`…ConditionList`**
+//   (`strDealerCodeConditionList` **226** · `strStatusConditionList` **83** · `strROIDConditionList` **66** ·
+//   `strPlateNoConditionList` **59** · `strFrameNoConditionList` **47** · `strCreatedDateConditionList` **47** …)
+//   ⇒ hậu tố đó **chính là lời hứa** "chuỗi này đã mang toán tử" (`=D01`, `>=2024-01-01|<=2024-01-31`, `like %x%`).
+//   Và **17** site viết thẳng `"=" + strDealerCode` — cách **chắc chắn đúng**.
+//
+// 🔴 **NHƯNG CÓ 161 SITE DÙNG BIẾN TRẦN** — không hậu tố `ConditionList`/`List`/`Pattern`, cũng không `"=" +`:
+//   `strCheckInDate` **29** · `strDealerCode` **13** · `strROExpenseType` 8 · `strCusName` 8 · `strCreator` 7 ·
+//   `strRemark` 6 · `strAppDateTime` 6 · `strUserCode` 4 · `strPartId` 4 · `strPartCode` 4 · `strModel` 4 ·
+//   `strIsDebit` 4 · `strSupplierID` 3 · `strRoNo` 3 · …
+//   ⇒ Với những site này, **việc lọc có sống hay không phụ thuộc hoàn toàn vào client tự ghép toán tử** —
+//     mà **tên tham số không hề nói ra điều đó**.
+//   ⚠️ **KHÔNG kết luận cả 161 đều hỏng**: nhiều màn có thể luôn gửi kèm `=`. Nhưng đây là **bề mặt rủi ro**
+//     đã định lượng, và **ba** ca dưới đây đã **kiểm LIVE**:
+//
+// ✅ **BA CA LIVE ĐÃ XÁC THỰC**
+//   · `SerQuotePartRpt` (#832) — `t.DealerCode` **và** `t.QuoteID` đều trần; WS truyền thẳng giá trị client.
+//   · `Ser_AssignmentWork_Get` (`AssignmentOfWork.cs:2016`, WS gọi **1**) — `BuildClause("and", "ro.DealerCode",`
+//     `**strDealerCode**, …)`; WS truyền thẳng `strDealerCode` ⇒ **màn giao việc** cùng rủi ro rò chéo đại lý.
+//   · `Email_SendEmail_Get` (`SendMail.cs:698`, WS gọi **1**) — y hệt.
+//   ⚪ `BuildGetAverageCost01**xxx**` (`Inventory.Stock.cs:3833`) cũng trong danh sách nhưng **WS gọi 0** —
+//     đúng khuôn hậu tố `xxx` **chết** (#802), nên **loại**.
+//
+// 🔴🔴 **TÊN BIẾN CLAUSE TỰ MÂU THUẪN — NGƯỜI VIẾT NHẦM CHÍNH QUY ƯỚC CỦA MÌNH**
+//   `Inventory.Stock.cs:3833` và `SendMail.cs:698` đặt tên biến là
+//     `string zzzzClauseWhere**DealerCodeConditionList** = SqlUtils.BuildClause("and", "t.DealerCode", **strDealerCode**, …)`
+//   ⇒ **tên biến hứa "ConditionList" (có toán tử) nhưng giá trị truyền vào là biến TRẦN**. Người đọc sau sẽ tin
+//     tên biến và bỏ qua. Đây là dạng "tên nói dối" ở **cấp biến cục bộ**, khác các ca trước (tên hàm/tên cột).
+//
+// 🔴 **NHÃN LOG SAI KÈM THEO**: `BizCarSv.Service.RO.cs:57` viết `, "strCheckInDate", **strFrameNoList**`
+//   trong `alParamsCoupleError` ⇒ nhật ký lỗi ghi **số khung** dưới nhãn **ngày tiếp nhận** (họ #741/#744).
+// 📌 **Luật quét để lại**: `grep -noE "SqlUtils\.BuildClause\([^;]{0,200}"` rồi lấy **đối số thứ ba**; nếu nó là
+//   biến `str*` **không** có hậu tố `ConditionList`/`List`/`Pattern` và **không** bắt đầu bằng `"=" +` ⇒ **nghi ngay**,
+//   rồi lọc tiếp bằng **LIVE/CHẾT** (bài học #820) trước khi báo.
+app.MapGet("/api/_meta/buildclause-missing-operator-sweep", () => Results.Ok(new
+{
+    trigger = "#832 chung minh bang ma nguon: CommonUtils/DataUtils.cs:1074 BuildClause tra chuoi RONG neu gia tri khong bat dau bang toan tu (#410)",
+    buildClauseSites = 1812,
+    buildClauseConditionListSites = 579,
+    contractRevealedByNaming = "dai da so doi so thu ba mang hau to …ConditionList (strDealerCodeConditionList 226, strStatusConditionList 83, strROIDConditionList 66, strPlateNoConditionList 59, strFrameNoConditionList 47, strCreatedDateConditionList 47...) => hau to do CHINH LA loi hua chuoi da mang toan tu. Va 17 site viet thang \"=\" + strDealerCode — cach chac chan dung",
+    sitesUsingBareVariable = 161,
+    topBareVariables = new[] { "strCheckInDate 29", "strDealerCode 13", "strROExpenseType 8", "strCusName 8",
+        "strCreator 7", "strRemark 6", "strAppDateTime 6", "strUserCode 4", "strPartId 4", "strPartCode 4",
+        "strModel 4", "strIsDebit 4", "strSupplierID 3", "strRoNo 3" },
+    notOverclaimed = "KHONG ket luan ca 161 deu hong: nhieu man co the luon gui kem dau =. Day la BE MAT RUI RO da dinh luong, va viec loc co song hay khong phu thuoc hoan toan vao client tu ghep toan tu — ma TEN THAM SO khong he noi ra dieu do",
+    verifiedLiveCases = new[]
+    {
+        "SerQuotePartRpt (#832): t.DealerCode VA t.QuoteID deu tran; WS truyen thang gia tri client",
+        "Ser_AssignmentWork_Get (AssignmentOfWork.cs:2016, WS goi 1): BuildClause(and, ro.DealerCode, strDealerCode, ...) — man GIAO VIEC, cung rui ro ro cheo dai ly",
+        "Email_SendEmail_Get (SendMail.cs:698, WS goi 1): y het",
+    },
+    excludedDeadCase = "BuildGetAverageCost01xxx (Inventory.Stock.cs:3833) cung trong danh sach nhung WS goi 0 — dung khuon hau to xxx CHET (#802) nen LOAI",
+    variableNameContradictsItsValue = "Inventory.Stock.cs:3833 va SendMail.cs:698 dat ten bien la zzzzClauseWhereDealerCodeConditionList = SqlUtils.BuildClause(and, t.DealerCode, strDealerCode, ...) => TEN BIEN hua ConditionList (co toan tu) nhung GIA TRI truyen vao la bien TRAN. Nguoi doc sau se tin ten bien va bo qua. Day la ten-noi-doi o CAP BIEN CUC BO, khac cac ca truoc (ten ham / ten cot)",
+    mislabeledErrorParam = "BizCarSv.Service.RO.cs:57 viet , \"strCheckInDate\", strFrameNoList trong alParamsCoupleError => nhat ky loi ghi SO KHUNG duoi nhan NGAY TIEP NHAN (ho #741/#744)",
+    sweepRule = "grep -noE SqlUtils.BuildClause\\([^;]{0,200} roi lay DOI SO THU BA; neu la bien str* KHONG co hau to ConditionList/List/Pattern va KHONG bat dau bang \"=\" + => NGHI NGAY, roi loc tiep bang LIVE/CHET (#820) truoc khi bao",
+})).RequireAuthorization();
 app.MapGet("/api/partquotes/part-report", async (AppDbContext db, ITenantContext t,
     string? dealerCode, string? quoteNo) =>
 {
