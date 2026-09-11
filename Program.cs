@@ -50726,6 +50726,70 @@ app.MapDelete("/api/engineers/{engineerNo}", async (string engineerNo, AppDbCont
         sourceUpdateOldGenSkipsDealer = "SerEngineerUpdate (khong 01) khong ghi _dbDealer lan nao",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #849 PARITY: `SerEngineer*` — **BA THẾ HỆ CHIA THEO LOẠI CLIENT**, và **TOÁN TỬ LỌC NGƯỢC NHAU GIỮA HAI CÂY NGUỒN** =====
+// Mini đã có đủ `GET`/`POST`/`PUT`/`DELETE /api/engineers` ⇒ **vòng parity, KHÔNG tăng bộ đếm màn**.
+//   `Service.cs:11773 Create` `166fd799` (11 tham số) · `:11973 Update` `7cc7fab5` · `:12302 Get` `a8b77c18`
+//   `:12474 Create01` `d68f5e1e` (**14** tham số) · `:12696 Update01` `9753593b` · `:12890 Get01` `0cff287d`
+//   `ZTemp.cs:23580 SerEngineerGet_New20190625`
+//
+// ⚪ **BA THẾ HỆ, CHIA THEO CỔNG VÀO — KHÔNG PHẢI THEO THỜI GIAN** (bổ sung #845/#333):
+//   `HTCWSCarSv/WSCarSv.asmx.cs` · `…20210208.cs` · `…20210412.cs` · `TERP.WSCarSv/App_Code/WSCarSv.cs`
+//     ⇒ phơi **cả** `SerEngineer{Create,Update,Get}` **lẫn** `…01` thành **hai `[WebMethod]` RIÊNG BIỆT**.
+//   `HTCWSCarSvTab/WSCarSvTab.asmx.cs` (+ bản `.20210412`) ⇒ **chỉ** `SerEngineerGet_New20190625`.
+//   ⇒ Ở #845 hai vỏ bọc **cùng tên** trỏ hai thân khác nhau (client không biết); ở đây **tên khác nhau**
+//     nên client **tự chọn**, còn **máy tính bảng** thì bị khoá vào một bản thứ ba nằm trong `ZTemp.cs`.
+//   ⇒ Vậy "bản có hậu tố = bản mới" **và** "bản thường = bản cũ" đều sai: ba bản là **ba giao diện song song**.
+//
+// 🔴🔴 **BẢN THƯỜNG GHI THIẾU BA CỘT so với `01`** (diff tập `Rows[0]["…"]` của hai hàm `Create`):
+//   `01` ghi thêm `**IsEngineer**` · `**StartWorkDate**` · `**FinishWorkDate**` (và nhận thêm đúng ba tham số
+//   cùng tên; ngoài ra `alParamsCoupleError` của `01` có thêm `"strGroupRID"`).
+//   ⇒ Kỹ thuật viên tạo qua `[WebMethod]` **`SerEngineerCreate`** (bản thường, vẫn LIVE ở cả 4 vỏ bọc) nằm trong
+//     bảng với **ba cột ấy rỗng** — trong khi `SerEngineerGet01` **lọc theo chính ba cột đó**.
+//
+// 🔴🔴🔴 **HAI CÂY NGUỒN DÙNG TOÁN TỬ NGƯỢC NHAU TRONG `SerEngineerGet01`** (diff chuẩn hoá, khác đúng 2 dòng):
+//   laptop `V20`:
+//     `zzzzClauseWhere_strStartWorkDateConditionList  = "and sp.StartWorkDate **>=** " + …;   //20120821`
+//     `zzzzClauseWhere_strFinishWorkDateConditionList = "and (sp.FinishWorkDate **<=** " + … + " or sp.FinishWorkDate is null)";  //20120821`
+//   máy 150 `V20.2023.Release`:
+//     `… "and sp.StartWorkDate **<=** " + …;`
+//     `… "and (sp.FinishWorkDate **>=** " + … + " or sp.FinishWorkDate is null)";`  (chú thích ngày đã bị gỡ)
+//   ⇒ Muốn tìm KTV **đang làm việc trong khoảng** thì phép giao đúng là `StartWorkDate <= ĐếnNgày` **và**
+//     `(FinishWorkDate >= TừNgày hoặc chưa nghỉ)` — tức **bản máy 150 đúng**, bản `V20` **ngược**.
+//   ⇒ Bản `V20` trả về KTV có ngày **vào làm sau** mốc và ngày **nghỉ trước** mốc — gần như **tập rỗng** hoặc
+//     đúng những người **không** làm trong kỳ. Đây là **khác biệt nghiệp vụ thật thứ HAI** giữa hai cây nguồn
+//     (sau #844) — và lần này bản cũ **sai nghĩa**, không chỉ thiếu nhánh.
+//   📌 Chú thích `//20120821` còn sót ở bản cũ là **dấu vết của lần sửa 2012**; bản 2023 gỡ chú thích khi sửa lại
+//     ⇒ đừng dùng chú thích-ngày để đoán bản nào mới.
+// 📌 Mini: `GET /api/engineers/workperiod` — lọc theo **phép giao đúng**, và trả kèm số KTV mà **bản `V20` sẽ bỏ sót**.
+app.MapGet("/api/engineers/workperiod", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var all = await db.ServiceEngineers.Where(x => x.OrgId == t.OrgId)
+        .Where(x => dl.Length == 0 || x.DealerCode == dl)
+        .Select(x => new { x.Id, x.EngineerNo, x.EngineerName, x.GroupRCode, x.EngineerType,
+            x.DealerCode, x.StartWorkDate, x.FinishWorkDate, x.Status })
+        .ToListAsync();
+    var f = fromDate; var tt = toDate;
+    // PHEP GIAO DUNG: StartWorkDate <= ToDate VA (FinishWorkDate >= FromDate hoac chua nghi).
+    var items = all.Where(e => (tt == null || e.StartWorkDate == null || e.StartWorkDate <= tt)
+                            && (f == null || e.FinishWorkDate == null || e.FinishWorkDate >= f)).ToList();
+    // Ban V20 dung toan tu NGUOC: StartWorkDate >= FromDate va (FinishWorkDate <= ToDate hoac null).
+    var v20 = all.Where(e => (f == null || e.StartWorkDate == null || e.StartWorkDate >= f)
+                          && (tt == null || e.FinishWorkDate == null || e.FinishWorkDate <= tt)).ToList();
+    var missedByV20 = items.Where(x => !v20.Any(y => y.Id == x.Id))
+        .Select(x => new { x.EngineerNo, x.EngineerName, x.StartWorkDate, x.FinishWorkDate }).ToList();
+    return Results.Ok(new
+    {
+        fromDate = f, toDate = tt, count = items.Count, items,
+        v20WouldReturn = v20.Count, missedByV20Count = missedByV20.Count, missedByV20,
+        twoTreesUseOppositeOperators = "#849 KHAC BIET NGHIEP VU THAT THU HAI giua hai cay nguon (sau #844), va lan nay ban cu SAI NGHIA chu khong chi thieu nhanh. SerEngineerGet01 — laptop V20: and sp.StartWorkDate >= ... va and (sp.FinishWorkDate <= ... or sp.FinishWorkDate is null), ca hai co chu thich //20120821; may 150 V20.2023.Release: and sp.StartWorkDate <= ... va and (sp.FinishWorkDate >= ... or is null), chu thich ngay da bi go. Muon tim KTV DANG LAM VIEC TRONG KHOANG thi phep giao dung la StartWorkDate <= DenNgay VA (FinishWorkDate >= TuNgay hoac chua nghi) => ban may 150 DUNG, ban V20 NGUOC: no tra ve KTV co ngay vao lam SAU moc va ngay nghi TRUOC moc — gan nhu tap rong hoac dung nhung nguoi KHONG lam trong ky",
+        dateCommentIsNotAVersionSignal = "chu thich //20120821 con sot o ban cu la dau vet cua lan sua 2012; ban 2023 GO chu thich khi sua lai => dung dung chu thich-ngay de doan ban nao moi",
+        threeGenerationsSplitByClientNotByTime = "BO SUNG #845/#333: HTCWSCarSv/WSCarSv.asmx.cs + hai ban .20210208/.20210412 + TERP.WSCarSv/App_Code/WSCarSv.cs deu phoi CA SerEngineer{Create,Update,Get} LAN ...01 thanh HAI WebMethod RIENG BIET; con HTCWSCarSvTab/WSCarSvTab.asmx.cs chi phoi SerEngineerGet_New20190625 (nam trong ZTemp.cs:23580). O #845 hai vo boc CUNG TEN tro hai than khac nhau (client khong biet); o day TEN KHAC NHAU nen client TU CHON, con MAY TINH BANG bi khoa vao ban thu ba => ba ban la BA GIAO DIEN SONG SONG, khong phai cu/moi",
+        plainCreateWritesThreeFewerColumns = "diff tap Rows[0][...] cua hai ham Create: ban 01 ghi them IsEngineer, StartWorkDate, FinishWorkDate (va nhan them dung ba tham so cung ten; alParamsCoupleError cua 01 co them strGroupRID). Ky thuat vien tao qua WebMethod SerEngineerCreate (ban thuong, VAN LIVE o ca 4 vo boc) nam trong bang voi BA COT AY RONG — trong khi SerEngineerGet01 LOC THEO CHINH BA COT DO",
+        twoMachinesVerified849 = "3B: Create 166fd799, Create01 d68f5e1e, Update01 9753593b KHOP ca hai may; Get01 lech (0cff287d vs d456912a) => diff chuan hoa cho DUNG HAI DONG toan tu nguoc nhau o tren",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? group, string? q,
     string? dealerCode, string? engineerNo, string? engineerName, string? engineerType,
     string? workingState) =>
