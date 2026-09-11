@@ -42297,6 +42297,82 @@ app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, 
 // 📌 Trả nợ một phần của #392/#393: trong năm bảng con (VIN · PlateNo · Dealer · FullVIN · Part),
 //   nay đã mô hình hoá **Part** (cũ) + **FullVIN** (lượt này); còn **ba** bảng ⇒ cờ `childTablesNotModelled`
 //   vẫn giữ cho ba cái còn lại.
+// ===== 🔴🔴🔴 #881 MÀN MỚI (chỉ có trên cây 150): TÌM CHIẾN DỊCH MARKETING NÂNG CAO =====
+// `Ser_CampaignMarketing_GetSpecial` — `CampaignMarketing/BizCarSv.CampaignMarketing.cs:353` trên
+// `V20.2023.Release`, md5 `33af8385` (**301 dòng**, **13** tham số lọc), **1** vỏ bọc.
+// **3B**: cây laptop **KHÔNG CÓ**. Lấy từ hàng đợi **60** (#874). BƯỚC 2 bốn phép grep (#357 + #368).
+//
+// 🔴🔴🔴 **HÀM NHẬN HAI THAM SỐ PHÂN TRANG NHƯNG CẢ HAI MỆNH ĐỀ CẮT TRANG ĐỀU BỊ COMMENT**
+//     `select t.* into #tbl_Ser_CampaignMarketing_Filter`
+//     `from #tbl_Ser_CampaignMarketing_Filter_Draft t --//[mylock]`
+//     `where(1=1)`
+//     `    **--(t.MyIdxSeq >= @nFilterRecordStart)**`
+//     `    **--and (t.MyIdxSeq <= @nFilterRecordEnd)**`
+//     `;`
+//   Chữ ký vẫn nhận `strResultRecordStart` và `strResultRecordCount`.
+//   ⇒ **Trả về TOÀN BỘ kết quả**, bất kể client xin trang nào. Cột `MyIdxSeq` được tạo bằng
+//     `identity(bigint, 0, 1)` rồi **không ai dùng** ⇒ cả cơ chế đánh số + sắp xếp trở nên **vô dụng**.
+//   ⇒ Với màn tìm chiến dịch (có thể hàng nghìn dòng) đây là **tải toàn bảng về client mỗi lần tìm**.
+//
+// 📌 **ĐỐI CHIẾU #877 — HAI HÀM PHÂN TRANG, HAI KIỂU HỎNG NGƯỢC NHAU**
+//   `Ser_Customer_GetAllDL` (#877): **cắt trang ĐÚNG** (`MyRowIdx between @Start and @End`) nhưng câu trả về
+//     **không `ORDER BY`** ⇒ *thứ tự trong trang* loạn.
+//   `Ser_CampaignMarketing_GetSpecial` (đây): **có** `order by scm.CamMarketingNo asc` nhưng **không cắt trang gì cả**.
+//   ⇒ Hai nửa của một cơ chế phân trang đúng, mỗi hàm làm được **một nửa khác nhau**.
+//
+// ⚠️ **`order by` TRONG `SELECT … INTO` Ở ĐÂY CÓ CHỦ ĐÍCH — KHÁC #876**
+//     `select distinct **identity(bigint, 0, 1) MyIdxSeq**, scm.CamMarketingNo into #tbl_…_Draft`
+//     `from Ser_CampaignMarketing scm … **order by scm.CamMarketingNo asc**;`
+//   ⇒ Ở #876 `order by` là **thừa thật** (không có cột đánh số). Ở đây nó nhằm **quyết định thứ tự gán**
+//     `MyIdxSeq` ⇒ là cách dùng **có chủ đích**.
+//   ⚠️ Nhưng SQL Server **không bảo đảm** thứ tự gán `IDENTITY()` theo `ORDER BY` trong `SELECT … INTO`
+//     (chỉ là hành vi thực nghiệm). ⇒ Ghi là **rủi ro**, không phải lỗi chắc chắn — và **hiện tại vô hại**
+//     vì `MyIdxSeq` **không được dùng** (hai dòng cắt trang đã bị comment).
+//
+// ⚪ **CÓ TẦNG PHÂN QUYỀN XEM**: `inner join #tbl_Ser_CampaignMarketing_**ViewAbility** t on scm.CamMarketingNo`
+//   `= t.CamMarketingNo` ⇒ chiến dịch ngoài phạm vi xem của người dùng bị loại **trước** mọi bộ lọc khác.
+//   ⇒ Đây là **invariant RBAC `ViewAbility`** đã biết; ghi âm tính vì nhiều hàm khác **không** có tầng này.
+// 🔴 **13 tham số lọc, tất cả đi qua `zzzzClauseWhere…ConditionList`** ⇒ phải kiểm **từng** placeholder có
+//   chỗ cắm trong SQL hay không (luật #367). Ở câu `Draft` tôi đếm **12** placeholder xuất hiện, khớp 12 tham số
+//   `…ConditionList`; tham số thứ 13 (`strDealerCode`) dùng ở tầng `ViewAbility`, **không** ở câu này.
+// 📌 Mini: `GET /api/campaignmarketings/search-special` — **phân trang thật** (skip/take) **và** `ORDER BY`
+//   ở câu trả về, tức làm **cả hai nửa** mà #877 và hàm này mỗi bên chỉ làm một.
+app.MapGet("/api/campaignmarketings/search-special", async (AppDbContext db, ITenantContext t,
+    string? camNo, string? camName, string? status, DateTime? effFrom, DateTime? effTo,
+    int? start, int? count) =>
+{
+    var no = (camNo ?? "").Trim();
+    var nm = (camName ?? "").Trim();
+    var st = (status ?? "").Trim();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 500 ? count!.Value : 50;
+    var qy = db.CampaignMarketings.Where(x => x.OrgId == t.OrgId)
+        .Where(x => no.Length == 0 || x.CamNo.Contains(no))
+        .Where(x => nm.Length == 0 || x.CamName.Contains(nm))
+        .Where(x => st.Length == 0 || x.CamMarketingStatus == st)
+        .Where(x => effFrom == null || x.EffDateEnd >= effFrom)
+        .Where(x => effTo == null || x.EffDateStart <= effTo);
+    var total = await qy.CountAsync();
+    var items = await qy
+        .OrderBy(x => x.CamNo)          // ORDER BY o CAU TRA VE — thu nguon thieu (#877)
+        .Skip(skip).Take(take)                   // CAT TRANG THAT — thu nguon comment mat
+        .Select(x => new
+        {
+            x.CamNo, x.CamName, x.CamDesc,
+            x.EffDateStart, x.EffDateEnd, x.CamMarketingStatus,
+        })
+        .ToListAsync();
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = items.Count, items,
+        onlyExistsOnMachine150_881 = "#881: Ser_CampaignMarketing_GetSpecial — CampaignMarketing/BizCarSv.CampaignMarketing.cs:353 tren V20.2023.Release, md5 33af8385 (301 dong, 13 tham so loc), 1 vo boc; cay laptop KHONG CO. Lay tu hang doi 60 cua #874",
+        sourcePagingClausesAreCommentedOut = "#881 HAM NHAN HAI THAM SO PHAN TRANG NHUNG CA HAI MENH DE CAT TRANG DEU BI COMMENT: select t.* into #tbl_Ser_CampaignMarketing_Filter from #tbl_..._Draft t where(1=1) --(t.MyIdxSeq >= @nFilterRecordStart) --and (t.MyIdxSeq <= @nFilterRecordEnd) ; trong khi chu ky van nhan strResultRecordStart va strResultRecordCount => TRA VE TOAN BO ket qua bat ke client xin trang nao. Cot MyIdxSeq duoc tao bang identity(bigint, 0, 1) roi KHONG AI DUNG => ca co che danh so + sap xep tro nen VO DUNG. Voi man tim chien dich co the hang nghin dong, day la TAI TOAN BANG ve client moi lan tim",
+        twoPagingFunctionsTwoOppositeBreakages = "DOI CHIEU #877 — HAI HAM PHAN TRANG, HAI KIEU HONG NGUOC NHAU: Ser_Customer_GetAllDL (#877) CAT TRANG DUNG (MyRowIdx between @Start and @End) nhung cau tra ve KHONG ORDER BY nen thu tu trong trang loan; Ser_CampaignMarketing_GetSpecial (day) CO order by scm.CamMarketingNo asc nhung KHONG CAT TRANG GI CA => hai nua cua mot co che phan trang dung, moi ham lam duoc MOT NUA KHAC NHAU. Mini lam CA HAI NUA",
+        orderByInsideSelectIntoIsIntentionalHere = "order by TRONG SELECT ... INTO O DAY CO CHU DICH — KHAC #876: select distinct identity(bigint, 0, 1) MyIdxSeq, scm.CamMarketingNo into #tbl_..._Draft from Ser_CampaignMarketing scm ... order by scm.CamMarketingNo asc; o #876 order by la THUA THAT (khong co cot danh so), o day no nham QUYET DINH THU TU GAN MyIdxSeq nen la cach dung CO CHU DICH. NHUNG SQL Server KHONG BAO DAM thu tu gan IDENTITY() theo ORDER BY trong SELECT ... INTO (chi la hanh vi thuc nghiem) => ghi la RUI RO, khong phai loi chac chan, va HIEN TAI VO HAI vi MyIdxSeq khong duoc dung",
+        positiveViewAbilityLayer = "AM TINH — CO TANG PHAN QUYEN XEM: inner join #tbl_Ser_CampaignMarketing_ViewAbility t on scm.CamMarketingNo = t.CamMarketingNo => chien dich ngoai pham vi xem cua nguoi dung bi loai TRUOC moi bo loc khac. Day la invariant RBAC ViewAbility da biet; ghi am tinh vi nhieu ham khac KHONG co tang nay",
+        thirteenFiltersPlaceholderCheck = "13 THAM SO LOC, tat ca di qua zzzzClauseWhere...ConditionList => phai kiem TUNG placeholder co cho cam trong SQL hay khong (luat #367). O cau Draft dem duoc 12 placeholder xuat hien, khop 12 tham so ...ConditionList; tham so thu 13 (strDealerCode) dung o tang ViewAbility, KHONG o cau nay",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, ITenantContext t,
     string? scope) =>
 {
