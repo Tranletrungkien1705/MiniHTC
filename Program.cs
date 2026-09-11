@@ -40111,6 +40111,112 @@ app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantConte
         twoMachinesVerified862 = "md5 chuan hoa b380db99 KHOP may 150",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #867 MÀN MỚI: DOANH THU THEO KỸ THUẬT VIÊN — `Ser_RO_ReportResult_Revenue_ByEngineer` =====
+// `Service.Report.cs:6035-6211` md5 `24422406` (177 dòng), LIVE (4 vỏ bọc). **3B**: **KHỚP** máy 150
+// (kèm `…_ByRO` `:1614` `e7b37b93` cũng khớp). BƯỚC 2 grep **cả hai** kiểu (luật #357): tên hàm ra 2 hit
+// (chỉ là ghi chú ở #675 về bản `_WH`), đường dẫn `revenue-by-engineer` ra **0** ⇒ **màn mới**.
+//
+// 🔴🔴🔴 **`select DISTINCT` TRÊN BÁO CÁO TIỀN — NUỐT DÒNG TRÙNG HỢP LỆ**
+//     `select **distinct** 'LS-'+ro.RONo RONo, car.PlateNo, cus.CusName, …, sri.Price,`
+//     `       isnull(sri.Price*sri.Factor*(1+sri.VAT/100), 0) as PriceAfterVAT, …, se.EngineerName, sms.SerName, 0 SumCost`
+//   ⇒ Một phiếu có **hai hạng mục dịch vụ giống hệt nhau** (cùng dịch vụ, cùng giá, cùng KTV — chuyện bình thường
+//     khi làm lại/làm hai lần) sẽ bị `distinct` **gộp thành một dòng** ⇒ **mất doanh thu**, im lặng.
+//   ⇒ `distinct` ở đây rõ ràng dùng để **chữa cháy việc nở dòng** do chuỗi `inner join`, nhưng nó chữa bằng cách
+//     **xoá cả dòng thật**.
+//
+// 🔴🔴 **NỞ DÒNG THEO SỐ KTV, VÀ TIỀN KHÔNG ĐƯỢC CHIA**
+//     `INNER JOIN Ser_ROServiceItemsEngineer srie ON srie.ItemID = sri.ItemID AND srie.SerID = sri.SerID`
+//     `                                           AND srie.ROID = sri.ROID`
+//     `INNER JOIN Ser_Engineer se ON se.EngineerID = srie.EngineerID`
+//   ⇒ Một hạng mục do **N kỹ thuật viên** cùng làm ⇒ **N dòng**, mỗi dòng mang **NGUYÊN** `PriceAfterVAT`.
+//     `distinct` **không** cứu được vì `se.EngineerName` khác nhau.
+//   ⇒ Ai `sum(PriceAfterVAT)` để ra tổng doanh thu sẽ **cộng gấp N lần**. Muốn dùng cho năng suất KTV thì tiền
+//     phải **chia cho số KTV** (hoặc theo tỷ lệ công) — nguồn **không** làm.
+//
+// 🔴🔴🔴 **`sri.VAT/100` — CHIA NGUYÊN, CA THỨ HAI TRONG CÙNG FILE**
+//   `(1 + sri.**VAT/100**)` ⇒ `VAT` kiểu nguyên thì `10/100 = 0` ⇒ **mất thuế** (#408).
+//   ⇒ Trong **một file** `Service.Report.cs` nay đã có: `/100` ở `Ser_RO_Sumary_Revenue` (#860) và ở **đây**;
+//     `*0.01` (đúng) ở `Ser_RO_Statistic_Part` (#861). ⇒ **Hai sai, một đúng, cùng một file.**
+//
+// 🔴🔴 **CỘT CHI PHÍ LÀ HẰNG SỐ 0**: `, **0 SumCost**` — báo cáo tên *ReportResult* (kết quả) có cột `SumCost`
+//   nhưng **luôn bằng 0** ⇒ mọi phép "lãi = doanh thu − chi phí" dựa trên cột này cho ra **lãi = doanh thu**.
+//   ⇒ Cột **chưa được cài đặt** nhưng vẫn xuất hiện trong kết quả như thể có nghĩa.
+//
+// 🔴🔴 **HAI BÁO CÁO DOANH THU, HAI TẬP TRẠNG THÁI KHÁC NHAU**
+//     đây: `and ro.Status **in ('FNS','PAID')**`     ·     #860 `Ser_RO_Sumary_Revenue`: `and ro.status=**'FNS'**`
+//   ⇒ Cùng gọi là "doanh thu" nhưng **tập phiếu khác nhau** ⇒ hai báo cáo **không bao giờ khớp tổng**,
+//     và không có gì trong tên hay tham số nói cho người dùng biết. Cả hai đều dùng **literal**, không dùng hằng.
+//
+// ⚪⚪ **HAI THỨ HÀM NÀY LÀM ĐÚNG** (đối lập với #860/#861/#862 cùng file):
+//   ① **Ngày được THAM SỐ HOÁ**, không bake: `BuildClause("and", "ro.CheckInDate", strDateCheckInConditonList,`
+//      `"@p", ref alParamsCoupleSql)` và tương tự cho `ro.PaidCreatedDate`, `ro.DealerCode` ⇒ **không** có
+//      `'@FromDate'` trong nháy, **không** `datediff` trên cột ⇒ **không injection, không non-sargable**.
+//   ② **Biển số lấy từ bảng XE**: `car.PlateNo`, và `inner join ser_car` ở đây **có dùng cột** ⇒ không phải join câm.
+//   ⇒ Khi cần mẫu đúng cho việc **lọc ngày**, dùng **hàm này**; cho **thuế** và **biển số**, dùng #861.
+// 🔴 `INNER JOIN Ser_MST_Service sms` — join danh mục ⇒ hạng mục có `SerID` đã bị xoá khỏi danh mục **biến mất**
+//   khỏi báo cáo (#410), đúng như #861 với `Ser_Mst_Part`.
+// 📌 Mini: `GET /api/report/revenue-by-engineer` — **không** `distinct`, **chia** tiền theo số KTV của hạng mục,
+//   tính thuế bằng `decimal`, và trả kèm số dòng mà `distinct` của nguồn sẽ nuốt.
+app.MapGet("/api/report/revenue-by-engineer", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? engineerNo) =>
+{
+    var eng = (engineerNo ?? "").Trim();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        .Where(x => x.Status == "Finished" || x.Status == "Paid")
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CusRequest, x.CheckInDate })
+        .ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+    var roMap = ros.ToDictionary(x => x.Id, x => x);
+    var items = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.Id, x.RoId, x.SerCode, x.SerName, x.Price, x.Factor, x.Vat }).ToListAsync();
+    var itemIds = items.Select(x => x.Id).ToList();
+    var links = await db.RoServiceItemEngineers
+        .Where(x => x.OrgId == t.OrgId && itemIds.Contains(x.RoServiceItemId))
+        .Select(x => new { x.RoServiceItemId, x.EngineerNo }).ToListAsync();
+    var byItem = links.GroupBy(x => x.RoServiceItemId).ToDictionary(g => g.Key, g => g.Select(x => x.EngineerNo).ToList());
+    var rows = new List<object>();
+    var distinctWouldSwallow = 0;
+    var seen = new HashSet<string>();
+    foreach (var it in items)
+    {
+        var ro = roMap[it.RoId];
+        var f = it.Factor == 0m ? 1m : it.Factor;
+        var priceAfterVat = it.Price * f * (1m + it.Vat / 100m);   // decimal, KHONG chia nguyen
+        var engs = byItem.TryGetValue(it.Id, out var e) ? e : new List<string>();
+        if (engs.Count == 0) engs = new List<string> { "" };       // KHONG cat dong nhu inner join cua nguon
+        var share = priceAfterVat / engs.Count;                    // CHIA cho so KTV — nguon KHONG chia
+        foreach (var en in engs)
+        {
+            if (eng.Length > 0 && en != eng) continue;
+            // Dem xem distinct cua nguon se nuot bao nhieu dong (moi cot giong het nhau).
+            var key = string.Join("|", ro.RONo, ro.LicensePlate, it.SerName, it.Price, priceAfterVat, it.Vat, en);
+            if (!seen.Add(key)) distinctWouldSwallow++;
+            rows.Add(new
+            {
+                roNo = ro.RONo, plateNo = ro.LicensePlate, ro.CusName, ro.CusRequest, ro.CheckInDate,
+                serCode = it.SerCode, serName = it.SerName,
+                price = it.Price, vat = it.Vat, priceAfterVat,
+                engineerNo = en, engineerCount = engs.Count, revenueShare = share,
+            });
+        }
+    }
+    return Results.Ok(new
+    {
+        fromDate, toDate, engineerNo = eng.Length > 0 ? eng : null,
+        count = rows.Count, rowsSourceDistinctWouldSwallow = distinctWouldSwallow, items = rows,
+        sourceDistinctSwallowsRealRows = "#867: select DISTINCT tren bao cao TIEN — mot phieu co HAI hang muc dich vu giong het nhau (cung dich vu, cung gia, cung KTV — chuyen binh thuong khi lam lai) se bi distinct GOP THANH MOT DONG => MAT DOANH THU, im lang. distinct o day ro rang dung de CHUA CHAY viec no dong do chuoi inner join, nhung no chua bang cach XOA CA DONG THAT",
+        sourceMultipliesRowsByEngineerWithoutSplitting = "NO DONG THEO SO KTV, VA TIEN KHONG DUOC CHIA: INNER JOIN Ser_ROServiceItemsEngineer srie ON srie.ItemID = sri.ItemID AND srie.SerID = sri.SerID AND srie.ROID = sri.ROID roi INNER JOIN Ser_Engineer se ON se.EngineerID = srie.EngineerID => mot hang muc do N ky thuat vien cung lam ra N DONG, moi dong mang NGUYEN PriceAfterVAT; distinct KHONG cuu duoc vi se.EngineerName khac nhau => ai sum(PriceAfterVAT) se cong GAP N LAN. Mini chia tien theo so KTV (revenueShare)",
+        integerDivisionSecondCaseSameFile = "sri.VAT/100 — CHIA NGUYEN, CA THU HAI TRONG CUNG FILE: trong Service.Report.cs nay da co /100 o Ser_RO_Sumary_Revenue (#860) va o day; *0.01 (DUNG) o Ser_RO_Statistic_Part (#861) => HAI SAI, MOT DUNG, CUNG MOT FILE",
+        sumCostIsHardcodedZero = "COT CHI PHI LA HANG SO 0: , 0 SumCost — bao cao ten ReportResult (ket qua) co cot SumCost nhung LUON BANG 0 => moi phep lai = doanh thu tru chi phi dua tren cot nay cho ra LAI = DOANH THU. Cot CHUA DUOC CAI DAT nhung van xuat hien trong ket qua nhu the co nghia",
+        twoRevenueReportsTwoStatusSets = "HAI BAO CAO DOANH THU, HAI TAP TRANG THAI KHAC NHAU: day dung and ro.Status in (FNS, PAID) con #860 Ser_RO_Sumary_Revenue dung and ro.status = FNS => cung goi la doanh thu nhung TAP PHIEU KHAC NHAU nen hai bao cao KHONG BAO GIO KHOP TONG, va khong gi trong ten hay tham so noi cho nguoi dung biet. Ca hai deu dung LITERAL, khong dung hang",
+        positiveDatesAreParameterised = "AM TINH — HAM NAY LAM DUNG viec loc ngay: BuildClause(and, ro.CheckInDate, strDateCheckInConditonList, @p, ref alParamsCoupleSql) va tuong tu cho ro.PaidCreatedDate, ro.DealerCode => KHONG co @FromDate trong nhay, KHONG datediff tren cot => khong injection, khong non-sargable. Khi can mau dung cho viec LOC NGAY thi dung HAM NAY; cho THUE va BIEN SO thi dung #861",
+        positivePlateFromCarTable = "AM TINH: bien so lay car.PlateNo tu bang XE, va inner join ser_car o day CO DUNG COT => khong phai join cam nhu #860/#862",
+        innerJoinServiceCatalogLosesRows = "INNER JOIN Ser_MST_Service sms — join danh muc => hang muc co SerID da bi xoa khoi danh muc BIEN MAT khoi bao cao (#410), dung nhu #861 voi Ser_Mst_Part",
+        twoMachinesVerified867 = "md5 chuan hoa KHOP may 150: _ByEngineer 24422406, _ByRO e7b37b93",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/ro-part-statistic", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? partCode) =>
 {
