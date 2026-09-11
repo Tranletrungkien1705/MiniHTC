@@ -23897,6 +23897,79 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //     phụ tùng thì tính cho **cái gì**? Chưa đọc thân hàm ⇒ ghi là **cần đọc tiếp**, không kết luận.
 // 📌 **Bài học đo lường**: khuôn này cần **ba** tầng lọc (tham số hạ tầng · nhiễu regex · **tham số đã comment**).
 //   Thô **2532** → lọc đủ **18**. Riêng tầng "đã comment" loại **6/24** — nếu bỏ qua sẽ báo oan 25%.
+// ===== 🔴🔴🔴 #832 MÀN MỚI: BÁO CÁO PHỤ TÙNG THEO BÁO GIÁ — `SerQuotePartRpt` =====
+// `BizCarSv.Inventory.Quote.cs:1990-2151` md5 `936def49` (152 dòng, `Raise`=**0**), LIVE qua web WS `:20645`.
+// ⚠️ Đây là **hàm CUỐI FILE** ⇒ phải dùng nhánh dự phòng `[ -z "$E" ] && E=$((L+1))` khi trích, nếu không md5
+//   ra `d41d8cd9` (md5 chuỗi rỗng) — đúng bẫy đã ghi ở **C0-310**. Lần này đã vấp và tự sửa ngay.
+// **BƯỚC 3B**: file **2151** dòng trên **cả hai** máy; md5 trên 150 = `936def49` **KHỚP**.
+//
+// 🔴🔴🔴 **HAI BỘ LỌC BIẾN MẤT IM LẶNG — VÀ NAY CÓ BẰNG CHỨNG MÃ NGUỒN CHO #410**
+//   Hàm gọi: `BuildClause("and", "t.DealerCode", **strDealerCode**, "@p", ref alParamsCoupleSql)` và
+//            `BuildClause("and", "t.QuoteID",    **strQuoteID**,    "@p", ref alParamsCoupleSql)`
+//   — **không** có tiền tố toán tử (khác `"=" + strX` ở #779/#827/#830).
+//   Mở `CommonUtils/DataUtils.cs:1074 BuildClause`: nó `Split('|')` rồi với mỗi điều kiện chỉ đặt `nCase`
+//   khi chuỗi **bắt đầu bằng** `=` · `!=` · `>=` · `<=` · `LIKE` · `NOT LIKE` · `IS NULL` · `IS NOT NULL` ·
+//   `IN` · `NOT IN`. Không khớp cái nào ⇒ `nCase` **giữ 0** ⇒ **không nhánh `if` nào chạy** ⇒ `strbdResult`
+//   rỗng ⇒ `if (strbdResult.Length < 1) **return ""**`.
+//   ⇒ Client gửi `"D01"` (mã đại lý thuần) thì **cả hai** mệnh đề **biến mất** ⇒ báo cáo trả về **TẤT CẢ báo giá
+//     của MỌI đại lý**. Chỉ khi client tự gửi `"=D01"` thì mới lọc.
+//   🔴 Và WS (`WSCarSv.asmx.cs:20645`) truyền **thẳng** `strDealerCode`/`strQuoteID` từ client xuống — **không**
+//     thêm toán tử ⇒ toàn bộ việc lọc phụ thuộc vào **hợp đồng ngầm** rằng client tự ghép dấu `=`.
+//   📌 Đây là **rò dữ liệu chéo đại lý**, cùng họ với chuỗi #761/#764/#765/#828 nhưng **cơ chế thứ NĂM**:
+//     tham số **có** vào `BuildClause` nhưng **thiếu toán tử** nên bị hàm đó nuốt.
+//
+// 🔴🔴 **TÊN CỘT NÓI DỐI**: `isnull(cus.Tel, cus.mobile) **cusMobile**` — cột tên "mobile" nhưng **ưu tiên `Tel`**
+//   (điện thoại bàn), chỉ rơi về `mobile` khi `Tel` NULL. Mà `cus.Mobile` **cũng** được trả riêng ở dòng trên
+//   ⇒ hai cột cùng nói về điện thoại, **một cái mang tên sai**. Mẫu in ra "di động" thực chất là **số bàn**.
+//
+// 🔴 **`left join sys_user su on t.Creator = su.UserCode AND t.DealerCode = su.DealerCode`** (đọc từ
+//   `[@strDBName_CommonCenter]`) ⇒ ⚪ là `left join` nên **không nuốt dòng**, nhưng người tạo báo giá đã **chuyển
+//   đại lý** thì `UserName` trả về **rỗng** — báo cáo mất tên người lập.
+//
+// ⚪ **ÂM TÍNH — công thức tiền ĐÚNG**: `Amount = Qty*Price*Factor + Qty*Price*0.01*VAT*Factor`
+//   `= Qty*Price*Factor*(1 + VAT/100)` ⇒ VAT tính trên giá **đã** nhân hệ số, đúng ý; và `0.01*VAT` là **nhân**
+//   số thực nên **không** dính bẫy chia nguyên `VAT/100` của **#408**. `AmountBeforeVAT` cũng nhất quán.
+//   (Chú thích nguyên văn cạnh hai dòng đó: `-------20121226 - issue 813`.)
+// 🔴 `SELECT t.*` **hai lần** + `select * from #tbl_Inv_Quote` ⇒ trả toàn bộ cột (họ #763).
+// ⚪ `drop table #tbl_Inv_Quote` ở cuối — và `select` lấy dữ liệu **trước** khi drop ⇒ đúng thứ tự, không lỗi.
+// 📌 Mini: `GET /api/partquotes/part-report` — lọc **thật sự có tác dụng** và **đếm** số dòng mà nguồn sẽ trả thừa.
+app.MapGet("/api/partquotes/part-report", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? quoteNo) =>
+{
+    var all = await db.PartQuotes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var qn = (quoteNo ?? "").Trim();
+    var heads = all.Where(x => qn.Length == 0 || x.QuoteNo == qn).ToList();
+    var ids = heads.Select(h => h.Id).ToList();
+    var lines = await db.PartQuoteLines
+        .Where(l => l.OrgId == t.OrgId && ids.Contains(l.PartQuoteId)).ToListAsync();
+    var rows = lines.Select(l =>
+    {
+        var head = heads.First(h => h.Id == l.PartQuoteId);
+        // Cong thuc nguon: Qty*Price*Factor + Qty*Price*0.01*VAT*Factor
+        var beforeVat = l.Quantity * l.UnitPrice * l.Factor;
+        var amount = beforeVat + l.Quantity * l.UnitPrice * 0.01m * l.Vat * l.Factor;
+        return new { head.QuoteNo, head.CusId, head.CusName, head.Mobile, l.PartCode, l.PartName,
+            l.Unit, l.Quantity, l.UnitPrice, l.Vat, l.Factor,
+            amountBeforeVat = beforeVat, amount };
+    }).ToList();
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        quoteHeadCount = heads.Count, quoteHeadCountIgnoringFilter = all.Count,
+        headsSourceWouldReturnExtra = all.Count - heads.Count,
+        sourceFiltersVanishSilently = "BUG THAT: ham goi BuildClause(and, t.DealerCode, strDealerCode, @p, ...) va BuildClause(and, t.QuoteID, strQuoteID, ...) — KHONG co tien to toan tu. Doc CommonUtils/DataUtils.cs:1074: BuildClause chi dat nCase khi chuoi BAT DAU BANG =, !=, >=, <=, LIKE, NOT LIKE, IS NULL, IS NOT NULL, IN, NOT IN. Khong khop thi nCase giu 0 => khong nhanh if nao chay => strbdResult rong => if (strbdResult.Length < 1) return \"\" => DIEU KIEN BIEN MAT IM LANG",
+        consequenceCrossDealer = "client gui D01 (ma dai ly thuan) thi CA HAI menh de bien mat => bao cao tra ve TAT CA bao gia cua MOI dai ly. Chi khi client tu gui =D01 moi loc",
+        wsPassesRawValue = "WSCarSv.asmx.cs:20645 truyen THANG strDealerCode/strQuoteID tu client xuong, KHONG them toan tu => viec loc phu thuoc vao HOP DONG NGAM rang client tu ghep dau =",
+        fifthMechanismOfCrossDealerLeak = "co che thu NAM cua chuoi ro du lieu cheo dai ly (#761/#764/#765/#828): tham so CO vao BuildClause nhung THIEU TOAN TU nen bi ham do nuot. Day cung la BANG CHUNG MA NGUON cho #410",
+        columnNameLies = "isnull(cus.Tel, cus.mobile) cusMobile — cot ten mobile nhung UU TIEN Tel (dien thoai ban), chi roi ve mobile khi Tel NULL; ma cus.Mobile CUNG duoc tra rieng => hai cot cung noi ve dien thoai, mot cai mang ten SAI",
+        creatorNameLostIfUserMoved = "left join sys_user su on t.Creator = su.UserCode AND t.DealerCode = su.DealerCode (doc tu CommonCenter) — la LEFT join nen khong nuot dong, nhung nguoi tao bao gia da CHUYEN DAI LY thi UserName tra ve RONG",
+        amountFormulaIsCorrect = "AM TINH: Amount = Qty*Price*Factor + Qty*Price*0.01*VAT*Factor = Qty*Price*Factor*(1 + VAT/100) => VAT tinh tren gia DA nhan he so, dung y; va 0.01*VAT la NHAN so thuc nen KHONG dinh bay chia nguyen VAT/100 cua #408. Chu thich nguyen van canh hai dong do: -------20121226 - issue 813",
+        sourceSelectsStar = "SELECT t.* hai lan + select * from #tbl_Inv_Quote => tra toan bo cot (ho #763)",
+        tempTableDropOrderIsFine = "AM TINH: drop table #tbl_Inv_Quote o cuoi, va select lay du lieu TRUOC khi drop => dung thu tu",
+        lastFunctionInFileTrap = "day la HAM CUOI FILE => phai dung nhanh du phong [ -z $E ] && E=$((L+1)) khi trich, neu khong md5 ra d41d8cd9 (md5 chuoi rong) — dung bay C0-310. Lan nay da vap va tu sua ngay",
+        twoMachinesVerified = "Inventory.Quote.cs 2151 dong tren CA HAI may; md5 chuan hoa tren 150 = 936def49 KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/dead-parameter-sweep", () => Results.Ok(new
 {
     trigger = "#806 (strROIDList sai toan tu), #808 (strModelCodeList bake nham bien), #827 (strStatus khong vao SQL)",
