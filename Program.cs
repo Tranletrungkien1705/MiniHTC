@@ -23817,6 +23817,79 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   Ser_Mst_Service` ⇒ **dịch vụ bị xoá khỏi danh mục thì dòng RO biến mất khỏi thống kê, im lặng**.
 //   Nay thấy đầu kia: `Ser_Mst_Service_Delete` **có** chặn xoá khi còn `Ser_ROServiceItems` ⇒ ⚪ **hai đầu khớp nhau**,
 //   dữ liệu cũ khó rơi vào cảnh đó — **trừ khi** ai xoá thẳng bằng SQL, hoặc `Ser_ROServiceItems` đã bị dọn trước.
+// ===== 🔴🔴🔴 #827 MÀN MỚI: LỊCH SỬ LỆNH SỬA CHỮA — `SerROHistoryGet` (`Service01.cs:14298-14417`) =====
+// md5 `19ebdca7` (108 dòng, `Raise`=**0**). LIVE qua web WS. **BƯỚC 3B**: md5 trên máy 150 = `19ebdca7` **KHỚP**.
+//
+// 🔴🔴🔴 **THAM SỐ `strStatus` LÀ THAM SỐ CHẾT — TRẠNG THÁI BỊ HARD-CODE**
+//   Chữ ký nhận `string strStatus`, nhưng SQL viết **cứng**:
+//     `select * FROM [@strDBName_CommonCenter].[dbo].Ser_ROHistory td --//[mylock]`
+//     `WHERE (1=1) AND td.Status in(**'REJ'**) zzzzClauseWhere_strROIDConditionList ;`
+//   `grep -c strStatus` trên **trọn** thân hàm = **1** — đúng **một** lần, ở **chữ ký**. Nó **không** vào
+//   `alParamsCoupleError`, **không** vào `BuildClause`, **không** vào `Replace`.
+//   ⇒ Màn "lịch sử lệnh sửa chữa" **chỉ trả về bản ghi bị TỪ CHỐI**, bất kể người dùng chọn trạng thái nào.
+//   **HẰNG ≠ GIÁ TRỊ**: `REJ` = `TConst.Ser_RO_Stage.RejectRO` — chú thích nguyên văn ở `Const.Main.cs:179`
+//   là `// Hủy // Lập lệnh sửa chữa` (**hai** lời chú thích dính nhau, đã ghi ở #815).
+//   📌 Khác `#806` (`strROIDList` **có** vào SQL nhưng sai toán tử): ở đây tham số **không vào SQL chút nào**.
+//
+// 🔴🔴 **`"=" + strROID` — NỐI TOÁN TỬ VÀO GIÁ TRỊ** (họ #779):
+//     `BuildClause("and", "td.ROID", **"=" + strROID**, "@p", ref alParamsCoupleSql)`
+//   ⇒ `strROID` rỗng thì đối số thành chuỗi `"="` chứ **không** phải rỗng ⇒ hành vi "bỏ lọc" không còn là bỏ lọc.
+// 🔴 **`select *`** ⇒ kéo toàn bộ cột của `Ser_ROHistory` về client (họ #763).
+// 🔴 **Đọc từ CSDL khác qua tên đầy đủ**: `[@strDBName_CommonCenter].[dbo]` ← `_strConfig_DBName_**Main**`
+//   (**tên hằng nói dối**, lần thứ **bảy** sau #745/#750/#763/#768/#779/#790) trong khi handle là `_dbDealer`.
+// 🔴 `bNeedTransaction_Dealer = true` + `RollbackSafety(_dbDealer)` cho một hàm **chỉ đọc** (khuôn #803).
+// ⚪ `Raise`=0 và **không** có `#region Check` — hàm thuần đọc, đúng bản chất (đã trích trọn theo #403).
+//
+// 🔴 **CẦN XÁC MINH (ghi kèm, không kết luận)**: `Ser_RO_Delete` (`Service01.cs:5763`) xoá
+//   `Ser_ROServiceItemsEngineer` bằng `inner join #tbl … on t.EngineerID = q.EngineerID **and t.ItemID = q.ItemID**`
+//   — **không** có `ROID` trong điều kiện join. Nếu cùng cặp (`EngineerID`,`ItemID`) xuất hiện ở RO khác thì
+//   **xoá nhầm**. Chưa có DB để đo tính duy nhất của `ItemID` ⇒ **không kết luận**.
+// 📌 §12: `RoHistory` đủ **4 chỗ** — entity + DbSet + Seeder `CREATE TABLE IF NOT EXISTS` + **cả GET lẫn POST**.
+app.MapGet("/api/rohistories", async (AppDbContext db, ITenantContext t, string? roId, string? status) =>
+{
+    var qy = db.RoHistories.Where(x => x.OrgId == t.OrgId);
+    var rid = (roId ?? "").Trim();
+    if (rid.Length > 0) qy = qy.Where(x => x.ROID == rid);
+    // Nguon hard-code in(REJ) va BO QUA tham so strStatus — Mini dung tham so that.
+    var st = (status ?? "").Trim();
+    var appliedStatus = st.Length > 0 ? st : "REJ";
+    var rows = await qy.Where(x => x.Status == appliedStatus)
+        .OrderByDescending(x => x.LogLUDateTime)
+        .Select(x => new { x.Id, x.ROHID, x.ROID, x.Status, x.Reason, x.LogLUDateTime, x.LogLUBy })
+        .Take(1000).ToListAsync();
+    var allStatusCount = await qy.CountAsync();
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows, roId = rid.Length > 0 ? rid : null,
+        appliedStatus, rowCountIgnoringStatus = allStatusCount,
+        rowsSourceWouldHide = allStatusCount - rows.Count,
+        sourceIgnoresStatusParameter = "NGUON: chu ky nhan string strStatus nhung SQL viet cung AND td.Status in(REJ); grep -c strStatus tren TRON than ham = 1 — dung MOT lan, o CHU KY. No khong vao alParamsCoupleError, khong vao BuildClause, khong vao Replace => man lich su lenh sua chua CHI tra ve ban ghi bi TU CHOI, bat ke nguoi dung chon trang thai nao",
+        rejConstantValue = "REJ = TConst.Ser_RO_Stage.RejectRO; chu thich nguyen van o Const.Main.cs:179 la // Huy // Lap lenh sua chua (HAI loi chu thich dinh nhau, da ghi o #815)",
+        differsFrom806 = "khac #806 (strROIDList CO vao SQL nhung sai toan tu =): o day tham so KHONG vao SQL chut nao",
+        sourceConcatenatesOperator = "BuildClause(and, td.ROID, \"=\" + strROID, @p, ref alParamsCoupleSql) — noi toan tu vao gia tri (ho #779): strROID rong thi doi so thanh chuoi = chu khong phai rong",
+        sourceSelectsStar = "select * => keo toan bo cot cua Ser_ROHistory ve client (ho #763)",
+        sourceReadsAnotherDbByFullName = "[@strDBName_CommonCenter].[dbo].Ser_ROHistory voi @strDBName_CommonCenter <- _strConfig_DBName_Main (TEN HANG NOI DOI, lan thu BAY sau #745/#750/#763/#768/#779/#790) trong khi handle la _dbDealer",
+        sourceOpensTransactionForReadOnly = "bNeedTransaction_Dealer = true + RollbackSafety(_dbDealer) cho ham CHI DOC (khuon #803)",
+        sourceHasNoGuardByNature = "AM TINH (#403): Raise=0 va KHONG co #region Check — ham thuan doc, dung ban chat",
+        needsVerification = "CAN XAC MINH: Ser_RO_Delete (Service01.cs:5763) xoa Ser_ROServiceItemsEngineer bang inner join on t.EngineerID = q.EngineerID and t.ItemID = q.ItemID — KHONG co ROID trong dieu kien join. Neu cung cap (EngineerID, ItemID) xuat hien o RO khac thi XOA NHAM. Chua co DB de do tinh duy nhat cua ItemID => KHONG ket luan",
+        miniModelNote = "Mini CHUA biet du cot cua Ser_ROHistory (nguon dung select *); entity RoHistory chi giu khoa doc duoc tu Ser_RO_Delete: ROHID + ROID, cong Status/Reason/LogLU*",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/rohistories", async (RoHistoryDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var rohid = (dto.ROHID ?? "").Trim();
+    if (rohid.Length == 0) return Results.BadRequest(new { error = "Chua nhap ROHID" });
+    var row = await db.RoHistories.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROHID == rohid);
+    if (row is null) { row = new RoHistory { OrgId = t.OrgId, ROHID = rohid }; db.RoHistories.Add(row); }
+    row.ROID = (dto.ROID ?? row.ROID ?? "").Trim();
+    row.Status = string.IsNullOrWhiteSpace(dto.Status) ? row.Status : dto.Status!.Trim();
+    if (dto.Reason != null) row.Reason = dto.Reason;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = dto.LogLUBy;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ROHID, row.ROID, row.Status, row.Reason, row.LogLUDateTime });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/delete-guard-sweep", () => Results.Ok(new
 {
     trigger = "khuon Delete khong kiem rang buoc gap BA lan: #818 (co guard), #819 (khong), #824 (khong)",
@@ -71469,6 +71542,7 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record RoHistoryDto(string? ROHID, string? ROID, string? Status, string? Reason, string? LogLUBy);
 record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status);
 record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
 record StockInAdjustFinishDto(string? NewStockInNo, string? AdjustmentBy, DateTime? AdjustmentDate, string? AdjustmentNote, string? OldStockInNo);

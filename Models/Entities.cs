@@ -2378,8 +2378,21 @@ public sealed class RepairOrder
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
-public sealed class RoServiceItem
+// #827 Ser_ROHistory — lich su lenh sua chua (nguon: BizCarSv.Service01.cs:14298 SerROHistoryGet).
+// Khoa doc duoc tu Ser_RO_Delete (:5891): ROHID (khoa) + ROID. Cac cot khac CHUA biet — nguon dung select *.
+public sealed class RoHistory
 {
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROHID { get; set; } = "";
+    public string ROID { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string? Reason { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class RoServiceItem{
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long RoId { get; set; }
