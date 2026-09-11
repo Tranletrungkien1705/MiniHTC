@@ -24078,6 +24078,82 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   (khuôn #748) và `CommitSafety` cho cả ba ⇒ không thuộc nhóm lệch handle của #803.
 // 📌 Mini: `POST /api/stockins/import-partinstance` — **giữ** kho người dùng khai nếu có, **báo rõ** khi nó khác
 //   kho suy từ vị trí (nguồn ghi đè im lặng), và guard tên bảng/khoá tra cứu.
+// ===== 🔴🔴🔴 #837 MÀN MỚI: DANH SÁCH KHÁCH CỦA CHIẾN DỊCH — `SerCampaign_ListCustomerGet` =====
+// `BizCarSv.Service.cs:9721-9916` md5 `836f094c` (186 dòng, `Raise`=**0**), LIVE qua web WS.
+// Mini đã có `/api/campaigns` (CRUD chiến dịch) nhưng **chưa** có màn danh sách khách. **3B**: md5 trên 150
+// = `836f094c` **KHỚP**.
+//
+// 🔴🔴🔴 **BẢNG GỐC LÀ *XE*, KHÔNG PHẢI CHIẾN DỊCH — VÀ WHERE GIẾT `LEFT JOIN`**
+//   `FROM **ser_car car** LEFT JOIN ser_customer cus ON car.cusid = cus.cusid`
+//   `LEFT JOIN […].ser_camContact cc ON car.cusid = cc.cusid AND cc.carid = car.carid`
+//   `LEFT JOIN […].Ser_Campaign cam ON cc.Camid = cam.camid`
+//   `LEFT JOIN […].ser_mst_model md ON car.modelid = md.modelid`
+//   `WHERE (1=1) **and cus.Isactive = '1' and car.isactive = '1'** zzzzClauseWhere_strCamIDConditionList …`
+//   ⇒ ① Điều kiện `cus.Isactive = '1'` đặt ở **WHERE** trên bảng **LEFT JOIN** ⇒ **giết `left join`**:
+//     xe **không có** bản ghi khách tương ứng bị **loại hẳn** (NULL không thoả `= '1'`). Đúng trạng thái
+//     **"chết có điều kiện"** của #414 — muốn giữ thì phải chuyển điều kiện lên `ON`.
+//   ⇒ ② Mọi mệnh đề lọc chiến dịch (`cam.CamID`, `cam.CamNo`, `cam.CamName`, `cam.IsActive`) cũng nằm ở
+//     **WHERE** trên bảng `cam` (LEFT JOIN) ⇒ khi người dùng **có** chọn chiến dịch thì ba `left join`
+//     `cc`/`cam` **hoá thành inner**; khi **không** chọn thì câu trả về **MỌI XE** của đại lý — kể cả xe
+//     chưa từng thuộc chiến dịch nào. **Một màn, hai hành vi hoàn toàn khác nhau** tuỳ ô lọc.
+//
+// 🔴🔴 **BA MỆNH ĐỀ ĐẠI LÝ DÙNG CHUNG MỘT BIẾN — VÀ CHÚNG `AND` VỚI NHAU**
+//     `…DealerCode**01**… = BuildClause("and", "**cam**.DealerCode", strDealerCodeConditionList, …)`
+//     `…DealerCode**02**… = BuildClause("and", "**cus**.DealerCode", strDealerCodeConditionList, …)`
+//     `…DealerCode**03**… = BuildClause("and", "**car**.DealerCode", strDealerCodeConditionList, …)`
+//   ⇒ Cùng một giá trị áp cho **ba** bảng trong **cùng một `WHERE`** ⇒ **AND cả ba**.
+//   📌 Thoạt nhìn giống ca **#809** (`strContactDateConditionList` dùng cho ba cột) nhưng ở #809 ba placeholder
+//     nằm ở **ba bảng tạm khác nhau** nên vô hại; **ở đây chúng cùng một câu** ⇒ **chiến dịch toàn quốc**
+//     (`cam.DealerCode` là mã hãng/rỗng, khác mã đại lý) sẽ **loại sạch** danh sách khách.
+//     ⇒ Cùng một cách viết, **hai kết cục khác nhau** — phải đọc **vị trí** placeholder, không chỉ đếm số lần dùng biến.
+//
+// 🔴🔴 **`CASE` TRẠNG THÁI KHÔNG CÓ `ELSE` — VÀ THỨ TỰ NGƯỢC TRỰC GIÁC**
+//     `case cc.Status when '1' then N'Đã liên hệ' when '2' then N'Chưa liên hệ'`
+//     `                when '3' then N'Không liên hệ' end as NewStatus`
+//   ⇒ ① **Không `ELSE`** ⇒ trạng thái ngoài {1,2,3} ⇒ `NewStatus` = **NULL**; và xe không thuộc chiến dịch
+//     (`cc.Status` NULL) cũng ra **NULL** ⇒ hai nguyên nhân khác hẳn nhau cho **cùng một ô trống**.
+//   ⇒ ② **`'1' = Đã liên hệ`, `'2' = Chưa liên hệ`** — **ngược** thói quen (thường `1` = chưa làm).
+//     Tra `TERP.Constants` **không** thấy lớp hằng nào cho trạng thái `ser_camContact` ⇒ **ba chuỗi này là
+//     literal viết thẳng trong SQL**, không có hằng để đối chiếu ⇒ nơi khác rất dễ hiểu ngược.
+// 🔴 Câu thứ nhất `SELECT * FROM …Ser_Campaign` ⇒ trả toàn bộ cột (họ #763).
+// 📌 Mini: `GET /api/campaigns/{camId}/customers` — giữ **đúng** ngữ nghĩa `left join` (không giết bằng WHERE),
+//   **đếm riêng** số dòng mà nguồn sẽ loại, và trả `statusText` **có nhánh mặc định**.
+app.MapGet("/api/campaigns/{camId}/customers", async (string camId, AppDbContext db, ITenantContext t,
+    string? dealerCode) =>
+{
+    var cid = (camId ?? "").Trim();
+    var dl = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
+        .Where(c => dl.Length == 0 || c.DealerCode == dl)
+        .Select(c => new { c.Id, c.CarID, c.CusID, c.PlateNo, c.FrameNo, c.TradeMark, c.DealerCode, c.FlagActive })
+        .ToListAsync();
+    var cusList = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId)
+        .Select(c => new { c.CusCode, c.CusName, c.Mobile, c.Address, c.FlagActive }).ToListAsync();
+    var cusMap = cusList.GroupBy(x => x.CusCode).ToDictionary(g => g.Key, g => g.First());
+    var rows = cars.Select(c =>
+    {
+        cusMap.TryGetValue(c.CusID ?? "", out var cus);
+        // Nguon dat cus.Isactive = 1 va car.isactive = 1 o WHERE tren bang LEFT JOIN => GIET left join.
+        var sourceWouldDrop = cus == null || cus.FlagActive != "1" || c.FlagActive != "1";
+        return new { c.CarID, c.PlateNo, c.FrameNo, c.TradeMark, c.DealerCode,
+            cusId = c.CusID, cusName = cus?.CusName, mobile = cus?.Mobile, address = cus?.Address,
+            sourceWouldDrop };
+    }).ToList();
+    return Results.Ok(new
+    {
+        camId = cid, dealerCode = dl.Length > 0 ? dl : null,
+        count = rows.Count, items = rows,
+        rowsSourceWouldDrop = rows.Count(r => r.sourceWouldDrop),
+        statusTextMap = new { _1 = "Đã liên hệ", _2 = "Chưa liên hệ", _3 = "Không liên hệ", other = "(khong xac dinh)" },
+        sourceBaseTableIsCarNotCampaign = "NGUON: FROM ser_car car LEFT JOIN ser_customer / ser_camContact / Ser_Campaign / ser_mst_model => BANG GOC la XE, khong phai chien dich. Khi nguoi dung KHONG chon chien dich thi cau tra ve MOI XE cua dai ly, ke ca xe chua tung thuoc chien dich nao; khi CO chon thi cac menh de tren cam.* nam o WHERE lam ba left join hoa thanh INNER => MOT MAN, HAI HANH VI hoan toan khac nhau tuy o loc",
+        sourceWhereKillsLeftJoin = "and cus.Isactive = 1 va car.isactive = 1 dat o WHERE tren bang LEFT JOIN => GIET left join: xe khong co ban ghi khach tuong ung bi LOAI HAN (NULL khong thoa = 1). Dung trang thai CHET CO DIEU KIEN cua #414 — muon giu thi phai chuyen dieu kien len ON",
+        threeDealerClausesShareOneVariable = "DealerCode01/02/03 deu dung strDealerCodeConditionList cho ba bang cam/cus/car trong CUNG MOT WHERE => AND ca ba. Thoat nhin giong #809 (mot bien cho ba cot) nhung o #809 ba placeholder nam o BA BANG TAM khac nhau nen vo hai; o day chung CUNG MOT CAU => chien dich TOAN QUOC (cam.DealerCode khac ma dai ly) se LOAI SACH danh sach khach. Cung mot cach viet, HAI ket cuc — phai doc VI TRI placeholder, khong chi dem so lan dung bien",
+        sourceCaseHasNoElse = "case cc.Status when 1 then Da lien he when 2 then Chua lien he when 3 then Khong lien he end as NewStatus — KHONG co ELSE => trang thai ngoai {1,2,3} ra NULL; va xe khong thuoc chien dich (cc.Status NULL) cung ra NULL => HAI nguyen nhan khac han nhau cho CUNG MOT o trong",
+        sourceStatusOrderIsCounterintuitive = "1 = Da lien he, 2 = Chua lien he — NGUOC thoi quen (thuong 1 = chua lam). Tra TERP.Constants KHONG thay lop hang nao cho trang thai ser_camContact => ba chuoi nay la LITERAL viet thang trong SQL, khong co hang de doi chieu => noi khac rat de hieu nguoc",
+        sourceSelectsStar = "cau thu nhat SELECT * FROM ...Ser_Campaign => tra toan bo cot (ho #763)",
+        twoMachinesVerified = "md5 chuan hoa tren may 150 = 836f094c KHOP laptop",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/stockins/import-partinstance", async (PartInstanceImportDto dto,
     AppDbContext db, ITenantContext t) =>
 {
