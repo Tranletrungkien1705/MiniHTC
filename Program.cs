@@ -23721,6 +23721,91 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 //   là **thiếu sót**, không phải quy ước nhà.
 // 📌 **Bài học đo lường**: khuôn này cần **ba** tầng lọc (cột-tạo-mới · helper-ghi-kèm · nhánh-chết). Dừng ở
 //   phép quét thô sẽ báo **50**; lọc đủ còn **2**.
+// ===== 🔴🔴🔴 #823 MÀN MỚI: VÁ HAI CA LIVE CỦA #822 — SỬA PHIẾU XUẤT & ĐIỀU CHỈNH PHIẾU NHẬP =====
+// #822 quét ra **hai** ca LIVE của khuôn "cột được gán nhưng không nằm trong danh sách ghi"; Mini **chưa có**
+// endpoint cho cả hai (grep: `SerStockOutUpdate` chỉ xuất hiện trong chú thích #822). Vòng này **port + vá**.
+//
+// 🔴 **CA 1 — điều chỉnh phiếu nhập** (`SerStockInStatusUpdateToFinishedAdjustment`, `WS:15108`):
+//   nguồn gán `Status = Adjustment ("4")` cho phiếu **CŨ** nhưng **không** đưa `"Status"` vào `alColumnEffective`
+//   ⇒ phiếu cũ **vẫn ở `Finished` ("3")**. Mini đánh dấu **thật**, và trả về **cả hai** phiếu để đối chiếu.
+//   Hằng (`Const.Main.cs:203-210`): `Pending="1"` · `Executing="2"` · `Finished="3"` · **`Adjustment="4"`** ·
+//   `Reject="5"` (chú thích `// Kết thúc` — **sai**, đã ghi ở #817).
+//
+// 🔴 **CA 2 — sửa phiếu xuất** (`SerStockOutUpdate` → `UpdateStockOut`): nguồn gán `Status = strStatus` nhưng
+//   **không** `Add("Status")`, và đây là caller **duy nhất** không gọi kèm `UpdateStockOutStatus`
+//   ⇒ **trạng thái người dùng chọn không được lưu**. Mini lưu **đúng** cột đó.
+//   ⚠️ Nhưng **giữ máy trạng thái của #816**: chỉ cho `1→2`, `2→3`, `2→1` (revert). Nguồn ở nhánh này
+//     **không** đi qua `UpdateStockOutStatus` nên **cũng không có guard nào** — Mini **thêm** guard và nói rõ.
+app.MapPut("/api/stockouts/{stockOutId}/edit", async (long stockOutId, StockOutEditDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var so = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == stockOutId);
+    if (so == null) return Results.NotFound(new { error = "khong tim thay phieu xuat" });
+    var cur = (so.Status ?? "").Trim();
+    var next = (dto.Status ?? "").Trim();
+    var statusChanged = next.Length > 0 && next != cur;
+    if (statusChanged)
+    {
+        // Nguon o nhanh nay KHONG goi UpdateStockOutStatus nen KHONG co guard — Mini them, theo may trang thai #816.
+        var ok = (cur == "1" && next == "2") || (cur == "2" && (next == "3" || next == "1"));
+        if (!ok)
+        {
+            return Results.BadRequest(new { error = "buoc chuyen trang thai khong hop le", currentStatus = cur,
+                newStatus = next, allowed = "1->2, 2->3, 2->1",
+                sourceHasNoGuardOnThisPath = true });
+        }
+    }
+    if (dto.Description != null) so.Description = dto.Description;
+    if (dto.TruckNo != null) so.TruckNo = dto.TruckNo;
+    if (dto.DriverName != null) so.DriverName = dto.DriverName;
+    if (statusChanged) so.Status = next;            // <- dong ma NGUON quen dua vao alColumnEffective
+    so.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        stockOutId, oldStatus = cur, status = so.Status, statusChanged,
+        so.Description, so.TruckNo, so.DriverName,
+        sourceDropsStatusFromEffectiveColumns = "NGUON UpdateStockOut (Inventory.StockOut.cs:2183-2364): dt_Inv_StockOut.Rows[0][Status] = strStatus NHUNG KHONG co alColumnEffective.Add(Status); roi _dbMain.SaveData + _dbWH.SaveData voi alColumnEffective.ToArray() => trang thai nguoi dung chon KHONG DUOC LUU",
+        onlyThisCallerIsAffected = "trong 8 caller cua UpdateStockOut, DUY NHAT SerStockOutUpdate (LIVE, WS goi 1) khong goi kem UpdateStockOutStatus — bay caller kia co goi nen Status van duoc ghi (#822 tang loc ②)",
+        theFunctionDoingItRight = "UpdateStockOutStatus cung file viet Rows[0][Status] = strStatus; alColumnEffective.Add(Status) => chung minh day la THIEU SOT",
+        miniAddsGuardSourceLacks = "nguon o nhanh nay khong di qua UpdateStockOutStatus nen KHONG co guard may trang thai; Mini them guard 1->2, 2->3, 2->1 theo #816 va noi ro",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/stockins/{oldStockInId}/finish-adjustment", async (long oldStockInId,
+    StockInAdjustFinishDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var oldSi = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == oldStockInId);
+    if (oldSi == null) return Results.NotFound(new { error = "khong tim thay phieu nhap cu", oldStockInId });
+    var newNo = (dto.NewStockInNo ?? "").Trim();
+    var newSi = newNo.Length > 0
+        ? await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == newNo)
+        : null;
+    if (newNo.Length > 0 && newSi == null)
+    {
+        return Results.NotFound(new { error = "khong tim thay phieu nhap moi", newStockInNo = newNo });
+    }
+    var oldStatusBefore = oldSi.Status;
+    // <- BON dong duoi day NGUON co ghi; dong Status thi KHONG (thieu .Add("Status"))
+    oldSi.AdjustmentBy = dto.AdjustmentBy;
+    oldSi.AdjustmentDate = dto.AdjustmentDate ?? DateTime.Now;
+    oldSi.AdjustmentNote = dto.AdjustmentNote;
+    oldSi.OldStockInID = dto.OldStockInNo;
+    oldSi.Status = "4";                    // Adjustment — dong ma NGUON KHONG ghi duoc
+    oldSi.IsAdjustment = "1";
+    if (newSi != null) newSi.Status = "3"; // Finished — nguon dat qua UpdateStockInStatus(strStockInNo, Finished)
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        oldStockInId, oldStatusBefore, oldStatusAfter = oldSi.Status,
+        newStockInNo = newSi?.StockInNo, newStatus = newSi?.Status,
+        statusConstants = new { Pending = "1", Executing = "2", Finished = "3", Adjustment = "4", Reject = "5" },
+        sourceNeverMarksOldStockInAsAdjustment = "NGUON SerStockInStatusUpdateToFinishedAdjustment (Inventory.StockIn.cs:6857-7092 md5 2a39949a, LIVE WS:15108): dt_Inv_StockInOld.Rows[0][Status] = Adjustment KHONG co .Add(Status) trong khi BON dong duoi (AdjustmentBy/AdjustmentDate/AdjustmentNote/OldStockInID) deu co => phieu nhap CU van o Finished (3)",
+        helperDoesNotRescueIt = "UpdateStockInStatus goi o duoi nhan strStockInNo (phieu MOI) voi TConst.Ser_Inv_StockIn.Finished — KHONG phai phieu cu",
+        impactIfUnpatched = "(1) phieu cu co the bi dieu chinh LAI nhieu lan; (2) moi bao cao loc Status = 3 tinh CA phieu cu lan phieu moi => NHAN DOI so lieu nhap kho",
+        rejectConstantCommentIsWrong = "Const.Main.cs:203-210: Reject = 5 mang chu thich // Ket thuc — trung chu thich cua Finished = 3 (da ghi o #817)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/_meta/effective-column-mismatch-sweep", () => Results.Ok(new
 {
     trigger = "#813 (IsActive khong duoc dua vao alEffectiveColumn) va #821 (dua NHAM ten cot) — hai lan trong cung file SendMail.cs",
@@ -71205,6 +71290,8 @@ record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string?
 //   ngược, được coi là đợt chia sẻ 1 dòng.
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark,
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
+record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
+record StockInAdjustFinishDto(string? NewStockInNo, string? AdjustmentBy, DateTime? AdjustmentDate, string? AdjustmentNote, string? OldStockInNo);
 record StockInStatusDto(string? NewStatus, bool IsRevert);
 record StockOutStatusDto(string? NewStatus, bool IsRevert, bool RunSideEffects);
 record RoStatusChangeDto(string? NewStatus, bool AllowUnguardedNotResponding);
