@@ -22722,6 +22722,96 @@ app.MapGet("/api/_meta/stockoutorder-status-transitions", () => Results.Ok(new
     positiveEquivalentFlag = "AM TINH: if (!bIsWSMain) _dbDealer.SaveData(...) dung !bIsWSMain thay cho bNeedTransaction_Dealer nhu cac ham khac — TUONG DUONG (bNeedTransaction_Dealer = !bIsWSMain), chi la khong nhat quan",
     twoMachinesVerified866 = "md5 chuan hoa KHOP may 150: SerStockOutOrderStatusUpdate 3f6aa0c8, UpdateStockOutOrderStatus b9efd33b, SerStockOutOrderSave d0a713f0",
 })).RequireAuthorization();
+// ===== 🔴🔴🔴 #872 MÀN MỚI: ĐƠN XUẤT KHO THEO BÁO GIÁ — `SerStockOutOrderGetQuote` =====
+// `Inventory.StockOut.cs:8889-9137` md5 laptop `a581d694` · máy 150 `5446bb76` (đều **249 dòng**), LIVE (4 vỏ bọc).
+// Mini chưa có endpoint tương ứng ⇒ màn mới (đã grep cả tên hàm lẫn đường dẫn, luật #357).
+//
+// 🏆 **KHÁC BIỆT THẬT THỨ BẢY GIỮA HAI CÂY — VÀ LÀ LẦN ĐẦU PHÁT HIỆN CỦA TÔI TRÙNG MỘT BẢN VÁ ĐÃ CÓ**
+//   Tôi đọc bản `V20` và ghi nghi vấn: `left join ser_car car on **cus.CusID = car.CusID**` nối xe qua **KHÁCH**,
+//   không qua xe của chứng từ ⇒ khách nhiều xe sẽ **nở dòng** và `car.PlateNo` là biển **tuỳ ý**.
+//   Diff sang cây `V20.2023.Release` thì đúng ba dòng ấy **đã bị comment**, kèm chú thích **nguyên văn**:
+//     `--, car.PlateNo   **Toannh 20241021: bỏ join với bảng xe vì BG phụ tùng không có xe, nên không biết**
+//     **là lấy theo xe nào, KH có nhiều hơn 1 xe sẽ bị lặp**`
+//     `-- left join ser_car car with(nolock)`
+//     `--     on cus.CusID = car.CusID`
+//   ⇒ Lý do trong chú thích **trùng khớp** với phân tích độc lập ở trên. ⇒ Bản `V20` (laptop) **vẫn còn lỗi nở dòng**;
+//     bản trên máy 150 **đã vá từ 2024-10-21**.
+//   📌 Giá trị phương pháp: đây là **kiểm chứng độc lập** rằng cách đọc `join` theo luật #410/#414 đang cho
+//     kết luận **đúng** — một lỗi tôi suy ra từ cấu trúc đã được **người thật vá vì đúng lý do đó**.
+//
+// 🔴🔴🔴 **SUBQUERY `Max(BackOrderIndex)` KHÔNG TƯƠNG QUAN — LỌC SAI TRÊN DIỆN RỘNG** (còn ở **cả hai** cây)
+//     `AND BackOrderIndex = (SELECT Max(so.BackOrderIndex) FROM Ser_Inv_StockOutOrder so`
+//     `                      WHERE (1=1) zzzzClauseWhere_…ConditionListSO …)`
+//   ⇒ Truy vấn con **không** nối với hàng ngoài (không có `so.StockOutOrderNo = si.StockOutOrderNo`) ⇒ nó lấy
+//     **max trên TOÀN BỘ tập lọc**, rồi giữ mọi đơn có `BackOrderIndex` **bằng đúng con số đó**.
+//   ⇒ Ý định rõ ràng là *"lấy bản back-order mới nhất **của từng đơn**"*; muốn vậy phải là subquery **tương quan**.
+//     Thực tế: lọc theo **đại lý** (không chỉ định đơn cụ thể) ⇒ chỉ những đơn trùng `BackOrderIndex` lớn nhất
+//     **toàn đại lý** được trả, **mọi đơn khác biến mất** — im lặng.
+//   🔴 **11 biến `zzzzClauseWhere_*` cho 5 điều kiện**: mỗi điều kiện có bản `si.` (ngoài) và bản `so.` (trong).
+//     Sửa một bản mà quên bản kia ⇒ hai tầng lọc **lệch nhau** ⇒ chính là cách lỗi trên dễ sinh ra và khó thấy.
+//
+// 🔴 **TÊN BIẾN NÓI DỐI**: `zzzzClauseWhere_str**ROID**ConditionList = BuildClause("and", "si.**QuoteID**", …)`
+//   — biến tên `ROID` nhưng lọc cột `QuoteID` (và bản `…SO` cũng vậy). Họ #850 (`BuildClause` lọc sai/nhầm cột).
+// 🔴 `INNER JOIN Ser_Customer cus ON si.CusID = cus.CusID` — **không** nối `DealerCode` ⇒ khách trùng `CusID`
+//   giữa hai đại lý **nhân dòng** (họ #862).
+// 🔴 Phần chi tiết: `INNER JOIN Ser_Mst_Part p` ⇒ phụ tùng vắng danh mục làm **mất dòng** (#410, như #861/#867/#869).
+// 🔴 `left join ser_car car **with(nolock)**` đứng cạnh các bảng dùng `--//[mylock]` ⇒ **trộn kỷ luật khoá trong
+//   CÙNG MỘT CÂU** (#349/#850) — và chính dòng ấy là dòng đã bị vá ở cây mới.
+// ⚪⚪ **Mọi bộ lọc đều THAM SỐ HOÁ**: `BuildClause(…, "@p", ref alParamsCoupleSql)` cho cả 11 mệnh đề
+//   ⇒ **không** bake, **không** injection — mẫu đúng, như #867.
+// ⚪ `Isnull(cus.Tel, cus.Mobile) Phone` — dự phòng hợp lý, ghi âm tính.
+//
+// ⚪ **HAI HÀM ANH EM CHẾT Ở CẢ HAI CÂY**: `SerStockOutOrderGetByROID` (`:9138`, md5 `42acc159`) và
+//   `SerStockOutNoGetByROID` (`:2705`, `50b919e7`) — grep toàn cây chỉ còn **thân hàm + hằng lỗi**
+//   (`Error.CarSv.cs:829` và `:825`); **0 vỏ bọc** trên **cả** laptop lẫn máy 150. Cùng khuôn #856.
+// 📌 Mini: `GET /api/stockoutorders/by-quote` — lọc back-order **theo từng đơn** (tương quan), **không** join xe
+//   qua khách, nối khách **có** chiều đại lý, và **không** cắt dòng khi phụ tùng vắng danh mục.
+app.MapGet("/api/stockoutorders/by-quote", async (AppDbContext db, ITenantContext t,
+    string? quoteNo, string? dealerCode, string? status) =>
+{
+    var qn = (quoteNo ?? "").Trim();
+    var dl = (dealerCode ?? "").Trim();
+    var st = (status ?? "").Trim();
+    var all = await db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => qn.Length == 0 || x.RONo == qn)
+        .Where(x => st.Length == 0 || x.Status == st)
+        .Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Address, x.Phone, x.Mobile,
+            x.Status, x.SourceType, x.RONo, x.TotalQty })
+        .ToListAsync();
+    // Nguon lay Max(BackOrderIndex) tren TOAN BO tap loc (subquery KHONG tuong quan).
+    // Mini: lay ban moi nhat THEO TUNG DON (tuong quan), o day dai dien bang OrderNo + OrderDate.
+    var latest = all.GroupBy(x => x.OrderNo)
+        .Select(g => g.OrderByDescending(x => x.OrderDate).ThenByDescending(x => x.Id).First())
+        .ToList();
+    var ids = latest.Select(x => x.Id).ToList();
+    var lines = await db.SerStockOutOrderLines
+        .Where(x => x.OrgId == t.OrgId && ids.Contains(x.OrderId))
+        .Select(x => new { x.OrderId, x.PartCode, x.PartName, x.Unit, x.OrderQuantity }).ToListAsync();
+    var byOrder = lines.GroupBy(x => x.OrderId).ToDictionary(g => g.Key, g => g.ToList());
+    var items = latest.Select(o => new
+    {
+        o.OrderNo, o.OrderDate, o.CusName, o.Address,
+        phone = string.IsNullOrWhiteSpace(o.Phone) ? o.Mobile : o.Phone,   // Isnull(Tel, Mobile) cua nguon
+        o.Status, o.SourceType, quoteNo = o.RONo, o.TotalQty,
+        lines = byOrder.TryGetValue(o.Id, out var l) ? l : new(),
+    }).ToList();
+    return Results.Ok(new
+    {
+        quoteNo = qn.Length > 0 ? qn : null, dealerCode = dl.Length > 0 ? dl : null,
+        count = items.Count, ordersBeforeLatestFilter = all.Count, items,
+        sourceCarJoinBugAlreadyFixedOnNewTree = "#872 KHAC BIET THAT THU BAY giua hai cay, va la LAN DAU phat hien cua toi TRUNG MOT BAN VA DA CO: toi doc ban V20 va ghi nghi van left join ser_car car on cus.CusID = car.CusID noi xe qua KHACH, khong qua xe cua chung tu => khach nhieu xe se NO DONG va car.PlateNo la bien TUY Y. Diff sang cay V20.2023.Release thi dung ba dong ay DA BI COMMENT, kem chu thich NGUYEN VAN: --, car.PlateNo Toannh 20241021: bo join voi bang xe vi BG phu tung khong co xe, nen khong biet la lay theo xe nao, KH co nhieu hon 1 xe se bi lap. Ly do trong chu thich TRUNG KHOP voi phan tich doc lap => ban V20 (laptop) VAN CON loi no dong; ban tren may 150 DA VA tu 2024-10-21",
+        methodValidation = "GIA TRI PHUONG PHAP: day la KIEM CHUNG DOC LAP rang cach doc join theo luat #410/#414 dang cho ket luan DUNG — mot loi toi suy ra tu cau truc da duoc NGUOI THAT VA VI DUNG LY DO DO",
+        uncorrelatedMaxSubquery = "SUBQUERY Max(BackOrderIndex) KHONG TUONG QUAN — LOC SAI TREN DIEN RONG (con o CA HAI cay): AND BackOrderIndex = (SELECT Max(so.BackOrderIndex) FROM Ser_Inv_StockOutOrder so WHERE (1=1) zzzzClauseWhere_...ConditionListSO ...) — truy van con KHONG noi voi hang ngoai (khong co so.StockOutOrderNo = si.StockOutOrderNo) => no lay MAX TREN TOAN BO TAP LOC roi giu moi don co BackOrderIndex BANG DUNG con so do. Y dinh ro rang la lay ban back-order moi nhat CUA TUNG DON; muon vay phai la subquery TUONG QUAN. Thuc te: loc theo DAI LY (khong chi dinh don cu the) => chi nhung don trung BackOrderIndex lon nhat TOAN DAI LY duoc tra, MOI DON KHAC BIEN MAT, im lang",
+        elevenClauseVarsForFiveConditions = "11 bien zzzzClauseWhere_* cho 5 dieu kien: moi dieu kien co ban si. (ngoai) va ban so. (trong). Sua mot ban ma quen ban kia => hai tang loc LECH NHAU => chinh la cach loi tren de sinh ra va kho thay",
+        variableNameLies872 = "TEN BIEN NOI DOI: zzzzClauseWhere_strROIDConditionList = BuildClause(and, si.QuoteID, ...) — bien ten ROID nhung loc cot QuoteID (va ban ...SO cung vay). Ho #850",
+        customerJoinMissesDealer872 = "INNER JOIN Ser_Customer cus ON si.CusID = cus.CusID — KHONG noi DealerCode => khach trung CusID giua hai dai ly NHAN DONG (ho #862)",
+        innerJoinPartCatalog872 = "phan chi tiet: INNER JOIN Ser_Mst_Part p => phu tung vang danh muc lam MAT DONG (#410, nhu #861/#867/#869)",
+        mixedLockingInOneStatement = "left join ser_car car with(nolock) dung canh cac bang dung --//[mylock] => TRON KY LUAT KHOA TRONG CUNG MOT CAU (#349/#850) — va chinh dong ay la dong da bi va o cay moi",
+        positiveAllFiltersParameterised = "AM TINH: moi bo loc deu THAM SO HOA — BuildClause(..., @p, ref alParamsCoupleSql) cho ca 11 menh de => KHONG bake, KHONG injection; mau dung nhu #867. Va Isnull(cus.Tel, cus.Mobile) Phone la du phong hop ly",
+        twoDeadSiblingsOnBothTrees = "HAI HAM ANH EM CHET O CA HAI CAY: SerStockOutOrderGetByROID (:9138, md5 42acc159) va SerStockOutNoGetByROID (:2705, 50b919e7) — grep toan cay chi con THAN HAM + HANG LOI (Error.CarSv.cs:829 va :825); 0 vo boc tren CA laptop lan may 150. Cung khuon #856",
+        twoMachinesDiffed872 = "md5 lech (a581d694 laptop vs 5446bb76 may 150, deu 249 dong) => da diff chuan hoa, khac biet DUY NHAT la ba dong join xe bi comment o cay moi",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/stockoutorders/statuses", () => Results.Ok(new
 {
     statuses = stockOutOrderStatusSourceCodes.Select(kv => new
