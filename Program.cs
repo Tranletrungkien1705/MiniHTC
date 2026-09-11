@@ -64560,6 +64560,111 @@ app.MapGet("/api/_meta/commented-placeholder-sweep", () => Results.Ok(new
     otherSites = new[] { "Service.cs:6659/6660 (PartID, DealerCode)", "ServicePackage.cs:1657/1659 (Creator, IsPublicFlag)", "System.cs:257/258 (PartnerCodeList, FlagActiveListForObject)", "Tab.cs:714 (QuotationNoList)" },
     thirdReturnShapeOnTabletWs = "WSCarSvTab.asmx.cs: MyDSEncode 82 endpoint, WSReturn 9 endpoint, tra thang 0. private object[] WSReturn(DataSet ds) => ConvertUtils.DataSet2Array(ds) => TRA MANG, khong phai DataSet ma hoa. Cong voi WS web (MyDSEncode 711 / tra thang 20) => BA dinh dang tra ve khac nhau tren hai WS",
 })).RequireAuthorization();
+// ===== 🔴🔴🔴 #883 MÀN MỚI (chỉ có trên cây 150): SINH FILE GIÁ NET GỬI HMC — `CreatFileDNPSendHMC` =====
+// `UploadFile/BizCarSv.UploadFile.cs:2555` trên `V20.2023.Release`, md5 `6d261917` (156 dòng);
+// anh em `CreatFilePODSendHMC` `:2711` md5 `fe6fe3ed` (185). **3B**: cây laptop **KHÔNG CÓ**.
+// Đây là bước **sinh file định dạng cột cố định** của luồng đã audit ở #694/#880.
+//
+// 🔴🔴🔴 **`File.AppendAllText` — GHI NỐI, KHÔNG GHI ĐÈ**
+//     `var pathFile = TUtils.CUtils.PathFile(rootFolder, folder, filename);`
+//     `System.IO.File.**AppendAllText**(pathFile, strFileContent, Encoding.UTF8);`
+//   ⇒ Nếu file **cùng tên** đã tồn tại (gửi lại trong ngày, hoặc `filename` đặt theo ngày), nội dung mới
+//     **nối thêm** vào file cũ ⇒ **HMC nhận file chứa CẢ dữ liệu lần trước**.
+//   ⇒ **Cộng hưởng với #878**: màn "đã gửi chưa" báo sai (vì `LastGetX` lấy `MAX(RptID)` **không lọc đại lý**)
+//     ⇒ người dùng **gửi lại** ⇒ đúng kịch bản sinh ra file nối đôi. Hai lỗi ở hai tầng, **cùng một luồng**.
+//
+// 🔴🔴🔴 **MÃ PHỤ TÙNG DÀI HƠN 20 KÝ TỰ BỊ CẮT CỤT, KHÔNG CẢNH BÁO**
+//   Bốn nhánh chia mã theo độ dài (`<=5` · `>5..10` · `>10..20` · `>20`); nhánh cuối:
+//     `else if (length > 20) { Append(Substring(0,5).PadRight(5)); Append(Substring(5,5).PadRight(5));`
+//     `                        Append(Substring(**10,10**).PadRight(10)); }`
+//   ⇒ Chỉ lấy **20 ký tự đầu**; phần dư **biến mất im lặng** — không `throw`, không log. Trong khi cùng hàm
+//     **có** `throw` cho `UpdateDateTime` và `TSTPrice` không hợp lệ ⇒ **kiểm chỗ này, bỏ chỗ kia**.
+//   ⚪ Bốn nhánh **phủ đủ** miền `length > 0` (và `length == 0` đã bị guard `IsNullOrEmpty` chặn trước) ⇒
+//     **không** có lỗ hổng "rơi khỏi mọi nhánh" như #859.
+//
+// 🔴🔴 **`Encoding.UTF8` CHO FILE CỘT CỐ ĐỊNH ⇒ GHI BOM 3 BYTE Ở ĐẦU FILE**
+//   `Encoding.UTF8` trong .NET là `UTF8Encoding(**encoderShouldEmitUTF8Identifier: true**)` ⇒ khi
+//   `AppendAllText` **tạo file mới**, nó ghi **preamble `EF BB BF`** trước bản ghi đầu tiên.
+//   ⇒ Với định dạng **cột cố định**, ba byte ấy **đẩy lệch** toàn bộ trường đầu của dòng thứ nhất.
+//
+// 🔴🔴 **NGĂN DÒNG BẰNG `"\r"` ĐƠN** (CR), không phải `"\r\n"`:
+//     `if (string.IsNullOrEmpty(strFileContent)) strFileContent += stringBuilder.ToString();`
+//     `else strFileContent += **"\r"** + stringBuilder.ToString();`
+//   ⇒ Khác quy ước text Windows/HMC thông thường (CRLF). Ghi ở mức **khác quy ước**, **không** khẳng định
+//     HMC từ chối — chưa có tài liệu đặc tả để đối chiếu.
+//
+// 🔴🔴 **GIÁ ÉP VỀ `Int32` RỒI `ToString("D11")` — HAI RỦI RO**
+//     `Int32 iPartPrice = Convert.ToInt32(dtr["TSTPrice"]);`
+//     `Append(iPartPrice.ToString("D11")); //DNPPR1`  … lặp lại **y hệt** cho `DNPPR2`, `DNPPR3`, `DNPPR4`
+//   ⇒ ① `Convert.ToInt32` **làm tròn ngân hàng** (ties-to-even) và **ném `OverflowException`** nếu giá vượt
+//     `Int32.MaxValue` (`2,15 tỷ) — giá phụ tùng VND hoàn toàn có thể vượt.
+//   ⇒ ② `"D11"` chỉ **đệm** tới 11 chữ số, **không cắt**: số dài hơn 11 chữ số sẽ ghi **đủ độ dài thật**
+//     ⇒ **lệch cột từ đó tới hết dòng**, và vì đây là file cột cố định nên **hỏng cả bản ghi**.
+//   ⇒ ③ **Bốn cột giá ghi CÙNG MỘT giá trị** ⇒ nếu HMC mong bốn mức giá khác nhau thì đây là **điền trùng**.
+//
+// 🔴 **NĂM HẰNG ĐỊNH DẠNG HARD-CODE TRONG THÂN HÀM**, không lấy từ cấu hình:
+//   `strDNPDST = "**A26AX**"` · `strDNPEFT = "**99991231**"` · `strCURR_CD = "**VND**"` · `strDNPCAT = "     "` (5 dấu cách)
+//   ⇒ Đổi mã đại lý/khu vực hay đơn vị tiền tệ phải **sửa code**, không đổi được bằng tham số.
+// 🔴 `strPartNameEn.Substring(0, 80)` khi tên tiếng Anh dài hơn 80 ⇒ **cắt im lặng** (cùng bệnh mã phụ tùng).
+// ⚪ **Có validate**: `…_UpdateDateTimeInvalid`, `…_TSTPriceInvalid` (kiểm `IsNumeric`), `…_FileContentEmty`
+//   (nội dung rỗng thì **không** tạo file). 🔴 Tên hằng lỗi **sai chính tả**: `FileContent**Emty**` (thiếu `p`) —
+//   nguyên văn nguồn, ghi lại theo luật "chép sai chính tả y nguyên".
+// 📌 Mini: `POST /api/report/dealernetprice/build-file` — sinh **nội dung** theo đúng layout, **ghi đè** thay vì
+//   nối, **cảnh báo** mọi mã bị cắt, và **không** ép `Int32` (dùng `decimal` rồi kiểm độ dài trước khi đệm).
+app.MapPost("/api/report/dealernetprice/build-file", (DnpFileBuildDto dto) =>
+{
+    var lines = dto.Items ?? new List<DnpFileLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Rpt_DMSSer_DealerNetPrice_SendHMC_FileContentEmty" });
+    const string DNPDST = "A26AX";
+    const string DNPEFT = "99991231";
+    const string CURR_CD = "VND";
+    const string DNPCAT = "     ";
+    var sb = new System.Text.StringBuilder();
+    var truncatedCodes = new List<string>();
+    var overflowPrices = new List<string>();
+    var n = 0;
+    foreach (var l in lines)
+    {
+        var code = (l.TSTPartCode ?? "").Trim();
+        if (code.Length == 0) return Results.BadRequest(new { error = "TSTPartCode rong", rowIndex = n });
+        if (l.UpdateDateTime == null) return Results.BadRequest(new { error = "Rpt_DMSSer_DealerNetPrice_SendHMC_UpdateDateTimeInvalid", partCode = code });
+        if (l.TSTPrice == null) return Results.BadRequest(new { error = "Rpt_DMSSer_DealerNetPrice_SendHMC_TSTPriceInvalid", partCode = code });
+        if (n > 0) sb.Append("\r\n");   // CRLF — nguon dung "\r" don
+        sb.Append(DNPDST);
+        // Cat ma theo dung bon nhanh cua nguon, NHUNG BAO LAI khi mat ky tu.
+        if (code.Length <= 5) { sb.Append(code.PadRight(5)).Append("     ").Append("          "); }
+        else if (code.Length <= 10) { sb.Append(code[..5]).Append(code[5..].PadRight(5)).Append("          "); }
+        else if (code.Length <= 20) { sb.Append(code[..5]).Append(code.Substring(5, 5)).Append(code[10..].PadRight(10)); }
+        else { sb.Append(code[..5]).Append(code.Substring(5, 5)).Append(code.Substring(10, 10)); truncatedCodes.Add(code); }
+        sb.Append(l.UpdateDateTime!.Value.ToString("yyyyMMdd")).Append(DNPEFT).Append(CURR_CD);
+        var price = decimal.Truncate(l.TSTPrice!.Value);
+        var priceText = ((long)price).ToString("D11");
+        if (priceText.Length > 11) overflowPrices.Add(code);
+        for (var k = 0; k < 4; k++) sb.Append(priceText);   // DNPPR1..4 — nguon ghi CUNG mot gia tri
+        sb.Append(DNPCAT);
+        var en = (l.EngName ?? "");
+        if (en.Length > 80) { en = en[..80]; truncatedCodes.Add(code + " (EngName)"); }
+        sb.Append(en);
+        n++;
+    }
+    return Results.Ok(new
+    {
+        lineCount = n, content = sb.ToString(),
+        truncatedCodes, overflowPrices,
+        writeMode = "GHI DE (nguon dung File.AppendAllText = GHI NOI)",
+        encoding = "UTF-8 KHONG BOM (nguon dung Encoding.UTF8 nen ghi BOM 3 byte khi tao file moi)",
+        lineSeparator = "CRLF (nguon dung CR don)",
+        onlyExistsOnMachine150_883 = "#883: CreatFileDNPSendHMC — UploadFile/BizCarSv.UploadFile.cs:2555 tren V20.2023.Release, md5 6d261917 (156 dong); anh em CreatFilePODSendHMC :2711 md5 fe6fe3ed (185). Cay laptop KHONG CO",
+        sourceAppendsInsteadOfOverwrites = "#883 File.AppendAllText — GHI NOI, KHONG GHI DE: var pathFile = TUtils.CUtils.PathFile(rootFolder, folder, filename); System.IO.File.AppendAllText(pathFile, strFileContent, Encoding.UTF8); => neu file CUNG TEN da ton tai (gui lai trong ngay, hoac filename dat theo ngay) thi noi dung moi NOI THEM vao file cu => HMC nhan file chua CA du lieu lan truoc. CONG HUONG VOI #878: man da-gui-chua bao sai (LastGetX lay MAX(RptID) khong loc dai ly) => nguoi dung GUI LAI => dung kich ban sinh ra file noi doi. Hai loi o hai tang, CUNG MOT LUONG",
+        partCodeOver20CharsTruncatedSilently = "MA PHU TUNG DAI HON 20 KY TU BI CAT CUT, KHONG CANH BAO: nhanh else if (length > 20) chi Append Substring(0,5), Substring(5,5), Substring(10,10) => lay 20 ky tu dau, phan du BIEN MAT IM LANG, khong throw khong log — trong khi cung ham CO throw cho UpdateDateTime va TSTPrice khong hop le => KIEM CHO NAY, BO CHO KIA. AM TINH: bon nhanh PHU DU mien length > 0 (length == 0 da bi guard IsNullOrEmpty chan truoc) nen KHONG co lo hong roi-khoi-moi-nhanh nhu #859",
+        utf8BomBreaksFixedWidth = "Encoding.UTF8 CHO FILE COT CO DINH => GHI BOM 3 BYTE O DAU FILE: Encoding.UTF8 trong .NET la UTF8Encoding(encoderShouldEmitUTF8Identifier: true) nen khi AppendAllText TAO FILE MOI no ghi preamble EF BB BF truoc ban ghi dau tien => ba byte ay DAY LECH toan bo truong dau cua dong thu nhat",
+        singleCarriageReturnSeparator = "NGAN DONG BANG chuoi CR DON: else strFileContent += (CR) + stringBuilder.ToString(); — khac quy uoc text Windows/HMC thong thuong (CRLF). Ghi o muc KHAC QUY UOC, KHONG khang dinh HMC tu choi vi chua co tai lieu dac ta de doi chieu",
+        priceInt32AndD11Risks = "GIA EP VE Int32 ROI ToString(D11) — HAI RUI RO: (1) Convert.ToInt32 lam tron ngan hang (ties-to-even) va nem OverflowException neu gia vuot Int32.MaxValue (`2,15 ty) — gia phu tung VND hoan toan co the vuot; (2) D11 chi DEM toi 11 chu so, KHONG CAT: so dai hon 11 chu so se ghi DU DO DAI THAT => LECH COT tu do toi het dong, va vi la file cot co dinh nen HONG CA BAN GHI; (3) BON cot gia DNPPR1..4 ghi CUNG MOT gia tri => neu HMC mong bon muc gia khac nhau thi day la DIEN TRUNG",
+        fiveHardcodedFormatConstants = "NAM HANG DINH DANG HARD-CODE TRONG THAN HAM, khong lay tu cau hinh: strDNPDST = A26AX, strDNPEFT = 99991231, strCURR_CD = VND, strDNPCAT = nam dau cach => doi ma dai ly/khu vuc hay don vi tien te phai SUA CODE",
+        engNameTruncatedSilently = "strPartNameEn.Substring(0, 80) khi ten tieng Anh dai hon 80 => CAT IM LANG (cung benh ma phu tung). Mini bao lai trong truncatedCodes",
+        positiveValidationAndTypo = "AM TINH co validate: ..._UpdateDateTimeInvalid, ..._TSTPriceInvalid (kiem IsNumeric), ..._FileContentEmty (noi dung rong thi KHONG tao file). Ten hang loi SAI CHINH TA: FileContentEmty (thieu chu p) — nguyen van nguon",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/dealernetprice/send-preview", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate) =>
 {
@@ -75680,6 +75785,8 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record DnpFileLineDto(string? TSTPartCode, DateTime? UpdateDateTime, decimal? TSTPrice, string? EngName);
+record DnpFileBuildDto(List<DnpFileLineDto>? Items);
 record ServicePartSyncLineDto(string? PartID, string? VieName, decimal? VAT, string? Unit, string? FlagInTST, decimal? MinQuantity, string? PartTypeID, string? Note, string? PartGroupCode);
 record ServicePartSyncDto(List<ServicePartSyncLineDto>? Items);
 record RoAttachmentFlagHmcLineDto(long Id, string? FlagHMC);
