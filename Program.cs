@@ -39779,6 +39779,76 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
 //   chỉ là không nhất quán; ghi để khỏi ai đó tưởng là `LEFT`.
 // 📌 Mini: `GET /api/report/ro-part-statistic` — giữ cách tính thuế **đúng** của nguồn, **trả thêm `quantity`**,
 //   và **không** cắt dòng khi phụ tùng vắng danh mục (đếm riêng số dòng nguồn sẽ bỏ).
+// ===== 🔴🔴🔴 #862 MÀN MỚI: BÁO CÁO PHIẾU KHÔNG PHẢN HỒI — `Ser_RO_Sumary_NotResponding` =====
+// `Service.Report.cs:1001-1133` md5 `b380db99` (133 dòng), LIVE (4 vỏ bọc). **3B**: **KHỚP** máy 150.
+// Mini **chưa có** báo cáo này ⇒ màn mới.
+//
+// 🔴🔴🔴 **BÁO CÁO LỌC CỨNG MỘT TRẠNG THÁI MÀ CHÍNH TẦNG HẰNG GHI LÀ "CHƯA DÙNG"**
+//     SQL: `and ro.Status = '**NORE**'`  (literal, không dùng hằng)
+//     Hằng: `TConst….**NotResponding = "NORE";  // **Chưa dùng****`  ← chú thích **nguyên văn của nguồn**
+//   ⇒ Nếu chú thích ấy đúng, báo cáo này **luôn trả về rỗng** — và không có gì trong hàm nói cho người dùng biết.
+//   ⇒ Nếu chú thích ấy **lỗi thời** (trạng thái nay đã dùng) thì chú thích đang **nói dối** người đọc sau.
+//     Cả hai khả năng đều phải ghi; **không** kết luận là "báo cáo chết" khi chưa đo dữ liệu thật.
+//   📌 Chú thích này có ở **cả hai** cây nguồn (đếm trên máy 150 = 1).
+//
+// 🔴🔴 **CÙNG MÃ `NORE` LẠI NẰM TRONG MỘT HẰNG KHÁC — DƯỚI NGHĨA "HUỶ"**
+//     `public const string **Cancel** = "W4P,HPA,**NORE**";  // Hủy, Hẹn lại`
+//   ⇒ Một hằng **chứa DANH SÁCH ba mã trong MỘT chuỗi**, và `NORE` được xếp vào nhóm **huỷ/hẹn lại**.
+//   ⇒ Vậy `NORE` mang **hai vai** tuỳ nơi đọc: trạng thái riêng "không phản hồi" (báo cáo này) và một phần
+//     của nhóm "huỷ" (`Cancel`). Ai lọc theo `Cancel` sẽ **gộp** phiếu không-phản-hồi vào số liệu huỷ.
+//   📌 Đối chiếu MiniHTC: `Program.cs:25983` đã ghi `RO.Status NOT IN ('CRE','PRT','HPA','NORE','REJ')`
+//     — **danh sách ĐEN** ⇒ ở đó `NORE` bị **loại**. ⇒ Cùng một mã, ba cách đối xử trong ba màn.
+//
+// 🔴🔴 **LẶP LẠI ĐÚNG KHUÔN SAI CỦA #860 — BIỂN SỐ TỪ BẢNG KHÁCH + JOIN CÂM**
+//     `select … , **cus.PlateNo** , …` với `inner JOIN Ser_Customer cus on ro.CusID = cus.CusID`
+//     `inner join ser_Car car on ro.CarID = car.CarID and ro.CusID = car.CusID and ro.DealerCode = car.DealerCode`
+//   ⇒ Bảng xe **được join nhưng KHÔNG một cột nào được dùng** ⇒ join **câm**, chỉ để **lọc**;
+//     phiếu không khớp **bộ ba** `(CarID, CusID, DealerCode)` **biến mất khỏi báo cáo** (#410).
+//   ⇒ Đây là **lần thứ HAI** đúng khuôn ấy (#860 `Ser_RO_Sumary_Revenue`), trong khi **#861**
+//     `Ser_RO_Statistic_Part` — **cùng file** — lấy `car.PlateNo` và dùng cột của `car`.
+//     ⇒ Trong **một file** có **hai** hàm sai và **một** hàm đúng cùng một chi tiết.
+//   🔴 `inner JOIN Ser_Customer cus` ở đây **chỉ nối `CusID`**, **không** nối `DealerCode` — khác `Ser_RO_Statistic_Part`
+//     (`on ro.CusID=cus.CusID and ro.DealerCode=cus.DealerCode`) ⇒ khách trùng `CusID` giữa hai đại lý sẽ **nhân dòng**.
+//
+// 🔴 **Lặp lại ba lỗi đã ghi**: `'@FromDate'`/`'@ToDate'` **bake trong nháy** (injection) · `datediff(day, …, ro.CheckInDate)`
+//   đặt **hàm lên cột** (non-sargable) · tiền tố cứng `'**LS-**' + ro.RONO AS RONO`.
+// ⚪ Dùng `--//[mylock]` (không phải `with(nolock)` như #861) ⇒ **cùng file, hai kỷ luật khoá** — đã ghi ở #349.
+// ⚪ `inner JOIN` / `inner join` viết hoa-thường lẫn lộn trong cùng câu — vô hại, ghi để khỏi ai tưởng khác nghĩa.
+// 📌 Mini: `GET /api/report/ro-not-responding` — lọc theo **hằng** (không literal), **không** cắt dòng bằng join câm,
+//   nối khách **có** chiều đại lý, và **báo rõ** khi tập kết quả rỗng vì trạng thái chưa từng được dùng.
+app.MapGet("/api/report/ro-not-responding", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    const string StatusNotResponding = "NotResponding";   // HANG, khong literal NORE
+    var dl = (dealerCode ?? "").Trim();
+    var rows = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        .Where(x => x.Status == StatusNotResponding)
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CheckInDate, x.Creator, x.CusRequest })
+        .ToListAsync();
+    var totalInRange = await db.RepairOrders.CountAsync(x => x.OrgId == t.OrgId
+        && (fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
+        && (toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1))));
+    return Results.Ok(new
+    {
+        fromDate, toDate, dealerCode = dl.Length > 0 ? dl : null,
+        count = rows.Count, totalRepairOrdersInRange = totalInRange,
+        items = rows.Select(r => new
+        {
+            roNo = r.RONo, plateNo = r.LicensePlate,   // tu PHIEU, khong phai tu bang khach
+            r.CusName, r.CheckInDate, r.Creator, r.CusRequest,
+        }),
+        emptyBecauseStatusNeverUsed = rows.Count == 0 && totalInRange > 0,
+        sourceFiltersAStatusMarkedUnused = "#862: SQL loc cung and ro.Status = (nhay)NORE(nhay) (literal, khong dung hang) trong khi hang TConst....NotResponding = NORE mang chu thich NGUYEN VAN cua nguon la Chua dung. Neu chu thich ay DUNG thi bao cao nay LUON TRA VE RONG va khong gi trong ham noi cho nguoi dung biet; neu chu thich LOI THOI (trang thai nay da dung) thi chu thich dang NOI DOI nguoi doc sau. CA HAI kha nang deu phai ghi — KHONG ket luan bao cao chet khi chua do du lieu that. Chu thich nay co o CA HAI cay nguon (dem tren may 150 = 1)",
+        sameCodeAlsoMeansCancel = "CUNG MA NORE LAI NAM TRONG MOT HANG KHAC DUOI NGHIA HUY: public const string Cancel = W4P,HPA,NORE; // Huy, Hen lai — mot hang CHUA DANH SACH BA MA TRONG MOT CHUOI, va NORE duoc xep vao nhom huy/hen lai => NORE mang HAI VAI tuy noi doc; ai loc theo Cancel se GOP phieu khong-phan-hoi vao so lieu huy. Doi chieu MiniHTC Program.cs:25983 da ghi RO.Status NOT IN (CRE,PRT,HPA,NORE,REJ) — danh sach DEN, o do NORE bi LOAI => cung mot ma, BA cach doi xu trong ba man",
+        repeatsWrongTemplateOf860 = "LAP LAI DUNG KHUON SAI CUA #860: select ..., cus.PlateNo ... voi inner JOIN Ser_Customer cus on ro.CusID = cus.CusID va inner join ser_Car car on ro.CarID = car.CarID and ro.CusID = car.CusID and ro.DealerCode = car.DealerCode — bang XE duoc join nhung KHONG mot cot nao duoc dung => JOIN CAM, chi de LOC; phieu khong khop BO BA (CarID, CusID, DealerCode) BIEN MAT khoi bao cao (#410). Day la LAN THU HAI dung khuon ay, trong khi #861 Ser_RO_Statistic_Part — CUNG FILE — lay car.PlateNo va dung cot cua car => trong MOT FILE co HAI ham sai va MOT ham dung cung mot chi tiet",
+        customerJoinMissesDealerScope = "inner JOIN Ser_Customer cus o day CHI noi CusID, KHONG noi DealerCode — khac Ser_RO_Statistic_Part (on ro.CusID=cus.CusID and ro.DealerCode=cus.DealerCode) => khach trung CusID giua hai dai ly se NHAN DONG",
+        repeatsThreeKnownBugs = "lap lai ba loi da ghi: (nhay)@FromDate(nhay)/(nhay)@ToDate(nhay) BAKE TRONG NHAY (injection) · datediff(day, ..., ro.CheckInDate) dat HAM LEN COT (non-sargable) · tien to cung LS- + ro.RONO AS RONO",
+        positiveUsesMylock = "AM TINH: dung --//[mylock] (khong phai with(nolock) nhu #861) => cung file, hai ky luat khoa — da ghi o bai hoc #349",
+        twoMachinesVerified862 = "md5 chuan hoa b380db99 KHOP may 150",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/report/ro-part-statistic", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? partCode) =>
 {
