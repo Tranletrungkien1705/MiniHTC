@@ -39869,6 +39869,58 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
 //   `CheckStockInNotPendingExecuting(currentStatus)` và, nếu đang `Pending`, thêm `CheckStockInNotExecuting(…)`
 //   ⇒ **có** kiểm trạng thái hiện tại trước khi chuyển — khác hẳn #858 (`Ser_Inv_Quote_Update` ghi `Status` vô điều kiện).
 // 📌 Mini: thêm endpoint tra cứu định tuyến + bảng chuyển trạng thái để không ai port nhầm thế hệ.
+// ===== ⛔🔴🔴 #864 TRẢ NỢ #863 — VÀ SỬA LẠI CHÍNH #863: CÓ **THẾ HỆ THỨ BA** CHỈ TỒN TẠI TRÊN MÁY 150 =====
+// **Vòng trả nợ/parity ⇒ KHÔNG tăng bộ đếm màn.**
+//
+// ✅ **Hai hàm `…ToFinished` KHÔNG hề khác nhau giữa hai cây** — diff chuẩn hoá cho **0 dòng khác biệt**
+//   (`…ToFinished` thường: **400 = 400** dòng, diff rỗng). ⇒ Hai lần "md5 lệch" ghi ở #863 đều là **LỖI ĐO**:
+//   vòng lặp đo phía laptop dùng `B=$(sed -n …)` rồi `echo "$B" | …` trong khi phía 150 dùng `sed -n … | …`
+//   ⇒ đúng cái bẫy đã ghi ở **#331** và phần tinh chỉnh ở **#845**. ⛔ **Rút lại** phần "còn nợ diff" của #863:
+//   **không** có khác biệt nghiệp vụ ở hai hàm ấy.
+//
+// 🔴🔴🔴 **NHƯNG DIFF LẠI LÒI RA THỨ KHÁC: MỘT HÀM CHỈ CÓ TRÊN CÂY `V20.2023.Release`**
+//   Dòng lệch duy nhất ở `…_New20200118` nằm **ngay ranh giới cuối hàm** và hoá ra là chú thích **mở đầu cho
+//   một thành viên MỚI** mà cây laptop **không hề có**:
+//     `// 2023-07-21: HungLD. Đổi cờ khi đã nhập hết số lượng trong đơn hàng TST`
+//     `public DataSet SerStockInStatusUpdateToFinished_New**20230721**(…)`  — **526 dòng**, md5 `ec4d0583`
+//   ⇒ Họ `SerStockInStatusUpdateToFinished` thực tế có **BA** thế hệ, không phải hai.
+//
+// ⛔ **SỬA LẠI BẢNG ĐỊNH TUYẾN CỦA #863** — bảng ấy chỉ đúng cho cây `V20` (laptop). Trên cây `V20.2023.Release`:
+//     `HTCWSCarSv/WSCarSv.asmx.cs` (**bản hiện hành**) → `_New**20230721**`   ← thế hệ **mới nhất**
+//     `HTCWSCarSv/WSCarSv.asmx.**20210208**.cs` và `.**20210412**.cs`      → `_New**20200118**`
+//     `TERP.WSCarSv/App_Code/WSCarSv.cs`                                  → **bản thường**
+//   ⇒ **Ba cổng vào, ba thế hệ, cùng một nghiệp vụ "kết thúc phiếu nhập".**
+//   ⇒ Kết luận #350 (`TERP.WSCarSv` bị bỏ lại) **vẫn đúng, và còn nặng hơn**: trên cây mới nó tụt **HAI** thế hệ.
+//   📌 **Bài học**: bảng định tuyến **phụ thuộc cây nguồn**. Grep `_biz.X` trên **một** cây chỉ cho biết cây đó;
+//     muốn nói "bản nào đang chạy" thì phải grep trên **cây của máy đang phục vụ**.
+//
+// 🔴 **Mục đích của thế hệ 2023-07-21 nằm ngay trong chú thích**: *"Đổi cờ khi đã nhập hết số lượng trong
+//   đơn hàng TST"* ⇒ đây là **thay đổi nghiệp vụ về cờ đơn hàng TST**, không phải refactor.
+//   ⇒ Client đi qua `TERP.WSCarSv` (bản thường) **không** có logic ấy, client đi qua `.20210208`/`.20210412`
+//     cũng **không** — chỉ `WSCarSv.asmx.cs` có. **Chưa đọc thân hàm 526 dòng** nên **chưa** kết luận chi tiết
+//     nó đổi cờ nào; ghi làm **đầu mối cần đọc riêng**.
+// 📌 Mini: endpoint tra cứu ba thế hệ, thay cho bảng hai thế hệ đã ghi ở #863.
+app.MapGet("/api/_meta/stockin-finished-generations", () => Results.Ok(new
+{
+    paysDebtOf863 = "#864 TRA NO #863: da diff chuan hoa hai ham ...ToFinished giua hai cay",
+    retracts863MeasurementClaim = "RUT LAI phan con-no-diff cua #863: hai ham ...ToFinished KHONG he khac nhau giua hai cay — diff chuan hoa cho 0 dong khac biet (ban thuong 400 = 400 dong). Hai lan md5 lech deu la LOI DO: vong lap do phia laptop dung B=$(sed -n ...) roi echo \"$B\" | ... trong khi phia 150 dung sed -n ... | ... => dung cai bay da ghi o #331 va phan tinh chinh o #845",
+    thirdGenerationExistsOnlyOn150 = "NHUNG DIFF LAI LOI RA THU KHAC: dong lech duy nhat o ..._New20200118 nam NGAY RANH GIOI cuoi ham va hoa ra la chu thich MO DAU cho mot thanh vien MOI ma cay laptop KHONG he co: // 2023-07-21: HungLD. Doi co khi da nhap het so luong trong don hang TST — public DataSet SerStockInStatusUpdateToFinished_New20230721(...) 526 dong, md5 ec4d0583 => ho SerStockInStatusUpdateToFinished thuc te co BA the he, khong phai hai",
+    routingOnV20Laptop = new[]
+    {
+        "HTCWSCarSv/WSCarSv.asmx.cs + .20210208 + .20210412 -> _New20200118",
+        "TERP.WSCarSv/App_Code/WSCarSv.cs -> ban thuong",
+    },
+    routingOnV20_2023Release = new[]
+    {
+        "HTCWSCarSv/WSCarSv.asmx.cs (ban hien hanh) -> _New20230721  <- the he MOI NHAT",
+        "HTCWSCarSv/WSCarSv.asmx.20210208.cs va .20210412.cs -> _New20200118",
+        "TERP.WSCarSv/App_Code/WSCarSv.cs -> ban thuong",
+    },
+    correctsRoutingTableOf863 = "SUA LAI bang dinh tuyen cua #863 — bang ay CHI DUNG cho cay V20 (laptop). Tren cay V20.2023.Release co BA CONG VAO, BA THE HE cho cung mot nghiep vu ket thuc phieu nhap. Ket luan #350 (TERP.WSCarSv bi bo lai) VAN DUNG va con NANG HON: tren cay moi no tut HAI the he",
+    routingTableDependsOnSourceTree = "BAI HOC: bang dinh tuyen PHU THUOC CAY NGUON. Grep _biz.X tren MOT cay chi cho biet cay do; muon noi ban nao dang chay thi phai grep tren CAY CUA MAY DANG PHUC VU",
+    purposeOfNewestGeneration = "muc dich cua the he 2023-07-21 nam ngay trong chu thich: Doi co khi da nhap het so luong trong don hang TST => day la THAY DOI NGHIEP VU ve co don hang TST, khong phai refactor. Client di qua TERP.WSCarSv (ban thuong) KHONG co logic ay, client di qua .20210208/.20210412 cung KHONG — chi WSCarSv.asmx.cs co",
+    notYetRead = "CHUA DOC than ham 526 dong nen CHUA ket luan chi tiet no doi co nao — DAU MOI CAN DOC RIENG",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/stockin-status-routing", () => Results.Ok(new
 {
     routing = new[]
