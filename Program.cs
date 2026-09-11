@@ -18145,6 +18145,94 @@ app.MapPost("/api/serviceparts/update-bo", async (PartUpdateBoDto dto, AppDbCont
 //     nhưng **đặt trong region khác** (ca này). ⇒ Vẫn phải đọc trọn thân hàm, đừng kết luận từ tên region.
 // 📌 Mini: `/toggle` **giữ nguyên đường dẫn cũ** nhưng nay áp luật `Ser_Part_ActiveMuti` **có loại chính mình**,
 //   và khi bật lại một phụ tùng **đang bật** thì trả về **không đổi** thay vì báo lỗi như nguồn.
+// ===== 🔴🔴🔴 #882 MÀN MỚI (chỉ có trên cây 150): ĐỒNG BỘ THÔNG TIN PHỤ TÙNG TỪ TRUNG TÂM XUỐNG ĐẠI LÝ =====
+// `TST_Mst_Part_SyncPartInfo_DMSDealer` — `BizCarSv.Service.cs:16845` trên `V20.2023.Release`,
+// md5 `892297b3` (191 dòng), **1** vỏ bọc. **3B**: cây laptop **KHÔNG CÓ**. Hàng đợi **60** (#874).
+//
+// 🔴🔴🔴 **HÀM GUARD TÊN `CheckNOTExistPartID` NHƯNG KIỂM "PHẢI TỒN TẠI"**
+//     `private void **CheckNotExistPartID**(TDAL.IEzDAL dbAction, ref ArrayList …, string strPartID, out DataTable dt_Part)`
+//     `{ dt_Part = GetTableContents(dbAction, "Ser_Mst_Part", "top 1 *", "", "PartID","=",strPartID);`
+//     `  if (dt_Part == null || dt_Part.Rows.Count == **0**) throw …**Ser_PartID_NotExist**; }`
+//   ⇒ Tên nói *"kiểm KHÔNG tồn tại"*, thân làm *"phải TỒN TẠI"* — **ngữ nghĩa ngược hoàn toàn**.
+//   ⇒ Người đọc lướt sẽ tưởng đây là guard **chống trùng** khi thêm mới; thực ra nó **bắt buộc phải có sẵn**.
+//     Đây là ca rõ nhất của "tên nói dối" trong họ guard (nặng hơn #850/#872 vì nó đảo **ý nghĩa kiểm**).
+//   🔴 Và bên trong: `//, "IsActive", "=", "1"` **bị comment** ⇒ phụ tùng **đã vô hiệu hoá** vẫn qua guard.
+//
+// 🔴🔴🔴 **`'@LogLUDateTime'` VÀ `'@LogLUBy'` BAKE TRONG NHÁY — TRÊN CÂU `UPDATE`**
+//     `set … , msp.LogLUDateTime = '**@LogLUDateTime**' , msp.LogLUBy = '**@LogLUBy**'`
+//     `… StringUtils.Replace(…, "@LogLUDateTime", dtimeSys.ToString("yyyy-MM-dd HH:mm:ss"), "@LogLUBy", **strPartnerUserCode**)`
+//   ⇒ `strPartnerUserCode` đến **thẳng từ tham số WS** ⇒ **bề mặt SQL injection**, và ở đây là câu **UPDATE**
+//     nên hậu quả là **ghi**, không chỉ đọc (nặng hơn #846/#860/#868 vốn ở câu `select`).
+//
+// 🔴🔴 **ĐỒNG BỘ BỎ QUA NHÓM PHỤ TÙNG — HAI DÒNG BỊ COMMENT ĐỐI XỨNG**
+//     `--, mmsp.**PartGroupID**`                    (ở câu gom dữ liệu từ trung tâm)
+//     `--, msp.**PartGroupID** = t.PartGroupID`     (ở câu `update` xuống đại lý)
+//   ⇒ Port **dòng ACTIVE**: luồng đồng bộ **không bao giờ** cập nhật nhóm phụ tùng ⇒ nhóm ở đại lý
+//     **vĩnh viễn lệch** với trung tâm, kể cả khi trung tâm đổi nhóm. Các cột khác (`VieName`, `VAT`,
+//     `Unit`, `FlagInTST`, `MinQuantity`, `PartTypeID`, `Note`) **đều** được đồng bộ.
+//   ⇒ Hai dòng comment **đối xứng** (một ở `select`, một ở `update`) ⇒ là **quyết định có chủ ý** của ai đó,
+//     nhưng **không có chú thích lý do** ⇒ người sau không biết bật lại có an toàn không.
+//
+// ⚪ **"CHỈ UPDATE, KHÔNG THÊM MỚI" LÀ CỐ Ý VÀ NHẤT QUÁN**: chú thích nguyên văn
+//   `#region // Ser_MST_Part  **Chỉ có update không có thêm mới**`, và guard `CheckNotExistPartID` ném nếu
+//   phụ tùng **chưa có** ở đại lý ⇒ hai thứ **khớp nhau**. ⇒ Phụ tùng mới ở trung tâm **không** tự xuống đại lý;
+//   phải có đường tạo riêng. Ghi âm tính để không báo nhầm là "thiếu insert".
+// 🔴 **Guard chạy TRONG vòng lặp**: `for (i…) { … CheckNotExistPartID(_dbDealer, …); }` ⇒ **N+1** —
+//   đồng bộ 500 phụ tùng là 500 round-trip, giống #879.
+// 🔴 **Mã lỗi mặc định khác tên hàm**: `strErrorCodeDefault = TError.ErrCarSv.**TST_SendPartInfo_DMSDealer**`
+//   trong hàm tên `TST_Mst_Part_**SyncPartInfo**_DMSDealer` ⇒ họ #879 (mã lỗi mượn/lệch tên).
+// ⚪ Hàm **chỉ** chạm `_dbDealer` (mở/commit/rollback đúng một CSDL) ⇒ hợp với nghĩa "đồng bộ **xuống** đại lý";
+//   dữ liệu nguồn đọc từ `[@strDBName_CommonCenter].[dbo].Ser_MST_Part` ⇒ **DB trung tâm** (họ #853).
+// 📌 Mini: `POST /api/serviceparts/sync-from-center` — **đồng bộ CẢ nhóm phụ tùng** (cột nguồn bỏ qua),
+//   kiểm tồn tại **một lượt** thay vì N+1, và đặt tên guard **đúng nghĩa**.
+app.MapPost("/api/serviceparts/sync-from-center", async (ServicePartSyncDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var lines = dto.Items ?? new List<ServicePartSyncLineDto>();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "khong co dong nao de dong bo" });
+    var ids = lines.Select(x => (x.PartID ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    // Kiem ton tai MOT LUOT (nguon goi CheckNotExistPartID trong VONG LAP => N+1).
+    var rows = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && ids.Contains(x.PartID)).ToListAsync();
+    var missing = ids.Where(i => rows.All(r => r.PartID != i)).ToList();
+    if (missing.Count > 0)
+    {
+        return Results.NotFound(new
+        {
+            error = "Ser_PartID_NotExist", partIds = missing,
+            note = "nguon CHI UPDATE, khong them moi — phu tung chua co o dai ly thi nem loi (co y va nhat quan)",
+        });
+    }
+    var map = lines.GroupBy(x => (x.PartID ?? "").Trim()).ToDictionary(g => g.Key, g => g.Last());
+    var updated = 0; var groupSynced = 0;
+    foreach (var r in rows)
+    {
+        if (!map.TryGetValue(r.PartID!, out var s)) continue;
+        if (s.VieName != null) r.PartName = s.VieName;
+        if (s.VAT != null) r.VAT = s.VAT;
+        if (s.Unit != null) r.Unit = s.Unit;
+        if (s.FlagInTST != null) r.FlagInTST = s.FlagInTST;
+        if (s.MinQuantity != null) r.MinQuantity = s.MinQuantity.Value;
+        if (s.PartTypeID != null) r.PartTypeID = s.PartTypeID;
+        if (s.Note != null) r.Note = s.Note;
+        // NGUON BO QUA cot nay (hai dong bi comment doi xung) — Mini DONG BO.
+        if (s.PartGroupCode != null) { r.PartGroupCode = s.PartGroupCode; groupSynced++; }
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated, partGroupSynced = groupSynced,
+        onlyExistsOnMachine150_882 = "#882: TST_Mst_Part_SyncPartInfo_DMSDealer — BizCarSv.Service.cs:16845 tren V20.2023.Release, md5 892297b3 (191 dong), 1 vo boc; cay laptop KHONG CO",
+        guardNameSaysNotExistButChecksMustExist = "#882 HAM GUARD TEN CheckNotExistPartID NHUNG KIEM PHAI TON TAI: private void CheckNotExistPartID(dbAction, ref ..., strPartID, out dt_Part) { dt_Part = GetTableContents(dbAction, Ser_Mst_Part, top 1 *, rong, PartID, =, strPartID); if (dt_Part == null || dt_Part.Rows.Count == 0) throw Ser_PartID_NotExist; } => ten noi kiem-KHONG-ton-tai, than lam phai-TON-TAI, NGU NGHIA NGUOC HOAN TOAN. Nguoi doc luot se tuong day la guard CHONG TRUNG khi them moi; thuc ra no BAT BUOC PHAI CO SAN. Nang hon #850/#872 vi no dao Y NGHIA KIEM",
+        activeFilterCommentedInGuard = "ben trong guard: //, IsActive, =, 1 BI COMMENT => phu tung DA VO HIEU HOA van qua guard",
+        bakesUserCodeIntoUpdateStatement = "@LogLUDateTime va @LogLUBy BAKE TRONG NHAY — TREN CAU UPDATE: set ..., msp.LogLUDateTime = (nhay)@LogLUDateTime(nhay), msp.LogLUBy = (nhay)@LogLUBy(nhay) roi StringUtils.Replace(..., @LogLUBy, strPartnerUserCode) — strPartnerUserCode den THANG tu tham so WS => BE MAT SQL INJECTION, va o day la cau UPDATE nen hau qua la GHI, khong chi doc (nang hon #846/#860/#868 von o cau select)",
+        partGroupNotSynced = "DONG BO BO QUA NHOM PHU TUNG — HAI DONG BI COMMENT DOI XUNG: --, mmsp.PartGroupID (o cau gom du lieu tu trung tam) va --, msp.PartGroupID = t.PartGroupID (o cau update xuong dai ly) => port dong ACTIVE: luong dong bo KHONG BAO GIO cap nhat nhom phu tung => nhom o dai ly VINH VIEN LECH voi trung tam. Cac cot khac (VieName, VAT, Unit, FlagInTST, MinQuantity, PartTypeID, Note) DEU duoc dong bo. Hai dong comment DOI XUNG nen la quyet dinh CO CHU Y, nhung KHONG CO CHU THICH LY DO => nguoi sau khong biet bat lai co an toan khong. Mini DONG BO cot nay va dem partGroupSynced",
+        updateOnlyIsIntentional = "AM TINH: chu thich nguyen van #region // Ser_MST_Part Chi co update khong co them moi, va guard CheckNotExistPartID nem neu phu tung CHUA CO o dai ly => hai thu KHOP NHAU. Phu tung moi o trung tam KHONG tu xuong dai ly, phai co duong tao rieng. Ghi am tinh de khong bao nham la thieu insert",
+        guardInsideLoop882 = "GUARD CHAY TRONG VONG LAP: for (i...) { ... CheckNotExistPartID(_dbDealer, ...); } => N+1 — dong bo 500 phu tung la 500 round-trip, giong #879. Mini kiem MOT LUOT",
+        errorCodeNameMismatch882 = "MA LOI MAC DINH KHAC TEN HAM: strErrorCodeDefault = TError.ErrCarSv.TST_SendPartInfo_DMSDealer trong ham ten TST_Mst_Part_SyncPartInfo_DMSDealer => ho #879",
+        positiveSingleDbAndCentralSource = "AM TINH: ham CHI cham _dbDealer (mo/commit/rollback dung mot CSDL) => hop voi nghia dong bo XUONG dai ly; du lieu nguon doc tu [@strDBName_CommonCenter].[dbo].Ser_MST_Part => DB TRUNG TAM (ho #853)",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -75592,6 +75680,8 @@ record SharePartDto(string DealerCode, string PartCode, string? PartName, string
     decimal MinQuantity = 0, string? Note = null, string? CreatedBy = null, List<SharePartLineDto>? Lines = null);
 record PartInstanceImportLineDto(string? PartCode, string? LocationCode, string? StockNo, decimal Quantity);
 record PartInstanceImportDto(string? DealerCode, List<PartInstanceImportLineDto>? Lines);
+record ServicePartSyncLineDto(string? PartID, string? VieName, decimal? VAT, string? Unit, string? FlagInTST, decimal? MinQuantity, string? PartTypeID, string? Note, string? PartGroupCode);
+record ServicePartSyncDto(List<ServicePartSyncLineDto>? Items);
 record RoAttachmentFlagHmcLineDto(long Id, string? FlagHMC);
 record RoAttachmentFlagHmcDto(List<RoAttachmentFlagHmcLineDto>? Items);
 record RoAppointmentDto(string? AppId, bool? AllowOverwrite);
