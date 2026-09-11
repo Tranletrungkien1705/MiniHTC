@@ -24011,6 +24011,62 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 // ⚪ `left join Ser_MST_Model` và `left join Ser_GroupRepair` ⇒ **không** nuốt dòng khi thiếu model/nhóm thợ.
 // 📌 Mini: `GET /api/assignmentworks/search` — **đếm riêng** ba nguyên nhân mất dòng thay vì để im lặng, và
 //   **có phân trang** (điều bản web thiếu).
+// ===== 🔴🔴🔴 #835 QUÉT KHUÔN "JOIN XE THEO CHỦ XE" TOÀN TẦNG (#752, #788, #834) — **59 HÀM LIVE** =====
+// Khuôn `join ser_car … on ro.CarID = car.CarID **AND ro.CusID = car.CusID**` đã gặp **ba** lần ⇒ đo cho hết.
+//   · **390** site `join … ser_car` trong `TERP.BizCarSv/*.cs`; **114** trong đó là `left join`.
+//   · Lọc những site có điều kiện `CusID = car.CusID` (quét 3 dòng sau mệnh đề join): **251** site —
+//     **201 `INNER`** · **50 `LEFT`**.
+//   · Gom theo hàm: **124** hàm phân biệt có `INNER` kiểu này; lọc **LIVE/CHẾT** (#820) ⇒ **59 hàm LIVE**.
+//
+// 🔴 **59 hàm LIVE đó trải khắp nghiệp vụ chính** (trích): `DMSWROGet` (#752) · `Ser_AssignmentWork_Get` +
+//   `…_ForTab` (#834) · `Ser_App_GetStatusList` + `…01_New20201230` + `…01_WH_New20201230` + `…_Get_New20190621`
+//   (lịch hẹn) · `Ser_CustomerCare_GetNew` + `…_All` + hai bản `_WH` (chăm sóc khách) · `Ser_CustomerCareMace_Get` ·
+//   `Ser_ROInvoice_Get_New20230220` + `…_WH_New20220926` (hoá đơn) · **tám** hàm `Ser_ROWarrantyReportHTC_*_New20230417`
+//   (báo cáo bảo hành HTC/RLU/RLUU/OnlyOneROWID, cả `_WH`) · `Ser_CampaignDealerRpt(_WH)` ·
+//   `Ser_Customer_GetByJDPowerTerm_New20210618` · ba hàm `HTCMobileTVO_*` (app di động).
+//   ⇒ **Xe đổi chủ** (`ro.CusID` = chủ lúc lập lệnh ≠ `car.CusID` = chủ hiện tại) ⇒ dòng **biến mất im lặng**
+//     khỏi tất cả những màn này. Đây là **một lỗi, 59 mặt**.
+//
+// ⚪ **CÓ HÀM LÀM ĐÚNG — DÙNG `LEFT`** (luật "tìm bản làm đúng"): `SerInsuranceDebitDetailGet(_WH)` (#790 đã ghi) ·
+//   `CarSv_Ser_CustomerCar_Get` · `SerStockOutOrderGet` / `…GetQuote` / `…GetWH` · `SerStockOutPaperRpt` ·
+//   `SerStockOutSearch` / `…_New20180623` / `…_New20240115`.
+//   ⇒ Khuôn `LEFT` **tồn tại và được dùng có ý thức** ⇒ 201 site `INNER` kia **không** phải "quy ước nhà".
+//
+// 🔴🔴 **VÀ CÓ HÀM DÙNG CẢ HAI TRONG CÙNG MỘT THÂN**: `SerCusDebitDetailGet` (`Debit.cs`) —
+//     dòng `1052: JOIN Ser_Car car` (viết **trần** ⇒ **INNER**) và `1066: left join ser_car car`;
+//     lặp lại y hệt ở `1210` / `1224`; thêm `1383: left join ser_car car with(nolock)`.
+//   ⇒ Trong **cùng một hàm**, hai câu truy vấn cùng nối `ser_car` nhưng **một câu nuốt dòng, một câu không**
+//     ⇒ **hai bảng kết quả của cùng một màn có phạm vi dữ liệu khác nhau**. Người dùng thấy dòng công nợ ở
+//     bảng này mà không thấy ở bảng kia, **không có gì giải thích**.
+//   ⚠️ `JOIN` viết trần chính là `INNER JOIN` — đã cảnh báo ở #788, nay là bằng chứng thứ hai rằng nó **dễ đọc lướt**.
+// 📌 **Không over-claim**: 59 là số hàm **LIVE có khuôn đó**, không phải 59 lỗi đã chứng minh — mức độ ảnh hưởng
+//   tuỳ tần suất xe đổi chủ trong dữ liệu thật, thứ **chưa đo được** vì không có DB.
+app.MapGet("/api/_meta/car-owner-join-sweep", () => Results.Ok(new
+{
+    trigger = "khuon join ser_car ... on ro.CarID = car.CarID AND ro.CusID = car.CusID gap BA lan: #752 (DMSWROGet), #788 (thong ke dich vu), #834 (phieu giao viec)",
+    joinSerCarSites = 390,
+    ofWhichLeftJoin = 114,
+    sitesWithOwnerCondition = 251,
+    innerWithOwnerCondition = 201,
+    leftWithOwnerCondition = 50,
+    distinctFunctionsWithInner = 124,
+    liveFunctionsWithInner = 59,
+    liveExamples = new[] { "DMSWROGet (#752)", "Ser_AssignmentWork_Get + _ForTab (#834)",
+        "Ser_App_GetStatusList / _01_New20201230 / _01_WH_New20201230 / _Get_New20190621 (lich hen)",
+        "Ser_CustomerCare_GetNew / _All / hai ban _WH (cham soc khach)", "Ser_CustomerCareMace_Get",
+        "Ser_ROInvoice_Get_New20230220 / _WH_New20220926 (hoa don)",
+        "TAM ham Ser_ROWarrantyReportHTC_*_New20230417 (HTC/RLU/RLUU/OnlyOneROWID, ca _WH)",
+        "Ser_CampaignDealerRpt(_WH)", "Ser_Customer_GetByJDPowerTerm_New20210618",
+        "ba ham HTCMobileTVO_* (app di dong)" },
+    consequence = "xe DOI CHU (ro.CusID = chu luc lap lenh khac car.CusID = chu hien tai) => dong BIEN MAT IM LANG khoi tat ca nhung man nay. MOT loi, 59 mat",
+    functionsDoingItRight = new[] { "SerInsuranceDebitDetailGet(_WH) (#790)", "CarSv_Ser_CustomerCar_Get",
+        "SerStockOutOrderGet / _GetQuote / _GetWH", "SerStockOutPaperRpt",
+        "SerStockOutSearch / _New20180623 / _New20240115" },
+    leftPatternExists = "khuon LEFT TON TAI va duoc dung co y thuc => 201 site INNER kia KHONG phai quy uoc nha",
+    bothInOneFunction = "SerCusDebitDetailGet (Debit.cs) co CA HAI trong cung mot than: dong 1052 JOIN Ser_Car car (viet TRAN => INNER) va dong 1066 left join ser_car car; lap lai y het o 1210/1224; them 1383 left join ser_car car with(nolock) => trong CUNG MOT HAM, hai cau truy van cung noi ser_car nhung MOT CAU NUOT DONG, mot cau khong => hai bang ket qua cua cung mot man co PHAM VI DU LIEU KHAC NHAU",
+    bareJoinIsInnerJoin = "JOIN viet tran chinh la INNER JOIN — da canh bao o #788, nay la bang chung thu hai rang no DE DOC LUOT",
+    notOverclaimed = "59 la so ham LIVE CO KHUON do, khong phai 59 loi da chung minh — muc do anh huong tuy tan suat xe doi chu trong du lieu that, thu CHUA DO DUOC vi khong co DB",
+})).RequireAuthorization();
 app.MapGet("/api/assignmentworks/search", async (AppDbContext db, ITenantContext t,
     string? roId, string? roNo, string? dealerCode, int? skip, int? take) =>
 {
