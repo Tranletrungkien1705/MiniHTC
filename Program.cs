@@ -39603,6 +39603,110 @@ app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenant
     return Results.Ok(new { h.QuoteNo, lines = lines.Count, totalAmount = total, sumAmountNoFactor });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #858 MÀN MỚI: SỬA BÁO GIÁ PHỤ TÙNG — `Ser_Inv_Quote_Update` (`Inventory.Quote.cs:1006`) =====
+// md5 `9bb3b107` (170 dòng, `Raise`=**0**, `SaveData`=3, `Check`=**0**), LIVE (4 vỏ bọc). **3B**: **KHỚP** máy 150.
+// Mini có `GET`/`POST /api/partquotes` + `/{no}/{action}` nhưng **không có `PUT`** ⇒ màn mới.
+//
+// 🔴🔴🔴 **`Status` ĐƯỢC GHI VÔ ĐIỀU KIỆN — KHÔNG MỘT GUARD CHUYỂN TRẠNG THÁI NÀO**
+//   `dt_Ser_Inv_Quote.Rows[0]["**Status**"] = strStatus; alEffectiveColumn.Add("Status");`
+//   Toàn hàm `Raise`=0, `this.Check*`=0 ⇒ **không** so trạng thái cũ với trạng thái mới.
+//   ⇒ Một báo giá **đã duyệt** (hoặc đã sinh lệnh xuất kho) có thể bị đẩy **ngược** về nháp bằng một lời gọi
+//     `Update`; và ngược lại, nhảy thẳng từ nháp sang duyệt **không qua bước nào**.
+//   ⇒ Đối chiếu Mini: `POST /api/partquotes/{no}/{action}` đã mô hình hoá vòng đời
+//     `Draft → Sent → Approved / Cancelled` ⇒ **Mini chặt hơn nguồn**; giữ nguyên, và `PUT` mới **không**
+//     cho đổi `Status` (phải đi qua `/{action}`).
+//
+// 🔴🔴 **XOÁ SẠCH DÒNG CHI TIẾT RỒI CHÈN LẠI** (khuôn #843 `Mst_Param_Save`)
+//     `this.ProcessDeleteQuotePartItems(ref alParamsCoupleError, strQuoteID);`
+//     `this.ProcessSaveQuotePartItems(ds_QuotePartItems, strQuoteID, strPartnerUserCode);`
+//   ⇒ Gói gửi lên thiếu một dòng ⇒ dòng đó **biến mất**. Khác #843 ở chỗ: sửa báo giá **vốn là** thao tác
+//     "thay cả lô" nên ngữ nghĩa **chấp nhận được** — nhưng vẫn phải nói rõ vì `Update` không hề báo
+//     **đã xoá bao nhiêu dòng**.
+//   🔴 **Thứ tự đáng ngờ**: lệnh xuất kho bổ sung được tạo **TRƯỚC** khi chi tiết cũ bị xoá —
+//     `ProcessCreateAdditionalStockOutOrderPartQuote(_dbDealer, strQuoteID, …, dt_…_Input, …)` chạy ở region
+//     `// Create Additional StockOut Order`, **rồi mới** tới region `// Ser_Inv_QuotePartItems:` (xoá + lưu).
+//     Helper ấy lại `SELECT … FROM Ser_Inv_QuotePartItems WHERE QuoteID = …` — tức **đọc dữ liệu CŨ** trong khi
+//     tham số `dtPartItem` là dữ liệu **MỚI**. Hai nguồn số liệu trong một lần gọi.
+//
+// 🔴 **HAI CSDL CHO HAI VIỆC TRONG CÙNG MỘT HÀM**: bản ghi báo giá đọc từ `**_dbMain**`
+//   (`GetTableContents(_dbMain, "Ser_Inv_Quote", …)`) nhưng lệnh xuất kho bổ sung chạy trên `**_dbDealer**`
+//   (`ProcessCreateAdditionalStockOutOrderPartQuote(_dbDealer, …)`), còn `SaveData` thì cả ba.
+// 🔴 `Rows[0]` **trần** ngay sau `GetTableContents` — nhóm 44 site của #814.
+//
+// ⚪ **`CreatedDate` BỊ COMMENT — VÀ ĐÓ LÀ HÀNH VI ĐÚNG**
+//     `//dt_Ser_Inv_Quote.Rows[0]["CreatedDate"] = Convert.ToDateTime(strCreatedDate)…; alEffectiveColumn.Add("CreatedDate");`
+//   ⇒ Port **dòng ACTIVE**: hàm này **không** đè ngày tạo. Đối chiếu #607/#612 (`SerCustomerGroupUpdate`) nơi
+//     `CreatedDate`/`CreatedBy` **bị ghi đè** bằng thời điểm SỬA ⇒ **tầng có CẢ HAI hành vi**, và chỗ đúng là
+//     chỗ người ta đã **chủ động comment đi**.
+//
+// ⚠️ **KHÔNG KẾT LUẬN VỘI VỀ SỐ LỆNH XUẤT KHO**: helper `ProcessCreateAdditionalStockOutOrderPartQuote`
+//   (`Inventory.StockOut.cs:11876`) rẽ nhánh theo hằng `TConst.Ser_Inv_StockOut.{NoSOO, SOOHasSO, SOIsSO}`
+//   và có `if (dtTempPart.Rows.Count > 0)`. Tôi **chưa** đọc hết ba nhánh nên **không** khẳng định "mỗi lần
+//   Update lại sinh thêm một lệnh xuất kho". Ghi làm **đầu mối cần đọc riêng**. Guard ở đây **nằm trong helper**
+//   ⇒ đúng họ #328: phép đếm `Raise` trong thân hàm **không** thấy nó.
+// 📌 Cặp `xxx`: `…PartQuote**xxx**` (`:11742`, đọc `_dbMain`) là bản **chết**; bản sống `…PartQuote` (`:11876`)
+//   nhận `TDAL.IEzDAL dbAction`. ⇒ **Lần thứ HAI** gặp khuôn "clone một bản `xxx` chỉ để tham số hoá CSDL ĐỌC"
+//   (lần đầu: `Ser_CustomerCareStatusUpdatexxx` ở #856). **Hai** ca — chưa đủ ba để gọi là khuôn của tầng.
+app.MapPut("/api/partquotes/{no}", async (string no, PartQuoteDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var qn = (no ?? "").Trim();
+    var qt = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == qn);
+    if (qt is null)
+    {
+        return Results.NotFound(new
+        {
+            error = "Ser_Inv_Quote_NotFound", quoteNo = qn,
+            sourceWouldCrashHere = "nguon doc Rows[0] NGAY sau GetTableContents nen truong hop nay la IndexOutOfRange tho (nhom 44 site #814)",
+        });
+    }
+    if (qt.Status != "Draft")
+    {
+        // Guard NGUON KHONG CO: nguon ghi Status vo dieu kien, khong so trang thai cu voi moi.
+        return Results.Conflict(new
+        {
+            error = "bao gia khong con o trang thai Draft", quoteNo = qn, status = qt.Status,
+            hint = "doi trang thai qua POST /api/partquotes/{no}/{action}",
+            sourceHasNoStatusGuard = true,
+        });
+    }
+    if (dto.CusId != null) qt.CusId = dto.CusId;
+    if (dto.CusName != null) qt.CusName = dto.CusName;
+    if (dto.Mobile != null) qt.Mobile = dto.Mobile;
+    if (dto.ReceiveName != null) qt.ReceiveName = dto.ReceiveName;
+    if (dto.PaymentMethod != null) qt.PaymentMethod = dto.PaymentMethod;
+    if (dto.CusName != null || dto.Remark != null) qt.Remark = dto.Remark ?? qt.Remark;
+    var removed = 0; var added = 0;
+    if (dto.Lines != null)
+    {
+        // Nguon: ProcessDeleteQuotePartItems roi ProcessSaveQuotePartItems — THAY CA LO.
+        var old = await db.PartQuoteLines.Where(x => x.OrgId == t.OrgId && x.PartQuoteId == qt.Id).ToListAsync();
+        removed = old.Count;
+        db.PartQuoteLines.RemoveRange(old);
+        foreach (var l in dto.Lines)
+        {
+            db.PartQuoteLines.Add(new PartQuoteLine
+            {
+                OrgId = t.OrgId, PartQuoteId = qt.Id, PartCode = l.PartCode ?? "",
+                PartName = l.PartName, Quantity = l.Quantity, UnitPrice = l.UnitPrice,
+            });
+            added++;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        qt.QuoteNo, qt.CusId, qt.CusName, qt.ReceiveName, qt.PaymentMethod, qt.Remark, qt.Status,
+        linesRemoved = removed, linesAdded = added,
+        sourceWritesStatusUnconditionally = "#858: dt_Ser_Inv_Quote.Rows[0][Status] = strStatus; alEffectiveColumn.Add(Status); va TOAN HAM Raise=0, this.Check*=0 => KHONG so trang thai cu voi trang thai moi. Mot bao gia DA DUYET (hoac da sinh lenh xuat kho) co the bi day NGUOC ve nhap bang mot loi goi Update; va nguoc lai, nhay thang tu nhap sang duyet KHONG qua buoc nao. Mini chan: PUT nay khong cho doi Status, phai di qua POST /api/partquotes/{no}/{action}",
+        sourceReplacesAllDetailLines = "ProcessDeleteQuotePartItems roi ProcessSaveQuotePartItems => goi gui len thieu mot dong thi dong do BIEN MAT (khuon #843 Mst_Param_Save). Khac #843 o cho: sua bao gia VON LA thao tac thay-ca-lo nen ngu nghia chap nhan duoc — nhung nguon khong he bao DA XOA BAO NHIEU DONG; Mini tra linesRemoved/linesAdded",
+        suspiciousOrderOfOperations = "THU TU DANG NGO: lenh xuat kho bo sung duoc tao TRUOC khi chi tiet cu bi xoa — ProcessCreateAdditionalStockOutOrderPartQuote(_dbDealer, strQuoteID, ..., dt_Input, ...) chay o region Create Additional StockOut Order, ROI MOI toi region Ser_Inv_QuotePartItems (xoa + luu). Helper ay lai SELECT ... FROM Ser_Inv_QuotePartItems WHERE QuoteID = ... tuc DOC DU LIEU CU trong khi tham so dtPartItem la du lieu MOI => hai nguon so lieu trong mot lan goi",
+        twoDatabasesForTwoJobs = "ban ghi bao gia doc tu _dbMain (GetTableContents(_dbMain, Ser_Inv_Quote, ...)) nhung lenh xuat kho bo sung chay tren _dbDealer, con SaveData thi ca ba",
+        createdDateCommentedOutIsCorrect = "AM TINH: //dt_Ser_Inv_Quote.Rows[0][CreatedDate] = Convert.ToDateTime(strCreatedDate)...; bi COMMENT => port dong ACTIVE: ham nay KHONG de ngay tao. Doi chieu #607/#612 (SerCustomerGroupUpdate) noi CreatedDate/CreatedBy BI GHI DE bang thoi diem SUA => tang co CA HAI hanh vi, va cho dung la cho nguoi ta da CHU DONG comment di",
+        doNotConcludeAboutStockOutCount = "KHONG KET LUAN VOI: helper ProcessCreateAdditionalStockOutOrderPartQuote (Inventory.StockOut.cs:11876) re nhanh theo hang TConst.Ser_Inv_StockOut.{NoSOO, SOOHasSO, SOIsSO} va co if (dtTempPart.Rows.Count > 0). Chua doc het ba nhanh nen KHONG khang dinh moi lan Update lai sinh them mot lenh xuat kho. DAU MOI CAN DOC RIENG. Guard o day NAM TRONG HELPER => dung ho #328: phep dem Raise trong than ham khong thay no",
+        secondXxxCloneForReadDbOnly = "cap xxx: ...PartQuotexxx (:11742, doc _dbMain) la ban CHET; ban song ...PartQuote (:11876) nhan TDAL.IEzDAL dbAction => LAN THU HAI gap khuon clone mot ban xxx CHI de tham so hoa CSDL DOC (lan dau: Ser_CustomerCareStatusUpdatexxx o #856). HAI ca — chua du ba de goi la khuon cua tang",
+        twoMachinesVerified858 = "md5 chuan hoa 9bb3b107 KHOP may 150",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
