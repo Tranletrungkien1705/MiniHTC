@@ -74859,6 +74859,54 @@ app.MapPost("/api/repairorders/{no}/setstatus", async (
 // ⚪ Ghi nợ tài liệu, KHÔNG cài: nguồn gọi `PushDataROToHyundaiMe(...)` SAU khi commit cả ba CSDL — nếu
 // tích hợp ngoài đó lỗi, WS trả lỗi cho client dù lệnh ĐÃ HUỶ THÀNH CÔNG thật trong DB. Mini không có tích
 // hợp ngoài nên không dính rủi ro này.
+// ===== 🔴🔴 #903 — `Ser_RO_Update_Maintance_New20210704` (nhắc bảo dưỡng lần sau, LIVE — `WSCarSv.asmx.cs:11009`) — **1447/`2800 (51,7%)**
+// `BizCarSv.ServiceUpdate.cs:2870` (235 dòng, cuối file — dùng nhánh dự phòng E=L+1). ⚠️ KHÔNG trùng
+// `GET /api/osveloca/ro/{roNo}/maintenance-reminder` đã có (đọc, kênh Veloca) — đây là hàm GHI, kênh khác.
+//
+// 🔴🔴🔴 **THAM SỐ `strKm` ĐƯỢC NHẬN, ĐƯỢC LOG, NHƯNG DÒNG GHI BỊ COMMENT — KHÔNG BAO GIỜ CẬP NHẬT**:
+//     `//dt_Ser_RO.Rows[0]["Km"] = strKm; alEffectiveColumn.Add("Km");`
+//   Đây là tham số WS hợp lệ (`strKm`, có mặt trong `alParamsCoupleError` để log), nhưng dòng GHI bị comment
+//   ⇒ client gửi Km mới lên, WS nhận "thành công", nhưng cột `Km` trên `Ser_RO` **không hề đổi**. Áp đúng
+//   luật port dòng ACTIVE — port dòng comment (ghi Km) sẽ là port SAI, phải bỏ qua giống nguồn.
+// ⚠️ **JOIN `ser_ro ro on t.ROID = ro.ROID` MANG CHÚ THÍCH `-- ???` — CHÍNH TÁC GIẢ NGHI NGỜ**: câu `UPDATE
+// Ser_CustomerCareMace` join lại `ser_ro` qua `t.ROID` (ROID lưu trên CHÍNH bản ghi Mace) thay vì qua
+// `#tbl_Ser_CustomerCareMace` (đã lọc đúng ROID hiện tại) — dò kỹ thì logic TỰ NHẤT QUÁN (`t.MaceId` đã bị
+// giới hạn bởi bảng tạm lọc theo ROID hiện tại từ trước), nhưng bản thân tác giả để lại dấu hỏi ngay trong
+// code ⇒ ghi lại như một điểm RỦI RO cần cẩn trọng nếu sau này có ai sửa hàm này, không khẳng định là bug
+// hiện tại (đã dò không thấy sai lệch cụ thể).
+// ⚪ Guard đúng: chặn cập nhật nhắc bảo dưỡng khi RO đã `PAID`/`FNS` (Đã thanh toán/Đã hoàn thành).
+// 📌 Mini: `POST /api/repairorders/{no}/maintenance-reminder` — port ĐÚNG: không ghi `Km` (giữ nguyên hành
+// vi nguồn dòng comment), cập nhật `ReminderMaintanceDate/Km`, `WorkDoneSoon`, `MemberNo`, lan `MaceRecomentDate`
+// sang `CustomerCareMace` liên quan tới RO đó.
+app.MapPost("/api/repairorders/{no}/maintenance-reminder", async (string no, RoMaintenanceReminderDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { error = "Khong tim thay lenh sua chua." });
+    if (ro.Status is "Paid" or "Finished")
+        return Results.BadRequest(new { error = "Lenh da Thanh toan/Hoan thanh, khong sua duoc nhac bao duong.", status = ro.Status });
+
+    // Vi PORT DUNG: KHONG ghi Km — nguon co tham so strKm nhung dong ghi bi COMMENT, giu nguyen hanh vi.
+    ro.ReminderMaintanceDate = dto.ReminderMaintanceDate;
+    ro.ReminderMaintanceKm = dto.ReminderMaintanceKm;
+    ro.WorkDoneSoon = dto.WorkDoneSoon;
+    ro.MemberNo = dto.MemberNo;
+    ro.LogLUDateTime = DateTime.Now;
+
+    var maces = await db.Set<CustomerCareMace>().Where(x => x.OrgId == t.OrgId && x.ROID == no).ToListAsync();
+    foreach (var m in maces) m.MaceRecomentDate = dto.ReminderMaintanceDate;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        ro.RONo, ro.ReminderMaintanceDate, ro.ReminderMaintanceKm, ro.WorkDoneSoon, ro.MemberNo,
+        maceRecordsUpdated = maces.Count,
+        onlyLiveConfirmed903 = "#903: Ser_RO_Update_Maintance_New20210704 — BizCarSv.ServiceUpdate.cs:2870, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:11009. Ham cuoi file, dung nhanh du phong E=L+1",
+        kmParamAcceptedButWriteCommentedOut = "THAM SO strKm DUOC NHAN, DUOC LOG, NHUNG DONG GHI BI COMMENT — KHONG BAO GIO CAP NHAT: //dt_Ser_RO.Rows[0][Km] = strKm. Ap dung luat port dong ACTIVE — Mini KHONG ghi Km, giu dung hanh vi nguon",
+        authorLeftQuestionMarkOnJoin = "CANH BAO KHONG KHANG DINH BUG: UPDATE Ser_CustomerCareMace join lai ser_ro qua t.ROID kem chu thich -- ??? cua CHINH TAC GIA. Do ky logic TU NHAT QUAN (t.MaceId da bi gioi han boi bang tam loc theo ROID hien tai) nhung ghi lai vi tac gia tu nghi ngo — diem rui ro can can trong neu sau nay co ai sua ham nay",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -76305,6 +76353,7 @@ record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null, decimal? To
     string? CardTypeInv = null, string? CardTypeExpectInv = null, decimal? PointEndInv = null,
     decimal? PointRankTotalInv = null, decimal? PointConsumptionPrm = null, string? LogLUBy = null,
     string? CrdDealSerROJson = null, string? CrdDealSerRODtlJson = null);
+record RoMaintenanceReminderDto(DateTime? ReminderMaintanceDate, decimal? ReminderMaintanceKm, string? WorkDoneSoon, string? MemberNo);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
