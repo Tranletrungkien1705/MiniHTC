@@ -15626,6 +15626,18 @@ app.MapDelete("/api/servicemodels/{code}", async (string code, AppDbContext db, 
         twoMachinesVerified845 = "Delete b8730c17 va CheckModelForDelete 7f421dc0 KHOP; Create va Create_New20200203 diff chuan hoa = 0 dong",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #940 VÁ THEO `Ser_Mst_Model_Import_New20200203` (LIVE, `Master.cs:3428`) — THẾ HỆ THẬT ĐANG CHẠY =====
+// #845 đã xác định: HTCWSCarSv (host chính, đang deploy) trỏ WebMethod `Ser_Mst_Model_Import` vào thân
+// `…_New20200203`, KHÔNG phải bản trần — endpoint cũ ở đây port theo bản TRẦN (thiếu guard) vì chưa đọc kỹ
+// #845 lúc viết. Bản `_New20200203` có BA khác biệt cần vá:
+//   1) Guard `TradeMarkCode`/`ModelName` không rỗng (mã lỗi nguồn VAY từ `Ser_Mst_Service_Import` — họ #414
+//      "từ vựng lạ", giữ Ý NGHĨA không giữ TÊN MÃ LỖI sai theo).
+//   2) `ModelCode` không rỗng — RỒI PHẢI TỒN TẠI trong danh mục chuẩn `Mst_CarModelStd` (ACTIVE) qua
+//      `Mst_CarModelStd_CheckDB(..., FlagExistToCheck=Yes, FlagActiveListToCheck=Active)` — model KHÔNG có
+//      trong danh mục chuẩn thì import bị từ chối.
+// ⚠️ Nguồn upsert theo **`(ModelName, DealerCode)`** (không phải `ModelCode`) — giữ nguyên khoá `ModelCode`
+//    của Mini (đã đúng từ trước, an toàn hơn — tránh hai dòng cùng `ModelCode` khác `ModelName`), CHỈ vá
+//    thêm 2 guard còn thiếu, không đổi khoá upsert (rủi ro trùng `ModelCode` nếu đổi theo nguồn).
 app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDbContext db, ITenantContext t) =>
 {
     var rows = dto.Rows ?? new();
@@ -15637,15 +15649,19 @@ app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDb
     {
         var r = rows[i]; var line = i + 1;
         var code = (r.ModelCode ?? "").Trim().ToUpperInvariant();
-        if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã model." }); continue; }
-        if (string.IsNullOrWhiteSpace(r.ModelName)) { errors.Add(new { line, code, error = "Thiếu tên model." }); continue; }
+        if (string.IsNullOrWhiteSpace(r.TradeMarkCode)) { errors.Add(new { line, error = "Ser_Mst_Model_Import_TradeMarkCodeNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(r.ModelName)) { errors.Add(new { line, code, error = "Ser_Mst_Model_Import_ModelNameNotEmty" }); continue; }
+        if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Ser_Mst_Model_Import_ModelCodeNotEmty" }); continue; }
+        var std = await db.CarModelStds.AnyAsync(m => m.OrgId == t.OrgId && m.ModelCode == code && m.FlagActive == "1");
+        if (!std) { errors.Add(new { line, code, error = "Mst_CarModelStd_CheckDB_NotFound", note = "ModelCode chua co trong danh muc chuan Mst_CarModelStd" }); continue; }
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã model bị trùng trong file nhập." }); continue; }
         var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
         if (ex is not null) { ex.ModelName = r.ModelName; ex.TradeMarkCode = r.TradeMarkCode; ex.ProductionCode = r.ProductionCode; ex.DealerCode = r.DealerCode; ex.FlagActive = "1"; updated++; }
         else { db.ServiceModels.Add(new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = r.ModelName, TradeMarkCode = r.TradeMarkCode, ProductionCode = r.ProductionCode, DealerCode = r.DealerCode, FlagActive = "1" }); created++; }
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors,
+        upsertKeyDiffersFromSource = "Nguon upsert theo (ModelName, DealerCode); Mini giu khoa ModelCode (an toan hon, khong doi de tranh trung ModelCode khac ModelName)." });
 }).RequireAuthorization();
 
 // ===== Xuất kho phụ tùng dịch vụ (ServiceStockOut header-detail — port 1:1 FrmSerInventoryAccStockOut01, TCMotor) =====
