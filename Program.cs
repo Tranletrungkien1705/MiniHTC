@@ -21316,11 +21316,17 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
     var claimIds = claims.Select(x => x.Id).ToList();
     var svcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId)).ToListAsync();
     var partItems = await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId)).ToListAsync();
+    // #978: nguồn `td.*, ro.RONo, ro.StartDate, ro.FinishedDate, ro.FrameNo, ro.PlateNo, ro.BatteryNo,
+    // ro.SerialNo, ro.WarrantyExpiresDate, car.CusConfirmedWarrantyDate` — port cũ chỉ lấy FrameNo qua xe,
+    // bỏ sót toàn bộ cụm ngày/PT ở cấp LỆNH SỬA (RepairOrder) này.
+    var roNos = claims.Where(x => x.RONo != null).Select(x => x.RONo!).Distinct().ToList();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && roNos.Contains(x.RONo)).ToListAsync();
 
     var items = claims.Select(c =>
     {
         var car = c.CarID is null ? null : cars.FirstOrDefault(x => x.CarID == c.CarID);
         var dealer = c.DealerCode is null ? null : dealers.FirstOrDefault(x => x.DealerCode == c.DealerCode);
+        var ro = c.RONo is null ? null : ros.FirstOrDefault(x => x.RONo == c.RONo);   // #978
         var svc = svcItems.Where(x => x.ClaimId == c.Id);
         var parts = partItems.Where(x => x.ClaimId == c.Id);
         // Vi FIX: CUNG MOT cong thuc cho tong lan chi tiet — Mini VAT la decimal khong-null nen khong
@@ -21335,6 +21341,10 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
             carMissing = car is null,                                  // #895: vs INNER JOIN ser_car cua nguon
             c.RONo, c.Status, c.HMCApiStatus, c.ClmRcptNo, totalAmount, c.CreatedAt,
             frameNo = car?.FrameNo, warrantyRegistrationDate = c.WarrantyRegistrationDate,
+            // #978: cụm ngày/PT cấp LỆNH SỬA — nguồn lấy từ `ro.*`, không phải từ xe/claim.
+            roStartDate = ro?.StartDate, roFinishedDate = ro?.FinishedDate, roPlateNo = ro?.LicensePlate,
+            roBatteryNo = ro?.BatteryNo, roSerialNo = ro?.SerialNo, roWarrantyExpiresDate = ro?.WarrantyExpiresDate,
+            cusConfirmedWarrantyDate = car?.CusConfirmedWarrantyDate,
             serviceItems = includeDetail ? svc.Select(x => new { x.SerCode, x.Factor, x.Price, x.VAT,
                 amount = x.Factor * x.Price * (1 + x.VAT / 100m) }) : null,
             partItems = includeDetail ? parts.Select(x => new { x.PartCode, x.Quantity, x.Factor, x.Price, x.Vat,
