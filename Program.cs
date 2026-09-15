@@ -74817,6 +74817,32 @@ app.MapPost("/api/repairorders/{no}/serviceitems/status", async (string no, List
     return Results.Ok(new { r.RONo, updated = updated.Count, updatedIds = updated });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #924 `Ser_ROServiceItemsEngineerCreate` (LIVE, `BizCarSv.Service01.cs:14418`) =====
+// Nguồn XOÁ SẠCH rồi GHI LẠI toàn bộ `Ser_ROServiceItemsEngineer` của một RO (không lọc theo ItemID cụ thể
+// — REPLACE-ALL đúng nghĩa). Đây là lối ghi THỨ HAI vào cùng bảng, TÁCH BIỆT khỏi luồng tự sinh từ màn phân
+// công (`FrmSer_AssignmentWork`, đã port ở endpoint `AssignmentWork`) — chính nguồn cũng có 2 điểm gọi hợp lệ
+// tới cùng helper `ProcessDeleteROServiceItemsEngineer`/`ProcessSaveROServiceItemsEngineer`, không phải lỗi.
+// Port cũ chỉ có đường tự sinh; thiếu đường GHI TAY trực tiếp theo RO này.
+app.MapPost("/api/repairorders/{no}/engineers", async (string no, List<RoServiceItemEngineerDto> items, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var itemIds = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).Select(x => x.Id).ToListAsync();
+    // Replace-all đúng nguồn: xoá HẾT phân công cũ của RO này trước khi ghi lại.
+    db.RoServiceItemEngineers.RemoveRange(db.RoServiceItemEngineers.Where(e => e.OrgId == t.OrgId && itemIds.Contains(e.RoServiceItemId)));
+    var inserted = 0;
+    foreach (var it in items ?? new List<RoServiceItemEngineerDto>())
+    {
+        if (!itemIds.Contains(it.ItemID) || string.IsNullOrWhiteSpace(it.EngineerNo)) continue;
+        var item = await db.RoServiceItems.FirstAsync(x => x.OrgId == t.OrgId && x.Id == it.ItemID);
+        db.RoServiceItemEngineers.Add(new RoServiceItemEngineer { OrgId = t.OrgId, RoServiceItemId = it.ItemID, SerCode = item.SerCode, EngineerNo = it.EngineerNo!.Trim().ToUpperInvariant() });
+        inserted++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, inserted });
+}).RequireAuthorization();
+
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -76691,6 +76717,7 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
 // #341: TotalActHours ghi kem o buoc Repaired (rong = giu nguyen).
 record RoDispatchDto(string? DPRemark, string? EngineerID, string? CavityID);   // #917
 record RoServiceItemStatusDto(long ItemID, string? Status);   // #922
+record RoServiceItemEngineerDto(long ItemID, string? EngineerNo);   // #924
 
 record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null, decimal? TotalActHours = null,
     // #328 §12: 12 truong bo sung cua buoc THANH TOAN (SerROStatusUpdatePaid_New20230228).
