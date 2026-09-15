@@ -64878,6 +64878,61 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #949 `Ser_ROInvoice_Get_New20220926` (LIVE, `BizCarSv.Service01.cs:4177`) — CHI TIẾT IN HOÁ ĐƠN/BÁO GIÁ, CHƯA CÓ =====
+// ⚠️ Sửa lại tham chiếu SAI của lượt trước: manifest cũ ghi "Ser_ROInvoice_Get_New20230220" — TÊN NÀY KHÔNG
+// TỒN TẠI trong nguồn (chỉ có `_New20181105`/`_New20200118`/`_New20220926`, LIVE = `_New20220926`, cả bản
+// Main lẫn `_WH`). Có lẽ do gõ nhầm với cụm `Ser_RO_Get*_New20230220` khác trong cùng file — chưa hàm nào
+// trong cụm `Ser_ROInvoice_Get*` thực sự được port trước lượt này.
+// Nguồn trả BA bảng cho một ROID: (1) RO + khách + xe + bảo hiểm (join, không phải ba lệnh riêng như GET
+// thường của Mini), (2) danh sách dòng CÔNG, (3) danh sách dòng PHỤ TÙNG — dùng để in hoá đơn/báo giá.
+// 🔴🔴 **BA CỘT SUY DIỄN ĐỊA CHỈ/SĐT KHÁCH — ƯU TIÊN BA TẦNG**: `CusAddress`/`CusTel`/`CusMobile` không lấy
+// thẳng từ khách hàng — thứ tự ưu tiên: (a) nếu RO có `CusName` RIÊNG (khách vãng lai ghi tay trên RO, khác
+// khách hàng gốc) → dùng `ro.CusAddress` (RO tự có sẵn) nhưng Tel/Mobile vẫn lấy của KHÁCH GỐC; (b) nếu
+// khách hàng gốc có `ContName` (là tổ chức, có người liên hệ) → dùng bộ ba của NGƯỜI LIÊN HỆ; (c) mặc định
+// → dùng bộ ba GỐC của khách hàng. `OwnerName` (chủ sở hữu gốc) LUÔN là `cus.CusName`, tách biệt khỏi
+// `CusName` hiển thị (có thể là RO tự ghi đè).
+app.MapGet("/api/repairorders/{no}/invoice-detail", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var cus = string.IsNullOrWhiteSpace(r.CusID) ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == r.CusID);
+    var car = string.IsNullOrWhiteSpace(r.CarID) ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == r.CarID);
+    var ins = (car?.InsNo is not null)
+        ? await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == car.InsNo) : null;
+    var model = (car?.ModelCode is not null)
+        ? await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == car.ModelCode) : null;
+
+    // Ba cột suy diễn theo đúng thứ tự ưu tiên nguồn (case-when ba nhánh).
+    string? cusAddress, cusTel, cusMobile;
+    if (!string.IsNullOrWhiteSpace(r.CusName)) { cusAddress = r.CusAddress; cusTel = cus?.Tel; cusMobile = cus?.Mobile; }
+    else if (!string.IsNullOrWhiteSpace(cus?.ContName)) { cusAddress = cus.ContAddress; cusTel = cus.ContTel; cusMobile = cus.ContMobile; }
+    else { cusAddress = cus?.Address; cusTel = cus?.Tel; cusMobile = cus?.Mobile; }
+
+    var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
+        .OrderBy(s => s.Id)
+        // ⚪ Nguồn có cột `rs.Note` (`Ser_ROServiceItems.Remark`) nhưng entity Mini `RoServiceItem` (#280/#342/#367)
+        // không có trường ghi chú riêng — không bịa cột, giữ nguyên nợ đã có từ trước.
+        .Select(s => new { s.SerCode, s.SerName, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice }).ToListAsync();
+    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
+        .OrderBy(p => p.Id)
+        .Select(p => new { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        ro = new { r.RONo, r.DealerCode, r.CusRequest, r.CarStatus, r.CheckInDate, r.AdvisoryCode, r.AdvisoryPhone,
+            r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.TermsOfRepair, r.InsNo, r.InvoiceBy, r.Status },
+        customer = new { ownerName = cus?.CusName, cusName = r.CusName ?? (cus?.ContName ?? cus?.CusName),
+            cusAddress, cusTel, cusMobile, taxCode = cus?.TaxCode },
+        car = car is null ? null : new { car.PlateNo, car.TradeMark, modelName = model?.ModelName, car.ColorCode, car.FrameNo, car.EngineNo, car.MemberCarID, car.ProductYear },
+        insurance = ins is null ? null : new { ins.InsVieName, ins.Phone, ins.Address, ins.TaxCode },
+        services, parts,
+        columnFallbackNote = "CusAddress/CusTel/CusMobile: (1) RO co CusName rieng -> dia chi tu RO, SDT tu KHACH GOC; (2) khach la to chuc (co ContName) -> dung bo ba nguoi lien he; (3) mac dinh -> bo ba goc cua khach.",
+    });
+}).RequireAuthorization();
+
 // Gán kỹ thuật viên cho 1 dòng công việc trong RO (port 1:1 FrmSerItemEngineerList — picker 2 lưới chuyển qua lại,
 // TCMotor DMSCarSv/Services): lưu danh sách KTV đã chọn thành chuỗi "no1,no2,..." vào RoServiceItem.Engineer.
 app.MapPost("/api/repairorders/{no}/services/{serCode}/engineers", async (string no, string serCode, RoEngineersDto dto, AppDbContext db, ITenantContext t) =>
