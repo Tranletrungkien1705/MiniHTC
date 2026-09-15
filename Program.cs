@@ -65502,18 +65502,21 @@ app.MapGet("/api/repairorders/board", async (AppDbContext db, ITenantContext t) 
 // Nguồn `left join Ser_Mst_Part` (KHÔNG inner — dòng RO part vẫn hiện dù master thiếu) chỉ để lấy thêm MỘT
 // cột: `mp.Quantity` (tồn kho HIỆN TẠI của phụ tùng), đặt cạnh `rp.Quantity` (SL CẦN) — cho người dùng thấy
 // "cần X, còn Y trong kho" ngay trên màn chi tiết lệnh, không cần mở riêng màn tồn kho.
+// #975: endpoint này là màn TỔNG HỢP chi tiết RO (gộp nhiều đợt vá #280/#342/#367/#955), không map 1:1 một
+// hàm nguồn duy nhất — bổ sung `Note`/`Remark` (RoServiceItem) và `Remark` (RoPartItem, đã có `Note`) cho
+// nhất quán với các endpoint RO khác (#949/#956/#967) sau khi hai cột này được thêm vào entity ở #972.
 app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.InsurancePrice, s.CamID }).ToListAsync();   // #280 §12 + #342 + #367
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.InsurancePrice, s.CamID, s.Note, s.Remark }).ToListAsync();   // #280 §12 + #342 + #367 + #975
     var partRows = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id).ToListAsync();
     var stockByCode = await db.ServiceParts.Where(x => x.OrgId == t.OrgId).ToDictionaryAsync(x => x.PartCode, x => x.Quantity);
     var parts = partRows.Select(p => new
     {
-        p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note, p.CamID,
+        p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note, p.Remark, p.CamID,   // #975: +Remark
         inStock = stockByCode.TryGetValue(p.PartCode, out var q) ? q : (decimal?)null,   // #955: nguon left join, thieu master van tra dong RO
     }).ToList();
     return Results.Ok(new
