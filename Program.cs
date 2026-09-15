@@ -23993,6 +23993,26 @@ app.MapDelete("/api/roattachments/{id:long}", async (long id, AppDbContext db, I
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #910 `Ser_ROAttachment_UpdateAttachmentType` (LIVE, `BizCarSv.Service01.cs:12466`) =====
+// PHÁT HIỆN QUA CHIẾN THUẬT #393 (liệt kê toàn bộ `_biz.X(` LIVE từ WS host, không suy từ tên bảng).
+// Nguồn ghi 3 cột `AttachmentType`/`ROWPTCode`/`Remark` — port cũ hoàn toàn không có — VÀ có GUARD chặn sửa
+// khi RO đã có đề nghị bảo hành đang ở trạng thái Sent/Accepted/Confirmed (tránh đổi phân loại ảnh SAU khi
+// hồ sơ đã được HTC xem xét/duyệt — ảnh đã nộp phải giữ nguyên phân loại cho khớp hồ sơ đã gửi).
+app.MapPost("/api/roattachments/{id:long}/type", async (long id, RoAttachmentTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.RoAttachments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    var blocked = await db.ServiceWarrantyClaims.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == row.RONo
+        && (x.Status == "Sent" || x.Status == "Accepted" || x.Status == "Confirmed"));
+    if (blocked) return Results.BadRequest(new { error = "Trạng thái BCBH không hợp lệ!",
+        detail = "RO đã có đề nghị bảo hành đang Sent/Accepted/Confirmed — không được đổi phân loại ảnh." });
+    row.AttachmentType = dto.AttachmentType;
+    row.ROWPTCode = string.IsNullOrWhiteSpace(dto.ROWPTCode) ? null : dto.ROWPTCode;
+    row.Remark = dto.Remark;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.AttachmentType, row.ROWPTCode, row.Remark });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #597 `PostBravo` (`BravoService.cs`) — **TOKEN VÀO LOG + ÉP TLS TOÀN TIẾN TRÌNH** =====
 // Đây là hàm gọi Bravo **thật sự** (mọi nghiệp vụ TST đi qua nó, sau khi `GetToken` #596 lấy token).
 //
@@ -77475,6 +77495,7 @@ record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 // #245: 16 trường của `TST_Mst_Part_Get01` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 // #253: ảnh đính kèm LSC. Nội dung file (base64) do tầng lưu trữ xử lý — nợ chung của MiniHTC.
 record RoAttachmentDto(string? RONo, string? ImageName, string? ImagePath = null);
+record RoAttachmentTypeDto(string? AttachmentType, string? ROWPTCode, string? Remark);   // #910
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive,
     decimal? MinOrderQuantity = null, decimal? TSTPriceList = null, decimal? TSTPriceUrgent = null,
     decimal? TSTPriceWarranty = null, decimal? TaxRate = null,

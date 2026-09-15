@@ -2468,6 +2468,14 @@ public sealed class RoAttachment
     /// <summary>#879 §12 FLAGHMC — cờ "ảnh này có gửi lên HMC không". Nguồn `Ser_ROAttachment_UpdateFlagHMC`
     /// (chỉ có trên cây `V20.2023.Release`) chỉ nhận đúng hai giá trị `Flag.Active`/`Flag.Inactive`.</summary>
     public string? FlagHMC { get; set; }
+    /// <summary>#910 §12 — nguồn `Ser_ROAttachment_UpdateAttachmentType` (`BizCarSv.Service01.cs:12466`, LIVE)
+    /// ghi 3 cột này (`AttachmentType`, `ROWPTCode`, `Remark`) với GUARD: chặn sửa nếu RO đã có đề nghị bảo
+    /// hành (`Ser_ROWarrantyReport` = <see cref="ServiceWarrantyClaim"/>) đang ở trạng thái Sent/Accepted/
+    /// Confirmed — port cũ không có cả 3 cột lẫn guard.</summary>
+    public string? AttachmentType { get; set; }
+    /// <summary>ROWPTCode — mã loại ảnh báo cáo bảo hành (`RoWarrantyPhotoType`), rỗng ⇒ NULL ở nguồn.</summary>
+    public string? ROWPTCode { get; set; }
+    public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
