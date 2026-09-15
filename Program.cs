@@ -65304,6 +65304,140 @@ app.MapGet("/api/repairorders/{no}/warranty", async (string no, AppDbContext db,
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #956 CỔNG TRA CỨU BẢO HÀNH THEO NHIỀU TIÊU CHÍ — `Ser_RO_GetWarranty` (bản TRẦN, KHÁC `_V2`) =====
+// Nguồn: `BizCarSv.Service01.cs:2164`. #460 tự ghi trong doc-comment của nó: "WS chỉ gọi `_New20230417`
+//   và bản trần `Ser_RO_GetWarranty`" — tức CÓ HAI [WebMethod] sống song song, #460 chỉ port một.
+//   Xác nhận LIVE: `_biz.Ser_RO_GetWarranty(` có ở `HTCWSCarSv/WSCarSv.asmx.cs:9811` ([WebMethod] dòng 9786).
+//   Không tìm thấy caller trong WinForm Carsv — đây là kiểu cổng ĐỐI TÁC/GATEWAY (tham số `strGWUserCode`/
+//   `strPartnerCode`, theo đúng khuôn #405 "channel-prefix": không lên UI nội bộ vẫn có thể LIVE).
+//
+// 🔴 KHÁC `GET /api/repairorders/{no}/warranty` (#460) Ở HAI ĐIỂM:
+//   (1) Tra theo NHIỀU tiêu chí danh sách (`|`-delimited: DealerCode/FrameNo/PlateNo/RONo/QuotationNo),
+//       không phải theo ĐÚNG MỘT RONo qua route param.
+//   (2) Trả thêm hai bảng #460 không có: nhật ký chuyển trạng thái BCBH (`Ser_ROWarrantyReportTransaction`)
+//       và danh sách `sys_user` (lọc theo DealerCode/UserCode) — cổng đối tác cần cả hai để đồng bộ.
+//
+// 🔴 BẪY THẬT (#411-family, ĐÃ DÙNG TIẾP chứ không chỉ kiểm tồn tại — khác ca #485 "vô hại"):
+//   `declare @ROID; select @ROID = ro0.ROID from ser_RO ro0 where exists(...)` — truy vấn NHIỀU DÒNG,
+//   KHÔNG `order by` ⇒ nếu bộ lọc khớp NHIỀU lệnh sửa, `@ROID` nhận DÒNG BẤT KỲ (thứ tự vật lý, không
+//   xác định), rồi TOÀN BỘ chi tiết trả về CHỈ CHO đúng một lệnh đó — các lệnh khớp còn lại bị BỎ SÓT
+//   HOÀN TOÀN mà không có cách nào biết. Port giữ đúng "một kết quả bất kỳ trong tập khớp" (ở đây chọn
+//   dòng ĐẦU theo Id để có tính xác định máy-này-máy-khác, nguồn thì không đảm bảo dòng nào).
+//
+// 🔴 HAI MỆNH ĐỀ CÙNG CỘT: nguồn AND cả `zzzzClauseWhere_strRONoList` (từ `strRONoList`, bỏ tiền tố
+//   "LS-") lẫn `zzzzClauseWhere_strQuotationNoList` (từ `strQuotationNoList`, bỏ tiền tố "BG-") — CẢ HAI
+//   đều lọc trên `ro.RONo`. Nếu bên gọi truyền cả hai với giá trị KHÁC NHAU, kết quả rỗng (mâu thuẫn tự
+//   thân). Port giữ nguyên: hai tham số riêng, cùng AND vào `RONo`.
+app.MapGet("/api/repairorders/warranty-lookup", async (AppDbContext db, ITenantContext t,
+    string? dealerCodes, string? frameNos, string? plateNos, string? roNos, string? quotationNos, string? userCodes) =>
+{
+    static List<string> ParseList(string? s) => (s ?? "").Split(new[] { ',', '|' },
+        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => x.ToUpperInvariant()).Distinct().ToList();
+
+    var dealerList = ParseList(dealerCodes);
+    var frameList = ParseList(frameNos);
+    var plateList = ParseList(plateNos);
+    // Bỏ tiền tố như nguồn (Replace("LS-","")/Replace("BG-","")) trước khi so khớp ro.RONo.
+    var roNoList = ParseList(roNos).Select(x => x.Replace("LS-", "")).ToList();
+    var quotationList = ParseList(quotationNos).Select(x => x.Replace("BG-", "")).ToList();
+    var userCodeList = ParseList(userCodes);
+
+    var candidates = await db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && (dealerList.Count == 0 || dealerList.Contains(r.DealerCode!))
+        && (frameList.Count == 0 || frameList.Contains(r.Vin!))
+        && (plateList.Count == 0 || plateList.Contains(r.LicensePlate))
+        && (roNoList.Count == 0 || roNoList.Contains(r.RONo))
+        && (quotationList.Count == 0 || quotationList.Contains(r.RONo)))
+        .OrderBy(r => r.Id).ToListAsync();
+    var r = candidates.FirstOrDefault();
+    if (r is null)
+        return Results.Ok(new { header = (object?)null, services = Array.Empty<object>(), parts = Array.Empty<object>(),
+            transactions = Array.Empty<object>(), users = Array.Empty<object>(), matchCount = 0 });
+
+    var cus = string.IsNullOrWhiteSpace(r.CusID) ? null
+        : await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == r.CusID && x.DealerCode == r.DealerCode);
+    // Hai cột này nguồn đọc từ DANH MỤC xe (car.ProductYear/car.CusConfirmedWarrantyDate), không phải bản chụp trên RO — như #460.
+    var car = string.IsNullOrWhiteSpace(r.CarID) ? null
+        : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == r.CarID && x.CusID == r.CusID);
+    var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == r.RONo && x.DealerCode == r.DealerCode);
+
+    var warrantyStatusText = claim?.Status switch
+    {
+        "SENT" => "Chờ xem xét", "PEND" => "Chưa gửi", "CONF" => "Chờ duyệt",
+        "ACCE" => "Chấp thuận B.H", "REJ" => "Không duyệt", "REVERT" => "HTC Hoàn trả", _ => (string?)null,
+    };
+
+    var header = new
+    {
+        r.RONo, r.DealerCode,
+        CusRequest = claim?.CusRequest ?? r.CusRequest, CarStatus = claim?.CarStatus ?? r.CarStatus,
+        r.CheckInDate, r.Assistant, r.Km, r.Status,
+        r.CusID, OwnerName = cus?.CusName,
+        CusName = r.CusName ?? cus?.ContName ?? cus?.CusName,
+        CusAddress = r.CusName != null ? r.CusAddress : (cus?.ContName != null ? cus.ContAddress : cus?.Address),
+        CusTel = r.CusName != null ? cus?.Tel : (cus?.ContName != null ? cus.ContTel : cus?.Tel),
+        CusMobile = r.CusName != null ? cus?.Mobile : (cus?.ContName != null ? cus.ContMobile : cus?.Mobile),
+        TaxCode = cus?.TaxCode,
+        WarrantyRegistrationDate = r.WarrantyRegistrationDate,
+        r.LicensePlate, r.TradeMarkCode, r.ColorCode, FrameNo = r.Vin, r.EngineNo,
+        r.BatteryNo, r.SerialNo, ProductYear = car?.ProductYear,
+        WRROID = claim?.ROID, ROWID = claim?.Id, claim?.ROWNo, claim?.NaturalCode, claim?.CauseCode,
+        WarrantyStatus = claim?.Status, warrantyStatusText,
+        claim?.ErrorCodeCD, claim?.ErrorCodePN, claim?.ROWTID,
+        claim?.FlagReadySend, claim?.PartIDError,
+        r.WarrantyExpiresDate, CusConfirmedWarrantyDate = car?.CusConfirmedWarrantyDate,
+    };
+
+    // ⚪ Nguồn có `rs.Note` nhưng entity Mini `RoServiceItem` không có cột ghi chú riêng — nợ có từ trước (xem #949).
+    var services = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).OrderBy(x => x.Id)
+        .Select(x => new { x.SerCode, x.SerName, x.ActManHour, x.Factor, x.Price, x.Vat,
+            Amount = x.Factor * x.Price * (1 + x.Vat / 100), x.ExpenseType, x.InsurancePrice }).ToListAsync();
+    var claimServiceByCode = claim is null ? new Dictionary<string, WarrantyClaimServiceItem>()
+        : (await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == claim.Id).ToListAsync())
+            .Where(x => x.SerCode != null).GroupBy(x => x.SerCode!).ToDictionary(g => g.Key, g => g.First());
+    var servicesOut = services.Select(x => new
+    {
+        x.SerCode, x.SerName, x.ActManHour, x.Factor, x.Price, x.Vat, x.Amount, x.ExpenseType, x.InsurancePrice,
+        WarrantyStatus = claimServiceByCode.TryGetValue(x.SerCode, out var cs) ? (cs.WarrantyStatus ?? "PEND") : "PEND",
+        BulletinID = claimServiceByCode.TryGetValue(x.SerCode, out var cs2) ? cs2.BulletinID : null,
+    }).ToList();
+
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).OrderBy(x => x.Id)
+        .Select(x => new { x.PartCode, x.PartName, x.NeedQty, x.UnitPrice, x.Factor, x.Vat, x.Note, x.ExpenseType, x.InsurancePrice }).ToListAsync();
+    var claimPartByCode = claim is null ? new Dictionary<string, WarrantyClaimPartItem>()
+        : (await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == claim.Id).ToListAsync())
+            .GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var partsOut = parts.Select(x => new
+    {
+        x.PartCode, x.PartName, x.NeedQty, x.UnitPrice, x.Factor, x.Vat,
+        Amount = x.Factor * x.UnitPrice * x.NeedQty * (1 + x.Vat / 100), x.Note, x.ExpenseType, x.InsurancePrice,
+        WarrantyStatus = claimPartByCode.TryGetValue(x.PartCode, out var cp) ? (cp.WarrantyStatus ?? "PEND") : "PEND",
+        FlagMainPart = claimPartByCode.TryGetValue(x.PartCode, out var cp2) ? cp2.FlagMainPart : null,
+    }).ToList();
+
+    var transactions = claim is null ? new List<object>()
+        : (await db.ServiceWarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && x.ClaimId == claim.Id)
+            .OrderBy(x => x.Id).ToListAsync())
+            .Select(x => new { x.Id, claim.ROWNo, x.ClaimId, x.Creator, x.CreatedDate, x.CurrentStatus, x.Note })
+            .Cast<object>().ToList();
+
+    // Danh sách sys_user: lọc theo CÙNG dealerList của phần tìm RO (nguồn tái dùng biến) + userCodeList riêng.
+    // Nguồn KHÔNG lọc gì nếu cả hai rỗng ⇒ trả TOÀN BỘ user (giữ đúng, không tự thêm rào chắn).
+    var users = await db.SysUsers.Where(x => x.OrgId == t.OrgId
+        && (dealerList.Count == 0 || dealerList.Contains(x.DealerCode!))
+        && (userCodeList.Count == 0 || userCodeList.Contains(x.UserCode)))
+        .Select(x => new { x.UserCode, x.UserName, x.DealerCode, x.FlagActive }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        matchCount = candidates.Count, header, services = servicesOut, parts = partsOut, transactions, users,
+        arbitraryRowPickNote = candidates.Count > 1
+            ? $"Bộ lọc khớp {candidates.Count} lệnh sửa — nguồn chọn MỘT dòng bất kỳ (không ORDER BY), ở đây chọn Id nhỏ nhất để xác định; các lệnh khớp còn lại KHÔNG có trong kết quả."
+            : null,
+        bothRoNoAndQuotationNoAndedNote = "Nếu truyền cả roNos lẫn quotationNos với giá trị khác nhau, cả hai đều AND trên RONo => kết quả rỗng (mâu thuẫn tự thân của nguồn, giữ nguyên).",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #469 BÁO CÁO TỔNG XUẤT KHO — `Ser_InvReportTotalStockOutRpt_New20230623` =====
 // Nguồn: `BizCarSv.Inventory.Report.cs:1609` (WS gọi bản này; bản kho `…_WH` ở `WH.cs:10495`).
 // Chọn màn này từ danh sách lệch của #468 (**15 dòng SQL → 5**) — chênh lớn nhất theo tỉ lệ.
