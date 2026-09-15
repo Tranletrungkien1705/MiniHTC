@@ -18122,6 +18122,45 @@ app.MapPost("/api/servicecars/warranty-reg-batch", async (List<WarrantyRegRowDto
     return Results.Ok(new { total = rows.Count, updated, errorCount, errors });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #950 `OS_Ser_CarSalesUpd` (LIVE, `BizCarSv.Customer.cs:4373`) — CỔNG NGOÀI SỬA/XOÁ BẢO HÀNH XE, CHƯA CÓ =====
+// KHÁC `warranty-reg-batch` ở trên (công cụ Excel nội bộ, chỉ set MỘT cột `WarrantyRegistrationDate`):
+// đây là API cho ĐỐI TÁC NGOÀI (kênh "OS"), nhận CẢ BA cột bảo hành + cờ `FlagDelete`.
+// 🔴🔴 **`DealerCode` LÀ THAM SỐ CHẾT**: câu tra tồn tại chỉ lọc `FrameNo` — dòng lọc `and sc.DealerCode =
+// @strDealerCode` bị COMMENT NGAY TRONG NGUỒN — client gửi đại lý sai vẫn sửa được xe của đại lý khác.
+// 🔴🔴 **`WarrantyRegistrationDate` NHẬN NHƯNG KHÔNG DÙNG** ở nhánh cập nhật: tham số được bind vào câu SQL
+// nhưng câu lệnh `UPDATE` chỉ gán `WarrantyExpiresDate`/`CusConfirmedWarrantyDate` — cột thứ ba bị BỎ QUA
+// hoàn toàn (khác `warranty-reg-batch`, đúng cột đó, nhưng đây là API riêng, không dùng chung logic).
+// 🔴 **`FlagDelete = Active` KHÔNG XOÁ XE — XOÁ TRẮNG CẢ BA NGÀY BẢO HÀNH** (đặt cả ba về NULL) — tên tham
+// số nói "xoá" nhưng hành vi thật là "reset thông tin bảo hành", giữ nguyên record xe.
+// ⚪ Nguồn tự nhận thiếu index vì MỘT `FrameNo` có thể ứng với NHIỀU `CarID` (dữ liệu thực tế lộn xộn) — cập
+// nhật áp dụng cho TẤT CẢ xe cùng số khung, không chỉ dòng đầu tiên.
+app.MapPost("/api/servicecars/os-warranty-update", async (OsCarSalesUpdDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var frame = (dto.FrameNo ?? "").Trim();
+    if (frame == "") return Results.BadRequest(new { error = "Cần FrameNo." });
+    var cars = await db.ServiceCars.Where(v => v.OrgId == t.OrgId && v.FrameNo == frame).ToListAsync();
+    if (cars.Count == 0) return Results.NotFound(new { error = "OS_Ser_CustomerSalesUpd_SalesCarID_NotExist", frameNo = frame });
+    var isDelete = string.Equals(dto.FlagDelete, "1", StringComparison.Ordinal);
+    var now = DateTime.Now;
+    foreach (var car in cars)
+    {
+        if (isDelete)
+        {
+            car.WarrantyExpiresDate = null; car.CusConfirmedWarrantyDate = null; car.WarrantyRegistrationDate = null;
+        }
+        else
+        {
+            car.WarrantyExpiresDate = dto.WarrantyExpiresDate; car.CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate;
+            // 🔴 dto.WarrantyRegistrationDate CỐ Ý KHÔNG gán — đúng bug nguồn (tham số nhận nhưng không dùng).
+        }
+        car.LogLUDateTime = now; car.LogLUBy = dto.LogLUBy;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { frameNo = frame, carsUpdated = cars.Count, isDelete,
+        dealerCodeIsDeadParam = "Nguon COMMENT dieu kien loc DealerCode trong cau tra ton tai — moi dai ly deu sua duoc xe cua dai ly khac qua cong nay.",
+        warrantyRegistrationDateNotWrittenOnUpdate = "Nhanh khong-xoa: tham so nhan nhung KHONG duoc gan vao cot nao (dung bug nguon)." });
+}).RequireAuthorization();
+
 // ===== Danh mục phụ tùng dịch vụ (ServicePart — port 1:1 FrmPart/FrmPartSearch, TCMotor) =====
 app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active) =>
 {
@@ -78452,6 +78491,8 @@ record SqPartDto(string PartCode, string? PartName, decimal Quantity, decimal Pr
     decimal InsurancePrice = 0);     // phần bảo hiểm chi trả cho dòng này
 record ServiceQuotationStatusDto(string Status);
 record WarrantyRegRowDto(string? FrameNo, string? WarrantyRegDate);
+record OsCarSalesUpdDto(string? FrameNo, string? DealerCode, DateTime? WarrantyRegistrationDate,
+    DateTime? WarrantyExpiresDate, DateTime? CusConfirmedWarrantyDate, string? FlagDelete, string? LogLUBy);   // #950
 record DealPriceFixDto(long Id, decimal NewPrice);
 record ContractSmFixDto(long Id, string? NewSmCode);
 record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
