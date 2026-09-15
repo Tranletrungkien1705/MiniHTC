@@ -34998,6 +34998,29 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
 // Nguồn giữ **HAI** mốc chứ không phải một: lần liên hệ ĐẦU TIÊN không bao giờ bị ghi đè, lần GẦN NHẤT
 //   cập nhật mỗi lần gọi ⇒ đo được "bao lâu mới liên hệ được khách lần đầu" và "liên hệ gần nhất khi nào".
 //   Gộp một cột là mất hẳn chỉ tiêu thứ nhất.
+// ===== 🔴🔴 #954 `Ser_App_Delete` (LIVE, `BizCarSv.Appointment.cs:1022`) — XOÁ LỊCH HẸN, CHƯA CÓ =====
+// Guard `CheckStatusAppForDelete`: chỉ xoá được khi `AppStatus` là "1" (MỚI TẠO) hoặc "4" (HUỶ) — bảng mã
+// đúng nguồn (`Rpt_Ser_App_GroupByDateAndStatusForTab`, #698): 1=MOITAO, 2=XACNHAN, 3=TIEPNHAN, 4=HUY.
+// MiniHTC dùng nhãn chuỗi (`Booked`/`Cancelled`…) — chấp nhận CẢ HAI dạng (số thô lẫn nhãn) vì #319 đã ghi
+// dữ liệu cũ có thể còn ở dạng số thô. Xoá cascade đúng thứ tự nguồn: `AppServiceItems`/`AppPartItems`
+// (`Ser_App_DeleteForCheckDeleteItems`) rồi mới xoá `Ser_App`.
+app.MapDelete("/api/appointments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no);
+    if (a is null) return Results.NotFound(new { no });
+    var deletable = new[] { "1", "4", "Booked", "Cancelled" };
+    if (!deletable.Contains(a.Status))
+        return Results.BadRequest(new { error = "Ser_App_Not_Delete", status = a.Status, deletable });
+    var svcItems = await db.AppointmentServiceItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no).ToListAsync();
+    db.AppointmentServiceItems.RemoveRange(svcItems);
+    var partItems = await db.AppointmentPartItems.Where(x => x.OrgId == t.OrgId && x.AppNo == no).ToListAsync();
+    db.AppointmentPartItems.RemoveRange(partItems);
+    db.ServiceAppointments.Remove(a);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
+}).RequireAuthorization();
+
 app.MapPost("/api/appointments/{no}/contact", async (string no, AppDbContext db, ITenantContext t) =>
 {
     var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppNo == no.Trim());
