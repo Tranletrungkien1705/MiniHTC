@@ -61603,6 +61603,17 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
         if (stock is null) { stock = new PartStock { OrgId = t.OrgId, WarehouseCode = h.WarehouseCode, PartCode = l.PartCode, PartName = l.PartName, Location = l.Location, OnHand = 0 }; db.PartStocks.Add(stock); }
         stock.OnHand += l.Quantity; stock.PartName = l.PartName ?? stock.PartName; stock.UpdatedAt = DateTime.Now;
     }
+    // ===== 🏆🔴🔴🔴 #928 `Ser_Inv_PartInstance` — CHƯA TỪNG được ghi ở BẤT KỲ đâu (LỆ #398) =====
+    // 14 chỗ trong Program.cs ĐỌC `db.PartInstances` (báo cáo lãi/lỗ theo lô — #416) nhưng KHÔNG một dòng
+    // nào từng `.Add()` vào bảng này ⇒ toàn bộ 14 báo cáo/tra cứu đó LUÔN RỖNG kể từ khi tạo. Nguồn tạo một
+    // dòng `Ser_Inv_PartInstance` (Status=INSTOCK) cho MỖI dòng chi tiết mỗi khi phiếu NHẬP hoàn tất.
+    foreach (var l in lines)
+        db.PartInstances.Add(new PartInstance
+        {
+            OrgId = t.OrgId, DealerCode = h.DealerCode, PartCode = l.PartCode,
+            Status = "1", StockInNo = h.StockInNo, StockInId = h.Id, LocationID = l.Location,
+            Quantity = l.Quantity, SIPrice = l.Price, SIVAT = l.VAT, DateIn = DateTime.Now,
+        });
     // --- #390 GIÁ VỐN BÌNH QUÂN TĂNG DẦN (chỉ khi HAI tham số cùng bật).
     var pMcc = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param"
         && m.Code == "MCC" && m.Name == "Average");
