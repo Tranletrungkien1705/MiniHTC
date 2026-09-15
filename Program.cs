@@ -65236,6 +65236,118 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #967 `Ser_RO_GetForTab` (LIVE qua `WSCarSvTab`, `BizCarSv.Tab.cs:27`, thân thật `Ser_RO_GetX`
+//   `:575-1090`) — TRA CỨU LỆNH SỬA NHIỀU TIÊU CHÍ + PHÂN TRANG KIỂU TABLET, CHƯA CÓ =====
+// Phát hiện qua #408 trên `BizCarSv.Tab.cs`. KHÁC hẳn `GET /api/repairorders` ở trên (lọc đơn giản, không
+//   phân trang kiểu chỉ số dòng): hàm này dựng bảng tạm `#tbl_Ser_RO_Filter_Draft` (LỌC trước, đánh số thứ
+//   tự `MyIdxSeq`), trả `MyCount` (tổng số dòng khớp) rồi CẮT TRANG theo `[RecordStart, RecordStart+
+//   RecordCount-1]` — đúng kiểu phân trang "cuộn thêm" của app di động.
+// 🔴 `strQuotationNoList` là THAM SỐ CHẾT: mệnh đề lọc theo nó bị comment ở CẢ HAI chỗ (khai báo lẫn
+//   `Replace`) — nhận vào cho có, không lọc được gì. Giữ tham số trong DTO cho tương thích, không lọc.
+// 🔴 `strFlagHasAW`: `"0"` = CHỈ lấy RO CHƯA có phân công việc (`Ser_AssignmentWork`); `"1"` = CHỈ lấy RO
+//   ĐÃ có; giá trị khác/rỗng = không lọc theo trục này.
+// ⚪ Nguồn trả thêm nhiều cột phụ (tên NV/SĐT người tạo, tên khoang/KTV phân công, bảo hiểm xe, lịch sử
+//   ngày giao dự kiến, StockOutOrderID) — MiniHTC chưa mô hình hoá đủ các bảng phụ đó ở tầng RO-search; giữ
+//   nợ, trả cờ `extraColumnsNotModelledYet` để không ai tưởng đã đủ ngang nguồn.
+app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContext t,
+    int? recordStart, int? recordCount,
+    string? dealerCodes, string? frameNos, string? plateNos, string? cusIds, string? cusNames,
+    string? creators, string? roNos, string? quotationNos, string? statuses, string? flagHasAW,
+    bool? includeServices, bool? includeParts) =>
+{
+    static List<string> ParseList(string? s) => (s ?? "").Split(new[] { ',', '|' },
+        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(x => x.ToUpperInvariant()).Distinct().ToList();
+
+    var dealerList = ParseList(dealerCodes);
+    var frameList = ParseList(frameNos);
+    var plateList = ParseList(plateNos);
+    var cusIdList = ParseList(cusIds);
+    var cusNameList = ParseList(cusNames);
+    var creatorList = ParseList(creators);
+    var roNoList = ParseList(roNos);
+    var statusList = ParseList(statuses);
+
+    var start = recordStart is >= 0 ? recordStart.Value : 0;
+    var count = recordCount is > 0 and <= 500 ? recordCount!.Value : 100;
+
+    var q = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && (dealerList.Count == 0 || dealerList.Contains(r.DealerCode!))
+        && (frameList.Count == 0 || (r.Vin != null && frameList.Contains(r.Vin)))
+        && (plateList.Count == 0 || plateList.Contains(r.LicensePlate))
+        && (cusIdList.Count == 0 || (r.CusID != null && cusIdList.Contains(r.CusID)))
+        && (creatorList.Count == 0 || (r.Creator != null && creatorList.Contains(r.Creator)))
+        && (roNoList.Count == 0 || roNoList.Contains(r.RONo))
+        && (statusList.Count == 0 || statusList.Contains(r.Status)));
+    // CusName lọc trên bảng khách (cus.CusName của nguồn), không phải bản chụp trên RO — cần join riêng.
+    if (cusNameList.Count > 0)
+    {
+        var cusCodesMatchingName = await db.ServiceCustomers.Where(c => t.OrgId == c.OrgId && cusNameList.Any(n => c.CusName.ToUpper().Contains(n))).Select(c => c.CusCode).ToListAsync();
+        q = q.Where(r => r.CusID != null && cusCodesMatchingName.Contains(r.CusID));
+    }
+    if (flagHasAW == "0") q = q.Where(r => !db.SerAssignmentWorks.Any(a => a.OrgId == t.OrgId && a.RONo == r.RONo));
+    else if (flagHasAW == "1") q = q.Where(r => db.SerAssignmentWorks.Any(a => a.OrgId == t.OrgId && a.RONo == r.RONo));
+
+    var totalCount = await q.CountAsync();
+    var page = await q.OrderBy(r => r.RONo).Skip(start).Take(count).ToListAsync();
+
+    var cusCodes = page.Where(r => r.CusID != null).Select(r => r.CusID!).Distinct().ToList();
+    var cusById = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && cusCodes.Contains(c.CusCode)).ToDictionaryAsync(c => c.CusCode);
+    var carIds = page.Where(r => r.CarID != null).Select(r => r.CarID!).Distinct().ToList();
+    var carsByCarId = (await db.ServiceCars.Where(c => c.OrgId == t.OrgId && c.CarID != null && carIds.Contains(c.CarID!)).ToListAsync())
+        .GroupBy(c => c.CarID!).ToDictionary(g => g.Key, g => g.First());
+    var modelCodes = carsByCarId.Values.Where(c => c.ModelCode != null).Select(c => c.ModelCode!).Distinct().ToList();
+    var modelsByCode = await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToDictionaryAsync(m => m.ModelCode);
+    var tmCodes = carsByCarId.Values.Where(c => c.TradeMark != null).Select(c => c.TradeMark!).Distinct().ToList();
+    var tmByCode = await db.ServiceTradeMarks.Where(tm => tm.OrgId == t.OrgId && tmCodes.Contains(tm.TradeMarkCode)).ToDictionaryAsync(tm => tm.TradeMarkCode);
+
+    var roIds = page.Select(r => r.Id).ToList();
+    var servicesByRo = includeServices == true
+        ? (await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIds.Contains(s.RoId)).ToListAsync())
+            .GroupBy(s => s.RoId).ToDictionary(g => g.Key, g => (object)g.Select(s => new
+            { s.SerCode, s.SerName, s.ActManHour, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice }).ToList())
+        : null;
+    var partsByRo = includeParts == true
+        ? (await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIds.Contains(p.RoId)).ToListAsync())
+            .GroupBy(p => p.RoId).ToDictionary(g => g.Key, g => (object)g.Select(p => new
+            { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note }).ToList())
+        : null;
+
+    var items = page.Select(r =>
+    {
+        var cus = r.CusID != null && cusById.TryGetValue(r.CusID, out var cc) ? cc : null;
+        var car = r.CarID != null && carsByCarId.TryGetValue(r.CarID, out var cr) ? cr : null;
+        var model = car?.ModelCode != null && modelsByCode.TryGetValue(car.ModelCode, out var m) ? m : null;
+        var tm = car?.TradeMark != null && tmByCode.TryGetValue(car.TradeMark, out var t2) ? t2 : null;
+        return new
+        {
+            r.RONo, r.DealerCode, r.CusRequest, r.CarStatus, r.CheckInDate, r.Assistant, r.StartDate, r.FinishedDate,
+            r.PlanedDeliveryDate, r.ActualDeliveryDate, r.PlanedDuration, r.CusWaiting, r.CarWashRequested,
+            r.UseSHPart, r.PayByCard, r.Km, r.Status, r.Creator,
+            r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.WorkDoneSoon, r.TermsOfRepair, r.InsNo, r.InvoiceBy,
+            r.AdvisoryCode, r.AdvisoryPhone, r.TotalActHours, r.ModifyDate, r.ModifyBy, r.CheckEndDate, r.FlagPause,
+            r.EngineerID, r.CavityID, r.ReceptionFNo, r.LevelOfInspection, r.InsuranceDeductible,
+            cusId = cus?.CusCode, ownerName = cus?.CusName,
+            cusName = r.CusName ?? cus?.ContName ?? cus?.CusName,
+            cusAddress = r.CusName != null ? r.CusAddress : (cus?.ContName != null ? cus.ContAddress : cus?.Address),
+            cusTel = r.CusName != null ? cus?.Tel : (cus?.ContName != null ? cus.ContTel : cus?.Tel),
+            cusMobile = r.CusName != null ? cus?.Mobile : (cus?.ContName != null ? cus.ContMobile : cus?.Mobile),
+            taxCode = cus?.TaxCode,
+            carId = car?.CarID, r.LicensePlate, tradeMarkCode = car?.TradeMark, tradeMarkName = tm?.TradeMarkName,
+            modelId = car?.ModelCode, modelName = model?.ModelName, colorCode = car?.ColorCode, frameNo = r.Vin,
+            engineNo = car?.EngineNo, car?.ProductYear, car?.MemberCarID, car?.CurrentServiceDate, car?.CurrentKm,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        totalCount, recordStart = start, recordCount = count, count = items.Count, items,
+        services = servicesByRo, parts = partsByRo,
+        deadFilterNote = "quotationNos khong loc duoc gi (menh de bi comment o nguon, giu tham so cho tuong thich).",
+        flagHasAWNote = "'0' = chua co Ser_AssignmentWork; '1' = da co; khac/rong = khong loc.",
+        extraColumnsNotModelledYet = "Nguon con tra: ten/SDT nguoi tao (sys_user), ten khoang/KTV phan cong, bao hiem xe (Ser_Insurance), lich su ngay giao du kien (Ser_Ro_PlanedDeliveryDate_His), StockOutOrderID — MiniHTC chua ghep du cac bang phu nay o man tra cuu, ghi no khong bia.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LicensePlate)) return Results.BadRequest(new { error = "Cần biển số (LicensePlate)." });
