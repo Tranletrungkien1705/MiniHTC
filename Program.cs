@@ -60644,6 +60644,39 @@ app.MapDelete("/api/partprices/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { p.Id, p.PartCode, p.EffectiveDate, p.IsActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #935 `Ser_Mst_PartPrice_Import` (LIVE, `BizCarSv.Inventory.cs:891`) — NHẬP HÀNG LOẠT TỪ EXCEL, CHƯA CÓ =====
+// Nguồn nhận DataSet Excel (cột `PARTCODE`/`VIENAME`/`PRICE`/`PARTID`/`DATEEFFECT`/`REMARK`), lặp từng dòng:
+//   1) `VieName` rỗng ⇒ `Ser_Mst_Part_Import_VieNameNotEmty`; `Price` rỗng ⇒ `..._PriceNotEmty`.
+//   2) 🔴 GUARD ÂM THẦM: nếu `PartCode` tồn tại trong `TST_Mst_Part` (phụ tùng TST) thì SKIP HẲN dòng đó — comment
+//      nguồn "Nếu mã pt là TST thì không cho phép sửa giá bán và ngày hiệu lực" nhưng nhánh `if` RỖNG, KHÔNG ném
+//      lỗi, KHÔNG báo cho người dùng biết dòng nào bị bỏ qua — import "thành công" nhưng thiếu dòng không dấu vết.
+//   3) Còn lại upsert theo `(PartID, DateEffect)` — khớp đúng khoá `(PartCode, EffectiveDate)` mà Mini đã dùng
+//      từ #295/#256 cho `POST /api/partprices` đơn lẻ.
+// Fix: Mini trả về danh sách dòng bị SKIP (kèm lý do) để không lặp lại lỗi "im lặng" của nguồn.
+app.MapPost("/api/partprices/import", async (List<PartPriceImportRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    var skipped = new List<object>();
+    var saved = new List<object>();
+    foreach (var row in rows)
+    {
+        var code = (row.PartCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(row.PartName)) { skipped.Add(new { row.PartCode, reason = "Ser_Mst_Part_Import_VieNameNotEmty" }); continue; }
+        if (row.Price is null) { skipped.Add(new { row.PartCode, reason = "Ser_Mst_Part_Import_PriceNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(code) || row.EffectiveDate is null)
+        { skipped.Add(new { row.PartCode, reason = "Thieu PartCode hoac EffectiveDate" }); continue; }
+        var isTst = await db.TstParts.AnyAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
+        if (isTst) { skipped.Add(new { row.PartCode, reason = "TST_Mst_Part_HasCode (nguon bo qua am tham, khong sua gia PT TST qua import)" }); continue; }
+        var ed = row.EffectiveDate.Value.Date;
+        var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.EffectiveDate == ed);
+        if (p is null) { p = new PartPrice { OrgId = t.OrgId, PartCode = code, EffectiveDate = ed }; db.PartPrices.Add(p); }
+        p.Price = row.Price.Value; p.Remark = row.Remark; p.IsActive = "1"; p.UpdatedAt = DateTime.Now;
+        saved.Add(new { p.PartCode, p.EffectiveDate, p.Price });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { savedCount = saved.Count, skippedCount = skipped.Count, saved, skipped,
+        sourceSilentlySkipsTstParts = "Nguon bo qua PHU TUNG TST khong bao loi/khong bao danh sach — Mini tra ro skipped[] de khong lap lai" });
+}).RequireAuthorization();
+
 // ===== Phiếu xuất kho phụ tùng (Ser_Inv_StockOut — port 1:1 FrmStockOutCreate), TRỪ tồn PartStock =====
 // ===== 🔴 #264 LOẠI XUẤT + NHÃN + khối VẬN CHUYỂN/ĐIỀU CHỈNH — `TblSerInvStockOut` =====
 // DbDefine.cs:1257-1303 (md5 `d373e758` — KHỚP 2 máy), tìm qua sweep `sweep_tblconst_tail.js` (#261).
@@ -77061,6 +77094,7 @@ record StockOutDto(DateTime? StockOutDate, string? StockOutType, string Warehous
 record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status,
     string? Remark = null, string? IsActive = null);   // #295
+record PartPriceImportRowDto(string? PartCode, string? PartName, decimal? Price, DateTime? EffectiveDate, string? Remark);   // #935
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate,
     string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
