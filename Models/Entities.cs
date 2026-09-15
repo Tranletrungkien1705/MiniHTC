@@ -3695,6 +3695,12 @@ public sealed class StockAdjLine
 /// <summary>Master loại công việc dịch vụ (Ser_MST_ServiceType) — port 1:1 FrmServiceTypeCreate/Search (TCMotor DMSCarSv). Tên loại công việc + cờ hoạt động.</summary>
 public sealed class SerServiceType
 {
+    /// <summary>🔴 #906 §12 `Ser_MST_ServiceType.DealerCode` — nguồn `Ser_Mst_ServiceType_Create/Update/Delete`
+    /// (`BizCarSv.Master.cs:5171/:5326/:5471`) nhận/lưu cột này; mỗi đại lý có DANH SÁCH LOẠI DỊCH VỤ RIÊNG,
+    /// khoá thật của bảng là `TypeID` tự tăng — KHÔNG phải `TypeName`. Port cũ thiếu cột này nên ẩn khoá
+    /// upsert theo `TypeName` TOÀN CỤC ⇒ hai đại lý cùng đặt tên loại DV giống nhau sẽ VÔ TÌNH DÙNG CHUNG một
+    /// dòng thay vì có hai dòng riêng theo nguồn.</summary>
+    public string? DealerCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string TypeName { get; set; } = "";

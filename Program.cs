@@ -26485,13 +26485,28 @@ app.MapPost("/api/stockadjs/{no}/finish", async (string no, AppDbContext db, ITe
     return Results.Ok(new { h.StockAdjNo, status = h.AdjStatus, statusName = "Kết thúc", adjustedLines = lines.Count });
 }).RequireAuthorization();
 
-// ===== Master loại công việc DV (SerServiceType — port 1:1 FrmServiceTypeCreate/Search, TCMotor DMSCarSv) =====
-app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+// ===== 🔴🔴🔴 #906 Master loại công việc DV (`Ser_MST_ServiceType`) — VÁ khoá upsert + `DealerCode` =====
+// Nguồn LIVE `Ser_Mst_ServiceType_{Get,Create,Update,Delete}` (`BizCarSv.Master.cs:5045/:5171/:5326/:5471`,
+// xác nhận qua `HTCWSCarSv/WSCarSv.asmx.cs`). Bảng `Ser_MST_ServiceType` — cùng nghi ngờ ban đầu bằng
+// case-insensitive grep, thoạt tưởng "chưa port", nhưng đã có port TỪ NGUỒN WINFORM khác (`FrmServiceTypeCreate`,
+// entity `SerServiceType`) — cùng bẫy đặt tên như #389.
+// 🔴🔴🔴 **`Ser_Mst_ServiceType_Update` GHI THIẾU CẢ HAI CỘT NHẬT KÝ, DÙ ĐÃ TÍNH SẴN `strTDate`**:
+//     `//dt_ServiceType.Rows[0]["LogLUDateTime"] = strTDate; alColumnEffective.Add("LogLUDateTime");`
+//     `//dt_ServiceType.Rows[0]["LogLuBy"] = strPartnerUserCode; alColumnEffective.Add("LogLuBy");`
+//   Cả hai dòng ghi nhật ký đều bị COMMENT — cập nhật tên/đại lý của loại dịch vụ không để lại vết người sửa.
+//   Mini KHÔNG port lại lỗi này: `UpdatedAt` vẫn được ghi (hành vi tốt hơn nguồn, giữ nguyên).
+// 🔴🔴 **PORT CŨ THIẾU `DealerCode` — LÀM SAI KHOÁ UPSERT**: nguồn `Create`/`Update`/`Delete` đều nhận/lưu',
+// `DealerCode` (mỗi đại lý có DANH SÁCH LOẠI DỊCH VỤ RIÊNG, khoá thật là `TypeID` tự tăng, KHÔNG phải',
+// `TypeName`). Port cũ upsert theo `TypeName` TOÀN CỤC (không có `DealerCode`) ⇒ hai đại lý cùng đặt tên',
+// loại DV giống nhau sẽ VÔ TÌNH DÙNG CHUNG một dòng thay vì có hai dòng riêng theo nguồn.',
+// ⚪ `Create` nguồn KHÔNG kiểm trùng tên (không guard) — Mini upsert theo tên vẫn AN TOÀN HƠN, giữ nguyên.
+app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealerCode) =>
 {
     var qry = db.SerServiceTypes.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!));
-    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
+    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive, x.DealerCode }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -26499,12 +26514,13 @@ app.MapPost("/api/serservicetypes", async (SerServiceTypeDto dto, AppDbContext d
 {
     var name = (dto.TypeName ?? "").Trim();
     if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Chưa nhập tên loại công việc." });
-    var row = await db.SerServiceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == name);
-    if (row is null) { row = new SerServiceType { OrgId = t.OrgId, TypeName = name }; db.SerServiceTypes.Add(row); }
+    // #906: khoá upsert đúng (TypeName, DealerCode) — mỗi đại lý có danh sách riêng, khớp nguồn.
+    var row = await db.SerServiceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dto.DealerCode);
+    if (row is null) { row = new SerServiceType { OrgId = t.OrgId, TypeName = name, DealerCode = dto.DealerCode }; db.SerServiceTypes.Add(row); }
     row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode });
 }).RequireAuthorization();
 
 app.MapPost("/api/serservicetypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -77424,7 +77440,7 @@ record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo, string? FilePath
 record ReceptionFAudTypeMstDto(string? ReceptionFAudType, string? ReceptionFAudTypeName, string? FlagActive, string? Remark);   // #627
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
-record SerServiceTypeDto(string? TypeName, string? FlagActive);
+record SerServiceTypeDto(string? TypeName, string? FlagActive, string? DealerCode = null);
 record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
 record SerPartTypeDto(string? TypeName, string? FlagActive);
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
