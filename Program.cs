@@ -18117,6 +18117,8 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
     var ex = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
     if (ex is not null)
     {
+        // #404: nguồn LIVE thật của Update (`Ser_Mst_Part_Update`) KHÔNG có nhánh TST override — chỉ
+        // Create mới có. Giữ nguyên nhánh Update không đụng TST (đúng bất đối xứng nguồn).
         ex.PartName = dto.PartName; ex.EngName = dto.EngName; ex.Unit = dto.Unit; ex.Price = dto.Price; ex.Cost = dto.Cost; ex.Location = dto.Location; ex.Quantity = dto.Quantity; ex.MinQuantity = dto.MinQuantity; ex.PartGroupCode = dto.PartGroupCode; ex.Model = dto.Model; ex.Note = dto.Note; ex.FlagActive = "1";
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.PartCode, updated = true });
@@ -18127,17 +18129,30 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
     // ⚠️ `TSTPrice`/`TSTPriceBefore` là **cặp giá hiện tại / giá trước** — thiếu vế sau thì không đối chiếu
     //    được biến động giá NCC. `FlagInTST` cho biết PT có trong danh mục TST hay không.
     // ⚠️ `InventoryQuantity` KHÁC `Quantity` (hai cột riêng trong cùng lớp hằng).
-    var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, EngName = dto.EngName, Unit = dto.Unit, Price = dto.Price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1",
+    // ===== 🔴🔴🔴 #947 companion-scan (#403 mở rộng): CREATE THẬT của nguồn KHÔNG phải `Ser_Mst_Part_Create`
+    // (bản trần, `_biz.Ser_Mst_Part_Create(` = 0 hit trên WS chính) mà là `Ser_Mst_Part_Create_20210303`
+    // (`Service.cs:4871`, LIVE) — cùng khuôn "port ĐÚNG TÊN HÀM SAI THÂN HÀM" đã gặp ở #940. Thân thật có
+    // nhánh TST_Mst_Part override CHƯA từng port: nếu `PartCode` đã có trong `TST_Mst_Part`, GHI ĐÈ
+    // `VieName`/`Unit`/`VAT`/`Price` bằng giá trị TST và bật `FlagInTST="1"` — đại lý không tự đặt giá cho
+    // phụ tùng đã có trong danh mục hãng. Đúng luật #297/#938 nhưng lần này ở đường TẠO ĐƠN LẺ, không phải
+    // import hàng loạt.
+    var vieName = dto.PartName; var unit = dto.Unit; var vat = dto.VAT; var price = dto.Price; var flagInTST = dto.FlagInTST;
+    var tst = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
+    if (tst is not null)
+    {
+        vieName = tst.VieName; unit = tst.Unit; vat = tst.VAT; price = tst.TSTPrice; flagInTST = "1";
+    }
+    var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = vieName, EngName = dto.EngName, Unit = unit, Price = price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1",
         PartID = dto.PartID, PartTypeID = dto.PartTypeID, DealerCode = dto.DealerCode,
-        VAT = dto.VAT,
+        VAT = vat,
         // 🔴 #380 KHÔNG nhận `InventoryQuantity` từ client nữa: nguồn KHÔNG lưu cột này, nó luôn được
         //   TÍNH lúc đọc từ bảng tồn. Nhận từ DTO nghĩa là client tự khai tồn kho — build vẫn xanh,
         //   §12 vẫn đủ dấu vết, nhưng NGỮ NGHĨA SAI (đúng sự cố #312).
         TotalPrice = dto.TotalPrice, BalanceLocationId = dto.BalanceLocationId, FreqUsed = dto.FreqUsed,
         PriceEffect = dto.PriceEffect, TSTPrice = dto.TSTPrice, TSTPriceBefore = dto.TSTPriceBefore,
-        FlagInTST = dto.FlagInTST };
+        FlagInTST = flagInTST };
     db.ServiceParts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.PartCode, updated = false });
+    return Results.Ok(new { r.PartCode, updated = false, fromTST = tst is not null });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #938 `Ser_Mst_Part_Import` (LIVE, `BizCarSv.Service.cs:5843`) — NHẬP HÀNG LOẠT DANH MỤC PHỤ TÙNG, CHƯA CÓ =====
