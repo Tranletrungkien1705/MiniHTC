@@ -27163,6 +27163,20 @@ app.MapPost("/api/serservicetypes/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴 #964 `Ser_Mst_ServiceType_Delete` (LIVE, `BizCarSv.Master.cs:5524`) — XOÁ CỨNG, CHƯA CÓ =====
+// #906 đã vá GET/POST (khoá DealerCode) nhưng chưa có DELETE thật — chỉ có `toggle` (soft, FlagActive).
+// Nguồn: guard `checkExistServiceType` (phải tồn tại theo TypeID+DealerCode) rồi XOÁ CỨNG, không kiểm
+// tham chiếu (không kiểm có `Ser_ROServiceItems`/hạng mục nào đang dùng loại này) — giữ đúng, không tự thêm.
+app.MapDelete("/api/serservicetypes/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerServiceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    db.SerServiceTypes.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id,
+        noReferenceGuardNote = "Nguon Ser_Mst_ServiceType_Delete xoa CUNG khong kiem hang muc nao dang dung loai nay — giu dung, khong tu them rao chan." });
+}).RequireAuthorization();
+
 // ===== Master kho dịch vụ (SerStock — port 1:1 FrmStockCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/serstocks", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
