@@ -69802,6 +69802,73 @@ app.MapGet("/api/report/car-warranty-info-wh", async (AppDbContext db, ITenantCo
 // 🔴 `(tm.TradeMarkName +' - '+mdl.ModelName)` NULL nuốt cả cột (họ #673).
 // 📌 Mini: `GET /api/repairorders/status-list-with-parts` — sắp TRƯỚC rồi mới cắt (vá #415), áp ĐỦ HAI lớp
 // lọc ngày trên cùng một tập kết quả (vá bug clause-chết), chỉ trả RO có ít nhất 1 dòng phụ tùng.
+// ===== 🔴🔴🔴 #900 — `Ser_RO_GetStatusList02_WH_New20230220` (danh sách lệnh kho + CHE DỮ LIỆU chéo đại lý, LIVE — `WSCarSv.asmx.cs:28887`) — **1444/`2800 (51,6%)**
+// `BizCarSv.Service.RO.cs:840` (334 dòng), chạy trên `_dbWH`. Hàng đợi 6 — mục cuối thật sự cần port
+// (`GetClaimX_WH` song song xác nhận DEAD, không lệnh gọi nào).
+//
+// 🔴🔴🔴 **INJECTION NGAY TRONG CHÍNH CƠ CHẾ CHE DỮ LIỆU CHÉO ĐẠI LÝ — NGHIÊM TRỌNG NHẤT ĐÃ GẶP TRONG HỌ
+// BAKE**: câu K4 có màn che quyền riêng tư thật:
+//     `CASE tpro.DealerCode WHEN '@strCallerDealerCode' THEN ('LS-'+tpro.RONo) ELSE '******' END NormalizedRONo`
+//     `CASE tpro.DealerCode WHEN '@strCallerDealerCode' THEN tpro.Creator        ELSE '******' END NormalizedCreator`
+//   — Ý ĐỊNH: chỉ đại lý ĐÚNG LÀ NGƯỜI GỌI (`strCallerDealerCode`) mới thấy `RONo`/`Creator` thật của dòng
+//   thuộc đại lý KHÁC trong kết quả trả về; còn lại bị che `******`. **NHƯNG** `'@strCallerDealerCode'` được
+//   nhét vào SQL bằng `StringUtils.Replace` — GIÁ TRỊ NGƯỜI GỌI TỰ GỬI LÊN nằm NGUYÊN VĂN trong literal SQL,
+//   không qua tham số hoá (khác 12 điều kiện khác trong CÙNG hàm đều đi qua `SqlUtils.BuildClause*`). ⇒ Đây
+//   không chỉ là injection thường (họ #367/#886/#887/#892) — **kẻ tấn công kiểm soát `strCallerDealerCode`
+//   CÓ THỂ THOÁT CHUỖI VÀ VÔ HIỆU HOÁ CHÍNH LUẬT CHE DỮ LIỆU**, xem được `RONo`/`Creator` thật của MỌI đại lý
+//   khác thay vì chỉ đại lý mình. Injection thường làm lộ dữ liệu qua UNION/subquery; ở đây injection PHÁ VỠ
+//   MỘT KIỂM SOÁT RIÊNG TƯ ĐANG CÓ CHỦ ĐÍCH BẢO VỆ.
+// 🔴🔴🔴 **"500 LỆNH MỚI NHẤT" LÀ 500 BẤT KỲ — CA THỨ NĂM CỦA #415** trong họ `GetStatusList*`: `TOP 500
+// INTO #tbl_ro … ORDER BY ro.CheckInDate DESC` (vô nghĩa trên `SELECT…INTO`).
+// 🔴 **`strPlateNoParttern.Replace(...)` KHÔNG kiểm `null` trước, trong khi `strQuotationNoList` CÙNG HÀM
+// có kiểm** (`if (strQuotationNoList == null || ...)`) — bất đối xứng null-check giữa hai tham số cùng vai
+// trò lọc chuỗi, `strPlateNoParttern = null` từ WS caller sẽ ném `NullReferenceException`.
+// ⚪ Chuẩn hoá biển số bỏ khoảng trắng/dấu chấm/gạch ngang/gạch dưới ở CẢ tham số lẫn cột `ro.PlateNo` —
+// nhất quán hai chiều, không phải nửa vời.
+// 📌 Mini: `GET /api/repairorders/status-list-wh-masked` — che `RONo`/`Creator` bằng SO SÁNH C# (không bake
+// SQL), sắp TRƯỚC rồi mới cắt (vá #415), và không crash khi `plateNoPattern` rỗng/null.
+app.MapGet("/api/repairorders/status-list-wh-masked", async (AppDbContext db, ITenantContext t,
+    string callerDealerCode, string? dealerCodeList, string? checkInDate, string? actualDeliveryDate,
+    string? statusList, string? frameNoPattern, string? plateNoPattern, string? quotationNoList, string? cusNameLike) =>
+{
+    var dealerCodes = (dealerCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var statuses = (statusList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    // Vi FIX: khong crash khi rong/null (nguon KHONG kiem null truoc .Replace cho tham so nay).
+    var plateNorm = (plateNoPattern ?? "").Replace(" ", "").Replace(".", "").Replace("-", "").Replace("_", "");
+    var quotationNos = (quotationNoList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.Replace("BG-", "").Replace("LS-", "")).ToList();
+
+    var query = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (dealerCodes.Count > 0) query = query.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode));
+    if (statuses.Count > 0) query = query.Where(x => statuses.Contains(x.Status));
+    if (!string.IsNullOrWhiteSpace(frameNoPattern)) query = query.Where(x => x.Vin != null && x.Vin.Contains(frameNoPattern!));
+    if (plateNorm.Length > 0) query = query.Where(x => x.LicensePlate.Replace(" ", "").Replace(".", "").Replace("-", "").Replace("_", "").Contains(plateNorm));
+    if (quotationNos.Count > 0) query = query.Where(x => quotationNos.Contains(x.RONo));
+    if (!string.IsNullOrWhiteSpace(cusNameLike)) query = query.Where(x => x.CusName != null && x.CusName.Contains(cusNameLike!));
+    if (!string.IsNullOrWhiteSpace(checkInDate) && DateTime.TryParse(checkInDate, out var ciDate))
+        query = query.Where(x => x.CheckInDate != null && x.CheckInDate.Value.Date == ciDate.Date);
+    if (!string.IsNullOrWhiteSpace(actualDeliveryDate) && DateTime.TryParse(actualDeliveryDate, out var adDate))
+        query = query.Where(x => x.ActualDeliveryDate != null && x.ActualDeliveryDate.Value.Date == adDate.Date);
+
+    // Vi FIX #415: SAP TRUOC roi moi cat.
+    var items = await query.OrderByDescending(x => x.CheckInDate).Take(500).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = items.Count,
+        items = items.Select(x => new
+        {
+            x.DealerCode, x.CheckInDate, x.Status, x.LicensePlate, x.Vin,
+            // Vi FIX INJECTION: SO SANH BANG C# (khong bake SQL) — day la luat CHE DU LIEU CHEO DAI LY that.
+            normalizedRONo = x.DealerCode == callerDealerCode ? ("LS-" + x.RONo) : "******",
+            normalizedCreator = x.DealerCode == callerDealerCode ? x.Creator : "******",
+        }),
+        onlyLiveConfirmed900 = "#900: Ser_RO_GetStatusList02_WH_New20230220 — BizCarSv.Service.RO.cs:840, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:28887",
+        criticalMaskingBypassInjection = "INJECTION NGAY TRONG CO CHE CHE DU LIEU CHEO DAI LY — NGHIEM TRONG NHAT DA GAP TRONG HO BAKE: CASE tpro.DealerCode WHEN @strCallerDealerCode THEN ... ELSE ****** — gia tri strCallerDealerCode (WS caller TU GUI LEN) duoc StringUtils.Replace THANG vao SQL, KHONG tham so hoa (khac 12 dieu kien khac CUNG HAM deu dung SqlUtils.BuildClause). Ke tan cong kiem soat strCallerDealerCode CO THE THOAT CHUOI VA VO HIEU HOA chinh luat che du lieu, xem duoc RONo/Creator that cua MOI dai ly khac thay vi chi dai ly minh — injection o day PHA VO mot kiem soat rieng tu dang co chu dich, khong chi lo du lieu qua UNION nhu injection thuong",
+        top500BeforeSortFifthOccurrence = "TOP 500 CAT TRUOC KHI SAP — CA THU NAM cua #415 trong ho GetStatusList*",
+        asymmetricNullCheckBetweenSiblingParams = "strPlateNoParttern.Replace(...) KHONG kiem null truoc, trong khi strQuotationNoList CUNG HAM CO kiem (if strQuotationNoList == null ...) — bat doi xung null-check giua hai tham so cung vai tro loc chuoi, strPlateNoParttern = null se nem NullReferenceException",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/repairorders/status-list-with-parts", async (AppDbContext db, ITenantContext t,
     string? dealerCodeList, string? checkInDate, string? statusList, string? frameNoPattern,
     string? plateNoPattern, string? quotationNoList) =>
