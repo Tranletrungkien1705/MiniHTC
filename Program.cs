@@ -57521,6 +57521,71 @@ app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? 
 //   `dt_OrderPart_Detail.Rows[0]["DiscountRate"] = objValDiscount;` (`:4913`)
 //   ⇒ `ValDiscount` là cột **ma** do port đặt theo tên tham số. Giữ nguyên (xoá cột là đổi lược đồ
 //     ngoài phạm vi lượt này) nhưng ghi rõ để không ai đi tìm đường ghi cho nó nữa.
+// ===== 🔴🔴🔴 #890 — `Ser_Order_Part_UpdateTST`/`…UpdateTSTX` (NCC cập nhật đơn TST, LIVE cả hai cây) — **1434/`2800 (51,2%)**
+// `BizCarSv.A.02.OrderPart.cs:4063` (vỏ) + `…UpdateTSTX:3544` (519 dòng, thân thật). Hàng đợi **29**.
+// ⚠️ Khác `Ser_Order_Part_SaveTST` (:1129) — hàm đó chỉ gọi `SaveX` (ĐÃ port ở #240/#234, cùng thân với
+// `Ser_Order_Part_Save`) ⇒ KHÔNG cần port riêng. `UpdateTSTX` là thân RIÊNG của phía NCC, chưa từng đọc.
+//
+// ⛔ **Tự đính chính trong lúc đọc**: thoạt tiên nghi `OrderPartStatusDtl` bị ép về `Pending` trên MỌI dòng
+// mỗi lần NCC cập nhật (`drScan["OrderPartStatusDtl"] = TConst.OrderPartStatus.Pending`, không điều kiện) —
+// đọc tiếp xuống khối `UPDATE` mới thấy **`zzB_Update_Ser_Order_PartDtl_ClauseSet_zzE` KHÔNG hề nhắc
+// `OrderPartStatusDtl`** trong SET clause ⇒ giá trị được tính, được đưa vào bảng tạm `#input_...` qua
+// `MyBuildDBDT_Common` (cả ba CSDL), nhưng **KHÔNG BAO GIỜ chạm bảng thật** — chỉ là tính toán chết, không
+// phải ghi đè trạng thái dòng như tôi nghi lúc đầu (#362: đọc hết vùng ảnh hưởng trước khi kết luận).
+// 🔴🔴 **KHÔNG kiểm miền giá trị của `strSupplierStatus`** trước khi ghi — guard duy nhất là
+// `Ser_Order_Part_CheckTST(..., strOrderPartStatusListToCheck="", strSupplierStatusListToCheck="")` (chỉ
+// xác nhận TSTID TỒN TẠI, không hạn chế TRẠNG THÁI HIỆN TẠI lẫn giá trị MỚI) ⇒ NCC gửi bất kỳ chuỗi nào
+// cũng được ghi thẳng vào `SupplierStatus`. **Ca thứ hai của họ #866** (`SerStockOutOrderStatusUpdate`),
+// nay ở luồng đơn đặt PT phía NCC.
+// 🔴 **Dọn bảng tạm KHÔNG ĐỐI XỨNG**: `--drop table #input_Ser_Order_Part;` bị **comment**, còn ngay dòng
+// dưới `drop table #input_Ser_Order_PartDtl;` **chạy thật** — cùng khối "Clear For Debug", một bảng dọn một
+// bảng không, khác hẳn kiểu "cả hai đều comment có chủ đích" đã gặp ở #888.
+// ⚪ Ghi cả **Main + WH luôn luôn**, **Dealer có điều kiện** (`if (!bIsWSMain)`) — đúng khuôn routing đã biết.
+// 📌 Mini: `POST /api/orderparts/{no}/update-tst` — thêm **kiểm miền giá trị** `SupplierStatus` (vá #866),
+// cập nhật đúng các cột thật (không đụng `OrderPartStatusDtl` — giữ hành vi ĐÃ ĐO, không phải hành vi tôi
+// nghi ban đầu).
+app.MapPost("/api/orderparts/{no}/update-tst", async (string no, OrderPartUpdateTstDto dto,
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var op = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
+    if (op is null) return Results.NotFound(new { error = "Khong tim thay don dat PT." });
+    // Kiem MIEN GIA TRI SupplierStatus (nguon KHONG kiem — va #866 lan hai).
+    var validStatuses = new[] { "1", "2", "4", "7" };
+    if (!string.IsNullOrWhiteSpace(dto.SupplierStatus) && !validStatuses.Contains(dto.SupplierStatus))
+        return Results.BadRequest(new { error = "SupplierStatus khong hop le.", allowed = validStatuses, got = dto.SupplierStatus });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.SupplierStatus)) op.SupplierStatus = dto.SupplierStatus;
+    if (dto.DeliveryFormCode is not null) op.DeliveryFormCode = dto.DeliveryFormCode;
+    if (dto.SupplierLUDTime is not null) op.SupplierLUDTime = dto.SupplierLUDTime;
+    op.LogLUDateTime = now; op.LogLUBy = who;
+
+    var updated = 0;
+    if (dto.Lines is { Count: > 0 })
+    {
+        var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == op.Id).ToListAsync();
+        foreach (var ld in dto.Lines)
+        {
+            var line = lines.FirstOrDefault(x => x.PartCode == ld.PartCode);
+            if (line is null) continue;
+            line.QtyAppr = ld.QtyAppr; line.UPBeforeDc = ld.UPBeforeDc; line.DiscountRate = ld.DiscountRate;
+            line.VAT = ld.VAT;
+            // Cong thuc dan xuat NHU nguon (TPBeforeDc/UPAfterDc/TPAfterDc/ValVAT/TPAfterVAT do client TST gui,
+            // nguon KHONG tu tinh lai o ham nay — giu dung, khong tu che cong thuc).
+            updated++;
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        op.OrderPartNo, op.SupplierStatus, op.DeliveryFormCode, op.SupplierLUDTime, linesUpdated = updated,
+        onlyExistsOnBoth890 = "#890: Ser_Order_Part_UpdateTST/UpdateTSTX — BizCarSv.A.02.OrderPart.cs:4063/:3544, LIVE ca hai cay. Khac Ser_Order_Part_SaveTST (chi goi SaveX da port o #240/#234)",
+        selfCorrectedOrderPartStatusDtl = "TU DINH CHINH: nghi OrderPartStatusDtl bi ep ve Pending moi dong — doc tiep xuong SET clause moi thay KHONG he nhac OrderPartStatusDtl => gia tri duoc tinh, dua vao bang tam nhung KHONG BAO GIO cham bang that. Chi la tinh toan chet, khong phai ghi de trang thai dong",
+        noValueDomainCheckOnSupplierStatus = "KHONG KIEM MIEN GIA TRI SupplierStatus truoc khi ghi — guard duy nhat chi xac nhan TSTID TON TAI, khong han che gia tri MOI. CA THU HAI cua ho #866 (SerStockOutOrderStatusUpdate), nay o luong don dat PT phia NCC",
+        asymmetricTempTableCleanup = "DON BANG TAM KHONG DOI XUNG: --drop table #input_Ser_Order_Part bi comment, drop table #input_Ser_Order_PartDtl chay that — cung mot khoi Clear For Debug, khac han kieu ca hai deu comment co chu dich da gap o #888",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
@@ -75766,6 +75831,7 @@ record OrderPartLineStatusDto(string? ToStatus);
 // #240: `OrderPartNo` (trống = tạo mới) + `FlagIsDelete` ("Y" = xoá) — nguồn dùng CHUNG một hàm
 //   `Ser_Order_Part_Save` cho cả tạo/sửa/xoá.
 // #389 §12: DTO man SUA don dat phu tung. LUU Y ngu nghia RONG khac nhau tung cot (xem endpoint).
+record OrderPartUpdateTstDto(string? SupplierStatus, string? DeliveryFormCode, DateTime? SupplierLUDTime, List<OrderPartLineDto>? Lines = null);
 record OrderPartUpdateDto(string? SupplierID, string? OrderNoUser, string? Status,
     DateTime? ReceivePartDate, DateTime? ApprovedDate, DateTime? SendDate,
     string? UserCreate, string? UserApproved, string? TypeOrder,
