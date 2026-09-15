@@ -15401,7 +15401,8 @@ app.MapGet("/api/sermstlocations", async (AppDbContext db, ITenantContext t,
         .Where(x => sn.Length == 0 || x.StockNo == sn)
         .Where(x => all == true || x.IsActive == "1")
         .OrderBy(x => x.LocationCode)
-        .Select(x => new { x.Id, x.LocationID, x.LocationCode, x.LocationName, x.StockNo, x.DealerCode, x.IsActive })
+        .Select(x => new { x.Id, x.LocationID, x.LocationCode, x.LocationName, x.StockNo, x.DealerCode, x.IsActive,
+            x.LocationHight, x.LocationSurface, x.LocationType })   // #937
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -15418,9 +15419,12 @@ app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext d
         OrgId = t.OrgId, LocationCode = lc, LocationName = dto.LocationName,
         StockNo = dto.StockNo, DealerCode = dl, IsActive = "1",
         LocationID = (dto.LocationID ?? lc),
+        // #937 §12: Ser_Mst_Location_Create ghi ca ba cot nay, port cu bo sot.
+        LocationHight = dto.LocationHight, LocationSurface = dto.LocationSurface, LocationType = dto.LocationType,
     };
     db.SerMstLocations.Add(row); await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive });
+    return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive,
+        row.LocationHight, row.LocationSurface, row.LocationType });
 }).RequireAuthorization();
 
 app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMstLocationDto dto,
@@ -15432,8 +15436,47 @@ app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMst
     if (!string.IsNullOrWhiteSpace(dto.LocationName)) row.LocationName = dto.LocationName;
     if (!string.IsNullOrWhiteSpace(dto.StockNo)) row.StockNo = dto.StockNo;
     if (!string.IsNullOrWhiteSpace(dto.IsActive)) row.IsActive = dto.IsActive!;
+    // #937 §12: Ser_Mst_Location_Update ghi ca ba cot nay (moi cot dung dung bien cua no, KHONG co bug), port cu bo sot.
+    if (dto.LocationHight is not null) row.LocationHight = dto.LocationHight;
+    if (dto.LocationSurface is not null) row.LocationSurface = dto.LocationSurface;
+    if (dto.LocationType is not null) row.LocationType = dto.LocationType;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive });
+    return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive,
+        row.LocationHight, row.LocationSurface, row.LocationType });
+}).RequireAuthorization();
+
+// ===== 🔴🔴 #937b `Ser_Mst_Location_Import` (LIVE, `BizCarSv.Master.cs:7371`) — NHẬP HÀNG LOẠT, CHƯA CÓ =====
+// Nguồn nhận DataSet Excel (`LOCATIONCODE`/`LOCATIONNAME`/`LOCATIONHIGHT`/`LOCATIONSURFACE`/`LOCATIONTYPE`/
+// `STOCKNO`), upsert theo `(LocationCode, DealerCode)`.
+// 🔴🔴 **BUG COPY-PASTE CỦA NGUỒN — CHỈ Ở `_Import`, KHÔNG có ở `_Create`/`_Update` trần**: cả ba nhánh
+// `if (!StringUtils.IsEmpty(strLocationHight))` đều dùng CHUNG biến `strLocationHight` để quyết định có ghi
+// `LOCATIONHIGHT` **và** `LOCATIONSURFACE` **và** `LOCATIONTYPE` hay không — hai cột sau lẽ ra phải tự kiểm tra
+// biến của CHÍNH NÓ (`strLocationSuface`/`strLocationType`). Hậu quả: nếu dòng Excel có `LOCATIONHIGHT` rỗng
+// nhưng `LOCATIONSURFACE`/`LOCATIONTYPE` có giá trị, CẢ HAI vẫn bị ghi `NULL` theo nhánh else của Height.
+// Áp luật "port dòng ACTIVE": giữ NGUYÊN lỗi này (không tự sửa), ghi rõ trong response để không ai tưởng nhầm.
+app.MapPost("/api/sermstlocations/import", async (List<SerMstLocationImportRowDto> rows, string? dealerCode,
+    AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var saved = new List<object>();
+    foreach (var row in rows)
+    {
+        var lc = (row.LocationCode ?? "").Trim().ToUpperInvariant();
+        if (lc.Length == 0) continue;
+        var heightEmpty = string.IsNullOrEmpty(row.LocationHight);   // biến DUY NHẤT quyết định cả ba cột — đúng bug nguồn
+        var r = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == lc && x.DealerCode == dl);
+        if (r is null) { r = new SerMstLocation { OrgId = t.OrgId, LocationCode = lc, DealerCode = dl, LocationID = lc }; db.SerMstLocations.Add(r); }
+        r.LocationName = row.LocationName;
+        r.LocationHight = heightEmpty ? null : row.LocationHight;
+        r.LocationSurface = heightEmpty ? null : row.LocationSurface;      // bug nguồn: gate theo Height, không theo Surface
+        r.LocationType = heightEmpty ? null : row.LocationType;            // bug nguồn: gate theo Height, không theo Type
+        r.StockNo = string.IsNullOrEmpty(row.StockNo) ? null : row.StockNo;
+        r.IsActive = "1";
+        saved.Add(new { r.LocationCode, r.LocationHight, r.LocationSurface, r.LocationType });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { savedCount = saved.Count, saved,
+        sourceCopyPasteBug = "Ser_Mst_Location_Import (BizCarSv.Master.cs:7371): ca ba nhanh if (!IsEmpty(strLocationHight)) deu dung CHUNG bien Height, khong tu kiem bien cua chinh no (Surface/Type) — giu nguyen dung 'port dong ACTIVE', KHONG tu sua" });
 }).RequireAuthorization();
 
 app.MapDelete("/api/sermstlocations/{locationId}", async (string locationId, AppDbContext db,
@@ -77752,7 +77795,9 @@ record RoAttachmentFlagHmcLineDto(long Id, string? FlagHMC);
 record RoAttachmentFlagHmcDto(List<RoAttachmentFlagHmcLineDto>? Items);
 record RoAppointmentDto(string? AppId, bool? AllowOverwrite);
 record RoWarrantyPhotoTypeDto(string? ROWPTCode, string? ROWPTName, string? FlagActive);
-record SerMstLocationDto(string? LocationID, string? LocationCode, string? LocationName, string? StockNo, string? DealerCode, string? IsActive);
+record SerMstLocationDto(string? LocationID, string? LocationCode, string? LocationName, string? StockNo, string? DealerCode, string? IsActive,
+    string? LocationHight = null, string? LocationSurface = null, string? LocationType = null);   // #937
+record SerMstLocationImportRowDto(string? LocationCode, string? LocationName, string? LocationHight, string? LocationSurface, string? LocationType, string? StockNo);   // #937
 record RoMaintanceSettingDto(long? ROMSID, decimal? Km, string? Maintances, string? FlagActive);
 record RoMaintanceSettingSaveDto(string? DealerCode, List<RoMaintanceSettingDto>? Items);
 record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);

@@ -2938,6 +2938,10 @@ public static class Seeder
                 "ALTER TABLE public.\"Campaigns\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"OrderComplainAttachments\" ADD COLUMN IF NOT EXISTS \"ImagePath\" text NULL",
+                // #937: Ser_Mst_Location_Create/_Update ghi ba cot nay, port cu (#848) bo sot ca ba.
+                "ALTER TABLE public.\"SerMstLocations\" ADD COLUMN IF NOT EXISTS \"LocationHight\" text NULL",
+                "ALTER TABLE public.\"SerMstLocations\" ADD COLUMN IF NOT EXISTS \"LocationSurface\" text NULL",
+                "ALTER TABLE public.\"SerMstLocations\" ADD COLUMN IF NOT EXISTS \"LocationType\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

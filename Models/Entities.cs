@@ -15103,6 +15103,12 @@ public sealed class SerMstLocation
     public string? LocationName { get; set; }
     public string? StockNo { get; set; }
     public string IsActive { get; set; } = "1";
+
+    // ===== 🔴 #937 §12 companion-scan (#400): `Ser_Mst_Location_Create`/`_Update` ghi ba cột này,
+    // port cũ (#848) bỏ sót cả ba — thêm cho khớp Create/Update nguồn. =====
+    public string? LocationHight { get; set; }
+    public string? LocationSurface { get; set; }
+    public string? LocationType { get; set; }
 }
 
 public sealed class CusServiceFactor
