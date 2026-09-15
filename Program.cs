@@ -61683,6 +61683,43 @@ app.MapPost("/api/reports/partinstance-backfill", async (AppDbContext db, ITenan
         sourcePrecedent = "MigratePartInstance/SerImpPartInstance (StockOut.cs:4602) — nguon tu viet job bu du lieu tuong tu, xac nhan day la NO can bu chu khong phai chi ap dung tu nay ve sau" });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #946 `SerImpPartInstance` (LIVE, `BizCarSv.Inventory.Stock.cs:1038`) — KÊNH THỨ BA GHI TAY VÀO LÔ, CHƯA CÓ =====
+// ⚠️ **ĐÍNH CHÍNH #936**: chuỗi `"SerImpPartInstance"` trong comment #936 chỉ là NHÃN LOG nội bộ của
+// `MigratePartInstance` (`StockOut.cs:4602`) — nhưng có một `[WebMethod]` THẬT tên `SerImpPartInstance`
+// (`Inventory.Stock.cs:1038`) HOÀN TOÀN KHÁC, LIVE riêng (`WSCarSv.asmx.cs:16386`), chưa từng động tới.
+// Nguồn nhận DataSet Excel/đối tác gửi bảng `Ser_Inv_StockInDetail` — GHI TAY TRỰC TIẾP một lô tồn kho,
+// KHÔNG qua luồng "tạo phiếu Nhập rồi Tiến hành/Kết thúc" như #928. Guard: `PartCode` phải ACTIVE trong
+// `Ser_Mst_Part` theo ĐÚNG đại lý (`CheckExistPart` → `Ser_Part_NotFound`); `LocationCode` phải ACTIVE trong
+// `Ser_Mst_Location` theo ĐÚNG đại lý (`CheckExistLocation` → `Ser_Location_NotFound`); `Quantity` không âm
+// (`Ser_Inv_PartInstance_NegativeQuantity`). Ghi thẳng một dòng `Ser_Inv_PartInstance` (RefType=INSTOCK).
+app.MapPost("/api/partinstances/import", async (List<PartInstanceImportRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    var saved = new List<object>();
+    var errors = new List<object>();
+    foreach (var row in rows)
+    {
+        var dl = (row.DealerCode ?? "").Trim().ToUpperInvariant();
+        var partCode = (row.PartCode ?? "").Trim().ToUpperInvariant();
+        var locCode = (row.LocationCode ?? "").Trim().ToUpperInvariant();
+        if (row.Quantity < 0) { errors.Add(new { row.PartCode, error = "Ser_Inv_PartInstance_NegativeQuantity" }); continue; }
+        var partOk = await db.ServiceParts.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == partCode && x.DealerCode == dl && x.FlagActive == "1");
+        if (!partOk) { errors.Add(new { row.PartCode, error = "Ser_Part_NotFound" }); continue; }
+        var locOk = await db.SerMstLocations.AnyAsync(x => x.OrgId == t.OrgId && x.LocationCode == locCode && x.DealerCode == dl && x.IsActive == "1");
+        if (!locOk) { errors.Add(new { row.PartCode, row.LocationCode, error = "Ser_Location_NotFound" }); continue; }
+        var r = new PartInstance
+        {
+            OrgId = t.OrgId, DealerCode = dl, PartCode = partCode, LocationID = locCode,
+            StockInNo = row.StockInNo, Status = row.Status, Quantity = row.Quantity, DateIn = row.DateIn,
+            SIPrice = row.SIPrice, SOPrice = row.SOPrice, SIVAT = row.SIVAT,
+        };
+        db.PartInstances.Add(r);
+        saved.Add(new { r.PartCode, r.LocationID, r.Quantity, r.StockInNo });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { savedCount = saved.Count, errorCount = errors.Count, saved, errors,
+        note = "Ghi tay truc tiep mot lo ton kho (Ser_Inv_StockInDetail -> Ser_Inv_PartInstance), khac han luong tao phieu Nhap roi Tien hanh/Ket thuc cua #928." });
+}).RequireAuthorization();
+
 // ===== 🏆🔴 #919 `SerStockOutStatusUpdateToFinished02` — XUẤT ĐIỀU CHUYỂN KHO (LIVE, `StockOut.cs:6475`) =====
 // "Xuất điều chuyển kho: 1. xuất kho 2. nhập kho" (nguyên văn comment nguồn). Khi kết thúc phiếu xuất LOẠI
 // điều chuyển, nguồn tự động gọi `ProcessFinishStockInAdj` (`Stock.cs:3116`) tạo NGAY một phiếu NHẬP Ở
@@ -78053,6 +78090,8 @@ record RoWarrantyPhotoTypeDto(string? ROWPTCode, string? ROWPTName, string? Flag
 record SerMstLocationDto(string? LocationID, string? LocationCode, string? LocationName, string? StockNo, string? DealerCode, string? IsActive,
     string? LocationHight = null, string? LocationSurface = null, string? LocationType = null);   // #937
 record SerMstLocationImportRowDto(string? LocationCode, string? LocationName, string? LocationHight, string? LocationSurface, string? LocationType, string? StockNo);   // #937
+record PartInstanceImportRowDto(string? DealerCode, string? PartCode, string? LocationCode, string? StockInNo, string? Status,
+    decimal Quantity, DateTime? DateIn, decimal? SIPrice, decimal? SOPrice, decimal? SIVAT);   // #946
 record RoMaintanceSettingDto(long? ROMSID, decimal? Km, string? Maintances, string? FlagActive);
 record RoMaintanceSettingSaveDto(string? DealerCode, List<RoMaintanceSettingDto>? Items);
 record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);
