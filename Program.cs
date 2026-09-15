@@ -15646,6 +15646,64 @@ app.MapPost("/api/servicestockouts/{no}/confirm", async (string no, AppDbContext
 }).RequireAuthorization();
 
 // ===== Nhập kho phụ tùng dịch vụ (ServiceStockIn header-detail — port 1:1 FrmSerInventoryAccStockIn, TCMotor) =====
+// ===== 🔴🔴🔴 #892 — `Ser_Mst_Part_GetForSupplierPaymentSave` (chọn dòng nhập kho để lập phiếu chi trả NCC) — **1436/`2800 (51,4%)**
+// `BizCarSv.Inventory.StockOut.cs:15064` (181 dòng), LIVE. **3B khớp cả hai cây**. Hàng đợi **29**.
+//
+// 🔴🔴🔴 **`si.DealerCode = '@strDealerCode'` — BAKE QUA `StringUtils.Replace`, KHÔNG THAM SỐ HOÁ**:
+//   trong khi `strPartCodeList`/`strStockInNoList` đều đi đúng `SqlUtils.BuildClause` (tham số hoá), riêng
+//   `strDealerCode` — chỉ qua `StandardizeParam` (không lọc ký tự) — được nhét vào NGOẶC ĐƠN literal SQL.
+//   Cùng họ #886/#887/#889 (một tham số bị bỏ sót khỏi tham số hoá trong khi các tham số anh em đều đúng).
+// 🔴🔴🔴 **TỒN KHO BỊ NHÂN BẢN THEO TỪNG LÔ NHẬP — `GROUP BY` CHỨA CỘT KHÔNG NẰM TRONG ĐIỀU KIỆN JOIN**:
+//     `join Ser_Inv_StockBalance sb on sb.DealerCode = t.DealerCode and sb.PartID = t.PartID`
+//     `group by sb.PartID, sb.DealerCode, **t.StockInID**` ⟵ **StockInID không xuất hiện trong ON**
+//   ⇒ nếu một phụ tùng từng nhập qua **N lô** (N `StockInID` khác nhau), `SUM(sb.InStockQuantity)` — vốn là
+//   **tổng tồn kho DUY NHẤT của phụ tùng đó** — bị **lặp lại N LẦN**, mỗi lần gắn với một lô nhập khác nhau.
+//   ⇒ Màn chọn dòng để lập phiếu chi trả **hiển thị "tồn kho" bị thổi phồng gấp N lần** cho phụ tùng nhập
+//   nhiều lô, dù số tồn thật không đổi. Khác #872 (subquery thiếu tương quan làm MẤT dòng) — đây là NHÂN dòng
+//   giữ nguyên giá trị (biến thể mới của họ #410/#414: `GROUP BY` một cột không tham gia `ON` = phóng đại số liệu tổng hợp, không phải mất dòng).
+// ⚪ `PriceAfterVAT = Price + Price*(VAT/100)` — công thức VAT ĐÚNG (không dính `/100` một mình như #860).
+// ⚪ `left join Ser_Mst_Location` — catalog LEFT JOIN, không mất dòng (#410 tránh đúng).
+// 📌 Mini: `GET /api/servicestockins/for-supplier-payment` — tham số hoá `dealerCode`, và vì MiniHTC lưu
+// tồn kho MỘT giá trị/phụ tùng (không tách theo lô nhập) nên KHÔNG dính bug nhân bản — ghi rõ để không ai
+// hiểu nhầm là "đã sửa engine tồn kho theo lô", chỉ là mô hình dữ liệu khác từ đầu.
+app.MapGet("/api/servicestockins/for-supplier-payment", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCodeList, string? stockInNoList) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Can dealerCode." });
+    var partCodes = (partCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var stockInNos = (stockInNoList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    var heads = await db.ServiceStockIns.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode
+        && (stockInNos.Count == 0 || stockInNos.Contains(x.StockInNo))).ToListAsync();
+    var headIds = heads.Select(x => x.Id).ToList();
+    var lines = await db.ServiceStockInLines.Where(x => x.OrgId == t.OrgId && headIds.Contains(x.ServiceStockInId)
+        && (partCodes.Count == 0 || partCodes.Contains(x.PartCode))).ToListAsync();
+    var partCodesInLines = lines.Select(x => x.PartCode).Distinct().ToList();
+    var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && partCodesInLines.Contains(x.PartCode)).ToListAsync();
+
+    var items = lines.Select(l =>
+    {
+        var head = heads.First(h => h.Id == l.ServiceStockInId);
+        var part = parts.FirstOrDefault(p => p.PartCode == l.PartCode);
+        return new
+        {
+            dealerCode = head.DealerCode, l.PartCode, partName = part?.PartName, unit = part?.Unit,
+            head.StockInNo, l.Price, l.Vat,
+            priceAfterVat = l.Price + l.Price * (l.Vat / 100m),
+            qtyInventory = part?.Quantity ?? 0,   // #892: MOT gia tri/phu tung — KHONG nhan ban theo lo (khac loi nguon)
+            locationCode = (string?)null,          // Mini chua mo hinh hoa vi tri XUAT rieng cho man nay
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        onlyExistsOnBoth892 = "#892: Ser_Mst_Part_GetForSupplierPaymentSave — BizCarSv.Inventory.StockOut.cs:15064, LIVE ca hai cay. Hang doi 29",
+        dealerCodeInjection = "si.DealerCode = @strDealerCode BAKE qua StringUtils.Replace, KHONG tham so hoa — cung ho #886/#887/#889, trong khi PartCodeList/StockInNoList deu dung SqlUtils.BuildClause",
+        stockQtyMultipliedPerBatch = "TON KHO BI NHAN BAN THEO TUNG LO NHAP: group by sb.PartID, sb.DealerCode, t.StockInID nhung StockInID KHONG nam trong dieu kien JOIN (ON chi co DealerCode+PartID) => SUM(InStockQuantity) — von la TONG DUY NHAT cua phu tung — bi LAP LAI N LAN neu phu tung nhap qua N lo khac nhau. Bien the moi cua ho #410/#414: GROUP BY mot cot khong tham gia ON = PHONG DAI so lieu tong hop (khong phai mat dong nhu #872)",
+        miniSidestepsBugByDataModel = "Mini luu ton kho MOT gia tri/phu tung (ServicePart.Quantity), khong tach theo StockInID, nen KHONG dinh bug nhan ban — day la khac biet MO HINH DU LIEU tu dau, khong phai da sua engine tinh ton kho theo lo",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/servicestockins", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
     var query = db.ServiceStockIns.Where(x => x.OrgId == t.OrgId);
