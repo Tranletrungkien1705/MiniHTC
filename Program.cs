@@ -63584,6 +63584,31 @@ app.MapPost("/api/repairorders/{no}/status-raw", async (string no, RoStatusRawDt
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #960 `Ser_RO_CreateInvoice` (LIVE, `BizCarSv.Service01.cs:8337`) — CỔNG RIÊNG, CHỈ SET `Repaired` =====
+// Phát hiện qua #408 (liệt kê trọn `Service01.cs`, đếm 0-hit). Thân hàm CHỈ đọc `top 1 *` từ `Ser_RO` theo
+//   ROID rồi ghi `Status = TERP.Constants.Ser_RO_Stage.Repaired` ("RPRD") — KHÔNG guard (`#region Check
+//   Input Detail` rỗng, `Raise` = 0) — giống hệt bản chất "cổng ghi đè thô" của `#942`, nhưng CỐ ĐỊNH đúng
+//   một giá trị đích (`Repaired`) thay vì nhận `strStatus` tuỳ ý từ client. Xác nhận LIVE qua
+//   `_biz.Ser_RO_CreateInvoice(` ở `HTCWSCarSv/WSCarSv.asmx.cs:11227`, có DbService wrapper
+//   `SerROService.cs:1001` (không thấy caller WinForm — cổng gateway đối tác, cùng khuôn #956/#957).
+// ⚪ Tên hàm "CreateInvoice" GÂY HIỂU LẦM: không có logic tạo hoá đơn nào trong thân — chỉ đổi trạng thái.
+//   Giữ tên endpoint theo Ý NGHĨA THẬT (chuyển RO sang "đã sửa xong"), ghi rõ tên hàm nguồn trong response.
+app.MapPost("/api/repairorders/{no}/mark-repaired", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var oldStatus = r.Status;
+    r.Status = "Repaired";
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        r.RONo, oldStatus, newStatus = r.Status,
+        sourceFunctionName = "Ser_RO_CreateInvoice",
+        misleadingNameNote = "Ten ham nguon la CreateInvoice nhung than ham KHONG tao hoa don nao — chi ghi Status='RPRD' (Repaired), khong guard, giong ban chat cong tho cua #942 nhung co dinh mot dich duy nhat.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
