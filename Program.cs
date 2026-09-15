@@ -16597,6 +16597,38 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
     return Results.Ok(new { r.FrameNo, updated = false });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #948 companion-scan (#403/#947 mở rộng): `ProcessSaveCar20220926` (helper nội bộ của
+// `Ser_CustomerUpdateCarCreate20220926`, LIVE — `Customer.cs:6931`, "hàm mang dấu ngày không `_New`" #798-note)
+// — CHƯA CÓ đường đăng ký xe MỚI kèm guard chặn trùng biển số =====
+// KHÁC `POST /api/servicecars` ở trên (upsert theo `FrameNo`/VIN, không chặn trùng biển số ở đại lý khác xe):
+// nguồn ở đây CHỈ CHO TẠO MỚI (không sửa), và guard `CheckExistPlateNo` **CHẶN** nếu biển số ĐÃ tồn tại
+// (đang Active) trong CÙNG đại lý — ngược hẳn với semantics upsert. Chỉ ghi các cột KHÁC RỖNG (giữ DBNull
+// cho cột rỗng, không XOÁ vì đây là tạo mới).
+app.MapPost("/api/servicecars/register-new", async (ServiceCarDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
+    if (!string.IsNullOrWhiteSpace(plate))
+    {
+        var dup = await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate && x.DealerCode == dl && x.FlagActive == "1");
+        if (dup) return Results.Conflict(new { error = "Ser_PlateNo_Exist", plateNo = plate, dealerCode = dl });
+    }
+    var r = new ServiceCar
+    {
+        OrgId = t.OrgId, FrameNo = dto.FrameNo, DealerCode = dl, CusID = dto.CusID,
+        ModelCode = dto.ModelCode, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo,
+        ProductYear = dto.ProductYear, ColorCode = dto.ColorCode, WarrantyRegistrationDate = dto.WarrantyRegistrationDate?.Date,
+        CurrentKm = dto.CurrentKm, TradeMark = dto.TradeMark, SalesCarID = dto.SalesCarID,
+        InsStartDate = dto.InsStartDate, InsNo = dto.InsNo, InsFinishedDate = dto.InsFinishedDate,
+        InsContractNo = dto.InsContractNo, SerialNo = dto.SerialNo, BatteryNo = dto.BatteryNo,
+        Note = dto.Note, WarrantyExpiresDate = dto.WarrantyExpiresDate, CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate,
+        WarrantyKM = dto.WarrantyKM, PlateColorCode = dto.PlateColorCode, FlagActive = "1",
+    };
+    db.ServiceCars.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.FrameNo, r.PlateNo, r.CusID,
+        note = "Nguon: ProcessSaveCar20220926 (helper cua Ser_CustomerUpdateCarCreate20220926) — CHI TAO MOI, chan trung bien so trong dai ly, khac upsert cua /api/servicecars." });
+}).RequireAuthorization();
+
 // 🔴 GÁN MÃ XE HỘI VIÊN (Loyalty) cho xe dịch vụ — port `CarSv_SerCarUpdate_MemberCarID`
 // (`DMS-Loyalty/DMS/TERP.BizDMS/Biz.zzzz.iNOS.CarSv.cs:2630-2770`, hệ CHỈ có trên máy 150).
 // ===== 🔴🔴🔴 #745 `CarSv_SerCarUpdate_KeyVIN` / `_KeyPlateNo` — API NGOÀI SỬA XE + CHỦ XE =====
