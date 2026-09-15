@@ -22616,6 +22616,23 @@ app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext d
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #965 `Ser_Mst_TradeMark_Delete` (LIVE, `BizCarSv.Master.cs:1778`) — XOÁ CỨNG CÓ GUARD THAM CHIẾU
+//   THẬT, CHƯA CÓ =====
+// Khác #963/#964 (PartType/ServiceType — Delete KHÔNG kiểm tham chiếu): TradeMark có guard THẬT
+// `CheckTrademarkForDelete` — chặn xoá nếu còn `Ser_MST_Model` (dòng xe) nào đang gán TradeMarkCode này
+// (cùng DealerCode). Chỉ có `toggle` (soft) từ trước, chưa có xoá cứng thật.
+app.MapDelete("/api/servicetrademarks/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    var inUse = await db.ServiceModels.AnyAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == row.TradeMarkCode && x.DealerCode == row.DealerCode);
+    if (inUse) return Results.Conflict(new { error = "Ser_Mst_TradeMark_Delete_UserAnother",
+        message = "Còn dòng xe (Ser_MST_Model) đang dùng thương hiệu này ở cùng đại lý — không xoá được." });
+    db.ServiceTradeMarks.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
 // ===== Khách đến xem xe (CustomerVisit — port 1:1 FrmCusVisit, 2010.HTC/Sales/RetailContract) =====
 app.MapGet("/api/customervisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model, DateTime? from, DateTime? to) =>
 {
