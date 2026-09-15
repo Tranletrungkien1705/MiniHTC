@@ -60592,7 +60592,7 @@ app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? 
     var q = db.PartPrices.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(part)) q = q.Where(p => p.PartCode.Contains(part.ToUpper()));
     var items = await q.OrderBy(p => p.PartCode).ThenByDescending(p => p.EffectiveDate).Take(1000).Select(p => new
-    { p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive }).ToListAsync();   // #295 §12
+    { p.Id, p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive }).ToListAsync();   // #295 §12
     object? applicable = null;
     if (!string.IsNullOrWhiteSpace(part) && DateTime.TryParse(onDate, out var od))
         applicable = items.Where(x => x.PartCode == part.Trim().ToUpperInvariant() && x.EffectiveDate <= od)
@@ -60621,6 +60621,27 @@ app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenant
     p.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate });
+}).RequireAuthorization();
+
+// ===== 🔴 #934 `Ser_Mst_PartPrice_Delete` (LIVE, `BizCarSv.Inventory.cs:1507`) — CHƯA TỪNG có đường xoá =====
+// Nguồn xoá MỀM (`IsActive` → Inactive, không xoá cứng) theo `PartPriceID`, với HAI guard:
+//   1) Mốc giá phải tồn tại và đang Active (`Ser_PartPrice_NotActive`).
+//   2) CHẶN xoá nếu phụ tùng tương ứng đang `FlagInTST = Active` **và** `IsActive = Active` trong `Ser_Mst_Part`
+//      (`Ser_Mst_Part_PartCode_Is_FlagInTST`) — mốc giá của phụ tùng đang trong danh mục TST không được xoá.
+// Mini không có `PartPriceID` kỹ thuật lộ ra client (khoá tự nhiên `PartCode`+`EffectiveDate`) — dùng `Id` (vừa
+// thêm vào GET ở trên) làm khoá route, giữ đúng cả hai guard.
+app.MapDelete("/api/partprices/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (p is null || p.IsActive != "1")
+        return Results.BadRequest(new { error = "Ser_PartPrice_NotActive" });
+    var part = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == p.PartCode);
+    if (part is not null && part.FlagInTST == "1" && part.FlagActive == "1")
+        return Results.BadRequest(new { error = "Ser_Mst_Part_PartCode_Is_FlagInTST" });
+    p.IsActive = "0";
+    p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.PartCode, p.EffectiveDate, p.IsActive });
 }).RequireAuthorization();
 
 // ===== Phiếu xuất kho phụ tùng (Ser_Inv_StockOut — port 1:1 FrmStockOutCreate), TRỪ tồn PartStock =====
