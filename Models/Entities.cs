@@ -2457,6 +2457,11 @@ public sealed class RoServiceItem{
     /// thái HOÀN THÀNH của TỪNG hạng mục, cập nhật hàng loạt theo ItemID qua `Ser_RORepair_Update_
     /// ServiceItemsStatus` — CHẶN sửa khi RO đã CheckEnd/Paid/Finished. Port cũ hoàn toàn chưa có cột này.</summary>
     public string? Status { get; set; }
+    // ===== #969 §12 — đọc thấy ở `Ser_RO_GetX` (BizCarSv.Tab.cs:925-965): `Ser_ROServiceItems` còn
+    // `CamMarketingNo` (số phiếu marketing campaign, KHÁC `CamID` — mã khuyến mại) và `FlagAccrual`
+    // (cờ tích luỹ/dồn, nguồn không giải thích thêm) mà entity chưa từng có chỗ chứa.
+    public string? CamMarketingNo { get; set; }
+    public string? FlagAccrual { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
@@ -2531,6 +2536,9 @@ public sealed class RoPartItem
     public string? ExpenseType { get; set; }
     /// <summary>#367 CamID — khuyến mại áp cho dòng phụ tùng (xem <see cref="RoServiceItem.CamID"/>).</summary>
     public string? CamID { get; set; }
+    // ===== #969 §12 — cùng cặp cột thiếu như RoServiceItem, đọc thấy ở `Ser_RO_GetX` (BizCarSv.Tab.cs:979-1017).
+    public string? CamMarketingNo { get; set; }
+    public string? FlagAccrual { get; set; }
 }
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):

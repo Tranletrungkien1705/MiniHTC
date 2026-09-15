@@ -65304,12 +65304,14 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
     var servicesByRo = includeServices == true
         ? (await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIds.Contains(s.RoId)).ToListAsync())
             .GroupBy(s => s.RoId).ToDictionary(g => g.Key, g => (object)g.Select(s => new
-            { s.SerCode, s.SerName, s.ActManHour, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice }).ToList())
+            { s.SerCode, s.SerName, s.ActManHour, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice,
+              s.CamID, s.CamMarketingNo, s.FlagAccrual, s.Status }).ToList())   // #969
         : null;
     var partsByRo = includeParts == true
         ? (await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIds.Contains(p.RoId)).ToListAsync())
             .GroupBy(p => p.RoId).ToDictionary(g => g.Key, g => (object)g.Select(p => new
-            { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note }).ToList())
+            { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note,
+              p.CamID, p.CamMarketingNo, p.FlagAccrual }).ToList())   // #969
         : null;
 
     var items = page.Select(r =>
@@ -65423,7 +65425,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền hạng mục DỊCH VỤ theo nguồn: Factor * Price * (1 + VAT*0.01) — KHÔNG có cột Quantity riêng.
         // Client cũ vẫn truyền thẳng Amount; có Price thì tính lại cho đúng công thức nguồn.
         var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
-        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice, CamID = s.CamID });
+        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice, CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual });
     }
     foreach (var p in dto.Parts ?? new())
     {
@@ -65431,7 +65433,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền dòng PHỤ TÙNG theo nguồn: Factor * Quantity * Price * (1 + VAT*0.01).
         var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
         var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
-        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice, CamID = p.CamID });
+        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo, FlagAccrual = p.FlagAccrual });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
@@ -78265,14 +78267,16 @@ record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int De
 //   loc ExpenseType = ROINSURANCE se LUON bo sot phan tien cong.
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null,
     string? ExpenseType = null, decimal? InsurancePrice = null,
-    string? CamID = null);   // #367
+    string? CamID = null,   // #367
+    string? CamMarketingNo = null, string? FlagAccrual = null);   // #969
 // #337: ExpenseType (nguon tien) va FlagAccessory (co phu kien) — HAI truong bao cao KPI loc theo,
 //   ma truoc nay KHONG duong nao ghi duoc: cot ExpenseType them tu #280 nhung dong tao RO khong gan.
 //   Thieu chung thi nhom PartAmount* cua bao cao LUON bang 0.
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0,
     decimal? InsurancePrice = null,   // #342
     string? ExpenseType = null, string? FlagAccessory = "0",
-    string? CamID = null);   // #367
+    string? CamID = null,   // #367
+    string? CamMarketingNo = null, string? FlagAccrual = null);   // #969
 // #266: chỉ nhận `MemberNo` + `FlagCardExist` lúc tạo LSC. Nhóm `*Inv` và `PointVoucher` do luồng lập
 //   hoá đơn chốt (xem chú thích ở endpoint) — cố ý không nhận từ client.
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,

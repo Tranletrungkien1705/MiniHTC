@@ -1303,6 +1303,11 @@ public static class Seeder
         // #280 parity Rpt_DMS_CSI_Dashboard: doi tuong thanh toan tren DONG cua LENH SUA CHUA
         "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
         "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
+        // #969 Ser_ROServiceItems/Ser_ROPartItems thieu CamMarketingNo/FlagAccrual (doc thay o Ser_RO_GetX, BizCarSv.Tab.cs)
+        "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"CamMarketingNo\" text",
+        "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"FlagAccrual\" text",
+        "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"CamMarketingNo\" text",
+        "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"FlagAccrual\" text",
         // #279 parity RptSSI_ICIC: co giao dich khoi tao (bao cao SSI loai cac dong nay)
         "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"FlagInitDeal\" text",
         // #278 parity iCIC: dai ly cua phieu CSKH (loc danh sach dai ly bi loai)
