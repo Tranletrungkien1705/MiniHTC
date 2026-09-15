@@ -65338,12 +65338,23 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
               p.CamID, p.CamMarketingNo, p.FlagAccrual }).ToList())   // #969
         : null;
 
+    // #970: bổ sung ba bảng phụ CẤP LỆNH mà nguồn có nhưng #967 để trống — bảo hiểm xe, tên khoang, tên KTV điều phối.
+    var insNos = page.Where(r => r.InsNo != null).Select(r => r.InsNo!).Distinct().ToList();
+    var insByNo = await db.SerInsurances.Where(i => t.OrgId == i.OrgId && insNos.Contains(i.InsNo)).ToDictionaryAsync(i => i.InsNo);
+    var cavityIds = page.Where(r => r.CavityID != null).Select(r => r.CavityID!).Distinct().ToList();
+    var cavityByNo = await db.Cavities.Where(c => c.OrgId == t.OrgId && cavityIds.Contains(c.CavityNo)).ToDictionaryAsync(c => c.CavityNo);
+    var roEngineerIds = page.Where(r => r.EngineerID != null).Select(r => r.EngineerID!).Distinct().ToList();
+    var roEngineerByNo = await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId && roEngineerIds.Contains(e.EngineerNo)).ToDictionaryAsync(e => e.EngineerNo);
+
     var items = page.Select(r =>
     {
         var cus = r.CusID != null && cusById.TryGetValue(r.CusID, out var cc) ? cc : null;
         var car = r.CarID != null && carsByCarId.TryGetValue(r.CarID, out var cr) ? cr : null;
         var model = car?.ModelCode != null && modelsByCode.TryGetValue(car.ModelCode, out var m) ? m : null;
         var tm = car?.TradeMark != null && tmByCode.TryGetValue(car.TradeMark, out var t2) ? t2 : null;
+        var ins = r.InsNo != null && insByNo.TryGetValue(r.InsNo, out var i0) ? i0 : null;
+        var cavity = r.CavityID != null && cavityByNo.TryGetValue(r.CavityID, out var cv0) ? cv0 : null;
+        var roEngineer = r.EngineerID != null && roEngineerByNo.TryGetValue(r.EngineerID, out var re0) ? re0 : null;
         return new
         {
             r.RONo, r.DealerCode, r.CusRequest, r.CarStatus, r.CheckInDate, r.Assistant, r.StartDate, r.FinishedDate,
@@ -65361,6 +65372,9 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
             carId = car?.CarID, r.LicensePlate, tradeMarkCode = car?.TradeMark, tradeMarkName = tm?.TradeMarkName,
             modelId = car?.ModelCode, modelName = model?.ModelName, colorCode = car?.ColorCode, frameNo = r.Vin,
             engineNo = car?.EngineNo, car?.ProductYear, car?.MemberCarID, car?.CurrentServiceDate, car?.CurrentKm,
+            // #970: insurance/khoang/KTV điều phối cấp LỆNH (khác KTV theo hạng mục dịch vụ ở servicesByRo).
+            insName = ins?.InsVieName, insPhone = ins?.Phone, insAddress = ins?.Address, insTaxCode = ins?.TaxCode,
+            cavityName = cavity?.CavityName, roEngineerName = roEngineer?.EngineerName,
         };
     }).ToList();
 
@@ -65370,7 +65384,7 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
         services = servicesByRo, parts = partsByRo,
         deadFilterNote = "quotationNos khong loc duoc gi (menh de bi comment o nguon, giu tham so cho tuong thich).",
         flagHasAWNote = "'0' = chua co Ser_AssignmentWork; '1' = da co; khac/rong = khong loc.",
-        extraColumnsNotModelledYet = "Nguon con tra: ten/SDT nguoi tao (sys_user), ten khoang/KTV phan cong, bao hiem xe (Ser_Insurance), lich su ngay giao du kien (Ser_Ro_PlanedDeliveryDate_His), StockOutOrderID — MiniHTC chua ghep du cac bang phu nay o man tra cuu, ghi no khong bia.",
+        extraColumnsNotModelledYet = "Nguon con tra: ten/SDT nguoi tao (sys_user), lich su ngay giao du kien (Ser_Ro_PlanedDeliveryDate_His), StockOutOrderID — MiniHTC chua ghep du cac bang phu nay (bao hiem/khoang/KTV dieu phoi da bo sung o #970).",
     });
 }).RequireAuthorization();
 
