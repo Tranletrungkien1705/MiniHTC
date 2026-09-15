@@ -88,6 +88,11 @@ public sealed class Dealer
     public string? CtrNoSignerPosition { get; set; }
     public string? Remark { get; set; }
     public string? HTCStaffInCharge { get; set; }
+    /// <summary>🔴 #977 §12 `Mst_Dealer.WarrantyStaffInCharge` — cột RIÊNG, KHÁC `HTCStaffInCharge` (nhân
+    /// viên phụ trách CHUNG). Nguồn `Ser_ROWarrantyReportHTC_Get_New20230417` (`BizCarSv.WarrantyReport.cs:
+    /// 17780`, máy 150) dùng cột này làm CẢ mệnh đề lọc (`strWarrantyStaffInChargeConditionList`) LẪN cột
+    /// trả về (`dl.WarrantyStaffInCharge`) — cho biết NHÂN VIÊN HTC phụ trách xử lý bảo hành của đại lý đó.</summary>
+    public string? WarrantyStaffInCharge { get; set; }
     public string? DealerAddress01 { get; set; }
     public string? DealerAddress02 { get; set; }
     public string? DealerAddress03 { get; set; }

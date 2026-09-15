@@ -414,7 +414,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q,
       d.FlagDirect, d.FlagActive, d.FlagDealerHTC, d.OrgHCCID, d.NetworkHCCID, d.DealerScale,   // #349 §12 d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
       d.GarageAddress, d.GarageManagerPhoneNo, d.GarageFaxNo, d.DirectorName, d.DirectorPhoneNo, d.DirectorEmail,
       d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
-      d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
+      d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge, d.WarrantyStaffInCharge,   // #977
       d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
       d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status }).ToListAsync();
     return Results.Ok(new
@@ -456,7 +456,7 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     d.SalesManagerName = dto.SalesManagerName; d.SalesManagerPhoneNo = dto.SalesManagerPhoneNo; d.SalesManagerEmail = dto.SalesManagerEmail;
     d.GarageManagerName = dto.GarageManagerName; d.GarageManagerEmail = dto.GarageManagerEmail;
     d.ContactName = dto.ContactName; d.Signer = dto.Signer; d.SignerPosition = dto.SignerPosition; d.CtrNoSigner = dto.CtrNoSigner; d.CtrNoSignerPosition = dto.CtrNoSignerPosition;
-    d.Remark = dto.Remark; d.HTCStaffInCharge = dto.HTCStaffInCharge;
+    d.Remark = dto.Remark; d.HTCStaffInCharge = dto.HTCStaffInCharge; d.WarrantyStaffInCharge = dto.WarrantyStaffInCharge;   // #977
     d.DealerAddress01 = dto.DealerAddress01; d.DealerAddress02 = dto.DealerAddress02; d.DealerAddress03 = dto.DealerAddress03; d.DealerAddress04 = dto.DealerAddress04; d.DealerAddress05 = dto.DealerAddress05;
     d.FlagTCG = dto.FlagTCG; d.FlagOrdTCG = dto.FlagOrdTCG; d.FlagAutoLXX = dto.FlagAutoLXX; d.FlagAutoMapVIN = dto.FlagAutoMapVIN; d.FlagAutoSOAppr = dto.FlagAutoSOAppr;
     d.Status = dto.Status ?? "1";
@@ -21271,8 +21271,10 @@ app.MapGet("/api/_meta/htmv-rluu-report-audit", () => Results.Ok(new
 app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantContext t,
     string? dealerCodeList, string? statusList, string? rowTypeCodeList, string? hmcApiStatusList,
     DateTime? createdDateFrom, DateTime? createdDateTo, string? vinPrefix, string? excludeVinPrefix,
-    bool includeDetail = false) =>
+    string? warrantyStaffInChargeList, bool includeDetail = false) =>
 {
+    // #977: strWarrantyStaffInChargeConditionList (nguon) - loc theo NHAN VIEN HTC phu trach BAO HANH cua dai ly, khac HTCStaffInCharge.
+    var warrantyStaff = (warrantyStaffInChargeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     // #896: vinPrefix la tham so CAU HINH DUOC thay cho hang cung "and ro.FrameNo like 'RLU%'" cua nguon
     // (dung chung endpoint nay cho ca man HTC_Get lan man rieng dong xe HTC_RLU_Get/HTC_RLUU_Get).
     // #897: excludeVinPrefix thay hang cung "not like RLUU%" cua Ser_ROWarrantyReportHTMV_Get_New20230417
@@ -21306,6 +21308,11 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
     }
     var dealerCodesUsed = claims.Select(x => x.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodesUsed.Contains(x.DealerCode)).ToListAsync();
+    if (warrantyStaff.Count > 0)
+    {
+        var staffDealerCodes = dealers.Where(d => d.WarrantyStaffInCharge != null && warrantyStaff.Contains(d.WarrantyStaffInCharge)).Select(d => d.DealerCode).ToHashSet();
+        claims = claims.Where(c => c.DealerCode != null && staffDealerCodes.Contains(c.DealerCode)).ToList();
+    }
     var claimIds = claims.Select(x => x.Id).ToList();
     var svcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId)).ToListAsync();
     var partItems = await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId)).ToListAsync();
@@ -21323,6 +21330,7 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
         return new
         {
             c.ClaimNo, c.ROWTypeCode, c.DealerCode, dealerName = dealer?.DealerName,
+            warrantyStaffInCharge = dealer?.WarrantyStaffInCharge,   // #977
             dealerInactive = dealer is null || dealer.Status != "1",   // #895: vs INNER JOIN + DealerStatus=1 cua nguon
             carMissing = car is null,                                  // #895: vs INNER JOIN ser_car cua nguon
             c.RONo, c.Status, c.HMCApiStatus, c.ClmRcptNo, totalAmount, c.CreatedAt,
@@ -78156,7 +78164,8 @@ record DealerDto(string DealerCode, string DealerName, string? FlagDealerHTC,
     string? SalesManagerName, string? SalesManagerPhoneNo, string? SalesManagerEmail, string? GarageManagerName, string? GarageManagerEmail,
     string? ContactName, string? Signer, string? SignerPosition, string? CtrNoSigner, string? CtrNoSignerPosition, string? Remark, string? HTCStaffInCharge,
     string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,
-    string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status);
+    string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status,
+    string? WarrantyStaffInCharge = null);   // #977
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? SalesType, string? Phone, string? Email, string? Status,
     string? Gender, DateTime? DateOfBirth, string? Address, string? ProvinceCode, string? QualificationCode, string? Specialized, string? YearExperience,

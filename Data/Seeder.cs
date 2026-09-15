@@ -625,6 +625,8 @@ public static class Seeder
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"CtrNoSignerPosition\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"HTCStaffInCharge\" text NULL",
+                // #977 Mst_Dealer.WarrantyStaffInCharge - cot RIENG, khac HTCStaffInCharge, dung boi Ser_ROWarrantyReportHTC_Get_New20230417
+                "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"WarrantyStaffInCharge\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"DealerAddress01\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"DealerAddress02\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"DealerAddress03\" text NULL",
