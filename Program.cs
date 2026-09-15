@@ -74772,6 +74772,30 @@ app.MapPost("/api/repairorders/{no}/dispatch", async (string no, RoDispatchDto d
     return Results.Ok(new { r.RONo, r.DPRemark, r.EngineerID, r.CavityID });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #922 `Ser_RORepair_Update_ServiceItemsStatus` (LIVE, `BizCarSv.Service01.cs:7052`) =====
+// Nguồn cập nhật HÀNG LOẠT cột `Status` của TỪNG hạng mục dịch vụ theo ItemID — KHÁC `RepairOrder.Status`
+// (trạng thái cấp LỆNH). Guard: chặn khi RO đã CheckEnd/Paid/Finished (`MyCheckDB_Ser_RO`). Port cũ chưa
+// từng có cột `RoServiceItem.Status` lẫn endpoint này.
+app.MapPost("/api/repairorders/{no}/serviceitems/status", async (string no, List<RoServiceItemStatusDto> items, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status == "CheckEnd" || r.Status == "Paid" || r.Status == "Finished")
+        return Results.BadRequest(new { error = "Ser_RORepair_Update_ServiceItemsStatus_InvalidROStatus", status = r.Status });
+    items ??= new List<RoServiceItemStatusDto>();
+    if (items.Count == 0) return Results.BadRequest(new { error = "Ser_RORepair_Update_ServiceItemsStatus_Input_Ser_ROServiceItemsNotFound" });
+    var updated = new List<long>();
+    foreach (var it in items)
+    {
+        var row = await db.RoServiceItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RoId == r.Id && x.Id == it.ItemID);
+        if (row is null) continue;
+        row.Status = it.Status; updated.Add(row.Id);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, updated = updated.Count, updatedIds = updated });
+}).RequireAuthorization();
+
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -76645,6 +76669,7 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
 //   RONG / "0" / null => khach KHONG tra het => ghi no hang bao hiem (ba gia tri nhu nhau).
 // #341: TotalActHours ghi kem o buoc Repaired (rong = giu nguyen).
 record RoDispatchDto(string? DPRemark, string? EngineerID, string? CavityID);   // #917
+record RoServiceItemStatusDto(long ItemID, string? Status);   // #922
 
 record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null, decimal? TotalActHours = null,
     // #328 §12: 12 truong bo sung cua buoc THANH TOAN (SerROStatusUpdatePaid_New20230228).

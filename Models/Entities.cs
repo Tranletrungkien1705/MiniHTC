@@ -2453,6 +2453,10 @@ public sealed class RoServiceItem{
     /// (`Table 20`) lọc mã này trên CHÍNH hai bảng dòng RO ⇒ **không có cột này thì bảng khuyến mại
     /// gửi sang Veloca VĨNH VIỄN RỖNG**, chứ không phải "chưa có dữ liệu".</summary>
     public string? CamID { get; set; }
+    /// <summary>#922 §12 — nguồn `Ser_ROServiceItems.Status` (khác `RepairOrder.Status` cấp LỆNH): trạng
+    /// thái HOÀN THÀNH của TỪNG hạng mục, cập nhật hàng loạt theo ItemID qua `Ser_RORepair_Update_
+    /// ServiceItemsStatus` — CHẶN sửa khi RO đã CheckEnd/Paid/Finished. Port cũ hoàn toàn chưa có cột này.</summary>
+    public string? Status { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>

@@ -1043,6 +1043,7 @@ public static class Seeder
         "ALTER TABLE public.\"ServiceCustomers\" ADD COLUMN IF NOT EXISTS \"SalesCusID\" text NULL",
         // #367 ma khuyen mai tren tung dong RO — thieu thi bang Table 20 gui Veloca luon rong
         "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"CamID\" text NULL",
+        "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"Status\" text NULL",
         "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"CamID\" text NULL",
         // #368 dau vao bao cao tong hop phieu xuat — thieu thi moi cot tien bang 0
         "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"Price\" numeric NULL",
