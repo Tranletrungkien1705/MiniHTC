@@ -59500,6 +59500,71 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
     return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #939 `Ser_Customer_Import` (LIVE, `BizCarSv.Customer.cs:7417`) — KÊNH WS RIÊNG, CHƯA CÓ =====
+// ⚠️ Route KHÁC `/api/servicecustomers/import` ở trên (port `FrmImportCustomer.cs` — kênh WinForm, guard
+// ký tự đặc biệt + trùng biển số trong file). Đúng họ #397/#938: nguồn có HAI kênh nhập khách hàng độc lập —
+// WinForm gọi `FrmImportCustomer`, hệ ngoài/đối tác gọi thẳng WS `Ser_Customer_Import` — KHÔNG phải trùng lặp.
+// Nguồn nhận DataSet Excel gồm cả cột XE (TrademarkCode/ModelName/PlateNo/FrameNo/EngineNo/ProductYear/
+// ColorCode) LẪN cột KHÁCH (CusName/CusTypeName/địa chỉ/liên hệ) — MỘT DÒNG TẠO/CẬP NHẬT ĐỒNG THỜI khách
+// hàng VÀ xe của khách, khác `/import` (chỉ khách, xe là tuỳ chọn phụ).
+//   1) Guard 5 trường bắt buộc: CusName/TrademarkCode/PlateNo/FrameNo/ModelName/CusTypeName không rỗng.
+//   2) `ModelName` phải khớp một dòng ACTIVE trong `Ser_Mst_Model` của ĐÚNG đại lý — không thấy thì ném
+//      `Ser_Customer_ImportModelNotFound`. `CusTypeName` tương tự với `Ser_MST_CustomerType`.
+//   3) Xét xe đã tồn tại theo `(PlateNo, DealerCode)` để quyết định NHÁNH tạo mới hay cập nhật CẢ khách
+//      lẫn xe (dùng chung `ProcessCustomerCreate/Update` + `ProcessCarCreate/Update` — helper nội bộ đã
+//      port rải rác qua các endpoint khách/xe khác, ở đây gộp lại thành MỘT giao dịch/dòng Excel).
+// 🔴 Nợ #395 lan sang: `CustomerCar` (entity Mini dùng cho xe khách) không có cột `DealerCode` — tra xe theo
+// PlateNo KHÔNG lọc được đại lý (giống hệt debt đã ghi ở #921/#911/#938). Giữ nguyên, không tự thêm cột.
+app.MapPost("/api/servicecustomers/import-ws", async (List<ServiceCustomerImportWsRow> rows, string? dealerCode,
+    AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var saved = new List<object>();
+    var errors = new List<object>();
+    foreach (var row in rows)
+    {
+        if (string.IsNullOrWhiteSpace(row.CusName)) { errors.Add(new { error = "Ser_CusNameNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(row.TrademarkCode)) { errors.Add(new { row.CusName, error = "Ser_TradeMarkCodeNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(row.PlateNo)) { errors.Add(new { row.CusName, error = "Ser_PlateNoNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(row.FrameNo)) { errors.Add(new { row.CusName, error = "Ser_FrameNoNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(row.ModelName)) { errors.Add(new { row.CusName, error = "Ser_ModelNameNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(row.CusTypeName)) { errors.Add(new { row.CusName, error = "Ser_CusTypeNameNotEmty" }); continue; }
+        var model = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelName == row.ModelName
+            && x.DealerCode == dl && x.FlagActive == "1");
+        if (model is null) { errors.Add(new { row.CusName, error = "Ser_Customer_ImportModelNotFound", row.ModelName }); continue; }
+        var cusType = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeName == row.CusTypeName
+            && x.DealerCode == dl && x.FlagActive == "1");
+        if (cusType is null) { errors.Add(new { row.CusName, error = "Ser_Customer_ImportCusTypeNotFound", row.CusTypeName }); continue; }
+        var plate = row.PlateNo!.Trim().ToUpperInvariant();
+        var car = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate);
+        ServiceCustomer cus;
+        if (car is null || string.IsNullOrWhiteSpace(car.CusCode))
+        {
+            cus = new ServiceCustomer
+            {
+                OrgId = t.OrgId, CusCode = "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff") + saved.Count,
+                CusName = row.CusName, CusTypeID = cusType.CusTypeCode, DealerCode = dl,
+                Sex = row.Sex, Address = row.Address, Tel = row.Tel, Mobile = row.Mobile, Email = row.Email,
+            };
+            db.ServiceCustomers.Add(cus);
+        }
+        else
+        {
+            cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == car.CusCode) ?? new ServiceCustomer { OrgId = t.OrgId, CusCode = car.CusCode };
+            cus.CusName = row.CusName; cus.CusTypeID = cusType.CusTypeCode; cus.DealerCode = dl;
+            cus.Sex = row.Sex; cus.Address = row.Address; cus.Tel = row.Tel; cus.Mobile = row.Mobile; cus.Email = row.Email;
+        }
+        await db.SaveChangesAsync();   // đảm bảo cus có Id/CusCode trước khi gán vào car
+        if (car is null) { car = new CustomerCar { OrgId = t.OrgId, PlateNo = plate }; db.CustomerCars.Add(car); }
+        car.FrameNo = row.FrameNo; car.EngineNo = row.EngineNo; car.ModelCode = model.ModelCode; car.ColorCode = row.ColorCode;
+        car.CusCode = cus.CusCode; car.CusName = cus.CusName; car.CusPhone = cus.Mobile ?? cus.Tel; car.UpdatedAt = DateTime.Now;
+        saved.Add(new { cus.CusCode, cus.CusName, car.PlateNo, car.FrameNo });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { savedCount = saved.Count, errorCount = errors.Count, saved, errors,
+        dealerScopeDebtOnCar = "CustomerCar chua co cot DealerCode (no #395) - tra xe theo PlateNo KHONG loc dai ly." });
+}).RequireAuthorization();
+
 // ===== Chăm sóc khách hàng (Ser_CustomerCare — port 1:1 FrmCustomerCare) =====
 // #220 parity: mã loại phiếu CSKH đúng `TConst.SerCareType` (Const.Main.cs:349) — viết THƯỜNG.
 string[] _careTypes = { "24h", "72h", "dob", "man" };
@@ -77920,6 +77985,9 @@ record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email,
     string? PlateNo = null,
     string? ContName = null, string? ContAddress = null);
+record ServiceCustomerImportWsRow(string? CusName, string? TrademarkCode, string? ModelName, string? PlateNo, string? FrameNo,
+    string? CusTypeName, string? Sex, string? Address, string? Tel, string? Mobile, string? Fax, string? Email,
+    string? EngineNo, string? ProductYear, string? ColorCode);   // #939
 // #332: tao khach KEM danh sach xe (kenh may tinh bang). Gender: rong | "1" | "0".
 record CustomerWithCarsDto(string? CusName, string? DealerCode, string? Address = null,
     string? Mobile = null, string? ContName = null, string? ContAddress = null, string? ContPhone = null,
