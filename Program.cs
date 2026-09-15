@@ -18040,6 +18040,56 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
     return Results.Ok(new { r.PartCode, updated = false });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #938 `Ser_Mst_Part_Import` (LIVE, `BizCarSv.Service.cs:5843`) — NHẬP HÀNG LOẠT DANH MỤC PHỤ TÙNG, CHƯA CÓ =====
+// Nguồn nhận DataSet Excel (`PARTCODE`/`ENGNAME`/`VIENAME`/`UNIT`/`VAT`/`MODEL`/`MINQUANTITY`/`COST`/`PRICE`/
+// `GROUPNAME`/`TYPENAME`), với 3 điểm nghiệp vụ đáng chú ý:
+//   1) Nếu `PartCode` ĐÃ có trong `TST_Mst_Part` (danh mục hãng), GHI ĐÈ `VieName`/`Unit`/`VAT`/`Price` bằng
+//      giá trị của TST — Excel gửi gì cũng bị bỏ qua cho bốn cột đó (đại lý không tự đặt giá cho PT hãng).
+//   2) `GroupName`/`TypeName` phải khớp một dòng ĐANG ACTIVE trong `Ser_Mst_PartGroup`/`Ser_Mst_PartType` của
+//      ĐÚNG đại lý — không thấy thì ném `..._PartGroupNotFound`/`..._PartTypeNotFound` (dừng cả dòng).
+//   3) Upsert theo `(PartCode, DealerCode)`.
+// 🔴 **Nợ #395 CHƯA đóng lan sang đây**: `PartGroup`/`SerPartType` (entity Mini của #839) không có cột
+// `DealerCode` (chưa retrofit — xem #921/#911 cùng họ) ⇒ tra theo TÊN không lọc được đại lý; giữ nguyên nợ đó,
+// không tự ý thêm cột giữa một lượt import (rủi ro regression 12+4 endpoint đang đọc hai bảng này).
+// ⚠️ Route KHÁC `/api/serviceparts/import` (đã có, port `FrmImportPart` — kênh WinForm, guard lỏng hơn,
+// KHÔNG override theo TST, KHÔNG tra Group/Type theo tên). Hai kênh nguồn riêng biệt, không phải trùng lặp
+// (đúng họ #397): WinForm gọi `FrmImportPart`, hệ ngoài/đối tác gọi thẳng WS `Ser_Mst_Part_Import`.
+app.MapPost("/api/serviceparts/import-catalog", async (List<ServicePartImportRowDto> rows, string? dealerCode,
+    AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var saved = new List<object>();
+    var errors = new List<object>();
+    foreach (var row in rows)
+    {
+        var code = (row.PartCode ?? "").Trim().ToUpperInvariant();
+        if (code.Length == 0) { errors.Add(new { row.PartCode, error = "PartCode rong" }); continue; }
+        var vieName = row.VieName; var unit = row.Unit; var vat = row.VAT; var price = row.Price;
+        var tst = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
+        if (tst is not null) { vieName = tst.VieName; unit = tst.Unit; vat = tst.VAT; price = tst.TSTPrice; }
+        if (string.IsNullOrWhiteSpace(vieName)) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_VieNameNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(unit)) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_UnitNotEmty" }); continue; }
+        if (price is null) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_PriceNotEmty" }); continue; }
+        if (row.MinQuantity is null) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_MinQuantityNotEmty" }); continue; }
+        if (row.Cost is null) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_CostNotEmty" }); continue; }
+        if (vat is null) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_VATNotEmty" }); continue; }
+        var group = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupName == row.GroupName && x.FlagActive == "1");
+        if (group is null) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_PartGroupNotFound", row.GroupName }); continue; }
+        var type = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == row.TypeName && x.FlagActive == "1");
+        if (type is null) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_PartTypeNotFound", row.TypeName }); continue; }
+        var r = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.DealerCode == dl);
+        if (r is null) { r = new ServicePart { OrgId = t.OrgId, PartCode = code, DealerCode = dl }; db.ServiceParts.Add(r); }
+        r.EngName = row.EngName; r.PartName = vieName; r.Unit = unit; r.Model = row.Model;
+        r.VAT = vat; r.MinQuantity = row.MinQuantity.Value; r.Cost = row.Cost.Value; r.Price = price.Value;
+        r.PartGroupCode = group.GroupCode; r.PartTypeID = type.Id.ToString(); r.FlagActive = "1";
+        saved.Add(new { r.PartCode, r.PartName, r.Price, r.PartGroupCode, r.PartTypeID });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { savedCount = saved.Count, errorCount = errors.Count, saved, errors,
+        tstOverrideNote = "PartCode co trong TST_Mst_Part thi VieName/Unit/VAT/Price lay tu TST, bo qua gia tri Excel gui.",
+        dealerScopeDebtOnGroupType = "PartGroup/SerPartType (#839) chua co DealerCode (no #395 chua dong) - tra theo ten KHONG loc dai ly." });
+}).RequireAuthorization();
+
 // ===== 🔴 #374 XOÁ MASTER PHỤ TÙNG (`Ser_Mst_Part_Delete`, `Service.cs:4482`) =====
 // Guard: phụ tùng **đang được tham chiếu ở BẤT KỲ đâu** thì không cho xoá. Nguồn chạy MỘT câu lệnh
 // trả về **5 bảng kết quả** (mỗi bảng một nơi tham chiếu) rồi `foreach` qua **tất cả** các bảng —
@@ -77852,6 +77902,8 @@ record ServicePartDto(string PartCode, string? PartName, string? EngName, string
     decimal? TotalPrice = null, string? BalanceLocationId = null, decimal? FreqUsed = null,
     DateTime? PriceEffect = null, decimal? TSTPrice = null, decimal? TSTPriceBefore = null,
     string? FlagInTST = null);
+record ServicePartImportRowDto(string? PartCode, string? EngName, string? VieName, string? Unit, decimal? VAT, string? Model,
+    decimal? MinQuantity, decimal? Cost, decimal? Price, string? GroupName, string? TypeName);   // #938
 // #333: 6 truong cua ho ProcessSaveCar01 (AVN / ac quy / lo SX / bao hanh mo rong).
 record ServiceCarDto(string FrameNo, string? SerialNo, string? BatteryNo, string? ProductionCode,
     DateTime? CusConfirmedWarrantyDate, DateTime? WarrantyExpiresDate, decimal? WarrantyKM,
