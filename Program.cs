@@ -57544,6 +57544,83 @@ app.MapGet("/api/orderparts", async (AppDbContext db, ITenantContext t, string? 
 // 📌 Mini: `POST /api/orderparts/{no}/update-tst` — thêm **kiểm miền giá trị** `SupplierStatus` (vá #866),
 // cập nhật đúng các cột thật (không đụng `OrderPartStatusDtl` — giữ hành vi ĐÃ ĐO, không phải hành vi tôi
 // nghi ban đầu).
+// ===== 🔴🔴🔴 #891 — `Ser_Order_Part_UpdTST`/`…UpdTSTX` (NCC gán số PO + xác nhận, khác `UpdateTST`/#890) — **1435/`2800 (51,3%)**
+// `BizCarSv.A.02.OrderPart.cs:4191` (vỏ) + `…UpdTSTX:4319` (561 dòng, thân thật). Tên **rất giống** #890
+// (`UpdTST` vs `UpdateTST`) nhưng khác hẳn: định vị theo `OrderPartNo` (không phải `TSTID`), và GÁN thêm
+// `OrderSuppierNo` (số đơn phía NCC) — bước "NCC xác nhận + cấp số PO", khác bước "NCC đổi trạng thái/giá"
+// của #890.
+//
+// 🔴🔴🔴 **GAP CHỨC NĂNG THẬT GIỮA HAI ANH EM: `UpdTST` TÍNH LẠI TỔNG ĐẦU ĐƠN, `UpdateTST` (#890) THÌ KHÔNG**:
+//   Sau khi ghi giá dòng, `UpdTSTX` chạy TIẾP một khối SQL thứ hai: dựng `#tbl_Ser_Order_PartDtl_Filter`
+//   (đọc LẠI từ bảng thật `Ser_Order_PartDtl` vừa ghi), tính `Sum(TPBeforeDc)/Sum(TPAfterDc)/Sum(TPAfterVAT)`
+//   rồi `UPDATE Ser_Order_Part SET TotalValOrderBeforeDc/AfterDc/AfterVAT` (mẫu ĐÚNG của #236). `UpdateTSTX`
+//   (#890) **không có bước này** ⇒ nếu NCC sửa giá dòng qua đường `UpdateTST` thay vì `UpdTST`, **tổng đầu
+//   đơn trở nên LỖI THỜI** (vẫn giữ số cũ) trong khi giá dòng đã đổi — hai đường cùng sửa được giá dòng,
+//   chỉ MỘT đường cập nhật đúng tổng. ⚠️ Ghi nợ cho vòng sau: xét bổ sung bước tính lại tổng vào `#890`.
+// ⚠️ **RỦI RO ĐƠN VỊ `DiscountRate` GIỮA HAI ANH EM — CẦN XÁC MINH NGHIỆP VỤ, CHƯA KHẲNG ĐỊNH LÀ LỖI**:
+//   `UpdTSTX` ghi `t.DiscountRate = f.DiscountRate **\* 100**` ở khối ghi đầu, rồi khối tính lại tổng đọc LẠI
+//   giá trị đó (đã ×100) qua `(f.DiscountRate**/100**)` trong công thức `UPAfterDc` ⇒ **tự nhất quán NỘI BỘ**
+//   nếu client gửi `DiscountRate` dạng PHÂN SỐ (`0.05` = 5%). `UpdateTSTX` (#890) thì ghi
+//   `t.DiscountRate = f.DiscountRate` **KHÔNG nhân** — chỉ đúng nếu client của đường ĐÓ gửi dạng SỐ NGUYÊN
+//   PHẦN TRĂM (`5` = 5%). ⇒ Không tự suy luận đường nào đúng (không có tài liệu WSDL để đối chiếu quy ước
+//   client TST thật) — ghi RÕ là RỦI RO ĐƠN VỊ cần xác minh, theo đúng kỷ luật #362/#364 (đo được thì mới
+//   kết luận là lỗi; ở đây tôi CHỈ đo được rằng công thức nội bộ mỗi hàm tự nhất quán, KHÔNG đo được quy ước
+//   client thật giữa hai luồng WS có khớp nhau hay không).
+// 🔴 `strFunctionName = "Ser_Order_Part_**Update**TSTX"` trong CHÍNH thân `UpdTSTX` — **mượn tên hàm khác**,
+//   cùng khuôn với #879/#890 (log/telemetry quy sai hàm), lần này giữa hai hàm CÙNG MỘT CẶP wrapper/thân.
+// ⚪ **`UpdTST` tự tính lại server-side** (`UPAfterDc`/`TPAfterDc`/`ValVAT`/`TPAfterVAT` từ `UPBeforeDc`/
+//   `DiscountRate`/`VAT`/`QtyAppr` bằng công thức SQL) — KHÔNG tin số client tính sẵn, đối lập hẳn `UpdateTST`
+//   (nhận nguyên số client gửi, không kiểm/không tính lại) — hai triết lý khác nhau trong CÙNG cặp hàm.
+// 📌 Mini: `POST /api/orderparts/{no}/update-tst-supplier` — server tự tính công thức (mẫu #236), tính lại
+// TỔNG đầu đơn (vá GAP so với #890), giữ nguyên quy ước `DiscountRate` NHƯ NGUỒN (không tự "sửa" đơn vị vì
+// chưa xác minh được đường nào đúng) và gắn cờ cảnh báo `discountRateUnitRisk` trong response.
+app.MapPost("/api/orderparts/{no}/update-tst-supplier", async (string no, OrderPartUpdTstSupplierDto dto,
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var op = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
+    if (op is null) return Results.NotFound(new { error = "Khong tim thay don dat PT." });
+    var validStatuses = new[] { "1", "2", "4", "7" };
+    if (!string.IsNullOrWhiteSpace(dto.SupplierStatus) && !validStatuses.Contains(dto.SupplierStatus))
+        return Results.BadRequest(new { error = "SupplierStatus khong hop le.", allowed = validStatuses });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    if (dto.OrderSuppierNo is not null) op.OrderSuppierNo = dto.OrderSuppierNo;
+    if (!string.IsNullOrWhiteSpace(dto.SupplierStatus)) op.SupplierStatus = dto.SupplierStatus;
+    if (dto.SupplierLUDTime is not null) op.SupplierLUDTime = dto.SupplierLUDTime;
+    op.LogLUDateTime = now; op.LogLUBy = who;
+
+    var lines = await db.OrderPartLines.Where(l => l.OrgId == t.OrgId && l.OrderPartId == op.Id).ToListAsync();
+    foreach (var ld in dto.Lines ?? new())
+    {
+        var line = lines.FirstOrDefault(x => x.PartCode == ld.PartCode);
+        if (line is null) continue;
+        line.QtyAppr = ld.QtyAppr; line.UPBeforeDc = ld.UPBeforeDc; line.DiscountRate = ld.DiscountRate; line.VAT = ld.VAT;
+        // Cong thuc server tu tinh (mau #236/UpdTSTX) — KHONG tin so client, khac han update-tst (#890).
+        var qty = ld.QtyAppr ?? 0; var up = ld.UPBeforeDc ?? 0; var disc = ld.DiscountRate ?? 0; var vat = ld.VAT ?? 0;
+        line.TPBeforeDc = up * qty;
+        line.UPAfterDc = up * (1 - disc / 100m);
+        line.TPAfterDc = qty * (up * (1 - disc / 100m));
+        line.ValVAT = (qty * (up * (1 - disc / 100m))) * (vat / 100m);
+        line.TPAfterVAT = line.TPAfterDc + line.ValVAT;
+    }
+    // Vi VA GAP so voi #890: tinh lai TONG DAU DON tu cac dong (mau dung cua UpdTSTX/#236).
+    op.TotalValOrderBeforeDc = lines.Sum(x => x.TPBeforeDc ?? 0);
+    op.TotalValOrderAfterDc = lines.Sum(x => x.TPAfterDc ?? 0);
+    op.TotalValOrderAfterVAT = lines.Sum(x => x.TPAfterVAT ?? 0);
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        op.OrderPartNo, op.OrderSuppierNo, op.SupplierStatus, op.SupplierLUDTime,
+        op.TotalValOrderBeforeDc, op.TotalValOrderAfterDc, op.TotalValOrderAfterVAT,
+        onlyExistsOnBoth891 = "#891: Ser_Order_Part_UpdTST/UpdTSTX — BizCarSv.A.02.OrderPart.cs:4191/:4319, LIVE ca hai cay. Ten giong #890 (UpdTST vs UpdateTST) nhung dinh vi theo OrderPartNo (khong phai TSTID) va GAN them OrderSuppierNo",
+        totalsGapVs890 = "GAP CHUC NANG THAT: UpdTSTX TINH LAI TONG DAU DON (Sum TPBeforeDc/TPAfterDc/TPAfterVAT roi UPDATE Ser_Order_Part), UpdateTSTX (#890) KHONG CO buoc nay => neu NCC sua gia dong qua duong UpdateTST thay vi UpdTST, TONG DAU DON tro nen LOI THOI. Ghi no cho vong sau: xet bo sung buoc tinh lai tong vao #890",
+        discountRateUnitRisk = "RUI RO DON VI CHUA XAC MINH: UpdTSTX ghi DiscountRate * 100 roi doc lai qua /100 trong cong thuc (tu nhat quan NOI BO neu client gui dang phan so 0.05); UpdateTSTX (#890) ghi DiscountRate KHONG nhan (chi dung neu client duong do gui dang so nguyen phan tram 5). KHONG the ket luan duong nao dung neu khong co tai lieu quy uoc client TST that — ghi RUI RO, khong khang dinh loi (ky luat #362/#364)",
+        borrowedFunctionNameInUpdTSTX = "strFunctionName = Ser_Order_Part_UpdateTSTX BEN TRONG than UpdTSTX — muon ten ham khac, cung khuon #879/#890",
+        serverRecomputesUnlikeUpdateTst = "AM TINH: UpdTST tu tinh lai UPAfterDc/TPAfterDc/ValVAT/TPAfterVAT tu UPBeforeDc/DiscountRate/VAT/QtyAppr bang cong thuc — KHONG tin so client tinh san, doi lap han UpdateTST (nhan nguyen so client gui)",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/orderparts/{no}/update-tst", async (string no, OrderPartUpdateTstDto dto,
     AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
@@ -75831,6 +75908,7 @@ record OrderPartLineStatusDto(string? ToStatus);
 // #240: `OrderPartNo` (trống = tạo mới) + `FlagIsDelete` ("Y" = xoá) — nguồn dùng CHUNG một hàm
 //   `Ser_Order_Part_Save` cho cả tạo/sửa/xoá.
 // #389 §12: DTO man SUA don dat phu tung. LUU Y ngu nghia RONG khac nhau tung cot (xem endpoint).
+record OrderPartUpdTstSupplierDto(string? OrderSuppierNo, string? SupplierStatus, DateTime? SupplierLUDTime, List<OrderPartLineDto>? Lines = null);
 record OrderPartUpdateTstDto(string? SupplierStatus, string? DeliveryFormCode, DateTime? SupplierLUDTime, List<OrderPartLineDto>? Lines = null);
 record OrderPartUpdateDto(string? SupplierID, string? OrderNoUser, string? Status,
     DateTime? ReceivePartDate, DateTime? ApprovedDate, DateTime? SendDate,
