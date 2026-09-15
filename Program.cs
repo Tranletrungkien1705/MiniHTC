@@ -53439,7 +53439,10 @@ app.MapPost("/api/serviceinvoices/{no}/pay", async (string no, AppDbContext db, 
 app.MapPut("/api/campaigns/{no}", async (string no, CampaignDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = no.Trim().ToUpperInvariant();
-    var c = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == code);
+    // #913: CamNo chi duy nhat TRONG PHAM VI 1 dai ly — can dealerCode de phan biet khi 2 dai ly cung ma.
+    var q = db.Campaigns.Where(x => x.OrgId == t.OrgId && x.CamNo == code);
+    if (dto.DealerCode != null) q = q.Where(x => x.DealerCode == dto.DealerCode);
+    var c = await q.FirstOrDefaultAsync();
     if (c is null) return Results.NotFound(new { camNo = code });
     if (dto.FinishDate is DateTime fd2 && dto.StartDate is DateTime sd2 && fd2 < sd2)
         return Results.BadRequest(new { error = "Ngày kết thúc phải ≥ ngày bắt đầu." });
@@ -53448,7 +53451,7 @@ app.MapPut("/api/campaigns/{no}", async (string no, CampaignDto dto, AppDbContex
     c.FinishDate = dto.FinishDate ?? c.FinishDate;
     if (dto.Content != null) c.Content = dto.Content;
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.CamNo, c.CamName, c.StartDate, c.FinishDate, notPushedToDealerDb = "nguon: khoi ghi _dbDealer bi comment tron o CA Create lan Delete, va _Update khong cham _dbDealer => CO CHU Y, khong phai thieu sot" });
+    return Results.Ok(new { c.CamNo, c.CamName, c.StartDate, c.FinishDate, c.DealerCode, notPushedToDealerDb = "nguon: khoi ghi _dbDealer bi comment tron o CA Create lan Delete, va _Update khong cham _dbDealer => CO CHU Y, khong phai thieu sot" });
 }).RequireAuthorization();
 
 app.MapDelete("/api/campaigns/{no}", async (string no, AppDbContext db, ITenantContext t) =>
@@ -53464,14 +53467,16 @@ app.MapDelete("/api/campaigns/{no}", async (string no, AppDbContext db, ITenantC
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code, guardNotPortable, sourceChecksOnDealerDbButDeletesOnMainAndWh = "nguon doc guard tren _dbDealer (noi co RO) nhung xoa tren _dbMain + _dbWH (noi co danh muc) — dung ca hai chieu" });
 }).RequireAuthorization();
-app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? active) =>
+// #913 §12: nguồn khoá trùng CamNo theo BỘ ĐÔI (CamNo, DealerCode) — CheckExistCamNo/CheckExistCamNoModify.
+app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? active, string? dealerCode) =>
 {
     var q = db.Campaigns.Where(c => c.OrgId == t.OrgId);
     var now = DateTime.Now;
     if (active == "1") q = q.Where(c => c.StartDate <= now && (c.FinishDate == null || c.FinishDate >= now));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode);
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
-        c.CamNo, c.CamName, c.StartDate, c.FinishDate, c.Content, c.Status,
+        c.CamNo, c.CamName, c.StartDate, c.FinishDate, c.Content, c.Status, c.DealerCode,
         contacts = db.CampaignContacts.Count(x => x.OrgId == t.OrgId && x.CampaignId == c.Id),
         contacted = db.CampaignContacts.Count(x => x.OrgId == t.OrgId && x.CampaignId == c.Id && x.ContactStatus == "Contacted"),
         running = c.StartDate <= now && (c.FinishDate == null || c.FinishDate >= now)
@@ -53490,9 +53495,9 @@ app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantCo
     if (dto.FinishDate is DateTime fd && fd < dto.StartDate.Value)
         return Results.BadRequest(new { error = "Ngày kết thúc phải ≥ ngày bắt đầu." });   // guard gốc FrmCampaignCreate
     var no = dto.CamNo.Trim().ToUpperInvariant();
-    if (await db.Campaigns.AnyAsync(x => x.OrgId == t.OrgId && x.CamNo == no))
+    if (await db.Campaigns.AnyAsync(x => x.OrgId == t.OrgId && x.CamNo == no && x.DealerCode == dto.DealerCode))
         return Results.BadRequest(new { error = $"Mã chiến dịch {no} đã tồn tại." });
-    var c = new Campaign { OrgId = t.OrgId, CamNo = no, CamName = dto.CamName, StartDate = dto.StartDate.Value, FinishDate = dto.FinishDate, Content = dto.Content, Status = "1" };
+    var c = new Campaign { OrgId = t.OrgId, CamNo = no, CamName = dto.CamName, StartDate = dto.StartDate.Value, FinishDate = dto.FinishDate, Content = dto.Content, Status = "1", DealerCode = dto.DealerCode };
     db.Campaigns.Add(c); await db.SaveChangesAsync();
     foreach (var ct in dto.Contacts ?? new())
         if (!string.IsNullOrWhiteSpace(ct.PlateNo) || !string.IsNullOrWhiteSpace(ct.CusName))
@@ -76806,7 +76811,7 @@ record CampaignContactDto(string? PlateNo, string? CusName, string? Address,
     // Người liên hệ thay mặt khách
     string? ContName = null, string? ContTel = null, string? ContMobile = null, string? ContEmail = null,
     string? Remark = null);
-record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts);
+record CampaignDto(string CamNo, string CamName, DateTime? StartDate, DateTime? FinishDate, string? Content, List<CampaignContactDto>? Contacts, string? DealerCode = null);   // #913 DealerCode
 /// <summary>
 /// Lập hoá đơn dịch vụ cho 1 lệnh sửa chữa (FrmInvoice).
 /// Nguồn tách RIÊNG 2 loại chiết khấu: <paramref name="AmountFromMC"/> (từ hãng) và

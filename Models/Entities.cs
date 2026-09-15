@@ -6637,6 +6637,10 @@ public sealed class Campaign
     public DateTime? FinishDate { get; set; }
     public string? Content { get; set; }
     public string Status { get; set; } = "1";
+    /// <summary>#913 §12 `DealerCode` — nguồn `CheckExistCamNo`/`CheckExistCamNoModify`
+    /// (`BizCarSv.Service.cs:293`) khoá trùng `CamNo` theo BỘ ĐÔI `(CamNo, DealerCode)`, và `Create`/`Update`
+    /// đều GHI cột này (khuôn giống #906/#907/#911) — port cũ chưa hề mô hình hoá.</summary>
+    public string? DealerCode { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
