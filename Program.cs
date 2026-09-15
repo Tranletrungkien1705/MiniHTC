@@ -65299,6 +65299,9 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
     var modelsByCode = await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToDictionaryAsync(m => m.ModelCode);
     var tmCodes = carsByCarId.Values.Where(c => c.TradeMark != null).Select(c => c.TradeMark!).Distinct().ToList();
     var tmByCode = await db.ServiceTradeMarks.Where(tm => tm.OrgId == t.OrgId && tmCodes.Contains(tm.TradeMarkCode)).ToDictionaryAsync(tm => tm.TradeMarkCode);
+    // #970c: nguồn nối sys_user theo Creator để lấy tên NV lập lệnh — dùng lại cột UserName đã có, không cần §12.
+    var creatorCodes = page.Where(r => r.Creator != null).Select(r => r.Creator!).Distinct().ToList();
+    var creatorByCode = await db.SysUsers.Where(u => u.OrgId == t.OrgId && creatorCodes.Contains(u.UserCode)).ToDictionaryAsync(u => u.UserCode);
 
     var roIds = page.Select(r => r.Id).ToList();
     List<RoServiceItem>? svcRows = null;
@@ -65355,6 +65358,7 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
         var ins = r.InsNo != null && insByNo.TryGetValue(r.InsNo, out var i0) ? i0 : null;
         var cavity = r.CavityID != null && cavityByNo.TryGetValue(r.CavityID, out var cv0) ? cv0 : null;
         var roEngineer = r.EngineerID != null && roEngineerByNo.TryGetValue(r.EngineerID, out var re0) ? re0 : null;
+        var creator = r.Creator != null && creatorByCode.TryGetValue(r.Creator, out var cu0) ? cu0 : null;
         return new
         {
             r.RONo, r.DealerCode, r.CusRequest, r.CarStatus, r.CheckInDate, r.Assistant, r.StartDate, r.FinishedDate,
@@ -65375,6 +65379,7 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
             // #970: insurance/khoang/KTV điều phối cấp LỆNH (khác KTV theo hạng mục dịch vụ ở servicesByRo).
             insName = ins?.InsVieName, insPhone = ins?.Phone, insAddress = ins?.Address, insTaxCode = ins?.TaxCode,
             cavityName = cavity?.CavityName, roEngineerName = roEngineer?.EngineerName,
+            creatorUserName = creator?.UserName,   // #970c
         };
     }).ToList();
 
@@ -65384,7 +65389,7 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
         services = servicesByRo, parts = partsByRo,
         deadFilterNote = "quotationNos khong loc duoc gi (menh de bi comment o nguon, giu tham so cho tuong thich).",
         flagHasAWNote = "'0' = chua co Ser_AssignmentWork; '1' = da co; khac/rong = khong loc.",
-        extraColumnsNotModelledYet = "Nguon con tra: ten/SDT nguoi tao (sys_user), lich su ngay giao du kien (Ser_Ro_PlanedDeliveryDate_His), StockOutOrderID — MiniHTC chua ghep du cac bang phu nay (bao hiem/khoang/KTV dieu phoi da bo sung o #970).",
+        extraColumnsNotModelledYet = "Nguon con tra SDT nguoi tao (sys_user.UserPhone — SysUser Mini chua co cot nay) + lich su ngay giao du kien (Ser_Ro_PlanedDeliveryDate_His) + StockOutOrderID — con lai (bao hiem/khoang/KTV dieu phoi/ten nguoi tao) da bo sung o #970/#970c.",
     });
 }).RequireAuthorization();
 
