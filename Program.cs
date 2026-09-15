@@ -64261,7 +64261,10 @@ app.MapGet("/api/repairorders/statuses", () => Results.Ok(new
     completed = roCompletedStatuses
 })).RequireAuthorization();
 
-app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string? status, string? plate, string? stage) =>
+// #933 §12: Ser_RO_Search (LIVE, Service01.cs:1772) co 3 bo loc port cu THIEU: DealerCode (danh sach), khoang
+// CheckInDate (From/To), va FrameNo (VIN) — chi co Status/PlateNo/stage-nhom o day truoc lan vien nay.
+app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string? status, string? plate, string? stage,
+    string? dealerCode, DateTime? checkInDateFrom, DateTime? checkInDateTo, string? frameNo) =>
 {
     var q = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
@@ -64269,6 +64272,10 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(stage) && roStage4Search.TryGetValue(stage, out var stageStatuses))
         q = q.Where(r => stageStatuses.Contains(r.Status));
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.LicensePlate.Contains(plate.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(r => r.DealerCode == dealerCode);
+    if (checkInDateFrom.HasValue) q = q.Where(r => r.CheckInDate >= checkInDateFrom.Value);
+    if (checkInDateTo.HasValue) q = q.Where(r => r.CheckInDate <= checkInDateTo.Value);
+    if (!string.IsNullOrWhiteSpace(frameNo)) q = q.Where(r => r.Vin != null && r.Vin.Contains(frameNo.Trim().ToUpper()));
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusWaiting, r.Status, r.RejectNote,
