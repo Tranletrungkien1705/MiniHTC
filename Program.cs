@@ -27278,25 +27278,63 @@ app.MapPost("/api/serstocks/{id}/toggle", async (long id, AppDbContext db, ITena
 }).RequireAuthorization();
 
 // ===== Master loại phụ tùng DV (SerPartType — port 1:1 FrmPartTypeCreate/Search, TCMotor DMSCarSv) =====
-app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+// ===== 🔴🔴 #963 §12 `Ser_Mst_PartType_Get/_Create/_Update/_Delete` (LIVE cả hai máy, `BizCarSv.Master.cs:4400`) —
+//   ĐÃ CÓ ENDPOINT NHƯNG THIẾU BA CỘT NGUỒN DÙNG THẬT =====
+// Phát hiện qua #408 rồi #409 (route có sẵn nhưng không mang tên hàm nguồn nào, không đủ cột).
+// Nguồn bảng `Ser_MST_PartType` có `TypeCode` (mã nghiệp vụ, KHÁC `TypeName`) + `DealerCode` (phạm vi
+//   trùng lặp) + `CreatedDate`/`CreatedBy` — port cũ chỉ có `TypeName`+`FlagActive` ⇒ (a) không có mã
+//   nghiệp vụ để tra chéo màn khác dùng `TypeCode`; (b) trùng TÊN bị chặn TOÀN HỆ THỐNG thay vì CHỈ trong
+//   CÙNG đại lý (nguồn: `CheckExistTypePartName`/`CheckExistTypeCode` đều lọc `DealerCode`).
+// 🔴 BẤT ĐỐI XỨNG GUARD CÓ THẬT: `_Create` kiểm CẢ HAI (`CheckExistTypeCode` + `CheckExistTypePartName`);
+//   `_Update` CHỈ kiểm trùng TÊN (loại trừ chính nó, `CheckExistTypePartNameWhenUpdate`) — KHÔNG kiểm lại
+//   `TypeCode` ⇒ sửa có thể đổi `TypeCode` thành mã đã dùng bởi dòng khác mà không bị chặn. Giữ đúng.
+// 🔴 `_Delete` là XOÁ CỨNG theo khoá nội bộ (PartTypeID), KHÔNG có guard tham chiếu (không kiểm phụ tùng
+//   nào đang dùng loại này) — port giữ đúng, không tự thêm rào chắn nguồn không có.
+app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealerCode) =>
 {
     var qry = db.SerPartTypes.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
-    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!));
-    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!) || (x.TypeCode != null && x.TypeCode.Contains(q!)));
+    var items = await qry.OrderBy(x => x.TypeName).Take(500)
+        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/serparttypes", async (SerPartTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbContext db, ITenantContext t) =>
 {
     var name = (dto.TypeName ?? "").Trim();
     if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Chưa nhập tên loại phụ tùng." });
-    var row = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == name);
-    if (row is null) { row = new SerPartType { OrgId = t.OrgId, TypeName = name }; db.SerPartTypes.Add(row); }
+    var dealerCode = string.IsNullOrWhiteSpace(dto.DealerCode) ? null : dto.DealerCode!.Trim();
+    var typeCode = string.IsNullOrWhiteSpace(dto.TypeCode) ? null : dto.TypeCode!.Trim();
+
+    SerPartType? row = id.HasValue
+        ? await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id.Value)
+        : null;
+
+    if (row is null)
+    {
+        // _Create: kiểm CẢ HAI, trong CÙNG đại lý.
+        if (typeCode is not null && await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeCode == typeCode && x.DealerCode == dealerCode))
+            return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Mã loại phụ tùng đã tồn tại ở đại lý này.", typeCode });
+        if (await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dealerCode))
+            return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
+        row = new SerPartType { OrgId = t.OrgId, TypeCode = typeCode, DealerCode = dealerCode, CreatedDate = DateTime.Now, CreatedBy = "api" };
+        db.SerPartTypes.Add(row);
+    }
+    else
+    {
+        // _Update: CHỈ kiểm trùng TÊN (loại trừ chính nó) — KHÔNG kiểm lại TypeCode, đúng bất đối xứng nguồn.
+        if (await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dealerCode && x.Id != row.Id))
+            return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
+        row.TypeCode = typeCode;
+        row.DealerCode = dealerCode;
+    }
+    row.TypeName = name;
     row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.DealerCode, row.FlagActive });
 }).RequireAuthorization();
 
 app.MapPost("/api/serparttypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -27306,6 +27344,16 @@ app.MapPost("/api/serparttypes/{id}/toggle", async (long id, AppDbContext db, IT
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+app.MapDelete("/api/serparttypes/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    db.SerPartTypes.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id,
+        noReferenceGuardNote = "Nguon Ser_Mst_PartType_Delete xoa CUNG khong kiem phu tung nao dang dung loai nay — giu dung, khong tu them rao chan." });
 }).RequireAuthorization();
 
 // ===== 🔴 #355 KHÁCH ĐỦ ĐIỀU KIỆN KHẢO SÁT J.D. POWER — `Ser_Customer_GetByJDPowerTerm` =====
@@ -79178,7 +79226,7 @@ record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, 
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive, string? DealerCode = null);
 record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
-record SerPartTypeDto(string? TypeName, string? FlagActive);
+record SerPartTypeDto(string? TypeName, string? FlagActive, string? TypeCode = null, string? DealerCode = null);   // #963: +TypeCode/DealerCode
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
 record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
 record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);

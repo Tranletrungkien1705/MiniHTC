@@ -3761,6 +3761,14 @@ public sealed class SerPartType
     public string TypeName { get; set; } = "";
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    // ===== #963 §12 — nguồn `Ser_MST_PartType` (Ser_Mst_PartType_Get/_Create/_Update/_Delete) có 3 cột
+    //   port cũ thiếu: `TypeCode` (mã nghiệp vụ, KHÁC TypeName), `DealerCode` (phạm vi trùng lặp/lọc —
+    //   thiếu thì TypeName trùng bị chặn TOÀN HỆ THỐNG thay vì chỉ trong CÙNG đại lý), `CreatedDate`/`CreatedBy`.
+    public string? TypeCode { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Master kỳ khảo sát JD Power (Ser_MST_JDPowerTerm) — port 1:1 FrmJDPowerTermCreate/Search (TCMotor DMSCarSv). Mã kỳ + nội dung + ngày bắt đầu/kết thúc.</summary>

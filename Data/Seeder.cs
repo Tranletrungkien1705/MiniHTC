@@ -76,6 +76,12 @@ public static class Seeder
                 "ALTER TABLE public.\"RoAttachments\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 // #906 Ser_MST_ServiceType.DealerCode — moi dai ly co danh sach loai dich vu rieng
                 "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                // #963 Ser_MST_PartType thieu TypeCode/DealerCode/CreatedDate/CreatedBy (nguon dung ca 4 cot nay
+                // de trung-lap-theo-dai-ly va guard); cung ho voi #906 nhung PartType con thieu ca TypeCode.
+                "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"TypeCode\" text NULL",
+                "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 // #907 Ser_InsuranceContract.DealerCode — khoa guard trung lap (InContractNo, InsNo, DealerCode)
                 "ALTER TABLE public.\"SerInsuranceContracts\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
