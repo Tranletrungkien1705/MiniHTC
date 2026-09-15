@@ -40830,6 +40830,48 @@ app.MapPost("/api/roattachments/flag-hmc", async (RoAttachmentFlagHmcDto dto,
 // ⚪ `DealerNetPrice_SendHMCX` còn ghi `TST_Mst_Part_DNP` (`SaveData` + `InsertHuge`) — **đúng bảng mà #810
 //   đã ghi nợ "chưa mô hình hoá"**; nay xác nhận nó là **bảng snapshot giá net đã gửi**, ghi trên cả Main và WH.
 // 📌 Mini: endpoint tra cứu bộ lọc thật của luồng gửi HMC, để ai port `SendHMC` biết đủ 5 điều kiện.
+// ===== ⛔🔴🔴 #885 MỔ NỐT BA HÀM CÒN LẠI CỦA HÀNG ĐỢI 29 — CỤM HMC DealerNetPrice/PartsOrderDetail =====
+// **Vòng parity/GAP ⇒ KHÔNG tăng bộ đếm màn.** BizCarSv.Report.Special.Warranty.cs trên V20.2023.Release:
+//   `Rpt_DMSSer_DealerNetPrice_PartGetX`      :4513 (84 dòng)  · vỏ `_PartGet` :4597 (473 dòng, chỉ gọi X)
+//   `Rpt_DMSSer_PartsOrderDetail_PartGetX`    :5316 (68 dòng)
+//   `Rpt_DMSSer_DealerNetPrice_SendHMC_Auto`  :5070 (109 dòng)
+// Cả ba **chỉ có trên cây 150**, lấy từ hàng đợi **29** (đo lại từ #874 bằng grep nới lỏng).
+//
+// 🔴🔴🔴 **BẢN SAO NGUYÊN VĂN BỘ LỌC BUG CỦA #880 — Ở ĐÂY LÀ MÀN HIỂN THỊ, KHÔNG PHẢI MÀN GỬI**
+//   `PartsOrderDetail_PartGetX` (câu LẤY DANH SÁCH ĐỂ HIỂN THỊ) chứa **Y HỆT** 5 điều kiện của
+//   `PartsOrderDetail_SendHMCX` (#880), gồm cả `f.QtyAppr = f.QtyOrd` (so bằng đúng — bug #355 ca 2).
+//   ⇒ **Đây là bản SAO-DÁN của cùng một khối SQL vào HAI hàm khác nhau**, không phải hai lần độc lập bị cùng
+//   một lỗi ⇒ vá một chỗ mà quên chỗ kia thì **màn hiển thị và file gửi sẽ vĩnh viễn lệch nhau bằng đúng lỗi đó**.
+//
+// 🔴🔴 **CỘT `PriceVAT` LẠI KHÔNG CÓ VAT (xác nhận #695/#880 lần THỨ BA) — NHƯNG NGAY DÒNG DƯỚI CÓ CỘT `Amount` CÓ VAT**
+//     `, cast(ROUND(isnull(f.UPAfterDc, 0) * 0.01, 0) as int) PriceVAT`   -- KHÔNG nhân VAT (dòng có VAT bị comment ngay trên)
+//     `, isnull(f.Price, 0) * (1 + isnull(f.VAT, 0)) Amount`               -- CÓ nhân VAT
+//   ⇒ **Tên cột nói dối kiểu #869/#872**: `PriceVAT` nghe như "giá đã gồm VAT" nhưng KHÔNG; cột `Amount` mới
+//   thực sự gồm VAT. Ai đọc lướt tên cột để tổng hợp doanh thu sẽ **cộng nhầm cột không thuế**.
+//
+// ⚪⚪ **`DealerNetPrice_PartGetX` KHÔNG dính hai bẫy trên** — chỉ trả cột thô (`TSTPrice = TSTWarrantyPrice/100`,
+//   không có cột `PriceVAT`/`Amount`) và KHÔNG có filter `QtyAppr` (không áp dụng ở cụm giá net).
+//   🔴 Nhưng có cột **`TSTUrgentPrice` = bản sao y hệt `TSTWarrantyPrice`** (`t.TSTWarrantyPrice TSTUrgentPrice`)
+//   ⇒ tên ngụ ý "giá khẩn cấp" khác giá thường, nhưng giá trị **luôn bằng nhau** — cùng họ tên-cột-nói-dối,
+//   khác cơ chế (ở đây là bí danh của CHÍNH nó, không phải công thức khác cột khác như #880).
+//
+// ⚪ **`SendHMC_Auto` của DealerNetPrice — KHÔNG tổng quát hoá theo #694 (cảnh báo cho PartsOrderDetail)**:
+//   `_Auto` gọi `SendHMCX` với `strReportDateConditionList = ""` (bỏ lọc ngày) — giống hệt điều #694 từng
+//   cảnh báo cho `PartsOrderDetail_SendHMC_Auto`. Nhưng cơ chế chặn gửi lại của HAI cụm khác nhau:
+//   `DealerNetPrice_SendHMCX` tự lọc theo **diff giá** (`TST_Mst_Part_DNP` chưa có hoặc giá đổi) — bỏ ngày
+//   filter vẫn **không** gửi lại phần không đổi. `PartsOrderDetail` lọc theo **"chưa gửi" qua `rpodp` NULL**
+//   — cũng tự chặn gửi lại, không phụ thuộc ngày. ⇒ Cả hai `_Auto` **vô hại** với việc bỏ lọc ngày vì cơ chế
+//   chống-gửi-lại nằm ở **JOIN**, không phải ở khoảng ngày; #694 gọi đây là "gửi toàn bộ lịch sử" là đúng nghĩa
+//   **quét toàn bộ bảng nguồn mỗi lần chạy** (không phải gửi trùng dữ liệu cũ) — ghi rõ để không suy diễn quá.
+// 📌 Mini: endpoint tra cứu tổng hợp ba phát hiện trên, để ai port `PartGet`/`SendHMC_Auto` biết đủ.
+app.MapGet("/api/_meta/dnp-pod-partget-audit", () => Results.Ok(new
+{
+    scope885 = "#885 mo not ba ham con lai cua hang doi 29: DealerNetPrice_PartGetX :4513 (+vo PartGet :4597), PartsOrderDetail_PartGetX :5316, DealerNetPrice_SendHMC_Auto :5070 tren BizCarSv.Report.Special.Warranty.cs V20.2023.Release. Ca ba CHI CO tren cay 150",
+    copyPastedBugFromSendHMCX880 = "PartsOrderDetail_PartGetX (man HIEN THI) chua Y HET 5 dieu kien loc cua PartsOrderDetail_SendHMCX (#880), gom ca f.QtyAppr = f.QtyOrd (bug #355 ca 2). Day la BAN SAO-DAN cung mot khoi SQL vao HAI ham khac nhau => va mot cho ma quen cho kia thi man hien thi va file gui se VINH VIEN LECH NHAU bang dung loi do",
+    priceVatLiesAgain = "COT PriceVAT LAI KHONG CO VAT (xac nhan #695/#880 LAN THU BA): cast(ROUND(isnull(f.UPAfterDc,0)*0.01,0) as int) PriceVAT KHONG nhan VAT (dong co VAT bi comment ngay tren); nhung ngay dong duoi co cot Amount = isnull(f.Price,0)*(1+isnull(f.VAT,0)) MOI thuc su gom VAT. Ten cot noi doi kieu #869/#872: ai cong nham PriceVAT tuong da gom thue se sai",
+    dealerNetPricePartGetXClean = "AM TINH — DealerNetPrice_PartGetX KHONG dinh hai bay tren: chi tra cot tho, KHONG co PriceVAT/Amount, KHONG co filter QtyAppr. Nhung co cot TSTUrgentPrice = t.TSTWarrantyPrice TSTUrgentPrice — BAN SAO Y HET TSTWarrantyPrice, ten ngu y gia khan cap khac gia thuong nhung gia tri LUON BANG NHAU — cung ho ten-cot-noi-doi, khac co che (bi danh cua CHINH NO, khong phai cong thuc khac cot khac nhu #880)",
+    sendHmcAutoNotGeneralizedFrom694 = "KHONG TONG QUAT HOA: DealerNetPrice_SendHMC_Auto goi SendHMCX voi strReportDateConditionList = rong (bo loc ngay) giong dung dieu #694 tung canh bao cho PartsOrderDetail_SendHMC_Auto. NHUNG co che chan gui lai cua HAI cum khac nhau: DealerNetPrice tu loc theo DIFF GIA (TST_Mst_Part_DNP chua co hoac gia doi); PartsOrderDetail loc theo CHUA GUI qua rpodp NULL. Ca hai deu tu chan gui lai o TANG JOIN, khong phu thuoc ngay => bo loc ngay VO HAI voi viec gui trung, chi la QUET TOAN BO BANG NGUON moi lan chay — ghi ro de khong suy dien qua",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/hmc-send-filters", () => Results.Ok(new
 {
     paysDebtOf878 = "#880 TRA NO #878: mo THAN THAT ..._SendHMCX cua hai cum (PartsOrderDetail :5487 md5 0e0c36b0 187 dong; DealerNetPrice :4700 md5 bf74658f 261 dong) — ca hai CHI CO tren cay V20.2023.Release. Ap luat #369",
