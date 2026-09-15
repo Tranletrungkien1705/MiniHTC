@@ -64963,6 +64963,66 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #953 `Ser_RO_Delete` (LIVE, `BizCarSv.Service01.cs:5149`) — XOÁ LỆNH SỬA CHỮA, CHƯA CÓ =====
+// Ba guard đúng nguồn (`CheckStatusROForDelete`/kiểm StockOut thật/`CheckIsCreatedROWarrantyReport`):
+//   1) Chỉ xoá được RO ở trạng thái RẤT SỚM: nguồn cho phép `Print`/`Create`/`NotResponding`/`RejectRO` —
+//      MiniHTC không có hai trạng thái đầu (RO luôn tạo thẳng ở `HasRO`, xem #952), nên áp dụng cho
+//      `HasRO`/`NotResponding`/`Rejected` (ba trạng thái Mini THỰC SỰ có thể đạt tới trước khi sửa chữa thật
+//      bắt đầu) — còn lại (`InGarage`trở đi) chặn như nguồn.
+//   2) CHẶN nếu đã có xuất kho THẬT (nối `SerStockOutOrder` → `SerStockOutOrderStockOut`) — nguồn dùng
+//      `Ser_RO_Delete_ExistStockOut`.
+//   3) CHẶN nếu RO đã có hồ sơ bảo hành (`Ser_ROWarrantyReport` → Mini `ServiceWarrantyClaim`).
+// Xoá theo ĐÚNG THỨ TỰ nguồn: `RoHistory` → `RoServiceItemEngineer` (theo hạng mục của RO) →
+// `InsuranceAttachment` (theo RONo) → `SerStockOutOrder` nguồn RO (+ dòng chi tiết, xem #952) →
+// `RoServiceItems`/`RoPartItems` → cuối cùng chính `RepairOrder`.
+// ⚪ Nguồn còn đồng bộ xoá sang DMS Sales (`DlrPDIRequestDtl_SyncRO`) — MiniHTC không có cổng sang hệ đó
+// (đúng #680 "chỉ mô phỏng hợp đồng"), KHÔNG bịa, ghi nợ trong response.
+app.MapDelete("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var allowedStatuses = new[] { "HasRO", "NotResponding", "Rejected" };
+    if (!allowedStatuses.Contains(r.Status))
+        return Results.BadRequest(new { error = "Ser_RO_Not_Delete", status = r.Status, allowedStatuses });
+
+    var hasRealStockOut = await db.SerStockOutOrders.Where(o => o.OrgId == t.OrgId && o.SourceType == "RO" && o.RONo == no)
+        .Join(db.SerStockOutOrderStockOuts.Where(x => x.OrgId == t.OrgId), o => o.Id, l => l.StockOutOrderId, (o, l) => l)
+        .AnyAsync();
+    if (hasRealStockOut) return Results.BadRequest(new { error = "Ser_RO_Delete_ExistStockOut" });
+
+    var hasWarrantyReport = await db.ServiceWarrantyClaims.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (hasWarrantyReport) return Results.BadRequest(new { error = "Ser_RO_IsCreatedROWarrantyReport_Delete" });
+
+    var svcItemIds = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).Select(x => x.Id).ToListAsync();
+    var engineers = await db.RoServiceItemEngineers.Where(x => x.OrgId == t.OrgId && svcItemIds.Contains(x.RoServiceItemId)).ToListAsync();
+    db.RoServiceItemEngineers.RemoveRange(engineers);
+
+    var histories = await db.RoHistories.Where(x => x.OrgId == t.OrgId && x.ROID == no).ToListAsync();
+    db.RoHistories.RemoveRange(histories);
+
+    var attachments = await db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == no).ToListAsync();
+    db.InsuranceAttachments.RemoveRange(attachments);
+
+    var orders = await db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && x.SourceType == "RO" && x.RONo == no).ToListAsync();
+    foreach (var o in orders)
+    {
+        var lines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && x.OrderId == o.Id).ToListAsync();
+        db.SerStockOutOrderLines.RemoveRange(lines);
+    }
+    db.SerStockOutOrders.RemoveRange(orders);
+
+    var services = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+    db.RoServiceItems.RemoveRange(services);
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+    db.RoPartItems.RemoveRange(parts);
+
+    db.RepairOrders.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no,
+        dmsSalesSyncNotDone = "Nguon dong bo xoa sang DMS Sales (DlrPDIRequestDtl_SyncRO) — MiniHTC khong co cong sang he do, khong mo phong." });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #949 `Ser_ROInvoice_Get_New20220926` (LIVE, `BizCarSv.Service01.cs:4177`) — CHI TIẾT IN HOÁ ĐƠN/BÁO GIÁ, CHƯA CÓ =====
 // ⚠️ Sửa lại tham chiếu SAI của lượt trước: manifest cũ ghi "Ser_ROInvoice_Get_New20230220" — TÊN NÀY KHÔNG
 // TỒN TẠI trong nguồn (chỉ có `_New20181105`/`_New20200118`/`_New20220926`, LIVE = `_New20220926`, cả bản
