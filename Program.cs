@@ -54961,6 +54961,45 @@ app.MapGet("/api/report/kpi-formatted", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
+// ===== 🏆🔴🔴 #932 `RptKPICreate`/`RptKPIUpdate` (LIVE, `BizCarSv.Service.Report.cs:3759/:4096`) — entity =====
+// `RptKpiLegacy` đã dựng đủ 32 cột từ #721/#722 (chỉ để phục vụ báo cáo `kpi-formatted` ở trên) nhưng
+// CHƯA TỪNG có endpoint GHI — nhân viên nhập tay KPI hàng tháng không có cách nào lưu dữ liệu.
+// Guard nguồn: `CheckExistRptKPIYearMonth` khoá trùng theo BỘ BA `(DealerCode, RptYear, RptMonth)` — CHỈ có
+// ở Create; Update sửa theo `AutoID` không kiểm trùng lại. Mini gộp thành MỘT upsert theo bộ ba tự nhiên
+// (không bắt client biết `AutoID` kỹ thuật) — vẫn giữ đúng ý nghĩa "mỗi đại lý/tháng chỉ một bản ghi".
+app.MapPost("/api/report/kpi-legacy", async (RptKpiLegacyDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var year = (dto.RptYear ?? "").Trim();
+    var month = (dto.RptMonth ?? "").Trim();
+    if (dealer.Length == 0 || year.Length == 0 || month.Length == 0)
+        return Results.BadRequest(new { error = "Cần DealerCode, RptYear, RptMonth." });
+    var row = await db.RptKpiLegacies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DealerCode == dealer && x.RptYear == year && x.RptMonth == month);
+    var isNew = row is null;
+    if (isNew)
+        row = new RptKpiLegacy { OrgId = t.OrgId, DealerCode = dealer, RptYear = year, RptMonth = month,
+            AutoID = "KPI" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now };
+    row!.RptBy = dto.RptBy; row.Status = dto.Status;
+    row.EnginerNumber = dto.EnginerNumber; row.AdvisoryNumber = dto.AdvisoryNumber; row.EnginerBP = dto.EnginerBP;
+    row.StaffOrther = dto.StaffOrther; row.CavityRONumber = dto.CavityRONumber; row.CavityBPNumber = dto.CavityBPNumber;
+    row.CavityParkingNumber = dto.CavityParkingNumber;
+    row.CountPaymentGJ = dto.CountPaymentGJ; row.CountWarrantyGJ = dto.CountWarrantyGJ; row.CountLocalGJ = dto.CountLocalGJ;
+    row.CountRepairedGJ = dto.CountRepairedGJ; row.CountOtherGJ = dto.CountOtherGJ;
+    row.CountPaymentBP = dto.CountPaymentBP; row.CountWarrantyBP = dto.CountWarrantyBP; row.CountLocalBP = dto.CountLocalBP;
+    row.CountRepairedBP = dto.CountRepairedBP; row.CountOrtherBP = dto.CountOrtherBP; row.CountInsurancePaymentBP = dto.CountInsurancePaymentBP;
+    row.AmountGJWarranty = dto.AmountGJWarranty; row.AmountGJLocal = dto.AmountGJLocal; row.AmountGJPayment = dto.AmountGJPayment;
+    row.AmountBPPayment = dto.AmountBPPayment; row.AmountBPWarranty = dto.AmountBPWarranty; row.AmountBPLocal = dto.AmountBPLocal;
+    row.AmountBPPaymentInsurance = dto.AmountBPPaymentInsurance;
+    row.AmountPartRO = dto.AmountPartRO; row.AmountPartSO = dto.AmountPartSO; row.AmountOill = dto.AmountOill;
+    row.AmountServiceGJ = dto.AmountServiceGJ; row.AmountServiceBP = dto.AmountServiceBP;
+    row.HourGJ = dto.HourGJ; row.HourBP = dto.HourBP;
+    if (isNew) db.RptKpiLegacies.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.AutoID, row.DealerCode, row.RptYear, row.RptMonth, isNew,
+        noteOnGuard = "nguon CheckExistRptKPIYearMonth chan trung (DealerCode,RptYear,RptMonth) o Create — Mini gop Create/Update thanh upsert theo dung bo ba do" });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #720 TRẢ NỢ `Mst_BOMDtl` — TỒN TỐI THIỂU THEO ĐỊNH MỨC BOM (`StationInvQtyMin`) =====
 // Nợ mở ở #689 (`miniModelGap`: *"Mini chưa mô hình hoá `Mst_BOMDtl` theo `PartCode` ⇒ nhánh
 // `StationInvQtyMin` chưa port được đầy đủ"*). Nguồn `BizCarSv.ZTemp.cs:1395-1480`.
@@ -78353,3 +78392,16 @@ record DlvUpdDatesRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, 
 record DlvUpdProvinceDto(List<DlvUpdProvinceRowDto>? Rows);
 record DlvUpdProvinceRowDto(string? DlvMnNo, string? VIN, string? FProvinceCodeNew, string? FDistrictCodeNew, string? TProvinceCodeNew, string? TDistrictCodeNew);
 record CarDeliveryDateRowDto(string? VIN, string? DlvMnNo, string? DeliveryOrderNo, string? CarId, string? DealNo, DateTime? CarDeliveryDate);
+
+// #932
+record RptKpiLegacyDto(
+    string? DealerCode, string? RptYear, string? RptMonth, string? RptBy, string? Status,
+    decimal? EnginerNumber, decimal? AdvisoryNumber, decimal? EnginerBP, decimal? StaffOrther,
+    decimal? CavityRONumber, decimal? CavityBPNumber, decimal? CavityParkingNumber,
+    decimal? CountPaymentGJ, decimal? CountWarrantyGJ, decimal? CountLocalGJ, decimal? CountRepairedGJ, decimal? CountOtherGJ,
+    decimal? CountPaymentBP, decimal? CountWarrantyBP, decimal? CountLocalBP, decimal? CountRepairedBP,
+    decimal? CountOrtherBP, decimal? CountInsurancePaymentBP,
+    decimal? AmountGJWarranty, decimal? AmountGJLocal, decimal? AmountGJPayment,
+    decimal? AmountBPPayment, decimal? AmountBPWarranty, decimal? AmountBPLocal, decimal? AmountBPPaymentInsurance,
+    decimal? AmountPartRO, decimal? AmountPartSO, decimal? AmountOill,
+    decimal? AmountServiceGJ, decimal? AmountServiceBP, decimal? HourGJ, decimal? HourBP);
