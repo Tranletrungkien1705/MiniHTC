@@ -137,6 +137,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstDeliveryForm> MstDeliveryForms => Set<MstDeliveryForm>();   // #634
     public DbSet<MstOrderComplainType> MstOrderComplainTypes => Set<MstOrderComplainType>();   // #633
     public DbSet<MstOrderComplainImageType> MstOrderComplainImageTypes => Set<MstOrderComplainImageType>();   // #633
+    public DbSet<SerReceptionError> SerReceptionErrors => Set<SerReceptionError>();   // #909
     public DbSet<RoWorkTime> RoWorkTimes => Set<RoWorkTime>();   // #532
     public DbSet<PartExtraMst> PartExtraMsts => Set<PartExtraMst>();   // #538
     public DbSet<RoWorkArisingQuotaMst> RoWorkArisingQuotaMsts => Set<RoWorkArisingQuotaMst>();   // #539

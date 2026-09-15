@@ -72697,6 +72697,39 @@ app.MapPost("/api/mstordercomplainimagetypes", async (MstOrderComplainImageTypeD
                             writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #909 Danh mục LỖI TIẾP NHẬN `Ser_Mst_ReceptionError` (LIVE, `TERP.BizCarSv/Tab/BizCarSv.Tab.cs:1425`) =====
+// PHÁT HIỆN QUA CHIẾN THUẬT MỚI (#393): mọi lượt quét trước chỉ glob `$D/*.cs` KHÔNG đệ quy — toàn bộ thư mục
+// con `TERP.BizCarSv/Tab/`, `/BizCarSv.CampaignMarketing/`, `/HCCIntergration/`, `/iCIC.KhieuNai/`,
+// `/UploadFile/` (đều compile chung vào `TERP.BizCarSv.dll` theo `bin/Debug`) CHƯA TỪNG được quét bởi bất kỳ
+// vòng quét-theo-tên-hàm hay quét-theo-bảng nào trước đây. Cột thật lấy từ
+// `TERP.HTCService.ClientService/Entities/Ser_Mst_ReceptionError.cs` (client entity, khớp `smre.*` trong SQL).
+// Nguồn CHỈ có `_Get` — quét toàn solution không thấy `_Create/_Update/_Delete` (danh mục nuôi thẳng trong DB).
+app.MapGet("/api/receptionerrors", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerReceptionErrors.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReceptionErrorCode.Contains(q!) || (x.ReceptionErrorName != null && x.ReceptionErrorName.Contains(q!)));
+    var items = await qry.OrderBy(x => x.ReceptionErrorCode).Take(500)
+        .Select(x => new { x.ReceptionErrorCode, x.ReceptionErrorName, x.Remark, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptionerrors", async (SerReceptionErrorDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.ReceptionErrorCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã lỗi tiếp nhận." });
+    var by = user.Identity?.Name ?? "system";
+    var row = await db.SerReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == code);
+    if (row is null) { row = new SerReceptionError { OrgId = t.OrgId, ReceptionErrorCode = code }; db.SerReceptionErrors.Add(row); }
+    row.ReceptionErrorName = dto.ReceptionErrorName; row.Remark = dto.Remark;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ReceptionErrorCode, row.ReceptionErrorName, row.FlagActive,
+                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #632 MASTER FILE ĐÍNH KÈM PHIẾU TIẾP NHẬN `Ser_Mst_ReceptionAttachFile` (`Tab.cs:14419`) =====
 // 3B: laptop `:14419` md5 `b7e207ea` **KHỚP** máy 150 `:14437` (lệch **+18**, căn theo TÊN).
 // ⚠️ **KHÁC BẢNG** với `ReceptionAttachFile` mà MiniHTC đã có (`/api/receptions/{no}/attachfiles`): bảng kia
@@ -77459,6 +77492,7 @@ record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? Deale
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
 record MstDeliveryFormDto(string? DeliveryFormCode, string? DeliveryFormName, string? FlagActive);   // #634
 record MstOrderComplainTypeDto(string? OrderComplainType, string? OrderComplainTypeName, string? FlagActive);   // #633
+record SerReceptionErrorDto(string? ReceptionErrorCode, string? ReceptionErrorName, string? Remark, string? FlagActive);   // #909
 record MstOrderComplainImageTypeDto(string? OrderComplainImageType, string? OrderComplainImageName, string? FlagActive);   // #633
 record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo, string? FilePath, string? FileName);   // #632
 record ReceptionFAudTypeMstDto(string? ReceptionFAudType, string? ReceptionFAudTypeName, string? FlagActive, string? Remark);   // #627

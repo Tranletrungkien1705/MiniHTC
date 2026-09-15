@@ -15436,6 +15436,22 @@ public sealed class MstOrderComplainType
     public string? LogLUBy { get; set; }
 }
 
+/// <summary>#909 Danh mục LỖI TIẾP NHẬN (`Ser_Mst_ReceptionError`, `TERP.BizCarSv/Tab/BizCarSv.Tab.cs:1425`, LIVE),
+/// khoá `ReceptionErrorCode`. Cột lấy từ `TERP.HTCService.ClientService/Entities/Ser_Mst_ReceptionError.cs`
+/// (khớp `smre.*`). Nguồn chỉ có hàm ĐỌC — không có Create/Update/Delete trong toàn bộ solution ⇒ danh mục
+/// được nuôi thẳng trong DB, giống <see cref="MstOrderComplainType"/>.</summary>
+public sealed class SerReceptionError
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionErrorCode { get; set; } = "";
+    public string? ReceptionErrorName { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>#633 Master **LOẠI ẢNH** của khiếu nại (`Mst_OrderComplainImageType`), khoá
 /// `OrderComplainImageType`. 🔴 Cột tên **KHÔNG** đối xứng với bảng anh em: nguồn lọc bằng
 /// `mocit.OrderComplainImage**Name**` (bỏ chữ "Type"), không phải `OrderComplainImageTypeName`.
