@@ -30598,7 +30598,7 @@ app.MapGet("/api/ordercomplains/{no}/attachments", async (string no, AppDbContex
     var cn = no.Trim();
     if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
     var files = await db.OrderComplainAttachments.Where(a => a.OrgId == t.OrgId && a.ComplainNo == cn).OrderBy(a => a.Id)
-        .Select(a => new { a.Id, a.FileName, a.ImageType, a.FileNote, createdAt = a.CreatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+        .Select(a => new { a.Id, a.FileName, a.ImageType, a.ImagePath, a.FileNote, createdAt = a.CreatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { complainNo = cn, count = files.Count, files });
 }).RequireAuthorization();
 
@@ -30608,7 +30608,8 @@ app.MapPost("/api/ordercomplains/{no}/attachments", async (string no, OcAttachDt
     if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
     var fn = (dto.FileName ?? "").Trim();
     if (fn == "") return Results.BadRequest(new { error = "Cần tên file đính kèm." });
-    var a = new OrderComplainAttachment { OrgId = t.OrgId, ComplainNo = cn, FileName = fn, ImageType = dto.ImageType, FileNote = dto.FileNote };
+    // #908 §12: nguồn `Ser_OrderComplainAttachFile.ImagePath` là đường dẫn thật lưu file, KHÔNG được bỏ.
+    var a = new OrderComplainAttachment { OrgId = t.OrgId, ComplainNo = cn, FileName = fn, ImageType = dto.ImageType, ImagePath = dto.ImagePath, FileNote = dto.FileNote };
     db.OrderComplainAttachments.Add(a); await db.SaveChangesAsync();
     return Results.Ok(new { a.Id, a.FileName });
 }).RequireAuthorization();
@@ -77553,7 +77554,7 @@ record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, in
 record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);
 record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);
 record PaymentDiscountStatusDto(string Status, string? Note);
-record OcAttachDto(string FileName, string? ImageType, string? FileNote);
+record OcAttachDto(string FileName, string? ImageType, string? ImagePath, string? FileNote);
 record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, decimal TotalQty);
 record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);
 record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);

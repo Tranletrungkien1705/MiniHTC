@@ -4513,7 +4513,8 @@ public sealed class PaymentDiscountReq
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>File đính kèm khiếu nại đơn phụ tùng — port 1:1 FrmSer_OrderComplainAttachment (Ser_OrderComplainAttachment, TCMotor/TST).</summary>
+/// <summary>File đính kèm khiếu nại đơn phụ tùng — port 1:1 FrmSer_OrderComplainAttachment (nguồn thật `Ser_OrderComplainAttachFile`,
+/// `BizCarSv.SuggestPrice.cs:3316 Ser_OrderComplain_Save`, LIVE).</summary>
 public sealed class OrderComplainAttachment
 {
     public long Id { get; set; }
@@ -4521,6 +4522,9 @@ public sealed class OrderComplainAttachment
     public string ComplainNo { get; set; } = "";
     public string FileName { get; set; } = "";
     public string? ImageType { get; set; }   // loại ảnh (OrderComplainImageType)
+    /// <summary>🔴 #908 §12 `ImagePath` — cột nguồn thật (`Ser_OrderComplainAttachFile.ImagePath`) bị mất hoàn toàn ở
+    /// port cũ (chỉ có `FileNote` bịa thêm, không có trong nguồn) — không có cột này thì không lấy lại được file đã lưu.</summary>
+    public string? ImagePath { get; set; }
     public string? FileNote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
