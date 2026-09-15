@@ -68280,6 +68280,112 @@ app.MapGet("/api/report/warranty-accept-getall-wh", async (AppDbContext db, ITen
 // 🔴 **THỨ TỰ CỘT KHÁC NHAU GIỮA HAI BẢN**: `upper(sc.TradeMarkCode) TradeMarkCode` đứng **trước** ở `CrtRO`,
 //   **sau** ở `UpdRO` ⇒ client nào đọc theo **vị trí cột** (không theo tên) sẽ lấy nhầm giữa hai API.
 // 🔴 `scm.CamMarketingStatus in ('A')` — trạng thái **gõ cứng một mã**, `in (…)` với đúng một phần tử.
+// ===== 🔴🔴🔴 #886 — `Ser_CampaignMarketing_GetForRoPartItem` (SIBLING THỨ BA của cụm #740, chưa audit) — **1430/`2800 (51,1%)**
+// `CampaignMarketing/BizCarSv.CampaignMarketing.cs:2649`, LIVE trên cả hai cây (**3B khớp**). Khác
+// `Ser_CampaignMarketing_GetForCusCrtRO`/`GetForCusUpdRO` mà #740 đã đọc — đây là bản BATCH (nhận CSV
+// `strROIDConditionList` + `strCarIDConditionList`), không phải một RO/xe.
+//
+// ⛔ **ĐÍNH CHÍNH KHUNG PHÂN TÍCH CỦA #740 — "thiếu ngoặc" KHÔNG đổi kết quả khi mệnh đề còn lại là `(1=1)`**:
+//   #740 viết *"AND ưu tiên hơn OR => … OR NUỐT TOÀN BỘ WHERE"*. Tính lại bằng đại số Boole:
+//   `(1=1) AND (ConditionPlateNo is null) OR (PlateNo like …)` ⇒ theo thứ tự ưu tiên đúng là
+//   `((1=1) AND (ConditionPlateNo is null)) OR (PlateNo like …)`. Vì `1=1` là hằng ĐÚNG, `(1=1 AND A) ≡ A`
+//   ⇒ biểu thức **bằng hệt** `(ConditionPlateNo is null) OR (PlateNo like …)` — tức **CHÍNH bản có ngoặc đúng**
+//   `(1=1) AND ((A) OR (B))` cũng rút gọn về đúng `A OR B`. **Hai cách viết cho cùng một kết quả** khi mệnh đề
+//   đứng trước dấu `and` là hằng đúng. ⇒ Đây **không phải lỗi thiếu ngoặc** (khác #362 — đã đo lại bằng đại số,
+//   không suy đoán). Áp dụng lại đúng: ba khối tương tự (`ConditionDealer`, `ConditionVIN`, `ConditionFullVIN`)
+//   trong CHÍNH hàm này cũng vô hại vì lý do y hệt.
+// 🔴🔴🔴 **NHƯNG KẾT LUẬN CHUNG CỦA #740 VẪN ĐÚNG, CHỈ SAI NGUYÊN NHÂN — GỐC THẬT LÀ `inner join … on (1=1)`
+//   (CROSS JOIN) XUẤT HIỆN SÁU LẦN** (đếm được: khối Warranty, PlateNo, Dealer, VIN, FullVIN, và khối `Filter`
+//   cuối — nhiều hơn cả CrtRO 3 lần và UpdRO 4 lần mà #740 từng đếm). Vì `strCarIDConditionList`/
+//   `strROIDConditionList` là **danh sách** (hàm BATCH, không phải một xe), `#tbl_Ser_Car_Filter` có thể chứa
+//   **NHIỀU xe cùng lúc**, và `SELECT DISTINCT scm.CamMarketingNo` gộp chung ⇒ **một chiến dịch khớp CHỈ MỘT
+//   xe trong lô là lọt qua cho CẢ LÔ** — và câu `Return:` cuối trả một danh sách chiến dịch **phẳng**, không gắn
+//   lại với ROID/CarID nào ⇒ **bên gọi không biết chiến dịch nào áp cho xe nào trong lô**. Đây mới là bug thật.
+// 🔴🔴 **INJECTION QUA `StringUtils.Replace`, KHÔNG QUA THAM SỐ HOÁ**: `strEffDate` (tham số WS, chỉ được
+//   "chuẩn hoá định dạng" qua `StandardizeDateOrDBNull`, KHÔNG lọc ký tự) được nhét thẳng vào SQL bằng
+//   `StringUtils.Replace(strSqlGetData, ["@strSysDate", strEffDate])` — tức **thay chuỗi tại biên dịch SQL**,
+//   không phải `alParamsCoupleSql` như 12 chỗ `zzzzClauseWhere*` khác trong CÙNG hàm. Khác hẳn kiểu bake #367/
+//   #881 (chỉ lộ khi field SAI CHỖ), ở đây là **field ĐÚNG vị trí nhưng ĐI SAI ĐƯỜNG tham số hoá**.
+// ⚪ Mini đã có đủ 4 bảng con (`CampaignMarketingPlateNo/Dealer/Vin/FullVin`, #482/#483) ⇒ port được ĐẦY ĐỦ
+// điều kiện, không phải ghi nợ như #740 từng phải ghi cho `for-car`.
+// 📌 Mini: `GET /api/campaignmarketings/for-ro-batch` — chấm điểm TỪNG RO ĐỘC LẬP (vá lỗi gộp lô), tham số hoá
+// `effDate`, và trả kèm RONo cho mỗi dòng chiến dịch để bên gọi biết áp cho xe nào.
+app.MapGet("/api/campaignmarketings/for-ro-batch", async (AppDbContext db, ITenantContext t,
+    string? roNos, string? effDate) =>
+{
+    const string StatusActive = "A";
+    const string BrandHyundai = "HYUNDAI";
+    var wantedRoNos = (roNos ?? "").Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct().ToList();
+    if (wantedRoNos.Count == 0) return Results.BadRequest(new { error = "roNos rong" });
+    DateTime? effDateParam = DateTime.TryParse(effDate, out var ed) ? ed : (DateTime?)null;
+
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && wantedRoNos.Contains(x.RONo)).ToListAsync();
+    var foundRoNos = ros.Select(x => x.RONo).ToHashSet();
+    var missingRoNos = wantedRoNos.Where(x => !foundRoNos.Contains(x)).ToList();
+
+    var carIds = ros.Select(x => x.CarID).Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID)).ToListAsync();
+    var carsByCarId = cars.ToDictionary(x => x.CarID!, x => x);
+
+    var cams = await db.CampaignMarketings.Where(x => x.OrgId == t.OrgId && x.CamMarketingStatus == StatusActive).ToListAsync();
+    var camNos = cams.Select(c => c.CamNo).ToList();
+    var plateRows = await db.CampaignMarketingPlateNos.Where(x => x.OrgId == t.OrgId && camNos.Contains(x.CamNo)).ToListAsync();
+    var dealerRows = await db.CampaignMarketingDealers.Where(x => x.OrgId == t.OrgId && camNos.Contains(x.CamNo)).ToListAsync();
+    var vinRows = await db.CampaignMarketingVins.Where(x => x.OrgId == t.OrgId && camNos.Contains(x.CamNo)).ToListAsync();
+    var fullVinRows = await db.CampaignMarketingFullVins.Where(x => x.OrgId == t.OrgId && camNos.Contains(x.CamNo)).ToListAsync();
+    var plateByCam = plateRows.GroupBy(x => x.CamNo).ToDictionary(g => g.Key, g => g.ToList());
+    var dealerByCam = dealerRows.GroupBy(x => x.CamNo).ToDictionary(g => g.Key, g => g.ToList());
+    var vinByCam = vinRows.GroupBy(x => x.CamNo).ToDictionary(g => g.Key, g => g.ToList());
+    var fullVinByCam = fullVinRows.GroupBy(x => x.CamNo).ToDictionary(g => g.Key, g => g.ToList());
+
+    var resultRows = new List<object>();
+    foreach (var ro in ros)
+    {
+        if (ro.CarID is null || !carsByCarId.TryGetValue(ro.CarID, out var car)) continue;
+        var brand = (car.TradeMark ?? "").Trim().ToUpperInvariant();
+        if (brand != BrandHyundai) continue;
+        var wrd = car.WarrantyRegistrationDate;
+        var roCreatedDate = ro.CheckInDate?.Date;
+        var sysDate = (effDateParam ?? DateTime.Today).Date;
+
+        foreach (var c in cams)
+        {
+            // ===== Điều kiện bảo hành — mở, hoặc trong khoảng =====
+            bool warrantyOk = (c.WarrantyDateStart is null && c.WarrantyDateEnd is null)
+                || (wrd is not null && c.WarrantyDateStart <= wrd && wrd <= c.WarrantyDateEnd);
+            if (!warrantyOk) continue;
+            // ===== Điều kiện hiệu lực — mở, hoặc theo effDate tham so hoa, hoac theo ngay vao xuong cua RO =====
+            bool effOk = (true)
+                && ((c.EffDateStart <= sysDate && sysDate <= c.EffDateEnd)
+                    || (roCreatedDate is not null && c.EffDateStart <= roCreatedDate && roCreatedDate <= c.EffDateEnd));
+            if (!effOk) continue;
+            bool plateOk = string.IsNullOrEmpty(c.ConditionPlateNo)
+                || (plateByCam.TryGetValue(c.CamNo, out var pr) && pr.Any(p => (car.PlateNo ?? "").StartsWith(p.StartPlateNo)));
+            if (!plateOk) continue;
+            bool dealerOk = string.IsNullOrEmpty(c.ConditionDealer)
+                || (dealerByCam.TryGetValue(c.CamNo, out var dr) && dr.Any(d => d.DealerCode == car.DealerCode));
+            if (!dealerOk) continue;
+            bool vinOk = string.IsNullOrEmpty(c.ConditionVin)
+                || (vinByCam.TryGetValue(c.CamNo, out var vr) && vr.Any(v => (car.FrameNo ?? "").Contains(v.VIN)));
+            if (!vinOk) continue;
+            bool fullVinOk = !fullVinByCam.TryGetValue(c.CamNo, out var fr) || fr.Count == 0
+                || fr.Any(f => f.VinNo == car.FrameNo);
+            if (!fullVinOk) continue;
+
+            resultRows.Add(new { ro.RONo, car.CarID, c.CamNo, c.CamName, c.EffDateStart, c.EffDateEnd });
+        }
+    }
+
+    return Results.Ok(new
+    {
+        count = resultRows.Count, rows = resultRows, missingRoNos,
+        onlyExistsOnBoth886 = "#886: Ser_CampaignMarketing_GetForRoPartItem — CampaignMarketing/BizCarSv.CampaignMarketing.cs:2649, LIVE tren ca hai cay. Sibling THU BA cua cum #740 (khac GetForCusCrtRO/GetForCusUpdRO), chua tung audit",
+        correction740MissingParensIsHarmlessHereBecauseOfTautology = "DINH CHINH KHUNG PHAN TICH CUA #740: (1=1) AND (A) OR (B) ruot gon dai so Boole bang dung A OR B — GIONG HET ban co ngoac dung (1=1) AND ((A) OR (B)). Khong phai loi thieu ngoac khi menh de truoc and la hang DUNG. Da do lai bang dai so, khong suy doan",
+        realRootCauseIsCrossJoinOnOneEqualsOneSixTimes = "KET LUAN CHUNG CUA #740 VAN DUNG, SAI NGUYEN NHAN: goc that la inner join ... on (1=1) (CROSS JOIN) XUAT HIEN SAU LAN trong ham nay (Warranty, PlateNo, Dealer, VIN, FullVIN, Filter cuoi) — nhieu hon CrtRO (3) va UpdRO (4). Vi la ham BATCH (nhieu ROID/CarID cung luc), SELECT DISTINCT gop chung => MOT chien dich khop CHI MOT xe trong lo la lot qua cho CA LO, va cau Return cuoi tra danh sach PHANG khong gan lai ROID/CarID nao => ben goi khong biet chien dich nao ap cho xe nao",
+        injectionViaStringReplaceNotParam = "strEffDate duoc nhet vao SQL bang StringUtils.Replace (thay chuoi tai bien dich), KHONG qua alParamsCoupleSql nhu 12 cho zzzzClauseWhere khac trong CUNG ham — field DUNG VI TRI nhung DI SAI DUONG tham so hoa",
+        miniNowModelsAllFourChildTables = "AM TINH: Mini da co du CampaignMarketingPlateNo/Dealer/Vin/FullVin (#482/#483) nen port duoc DAY DU dieu kien, khong phai ghi no nhu #740 tung ghi cho for-car",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/campaignmarketings/for-car", async (AppDbContext db, ITenantContext t,
     string? carId, string? roId, string? dealerCode) =>
 {
