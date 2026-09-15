@@ -14989,6 +14989,63 @@ app.MapGet("/api/serviceitems", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #902 — `Ser_Mst_Service_Get_New20210618` (tìm dịch vụ nâng cao + hệ số giá, LIVE — `WSCarSv.asmx.cs:2686`) — **1446/`2800 (51,6%)**
+// `BizCarSv.Service.cs:1145` (191 dòng). Khác `/api/serviceitems` đã có (port của `_Create`/#297, chỉ lọc
+// đơn giản) — hàm này có phân trang `Row_Number()` + hệ số giá theo loại khách, chưa từng port.
+//
+// 🔴🔴🔴 **`@CusTypeID` VỪA LÀ INJECTION TRẦN TRỤI (KHÔNG NGOẶC) VỪA LÀ DEAD-JOIN — CA THỨ BA CỦA #887/#889**:
+//     `if (string.IsNullOrEmpty(strCusTypeID)) strCusTypeID = "null";`
+//     `... on mcsf.CusTypeID = @CusTypeID ...` rồi `StringUtils.Replace(sql, "@CusTypeID", strCusTypeID)`
+//   ⓵ Khi RỖNG: giá trị thay vào là chuỗi `"null"` → SQL thành `mcsf.CusTypeID **= null**` (literal, không
+//   phải `IS NULL`) ⇒ luôn UNKNOWN, JOIN không bao giờ khớp — **CA THỨ BA** của bug #887/#889
+//   (`mcpf.CusTypeID = NULL`), lần này ở danh mục DỊCH VỤ thay vì PHỤ TÙNG. Mẫu ĐÚNG vẫn là #734.
+//   ⓶ Khi CÓ GIÁ TRỊ: `strCusTypeID` (tham số WS, người gọi tự gửi) được nhét **KHÔNG NGOẶC, KHÔNG THAM SỐ
+//   HOÁ** thẳng vào vị trí so sánh trong `ON` — nặng hơn mọi ca bake-trong-ngoặc đã gặp (#367/#886/#887/#889/
+//   #892/#900): ở đây KHÔNG CÓ dấu nháy nào để thoát ra — attacker chèn thẳng SQL bất kỳ vào vị trí đó mà
+//   không cần kỹ thuật thoát chuỗi. **Injection trần trụi nhất trong họ bake đã gặp trong đợt grind này.**
+// ⚪ Phân trang `Row_Number() over (order by t.SerID desc)` rồi cắt theo `MyRowIdx` — **đúng mẫu**, không
+// dính #415 (khác `SELECT…INTO` không `OVER`, `ROW_NUMBER() OVER(ORDER BY…)` có thứ tự đảm bảo).
+// 📌 Mini: `GET /api/serviceitems/search-full` — hệ số giá dùng đúng `CusTypeCode` thật + so sánh C# an toàn
+// (không bake), phân trang skip/take tương đương.
+app.MapGet("/api/serviceitems/search-full", async (AppDbContext db, ITenantContext t,
+    string? serCodePattern, string? serNamePattern, string? dealerCode, string? cusTypeId,
+    string? isActive, int? start, int? count) =>
+{
+    var query = db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(serCodePattern)) query = query.Where(x => x.SerCode.Contains(serCodePattern!));
+    if (!string.IsNullOrWhiteSpace(serNamePattern)) query = query.Where(x => x.SerName != null && x.SerName.Contains(serNamePattern!));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(isActive)) query = query.Where(x => x.FlagActive == isActive);
+
+    var total = await query.CountAsync();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 1000 ? count!.Value : 100;
+    var page = await query.OrderByDescending(x => x.SerCode).Skip(skip).Take(take).ToListAsync();
+
+    // Vi FIX ho so: he so gia dung CusTypeCode that (mau dung #734), khong bake, khong dead-join.
+    Dictionary<string, decimal> factorBySer = new();
+    if (!string.IsNullOrWhiteSpace(cusTypeId))
+    {
+        var serIds = page.Select(x => x.SerCode).ToList();
+        var csf = await db.CusServiceFactors.Where(x => x.OrgId == t.OrgId && x.CusTypeID == cusTypeId && serIds.Contains(x.SerID)).ToListAsync();
+        var ct = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == cusTypeId);
+        foreach (var s in page)
+        {
+            var bySer = csf.FirstOrDefault(x => x.SerID == s.SerCode)?.Factor;
+            factorBySer[s.SerCode] = bySer ?? ct?.CusFactor ?? 1m;
+        }
+    }
+
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = page.Count,
+        items = page.Select(s => new { s.SerCode, s.SerName, s.Cost, s.Price, s.Model, s.Vat, s.FlagActive, s.DealerCode,
+            factor = factorBySer.TryGetValue(s.SerCode, out var f) ? f : (decimal?)null }),
+        onlyLiveConfirmed902 = "#902: Ser_Mst_Service_Get_New20210618 — BizCarSv.Service.cs:1145, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:2686",
+        cusTypeIdNakedInjectionAndDeadJoin = "@CusTypeID VUA LA INJECTION TRAN TRUI (KHONG NGOAC) VUA LA DEAD-JOIN — CA THU BA cua ho #887/#889: rong => strCusTypeID = literal chuoi null => SQL thanh mcsf.CusTypeID = null (khong phai IS NULL) => JOIN khong bao gio khop; co gia tri => strCusTypeID (WS caller tu gui) nhet KHONG NGOAC KHONG THAM SO HOA thang vao vi tri so sanh trong ON => INJECTION TRAN TRUI NHAT trong ho bake da gap dot nay, khong can ky thuat thoat chuoi",
+        paginationPatternIsCorrect = "AM TINH: Row_Number() over (order by t.SerID desc) roi cat theo MyRowIdx la MAU DUNG, khong dinh #415 vi ROW_NUMBER() OVER(ORDER BY) co thu tu dam bao, khac SELECT INTO khong OVER",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SerCode)) return Results.BadRequest(new { error = "Chưa nhập mã dịch vụ." });
