@@ -60107,6 +60107,11 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
 //      port rải rác qua các endpoint khách/xe khác, ở đây gộp lại thành MỘT giao dịch/dòng Excel).
 // 🔴 Nợ #395 lan sang: `CustomerCar` (entity Mini dùng cho xe khách) không có cột `DealerCode` — tra xe theo
 // PlateNo KHÔNG lọc được đại lý (giống hệt debt đã ghi ở #921/#911/#938). Giữ nguyên, không tự thêm cột.
+// 🔴🔴 #976 SỬA PARITY: nguồn gọi `ProcessCustomerCreate`/`ProcessCustomerUpdate` với 18 tham số (CẢ HAI
+// nhánh cùng bộ) và `ProcessCarCreate`/`ProcessCarUpdate` có `strTradeMarkCode`/`strProductYear`
+// (`BizCarSv.Customer.cs:7644-7760`) — port cũ chỉ gán 5/18 trường khách (kể cả `Fax`/`ProductYear` ĐÃ CÓ
+// sẵn trong DTO nhưng chưa bao giờ được đọc) và bỏ hẳn TradeMarkCode/ProductYear của xe (entity `CustomerCar`
+// chưa có hai cột này — bổ sung §12). Vá đủ cả hai nhánh Create/Update, đúng nguồn "cùng bộ tham số".
 app.MapPost("/api/servicecustomers/import-ws", async (List<ServiceCustomerImportWsRow> rows, string? dealerCode,
     AppDbContext db, ITenantContext t) =>
 {
@@ -60135,22 +60140,28 @@ app.MapPost("/api/servicecustomers/import-ws", async (List<ServiceCustomerImport
             cus = new ServiceCustomer
             {
                 OrgId = t.OrgId, CusCode = "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff") + saved.Count,
-                CusName = row.CusName, CusTypeID = cusType.CusTypeCode, DealerCode = dl,
-                Sex = row.Sex, Address = row.Address, Tel = row.Tel, Mobile = row.Mobile, Email = row.Email,
             };
             db.ServiceCustomers.Add(cus);
         }
         else
         {
             cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == car.CusCode) ?? new ServiceCustomer { OrgId = t.OrgId, CusCode = car.CusCode };
-            cus.CusName = row.CusName; cus.CusTypeID = cusType.CusTypeCode; cus.DealerCode = dl;
-            cus.Sex = row.Sex; cus.Address = row.Address; cus.Tel = row.Tel; cus.Mobile = row.Mobile; cus.Email = row.Email;
         }
+        // #976: ProcessCustomerCreate/ProcessCustomerUpdate (nguồn) nhận ĐÚNG bộ tham số này ở CẢ HAI nhánh —
+        // port cũ chỉ gán 5/18 trường, 13 trường còn lại (kể cả Fax/ProductYear đã CÓ trong DTO) bị rớt âm thầm.
+        cus.CusName = row.CusName; cus.CusTypeID = cusType.CusTypeCode; cus.DealerCode = dl;
+        cus.Sex = row.Sex; cus.Address = row.Address; cus.Tel = row.Tel; cus.Mobile = row.Mobile;
+        cus.Fax = row.Fax; cus.Email = row.Email; cus.Website = row.Website; cus.Bank = row.Bank;
+        cus.BankAccountNo = row.BankAccountNo; cus.TaxCode = row.TaxCode; cus.IsContact = row.IsContact;
+        cus.ContName = row.ContName; cus.ContSex = row.ContSex; cus.ContAddress = row.ContAddress;
+        cus.ContTel = row.ContTel; cus.ContMobile = row.ContMobile; cus.ContFax = row.ContFax; cus.ContEmail = row.ContEmail;
         await db.SaveChangesAsync();   // đảm bảo cus có Id/CusCode trước khi gán vào car
         if (car is null) { car = new CustomerCar { OrgId = t.OrgId, PlateNo = plate }; db.CustomerCars.Add(car); }
         car.FrameNo = row.FrameNo; car.EngineNo = row.EngineNo; car.ModelCode = model.ModelCode; car.ColorCode = row.ColorCode;
+        car.TradeMarkCode = row.TrademarkCode;   // #976
+        car.ProductYear = int.TryParse(row.ProductYear, out var py) ? py : null;   // #976
         car.CusCode = cus.CusCode; car.CusName = cus.CusName; car.CusPhone = cus.Mobile ?? cus.Tel; car.UpdatedAt = DateTime.Now;
-        saved.Add(new { cus.CusCode, cus.CusName, car.PlateNo, car.FrameNo });
+        saved.Add(new { cus.CusCode, cus.CusName, car.PlateNo, car.FrameNo, car.TradeMarkCode, car.ProductYear });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { savedCount = saved.Count, errorCount = errors.Count, saved, errors,
@@ -79212,7 +79223,10 @@ record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile
     string? ContName = null, string? ContAddress = null);
 record ServiceCustomerImportWsRow(string? CusName, string? TrademarkCode, string? ModelName, string? PlateNo, string? FrameNo,
     string? CusTypeName, string? Sex, string? Address, string? Tel, string? Mobile, string? Fax, string? Email,
-    string? EngineNo, string? ProductYear, string? ColorCode);   // #939
+    string? EngineNo, string? ProductYear, string? ColorCode,   // #939
+    string? Website = null, string? Bank = null, string? BankAccountNo = null, string? TaxCode = null, string? IsContact = null,
+    string? ContName = null, string? ContSex = null, string? ContAddress = null, string? ContTel = null,
+    string? ContMobile = null, string? ContFax = null, string? ContEmail = null);   // #976
 // #332: tao khach KEM danh sach xe (kenh may tinh bang). Gender: rong | "1" | "0".
 record CustomerWithCarsDto(string? CusName, string? DealerCode, string? Address = null,
     string? Mobile = null, string? ContName = null, string? ContAddress = null, string? ContPhone = null,

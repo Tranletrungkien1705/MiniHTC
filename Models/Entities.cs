@@ -2929,6 +2929,11 @@ public sealed class CustomerCar
     public string? CusPhone { get; set; }
     public DateTime? SaleDate { get; set; }            // ngày bán xe
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    // ===== #976 §12 — nguồn `ProcessCarCreate`/`ProcessCarUpdate` (gọi từ `Ser_Customer_Import`,
+    // `BizCarSv.Customer.cs:7677-7760`) truyền `strTradeMarkCode`/`strProductYear` nhưng entity chưa có
+    // chỗ chứa ⇒ hai giá trị nhận từ import bị RỚT ÂM THẦM (không lỗi, chỉ không lưu).
+    public string? TradeMarkCode { get; set; }
+    public int? ProductYear { get; set; }
 }
 
 /// <summary>Báo giá sửa chữa (header: theo RO, tổng công + phụ tùng + VAT) — port 1:1 FrmQuotation (TblSerRO/Quotation, TCMotor).</summary>
