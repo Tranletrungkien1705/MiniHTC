@@ -65612,6 +65612,9 @@ app.MapGet("/api/repairorders/{no}/invoice-detail", async (string no, AppDbConte
     // #971: sys_user theo Creator — nguồn nối để lấy SUUserName/SUUserPhone (giống #970c).
     var creator = string.IsNullOrWhiteSpace(r.Creator) ? null
         : await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == r.Creator);
+    // #971: nguồn CÓ join tm.TradeMarkName riêng (khác car.TradeMarkCode) mà bản port cũ chưa tra.
+    var tm = (car?.TradeMark is not null)
+        ? await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == car.TradeMark) : null;
 
     // Ba cột suy diễn theo đúng thứ tự ưu tiên nguồn (case-when ba nhánh).
     string? cusAddress, cusTel, cusMobile;
@@ -65643,7 +65646,8 @@ app.MapGet("/api/repairorders/{no}/invoice-detail", async (string no, AppDbConte
             r.FlagOnlyPoint, r.DlrPDIReqNo, r.InsuranceDeductible, r.AmountDiscountOther, r.LevelOfInspection },
         customer = new { ownerName = cus?.CusName, cusName = r.CusName ?? (cus?.ContName ?? cus?.CusName),
             cusAddress, cusTel, cusMobile, taxCode = cus?.TaxCode },
-        car = car is null ? null : new { car.PlateNo, car.TradeMark, modelName = model?.ModelName, car.ColorCode, car.FrameNo, car.EngineNo, car.MemberCarID, car.ProductYear },
+        car = car is null ? null : new { car.CarID, car.PlateNo, car.TradeMark, tradeMarkName = tm?.TradeMarkName,
+            modelName = model?.ModelName, car.ColorCode, car.FrameNo, car.EngineNo, car.MemberCarID, car.ProductYear },
         insurance = ins is null ? null : new { ins.InsVieName, ins.Phone, ins.Address, ins.TaxCode },
         services, parts,
         columnFallbackNote = "CusAddress/CusTel/CusMobile: (1) RO co CusName rieng -> dia chi tu RO, SDT tu KHACH GOC; (2) khach la to chuc (co ContName) -> dung bo ba nguoi lien he; (3) mac dinh -> bo ba goc cua khach.",
