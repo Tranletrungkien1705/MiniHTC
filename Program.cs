@@ -65933,16 +65933,20 @@ app.MapGet("/api/repairorders/warranty-lookup", async (AppDbContext db, ITenantC
         r.WarrantyExpiresDate, CusConfirmedWarrantyDate = car?.CusConfirmedWarrantyDate,
     };
 
-    // ⚪ Nguồn có `rs.Note` nhưng entity Mini `RoServiceItem` không có cột ghi chú riêng — nợ có từ trước (xem #949).
+    // #973: RÚT LẠI ghi chú nợ cũ — `RoServiceItem` nay đã có `Note` (§12 ở #972). Nguồn CỦA CHÍNH HÀM NÀY
+    // (`Ser_RO_GetWarranty` bản trần, `Service01.cs:2164`) chỉ SELECT `rs.Note`/`rp.Note`, KHÔNG có `Remark`
+    // (khác `Ser_ROInvoice_Get_New20220926` của #949/#972) — không thêm `Remark` ở đây để giữ đúng nguồn của
+    // CHÍNH hàm này, không lây cột từ hàm khác dù entity đã có sẵn.
     var services = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).OrderBy(x => x.Id)
         .Select(x => new { x.SerCode, x.SerName, x.ActManHour, x.Factor, x.Price, x.Vat,
-            Amount = x.Factor * x.Price * (1 + x.Vat / 100), x.ExpenseType, x.InsurancePrice }).ToListAsync();
+            Amount = x.Factor * x.Price * (1 + x.Vat / 100), x.ExpenseType, x.InsurancePrice, x.Note }).ToListAsync();
     var claimServiceByCode = claim is null ? new Dictionary<string, WarrantyClaimServiceItem>()
         : (await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == claim.Id).ToListAsync())
             .Where(x => x.SerCode != null).GroupBy(x => x.SerCode!).ToDictionary(g => g.Key, g => g.First());
     var servicesOut = services.Select(x => new
     {
         x.SerCode, x.SerName, x.ActManHour, x.Factor, x.Price, x.Vat, x.Amount, x.ExpenseType, x.InsurancePrice,
+        x.Note,   // #973
         WarrantyStatus = claimServiceByCode.TryGetValue(x.SerCode, out var cs) ? (cs.WarrantyStatus ?? "PEND") : "PEND",
         BulletinID = claimServiceByCode.TryGetValue(x.SerCode, out var cs2) ? cs2.BulletinID : null,
     }).ToList();
@@ -65955,7 +65959,7 @@ app.MapGet("/api/repairorders/warranty-lookup", async (AppDbContext db, ITenantC
     var partsOut = parts.Select(x => new
     {
         x.PartCode, x.PartName, x.NeedQty, x.UnitPrice, x.Factor, x.Vat,
-        Amount = x.Factor * x.UnitPrice * x.NeedQty * (1 + x.Vat / 100), x.Note, x.ExpenseType, x.InsurancePrice,
+        Amount = x.Factor * x.UnitPrice * x.NeedQty * (1 + x.Vat / 100), x.Note, x.ExpenseType, x.InsurancePrice,   // #973
         WarrantyStatus = claimPartByCode.TryGetValue(x.PartCode, out var cp) ? (cp.WarrantyStatus ?? "PEND") : "PEND",
         FlagMainPart = claimPartByCode.TryGetValue(x.PartCode, out var cp2) ? cp2.FlagMainPart : null,
     }).ToList();
