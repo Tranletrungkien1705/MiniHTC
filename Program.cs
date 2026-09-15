@@ -74899,6 +74899,39 @@ app.MapPost("/api/warrantyrenewalcategorymsts/delete", async (List<string> codes
     });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #931 `Ser_ROAttachFile_Get`/`_Save` (LIVE qua `WSCarSvTab`, `BizCarSv.Tab.cs:304/:426`) =====
+// Entity `RoAttachFile` đã có bảng từ trước nhưng CHƯA TỪNG có endpoint. KHÁC `Ser_ROAttachment` (#879/#910,
+// ảnh đính kèm tự do) — bảng này là MỘT SLOT DUY NHẤT theo (ROID, ROFileType): mỗi loại file chỉ giữ MỘT
+// bản mới nhất, ghi đè theo kiểu xoá-rồi-chèn. `strFlagIsDelete` cho phép xoá thuần (không chèn lại).
+app.MapGet("/api/repairorders/{no}/attachfiles", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var files = await db.RoAttachFiles.Where(x => x.OrgId == t.OrgId && x.RONo == no)
+        .Select(x => new { x.ROFileType, x.ROFilePath, x.ROFileName, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { roNo = no, count = files.Count, files });
+}).RequireAuthorization();
+
+app.MapPost("/api/repairorders/{no}/attachfiles", async (string no, RoAttachFileDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    if (!await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == no)) return Results.NotFound(new { no });
+    var fileType = (dto.ROFileType ?? "").Trim();
+    if (fileType.Length == 0) return Results.BadRequest(new { error = "Chưa nhập loại file." });
+    // Xoá bản cũ cùng (RONo, ROFileType) — đúng khoá nguồn.
+    var old = db.RoAttachFiles.Where(x => x.OrgId == t.OrgId && x.RONo == no && x.ROFileType == fileType);
+    db.RoAttachFiles.RemoveRange(old);
+    var isDeleteOnly = string.Equals(dto.FlagIsDelete, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(dto.FlagIsDelete, "Y", StringComparison.OrdinalIgnoreCase);
+    if (!isDeleteOnly)
+        db.RoAttachFiles.Add(new RoAttachFile
+        {
+            OrgId = t.OrgId, RONo = no, ROFileType = fileType,
+            ROFilePath = dto.ROFilePath, ROFileName = dto.ROFileName,
+            LogLUDateTime = DateTime.Now, LogLUBy = dto.LogLUBy,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { roNo = no, fileType, deleted = true, inserted = !isDeleteOnly });
+}).RequireAuthorization();
+
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
 // ===== 🏆🔴 #917 `Ser_RO_UpdateDPTD` (LIVE, `BizCarSv.Service01.cs:9241`) — điều phối KTV+khoang+ghi chú =====
 // Ghi ĐỒNG THỜI 3 cột `DPRemark`/`EngineerID`/`CavityID` lên `Ser_RO`; rỗng ⇒ xoá (DBNull), có giá trị ⇒
@@ -76843,6 +76876,7 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
 //   RONG / "0" / null => khach KHONG tra het => ghi no hang bao hiem (ba gia tri nhu nhau).
 // #341: TotalActHours ghi kem o buoc Repaired (rong = giu nguyen).
 record RoDispatchDto(string? DPRemark, string? EngineerID, string? CavityID);   // #917
+record RoAttachFileDto(string? ROFileType, string? ROFilePath, string? ROFileName, string? FlagIsDelete, string? LogLUBy);   // #931
 record RoServiceItemStatusDto(long ItemID, string? Status);   // #922
 record RoServiceItemEngineerDto(long ItemID, string? EngineerNo);   // #924
 
