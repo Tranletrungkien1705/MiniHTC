@@ -57228,6 +57228,51 @@ app.MapGet("/api/ordercomplains/statuses", () => Results.Ok(new
     note = "Mã TST nhảy số 1/15/21/31; nguồn set '1' NGAY KHI TẠO, không có trạng thái rỗng."
 })).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #893 — `Ser_OrderComplain_UpdTST`/`…UpdTSTX` (NCC phản hồi khiếu nại, LIVE cả hai cây) — **1437/`2800 (51,5%)**
+// `BizCarSv.SuggestPrice.cs:3853` (vỏ) + `…UpdTSTX:3979` (thân thật, cuối file — biên E dùng nhánh dự phòng
+// vì không còn hàm nào sau nó). Hàng đợi **29**.
+//
+// 🔴🔴🔴 **`SET t.TSTLUDTime = f.TSTLUDTime` NHƯNG `TSTLUDTime` KHÔNG HỀ CÓ TRONG BẢNG TẠM `#input_...`**:
+//   danh sách cột đưa vào `MyBuildDBDT_Common` cho `#input_Ser_OrderComplain` chỉ có TÁM cột
+//   (`TSTOrderComplainNo, OrderComplainNo, DealerCode, TSTEmployeeCode, TSTSolution,
+//   TSTOrderComplainStatus, LogLUDTime, LogLUBy`) — **không có `TSTLUDTime`** — nhưng câu `UPDATE ... SET`
+//   lại tham chiếu `f.TSTLUDTime`. Ngược hẳn khuôn #381 (cột được TÍNH nhưng KHÔNG được SET): ở đây cột được
+//   SET nhưng KHÔNG hề được ĐƯA VÀO bảng tạm nguồn ⇒ tham chiếu tới cột không tồn tại trên `#input_...`.
+// 🔴🔴 **KHÔNG guard tồn tại `OrderComplainNo` trước khi UPDATE** — không có bất kỳ
+//   `Ser_OrderComplain_CheckDB(...)` nào trong cả vỏ lẫn thân; câu `UPDATE ... INNER JOIN #input_...`
+//   sẽ chỉ ảnh hưởng 0 dòng nếu `OrderComplainNo` sai/không tồn tại — **không ném lỗi, không báo `0 dòng`**
+//   ⇒ khiếu nại nào NCC gõ sai số vẫn nhận phản hồi "thành công" từ WS dù **không có gì được ghi**.
+// 🔴 **Không kiểm miền giá trị `TSTOrderComplainStatus`**: dòng chuẩn hoá bị COMMENT
+//   (`//strTSTOrderComplainStatus = TUtils.CUtils.StandardizeFlag(...)`) ⇒ **ca thứ BA của họ #866/#890**,
+//   nay ở luồng khiếu nại đơn PT phía NCC.
+// ⚪ Ghi cả Main + WH luôn luôn; Dealer có điều kiện (`!bIsWSMain`) — đúng khuôn routing đã biết.
+// 📌 Mini: `POST /api/ordercomplains/{no}/update-tst` — vá CẢ HAI: guard tồn tại (404 nếu sai số) + kiểm
+// miền giá trị `TSTOrderComplainStatus` (`"1","15","21","31"`, theo taxonomy đã ghi ở entity).
+app.MapPost("/api/ordercomplains/{no}/update-tst", async (string no, OrderComplainUpdTstDto dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var oc = await db.OrderComplains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ComplainNo == no);
+    if (oc is null) return Results.NotFound(new { error = "Khong tim thay khieu nai — nguon KHONG bao loi o day (silent no-op), Mini bao 404 ro rang." });
+    var validStatuses = new[] { "1", "15", "21", "31" };
+    if (!string.IsNullOrWhiteSpace(dto.TSTOrderComplainStatus) && !validStatuses.Contains(dto.TSTOrderComplainStatus))
+        return Results.BadRequest(new { error = "TSTOrderComplainStatus khong hop le.", allowed = validStatuses });
+
+    if (dto.TSTOrderComplainNo is not null) oc.TSTOrderComplainNo = dto.TSTOrderComplainNo;
+    if (dto.TSTEmployeeCode is not null) oc.TSTEmployeeCode = dto.TSTEmployeeCode;
+    if (dto.TSTSolution is not null) oc.Resolution = dto.TSTSolution;
+    if (!string.IsNullOrWhiteSpace(dto.TSTOrderComplainStatus)) oc.TSTStatus = dto.TSTOrderComplainStatus;
+    oc.LogLUDTime = DateTime.Now;
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        oc.ComplainNo, oc.TSTOrderComplainNo, oc.TSTEmployeeCode, oc.Resolution, oc.TSTStatus,
+        onlyExistsOnBoth893 = "#893: Ser_OrderComplain_UpdTST/UpdTSTX — BizCarSv.SuggestPrice.cs:3853/:3979, LIVE ca hai cay. UpdTSTX la ham cuoi file (bien E dung nhanh du phong)",
+        tstludtimeReferencesMissingColumn = "SET t.TSTLUDTime = f.TSTLUDTime nhung TSTLUDTime KHONG CO trong 8 cot dua vao MyBuildDBDT_Common cho #input_Ser_OrderComplain — nguoc khuon #381 (cot duoc SET nhung KHONG duoc dua vao bang tam nguon, thay vi duoc tinh nhung khong duoc SET)",
+        noExistenceGuardSilentNoop = "KHONG guard ton tai OrderComplainNo truoc UPDATE — UPDATE INNER JOIN chi anh huong 0 dong neu sai so, KHONG nem loi, KHONG bao 0 dong => NCC go sai van nhan phan hoi thanh cong tu WS du khong ghi gi. Mini FIX: tra 404 ro rang",
+        noValueDomainCheckThirdOccurrence = "KHONG kiem mien gia tri TSTOrderComplainStatus — dong StandardizeFlag bi COMMENT. CA THU BA cua ho #866/#890, nay o luong khieu nai NCC",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action, OrderComplainActDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
@@ -75999,6 +76044,7 @@ record OrderComplainDto(string OrderPartNo, string? ComplainType, string? Conten
     string? DeliveryLocation = null, string? ReceiveBy = null,
     DateTime? AssembleDateTime = null, string? AssembleBy = null);
 // #239: thêm 2 trường đồng bộ Bravo ở CUỐI (tuỳ chọn) — xem `SentTstDto`.
+record OrderComplainUpdTstDto(string? TSTOrderComplainNo, string? TSTEmployeeCode, string? TSTSolution, string? TSTOrderComplainStatus);
 record OrderComplainActDto(string? Resolution, string? SyncStatus = null, string? SyncDescription = null);
 // #237: 6 cột bổ sung mà form gửi lên. KHÔNG nhận `PriceAfterVAT` (server tính) và
 //   `SupplierPaymentDtlStatus`/vết ghi (server đặt).
