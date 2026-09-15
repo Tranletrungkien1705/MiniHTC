@@ -65301,11 +65301,35 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
     var tmByCode = await db.ServiceTradeMarks.Where(tm => tm.OrgId == t.OrgId && tmCodes.Contains(tm.TradeMarkCode)).ToDictionaryAsync(tm => tm.TradeMarkCode);
 
     var roIds = page.Select(r => r.Id).ToList();
+    List<RoServiceItem>? svcRows = null;
+    Dictionary<long, string?>? firstEngineerBySvcId = null;
+    Dictionary<string, ServiceEngineer>? engineersByNo = null;
+    Dictionary<string, GroupRepair>? groupsByCode = null;
+    if (includeServices == true)
+    {
+        svcRows = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIds.Contains(s.RoId)).ToListAsync();
+        var svcIds = svcRows.Select(s => s.Id).ToList();
+        // #970: nguồn lấy `min(EngineerID)` mỗi hạng mục qua Ser_ROServiceItemsEngineer — KTV "đại diện" đầu tiên.
+        firstEngineerBySvcId = (await db.RoServiceItemEngineers.Where(e => e.OrgId == t.OrgId && svcIds.Contains(e.RoServiceItemId)).ToListAsync())
+            .GroupBy(e => e.RoServiceItemId).ToDictionary(g => g.Key, g => (string?)g.Select(e => e.EngineerNo).OrderBy(x => x).First());
+        var engNos = firstEngineerBySvcId.Values.Where(x => x != null).Select(x => x!).Distinct().ToList();
+        engineersByNo = await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId && engNos.Contains(e.EngineerNo)).ToDictionaryAsync(e => e.EngineerNo);
+        var grpCodes = engineersByNo.Values.Where(e => e.GroupRCode != null).Select(e => e.GroupRCode!).Distinct().ToList();
+        groupsByCode = await db.GroupRepairs.Where(g => g.OrgId == t.OrgId && grpCodes.Contains(g.GroupRCode)).ToDictionaryAsync(g => g.GroupRCode);
+    }
     var servicesByRo = includeServices == true
-        ? (await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIds.Contains(s.RoId)).ToListAsync())
-            .GroupBy(s => s.RoId).ToDictionary(g => g.Key, g => (object)g.Select(s => new
-            { s.SerCode, s.SerName, s.ActManHour, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice,
-              s.CamID, s.CamMarketingNo, s.FlagAccrual, s.Status }).ToList())   // #969
+        ? svcRows!.GroupBy(s => s.RoId).ToDictionary(g => g.Key, g => (object)g.Select(s =>
+        {
+            var engNo = firstEngineerBySvcId!.TryGetValue(s.Id, out var e0) ? e0 : null;
+            var eng = engNo != null && engineersByNo!.TryGetValue(engNo, out var e1) ? e1 : null;
+            var grp = eng?.GroupRCode != null && groupsByCode!.TryGetValue(eng.GroupRCode, out var g1) ? g1 : null;
+            return new
+            {
+                s.SerCode, s.SerName, s.ActManHour, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice,
+                s.CamID, s.CamMarketingNo, s.FlagAccrual, s.Status,   // #969
+                engineerNo = eng?.EngineerNo, engineerName = eng?.EngineerName, groupRName = grp?.GroupRName,   // #970
+            };
+        }).ToList())
         : null;
     var partsByRo = includeParts == true
         ? (await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIds.Contains(p.RoId)).ToListAsync())
