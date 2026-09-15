@@ -15142,6 +15142,32 @@ app.MapPost("/api/serviceitems/{code}/toggle", async (string code, AppDbContext 
     return Results.Ok(new { x.SerCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #944 `Ser_Mst_Service_Delete` (LIVE, `BizCarSv.Service.cs:1613-1814`) — ĐÃ PHÂN TÍCH Ở #825 NHƯNG CHƯA TỪNG PORT =====
+// #825 đã đọc trọn hàm và xác định đây là **"guard im lặng"**: hàm CÓ tra tham chiếu thật (`Ser_ROServiceItems`
+// và `Ser_ServicePackageServiceItems`) trước khi xoá, nhưng nếu CÓ dòng tham chiếu thì chỉ ÂM THẦM KHÔNG XOÁ —
+// không `Raise`, không trả mã lỗi, không báo gì. Người dùng bấm Xoá tưởng đã xong, mở lại vẫn còn.
+// Phân tích đã xong nhưng CHƯA CÓ endpoint nào thật sự port hành vi này — vá ngay bây giờ.
+// 🔴🔴 **CỐ Ý PORT TỐT HƠN NGUỒN Ở MỘT ĐIỂM**: giữ đúng LOGIC chặn (không xoá khi còn tham chiếu), nhưng trả
+// về **rõ ràng** `blocked=true` + số dòng tham chiếu thay vì im lặng — tránh lặp lại đúng cái bẫy UX mà #825
+// vừa vạch ra (người dùng không biết vì sao "xoá" không có tác dụng).
+app.MapDelete("/api/serviceitems/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var x = await db.ServiceItemMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SerCode == code);
+    if (x is null) return Results.NotFound(new { code });
+    var roRefs = await db.RoServiceItems.CountAsync(r => r.OrgId == t.OrgId && r.SerCode == code);
+    var pkgRefs = await db.ServicePackageServices.CountAsync(p => p.OrgId == t.OrgId && p.SerCode == code);
+    if (roRefs > 0 || pkgRefs > 0)
+        return Results.Conflict(new
+        {
+            error = "Ser_Mst_Service_Delete_InUse", serCode = code, blocked = true, roServiceItemRefs = roRefs, servicePackageRefs = pkgRefs,
+            sourceIsSilentAboutThis = "Ser_Mst_Service_Delete (Service.cs:1613-1814): nguon KHONG bao loi khi chan, chi AM THAM khong xoa (#825 'guard im lang'). Mini tra ro ly do thay vi im lang.",
+        });
+    db.ServiceItemMsts.Remove(x);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 // Nhập dịch vụ hàng loạt từ Excel (port 1:1 FrmImportService).
 app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, AppDbContext db, ITenantContext t) =>
 {
