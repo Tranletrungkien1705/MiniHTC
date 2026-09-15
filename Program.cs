@@ -20879,6 +20879,34 @@ app.MapGet("/api/_meta/htc-rlu-report-audit", () => Results.Ok(new
 // 📌 Mini: thêm `excludeVinPrefix` (cấu hình được) vào CÙNG endpoint `GET /api/warrantyclaims/report/htc`
 // (#895/#896) — `vinPrefix=RLU&excludeVinPrefix=RLUU` tái tạo đúng HTMV_Get mà không nhân bản code, và WS
 // caller giờ CHỌN ĐƯỢC dòng xe cần loại trừ thay vì phải sửa nguồn như #896/#897.
+// ===== 🏆🔴🔴🔴 #905 QUÉT ĐÓNG NỐT 2 SONG SINH `_WH` CUỐI CÙNG — `Ser_ROWarrantyReportHTC_Get_OnlyOneROWID_WH_New20230417` + `…RLUU_Get_WH_New20230417` (đều LIVE) — vòng parity, KHÔNG tăng bộ đếm =====
+// `BizCarSv.WH.cs:33646` (382 dòng) + `BizCarSv.WH.cs:18191` (395 dòng). Hàng đợi vòng quét mới ĐÃ ĐÓNG HẾT.
+//
+// 🏆🔴🔴🔴 **SONG SINH `_WH` LÀM HỎNG ĐÚNG LOGIC "LẦN LẮP TRƯỚC" MÀ #898 (BẢN MAIN/DEALER) LÀM ĐÚNG**:
+//     Bản Main/Dealer (`HTC_Get_OnlyOneROWID_New20230417`, #898): `and t.ROID **>** sr.ROID -- Chỉ lấy
+//     những báo giá TRƯỚC ĐÓ`
+//     Bản `_WH` (đây): `and t.ROID **<>** sr.ROID` — bỏ hẳn ràng buộc "trước đó", chỉ còn "khác chính nó"
+//   ⇒ Bản `_WH` có thể trả về `ActualDeliveryDate` của một RO **TẠO SAU** claim hiện tại — vô nghĩa với mục
+//   đích thật của cột này ("phụ tùng lắp cách đây bao lâu thì hỏng"). **Hai anh em cùng tên gần giống nhau
+//   triển khai HAI PHIÊN BẢN khác nhau của cùng MỘT quy tắc nghiệp vụ**, một đúng một hỏng — không phải lỗi
+//   gõ nhầm đơn lẻ vì #895/#896/#897/#898 đã cho thấy các cặp `_WH` khác đều CHỦ ĐÍCH khác nhau vài chỗ (tiền
+//   tố DB, `nolock`), nên đây nhiều khả năng là **DIVERGENCE theo thời gian** (một bên được sửa sau, bên kia
+//   bị bỏ quên) hơn là cố ý.
+// ⚪ Xác nhận lại pattern đã biết (#655/#663/#671/#900): tiền tố `[@strDBName_CommonCenter]` cho
+//   `Ser_MST_ROWarrantyType`/`Mst_Dealer` có ở bản Main/Dealer nhưng KHÔNG có ở bản `_WH` — vẫn đúng luật
+//   "phân giải theo TỪNG HÀM, không theo Main-hay-WH" đã chốt ở #900.
+// 📌 Mini KHÔNG có kiến trúc tách Main/WH (một CSDL đơn) nên KHÔNG có "song sinh WH" để port riêng —
+//   endpoint `GET /api/warrantyclaims/{claimNo}/prior-part-delivery` (#898) đã dùng ĐÚNG logic `Id < thisRo.Id`
+//   (khớp bản Main/Dealer đúng), tự động tránh được lỗi của bản `_WH`. `RLUU_Get_WH` không có khối logic này
+//   nên không áp dụng. Ghi log để đóng hồ sơ vòng quét nguồn `_New202xxxxx` — **không còn hàm LIVE nào khác**
+//   trong danh sách 130 hàm hậu tố ngày đã quét.
+app.MapGet("/api/_meta/htc-wh-twins-final-audit", () => Results.Ok(new
+{
+    scope905 = "#905: Ser_ROWarrantyReportHTC_Get_OnlyOneROWID_WH_New20230417 (BizCarSv.WH.cs:33646) + …RLUU_Get_WH_New20230417 (BizCarSv.WH.cs:18191), ca hai LIVE. Vong quet nguon _New202xxxxx (130 ham) DA DONG HET",
+    whTwinBreaksPriorDeliveryLogic = "SONG SINH _WH LAM HONG DUNG LOGIC LAN LAP TRUOC MA #898 (ban Main/Dealer) lam dung: Main dung t.ROID > sr.ROID (chi lay bao gia TRUOC DO); ban _WH dung t.ROID <> sr.ROID (bo han rang buoc truoc do, chi con khac chinh no) => ban _WH co the tra ve ActualDeliveryDate cua mot RO TAO SAU claim hien tai — vo nghia voi muc dich that. Nhieu kha nang la DIVERGENCE theo thoi gian (mot ben duoc sua sau, ben kia bi bo quen), khong phai loi go nham don le",
+    confirmsKnownCommonCenterPrefixPattern = "AM TINH — xac nhan lai pattern da biet #655/#663/#671/#900: tien to [@strDBName_CommonCenter] cho Ser_MST_ROWarrantyType/Mst_Dealer co o ban Main/Dealer nhung KHONG co o ban _WH — van dung luat da chot o #900 (phan giai theo TUNG HAM, khong theo Main-hay-WH)",
+    miniAvoidsWhBugByArchitecture = "Mini KHONG co kien truc tach Main/WH (mot CSDL don) nen KHONG co song sinh WH de port rieng — endpoint prior-part-delivery (#898) da dung DUNG logic Id < thisRo.Id (khop ban Main/Dealer dung), tu dong tranh duoc loi cua ban _WH. RLUU_Get_WH khong co khoi logic nay nen khong ap dung",
+})).RequireAuthorization();
 app.MapGet("/api/_meta/htmv-rluu-report-audit", () => Results.Ok(new
 {
     scope897 = "#897: Ser_ROWarrantyReportHTMV_Get_New20230417 — BizCarSv.WarrantyReport.cs:22633 (425 dong). Ser_ROWarrantyReportHTC_RLUU_Get_New20230417 (:21215) da doi chieu dong-doi-dong voi RLU_Get/#896 — CHI khac dung mot literal (RLU% -> RLUU%) => KHONG can code moi, vinPrefix=RLUU tren endpoint #896 da phu dung",
