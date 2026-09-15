@@ -24996,11 +24996,31 @@ app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbCont
         OrgId = t.OrgId, TechnicalLibraryCode = "TLIB" + DateTime.Now.ToString("yyMMddHHmmss"),
         DealerCode = dto.DealerCode, PlateNo = dto.PlateNo, Model = dto.Model.Trim(), Engine = dto.Engine, Gear = dto.Gear, ReRepairType = dto.ReRepairType,
         ReRepairRemark = dto.ReRepairRemark, ReRepairReason = dto.ReRepairReason, ReRepairSolution = dto.ReRepairSolution, ExclusionTest = dto.ExclusionTest,
-        IsActive = "1", CreatedBy = by, CreatedAt = DateTime.Now
+        // #926 §12: nguồn Ser_Technical_Library_Add ghi IsActive = Flag.Inactive ("0") khi tạo mới — bài viết
+        // chờ DUYỆT (Ser_Technical_Library_Approve) mới hiển thị/dùng được. Port cũ bật Active ngay, bỏ qua
+        // toàn bộ vòng duyệt.
+        IsActive = "0", CreatedBy = by, CreatedAt = DateTime.Now
     };
     db.TechnicalLibraries.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.TechnicalLibraryCode, row.Model, row.CreatedBy });
+    return Results.Ok(new { row.TechnicalLibraryCode, row.Model, row.CreatedBy, row.IsActive,
+        pendingApproval = "cho duyet qua POST /api/technicallibraries/{code}/approve" });
+}).RequireAuthorization();
+
+// #926 `Ser_Technical_Library_Approve` (LIVE, `BizCarSv.ZTemp.cs:32420`) — guard nguồn CHỈ duyệt được bài
+// đang Inactive ("0"); tham số Remark nguồn NHẬN nhưng KHÔNG GHI cột nào (dead input, giữ nguyên 1:1).
+app.MapPost("/api/technicallibraries/{code}/approve", async (string code, TechnicalLibraryApproveDto? dto,
+    AppDbContext db, ITenantContext t) =>
+{
+    var libCode = code.Trim().ToUpperInvariant();
+    var row = await db.TechnicalLibraries.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TechnicalLibraryCode == libCode);
+    if (row is null) return Results.NotFound(new { error = "Ser_Technical_Library_CheckDB_TechnicalLibraryCodeNotFound", code = libCode });
+    if (row.IsActive != "0")
+        return Results.BadRequest(new { error = "Ser_Technical_Library_CheckDB_TechnicalLibraryCodeNotFound", detail = "Chỉ duyệt được bài đang chờ duyệt (Inactive)." });
+    row.IsActive = "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.TechnicalLibraryCode, row.IsActive,
+        remarkNotPersisted = "nguon nhan strRemark nhung khong ghi cot nao — giu dung 1:1, khong bia cot moi" });
 }).RequireAuthorization();
 
 app.MapPost("/api/technicallibraries/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -77759,6 +77779,7 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     decimal? TSTWarrantyPrice = null, decimal? TSTUrgentPrice = null,
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
+record TechnicalLibraryApproveDto(string? Remark);   // #926 — Remark nguon nhan nhung khong ghi cot nao
 record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? DealerCode, string? FlagActive);
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive, string? DealerCode = null);   // #911 DealerCode
 record MstDeliveryFormDto(string? DeliveryFormCode, string? DeliveryFormName, string? FlagActive);   // #634
