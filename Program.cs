@@ -61186,6 +61186,40 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
         var stock = await db.PartStocks.FirstAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
         stock.OnHand -= l.Quantity; stock.UpdatedAt = DateTime.Now;
     }
+    // ===== 🏆🔴🔴🔴 #929 nối #928 — TIÊU THỤ lô `PartInstance` theo FIFO khi phiếu XUẤT kết thúc =====
+    // Nguồn: mỗi lần xuất khớp một/nhiều lô NHẬP theo thứ tự ngày nhập cũ nhất trước (FIFO), ghi StockOutID/
+    // StockOutNo/DateOut/SOPrice lên đúng lô đó; nếu SL xuất < SL còn lại của lô thì lô bị TÁCH — phần đã
+    // xuất trở thành lô mới đã tiêu thụ, phần còn lại giữ nguyên StockInNo, giảm Quantity.
+    foreach (var l in lines)
+    {
+        var need = l.Quantity;
+        var lots = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.PartCode == l.PartCode
+            && x.StockOutId == null && x.Quantity > 0)
+            .OrderBy(x => x.DateIn).ToListAsync();
+        foreach (var lot in lots)
+        {
+            if (need <= 0) break;
+            var take = Math.Min(need, lot.Quantity);
+            if (take == lot.Quantity)
+            {
+                lot.StockOutId = h.Id; lot.StockOutNo = h.StockOutNo; lot.DateOut = DateTime.Now; lot.SOPrice = l.Price;
+            }
+            else
+            {
+                lot.Quantity -= take;   // phần còn lại vẫn tồn kho, chưa xuất
+                db.PartInstances.Add(new PartInstance
+                {
+                    OrgId = t.OrgId, DealerCode = lot.DealerCode, PartCode = lot.PartCode,
+                    StockInNo = lot.StockInNo, StockInId = lot.StockInId, LocationID = lot.LocationID,
+                    SIPrice = lot.SIPrice, SIVAT = lot.SIVAT, DateIn = lot.DateIn,
+                    Quantity = take, StockOutId = h.Id, StockOutNo = h.StockOutNo, DateOut = DateTime.Now, SOPrice = l.Price,
+                });
+            }
+            need -= take;
+        }
+        // NỢ: nếu `need > 0` sau vòng lặp (không đủ lô để khớp — dữ liệu PartInstance lịch sử thiếu trước
+        // #928), KHÔNG chặn phiếu xuất (nguồn không chặn theo lô, chỉ chặn theo tổng tồn ở vòng trên).
+    }
     // ⚠️ KHÔNG gán lại StockOutDate: luật "ngày = thời điểm duyệt" chỉ có ở phiếu NHẬP, nguồn phiếu XUẤT không có.
     h.Status = "3"; h.PostedAt = DateTime.Now;
     await db.SaveChangesAsync();
