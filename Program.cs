@@ -76202,10 +76202,18 @@ app.MapPost("/api/warrantyrenewalcategorymsts/delete", async (List<string> codes
     });
 }).RequireAuthorization();
 
-// ===== 🏆🔴 #931 `Ser_ROAttachFile_Get`/`_Save` (LIVE qua `WSCarSvTab`, `BizCarSv.Tab.cs:304/:426`) =====
+// ===== 🏆🔴🔴 #931/#966 `Ser_ROAttachFile_Get`/`_Save` (LIVE qua `WSCarSvTab`, `BizCarSv.Tab.cs:304/:426`) =====
 // Entity `RoAttachFile` đã có bảng từ trước nhưng CHƯA TỪNG có endpoint. KHÁC `Ser_ROAttachment` (#879/#910,
 // ảnh đính kèm tự do) — bảng này là MỘT SLOT DUY NHẤT theo (ROID, ROFileType): mỗi loại file chỉ giữ MỘT
-// bản mới nhất, ghi đè theo kiểu xoá-rồi-chèn. `strFlagIsDelete` cho phép xoá thuần (không chèn lại).
+// bản mới nhất, ghi đè theo kiểu xoá-rồi-chèn.
+// 🔴🔴 #966 SỬA LẠI #931 — `strFlagIsDelete` LÀ THAM SỐ CHẾT, KHÔNG PHẢI "xoá thuần": đọc trọn thân helper
+//   `Ser_ROAttachFile_SaveX` (`BizCarSv.Tab.cs:1606-1810`) xác nhận `bool bIsDelete = StringUtils.StringEqual(
+//   strFlagIsDelete, TConst.Flag.Yes);` được TÍNH ĐÚNG MỘT LẦN rồi KHÔNG BAO GIỜ dùng lại ở bất kỳ đâu
+//   trong phần còn lại của hàm — cả khối `#region Save Main` lẫn `#region SaveTemp WH and Dealer` đều
+//   XOÁ-RỒI-CHÈN VÔ ĐIỀU KIỆN bất kể `strFlagIsDelete` là gì. #931 đọc lướt tên tham số rồi TỰ SUY DIỄN
+//   ra hành vi "hợp lý" (nếu là xoá thì bỏ qua chèn) — đúng khuôn `HẰNG≠GIÁ TRỊ`/#411 nhưng ở dạng
+//   "tham số chết", và là bằng chứng cho luật port dòng ACTIVE: SUY DIỄN không thay được ĐỌC. Port lại
+//   đúng nguồn: LUÔN chèn dòng mới (kể cả khi `ROFilePath`/`ROFileName` rỗng — nguồn cũng chèn thẳng).
 app.MapGet("/api/repairorders/{no}/attachfiles", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -76223,16 +76231,16 @@ app.MapPost("/api/repairorders/{no}/attachfiles", async (string no, RoAttachFile
     // Xoá bản cũ cùng (RONo, ROFileType) — đúng khoá nguồn.
     var old = db.RoAttachFiles.Where(x => x.OrgId == t.OrgId && x.RONo == no && x.ROFileType == fileType);
     db.RoAttachFiles.RemoveRange(old);
-    var isDeleteOnly = string.Equals(dto.FlagIsDelete, "1", StringComparison.OrdinalIgnoreCase) || string.Equals(dto.FlagIsDelete, "Y", StringComparison.OrdinalIgnoreCase);
-    if (!isDeleteOnly)
-        db.RoAttachFiles.Add(new RoAttachFile
-        {
-            OrgId = t.OrgId, RONo = no, ROFileType = fileType,
-            ROFilePath = dto.ROFilePath, ROFileName = dto.ROFileName,
-            LogLUDateTime = DateTime.Now, LogLUBy = dto.LogLUBy,
-        });
+    // #966: LUÔN chèn lại — strFlagIsDelete là tham số CHẾT trong nguồn (giữ trường trong DTO cho tương thích).
+    db.RoAttachFiles.Add(new RoAttachFile
+    {
+        OrgId = t.OrgId, RONo = no, ROFileType = fileType,
+        ROFilePath = dto.ROFilePath, ROFileName = dto.ROFileName,
+        LogLUDateTime = DateTime.Now, LogLUBy = dto.LogLUBy,
+    });
     await db.SaveChangesAsync();
-    return Results.Ok(new { roNo = no, fileType, deleted = true, inserted = !isDeleteOnly });
+    return Results.Ok(new { roNo = no, fileType, deleted = true, inserted = true,
+        flagIsDeleteIsDeadParamNote = "#966: strFlagIsDelete duoc TINH (bIsDelete) nhung KHONG BAO GIO dung lai trong Ser_ROAttachFile_SaveX — nguon LUON xoa-roi-chen vo dieu kien. #931 truoc day tu suy dien flag co tac dung la SAI." });
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
