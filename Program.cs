@@ -24939,6 +24939,31 @@ app.MapPost("/api/tstparts/sync-all", async (List<TstPartSyncDto> rows, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #918 `TST_Mst_Part_HTVUpdate` (LIVE, `BizCarSv.Service.cs:15890`) — hãng cập nhật tên tiếng Việt =====
+// KHÁC `/sync-all` (đó là `TST_Mst_Part_Update` — REPLACE-ALL theo `TSTPartCode`+`TSTPrice`). Hàm này chỉ
+// UPDATE (không insert) `VieNameHTC` VÀ `VieName` cùng lúc từ MỘT giá trị gửi lên, cho các mã ĐÃ TỒN TẠI
+// (`TST_Mst_Part_CheckDB`) — mã không tồn tại bị bỏ qua với lỗi `InvalidTSTPartCode`, không tự tạo mới.
+app.MapPost("/api/tstparts/htv-update-name", async (List<TstHtvNameDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    rows ??= new List<TstHtvNameDto>();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Lô cập nhật tên rỗng." });
+    var by = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var updated = new List<string>(); var notFound = new List<string>(); var invalid = new List<int>();
+    for (var i = 0; i < rows.Count; i++)
+    {
+        var code = (rows[i].TSTPartCode ?? "").Trim();
+        var name = (rows[i].VieName ?? "").Trim();
+        if (code.Length == 0 || name.Length == 0) { invalid.Add(i); continue; }
+        var row = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
+        if (row is null) { notFound.Add(code); continue; }
+        row.VieNameHTC = name; row.VieName = name; row.LUDTime = now; row.LUBy = by;
+        updated.Add(code);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated = updated.Count, updatedCodes = updated, notFound, invalidRows = invalid,
+        noteOnlyUpdatesExisting = "nguon TST_Mst_Part_HTVUpdate CHI update ma da ton tai (TST_Mst_Part_CheckDB), khong tu tao moi" });
+}).RequireAuthorization();
+
 app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -77535,6 +77560,7 @@ record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender
 record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null);   // #915 DealerCode
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
+record TstHtvNameDto(string? TSTPartCode, string? VieName);   // #918
 // #245: 16 trường của `TST_Mst_Part_Get01` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 // #253: ảnh đính kèm LSC. Nội dung file (base64) do tầng lưu trữ xử lý — nợ chung của MiniHTC.
 record RoAttachmentDto(string? RONo, string? ImageName, string? ImagePath = null);
