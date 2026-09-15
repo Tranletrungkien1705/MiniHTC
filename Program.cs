@@ -24318,10 +24318,25 @@ app.MapPost("/api/roattachments", async (RoAttachmentDto dto, AppDbContext db, I
     return Results.Ok(new { row.Id, row.RONo, row.ImageName, row.ImagePath, roNoDisplay = "LS-" + row.RONo });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #958 `SerROAttachmentRemove` (LIVE, `BizCarSv.Service01.cs:11622`) — DELETE Ở TRÊN THIẾU CẢ HAI GUARD =====
+// Phát hiện qua kỹ thuật #408 (liệt kê trọn `Service01.cs`, đếm 0-hit) — endpoint DELETE này đã có từ trước
+//   nhưng chỉ xoá thẳng, KHÔNG mang tên/đối chiếu với hàm nguồn nào ⇒ chưa từng port hai guard của
+//   `SerROAttachmentRemove`: (1) chặn nếu RO đã `Paid`/`Finished`; (2) chặn nếu RO có đề nghị bảo hành đang
+//   Sent/Accepted/Confirmed (`left join Ser_ROWarrantyReport` theo ROID — cùng bảng, cùng bộ trạng thái với
+//   guard đã port ở `#910 …/type`, giữ ĐÚNG cách viết "Sent"/"Accepted"/"Confirmed" cho nhất quán với anh em).
 app.MapDelete("/api/roattachments/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.RoAttachments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == row.RONo);
+    if (ro is not null && (ro.Status == "Paid" || ro.Status == "Finished"))
+        return Results.BadRequest(new { error = "Ser_RO_Attachment_Remove_InvalidROStatus",
+            message = "Lệnh sửa chữa đã Thanh toán/Hoàn tất — không được xoá ảnh đính kèm.", roStatus = ro.Status });
+    var warrantyBlocked = await db.ServiceWarrantyClaims.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == row.RONo
+        && (x.Status == "Sent" || x.Status == "Accepted" || x.Status == "Confirmed"));
+    if (warrantyBlocked)
+        return Results.BadRequest(new { error = "Ser_RO_UpdateStatus_InvalidWarrantyStatus",
+            message = "RO đã có đề nghị bảo hành đang Sent/Accepted/Confirmed — không được xoá ảnh." });
     db.RoAttachments.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = id });
