@@ -74791,17 +74791,39 @@ app.MapPost("/api/repairorders/{no}/setstatus", async (
     return Results.Ok(new { r.RONo, status = r.Status, sourceCode = roStatusSourceCodes[target] });
 }).RequireAuthorization();
 
-// Từ chối lệnh sửa chữa (port 1:1 FrmROReject, TCMotor DMSCarSv): set Rejected + ghi lý do.
+// ===== 🔴🔴🔴 #901 VÁ endpoint reject bằng biz THẬT `SerROUpdateToROReject_New20210329` (LIVE — `WSCarSv.asmx.cs:11676`) =====
+// `BizCarSv.Service01.cs:11038` (241 dòng). Endpoint cũ port từ WinForm `FrmROReject` — guard chỉ chặn
+// "Finished"/"Rejected", THIẾU "Repaired"/"Paid" (nguồn chặn cả RPRD/PAID/FNS/REJ) ⇒ có thể "huỷ" một lệnh
+// ĐÃ SỬA XONG hoặc ĐÃ THANH TOÁN — sai nghiệp vụ thật.
+// 🔴🔴 **HUỶ LỆNH XOÁ SẠCH PHÂN CÔNG KTV, KHÔNG LƯU VẾT**: nguồn `delete from Ser_AssignmentWorkEngineer/
+// Ser_AssignmentWork where ROID = @strROID` — kể cả khi lệnh đang `INGA` (đang sửa, vẫn được phép huỷ theo
+// guard) thì lịch sử phân công KTV bị xoá vĩnh viễn, khác `Ser_RO` (giữ dòng, chỉ đổi `Status`). Port cũ
+// hoàn toàn thiếu bước này.
+// ⚪ Ghi nợ tài liệu, KHÔNG cài: nguồn gọi `PushDataROToHyundaiMe(...)` SAU khi commit cả ba CSDL — nếu
+// tích hợp ngoài đó lỗi, WS trả lỗi cho client dù lệnh ĐÃ HUỶ THÀNH CÔNG thật trong DB. Mini không có tích
+// hợp ngoài nên không dính rủi ro này.
 app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.Note)) return Results.BadRequest(new { error = "Chưa nhập lý do từ chối." });
-    if (r.Status is "Finished" or "Rejected") return Results.BadRequest(new { error = "Lệnh đã kết thúc/đã từ chối, không thể từ chối." });
+    // #901 FIX: đủ bốn trạng thái nguồn chặn (RPRD/PAID/FNS/REJ) — port cũ thiếu Repaired/Paid.
+    if (r.Status is "Repaired" or "Paid" or "Finished" or "Rejected")
+        return Results.BadRequest(new { error = "Lệnh đã Sửa xong/Đã thanh toán/Đã hoàn thành/Đã từ chối, không thể huỷ.", status = r.Status });
     r.Status = "Rejected"; r.RejectNote = dto.Note.Trim(); r.RejectedAt = DateTime.Now;
+
+    // #901: PORT ĐÚNG hành vi nguồn — xoá phân công KTV của lệnh (không lưu vết), khác Ser_RO.
+    var works = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.ROID == no).ToListAsync();
+    if (works.Count > 0) db.SerAssignmentWorks.RemoveRange(works);
+
+    db.RoHistories.Add(new RoHistory
+    {
+        OrgId = t.OrgId, ROHID = Guid.NewGuid().ToString("N"), ROID = no, Status = "REJ",
+        Reason = dto.Note, LogLUDateTime = DateTime.Now,
+    });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, r.Status, r.RejectNote });
+    return Results.Ok(new { r.RONo, r.Status, r.RejectNote, assignmentWorksDeleted = works.Count });
 }).RequireAuthorization();
 
 // ===== Giá bán xe TCG theo spec (Mst_TCGCarSalePrice — port 1:1 FrmMstTCGCarSalePrice) =====
