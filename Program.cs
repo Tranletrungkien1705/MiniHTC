@@ -15159,6 +15159,47 @@ app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, AppDbCo
     return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #941 `Ser_Mst_Service_Import` (LIVE, `BizCarSv.Service.cs:1990`) — KÊNH WS RIÊNG, CHƯA CÓ =====
+// ⚠️ Route KHÁC `/api/serviceitems/import` ở trên (port `FrmImportService` — kênh WinForm, guard ký tự đặc
+// biệt sống). Đúng họ #397/#938/#939: kênh WS riêng cho hệ ngoài/đối tác.
+// 🔴🔴🔴 **ÁP DỤNG LẠI ĐÚNG LUẬT #297** (đã port ở `POST /api/serviceitems` cho đường tạo/sửa đơn lẻ) VÀO
+// ĐƯỜNG IMPORT — nguồn LẶP LẠI y hệt logic ghi đè: nếu `SERCODE` trùng công bảo hành ĐANG HIỆU LỰC trong
+// `Ser_MST_ROWarrantyWork`, MỌI trường Excel gửi lên bị GHI ĐÈ bằng giá trị danh mục hãng
+// (`ROWWorkName`→SerName · `RateHour`→StdManHour · `RatePrice`→Cost · `Price`→Price · `VAT`→Vat ·
+// `Model`→Model · `Remark`→Note), kèm bật `FlagWarranty`. `.../import` (WinForm) KHÔNG có nhánh này —
+// đúng vì `FrmImportService` không phải kênh đối tác, không cần đối chiếu danh mục hãng.
+app.MapPost("/api/serviceitems/import-catalog", async (ServiceItemImportDto dto, string? dealerCode,
+    AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var rows = dto.Rows ?? new();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var errors = new List<object>();
+    var saved = new List<object>();
+    foreach (var r in rows)
+    {
+        var code = (r.SerCode ?? "").Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(r.SerName)) { errors.Add(new { r.SerCode, error = "Ser_Mst_Service_Import_SerNameNotEmty" }); continue; }
+        if (r.Price < 0) { errors.Add(new { r.SerCode, error = "Ser_Mst_Service_Import_PriceNotEmty" }); continue; }
+        var serName = r.SerName; var cost = r.Cost; var price = r.Price; var vat = r.Vat; var model = r.Model; var note = r.Note;
+        decimal stdManHour = 1; var flagWarranty = "0";
+        var ww = await db.WarrantyWorkMsts.FirstOrDefaultAsync(w => w.OrgId == t.OrgId && w.ROWWorkCode == code && w.FlagActive == "1");
+        if (ww is not null)
+        {
+            serName = ww.ROWWorkName; stdManHour = ww.RateHour; cost = ww.RatePrice; price = ww.Price;
+            vat = ww.VAT; model = ww.ModelCode; note = ww.Remark; flagWarranty = "1";
+        }
+        var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code && x.DealerCode == dl);
+        if (ex is null) { ex = new ServiceItemMst { OrgId = t.OrgId, SerCode = code, DealerCode = dl }; db.ServiceItemMsts.Add(ex); }
+        ex.SerName = serName; ex.Cost = cost; ex.Price = price; ex.Vat = vat; ex.Model = model; ex.Note = note;
+        ex.StdManHour = stdManHour; ex.FlagWarranty = flagWarranty; ex.FlagActive = "1";
+        saved.Add(new { ex.SerCode, ex.SerName, fromWarrantyWork = ww is not null });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { savedCount = saved.Count, errorCount = errors.Count, saved, errors,
+        warrantyWorkOverrideNote = "SERCODE trung cong bao hanh HTC (Ser_MST_ROWarrantyWork, Active) thi TOAN BO truong Excel gui bi ghi de bang du lieu hang (#297 ap lai cho duong import)." });
+}).RequireAuthorization();
+
 // ===== Danh mục model xe dịch vụ (ServiceModel — port 1:1 FrmModel/FrmImportModel, TCMotor) =====
 app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, string? q, string? trade, string? active) =>
 {
