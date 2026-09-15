@@ -24973,6 +24973,50 @@ app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenan
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #930 `TST_Mst_PartGroup_Get`/`TST_Mst_PartType_Get` (LIVE, `BizCarSv.Service.cs:18136/:17862`) =====
+// Entity đã tồn tại từ #767 nhưng CHƯA TỪNG có endpoint — grep toàn Program.cs ra 0 lần đọc lẫn ghi.
+app.MapGet("/api/tstmstpartgroups", async (AppDbContext db, ITenantContext t, bool? all) =>
+{
+    var qry = db.TstMstPartGroups.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    var items = await qry.OrderBy(x => x.GroupCode).Take(500).Select(x => new { x.GroupCode, x.GroupName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstpartgroups", async (TstMstPartGroupDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.GroupCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã nhóm phụ tùng TST." });
+    var row = await db.TstMstPartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
+    if (row is null) { row = new TstMstPartGroup { OrgId = t.OrgId, GroupCode = code }; db.TstMstPartGroups.Add(row); }
+    row.GroupName = dto.GroupName;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.GroupCode, row.GroupName, row.FlagActive,
+        writeIsPortAddition = "nguon chi co ham doc (TST_Mst_PartGroup_Get) — chua thay ham ghi trong toan solution" });
+}).RequireAuthorization();
+
+app.MapGet("/api/tstmstparttypes", async (AppDbContext db, ITenantContext t, bool? all) =>
+{
+    var qry = db.TstMstPartTypes.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    var items = await qry.OrderBy(x => x.TypeCode).Take(500).Select(x => new { x.TypeCode, x.TypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstparttypes", async (TstMstPartTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TypeCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã loại phụ tùng TST." });
+    var row = await db.TstMstPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeCode == code);
+    if (row is null) { row = new TstMstPartType { OrgId = t.OrgId, TypeCode = code }; db.TstMstPartTypes.Add(row); }
+    row.TypeName = dto.TypeName;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.TypeCode, row.TypeName, row.FlagActive,
+        writeIsPortAddition = "nguon chi co ham doc (TST_Mst_PartType_Get, sinh doi cua PartGroup_Get) — chua thay ham ghi trong toan solution" });
+}).RequireAuthorization();
+
 // ===== Thư viện kỹ thuật (TechnicalLibrary — port 1:1 FrmSer_Technical_Library, TCMotor DMSCarSv) =====
 app.MapGet("/api/technicallibraries", async (AppDbContext db, ITenantContext t, string? model, string? q, bool? all) =>
 {
@@ -77819,6 +77863,8 @@ record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender
 record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null);   // #915 DealerCode
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
+record TstMstPartGroupDto(string? GroupCode, string? GroupName, string? FlagActive);   // #930
+record TstMstPartTypeDto(string? TypeCode, string? TypeName, string? FlagActive);   // #930
 record TstHtvNameDto(string? TSTPartCode, string? VieName);   // #918
 // #245: 16 trường của `TST_Mst_Part_Get01` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).
 // #253: ảnh đính kèm LSC. Nội dung file (base64) do tầng lưu trữ xử lý — nợ chung của MiniHTC.
