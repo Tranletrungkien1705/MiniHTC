@@ -2032,6 +2032,12 @@ app.MapPost("/api/gxdk", async (DeliveryDateHistoryDto request, AppDbContext dat
         .FirstOrDefaultAsync(order => order.OrgId == tenant.OrgId && order.RONo == repairOrderNo);
     if (repairOrder is null)
         return Results.NotFound(new { error = $"Không tìm thấy RO {repairOrderNo}." });
+    // #916 §12: nguồn Ser_RO_UpdatePlanedDeliveryDate (BizCarSv.Service01.cs:15137) có 2 guard port cũ THIẾU:
+    if (repairOrder.Status == "Finished")
+        return Results.BadRequest(new { error = "Ser_RO_UpdatePlanedDeliveryDate_InvalidStatus", detail = "RO đã hoàn thành (Finished), không được đổi ngày giao dự kiến." });
+    if (repairOrder.PlanedDeliveryDate.HasValue
+        && repairOrder.PlanedDeliveryDate.Value.ToString("yyyy-MM-dd HH:mm") == request.PlanedDeliveryDate.ToString("yyyy-MM-dd HH:mm"))
+        return Results.BadRequest(new { error = "Ser_RO_UpdatePlanedDeliveryDate_EqualPlanedDeliveryDateOld", detail = "Ngày giao dự kiến mới trùng ngày cũ." });
 
     // Hạ cờ mọi bản lịch sử trước đó của RO này (chỉ được tồn tại DUY NHẤT 1 bản FlagCurrent="1").
     var previousHistories = await database.RoDeliveryDateHistories
