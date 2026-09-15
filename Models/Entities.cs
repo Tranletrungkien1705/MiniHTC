@@ -2212,6 +2212,11 @@ public sealed class RepairOrder
     public string? CusTypeID { get; set; }           // loại KH — bản chụp trên lệnh (chuỗi isnull #301)
     public string? DlrPDIReqNo { get; set; }         // số yêu cầu PDI của đại lý
     public string? EngineerID { get; set; }
+    /// <summary>#917 §12 — nguồn `Ser_RO_UpdateDPTD` (`BizCarSv.Service01.cs:9241`, LIVE) ghi CẢ BA cột
+    /// `DPRemark`/`EngineerID`/`CavityID` trong CÙNG một lần điều phối; port cũ chỉ có `EngineerID`.</summary>
+    public string? DPRemark { get; set; }
+    /// <summary>CavityID điều phối ở cấp LỆNH (khác `Ser_App.CavityID` của lịch hẹn) — nguồn `Ser_RO_UpdateDPTD`.</summary>
+    public string? CavityID { get; set; }
     public string? FlagOnlyPoint { get; set; }
     public string? FlagPause { get; set; }           // tạm dừng sửa chữa
 

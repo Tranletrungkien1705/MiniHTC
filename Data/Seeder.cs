@@ -1153,6 +1153,8 @@ public static class Seeder
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CusTypeID\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"DlrPDIReqNo\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"EngineerID\" text",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"DPRemark\" text NULL",
+        "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CavityID\" text NULL",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"FlagOnlyPoint\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"FlagPause\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"IDCardNo\" text",

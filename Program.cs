@@ -74626,6 +74626,26 @@ app.MapPost("/api/warrantyrenewalcategorymsts/delete", async (List<string> codes
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
+// ===== 🏆🔴 #917 `Ser_RO_UpdateDPTD` (LIVE, `BizCarSv.Service01.cs:9241`) — điều phối KTV+khoang+ghi chú =====
+// Ghi ĐỒNG THỜI 3 cột `DPRemark`/`EngineerID`/`CavityID` lên `Ser_RO`; rỗng ⇒ xoá (DBNull), có giá trị ⇒
+// guard tồn tại (`CheckExistEngineer`/`CheckExistCavity`) trước khi ghi. Port cũ chỉ có cột `EngineerID`,
+// chưa từng có endpoint ghi cả cụm 3 cột này cùng lúc.
+app.MapPost("/api/repairorders/{no}/dispatch", async (string no, RoDispatchDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (!string.IsNullOrWhiteSpace(dto.EngineerID) && !await db.ServiceEngineers.AnyAsync(x => x.OrgId == t.OrgId && x.EngineerNo == dto.EngineerID))
+        return Results.BadRequest(new { error = "Ser_Mst_EngineerNotFound", engineerID = dto.EngineerID });
+    if (!string.IsNullOrWhiteSpace(dto.CavityID) && !await db.Cavities.AnyAsync(x => x.OrgId == t.OrgId && x.CavityNo == dto.CavityID))
+        return Results.BadRequest(new { error = "Ser_CavityNo_NotFound", cavityID = dto.CavityID });
+    r.DPRemark = string.IsNullOrWhiteSpace(dto.DPRemark) ? null : dto.DPRemark;
+    r.EngineerID = string.IsNullOrWhiteSpace(dto.EngineerID) ? null : dto.EngineerID;
+    r.CavityID = string.IsNullOrWhiteSpace(dto.CavityID) ? null : dto.CavityID;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.DPRemark, r.EngineerID, r.CavityID });
+}).RequireAuthorization();
+
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -76498,6 +76518,8 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
 // #326: ToStatus + co "khach tra toan bo?" (nguon: strIsCusPaymentAll).
 //   RONG / "0" / null => khach KHONG tra het => ghi no hang bao hiem (ba gia tri nhu nhau).
 // #341: TotalActHours ghi kem o buoc Repaired (rong = giu nguyen).
+record RoDispatchDto(string? DPRemark, string? EngineerID, string? CavityID);   // #917
+
 record RoAdvanceDto(string ToStatus, string? IsCusPaymentAll = null, decimal? TotalActHours = null,
     // #328 §12: 12 truong bo sung cua buoc THANH TOAN (SerROStatusUpdatePaid_New20230228).
     DateTime? StatusDate = null, decimal? AmountFromMC = null, decimal? PointTotal = null,
