@@ -65916,6 +65916,9 @@ app.MapGet("/api/repairorders/warranty-lookup", async (AppDbContext db, ITenantC
     {
         r.RONo, r.DealerCode,
         CusRequest = claim?.CusRequest ?? r.CusRequest, CarStatus = claim?.CarStatus ?? r.CarStatus,
+        // #974: StartDate/FinishedDate cùng khuôn isnull(claim, RO) như CusRequest/CarStatus ở trên —
+        // nguồn có nhưng bản port cũ bỏ sót cặp này.
+        StartDate = claim?.StartDate ?? r.StartDate, FinishedDate = claim?.FinishedDate ?? r.FinishedDate,
         r.CheckInDate, r.Assistant, r.Km, r.Status,
         r.CusID, OwnerName = cus?.CusName,
         CusName = r.CusName ?? cus?.ContName ?? cus?.CusName,
