@@ -2462,6 +2462,11 @@ public sealed class RoServiceItem{
     // (cờ tích luỹ/dồn, nguồn không giải thích thêm) mà entity chưa từng có chỗ chứa.
     public string? CamMarketingNo { get; set; }
     public string? FlagAccrual { get; set; }
+    // ===== #972 §12 — nguồn `Ser_ROServiceItems` (đọc thấy ở `Ser_ROInvoice_Get_New20220926`,
+    // `Service01.cs:4374-4396`) có CẢ HAI cột `Note` và `Remark` — HAI CỘT KHÁC NHAU, không phải một cột
+    // bị đặt tên nhầm như doc-comment cũ (#949) từng suy đoán. Port cũ chưa có cột nào trong hai cột này.
+    public string? Note { get; set; }
+    public string? Remark { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
@@ -2539,6 +2544,9 @@ public sealed class RoPartItem
     // ===== #969 §12 — cùng cặp cột thiếu như RoServiceItem, đọc thấy ở `Ser_RO_GetX` (BizCarSv.Tab.cs:979-1017).
     public string? CamMarketingNo { get; set; }
     public string? FlagAccrual { get; set; }
+    // ===== #972 §12 — nguồn `Ser_ROPartItems` cũng có CẢ `Note` (đã có) LẪN `Remark` (chưa có) — hai cột
+    // khác nhau, đọc thấy ở `Ser_ROInvoice_Get_New20220926` (`Service01.cs:4398-4413`).
+    public string? Remark { get; set; }
 }
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):

@@ -65330,6 +65330,7 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
             {
                 s.SerCode, s.SerName, s.ActManHour, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice,
                 s.CamID, s.CamMarketingNo, s.FlagAccrual, s.Status,   // #969
+                s.Note, s.Remark,   // #972
                 engineerNo = eng?.EngineerNo, engineerName = eng?.EngineerName, groupRName = grp?.GroupRName,   // #970
             };
         }).ToList())
@@ -65337,7 +65338,7 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
     var partsByRo = includeParts == true
         ? (await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIds.Contains(p.RoId)).ToListAsync())
             .GroupBy(p => p.RoId).ToDictionary(g => g.Key, g => (object)g.Select(p => new
-            { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note,
+            { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note, p.Remark,   // #972
               p.CamID, p.CamMarketingNo, p.FlagAccrual }).ToList())   // #969
         : null;
 
@@ -65468,7 +65469,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền hạng mục DỊCH VỤ theo nguồn: Factor * Price * (1 + VAT*0.01) — KHÔNG có cột Quantity riêng.
         // Client cũ vẫn truyền thẳng Amount; có Price thì tính lại cho đúng công thức nguồn.
         var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
-        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice, CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual });
+        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice, CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual, Note = s.Note, Remark = s.Remark });
     }
     foreach (var p in dto.Parts ?? new())
     {
@@ -65476,7 +65477,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền dòng PHỤ TÙNG theo nguồn: Factor * Quantity * Price * (1 + VAT*0.01).
         var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
         var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
-        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo, FlagAccrual = p.FlagAccrual });
+        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo, FlagAccrual = p.FlagAccrual, Remark = p.Remark });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
@@ -65622,14 +65623,14 @@ app.MapGet("/api/repairorders/{no}/invoice-detail", async (string no, AppDbConte
     else if (!string.IsNullOrWhiteSpace(cus?.ContName)) { cusAddress = cus.ContAddress; cusTel = cus.ContTel; cusMobile = cus.ContMobile; }
     else { cusAddress = cus?.Address; cusTel = cus?.Tel; cusMobile = cus?.Mobile; }
 
+    // #972: RÚT LẠI ghi chú cũ — `Note` và `Remark` là HAI CỘT THẬT KHÁC NHAU trên `Ser_ROServiceItems`
+    // (không phải một cột bị đặt tên nhầm), cả hai nay đã có trên entity.
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
         .OrderBy(s => s.Id)
-        // ⚪ Nguồn có cột `rs.Note` (`Ser_ROServiceItems.Remark`) nhưng entity Mini `RoServiceItem` (#280/#342/#367)
-        // không có trường ghi chú riêng — không bịa cột, giữ nguyên nợ đã có từ trước.
-        .Select(s => new { s.SerCode, s.SerName, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice }).ToListAsync();
+        .Select(s => new { s.SerCode, s.SerName, s.Factor, s.Price, s.Vat, s.ExpenseType, s.InsurancePrice, s.Note, s.Remark }).ToListAsync();
     var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
         .OrderBy(p => p.Id)
-        .Select(p => new { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note }).ToListAsync();
+        .Select(p => new { p.PartCode, p.PartName, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, p.Note, p.Remark }).ToListAsync();
 
     return Results.Ok(new
     {
@@ -78327,7 +78328,8 @@ record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int De
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null,
     string? ExpenseType = null, decimal? InsurancePrice = null,
     string? CamID = null,   // #367
-    string? CamMarketingNo = null, string? FlagAccrual = null);   // #969
+    string? CamMarketingNo = null, string? FlagAccrual = null,   // #969
+    string? Note = null, string? Remark = null);   // #972
 // #337: ExpenseType (nguon tien) va FlagAccessory (co phu kien) — HAI truong bao cao KPI loc theo,
 //   ma truoc nay KHONG duong nao ghi duoc: cot ExpenseType them tu #280 nhung dong tao RO khong gan.
 //   Thieu chung thi nhom PartAmount* cua bao cao LUON bang 0.
@@ -78335,7 +78337,8 @@ record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQt
     decimal? InsurancePrice = null,   // #342
     string? ExpenseType = null, string? FlagAccessory = "0",
     string? CamID = null,   // #367
-    string? CamMarketingNo = null, string? FlagAccrual = null);   // #969
+    string? CamMarketingNo = null, string? FlagAccrual = null,   // #969
+    string? Remark = null);   // #972
 // #266: chỉ nhận `MemberNo` + `FlagCardExist` lúc tạo LSC. Nhóm `*Inv` và `PointVoucher` do luồng lập
 //   hoá đơn chốt (xem chú thích ở endpoint) — cố ý không nhận từ client.
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,

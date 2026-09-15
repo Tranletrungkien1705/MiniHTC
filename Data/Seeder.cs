@@ -1308,6 +1308,10 @@ public static class Seeder
         "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"FlagAccrual\" text",
         "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"CamMarketingNo\" text",
         "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"FlagAccrual\" text",
+        // #972 Ser_ROServiceItems.Note/Remark (hai cot khac nhau) + Ser_ROPartItems.Remark (doc thay o Ser_ROInvoice_Get_New20220926)
+        "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"Note\" text",
+        "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
+        "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"Remark\" text",
         // #279 parity RptSSI_ICIC: co giao dich khoi tao (bao cao SSI loai cac dong nay)
         "ALTER TABLE public.\"DealerDeals\" ADD COLUMN IF NOT EXISTS \"FlagInitDeal\" text",
         // #278 parity iCIC: dai ly cua phieu CSKH (loc danh sach dai ly bi loai)
