@@ -68702,6 +68702,23 @@ app.MapGet("/api/reports/inventory-out", async (AppDbContext db, ITenantContext 
         sourceUsesPartInstanceMiniUsesLine = "nguon gom theo lo (Ser_Inv_PartInstance), Mini gom theo dong phieu xuat (PartStockOutLine) — cung y nghia so lieu, khac muc chi tiet lo" });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #921 `SerInventoryPartOrderNeed` (LIVE, `BizCarSv.Inventory.Report.cs:5880`) — PT cần đặt hàng =====
+// Nguồn: `Ser_MST_Part.MinQuantity` so với `Ser_Inv_StockBalance.InstockQuantity`, lấy các mã tồn ≤ tối thiểu.
+// Mini dùng `ServicePart` (đã có `Quantity`/`MinQuantity` sẵn từ #400) — cùng khái niệm, khác nguồn số tồn
+// (Quantity trực tiếp trên dòng danh mục thay vì cộng dồn từ bảng tồn kho riêng).
+// 📌 NỢ: `ServicePart` CHƯA có cột `DealerCode` (nguồn lọc theo đại lý) — danh mục đang DÙNG CHUNG TOÀN ORG;
+//   đây là gap lớn ảnh hưởng CẢ module phụ tùng (StockIn/StockOut/PartOrder dùng chung bảng), không sửa vội
+//   trong lượt này vì phạm vi quá rộng — ghi sổ để lượt sau đánh giá riêng.
+app.MapGet("/api/reports/part-order-need", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.Quantity <= x.MinQuantity)
+        .OrderBy(x => x.PartCode)
+        .Select(x => new { x.PartCode, partName = x.PartName, x.Unit, x.MinQuantity, instockQuantity = x.Quantity, minQty = x.Quantity - x.MinQuantity })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        dealerScopeDebt = "ServicePart chua co DealerCode (nguon Ser_MST_Part co) — danh sach nay la TOAN ORG, chua tach theo dai ly" });
+}).RequireAuthorization();
+
 // ===== 🔴 #520 DANH MỤC MÀU BIỂN SỐ — VÀ BA BỘ LỌC **BỊ BỎ IM LẶNG** =====
 // Nguồn: `BizCarSv.Master.cs:5743 Mst_PlateColor_Get`. Hàm này **không WS nào gọi**; nó sống qua
 //   **kênh vào thứ năm** `TERP.HTCService.ClientService/Services/Mst_PlateColorService.cs:40` (#519).
