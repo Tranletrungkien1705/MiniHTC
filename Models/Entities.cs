@@ -6024,7 +6024,12 @@ public sealed class CustomerCareMace
 }
 
 /// <summary>Phụ tùng nợ khách (Ser_Part_OO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor DMSCarSv/Services):
-/// PT hết hàng nhưng đã hứa khách theo biển số, chờ đặt hàng về trả tiếp. Upsert theo (PlateNo, PartCode).</summary>
+/// PT hết hàng nhưng đã hứa khách theo biển số, chờ đặt hàng về trả tiếp. Upsert theo (PlateNo, PartCode).
+/// 🏆🔴🔴 #912 PORT TRÙNG LẶP với <see cref="ServicePartOO"/> — CÙNG bảng nguồn `Ser_Part_OO`/`TblSer_Part_OO`,
+/// CÙNG hai form `FrmNewSerPartOO/FrmMngSerPartOO`, được port ĐỘC LẬP HAI LẦN dưới hai tên entity/route khác
+/// nhau (`/api/partbackorders` vs `/api/servicepartoos`). Bảng NÀY khớp ĐÚNG khoá tự nhiên của nguồn
+/// `(PartID, OOPlateNo)` — dùng `(PlateNo, PartCode)` làm khoá, không có số phiếu tự sinh. Giữ CẢ HAI (không
+/// xoá bản kia, tránh gãy caller đang dùng) — xem endpoint để biết bản nào là chính cho tính năng mới.</summary>
 public sealed class PartBackorder
 {
     public long Id { get; set; }
@@ -14134,7 +14139,11 @@ public sealed class ServiceStockInLine
     public decimal Amount { get; set; }
 }
 
-/// <summary>Phụ tùng nợ/chờ giao theo xe (outstanding part order) — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO (Ser_Part_OO, TCMotor).</summary>
+/// <summary>Phụ tùng nợ/chờ giao theo xe (outstanding part order) — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO (Ser_Part_OO, TCMotor).
+/// 🏆🔴🔴 #912 PORT TRÙNG LẶP với <see cref="PartBackorder"/> — xem chú thích bên đó. Bảng NÀY tự sinh số
+/// phiếu `OONo` (nguồn KHÔNG có khái niệm này) và dùng mô hình "giao dần" (`fulfill` cộng dồn) thay vì
+/// overwrite trực tiếp `SoLuongNo/SoLuongTra` như `Ser_Part_OO_Update` — là bản CÓ 6 cột đủ nhất (đã vá
+/// 2026-09-05) nên vẫn giữ làm route chính cho tính năng mới; `PartBackorder` khớp khoá tự nhiên nguồn hơn.</summary>
 public sealed class ServicePartOO
 {
     public long Id { get; set; }
