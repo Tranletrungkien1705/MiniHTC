@@ -1814,6 +1814,23 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #943 `Mst_BOM_Delete` (LIVE, `BizCarSv.ZTemp.cs:23390`) — CHƯA TỪNG có đường xoá HEADER =====
+// #689 đã đọc trọn cụm `Mst_BOM_*`, Mini đã có Get/Create/Update (`POST /api/boms` gộp cả hai qua `allowUpdate`)
+// và `DELETE /api/boms/lines/{id}` (xoá TỪNG dòng chi tiết) nhưng CHƯA có đường xoá CẢ BOM (header + mọi dòng).
+// Guard nguồn: `Mst_BOM_CheckDB(strBOMCode, FlagExistToCheck=Yes, "")` — BOM phải tồn tại (không lọc trạng
+// thái). Thân: XOÁ CỨNG `Mst_BOMDtl` (mọi dòng chi tiết của BOM) rồi `Mst_BOM` (header) — cùng một giao dịch.
+app.MapDelete("/api/boms/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == c);
+    if (b is null) return Results.NotFound(new { error = "Mst_BOM_CheckDB_BOMCodeNotFound", bomCode = c });
+    var lines = await db.BomLines.Where(x => x.OrgId == t.OrgId && x.BomId == b.Id).ToListAsync();
+    db.BomLines.RemoveRange(lines);
+    db.Boms.Remove(b);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { bomCode = c, deletedLines = lines.Count });
+}).RequireAuthorization();
+
 // ===== Hãng bảo hiểm + khách hàng thuộc hãng (port 1:1 FrmInsuranceCreate/Modify — TCMotor DMSCarSv/Admin) =====
 // Nguồn: ValidateInput() + checkInsuranceExist() + gviewPart_ValidateRow() + mst.SerInsuranceCreate.
 app.MapGet("/api/insurances", async (AppDbContext database, ITenantContext tenant, string? keyword) =>
