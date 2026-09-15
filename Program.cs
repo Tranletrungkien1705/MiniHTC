@@ -25032,6 +25032,19 @@ app.MapPost("/api/technicallibraries/{id}/toggle", async (long id, AppDbContext 
     return Results.Ok(new { row.Id, row.IsActive });
 }).RequireAuthorization();
 
+// #927 `Ser_Technical_Library_Delete` (LIVE, `BizCarSv.ZTemp.cs:32847`) — XOÁ CỨNG, chưa từng có đường xoá.
+// Guard nguồn: bản ghi phải tồn tại đúng theo (TechnicalLibraryCode, DealerCode) mới xoá được.
+app.MapDelete("/api/technicallibraries/{code}", async (string code, string dealerCode, AppDbContext db, ITenantContext t) =>
+{
+    var libCode = code.Trim().ToUpperInvariant();
+    var row = await db.TechnicalLibraries.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.TechnicalLibraryCode == libCode && x.DealerCode == dealerCode);
+    if (row is null) return Results.NotFound(new { error = "Ser_Technical_Library_CheckDB_TechnicalLibraryCodeNotFound", code = libCode, dealerCode });
+    db.TechnicalLibraries.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = libCode });
+}).RequireAuthorization();
+
 // ===== Master nhà cung cấp phụ tùng (SerMstSupplier — port 1:1 FrmMstSupplierCreate/Search, TCMotor DMSCarSv) =====
 // #911 (nối #818): entity SerMstSupplier hoàn toàn không mô hình hoá DealerCode dù nguồn khoá trùng theo
 // (SupplierCode, DealerCode, IsActive) và Create/Update đều ghi cột này — vá thêm cột + scope theo #818 đã sửa.
