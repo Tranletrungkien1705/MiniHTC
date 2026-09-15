@@ -23310,6 +23310,52 @@ app.MapPost("/api/stockoutorders/sv", async (SerStockOutOrderSvDto dto, AppDbCon
     return Results.Ok(new { h.Id, h.OrderNo, h.RONo, h.TotalQty, h.Status, lineCount = lines.Count });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #952 `Ser_RO_CreateRO` (LIVE, `BizCarSv.Service01.cs:6776`) — TỰ ĐỘNG ĐỒNG BỘ LỆNH XUẤT THEO PHỤ TÙNG CỦA RO, CHƯA CÓ =====
+// `/api/stockoutorders/sv` ở trên (đã port) là màn NHẬP TAY (`FrmStockOutOrderSvCreate`, client tự gửi dòng
+// phụ tùng). Hàm nguồn này KHÁC HẲN: chạy TỰ ĐỘNG mỗi khi RO chuyển vào lệnh sửa chữa thật, và có phần thân
+// KHÔNG PHỤ THUỘC trạng thái RO (nằm ngoài khối `if (Status == Create)`): kiểm RO có dòng phụ tùng nào không
+// (`CheckNoPartInRO`) — nếu CÓ và CHƯA có lệnh xuất (`Ser_Inv_StockOutOrder`) khớp RO này thì TẠO MỚI (mã
+// `"LX-" + RONo`, sao chép NGUYÊN danh sách `Ser_ROPartItems` làm dòng chi tiết); nếu ĐÃ có thì XOÁ HẾT dòng
+// cũ rồi CHÉP LẠI từ `Ser_ROPartItems` hiện tại — tức đồng bộ 1 CHIỀU từ RO SANG lệnh xuất, không phải xoá
+// hẳn khỏi nguồn (RO là nguồn sự thật, lệnh xuất chỉ là ảnh phản chiếu).
+// ⚪ Phần chuyển `Status: Create → HasRO` (+ `ROCreateBy`/`ROCreateDate`) của hàm nguồn KHÔNG áp dụng cho
+// MiniHTC: RepairOrder của Mini luôn được tạo thẳng ở `Status="HasRO"` (không có giai đoạn báo giá riêng
+// biệt), nên nhánh đó không có gì để port — chỉ port phần đồng bộ lệnh xuất, đúng phạm vi còn thiếu thật.
+app.MapPost("/api/repairorders/{no}/sync-partorder", async (string no, HttpContext http, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { no });
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id).ToListAsync();
+    if (parts.Count == 0) return Results.Ok(new { no, synced = false, note = "RO chua co dong phu tung nao (dung nguon: CheckNoPartInRO)." });
+
+    var order = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SourceType == "RO" && x.RONo == no);
+    var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    bool created = false;
+    if (order is null)
+    {
+        order = new SerStockOutOrder
+        {
+            OrgId = t.OrgId, OrderNo = "LX-" + no, OrderDate = DateTime.Now, CusName = ro.CusName,
+            RONo = no, SourceType = "RO", Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now,
+        };
+        db.SerStockOutOrders.Add(order);
+        await db.SaveChangesAsync();
+        created = true;
+    }
+    else
+    {
+        var oldLines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && x.OrderId == order.Id).ToListAsync();
+        db.SerStockOutOrderLines.RemoveRange(oldLines);
+    }
+    foreach (var p in parts)
+        db.SerStockOutOrderLines.Add(new SerStockOutOrderLine { OrgId = t.OrgId, OrderId = order.Id, PartCode = p.PartCode, PartName = p.PartName, Unit = p.Unit, OrderQuantity = p.NeedQty });
+    order.TotalQty = parts.Sum(p => p.NeedQty);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { no, order.OrderNo, created, lineCount = parts.Count,
+        oneWaySyncNote = "Dong bo MOT CHIEU tu RO sang lenh xuat (RO la nguon su that) — moi lan goi XOA HET dong cu roi chep lai tu Ser_ROPartItems hien tai, dung nguon." });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockoutorders", async (SerStockOutOrderDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
 {
     if (string.IsNullOrWhiteSpace((dto.CusName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên khách hàng." });
