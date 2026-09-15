@@ -20584,6 +20584,69 @@ app.MapGet("/api/warrantyclaims/report/main-part", async (AppDbContext db, ITena
         miniAddsCarMasterFallback = "CAI TIEN CUA MINI (khong phai hanh vi nguon): fallback sang ServiceCar qua CarID khi RO khong tim thay, giam rui ro vua ghi — co gan co frameSource de phan biet ro nguon du lieu moi dong",
     });
 }).RequireAuthorization();
+// ===== 🏆🔴🔴 #898 — `Ser_ROWarrantyReportHTC_Get_OnlyOneROWID_New20230417` (chi tiết 1 claim + tra "lần lắp trước") — **1442/`2800 (51,5%)**
+// `BizCarSv.WarrantyReport.cs:18587` (382 dòng). So dòng-đối-dòng với `HTC_Get_New20230417` (#895): tham
+// số nhỏ hơn hẳn (chỉ `ROWID`+`IsGetDetail`), bỏ cụm CVC/PTC đại diện, nhưng THÊM một khối logic mới THẬT
+// SỰ, không phải bản sao.
+//
+// 🏆🔴 **TRA "LẦN LẮP PHỤ TÙNG NÀY GẦN NHẤT TRƯỚC ĐÓ" — CHỈ ÁP DỤNG CHO KHIẾU NẠI BẢO HÀNH PHỤ TÙNG
+// (`ROWTypeCode='PT'` + `ROWTypeDtlCode='S'` + dòng `ROWPartType='PTC'`)**: dựng `#tblSer_RO...ServiceItems`
+// (car+part của claim hiện tại) rồi `select top 1 … from … inner join Ser_RO sr on cc.CarID = sr.CarID and
+// t.ROID > sr.ROID -- Chỉ lấy những báo giá TRƯỚC ĐÓ … inner join Ser_ROPartItems srpart on … t.PartID =
+// srpart.PartID where sr.ActualDeliveryDate is not null and sr.Status not in ('REJ') order by
+// sr.ActualDeliveryDate desc` ⇒ trả về ngày GIAO XE THỰC TẾ của lần sửa chữa **gần nhất, trước claim này**,
+// trên CÙNG xe, CÙNG phụ tùng, đã giao thành công (không phải phiếu bị huỷ) — dùng để xét "phụ tùng này mới
+// lắp cách đây bao lâu thì hỏng" khi HTC duyệt claim.
+// ⚠️ **DÙNG THỨ TỰ `ROID` LÀM ĐẠI DIỆN CHO THỨ TỰ THỜI GIAN, KHÔNG SO SÁNH NGÀY** (`t.ROID > sr.ROID`,
+// không phải `t.CreatedDate > sr.CheckInDate`) — chỉ đúng nếu `ROID` là chuỗi tăng dần NGHIÊM NGẶT theo
+// thời gian tạo, không bị chia theo đại lý/nguồn tạo riêng. Chưa xác minh được tính đơn điệu thật của cột
+// này trên dữ liệu sản xuất nên ghi RỦI RO, không khẳng định là lỗi (#362/#364).
+// 🔴🔴 **NGUỒN CATALOG `Ser_MST_ROWarrantyType` LỆCH GIỮA HAI ANH EM**: `HTC_Get` (#895) đọc bảng LOCAL
+// (`Ser_MST_ROWarrantyType`, không tiền tố CSDL); `HTC_Get_OnlyOneROWID` đọc TỪ TRUNG TÂM
+// (`[@strDBName_CommonCenter].[dbo].Ser_MST_ROWarrantyType`) — CÙNG một danh mục loại bảo hành, HAI hàm anh
+// em đọc HAI NGUỒN khác nhau ⇒ nếu bản LOCAL và TRUNG TÂM lệch nhau, hai màn xem CÙNG một ROWID có thể hiện
+// `ROWTypeName` khác nhau. Họ #853 (Model đọc từ DB trung tâm), lần này là danh mục loại BCBH.
+// ⚪ Thêm **`BulletinNoHMC`** (số bản tin PHÍA HÃNG, khác `BulletinNo` nội bộ) và **`PartOrderType`/
+// `PartOrderNo`** (nguồn gốc phụ tùng: TST hay khác) ở khối chi tiết dòng phụ tùng — cột thật, không có ở
+// #895, khớp đúng field Mini đã mô hình hoá sẵn (`WarrantyClaimPartItem.PartOrderType/PartOrderNo`).
+// 📌 Mini: `GET /api/warrantyclaims/{claimNo}/prior-part-delivery` — tra lần giao xe gần nhất trước đó có
+// CÙNG xe + CÙNG phụ tùng + đã giao thật, CHỈ áp dụng đúng điều kiện `ROWTypeCode/ROWTypeDtlCode/ROWPartType`
+// như nguồn; dùng `CreatedAt`/`Id` của RO làm khoá thứ tự (Mini `RepairOrder.Id` là auto-increment tuần tự
+// thật trong CÙNG một CSDL đơn — không có rủi ro chia đại lý như nguồn multi-DB).
+app.MapGet("/api/warrantyclaims/{claimNo}/prior-part-delivery", async (string claimNo, AppDbContext db, ITenantContext t) =>
+{
+    const string RowTypeCodePT = "PT"; const string RowTypeDtlCodeS = "S"; const string RowPartTypePTC = "PTC";
+    var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ClaimNo == claimNo);
+    if (claim is null) return Results.NotFound(new { error = "Khong tim thay khieu nai." });
+    if (claim.ROWTypeCode != RowTypeCodePT || claim.ROWTypeDtlCode != RowTypeDtlCodeS)
+        return Results.Ok(new { applicable = false, reason = "Chi ap dung cho BCBH phu tung (ROWTypeCode=PT, ROWTypeDtlCode=S) — dung nguon" });
+
+    var mainPart = await db.WarrantyClaimPartItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ClaimId == claim.Id && x.RowPartType == RowPartTypePTC);
+    if (mainPart is null || claim.RONo is null || claim.CarID is null)
+        return Results.Ok(new { applicable = true, priorDeliveryDate = (DateTime?)null, reason = "Thieu du lieu (khong co dong PTC, RONo, hoac CarID)" });
+
+    var thisRo = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == claim.RONo);
+    if (thisRo is null) return Results.Ok(new { applicable = true, priorDeliveryDate = (DateTime?)null, reason = "Khong tim thay RO cua claim" });
+
+    // Vi FIX ho so RUI RO: dung Id (auto-increment tuan tu that trong 1 CSDL) thay ROID da bao rui ro o tren.
+    var priorRos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.CarID == claim.CarID
+        && x.Id < thisRo.Id && x.ActualDeliveryDate != null && x.Status != "REJ").OrderByDescending(x => x.ActualDeliveryDate).ToListAsync();
+    DateTime? priorDate = null; string? priorRoNo = null;
+    foreach (var pr in priorRos)
+    {
+        var hasSamePart = await db.RoPartItems.AnyAsync(x => x.OrgId == t.OrgId && x.RoId == pr.Id && x.PartCode == mainPart.PartCode);
+        if (hasSamePart) { priorDate = pr.ActualDeliveryDate; priorRoNo = pr.RONo; break; }
+    }
+
+    return Results.Ok(new
+    {
+        applicable = true, claimNo, partCode = mainPart.PartCode, priorDeliveryDate = priorDate, priorRoNo,
+        onlyExistsOnBoth898 = "#898: Ser_ROWarrantyReportHTC_Get_OnlyOneROWID_New20230417 — BizCarSv.WarrantyReport.cs:18587 (382 dong). So dong-doi-dong voi HTC_Get_New20230417 (#895): tham so nho hon han, bo cum CVC/PTC dai dien, THEM khoi logic moi that su",
+        roidAsChronologyProxyRisk = "DUNG THU TU ROID LAM DAI DIEN THOI GIAN, KHONG SO SANH NGAY (t.ROID > sr.ROID, khong phai t.CreatedDate > sr.CheckInDate) — chi dung neu ROID la chuoi tang dan NGHIEM NGAT theo thoi gian tao, khong chia theo dai ly/nguon tao rieng. Chua xac minh tinh don dieu that tren du lieu san xuat nen ghi RUI RO, khong khang dinh loi",
+        catalogSourceMismatchBetweenSiblings = "NGUON CATALOG Ser_MST_ROWarrantyType LECH GIUA HAI ANH EM: HTC_Get (#895) doc bang LOCAL, HTC_Get_OnlyOneROWID doc TU TRUNG TAM ([@strDBName_CommonCenter]) — CUNG mot danh muc loai bao hanh, HAI ham anh em doc HAI NGUON khac nhau => neu local va trung tam lech nhau, hai man xem CUNG mot ROWID co the hien ROWTypeName khac nhau. Ho #853, lan nay la danh muc loai BCBH",
+        newRealColumnsVsHtc895 = "AM TINH: them BulletinNoHMC (so ban tin PHIA HANG, khac BulletinNo noi bo) va PartOrderType/PartOrderNo (nguon goc phu tung) o khoi chi tiet dong phu tung — cot THAT, khong co o #895, khop dung field Mini da mo hinh hoa san",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
