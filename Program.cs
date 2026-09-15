@@ -20707,10 +20707,44 @@ app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext 
 // `dealerInactive` thay vì im lặng mất dòng), và `TotalAmount` cộng đúng cả dòng VAT rỗng (Mini dùng
 // `decimal` không-null cho VAT nên không tự dính bug NULL — vẫn giữ CÙNG MỘT công thức cho tổng lẫn chi
 // tiết, không tách hai công thức như nguồn).
+// ===== 🔴🔴🔴 #896 — `Ser_ROWarrantyReportHTC_RLU_Get_New20230417` (báo cáo HTC riêng dòng xe VIN tiền tố "RLU") — **1440/`2800 (51,4%)**
+// `BizCarSv.WarrantyReport.cs:19619` (401 dòng), LIVE trên máy 150. Hàng đợi **29**. Cấu trúc gần như
+// SAO-DÁN của `HTC_Get_New20230417` (#895) — cùng khối `#tbl_rsv`/`#tbl_rsp`/`#tbl_amount` — nhưng KHÔNG
+// phải trùng lặp vô ích: đây là báo cáo RIÊNG cho MỘT DÒNG XE (VIN tiền tố cố định), tham số nhỏ hơn hẳn
+// (không có `ROWTypeCode`/`ROWTID`/`HMCApiStatus`/`WarrantyStaffInCharge` như #895), và thêm `ModelName`.
+//
+// 🔴🔴🔴 **HAI HẰNG SỐ NÓI CỨNG NGAY TRONG SQL, KHÔNG ĐẶT TÊN, KHÔNG THAM SỐ HOÁ (HẰNG≠GIÁ TRỊ)**:
+//     `and ro.FrameNo like 'RLU%'` — chốt CỨNG dòng xe theo tiền tố VIN, đây chính là ĐIỂM KHÁC BIỆT DUY
+//     NHẤT so với #895 nhưng lại nằm trong THÂN CÂU LỆNH, không phải tham số WS ⇒ muốn thêm dòng xe mới
+//     phải SỬA CODE, không cấu hình được.
+//     `and srr.CreatedDate >= '2016-01-01'` — mốc ngày CỨNG không giải thích, khả năng là ngày dòng xe RLU
+//     ra mắt, nhưng **không có hằng số đặt tên** nào trong `TERP.Constants` ghi lại ý nghĩa mốc này.
+// 🔴🔴🔴 **XÁC NHẬN LẶP LẠI ĐÚNG HAI BUG CỦA #895 — LẦN THỨ HAI, CHỨNG MINH ĐÂY LÀ LỖI HỆ THỐNG CỦA CẢ
+// HỌ HÀM, KHÔNG PHẢI RIÊNG MỘT HÀM**:
+//   ⓵ `#tbl_rsv`/`#tbl_rsp` tính `Factor*Price+Factor*Price*VAT*0.01` KHÔNG kiểm `VAT is null`, trong khi
+//   khối Detail CÙNG HÀM có guard `case when VAT is null or VAT=0 then …` — Y HỆT #895.
+//   ⓶ `inner join ser_car`/`inner join Mst_Dealer … DealerStatus='1'` xuất hiện **BỐN LẦN** (Draft, Main,
+//   ServiceItems Detail, PartItem Detail) — NHIỀU HƠN #895 (hai lần) vì khối Detail ở đây tự JOIN lại xe/dealer
+//   một lần nữa thay vì tái dùng từ bảng tạm.
+// ⚪ Model xe (`smm.ModelName`) — cột #895 không có, xác nhận đây là báo cáo THẬT KHÁC, không phải bản sao vô
+//   nghĩa.
+// 📌 Mini: `GET /api/warrantyclaims/report/htc?vinPrefix=RLU&dateFrom=2016-01-01` — TÁI DÙNG endpoint #895,
+// thêm hai tham số **cấu hình được** (`vinPrefix`, `dateFrom`) thay vì hai hằng cứng trong SQL nguồn — vá
+// đúng phát hiện HẰNG≠GIÁ TRỊ ở trên mà không tạo endpoint trùng lặp logic.
+app.MapGet("/api/_meta/htc-rlu-report-audit", () => Results.Ok(new
+{
+    scope896 = "#896: Ser_ROWarrantyReportHTC_RLU_Get_New20230417 — BizCarSv.WarrantyReport.cs:19619 (401 dong), LIVE tren may 150. Cau truc gan nhu sao-dan cua HTC_Get_New20230417 (#895) nhung la bao cao RIENG cho MOT DONG XE (VIN tien to co dinh), tham so nho hon han",
+    hardcodedUnnamedConstants = "HAI HANG SO NOI CUNG NGAY TRONG SQL, KHONG DAT TEN, KHONG THAM SO HOA: and ro.FrameNo like RLU% (chot cung dong xe theo tien to VIN — DIEM KHAC BIET DUY NHAT so voi #895 nhung nam trong THAN cau lenh, khong phai tham so WS => them dong xe moi phai SUA CODE); and srr.CreatedDate >= 2016-01-01 (moc ngay cung khong giai thich, khong co hang so dat ten nao trong TERP.Constants ghi lai y nghia)",
+    confirmsSameTwoBugsAsHtc895SecondOccurrence = "XAC NHAN LAP LAI DUNG HAI BUG CUA #895 LAN THU HAI — CHUNG MINH LA LOI HE THONG CUA CA HO HAM: (1) #tbl_rsv/#tbl_rsp khong kiem VAT is null trong khi Detail CUNG HAM co guard; (2) inner join ser_car/Mst_Dealer DealerStatus=1 xuat hien BON LAN (Draft, Main, ServiceItems Detail, PartItem Detail) — nhieu hon #895 (hai lan) vi khoi Detail tu JOIN lai xe/dealer thay vi tai dung tu bang tam",
+    modelNameIsRealDifference = "AM TINH: cot smm.ModelName ma #895 KHONG co — xac nhan day la bao cao THAT KHAC, khong phai ban sao vo nghia",
+    miniReusesEndpoint895WithConfigurableParams = "Mini KHONG tao endpoint trung logic: tai dung GET /api/warrantyclaims/report/htc (#895), them hai tham so CAU HINH DUOC (vinPrefix, dateFrom) thay vi hai hang cung trong SQL nguon — va dung phat hien HANG=GIA TRI o tren",
+})).RequireAuthorization();
 app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantContext t,
     string? dealerCodeList, string? statusList, string? rowTypeCodeList, string? hmcApiStatusList,
-    DateTime? createdDateFrom, DateTime? createdDateTo, bool includeDetail = false) =>
+    DateTime? createdDateFrom, DateTime? createdDateTo, string? vinPrefix, bool includeDetail = false) =>
 {
+    // #896: vinPrefix la tham so CAU HINH DUOC thay cho hang cung "and ro.FrameNo like 'RLU%'" cua nguon
+    // (dung chung endpoint nay cho ca man HTC_Get lan man rieng dong xe HTC_RLU_Get/HTC_RLUU_Get).
     var dealerCodes = (dealerCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     var statuses = (statusList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     var rowTypes = (rowTypeCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -20727,6 +20761,11 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
 
     var carIds = claims.Select(x => x.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vinPrefix))
+    {
+        var matchIds = cars.Where(x => (x.FrameNo ?? "").StartsWith(vinPrefix, StringComparison.OrdinalIgnoreCase)).Select(x => x.CarID).ToHashSet();
+        claims = claims.Where(c => c.CarID != null && matchIds.Contains(c.CarID)).ToList();
+    }
     var dealerCodesUsed = claims.Select(x => x.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodesUsed.Contains(x.DealerCode)).ToListAsync();
     var claimIds = claims.Select(x => x.Id).ToList();
