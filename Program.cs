@@ -61363,6 +61363,56 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
     return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count });
 }).RequireAuthorization();
 
+// ===== 🏆🔴🔴🔴 #936 `MigratePartInstance` (LIVE, `StockOut.cs:4602`) — NGUỒN TỰ VIẾT JOB BÙ DỮ LIỆU CHO ĐÚNG =====
+// NỢ CỦA `Ser_Inv_PartInstance` không ĐÃ tự nguồn thừa nhận: nguồn có sẵn một WS MỘT-LẦN
+// (`strFunctionName = "SerImpPartInstance"`) quét phiếu XUẤT `Status='3'` chưa có `PartInstance` khớp
+// (`left join ... where sip.PartInstanceID is null`), rồi TIÊU THỤ FIFO giống hệt logic #929 để lấp ngược.
+// ⇒ Xác nhận: NGUỒN CŨNG COI ĐÂY LÀ NỢ CẦN BÙ, không phải "chỉ áp dụng từ nay về sau" như #928/#929 từng
+// tạm chấp nhận (thiếu cơ sở nguồn lúc đó). Giờ có cơ sở — cổng bù cho đúng, tái dùng NGUYÊN logic FIFO/tách
+// lô của #929, chỉ khác phạm vi: quét NGƯỢC toàn bộ phiếu Kết thúc cũ thay vì áp cho phiếu mới.
+app.MapPost("/api/reports/partinstance-backfill", async (AppDbContext db, ITenantContext t) =>
+{
+    var doneOuts = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.StockOutId != null)
+        .Select(x => x.StockOutId!.Value).Distinct().ToListAsync();
+    var headers = await db.PartStockOuts.Where(h => h.OrgId == t.OrgId && h.Status == "3" && !doneOuts.Contains(h.Id)).ToListAsync();
+    var processed = new List<object>();
+    var stillShort = new List<object>();
+    foreach (var h in headers)
+    {
+        var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id).ToListAsync();
+        foreach (var l in lines)
+        {
+            var need = l.Quantity;
+            var lots = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.PartCode == l.PartCode
+                && x.StockOutId == null && x.Quantity > 0).OrderBy(x => x.DateIn).ToListAsync();
+            foreach (var lot in lots)
+            {
+                if (need <= 0) break;
+                var take = Math.Min(need, lot.Quantity);
+                if (take == lot.Quantity)
+                { lot.StockOutId = h.Id; lot.StockOutNo = h.StockOutNo; lot.DateOut = h.PostedAt ?? h.CreatedAt; lot.SOPrice = l.Price; }
+                else
+                {
+                    lot.Quantity -= take;
+                    db.PartInstances.Add(new PartInstance
+                    {
+                        OrgId = t.OrgId, DealerCode = lot.DealerCode, PartCode = lot.PartCode,
+                        StockInNo = lot.StockInNo, StockInId = lot.StockInId, LocationID = lot.LocationID,
+                        SIPrice = lot.SIPrice, SIVAT = lot.SIVAT, DateIn = lot.DateIn,
+                        Quantity = take, StockOutId = h.Id, StockOutNo = h.StockOutNo, DateOut = h.PostedAt ?? h.CreatedAt, SOPrice = l.Price,
+                    });
+                }
+                need -= take;
+            }
+            if (need > 0) stillShort.Add(new { h.StockOutNo, l.PartCode, shortBy = need });
+        }
+        processed.Add(new { h.StockOutNo, lines = lines.Count });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { backfilledCount = processed.Count, processed, stillShort,
+        sourcePrecedent = "MigratePartInstance/SerImpPartInstance (StockOut.cs:4602) — nguon tu viet job bu du lieu tuong tu, xac nhan day la NO can bu chu khong phai chi ap dung tu nay ve sau" });
+}).RequireAuthorization();
+
 // ===== 🏆🔴 #919 `SerStockOutStatusUpdateToFinished02` — XUẤT ĐIỀU CHUYỂN KHO (LIVE, `StockOut.cs:6475`) =====
 // "Xuất điều chuyển kho: 1. xuất kho 2. nhập kho" (nguyên văn comment nguồn). Khi kết thúc phiếu xuất LOẠI
 // điều chuyển, nguồn tự động gọi `ProcessFinishStockInAdj` (`Stock.cs:3116`) tạo NGAY một phiếu NHẬP Ở
