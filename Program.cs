@@ -59789,6 +59789,107 @@ app.MapPost("/api/servicecustomers/with-cars", async (CustomerWithCarsDto dto, A
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #961 `Ser_Customer_Create01` (LIVE, `BizCarSv.Customer.cs:2401`) — TẠO KHÁCH + PHIẾU SINH NHẬT +
+//   XE HẸP CỘT, CHƯA CÓ =====
+// Phát hiện qua #408 (liệt kê trọn `BizCarSv.Customer.cs`, đếm 0-hit, xác nhận LIVE cả hai máy).
+// KHÁC hẳn `POST /api/servicecustomers` (tạo khách trần) và `POST /api/servicecustomers/with-cars` (#332,
+//   nguồn `CarSv_Ser_CustomerCar_Create*`, kênh máy tính bảng): đây là MỘT hàm gateway riêng biệt, có HAI
+//   side-effect mà hai cổng kia không có:
+//   (1) **Tự động tạo phiếu CSKH sinh nhật** (`Ser_CustomerCareBth`, qua `ProcessSaveCareBth`) ngay khi tạo
+//       khách — `DateBth` = ngày/tháng sinh CHUẨN HOÁ VỀ NĂM HIỆN TẠI (không lưu năm sinh gốc), Status=
+//       Inactive (chưa liên hệ). Chỉ tạo nếu có `DOB`.
+//   (2) Xe (nếu có) tạo qua helper RIÊNG `ProcessSaveCar_ForHCC` — nguồn CÓ CHỦ Ý comment-out phần lớn cột
+//       (EngineNo/ProductYear/ColorCode/WarrantyRegistrationDate/DateBuyCar/CurrentKm/SalesCarID/Ins*/
+//       SerialNo/BatteryNo đều bị `//` — luật port dòng ACTIVE) ⇒ CHỈ ghi đúng sáu cột:
+//       DealerCode/CusID/ModelID(nếu có)/PlateNo/FrameNo/TradeMarkCode(nếu có) + Note(nếu có).
+// Guard giữ nguyên ba nhánh nguồn: IDCardNo trùng trong CÙNG đại lý (`mycheck_Ser_Customer_IDCardNo`) ·
+//   ProvinceCode phải tồn tại · DistrictCode phải tồn tại (cùng ProvinceCode) — và guard PlateNo trùng
+//   (Active, cùng đại lý) khi có xe đi kèm (`CheckExistPlateNo`).
+app.MapPost("/api/servicecustomers/create01", async (Customer01Dto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var idCardNo = (dto.IDCardNo ?? "").Trim().ToUpperInvariant();
+    if (idCardNo.Length > 0)
+    {
+        var dupIdCard = await db.ServiceCustomers.AnyAsync(x => x.OrgId == t.OrgId
+            && x.DealerCode == dealerCode && x.IDCardNo == idCardNo);
+        if (dupIdCard) return Results.Conflict(new { error = "mycheck_Ser_Customer_ExistIDCardNo",
+            message = "Số CMND/CCCD đã tồn tại ở một khách khác cùng đại lý." });
+    }
+    var provinceCode = (dto.ProvinceCode ?? "").Trim().ToUpperInvariant();
+    if (provinceCode.Length > 0)
+    {
+        var provinceExists = await db.MstProvinces.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == provinceCode);
+        if (!provinceExists) return Results.BadRequest(new { error = "MyCheckExist_Province", message = "Tỉnh/thành không tồn tại.", provinceCode });
+    }
+    var districtCode = (dto.DistrictCode ?? "").Trim().ToUpperInvariant();
+    if (districtCode.Length > 0)
+    {
+        var districtExists = await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == provinceCode && x.DistrictCode == districtCode);
+        if (!districtExists) return Results.BadRequest(new { error = "MyCheckExist_District", message = "Quận/huyện không tồn tại trong tỉnh đã chọn.", provinceCode, districtCode });
+    }
+
+    var code = "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff");
+    var c = new ServiceCustomer
+    {
+        OrgId = t.OrgId, CusCode = code, DealerCode = dealerCode.Length > 0 ? dealerCode : null,
+        CusName = dto.CusName ?? "", Sex = dto.Sex, Address = dto.Address, Tel = dto.Tel, Mobile = dto.Mobile,
+        Fax = dto.Fax, Email = dto.Email, Website = dto.Website, Bank = dto.Bank, BankAccountNo = dto.BankAccountNo,
+        TaxCode = dto.TaxCode, IsContact = string.IsNullOrEmpty(dto.IsContact) ? "1" : dto.IsContact,
+        Note = dto.Note, ContName = dto.ContName, ContSex = dto.ContSex, ContAddress = dto.ContAddress,
+        ContTel = dto.ContTel, ContMobile = dto.ContMobile, ContFax = dto.ContFax, ContEmail = dto.ContEmail,
+        CusTypeID = dto.CusTypeID, OrgTypeID = dto.OrgTypeID, DOB = dto.DOB,
+        IDCardNo = idCardNo.Length > 0 ? idCardNo : null,
+        ProvinceCode = provinceCode.Length > 0 ? provinceCode : null,
+        DistrictCode = districtCode.Length > 0 ? districtCode : null,
+        FlagActive = "1", CreatedDate = DateTime.Now,
+    };
+    db.ServiceCustomers.Add(c);
+
+    // ===== (1) Phiếu CSKH sinh nhật tự động — chỉ khi có DOB, DateBth chuẩn hoá về NĂM HIỆN TẠI =====
+    if (dto.DOB.HasValue)
+    {
+        var today = DateTime.Today;
+        DateTime dateBth;
+        try { dateBth = new DateTime(today.Year, dto.DOB.Value.Month, dto.DOB.Value.Day); }
+        catch (ArgumentOutOfRangeException) { dateBth = new DateTime(today.Year, dto.DOB.Value.Month, 28); } // 29/2 nam khong nhuan
+        db.CustomerCareBirthdays.Add(new CustomerCareBirthday
+        {
+            OrgId = t.OrgId, CareBthId = "CBT" + DateTime.Now.ToString("yyMMddHHmmssfff"),
+            CusId = code, DealerCode = c.DealerCode, DateBth = dateBth, Status = "0", CreatedDate = DateTime.Now,
+        });
+    }
+
+    // ===== (2) Xe kèm theo — helper HẸP, chỉ sáu cột (nguồn comment-out phần còn lại) =====
+    object? carOut = null;
+    if (dto.Car is not null && !string.IsNullOrWhiteSpace(dto.Car.PlateNo) && !string.IsNullOrWhiteSpace(dto.Car.FrameNo))
+    {
+        var plateNo = dto.Car.PlateNo!.Trim().ToUpperInvariant();
+        var duplicatePlate = await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId
+            && x.PlateNo == plateNo && x.DealerCode == c.DealerCode && x.FlagActive == "1");
+        if (duplicatePlate) return Results.Conflict(new { error = "Ser_PlateNo_Exist", message = "Biển số đã tồn tại (đang hoạt động) ở đại lý này." });
+        var car = new ServiceCar
+        {
+            OrgId = t.OrgId, DealerCode = c.DealerCode, CusID = code,
+            ModelCode = string.IsNullOrWhiteSpace(dto.Car.ModelID) ? null : dto.Car.ModelID,
+            PlateNo = plateNo, FrameNo = dto.Car.FrameNo!.Trim().ToUpperInvariant(),
+            TradeMark = string.IsNullOrWhiteSpace(dto.Car.TradeMarkCode) ? null : dto.Car.TradeMarkCode,
+            Note = string.IsNullOrWhiteSpace(dto.Car.Note) ? null : dto.Car.Note,
+            FlagActive = "1",
+        };
+        db.ServiceCars.Add(car);
+        carOut = new { car.PlateNo, car.FrameNo, car.ModelCode, car.TradeMark };
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        c.CusCode, c.CusName, car = carOut,
+        narrowCarFieldsNote = "Nguon comment-out phan lon cot xe o ProcessSaveCar_ForHCC (EngineNo/ProductYear/ColorCode/WarrantyRegistrationDate/DateBuyCar/CurrentKm/SalesCarID/Ins*/SerialNo/BatteryNo) — chi ghi DUNG SAU cot, giu nguyen (luat port dong ACTIVE).",
+        careBthAutoCreatedNote = "Co DOB thi tu dong tao phieu CSKH sinh nhat (Status Inactive), DateBth = ngay/thang sinh CHUAN HOA VE NAM HIEN TAI, khong luu nam sinh goc.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto, AppDbContext db, ITenantContext t) =>
 {
     var rows = dto.Rows ?? new();
@@ -78148,6 +78249,12 @@ record ServiceCarUpdateDto(string? DealerCode, string? CusID, string? ModelID, s
 record ServiceCustomerDto(string? SalesCusID,string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
     // #221 parity: 15 trường của CustomerCreate/CustomerUpdate
     string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
+record Customer01CarDto(string? ModelID, string? PlateNo, string? FrameNo, string? TradeMarkCode, string? Note);   // #961
+record Customer01Dto(string? DealerCode, string? CusName, string? Sex, string? Address, string? Tel, string? Mobile,
+    string? Fax, string? Email, string? Website, string? Bank, string? BankAccountNo, string? TaxCode,
+    string? IsContact, string? Note, string? ContName, string? ContSex, string? ContAddress, string? ContTel,
+    string? ContMobile, string? ContFax, string? ContEmail, string? CusTypeID, string? OrgTypeID,
+    DateTime? DOB, string? IDCardNo, string? ProvinceCode, string? DistrictCode, Customer01CarDto? Car);   // #961
 // #235: khối giá + ngữ cảnh phụ tùng, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
 //  KHÔNG nhận 5 cột dẫn xuất (TPBeforeDc/UPAfterDc/TPAfterDc/ValVAT/TPAfterVAT): server tính,
 //  đúng như lưới nguồn KHOÁ 5 ô đó (`_lstColNotAllowEdit`).
