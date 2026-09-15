@@ -5955,6 +5955,11 @@ public sealed class CustomerCareSurvey
 /// + danh sách phụ tùng khuyến mãi kèm % giảm.</summary>
 public sealed class CampaignMarketing
 {
+    // 🏆🔴🔴 #914 PORT TRÙNG LẶP với ServiceCampaign (Models/Entities.cs, route `/api/servicecampaigns`) —
+    // CẢ HAI tự nhận port 1:1 CÙNG một màn `FrmSer_CampaignMarketing`/`Ser_CampaignMarketing`, độc lập, đều
+    // LIVE. Bảng NÀY (`CampaignMarketing`/`/api/campaignmarketings`) đầy đủ hơn: có luồng duyệt lan 6 bảng
+    // con (#798), điều kiện VIN/biển số/khoảng ngày bảo hành. `ServiceCampaign` chỉ có Draft/Active/Closed +
+    // điều kiện đại lý, không có duyệt. Giữ CẢ HAI (không xoá, tránh gãy caller) — route MỚI dùng bảng này.
     // ===== 🔴 #392 §12 TRẠNG THÁI + DẤU DUYỆT của chiến dịch marketing =====
     /// <summary>Trạng thái: `P` = chờ duyệt (Pending) · `A` = đã duyệt (Approve).
     /// 🔴 Khi duyệt, nguồn **lan trạng thái này xuống SÁU bảng con** — xem
@@ -13382,7 +13387,10 @@ public sealed class DeliveryLocation
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).</summary>
+/// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).
+/// 🏆🔴🔴 #914 PORT TRÙNG LẶP với <see cref="CampaignMarketing"/> — xem chú thích bên đó. Bảng đó đầy đủ
+/// hơn (có duyệt lan 6 bảng con, điều kiện VIN/biển số); bảng NÀY đơn giản hơn, KHÔNG xoá để tránh gãy
+/// caller đang dùng `/api/servicecampaigns/*`.</summary>
 public sealed class ServiceCampaign
 {
     public long Id { get; set; }
