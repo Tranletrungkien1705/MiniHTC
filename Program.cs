@@ -64972,6 +64972,62 @@ app.MapGet("/api/repairorders/{no}/invoice-detail", async (string no, AppDbConte
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #951 `SerROInvoiceBill_New20180624` (LIVE, `BizCarSv.Service01.cs:12980`) — TỔNG HỢP HOÁ ĐƠN HÀNG LOẠT, CHƯA CÓ =====
+// KHÁC `#949` (chi tiết MỘT lệnh, đủ dòng công/phụ tùng): đây là báo cáo TỔNG HỢP nhiều lệnh cùng lúc (theo
+// danh sách RONo/đại lý/người tạo), trả `TotalAmount`/`DebitAmount`/`PaymentAmount` mỗi lệnh — dùng cho màn
+// "Bảng kê hoá đơn" xem nhanh nhiều lệnh không cần mở từng lệnh.
+// 🔴🔴 **CÔNG THỨC VAT KHÁC NHAU GIỮA PHỤ TÙNG VÀ CÔNG**: cả hai gộp theo `(ROID, VAT)` rồi `sum(...)`, nhưng
+// điều kiện y hệt (`VAT=0` → không nhân hệ số; `VAT!=0` → nhân `(1+VAT/100)`) — port ĐÚNG cùng công thức
+// cho cả hai loại dòng, không tổng quát hoá khác đi.
+// 🔴 `TotalAmount` = tổng phụ tùng + tổng công (nguồn `full outer join` hai bảng tạm — RO có TOÀN phụ tùng
+// hoặc TOÀN công vẫn tính đủ, không rơi mất bên thiếu). `DebitAmount` gộp TOÀN BỘ `Ser_CusDebit` của RO đó
+// (không lọc `DebitType` — cả ba loại công nợ cộng dồn). `PaymentAmount = TotalAmount - DebitAmount`.
+app.MapGet("/api/repairorders/invoice-bill-summary", async (AppDbContext db, ITenantContext t, string? roNos) =>
+{
+    var list = (roNos ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.ToUpperInvariant()).Distinct().ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Cần roNos (danh sách RONo, phân cách bởi , hoặc |)." });
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && list.Contains(x.RONo)).ToListAsync();
+    var ids = ros.Select(x => x.Id).ToList();
+
+    static decimal VatAdjustedSum(IEnumerable<(decimal vat, decimal raw)> lines) =>
+        lines.GroupBy(l => l.vat).Sum(g => g.Key == 0 ? g.Sum(x => x.raw) : g.Sum(x => x.raw) * (1 + g.Key / 100m));
+
+    var partLines = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Vat, raw = x.NeedQty * x.Factor * x.UnitPrice }).ToListAsync();
+    var serviceLines = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Vat, raw = x.Factor * x.Price }).ToListAsync();
+    var debits = await db.CusDebits.Where(x => x.OrgId == t.OrgId && x.RONo != null && list.Contains(x.RONo!))
+        .GroupBy(x => x.RONo!).Select(g => new { RONo = g.Key, sum = g.Sum(x => x.DebitAmount) }).ToListAsync();
+    var debitByRoNo = debits.ToDictionary(x => x.RONo, x => x.sum);
+
+    var custByCode = (await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId).ToListAsync()).ToDictionary(c => c.CusCode, c => c);
+    var provinces = (await db.MstProvinces.Where(x => x.OrgId == t.OrgId).ToListAsync()).ToDictionary(p => p.ProvinceCode, p => p.ProvinceName);
+    var districts = await db.MstDistricts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+
+    var rows = ros.Select(r =>
+    {
+        var partAmount = VatAdjustedSum(partLines.Where(x => x.RoId == r.Id).Select(x => (x.Vat, x.raw)));
+        var serviceAmount = VatAdjustedSum(serviceLines.Where(x => x.RoId == r.Id).Select(x => (x.Vat, x.raw)));
+        var totalAmount = partAmount + serviceAmount;
+        var debitAmount = debitByRoNo.TryGetValue(r.RONo, out var d) ? d : 0m;
+        ServiceCustomer? cus = r.CusID is not null && custByCode.TryGetValue(r.CusID, out var c) ? c : null;
+        var districtName = cus?.ProvinceCode is not null && cus?.DistrictCode is not null
+            ? districts.FirstOrDefault(x => x.ProvinceCode == cus.ProvinceCode && x.DistrictCode == cus.DistrictCode)?.DistrictName : null;
+        return new
+        {
+            r.RONo, r.DealerCode, r.CusID, cusName = cus?.CusName,
+            provinceName = cus?.ProvinceCode is not null && provinces.TryGetValue(cus.ProvinceCode, out var pn) ? pn : null,
+            districtName,
+            totalAmount, debitAmount, paymentAmount = totalAmount - debitAmount,
+        };
+    }).ToList();
+
+    return Results.Ok(new { count = rows.Count, rows,
+        vatFormulaNote = "VAT=0: cong nguyen; VAT!=0: nhan (1+VAT/100) — ap dung rieng cho tung nhom (ROID,VAT) roi cong lai, dung cong thuc nguon cho ca phu tung lan cong.",
+        debitIncludesAllTypes = "DebitAmount gop CA BA loai cong no (khach hang/bao hiem/nha cung cap) cua RO do, dung nguon (khong loc DebitType)." });
+}).RequireAuthorization();
+
 // Gán kỹ thuật viên cho 1 dòng công việc trong RO (port 1:1 FrmSerItemEngineerList — picker 2 lưới chuyển qua lại,
 // TCMotor DMSCarSv/Services): lưu danh sách KTV đã chọn thành chuỗi "no1,no2,..." vào RoServiceItem.Engineer.
 app.MapPost("/api/repairorders/{no}/services/{serCode}/engineers", async (string no, string serCode, RoEngineersDto dto, AppDbContext db, ITenantContext t) =>
