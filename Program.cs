@@ -20739,12 +20739,44 @@ app.MapGet("/api/_meta/htc-rlu-report-audit", () => Results.Ok(new
     modelNameIsRealDifference = "AM TINH: cot smm.ModelName ma #895 KHONG co — xac nhan day la bao cao THAT KHAC, khong phai ban sao vo nghia",
     miniReusesEndpoint895WithConfigurableParams = "Mini KHONG tao endpoint trung logic: tai dung GET /api/warrantyclaims/report/htc (#895), them hai tham so CAU HINH DUOC (vinPrefix, dateFrom) thay vi hai hang cung trong SQL nguon — va dung phat hien HANG=GIA TRI o tren",
 })).RequireAuthorization();
+// ===== 🏆🔴🔴 #897 — `Ser_ROWarrantyReportHTMV_Get_New20230417` (báo cáo HTMV = RLU TRỪ RLUU) + xác nhận `HTC_RLUU_Get` là bản sao 100% của #896 — **1441/`2800 (51,4%)**
+// `BizCarSv.WarrantyReport.cs:22633` (425 dòng). `Ser_ROWarrantyReportHTC_RLUU_Get_New20230417` (:21215,
+// 425 dòng) — diff dòng-đối-dòng với `HTC_RLU_Get` (#896) cho thấy **CHỈ khác đúng một literal**
+// (`'RLU%'` → `'RLUU%'` và tên hàm/mã lỗi) ⇒ **không cần code mới**, `vinPrefix=RLUU` trên endpoint #896
+// đã phủ đúng hàm này.
+//
+// 🏆🔴🔴 **HTMV_Get PHÂN VÙNG DÒNG XE BẰNG PHÉP TRỪ TẬP HỢP, ẨN TRONG HAI HẰNG SỐ CỤC BỘ**:
+//     `string strFrameNoFIXConditionList = "like RLU%";           //Chỉ lấy VIN bắt đầu RLU`
+//     `string strFrameNoFIX_RLUUConditionList = "not like RLUU%"; //trừ RLUU`
+//   Cả hai đi qua `SqlUtils.BuildClause("and", "car.FrameNo", …, "@p", …)` — **tham số hoá đúng cú pháp SQL**
+//   (không injection) — nhưng **giá trị KHÔNG đến từ tham số WS nào**, hai chuỗi này là **hằng cục bộ khai
+//   ngay trong thân hàm**, dù chữ ký hàm KHÔNG hề khai `strFrameNoFIXConditionList`/`_RLUUConditionList`.
+//   ⇒ Kết hợp AND: `FrameNo LIKE 'RLU%' AND FrameNo NOT LIKE 'RLUU%'` = **đúng nghĩa "RLU trừ RLUU"**.
+//   ⇒ Xác nhận **họ #413 (HẰNG≠GIÁ TRỊ)** ở dạng mới: tham số hoá đúng KỸ THUẬT (chống injection) nhưng
+//   GIÁ TRỊ vẫn bị khoá cứng — khác #896 (literal thẳng trong SQL) chỉ ở LỚP BỌC, không ở bản chất.
+// ⚪ Việc `zzzzClauseWhere_FrameNoFix_RLUZConditionList` bị COMMENT (dòng #3, cùng khối) cho thấy TỪNG có
+//   dòng xe thứ ba "RLUZ" định đưa vào loại trừ nhưng bị bỏ dở — nợ kỹ thuật CÓ CHỦ Ý, không phải quên.
+// 📌 Mini: thêm `excludeVinPrefix` (cấu hình được) vào CÙNG endpoint `GET /api/warrantyclaims/report/htc`
+// (#895/#896) — `vinPrefix=RLU&excludeVinPrefix=RLUU` tái tạo đúng HTMV_Get mà không nhân bản code, và WS
+// caller giờ CHỌN ĐƯỢC dòng xe cần loại trừ thay vì phải sửa nguồn như #896/#897.
+app.MapGet("/api/_meta/htmv-rluu-report-audit", () => Results.Ok(new
+{
+    scope897 = "#897: Ser_ROWarrantyReportHTMV_Get_New20230417 — BizCarSv.WarrantyReport.cs:22633 (425 dong). Ser_ROWarrantyReportHTC_RLUU_Get_New20230417 (:21215) da doi chieu dong-doi-dong voi RLU_Get/#896 — CHI khac dung mot literal (RLU% -> RLUU%) => KHONG can code moi, vinPrefix=RLUU tren endpoint #896 da phu dung",
+    htmvIsSetSubtraction = "HTMV_Get PHAN VUNG DONG XE BANG PHEP TRU TAP HOP, AN TRONG HAI HANG SO CUC BO: strFrameNoFIXConditionList = like RLU%, strFrameNoFIX_RLUUConditionList = not like RLUU% — ca hai qua SqlUtils.BuildClause (tham so hoa DUNG KY THUAT, khong injection) nhung GIA TRI khong den tu tham so WS nao, la hang cuc bo khai trong than ham dù chu ky ham KHONG khai bao chung. Ket hop AND = FrameNo LIKE RLU% AND FrameNo NOT LIKE RLUU% = dung nghia RLU tru RLUU",
+    confirmsHang413NewShape = "XAC NHAN HO #413 (HANG KHAC GIA TRI) O DANG MOI: tham so hoa dung KY THUAT (chong injection qua BuildClause) nhung GIA TRI van bi khoa cung — khac #896 (literal thang trong SQL) chi o LOP BOC, khong o ban chat",
+    rluzCommentedOutIsIntentionalDebt = "AM TINH: zzzzClauseWhere_FrameNoFix_RLUZConditionList bi COMMENT (dong thu ba cung khoi) cho thay TUNG co dong xe thu ba RLUZ dinh dua vao loai tru nhung bi bo do — no ky thuat CO CHU Y, khong phai quen",
+    miniAddsExcludeVinPrefixNoCodeDuplication = "Mini them excludeVinPrefix (cau hinh duoc) vao CUNG endpoint GET /api/warrantyclaims/report/htc (#895/#896) — vinPrefix=RLU&excludeVinPrefix=RLUU tai tao dung HTMV_Get ma khong nhan ban code, va WS caller gio CHON DUOC dong xe can loai tru thay vi phai sua nguon",
+})).RequireAuthorization();
 app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantContext t,
     string? dealerCodeList, string? statusList, string? rowTypeCodeList, string? hmcApiStatusList,
-    DateTime? createdDateFrom, DateTime? createdDateTo, string? vinPrefix, bool includeDetail = false) =>
+    DateTime? createdDateFrom, DateTime? createdDateTo, string? vinPrefix, string? excludeVinPrefix,
+    bool includeDetail = false) =>
 {
     // #896: vinPrefix la tham so CAU HINH DUOC thay cho hang cung "and ro.FrameNo like 'RLU%'" cua nguon
     // (dung chung endpoint nay cho ca man HTC_Get lan man rieng dong xe HTC_RLU_Get/HTC_RLUU_Get).
+    // #897: excludeVinPrefix thay hang cung "not like RLUU%" cua Ser_ROWarrantyReportHTMV_Get_New20230417
+    // (nguon: strFrameNoFIXConditionList = "like RLU%" + strFrameNoFIX_RLUUConditionList = "not like RLUU%",
+    // hai chuoi HARDCODE cuc bo, khong phai tham so WS, du di qua SqlUtils.BuildClause).
     var dealerCodes = (dealerCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     var statuses = (statusList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     var rowTypes = (rowTypeCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -20765,6 +20797,11 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
     {
         var matchIds = cars.Where(x => (x.FrameNo ?? "").StartsWith(vinPrefix, StringComparison.OrdinalIgnoreCase)).Select(x => x.CarID).ToHashSet();
         claims = claims.Where(c => c.CarID != null && matchIds.Contains(c.CarID)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(excludeVinPrefix))
+    {
+        var excludeIds = cars.Where(x => (x.FrameNo ?? "").StartsWith(excludeVinPrefix, StringComparison.OrdinalIgnoreCase)).Select(x => x.CarID).ToHashSet();
+        claims = claims.Where(c => c.CarID == null || !excludeIds.Contains(c.CarID)).ToList();
     }
     var dealerCodesUsed = claims.Select(x => x.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodesUsed.Contains(x.DealerCode)).ToListAsync();
