@@ -2470,6 +2470,7 @@ public static class Seeder
                 "ALTER TABLE public.\"MstDistricts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 // #707: khoa ky thuat cua nha cung cap, KHAC SupplierCode.
                 "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"SupplierID\" text NULL",
+                "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 // #709: khoa cua Email_SendEmailAutoTemp_Update.
                 "ALTER TABLE public.\"EmailSendAutoTemps\" ADD COLUMN IF NOT EXISTS \"AutoTempID\" text NULL",
                 // #711: khoa cua Email_TempEmail_Cancel.

@@ -3649,6 +3649,11 @@ public sealed class SerMstSupplier
     /// `d.ContactPhone` ở bảng danh mục nhà cung cấp (bản bảo hiểm sinh đôi chọn `TelePhone`/`Email`).</summary>
     public string? ContactName { get; set; }
     public string? ContactPhone { get; set; }
+    /// <summary>#911 §12 `DealerCode` — nguồn `checkExistSupplierCode`/`checkExistSupplierCodeModify`
+    /// (`BizCarSv.Inventory.Master.cs`) khoá trùng mã theo BỘ BA `(SupplierCode, DealerCode, IsActive)`,
+    /// và `Create`/`Update` đều GHI cột này. Port cũ (#818) đã vá 2 gap guard nhưng CHƯA hề mô hình hoá cột
+    /// này — mọi nhà cung cấp bị coi là DÙNG CHUNG TOÀN ORG, không tách theo đại lý.</summary>
+    public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
 }

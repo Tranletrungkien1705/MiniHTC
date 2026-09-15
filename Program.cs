@@ -24979,12 +24979,15 @@ app.MapPost("/api/technicallibraries/{id}/toggle", async (long id, AppDbContext 
 }).RequireAuthorization();
 
 // ===== Master nhà cung cấp phụ tùng (SerMstSupplier — port 1:1 FrmMstSupplierCreate/Search, TCMotor DMSCarSv) =====
-app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+// #911 (nối #818): entity SerMstSupplier hoàn toàn không mô hình hoá DealerCode dù nguồn khoá trùng theo
+// (SupplierCode, DealerCode, IsActive) và Create/Update đều ghi cột này — vá thêm cột + scope theo #818 đã sửa.
+app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealerCode) =>
 {
     var qry = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SupplierCode.Contains(q!) || x.SupplierName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.DealerCode, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -24993,12 +24996,14 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
     var code = (dto.SupplierCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
     if (!string.IsNullOrWhiteSpace(dto.Phone) && !dto.Phone!.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')')) return Results.BadRequest(new { error = "Số điện thoại không hợp lệ." });
-    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
-    if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code }; db.SerMstSuppliers.Add(row); }
+    // #911 §12: nguồn khoá trùng theo (SupplierCode, DealerCode, IsActive) — thiếu DealerCode thì hai đại lý
+    // không thể cùng dùng một mã NCC (điều nguồn cho phép).
+    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code && x.DealerCode == dto.DealerCode);
+    if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, DealerCode = dto.DealerCode }; db.SerMstSuppliers.Add(row); }
     row.SupplierName = dto.SupplierName; row.Address = dto.Address; row.Phone = dto.Phone; row.Fax = dto.Fax; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.DealerCode, row.FlagActive });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #818 PARITY NHÀ CUNG CẤP PHỤ TÙNG — `SerSupplier{Create,Update,Delete,Get,GetForCode}` =====
@@ -26149,13 +26154,15 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
             sourceOnlyChecksOnCreate = true });
     }
     // GAP 1 — kiem trung ma KHONG phan biet IsActive (nguon: Create theo strIsActive, Update cung '1').
+    // #911: khoa trung PHAI ke ca DealerCode (nguon: checkExistSupplierCodeModify loc ca DealerCode).
     var newCode = (dto.SupplierCode ?? code).Trim();
-    if (!string.Equals(newCode, code, StringComparison.OrdinalIgnoreCase))
+    var newDealerCode = dto.DealerCode ?? row.DealerCode;
+    if (!string.Equals(newCode, code, StringComparison.OrdinalIgnoreCase) || newDealerCode != row.DealerCode)
     {
         var dup = await db.SerMstSuppliers.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id
-            && x.SupplierCode == newCode);
-        if (dup) return Results.Conflict(new { error = "Ser_Mst_Supplier_Exist", supplierCode = newCode });
-        row.SupplierCode = newCode;
+            && x.SupplierCode == newCode && x.DealerCode == newDealerCode);
+        if (dup) return Results.Conflict(new { error = "Ser_Mst_Supplier_Exist", supplierCode = newCode, dealerCode = newDealerCode });
+        row.SupplierCode = newCode; row.DealerCode = newDealerCode;
     }
     row.SupplierName = newName; row.Address = newAddr;
     if (dto.Phone != null) row.Phone = dto.Phone;
@@ -26165,7 +26172,7 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        row.Id, row.SupplierCode, row.SupplierName, row.Address, row.Phone, row.Fax, row.FlagActive,
+        row.Id, row.SupplierCode, row.SupplierName, row.Address, row.Phone, row.Fax, row.DealerCode, row.FlagActive,
         sourceDuplicateGuardScopeDiffers = "GAP 1 (#404): checkExistSupplierCode (TAO) loc IsActive = strIsActive — gia tri cua chinh ban ghi sap tao; checkExistSupplierCodeModify (SUA) loc IsActive = 1 CUNG. => tao NCC moi voi IsActive = 0 thi guard CHI tim trong nhom da vo hieu hoa => TRUNG MA voi mot NCC DANG HOAT DONG van tao duoc; chieu nguoc lai cung vay => Ser_MST_Supplier co the co NHIEU dong cung SupplierCode + DealerCode khac nhau IsActive",
         sourceUpdateSkipsFieldEmptyCheck = "GAP 2: Create goi checkSupplierFieldEmpty(..., strSupplierName, strAddress, strIsActive) nhung Update KHONG goi => SUA mot NCC co the XOA TRANG ten va dia chi trong khi TAO MOI thi bat buoc phai nhap",
         sourceModifyGuardExcludesItself = "AM TINH: checkExistSupplierCodeModify co SupplierID <> strSupplierID => loai chinh no ra, dung khuon da thay o #807",
@@ -77510,7 +77517,7 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? DealerCode, string? FlagActive);
-record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
+record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive, string? DealerCode = null);   // #911 DealerCode
 record MstDeliveryFormDto(string? DeliveryFormCode, string? DeliveryFormName, string? FlagActive);   // #634
 record MstOrderComplainTypeDto(string? OrderComplainType, string? OrderComplainTypeName, string? FlagActive);   // #633
 record SerReceptionErrorDto(string? ReceptionErrorCode, string? ReceptionErrorName, string? Remark, string? FlagActive);   // #909
