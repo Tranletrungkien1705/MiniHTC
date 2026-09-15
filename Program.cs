@@ -65348,6 +65348,27 @@ app.MapGet("/api/repairorders/search-tab", async (AppDbContext db, ITenantContex
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #968 `Ser_RO_Get_From_ReceptionFNo_ForTab` (LIVE qua `WSCarSvTab`, `BizCarSv.Tab.cs:186`, thân
+//   thật `Ser_RO_Get_From_ReceptionFNoX` `:1093-1221`) — TRA RO THEO PHIẾU TIẾP NHẬN + PHÂN TRANG, CHƯA CÓ =====
+// Phát hiện qua #408. Rất đơn giản so với `Ser_RO_GetX` (#967): CHỈ lọc theo `ReceptionFNo` (đúng danh sách
+//   `|`-delimited), phân trang kiểu `[RecordStart, RecordStart+RecordCount-1]` như #967, trả `ROID`/`RONo`/
+//   `ReceptionFNo`. Khớp #310 (một phiếu tiếp nhận CÓ THỂ sinh NHIỀU lệnh sửa chữa).
+app.MapGet("/api/repairorders/by-receptionfno", async (AppDbContext db, ITenantContext t,
+    string? receptionFNos, int? recordStart, int? recordCount) =>
+{
+    var list = (receptionFNos ?? "").Split(new[] { ',', '|' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.ToUpperInvariant()).Distinct().ToList();
+    var start = recordStart is >= 0 ? recordStart.Value : 0;
+    var count = recordCount is > 0 and <= 500 ? recordCount!.Value : 100;
+
+    var q = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+        && (list.Count == 0 || (r.ReceptionFNo != null && list.Contains(r.ReceptionFNo))));
+    var totalCount = await q.CountAsync();
+    var items = await q.OrderBy(r => r.RONo).Skip(start).Take(count)
+        .Select(r => new { r.RONo, r.ReceptionFNo }).ToListAsync();
+    return Results.Ok(new { totalCount, recordStart = start, recordCount = count, count = items.Count, items });
+}).RequireAuthorization();
+
 app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LicensePlate)) return Results.BadRequest(new { error = "Cần biển số (LicensePlate)." });
