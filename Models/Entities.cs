@@ -15980,7 +15980,13 @@ public sealed class CampaignMarketingDealer
 // ===== 🔴 #488 DANH MỤC DỊCH VỤ CHUẨN (`Ser_MST_Service`) — trước nay CHƯA mô hình hoá =====
 /// <summary>Báo cáo chênh lệch giá (`Ser_ReportRoVarianceCost`) so **giá bán trên lệnh** với **giá chuẩn**
 /// của danh mục. Phía phụ tùng đã có `ServicePart.Price/VAT`; phía **dịch vụ** thì thiếu hẳn bảng chuẩn
-/// ⇒ không có bảng này thì báo cáo **không tồn tại được** (đúng loại "cột/bảng THIẾU HẲN" mà §12 không bắt).</summary>
+/// ⇒ không có bảng này thì báo cáo **không tồn tại được** (đúng loại "cột/bảng THIẾU HẲN" mà §12 không bắt).
+/// 🏆🔴🔴🔴 #925 PORT TRÙNG LẶP MỘT CHIỀU — bảng NÀY hoàn toàn KHÔNG có đường ghi (không `MapPost`/`MapPut`
+/// nào chạm tới `ServiceMstServices` — chỉ có 2 report đọc), trong khi <see cref="ServiceItemMst"/> (#297,
+/// ghi qua `POST /api/serviceitems`, đã cài đúng luật ghi đè từ `Ser_MST_ROWarrantyWork`) MỚI LÀ nguồn dữ
+/// liệu thật của `Ser_MST_Service`. Hai report từng đọc bảng NÀY đã được sửa sang đọc
+/// <see cref="ServiceItemMst"/> (xem sửa ở `/api/cusservicefactors` và báo cáo chênh lệch giá RO) — bảng NÀY
+/// giữ lại KHÔNG xoá (tránh gãy schema cũ) nhưng không còn được đọc.</summary>
 public sealed class ServiceMstService
 {
     public long Id { get; set; }

@@ -63046,7 +63046,9 @@ app.MapGet("/api/cusservicefactors", async (AppDbContext db, ITenantContext t,
             && c.DealerCode != null && dealers.Contains(c.DealerCode))
         .Select(c => new { c.CusTypeCode, c.CusTypeName, c.CusFactor }).ToListAsync();
 
-    var svcQ = db.ServiceMstServices.Where(x => x.OrgId == t.OrgId);
+    // #925: doi nguon tu ServiceMstService (KHONG co duong ghi nao, du lieu luon RONG) sang ServiceItemMst
+    // (nguon that cua Ser_Mst_Service, duoc ghi qua POST /api/serviceitems — xem #925 o entity ServiceMstService).
+    var svcQ = db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(serIdList)) svcQ = svcQ.Where(x => x.SerCode == serIdList!.Trim());
     var services = await svcQ.Select(x => new { x.SerCode, x.SerName, x.Price, x.DealerCode }).ToListAsync();
     services = services.Where(x => x.DealerCode == HTCDealerCode
@@ -66791,8 +66793,11 @@ app.MapGet("/api/reports/ro-variance-cost", async (AppDbContext db, ITenantConte
     var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId)
         .Select(x => new { x.ModelCode, x.ModelName }).ToListAsync();
     var modelName = models.GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
-    var stdSer = await db.ServiceMstServices.Where(x => x.OrgId == t.OrgId).ToListAsync();
-    var serById = stdSer.GroupBy(x => x.SerID).ToDictionary(g => g.Key, g => g.First());
+    // #925: doi nguon tu ServiceMstService (KHONG co duong ghi, luon RONG) sang ServiceItemMst (nguon that,
+    // ghi qua POST /api/serviceitems) — dong thoi sua khoa gom SerID->SerCode cho khop voi RoServiceItem.SerCode
+    // ma cho tieu thu (`x.SerCode != null && serById.ContainsKey(x.SerCode)`) da dung tu truoc.
+    var stdSer = await db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var serById = stdSer.GroupBy(x => x.SerCode).ToDictionary(g => g.Key, g => g.First());
     var stdPart = await db.ServiceParts.Where(x => x.OrgId == t.OrgId).ToListAsync();
     var partByCode = stdPart.Where(x => x.PartCode != null)
         .GroupBy(x => x.PartCode!).ToDictionary(g => g.Key, g => g.First());
