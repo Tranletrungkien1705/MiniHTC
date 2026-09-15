@@ -16819,6 +16819,74 @@ app.MapPost("/api/servicecars/{frameNo}/membercar", async (
     return Results.Ok(new { car.FrameNo, car.DealerCode, car.CusID, car.MemberCarID });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #962 `CarSv_SerCarUpdate_New20180622` (LIVE, `BizCarSv.Customer.cs:16676`) — GÁN XE HỘI VIÊN
+//   + SỬA KHÁCH CÙNG LÚC, BẢN CŨ HƠN `/membercar` Ở TRÊN =====
+// Phát hiện qua #408. KHÁC endpoint `/membercar` (nguồn `CarSv_SerCarUpdate_MemberCarID`, guard trùng CÓ
+//   enforce): hàm này TÍNH bộ kiểm trùng MemberCarID (`dtDB_Ser_Car_Check`) rồi **KHÔNG BAO GIỜ dùng kết
+//   quả đó** — không có `if (...Rows.Count > 0) throw` nào theo sau ⇒ guard trùng MemberCarID **chết hoàn
+//   toàn** ở hàm này (khác `/membercar` nơi guard đó SỐNG). Port giữ đúng: KHÔNG chặn trùng MemberCarID.
+// 🔴 Cùng lúc GHI ĐÈ nhiều trường của `Ser_Customer` (CusName bắt buộc; IDCardNo/ProvinceCode/DistrictCode/
+//   Tel/Mobile/Address theo luật "rỗng = XOÁ" — khác nhóm "rỗng = giữ nguyên" hay gặp ở các hàm khác).
+// 🔴 `objDOB = StandardizeDateOrDBNull(strDOB)` được TÍNH nhưng dòng ghi thật lại dùng `strDOB` (chuỗi
+//   thô, KHÔNG chuẩn hoá) — biến `objDOB` chết, một bẫy #411 khác trong cùng hàm.
+// 🔴 `strGender` chỉ nhận đúng "1"/"0" (Flag.Active/Inactive), không phải giới tính tự do.
+// ⚪ Xe (theo DealerCode+FrameNo+CusID) nguồn ĐỌC THẲNG `Rows[0]` KHÔNG guard tồn tại trước đó ⇒ xe không
+//   khớp bộ ba này sẽ crash IndexOutOfRange ở nguồn; Mini trả `NotFound` thay vì crash.
+app.MapPost("/api/servicecars/{frameNo}/membercar-and-customer", async (
+    string frameNo, ServiceCarMemberAndCustomerDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var fn = frameNo.Trim().ToUpperInvariant();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var cusId = (dto.CusID ?? "").Trim();
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa có mã đại lý." });
+    if (cusId.Length == 0) return Results.BadRequest(new { error = "Chưa có mã khách hàng." });
+
+    var dealerRow = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.Status == "1");
+    if (dealerRow is null) return Results.BadRequest(new { error = "Mst_Dealer_CheckDB", message = "Đại lý không tồn tại hoặc không hoạt động.", dealer });
+
+    var provinceCode = (dto.ProvinceCode ?? "").Trim().ToUpperInvariant();
+    if (provinceCode.Length > 0 && !await db.MstProvinces.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == provinceCode))
+        return Results.BadRequest(new { error = "Ser_CustomerCar_SalesCreate_InvalidProvinceCode", provinceCode });
+    var districtCode = (dto.DistrictCode ?? "").Trim().ToUpperInvariant();
+    if (districtCode.Length > 0 && !await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == provinceCode && x.DistrictCode == districtCode))
+        return Results.BadRequest(new { error = "Ser_CustomerCar_SalesCreate_InvalidDistrictCode", provinceCode, districtCode });
+    if (string.IsNullOrWhiteSpace(dto.CusName))
+        return Results.BadRequest(new { error = "CarSv_SerCarUpdate_InvalidCusName", message = "Tên khách hàng không được để trống." });
+    var gender = (dto.Gender ?? "").Trim();
+    if (gender.Length > 0 && gender != "1" && gender != "0")
+        return Results.BadRequest(new { error = "CarSv_Ser_CustomerCar_SalesCreate_InvalidGender", message = "Giới tính chỉ nhận '1' hoặc '0'.", gender });
+
+    var cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == cusId && x.DealerCode == dealer);
+    if (cus is null) return Results.BadRequest(new { error = "CarSv_SerCarUpdate_Ser_CustomerNotFound", cusId, dealer });
+
+    var car = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.FrameNo == fn && x.CusID == cusId);
+    if (car is null)
+        return Results.NotFound(new { error = "Không tìm thấy xe theo đại lý + số khung + mã khách hàng (nguồn crash IndexOutOfRange ở đây, Mini trả NotFound).", dealer, frameNo = fn, cusId });
+
+    // KHÔNG chặn trùng MemberCarID — port đúng bẫy #411 của nguồn (guard tính rồi bỏ).
+    car.MemberCarID = string.IsNullOrWhiteSpace(dto.MemberCarID) ? null : dto.MemberCarID.Trim();
+
+    cus.CusName = dto.CusName!.Trim();
+    cus.IDCardNo = string.IsNullOrWhiteSpace(dto.IDCardNo) ? null : dto.IDCardNo.Trim().ToUpperInvariant();
+    cus.ProvinceCode = provinceCode.Length > 0 ? provinceCode : null;
+    cus.DistrictCode = districtCode.Length > 0 ? districtCode : null;
+    cus.Tel = string.IsNullOrWhiteSpace(dto.Tel) ? null : dto.Tel.Trim();
+    cus.Mobile = string.IsNullOrWhiteSpace(dto.Mobile) ? null : dto.Mobile.Trim();
+    cus.Address = string.IsNullOrWhiteSpace(dto.CusAddress) ? null : dto.CusAddress.Trim();
+    cus.Sex = gender.Length > 0 ? gender : null;
+    cus.DOB = dto.DOB;   // Mini kieu DateTime? nen buoc phai parse — nguon ghi chuoi tho (objDOB chuan hoa bi bo qua)
+    cus.LogLUDateTime = DateTime.Now;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        car.FrameNo, car.DealerCode, car.CusID, car.MemberCarID,
+        cus.CusCode, cus.CusName, cus.IDCardNo, cus.ProvinceCode, cus.DistrictCode, cus.Tel, cus.Mobile, cus.Address, cus.Sex, cus.DOB,
+        emptyClearsFieldNote = "IDCardNo/ProvinceCode/DistrictCode/Tel/Mobile/Address theo dung nguon: truyen rong se XOA gia tri cu (khac nhieu ham khac dung luat rong=giu nguyen).",
+        duplicateMemberCarIdNotEnforcedNote = "Nguon TINH bo kiem trung MemberCarID (dtDB_Ser_Car_Check) nhung KHONG BAO GIO dung ket qua do — giu dung, khac /membercar o tren (guard SONG).",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #399 SỬA THÔNG TIN XE (`FrmCustomerCarSearch` → `SerCarUpdate`, `BizCarSv.Car.cs:328`) =====
 // TRACE 4 tầng: form → `MstCarService.CarUpdate` (`:109`) → WS `SerCarUpdate` → biz `SerCarUpdate`.
 //
@@ -78836,6 +78904,9 @@ record ServiceCarDto(string FrameNo, string? SerialNo, string? BatteryNo, string
     // #222 parity: 8 trường của CarUpdate
     string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);
 record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarID);
+record ServiceCarMemberAndCustomerDto(string? DealerCode, string? CusID, string? MemberCarID, string? CusName,
+    string? IDCardNo, string? ProvinceCode, string? DistrictCode, string? Tel, string? Mobile, string? CusAddress,
+    string? Gender, DateTime? DOB);   // #962
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);
 // #255: thêm 2 trường người liên hệ — nguồn `FrmImportCustomer` kiểm chúng nên file nhập CÓ chứa chúng.
