@@ -68672,6 +68672,36 @@ app.MapGet("/api/reports/ro-revenue-avg-by-month", async (AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #920 `Ser_InventoryReport_Out` (LIVE, `BizCarSv.Inventory.Report.cs:1436`) — PT xuất theo RO =====
+// Nguồn JOIN `Ser_Inv_PartInstance` (lô) → `Ser_Inv_StockOutOrderStockOut` (phiếu xuất sinh từ lệnh) →
+// `Ser_Inv_StockOutOrder` → `Ser_RO` (chỉ lấy phiếu xuất status=3 Kết thúc, trong khoảng ngày, theo đại lý).
+// Mini dùng `PartStockOutLine` (đã có Price/Unit qua #368) thay `PartInstance` cho gọn — cùng ý nghĩa số liệu.
+app.MapGet("/api/reports/inventory-out", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Cần fromDate và toDate." });
+    var from = fromDate.Value.Date; var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
+    var outsQuery = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3"
+        && o.StockOutDate >= from && o.StockOutDate <= to);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) outsQuery = outsQuery.Where(o => o.DealerCode == dealerCode);
+
+    var rows = await (
+        from so in outsQuery
+        join link in db.SerStockOutOrderStockOuts.Where(x => x.OrgId == t.OrgId) on so.Id equals link.StockOutId
+        join order in db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && x.SourceType == "RO") on link.StockOutOrderId equals order.Id
+        join line in db.PartStockOutLines.Where(x => x.OrgId == t.OrgId) on so.Id equals line.StockOutId
+        group new { line.Quantity, line.Price } by new { so.StockOutDate, line.PartCode, line.PartName, line.UnitCode, order.RONo, line.Price } into g
+        select new
+        {
+            date = g.Key.StockOutDate, g.Key.PartCode, partName = g.Key.PartName, unit = g.Key.UnitCode,
+            outQuantity = g.Sum(x => x.Quantity), inPrice = g.Key.Price ?? 0, roNo = g.Key.RONo,
+        }
+    ).OrderByDescending(x => x.date).Take(2000).ToListAsync();
+
+    return Results.Ok(new { count = rows.Count, items = rows,
+        sourceUsesPartInstanceMiniUsesLine = "nguon gom theo lo (Ser_Inv_PartInstance), Mini gom theo dong phieu xuat (PartStockOutLine) — cung y nghia so lieu, khac muc chi tiet lo" });
+}).RequireAuthorization();
+
 // ===== 🔴 #520 DANH MỤC MÀU BIỂN SỐ — VÀ BA BỘ LỌC **BỊ BỎ IM LẶNG** =====
 // Nguồn: `BizCarSv.Master.cs:5743 Mst_PlateColor_Get`. Hàm này **không WS nào gọi**; nó sống qua
 //   **kênh vào thứ năm** `TERP.HTCService.ClientService/Services/Mst_PlateColorService.cs:40` (#519).
