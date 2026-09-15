@@ -3201,6 +3201,10 @@ public sealed class TstPart
 /// <summary>Thư viện kỹ thuật (Ser_InsuranceContract) — port 1:1 FrmInsuranceContractCreate/Search (TCMotor DMSCarSv/Admin). Theo mã HĐ (auto): số HĐ + loại thanh toán + hiệu lực + hãng BH (InsNo→SerInsurance) + hạn mức.</summary>
 public sealed class SerInsuranceContract
 {
+    /// <summary>🔴 #907 §12 `DealerCode` — nguồn `Ser_InsuranceContract{Create,Update,Get}`
+    /// (`BizCarSv.Service.cs:13694/:14074/:14287`) khoá TOÀN BỘ guard trùng lặp theo bộ ba
+    /// `(InContractNo, InsNo, DealerCode)` — thiếu cột này thì không tái hiện được đúng phạm vi đại lý.</summary>
+    public string? DealerCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string InContractCode { get; set; } = "";

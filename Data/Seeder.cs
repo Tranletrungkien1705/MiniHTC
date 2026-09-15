@@ -73,6 +73,8 @@ public static class Seeder
                 "ALTER TABLE public.\"RoAttachments\" ADD COLUMN IF NOT EXISTS \"FlagHMC\" text NULL",
                 // #906 Ser_MST_ServiceType.DealerCode — moi dai ly co danh sach loai dich vu rieng
                 "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                // #907 Ser_InsuranceContract.DealerCode — khoa guard trung lap (InContractNo, InsNo, DealerCode)
+                "ALTER TABLE public.\"SerInsuranceContracts\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",

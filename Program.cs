@@ -23568,13 +23568,28 @@ app.MapPost("/api/unitpricegps/{id}/toggle", async (long id, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
-// ===== Hợp đồng bảo hiểm dịch vụ (SerInsuranceContract — port 1:1 FrmInsuranceContractCreate/Search, TCMotor DMSCarSv/Admin) =====
-app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+// ===== 🏆🔴🔴🔴 #907 Hợp đồng bảo hiểm dịch vụ — PHÁT HIỆN PORT TRÙNG LẶP HOÀN TOÀN =====
+// Cả `/api/insurancecontracts` (đây, entity `SerInsuranceContract`) LẪN `/api/inscontracts` (entity
+// `InsContract`, xem endpoint riêng bên dưới trong file) đều tự nhận "port 1:1 FrmInsuranceContractCreate/
+// Search, TCMotor" — CÙNG một màn WinForm, được port ĐỘC LẬP HAI LẦN ở hai lượt grind khác nhau (tên bảng
+// nguồn `Ser_InsuranceContract` ↔ hai tên entity Mini khác nhau khiến BƯỚC 2 không bắt chéo được). Dữ liệu
+// nhập qua route này KHÔNG hiện ở route kia — phân mảnh dữ liệu thật trong Mini. Giữ ĐÂY làm bản chính (đã có
+// `HasSpecialChar`/#250 khớp guard WinForm thật) và không xoá bản kia để tránh gãy caller đang dùng — ghi rõ
+// để lượt sau KHÔNG tạo bản thứ ba.
+// 🔴🔴🔴 Nguồn BIZ thật `Ser_InsuranceContract{Create,Update,Get}` (`BizCarSv.Service.cs:13694/:14074/:14287`,
+// LIVE) có guard `CheckExistInsContractNo_InsNo` (trùng `InContractNo`+`InsNo`+`DealerCode`) và `CheckTime`
+// (tên gợi ý kiểm CHỒNG CHÉO thời gian nhưng thân hàm chỉ so bằng TUYỆT ĐỐI cả `StartDate`+`FinishDate` — hai',
+// hợp đồng cùng hãng/đại lý với khoảng ngày chồng lấn nhưng KHÔNG trùng hệt vẫn lọt qua). `Update` nguồn KHÔNG
+// gọi `CheckTime` (bất đối xứng với `Create`). Port cũ (cả hai bản) đều THIẾU `DealerCode` và không có guard
+// trùng/chồng chéo nào. Vá tại đây: `DealerCode` + guard chồng chéo ĐÚNG (so khoảng, không so tuyệt đối) áp',
+// ở CẢ tạo lẫn sửa.
+app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealerCode) =>
 {
     var qry = db.SerInsuranceContracts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InContractCode.Contains(q!) || x.InContractNo!.Contains(q!) || x.InsNo!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive, x.DealerCode }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -23588,6 +23603,14 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
     if (string.IsNullOrWhiteSpace((dto.TypePayment ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập loại thanh toán." });
     if (dto.PaymentLimit < 0) return Results.BadRequest(new { error = "Hạn mức thanh toán không hợp lệ." });
     if (dto.StartDate.HasValue && dto.FinishDate.HasValue && dto.FinishDate < dto.StartDate) return Results.BadRequest(new { error = "Ngày hết hiệu lực trước ngày bắt đầu." });
+    // #907 FIX: nguon CheckTime chi kiem trung TUYET DOI ngay (ten ham noi doi) — Mini kiem DUNG chong cheo khoang ngay.
+    if (!string.IsNullOrWhiteSpace(dto.InsNo) && dto.StartDate.HasValue && dto.FinishDate.HasValue)
+    {
+        var overlap = await db.SerInsuranceContracts.AnyAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1"
+            && x.InsNo == dto.InsNo && x.DealerCode == dto.DealerCode && x.InContractCode != (dto.InContractCode ?? "").Trim()
+            && x.StartDate <= dto.FinishDate && x.FinishDate >= dto.StartDate);
+        if (overlap) return Results.BadRequest(new { error = "Ser_InsContractCheckTime", detail = "Khoảng ngày chồng chéo với hợp đồng khác cùng hãng bảo hiểm, cùng đại lý." });
+    }
     SerInsuranceContract row;
     var code = (dto.InContractCode ?? "").Trim();
     if (!string.IsNullOrWhiteSpace(code))
@@ -23598,7 +23621,7 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
         row.InContractCode = string.IsNullOrWhiteSpace(code) ? "IC" + DateTime.Now.ToString("yyMMddHHmmss") : code;
         db.SerInsuranceContracts.Add(row);
     }
-    row.InContractNo = no; row.TypePayment = dto.TypePayment; row.StartDate = dto.StartDate; row.FinishDate = dto.FinishDate; row.InsNo = dto.InsNo; row.PaymentLimit = dto.PaymentLimit; row.UpdatedAt = DateTime.Now;
+    row.InContractNo = no; row.TypePayment = dto.TypePayment; row.StartDate = dto.StartDate; row.FinishDate = dto.FinishDate; row.InsNo = dto.InsNo; row.PaymentLimit = dto.PaymentLimit; row.DealerCode = dto.DealerCode; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.InContractCode, row.InContractNo, row.PaymentLimit, row.FlagActive });
@@ -77391,7 +77414,7 @@ record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Facto
     decimal? Quantity = null, decimal? VAT = null, string? Note = null,
     string? ExpenseType = null);   // #552 §12
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
-record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
+record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive, string? DealerCode = null);
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);
 record StockOutOrderStatusDto(string? ToStatus);
