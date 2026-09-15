@@ -61159,6 +61159,60 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
     return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count });
 }).RequireAuthorization();
 
+// ===== 🏆🔴 #919 `SerStockOutStatusUpdateToFinished02` — XUẤT ĐIỀU CHUYỂN KHO (LIVE, `StockOut.cs:6475`) =====
+// "Xuất điều chuyển kho: 1. xuất kho 2. nhập kho" (nguyên văn comment nguồn). Khi kết thúc phiếu xuất LOẠI
+// điều chuyển, nguồn tự động gọi `ProcessFinishStockInAdj` (`Stock.cs:3116`) tạo NGAY một phiếu NHẬP Ở
+// TRẠNG THÁI "Kết thúc" (không qua bước Tiến hành thủ công), `StockInType = StockInAdj ("2")`, copy nguyên
+// các dòng chi tiết, nối lại bằng cột `StockOutNo` (đã có sẵn trên `PartStockIn` từ #264). Port cũ (`/post`)
+// chỉ trừ tồn kho nguồn, chưa từng tạo phiếu nhập đích — hàng "biến mất" khỏi hệ thống thay vì sang kho khác.
+app.MapPost("/api/stockouts/{no}/finish-transfer", async (string no, StockOutFinishTransferDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu đang ở trạng thái Tiến hành (2)." });
+    var destWarehouse = (dto.DestWarehouseCode ?? "").Trim().ToUpperInvariant();
+    if (destWarehouse.Length == 0) return Results.BadRequest(new { error = "Chưa chọn kho đích nhận hàng điều chuyển." });
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id).ToListAsync();
+    foreach (var l in lines)
+    {
+        var loc = l.Location ?? "";
+        var stock = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
+        var onhand = stock?.OnHand ?? 0;
+        if (onhand < l.Quantity) return Results.BadRequest(new { error = $"Tồn không đủ cho {l.PartCode}@{loc}: cần {l.Quantity}, còn {onhand}." });
+    }
+    foreach (var l in lines)
+    {
+        var loc = l.Location ?? "";
+        var stock = await db.PartStocks.FirstAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
+        stock.OnHand -= l.Quantity; stock.UpdatedAt = DateTime.Now;
+    }
+    h.Status = "3"; h.PostedAt = DateTime.Now;
+
+    var now = DateTime.Now;
+    var stockIn = new PartStockIn
+    {
+        OrgId = t.OrgId, StockInNo = "SIADJ" + now.ToString("yyMMddHHmmss"),
+        WarehouseCode = destWarehouse, StockInType = "2" /* StockInAdj */, Status = "3" /* Finished ngay, đúng nguồn */,
+        StockInDate = now, PostedAt = now, StockOutNo = no,
+    };
+    db.PartStockIns.Add(stockIn);
+    foreach (var l in lines)
+        db.PartStockInLines.Add(new PartStockInLine
+        {
+            OrgId = t.OrgId, StockInId = stockIn.Id, PartCode = l.PartCode, PartName = l.PartName,
+            Location = l.Location, Quantity = l.Quantity, Price = l.Price ?? 0, VAT = l.Vat ?? 0, Unit = l.UnitCode,
+        });
+    foreach (var l in lines)
+    {
+        var destStock = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == destWarehouse && x.PartCode == l.PartCode && (x.Location ?? "") == (l.Location ?? ""));
+        if (destStock is null) { destStock = new PartStock { OrgId = t.OrgId, WarehouseCode = destWarehouse, PartCode = l.PartCode, PartName = l.PartName, Location = l.Location }; db.PartStocks.Add(destStock); }
+        destStock.OnHand += l.Quantity; destStock.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.StockOutNo, status = h.Status, createdStockIn = stockIn.StockInNo, destWarehouse, lines = lines.Count });
+}).RequireAuthorization();
+
 // Hủy phiếu xuất kho (port 1:1 FrmSOReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
 // #291 XOÁ phiếu XUẤT — cùng luật với phiếu nhập (xem chú thích ở `DELETE /api/stockins/{no}`).
 // Guard nguồn: `CheckStockOutForDelete` (`StockOut.cs:184`) — chỉ `Status` ∈ { "1", "5" }.
@@ -76649,6 +76703,8 @@ record StockOutLineDto(string PartCode, string? PartName, string? Location, deci
 // #264: 7 trường bổ sung (người lập/khách/đại lý + khối vận chuyển).
 //  Khối ĐIỀU CHỈNH (`Adjustment*`/`OldStockOut*`) KHÔNG nhận từ client: nó do luồng tạo phiếu điều chỉnh
 //  sinh ra — chưa port, đã ghi nợ.
+record StockOutFinishTransferDto(string? DestWarehouseCode);   // #919
+
 record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines,
     string? UserCode = null, string? CusID = null, string? DealerCode = null,
     string? TruckNo = null, string? DriverName = null, string? DriverID = null, string? DrivingLicense = null,
