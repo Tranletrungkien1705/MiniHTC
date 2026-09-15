@@ -38288,6 +38288,85 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
 //   điều kiện) nhưng lãng phí, và là **bản sao-dán khối SQL trong CHÍNH hàm** (họ #376, lần này nội bộ 1 hàm).
 // 📌 Mini: `GET /api/serviceparts/search-full` — tham số hoá **PartGroupID**, hệ số giá theo loại khách dùng
 // đúng `IS NULL`/khớp `CusTypeID` thật (mẫu #734), lọc một lượt, phân trang skip/take.
+// ===== 🔴🔴🔴 #889 — `Ser_Mst_Part_Get02` (sibling của `Get01`/#887, LIVE cả hai cây) — **1433/`2800 (51,2%)**
+// `BizCarSv.Service.cs:19015` (434 dòng). Hàng đợi **29**. Khác `Get01` (#887): lọc theo `PartTypeIDList`
+// thay vì `PartGroupIDList`, và thêm cột `TSTUnit` (join `TST_Mst_Exchange_Unit`).
+//
+// 🔴🔴🔴 **`strVieNamePattern` INJECTION THẬT — CÙNG THAM SỐ, Get01 THAM SỐ HOÁ ĐÚNG, Get02 NỐI CHUỖI**:
+//     Get01: `SqlUtils.BuildClauseConditionSingle("and", "t.VieName", "like", "@strVieNamePattern", …)`
+//     Get02: `zzzzClauseWhereVieNamePattern = "AND (t.VieName like N'%" + strVieNamePattern + "%')"`
+//   ⇒ **cùng một tham số, cùng một khái niệm lọc, hai hàm anh em** — một tham số hoá đúng, một nối chuỗi
+//   trực tiếp. Không phải quy ước của tầng (khác #887 nơi tôi từng nghi PartGroupID là ca lẻ) — nay có ĐỦ HAI
+//   ví dụ đối lập trong CÙNG cặp hàm để khẳng định: đây là **lỗi của riêng người viết `Get02`**.
+// 🔴🔴🔴 **THAM SỐ `strEngNamePattern` ĐƯỢC TÍNH TOÁN VÀ ÁP DỤNG NHƯNG CHẾT VÌ TẦNG TRƯỚC ĐÃ LỌC BỎ**:
+//   khối `k2` (`#tbl_tem1`, quyết định TẬP ỨNG VIÊN + đánh `MyRowIdx` để cắt trang) ở `Get02` **chỉ** có
+//   `zzzzClauseWhereVieNamePattern` — **không hề nhắc tới** `zzzzClauseWhereEngNamePattern`. Khối `K8` (chi
+//   tiết, chạy SAU khi trang đã được cắt từ tập ứng viên của k2) mới áp lại đúng khối `OR` cả hai tên như
+//   `Get01`. ⇒ Phụ tùng khớp **CHỈ** `EngNamePattern` (không khớp `VieNamePattern`) **không bao giờ** vào
+//   được `#tbl_tem1` ⇒ không có `MyRowIdx` ⇒ không lọt qua `#tblTemp_Filter` ⇒ **`K8` không bao giờ có cơ
+//   hội chạy tới nó** dù chính `K8` có SQL đúng để khớp nó. **Dạng chết mới**: tham số được tính, được ráp
+//   đúng cú pháp, được dùng ở tầng sau — nhưng **tầng lọc SỚM HƠN đã loại bỏ ứng viên trước khi tầng đó chạy**.
+// ⚪ **Xác nhận chéo #887**: `LEFT JOIN Ser_Mst_CusPartFactor mcpf ON mcpf.CusTypeID = NULL` — **giống hệt**
+//   `Get01`, cùng hai lý do chết (literal `NULL` + token `@CusTypeID` không có chỗ cắm) ⇒ đây là **bản sao-dán
+//   nguyên khối K8 giữa hai hàm** (họ #376), không phải trùng hợp — bug factor chết ở CẢ HAI, không cần đọc
+//   lại riêng như tôi từng dự tính ở #887.
+// 🔴 **`strPartTypeIDList` cũng bake y hệt `PartGroupIDList` của `Get01`**: `"AND (t.PartTypeID = '" +
+//   strPartTypeIDList + "')"`, thêm injection thứ hai của hàm này.
+// ⚪ **Khác biệt chức năng thật (không phải bug)**: `Get02` thêm cột `TSTUnit` (join `TST_Mst_Exchange_Unit`) mà
+//   `Get01` không có — hai API phục vụ hai màn khác nhau, giữ khác biệt khi port, không gộp làm một.
+// 📌 Mini: `GET /api/serviceparts/search-by-type` — lọc PartTypeID **tham số hoá**, VieName/EngName áp CÙNG
+// một tầng lọc (vá bug tầng-sớm-loại-bỏ), hệ số giá dùng CusTypeCode thật (mẫu #734/#887), có `tstUnit`.
+app.MapGet("/api/serviceparts/search-by-type", async (AppDbContext db, ITenantContext t,
+    string? partTypeId, string? vieNamePattern, string? engNamePattern, string? cusTypeId,
+    string? dealerCode, string? isActive, int? start, int? count) =>
+{
+    var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(partTypeId)) query = query.Where(x => x.PartTypeID == partTypeId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(isActive)) query = query.Where(x => x.FlagActive == isActive);
+    // Vi FIX ho so: VieName/EngName ap CUNG MOT tang loc (nguon Get02 chi loc VieName o tang ung vien,
+    // khien EngName-only bi loai truoc khi tang sau kip khop) — tham so hoa ca hai, khong noi chuoi.
+    if (!string.IsNullOrWhiteSpace(vieNamePattern) || !string.IsNullOrWhiteSpace(engNamePattern))
+    {
+        query = query.Where(x =>
+            (!string.IsNullOrWhiteSpace(vieNamePattern) && x.PartName != null && x.PartName.Contains(vieNamePattern!))
+            || (!string.IsNullOrWhiteSpace(engNamePattern) && x.EngName != null && x.EngName.Contains(engNamePattern!)));
+    }
+
+    var total = await query.CountAsync();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 1000 ? count!.Value : 100;
+    var page = await query.OrderBy(x => x.PartCode).Skip(skip).Take(take).ToListAsync();
+
+    Dictionary<string, decimal> factorByPart = new();
+    if (!string.IsNullOrWhiteSpace(cusTypeId))
+    {
+        var partIds = page.Select(x => x.PartID).Where(x => x != null).Select(x => x!).ToList();
+        var cpf = await db.CusPartFactors.Where(x => x.OrgId == t.OrgId && x.CusTypeID == cusTypeId && partIds.Contains(x.PartID)).ToListAsync();
+        var ct = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == cusTypeId);
+        foreach (var p in page)
+        {
+            var byPart = cpf.FirstOrDefault(x => x.PartID == p.PartID)?.Factor;
+            factorByPart[p.PartCode] = byPart ?? ct?.CusFactor ?? 1m;
+        }
+    }
+    var codes = page.Select(x => x.PartCode).ToList();
+    var units = await db.TstExchangeUnits.Where(x => x.OrgId == t.OrgId && codes.Contains(x.TSTPartCode)).ToListAsync();
+
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = page.Count,
+        items = page.Select(p => new { p.PartCode, p.PartName, p.EngName, p.Unit, p.Price, p.Cost,
+            p.Quantity, p.MinQuantity, p.PartTypeID, p.FlagActive, p.FlagInTST, p.DealerCode,
+            tstUnit = units.FirstOrDefault(u => u.TSTPartCode == p.PartCode)?.TSTUnit,
+            factor = factorByPart.TryGetValue(p.PartCode, out var f) ? f : (decimal?)null }),
+        onlyExistsOnBoth889 = "#889: Ser_Mst_Part_Get02 — BizCarSv.Service.cs:19015, sibling cua Get01/#887. Hang doi 29",
+        vieNamePatternInjectionOnlyInGet02 = "CUNG THAM SO, Get01 THAM SO HOA DUNG (BuildClauseConditionSingle), Get02 NOI CHUOI TRUC TIEP (AND (t.VieName like N%+strVieNamePattern+%)) => loi CUA RIENG NGUOI VIET Get02, khong phai quy uoc tang, vi co ca hai vi du doi lap trong CUNG cap ham",
+        engNamePatternDeadBecauseEarlyStageDropsIt = "DANG CHET MOI: strEngNamePattern duoc tinh dung cu phap va dung o tang K8 (chi tiet), NHUNG tang k2 (quyet dinh TAP UNG VIEN + danh MyRowIdx de cat trang) CHI loc VieName, KHONG nhac EngName => phu tung khop CHI EngNamePattern khong bao gio vao duoc tap ung vien => K8 KHONG BAO GIO co co hoi chay toi no du SQL cua no dung",
+        cusTypeFactorDeadConfirmedInBothSiblings = "XAC NHAN CHEO #887: LEFT JOIN Ser_Mst_CusPartFactor ON mcpf.CusTypeID = NULL giong het Get01, cung hai ly do chet — BAN SAO-DAN NGUYEN KHOI K8 giua hai ham (ho #376), khong phai trung hop doc lap",
+        partTypeIdInjectionSameShapeAsGet01PartGroupId = "strPartTypeIDList cung bake y het PartGroupIDList cua Get01: AND (t.PartTypeID = + strPartTypeIDList + ) — injection thu hai cua ham nay",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/serviceparts/search-full", async (AppDbContext db, ITenantContext t,
     string? partCodePattern, string? partCodeList, string? engNamePattern, string? vieNamePattern,
     string? cusTypeId, string? dealerCode, string? partGroupId, string? isActive, string? flagInTST,
