@@ -20503,6 +20503,87 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
     });
 }).RequireAuthorization();
 
+// ===== 🏆🔴🔴 #894 — `Rpt_DMSSer_Warranty_MainPart_New20230417` (báo cáo PT chính đã duyệt bảo hành) — **1438/`2800 (51,5%)**
+// `BizCarSv.Report.Special.Warranty.cs:3550` (vỏ) + thân thật `…MainPartX_New20230417` ở
+// `BizCarSv.ZTemp.cs:719` (dùng nhánh dự phòng — không còn hàm cùng tên gần đó để neo mốc cuối chuẩn, đã
+// xác nhận qua khớp cấu trúc với bản liền trước `MainPartX` không hậu tố tại `:529`). Hàng đợi **29**.
+//
+// 🏆🔴 **TÁI XUẤT HIỆN ĐÚNG NGUYÊN LÝ #301 Ở MỘT BÁO CÁO KHÁC — "NÂNG CẤP 2023-04-17" = ĐỔI NGUỒN
+// FrameNo/WarrantyRegistrationDate TỪ BẢNG XE (MASTER) SANG LỆNH SỬA CHỮA (BẢN CHỤP)**: so hai bản
+// (`MainPartX` cũ vs `…_New20230417`, khác NHAU đúng hai chỗ):
+//     Cũ:  `,sc.FrameNo` · `,sc.WarrantyRegistrationDate` (đọc thẳng `ser_Car sc`)
+//     Mới: `,ro.FrameNo` · `,ro.WarrantyRegistrationDate` (thêm `left join Ser_RO ro on srr.ROID = ro.ROID`)
+//   ⇒ Đúng nguyên lý #301 (sửa hồ sơ xe HÔM NAY không được làm đổi báo cáo bảo hành đã duyệt của NĂM
+//   NGOÁI) — **xác nhận đây là mẫu lặp lại có chủ đích của tác giả nguồn qua đợt 2023-04-17**, không phải
+//   một lần chỉnh đơn lẻ (chú thích nguyên văn tại #874: hậu tố này xuất hiện ở **23 hàm** cùng đợt).
+// ⚠️ **RỦI RO CHO ĐỀ NGHỊ CŨ**: `left join Ser_RO ro on srr.ROID = ro.ROID` — nếu `srr.ROID` rỗng/NULL ở
+//   những đề nghị bảo hành tạo TRƯỚC KHI cột `ROID` được ghi nhận đầy đủ, `ro` là NULL ⇒ `FrameNo`/
+//   `WarrantyRegistrationDate` trắng trơn, trong khi bản CŨ (đọc `sc` qua `CarID`) vẫn còn hiển thị được.
+//   ⇒ Bản mới ĐÚNG hơn cho đề nghị mới nhưng CÓ THỂ kém hơn cho đề nghị cũ thiếu `ROID` — chưa đo được tỉ lệ
+//   NULL thật trên dữ liệu sản xuất nên ghi RỦI RO, không khẳng định là bug (#362/#364).
+// ⚪ `Amount_Part = Factor*Price*Quantity + Factor*Price*Quantity*VAT*0.01` = đúng công thức VAT-gồm-thuế
+//   (họ `*0.01` đúng, không dính bug `/100` của #860).
+// ⚪ `(srrpi.FlagMainPart = '1' or srrpi.ROWPartType = 'PTC')` — lọc đúng PT CHÍNH, khớp taxonomy đã ghi ở
+//   entity `WarrantyClaimPartItem` (`RowPartType`, `FlagMainPart`).
+// 📌 Mini: `GET /api/warrantyclaims/report/main-part` — đọc snapshot RO như bản `_New20230417`, và THÊM
+// (cải tiến, không phải nguồn) fallback sang `ServiceCar` qua `CarID` khi RO không tìm thấy, để giảm rủi ro
+// vừa ghi ở trên — có gắn cờ `frameNoSource` để phân biệt rõ nguồn dữ liệu mỗi dòng.
+app.MapGet("/api/warrantyclaims/report/main-part", async (AppDbContext db, ITenantContext t,
+    string? partCodeList, DateTime? dateFrom, DateTime? dateTo) =>
+{
+    if (dateFrom is null) return Results.BadRequest(new { error = "Can dateFrom (nguon: Rpt_DMSSer_Chart_ThongKeBaoHanh_InputReportDate)." });
+    var toDate = dateTo ?? new DateTime(2100, 1, 1);
+    var partCodes = (partCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    var claims = await db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.Status == "Accepted"
+        && x.CreatedAt >= dateFrom && x.CreatedAt <= toDate).ToListAsync();
+    var claimIds = claims.Select(x => x.Id).ToList();
+    var itemsQ = db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId)
+        && (x.FlagMainPart == "1" || x.RowPartType == "PTC")
+        && (x.WarrantyStatus == null || x.WarrantyStatus == "ACCE"));
+    if (partCodes.Count > 0) itemsQ = itemsQ.Where(x => partCodes.Contains(x.PartCode));
+    var items = await itemsQ.ToListAsync();
+
+    var roNos = claims.Select(c => c.RONo).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && roNos.Contains(x.RONo)).ToListAsync();
+    var dealerCodes = claims.Select(c => c.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodes.Contains(x.DealerCode)).ToListAsync();
+    var carIds = claims.Select(c => c.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID)).ToListAsync();
+
+    var rows = items.GroupBy(x => new { x.ClaimId, x.PartCode }).Select(g =>
+    {
+        var first = g.First();
+        var claim = claims.First(c => c.Id == g.Key.ClaimId);
+        var ro = claim.RONo is null ? null : ros.FirstOrDefault(r => r.RONo == claim.RONo);
+        // #894: RO SNAPSHOT truoc (dung nguon _New20230417); fallback ServiceCar khi RO khong tim thay
+        // (cai tien cua Mini, giam rui ro ROID rong da ghi o tren) — KHONG phai hanh vi nguon.
+        var car = claim.CarID is null ? null : cars.FirstOrDefault(x => x.CarID == claim.CarID);
+        string? frameNo; DateTime? wrd; string frameSource;
+        if (ro is not null) { frameNo = ro.Vin; wrd = ro.WarrantyRegistrationDate; frameSource = "RO_SNAPSHOT"; }
+        else if (car is not null) { frameNo = car.FrameNo; wrd = car.WarrantyRegistrationDate; frameSource = "CAR_MASTER_FALLBACK"; }
+        else { frameNo = null; wrd = null; frameSource = "NONE"; }
+        var qty = g.Sum(x => x.Quantity);
+        var amount = first.Factor * first.Price * qty * (1 + first.Vat / 100m);
+        return new
+        {
+            claim.ClaimNo, claim.DealerCode,
+            dealerName = dealers.FirstOrDefault(d => d.DealerCode == claim.DealerCode)?.DealerName,
+            frameNo, PartCode = g.Key.PartCode, first.PartName, quantity = qty,
+            first.Price, first.Factor, first.Vat, amountPart = amount,
+            createdDate = claim.CreatedAt, warrantyRegistrationDate = wrd, frameSource,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        onlyExistsOnBoth894 = "#894: Rpt_DMSSer_Warranty_MainPart_New20230417 — BizCarSv.Report.Special.Warranty.cs:3550 (vo) + BizCarSv.ZTemp.cs:719 (than that MainPartX_New20230417). Hang doi 29",
+        confirms301PatternRecurring = "TAI XUAT HIEN DUNG NGUYEN LY #301 O MOT BAO CAO KHAC: ban _New20230417 doi nguon FrameNo/WarrantyRegistrationDate tu BANG XE MASTER (sc.*) sang LENH SUA CHUA (ro.*, qua left join Ser_RO ro on srr.ROID = ro.ROID) — dung nguyen ly #301, xac nhan la mau lap lai co chu dich cua dot nang cap 2023-04-17 (23 ham cung dot theo #874), khong phai chinh don le",
+        romNullRiskForOldClaims = "RUI RO CHUA KHANG DINH: neu srr.ROID rong/NULL o de nghi TAO TRUOC KHI ROID duoc ghi nhan day du, ro la NULL => FrameNo/WarrantyRegistrationDate trang trong ban nguon, trong khi ban CU (doc qua CarID) van hien thi duoc. Chua do ty le NULL that tren du lieu san xuat nen ghi RUI RO, khong khang dinh loi (#362/#364)",
+        miniAddsCarMasterFallback = "CAI TIEN CUA MINI (khong phai hanh vi nguon): fallback sang ServiceCar qua CarID khi RO khong tim thay, giam rui ro vua ghi — co gan co frameSource de phan biet ro nguon du lieu moi dong",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
