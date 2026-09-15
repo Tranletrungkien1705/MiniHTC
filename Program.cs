@@ -24289,6 +24289,31 @@ app.MapGet("/api/roattachments/pending-path-migration", async (AppDbContext db, 
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #959 `Ser_ROAttachment_UpdateImagePath` (LIVE, `BizCarSv.Service01.cs:16441`) — NỬA CÒN LẠI của #622b =====
+// Nguồn nhận NGUYÊN MỘT `DataSet` (nhiều dòng `Ser_ROAttachment`), ép TẤT CẢ dòng thành `Modified` rồi
+//   `SaveData` CHỈ hai cột `Image`/`ImagePath` — đây chính là bước GHI mà tiến trình ngoài gọi SAU KHI đã
+//   ghi file thật, để tắt tình trạng "còn ảnh trong DB, chưa có đường dẫn" mà `#622b` (GET pending-path-
+//   migration) dùng để TÌM ứng viên. Hai hàm là HAI NỬA của cùng một quy trình bảo trì.
+// ⚪ **KHÔNG có guard** (`#region Check` rỗng, `Raise` = 0) — port giữ đúng, không tự thêm rào chắn.
+// ⚪ MiniHTC chưa mô hình hoá cột `Image` (nhị phân) — chỉ ghi `ImagePath` cho từng Id, đúng nợ đã ghi ở #622b.
+app.MapPost("/api/roattachments/imagepaths", async (List<RoAttachmentImagePathDto> items, AppDbContext db, ITenantContext t) =>
+{
+    var ids = items.Select(x => x.Id).Distinct().ToList();
+    var rows = await db.RoAttachments.Where(x => x.OrgId == t.OrgId && ids.Contains(x.Id)).ToListAsync();
+    var rowById = rows.ToDictionary(x => x.Id);
+    var updated = new List<long>();
+    var notFound = new List<long>();
+    foreach (var item in items)
+    {
+        if (!rowById.TryGetValue(item.Id, out var row)) { notFound.Add(item.Id); continue; }
+        row.ImagePath = item.ImagePath;
+        updated.Add(item.Id);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updatedCount = updated.Count, updated, notFound,
+        imageBlobColumnNotModelled = "Nguon ghi ca Image lan ImagePath trong cung mot SaveData; MiniHTC chi ghi ImagePath (chua mo hinh hoa cot Image nhi phan, dung nhu no da ghi o #622b)." });
+}).RequireAuthorization();
+
 app.MapPost("/api/roattachments", async (RoAttachmentDto dto, AppDbContext db, ITenantContext t) =>
 {
     var roNo = (dto.RONo ?? "").Trim().ToUpperInvariant();
@@ -78923,6 +78948,7 @@ record TstHtvNameDto(string? TSTPartCode, string? VieName);   // #918
 // #253: ảnh đính kèm LSC. Nội dung file (base64) do tầng lưu trữ xử lý — nợ chung của MiniHTC.
 record RoAttachmentDto(string? RONo, string? ImageName, string? ImagePath = null);
 record RoAttachmentTypeDto(string? AttachmentType, string? ROWPTCode, string? Remark);   // #910
+record RoAttachmentImagePathDto(long Id, string? ImagePath);   // #959
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive,
     decimal? MinOrderQuantity = null, decimal? TSTPriceList = null, decimal? TSTPriceUrgent = null,
     decimal? TSTPriceWarranty = null, decimal? TaxRate = null,
