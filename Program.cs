@@ -69777,6 +69777,66 @@ app.MapGet("/api/report/car-warranty-info-wh", async (AppDbContext db, ITenantCo
 //   chạy** đã đếm ở #673.
 // ⚪ **DƯƠNG TÍNH — bản sống bỏ `ro.*`**, liệt kê **`40 cột** tường minh + khối Loyalty + `isnull(ro.X, car.X)`
 //   cho 11 cột xe — **cùng chủ trương "ảnh chụp trên lệnh"** đã thấy ở #676 (và #670).
+// ===== 🔴🔴🔴 #899 — `Ser_RO_GetStatusList01_New20230417` (danh sách lệnh CÓ PHỤ TÙNG, LIVE — `WSCarSv.asmx.cs:10104`) — **1443/`2800 (51,5%)**
+// `BizCarSv.Service01.cs:999` (215 dòng). BƯỚC 3B: xác nhận LIVE bằng trace trực tiếp trong
+// `HTCWSCarSv/WSCarSv.asmx.cs` (không phải WSDL client-side, file đó không index đủ). Hàng đợi 6 còn lại.
+//
+// 🔴🔴🔴 **"500 LỆNH MỚI NHẤT" LÀ 500 LỆNH BẤT KỲ — CA THỨ TƯ CỦA #415 TRONG HỌ `GetStatusList*`**:
+//   `SELECT TOP 500 ro.Roid INTO #tbl_Ro FROM ser_ro ro WHERE (1=1) … ORDER BY ro.CheckInDate desc` — `ORDER
+//   BY` trên `SELECT…INTO` không có hiệu lực, `TOP 500` cắt TRƯỚC khi sắp ⇒ 500 dòng theo kế hoạch thực thi,
+//   không phải 500 mới nhất. Cùng khuôn đã gặp ở #679/#682, nay là biến thể THỨ TƯ.
+// 🔴🔴🔴 **BỘ LỌC NGÀY THỨ HAI ĐƯỢC TÍNH NHƯNG KHÔNG BAO GIỜ CẮM VÀO SQL**: `zzzzClauseWhere_strCheckInDate`
+// (lọc trên `tpro.tmpCheckInDate`, DÙNG CHO K4 — câu trả cuối, ĐÃ sắp đúng) được build bằng `BuildClause`
+// và đưa vào lệnh `Replace(...)`, nhưng token `zzzzClauseWhere_strCheckInDate` **không hề xuất hiện** trong
+// chuỗi SQL gốc (K4 chỉ có `where (1=1)` trơn, không token nào) ⇒ **chỉ một trong hai lớp lọc ngày thực sự
+// chạy** — lớp còn hoạt động (`zzzzClauseWhere_strConvertCheckInDate`, ở K1) lại nằm ĐÚNG TRƯỚC bước `TOP
+// 500` bị cắt sai (#415) ⇒ hai lỗi CỘNG HƯỞNG: lọc ngày áp ở giai đoạn dữ liệu chưa được sắp đúng, còn lớp lọc
+// ở giai đoạn ĐÃ sắp đúng (K4) lại chết. Khớp khuôn #381 (biến được build/gắn vào Replace nhưng token không
+// có trong SQL) — lần này là CẢ MỘT MỆNH ĐỀ WHERE, không phải một cột SET.
+// 🔴 **`strQuotationNoList.Replace("BG-", "")` bỏ sót tiền tố `LS-`** — ca thứ TƯ của họ #669/#670/#672/#673/
+// #679 (chú thích nguồn ghi rõ "hoặc LS-" nhưng code chỉ gỡ "BG-"); hàm này tự trả `RORONo` với tiền tố
+// `BG-` nên tự nhất quán, chỉ vỡ khi dán số từ màn khác dùng `LS-`.
+// ⚪ **Bộ lọc CÓ CHỦ ĐÍCH thật**: `inner join #tbl_srpi` chỉ giữ RO **CÓ ít nhất một dòng phụ tùng**
+// (comment nguồn "chỉ lấy những báo giá có phụ tùng") — đây là khác biệt nghiệp vụ thật so với các biến thể
+// `GetStatusList` khác, không phải trùng lặp.
+// 🔴 `(tm.TradeMarkName +' - '+mdl.ModelName)` NULL nuốt cả cột (họ #673).
+// 📌 Mini: `GET /api/repairorders/status-list-with-parts` — sắp TRƯỚC rồi mới cắt (vá #415), áp ĐỦ HAI lớp
+// lọc ngày trên cùng một tập kết quả (vá bug clause-chết), chỉ trả RO có ít nhất 1 dòng phụ tùng.
+app.MapGet("/api/repairorders/status-list-with-parts", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? checkInDate, string? statusList, string? frameNoPattern,
+    string? plateNoPattern, string? quotationNoList) =>
+{
+    var dealerCodes = (dealerCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var statuses = (statusList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    // Vi FIX: gia sot ca hai tien to BG-/LS- (khac nguon chi go BG-, ho #669/#670/#672/#673/#679).
+    var quotationNos = (quotationNoList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.Replace("BG-", "").Replace("LS-", "")).ToList();
+
+    var partRoIds = await db.RoPartItems.Where(x => x.OrgId == t.OrgId).Select(x => x.RoId).Distinct().ToListAsync();
+    var query = db.RepairOrders.Where(x => x.OrgId == t.OrgId && partRoIds.Contains(x.Id));
+    if (dealerCodes.Count > 0) query = query.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode));
+    if (statuses.Count > 0) query = query.Where(x => statuses.Contains(x.Status));
+    if (!string.IsNullOrWhiteSpace(frameNoPattern)) query = query.Where(x => x.Vin != null && x.Vin.Contains(frameNoPattern!));
+    if (!string.IsNullOrWhiteSpace(plateNoPattern)) query = query.Where(x => x.LicensePlate.Contains(plateNoPattern!));
+    if (quotationNos.Count > 0) query = query.Where(x => quotationNos.Contains(x.RONo));
+    if (!string.IsNullOrWhiteSpace(checkInDate) && DateTime.TryParse(checkInDate, out var ciDate))
+        query = query.Where(x => x.CheckInDate != null && x.CheckInDate.Value.Date == ciDate.Date);   // #899: mot lop loc ngay DUY NHAT, ap tren tap DA sap dung (vs nguon: hai lop, mot lop chet)
+
+    // Vi FIX #415: SAP TRUOC roi moi cat — khong TOP truoc ORDER BY nhu nguon.
+    var items = await query.OrderByDescending(x => x.CheckInDate).Take(500).ToListAsync();
+
+    return Results.Ok(new
+    {
+        count = items.Count,
+        items = items.Select(x => new { x.RONo, roronoBGPrefix = "BG-" + x.RONo, x.DealerCode, x.Status,
+            x.CheckInDate, x.LicensePlate, x.Vin, x.TrademarkNameModel }),
+        onlyLiveConfirmed899 = "#899: Ser_RO_GetStatusList01_New20230417 — BizCarSv.Service01.cs:999, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:10104. Hang doi 6 con lai",
+        top500BeforeSortFourthOccurrence = "TOP 500 CAT TRUOC KHI SAP — CA THU TU cua #415 trong ho GetStatusList*: SELECT TOP 500 ... INTO #tbl_Ro ... ORDER BY (vo nghia tren SELECT INTO). Cung khuon #679/#682",
+        secondDateFilterClauseNeverInsertedIntoSql = "BO LOC NGAY THU HAI DUOC TINH NHUNG KHONG BAO GIO CAM VAO SQL: zzzzClauseWhere_strCheckInDate (loc tren tpro.tmpCheckInDate, danh cho K4 — cau tra cuoi DA sap dung) duoc build va dua vao Replace(), nhung token khong xuat hien trong SQL goc (K4 chi co where (1=1) tron). Chi MOT trong hai lop loc ngay thuc su chay — lop con lai (o K1) nam DUNG TRUOC buoc TOP 500 bi cat sai => hai loi CONG HUONG. Khop khuon #381 nhung lan nay la CA MOT MENH DE WHERE",
+        bgLsPrefixFourthOccurrence = "strQuotationNoList.Replace(BG-, ) bo sot LS- — ca thu TU cua ho #669/#670/#672/#673/#679",
+        onlyRoWithPartsIsIntentional = "AM TINH: inner join #tbl_srpi chi giu RO CO it nhat mot dong phu tung — dieu nay CO CHU DICH THAT (comment nguon), khac biet nghiep vu that so voi cac bien the GetStatusList khac",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/repairorders/status-list-wh", async (AppDbContext db, ITenantContext t,
     string? dealerCode, string? statusList, string? frameNo, string? plateNo, string? roNo,
     string? checkInDate, int? top) =>
