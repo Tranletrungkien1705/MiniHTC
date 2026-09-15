@@ -22229,12 +22229,15 @@ app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, I
 }).RequireAuthorization();
 
 // ===== Master thương hiệu xe dịch vụ (ServiceTradeMark — port 1:1 FrmTradeMarkCreate/Search, TCMotor DMSCarSv/Admin) =====
-app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+// #915 §12: nguồn Ser_Mst_TradeMark_Create/_Update đều ghi DealerCode — trước đây phải lách bằng cách
+// lấy DealerCode của RO ở /api/osveloca/ro/{roNo}/catalogs, nay đã có cột thật trên chính bản ghi.
+app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealerCode) =>
 {
     var qry = db.ServiceTradeMarks.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TradeMarkCode.Contains(q!) || x.TradeMarkName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -22243,12 +22246,12 @@ app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbConte
     var code = (dto.TradeMarkCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã thương hiệu." });
     if (string.IsNullOrWhiteSpace((dto.TradeMarkName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên thương hiệu." });
-    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == code);
-    if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code }; db.ServiceTradeMarks.Add(row); }
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == code && x.DealerCode == dto.DealerCode);
+    if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code, DealerCode = dto.DealerCode }; db.ServiceTradeMarks.Add(row); }
     row.TradeMarkName = dto.TradeMarkName; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -77501,7 +77504,7 @@ record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, st
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
-record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive);
+record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null);   // #915 DealerCode
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 // #245: 16 trường của `TST_Mst_Part_Get01` thêm ở CUỐI (tuỳ chọn ⇒ không vỡ lời gọi cũ).

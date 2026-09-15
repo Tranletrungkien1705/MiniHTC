@@ -3607,6 +3607,11 @@ public sealed class ServiceTradeMark
     public Guid OrgId { get; set; }
     public string TradeMarkCode { get; set; } = "";
     public string? TradeMarkName { get; set; }
+    /// <summary>#915 §12 `DealerCode` — nguồn `Ser_Mst_TradeMark_Create/_Update` (`BizCarSv.Master.cs:1641`)
+    /// đều GHI cột này (khuôn #395: #906/#907/#911/#913). Trước lượt này, `/api/osveloca/ro/{roNo}/catalogs`
+    /// (dòng ~27252) phải LÁCH bằng cách lấy `DealerCode` từ RO thay vì từ chính bản ghi — dấu hiệu gap đã
+    /// được nhận ra nhưng chưa vá tận gốc.</summary>
+    public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
 }
