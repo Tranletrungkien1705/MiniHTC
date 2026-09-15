@@ -64969,6 +64969,10 @@ app.MapGet("/api/repairorders/board", async (AppDbContext db, ITenantContext t) 
     return Results.Ok(new { total = ros.Count, columns });
 }).RequireAuthorization();
 
+// ===== 🔴 #955 `Ser_ROPart_Get` (LIVE, `BizCarSv.Service01.cs:2998`) — GHÉP THÊM TỒN KHO VÀO DÒNG PHỤ TÙNG =====
+// Nguồn `left join Ser_Mst_Part` (KHÔNG inner — dòng RO part vẫn hiện dù master thiếu) chỉ để lấy thêm MỘT
+// cột: `mp.Quantity` (tồn kho HIỆN TẠI của phụ tùng), đặt cạnh `rp.Quantity` (SL CẦN) — cho người dùng thấy
+// "cần X, còn Y trong kho" ngay trên màn chi tiết lệnh, không cần mở riêng màn tồn kho.
 app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -64976,8 +64980,13 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     if (r is null) return Results.NotFound(new { no });
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
         .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.InsurancePrice, s.CamID }).ToListAsync();   // #280 §12 + #342 + #367
-    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
-        .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note, p.CamID }).ToListAsync();
+    var partRows = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id).ToListAsync();
+    var stockByCode = await db.ServiceParts.Where(x => x.OrgId == t.OrgId).ToDictionaryAsync(x => x.PartCode, x => x.Quantity);
+    var parts = partRows.Select(p => new
+    {
+        p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note, p.CamID,
+        inStock = stockByCode.TryGetValue(p.PartCode, out var q) ? q : (decimal?)null,   // #955: nguon left join, thieu master van tra dong RO
+    }).ToList();
     return Results.Ok(new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status,
