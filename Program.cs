@@ -24676,10 +24676,20 @@ app.MapGet("/api/tstparts/temp", async (AppDbContext db, ITenantContext t,
 //    ⇒ endpoint nhận `codes` và **tách theo cả dấu phẩy LẪN xuống dòng**, giữ đúng cách người dùng nhập.
 // ⚠️ Nguồn gọi **API Bravo** (GetToken → CallBravo) chứ không query DB; MiniHTC tra bảng `TstParts` đã đồng
 //    bộ sẵn (#212 `/api/tstparts/sync-all`) — nợ lớp gọi Bravo trực tiếp vẫn còn.
+// ===== 🔴🔴 #904 THÊM `typeCode` — VÁ `TST_Mst_Part_GetFull_New20230327` (BizCarSv.Service.cs:19449, LIVE — =====
+// `WSCarSv.asmx.cs:40214`) mà endpoint này CHƯA đủ tham số. Vòng quét nguồn mới, hàng đợi cuối cùng còn 3 hàm.
+// 🔴🔴 **`strTypeCode`/`strGroupCode` BAKE QUA `StringUtils.Replace`, TRONG NGOẶC**: nguồn viết
+//   `and (('@strTypeCode' = '') or (f.TypeCode = '@strTypeCode'))` — thay `@strTypeCode` trực tiếp bằng
+//   `strTypeCode` (tham số WS), KHÔNG qua `alParamsCoupleSql` như `strTSTPartCodeConditionList`/
+//   `strTSTPartNameConditionList` CÙNG HÀM (đều dùng đúng `SqlUtils.BuildClause`) — cùng họ #886/#887/#889/
+//   #892/#900/#902 (một tham số bị bỏ sót trong khi tham số anh em đều đúng). Mini lọc bằng C#, không bake.
 app.MapGet("/api/tstparts", async (AppDbContext db, ITenantContext t, string? q, string? group, bool? all,
-    string? codes) =>
+    string? codes, string? typeCode, string? groupCode) =>
 {
     var qry = db.TstParts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(typeCode)) qry = qry.Where(x => x.TypeCode == typeCode);
+    // #904: GroupCode (cot moi #262) KHAC PartGroup (cot cu, tham so `group` da co) — nguon TST_Mst_Part_GetFull loc theo GroupCode.
+    if (!string.IsNullOrWhiteSpace(groupCode)) qry = qry.Where(x => x.GroupCode == groupCode);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(group)) qry = qry.Where(x => x.PartGroup == group);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TSTPartCode.Contains(q!) || x.VieName!.Contains(q!) || x.VieNameHTC!.Contains(q!));
