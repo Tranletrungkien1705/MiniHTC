@@ -38259,6 +38259,93 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
 //   ⇒ Màn đặt hàng nhìn thấy con số **nhỏ hơn** màn hẹn/lệnh sửa chữa trên cùng một mã phụ tùng.
 //     Đây là chủ đích (đặt hàng không được tính hàng chưa về), nên **không hợp nhất hai công thức**.
 // ⚠️ MiniHTC chưa mô hình hoá 'hàng đang về' ⇒ trả `inShipment = null` và bật cờ, thay vì bịa số 0.
+// ===== 🔴🔴🔴 #887 — `Ser_Mst_Part_Get01` (tìm phụ tùng nâng cao, LIVE cả hai cây) — **1431/`2800 (51,1%)**
+// `BizCarSv.Service.cs:18621` (394 dòng), LIVE. **3B khớp cả hai cây**. Hàng đợi **29** (#874 đo lại).
+//
+// 🔴🔴🔴 **HỆ SỐ GIÁ THEO LOẠI KHÁCH — CHẾT VÌ HAI LÝ DO ĐỘC LẬP, KHÁC HẲN #734 (LÀM ĐÚNG)**:
+//     `LEFT JOIN Ser_Mst_CusPartFactor mcpf **ON mcpf.CusTypeID = NULL** AND mcpf.PartID = k7.PartID …`
+//   ⓵ `= NULL` là **literal SQL**, luôn UNKNOWN (không phải `IS NULL`) ⇒ JOIN **không bao giờ khớp**.
+//   ⓶ Biến `strCusTypeID` được nhận, chuẩn hoá (`if empty then "null"`), đưa vào `Replace(…, "@CusTypeID",
+//   strCusTypeID)` — nhưng token `@CusTypeID` **không hề xuất hiện** ở bất kỳ đâu trong chuỗi SQL ⇒ tham số
+//   **chết hai lớp độc lập**: JOIN dùng hằng `NULL` cứng, và biến chuẩn-hoá không có chỗ cắm.
+//   ⇒ Cột `Factor` (`isnull(mcpf.Factor, mct.CusFactor)`) **LUÔN NULL** ⇒ toàn bộ "giá theo loại khách" chết
+//   lặng, dù tham số `strCusTypeID` vẫn được ghi vào log lỗi như thể đang dùng. **Mẫu ĐÚNG đã có ở #734**
+//   (`COALESCE(cpf.Factor, ct.CusFactor, 1)` — ba tầng dự phòng, JOIN đúng cột) ⇒ cùng khái niệm, hai hàm khác
+//   nhau, một đúng một chết — không tổng quát hoá cho `Get02` (cần đọc lại riêng).
+// 🔴🔴🔴 **INJECTION THẬT — DUY NHẤT TRONG HÀM NÀY BỎ QUA THAM SỐ HOÁ**: 12 điều kiện lọc khác đều qua
+//   `SqlUtils.BuildClause*`, riêng `strPartGroupIDList` được **nối chuỗi trực tiếp**:
+//     `"AND ((pg.FamilyID LIKE '" + strPartGroupIDList + ".%') or (t.PartGroupID = '" + strPartGroupIDList + "'))"`
+//   ⇒ tham số WS đi thẳng vào SQL, không qua `alParamsCoupleSql` — khác kiểu bake #367/#886 (field baked qua
+//   `Replace` với TOKEN cố định) — ở đây GIÁ TRỊ NGƯỜI DÙNG được nối trực tiếp vào literal SQL.
+// ⚪ **Mẫu OR ĐÚNG NGOẶC — đối chiếu #886/#378**: `AND ( ((1=1) zzzzVieNamePattern) OR ((1=1) zzzzEngNamePattern) )`
+//   — ở đây vế trước dấu `AND` **không** phải hằng đúng đơn thuần mà là cả cụm `(1=1) OR (1=1)` lồng nhau có
+//   NGOẶC ĐẦY ĐỦ quanh khối OR ⇒ khác #886 (nơi thiếu ngoặc vô hại vì vế trước là tautology) — ở ĐÂY ngoặc
+//   **cần thiết thật** (kết quả OR hai điều kiện tên khác nhau) và tác giả **viết đúng**. Cùng file class, khác
+//   hàm, một chỗ cần ngoặc thì viết đúng; PartGroupID lại không tham số hoá — không nhất quán, không phải quy ước.
+// 🔴 **Lọc hai lần cùng một khối 8 điều kiện**: `#tbl_tem1` (k2) đã lọc đủ 8 điều kiện trước khi đánh `MyRowIdx`
+//   và cắt trang (k4); khối K8 sau đó LẶP LẠI nguyên khối 8 điều kiện ấy trên `#tbl_k7` (vốn đã được lọc từ
+//   `#tblTemp_Filter`, con của `#tbl_tem1`) ⇒ **tính lại vô ích** — không sai kết quả (vì cùng PartID, cùng
+//   điều kiện) nhưng lãng phí, và là **bản sao-dán khối SQL trong CHÍNH hàm** (họ #376, lần này nội bộ 1 hàm).
+// 📌 Mini: `GET /api/serviceparts/search-full` — tham số hoá **PartGroupID**, hệ số giá theo loại khách dùng
+// đúng `IS NULL`/khớp `CusTypeID` thật (mẫu #734), lọc một lượt, phân trang skip/take.
+app.MapGet("/api/serviceparts/search-full", async (AppDbContext db, ITenantContext t,
+    string? partCodePattern, string? partCodeList, string? engNamePattern, string? vieNamePattern,
+    string? cusTypeId, string? dealerCode, string? partGroupId, string? isActive, string? flagInTST,
+    int? start, int? count) =>
+{
+    var codeList = (partCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(partCodePattern)) query = query.Where(x => x.PartCode.Contains(partCodePattern!));
+    if (codeList.Count > 0) query = query.Where(x => codeList.Contains(x.PartCode));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(isActive)) query = query.Where(x => x.FlagActive == isActive);
+    if (!string.IsNullOrWhiteSpace(flagInTST)) query = query.Where(x => x.FlagInTST == flagInTST);
+    // Tham so hoa PartGroupID (vs literal-concat cua nguon): so bang MA hoac nhom CHA truc tiep (Mini khong co FamilyID phan cap).
+    if (!string.IsNullOrWhiteSpace(partGroupId))
+    {
+        var childCodes = await db.PartGroups.Where(x => x.OrgId == t.OrgId && x.ParentCode == partGroupId).Select(x => x.GroupCode).ToListAsync();
+        query = query.Where(x => x.PartGroupCode == partGroupId || childCodes.Contains(x.PartGroupCode!));
+    }
+    // Ten OR dung: khop TEN VIET **hoac** TEN ANH, giu dung nghia nguon (nguon co ngoac, khong bug precedence).
+    if (!string.IsNullOrWhiteSpace(vieNamePattern) || !string.IsNullOrWhiteSpace(engNamePattern))
+    {
+        query = query.Where(x =>
+            (!string.IsNullOrWhiteSpace(vieNamePattern) && x.PartName != null && x.PartName.Contains(vieNamePattern!))
+            || (!string.IsNullOrWhiteSpace(engNamePattern) && x.EngName != null && x.EngName.Contains(engNamePattern!)));
+    }
+
+    var total = await query.CountAsync();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 1000 ? count!.Value : 100;
+    var page = await query.OrderBy(x => x.PartCode).Skip(skip).Take(take).ToListAsync();
+
+    // Vi FIX ho so: he so gia theo loai khach dung CusTypeID that (nguon = mcpf.CusTypeID = NULL, luon chet).
+    Dictionary<string, decimal> factorByPart = new();
+    if (!string.IsNullOrWhiteSpace(cusTypeId))
+    {
+        var partIds = page.Select(x => x.PartID).Where(x => x != null).Select(x => x!).ToList();
+        var cpf = await db.CusPartFactors.Where(x => x.OrgId == t.OrgId && x.CusTypeID == cusTypeId && partIds.Contains(x.PartID)).ToListAsync();
+        var ct = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == cusTypeId);
+        foreach (var p in page)
+        {
+            var byPart = cpf.FirstOrDefault(x => x.PartID == p.PartID)?.Factor;
+            factorByPart[p.PartCode] = byPart ?? ct?.CusFactor ?? 1m;
+        }
+    }
+
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = page.Count,
+        items = page.Select(p => new { p.PartCode, p.PartName, p.EngName, p.Unit, p.Price, p.Cost, p.Location,
+            p.Quantity, p.MinQuantity, p.PartGroupCode, p.FlagActive, p.FlagInTST, p.DealerCode,
+            factor = factorByPart.TryGetValue(p.PartCode, out var f) ? f : (decimal?)null }),
+        onlyExistsOnBoth887 = "#887: Ser_Mst_Part_Get01 — BizCarSv.Service.cs:18621, LIVE ca hai cay. Hang doi 29 (#874 do lai)",
+        cusTypeFactorDeadTwoIndependentReasons = "HE SO GIA THEO LOAI KHACH CHET VI HAI LY DO DOC LAP: (1) LEFT JOIN Ser_Mst_CusPartFactor mcpf ON mcpf.CusTypeID = NULL la LITERAL, luon UNKNOWN, khong phai IS NULL => JOIN khong bao gio khop; (2) strCusTypeID duoc chuan hoa roi dua vao Replace voi token @CusTypeID nhung token do KHONG XUAT HIEN o bat ky dau trong SQL => tham so CHET HAI LOP DOC LAP. Mau DUNG da co o #734 (COALESCE(cpf.Factor, ct.CusFactor, 1), JOIN dung cot) — cung khai niem, hai ham khac nhau, mot dung mot chet",
+    partGroupIdInjection = "INJECTION THAT — DUY NHAT trong ham nay bo qua tham so hoa: strPartGroupIDList noi chuoi TRUC TIEP vao literal SQL (AND ((pg.FamilyID LIKE + strPartGroupIDList + .%) or (t.PartGroupID = + strPartGroupIDList))), trong khi 12 dieu kien loc khac deu qua SqlUtils.BuildClause*",
+        correctOrParenthesesContrastWith886 = "MAU OR DUNG NGOAC — doi chieu #886/#378: AND ( ((1=1) VieNamePattern) OR ((1=1) EngNamePattern) ) co NGOAC DAY DU quanh khoi OR, khac #886 (thieu ngoac vo hai vi ve truoc la tautology) — o day ngoac CAN THIET THAT va tac gia viet DUNG. Cung file class, khac ham, khong nhat quan (PartGroupID lai khong tham so hoa)",
+        duplicateFilterBlockAppliedTwice = "LOC HAI LAN CUNG MOT KHOI 8 DIEU KIEN: #tbl_tem1 (k2) da loc du 8 dieu kien truoc khi cat trang (k4); khoi K8 sau do LAP LAI y het khoi 8 dieu kien ay tren #tbl_k7 (da duoc loc tu con cua #tbl_tem1) => tinh lai vo ich, khong sai ket qua nhung lang phi — ban sao-dan khoi SQL TRONG CHINH MOT HAM (ho #376)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/serviceparts/{code}/inventory", async (string code, AppDbContext db, ITenantContext t,
     string? formula) =>
 {
