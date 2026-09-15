@@ -20683,6 +20683,89 @@ app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext 
 //   (nên **không có tên phụ tùng lỗi**) · `order by rt.ROWRTransactionID` · ba `left join` dịch vụ/phụ tùng/
 //   `Btl_Bulletin`. ⇒ Khớp đúng hình dạng "nhánh kho tụt hậu" mà #468 đo được trên toàn cây.
 // ⇒ Port cho tham số `scope` chọn **cột lọc**, mặc định `main` (ảnh chụp). Không tự hợp nhất hai bên.
+// ===== 🔴🔴🔴 #895 — `Ser_ROWarrantyReportHTC_Get_New20230417` (màn HTC xem đề nghị bảo hành toàn hệ thống) — **1439/`2800 (51,4%)**
+// `BizCarSv.WarrantyReport.cs:17780` (426 dòng), LIVE. **3B**: chỉ đọc trên máy 150 (chưa xác nhận laptop —
+// hàm nằm trong nhóm `_New20230417` #874 đã ghi là đợt nâng cấp riêng của cây 150). Hàng đợi **29**.
+//
+// 🔴🔴🔴 **TỔNG TIỀN ĐẦU CLAIM (`TotalAmount`) THIẾU BẢO VỆ `NULL VAT` MÀ CHI TIẾT DÒNG THÌ CÓ**:
+//   `#tbl_rsv`/`#tbl_rsp` (dựng `TotalAmount`): `Factor*Price**+**Factor*Price*VAT*0.01` — KHÔNG kiểm
+//   `VAT is null`. Khối "Detail" (`ServiceItems`/`PartItem`, cùng hàm, phía dưới) tính CÙNG khái niệm nhưng
+//   CÓ guard: `case when VAT is null or VAT=0 then Factor*Price else Factor*Price*(1+VAT/100) end`.
+//   ⇒ Một dòng bảo hành có `VAT` NULL: dòng CHI TIẾT vẫn hiện đúng số tiền (nhờ guard), nhưng dòng đó bị
+//   `SUM()` **loại khỏi tổng** (SQL Server bỏ qua NULL trong SUM, không cộng dồn được) ⇒ **`TotalAmount` của
+//   claim bị THIẾU đúng phần của dòng NULL VAT đó**, trong khi bảng chi tiết NGAY BÊN CẠNH vẫn hiện đủ —
+//   người xem dễ thấy "cộng dòng chi tiết ra không khớp tổng đầu claim".
+// 🔴🔴 **HAI `inner join` LÀM CLAIM CŨ CỦA ĐẠI LÝ ĐÃ ĐÓNG BIẾN MẤT KHỎI MÀN HTC**:
+//   `inner join ser_car car on td.CarID = car.CarID and td.CusID = car.CusID` (xe bị xoá ⇒ mất claim) và
+//   `inner join Mst_Dealer dl on dl.DealerCode = td.DealerCode **and dl.DealerStatus = '1'**` (đại lý đã
+//   NGƯNG hoạt động ⇒ MỌI claim lịch sử của đại lý đó biến mất khỏi màn xem của HTC, kể cả claim đã duyệt
+//   từ nhiều năm trước). Họ #410, nhưng hậu quả nặng hơn thường lệ vì đây là **màn tổng hợp của HÃNG**,
+//   không phải màn thao tác của đại lý — mất khả năng tra cứu lịch sử khi đại lý ngừng hợp tác.
+// ⚪ `zzB_tbl_Ser_ROWarrantyReport_HTCROWNo_zzE(...)` truyền cứng `"ACCE"` — `HTCROWNo` chỉ tồn tại cho
+//   claim đã CHẤP THUẬN, các trạng thái khác `NULL` là **đúng thiết kế** (chưa có số biên nhận), không bug.
+// 📌 Mini: `GET /api/warrantyclaims/report/htc` — `LEFT JOIN` xe/đại lý (vá #410, gắn cờ `carMissing`/
+// `dealerInactive` thay vì im lặng mất dòng), và `TotalAmount` cộng đúng cả dòng VAT rỗng (Mini dùng
+// `decimal` không-null cho VAT nên không tự dính bug NULL — vẫn giữ CÙNG MỘT công thức cho tổng lẫn chi
+// tiết, không tách hai công thức như nguồn).
+app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? statusList, string? rowTypeCodeList, string? hmcApiStatusList,
+    DateTime? createdDateFrom, DateTime? createdDateTo, bool includeDetail = false) =>
+{
+    var dealerCodes = (dealerCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var statuses = (statusList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var rowTypes = (rowTypeCodeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var hmcStatuses = (hmcApiStatusList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    var query = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    if (dealerCodes.Count > 0) query = query.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode));
+    if (statuses.Count > 0) query = query.Where(x => statuses.Contains(x.Status));
+    if (rowTypes.Count > 0) query = query.Where(x => x.ROWTypeCode != null && rowTypes.Contains(x.ROWTypeCode));
+    if (hmcStatuses.Count > 0) query = query.Where(x => hmcStatuses.Contains(x.HMCApiStatus));
+    if (createdDateFrom is not null) query = query.Where(x => x.CreatedAt >= createdDateFrom);
+    if (createdDateTo is not null) query = query.Where(x => x.CreatedAt <= createdDateTo);
+    var claims = await query.OrderByDescending(x => x.CreatedAt).Take(500).ToListAsync();
+
+    var carIds = claims.Select(x => x.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID)).ToListAsync();
+    var dealerCodesUsed = claims.Select(x => x.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodesUsed.Contains(x.DealerCode)).ToListAsync();
+    var claimIds = claims.Select(x => x.Id).ToList();
+    var svcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId)).ToListAsync();
+    var partItems = await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId)).ToListAsync();
+
+    var items = claims.Select(c =>
+    {
+        var car = c.CarID is null ? null : cars.FirstOrDefault(x => x.CarID == c.CarID);
+        var dealer = c.DealerCode is null ? null : dealers.FirstOrDefault(x => x.DealerCode == c.DealerCode);
+        var svc = svcItems.Where(x => x.ClaimId == c.Id);
+        var parts = partItems.Where(x => x.ClaimId == c.Id);
+        // Vi FIX: CUNG MOT cong thuc cho tong lan chi tiet — Mini VAT la decimal khong-null nen khong
+        // dinh bug NULL cua nguon, nhung van cong DU moi dong (khong dung SUM co the bo qua NULL nhu nguon).
+        var totalAmount = svc.Sum(x => x.Factor * x.Price * (1 + x.VAT / 100m))
+            + parts.Sum(x => x.Factor * x.Price * x.Quantity * (1 + x.Vat / 100m));
+        return new
+        {
+            c.ClaimNo, c.ROWTypeCode, c.DealerCode, dealerName = dealer?.DealerName,
+            dealerInactive = dealer is null || dealer.Status != "1",   // #895: vs INNER JOIN + DealerStatus=1 cua nguon
+            carMissing = car is null,                                  // #895: vs INNER JOIN ser_car cua nguon
+            c.RONo, c.Status, c.HMCApiStatus, c.ClmRcptNo, totalAmount, c.CreatedAt,
+            frameNo = car?.FrameNo, warrantyRegistrationDate = c.WarrantyRegistrationDate,
+            serviceItems = includeDetail ? svc.Select(x => new { x.SerCode, x.Factor, x.Price, x.VAT,
+                amount = x.Factor * x.Price * (1 + x.VAT / 100m) }) : null,
+            partItems = includeDetail ? parts.Select(x => new { x.PartCode, x.Quantity, x.Factor, x.Price, x.Vat,
+                amount = x.Factor * x.Price * x.Quantity * (1 + x.Vat / 100m) }) : null,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        onlyExistsOnMachine150_895 = "#895: Ser_ROWarrantyReportHTC_Get_New20230417 — BizCarSv.WarrantyReport.cs:17780 (426 dong). Hang doi 29",
+        totalAmountMissesNullVatLines = "TONG TIEN THIEU BAO VE NULL VAT MA CHI TIET THI CO: #tbl_rsv/#tbl_rsp tinh Factor*Price+Factor*Price*VAT*0.01 KHONG kiem VAT is null; khoi Detail (ServiceItems/PartItem) tinh CUNG khai niem nhung CO guard (case when VAT is null or VAT=0 then Factor*Price else ...). Mot dong VAT NULL bi SUM() LOAI KHOI TONG (SQL Server bo qua NULL trong SUM) => TotalAmount THIEU dung phan dong do, trong khi bang chi tiet ngay ben canh van hien du",
+        innerJoinsHideClosedDealerHistory = "HAI inner join LAM CLAIM CU CUA DAI LY DA DONG BIEN MAT KHOI MAN HTC: inner join ser_car (xe bi xoa => mat claim) va inner join Mst_Dealer ... and DealerStatus = 1 (dai ly NGUNG hoat dong => MOI claim lich su cua dai ly do bien mat khoi man xem cua HANG, ke ca claim da duyet tu nhieu nam truoc). Ho #410, hau qua nang hon vi day la man tong hop cua HANG",
+        htcrownoAcceOnlyIsIntentional = "AM TINH: zzB_tbl_..._HTCROWNo truyen cung ACCE — HTCROWNo chi ton tai cho claim da CHAP THUAN, cac trang thai khac NULL la DUNG THIET KE, khong phai bug",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, string? status, string? plate,
     string? vin, string? dealer, string? roId, string? rowId, string? isGetDetail, string? scope) =>
 {
