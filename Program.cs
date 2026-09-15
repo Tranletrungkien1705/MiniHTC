@@ -56870,6 +56870,65 @@ app.MapPost("/api/supplierpayments/{no}/approve", async (string no, AppDbContext
 }).RequireAuthorization();
 
 // ===== Khiếu nại đơn đặt phụ tùng (Ser_OrderComplain — port 1:1 FrmSer_OrderComplain/Mng) =====
+// ===== 🔴🔴🔴 #888 — `Ser_OrderComplain_Get` + thân thật `…GetX` (khiếu nại đơn PT, LIVE cả hai cây) — **1432/`2800 (51,1%)**
+// `BizCarSv.SuggestPrice.cs:2210` (vỏ, 113 dòng) + `…GetX:2323` (191 dòng, thân thật). Hàng đợi **29**.
+// ⚠️ **KHÔNG trùng `GET /api/ordercomplains` đã có** (#233/#242, port của `_Save`): đây là API TÌM KIẾM/PHÂN
+// TRANG RIÊNG (`_Get`/`_GetX`) với cơ chế `MyIdxSeq` + `BuildWhere` động — khác hàm, khác vai trò (#368).
+//
+// 🔴🔴🔴 **`MyCount` ĐẾM TỪ BẢNG `Draft` (TRƯỚC INNER JOIN); DANH SÁCH TRẢ VỀ SAU HAI `INNER JOIN` CATALOG**
+//   `MySummaryTable` = `Count(0)` trên `#tbl_Ser_OrderComplain_Draft` — chỉ lọc theo `strFt_WhereClause`.
+//   Câu trả dữ liệu `Ser_OrderComplain` sau đó **`inner join Mst_OrderComplainType`** VÀ
+//   **`inner join Mst_Dealer`** ⇒ nếu một khiếu nại có `OrderComplainType`/`DealerCode` KHÔNG còn tồn tại
+//   trong danh mục (loại bị xoá, đại lý bị vô hiệu/xoá) thì dòng đó **biến mất khỏi kết quả** dù vẫn được
+//   **đếm** trong `MyCount` (họ #410, biến thể mới: **đếm và trả hàng tính ở HAI TẦNG khác nhau của cùng
+//   pipeline** — Draft đếm trước join, Filter/Return trả sau join) ⇒ **UI phân trang lệch**: tổng số ghi
+//   nhiều hơn số dòng thực nhận được ở trang cuối, và khiếu nại bị mất KHÔNG có thông báo lỗi nào.
+// ⚪ `strFt_WhereClause` qua `SqlUtils.BuildWhere(htSpCols, …, "@p_", …)` với `htSpCols` lấy từ
+//   `MyBuildHTSupportedColumns` (danh sách cột hợp lệ) ⇒ **tham số hoá đúng cách**, không phải bake — khác
+//   hẳn #887 (PartGroupID bake) và #886 (StringUtils.Replace bake); đây là MẪU ĐÚNG cho lọc động.
+// ⚪ Hai bảng tạm `#tbl_Ser_OrderComplain_{Draft,Filter}` có `--drop table` bị COMMENT nguyên văn "Clear for
+//   Debug" — không dọn tường minh, nhưng vô hại vì bảng `#` tự huỷ theo scope kết nối (không phải bug thật,
+//   khác các trường hợp DROP bị thiếu do quên — ở đây ghi chú rõ chủ đích).
+// 📌 Mini: `GET /api/ordercomplains/search-paged` — **`LEFT JOIN`** danh mục thay vì `INNER JOIN` (vá #410),
+// `totalCount` và số dòng trả về LUÔN khớp nhau, kèm cờ đếm khiếu nại có danh mục treo (orphan).
+app.MapGet("/api/ordercomplains/search-paged", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? complainType, string? dmsStatus, string? tstStatus, int? start, int? count) =>
+{
+    var query = db.OrderComplains.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(complainType)) query = query.Where(x => x.ComplainType == complainType);
+    if (!string.IsNullOrWhiteSpace(dmsStatus)) query = query.Where(x => x.DMSStatus == dmsStatus);
+    if (!string.IsNullOrWhiteSpace(tstStatus)) query = query.Where(x => x.TSTStatus == tstStatus);
+
+    var total = await query.CountAsync();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 500 ? count!.Value : 100;
+    var page = await query.OrderBy(x => x.ComplainNo).Skip(skip).Take(take).ToListAsync();
+
+    var types = await db.MstOrderComplainTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var dealerCodes = page.Select(x => x.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodes.Contains(x.DealerCode)).ToListAsync();
+    var orphanTypeCount = page.Count(x => x.ComplainType != null && !types.Any(y => y.OrderComplainType == x.ComplainType));
+    var orphanDealerCount = page.Count(x => x.DealerCode != null && !dealers.Any(y => y.DealerCode == x.DealerCode));
+
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = page.Count,   // #888: totalCount va count LUON khop (LEFT JOIN, khong roi hang nhu nguon)
+        items = page.Select(c => new
+        {
+            c.ComplainNo, c.OrderPartNo, c.ComplainType,
+            complainTypeName = types.FirstOrDefault(y => y.OrderComplainType == c.ComplainType)?.OrderComplainTypeName,
+            c.DealerCode,
+            dealerName = dealers.FirstOrDefault(y => y.DealerCode == c.DealerCode)?.DealerName,
+            c.Content, c.DMSStatus, c.TSTStatus, c.CreatedAt,
+        }),
+        orphanTypeCount, orphanDealerCount,
+        onlyExistsOnBoth888 = "#888: Ser_OrderComplain_Get + GetX — BizCarSv.SuggestPrice.cs:2210/:2323, LIVE ca hai cay. KHONG trung /api/ordercomplains (#233/#242, port cua _Save) — day la API tim kiem/phan trang RIENG (#368)",
+        countBeforeJoinRowsAfterJoinMismatch = "MyCount DEM TU BANG Draft (TRUOC inner join danh muc); danh sach tra ve SAU inner join Mst_OrderComplainType VA Mst_Dealer => khieu nai co loai/dai ly KHONG CON trong danh muc BIEN MAT khoi ket qua nhung VAN duoc dem trong MyCount (ho #410, bien the: dem va tra hang o HAI TANG khac nhau cua cung pipeline) => UI phan trang lech, tong so nhieu hon so dong thuc nhan duoc, khong co thong bao loi",
+        buildWhereIsCorrectPattern = "AM TINH: strFt_WhereClause qua SqlUtils.BuildWhere(htSpCols tu MyBuildHTSupportedColumns, prefix @p_) => THAM SO HOA DUNG CACH, khac han #887 (PartGroupID bake) va #886 (StringUtils.Replace bake) — day la MAU DUNG cho loc dong",
+        miniFixLeftJoinInsteadOfInner = "Mini dung LEFT JOIN thay INNER JOIN danh muc (va #410): totalCount va so dong tra ve LUON khop, kem orphanTypeCount/orphanDealerCount de do phan khieu nai co danh muc treo",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, string? dms, string? tst, string? order) =>
 {
     var q = db.OrderComplains.Where(c => c.OrgId == t.OrgId);
