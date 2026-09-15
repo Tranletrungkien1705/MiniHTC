@@ -63233,6 +63233,33 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #942 `Ser_RO_UpdateStatus` (LIVE, `BizCarSv.Service01.cs:8453`) — GHI ĐÈ TRẠNG THÁI THÔ, KHÔNG GUARD =====
+// Áp #403: trích TRỌN danh sách region — `#region // Temp:` · `#region // Init:` · `#region // Check Input
+// Detail:` (chỉ có `strTDate = ...`, RỖNG về nghiệp vụ) · `#region // Update:` · catch · finally. `Raise=0`,
+// `this.Check*=0`, `my*_Check*=0` ⇒ KHÔNG có guard nào — nhận `strStatus` từ client rồi ghi THẲNG vào
+// `Ser_RO.Status`, không đối chiếu danh sách trạng thái hợp lệ, không kiểm luồng chuyển trạng thái.
+// 🔴🔴🔴 Đây là hàm THÔ khác hẳn các endpoint chuyển trạng thái CÓ GUARD đã port (#321/#922/#933…) — không có
+// caller nội bộ nào khác trong `TERP.BizCarSv` gọi hàm này (chỉ có đúng MỘT `[WebMethod]` gọi thẳng), nên
+// không phải helper dùng chung — là một CỔNG GHI ĐÈ THÔ độc lập, kênh admin/đối tác đặc biệt.
+// Port ĐÚNG hành vi nguồn (không tự thêm validate danh sách trạng thái mà nguồn không có), NHƯNG cảnh báo rõ
+// rủi ro trong response để client hiểu đây là đường TẮT không qua state machine.
+app.MapPost("/api/repairorders/{no}/status-raw", async (string no, RoStatusRawDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.Status)) return Results.BadRequest(new { error = "Cần Status." });
+    var oldStatus = r.Status;
+    r.Status = dto.Status.Trim();
+    r.LogLUBy = dto.LogLUBy; r.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        r.RONo, oldStatus, newStatus = r.Status,
+        sourceHasNoGuardAtAll = "Ser_RO_UpdateStatus (Service01.cs:8453): #region Check RONG (chi strTDate), Raise=0 — nguon ghi THANG khong doi chieu danh sach trang thai hop le. Port dung hanh vi, KHONG tu them validate ma nguon khong co — dung API nay bo qua het cac guard chuyen trang thai o endpoint khac (#321/#922/#933).",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
@@ -77221,6 +77248,7 @@ record RepairOrderUpdateDto(DateTime? ScheduleDate, DateTime? CheckInDate,
     DateTime? StartDate = null, DateTime? FinishedDate = null,
     decimal? PlanedDuration = null, string? CusRequest = null, string? CarStatus = null,
     string? ModifyBy = null, decimal? TotalActHours = null, string? LevelOfInspection = null);   // #923
+record RoStatusRawDto(string? Status, string? LogLUBy = null);   // #942
 // #324: cap nhat lich hen tu API DOI TAC (OS_Ser_App_Update). Rong = GIU NGUYEN (helper Function_UtilsSerApp).
 // #325: tao lich hen tu HCC (OS_Ser_App_Create_ForHCC). AppDateTime ghi THO, CreatedDate cat toi PHUT.
 record OsAppointmentForHccDto(string? AppNo, string? DealerCode = null, string? Creator = null,
