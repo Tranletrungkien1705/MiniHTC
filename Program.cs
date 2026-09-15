@@ -65609,6 +65609,9 @@ app.MapGet("/api/repairorders/{no}/invoice-detail", async (string no, AppDbConte
         ? await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == car.InsNo) : null;
     var model = (car?.ModelCode is not null)
         ? await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == car.ModelCode) : null;
+    // #971: sys_user theo Creator — nguồn nối để lấy SUUserName/SUUserPhone (giống #970c).
+    var creator = string.IsNullOrWhiteSpace(r.Creator) ? null
+        : await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == r.Creator);
 
     // Ba cột suy diễn theo đúng thứ tự ưu tiên nguồn (case-when ba nhánh).
     string? cusAddress, cusTel, cusMobile;
@@ -65627,8 +65630,17 @@ app.MapGet("/api/repairorders/{no}/invoice-detail", async (string no, AppDbConte
 
     return Results.Ok(new
     {
+        // #971: so cột SELECT của nguồn (`Ser_ROInvoice_Get_New20220926`, `Service01.cs:4260-4351`) với
+        // entity `RepairOrder` hiện có — bổ sung 21 cột nguồn CÓ mà bản port cũ CHƯA trả (mọi cột đã có
+        // sẵn trên entity, không cần §12). `SUUserPhone`/`FullNamePhoneNoCreator` KHÔNG bổ sung được:
+        // `SysUser` (Mini) chưa có cột số điện thoại — ghi nợ, không bịa.
         ro = new { r.RONo, r.DealerCode, r.CusRequest, r.CarStatus, r.CheckInDate, r.AdvisoryCode, r.AdvisoryPhone,
-            r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.TermsOfRepair, r.InsNo, r.InvoiceBy, r.Status },
+            r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.TermsOfRepair, r.InsNo, r.InvoiceBy, r.Status,
+            r.Assistant, r.StartDate, r.FinishedDate, r.PlanedDeliveryDate, r.PlanedDuration, r.CusWaiting,
+            r.CarWashRequested, r.UseSHPart, r.PayByCard, r.Km, r.Creator, creatorUserName = creator?.UserName,
+            r.WorkDoneSoon, r.ROType, r.ActualDeliveryDate, r.IsReRepair, r.TotalActHours, r.ModifyDate, r.ModifyBy,
+            r.IsCusPaymentAll, r.CheckEndDate, r.FlagPause, r.AmountFromMC, r.PointTotal, r.ReceptionFNo,
+            r.FlagOnlyPoint, r.DlrPDIReqNo, r.InsuranceDeductible, r.AmountDiscountOther, r.LevelOfInspection },
         customer = new { ownerName = cus?.CusName, cusName = r.CusName ?? (cus?.ContName ?? cus?.CusName),
             cusAddress, cusTel, cusMobile, taxCode = cus?.TaxCode },
         car = car is null ? null : new { car.PlateNo, car.TradeMark, modelName = model?.ModelName, car.ColorCode, car.FrameNo, car.EngineNo, car.MemberCarID, car.ProductYear },
