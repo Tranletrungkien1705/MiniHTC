@@ -26292,6 +26292,43 @@ app.MapPost("/api/rohistories", async (RoHistoryDto dto, AppDbContext db, ITenan
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.ROHID, row.ROID, row.Status, row.Reason, row.LogLUDateTime });
 }).RequireAuthorization();
+
+// ===== 🔴 #957 `Ser_ROHistory_Create` (LIVE — companion-scan #400 trong CÙNG FILE `Service01.cs:13280`) =====
+// Nguồn qua helper `InsertToROHistory` (`:13223`): LUÔN CHÈN DÒNG MỚI vào `Ser_ROHistory` (ROHID sinh bởi
+//   `select @@Identity`), ghi `ROID`/`Status`/`HistoryDate`/`UserCode`/`Note`, rồi nhân bản dòng vừa chèn
+//   sang `_dbWH` (Data WH — không mô phỏng, Mini không có kho tách biệt).
+// 🔴 KHÁC HẲN `POST /api/rohistories` Ở TRÊN (đã port cho một hàm khác — UPSERT theo `ROHID` có sẵn, dùng
+//   cho việc SỬA một dòng lịch sử đã có): hàm này KHÔNG nhận ROHID đầu vào, mỗi lần gọi luôn tạo THÊM MỘT
+//   DÒNG MỚI — đúng ngữ nghĩa "ghi log", không phải "cập nhật trạng thái hiện tại".
+// Xác nhận LIVE: `_biz.Ser_ROHistory_Create(` có ở `HTCWSCarSv/WSCarSv.asmx.cs:11227`; đồng thời có DbService
+//   wrapper `TERP.HTCServiceClient/DbServices/SerROService.cs:1001` (cổng đối tác, không thấy caller WinForm).
+// ⚠️ Entity `RoHistory` (Mini) không có cột `UserCode`/`Note`/`HistoryDate` riêng — tái dùng đúng khuôn hai
+//   cột đã có (`LogLUBy`↔UserCode, `Reason`↔Note) như dòng port trước; `LogLUDateTime` nhận `HistoryDate`
+//   nếu parse được, không thì dùng giờ hệ thống (nguồn ghi thẳng chuỗi tham số, không có định dạng bắt buộc).
+// 🔴 Mini không có IDENTITY tự tăng dùng chung — sinh `ROHID` bằng GUID rút gọn để đảm bảo DUY NHẤT,
+//   khác nguồn (số nguyên tăng dần) nhưng giữ đúng ngữ nghĩa "khoá mới cho mỗi lần chèn".
+app.MapPost("/api/repairorders/history-log", async (RoHistoryCreateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var roid = (dto.ROID ?? "").Trim();
+    if (roid.Length == 0) return Results.BadRequest(new { error = "Cần ROID." });
+    var status = (dto.Status ?? "").Trim();
+    DateTime? historyDate = DateTime.TryParse(dto.HistoryDate, out var hd) ? hd : null;
+    var row = new RoHistory
+    {
+        OrgId = t.OrgId,
+        ROHID = Guid.NewGuid().ToString("N").Substring(0, 12),
+        ROID = roid,
+        Status = status,
+        Reason = dto.Note,
+        LogLUBy = dto.UserCode,
+        LogLUDateTime = historyDate ?? DateTime.Now,
+    };
+    db.RoHistories.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ROHID, row.ROID, row.Status, note = row.Reason, userCode = row.LogLUBy, row.LogLUDateTime,
+        alwaysInsertsNewRowNote = "Khac /api/rohistories (upsert theo ROHID) - moi lan goi day LUON la MOT dong lich su moi, dung nhu nguon." });
+}).RequireAuthorization();
+
 app.MapGet("/api/_meta/delete-guard-sweep", () => Results.Ok(new
 {
     trigger = "khuon Delete khong kiem rang buoc gap BA lan: #818 (co guard), #819 (khong), #824 (khong)",
@@ -78566,6 +78603,7 @@ record RoMaintanceSettingSaveDto(string? DealerCode, List<RoMaintanceSettingDto>
 record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);
 record MstParamSaveByTypeDto(string? ParamType, List<MstParamDto>? Items, bool? AllowWipe);
 record RoHistoryDto(string? ROHID, string? ROID, string? Status, string? Reason, string? LogLUBy);
+record RoHistoryCreateDto(string? ROID, string? Status, string? UserCode, string? HistoryDate, string? Note);
 record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status);
 record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
 record StockInAdjustFinishDto(string? NewStockInNo, string? AdjustmentBy, DateTime? AdjustmentDate, string? AdjustmentNote, string? OldStockInNo);
