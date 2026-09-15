@@ -62718,6 +62718,26 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
     if (dto.StartDate.HasValue) r.StartDate = ToMinute(dto.StartDate.Value);
     if (dto.FinishedDate.HasValue) r.FinishedDate = ToMinute(dto.FinishedDate.Value);
 
+    // #923 §12 (Ser_RORepair_Update, Service01.cs:6762): TotalActHours CHỈ ghi khi lệnh đã ở Paid/Repaired/
+    // Finished — nguồn không ghi ở các trạng thái khác dù client gửi lên.
+    if (dto.TotalActHours.HasValue && (r.Status == "Paid" || r.Status == "Repaired" || r.Status == "Finished"))
+        r.TotalActHours = dto.TotalActHours;
+
+    // #923: LevelOfInspection sửa GIỮA lúc sửa xe (khác lúc tiếp nhận) — nguồn ghi CẢ Ser_RO LẪN Ser_ReceptionF
+    // liên kết, cùng guard "chỉ nhận 1/2/3" như lúc tiếp nhận (Ser_ReceptionF_CheckInput_InvalidLevelOfInspection).
+    Reception? linkedReception = null;
+    if (!string.IsNullOrWhiteSpace(dto.LevelOfInspection))
+    {
+        if (dto.LevelOfInspection!.Trim() is not ("1" or "2" or "3"))
+            return Results.BadRequest(new { error = "Ser_ReceptionF_CheckInput_InvalidLevelOfInspection" });
+        r.LevelOfInspection = dto.LevelOfInspection;
+        if (!string.IsNullOrWhiteSpace(r.ReceptionFNo))
+        {
+            linkedReception = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == r.ReceptionFNo);
+            if (linkedReception is not null) linkedReception.LevelOfInspection = dto.LevelOfInspection;
+        }
+    }
+
     r.ModifyBy = dto.ModifyBy; r.ModifyDate = DateTime.Now;
     r.LogLUBy = dto.ModifyBy; r.LogLUDateTime = DateTime.Now;
     await db.SaveChangesAsync();
@@ -62727,6 +62747,7 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
         r.RONo, r.Assistant, r.Engineer, r.QA, r.Operator, r.QuanDoc,
         r.ScheduleDate, r.CheckInDate, r.StartDate, r.FinishedDate,
         r.PlanedDuration, r.CusRequest, r.CarStatus, r.ModifyBy, r.ModifyDate,
+        r.TotalActHours, r.LevelOfInspection, syncedReceptionF = linkedReception?.ReceptionFNo,
         note = "Năm vai trò kỹ thuật + ScheduleDate/CheckInDate ghi VÔ ĐIỀU KIỆN (rỗng = XOÁ); "
              + "StartDate/FinishedDate có guard (rỗng = GIỮ NGUYÊN). Ngày cắt tới PHÚT như nguồn.",
     });
@@ -76648,7 +76669,7 @@ record RepairOrderUpdateDto(DateTime? ScheduleDate, DateTime? CheckInDate,
     string? Operator = null, string? QuanDoc = null,
     DateTime? StartDate = null, DateTime? FinishedDate = null,
     decimal? PlanedDuration = null, string? CusRequest = null, string? CarStatus = null,
-    string? ModifyBy = null);
+    string? ModifyBy = null, decimal? TotalActHours = null, string? LevelOfInspection = null);   // #923
 // #324: cap nhat lich hen tu API DOI TAC (OS_Ser_App_Update). Rong = GIU NGUYEN (helper Function_UtilsSerApp).
 // #325: tao lich hen tu HCC (OS_Ser_App_Create_ForHCC). AppDateTime ghi THO, CreatedDate cat toi PHUT.
 record OsAppointmentForHccDto(string? AppNo, string? DealerCode = null, string? Creator = null,
