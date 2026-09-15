@@ -44715,10 +44715,13 @@ app.MapGet("/api/cavities/usestatus", async (AppDbContext db, ITenantContext t, 
 }).RequireAuthorization();
 
 // #296 SỬA khoang — nguồn có `Ser_CavityUpdate` riêng (`Service.cs:12971`), port cũ chỉ có upsert + toggle.
-app.MapPut("/api/cavities/{code}", async (string code, CavityUpdateDto dto, AppDbContext db, ITenantContext t) =>
+// #945: nguồn khoá thật là `CavityID` (PK số) + `(CavityNo, DealerCode)` — route dùng `CavityNo` làm khoá nên
+// thêm `dealerCode` (tuỳ chọn) để phân biệt khi hai đại lý cùng dùng một mã khoang (nay Create đã cho phép).
+app.MapPut("/api/cavities/{code}", async (string code, CavityUpdateDto dto, AppDbContext db, ITenantContext t, string? dealerCode) =>
 {
     var no = code.Trim().ToUpperInvariant();
-    var c = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == no);
+    var dl = dealerCode?.Trim().ToUpperInvariant();
+    var c = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == no && (dl == null || x.DealerCode == dl));
     if (c is null) return Results.NotFound(new { code = no });
 
     c.CavityName = dto.CavityName; c.CavityType = dto.CavityType;
@@ -44746,25 +44749,34 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Upsert theo mã khoang.
+// ===== 🔴🔴🔴 #945 companion-scan (#400/#401 mở rộng CheckExist*): `CheckCavityFieldEmpty`/`CheckExistCavityNo`
+// (`BizCarSv.Service.cs:13275/:13304`) — #296 ĐÃ thêm cột `DealerCode` vào entity/DTO, nhưng Create KHÔNG
+// dùng đúng nó =====
+// Nguồn bắt buộc `strDealerCode` không rỗng (`CheckCavityFieldEmpty`, ném `Ser_Engineer_DealerEmpty` — mã lỗi
+// VAY từ cụm Engineer, giữ nguyên vì đây là 1:1) và khoá trùng mã là CẶP `(CavityNo, DealerCode)`
+// (`CheckExistCavityNo`), KHÔNG PHẢI riêng `CavityNo`. Create cũ (Mini) không set `DealerCode` khi tạo mới VÀ
+// tra trùng chỉ theo `CavityNo` — hai đại lý không thể cùng dùng một mã khoang dù nguồn cho phép, trong khi PUT
+// (Update, đã port đúng ở #296) đã set `DealerCode` — bất đối xứng Create/Update (luật #404).
 app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.CavityNo)) return Results.BadRequest(new { error = "Chưa nhập mã khoang." });
+    if (string.IsNullOrWhiteSpace(dto.CavityNo)) return Results.BadRequest(new { error = "Ser_Cavity_CavityNoEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Ser_Engineer_DealerEmpty" });
     if (string.IsNullOrWhiteSpace(dto.CavityName)) return Results.BadRequest(new { error = "Chưa nhập tên khoang." });
     // #249: `FrmCavityCreate.cs:93` `regex.IsMatch(txtCavityNo.Text)`
     if (HasSpecialChar(dto.CavityNo!.Trim()))
         return Results.BadRequest(new { error = "Mã khoang không được phép chứa các ký tự đặc biệt" });
     var code = dto.CavityNo.Trim().ToUpperInvariant();
-    var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code);
+    var dl = dto.DealerCode!.Trim().ToUpperInvariant();
+    var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code && x.DealerCode == dl);
     if (ex is not null)
     {
         ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartWorkTime = dto.StartWorkTime; ex.FinishWorkTime = dto.FinishWorkTime; ex.Note = dto.Note; ex.FlagActive = "1";
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.CavityNo, updated = true });
+        return Results.Ok(new { ex.CavityNo, ex.DealerCode, updated = true });
     }
-    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartWorkTime = dto.StartWorkTime, FinishWorkTime = dto.FinishWorkTime, Note = dto.Note, FlagActive = "1" };
+    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, DealerCode = dl, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartWorkTime = dto.StartWorkTime, FinishWorkTime = dto.FinishWorkTime, Note = dto.Note, FlagActive = "1" };
     db.Cavities.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.CavityNo, updated = false });
+    return Results.Ok(new { r.CavityNo, r.DealerCode, updated = false });
 }).RequireAuthorization();
 
 app.MapPost("/api/cavities/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
