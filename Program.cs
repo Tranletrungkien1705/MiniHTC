@@ -8026,9 +8026,10 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     // ===== #1062 B.I Tổng số lượt xe dịch vụ (ZTemp.cs:3102-3114/3740-3779) — #tbl_Ser_RO lọc
     // ActualDeliveryDate trong khoảng + Status='FNS'; #tbl_Ser_ROServiceItems join theo ROID lấy ROTYpe/
     // ExpenseType. Đếm PHÂN BIỆT theo RO (khớp nguồn: `q.ROID in (select t.ROID from ...)`, không đếm dòng).
-    var roIdsInPeriod = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.DealerCode == dealer
+    var rosInPeriod = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.DealerCode == dealer
             && r.Status == "FNS" && r.ActualDeliveryDate >= dateFrom && r.ActualDeliveryDate <= dateTo)
-        .Select(r => r.Id).ToListAsync();
+        .Select(r => new { r.Id, r.ActualDeliveryDate, r.StartDate, r.FinishedDate }).ToListAsync();
+    var roIdsInPeriod = rosInPeriod.Select(r => r.Id).ToList();
     var roServiceRows = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIdsInPeriod.Contains(s.RoId))
         .Select(s => new { s.RoId, s.ROType, s.ExpenseType, s.Factor, s.Price, s.Vat }).ToListAsync();
     int CountRO(string roType, string? expenseType = null) => roServiceRows
@@ -8053,6 +8054,31 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     var partRoRepair = PartAmount("ROREPAIR", false); var partRoWarranty = PartAmount("ROWARRANTY", false);
     var partRoInsurance = PartAmount("ROINSURANCE", false); var partLocal = PartAmount("LOCAL", false);
     var partShell = PartAmount(null, true);
+
+    // ===== #1065 A.IV Số giờ làm việc của KTV (ZTemp.cs:3663-3727) — dùng lại `ServiceAmount`/`unitPrice*`
+    // đã có từ #1061/#1063 (đúng đề xuất lesson #460: mở rộng, không tính lại).
+    // 1. Tổng số ngày làm việc = số NGÀY (theo lịch) riêng biệt có RO giao xe trong kỳ.
+    var workDayQty = rosInPeriod.Where(r => r.ActualDeliveryDate.HasValue)
+        .Select(r => r.ActualDeliveryDate!.Value.Date).Distinct().Count();
+    // 2. Tổng số giờ công hành chính = (KTVD+KTVS+NVPT+KHAC) * WorkDayQty * 8.
+    var workHourQty = (NE("KTVD") + NE("KTVS") + NE("NVPT") + NE("KHAC")) * workDayQty * 8;
+    // 3. Tổng số giờ công có tính phí = SUM 4 nhóm, mỗi nhóm Round(Round(ServiceAmountNhóm,0)/ĐơnGiá, 1),
+    //    0 nếu đơn giá = 0 (tránh chia 0, đúng nguồn `case when ... = 0 then 0`).
+    decimal WorkHour(decimal serviceAmountGroup, double unitPrice) =>
+        unitPrice == 0 ? 0 : Math.Round(Math.Round(serviceAmountGroup) / (decimal)unitPrice, 1);
+    var serviceAmountBDDTotal = ServiceAmount("BDD");
+    var serviceAmountSCCTotal = ServiceAmount("SCC");
+    var serviceAmountSCDTotal = ServiceAmount("SCD");
+    var serviceAmountSCSTotal = ServiceAmount("SCS");
+    var workHourBDNQty = WorkHour(serviceAmountBDDTotal, unitPriceBDN);
+    var workHourSCCQty = WorkHour(serviceAmountSCCTotal, unitPriceSCC);
+    var workHourSCDQty = WorkHour(serviceAmountSCDTotal, unitPriceSCD);
+    var workHourSCSQty = WorkHour(serviceAmountSCSTotal, unitPriceSCS);
+    var workHourFeeQty = workHourBDNQty + workHourSCCQty + workHourSCDQty + workHourSCSQty;
+    // 4. Tổng số giờ công lao động thực tế = Round(SUM(DATEDIFF(MINUTE,StartDate,FinishedDate))/60, 1).
+    var workMinuteROQty = rosInPeriod.Where(r => r.StartDate.HasValue && r.FinishedDate.HasValue)
+        .Sum(r => (decimal)(r.FinishedDate!.Value - r.StartDate!.Value).TotalMinutes);
+    var workHourActualQty = Math.Round(workMinuteROQty / 60m, 1);
 
     return Results.Ok(new
     {
@@ -8116,10 +8142,14 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         partAmountRoRepair = Math.Round(partRoRepair), partAmountRoWarranty = Math.Round(partRoWarranty),
         partAmountRoInsurance = Math.Round(partRoInsurance), partAmountLocal = Math.Round(partLocal),
         partAmountShell = Math.Round(partShell),
-        notPortedYet = "A.IV (giờ công quy đổi — cần thêm WorkDayQty/WorkMinuteROQty từ RO) và B.III PHẦN 2 "
-            + "(doanh thu phụ kiện `AccessoryAmountAfterVAT` + khối bán ra ngoài `Ser_Inv_StockOut/"
-            + "StockOutDetail/StockOutOrder` phân loại phụ kiện qua `Ser_MST_PartType`) CHƯA port — hàm "
-            + "nguồn ~1734 dòng, xem hàng đợi ở manifest. A.I/A.II/A.III/A.V/B.I/B.II/B.III-phần1 xong.",
+        // ===== A.IV Số giờ làm việc của KTV =====
+        workDayQty,
+        workHourQty,
+        workHourFeeQty, workHourBDNQty, workHourSCCQty, workHourSCDQty, workHourSCSQty,
+        workHourActualQty,
+        notPortedYet = "B.III PHẦN 2 (doanh thu phụ kiện `AccessoryAmountAfterVAT` + khối bán ra ngoài "
+            + "`Ser_Inv_StockOut/StockOutDetail/StockOutOrder` phân loại phụ kiện qua `Ser_MST_PartType`) "
+            + "CHƯA port — hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. A.I-A.V/B.I/B.II/B.III-phần1 xong.",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
