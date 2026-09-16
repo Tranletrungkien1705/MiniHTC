@@ -27838,7 +27838,7 @@ app.MapGet("/api/_meta/missing-dealer-write-sweep", () => Results.Ok(new
     measurementLesson = "thieu nhanh ghi PHAI loc LIVE/CHET truoc khi bao. Neu dung o buoc 2 thi da bao 8 loi trong khi that su chi co 1 — bay cai kia nam trong khoi ham chet da do o #795/#800",
 })).RequireAuthorization();
 app.MapPut("/api/engineers/{engineerNo}", async (string engineerNo, EngineerUpdateDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = (engineerNo ?? "").Trim();
     var row = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
@@ -27864,6 +27864,10 @@ app.MapPut("/api/engineers/{engineerNo}", async (string engineerNo, EngineerUpda
     if (dto.DealerCode != null) row.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
     if (dto.GroupRCode != null) row.GroupRCode = dto.GroupRCode.Trim().ToUpperInvariant();
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.Status = dto.FlagActive!;
+    // #1132: nguồn `SerEngineerUpdate01` ghi `LogLUDateTime`/`LogLUBy` = strPartnerUserCode qua
+    // `alColumnEffective` MỖI LẦN sửa (kể cả chỉ đổi `IsActive`) — cột đã có sẵn từ #1048 (theo POST tạo)
+    // nhưng route PUT riêng này (sửa) chưa từng wire.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
