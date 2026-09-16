@@ -5947,6 +5947,13 @@ public sealed class WarrantyClaimPartItem
     public string? Note { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1116 §12 — nguồn `ProcessSaveROWarrantyReportItems` (WarrantyReport.cs:169) ghi đủ 4 cột
+    /// nhật ký (= strPartnerUserCode, actor server) cho CẢ dòng công lẫn dòng phụ tùng — port cũ thiếu hẳn.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare — port 1:1 FrmCustomerCare, TCMotor DMSCarSv/Customer):

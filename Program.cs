@@ -22289,7 +22289,7 @@ app.MapGet("/api/warrantyclaims/{id}/parts", async (long id, AppDbContext db, IT
 
 // Thêm 1 dòng phụ tùng vào đề nghị bảo hành — port ĐỦ chuỗi guard của nguồn.
 app.MapPost("/api/warrantyclaims/{id}/parts", async (
-    long id, WarrantyClaimPartItemDto dto, AppDbContext db, ITenantContext t) =>
+    long id, WarrantyClaimPartItemDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (c is null) return Results.NotFound(new { error = "Không tìm thấy đề nghị bảo hành." });
@@ -22364,6 +22364,9 @@ app.MapPost("/api/warrantyclaims/{id}/parts", async (
         Vat = dto.Vat, InsurancePrice = dto.InsurancePrice, ExpenseType = dto.ExpenseType,
         WarrantyStatus = dto.WarrantyStatus, FlagMainPart = rowPartType == "PTC" ? "1" : dto.FlagMainPart,
         Note = dto.Note,
+        // #1116 §12: ProcessSaveROWarrantyReportItems ghi đủ 4 cột nhật ký = strPartnerUserCode.
+        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.WarrantyClaimPartItems.Add(row);
     await db.SaveChangesAsync();
@@ -35168,7 +35171,7 @@ app.MapGet("/api/warrantyclaims/{id:long}/serviceitems", async (long id, AppDbCo
 }).RequireAuthorization();
 
 app.MapPost("/api/warrantyclaims/{id:long}/serviceitems", async (long id, WarrantyClaimServiceItemDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (c is null) return Results.NotFound(new { claimId = id });
@@ -35187,7 +35190,10 @@ app.MapPost("/api/warrantyclaims/{id:long}/serviceitems", async (long id, Warran
         WarrantyStatus = dto.WarrantyStatus, Note = dto.Note,
         // ⚠️ Nguồn coi chuỗi "0" như RỖNG cho BulletinID (WarrantyReport.cs:246) — bỏ qua, không ghi.
         BulletinID = string.IsNullOrWhiteSpace(dto.BulletinID) || dto.BulletinID == "0" ? null : dto.BulletinID,
-        CreatedBy = dto.CreatedBy, LogLUDateTime = DateTime.Now, LogLUBy = dto.CreatedBy,
+        // #1116 SỬA BUG THẬT: nguồn ProcessSaveROWarrantyReportItems (WarrantyReport.cs:169) ghi đủ 4 cột
+        // nhật ký = strPartnerUserCode (actor server) — port cũ nhận dto.CreatedBy từ client cho cả 2 cột.
+        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.WarrantyClaimServiceItems.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { itemId = r.Id, claimId = id, r.ROWSerType,
