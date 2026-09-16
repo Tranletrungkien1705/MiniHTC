@@ -3016,6 +3016,9 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceModels\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1050: SerServicePackageCreate/Update ghi LogLUDateTime/LogLUBy o ca hai nhanh.
+                "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

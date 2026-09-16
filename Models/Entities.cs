@@ -3049,6 +3049,10 @@ public sealed class ServicePackage
     public decimal PartTotal { get; set; }
     public decimal GrandTotal { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1050 §12 — `SerServicePackageCreate`/`Update` (BizCarSv.ServicePackage.cs:303/706) ghi
+    // `LogLUDateTime`/`LogLUBy` ở CẢ HAI nhánh (Create vô điều kiện, Update qua `alColumnEffective`).
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

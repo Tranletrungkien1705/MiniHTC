@@ -22704,7 +22704,7 @@ app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, str
 // 🔴 **4) `CheckExistServicePackageNo`**: nguồn **CHẶN trùng mã** khi tạo mới; bản port cũ **upsert theo mã**
 //   ⇒ gọi lại cùng mã là **ghi đè im lặng** gói cũ. Nay tách: trùng mã ⇒ báo lỗi, muốn sửa thì gọi
 //   `/api/servicepackages/{id}/detail` + đường sửa riêng (bản `Update` của nguồn có `ServicePackageID`).
-app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // Giá trị hằng — chép từ Const.Main.cs, KHÔNG chép tên lớp.
     const string kROTypeBDD = "BDD";                 // Ser_ROType_New.BDD (loại công việc)
@@ -22770,6 +22770,8 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         });
     h = new ServicePackage { OrgId = t.OrgId, PackageNo = no }; db.ServicePackages.Add(h);
     h.PackageName = dto.PackageName; h.ServiceTotal = svcTotal; h.PartTotal = partTotal; h.GrandTotal = svcTotal + partTotal; h.UpdatedAt = DateTime.Now;
+    // #1050: SerServicePackageCreate ghi VÔ ĐIỀU KIỆN LogLUDateTime/LogLUBy lúc tạo.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     db.ServicePackageServices.RemoveRange(db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
     db.ServicePackageParts.RemoveRange(db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
@@ -22858,7 +22860,7 @@ app.MapPost("/api/servicepackages/{id:long}/delete", async (long id, AppDbContex
 //   Ba cột bắt buộc (`No · DealerCode · Name`) được `CheckServicePackageFieldEmpty` chặn từ trước.
 // ⚠️ `ServicePackageNo` được `.ToUpper()` trước khi ghi (chuẩn hoá **chỉ ở nhánh sửa**).
 app.MapPost("/api/servicepackages/{id:long}/update", async (long id, ServicePackageUpdateDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // CheckExistServicePackage(ID) — nguồn gọi HAI lần; ở đây một lần là đủ (nêu cờ).
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -22897,6 +22899,8 @@ app.MapPost("/api/servicepackages/{id:long}/update", async (long id, ServicePack
     h.IsPublicFlag = string.IsNullOrWhiteSpace(dto.IsPublicFlag) ? null : dto.IsPublicFlag;
     h.IsUserBasePrice = string.IsNullOrWhiteSpace(dto.IsUserBasePrice) ? null : dto.IsUserBasePrice;
     h.UpdatedAt = DateTime.Now;
+    // #1050: SerServicePackageUpdate ghi LogLUDateTime/LogLUBy (alColumnEffective, không guard rỗng).
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
 
     // #1011: chỉ đụng vào hai bảng con khi client THẬT SỰ gửi danh sách (khác `null`) — nguồn luôn nhận
     // dsFull (không có null) nên XOÁ-RỒI-CHÈN-LẠI vô điều kiện; Mini thêm lằn ranh "null = không đụng"
