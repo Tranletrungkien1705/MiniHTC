@@ -3831,6 +3831,22 @@ public sealed class SerStock
     public string? Address { get; set; }
     public string? Email { get; set; }
     public string FlagActive { get; set; } = "1";
+
+    // ===== #1074 §12 — `SerStockCreate` (BizCarSv.Inventory.Master.cs:1856-1872) nhận **11** tham số,
+    // port cũ chỉ giữ 4 (StockName/Contact/Address/Email) — 6 cột nghiệp vụ + 4 cột nhật ký sau đây
+    // CHƯA TỪNG có chỗ chứa. `SerStockUpdate` (:1710-1719) ghi lại 8 cột nghiệp vụ (KHÔNG có DealerCode)
+    // + LogLU* (KHÔNG có Created* — chỉ set MỘT LẦN lúc tạo).
+    public string? TelePhone { get; set; }
+    public string? Fax { get; set; }
+    public string? Mobi { get; set; }
+    public string? Manager { get; set; }
+    public string? Description { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime UpdatedAt { get; set; }
 }
 

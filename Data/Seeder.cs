@@ -3066,6 +3066,17 @@ public static class Seeder
                 "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1074: SerStockCreate/Update thieu 6 cot nghiep vu + 4 cot nhat ky (port cu chi giu 4/11).
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"TelePhone\" text NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"Fax\" text NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"Mobi\" text NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"Manager\" text NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"Description\" text NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"SerStocks\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

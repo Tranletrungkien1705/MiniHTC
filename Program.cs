@@ -28334,17 +28334,22 @@ app.MapGet("/api/serstocks", async (AppDbContext db, ITenantContext t, string? q
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/serstocks", async (SerStockDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serstocks", async (SerStockDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = (dto.StockNo ?? "").Trim();
     if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập mã kho." });
     if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    var by1074 = (partnerUserCode ?? "system").Trim(); var now1074 = DateTime.Now;
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
-    if (row is null) { row = new SerStock { OrgId = t.OrgId, StockNo = no }; db.SerStocks.Add(row); }
+    // #1074: SerStockCreate ghi VÔ ĐIỀU KIỆN 6 cột nghiệp vụ + 4 cột nhật ký (DealerCode/CreatedDate/
+    // CreatedBy chỉ set lúc TẠO — Update không đụng lại).
+    if (row is null) { row = new SerStock { OrgId = t.OrgId, StockNo = no, DealerCode = dto.DealerCode, CreatedDate = now1074, CreatedBy = by1074 }; db.SerStocks.Add(row); }
     row.StockName = dto.StockName; row.Contact = dto.Contact; row.Address = dto.Address; row.Email = dto.Email; row.UpdatedAt = DateTime.Now;
+    row.TelePhone = dto.TelePhone; row.Fax = dto.Fax; row.Mobi = dto.Mobi; row.Manager = dto.Manager; row.Description = dto.Description;
+    row.LogLUDateTime = now1074; row.LogLUBy = by1074;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.StockNo, row.StockName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.StockNo, row.StockName, row.FlagActive, row.TelePhone, row.Fax, row.Mobi, row.Manager, row.Description, row.DealerCode });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #838 MÀN MỚI: SỬA / XOÁ KHO — `SerStock{Get,Create,Update,Delete}` (`Inventory.Master.cs`) =====
@@ -28379,7 +28384,7 @@ app.MapPost("/api/serstocks", async (SerStockDto dto, AppDbContext db, ITenantCo
 // 📌 Mini: `PUT /api/serstocks/{stockNo}` và `DELETE /api/serstocks/{stockNo}` — **thêm** guard chống trùng mã
 //   (nguồn thiếu ở cả hai nhánh) và **giữ** guard "không xoá kho cuối cùng" của nguồn.
 app.MapPut("/api/serstocks/{stockNo}", async (string stockNo, SerStockDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = (stockNo ?? "").Trim();
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
@@ -28395,6 +28400,15 @@ app.MapPut("/api/serstocks/{stockNo}", async (string stockNo, SerStockDto dto,
     if (dto.StockName != null) row.StockName = dto.StockName;
     if (dto.Contact != null) row.Contact = dto.Contact;
     if (dto.Address != null) row.Address = dto.Address;
+    // #1074: SerStockUpdate ghi lại Email/TelePhone/Fax/Mobi/Manager/Description + LogLU* — Email bị
+    // bỏ sót ở port cũ dù DTO đã có sẵn field từ trước; DealerCode/Created* KHÔNG ghi lại (đúng nguồn).
+    if (dto.Email != null) row.Email = dto.Email;
+    if (dto.TelePhone != null) row.TelePhone = dto.TelePhone;
+    if (dto.Fax != null) row.Fax = dto.Fax;
+    if (dto.Mobi != null) row.Mobi = dto.Mobi;
+    if (dto.Manager != null) row.Manager = dto.Manager;
+    if (dto.Description != null) row.Description = dto.Description;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new
@@ -81426,7 +81440,9 @@ record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal
 record SerServiceTypeDto(string? TypeName, string? FlagActive, string? DealerCode = null);
 record SerAppTypeMstDto(string? AppTypeCode, string? AppTypeName, string? FlagActive = null);   // #1058
 record MstStaffDto(string? StaffCode, string? StaffName, string? FlagActive = null);   // #1059
-record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
+record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive,
+    string? TelePhone = null, string? Fax = null, string? Mobi = null, string? Manager = null,
+    string? Description = null, string? DealerCode = null);   // #1074
 record SerPartTypeDto(string? TypeName, string? FlagActive, string? TypeCode = null, string? DealerCode = null);   // #963: +TypeCode/DealerCode
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
 record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
