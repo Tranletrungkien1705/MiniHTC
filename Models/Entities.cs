@@ -3294,6 +3294,13 @@ public sealed class SerInsuranceContract
     public decimal PaymentLimit { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>#1080 §12 — nguồn `Ser_InsuranceContractCreate` (Service.cs:14376) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `Ser_InsuranceContractUpdate` (:14755) chỉ ghi LogLUDateTime/LogLUBy khi SỬA (không đụng CreatedDate/CreatedBy).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đơn giá thuê thiết bị GPS (Mst_UnitPriceGPS) — port 1:1 FrmMst_UnitPriceGPS (2010.HTC/Sales/Product). Theo số hợp đồng: đơn giá GPS + ngày hiệu lực. Upsert-by-ContractNo.</summary>

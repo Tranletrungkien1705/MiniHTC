@@ -24878,7 +24878,7 @@ app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = (dto.InContractNo ?? "").Trim();
     if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng bảo hiểm." });
@@ -24901,13 +24901,18 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
     if (!string.IsNullOrWhiteSpace(code))
         row = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractCode == code) ?? new SerInsuranceContract { OrgId = t.OrgId };
     else row = new SerInsuranceContract { OrgId = t.OrgId };
-    if (row.Id == 0)
+    var isNew1080 = row.Id == 0;
+    var by1080 = (partnerUserCode ?? "system").Trim(); var now1080 = DateTime.Now;
+    if (isNew1080)
     {
         row.InContractCode = string.IsNullOrWhiteSpace(code) ? "IC" + DateTime.Now.ToString("yyMMddHHmmss") : code;
         db.SerInsuranceContracts.Add(row);
     }
     row.InContractNo = no; row.TypePayment = dto.TypePayment; row.StartDate = dto.StartDate; row.FinishDate = dto.FinishDate; row.InsNo = dto.InsNo; row.PaymentLimit = dto.PaymentLimit; row.DealerCode = dto.DealerCode; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // #1080: nguon Create ghi du 4 cot nhat ky; Update chi ghi LogLUDateTime/LogLUBy.
+    if (isNew1080) { row.CreatedDate = now1080; row.CreatedBy = by1080; }
+    row.LogLUDateTime = now1080; row.LogLUBy = by1080;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.InContractCode, row.InContractNo, row.PaymentLimit, row.FlagActive });
 }).RequireAuthorization();
