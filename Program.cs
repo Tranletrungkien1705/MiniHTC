@@ -16342,6 +16342,9 @@ app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db,
 {
     if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
     if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Chưa nhập biển số xe." });
+    // #1002: nguon Ser_Part_OO_Create guard do dai bien so 8-10 ky tu (Ser_Part_OO_Create_Invalid_BienSo) — port cu thieu.
+    if (dto.PlateNo.Trim().Length < 8 || dto.PlateNo.Trim().Length > 10)
+        return Results.BadRequest(new { error = "Ser_Part_OO_Create_Invalid_BienSo", detail = "Biển số phải từ 8 đến 10 ký tự." });
     if (dto.QtyNeeded <= 0) return Results.BadRequest(new { error = "Số lượng nợ phải lớn hơn 0." });
     var no = "OO" + DateTime.Now.ToString("yyMMddHHmmss");
     var r = new ServicePartOO
