@@ -28029,7 +28029,11 @@ app.MapPost("/api/stockadjs", async (StockAdjDto dto, AppDbContext db, ITenantCo
     if (no.Length == 0) return Results.BadRequest(new { error = "Bạn chưa nhập số phiếu điều chỉnh." });
     if (await db.StockAdjs.AnyAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no))
         return Results.BadRequest(new { error = $"Số phiếu {no} đã tồn tại!" });
-    var h = new StockAdj { OrgId = t.OrgId, StockAdjNo = no, StorageCode = dto.StorageCode, DealerCode = dto.DealerCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Remark = dto.Remark, AdjStatus = "0", CreatedBy = by, CreatedAt = DateTime.Now };
+    // #1075: Ser_StockAdj_Create ghi VÔ ĐIỀU KIỆN LogLUDateTime/LogLUBy lúc tạo (entity đã có 2 cột này
+    // từ #176 nhưng chỉ endpoint /update wire — /create bỏ sót).
+    var now1075 = DateTime.Now;
+    var h = new StockAdj { OrgId = t.OrgId, StockAdjNo = no, StorageCode = dto.StorageCode, DealerCode = dto.DealerCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Remark = dto.Remark, AdjStatus = "0", CreatedBy = by, CreatedAt = now1075,
+        LogLUDateTime = now1075, LogLUBy = by };
     db.StockAdjs.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.StockAdjLines.Add(new StockAdjLine { OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim(), PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust, BalanceLocation = l.BalanceLocation, InStockLocation = l.InStockLocation });
