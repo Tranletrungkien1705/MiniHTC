@@ -36322,7 +36322,7 @@ app.MapGet("/api/tvo/appointments/confirmed", async (AppDbContext db, ITenantCon
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // Thứ tự và tập trường bắt buộc lấy đúng theo nguồn. ModelCode và CVDVCode **không** bắt buộc
     //   (hai guard đó bị comment trong nguồn) ⇒ không tự thêm.
@@ -36374,6 +36374,11 @@ app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db
             IDCardNo = string.IsNullOrWhiteSpace(dto.CustomerIDCardNo) ? null : dto.CustomerIDCardNo!.Trim(),
             // Nguồn ghi `true` (cột bit); MiniHTC dùng từ vựng cờ "1"/"0" ⇒ "1".
             IsContact = "1", FlagActive = "1",
+            // #1167 SỬA BUG THẬT: nguồn HTCMobileTVO_Ser_App_Create_New20210423 (BizCarSv.TVO.cs:2334-2337)
+            // ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy = strTDate/strPartnerUserCode trên dt_Ser_Car —
+            // port cũ bỏ sót cả 4 cột trên ServiceCustomer lẫn ServiceCar.
+            CreatedDate = now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+            LogLUDateTime = now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
         cusCreated = cusId;
 
@@ -36384,6 +36389,8 @@ app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db
             TradeMark = dto.TradeMarkCode!.Trim(), ModelCode = string.IsNullOrWhiteSpace(dto.ModelCode) ? null : dto.ModelCode!.Trim(),
             CusName = dto.CustomerName!.Trim(), CusMobile = dto.CustomerMobile!.Trim(),
             FlagActive = "1",
+            CreatedDate = now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+            LogLUDateTime = now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
         carCreated = carId;
     }
