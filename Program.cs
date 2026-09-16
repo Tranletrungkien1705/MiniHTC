@@ -45836,7 +45836,7 @@ app.MapGet("/api/partbackorders", async (AppDbContext db, ITenantContext t, stri
 
 // Khớp ValidateInput() của form + 3 luật CHỈ CÓ TRONG BIZ (Ser_Part_OO_Create / _Update).
 // Khoá tra cứu (biển số, mã phụ tùng) ĐÃ ĐÚNG với nguồn: biz Update cũng tra theo (PartID, OOPlateNo).
-app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
     var code = (dto.PartCode ?? "").Trim().ToUpperInvariant();
@@ -45852,7 +45852,12 @@ app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db,
     var row = await db.PartBackorders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate && x.PartCode == code);
     var isNew = row is null;
     if (isNew) { row = new PartBackorder { OrgId = t.OrgId, PlateNo = plate, PartCode = code }; db.PartBackorders.Add(row); }
-    row!.PartName = dto.PartName; row.CarType = dto.CarType; row.StaffCode = dto.StaffCode;
+    // #1190 SUA BUG THAT: Ser_Part_OO_Create ghi du 4 cot nhat ky khi tao; Ser_Part_OO_Update chi ghi
+    // LogLUDateTime/LogLUBy khi sua — port cu chua tung dong dau.
+    var by1190 = (partnerUserCode ?? "system").Trim(); var now1190 = DateTime.Now;
+    if (isNew) { row!.CreatedDate = now1190; row.CreatedBy = by1190; }
+    row!.LogLUDateTime = now1190; row.LogLUBy = by1190;
+    row.PartName = dto.PartName; row.CarType = dto.CarType; row.StaffCode = dto.StaffCode;
     row.DealerCode = dto.DealerCode;
     row.QtyOwed = dto.QtyOwed; row.QtyReturned = dto.QtyReturned;
     row.PromiseDate = dto.PromiseDate; row.OrderDate = dto.OrderDate; row.ExpectedDate = dto.ExpectedDate; row.Note = dto.Note;

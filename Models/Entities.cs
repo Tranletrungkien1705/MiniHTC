@@ -6319,6 +6319,14 @@ public sealed class PartBackorder
     public DateTime? ExpectedDate { get; set; }     // NgayVeDK
     public string? Note { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1190 §12 — PartBackorder la ban port THU HAI cua cung man nguon FrmNewSerPartOO/FrmMngSerPartOO
+    // (trung ServicePartOO/#1081). Ser_Part_OO_Create (BizCarSv.Service.cs:15795+150-154) ghi du 4 cot
+    // nhat ky khi tao; Ser_Part_OO_Update (:16043+183-184) chi ghi LogLUDateTime/LogLUBy khi sua.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo, TCMotor DMSCarSv/Customer):
