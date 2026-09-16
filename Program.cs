@@ -33446,11 +33446,15 @@ app.MapPost("/api/rowarrantytypes", async (
     return Results.Ok(new { row.Id, row.ROWTypeCode, row.ROWTypeDtlCode, photos = photoLines.Count, row.ROWPhotoType, row.FlagActive });
 }).RequireAuthorization();
 
-app.MapPost("/api/rowarrantytypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/rowarrantytypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1207 SUA BUG THAT: nhat quan voi POST cung bang (ghi UpdatedBy vo dieu kien moi lan luu) —
+    // toggle truoc do khong dong dau nguoi thao tac (nguon chi co Ser_MST_ROWarrantyType_Get, khong
+    // co ham Update/Save nao — quy uoc UpdatedBy la cua Mini, giu nhat quan giua hai duong ghi).
+    row.UpdatedBy = user.Identity?.Name;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
@@ -44949,12 +44953,15 @@ app.MapPost("/api/customergroups/{no}/update", async (string no, CustomerGroupDt
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/customergroups/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/customergroups/{no}/toggle", async (string no, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
     if (g is null) return Results.NotFound(new { no });
     g.FlagActive = g.FlagActive == "1" ? "0" : "1";
+    // #1205 SUA BUG THAT: nhat quan voi /update cung bang (#1077, SerCustomerGroupUpdate ghi
+    // LogLUDateTime/LogLUBy vo dieu kien) — toggle truoc do khong dong dau cot nao.
+    g.LogLUDateTime = DateTime.Now; g.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { g.GroupNo, flagActive = g.FlagActive });
 }).RequireAuthorization();
@@ -46855,12 +46862,15 @@ app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantConte
     return Results.Ok(new { r.CavityNo, r.DealerCode, updated = false });
 }).RequireAuthorization();
 
-app.MapPost("/api/cavities/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/cavities/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.Cavities.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.CavityNo == code);
     if (x is null) return Results.NotFound(new { code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1206 SUA BUG THAT: nhat quan voi POST cung bang (#1102/#1124, Ser_CavityUpdate luon ghi
+    // LogLUDateTime/LogLUBy khi sua khoang) — toggle truoc do khong dong dau cot nao.
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.CavityNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
