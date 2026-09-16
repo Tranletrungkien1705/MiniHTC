@@ -79087,7 +79087,7 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
 //   NotResponding        — hẹn lại / chưa phản hồi
 // Tách khỏi /advance vì đây KHÔNG phải bước tiến trong chuỗi mà là rẽ nhánh.
 app.MapPost("/api/repairorders/{no}/setstatus", async (
-    string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
+    string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
@@ -79103,6 +79103,11 @@ app.MapPost("/api/repairorders/{no}/setstatus", async (
     if (r.Status == "Finished") return Results.BadRequest(new { error = "Lệnh đã hoàn thành, không thể chuyển trạng thái." });
 
     r.Status = target;
+    // #1143: cùng luật #1140/#1141/#1142 — ít nhất "Rejected" (SerROUpdateToROReject_New20210329) và
+    // "NotResponding" (qua SerROStatusUpdate) ĐÃ XÁC NHẬN ghi LogLUDateTime/LogLUBy cùng lúc đổi Status;
+    // stamp actor thống nhất cho cả nhánh còn lại (Created/PrintedQuote/Wait4Part/HasPart) theo đúng quy ước
+    // toàn hệ thống — không để trống dấu vết "ai đổi trạng thái" trên bất kỳ đường ghi Status nào.
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, status = r.Status, sourceCode = roStatusSourceCodes[target] });
 }).RequireAuthorization();
