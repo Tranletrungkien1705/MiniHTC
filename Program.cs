@@ -21270,7 +21270,7 @@ var warrantyClaimStatusNames = warrantyClaimStatusNamesByScreen["biz"];
 // 🔴 Ghi chú `// Update in **DatA** WH` / `// Update in **DatA** Dealer` ở bản Confirm (bản Reject viết `Data`)
 //   — chép tay, giữ nguyên văn.
 // 📌 Mini: hai endpoint dưới đây giữ **đúng phạm vi trạng thái của từng nhánh** và **nói rõ** rằng `REJ` là ngõ cụt.
-app.MapPost("/api/warrantyclaims/{id:long}/htc-confirm", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyclaims/{id:long}/htc-confirm", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (claim is null) return Results.NotFound(new { id });
@@ -21283,6 +21283,8 @@ app.MapPost("/api/warrantyclaims/{id:long}/htc-confirm", async (long id, AppDbCo
             rejectedIsDeadEnd = st == "REJ" ? "Da bi tu choi: cap ham nguon KHONG co duong dua REJ ve CONF" : null,
         });
     claim.Status = "CONF"; claim.UpdatedAt = DateTime.Now;
+    // #1144: Ser_ROWarrantyReport_HTCConfirm ghi LogLUDateTime/LogLUBy trong CUNG alColumnEffective voi WarrantyStatus.
+    claim.LogLUDateTime = DateTime.Now; claim.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -21294,7 +21296,7 @@ app.MapPost("/api/warrantyclaims/{id:long}/htc-confirm", async (long id, AppDbCo
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/warrantyclaims/{id:long}/htc-reject", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyclaims/{id:long}/htc-reject", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (claim is null) return Results.NotFound(new { id });
@@ -21307,6 +21309,8 @@ app.MapPost("/api/warrantyclaims/{id:long}/htc-reject", async (long id, AppDbCon
             currentStatus = st, allowed = new[] { "SENT", "CONF" },
         });
     claim.Status = "REJ"; claim.UpdatedAt = DateTime.Now;
+    // #1144: Ser_ROWarrantyReport_HTCReject ghi LogLUDateTime/LogLUBy trong CUNG alColumnEffective voi WarrantyStatus.
+    claim.LogLUDateTime = DateTime.Now; claim.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {

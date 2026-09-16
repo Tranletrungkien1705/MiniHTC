@@ -5848,6 +5848,12 @@ public sealed class ServiceWarrantyClaim
     /// <summary>NOTE — ghi chú của ĐỀ NGHỊ. ⚠️ KHÁC `HtcNote` (ghi chú của HTC khi duyệt/từ chối).</summary>
     public string? Note { get; set; }
 
+    // #1144 §12 — `Ser_ROWarrantyReport_HTCConfirm` (WarrantyReport.cs:7230) / `_HTCReject` (:9670) đều ghi
+    // `WarrantyStatus`/`LogLUDateTime`/`LogLUBy` trong CÙNG một `alColumnEffective` — entity (header) chưa
+    // từng có 2 cột này (khác `ServiceWarrantyClaimTransaction` đã vá ở #1113).
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

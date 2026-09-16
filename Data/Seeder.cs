@@ -1231,6 +1231,9 @@ public static class Seeder
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"PartIDError\" text",
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text",
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",
+        // #1144: Ser_ROWarrantyReport_HTCConfirm/_HTCReject ghi LogLUDateTime/LogLUBy cung WarrantyStatus.
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
         // #301 ban chup khach+xe tren chinh lenh sua chua (master chi la du phong)
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CusAddress\" text",
