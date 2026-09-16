@@ -77223,11 +77223,43 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     // ⚠️ Nguồn lưu cả hai mốc dạng `"yyyy-MM-dd HH:mm"` ⇒ **CẮT GIÂY** (cùng lệ #328/#331).
     if (target == "Repaired")
     {
-        // Bước SỬA XONG mới là chỗ đóng dấu `FinishedDate` (kèm `TotalActHours` — chưa port, xem nợ).
+        // Bước SỬA XONG mới là chỗ đóng dấu `FinishedDate`.
         var fin = dto.StatusDate ?? DateTime.Now;
-        r.FinishedDate = new DateTime(fin.Year, fin.Month, fin.Day, fin.Hour, fin.Minute, 0);
+        var finCut = new DateTime(fin.Year, fin.Month, fin.Day, fin.Hour, fin.Minute, 0);
+        r.FinishedDate = finCut;
+        // ===== #1013 TRẢ NỢ `TotalActHours` (ghi ở #341: "chưa port, xem nợ") =====
+        // Nguồn (`SerROStatusUpdate`, Service01.cs:8965-8984) tự CHÈN một dòng `Ser_ROWorkTime` đánh dấu
+        // KẾT THÚC (FlagEnd=Yes/FlagBegin=No/FlagPlay=Yes) NGAY TẠI BƯỚC NÀY rồi gọi `GetTotalActualHours`
+        // (`zzzzCode.cs:507`) TÍNH LẠI TỪ ĐẦU trên TOÀN BỘ nhật ký bấm giờ của lệnh — `TotalActHours` là
+        // giá trị SERVER TỰ TÍNH, không phải giá trị client gửi lên. Port cũ chỉ nhận `dto.TotalActHours`.
+        var roIdStr = r.Id.ToString();
+        db.RoWorkTimes.Add(new RoWorkTime
+        {
+            OrgId = t.OrgId, ROWTNo = "ROWT" + DateTime.Now.ToString("yyMMddHHmmssfff"),
+            ROID = roIdStr, RONo = r.RONo, PointDateTime = finCut,
+            FlagPlay = "1", FlagBegin = "0", FlagEnd = "1", LogLUDateTime = DateTime.Now,
+        });
+        await db.SaveChangesAsync();
+        var punches = await db.RoWorkTimes.Where(x => x.OrgId == t.OrgId && x.ROID == roIdStr)
+            .OrderBy(x => x.PointDateTime).ToListAsync();
+        // Nguồn CHỈ tính khi có ĐÚNG MỘT dòng FlagEnd="1" trong toàn bộ nhật ký (guard
+        // `if (count(*) from #tbl_Ser_ROWorkTime_End) = 1`); khác đi thì KHÔNG tính (giữ nguyên #334).
+        if (punches.Count(x => x.FlagEnd == "1") == 1)
+        {
+            // Dịch NGUYÊN VĂN vòng lặp T-SQL (n=1; n<mycount; n+=2) — GHÉP CẶP TỪ CUỐI danh sách lùi
+            // về đầu theo bước 2; KHÔNG được đơn giản hoá thành "ghép từ đầu (0,1),(2,3)…" vì hai cách
+            // cho kết quả KHÁC NHAU khi số dòng LẺ (dòng đầu bị bỏ qua, không ghép).
+            var mycount = punches.Count; var n = 1; decimal totalMinutes = 0;
+            while (n < mycount)
+            {
+                var idx1 = mycount - n - 1; var idx2 = mycount - n;
+                totalMinutes += (decimal)(punches[idx2].PointDateTime!.Value - punches[idx1].PointDateTime!.Value).TotalMinutes;
+                n += 2;
+            }
+            r.TotalActHours = Math.Round(totalMinutes / 60m, 2);
+        }
         // `TotalActHours` chỉ ghi khi KHÁC RỖNG ⇒ rỗng = GIỮ NGUYÊN (khác nhóm "rỗng = xoá" #334).
-        if (dto.TotalActHours is not null) r.TotalActHours = dto.TotalActHours;
+        else if (dto.TotalActHours is not null) r.TotalActHours = dto.TotalActHours;
     }
     if (target == "Finished")
     {
