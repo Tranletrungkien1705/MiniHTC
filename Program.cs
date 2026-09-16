@@ -33192,7 +33192,7 @@ app.MapGet("/api/rowarrantytypes", async (AppDbContext db, ITenantContext t, str
 //   ⇒ Bảy loại báo cáo bảo hành; guard chỉ tách riêng loại **`A`** ⇒ sáu loại còn lại đi chung một nhánh.
 // 📌 Mini chưa có đường TẠO báo cáo bảo hành (chỉ có các endpoint đọc/báo cáo trên `ServiceWarrantyClaims`)
 //   ⇒ endpoint dưới đây port theo **bản CÓ guard** (`_20220218`), và nêu rõ bản cũ vẫn sống.
-app.MapPost("/api/servicewarrantyclaims", async (WarrantyClaimCreateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicewarrantyclaims", async (WarrantyClaimCreateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var roId = (dto.ROID ?? "").Trim();
     if (roId.Length == 0) return Results.BadRequest(new { error = "Chưa nhập ROID." });
@@ -33217,7 +33217,12 @@ app.MapPost("/api/servicewarrantyclaims", async (WarrantyClaimCreateDto dto, App
         ROWTypeCode = dto.ROWTypeCode, ROWTypeDtlCode = typeDtl.Length > 0 ? typeDtl : null,
         ROWTID = dto.ROWTID, ErrorCodePN = dto.ErrorCodePN, ErrorCodeCD = dto.ErrorCodeCD,
         PartIDError = dto.PartIDError, Description = dto.Description,
-        Status = "Pending", HMCApiStatus = "", CreatedBy = "api",
+        Status = "Pending", HMCApiStatus = "",
+        // #1164 SUA BUG THAT: nguon Ser_ROWarrantyReport_Create_20220218 (WarrantyReport.cs:2015-2354) ghi
+        // CreatedBy/LogLUDateTime/LogLUBy = strPartnerUserCode (actor server) — port cu hard-code
+        // CreatedBy = "api" va bo sot ca LogLUDateTime/LogLUBy (cot da co tu #1144).
+        CreatedBy = (partnerUserCode ?? "system").Trim(),
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.ServiceWarrantyClaims.Add(claim);
     await db.SaveChangesAsync();
