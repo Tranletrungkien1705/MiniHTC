@@ -416,7 +416,8 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q,
       d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge, d.WarrantyStaffInCharge,   // #977
       d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
-      d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status }).ToListAsync();
+      d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status,
+      d.WsUrlAddr }).ToListAsync();   // #1223
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -457,6 +458,7 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     d.GarageManagerName = dto.GarageManagerName; d.GarageManagerEmail = dto.GarageManagerEmail;
     d.ContactName = dto.ContactName; d.Signer = dto.Signer; d.SignerPosition = dto.SignerPosition; d.CtrNoSigner = dto.CtrNoSigner; d.CtrNoSignerPosition = dto.CtrNoSignerPosition;
     d.Remark = dto.Remark; d.HTCStaffInCharge = dto.HTCStaffInCharge; d.WarrantyStaffInCharge = dto.WarrantyStaffInCharge;   // #977
+    d.WsUrlAddr = dto.WsUrlAddr;   // #1223
     d.DealerAddress01 = dto.DealerAddress01; d.DealerAddress02 = dto.DealerAddress02; d.DealerAddress03 = dto.DealerAddress03; d.DealerAddress04 = dto.DealerAddress04; d.DealerAddress05 = dto.DealerAddress05;
     d.FlagTCG = dto.FlagTCG; d.FlagOrdTCG = dto.FlagOrdTCG; d.FlagAutoLXX = dto.FlagAutoLXX; d.FlagAutoMapVIN = dto.FlagAutoMapVIN; d.FlagAutoSOAppr = dto.FlagAutoSOAppr;
     d.Status = dto.Status ?? "1";
@@ -80822,7 +80824,11 @@ record DealerDto(string DealerCode, string DealerName, string? FlagDealerHTC,
     string? ContactName, string? Signer, string? SignerPosition, string? CtrNoSigner, string? CtrNoSignerPosition, string? Remark, string? HTCStaffInCharge,
     string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,
     string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status,
-    string? WarrantyStaffInCharge = null);   // #977
+    string? WarrantyStaffInCharge = null,   // #977
+    // #1223 §12: WsUrlAddr la du lieu MASTER cua dai ly (dia chi web service, dung o
+    // /api/warrantyclaims/{id}/action) - truoc day KHONG co duong ghi/doc nao qua API, moi dai ly
+    // vinh vien NULL => duyet bao hanh LUON THAT BAI voi loi Ser_ROWarrantyReport_WSUrlAddr_NotFound.
+    string? WsUrlAddr = null);
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? SalesType, string? Phone, string? Email, string? Status,
     string? Gender, DateTime? DateOfBirth, string? Address, string? ProvinceCode, string? QualificationCode, string? Specialized, string? YearExperience,
