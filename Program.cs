@@ -64030,6 +64030,9 @@ app.MapPost("/api/stockouts/{no}/reject", async (string no, StockRejectDto dto, 
     if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { error = "Bạn chưa nhập lý do hủy phiếu xuất." });
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
     h.Status = "5"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
+    // #1151: nguồn SerStockOutReject (StockOut.cs:5619-5719) ghi LogLUDateTime/LogLUBy = strPartnerUserCode
+    // trong CÙNG alColumnEffective với Status/RejectBy — port cũ hoàn toàn bỏ sót 2 cột nhật ký.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, status = h.Status });
 }).RequireAuthorization();
@@ -64545,6 +64548,9 @@ app.MapPost("/api/stockins/{no}/reject", async (string no, StockRejectDto dto, A
     // ⚠️ Hệ quả nguồn: huỷ phiếu đã Kết thúc KHÔNG hoàn lại tồn kho — đã ghi C0-bug4 để người quyết.
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
     h.Status = "5"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
+    // #1151: nguồn SerStockInReject (StockIn.cs:4689-4780) ghi LogLUDateTime/LogLUBy = strPartnerUserCode
+    // trong CÙNG alColumnEffective với Status/RejectBy — port cũ hoàn toàn bỏ sót 2 cột nhật ký.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, status = h.Status });
 }).RequireAuthorization();
