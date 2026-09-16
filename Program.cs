@@ -22484,7 +22484,7 @@ app.MapDelete("/api/warrantyclaims/{id}/parts/{lineId}", async (
 // 📌 Mini: `POST /api/warrantyclaims/{claimId}/items/{itemId}/status` port theo **bản `_V2`** (có guard trạng thái,
 //   dùng cặp mã lỗi mới) và nêu rõ đường cũ vẫn sống.
 app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", async (long claimId, long itemId,
-    WarrantyItemStatusDto dto, AppDbContext db, ITenantContext t) =>
+    WarrantyItemStatusDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == claimId);
     if (claim is null) return Results.NotFound(new { claimId });
@@ -22764,7 +22764,9 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
     // Bản _V2 dùng cặp mã lỗi MỚI (ErrorCodePN/ErrorCodeCD); bản cũ dùng NaturalCode/CauseCode.
     if (!string.IsNullOrWhiteSpace(dto.ErrorCodePN)) claim.ErrorCodePN = dto.ErrorCodePN;
     if (!string.IsNullOrWhiteSpace(dto.ErrorCodeCD)) claim.ErrorCodeCD = dto.ErrorCodeCD;
-    item.LogLUDateTime = DateTime.Now; item.LogLUBy = "api";
+    // #1146 SUA BUG THAT: nguon Ser_ROWarrantyReport_ItemStatus_Update_V2 ghi LogLUBy = strPartnerUserCode
+    // (actor server) — port cu hard-code chuoi "api" thay vi dung actor thuc su.
+    item.LogLUDateTime = DateTime.Now; item.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
