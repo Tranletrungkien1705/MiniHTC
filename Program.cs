@@ -22285,6 +22285,42 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
                     message = "Báo cáo bảo hành chưa có phụ tùng lỗi!" });
         }
 
+        // ===== #1024 `ROWarrantyReport_Approve_Check_Bulletin` (WarrantyReport.cs:6151) — CHỈ (BT,C) =====
+        // Nguồn: dòng công CVC của claim phải gắn `BulletinID` (Mini lưu BulletinNo vào field cùng tên, khớp
+        // quy ước đã có ở #396); bản tin đó phải ĐANG HOẠT ĐỘNG, có dòng chi tiết (`BulletinDtl`) cùng mã dịch
+        // vụ với dòng CVC, có dòng VIN (`BulletinVin`) khớp VIN xe với Status="P" (chưa xử lý), và CHƯA HẾT HẠN
+        // (`DateExpired`).
+        if (rowType == "BT" && rowTypeDtl == "C")
+        {
+            var cvc = await db.WarrantyClaimServiceItems.FirstOrDefaultAsync(x =>
+                x.OrgId == t.OrgId && x.ClaimId == claimId && x.ROWSerType == "CVC");
+            if (cvc is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "BCBH chưa có công việc chính hoặc chưa có công việc chính theo bản tin kỹ thuật!" });
+            var bulletinNo = (cvc.BulletinID ?? "").Trim().ToUpperInvariant();
+            if (bulletinNo.Length == 0)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "Công việc chính chưa chọn bản tin kỹ thuật!" });
+            var bulletin = await db.Bulletins.FirstOrDefaultAsync(x =>
+                x.OrgId == t.OrgId && x.BulletinNo == bulletinNo && x.FlagActive == "1");
+            if (bulletin is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "BCBH chưa có công việc chính hoặc chưa có công việc chính theo bản tin kỹ thuật!" });
+            var dtlOk = await db.BulletinDtls.AnyAsync(x => x.OrgId == t.OrgId && x.BulletinNo == bulletinNo
+                && x.SerCode == cvc.SerCode);
+            if (!dtlOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "Công việc chính không có trong bản tin kỹ thuật!" });
+            var vinOk = !string.IsNullOrWhiteSpace(claim.Vin) && await db.BulletinVins.AnyAsync(x =>
+                x.OrgId == t.OrgId && x.BulletinNo == bulletinNo && x.VinNo == claim.Vin && x.Status == "P");
+            if (!vinOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "Không tìm thấy bản tin kỹ thuật của VIN!" });
+            if (bulletin.DateExpired is null || bulletin.DateExpired.Value.Date < DateTime.Now.Date)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidBulletin",
+                    message = "Số bản tin kỹ thuật hết hạn!" });
+        }
+
         // ===== #1020 `ROWarrantyReport_Approve_Check_ComplaintDiagnosticError` (WarrantyReport.cs:5886) =====
         // Gọi ở 8/11 nhánh — CHỈ trong (XM,*)/(SB,*) (cả bốn ROWTypeDtlCode A/B/P/W), loại trừ (PT,S)/(TC,R)/(BT,C).
         // Nguồn: mã lỗi phàn nàn (`ErrorCodePN`) và mã lỗi chẩn đoán (`ErrorCodeCD`) của claim đều PHẢI tồn tại
