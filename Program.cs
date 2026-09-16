@@ -46997,29 +46997,36 @@ app.MapGet("/api/servicesuppliers", async (AppDbContext db, ITenantContext t, st
 }).RequireAuthorization();
 
 // Upsert theo mã nhà cung cấp.
-app.MapPost("/api/servicesuppliers", async (ServiceSupplierDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicesuppliers", async (ServiceSupplierDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
     if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp." });
     var code = dto.SupplierCode.Trim().ToUpperInvariant();
     var ex = await db.ServiceSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
+    // #1189 SUA BUG THAT: SerSupplierCreate ghi du 4 cot nhat ky khi tao; SerSupplierUpdate chi ghi
+    // LogLUDateTime/LogLUBy khi sua (BizCarSv.Inventory.Master.cs:259/451) — port cu chua tung dong dau.
+    var by1189 = (partnerUserCode ?? "system").Trim(); var now1189 = DateTime.Now;
     if (ex is not null)
     {
         ex.SupplierName = dto.SupplierName; ex.Phone = dto.Phone; ex.Fax = dto.Fax; ex.ContactName = dto.ContactName; ex.ContactPhone = dto.ContactPhone; ex.Address = dto.Address; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
+        ex.LogLUDateTime = now1189; ex.LogLUBy = by1189;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.SupplierCode, updated = true });
     }
-    var r = new ServiceSupplier { OrgId = t.OrgId, SupplierCode = code, SupplierName = dto.SupplierName, Phone = dto.Phone, Fax = dto.Fax, ContactName = dto.ContactName, ContactPhone = dto.ContactPhone, Address = dto.Address, DealerCode = dto.DealerCode, FlagActive = "1" };
+    var r = new ServiceSupplier { OrgId = t.OrgId, SupplierCode = code, SupplierName = dto.SupplierName, Phone = dto.Phone, Fax = dto.Fax, ContactName = dto.ContactName, ContactPhone = dto.ContactPhone, Address = dto.Address, DealerCode = dto.DealerCode, FlagActive = "1",
+        CreatedDate = now1189, CreatedBy = by1189, LogLUDateTime = now1189, LogLUBy = by1189 };
     db.ServiceSuppliers.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.SupplierCode, updated = false });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicesuppliers/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicesuppliers/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ServiceSuppliers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SupplierCode == code);
     if (x is null) return Results.NotFound(new { code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1189: toggle = SerSupplierUpdate nhánh strIsActive đổi — luôn ghi LogLUDateTime/LogLUBy.
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.SupplierCode, flagActive = x.FlagActive });
 }).RequireAuthorization();

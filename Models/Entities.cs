@@ -15783,6 +15783,14 @@ public sealed class ServiceSupplier
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1189 §12 — ServiceSupplier la ban port THU HAI cua cung man nguon FrmMstSupplierCreate (trung
+    // SerMstSupplier/#1073). SerSupplierCreate (BizCarSv.Inventory.Master.cs:259+103-107) ghi du 4 cot
+    // nhat ky khi tao; SerSupplierUpdate (:451) chi ghi LogLUDateTime/LogLUBy khi sua.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thời hạn bảo hành theo model (BH đại lý/HTV, km giới hạn, kỳ lưu kho) — port 1:1 FrmMngMst_WarrantyPeriod (Tbl_Mst_WarrantyPeriod, TCMotor).</summary>
