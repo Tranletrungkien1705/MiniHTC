@@ -50233,6 +50233,7 @@ app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, 
             c.HTCAppr1DTime, c.HTCAppr1By, c.HTCAppr2By, c.DlrApprBy, c.RejectDTime, c.RejectBy, c.FilePath, c.Remark, c.LogLUDateTime, c.LogLUBy,
             c.DCPType, c.TotalAmount, c.CreateDTime, c.CreateBy, c.LUDTime, c.LUBy,
             c.PMTermNo, c.DepositPercent, c.GuaranteePercent, c.GuaranteeDays, c.DepositDutyEndDays, c.GuaranteeEndDays,
+            c.CancelDTime, c.CancelBy,   // #1240 §12
             lines = db.DmsDealerContractDtls.Count(l => l.OrgId == t.OrgId && l.DlrCtrNo == c.DlrCtrNo) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -80011,7 +80012,7 @@ app.MapGet("/api/smviolates", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(v => v.ViolateTypeId == type);
     var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new
-    { v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.SMType, v.SmDateOfBirth, v.Remark, v.CreatedAt }).ToListAsync();
+    { v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.SMType, v.SmDateOfBirth, v.Remark, v.CreatedAt, v.IdentityCardNo, v.PhoneNo }).ToListAsync();   // #1238 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -80514,12 +80515,17 @@ string[] _transpReqTypes = { "Retrieve", "StorageRearrCB", "StorageRearrange" };
 string _transpReqPrefix(string type) => type switch { "StorageRearrCB" => "RCB", "StorageRearrange" => "RRG", _ => "RTR" };
 app.MapGet("/api/retrievereqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? type) =>
 {
-    var q = db.RetrieveRequests.Where(r => r.OrgId == t.OrgId && r.TranspReqTypeHeaderOnly == (string.IsNullOrWhiteSpace(type) ? "Retrieve" : type));
+    // #1239 SUA BUG THAT: filter cu doi chieu voi TranspReqTypeHeaderOnly - cot nay KHONG TON TAI trong
+    // nguon (#354, chua tung duoc ghi o bat ky endpoint nao, chi dung lam gia tri seed migrate sang dong)
+    // ⇒ moi request MOI TAO deu co cot nay = NULL, khong bao gio khop dieu kien so sanh chuoi ⇒ GET nay
+    // LUON TRA RONG bat ke type truyen vao gi. Doi sang loc theo TranspReqType (cot header thuc su duoc
+    // ghi khi tao, dong 80542).
+    var q = db.RetrieveRequests.Where(r => r.OrgId == t.OrgId && r.TranspReqType == (string.IsNullOrWhiteSpace(type) ? "Retrieve" : type));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.Status, r.CreatedAt, r.DecidedAt, r.TranspReqTypeHeaderOnly,
+        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.Status, r.CreatedAt, r.DecidedAt, r.TranspReqType,
         // #156 parity Sto_TranspReq.
         r.TransportContractNo, r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,
         cars = db.RetrieveReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
