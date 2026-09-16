@@ -61300,7 +61300,7 @@ app.MapPost("/api/servicecustomers/{cusCode}/activate", async (string cusCode,
         readsDealerWritesThree = "doc _dbDealer nhung ghi _dbMain + _dbWH + _dbDealer => GUARD HEP HON PHAM VI GHI, ca thu TU cua ho #338/#351 (sau #851, #854, #855): khach co o Main ma chua dong bo Dealer se KHONG KICH HOAT DUOC",
     });
 }).RequireAuthorization();
-app.MapDelete("/api/servicecustomers/{cusCode}", async (string cusCode, AppDbContext db, ITenantContext t) =>
+app.MapDelete("/api/servicecustomers/{cusCode}", async (string cusCode, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (cusCode ?? "").Trim();
     var cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
@@ -61321,7 +61321,9 @@ app.MapDelete("/api/servicecustomers/{cusCode}", async (string cusCode, AppDbCon
         });
     }
     cus.FlagActive = "0";   // HANG cua tang (Flag.Inactive), KHONG phai chuoi "False" nhu nguon
-    cus.LogLUDateTime = DateTime.UtcNow;
+    // #1138: nguon Ser_Customer_Delete ghi alEffectiveColumn = {IsActive, LogLUDateTime, LogLUBy} (da ghi
+    // ro o #855) nhung port cu chi wire LogLUDateTime, bo sot LogLUBy.
+    cus.LogLUDateTime = DateTime.UtcNow; cus.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
