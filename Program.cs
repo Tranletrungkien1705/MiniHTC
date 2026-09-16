@@ -8036,7 +8036,7 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     // ActualDeliveryDate trong khoảng + Status='FNS'; #tbl_Ser_ROServiceItems join theo ROID lấy ROTYpe/
     // ExpenseType. Đếm PHÂN BIỆT theo RO (khớp nguồn: `q.ROID in (select t.ROID from ...)`, không đếm dòng).
     var rosInPeriod = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.DealerCode == dealer
-            && r.Status == "FNS" && r.ActualDeliveryDate >= dateFrom && r.ActualDeliveryDate <= dateTo)
+            && r.Status == "Finished" && r.ActualDeliveryDate >= dateFrom && r.ActualDeliveryDate <= dateTo)
         .Select(r => new { r.Id, r.ActualDeliveryDate, r.StartDate, r.FinishedDate }).ToListAsync();
     var roIdsInPeriod = rosInPeriod.Select(r => r.Id).ToList();
     var roServiceRows = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIdsInPeriod.Contains(s.RoId))
@@ -19865,7 +19865,7 @@ app.MapGet("/api/tvo/customers-used-service", async (AppDbContext db, ITenantCon
     // Bước 1: RO đủ điều kiện. Nguồn lọc rosi.ROType + rosi.ExpenseType trong WHERE trên bảng left join
     //   ⇒ hoá inner. Port GIỮ đúng phạm vi đó (RO phải có dòng công hợp lệ) nhưng ĐẾM số RO bị loại.
     var baseQ = db.RepairOrders.Where(r => r.OrgId == t.OrgId
-        && r.Status == "FNS" && (r.IsReRepair == null || r.IsReRepair == "0")
+        && r.Status == "Finished" && (r.IsReRepair == null || r.IsReRepair == "0")
         && r.LogLUDateTime != null && r.LogLUDateTime >= f && r.LogLUDateTime < toEx);
 
     var withSer = await (from r in baseQ
@@ -20547,7 +20547,7 @@ app.MapGet("/api/report/campaign-htc-summary", async (AppDbContext db, ITenantCo
     var from = (checkInFrom ?? DateTime.Today.AddMonths(-1)).Date;
     var to = (checkInTo ?? DateTime.Today).Date;
 
-    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "PAID" || x.Status == "FNS"));
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "Paid" || x.Status == "Finished"));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
     var ros = (await qy.Select(x => new { x.Id, x.RONo, x.DealerCode, x.CheckInDate }).ToListAsync())
         .Where(r => r.CheckInDate.HasValue && r.CheckInDate.Value.Date >= from && r.CheckInDate.Value.Date <= to)
@@ -20636,7 +20636,7 @@ app.MapGet("/api/report/xe-con-han-bao-hanh", async (AppDbContext db, ITenantCon
                                           c.WarrantyRegistrationDate, c.WarrantyExpiresDate }).ToListAsync();
 
     // Km lớn nhất từ các lệnh đã hoàn thành — nguồn đặt điều kiện Status trong ON nên LEFT còn sống.
-    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.Status == "FNS")
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.Status == "Finished")
         .Select(r => new { r.Vin, r.Km }).ToListAsync();
 
     // Hai chính sách hạn bảo hành của nguồn — port tính CẢ HAI để thấy chênh lệch.
@@ -39241,7 +39241,7 @@ app.MapGet("/api/report/customer-to-htc", async (AppDbContext db, ITenantContext
 
         foreach (var ro in carROs)
         {
-            if (ro.Status != "PAID" && ro.Status != "FNS") { droppedByStatus++; continue; }
+            if (ro.Status != "Paid" && ro.Status != "Finished") { droppedByStatus++; continue; }
             if (ro.CheckInDate == null) { droppedByStatus++; continue; }
             var d = ro.CheckInDate.Value.Date;
             if (d < f || d > to) continue;                     // datediff(day,…) >= 0 hai chiều
@@ -41559,7 +41559,7 @@ app.MapGet("/api/report/campaign-dealer", async (AppDbContext db, ITenantContext
     var camIds = cams.Select(c => c.CamNo).ToHashSet();   // Campaign: khoa nghiep vu la CamNo (khong co cot CamID)
 
     // #tbl_ro — chỉ lệnh đã hoàn tất.
-    var roQ = db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.Status == "FNS");
+    var roQ = db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.Status == "Finished");
     if (!string.IsNullOrWhiteSpace(dealer)) roQ = roQ.Where(r => r.DealerCode == dealer!.Trim());
     if (fromDate.HasValue) roQ = roQ.Where(r => r.CheckInDate >= fromDate.Value.Date);
     if (toDate.HasValue) roQ = roQ.Where(r => r.CheckInDate <= toDate.Value.Date);
@@ -57041,7 +57041,7 @@ app.MapGet("/api/report/bcth-carsv", async (AppDbContext db, ITenantContext t,
     // Nguồn gõ cứng ba biến thể — CHÉP NGUYÊN VĂN, không tự thêm dạng khác.
     string[] hyundaiVariants = { "HYUNDAI", "Hyundai", "hyundai" };
 
-    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Status == "FNS");
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Status == "Finished");
     if (tDateFrom is not null) qr = qr.Where(x => x.ActualDeliveryDate >= tDateFrom!.Value);
     // GIỮ 1:1 mốc `<=` của nguồn (mất ngày cuối) — đo phần bị loại bên dưới.
     if (tDateTo is not null) qr = qr.Where(x => x.ActualDeliveryDate <= tDateTo!.Value);
@@ -57071,7 +57071,7 @@ app.MapGet("/api/report/bcth-carsv", async (AppDbContext db, ITenantContext t,
         .ToList();
     var lostByEndDateInclusive = 0;
     if (tDateTo is not null)
-        lostByEndDateInclusive = await db.RepairOrders.CountAsync(x => x.OrgId == t.OrgId && x.Status == "FNS"
+        lostByEndDateInclusive = await db.RepairOrders.CountAsync(x => x.OrgId == t.OrgId && x.Status == "Finished"
             && x.ActualDeliveryDate > tDateTo!.Value
             && x.ActualDeliveryDate < tDateTo!.Value.Date.AddDays(1));
 
@@ -62248,7 +62248,7 @@ app.MapGet("/api/customercares/search", async (AppDbContext db, ITenantContext t
 
     // Bảng lệnh sửa chữa đã bị hai điều kiện WHERE ép thành INNER (xem ghi chú).
     var ros = db.RepairOrders.Where(r => r.OrgId == t.OrgId
-        && r.IsReRepair == "0" && r.Status == "FNS");
+        && r.IsReRepair == "0" && r.Status == "Finished");
     if (deliveryFrom.HasValue) ros = ros.Where(r => r.ActualDeliveryDate >= deliveryFrom);
     if (deliveryTo.HasValue) ros = ros.Where(r => r.ActualDeliveryDate <= deliveryTo);
     if (checkInFrom.HasValue) ros = ros.Where(r => r.CheckInDate >= checkInFrom);
@@ -70738,7 +70738,7 @@ app.MapGet("/api/reports/ro-variance-cost", async (AppDbContext db, ITenantConte
     var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
 
     var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.DealerCode == dealer
-            && r.Status == "FNS"
+            && r.Status == "Finished"
             && r.ActualDeliveryDate >= from && r.ActualDeliveryDate <= to
             && r.CheckInDate >= from && r.CheckInDate <= to).ToListAsync();
     var lostByRawEndDate = ros.Count(r => r.ActualDeliveryDate > toRawMidnight || r.CheckInDate > toRawMidnight);
@@ -70891,7 +70891,7 @@ app.MapGet("/api/reports/customer-serviced", async (AppDbContext db, ITenantCont
         cars = cars.Where(c => c.FrameNo.Contains(vin!.Trim())).ToList();
 
     var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId
-            && (r.Status == "PAID" || r.Status == "FNS")
+            && (r.Status == "Paid" || r.Status == "Finished")
             && r.CheckInDate != null).ToListAsync();
     ros = ros.Where(r => r.CheckInDate!.Value.Date >= from && r.CheckInDate!.Value.Date <= to).ToList();
 
@@ -75434,7 +75434,7 @@ app.MapGet("/api/report/customers-only-htc", async (AppDbContext db, ITenantCont
     var from = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
     var to = (toDate ?? DateTime.Today).Date;
 
-    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "PAID" || x.Status == "FNS"));
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "Paid" || x.Status == "Finished"));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode!.Contains(dealerCode!.Trim()));
     var ros = (await qy.Select(x => new { x.RONo, x.CheckInDate, x.ActualDeliveryDate, x.CusID, x.Vin, x.CusRequest })
             .ToListAsync())
@@ -75538,7 +75538,7 @@ app.MapGet("/api/report/count-customer-wh", async (AppDbContext db, ITenantConte
     var from = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
     var to = (toDate ?? DateTime.Today).Date;
 
-    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "PAID" || x.Status == "FNS"));
+    var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "Paid" || x.Status == "Finished"));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
     var ros = (await qy.Select(x => new { x.RONo, x.CheckInDate, x.CusID, x.Vin }).ToListAsync())
         .Where(r => r.CheckInDate.HasValue && r.CheckInDate.Value.Date >= from && r.CheckInDate.Value.Date <= to)
@@ -75635,7 +75635,7 @@ app.MapGet("/api/report/customers-to-htc", async (AppDbContext db, ITenantContex
 
     var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId
                                         && x.Status != null
-                                        && (x.Status == "PAID" || x.Status == "FNS"));
+                                        && (x.Status == "Paid" || x.Status == "Finished"));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
     var ros = await qy.Select(x => new { x.RONo, x.CheckInDate, x.CusID, x.CusName, x.CusAddress,
                                          x.CusRequest, x.Vin, x.LicensePlate, x.DealerCode }).ToListAsync();
