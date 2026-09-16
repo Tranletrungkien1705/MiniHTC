@@ -33602,11 +33602,15 @@ app.MapPost("/api/warrantyextensiondatelogs", async (
     return Results.Ok(new { row.Id, row.VIN, row.ExtCategoryCode, row.ExtensionDate, row.FlagActive, created = isNew });
 }).RequireAuthorization();
 
-app.MapPost("/api/warrantyextensiondatelogs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyextensiondatelogs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.WarrantyExtensionDateLogs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1201 SUA BUG THAT: cong POST /api/warrantyextensiondatelogs cung bang ghi CA UpdatedAt lan
+    // UpdatedBy (ánh xạ tu LogLUDateTime/LogLUBy nguon, ghi vo dieu kien moi lan luu) — toggle truoc day
+    // chi co UpdatedAt, thieu UpdatedBy.
+    row.UpdatedBy = user.Identity?.Name;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
