@@ -22176,6 +22176,27 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
                 }
             }
         }
+
+        // ===== #1018 `ROWarrantyReport_Approve_Check_WarrantyFile_VIN` / `_KM` (WarrantyReport.cs:6289/6378) =====
+        // Nguồn: PHẢI có ĐÚNG MỘT ảnh mang mã "VIN"/"KM" cho RO, và giá trị người dùng gõ vào ô `Remark` lúc
+        // tải ảnh lên phải KHỚP CHÍNH XÁC với `claim.Vin`/`claim.WarrantyKM` (so chuỗi, giữ nguyên khuôn nguồn).
+        var vinAttachments = await db.RoAttachments
+            .Where(x => x.OrgId == t.OrgId && x.RONo == claim.RONo && x.ROWPTCode == "VIN").ToListAsync();
+        if (vinAttachments.Count != 1)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_VIN",
+                message = vinAttachments.Count == 0 ? "BCBH chưa có ảnh VIN!" : "BCBH có nhiều hơn 1 ảnh VIN!" });
+        if (!string.Equals((vinAttachments[0].Remark ?? "").Trim(), (claim.Vin ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_VIN",
+                message = "Giá trị của ảnh VIN không trùng với số VIN của xe!" });
+
+        var kmAttachments = await db.RoAttachments
+            .Where(x => x.OrgId == t.OrgId && x.RONo == claim.RONo && x.ROWPTCode == "KM").ToListAsync();
+        if (kmAttachments.Count != 1)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_KM",
+                message = kmAttachments.Count == 0 ? "BCBH chưa có ảnh KM!" : "BCBH có nhiều hơn 1 ảnh KM!" });
+        if (!string.Equals((kmAttachments[0].Remark ?? "").Trim(), claim.WarrantyKM!.Value.ToString(), StringComparison.Ordinal))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_KM",
+                message = "Giá trị của ảnh KM không trùng với số Km của báo giá!" });
     }
     if (newItemStatus != null) item.WarrantyStatus = newItemStatus;
     if (dto.Note != null) item.Note = dto.Note;
