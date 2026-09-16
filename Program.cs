@@ -18855,7 +18855,7 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
 // KHÔNG override theo TST, KHÔNG tra Group/Type theo tên). Hai kênh nguồn riêng biệt, không phải trùng lặp
 // (đúng họ #397): WinForm gọi `FrmImportPart`, hệ ngoài/đối tác gọi thẳng WS `Ser_Mst_Part_Import`.
 app.MapPost("/api/serviceparts/import-catalog", async (List<ServicePartImportRowDto> rows, string? dealerCode,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dl = (dealerCode ?? "").Trim();
     var saved = new List<object>();
@@ -18878,7 +18878,13 @@ app.MapPost("/api/serviceparts/import-catalog", async (List<ServicePartImportRow
         var type = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == row.TypeName && x.FlagActive == "1");
         if (type is null) { errors.Add(new { row.PartCode, error = "Ser_Mst_Part_Import_PartTypeNotFound", row.TypeName }); continue; }
         var r = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.DealerCode == dl);
+        var by1174 = (partnerUserCode ?? "system").Trim(); var now1174 = DateTime.Now;
+        var isNewPart1174 = r is null;
         if (r is null) { r = new ServicePart { OrgId = t.OrgId, PartCode = code, DealerCode = dl }; db.ServiceParts.Add(r); }
+        // #1174 SUA BUG THAT: nguon Ser_Mst_Part_Import (BizCarSv.Service.cs:6102-6105 tao, :6206-6207/6223-6224
+        // sua) ghi du 4 cot nhat ky khi tao / LogLUDateTime+LogLUBy khi sua tren dt_part_Check — port cu bo sot.
+        if (isNewPart1174) { r.CreatedDate = now1174; r.CreatedBy = by1174; }
+        r.LogLUDateTime = now1174; r.LogLUBy = by1174;
         r.EngName = row.EngName; r.PartName = vieName; r.Unit = unit; r.Model = row.Model;
         r.VAT = vat; r.MinQuantity = row.MinQuantity.Value; r.Cost = row.Cost.Value; r.Price = price.Value;
         r.PartGroupCode = group.GroupCode; r.PartTypeID = type.Id.ToString(); r.FlagActive = "1";
