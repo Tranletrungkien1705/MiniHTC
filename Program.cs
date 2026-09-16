@@ -21455,15 +21455,20 @@ app.MapDelete("/api/warrantyclaims/{id:long}", async (long id, AppDbContext db, 
     // nhung "Confirmed".ToUpper() = "CONFIRMED" != "CONF" va "Accepted".ToUpper() = "ACCEPTED" != "ACCE"
     // => hai guard KHONG BAO GIO KICH HOAT: de nghi da CHO DUYET (Confirmed) hoac DA DUYET (Accepted)
     // van bi XOA duoc, trai han nguon (Ser_WarrantyReport_NotDelete_Sent / _NotDelete_Accept).
+    // 🔴 PHAT HIEN THEM: /api/warrantyclaims/{id}/htc-confirm|htc-reject ghi Status BANG MA NGUON THO
+    // ("CONF"/"REJ"/giu "SENT") CHU KHONG PHAI chuoi tieng Anh cua /action — hai duong ghi cung cot
+    // dung HAI TU VUNG khac nhau cho cung nghiep vu (no ky thuat rieng, chua go duoc trong 1 don vi
+    // nay). Guard o day PHAI nhan CA HAI tu vung de khong bo lot truong hop nao.
+    var stUp = st.ToUpperInvariant();
     // Guard 2 — nguồn chặn SENT **và** CONF bằng CÙNG một mã lỗi.
-    if (st is "Sent" or "Confirmed")
+    if (st is "Sent" or "Confirmed" || stUp is "SENT" or "CONF")
         return Results.BadRequest(new
         {
             error = "Ser_WarrantyReport_NotDelete_Sent", currentStatus = st,
             sourceOneErrorCodeForTwoStatuses = "nguon nem ..._NotDelete_Sent cho CA SENT lan CONF (da gui HMC cho duyet) => nhan HEP hon dieu kien",
         });
     // Guard 3 — nguồn: Ser_WarrantyReport_NotDelete_Accept.
-    if (st == "Accepted")
+    if (st == "Accepted" || stUp == "ACCE")
         return Results.BadRequest(new { error = "Ser_WarrantyReport_NotDelete_Accept", currentStatus = st });
     // Chỉ tới đây mới xoá — đúng thứ tự của nguồn.
     var svcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync();
