@@ -16749,10 +16749,19 @@ app.MapPost("/api/servicepartoos/{no}/fulfill", async (string no, ServicePartFul
 }).RequireAuthorization();
 
 // ===== Nhập phụ tùng hàng loạt từ Excel (port 1:1 FrmImportPart, TCMotor) — tái dùng ServicePart =====
-app.MapPost("/api/serviceparts/import", async (ServicePartImportDto dto, AppDbContext db, ITenantContext t) =>
+// #1176 SUA SAI PHAN LOAI #938: doc lai FrmImportPart.cs (CA HAI ban WinForm) xac nhan no goi THANG
+// _mstService.Ser_Mst_Part_Import(dt_Service.Copy()) — CUNG MOT ham nguon voi kenh WS "import-catalog"
+// (BizCarSv.Service.cs:5843), KHONG PHAI "hai kenh doc lap" nhu #938 tung ket luan. Luoi Excel WinForm
+// CO san hai cot GroupName/TypeName (FrmImportPart.cs:59-60, "Loai vat tu"/"Loai hang") — nguon AP DUNG
+// VO DIEU KIEN cho MOI caller: override theo TST_Mst_Part, guard PartGroup/PartType theo ten+dealer+active,
+// va dong bo Ser_Inv_PartPrice (khoa PartID+DateEffect=hom nay). Port cu (#256/#938) chi ghi 5/10 truong,
+// bo qua ca ba hanh vi tren VA audit-trail — vá đủ, đúng khuôn #1174/#1175.
+app.MapPost("/api/serviceparts/import", async (ServicePartImportDto dto, string? dealerCode,
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rows = dto.Rows ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var dl = (dealerCode ?? "").Trim();
     var errors = new List<object>();
     // Phát hiện trùng mã trong lô nhập — nguồn `MSG_WARNING_DUPLICATE_PARTCODE` = "Mã phụ tùng trùng nhau".
     // ===== 🔴 #256 CỐ Ý KHÔNG thêm guard ký tự đặc biệt ở đây =====
@@ -16767,27 +16776,44 @@ app.MapPost("/api/serviceparts/import", async (ServicePartImportDto dto, AppDbCo
     int created = 0, updated = 0;
     for (int i = 0; i < rows.Count; i++)
     {
-        var r = rows[i];
+        var row = rows[i];
         var line = i + 1;
-        var code = (r.PartCode ?? "").Trim().ToUpperInvariant();
+        var code = (row.PartCode ?? "").Trim().ToUpperInvariant();
         if (string.IsNullOrEmpty(code)) { errors.Add(new { line, error = "Thiếu mã phụ tùng." }); continue; }
-        if (string.IsNullOrWhiteSpace(r.PartName)) { errors.Add(new { line, code, error = "Thiếu tên phụ tùng." }); continue; }
-        if (r.Price < 0 || r.MinQuantity < 0) { errors.Add(new { line, code, error = "Giá/tồn tối thiểu không hợp lệ." }); continue; }
+        var vieName = row.VieName; var unit = row.Unit; var vat = row.VAT; var price = row.Price;
+        var tst = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
+        if (tst is not null) { vieName = tst.VieName; unit = tst.Unit; vat = tst.VAT; price = tst.TSTPrice; }
+        if (string.IsNullOrWhiteSpace(vieName)) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_VieNameNotEmty" }); continue; }
+        if (string.IsNullOrWhiteSpace(unit)) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_UnitNotEmty" }); continue; }
+        if (price is null) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_PriceNotEmty" }); continue; }
+        if (row.MinQuantity is null) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_MinQuantityNotEmty" }); continue; }
+        if (row.Cost is null) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_CostNotEmty" }); continue; }
+        if (vat is null) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_VATNotEmty" }); continue; }
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã phụ tùng bị trùng trong file nhập." }); continue; }
-        var ex = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == code);
-        if (ex is not null)
-        {
-            ex.PartName = r.PartName; ex.Unit = r.Unit; ex.Price = r.Price; ex.MinQuantity = r.MinQuantity; ex.FlagActive = "1";
-            updated++;
-        }
-        else
-        {
-            db.ServiceParts.Add(new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = r.PartName, Unit = r.Unit, Price = r.Price, MinQuantity = r.MinQuantity, FlagActive = "1" });
-            created++;
-        }
+        var group = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupName == row.GroupName && x.FlagActive == "1");
+        if (group is null) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_PartGroupNotFound", row.GroupName }); continue; }
+        var type = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == row.TypeName && x.FlagActive == "1");
+        if (type is null) { errors.Add(new { line, code, error = "Ser_Mst_Part_Import_PartTypeNotFound", row.TypeName }); continue; }
+        var ex = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == code && p.DealerCode == dl);
+        var by1176 = (partnerUserCode ?? "system").Trim(); var now1176 = DateTime.Now;
+        var isNewPart1176 = ex is null;
+        if (ex is null) { ex = new ServicePart { OrgId = t.OrgId, PartCode = code, DealerCode = dl }; db.ServiceParts.Add(ex); created++; }
+        else updated++;
+        if (isNewPart1176) { ex.CreatedDate = now1176; ex.CreatedBy = by1176; }
+        ex.LogLUDateTime = now1176; ex.LogLUBy = by1176;
+        ex.EngName = row.EngName; ex.PartName = vieName; ex.Unit = unit; ex.Model = row.Model;
+        ex.VAT = vat; ex.MinQuantity = row.MinQuantity.Value; ex.Cost = row.Cost.Value; ex.Price = price.Value;
+        ex.PartGroupCode = group.GroupCode; ex.PartTypeID = type.Id.ToString(); ex.FlagActive = "1";
+        var priceRow = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.EffectiveDate == now1176.Date);
+        var isNewPrice1176 = priceRow is null;
+        if (priceRow is null) { priceRow = new PartPrice { OrgId = t.OrgId, PartCode = code, EffectiveDate = now1176.Date }; db.PartPrices.Add(priceRow); }
+        priceRow.PartName = vieName; priceRow.Price = price.Value; priceRow.IsActive = "1";
+        if (isNewPrice1176) { priceRow.CreatedDate = now1176; priceRow.CreatedBy = by1176; }
+        priceRow.LogLUDateTime = now1176; priceRow.LogLUBy = by1176;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors,
+        tstOverrideNote = "PartCode co trong TST_Mst_Part thi VieName/Unit/VAT/Price lay tu TST, bo qua gia tri Excel gui." });
 }).RequireAuthorization();
 
 // ===== Xe khách trong hệ thống dịch vụ (ServiceCar — port 1:1 FrmCarInfo, TCMotor) =====
@@ -81621,7 +81647,11 @@ record ServiceCarMemberAndCustomerDto(string? DealerCode, string? CusID, string?
     string? IDCardNo, string? ProvinceCode, string? DistrictCode, string? Tel, string? Mobile, string? CusAddress,
     string? Gender, DateTime? DOB);   // #962
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
-record ServicePartImportDto(List<ServicePartImportRow>? Rows);
+// #1176 SUA SAI PHAN LOAI #938: FrmImportPart.cs (CA HAI ban WinForm) goi THANG _mstService.Ser_Mst_Part_Import
+// — CUNG MOT ham nguon voi kenh WS "import-catalog", KHONG PHAI hai kenh doc lap nhu #938 tung ket luan.
+// Luoi Excel WinForm CO cot GroupName/TypeName (FrmImportPart.cs:59-60, "Loai vat tu"/"Loai hang") nen dung
+// lai ServicePartImportRowDto (da du truong) thay vi ServicePartImportRow (thieu EngName/VAT/Model/Cost/Group/Type).
+record ServicePartImportDto(List<ServicePartImportRowDto>? Rows);
 // #255: thêm 2 trường người liên hệ — nguồn `FrmImportCustomer` kiểm chúng nên file nhập CÓ chứa chúng.
 // #258: thêm `PlateNo` — file nhập của nguồn CÓ cột biển số (`TblSerCar.PlateNo`) và kiểm 2 mẫu + trùng.
 record ServiceCustomerImportRow(string? CusCode, string? CusName, string? Mobile, string? Tel, string? Address, string? Email,
