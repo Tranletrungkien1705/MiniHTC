@@ -36235,7 +36235,8 @@ app.MapGet("/api/warranty-online/ro-service", async (AppDbContext db, ITenantCon
     var toRaw = (toDate ?? DateTime.Today);
     var toEx = toRaw.Date == toRaw ? toRaw.AddDays(1) : toRaw;   // #415
     var take = count is > 0 ? count!.Value : 50;
-    var STATUSES = new[] { "RPRD", "PAID", "FNS" };
+    // #1215 SUA BUG THAT: cung ho #1213/#1214 — RepairOrder.Status luu chuoi tieng Anh, khong phai ma nguon tho.
+    var STATUSES = new[] { "Repaired", "Paid", "Finished" };
 
     var q0 = db.RepairOrders.Where(r => r.OrgId == t.OrgId
         && STATUSES.Contains(r.Status)
@@ -73942,14 +73943,15 @@ app.MapGet("/api/repairorders/status-realtime-wh", async (AppDbContext db, ITena
     }
 
     // Bảng chân trị 7 nhánh của nguồn, chép NGUYÊN VĂN (FlagPause 1 = đang chạy, 0 = tạm dừng).
-    var waiting = new[] { "CEND", "RPRD", "PAID" };
-    if (f1 && !f2 && !f3) qr = qr.Where(x => x.Status == "INGA" && x.FlagPause == "1");
+    // #1216 SUA BUG THAT: cung ho #1213/#1215 — RepairOrder.Status luu chuoi tieng Anh, khong phai ma nguon tho.
+    var waiting = new[] { "CheckEnd", "Repaired", "Paid" };
+    if (f1 && !f2 && !f3) qr = qr.Where(x => x.Status == "InGarage" && x.FlagPause == "1");
     else if (!f1 && f2 && !f3) qr = qr.Where(x => waiting.Contains(x.Status));
-    else if (!f1 && !f2 && f3) qr = qr.Where(x => x.Status == "INGA" && x.FlagPause == "0");
-    else if (f1 && f2 && !f3) qr = qr.Where(x => (x.Status == "INGA" && x.FlagPause == "1") || waiting.Contains(x.Status));
-    else if (f1 && !f2 && f3) qr = qr.Where(x => x.Status == "INGA");
-    else if (!f1 && f2 && f3) qr = qr.Where(x => waiting.Contains(x.Status) || (x.Status == "INGA" && x.FlagPause == "0"));
-    else if (f1 && f2 && f3) qr = qr.Where(x => x.Status == "INGA" || waiting.Contains(x.Status));
+    else if (!f1 && !f2 && f3) qr = qr.Where(x => x.Status == "InGarage" && x.FlagPause == "0");
+    else if (f1 && f2 && !f3) qr = qr.Where(x => (x.Status == "InGarage" && x.FlagPause == "1") || waiting.Contains(x.Status));
+    else if (f1 && !f2 && f3) qr = qr.Where(x => x.Status == "InGarage");
+    else if (!f1 && f2 && f3) qr = qr.Where(x => waiting.Contains(x.Status) || (x.Status == "InGarage" && x.FlagPause == "0"));
+    else if (f1 && f2 && f3) qr = qr.Where(x => x.Status == "InGarage" || waiting.Contains(x.Status));
     // else: tổ hợp 0-0-0 — nguồn KHÔNG có nhánh nên không lọc gì. Port giữ 1:1 và nêu cờ.
 
     // #415: nguồn cắt TOP 500 TRƯỚC khi sắp (ORDER BY trên SELECT … INTO vô nghĩa). Port sắp trước rồi cắt.
@@ -77850,7 +77852,8 @@ app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, Assignme
 {
     const string kFlagActive = "1";                 // TConst.Flag.Active
     const string kFlagInactive = "0";               // TConst.Flag.Inactive
-    string[] kStatusAllowPause = { "RPRD", "INGA" };  // Ser_RO_Stage.Repaired / InGarage
+    // #1217 SUA BUG THAT: cung ho #1213/#1215/#1216 — RepairOrder.Status luu chuoi tieng Anh, khong phai ma nguon tho.
+    string[] kStatusAllowPause = { "Repaired", "InGarage" };  // Ser_RO_Stage.Repaired / InGarage
 
     var ro = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
         .OrderByDescending(x => x.Id).FirstOrDefaultAsync();
@@ -77998,7 +78001,8 @@ app.MapPost("/api/roworktimes", async (RoWorkTimeDto dto, AppDbContext db, ITena
 {
     const string kYes = "1";   // TConst.Flag.Yes = Active
     const string kNo = "0";    // TConst.Flag.No  = Inactive
-    string[] kStatusAllow = { "CRE", "PRT", "HRO", "INGA", "RPRD" };
+    // #1217 SUA BUG THAT: cung ho — RepairOrder.Status luu chuoi tieng Anh, khong phai ma nguon tho.
+    string[] kStatusAllow = { "Created", "PrintedQuote", "HasRO", "InGarage", "Repaired" };
 
     if (string.IsNullOrWhiteSpace(dto.RONo))
         return Results.BadRequest(new { error = "Cần RONo." });
