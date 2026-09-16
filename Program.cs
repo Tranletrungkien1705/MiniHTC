@@ -8081,6 +8081,37 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
             && confirmedStockOutIds.Contains(l.ServiceStockOutId) && accessoryPartCodes.Contains(l.PartCode))
         .SumAsync(l => l.Quantity * l.Price * (1 + l.Vat / 100m));
 
+    // ===== #1069 B.III phần 2b-ii "PartAmountOut"/"ShellAmountOut" (ZTemp.cs:3559-3615) — nguồn INNER JOIN
+    // `Ser_ROPartItems f on t.ROID=f.ROID and t.PartID=f.PartID where f.FlagAccessory='0'`: dòng xuất kho
+    // CHỈ tính khi khớp ĐÚNG (RO, PartCode) với một dòng phụ tùng KHÔNG PHẢI phụ kiện của RO đó — dòng
+    // không khớp bị LOẠI HẲN (INNER JOIN, không phải LEFT). Chuỗi liên kết: StockOut → (junction) →
+    // StockOutOrder.RONo → RepairOrder.Id → RoPartItems(RoId, PartCode, FlagAccessory).
+    var stockOutToOrderId = await db.SerStockOutOrderStockOuts.Where(j => j.OrgId == t.OrgId
+            && confirmedStockOutIds.Contains(j.StockOutId))
+        .ToDictionaryAsync(j => j.StockOutId, j => j.StockOutOrderId);
+    var orderIdToRONo = await db.SerStockOutOrders.Where(o => o.OrgId == t.OrgId
+            && stockOutToOrderId.Values.Contains(o.Id) && o.RONo != null)
+        .ToDictionaryAsync(o => o.Id, o => o.RONo!);
+    var roNoToId = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && orderIdToRONo.Values.Contains(r.RONo))
+        .ToDictionaryAsync(r => r.RONo, r => r.Id);
+    var roAccessoryFlags = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roNoToId.Values.Contains(p.RoId))
+        .Select(p => new { p.RoId, p.PartCode, p.FlagAccessory }).ToListAsync();
+    var noAccessoryPairs = roAccessoryFlags.Where(p => p.FlagAccessory == "0")
+        .Select(p => (p.RoId, PartCode: (p.PartCode ?? "").ToUpperInvariant())).ToHashSet();
+    var stockOutLinesForNoAccessory = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId
+            && confirmedStockOutIds.Contains(l.ServiceStockOutId))
+        .Select(l => new { l.ServiceStockOutId, l.PartCode, l.Quantity, l.Price, l.Vat }).ToListAsync();
+    decimal PartOutAmount(bool shell) => stockOutLinesForNoAccessory.Where(l =>
+    {
+        if (!stockOutToOrderId.TryGetValue(l.ServiceStockOutId, out var orderId)) return false;
+        if (!orderIdToRONo.TryGetValue(orderId, out var roNo)) return false;
+        if (!roNoToId.TryGetValue(roNo, out var roId)) return false;
+        if (!noAccessoryPairs.Contains((roId, (l.PartCode ?? "").ToUpperInvariant()))) return false;
+        return shell == shellCodeSet.Contains((l.PartCode ?? "").ToUpperInvariant());
+    }).Sum(l => l.Quantity * l.Price * (1 + l.Vat / 100m));
+    var partAmountOut = PartOutAmount(false);
+    var shellAmountOut = PartOutAmount(true);
+
     // ===== #1065 A.IV Số giờ làm việc của KTV (ZTemp.cs:3663-3727) — dùng lại `ServiceAmount`/`unitPrice*`
     // đã có từ #1061/#1063 (đúng đề xuất lesson #460: mở rộng, không tính lại).
     // 1. Tổng số ngày làm việc = số NGÀY (theo lịch) riêng biệt có RO giao xe trong kỳ.
@@ -8133,8 +8164,9 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     decimal SafeDiv(decimal numerator, decimal denominator) => denominator == 0 ? 0 : Math.Round(numerator / denominator, 1);
     // ⚠️ AllPartAmount nguồn CÒN CỘNG PartAmountOut/ShellAmountOut/AccessoryAmountAfterVAT/AccessoryAmountOut
     // (khối StockOut/phụ kiện — B.III phần 2, CHƯA port) — ở đây chỉ có phần "dòng sửa chữa" (B.III phần 1).
-    var allPartAmountPartial = partRoRepair + partRoWarranty + partRoInsurance + partLocal + partShell
-        + accessoryAmountAfterVAT + accessoryAmountOut;
+    // III. Tổng doanh thu phụ tùng, dầu nhớt — ĐỦ CẢ 8 số hạng nguồn (ZTemp.cs:3831-3832).
+    var allPartAmountTotal = partRoRepair + partRoWarranty + partRoInsurance + partLocal + partShell
+        + accessoryAmountAfterVAT + partAmountOut + shellAmountOut + accessoryAmountOut;
     var carPerAdviserDay = (advisoryNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countCarService, advisoryNumber * workDayQty);
     var workHourPerCarRO = SafeDiv(workHourActualQty, countCarService);
     var cavityQtyPerEngineerBDNSCC = (serviceTechnicianQty + enginerNumber == 0) ? 0
@@ -8144,7 +8176,7 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     var countSCDPerCavityCopper = (cavityCopperNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countSCD, cavityCopperNumber * workDayQty);
     var countSCSPerCavityBP = (cavityBPNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countSCS, cavityBPNumber * workDayQty);
     var countSCSPerCabinetPaint = (cabinetPaintNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countSCS, cabinetPaintNumber * workDayQty);
-    var revenuePerAdviser = SafeDiv(serviceAmountTotal + allPartAmountPartial, advisoryNumber);
+    var revenuePerAdviser = SafeDiv(serviceAmountTotal + allPartAmountTotal, advisoryNumber);
     var revenuePerKTVBDN = SafeDiv(serviceAmountBDDTotal, serviceTechnicianQty);
     var revenuePerKTVSCC = SafeDiv(serviceAmountSCCTotal, enginerNumber);
     var revenuePerKTVSCD = SafeDiv(serviceAmountSCDTotal, enginerBP);
@@ -8194,13 +8226,14 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         serviceAmountSPKRoRepair = Math.Round(ServiceAmount("SPK", "ROREPAIR")), serviceAmountSPKLocal = Math.Round(ServiceAmount("SPK", "LOCAL")),
         // ===== B.III Tổng doanh thu phụ tùng, dầu nhớt (PHẦN 1 dòng sửa chữa + PHẦN 2a phụ kiện từ RO;
         // PHẦN 2b bán ra ngoài qua StockOut vẫn CHƯA port, xem notPortedYet) =====
-        allPartAmount = Math.Round(allPartAmountPartial),   // III. Tổng — vẫn thiếu 2 số hạng StockOut bán ngoài
+        allPartAmount = Math.Round(allPartAmountTotal),   // III. Tổng — ĐỦ cả 8 số hạng nguồn
         partAmountNotShell = Math.Round(partRoRepair + partRoWarranty + partRoInsurance + partLocal),
         partAmountRoRepair = Math.Round(partRoRepair), partAmountRoWarranty = Math.Round(partRoWarranty),
         partAmountRoInsurance = Math.Round(partRoInsurance), partAmountLocal = Math.Round(partLocal),
         partAmountShell = Math.Round(partShell),
         accessoryAmountAfterVAT = Math.Round(accessoryAmountAfterVAT),
         accessoryAmountOut = Math.Round(accessoryAmountOut),
+        partAmountOut = Math.Round(partAmountOut), shellAmountOut = Math.Round(shellAmountOut),
         // ===== B.IV Quản lý hoạt động xưởng dịch vụ (4 cột đầu HARDCODE 0 đúng nguồn; 16 chỉ số sau
         // là TỶ SỐ suy ra từ dữ liệu đã tính ở trên) =====
         countWorkTime = 0, countWorkTime_DBD = 0, countWorkTime_SCC = 0, countWorkTime_SCD = 0, countWorkTime_SCS = 0,
@@ -8208,11 +8241,10 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         countBDDPerCavityMaintain, countSCCPerCavityRO, countSCDPerCavityCopper, countSCSPerCavityBP, countSCSPerCabinetPaint,
         revenuePerAdviser, revenuePerKTVBDN, revenuePerKTVSCC, revenuePerKTVSCD, revenuePerKTVSCS,
         laborProductivity, serviceProductivity, employmentRate,
-        notPortedYet = "B.III PHẦN 2b CÒN LẠI (`PartAmountOut`/`ShellAmountOut` — doanh thu phụ tùng/dầu "
-            + "nhớt bán ra ngoài KHÔNG PHẢI phụ kiện, cần join `Ser_Inv_StockOut`→`StockOutOrder`→`RONo` rồi "
-            + "đối chiếu `RoPartItems.FlagAccessory='0'` theo ĐÚNG RO+PartCode) CHƯA port — hàm nguồn ~1734 "
-            + "dòng, xem hàng đợi ở manifest. `revenuePerAdviser`/`allPartAmount` hiện THIẾU 2 số hạng đó "
-            + "nên THẤP HƠN nguồn thật. A.I-A.V/B.I/B.II/B.III-phần1+2a+2b(i)/B.IV xong.",
+        portComplete = "#1069: ĐỦ 8/8 mục La Mã của Report_KPIGet_Real_New20221101 (A.I-A.V, B.I-B.IV) — "
+            + "port xong toàn bộ hàm nguồn ~1734 dòng qua các fire #1060/#1061/#1062/#1063/#1064/#1065/"
+            + "#1066/#1067/#1068/#1069. 4 cột `CountWorkTime*` giữ HARDCODE 0 đúng nguồn (chưa cài công thức "
+            + "ở chính nguồn, không phải MiniHTC thiếu).",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
