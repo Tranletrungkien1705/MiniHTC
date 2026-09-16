@@ -78393,7 +78393,7 @@ app.MapGet("/api/repairorders/{no}/attachfiles", async (string no, AppDbContext 
     return Results.Ok(new { roNo = no, count = files.Count, files });
 }).RequireAuthorization();
 
-app.MapPost("/api/repairorders/{no}/attachfiles", async (string no, RoAttachFileDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/repairorders/{no}/attachfiles", async (string no, RoAttachFileDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     if (!await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == no)) return Results.NotFound(new { no });
@@ -78403,15 +78403,19 @@ app.MapPost("/api/repairorders/{no}/attachfiles", async (string no, RoAttachFile
     var old = db.RoAttachFiles.Where(x => x.OrgId == t.OrgId && x.RONo == no && x.ROFileType == fileType);
     db.RoAttachFiles.RemoveRange(old);
     // #966: LUÔN chèn lại — strFlagIsDelete là tham số CHẾT trong nguồn (giữ trường trong DTO cho tương thích).
+    // #1100 SỬA BUG THẬT: nguồn ghi LogLUBy = strPartnerUserCode (actor phía server gọi WS), KHÔNG PHẢI
+    // giá trị client tự gửi lên — port cũ nhận thẳng dto.LogLUBy làm cột nhật ký, cho phép client tự xưng
+    // là ai đã sửa file. Đổi sang đúng quy ước partnerUserCode dùng xuyên suốt các endpoint khác.
     db.RoAttachFiles.Add(new RoAttachFile
     {
         OrgId = t.OrgId, RONo = no, ROFileType = fileType,
         ROFilePath = dto.ROFilePath, ROFileName = dto.ROFileName,
-        LogLUDateTime = DateTime.Now, LogLUBy = dto.LogLUBy,
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     });
     await db.SaveChangesAsync();
     return Results.Ok(new { roNo = no, fileType, deleted = true, inserted = true,
-        flagIsDeleteIsDeadParamNote = "#966: strFlagIsDelete duoc TINH (bIsDelete) nhung KHONG BAO GIO dung lai trong Ser_ROAttachFile_SaveX — nguon LUON xoa-roi-chen vo dieu kien. #931 truoc day tu suy dien flag co tac dung la SAI." });
+        flagIsDeleteIsDeadParamNote = "#966: strFlagIsDelete duoc TINH (bIsDelete) nhung KHONG BAO GIO dung lai trong Ser_ROAttachFile_SaveX — nguon LUON xoa-roi-chen vo dieu kien. #931 truoc day tu suy dien flag co tac dung la SAI.",
+        logLUByWasClientSuppliedBug = "#1100: port cu nhan dto.LogLUBy tu client lam cot audit — nguon luon dung strPartnerUserCode (actor server), da doi sang partnerUserCode dung quy uoc." });
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
