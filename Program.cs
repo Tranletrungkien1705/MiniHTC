@@ -22124,7 +22124,31 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
             allStatuses = new { PEND = "Pending", SENT = "Chờ xem xét", CONF = "Chờ duyệt / đã gửi HMC", ACCE = "Accepted", REJ = "Rejected", REVERT = "HTCRevert" },
             sourceLegacyPathHasNoStatusGuard = "duong cu Ser_ROWarrantyReport_ItemStatus_Update (Raise=0) van LIVE va sua duoc o BAT KY trang thai nao",
         });
-    if (!string.IsNullOrWhiteSpace(dto.WarrantyStatus)) item.WarrantyStatus = dto.WarrantyStatus!.Trim().ToUpperInvariant();
+    var newItemStatus = string.IsNullOrWhiteSpace(dto.WarrantyStatus) ? null : dto.WarrantyStatus!.Trim().ToUpperInvariant();
+    // ===== #1016 `ROWarrantyReport_Approve_Check` (WarrantyReport.cs:3979, gọi từ CHÍNH `_ItemStatus_Update_V2`
+    // mà Mini đã chọn port theo #775) — CHỈ chạy khi chuyển sang "SENT" (đại lý nộp hồ sơ cho HTC xem xét).
+    // Port ĐÚNG MỘT trong mười guard con của cascade — `…_CreatedDateAndWarrantyRegisDateAndKM`
+    // (`WarrantyReport.cs:5220`, dễ đọc/kiểm chứng nhất): Km bắt buộc và phải < 20.000; CreatedDate (ngày lập)
+    // và WarrantyRegistrationDate (ngày ĐKBH) đều bắt buộc; và khoảng cách CreatedDate − WarrantyRegistrationDate
+    // không được vượt quá 360 ngày (~12 tháng). Nguồn đọc Km/CreatedDate/WarrantyRegistrationDate từ MỘT dòng
+    // `Ser_ROWarrantyReport` — Mini đã đưa ba cột này về CẤP CLAIM (không có bản sao cấp item) nên dùng thẳng
+    // `claim.WarrantyKM`/`claim.CreatedAt`/`claim.WarrantyRegistrationDate`.
+    // 📌 CHÍN guard con còn lại (WarrantyFile tồn tại, VIN khớp, KM khớp, BatteryNo, CVC, FinishedDate,
+    // ComplaintDiagnosticError, WarrantyRegistrationDate riêng, WarrantyExpiresDateAndWarrantyKM) CHƯA port
+    // — ghi nợ ở manifest, không bịa để tránh chặn sai các lượt chuyển trạng thái hợp lệ.
+    if (newItemStatus == "SENT")
+    {
+        if (claim.WarrantyKM is null)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM", message = "Số Km của BCBH trống!" });
+        if (claim.WarrantyKM >= 20000)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM", message = "Số Km của BCBH lớn hơn 20,000KM!" });
+        if (claim.WarrantyRegistrationDate is null)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyRegisDate", message = "Ngày ĐKBH của BCBH trống!" });
+        if (claim.WarrantyRegistrationDate.Value.AddDays(360) < claim.CreatedAt)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCreatedDateAndWarrantyRegisDate",
+                message = "Ngày gửi BCBH - Ngày bảo hành > 12 tháng!" });
+    }
+    if (newItemStatus != null) item.WarrantyStatus = newItemStatus;
     if (dto.Note != null) item.Note = dto.Note;
     // Bản _V2 dùng cặp mã lỗi MỚI (ErrorCodePN/ErrorCodeCD); bản cũ dùng NaturalCode/CauseCode.
     if (!string.IsNullOrWhiteSpace(dto.ErrorCodePN)) claim.ErrorCodePN = dto.ErrorCodePN;
