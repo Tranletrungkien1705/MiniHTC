@@ -69016,7 +69016,7 @@ app.MapPost("/api/stockouts/{stockOutId}/status", async (long stockOutId, StockO
     });
 }).RequireAuthorization();
 app.MapPost("/api/repairorders/{roId}/status", async (long roId, RoStatusChangeDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var ro = await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.Id == roId);
     if (ro == null) return Results.NotFound(new { error = "khong tim thay lenh sua chua" });
@@ -69057,6 +69057,10 @@ app.MapPost("/api/repairorders/{roId}/status", async (long roId, RoStatusChangeD
         return Results.BadRequest(new { error = "trang thai dich khong nam trong may trang thai", newStatus });
     }
     ro.Status = newStatus;
+    // #1140: nguon SerROStatusUpdate (Service01.cs:8754-8839) ghi Status/LogLUDateTime/LogLUBy trong CUNG
+    // mot alColumnEffective — port cu (dung chung than nay cho ca 5 vo boc chuyen trang thai) bo sot hoan
+    // toan 2 cot nhat ky, du RepairOrder da co san cot tu #1051/#1115.
+    ro.LogLUDateTime = DateTime.Now; ro.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
