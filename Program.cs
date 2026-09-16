@@ -64240,7 +64240,7 @@ app.MapGet("/api/report/inventory-balance-by-part", async (AppDbContext db, ITen
         partCodeIsMandatory = "GroupByPart BAT BUOC and smp.PartCode = @strPartCode (khong co nhanh rong) => luon dung MOT ma",
         zeroStockExcluded = "and t.TotalInStockQuantity != 0.0 => phu tung ton bang 0 BI LOAI khoi bao cao ton kho",
         negativeTemplateHasNoLeftoverToken = "AM TINH: Replace(@strDBName_CommonCenter, _strConfig_DBName_Main) chay TRUOC khi chen template, nhung template zzB_tbl_Inv_StockBalance_QtyInStock_zzE KHONG chua token do (dem = 0 trong BizCarSv.zSqlTemplate.Inv.cs) va nhan san tien to qua doi so => KHONG sot token. Kiem roi moi ghi",
-        miniModelGap = "Mini chua co cot DealerCode tren ServicePart va chua mo hinh hoa Mst_BOMDtl theo PartCode => nhanh StationInvQtyMin chua port duoc day du; ghi NO",
+        miniModelGapPaidAt720 = "#990: GHI CHU NO NAY DA STALE — nhanh StationInvQtyMin duoc port DAY DU rieng o #720 (`GET /api/report/station-inv-qtymin-bom`, Program.cs ~55813), dung BomLine.BOMCode/PartCode (§12 them o do) thay Mst_BOMDtl. ServicePart cung DA CO DealerCode tu truoc #720 xac nhan. Diem nay (endpoint GroupByPart) khong can port lai StationInvQtyMin — trung endpoint rieng da co.",
     });
 }).RequireAuthorization();
 
