@@ -66204,7 +66204,7 @@ app.MapGet("/api/mstvinmodelorginals", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.VINCode ?? "").Trim().ToUpperInvariant();
     // Guard 1 của nguồn (_Create): độ dài PHẢI là 4 hoặc 5.
@@ -66221,13 +66221,17 @@ app.MapPost("/api/mstvinmodelorginals", async (MstVinModelOrginalDto dto, AppDbC
             sourceHasNoSuchGuard = "nguon _Create KHONG kiem trung VINCode — guard nay do PORT them, vi trung dau VIN chinh la nguon go bay no dong o #651/#655",
             vinCode = code,
         });
+    // #1191 SUA BUG THAT: nguon Mst_VINModelOrginal_Create (BizCarSv.Master.cs:9340+92-96) ghi du 4 cot
+    // nhat ky khi tao — cong don le nay chi co CreatedDate, thieu CreatedBy/LogLUDateTime/LogLUBy.
+    var by1191 = (partnerUserCode ?? "system").Trim(); var now1191 = DateTime.Now;
     db.MstVinModelOrginals.Add(new MstVinModelOrginal
     {
         OrgId = t.OrgId, VINCode = code,
         ModelCode = dto.ModelCode?.Trim().ToUpperInvariant(),
         OrginalCode = dto.OrginalCode?.Trim().ToUpperInvariant(),
         FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim(),
-        Remark = dto.Remark, CreatedDate = DateTime.Now,
+        Remark = dto.Remark, CreatedDate = now1191,
+        CreatedBy = by1191, LogLUDateTime = now1191, LogLUBy = by1191,
     });
     await db.SaveChangesAsync();
     return Results.Ok(new { vinCode = code, dto.ModelCode, dto.OrginalCode });
