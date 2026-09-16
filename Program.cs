@@ -45302,7 +45302,7 @@ app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, IT
 // #483 §12: ghi ba bảng con còn lại. Cùng lệ "XOÁ SẠCH rồi ghi lại" của #393.
 // ⚠️ Trạng thái khởi tạo = "P" (hằng CamMarketingStatus.Pending) — bảng mã chỉ có P/A, không có mã từ chối.
 app.MapPost("/api/campaignmarketings/{no}/scope", async (string no, CampaignScopeDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == no);
@@ -45322,8 +45322,10 @@ app.MapPost("/api/campaignmarketings/{no}/scope", async (string no, CampaignScop
     {
         var old = await db.CampaignMarketingVins.Where(v => v.OrgId == t.OrgId && v.CamNo == no).ToListAsync();
         removed += old.Count; db.CampaignMarketingVins.RemoveRange(old);
+        // #1119 §12: chỉ bảng VIN có dòng gán LogLUDateTime/LogLUBy ACTIVE trong nguồn (ba bảng kia bị comment).
         foreach (var v in vins) db.CampaignMarketingVins.Add(new CampaignMarketingVin
-            { OrgId = t.OrgId, CamNo = no, VIN = v, CamMarketingVinStatus = status });
+            { OrgId = t.OrgId, CamNo = no, VIN = v, CamMarketingVinStatus = status,
+              LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() });
     }
     if (plates.Count > 0)
     {

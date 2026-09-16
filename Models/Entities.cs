@@ -16407,6 +16407,12 @@ public sealed class CampaignMarketingVin
     public string VIN { get; set; } = "";
     public string? CamMarketingVinStatus { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1119 §12 — nguồn `Ser_CampaignMarketing_Create_20220926` ghi `LogLUDateTime`/`LogLUBy`
+    /// (= strPartnerUserCode) CHỈ cho bảng VIN — ba bảng con còn lại (PlateNo/Dealer/FullVIN) có dòng gán
+    /// tương tự nhưng bị CHÍNH NGUỒN COMMENT (không active), không port cho ba bảng đó.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>`Ser_CampaignMarketingPlateNo` — chỉ định theo BIỂN SỐ.
