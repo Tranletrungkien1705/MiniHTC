@@ -16099,3 +16099,37 @@ public sealed class RptDealerNetPriceDetail
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>
+/// 🔴 #983 §12 — HEADER một đợt gửi CHI TIẾT ĐƠN ĐẶT PT (POD = Parts Order Detail) sang HMC
+/// (`Rpt_PartsOrderDetail`) — port 1:1 `Rpt_DMSSer_PartsOrderDetail_{LastGet,PartGet,SendHMC,SendHMC_Auto}`
+/// (`BizCarSv.Report.Special.Warranty.cs:5179-5877`, TCMotor DMSCarSv, chỉ có trên máy 150).
+/// Khác cụm DNP (#982, theo dõi GIÁ thay đổi): cụm này báo cáo đơn đặt PT đã DUYỆT ĐỦ SỐ LƯỢNG
+/// (`QtyAppr = QtyOrd`), giao qua NCC (`DeliveryFormCode='2'`), NCC đã xác nhận (`SupplierStatus in ('2','4')`),
+/// và CHƯA TỪNG gửi HMC (theo dõi bằng khoá (OrderPartNo, PartID) trên <see cref="RptPartsOrderDetailPart"/>,
+/// không phải theo GIÁ như DNP).
+/// </summary>
+public sealed class RptPartsOrderDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RptID { get; set; }
+    public DateTime CreatedDateTime { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? FilePath { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Bảng "ĐÃ TỪNG GỬI" của cụm POD (`Rpt_PartsOrderDetail_Part`) — khoá (OrderPartNo, PartID), KHÔNG
+/// lưu giá (khác <see cref="TstMstPartDnp"/>) vì cụm này không theo dõi thay đổi giá, chỉ theo dõi "đã gửi chưa".</summary>
+public sealed class RptPartsOrderDetailPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RptID { get; set; }
+    public string OrderPartNo { get; set; } = "";
+    public string PartID { get; set; } = "";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}

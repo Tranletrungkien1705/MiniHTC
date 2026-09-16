@@ -25577,6 +25577,112 @@ app.MapPost("/api/tstparts/dealer-net-price/send-hmc", async (AppDbContext db, I
     });
 }).RequireAuthorization();
 
+// ===== 🏆🔴🔴 #983 CỤM MỚI `Rpt_DMSSer_PartsOrderDetail_{LastGet,PartGet,SendHMC,SendHMC_Auto}` =====
+// `BizCarSv.Report.Special.Warranty.cs:5179-5877` trên máy 150. LIVE xác nhận qua
+// `HTCWSCarSv/WSCarSv.asmx.cs:33961/33990/34020/34099`. Song song #982 (DNP — theo dõi GIÁ đổi) nhưng khác
+// TIÊU CHÍ chọn dòng: đơn đặt PT (`Ser_Order_Part`/`Ser_Order_PartDtl`) đã DUYỆT ĐỦ SỐ LƯỢNG
+// (`QtyAppr = QtyOrd`), giao qua NCC (`DeliveryFormCode='2'`), NCC xác nhận (`SupplierStatus in ('2','4')`),
+// loại `TST`, và CHƯA TỪNG gửi (khoá (OrderPartNo, PartID) trên `Rpt_PartsOrderDetail_Part` — theo dõi
+// "đã gửi" chứ KHÔNG theo dõi giá như #982, vì đơn hàng không đổi giá sau khi NCC đã duyệt).
+// ⚠️ KHÔNG SFTP THẬT — cùng lý do đã ghi ở #982 (cấu hình FTP triển khai riêng, không có trong MiniHTC).
+app.MapGet("/api/orderparts/hmc-report/eligible", async (AppDbContext db, ITenantContext t, DateTime? reportDateFrom) =>
+{
+    var sentKeys = (await db.RptPartsOrderDetailParts.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .Select(x => (x.OrderPartNo, x.PartID)).ToHashSet();
+    var ordersQ = db.OrderParts.Where(x => x.OrgId == t.OrgId && x.OrderPartType == "TST"
+        && x.DeliveryFormCode == "2" && x.SupplierStatus != null && (x.SupplierStatus == "2" || x.SupplierStatus == "4"));
+    if (reportDateFrom is not null) ordersQ = ordersQ.Where(x => x.SentAt >= reportDateFrom);   // #983: strReportDateConditionList tren t.ApprDTime (=SentAt)
+    var orders = await ordersQ.ToListAsync();
+    var orderIds = orders.Select(x => x.Id).ToList();
+    var lines = await db.OrderPartLines.Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.OrderPartId)
+        && x.PartID != null && x.QtyAppr == x.OrderQty).ToListAsync();   // #983: f.QtyAppr = f.QtyOrd
+    var partIds = lines.Select(x => x.PartID!).Distinct().ToList();
+    var masterParts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIds.Contains(x.PartID!)).ToListAsync();
+    var masterByPartId = masterParts.GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+
+    var eligible = new List<object>();
+    foreach (var o in orders)
+    foreach (var l in lines.Where(x => x.OrderPartId == o.Id))
+    {
+        // #983: t.OrderSuppierNo — số NCC dùng làm khoá "đã gửi", KHÁC `OrderPartNo` hệ thống sinh.
+        var key = (o.OrderSuppierNo ?? "", l.PartID!);
+        if (sentKeys.Contains(key)) continue;
+        masterByPartId.TryGetValue(l.PartID!, out var mp);
+        eligible.Add(new
+        {
+            orderPartNo = o.OrderSuppierNo, partID = l.PartID, partCode = mp?.PartCode, vieName = mp?.PartName,
+            engName = mp?.EngName, unit = mp?.Unit, dealerCode = o.DealerCode, approvedDate = o.SentAt,
+            priceVAT = (int)Math.Round((l.UPAfterDc ?? 0) * 0.01m, 0), quantity = l.QtyAppr,
+            orderPartType = o.OrderPartType, amount = l.Price * (1 + (l.VAT ?? 0)),
+        });
+    }
+    return Results.Ok(new
+    {
+        count = eligible.Count, items = eligible,
+        onlyExistsOnMachine150_983 = "#983: Rpt_DMSSer_PartsOrderDetail_PartGet — BizCarSv.Report.Special.Warranty.cs:5316",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/orderparts/hmc-report/last-batch", async (AppDbContext db, ITenantContext t) =>
+{
+    var header = await db.RptPartsOrderDetails.Where(x => x.OrgId == t.OrgId).OrderByDescending(x => x.RptID).FirstOrDefaultAsync();
+    if (header is null) return Results.Ok(new { header = (object?)null, lines = Array.Empty<object>() });
+    var lines = await db.RptPartsOrderDetailParts.Where(x => x.OrgId == t.OrgId && x.RptID == header.RptID).ToListAsync();
+    return Results.Ok(new
+    {
+        header = new { header.RptID, header.CreatedDateTime, header.CreatedBy, header.FilePath },
+        lines = lines.Select(l => new { l.OrderPartNo, l.PartID }),
+        onlyExistsOnMachine150_983 = "#983: Rpt_DMSSer_PartsOrderDetail_LastGet — BizCarSv.Report.Special.Warranty.cs:5218 (MAX(RptID))",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/orderparts/hmc-report/send-hmc", async (AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var userCode = user.Identity?.Name ?? "system";
+    var sentKeys = (await db.RptPartsOrderDetailParts.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .Select(x => (x.OrderPartNo, x.PartID)).ToHashSet();
+    var orders = await db.OrderParts.Where(x => x.OrgId == t.OrgId && x.OrderPartType == "TST"
+        && x.DeliveryFormCode == "2" && x.SupplierStatus != null && (x.SupplierStatus == "2" || x.SupplierStatus == "4")).ToListAsync();
+    var orderIds = orders.Select(x => x.Id).ToList();
+    var lines = await db.OrderPartLines.Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.OrderPartId)
+        && x.PartID != null && x.QtyAppr == x.OrderQty).ToListAsync();
+    var eligiblePairs = new List<(long orderId, string orderSuppierNo, OrderPartLine line)>();
+    foreach (var o in orders)
+    foreach (var l in lines.Where(x => x.OrderPartId == o.Id))
+    {
+        var key = (o.OrderSuppierNo ?? "", l.PartID!);
+        if (!sentKeys.Contains(key)) eligiblePairs.Add((o.Id, o.OrderSuppierNo ?? "", l));
+    }
+    // #983: nguon nem loi "Danh sach Part day trong!" khi khong co dong nao du dieu kien.
+    if (eligiblePairs.Count == 0) return Results.BadRequest(new { error = "Rpt_DMSSer_PartsOrderDetail_SendHMC_TablePartSendEmty" });
+
+    var now = DateTime.Now;
+    var maxRptId = await db.RptPartsOrderDetails.Where(x => x.OrgId == t.OrgId).Select(x => (long?)x.RptID).MaxAsync() ?? 0;
+    var rptId = maxRptId + 1;
+    var fileName = $"A26AX_POD_{now:yyyyMMdd}.txt";
+    var fileContent = string.Join("\n", eligiblePairs.Select(p => $"{p.orderSuppierNo}\t{p.line.PartID}\t{p.line.QtyAppr}"));
+
+    db.RptPartsOrderDetails.Add(new RptPartsOrderDetail
+    {
+        OrgId = t.OrgId, RptID = rptId, CreatedDateTime = now, CreatedBy = userCode, FilePath = fileName,
+        LogLUDateTime = now, LogLUBy = userCode,
+    });
+    foreach (var p in eligiblePairs)
+        db.RptPartsOrderDetailParts.Add(new RptPartsOrderDetailPart
+        {
+            OrgId = t.OrgId, RptID = rptId, OrderPartNo = p.orderSuppierNo, PartID = p.line.PartID!,
+            LogLUDateTime = now, LogLUBy = userCode,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        rptId, fileName, fileContent, partsCount = eligiblePairs.Count,
+        sftpNotSimulated = true,
+        onlyExistsOnMachine150_983 = "#983: Rpt_DMSSer_PartsOrderDetail_SendHMC(X) — BizCarSv.Report.Special.Warranty.cs:5487",
+        sftpSkippedReason = "Giong #982: SftpClient.UploadFile(...) khong co trong MiniHTC — DB ghi du, chi khong goi SFTP that.",
+    });
+}).RequireAuthorization();
+
 // ===== 🏆🔴 #930 `TST_Mst_PartGroup_Get`/`TST_Mst_PartType_Get` (LIVE, `BizCarSv.Service.cs:18136/:17862`) =====
 // Entity đã tồn tại từ #767 nhưng CHƯA TỪNG có endpoint — grep toàn Program.cs ra 0 lần đọc lẫn ghi.
 app.MapGet("/api/tstmstpartgroups", async (AppDbContext db, ITenantContext t, bool? all) =>
