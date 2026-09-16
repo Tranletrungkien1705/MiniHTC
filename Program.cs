@@ -78116,7 +78116,7 @@ app.MapGet("/api/roworkarisingquotamsts", async (AppDbContext db, ITenantContext
 }).RequireAuthorization();
 
 app.MapPost("/api/roworkarisingquotamsts", async (List<RoWorkArisingQuotaDto> rows,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (rows is null || rows.Count == 0)
         return Results.BadRequest(new { error = "Cần bảng Ser_MST_ROWorkArisingQuota." });
@@ -78150,6 +78150,7 @@ app.MapPost("/api/roworkarisingquotamsts", async (List<RoWorkArisingQuotaDto> ro
             return Results.BadRequest(new { error = "ROWArisCode và ROWTypeDtlCode không được rỗng." });
         var row = await db.RoWorkArisingQuotaMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
             && x.ROWArisCode == code && x.ROWTypeDtlCode == dtl);
+        var isNew1093 = row is null;
         if (row is null)
         {
             row = new RoWorkArisingQuotaMst { OrgId = t.OrgId, ROWArisCode = code, ROWTypeDtlCode = dtl };
@@ -78158,6 +78159,10 @@ app.MapPost("/api/roworkarisingquotamsts", async (List<RoWorkArisingQuotaDto> ro
         else updated++;
         row.ROWArisName = string.IsNullOrWhiteSpace(r.ROWArisName) ? null : r.ROWArisName;
         if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!.Trim();
+        // #1093: nhanh TAO ghi du 4 cot nhat ky; nhanh SUA chi ghi LogLUDateTime/LogLUBy.
+        var by1093 = (partnerUserCode ?? "system").Trim(); var now1093 = DateTime.Now;
+        if (isNew1093) { row.CreatedDate = now1093; row.CreatedBy = by1093; }
+        row.LogLUDateTime = now1093; row.LogLUBy = by1093;
     }
     await db.SaveChangesAsync();
 

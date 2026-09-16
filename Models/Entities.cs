@@ -15591,6 +15591,14 @@ public sealed class RoWorkArisingQuotaMst
     public string ROWTypeDtlCode { get; set; } = "";
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1093 §12 — nguồn `Ser_MST_ROWorkArisingQuota_Save` (AssignmentOfWork.cs:7166) ghi đủ 4 cột
+    /// nhật ký khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy (CreatedDate/CreatedBy bị COMMENT trong
+    /// nguồn — cùng khuôn với `ExtraWorkMst` #1092, hai bảng chị em cùng cụm ROWorkArising).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>#538 Phụ tùng phát sinh **của CommonCenter** (`Ser_MST_PartExtra`) — **KHÁC** `ExtraPartMst`
