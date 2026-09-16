@@ -1350,6 +1350,10 @@ public static class Seeder
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CarID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"ROID\" text",
         "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
+        // #1156: ProcessSaveCareMace ghi CreatedBy/LogLUDateTime/LogLUBy = strPartnerUserCode.
+        "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+        "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"CustomerCareMaces\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
         // #574 §12 nguoi lien he cua nha cung cap (Ser_Mst_Supplier)
         "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"ContactName\" text",
         "ALTER TABLE public.\"SerMstSuppliers\" ADD COLUMN IF NOT EXISTS \"ContactPhone\" text",

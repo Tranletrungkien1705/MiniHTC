@@ -6278,6 +6278,12 @@ public sealed class CustomerCareMace
     public string? ROID { get; set; }
     /// <summary>#490 `CreatedDate` — nguồn ghi mốc tạo phiếu nhắc.</summary>
     public DateTime? CreatedDate { get; set; }
+    // #1156 §12 — `ProcessSaveCareMace` (Customer.cs:12782-12800, gọi từ `OS_Ser_CustomerCareMace_Update`)
+    // ghi `CreatedBy`/`LogLUDateTime`/`LogLUBy` = strPartnerUserCode mỗi lần "sửa" (nguồn thực chất chèn
+    // dòng mới) — entity Mini chưa từng có 3 cột này dù dùng mô hình sửa-tại-chỗ.
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

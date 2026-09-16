@@ -62861,7 +62861,7 @@ app.MapGet("/api/customercaremaces/appointments", async (AppDbContext db, ITenan
 //   phiếu không tồn tại, `MaceType` lạ, `Status` ngoài `0/1/2` đều đi thẳng vào `SaveData`.
 // 📌 Mini: `PUT /api/customercaremaces/{careNo}` giữ **đúng phân nhóm A/B của helper** — năm trường nhóm A bỏ qua
 //   khi rỗng, còn `CreatedDate` thì **KHÔNG xoá trắng** (khác biệt CÓ CHỦ Ý, nêu rõ ở cờ).
-app.MapPut("/api/customercaremaces/{careNo}", async (string careNo, CareMaceOsUpdateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/customercaremaces/{careNo}", async (string careNo, CareMaceOsUpdateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = careNo.Trim();
     var row = await db.CustomerCareMaces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
@@ -62879,6 +62879,8 @@ app.MapPut("/api/customercaremaces/{careNo}", async (string careNo, CareMaceOsUp
     if (!string.IsNullOrWhiteSpace(dto.CusID)) row.CusID = dto.CusID;
     if (!string.IsNullOrWhiteSpace(dto.MaceType)) row.MaceType = dto.MaceType!;
     if (!string.IsNullOrWhiteSpace(dto.ROID)) row.ROID = dto.ROID;
+    // #1156: ProcessSaveCareMace ghi LogLUDateTime/LogLUBy = strPartnerUserCode moi lan "sua".
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -62889,24 +62891,27 @@ app.MapPut("/api/customercaremaces/{careNo}", async (string careNo, CareMaceOsUp
         miniDoesNotWipeCreatedDate = true,
     });
 }).RequireAuthorization();
-app.MapPost("/api/customercaremaces", async (CustomerCareMaceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/customercaremaces", async (CustomerCareMaceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var maceType = (dto.MaceType ?? "").Trim();
     if (string.IsNullOrWhiteSpace(maceType)) return Results.BadRequest(new { error = "Chưa nhập MaceType." });
     if (string.IsNullOrWhiteSpace(dto.Vin) && string.IsNullOrWhiteSpace(dto.CusName))
         return Results.BadRequest(new { error = "Cần VIN hoặc tên khách." });
     var no = "MC" + DateTime.Now.ToString("yyMMddHHmmss");
+    // #1156 §12: ProcessSaveCareMace ghi CreatedBy/LogLUDateTime/LogLUBy = strPartnerUserCode luc tao.
+    var by1156 = (partnerUserCode ?? "system").Trim(); var now1156 = DateTime.Now;
     var c = new CustomerCareMace
     {
         OrgId = t.OrgId, CareNo = no, MaceType = maceType, RONo = dto.RONo, Vin = dto.Vin?.Trim().ToUpperInvariant(),
-        CusName = dto.CusName, MaceRecomentDate = dto.MaceRecomentDate, Status = "Pending"
+        CusName = dto.CusName, MaceRecomentDate = dto.MaceRecomentDate, Status = "Pending",
+        CreatedDate = now1156, CreatedBy = by1156, LogLUDateTime = now1156, LogLUBy = by1156,
     };
     db.CustomerCareMaces.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, c.MaceType, status = c.Status });
 }).RequireAuthorization();
 
 // Cập nhật trạng thái liên hệ (khớp FrmCustomerCareMaceUpdate: Contacted bắt buộc có ContactDate).
-app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceContactDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceContactDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.CustomerCareMaces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
@@ -62918,6 +62923,8 @@ app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceCon
     c.Status = status; c.Remark = dto.Remark;
     c.ContactDate = status == "Contacted" ? dto.ContactDate : null;
     c.ApointDate = status == "Contacted" ? dto.ApointDate : null;
+    // #1156: cung luat ProcessSaveCareMace — moi lan doi Status deu dong dau actor.
+    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, status = c.Status });
 }).RequireAuthorization();
