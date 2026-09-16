@@ -44117,17 +44117,29 @@ app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, 
 //   `…ConditionList`; tham số thứ 13 (`strDealerCode`) dùng ở tầng `ViewAbility`, **không** ở câu này.
 // 📌 Mini: `GET /api/campaignmarketings/search-special` — **phân trang thật** (skip/take) **và** `ORDER BY`
 //   ở câu trả về, tức làm **cả hai nửa** mà #877 và hàm này mỗi bên chỉ làm một.
+// 🔴🔴🔴 #987 PHÁT HIỆN MỚI đọc lại chính nguồn: NGAY SAU KHI NHẬN THAM SỐ, hàm GHI ĐÈ
+// `strCamMarketingNoConditionList = String.Format("={0}", _strCamMarketingNoSpecial)` — `_strCamMarketingNoSpecial`
+// là HẰNG CẤU HÌNH đọc từ app.config lúc khởi động (`BizCarSv.Common.cs:150/256`, mặc định `""`), KHÔNG
+// PHẢI tham số WS. ⇒ Bất kể client truyền `CamMarketingNo` gì, hàm LUÔN lọc CỨNG về ĐÚNG MỘT chiến dịch
+// định sẵn phía server ("GetSpecial" = "lấy đúng CHIẾN DỊCH ĐẶC BIỆT đó", KHÔNG PHẢI "tìm kiếm chung
+// chung" như 12 tham số lọc còn lại (tên/mô tả/ngày/VIN/đại lý) gợi ý). Port cũ (#881, trước #987) coi
+// nhầm `camNo` là bộ lọc CONTAINS tuỳ chọn như một hàm tìm kiếm thường — SAI CHIỀU HOÀN TOÀN với nguồn.
+// 📌 Mini: `_strCamMarketingNoSpecial` là hằng CẤU HÌNH TRIỂN KHAI (không có trong source code, không suy
+// đoán giá trị) — HẰNG≠GIÁ TRỊ (#413) xử lý ĐÚNG kiểu: biến nó thành tham số bắt buộc `specialCamNo`
+// (đóng vai trò server-config đó), khớp OPERATOR THẬT của nguồn ("=" — bằng tuyệt đối, không phải LIKE).
 app.MapGet("/api/campaignmarketings/search-special", async (AppDbContext db, ITenantContext t,
-    string? camNo, string? camName, string? status, DateTime? effFrom, DateTime? effTo,
+    string specialCamNo, string? camName, string? status, DateTime? effFrom, DateTime? effTo,
     int? start, int? count) =>
 {
-    var no = (camNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(specialCamNo))
+        return Results.BadRequest(new { error = "specialCamNo bat buoc — nguon ghi de CamMarketingNo bang hang cau hinh _strCamMarketingNoSpecial, khong phai bo loc tuy chon" });
+    var no = specialCamNo.Trim();
     var nm = (camName ?? "").Trim();
     var st = (status ?? "").Trim();
     var skip = start ?? 0;
     var take = count is > 0 and <= 500 ? count!.Value : 50;
     var qy = db.CampaignMarketings.Where(x => x.OrgId == t.OrgId)
-        .Where(x => no.Length == 0 || x.CamNo.Contains(no))
+        .Where(x => x.CamNo == no)   // #987: nguon dung "=" (bang tuyet doi), khong phai LIKE
         .Where(x => nm.Length == 0 || x.CamName.Contains(nm))
         .Where(x => st.Length == 0 || x.CamMarketingStatus == st)
         .Where(x => effFrom == null || x.EffDateEnd >= effFrom)
@@ -44151,6 +44163,7 @@ app.MapGet("/api/campaignmarketings/search-special", async (AppDbContext db, ITe
         orderByInsideSelectIntoIsIntentionalHere = "order by TRONG SELECT ... INTO O DAY CO CHU DICH — KHAC #876: select distinct identity(bigint, 0, 1) MyIdxSeq, scm.CamMarketingNo into #tbl_..._Draft from Ser_CampaignMarketing scm ... order by scm.CamMarketingNo asc; o #876 order by la THUA THAT (khong co cot danh so), o day no nham QUYET DINH THU TU GAN MyIdxSeq nen la cach dung CO CHU DICH. NHUNG SQL Server KHONG BAO DAM thu tu gan IDENTITY() theo ORDER BY trong SELECT ... INTO (chi la hanh vi thuc nghiem) => ghi la RUI RO, khong phai loi chac chan, va HIEN TAI VO HAI vi MyIdxSeq khong duoc dung",
         positiveViewAbilityLayer = "AM TINH — CO TANG PHAN QUYEN XEM: inner join #tbl_Ser_CampaignMarketing_ViewAbility t on scm.CamMarketingNo = t.CamMarketingNo => chien dich ngoai pham vi xem cua nguoi dung bi loai TRUOC moi bo loc khac. Day la invariant RBAC ViewAbility da biet; ghi am tinh vi nhieu ham khac KHONG co tang nay",
         thirteenFiltersPlaceholderCheck = "13 THAM SO LOC, tat ca di qua zzzzClauseWhere...ConditionList => phai kiem TUNG placeholder co cho cam trong SQL hay khong (luat #367). O cau Draft dem duoc 12 placeholder xuat hien, khop 12 tham so ...ConditionList; tham so thu 13 (strDealerCode) dung o tang ViewAbility, KHONG o cau nay",
+        camMarketingNoIsHardOverriddenByServerConfig_987 = "#987 SUA LAI TOAN BO Y NGHIA THAM SO: nguon ghi `strCamMarketingNoConditionList = String.Format(\"={0}\", _strCamMarketingNoSpecial)` NGAY SAU KHI NHAN tham so — _strCamMarketingNoSpecial la hang CAU HINH doc tu app.config (BizCarSv.Common.cs:150/256), KHONG PHAI tham so WS. Bat ke client goi CamMarketingNo gi, ket qua LUON bi khoa CUNG ve DUNG MOT chien dich dinh san phia server (dung 'GetSpecial' = 'lay dung MOT chien dich dac biet', khong phai 'tim kiem chung'). Port TRUOC #987 hieu nham thanh bo loc CONTAINS tuy chon nhu ham tim kiem thuong — SAI CHIEU. Sua: `specialCamNo` BAT BUOC + so sanh BANG TUYET DOI (dung dung operator '=' cua nguon).",
     });
 }).RequireAuthorization();
 app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, ITenantContext t,
