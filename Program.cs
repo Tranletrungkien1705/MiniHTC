@@ -66320,6 +66320,74 @@ app.MapGet("/api/repairorders/by-receptionfno", async (AppDbContext db, ITenantC
 app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LicensePlate)) return Results.BadRequest(new { error = "Cần biển số (LicensePlate)." });
+    // ===== 🔴🔴🔴 #1033/#1034/#1035 GUARD `Ser_RO_Create_New20220926` (`BizCarSv.ZTemp.cs:6258`) — PORT CŨ KHÔNG GUARD NÀO =====
+    // Nguồn: cây laptop hiện KHÔNG còn `BizCarSv.Service.RO.cs`/`_New20230220` (bản #320/#799 từng đo) —
+    //   WS gateway trên CẢ HAI máy nay gọi `_New20220926` (đánh dấu `//ToanNH`, xác nhận là bản triển khai
+    //   thật gần nhất). Xem `source-khac-nhau-giua-laptop-va-150.md` để biết lý do đóng băng trước đây.
+    // #1033: 3 guard đầu vào cấp LỆNH — bắt buộc, nguồn chạy KHÔNG ĐIỀU KIỆN (không phụ thuộc ReceptionFNo).
+    if (string.IsNullOrWhiteSpace(dto.Assistant))
+        return Results.BadRequest(new { error = "Ser_RO_Check_Assistant_IsNull", message = "Chưa nhập trợ lý dịch vụ." });
+    var levelOfInspection = (dto.LevelOfInspection ?? "").Trim();
+    if (levelOfInspection != "1" && levelOfInspection != "2" && levelOfInspection != "3")
+        return Results.BadRequest(new { error = "Ser_RO_CheckInput_InvalidLevelOfInspection",
+            message = "Mức độ kiểm tra phải là 1/2/3.", levelOfInspection = dto.LevelOfInspection });
+    var svcInput = dto.Services ?? new();
+    if (svcInput.Count == 0)
+        return Results.BadRequest(new { error = "Ser_RO_Create_ServiceTableNotBlank", message = "Phải có ít nhất một hạng mục dịch vụ." });
+
+    // #1034: guard TỪNG DÒNG công/phụ tùng — nguồn THROW ngay khi thiếu, port cũ chỉ `continue` bỏ qua âm thầm.
+    var checkCVBH = false;   // nguồn: có dòng công đối tượng thanh toán = Bảo hành thì bắt buộc CV bảo hành chính
+    foreach (var s in svcInput)
+    {
+        if (string.IsNullOrWhiteSpace(s.SerCode))
+            return Results.BadRequest(new { error = "Ser_RO_Check_ServiceNotInList", message = "Dịch vụ không có trong danh mục." });
+        if (string.IsNullOrWhiteSpace(s.ExpenseType))
+            return Results.BadRequest(new { error = "Ser_RO_Create_Check_Service_Invalid_ExpenseType", serCode = s.SerCode });
+        if (string.Equals(s.ExpenseType, "ROWARRANTY", StringComparison.OrdinalIgnoreCase)) checkCVBH = true;
+        if (string.IsNullOrWhiteSpace(s.ROType))
+            return Results.BadRequest(new { error = "Ser_RO_Create_Check_Service_Invalid_ROType", serCode = s.SerCode });
+        // Nguồn: loại công việc BDD (bảo dưỡng định kỳ) chỉ nhận đối tượng thanh toán RORepair/Local.
+        if (string.Equals(s.ROType, "BDD", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(s.ExpenseType, "ROREPAIR", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(s.ExpenseType, "LOCAL", StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = "Ser_RO_Create_InvalidService_ExpenseType",
+                serCode = s.SerCode, roType = s.ROType, expenseType = s.ExpenseType });
+    }
+    var partInput = dto.Parts ?? new();
+    var validPartExpenseTypes = new[] { "ROREPAIR", "LOCAL", "ROINSURANCE", "ROWARRANTY" };
+    foreach (var p in partInput)
+    {
+        if (string.IsNullOrWhiteSpace(p.PartCode))
+            return Results.BadRequest(new { error = "Ser_RO_Check_PartNotInStock", message = "Phụ tùng không có trong danh mục." });
+        if (string.IsNullOrWhiteSpace(p.ExpenseType))
+            return Results.BadRequest(new { error = "Ser_RO_Create_Check_Part_InvalidExpenseType", partCode = p.PartCode });
+        if (!validPartExpenseTypes.Contains(p.ExpenseType.Trim().ToUpperInvariant()))
+            return Results.BadRequest(new { error = "Ser_RO_Create_InvalidPart_ExpenseType", partCode = p.PartCode, expenseType = p.ExpenseType });
+    }
+
+    // #1035: guard CHÉO (đòi query DB) — nguồn chạy SAU KHI đã insert (rollback nếu fail); port kiểm
+    //   TRƯỚC KHI ghi để tránh insert-rồi-rollback vô ích, hiệu ứng cuối giống hệt.
+    var receptionFNo = string.IsNullOrWhiteSpace(dto.ReceptionFNo) ? null : dto.ReceptionFNo!.Trim().ToUpperInvariant();
+    if (receptionFNo != null)
+    {
+        // ⚠️ #310/#968 (đọc): quan hệ phiếu↔lệnh là "1 phiếu có thể sinh nhiều lệnh" — dùng cho MÀN ĐỌC
+        //   (dữ liệu lịch sử/đường tạo khác có thể đã sinh nhiều). Guard NÀY chỉ áp cho ĐƯỜNG TẠO này —
+        //   không mâu thuẫn: nguồn CHẶN tạo trùng ở path này, còn dữ liệu cũ/path khác vẫn được đọc khoan dung.
+        var receptionAlreadyHasRo = await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == receptionFNo);
+        if (receptionAlreadyHasRo)
+            return Results.BadRequest(new { error = "Ser_RO_Create_OneReceptionOneRONo",
+                message = "Phiếu tiếp nhận này đã có lệnh sửa chữa.", receptionFNo });
+    }
+    if (checkCVBH)
+    {
+        var warrantySerCodes = svcInput.Where(s => string.Equals(s.ExpenseType, "ROWARRANTY", StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.SerCode.Trim().ToUpperInvariant()).Distinct().ToList();
+        var hasFlagWarrantyService = await db.ServiceItemMsts.AnyAsync(x => x.OrgId == t.OrgId
+            && warrantySerCodes.Contains(x.SerCode) && x.FlagWarranty == "1");
+        if (!hasFlagWarrantyService)
+            return Results.BadRequest(new { error = "Ser_RO_Create_NotFound_ROService_FlagWarranty",
+                message = "Báo giá chưa có công việc bảo hành chính." });
+    }
     var no = "RO" + DateTime.Now.ToString("yyMMddHHmmss");
     // ===== 🔴 #343 SÁU CỘT `Ser_RO` có entity nhưng CHƯA CÓ ĐƯỜNG GHI =====
     // Tìm bằng `_audit/sweep_dead_column.js` (viết ở lượt này, tổng quát hoá cách dò tay của #337/#342).
