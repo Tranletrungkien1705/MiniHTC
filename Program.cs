@@ -36062,11 +36062,52 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
     if (!string.IsNullOrWhiteSpace(dto.AppType)) a.AppType = dto.AppType!.Trim();
     if (!string.IsNullOrWhiteSpace(dto.CusRequest)) a.CusRequest = dto.CusRequest!.Trim();
     a.AppFrom = dto.AppFrom; a.AppTo = dto.AppTo;
+    // #1010: `Ser_App_Update` (BizCarSv.Appointment.cs:515) ghi thêm 7 cột — DTO ĐÃ CÓ đủ 7 trường
+    // (dùng ở POST §282/§319/§323) nhưng PUT CHƯA TỪNG đọc — cùng khuôn bug #422/#1005: DTO có tham số
+    // không chứng minh tham số được PUT dùng. Nguồn ghi "rỗng ⇒ KHÔNG đụng" cho từng cột riêng lẻ.
+    if (!string.IsNullOrWhiteSpace(dto.Creator)) a.Creator = dto.Creator!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.CusID)) a.CusID = dto.CusID!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.InsNo)) a.InsNo = dto.InsNo!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.CarID)) a.CarID = dto.CarID!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.Note)) a.Note = dto.Note!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.AppDateTime)) a.AppDateTime = dto.AppDateTime!.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.AppTime)) a.AppTime = dto.AppTime!.Trim();
+    // Nguồn XOÁ TOÀN BỘ rồi CHÈN LẠI từ input (không so khớp dòng cũ) — chỉ làm khi client THẬT SỰ gửi
+    // danh sách (khác `null`); gửi `null` = không đụng dòng dịch vụ/phụ tùng (tránh xoá trắng do payload
+    // rút gọn — nguồn luôn nhận dsFull nên không có khái niệm "null", Mini thêm lằn ranh này có chủ đích).
+    int? newServiceItemsCount = null, newPartItemsCount = null;
+    if (dto.ServiceItems is not null)
+    {
+        var oldSvc = await db.AppointmentServiceItems.Where(x => x.OrgId == t.OrgId && x.AppNo == appNo).ToListAsync();
+        db.AppointmentServiceItems.RemoveRange(oldSvc);
+        foreach (var line in dto.ServiceItems)
+            if (!string.IsNullOrWhiteSpace(line.SerCode))
+                db.AppointmentServiceItems.Add(new AppointmentServiceItem
+                {
+                    OrgId = t.OrgId, AppNo = appNo, SerCode = line.SerCode!.Trim().ToUpperInvariant(),
+                    SerName = line.SerName, StdManHour = line.StdManHour, Note = line.Note
+                });
+        newServiceItemsCount = dto.ServiceItems.Count;
+    }
+    if (dto.PartItems is not null)
+    {
+        var oldPart = await db.AppointmentPartItems.Where(x => x.OrgId == t.OrgId && x.AppNo == appNo).ToListAsync();
+        db.AppointmentPartItems.RemoveRange(oldPart);
+        foreach (var line in dto.PartItems)
+            if (!string.IsNullOrWhiteSpace(line.PartCode))
+                db.AppointmentPartItems.Add(new AppointmentPartItem
+                {
+                    OrgId = t.OrgId, AppNo = appNo, PartCode = line.PartCode!.Trim().ToUpperInvariant(),
+                    PartName = line.PartName, EngName = line.EngName, Unit = line.Unit, Quantity = line.Quantity, Note = line.Note
+                });
+        newPartItemsCount = dto.PartItems.Count;
+    }
     await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
         a.AppNo, a.CavityName, a.CavityID, a.AppFrom, a.AppTo, a.Status,
+        a.Note, a.InsNo, a.CarID, serviceItems = newServiceItemsCount, partItems = newPartItemsCount,
         overloadNote = "Nguồn có HAI overload LIVE cùng tên MyCheck_DateTime_Cavity: bản 5 tham số cho TẠO "
             + "(ZTemp.cs:23125) và bản 6 tham số cho SỬA (:23175) — bản sửa thêm đúng một dòng "
             + "`and t.AppId <> @strAppId` để tự loại chính nó.",
