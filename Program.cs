@@ -55448,7 +55448,7 @@ app.MapPost("/api/serviceinvoices/{no}/pay", async (string no, AppDbContext db, 
 //   **chỉ tồn tại ở CSDL đại lý**; gọi hàm này tại WS Main sẽ đọc `_dbMain` (do `_dbDealer ≡ _dbMain`) và
 //   **không thấy khách của đại lý nào cả**. Đây là hệ quả trực tiếp của kiến trúc trên — cần biết khi port.
 // 📌 Mini một CSDL nên không tái hiện được phân tách này; hai endpoint dưới trả cờ để giữ phát hiện.
-app.MapPut("/api/campaigns/{no}", async (string no, CampaignDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/campaigns/{no}", async (string no, CampaignDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = no.Trim().ToUpperInvariant();
     // #913: CamNo chi duy nhat TRONG PHAM VI 1 dai ly — can dealerCode de phan biet khi 2 dai ly cung ma.
@@ -55462,6 +55462,8 @@ app.MapPut("/api/campaigns/{no}", async (string no, CampaignDto dto, AppDbContex
     if (dto.StartDate.HasValue) c.StartDate = dto.StartDate.Value;
     c.FinishDate = dto.FinishDate ?? c.FinishDate;
     if (dto.Content != null) c.Content = dto.Content;
+    // #1079: SerCampaignUpdate (Service.cs:9903) chi ghi LogLUDateTime/LogLUBy khi SUA (khong dong CreatedDate/CreatedBy).
+    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CamNo, c.CamName, c.StartDate, c.FinishDate, c.DealerCode, notPushedToDealerDb = "nguon: khoi ghi _dbDealer bi comment tron o CA Create lan Delete, va _Update khong cham _dbDealer => CO CHU Y, khong phai thieu sot" });
 }).RequireAuthorization();
@@ -55496,7 +55498,7 @@ app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? a
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CamNo) || string.IsNullOrWhiteSpace(dto.CamName))
         return Results.BadRequest(new { error = "Cần CamNo và CamName." });
@@ -55509,7 +55511,10 @@ app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantCo
     var no = dto.CamNo.Trim().ToUpperInvariant();
     if (await db.Campaigns.AnyAsync(x => x.OrgId == t.OrgId && x.CamNo == no && x.DealerCode == dto.DealerCode))
         return Results.BadRequest(new { error = $"Mã chiến dịch {no} đã tồn tại." });
-    var c = new Campaign { OrgId = t.OrgId, CamNo = no, CamName = dto.CamName, StartDate = dto.StartDate.Value, FinishDate = dto.FinishDate, Content = dto.Content, Status = "1", DealerCode = dto.DealerCode };
+    // #1079: SerCampaignCreate (Service.cs:9698) ghi du 4 cot nhat ky (tren ban WH cua nguon) khi TAO.
+    var by1079 = (partnerUserCode ?? "system").Trim(); var now1079 = DateTime.Now;
+    var c = new Campaign { OrgId = t.OrgId, CamNo = no, CamName = dto.CamName, StartDate = dto.StartDate.Value, FinishDate = dto.FinishDate, Content = dto.Content, Status = "1", DealerCode = dto.DealerCode,
+        CreatedDate = now1079, CreatedBy = by1079, LogLUDateTime = now1079, LogLUBy = by1079 };
     db.Campaigns.Add(c); await db.SaveChangesAsync();
     foreach (var ct in dto.Contacts ?? new())
         if (!string.IsNullOrWhiteSpace(ct.PlateNo) || !string.IsNullOrWhiteSpace(ct.CusName))

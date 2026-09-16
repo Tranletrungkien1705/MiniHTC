@@ -6826,6 +6826,14 @@ public sealed class Campaign
     /// đều GHI cột này (khuôn giống #906/#907/#911) — port cũ chưa hề mô hình hoá.</summary>
     public string? DealerCode { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1079 §12 — nguồn `SerCampaignCreate` (Service.cs:9698) chỉ ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy
+    /// trên BẢN SAO WH (`dt_Cam_WH`), KHÔNG ghi trên bản Main (`dt_Cam`); `SerCampaignUpdate` (:9903) lại ghi
+    /// LogLUDateTime/LogLUBy trên CHÍNH bản Main. MiniHTC một DB ⇒ hợp nhất: TẠO set đủ 4 cột, SỬA chỉ set 2 cột LogLU*.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Liên hệ trong chiến dịch (Ser_CamContact): xe/khách trong danh sách chiến dịch + trạng thái liên hệ.</summary>
