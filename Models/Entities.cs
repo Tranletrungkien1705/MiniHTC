@@ -14303,6 +14303,15 @@ public sealed class PartLocation
     public string? StockNo { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1184 §12 — cung nguon voi SerMstLocation: Ser_Mst_Location_Import (BizCarSv.Master.cs:7371+127-131
+    // tao, +213-215 sua) ghi du 4 cot nhat ky khi tao va cap LogLUDateTime/LogLUBy khi sua. PartLocation la
+    // ban port THU HAI cua cung man nguon (FrmImportLocation) — trung voi SerMstLocation (#937b), giu
+    // doc lap khong gop (dung tien le #489), vá audit-trail rieng cho bang nay.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Danh mục dịch vụ/công (master: mã/tên/giá vốn/giá bán/model/VAT) — port 1:1 FrmService/FrmImportService (TblSerMSTService, TCMotor).</summary>

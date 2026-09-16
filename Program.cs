@@ -15232,19 +15232,24 @@ app.MapGet("/api/partlocations", async (AppDbContext db, ITenantContext t, strin
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/partlocations", async (PartLocationDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partlocations", async (PartLocationDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LocationCode)) return Results.BadRequest(new { error = "Chưa nhập mã vị trí." });
     if (string.IsNullOrWhiteSpace(dto.LocationName)) return Results.BadRequest(new { error = "Chưa nhập tên vị trí." });
     var code = dto.LocationCode.Trim().ToUpperInvariant();
     var ex = await db.PartLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == code);
+    // #1184 SUA BUG THAT: cung nguon Ser_Mst_Location_Import/Ser_Mst_Location_Update voi SerMstLocation
+    // (BizCarSv.Master.cs:7371 tao/sua) — ghi du 4 cot nhat ky khi tao, cap LogLUDateTime/LogLUBy khi sua.
+    var by1184 = (partnerUserCode ?? "system").Trim(); var now1184 = DateTime.Now;
     if (ex is not null)
     {
         ex.LocationName = dto.LocationName; ex.LocationType = dto.LocationType; ex.LocationSurface = dto.LocationSurface; ex.LocationHeight = dto.LocationHeight; ex.StockNo = dto.StockNo; ex.FlagActive = "1";
+        ex.LogLUDateTime = now1184; ex.LogLUBy = by1184;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.LocationCode, updated = true });
     }
-    var r = new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = dto.LocationName, LocationType = dto.LocationType, LocationSurface = dto.LocationSurface, LocationHeight = dto.LocationHeight, StockNo = dto.StockNo, FlagActive = "1" };
+    var r = new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = dto.LocationName, LocationType = dto.LocationType, LocationSurface = dto.LocationSurface, LocationHeight = dto.LocationHeight, StockNo = dto.StockNo, FlagActive = "1",
+        CreatedDate = now1184, CreatedBy = by1184, LogLUDateTime = now1184, LogLUBy = by1184 };
     db.PartLocations.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.LocationCode, updated = false });
 }).RequireAuthorization();
@@ -15259,7 +15264,7 @@ app.MapPost("/api/partlocations/{code}/toggle", async (string code, AppDbContext
     return Results.Ok(new { x.LocationCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
-app.MapPost("/api/partlocations/import", async (PartLocationImportDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partlocations/import", async (PartLocationImportDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rows = dto.Rows ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
@@ -15274,8 +15279,20 @@ app.MapPost("/api/partlocations/import", async (PartLocationImportDto dto, AppDb
         if (string.IsNullOrWhiteSpace(r.LocationName)) { errors.Add(new { line, code, error = "Thiếu tên vị trí." }); continue; }
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã vị trí bị trùng trong file nhập." }); continue; }
         var ex = await db.PartLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == code);
-        if (ex is not null) { ex.LocationName = r.LocationName; ex.LocationType = r.LocationType; ex.LocationSurface = r.LocationSurface; ex.LocationHeight = r.LocationHeight; ex.StockNo = r.StockNo; ex.FlagActive = "1"; updated++; }
-        else { db.PartLocations.Add(new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = r.LocationName, LocationType = r.LocationType, LocationSurface = r.LocationSurface, LocationHeight = r.LocationHeight, StockNo = r.StockNo, FlagActive = "1" }); created++; }
+        // #1184: cung nguon Ser_Mst_Location_Import voi SerMstLocation (#1183) — 4 cot tao / cap LogLU sua.
+        var by1184imp = (partnerUserCode ?? "system").Trim(); var now1184imp = DateTime.Now;
+        if (ex is not null)
+        {
+            ex.LocationName = r.LocationName; ex.LocationType = r.LocationType; ex.LocationSurface = r.LocationSurface; ex.LocationHeight = r.LocationHeight; ex.StockNo = r.StockNo; ex.FlagActive = "1";
+            ex.LogLUDateTime = now1184imp; ex.LogLUBy = by1184imp;
+            updated++;
+        }
+        else
+        {
+            db.PartLocations.Add(new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = r.LocationName, LocationType = r.LocationType, LocationSurface = r.LocationSurface, LocationHeight = r.LocationHeight, StockNo = r.StockNo, FlagActive = "1",
+                CreatedDate = now1184imp, CreatedBy = by1184imp, LogLUDateTime = now1184imp, LogLUBy = by1184imp });
+            created++;
+        }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
