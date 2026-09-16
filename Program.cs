@@ -33978,7 +33978,7 @@ app.MapPost("/api/warrantyworkmsts", async (WarrantyWorkMstDto dto, AppDbContext
 // Nhập hàng loạt từ Excel — port 1:1 nhánh import của FrmMstWarrantyWorkMng.
 // Nguồn kiểm TOÀN BỘ file trước; gặp lỗi là DỪNG và KHÔNG lưu gì (return giữa vòng lặp).
 app.MapPost("/api/warrantyworkmsts/import", async (
-    WarrantyWorkImportDto dto, AppDbContext db, ITenantContext t) =>
+    WarrantyWorkImportDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var lines = dto.Rows ?? new();
     if (lines.Count == 0) return Results.BadRequest(new { error = "File excel không có dữ liệu!" });
@@ -34007,6 +34007,7 @@ app.MapPost("/api/warrantyworkmsts/import", async (
         var code = line.ROWWorkCode!.Trim().ToUpperInvariant();
         var model = (line.ModelCode ?? "").Trim().ToUpperInvariant();
         var row = await db.WarrantyWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == code && x.ModelCode == model);
+        var isNewWw1178 = row is null;
         if (row is null)
         {
             row = new WarrantyWorkMst { OrgId = t.OrgId, ROWWorkCode = code, ModelCode = model };
@@ -34018,6 +34019,14 @@ app.MapPost("/api/warrantyworkmsts/import", async (
         row.Price = line.Price; row.VAT = line.VAT; row.Remark = line.Remark;
         if (!string.IsNullOrWhiteSpace(line.FlagActive)) row.FlagActive = line.FlagActive!;
         row.UpdatedAt = now;
+        // #1178 SUA BUG THAT: nguon Ser_MST_ROWarrantyWork_Save (BizCarSv.AssignmentOfWork.cs:4036, "Ham
+        // CmCenter", goi tu Mst_Warranty_Work_Mng_Save cua nhanh import FrmMstWarrantyWorkMng) ghi du 4 cot
+        // nhat ky khi TAO (:4360-4363) va CHI LogLUDateTime/LogLUBy khi SUA (:4230-4231, CreatedDate/CreatedBy
+        // bi COMMENT o nhanh sua :4228-4229) — port cu (khac han /api/warrantyworkmsts don le da vá #1095)
+        // chua tung dong dau nao.
+        var by1178 = (partnerUserCode ?? "system").Trim();
+        if (isNewWw1178) { row.CreatedDate = now; row.CreatedBy = by1178; }
+        row.LogLUDateTime = now; row.LogLUBy = by1178;
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { added, updated, total = lines.Count, message = "Import thành công!" });
