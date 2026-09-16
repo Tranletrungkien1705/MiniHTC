@@ -30221,20 +30221,25 @@ app.MapGet("/api/jdpowerterms/{code}/details", async (string code, AppDbContext 
 }).RequireAuthorization();
 
 app.MapPost("/api/jdpowerterms/{code}/details", async (string code, JDPowerTermDtlDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var c = (code ?? "").Trim().ToUpperInvariant();
     var term = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == c);
     if (term is null) return Results.NotFound(new { error = "JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeNotFound", jdpTermCode = c });
     var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
     if (vin.Length == 0) return Results.BadRequest(new { error = "thieu VIN" });
+    // #1194 SUA BUG THAT: nguon (JDPowerTerm_Update, BizCarSv.Service01.cs:15487-15494) kiem
+    // strVIN.Length != 17 => JDPowerTerm_Create_Input_VIN_InvalidVINLength — port cu chua co guard nay.
+    if (vin.Length != 17) return Results.BadRequest(new { error = "JDPowerTerm_Create_Input_VIN_InvalidVINLength", vin });
     var dup = await db.JDPowerTermDtls.AnyAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == c && x.VIN == vin);
     if (dup) return Results.Conflict(new { error = "VIN da co trong ky nay", jdpTermCode = c, vin });
+    // #1194: nguon ghi ca LogLUDateTime lan LogLUBy khi chen dong (:15518-15519) — port cu chi co
+    // LogLUDateTime (va dung UtcNow thay vi Now nhu quy uoc chung cua he thong).
     var row = new JDPowerTermDtl
     {
         OrgId = t.OrgId, JDPTermCode = c, VIN = vin,
         PlateNo = dto.PlateNo, CusCode = dto.CusCode,
-        LogLUDateTime = DateTime.UtcNow,
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.JDPowerTermDtls.Add(row); await db.SaveChangesAsync();
     return Results.Ok(new
