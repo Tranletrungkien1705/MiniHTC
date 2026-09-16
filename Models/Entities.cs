@@ -2642,6 +2642,17 @@ public sealed class Reception
     /// </summary>
     public string? AppNo { get; set; }
 
+    // ===== #1039 §12 — 4 cột nguồn `Ser_ReceptionF_ReceptionX_New20210727` (ZTemp.cs:16604) mà #522
+    // đã tự ghi "notPortedYet" nhưng chưa ai quay lại vá.
+    /// <summary>Đường dẫn tệp ảnh đồng sơn lúc tiếp nhận (`strBodyPaintFilePath`).</summary>
+    public string? BodyPaintFilePath { get; set; }
+    /// <summary>Số thẻ hội viên quét lúc tiếp nhận (`strCardNo`).</summary>
+    public string? CardNo { get; set; }
+    /// <summary>Mã hội viên (`strMemberNo`).</summary>
+    public string? MemberNo { get; set; }
+    /// <summary>Hạng thẻ hội viên (`strCardType`).</summary>
+    public string? CardType { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DeliveredAt { get; set; }
 }

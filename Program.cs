@@ -63978,6 +63978,8 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
         Km = dto.Km, FuelLevel = dto.FuelLevel, LevelOfInspection = dto.LevelOfInspection,
         BackRepairStatus = dto.BackRepairStatus, WarrantlyStatus = dto.WarrantlyStatus,
         InsuaranceStatus = dto.InsuaranceStatus, RemarkErrOrther = dto.RemarkErrOrther,
+        // #1039 §12 — trả nợ #522.
+        BodyPaintFilePath = dto.BodyPaintFilePath, CardNo = dto.CardNo, MemberNo = dto.MemberNo, CardType = dto.CardType,
     };
     db.Receptions.Add(r);
 
@@ -64005,14 +64007,15 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
         r.ReceptionFNo, r.PlateNo, status = r.Status, r.AppNo, hccFinishStatus = appPush,
         r.DealerCode, r.CusID, r.CarID, r.Km, r.FuelLevel, r.LevelOfInspection,
         r.BackRepairStatus, r.WarrantlyStatus, r.InsuaranceStatus, r.RemarkErrOrther,
+        // #1039 trả nợ #522.
+        r.BodyPaintFilePath, r.CardNo, r.MemberNo, r.CardType,
         // #522 các điểm còn lệch so với bản LIVE 2021 — nêu tên, không giấu.
         guardsAddedFrom2021 = new[] { "Mst_Dealer_CheckDB(exist+active)", "CheckExistCarID",
             "Ser_App_CheckDB(status in 1,2)", "LevelOfInspection in (1,2,3)" },
         levelOfInspectionRequiredInSource = true,
         sourceMisspellings = new[] { "WarrantlyStatus", "InsuaranceStatus", "RemarkErrOrther" },
         notPortedYet = new[] { "ds_Ser_ReceptionFDtl (bang chi tiet hang muc)",
-            "ds_Ser_ReceptionFAttachFile (tep dinh kem)", "BodyPaintFilePath",
-            "CardNo/MemberNo/CardType (the hoi vien)" },
+            "ds_Ser_ReceptionFAttachFile (tep dinh kem)" },
         sourceWritesThreeDatabases = "Main + WH + Dealer (no _dbWH/_dbDealer)",
     });
 }).RequireAuthorization();
@@ -79931,7 +79934,9 @@ record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? 
     string? Km = null, string? FuelLevel = null, string? LevelOfInspection = null,
     string? BackRepairStatus = null, string? WarrantlyStatus = null, string? InsuaranceStatus = null,
     string? RemarkErrOrther = null,
-    string? AppNo = null);
+    string? AppNo = null,
+    // #1039: 4 cot con lai cua ban LIVE 2021 (#522 tu ghi "notPortedYet", chua ai vá).
+    string? BodyPaintFilePath = null, string? CardNo = null, string? MemberNo = null, string? CardType = null);
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
 // #265 §12: 12 trường bổ sung. Khối ĐIỀU CHỈNH (`IsAdjustment`/`Adjustment*`/`OldStockInID`) CỐ Ý
