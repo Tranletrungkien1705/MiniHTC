@@ -3755,6 +3755,13 @@ public sealed class TechnicalLibrary
     public string IsActive { get; set; } = "1";
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    /// <summary>#1090 §12 — nguồn `Ser_Technical_Library_Add`/`_Save` (ZTemp.cs:25471/25774) còn ghi
+    /// `CreatedDate` (khác `CreatedAt` do port tự đặt) + `LogLUDateTime`/`LogLUBy` khi TẠO; `_Update`
+    /// (:26395) KHÔNG đụng các cột này (đã ghi rõ ở #1029: chỉ sửa đúng 12 cột nghiệp vụ).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master nhà cung cấp phụ tùng (Ser_MST_Supplier) — port 1:1 FrmMstSupplierCreate/Search (TCMotor DMSCarSv). Mã + tên + địa chỉ + SĐT + fax.</summary>

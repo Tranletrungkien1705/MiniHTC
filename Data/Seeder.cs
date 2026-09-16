@@ -3149,6 +3149,10 @@ public static class Seeder
                 "ALTER TABLE public.\"CustomerCars\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"CustomerCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"CustomerCars\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1090: TechnicalLibrary thieu CreatedDate + LogLUDateTime/LogLUBy (Ser_Technical_Library_Add/Save).
+                "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

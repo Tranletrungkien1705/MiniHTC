@@ -26527,7 +26527,9 @@ app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbCont
         // #926 §12: nguồn Ser_Technical_Library_Add ghi IsActive = Flag.Inactive ("0") khi tạo mới — bài viết
         // chờ DUYỆT (Ser_Technical_Library_Approve) mới hiển thị/dùng được. Port cũ bật Active ngay, bỏ qua
         // toàn bộ vòng duyệt.
-        IsActive = "0", CreatedBy = by, CreatedAt = DateTime.Now
+        IsActive = "0", CreatedBy = by, CreatedAt = DateTime.Now,
+        // #1090: nguon con ghi CreatedDate + LogLUDateTime/LogLUBy (cung actor voi CreatedBy) khi TAO.
+        CreatedDate = DateTime.Now, LogLUDateTime = DateTime.Now, LogLUBy = by,
     };
     db.TechnicalLibraries.Add(row);
     await db.SaveChangesAsync();
