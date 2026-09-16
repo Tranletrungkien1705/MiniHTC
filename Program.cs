@@ -33662,7 +33662,7 @@ app.MapPost("/api/serassignmentworks/{roNo}/engineers", async (
 // Vị từ chồng giờ ĐÚNG NHƯ NGUỒN — chỉ xét hai MỐC, không xét bao trùm.
 static bool SourceOverlap(DateTime? s, DateTime? f, DateTime mark) => s.HasValue && f.HasValue && s < mark && f > mark;
 
-app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
     var stageCode = (dto.StageCode ?? "").Trim().ToUpperInvariant();
@@ -33717,8 +33717,14 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
                 });
         }
     }
+    // #1161: xac nhan than ham nguon cua endpoint nay CHINH LA Ser_AssignmentWork_Update (7 tham so
+    // SCC.../SCD.../... da khop DUNG chu ky ham, AssignmentOfWork.cs:403-430) — da fix header LogLUBy o
+    // #1158 cho route /update, nhung route /stage (Mini tach thanh bang con SerAssignmentWorkStage) dung
+    // CUNG mot ham nguon nen cung phai dong dau actor tren header.
+    var by1161 = (partnerUserCode ?? "system").Trim(); var now1161 = DateTime.Now;
     var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
-    if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
+    if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo, CreateDTime = now1161, CreateBy = by1161 }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
+    h.LogLUDateTime = now1161; h.LogLUBy = by1161;
     var stage = await db.SerAssignmentWorkStages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id && x.StageCode == stageCode);
     if (stage is null) { stage = new SerAssignmentWorkStage { OrgId = t.OrgId, AssignmentWorkId = h.Id, StageCode = stageCode }; db.SerAssignmentWorkStages.Add(stage); }
     stage.CavityId = dto.CavityId; stage.PlanStart = dto.PlanStart; stage.PlanFinish = dto.PlanFinish; stage.ActualStart = dto.ActualStart; stage.ActualFinish = dto.ActualFinish;
