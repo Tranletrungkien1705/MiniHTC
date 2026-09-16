@@ -18888,6 +18888,15 @@ app.MapPost("/api/serviceparts/import-catalog", async (List<ServicePartImportRow
         r.EngName = row.EngName; r.PartName = vieName; r.Unit = unit; r.Model = row.Model;
         r.VAT = vat; r.MinQuantity = row.MinQuantity.Value; r.Cost = row.Cost.Value; r.Price = price.Value;
         r.PartGroupCode = group.GroupCode; r.PartTypeID = type.Id.ToString(); r.FlagActive = "1";
+        // #1175 SUA GAP THAT (khong chi audit-trail): nguon Ser_Mst_Part_Import CON tao/cap-nhat MOT dong
+        // Ser_Inv_PartPrice (khoa PartID+DateEffect=HOM NAY, :6240-6241 tao moi neu khong thay dong nao, :6403
+        // sua neu da co) — port cu CHUA TUNG cham bang gia, ca create lan update deu roi mat lich su gia.
+        var priceRow = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.EffectiveDate == now1174.Date);
+        var isNewPrice1175 = priceRow is null;
+        if (priceRow is null) { priceRow = new PartPrice { OrgId = t.OrgId, PartCode = code, EffectiveDate = now1174.Date }; db.PartPrices.Add(priceRow); }
+        priceRow.PartName = vieName; priceRow.Price = price.Value; priceRow.IsActive = "1";
+        if (isNewPrice1175) { priceRow.CreatedDate = now1174; priceRow.CreatedBy = by1174; }
+        priceRow.LogLUDateTime = now1174; priceRow.LogLUBy = by1174;
         saved.Add(new { r.PartCode, r.PartName, r.Price, r.PartGroupCode, r.PartTypeID });
     }
     await db.SaveChangesAsync();
