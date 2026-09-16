@@ -31970,7 +31970,7 @@ app.MapGet("/api/storearcbs", async (AppDbContext db, ITenantContext t, string? 
         q = q.Where(x => ids.Contains(x.Id));
     }
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.StoRearCBNo, x.CreatedDate, x.RearCBStatus, x.Remark, x.CreatedBy, x.ApprovedDate,
+        x.Id, x.StoRearCBNo, x.CreatedDate, x.RearCBStatus, x.Remark, x.CreatedBy, x.ApprovedDate, x.ApprovedBy,   // #1229 §12
         cars = db.StoRearCBDtls.Count(c => c.OrgId == t.OrgId && c.StoRearCBId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -32083,7 +32083,7 @@ app.MapGet("/api/stocbreqs", async (AppDbContext db, ITenantContext t, string? s
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.CBReqStatus == status);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.CBReqNo.Contains(no!));
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.CBReqNo, x.CreatedDate, x.CBReqStatus, x.Remark, x.CreatedBy, x.ApprovedAt,
+        x.Id, x.CBReqNo, x.CreatedDate, x.CBReqStatus, x.Remark, x.CreatedBy, x.ApprovedAt, x.ApprovedBy,   // #1229 §12
         cars = db.StoCBReqDtls.Count(c => c.OrgId == t.OrgId && c.StoCBReqId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
