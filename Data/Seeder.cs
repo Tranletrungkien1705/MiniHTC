@@ -3179,6 +3179,9 @@ public static class Seeder
                 // #1096: RoComplaintDiagnosticError thieu CreatedDate/CreatedBy (Ser_MST_ROComplaintDiagnosticError_Save).
                 "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1097: RoWarrantyRenewal thieu CreatedDate/CreatedBy (Ser_MST_ROWarrantyRenewal_Save).
+                "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

@@ -11670,7 +11670,7 @@ app.MapGet("/api/rowarrantyrenewals", async (AppDbContext db, ITenantContext t, 
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/rowarrantyrenewals", async (List<RoWarrantyRenewalDto> rows, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/rowarrantyrenewals", async (List<RoWarrantyRenewalDto> rows, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn _Save không guard gì (Raise/this.Check/my*_Check đều 0).
     if (rows is null || rows.Count == 0)
@@ -11684,8 +11684,13 @@ app.MapPost("/api/rowarrantyrenewals", async (List<RoWarrantyRenewalDto> rows, A
         var vin = r.VIN!.Trim().ToUpperInvariant();
         var cate = r.WrtReneCateCode?.Trim();
         var row = await db.RoWarrantyRenewals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.WrtReneCateCode == cate);
+        var isNew1097 = row is null;
         if (row is null) { row = new RoWarrantyRenewal { OrgId = t.OrgId, VIN = vin, WrtReneCateCode = cate }; db.RoWarrantyRenewals.Add(row); }
-        row.Remark = r.Remark; row.LogLUDateTime = DateTime.Now; row.LogLUBy = "api";
+        row.Remark = r.Remark;
+        // #1097: nhanh TAO nguon ghi du 4 cot nhat ky; nhanh SUA chi ghi LogLUDateTime/LogLUBy.
+        var by1097 = (partnerUserCode ?? "system").Trim(); var now1097 = DateTime.Now;
+        if (isNew1097) { row.CreatedDate = now1097; row.CreatedBy = by1097; }
+        row.LogLUDateTime = now1097; row.LogLUBy = by1097;
         saved++;
     }
     await db.SaveChangesAsync();

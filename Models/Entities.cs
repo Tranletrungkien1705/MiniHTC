@@ -13738,6 +13738,12 @@ public sealed class RoWarrantyRenewal
     public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#1097 §12 — nguồn `Ser_MST_ROWarrantyRenewal_Save` (AssignmentOfWork.cs:8487, đời thứ năm của
+    /// chuỗi chép #785/#786/#1092/#1093/#1094/#1096) ghi đủ 4 cột nhật ký khi TẠO; nhánh SỬA chỉ ghi
+    /// LogLUDateTime/LogLUBy (CreatedDate/CreatedBy bị COMMENT).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 public sealed class SmsAccount
