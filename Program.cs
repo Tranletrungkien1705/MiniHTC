@@ -12651,7 +12651,7 @@ app.MapGet("/api/emails/search", async (AppDbContext db, ITenantContext t,
         {
             x.Id, x.BatchNo, toAddress = x.Email, x.FromAddress, x.Subject,
             x.Status, emailType = x.EmailType, x.DealerCode, x.CusId, x.IsAuto,
-            x.SendDate, x.UserName, x.Note, x.InvalidEmail,
+            x.SendDate, x.UserName, x.Note, x.InvalidEmail, x.Body, x.FileAttachment,   // #1250 §12
         })
         .ToListAsync();
 
@@ -13001,7 +13001,7 @@ app.MapGet("/api/emailautotemps", async (AppDbContext db, ITenantContext t,
         x.TypeEmail, newTypeEmail = EmailTypeLabelAuto(x.TypeEmail),
         x.ConfigAutoID, x.SendType, x.Remark, x.CurrentDate, x.Status,
         statusText = EmailAutoTempStatusLabel(emailAutoTempStatusNames, x.Status),
-        createdDate = x.CreatedDate,
+        createdDate = x.CreatedDate, x.Body,   // #1251 §12
     }).ToList();
     return Results.Ok(new
     {
@@ -58359,7 +58359,8 @@ app.MapGet("/api/email/autotemp", async (AppDbContext db, ITenantContext t,
     var take = recordCount is > 0 and <= 2000 ? recordCount!.Value : 500;
     var items = await qy.OrderByDescending(x => x.CreatedDate).ThenBy(x => x.Id).Skip(skip).Take(take)
         .Select(x => new { x.Id, x.AutoTempID, x.DealerCode, x.CusID, x.CusEmail, x.Subject, x.Body,
-                           x.CurrentDate, x.TypeEmail, x.ConfigAutoID, x.Status, x.SendType, x.CreatedDate })
+                           x.CurrentDate, x.TypeEmail, x.ConfigAutoID, x.Status, x.SendType, x.CreatedDate,
+                           x.BatchId, x.Remark })   // #1252 §12
         .ToListAsync();
 
     return Results.Ok(new
@@ -58390,6 +58391,7 @@ app.MapPost("/api/email/autotemp", async (EmailAutoTempDto dto, AppDbContext db,
         TypeEmail = OrNull(dto.TypeEmail), CurrentDate = OrNull(dto.CurrentDate),
         ConfigAutoID = OrNull(dto.ConfigAutoID), Status = OrNull(dto.Status),
         CusEmail = OrNull(dto.CusEmail),
+        BatchId = OrNull(dto.BatchId), Remark = OrNull(dto.Remark),   // #1252 SUA BUG THAT: DTO co san 2 tham so nay tu dau nhung endpoint chua tung ghi
         CreatedDate = DateTime.Now,
     };
     db.EmailSendAutoTemps.Add(row);
@@ -58422,6 +58424,7 @@ app.MapPut("/api/email/autotemp/{autoTempID}", async (string autoTempID, EmailAu
     row.TypeEmail = OrNull(dto.TypeEmail); row.CurrentDate = OrNull(dto.CurrentDate);
     row.ConfigAutoID = OrNull(dto.ConfigAutoID); row.Status = OrNull(dto.Status);
     row.CusEmail = OrNull(dto.CusEmail);
+    row.BatchId = OrNull(dto.BatchId); row.Remark = OrNull(dto.Remark);   // #1252 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.AutoTempID, row.DealerCode, row.Status, updated = true });
 }).RequireAuthorization();
