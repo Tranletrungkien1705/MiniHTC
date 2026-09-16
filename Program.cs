@@ -65136,7 +65136,10 @@ app.MapPost("/api/receptions/{no}/deliver", async (string no, ReceptionDeliverDt
             row.DeliveryAudStatus = d.DeliveryAudStatus;
             row.ReceptionFStatusDtl = kReceptionFStatusApprove;
             if (d.Remark is not null) row.Remark = d.Remark;
-            row.LogLUDateTime = DateTime.Now;
+            // #1196 SUA BUG THAT: nguon Ser_ReceptionF_DeliveryX_New20180921 (BizCarSv.Tab.cs may 150,
+            // vung cap nhat dtInput_Ser_ReceptionFDtl) ghi ca LogLUDateTime lan LogLUBy tren dong chi
+            // tiet — port cu chi co LogLUDateTime.
+            row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
             updated++;
         }
     }
