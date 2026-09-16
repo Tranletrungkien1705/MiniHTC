@@ -44478,13 +44478,14 @@ app.MapDelete("/api/filepathvideos/{code}", async (string code, AppDbContext db,
 }).RequireAuthorization();
 
 // ===== Ảnh mẫu phiếu TN-GX (SerModelAudImage — port 1:1 FrmSerMstModelAudImageCreate/Search, TCMotor DMSCarSv/Admin) =====
-app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, string? model, string? audType) =>
+app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, string? model, string? audType, bool? all) =>
 {
     var qry = db.SerModelAudImages.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(audType)) qry = qry.Where(x => x.ReceptionFAudType == audType);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");   // #1044
     var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.ReceptionFAudType).Take(500)
-        .Select(x => new { x.ModelCode, x.ReceptionFAudType, x.FilePath, x.Remark }).ToListAsync();   // #1043
+        .Select(x => new { x.ModelCode, x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive }).ToListAsync();   // #1043/#1044
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -44506,6 +44507,18 @@ app.MapPost("/api/modelaudimages", async (SerModelAudImageDto dto, AppDbContext 
     row!.FilePath = dto.FilePath; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;   // #1043 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FilePath, row.Remark, isNew });
+}).RequireAuthorization();
+
+// #1044: `Ser_Mst_ModelAudImage_Update` cho phép bật/tắt `FlagActive` (guard theo danh sách cột được
+//   phép sửa `strFt_Cols_Upd`) — port cũ hoàn toàn chưa có đường bật/tắt, chỉ có xoá cứng.
+app.MapPost("/api/modelaudimages/toggle", async (string model, string audType, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ReceptionFAudType == audType);
+    if (row is null) return Results.NotFound(new { model, audType });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FlagActive });
 }).RequireAuthorization();
 
 app.MapDelete("/api/modelaudimages", async (string model, string audType, AppDbContext db, ITenantContext t) =>

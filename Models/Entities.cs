@@ -15720,6 +15720,10 @@ public sealed class SerModelAudImage
     /// <summary>#1043 §12 — nguồn `Ser_Mst_ModelAudImage_Add`/`_Update` (Tab/BizCarSv.Tab.cs) đều nhận và
     /// ghi cột này, port cũ chưa từng mô hình hoá.</summary>
     public string? Remark { get; set; }
+    /// <summary>#1044 §12 — cột `FLAGACTIVE` xác nhận qua entity mirror ở tầng ClientService
+    /// (`Entities/Ser_Mst_ModelAudImage.cs`) — nguồn `_Update` CÓ THỂ bật/tắt (guard theo danh sách cột
+    /// được phép sửa `strFt_Cols_Upd`), port cũ hoàn toàn chưa mô hình hoá cột này (chỉ hard-delete).</summary>
+    public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
