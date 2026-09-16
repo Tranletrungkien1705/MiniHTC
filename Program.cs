@@ -22943,6 +22943,10 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
         }
     }
     c.UpdatedAt = DateTime.Now;
+    // #1145 cùng luật #1144: cả họ hàm `Ser_ROWarrantyReport_HTCApproved*` (LIVE qua nhiều kênh WS
+    // HTC/Auto/DealerAuto) ghi `WarrantyStatus`/`LogLUDateTime`/`LogLUBy` trong CÙNG một alColumnEffective —
+    // /action bao mọi bước submit/review/approve/reject/revert nhưng chưa từng wire 2 cột này trên header.
+    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
 
     // 🔴 #268: MỌI bước chuyển đều ghi một dòng nhật ký — nguồn gọi
     //   `ProcessSaveSerROWarrantyReportTransaction` ở **10 chỗ**, phủ hết submit/review/approve/reject/revert.
