@@ -17635,6 +17635,62 @@ app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantConte
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #997 `Rpt_Correct_Repair_Rate`/`_WH` (LIVE, `BizCarSv.Service.Report.cs:6440/6643`) — TỶ LỆ SỬA ĐÚNG NGAY LẦN ĐẦU =====
+// ĐÃ nhắc tên ở ghi chú #376 (cùng khối với `Rpt_Vehicle_Service_Frequency`) NHƯNG CHƯA TỪNG CÓ ENDPOINT —
+// #376 chỉ port `Rpt_Vehicle_Service_Frequency` (đo TẦN SUẤT ra xưởng), một chỉ số HOÀN TOÀN KHÁC với
+// "tỷ lệ sửa đúng ngay lần đầu" (đo RO nào FINISHED rồi PHẢI QUAY LẠI SỬA LẠI qua liên kết `Ser_ReceptionF.
+// BackRepairStatus='1'`) — bị gộp nhầm là "đã port" vì cùng khối ghi chú diff, đúng bẫy #420 mới (route đã
+// có của HÀM KHÁC che khuất hàm THẬT SỰ chưa có, dù cùng đoạn văn nhắc tên).
+// 🔴 Bản thường: `and (sr.ReceptionFNo is not null or sr.ReceptionFNo != '')` BỊ COMMENT (không lọc gì thêm).
+// Bản `_WH`: dòng đó ĐANG CHẠY nhưng dùng `or` nên chuỗi RỖNG vẫn lọt qua (chỉ NULL bị loại) — giữ 1:1,
+// không tự sửa thành `and`. Theo mẫu #376: `scope=wh` bật đúng lọc này, không tạo endpoint thứ hai.
+app.MapGet("/api/report/correct-repair-rate", async (AppDbContext db, ITenantContext t,
+    string dealerCodeList, DateTime checkInDateFrom, DateTime? checkInDateTo, string? scope) =>
+{
+    var wh = (scope ?? "main").Trim().ToLowerInvariant() == "wh";
+    var dealers = (dealerCodeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+    if (dealers.Count == 0) return Results.BadRequest(new { error = "Rpt_Correct_Repair_Rate_InvalidDealerCodeConditionList" });
+    var toDate = checkInDateTo ?? DateTime.Today;
+
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Status == "Finished"
+        && dealers.Contains(x.DealerCode) && x.CheckInDate >= checkInDateFrom && x.CheckInDate <= toDate)
+        .ToListAsync();
+    var receptionFNos = ros.Where(x => x.ReceptionFNo != null).Select(x => x.ReceptionFNo!).Distinct().ToList();
+    var receptions = await db.Receptions.Where(x => x.OrgId == t.OrgId && receptionFNos.Contains(x.ReceptionFNo)).ToListAsync();
+    var backRepairFNos = receptions
+        // Nguồn dùng `or` — chỉ NULL bị loại, chuỗi rỗng vẫn lọt (giữ nguyên khi scope=wh).
+        .Where(x => x.BackRepairStatus == "1" && (!wh || x.ReceptionFNo != null))
+        .Select(x => x.ReceptionFNo).ToHashSet();
+    var backRepairRos = ros.Where(x => x.ReceptionFNo != null && backRepairFNos.Contains(x.ReceptionFNo)).ToList();
+
+    var carIds = backRepairRos.Select(x => x.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID)).ToListAsync();
+    var modelIds = cars.Select(x => x.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId && modelIds.Contains(x.ModelCode)).ToListAsync();
+
+    var detail = backRepairRos.Select(r =>
+    {
+        var car = cars.FirstOrDefault(c => c.CarID == r.CarID);
+        var model = car?.ModelCode is null ? null : models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
+        return new
+        {
+            r.DealerCode, roNo = "BG-" + r.RONo, r.CusName, plateNo = car?.PlateNo, frameNo = car?.FrameNo,
+            modelName = model?.ModelName, r.Km, r.Creator, r.CheckInDate, r.ActualDeliveryDate, r.CusRequest,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        totalRO = ros.Count, totalROBackRepair = backRepairRos.Count,
+        rate = ros.Count == 0 ? 0 : Math.Round((double)backRepairRos.Count / ros.Count * 100, 2),
+        detail, scope = wh ? "wh" : "main",
+        onlyExistsOnMachine150_997 = "#997: Rpt_Correct_Repair_Rate/_WH — BizCarSv.Service.Report.cs:6440/6643",
+        distinctFromVehicleFrequency = "KHAC HOAN TOAN #376 (Rpt_Vehicle_Service_Frequency — do TAN SUAT ra xuong): ham nay do RO FINISHED roi PHAI QUAY LAI SUA LAI (Ser_ReceptionF.BackRepairStatus=1), tung bi tuong da port vi cung khoi ghi chu #376 nhac ten — CHUA TUNG co endpoint truoc #997.",
+        brokenOrConditionKeptAsIs = "Nguon viet (ReceptionFNo is not null or ReceptionFNo != '') — dung 'or' nen chuoi RONG van lot qua, chi NULL bi loai; giu 1:1 khi scope=wh, khong tu sua thanh 'and'.",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #311 KHẢ NĂNG CUNG ỨNG PHỤ TÙNG — viết lại theo nguồn `Rpt_AbilitySupplyParts` =====
 // Nguồn: `BizCarSv.Inventory.Report.cs:8303` (LIVE). 🆕 Đến được nhờ rà **17 hit "lệch trục"** của sweep
 //   `top 1` (#308/#310): ba cặp `select f.StockOutID/StockOutTime … order by f.StockOutNo asc` nằm trong
