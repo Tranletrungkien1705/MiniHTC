@@ -5277,6 +5277,14 @@ public sealed class WarrantyWorkMst
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1095 §12 — nguồn `Ser_MST_ROWarrantyWork_Save` (AssignmentOfWork.cs:4036, bản GỐC của chuỗi
+    /// chép #785/#786/#1092/#1093/#1094) ghi đủ 4 cột nhật ký khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy
+    /// (CreatedDate/CreatedBy bị COMMENT).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Khoang/ngăn kho (Mst_Compartment) — port 1:1 FrmMst_Compartment (TCMotor DMSCarSv/Admin). Mã + tên khoang. Upsert-by-code + toggle.</summary>

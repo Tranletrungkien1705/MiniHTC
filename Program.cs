@@ -33767,7 +33767,7 @@ app.MapPost("/api/warrantyworkmsts/sync-to-service", async (List<WarrantyWorkSyn
         vocabularyIsNotCopyPaste = "AM TINH: ten tham so ds_Ser_Mst_Service va nhan SQL ---- Ser_MST_Service KHONG phai chep khoi — chung KHOP voi bang dich that; cai sai lech la TEN HAM",
     });
 }).RequireAuthorization();
-app.MapPost("/api/warrantyworkmsts", async (WarrantyWorkMstDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyworkmsts", async (WarrantyWorkMstDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.ROWWorkCode ?? "").Trim().ToUpperInvariant();
     var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
@@ -33775,10 +33775,15 @@ app.MapPost("/api/warrantyworkmsts", async (WarrantyWorkMstDto dto, AppDbContext
     if (lineError is not null) return Results.BadRequest(new { error = lineError });
 
     var row = await db.WarrantyWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == code && x.ModelCode == model);
+    var isNew1095 = row is null;
     if (row is null) { row = new WarrantyWorkMst { OrgId = t.OrgId, ROWWorkCode = code, ModelCode = model }; db.WarrantyWorkMsts.Add(row); }
     if (!string.IsNullOrWhiteSpace(dto.ROWWID)) row.ROWWID = dto.ROWWID!.Trim();
     row.ROWWorkName = dto.ROWWorkName; row.AppTypeCode = dto.AppTypeCode; row.RateHour = dto.RateHour; row.RatePrice = dto.RatePrice; row.Price = dto.Price; row.VAT = dto.VAT; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // #1095: nhanh TAO ghi du 4 cot nhat ky; nhanh SUA chi ghi LogLUDateTime/LogLUBy.
+    var by1095 = (partnerUserCode ?? "system").Trim(); var now1095 = DateTime.Now;
+    if (isNew1095) { row.CreatedDate = now1095; row.CreatedBy = by1095; }
+    row.LogLUDateTime = now1095; row.LogLUBy = by1095;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.ROWWID, row.ROWWorkCode, row.ModelCode, row.FlagActive });
 }).RequireAuthorization();
