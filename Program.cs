@@ -11617,7 +11617,7 @@ app.MapGet("/api/complaintdiagerrors", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(errorTypeCode)) qy = qy.Where(x => x.ErrorTypeCode == errorTypeCode!.Trim());
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
     var items = await qy.OrderBy(x => x.ErrorCode).Take(500)
-        .Select(x => new { x.ErrorCode, x.ErrorName, x.ErrorTypeCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+        .Select(x => new { x.ErrorCode, x.ErrorName, x.ErrorTypeCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1227 §12
     return Results.Ok(new
     {
         count = items.Count, items,
