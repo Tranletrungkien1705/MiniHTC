@@ -3258,6 +3258,10 @@ public static class Seeder
                 "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1208: SerModelAudImage (Ser_Mst_ModelAudImage_Add/_Update, Tab/BizCarSv.Tab.cs) ghi
+                // LogLUDateTime/LogLUBy vo dieu kien ca tao lan sua - port cu chua tung mo hinh hoa.
+                "ALTER TABLE public.\"SerModelAudImages\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"SerModelAudImages\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

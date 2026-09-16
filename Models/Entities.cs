@@ -16147,6 +16147,10 @@ public sealed class SerModelAudImage
     /// được phép sửa `strFt_Cols_Upd`), port cũ hoàn toàn chưa mô hình hoá cột này (chỉ hard-delete).</summary>
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    /// <summary>#1208 §12 — nguồn `Ser_Mst_ModelAudImage_Add`/`_Update` (Tab/BizCarSv.Tab.cs) ghi cả hai
+    /// cột này VÔ ĐIỀU KIỆN (cả tạo lẫn sửa) — port cũ chưa từng mô hình hoá.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>

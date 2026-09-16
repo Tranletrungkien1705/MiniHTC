@@ -45296,7 +45296,7 @@ app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/modelaudimages", async (SerModelAudImageDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/modelaudimages", async (SerModelAudImageDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var model = (dto.ModelCode ?? "").Trim();
     var audType = (dto.ReceptionFAudType ?? "").Trim();
@@ -45312,18 +45312,24 @@ app.MapPost("/api/modelaudimages", async (SerModelAudImageDto dto, AppDbContext 
     var isNew = row is null;
     if (isNew) { row = new SerModelAudImage { OrgId = t.OrgId, ModelCode = model, ReceptionFAudType = audType }; db.SerModelAudImages.Add(row); }
     row!.FilePath = dto.FilePath; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;   // #1043 §12
+    // #1208 SUA BUG THAT: nguon Ser_Mst_ModelAudImage_Add/_Update (Tab/BizCarSv.Tab.cs) ghi
+    // LogLUDateTime/LogLUBy VO DIEU KIEN ca tao lan sua — port cu chua tung dong cot nao.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FilePath, row.Remark, isNew });
 }).RequireAuthorization();
 
 // #1044: `Ser_Mst_ModelAudImage_Update` cho phép bật/tắt `FlagActive` (guard theo danh sách cột được
 //   phép sửa `strFt_Cols_Upd`) — port cũ hoàn toàn chưa có đường bật/tắt, chỉ có xoá cứng.
-app.MapPost("/api/modelaudimages/toggle", async (string model, string audType, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/modelaudimages/toggle", async (string model, string audType, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ReceptionFAudType == audType);
     if (row is null) return Results.NotFound(new { model, audType });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1";
     row.UpdatedAt = DateTime.Now;
+    // #1208: nhat quan voi POST cung bang — Ser_Mst_ModelAudImage_Update ghi LogLUDateTime/LogLUBy
+    // vo dieu kien moi lan sua (ke ca khi chi doi FlagActive).
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FlagActive });
 }).RequireAuthorization();
