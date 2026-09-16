@@ -55471,7 +55471,7 @@ app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? g
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.EngineerNo) || string.IsNullOrWhiteSpace(dto.EngineerName))
         return Results.BadRequest(new { error = "Cần EngineerNo và EngineerName." });
@@ -55482,12 +55482,17 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
     if (HasSpecialChar(no)) return Results.BadRequest(new { error = "Mã nhân viên không được nhập ký tự đặc biệt." });
     if (dto.StartWorkDate.HasValue && dto.FinishWorkDate.HasValue && dto.FinishWorkDate < dto.StartWorkDate)
         return Results.BadRequest(new { error = "Ngày bắt đầu làm việc không được lớn hơn ngày kết thúc làm việc." });
+    var by = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
     var e = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
-    if (e is null) { e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no }; db.ServiceEngineers.Add(e); }
+    // #1048: nguồn ghi VÔ ĐIỀU KIỆN CreatedDate/CreatedBy CHỈ lúc TẠO (SerEngineerCreate01); LogLUDateTime/
+    // LogLUBy ghi ở CẢ HAI nhánh (Create01 vô điều kiện, Update01 qua alColumnEffective — không có guard rỗng).
+    if (e is null) { e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no, CreatedDate = now, CreatedBy = by }; db.ServiceEngineers.Add(e); }
     e.EngineerName = dto.EngineerName; e.GroupRCode = dto.GroupRCode?.Trim().ToUpperInvariant(); e.Note = dto.Note; e.Status = dto.Status ?? "1";
     e.EngineerType = dto.EngineerType; e.StartWorkDate = dto.StartWorkDate; e.FinishWorkDate = dto.FinishWorkDate; e.UpdatedAt = DateTime.Now;
     e.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();   // #338 §12
     if (!string.IsNullOrWhiteSpace(dto.IsEngineer)) e.IsEngineer = dto.IsEngineer;   // #1000 §12
+    e.LogLUDateTime = now; e.LogLUBy = by;   // #1048
     await db.SaveChangesAsync();
     return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.EngineerType, e.StartWorkDate, e.FinishWorkDate, e.DealerCode, e.IsEngineer });
 }).RequireAuthorization();

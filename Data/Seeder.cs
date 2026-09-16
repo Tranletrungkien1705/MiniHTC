@@ -3006,6 +3006,11 @@ public static class Seeder
                 // #1047: Ser_CavityCreate ghi VO DIEU KIEN CreatedDate/CreatedBy (thieu tren entity Cavity).
                 "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1048: SerEngineerCreate01 ghi VO DIEU KIEN CreatedDate/CreatedBy + LogLUDateTime/LogLUBy.
+                "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

@@ -6722,6 +6722,16 @@ public sealed class ServiceEngineer
     /// khác `IsActive`(=`Status` của Mini) — phân biệt "có tính là KTV thợ" (dùng cho báo cáo năng suất/KPI
     /// theo đầu KTV) với "đang hoạt động". Port cũ (dùng `SerEngineerCreate` cũ hơn) không có cột này.</summary>
     public string? IsEngineer { get; set; }
+
+    // ===== #1048 §12 — `SerEngineerCreate01` (BizCarSv.Service.cs:12587) ghi VÔ ĐIỀU KIỆN
+    // CreatedDate/CreatedBy lúc TẠO + LogLUDateTime/LogLUBy (cả TẠO lẫn SỬA, `alColumnEffective`) —
+    // cùng nhóm thiếu sót hệ thống đã vá cho ServiceCustomer(#715)/ServiceCar(#716)/Cavity(#1047).
+    /// <summary>`Ser_Engineer.CreatedDate` (`strTDate` lúc tạo).</summary>
+    public DateTime? CreatedDate { get; set; }
+    /// <summary>`Ser_Engineer.CreatedBy` (`strPartnerUserCode` lúc tạo).</summary>
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chiến dịch dịch vụ/marketing (Ser_Campaign — port 1:1 FrmCampaignCreate, TCMotor DMSCarSv/Admin):
