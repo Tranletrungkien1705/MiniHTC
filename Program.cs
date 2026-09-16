@@ -62854,7 +62854,7 @@ app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? 
     return Results.Ok(new { count = items.Count, applicable, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Cần PartCode." });
     // 🔴 #256: `Views/Inventory/FrmPartPriceImport.cs:125` — guard **SỐNG** (khác `FrmImportPart` bị comment):
@@ -62866,6 +62866,7 @@ app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenant
     var code = dto.PartCode.Trim().ToUpperInvariant();
     var ed = dto.EffectiveDate.Value.Date;
     var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.EffectiveDate == ed);
+    var isNew1084 = p is null;
     if (p is null) { p = new PartPrice { OrgId = t.OrgId, PartCode = code, EffectiveDate = ed }; db.PartPrices.Add(p); }
     p.PartName = dto.PartName; p.Price = dto.Price; p.VAT = dto.VAT; p.PriceVAT = Math.Round(dto.Price * (1 + dto.VAT / 100m), 2);
     p.Status = dto.Status ?? "1";
@@ -62873,6 +62874,10 @@ app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenant
     p.Remark = dto.Remark;
     p.IsActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim();
     p.UpdatedAt = DateTime.Now;
+    // #1084: Create ghi du 4 cot nhat ky; Update chi ghi LogLUDateTime/LogLUBy.
+    var by1084 = (partnerUserCode ?? "system").Trim(); var now1084 = DateTime.Now;
+    if (isNew1084) { p.CreatedDate = now1084; p.CreatedBy = by1084; }
+    p.LogLUDateTime = now1084; p.LogLUBy = by1084;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate });
 }).RequireAuthorization();

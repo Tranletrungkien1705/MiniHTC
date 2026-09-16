@@ -2945,6 +2945,13 @@ public sealed class PartPrice
     public string? IsActive { get; set; }
 
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1084 §12 — nguồn `Ser_Mst_PartPrice_Create` (Inventory.cs:553) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `Ser_Mst_PartPrice_Update` (:742) chỉ ghi LogLUDateTime/LogLUBy khi SỬA.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Xe của khách hàng (Ser_Car — port 1:1 FrmCustomerCar, TCMotor DMSCarSv/Customer):
