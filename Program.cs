@@ -23521,15 +23521,20 @@ app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbConte
     if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code, DealerCode = dto.DealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() }; db.ServiceTradeMarks.Add(row); }
     row.TradeMarkName = dto.TradeMarkName; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // #1128 §12: nguồn `Ser_Mst_TradeMark_Create` LẪN `_Update` đều ghi `LogLUDateTime`/`LogLUBy` =
+    // strPartnerUserCode (thêm 2 cột vào entity, chưa từng có) — endpoint này gộp cả hai nhánh nên ghi vô điều kiện.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1128: toggle = gọi Ser_Mst_TradeMark_Update đổi IsActive — hàm nguồn luôn ghi 2 cột nhật ký.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();

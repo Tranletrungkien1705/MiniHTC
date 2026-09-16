@@ -3020,6 +3020,9 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceModels\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1128: Ser_Mst_TradeMark_Update ghi LogLUDateTime/LogLUBy = strPartnerUserCode moi lan sua.
+                "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 // #1050: SerServicePackageCreate/Update ghi LogLUDateTime/LogLUBy o ca hai nhanh.
                 "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",

@@ -3736,6 +3736,10 @@ public sealed class ServiceTradeMark
     // #1049 §12 — `Ser_Mst_TradeMark_Create` (BizCarSv.Master.cs:1710, LIVE) ghi `CreatedDate`/`CreatedBy`.
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
+    // #1128 §12 — `Ser_Mst_TradeMark_Update` (BizCarSv.Master.cs:1918-1993) ghi `LogLUDateTime`/`LogLUBy` =
+    // strPartnerUserCode mỗi lần sửa (kể cả chỉ đổi `IsActive`) — entity chưa từng có chỗ chứa.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
