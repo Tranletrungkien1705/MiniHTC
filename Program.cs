@@ -8080,56 +8080,85 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         .Sum(r => (decimal)(r.FinishedDate!.Value - r.StartDate!.Value).TotalMinutes);
     var workHourActualQty = Math.Round(workMinuteROQty / 60m, 1);
 
+    // ===== A.I/A.II/B.I biến dùng chung cho CẢ B.IV lẫn khối trả về (tính MỘT LẦN, đúng lesson #460).
+    var employeeNumber = engInWindow.Count;
+    var advisoryNumber = NE("CVDV"); var serviceTechnicianQty = NE("BDN"); var enginerNumber = NE("SCC");
+    var enginerBP = NE("KTVD"); var paintingTechnicianQty = NE("KTVS"); var sparePartsStaff = NE("NVPT"); var staffOrther = NE("KHAC");
+    var cavityNumber = cavInWindow.Count;
+    var cavityMaintainNumber = NC("BDN"); var cavityRONumber = NC("SCC"); var cavityOtherNumber = NC("KHAC");
+    var cavityCopperNumber = NC("KD"); var cavityBPNumber = NC("KS"); var cabinetPaintNumber = NC("BS"); var cavityParkingNumber = NC("KTN");
+    var countCarService = roIdsInPeriod.Count;
+    var countBDD = CountRO("BDD"); var countBDDRoRepair = CountRO("BDD", "ROREPAIR"); var countBDDLocal = CountRO("BDD", "LOCAL");
+    var countSCC = CountRO("SCC"); var countSCCRoRepair = CountRO("SCC", "ROREPAIR"); var countSCCRoWarranty = CountRO("SCC", "ROWARRANTY");
+    var countSCCRoInsurance = CountRO("SCC", "ROINSURANCE"); var countSCCLocal = CountRO("SCC", "LOCAL");
+    var countSCD = CountRO("SCD"); var countSCDRoRepair = CountRO("SCD", "ROREPAIR"); var countSCDRoWarranty = CountRO("SCD", "ROWARRANTY");
+    var countSCDRoInsurance = CountRO("SCD", "ROINSURANCE"); var countSCDLocal = CountRO("SCD", "LOCAL");
+    var countSCS = CountRO("SCS"); var countSCSRoRepair = CountRO("SCS", "ROREPAIR"); var countSCSRoWarranty = CountRO("SCS", "ROWARRANTY");
+    var countSCSRoInsurance = CountRO("SCS", "ROINSURANCE"); var countSCSLocal = CountRO("SCS", "LOCAL");
+    var countPDI = CountRO("PDI"); var countPDIRoRepair = CountRO("PDI", "ROREPAIR"); var countPDILocal = CountRO("PDI", "LOCAL");
+    var countSPK = CountRO("SPK"); var countSPKRoRepair = CountRO("SPK", "ROREPAIR"); var countSPKLocal = CountRO("SPK", "LOCAL");
+    var serviceAmountTotal = Math.Round(serviceAmountBDDTotal + serviceAmountSCCTotal + serviceAmountSCDTotal
+        + serviceAmountSCSTotal + ServiceAmount("PDI") + ServiceAmount("SPK"));
+
+    // ===== #1066 B.IV Quản lý hoạt động xưởng dịch vụ (ZTemp.cs:3970-4066) — 4 cột `CountWorkTime*`
+    // nguồn HARDCODE 0 (chưa cài công thức, giữ nguyên — port dòng ACTIVE); 16 chỉ số 5-20 là TỶ SỐ
+    // thuần tuý trên các giá trị ĐÃ TÍNH ở A.I-A.V/B.I-B.III (không cần query thêm) — mỗi tỷ số nguồn
+    // `case when <mẫu số>=0 then 0 else Round(tử/mẫu,1) end` (tránh chia 0).
+    decimal SafeDiv(decimal numerator, decimal denominator) => denominator == 0 ? 0 : Math.Round(numerator / denominator, 1);
+    // ⚠️ AllPartAmount nguồn CÒN CỘNG PartAmountOut/ShellAmountOut/AccessoryAmountAfterVAT/AccessoryAmountOut
+    // (khối StockOut/phụ kiện — B.III phần 2, CHƯA port) — ở đây chỉ có phần "dòng sửa chữa" (B.III phần 1).
+    var allPartAmountPartial = partRoRepair + partRoWarranty + partRoInsurance + partLocal + partShell;
+    var carPerAdviserDay = (advisoryNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countCarService, advisoryNumber * workDayQty);
+    var workHourPerCarRO = SafeDiv(workHourActualQty, countCarService);
+    var cavityQtyPerEngineerBDNSCC = (serviceTechnicianQty + enginerNumber == 0) ? 0
+        : SafeDiv(cavityMaintainNumber + cavityRONumber, serviceTechnicianQty + enginerNumber);
+    var countBDDPerCavityMaintain = (cavityMaintainNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countBDD, cavityMaintainNumber * workDayQty);
+    var countSCCPerCavityRO = (cavityRONumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countSCC, cavityRONumber * workDayQty);
+    var countSCDPerCavityCopper = (cavityCopperNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countSCD, cavityCopperNumber * workDayQty);
+    var countSCSPerCavityBP = (cavityBPNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countSCS, cavityBPNumber * workDayQty);
+    var countSCSPerCabinetPaint = (cabinetPaintNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countSCS, cabinetPaintNumber * workDayQty);
+    var revenuePerAdviser = SafeDiv(serviceAmountTotal + allPartAmountPartial, advisoryNumber);
+    var revenuePerKTVBDN = SafeDiv(serviceAmountBDDTotal, serviceTechnicianQty);
+    var revenuePerKTVSCC = SafeDiv(serviceAmountSCCTotal, enginerNumber);
+    var revenuePerKTVSCD = SafeDiv(serviceAmountSCDTotal, enginerBP);
+    var revenuePerKTVSCS = SafeDiv(serviceAmountSCSTotal, paintingTechnicianQty);
+    var laborProductivity = SafeDiv(workHourFeeQty, workHourActualQty);
+    var serviceProductivity = SafeDiv(workHourFeeQty, workHourQty);
+    var employmentRate = SafeDiv(workHourActualQty, workHourQty);
+
     return Results.Ok(new
     {
         dealer, dateFrom, dateTo,
         // ===== A.I Nhân sự bộ phận dịch vụ, phụ tùng (ZTemp.cs:3622-3629) =====
-        employeeNumber = engInWindow.Count,
-        advisoryNumber = NE("CVDV"),           // 1. Cố vấn dịch vụ
-        serviceTechnicianQty = NE("BDN"),      // 2. KTV bảo dưỡng nhanh
-        enginerNumber = NE("SCC"),             // 3. KTV sửa chữa chung
-        enginerBP = NE("KTVD"),                // 4. KTV đồng
-        paintingTechnicianQty = NE("KTVS"),    // 5. KTV sơn
-        sparePartsStaff = NE("NVPT"),          // 6. Nhân viên phụ tùng
-        staffOrther = NE("KHAC"),              // 7. Nhân viên khác
+        employeeNumber, advisoryNumber, serviceTechnicianQty, enginerNumber, enginerBP, paintingTechnicianQty, sparePartsStaff, staffOrther,
         // ===== A.II Tổng số khoang (ZTemp.cs:3633-3641) =====
-        cavityNumber = cavInWindow.Count,
-        cavityMaintainNumber = NC("BDN"),       // 1. Khoang bảo dưỡng nhanh
-        cavityRONumber = NC("SCC"),             // 2. Khoang sửa chữa chung
-        cavityOtherNumber = NC("KHAC"),         // 3. Khoang khác (kiểm tra cuối, thử phanh)
-        cavityCopperNumber = NC("KD"),          // 4. Khoang đồng
-        cavityBPNumber = NC("KS"),              // 5. Khoang sơn
-        cabinetPaintNumber = NC("BS"),          // 6. Buồng sơn
-        cavityParkingNumber = NC("KTN"),        // 7. Buồng sơn/giao xe/đậu xe
+        cavityNumber, cavityMaintainNumber, cavityRONumber, cavityOtherNumber, cavityCopperNumber, cavityBPNumber, cabinetPaintNumber, cavityParkingNumber,
         // ===== A.III Đơn giá nhân công =====
         unitPrice = unitPriceBDN + unitPriceSCC + unitPriceSCD + unitPriceSCS,   // Tổng 1+2+3+4
         unitPriceBDN, unitPriceSCC, unitPriceSCD, unitPriceSCS,
+        // ===== A.IV Số giờ làm việc của KTV =====
+        workHourKTV = workDayQty + workHourQty + workHourFeeQty + workHourActualQty,   // Tổng 1+2+3+4 (nguyên văn nguồn)
+        workDayQty, workHourQty, workHourFeeQty, workHourBDNQty, workHourSCCQty, workHourSCDQty, workHourSCSQty, workHourActualQty,
         // ===== A.V Tỷ lệ lợi nhuận gộp =====
         profitRate = serProfitRate + partProfitRate,   // Tổng 1+2 (nguyên văn nguồn: "công thức gây khó hiểu")
         serProfitRate, partProfitRate,
         // ===== B.I Tổng số lượt xe dịch vụ =====
-        countCarService = roIdsInPeriod.Count,
-        countBDD = CountRO("BDD"), countBDDRoRepair = CountRO("BDD", "ROREPAIR"), countBDDLocal = CountRO("BDD", "LOCAL"),
-        countSCC = CountRO("SCC"), countSCCRoRepair = CountRO("SCC", "ROREPAIR"), countSCCRoWarranty = CountRO("SCC", "ROWARRANTY"),
-        countSCCRoInsurance = CountRO("SCC", "ROINSURANCE"), countSCCLocal = CountRO("SCC", "LOCAL"),
-        countSCD = CountRO("SCD"), countSCDRoRepair = CountRO("SCD", "ROREPAIR"), countSCDRoWarranty = CountRO("SCD", "ROWARRANTY"),
-        countSCDRoInsurance = CountRO("SCD", "ROINSURANCE"), countSCDLocal = CountRO("SCD", "LOCAL"),
-        countSCS = CountRO("SCS"), countSCSRoRepair = CountRO("SCS", "ROREPAIR"), countSCSRoWarranty = CountRO("SCS", "ROWARRANTY"),
-        countSCSRoInsurance = CountRO("SCS", "ROINSURANCE"), countSCSLocal = CountRO("SCS", "LOCAL"),
-        countPDI = CountRO("PDI"), countPDIRoRepair = CountRO("PDI", "ROREPAIR"), countPDILocal = CountRO("PDI", "LOCAL"),
-        countSPK = CountRO("SPK"), countSPKRoRepair = CountRO("SPK", "ROREPAIR"), countSPKLocal = CountRO("SPK", "LOCAL"),
+        countCarService, countBDD, countBDDRoRepair, countBDDLocal,
+        countSCC, countSCCRoRepair, countSCCRoWarranty, countSCCRoInsurance, countSCCLocal,
+        countSCD, countSCDRoRepair, countSCDRoWarranty, countSCDRoInsurance, countSCDLocal,
+        countSCS, countSCSRoRepair, countSCSRoWarranty, countSCSRoInsurance, countSCSLocal,
+        countPDI, countPDIRoRepair, countPDILocal, countSPK, countSPKRoRepair, countSPKLocal,
         // ===== B.II Tổng doanh thu tiền công dịch vụ =====
-        serviceAmount = Math.Round(ServiceAmount("BDD") + ServiceAmount("SCC") + ServiceAmount("SCD")
-            + ServiceAmount("SCS") + ServiceAmount("PDI") + ServiceAmount("SPK")),
-        serviceAmountBDD = Math.Round(ServiceAmount("BDD")),
+        serviceAmount = serviceAmountTotal,
+        serviceAmountBDD = Math.Round(serviceAmountBDDTotal),
         serviceAmountBDDRoRepair = Math.Round(ServiceAmount("BDD", "ROREPAIR")), serviceAmountBDDLocal = Math.Round(ServiceAmount("BDD", "LOCAL")),
-        serviceAmountSCC = Math.Round(ServiceAmount("SCC")),
+        serviceAmountSCC = Math.Round(serviceAmountSCCTotal),
         serviceAmountSCCRoRepair = Math.Round(ServiceAmount("SCC", "ROREPAIR")), serviceAmountSCCRoWarranty = Math.Round(ServiceAmount("SCC", "ROWARRANTY")),
         serviceAmountSCCRoInsurance = Math.Round(ServiceAmount("SCC", "ROINSURANCE")), serviceAmountSCCLocal = Math.Round(ServiceAmount("SCC", "LOCAL")),
-        serviceAmountSCD = Math.Round(ServiceAmount("SCD")),
+        serviceAmountSCD = Math.Round(serviceAmountSCDTotal),
         serviceAmountSCDRoRepair = Math.Round(ServiceAmount("SCD", "ROREPAIR")), serviceAmountSCDRoWarranty = Math.Round(ServiceAmount("SCD", "ROWARRANTY")),
         serviceAmountSCDRoInsurance = Math.Round(ServiceAmount("SCD", "ROINSURANCE")), serviceAmountSCDLocal = Math.Round(ServiceAmount("SCD", "LOCAL")),
-        serviceAmountSCS = Math.Round(ServiceAmount("SCS")),
+        serviceAmountSCS = Math.Round(serviceAmountSCSTotal),
         serviceAmountSCSRoRepair = Math.Round(ServiceAmount("SCS", "ROREPAIR")), serviceAmountSCSRoWarranty = Math.Round(ServiceAmount("SCS", "ROWARRANTY")),
         serviceAmountSCSRoInsurance = Math.Round(ServiceAmount("SCS", "ROINSURANCE")), serviceAmountSCSLocal = Math.Round(ServiceAmount("SCS", "LOCAL")),
         serviceAmountPDI = Math.Round(ServiceAmount("PDI")),
@@ -8138,18 +8167,21 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         serviceAmountSPKRoRepair = Math.Round(ServiceAmount("SPK", "ROREPAIR")), serviceAmountSPKLocal = Math.Round(ServiceAmount("SPK", "LOCAL")),
         // ===== B.III Tổng doanh thu phụ tùng, dầu nhớt (PHẦN 1 — dòng sửa chữa; PHẦN 2 StockOut/phụ kiện
         // vẫn CHƯA port, xem notPortedYet) =====
-        partAmountNotShell = Math.Round(partRoRepair + partRoWarranty + partRoInsurance + partLocal),
+        partAmountNotShell = Math.Round(allPartAmountPartial - partShell),
         partAmountRoRepair = Math.Round(partRoRepair), partAmountRoWarranty = Math.Round(partRoWarranty),
         partAmountRoInsurance = Math.Round(partRoInsurance), partAmountLocal = Math.Round(partLocal),
         partAmountShell = Math.Round(partShell),
-        // ===== A.IV Số giờ làm việc của KTV =====
-        workDayQty,
-        workHourQty,
-        workHourFeeQty, workHourBDNQty, workHourSCCQty, workHourSCDQty, workHourSCSQty,
-        workHourActualQty,
+        // ===== B.IV Quản lý hoạt động xưởng dịch vụ (4 cột đầu HARDCODE 0 đúng nguồn; 16 chỉ số sau
+        // là TỶ SỐ suy ra từ dữ liệu đã tính ở trên) =====
+        countWorkTime = 0, countWorkTime_DBD = 0, countWorkTime_SCC = 0, countWorkTime_SCD = 0, countWorkTime_SCS = 0,
+        carPerAdviserDay, workHourPerCarRO, cavityQtyPerEngineerBDNSCC,
+        countBDDPerCavityMaintain, countSCCPerCavityRO, countSCDPerCavityCopper, countSCSPerCavityBP, countSCSPerCabinetPaint,
+        revenuePerAdviser, revenuePerKTVBDN, revenuePerKTVSCC, revenuePerKTVSCD, revenuePerKTVSCS,
+        laborProductivity, serviceProductivity, employmentRate,
         notPortedYet = "B.III PHẦN 2 (doanh thu phụ kiện `AccessoryAmountAfterVAT` + khối bán ra ngoài "
             + "`Ser_Inv_StockOut/StockOutDetail/StockOutOrder` phân loại phụ kiện qua `Ser_MST_PartType`) "
-            + "CHƯA port — hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. A.I-A.V/B.I/B.II/B.III-phần1 xong.",
+            + "CHƯA port — hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. `revenuePerAdviser`/`AllPartAmount` "
+            + "hiện THIẾU phần B.III-2 nên bị THẤP HƠN nguồn thật. A.I-A.V/B.I/B.II/B.III-phần1/B.IV xong.",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
