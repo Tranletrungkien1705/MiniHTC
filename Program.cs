@@ -78489,7 +78489,7 @@ app.MapPost("/api/repairorders/{no}/engineers", async (string no, List<RoService
     return Results.Ok(new { r.RONo, inserted });
 }).RequireAuthorization();
 
-app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
@@ -78709,7 +78709,10 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         r.PointEndInv = dto.PointEndInv;
         r.PointRankTotalInv = dto.PointRankTotalInv;         // điểm tích TIÊU DÙNG — KHÁC PointTotal
         r.PointConsumptionPrm = dto.PointConsumptionPrm;
-        r.LogLUDateTime = DateTime.Now; r.LogLUBy = dto.LogLUBy;
+        // #1101 SỬA BUG THẬT: nguồn `SerROStatusUpdatePaid_New20230228` (Service.RO.cs:5736, máy 150) không
+        // hề có tham số `strLogLUBy` — actor DUY NHẤT là `strPartnerUserCode`. Port cũ nhận LogLUBy trực tiếp
+        // từ client (`dto.LogLUBy`), cho phép client tự xưng là ai đã chuyển trạng thái. Đổi sang partnerUserCode.
+        r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
 
         // ===== 🔴🔴 #465 RÚT KẾT LUẬN CỦA #464 — TÔI ĐO SAI, KHÔNG PHẢI NGUỒN SAI =====
         // #464 tuyên bố hai khối JSON Loyalty "không bao giờ tới máy chủ". **SAI**.
