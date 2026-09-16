@@ -36691,13 +36691,15 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         //   của nguồn ⇒ giữ nguyên, đúng bản LIVE.
         //
         // ⚠️ Nguồn loại `AppStatus != '4'` (Hủy) — **blacklist đúng MỘT mã**, mã lạ/NULL **vẫn tính là bận**.
+        // #1220 SUA BUG THAT: code truoc day so voi "Cancelled" (tieng Anh) trong khi ServiceAppointment.Status
+        // luu MA SO THO ("4" = Huy, dung nhu chinh chu thich tren) — guard nay khong bao gio loai duoc lich da huy.
         var cavityId = (dto.CavityID ?? "").Trim();
         var overlap = cavityId.Length > 0
             ? await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityID == cavityId
-                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo)
+                  && x.Status != "4" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo)
             // lùi về TÊN chỉ khi chưa có CavityID (dữ liệu cũ) — kém chính xác, đã khai báo.
             : await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity
-                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
+                  && x.Status != "4" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
         if (overlap) return Results.BadRequest(new
         {
             error = "Khoang " + (cavityId.Length > 0 ? cavityId : cavity) + " đã có lịch trùng khung giờ.",
@@ -36728,7 +36730,10 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         // 🔴 #319 TRẠNG THÁI do NGƯỜI GỌI truyền: nguồn ghi `AppStatus` **chỉ khi tham số khác rỗng**
         //   (`if (!StringUtils.IsEmpty(strAppStatus))`) ⇒ kênh máy tính bảng tự quyết trạng thái ban đầu.
         //   Port cũ **ép cứng** "Booked" ⇒ mất khả năng đó. Nay: rỗng thì mới mặc định "Booked".
-        Status = string.IsNullOrWhiteSpace(dto.AppStatus) ? "Booked" : dto.AppStatus!.Trim(),
+        // #1220 SUA BUG THAT: mac dinh truoc day la "Booked" (tieng Anh) trong khi ServiceAppointment.Status
+        // luu MA SO THO cua nguon (AppStatus chu so — xem dong Status = "1" o endpoint tao lich khac, va
+        // guard "AppStatus != '4'" o nhieu noi) — "Booked" khong khop bat ky bo loc/guard nao dung ma so.
+        Status = string.IsNullOrWhiteSpace(dto.AppStatus) ? "1" : dto.AppStatus!.Trim(),
         EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest,
         DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(), CusID = dto.CusID, Vin = dto.Vin?.Trim().ToUpperInvariant(),
         // #282 §12: 8 cột thật của `TblSerAppRO`. `Source` là cột NGUỒN; `Channel` (#270, port tự đặt)
@@ -37163,10 +37168,10 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         var overlap = cavityId.Length > 0
             ? await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityID == cavityId
                   && x.AppNo != appNo
-                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo)
+                  && x.Status != "4" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo)
             : await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity
                   && x.AppNo != appNo
-                  && x.Status != "Cancelled" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
+                  && x.Status != "4" && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
         if (overlap) return Results.BadRequest(new
         {
             error = "Khoang " + (cavityId.Length > 0 ? cavityId : cavity) + " đã có lịch trùng khung giờ.",
@@ -37910,7 +37915,7 @@ app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantCont
         .OrderBy(c => c.CavityName).Select(c => new { c.CavityName, c.CavityNo }).ToListAsync();   // Cavity dung CavityNo
 
     var raw = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityName != null
-            && x.Status != "Cancelled" && x.AppFrom >= d0 && x.AppFrom < d1)
+            && x.Status != "4" && x.AppFrom >= d0 && x.AppFrom < d1)
         .OrderBy(x => x.AppFrom).ToListAsync();
 
     // Nguồn: dòng thiếu giờ bắt đầu/kết thúc bị `continue` — bỏ qua lặng lẽ. Nay ĐẾM ra.
@@ -65735,7 +65740,7 @@ app.MapPost("/api/os/appointments/for-hcc", async (OsAppointmentForHccDto dto, A
     if (cavityId.Length > 0 && dto.AppFrom.HasValue && dto.AppTo.HasValue)
     {
         var busy = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityID == cavityId
-            && x.Status != "Cancelled" && x.AppFrom < dto.AppTo!.Value && dto.AppFrom!.Value < x.AppTo);
+            && x.Status != "4" && x.AppFrom < dto.AppTo!.Value && dto.AppFrom!.Value < x.AppTo);
         if (busy) return Results.BadRequest(new { error = "Khoang " + cavityId + " đã có lịch trùng khung giờ." });
     }
 
@@ -65750,7 +65755,10 @@ app.MapPost("/api/os/appointments/for-hcc", async (OsAppointmentForHccDto dto, A
         // ⚠️ AppDateTime ghi THÔ (không convert) — đúng nhánh ForHCC.
         AppDateTime = dto.AppDateTime, AppTime = dto.AppTime,
         AppDateTimeFrom = dto.AppDateTimeFrom, AppTimeFrom = dto.AppTimeFrom,
-        Status = string.IsNullOrWhiteSpace(dto.AppStatus) ? "Booked" : dto.AppStatus!.Trim(),
+        // #1220 SUA BUG THAT: mac dinh truoc day la "Booked" (tieng Anh) trong khi ServiceAppointment.Status
+        // luu MA SO THO cua nguon (AppStatus chu so — xem dong Status = "1" o endpoint tao lich khac, va
+        // guard "AppStatus != '4'" o nhieu noi) — "Booked" khong khop bat ky bo loc/guard nao dung ma so.
+        Status = string.IsNullOrWhiteSpace(dto.AppStatus) ? "1" : dto.AppStatus!.Trim(),
         AppFrom = dto.AppFrom ?? DateTime.Now, AppTo = dto.AppTo ?? DateTime.Now,
         // CreatedDate của nguồn: có guard + cắt tới PHÚT.
         CreatedAt = dto.CreatedDate.HasValue
