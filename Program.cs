@@ -33905,11 +33905,15 @@ app.MapPost("/api/warrantyworkmsts/import", async (
     return Results.Ok(new { added, updated, total = lines.Count, message = "Import thành công!" });
 }).RequireAuthorization();
 
-app.MapPost("/api/warrantyworkmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyworkmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.WarrantyWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1131 cùng luật #1095: toggle = gọi Ser_MST_ROWarrantyWork_Save nhánh SỬA (AssignmentOfWork.cs:4036,
+    // dòng 4230/4243 luôn ghi LogLUDateTime/LogLUBy khi cập nhật bản ghi đã tồn tại) — trước đó bị bỏ sót
+    // vì chỉ soi `_Delete` (xoá cứng, không liên quan FlagActive) thay vì soi đúng `_Save`.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
@@ -46772,12 +46776,15 @@ app.MapPost("/api/extraworks", async (ExtraWorkDto dto, AppDbContext db, ITenant
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/extraworks/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/extraworks/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ExtraWorkMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ExtraWorkCode == code);
     if (x is null) return Results.NotFound(new { code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1131 cùng luật #1092: toggle = gọi Ser_MST_ROWorkArising_Save nhánh SỬA — luôn ghi LogLUDateTime/LogLUBy
+    // (CreatedDate/CreatedBy bị comment trong nguồn nên KHÔNG đụng ở đây, đúng khuôn #1092).
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.ExtraWorkCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
