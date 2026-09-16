@@ -23070,8 +23070,15 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     var prtItems = await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == c.Id).ToListAsync();
     if (htcSide)
     {
-        foreach (var i in svcItems) { i.WarrantyStatus = rule.to; i.ApprovedDate = apprAt; i.ApprovedBy = dto.ApprovedBy; }
-        foreach (var i in prtItems) { i.WarrantyStatus = rule.to; i.ApprovedDate = apprAt; i.ApprovedBy = dto.ApprovedBy; }
+        // #1211 SUA BUG THAT: cot WarrantyStatus cua DONG (khac cot Status cua DAU) van dung MA NGUON
+        // THO ("ACCE"/"REJ"/"REVERT" - xem GET /api/warrantyclaims/report/main-part loc
+        // "x.WarrantyStatus == \"ACCE\"") - truoc day cascade ghi thang rule.to (chuoi tieng Anh cua DAU,
+        // "Accepted"/"Rejected"/"Reverted") xuong cot nay, khien dong vua duyet KHONG BAO GIO khop bo loc
+        // "ACCE" cua bao cao main-part (chi lot qua nho nhanh "|| WarrantyStatus == null" cho dong CHUA
+        // TUNG duyet, con dong DA duyet qua /action thi bi loai).
+        var itemStatusCode = rule.to switch { "Accepted" => "ACCE", "Rejected" => "REJ", "Reverted" => "REVERT", _ => rule.to };
+        foreach (var i in svcItems) { i.WarrantyStatus = itemStatusCode; i.ApprovedDate = apprAt; i.ApprovedBy = dto.ApprovedBy; }
+        foreach (var i in prtItems) { i.WarrantyStatus = itemStatusCode; i.ApprovedDate = apprAt; i.ApprovedBy = dto.ApprovedBy; }
     }
 
     // --- #396 TÁC DỤNG PHỤ: duyệt CHẤP THUẬN + dòng công có BulletinID ⇒ đóng thông báo kỹ thuật.
