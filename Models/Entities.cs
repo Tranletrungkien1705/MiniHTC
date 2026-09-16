@@ -14615,6 +14615,13 @@ public sealed class CusDebit
     public string? Note { get; set; }
     public string Status { get; set; } = "Open"; // Open -> Paid
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1082 §12 — nguồn `SerCusDebitCreate` (Debit.cs:432) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `SerCusDebitUpdate` (:645) chỉ ghi LogLUDateTime/LogLUBy khi SỬA.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thu tiền trên công nợ khách hàng — port 1:1 FrmCusPaymentCreate (TblPayment, TCMotor).</summary>

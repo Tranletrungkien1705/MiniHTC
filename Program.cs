@@ -19916,7 +19916,7 @@ app.MapPost("/api/cusdebits/{id:long}/delete", async (long id, AppDbContext db, 
 // ⚠️ Cột `SupplierID` (không phải `SupplierCode`) mới là tên cột thật trên `Ser_CusDebit` ở hàm ghi —
 //   trong khi câu ĐỌC của #555 select `d.SupplierCode`. **Hai tên cho một khái niệm**; MiniHTC dùng
 //   `SupplierCode` (theo câu đọc) và nêu cờ.
-app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // checkCusDebitFieldEmpty(DealerCode, DebitAmount, DebitDate) — BA trường bắt buộc của nguồn.
     if (string.IsNullOrWhiteSpace(dto.DealerCode))
@@ -19941,6 +19941,9 @@ app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantCo
         DebitAmount = dto.DebitAmount, PaidAmount = 0,
         DebitDate = dto.DebitDate, Note = dto.Note, Status = "Open",
     };
+    // #1082: SerCusDebitCreate (Debit.cs:432) ghi du 4 cot nhat ky khi TAO.
+    var by1082 = (partnerUserCode ?? "system").Trim(); var now1082 = DateTime.Now;
+    r.CreatedDate = now1082; r.CreatedBy = by1082; r.LogLUDateTime = now1082; r.LogLUBy = by1082;
     db.CusDebits.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -19978,7 +19981,7 @@ app.MapPost("/api/cusdebits", async (CusDebitDto dto, AppDbContext db, ITenantCo
 // ⚠️ Nhánh sửa gán `DebitAmount` **vô điều kiện** (không guard rỗng) trong khi `DebitDate`/`Note` thì có
 //   nhánh `else DBNull` ⇒ ba cột số/ngày/ghi chú, **ba cách xử lý rỗng khác nhau** trong cùng một khối lệnh.
 app.MapPost("/api/cusdebits/{id:long}/update", async (long id, CusDebitDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // CheckExistCusDebit(ID) — guard DUY NHẤT của nguồn ở nhánh sửa.
     var r = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -20006,6 +20009,8 @@ app.MapPost("/api/cusdebits/{id:long}/update", async (long id, CusDebitDto dto,
         dto.DebitDate.Value.Hour, dto.DebitDate.Value.Minute, 0);
     r.Note = string.IsNullOrWhiteSpace(dto.Note) ? null : dto.Note;
     if (!string.IsNullOrWhiteSpace(dto.DebitType)) r.DebitType = dto.DebitType!.Trim();
+    // #1082: SerCusDebitUpdate (Debit.cs:645) chi ghi LogLUDateTime/LogLUBy khi SUA.
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
 
     return Results.Ok(new
