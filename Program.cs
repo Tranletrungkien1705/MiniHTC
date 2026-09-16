@@ -69424,7 +69424,14 @@ app.MapPost("/api/repairorders/{roId}/status", async (long roId, RoStatusChangeD
 {
     var ro = await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.Id == roId);
     if (ro == null) return Results.NotFound(new { error = "khong tim thay lenh sua chua" });
-    var oldStatus = (ro.Status ?? "").Trim().ToUpperInvariant();
+    // #1219 SUA BUG THAT: endpoint nay truoc day ghi thang ma nguon tho ("INGA"/"RPRD"/...) vao
+    // ro.Status, NGUOC HUONG voi toan bo phan con lai cua he thong (RO creation, create-invoice #960,
+    // va ~24 vi tri da vá o #1212-#1218) - tat ca deu doc/ghi RepairOrder.Status bang chuoi tieng Anh
+    // (roStatusSourceCodes, dong ~65340). ro.Status="INGA" se tro nen VO HINH voi moi noi khac doc theo
+    // tieng Anh. Giu NGUYEN hop dong client (gui/nhan ma nguon tho, dung stageConstants da cong bo),
+    // chi dich sang tieng Anh truoc khi ghi xuong DB, va dich ro.Status (tieng Anh) sang ma tho de so
+    // voi bang allowed (van giu dang ma nguon cho de doi chieu nguon).
+    var oldStatus = roStatusSourceCodes.TryGetValue((ro.Status ?? "").Trim(), out var oldRaw) ? oldRaw : (ro.Status ?? "").Trim().ToUpperInvariant();
     var newStatus = (dto.NewStatus ?? "").Trim().ToUpperInvariant();
     // Bang chuyen doi 1:1 voi cac case cua nguon.
     var allowed = new Dictionary<string, string[]>
@@ -69460,7 +69467,8 @@ app.MapPost("/api/repairorders/{roId}/status", async (long roId, RoStatusChangeD
     {
         return Results.BadRequest(new { error = "trang thai dich khong nam trong may trang thai", newStatus });
     }
-    ro.Status = newStatus;
+    // #1219: dich ma nguon tho (newStatus) sang chuoi tieng Anh Mini luu truoc khi ghi xuong DB.
+    ro.Status = roStatusSourceCodes.FirstOrDefault(kv => kv.Value == newStatus).Key ?? newStatus;
     // #1140: nguon SerROStatusUpdate (Service01.cs:8754-8839) ghi Status/LogLUDateTime/LogLUBy trong CUNG
     // mot alColumnEffective — port cu (dung chung than nay cho ca 5 vo boc chuyen trang thai) bo sot hoan
     // toan 2 cot nhat ky, du RepairOrder da co san cot tu #1051/#1115.
