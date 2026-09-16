@@ -22197,6 +22197,27 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
         if (!string.Equals((kmAttachments[0].Remark ?? "").Trim(), claim.WarrantyKM!.Value.ToString(), StringComparison.Ordinal))
             return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_KM",
                 message = "Giá trị của ảnh KM không trùng với số Km của báo giá!" });
+
+        // ===== #1019 `ROWarrantyReport_Approve_Check_FinishedDate` / `_BatteryNo` (WarrantyReport.cs:4833/4721) =====
+        // Nguồn nhánh hoá theo (ROWTypeCode, ROWTypeDtlCode) — bản đồ đủ 11 nhánh lá đã đọc trọn:
+        //   `FinishedDate` gọi ở 10/11 nhánh, CHỈ trừ (BT, C) — nhánh "Báo cáo bản tin/chiến dịch" có bộ
+        //   guard RIÊNG (CVC/Bulletin/WarrantyFile*, không có FinishedDate) ⇒ loại trừ đúng cặp này, KHÔNG
+        //   áp dụng chung cho mọi claim (tránh over-generalize — #428/#430).
+        //   `BatteryNo` CHỈ gọi ở (XM,B) và (SB,B) — tức khi `ROWTypeDtlCode == "B"` (Ắc quy), bất kể ROWTypeCode.
+        var rowType = (claim.ROWTypeCode ?? "").Trim().ToUpperInvariant();
+        var rowTypeDtl = (claim.ROWTypeDtlCode ?? "").Trim().ToUpperInvariant();
+        if (!(rowType == "BT" && rowTypeDtl == "C"))
+        {
+            if (claim.FinishedDate is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidRO_FinishedDate",
+                    message = "BCBH chưa có ngày sửa xong!" });
+            if (claim.FinishedDate.Value.AddDays(7) < claim.CreatedAt)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidRO_FinishedDate",
+                    message = "Ngày gửi BCBH - Ngày sửa xong <= 7!" });
+        }
+        if (rowTypeDtl == "B" && string.IsNullOrWhiteSpace(claim.BatteryNo))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidBatteryNo",
+                message = "VIN không có mã Ắc quy!" });
     }
     if (newItemStatus != null) item.WarrantyStatus = newItemStatus;
     if (dto.Note != null) item.Note = dto.Note;
