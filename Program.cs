@@ -42264,7 +42264,7 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
 // 📌 MiniHTC: cột tương ứng là `Bulletin.FlagActive`. Endpoint dưới **bắt buộc** truyền cờ (chặn đúng lỗ
 //   NULL của nguồn) và ghi rõ hai đường xoá khác nhau.
 app.MapPost("/api/bulletins/{bulletinNo}/set-active", async (string bulletinNo, AppDbContext db,
-    ITenantContext t, string? isActive) =>
+    ITenantContext t, string? isActive, string? partnerUserCode) =>
 {
     var no = bulletinNo.Trim().ToUpperInvariant();
     var b = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
@@ -42281,6 +42281,9 @@ app.MapPost("/api/bulletins/{bulletinNo}/set-active", async (string bulletinNo, 
         return Results.BadRequest(new { error = "isActive chi nhan 0 hoac 1 (Constants.Flag.Active = 1)." });
 
     b.FlagActive = v;
+    // #1122 §12 gap: nguồn `UpdateBulletin_20210224` LUÔN ghi `LogLUDateTime`/`LogLUBy` = `strPartnerUserCode`
+    // trong CÙNG câu update đổi `IsActive` (Bulletin.cs:921, dòng 992-994) — port cũ bỏ sót hoàn toàn.
+    b.LogLUDateTime = DateTime.Now; b.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
 
     return Results.Ok(new
