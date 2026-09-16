@@ -63120,7 +63120,11 @@ app.MapGet("/api/customercaremaces/appointments", async (AppDbContext db, ITenan
     string? cusName, string? plateNo, DateTime? fromDate, DateTime? toDate) =>
 {
     // hai guard cứng của nguồn — luôn áp, không cho client tắt
-    var qy = db.CustomerCareMaces.Where(c => c.OrgId == t.OrgId && c.Status == "1" && c.ApointDate != null);
+    // #1222 SUA BUG THAT: "1" la ma nguon tho (TConst.SerCareMaceStatus: 0/1/2), nhung
+    // CustomerCareMace.Status luu TEN TRANG THAI TIENG ANH (xac nhan qua endpoint tham quyen
+    // POST /api/customercaremaces/{no}/contact, dung _maceStatuses = Pending/Contacted/NotContacted)
+    // => guard nay khong bao gio khop, endpoint luon tra RONG.
+    var qy = db.CustomerCareMaces.Where(c => c.OrgId == t.OrgId && c.Status == "Contacted" && c.ApointDate != null);
 
     if (!string.IsNullOrWhiteSpace(cusName))
         qy = qy.Where(c => c.CusName != null && c.CusName.ToLower().Contains(cusName!.Trim().ToLower()));
