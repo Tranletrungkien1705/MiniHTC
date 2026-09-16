@@ -74244,16 +74244,18 @@ app.MapGet("/api/repairorders/status-list-wh", async (AppDbContext db, ITenantCo
                            plateNo = x.LicensePlate, frameNo = x.Vin, x.Km, x.IsReRepair })
         .ToListAsync();
 
+    // #1214 SUA BUG THAT: cung ho #1213 — ham nay nhan RepairOrder.Status (chuoi tieng Anh Mini luu),
+    // khong phai ma nguon tho, cac case cu khong bao gio khop.
     static string StatusName(string? st) => st switch
     {
-        "CRE" or "PRT" or "HRO" => "Chờ sửa",
-        "INGA" => "Đang sửa",
-        "RPRD" => "Sửa xong",
-        "CEND" => "Kiểm tra cuối cùng",
-        "PAID" => "Thanh toán xong",
-        "FNS" => "Đã giao xe",
-        "REJ" => "Lệnh hủy",
-        "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+        "Created" or "PrintedQuote" or "HasRO" => "Chờ sửa",
+        "InGarage" => "Đang sửa",
+        "Repaired" => "Sửa xong",
+        "CheckEnd" => "Kiểm tra cuối cùng",
+        "Paid" => "Thanh toán xong",
+        "Finished" => "Đã giao xe",
+        "Rejected" => "Lệnh hủy",
+        "Wait4Part" or "HasPart" or "NotResponding" => "Hủy, Hẹn lại",
         _ => "Không xác định",
     };
 
@@ -74604,16 +74606,18 @@ app.MapGet("/api/report/ro-summary-wh", async (AppDbContext db, ITenantContext t
             .Select(x => new { x.FrameNo, x.ModelCode, x.TradeMark, x.WarrantyRegistrationDate }).ToListAsync())
         .GroupBy(x => x.FrameNo).ToDictionary(g => g.Key, g => g.First());
 
+    // #1214 SUA BUG THAT: cung ho #1213 — ham nay nhan RepairOrder.Status (chuoi tieng Anh Mini luu),
+    // khong phai ma nguon tho, cac case cu khong bao gio khop.
     static string StatusName(string? st) => st switch
     {
-        "CRE" or "PRT" or "HRO" => "Chờ sửa",
-        "INGA" => "Đang sửa",
-        "RPRD" => "Sửa xong",
-        "CEND" => "Kiểm tra cuối cùng",
-        "PAID" => "Thanh toán xong",
-        "FNS" => "Đã giao xe",
-        "REJ" => "Lệnh hủy",
-        "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+        "Created" or "PrintedQuote" or "HasRO" => "Chờ sửa",
+        "InGarage" => "Đang sửa",
+        "Repaired" => "Sửa xong",
+        "CheckEnd" => "Kiểm tra cuối cùng",
+        "Paid" => "Thanh toán xong",
+        "Finished" => "Đã giao xe",
+        "Rejected" => "Lệnh hủy",
+        "Wait4Part" or "HasPart" or "NotResponding" => "Hủy, Hẹn lại",
         _ => "Không xác định",
     };
 
@@ -74721,16 +74725,18 @@ app.MapGet("/api/report/ro-service-statistic-wh", async (AppDbContext db, ITenan
         .Select(x => new { x.Id, x.RoId, x.SerCode, x.SerName, x.Factor, x.Price, x.Vat }).ToListAsync();
 
     // Nguồn chép nguyên văn (port dòng ACTIVE = khối case nội tuyến, KHÔNG dùng hàm SQL đã bị comment).
+    // #1214 SUA BUG THAT: cung ho #1213 — ham nay nhan RepairOrder.Status (chuoi tieng Anh Mini luu),
+    // khong phai ma nguon tho, cac case cu khong bao gio khop.
     static string StatusName(string? st) => st switch
     {
-        "CRE" or "PRT" or "HRO" => "Chờ sửa",
-        "INGA" => "Đang sửa",
-        "RPRD" => "Sửa xong",
-        "CEND" => "Kiểm tra cuối cùng",
-        "PAID" => "Thanh toán xong",
-        "FNS" => "Đã giao xe",
-        "REJ" => "Lệnh hủy",
-        "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+        "Created" or "PrintedQuote" or "HasRO" => "Chờ sửa",
+        "InGarage" => "Đang sửa",
+        "Repaired" => "Sửa xong",
+        "CheckEnd" => "Kiểm tra cuối cùng",
+        "Paid" => "Thanh toán xong",
+        "Finished" => "Đã giao xe",
+        "Rejected" => "Lệnh hủy",
+        "Wait4Part" or "HasPart" or "NotResponding" => "Hủy, Hẹn lại",
         _ => "Không xác định",
     };
 
