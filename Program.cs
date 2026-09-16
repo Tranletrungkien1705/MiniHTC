@@ -28299,7 +28299,7 @@ app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? s
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.AdjStatus == status);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.StockAdjNo.Contains(no!));
     var rows = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus, x.CreatedBy, x.CreatedAt, x.ApprovedAt,
+        x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus, x.CreatedBy, x.CreatedAt, x.ApprovedAt, x.LogLUDateTime, x.LogLUBy,   // #1228 §12
         lines = db.StockAdjLines.Count(l => l.OrgId == t.OrgId && l.StockAdjId == x.Id)
     }).ToListAsync();
     // #619: nguồn nối sys_user bằng HAI khoá (UserCode + DealerCode) và là INNER ⇒ nuốt phiếu.
@@ -28308,7 +28308,7 @@ app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? s
     var items = rows.Select(x => new
     {
         x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus,
-        x.CreatedBy, x.CreatedAt, x.ApprovedAt, x.lines,
+        x.CreatedBy, x.CreatedAt, x.ApprovedAt, x.LogLUDateTime, x.LogLUBy, x.lines,
         userName = users.FirstOrDefault(u => u.UserCode == x.CreatedBy && u.DealerCode == x.DealerCode)?.UserName,
         // Nguồn: case status when 0 / when 1 — KHÔNG có else ⇒ ngoài {0,1} là NULL.
         statusText = x.AdjStatus == "0" ? "Mới tạo" : x.AdjStatus == "1" ? "Kết thúc" : null,
