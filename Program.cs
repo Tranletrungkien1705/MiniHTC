@@ -42421,13 +42421,16 @@ app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? 
 }).RequireAuthorization();
 
 // Tạo báo giá (header + dòng phụ tùng; tính Amount=Qty*Price*(1+VAT/100) + tổng).
-app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
     if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải lớn hơn 0." });
     var no = "PQ" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PartQuote { OrgId = t.OrgId, QuoteNo = no, CusId = dto.CusId, CusName = dto.CusName, Mobile = dto.Mobile, ReceiveName = dto.ReceiveName, PaymentMethod = dto.PaymentMethod, Remark = dto.Remark, Status = "Draft" };
+    // #1083: Ser_Inv_Quote_Create (Inventory.Quote.cs:159) ghi DealerCode + du 4 cot nhat ky khi TAO.
+    var by1083 = (partnerUserCode ?? "system").Trim(); var now1083 = DateTime.Now;
+    var h = new PartQuote { OrgId = t.OrgId, QuoteNo = no, CusId = dto.CusId, CusName = dto.CusName, Mobile = dto.Mobile, ReceiveName = dto.ReceiveName, PaymentMethod = dto.PaymentMethod, Remark = dto.Remark, Status = "Draft",
+        DealerCode = dto.DealerCode, CreatedDate = now1083, CreatedBy = by1083, LogLUDateTime = now1083, LogLUBy = by1083 };
     db.PartQuotes.Add(h); await db.SaveChangesAsync();
     decimal total = 0m, sumAmountNoFactor = 0m;
     foreach (var l in lines)
@@ -44007,7 +44010,7 @@ app.MapGet("/api/_meta/quote-stockout-branches", () => Results.Ok(new
     positiveNoDuplicateColumnException = "AM TINH: nhanh SOOHasSO them 4 cot (StockOutOrderID, StockOutOrderNo, PlanLocationID, ActualLocationID) vao dtTempPart TRUOC khi gan trong foreach => thu tu DUNG; va dtTempPart chi co PartID + Quantity nen KHONG dung DuplicateNameException nhu #836",
     twoMachinesVerified859 = "md5 chuan hoa KHOP may 150: helper a84995a3, ban chet xxx 1f9562b6, ProcessTypeAdd... f412bc5a; hai hang trung gia tri cung co tren 150",
 })).RequireAuthorization();
-app.MapPut("/api/partquotes/{no}", async (string no, PartQuoteDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/partquotes/{no}", async (string no, PartQuoteDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var qn = (no ?? "").Trim();
     var qt = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == qn);
@@ -44035,6 +44038,10 @@ app.MapPut("/api/partquotes/{no}", async (string no, PartQuoteDto dto, AppDbCont
     if (dto.ReceiveName != null) qt.ReceiveName = dto.ReceiveName;
     if (dto.PaymentMethod != null) qt.PaymentMethod = dto.PaymentMethod;
     if (dto.CusName != null || dto.Remark != null) qt.Remark = dto.Remark ?? qt.Remark;
+    // #1083: Ser_Inv_Quote_Update (:1006) ghi lai DealerCode (active o CA hai ham) + LogLUDateTime/LogLUBy
+    // (dong gan CreatedDate o Update bi COMMENT trong nguon => KHONG dong, khac nhanh TAO).
+    if (dto.DealerCode != null) qt.DealerCode = dto.DealerCode;
+    qt.LogLUDateTime = DateTime.Now; qt.LogLUBy = (partnerUserCode ?? "system").Trim();
     var removed = 0; var added = 0;
     if (dto.Lines != null)
     {
@@ -81717,7 +81724,7 @@ record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAm
 record SerPaymentAllocateDto(string? DealerCode, string? SubjectKey, decimal PaymentAmount, string? PayPersonName, string? PayPersonIDCardNo, DateTime? PayDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat, decimal? Factor = null, string? PartPriceId = null, string? Note = null);
-record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
+record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines, string? DealerCode = null);
 // #1077: SerCustomerGroupCreate/Update (BizCarSv.Service.cs:8457/8289) nhan 9 tham so, DTO cu chi giu 3.
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description,
     string? Address = null, string? Email = null, string? TelePhone = null, string? Fax = null,

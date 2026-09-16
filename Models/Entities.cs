@@ -15254,6 +15254,16 @@ public sealed class PartQuote
     public decimal SumAmountNoFactor { get; set; }
     public string Status { get; set; } = "Draft";   // Draft -> Sent -> Approved / Cancelled
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1083 §12 — nguồn `Ser_Inv_Quote_Create`/`Update` (Inventory.Quote.cs:159/1006) đều ghi
+    /// `DealerCode` (port cũ chưa có), và `CreatedDate/CreatedBy/LogLUDateTime/LogLUBy` khi TẠO;
+    /// `Update` chỉ ghi lại `LogLUDateTime/LogLUBy` (dòng gán CreatedDate ở Update bị COMMENT trong nguồn —
+    /// không active, không port).</summary>
+    public string? DealerCode { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng báo giá phụ tùng (detail) — port 1:1 FrmPartQuotation grid, TCMotor.</summary>
