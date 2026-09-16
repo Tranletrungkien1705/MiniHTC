@@ -40069,7 +40069,7 @@ app.MapGet("/api/supplierpartorders/{no}/lines", async (string no, AppDbContext 
 //   📌 MiniHTC **cố ý lệch**: chặn trùng `ConfirmNo` ở **cả hai** cửa, và nêu cờ.
 // ⚪ Âm tính: cả hai nhánh đều tra guard bằng `_dbDealer` (nhất quán), và đều mở giao dịch **cả ba** DB
 //   (`_dbMain`/`_dbWH`/`_dbDealer`) rồi `CommitSafety` đủ ba — **không** dính lỗi "quên một DB" của #571/#598.
-app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
@@ -40104,6 +40104,8 @@ app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbCon
         ApprovedDate = dto.ApprovedDate, TypeOrder = dto.TypeOrder, HTCConfirm = dto.HTCConfirm,
         PartialShipment = dto.PartialShipment, TypeTransport = dto.TypeTransport,
         VIN = dto.VIN?.Trim().ToUpperInvariant(), ConfirmNo = dto.ConfirmNo, CusCharges = dto.CusCharges,
+        // #1114 §12: nguồn Ser_Part_OrderCreate ghi LogLUDateTime/LogLUBy (= strPartnerUserCode) trên header.
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.SupplierPartOrders.Add(h); await db.SaveChangesAsync();
     // #605: cờ mô tả lệch guard giữa hai nhánh của nguồn (xem chú thích đầu endpoint).
@@ -40131,7 +40133,9 @@ app.MapPost("/api/supplierpartorders", async (SupplierPartOrderDto dto, AppDbCon
             PartID = l.PartID, Factor = l.Factor, Cost = l.Cost, VAT = l.VAT, Discount = l.Discount,
             Model = l.Model, HTCConfirm = l.HTCConfirm, LastDateDelivery = l.LastDateDelivery,
             MIP = l.MIP, OO = l.OO, BO = l.BO, OH = l.OH, SOQ = l.SOQ, ICC = l.ICC,
-            LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCreate,
+            // #1114 SỬA BUG THẬT: Ser_Part_OrderDetailCreate (PartOrder.cs:637) ghi LogLUBy = strPartnerUserCode
+            // (actor server), KHÁC UserCreate (cột nghiệp vụ trên header, client-nhập).
+            LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.OrderNo, h.Status, lines = lines.Count, guardNote, confirmNoDuplicated });

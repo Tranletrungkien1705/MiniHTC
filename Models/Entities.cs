@@ -15052,6 +15052,12 @@ public sealed class SupplierPartOrder
     //   bảng LIVE của màn danh sách; ghi lại (a) để ai đọc log sau khi TẠO không tưởng là port sai.
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1114 §12 — nguồn `Ser_Part_OrderCreate` (PartOrder.cs:756) ghi `LogLUDateTime`/`LogLUBy`
+    /// (= strPartnerUserCode) trên header — port cũ chưa có cột, và dòng chi tiết đang tái dùng nhầm
+    /// `UserCreate` (client) cho `LogLUBy` thay vì actor server.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>#287 Dòng của đơn đặt phụ tùng NCC (`Ser_Part_OrderDetail`).</summary>

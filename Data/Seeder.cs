@@ -3185,6 +3185,9 @@ public static class Seeder
                 // #1098: WarrantyRenewalCategoryMst thieu LogLUDateTime/LogLUBy (Ser_MST_ROWarrantyRenewalCategory_Save).
                 "ALTER TABLE public.\"WarrantyRenewalCategoryMsts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"WarrantyRenewalCategoryMsts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1114: SupplierPartOrder thieu LogLUDateTime/LogLUBy (Ser_Part_OrderCreate).
+                "ALTER TABLE public.\"SupplierPartOrders\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"SupplierPartOrders\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
