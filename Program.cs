@@ -64099,8 +64099,8 @@ app.MapPost("/api/partinstances/import", async (List<PartInstanceImportRowDto> r
         if (row.Quantity < 0) { errors.Add(new { row.PartCode, error = "Ser_Inv_PartInstance_NegativeQuantity" }); continue; }
         var partOk = await db.ServiceParts.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == partCode && x.DealerCode == dl && x.FlagActive == "1");
         if (!partOk) { errors.Add(new { row.PartCode, error = "Ser_Part_NotFound" }); continue; }
-        var locOk = await db.SerMstLocations.AnyAsync(x => x.OrgId == t.OrgId && x.LocationCode == locCode && x.DealerCode == dl && x.IsActive == "1");
-        if (!locOk) { errors.Add(new { row.PartCode, row.LocationCode, error = "Ser_Location_NotFound" }); continue; }
+        var loc = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == locCode && x.DealerCode == dl && x.IsActive == "1");
+        if (loc is null) { errors.Add(new { row.PartCode, row.LocationCode, error = "Ser_Location_NotFound" }); continue; }
         // #1180 SUA BUG THAT: nguon SerImpPartInstance (BizCarSv.Inventory.Stock.cs:1038+353-356) ghi du 4
         // cot nhat ky khi ghi tay lo ton kho — port cu bo sot ca 4 (entity chua tung co cot, da them §12).
         var r = new PartInstance
@@ -64112,6 +64112,16 @@ app.MapPost("/api/partinstances/import", async (List<PartInstanceImportRowDto> r
             LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         };
         db.PartInstances.Add(r);
+        // #1186 SUA GAP THAT (khong chi audit-trail): nguon con dong bo dtStockBalance (tang InStockQuantity
+        // theo DealerCode+LocationCode+PartID, BizCarSv.Inventory.Stock.cs:1038+445-460) — port cu chua tung
+        // cham PartStock. Dung StockNo cua vi tri lam WarehouseCode (dung khuon /api/stockins/{no}/post).
+        var wh = (loc.StockNo ?? "").Trim().ToUpperInvariant();
+        if (wh.Length > 0)
+        {
+            var stock = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == wh && x.PartCode == partCode && (x.Location ?? "") == locCode);
+            if (stock is null) { stock = new PartStock { OrgId = t.OrgId, WarehouseCode = wh, PartCode = partCode, Location = locCode, OnHand = 0 }; db.PartStocks.Add(stock); }
+            stock.OnHand += row.Quantity; stock.UpdatedAt = DateTime.Now;
+        }
         saved.Add(new { r.PartCode, r.LocationID, r.Quantity, r.StockInNo });
     }
     await db.SaveChangesAsync();
