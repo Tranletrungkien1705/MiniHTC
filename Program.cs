@@ -28094,7 +28094,7 @@ app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var name = (dto.TypeName ?? "").Trim();
     if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Chưa nhập tên loại phụ tùng." });
@@ -28112,7 +28112,8 @@ app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbConte
             return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Mã loại phụ tùng đã tồn tại ở đại lý này.", typeCode });
         if (await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dealerCode))
             return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
-        row = new SerPartType { OrgId = t.OrgId, TypeCode = typeCode, DealerCode = dealerCode, CreatedDate = DateTime.Now, CreatedBy = "api" };
+        // #1053: strPartnerUserCode thật của nguồn — sửa hằng "api" tự chế thành tham số theo đúng convention.
+        row = new SerPartType { OrgId = t.OrgId, TypeCode = typeCode, DealerCode = dealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() };
         db.SerPartTypes.Add(row);
     }
     else
