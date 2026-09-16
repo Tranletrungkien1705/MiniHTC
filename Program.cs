@@ -63069,6 +63069,8 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
         TruckNo = dto.TruckNo, DriverName = dto.DriverName, DriverID = dto.DriverID,
         DrivingLicense = dto.DrivingLicense,
         LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCode,
+        // #1087: SerStockOutCreate ghi CA CreatedDate/CreatedBy khi TAO, cung actor voi LogLUBy (strPartnerUserCode).
+        CreatedDate = DateTime.Now, CreatedBy = dto.UserCode,
     };
     // 🔴 #304: nguồn đặt `FlagSyncVeloca = Flag.Inactive` **ngay khi tạo** (4 chỗ, cả DB đại lý lẫn DB kho)
     //   ⇒ phiếu mới luôn ở trạng thái "chưa đồng bộ Veloca". Mặc định entity đã là "0", ghi rõ cho khỏi lệch.

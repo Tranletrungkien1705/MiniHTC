@@ -2901,6 +2901,12 @@ public sealed class PartStockOut
 
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#1087 §12 — nguồn `SerStockOutCreate` (StockOut.cs:520) còn ghi `CreatedDate`/`CreatedBy`
+    /// khi TẠO (port cũ đã có `LogLUDateTime/LogLUBy` từ #264 nhưng thiếu cặp Created*) — cùng khuôn
+    /// `PartStockIn` (#1086, mirror chiều nhập).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng xuất (Ser_Inv_StockOutDetail): mã PT + vị trí + SL.</summary>
