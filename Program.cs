@@ -63257,7 +63257,7 @@ app.MapDelete("/api/partprices/{id:long}", async (long id, AppDbContext db, ITen
 //   3) Còn lại upsert theo `(PartID, DateEffect)` — khớp đúng khoá `(PartCode, EffectiveDate)` mà Mini đã dùng
 //      từ #295/#256 cho `POST /api/partprices` đơn lẻ.
 // Fix: Mini trả về danh sách dòng bị SKIP (kèm lý do) để không lặp lại lỗi "im lặng" của nguồn.
-app.MapPost("/api/partprices/import", async (List<PartPriceImportRowDto> rows, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partprices/import", async (List<PartPriceImportRowDto> rows, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var skipped = new List<object>();
     var saved = new List<object>();
@@ -63272,7 +63272,14 @@ app.MapPost("/api/partprices/import", async (List<PartPriceImportRowDto> rows, A
         if (isTst) { skipped.Add(new { row.PartCode, reason = "TST_Mst_Part_HasCode (nguon bo qua am tham, khong sua gia PT TST qua import)" }); continue; }
         var ed = row.EffectiveDate.Value.Date;
         var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code && x.EffectiveDate == ed);
+        var by1179 = (partnerUserCode ?? "system").Trim(); var now1179 = DateTime.Now;
+        var isNewPrice1179 = p is null;
         if (p is null) { p = new PartPrice { OrgId = t.OrgId, PartCode = code, EffectiveDate = ed }; db.PartPrices.Add(p); }
+        // #1179 SUA BUG THAT: nguon Ser_Mst_PartPrice_Import (BizCarSv.Inventory.cs:891+133-141 tao,
+        // +174-177 sua) ghi du 4 cot nhat ky khi tao / IsActive+LogLUDateTime+LogLUBy khi sua — port cu
+        // chua tung dong cot nao.
+        if (isNewPrice1179) { p.CreatedDate = now1179; p.CreatedBy = by1179; }
+        p.LogLUDateTime = now1179; p.LogLUBy = by1179;
         p.Price = row.Price.Value; p.Remark = row.Remark; p.IsActive = "1"; p.UpdatedAt = DateTime.Now;
         saved.Add(new { p.PartCode, p.EffectiveDate, p.Price });
     }
