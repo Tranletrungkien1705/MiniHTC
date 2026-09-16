@@ -64575,7 +64575,7 @@ app.MapPost("/api/stockins/{no}/revert", async (string no, AppDbContext db, ITen
 //   Port có chặn và trả cờ `skippedZeroStock` thay vì ném lỗi.
 // ⚠️ Kết quả `Math.Round(ave, 2)` ghi vào `Ser_PartCost` kèm `StockInID` ⇒ mỗi phiếu nhập để lại
 //   **một mốc giá vốn**, không ghi đè cột trên master phụ tùng.
-app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
@@ -64595,12 +64595,17 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
     // 14 chỗ trong Program.cs ĐỌC `db.PartInstances` (báo cáo lãi/lỗ theo lô — #416) nhưng KHÔNG một dòng
     // nào từng `.Add()` vào bảng này ⇒ toàn bộ 14 báo cáo/tra cứu đó LUÔN RỖNG kể từ khi tạo. Nguồn tạo một
     // dòng `Ser_Inv_PartInstance` (Status=INSTOCK) cho MỖI dòng chi tiết mỗi khi phiếu NHẬP hoàn tất.
+    // #1197 SUA BUG THAT: nguon (cung khoi ghi Ser_Inv_PartInstance da xac nhan o #1180,
+    // BizCarSv.Inventory.Stock.cs:1038+353-356) ghi du 4 cot nhat ky khi tao lo ton kho — day la duong
+    // ghi CHINH (#928, phieu Nhap Ket thuc), truoc gio chua tung dong dau (khac #1180 chi vá kenh import tay).
+    var by1197 = (partnerUserCode ?? "system").Trim(); var now1197 = DateTime.Now;
     foreach (var l in lines)
         db.PartInstances.Add(new PartInstance
         {
             OrgId = t.OrgId, DealerCode = h.DealerCode, PartCode = l.PartCode,
             Status = "1", StockInNo = h.StockInNo, StockInId = h.Id, LocationID = l.Location,
             Quantity = l.Quantity, SIPrice = l.Price, SIVAT = l.VAT, DateIn = DateTime.Now,
+            CreatedDate = now1197, CreatedBy = by1197, LogLUDateTime = now1197, LogLUBy = by1197,
         });
     // --- #390 GIÁ VỐN BÌNH QUÂN TĂNG DẦN (chỉ khi HAI tham số cùng bật).
     var pMcc = await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Mst_Param"
