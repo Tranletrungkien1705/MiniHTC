@@ -15763,6 +15763,28 @@ app.MapGet("/api/servicestockouts", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #995 `SerStockOutGetMaxStockOutNo`/`_V2` (LIVE CẢ HAI, BizCarSv.Inventory.StockOut.cs:4883/5010) =====
+// CÙNG KHUÔN #994 (StockIn): `HTCWSCarSv/WSCarSv.asmx.cs:15423` gọi `_V2` (lọc `like '%'+yymmdd(hôm nay)+'%'`);
+// `TERP.WSCarSv/App_Code/WSCarSv.cs:21993` gọi bản TRẦN (không lọc ngày) — hai cổng SỐNG, hai luật cấp số
+// khác nhau trên CÙNG bảng ⇒ TRÙNG SỐ CHỨNG TỪ có hệ thống (họ #601/#604/#994).
+// §12: `ServiceStockOut` chưa từng có `DealerCode` — thêm để cấp số ĐÚNG PHẠM VI đại lý như nguồn.
+app.MapGet("/api/servicestockouts/next-number", async (AppDbContext db, ITenantContext t, string dealerCode, int stockOutNoLength = 10) =>
+{
+    var dc = (dealerCode ?? "").Trim();
+    if (dc.Length == 0) return Results.BadRequest(new { error = "Can dealerCode." });
+    var candidates = await db.ServiceStockOuts
+        .Where(x => x.OrgId == t.OrgId && x.DealerCode == dc && x.StockOutNo.Length == stockOutNoLength)
+        .Select(x => x.StockOutNo).ToListAsync();
+    var maxNo = candidates.Where(s => long.TryParse(s, out _)).Select(long.Parse).DefaultIfEmpty(0).Max();
+    return Results.Ok(new
+    {
+        dealerCode = dc, stockOutNoLength, maxStockOutNo = maxNo == 0 ? null : maxNo.ToString(),
+        nextStockOutNo = (maxNo + 1).ToString().PadLeft(stockOutNoLength, '0'),
+        onlyExistsOnMachine150_995 = "#995: SerStockOutGetMaxStockOutNo/_V2 — BizCarSv.Inventory.StockOut.cs:4883/5010",
+        twoLiveGatewaysTwoLaws = "Giong het #994 (StockIn): HTCWSCarSv goi _V2 (loc theo ngay), TERP.WSCarSv/App_Code goi ban TRAN (khong loc) => TRUNG SO CHUNG TU khi ca hai cong cung chay. Port CHI dung MOT luat (khong LIKE ngay, ep so, loc dai ly) de khong ke thua bug nao.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicestockouts", async (ServiceStockOutDto dto, AppDbContext db, ITenantContext t) =>
 {
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
@@ -15771,7 +15793,7 @@ app.MapPost("/api/servicestockouts", async (ServiceStockOutDto dto, AppDbContext
     var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
     // Loại phiếu mặc định "2" = phiếu xuất thường (loại DUY NHẤT được tính doanh thu bán ngoài).
     var h = new ServiceStockOut { OrgId = t.OrgId, StockOutNo = no, ReceiverCode = dto.ReceiverCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Status = "Draft",
-        StockOutType = string.IsNullOrWhiteSpace(dto.StockOutType) ? "2" : dto.StockOutType.Trim() };
+        StockOutType = string.IsNullOrWhiteSpace(dto.StockOutType) ? "2" : dto.StockOutType.Trim(), DealerCode = dto.DealerCode };   // #995
     db.ServiceStockOuts.Add(h); await db.SaveChangesAsync();
     decimal totalQty = 0m, totalAmount = 0m;
     foreach (var l in lines)
@@ -79548,7 +79570,7 @@ record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity
 record StockDocVoidDto(string? ToStatus);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines, string? DealerCode = null);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price = 0, decimal Vat = 0);
-record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null);
+record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null, string? DealerCode = null);   // #995
 record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);

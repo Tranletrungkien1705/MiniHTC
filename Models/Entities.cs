@@ -14134,6 +14134,11 @@ public sealed class ServiceStockOut
 
     public string Status { get; set; } = "Draft"; // Draft -> Confirmed (trừ tồn)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #995 §12 — nguồn `SerStockOutGetMaxStockOutNo`/`_V2` LUÔN lọc theo `strDealerCodeConditionList`
+    /// (`Ser_Inv_StockOut.DealerCode`) khi cấp số chứng từ — port cũ chưa có cột này nên chưa cấp số theo
+    /// đúng phạm vi đại lý (giống nợ đã vá cho `ServiceStockIn` ở #994).</summary>
+    public string? DealerCode { get; set; }
 }
 
 /// <summary>Dòng phiếu xuất kho phụ tùng (detail) — port 1:1 FrmSerInventoryAccStockOut01 grid, TCMotor.</summary>
