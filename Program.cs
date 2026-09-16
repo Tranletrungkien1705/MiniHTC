@@ -55209,6 +55209,7 @@ app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
         o.DoNo, o.DealerCode, o.Status, o.CreatedAt, o.DeliveredAt, o.Approved1At, o.Approved2At, o.RejectReason,
+        o.ApprovedBy1, o.ApprovedBy2, o.RejectedAt,   // #1231 §12
         o.DeliveryAddress, o.TransportCompanyName, o.TransportCompanyPhoneNo, o.TransportCompanyFaxNo, o.D4CDONo, o.D4CDOType,
         cars = db.DeliveryOrderCars.Count(c => c.OrgId == t.OrgId && c.DoId == o.Id)
     }).ToListAsync();
