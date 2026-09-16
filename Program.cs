@@ -64846,7 +64846,103 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
         note = "Năm vai trò kỹ thuật + ScheduleDate/CheckInDate ghi VÔ ĐIỀU KIỆN (rỗng = XOÁ); "
              + "StartDate/FinishedDate có guard (rỗng = GIỮ NGUYÊN). Ngày cắt tới PHÚT như nguồn.",
         pushToHyundaiMeNotDone = "Nguon dat co day RO ve HyundaiMe khi backToHasRO — MiniHTC chua co tang goi ngoai, khong mo phong.",
-        serviceAndPartReplaceNotDone = "Nguon con XOA-ROI-GHI-LAI toan bo Ser_ROServiceItems/Ser_ROPartItems trong cung ham nay — CHUA port (qua lon cho 1 don vi, xem hang doi manifest).",
+        serviceAndPartReplaceSeeEndpoint = "Nguon con XOA-ROI-GHI-LAI toan bo Ser_ROServiceItems/Ser_ROPartItems trong CUNG ham nay — port TACH thanh POST /api/repairorders/{no}/lines (#1038), khong dung chung transaction.",
+    });
+}).RequireAuthorization();
+
+// ===== 🔴🔴🔴 #1038 THAY TOÀN BỘ DÒNG CÔNG/PHỤ TÙNG CỦA RO — phần "REPLACE ALL" của `Ser_RO_Update_New20220926`
+//   (`BizCarSv.ZTemp.cs:13209`, đoạn `#region // Ser_ROServiceItems`/`Ser_ROPartItems`), TÁCH KHỎI PUT header =====
+// Nguồn XOÁ SẠCH `Ser_ROServiceItems`/`Ser_ROPartItems` của RO rồi GHI LẠI TOÀN BỘ theo danh sách client gửi —
+// cùng khuôn REPLACE-ALL đã thấy ở #924 (ROServiceItemsEngineer). Áp lại NGUYÊN 6 guard từng dòng của #1034
+// (SerCode/ExpenseType/ROType bắt buộc cho dòng công; PartCode/ExpenseType + 4 giá trị hợp lệ cho dòng phụ
+// tùng) và guard chéo `NotFound_ROService_FlagWarranty` (#1035) — CÙNG MỘT BỘ GUARD, khác hàm gọi.
+// 🔴 Cột `Status` của dòng CÔNG: nếu `Ser_RO.ServiceStatus = Active` thì MỌI dòng bị ép `Status = Active`,
+//   ngược lại giữ `Status` client gửi (rỗng thì `Inactive`) — port giữ đúng, không tự suy diễn ý nghĩa.
+// ⚠️ Dòng PHỤ TÙNG KHÔNG ghi `Remark` (nguồn comment nguyên dòng `//dr["Remark"] = ...`) dù entity có cột —
+//   port dòng ACTIVE, không bịa thêm.
+// 📌 CHƯA port: `ProcessCreateAdditionalStockOutOrder`/`ProcessDeleteSOOSOByROID` (tạo/xoá phiếu xuất kho phụ
+//   trợ theo dòng phụ tùng còn lại) — cụm StockOutOrder riêng, nhiều overload lớn (`Inventory.StockOut.cs`),
+//   để dành fire chuyên biệt; ghi cờ rõ trong response, không mô phỏng.
+app.MapPost("/api/repairorders/{no}/lines", async (string no, List<RoServiceDto>? services, List<RoPartDto>? parts,
+    AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+
+    var svcInput = services ?? new();
+    var partInput = parts ?? new();
+    var checkCVBH = false;
+    foreach (var s in svcInput)
+    {
+        if (string.IsNullOrWhiteSpace(s.SerCode))
+            return Results.BadRequest(new { error = "Ser_RO_Check_ServiceNotInList", message = "Dịch vụ không có trong danh mục." });
+        if (string.IsNullOrWhiteSpace(s.ExpenseType))
+            return Results.BadRequest(new { error = "Ser_RO_Update_New20160514_ExpenseType", serCode = s.SerCode });
+        if (string.Equals(s.ExpenseType, "ROWARRANTY", StringComparison.OrdinalIgnoreCase)) checkCVBH = true;
+        if (string.IsNullOrWhiteSpace(s.ROType))
+            return Results.BadRequest(new { error = "Ser_RO_Update_New20160514_ROType", serCode = s.SerCode });
+    }
+    var validPartExpenseTypes = new[] { "ROREPAIR", "LOCAL", "ROINSURANCE", "ROWARRANTY" };
+    foreach (var p in partInput)
+    {
+        if (string.IsNullOrWhiteSpace(p.PartCode))
+            return Results.BadRequest(new { error = "Ser_RO_Check_PartNotInStock", message = "Phụ tùng không có trong danh mục." });
+        if (string.IsNullOrWhiteSpace(p.ExpenseType))
+            return Results.BadRequest(new { error = "Ser_RO_Update_New20160514_ExpenseTypeNotNull", partCode = p.PartCode });
+        if (!validPartExpenseTypes.Contains(p.ExpenseType.Trim().ToUpperInvariant()))
+            return Results.BadRequest(new { error = "Ser_RO_Create_InvalidPart_ExpenseType", partCode = p.PartCode, expenseType = p.ExpenseType });
+    }
+    if (checkCVBH)
+    {
+        var warrantySerCodes = svcInput.Where(s => string.Equals(s.ExpenseType, "ROWARRANTY", StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.SerCode.Trim().ToUpperInvariant()).Distinct().ToList();
+        var hasFlagWarrantyService = await db.ServiceItemMsts.AnyAsync(x => x.OrgId == t.OrgId
+            && warrantySerCodes.Contains(x.SerCode) && x.FlagWarranty == "1");
+        if (!hasFlagWarrantyService)
+            return Results.BadRequest(new { error = "Ser_RO_Update_NotFound_ROService_FlagWarranty",
+                message = "Báo giá chưa có công việc bảo hành chính." });
+    }
+
+    // Xoá sạch rồi ghi lại toàn bộ — đúng khuôn REPLACE-ALL của nguồn.
+    var oldServices = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+    db.RoServiceItems.RemoveRange(oldServices);
+    var oldParts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+    db.RoPartItems.RemoveRange(oldParts);
+    await db.SaveChangesAsync();
+
+    // Status dòng công: ServiceStatus="1" (Active) ép TẤT CẢ dòng "1"; ngược lại giữ status client gửi.
+    var forceActive = r.ServiceStatus == "1";
+    foreach (var s in svcInput)
+    {
+        var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
+        db.RoServiceItems.Add(new RoServiceItem
+        {
+            OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause,
+            Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price,
+            Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice,
+            CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual, Note = s.Note,
+            Remark = s.Remark, Status = forceActive ? "1" : (string.IsNullOrWhiteSpace(s.Status) ? "0" : s.Status),
+        });
+    }
+    foreach (var p in partInput)
+    {
+        var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
+        var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
+        db.RoPartItems.Add(new RoPartItem
+        {
+            OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit,
+            NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount,
+            Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0",
+            InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo,
+            FlagAccrual = p.FlagAccrual,   // KHÔNG gán Remark — nguồn comment dòng đó cho phụ tùng.
+        });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        r.RONo, services = svcInput.Count, parts = partInput.Count,
+        stockOutOrderSideEffectNotDone = "Nguon con goi ProcessCreateAdditionalStockOutOrder/ProcessDeleteSOOSOByROID (Inventory.StockOut.cs) de dong bo phieu xuat kho phu — CHUA port, danh cho fire rieng.",
     });
 }).RequireAuthorization();
 
@@ -79694,7 +79790,8 @@ record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engi
     string? ExpenseType = null, decimal? InsurancePrice = null,
     string? CamID = null,   // #367
     string? CamMarketingNo = null, string? FlagAccrual = null,   // #969
-    string? Note = null, string? Remark = null);   // #972
+    string? Note = null, string? Remark = null,   // #972
+    string? Status = null);   // #1038: chi dung khi Ser_RO.ServiceStatus != Active (nguon doc tu dong nhap)
 // #337: ExpenseType (nguon tien) va FlagAccessory (co phu kien) — HAI truong bao cao KPI loc theo,
 //   ma truoc nay KHONG duong nao ghi duoc: cot ExpenseType them tu #280 nhung dong tao RO khong gan.
 //   Thieu chung thi nhom PartAmount* cua bao cao LUON bang 0.
