@@ -62767,7 +62767,15 @@ app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDb
     if (string.IsNullOrWhiteSpace(dto.StockOutNo)) return Results.BadRequest(new { error = "Chưa nhập số phiếu xuất." });
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Chưa chọn kho." });
 
-    // 🔴 KHÔNG guard trạng thái HIỆN TẠI. Chỉ khi client GỬI Status thì mới kiểm — và chỉ nhận "1"/"5".
+    // #1009: guard THẬT nhưng CHỈ có ở bản 150 (V20.2023.Release, mới hơn laptop) — đọc trọn
+    // `UpdateStockOut` (dbAction-first overload, xác nhận LIVE qua `SerStockOutUpdate` gọi `_dbDealer` đầu
+    // tiên) trên cả hai máy, diff chuẩn hoá lòi ra máy 150 CÓ THÊM khối chặn sửa khi Status hiện tại là
+    // Finished("3")/Reject("5") — laptop KHÔNG có. Máy 150 là máy dev chính ⇒ port theo bản mới hơn.
+    var cur = (h.Status ?? "").Trim();
+    if (cur == "3" || cur == "5")
+        return Results.BadRequest(new { error = "Trạng thái phiếu xuất không hợp lệ để sửa (đã Kết thúc/Huỷ).", currentStatus = cur });
+
+    // 🔴 KHÔNG guard theo Status MỚI. Chỉ khi client GỬI Status thì mới kiểm — và chỉ nhận "1"/"5".
     var newStatus = (dto.Status ?? "").Trim();
     if (newStatus.Length > 0 && newStatus != "1" && newStatus != "5")
         return Results.BadRequest(new { error = "Status gửi lên chỉ được là Mới tạo (1) hoặc Huỷ (5).", status = newStatus });
@@ -62780,6 +62788,9 @@ app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDb
     h.Description = dto.Description; h.UserCode = dto.StaffID;
     h.DriverName = dto.DriverName; h.DrivingLicense = dto.DrivingLicense;
     h.DriverID = dto.DriverID; h.TruckNo = dto.TruckNo; h.CusID = dto.CusID;
+    // #1009: nguồn (`UpdateStockOut`) GHI + ĐƯA VÀO `alColumnEffective` cả `DealerCode` — port cũ (PUT)
+    // chưa từng đọc trường này dù POST đã ghi lúc tạo (#264) và entity đã có sẵn cột.
+    if (dto.DealerCode != null) h.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
     h.AdjustmentBy = dto.AdjustmentBy; h.AdjustmentDate = dto.AdjustmentDate; h.AdjustmentNote = dto.AdjustmentNote;
     h.OldStockOutID = string.IsNullOrWhiteSpace(dto.OldStockOutID) ? null : dto.OldStockOutID!.Trim();
 
@@ -78994,7 +79005,7 @@ record StockOutUpdateDto(string? StockOutNo, string? WarehouseCode, string? Stoc
     DateTime? StockOutDate = null, string? Status = null, string? Description = null, string? StaffID = null,
     string? DriverName = null, string? DrivingLicense = null, string? DriverID = null, string? TruckNo = null,
     string? CusID = null, string? AdjustmentBy = null, DateTime? AdjustmentDate = null,
-    string? AdjustmentNote = null, string? OldStockOutID = null);
+    string? AdjustmentNote = null, string? OldStockOutID = null, string? DealerCode = null);   // #1009
 record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines,
     string? Description = null, string? UserCode = null,
     string? DriverName = null, string? DrivingLicense = null, string? DriverID = null, string? TruckNo = null,
