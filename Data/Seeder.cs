@@ -3019,6 +3019,11 @@ public static class Seeder
                 // #1050: SerServicePackageCreate/Update ghi LogLUDateTime/LogLUBy o ca hai nhanh.
                 "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1051: Ser_RO_Create_New20220926 ghi LogLUDateTime/LogLUBy cho MOI dong cong/phu tung.
+                "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"RoServiceItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"RoPartItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

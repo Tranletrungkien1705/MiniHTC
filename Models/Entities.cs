@@ -2477,6 +2477,10 @@ public sealed class RoServiceItem{
     // bị đặt tên nhầm như doc-comment cũ (#949) từng suy đoán. Port cũ chưa có cột nào trong hai cột này.
     public string? Note { get; set; }
     public string? Remark { get; set; }
+    // #1051 §12 — `Ser_RO_Create_New20220926` (ZTemp.cs:6879-6880) ghi `LogLUDateTime`/`LogLUBy` cho
+    // MỖI dòng dịch vụ lúc tạo RO — entity chưa từng có chỗ chứa.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
@@ -2557,6 +2561,10 @@ public sealed class RoPartItem
     // ===== #972 §12 — nguồn `Ser_ROPartItems` cũng có CẢ `Note` (đã có) LẪN `Remark` (chưa có) — hai cột
     // khác nhau, đọc thấy ở `Ser_ROInvoice_Get_New20220926` (`Service01.cs:4398-4413`).
     public string? Remark { get; set; }
+    // #1051 §12 — `Ser_RO_Create_New20220926` (ZTemp.cs:6944-6945) ghi `LogLUDateTime`/`LogLUBy` cho
+    // MỖI dòng phụ tùng lúc tạo RO — cùng gap như RoServiceItem.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):

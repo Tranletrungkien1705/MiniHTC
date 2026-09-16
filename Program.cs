@@ -64927,7 +64927,7 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
 //   trợ theo dòng phụ tùng còn lại) — cụm StockOutOrder riêng, nhiều overload lớn (`Inventory.StockOut.cs`),
 //   để dành fire chuyên biệt; ghi cờ rõ trong response, không mô phỏng.
 app.MapPost("/api/repairorders/{no}/lines", async (string no, List<RoServiceDto>? services, List<RoPartDto>? parts,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
@@ -64976,6 +64976,9 @@ app.MapPost("/api/repairorders/{no}/lines", async (string no, List<RoServiceDto>
 
     // Status dòng công: ServiceStatus="1" (Active) ép TẤT CẢ dòng "1"; ngược lại giữ status client gửi.
     var forceActive = r.ServiceStatus == "1";
+    // #1051: Ser_RO_Create_New20220926 ghi LogLUDateTime/LogLUBy cho MỖI dòng công/phụ tùng lúc tạo.
+    var lineNow = DateTime.Now;
+    var lineBy = (partnerUserCode ?? "system").Trim();
     foreach (var s in svcInput)
     {
         var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
@@ -64986,6 +64989,7 @@ app.MapPost("/api/repairorders/{no}/lines", async (string no, List<RoServiceDto>
             Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice,
             CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual, Note = s.Note,
             Remark = s.Remark, Status = forceActive ? "1" : (string.IsNullOrWhiteSpace(s.Status) ? "0" : s.Status),
+            LogLUDateTime = lineNow, LogLUBy = lineBy,
         });
     }
     foreach (var p in partInput)
@@ -64999,6 +65003,7 @@ app.MapPost("/api/repairorders/{no}/lines", async (string no, List<RoServiceDto>
             Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0",
             InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo,
             FlagAccrual = p.FlagAccrual,   // KHÔNG gán Remark — nguồn comment dòng đó cho phụ tùng.
+            LogLUDateTime = lineNow, LogLUBy = lineBy,
         });
     }
     await db.SaveChangesAsync();
@@ -66741,7 +66746,8 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền hạng mục DỊCH VỤ theo nguồn: Factor * Price * (1 + VAT*0.01) — KHÔNG có cột Quantity riêng.
         // Client cũ vẫn truyền thẳng Amount; có Price thì tính lại cho đúng công thức nguồn.
         var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
-        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice, CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual, Note = s.Note, Remark = s.Remark });
+        // #1051: Ser_RO_Create_New20220926 ghi LogLUDateTime/LogLUBy cho MỖI dòng (cùng strPartnerUserCode của header).
+        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice, CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual, Note = s.Note, Remark = s.Remark, LogLUDateTime = DateTime.Now, LogLUBy = dto.LogLUBy });
     }
     foreach (var p in dto.Parts ?? new())
     {
@@ -66749,7 +66755,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền dòng PHỤ TÙNG theo nguồn: Factor * Quantity * Price * (1 + VAT*0.01).
         var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
         var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
-        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo, FlagAccrual = p.FlagAccrual, Remark = p.Remark });
+        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0", InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo, FlagAccrual = p.FlagAccrual, Remark = p.Remark, LogLUDateTime = DateTime.Now, LogLUBy = dto.LogLUBy });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
