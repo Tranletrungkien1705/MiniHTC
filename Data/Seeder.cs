@@ -3176,6 +3176,9 @@ public static class Seeder
                 "ALTER TABLE public.\"WarrantyWorkMsts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"WarrantyWorkMsts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"WarrantyWorkMsts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1096: RoComplaintDiagnosticError thieu CreatedDate/CreatedBy (Ser_MST_ROComplaintDiagnosticError_Save).
+                "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

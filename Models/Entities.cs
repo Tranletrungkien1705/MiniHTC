@@ -13722,6 +13722,11 @@ public sealed class RoComplaintDiagnosticError
     public string FlagActive { get; set; } = "1";
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#1096 §12 — nguồn `Ser_MST_ROComplaintDiagnosticError_Save` (AssignmentOfWork.cs:7834, đời thứ
+    /// ba của chuỗi chép #785/#786) ghi đủ 4 cột nhật ký khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 public sealed class RoWarrantyRenewal

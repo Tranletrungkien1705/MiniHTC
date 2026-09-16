@@ -11611,7 +11611,7 @@ app.MapGet("/api/complaintdiagerrors", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/complaintdiagerrors", async (List<ComplaintDiagErrorDto> rows, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/complaintdiagerrors", async (List<ComplaintDiagErrorDto> rows, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Danh sách rỗng." });
     // 📌 KHÁC NGUỒN CÓ CHỦ Ý: nguồn _Save không guard gì (ba nguồn đếm đều = 0).
@@ -11624,18 +11624,23 @@ app.MapPost("/api/complaintdiagerrors", async (List<ComplaintDiagErrorDto> rows,
         .Where(x => x.OrgId == t.OrgId && codes.Contains(x.ErrorCode)).ToListAsync();
     var byCode = existing.GroupBy(x => x.ErrorCode).ToDictionary(g => g.Key, g => g.First());
     var created = 0; var updated = 0;
+    var by1096 = (partnerUserCode ?? "system").Trim();
     foreach (var r in rows)
     {
         var code = r.ErrorCode!.Trim().ToUpperInvariant();
-        if (!byCode.TryGetValue(code, out var row))
+        var isNew1096 = !byCode.TryGetValue(code, out var row);
+        if (isNew1096)
         {
             row = new RoComplaintDiagnosticError { OrgId = t.OrgId, ErrorCode = code };
             db.RoComplaintDiagnosticErrors.Add(row); byCode[code] = row; created++;
         }
         else updated++;
-        row.ErrorName = r.ErrorName; row.ErrorTypeCode = r.ErrorTypeCode;
+        row!.ErrorName = r.ErrorName; row.ErrorTypeCode = r.ErrorTypeCode;
         if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!;
-        row.LogLUDateTime = DateTime.Now; row.LogLUBy = "api";
+        // #1096: nhanh TAO nguon ghi du 4 cot nhat ky; nhanh SUA chi ghi LogLUDateTime/LogLUBy.
+        var now1096 = DateTime.Now;
+        if (isNew1096) { row.CreatedDate = now1096; row.CreatedBy = by1096; }
+        row.LogLUDateTime = now1096; row.LogLUBy = by1096;
     }
     await db.SaveChangesAsync();
     return Results.Ok(new
