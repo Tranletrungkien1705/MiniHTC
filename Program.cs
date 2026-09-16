@@ -61616,7 +61616,7 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
 // sẵn trong DTO nhưng chưa bao giờ được đọc) và bỏ hẳn TradeMarkCode/ProductYear của xe (entity `CustomerCar`
 // chưa có hai cột này — bổ sung §12). Vá đủ cả hai nhánh Create/Update, đúng nguồn "cùng bộ tham số".
 app.MapPost("/api/servicecustomers/import-ws", async (List<ServiceCustomerImportWsRow> rows, string? dealerCode,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dl = (dealerCode ?? "").Trim();
     var saved = new List<object>();
@@ -61659,11 +61659,16 @@ app.MapPost("/api/servicecustomers/import-ws", async (List<ServiceCustomerImport
         cus.ContName = row.ContName; cus.ContSex = row.ContSex; cus.ContAddress = row.ContAddress;
         cus.ContTel = row.ContTel; cus.ContMobile = row.ContMobile; cus.ContFax = row.ContFax; cus.ContEmail = row.ContEmail;
         await db.SaveChangesAsync();   // đảm bảo cus có Id/CusCode trước khi gán vào car
+        var isNewCar1089 = car is null;
         if (car is null) { car = new CustomerCar { OrgId = t.OrgId, PlateNo = plate }; db.CustomerCars.Add(car); }
         car.FrameNo = row.FrameNo; car.EngineNo = row.EngineNo; car.ModelCode = model.ModelCode; car.ColorCode = row.ColorCode;
         car.TradeMarkCode = row.TrademarkCode;   // #976
         car.ProductYear = int.TryParse(row.ProductYear, out var py) ? py : null;   // #976
         car.CusCode = cus.CusCode; car.CusName = cus.CusName; car.CusPhone = cus.Mobile ?? cus.Tel; car.UpdatedAt = DateTime.Now;
+        // #1089: ProcessCarCreate ghi du 4 cot nhat ky khi TAO; ProcessCarUpdate chi ghi LogLUDateTime/LogLUBy.
+        var by1089 = (partnerUserCode ?? "system").Trim(); var now1089 = DateTime.Now;
+        if (isNewCar1089) { car.CreatedDate = now1089; car.CreatedBy = by1089; }
+        car.LogLUDateTime = now1089; car.LogLUBy = by1089;
         saved.Add(new { cus.CusCode, cus.CusName, car.PlateNo, car.FrameNo, car.TradeMarkCode, car.ProductYear });
     }
     await db.SaveChangesAsync();

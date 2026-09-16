@@ -3144,6 +3144,11 @@ public static class Seeder
                 "ALTER TABLE public.\"PartStockOuts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 // #1088: ServicePackage thieu CreatedBy (khac Creator - xem chu thich entity).
                 "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1089: CustomerCar (Ser_Car) thieu 4 cot nhat ky (ProcessCarCreate/Update, duong Import).
+                "ALTER TABLE public.\"CustomerCars\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"CustomerCars\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"CustomerCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"CustomerCars\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

@@ -2990,6 +2990,15 @@ public sealed class CustomerCar
     // chỗ chứa ⇒ hai giá trị nhận từ import bị RỚT ÂM THẦM (không lỗi, chỉ không lưu).
     public string? TradeMarkCode { get; set; }
     public int? ProductYear { get; set; }
+
+    /// <summary>#1089 §12 — nguồn `ProcessCarCreate`/`ProcessCarUpdate` (Car.cs:1731/1970, gọi từ
+    /// `Ser_Customer_Import`, Customer.cs:7677/7740) ghi đủ 4 cột nhật ký khi TẠO; `Update` chỉ ghi
+    /// LogLUDateTime/LogLUBy. ⚠️ Nhánh tạo xe qua `SerCarCreate` (UI thường, Car.cs:80) KHÔNG hề ghi
+    /// audit-column nào trên `Ser_Car` — CHỈ đường IMPORT mới có; port đúng theo đường import này.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Báo giá sửa chữa (header: theo RO, tổng công + phụ tùng + VAT) — port 1:1 FrmQuotation (TblSerRO/Quotation, TCMotor).</summary>
