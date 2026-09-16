@@ -3203,6 +3203,11 @@ public sealed class TstExchangeUnit
     public decimal ExchangeRate { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>#1118 §12 — nguồn `TST_Mst_Exchange_Unit_Add`/`_Update` (Service.cs:18093/18386) ghi
+    /// `LogLUDateTime`/`LogLUBy` (= strPartnerUserCode) ở CẢ HAI nhánh (bảng không có CreatedDate/CreatedBy).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master phụ tùng TST (TST_Mst_Part) — port 1:1 FrmTST_Mst_Part (TCMotor DMSCarSv).

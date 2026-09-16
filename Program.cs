@@ -24990,7 +24990,7 @@ app.MapGet("/api/tstexchangeunits", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.TSTPartCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng TST." });
@@ -25002,6 +25002,8 @@ app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext
     if (row is null) { row = new TstExchangeUnit { OrgId = t.OrgId, TSTPartCode = code }; db.TstExchangeUnits.Add(row); }
     row.VieName = dto.VieName; row.TSTUnit = dto.TSTUnit; row.DMSUnit = dto.DMSUnit; row.ExchangeRate = dto.ExchangeRate; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // #1118: nguon ghi LogLUDateTime/LogLUBy = strPartnerUserCode o CA Add lan Update.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.TSTPartCode, row.ExchangeRate, row.FlagActive });
 }).RequireAuthorization();

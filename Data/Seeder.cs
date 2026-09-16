@@ -3196,6 +3196,9 @@ public static class Seeder
                 // #1117: CampaignMarketing thieu LogLUDateTime/LogLUBy (Ser_CampaignMarketing_Create_20220926).
                 "ALTER TABLE public.\"CampaignMarketings\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"CampaignMarketings\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1118: TstExchangeUnit thieu LogLUDateTime/LogLUBy (TST_Mst_Exchange_Unit_Add/Update).
+                "ALTER TABLE public.\"TstExchangeUnits\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"TstExchangeUnits\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
