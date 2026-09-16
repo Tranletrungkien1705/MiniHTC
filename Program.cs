@@ -44257,7 +44257,7 @@ app.MapGet("/api/partquotes/statuses", () => Results.Ok(new
     note = "Nguồn theo dõi báo giá bám vòng đời phiếu xuất; KHÔNG có bước gửi/duyệt như port cũ."
 })).RequireAuthorization();
 
-app.MapPost("/api/partquotes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partquotes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartQuotes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QuoteNo == no);
@@ -44287,7 +44287,11 @@ app.MapPost("/api/partquotes/{no}/{action}", async (string no, string action, Ap
         return Results.BadRequest(new { error = $"Không thể {action} khi đang ở trạng thái {current}." });
     }
 
-    h.Status = next; await db.SaveChangesAsync();
+    h.Status = next;
+    // #1133: `Ser_Inv_Quote_Update` (Inventory.Quote.cs:1006-1099) ghi `Status`/`LogLUDateTime`/`LogLUBy`
+    // trong CÙNG một alColumnEffective/SaveData — mọi lần đổi Status qua hàm này đều ghi kèm actor server.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
     return Results.Ok(new { h.QuoteNo, status = h.Status, sourceCode = partQuoteStatusSourceCodes[next] });
 }).RequireAuthorization();
 
