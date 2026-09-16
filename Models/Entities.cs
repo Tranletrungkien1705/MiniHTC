@@ -6215,6 +6215,11 @@ public sealed class CampaignMarketing
     public string? ConditionPlateNo { get; set; }     // CSV
     public string? ConditionDealer { get; set; }      // CSV
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1117 §12 — nguồn `Ser_CampaignMarketing_Create_20220926` (LIVE qua WS gateway) ghi
+    /// `LogLUDateTime`/`LogLUBy` (= strPartnerUserCode) — bảng KHÔNG có CreatedDate/CreatedBy.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phụ tùng khuyến mãi trong chiến dịch marketing (dòng) — port 1:1 grid gridCPart, TCMotor.</summary>

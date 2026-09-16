@@ -45548,7 +45548,7 @@ app.MapPost("/api/campaignmarketings/{no}/approve", async (string no, CampaignAp
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CamName)) return Results.BadRequest(new { error = "Chưa nhập tên chiến dịch." });
     if (string.IsNullOrWhiteSpace(dto.CamDesc)) return Results.BadRequest(new { error = "Chưa nhập nội dung chiến dịch." });
@@ -45567,7 +45567,9 @@ app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbCon
         OrgId = t.OrgId, CamNo = no, CamName = dto.CamName.Trim(), CamDesc = dto.CamDesc,
         EffDateStart = dto.EffDateStart.Value, EffDateEnd = dto.EffDateEnd.Value,
         WarrantyDateStart = dto.WarrantyDateStart, WarrantyDateEnd = dto.WarrantyDateEnd,
-        ConditionVin = dto.ConditionVin, ConditionPlateNo = dto.ConditionPlateNo, ConditionDealer = dto.ConditionDealer
+        ConditionVin = dto.ConditionVin, ConditionPlateNo = dto.ConditionPlateNo, ConditionDealer = dto.ConditionDealer,
+        // #1117 §12: Ser_CampaignMarketing_Create_20220926 ghi LogLUDateTime/LogLUBy = strPartnerUserCode.
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.CampaignMarketings.Add(c); await db.SaveChangesAsync();
     foreach (var p in parts)
