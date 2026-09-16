@@ -57782,7 +57782,14 @@ app.MapGet("/api/report/parts-order-detail-to-hmc", async (AppDbContext db, ITen
     var eligible = lines.Where(x => x.QtyAppr != null && x.QtyAppr == x.OrderQty).ToList();
     var droppedByPartialApproval = lines.Count - eligible.Count;
 
-    var rows = eligible.Select(x =>
+    // #989 TRẢ NỢ `miniModelGap`: bảng `RptPartsOrderDetailPart` (~Rpt_PartsOrderDetail_Part, thêm ở #983)
+    // nay đã có — áp ĐÚNG anti-join nguồn (rpodp.OrderPartNo is null -- Chưa từng gửi HMC), khoá (OrderSuppierNo, PartID).
+    var sentKeys = (await db.RptPartsOrderDetailParts.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .Select(x => (x.OrderPartNo, x.PartID)).ToHashSet();
+    var notYetSent = eligible.Where(x => !sentKeys.Contains((orderById[x.OrderPartId].OrderSuppierNo ?? "", x.PartID ?? ""))).ToList();
+    var droppedAsAlreadySent = eligible.Count - notYetSent.Count;
+
+    var rows = notYetSent.Select(x =>
     {
         var o = orderById[x.OrderPartId];
         return new
@@ -57801,7 +57808,7 @@ app.MapGet("/api/report/parts-order-detail-to-hmc", async (AppDbContext db, ITen
     return Results.Ok(new
     {
         auto, fromDate = from, toDate = to, count = rows.Count, rows,
-        droppedByPartialApproval,
+        droppedByPartialApproval, droppedAsAlreadySent,
         // ===== #695 =====
         autoVariantPatternCounted = "BAN _Auto BO TRONG BO LOC NGAY LA KHUON MAU KHONG PHAI LOI LE: co BA cap _SendHMC/_SendHMC_Auto trong he (Rpt_DMSSer_DealerNetPrice_* #694, Rpt_DMSSer_PartsOrderDetail_* ham nay, Ser_ROWarrantyReport_*). Chuoi \"\" // strReportDateConditionList xuat hien 2 lan, ca hai trong file nay => 2/3 cap bo loc ngay o ban tu dong; cap Ser_ROWarrantyReport KHONG dung cach do (phai kiem rieng). Phat bieu dung: HAI luong gui HMC tu dong gui toan bo lich su, khong phai moi luong",
         threeMoneyFormulasStackedTwoCommented = "BA CONG THUC TIEN CHONG LEN NHAU, HAI BI COMMENT — VA CA BA KHAC NHAU: (1) --, isnull(f.Price,0) * isnull(f.VAT,0) PriceVAT (Price NHAN VAT, khong phai 1+VAT); (2) --, cast(isnull(ROUND(f.UPAfterDc / 100, 0), 0) as int) * (1 + isnull(f.VAT,0)) PriceVAT; (3) DANG CHAY: , cast(ROUND(isnull(f.UPAfterDc,0) * 0.01, 0) as int) PriceVAT",
@@ -57812,7 +57819,7 @@ app.MapGet("/api/report/parts-order-detail-to-hmc", async (AppDbContext db, ITen
         partialApprovalNeverSentToHmc = "Ve cuoi la bo loc nghiep vu NANG NHAT: chi gui HMC nhung dong duoc duyet DUNG BANG so dat => don DUYET THIEU (QtyAppr < QtyOrd) KHONG BAO GIO duoc gui, va khong co canh bao nao. Port dem droppedByPartialApproval",
         constantsResolved = "TConst.OrderPartType = TST/OTHER; TConst.SupplierStatus (Const.Main.cs:544) 1 cho duyet, 2 da duyet cho hoan => in (2,4) la HAI trang thai phia NCC",
         positiveAntiJoinIsIntentional = "DUONG TINH: left join Rpt_PartsOrderDetail_Part rpodp on … + and rpodp.OrderPartNo is null -- Chua tung gui HMC => chi lay don CHUA TUNG GUI; nguon CO CHU THICH RO (go sai tung/tung, vo hai). Khac #659 noi IS NULL MO TOANG bo loc",
-        miniModelGap = "Mini chua mo hinh hoa Rpt_PartsOrderDetail_Part (bang da gui HMC) => port chua loc duoc chua-tung-gui; ghi NO",
+        miniModelGapPaidAt989 = "#989 TRA NO: bang RptPartsOrderDetailPart da them o #983 — endpoint nay nay loc DUNG chua-tung-gui qua khoa (OrderSuppierNo, PartID), dem rieng droppedAsAlreadySent.",
     });
 }).RequireAuthorization();
 
