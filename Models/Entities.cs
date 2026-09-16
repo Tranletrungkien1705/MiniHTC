@@ -3862,6 +3862,19 @@ public sealed class SerAppTypeMst
     public string? LogLUBy { get; set; }
 }
 
+/// <summary>#1059 §12 — MÀN CHƯA TỪNG PORT: `Mst_Staff` (danh mục nhân viên chung), cùng whitelist
+/// `myCommon_GetSupportedTable` như `Mst_Ser_AppType` (#1058) — cùng cơ chế `CommonGetMasterData`/
+/// `CommonSaveMasterData`, KHÔNG có hàm Create/Update riêng. `TblMst_Staff` (DbDefine.cs:565) xác nhận
+/// ĐÚNG 3 cột thật: StaffCode/StaffName/FlagActive — không có cột log nào (khác đa số master khác).</summary>
+public sealed class MstStaff
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StaffCode { get; set; } = "";
+    public string? StaffName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 /// <summary>Master kỳ khảo sát JD Power (Ser_MST_JDPowerTerm) — port 1:1 FrmJDPowerTermCreate/Search (TCMotor DMSCarSv). Mã kỳ + nội dung + ngày bắt đầu/kết thúc.</summary>
 public sealed class JDPowerTerm
 {

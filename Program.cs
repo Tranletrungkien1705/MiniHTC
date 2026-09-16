@@ -27995,6 +27995,41 @@ app.MapPost("/api/serapptypes/{id:long}/toggle", async (long id, AppDbContext db
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴 #1059 MÀN CHƯA TỪNG PORT: `Mst_Staff` (danh mục nhân viên chung) =====
+// Cùng cơ chế whitelist chung như #1058 — KHÔNG có hàm Create/Update riêng, chỉ 3 cột thật
+// (`TblMst_Staff`: StaffCode/StaffName/FlagActive), không có cột log nào để mô phỏng thêm.
+app.MapGet("/api/mststaffs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.MstStaffs.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StaffCode.Contains(q!) || (x.StaffName != null && x.StaffName.Contains(q!)));
+    var items = await qry.OrderBy(x => x.StaffCode).Take(500)
+        .Select(x => new { x.Id, x.StaffCode, x.StaffName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mststaffs", async (MstStaffDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.StaffCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhân viên." });
+    var row = await db.MstStaffs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StaffCode == code);
+    var isNew = row is null;
+    if (isNew) { row = new MstStaff { OrgId = t.OrgId, StaffCode = code }; db.MstStaffs.Add(row); }
+    row!.StaffName = dto.StaffName;
+    if (!isNew && dto.FlagActive != null) row.FlagActive = dto.FlagActive;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.StaffCode, row.StaffName, row.FlagActive, isNew });
+}).RequireAuthorization();
+
+app.MapPost("/api/mststaffs/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.MstStaffs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Master kho dịch vụ (SerStock — port 1:1 FrmStockCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/serstocks", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -81094,6 +81129,7 @@ record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, 
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive, string? DealerCode = null);
 record SerAppTypeMstDto(string? AppTypeCode, string? AppTypeName, string? FlagActive = null);   // #1058
+record MstStaffDto(string? StaffCode, string? StaffName, string? FlagActive = null);   // #1059
 record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
 record SerPartTypeDto(string? TypeName, string? FlagActive, string? TypeCode = null, string? DealerCode = null);   // #963: +TypeCode/DealerCode
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
