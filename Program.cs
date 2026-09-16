@@ -25190,11 +25190,14 @@ app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext
     return Results.Ok(new { row.Id, row.TSTPartCode, row.ExchangeRate, row.FlagActive });
 }).RequireAuthorization();
 
-app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1200: nhất quán với POST cùng bảng (#1118) — nguồn `TST_Mst_Exchange_Unit_Update` ghi
+    // LogLUDateTime/LogLUBy VÔ ĐIỀU KIỆN ở mọi lần lưu (Service.cs:18459-18460), toggle trước đây thiếu.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
