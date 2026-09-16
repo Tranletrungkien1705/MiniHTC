@@ -15901,7 +15901,7 @@ app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMst
 // nhưng `LOCATIONSURFACE`/`LOCATIONTYPE` có giá trị, CẢ HAI vẫn bị ghi `NULL` theo nhánh else của Height.
 // Áp luật "port dòng ACTIVE": giữ NGUYÊN lỗi này (không tự sửa), ghi rõ trong response để không ai tưởng nhầm.
 app.MapPost("/api/sermstlocations/import", async (List<SerMstLocationImportRowDto> rows, string? dealerCode,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dl = (dealerCode ?? "").Trim();
     var saved = new List<object>();
@@ -15911,7 +15911,14 @@ app.MapPost("/api/sermstlocations/import", async (List<SerMstLocationImportRowDt
         if (lc.Length == 0) continue;
         var heightEmpty = string.IsNullOrEmpty(row.LocationHight);   // biến DUY NHẤT quyết định cả ba cột — đúng bug nguồn
         var r = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == lc && x.DealerCode == dl);
+        // #1183 SUA BUG THAT: nguon Ser_Mst_Location_Import (BizCarSv.Master.cs:7371+127-131 tao,
+        // +213-215 sua) ghi du 4 cot nhat ky khi tao va cap LogLUDateTime/LogLUBy khi sua — port cu
+        // chua tung dong cot nao.
+        var by1183 = (partnerUserCode ?? "system").Trim(); var now1183 = DateTime.Now;
+        var isNewLoc1183 = r is null;
         if (r is null) { r = new SerMstLocation { OrgId = t.OrgId, LocationCode = lc, DealerCode = dl, LocationID = lc }; db.SerMstLocations.Add(r); }
+        if (isNewLoc1183) { r.CreatedDate = now1183; r.CreatedBy = by1183; }
+        r.LogLUDateTime = now1183; r.LogLUBy = by1183;
         r.LocationName = row.LocationName;
         r.LocationHight = heightEmpty ? null : row.LocationHight;
         r.LocationSurface = heightEmpty ? null : row.LocationSurface;      // bug nguồn: gate theo Height, không theo Surface
