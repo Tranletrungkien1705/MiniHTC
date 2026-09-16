@@ -60559,7 +60559,7 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
 // ⚠️ `alColumnEffective` có `CreateDate` nhưng **không có dòng nào gán** nó ⇒ mỗi lần sửa lại ghi đè
 //   `CreateDate` bằng giá trị vừa đọc lên (vô hại nếu bản đọc còn mới, nhưng là ghi thừa).
 // ⚠️ Ghi vào **Main + WH**, còn **Dealer chỉ khi `!bIsWSMain`** — lại một luồng ba CSDL (#388).
-app.MapPut("/api/orderparts/{no}", async (string no, OrderPartUpdateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/orderparts/{no}", async (string no, OrderPartUpdateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.OrderParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderPartNo == no);
@@ -60610,8 +60610,10 @@ app.MapPut("/api/orderparts/{no}", async (string no, OrderPartUpdateDto dto, App
     o.CreateBy = string.IsNullOrWhiteSpace(dto.UserCreate) ? null : dto.UserCreate!.Trim();
     if (o.CreateBy is null) cleared.Add("CreateBy");
 
+    // #1109 SỬA BUG THẬT: nguồn Ser_Order_Part_Appr (A.02.OrderPart.cs:3239) ghi LogLUBy = strPartnerUserCode
+    // (actor server) — port cũ nhận dto.LogLUBy tự client gửi.
     o.LogLUDateTime = DateTime.Now;
-    o.LogLUBy = dto.LogLUBy;
+    o.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -63429,7 +63431,7 @@ app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITena
 //      Sau đó `ProcessFinishOrderByStockOut` đóng lệnh.
 //
 // MiniHTC một CSDL ⇒ không tái hiện được (1) và (5); trả cờ để không ai tưởng port thiếu.
-app.MapPost("/api/stockouts/{no}/adjust-svc", async (string no, StockOutAdjustDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockouts/{no}/adjust-svc", async (string no, StockOutAdjustDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var old = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
@@ -63460,7 +63462,10 @@ app.MapPost("/api/stockouts/{no}/adjust-svc", async (string no, StockOutAdjustDt
         Status = "3",
         StatusText = stockOutStatusNames.TryGetValue("3", out var a3) ? a3 : null,
         PostedAt = DateTime.Now,
-        LogLUDateTime = DateTime.Now, LogLUBy = dto.AdjustmentBy,
+        // #1111 SỬA BUG THẬT: nguồn UpdateStockOut (StockOut.cs:1653, gọi từ
+        // SerStockOutStatusUpdateToFinishedAdjusmnet) ghi LogLUBy = strPartnerUserCode — KHÁC AdjustmentBy
+        // (cột nghiệp vụ riêng, ghi ở dòng trên cho bản ghi CŨ). Port cũ tái dùng dto.AdjustmentBy.
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.PartStockOuts.Add(neu);
     await db.SaveChangesAsync();
@@ -65337,7 +65342,7 @@ app.MapGet("/api/auth/app-login-eligibility", (string dealerCode, string userCod
 //   FormatException** khi tham số rỗng. Đây đúng lớp lỗi đã ghi trong hook (`Convert.To*` trên ô rỗng).
 //   Port KHÔNG bắt chước crash: thiếu ngày ⇒ trả `400` có thông điệp, và ghi rõ chỗ lệch này.
 // ⚠️ Nguồn lưu ngày dạng `"yyyy-MM-dd HH:mm"` ⇒ **cắt mất GIÂY**. Port cắt giây y hệt để đối chiếu khớp.
-app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var roNo = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
@@ -65412,8 +65417,11 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
         backToHasRO = true;
     }
 
+    // #1110 SỬA BUG THẬT: nguồn Ser_RO_Update_New20220926 (ZTemp.cs:13209) ghi `ModifyBy` từ tham số client
+    // strModifyBy (ĐÚNG, giữ nguyên) nhưng `LogLUBy` = strPartnerUserCode (actor server, KHÁC ModifyBy) —
+    // port cũ tái dùng dto.ModifyBy cho cả hai cột.
     r.ModifyBy = dto.ModifyBy; r.ModifyDate = DateTime.Now;
-    r.LogLUBy = dto.ModifyBy; r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = (partnerUserCode ?? "system").Trim(); r.LogLUDateTime = DateTime.Now;
     await db.SaveChangesAsync();
 
     return Results.Ok(new
