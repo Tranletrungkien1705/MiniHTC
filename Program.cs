@@ -42569,13 +42569,18 @@ app.MapGet("/api/servicecustomers/all-dl", async (AppDbContext db, ITenantContex
         .Select(x => new { x.Id, x.CusCode, x.CusName, x.Address, x.Mobile, x.CusTypeID, x.FlagActive })
         .ToListAsync();
     var codes = page.Select(x => x.CusCode).ToList();
-    var roCount = (await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
-            .Select(x => new { x.CusName }).ToListAsync())
-        .GroupBy(x => x.CusName ?? "").ToDictionary(g => g.Key, g => g.Count());
+    // #986: nguon dem theo `ro.CusID` (khoa THAT), Mini truoc day dem theo CusName (khoa YEU — trung ten
+    // se cong don sai). CusID cua RO luu ma khach (giong CusCode), khong phai Id noi bo — sua lai dung khoa.
+    var roCount = (await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.CusID != null && codes.Contains(x.CusID))
+            .Select(x => new { x.CusID }).ToListAsync())
+        .GroupBy(x => x.CusID!).ToDictionary(g => g.Key, g => g.Count());
+    // #986: nguon con noi `Ser_mst_customertype sut on t.CusTypeID=sut.CusTypeID` de tra `sut.CusPersonType` — port cu bo sot.
+    var custTypes = await db.CustomerTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
     var items = page.Select(x => new
     {
         x.CusCode, x.CusName, x.Address, x.Mobile, x.CusTypeID, x.FlagActive,
-        checkInCount = roCount.TryGetValue(x.CusName ?? "", out var c) ? c : 0,
+        cusPersonType = custTypes.FirstOrDefault(ct => ct.CusTypeCode == x.CusTypeID)?.CusPersonType,   // #986
+        checkInCount = roCount.TryGetValue(x.CusCode, out var c) ? c : 0,
     }).ToList();
     return Results.Ok(new
     {
