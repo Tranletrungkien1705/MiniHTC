@@ -76673,6 +76673,59 @@ app.MapPost("/api/serassignmentworks/{roNo}/actual", async (string roNo, Assignm
             return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_Actual*DTime_Cavity: " + g + " bat dau sau ket thuc." });
     }
 
+    // ===== #1027 TRẢ NỢ #534: "#region ReCheck (14 lời gọi kiểm khoang)" MỚI CHỈ ĐƯỢC MÔ TẢ, CHƯA PORT =====
+    // Nguồn: `MyCheck_SerAssignmentWork_Actual{Start,Finish}DTime_Cavity` (AssignmentOfWork.cs:3024/~3110,
+    // bản KHÔNG hậu tố `xxx` — bản `xxx` cạnh đó là bản CHẾT, xác nhận qua callsite). Với MỖI mốc giờ thực
+    // tế (start hoặc finish) VỪA nhập cho MỘT công đoạn: nếu mốc đó rơi vào khoảng [ActualStart, ActualFinish)
+    // của BẤT KỲ công đoạn nào (trong 7 công đoạn) của BẤT KỲ lệnh nào khác ĐANG dùng CÙNG khoang — CHẶN.
+    // ⚠️ Nguồn KHÔNG loại trừ chính lệnh hiện tại (`ROID != @strROID` không xuất hiện trong hai hàm này,
+    // khác hẳn guard PlanDateTime ở #1026) — giữ đúng, không tự thêm loại trừ nguồn không có.
+    async Task<string?> FindActualPointConflict(string? cavityId, DateTime? point)
+    {
+        if (string.IsNullOrWhiteSpace(cavityId) || point is null) return null;
+        var candidates = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId &&
+            (x.SCCCavityID == cavityId || x.SCDCavityID == cavityId || x.SCNCavityID == cavityId
+             || x.SCSCavityID == cavityId || x.SCDBCavityID == cavityId || x.SCLRCavityID == cavityId
+             || x.SCKSCCavityID == cavityId)).ToListAsync();
+        bool InRange(DateTime? s, DateTime? f) => s.HasValue && f.HasValue && s.Value < point.Value && f.Value > point.Value;
+        foreach (var c in candidates)
+        {
+            if (c.SCCCavityID == cavityId && InRange(c.SCCActualStartDTime, c.SCCActualFinishDTime)) return c.RONo;
+            if (c.SCDCavityID == cavityId && InRange(c.SCDActualStartDTime, c.SCDActualFinishDTime)) return c.RONo;
+            if (c.SCNCavityID == cavityId && InRange(c.SCNActualStartDTime, c.SCNActualFinishDTime)) return c.RONo;
+            if (c.SCSCavityID == cavityId && InRange(c.SCSActualStartDTime, c.SCSActualFinishDTime)) return c.RONo;
+            if (c.SCDBCavityID == cavityId && InRange(c.SCDBActualStartDTime, c.SCDBActualFinishDTime)) return c.RONo;
+            if (c.SCLRCavityID == cavityId && InRange(c.SCLRActualStartDTime, c.SCLRActualFinishDTime)) return c.RONo;
+            if (c.SCKSCCavityID == cavityId && InRange(c.SCKSCActualStartDTime, c.SCKSCActualFinishDTime)) return c.RONo;
+        }
+        return null;
+    }
+    var stageCavityIds = new (string cavityId, string label)[]
+    {
+        (w.SCCCavityID ?? "", "SCC"), (w.SCDCavityID ?? "", "SCD"), (w.SCNCavityID ?? "", "SCN"),
+        (w.SCSCavityID ?? "", "SCS"), (w.SCDBCavityID ?? "", "SCDB"), (w.SCLRCavityID ?? "", "SCLR"),
+        (w.SCKSCCavityID ?? "", "SCKSC"),
+    };
+    foreach (var (cavityId, label) in stageCavityIds)
+    {
+        var st = (DateTime?)typeof(AssignmentActualDto).GetProperty(label + "ActualStartDTime")!.GetValue(dto);
+        var fi = (DateTime?)typeof(AssignmentActualDto).GetProperty(label + "ActualFinishDTime")!.GetValue(dto);
+        if (st is not null)
+        {
+            var conflictRoNo = await FindActualPointConflict(cavityId, st);
+            if (conflictRoNo is not null)
+                return Results.BadRequest(new { error = "Ser_AssignmentWork_Update_InvalidActualStartDTime",
+                    message = $"Khoang {cavityId} ({label}) đang bận với lệnh {conflictRoNo} tại mốc bắt đầu.", stage = label, cavityId, conflictRoNo });
+        }
+        if (fi is not null)
+        {
+            var conflictRoNo = await FindActualPointConflict(cavityId, fi);
+            if (conflictRoNo is not null)
+                return Results.BadRequest(new { error = "Ser_AssignmentWork_Update_InvalidActualFinishDTime",
+                    message = $"Khoang {cavityId} ({label}) đang bận với lệnh {conflictRoNo} tại mốc kết thúc.", stage = label, cavityId, conflictRoNo });
+        }
+    }
+
     if (dto.SCCActualStartDTime is not null) w.SCCActualStartDTime = dto.SCCActualStartDTime;
     if (dto.SCCActualFinishDTime is not null) w.SCCActualFinishDTime = dto.SCCActualFinishDTime;
     if (dto.SCDActualStartDTime is not null) w.SCDActualStartDTime = dto.SCDActualStartDTime;
