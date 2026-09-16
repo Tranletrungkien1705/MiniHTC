@@ -79166,7 +79166,7 @@ app.MapPost("/api/repairorders/{no}/maintenance-reminder", async (string no, RoM
         authorLeftQuestionMarkOnJoin = "CANH BAO KHONG KHANG DINH BUG: UPDATE Ser_CustomerCareMace join lai ser_ro qua t.ROID kem chu thich -- ??? cua CHINH TAC GIA. Do ky logic TU NHAT QUAN (t.MaceId da bi gioi han boi bang tam loc theo ROID hien tai) nhung ghi lai vi tac gia tu nghi ngo — diem rui ro can can trong neu sau nay co ai sua ham nay",
     });
 }).RequireAuthorization();
-app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
@@ -79176,6 +79176,9 @@ app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, 
     if (r.Status is "Repaired" or "Paid" or "Finished" or "Rejected")
         return Results.BadRequest(new { error = "Lệnh đã Sửa xong/Đã thanh toán/Đã hoàn thành/Đã từ chối, không thể huỷ.", status = r.Status });
     r.Status = "Rejected"; r.RejectNote = dto.Note.Trim(); r.RejectedAt = DateTime.Now;
+    // #1142: nguồn `SerROUpdateToROReject_New20210329` (Service01.cs:10377-10478) ghi Status/LogLUDateTime/
+    // LogLUBy trong CÙNG một lệnh SaveData — port cũ hoàn toàn bỏ sót 2 cột nhật ký trên chính Ser_RO.
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
 
     // #901: PORT ĐÚNG hành vi nguồn — xoá phân công KTV của lệnh (không lưu vết), khác Ser_RO.
     var works = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.ROID == no).ToListAsync();
