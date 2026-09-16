@@ -42469,12 +42469,15 @@ app.MapPost("/api/bulletins/{no}/vins/{vin}/status", async (
     return Results.Ok(new { row.BulletinNo, row.VinNo, row.Status });
 }).RequireAuthorization();
 
-app.MapPost("/api/bulletins/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/bulletins/{no}/toggle", async (string no, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var x = await db.Bulletins.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.BulletinNo == no);
     if (x is null) return Results.NotFound(new { no });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1123 cùng luật #1122: nguồn `UpdateBulletin_20210224` LUÔN ghi LogLUDateTime/LogLUBy khi đổi IsActive,
+    // bất kể client gọi qua đường nào — endpoint lật cờ (song song với set-active) cũng phải ghi.
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.BulletinNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
@@ -46556,6 +46559,10 @@ app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantConte
         ex.CavityType = dto.CavityType;
         if (!string.IsNullOrWhiteSpace(dto.Status)) ex.Status = dto.Status;
         ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate;
+        // #1124 cùng luật #1102 (Ser_CavityUpdate luôn ghi LogLUDateTime/LogLUBy = strPartnerUserCode khi
+        // sửa khoang) — nhánh nâng cấp lại (upsert khi đã tồn tại) trong CHÍNH endpoint tạo này thực chất
+        // là một lượt SỬA, nhưng chưa từng ghi 2 cột nhật ký.
+        ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = (partnerUserCode ?? "system").Trim();
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.CavityNo, ex.DealerCode, updated = true });
     }
