@@ -15254,12 +15254,15 @@ app.MapPost("/api/partlocations", async (PartLocationDto dto, AppDbContext db, I
     return Results.Ok(new { r.LocationCode, updated = false });
 }).RequireAuthorization();
 
-app.MapPost("/api/partlocations/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partlocations/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.PartLocations.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.LocationCode == code);
     if (x is null) return Results.NotFound(new { code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1202 SUA BUG THAT: nhat quan voi POST cung bang (#1184) — Ser_Mst_Location_Update ghi
+    // LogLUDateTime/LogLUBy khi sua; toggle truoc do khong dong dau cot nao.
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.LocationCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
@@ -25076,11 +25079,14 @@ app.MapPost("/api/unitpricegps/{id}/delete", async (long id, AppDbContext db, IT
     return Results.Ok(new { deleted = row.ContractNo });
 }).RequireAuthorization();
 
-app.MapPost("/api/unitpricegps/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/unitpricegps/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1203 SUA BUG THAT: nhat quan voi /api/unitpricegps/{id}/update cung bang — nguon ghi
+    // LogLUDateTime/LogLUBy vo dieu kien moi lan sua; toggle truoc do khong dong dau cot nao.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
@@ -28722,11 +28728,14 @@ app.MapDelete("/api/serstocks/{stockNo}", async (string stockNo, AppDbContext db
         twoMachinesVerified = "md5 chuan hoa SerStockDelete tren may 150 = abeb16f7 KHOP laptop",
     });
 }).RequireAuthorization();
-app.MapPost("/api/serstocks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serstocks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1204 SUA BUG THAT: nhat quan voi POST cung bang (SerStockUpdate ghi LogLUDateTime/LogLUBy
+    // vo dieu kien moi lan sua) — toggle truoc do khong dong dau cot nao.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
