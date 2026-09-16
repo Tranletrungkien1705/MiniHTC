@@ -7249,7 +7249,7 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
 // ⚠️ KHOÁ tra là **cặp (DealerCode, DateReport)**, KHÔNG phải Id.
 // ⚠️ `ApprovedDate` dùng `"yyyy-MM-dd HH:mm:ss"` ⇒ **GIỮ GIÂY** — khác các mốc của lệnh sửa chữa vốn cắt
 //   tới PHÚT (#321/#328). Độ chính xác thời gian **không đồng nhất** giữa các màn; port theo từng chỗ.
-app.MapPost("/api/reportkpis/approve", async (ReportKpiApproveDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/reportkpis/approve", async (ReportKpiApproveDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
     if (dealer.Length == 0 || dto.DateReport is null)
@@ -7260,13 +7260,17 @@ app.MapPost("/api/reportkpis/approve", async (ReportKpiApproveDto dto, AppDbCont
     if (rows.Count == 0) return Results.NotFound(new { dealer, dto.DateReport });
 
     var now = DateTime.Now;   // giữ GIÂY, đúng nguồn
+    // #1103 SỬA BUG THẬT: nguồn `Report_KPIApproved` (zzzzCode.cs:1636) KHÔNG có tham số client cho người
+    // duyệt — cả `ApprovedBy` lẫn `LogLUBy` đều gán từ `strPartnerUserCode` (actor server). Port cũ nhận
+    // thẳng `dto.ApprovedBy` từ client, cho phép client tự xưng là ai đã duyệt.
+    var approver1103 = (partnerUserCode ?? "system").Trim();
     foreach (var r in rows)
     {
         r.Status = "F";                 // Stage.Finished — vốn đã là "F" từ lúc tạo
         r.ApprovedDate = now;
-        r.ApprovedBy = dto.ApprovedBy;
+        r.ApprovedBy = approver1103;
         r.LogLUDateTime = now;
-        r.LogLUBy = dto.ApprovedBy;
+        r.LogLUBy = approver1103;
     }
     await db.SaveChangesAsync();
     return Results.Ok(new
@@ -8255,7 +8259,7 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     });
 }).RequireAuthorization();
 
-app.MapPut("/api/reportkpis/{id:long}", async (long id, ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/reportkpis/{id:long}", async (long id, ReportKpiDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var r = await db.ReportKpis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (r is null) return Results.NotFound(new { id });
@@ -8284,7 +8288,10 @@ app.MapPut("/api/reportkpis/{id:long}", async (long id, ReportKpiDto dto, AppDbC
         && await db.ReportKpis.AnyAsync(x => x.OrgId == t.OrgId && x.Id != r.Id
             && x.DealerCode == r.DealerCode && x.RptYear == r.RptYear && x.RptMonth == r.RptMonth);
 
-    r.LogLUDateTime = DateTime.Now; r.LogLUBy = dto.RptBy;
+    // #1104 SỬA BUG THẬT: nguồn `Report_KPIUpdate` (zzzzCode.cs:1388) ghi `LogLUBy = strPartnerUserCode`
+    // (actor server) — KHÔNG liên quan `RptBy` (cột nghiệp vụ "người báo cáo"). Port cũ tái dùng dto.RptBy
+    // cho cả cột audit, làm mất dấu vết actor thật khi RptBy khác người đang thao tác.
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -8303,7 +8310,7 @@ app.MapPut("/api/reportkpis/{id:long}", async (long id, ReportKpiDto dto, AppDbC
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // 🔴 #403 Guard của nguồn: KHÔNG cho hai báo cáo cùng (đại lý, năm, tháng).
     if (!string.IsNullOrWhiteSpace(dto.DealerCode)
@@ -8376,8 +8383,7 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
         EnginerBP = dto.EnginerBP,
         EnginerNumber = dto.EnginerNumber,
         LaborProductivity = dto.LaborProductivity,
-        LogLUBy = dto.LogLUBy,
-        LogLUDateTime = dto.LogLUDateTime,
+        // #1105: LogLUBy/LogLUDateTime duoc gan lai ben duoi tu partnerUserCode (server actor), khong tu client.
         PaintingTechnicianQty = dto.PaintingTechnicianQty,
         PartAmountLocal = dto.PartAmountLocal,
         PartAmountOut = dto.PartAmountOut,
@@ -8429,7 +8435,11 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
         WorkHourSCCQty = dto.WorkHourSCCQty,
         WorkHourSCDQty = dto.WorkHourSCDQty,
         WorkHourSCSQty = dto.WorkHourSCSQty,
-        CreatedBy = dto.CreatedBy,
+        // #1105 SỬA BUG THẬT: nguồn `Report_KPICreate`/`_New20221101` (zzzzCode.cs:956/1151) ghi CẢ
+        // `CreatedBy` LẪN `LogLUBy` từ `strPartnerUserCode` (actor server) — port cũ nhận `dto.CreatedBy`
+        // từ client và bỏ sót hẳn LogLUDateTime/LogLUBy.
+        CreatedBy = (partnerUserCode ?? "system").Trim(),
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.ReportKpis.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.Id, r.DealerCode, r.DateReport, r.Status });
