@@ -16137,6 +16137,11 @@ public sealed class MstParam
     public string? ParamValue { get; set; }
     public string? Description { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1072 §12 — `Mst_Param_Create`/`_Update` (BizCarSv.Master.cs:976/1147, LIVE) ghi `LogLUDateTime`/
+    // `LogLUBy` (KHÔNG có `CreatedDate`/`CreatedBy` — bảng này chỉ có 2 cột log, không có 2 cột Created).
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 

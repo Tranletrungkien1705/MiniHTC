@@ -66595,7 +66595,7 @@ app.MapDelete("/api/mstparams/{dealerCode}/{paramCode}", async (string dealerCod
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/mstparams", async (MstParamDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mstparams", async (MstParamDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ParamType)
         || string.IsNullOrWhiteSpace(dto.ParamCode))
@@ -66614,10 +66614,12 @@ app.MapPost("/api/mstparams", async (MstParamDto dto, AppDbContext db, ITenantCo
             sourceHasNoSuchGuard = "nguon KHONG chan trung khoa — day la guard do PORT them, de bao ve chinh cac truy van khong co top 1 da neu o #675",
             dealerCode = dealer, paramType = ptype, paramCode = pcode,
         });
+    // #1072: Mst_Param_Create ghi LogLUDateTime/LogLUBy vô điều kiện lúc tạo.
     db.MstParams.Add(new MstParam
     {
         OrgId = t.OrgId, DealerCode = dealer, ParamType = ptype, ParamCode = pcode,
         ParamValue = dto.ParamValue, Description = dto.Description,
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     });
     await db.SaveChangesAsync();
     return Results.Ok(new { dealerCode = dealer, paramType = ptype, paramCode = pcode, dto.ParamValue });
