@@ -15087,7 +15087,9 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
     if (dto.Price < 0 || dto.Cost < 0 || dto.Vat < 0) return Results.BadRequest(new { error = "Giá/vốn/VAT không hợp lệ." });
     var code = dto.SerCode.Trim().ToUpperInvariant();
 
-    // ===== 🔴 #297 LUẬT GHI ĐÈ TỪ DANH MỤC CÔNG BẢO HÀNH CỦA HÃNG =====
+    var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
+
+    // ===== 🔴 #297 LUẬT GHI ĐÈ TỪ DANH MỤC CÔNG BẢO HÀNH CỦA HÃNG — CHỈ ÁP DỤNG KHI TẠO MỚI =====
     // Nguồn `Ser_Mst_Service_Create` (`BizCarSv.Service.cs`), chú thích **của chính tác giả**:
     //   *"Tạo mới nếu mã CV trùng mới mã CV bảo hành của HTV thì lấy từ master CV bảo hàng xuống,
     //     Đại lý ko dc tạo mới"*
@@ -15096,8 +15098,15 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
     //   `FlagWarranty` bật. Người dùng nhập gì cũng không có tác dụng — đây là **dữ liệu của HÃNG**.
     // ⚠️ Ánh xạ cột: `ROWWorkName`→SerName · `RateHour`→StdManHour · `RatePrice`→Cost · `Price`→Price ·
     //   `VAT`→Vat · `Model`→Model · `Remark`→Note. `FlagWarranty` mặc định TẮT, chỉ bật ở nhánh này.
-    var ww = await db.WarrantyWorkMsts.FirstOrDefaultAsync(w => w.OrgId == t.OrgId
-        && w.ROWWorkCode == code && w.FlagActive == "1");
+    // 🔴 #1032 SỬA GAP: `Ser_Mst_Service_Update` (`BizCarSv.Service.cs:1823`, endpoint dùng chung này CŨNG
+    //   đứng cho Update vì Mini không có route Update riêng) KHÔNG hề tra `Ser_MST_ROWarrantyWork` — Update
+    //   ghi THẲNG giá trị client gửi, không override. Port cũ áp override cho CẢ HAI nhánh (create lẫn update)
+    //   ⇒ sửa một dịch vụ trùng mã công bảo hành thì input bị ghi đè âm thầm mỗi lần sửa, nguồn không vậy.
+    //   Thu hẹp: chỉ tra/áp override khi TẠO MỚI (`ex is null`), đúng phạm vi nguồn.
+    var ww = ex is null
+        ? await db.WarrantyWorkMsts.FirstOrDefaultAsync(w => w.OrgId == t.OrgId
+            && w.ROWWorkCode == code && w.FlagActive == "1")
+        : null;
 
     var serName = dto.SerName; var cost = dto.Cost; var price = dto.Price;
     var vat = dto.Vat; var model = dto.Model; var note = dto.Note;
@@ -15111,7 +15120,6 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
         flagWarranty = "1";                       // Constants.Flag.Active
     }
 
-    var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
     if (ex is not null)
     {
         ex.SerName = serName; ex.Cost = cost; ex.Price = price; ex.Model = model; ex.Vat = vat; ex.Note = note; ex.FlagActive = "1";
@@ -15119,9 +15127,10 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
         // Nguồn ghi **DBNull khi rỗng** cho SerTypeID, không ghi chuỗi rỗng.
         ex.SerTypeID = string.IsNullOrWhiteSpace(serTypeId) ? null : serTypeId;
         ex.StdManHour = stdManHour; ex.Factor = dto.Factor;
-        ex.Status = dto.Status; ex.FlagWarranty = flagWarranty;
+        ex.Status = dto.Status;
+        // #1032: Update nguồn KHÔNG đụng FlagWarranty — giữ nguyên giá trị cũ, không reset về "0".
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.SerCode, updated = true, fromWarrantyWork = ww is not null });
+        return Results.Ok(new { ex.SerCode, updated = true, fromWarrantyWork = false });
     }
     var r = new ServiceItemMst
     {
