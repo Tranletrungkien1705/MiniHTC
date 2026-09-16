@@ -3667,6 +3667,13 @@ public sealed class TechnicalLibrary
     public string? ReRepairReason { get; set; }    // nguyên nhân
     public string? ReRepairSolution { get; set; }  // giải pháp
     public string? ExclusionTest { get; set; }
+    /// <summary>#1029 §12 — nguồn `Ser_Technical_Library_Save`/`_Update` ghi cả ba cột này, port cũ thiếu
+    /// hoàn toàn (chỉ có Add/Approve/Delete).</summary>
+    public string? Version { get; set; }
+    public string? ReRepairFeedback { get; set; }
+    /// <summary>TYPE (`TConst.Ser_Technical_LibraryType`): "0" Thông thường · "1" Phản tu (ReRepair) —
+    /// quyết định dãy số hiệu (`TeckLibPAN`/`TeckLibPHT`) khi nguồn tự sinh mã.</summary>
+    public string? Type { get; set; }
     public string IsActive { get; set; } = "1";
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }

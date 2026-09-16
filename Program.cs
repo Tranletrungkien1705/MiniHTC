@@ -26181,8 +26181,8 @@ app.MapGet("/api/technicallibraries", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.Model == model);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TechnicalLibraryCode.Contains(q!) || x.ReRepairRemark!.Contains(q!) || x.ReRepairReason!.Contains(q!) || x.PlateNo!.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.TechnicalLibraryCode, x.DealerCode, x.PlateNo, x.Model, x.Engine, x.Gear, x.ReRepairType,
-        x.ReRepairRemark, x.ReRepairReason, x.ReRepairSolution, x.ExclusionTest, x.IsActive, x.CreatedBy, x.CreatedAt
+        x.Id, x.TechnicalLibraryCode, x.DealerCode, x.PlateNo, x.Model, x.Engine, x.Gear, x.Version, x.ReRepairType,
+        x.ReRepairRemark, x.ReRepairFeedback, x.ReRepairReason, x.ReRepairSolution, x.ExclusionTest, x.Type, x.IsActive, x.CreatedBy, x.CreatedAt
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -26196,6 +26196,8 @@ app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbCont
         OrgId = t.OrgId, TechnicalLibraryCode = "TLIB" + DateTime.Now.ToString("yyMMddHHmmss"),
         DealerCode = dto.DealerCode, PlateNo = dto.PlateNo, Model = dto.Model.Trim(), Engine = dto.Engine, Gear = dto.Gear, ReRepairType = dto.ReRepairType,
         ReRepairRemark = dto.ReRepairRemark, ReRepairReason = dto.ReRepairReason, ReRepairSolution = dto.ReRepairSolution, ExclusionTest = dto.ExclusionTest,
+        // #1029 §12: ba cột nguồn `Ser_Technical_Library_Save` ghi mà port cũ thiếu hoàn toàn.
+        Version = dto.Version, ReRepairFeedback = dto.ReRepairFeedback, Type = dto.Type,
         // #926 §12: nguồn Ser_Technical_Library_Add ghi IsActive = Flag.Inactive ("0") khi tạo mới — bài viết
         // chờ DUYỆT (Ser_Technical_Library_Approve) mới hiển thị/dùng được. Port cũ bật Active ngay, bỏ qua
         // toàn bộ vòng duyệt.
@@ -26205,6 +26207,24 @@ app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbCont
     await db.SaveChangesAsync();
     return Results.Ok(new { row.TechnicalLibraryCode, row.Model, row.CreatedBy, row.IsActive,
         pendingApproval = "cho duyet qua POST /api/technicallibraries/{code}/approve" });
+}).RequireAuthorization();
+
+// #1029 `Ser_Technical_Library_Update` (LIVE, `BizCarSv.ZTemp.cs:26395`) — TỪNG CHƯA TỪNG PORT (chỉ có
+// Add/Approve/Delete). Nguồn cập nhật ĐÚNG 12 cột (không đụng DealerCode/IsActive/CreatedBy/CreatedDate —
+// những cột đó thuộc nhánh tạo/duyệt riêng): PlateNo/Model/Engine/Gear/Version/ReRepairType/ReRepairRemark/
+// ReRepairFeedback/ReRepairReason/ReRepairSolution/ExclusionTest/Type.
+app.MapPut("/api/technicallibraries/{code}", async (string code, TechnicalLibraryDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var libCode = code.Trim().ToUpperInvariant();
+    var row = await db.TechnicalLibraries.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TechnicalLibraryCode == libCode);
+    if (row is null) return Results.NotFound(new { error = "Ser_Technical_Library_Add_Ser_Technical_LibraryTblNotFound", code = libCode });
+    row.PlateNo = dto.PlateNo; row.Model = dto.Model; row.Engine = dto.Engine; row.Gear = dto.Gear;
+    row.Version = dto.Version; row.ReRepairType = dto.ReRepairType; row.ReRepairRemark = dto.ReRepairRemark;
+    row.ReRepairFeedback = dto.ReRepairFeedback; row.ReRepairReason = dto.ReRepairReason;
+    row.ReRepairSolution = dto.ReRepairSolution; row.ExclusionTest = dto.ExclusionTest; row.Type = dto.Type;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.TechnicalLibraryCode, row.Model, row.Version, row.Type,
+        sourceDoesNotTouchDealerCodeOrIsActive = true });
 }).RequireAuthorization();
 
 // #926 `Ser_Technical_Library_Approve` (LIVE, `BizCarSv.ZTemp.cs:32420`) — guard nguồn CHỈ duyệt được bài
@@ -80565,7 +80585,8 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     string? TypeCode = null, string? TypeName = null,
     decimal? TSTWarrantyPrice = null, decimal? TSTUrgentPrice = null,
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
-record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
+record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest,
+    string? Version = null, string? ReRepairFeedback = null, string? Type = null);   // #1029
 record TechnicalLibraryApproveDto(string? Remark);   // #926 — Remark nguon nhan nhung khong ghi cot nao
 record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? DealerCode, string? FlagActive, string? GroupRCode = null);   // #1006
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive, string? DealerCode = null);   // #911 DealerCode

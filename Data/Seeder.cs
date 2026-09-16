@@ -2983,6 +2983,10 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"IsEngineer\" text NULL",
                 // #1008: Ser_Insurance khoa trung theo (InsNo, DealerCode), khong phai InsNo toan cuc.
                 "ALTER TABLE public.\"ServiceInsurances\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                // #1029: Ser_Technical_Library_Save/_Update ghi ca ba cot nay, port cu thieu (chi co Add/Approve/Delete).
+                "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"Version\" text NULL",
+                "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"ReRepairFeedback\" text NULL",
+                "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"Type\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
