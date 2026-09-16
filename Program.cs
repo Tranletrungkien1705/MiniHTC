@@ -66423,7 +66423,7 @@ app.MapGet("/api/_meta/db-handles", (ITenantContext t) => Results.Ok(new
 // 📌 Bản CHẾT dùng handle `_dbCarSv` — **handle thứ TƯ** (sau `_dbMain`/`_dbWH`/`_dbDealer`, và `_dbWH_Sys`
 //   thấy ở #728). Bản LIVE đã chuyển sang bộ ba chuẩn. Ghi nhận, **chưa** truy `_dbCarSv` trỏ vào đâu.
 app.MapPost("/api/campaignmarketings/create-full", async (CampaignMarketingCreateDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // Nguồn: StandardizeDate(x) = Convert.ToDateTime(x) + kiểm phạm vi 1900-01-01 .. 2100-01-01.
     static (DateTime? val, string? err) StandardizeDate(string? v, bool guardEmpty)
@@ -66466,6 +66466,10 @@ app.MapPost("/api/campaignmarketings/create-full", async (CampaignMarketingCreat
         ConditionVin = dto.ConditionVin, ConditionPlateNo = dto.ConditionPlateNo,
         ConditionDealer = dto.ConditionDealer,
         CamMarketingStatus = dto.CamMarketingStatus ?? "",
+        // #1165: cung nguon Ser_CampaignMarketing_Create_20220926 da xac nhan o #1117 (khuon 2-cot,
+        // KHONG co CreatedDate/CreatedBy) — endpoint /create-full la duong ghi THU HAI toi cung bang,
+        // chua tung wire LogLUDateTime/LogLUBy.
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.CampaignMarketings.Add(row);
     await db.SaveChangesAsync();
