@@ -20960,6 +20960,11 @@ app.MapGet("/api/warrantyclaims/report/main-part", async (AppDbContext db, ITena
     var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodes.Contains(x.DealerCode)).ToListAsync();
     var carIds = claims.Select(c => c.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID)).ToListAsync();
+    // #981: nguồn còn nối `Ser_MST_Model` theo `sc.ModelID` (Model/ProductionCode/ModelName) và
+    // `Mst_VINModelOrginal` theo 4-5 ký tự đầu VIN (`Model_CarSv`/`OrginalCode`) — chưa từng ghép.
+    var modelIds = cars.Select(x => x.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var models = await db.ServiceModels.Where(x => x.OrgId == t.OrgId && modelIds.Contains(x.ModelCode)).ToListAsync();
+    var vinModels = await db.MstVinModelOrginals.Where(x => x.OrgId == t.OrgId).ToListAsync();
 
     var rows = items.GroupBy(x => new { x.ClaimId, x.PartCode }).Select(g =>
     {
@@ -20973,15 +20978,22 @@ app.MapGet("/api/warrantyclaims/report/main-part", async (AppDbContext db, ITena
         if (ro is not null) { frameNo = ro.Vin; wrd = ro.WarrantyRegistrationDate; frameSource = "RO_SNAPSHOT"; }
         else if (car is not null) { frameNo = car.FrameNo; wrd = car.WarrantyRegistrationDate; frameSource = "CAR_MASTER_FALLBACK"; }
         else { frameNo = null; wrd = null; frameSource = "NONE"; }
+        var model = car?.ModelCode is null ? null : models.FirstOrDefault(x => x.ModelCode == car.ModelCode);
+        // #981: nguồn `on (mvo.VINCode = left(sc.FrameNo,4) or mvo.VINCode = left(sc.FrameNo,5))` — thử 4 rồi 5.
+        var vinModel = frameNo is null ? null
+            : vinModels.FirstOrDefault(x => x.VINCode == frameNo.Substring(0, Math.Min(4, frameNo.Length)))
+              ?? vinModels.FirstOrDefault(x => x.VINCode == frameNo.Substring(0, Math.Min(5, frameNo.Length)));
         var qty = g.Sum(x => x.Quantity);
         var amount = first.Factor * first.Price * qty * (1 + first.Vat / 100m);
         return new
         {
-            claim.ClaimNo, claim.DealerCode,
+            claim.ClaimNo, claim.DealerCode, rowNo = claim.ROWNo, km = claim.Km,   // #981
             dealerName = dealers.FirstOrDefault(d => d.DealerCode == claim.DealerCode)?.DealerName,
             frameNo, PartCode = g.Key.PartCode, first.PartName, quantity = qty,
             first.Price, first.Factor, first.Vat, amountPart = amount,
             createdDate = claim.CreatedAt, warrantyRegistrationDate = wrd, frameSource,
+            modelId = car?.ModelCode, productionCode = model?.ProductionCode, modelName = model?.ModelName,   // #981
+            modelCarSv = vinModel?.ModelCode, orginalCode = vinModel?.OrginalCode,   // #981
         };
     }).ToList();
 
