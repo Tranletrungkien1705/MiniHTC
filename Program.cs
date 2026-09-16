@@ -19247,7 +19247,7 @@ app.MapPost("/api/serviceparts/sync-from-center", async (ServicePartSyncDto dto,
         positiveSingleDbAndCentralSource = "AM TINH: ham CHI cham _dbDealer (mo/commit/rollback dung mot CSDL) => hop voi nghia dong bo XUONG dai ly; du lieu nguon doc tu [@strDBName_CommonCenter].[dbo].Ser_MST_Part => DB TRUNG TAM (ho #853)",
     });
 }).RequireAuthorization();
-app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ServiceParts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.PartCode == code);
@@ -19268,6 +19268,9 @@ app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext 
         }
     }
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1135: nguồn `SerMstPartUpdateActive` (Service.cs:5674) ghi `IsActive`/`LogLUDateTime`/`LogLUBy` trong
+    // CÙNG một `alEffectiveColumn`/`SaveData` — cột đã có sẵn từ #1134 nhưng endpoint toggle này chưa wire.
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -63038,7 +63041,7 @@ app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenant
 //      (`Ser_Mst_Part_PartCode_Is_FlagInTST`) — mốc giá của phụ tùng đang trong danh mục TST không được xoá.
 // Mini không có `PartPriceID` kỹ thuật lộ ra client (khoá tự nhiên `PartCode`+`EffectiveDate`) — dùng `Id` (vừa
 // thêm vào GET ở trên) làm khoá route, giữ đúng cả hai guard.
-app.MapDelete("/api/partprices/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapDelete("/api/partprices/{id:long}", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (p is null || p.IsActive != "1")
@@ -63047,6 +63050,9 @@ app.MapDelete("/api/partprices/{id:long}", async (long id, AppDbContext db, ITen
     if (part is not null && part.FlagInTST == "1" && part.FlagActive == "1")
         return Results.BadRequest(new { error = "Ser_Mst_Part_PartCode_Is_FlagInTST" });
     p.IsActive = "0";
+    // #1136: nguồn `Ser_Mst_PartPrice_Delete` (Inventory.cs:1507) ghi `IsActive`/`LogLUDateTime`/`LogLUBy`
+    // trong CÙNG một `alEffectiveColumn`/`SaveData` (xoá MỀM) — port cũ bỏ sót 2 cột nhật ký.
+    p.LogLUDateTime = DateTime.Now; p.LogLUBy = (partnerUserCode ?? "system").Trim();
     p.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.Id, p.PartCode, p.EffectiveDate, p.IsActive });
