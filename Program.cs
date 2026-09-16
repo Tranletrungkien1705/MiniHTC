@@ -16095,7 +16095,7 @@ app.MapDelete("/api/servicemodels/{code}", async (string code, AppDbContext db, 
 // ⚠️ Nguồn upsert theo **`(ModelName, DealerCode)`** (không phải `ModelCode`) — giữ nguyên khoá `ModelCode`
 //    của Mini (đã đúng từ trước, an toàn hơn — tránh hai dòng cùng `ModelCode` khác `ModelName`), CHỈ vá
 //    thêm 2 guard còn thiếu, không đổi khoá upsert (rủi ro trùng `ModelCode` nếu đổi theo nguồn).
-app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rows = dto.Rows ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
@@ -16113,8 +16113,22 @@ app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDb
         if (!std) { errors.Add(new { line, code, error = "Mst_CarModelStd_CheckDB_NotFound", note = "ModelCode chua co trong danh muc chuan Mst_CarModelStd" }); continue; }
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã model bị trùng trong file nhập." }); continue; }
         var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
-        if (ex is not null) { ex.ModelName = r.ModelName; ex.TradeMarkCode = r.TradeMarkCode; ex.ProductionCode = r.ProductionCode; ex.DealerCode = r.DealerCode; ex.FlagActive = "1"; updated++; }
-        else { db.ServiceModels.Add(new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = r.ModelName, TradeMarkCode = r.TradeMarkCode, ProductionCode = r.ProductionCode, DealerCode = r.DealerCode, FlagActive = "1" }); created++; }
+        // #1182 SUA BUG THAT: nguon Ser_Mst_Model_Import_New20200203 (BizCarSv.Master.cs:3428+170-174 tao,
+        // +212-214 sua) ghi du 4 cot nhat ky khi tao va cap LogLUDateTime/LogLUBy khi sua — port cu chua
+        // tung dong cot nao.
+        var by1182 = (partnerUserCode ?? "system").Trim(); var now1182 = DateTime.Now;
+        if (ex is not null)
+        {
+            ex.ModelName = r.ModelName; ex.TradeMarkCode = r.TradeMarkCode; ex.ProductionCode = r.ProductionCode; ex.DealerCode = r.DealerCode; ex.FlagActive = "1";
+            ex.LogLUDateTime = now1182; ex.LogLUBy = by1182;
+            updated++;
+        }
+        else
+        {
+            db.ServiceModels.Add(new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = r.ModelName, TradeMarkCode = r.TradeMarkCode, ProductionCode = r.ProductionCode, DealerCode = r.DealerCode, FlagActive = "1",
+                CreatedDate = now1182, CreatedBy = by1182, LogLUDateTime = now1182, LogLUBy = by1182 });
+            created++;
+        }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors,
