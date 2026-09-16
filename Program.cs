@@ -35972,6 +35972,8 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         AppTypeCode = string.IsNullOrWhiteSpace(dto.AppTypeCode) ? dto.AppType : dto.AppTypeCode!.Trim(),
         CVDVCode = string.IsNullOrWhiteSpace(dto.CVDVCode) ? engineerNo : dto.CVDVCode!.Trim(),   // nguồn .Trim()
         Source = string.IsNullOrWhiteSpace(dto.Source) ? (string.IsNullOrWhiteSpace(dto.Channel) ? null : dto.Channel!.Trim().ToUpperInvariant()) : dto.Source!.Trim().ToUpperInvariant(),
+        // #1046: nguồn CHỈ ghi khi client truyền khác rỗng — không tự lấy DateTime.Now (đó là CreatedAt).
+        CreatedDate = dto.CreatedDate,
         HCCPushStatus = isTab ? "P" : null };
     db.ServiceAppointments.Add(a);
 
@@ -81204,7 +81206,9 @@ record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, stri
     // #323 §12: 4 cot NGAY/GIO THO cua nguon (tach roi) + 2 ma goc.
     string? AppDateTime = null, string? AppTime = null,
     string? AppDateTimeFrom = null, string? AppTimeFrom = null,
-    string? AppTypeCode = null, string? CVDVCode = null);
+    string? AppTypeCode = null, string? CVDVCode = null,
+    // #1046: Ser_App.CreatedDate do CLIENT truyen (strCreatedDate), CHI ghi khi khac rong.
+    DateTime? CreatedDate = null);
 record AppointmentStatusDto(string Status);
 // #270: `ToStatus` "A" thanh cong / "R" loi - cung bo ma voi truc HMC cua de nghi bao hanh.
 record AppointmentHccPushDto(string ToStatus, string? Note = null);

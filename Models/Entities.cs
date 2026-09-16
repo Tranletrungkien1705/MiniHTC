@@ -14620,6 +14620,12 @@ public sealed class ServiceAppointment
     public DateTime? FirstContactDateTime { get; set; }
     public DateTime? LastContactDateTime { get; set; }
 
+    // ===== #1046 §12 — nguồn `Ser_App_Create_New20201230` (ZTemp.cs:19269) nhận riêng `strCreatedDate`
+    // và CHỈ ghi cột `Ser_App.CreatedDate` khi tham số khác rỗng (khác `CreatedAt` do port tự đặt =
+    // DateTime.Now lúc insert — hai giá trị có thể LỆCH NHAU nếu client backfill dữ liệu cũ).
+    /// <summary>`Ser_App.CreatedDate` — do CLIENT truyền (`strCreatedDate`), khác `CreatedAt` (server tự set).</summary>
+    public DateTime? CreatedDate { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
