@@ -51447,6 +51447,7 @@ app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, strin
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt,
+        r.ApprovedDate, r.ApprovedBy, r.Remark,   // #1230 §12
         cars = db.InsuranceReqDtls.Count(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id),
         totalAmount = db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id).Sum(c => (decimal?)c.InsAmount) ?? 0
     }).ToListAsync();
@@ -54485,6 +54486,7 @@ app.MapGet("/api/dlrpdirequests", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
         p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.DoneAt,
+        p.ApprovedDate, p.ApprovedBy, p.Remark,   // #1230 §12
         cars = db.DlrPdiRequestDetails.Count(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
