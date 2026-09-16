@@ -78003,7 +78003,7 @@ app.MapGet("/api/partextramsts", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (rows is null || rows.Count == 0)
         return Results.BadRequest(new { error = "Cần bảng Ser_MST_PartExtra (nguồn không kiểm Tables.Contains)." });
@@ -78014,6 +78014,7 @@ app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContex
         var code = (r.PartCode ?? "").Trim();
         if (code.Length == 0) return Results.BadRequest(new { error = "PartCode rỗng." });
         var row = await db.PartExtraMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
+        var isNew1094 = row is null;
         if (row is null)
         {
             row = new PartExtraMst { OrgId = t.OrgId, PartCode = code };
@@ -78027,6 +78028,10 @@ app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContex
         row.Price = r.Price;
         row.TotalLimit = r.TotalLimit;
         if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!.Trim();
+        // #1094: nhanh TAO ghi du 4 cot nhat ky; nhanh SUA chi ghi LogLUDateTime/LogLUBy.
+        var by1094 = (partnerUserCode ?? "system").Trim(); var now1094 = DateTime.Now;
+        if (isNew1094) { row.CreatedDate = now1094; row.CreatedBy = by1094; }
+        row.LogLUDateTime = now1094; row.LogLUBy = by1094;
     }
     await db.SaveChangesAsync();
     return Results.Ok(new

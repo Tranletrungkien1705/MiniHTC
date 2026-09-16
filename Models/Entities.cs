@@ -15619,6 +15619,14 @@ public sealed class PartExtraMst
     public decimal? TotalLimit { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1094 §12 — nguồn `Ser_MST_PartExtra_Save` (AssignmentOfWork.cs:6540) ghi đủ 4 cột nhật ký
+    /// khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy (CreatedDate/CreatedBy bị COMMENT — cùng khuôn
+    /// với cả cụm chép khối #785/#786: `ExtraWorkMst` #1092, `RoWorkArisingQuotaMst` #1093).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phụ tùng phát sinh (mã/tên/ĐVT/giá/SL tối đa) — port 1:1 FrmMstExtraPartsMng (Tbl_Mst_Extra_Parts_Mng, TCMotor).</summary>
