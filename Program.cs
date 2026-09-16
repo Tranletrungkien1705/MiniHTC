@@ -44688,7 +44688,7 @@ app.MapGet("/api/customertypes", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(personType)) query = query.Where(x => x.CusPersonType == personType);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.CusTypeCode).Take(500)
-        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode }).ToListAsync();   // #1245 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -44700,13 +44700,18 @@ app.MapPost("/api/customertypes", async (CustomerTypeDto dto, AppDbContext db, I
     var person = _cusPersonTypes.Contains(dto.CusPersonType) ? dto.CusPersonType! : "Personal";
     var code = string.IsNullOrWhiteSpace(dto.CusTypeCode) ? "CT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CusTypeCode.Trim().ToUpperInvariant();
     var ex = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == code);
+    // #1245 SUA BUG THAT: CustomerType.DealerCode duoc doc boi guard #1041 (dong ~61690, "Ser_Customer_Update")
+    // de kiem danh muc "KHACHLE" ton tai theo dai ly, nhung truoc day KHONG TUNG duoc ghi (DTO khong co
+    // tham so nay) => moi CustomerType co DealerCode=NULL vinh vien, guard "x.DealerCode == dto.DealerCode"
+    // LUON FALSE => moi lan set khach hang IsNormal="1" LUON BI CHAN, bat ke danh muc that co ton tai hay khong.
     if (ex is not null)
     {
         ex.CusTypeName = dto.CusTypeName; ex.CusFactor = dto.CusFactor; ex.CusPersonType = person; ex.FlagActive = "1";
+        if (dto.DealerCode is not null) ex.DealerCode = dto.DealerCode;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.CusTypeCode, updated = true });
     }
-    var r = new CustomerType { OrgId = t.OrgId, CusTypeCode = code, CusTypeName = dto.CusTypeName, CusFactor = dto.CusFactor, CusPersonType = person, FlagActive = "1" };
+    var r = new CustomerType { OrgId = t.OrgId, CusTypeCode = code, CusTypeName = dto.CusTypeName, CusFactor = dto.CusFactor, CusPersonType = person, FlagActive = "1", DealerCode = dto.DealerCode };
     db.CustomerTypes.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.CusTypeCode, updated = false });
 }).RequireAuthorization();
@@ -45147,7 +45152,7 @@ app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 500;
     var items = await qry.OrderBy(x => x.ModelCode).Skip(skip).Take(take)
-        .Select(x => new { x.ModelCode, x.ModelName, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.ModelCode, x.ModelName, x.FlagActive, x.Remark, x.UpdatedAt }).ToListAsync();   // #1246 §12
     return Results.Ok(new
     {
         count = items.Count, total, skip, take, items,
@@ -46430,7 +46435,7 @@ app.MapGet("/api/storagepayments", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status,
+    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status, x.CreatedAt, x.HtvSignAt, x.TcmsSignAt,   // #1244 §12
       lines = db.StoragePaymentLines.Count(l => l.OrgId == t.OrgId && l.StoragePaymentId == x.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -46543,7 +46548,7 @@ app.MapGet("/api/pdifeepayments", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status,
+    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status, x.CreatedAt, x.HtvSignAt, x.TcmsSignAt,   // #1244 §12
       lines = db.PdiFeePaymentLines.Count(l => l.OrgId == t.OrgId && l.PdiFeePaymentId == x.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -46656,7 +46661,7 @@ app.MapGet("/api/transportinspayments", async (AppDbContext db, ITenantContext t
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status,
+    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status, x.CreatedAt, x.HtvSignAt, x.TcmsSignAt,   // #1244 §12
       lines = db.TransportInsPaymentLines.Count(l => l.OrgId == t.OrgId && l.TransportInsPaymentId == x.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -81852,7 +81857,7 @@ record ReqPartPriceTstReplyDto(string? TSTReqPartPriceID, DateTime? TSTSentDate,
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive,
     string? Remark = null);   // #1055
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath, string? Remark = null);   // #1043
-record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
+record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType, string? DealerCode = null);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
 record BulletinDtlDto(string? SerCode, string? SerName, string? PartCode, string? PartName);
