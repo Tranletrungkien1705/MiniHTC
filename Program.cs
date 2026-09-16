@@ -15492,10 +15492,19 @@ app.MapDelete("/api/serviceitems/{code}", async (string code, AppDbContext db, I
 }).RequireAuthorization();
 
 // Nhập dịch vụ hàng loạt từ Excel (port 1:1 FrmImportService).
-app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, AppDbContext db, ITenantContext t) =>
+// #1177 SUA SAI PHAN LOAI #941 (cung ho #938/#1176): FrmImportService.cs (CA HAI ban WinForm) goi THANG
+// _mstService.Ser_Mst_Service_Import(...) — CUNG MOT ham nguon voi kenh WS "import-catalog" (BizCarSv.
+// Service.cs:1990), khong phai "hai kenh doc lap" nhu #941 tung ket luan. Ham nguon AP DUNG VO DIEU KIEN
+// cho MOI caller: neu SERCODE trung cong bao hanh dang hieu luc trong Ser_MST_ROWarrantyWork thi GHI DE
+// MOI truong bang danh muc hang (ca nhanh TAO lan SUA — khac han cap doi Create/Update rieng le cua
+// POST /api/serviceitems, noi #1032 da xac nhan override CHI ap dung luc TAO) + audit-trail day du.
+// Port cu bo qua ca override lan audit.
+app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, string? dealerCode,
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rows = dto.Rows ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
+    var dl = (dealerCode ?? "").Trim();
     var errors = new List<object>();
     var seen = new HashSet<string>();
     int created = 0, updated = 0;
@@ -15517,12 +15526,28 @@ app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, AppDbCo
 
         // Thông điệp trùng mã đổi về ĐÚNG nguồn: `MSG_WARNING_DUPLICATE_SERCODE` = "Mã công việc trùng nhau".
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã công việc trùng nhau" }); continue; }
-        var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
-        if (ex is not null) { ex.SerName = r.SerName; ex.Cost = r.Cost; ex.Price = r.Price; ex.Model = r.Model; ex.Vat = r.Vat; ex.Note = r.Note; ex.FlagActive = "1"; updated++; }
-        else { db.ServiceItemMsts.Add(new ServiceItemMst { OrgId = t.OrgId, SerCode = code, SerName = r.SerName, Cost = r.Cost, Price = r.Price, Model = r.Model, Vat = r.Vat, Note = r.Note, FlagActive = "1" }); created++; }
+        // #1177: override VÔ ĐIỀU KIỆN (CẢ tạo lẫn sửa) theo Ser_MST_ROWarrantyWork — khác `POST /api/serviceitems`.
+        var ww = await db.WarrantyWorkMsts.FirstOrDefaultAsync(w => w.OrgId == t.OrgId && w.ROWWorkCode == code && w.FlagActive == "1");
+        var serName = r.SerName; var cost = r.Cost; var price = r.Price; var vat = r.Vat; var model = r.Model; var note = r.Note;
+        var stdManHour = 1m; var flagWarranty = "0";
+        if (ww is not null)
+        {
+            serName = ww.ROWWorkName; stdManHour = ww.RateHour; cost = ww.RatePrice; price = ww.Price;
+            vat = ww.VAT; model = ww.ModelCode; note = ww.Remark; flagWarranty = "1";
+        }
+        var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code && x.DealerCode == dl);
+        var by1177 = (partnerUserCode ?? "system").Trim(); var now1177 = DateTime.Now;
+        var isNewItem1177 = ex is null;
+        if (ex is null) { ex = new ServiceItemMst { OrgId = t.OrgId, SerCode = code, DealerCode = dl }; db.ServiceItemMsts.Add(ex); created++; }
+        else updated++;
+        if (isNewItem1177) { ex.CreatedDate = now1177; ex.CreatedBy = by1177; ex.StdManHour = stdManHour; }
+        ex.LogLUDateTime = now1177; ex.LogLUBy = by1177;
+        ex.SerName = serName; ex.Cost = cost; ex.Price = price; ex.Model = model; ex.Vat = vat; ex.Note = note;
+        ex.FlagActive = "1"; ex.FlagWarranty = flagWarranty;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
+    return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors,
+        warrantyOverrideNote = "SerCode trung cong bao hanh dang hieu luc (Ser_MST_ROWarrantyWork) thi MOI truong bi ghi de bang danh muc hang, ca luc tao lan luc sua." });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #941 `Ser_Mst_Service_Import` (LIVE, `BizCarSv.Service.cs:1990`) — KÊNH WS RIÊNG, CHƯA CÓ =====
