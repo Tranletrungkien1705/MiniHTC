@@ -26892,11 +26892,17 @@ app.MapPut("/api/insurances/{insNo}", async (string insNo, InsuranceEditDto dto,
     if (dto.Email != null) row.Email = dto.Email;
     if (dto.Telephone != null) row.Telephone = dto.Telephone;
     if (dto.Taxcode != null) row.Taxcode = dto.Taxcode;
+    // #1007 SUA BUG THAT: nguon SerInsuranceUpdate ghi CA Fax/Website/Description VO DIEU KIEN
+    // (Service.cs:8371-8473) — ca ba cot da co tren entity ServiceInsurance va duoc POST /api/insurances
+    // ghi khi TAO MOI, nhung PUT (sua) chua tung doc chung — cung ho bug #1005/#1006.
+    if (dto.Fax != null) row.Fax = dto.Fax;
+    if (dto.Website != null) row.Website = dto.Website;
+    if (dto.Description != null) row.Description = dto.Description;
     if (!string.IsNullOrWhiteSpace(dto.Status)) row.Status = dto.Status!;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        row.Id, row.InsNo, row.InsVieName, row.Address, row.Status,
+        row.Id, row.InsNo, row.InsVieName, row.Address, row.Status, row.Fax, row.Website, row.Description,
         sourceGuardScopesAreConsistent = "AM TINH (doi chung voi #818): checkCreateExistSerIns va checkExistSerIns deu tra GetTableContents(..., InsNo, =, ..., DealerCode, =, ..., IsActive, =, 1) — CUNG IsActive = 1 cung; chi khac CHIEU kiem (Exist khi tim thay vs NotExist khi khong tim thay) => dung khuon cap create/update (#404), KHONG lap lai loi lech pham vi cua SerSupplier* (#818)",
     });
 }).RequireAuthorization();
@@ -79635,7 +79641,8 @@ record JDPowerTermDtlDto(string? VIN, string? PlateNo, string? CusCode);
 record MstParamSaveByTypeDto(string? ParamType, List<MstParamDto>? Items, bool? AllowWipe);
 record RoHistoryDto(string? ROHID, string? ROID, string? Status, string? Reason, string? LogLUBy);
 record RoHistoryCreateDto(string? ROID, string? Status, string? UserCode, string? HistoryDate, string? Note);
-record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status);
+record InsuranceEditDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Taxcode, string? Status,
+    string? Fax = null, string? Website = null, string? Description = null);   // #1007
 record StockOutEditDto(string? Status, string? Description, string? TruckNo, string? DriverName);
 record StockInAdjustFinishDto(string? NewStockInNo, string? AdjustmentBy, DateTime? AdjustmentDate, string? AdjustmentNote, string? OldStockInNo);
 record StockInStatusDto(string? NewStatus, bool IsRevert);
