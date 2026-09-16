@@ -18696,7 +18696,7 @@ app.MapPost("/api/servicecars/warranty-reg-batch", async (List<WarrantyRegRowDto
 // số nói "xoá" nhưng hành vi thật là "reset thông tin bảo hành", giữ nguyên record xe.
 // ⚪ Nguồn tự nhận thiếu index vì MỘT `FrameNo` có thể ứng với NHIỀU `CarID` (dữ liệu thực tế lộn xộn) — cập
 // nhật áp dụng cho TẤT CẢ xe cùng số khung, không chỉ dòng đầu tiên.
-app.MapPost("/api/servicecars/os-warranty-update", async (OsCarSalesUpdDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicecars/os-warranty-update", async (OsCarSalesUpdDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var frame = (dto.FrameNo ?? "").Trim();
     if (frame == "") return Results.BadRequest(new { error = "Cần FrameNo." });
@@ -18715,7 +18715,9 @@ app.MapPost("/api/servicecars/os-warranty-update", async (OsCarSalesUpdDto dto, 
             car.WarrantyExpiresDate = dto.WarrantyExpiresDate; car.CusConfirmedWarrantyDate = dto.CusConfirmedWarrantyDate;
             // 🔴 dto.WarrantyRegistrationDate CỐ Ý KHÔNG gán — đúng bug nguồn (tham số nhận nhưng không dùng).
         }
-        car.LogLUDateTime = now; car.LogLUBy = dto.LogLUBy;
+        // #1106 SỬA BUG THẬT: nguồn `OS_Ser_CarSalesUpd` (Customer.cs:4373) ghi LogLUBy = strPartnerUserCode
+        // (actor server gọi OS) — port cũ nhận dto.LogLUBy tự client gửi.
+        car.LogLUDateTime = now; car.LogLUBy = (partnerUserCode ?? "system").Trim();
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { frameNo = frame, carsUpdated = cars.Count, isDelete,
@@ -24719,7 +24721,7 @@ app.MapPost("/api/stockoutorders/{id}/status", async (
 //     đều cho sửa lại lệnh. Chú thích chỉ nói "hủy hoặc xóa" nhưng code còn cho cả "điều chỉnh".
 //   ⚠️ Lệnh xuất **DỊCH VỤ** (`"1"`) **KHÔNG bị guard này** — sửa được kể cả khi đã có phiếu xuất.
 app.MapPut("/api/stockoutorders/{id:long}", async (long id, SerStockOutOrderUpdateDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
@@ -24752,7 +24754,9 @@ app.MapPut("/api/stockoutorders/{id:long}", async (long id, SerStockOutOrderUpda
     h.CusID = dto.CusID; h.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
     if (!string.IsNullOrWhiteSpace(dto.RONo)) h.RONo = dto.RONo;               // nguồn chỉ ghi khi khác rỗng
     h.StockOutType = dto.StockOutType ?? h.StockOutType;
-    h.LogLUDateTime = DateTime.Now; h.LogLUBy = dto.UserCode;
+    // #1108 SỬA BUG THẬT: nguồn SerStockOutOrderUpdate (StockOut.cs:9730) ghi LogLUBy = strPartnerUserCode,
+    // KHÁC hẳn UserCode (cột nghiệp vụ riêng, ghi ở dòng trên) — port cũ tái dùng dto.UserCode cho cả hai.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.OrderNo, h.Status, h.StockOutType });
 }).RequireAuthorization();
@@ -65541,7 +65545,7 @@ app.MapPost("/api/repairorders/{no}/lines", async (string no, List<RoServiceDto>
 // không phải helper dùng chung — là một CỔNG GHI ĐÈ THÔ độc lập, kênh admin/đối tác đặc biệt.
 // Port ĐÚNG hành vi nguồn (không tự thêm validate danh sách trạng thái mà nguồn không có), NHƯNG cảnh báo rõ
 // rủi ro trong response để client hiểu đây là đường TẮT không qua state machine.
-app.MapPost("/api/repairorders/{no}/status-raw", async (string no, RoStatusRawDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/repairorders/{no}/status-raw", async (string no, RoStatusRawDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
@@ -65549,7 +65553,9 @@ app.MapPost("/api/repairorders/{no}/status-raw", async (string no, RoStatusRawDt
     if (string.IsNullOrWhiteSpace(dto.Status)) return Results.BadRequest(new { error = "Cần Status." });
     var oldStatus = r.Status;
     r.Status = dto.Status.Trim();
-    r.LogLUBy = dto.LogLUBy; r.LogLUDateTime = DateTime.Now;
+    // #1107 SỬA BUG THẬT: nguồn Ser_RO_UpdateStatus (Service01.cs:8453) ghi LogLUBy = strPartnerUserCode —
+    // port cũ nhận dto.LogLUBy tự client gửi.
+    r.LogLUBy = (partnerUserCode ?? "system").Trim(); r.LogLUDateTime = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
