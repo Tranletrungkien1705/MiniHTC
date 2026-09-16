@@ -8026,10 +8026,15 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
             && r.Status == "FNS" && r.ActualDeliveryDate >= dateFrom && r.ActualDeliveryDate <= dateTo)
         .Select(r => r.Id).ToListAsync();
     var roServiceRows = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIdsInPeriod.Contains(s.RoId))
-        .Select(s => new { s.RoId, s.ROType, s.ExpenseType }).ToListAsync();
+        .Select(s => new { s.RoId, s.ROType, s.ExpenseType, s.Factor, s.Price, s.Vat }).ToListAsync();
     int CountRO(string roType, string? expenseType = null) => roServiceRows
         .Where(s => s.ROType == roType && (expenseType == null || s.ExpenseType == expenseType))
         .Select(s => s.RoId).Distinct().Count();
+    // ===== #1063 B.II Tổng doanh thu tiền công dịch vụ (ZTemp.cs:3192-3431 khối SUM, :3783-3827 tổng hợp)
+    // — SUM(isnull(Factor,0)*isnull(Price,0)*(1+VAT*0.01)) theo TỪNG dòng (không distinct theo RO, khác B.I).
+    decimal ServiceAmount(string roType, string? expenseType = null) => roServiceRows
+        .Where(s => s.ROType == roType && (expenseType == null || s.ExpenseType == expenseType))
+        .Sum(s => s.Factor * s.Price * (1 + s.Vat / 100m));
 
     return Results.Ok(new
     {
@@ -8069,9 +8074,27 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         countSCSRoInsurance = CountRO("SCS", "ROINSURANCE"), countSCSLocal = CountRO("SCS", "LOCAL"),
         countPDI = CountRO("PDI"), countPDIRoRepair = CountRO("PDI", "ROREPAIR"), countPDILocal = CountRO("PDI", "LOCAL"),
         countSPK = CountRO("SPK"), countSPKRoRepair = CountRO("SPK", "ROREPAIR"), countSPKLocal = CountRO("SPK", "LOCAL"),
-        notPortedYet = "A.IV (giờ công quy đổi — phụ thuộc ma trận ROType×ExpenseType SUM tiền, block 2 "
-            + "hàng đợi) và B.II trở đi (doanh thu tiền công/phụ tùng, khối StockOut/phụ kiện) CHƯA port — "
-            + "hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. A.I/A.II/A.III/A.V/B.I xong ở các lượt này.",
+        // ===== B.II Tổng doanh thu tiền công dịch vụ =====
+        serviceAmount = Math.Round(ServiceAmount("BDD") + ServiceAmount("SCC") + ServiceAmount("SCD")
+            + ServiceAmount("SCS") + ServiceAmount("PDI") + ServiceAmount("SPK")),
+        serviceAmountBDD = Math.Round(ServiceAmount("BDD")),
+        serviceAmountBDDRoRepair = Math.Round(ServiceAmount("BDD", "ROREPAIR")), serviceAmountBDDLocal = Math.Round(ServiceAmount("BDD", "LOCAL")),
+        serviceAmountSCC = Math.Round(ServiceAmount("SCC")),
+        serviceAmountSCCRoRepair = Math.Round(ServiceAmount("SCC", "ROREPAIR")), serviceAmountSCCRoWarranty = Math.Round(ServiceAmount("SCC", "ROWARRANTY")),
+        serviceAmountSCCRoInsurance = Math.Round(ServiceAmount("SCC", "ROINSURANCE")), serviceAmountSCCLocal = Math.Round(ServiceAmount("SCC", "LOCAL")),
+        serviceAmountSCD = Math.Round(ServiceAmount("SCD")),
+        serviceAmountSCDRoRepair = Math.Round(ServiceAmount("SCD", "ROREPAIR")), serviceAmountSCDRoWarranty = Math.Round(ServiceAmount("SCD", "ROWARRANTY")),
+        serviceAmountSCDRoInsurance = Math.Round(ServiceAmount("SCD", "ROINSURANCE")), serviceAmountSCDLocal = Math.Round(ServiceAmount("SCD", "LOCAL")),
+        serviceAmountSCS = Math.Round(ServiceAmount("SCS")),
+        serviceAmountSCSRoRepair = Math.Round(ServiceAmount("SCS", "ROREPAIR")), serviceAmountSCSRoWarranty = Math.Round(ServiceAmount("SCS", "ROWARRANTY")),
+        serviceAmountSCSRoInsurance = Math.Round(ServiceAmount("SCS", "ROINSURANCE")), serviceAmountSCSLocal = Math.Round(ServiceAmount("SCS", "LOCAL")),
+        serviceAmountPDI = Math.Round(ServiceAmount("PDI")),
+        serviceAmountPDIRoRepair = Math.Round(ServiceAmount("PDI", "ROREPAIR")), serviceAmountPDILocal = Math.Round(ServiceAmount("PDI", "LOCAL")),
+        serviceAmountSPK = Math.Round(ServiceAmount("SPK")),
+        serviceAmountSPKRoRepair = Math.Round(ServiceAmount("SPK", "ROREPAIR")), serviceAmountSPKLocal = Math.Round(ServiceAmount("SPK", "LOCAL")),
+        notPortedYet = "A.IV (giờ công quy đổi — phụ thuộc B.II vừa port, cần thêm WorkDayQty/WorkMinuteROQty) "
+            + "và B.III trở đi (doanh thu phụ tùng, khối StockOut/phụ kiện) CHƯA port — hàm nguồn ~1734 dòng, "
+            + "xem hàng đợi ở manifest. A.I/A.II/A.III/A.V/B.I/B.II xong ở các lượt này.",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
