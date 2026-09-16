@@ -18783,7 +18783,7 @@ app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string
 }).RequireAuthorization();
 
 // Upsert theo mã phụ tùng.
-app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
     if (string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa nhập tên phụ tùng." });
@@ -18799,6 +18799,9 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
         // #404: nguồn LIVE thật của Update (`Ser_Mst_Part_Update`) KHÔNG có nhánh TST override — chỉ
         // Create mới có. Giữ nguyên nhánh Update không đụng TST (đúng bất đối xứng nguồn).
         ex.PartName = dto.PartName; ex.EngName = dto.EngName; ex.Unit = dto.Unit; ex.Price = dto.Price; ex.Cost = dto.Cost; ex.Location = dto.Location; ex.Quantity = dto.Quantity; ex.MinQuantity = dto.MinQuantity; ex.PartGroupCode = dto.PartGroupCode; ex.Model = dto.Model; ex.Note = dto.Note; ex.FlagActive = "1";
+        // #1134 §12: `Ser_Mst_Part_Update` (Service.cs:5407, có strIsActive) LUÔN ghi LogLUDateTime/LogLUBy —
+        // cột đã có sẵn trên entity (#1070) nhưng endpoint gộp Create/Update này chưa từng wire cho nhánh SỬA.
+        ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = (partnerUserCode ?? "system").Trim();
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.PartCode, updated = true });
     }
@@ -18829,7 +18832,10 @@ app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITe
         //   §12 vẫn đủ dấu vết, nhưng NGỮ NGHĨA SAI (đúng sự cố #312).
         TotalPrice = dto.TotalPrice, BalanceLocationId = dto.BalanceLocationId, FreqUsed = dto.FreqUsed,
         PriceEffect = dto.PriceEffect, TSTPrice = dto.TSTPrice, TSTPriceBefore = dto.TSTPriceBefore,
-        FlagInTST = flagInTST };
+        FlagInTST = flagInTST,
+        // #1134 §12: `Ser_Mst_Part_Create_20210303` (LIVE, :4871) ghi đủ 4 cột nhật ký lúc tạo.
+        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() };
     db.ServiceParts.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.PartCode, updated = false, fromTST = tst is not null });
 }).RequireAuthorization();

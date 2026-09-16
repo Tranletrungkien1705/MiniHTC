@@ -1587,6 +1587,11 @@ public static class Seeder
         "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"TSTPrice\" numeric",
         "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"TSTPriceBefore\" numeric",
         "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"FlagInTST\" text",
+        // #1134: Ser_Mst_Part_Create_20210303 ghi du 4 cot; _Update (strIsActive) chi ghi lai LogLUDateTime/LogLUBy.
+        "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+        "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+        "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
         // #260 parity Ser_SupplierPaymentDtl: 3 cot con thieu sau #237
         "ALTER TABLE public.\"SupplierPaymentLines\" ADD COLUMN IF NOT EXISTS \"InStockQuantity\" numeric",
         "ALTER TABLE public.\"SupplierPaymentLines\" ADD COLUMN IF NOT EXISTS \"LocationCode\" text",

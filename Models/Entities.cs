@@ -14668,6 +14668,13 @@ public sealed class ServicePart
 
     /// <summary>FLAGINTST — phụ tùng có nằm trong danh mục TST hay không.</summary>
     public string? FlagInTST { get; set; }
+
+    // #1134 §12 — `Ser_Mst_Part_Create_20210303` (Service.cs:4871, LIVE) ghi đủ 4 cột nhật ký lúc tạo;
+    // `Ser_Mst_Part_Update` (:5407, có strIsActive) chỉ ghi lại LogLUDateTime/LogLUBy — entity chưa từng có.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Nhóm phụ tùng phân cấp (cha-con) — port 1:1 FrmPartGroup (TblSerMSTPartGroup, TCMotor).</summary>
