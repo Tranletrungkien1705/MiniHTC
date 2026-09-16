@@ -1275,6 +1275,11 @@ public static class Seeder
         "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"Factor\" numeric",
         "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"Status\" text",
         "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"FlagWarranty\" text",
+        // #1130: Ser_Mst_Service_Create ghi du 4 cot; _Update (strIsActive) chi ghi lai LogLUDateTime/LogLUBy.
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"ServiceItemMsts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
         // #296 parity TblSerCavity: 7 cot con thieu (StartUseDate/FinishUseDate luu CHUOI)
         "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"CavityType\" text",

@@ -15375,7 +15375,7 @@ app.MapGet("/api/serviceitems/search-full", async (AppDbContext db, ITenantConte
         paginationPatternIsCorrect = "AM TINH: Row_Number() over (order by t.SerID desc) roi cat theo MyRowIdx la MAU DUNG, khong dinh #415 vi ROW_NUMBER() OVER(ORDER BY) co thu tu dam bao, khac SELECT INTO khong OVER",
     });
 }).RequireAuthorization();
-app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SerCode)) return Results.BadRequest(new { error = "Chưa nhập mã dịch vụ." });
     if (string.IsNullOrWhiteSpace(dto.SerName)) return Results.BadRequest(new { error = "Chưa nhập tên dịch vụ." });
@@ -15431,9 +15431,13 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
         ex.StdManHour = stdManHour; ex.Factor = dto.Factor;
         ex.Status = dto.Status;
         // #1032: Update nguồn KHÔNG đụng FlagWarranty — giữ nguyên giá trị cũ, không reset về "0".
+        // #1130 §12: `Ser_Mst_Service_Update` (có strIsActive) LUÔN ghi LogLUDateTime/LogLUBy — entity
+        // chưa từng có cột, nhánh SỬA-QUA-UPSERT bỏ sót hoàn toàn.
+        ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = (partnerUserCode ?? "system").Trim();
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.SerCode, updated = true, fromWarrantyWork = false });
     }
+    var by1130 = (partnerUserCode ?? "system").Trim(); var now1130 = DateTime.Now;
     var r = new ServiceItemMst
     {
         OrgId = t.OrgId, SerCode = code, SerName = serName, Cost = cost, Price = price,
@@ -15441,18 +15445,22 @@ app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITe
         DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
         SerTypeID = string.IsNullOrWhiteSpace(serTypeId) ? null : serTypeId,
         StdManHour = stdManHour, Factor = dto.Factor, Status = dto.Status, FlagWarranty = flagWarranty,
+        // #1130 §12: Ser_Mst_Service_Create ghi đủ 4 cột nhật ký lúc tạo.
+        CreatedDate = now1130, CreatedBy = by1130, LogLUDateTime = now1130, LogLUBy = by1130,
     };
     db.ServiceItemMsts.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.SerCode, updated = false, fromWarrantyWork = ww is not null,
         note = ww is not null ? "Mã trùng công bảo hành của hãng — toàn bộ thông tin lấy từ danh mục hãng." : null });
 }).RequireAuthorization();
 
-app.MapPost("/api/serviceitems/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serviceitems/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ServiceItemMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SerCode == code);
     if (x is null) return Results.NotFound(new { code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1130: toggle = gọi Ser_Mst_Service_Update đổi strIsActive — hàm nguồn luôn ghi 2 cột nhật ký.
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.SerCode, flagActive = x.FlagActive });
 }).RequireAuthorization();

@@ -14326,6 +14326,13 @@ public sealed class ServiceItemMst
     /// </summary>
     public string? FlagWarranty { get; set; }
 
+    // #1130 §12 — `Ser_Mst_Service_Create` (Service.cs:1344) ghi đủ 4 cột nhật ký; `_Update` (:1823, có tham
+    // số strIsActive) chỉ ghi lại LogLUDateTime/LogLUBy — entity chưa từng có chỗ chứa cả bốn.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
