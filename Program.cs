@@ -65547,6 +65547,19 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
     });
 }).RequireAuthorization();
 
+// #1139 MAN MOI: noi LENH SUA ve CUOC HEN sinh ra no (Ser_RO_UpdateAppId, Appointment.cs:1955) — nguon
+// khong guard gi (Raise=0, Check=0), ghi AppId/LogLUDateTime/LogLUBy trong CUNG mot SaveData. Man lich hen
+// dung cot AppId nay (Ser_RO_Get_ByAppId, #446) de biet cuoc hen da co bao gia chua.
+app.MapPost("/api/repairorders/{no}/appid", async (string no, string? appId, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no.Trim().ToUpperInvariant());
+    if (r is null) return Results.NotFound(new { no });
+    r.AppId = appId;
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.AppId });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #1038 THAY TOÀN BỘ DÒNG CÔNG/PHỤ TÙNG CỦA RO — phần "REPLACE ALL" của `Ser_RO_Update_New20220926`
 //   (`BizCarSv.ZTemp.cs:13209`, đoạn `#region // Ser_ROServiceItems`/`Ser_ROPartItems`), TÁCH KHỎI PUT header =====
 // Nguồn XOÁ SẠCH `Ser_ROServiceItems`/`Ser_ROPartItems` của RO rồi GHI LẠI TOÀN BỘ theo danh sách client gửi —
