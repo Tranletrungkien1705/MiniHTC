@@ -24971,11 +24971,15 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
     return Results.Ok(new { row.Id, row.InContractCode, row.InContractNo, row.PaymentLimit, row.FlagActive });
 }).RequireAuthorization();
 
-app.MapPost("/api/insurancecontracts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/insurancecontracts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1126: `strIsActive` là MỘT tham số của `Ser_InsuranceContractUpdate` (Service.cs:14756-14772) — hàm này
+    // LUÔN ghi LogLUDateTime/LogLUBy = strPartnerUserCode mỗi lần gọi, bất kể trường nào đổi. Lật cờ FlagActive
+    // qua toggle chính là gọi Update với strIsActive đổi — port cũ bỏ sót hoàn toàn 2 cột nhật ký.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
@@ -27903,11 +27907,15 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
         twoMachinesVerified = "Inventory.Master.cs 2104 dong tren CA HAI may; md5 chuan hoa SerSupplierUpdate tren 150 = 2480a044 KHOP laptop",
     });
 }).RequireAuthorization();
-app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1127 cùng luật #1126: `strIsActive` là tham số của `SerSupplierUpdate` (Inventory.Master.cs:451-467),
+    // hàm LUÔN ghi LogLUDateTime/LogLUBy = strPartnerUserCode — toggle chính là gọi Update đổi IsActive,
+    // port cũ bỏ sót 2 cột nhật ký ở đường ghi này (PUT #1073 đã đúng, chỉ toggle thiếu).
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
