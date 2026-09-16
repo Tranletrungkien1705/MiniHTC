@@ -3069,6 +3069,10 @@ public sealed class ServicePackage
     public string? Description { get; set; }
     public string? Creator { get; set; }
     public DateTime? CreatedDate { get; set; }
+    /// <summary>#1088 §12 — nguồn `SerServicePackageCreate` (ServicePackage.cs:179) ghi CreatedBy = strPartnerUserCode
+    /// (cột nhật ký hệ thống), KHÁC `Creator` = strCreator (giá trị client tự nhập) — hai cột riêng biệt,
+    /// port cũ đã có `Creator` nhưng thiếu hẳn `CreatedBy`.</summary>
+    public string? CreatedBy { get; set; }
     /// <summary>Cờ gói CÔNG KHAI — nguồn dùng nó ở nhánh `Union` thứ nhất (#546).</summary>
     public string? IsPublicFlag { get; set; }
     /// <summary>1 = dùng **giá chung**; 0 = dùng **giá riêng của gói** (chú thích nguyên văn của nguồn).</summary>

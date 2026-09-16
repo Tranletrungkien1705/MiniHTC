@@ -3142,6 +3142,8 @@ public static class Seeder
                 // #1087: PartStockOut (Ser_Inv_StockOut) thieu CreatedDate/CreatedBy (SerStockOutCreate).
                 "ALTER TABLE public.\"PartStockOuts\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"PartStockOuts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1088: ServicePackage thieu CreatedBy (khac Creator - xem chu thich entity).
+                "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

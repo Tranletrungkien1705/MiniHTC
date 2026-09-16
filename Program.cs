@@ -23073,7 +23073,10 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
     h = new ServicePackage { OrgId = t.OrgId, PackageNo = no }; db.ServicePackages.Add(h);
     h.PackageName = dto.PackageName; h.ServiceTotal = svcTotal; h.PartTotal = partTotal; h.GrandTotal = svcTotal + partTotal; h.UpdatedAt = DateTime.Now;
     // #1050: SerServicePackageCreate ghi VÔ ĐIỀU KIỆN LogLUDateTime/LogLUBy lúc tạo.
-    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
+    var by1088 = (partnerUserCode ?? "system").Trim(); var now1088 = DateTime.Now;
+    h.LogLUDateTime = now1088; h.LogLUBy = by1088;
+    // #1088: nguồn còn ghi CreatedDate/CreatedBy (CreatedBy KHÁC Creator — xem chú thích entity).
+    h.CreatedDate = now1088; h.CreatedBy = by1088;
     await db.SaveChangesAsync();
     db.ServicePackageServices.RemoveRange(db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
     db.ServicePackageParts.RemoveRange(db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
