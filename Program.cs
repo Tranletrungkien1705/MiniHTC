@@ -61766,7 +61766,7 @@ app.MapPost("/api/servicecustomers/create-fordms", async (CustomerForDmsDto dto,
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rows = dto.Rows ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng nào để nhập." });
@@ -61811,8 +61811,18 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
         var code = string.IsNullOrWhiteSpace(r.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff") + line : r.CusCode.Trim().ToUpperInvariant();
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã khách hàng bị trùng trong file nhập." }); continue; }
         var c = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
-        if (c is null) { c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code }; db.ServiceCustomers.Add(c); created++; }
+        var by1172 = (partnerUserCode ?? "system").Trim();
+        var now1172 = DateTime.Now;
+        if (c is null)
+        {
+            // #1172 SUA BUG THAT: nguon Ser_Customer_Import (BizCarSv.Customer.cs:8069-8072) ghi du 4 cot
+            // nhat ky tren dt_Ser_Customer khi tao moi tung dong Excel — port cu bo sot toan bo.
+            c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code, CreatedDate = now1172, CreatedBy = by1172 };
+            db.ServiceCustomers.Add(c); created++;
+        }
         else updated++;
+        // Nhanh sua (:8598-8599) luon ghi LogLUDateTime/LogLUBy o ca hai nhanh tao/sua.
+        c.LogLUDateTime = now1172; c.LogLUBy = by1172;
         c.CusName = r.CusName; c.Mobile = r.Mobile; c.Tel = r.Tel; c.Address = r.Address; c.Email = r.Email; c.UpdatedAt = DateTime.Now;
         // #255: hai cột người liên hệ mà nguồn CÓ kiểm nhưng import cũ không nhận/không gán (§12).
         c.ContName = r.ContName; c.ContAddress = r.ContAddress;
@@ -61863,7 +61873,9 @@ app.MapPost("/api/servicecustomers/import-ws", async (List<ServiceCustomerImport
         if (cusType is null) { errors.Add(new { row.CusName, error = "Ser_Customer_ImportCusTypeNotFound", row.CusTypeName }); continue; }
         var plate = row.PlateNo!.Trim().ToUpperInvariant();
         var car = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate);
+        var by1173 = (partnerUserCode ?? "system").Trim(); var now1173 = DateTime.Now;
         ServiceCustomer cus;
+        bool isNewCus1173;
         if (car is null || string.IsNullOrWhiteSpace(car.CusCode))
         {
             cus = new ServiceCustomer
@@ -61871,11 +61883,17 @@ app.MapPost("/api/servicecustomers/import-ws", async (List<ServiceCustomerImport
                 OrgId = t.OrgId, CusCode = "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff") + saved.Count,
             };
             db.ServiceCustomers.Add(cus);
+            isNewCus1173 = true;
         }
         else
         {
             cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == car.CusCode) ?? new ServiceCustomer { OrgId = t.OrgId, CusCode = car.CusCode };
+            isNewCus1173 = false;
         }
+        // #1173 SUA BUG THAT: ProcessCustomerCreate (BizCarSv.Customer.cs:7824+245-248) ghi du 4 cot nhat ky
+        // khi tao; ProcessCustomerUpdate (:8305+293-294) chi ghi LogLUDateTime/LogLUBy — port cu bo sot ca hai.
+        if (isNewCus1173) { cus.CreatedDate = now1173; cus.CreatedBy = by1173; }
+        cus.LogLUDateTime = now1173; cus.LogLUBy = by1173;
         // #976: ProcessCustomerCreate/ProcessCustomerUpdate (nguồn) nhận ĐÚNG bộ tham số này ở CẢ HAI nhánh —
         // port cũ chỉ gán 5/18 trường, 13 trường còn lại (kể cả Fax/ProductYear đã CÓ trong DTO) bị rớt âm thầm.
         cus.CusName = row.CusName; cus.CusTypeID = cusType.CusTypeCode; cus.DealerCode = dl;
