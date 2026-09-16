@@ -1758,7 +1758,7 @@ app.MapGet("/api/boms", async (AppDbContext db, ITenantContext t, string? model)
 // ⇒ **GAP ĐÃ VÁ**: port cũ dùng **một** `POST` làm **upsert**, tức **mất guard chống trùng mã** của `Add`
 //   (gửi lại cùng `BomCode` thì Mini **ghi đè**, nguồn thì **từ chối**). Nay `POST` mặc định **tạo mới**
 //   (trùng mã ⇒ 409) và chỉ cập nhật khi truyền `allowUpdate=true` — giữ đường lùi cho client cũ.
-app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t, bool allowUpdate = false) =>
+app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t, bool allowUpdate = false, string? partnerUserCode = null) =>
 {
     if (string.IsNullOrWhiteSpace(dto.BomCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
         return Results.BadRequest(new { error = "Cần BomCode và ModelCode." });
@@ -1781,6 +1781,8 @@ app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t, b
         });
     if (b is null) { b = new Bom { OrgId = t.OrgId, BomCode = code }; db.Boms.Add(b); }
     b.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); b.MaintLevel = dto.MaintLevel; b.Status = dto.Status ?? "1";
+    // #1091: Mst_BOM_Add/_Update ghi LogLUDateTime/LogLUBy o CA HAI nhanh.
+    b.LogLUDateTime = DateTime.Now; b.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { b.BomCode, b.ModelCode, b.MaintLevel, updatedExisting = allowUpdate });
 }).RequireAuthorization();

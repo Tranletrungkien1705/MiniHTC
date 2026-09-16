@@ -493,6 +493,11 @@ public sealed class Bom
     public string? MaintLevel { get; set; }   // cấp bảo dưỡng (1000km/5000km...)
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1091 §12 — nguồn `Mst_BOM_Add`/`_Update` (ZTemp.cs:22637/22999) đều ghi `LogLUDateTime`/`LogLUBy`
+    /// (bảng này KHÔNG có CreatedDate/CreatedBy — đúng khuôn 2-cột như `Mst_Param` #1072).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng BOM: 1 phụ tùng + số lượng định mức.</summary>
