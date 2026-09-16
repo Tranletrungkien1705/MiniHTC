@@ -22218,6 +22218,29 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
         if (rowTypeDtl == "B" && string.IsNullOrWhiteSpace(claim.BatteryNo))
             return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidBatteryNo",
                 message = "VIN không có mã Ắc quy!" });
+
+        // ===== #1020 `ROWarrantyReport_Approve_Check_ComplaintDiagnosticError` (WarrantyReport.cs:5886) =====
+        // Gọi ở 8/11 nhánh — CHỈ trong (XM,*)/(SB,*) (cả bốn ROWTypeDtlCode A/B/P/W), loại trừ (PT,S)/(TC,R)/(BT,C).
+        // Nguồn: mã lỗi phàn nàn (`ErrorCodePN`) và mã lỗi chẩn đoán (`ErrorCodeCD`) của claim đều PHẢI tồn tại
+        // và ĐANG HOẠT ĐỘNG trong danh mục `Ser_MST_ROComplaintDiagnosticError`, đúng `ErrorTypeCode` tương ứng
+        // ("PN"/"CD") — dùng lại đúng master `RoComplaintDiagnosticError` đã có từ #784. Bốn luật KM/ngày còn
+        // lại trong hàm nguồn đã bị COMMENT ("20220402 bỏ luật check KM"/"…Ngày gửi BCBH…") — port dòng ACTIVE,
+        // không port phần đã tắt.
+        if (rowType == "XM" || rowType == "SB")
+        {
+            var pnCode = (claim.ErrorCodePN ?? "").Trim().ToUpperInvariant();
+            var cdCode = (claim.ErrorCodeCD ?? "").Trim().ToUpperInvariant();
+            var pnOk = pnCode.Length > 0 && await db.RoComplaintDiagnosticErrors.AnyAsync(x =>
+                x.OrgId == t.OrgId && x.ErrorCode == pnCode && x.ErrorTypeCode == "PN" && x.FlagActive == "1");
+            if (!pnOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidComplaintDiagnosticError",
+                    message = "Không tìm thấy mã lỗi phàn nàn!" });
+            var cdOk = cdCode.Length > 0 && await db.RoComplaintDiagnosticErrors.AnyAsync(x =>
+                x.OrgId == t.OrgId && x.ErrorCode == cdCode && x.ErrorTypeCode == "CD" && x.FlagActive == "1");
+            if (!cdOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidComplaintDiagnosticError",
+                    message = "Không tìm thấy mã lỗi chẩn đoán!" });
+        }
     }
     if (newItemStatus != null) item.WarrantyStatus = newItemStatus;
     if (dto.Note != null) item.Note = dto.Note;
