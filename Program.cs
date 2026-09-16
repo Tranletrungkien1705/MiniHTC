@@ -76416,7 +76416,9 @@ app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
     var items = wantDetail
         ? await qy.OrderBy(x => x.ReceptionFAudCode).ThenBy(x => x.ReceptionFAudType)   // nguồn KHÔNG sắp ở câu cuối
             .Skip(start).Take(count)
-            .Select(x => new { x.Id, x.ReceptionFAudCode, x.ReceptionFAudType, x.ReceptionFAudName, x.FlagActive })
+            // #1056: nguồn `smrfa.*` trả ĐỦ bảng — thêm 4 cột trước đây bị bỏ sót.
+            .Select(x => new { x.Id, x.ReceptionFAudCode, x.ReceptionFAudType, x.ReceptionFAudName, x.FlagActive,
+                x.Idx, x.Remark, x.LogLUDateTime, x.LogLUBy })
             .ToListAsync()
         : new();
 

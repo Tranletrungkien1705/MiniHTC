@@ -3034,6 +3034,11 @@ public static class Seeder
                 "ALTER TABLE public.\"SerFilePathVideos\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 "ALTER TABLE public.\"SerFilePathVideos\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"SerFilePathVideos\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1056: Ser_Mst_ReceptionFAudit_GetX tra smrfa.* du bang; GET Mini chi chieu 4/8 cot.
+                "ALTER TABLE public.\"ReceptionFAuditMsts\" ADD COLUMN IF NOT EXISTS \"Idx\" integer NULL",
+                "ALTER TABLE public.\"ReceptionFAuditMsts\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"ReceptionFAuditMsts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"ReceptionFAuditMsts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

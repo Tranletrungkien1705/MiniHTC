@@ -15725,6 +15725,14 @@ public sealed class ReceptionFAuditMst
     public string ReceptionFAudType { get; set; } = "";
     public string? ReceptionFAudName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1056 §12 — `Ser_Mst_ReceptionFAudit_GetX` (BizCarSv.Tab.cs:15170) trả `smrfa.*` — ĐỦ cả bảng —
+    // nhưng GET của Mini chỉ chiếu 4 cột, bỏ sót IDX/Remark/LogLUDateTime/LogLUBy dù bảng có sẵn.
+    // Bảng nguồn KHÔNG có Add/Update trong TERP.BizCarSv (chỉ Get) — dữ liệu do hệ CmCenter khác nạp,
+    // nên đây là gap ở TẦNG HIỂN THỊ, không phải tầng ghi.
+    public int? Idx { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
