@@ -76404,6 +76404,17 @@ app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, Assignme
     var bPause = string.Equals(dto.FlagPause?.Trim(), kFlagActive, StringComparison.OrdinalIgnoreCase);
     ro.FlagPause = bPause ? kFlagInactive : kFlagActive;
     ro.ModifyDate = DateTime.Now;
+
+    // #1030 TRẢ NỢ (ghi ở #530): nguồn còn chèn Ser_ROWorkTime (InsertSer_ROWorkTime, zzzzCode.cs:208)
+    // — FlagPlay = bPause?Yes:No, FlagBegin/FlagEnd luôn "0". Guard trạng thái của hàm chèn đòi RO thuộc
+    // {CRE,PRT,HRO,INGA,RPRD}; guard của CHÍNH endpoint này đã hẹp hơn ({RPRD,INGA} ⊂ tập trên) nên luôn qua.
+    var roWTNo = "ROWT" + DateTime.Now.ToString("yyMMddHHmmssfff");
+    db.RoWorkTimes.Add(new RoWorkTime
+    {
+        OrgId = t.OrgId, ROWTNo = roWTNo, ROID = ro.Id.ToString(), RONo = ro.RONo,
+        PointDateTime = DateTime.Now, FlagPlay = bPause ? kFlagActive : kFlagInactive,
+        FlagBegin = kFlagInactive, FlagEnd = kFlagInactive, LogLUDateTime = DateTime.Now,
+    });
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -76418,6 +76429,8 @@ app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, Assignme
         sourceHasNoOrderBy = "top 1 * tren ca Ser_AssignmentWork lan Ser_RO",
         sourceDropsTimeInLogColumn = "StandardizeDate(DateTime.Now) chi con yyyy-MM-dd",
         statusAllowed = kStatusAllowPause,
+        // ===== #1030 =====
+        roWorkTime = new { roWTNo, flagPlay = bPause ? kFlagActive : kFlagInactive },
     });
 }).RequireAuthorization();
 
