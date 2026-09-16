@@ -26652,7 +26652,7 @@ app.MapPut("/api/technicallibraries/{code}", async (string code, TechnicalLibrar
 // #926 `Ser_Technical_Library_Approve` (LIVE, `BizCarSv.ZTemp.cs:32420`) — guard nguồn CHỈ duyệt được bài
 // đang Inactive ("0"); tham số Remark nguồn NHẬN nhưng KHÔNG GHI cột nào (dead input, giữ nguyên 1:1).
 app.MapPost("/api/technicallibraries/{code}/approve", async (string code, TechnicalLibraryApproveDto? dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var libCode = code.Trim().ToUpperInvariant();
     var row = await db.TechnicalLibraries.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TechnicalLibraryCode == libCode);
@@ -26660,16 +26660,22 @@ app.MapPost("/api/technicallibraries/{code}/approve", async (string code, Techni
     if (row.IsActive != "0")
         return Results.BadRequest(new { error = "Ser_Technical_Library_CheckDB_TechnicalLibraryCodeNotFound", detail = "Chỉ duyệt được bài đang chờ duyệt (Inactive)." });
     row.IsActive = "1";
+    // #1155: nguồn Ser_Technical_Library_Approve (ZTemp.cs:26228) ghi IsActive/LogLUDateTime/LogLUBy
+    // TRONG CÙNG một câu update — port cũ bỏ sót 2 cột nhật ký.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.TechnicalLibraryCode, row.IsActive,
         remarkNotPersisted = "nguon nhan strRemark nhung khong ghi cot nao — giu dung 1:1, khong bia cot moi" });
 }).RequireAuthorization();
 
-app.MapPost("/api/technicallibraries/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/technicallibraries/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.TechnicalLibraries.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.IsActive = row.IsActive == "1" ? "0" : "1";
+    // #1155: chieu bat (0->1) khop dung Ser_Technical_Library_Approve (ghi kem LogLUBy); chieu tat chua
+    // co ham nguon rieng — ap dung cung quy uoc (khong de trong dau vet) nhu #1153.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.IsActive });
 }).RequireAuthorization();
