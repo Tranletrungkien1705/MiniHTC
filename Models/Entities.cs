@@ -15595,6 +15595,12 @@ public sealed class WarrantyRenewalCategoryMst
     public string? WrtReneCateName { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1098 §12 — nguồn `Ser_MST_ROWarrantyRenewalCategory_Save` (AssignmentOfWork.cs:9081) chỉ ghi
+    /// `LogLUDateTime`/`LogLUBy` ở CẢ Create lẫn Update (bảng KHÔNG có CreatedDate/CreatedBy — khuôn 2-cột
+    /// như `Mst_Param` #1072).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>#539 ĐỊNH MỨC công phát sinh **theo loại bảo hành chi tiết** (`Ser_MST_ROWorkArisingQuota`).

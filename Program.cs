@@ -78311,7 +78311,7 @@ app.MapGet("/api/warrantyrenewalcategorymsts", async (AppDbContext db, ITenantCo
 }).RequireAuthorization();
 
 app.MapPost("/api/warrantyrenewalcategorymsts", async (List<WarrantyRenewalCategoryDto> rows,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (rows is null || rows.Count == 0)
         return Results.BadRequest(new { error = "Cần bảng Ser_MST_ROWarrantyRenewalCategory." });
@@ -78331,6 +78331,8 @@ app.MapPost("/api/warrantyrenewalcategorymsts", async (List<WarrantyRenewalCateg
         // Rỗng ⇒ null (khuôn DBNull: gửi rỗng XOÁ).
         row.WrtReneCateName = string.IsNullOrWhiteSpace(r.WrtReneCateName) ? null : r.WrtReneCateName;
         if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!.Trim();
+        // #1098: nguon ghi LogLUDateTime/LogLUBy o CA Create lan Update.
+        row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { count = rows.Count, created, updated, emptyMeansClear = true });
