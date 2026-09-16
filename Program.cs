@@ -8046,7 +8046,7 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     // (`smp.PartCode Not in @strListShellCode`) khỏi 4 nhóm ROREPAIR/ROWARRANTY/ROINSURANCE/LOCAL —
     // PART_SHELL cộng RIÊNG cho đúng những mã CÓ trong danh sách đó (`in @strListShellCode`).
     var roPartRows = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIdsInPeriod.Contains(p.RoId))
-        .Select(p => new { p.PartCode, p.ExpenseType, p.NeedQty, p.Factor, p.UnitPrice, p.Vat }).ToListAsync();
+        .Select(p => new { p.PartCode, p.ExpenseType, p.NeedQty, p.Factor, p.UnitPrice, p.Vat, p.FlagAccessory }).ToListAsync();
     decimal PartAmount(string? expenseType, bool shell) => roPartRows
         .Where(p => (expenseType == null || p.ExpenseType == expenseType)
             && (shell == shellCodeSet.Contains((p.PartCode ?? "").ToUpperInvariant())))
@@ -8054,6 +8054,12 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     var partRoRepair = PartAmount("ROREPAIR", false); var partRoWarranty = PartAmount("ROWARRANTY", false);
     var partRoInsurance = PartAmount("ROINSURANCE", false); var partLocal = PartAmount("LOCAL", false);
     var partShell = PartAmount(null, true);
+    // ===== #1067 B.III phần 2a "Doanh thu phụ kiện" (ZTemp.cs:3168-3190, `#tbl_Ser_ROPartItemsIsAccessory*`)
+    // — LỌC `FlagAccessory='1'` (KHÁC PART_* dùng `FlagAccessory` mặc định — không lọc gì).
+    // ⚠️ HẰNG≠GIÁ TRỊ: công thức KHÔNG nhân `Factor` (nguồn nguyên văn `Price*Quantity*(1+VAT*0.01)`,
+    // khác 5 công thức PART_* ở trên đều CÓ `Factor`) — port ĐÚNG dòng active, không tổng quát hoá.
+    var accessoryAmountAfterVAT = roPartRows.Where(p => p.FlagAccessory == "1")
+        .Sum(p => p.NeedQty * p.UnitPrice * (1 + p.Vat / 100m));
 
     // ===== #1065 A.IV Số giờ làm việc của KTV (ZTemp.cs:3663-3727) — dùng lại `ServiceAmount`/`unitPrice*`
     // đã có từ #1061/#1063 (đúng đề xuất lesson #460: mở rộng, không tính lại).
@@ -8107,7 +8113,7 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     decimal SafeDiv(decimal numerator, decimal denominator) => denominator == 0 ? 0 : Math.Round(numerator / denominator, 1);
     // ⚠️ AllPartAmount nguồn CÒN CỘNG PartAmountOut/ShellAmountOut/AccessoryAmountAfterVAT/AccessoryAmountOut
     // (khối StockOut/phụ kiện — B.III phần 2, CHƯA port) — ở đây chỉ có phần "dòng sửa chữa" (B.III phần 1).
-    var allPartAmountPartial = partRoRepair + partRoWarranty + partRoInsurance + partLocal + partShell;
+    var allPartAmountPartial = partRoRepair + partRoWarranty + partRoInsurance + partLocal + partShell + accessoryAmountAfterVAT;
     var carPerAdviserDay = (advisoryNumber == 0 || workDayQty == 0) ? 0 : SafeDiv(countCarService, advisoryNumber * workDayQty);
     var workHourPerCarRO = SafeDiv(workHourActualQty, countCarService);
     var cavityQtyPerEngineerBDNSCC = (serviceTechnicianQty + enginerNumber == 0) ? 0
@@ -8165,12 +8171,14 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         serviceAmountPDIRoRepair = Math.Round(ServiceAmount("PDI", "ROREPAIR")), serviceAmountPDILocal = Math.Round(ServiceAmount("PDI", "LOCAL")),
         serviceAmountSPK = Math.Round(ServiceAmount("SPK")),
         serviceAmountSPKRoRepair = Math.Round(ServiceAmount("SPK", "ROREPAIR")), serviceAmountSPKLocal = Math.Round(ServiceAmount("SPK", "LOCAL")),
-        // ===== B.III Tổng doanh thu phụ tùng, dầu nhớt (PHẦN 1 — dòng sửa chữa; PHẦN 2 StockOut/phụ kiện
-        // vẫn CHƯA port, xem notPortedYet) =====
-        partAmountNotShell = Math.Round(allPartAmountPartial - partShell),
+        // ===== B.III Tổng doanh thu phụ tùng, dầu nhớt (PHẦN 1 dòng sửa chữa + PHẦN 2a phụ kiện từ RO;
+        // PHẦN 2b bán ra ngoài qua StockOut vẫn CHƯA port, xem notPortedYet) =====
+        allPartAmount = Math.Round(allPartAmountPartial),   // III. Tổng — vẫn thiếu 2 số hạng StockOut bán ngoài
+        partAmountNotShell = Math.Round(partRoRepair + partRoWarranty + partRoInsurance + partLocal),
         partAmountRoRepair = Math.Round(partRoRepair), partAmountRoWarranty = Math.Round(partRoWarranty),
         partAmountRoInsurance = Math.Round(partRoInsurance), partAmountLocal = Math.Round(partLocal),
         partAmountShell = Math.Round(partShell),
+        accessoryAmountAfterVAT = Math.Round(accessoryAmountAfterVAT),
         // ===== B.IV Quản lý hoạt động xưởng dịch vụ (4 cột đầu HARDCODE 0 đúng nguồn; 16 chỉ số sau
         // là TỶ SỐ suy ra từ dữ liệu đã tính ở trên) =====
         countWorkTime = 0, countWorkTime_DBD = 0, countWorkTime_SCC = 0, countWorkTime_SCD = 0, countWorkTime_SCS = 0,
@@ -8178,10 +8186,10 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         countBDDPerCavityMaintain, countSCCPerCavityRO, countSCDPerCavityCopper, countSCSPerCavityBP, countSCSPerCabinetPaint,
         revenuePerAdviser, revenuePerKTVBDN, revenuePerKTVSCC, revenuePerKTVSCD, revenuePerKTVSCS,
         laborProductivity, serviceProductivity, employmentRate,
-        notPortedYet = "B.III PHẦN 2 (doanh thu phụ kiện `AccessoryAmountAfterVAT` + khối bán ra ngoài "
-            + "`Ser_Inv_StockOut/StockOutDetail/StockOutOrder` phân loại phụ kiện qua `Ser_MST_PartType`) "
-            + "CHƯA port — hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. `revenuePerAdviser`/`AllPartAmount` "
-            + "hiện THIẾU phần B.III-2 nên bị THẤP HƠN nguồn thật. A.I-A.V/B.I/B.II/B.III-phần1/B.IV xong.",
+        notPortedYet = "B.III PHẦN 2b (khối bán ra ngoài `PartAmountOut`/`ShellAmountOut`/`AccessoryAmountOut` "
+            + "qua `Ser_Inv_StockOut/StockOutDetail/StockOutOrder`, phân loại phụ kiện qua `Ser_MST_PartType`) "
+            + "CHƯA port — hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. `revenuePerAdviser`/`allPartAmount` "
+            + "hiện THIẾU 3 số hạng bán-ra-ngoài đó nên THẤP HƠN nguồn thật. A.I-A.V/B.I/B.II/B.III-phần1+2a/B.IV xong.",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
