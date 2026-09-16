@@ -40474,7 +40474,7 @@ app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? 
 //   ⇒ Client gửi hai tham số đó mà **không** gửi `dsSPDetail` thì **không tạo gì** — và không có lỗi nào báo lại.
 // ⚪ Hàm **có** RBAC: `DataRow drAbilityOfUser = myCommon_GetAbilityOfUser(strPartnerUserCode);` cùng **2**
 //   `CMyException.Raise` ⇒ không thuộc nhóm "không guard".
-app.MapPost("/api/shareparts", async (SharePartDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/shareparts", async (SharePartDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
 
@@ -40521,7 +40521,7 @@ app.MapPost("/api/shareparts", async (SharePartDto dto, AppDbContext db, ITenant
             InStock = inStock, MinQuantity = minQty,
             QuantityShareRequested = req, QuantityShare = actual,
             Remark = l.Remark, Note = dto.Note, Status = "Open", FlagLatest = "1",
-            CreatedBy = dto.CreatedBy, LogLUDateTime = now, LogLUBy = dto.CreatedBy,
+            CreatedBy = (partnerUserCode ?? "system").Trim(), LogLUDateTime = now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
     }
 
