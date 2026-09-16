@@ -3846,6 +3846,22 @@ public sealed class SerPartType
     public string? CreatedBy { get; set; }
 }
 
+/// <summary>#1058 §12 — MÀN CHƯA TỪNG PORT: `Mst_Ser_AppType` (loại lịch hẹn), một trong ~20 bảng nằm trong
+/// whitelist `myCommon_GetSupportedTable` (BizCarSv.Common.cs:631) mà biz KHÔNG có hàm Create/Update RIÊNG —
+/// ghi/đọc qua CƠ CHẾ CHUNG `CommonSaveMasterData`/`CommonGetMasterData` (:1199/:1314): client gửi nguyên
+/// DataSet đã đổi (Added/Modified/Deleted), server `SaveData` THẲNG không kiểm nghiệp vụ nào khác ngoài
+/// whitelist tên bảng — nên port cũng đơn giản như một master danh mục thường (không có guard đặc thù).</summary>
+public sealed class SerAppTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppTypeCode { get; set; } = "";
+    public string? AppTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Master kỳ khảo sát JD Power (Ser_MST_JDPowerTerm) — port 1:1 FrmJDPowerTermCreate/Search (TCMotor DMSCarSv). Mã kỳ + nội dung + ngày bắt đầu/kết thúc.</summary>
 public sealed class JDPowerTerm
 {

@@ -27956,6 +27956,45 @@ app.MapDelete("/api/serservicetypes/{id:long}", async (long id, AppDbContext db,
         noReferenceGuardNote = "Nguon Ser_Mst_ServiceType_Delete xoa CUNG khong kiem hang muc nao dang dung loai nay — giu dung, khong tu them rao chan." });
 }).RequireAuthorization();
 
+// ===== 🔴 #1058 MÀN CHƯA TỪNG PORT: `Mst_Ser_AppType` (loại lịch hẹn dịch vụ) =====
+// Nguồn KHÔNG có `Mst_Ser_AppType_Create`/`_Update` riêng — bảng nằm trong whitelist chung
+// `myCommon_GetSupportedTable` (BizCarSv.Common.cs:631), đọc/ghi qua `CommonGetMasterData`
+// (`select * from <bảng> where <bộ ba cột=giá trị>`) và `CommonSaveMasterData` (nhận nguyên
+// DataSet đã đổi, `SaveData` THẲNG — không guard nghiệp vụ nào ngoài whitelist tên bảng).
+// ⇒ Port như một master danh mục ĐƠN GIẢN, không có luật riêng để mô phỏng thêm.
+app.MapGet("/api/serapptypes", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+{
+    var qry = db.SerAppTypeMsts.Where(x => x.OrgId == t.OrgId);
+    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.AppTypeCode.Contains(q!) || (x.AppTypeName != null && x.AppTypeName.Contains(q!)));
+    var items = await qry.OrderBy(x => x.AppTypeCode).Take(500)
+        .Select(x => new { x.Id, x.AppTypeCode, x.AppTypeName, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/serapptypes", async (SerAppTypeMstDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var code = (dto.AppTypeCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã loại lịch hẹn." });
+    var row = await db.SerAppTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AppTypeCode == code);
+    var isNew = row is null;
+    if (isNew) { row = new SerAppTypeMst { OrgId = t.OrgId, AppTypeCode = code }; db.SerAppTypeMsts.Add(row); }
+    row!.AppTypeName = dto.AppTypeName;
+    if (!isNew && dto.FlagActive != null) row.FlagActive = dto.FlagActive;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.AppTypeCode, row.AppTypeName, row.FlagActive, isNew });
+}).RequireAuthorization();
+
+app.MapPost("/api/serapptypes/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerAppTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== Master kho dịch vụ (SerStock — port 1:1 FrmStockCreate/Search, TCMotor DMSCarSv) =====
 app.MapGet("/api/serstocks", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
@@ -81054,6 +81093,7 @@ record ReceptionFAudTypeMstDto(string? ReceptionFAudType, string? ReceptionFAudT
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive, string? DealerCode = null);
+record SerAppTypeMstDto(string? AppTypeCode, string? AppTypeName, string? FlagActive = null);   // #1058
 record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
 record SerPartTypeDto(string? TypeName, string? FlagActive, string? TypeCode = null, string? DealerCode = null);   // #963: +TypeCode/DealerCode
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);

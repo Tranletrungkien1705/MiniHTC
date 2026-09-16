@@ -307,6 +307,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SerServiceType> SerServiceTypes => Set<SerServiceType>();
     public DbSet<SerStock> SerStocks => Set<SerStock>();
     public DbSet<SerPartType> SerPartTypes => Set<SerPartType>();
+    public DbSet<SerAppTypeMst> SerAppTypeMsts => Set<SerAppTypeMst>();   // #1058
     public DbSet<JDPowerTerm> JDPowerTerms => Set<JDPowerTerm>();
     public DbSet<JDPowerTermDtl> JDPowerTermDtls => Set<JDPowerTermDtl>();   // #842
     public DbSet<RoMaintanceSetting> RoMaintanceSettings => Set<RoMaintanceSetting>();   // #846
