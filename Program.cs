@@ -63104,7 +63104,7 @@ app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? s
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
@@ -63121,9 +63121,12 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
         UserCode = dto.UserCode, CusID = dto.CusID, DealerCode = dto.DealerCode,
         TruckNo = dto.TruckNo, DriverName = dto.DriverName, DriverID = dto.DriverID,
         DrivingLicense = dto.DrivingLicense,
-        LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCode,
-        // #1087: SerStockOutCreate ghi CA CreatedDate/CreatedBy khi TAO, cung actor voi LogLUBy (strPartnerUserCode).
-        CreatedDate = DateTime.Now, CreatedBy = dto.UserCode,
+        // #1112 ĐÍNH CHÍNH #1087 (SAI): #1087 tuyên bố CreatedBy/LogLUBy "cùng actor với UserCode" — SAI, đã
+        // KHÔNG verify kỹ. Đọc lại nguồn SerStockOutCreate (StockOut.cs:520) xác nhận `UserCode = strStaffID`
+        // (tham số RIÊNG) trong khi `CreatedBy`/`LogLUBy` = `strPartnerUserCode` (actor server) — HAI biến
+        // khác nhau hoàn toàn, không phải "cùng actor".
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
+        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
     };
     // 🔴 #304: nguồn đặt `FlagSyncVeloca = Flag.Inactive` **ngay khi tạo** (4 chỗ, cả DB đại lý lẫn DB kho)
     //   ⇒ phiếu mới luôn ở trạng thái "chưa đồng bộ Veloca". Mặc định entity đã là "0", ghi rõ cho khỏi lệch.
@@ -63152,7 +63155,8 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
             OrgId = t.OrgId,
             StockOutOrderId = soo.Id, StockOutOrderNo = soo.OrderNo,
             StockOutId = h.Id, StockOutNo = h.StockOutNo,
-            LogLUDateTime = DateTime.Now, LogLUBy = dto.UserCode,
+            // #1112: SerStockOutOrderStockOutCreate (StockOut.cs:6386) ghi LogLUBy = strPartnerUserCode.
+            LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
         await db.SaveChangesAsync();
     }
@@ -63508,7 +63512,7 @@ app.MapPost("/api/stockouts/{no}/adjust-svc", async (string no, StockOutAdjustDt
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/stockouts/{no}/adjust", async (string no, StockOutAdjustDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockouts/{no}/adjust", async (string no, StockOutAdjustDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var old = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
@@ -63538,7 +63542,8 @@ app.MapPost("/api/stockouts/{no}/adjust", async (string no, StockOutAdjustDto dt
         DrivingLicense = dto.DrivingLicense ?? old.DrivingLicense, TruckNo = dto.TruckNo ?? old.TruckNo,
         OldStockOutID = old.Id.ToString(), OldStockOutNo = old.StockOutNo,
         Status = "1",
-        LogLUDateTime = DateTime.Now, LogLUBy = dto.AdjustmentBy,
+        // #1112: UpdateStockOut (StockOut.cs:1653) ghi LogLUBy = strPartnerUserCode, KHAC AdjustmentBy.
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.PartStockOuts.Add(neu);
     await db.SaveChangesAsync();
@@ -63578,7 +63583,8 @@ app.MapPost("/api/stockouts/{no}/adjust", async (string no, StockOutAdjustDto dt
             OrgId = t.OrgId,
             StockOutOrderId = lk.StockOutOrderId, StockOutOrderNo = lk.StockOutOrderNo,
             StockOutId = neu.Id, StockOutNo = neu.StockOutNo,
-            LogLUDateTime = DateTime.Now, LogLUBy = dto.AdjustmentBy,
+            // #1112: SerStockOutOrderStockOutCreate (StockOut.cs:6386) ghi LogLUBy = strPartnerUserCode.
+            LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
 
     // --- Hai bước trạng thái trong CÙNG một lời gọi, đúng nguồn.
