@@ -58646,7 +58646,9 @@ app.MapGet("/api/osveloca/stockins", async (AppDbContext db, ITenantContext t,
 app.MapGet("/api/osveloca/repairorders/{roId}/incomplete-detail", async (string roId, AppDbContext db, ITenantContext t) =>
 {
     var id = (roId ?? "").Trim();      // nguồn: StandardizeParam(strROID) — bản #705 KHÔNG chuẩn hoá tham số nào
-    string[] excludedStatus = { "CRE", "REJ", "NORE", "FNS" };            // bản 150 (20260323), đã bỏ PAID
+    // #1218 SUA BUG THAT: cung ho #1213/#1215/#1216/#1217 — RepairOrder.Status luu chuoi tieng Anh,
+    // khong phai ma nguon tho (excludedStatusOldLaptop giu nguyen ma tho vi CHI dung de doi chieu/hien thi).
+    string[] excludedStatus = { "Created", "Rejected", "NotResponding", "Finished" };            // bản 150 (20260323), đã bỏ PAID
     string[] excludedStatusOldLaptop = { "CRE", "REJ", "NORE", "PAID", "FNS" };
 
     var anyRo = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == id);
@@ -58813,7 +58815,8 @@ app.MapGet("/api/osveloca/repairorders/incomplete", async (AppDbContext db, ITen
 {
     // Nguồn gõ cứng năm mã bị loại. Chép nguyên văn.
     // 🔴 HAI CÂY NGUỒN LỆCH NHAU — dùng bản MỚI của máy 150 (20260323): PAID đã bị BỎ khỏi danh sách loại trừ.
-    string[] excludedStatus = { "CRE", "REJ", "NORE", "FNS" };
+    // #1218 SUA BUG THAT: RepairOrder.Status luu chuoi tieng Anh, khong phai ma nguon tho.
+    string[] excludedStatus = { "Created", "Rejected", "NotResponding", "Finished" };
     string[] excludedStatusOldLaptop = { "CRE", "REJ", "NORE", "PAID", "FNS" };
 
     var qy = db.RepairOrders.Where(x => x.OrgId == t.OrgId && !excludedStatus.Contains(x.Status));
