@@ -3251,6 +3251,13 @@ public static class Seeder
                 "ALTER TABLE public.\"PartBackorders\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"PartBackorders\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"PartBackorders\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1199: SerInsurance (ban port thu hai cua FrmInsuranceCreate/Modify, trung ServiceInsurance
+                // #1078) thieu DealerCode (khoa trung ma theo BizCarSv.Service.cs:8868/8925) va ca 4 cot nhat ky.
+                "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"SerInsurances\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

@@ -23627,30 +23627,43 @@ app.MapGet("/api/serinsurances", async (AppDbContext db, ITenantContext t, strin
     var qry = db.SerInsurances.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InsNo.Contains(q!) || x.InsVieName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.InsNo).Take(500).Select(x => new { x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Phone, x.Fax, x.TaxCode, x.Description, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.InsNo).Take(500).Select(x => new { x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Phone, x.Fax, x.TaxCode, x.Description, x.FlagActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/serinsurances", async (SerInsuranceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serinsurances", async (SerInsuranceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    var no = (dto.InsNo ?? "").Trim();
+    var no = (dto.InsNo ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập mã hãng bảo hiểm." });
     if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
-    var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no);
-    if (row is null) { row = new SerInsurance { OrgId = t.OrgId, InsNo = no }; db.SerInsurances.Add(row); }
+    var dealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
+    // #1199 SUA BUG THAT: nguon checkExistSerIns/checkCreateExistSerIns (BizCarSv.Service.cs:8868/8925)
+    // khoa TON TAI theo BO DOI (InsNo, DealerCode) — port cu khoa InsNo TOAN CUC (cung lop bug #1008 da
+    // vá cho ServiceInsurance/api/insurances, bang nay la BAN PORT THU HAI cua CUNG mot nguon).
+    var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no && x.DealerCode == dealerCode);
+    var by1199 = (partnerUserCode ?? "system").Trim(); var now1199 = DateTime.Now;
+    var isNewIns1199 = row is null;
+    if (row is null) { row = new SerInsurance { OrgId = t.OrgId, InsNo = no, DealerCode = dealerCode }; db.SerInsurances.Add(row); }
+    // #1199: SerInsuranceCreate (:9308+9396-9399) ghi du 4 cot nhat ky khi TAO; SerInsuranceUpdate
+    // (:9147+9236-9237) chi ghi LogLUDateTime/LogLUBy khi SUA.
+    if (isNewIns1199) { row.CreatedDate = now1199; row.CreatedBy = by1199; }
+    row.LogLUDateTime = now1199; row.LogLUBy = by1199;
     row.InsVieName = dto.InsVieName; row.InsEngName = dto.InsEngName; row.Address = dto.Address; row.Email = dto.Email; row.Phone = dto.Phone; row.Fax = dto.Fax; row.TaxCode = dto.TaxCode; row.Description = dto.Description; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.InsNo, row.InsVieName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.InsNo, row.InsVieName, row.FlagActive, row.DealerCode });
 }).RequireAuthorization();
 
-app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    // #1199: nhất quán với POST cùng bảng (LogLUBy đã đóng ở nhánh sửa của SerInsuranceUpdate).
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FlagActive,
+        sourceActuallyHardDeletesNotToggle = "SerInsuranceDelete (BizCarSv.Service.cs:9475) la XOA CUNG (delete Ser_InsuranceCustomer + Ser_Insurance theo InsNo+DealerCode), KHONG co ham doi FlagActive nao trong nguon — toggle o day la thiet ke rieng cua Mini, giu nguyen vi doi sang xoa cung se mat du lieu; chua co bang con SerInsuranceCustomer tuong ung o bang nay (khac /api/insurances da co)." });
 }).RequireAuthorization();
 
 // ===== Master thương hiệu xe dịch vụ (ServiceTradeMark — port 1:1 FrmTradeMarkCreate/Search, TCMotor DMSCarSv/Admin) =====
@@ -82023,7 +82036,7 @@ record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor,
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor,
     decimal? Quantity = null, decimal? VAT = null, string? Note = null,
     string? ExpenseType = null);   // #552 §12
-record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
+record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive, string? DealerCode);
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive, string? DealerCode = null);
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);

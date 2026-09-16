@@ -3196,6 +3196,16 @@ public sealed class SerInsurance
     public string? Description { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+    /// <summary>
+    /// 🔴 #1199 §12: nguồn `checkExistSerIns`/`checkCreateExistSerIns` (BizCarSv.Service.cs:8868/8925) khoá
+    /// TỒN TẠI theo BỘ ĐÔI (InsNo, DealerCode) — cột này trước đây KHÔNG có, khiến guard trùng mã bị khoá
+    /// TOÀN CỤC (cùng lớp bug #1008 đã vá cho ServiceInsurance/api/insurances).
+    /// </summary>
+    public string? DealerCode { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master quy đổi đơn vị TST↔DMS (TST_Mst_Exchange_Unit) — port 1:1 FrmTST_Mst_Exchange_Unit (TCMotor DMSCarSv). Theo mã phụ tùng TST: đơn vị TST/DMS + tỷ lệ quy đổi.</summary>
