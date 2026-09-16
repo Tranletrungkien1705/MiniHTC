@@ -16356,6 +16356,26 @@ app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db,
     return Results.Ok(new { r.OONo });
 }).RequireAuthorization();
 
+// ===== 🔴 #1001 `Ser_Part_OO_Update` (LIVE, `BizCarSv.Service.cs:15361`) — SỬA PT NỢ CHƯA GIAO, CHƯA CÓ =====
+// Nguồn khoá THEO CẶP `(PartID, OOPlateNo)` (kiểm tồn tại trước khi sửa) — khớp `(PartCode, PlateNo)` của
+// Mini. Guard thật: `strSoLuongTra > strSoLuongNo` bị chặn (`Ser_Part_OO_Update_Invalid_SoLuong`) — Mini
+// giữ đúng ý bằng cách so `QtyNeeded` mới với `QtyFulfilled` HIỆN CÓ (SL đã giao không đổi qua endpoint
+// này — có `/fulfill` riêng), không cho giảm SL nợ xuống dưới SL đã giao.
+app.MapPut("/api/servicepartoos/{no}", async (string no, ServicePartOODto dto, AppDbContext db, ITenantContext t) =>
+{
+    var r = await db.ServicePartOOs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OONo == no);
+    if (r is null) return Results.NotFound(new { error = "Ser_Part_OO_NotExist", no });
+    if (dto.QtyNeeded <= 0) return Results.BadRequest(new { error = "Số lượng nợ phải lớn hơn 0." });
+    if (dto.QtyNeeded < r.QtyFulfilled)
+        return Results.BadRequest(new { error = "Ser_Part_OO_Update_Invalid_SoLuong", detail = "Số lượng nợ mới không được nhỏ hơn số lượng đã giao.", r.QtyFulfilled });
+    r.PartCode = dto.PartCode.Trim().ToUpperInvariant(); r.PartName = dto.PartName; r.PlateNo = dto.PlateNo.Trim();
+    r.QtyNeeded = dto.QtyNeeded; r.Note = dto.Note; r.LoaiXe = dto.LoaiXe; r.CVDV = dto.CVDV;
+    r.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
+    r.NgayDatHang = dto.NgayDatHang; r.NgayVeDuKien = dto.NgayVeDuKien; r.NgayHenTra = dto.NgayHenTra;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.OONo, r.QtyNeeded, r.QtyFulfilled });
+}).RequireAuthorization();
+
 // Giao phụ tùng (cấn trừ SL nợ; không vượt SL còn thiếu; đủ -> Fulfilled).
 app.MapPost("/api/servicepartoos/{no}/fulfill", async (string no, ServicePartFulfillDto dto, AppDbContext db, ITenantContext t) =>
 {
