@@ -24831,17 +24831,20 @@ app.MapDelete("/api/stockoutorders/{id:long}", async (long id, AppDbContext db, 
     return Results.Ok(new { id, deletedLines = lines.Count });
 }).RequireAuthorization();
 
-app.MapPost("/api/stockoutorders/{id}/issue", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockoutorders/{id}/issue", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     if (h.Status != "Created") return Results.BadRequest(new { error = $"Lệnh đang '{h.Status}', chỉ xuất được khi 'Created'." });
     h.Status = "Finished";
+    // #1147: nguồn `SerStockOutOrderStatusUpdate`→`UpdateStockOutOrderStatus` (StockOut.cs:10278-10318) ghi
+    // Status/LogLUDateTime/LogLUBy trong CÙNG một alColumnEffective — port cũ bỏ sót 2 cột nhật ký.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.Status, shortcut = true });
 }).RequireAuthorization();
 
-app.MapPost("/api/stockoutorders/{id}/reject", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockoutorders/{id}/reject", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
@@ -24849,6 +24852,8 @@ app.MapPost("/api/stockoutorders/{id}/reject", async (long id, AppDbContext db, 
     if (!stockOutOrderTransitions.TryGetValue(h.Status, out var rejectable) || !rejectable.Contains("Rejected"))
         return Results.BadRequest(new { error = $"Lệnh đang '{h.Status}', không từ chối được nữa." });
     h.Status = "Rejected";
+    // #1147: cùng luật — mọi đường đổi Status của Ser_Inv_StockOutOrder đã xác nhận ghi kèm LogLUDateTime/LogLUBy.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.Status });
 }).RequireAuthorization();
