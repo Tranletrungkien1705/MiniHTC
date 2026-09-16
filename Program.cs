@@ -22147,6 +22147,35 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
         if (claim.WarrantyRegistrationDate.Value.AddDays(360) < claim.CreatedAt)
             return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCreatedDateAndWarrantyRegisDate",
                 message = "Ngày gửi BCBH - Ngày bảo hành > 12 tháng!" });
+
+        // ===== #1017 `ROWarrantyReport_Approve_Check_WarrantyFile` (WarrantyReport.cs:4905) =====
+        // Nguồn: mỗi loại bảo hành (`Ser_MST_ROWarrantyType`) đòi một danh sách loại ảnh chứng minh bắt buộc
+        // (`Ser_MST_ROWarrantyType_PhotoType`, trừ mã "KHAC"); left join `Ser_ROAttachment` theo `ROWPTCode`,
+        // loại nào CHƯA có ảnh (`roam.ROWPTCode is null`) thì BCBH bị chặn không cho chuyển sang "SENT".
+        // Mini đã có sẵn cả ba mảnh (§12 từ #850/#910): `ROWarrantyType`, `ROWarrantyTypePhoto`
+        // (loại ảnh bắt buộc theo loại BH), `RoAttachment.ROWPTCode` (ảnh đã tải theo RONo).
+        if (!string.IsNullOrWhiteSpace(claim.ROWTID))
+        {
+            var wt = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWTID == claim.ROWTID);
+            if (wt is not null)
+            {
+                var requiredCodes = await db.ROWarrantyTypePhotos
+                    .Where(x => x.OrgId == t.OrgId && x.ROWarrantyTypeId == wt.Id && x.ROWPTCode != "KHAC")
+                    .Join(db.RoWarrantyPhotoTypes.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1"),
+                        rp => rp.ROWPTCode, pt => pt.ROWPTCode, (rp, pt) => rp.ROWPTCode)
+                    .Distinct().ToListAsync();
+                if (requiredCodes.Count > 0)
+                {
+                    var uploadedCodes = await db.RoAttachments
+                        .Where(x => x.OrgId == t.OrgId && x.RONo == claim.RONo && x.ROWPTCode != null)
+                        .Select(x => x.ROWPTCode!).ToListAsync();
+                    var missingPhotoTypes = requiredCodes.Except(uploadedCodes).ToList();
+                    if (missingPhotoTypes.Count > 0)
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile",
+                            message = "BCBH chưa đủ loại ảnh!", missingPhotoTypes });
+                }
+            }
+        }
     }
     if (newItemStatus != null) item.WarrantyStatus = newItemStatus;
     if (dto.Note != null) item.Note = dto.Note;
