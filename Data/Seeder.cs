@@ -3030,6 +3030,10 @@ public static class Seeder
                 // #1054: SerGroupRepairCreate ghi CreatedDate/CreatedBy (bo sot khi va LogLU* o #747).
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1055: Ser_Mst_FilePathVideo_Add/_Update ghi Remark + LogLUDateTime/LogLUBy.
+                "ALTER TABLE public.\"SerFilePathVideos\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"SerFilePathVideos\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"SerFilePathVideos\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

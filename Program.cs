@@ -44461,7 +44461,7 @@ app.MapGet("/api/filepathvideos/for-tab", async (AppDbContext db, ITenantContext
     // Cờ giữ phát hiện #741: ở NGUỒN, bản ForTab quên đưa `strFilePathVideoNameList` vào nhãn log lỗi.
     return Results.Ok(new { count = items.Count, items, sameQueryAsCmCenter = true, logParamsMissingNameAtSource = true });
 }).RequireAuthorization();
-app.MapPost("/api/filepathvideos", async (SerFilePathVideoDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/filepathvideos", async (SerFilePathVideoDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.FilePathVideoCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã video." });
@@ -44474,6 +44474,10 @@ app.MapPost("/api/filepathvideos", async (SerFilePathVideoDto dto, AppDbContext 
     if (isNew) { row = new SerFilePathVideo { OrgId = t.OrgId, FilePathVideoCode = code, FlagActive = "1" }; db.SerFilePathVideos.Add(row); }
     row!.FilePathVideoName = dto.FilePathVideoName; row.FilePathVideo = dto.FilePathVideo; row.FilePathAvatar = dto.FilePathAvatar;
     row.IdxView = dto.IdxView; if (!isNew && dto.FlagActive != null) row.FlagActive = dto.FlagActive;
+    // #1055: Ser_Mst_FilePathVideo_Add/_Update ghi Remark (allow-list ở sửa, luôn ghi ở tạo) +
+    // LogLUDateTime/LogLUBy VÔ ĐIỀU KIỆN ở cả hai nhánh.
+    if (isNew || dto.Remark is not null) row.Remark = dto.Remark;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.FilePathVideoCode, row.FilePathVideoName, row.IdxView, row.FlagActive, isNew });
@@ -80662,7 +80666,8 @@ record MstVinModelOrginalDto(string? VINCode, string? ModelCode, string? Orginal
 record OsVelocaCustomerDto(string? SalesCusID, string? CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex);
 record ReqPartPriceTstReplyLineDto(string? PartCode, string? TSTPartCode, decimal? TSTPrice);
 record ReqPartPriceTstReplyDto(string? TSTReqPartPriceID, DateTime? TSTSentDate, string? TSTStatus, List<ReqPartPriceTstReplyLineDto>? Lines);
-record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
+record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive,
+    string? Remark = null);   // #1055
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath, string? Remark = null);   // #1043
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);

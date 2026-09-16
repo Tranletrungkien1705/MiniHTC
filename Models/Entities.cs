@@ -15588,6 +15588,11 @@ public sealed class SerFilePathVideo
     public string? FilePathAvatar { get; set; }
     public int IdxView { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1055 §12 — `Ser_Mst_FilePathVideo_Add`/`_Update` (Tab/BizCarSv.Tab.cs:2172/2431) ghi `Remark`
+    // (allow-list `strFt_Cols_Upd` ở nhánh sửa) + `LogLUDateTime`/`LogLUBy` (vô điều kiện cả hai nhánh).
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
