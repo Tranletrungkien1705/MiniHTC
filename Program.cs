@@ -26632,7 +26632,7 @@ app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbCont
 // Add/Approve/Delete). Nguồn cập nhật ĐÚNG 12 cột (không đụng DealerCode/IsActive/CreatedBy/CreatedDate —
 // những cột đó thuộc nhánh tạo/duyệt riêng): PlateNo/Model/Engine/Gear/Version/ReRepairType/ReRepairRemark/
 // ReRepairFeedback/ReRepairReason/ReRepairSolution/ExclusionTest/Type.
-app.MapPut("/api/technicallibraries/{code}", async (string code, TechnicalLibraryDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/technicallibraries/{code}", async (string code, TechnicalLibraryDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var libCode = code.Trim().ToUpperInvariant();
     var row = await db.TechnicalLibraries.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TechnicalLibraryCode == libCode);
@@ -26641,6 +26641,9 @@ app.MapPut("/api/technicallibraries/{code}", async (string code, TechnicalLibrar
     row.Version = dto.Version; row.ReRepairType = dto.ReRepairType; row.ReRepairRemark = dto.ReRepairRemark;
     row.ReRepairFeedback = dto.ReRepairFeedback; row.ReRepairReason = dto.ReRepairReason;
     row.ReRepairSolution = dto.ReRepairSolution; row.ExclusionTest = dto.ExclusionTest; row.Type = dto.Type;
+    // #1154: Ser_Technical_Library_Update (ZTemp.cs:26395) ghi LogLUDateTime/LogLUBy = strPartnerUserCode
+    // (khong dung DealerCode/IsActive/CreatedBy nhu comment tren da xac nhan) — port cu bo sot 2 cot nay.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.TechnicalLibraryCode, row.Model, row.Version, row.Type,
         sourceDoesNotTouchDealerCodeOrIsActive = true });
