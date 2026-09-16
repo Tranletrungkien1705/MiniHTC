@@ -64044,7 +64044,7 @@ app.MapPost("/api/reports/partinstance-backfill", async (AppDbContext db, ITenan
 // `Ser_Mst_Part` theo ĐÚNG đại lý (`CheckExistPart` → `Ser_Part_NotFound`); `LocationCode` phải ACTIVE trong
 // `Ser_Mst_Location` theo ĐÚNG đại lý (`CheckExistLocation` → `Ser_Location_NotFound`); `Quantity` không âm
 // (`Ser_Inv_PartInstance_NegativeQuantity`). Ghi thẳng một dòng `Ser_Inv_PartInstance` (RefType=INSTOCK).
-app.MapPost("/api/partinstances/import", async (List<PartInstanceImportRowDto> rows, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partinstances/import", async (List<PartInstanceImportRowDto> rows, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var saved = new List<object>();
     var errors = new List<object>();
@@ -64058,11 +64058,15 @@ app.MapPost("/api/partinstances/import", async (List<PartInstanceImportRowDto> r
         if (!partOk) { errors.Add(new { row.PartCode, error = "Ser_Part_NotFound" }); continue; }
         var locOk = await db.SerMstLocations.AnyAsync(x => x.OrgId == t.OrgId && x.LocationCode == locCode && x.DealerCode == dl && x.IsActive == "1");
         if (!locOk) { errors.Add(new { row.PartCode, row.LocationCode, error = "Ser_Location_NotFound" }); continue; }
+        // #1180 SUA BUG THAT: nguon SerImpPartInstance (BizCarSv.Inventory.Stock.cs:1038+353-356) ghi du 4
+        // cot nhat ky khi ghi tay lo ton kho — port cu bo sot ca 4 (entity chua tung co cot, da them §12).
         var r = new PartInstance
         {
             OrgId = t.OrgId, DealerCode = dl, PartCode = partCode, LocationID = locCode,
             StockInNo = row.StockInNo, Status = row.Status, Quantity = row.Quantity, DateIn = row.DateIn,
             SIPrice = row.SIPrice, SOPrice = row.SOPrice, SIVAT = row.SIVAT,
+            CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+            LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         };
         db.PartInstances.Add(r);
         saved.Add(new { r.PartCode, r.LocationID, r.Quantity, r.StockInNo });

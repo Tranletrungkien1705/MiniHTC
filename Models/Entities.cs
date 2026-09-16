@@ -2710,6 +2710,13 @@ public sealed class PartInstance
     public DateTime? DateIn { get; set; }
     public DateTime? DateOut { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1180 §12 — nguon SerImpPartInstance (BizCarSv.Inventory.Stock.cs:1038+300-356) ghi du 4 cot nhat ky
+    // khi ghi tay mot lo ton kho qua kenh import doi tac.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 public sealed class PartStockIn

@@ -3228,6 +3228,11 @@ public static class Seeder
                 // #1119: CampaignMarketingVin thieu LogLUDateTime/LogLUBy (Ser_CampaignMarketing_Create_20220926).
                 "ALTER TABLE public.\"CampaignMarketingVins\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"CampaignMarketingVins\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1180: PartInstance thieu ca 4 cot nhat ky (SerImpPartInstance).
+                "ALTER TABLE public.\"PartInstances\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"PartInstances\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"PartInstances\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PartInstances\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
