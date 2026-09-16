@@ -47775,7 +47775,7 @@ app.MapGet("/api/paymentterms", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
         p.PMTermNo, p.EffectiveDateFrom, p.EffectiveDateTo, p.ModelCode, p.SpecCode, p.FlagDepositPmt, p.DepositPercent, p.GuaranteePercent,
-        p.GuaranteeDays, p.DepositDutyEndDays, p.GuaranteeEndDays, p.DepositDealDateDays, p.FlagActive,
+        p.GuaranteeDays, p.DepositDutyEndDays, p.GuaranteeEndDays, p.DepositDealDateDays, p.FlagActive, p.CreatedAt,   // #1256 §12
         // Số dòng model/quy cách áp dụng — chi tiết lấy ở /api/paymentterms/{no}/details.
         details = db.PaymentTermDetails.Count(d => d.OrgId == t.OrgId && d.PMTermNo == p.PMTermNo)
     }).ToListAsync();
@@ -47931,7 +47931,7 @@ app.MapGet("/api/carspecs", async (AppDbContext db, ITenantContext t, string? mo
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.SpecCode.Contains(q) || (c.SpecDesc != null && c.SpecDesc.Contains(q)));
     var items = await query.OrderByDescending(c => c.Id).Take(500)
         .Select(c => new { c.SpecCode, c.ModelCode, c.StdOptCode, c.GradeCode, c.OCNCode, c.SpecDesc, c.RootSpec, c.NumberOfSeats, c.FlagAmbulance, c.FlagActive,
-            c.AssemblyStatus, c.FlagInvoiceFactory, c.FlagDepositPmt, c.OriginNo, c.QuotaDate }).ToListAsync();
+            c.AssemblyStatus, c.FlagInvoiceFactory, c.FlagDepositPmt, c.OriginNo, c.QuotaDate, c.CreatedAt }).ToListAsync();   // #1256 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47984,7 +47984,7 @@ app.MapGet("/api/avnprices", async (AppDbContext db, ITenantContext t, string? a
     var q = db.AVNPrices.Where(a => a.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(a => a.FlagActive == active);
     if (!string.IsNullOrWhiteSpace(code)) q = q.Where(a => a.AVNCode.Contains(code.Trim().ToUpperInvariant()));
-    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.AVNCode, a.UnitPriceAVN, a.EffDateTime, a.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.AVNCode, a.UnitPriceAVN, a.EffDateTime, a.FlagActive, a.CreatedAt }).ToListAsync();   // #1256 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -51858,7 +51858,7 @@ app.MapGet("/api/principlecontracts", async (AppDbContext db, ITenantContext t, 
 {
     var q = db.PrincipleContracts.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
-    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new { p.PrincipleContractNo, p.DealerCode, p.BankInfo, p.PrincipleContractDate, p.PrincipleContractExpectedDate, p.Representative, p.JobTitle }).ToListAsync();
+    var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new { p.PrincipleContractNo, p.DealerCode, p.BankInfo, p.PrincipleContractDate, p.PrincipleContractExpectedDate, p.Representative, p.JobTitle, p.CreatedAt }).ToListAsync();   // #1257 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -52111,7 +52111,7 @@ app.MapGet("/api/cardrivertests", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
         c.DrvTestPlateNo, c.DealerCode, c.DrvTestVIN, c.DrvTestEngineNo, c.ModelCode, c.SpecCode, c.ColorCode, c.FlagActive,
-        c.Price, c.AmountSupport1, c.DateSupport1, c.AmountSupport2, c.DateSupport2, c.ClaimNoSupport, c.Remark, c.CarDrvTestGPS
+        c.Price, c.AmountSupport1, c.DateSupport1, c.AmountSupport2, c.DateSupport2, c.ClaimNoSupport, c.Remark, c.CarDrvTestGPS, c.CreatedAt   // #1257 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -55520,7 +55520,7 @@ app.MapGet("/api/tkhqs", async (AppDbContext db, ITenantContext t, string? statu
     if (!string.IsNullOrWhiteSpace(contract)) q = q.Where(k => k.ContractNo.Contains(contract.ToUpper()));
     var items = await q.OrderByDescending(k => k.Id).Take(500).Select(k => new
     {
-        k.DeclarationNo, k.ContractNo, k.PortCode, k.OpenDate, k.Remark, k.Status, k.ClearedAt,
+        k.DeclarationNo, k.ContractNo, k.PortCode, k.OpenDate, k.Remark, k.Status, k.ClearedAt, k.CreatedAt,   // #1257 §12
         pls = db.TkhqPLs.Count(p => p.OrgId == t.OrgId && p.TkhqId == k.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -55610,7 +55610,7 @@ app.MapGet("/api/pis", async (AppDbContext db, ITenantContext t, string? status)
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.PiNo, p.RefNo, p.ProductionMonth, p.OrderMonth, p.ExpectedMonth, p.Status,
+        p.PiNo, p.RefNo, p.ProductionMonth, p.OrderMonth, p.ExpectedMonth, p.Status, p.CreatedAt,   // #1258 §12
         lines = db.PiLines.Count(l => l.OrgId == t.OrgId && l.PiId == p.Id),
         totalQty = db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).Sum(l => (int?)l.Quantity) ?? 0,
         totalAmount = db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id).Sum(l => (decimal?)(l.Quantity * l.UnitPrice)) ?? 0
@@ -55843,7 +55843,7 @@ app.MapGet("/api/serviceinvoices", async (AppDbContext db, ITenantContext t, str
     {
         i.InvoiceNo, i.RONo, i.SubTotal, i.VatPercent, i.VatAmount, i.DiscountAmount, i.TotalAmount, i.PaymentType, i.Status, i.PaidAt,
         // GAP đã vá: 6 cột tiền/điểm trước đây không được trả về
-        i.AmountFromMC, i.AmountDiscountOther, i.TotalBeforeTax, i.TotalAfterTax, i.PointTotal, i.CardTypeExpect
+        i.AmountFromMC, i.AmountDiscountOther, i.TotalBeforeTax, i.TotalAfterTax, i.PointTotal, i.CardTypeExpect, i.CreatedAt   // #1258 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalRevenue = items.Where(x => x.Status == "Paid").Sum(x => x.TotalAmount), items });
 }).RequireAuthorization();
@@ -59864,7 +59864,7 @@ app.MapGet("/api/supplierpayments", async (AppDbContext db, ITenantContext t, st
     { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.DealerCode, p.Amount, p.PaymentDate, p.Status, p.ApprovedAt,
       // #237: 10 cột bổ sung của đầu phiếu
       p.SupplierID, p.Address, p.TSTRequestNo, p.PaymentType, p.Description,
-      p.PaymentBy, p.CreateBy, p.ApprBy, p.LogLUDTime, p.LogLUBy,
+      p.PaymentBy, p.CreateBy, p.ApprBy, p.LogLUDTime, p.LogLUBy, p.CreatedAt,   // #1258 §12
       lines = db.SupplierPaymentLines.Count(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo),
       // #766 Nguồn inner join Dtl ở bảng lọc ⇒ phiếu chưa có dòng nào KHÔNG BAO GIỜ hiện ra.
       lineTotal = db.SupplierPaymentLines.Where(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo).Sum(l => (decimal?)l.Amount) ?? 0m,
@@ -80614,7 +80614,7 @@ app.MapGet("/api/insfees", async (AppDbContext db, ITenantContext t, string? q) 
     var query = db.InsuranceFees.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.Code.Contains(q) || (x.ContractNo ?? "").Contains(q));
     var items = await query.OrderBy(x => x.Code).Select(x => new
-    { x.Code, x.InsCompanyCode, x.InsTypeCode, x.ContractNo, x.Fee, x.Percent, x.EffStartDate, x.Status }).ToListAsync();
+    { x.Code, x.InsCompanyCode, x.InsTypeCode, x.ContractNo, x.Fee, x.Percent, x.EffStartDate, x.Status, x.CreatedAt }).ToListAsync();   // #1258 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
