@@ -60702,6 +60702,17 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
 {
     if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Cần CusName." });
     if (string.IsNullOrWhiteSpace(dto.Mobile) && string.IsNullOrWhiteSpace(dto.Tel)) return Results.BadRequest(new { error = "Cần SĐT di động hoặc cố định." });
+    // #1041 GUARD `Ser_Customer_Update` (Customer.cs:5489): khi IsNormal="1" (Active) bắt buộc danh mục
+    //   "KHACHLE" (TConst.Ser_CusPersonType.CusTypeNormal) phải TỒN TẠI VÀ ĐANG HOẠT ĐỘNG cho đại lý đó —
+    //   nguồn KHÔNG kiểm gì khi IsNormal khác Active (nhánh if rỗng, giữ nguyên).
+    if (dto.IsNormal == "1")
+    {
+        var cusTypeNormalExists = await db.CustomerTypes.AnyAsync(x => x.OrgId == t.OrgId
+            && x.CusTypeName == "KHACHLE" && x.DealerCode == dto.DealerCode && x.FlagActive == "1");
+        if (!cusTypeNormalExists)
+            return Results.BadRequest(new { error = "Ser_MST_CustomerType_NotFound",
+                message = "Danh mục loại khách 'KHACHLE' chưa có hoặc ngừng hoạt động cho đại lý này.", dealerCode = dto.DealerCode });
+    }
     var code = string.IsNullOrWhiteSpace(dto.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CusCode.Trim().ToUpperInvariant();
     var c = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
     var isUpdate = c is not null;
@@ -60732,7 +60743,6 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     if (isUpdate && dto.IsActive.HasValue) c.FlagActive = dto.IsActive.Value ? "1" : "0";
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CusCode, c.CusName, c.FlagActive,
-        cusTypeNormalGuardNotDone = "Nguon: khi strIsNormal=Active con kiem CheckExistCusType(CusTypeNormal) ton tai+active — CHUA port, ghi co.",
         careBthReactivateNotDone = "Nguon: khi kich hoat lai KH (IsActive=True) va co phieu CSKH sinh nhat dang Inactive thi bat lai Status='1' — CHUA port, ghi co." });
 }).RequireAuthorization();
 
