@@ -46449,7 +46449,7 @@ app.MapGet("/api/cavities/usestatus", async (AppDbContext db, ITenantContext t, 
 // #296 SỬA khoang — nguồn có `Ser_CavityUpdate` riêng (`Service.cs:12971`), port cũ chỉ có upsert + toggle.
 // #945: nguồn khoá thật là `CavityID` (PK số) + `(CavityNo, DealerCode)` — route dùng `CavityNo` làm khoá nên
 // thêm `dealerCode` (tuỳ chọn) để phân biệt khi hai đại lý cùng dùng một mã khoang (nay Create đã cho phép).
-app.MapPut("/api/cavities/{code}", async (string code, CavityUpdateDto dto, AppDbContext db, ITenantContext t, string? dealerCode) =>
+app.MapPut("/api/cavities/{code}", async (string code, CavityUpdateDto dto, AppDbContext db, ITenantContext t, string? dealerCode, string? partnerUserCode) =>
 {
     var no = code.Trim().ToUpperInvariant();
     var dl = dealerCode?.Trim().ToUpperInvariant();
@@ -46463,7 +46463,9 @@ app.MapPut("/api/cavities/{code}", async (string code, CavityUpdateDto dto, AppD
     if (!string.IsNullOrWhiteSpace(dto.IsActive)) c.FlagActive = dto.IsActive!.Trim();
     if (!string.IsNullOrWhiteSpace(dto.Status)) c.Status = dto.Status!.Trim();
     c.StartUseDate = dto.StartUseDate; c.FinishUseDate = dto.FinishUseDate;
-    c.LogLUDateTime = DateTime.Now; c.LogLUBy = dto.LogLUBy;
+    // #1102 SỬA BUG THẬT: nguồn `Ser_CavityUpdate` (Service.cs:13672) ghi LogLUBy = strPartnerUserCode
+    // (actor server) — port cũ nhận thẳng dto.LogLUBy tự client gửi. Đổi sang partnerUserCode đúng quy ước.
+    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CavityNo, c.Status, c.FlagActive, c.StartUseDate, c.FinishUseDate });
 }).RequireAuthorization();
