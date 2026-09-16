@@ -27118,12 +27118,16 @@ app.MapPut("/api/engineers/{engineerNo}", async (string engineerNo, EngineerUpda
         row.EngineerNo = newNo;
     }
     row.EngineerName = newName;
-    if (dto.DealerCode != null) row.Note = dto.DealerCode;   // entity Mini khong co DealerCode — giu o Note
+    // #1006 SUA BUG THAT: nguon SerEngineerUpdate ghi CA strGroupRID lan strDealerCode vao CHINH HAI COT
+    // do (Ser_Engineer.GroupRID/DealerCode) — entity ServiceEngineer.DealerCode DA CO tu #338, ghi chu cu
+    // "entity Mini khong co DealerCode — giu o Note" la STALE, va GroupRID chua tung duoc doc o day.
+    if (dto.DealerCode != null) row.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+    if (dto.GroupRCode != null) row.GroupRCode = dto.GroupRCode.Trim().ToUpperInvariant();
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.Status = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        row.Id, row.EngineerNo, row.EngineerName, row.GroupRCode, row.Status,
+        row.Id, row.EngineerNo, row.EngineerName, row.GroupRCode, row.DealerCode, row.Status,
         sourceUpdateSkipsDealerDatabase = "GAP THAT: dem SaveData theo handle — Create/Create01/Update01 deu ghi _dbMain + _dbWH + _dbDealer (3), rieng Update chi ghi _dbMain + _dbWH (2) va KHONG co bNeedTransaction_Dealer, KHONG co _dbDealer.SaveData (_dbDealer chi xuat hien lam THAM SO cho guard) => sua ky thuat vien qua bo khong-01 thi CSDL DAI LY KHONG DOI",
         sourceDeleteSkipsDealerDatabase = "cau delete from Ser_Engineer where EngineerID = @EngineerID chay qua _dbMain.ExecQuery va _dbWH.ExecQuery — KHONG co nhanh _dbDealer => KTV DA XOA VAN CON o dai ly, van chon duoc khi giao viec",
         notTheWsMainPattern = "KHONG phai khuon bNeedTransaction_Dealer = false o WS Main (#748): o do co TON TAI va dong SaveData CO MAT, chi khong chay. O Update/Delete thi dong do KHONG DUOC VIET RA. Bang chung la thieu sot: Create CUNG BO va Update01 deu co",
@@ -79957,7 +79961,7 @@ record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, stri
     string? UpdateBy = null, DateTime? UpdateDateTime = null, string? LUBy = null);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
 record TechnicalLibraryApproveDto(string? Remark);   // #926 — Remark nguon nhan nhung khong ghi cot nao
-record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? DealerCode, string? FlagActive);
+record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? DealerCode, string? FlagActive, string? GroupRCode = null);   // #1006
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive, string? DealerCode = null);   // #911 DealerCode
 record MstDeliveryFormDto(string? DeliveryFormCode, string? DeliveryFormName, string? FlagActive);   // #634
 record MstOrderComplainTypeDto(string? OrderComplainType, string? OrderComplainTypeName, string? FlagActive);   // #633
