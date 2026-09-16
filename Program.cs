@@ -15783,13 +15783,15 @@ app.MapGet("/api/sermstlocations", async (AppDbContext db, ITenantContext t,
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var lc = (dto.LocationCode ?? "").Trim().ToUpperInvariant();
     if (lc.Length == 0) return Results.BadRequest(new { error = "thieu LocationCode" });
     var dl = (dto.DealerCode ?? "").Trim();
     var dup = await db.SerMstLocations.AnyAsync(x => x.OrgId == t.OrgId && x.LocationCode == lc && x.DealerCode == dl);
     if (dup) return Results.Conflict(new { error = "Ser_Location_Exist", locationCode = lc, dealerCode = dl });
+    // #1070: Ser_Mst_Location_Create ghi VÔ ĐIỀU KIỆN CreatedDate/CreatedBy/LogLUDateTime/LogLUBy.
+    var by1070 = (partnerUserCode ?? "system").Trim(); var now1070 = DateTime.Now;
     var row = new SerMstLocation
     {
         OrgId = t.OrgId, LocationCode = lc, LocationName = dto.LocationName,
@@ -15797,6 +15799,7 @@ app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext d
         LocationID = (dto.LocationID ?? lc),
         // #937 §12: Ser_Mst_Location_Create ghi ca ba cot nay, port cu bo sot.
         LocationHight = dto.LocationHight, LocationSurface = dto.LocationSurface, LocationType = dto.LocationType,
+        CreatedDate = now1070, CreatedBy = by1070, LogLUDateTime = now1070, LogLUBy = by1070,
     };
     db.SerMstLocations.Add(row); await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive,
@@ -15804,7 +15807,7 @@ app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext d
 }).RequireAuthorization();
 
 app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMstLocationDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var id = (locationId ?? "").Trim();
     var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id);
@@ -15816,6 +15819,8 @@ app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMst
     if (dto.LocationHight is not null) row.LocationHight = dto.LocationHight;
     if (dto.LocationSurface is not null) row.LocationSurface = dto.LocationSurface;
     if (dto.LocationType is not null) row.LocationType = dto.LocationType;
+    // #1070: Ser_Mst_Location_Update ghi LogLUDateTime/LogLUBy (KHÔNG ghi lại CreatedDate/CreatedBy).
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive,
         row.LocationHight, row.LocationSurface, row.LocationType });

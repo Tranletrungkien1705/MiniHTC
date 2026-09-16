@@ -15284,6 +15284,14 @@ public sealed class SerMstLocation
     public string? LocationHight { get; set; }
     public string? LocationSurface { get; set; }
     public string? LocationType { get; set; }
+
+    // #1070 §12 — `Ser_Mst_Location_Create` (BizCarSv.Master.cs:6851, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký; `Ser_Mst_Location_Update` (:7301) chỉ ghi lại `LogLUDateTime`/`LogLUBy` (không có CreatedDate/
+    // CreatedBy — đúng nguồn, cột Created chỉ set MỘT LẦN lúc tạo).
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 public sealed class CusServiceFactor
