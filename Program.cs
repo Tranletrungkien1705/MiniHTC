@@ -15579,22 +15579,29 @@ app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, I
     if (ex is not null)
     {
         ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
+        // #1129 §12: nguồn `_Update_New20200203` (có tham số strIsActive) LUÔN ghi LogLUDateTime/LogLUBy —
+        // entity chưa từng có cột này, nhánh SỬA-QUA-UPSERT bỏ sót hoàn toàn.
+        ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = (partnerUserCode ?? "system").Trim();
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.ModelCode, updated = true });
     }
     // #1049: Ser_Mst_Model_Create_New20200203 ghi CreatedDate/CreatedBy VÔ ĐIỀU KIỆN lúc tạo.
     var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, DealerCode = dto.DealerCode, FlagActive = "1",
-        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() };
+        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+        // #1129 §12: nguồn Create cũng ghi LogLUDateTime/LogLUBy cùng lúc với Created*.
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() };
     db.ServiceModels.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.ModelCode, updated = false });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ServiceModels.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ModelCode == code);
     if (x is null) return Results.NotFound(new { code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    // #1129: toggle = gọi _Update_New20200203 đổi strIsActive — hàm nguồn luôn ghi 2 cột nhật ký.
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.ModelCode, flagActive = x.FlagActive });
 }).RequireAuthorization();

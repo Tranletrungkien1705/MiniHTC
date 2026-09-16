@@ -14344,6 +14344,10 @@ public sealed class ServiceModel
     // ghi `CreatedDate`/`CreatedBy` — cùng mẫu hình #453 (ServiceAppointment/Cavity/ServiceEngineer).
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
+    // #1129 §12 — `Ser_Mst_Model_Create_New20200203` ghi cả 4 cột; `_Update_New20200203` (LIVE qua WS, có
+    // tham số `strIsActive`) chỉ ghi lại LogLUDateTime/LogLUBy = strPartnerUserCode — entity chưa từng có.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
