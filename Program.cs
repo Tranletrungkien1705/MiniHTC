@@ -58779,7 +58779,7 @@ app.MapPost("/api/osveloca/repairorders/{roId}/sync-flag", async (string roId, A
 //   ⚠️ Hàm này chỉ **ĐỌC** `_dbDealer` trực tiếp; việc **ghi** nằm trong `Ser_Customer_CreateX/UpdateX`
 //     ⇒ **chưa** kiểm được hai hàm con đó có ghi `_dbDealer` hay không ⇒ ghi vào hàng đợi, **không** kết luận.
 // 🔴 **BA `CommitSafety` RỜI NHAU** (`_dbMain` · `_dbWH` · `_dbDealer`) — cùng khuôn với #693/#701.
-app.MapPost("/api/osveloca/customers", async (OsVelocaCustomerDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/osveloca/customers", async (OsVelocaCustomerDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SalesCusID))
         return Results.BadRequest(new { error = "Can SalesCusID — nguon dung no lam khoa tra Ser_Customer_CheckDB." });
@@ -58799,12 +58799,19 @@ app.MapPost("/api/osveloca/customers", async (OsVelocaCustomerDto dto, AppDbCont
 
     var existed = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == salesCusId);
     var created = existed is null;
+    var by1169 = (partnerUserCode ?? "system").Trim();
+    var now1169 = DateTime.Now;
     if (created)
     {
-        existed = new ServiceCustomer { OrgId = t.OrgId, CusCode = salesCusId };
+        // #1169 SUA BUG THAT: OSVeloca_Ser_Customer_Save re nhanh Rows.Count<1 sang Ser_Customer_CreateX
+        // (BizCarSv.Customer.cs:21180+336-339, may 150) — ham do ghi CreatedDate/CreatedBy/LogLUDateTime/
+        // LogLUBy tren dt_Ser_Customer; port cu bo sot ca 4 cot.
+        existed = new ServiceCustomer { OrgId = t.OrgId, CusCode = salesCusId, CreatedDate = now1169, CreatedBy = by1169 };
         db.ServiceCustomers.Add(existed);
     }
-    existed!.CusName = dto.CusName ?? existed.CusName;
+    // Nhanh con lai re sang Ser_Customer_UpdateX (:21780+385-386), luon ghi LogLUDateTime/LogLUBy.
+    existed!.LogLUDateTime = now1169; existed.LogLUBy = by1169;
+    existed.CusName = dto.CusName ?? existed.CusName;
     existed.CusTypeID = resolvedType;
     existed.Address = dto.Address ?? existed.Address;
     existed.Mobile = dto.Mobile ?? existed.Mobile;
@@ -61392,7 +61399,7 @@ app.MapDelete("/api/servicecustomers/{cusCode}", async (string cusCode, AppDbCon
         twoMachinesDiffed855 = "md5 lech (e301df1f laptop vs af7582c3 may 150) => da diff chuan hoa, ket qua o tren",
     });
 }).RequireAuthorization();
-app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Cần CusName." });
     if (string.IsNullOrWhiteSpace(dto.Mobile) && string.IsNullOrWhiteSpace(dto.Tel)) return Results.BadRequest(new { error = "Cần SĐT di động hoặc cố định." });
@@ -61410,7 +61417,18 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     var code = string.IsNullOrWhiteSpace(dto.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CusCode.Trim().ToUpperInvariant();
     var c = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
     var isUpdate = c is not null;
-    if (c is null) { c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code }; db.ServiceCustomers.Add(c); }
+    var by1168 = (partnerUserCode ?? "system").Trim();
+    var now1168 = DateTime.Now;
+    if (c is null)
+    {
+        // #1168 SUA BUG THAT: nguon Ser_Customer_CreateX (BizCarSv.Customer.cs:21180+336-339, may 150)
+        // ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy tren dt_Ser_Customer khi tao moi — port cu
+        // bo sot ca 4 cot.
+        c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code, CreatedDate = now1168, CreatedBy = by1168 };
+        db.ServiceCustomers.Add(c);
+    }
+    // Ser_Customer_UpdateX (:21780+385-386) luon ghi LogLUDateTime/LogLUBy o CA hai nhanh tao/sua.
+    c.LogLUDateTime = now1168; c.LogLUBy = by1168;
     c.CusName = dto.CusName; c.CusTypeID = dto.CusTypeID; c.Address = dto.Address; c.Mobile = dto.Mobile; c.Tel = dto.Tel;
     c.Email = dto.Email; c.TaxCode = dto.TaxCode; c.Sex = dto.Sex; c.DOB = dto.DOB;
     // #362 §12: khong co dong nay thi SalesCusID la COT CHET — dung benh #337/#342.
