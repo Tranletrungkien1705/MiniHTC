@@ -45604,11 +45604,17 @@ app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantConte
     var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code && x.DealerCode == dl);
     if (ex is not null)
     {
+        // #1005: nguon Ser_CavityCreate ghi CavityType VO DIEU KIEN + Status (khi khac rong) + StartUseDate/
+        // FinishUseDate (LUON, null neu rong) — DTO da co san tu #296 nhung nhanh POST nay chua tung doc.
         ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartWorkTime = dto.StartWorkTime; ex.FinishWorkTime = dto.FinishWorkTime; ex.Note = dto.Note; ex.FlagActive = "1";
+        ex.CavityType = dto.CavityType;
+        if (!string.IsNullOrWhiteSpace(dto.Status)) ex.Status = dto.Status;
+        ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.CavityNo, ex.DealerCode, updated = true });
     }
-    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, DealerCode = dl, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartWorkTime = dto.StartWorkTime, FinishWorkTime = dto.FinishWorkTime, Note = dto.Note, FlagActive = "1" };
+    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, DealerCode = dl, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartWorkTime = dto.StartWorkTime, FinishWorkTime = dto.FinishWorkTime, Note = dto.Note, FlagActive = "1",
+        CavityType = dto.CavityType, Status = dto.Status, StartUseDate = dto.StartUseDate, FinishUseDate = dto.FinishUseDate };   // #1005
     db.Cavities.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.CavityNo, r.DealerCode, updated = false });
 }).RequireAuthorization();
