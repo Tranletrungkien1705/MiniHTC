@@ -61012,7 +61012,7 @@ app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, Or
 
 // Duyệt / từ chối TỪNG DÒNG đơn đặt — khả năng nguồn có nhờ cột OrderPartStatusDtl riêng của dòng.
 app.MapPost("/api/orderparts/{no}/lines/{partCode}/status", async (
-    string no, string partCode, OrderPartLineStatusDto dto, AppDbContext db, ITenantContext t) =>
+    string no, string partCode, OrderPartLineStatusDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     partCode = partCode.Trim().ToUpperInvariant();
@@ -61027,6 +61027,10 @@ app.MapPost("/api/orderparts/{no}/lines/{partCode}/status", async (
         return Results.BadRequest(new { error = "ToStatus = P (mới tạo) | A (đã duyệt) | F (hoàn thành) | R (từ chối)" });
 
     line.OrderPartStatusDtl = target;
+    // #1153: khong tim thay ham nguon RIENG cho doi trang thai TUNG DONG le (chi thay OrderPartStatusDtl
+    // duoc ghi ben trong cac ham Create/Update/Appr gop ca bang) — ap dung QUY UOC THONG NHAT toan he thong
+    // (moi lan doi cot trang thai deu dong dau actor) de khong bo trong dau vet, giong cach xu ly #1143.
+    line.LogLUDateTime = DateTime.Now; line.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { o.OrderPartNo, line.PartCode, lineStatus = line.OrderPartStatusDtl });
 }).RequireAuthorization();
