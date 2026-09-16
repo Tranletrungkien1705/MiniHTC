@@ -22239,6 +22239,44 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
                     message = $"{cvcCode} không thuộc Mst công việc bảo hành!" });
         }
 
+        // ===== #1025 `ROWarrantyReport_Approve_Check_CreatedDate_OtherROActualDeliveryDate` (WarrantyReport.cs:5483)
+        // — CHỈ (PT,S) (Bảo hành phụ tùng) =====
+        // Nguồn: tìm RO GẦN NHẤT (khác RO hiện tại, CÙNG VIN, đã giao xe, chưa Reject) có dùng CÙNG phụ tùng
+        // CHÍNH (RowPartType="PTC") của claim. Nếu có: (a) RO đó phải giao xe trong vòng 6 tháng trước ngày
+        // gửi BCBH (chặn "phụ tùng đã thay hơn 6 tháng trước"), (b) RO đó phải có Km, (c) Km của RO đó KHÔNG
+        // được vượt quá Km của BCBH hiện tại (logic ngược đời có chủ đích của nguồn — Km RO CŨ không được
+        // CAO HƠN Km RO hiện tại đang xin bảo hành, vì Km luôn tăng theo thời gian).
+        if (rowType == "PT" && rowTypeDtl == "S")
+        {
+            if (claim.WarrantyKM is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM",
+                    message = "Số Km của BCBH trống!" });
+            var mainPart = await db.WarrantyClaimPartItems.FirstOrDefaultAsync(x =>
+                x.OrgId == t.OrgId && x.ClaimId == claimId && x.RowPartType == "PTC");
+            if (mainPart is not null && !string.IsNullOrWhiteSpace(claim.Vin))
+            {
+                var otherRO = await (from ro in db.RepairOrders
+                                      join rp in db.RoPartItems on ro.Id equals rp.RoId
+                                      where ro.OrgId == t.OrgId && ro.Vin == claim.Vin && ro.RONo != claim.RONo
+                                          && ro.ActualDeliveryDate != null && ro.Status != "Rejected"
+                                          && rp.PartCode == mainPart.PartCode
+                                      orderby ro.ActualDeliveryDate descending
+                                      select new { ro.RONo, ro.ActualDeliveryDate, ro.Km }).FirstOrDefaultAsync();
+                if (otherRO is not null)
+                {
+                    if (otherRO.ActualDeliveryDate!.Value.AddMonths(6) < claim.CreatedAt)
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCreatedDate_OtherROActualDeliveryDate",
+                            message = "Phụ tùng chính đã được thay thế hơn 6 tháng trước!", otherRO.RONo });
+                    if (string.IsNullOrWhiteSpace(otherRO.Km))
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidOtherKM",
+                            message = "Số KM của báo giá có phụ tùng chính gần nhất trống!", otherRO.RONo });
+                    if (Convert.ToDouble(otherRO.Km) > (double)claim.WarrantyKM.Value)
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidOtherKM",
+                            message = "Số Km của báo giá có phụ tùng chính gần nhất lớn hơn Km của BCBH!", otherRO.RONo, otherRO.Km });
+                }
+            }
+        }
+
         // ===== #1022 `ROWarrantyReport_Approve_Check_WarrantyExpiresDateAndWarrantyKM` (WarrantyReport.cs:6490) =====
         // Gọi ở ĐÚNG 3/11 nhánh — (SB,A)/(SB,P)/(SB,W) (bảo hành xe SAU BÁN, trừ nhánh Ắc quy SB.B đã có
         // guard riêng ở #1019). Đối chiếu với hạn bảo hành THẬT của XE (`Ser_Car.WarrantyExpiresDate`/
