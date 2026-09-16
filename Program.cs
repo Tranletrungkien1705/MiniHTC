@@ -44336,7 +44336,7 @@ app.MapGet("/api/inscontracts", async (AppDbContext db, ITenantContext t, string
 }).RequireAuthorization();
 
 // Tạo/cập nhật HĐ bảo hiểm (số HĐ trống = auto-gen). Guard ngày hết hạn >= ngày hiệu lực.
-app.MapPost("/api/inscontracts", async (InsContractDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/inscontracts", async (InsContractDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.InsNo)) return Results.BadRequest(new { error = "Chưa chọn nhà bảo hiểm." });
     if (dto.PaymentLimit < 0) return Results.BadRequest(new { error = "Hạn mức chi trả không hợp lệ." });
@@ -44344,23 +44344,28 @@ app.MapPost("/api/inscontracts", async (InsContractDto dto, AppDbContext db, ITe
         return Results.BadRequest(new { error = "Ngày hết hạn phải sau ngày hiệu lực." });
     var no = string.IsNullOrWhiteSpace(dto.InContractNo) ? "IC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.InContractNo.Trim().ToUpperInvariant();
     var ex = await db.InsContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractNo == no);
+    // #1148 §12: Ser_InsuranceContractCreate/_Update deu ghi LogLUDateTime/LogLUBy = strPartnerUserCode.
+    var by1148 = (partnerUserCode ?? "system").Trim(); var now1148 = DateTime.Now;
     if (ex is not null)
     {
         ex.InContractCode = dto.InContractCode; ex.InsNo = dto.InsNo; ex.InsName = dto.InsName; ex.StartDate = dto.StartDate; ex.FinishDate = dto.FinishDate; ex.PaymentLimit = dto.PaymentLimit; ex.TypePayment = dto.TypePayment; ex.FlagActive = "1";
+        ex.LogLUDateTime = now1148; ex.LogLUBy = by1148;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.InContractNo, updated = true });
     }
-    var r = new InsContract { OrgId = t.OrgId, InContractNo = no, InContractCode = dto.InContractCode, InsNo = dto.InsNo, InsName = dto.InsName, StartDate = dto.StartDate, FinishDate = dto.FinishDate, PaymentLimit = dto.PaymentLimit, TypePayment = dto.TypePayment, FlagActive = "1" };
+    var r = new InsContract { OrgId = t.OrgId, InContractNo = no, InContractCode = dto.InContractCode, InsNo = dto.InsNo, InsName = dto.InsName, StartDate = dto.StartDate, FinishDate = dto.FinishDate, PaymentLimit = dto.PaymentLimit, TypePayment = dto.TypePayment, FlagActive = "1",
+        LogLUDateTime = now1148, LogLUBy = by1148 };
     db.InsContracts.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.InContractNo, updated = false });
 }).RequireAuthorization();
 
-app.MapPost("/api/inscontracts/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/inscontracts/{no}/toggle", async (string no, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var x = await db.InsContracts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.InContractNo == no);
     if (x is null) return Results.NotFound(new { no });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { x.InContractNo, flagActive = x.FlagActive });
 }).RequireAuthorization();

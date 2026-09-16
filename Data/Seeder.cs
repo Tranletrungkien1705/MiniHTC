@@ -1234,6 +1234,9 @@ public static class Seeder
         // #1144: Ser_ROWarrantyReport_HTCConfirm/_HTCReject ghi LogLUDateTime/LogLUBy cung WarrantyStatus.
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
         "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+        // #1148: InsContracts (ban song song SerInsuranceContracts) cung nguon, chua tung co 2 cot nay.
+        "ALTER TABLE public.\"InsContracts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"InsContracts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
         // #301 ban chup khach+xe tren chinh lenh sua chua (master chi la du phong)
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CusID\" text",
         "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CusAddress\" text",

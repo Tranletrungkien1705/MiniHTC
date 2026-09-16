@@ -15449,6 +15449,11 @@ public sealed class InsContract
     public decimal PaymentLimit { get; set; }
     public string? TypePayment { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1148 §12 — cùng nguồn `Ser_InsuranceContractCreate`/`_Update` (Service.cs:14376/14756, có strIsActive)
+    // đã xác nhận ghi LogLUDateTime/LogLUBy ở entity song song `SerInsuranceContract` (#1126) — bảng này
+    // (port cũ hơn, thiếu cả DealerCode) chưa từng có 2 cột nhật ký.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
