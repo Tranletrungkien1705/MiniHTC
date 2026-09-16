@@ -29895,7 +29895,7 @@ app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string
 //   xảy ra khi tạo bảng tạm ở lần gọi này rồi dùng ở lần gọi khác.
 // 📌 Mini vá bên dưới: thêm guard "chỉ một kỳ Active" **TRƯỚC khi ghi** cho cả `POST /api/jdpowerterms` lẫn `/toggle`
 //   (nguồn có guard nhưng đặt sai chỗ và mất transaction; Mini **không** tái hiện lỗi đó — ghi rõ là khác biệt CÓ CHỦ Ý).
-app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.JDPTermCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã kỳ khảo sát." });
@@ -29909,9 +29909,17 @@ app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITe
             .CountAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.JDPTermCode != code);
         if (otherActive > 0) return Results.BadRequest(new { error = "Đã tồn tại kỳ khảo sát đang hiệu lực.", otherActive });
     }
+    var isNew1085 = row is null;
     if (row is null) { row = new JDPowerTerm { OrgId = t.OrgId, JDPTermCode = code }; db.JDPowerTerms.Add(row); }
     row.JDPTermName = dto.JDPTermName; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // #1085: JDPowerTerm_Create ghi du 4 cot nhat ky khi TAO; JDPowerTerm_Update KHONG dong cac cot nay (gap that cua nguon).
+    if (isNew1085)
+    {
+        var now1085 = DateTime.Now;
+        row.CreatedDate = now1085; row.CreatedBy = (partnerUserCode ?? "system").Trim();
+        row.LogLUDateTime = now1085; row.LogLUBy = row.CreatedBy;
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new
     {

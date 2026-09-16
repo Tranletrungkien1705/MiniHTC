@@ -3922,6 +3922,14 @@ public sealed class JDPowerTerm
     public DateTime? EndDate { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>#1085 §12 — nguồn `JDPowerTerm_Create` (Service01.cs:14945) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `JDPowerTerm_Update` (:15381) KHÔNG hề đụng các cột này (chỉ ghi `JDPTermName`/`FlagActive`) — gap thật
+    /// của chính nguồn, không port thêm cho Update.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết kỳ khảo sát JD Power (JDP_Mst_JDPowerTermDtl) — #842 TRẢ NỢ ghi ở #26657: danh sách VIN thuộc một kỳ. Nguồn chỉ Create ghi và Delete xoá, không đường nào SỬA.</summary>

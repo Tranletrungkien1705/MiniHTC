@@ -3129,6 +3129,11 @@ public static class Seeder
                 "ALTER TABLE public.\"PartPrices\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"PartPrices\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"PartPrices\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1085: JDPowerTerm (JDP_Mst_JDPowerTerm) thieu 4 cot nhat ky (JDPowerTerm_Create).
+                "ALTER TABLE public.\"JDPowerTerms\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"JDPowerTerms\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"JDPowerTerms\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"JDPowerTerms\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
