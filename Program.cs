@@ -44083,8 +44083,11 @@ app.MapGet("/api/insuranceattachments/{roNo}", async (string roNo, AppDbContext 
 {
     roNo = roNo.Trim().ToUpperInvariant();
     var types = await db.InsuranceAttachmentTypes.Where(x => x.OrgId == t.OrgId && x.Status == "1").OrderBy(x => x.Code).ToListAsync();
-    var have = (await db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == roNo).Select(x => x.AttachmentCode).ToListAsync()).ToHashSet();
-    var items = types.Select(x => new { x.Code, x.Name, x.Note, ischecked = have.Contains(x.Code) });
+    var have = await db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == roNo)
+        .Select(x => new { x.AttachmentCode, x.Note }).ToListAsync();
+    var haveByCode = have.ToDictionary(x => x.AttachmentCode, x => x.Note);
+    var items = types.Select(x => new { x.Code, x.Name, typeNote = x.Note,
+        ischecked = haveByCode.ContainsKey(x.Code), note = haveByCode.TryGetValue(x.Code, out var n) ? n : null });   // #998
     return Results.Ok(new { roNo, items });
 }).RequireAuthorization();
 
@@ -44096,7 +44099,10 @@ app.MapPost("/api/insuranceattachments/{roNo}", async (string roNo, InsuranceAtt
     if (codes.Count == 0) return Results.BadRequest(new { error = "Chưa tích chọn tài liệu nào." });
     var old = db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == roNo);
     db.InsuranceAttachments.RemoveRange(old);
-    foreach (var c in codes) db.InsuranceAttachments.Add(new InsuranceAttachment { OrgId = t.OrgId, RONo = roNo, AttachmentCode = c });
+    // #998: nguồn `InsertInsuranceAttachment` ghi Note riêng cho mỗi dòng — port cũ bỏ mất.
+    foreach (var c in codes)
+        db.InsuranceAttachments.Add(new InsuranceAttachment { OrgId = t.OrgId, RONo = roNo, AttachmentCode = c,
+            Note = dto.Notes != null && dto.Notes.TryGetValue(c, out var note) ? note : null });
     await db.SaveChangesAsync();
     return Results.Ok(new { roNo, count = codes.Count });
 }).RequireAuthorization();
@@ -78956,7 +78962,7 @@ record CareMaintanceDto(string? Status, string? DateAppointment = null, DateTime
 record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? CusName, DateTime? MaceRecomentDate);
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
-record InsuranceAttachmentSaveDto(List<string>? Codes);
+record InsuranceAttachmentSaveDto(List<string>? Codes, Dictionary<string, string?>? Notes = null);   // #998: Notes theo Code
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 // #392: dau vao duyet chien dich marketing. Remark = null khi rong (dung nguon).
 record CampaignApproveDto(string? ApprBy, string? Remark);

@@ -5511,6 +5511,11 @@ public sealed class InsuranceAttachment
     public string RONo { get; set; } = "";
     public string AttachmentCode { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #998 §12 — nguồn `InsertInsuranceAttachment` (`BizCarSv.Service.cs:6852`) ghi cột `Note`
+    /// riêng cho TỪNG dòng tài liệu đã tích chọn (khác `InsuranceAttachmentType.Note` là mô tả LOẠI tài
+    /// liệu) — port cũ thiếu hẳn cột này, mất ghi chú người dùng nhập khi tích chọn.</summary>
+    public string? Note { get; set; }
 }
 
 /// <summary>
