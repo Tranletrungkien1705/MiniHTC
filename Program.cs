@@ -63958,7 +63958,7 @@ app.MapPost("/api/stockouts/{no}/finish-transfer", async (string no, StockOutFin
 // #291 XOÁ phiếu XUẤT — cùng luật với phiếu nhập (xem chú thích ở `DELETE /api/stockins/{no}`).
 // Guard nguồn: `CheckStockOutForDelete` (`StockOut.cs:184`) — chỉ `Status` ∈ { "1", "5" }.
 // #292 SỬA phiếu XUẤT — thiết kế guard KHÁC màn nhập (xem chú thích ở `PUT /api/stockins/{no}`).
-app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
@@ -63993,6 +63993,9 @@ app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDb
     if (dto.DealerCode != null) h.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
     h.AdjustmentBy = dto.AdjustmentBy; h.AdjustmentDate = dto.AdjustmentDate; h.AdjustmentNote = dto.AdjustmentNote;
     h.OldStockOutID = string.IsNullOrWhiteSpace(dto.OldStockOutID) ? null : dto.OldStockOutID!.Trim();
+    // #1152: UpdateStockOut (StockOut.cs:1653, overload dbAction-first, LIVE qua SerStockOutUpdate) ghi
+    // LogLUDateTime/LogLUBy = strPartnerUserCode trong CUNG alColumnEffective — port cu bo sot 2 cot nay.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
 
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, status = h.Status, statusChanged = newStatus.Length > 0 });
