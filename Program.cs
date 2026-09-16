@@ -7982,8 +7982,12 @@ app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
 // A.II "Tổng số khoang" (đọc ZTemp.cs:3050-3069 cho cửa sổ hiệu lực nhân sự/khoang, :3621-3641 cho công
 // thức đếm) — các mục A.III trở đi CHƯA port, ghi rõ cờ để fire sau tiếp tục đúng vị trí.
 app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantContext t,
-    string? dealer, DateTime? dateFrom, DateTime? dateTo) =>
+    string? dealer, DateTime? dateFrom, DateTime? dateTo, string? shellCodes) =>
 {
+    // #1064: `strListShellCode` của nguồn — danh sách mã phụ tùng "dầu nhớt" do client truyền, phân
+    // cách bằng dấu phẩy (khớp quy ước tham số danh sách phổ biến của MiniHTC).
+    var shellCodeSet = (shellCodes ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(s => s.ToUpperInvariant()).ToHashSet();
     if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Thiếu mã đại lý." });
     if (dateFrom is null || dateTo is null) return Results.BadRequest(new { error = "Thiếu strDateFrom/strDateTo." });
 
@@ -8035,6 +8039,20 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     decimal ServiceAmount(string roType, string? expenseType = null) => roServiceRows
         .Where(s => s.ROType == roType && (expenseType == null || s.ExpenseType == expenseType))
         .Sum(s => s.Factor * s.Price * (1 + s.Vat / 100m));
+
+    // ===== #1064 B.III Tổng doanh thu phụ tùng, dầu nhớt (phần 1: PART_* — ZTemp.cs:3433-3506, dòng
+    // sửa chữa) — KHÁC B.II: nhóm THEO ExpenseType (không theo ROType), và LOẠI mã "dầu nhớt"
+    // (`smp.PartCode Not in @strListShellCode`) khỏi 4 nhóm ROREPAIR/ROWARRANTY/ROINSURANCE/LOCAL —
+    // PART_SHELL cộng RIÊNG cho đúng những mã CÓ trong danh sách đó (`in @strListShellCode`).
+    var roPartRows = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIdsInPeriod.Contains(p.RoId))
+        .Select(p => new { p.PartCode, p.ExpenseType, p.NeedQty, p.Factor, p.UnitPrice, p.Vat }).ToListAsync();
+    decimal PartAmount(string? expenseType, bool shell) => roPartRows
+        .Where(p => (expenseType == null || p.ExpenseType == expenseType)
+            && (shell == shellCodeSet.Contains((p.PartCode ?? "").ToUpperInvariant())))
+        .Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1 + p.Vat / 100m));
+    var partRoRepair = PartAmount("ROREPAIR", false); var partRoWarranty = PartAmount("ROWARRANTY", false);
+    var partRoInsurance = PartAmount("ROINSURANCE", false); var partLocal = PartAmount("LOCAL", false);
+    var partShell = PartAmount(null, true);
 
     return Results.Ok(new
     {
@@ -8092,9 +8110,16 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         serviceAmountPDIRoRepair = Math.Round(ServiceAmount("PDI", "ROREPAIR")), serviceAmountPDILocal = Math.Round(ServiceAmount("PDI", "LOCAL")),
         serviceAmountSPK = Math.Round(ServiceAmount("SPK")),
         serviceAmountSPKRoRepair = Math.Round(ServiceAmount("SPK", "ROREPAIR")), serviceAmountSPKLocal = Math.Round(ServiceAmount("SPK", "LOCAL")),
-        notPortedYet = "A.IV (giờ công quy đổi — phụ thuộc B.II vừa port, cần thêm WorkDayQty/WorkMinuteROQty) "
-            + "và B.III trở đi (doanh thu phụ tùng, khối StockOut/phụ kiện) CHƯA port — hàm nguồn ~1734 dòng, "
-            + "xem hàng đợi ở manifest. A.I/A.II/A.III/A.V/B.I/B.II xong ở các lượt này.",
+        // ===== B.III Tổng doanh thu phụ tùng, dầu nhớt (PHẦN 1 — dòng sửa chữa; PHẦN 2 StockOut/phụ kiện
+        // vẫn CHƯA port, xem notPortedYet) =====
+        partAmountNotShell = Math.Round(partRoRepair + partRoWarranty + partRoInsurance + partLocal),
+        partAmountRoRepair = Math.Round(partRoRepair), partAmountRoWarranty = Math.Round(partRoWarranty),
+        partAmountRoInsurance = Math.Round(partRoInsurance), partAmountLocal = Math.Round(partLocal),
+        partAmountShell = Math.Round(partShell),
+        notPortedYet = "A.IV (giờ công quy đổi — cần thêm WorkDayQty/WorkMinuteROQty từ RO) và B.III PHẦN 2 "
+            + "(doanh thu phụ kiện `AccessoryAmountAfterVAT` + khối bán ra ngoài `Ser_Inv_StockOut/"
+            + "StockOutDetail/StockOutOrder` phân loại phụ kiện qua `Ser_MST_PartType`) CHƯA port — hàm "
+            + "nguồn ~1734 dòng, xem hàng đợi ở manifest. A.I/A.II/A.III/A.V/B.I/B.II/B.III-phần1 xong.",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
