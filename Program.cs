@@ -51253,6 +51253,7 @@ app.MapGet("/api/storagerearranges", async (AppDbContext db, ITenantContext t, s
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.SCNo, r.Status, r.CreatedAt, r.Approved1At, r.ConfirmedAt,
+        r.ApprovedBy1, r.Approved2At, r.ApprovedBy2, r.Remark,   // #1232 §12
         cars = db.StorageRearrangeDetails.Count(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -51798,6 +51799,7 @@ app.MapGet("/api/testcarregs", async (AppDbContext db, ITenantContext t, string?
     var items = await qy.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.TestCarCode, r.DealerCode, status = r.TestCarStatus, r.CreatedAt, r.ApprovedAt, r.RejectReason,
+        r.Remark, r.ApprovedBy, r.FinishedDate, r.FinishedBy,   // #1233 §12
         cars = db.CarTestCarDtls.Count(c => c.OrgId == t.OrgId && c.TestCarId == r.Id),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -80394,7 +80396,7 @@ app.MapGet("/api/gpsclaims", async (AppDbContext db, ITenantContext t, string? c
     if (!string.IsNullOrWhiteSpace(claimStatus)) q = q.Where(g => g.ClaimStatus == claimStatus);
     if (!string.IsNullOrWhiteSpace(device)) q = q.Where(g => g.GpsDvNo.Contains(device.ToUpper()));
     var items = await q.OrderByDescending(g => g.Id).Take(500)
-        .Select(g => new { g.GpsClaimNo, g.GpsDvNo, g.BeforeFixRemark, g.Remark, g.ClaimStatus, g.ReceivedStatus, g.FixStatus, g.CreatedAt }).ToListAsync();
+        .Select(g => new { g.GpsClaimNo, g.GpsDvNo, g.BeforeFixRemark, g.Remark, g.ClaimStatus, g.ReceivedStatus, g.FixStatus, g.CreatedAt, g.ApprovedAt }).ToListAsync();   // #1234 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
