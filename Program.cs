@@ -22038,7 +22038,7 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
 }).RequireAuthorization();
 
 // Đại lý tạo đề nghị bảo hành (theo RO). Amount >= 0; cần VIN hoặc biển số.
-app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin) && string.IsNullOrWhiteSpace(dto.PlateNo))
         return Results.BadRequest(new { error = "Cần số khung (VIN) hoặc biển số." });
@@ -22048,12 +22048,14 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
         ROWTypeCode = dto.ROWTypeCode, ROWTypeDtlCode = dto.ROWTypeDtlCode,   // #369 §12
         Vin = dto.Vin, PlateNo = dto.PlateNo, WarrantyType = dto.WarrantyType, PartCode = dto.PartCode, Description = dto.Description,
         Amount = dto.Amount, Status = "Pending", WarrantySerCode = dto.WarrantySerCode,
-        // #302 §12 POST: 20 cột thật của `Ser_ROWarrantyReport` phải GÁN được, không chỉ ĐỌC được.
+        // #1113 ĐÍNH CHÍNH #302 (SAI): #302 tuyên bố "Creator/CreatedBy: nguồn có CẢ HAI cột và ghi cùng
+        // người lúc tạo" — SAI. Đọc lại nguồn Ser_ROWarrantyReport_Create (WarrantyReport.cs:1604) xác nhận
+        // `Creator = strCreator` (tham số CLIENT riêng) nhưng `CreatedBy` = `strPartnerUserCode` (actor
+        // server) — HAI biến khác nhau, không "ghi cùng người".
         //   `ROWNo` rỗng thì lấy chính `ClaimNo` — nguồn sinh số phiếu riêng, MiniHTC dùng một số.
-        //   `Creator`/`CreatedBy`: nguồn có CẢ HAI cột và ghi cùng người lúc tạo.
         ROWNo = string.IsNullOrWhiteSpace(dto.ROWNo) ? no : dto.ROWNo,
         ROID = dto.ROID, CusID = dto.CusID, CarID = dto.CarID,
-        Creator = dto.Creator, CreatedBy = dto.CreatedBy ?? dto.Creator, Assistant = dto.Assistant,
+        Creator = dto.Creator, CreatedBy = (partnerUserCode ?? "system").Trim(), Assistant = dto.Assistant,
         Km = dto.Km, CheckInDate = dto.CheckInDate, FinishedDate = dto.FinishedDate,
         CusRequest = dto.CusRequest, CarStatus = dto.CarStatus,
         NaturalCode = dto.NaturalCode, CauseCode = dto.CauseCode, StartDate = dto.StartDate,
@@ -22068,10 +22070,14 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
     db.ServiceWarrantyClaims.Add(c); await db.SaveChangesAsync();
     // #268: nguồn ghi nhật ký NGAY KHI TẠO (2 chỗ gọi với Ser_WarrantyReport_Status.Pending,
     //   WarrantyReport.cs:2792 và :3493) ⇒ đề nghị nào cũng có dòng đầu tiên "PEND".
+    // #1113: ProcessSaveSerROWarrantyReportTransaction (WarrantyReport.cs:1492) ghi Creator = strCreator
+    // (client) nhưng CreatedBy/LogLUBy = strPartnerUserCode (actor server) — port cũ tái dùng dto.Creator
+    // cho cả ba cột.
+    var by1113 = (partnerUserCode ?? "system").Trim();
     db.ServiceWarrantyClaimTransactions.Add(new ServiceWarrantyClaimTransaction
     {
         OrgId = t.OrgId, ClaimId = c.Id, Creator = dto.Creator, CurrentStatus = c.Status,
-        Note = dto.Description, CreatedBy = dto.Creator, LogLUDateTime = DateTime.Now, LogLUBy = dto.Creator,
+        Note = dto.Description, CreatedBy = by1113, LogLUDateTime = DateTime.Now, LogLUBy = by1113,
     });
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.ClaimNo, c.ROWNo, c.Status,
@@ -22812,7 +22818,7 @@ app.MapPost("/api/warrantyclaims/approve-auto", async (WarrantyClaimAutoDto dto,
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (c is null) return Results.NotFound(new { id });
@@ -22910,10 +22916,13 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     // 🔴 #268: MỌI bước chuyển đều ghi một dòng nhật ký — nguồn gọi
     //   `ProcessSaveSerROWarrantyReportTransaction` ở **10 chỗ**, phủ hết submit/review/approve/reject/revert.
     //   `CurrentStatus` là trạng thái ĐÍCH (nguồn truyền vào chính hằng trạng thái mới).
+    // #1113: cùng bug — ProcessSaveSerROWarrantyReportTransaction ghi CreatedBy/LogLUBy = strPartnerUserCode,
+    // KHÁC Creator (client). Port cũ tái dùng dto.Creator cho cả ba cột.
+    var by1113b = (partnerUserCode ?? "system").Trim();
     db.ServiceWarrantyClaimTransactions.Add(new ServiceWarrantyClaimTransaction
     {
         OrgId = t.OrgId, ClaimId = c.Id, Creator = dto.Creator, CurrentStatus = c.Status,
-        Note = dto.Note, CreatedBy = dto.Creator, LogLUDateTime = DateTime.Now, LogLUBy = dto.Creator,
+        Note = dto.Note, CreatedBy = by1113b, LogLUDateTime = DateTime.Now, LogLUBy = by1113b,
     });
     await db.SaveChangesAsync();
     return Results.Ok(new
