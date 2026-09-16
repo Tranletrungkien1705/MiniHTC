@@ -16044,3 +16044,58 @@ public sealed class ServiceMstService
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+
+/// <summary>
+/// 🔴 #982 §12 — bản chụp GIÁ BẢO HÀNH đã GỬI HMC lần gần nhất cho mỗi PT (`TST_Mst_Part_DNP`) — port 1:1
+/// `Rpt_DMSSer_DealerNetPrice_{LastGet,PartGet,SendHMC}` (`BizCarSv.Report.Special.Warranty.cs:4376-5069`,
+/// TCMotor DMSCarSv, chỉ có trên máy 150). Dùng để PHÁT HIỆN PT nào vừa đổi `TSTWarrantyPrice` kể từ lần
+/// gửi trước (`t.TSTWarrantyPrice &lt;&gt; f.TSTWarrantyPrice` hoặc chưa từng gửi `f.TSTPartCode is null`).
+/// </summary>
+public sealed class TstMstPartDnp
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public decimal? TSTWarrantyPrice { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// 🔴 #982 §12 — HEADER một đợt gửi bảng giá bảo hành PT (DNP) sang HMC (`Rpt_DealerNetPrice`) — mỗi lần
+/// bấm "Gửi HMC" sinh đúng 1 dòng ở đây + N dòng chi tiết ở <see cref="RptDealerNetPriceDetail"/>.
+/// </summary>
+public sealed class RptDealerNetPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>RptID nguồn — khoá tự tăng THẬT của nguồn (`@@Identity` ngay sau insert header), khác `Id`
+    /// nội bộ Mini. `RptDealerNetPriceDetail.RptID` nối về đây.</summary>
+    public long RptID { get; set; }
+    public DateTime CreatedDateTime { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>Đường dẫn file `A26AX_DNP_yyyyMMdd.txt` đã sinh (nguồn còn SFTP file này lên HMC — xem
+    /// ghi chú "KHÔNG SFTP" ở endpoint `send-hmc`).</summary>
+    public string? FilePath { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng chi tiết một đợt gửi DNP (`Rpt_DealerNetPriceDetail`) — 1-n theo <see cref="RptDealerNetPrice.RptID"/>.</summary>
+public sealed class RptDealerNetPriceDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RptID { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public DateTime? UpdateDateTime { get; set; }
+    /// <summary>Giá quy đổi gửi HMC (nguồn `ROUND(TSTWarrantyPrice/100,0)`, đơn vị "trăm đồng").</summary>
+    public int TSTPrice { get; set; }
+    public decimal? TSTWarrantyPrice { get; set; }
+    /// <summary>Giá LẦN GỬI TRƯỚC (từ `TST_Mst_Part_DNP` cũ, trước khi ghi đè) — NULL nếu lần đầu gửi PT này.</summary>
+    public decimal? TSTWarrantyPriceOld { get; set; }
+    public string? EngName { get; set; }
+    public string? VieName { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}

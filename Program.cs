@@ -25480,6 +25480,103 @@ app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenan
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🏆🔴🔴 #982 CỤM MỚI `Rpt_DMSSer_DealerNetPrice_{LastGet,PartGet,SendHMC}` =====
+// `BizCarSv.Report.Special.Warranty.cs:4376-5069` trên máy 150 (KHÔNG có ở cây laptop). LIVE xác nhận qua
+// `HTCWSCarSv/WSCarSv.asmx.cs:33794` (`_biz.Rpt_DMSSer_DealerNetPrice_LastGet(`). Nghiệp vụ: gửi bảng GIÁ
+// BẢO HÀNH phụ tùng (DNP = Dealer Net Price) sang HÃNG (HMC) qua file `A26AX_DNP_yyyyMMdd.txt` + SFTP, có
+// bảng nhớ `TST_Mst_Part_DNP` ghi lại "giá đã gửi lần trước" để chỉ gửi PT nào ĐỔI GIÁ kể từ lần gửi trước.
+//
+// 🔴 `PartGet` (xem trước danh sách sẽ gửi) có DÒNG BUG THẬT giữ nguyên khi port: cột cuối cùng của SELECT
+// là `t.TSTWarrantyPrice TSTUrgentPrice` — LẤY GIÁ BẢO HÀNH RỒI ĐẶT TÊN LÀ "GIÁ KHẨN CẤP", rõ ràng copy-paste
+// từ một SELECT khác (khớp họ bug #413 HẰNG≠GIÁ TRỊ — ở đây là "tên cột≠cột thật"). Port ĐÚNG dòng ACTIVE:
+// trả `tstUrgentPrice` = TSTWarrantyPrice, không "sửa cho hợp lý".
+// ⚠️ **KHÔNG SFTP THẬT**: nguồn `SendHMCX` sinh file rồi `SftpClient.UploadFile(...)` lên server HMC qua
+// FTP config (`_str_HOST_FTP_*`, hằng cấu hình triển khai — không có trong MiniHTC). Port giữ ĐỦ logic DB
+// (tạo file nội dung + ghi `RptDealerNetPrice`/`Detail` + cập nhật cache `TstMstPartDnp`) nhưng KHÔNG gọi
+// SFTP thật — trả `filePath`/`fileContent` để caller tự tải, gắn cờ `sftpNotSimulated=true` để không ai
+// nhầm là đã gửi HMC thật.
+app.MapGet("/api/tstparts/dealer-net-price/eligible", async (AppDbContext db, ITenantContext t, DateTime? reportDateFrom) =>
+{
+    var cache = await db.TstMstPartDnps.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var cacheByCode = cache.GroupBy(x => x.TSTPartCode).ToDictionary(g => g.Key, g => g.First());
+    var partsQ = db.TstParts.Where(x => x.OrgId == t.OrgId && x.TSTWarrantyPrice != null && x.TSTWarrantyPrice > 0);
+    if (reportDateFrom is not null) partsQ = partsQ.Where(x => x.LUDTime >= reportDateFrom);   // #982: strReportDateConditionList tren t.LUDTime
+    var parts = await partsQ.ToListAsync();
+    var eligible = parts.Where(p => !cacheByCode.TryGetValue(p.TSTPartCode, out var c) || c.TSTWarrantyPrice != p.TSTWarrantyPrice)
+        .Select(p => new
+        {
+            p.TSTPartCode,
+            tstPrice = (int)Math.Round((p.TSTWarrantyPrice ?? 0) / 100m, 0),   // nguon: ROUND(TSTWarrantyPrice/100,0)
+            p.TSTPriceBefore, p.LUDTime, p.LUBy, p.VieName, p.VAT, p.Unit, p.DateEffect, p.TSTCost,
+            p.VieNameHTC, p.TSTWarrantyPrice, p.TypeCode, p.GroupCode, p.UpdateDateTime, p.UpdateBy,
+            p.MinOrderQuantity, p.Remark, p.EngName, p.TSTUnit,
+            tstUrgentPrice = p.TSTWarrantyPrice,   // #982: BUG GIU NGUYEN — nguon dat ten sai "TSTUrgentPrice" cho chinh TSTWarrantyPrice
+        }).ToList();
+    return Results.Ok(new
+    {
+        count = eligible.Count, items = eligible,
+        onlyExistsOnMachine150_982 = "#982: Rpt_DMSSer_DealerNetPrice_PartGet — BizCarSv.Report.Special.Warranty.cs:4513",
+        tstUrgentPriceIsWarrantyPriceCopyPasteBug = "Nguon SELECT cuoi cung co 't.TSTWarrantyPrice TSTUrgentPrice' — dat sai ten cot (gia bao hanh duoc doi ten thanh gia khan cap), giu nguyen dong ACTIVE khong sua",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/tstparts/dealer-net-price/last-batch", async (AppDbContext db, ITenantContext t) =>
+{
+    var header = await db.RptDealerNetPrices.Where(x => x.OrgId == t.OrgId).OrderByDescending(x => x.RptID).FirstOrDefaultAsync();
+    if (header is null) return Results.Ok(new { header = (object?)null, lines = Array.Empty<object>() });
+    var lines = await db.RptDealerNetPriceDetails.Where(x => x.OrgId == t.OrgId && x.RptID == header.RptID).ToListAsync();
+    return Results.Ok(new
+    {
+        header = new { header.RptID, header.CreatedDateTime, header.CreatedBy, header.FilePath },
+        lines = lines.Select(l => new { l.TSTPartCode, l.UpdateDateTime, l.TSTPrice, l.TSTWarrantyPrice, l.TSTWarrantyPriceOld, l.EngName, l.VieName }),
+        onlyExistsOnMachine150_982 = "#982: Rpt_DMSSer_DealerNetPrice_LastGet — BizCarSv.Report.Special.Warranty.cs:4415 (MAX(RptID))",
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstparts/dealer-net-price/send-hmc", async (AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var userCode = user.Identity?.Name ?? "system";
+    var cache = await db.TstMstPartDnps.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var cacheByCode = cache.ToDictionary(x => x.TSTPartCode, x => x);
+    var parts = await db.TstParts.Where(x => x.OrgId == t.OrgId && x.TSTWarrantyPrice != null && x.TSTWarrantyPrice > 0).ToListAsync();
+    var eligible = parts.Where(p => !cacheByCode.TryGetValue(p.TSTPartCode, out var c) || c.TSTWarrantyPrice != p.TSTWarrantyPrice).ToList();
+    // #982: nguon nem loi "Danh sach Part day trong!" khi khong co PT nao du dieu kien.
+    if (eligible.Count == 0) return Results.BadRequest(new { error = "Rpt_DMSSer_DealerNetPrice_SendHMC_TablePartSendEmty" });
+
+    var now = DateTime.Now;
+    var maxRptId = await db.RptDealerNetPrices.Where(x => x.OrgId == t.OrgId).Select(x => (long?)x.RptID).MaxAsync() ?? 0;
+    var rptId = maxRptId + 1;
+    var fileName = $"A26AX_DNP_{now:yyyyMMdd}.txt";
+    var fileContent = string.Join("\n", eligible.Select(p => $"{p.TSTPartCode}\t{(int)Math.Round((p.TSTWarrantyPrice ?? 0) / 100m, 0)}"));
+
+    db.RptDealerNetPrices.Add(new RptDealerNetPrice
+    {
+        OrgId = t.OrgId, RptID = rptId, CreatedDateTime = now, CreatedBy = userCode, FilePath = fileName,
+        LogLUDateTime = now, LogLUBy = userCode,
+    });
+    foreach (var p in eligible)
+    {
+        cacheByCode.TryGetValue(p.TSTPartCode, out var old);
+        db.RptDealerNetPriceDetails.Add(new RptDealerNetPriceDetail
+        {
+            OrgId = t.OrgId, RptID = rptId, TSTPartCode = p.TSTPartCode, UpdateDateTime = p.LUDTime,
+            TSTPrice = (int)Math.Round((p.TSTWarrantyPrice ?? 0) / 100m, 0), TSTWarrantyPrice = p.TSTWarrantyPrice,
+            TSTWarrantyPriceOld = old?.TSTWarrantyPrice, EngName = p.EngName, VieName = p.VieName,
+            LogLUDateTime = now, LogLUBy = userCode,
+        });
+        if (old is not null) { old.TSTWarrantyPrice = p.TSTWarrantyPrice; old.LogLUDateTime = now; old.LogLUBy = userCode; }
+        else db.TstMstPartDnps.Add(new TstMstPartDnp { OrgId = t.OrgId, TSTPartCode = p.TSTPartCode, TSTWarrantyPrice = p.TSTWarrantyPrice, LogLUDateTime = now, LogLUBy = userCode });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        rptId, fileName, fileContent, partsCount = eligible.Count,
+        sftpNotSimulated = true,
+        onlyExistsOnMachine150_982 = "#982: Rpt_DMSSer_DealerNetPrice_SendHMC(X) — BizCarSv.Report.Special.Warranty.cs:4700",
+        sftpSkippedReason = "Nguon SftpClient.UploadFile(...) len server HMC qua cau hinh FTP trien khai rieng (_str_HOST_FTP_*), khong co trong MiniHTC — DB (RptDealerNetPrice/Detail + cache TstMstPartDnp) ghi DU theo nguon, chi KHONG goi SFTP that. fileContent tra ve de caller tu tai neu can gui tay",
+    });
+}).RequireAuthorization();
+
 // ===== 🏆🔴 #930 `TST_Mst_PartGroup_Get`/`TST_Mst_PartType_Get` (LIVE, `BizCarSv.Service.cs:18136/:17862`) =====
 // Entity đã tồn tại từ #767 nhưng CHƯA TỪNG có endpoint — grep toàn Program.cs ra 0 lần đọc lẫn ghi.
 app.MapGet("/api/tstmstpartgroups", async (AppDbContext db, ITenantContext t, bool? all) =>
