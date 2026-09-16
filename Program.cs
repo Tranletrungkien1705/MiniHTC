@@ -21398,15 +21398,22 @@ app.MapPost("/api/warrantyclaims/{id:long}/htc-confirm", async (long id, AppDbCo
 {
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (claim is null) return Results.NotFound(new { id });
-    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
-    if (st != "SENT")
+    var st = (claim.Status ?? "").Trim();
+    // #1210 SUA BUG THAT: endpoint nay truoc day GHI ma nguon tho ("CONF") trong khi CA HE THONG (GET
+    // /api/warrantyclaims, /action, moi dashboard/filter WarrantyClaim) dung MOT tu vung tieng Anh duy
+    // nhat ("Pending"/"Sent"/"Confirmed"/"Accepted"/"Rejected"/"Reverted" - xem
+    // /api/warrantyclaims/statusnames: "Cung SAU trang thai"). Ghi "CONF" khien claim TRO NEN VO HINH
+    // voi /action (rule.from chi nhan "Confirmed"), voi GET listing (dem theo "Confirmed"), va voi guard
+    // xoa (#1209) - mot claim di qua duong nay khong bao gio "approve" hay "delete-block" dung duoc nua.
+    var stUp = st.ToUpperInvariant();
+    if (st != "Sent" && stUp != "SENT")
         return Results.BadRequest(new
         {
             error = "Ser_ROWarrantyReport_HTCConfirm_InvalidWarrantyStatus",
-            currentStatus = st, allowed = new[] { "SENT" },
-            rejectedIsDeadEnd = st == "REJ" ? "Da bi tu choi: cap ham nguon KHONG co duong dua REJ ve CONF" : null,
+            currentStatus = st, allowed = new[] { "Sent" },
+            rejectedIsDeadEnd = st is "Rejected" || stUp == "REJ" ? "Da bi tu choi: cap ham nguon KHONG co duong dua REJ ve CONF" : null,
         });
-    claim.Status = "CONF"; claim.UpdatedAt = DateTime.Now;
+    claim.Status = "Confirmed"; claim.UpdatedAt = DateTime.Now;
     // #1144: Ser_ROWarrantyReport_HTCConfirm ghi LogLUDateTime/LogLUBy trong CUNG alColumnEffective voi WarrantyStatus.
     claim.LogLUDateTime = DateTime.Now; claim.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
@@ -21424,15 +21431,17 @@ app.MapPost("/api/warrantyclaims/{id:long}/htc-reject", async (long id, AppDbCon
 {
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (claim is null) return Results.NotFound(new { id });
-    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
+    var st = (claim.Status ?? "").Trim();
+    var stUp = st.ToUpperInvariant();
     // Nguồn nhận CẢ SENT lẫn CONF — rộng hơn nhánh duyệt đúng một trạng thái.
-    if (st != "SENT" && st != "CONF")
+    // #1210: cùng sửa như htc-confirm — so/ghi theo tu vung tieng Anh duy nhat cua he thong.
+    if (st is not ("Sent" or "Confirmed") && stUp is not ("SENT" or "CONF"))
         return Results.BadRequest(new
         {
             error = "Ser_ROWarrantyReport_HTCReject_InvalidWarrantyStatus",
-            currentStatus = st, allowed = new[] { "SENT", "CONF" },
+            currentStatus = st, allowed = new[] { "Sent", "Confirmed" },
         });
-    claim.Status = "REJ"; claim.UpdatedAt = DateTime.Now;
+    claim.Status = "Rejected"; claim.UpdatedAt = DateTime.Now;
     // #1144: Ser_ROWarrantyReport_HTCReject ghi LogLUDateTime/LogLUBy trong CUNG alColumnEffective voi WarrantyStatus.
     claim.LogLUDateTime = DateTime.Now; claim.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
