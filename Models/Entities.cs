@@ -14398,6 +14398,15 @@ public sealed class ServicePartOO
     public DateTime? NgayDatHang { get; set; }         // TblSer_Part_OO.NgayDatHang — ngày đặt hàng
     public DateTime? NgayVeDuKien { get; set; }        // TblSer_Part_OO.NgayVeDuKien — ngày về dự kiến
     public DateTime? NgayHenTra { get; set; }          // TblSer_Part_OO.NgayHenTra — ngày hẹn trả khách
+
+    /// <summary>#1081 §12 — nguồn `Ser_Part_OO_Create` (Service.cs:15794) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `Ser_Part_OO_Update` (:16042) chỉ ghi LogLUDateTime/LogLUBy khi SỬA. Chỉ vá bản `ServicePartOO`
+    /// ("route chính" theo #912) — twin `PartBackorder` (`/api/partbackorders`) giữ nguyên, chờ 1 fire
+    /// riêng đối chiếu/hợp nhất hai route cùng bảng nguồn.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Xe khách trong hệ thống dịch vụ (biển số/khung/máy/km/bảo hành) — port 1:1 FrmCarInfo (TblSerCar, TCMotor).</summary>

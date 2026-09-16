@@ -16646,7 +16646,7 @@ app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, stri
 }).RequireAuthorization();
 
 // Tạo phiếu nợ phụ tùng (SL nợ > 0).
-app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
     if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Chưa nhập biển số xe." });
@@ -16655,13 +16655,16 @@ app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db,
         return Results.BadRequest(new { error = "Ser_Part_OO_Create_Invalid_BienSo", detail = "Biển số phải từ 8 đến 10 ký tự." });
     if (dto.QtyNeeded <= 0) return Results.BadRequest(new { error = "Số lượng nợ phải lớn hơn 0." });
     var no = "OO" + DateTime.Now.ToString("yyMMddHHmmss");
+    // #1081: Ser_Part_OO_Create (Service.cs:15794) ghi du 4 cot nhat ky khi TAO.
+    var by1081 = (partnerUserCode ?? "system").Trim(); var now1081 = DateTime.Now;
     var r = new ServicePartOO
     {
         OrgId = t.OrgId, OONo = no, PartCode = dto.PartCode.Trim().ToUpperInvariant(), PartName = dto.PartName,
         PlateNo = dto.PlateNo.Trim(), QtyNeeded = dto.QtyNeeded, QtyFulfilled = 0, Note = dto.Note, Status = "Open",
         // GAP đã vá: nhận đủ 6 cột TblSer_Part_OO
         LoaiXe = dto.LoaiXe, CVDV = dto.CVDV, DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
-        NgayDatHang = dto.NgayDatHang, NgayVeDuKien = dto.NgayVeDuKien, NgayHenTra = dto.NgayHenTra
+        NgayDatHang = dto.NgayDatHang, NgayVeDuKien = dto.NgayVeDuKien, NgayHenTra = dto.NgayHenTra,
+        CreatedDate = now1081, CreatedBy = by1081, LogLUDateTime = now1081, LogLUBy = by1081,
     };
     db.ServicePartOOs.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.OONo });
@@ -16672,7 +16675,7 @@ app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db,
 // Mini. Guard thật: `strSoLuongTra > strSoLuongNo` bị chặn (`Ser_Part_OO_Update_Invalid_SoLuong`) — Mini
 // giữ đúng ý bằng cách so `QtyNeeded` mới với `QtyFulfilled` HIỆN CÓ (SL đã giao không đổi qua endpoint
 // này — có `/fulfill` riêng), không cho giảm SL nợ xuống dưới SL đã giao.
-app.MapPut("/api/servicepartoos/{no}", async (string no, ServicePartOODto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/servicepartoos/{no}", async (string no, ServicePartOODto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var r = await db.ServicePartOOs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OONo == no);
     if (r is null) return Results.NotFound(new { error = "Ser_Part_OO_NotExist", no });
@@ -16683,6 +16686,8 @@ app.MapPut("/api/servicepartoos/{no}", async (string no, ServicePartOODto dto, A
     r.QtyNeeded = dto.QtyNeeded; r.Note = dto.Note; r.LoaiXe = dto.LoaiXe; r.CVDV = dto.CVDV;
     r.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
     r.NgayDatHang = dto.NgayDatHang; r.NgayVeDuKien = dto.NgayVeDuKien; r.NgayHenTra = dto.NgayHenTra;
+    // #1081: Ser_Part_OO_Update (Service.cs:16042) chi ghi LogLUDateTime/LogLUBy khi SUA.
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { r.OONo, r.QtyNeeded, r.QtyFulfilled });
 }).RequireAuthorization();
