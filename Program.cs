@@ -76162,6 +76162,52 @@ app.MapPost("/api/serassignmentworks/{roNo}/update", async (string roNo, SerAssi
     var w = all.FirstOrDefault();
     if (w is null) return Results.NotFound(new { error = "Chưa có bản phân công cho lệnh " + roNo });
 
+    // ===== #1026 TRẢ NỢ: field `updateGuardExcludesSelf` Ở DƯỚI CHỈ MÔ TẢ, CHƯA TỪNG GỌI GUARD THẬT =====
+    // Nguồn: `MyCheckUpdate_SerAssignmentWork_PlanDateTime_Cavity_20211007` (AssignmentOfWork.cs:2857, gọi
+    // 7 lần — ĐÚNG bảy công đoạn SCC/SCD/SCN/SCS/SCDB/SCLR/SCKSC — từ `Ser_AssignmentWork_UpdateX` LIVE).
+    // Với MỖI công đoạn: nếu khoang (Cavity) đó ĐÃ đặt cho công đoạn BẤT KỲ trong 7 công đoạn của MỘT
+    // lệnh KHÁC (`ROID != strROID`) và khung giờ chồng nhau (hai nhánh mốc, đúng khuôn nguồn — không thêm
+    // nhánh "bao trùm" nguồn không có) thì CHẶN. Endpoint đã có sẵn field `updateGuardExcludesSelf` mô tả
+    // đúng tên hàm này nhưng CHƯA TỪNG gọi nó — chỉ là chuỗi mô tả, không phải bằng chứng đã guard.
+    async Task<string?> FindCavityOverlap(string? cavityId, DateTime? planStart, DateTime? planFinish)
+    {
+        if (string.IsNullOrWhiteSpace(cavityId) || planStart is null || planFinish is null) return null;
+        var candidates = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.ROID != roNo &&
+            (x.SCCCavityID == cavityId || x.SCDCavityID == cavityId || x.SCNCavityID == cavityId
+             || x.SCSCavityID == cavityId || x.SCDBCavityID == cavityId || x.SCLRCavityID == cavityId
+             || x.SCKSCCavityID == cavityId)).ToListAsync();
+        bool Overlap(DateTime? s, DateTime? f) => s.HasValue && f.HasValue
+            && ((s.Value < planStart.Value && f.Value > planStart.Value) || (s.Value < planFinish.Value && f.Value > planFinish.Value));
+        foreach (var c in candidates)
+        {
+            if (c.SCCCavityID == cavityId && Overlap(c.SCCPlanStartDTime, c.SCCPlanFinishDTime)) return c.RONo;
+            if (c.SCDCavityID == cavityId && Overlap(c.SCDPlanStartDTime, c.SCDPlanFinishDTime)) return c.RONo;
+            if (c.SCNCavityID == cavityId && Overlap(c.SCNPlanStartDTime, c.SCNPlanFinishDTime)) return c.RONo;
+            if (c.SCSCavityID == cavityId && Overlap(c.SCSPlanStartDTime, c.SCSPlanFinishDTime)) return c.RONo;
+            if (c.SCDBCavityID == cavityId && Overlap(c.SCDBPlanStartDTime, c.SCDBPlanFinishDTime)) return c.RONo;
+            if (c.SCLRCavityID == cavityId && Overlap(c.SCLRPlanStartDTime, c.SCLRPlanFinishDTime)) return c.RONo;
+            if (c.SCKSCCavityID == cavityId && Overlap(c.SCKSCPlanStartDTime, c.SCKSCPlanFinishDTime)) return c.RONo;
+        }
+        return null;
+    }
+    var effCavity = new (string? cavityId, DateTime? start, DateTime? finish, string label)[]
+    {
+        (dto.SCCCavityID ?? w.SCCCavityID, dto.SCCPlanStartDTime ?? w.SCCPlanStartDTime, dto.SCCPlanFinishDTime ?? w.SCCPlanFinishDTime, "SCC"),
+        (dto.SCDCavityID ?? w.SCDCavityID, dto.SCDPlanStartDTime ?? w.SCDPlanStartDTime, dto.SCDPlanFinishDTime ?? w.SCDPlanFinishDTime, "SCD"),
+        (dto.SCNCavityID ?? w.SCNCavityID, dto.SCNPlanStartDTime ?? w.SCNPlanStartDTime, dto.SCNPlanFinishDTime ?? w.SCNPlanFinishDTime, "SCN"),
+        (dto.SCSCavityID ?? w.SCSCavityID, dto.SCSPlanStartDTime ?? w.SCSPlanStartDTime, dto.SCSPlanFinishDTime ?? w.SCSPlanFinishDTime, "SCS"),
+        (dto.SCDBCavityID ?? w.SCDBCavityID, dto.SCDBPlanStartDTime ?? w.SCDBPlanStartDTime, dto.SCDBPlanFinishDTime ?? w.SCDBPlanFinishDTime, "SCDB"),
+        (dto.SCLRCavityID ?? w.SCLRCavityID, dto.SCLRPlanStartDTime ?? w.SCLRPlanStartDTime, dto.SCLRPlanFinishDTime ?? w.SCLRPlanFinishDTime, "SCLR"),
+        (dto.SCKSCCavityID ?? w.SCKSCCavityID, dto.SCKSCPlanStartDTime ?? w.SCKSCPlanStartDTime, dto.SCKSCPlanFinishDTime ?? w.SCKSCPlanFinishDTime, "SCKSC"),
+    };
+    foreach (var (cavityId, start, finish, label) in effCavity)
+    {
+        var conflictRoNo = await FindCavityOverlap(cavityId, start, finish);
+        if (conflictRoNo is not null)
+            return Results.BadRequest(new { error = "Ser_AssignmentWork_Update_InvalidPlanStartDTimeOrPlanFinishDTime",
+                message = $"Khoang {cavityId} ({label}) đã có lịch trùng khung giờ với lệnh {conflictRoNo}.", stage = label, cavityId, conflictRoNo });
+    }
+
     var pushToHyundaiMe = false; string? cavityIDPushToHyundaiMe = null;
     if (!pushToHyundaiMe && !string.IsNullOrEmpty(w.SCCCavityID)
         && w.SCCCavityID != dto.SCCCavityID
@@ -76229,7 +76275,7 @@ app.MapPost("/api/serassignmentworks/{roNo}/update", async (string roNo, SerAssi
         sourceHasNoOrderBy = "GetTableContents(... top 1 * ..., ROID = @ROID)",
         rowsForThisRo = all.Count,
         emptyMeansKeepNotClear = true,
-        updateGuardExcludesSelf = "MyCheckUpdate_..._20211007(..., strROID, strRONo)",
+        updateGuardExcludesSelf = "#1026: MyCheckUpdate_..._20211007 NAY DA GOI THAT (truoc chi la mo ta) — kiem tren 7 cong doan, loai tru chinh strROID",
     });
 }).RequireAuthorization();
 
