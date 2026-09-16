@@ -24722,6 +24722,16 @@ app.MapPost("/api/roattachments", async (RoAttachmentDto dto, AppDbContext db, I
     if (ext is not (".jpg" or ".jpeg" or ".gif" or ".bmp"))
         return Results.BadRequest(new { error = "Chỉ nhận ảnh jpg, jpeg, gif, bmp.", imageName = name });
 
+    // ===== #1014 `ValidateROAttachment` (Service01.cs:396, gọi từ `SerROAttachmentUpload` LIVE) =====
+    // Nguồn có HAI guard trước khi ghi: (1) tối đa `Constants.Ser_ROAttachment.NumberAttachment` = 5 ảnh/RO
+    // — port cũ chưa từng đếm, ảnh đính kèm không giới hạn. (2) tổng dung lượng <= `AttchmentSize` = 1000KB,
+    // tính trên byte ảnh thô (cột `IMAGE` của DataTable) — ⚪ KHÔNG portable: Mini chỉ lưu `ImagePath`
+    // (tham chiếu file ngoài), không có nội dung ảnh phía server để đo dung lượng; ghi nợ rõ, không bịa số.
+    var existingCount = await db.RoAttachments.CountAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    if (existingCount >= 5)
+        return Results.BadRequest(new { error = "Ser_RO_TooManyFiles",
+            message = "Lệnh sửa chữa đã có đủ 5 ảnh đính kèm, không thêm được nữa.", count = existingCount });
+
     var row = new RoAttachment { OrgId = t.OrgId, RONo = roNo, ImageName = name, ImagePath = dto.ImagePath };
     db.RoAttachments.Add(row);
     await db.SaveChangesAsync();
