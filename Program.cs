@@ -36857,12 +36857,12 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
         //   · `Year="YEAR"`. Lưu ý **tên hằng không nhất quán** (`DAY` viết hoa cả cụm, ba cái kia Pascal)
         //   — dễ gõ nhầm `ReportType.Day` (không tồn tại) khi port.
         // ⚠️ So khớp bằng `StringEqualIgnoreCase` ⇒ **không phân biệt hoa thường**; truyền "hour" vẫn trúng.
-        // 📌 MiniHTC **chưa có** cụm báo cáo tiếp nhận cho máy tính bảng ⇒ ghi thành **nợ có tên**,
-        //   kèm đúng luật rẽ nhánh ở trên để lượt sau port không bỏ sót nửa DAY/MONTH/YEAR.
+        // #1042-audit: "nợ có tên" cũ ĐÃ TRẢ ở #506 (GET /api/reports/reception-qty-by-period) — bao gồm
+        //   đúng luật rẽ nhánh HOUR/DAY/MONTH và chặn thẳng YEAR (nguồn tự rỗng-im-lặng cho nhánh này).
         receptionSumByReportType = new { mainBranchesByReportType = true, whAlwaysUsesHourPath = true,
             reportTypeValues = new[] { "HOUR", "DAY", "MONTH", "YEAR" },
             comparisonIsCaseInsensitive = true,
-            notPortedYet = "MiniHTC chua co cum bao cao tiep nhan cho may tinh bang" },
+            portedAt = "GET /api/reports/reception-qty-by-period (#506)" },
         // ===== 🔴 #505 ĐỌC CA CUỐI — VÀ NÓ **KHÔNG PHẢI** LỆCH MAIN↔KHO, MÀ LÀ **KÊNH ĐỐI TÁC TỤT HẬU** =====
         // `diffguard` báo `SerStockOutSearch` vs `SerStockOutSearch_WH` lệch `TConstHang 0/2 · ifGuard 1/3`
         //   — tức bản kho có **NHIỀU** guard hơn bản chính, nghe đã ngược đời.
