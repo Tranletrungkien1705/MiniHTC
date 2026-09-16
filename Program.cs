@@ -27919,13 +27919,14 @@ app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/serservicetypes", async (SerServiceTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serservicetypes", async (SerServiceTypeDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var name = (dto.TypeName ?? "").Trim();
     if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Chưa nhập tên loại công việc." });
     // #906: khoá upsert đúng (TypeName, DealerCode) — mỗi đại lý có danh sách riêng, khớp nguồn.
     var row = await db.SerServiceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dto.DealerCode);
-    if (row is null) { row = new SerServiceType { OrgId = t.OrgId, TypeName = name, DealerCode = dto.DealerCode }; db.SerServiceTypes.Add(row); }
+    // #1052: Ser_Mst_ServiceType_Create ghi CreatedDate/CreatedBy VÔ ĐIỀU KIỆN lúc tạo.
+    if (row is null) { row = new SerServiceType { OrgId = t.OrgId, TypeName = name, DealerCode = dto.DealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() }; db.SerServiceTypes.Add(row); }
     row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();

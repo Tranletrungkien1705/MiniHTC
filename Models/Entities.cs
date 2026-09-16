@@ -3807,6 +3807,10 @@ public sealed class SerServiceType
     public Guid OrgId { get; set; }
     public string TypeName { get; set; } = "";
     public string FlagActive { get; set; } = "1";
+    // #1052 §12 — `Ser_Mst_ServiceType_Create` (BizCarSv.Master.cs:5288, LIVE) ghi `CreatedDate`/`CreatedBy`
+    // vô điều kiện — cùng mẫu hình #453 (đã vá cho `SerPartType` ở #963 nhưng chưa vá cho bảng song sinh này).
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
