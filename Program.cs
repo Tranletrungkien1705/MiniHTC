@@ -61295,9 +61295,10 @@ app.MapPost("/api/customercares", async (CustomerCareDto dto, AppDbContext db, I
 //     REJ   = không cần liên hệ, bỏ qua
 //   Từ vựng `Pending/Contacted/Closed` của port cũ KHÔNG có ở nguồn ⇒ đã đổi + migration.
 //
-// ⚠️ NỢ: lệnh đầy đủ `Ser_CustomerCare72h_UpdateStatus_New20180622` (15728) còn nhận **bộ khảo sát**
-//   (`Survey1..9`, `FyourCSSH`, `WFBasicNeeds`, `YourCarProblem`, `YourRIWN`, `YourSatisfyQSv`,
-//   `YourHopeOfOur`) — cụm khảo sát CSKH 72h, để lượt riêng, KHÔNG bịa cột ở đây.
+// ✅ #1029-audit: "NỢ" cũ ở đây đã lỗi thời — bộ khảo sát 72h (`Survey1..28`, `FyourCSSH`, `WFBasicNeeds`,
+//   `YourCarProblem`, `YourRIWN`, `YourSatisfyQSv`, `YourHopeOfOur`) ĐÃ port đủ ở #211 (endpoint
+//   `/api/customercares/72h/survey`, dòng ~61485+), kể cả side-effect đồng bộ `care.Status`/`ContactDate`
+//   của `Ser_CustomerCareStatusUpdate_New20180622` (dòng `care.Status = newStatus;` ở endpoint đó).
 app.MapPost("/api/customercares/{no}/contact", async (string no, CareContactDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
