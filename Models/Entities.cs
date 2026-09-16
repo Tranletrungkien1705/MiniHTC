@@ -2655,6 +2655,13 @@ public sealed class Reception
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DeliveredAt { get; set; }
+    // ===== #1045 §12 — nguồn `Ser_ReceptionF_DeliveryX_New20180921` (BizCarSv.Tab.cs:11673) ghi THÊM
+    // 2 cột lúc GIAO XE mà #522/#1039 chưa vá: `DeliveryBy` (người giao) và `Remark` (ghi chú lúc giao —
+    // KHÁC `RemarkErrOrther` vốn ghi lúc tiếp nhận). Nguồn còn GHI ĐÈ `BodyPaintFilePath` ở bước này.
+    /// <summary>Người thực hiện giao xe (`strPartnerUserCode` truyền vào worker giao xe).</summary>
+    public string? DeliveredBy { get; set; }
+    /// <summary>Ghi chú lúc giao xe (`strRemark` của worker giao xe, cột `Remark`).</summary>
+    public string? Remark { get; set; }
 }
 
 /// <summary>Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate, TCMotor DMSCarSv/Inventory):

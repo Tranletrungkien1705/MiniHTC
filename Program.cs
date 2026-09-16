@@ -64163,7 +64163,7 @@ app.MapPost("/api/receptions/{no}/linkro", async (string no, ReceptionLinkDto dt
 //   khác khâu tiếp nhận vốn nạp bảng mới ⇒ giao xe **cộng thêm** ảnh, không thay ảnh cũ.
 // ⚠️ Nguồn cập nhật `Ser_ReceptionF` ở **ba** DB (Main/WH/Dealer) — MiniHTC một DB (nợ kiến trúc đã ghi).
 app.MapPost("/api/receptions/{no}/deliver", async (string no, ReceptionDeliverDto? dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
@@ -64202,7 +64202,12 @@ app.MapPost("/api/receptions/{no}/deliver", async (string no, ReceptionDeliverDt
         }
     }
 
+    // #1045: nguồn Ser_ReceptionF_DeliveryX_New20180921 ghi DeliveryBy=strPartnerUserCode và cho phép
+    // GHI ĐÈ BodyPaintFilePath + Remark ngay lúc giao xe (khác Remark của #522 vốn không tồn tại ở port cũ).
     r.Status = "Approved"; r.DeliveredAt = DateTime.Now;
+    r.DeliveredBy = (partnerUserCode ?? "system").Trim();
+    if (dto?.BodyPaintFilePath is not null) r.BodyPaintFilePath = dto.BodyPaintFilePath.Trim();
+    if (dto?.Remark is not null) r.Remark = dto.Remark.Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -79957,7 +79962,8 @@ record SerAssignmentWorkDto(string? RONo = null, string? ROID = null,
 
 record ReceptionDeliverDetailDto(string? ReceptionFAudCode, string? ReceptionFAudType,
     string? DeliveryAudStatus, string? Remark);   // #527
-record ReceptionDeliverDto(List<ReceptionDeliverDetailDto>? Details);   // #527
+record ReceptionDeliverDto(List<ReceptionDeliverDetailDto>? Details,
+    string? BodyPaintFilePath, string? Remark);   // #527, #1045
 
 record ReceptionAttachFileDto(string? FileIndex, string? ReceptionFilePath,
     string? ReceptionFileName, string? ReceptionFileType, string? Remark);   // #525

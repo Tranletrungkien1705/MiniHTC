@@ -2998,6 +2998,9 @@ public static class Seeder
                 "ALTER TABLE public.\"SerModelAudImages\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 // #1044: cot FlagActive (xac nhan qua entity mirror ClientService) - Update co the bat/tat.
                 "ALTER TABLE public.\"SerModelAudImages\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
+                // #1045: Ser_ReceptionF_DeliveryX_New20180921 ghi THEM DeliveryBy/Remark luc GIAO XE.
+                "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"DeliveredBy\" text NULL",
+                "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
