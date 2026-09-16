@@ -15640,6 +15640,14 @@ app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
 {
     var lines = dto.Items ?? new List<RoMaintanceSettingDto>();
     if (lines.Count == 0) return Results.BadRequest(new { error = "khong co dong nao de luu" });
+    // #1003: nguon Ser_MST_ROMaintanceSetting_Save guard Maintances<0 va Km<0 (Ser_MST_ROMaintanceSetting_Save_InvalidValue) — port cu thieu ca hai.
+    foreach (var l in lines)
+    {
+        if (l.Km is < 0)
+            return Results.BadRequest(new { error = "Ser_MST_ROMaintanceSetting_Save_InvalidValue", detail = "Km khong duoc am.", l.ROMSID });
+        if (!string.IsNullOrWhiteSpace(l.Maintances) && int.TryParse(l.Maintances, out var qty) && qty < 0)
+            return Results.BadRequest(new { error = "Ser_MST_ROMaintanceSetting_Save_InvalidValue", detail = "So luong hang muc bao duong khong duoc am.", l.ROMSID });
+    }
     var updated = 0; var inserted = 0; var notFound = new List<long>();
     foreach (var l in lines)
     {
