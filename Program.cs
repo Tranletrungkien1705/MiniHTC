@@ -22239,6 +22239,40 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
                     message = $"{cvcCode} không thuộc Mst công việc bảo hành!" });
         }
 
+        // ===== #1022 `ROWarrantyReport_Approve_Check_WarrantyExpiresDateAndWarrantyKM` (WarrantyReport.cs:6490) =====
+        // Gọi ở ĐÚNG 3/11 nhánh — (SB,A)/(SB,P)/(SB,W) (bảo hành xe SAU BÁN, trừ nhánh Ắc quy SB.B đã có
+        // guard riêng ở #1019). Đối chiếu với hạn bảo hành THẬT của XE (`Ser_Car.WarrantyExpiresDate`/
+        // `.WarrantyKM` — mốc gốc khi đăng ký, KHÁC `claim.WarrantyExpiresDate`/`WarrantyKM` là bản chụp
+        // trên claim) — Mini có sẵn `ServiceCar.CarID`/`WarrantyExpiresDate`/`WarrantyKM`.
+        if (rowType == "SB" && (rowTypeDtl == "A" || rowTypeDtl == "P" || rowTypeDtl == "W"))
+        {
+            if (string.IsNullOrWhiteSpace(claim.CarID))
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy thông tin xe của BCBH!" });
+            if (claim.FinishedDate is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidFinishedDate",
+                    message = "Ngày sửa xong của BCBH trống!" });
+            if (claim.WarrantyKM is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM",
+                    message = "Số Km của BCBH trống!" });
+            var car = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == claim.CarID);
+            if (car is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy thông tin xe của BCBH!" });
+            if (car.WarrantyExpiresDate is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy ngày hết hạn bảo hành của xe!" });
+            if (car.WarrantyKM is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy Km giới hạn BH của xe!" });
+            if (claim.FinishedDate.Value.Date > car.WarrantyExpiresDate.Value.Date)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidFinishedDate",
+                    message = "Ngày sửa xong > Ngày hết hạn bảo hành của xe tạo BCBH!" });
+            if (claim.WarrantyKM.Value > car.WarrantyKM.Value)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM",
+                    message = "Số Km của BCBH > Số KM giới hạn bảo hành của xe tạo BCBH!" });
+        }
+
         // ===== #1020 `ROWarrantyReport_Approve_Check_ComplaintDiagnosticError` (WarrantyReport.cs:5886) =====
         // Gọi ở 8/11 nhánh — CHỈ trong (XM,*)/(SB,*) (cả bốn ROWTypeDtlCode A/B/P/W), loại trừ (PT,S)/(TC,R)/(BT,C).
         // Nguồn: mã lỗi phàn nàn (`ErrorCodePN`) và mã lỗi chẩn đoán (`ErrorCodeCD`) của claim đều PHẢI tồn tại
