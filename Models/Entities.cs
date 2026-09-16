@@ -14139,6 +14139,14 @@ public sealed class ServiceStockOut
     /// (`Ser_Inv_StockOut.DealerCode`) khi cấp số chứng từ — port cũ chưa có cột này nên chưa cấp số theo
     /// đúng phạm vi đại lý (giống nợ đã vá cho `ServiceStockIn` ở #994).</summary>
     public string? DealerCode { get; set; }
+
+    /// <summary>🔴 #996 §12 — nguồn `SerStockOutGet` join `Ser_Customer su on t.CusID = su.CusID` để trả
+    /// tên khách nhận hàng — port cũ chỉ có `ReceiverCode` (mã thô), không có khoá khách hàng thật.</summary>
+    public string? CusID { get; set; }
+    /// <summary>🔴 #996 §12 — nguồn join `Sys_user suser on t.UserCode = suser.UserCode` để trả tên
+    /// người lập phiếu.</summary>
+    public string? UserCode { get; set; }
+    public string? TruckNo { get; set; }
 }
 
 /// <summary>Dòng phiếu xuất kho phụ tùng (detail) — port 1:1 FrmSerInventoryAccStockOut01 grid, TCMotor.</summary>

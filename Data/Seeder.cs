@@ -2973,6 +2973,10 @@ public static class Seeder
                 "ALTER TABLE public.\"PartCostSnapshots\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 // #995: SerStockOutGetMaxStockOutNo/_V2 loc theo DealerCode - ServiceStockOuts truoc day khong co.
                 "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                // #996: SerStockOutGet join Ser_Customer/Sys_user - can khoa CusID/UserCode; TruckNo cung thieu.
+                "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"CusID\" text NULL",
+                "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"UserCode\" text NULL",
+                "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"TruckNo\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

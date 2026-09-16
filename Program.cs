@@ -15763,6 +15763,32 @@ app.MapGet("/api/servicestockouts", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #996 `SerStockOutGet` (LIVE, `BizCarSv.Inventory.StockOut.cs:3028`) — CHI TIẾT 1 PHIẾU XUẤT =====
+// Nguồn: header `t.*` + `left join Ser_Customer su on t.CusID=su.CusID` (tên khách) + `left join Sys_user
+// suser on t.UserCode=suser.UserCode` (tên người lập) + khối chi tiết CÓ ĐIỀU KIỆN (`strIsGetDetail`).
+// 📌 Mini: port header + CusName/UserName + dòng phụ tùng (đã có sẵn `ServiceStockOutLine`). KHÔNG port
+// khối `#tbl_sbb`/`#tbl_tmpprice` (tồn kho + giá theo RANK ngày hiệu lực) — đây là dữ liệu TÍNH LẠI cho
+// hiển thị gợi ý giá lúc xuất, không phải dữ liệu đã LƯU trên phiếu; ghi nợ rõ, không bịa.
+app.MapGet("/api/servicestockouts/{no}", async (string no, AppDbContext db, ITenantContext t, bool includeDetail = false) =>
+{
+    var n = no.Trim().ToUpperInvariant();
+    var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == n);
+    if (h is null) return Results.NotFound(new { no = n });
+    var cus = h.CusID is null ? null : await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == h.CusID);
+    var user = h.UserCode is null ? null : await db.SysUsers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.UserCode == h.UserCode);
+    var lines = includeDetail
+        ? await db.ServiceStockOutLines.Where(x => x.OrgId == t.OrgId && x.ServiceStockOutId == h.Id).ToListAsync()
+        : new List<ServiceStockOutLine>();
+    return Results.Ok(new
+    {
+        h.StockOutNo, h.DealerCode, h.CusID, cusName = cus?.CusName, h.UserCode, userName = user?.UserName,
+        h.TruckNo, h.ReceiverCode, h.StockOutDate, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount,
+        lines = includeDetail ? lines.Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount }) : null,
+        onlyExistsOnMachine150_996 = "#996: SerStockOutGet — BizCarSv.Inventory.StockOut.cs:3028",
+        priceRankAndStockBalanceBlocksNotPorted = "Nguon con khoi #tbl_sbb (ton kho InStockQuantity theo PartID) va #tbl_tmpprice (gia hieu luc gan nhat qua RANK() OVER PARTITION BY PartId ORDER BY DateEffect DESC) khi strIsGetDetail=Active — day la du lieu TINH LAI de goi y gia luc xuat (khong phai du lieu da LUU tren dong phieu), Mini chua port; ghi NO",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #995 `SerStockOutGetMaxStockOutNo`/`_V2` (LIVE CẢ HAI, BizCarSv.Inventory.StockOut.cs:4883/5010) =====
 // CÙNG KHUÔN #994 (StockIn): `HTCWSCarSv/WSCarSv.asmx.cs:15423` gọi `_V2` (lọc `like '%'+yymmdd(hôm nay)+'%'`);
 // `TERP.WSCarSv/App_Code/WSCarSv.cs:21993` gọi bản TRẦN (không lọc ngày) — hai cổng SỐNG, hai luật cấp số
@@ -15793,7 +15819,8 @@ app.MapPost("/api/servicestockouts", async (ServiceStockOutDto dto, AppDbContext
     var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
     // Loại phiếu mặc định "2" = phiếu xuất thường (loại DUY NHẤT được tính doanh thu bán ngoài).
     var h = new ServiceStockOut { OrgId = t.OrgId, StockOutNo = no, ReceiverCode = dto.ReceiverCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Status = "Draft",
-        StockOutType = string.IsNullOrWhiteSpace(dto.StockOutType) ? "2" : dto.StockOutType.Trim(), DealerCode = dto.DealerCode };   // #995
+        StockOutType = string.IsNullOrWhiteSpace(dto.StockOutType) ? "2" : dto.StockOutType.Trim(), DealerCode = dto.DealerCode,
+        CusID = dto.CusID, UserCode = dto.UserCode, TruckNo = dto.TruckNo };   // #995/#996
     db.ServiceStockOuts.Add(h); await db.SaveChangesAsync();
     decimal totalQty = 0m, totalAmount = 0m;
     foreach (var l in lines)
@@ -79570,7 +79597,8 @@ record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity
 record StockDocVoidDto(string? ToStatus);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines, string? DealerCode = null);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price = 0, decimal Vat = 0);
-record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null, string? DealerCode = null);   // #995
+record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null, string? DealerCode = null,
+    string? CusID = null, string? UserCode = null, string? TruckNo = null);   // #995/#996
 record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
