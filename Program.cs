@@ -77168,7 +77168,7 @@ app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
 // ⚠️ Ghi **ba** DB: `_dbMain.SaveData` → sao chép rồi `_dbWH.SaveData` → `_dbDealer.SaveData` nếu
 //   `!bIsWSMain`. ⚠️ `SetDataRowStateOfAllRows(ref …, DataRowState.Added)` được gọi **HAI lần liên tiếp**
 //   trên cùng bảng — lần thứ hai **thừa** (trạng thái đã là `Added`): câu lệnh chết, vô hại.
-app.MapPost("/api/serassignmentworks", async (SerAssignmentWorkDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serassignmentworks", async (SerAssignmentWorkDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.RONo) && string.IsNullOrWhiteSpace(dto.ROID))
         return Results.BadRequest(new { error = "Cần RONo hoặc ROID (nguồn Convert.ToInt32(strROID) không guard rỗng)." });
@@ -77245,10 +77245,13 @@ app.MapPost("/api/serassignmentworks", async (SerAssignmentWorkDto dto, AppDbCon
                 message = $"Khoang {cavityId} ({label}) đã có lịch trùng khung giờ với lệnh {conflictRoNo}.", stage = label, cavityId, conflictRoNo });
     }
 
+    // #1159: Ser_AssignmentWork_Create (AssignmentOfWork.cs:23-378) ghi CreateBy/LogLUBy = strPartnerUserCode
+    // cung luc voi CreateDTime/LogLUDateTime — port cu bo sot ca hai cot actor.
+    var by1159 = (partnerUserCode ?? "system").Trim(); var now1159 = DateTime.Now;
     var w = new SerAssignmentWork
     {
         OrgId = t.OrgId, RONo = ro.RONo, ROID = dto.ROID ?? ro.Id.ToString(),
-        CreateDTime = DateTime.Now, LogLUDateTime = DateTime.Now,
+        CreateDTime = now1159, CreateBy = by1159, LogLUDateTime = now1159, LogLUBy = by1159,
     };
     // Gửi rỗng = KHÔNG ghi (đúng nguồn).
     if (dto.SCCPlanStartDTime is not null) w.SCCPlanStartDTime = dto.SCCPlanStartDTime;
@@ -77332,7 +77335,7 @@ app.MapGet("/api/serassignmentworks", async (AppDbContext db, ITenantContext t, 
 //     **chỉ nhóm đầu được đẩy**, nhóm sau im lặng.
 // ⚠️ Vẫn giữ nguyên bẫy #528: mọi trường bọc `if (!IsEmpty(...))` ⇒ **không xoá được mốc kế hoạch**.
 app.MapPost("/api/serassignmentworks/{roNo}/update", async (string roNo, SerAssignmentWorkDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
     if (ro is null) return Results.BadRequest(new { error = "MyCheckUpdate_Ser_RO: không tìm thấy lệnh sửa chữa." });
@@ -77442,7 +77445,9 @@ app.MapPost("/api/serassignmentworks/{roNo}/update", async (string roNo, SerAssi
     if (dto.SCKSCPlanFinishDTime is not null) w.SCKSCPlanFinishDTime = dto.SCKSCPlanFinishDTime;
     if (!string.IsNullOrWhiteSpace(dto.WorkTypeStart)) w.WorkTypeStart = dto.WorkTypeStart;
     if (!string.IsNullOrWhiteSpace(dto.WorkTypeFinish)) w.WorkTypeFinish = dto.WorkTypeFinish;
-    w.LogLUDateTime = DateTime.Now;
+    // #1158: Ser_AssignmentWork_Update (AssignmentOfWork.cs:403-778) ghi LogLUDateTime/LogLUBy trong CUNG
+    // mot alColumnEffective — port cu chi wire LogLUDateTime, bo sot LogLUBy.
+    w.LogLUDateTime = DateTime.Now; w.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
 
     return Results.Ok(new
