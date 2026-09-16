@@ -50983,6 +50983,11 @@ app.MapPost("/api/drivetests/{code}", async (string code, DriveTestUpdateDto dto
     }
     if (dto.DriveDate is not null && dto.DriveDate.Value.Date > DateTime.Now.Date)
         return Results.BadRequest(new { error = "Ngày lái thử phải nhỏ hơn hoặc là Ngày hiện tại." });
+    // #1012: nguồn bắt buộc CustomerCode/DriverLicenseNo/RangeAgeCode ở nhánh SỬA (ném lỗi nếu rỗng) —
+    // khác nhánh CHỈ NÀY được cập nhật, ba trường này KHÔNG có khuôn "rỗng = không đụng" như các trường khác.
+    if (string.IsNullOrWhiteSpace(dto.CustomerCode)) return Results.BadRequest(new { error = "Chưa nhập mã khách hàng." });
+    if (string.IsNullOrWhiteSpace(dto.DriverLicenseNo)) return Results.BadRequest(new { error = "Phải nhập GPLX." });
+    if (string.IsNullOrWhiteSpace(dto.RangeAge)) return Results.BadRequest(new { error = "Chưa chọn độ tuổi." });
     if (plate.Length > 0) d.DrvTestPlateNo = plate;
     if (!string.IsNullOrWhiteSpace(dto.TestModelCode)) d.TestModelCode = model;
     if (dto.DriveDate is not null) d.DriveDate = dto.DriveDate.Value;
@@ -50990,8 +50995,11 @@ app.MapPost("/api/drivetests/{code}", async (string code, DriveTestUpdateDto dto
     if (dto.PhoneNo is not null) d.PhoneNo = dto.PhoneNo.Trim();
     if (dto.Address is not null) d.Address = dto.Address.Trim();
     if (dto.Email is not null) d.Email = dto.Email;
+    d.CustomerCode = dto.CustomerCode.Trim();
+    d.DriverLicenseNo = dto.DriverLicenseNo.Trim();
+    d.RangeAge = dto.RangeAge.Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DriveTestCode, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate });
+    return Results.Ok(new { d.DriveTestCode, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerCode, d.DriverLicenseNo, d.RangeAge });
 }).RequireAuthorization();
 
 // 🔴 XOÁ — `DLR_DriveTestDel_New20181115` (187383): guard trạng thái **"P,R"** ⇒ lượt **đã duyệt ("A")
@@ -80485,7 +80493,11 @@ record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email);
-record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email);
+record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email,
+    // #1012: nguồn (`DLR_DriveTestUpdate_New20181119`, Biz.HTC.WH.cs:106538) ghi BA cột này VÔ ĐIỀU KIỆN
+    // (BẮT BUỘC, ném lỗi nếu rỗng) mỗi lần sửa — DTO tạo (`DriveTestDto`) đã có sẵn cả ba nhưng DTO sửa
+    // chưa từng có, nên PUT không thể sửa được các trường này dù entity đã có cột.
+    string? CustomerCode = null, string? DriverLicenseNo = null, string? RangeAge = null);
 record RegisterOrgDto(string Name);
 
 // Cập nhật ngày giao xe theo LÔ dòng (nguồn nhận bảng `dtInput_CarDeliveryDate` nhiều dòng).
