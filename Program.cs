@@ -25459,15 +25459,17 @@ app.MapGet("/api/roattachments", async (AppDbContext db, ITenantContext t, strin
 {
     var qy = db.RoAttachments.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim().ToUpperInvariant());
+    // #1224 §12: FlagHMC/AttachmentType/ROWPTCode/Remark co duong ghi rieng (#879/#910) nhung chua
+    // tung chieu o day - client ghi xong khong co cach nao doc lai qua danh sach.
     var rows = await qy.OrderBy(x => x.Id).Take(500)
-        .Select(x => new { x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt })
+        .Select(x => new { x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt, x.FlagHMC, x.AttachmentType, x.ROWPTCode, x.Remark })
         .ToListAsync();
     // #622: nguồn trả thêm ro.DealerCode qua LEFT JOIN Ser_RO (LEFT còn sống ⇒ có thể NULL).
     var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId)
         .Select(r => new { r.RONo, r.DealerCode }).ToListAsync();
     var items = rows.Select(x => new
     {
-        x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt,
+        x.Id, x.RONo, x.ImageName, x.ImagePath, x.CreatedAt, x.FlagHMC, x.AttachmentType, x.ROWPTCode, x.Remark,
         // form hiển thị số LSC kèm tiền tố "LS-" (:203) — chỉ là ĐỊNH DẠNG hiển thị
         roNoDisplay = "LS-" + x.RONo,
         dealerCode = ros.FirstOrDefault(r => r.RONo == x.RONo)?.DealerCode,
