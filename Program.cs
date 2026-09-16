@@ -17489,7 +17489,7 @@ app.MapPost("/api/servicecars/{frameNo}/membercar-and-customer", async (
 //   ⚠️ Dòng `//if (strDealer.Equals("VS058"))` là bộ lọc gỡ lỗi **đã bị comment** — port dòng ACTIVE.
 //   📌 MiniHTC một CSDL, không có RPC ⇒ ghi cờ `dealerPushNotModelled` thay vì giả vờ đã đồng bộ.
 app.MapPost("/api/servicecars/warranty-registration-date", async (WarrantyRegDateImportDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rows = dto.Rows ?? new();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Lưới dữ liệu trống" });
@@ -17541,11 +17541,16 @@ app.MapPost("/api/servicecars/warranty-registration-date", async (WarrantyRegDat
         });
 
     // --- GHI (một CSDL; nguồn ghi Main + WH + Dealer rồi còn RPC sang từng đại lý).
+    // #1188 SUA BUG THAT: nguon SerCarHTCUpdateWarrantyDate (BizCarSv.Car.cs:2118+141-143) ghi
+    // LogLUDateTime/LogLUBy tren dt_Ser_CarUpdate — port cu chua tung dong dau (khac han SerCarUpdate
+    // tran, von KHONG ghi cot nao, da xac nhan o #1051).
+    var by1188 = (partnerUserCode ?? "system").Trim(); var now1188 = DateTime.Now;
     var updated = 0;
     foreach (var r in rows)
     {
         var car = carByVin[(r.FrameNo ?? "").Trim()];
         car.WarrantyRegistrationDate = r.WarrantyRegistrationDate;
+        car.LogLUDateTime = now1188; car.LogLUBy = by1188;
         // ServiceCar khong co cot UpdatedAt
         updated++;
     }
