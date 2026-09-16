@@ -76064,6 +76064,50 @@ app.MapPost("/api/serassignmentworks", async (SerAssignmentWorkDto dto, AppDbCon
         && dto.SCKSCPlanStartDTime > dto.SCKSCPlanFinishDTime)
         return Results.BadRequest(new { error = "MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007: SCKSC bat dau sau ket thuc." });
 
+    // ===== #1028 TRẢ NỢ: cùng khuôn #1026 nhưng cho nhánh TẠO MỚI — guard chỉ mới kiểm "bắt đầu sau kết
+    // thúc", CHƯA từng kiểm trùng khoang thật với các lệnh KHÁC =====
+    // Nguồn: `MyCheck_SerAssignmentWork_PlanDateTime_Cavity_20211007` (AssignmentOfWork.cs:2621, gọi từ
+    // `Ser_AssignmentWork_CreateX` LIVE, 7 lần — đúng bảy công đoạn). KHÔNG loại trừ ROID (bản ghi chưa
+    // tồn tại lúc tạo, khác bản Update ở #1026 có `t.ROID != @strROID`).
+    async Task<string?> FindCavityOverlapCreate(string? cavityId, DateTime? planStart, DateTime? planFinish)
+    {
+        if (string.IsNullOrWhiteSpace(cavityId) || planStart is null || planFinish is null) return null;
+        var candidates = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId &&
+            (x.SCCCavityID == cavityId || x.SCDCavityID == cavityId || x.SCNCavityID == cavityId
+             || x.SCSCavityID == cavityId || x.SCDBCavityID == cavityId || x.SCLRCavityID == cavityId
+             || x.SCKSCCavityID == cavityId)).ToListAsync();
+        bool Overlap(DateTime? s, DateTime? f) => s.HasValue && f.HasValue
+            && ((s.Value < planStart.Value && f.Value > planStart.Value) || (s.Value < planFinish.Value && f.Value > planFinish.Value));
+        foreach (var c in candidates)
+        {
+            if (c.SCCCavityID == cavityId && Overlap(c.SCCPlanStartDTime, c.SCCPlanFinishDTime)) return c.RONo;
+            if (c.SCDCavityID == cavityId && Overlap(c.SCDPlanStartDTime, c.SCDPlanFinishDTime)) return c.RONo;
+            if (c.SCNCavityID == cavityId && Overlap(c.SCNPlanStartDTime, c.SCNPlanFinishDTime)) return c.RONo;
+            if (c.SCSCavityID == cavityId && Overlap(c.SCSPlanStartDTime, c.SCSPlanFinishDTime)) return c.RONo;
+            if (c.SCDBCavityID == cavityId && Overlap(c.SCDBPlanStartDTime, c.SCDBPlanFinishDTime)) return c.RONo;
+            if (c.SCLRCavityID == cavityId && Overlap(c.SCLRPlanStartDTime, c.SCLRPlanFinishDTime)) return c.RONo;
+            if (c.SCKSCCavityID == cavityId && Overlap(c.SCKSCPlanStartDTime, c.SCKSCPlanFinishDTime)) return c.RONo;
+        }
+        return null;
+    }
+    var newCavityGroups = new (string? cavityId, DateTime? start, DateTime? finish, string label)[]
+    {
+        (dto.SCCCavityID, dto.SCCPlanStartDTime, dto.SCCPlanFinishDTime, "SCC"),
+        (dto.SCDCavityID, dto.SCDPlanStartDTime, dto.SCDPlanFinishDTime, "SCD"),
+        (dto.SCNCavityID, dto.SCNPlanStartDTime, dto.SCNPlanFinishDTime, "SCN"),
+        (dto.SCSCavityID, dto.SCSPlanStartDTime, dto.SCSPlanFinishDTime, "SCS"),
+        (dto.SCDBCavityID, dto.SCDBPlanStartDTime, dto.SCDBPlanFinishDTime, "SCDB"),
+        (dto.SCLRCavityID, dto.SCLRPlanStartDTime, dto.SCLRPlanFinishDTime, "SCLR"),
+        (dto.SCKSCCavityID, dto.SCKSCPlanStartDTime, dto.SCKSCPlanFinishDTime, "SCKSC"),
+    };
+    foreach (var (cavityId, start, finish, label) in newCavityGroups)
+    {
+        var conflictRoNo = await FindCavityOverlapCreate(cavityId, start, finish);
+        if (conflictRoNo is not null)
+            return Results.BadRequest(new { error = "Ser_AssignmentWork_Create_InvalidPlanStartDTimeOrPlanFinishDTime",
+                message = $"Khoang {cavityId} ({label}) đã có lịch trùng khung giờ với lệnh {conflictRoNo}.", stage = label, cavityId, conflictRoNo });
+    }
+
     var w = new SerAssignmentWork
     {
         OrgId = t.OrgId, RONo = ro.RONo, ROID = dto.ROID ?? ro.Id.ToString(),
