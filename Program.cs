@@ -64802,6 +64802,32 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
         }
     }
 
+    // #1037: phần header còn lại của `Ser_RO_Update_New20220926` — CÙNG nhóm (a) VÔ ĐIỀU KIỆN, rỗng = XOÁ.
+    r.CusID = dto.CusID; r.CusName = dto.CusName; r.CusAddress = dto.CusAddress; r.CusTel = dto.CusTel;
+    if (dto.CusWaiting.HasValue) r.CusWaiting = dto.CusWaiting.Value;
+    r.CarWashRequested = dto.CarWashRequested; r.UseSHPart = dto.UseSHPart; r.PayByCard = dto.PayByCard;
+    r.Km = dto.Km;
+    // Nguồn: rỗng ⇒ ghi CHUỖI RỖNG (vẫn nằm trong alEffectiveColumn) — không phải "giữ nguyên".
+    r.ReminderMaintanceDate = dto.ReminderMaintanceDate;
+    r.ReminderMaintanceKm = dto.ReminderMaintanceKm;
+    r.WorkDoneSoon = dto.WorkDoneSoon; r.ROType = dto.ROType; r.TermsOfRepair = dto.TermsOfRepair;
+    r.CarID = dto.CarID; r.InsNo = dto.InsNo; r.InvoiceBy = dto.InvoiceBy;
+    r.AdvisoryCode = dto.AdvisoryCode; r.AdvisoryPhone = dto.AdvisoryPhone;
+    r.CardNo = dto.CardNo;   // #1037 §12
+    r.FlagOnlyPoint = dto.FlagOnlyPoint; r.InsuranceDeductible = dto.InsuranceDeductible;
+    // Nguồn: CHỈ ghi khi khác rỗng (không nằm trong nhóm rỗng=xoá).
+    if (!string.IsNullOrWhiteSpace(dto.IsReRepair)) r.IsReRepair = dto.IsReRepair;
+
+    // #1037: `bFlagBackLSC` — trả lệnh về "Mới tạo" (HasRO) khi đang ở Repaired/CheckEnd/InGarage, dùng để
+    //   SỬA LẠI báo giá đã đi quá xa mà chưa cho phép (nguồn còn đặt cờ đẩy HyundaiMe — MiniHTC không có
+    //   tầng đó, không mô phỏng).
+    var backToHasRO = false;
+    if (string.Equals(dto.FlagBackLSC, "1") && r.Status is "Repaired" or "CheckEnd" or "InGarage")
+    {
+        r.Status = "HasRO";
+        backToHasRO = true;
+    }
+
     r.ModifyBy = dto.ModifyBy; r.ModifyDate = DateTime.Now;
     r.LogLUBy = dto.ModifyBy; r.LogLUDateTime = DateTime.Now;
     await db.SaveChangesAsync();
@@ -64812,8 +64838,15 @@ app.MapPut("/api/repairorders/{no}", async (string no, RepairOrderUpdateDto dto,
         r.ScheduleDate, r.CheckInDate, r.StartDate, r.FinishedDate,
         r.PlanedDuration, r.CusRequest, r.CarStatus, r.ModifyBy, r.ModifyDate,
         r.TotalActHours, r.LevelOfInspection, syncedReceptionF = linkedReception?.ReceptionFNo,
+        // ===== #1037 =====
+        r.CusID, r.CusName, r.CusAddress, r.CusTel, r.CusWaiting, r.CarWashRequested, r.UseSHPart, r.PayByCard,
+        r.Km, r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.WorkDoneSoon, r.ROType, r.TermsOfRepair,
+        r.CarID, r.InsNo, r.InvoiceBy, r.AdvisoryCode, r.AdvisoryPhone, r.CardNo, r.IsReRepair, r.FlagOnlyPoint,
+        r.InsuranceDeductible, backToHasRO, r.Status,
         note = "Năm vai trò kỹ thuật + ScheduleDate/CheckInDate ghi VÔ ĐIỀU KIỆN (rỗng = XOÁ); "
              + "StartDate/FinishedDate có guard (rỗng = GIỮ NGUYÊN). Ngày cắt tới PHÚT như nguồn.",
+        pushToHyundaiMeNotDone = "Nguon dat co day RO ve HyundaiMe khi backToHasRO — MiniHTC chua co tang goi ngoai, khong mo phong.",
+        serviceAndPartReplaceNotDone = "Nguon con XOA-ROI-GHI-LAI toan bo Ser_ROServiceItems/Ser_ROPartItems trong cung ham nay — CHUA port (qua lon cho 1 don vi, xem hang doi manifest).",
     });
 }).RequireAuthorization();
 
@@ -79697,7 +79730,16 @@ record RepairOrderUpdateDto(DateTime? ScheduleDate, DateTime? CheckInDate,
     string? Operator = null, string? QuanDoc = null,
     DateTime? StartDate = null, DateTime? FinishedDate = null,
     decimal? PlanedDuration = null, string? CusRequest = null, string? CarStatus = null,
-    string? ModifyBy = null, decimal? TotalActHours = null, string? LevelOfInspection = null);   // #923
+    string? ModifyBy = null, decimal? TotalActHours = null, string? LevelOfInspection = null,   // #923
+    // #1037: phần còn lại của `Ser_RO_Update_New20220926` (ZTemp.cs:13209) — 22 cột nhóm VÔ ĐIỀU KIỆN
+    // chưa từng có route ghi. Rỗng = XOÁ, cùng luật (a) đã ghi ở #321.
+    string? CusID = null, string? CusName = null, string? CusAddress = null, string? CusTel = null,
+    bool? CusWaiting = null, string? CarWashRequested = null, string? UseSHPart = null, string? PayByCard = null,
+    string? Km = null, DateTime? ReminderMaintanceDate = null, decimal? ReminderMaintanceKm = null,
+    string? WorkDoneSoon = null, string? ROType = null, string? TermsOfRepair = null, string? CarID = null,
+    string? InsNo = null, string? InvoiceBy = null, string? AdvisoryCode = null, string? AdvisoryPhone = null,
+    string? CardNo = null, string? IsReRepair = null, string? FlagOnlyPoint = null,
+    decimal? InsuranceDeductible = null, string? FlagBackLSC = null);
 record RoStatusRawDto(string? Status, string? LogLUBy = null);   // #942
 // #324: cap nhat lich hen tu API DOI TAC (OS_Ser_App_Update). Rong = GIU NGUYEN (helper Function_UtilsSerApp).
 // #325: tao lich hen tu HCC (OS_Ser_App_Create_ForHCC). AppDateTime ghi THO, CreatedDate cat toi PHUT.

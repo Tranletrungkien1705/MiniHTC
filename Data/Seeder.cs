@@ -2987,6 +2987,8 @@ public static class Seeder
                 "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"Version\" text NULL",
                 "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"ReRepairFeedback\" text NULL",
                 "ALTER TABLE public.\"TechnicalLibraries\" ADD COLUMN IF NOT EXISTS \"Type\" text NULL",
+                // #1037: Ser_RO_Update_New20220926 ghi cot tran CardNo (KHAC CardNoInv snapshot hoa don).
+                "ALTER TABLE public.\"RepairOrders\" ADD COLUMN IF NOT EXISTS \"CardNo\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

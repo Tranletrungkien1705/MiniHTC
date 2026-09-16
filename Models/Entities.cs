@@ -2316,6 +2316,11 @@ public sealed class RepairOrder
     /// <summary>FLAGISDLQUERY — đã tra cứu thông tin hội viên hay chưa.</summary>
     public string? FlagIsDLQuery { get; set; }
 
+    /// <summary>🔴 #1037 §12 `Ser_RO.CardNo` — nguồn `Ser_RO_Update_New20220926` (ZTemp.cs:13209) ghi cột
+    /// TRẦN này (số thẻ hội viên quét lúc SỬA lệnh), KHÁC HẲN `CardNoInv` bên dưới (snapshot chốt lúc lập
+    /// HOÁ ĐƠN — #266). Hai cột độc lập, không nhầm lẫn.</summary>
+    public string? CardNo { get; set; }
+
     /// <summary>
     /// 🔴 Nhóm hậu tố **`Inv`** = **CHỐT tại thời điểm lập HOÁ ĐƠN** (snapshot), KHÔNG phải giá trị hiện
     /// tại của thẻ. Cùng họ với cặp `CostInit`/`CostActual` (#231): hoá đơn phải giữ số liệu lúc phát hành,
