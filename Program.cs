@@ -36467,10 +36467,11 @@ app.MapGet("/api/tvo/appointments/confirmed", async (AppDbContext db, ITenantCon
         && x.CreatedAt >= f && x.CreatedAt < toEx);
 
     // Trạng thái: nguồn CỨNG in ('2'); bộ lọc do người dùng chọn đã bị comment.
+    // #1221: '2' la ma nguon tho cua "Confirmed" (xem appointmentStatusSourceCodes) - Mini luu ten trang thai.
     var statuses = (statusList ?? "").Split((char)124, StringSplitOptions.RemoveEmptyEntries)
         .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
     if (statuses.Count > 0) q0 = q0.Where(x => statuses.Contains(x.Status));
-    else q0 = q0.Where(x => x.Status == "2");
+    else q0 = q0.Where(x => x.Status == "Confirmed");
 
     // Năm bộ lọc còn lại — nguồn KHÔNG áp (bị comment); port áp thật.
     var revived = new List<string>();
@@ -36628,7 +36629,12 @@ app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db
         CusAddress = dto.CustomerAddress!.Trim(),
         CusRequest = dto.CusRequest!.Trim(),
         Creator = dto.PartnerUserCode,
-        Status = "1",                       // AppStatus ghi thẳng chữ số, đúng nguồn
+        // #1221 SUA BUG THAT: nguon ghi AppStatus THO ("1"), nhung ServiceAppointment.Status cua Mini
+        // luu TEN TRANG THAI TIENG ANH ("Booked" v.v — quyet dinh CO CHU Y cua #285: "giu ten trang thai
+        // noi bo cua port", xem appointmentStatusSourceCodes/appointmentTransitions cung file) - ghi "1"
+        // khien lich hen nay VO HINH voi POST /api/appointments/{id}/status (tra ve loi vi "1" khong nam
+        // trong appointmentTransitions) va voi moi bo dem/filter khac dung ten trang thai.
+        Status = "Booked",
         Source = "HYUNDAIME",               // ĐÓNG CỨNG trong nguồn — client không đặt được
         // ⚠️ THÔ, **không** cắt ngày — khác kênh nội bộ (#323). Xem chú thích (3) ở đầu khối.
         AppDateTime = dto.AppDateTime!.Trim(), AppDateTimeFrom = dto.AppDateTime!.Trim(),
@@ -36642,8 +36648,9 @@ app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db
     await db.SaveChangesAsync();
 
     // Nguồn đếm số lịch `AppStatus = '1'` của đại lý rồi gửi sang HCC (`itemcount`).
+    // #1221: so voi "Booked" (ten trang thai Mini luu), khong phai ma nguon tho "1".
     var pendingAppCount = await db.ServiceAppointments.CountAsync(x => x.OrgId == t.OrgId
-        && x.DealerCode == dealer && x.Status == "1");
+        && x.DealerCode == dealer && x.Status == "Booked");
 
     return Results.Ok(new
     {
@@ -69596,7 +69603,8 @@ app.MapGet("/api/tvo/appointments", async (AppDbContext db, ITenantContext t,
 {
     var qy = db.ServiceAppointments.Where(a => a.OrgId == t.OrgId);
     // Nguon chi con HAI dieu kien nay la that:
-    qy = qy.Where(a => a.Status == "2");                       // and ro.AppStatus in (2)
+    // #1221: '2' la ma nguon tho cua "Confirmed" - Mini luu ten trang thai (appointmentStatusSourceCodes).
+    qy = qy.Where(a => a.Status == "Confirmed");                       // and ro.AppStatus in (2)
     if (fromDate.HasValue) qy = qy.Where(a => a.AppFrom >= fromDate.Value);
     if (toDate.HasValue) qy = qy.Where(a => a.AppFrom <= toDate.Value);
     var beforeDeadFilters = await qy.CountAsync();
