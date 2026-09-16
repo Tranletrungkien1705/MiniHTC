@@ -8009,6 +8009,16 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     int NE(params string[] codes) => engInWindow.Count(e => e.EngineerType != null && codes.Contains(e.EngineerType));
     int NC(params string[] codes) => cavInWindow.Count(c => c.CavityType != null && codes.Contains(c.CavityType));
 
+    // ===== #1061 A.III Đơn giá nhân công (ZTemp.cs:3644-3661) — tra `#tbl_Mst_Param` (Mst_Param lọc theo
+    // DealerCode, ZTemp.cs:3090-3100), mỗi ParamCode một dòng, KHÔNG group theo gì khác.
+    var paramMap = await db.MstParams.Where(p => p.OrgId == t.OrgId && p.DealerCode == dealer)
+        .ToDictionaryAsync(p => p.ParamCode, p => p.ParamValue);
+    double ParamF(string code) => paramMap.TryGetValue(code, out var v) && double.TryParse(v, out var d) ? d : 0;
+    var unitPriceBDN = ParamF("UnitPriceBDN"); var unitPriceSCC = ParamF("UnitPriceSCC");
+    var unitPriceSCD = ParamF("UnitPriceSCD"); var unitPriceSCS = ParamF("UnitPriceSCS");
+    // ===== #1061 A.V Tỷ lệ lợi nhuận gộp (ZTemp.cs:3732-3737) — cùng cơ chế tra Mst_Param.
+    var serProfitRate = ParamF("SerProfitRate"); var partProfitRate = ParamF("PartProfitRate");
+
     return Results.Ok(new
     {
         dealer, dateFrom, dateTo,
@@ -8030,8 +8040,15 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         cavityBPNumber = NC("KS"),              // 5. Khoang sơn
         cabinetPaintNumber = NC("BS"),          // 6. Buồng sơn
         cavityParkingNumber = NC("KTN"),        // 7. Buồng sơn/giao xe/đậu xe
-        notPortedYet = "A.III (đơn giá nhân công) tới B (số liệu hoạt động) VÀ khối StockOut/phụ kiện "
-            + "CHƯA port — hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. Chỉ A.I/A.II ở lượt này.",
+        // ===== A.III Đơn giá nhân công =====
+        unitPrice = unitPriceBDN + unitPriceSCC + unitPriceSCD + unitPriceSCS,   // Tổng 1+2+3+4
+        unitPriceBDN, unitPriceSCC, unitPriceSCD, unitPriceSCS,
+        // ===== A.V Tỷ lệ lợi nhuận gộp =====
+        profitRate = serProfitRate + partProfitRate,   // Tổng 1+2 (nguyên văn nguồn: "công thức gây khó hiểu")
+        serProfitRate, partProfitRate,
+        notPortedYet = "A.IV (giờ công quy đổi — phụ thuộc ma trận ROType×ExpenseType, block 2 hàng đợi) "
+            + "tới B (số liệu hoạt động) VÀ khối StockOut/phụ kiện CHƯA port — hàm nguồn ~1734 dòng, xem "
+            + "hàng đợi ở manifest. A.I/A.II/A.III/A.V xong ở các lượt này.",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
