@@ -26274,7 +26274,7 @@ app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SupplierCode.Contains(q!) || x.SupplierName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.DealerCode, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.DealerCode, x.FlagActive, x.ContactName, x.ContactPhone }).ToListAsync();   // #1031
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -26288,9 +26288,12 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code && x.DealerCode == dto.DealerCode);
     if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, DealerCode = dto.DealerCode }; db.SerMstSuppliers.Add(row); }
     row.SupplierName = dto.SupplierName; row.Address = dto.Address; row.Phone = dto.Phone; row.Fax = dto.Fax; row.UpdatedAt = DateTime.Now;
+    // #1031: nguồn `SerSupplierCreate` (Inventory.Master.cs:259) ghi thẳng hai cột này (gán trực tiếp,
+    // không guard rỗng) — entity đã có sẵn từ #574 nhưng DTO/endpoint chưa từng wire.
+    row.ContactName = dto.ContactName; row.ContactPhone = dto.ContactPhone;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.DealerCode, row.FlagActive });
+    return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.DealerCode, row.FlagActive, row.ContactName, row.ContactPhone });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #818 PARITY NHÀ CUNG CẤP PHỤ TÙNG — `SerSupplier{Create,Update,Delete,Get,GetForCode}` =====
@@ -27503,12 +27506,16 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
     row.SupplierName = newName; row.Address = newAddr;
     if (dto.Phone != null) row.Phone = dto.Phone;
     if (dto.Fax != null) row.Fax = dto.Fax;
+    // #1031: nguồn `SerSupplierUpdate` (Inventory.Master.cs:451) cũng gán thẳng hai cột này, cùng khuôn Create.
+    if (dto.ContactName != null) row.ContactName = dto.ContactName;
+    if (dto.ContactPhone != null) row.ContactPhone = dto.ContactPhone;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         row.Id, row.SupplierCode, row.SupplierName, row.Address, row.Phone, row.Fax, row.DealerCode, row.FlagActive,
+        row.ContactName, row.ContactPhone,
         sourceDuplicateGuardScopeDiffers = "GAP 1 (#404): checkExistSupplierCode (TAO) loc IsActive = strIsActive — gia tri cua chinh ban ghi sap tao; checkExistSupplierCodeModify (SUA) loc IsActive = 1 CUNG. => tao NCC moi voi IsActive = 0 thi guard CHI tim trong nhom da vo hieu hoa => TRUNG MA voi mot NCC DANG HOAT DONG van tao duoc; chieu nguoc lai cung vay => Ser_MST_Supplier co the co NHIEU dong cung SupplierCode + DealerCode khac nhau IsActive",
         sourceUpdateSkipsFieldEmptyCheck = "GAP 2: Create goi checkSupplierFieldEmpty(..., strSupplierName, strAddress, strIsActive) nhung Update KHONG goi => SUA mot NCC co the XOA TRANG ten va dia chi trong khi TAO MOI thi bat buoc phai nhap",
         sourceModifyGuardExcludesItself = "AM TINH: checkExistSupplierCodeModify co SupplierID <> strSupplierID => loai chinh no ra, dung khuon da thay o #807",
@@ -80603,7 +80610,8 @@ record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, s
     string? Version = null, string? ReRepairFeedback = null, string? Type = null);   // #1029
 record TechnicalLibraryApproveDto(string? Remark);   // #926 — Remark nguon nhan nhung khong ghi cot nao
 record EngineerUpdateDto(string? EngineerNo, string? EngineerName, string? DealerCode, string? FlagActive, string? GroupRCode = null);   // #1006
-record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive, string? DealerCode = null);   // #911 DealerCode
+record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive, string? DealerCode = null,
+    string? ContactName = null, string? ContactPhone = null);   // #911 DealerCode; #1031 ContactName/ContactPhone (SerSupplierCreate/Update, Inventory.Master.cs)
 record MstDeliveryFormDto(string? DeliveryFormCode, string? DeliveryFormName, string? FlagActive);   // #634
 record MstOrderComplainTypeDto(string? OrderComplainType, string? OrderComplainTypeName, string? FlagActive);   // #633
 record SerReceptionErrorDto(string? ReceptionErrorCode, string? ReceptionErrorName, string? Remark, string? FlagActive);   // #909
