@@ -77270,6 +77270,52 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         }
         // `TotalActHours` chỉ ghi khi KHÁC RỖNG ⇒ rỗng = GIỮ NGUYÊN (khác nhóm "rỗng = xoá" #334).
         else if (dto.TotalActHours is not null) r.TotalActHours = dto.TotalActHours;
+
+        // ===== #1015 TRẢ NỢ: TỰ ĐỘNG TẠO NHẮC BẢO DƯỠNG (`Ser_CustomerCareMace`) KHI RO CHUYỂN "Repaired" =====
+        // Nguồn (cùng khối `SerROStatusUpdate`, Service01.cs:8988-9022) tại bước NÀY: (1) xoá mọi nhắc còn
+        // "Chưa liên hệ" (Status="0") của CÙNG xe (`ProcessDeleteCareMace`, BizCarSv.Customer.cs:13187);
+        // (2) tính ngày nhắc kế tiếp qua `ProcessGetLastestMace` (Service01.cs:14084) rồi CHÈN một dòng mới.
+        // Port cũ hoàn toàn không có bước này — sửa xe xong không tự sinh nhắc bảo dưỡng lần sau.
+        if (!string.IsNullOrWhiteSpace(r.CarID))
+        {
+            var oldPending = await db.CustomerCareMaces.Where(x => x.OrgId == t.OrgId
+                && x.DealerCode == r.DealerCode && x.CarID == r.CarID && x.Status == "Pending").ToListAsync();
+            db.CustomerCareMaces.RemoveRange(oldPending);
+
+            string maceType; DateTime maceRecomentDate;
+            if (r.ReminderMaintanceDate.HasValue)
+            {
+                // M3: CVDV đã chỉ định ngày nhắc riêng trên chính RO ⇒ dùng luôn (ưu tiên cao nhất).
+                maceType = "1"; maceRecomentDate = r.ReminderMaintanceDate.Value.Date;
+            }
+            else
+            {
+                // M1: tần suất trung bình xe vào xưởng (CheckInDate của MỌI RO cùng xe, theo thứ tự tạo).
+                var checkIns = await db.RepairOrders.Where(x => x.OrgId == t.OrgId
+                        && x.DealerCode == r.DealerCode && x.CarID == r.CarID && x.CheckInDate != null)
+                    .OrderBy(x => x.Id).Select(x => x.CheckInDate!.Value).ToListAsync();
+                int months;
+                if (checkIns.Count <= 1) months = 6;   // xe mới vào lần đầu ⇒ mặc định 6 tháng
+                else
+                {
+                    var totalDays = 0;
+                    for (int i = 1; i < checkIns.Count; i++) totalDays += (checkIns[i] - checkIns[i - 1]).Days;
+                    months = totalDays / ((checkIns.Count - 1) * 30);   // làm tròn XUỐNG, đúng nguồn
+                    if (months == 0) months = 1;
+                }
+                var m1 = finCut.AddMonths(months);
+                // M2: mốc mặc định cố định = ngày sửa xong + 6 tháng.
+                var m2 = finCut.AddMonths(6);
+                if (m1 < m2) { maceType = "3"; maceRecomentDate = m1; } else { maceType = "2"; maceRecomentDate = m2; }
+            }
+            db.CustomerCareMaces.Add(new CustomerCareMace
+            {
+                OrgId = t.OrgId, CareNo = "MC" + DateTime.Now.ToString("yyMMddHHmmssfff"),
+                MaceType = maceType, DealerCode = r.DealerCode, CarID = r.CarID, CusID = r.CusID,
+                ROID = roIdStr, RONo = r.RONo, MaceRecomentDate = maceRecomentDate, Status = "Pending",
+                CreatedDate = DateTime.Now,
+            });
+        }
     }
     if (target == "Finished")
     {
