@@ -18230,12 +18230,16 @@ app.MapPost("/api/servicecars/os-warranty-update", async (OsCarSalesUpdDto dto, 
 }).RequireAuthorization();
 
 // ===== Danh mục phụ tùng dịch vụ (ServicePart — port 1:1 FrmPart/FrmPartSearch, TCMotor) =====
-app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active) =>
+// #991: `SerPartGetAllByDealer` (LIVE, `BizCarSv.Inventory.Master.cs:1221`) — hàm nguồn nạp picklist PT
+// theo đại lý (chỉ 4 cột PartID/PartCode/Unit/VieName, IsActive='1' cứng) chưa từng ghép vào GET chung
+// vì thiếu filter `dealerCode` — entity `ServicePart.DealerCode` đã có sẵn từ trước, chỉ thiếu tham số lọc.
+app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active, string? dealerCode) =>
 {
     var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PartCode.Contains(q!.ToUpper()) || (x.PartName != null && x.PartName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(group)) query = query.Where(x => x.PartGroupCode == group);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);   // #991
     var items = await query.OrderBy(x => x.PartCode).Take(500)
         .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location, x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive,
             lowStock = x.Quantity < x.MinQuantity }).ToListAsync();
