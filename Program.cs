@@ -77545,11 +77545,13 @@ app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, Assignme
     // — FlagPlay = bPause?Yes:No, FlagBegin/FlagEnd luôn "0". Guard trạng thái của hàm chèn đòi RO thuộc
     // {CRE,PRT,HRO,INGA,RPRD}; guard của CHÍNH endpoint này đã hẹp hơn ({RPRD,INGA} ⊂ tập trên) nên luôn qua.
     var roWTNo = "ROWT" + DateTime.Now.ToString("yyMMddHHmmssfff");
+    // #1163: InsertSer_ROWorkTime ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy — cung khuon #1162.
     db.RoWorkTimes.Add(new RoWorkTime
     {
         OrgId = t.OrgId, ROWTNo = roWTNo, ROID = ro.Id.ToString(), RONo = ro.RONo,
         PointDateTime = DateTime.Now, FlagPlay = bPause ? kFlagActive : kFlagInactive,
-        FlagBegin = kFlagInactive, FlagEnd = kFlagInactive, LogLUDateTime = DateTime.Now,
+        FlagBegin = kFlagInactive, FlagEnd = kFlagInactive,
+        CreatedDate = DateTime.Now, CreatedBy = by1030, LogLUDateTime = DateTime.Now, LogLUBy = by1030,
     });
     await db.SaveChangesAsync();
 
@@ -77651,7 +77653,7 @@ app.MapPost("/api/serassignmentworks/{roNo}/arise", async (string roNo, Assignme
 //   như cột nhật ký của #530 ⇒ ở bảng này giờ **không bị mất**.
 // ⚠️ Câu kiểm dùng `select top 1 sr.* … where sr.ROID = @ROID and sr.RONo = @RONo` — `top 1` **không**
 //   `ORDER BY` (họ #529/#530), nhưng cặp khoá (ROID, RONo) vốn duy nhất nên **vô hại** — nêu để khỏi soi lại.
-app.MapPost("/api/roworktimes", async (RoWorkTimeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/roworktimes", async (RoWorkTimeDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     const string kYes = "1";   // TConst.Flag.Yes = Active
     const string kNo = "0";    // TConst.Flag.No  = Inactive
@@ -77683,12 +77685,15 @@ app.MapPost("/api/roworktimes", async (RoWorkTimeDto dto, AppDbContext db, ITena
     var no = string.IsNullOrWhiteSpace(dto.ROWTNo)
         ? "ROWT" + DateTime.Now.ToString("yyMMddHHmmssfff")   // nguồn xin số qua SequenceGetForDMS_Util
         : dto.ROWTNo!.Trim();
+    // #1162: InsertSer_ROWorkTime (zzzzCode.cs:208-375) ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy =
+    // strPartnerUserCode/DateTime.Now trong CUNG cau insert — port cu chi wire LogLUDateTime.
+    var by1162 = (partnerUserCode ?? "system").Trim(); var now1162 = DateTime.Now;
     var w = new RoWorkTime
     {
         OrgId = t.OrgId, ROWTNo = no, ROID = dto.ROID ?? ro.Id.ToString(), RONo = ro.RONo,
         PointDateTime = dto.PointDateTime ?? DateTime.Now,   // StandardizeDTime: GIỮ giờ
         FlagPlay = dto.FlagPlay, FlagBegin = dto.FlagBegin, FlagEnd = dto.FlagEnd,
-        LogLUDateTime = DateTime.Now,
+        CreatedDate = now1162, CreatedBy = by1162, LogLUDateTime = now1162, LogLUBy = by1162,
     };
     db.RoWorkTimes.Add(w);
     await db.SaveChangesAsync();
@@ -78838,11 +78843,14 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         // (`zzzzCode.cs:507`) TÍNH LẠI TỪ ĐẦU trên TOÀN BỘ nhật ký bấm giờ của lệnh — `TotalActHours` là
         // giá trị SERVER TỰ TÍNH, không phải giá trị client gửi lên. Port cũ chỉ nhận `dto.TotalActHours`.
         var roIdStr = r.Id.ToString();
+        // #1163: InsertSer_ROWorkTime ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy — cung khuon #1162.
+        var by1163 = (partnerUserCode ?? "system").Trim(); var now1163 = DateTime.Now;
         db.RoWorkTimes.Add(new RoWorkTime
         {
             OrgId = t.OrgId, ROWTNo = "ROWT" + DateTime.Now.ToString("yyMMddHHmmssfff"),
             ROID = roIdStr, RONo = r.RONo, PointDateTime = finCut,
-            FlagPlay = "1", FlagBegin = "0", FlagEnd = "1", LogLUDateTime = DateTime.Now,
+            FlagPlay = "1", FlagBegin = "0", FlagEnd = "1",
+            CreatedDate = now1163, CreatedBy = by1163, LogLUDateTime = now1163, LogLUBy = by1163,
         });
         await db.SaveChangesAsync();
         var punches = await db.RoWorkTimes.Where(x => x.OrgId == t.OrgId && x.ROID == roIdStr)
