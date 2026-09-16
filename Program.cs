@@ -7973,6 +7973,70 @@ app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #1060 BÁO CÁO DASHBOARD ĐẠI LÝ THEO KHOẢNG NGÀY (`Report_KPIGet_Real_New20221101`) =====
+// KHÁC HẲN endpoint trên: nguồn LIVE `Report_KPIGet_Real_New20221101` (BizCarSv.zzzzCode.cs:2954-4688,
+// _biz gọi tại WSCarSv.asmx.cs:27137, cổng WS RIÊNG `Report_KPIGet_Real` — không phải `RptKPIGetReal`),
+// nhận `strDateFrom`/`strDateTo` (khoảng ngày trực tiếp) thay vì năm/tháng, và dùng MÃ CHỮ luôn (không có
+// bất nhất số/chữ như bản 2016). Hàm nguồn dài ~1734 dòng, trả HÀNG TRĂM cột dashboard (mục La Mã A/B) —
+// port TOÀN BỘ trong một lần là quá lớn (đã ghi ở manifest); lượt này CHỈ port ĐÚNG A.I "Nhân sự" +
+// A.II "Tổng số khoang" (đọc ZTemp.cs:3050-3069 cho cửa sổ hiệu lực nhân sự/khoang, :3621-3641 cho công
+// thức đếm) — các mục A.III trở đi CHƯA port, ghi rõ cờ để fire sau tiếp tục đúng vị trí.
+app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantContext t,
+    string? dealer, DateTime? dateFrom, DateTime? dateTo) =>
+{
+    if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Thiếu mã đại lý." });
+    if (dateFrom is null || dateTo is null) return Results.BadRequest(new { error = "Thiếu strDateFrom/strDateTo." });
+
+    // ===== Cửa sổ hiệu lực NHÂN SỰ/KHOANG (ZTemp.cs:3062-3068/3081-3087) — KHÁC endpoint /real ở trên:
+    //   so `StartWorkDate <= @strDateFrom` (mốc ĐẦU kỳ, không phải cuối) — nghĩa là chỉ tính người/khoang
+    //   ĐÃ TỒN TẠI TỪ TRƯỚC kỳ và (chưa nghỉ HOẶC nghỉ sau khi kỳ đã kết thúc `>= @strDateTo`).
+    bool InWindow(DateTime? start, DateTime? finish)
+    {
+        if (start is null && finish is null) return true;
+        if (start <= dateFrom && finish is null) return true;
+        if (start <= dateFrom && finish >= dateTo) return true;
+        return false;
+    }
+    var engineers = await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId && e.DealerCode == dealer)
+        .Select(e => new { e.EngineerType, e.StartWorkDate, e.FinishWorkDate }).ToListAsync();
+    var cavities = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.DealerCode == dealer)
+        .Select(c => new { c.CavityType, StartUseDateTime = c.StartUseDate, FinishUseDateTime = c.FinishUseDate }).ToListAsync();
+    // StartUseDate/FinishUseDate của Cavity lưu dạng CHUỖI (#296) — parse best-effort, rỗng/không parse
+    // được coi như null (đúng nguồn: `is null or = ''`).
+    DateTime? ParseOrNull(string? s) => DateTime.TryParse(s, out var d) ? d : null;
+    var engInWindow = engineers.Where(e => InWindow(e.StartWorkDate, e.FinishWorkDate)).ToList();
+    var cavInWindow = cavities.Where(c => InWindow(ParseOrNull(c.StartUseDateTime), ParseOrNull(c.FinishUseDateTime))).ToList();
+    int NE(params string[] codes) => engInWindow.Count(e => e.EngineerType != null && codes.Contains(e.EngineerType));
+    int NC(params string[] codes) => cavInWindow.Count(c => c.CavityType != null && codes.Contains(c.CavityType));
+
+    return Results.Ok(new
+    {
+        dealer, dateFrom, dateTo,
+        // ===== A.I Nhân sự bộ phận dịch vụ, phụ tùng (ZTemp.cs:3622-3629) =====
+        employeeNumber = engInWindow.Count,
+        advisoryNumber = NE("CVDV"),           // 1. Cố vấn dịch vụ
+        serviceTechnicianQty = NE("BDN"),      // 2. KTV bảo dưỡng nhanh
+        enginerNumber = NE("SCC"),             // 3. KTV sửa chữa chung
+        enginerBP = NE("KTVD"),                // 4. KTV đồng
+        paintingTechnicianQty = NE("KTVS"),    // 5. KTV sơn
+        sparePartsStaff = NE("NVPT"),          // 6. Nhân viên phụ tùng
+        staffOrther = NE("KHAC"),              // 7. Nhân viên khác
+        // ===== A.II Tổng số khoang (ZTemp.cs:3633-3641) =====
+        cavityNumber = cavInWindow.Count,
+        cavityMaintainNumber = NC("BDN"),       // 1. Khoang bảo dưỡng nhanh
+        cavityRONumber = NC("SCC"),             // 2. Khoang sửa chữa chung
+        cavityOtherNumber = NC("KHAC"),         // 3. Khoang khác (kiểm tra cuối, thử phanh)
+        cavityCopperNumber = NC("KD"),          // 4. Khoang đồng
+        cavityBPNumber = NC("KS"),              // 5. Khoang sơn
+        cabinetPaintNumber = NC("BS"),          // 6. Buồng sơn
+        cavityParkingNumber = NC("KTN"),        // 7. Buồng sơn/giao xe/đậu xe
+        notPortedYet = "A.III (đơn giá nhân công) tới B (số liệu hoạt động) VÀ khối StockOut/phụ kiện "
+            + "CHƯA port — hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. Chỉ A.I/A.II ở lượt này.",
+        liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
+            + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
+    });
+}).RequireAuthorization();
+
 app.MapPut("/api/reportkpis/{id:long}", async (long id, ReportKpiDto dto, AppDbContext db, ITenantContext t) =>
 {
     var r = await db.ReportKpis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
