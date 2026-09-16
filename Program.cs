@@ -60916,6 +60916,116 @@ app.MapPost("/api/servicecustomers/create01", async (Customer01Dto dto, AppDbCon
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #1036 `Ser_Customer_CreateForDMS20220926` (LIVE, `BizCarSv.Customer.cs:3714`) — TẠO KHÁCH TỪ DMS
+//   + XE ĐẦY ĐỦ CỘT, CHƯA CÓ =====
+// Cùng khuôn #961 (Ser_Customer_Create01: cùng field khách, cùng side-effect CSKH sinh nhật qua
+// `ProcessSaveCareBth`, cùng ba guard IDCardNo/Province/District) — KHÁC Ở PHẦN XE: nguồn này gọi
+// `ProcessSaveCar20220926` (Customer.cs:4807), ghi ĐỦ **21 cột** thay vì 6 cột hẹp của `ProcessSaveCar_ForHCC`
+// (#961) — thêm EngineNo/ProductYear/ColorCode/WarrantyRegistrationDate/DateBuyCar/CurrentKm/SalesCarID/
+// InsStartDate/InsNo/InsFinishedDate/InsContractNo/SerialNo/BatteryNo/WarrantyExpiresDate/
+// CusConfirmedWarrantyDate/WarrantyKM/PlateColorCode. Guard xe riêng: `CheckExistPlateNo` (trùng khuôn #961).
+app.MapPost("/api/servicecustomers/create-fordms", async (CustomerForDmsDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var dealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var idCardNo = (dto.IDCardNo ?? "").Trim().ToUpperInvariant();
+    if (idCardNo.Length > 0)
+    {
+        var dupIdCard = await db.ServiceCustomers.AnyAsync(x => x.OrgId == t.OrgId
+            && x.DealerCode == dealerCode && x.IDCardNo == idCardNo);
+        if (dupIdCard) return Results.Conflict(new { error = "mycheck_Ser_Customer_ExistIDCardNo",
+            message = "Số CMND/CCCD đã tồn tại ở một khách khác cùng đại lý." });
+    }
+    var provinceCode = (dto.ProvinceCode ?? "").Trim().ToUpperInvariant();
+    if (provinceCode.Length > 0)
+    {
+        var provinceExists = await db.MstProvinces.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == provinceCode);
+        if (!provinceExists) return Results.BadRequest(new { error = "MyCheckExist_Province", message = "Tỉnh/thành không tồn tại.", provinceCode });
+    }
+    var districtCode = (dto.DistrictCode ?? "").Trim().ToUpperInvariant();
+    if (districtCode.Length > 0)
+    {
+        var districtExists = await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == provinceCode && x.DistrictCode == districtCode);
+        if (!districtExists) return Results.BadRequest(new { error = "MyCheckExist_District", message = "Quận/huyện không tồn tại trong tỉnh đã chọn.", provinceCode, districtCode });
+    }
+
+    var code = "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff");
+    var c = new ServiceCustomer
+    {
+        OrgId = t.OrgId, CusCode = code, DealerCode = dealerCode.Length > 0 ? dealerCode : null,
+        CusName = dto.CusName ?? "", Sex = dto.Sex, Address = dto.Address, Tel = dto.Tel, Mobile = dto.Mobile,
+        Fax = dto.Fax, Email = dto.Email, Website = dto.Website, Bank = dto.Bank, BankAccountNo = dto.BankAccountNo,
+        TaxCode = dto.TaxCode, IsContact = string.IsNullOrEmpty(dto.IsContact) ? "1" : dto.IsContact,
+        Note = dto.Note, ContName = dto.ContName, ContSex = dto.ContSex, ContAddress = dto.ContAddress,
+        ContTel = dto.ContTel, ContMobile = dto.ContMobile, ContFax = dto.ContFax, ContEmail = dto.ContEmail,
+        CusTypeID = dto.CusTypeID, OrgTypeID = dto.OrgTypeID, DOB = dto.DOB,
+        IDCardNo = idCardNo.Length > 0 ? idCardNo : null,
+        ProvinceCode = provinceCode.Length > 0 ? provinceCode : null,
+        DistrictCode = districtCode.Length > 0 ? districtCode : null,
+        FlagActive = "1", CreatedDate = DateTime.Now,
+    };
+    db.ServiceCustomers.Add(c);
+
+    // ===== (1) Phiếu CSKH sinh nhật tự động — giống hệt #961 =====
+    if (dto.DOB.HasValue)
+    {
+        var today = DateTime.Today;
+        DateTime dateBth;
+        try { dateBth = new DateTime(today.Year, dto.DOB.Value.Month, dto.DOB.Value.Day); }
+        catch (ArgumentOutOfRangeException) { dateBth = new DateTime(today.Year, dto.DOB.Value.Month, 28); }
+        db.CustomerCareBirthdays.Add(new CustomerCareBirthday
+        {
+            OrgId = t.OrgId, CareBthId = "CBT" + DateTime.Now.ToString("yyMMddHHmmssfff"),
+            CusId = code, DealerCode = c.DealerCode, DateBth = dateBth, Status = "0", CreatedDate = DateTime.Now,
+        });
+    }
+
+    // ===== (2) Xe kèm theo — helper ĐẦY ĐỦ (ProcessSaveCar20220926), 21 cột =====
+    object? carOut = null;
+    if (dto.Car is not null && !string.IsNullOrWhiteSpace(dto.Car.PlateNo) && !string.IsNullOrWhiteSpace(dto.Car.FrameNo))
+    {
+        var plateNo = dto.Car.PlateNo!.Trim().ToUpperInvariant();
+        var duplicatePlate = await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId
+            && x.PlateNo == plateNo && x.DealerCode == c.DealerCode && x.FlagActive == "1");
+        if (duplicatePlate) return Results.Conflict(new { error = "CheckExistPlateNo", message = "Biển số đã tồn tại (đang hoạt động) ở đại lý này." });
+        var car = new ServiceCar
+        {
+            OrgId = t.OrgId, DealerCode = c.DealerCode, CusID = code,
+            ModelCode = string.IsNullOrWhiteSpace(dto.Car.ModelID) ? null : dto.Car.ModelID,
+            PlateNo = plateNo, FrameNo = dto.Car.FrameNo!.Trim().ToUpperInvariant(),
+            EngineNo = string.IsNullOrWhiteSpace(dto.Car.EngineNo) ? null : dto.Car.EngineNo,
+            ProductYear = dto.Car.ProductYear,
+            ColorCode = string.IsNullOrWhiteSpace(dto.Car.ColorCode) ? null : dto.Car.ColorCode,
+            WarrantyRegistrationDate = dto.Car.WarrantyRegistrationDate,
+            DateBuyCar = dto.Car.DateBuyCar?.ToString("yyyy-MM-dd"),
+            CurrentKm = dto.Car.CurrentKm ?? 0,
+            TradeMark = string.IsNullOrWhiteSpace(dto.Car.TradeMarkCode) ? null : dto.Car.TradeMarkCode,
+            SalesCarID = string.IsNullOrWhiteSpace(dto.Car.SalesCarID) ? null : dto.Car.SalesCarID,
+            InsStartDate = dto.Car.InsStartDate?.ToString("yyyy-MM-dd"),
+            InsNo = string.IsNullOrWhiteSpace(dto.Car.InsNo) ? null : dto.Car.InsNo,
+            InsFinishedDate = dto.Car.InsFinishedDate?.ToString("yyyy-MM-dd"),
+            InsContractNo = string.IsNullOrWhiteSpace(dto.Car.InsContractNo) ? null : dto.Car.InsContractNo,
+            SerialNo = string.IsNullOrWhiteSpace(dto.Car.SerialNo) ? null : dto.Car.SerialNo,
+            BatteryNo = string.IsNullOrWhiteSpace(dto.Car.BatteryNo) ? null : dto.Car.BatteryNo,
+            Note = string.IsNullOrWhiteSpace(dto.Car.Note) ? null : dto.Car.Note,
+            WarrantyExpiresDate = dto.Car.WarrantyExpiresDate,
+            CusConfirmedWarrantyDate = dto.Car.CusConfirmedWarrantyDate,
+            WarrantyKM = dto.Car.WarrantyKM,
+            PlateColorCode = string.IsNullOrWhiteSpace(dto.Car.PlateColorCode) ? null : dto.Car.PlateColorCode,
+            FlagActive = "1",
+        };
+        db.ServiceCars.Add(car);
+        carOut = new { car.PlateNo, car.FrameNo, car.ModelCode, car.TradeMark, car.SerialNo, car.BatteryNo, car.InsNo };
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        c.CusCode, c.CusName, car = carOut,
+        fullCarFieldsNote = "Khac #961 (ProcessSaveCar_ForHCC, 6 cot): duong nay dung ProcessSaveCar20220926, ghi du 21 cot xe.",
+        careBthAutoCreatedNote = "Co DOB thi tu dong tao phieu CSKH sinh nhat (Status Inactive), DateBth = ngay/thang sinh CHUAN HOA VE NAM HIEN TAI, khong luu nam sinh goc.",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto, AppDbContext db, ITenantContext t) =>
 {
     var rows = dto.Rows ?? new();
@@ -79831,6 +79941,19 @@ record Customer01Dto(string? DealerCode, string? CusName, string? Sex, string? A
     string? IsContact, string? Note, string? ContName, string? ContSex, string? ContAddress, string? ContTel,
     string? ContMobile, string? ContFax, string? ContEmail, string? CusTypeID, string? OrgTypeID,
     DateTime? DOB, string? IDCardNo, string? ProvinceCode, string? DistrictCode, Customer01CarDto? Car);   // #961
+
+// #1036: xe ĐẦY ĐỦ CỘT của `ProcessSaveCar20220926` (Customer.cs:4807) — khác hẳn `Customer01CarDto` hẹp
+//   (chỉ 5 cột, dùng cho `ProcessSaveCar_ForHCC` của #961). Nguồn Ser_Customer_CreateForDMS20220926 dùng bản này.
+record CustomerForDmsCarDto(string? ModelID, string? PlateNo, string? FrameNo, string? EngineNo, int? ProductYear,
+    string? ColorCode, DateTime? WarrantyRegistrationDate, DateTime? DateBuyCar, decimal? CurrentKm,
+    string? TradeMarkCode, string? SalesCarID, DateTime? InsStartDate, string? InsNo, DateTime? InsFinishedDate,
+    string? InsContractNo, string? SerialNo, string? BatteryNo, string? Note, DateTime? WarrantyExpiresDate,
+    DateTime? CusConfirmedWarrantyDate, decimal? WarrantyKM, string? PlateColorCode);
+record CustomerForDmsDto(string? DealerCode, string? CusName, string? Sex, string? Address, string? Tel, string? Mobile,
+    string? Fax, string? Email, string? Website, string? Bank, string? BankAccountNo, string? TaxCode,
+    string? IsContact, string? Note, string? ContName, string? ContSex, string? ContAddress, string? ContTel,
+    string? ContMobile, string? ContFax, string? ContEmail, string? CusTypeID, string? OrgTypeID,
+    DateTime? DOB, string? IDCardNo, string? ProvinceCode, string? DistrictCode, CustomerForDmsCarDto? Car);
 // #235: khối giá + ngữ cảnh phụ tùng, thêm ở CUỐI ⇒ không vỡ lời gọi cũ.
 //  KHÔNG nhận 5 cột dẫn xuất (TPBeforeDc/UPAfterDc/TPAfterDc/ValVAT/TPAfterVAT): server tính,
 //  đúng như lưới nguồn KHOÁ 5 ô đó (`_lstColNotAllowEdit`).
