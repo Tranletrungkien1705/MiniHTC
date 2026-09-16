@@ -68953,7 +68953,7 @@ app.MapPost("/api/stockin/adjust-precheck", async (StockInAdjustPrecheckDto dto,
 // 📌 Mini: `POST /api/stockins/{stockInId}/status` — máy trạng thái `1 → 2 → 3` (và `2 → 1`), kèm cờ cảnh báo
 //   về khối đóng đơn TST.
 app.MapPost("/api/stockins/{stockInId}/status", async (long stockInId, StockInStatusDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var si = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == stockInId);
     if (si == null) return Results.NotFound(new { error = "khong tim thay phieu nhap" });
@@ -68969,6 +68969,9 @@ app.MapPost("/api/stockins/{stockInId}/status", async (long stockInId, StockInSt
         return Results.BadRequest(new { error = "buoc chuyen khong hop le", currentStatus = cur, newStatus = next, expected = want });
     }
     si.Status = next;
+    // #1150: SerStockInStatusUpdate (Inventory.StockIn.cs:3166) ghi Status/LogLUDateTime/LogLUBy trong CUNG
+    // mot alColumnEffective (ca hai nhanh Executing va Finished/Revert) — ban "tran" cua Mini bo sot 2 cot.
+    si.LogLUDateTime = DateTime.Now; si.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
