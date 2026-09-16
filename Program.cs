@@ -22628,12 +22628,49 @@ app.MapPost("/api/servicepackages/{id:long}/update", async (long id, ServicePack
     h.IsPublicFlag = string.IsNullOrWhiteSpace(dto.IsPublicFlag) ? null : dto.IsPublicFlag;
     h.IsUserBasePrice = string.IsNullOrWhiteSpace(dto.IsUserBasePrice) ? null : dto.IsUserBasePrice;
     h.UpdatedAt = DateTime.Now;
+
+    // #1011: chỉ đụng vào hai bảng con khi client THẬT SỰ gửi danh sách (khác `null`) — nguồn luôn nhận
+    // dsFull (không có null) nên XOÁ-RỒI-CHÈN-LẠI vô điều kiện; Mini thêm lằn ranh "null = không đụng"
+    // để tránh xoá trắng khi client chỉ gửi 9 trường đầu phiếu (payload rút gọn), giống #1010.
+    int? newServiceCount = null, newPartCount = null;
+    if (dto.Services is not null)
+    {
+        db.ServicePackageServices.RemoveRange(db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
+        decimal svcTotal2 = 0;
+        foreach (var s in dto.Services)
+        {
+            if (string.IsNullOrWhiteSpace(s.SerCode)) continue;
+            var f = s.Factor <= 0 ? 1 : s.Factor; var amt = Math.Round(s.Price * f, 2);
+            svcTotal2 += amt;
+            db.ServicePackageServices.Add(new ServicePackageService { OrgId = t.OrgId, ServicePackageId = h.Id,
+                SerCode = s.SerCode.Trim(), SerName = s.SerName, ExpenseType = s.ExpenseType, ROType = s.ROType,
+                Price = s.Price, Factor = f, Amount = amt, ActManHour = s.ActManHour, VAT = s.VAT, Note = s.Note });
+        }
+        h.ServiceTotal = svcTotal2; newServiceCount = dto.Services.Count;
+    }
+    if (dto.Parts is not null)
+    {
+        db.ServicePackageParts.RemoveRange(db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
+        decimal partTotal2 = 0; var seenP2 = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in dto.Parts)
+        {
+            if (string.IsNullOrWhiteSpace(p.PartCode) || !seenP2.Add(p.PartCode.Trim())) continue;
+            var f = p.Factor <= 0 ? 1 : p.Factor; var amt = Math.Round(p.Price * f, 2);
+            partTotal2 += amt;
+            db.ServicePackageParts.Add(new ServicePackagePart { OrgId = t.OrgId, ServicePackageId = h.Id,
+                PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt,
+                Quantity = p.Quantity, VAT = p.VAT, Note = p.Note, ExpenseType = p.ExpenseType });
+        }
+        h.PartTotal = partTotal2; newPartCount = dto.Parts.Count;
+    }
+    if (newServiceCount.HasValue || newPartCount.HasValue) h.GrandTotal = h.ServiceTotal + h.PartTotal;
     await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
         h.Id, h.PackageNo, h.DealerCode, h.PackageName, h.TakingTime, h.Description,
         h.Creator, h.CreatedDate, h.IsPublicFlag, h.IsUserBasePrice,
+        h.ServiceTotal, h.PartTotal, h.GrandTotal, services = newServiceCount, parts = newPartCount,
         duplicateGuardExcludesSelf = "CheckExistServicePackageNoModify(No, DealerCode, ID)",
         uniqueKeyIsPair = "(ServicePackageNo, DealerCode) — hai dai ly duoc trung ma goi",
         emptyMeansClear = "5 cot: TakingTime/Description/Creator/CreatedDate/IsPublicFlag/IsUserBasePrice",
@@ -79971,7 +80008,13 @@ record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
 record ServicePackageUpdateDto(string? PackageNo, string? DealerCode, string? PackageName,
     string? TakingTime, string? Description, string? Creator, DateTime? CreatedDate,
-    string? IsPublicFlag, string? IsUserBasePrice);   // #548
+    string? IsPublicFlag, string? IsUserBasePrice,
+    // #1011: nguồn (`SerServicePackageUpdate`, `BizCarSv.ServicePackage.cs:546`) nhận CẢ `dsServiceItem`
+    // lẫn `dsPartItem` và luôn XOÁ-RỒI-CHÈN-LẠI hai bảng con (`ProcessServicePackage{Service,Part}ItemDelete`
+    // + `ProcessSaveServicePackage{Service,Part}Item`) — CÙNG cơ chế với Create (§547), nhưng port cũ
+    // (#548) CHỈ sửa 9 cột đầu phiếu, chưa từng đọc hai danh sách này dù DTO tạo (`ServicePackageDto`)
+    // đã có sẵn `SpSvcDto`/`SpPartDto`.
+    List<SpSvcDto>? Services = null, List<SpPartDto>? Parts = null);   // #548
 
 record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor,
