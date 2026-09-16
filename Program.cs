@@ -60704,6 +60704,7 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     if (string.IsNullOrWhiteSpace(dto.Mobile) && string.IsNullOrWhiteSpace(dto.Tel)) return Results.BadRequest(new { error = "Cần SĐT di động hoặc cố định." });
     var code = string.IsNullOrWhiteSpace(dto.CusCode) ? "CUS" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CusCode.Trim().ToUpperInvariant();
     var c = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
+    var isUpdate = c is not null;
     if (c is null) { c = new ServiceCustomer { OrgId = t.OrgId, CusCode = code }; db.ServiceCustomers.Add(c); }
     c.CusName = dto.CusName; c.CusTypeID = dto.CusTypeID; c.Address = dto.Address; c.Mobile = dto.Mobile; c.Tel = dto.Tel;
     c.Email = dto.Email; c.TaxCode = dto.TaxCode; c.Sex = dto.Sex; c.DOB = dto.DOB;
@@ -60726,8 +60727,13 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     c.ContFax = dto.ContFax;
     c.ContSex = dto.ContSex;
     c.Note = dto.Note;
+    // #1040: `Ser_Customer_Update` (Customer.cs:5378, LIVE web) ghi `IsActive` — CHỈ ở nhánh SỬA (nguồn
+    // `Ser_Customer_Create*` KHÔNG có tham số này, khách mới luôn mặc định hoạt động).
+    if (isUpdate && dto.IsActive.HasValue) c.FlagActive = dto.IsActive.Value ? "1" : "0";
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.CusCode, c.CusName });
+    return Results.Ok(new { c.CusCode, c.CusName, c.FlagActive,
+        cusTypeNormalGuardNotDone = "Nguon: khi strIsNormal=Active con kiem CheckExistCusType(CusTypeNormal) ton tai+active — CHUA port, ghi co.",
+        careBthReactivateNotDone = "Nguon: khi kich hoat lai KH (IsActive=True) va co phieu CSKH sinh nhat dang Inactive thi bat lai Status='1' — CHUA port, ghi co." });
 }).RequireAuthorization();
 
 // Nhập khách hàng hàng loạt từ Excel (port 1:1 FrmImportCustomer) — tái dùng ServiceCustomer.
@@ -80080,7 +80086,10 @@ record ServiceCarUpdateDto(string? DealerCode, string? CusID, string? ModelID, s
     string? InsFinishedDate, string? InsContractNo, string? IsActive, string? Note);
 record ServiceCustomerDto(string? SalesCusID,string? CusCode, string CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex, DateTime? DOB, string? ContName, string? ContMobile, string? ContTel, string? ContEmail,
     // #221 parity: 15 trường của CustomerCreate/CustomerUpdate
-    string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null);
+    string? DealerCode = null, string? ProvinceCode = null, string? DistrictCode = null, string? Fax = null, string? Website = null, string? IDCardNo = null, string? Bank = null, string? BankAccountNo = null, string? OrgTypeID = null, string? IsNormal = null, string? IsContact = null, string? ContAddress = null, string? ContFax = null, string? ContSex = null, string? Note = null,
+    // #1040: `Ser_Customer_Update` (Customer.cs:5378, LIVE web) co tham so nay — nhan CHUOI "True"/"False"
+    // (bool.TrueString, KHAC hoi quy uoc "1"/"0" cua toan bo phan con lai cua nguon) — dich o bien API.
+    bool? IsActive = null);
 record Customer01CarDto(string? ModelID, string? PlateNo, string? FrameNo, string? TradeMarkCode, string? Note);   // #961
 record Customer01Dto(string? DealerCode, string? CusName, string? Sex, string? Address, string? Tel, string? Mobile,
     string? Fax, string? Email, string? Website, string? Bank, string? BankAccountNo, string? TaxCode,
