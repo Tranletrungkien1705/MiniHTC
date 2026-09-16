@@ -78682,7 +78682,9 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     if (target == "NotResponding")
     {
         r.Status = "NotResponding";
-        // RepairOrder khong co cot UpdatedAt (nguon cung khong ghi moc nao o nhanh nay).
+        // #1141: SerROStatusUpdate ghi LogLUDateTime/LogLUBy VO DIEU KIEN TRUOC ca switch (Service01.cs:
+        // 8828-8830) - ke ca nhanh NotResponding (khong co case rieng trong switch) van di qua doan ghi nay.
+        r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
         await db.SaveChangesAsync();
         return Results.Ok(new
         {
@@ -78715,6 +78717,10 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         });
 
     r.Status = target;
+    // #1141: SerROStatusUpdate ghi LogLUDateTime/LogLUBy = strPartnerUserCode VO DIEU KIEN cho MOI buoc
+    // chuyen trang thai (truoc ca switch InGarage/CheckEnd/Repaired/Finished) — port cu chi wire cho rieng
+    // nhanh Paid (#1101), bo sot bon buoc con lai. Nhanh Paid ben duoi ghi de lai cung gia tri, vo hai.
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();
 
     // ===== 🔴 #341 BẢN ĐỒ MỐC ⇄ BƯỚC (đo bằng tập cột ghi của `SerROStatusUpdate`) =====
     //   `InGarage` → `StartDate` · `CheckEnd` → `CheckEndDate` · `Repaired` → `FinishedDate` + `TotalActHours`
