@@ -40153,7 +40153,7 @@ app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q
 // ⚠️ Khoá kho chép từ `select @@Identity` + `Convert.ToInt32` — lặp lại đúng lỗi phạm vi/kiểu của #570/#575.
 // ⚪ Âm tính: `BulletinNoHMC` gán **vô điều kiện** trong khi các cột khác có guard rỗng — nhưng phía trên đã
 //   có `if (string.IsNullOrEmpty(strBulletinNoHMC)) throw Blt_Bulletin_InvalidBulletinNoHMC` nên **không lọt**.
-app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Remark)) return Results.BadRequest(new { error = "Chưa nhập nội dung thông báo." });
     // Biz chặn thiếu số bản tin hãng (Blt_Bulletin_InvalidBulletinNoHMC) — form không có luật này.
@@ -40185,7 +40185,10 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
     var no = string.IsNullOrWhiteSpace(dto.BulletinNo) ? "BLT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.BulletinNo.Trim().ToUpperInvariant();
     var row = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
     var updated = row is not null;
-    if (row is null) { row = new Bulletin { OrgId = t.OrgId, BulletinNo = no }; db.Bulletins.Add(row); }
+    // #1057: Blt_BulletinCreate_20210224 ghi VÔ ĐIỀU KIỆN 4 cột nhật ký lúc TẠO — Update KHÔNG ghi lại.
+    if (row is null) { row = new Bulletin { OrgId = t.OrgId, BulletinNo = no,
+        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() }; db.Bulletins.Add(row); }
 
     row.BulletinNoHMC = dto.BulletinNoHMC!.Trim();
     row.Remark = dto.Remark;

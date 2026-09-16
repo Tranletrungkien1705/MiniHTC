@@ -15078,6 +15078,15 @@ public sealed class Bulletin
     /// <summary>Người phát hành bản tin (USERCREATE).</summary>
     public string? UserCreate { get; set; }
 
+    // #1057 §12 — `Blt_BulletinCreate_20210224` (BizCarSv.Bulletin.cs:1617, LIVE qua WS gateway) ghi VÔ
+    // ĐIỀU KIỆN 4 cột nhật ký `CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy` — KHÁC `CreateDate` ở trên
+    // (ngày PHÁT HÀNH bản tin, do client truyền). `Blt_BulletinUpdate_20210224` KHÔNG ghi lại 4 cột này.
+    /// <summary>`Btl_Bulletin.CreatedDate` — mốc ghi bản ghi (server, `strTDate`), KHÁC `CreateDate` (ngày phát hành).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
