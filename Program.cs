@@ -502,7 +502,7 @@ app.MapGet("/api/carprices", async (AppDbContext db, ITenantContext t, string? m
     var query = db.CarPrices.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(model)) query = query.Where(c => c.ModelCode.Contains(model));
     var items = await query.OrderBy(c => c.ModelCode).ThenByDescending(c => c.EffectiveDate).Select(c => new
-    { c.Id, c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat, priceVat = c.Price * (1 + c.Vat / 100), c.Status }).ToListAsync();
+    { c.Id, c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat, priceVat = c.Price * (1 + c.Vat / 100), c.Status, c.CreatedAt }).ToListAsync();   // #1254 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -1155,7 +1155,7 @@ app.MapGet("/api/testdrives", async (AppDbContext db, ITenantContext t, string? 
     var q = db.TestDrives.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.Code, x.CustomerName, x.Phone, x.ModelCode, x.DealerCode, x.ScheduledAt, x.Status }).ToListAsync();
+    { x.Code, x.CustomerName, x.Phone, x.ModelCode, x.DealerCode, x.ScheduledAt, x.Status, x.Note, x.CreatedAt }).ToListAsync();   // #1253 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -1165,7 +1165,7 @@ app.MapPost("/api/testdrives", async (TestDriveDto dto, AppDbContext db, ITenant
         return Results.BadRequest(new { error = "Cần CustomerName và ModelCode." });
     if (dto.ScheduledAt == default) return Results.BadRequest(new { error = "Cần ScheduledAt." });
     var code = "TD" + DateTime.Now.ToString("yyMMddHHmmss");
-    var x = new TestDrive { OrgId = t.OrgId, Code = code, CustomerName = dto.CustomerName.Trim(), Phone = dto.Phone ?? "", ModelCode = dto.ModelCode.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode, ScheduledAt = dto.ScheduledAt, Status = "Booked" };
+    var x = new TestDrive { OrgId = t.OrgId, Code = code, CustomerName = dto.CustomerName.Trim(), Phone = dto.Phone ?? "", ModelCode = dto.ModelCode.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode, ScheduledAt = dto.ScheduledAt, Status = "Booked", Note = dto.Note };   // #1253 §12
     db.TestDrives.Add(x); await db.SaveChangesAsync();
     return Results.Ok(new { x.Code, x.CustomerName, x.ModelCode, status = x.Status });
 }).RequireAuthorization();
@@ -3504,7 +3504,7 @@ app.MapGet("/api/invoicesetups", async (AppDbContext db, ITenantContext t, strin
     var q = db.InvoiceSetups.Where(s => s.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(s => s.FlagActive == active);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(s => s.ModelCode == model);
-    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new { s.ModelCode, s.FlagInvoiceHTMV, s.FlagInvoiceTCG, s.FlagActive, s.LogLUDateTime, s.LogLUBy }).ToListAsync();
+    var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new { s.ModelCode, s.FlagInvoiceHTMV, s.FlagInvoiceTCG, s.FlagActive, s.LogLUDateTime, s.LogLUBy, s.CreatedAt }).ToListAsync();   // #1254 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -3607,7 +3607,7 @@ app.MapGet("/api/salesinvthresholds", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy, x.CreatedAt }).ToListAsync();   // #1254 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -3651,7 +3651,7 @@ app.MapGet("/api/bankmortages", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(guaranteeType)) q = q.Where(m => m.GuaranteeType == guaranteeType);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(m => m.FlagActive == active);
     var items = await q.OrderByDescending(m => m.Id).Take(500)
-        .Select(m => new { m.VIN, m.CarId, m.SOCode, m.DealerCode, m.BankCode, m.MortageBankCode, m.ModelCode, m.SpecCode, m.GuaranteeType, m.DeliveryRangeType, m.MortageStartDate, m.DlvStartDate, m.DlvEndDate, m.FlagActive }).ToListAsync();
+        .Select(m => new { m.VIN, m.CarId, m.SOCode, m.DealerCode, m.BankCode, m.MortageBankCode, m.ModelCode, m.SpecCode, m.GuaranteeType, m.DeliveryRangeType, m.MortageStartDate, m.DlvStartDate, m.DlvEndDate, m.FlagActive, m.CreatedAt }).ToListAsync();   // #1254 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -10214,7 +10214,7 @@ app.MapGet("/api/sbhonline", async (AppDbContext db, ITenantContext t, string? d
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(s => s.VIN.Contains(vin!.ToUpper()));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.PostStatus == status);
     var items = await q.OrderByDescending(s => s.Id).Take(500)
-        .Select(s => new { s.VIN, s.CarId, s.DealNo, s.DealerCode, s.DeliveryDate, s.WarrantyExpiresDate, s.PostStatus, s.PushCount, s.LastPushAt }).ToListAsync();
+        .Select(s => new { s.VIN, s.CarId, s.DealNo, s.DealerCode, s.DeliveryDate, s.WarrantyExpiresDate, s.PostStatus, s.PushCount, s.LastPushAt, s.CreatedAt }).ToListAsync();   // #1254 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -11413,7 +11413,7 @@ app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(a => a.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(a => a.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(a => a.FlagActive == active);
-    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.AccountNo, a.AccountName, a.BankCode, a.DealerCode, a.FlagAccGrtClaim, a.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.AccountNo, a.AccountName, a.BankCode, a.DealerCode, a.FlagAccGrtClaim, a.FlagActive, a.CreatedAt }).ToListAsync();   // #1254 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -11984,7 +11984,7 @@ app.MapGet("/api/smsaccounts/{name}/transactions", async (string name, AppDbCont
 app.MapGet("/api/servicecampaigns", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.ServiceCampaigns.Where(c => c.OrgId == t.OrgId).OrderByDescending(c => c.Id)
-        .Select(c => new { c.Id, c.CamNo, c.CamName, c.CamDesc, c.ConditionDealer, startDate = c.StartDate, endDate = c.EndDate, c.Status,
+        .Select(c => new { c.Id, c.CamNo, c.CamName, c.CamDesc, c.ConditionDealer, startDate = c.StartDate, endDate = c.EndDate, c.Status, c.CreatedAt,   // #1254 §12
             partCount = db.ServiceCampaignParts.Count(p => p.OrgId == t.OrgId && p.ServiceCampaignId == c.Id) }).ToListAsync();
     return Results.Ok(new { items });
 }).RequireAuthorization();
@@ -31587,7 +31587,7 @@ app.MapGet("/api/dealercontractforms", async (AppDbContext db, ITenantContext t,
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractFNo.Contains(q!) || x.ContractFName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.DealerCode).Take(500).Select(x => new { x.Id, x.DealerCode, x.ContractFNo, x.ContractFName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.DealerCode).Take(500).Select(x => new { x.Id, x.DealerCode, x.ContractFNo, x.ContractFName, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1255 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -80891,7 +80891,7 @@ record ImportSalesManDto(string? SMCode, string? SMHyundaiCode, string? Identity
     string? SMName, string? SMGender, string? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,
     string? SMSpecialized, string? QualificationCode, string? SMPostionCode, string? SMStartDate, string? SMStatus,
     string? WebsiteLink, string? FacebookLink, string? FanpageLink, string? GroupLink, string? ZaloLink, string? AccountHTA);
-record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt);
+record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string? DealerCode, DateTime ScheduledAt, string? Note = null);
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record PODto(string SupplierCode, string? Note, decimal Total);
 // Đơn mua xe từ hãng (Ord_PurchaseOrder) — nguồn không có trạng thái, chỉ cờ FlagActive.
