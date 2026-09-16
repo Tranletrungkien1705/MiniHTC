@@ -18366,6 +18366,12 @@ app.MapPost("/api/servicecars/os-warranty-update", async (OsCarSalesUpdDto dto, 
 // #991: `SerPartGetAllByDealer` (LIVE, `BizCarSv.Inventory.Master.cs:1221`) — hàm nguồn nạp picklist PT
 // theo đại lý (chỉ 4 cột PartID/PartCode/Unit/VieName, IsActive='1' cứng) chưa từng ghép vào GET chung
 // vì thiếu filter `dealerCode` — entity `ServicePart.DealerCode` đã có sẵn từ trước, chỉ thiếu tham số lọc.
+// #999: `Ser_Mst_Part_Get_OnlyPart` (LIVE, `BizCarSv.Service.cs:3593`) — nguồn nối THÊM `Ser_Mst_PartGroup`/
+// `Ser_Mst_PartType` để trả `PartGroupName`/`PartTypeName` (GET chung trước đây chỉ có mã, không có tên).
+// ⚠️ Nguồn còn lọc theo dòng họ nhóm (`pg.FamilyID like '<mã>.%' or t.PartGroupID = '<mã>'`) BẰNG NỐI CHUỖI
+// TRỰC TIẾP (không tham số hoá — bề mặt SQL injection thật của nguồn) — Mini KHÔNG có cột `FamilyID`
+// (đường dẫn phả hệ nhóm) trên `PartGroup`, chỉ có `ParentCode` một cấp; không suy diễn hành vi multi-cấp
+// khi không có dữ liệu để xác nhận, ghi nợ rõ thay vì bịa.
 app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active, string? dealerCode) =>
 {
     var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
@@ -18373,10 +18379,24 @@ app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(group)) query = query.Where(x => x.PartGroupCode == group);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);   // #991
-    var items = await query.OrderBy(x => x.PartCode).Take(500)
-        .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location, x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive,
-            lowStock = x.Quantity < x.MinQuantity }).ToListAsync();
-    return Results.Ok(new { count = items.Count, lowStockCount = items.Count(i => i.lowStock), items });
+    var parts = await query.OrderBy(x => x.PartCode).Take(500).ToListAsync();
+    var groupCodes = parts.Select(x => x.PartGroupCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var groups = await db.PartGroups.Where(x => x.OrgId == t.OrgId && groupCodes.Contains(x.GroupCode)).ToListAsync();
+    var typeIds = parts.Select(x => x.PartTypeID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var types = await db.SerPartTypes.Where(x => x.OrgId == t.OrgId && typeIds.Contains(x.TypeCode)).ToListAsync();
+    var items = parts.Select(x => new
+    {
+        x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location, x.Quantity, x.MinQuantity,
+        x.PartGroupCode, partGroupName = groups.FirstOrDefault(g => g.GroupCode == x.PartGroupCode)?.GroupName,   // #999
+        partTypeName = types.FirstOrDefault(pt => pt.TypeCode == x.PartTypeID)?.TypeName,   // #999
+        x.Model, x.Note, x.FlagActive, lowStock = x.Quantity < x.MinQuantity,
+    }).ToList();
+    return Results.Ok(new
+    {
+        count = items.Count, lowStockCount = items.Count(i => i.lowStock), items,
+        onlyExistsOnMachine150_999 = "#999: Ser_Mst_Part_Get_OnlyPart — BizCarSv.Service.cs:3593",
+        familyGroupFilterNotPorted = "Nguon con loc theo pg.FamilyID like '<ma>.%' or t.PartGroupID = '<ma>' (BAKE CHUOI TRUC TIEP, khong tham so hoa — be mat SQL injection that cua nguon). MiniHTC PartGroup chi co ParentCode mot cap, khong co FamilyID duong dan pha he — khong bia hanh vi da cap khi khong co du lieu xac nhan; ghi NO.",
+    });
 }).RequireAuthorization();
 
 // Upsert theo mã phụ tùng.
