@@ -4349,6 +4349,7 @@ app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string?
         v.OS_HDDT_RefNo, v.HddtSyncedAt, v.PaymentMethodCode, v.SourceInvoiceCode, v.RefNo,   // #195 §12
         v.ValGoodsNotTaxable, v.ValGoodsNotChargeTax, v.ValGoodsVAT5, v.ValVAT5, v.ValGoodsVAT10, v.ValVAT10,
         v.TotalValInvoice, v.TotalValVAT, v.TotalValPmt, v.CurrencyCode, v.CurrencyRate,
+        v.LogLUDateTime, v.LogLUBy, v.DeleteReason,   // #1225 §12: co duong ghi (huy/tu choi) nhung chua tung chieu o day
         cars = db.VatInvoiceCars.Count(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id),
         totalPrice = db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id).Sum(c => (decimal?)c.HTCUnitPrice) ?? 0
     }).ToListAsync();
