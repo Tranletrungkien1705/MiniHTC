@@ -26583,7 +26583,7 @@ app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.SupplierCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
@@ -26591,11 +26591,14 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
     // #911 §12: nguồn khoá trùng theo (SupplierCode, DealerCode, IsActive) — thiếu DealerCode thì hai đại lý
     // không thể cùng dùng một mã NCC (điều nguồn cho phép).
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code && x.DealerCode == dto.DealerCode);
-    if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, DealerCode = dto.DealerCode }; db.SerMstSuppliers.Add(row); }
+    var by1073 = (partnerUserCode ?? "system").Trim(); var now1073 = DateTime.Now;
+    // #1073: Create ghi VÔ ĐIỀU KIỆN cả 4 cột nhật ký; Update chỉ ghi lại LogLU*.
+    if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, DealerCode = dto.DealerCode, CreatedDate = now1073, CreatedBy = by1073 }; db.SerMstSuppliers.Add(row); }
     row.SupplierName = dto.SupplierName; row.Address = dto.Address; row.Phone = dto.Phone; row.Fax = dto.Fax; row.UpdatedAt = DateTime.Now;
     // #1031: nguồn `SerSupplierCreate` (Inventory.Master.cs:259) ghi thẳng hai cột này (gán trực tiếp,
     // không guard rỗng) — entity đã có sẵn từ #574 nhưng DTO/endpoint chưa từng wire.
     row.ContactName = dto.ContactName; row.ContactPhone = dto.ContactPhone;
+    row.LogLUDateTime = now1073; row.LogLUBy = by1073;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.DealerCode, row.FlagActive, row.ContactName, row.ContactPhone });
@@ -27784,7 +27787,7 @@ app.MapPut("/api/engineers/{engineerNo}", async (string engineerNo, EngineerUpda
     });
 }).RequireAuthorization();
 app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSupplierDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (supplierCode ?? "").Trim();
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
@@ -27815,6 +27818,8 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
     if (dto.ContactName != null) row.ContactName = dto.ContactName;
     if (dto.ContactPhone != null) row.ContactPhone = dto.ContactPhone;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // #1073: SerSupplierUpdate ghi lại LogLUDateTime/LogLUBy.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new

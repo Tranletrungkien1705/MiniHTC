@@ -3740,6 +3740,12 @@ public sealed class SerMstSupplier
     /// này — mọi nhà cung cấp bị coi là DÙNG CHUNG TOÀN ORG, không tách theo đại lý.</summary>
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1073 §12 — `SerSupplierCreate` (BizCarSv.Inventory.Master.cs:362, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký; `SerSupplierUpdate` (:560) chỉ ghi lại `LogLUDateTime`/`LogLUBy` — cùng khuôn #1070/#1071.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
