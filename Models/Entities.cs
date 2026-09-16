@@ -6707,6 +6707,11 @@ public sealed class GroupRepair
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 
+    // #1054 §12 — `SerGroupRepairCreate` (BizCarSv.Service.cs:11257, LIVE) ghi VÔ ĐIỀU KIỆN cả
+    // `CreatedDate`/`CreatedBy` NGOÀI hai cột LogLU* đã có từ #747 — bị bỏ sót khi vá lần đó.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

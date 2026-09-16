@@ -3027,6 +3027,9 @@ public static class Seeder
                 // #1052: Ser_Mst_ServiceType_Create ghi CreatedDate/CreatedBy (da vá cho SerPartType o #963).
                 "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1054: SerGroupRepairCreate ghi CreatedDate/CreatedBy (bo sot khi va LogLU* o #747).
+                "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

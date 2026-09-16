@@ -55244,7 +55244,7 @@ app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, string
 // 📌 Mini: `PUT`/`DELETE /api/grouprepairs/{code}` — **vá** chiều đại lý (guard và lệnh đều lọc `DealerCode`),
 //   xử lý ô rỗng **giống nhau** ở cả hai đường, và chặn xoá khi còn công đoạn tham chiếu.
 app.MapPut("/api/grouprepairs/{code}", async (string code, GroupRepairDto dto,
-    AppDbContext db, ITenantContext t, string? dealer) =>
+    AppDbContext db, ITenantContext t, string? dealer, string? partnerUserCode) =>
 {
     var c = (code ?? "").Trim().ToUpperInvariant();
     var dl = (dealer ?? dto.DealerCode ?? "").Trim();
@@ -55255,6 +55255,9 @@ app.MapPut("/api/grouprepairs/{code}", async (string code, GroupRepairDto dto,
     // Xu ly o RONG GIONG NHAU o ca hai duong (nguon lam khac nhau).
     g.Note = dto.Note;
     if (!string.IsNullOrWhiteSpace(dto.Status)) g.Status = dto.Status!;
+    // #1054: SerGroupRepairUpdate cũng ghi LogLUDateTime/LogLUBy (alColumnEffective, không guard rỗng) —
+    // endpoint PUT trước đây CHƯA TỪNG wire (chỉ POST/tạo có, và còn dùng hằng "api").
+    g.LogLUDateTime = DateTime.Now; g.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -55286,7 +55289,7 @@ app.MapDelete("/api/grouprepairs/{code}", async (string code, AppDbContext db, I
         twoMachinesVerified847 = "CA SAU md5 chuan hoa KHOP may 150: Create f4e12a3c, Update 84f09a77, Delete 32acfb39, CheckExistGroupR 7425b87e, CheckExistGroupRNo 8c6aa65b, CheckExistGroupRNoModify f5982ba5",
     });
 }).RequireAuthorization();
-app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.GroupRCode) || string.IsNullOrWhiteSpace(dto.GroupRName))
         return Results.BadRequest(new { error = "Cần GroupRCode và GroupRName." });
@@ -55294,12 +55297,14 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
     if (HasSpecialChar(dto.GroupRCode.Trim()))
         return Results.BadRequest(new { error = "Mã nhóm sửa chữa không được phép chứa các ký tự đặc biệt" });
     var code = dto.GroupRCode.Trim().ToUpperInvariant();
+    var by = (partnerUserCode ?? "system").Trim();
     var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRCode == code);
-    if (g is null) { g = new GroupRepair { OrgId = t.OrgId, GroupRCode = code }; db.GroupRepairs.Add(g); }
+    // #1054: SerGroupRepairCreate ghi CreatedDate/CreatedBy VÔ ĐIỀU KIỆN — bỏ sót khi vá LogLU* ở #747.
+    if (g is null) { g = new GroupRepair { OrgId = t.OrgId, GroupRCode = code, CreatedDate = DateTime.Now, CreatedBy = by }; db.GroupRepairs.Add(g); }
     // #747 Nguồn `CheckExistGroupRNo` xét trùng mã **trong phạm vi một đại lý** ⇒ khoá thật là (DealerCode, GroupRNo).
     if (!string.IsNullOrWhiteSpace(dto.DealerCode)) g.DealerCode = dto.DealerCode!.Trim().ToUpperInvariant();
     g.GroupRName = dto.GroupRName; g.Note = dto.Note; g.Status = dto.Status ?? "1"; g.UpdatedAt = DateTime.Now;
-    g.LogLUDateTime = DateTime.Now; g.LogLUBy = "api";
+    g.LogLUDateTime = DateTime.Now; g.LogLUBy = by;   // #1053-style: dùng partnerUserCode thật thay vì hằng "api"
     await db.SaveChangesAsync();
     return Results.Ok(new { g.GroupRCode, g.GroupRName, g.DealerCode });
 }).RequireAuthorization();
