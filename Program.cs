@@ -76831,7 +76831,9 @@ app.MapPost("/api/serassignmentworks/{roNo}/arise", async (string roNo, Assignme
         errorConstantWordOrderDiffers = "…_UpdateFlagArise_RONotFound vs …_UpdateFlagPause_NotFoundRO",
         sourceHasNoOrderBy = "top 1 *",
         sourceDropsTimeInLogColumn = true,
-        notPortedYet = "Ser_ROWorkTime (chi ban Pause chen, qua SequenceTypeDMS.ROWorkTime)",
+        // #1030-audit: ghi chú "notPortedYet" cũ đã đóng — nguồn `Ser_AssignmentWork_UpdateFlagArise`
+        // KHÔNG gọi InsertSer_ROWorkTime (chỉ bản Pause có, và #1030 đã port đủ cho /pause).
+        roWorkTimeNotApplicableHere = "Nguon Arise KHONG goi InsertSer_ROWorkTime (khac Pause) — khong phai no, da xac nhan doc lai nguon.",
     });
 }).RequireAuthorization();
 
