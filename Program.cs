@@ -24299,7 +24299,7 @@ app.MapGet("/api/salesmancerts", async (AppDbContext db, ITenantContext t, strin
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(cert)) qry = qry.Where(x => x.CertificateCode == cert);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMHyundaiCode.Contains(q!) || x.CertificateCode.Contains(q!) || x.CertificateName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMCerNo, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.DealerCode, x.EffStartDate, x.EffEndDate, x.Remark, x.FlagActive, x.UpdatedAt }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMCerNo, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.DealerCode, x.EffStartDate, x.EffEndDate, x.Remark, x.FlagActive, x.UpdatedAt, x.CreatedAt, x.CreatedBy, x.UpdatedBy }).ToListAsync();   // #1247 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -62873,7 +62873,7 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
     }
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark,
-      c.DealerCode, c.CusID, c.CarID, c.ROID, c.CreatedDate }).ToListAsync();
+      c.DealerCode, c.CusID, c.CarID, c.ROID, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #1248 §12
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items,
         // ===== #663 =====
         maceTypeFilterBoundToNonExistentColumn = "BuildClause(and, t.CareType, strMaceTypeConditionList, …) — Ser_CustomerCareMace KHONG co cot CareType (danh sach cot day du doc tu khoi insert o Customer.cs:14145: MaceId, DealerCode, CreatedDate, CreatedBy, MaceRecomentDate, Status, ApointDate, Remark, CarID, CusID, MaceType, ContactDate, ROID, LogLUDateTime, LogLUBy); cot that la MaceType",
@@ -67244,7 +67244,7 @@ app.MapGet("/api/mstparams", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(paramType)) qy = qy.Where(x => x.ParamType == paramType!.Trim());
     if (!string.IsNullOrWhiteSpace(paramCode)) qy = qy.Where(x => x.ParamCode == paramCode!.Trim());
     var items = await qy.OrderBy(x => x.DealerCode).ThenBy(x => x.ParamType).ThenBy(x => x.ParamCode)
-        .Select(x => new { x.DealerCode, x.ParamType, x.ParamCode, x.ParamValue, x.Description }).ToListAsync();
+        .Select(x => new { x.DealerCode, x.ParamType, x.ParamCode, x.ParamValue, x.Description, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1249 §12
 
     // Đo trực tiếp rủi ro đã nêu ở #675: có bộ khoá nào đang có NHIỀU HƠN một dòng không?
     var dupKeys = items.GroupBy(x => new { x.DealerCode, x.ParamType, x.ParamCode })
