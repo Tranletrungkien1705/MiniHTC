@@ -28531,11 +28531,14 @@ app.MapPost("/api/serapptypes", async (SerAppTypeMstDto dto, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.AppTypeCode, row.AppTypeName, row.FlagActive, isNew });
 }).RequireAuthorization();
 
-app.MapPost("/api/serapptypes/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serapptypes/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerAppTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.LogLUDateTime = DateTime.Now;
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    // #1193 SUA BUG THAT: cong POST /api/serapptypes (cung bang, cung CommonSaveMasterData) da dong dau
+    // ca LogLUDateTime lan LogLUBy khi doi FlagActive — toggle nay chi co LogLUDateTime, thieu LogLUBy.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
