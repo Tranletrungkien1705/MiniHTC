@@ -79139,12 +79139,15 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
                 var m2 = finCut.AddMonths(6);
                 if (m1 < m2) { maceType = "3"; maceRecomentDate = m1; } else { maceType = "2"; maceRecomentDate = m2; }
             }
+            // #1192 SUA BUG THAT: nguon (Service01.cs:8988-9022, khoi SerROStatusUpdate) ghi du 4 cot
+            // nhat ky khi chen dong nhac bao duong moi — port cu chi co CreatedDate.
+            var by1192 = (partnerUserCode ?? "system").Trim(); var now1192 = DateTime.Now;
             db.CustomerCareMaces.Add(new CustomerCareMace
             {
                 OrgId = t.OrgId, CareNo = "MC" + DateTime.Now.ToString("yyMMddHHmmssfff"),
                 MaceType = maceType, DealerCode = r.DealerCode, CarID = r.CarID, CusID = r.CusID,
                 ROID = roIdStr, RONo = r.RONo, MaceRecomentDate = maceRecomentDate, Status = "Pending",
-                CreatedDate = DateTime.Now,
+                CreatedDate = now1192, CreatedBy = by1192, LogLUDateTime = now1192, LogLUBy = by1192,
             });
         }
     }
