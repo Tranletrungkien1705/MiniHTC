@@ -77490,7 +77490,7 @@ app.MapPost("/api/serassignmentworks/{roNo}/update", async (string roNo, SerAssi
 // ⚠️ `LogLUDateTime = CUtils.StandardizeDate(DateTime.Now)` — `StandardizeDate` trả `yyyy-MM-dd` ⇒ **mất giờ**;
 //   cột nhật ký của thao tác tạm dừng chỉ còn **ngày**. Port ghi đủ giờ + cờ `sourceDropsTimeInLogColumn`.
 app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, AssignmentPauseDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     const string kFlagActive = "1";                 // TConst.Flag.Active
     const string kFlagInactive = "0";               // TConst.Flag.Inactive
@@ -77513,13 +77513,18 @@ app.MapPost("/api/serassignmentworks/{roNo}/pause", async (string roNo, Assignme
         });
 
     // Bảng phân công: nguồn CHỈ ghi WorkTypePause + nhật ký (không ghi FlagPause).
+    var by1030 = (partnerUserCode ?? "system").Trim();
     w.WorkTypePause = dto.WorkTypePause;
-    w.LogLUDateTime = DateTime.Now;
+    // #1157: nguồn ghi LogLUBy cùng LogLUDateTime trên CẢ HAI bảng (AssignmentOfWork.cs:1550-1552 cho
+    // Ser_AssignmentWork; Ser_RO_UpdateFlagPause cho Ser_RO) — port cũ chỉ wire LogLUDateTime, bỏ sót LogLUBy
+    // trên cả hai, và bỏ sót cả cặp LogLUDateTime/LogLUBy trên Ser_RO.
+    w.LogLUDateTime = DateTime.Now; w.LogLUBy = by1030;
 
     // Ser_RO.FlagPause ĐẢO NGƯỢC: gửi "1" (tạm dừng) thì ghi "0".
     var bPause = string.Equals(dto.FlagPause?.Trim(), kFlagActive, StringComparison.OrdinalIgnoreCase);
     ro.FlagPause = bPause ? kFlagInactive : kFlagActive;
     ro.ModifyDate = DateTime.Now;
+    ro.LogLUDateTime = DateTime.Now; ro.LogLUBy = by1030;
 
     // #1030 TRẢ NỢ (ghi ở #530): nguồn còn chèn Ser_ROWorkTime (InsertSer_ROWorkTime, zzzzCode.cs:208)
     // — FlagPlay = bPause?Yes:No, FlagBegin/FlagEnd luôn "0". Guard trạng thái của hàm chèn đòi RO thuộc
