@@ -1866,10 +1866,13 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
         return Results.BadRequest(new { error = "Phải nhập vào địa chỉ" });
 
     var insuranceNo = request.InsNo.Trim().ToUpperInvariant();
+    var dealerCode = request.DealerCode?.Trim().ToUpperInvariant();   // #1008
 
     // LUẬT 4 (checkInsuranceExist): mã hãng BH đã tồn tại thì KHÔNG cho tạo mới.
+    // #1008 SUA BUG THAT: nguon checkCreateExistSerIns khoa theo BO DOI (InsNo, DealerCode) — port cu
+    // khoa InsNo TOAN CUC, khien mot ma hang BH bi chan trung o MOI dai ly thay vi chi trong cung dai ly.
     var alreadyExists = await database.ServiceInsurances
-        .AnyAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo == insuranceNo);
+        .AnyAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo == insuranceNo && insurance.DealerCode == dealerCode);
     if (alreadyExists)
         return Results.BadRequest(new { error = "Hãng bảo hiểm đã tồn tại!" });
 
@@ -1886,7 +1889,8 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
         InsEngName = request.InsEngName,
         Address = request.Address.Trim(),
         Email = request.Email, Telephone = request.Telephone, Fax = request.Fax,
-        Website = request.Website, Taxcode = request.Taxcode, Description = request.Description
+        Website = request.Website, Taxcode = request.Taxcode, Description = request.Description,
+        DealerCode = dealerCode   // #1008
     };
     database.ServiceInsurances.Add(insuranceCompany);
     await database.SaveChangesAsync();
@@ -26874,15 +26878,17 @@ app.MapGet("/api/_meta/delete-guard-sweep", () => Results.Ok(new
     causalChainWith788 = "#788 ghi Ser_RO_Statistic_Service_ByGroup dung INNER JOIN Ser_Mst_Service => dich vu bi xoa khoi danh muc thi dong RO bien mat khoi thong ke, IM LANG. Nay thay dau kia: Ser_Mst_Service_Delete CO chan xoa khi con Ser_ROServiceItems => HAI DAU KHOP NHAU, du lieu cu kho roi vao canh do — TRU KHI ai xoa thang bang SQL hoac Ser_ROServiceItems da bi don truoc",
 })).RequireAuthorization();
 app.MapPut("/api/insurances/{insNo}", async (string insNo, InsuranceEditDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? dealerCode) =>
 {
     var no = (insNo ?? "").Trim();
-    var row = await db.ServiceInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no);
+    // #1008: InsNo chi duy nhat TRONG CUNG dai ly — them dealerCode de phan biet khi hai dai ly cung ma.
+    var dl = dealerCode?.Trim().ToUpperInvariant();
+    var row = await db.ServiceInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no && (dl == null || x.DealerCode == dl));
     if (row is null) return Results.NotFound(new { error = "Ser_Insurance_NotExist", insNo = no });
     var newNo = (dto.InsNo ?? no).Trim();
     if (!string.Equals(newNo, no, StringComparison.OrdinalIgnoreCase))
     {
-        var dup = await db.ServiceInsurances.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.InsNo == newNo);
+        var dup = await db.ServiceInsurances.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.InsNo == newNo && x.DealerCode == row.DealerCode);
         if (dup) return Results.Conflict(new { error = "Ser_Insurance_Exist", insNo = newNo });
         row.InsNo = newNo;
     }
@@ -26902,7 +26908,7 @@ app.MapPut("/api/insurances/{insNo}", async (string insNo, InsuranceEditDto dto,
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        row.Id, row.InsNo, row.InsVieName, row.Address, row.Status, row.Fax, row.Website, row.Description,
+        row.Id, row.InsNo, row.InsVieName, row.Address, row.Status, row.Fax, row.Website, row.Description, row.DealerCode,
         sourceGuardScopesAreConsistent = "AM TINH (doi chung voi #818): checkCreateExistSerIns va checkExistSerIns deu tra GetTableContents(..., InsNo, =, ..., DealerCode, =, ..., IsActive, =, 1) — CUNG IsActive = 1 cung; chi khac CHIEU kiem (Exist khi tim thay vs NotExist khi khong tim thay) => dung khuon cap create/update (#404), KHONG lap lai loi lech pham vi cua SerSupplier* (#818)",
     });
 }).RequireAuthorization();
@@ -78700,12 +78706,13 @@ record InsuranceCustomerDto(string CusId, string? CusName, string? Address, stri
 /// <paramref name="InsNo"/>, <paramref name="InsVieName"/>, <paramref name="Address"/>.
 /// </summary>
 record ServiceInsuranceDto(
-    string InsNo,          // mã hãng BH (bắt buộc, không trùng)
+    string InsNo,          // mã hãng BH (bắt buộc, không trùng TRONG CÙNG đại lý — #1008)
     string InsVieName,     // tên tiếng Việt (bắt buộc)
     string Address,        // địa chỉ (bắt buộc)
     string? InsEngName, string? Email, string? Telephone, string? Fax,
     string? Website, string? Taxcode, string? Description,
-    List<InsuranceCustomerDto>? Customers
+    List<InsuranceCustomerDto>? Customers,
+    string? DealerCode = null   // #1008
 );
 
 // ----- Nhập phụ tùng nợ từ Excel (FrmImportSerPartOO) -----

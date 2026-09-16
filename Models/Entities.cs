@@ -15817,6 +15817,11 @@ public sealed class ServiceInsurance
     public string? Description { get; set; }
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #1008 §12 — nguồn `checkCreateExistSerIns`/`checkExistSerIns` (`Service.cs:8532/8371`)
+    /// khoá trùng theo BỘ ĐÔI `(InsNo, DealerCode)`, KHÔNG phải `InsNo` toàn cục — port cũ chưa có cột này
+    /// nên chặn trùng SAI PHẠM VI (một mã hãng BH bị khoá cho MỌI đại lý thay vì chỉ trong cùng đại lý).</summary>
+    public string? DealerCode { get; set; }
 }
 
 /// <summary>
