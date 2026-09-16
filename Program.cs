@@ -61267,7 +61267,7 @@ app.MapGet("/api/servicecustomers/search", async (AppDbContext db, ITenantContex
 // 📌 Mini: `POST /api/servicecustomers/{cusCode}/activate` — guard **đúng chiều** (*phải đang vô hiệu hoá*)
 //   và ghi **hằng của tầng** (`"1"`), khớp với `DELETE` đã port ở #855 (ghi `"0"`).
 app.MapPost("/api/servicecustomers/{cusCode}/activate", async (string cusCode,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (cusCode ?? "").Trim();
     var cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == code);
@@ -61283,7 +61283,10 @@ app.MapPost("/api/servicecustomers/{cusCode}/activate", async (string cusCode,
         });
     }
     cus.FlagActive = "1";   // HANG cua tang (Flag.Active), KHONG phai chuoi "True" nhu nguon
-    cus.LogLUDateTime = DateTime.UtcNow;
+    // #1137: xac nhan qua plink may 150 (V20.2023.Release/BizCarSv.Customer.cs:6437-6519, chi ton tai o cay
+    // 150) — Ser_Customer_Active ghi CA BA cot IsActive/LogLUDateTime/LogLUBy trong CUNG mot alColumnEffective;
+    // port cu chi wire LogLUDateTime, bo sot LogLUBy.
+    cus.LogLUDateTime = DateTime.UtcNow; cus.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
