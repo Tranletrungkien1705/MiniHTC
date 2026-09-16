@@ -16526,7 +16526,8 @@ app.MapPost("/api/servicestockouts/{no}/void", async (
 app.MapPost("/api/servicepartoos/import", async (
     ImportPartOORequest request,
     AppDbContext database,
-    ITenantContext tenant) =>
+    ITenantContext tenant,
+    string? partnerUserCode) =>
 {
     var importRows = request.Rows ?? new List<ImportPartOORowDto>();
     // Nguồn: file rỗng → "File excel import không có dữ liệu"
@@ -16588,7 +16589,10 @@ app.MapPost("/api/servicepartoos/import", async (
                 + "Bản vá 2019 thêm dấu phân cách chỉ cứu được phần tử đầu bị mất, không bỏ được giá trị rác.",
         });
 
-    // --- Pha 3: mọi dòng hợp lệ → tạo phụ tùng nợ (nguồn gọi SerPartOOCreate từng dòng) ---
+    // --- Pha 3: mọi dòng hợp lệ → tạo phụ tùng nợ (nguồn gọi Ser_Part_OO_Create từng dòng) ---
+    // #1181 SUA BUG THAT: nguon Ser_Part_OO_Create (BizCarSv.Service.cs:15795+150-154) ghi du 4 cot nhat
+    // ky khi tao — cong import Mini chua tung dong dau nao, khac han POST /api/servicepartoos don le (#1081).
+    var by1181 = (partnerUserCode ?? "system").Trim(); var now1181 = DateTime.Now;
     var createdCount = 0;
     foreach (var row in importRows)
     {
@@ -16607,7 +16611,8 @@ app.MapPost("/api/servicepartoos/import", async (
             NgayDatHang = ParseOptionalDate(row.NgayDatHang),
             NgayVeDuKien = ParseOptionalDate(row.NgayVeDuKien),
             NgayHenTra = ParseOptionalDate(row.NgayHenTra),
-            Status = "Open"
+            Status = "Open",
+            CreatedDate = now1181, CreatedBy = by1181, LogLUDateTime = now1181, LogLUBy = by1181,
         });
         createdCount++;
     }
