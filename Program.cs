@@ -21370,10 +21370,12 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
             roStartDate = ro?.StartDate, roFinishedDate = ro?.FinishedDate, roPlateNo = ro?.LicensePlate,
             roBatteryNo = ro?.BatteryNo, roSerialNo = ro?.SerialNo, roWarrantyExpiresDate = ro?.WarrantyExpiresDate,
             cusConfirmedWarrantyDate = car?.CusConfirmedWarrantyDate,
-            serviceItems = includeDetail ? svc.Select(x => new { x.SerCode, x.Factor, x.Price, x.VAT,
-                amount = x.Factor * x.Price * (1 + x.VAT / 100m) }) : null,
-            partItems = includeDetail ? parts.Select(x => new { x.PartCode, x.Quantity, x.Factor, x.Price, x.Vat,
-                amount = x.Factor * x.Price * x.Quantity * (1 + x.Vat / 100m) }) : null,
+            // #980: khối Detail nguồn (`zzzzClauseSelect_ROWarrantyDetail`) còn trả `AMOUNTBEFOREVAT` (khác
+            // `AMOUNT` đã có) + `BulletinID` (dòng công) + `FlagMainPart` (dòng PT, khác `RowPartType`/PTC ở #979).
+            serviceItems = includeDetail ? svc.Select(x => new { x.SerCode, x.Factor, x.Price, x.VAT, x.BulletinID,
+                amountBeforeVat = x.Factor * x.Price, amount = x.Factor * x.Price * (1 + x.VAT / 100m) }) : null,
+            partItems = includeDetail ? parts.Select(x => new { x.PartCode, x.Quantity, x.Factor, x.Price, x.Vat, x.FlagMainPart,
+                amountBeforeVat = x.Factor * x.Price * x.Quantity, amount = x.Factor * x.Price * x.Quantity * (1 + x.Vat / 100m) }) : null,
         };
     }).ToList();
 
