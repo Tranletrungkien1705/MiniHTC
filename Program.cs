@@ -54985,7 +54985,7 @@ app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? g
     var items = await query.OrderBy(e => e.GroupRCode == null ? 0 : 1).ThenBy(e => e.GroupRCode)
         .ThenBy(e => e.EngineerNo).Take(500)
         .Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status, e.EngineerType,
-            e.DealerCode, e.StartWorkDate, e.FinishWorkDate }).ToListAsync();
+            e.DealerCode, e.StartWorkDate, e.FinishWorkDate, e.IsEngineer }).ToListAsync();   // #1000
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -55014,8 +55014,9 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
     e.EngineerName = dto.EngineerName; e.GroupRCode = dto.GroupRCode?.Trim().ToUpperInvariant(); e.Note = dto.Note; e.Status = dto.Status ?? "1";
     e.EngineerType = dto.EngineerType; e.StartWorkDate = dto.StartWorkDate; e.FinishWorkDate = dto.FinishWorkDate; e.UpdatedAt = DateTime.Now;
     e.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();   // #338 §12
+    if (!string.IsNullOrWhiteSpace(dto.IsEngineer)) e.IsEngineer = dto.IsEngineer;   // #1000 §12
     await db.SaveChangesAsync();
-    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.EngineerType, e.StartWorkDate, e.FinishWorkDate, e.DealerCode });
+    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.EngineerType, e.StartWorkDate, e.FinishWorkDate, e.DealerCode, e.IsEngineer });
 }).RequireAuthorization();
 
 // ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
@@ -79168,7 +79169,7 @@ record WarrantyWorkSyncRowDto(string? ROWWorkCode = null, string? ROWWorkName = 
 record ComplaintDiagErrorDto(string? ErrorCode = null, string? ErrorName = null, string? ErrorTypeCode = null, string? FlagActive = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
-    string? DealerCode = null);   // #338 §12
+    string? DealerCode = null, string? IsEngineer = null);   // #338/#1000 §12
 /// <summary>
 /// 1 khách hàng được chọn vào chiến dịch (lưới FrmCamp_CustomerList).
 /// Nguồn đặt Status="2" (Chưa liên hệ) cho mọi dòng mới thêm.

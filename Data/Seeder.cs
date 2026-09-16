@@ -2979,6 +2979,8 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"TruckNo\" text NULL",
                 // #998: InsertInsuranceAttachment ghi Note rieng tung dong, port cu thieu cot nay.
                 "ALTER TABLE public.\"InsuranceAttachments\" ADD COLUMN IF NOT EXISTS \"Note\" text NULL",
+                // #1000: SerEngineerCreate01/Update01 ghi rieng IsEngineer, khac Status(IsActive).
+                "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"IsEngineer\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

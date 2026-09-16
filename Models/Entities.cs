@@ -6686,6 +6686,12 @@ public sealed class ServiceEngineer
     public DateTime? StartWorkDate { get; set; }
     public DateTime? FinishWorkDate { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #1000 §12 — nguồn `SerEngineerCreate01`/`Update01` (`BizCarSv.Service.cs:11773/11995`,
+    /// bản MỚI HƠN `SerEngineerCreate`/`Update` — thêm đúng 3 tham số) ghi cột `IsEngineer` RIÊNG,
+    /// khác `IsActive`(=`Status` của Mini) — phân biệt "có tính là KTV thợ" (dùng cho báo cáo năng suất/KPI
+    /// theo đầu KTV) với "đang hoạt động". Port cũ (dùng `SerEngineerCreate` cũ hơn) không có cột này.</summary>
+    public string? IsEngineer { get; set; }
 }
 
 /// <summary>Chiến dịch dịch vụ/marketing (Ser_Campaign — port 1:1 FrmCampaignCreate, TCMotor DMSCarSv/Admin):
