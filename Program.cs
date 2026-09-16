@@ -40332,7 +40332,7 @@ app.MapGet("/api/hcc/noshow", async (AppDbContext db, ITenantContext t, string? 
 //   mọi thao tác ⇒ sửa phiếu không tồn tại bị chặn đúng chỗ (khác `SerGroupRepairDelete` ở #747).
 // 📌 Mini gộp master+chi tiết vào **một** bảng `SharePart` (mỗi dòng = một phụ tùng của phiếu), nên `PUT` dưới đây
 //   tái hiện đúng ngữ nghĩa "thay toàn bộ danh sách" — nhưng **kiểm TRƯỚC, xoá SAU** (khác biệt CÓ CHỦ Ý).
-app.MapPut("/api/shareparts/{shareNo}", async (string shareNo, List<SharePartLineDto> lines, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/shareparts/{shareNo}", async (string shareNo, List<SharePartLineDto> lines, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = shareNo.Trim().ToUpperInvariant();
     var existing = await db.ShareParts.Where(x => x.OrgId == t.OrgId && x.ShareNo == no).ToListAsync();
@@ -40356,7 +40356,11 @@ app.MapPut("/api/shareparts/{shareNo}", async (string shareNo, List<SharePartLin
             OrgId = t.OrgId, ShareNo = no, DealerCode = head.DealerCode,
             PartCode = l.PartCode!.Trim().ToUpperInvariant(), QuantityShare = l.QuantityShare,
             Remark = l.Remark, Status = head.Status, FlagLatest = "1",
-            LogLUDateTime = DateTime.Now, LogLUBy = "api",
+            // #1121 SỬA BUG: nguồn `SP_SharePartDetailCreate` (gọi từ `UpdateSharePart`) ghi CẢ
+            // `CreatedBy` LẪN `LogLUBy` = `strPartnerUserCode` (actor server) — port cũ hard-code
+            // `LogLUBy = "api"` và bỏ sót `CreatedBy` hoàn toàn.
+            CreatedBy = (partnerUserCode ?? "system").Trim(),
+            LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
     await db.SaveChangesAsync();
     return Results.Ok(new
