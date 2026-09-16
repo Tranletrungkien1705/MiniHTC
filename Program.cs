@@ -44445,18 +44445,30 @@ app.MapGet("/api/customergroups", async (AppDbContext db, ITenantContext t, stri
 //     ⇒ Không có quy ước "cửa nào chặt hơn" — **phải đọc từng cặp** (đúng bài học #589).
 // 🔴 Nhánh tạo gán **mọi** cột **vô điều kiện** (kể cả `GroupName`), chỉ `GroupNo` được `.ToUpper()`.
 // ⚪ `IsActive = Constants.Flag.Active` ⇒ giá trị **`"1"`** (`Const.Main.cs:28`).
-app.MapPost("/api/customergroups", async (CustomerGroupDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/customergroups", async (CustomerGroupDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "Chưa nhập tên nhóm." });
     var no = string.IsNullOrWhiteSpace(dto.GroupNo) ? "CG" + DateTime.Now.ToString("yyMMddHHmmss") : dto.GroupNo.Trim().ToUpperInvariant();
+    var by1077 = (partnerUserCode ?? "system").Trim(); var now1077 = DateTime.Now;
     var ex = await db.CustomerGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupNo == no);
     if (ex is not null)
     {
         ex.GroupName = dto.GroupName; ex.Description = dto.Description; ex.FlagActive = "1";
+        ex.Address = dto.Address; ex.Email = dto.Email; ex.TelePhone = dto.TelePhone; ex.Fax = dto.Fax; ex.TaxCode = dto.TaxCode;
+        // #1077 CỐ Ý LỆCH (giống #612): nguồn `SerCustomerGroupUpdate` (:8373) ghi đè CreatedDate/CreatedBy
+        // bằng thời điểm SỬA (không chỉ LogLUDateTime/LogLUBy) — giữ nguyên hành vi này.
+        ex.CreatedDate = now1077; ex.CreatedBy = by1077;
+        ex.LogLUDateTime = now1077; ex.LogLUBy = by1077;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.GroupNo, updated = true });
     }
-    var g = new CustomerGroup { OrgId = t.OrgId, GroupNo = no, GroupName = dto.GroupName, Description = dto.Description, FlagActive = "1" };
+    var g = new CustomerGroup
+    {
+        OrgId = t.OrgId, GroupNo = no, GroupName = dto.GroupName, Description = dto.Description, FlagActive = "1",
+        Address = dto.Address, Email = dto.Email, TelePhone = dto.TelePhone, Fax = dto.Fax, TaxCode = dto.TaxCode,
+        DealerCode = dto.DealerCode,
+        CreatedDate = now1077, CreatedBy = by1077, LogLUDateTime = now1077, LogLUBy = by1077,
+    };
     db.CustomerGroups.Add(g); await db.SaveChangesAsync();
     return Results.Ok(new { g.GroupNo, updated = false });
 }).RequireAuthorization();
@@ -44531,7 +44543,7 @@ app.MapPost("/api/customergroups/{no}/delete", async (string no, AppDbContext db
 
 // #612: SỬA nhóm khách hàng — port GIỮ `CreatedAt` (nguồn ghi đè bằng thời điểm sửa).
 app.MapPost("/api/customergroups/{no}/update", async (string no, CustomerGroupDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = no.Trim().ToUpperInvariant();
     // Nguồn nhánh SỬA có guard checkExistCusGroup (nhánh TẠO thì không có guard nào).
@@ -44541,8 +44553,14 @@ app.MapPost("/api/customergroups/{no}/update", async (string no, CustomerGroupDt
     var createdAtBefore = g.CreatedAt;
     g.GroupName = dto.GroupName;
     g.Description = dto.Description;
+    // #1077: SerCustomerGroupUpdate (:8373) con ghi Address/TelePhone/Fax/Email/TaxCode — port cu thieu.
+    g.Address = dto.Address; g.TelePhone = dto.TelePhone; g.Fax = dto.Fax; g.Email = dto.Email; g.TaxCode = dto.TaxCode;
     // DTO khong co FlagActive — bat/tat dung endpoint /toggle rieng (dung nguon: Update khong dung IsActive).
-    // CỐ Ý LỆCH: nguồn gán CreatedDate/CreatedBy = thời điểm SỬA; port giữ nguyên.
+    // CỐ Ý LỆCH: nguồn gán CreatedDate/CreatedBy = thời điểm SỬA; port giữ nguyên (đã có ở CreatedAt, nay
+    // thêm đúng 2 cột nguồn thật CreatedDate/CreatedBy cùng LogLUDateTime/LogLUBy).
+    var by1077 = (partnerUserCode ?? "system").Trim(); var now1077 = DateTime.Now;
+    g.CreatedDate = now1077; g.CreatedBy = by1077;
+    g.LogLUDateTime = now1077; g.LogLUBy = by1077;
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -81675,7 +81693,10 @@ record SerPaymentAllocateDto(string? DealerCode, string? SubjectKey, decimal Pay
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat, decimal? Factor = null, string? PartPriceId = null, string? Note = null);
 record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
-record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
+// #1077: SerCustomerGroupCreate/Update (BizCarSv.Service.cs:8457/8289) nhan 9 tham so, DTO cu chi giu 3.
+record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description,
+    string? Address = null, string? Email = null, string? TelePhone = null, string? Fax = null,
+    string? TaxCode = null, string? DealerCode = null);
 record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
 record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, decimal MTPercent, decimal MNPercent);

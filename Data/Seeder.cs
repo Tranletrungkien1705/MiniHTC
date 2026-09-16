@@ -3082,6 +3082,17 @@ public static class Seeder
                 "ALTER TABLE public.\"CampaignContacts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"CampaignContacts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"CampaignContacts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1077: CustomerGroup thieu 5 cot nghiep vu + DealerCode + 4 cot nhat ky (port cu chi giu 3/9).
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"Address\" text NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"Email\" text NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"TelePhone\" text NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"Fax\" text NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"TaxCode\" text NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"CustomerGroups\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

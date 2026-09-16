@@ -15378,6 +15378,23 @@ public sealed class CustomerGroup
     public string? GroupName { get; set; }
     public string? Description { get; set; }
     public string FlagActive { get; set; } = "1";
+
+    // ===== #1077 §12 — `SerCustomerGroupCreate` (BizCarSv.Service.cs:8457) nhận 9 tham số, port cũ chỉ
+    // giữ 3 (GroupNo/GroupName/Description) — thiếu HẲN 5 cột nghiệp vụ + DealerCode.
+    public string? Address { get; set; }
+    public string? Email { get; set; }
+    public string? TelePhone { get; set; }
+    public string? Fax { get; set; }
+    public string? TaxCode { get; set; }
+    public string? DealerCode { get; set; }
+    /// <summary>🔴 HẰNG≠GIÁ TRỊ / hành vi lạ ĐÃ XÁC NHẬN: `SerCustomerGroupUpdate` (:8289) GHI ĐÈ
+    /// `CreatedDate`/`CreatedBy` bằng thời điểm SỬA (không chỉ set lúc tạo) — giữ ĐÚNG hành vi này,
+    /// không "sửa cho đúng nghĩa" dù tên cột nói khác.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
