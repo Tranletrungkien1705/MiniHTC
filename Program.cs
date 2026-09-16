@@ -61563,7 +61563,7 @@ app.MapPost("/api/servicecustomers/with-cars", async (CustomerWithCarsDto dto, A
 // Guard giữ nguyên ba nhánh nguồn: IDCardNo trùng trong CÙNG đại lý (`mycheck_Ser_Customer_IDCardNo`) ·
 //   ProvinceCode phải tồn tại · DistrictCode phải tồn tại (cùng ProvinceCode) — và guard PlateNo trùng
 //   (Active, cùng đại lý) khi có xe đi kèm (`CheckExistPlateNo`).
-app.MapPost("/api/servicecustomers/create01", async (Customer01Dto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicecustomers/create01", async (Customer01Dto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
     var idCardNo = (dto.IDCardNo ?? "").Trim().ToUpperInvariant();
@@ -61601,6 +61601,10 @@ app.MapPost("/api/servicecustomers/create01", async (Customer01Dto dto, AppDbCon
         ProvinceCode = provinceCode.Length > 0 ? provinceCode : null,
         DistrictCode = districtCode.Length > 0 ? districtCode : null,
         FlagActive = "1", CreatedDate = DateTime.Now,
+        // #1170 SUA BUG THAT: nguon Ser_Customer_Create01 (BizCarSv.Customer.cs:2743-2744) ghi
+        // CreatedDate/CreatedBy tren dt_Ser_Customer (KHONG ghi LogLUDateTime/LogLUBy o ham nay —
+        // dung dong ACTIVE, khong tu them 2 cot nguon khong co) — port cu chi co CreatedDate, thieu CreatedBy.
+        CreatedBy = (partnerUserCode ?? "system").Trim(),
     };
     db.ServiceCustomers.Add(c);
 
@@ -61656,7 +61660,7 @@ app.MapPost("/api/servicecustomers/create01", async (Customer01Dto dto, AppDbCon
 // (#961) — thêm EngineNo/ProductYear/ColorCode/WarrantyRegistrationDate/DateBuyCar/CurrentKm/SalesCarID/
 // InsStartDate/InsNo/InsFinishedDate/InsContractNo/SerialNo/BatteryNo/WarrantyExpiresDate/
 // CusConfirmedWarrantyDate/WarrantyKM/PlateColorCode. Guard xe riêng: `CheckExistPlateNo` (trùng khuôn #961).
-app.MapPost("/api/servicecustomers/create-fordms", async (CustomerForDmsDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicecustomers/create-fordms", async (CustomerForDmsDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
     var idCardNo = (dto.IDCardNo ?? "").Trim().ToUpperInvariant();
@@ -61694,6 +61698,10 @@ app.MapPost("/api/servicecustomers/create-fordms", async (CustomerForDmsDto dto,
         ProvinceCode = provinceCode.Length > 0 ? provinceCode : null,
         DistrictCode = districtCode.Length > 0 ? districtCode : null,
         FlagActive = "1", CreatedDate = DateTime.Now,
+        // #1171 SUA BUG THAT: nguon Ser_Customer_CreateForDMS20220926 (BizCarSv.Customer.cs:4056-4057)
+        // ghi CreatedDate/CreatedBy tren dt_Ser_Customer (KHONG LogLUDateTime/LogLUBy, cung khuon #1170) —
+        // port cu chi co CreatedDate, thieu CreatedBy.
+        CreatedBy = (partnerUserCode ?? "system").Trim(),
     };
     db.ServiceCustomers.Add(c);
 
