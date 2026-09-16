@@ -25489,46 +25489,16 @@ app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenan
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
-// ===== 🏆🔴🔴 #982 CỤM MỚI `Rpt_DMSSer_DealerNetPrice_{LastGet,PartGet,SendHMC}` =====
-// `BizCarSv.Report.Special.Warranty.cs:4376-5069` trên máy 150 (KHÔNG có ở cây laptop). LIVE xác nhận qua
-// `HTCWSCarSv/WSCarSv.asmx.cs:33794` (`_biz.Rpt_DMSSer_DealerNetPrice_LastGet(`). Nghiệp vụ: gửi bảng GIÁ
-// BẢO HÀNH phụ tùng (DNP = Dealer Net Price) sang HÃNG (HMC) qua file `A26AX_DNP_yyyyMMdd.txt` + SFTP, có
-// bảng nhớ `TST_Mst_Part_DNP` ghi lại "giá đã gửi lần trước" để chỉ gửi PT nào ĐỔI GIÁ kể từ lần gửi trước.
-//
-// 🔴 `PartGet` (xem trước danh sách sẽ gửi) có DÒNG BUG THẬT giữ nguyên khi port: cột cuối cùng của SELECT
-// là `t.TSTWarrantyPrice TSTUrgentPrice` — LẤY GIÁ BẢO HÀNH RỒI ĐẶT TÊN LÀ "GIÁ KHẨN CẤP", rõ ràng copy-paste
-// từ một SELECT khác (khớp họ bug #413 HẰNG≠GIÁ TRỊ — ở đây là "tên cột≠cột thật"). Port ĐÚNG dòng ACTIVE:
-// trả `tstUrgentPrice` = TSTWarrantyPrice, không "sửa cho hợp lý".
-// ⚠️ **KHÔNG SFTP THẬT**: nguồn `SendHMCX` sinh file rồi `SftpClient.UploadFile(...)` lên server HMC qua
-// FTP config (`_str_HOST_FTP_*`, hằng cấu hình triển khai — không có trong MiniHTC). Port giữ ĐỦ logic DB
-// (tạo file nội dung + ghi `RptDealerNetPrice`/`Detail` + cập nhật cache `TstMstPartDnp`) nhưng KHÔNG gọi
-// SFTP thật — trả `filePath`/`fileContent` để caller tự tải, gắn cờ `sftpNotSimulated=true` để không ai
-// nhầm là đã gửi HMC thật.
-app.MapGet("/api/tstparts/dealer-net-price/eligible", async (AppDbContext db, ITenantContext t, DateTime? reportDateFrom) =>
-{
-    var cache = await db.TstMstPartDnps.Where(x => x.OrgId == t.OrgId).ToListAsync();
-    var cacheByCode = cache.GroupBy(x => x.TSTPartCode).ToDictionary(g => g.Key, g => g.First());
-    var partsQ = db.TstParts.Where(x => x.OrgId == t.OrgId && x.TSTWarrantyPrice != null && x.TSTWarrantyPrice > 0);
-    if (reportDateFrom is not null) partsQ = partsQ.Where(x => x.LUDTime >= reportDateFrom);   // #982: strReportDateConditionList tren t.LUDTime
-    var parts = await partsQ.ToListAsync();
-    var eligible = parts.Where(p => !cacheByCode.TryGetValue(p.TSTPartCode, out var c) || c.TSTWarrantyPrice != p.TSTWarrantyPrice)
-        .Select(p => new
-        {
-            p.TSTPartCode,
-            tstPrice = (int)Math.Round((p.TSTWarrantyPrice ?? 0) / 100m, 0),   // nguon: ROUND(TSTWarrantyPrice/100,0)
-            p.TSTPriceBefore, p.LUDTime, p.LUBy, p.VieName, p.VAT, p.Unit, p.DateEffect, p.TSTCost,
-            p.VieNameHTC, p.TSTWarrantyPrice, p.TypeCode, p.GroupCode, p.UpdateDateTime, p.UpdateBy,
-            p.MinOrderQuantity, p.Remark, p.EngName, p.TSTUnit,
-            tstUrgentPrice = p.TSTWarrantyPrice,   // #982: BUG GIU NGUYEN — nguon dat ten sai "TSTUrgentPrice" cho chinh TSTWarrantyPrice
-        }).ToList();
-    return Results.Ok(new
-    {
-        count = eligible.Count, items = eligible,
-        onlyExistsOnMachine150_982 = "#982: Rpt_DMSSer_DealerNetPrice_PartGet — BizCarSv.Report.Special.Warranty.cs:4513",
-        tstUrgentPriceIsWarrantyPriceCopyPasteBug = "Nguon SELECT cuoi cung co 't.TSTWarrantyPrice TSTUrgentPrice' — dat sai ten cot (gia bao hanh duoc doi ten thanh gia khan cap), giu nguyen dong ACTIVE khong sua",
-    });
-}).RequireAuthorization();
-
+// ===== 🏆🔴🔴 #988 SỬA OVER-CLAIM CỦA #982 — `Rpt_DMSSer_DealerNetPrice_{LastGet,PartGet,SendHMC}` ĐÃ CÓ AUDIT/ENDPOINT TỪ #694/#883 =====
+// #982 (fire trước) gắn nhãn "CỤM MỚI" cho họ hàm này — SAI: `#694` (`GET /api/report/dealer-net-price-to-hmc`,
+// gần cuối file) và `#883` (`POST /api/report/dealernetprice/build-file` + `send-preview`) ĐÃ audit + port
+// TRƯỚC RỒI, với ghi chú nợ rõ ràng (`miniModelGap`/`dnpTableNotModelled`: "Mini CHƯA có bảng TST_Mst_Part_DNP
+// nên KHÔNG mô phỏng được điều kiện nguồn — dùng tạm TSTPriceBefore, ghi NỢ"). `#878` từng ĐÍNH CHÍNH đúng
+// điều này ("#874 xếp cụm này vào PHÂN HỆ THẬT SỰ CHƯA CÓ là SAI") nhưng #982 không grep lại trước khi tin
+// theo danh sách hàng đợi CŨ — lặp lại đúng bài học #418 mới ghi ở fire trước, TRONG CHÍNH FIRE ĐÓ.
+// Xoá GET `.../eligible` (trùng `#694`); giữ `.../last-batch` + `POST .../send-hmc` (THẬT SỰ MỚI — chưa
+// có endpoint nào GHI vào `Rpt_DealerNetPrice`/`TST_Mst_Part_DNP` trước #982). Trả nợ THẬT ở `#694`/`#883`
+// bằng bảng `TstMstPartDnp` vừa thêm — xem sửa tại `GET /api/report/dealer-net-price-to-hmc` bên dưới.
 app.MapGet("/api/tstparts/dealer-net-price/last-batch", async (AppDbContext db, ITenantContext t) =>
 {
     var header = await db.RptDealerNetPrices.Where(x => x.OrgId == t.OrgId).OrderByDescending(x => x.RptID).FirstOrDefaultAsync();
@@ -25594,44 +25564,9 @@ app.MapPost("/api/tstparts/dealer-net-price/send-hmc", async (AppDbContext db, I
 // loại `TST`, và CHƯA TỪNG gửi (khoá (OrderPartNo, PartID) trên `Rpt_PartsOrderDetail_Part` — theo dõi
 // "đã gửi" chứ KHÔNG theo dõi giá như #982, vì đơn hàng không đổi giá sau khi NCC đã duyệt).
 // ⚠️ KHÔNG SFTP THẬT — cùng lý do đã ghi ở #982 (cấu hình FTP triển khai riêng, không có trong MiniHTC).
-app.MapGet("/api/orderparts/hmc-report/eligible", async (AppDbContext db, ITenantContext t, DateTime? reportDateFrom) =>
-{
-    var sentKeys = (await db.RptPartsOrderDetailParts.Where(x => x.OrgId == t.OrgId).ToListAsync())
-        .Select(x => (x.OrderPartNo, x.PartID)).ToHashSet();
-    var ordersQ = db.OrderParts.Where(x => x.OrgId == t.OrgId && x.OrderPartType == "TST"
-        && x.DeliveryFormCode == "2" && x.SupplierStatus != null && (x.SupplierStatus == "2" || x.SupplierStatus == "4"));
-    if (reportDateFrom is not null) ordersQ = ordersQ.Where(x => x.SentAt >= reportDateFrom);   // #983: strReportDateConditionList tren t.ApprDTime (=SentAt)
-    var orders = await ordersQ.ToListAsync();
-    var orderIds = orders.Select(x => x.Id).ToList();
-    var lines = await db.OrderPartLines.Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.OrderPartId)
-        && x.PartID != null && x.QtyAppr == x.OrderQty).ToListAsync();   // #983: f.QtyAppr = f.QtyOrd
-    var partIds = lines.Select(x => x.PartID!).Distinct().ToList();
-    var masterParts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIds.Contains(x.PartID!)).ToListAsync();
-    var masterByPartId = masterParts.GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
-
-    var eligible = new List<object>();
-    foreach (var o in orders)
-    foreach (var l in lines.Where(x => x.OrderPartId == o.Id))
-    {
-        // #983: t.OrderSuppierNo — số NCC dùng làm khoá "đã gửi", KHÁC `OrderPartNo` hệ thống sinh.
-        var key = (o.OrderSuppierNo ?? "", l.PartID!);
-        if (sentKeys.Contains(key)) continue;
-        masterByPartId.TryGetValue(l.PartID!, out var mp);
-        eligible.Add(new
-        {
-            orderPartNo = o.OrderSuppierNo, partID = l.PartID, partCode = mp?.PartCode, vieName = mp?.PartName,
-            engName = mp?.EngName, unit = mp?.Unit, dealerCode = o.DealerCode, approvedDate = o.SentAt,
-            priceVAT = (int)Math.Round((l.UPAfterDc ?? 0) * 0.01m, 0), quantity = l.QtyAppr,
-            orderPartType = o.OrderPartType, amount = l.Price * (1 + (l.VAT ?? 0)),
-        });
-    }
-    return Results.Ok(new
-    {
-        count = eligible.Count, items = eligible,
-        onlyExistsOnMachine150_983 = "#983: Rpt_DMSSer_PartsOrderDetail_PartGet — BizCarSv.Report.Special.Warranty.cs:5316",
-    });
-}).RequireAuthorization();
-
+// #988: xoá GET `.../eligible` — TRÙNG `#695` (`GET /api/report/parts-order-detail-to-hmc`, đã port TRƯỚC
+// #983, có ghi nợ rõ `miniModelGap`: "Mini chưa mô hình hoá Rpt_PartsOrderDetail_Part nên chưa lọc được
+// chưa-từng-gửi"). Trả nợ THẬT tại `#695` bằng bảng `RptPartsOrderDetailPart` vừa thêm — xem sửa bên dưới.
 app.MapGet("/api/orderparts/hmc-report/last-batch", async (AppDbContext db, ITenantContext t) =>
 {
     var header = await db.RptPartsOrderDetails.Where(x => x.OrgId == t.OrgId).OrderByDescending(x => x.RptID).FirstOrDefaultAsync();
@@ -57931,11 +57866,15 @@ app.MapGet("/api/report/dealer-net-price-to-hmc", async (AppDbContext db, ITenan
     var parts = await qp.Select(x => new { x.TSTPartCode, x.VieName, x.VieNameHTC, x.Unit, x.VAT,
                                           x.TSTPrice, x.TSTPriceBefore, x.TSTCost, x.DateEffect, x.LUDTime })
         .ToListAsync();
+    // #988: TRẢ NỢ `miniModelGap` — bảng `TST_Mst_Part_DNP` (Mini: `TstMstPartDnp`, thêm ở #982) nay đã có,
+    // dùng ĐÚNG điều kiện nguồn (`f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice`) thay
+    // cho phép so tạm bằng `TSTPriceBefore`.
+    var dnpCache = (await db.TstMstPartDnps.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.TSTPartCode).ToDictionary(g => g.Key, g => g.First());
 
     // Nguồn: loại giá 0/NULL, và chỉ lấy dòng CHƯA GỬI hoặc GIÁ ĐÃ ĐỔI (so với bảng DNP).
-    // Mini chưa mô hình hoá `TST_Mst_Part_DNP` ⇒ so bằng `TSTPriceBefore` và nêu cờ.
     var rows = parts.Where(x => x.TSTPrice > 0m)
-        .Where(x => x.TSTPriceBefore == null || x.TSTPriceBefore != x.TSTPrice)
+        .Where(x => !dnpCache.TryGetValue(x.TSTPartCode, out var d) || d.TSTWarrantyPrice != x.TSTPrice)
         .Select(x => new
         {
             x.TSTPartCode, x.VieName, x.VieNameHTC, x.Unit, x.VAT, x.DateEffect, x.LUDTime,
@@ -57959,7 +57898,7 @@ app.MapGet("/api/report/dealer-net-price-to-hmc", async (AppDbContext db, ITenan
         zeroPriceExcluded = "and isnull(t.TSTWarrantyPrice, 0.0) > 0 => phu tung gia 0 hoac NULL BI LOAI khoi dot gui",
         resultTableNameLeftUnset = "TEN BANG KET QUA BI BO TRONG: //dsGetData.Tables[0].TableName = strFunctionName; BI COMMENT => client phai tra theo CHI SO bang, khong theo ten (khac #683/#685 noi ten duoc dat)",
         debugSqlLoggingCommentedOut = "myDebug_SaveSql(...) trong …PartGetX BI COMMENT tron khoi => ham nay KHONG ghi lai SQL khi bat che do debug, khac hau het ham khac => kho chan doan khi so lieu sai",
-        miniModelGap = "Mini chua mo hinh hoa TST_Mst_Part_DNP (bang da gui HMC) va Rpt_DealerNetPrice => port so bang TSTPriceBefore thay cho bang DNP; ghi NO",
+        miniModelGapPaidAt988 = "#988 TRA NO: bang TstMstPartDnp (~TST_Mst_Part_DNP) + RptDealerNetPrice da duoc them o #982 — endpoint nay nay dung DUNG dieu kien nguon (f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice) thay vi so tam qua TSTPriceBefore.",
     });
 }).RequireAuthorization();
 
@@ -67784,8 +67723,14 @@ app.MapPost("/api/report/dealernetprice/build-file", (DnpFileBuildDto dto) =>
 app.MapGet("/api/report/dealernetprice/send-preview", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate) =>
 {
-    var all = await db.TstParts.Where(x => x.OrgId == t.OrgId && (x.TSTWarrantyPrice ?? 0m) > 0m)
-        .Select(x => new { x.TSTPartCode, x.EngName, x.TSTWarrantyPrice, x.LUDTime }).ToListAsync();
+    // #988 TRA NO dnpTableNotModelled: bang TstMstPartDnp (~TST_Mst_Part_DNP) da them o #982 — ap DUNG
+    // dieu kien nguon (f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice), khong chi loc gia > 0.
+    var dnpCache = (await db.TstMstPartDnps.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.TSTPartCode).ToDictionary(g => g.Key, g => g.First());
+    var all = (await db.TstParts.Where(x => x.OrgId == t.OrgId && (x.TSTWarrantyPrice ?? 0m) > 0m)
+        .Select(x => new { x.TSTPartCode, x.EngName, x.TSTWarrantyPrice, x.LUDTime }).ToListAsync())
+        .Where(x => !dnpCache.TryGetValue(x.TSTPartCode, out var d) || d.TSTWarrantyPrice != x.TSTWarrantyPrice)
+        .ToList();
     // Nguon: and isnull(t.TSTWarrantyPrice, 0.0) > 0  (da ap o tren)
     var inPeriod = all.Where(x => (!fromDate.HasValue || (x.LUDTime.HasValue && x.LUDTime.Value >= fromDate.Value))
                                && (!toDate.HasValue   || (x.LUDTime.HasValue && x.LUDTime.Value <= toDate.Value))).ToList();
@@ -67808,7 +67753,7 @@ app.MapGet("/api/report/dealernetprice/send-preview", async (AppDbContext db, IT
         autoVariantPassesEmptyPeriod = "diff hai vo boc: _SendHMC_Auto KHONG co tham so strReportDateConditionList va truyen \"\" vao SendHMCX => ngay ca khi ai do bo dau -- de cuu bo loc, duong TU DONG van gui tat ca",
         sourceDividesPriceByHundredThenRounds = "cast(isnull(ROUND(t.TSTWarrantyPrice / 100, 0), 0) as int) TSTPrice. TSTWarrantyPrice la kieu thap phan (chung cu tai cho: isnull(t.TSTWarrantyPrice, 0.0) o menh de ke ben) nen /100 la CHIA THUC, khong dinh bay VAT/100 cua #408. Nhung ROUND(...,0) roi cast as int => gia gui len hang la SO NGUYEN cua don vi tram => moi phu tung mat toi 50 dong, va KHONG co cho nao ghi lai phan du. Day la con so ROI KHOI he thong nen sai lech khong tu phat hien duoc",
         sourceWritesTwoDatabasesWithoutCompensation = "SendHMCX goi SaveData BON lan: _dbMain va _dbWH cho Rpt_DealerNetPrice, roi _dbMain va _dbWH cho TST_Mst_Part_DNP => hai CSDL DOC LAP; neu lan ghi thu hai hong thi ban Main DA danh dau la da gui con ban WH thi chua",
-        dnpTableNotModelled = "Mini CHUA co bang TST_Mst_Part_DNP (ban da gui lan truoc) nen KHONG mo phong duoc dieu kien nguon f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice (chi gui phan DOI GIA). Ghi la NO, khong bia bang",
+        dnpTableNotModelledPaidAt988 = "#988 TRA NO: bang TstMstPartDnp da them o #982 — endpoint nay nay AP DUNG dieu kien nguon (f.TSTPartCode is null or t.TSTWarrantyPrice <> f.TSTWarrantyPrice), chi con gia > 0 va PT DOI GIA moi vao candidateCount.",
         twoMachinesVerified = "BizCarSv.Report.Special.Warranty.cs 5891 dong tren CA HAI may; md5 chuan hoa SendHMCX tren 150 = 0071c354 KHOP laptop",
     });
 }).RequireAuthorization();
