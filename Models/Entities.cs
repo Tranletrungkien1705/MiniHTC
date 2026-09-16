@@ -6855,6 +6855,16 @@ public sealed class CampaignContact
     // 2 cột của Ser_CamContact được thêm khi đưa KH vào chiến dịch
     public DateTime? ContactDate { get; set; }  // TblSer_CamContact.ContactDate — ngày đã liên hệ
     public string? Remark { get; set; }         // TblSer_CamContact.Remark — ghi chú liên hệ
+
+    // #1076 §12 — `Ser_CamContactCreate` (BizCarSv.Service.cs:10745, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký. `Ser_CamContactUpdate` (#731, xoá-sạch-rồi-chèn-lại) KHÔNG chủ động gán 4 cột này trong
+    // vòng lặp dựng dòng (chỉ copy CusID/CarID/Status/ContactDate/Remark từ client) — khối "Insert…in
+    // Data WH" phía sau CHỈ SELECT lại rồi copy sang WH, không phải gán mới (đúng caveat lesson #455-b)
+    // ⇒ CHỈ wire 4 cột này ở nhánh TẠO, KHÔNG port cho nhánh XOÁ-CHÈN-LẠI.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice, TCMotor DMSCarSv/Services):

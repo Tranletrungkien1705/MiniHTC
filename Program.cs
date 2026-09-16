@@ -66215,7 +66215,7 @@ app.MapPost("/api/campaignmarketings/create-full", async (CampaignMarketingCreat
 // ⚪ **ÂM TÍNH — `Update` xoá ở CẢ HAI CSDL**: `_dbMain.ExecNonQuery` **và** `_dbWH.ExecNonQuery`
 //   ⇒ **mẫu ngược thứ BA** cho #726 (sau #728, #730).
 app.MapPost("/api/campaigns/{camId}/contacts", async (string camId, List<CamContactRowDto> rows,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var cam = (camId ?? "").Trim();
     // 🔴 Nguồn `Create` KHÔNG kiểm chiến dịch tồn tại. Giữ 1:1 nhưng TRẢ CỜ để lộ dữ liệu mồ côi.
@@ -66230,6 +66230,8 @@ app.MapPost("/api/campaigns/{camId}/contacts", async (string camId, List<CamCont
             return Results.BadRequest(new { error = "ErrCarSv.Ser_CamContactCreate_CusIDNotInList", rowIndex = i });
     }
 
+    // #1076: Ser_CamContactCreate ghi VÔ ĐIỀU KIỆN cả 4 cột nhật ký cho MỖI dòng lúc tạo.
+    var by1076 = (partnerUserCode ?? "system").Trim(); var now1076 = DateTime.Now;
     foreach (var r in rows)
     {
         db.CampaignContacts.Add(new CampaignContact
@@ -66237,6 +66239,7 @@ app.MapPost("/api/campaigns/{camId}/contacts", async (string camId, List<CamCont
             OrgId = t.OrgId, CampaignId = campaign?.Id ?? 0,
             CusID = r.CusID, CarID = r.CarID,
             ContactStatus = r.Status ?? "", ContactDate = r.ContactDate, Remark = r.Remark,
+            CreatedDate = now1076, CreatedBy = by1076, LogLUDateTime = now1076, LogLUBy = by1076,
         });
     }
     await db.SaveChangesAsync();
