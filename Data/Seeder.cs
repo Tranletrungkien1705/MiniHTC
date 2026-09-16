@@ -3053,6 +3053,11 @@ public static class Seeder
                 "ALTER TABLE public.\"SerMstLocations\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"SerMstLocations\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"SerMstLocations\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1071: Ser_MST_PartGroup_Create/_Update ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy.
+                "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

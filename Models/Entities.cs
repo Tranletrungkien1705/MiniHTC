@@ -14521,6 +14521,13 @@ public sealed class PartGroup
     public int OrderId { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1071 §12 — `Ser_MST_PartGroup_Create` (BizCarSv.Master.cs:3930, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký; `_Update` (:4292) chỉ ghi lại `LogLUDateTime`/`LogLUBy` — cùng khuôn #1070.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Công nợ khách hàng dịch vụ (theo RO) — port 1:1 FrmCusDebitCreate (TblCusDebit, TCMotor).</summary>

@@ -19244,7 +19244,7 @@ app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? 
 }).RequireAuthorization();
 
 // Upsert theo mã nhóm (guard: nhóm cha phải tồn tại + không tự trỏ chính nó).
-app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.GroupCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhóm." });
     if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "Chưa nhập tên nhóm." });
@@ -19253,14 +19253,19 @@ app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenant
     if (parent == code) return Results.BadRequest(new { error = "Nhóm cha không được trùng chính nó." });
     if (parent != null && !await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.GroupCode == parent))
         return Results.BadRequest(new { error = $"Nhóm cha {parent} không tồn tại." });
+    var by1071 = (partnerUserCode ?? "system").Trim(); var now1071 = DateTime.Now;
     var ex = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
     if (ex is not null)
     {
         ex.GroupName = dto.GroupName; ex.ParentCode = parent; ex.OrderId = dto.OrderId; ex.FlagActive = "1";
+        // #1071: Ser_MST_PartGroup_Update ghi lại LogLUDateTime/LogLUBy (không đụng CreatedDate/CreatedBy).
+        ex.LogLUDateTime = now1071; ex.LogLUBy = by1071;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.GroupCode, updated = true });
     }
-    var r = new PartGroup { OrgId = t.OrgId, GroupCode = code, GroupName = dto.GroupName, ParentCode = parent, OrderId = dto.OrderId, FlagActive = "1" };
+    // #1071: Ser_MST_PartGroup_Create ghi VÔ ĐIỀU KIỆN cả 4 cột nhật ký lúc tạo.
+    var r = new PartGroup { OrgId = t.OrgId, GroupCode = code, GroupName = dto.GroupName, ParentCode = parent, OrderId = dto.OrderId, FlagActive = "1",
+        CreatedDate = now1071, CreatedBy = by1071, LogLUDateTime = now1071, LogLUBy = by1071 };
     db.PartGroups.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.GroupCode, updated = false });
 }).RequireAuthorization();
@@ -19342,7 +19347,7 @@ app.MapGet("/api/_meta/checkexist-code-pair-sweep", () => Results.Ok(new
     twoWithoutCreateCounterpart = new[] { "CheckExistCusTypeName", "CheckExistServiceCode" },
     measurementLesson = "HAI lan gap CHUA DU de goi la khuon cua tang. O #820 phep loc LIVE/CHET ha 8 ung vien xuong 1; o day phep LIET KE TRON HO cho thay 2/13 — va 11 cai con lai lam dung hoac chat hon. Khi da ghi phai soi lai toan bo thi HAY SOI NGAY o luot ke tiep roi chot con so, dung de loi canh bao treo lo lung",
 })).RequireAuthorization();
-app.MapPut("/api/partgroups/{code}", async (string code, PartGroupDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/partgroups/{code}", async (string code, PartGroupDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var gc = (code ?? "").Trim().ToUpperInvariant();
     var row = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == gc);
@@ -19357,6 +19362,8 @@ app.MapPut("/api/partgroups/{code}", async (string code, PartGroupDto dto, AppDb
     }
     if (dto.GroupName != null) row.GroupName = dto.GroupName;
     if (dto.ParentCode != null) row.ParentCode = dto.ParentCode;
+    // #1071: Ser_MST_PartGroup_Update ghi lại LogLUDateTime/LogLUBy.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
