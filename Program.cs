@@ -64014,8 +64014,10 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
             "Ser_App_CheckDB(status in 1,2)", "LevelOfInspection in (1,2,3)" },
         levelOfInspectionRequiredInSource = true,
         sourceMisspellings = new[] { "WarrantlyStatus", "InsuaranceStatus", "RemarkErrOrther" },
-        notPortedYet = new[] { "ds_Ser_ReceptionFDtl (bang chi tiet hang muc)",
-            "ds_Ser_ReceptionFAttachFile (tep dinh kem)" },
+        // #1039-audit: ghi chú "notPortedYet" cũ đã LỖI THỜI — ds_Ser_ReceptionFDtl/ds_Ser_ReceptionFAttachFile
+        // đã port đủ ở #524 (POST /api/receptions/{no}/details) và #525 (.../attachfiles), chỉ tách endpoint
+        // riêng thay vì gộp vào lời gọi tạo phiếu.
+        detailsAndAttachFilesPortedSeparately = "POST /api/receptions/{no}/details (#524) va /attachfiles (#525)",
         sourceWritesThreeDatabases = "Main + WH + Dealer (no _dbWH/_dbDealer)",
     });
 }).RequireAuthorization();
