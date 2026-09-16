@@ -46638,20 +46638,25 @@ app.MapGet("/api/extraworks", async (AppDbContext db, ITenantContext t, string? 
 // ⚪ `_Delete` có **cả** `Raise` **và** `this.Check*` ⇒ chặt hơn `_Save` — cùng hình dạng "save mở, delete chặt"
 //   đã ghi ở #782.
 // Upsert theo mã công việc phát sinh.
-app.MapPost("/api/extraworks", async (ExtraWorkDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/extraworks", async (ExtraWorkDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.ExtraWorkCode)) return Results.BadRequest(new { error = "Chưa nhập mã công việc." });
     if (string.IsNullOrWhiteSpace(dto.ExtraWorkName)) return Results.BadRequest(new { error = "Chưa nhập tên công việc." });
     if (dto.MaxPrice < 0 || dto.Vat < 0) return Results.BadRequest(new { error = "Giá tối đa/VAT không hợp lệ." });
     var code = dto.ExtraWorkCode.Trim().ToUpperInvariant();
+    var by1092 = (partnerUserCode ?? "system").Trim(); var now1092 = DateTime.Now;
     var ex = await db.ExtraWorkMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ExtraWorkCode == code);
     if (ex is not null)
     {
         ex.ExtraWorkName = dto.ExtraWorkName; ex.MaxPrice = dto.MaxPrice; ex.Vat = dto.Vat; ex.Remark = dto.Remark; ex.FlagActive = "1";
+        // #1092: nhanh SUA nguon CHỈ ghi LogLUDateTime/LogLUBy (CreatedDate/CreatedBy bi COMMENT trong nguon).
+        ex.LogLUDateTime = now1092; ex.LogLUBy = by1092;
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.ExtraWorkCode, updated = true });
     }
-    var r = new ExtraWorkMst { OrgId = t.OrgId, ExtraWorkCode = code, ExtraWorkName = dto.ExtraWorkName, MaxPrice = dto.MaxPrice, Vat = dto.Vat, Remark = dto.Remark, FlagActive = "1" };
+    // #1092: nhanh TAO nguon ghi du 4 cot nhat ky.
+    var r = new ExtraWorkMst { OrgId = t.OrgId, ExtraWorkCode = code, ExtraWorkName = dto.ExtraWorkName, MaxPrice = dto.MaxPrice, Vat = dto.Vat, Remark = dto.Remark, FlagActive = "1",
+        CreatedDate = now1092, CreatedBy = by1092, LogLUDateTime = now1092, LogLUBy = by1092 };
     db.ExtraWorkMsts.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new
     {

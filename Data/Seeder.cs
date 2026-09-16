@@ -3156,6 +3156,11 @@ public static class Seeder
                 // #1091: Bom (Mst_BOM) thieu LogLUDateTime/LogLUBy (Mst_BOM_Add/_Update).
                 "ALTER TABLE public.\"Boms\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"Boms\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1092: ExtraWorkMst (Ser_MST_ROWorkArising) thieu 4 cot nhat ky (Ser_MST_ROWorkArising_Save).
+                "ALTER TABLE public.\"ExtraWorkMsts\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"ExtraWorkMsts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"ExtraWorkMsts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"ExtraWorkMsts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

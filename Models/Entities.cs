@@ -15639,6 +15639,14 @@ public sealed class ExtraWorkMst
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1092 §12 — nguồn `Ser_MST_ROWorkArising_Save` (AssignmentOfWork.cs:5948) ghi đủ 4 cột nhật ký
+    /// khi TẠO (dòng mới); khi SỬA (dòng đã tồn tại) hai dòng gán CreatedDate/CreatedBy bị chính nguồn COMMENT
+    /// (`//dr["CreatedDate"] = …`) — chỉ LogLUDateTime/LogLUBy active ở nhánh sửa.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Nhà cung cấp phụ tùng dịch vụ (mã/tên/liên hệ/địa chỉ) — port 1:1 FrmMstSupplierCreate (TblSerMstSupplier, TCMotor).</summary>
