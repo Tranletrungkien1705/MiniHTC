@@ -42597,18 +42597,22 @@ app.MapGet("/api/repairorders/for-stockout-order", async (AppDbContext db, ITena
     var cn = (cusName ?? "").Trim();
     // Danh sach DEN cua nguon: not in (CRE, W4P, REJ, NORE) — anh xa sang ma trang thai cua MiniHTC.
     var excluded = new[] { "Created", "Wait4Part", "Rejected", "NotResponding" };
-    var rows = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
         .Where(x => !excluded.Contains(x.Status))
         .Where(x => checkInDate == null || (x.CheckInDate != null && x.CheckInDate >= checkInDate))
         .Where(x => pn.Length == 0 || (x.LicensePlate != null && x.LicensePlate.Contains(pn)))
         .Where(x => rn.Length == 0 || x.RONo == rn)
         .Where(x => cn.Length == 0 || (x.CusName != null && x.CusName.Contains(cn)))
         .OrderByDescending(x => x.CheckInDate)        // VA BAY #415: nguon dat order by o cau INTO nen mat
-        .Select(x => new
-        {
-            x.RONo, x.CusName, x.LicensePlate, x.Vin, x.CheckInDate, x.Creator, x.Status, x.CreatedAt,
-        })
         .ToListAsync();
+    // #985: nguon con tra DealerCode/CusID/CusAddress/ModelID (ro.ModelID join Ser_MST_Model chi de xac
+    // nhan ModelID la ma model hop le — MiniHTC.RepairOrder.ModelID da luu THANG ma model, khong phai
+    // khoa noi bo can dich, nen join khong sinh them cot moi ngoai chinh no) — port cu bo sot ca 4 cot dau.
+    var rows = ros.Select(x => new
+    {
+        x.RONo, x.DealerCode, x.CusID, x.CusName, x.CusAddress, x.ModelID,
+        x.LicensePlate, x.Vin, x.CheckInDate, x.Creator, x.Status, x.CreatedAt,
+    }).ToList();
     return Results.Ok(new
     {
         count = rows.Count, items = rows,
