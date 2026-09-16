@@ -18403,13 +18403,18 @@ app.MapPost("/api/servicecars/os-warranty-update", async (OsCarSalesUpdDto dto, 
 // TRỰC TIẾP (không tham số hoá — bề mặt SQL injection thật của nguồn) — Mini KHÔNG có cột `FamilyID`
 // (đường dẫn phả hệ nhóm) trên `PartGroup`, chỉ có `ParentCode` một cấp; không suy diễn hành vi multi-cấp
 // khi không có dữ liệu để xác nhận, ghi nợ rõ thay vì bịa.
-app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active, string? dealerCode) =>
+// #1004: `Ser_Mst_Part_Get_InvSearch` (LIVE, `BizCarSv.Service.cs:5584`) — picklist PT CÒN TỒN KHO cho màn
+// lập hoá đơn/báo giá (`and sb.InStockQuantity > 0`). Thêm `inStockOnly` vào GET chung thay vì tạo endpoint
+// mới. KHÔNG port khối `PriceEffectTmp`/`RANK() OVER (... ORDER BY DateEffect DESC)` (giá hiệu lực tính
+// lại lúc hiển thị, không phải dữ liệu đã lưu — cùng lý do đã ghi ở #996/#999).
+app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active, string? dealerCode, bool? inStockOnly) =>
 {
     var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PartCode.Contains(q!.ToUpper()) || (x.PartName != null && x.PartName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(group)) query = query.Where(x => x.PartGroupCode == group);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);   // #991
+    if (inStockOnly == true) query = query.Where(x => x.Quantity > 0);   // #1004
     var parts = await query.OrderBy(x => x.PartCode).Take(500).ToListAsync();
     var groupCodes = parts.Select(x => x.PartGroupCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var groups = await db.PartGroups.Where(x => x.OrgId == t.OrgId && groupCodes.Contains(x.GroupCode)).ToListAsync();
