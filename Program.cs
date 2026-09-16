@@ -35462,6 +35462,7 @@ app.MapGet("/api/warrantyclaims/{id:long}/serviceitems", async (long id, AppDbCo
     {
         itemId = i.Id, i.SerID, i.SerCode, i.SerName, i.ROWSerType, i.Factor, i.Price, i.VAT,
         i.StdManHour, i.WarrantyStatus, i.Note, i.BulletinID, i.CreatedDate, i.CreatedBy,
+        i.ApprovedDate, i.ApprovedBy, i.LogLUDateTime, i.LogLUBy,   // #1236 §12
         servicePrice = i.Factor * i.Price + i.Factor * i.Price * i.VAT * 0.01m,
     }) });
 }).RequireAuthorization();
@@ -49781,6 +49782,7 @@ app.MapGet("/api/htmvpdis", async (AppDbContext db, ITenantContext t, string? st
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.PDINo, r.Status, r.CreatedAt, r.DoneAt,
+        r.ApprovedDate, r.ApprovedBy,   // #1235 §12
         cars = db.HtmvPdiDtls.Count(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -51164,7 +51166,7 @@ app.MapGet("/api/cbreqs", async (AppDbContext db, ITenantContext t, string? stat
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.CBReqNo, r.Status, r.CreatedAt, r.ConfirmedAt,
+        r.CBReqNo, r.Status, r.CreatedAt, r.ConfirmedAt, r.Remark,   // #1237 §12
         cars = db.CBReqDetails.Count(c => c.OrgId == t.OrgId && c.CBReqId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
