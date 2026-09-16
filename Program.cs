@@ -15924,6 +15924,34 @@ app.MapGet("/api/servicestockins", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #994 `SerStockInGetMaxStockInNo`/`_V2` (LIVE CẢ HAI, BizCarSv.Inventory.StockIn.cs:4107/4233) =====
+// TRACE 2 CỔNG WS: `HTCWSCarSv/WSCarSv.asmx.cs:14721` gọi `_V2` (CÓ lọc `like '%'+yymmdd(hôm nay)+'%'`);
+// `TERP.WSCarSv/App_Code/WSCarSv.cs:21377` gọi bản TRẦN (KHÔNG lọc ngày) — ĐÚNG khuôn bug đã phát hiện ở
+// `SerOrderPartGetMaxOrderNo`/`_V2` (#601/#604): hai cổng SỐNG cấp số theo HAI LUẬT khác nhau trên CÙNG
+// một bảng ⇒ cổng "theo ngày" luôn cấp số NHỎ HƠN cổng "toàn bộ" đã dùng ⇒ TRÙNG SỐ CHỨNG TỪ có hệ thống,
+// không cần đua tranh. Cả hai bản còn dùng `with(nolock)` + `MAX()` trên CHUỖI (không nguyên tử, không ép
+// kiểu số) + lọc `LEN` qua `BuildClause` (rỗng ⇒ mất điều kiện #410).
+// 📌 Port AN TOÀN (như #601 đã làm cho OrderPart): lọc đúng đại lý, ép kiểu số khi so sánh, không dùng `LIKE`
+// trên số chứng từ, và không phân biệt "trong ngày"/"toàn bộ" (chỉ MỘT luật, tránh chính bug nguồn mắc phải).
+app.MapGet("/api/servicestockins/next-number", async (AppDbContext db, ITenantContext t, string dealerCode, int stockInNoLength = 10) =>
+{
+    var dc = (dealerCode ?? "").Trim();
+    if (dc.Length == 0) return Results.BadRequest(new { error = "Can dealerCode." });
+    var candidates = await db.ServiceStockIns
+        .Where(x => x.OrgId == t.OrgId && x.DealerCode == dc && x.StockInNo.Length == stockInNoLength)
+        .Select(x => x.StockInNo).ToListAsync();
+    // So theo PHAN SO (khong LIKE theo ngay, khong MAX() chuoi tho) — tranh ca hai bug nguon.
+    var maxNo = candidates.Where(s => long.TryParse(s, out _)).Select(long.Parse).DefaultIfEmpty(0).Max();
+    return Results.Ok(new
+    {
+        dealerCode = dc, stockInNoLength, maxStockInNo = maxNo == 0 ? null : maxNo.ToString(),
+        nextStockInNo = (maxNo + 1).ToString().PadLeft(stockInNoLength, '0'),
+        onlyExistsOnMachine150_994 = "#994: SerStockInGetMaxStockInNo/_V2 — BizCarSv.Inventory.StockIn.cs:4107/4233",
+        twoLiveGatewaysTwoLaws = "HTCWSCarSv goi _V2 (loc like yymmdd hom nay); TERP.WSCarSv/App_Code goi ban TRAN (khong loc ngay) — TRUNG SO CHUNG TU CO HE THONG khi hai cong cung chay, dung khuon bug da phat hien o SerOrderPartGetMaxOrderNo/_V2 (#601/#604). Port CHI dung MOT luat (khong LIKE ngay, khong nolock, ep so) de khong ke thua bug nao trong hai ban nguon.",
+        noAtomicGuarantee = "Van co khoang ho dua tranh giua doc-max va ghi (chua co unique constraint tren (DealerCode, StockInNo) trong Seeder) — ghi lai nhu nguon, khong khang dinh da vá triet de.",
+    });
+}).RequireAuthorization();
+
 // Tạo phiếu nhập (header + dòng; tính Amount=Qty*Price + tổng).
 app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext db, ITenantContext t) =>
 {
