@@ -45087,6 +45087,10 @@ app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITe
     var isNew = row is null;
     if (isNew) { row = new CarModelStd { OrgId = t.OrgId, ModelCode = code }; db.CarModelStds.Add(row); }
     row!.ModelName = dto.ModelName; row.FlagActive = dto.FlagActive ?? "1"; row.UpdatedAt = DateTime.Now;
+    // #1187 SUA BUG THAT (§12 GAP): entity da co cot Remark tu #727 (Mst_CarModelStd_Add/_Update deu ghi
+    // cot nay: _Add chi .Trim(), _Update qua StandardizeParam = Trim().ToUpper()) nhung endpoint chua tung
+    // gan dto.Remark vao row — cot roi mat im lang moi lan tao/sua.
+    row.Remark = isNew ? dto.Remark?.Trim() : dto.Remark?.Trim().ToUpperInvariant();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.ModelCode, row.ModelName, row.FlagActive, isNew });
 }).RequireAuthorization();
