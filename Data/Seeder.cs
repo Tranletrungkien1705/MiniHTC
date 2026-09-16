@@ -2994,6 +2994,8 @@ public static class Seeder
                 "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"CardNo\" text NULL",
                 "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"MemberNo\" text NULL",
                 "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"CardType\" text NULL",
+                // #1043: Ser_Mst_ModelAudImage_Add/_Update ghi cot Remark, port cu thieu.
+                "ALTER TABLE public.\"SerModelAudImages\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

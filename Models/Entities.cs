@@ -15717,6 +15717,9 @@ public sealed class SerModelAudImage
     public string ModelCode { get; set; } = "";
     public string ReceptionFAudType { get; set; } = "";
     public string? FilePath { get; set; }
+    /// <summary>#1043 §12 — nguồn `Ser_Mst_ModelAudImage_Add`/`_Update` (Tab/BizCarSv.Tab.cs) đều nhận và
+    /// ghi cột này, port cũ chưa từng mô hình hoá.</summary>
+    public string? Remark { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

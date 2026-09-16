@@ -44484,7 +44484,7 @@ app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(audType)) qry = qry.Where(x => x.ReceptionFAudType == audType);
     var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.ReceptionFAudType).Take(500)
-        .Select(x => new { x.ModelCode, x.ReceptionFAudType, x.FilePath }).ToListAsync();
+        .Select(x => new { x.ModelCode, x.ReceptionFAudType, x.FilePath, x.Remark }).ToListAsync();   // #1043
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -44495,12 +44495,17 @@ app.MapPost("/api/modelaudimages", async (SerModelAudImageDto dto, AppDbContext 
     if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
     if (string.IsNullOrWhiteSpace(audType)) return Results.BadRequest(new { error = "Chưa chọn đầu mục." });
     if (string.IsNullOrWhiteSpace((dto.FilePath ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập link ảnh." });
+    // #1043 GUARD `Ser_Mst_ReceptionFAudType_CheckDB` (nguồn: Tab/BizCarSv.Tab.cs) — đầu mục kiểm tra
+    //   phải TỒN TẠI trong danh mục trước khi gán ảnh mẫu — port cũ hoàn toàn chưa kiểm.
+    var audTypeExists = await db.ReceptionFAudTypeMsts.AnyAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudType == audType);
+    if (!audTypeExists)
+        return Results.BadRequest(new { error = "Ser_Mst_ReceptionFAudType_NotFound", message = "Đầu mục kiểm tra chưa có trong danh mục.", audType });
     var row = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ReceptionFAudType == audType);
     var isNew = row is null;
     if (isNew) { row = new SerModelAudImage { OrgId = t.OrgId, ModelCode = model, ReceptionFAudType = audType }; db.SerModelAudImages.Add(row); }
-    row!.FilePath = dto.FilePath; row.UpdatedAt = DateTime.Now;
+    row!.FilePath = dto.FilePath; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;   // #1043 §12
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FilePath, isNew });
+    return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FilePath, row.Remark, isNew });
 }).RequireAuthorization();
 
 app.MapDelete("/api/modelaudimages", async (string model, string audType, AppDbContext db, ITenantContext t) =>
@@ -80607,7 +80612,7 @@ record OsVelocaCustomerDto(string? SalesCusID, string? CusName, string? CusTypeI
 record ReqPartPriceTstReplyLineDto(string? PartCode, string? TSTPartCode, decimal? TSTPrice);
 record ReqPartPriceTstReplyDto(string? TSTReqPartPriceID, DateTime? TSTSentDate, string? TSTStatus, List<ReqPartPriceTstReplyLineDto>? Lines);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
-record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath);
+record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath, string? Remark = null);   // #1043
 record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
