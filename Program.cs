@@ -34482,14 +34482,17 @@ app.MapGet("/api/dms/wro", async (AppDbContext db, ITenantContext t, string? roN
 }).RequireAuthorization();
 
 // #752 Bảng mã trạng thái của `DMSWROGet` — sáu nhóm, có `else` nên mã lạ KHÔNG bị nuốt dòng.
+// #1213 SUA BUG THAT: ham nay duoc goi voi RepairOrder.Status (chuoi tieng Anh Mini luu, xem `_roFlow`/
+// `roStatusSourceCodes`), khong phai ma nguon tho — cac case cu ("CRE"/"PRT"/... ) khong bao gio khop,
+// moi RO deu roi vao "Khong xac dinh".
 static string DmsWroStatusLabel(string? st) => (st ?? "") switch
 {
-    "CRE" or "PRT" or "HRO" => "Chờ sửa",
-    "INGA" => "Đang sửa",
-    "RPRD" or "PAID" => "Sửa xong",
-    "FNS" => "Đã giao xe",
-    "REJ" => "Lệnh hủy",
-    "W4P" or "HPA" or "NORE" => "Hủy, Hẹn lại",
+    "Created" or "PrintedQuote" or "HasRO" => "Chờ sửa",
+    "InGarage" => "Đang sửa",
+    "Repaired" or "Paid" => "Sửa xong",
+    "Finished" => "Đã giao xe",
+    "Rejected" => "Lệnh hủy",
+    "Wait4Part" or "HasPart" or "NotResponding" => "Hủy, Hẹn lại",
     _ => "Không xác định",
 };
 app.MapPost("/api/customercare/refresh-dob", async (AppDbContext db, ITenantContext t, string? dealer) =>
@@ -36336,7 +36339,11 @@ app.MapGet("/api/tvo/ro-service-status", async (AppDbContext db, ITenantContext 
     var toEx = toRaw.Date == toRaw ? toRaw.AddDays(1) : toRaw;   // #415
     var take = count is > 0 ? count!.Value : 50;
 
-    var STATUSES = new[] { "CRE", "PRT", "HRO", "INGA", "RPRD", "CEND", "FNS" };
+    // #1213 SUA BUG THAT: mang nay truoc day dung MA NGUON THO ("CRE"/"PRT"/.../"FNS") de loc truc tiep
+    // RepairOrder.Status, nhung cot do luu CHUOI TIENG ANH ("HasRO"/"InGarage"/...— xem `_roFlow` va
+    // `roStatusSourceCodes` khai o cum "Lenh sua chua RO" phia duoi file) => STATUSES.Contains(r.Status)
+    // KHONG BAO GIO dung, moi RO deu bi loai (droppedByStatusFilter = tong so, rows luon RONG).
+    var STATUSES = new[] { "Created", "PrintedQuote", "HasRO", "InGarage", "Repaired", "CheckEnd", "Finished" };
 
     // _Draft_01: lệnh sửa trong kỳ, BỎ báo giá PDI (đúng nguồn).
     var pool = await db.RepairOrders
@@ -36357,14 +36364,15 @@ app.MapGet("/api/tvo/ro-service-status", async (AppDbContext db, ITenantContext 
     var modelCodes = cars.Select(c => c.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var models = await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToListAsync();
 
+    // #1213: cung sua nhu STATUSES o tren — so theo chuoi Mini luu, khong phai ma nguon tho.
     string StatusName(string st) => st switch
     {
-        "CRE" or "PRT" or "HRO" => "Chờ sửa",
-        "INGA" => "Đang sửa",
-        "RPRD" => "Sửa xong",
-        "CEND" => "Kiểm tra cuối cùng",
-        "FNS" => "Đã giao xe",
-        _ => "Không xác định",     // PAID/REJ/W4P/HPA/NORE — nhánh bị comment ở nguồn
+        "Created" or "PrintedQuote" or "HasRO" => "Chờ sửa",
+        "InGarage" => "Đang sửa",
+        "Repaired" => "Sửa xong",
+        "CheckEnd" => "Kiểm tra cuối cùng",
+        "Finished" => "Đã giao xe",
+        _ => "Không xác định",     // Paid/Rejected/Wait4Part/HasPart/NotResponding — nhánh bị comment ở nguồn
     };
 
     var items = rows.Select(r =>
@@ -42127,15 +42135,17 @@ app.MapGet("/api/hyundaime/ro-payload/{roNo}", async (string roNo, AppDbContext 
     // inner join Ser_Customer / Ser_Car ở nguồn ⇒ thiếu một trong hai là KHÔNG đẩy.
     var droppedByInnerJoins = cus is null || car is null;
 
+    // #1213 SUA BUG THAT: cung loi nhu DmsWroStatusLabel — ham nay nhan RepairOrder.Status (chuoi tieng
+    // Anh Mini luu), khong phai ma nguon tho, cac case cu khong bao gio khop.
     string StatusName(string st) => st switch
     {
-        "CRE" or "PRT" or "HRO" => "Chờ sửa",
-        "INGA" => "Đang sửa",
-        "RPRD" => "Sửa xong",
-        "CEND" => "Kiểm tra cuối cùng",
-        "FNS" => "Đã giao xe",
-        "REJ" => "Lệnh hủy",          // nhánh NÀY có ở gói Hyundai Me, KHÔNG có ở #564
-        _ => "Không xác định",        // PAID vẫn thiếu ở cả hai (Issue 981)
+        "Created" or "PrintedQuote" or "HasRO" => "Chờ sửa",
+        "InGarage" => "Đang sửa",
+        "Repaired" => "Sửa xong",
+        "CheckEnd" => "Kiểm tra cuối cùng",
+        "Finished" => "Đã giao xe",
+        "Rejected" => "Lệnh hủy",          // nhánh NÀY có ở gói Hyundai Me, KHÔNG có ở #564
+        _ => "Không xác định",        // Paid vẫn thiếu ở cả hai (Issue 981)
     };
 
     var payload = new
