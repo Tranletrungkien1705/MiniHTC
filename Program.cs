@@ -33577,8 +33577,12 @@ app.MapPost("/api/serassignmentworks/{roNo}/engineers", async (
     var actor = user.Identity?.Name;
     var now = DateTime.Now;
 
+    // #1160: ProcessSaveSer_AssignmentWorkEngineer duoc goi tu BEN TRONG ca Ser_AssignmentWork_Create lan
+    // _Update (AssignmentOfWork.cs:391/808) — ca hai deu dong dau CreateBy/LogLUBy tren chinh header khi
+    // gan KTV — port cu chua tung wire actor cho nhanh nay.
     var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
-    if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
+    if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo, CreateDTime = now, CreateBy = actor }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
+    h.LogLUDateTime = now; h.LogLUBy = actor;
 
     db.SerAssignmentWorkEngineers.RemoveRange(
         db.SerAssignmentWorkEngineers.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id));
