@@ -22273,6 +22273,18 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
                     message = "Số Km của BCBH > Số KM giới hạn bảo hành của xe tạo BCBH!" });
         }
 
+        // ===== #1023 `ROWarrantyReport_Approve_Check_SerialNo` (WarrantyReport.cs:4699) — CHỈ (XM,A)/(SB,A) =====
+        if (rowTypeDtl == "A" && string.IsNullOrWhiteSpace(claim.SerialNo))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidSerialNo",
+                message = "VIN không có mã AVN!" });
+        // ===== `ROWarrantyReport_Approve_Check_PartIDError` (WarrantyReport.cs:6467) — CHỈ (PT,S)/(TC,R) =====
+        if ((rowType == "PT" && rowTypeDtl == "S") || (rowType == "TC" && rowTypeDtl == "R"))
+        {
+            if (string.IsNullOrWhiteSpace(claim.PartIDError))
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidPartIDError",
+                    message = "Báo cáo bảo hành chưa có phụ tùng lỗi!" });
+        }
+
         // ===== #1020 `ROWarrantyReport_Approve_Check_ComplaintDiagnosticError` (WarrantyReport.cs:5886) =====
         // Gọi ở 8/11 nhánh — CHỈ trong (XM,*)/(SB,*) (cả bốn ROWTypeDtlCode A/B/P/W), loại trừ (PT,S)/(TC,R)/(BT,C).
         // Nguồn: mã lỗi phàn nàn (`ErrorCodePN`) và mã lỗi chẩn đoán (`ErrorCodeCD`) của claim đều PHẢI tồn tại
