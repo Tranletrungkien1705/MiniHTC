@@ -15577,7 +15577,7 @@ app.MapPost("/api/serviceitems/import", async (ServiceItemImportDto dto, string?
 // `Model`→Model · `Remark`→Note), kèm bật `FlagWarranty`. `.../import` (WinForm) KHÔNG có nhánh này —
 // đúng vì `FrmImportService` không phải kênh đối tác, không cần đối chiếu danh mục hãng.
 app.MapPost("/api/serviceitems/import-catalog", async (ServiceItemImportDto dto, string? dealerCode,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dl = (dealerCode ?? "").Trim().ToUpperInvariant();
     var rows = dto.Rows ?? new();
@@ -15598,7 +15598,14 @@ app.MapPost("/api/serviceitems/import-catalog", async (ServiceItemImportDto dto,
             vat = ww.VAT; model = ww.ModelCode; note = ww.Remark; flagWarranty = "1";
         }
         var ex = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code && x.DealerCode == dl);
+        // #1198 SUA BUG THAT: nguon Ser_Mst_Service_Import (BizCarSv.Service.cs:1990+2135-2136 tao,
+        // +2212-2213 sua) ghi du 4 cot nhat ky khi tao va cap LogLUDateTime/LogLUBy khi sua — cung ho
+        // #1177 (kenh WinForm) nhung kenh WS rieng nay (#941) tu truoc chua tung dong cot nao.
+        var by1198 = (partnerUserCode ?? "system").Trim(); var now1198 = DateTime.Now;
+        var isNewItem1198 = ex is null;
         if (ex is null) { ex = new ServiceItemMst { OrgId = t.OrgId, SerCode = code, DealerCode = dl }; db.ServiceItemMsts.Add(ex); }
+        if (isNewItem1198) { ex.CreatedDate = now1198; ex.CreatedBy = by1198; }
+        ex.LogLUDateTime = now1198; ex.LogLUBy = by1198;
         ex.SerName = serName; ex.Cost = cost; ex.Price = price; ex.Vat = vat; ex.Model = model; ex.Note = note;
         ex.StdManHour = stdManHour; ex.FlagWarranty = flagWarranty; ex.FlagActive = "1";
         saved.Add(new { ex.SerCode, ex.SerName, fromWarrantyWork = ww is not null });
