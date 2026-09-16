@@ -977,7 +977,7 @@ app.MapGet("/api/planheaders", async (AppDbContext db, ITenantContext t, string?
     if (year.HasValue) q = q.Where(h => h.YearPlan == year.Value);
     var items = await q.OrderByDescending(h => h.Id).Take(500)
         .Select(h => new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt,
-            h.Approve1By, h.Approve2By, h.TimesPlan }).ToListAsync();
+            h.Approve1By, h.Approve2By, h.TimesPlan, h.LogLUDateTime, h.LogLUBy }).ToListAsync();   // #1226 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -1717,7 +1717,8 @@ app.MapGet("/api/boms", async (AppDbContext db, ITenantContext t, string? model)
     var q = db.Boms.Where(b => b.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(b => b.ModelCode.Contains(model));
     var items = await q.OrderBy(b => b.BomCode).Select(b => new
-    { b.BomCode, b.ModelCode, b.MaintLevel, b.Status, lines = db.BomLines.Count(l => l.OrgId == t.OrgId && l.BomId == b.Id) }).ToListAsync();
+    { b.BomCode, b.ModelCode, b.MaintLevel, b.Status, b.CreatedAt, b.LogLUDateTime, b.LogLUBy,   // #1226 §12
+      lines = db.BomLines.Count(l => l.OrgId == t.OrgId && l.BomId == b.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -2576,6 +2577,7 @@ app.MapGet("/api/grts", async (AppDbContext db, ITenantContext t, string? status
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
         g.GrtNo, g.BankGrtNo, g.DealerCode, g.BankCode, g.GrtType, g.GrtValue, g.GrtDate, g.DateExpired, g.Status,
+        g.CreatedAt, g.ApprovedAt, g.BankCodeMonitor, g.LogLUDateTime, g.LogLUBy,   // #1226 §12
         expired = g.DateExpired != null && g.DateExpired < now
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalValue = items.Sum(x => x.GrtValue), items });
