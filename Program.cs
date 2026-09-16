@@ -21448,16 +21448,22 @@ app.MapDelete("/api/warrantyclaims/{id:long}", async (long id, AppDbContext db, 
     var claim = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     // Guard 1 — nguồn: Ser_WarrantyReport_ROWID_NotFound.
     if (claim is null) return Results.NotFound(new { id, sourceError = "Ser_WarrantyReport_ROWID_NotFound" });
-    var st = (claim.Status ?? "").Trim().ToUpperInvariant();
+    var st = (claim.Status ?? "").Trim();
+    // #1209 SUA BUG THAT: guard truoc day so voi ma NGUON THO ("SENT"/"CONF"/"ACCE") sau khi
+    // ToUpperInvariant(), nhung cot Status cua Mini luu CHUOI TIENG ANH DAY DU ("Sent"/"Confirmed"/
+    // "Accepted" - xem /api/warrantyclaims/{id}/action). "Sent".ToUpper() == "SENT" trung NGAU NHIEN,
+    // nhung "Confirmed".ToUpper() = "CONFIRMED" != "CONF" va "Accepted".ToUpper() = "ACCEPTED" != "ACCE"
+    // => hai guard KHONG BAO GIO KICH HOAT: de nghi da CHO DUYET (Confirmed) hoac DA DUYET (Accepted)
+    // van bi XOA duoc, trai han nguon (Ser_WarrantyReport_NotDelete_Sent / _NotDelete_Accept).
     // Guard 2 — nguồn chặn SENT **và** CONF bằng CÙNG một mã lỗi.
-    if (st == "SENT" || st == "CONF")
+    if (st is "Sent" or "Confirmed")
         return Results.BadRequest(new
         {
             error = "Ser_WarrantyReport_NotDelete_Sent", currentStatus = st,
             sourceOneErrorCodeForTwoStatuses = "nguon nem ..._NotDelete_Sent cho CA SENT lan CONF (da gui HMC cho duyet) => nhan HEP hon dieu kien",
         });
     // Guard 3 — nguồn: Ser_WarrantyReport_NotDelete_Accept.
-    if (st == "ACCE")
+    if (st == "Accepted")
         return Results.BadRequest(new { error = "Ser_WarrantyReport_NotDelete_Accept", currentStatus = st });
     // Chỉ tới đây mới xoá — đúng thứ tự của nguồn.
     var svcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync();
