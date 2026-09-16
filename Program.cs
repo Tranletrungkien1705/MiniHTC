@@ -63897,7 +63897,7 @@ app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
@@ -63926,6 +63926,9 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     };
     // #305: phiếu nhập mới luôn ở trạng thái CHƯA đồng bộ Veloca (đối xứng chiều xuất, #304).
     h.FlagSyncVeloca = "0"; h.SyncVelocaDTime = null;
+    // #1086: SerStockInCreate (StockIn.cs:635) ghi du 4 cot nhat ky khi TAO.
+    var by1086 = (partnerUserCode ?? "system").Trim(); var now1086 = DateTime.Now;
+    h.CreatedDate = now1086; h.CreatedBy = by1086; h.LogLUDateTime = now1086; h.LogLUBy = by1086;
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT });
@@ -64288,7 +64291,7 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
 //
 // ⚠️ `OldStockInID`: nguồn ghi giá trị khi khác rỗng, **ngược lại ghi DBNull** ⇒ gửi rỗng là **XOÁ** liên kết
 //   phiếu gốc, không phải "bỏ qua". Port giữ đúng.
-app.MapPut("/api/stockins/{no}", async (string no, StockInUpdateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/stockins/{no}", async (string no, StockInUpdateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
@@ -64315,6 +64318,8 @@ app.MapPut("/api/stockins/{no}", async (string no, StockInUpdateDto dto, AppDbCo
     // Rỗng ⇒ XOÁ liên kết phiếu gốc (nguồn ghi DBNull), không phải bỏ qua.
     h.OldStockInID = string.IsNullOrWhiteSpace(dto.OldStockInID) ? null : dto.OldStockInID!.Trim();
     // ⚠️ KHÔNG ghi Status — nguồn không đụng tới.
+    // #1086: SerStockInUpdate (StockIn.cs:1463) chi ghi LogLUDateTime/LogLUBy khi SUA.
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = (partnerUserCode ?? "system").Trim();
 
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, status = h.Status, note = "Sửa phiếu KHÔNG đổi trạng thái (đúng nguồn)." });

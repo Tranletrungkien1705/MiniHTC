@@ -2787,6 +2787,13 @@ public sealed class PartStockIn
     public string? OrderPartId { get; set; }
     public string? OrderPartNo { get; set; }
     public string? FlagOrderNCC { get; set; }
+
+    /// <summary>#1086 §12 — nguồn `SerStockInCreate` (StockIn.cs:635) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `SerStockInUpdate` (:1463) chỉ ghi LogLUDateTime/LogLUBy khi SỬA.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>
