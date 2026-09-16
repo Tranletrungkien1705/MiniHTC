@@ -68986,7 +68986,7 @@ app.MapPost("/api/stockins/{stockInId}/status", async (long stockInId, StockInSt
     });
 }).RequireAuthorization();
 app.MapPost("/api/stockouts/{stockOutId}/status", async (long stockOutId, StockOutStatusDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var so = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == stockOutId);
     if (so == null) return Results.NotFound(new { error = "khong tim thay phieu xuat" });
@@ -69021,6 +69021,9 @@ app.MapPost("/api/stockouts/{stockOutId}/status", async (long stockOutId, StockO
         });
     }
     so.Status = next;
+    // #1149: helper UpdateStockOutStatus (Inventory.StockOut.cs:5247-5317) ghi Status/LogLUDateTime/LogLUBy
+    // trong CUNG mot alColumnEffective — ban "tran" cua Mini bo sot 2 cot nhat ky.
+    so.LogLUDateTime = DateTime.Now; so.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
