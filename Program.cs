@@ -15948,7 +15948,7 @@ app.MapGet("/api/romaintancesettings", async (AppDbContext db, ITenantContext t,
 }).RequireAuthorization();
 
 app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var lines = dto.Items ?? new List<RoMaintanceSettingDto>();
     if (lines.Count == 0) return Results.BadRequest(new { error = "khong co dong nao de luu" });
@@ -15961,6 +15961,9 @@ app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
             return Results.BadRequest(new { error = "Ser_MST_ROMaintanceSetting_Save_InvalidValue", detail = "So luong hang muc bao duong khong duoc am.", l.ROMSID });
     }
     var updated = 0; var inserted = 0; var notFound = new List<long>();
+    // #1099: nguon Ser_MST_ROMaintanceSetting_Save ghi CA LogLUDateTime lan LogLUBy (chi 2 cot nay,
+    // bang khong co CreatedDate/CreatedBy) — port cu chi wire LogLUDateTime, thieu han LogLUBy.
+    var by1099 = (partnerUserCode ?? "system").Trim();
     foreach (var l in lines)
     {
         // Guard NGUON THIEU: nguon chon nhanh SUA chi bang Columns.Contains(ROMSID) roi doc Rows[0] khong kiem.
@@ -15971,7 +15974,7 @@ app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
             if (cur is null) { notFound.Add(l.ROMSID!.Value); continue; }
             cur.Km = l.Km; cur.Maintances = l.Maintances;
             if (!string.IsNullOrWhiteSpace(l.FlagActive)) cur.FlagActive = l.FlagActive!;
-            cur.LogLUDateTime = DateTime.UtcNow;
+            cur.LogLUDateTime = DateTime.UtcNow; cur.LogLUBy = by1099;
             updated++;
         }
         else
@@ -15982,7 +15985,7 @@ app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
             {
                 OrgId = t.OrgId, ROMSID = next + 1, Km = l.Km, Maintances = l.Maintances,
                 DealerCode = dto.DealerCode, FlagActive = l.FlagActive ?? "1",
-                LogLUDateTime = DateTime.UtcNow,
+                LogLUDateTime = DateTime.UtcNow, LogLUBy = by1099,
             });
             inserted++;
         }
