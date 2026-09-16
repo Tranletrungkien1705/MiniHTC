@@ -21321,6 +21321,18 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
     // bỏ sót toàn bộ cụm ngày/PT ở cấp LỆNH SỬA (RepairOrder) này.
     var roNos = claims.Where(x => x.RONo != null).Select(x => x.RONo!).Distinct().ToList();
     var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && roNos.Contains(x.RONo)).ToListAsync();
+    // #979: nguồn nối thêm `smstrwt` (tên loại BCBH), `smpt` (mã+tên PT LỖI qua `td.PartIDError`),
+    // và hai bảng tạm CVC/PTC (dòng CÔNG/PT được đánh dấu "chính" của đề nghị) — 5 cụm cột port cũ
+    // chưa từng ghép dù entity liên quan đã có sẵn từ trước (#369/#396).
+    var rowTypeMasterList = await db.ROWarrantyTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var partIdsError = claims.Where(x => x.PartIDError != null).Select(x => x.PartIDError!).Distinct().ToList();
+    var errorParts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIdsError.Contains(x.PartID!)).ToListAsync();
+    static string? WarrantyStatusText(string? code) => code switch
+    {
+        "SENT" => "Chờ xem xét", "PEND" => "Chưa gửi", "CONF" => "Chờ duyệt",
+        "ACCE" => "Chấp thuận B.H", "REJ" => "Không duyệt", "REVERT" => "HTC Hoàn trả",
+        _ => null,
+    };
 
     var items = claims.Select(c =>
     {
@@ -21333,6 +21345,14 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
         // dinh bug NULL cua nguon, nhung van cong DU moi dong (khong dung SUM co the bo qua NULL nhu nguon).
         var totalAmount = svc.Sum(x => x.Factor * x.Price * (1 + x.VAT / 100m))
             + parts.Sum(x => x.Factor * x.Price * x.Quantity * (1 + x.Vat / 100m));
+        // #979: `rsvCVC`/`rspPTC` nguồn KHÔNG group theo dòng nào là "chính" — inner join theo ROWID nên
+        // nếu có NHIỀU dòng CVC/PTC thì kết quả nhân bản dòng claim (1 claim ra nhiều dòng SQL); port ở
+        // đây lấy dòng ĐẦU (tương đương hành vi hiển thị "1 dòng đại diện" mà báo cáo chấp thuận đã dùng).
+        var cvc = svc.FirstOrDefault(x => x.ROWSerType == "CVC");
+        var ptc = parts.FirstOrDefault(x => x.RowPartType == "PTC");
+        var rowType = (c.ROWTypeCode is null && c.ROWTypeDtlCode is null) ? null
+            : rowTypeMasterList.FirstOrDefault(x => x.ROWTypeCode == c.ROWTypeCode && x.ROWTypeDtlCode == c.ROWTypeDtlCode);
+        var errorPart = c.PartIDError is null ? null : errorParts.FirstOrDefault(x => x.PartID == c.PartIDError);
         return new
         {
             c.ClaimNo, c.ROWTypeCode, c.DealerCode, dealerName = dealer?.DealerName,
@@ -21340,6 +21360,11 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
             dealerInactive = dealer is null || dealer.Status != "1",   // #895: vs INNER JOIN + DealerStatus=1 cua nguon
             carMissing = car is null,                                  // #895: vs INNER JOIN ser_car cua nguon
             c.RONo, c.Status, c.HMCApiStatus, c.ClmRcptNo, totalAmount, c.CreatedAt,
+            warrantyStatusText = WarrantyStatusText(c.Status),   // #979
+            rowTypeName = rowType?.ROWTypeName, rowTypeDtlName = rowType?.ROWTypeDtlName,   // #979
+            partCodeError = errorPart?.PartCode, partNameError = errorPart?.PartName,   // #979
+            serIdCvc = cvc?.SerID, serCodeCvc = cvc?.SerCode, bulletinIdCvc = cvc?.BulletinID,   // #979
+            partIdPtc = ptc?.PartCode,   // #979: nguồn PTC chỉ trả PartID+PartCode, không có tên riêng
             frameNo = car?.FrameNo, warrantyRegistrationDate = c.WarrantyRegistrationDate,
             // #978: cụm ngày/PT cấp LỆNH SỬA — nguồn lấy từ `ro.*`, không phải từ xe/claim.
             roStartDate = ro?.StartDate, roFinishedDate = ro?.FinishedDate, roPlateNo = ro?.LicensePlate,
