@@ -46009,7 +46009,7 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
 // (`CheckExistCavityNo`), KHÔNG PHẢI riêng `CavityNo`. Create cũ (Mini) không set `DealerCode` khi tạo mới VÀ
 // tra trùng chỉ theo `CavityNo` — hai đại lý không thể cùng dùng một mã khoang dù nguồn cho phép, trong khi PUT
 // (Update, đã port đúng ở #296) đã set `DealerCode` — bất đối xứng Create/Update (luật #404).
-app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CavityNo)) return Results.BadRequest(new { error = "Ser_Cavity_CavityNoEmpty" });
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Ser_Engineer_DealerEmpty" });
@@ -46031,8 +46031,13 @@ app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantConte
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.CavityNo, ex.DealerCode, updated = true });
     }
+    // #1047: nguồn `Ser_CavityCreate` ghi VÔ ĐIỀU KIỆN CreatedDate/CreatedBy/LogLUDateTime/LogLUBy
+    // cùng giá trị strTDate/strPartnerUserCode lúc TẠO — thiếu hẳn ở port cũ.
+    var by = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
     var r = new Cavity { OrgId = t.OrgId, CavityNo = code, DealerCode = dl, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartWorkTime = dto.StartWorkTime, FinishWorkTime = dto.FinishWorkTime, Note = dto.Note, FlagActive = "1",
-        CavityType = dto.CavityType, Status = dto.Status, StartUseDate = dto.StartUseDate, FinishUseDate = dto.FinishUseDate };   // #1005
+        CavityType = dto.CavityType, Status = dto.Status, StartUseDate = dto.StartUseDate, FinishUseDate = dto.FinishUseDate,   // #1005
+        CreatedDate = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by };   // #1047
     db.Cavities.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.CavityNo, r.DealerCode, updated = false });
 }).RequireAuthorization();

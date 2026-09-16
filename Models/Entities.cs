@@ -15307,6 +15307,15 @@ public sealed class Cavity
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 
+    // ===== #1047 §12 — `Ser_CavityCreate` (BizCarSv.Service.cs:13548) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // CreatedDate/CreatedBy/LogLUDateTime/LogLUBy lúc TẠO (cùng giá trị strTDate/strPartnerUserCode) —
+    // port cũ chỉ wire LogLUDateTime/LogLUBy ở nhánh SỬA (`Ser_CavityUpdate`), thiếu hẳn cột Created* +
+    // thiếu LogLU* ở nhánh TẠO. Đúng mẫu #715/#716 đã vá cho ServiceCustomer/ServiceCar.
+    /// <summary>`Ser_Cavity.CreatedDate` (`strTDate` lúc tạo).</summary>
+    public DateTime? CreatedDate { get; set; }
+    /// <summary>`Ser_Cavity.CreatedBy` (`strPartnerUserCode` lúc tạo).</summary>
+    public string? CreatedBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

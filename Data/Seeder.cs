@@ -3003,6 +3003,9 @@ public static class Seeder
                 "ALTER TABLE public.\"Receptions\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 // #1046: Ser_App_Create_New20201230 nhan strCreatedDate rieng, KHAC CreatedAt server-set.
                 "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                // #1047: Ser_CavityCreate ghi VO DIEU KIEN CreatedDate/CreatedBy (thieu tren entity Cavity).
+                "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
+                "ALTER TABLE public.\"Cavities\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
