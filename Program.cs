@@ -15268,7 +15268,7 @@ app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, strin
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập mã model." });
     if (string.IsNullOrWhiteSpace(dto.ModelName)) return Results.BadRequest(new { error = "Chưa nhập tên model." });
@@ -15280,7 +15280,9 @@ app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, I
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.ModelCode, updated = true });
     }
-    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, DealerCode = dto.DealerCode, FlagActive = "1" };
+    // #1049: Ser_Mst_Model_Create_New20200203 ghi CreatedDate/CreatedBy VÔ ĐIỀU KIỆN lúc tạo.
+    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, DealerCode = dto.DealerCode, FlagActive = "1",
+        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() };
     db.ServiceModels.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.ModelCode, updated = false });
 }).RequireAuthorization();
@@ -23161,13 +23163,14 @@ app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, s
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.TradeMarkCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã thương hiệu." });
     if (string.IsNullOrWhiteSpace((dto.TradeMarkName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên thương hiệu." });
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == code && x.DealerCode == dto.DealerCode);
-    if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code, DealerCode = dto.DealerCode }; db.ServiceTradeMarks.Add(row); }
+    // #1049: Ser_Mst_TradeMark_Create ghi CreatedDate/CreatedBy lúc TẠO.
+    if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code, DealerCode = dto.DealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() }; db.ServiceTradeMarks.Add(row); }
     row.TradeMarkName = dto.TradeMarkName; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();

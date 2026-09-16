@@ -3671,6 +3671,9 @@ public sealed class ServiceTradeMark
     /// được nhận ra nhưng chưa vá tận gốc.</summary>
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1049 §12 — `Ser_Mst_TradeMark_Create` (BizCarSv.Master.cs:1710, LIVE) ghi `CreatedDate`/`CreatedBy`.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
@@ -14147,6 +14150,10 @@ public sealed class ServiceModel
     public string? ProductionCode { get; set; }
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #1049 §12 — `Ser_Mst_Model_Create_New20200203` (BizCarSv.Master.cs:2623, LIVE qua WS gateway)
+    // ghi `CreatedDate`/`CreatedBy` — cùng mẫu hình #453 (ServiceAppointment/Cavity/ServiceEngineer).
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
