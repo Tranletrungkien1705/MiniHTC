@@ -8019,6 +8019,18 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
     // ===== #1061 A.V Tỷ lệ lợi nhuận gộp (ZTemp.cs:3732-3737) — cùng cơ chế tra Mst_Param.
     var serProfitRate = ParamF("SerProfitRate"); var partProfitRate = ParamF("PartProfitRate");
 
+    // ===== #1062 B.I Tổng số lượt xe dịch vụ (ZTemp.cs:3102-3114/3740-3779) — #tbl_Ser_RO lọc
+    // ActualDeliveryDate trong khoảng + Status='FNS'; #tbl_Ser_ROServiceItems join theo ROID lấy ROTYpe/
+    // ExpenseType. Đếm PHÂN BIỆT theo RO (khớp nguồn: `q.ROID in (select t.ROID from ...)`, không đếm dòng).
+    var roIdsInPeriod = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.DealerCode == dealer
+            && r.Status == "FNS" && r.ActualDeliveryDate >= dateFrom && r.ActualDeliveryDate <= dateTo)
+        .Select(r => r.Id).ToListAsync();
+    var roServiceRows = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIdsInPeriod.Contains(s.RoId))
+        .Select(s => new { s.RoId, s.ROType, s.ExpenseType }).ToListAsync();
+    int CountRO(string roType, string? expenseType = null) => roServiceRows
+        .Where(s => s.ROType == roType && (expenseType == null || s.ExpenseType == expenseType))
+        .Select(s => s.RoId).Distinct().Count();
+
     return Results.Ok(new
     {
         dealer, dateFrom, dateTo,
@@ -8046,9 +8058,20 @@ app.MapGet("/api/reportkpis/dealerdashboard", async (AppDbContext db, ITenantCon
         // ===== A.V Tỷ lệ lợi nhuận gộp =====
         profitRate = serProfitRate + partProfitRate,   // Tổng 1+2 (nguyên văn nguồn: "công thức gây khó hiểu")
         serProfitRate, partProfitRate,
-        notPortedYet = "A.IV (giờ công quy đổi — phụ thuộc ma trận ROType×ExpenseType, block 2 hàng đợi) "
-            + "tới B (số liệu hoạt động) VÀ khối StockOut/phụ kiện CHƯA port — hàm nguồn ~1734 dòng, xem "
-            + "hàng đợi ở manifest. A.I/A.II/A.III/A.V xong ở các lượt này.",
+        // ===== B.I Tổng số lượt xe dịch vụ =====
+        countCarService = roIdsInPeriod.Count,
+        countBDD = CountRO("BDD"), countBDDRoRepair = CountRO("BDD", "ROREPAIR"), countBDDLocal = CountRO("BDD", "LOCAL"),
+        countSCC = CountRO("SCC"), countSCCRoRepair = CountRO("SCC", "ROREPAIR"), countSCCRoWarranty = CountRO("SCC", "ROWARRANTY"),
+        countSCCRoInsurance = CountRO("SCC", "ROINSURANCE"), countSCCLocal = CountRO("SCC", "LOCAL"),
+        countSCD = CountRO("SCD"), countSCDRoRepair = CountRO("SCD", "ROREPAIR"), countSCDRoWarranty = CountRO("SCD", "ROWARRANTY"),
+        countSCDRoInsurance = CountRO("SCD", "ROINSURANCE"), countSCDLocal = CountRO("SCD", "LOCAL"),
+        countSCS = CountRO("SCS"), countSCSRoRepair = CountRO("SCS", "ROREPAIR"), countSCSRoWarranty = CountRO("SCS", "ROWARRANTY"),
+        countSCSRoInsurance = CountRO("SCS", "ROINSURANCE"), countSCSLocal = CountRO("SCS", "LOCAL"),
+        countPDI = CountRO("PDI"), countPDIRoRepair = CountRO("PDI", "ROREPAIR"), countPDILocal = CountRO("PDI", "LOCAL"),
+        countSPK = CountRO("SPK"), countSPKRoRepair = CountRO("SPK", "ROREPAIR"), countSPKLocal = CountRO("SPK", "LOCAL"),
+        notPortedYet = "A.IV (giờ công quy đổi — phụ thuộc ma trận ROType×ExpenseType SUM tiền, block 2 "
+            + "hàng đợi) và B.II trở đi (doanh thu tiền công/phụ tùng, khối StockOut/phụ kiện) CHƯA port — "
+            + "hàm nguồn ~1734 dòng, xem hàng đợi ở manifest. A.I/A.II/A.III/A.V/B.I xong ở các lượt này.",
         liveTwinNote = "Report_KPIGet_Real_New20221101 (zzzzCode.cs:2954) — KHÁC HẲN /api/reportkpis/real "
             + "(dùng RptKPIGetReal_New20160602, năm/tháng). Cổng WS: Report_KPIGet_Real (WSCarSv.asmx.cs:27120).",
     });
