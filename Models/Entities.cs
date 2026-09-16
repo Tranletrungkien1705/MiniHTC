@@ -16027,6 +16027,13 @@ public sealed class ServiceInsurance
     /// khoá trùng theo BỘ ĐÔI `(InsNo, DealerCode)`, KHÔNG phải `InsNo` toàn cục — port cũ chưa có cột này
     /// nên chặn trùng SAI PHẠM VI (một mã hãng BH bị khoá cho MỌI đại lý thay vì chỉ trong cùng đại lý).</summary>
     public string? DealerCode { get; set; }
+
+    /// <summary>#1078 §12 — nguồn `SerInsuranceCreate`/`SerInsuranceUpdate` (`Service.cs:9308/8371`) ghi cả
+    /// bốn cột nhật ký (`CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy`) — port cũ chỉ có `CreatedAt` chung.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

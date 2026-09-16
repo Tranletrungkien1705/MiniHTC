@@ -1855,7 +1855,7 @@ app.MapGet("/api/insurances", async (AppDbContext database, ITenantContext tenan
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext database, ITenantContext tenant) =>
+app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext database, ITenantContext tenant, string? partnerUserCode) =>
 {
     // LUẬT 1-3 (ValidateInput): 3 trường bắt buộc, giữ nguyên văn thông báo form gốc.
     if (string.IsNullOrWhiteSpace(request.InsNo))
@@ -1881,6 +1881,8 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
     var validationError = ValidateInsuranceCustomerRows(customerRows);
     if (validationError is not null) return Results.BadRequest(new { error = validationError });
 
+    // #1078: SerInsuranceCreate (Service.cs:9308) ghi ca 4 cot nhat ky khi TAO; port cu chi co CreatedAt chung.
+    var by1078 = (partnerUserCode ?? "system").Trim(); var now1078 = DateTime.Now;
     var insuranceCompany = new ServiceInsurance
     {
         OrgId = tenant.OrgId,
@@ -1890,7 +1892,8 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
         Address = request.Address.Trim(),
         Email = request.Email, Telephone = request.Telephone, Fax = request.Fax,
         Website = request.Website, Taxcode = request.Taxcode, Description = request.Description,
-        DealerCode = dealerCode   // #1008
+        DealerCode = dealerCode,   // #1008
+        CreatedDate = now1078, CreatedBy = by1078, LogLUDateTime = now1078, LogLUBy = by1078,
     };
     database.ServiceInsurances.Add(insuranceCompany);
     await database.SaveChangesAsync();
@@ -27514,7 +27517,7 @@ app.MapGet("/api/_meta/delete-guard-sweep", () => Results.Ok(new
     causalChainWith788 = "#788 ghi Ser_RO_Statistic_Service_ByGroup dung INNER JOIN Ser_Mst_Service => dich vu bi xoa khoi danh muc thi dong RO bien mat khoi thong ke, IM LANG. Nay thay dau kia: Ser_Mst_Service_Delete CO chan xoa khi con Ser_ROServiceItems => HAI DAU KHOP NHAU, du lieu cu kho roi vao canh do — TRU KHI ai xoa thang bang SQL hoac Ser_ROServiceItems da bi don truoc",
 })).RequireAuthorization();
 app.MapPut("/api/insurances/{insNo}", async (string insNo, InsuranceEditDto dto,
-    AppDbContext db, ITenantContext t, string? dealerCode) =>
+    AppDbContext db, ITenantContext t, string? dealerCode, string? partnerUserCode) =>
 {
     var no = (insNo ?? "").Trim();
     // #1008: InsNo chi duy nhat TRONG CUNG dai ly — them dealerCode de phan biet khi hai dai ly cung ma.
@@ -27541,6 +27544,8 @@ app.MapPut("/api/insurances/{insNo}", async (string insNo, InsuranceEditDto dto,
     if (dto.Website != null) row.Website = dto.Website;
     if (dto.Description != null) row.Description = dto.Description;
     if (!string.IsNullOrWhiteSpace(dto.Status)) row.Status = dto.Status!;
+    // #1078: SerInsuranceUpdate (Service.cs:9146) chi ghi LogLUDateTime/LogLUBy khi SUA (KHONG dong CreatedDate/CreatedBy nhu #1077).
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
