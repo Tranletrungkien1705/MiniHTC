@@ -72494,7 +72494,7 @@ app.MapGet("/api/receptions/{no}/details", async (string no, AppDbContext db, IT
 //   cùng ghi vào một bảng.
 // ⚠️ Nguồn lưu **đường dẫn**, không lưu nội dung ⇒ tệp thật nằm ngoài DB (thư mục `UploadedFiles\` của #523).
 app.MapPost("/api/receptions/{no}/attachfiles", async (string no, List<ReceptionAttachFileDto> rows,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rec = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
     if (rec is null) return Results.NotFound(new { error = "Không tìm thấy phiếu tiếp nhận: " + no });
@@ -72502,6 +72502,9 @@ app.MapPost("/api/receptions/{no}/attachfiles", async (string no, List<Reception
         return Results.BadRequest(new { error = "Ser_ReceptionF_SaveX_InvalidSer_ReceptionFAttachFileTbl" });
 
     var now = DateTime.Now;
+    // #1125 §12 gap: nguồn `Ser_ReceptionF_SaveX` (Tab.cs:9729) ép thêm cột `LogLUBy` = `strPartnerUserCode`
+    // cho MỌI dòng trong `ds_Ser_ReceptionFAttachFile` — port cũ chỉ ghi `LogLUDateTime`, bỏ sót `LogLUBy`.
+    var by1125 = (partnerUserCode ?? "system").Trim();
     foreach (var r in rows)
         db.ReceptionAttachFiles.Add(new ReceptionAttachFile
         {
@@ -72511,7 +72514,7 @@ app.MapPost("/api/receptions/{no}/attachfiles", async (string no, List<Reception
             ReceptionFilePath = r.ReceptionFilePath,
             ReceptionFileName = r.ReceptionFileName,
             ReceptionFileType = r.ReceptionFileType?.Trim(),
-            Remark = r.Remark, LogLUDateTime = now,
+            Remark = r.Remark, LogLUDateTime = now, LogLUBy = by1125,
         });
     await db.SaveChangesAsync();
 
