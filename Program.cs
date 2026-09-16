@@ -61463,7 +61463,7 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
 //   ⚠️ Guard này chỉ có ở họ `*_CustomerCar_*Create` (Tab · Sales · MBS), **KHÔNG** có ở
 //     `Ser_Customer_Create` trần ⇒ **không** thêm guard vào `POST /api/servicecustomers` đang có
 //     (lệ #299: không tự chế luật cho cổng mà nguồn không chặn).
-app.MapPost("/api/servicecustomers/with-cars", async (CustomerWithCarsDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicecustomers/with-cars", async (CustomerWithCarsDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.CusName)) return Results.BadRequest(new { error = "Cần CusName." });
     var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
@@ -61486,6 +61486,10 @@ app.MapPost("/api/servicecustomers/with-cars", async (CustomerWithCarsDto dto, A
         //   Cùng một trường, hai kênh đối xử khác nhau ⇒ không suy từ kênh này sang kênh kia.
         IDCardNo = dto.IDCardNo,
         IsContact = "1", FlagActive = "1", UpdatedAt = now,
+        // #1166: nguồn CarSv_Ser_CustomerCar_Create_New20220926 (Tab.cs:12428-12775) ghi LogLUDateTime/
+        // LogLUBy = strPartnerUserCode khi tạo dòng Ser_Customer mới — KHÔNG ghi CreatedDate/CreatedBy ở
+        // nhánh này (đúng luật port dòng ACTIVE, không tự thêm 2 cột nguồn không ghi).
+        LogLUDateTime = now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     };
     db.ServiceCustomers.Add(c);
 
