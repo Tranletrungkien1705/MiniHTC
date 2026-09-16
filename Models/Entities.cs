@@ -5472,6 +5472,11 @@ public sealed class PartCostSnapshot
 
     public string Method { get; set; } = "Average"; // Average | FIFO
     public DateTime CalculatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #992 §12 — nguồn `Ser_PartCostCalculateGet`/`SerAverageCost` luôn nhận VÀ lọc theo
+    /// `strDealerCode` (`Ser_PartCost_Calculate.DealerCode`) — port cũ tính giá vốn GỘP CHUNG mọi đại lý
+    /// trong cùng Org, không tách theo đại lý như nguồn.</summary>
+    public string? DealerCode { get; set; }
 }
 
 /// <summary>File đính kèm đề nghị bảo hành (ảnh/chứng từ theo ĐN) — port 1:1 FrmROAttachment (Ser_ROAttachment, TCMotor).</summary>

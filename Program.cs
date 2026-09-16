@@ -33210,9 +33210,13 @@ app.MapPost("/api/partcosts/calculate", async (
     if (toDate < fromDate) return Results.BadRequest(new { error = "Ngày cuối kỳ phải >= ngày đầu kỳ." });
     // Nguồn chốt mốc cuối kỳ tới HẾT NGÀY: CalculateDateTime = ToDate + " 23:59:59".
     var toDateEndOfDay = toDate.Date.AddDays(1).AddTicks(-1);
+    // #992: nguồn `Ser_PartCost_Calculate`/`SerAverageCost` LUÔN nhận và lọc theo `strDealerCode` — port cũ
+    // tính gộp CHUNG mọi đại lý trong cùng Org, sai phạm vi so với nguồn khi Org có nhiều đại lý.
+    var dealerCode = (dto?.DealerCode ?? "").Trim();
+    if (dealerCode.Length == 0) return Results.BadRequest(new { error = "Can DealerCode — nguon Ser_PartCostCalculateGet/SerAverageCost luon loc theo dai ly." });
 
     var confirmedStockInIds = db.ServiceStockIns
-        .Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed")
+        .Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed" && o.DealerCode == dealerCode)
         .Select(o => o.Id);
 
     var stockInLines = await (
@@ -33230,8 +33234,8 @@ app.MapPost("/api/partcosts/calculate", async (
     var partCodes = openingLines.Select(l => l.PartCode).Concat(inPeriodLines.Select(l => l.PartCode)).Distinct().ToList();
     if (partCodes.Count == 0) return Results.Ok(new { calculated = 0, message = "Chưa có phiếu nhập đã duyệt để tính giá vốn." });
 
-    // Nguồn chỉ tính phụ tùng đang hiệu lực (p.IsActive = '1').
-    var activeParts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1").ToListAsync();
+    // Nguồn chỉ tính phụ tùng đang hiệu lực (p.IsActive = '1') CỦA ĐÚNG ĐẠI LÝ đang chọn.
+    var activeParts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1" && p.DealerCode == dealerCode).ToListAsync();
     var partByCode = activeParts.ToDictionary(p => p.PartCode, p => p);
 
     var now = DateTime.Now;
@@ -33256,7 +33260,7 @@ app.MapPost("/api/partcosts/calculate", async (
         var averageCost = Math.Round(totalValue / totalQty, 2);
         db.PartCostSnapshots.Add(new PartCostSnapshot
         {
-            OrgId = t.OrgId, PartCode = partCode,
+            OrgId = t.OrgId, PartCode = partCode, DealerCode = dealerCode,   // #992
             PartName = inPeriod.FirstOrDefault()?.PartName ?? opening.FirstOrDefault()?.PartName,
             AverageCost = averageCost,
             OpeningQty = openingQty, OpeningValue = openingValue,
@@ -33270,7 +33274,9 @@ app.MapPost("/api/partcosts/calculate", async (
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        calculated, partsUpdated = updated, fromDate, toDate,
+        calculated, partsUpdated = updated, fromDate, toDate, dealerCode,
+        // ===== #992: `Ser_PartCostCalculateGet` (LIVE, `BizCarSv.Inventory.Stock.cs:4385`) =====
+        dealerScopeAddedAt992 = "#992: nguon LUON loc theo strDealerCode (bang Ser_PartCost_Calculate.DealerCode) — port truoc day tinh GOP CHUNG moi dai ly trong cung Org. Nay bat buoc dealerCode + loc ServiceParts/StockIn theo dung dai ly, va ghi DealerCode vao PartCostSnapshot de xem lai lich su/lo tinh gan nhat theo GET /api/report/cost-calculate-history",
         // ===== 🔴🔴🔴 #829 TRẢ LỜI CÂU HỎI BỎ NGỎ Ở #828: `strPartId` CHẾT VÌ HÀM TÍNH CHO **TẤT CẢ** =====
         sourcePartIdIsAcceptedButNeverPassedDown = "#829: SerAverageCost (Inventory.Stock.cs:4225-4339 md5 4e550368) nhan string strPartId trong chu ky nhung loi goi than that la ProcessSaveAverageCost02(ref alParamsCoupleError, strFromDate, strToDate, strDealerCode, strCreatedDate) — KHONG co strPartId. #751 da xac dinh day la VO BOC; nay biet them: tham so ma phu tung KHONG duoc truyen xuong",
         realScopeIsAllPartsOfDealer = "#829 HE QUA THAT: ham tinh lai gia von binh quan cho TOAN BO phu tung cua dai ly trong khoang ngay, KHONG phai cho mot ma. Man hinh cho nguoi dung chon MOT phu tung roi bam Tinh gia von => he thong tinh lai gia von cho TAT CA phu tung trong ky. Voi nghiep vu TIEN, tac dong rong hon nhieu so voi dieu nguoi dung tuong",
@@ -33288,6 +33294,25 @@ app.MapGet("/api/partcosts", async (AppDbContext db, ITenantContext t) =>
         .Select(x => new { x.PartCode, x.PartName, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") })
         .OrderBy(x => x.PartCode).ToList();
     return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+// #992: `Ser_PartCostCalculateGet` (LIVE, `BizCarSv.Inventory.Stock.cs:4385`) — TRẢ 2 BẢNG như nguồn:
+// TOÀN BỘ lô tính (theo đại lý, mới nhất trước) + lô GẦN NHẤT riêng (nguồn `TOP(1) ... order by CalculateDateTime DESC`).
+// Nguồn đọc bảng `Ser_PartCost_Calculate` (1 dòng/lô); MiniHTC lưu 1 dòng/PHỤ TÙNG mỗi lô (PartCostSnapshot)
+// nên "1 lô" ở đây là GOM theo (dealerCode, CalculatedAt) — cùng thời điểm tính = cùng 1 lần bấm "Tính giá vốn".
+app.MapGet("/api/report/cost-calculate-history", async (AppDbContext db, ITenantContext t, string dealerCode) =>
+{
+    var dc = (dealerCode ?? "").Trim();
+    if (dc.Length == 0) return Results.BadRequest(new { error = "Can dealerCode." });
+    var rows = await db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId && x.DealerCode == dc).ToListAsync();
+    var batches = rows.GroupBy(x => x.CalculatedAt)
+        .Select(g => new { calculatedAt = g.Key, fromDate = g.First().FromDate, toDate = g.First().ToDate, partsCount = g.Count() })
+        .OrderByDescending(x => x.calculatedAt).ToList();
+    return Results.Ok(new
+    {
+        dealerCode = dc, count = batches.Count, batches,
+        latestBatch = batches.FirstOrDefault(),
+    });
 }).RequireAuthorization();
 
 // Lịch sử tính giá vốn 1 mã PT (các lần tính theo thời gian).
@@ -78780,7 +78805,7 @@ record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? 
     string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
 record CareContactDto(string? Result);
 /// <summary>Khảo sát CSKH sau dịch vụ — 6 câu trả lời + trạng thái chốt (CINFB/CIFB/REJ).</summary>
-record PartCostCalculateDto(DateTime? FromDate, DateTime? ToDate);
+record PartCostCalculateDto(DateTime? FromDate, DateTime? ToDate, string? DealerCode);   // #992
 record CustomerCareBirthdayDto(string? CusId, string? DealerCode, DateTime? DateBth, string? Status, DateTime? ContactDate, string? Remark, string? CareBthId = null);
 record CareSurveyDto(
     string? Status, string? RONo, DateTime? FinishedDate, DateTime? ContactDate,
