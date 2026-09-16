@@ -27827,7 +27827,7 @@ app.MapDelete("/api/insurances/{insNo}", async (string insNo, AppDbContext db, I
     });
 }).RequireAuthorization();
 app.MapPut("/api/stockouts/{stockOutId}/edit", async (long stockOutId, StockOutEditDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var so = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == stockOutId);
     if (so == null) return Results.NotFound(new { error = "khong tim thay phieu xuat" });
@@ -27849,7 +27849,9 @@ app.MapPut("/api/stockouts/{stockOutId}/edit", async (long stockOutId, StockOutE
     if (dto.TruckNo != null) so.TruckNo = dto.TruckNo;
     if (dto.DriverName != null) so.DriverName = dto.DriverName;
     if (statusChanged) so.Status = next;            // <- dong ma NGUON quen dua vao alColumnEffective
-    so.LogLUDateTime = DateTime.Now;
+    // #1195 SUA BUG THAT: nguon UpdateStockOut (BizCarSv.Inventory.StockOut.cs:1653+103-105) ghi ca
+    // LogLUDateTime lan LogLUBy — port cu chi co LogLUDateTime.
+    so.LogLUDateTime = DateTime.Now; so.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
