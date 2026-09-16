@@ -6722,6 +6722,11 @@ app.MapPost("/api/sysgroups/save", async (SysGroupSaveDto dto, AppDbContext db, 
     row!.GroupName = dto.GroupName;
     row.PartnerCode = dto.PartnerCode;
     row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    // #1242 SUA BUG THAT: §12 truoc day chi lam 3/4 diem (entity + Seeder ALTER + GET, xem #764/6432)
+    // — DTO va endpoint save CHUA TUNG duoc noi day, nen DealerCode/IsReadOnly luon NULL vinh vien du
+    // guard loc "IsReadOnly is null" (dong ~6638) da san sang doc dung.
+    if (dto.DealerCode is not null) row.DealerCode = dto.DealerCode;
+    if (dto.IsReadOnly is not null) row.IsReadOnly = dto.IsReadOnly;
     row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
@@ -55120,11 +55125,20 @@ app.MapPost("/api/cardocrequests", async (CarDocRequestDto dto, AppDbContext db,
     if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 xe." });
     var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"Xe {dupe.Key} bị trùng!" });
+    // #1241 SUA BUG THAT: CarDocReqTypeCRR (Car_DocReqDtl.TypeCRR) truoc day khong co tren DTO va khong
+    // tung duoc ghi khi tao dong ⇒ 3 guard doc lai cot nay (dong ~23967/55186/55191) LUON bi vo hieu
+    // (NULL khong bao gio khop "NORMAL"/"SPECIAL"). Bo sung tham so + validate "Bản 2024 chỉ chấp nhận
+    // NORMAL hoặc DEALER" theo doc-comment cua entity.
+    foreach (var c in cars)
+    {
+        var typeCrr = (c.CarDocReqTypeCRR ?? "NORMAL").Trim().ToUpperInvariant();
+        if (typeCrr is not ("NORMAL" or "DEALER")) return Results.BadRequest(new { error = $"Xe {c.CarId}: CarDocReqTypeCRR phải là NORMAL hoặc DEALER (đang '{typeCrr}')." });
+    }
     var no = "DR" + DateTime.Now.ToString("yyMMddHHmmss");
     var r = new CarDocRequest { OrgId = t.OrgId, RequestNo = no, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), ReceivedPerson = dto.ReceivedPerson.Trim(), ReceivedAddress = dto.ReceivedAddress.Trim(), Status = "Draft" };
     db.CarDocRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.CarDocRequestCars.Add(new CarDocRequestCar { OrgId = t.OrgId, RequestId = r.Id, CarId = c.CarId.Trim().ToUpperInvariant(), Remark = c.Remark, DeliveryStartDate = c.DeliveryStartDate });
+        db.CarDocRequestCars.Add(new CarDocRequestCar { OrgId = t.OrgId, RequestId = r.Id, CarId = c.CarId.Trim().ToUpperInvariant(), Remark = c.Remark, DeliveryStartDate = c.DeliveryStartDate, CarDocReqTypeCRR = (c.CarDocReqTypeCRR ?? "NORMAL").Trim().ToUpperInvariant() });
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RequestNo, r.ReceivedPerson, cars = cars.Count, status = r.Status });
 }).RequireAuthorization();
@@ -80649,7 +80663,7 @@ app.MapGet("/api/reqpaymentdiscounts", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqNo.Contains(q!) || x.DealerCode.Contains(q!));
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.ReqNo, x.DealerCode, x.PGDateEndFrom, x.PGDateEndTo, x.Status, x.CreatedAt,
+    { x.ReqNo, x.DealerCode, x.PGDateEndFrom, x.PGDateEndTo, x.Status, x.CreatedAt, x.SentAt, x.DecidedAt,   // #1243 §12
       lines = db.ReqPaymentDiscountLines.Count(l => l.OrgId == t.OrgId && l.ReqId == x.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -81496,7 +81510,7 @@ record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, stri
 record DocReqSupportDto(List<DocReqSupportRowDto>? Rows);
 record ForeignContractLineDto(string? RefNo, string LcTemp);
 record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines);
-record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate);
+record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate, string? CarDocReqTypeCRR = null);
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars);
 record PackingListVinDto(string Vin, string? CrateType);
 record StorageTransactionDto(string? Vin, string? RefNo, string? RefType, string? StorageCode, string? StorageCodeTo, DateTime? DTimeFrom, DateTime? DTimeTo, string? Remark);
@@ -81764,7 +81778,7 @@ record SysUserSaveDto(string? UserCode, string? UserName, string? UserPassword, 
 record SysUserKeyDto(string? UserCode);
 record SysUserResetPwdDto(string? UserCode, string? PasswordReset);
 record SysUserChangePwdDto(string? UserCode, string? PasswordOld, string? PasswordNew);
-record SysGroupSaveDto(string? GroupCode, string? GroupName, string? PartnerCode, string? FlagActive);
+record SysGroupSaveDto(string? GroupCode, string? GroupName, string? PartnerCode, string? FlagActive, string? DealerCode = null, string? IsReadOnly = null);
 // Map phân quyền — lưu theo kiểu THAY THẾ TRỌN BỘ theo nhóm, không phải thêm dần.
 record MapSgSuRowDto(string? GroupCode, string? UserCode, string? DealerCode = null);
 record MapSgSuSaveDto(List<string>? GroupCodes, List<MapSgSuRowDto>? Rows, string? DealerCode = null);
