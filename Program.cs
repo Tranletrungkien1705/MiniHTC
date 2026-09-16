@@ -33287,11 +33287,14 @@ app.MapPost("/api/partcosts/calculate", async (
 }).RequireAuthorization();
 
 // Giá vốn hiện tại theo mã PT (snapshot mới nhất mỗi mã).
-app.MapGet("/api/partcosts", async (AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/partcosts", async (AppDbContext db, ITenantContext t, string? dealerCode) =>
 {
-    var snaps = await db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId).ToListAsync();
-    var rows = snaps.GroupBy(x => x.PartCode).Select(g => g.OrderByDescending(x => x.Id).First())
-        .Select(x => new { x.PartCode, x.PartName, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") })
+    var qry = db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId);
+    // #992: PartCostSnapshot nay co DealerCode — loc theo dai ly de tranh gop nham hai dai ly cung ma PT.
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
+    var snaps = await qry.ToListAsync();
+    var rows = snaps.GroupBy(x => new { x.PartCode, x.DealerCode }).Select(g => g.OrderByDescending(x => x.Id).First())
+        .Select(x => new { x.PartCode, x.PartName, x.DealerCode, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") })
         .OrderBy(x => x.PartCode).ToList();
     return Results.Ok(new { count = rows.Count, rows });
 }).RequireAuthorization();
@@ -33316,12 +33319,14 @@ app.MapGet("/api/report/cost-calculate-history", async (AppDbContext db, ITenant
 }).RequireAuthorization();
 
 // Lịch sử tính giá vốn 1 mã PT (các lần tính theo thời gian).
-app.MapGet("/api/report/cost-history", async (AppDbContext db, ITenantContext t, string partCode) =>
+app.MapGet("/api/report/cost-history", async (AppDbContext db, ITenantContext t, string partCode, string? dealerCode) =>
 {
     var code = (partCode ?? "").Trim();
     if (code == "") return Results.BadRequest(new { error = "Cần mã phụ tùng." });
-    var rows = await db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId && x.PartCode == code).OrderByDescending(x => x.Id)
-        .Select(x => new { x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, x.Method, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    var qry = db.PartCostSnapshots.Where(x => x.OrgId == t.OrgId && x.PartCode == code);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);   // #992
+    var rows = await qry.OrderByDescending(x => x.Id)
+        .Select(x => new { x.DealerCode, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, x.Method, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { partCode = code, count = rows.Count, rows });
 }).RequireAuthorization();
 
