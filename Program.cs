@@ -22200,13 +22200,15 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
 
         // ===== #1019 `ROWarrantyReport_Approve_Check_FinishedDate` / `_BatteryNo` (WarrantyReport.cs:4833/4721) =====
         // Nguồn nhánh hoá theo (ROWTypeCode, ROWTypeDtlCode) — bản đồ đủ 11 nhánh lá đã đọc trọn:
-        //   `FinishedDate` gọi ở 10/11 nhánh, CHỈ trừ (BT, C) — nhánh "Báo cáo bản tin/chiến dịch" có bộ
-        //   guard RIÊNG (CVC/Bulletin/WarrantyFile*, không có FinishedDate) ⇒ loại trừ đúng cặp này, KHÔNG
-        //   áp dụng chung cho mọi claim (tránh over-generalize — #428/#430).
+        //   `FinishedDate` gọi ở 9/11 nhánh, trừ (BT, C) VÀ (TC, R) — nhánh "Bảo hành thiện chí" (TC,R) chỉ
+        //   gọi `PartIDError`, không hề gọi `FinishedDate`/`CVC`. 🔴 #1021 SỬA LỖI TỰ GÂY Ở #1019: bản trước
+        //   chỉ loại trừ (BT,C), THIẾU (TC,R) — đúng lỗi over-generalize mà #428/#430 đã cảnh báo, tự dẫm lại.
         //   `BatteryNo` CHỈ gọi ở (XM,B) và (SB,B) — tức khi `ROWTypeDtlCode == "B"` (Ắc quy), bất kể ROWTypeCode.
         var rowType = (claim.ROWTypeCode ?? "").Trim().ToUpperInvariant();
         var rowTypeDtl = (claim.ROWTypeDtlCode ?? "").Trim().ToUpperInvariant();
-        if (!(rowType == "BT" && rowTypeDtl == "C"))
+        var isBTC = rowType == "BT" && rowTypeDtl == "C";
+        var isTCR = rowType == "TC" && rowTypeDtl == "R";
+        if (!isBTC && !isTCR)
         {
             if (claim.FinishedDate is null)
                 return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidRO_FinishedDate",
@@ -22218,6 +22220,24 @@ app.MapPost("/api/warrantyclaims/{claimId:long}/items/{itemId:long}/status", asy
         if (rowTypeDtl == "B" && string.IsNullOrWhiteSpace(claim.BatteryNo))
             return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidBatteryNo",
                 message = "VIN không có mã Ắc quy!" });
+
+        // ===== #1021 `ROWarrantyReport_Approve_Check_CVC` (WarrantyReport.cs:4963) =====
+        // Gọi ở 10/11 nhánh — CHỈ trừ (TC, R) (nhánh "Bảo hành thiện chí" chỉ gọi `PartIDError`).
+        // Nguồn: ĐÚNG MỘT dòng công việc trên claim có `ROWSerType = "CVC"` (công việc chính); mã dịch vụ đó
+        // phải thuộc danh mục có `FlagWarranty` bật (`Ser_MST_Service` → Mini `ServiceItemMst`).
+        if (!isTCR)
+        {
+            var cvcItems = await db.WarrantyClaimServiceItems
+                .Where(x => x.OrgId == t.OrgId && x.ClaimId == claimId && x.ROWSerType == "CVC").ToListAsync();
+            if (cvcItems.Count != 1)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = cvcItems.Count == 0 ? "BCBH chưa có công việc chính!" : "BCBH có nhiều hơn công việc chính!" });
+            var cvcCode = (cvcItems[0].SerCode ?? "").Trim().ToUpperInvariant();
+            var cvcMst = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == cvcCode);
+            if (cvcMst is null || cvcMst.FlagWarranty != "1")
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = $"{cvcCode} không thuộc Mst công việc bảo hành!" });
+        }
 
         // ===== #1020 `ROWarrantyReport_Approve_Check_ComplaintDiagnosticError` (WarrantyReport.cs:5886) =====
         // Gọi ở 8/11 nhánh — CHỈ trong (XM,*)/(SB,*) (cả bốn ROWTypeDtlCode A/B/P/W), loại trừ (PT,S)/(TC,R)/(BT,C).
