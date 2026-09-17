@@ -51943,7 +51943,7 @@ app.MapGet("/api/salespolicies", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(p => p.SPSRType == type);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.SPSRCode, p.SPNo, p.SPSRType, p.FormBusinessSupportCode, p.StartDate, p.EndDate, p.FlagMstValid, p.Remark,
+        p.SPSRCode, p.SPNo, p.SPSRType, p.SPSRRoot, p.FormBusinessSupportCode, p.StartDate, p.EndDate, p.FlagMstValid, p.Remark, p.FilePath, p.CreatedAt,   // #1330 §12
         lines = db.SalesPolicyMstDetails.Count(l => l.OrgId == t.OrgId && l.PolicyId == p.Id),
         totalSupport = db.SalesPolicyMstDetails.Where(l => l.OrgId == t.OrgId && l.PolicyId == p.Id).Sum(l => (decimal?)l.AmountSupport) ?? 0
     }).ToListAsync();
@@ -52238,7 +52238,7 @@ app.MapGet("/api/drivetests", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(d => d.TestModelCode == model);
     if (!string.IsNullOrWhiteSpace(phone)) q = q.Where(d => d.PhoneNo.Contains(phone));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(d => d.DriverTestStatus == status);
-    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerName, d.PhoneNo, d.DriverLicenseNo, d.DriverTestStatus, d.ApprovedBy, d.ApprovedDate }).ToListAsync();
+    var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new { d.DriveTestCode, d.DealerCode, d.DriverTestType, d.DrvTestPlateNo, d.TestModelCode, d.DriveDate, d.CustomerCode, d.CustomerName, d.PhoneNo, d.Address, d.DriverLicenseNo, d.RangeAge, d.Email, d.DriverTestStatus, d.ApprovedBy, d.ApprovedDate, d.CreatedAt }).ToListAsync();   // #1331 §12
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.DriverTestStatus == "P"), items });
 }).RequireAuthorization();
 
@@ -56043,6 +56043,7 @@ app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? a
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
         c.CamNo, c.CamName, c.StartDate, c.FinishDate, c.Content, c.Status, c.DealerCode,
+        c.CreatedAt, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy,   // #1332 §12
         contacts = db.CampaignContacts.Count(x => x.OrgId == t.OrgId && x.CampaignId == c.Id),
         contacted = db.CampaignContacts.Count(x => x.OrgId == t.OrgId && x.CampaignId == c.Id && x.ContactStatus == "Contacted"),
         running = c.StartDate <= now && (c.FinishDate == null || c.FinishDate >= now)
