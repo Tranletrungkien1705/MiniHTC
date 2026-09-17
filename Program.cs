@@ -56449,7 +56449,8 @@ app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? g
     var items = await query.OrderBy(e => e.GroupRCode == null ? 0 : 1).ThenBy(e => e.GroupRCode)
         .ThenBy(e => e.EngineerNo).Take(500)
         .Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status, e.EngineerType,
-            e.DealerCode, e.StartWorkDate, e.FinishWorkDate, e.IsEngineer }).ToListAsync();   // #1000
+            e.DealerCode, e.StartWorkDate, e.FinishWorkDate, e.IsEngineer,   // #1000
+            e.UpdatedAt, e.CreatedDate, e.CreatedBy, e.LogLUDateTime, e.LogLUBy }).ToListAsync();   // #1341 §12
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -63470,7 +63471,8 @@ app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? 
     var q = db.PartPrices.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(part)) q = q.Where(p => p.PartCode.Contains(part.ToUpper()));
     var items = await q.OrderBy(p => p.PartCode).ThenByDescending(p => p.EffectiveDate).Take(1000).Select(p => new
-    { p.Id, p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive }).ToListAsync();   // #295 §12
+    { p.Id, p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive,   // #295 §12
+      p.UpdatedAt, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy }).ToListAsync();   // #1339 §12
     object? applicable = null;
     if (!string.IsNullOrWhiteSpace(part) && DateTime.TryParse(onDate, out var od))
         applicable = items.Where(x => x.PartCode == part.Trim().ToUpperInvariant() && x.EffectiveDate <= od)
@@ -66406,7 +66408,7 @@ app.MapGet("/api/mstvinmodelorginals", async (AppDbContext db, ITenantContext t,
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = await qy.OrderBy(x => x.VINCode).Skip(skip).Take(take)
-        .Select(x => new { x.VINCode, x.ModelCode, x.OrginalCode, x.FlagActive, x.Remark, x.CreatedDate, x.CreatedBy })
+        .Select(x => new { x.VINCode, x.ModelCode, x.OrginalCode, x.FlagActive, x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1340 §12
         .ToListAsync();
 
     // Đo trực tiếp bẫy nở dòng của #651/#655: đầu VIN 4 ký tự nào là TIỀN TỐ của một đầu VIN 5 ký tự?
