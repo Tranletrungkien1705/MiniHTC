@@ -5142,7 +5142,7 @@ app.MapGet("/api/upgradeorders/{no}/lines", async (string no, AppDbContext db, I
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.UpgradeOrderLines.Where(l => l.OrgId == t.OrgId && l.UpgradeOrderId == o.Id)
         .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.Quantity, l.PromotionModel, l.DiscountAmount }).ToListAsync();
-    return Results.Ok(new { o.OrderNo, o.OrderMonth, o.OrderType, o.Status, count = lines.Count, lines });
+    return Results.Ok(new { o.OrderNo, o.DealerCode, o.OrderMonth, o.OrderType, o.OrderPolicy, o.TotalQty, o.Status, o.CreatedAt, o.ApprovedAt, count = lines.Count, lines });   // #1398 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/upgradeorders/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -40443,7 +40443,10 @@ app.MapGet("/api/supplierpartorders/{no}/lines", async (string no, AppDbContext 
         afterTax = (l.Cost ?? 0m) * l.Quantity * (100m + (l.VAT ?? 0m)) / 100m,
         pendingDeliveryQty = Math.Max(0m, l.Quantity - l.DeliveryQuantity),
     }).ToList();
-    return Results.Ok(new { h.OrderNo, h.Status, h.FlagActive, count = items.Count, items });
+    return Results.Ok(new { h.OrderNo, h.OrderNoUser, h.CreateDate, h.DealerCode, h.SupplierID, h.Status, h.FlagActive,
+        h.SendDate, h.ReceivePartDate, h.UserCreate, h.UserApproved, h.ApprovedDate,
+        h.TypeOrder, h.HTCConfirm, h.PartialShipment, h.TypeTransport, h.VIN, h.ConfirmNo, h.CusCharges,   // #1396 §12
+        count = items.Count, items });
 }).RequireAuthorization();
 
 // ⚠️ #298 KHÁC BIỆT CÓ CHỦ ĐÍCH so với nguồn, khai báo rõ để không ai tưởng port sót:
@@ -60147,7 +60150,10 @@ app.MapGet("/api/supplierpayments/{no}/lines", async (string no, AppDbContext db
                            l.PartID, l.Unit, l.StockInID, l.StockInNo, l.QtyInventory, l.LocationID,
                            l.InStockQuantity, l.LocationCode, l.LocationName,   // #260
                            l.SupplierPaymentDtlStatus, l.LogLUDTime, l.LogLUBy }).ToListAsync();
-    return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.DealerCode, p.Status, p.Amount, p.ApprovedAt, count = lines.Count, lines });
+    return Results.Ok(new { p.PaymentNo, p.SupplierCode, p.OrderPartNo, p.DealerCode, p.Amount, p.PaymentDate, p.Status, p.ApprovedAt,
+        p.SupplierID, p.Address, p.TSTRequestNo, p.PaymentType, p.Description,
+        p.PaymentBy, p.CreateBy, p.ApprBy, p.LogLUDTime, p.LogLUBy, p.CreatedAt,   // #1397 §12
+        count = lines.Count, lines });
 }).RequireAuthorization();
 
 app.MapPost("/api/supplierpayments/{no}/approve", async (string no, AppDbContext db, ITenantContext t,
