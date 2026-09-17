@@ -40397,7 +40397,7 @@ app.MapGet("/api/supplierpartorders", async (AppDbContext db, ITenantContext t,
             statusName = h.Status is not null && supplierPartOrderStatusNames.TryGetValue(h.Status, out var sn) ? sn : null,
             h.SendDate, h.ReceivePartDate, h.UserCreate, h.UserApproved, h.ApprovedDate,
             h.TypeOrder, h.HTCConfirm, h.PartialShipment, h.TypeTransport, h.VIN, h.ConfirmNo, h.CusCharges,
-            h.FlagActive,
+            h.FlagActive, h.CreatedAt, h.LogLUDateTime, h.LogLUBy,   // #1431 §12
             lineCount = ls.Count, sumQuantity = sumQty, sumDeliveryQuantity = sumDlv,
             beforeTax, afterTax, amount = afterTax,
             deliveryStatus,
@@ -40458,6 +40458,7 @@ app.MapGet("/api/supplierpartorders/{no}/lines", async (string no, AppDbContext 
     return Results.Ok(new { h.OrderNo, h.OrderNoUser, h.CreateDate, h.DealerCode, h.SupplierID, h.Status, h.FlagActive,
         h.SendDate, h.ReceivePartDate, h.UserCreate, h.UserApproved, h.ApprovedDate,
         h.TypeOrder, h.HTCConfirm, h.PartialShipment, h.TypeTransport, h.VIN, h.ConfirmNo, h.CusCharges,   // #1396 §12
+        h.CreatedAt, h.LogLUDateTime, h.LogLUBy,   // #1431 §12
         count = items.Count, items });
 }).RequireAuthorization();
 
@@ -63766,6 +63767,8 @@ app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? s
         s.TruckNo, s.DriverName, s.DriverID, s.DrivingLicense,
         s.AdjustmentBy, s.AdjustmentDate, s.AdjustmentNote, s.OldStockOutID, s.OldStockOutNo,
         s.LogLUDateTime, s.LogLUBy,
+        s.RejectReason, s.RejectedBy, s.RejectedAt, s.FlagSyncVeloca, s.SyncVelocaDTime, s.StockOutDateTime,
+        s.CreatedAt, s.CreatedDate, s.CreatedBy,   // #1433 §12
         lines = db.PartStockOutLines.Count(l => l.OrgId == t.OrgId && l.StockOutId == s.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -64066,6 +64069,8 @@ app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITena
         h.TruckNo, h.DriverName, h.DriverID, h.DrivingLicense,
         h.AdjustmentBy, h.AdjustmentDate, h.AdjustmentNote, h.OldStockOutID, h.OldStockOutNo,
         h.LogLUDateTime, h.LogLUBy,   // #1394 §12
+        h.RejectReason, h.RejectedBy, h.RejectedAt, h.FlagSyncVeloca, h.SyncVelocaDTime, h.StockOutDateTime,
+        h.CreatedAt, h.CreatedDate, h.CreatedBy,   // #1433 §12
         count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -64647,6 +64652,8 @@ app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? st
         s.IsAdjustment, s.AdjustmentBy, s.AdjustmentDate, s.AdjustmentNote, s.OldStockInID,
         s.OrderPartId, s.OrderPartNo, s.FlagOrderNCC,
         s.DealerCode, s.SupplierID, s.TSTRequestNo, s.BillNo,
+        s.CreatedAt, s.RejectReason, s.RejectedBy, s.RejectedAt, s.FlagSyncVeloca, s.SyncVelocaDTime,
+        s.CreatedDate, s.CreatedBy, s.LogLUDateTime, s.LogLUBy,   // #1432 §12
         lines = db.PartStockInLines.Count(l => l.OrgId == t.OrgId && l.StockInId == s.Id),
         total = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)(l.Quantity * l.Price)) ?? 0
     }).ToListAsync();
@@ -64812,6 +64819,8 @@ app.MapGet("/api/stockins/{no}/lines", async (string no, AppDbContext db, ITenan
         h.IsAdjustment, h.AdjustmentBy, h.AdjustmentDate, h.AdjustmentNote, h.OldStockInID,
         h.OrderPartId, h.OrderPartNo, h.FlagOrderNCC,
         h.DealerCode, h.SupplierID, h.TSTRequestNo, h.BillNo,   // #1393 §12
+        h.CreatedAt, h.RejectReason, h.RejectedBy, h.RejectedAt, h.FlagSyncVeloca, h.SyncVelocaDTime,
+        h.CreatedDate, h.CreatedBy, h.LogLUDateTime, h.LogLUBy,   // #1432 §12
         count = lines.Count, lines });
 }).RequireAuthorization();
 
