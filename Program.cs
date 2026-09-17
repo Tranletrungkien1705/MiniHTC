@@ -14082,7 +14082,11 @@ app.MapGet("/api/mngquotas/history", async (AppDbContext db, ITenantContext t, s
 // 🔴 Port cũ hiểu SAI bảng này thành "hạn mức theo model/kỳ"; xem ghi chú ở entity Quota.
 app.MapGet("/api/mstquotas", async (AppDbContext db, ITenantContext t, string? dealer, string? code, string? flagActive) =>
 {
-    var q = db.Quotas.Where(x => x.OrgId == t.OrgId);
+    // #1259 SUA BUG THAT: bang Quotas dung CHUNG cho 2 tinh nang khac nhau tren cung 1 bang - Mst_Quota
+    // (cum nay, khoa QuotaCode BAT BUOC) va han muc xe theo model+ky (cum /api/quotas, khoa ModelCode
+    // BAT BUOC, QuotaCode luon NULL). Khong loc rieng se lam GET nay tra ve LAN CA dong "rac" cua tinh
+    // nang kia (QuotaCode=null, cac cot con lai deu rong) khi client chi loc theo dealer.
+    var q = db.Quotas.Where(x => x.OrgId == t.OrgId && x.QuotaCode != null && x.QuotaCode != "");
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(code)) q = q.Where(x => x.QuotaCode == code);
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
@@ -80642,7 +80646,10 @@ app.MapDelete("/api/insfees/{code}", async (string code, AppDbContext db, ITenan
 // ===== Hạn mức phân bổ xe (Mst_Quota — port 1:1 FrmMngQuota) =====
 app.MapGet("/api/quotas", async (AppDbContext db, ITenantContext t, string? period, string? dealer) =>
 {
-    var q = db.Quotas.Where(x => x.OrgId == t.OrgId);
+    // #1259 SUA BUG THAT: xem chu thich doi xung o GET /api/mstquotas - bang Quotas dung chung cho
+    // 2 tinh nang, loc theo ModelCode (khoa BAT BUOC cua tinh nang nay) de khong dinh dong "rac" cua
+    // Mst_Quota (cum kia khong bao gio set ModelCode, mac dinh "").
+    var q = db.Quotas.Where(x => x.OrgId == t.OrgId && x.ModelCode != "");
     if (!string.IsNullOrWhiteSpace(period)) q = q.Where(x => x.Period == period);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var rows = await q.OrderBy(x => x.Period).ThenBy(x => x.DealerCode).Take(500).Select(x => new

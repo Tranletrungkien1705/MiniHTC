@@ -587,7 +587,12 @@ public sealed class Quota
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 
-    // --- ⛔ Bốn cột dưới đây KHÔNG có ở nguồn (port cũ hiểu sai). Giữ để đọc dữ liệu cũ, không ghi mới. ---
+    // #1259 CẬP NHẬT (thay ghi chú cũ "port cũ hiểu sai... không ghi mới" — không còn đúng): bốn cột dưới
+    // đây KHÔNG thuộc `Mst_Quota` gốc nhưng vẫn là tính năng SỐNG, KHÁC HẲN — "hạn mức xe theo model+kỳ"
+    // (`/api/quotas`, `/api/quotas/adjust`), dùng CHUNG bảng vật lý `Quotas` với `Mst_Quota` (khoá bằng
+    // `QuotaCode`, bắt buộc) nhưng khoá riêng của cụm này là `ModelCode` (bắt buộc, luôn rỗng ở dòng
+    // `Mst_Quota`). Cả hai `GET` đã lọc riêng để không dính dòng "rác" của nhau (`QuotaCode`/`ModelCode`
+    // rỗng) — xem `GET /api/mstquotas` và `GET /api/quotas`.
     public string ModelCode { get; set; } = "";
     public string Period { get; set; } = "";   // YYYYMM
     public int Qty { get; set; }
