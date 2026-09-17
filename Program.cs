@@ -5064,7 +5064,7 @@ app.MapGet("/api/qcdocreqs/{no}/cars", async (string no, AppDbContext db, ITenan
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.QcDocReqCars.Where(c => c.OrgId == t.OrgId && c.QcDocReqId == r.Id)
         .Select(c => new { c.OrderNo, c.ModelCode, c.SpecCode, c.ColorCode, c.VIN, c.EngineNo, c.OriginNo, c.FGFormNo, c.QCNo, c.ClearanceFormNo, c.DtlStatus }).ToListAsync();
-    return Results.Ok(new { r.DocReqNo, r.DocReqStatus, count = cars.Count, cars });
+    return Results.Ok(new { r.DocReqNo, r.CreateBy, r.DocReqStatus, r.CreatedAt, r.ApprovedAt, count = cars.Count, cars });   // #1359 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/qcdocreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -13003,7 +13003,7 @@ app.MapGet("/api/emailautotemps", async (AppDbContext db, ITenantContext t,
     var rows = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
     var items = rows.Select(x => new
     {
-        autoTempId = x.Id, x.BatchId, x.DealerCode, x.CusID, x.CusEmail, x.Subject,
+        autoTempId = x.Id, x.AutoTempID, x.BatchId, x.DealerCode, x.CusID, x.CusEmail, x.Subject,   // #1357 §12
         x.TypeEmail, newTypeEmail = EmailTypeLabelAuto(x.TypeEmail),
         x.ConfigAutoID, x.SendType, x.Remark, x.CurrentDate, x.Status,
         statusText = EmailAutoTempStatusLabel(emailAutoTempStatusNames, x.Status),
@@ -51268,7 +51268,7 @@ app.MapGet("/api/cbreqs/{no}/cars", async (string no, AppDbContext db, ITenantCo
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.CBReqDetails.Where(c => c.OrgId == t.OrgId && c.CBReqId == r.Id)
         .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.TypeCB, c.Remark }).ToListAsync();
-    return Results.Ok(new { r.CBReqNo, r.Status, count = cars.Count, cars });
+    return Results.Ok(new { r.CBReqNo, r.Status, r.CreatedAt, r.ConfirmedAt, r.Remark, count = cars.Count, cars });   // #1358 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
