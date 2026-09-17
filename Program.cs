@@ -1437,6 +1437,21 @@ app.MapPost("/api/dlvminutes/update-dates", async (DlvUpdDatesDto dto, AppDbCont
     return Results.Ok(new { rows = rows.Count, dlvMinutesUpdated = nDlv, deliveryOrderCarsUpdated = nDo });
 }).RequireAuthorization();
 
+// #1438 §12 — lịch sử sửa ngày xuất kho/tuyến của biên bản giao xe (ghi ở update-dates/update-province)
+// chưa có đường đọc lại nào, cùng khuôn /api/dlrcontracts/{no}/change-history.
+app.MapGet("/api/dlvminutes/{no}/change-history", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var dates = await db.DlvMinutesUpdDateHiss.Where(h => h.OrgId == t.OrgId && h.DlvMnNo == no)
+        .OrderByDescending(h => h.Id)
+        .Select(h => new { h.DeliveryOrderNo, h.VIN, h.DlvStartDateOld, h.DlvStartDateNew, h.DeliveryOutDateOld, h.DeliveryOutDateNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    var provinces = await db.DlvMinutesUpdProvinceHiss.Where(h => h.OrgId == t.OrgId && h.DlvMnNo == no)
+        .OrderByDescending(h => h.Id)
+        .Select(h => new { h.VIN, h.FProvinceCodeOld, h.FProvinceCodeNew, h.FDistrictCodeOld, h.FDistrictCodeNew,
+            h.TProvinceCodeOld, h.TProvinceCodeNew, h.TDistrictCodeOld, h.TDistrictCodeNew, h.UpdDTime, h.UpdBy }).ToListAsync();
+    return Results.Ok(new { no, dates, provinces });
+}).RequireAuthorization();
+
 // 🔴 Sửa TỈNH/HUYỆN tuyến giao — nguồn **kiểm cặp tỉnh–huyện mới có tồn tại trong `Mst_District`**
 //    cho CẢ hai đầu tuyến (F: nơi đi, T: nơi đến) trước khi cập nhật.
 app.MapPost("/api/dlvminutes/update-province", async (DlvUpdProvinceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -10411,6 +10426,11 @@ app.MapGet("/api/transpdlv/{no}/cars", async (string no, AppDbContext db, ITenan
         m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
         m.TranspReqNo, m.TranspReqType, m.RefOrdNo, m.FStorageCode, m.TStorageCode, m.DlvStartDate, m.DlvEndDate,
         m.GPSDvNo, m.DlvEndGPSDateTime,   // #1382 §12
+        m.FAddress, m.TAddress, m.FProvinceCode, m.FDistrictCode, m.TProvinceCode, m.TDistrictCode,
+        m.PlateNo, m.DriverId, m.TPlateNo, m.TDriverId, m.TDriverName, m.TGPSDvStatus,
+        m.FRemark, m.TRemark, m.FStatusIaKm, m.TStatusIaKm, m.FStatusIaRemark, m.TStatusIaRemark,
+        m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy,
+        m.TFVCode, m.TPValSys, m.TPVCode, m.DlvEndGPSBy, m.GPSDvAddress, m.GPSDvResponse, m.DlvEndDateTime, m.DlvEndBy,   // #1439 §12
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -61346,6 +61366,7 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
             totalQuantityIn = totalIn,                             // cột N — TÍNH từ phiếu nhập (#312)
             totalQuantityInExchangeRate = totalInExch,             // cột L — N CHIA tỷ lệ (#312)
             totalQuantityInStored = l.TotalQuantityIn,             // cột lưu cũ (#307) — chỉ để đối chiếu
+            totalQuantityInExchangeRateStored = l.TotalQuantityInExchangeRate,   // #1437 §12 — cùng khuôn, cột lưu cũ chỉ để đối chiếu
             // #315 "Ngày nhập cuối" — xem hai bất thường ở chú thích đầu endpoint.
             stockInDateLastest,
             stockInDateMaxFinished,
