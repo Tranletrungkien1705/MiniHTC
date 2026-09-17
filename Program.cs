@@ -44719,7 +44719,7 @@ app.MapGet("/api/customertypes", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(personType)) query = query.Where(x => x.CusPersonType == personType);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.CusTypeCode).Take(500)
-        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode }).ToListAsync();   // #1245 §12
+        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt }).ToListAsync();   // #1245 §12 + #1292 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -45442,7 +45442,7 @@ app.MapGet("/api/insuranceattachmenttypes", async (AppDbContext db, ITenantConte
 {
     var qry = db.InsuranceAttachmentTypes.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.Status == "1");
-    var items = await qry.OrderBy(x => x.Code).Take(500).Select(x => new { x.Code, x.Name, x.Note, x.Status }).ToListAsync();
+    var items = await qry.OrderBy(x => x.Code).Take(500).Select(x => new { x.Code, x.Name, x.Note, x.Status, x.UpdatedAt }).ToListAsync();   // #1292 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -46024,7 +46024,7 @@ app.MapGet("/api/avnpayments", async (AppDbContext db, ITenantContext t, string?
     var qry = db.AvnPayments.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalAmount, lines = db.AvnPaymentLines.Count(l => l.OrgId == t.OrgId && l.AvnPaymentId == x.Id) }).ToListAsync();
+    { x.PmtNo, x.PmtMonth, x.TotalAmount, x.CreatedAt, lines = db.AvnPaymentLines.Count(l => l.OrgId == t.OrgId && l.AvnPaymentId == x.Id) }).ToListAsync();   // #1293 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -46069,7 +46069,7 @@ app.MapGet("/api/gpsinstalls", async (AppDbContext db, ITenantContext t, string?
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Vin, x.GpsNo, x.DateActive, x.SyncStatus, x.SyncedAt, x.MapStatus, x.GpsMapVINNo, x.MappedAt,
         x.InStatus, x.StorageCode, x.GpsBoxNo, x.VinReal, x.RefNoType, x.RefNoPk, x.BlockStatus, x.VinAddress, x.GpsUnMapVINNo, x.UnMappedAt, x.Remark,
         // #B01 (§12 — field mới phải có mặt ở CẢ POST lẫn GET, nếu không là lỗi câm)
-        x.VinUnMap, x.GpsAddress, x.FlagRealSale, x.LogLUDateTime, x.LogLUBy, x.UnMapBy }).ToListAsync();
+        x.VinUnMap, x.GpsAddress, x.FlagRealSale, x.LogLUDateTime, x.LogLUBy, x.UnMapBy, x.CreatedAt }).ToListAsync();   // #1293 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -46412,7 +46412,7 @@ app.MapGet("/api/gpspayments", async (AppDbContext db, ITenantContext t, string?
     var qry = db.GpsPayments.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalWithoutVAT, x.AmountVAT, x.TotalAfterVAT, lines = db.GpsPaymentLines.Count(l => l.OrgId == t.OrgId && l.GpsPaymentId == x.Id) }).ToListAsync();
+    { x.PmtNo, x.PmtMonth, x.TotalWithoutVAT, x.AmountVAT, x.TotalAfterVAT, x.CreatedAt, lines = db.GpsPaymentLines.Count(l => l.OrgId == t.OrgId && l.GpsPaymentId == x.Id) }).ToListAsync();   // #1293 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47447,7 +47447,7 @@ app.MapGet("/api/delaytransports", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(x => x.StorageCode == storage);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.StorageCode).Take(500)
-        .Select(x => new { x.DealerCode, x.DealerName, x.StorageCode, x.StorageName, x.DelayDays, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.DealerCode, x.DealerName, x.StorageCode, x.StorageName, x.DelayDays, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1294 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47488,7 +47488,7 @@ app.MapGet("/api/inventorycosts", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(costType)) q = q.Where(x => x.CostTypeCode == costType);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.StorageCode).ThenBy(x => x.CostTypeCode).Take(500)
-        .Select(x => new { x.StorageCode, x.StorageName, x.CostTypeCode, x.CostTypeName, x.UnitPrice, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.StorageCode, x.StorageName, x.CostTypeCode, x.CostTypeName, x.UnitPrice, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1294 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47573,7 +47573,7 @@ app.MapGet("/api/invoiceids", async (AppDbContext db, ITenantContext t, string? 
     var q = db.InvoiceIDs.Where(i => i.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(i => i.InvoiceIDType == type);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(i => i.FlagActive == active);
-    var items = await q.OrderByDescending(i => i.Id).Take(500).Select(i => new { i.InvoiceIDCode, i.InvoiceIDType, i.EffectiveDate, i.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(i => i.Id).Take(500).Select(i => new { i.InvoiceIDCode, i.InvoiceIDType, i.EffectiveDate, i.FlagActive, i.CreatedAt }).ToListAsync();   // #1294 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
