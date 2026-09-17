@@ -44582,7 +44582,7 @@ app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITen
             amountStale = l.Amount != amount || l.AmountBeforeVat != beforeVat,
         };
     }).ToList();
-    return Results.Ok(new { h.QuoteNo, h.CusName, h.Status, h.TotalAmount, h.SumAmountNoFactor,
+    return Results.Ok(new { h.QuoteNo, h.CusId, h.CusName, h.Mobile, h.ReceiveName, h.PaymentMethod, h.Status, h.TotalAmount, h.SumAmountNoFactor, h.CreatedAt,   // #1388 §12
         count = lines.Count,
         // Tổng TÍNH LẠI từ dòng — nếu khác `TotalAmount` đang lưu thì dữ liệu đã lệch pha.
         totalAmountRecomputed = lines.Sum(x => x.amount),
@@ -55749,7 +55749,8 @@ app.MapGet("/api/pis/{no}/lines", async (string no, AppDbContext db, ITenantCont
     if (p is null) return Results.NotFound(new { no });
     var lines = await db.PiLines.Where(l => l.OrgId == t.OrgId && l.PiId == p.Id)
         .Select(l => new { l.SpecCode, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.WorkOrderNo, l.Quantity, l.UnitPrice, lineTotal = l.Quantity * l.UnitPrice }).ToListAsync();
-    return Results.Ok(new { p.PiNo, p.Status, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity), totalAmount = lines.Sum(x => x.lineTotal) });
+    return Results.Ok(new { p.PiNo, p.RefNo, p.ProductionMonth, p.OrderMonth, p.ExpectedMonth, p.Status, p.CreatedAt,   // #1389 §12
+        count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity), totalAmount = lines.Sum(x => x.lineTotal) });
 }).RequireAuthorization();
 
 app.MapPost("/api/pis/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
@@ -61316,7 +61317,13 @@ app.MapGet("/api/orderparts/{no}/lines", async (string no, AppDbContext db, ITen
             totalQuantityRemainExchangeRate = remainExchange,      // cột M — ĐV bán
         };
     }).ToList();
-    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.OrderPartStatus, o.OrderPartType,
+    return Results.Ok(new { o.OrderPartNo, o.SupplierCode, o.WarehouseCode, o.OrderPartStatus, o.CreatedAt, o.SentAt, o.FinishedAt,
+                            o.DealerCode, o.SupplierID, o.PartGroupID, o.DeliveryFormCode, o.DeliveryLocationCode,
+                            o.EstimatedDeliverDate, o.VIN, o.Remark,
+                            o.RequestSuppierDate, o.ResponseSuppierDate, o.OrderSuppierNo,
+                            o.SupplierStatus, o.OrderPartType, o.TSTID, o.SupplierLUDTime,
+                            o.OrderNoUser, o.ReceivePartDate, o.ApprovedDate, o.ConfirmNo, o.CusCharges, o.HTCConfirm, o.PartialShipment, o.TypeTransport,
+                            o.CreateBy, o.ApprBy, o.FinishBy, o.LogLUDateTime, o.LogLUBy,   // #1387 §12
                             stockInDateNote = "stockInDateLastest theo ĐÚNG nguồn: sắp theo giờ NHẬP LIỆU, lấy ngày NGHIỆP VỤ, "
                                             + "và KHÔNG lọc trạng thái phiếu (khác cột số lượng vốn chỉ tính phiếu Kết thúc). "
                                             + "stockInDateMaxFinished là MAX ngày nghiệp vụ của phiếu Kết thúc — dùng để đối chiếu.",
