@@ -54275,6 +54275,12 @@ app.MapGet("/api/dealerdeals", async (AppDbContext db, ITenantContext t, string?
     var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
     {
         d.DealNo, d.DealNoUser, d.DealerCode, d.CustomerCodeBuyer, d.SalesType, d.FlagPDI, d.DealDate,
+        // #1458 §12: nguồn `DealerSalesDealGet_ICIC_New20230613` (LIVE, BizHTC.DealerSales.cs:10288) header
+        //   SELECT là `dlsd.*` — TOÀN BỘ cột DLS_Deal ở ngay danh sách chính, KHÔNG chỉ ở màn chi tiết
+        //   (đã có sẵn ở /api/dealerdeals/{no}/cars, xem #1364). Danh sách trước đây chỉ trả 7 cột.
+        d.CustomerCodeDriver, d.CustomerCodeHolder, d.DlrContractNo, d.BankCode, d.CtmCareFlag,
+        d.FlagInitDeal, d.CtmCareUpdDate, d.CtmCareUpdBy, d.CtmCareRemark, d.ReasonNotPDI,
+        d.DealerCodeBuyer, d.SalesManCode,
         cars = db.DealerDealDetails.Count(c => c.OrgId == t.OrgId && c.DealId == d.Id),
         total = db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id).Sum(c => (decimal?)c.PriceAFVAT) ?? 0
     }).ToListAsync();
