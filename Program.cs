@@ -11918,7 +11918,7 @@ app.MapGet("/api/smsaccounts", async (AppDbContext db, ITenantContext t) =>
                            // #230: hạn mức thấu chi + hai cờ của Acc_Account (nguồn Acc_Balance_Get).
                            a.OverdraftThreshold,
                            availableBalance = a.Balance + a.OverdraftThreshold,
-                           a.FlagActive, a.FlagSysAdmin,
+                           a.FlagActive, a.FlagSysAdmin, a.CreatedAt,   // #1309 §12
                            txCount = db.SmsAccountTxs.Count(x => x.OrgId == t.OrgId && x.SmsAccountId == a.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalBalance = items.Sum(i => i.Balance), items });
 }).RequireAuthorization();
@@ -15051,6 +15051,7 @@ app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, stri
     var items = await query.OrderBy(x => x.TempType).Take(500)
         .Select(x => new { x.TempType, x.TempName, x.TempSubject, x.TempBody, x.FileAttachment, x.FlagActive,
             x.DealerCode,   // #438 §12: có mặt ở CẢ GET lẫn POST
+            x.TempIDEmail, x.CreatedAt,   // #1310 §12: đã ghi ở #701/#709 nhưng chưa hiển thị ở danh sách chính
             updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new
     {
@@ -28546,7 +28547,7 @@ app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, str
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
-    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive, x.DealerCode }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.UpdatedAt }).ToListAsync();   // #1311 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
