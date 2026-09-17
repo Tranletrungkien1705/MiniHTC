@@ -30893,7 +30893,8 @@ app.MapGet("/api/paymentreqdiscountvins", async (AppDbContext db, ITenantContext
     var q = db.PaymentReqDiscountVins.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(prd)) q = q.Where(x => x.PRDiscountNo.Contains(prd!));
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.PRDiscountNo, x.VIN, x.AmountHTCAppr, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.PRDiscountNo, x.VIN, x.AmountHTCAppr, x.HTCApprDate, x.CreatedDate, x.CreatedBy, x.UpdatedBy, x.UpdatedAt, x.LogLUDateTime, x.LogLUBy,
+        x.CarId, x.SpecCode, x.SpecDescription, x.DeliveryOutDate, x.DeliveryEndDate, x.DeliveryDate, x.DlrContractNo, x.SMName, x.CusInvoiceDate, x.UnitPriceActual, x.AmountDealerRequest, x.CustomerName }).ToListAsync();   // #1423 §12
     return Results.Ok(new { count = items.Count, totalApproved = items.Sum(x => x.AmountHTCAppr), items });
 }).RequireAuthorization();
 
@@ -47602,8 +47603,9 @@ app.MapGet("/api/gpsunitprices", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(active)) qy = qy.Where(x => x.FlagActive == active);
     var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.ContractNo, x.UnitPrice, x.FlagActive,
-        effStartDate = x.EffStartDate.HasValue ? x.EffStartDate.Value.ToString("yyyy-MM-dd") : ""
+        x.Id, x.ContractNo, x.UnitPrice, x.FlagActive,
+        effStartDate = x.EffStartDate.HasValue ? x.EffStartDate.Value.ToString("yyyy-MM-dd") : "",
+        x.UpdatedAt, x.LogLUDateTime, x.LogLUBy   // #1422 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -49397,8 +49399,9 @@ app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? 
     {
         m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.FDlvMnStatus, m.TDlvMnStatus,
         m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy, m.CreatedAt,
-        m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFInputDate, m.TFInputBy,
-        m.TFVCode, m.TPValSys, m.TPVCode, m.GPSDvNo, m.DlvEndDateTime, m.DlvEndBy,
+        m.TPlateNo, m.TDriverId, m.TDriverName, m.TGPSDvStatus, m.TRemark, m.TStatusIaKm, m.TStatusIaRemark,   // #1424 §12
+        m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy,
+        m.TFVCode, m.TPValSys, m.TPVCode, m.GPSDvNo, m.DlvEndGPSDateTime, m.DlvEndGPSBy, m.GPSDvAddress, m.GPSDvResponse, m.DlvEndDateTime, m.DlvEndBy,
         cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -49453,7 +49456,7 @@ app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantCon
             c.DriverCode, c.DlvStartDate, c.DlvEndDate }).ToListAsync();
     var checklist = await db.DlvMinutesCheckItems.Where(x => x.OrgId == t.OrgId && x.TranspDlvConfirmId == m.Id)
         .Select(x => new { x.ItemGroup, x.ItemCode, x.FStatus, x.TStatus }).ToListAsync();
-    return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.DealerCode,
+    return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.CreatedAt,   // #1424 §12
         m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
         m.TPlateNo, m.TDriverId, m.TDriverName, m.TGPSDvStatus, m.TRemark, m.TStatusIaKm, m.TStatusIaRemark,
         m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy,
