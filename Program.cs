@@ -2512,7 +2512,9 @@ app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, 
     var cars = await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id)
         .Select(c => new { vin = c.VIN, c.ModelCode, c.EngineNo, dtlStatus = c.RMDtlStatus,
             c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy }).ToListAsync();
-    return Results.Ok(new { m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, count = cars.Count, cars });
+    return Results.Ok(new { m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
+        m.DealerCode, m.MortageDate, m.Remark,   // #1362 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // ===== Phiếu chi / thanh toán (Pmt_Payment — port 1:1 FrmNewPM/FrmMngPM) =====
@@ -4959,7 +4961,9 @@ app.MapGet("/api/reqmortgages/{no}/cars", async (string no, AppDbContext db, ITe
             c.RMDtlStatus, c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy,
             // #140 parity RM_ReqMortgageDtl.
             c.CarId, c.DealerCode, c.FinishDate, c.FinishBy, c.ReqDMNo, c.Remark, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { r.ReqRMNo, r.MortageBankCode, r.Status, count = cars.Count, cars });
+    return Results.Ok(new { r.ReqRMNo, r.MortageBankCode, r.DealerCode, r.Status, r.MortageDate, r.CreatedAt, r.ApprovedAt,
+        r.CreatedBy, r.LUDateTime, r.LUBy, r.ApprovedBy, r.FinishedAt, r.FinishBy, r.Remark, r.LogLUDateTime, r.LogLUBy,   // #1361 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 app.MapPost("/api/reqmortgages/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -32150,7 +32154,7 @@ app.MapGet("/api/stocbreqs/{no}/cars", async (string no, AppDbContext db, ITenan
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == h.Id)
         .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo }).ToListAsync();
-    return Results.Ok(new { h.CBReqNo, h.CBReqStatus, count = cars.Count, cars });
+    return Results.Ok(new { h.CBReqNo, h.CreatedDate, h.CBReqStatus, h.Remark, h.CreatedBy, h.ApprovedAt, h.ApprovedBy, count = cars.Count, cars });   // #1360 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t,
