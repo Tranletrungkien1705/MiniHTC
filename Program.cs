@@ -16354,7 +16354,9 @@ app.MapGet("/api/servicestockouts/{no}/lines", async (string no, AppDbContext db
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount }).ToListAsync();
-    return Results.Ok(new { h.StockOutNo, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount, count = lines.Count, lines });
+    return Results.Ok(new { h.StockOutNo, h.ReceiverCode, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount,
+        stockOutDate = h.StockOutDate.HasValue ? h.StockOutDate.Value.ToString("yyyy-MM-dd") : "",   // #1406 §12
+        count = lines.Count, lines });
 }).RequireAuthorization();
 
 // Xác nhận xuất kho: kiểm tồn đủ TẤT CẢ dòng trước, rồi TRỪ TỒN ServicePart (all-or-nothing).
@@ -16511,7 +16513,9 @@ app.MapGet("/api/servicestockins/{no}/lines", async (string no, AppDbContext db,
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.ActualLocationCode, l.TotalBeforeVat, l.VatAmount, l.Amount }).ToListAsync();
-    return Results.Ok(new { h.StockInNo, h.Status, h.TotalAmount, count = lines.Count, lines });
+    return Results.Ok(new { h.StockInNo, h.SupplierCode, h.DealerCode, h.Status, h.TotalAmount, h.CreatedAt,
+        stockInDate = h.StockInDate.HasValue ? h.StockInDate.Value.ToString("yyyy-MM-dd") : "",   // #1405 §12
+        count = lines.Count, lines });
 }).RequireAuthorization();
 
 // Xác nhận nhập kho: Draft->Confirmed + CỘNG TỒN vào ServicePart (tích hợp thật).
@@ -46540,7 +46544,7 @@ app.MapGet("/api/storagepayments/{no}", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.StoragePaymentLines.Where(l => l.OrgId == t.OrgId && l.StoragePaymentId == h.Id).Select(l => new
     { l.Vin, l.ModelCode, l.ModelName, l.SpecCode, l.SpecDescription, l.ColorExtNameVN, l.DealerCode, l.StorageDate, l.DeliveryOutDate, l.CostCoat, l.CostStorage, l.TotalAmount, l.Remark }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, lines });
+    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, h.CreatedAt, h.HtvSignAt, h.TcmsSignAt, lines });   // #1407 §12
 }).RequireAuthorization();
 
 // Khớp DSXe/DSThanhToan gốc: TotalAmount(dòng)=CostCoat+CostStorage (đã gồm VAT); AmountTotal(header)=Σ dòng; TotalBeforeVAT=AmountTotal/1.1; VatAmount=AmountTotal-TotalBeforeVAT.
@@ -46653,7 +46657,7 @@ app.MapGet("/api/pdifeepayments/{no}", async (string no, AppDbContext db, ITenan
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PdiFeePaymentLines.Where(l => l.OrgId == t.OrgId && l.PdiFeePaymentId == h.Id).Select(l => new
     { l.Vin, l.ModelCode, l.ModelName, l.SpecCode, l.SpecDescription, l.ColorExtName, l.DealerCode, l.StoreDate, l.DeliveryOutDate, l.CostInCheck, l.CostOutCheck, l.TotalPrice }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, lines });
+    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, h.CreatedAt, h.HtvSignAt, h.TcmsSignAt, lines });   // #1407 §12
 }).RequireAuthorization();
 
 // Khớp DSXe gốc: TotalPrice(dòng)=CostInCheck+CostOutCheck (đã gồm VAT); AmountTotal(header)=Σ dòng; TotalBeforeVAT=AmountTotal/1.1; VatAmount=AmountTotal-TotalBeforeVAT.
@@ -46771,7 +46775,7 @@ app.MapGet("/api/transportinspayments/{no}", async (string no, AppDbContext db, 
       l.FStorageCode, l.FProvinceName, l.TStorageCode, l.InvStartDate, l.InvEndDate,
       l.ExpectedDays, l.DelayDate, l.DelayPenaty, l.TransportCost, l.InsurancePercent,
       l.TranspReqType, l.InsuranceContractNo, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, lines });
+    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, h.CreatedAt, h.HtvSignAt, h.TcmsSignAt, lines });   // #1407 §12
 }).RequireAuthorization();
 
 // Khớp gốc: ValTransport(dòng)=TFValReal+InsuranceCost-TPValReal (đã gồm VAT); AmountTotal(header)=Σ dòng; TotalBeforeVAT=AmountTotal/1.1.
