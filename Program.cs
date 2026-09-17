@@ -16768,7 +16768,8 @@ app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, stri
             remaining = x.QtyNeeded - x.QtyFulfilled, x.Note, x.Status,
             // GAP đã vá: 6 cột TblSer_Part_OO trước đây không được trả về
             x.LoaiXe, x.CVDV, x.DealerCode, x.NgayDatHang, x.NgayVeDuKien, x.NgayHenTra,
-            createdAt = x.CreatedAt.ToString("yyyy-MM-dd")
+            createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy   // #1318 §12
         }).ToListAsync();
     return Results.Ok(new
     {
@@ -23942,7 +23943,7 @@ app.MapGet("/api/redeeminvoicerequests", async (AppDbContext db, ITenantContext 
     var qry = db.RedeemInvoiceRequests.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqRDInvoiceNo.Contains(q!) || x.DealerCode!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRDInvoiceNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedDate, x.ApprovedBy }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRDInvoiceNo, x.CreatedDate, x.DealerCode, x.Note, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedDate, x.ApprovedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1319 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -23951,7 +23952,7 @@ app.MapGet("/api/redeeminvoicerequests/{id}", async (long id, AppDbContext db, I
     var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == id).Select(x => new { x.Id, x.VIN, x.CarId, x.ReqType }).ToListAsync();
-    return Results.Ok(new { header = new { h.Id, h.ReqRDInvoiceNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt, h.ApprovedDate, h.ApprovedBy }, lines });
+    return Results.Ok(new { header = new { h.Id, h.ReqRDInvoiceNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt, h.ApprovedDate, h.ApprovedBy, h.LogLUDateTime, h.LogLUBy }, lines });   // #1319 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/redeeminvoicerequests", async (RedeemInvoiceRequestDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
@@ -44698,10 +44699,12 @@ app.MapGet("/api/dealerserviceoptions", async (AppDbContext db, ITenantContext t
 {
     var stored = await db.DealerServiceOptions.Where(x => x.OrgId == t.OrgId).ToListAsync();
     var map = stored.ToDictionary(x => x.ParamCode, x => x.ParamValue);
+    var updatedAtMap = stored.ToDictionary(x => x.ParamCode, x => x.UpdatedAt);   // #1320 §12
     var items = DealerServiceOptCatalog.Select(c => new
     {
         paramCode = c.Code, label = c.Label, type = c.Type,
-        value = map.TryGetValue(c.Code, out var v) ? v : c.Default
+        value = map.TryGetValue(c.Code, out var v) ? v : c.Default,
+        updatedAt = updatedAtMap.TryGetValue(c.Code, out var ua) ? (DateTime?)ua : null   // #1320 §12
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
