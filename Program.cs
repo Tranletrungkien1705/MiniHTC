@@ -20065,8 +20065,8 @@ app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.DebitNo, x.CusId, x.CusName, x.RONo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
-        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : ""
+        x.DebitNo, x.DealerCode, x.CusId, x.CusName, x.RONo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
+        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : "", x.CreatedAt   // #1409 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalDebit = items.Sum(i => i.DebitAmount), totalPaid = items.Sum(i => i.PaidAmount), totalBalance = items.Sum(i => i.balance), items });
 }).RequireAuthorization();
@@ -20278,8 +20278,8 @@ app.MapGet("/api/cusdebits/{no}/payments", async (string no, AppDbContext db, IT
     var h = await db.CusDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     var pays = await db.CusDebitPayments.Where(p => p.OrgId == t.OrgId && p.CusDebitId == h.Id).OrderBy(p => p.Id)
-        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
-    return Results.Ok(new { h.DebitNo, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
+        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, p.CreatedAt, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();   // #1408 §12
+    return Results.Ok(new { h.DebitNo, h.DealerCode, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });   // #1410 §12
 }).RequireAuthorization();
 
 // Thu tiền công nợ (không vượt số dư; đủ tiền -> Paid).
@@ -38108,7 +38108,7 @@ app.MapGet("/api/insdebits/{no}/payments", async (string no, AppDbContext db, IT
     var h = await db.InsDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DebitNo == no);
     if (h is null) return Results.NotFound(new { no });
     var pays = await db.InsDebitPayments.Where(p => p.OrgId == t.OrgId && p.InsDebitId == h.Id).OrderBy(p => p.Id)
-        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, p.CreatedAt, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();   // #1408 §12
     return Results.Ok(new { h.DebitNo, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
 }).RequireAuthorization();
 
@@ -38204,8 +38204,8 @@ app.MapGet("/api/supplierdebits/{id:long}/payments", async (long id, AppDbContex
     var h = await db.SupplierDebits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var pays = await db.SupplierDebitPayments.Where(p => p.OrgId == t.OrgId && p.SupplierDebitId == h.Id).OrderBy(p => p.Id)
-        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
-    return Results.Ok(new { h.Id, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });
+        .Select(p => new { p.PaymentAmount, p.Note, p.PaymentNo, p.DealerCode, p.PayPersonName, p.PayPersonIDCardNo, p.CreatedAt, payDate = p.PayDate.HasValue ? p.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();   // #1408 §12
+    return Results.Ok(new { h.Id, h.SupplierCode, h.StockInNo, h.DebitAmount, h.PaidAmount, balance = h.DebitAmount - h.PaidAmount, h.Status, count = pays.Count, payments = pays });   // #1410 §12
 }).RequireAuthorization();
 
 // Thanh toán nợ NCC (không vượt số dư; đủ tiền -> Paid).
