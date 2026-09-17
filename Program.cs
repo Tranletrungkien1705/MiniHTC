@@ -62288,7 +62288,7 @@ app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, strin
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.CareNo, c.CareType, c.RONo, c.PlateNo, c.CusName, c.CusPhone, c.ContactDate, c.Status, c.Result, c.ContactedAt,
       c.IsCall, c.IsFeedback, c.CusFeedback, c.IsSendmail, c.Note, c.DealerCode,
-      c.CusID, c.CarID }).ToListAsync();   // #210 §12 · #278 · #457
+      c.CusID, c.CarID, c.CreatedAt }).ToListAsync();   // #210 §12 · #278 · #457 · #1296 §12
     // "Chưa liên hệ" nhận cả mã nguồn PEND lẫn giá trị Pending của dữ liệu tạo trước khi vá mã trạng thái.
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status is "PEND" or "Pending"), items });
 }).RequireAuthorization();
@@ -65014,7 +65014,7 @@ app.MapGet("/api/partstock", async (AppDbContext db, ITenantContext t, string? w
     var q = db.PartStocks.Where(s => s.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
     if (!string.IsNullOrWhiteSpace(part)) q = q.Where(s => s.PartCode.Contains(part.ToUpper()));
-    var items = await q.OrderBy(s => s.PartCode).Take(1000).Select(s => new { s.WarehouseCode, s.PartCode, s.PartName, s.Location, s.OnHand }).ToListAsync();
+    var items = await q.OrderBy(s => s.PartCode).Take(1000).Select(s => new { s.WarehouseCode, s.PartCode, s.PartName, s.Location, s.OnHand, s.UpdatedAt }).ToListAsync();   // #1297 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -67291,7 +67291,7 @@ app.MapGet("/api/mstparams", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(paramType)) qy = qy.Where(x => x.ParamType == paramType!.Trim());
     if (!string.IsNullOrWhiteSpace(paramCode)) qy = qy.Where(x => x.ParamCode == paramCode!.Trim());
     var items = await qy.OrderBy(x => x.DealerCode).ThenBy(x => x.ParamType).ThenBy(x => x.ParamCode)
-        .Select(x => new { x.DealerCode, x.ParamType, x.ParamCode, x.ParamValue, x.Description, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1249 §12
+        .Select(x => new { x.DealerCode, x.ParamType, x.ParamCode, x.ParamValue, x.Description, x.LogLUDateTime, x.LogLUBy, x.CreatedAt }).ToListAsync();   // #1249 §12 + #1295 §12
 
     // Đo trực tiếp rủi ro đã nêu ở #675: có bộ khoá nào đang có NHIỀU HƠN một dòng không?
     var dupKeys = items.GroupBy(x => new { x.DealerCode, x.ParamType, x.ParamCode })
