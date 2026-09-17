@@ -2211,7 +2211,7 @@ app.MapGet("/api/vouchers", async (AppDbContext db, ITenantContext t, string? me
     var mem = memberNo.Trim().ToUpperInvariant();
     var items = await db.MemberVouchers.Where(v => v.OrgId == t.OrgId && v.MemberNo == mem)
         .OrderBy(v => v.PointExpireDate)
-        .Select(v => new { v.VoucherNo, v.PointVCTotal, v.PointVCRemain, v.PointVCLimit, v.PointExpireDate })
+        .Select(v => new { v.VoucherNo, v.PointVCTotal, v.PointVCRemain, v.PointVCLimit, v.PointExpireDate, v.CreatedAt })   // #1303 §12
         .ToListAsync();
     return Results.Ok(new { memberNo = mem, count = items.Count, items });
 }).RequireAuthorization();
@@ -16407,7 +16407,7 @@ app.MapGet("/api/servicestockins", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.StockInNo, x.SupplierCode, x.TotalAmount, x.Status,
+        x.StockInNo, x.SupplierCode, x.DealerCode, x.TotalAmount, x.Status, x.CreatedAt,   // #1305 §12
         stockInDate = x.StockInDate.HasValue ? x.StockInDate.Value.ToString("yyyy-MM-dd") : "",
         lines = db.ServiceStockInLines.Count(l => l.OrgId == t.OrgId && l.ServiceStockInId == x.Id)
     }).ToListAsync();
@@ -17680,7 +17680,8 @@ app.MapGet("/api/servicequotations", async (AppDbContext db, ITenantContext t, s
     {
         x.Id, x.QuoteNo, x.RONo, x.Vin, x.PlateNo, x.CusName, x.LaborTotal, x.PartTotal, x.Discount, x.VatAmount, x.GrandTotal, x.Status,
         // GAP đã vá: phần bảo hiểm trước đây không được trả về
-        x.HasInsuranceItem, x.InsuranceDeductible, x.InsuranceTotal
+        x.HasInsuranceItem, x.InsuranceDeductible, x.InsuranceTotal,
+        x.Note, x.CreatedAt   // #1304 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalValue = items.Sum(i => i.GrandTotal), items });
 }).RequireAuthorization();
