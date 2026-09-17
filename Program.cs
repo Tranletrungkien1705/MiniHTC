@@ -2828,7 +2828,9 @@ app.MapGet("/api/transreqs/{no}/cars", async (string no, AppDbContext db, ITenan
     var cars = await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
         .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.StorageCode,
             c.CarId, c.TransportReqDtlStatus, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #142 parity
-    return Results.Ok(new { r.TranspReqNo, r.Status, count = cars.Count, cars });
+    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, r.TransContractNo, r.Status, r.CreatedAt, r.DecidedAt,
+        r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,   // #1383 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 app.MapPost("/api/transreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -3075,7 +3077,12 @@ app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITe
     var cars = await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id)
         .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.EngineNo, c.DtlStatus,
             c.CarId, c.CancelDateTime, c.CancelBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #142 parity
-    return Results.Ok(new { m.TransportMinutesNo, m.Status, count = cars.Count, cars });
+    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, m.Status, m.CreatedAt, m.DecidedAt,
+        m.DLTransportMinutesStatus, m.HTCTransportMinutesStatus, m.TransportMinutesDate, m.FilePath,
+        m.DLCreatedDateTime, m.DLCreatedBy, m.DLApprDateTime, m.DLApprBy,
+        m.HTCAppr1DateTime, m.HTCAppr1By, m.HTCAppr2DateTime, m.HTCAppr2By,
+        m.HTCCancelDateTime, m.HTCCancelBy, m.LogLUDateTime, m.LogLUBy,   // #1381 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // 🔴 #142 parity — CHUỖI DUYỆT THẬT của biên bản vận chuyển, BA TRỤC (Biz.HTC.WH.cs, csproj 272):
@@ -10395,7 +10402,11 @@ app.MapGet("/api/transpdlv/{no}/cars", async (string no, AppDbContext db, ITenan
     if (m is null) return Results.NotFound(new { no });
     var cars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
         .Select(c => new { c.VIN, c.ModelCode }).ToListAsync();
-    return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, count = cars.Count, cars });
+    return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, m.CreatedAt,
+        m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
+        m.TranspReqNo, m.TranspReqType, m.RefOrdNo, m.FStorageCode, m.TStorageCode, m.DlvStartDate, m.DlvEndDate,
+        m.GPSDvNo, m.DlvEndGPSDateTime,   // #1382 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // ⚠️ #199 ĐÃ BỎ `POST /api/transpdlv/{no}/confirm` — **nguồn KHÔNG có lệnh này**. Ba bằng chứng độc lập:
