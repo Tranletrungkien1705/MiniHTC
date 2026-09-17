@@ -32009,7 +32009,7 @@ app.MapGet("/api/dochandovers/{no}/cars", async (string no, AppDbContext db, ITe
     var cars = await db.DocHandoverMinuteCars.Where(c => c.OrgId == t.OrgId && c.DocHandoverMinuteId == h.Id)
         .Select(c => new { c.VIN, c.ModelProductionCode, c.SpecDescription, c.EngineNo, c.CQNo, c.CONo, c.CBNo, c.DeclarationNo, c.BankGuaranteeNo, c.BankName, c.DlrCtrNo, c.HTCInvoiceNo, c.TransportMinutesNo, c.QtyInvoiceOriginal, c.QtyTransportMnOriginal, c.QtyTransportMnCopy }).ToListAsync();
     var totInv = cars.Sum(c => c.QtyInvoiceOriginal); var totOrig = cars.Sum(c => c.QtyTransportMnOriginal); var totCopy = cars.Sum(c => c.QtyTransportMnCopy);
-    return Results.Ok(new { h.BBBGNo, h.DealerCode, h.DealerName, count = cars.Count, totInvoiceOriginal = totInv, totTransportOriginal = totOrig, totTransportCopy = totCopy, cars });
+    return Results.Ok(new { h.BBBGNo, h.DealerCode, h.DealerName, h.CreatedDate, h.CreatedBy, h.Remark, count = cars.Count, totInvoiceOriginal = totInv, totTransportOriginal = totOrig, totTransportCopy = totCopy, cars });   // #1377 §12
 }).RequireAuthorization();
 
 // ===== Lệnh cân bằng/điều chuyển kho (StoRearCB — port 1:1 FrmMngRearCBSC, TCMotor/Sales/Logistic) =====
@@ -32307,7 +32307,7 @@ app.MapGet("/api/msgdlvcars/{no}/cars", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.MsgDlvCarDtls.Where(c => c.OrgId == t.OrgId && c.MsgDlvCarId == h.Id)
         .Select(c => new { c.CarId, c.CarSpecCode, c.CarColorCode, c.CQEndDate }).ToListAsync();
-    return Results.Ok(new { h.MsDlvNo, h.DealerCode, h.MsType, h.MsReadStatus, count = cars.Count, cars });
+    return Results.Ok(new { h.MsDlvNo, h.MsDateTime, h.DealerCode, h.MsType, h.MsReadStatus, h.SendBy, h.ReadAt, count = cars.Count, cars });   // #1376 §12
 }).RequireAuthorization();
 
 // Đánh dấu đã đọc thông báo.
@@ -51572,7 +51572,7 @@ app.MapGet("/api/insurancereqs/{no}/cars", async (string no, AppDbContext db, IT
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id)
         .Select(c => new { c.VIN, c.ExpectedStartDate, c.InsAmount, c.InsuranceDay, c.LocationFrom, c.LocationTo, c.Price, c.Rate, c.TransporterCode, c.Remark, c.InsReqDtlStatus }).ToListAsync();
-    return Results.Ok(new { r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.ApprovedBy, r.ApprovedDate, r.Remark, count = cars.Count, cars });
+    return Results.Ok(new { r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt, r.ApprovedBy, r.ApprovedDate, r.Remark, count = cars.Count, cars });   // #1375 §12
 }).RequireAuthorization();
 
 // 🔴 DUYỆT / TỪ CHỐI — `Ins_InsuranceReqApprove_New20181119` (Biz.HTC.WH.cs:125335-125520).
