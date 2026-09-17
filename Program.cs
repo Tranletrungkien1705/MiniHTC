@@ -32066,7 +32066,7 @@ app.MapGet("/api/storearcbs/{no}/cars", async (string no, AppDbContext db, ITena
     var cars = await db.StoRearCBDtls.Where(c => c.OrgId == t.OrgId && c.StoRearCBId == h.Id)
         .Select(c => new { c.VIN, c.SpecCode, c.EngineNo, c.ColorCode, c.StorageCodeFrom, c.StorageCodeTo, c.ExpectedStartDate, c.ExpectedEndDate, c.CBReqNo, c.TenLoaiThung, c.Remark, c.RearCBDtlStatus,
             c.RearCBOutDate, c.RearCBEndDate, c.ConfirmDate, c.ConfirmBy }).ToListAsync();
-    return Results.Ok(new { h.StoRearCBNo, h.RearCBStatus, count = cars.Count, cars });
+    return Results.Ok(new { h.StoRearCBNo, h.CreatedDate, h.RearCBStatus, h.Remark, h.CreatedBy, h.ApprovedDate, h.ApprovedBy, count = cars.Count, cars });   // #1385 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/storearcbs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t,
@@ -51391,7 +51391,7 @@ app.MapGet("/api/storagerearranges/{no}/cars", async (string no, AppDbContext db
     var cars = await db.StorageRearrangeDetails.Where(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
         .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.Remark, c.RearrangeDtlStatus, c.ExpectedStartDate, c.ExpectedEndDate,
             c.RearrangeOutDate, c.RearrangeEndDate, c.ConfirmDate, c.ConfirmBy }).ToListAsync();
-    return Results.Ok(new { r.SCNo, r.Status, r.ApprovedBy1, r.ApprovedBy2, r.Remark, count = cars.Count, cars });
+    return Results.Ok(new { r.SCNo, r.Status, r.CreatedAt, r.Approved1At, r.ConfirmedAt, r.ApprovedBy1, r.Approved2At, r.ApprovedBy2, r.Remark, count = cars.Count, cars });   // #1384 §12
 }).RequireAuthorization();
 
 // action: confirm|cancel (1 bước, giữ nguyên) hoặc approve1|approve2 (2 cấp, khớp FrmMngSC: Draft→Approved1→Confirmed).
@@ -52110,7 +52110,11 @@ app.MapGet("/api/stofmaintains/{no}/cars", async (string no, AppDbContext db, IT
     var cars = await db.StoFMaintainMains.Where(c => c.OrgId == t.OrgId && c.StoFMaintainId == m.Id)
         .Select(c => new { c.VIN, c.MtnTp, c.ModelCode, c.UserCodeMtn, c.StorageCodeInit, c.StorageCodeCurrent, c.MtnStatusMain, c.Remark,
             c.MtnExtStatusMain, c.BeforeMtnStatusMain, c.AfterMtnStatusMain, c.UserCodeMtnExt, c.MtnExtStartDTime, c.MtnExtEndDTime, c.MtnExtRemark }).ToListAsync();
-    return Results.Ok(new { m.SfMtnNo, m.MtnType, m.Status, m.MtnStatus, m.MtnEvalStatus, count = cars.Count, cars });
+    return Results.Ok(new { m.SfMtnNo, m.MtnType, m.Status, m.CreatedAt, m.DoneAt, m.MtnStatus, m.MtnEvalStatus, m.QtyVIN,
+        m.CreateDateTime, m.CreateBy, m.LUDateTime, m.LUBy,
+        m.ApproveDateTime, m.ApproveBy, m.ApproveEvalDateTime, m.ApproveEvalBy,
+        m.Remark, m.LogLUDateTime, m.LogLUBy,   // #1386 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // ===== #B07 VÒNG ĐỜI THẬT CỦA PHIẾU BẢO TRÌ — BỐN BƯỚC, HAI TRỤC ĐỘC LẬP =====
