@@ -15894,7 +15894,8 @@ app.MapGet("/api/sermstlocations", async (AppDbContext db, ITenantContext t,
         .Where(x => all == true || x.IsActive == "1")
         .OrderBy(x => x.LocationCode)
         .Select(x => new { x.Id, x.LocationID, x.LocationCode, x.LocationName, x.StockNo, x.DealerCode, x.IsActive,
-            x.LocationHight, x.LocationSurface, x.LocationType })   // #937
+            x.LocationHight, x.LocationSurface, x.LocationType,   // #937
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1315 §12
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -19446,7 +19447,8 @@ app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? 
     {
         x.GroupCode, x.GroupName, x.ParentCode,
         parentName = !string.IsNullOrEmpty(x.ParentCode) && nameMap.TryGetValue(x.ParentCode, out var pn) ? pn : null,
-        x.OrderId, x.FlagActive
+        x.OrderId, x.FlagActive,
+        x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy   // #1316 §12
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -40922,6 +40924,7 @@ app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.BulletinNo, x.BulletinNoHMC, x.Remark, x.PartCode, x.PartName, x.SerCode, x.SerName, x.FileNameAttachment, x.FileAttachment, x.FlagActive, x.CreateDate, x.UserCreate,   // #377 §12
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt,   // #1317 §12
         vins = db.BulletinVins.Count(v => v.OrgId == t.OrgId && v.BulletinNo == x.BulletinNo),
         dateExpired = x.DateExpired.HasValue ? x.DateExpired.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
