@@ -21897,6 +21897,7 @@ app.MapGet("/api/warrantyclaims/{id:long}/detail", async (long id, AppDbContext 
         c.Km, c.CheckInDate, c.FinishedDate, c.CusRequest, c.CarStatus, c.StartDate,
         c.NaturalCode, c.CauseCode, c.ErrorCodeCD, c.ErrorCodePN, c.PartIDError, c.FlagReadySend,
         c.ROWTID, c.WarrantyType, c.WarrantySerCode, c.Amount, c.Description, c.HtcNote,
+        c.ROWTypeCode, c.ROWTypeDtlCode, c.LogLUDateTime, c.LogLUBy, c.CreatedAt, c.UpdatedAt,   // #1447 §12
         c.Status,
         warrantyStatusText = warrantyClaimStatusNames.TryGetValue(c.Status, out var sn) ? sn : null,
         c.HMCApiStatus, c.SyncHMCDateTime, c.ClmRcptNo, c.HMCApiQtyA, c.ClmNoSrl,
@@ -22547,7 +22548,7 @@ app.MapGet("/api/warrantyclaims/{id}/parts", async (long id, AppDbContext db, IT
         {
             x.Id, x.ClaimId, x.PartCode, x.PartName, x.RowPartType, x.PartOrderType, x.PartOrderNo,
             x.Quantity, x.Price, x.Factor, x.Vat, x.InsurancePrice, x.ExpenseType, x.WarrantyStatus,
-            x.FlagMainPart, x.Note, x.CreatedAt, x.UpdatedAt,
+            x.FlagMainPart, x.Note, x.CreatedAt, x.UpdatedAt, x.ApprovedDate, x.ApprovedBy,   // #1448 §12
             rowPartTypeName = rowPartTypeNames.ContainsKey(x.RowPartType) ? rowPartTypeNames[x.RowPartType] : x.RowPartType,
             amount = x.Quantity * x.Price * x.Factor,
         }).ToListAsync();
@@ -77759,7 +77760,7 @@ app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
             .Skip(start).Take(count)
             // #1056: nguồn `smrfa.*` trả ĐỦ bảng — thêm 4 cột trước đây bị bỏ sót.
             .Select(x => new { x.Id, x.ReceptionFAudCode, x.ReceptionFAudType, x.ReceptionFAudName, x.FlagActive,
-                x.Idx, x.Remark, x.LogLUDateTime, x.LogLUBy })
+                x.Idx, x.Remark, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt })   // #1446 §12
             .ToListAsync()
         : new();
 
