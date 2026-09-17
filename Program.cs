@@ -5086,7 +5086,7 @@ app.MapGet("/api/qcdocreqs/{no}/cars", async (string no, AppDbContext db, ITenan
     var r = await db.QcDocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.QcDocReqCars.Where(c => c.OrgId == t.OrgId && c.QcDocReqId == r.Id)
-        .Select(c => new { c.OrderNo, c.ModelCode, c.SpecCode, c.ColorCode, c.VIN, c.EngineNo, c.OriginNo, c.FGFormNo, c.QCNo, c.ClearanceFormNo, c.DtlStatus }).ToListAsync();
+        .Select(c => new { c.OrderNo, c.ModelCode, c.SpecCode, c.ColorCode, c.VIN, c.EngineNo, c.OriginNo, c.FGFormNo, c.QCNo, c.ClearanceFormNo, c.DocDeliverTypeCode, c.DtlStatus }).ToListAsync();   // #1418 §12
     return Results.Ok(new { r.DocReqNo, r.CreateBy, r.DocReqStatus, r.CreatedAt, r.ApprovedAt, count = cars.Count, cars });   // #1359 §12
 }).RequireAuthorization();
 
@@ -50194,7 +50194,8 @@ app.MapGet("/api/reqinvoices/{no}/cars", async (string no, AppDbContext db, ITen
         .Select(c => new { c.VIN, c.CarId, typeRDReqIv = c.ReqType, c.RDReqIvDtlStatus, c.DealerCode,
             c.MortageBankCode, c.ApprovedDate, c.ApprovedBy, c.Remark,
             c.HTCInvoiceNo, c.InvoiceNoFactory, c.TCGInvoiceNo }).ToListAsync();
-    return Results.Ok(new { reqIVNo = h.ReqRDInvoiceNo, h.Status, count = cars.Count, cars });
+    return Results.Ok(new { reqIVNo = h.ReqRDInvoiceNo, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt,
+        h.ApprovedDate, h.ApprovedBy, h.LogLUDateTime, h.LogLUBy, count = cars.Count, cars });   // #1419 §12
 }).RequireAuthorization();
 
 // 🔴 DUYỆT GIAO HỒ SƠ THEO TỪNG VIN — đúng chiều nguồn (Biz.HTC.WH.cs:128108-128142).
@@ -55274,8 +55275,8 @@ app.MapGet("/api/cardocrequests/{no}/cars", async (string no, AppDbContext db, I
     var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && c.RequestId == r.Id)
-        .Select(c => new { c.CarId, c.Remark, c.DeliveryStartDate }).ToListAsync();
-    return Results.Ok(new { r.RequestNo, r.Status, count = cars.Count, cars });
+        .Select(c => new { c.CarId, c.Remark, c.DeliveryStartDate, c.CarDocReqTypeCRR, c.DRDtlStatus, c.RejectDate, c.RejectBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #1417 §12
+    return Results.Ok(new { r.RequestNo, r.DealerCode, r.ReceivedPerson, r.ReceivedAddress, r.Status, r.CreatedAt, r.DoneAt, r.RejectReason, r.RejectedAt, count = cars.Count, cars });   // #1417 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/cardocrequests/{no}/complete", async (string no, AppDbContext db, ITenantContext t) =>
