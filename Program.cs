@@ -16259,6 +16259,7 @@ app.MapGet("/api/servicestockouts", async (AppDbContext db, ITenantContext t, st
     {
         x.StockOutNo, x.ReceiverCode, x.TotalQty, x.Status,
         stockOutDate = x.StockOutDate.HasValue ? x.StockOutDate.Value.ToString("yyyy-MM-dd") : "",
+        x.DealerCode, x.CusID, x.UserCode, x.TruckNo, x.StockOutType, x.TotalAmount, x.CreatedAt,   // #1443 §12
         lines = db.ServiceStockOutLines.Count(l => l.OrgId == t.OrgId && l.ServiceStockOutId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -16283,7 +16284,7 @@ app.MapGet("/api/servicestockouts/{no}", async (string no, AppDbContext db, ITen
     return Results.Ok(new
     {
         h.StockOutNo, h.DealerCode, h.CusID, cusName = cus?.CusName, h.UserCode, userName = user?.UserName,
-        h.TruckNo, h.ReceiverCode, h.StockOutDate, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount,
+        h.TruckNo, h.ReceiverCode, h.StockOutDate, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount, h.CreatedAt,   // #1443 §12
         lines = includeDetail ? lines.Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount }) : null,
         onlyExistsOnMachine150_996 = "#996: SerStockOutGet — BizCarSv.Inventory.StockOut.cs:3028",
         priceRankAndStockBalanceBlocksNotPorted = "Nguon con khoi #tbl_sbb (ton kho InStockQuantity theo PartID) va #tbl_tmpprice (gia hieu luc gan nhat qua RANK() OVER PARTITION BY PartId ORDER BY DateEffect DESC) khi strIsGetDetail=Active — day la du lieu TINH LAI de goi y gia luc xuat (khong phai du lieu da LUU tren dong phieu), Mini chua port; ghi NO",
@@ -65252,8 +65253,11 @@ app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? 
 
     var items = rows.Select(r => new
     {
-        r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest,
+        r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusAddress, r.CusPhoneNo, r.CusRequest,
         r.RONO, r.AppNo, r.Status, r.CreatedAt, r.DeliveredAt,
+        r.Km, r.FuelLevel, r.LevelOfInspection, r.BackRepairStatus, r.WarrantlyStatus, r.InsuaranceStatus, r.RemarkErrOrther,
+        r.CusID, r.CarID, r.DealerCode, r.BodyPaintFilePath, r.CardNo, r.MemberNo, r.CardType,
+        r.DeliveredBy, r.Remark,   // #1444 §12
         // ⚠️ #310d: `roCount` phải là SỐ THẬT. Bản đầu tôi trả 0/1 theo "có mặt trong Dictionary" —
         //   tên trường hứa một phép ĐẾM mà giá trị chỉ là cờ tồn tại (đúng lớp lỗi C0-…tricesimusoctavus).
         roNoLatest = roByReception.TryGetValue(r.ReceptionFNo, out var lr) ? lr[0].RONo : null,
@@ -76173,7 +76177,7 @@ app.MapGet("/api/stockouts/search-wh", async (AppDbContext db, ITenantContext t,
         return new
         {
             h.Id, h.StockOutNo, h.StockOutDate, h.Status, h.StockOutType, h.ReceiverCode,
-            h.TotalQty, h.TotalAmount,
+            h.TotalQty, h.TotalAmount, h.DealerCode, h.CusID, h.UserCode, h.TruckNo, h.CreatedAt,   // #1443 §12
             lineCount = ls.Count,
             // Nguồn: #tbl_sod inner join ser_mst_part ⇒ phiếu chưa có dòng, hoặc mọi dòng trỏ phụ tùng
             //        đã rời danh mục, sẽ rơi khỏi kết quả.
@@ -76274,7 +76278,7 @@ app.MapGet("/api/stockins/search-wh", async (AppDbContext db, ITenantContext t,
         return new
         {
             h.Id, h.StockInNo, h.DealerCode, h.SupplierCode, supplierName = su?.SupplierName,
-            h.StockInDate, h.Status, h.CreatedAt, userName = us?.UserName,
+            h.StockInDate, h.Status, h.CreatedAt, h.TotalAmount, userName = us?.UserName,   // #1445 §12
             // Nguồn nối CẢ HAI bằng inner join ⇒ phiếu sẽ biến mất; port giữ phiếu và đánh dấu.
             wouldBeDroppedBySource = su is null || us is null,
         };
