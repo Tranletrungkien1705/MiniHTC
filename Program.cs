@@ -5241,7 +5241,7 @@ app.MapGet("/api/woschedules/{no}/lines", async (string no, AppDbContext db, ITe
     if (s is null) return Results.NotFound(new { no });
     var lines = await db.WoScheduleLines.Where(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id)
         .Select(l => new { l.WorkOrderNo, l.ModelCode, l.SpecCode, l.ColorCode, l.QtyOrder, l.QtyProduct, l.QtyRemain }).ToListAsync();
-    return Results.Ok(new { s.ScheduleNo, s.Status, count = lines.Count, lines });
+    return Results.Ok(new { s.ScheduleNo, s.Status, s.CreatedBy, s.CreatedAt, count = lines.Count, lines });   // #1325 §12
 }).RequireAuthorization();
 
 // Cap nhat SL da san xuat (ghi nhan tien do); khi het SL con lai toan lich -> Closed.
@@ -38300,13 +38300,13 @@ app.MapGet("/api/debits/payments/{paymentNo}", async (string paymentNo, AppDbCon
     var no = paymentNo.Trim();
     var cus = await db.CusDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
         .Select(x => new { subject = "cus", x.PaymentAmount, x.DealerCode, x.PayPersonName, x.PayPersonIDCardNo, x.Note,
-            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "", x.CreatedAt }).ToListAsync();   // #1324 §12
     var ins = await db.InsDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
         .Select(x => new { subject = "ins", x.PaymentAmount, x.DealerCode, x.PayPersonName, x.PayPersonIDCardNo, x.Note,
-            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "", x.CreatedAt }).ToListAsync();   // #1324 §12
     var sup = await db.SupplierDebitPayments.Where(x => x.OrgId == t.OrgId && x.PaymentNo == no)
         .Select(x => new { subject = "supplier", x.PaymentAmount, x.DealerCode, x.PayPersonName, x.PayPersonIDCardNo, x.Note,
-            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
+            payDate = x.PayDate.HasValue ? x.PayDate.Value.ToString("yyyy-MM-dd") : "", x.CreatedAt }).ToListAsync();   // #1324 §12
     var all = cus.Concat(ins).Concat(sup).ToList();
     if (all.Count == 0) return Results.NotFound(new { paymentNo = no });
     return Results.Ok(new { paymentNo = no, count = all.Count, totalAmount = all.Sum(x => x.PaymentAmount), lines = all });
@@ -78712,7 +78712,8 @@ app.MapGet("/api/partextramsts", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(partCode)) qy = qy.Where(x => x.PartCode == partCode!.Trim());
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
     var items = await qy.OrderBy(x => x.PartCode).Take(1000)
-        .Select(x => new { x.Id, x.ROMSID, x.PartCode, x.VieName, x.Unit, x.Price, x.TotalLimit, x.FlagActive })
+        .Select(x => new { x.Id, x.ROMSID, x.PartCode, x.VieName, x.Unit, x.Price, x.TotalLimit, x.FlagActive,
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1326 §12
         .ToListAsync();
     return Results.Ok(new
     {
