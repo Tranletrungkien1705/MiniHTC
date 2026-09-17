@@ -2516,6 +2516,7 @@ app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, 
             c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy }).ToListAsync();
     return Results.Ok(new { m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
         m.DealerCode, m.MortageDate, m.Remark,   // #1362 §12
+        m.CreatedBy, m.LUDateTime, m.LUBy, m.ApprovedBy, m.FinishBy, m.LogLUDateTime, m.LogLUBy,   // #1430 §12
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -50372,7 +50373,12 @@ app.MapGet("/api/dmsdealercontracts/{no}/lines", async (string no, AppDbContext 
     var carIds = lines.Select(l => l.CarId).ToList();
     var cars = await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && carIds.Contains(v.VIN))
         .Select(v => new { v.VIN, v.DlrCtrNo, v.FlagDealerContractDMS40, v.LogLUDateTime, v.LogLUBy }).ToListAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.DlrCtrStatus, c.HTCSignStatus, c.DlrSignStatus, c.DlrApprDTime, c.DlrApprBy, c.FilePath, c.Remark, count = lines.Count, lines, cars });
+    return Results.Ok(new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrCtrStatus, c.HTCSignStatus, c.DlrSignStatus, c.DlrApprDTime, c.DlrApprBy, c.FilePath, c.Remark, c.CreatedAt,   // #1429 §12
+        c.HTCAppr1DTime, c.HTCAppr1By, c.HTCAppr2DTime, c.HTCAppr2By, c.BankCodeMD, c.FlagDlrCtrAdjust, c.DlrCtrNoParent, c.RejectDTime, c.RejectBy,
+        c.DCPType, c.TotalAmount, c.CreateDTime, c.CreateBy, c.LUDTime, c.LUBy,
+        c.PMTermNo, c.DepositPercent, c.GuaranteePercent, c.GuaranteeDays, c.DepositDutyEndDays, c.GuaranteeEndDays,
+        c.CancelDTime, c.CancelBy, c.LogLUDateTime, c.LogLUBy,
+        count = lines.Count, lines, cars });
 }).RequireAuthorization();
 
 // ===== #184 SỬA hợp đồng đại lý DMS40 — `DMS40_CT_DealerContract_Update_New20200130` =====
@@ -52421,7 +52427,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(customer)) q = q.Where(c => c.CustomerCode == customer || c.CustomerName.Contains(customer));
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
-        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
+        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status, c.VersionDTimeCurr,   // #1428 §12
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
         total = db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id).Sum(l => (decimal?)l.TotalAmountAfterVAT) ?? 0
