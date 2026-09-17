@@ -3328,7 +3328,9 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
         .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark }).ToListAsync();
-    return Results.Ok(new { d.DocReqNo, d.Status, d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy, count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
+    return Results.Ok(new { d.DocReqNo, d.DealerCode, d.Status, d.CreatedAt, d.SubmittedAt, d.DoneAt,
+        d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy,   // #1378 §12
+        count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
 }).RequireAuthorization();
 
 // Sửa hàng loạt ngày/số tờ trình + số ngày hỗ trợ vay vốn theo VIN (port 1:1 FrmUpdateDocReq, 2010.HTC/Sales)
@@ -50258,7 +50260,9 @@ app.MapGet("/api/dealercontracts/{no}/cars", async (string no, AppDbContext db, 
     if (c is null) return Results.NotFound(new { no });
     var cars = await db.DealerContractDetails.Where(l => l.OrgId == t.OrgId && l.DealerContractId == c.Id)
         .Select(l => new { l.DealerContractNo, l.CarId, l.UnitPrice, l.ContractDetailStatus }).ToListAsync();
-    return Results.Ok(new { c.DealerContractNo, c.DealerCode, c.TotalAmount, c.Status, count = cars.Count, cars });
+    return Results.Ok(new { c.DealerContractNo, c.DealerContractNoUser, c.DealerCode, c.ContractDate, c.TotalAmount, c.Status, c.CreatedAt, c.ApprovedAt,
+        c.ApprovedBy, c.Remark, c.ReceiptContractDate,   // #1379 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // 🔴 DUYỆT / TỪ CHỐI / HUỶ — `ContractDealerContractApprove_New201811119` (Biz.HTC.WH.cs:31068) và
@@ -54616,7 +54620,7 @@ app.MapGet("/api/dlrpdirequests/{no}/cars", async (string no, AppDbContext db, I
     if (p is null) return Results.NotFound(new { no });
     var cars = await db.DlrPdiRequestDetails.Where(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
         .Select(c => new { c.RONo, c.ROCreatedDate, c.ROStatus, c.DlrPDIReqDtlStatus }).ToListAsync();
-    return Results.Ok(new { p.DlrPdiReqNo, p.Status, p.ApprovedBy, p.ApprovedDate, p.Remark, count = cars.Count, cars });
+    return Results.Ok(new { p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.DoneAt, p.ApprovedBy, p.ApprovedDate, p.Remark, count = cars.Count, cars });   // #1380 §12
 }).RequireAuthorization();
 
 // 🔴 DUYỆT — `DlrPDIRequestApprove` (Biz.HTC.WH.DlrPDIRequest.cs:1735-1870). Vào từ **"P"**, ra **"A"**;
