@@ -72864,7 +72864,7 @@ app.MapGet("/api/platecolormsts", async (AppDbContext db, ITenantContext t,
     var items = await qy
         .OrderBy(x => x.IndexColor == null ? 0 : 1).ThenBy(x => x.IndexColor)   // NULL lên đầu, đúng SQL Server
         .ThenBy(x => x.PlateColorCode)
-        .Select(x => new { x.Id, x.PlateColorCode, x.PlateColorName, x.ColorHexCode, x.IndexColor, x.FlagActive })
+        .Select(x => new { x.Id, x.PlateColorCode, x.PlateColorName, x.ColorHexCode, x.IndexColor, x.FlagActive, x.UpdatedAt })   // #1298 §12
         .ToListAsync();
 
     return Results.Ok(new
@@ -79739,7 +79739,7 @@ app.MapGet("/api/tcgsaleprices", async (AppDbContext db, ITenantContext t, strin
 {
     var q = db.TcgSalePrices.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(p => p.SpecCode.Contains(spec.ToUpper()));
-    var items = await q.OrderBy(p => p.SpecCode).Take(1000).Select(p => new { p.SpecCode, p.UnitPrice, p.Status }).ToListAsync();
+    var items = await q.OrderBy(p => p.SpecCode).Take(1000).Select(p => new { p.SpecCode, p.UnitPrice, p.Status, p.UpdatedAt }).ToListAsync();   // #1299 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -79776,7 +79776,7 @@ app.MapGet("/api/deviceprices", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(d => d.SpecCode == spec);
     if (!string.IsNullOrWhiteSpace(device)) q = q.Where(d => d.DeviceCode.Contains(device.ToUpper()));
     var items = await q.OrderBy(d => d.SpecCode).ThenBy(d => d.DeviceCode).Take(1000).Select(d => new
-    { d.SpecCode, d.SpecDescription, d.DeviceTypeCode, d.DeviceCode, d.DeviceName, d.Price, d.VAT, d.PriceVAT, d.EffectiveDate, d.Status }).ToListAsync();
+    { d.SpecCode, d.SpecDescription, d.DeviceTypeCode, d.DeviceCode, d.DeviceName, d.Price, d.VAT, d.PriceVAT, d.EffectiveDate, d.Status, d.UpdatedAt }).ToListAsync();   // #1300 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -79804,7 +79804,7 @@ app.MapGet("/api/discounts", async (AppDbContext db, ITenantContext t, string? o
 {
     var q = db.Discounts.Where(d => d.OrgId == t.OrgId);
     var items = await q.OrderByDescending(d => d.EffectiveDate).Take(500).Select(d => new
-    { d.EffectiveDate, d.DiscountPercent, d.PenaltyPercent, d.PenaltyPercentTCKT, d.FnExpPercent, d.PmtDsTCGPercent, d.Status }).ToListAsync();
+    { d.EffectiveDate, d.DiscountPercent, d.PenaltyPercent, d.PenaltyPercentTCKT, d.FnExpPercent, d.PmtDsTCGPercent, d.Status, d.UpdatedAt }).ToListAsync();   // #1301 §12
     // biểu áp dụng cho 1 ngày = bản hiệu lực mới nhất ≤ ngày đó
     object? applicable = null;
     if (DateTime.TryParse(onDate, out var od))
@@ -79950,7 +79950,7 @@ app.MapGet("/api/carmaintenances", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(m => m.MtnType == type);
     if (!string.IsNullOrWhiteSpace(storage)) q = q.Where(m => m.StorageCode == storage);
     var items = await q.OrderByDescending(m => m.Id).Take(1000).Select(m => new
-    { m.Vin, m.StorageCode, m.ModelCode, m.MtnType, m.MtnTimes, m.MtnDate, m.MtnNextDate, m.UserCode, m.Remark }).ToListAsync();
+    { m.Vin, m.StorageCode, m.ModelCode, m.MtnType, m.MtnTimes, m.MtnDate, m.MtnNextDate, m.UserCode, m.Remark, m.CreatedAt }).ToListAsync();   // #1302 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
