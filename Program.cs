@@ -2559,7 +2559,7 @@ app.MapGet("/api/pms/{pmNo}/lines", async (string pmNo, AppDbContext db, ITenant
     if (p is null) return Results.NotFound(new { pmNo });
     var lines = await db.PmtLines.Where(l => l.OrgId == t.OrgId && l.VoucherId == p.Id)
         .Select(l => new { l.RefNo, l.AmountAccum, l.AmountCurrent, amountTotal = l.AmountAccum + l.AmountCurrent }).ToListAsync();
-    return Results.Ok(new { p.PMNo, p.DealerCode, p.TotalAmount, p.Status, count = lines.Count, lines });
+    return Results.Ok(new { p.PMNo, p.DealerCode, p.BankAccountSend, p.BankAccountReceive, p.TotalAmount, p.Status, p.CreatedAt, p.DecidedAt, count = lines.Count, lines });   // #1390 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/pms/{pmNo}/{action}", async (string pmNo, string action, AppDbContext db, ITenantContext t) =>
@@ -28425,7 +28425,7 @@ app.MapGet("/api/stockadjs/{no}/lines", async (string no, AppDbContext db, ITena
     var droppedByBalanceJoin = lines.Count(l => string.IsNullOrWhiteSpace(l.BalanceLocation));
     return Results.Ok(new
     {
-        h.StockAdjNo, h.AdjStatus, h.LogLUDateTime, h.LogLUBy,
+        h.StockAdjNo, h.StorageCode, h.DealerCode, h.StockOutDate, h.Remark, h.AdjStatus, h.CreatedBy, h.CreatedAt, h.ApprovedAt, h.LogLUDateTime, h.LogLUBy,   // #1392 §12
         count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines,
         // ===== #619 =====
         droppedByInnerJoinStockBalance = droppedByBalanceJoin,
@@ -54795,7 +54795,9 @@ app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITe
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id)
         .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate, l.UnitPriceInit, l.MapVINRanking, l.Remark, l.CarId }).ToListAsync();
-    return Results.Ok(new { o.SoCode, o.Status, count = lines.Count, lines, qty = lines.Sum(x => x.RequestedQuantity) });
+    return Results.Ok(new { o.SoCode, o.OrderType, o.PayType, o.DealerCode, o.Status, o.CreatedAt, o.SentAt,
+        o.SalesPolicy, o.ExpectedMonth, o.LatestDeliveryDate, o.Approved1At, o.Approved2At, o.RejectReason,   // #1391 §12
+        count = lines.Count, lines, qty = lines.Sum(x => x.RequestedQuantity) });
 }).RequireAuthorization();
 
 // ⚠️ ĐÃ BỎ `/api/salesorders/{no}/send`: nguồn KHÔNG có bước "gửi đơn" — `OrderSOCreate_New20181119`
