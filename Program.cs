@@ -33303,7 +33303,7 @@ app.MapGet("/api/complainterrorcodes", async (AppDbContext db, ITenantContext t,
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ErrorCode.Contains(q!) || x.ErrorName!.Contains(q!));
     var items = await qry.OrderBy(x => x.ErrorCode).Take(500)
-        .Select(x => new { x.Id, x.ErrorCode, x.ErrorName, x.ErrorDesc, x.ErrorTypeCode, x.WarrantyDate, x.WarrantyKm, x.Remark, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ErrorCode, x.ErrorName, x.ErrorDesc, x.ErrorTypeCode, x.WarrantyDate, x.WarrantyKm, x.Remark, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1287 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -33531,7 +33531,7 @@ app.MapGet("/api/compartmentmsts", async (AppDbContext db, ITenantContext t, str
     var qry = db.CompartmentMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.CompartmentCode.Contains(q!) || x.CompartmentName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.CompartmentCode).Take(500).Select(x => new { x.Id, x.CompartmentCode, x.CompartmentName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.CompartmentCode).Take(500).Select(x => new { x.Id, x.CompartmentCode, x.CompartmentName, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1287 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -33563,7 +33563,7 @@ app.MapGet("/api/staffmsts", async (AppDbContext db, ITenantContext t, string? q
     var qry = db.StaffMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StaffCode.Contains(q!) || x.StaffName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.StaffCode).Take(500).Select(x => new { x.Id, x.StaffCode, x.StaffName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.StaffCode).Take(500).Select(x => new { x.Id, x.StaffCode, x.StaffName, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1287 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -33596,7 +33596,7 @@ app.MapGet("/api/extraworklimitationmsts", async (AppDbContext db, ITenantContex
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(code)) qry = qry.Where(x => x.ExtraWorkCode == code);
     var items = await qry.OrderBy(x => x.ExtraWorkCode).ThenBy(x => x.WarrantyDtlCode).Take(1000)
-        .Select(x => new { x.Id, x.ExtraWorkCode, x.ExtraWorkName, x.WarrantyDtlCode, x.MaxPrice, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ExtraWorkCode, x.ExtraWorkName, x.WarrantyDtlCode, x.MaxPrice, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1288 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -34216,7 +34216,7 @@ app.MapGet("/api/paymenttermmsts", async (AppDbContext db, ITenantContext t, str
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.DCPType.Contains(q!) || x.DCPTypeName!.Contains(q!));
     var items = await qry.OrderBy(x => x.DCPType).Take(500)
-        .Select(x => new { x.Id, x.DCPType, x.DCPTypeName, x.PaymentDueDays, x.GuaranteeDueDays, x.PaymentCLDueDays, x.PaymentNHSDueDays, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.DCPType, x.DCPTypeName, x.PaymentDueDays, x.GuaranteeDueDays, x.PaymentCLDueDays, x.PaymentNHSDueDays, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1288 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -51808,24 +51808,27 @@ app.MapGet("/api/devicecars", async (AppDbContext db, ITenantContext t, string? 
     var q = db.DeviceCars.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.VIN.Contains(vin.Trim().ToUpperInvariant()));
     if (!string.IsNullOrWhiteSpace(deviceType)) q = q.Where(c => c.DeviceTypeCode == deviceType);
-    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.DeviceTypeCode, c.InputInvoiceNo, c.InputInvoiceDate, c.UpdatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.DeviceTypeCode, c.InputInvoiceNo, c.InputInvoiceDate, c.UpdatedAt, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #1286 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/devicecars", async (List<DeviceCarDto> dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/devicecars", async (List<DeviceCarDto> dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var rows = (dto ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe." });
     if (rows.Any(c => string.IsNullOrWhiteSpace(c.DeviceTypeCode))) return Results.BadRequest(new { error = "Chưa nhập loại thiết bị." });
     var dupe = rows.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    // #1286 SUA BUG THAT: LogLUDateTime/LogLUBy (cot map dung nguon #162) chua tung duoc ghi o ca 2
+    // nhanh tao/sua - luon NULL.
+    var by1286 = (partnerUserCode ?? "system").Trim(); var now1286 = DateTime.Now;
     int inserted = 0, updated = 0;
     foreach (var c in rows)
     {
         var vin = c.VIN.Trim().ToUpperInvariant();
         var ex = await db.DeviceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
-        if (ex is null) { db.DeviceCars.Add(new DeviceCar { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(), InputInvoiceNo = c.InputInvoiceNo, InputInvoiceDate = c.InputInvoiceDate }); inserted++; }
-        else { ex.DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(); ex.InputInvoiceNo = c.InputInvoiceNo; ex.InputInvoiceDate = c.InputInvoiceDate; ex.UpdatedAt = DateTime.Now; updated++; }
+        if (ex is null) { db.DeviceCars.Add(new DeviceCar { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(), InputInvoiceNo = c.InputInvoiceNo, InputInvoiceDate = c.InputInvoiceDate, LogLUDateTime = now1286, LogLUBy = by1286 }); inserted++; }
+        else { ex.DeviceTypeCode = c.DeviceTypeCode.Trim().ToUpperInvariant(); ex.InputInvoiceNo = c.InputInvoiceNo; ex.InputInvoiceDate = c.InputInvoiceDate; ex.UpdatedAt = DateTime.Now; ex.LogLUDateTime = now1286; ex.LogLUBy = by1286; updated++; }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, inserted, updated, message = "Lưu thành công!" });
