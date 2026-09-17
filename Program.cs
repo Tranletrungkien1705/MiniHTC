@@ -2717,7 +2717,7 @@ app.MapGet("/api/invoicelists/{code}/lines", async (string code, AppDbContext db
     if (h is null) return Results.NotFound(new { code });
     var lines = await db.InvoiceLines.Where(l => l.OrgId == t.OrgId && l.ListId == h.Id)
         .Select(l => new { l.InvoiceListCode, l.CarId, l.DealerCode, l.InvoiceDealerCode, l.InvoiceNo, l.Vin, l.InvoiceDate }).ToListAsync();
-    return Results.Ok(new { h.InvoiceListCode, count = lines.Count, lines });
+    return Results.Ok(new { h.InvoiceListCode, h.CreatedDate, h.CreatedBy, count = lines.Count, lines });   // #1434 §12
 }).RequireAuthorization();
 
 app.MapDelete("/api/invoicelists/{code}", async (string code, AppDbContext db, ITenantContext t) =>
@@ -12146,6 +12146,8 @@ app.MapGet("/api/smssends", async (AppDbContext db, ITenantContext t, string? mo
     var items = await q.OrderByDescending(x => x.Id).Take(500)
         .Select(x => new { x.BatchNo, x.Mobile, x.SmsType, x.Contents, x.Status, x.InvalidMobile,
             x.FlagANSI, x.TelCo, x.BatchType, x.CostType, x.ProjectCode, x.UnitPrice, x.MsgParts, x.Cost, x.TryCount,
+            x.SendId, x.SupplierPhoneNo, x.BranchName, x.FlagReply,
+            x.CusID, x.CusName, x.Address, x.CarID, x.PlateNo, x.TradeMarkModel, x.SendType,   // #1435 §12
             sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "F"), invalid = items.Count(i => i.InvalidMobile),
         totalParts = items.Sum(i => i.MsgParts), totalCost = items.Sum(i => i.Cost), items });
@@ -80313,7 +80315,9 @@ app.MapGet("/api/gpshistory", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(device)) q = q.Where(x => x.GpsDvNo.Contains(device.ToUpper()));
     if (open == "1") q = q.Where(x => x.UnMapDateTime == null);
     var items = await q.OrderByDescending(x => x.Id).Take(1000)
-        .Select(x => new { x.Vin, x.GpsDvNo, x.VINAddress, x.MapDateTime, x.UnMapDateTime }).ToListAsync();
+        .Select(x => new { x.Vin, x.GpsDvNo, x.VINAddress, x.MapDateTime, x.UnMapDateTime,
+            x.StorageCode, x.GpsBoxNo, x.VinReal, x.RefType, x.RefCode00, x.FunctionName, x.MapStatusAfter,
+            x.BlockStatus, x.InStatus, x.UnMapBy, x.Remark, x.CreateDateTime, x.CreateBy }).ToListAsync();   // #1436 §12
     return Results.Ok(new { count = items.Count, active = items.Count(i => i.UnMapDateTime == null), items });
 }).RequireAuthorization();
 
