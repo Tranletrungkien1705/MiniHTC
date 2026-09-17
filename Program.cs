@@ -5389,7 +5389,10 @@ app.MapGet("/api/wholesaledeals/{no}/cars", async (string no, AppDbContext db, I
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.WholesaleDealCars.Where(c => c.OrgId == t.OrgId && c.WholesaleDealId == d.Id)
         .Select(c => new { c.VIN, c.ModelCode, c.UnitPrice , c.CarId, c.DealNoPrevious, c.PlateNo, c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.Status, d.TotalAmount, count = cars.Count, cars });
+    return Results.Ok(new { d.DealNo, d.DealNoUser, d.BuyerDealerCode, d.SalesManCode, d.Status, d.TotalAmount, d.CreatedAt, d.ConfirmedAt,
+        d.DealerCode, d.SalesType, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver,
+        d.CreatedBy, d.FlagInitDeal, d.DlrContractNo, d.LogLUDateTime, d.LogLUBy,   // #1363 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 app.MapPost("/api/wholesaledeals/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -51894,7 +51897,9 @@ app.MapGet("/api/testcarregs/{no}/cars", async (string no, AppDbContext db, ITen
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.CarTestCarDtls.Where(c => c.OrgId == t.OrgId && c.TestCarId == h.Id)
         .Select(c => new { c.CarId, vin = c.VIN, c.ModelCode, statusDtl = c.TestCarStatusDtl }).ToListAsync();
-    return Results.Ok(new { h.TestCarCode, status = h.TestCarStatus, count = cars.Count, cars });
+    return Results.Ok(new { h.TestCarCode, h.DealerCode, status = h.TestCarStatus, h.CreatedAt, h.ApprovedAt, h.RejectReason,
+        h.Remark, h.ApprovedBy, h.FinishedDate, h.FinishedBy,   // #1365 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // ===== Đổi màu xe (CarColorChange — port 1:1 FrmChange_CarColor, 2010.HTC/Sales) =====
@@ -54212,7 +54217,7 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
         .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo }).ToListAsync();
-    return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, d.CtmCareFlag, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });
+    return Results.Ok(new { d.DealNo, d.DealNoUser, d.DealerCode, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, d.CtmCareFlag, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });   // #1364 §12
 }).RequireAuthorization();
 
 // Sửa hàng loạt KH mua/lái/đứng tên trên các GD bán lẻ đã lập (port 1:1 FrmEditDeal_KHGD, 2010.HTC/SalesDealer)
