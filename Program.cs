@@ -19791,7 +19791,7 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
             .OrderByDescending(x => x.Id)
             .Select(x => new { x.Id, x.DebitNo, key = x.CusId, name = x.CusName, doc = x.RONo,
                 x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount,
-                x.DebitDate, x.Status, x.Note }).ToListAsync();
+                x.DebitDate, x.Status, x.Note, x.DealerCode, x.CreatedAt }).ToListAsync();   // #1457 §12
         debits.AddRange(rows1);
         debitIds.AddRange(rows1.Select(x => x.Id));
     }
@@ -19808,7 +19808,7 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
             .OrderByDescending(x => x.Id)
             .Select(x => new { x.Id, x.DebitNo, key = x.InsNo, name = x.InsName, doc = x.RONo,
                 x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount,
-                x.DebitDate, x.Status, x.Note }).ToListAsync();
+                x.DebitDate, x.Status, x.Note, x.CreatedAt }).ToListAsync();   // #1457 §12
         debits.AddRange(rows2);
         debitIds.AddRange(rows2.Select(x => x.Id));
     }
@@ -19824,7 +19824,7 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
             .OrderByDescending(x => x.Id)
             .Select(x => new { x.Id, DebitNo = (string?)null, key = x.SupplierCode, name = (string?)null, doc = x.StockInNo,
                 x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount,
-                x.DebitDate, x.Status, x.Note }).ToListAsync();
+                x.DebitDate, x.Status, x.Note, x.CreatedAt }).ToListAsync();   // #1457 §12
         debits.AddRange(rows3);
         debitIds.AddRange(rows3.Select(x => x.Id));
     }
@@ -19838,20 +19838,20 @@ app.MapGet("/api/debits/detail", async (AppDbContext db, ITenantContext t,
         if (!string.IsNullOrWhiteSpace(dealerCode)) pq = pq.Where(x => x.DealerCode == dealerCode!.Trim());
         payments.AddRange((await pq.OrderByDescending(x => x.Id)
             .Select(x => new { x.Id, debitId = x.CusDebitId, x.PaymentNo, x.DealerCode, x.PayPersonName,
-                x.PaymentAmount, x.PayDate, x.Note }).ToListAsync()).Cast<object>());
+                x.PaymentAmount, x.PayDate, x.Note, x.CreatedAt }).ToListAsync()).Cast<object>());   // #1457 §12
     }
     else if (type == "2")
     {
         payments.AddRange((await db.InsDebitPayments.Where(x => x.OrgId == t.OrgId && debitIds.Contains(x.InsDebitId))
             .OrderByDescending(x => x.Id)
-            .Select(x => new { x.Id, debitId = x.InsDebitId, x.PaymentNo, x.PaymentAmount, x.PayDate, x.Note })
+            .Select(x => new { x.Id, debitId = x.InsDebitId, x.PaymentNo, x.PaymentAmount, x.PayDate, x.Note, x.CreatedAt })   // #1457 §12
             .ToListAsync()).Cast<object>());
     }
     else
     {
         payments.AddRange((await db.SupplierDebitPayments.Where(x => x.OrgId == t.OrgId && debitIds.Contains(x.SupplierDebitId))
             .OrderByDescending(x => x.Id)
-            .Select(x => new { x.Id, debitId = x.SupplierDebitId, x.PaymentNo, x.PaymentAmount, x.PayDate, x.Note })
+            .Select(x => new { x.Id, debitId = x.SupplierDebitId, x.PaymentNo, x.PaymentAmount, x.PayDate, x.Note, x.CreatedAt })   // #1457 §12
             .ToListAsync()).Cast<object>());
     }
 
@@ -20046,7 +20046,7 @@ app.MapGet("/api/cusdebits/{cusId}/detail", async (string cusId, AppDbContext db
     var debitQuery = db.CusDebits.Where(x => x.OrgId == t.OrgId && x.CusId == cus);
     var debits = await debitQuery.OrderByDescending(x => x.Id)
         .Select(x => new { x.Id, x.DebitNo, x.CusId, x.CusName, x.RONo, x.DebitAmount, x.PaidAmount,
-            balance = x.DebitAmount - x.PaidAmount, x.DebitDate, x.Status, x.Note })
+            balance = x.DebitAmount - x.PaidAmount, x.DebitDate, x.Status, x.Note, x.DealerCode, x.CreatedAt })   // #1456 §12
         .ToListAsync();
     var debitIds = debits.Select(x => x.Id).ToList();
 
@@ -20055,7 +20055,7 @@ app.MapGet("/api/cusdebits/{cusId}/detail", async (string cusId, AppDbContext db
     if (!string.IsNullOrWhiteSpace(dealerCode)) payQuery = payQuery.Where(x => x.DealerCode == dealerCode!.Trim());
     var payments = await payQuery.OrderByDescending(x => x.Id)
         .Select(x => new { x.Id, x.CusDebitId, x.PaymentNo, x.DealerCode, x.PayPersonName,
-            x.PayPersonIDCardNo, x.PaymentAmount, x.PayDate, x.Note })
+            x.PayPersonIDCardNo, x.PaymentAmount, x.PayDate, x.Note, x.CreatedAt })   // #1456 §12
         .ToListAsync();
 
     return Results.Ok(new
@@ -41841,7 +41841,8 @@ app.MapGet("/api/bulletins/search", async (AppDbContext db, ITenantContext t,
     {
         b.Id, b.BulletinNo, b.BulletinNoHMC, b.Remark, b.PartCode, b.PartName,
         b.SerCode, b.SerName, b.DateExpired, b.FlagActive, b.CreateDate, b.UserCreate,
-        b.FileNameAttachment,
+        b.FileNameAttachment, b.FileAttachment,
+        b.CreatedDate, b.CreatedBy, b.LogLUDateTime, b.LogLUBy, b.CreatedAt,   // #1455 §12
     }).ToList();
 
     return Results.Ok(new
