@@ -50100,6 +50100,7 @@ app.MapGet("/api/reqinvoices", async (AppDbContext db, ITenantContext t, string?
     var items = await qy.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         reqIVNo = r.ReqRDInvoiceNo, r.Status, r.CreatedAt, r.ApprovedDate, r.ApprovedBy, r.Note, r.DealerCode,   // #1269 §12
+        r.CreatedDate, r.VinCount, r.CreatedBy, r.LogLUDateTime, r.LogLUBy,   // #1336 §12
         cars = db.RedeemInvoiceRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id),
         carsPending = db.RedeemInvoiceRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id && c.RDReqIvDtlStatus == "P"),
     }).ToListAsync();
@@ -56163,7 +56164,9 @@ app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, string
     // #747 Nguồn `_Get` lọc `sp.DealerCode` qua BuildClause ⇒ bỏ trống là bỏ điều kiện. Giữ 1:1.
     if (!string.IsNullOrWhiteSpace(dealer)) qg = qg.Where(g => g.DealerCode == dealer!.Trim().ToUpperInvariant());
     var items = await qg.OrderBy(g => g.GroupRCode)
-        .Select(g => new { g.GroupRCode, g.GroupRName, g.Note, g.Status, g.DealerCode, g.LogLUDateTime, g.LogLUBy, engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRCode) }).ToListAsync();
+        .Select(g => new { g.GroupRCode, g.GroupRName, g.Note, g.Status, g.DealerCode, g.LogLUDateTime, g.LogLUBy,
+            g.CreatedDate, g.CreatedBy, g.UpdatedAt,   // #1337 §12
+            engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRCode) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -77017,7 +77020,7 @@ app.MapGet("/api/receptionerrors", async (AppDbContext db, ITenantContext t, str
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReceptionErrorCode.Contains(q!) || (x.ReceptionErrorName != null && x.ReceptionErrorName.Contains(q!)));
     var items = await qry.OrderBy(x => x.ReceptionErrorCode).Take(500)
-        .Select(x => new { x.ReceptionErrorCode, x.ReceptionErrorName, x.Remark, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.ReceptionErrorCode, x.ReceptionErrorName, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1338 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
