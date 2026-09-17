@@ -15167,7 +15167,7 @@ app.MapGet("/api/smstemplates", async (AppDbContext db, ITenantContext t, string
         .Select(x => new { x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode, x.UpdatedAt, x.CreatedAt }).ToListAsync();   // #1272 §12
     var items = rows.Select(x => new
     {
-        tempId = x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode,
+        tempId = x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode, x.CreatedAt,   // #1442 §12
         newIsActive = SmsTemplateActiveLabel(x.FlagActive),
         updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm"), length = (x.SmsBody ?? "").Length,
     }).ToList();
@@ -22262,8 +22262,12 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         i.HMCApiStatus, i.SyncHMCDateTime, i.ClmRcptNo, i.HMCApiQtyA, i.ClmNoSrl, i.HtcNote,
         i.WarrantySerCode, i.ApprovedDate,
         i.ROWNo, i.ROID, i.CusID, i.CarID, i.Creator, i.Assistant, i.Km, i.CheckInDate, i.FinishedDate,
+        i.ROWTypeCode, i.ROWTypeDtlCode,
+        i.CusName, i.CusAddress, i.CusTel, i.ModelID, i.BatteryNo, i.SerialNo,
+        i.WarrantyRegistrationDate, i.WarrantyExpiresDate, i.WarrantyKM, i.Note,
         i.CusRequest, i.CarStatus, i.NaturalCode, i.CauseCode, i.StartDate, i.ROWTID,
         i.ErrorCodeCD, i.ErrorCodePN, i.FlagReadySend, i.PartIDError, i.ApprovedBy, i.CreatedBy,
+        i.LogLUDateTime, i.LogLUBy, i.CreatedAt, i.UpdatedAt,   // #1440 §12
     }).ToList();
     // #466: ba bảng bắt buộc của nguồn (Ser_RO · Ser_Customer · ser_car) — đếm dòng bị nuốt.
     var roNos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId).Select(x => x.RONo).ToListAsync();
@@ -24483,8 +24487,10 @@ app.MapGet("/api/salesmancerts/progress", async (
         effStartCertificate = r.EffStartDate,
         effEndCertificate = r.EffEndDate,
         r.DealerCode,
+        r.DepartmentCode,
         r.Remark,
         r.FlagActive,
+        r.CreatedAt, r.CreatedBy, r.UpdatedBy,   // #1441 §12
         updateDateTime = r.UpdatedAt
     }).ToList();
 
