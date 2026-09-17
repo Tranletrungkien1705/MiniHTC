@@ -46954,7 +46954,7 @@ app.MapGet("/api/maintenancelevels", async (AppDbContext db, ITenantContext t, s
     var query = db.MaintenanceLevelMsts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.Km).Take(500)
-        .Select(x => new { x.Km, x.MaintenanceCount, x.Note, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Km, x.MaintenanceCount, x.Note, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -46999,7 +46999,7 @@ app.MapGet("/api/extraparts", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PartCode.Contains(q!) || (x.PartName != null && x.PartName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.PartCode).Take(500)
-        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.Price, x.MaxQuantity, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.Price, x.MaxQuantity, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47172,7 +47172,7 @@ app.MapGet("/api/warrantyperiods", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode.Contains(model!.ToUpper()));
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.ModelCode, x.ModelName, x.DealerWarrantyPeriod, x.HtcvWarrantyPeriod, x.LimitedWarrantyKM, x.StoragePeriod, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.ModelCode, x.ModelName, x.DealerWarrantyPeriod, x.HtcvWarrantyPeriod, x.LimitedWarrantyKM, x.StoragePeriod, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47213,7 +47213,7 @@ app.MapGet("/api/storageglobalmaps", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.StorageCode).ThenBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.StorageCode, x.ModelCode, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.StorageCode, x.ModelCode, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47261,7 +47261,7 @@ app.MapGet("/api/vinproductionyears", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(year)) q = q.Where(x => x.ProductionYear == year);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.VinChar).Take(500)
-        .Select(x => new { x.VinChar, x.ProductionYear, x.AssemblyStatus, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.VinChar, x.ProductionYear, x.AssemblyStatus, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1261 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47301,7 +47301,7 @@ app.MapGet("/api/orderamplitudes", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.DealerCode, x.DealerName, x.ModelCode, x.ModelName, x.AmplitudeOrdMax, x.AmplitudePlanMax, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+        .Select(x => new { x.DealerCode, x.DealerName, x.ModelCode, x.ModelName, x.AmplitudeOrdMax, x.AmplitudePlanMax, x.FlagActive, x.LogLUDateTime, x.LogLUBy, x.CreatedAt }).ToListAsync();   // #1261 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47340,7 +47340,7 @@ app.MapGet("/api/parampdis", async (AppDbContext db, ITenantContext t, string? c
     var q = db.ParamPdis.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(code)) q = q.Where(x => x.ParamCode.Contains(code!.ToUpper()));
     var items = await q.OrderBy(x => x.ParamCode).Take(500)
-        .Select(x => new { x.ParamCode, x.ParamName, x.ParamValue, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+        .Select(x => new { x.ParamCode, x.ParamName, x.ParamValue, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm"), x.CreatedAt }).ToListAsync();   // #1261 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47380,7 +47380,7 @@ app.MapGet("/api/warningemails", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(x => x.WarningType.Contains(type!.ToUpper()));
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.WarningType).Take(500)
-        .Select(x => new { x.WarningType, x.WarningName, x.EmailList, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+        .Select(x => new { x.WarningType, x.WarningName, x.EmailList, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm"), x.CreatedAt }).ToListAsync();   // #1261 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
