@@ -55540,6 +55540,9 @@ app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, I
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
         .Select(c => new { c.Vin, c.CarId, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryOutDate, c.DeliveryRemark, c.ConfirmStatus,
                            c.LogLUDateTime, c.LogLUBy,   // #197 §12
+                           // #1461 §12: route song sinh `/carsdates` có 4 cột này mà route hiển thị chính lại
+                           //   thiếu, và ngược lại route đó lại thiếu CarId/DeliveryRemark — gap CẢ HAI CHIỀU (họ #533).
+                           c.DeliveryStartDate, c.DeliveryEndDate, c.ConfirmDate, c.ConfirmBy,
                            flagAllowChangeVIN = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.FlagAllowChangeVIN).FirstOrDefault() }).ToListAsync();
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.ApprovedBy1, o.ApprovedBy2, count = cars.Count, cars });
 }).RequireAuthorization();
@@ -55552,7 +55555,8 @@ app.MapGet("/api/deliveryorders/{no}/carsdates", async (string no, AppDbContext 
     if (o is null) return Results.NotFound(new { no });
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
         .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryStartDate, c.DeliveryEndDate, c.DeliveryOutDate,
-            c.ConfirmStatus, c.ConfirmDate, c.ConfirmBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+            c.ConfirmStatus, c.ConfirmDate, c.ConfirmBy, c.LogLUDateTime, c.LogLUBy,
+            c.CarId, c.DeliveryRemark }).ToListAsync();   // #1461 §12: mirror gap voi /cars, xem ghi chu tren
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
