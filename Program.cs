@@ -4136,7 +4136,9 @@ app.MapGet("/api/banktms/{no}/cars", async (string no, AppDbContext db, ITenantC
     if (m is null) return Results.NotFound(new { no });
     var cars = await db.BankTmCars.Where(c => c.OrgId == t.OrgId && c.TransportMinuteId == m.Id)
         .Select(c => new { c.VIN, c.CarId, c.EngineNo, c.SOCode, c.GuaranteeNo, c.DlrCtrNo, c.ColorCode }).ToListAsync();
-    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.Status, m.DLApprDateTime, m.HTCAppr2DateTime, count = cars.Count, cars });
+    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.BankCode, m.BankCodeMonitor, m.Status, m.DLApprDateTime, m.HTCAppr2DateTime, m.CreatedAt,
+        m.BankBUCode, m.GuaranteeType,   // #1373 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // Ký kép: ĐL ký (dealer) + HTC ký (htc); đủ 2 chữ ký -> Approved (Đã ký).
@@ -4248,7 +4250,9 @@ app.MapGet("/api/bankpms/{no}/cars", async (string no, AppDbContext db, ITenantC
             modelCode = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.ModelCode).FirstOrDefault(),
             specCode  = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.SpecCode).FirstOrDefault()
         }).ToListAsync();
-    return Results.Ok(new { p.PaymentNo, p.DealerCode, p.PaymentStatus, p.TotalAmount, p.AccountingRecordNo, count = cars.Count, cars });
+    return Results.Ok(new { p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds,
+        p.PaymentStatus, p.TotalAmount, p.AccountingRecordNo, p.CreatedDate, p.ApprovedDate, p.InterestRate, p.LoanPeriod,   // #1372 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // Duyệt phiếu TT: Draft -> Approved (gán số ghi sổ kế toán) / Rejected.
@@ -49892,7 +49896,7 @@ app.MapGet("/api/htmvpdis/{no}/cars", async (string no, AppDbContext db, ITenant
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.HtmvPdiDtls.Where(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id)
         .Select(c => new { c.VIN, c.ColorCode, c.SpecCode, c.ModelCode, c.LCTemp, c.RefNo, c.ProductionMonth, c.EngineNo, c.PdiResult, c.PDIDtlStatus, c.PDIStorageStatus }).ToListAsync();
-    return Results.Ok(new { r.PDINo, r.Status, count = cars.Count, cars });
+    return Results.Ok(new { r.PDINo, r.Status, r.CreatedAt, r.DoneAt, r.ApprovedDate, r.ApprovedBy, r.Remark, r.CreatedBy, count = cars.Count, cars });   // #1374 §12
 }).RequireAuthorization();
 
 // 🔴 DUYỆT — `HTMV_PDIApprove_New20181115`. ⚠️ Bản LIVE nằm ở **file KHÁC**:
