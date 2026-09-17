@@ -54319,7 +54319,10 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
         .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo }).ToListAsync();
-    return Results.Ok(new { d.DealNo, d.DealNoUser, d.DealerCode, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, d.CtmCareFlag, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT) });   // #1364 §12
+    return Results.Ok(new { d.DealNo, d.DealNoUser, d.DealerCode, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, d.CtmCareFlag, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT),
+        // #1459 §12: cùng gap #1458 — nguồn `dlsd.*` còn 9 cột nữa mà màn CHI TIẾT (đáng lẽ đủ nhất) cũng thiếu.
+        d.DlrContractNo, d.BankCode, d.FlagInitDeal, d.CtmCareUpdDate, d.CtmCareUpdBy, d.CtmCareRemark,
+        d.ReasonNotPDI, d.DealerCodeBuyer, d.SalesManCode });   // #1364 §12
 }).RequireAuthorization();
 
 // Sửa hàng loạt KH mua/lái/đứng tên trên các GD bán lẻ đã lập (port 1:1 FrmEditDeal_KHGD, 2010.HTC/SalesDealer)
