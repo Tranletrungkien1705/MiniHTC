@@ -64029,7 +64029,12 @@ app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.Vat, l.UnitCode, l.RoFactor, l.RoPrice }).ToListAsync();   // #368 §12
-    return Results.Ok(new { h.StockOutNo, h.WarehouseCode, h.Status, count = lines.Count, lines });
+    return Results.Ok(new { h.StockOutNo, h.StockOutDate, h.StockOutType, h.WarehouseCode, h.Reason, h.Status, h.PostedAt,
+        h.StockOutTypeText, h.StatusText, h.UserCode, h.CusID, h.DealerCode, h.Description,
+        h.TruckNo, h.DriverName, h.DriverID, h.DrivingLicense,
+        h.AdjustmentBy, h.AdjustmentDate, h.AdjustmentNote, h.OldStockOutID, h.OldStockOutNo,
+        h.LogLUDateTime, h.LogLUBy,   // #1394 §12
+        count = lines.Count, lines });
 }).RequireAuthorization();
 
 // Ghi sổ: TRỪ tồn PartStock; guard tồn không đủ (kiểm TẤT CẢ dòng trước khi trừ)
@@ -64769,7 +64774,13 @@ app.MapGet("/api/stockins/{no}/lines", async (string no, AppDbContext db, ITenan
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.VAT, lineTotal = l.Quantity * l.Price }).ToListAsync();
-    return Results.Ok(new { h.StockInNo, h.WarehouseCode, h.Status, count = lines.Count, lines });
+    return Results.Ok(new { h.StockInNo, h.StockInDate, h.StockInType, h.WarehouseCode, h.Staff, h.Status, h.PostedAt,
+        h.StockInID, h.StatusText, h.Description, h.UserCode,
+        h.DriverName, h.DrivingLicense, h.DriverID, h.TruckNo, h.StockOutNo,
+        h.IsAdjustment, h.AdjustmentBy, h.AdjustmentDate, h.AdjustmentNote, h.OldStockInID,
+        h.OrderPartId, h.OrderPartNo, h.FlagOrderNCC,
+        h.DealerCode, h.SupplierID, h.TSTRequestNo, h.BillNo,   // #1393 §12
+        count = lines.Count, lines });
 }).RequireAuthorization();
 
 // Ghi sổ: tăng tồn PartStock (integration thật)
@@ -65503,7 +65514,7 @@ app.MapGet("/api/stockreqs/{no}/lines", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.StockReqLines.Where(l => l.OrgId == t.OrgId && l.ReqId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Unit }).ToListAsync();
-    return Results.Ok(new { h.ReqNo, h.RONo, h.Status, count = lines.Count, lines });
+    return Results.Ok(new { h.ReqNo, h.RONo, h.Status, h.CreatedAt, h.IssuedAt, h.DealerCode, h.Assistant, h.PlateNo, h.FrameNo, h.Note, count = lines.Count, lines });   // #1395 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/stockreqs/{no}/issue", async (string no, AppDbContext db, ITenantContext t) =>
