@@ -2767,7 +2767,7 @@ app.MapGet("/api/bankbills/{no}/cars", async (string no, AppDbContext db, ITenan
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.BankBillCars.Where(c => c.OrgId == t.OrgId && c.BillId == h.Id)
         .Select(c => new { c.Vin, c.EngineNo, c.LCNo, c.GuaranteeBankCode, c.ClaimAmount }).ToListAsync();
-    return Results.Ok(new { h.BankBillMnNo, h.Status, count = cars.Count, cars });
+    return Results.Ok(new { h.BankBillMnNo, h.BankCode, h.BankBillDate, h.BankBillReciveDate, h.Status, h.CreatedDateTime, count = cars.Count, cars });   // #1369 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/bankbills/{no}/receive", async (string no, BankBillReceiveDto dto, AppDbContext db, ITenantContext t) =>
@@ -3841,7 +3841,9 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
         .Select(c => new { c.VIN, c.GrtValue, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount }).ToListAsync();
-    return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.Status, g.FlagSettled, g.TotalAmount, count = cars.Count, cars });
+    return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot,
+        g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.ApprovedAt,   // #1371 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // Sửa bảo lãnh — cập nhật ngày hết hạn + ngày kết thúc theo VIN (port 1:1 FrmEditGrtExpiredDate, TCMotor/Sales/Payment).
@@ -4054,7 +4056,9 @@ app.MapGet("/api/bankdos/{no}/cars", async (string no, AppDbContext db, ITenantC
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.BankDoCars.Where(c => c.OrgId == t.OrgId && c.DeliveryOrderId == d.Id)
         .Select(c => new { c.VIN, c.CarId, c.BankGrtNo, c.SpecCode, c.ColorCode, c.DeliveryExpectedDate, c.DeliveryOutDate, c.ConfirmStatus, c.ConfirmRemark, c.ConfirmedAt }).ToListAsync();
-    return Results.Ok(new { d.DONo, d.DealerCode, d.SOCode, d.Status, count = cars.Count, cars });
+    return Results.Ok(new { d.DONo, d.DealerCode, d.SOCode, d.Status, d.CreatedAt, d.ConfirmedAt,
+        d.BankCode, d.BankCodeMonitor, d.BankBUCode, d.GuaranteeType,   // #1370 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // NH xác nhận nhận 1 xe; khi tất cả xe đã nhận -> header Confirmed.
