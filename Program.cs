@@ -10569,7 +10569,8 @@ app.MapGet("/api/hmcreport", async (AppDbContext db, ITenantContext t, DateTime?
         transactionDate = r.TransactionDate.ToString("yyyyMMdd"),
         r.VIN, r.DealerCode, r.ModelCode, r.DeliveryType, r.SalesType,
         n = r.SalesType.Length >= 1 ? r.SalesType.Substring(0, 1) : "",   // ký tự 1 (field N)
-        o = r.SalesType.Length >= 2 ? r.SalesType.Substring(1, 1) : ""    // ký tự 2 (field O)
+        o = r.SalesType.Length >= 2 ? r.SalesType.Substring(1, 1) : "",   // ký tự 2 (field O)
+        r.CreatedAt   // #1275 §12
     }).ToList();
     var byDelivery = recs.GroupBy(r => string.IsNullOrEmpty(r.DeliveryType) ? "(chưa rõ)" : r.DeliveryType)
         .Select(g => new { deliveryType = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
@@ -14932,7 +14933,7 @@ app.MapGet("/api/emailbatches", async (AppDbContext db, ITenantContext t, string
 app.MapGet("/api/emailautoconfigs", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.EmailAutoConfigs.Where(c => c.OrgId == t.OrgId).OrderBy(c => c.EmailType)
-        .Select(c => new { c.Id, c.EmailType, c.AutoTime, startDate = c.StartDate, endDate = c.EndDate, c.SendMode, c.Description, c.FlagActive }).ToListAsync();
+        .Select(c => new { c.Id, c.EmailType, c.AutoTime, startDate = c.StartDate, endDate = c.EndDate, c.SendMode, c.Description, c.FlagActive, c.UpdatedAt }).ToListAsync();   // #1275 §12
     return Results.Ok(new { items });
 }).RequireAuthorization();
 
@@ -14967,7 +14968,7 @@ app.MapPost("/api/emailautoconfigs/{id}/toggle", async (long id, AppDbContext db
 app.MapGet("/api/smsautoconfigs", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.SmsAutoConfigs.Where(c => c.OrgId == t.OrgId).OrderBy(c => c.SmsType)
-        .Select(c => new { c.Id, c.SmsType, c.AutoTime, effectDate = c.EffectDate, c.SendMode, c.Description, c.FlagActive }).ToListAsync();
+        .Select(c => new { c.Id, c.SmsType, c.AutoTime, effectDate = c.EffectDate, c.SendMode, c.Description, c.FlagActive, c.UpdatedAt }).ToListAsync();   // #1275 §12
     return Results.Ok(new { items });
 }).RequireAuthorization();
 
@@ -19124,7 +19125,7 @@ app.MapGet("/api/reportheaders", async (AppDbContext db, ITenantContext t, strin
     {
         x.DealerCode,
         info1 = x.DealerName, info2 = x.CompanyName, info3 = x.CompanyAddress, info4 = x.Website,
-        Tel = x.Showroom1, Fax = x.Showroom2, Mobile = x.Showroom3,
+        Tel = x.Showroom1, Fax = x.Showroom2, Mobile = x.Showroom3, x.CreatedAt,   // #1275 §12
     }).ToListAsync();
 
     return Results.Ok(new
@@ -28808,7 +28809,7 @@ app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!) || (x.TypeCode != null && x.TypeCode.Contains(q!)));
     var items = await qry.OrderBy(x => x.TypeName).Take(500)
-        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy }).ToListAsync();
+        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.UpdatedAt }).ToListAsync();   // #1274 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -30645,7 +30646,7 @@ app.MapGet("/api/registrationinfos", async (AppDbContext db, ITenantContext t, s
     if (all != true) q = q.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(year)) q = q.Where(x => x.RegistYear == year);
     if (!string.IsNullOrWhiteSpace(province)) q = q.Where(x => x.ProvinceCode == province);
-    var items = await q.OrderBy(x => x.RegistYear).ThenBy(x => x.ProvinceCode).Take(500).Select(x => new { x.Id, x.RegistYear, x.ProvinceCode, x.ProvinceName, x.Qty, x.RegistPercent, x.TotalAmount, x.FlagActive }).ToListAsync();
+    var items = await q.OrderBy(x => x.RegistYear).ThenBy(x => x.ProvinceCode).Take(500).Select(x => new { x.Id, x.RegistYear, x.ProvinceCode, x.ProvinceName, x.Qty, x.RegistPercent, x.TotalAmount, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1274 §12
     return Results.Ok(new { count = items.Count, totalQty = items.Sum(x => x.Qty), totalAmount = items.Sum(x => x.TotalAmount), items });
 }).RequireAuthorization();
 
@@ -30681,7 +30682,7 @@ app.MapGet("/api/cabincertificates", async (AppDbContext db, ITenantContext t, s
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(carType)) qry = qry.Where(x => x.CarType == carType);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.CabinCertificateNo.Contains(q!));
-    var items = await qry.OrderBy(x => x.CabinCertificateNo).Take(500).Select(x => new { x.Id, x.CabinCertificateNo, x.CarType, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.CabinCertificateNo).Take(500).Select(x => new { x.Id, x.CabinCertificateNo, x.CarType, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1274 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -30712,7 +30713,7 @@ app.MapGet("/api/devicetypes", async (AppDbContext db, ITenantContext t, string?
     var qry = db.DeviceTypes.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.DeviceTypeCode.Contains(q!) || x.DeviceTypeName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.DeviceTypeCode).Take(500).Select(x => new { x.Id, x.DeviceTypeCode, x.DeviceTypeName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.DeviceTypeCode).Take(500).Select(x => new { x.Id, x.DeviceTypeCode, x.DeviceTypeName, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1274 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -31060,7 +31061,7 @@ app.MapGet("/api/spsupportretails", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(spsrCode)) qry = qry.Where(x => x.SPSRCode == spsrCode.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer.Trim().ToUpperInvariant());
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.Remark }).ToListAsync();
+    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.Remark, x.CreatedAt }).ToListAsync();   // #1276 §12
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(x => x.AmountSupport), items });
 }).RequireAuthorization();
 
@@ -31630,7 +31631,7 @@ app.MapGet("/api/dealerstoragelocals", async (AppDbContext db, ITenantContext t,
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StorageCode.Contains(q!) || x.StorageName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.DealerCode).ThenBy(x => x.StorageCode).Take(500).Select(x => new { x.Id, x.DealerCode, x.StorageCode, x.StorageName, x.DealerName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.DealerCode).ThenBy(x => x.StorageCode).Take(500).Select(x => new { x.Id, x.DealerCode, x.StorageCode, x.StorageName, x.DealerName, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1276 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -31703,7 +31704,7 @@ app.MapGet("/api/salesmantypes", async (AppDbContext db, ITenantContext t, strin
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dept)) qry = qry.Where(x => x.DepartmentCode == dept);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMType.Contains(q!) || x.SMTypeName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.DepartmentCode).ThenBy(x => x.SMType).Take(500).Select(x => new { x.Id, x.DepartmentCode, x.SMType, x.SMTypeName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.DepartmentCode).ThenBy(x => x.SMType).Take(500).Select(x => new { x.Id, x.DepartmentCode, x.SMType, x.SMTypeName, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1276 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
