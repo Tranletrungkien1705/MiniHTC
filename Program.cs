@@ -47581,7 +47581,7 @@ app.MapGet("/api/carallocations", async (AppDbContext db, ITenantContext t, stri
     var q = db.CarAllocationByAreas.Where(a => a.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(a => a.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(a => a.FlagActive == active);
-    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.ModelCode, a.SpecCode, a.MBPercent, a.MTPercent, a.MNPercent, a.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.ModelCode, a.SpecCode, a.MBPercent, a.MTPercent, a.MNPercent, a.FlagActive, a.CreatedAt }).ToListAsync();   // #1262 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47616,7 +47616,7 @@ app.MapGet("/api/carocns", async (AppDbContext db, ITenantContext t, string? mod
     if (!string.IsNullOrWhiteSpace(model)) query = query.Where(c => c.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(c => c.FlagActive == active);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.OCNCode.Contains(q) || (c.OCNDesc != null && c.OCNDesc.Contains(q)));
-    var items = await query.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.OCNCode, c.ModelCode, c.OCNDesc, c.FlagActive }).ToListAsync();
+    var items = await query.OrderByDescending(c => c.Id).Take(500).Select(c => new { c.OCNCode, c.ModelCode, c.OCNDesc, c.FlagActive, c.CreatedAt }).ToListAsync();   // #1262 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47657,7 +47657,7 @@ app.MapGet("/api/dealerbanks", async (AppDbContext db, ITenantContext t, string?
         .Select(b => new { b.BankCode, b.DealerCode, b.BankBranchCode, b.BankBranchName,
             b.CreditContractNo, b.CreditContractDate, b.CreditAmount,
             b.FlagBankGrt, b.FlagBankPmt, b.FlagActive,
-            b.Remark, b.LogLUDateTime, b.LogLUBy }).ToListAsync();
+            b.Remark, b.LogLUDateTime, b.LogLUBy, b.CreatedAt }).ToListAsync();   // #1263 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47710,7 +47710,7 @@ app.MapGet("/api/dealerinvthresholds", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.Qty, x.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.Qty, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1263 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47744,7 +47744,7 @@ app.MapGet("/api/dealerzones", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(zone)) q = q.Where(z => z.ZoneCode == zone);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(z => z.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(z => z.FlagActive == active);
-    var items = await q.OrderByDescending(z => z.Id).Take(500).Select(z => new { z.DealerCode, z.ZoneCode, z.FlagActive }).ToListAsync();
+    var items = await q.OrderByDescending(z => z.Id).Take(500).Select(z => new { z.DealerCode, z.ZoneCode, z.FlagActive, z.CreatedAt }).ToListAsync();   // #1263 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -67910,6 +67910,7 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     return Results.Ok(new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status,
+        r.CusAddress, r.CusTel, r.CusTaxCode, r.ModelID, r.IsReRepair, r.ROType,   // #1264 §12
         services, parts,
         total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
     });
