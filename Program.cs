@@ -23735,7 +23735,8 @@ app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, s
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TradeMarkCode.Contains(q!) || x.TradeMarkName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1343 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -25173,7 +25174,8 @@ app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, 
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InContractCode.Contains(q!) || x.InContractNo!.Contains(q!) || x.InsNo!.Contains(q!));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive, x.DealerCode }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive, x.DealerCode,
+        x.UpdatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1344 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -25235,7 +25237,7 @@ app.MapGet("/api/tstexchangeunits", async (AppDbContext db, ITenantContext t, st
     var qry = db.TstExchangeUnits.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TSTPartCode.Contains(q!) || x.VieName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieName, x.TSTUnit, x.DMSUnit, x.ExchangeRate, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieName, x.TSTUnit, x.DMSUnit, x.ExchangeRate, x.FlagActive, x.UpdatedAt, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1342 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
