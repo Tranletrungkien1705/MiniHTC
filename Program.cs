@@ -2479,6 +2479,7 @@ app.MapGet("/api/mortgages", async (AppDbContext db, ITenantContext t, string? s
     var items = await qy.OrderByDescending(m => m.Id).Take(500).Select(m => new
     {
         m.Id, m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
+        m.DealerCode, m.MortageDate, m.Remark,   // #1270 §12
         cars = db.ReqMortgageCars.Count(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id),
         carsMortgaged = db.ReqMortgageCars.Count(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id && c.RMDtlStatus == "A"),
     }).ToListAsync();
@@ -2491,7 +2492,11 @@ app.MapPost("/api/mortgages", async (MortgageDto dto, AppDbContext db, ITenantCo
     var vins = (dto.Vins ?? new List<string>()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v.Length > 0).Distinct().ToList();
     if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
     var reqNo = "RM" + DateTime.Now.ToString("yyMMddHHmmss");
-    var m = new ReqMortgage { OrgId = t.OrgId, ReqRMNo = reqNo, MortageBankCode = dto.BankCode.Trim().ToUpperInvariant(), Status = "P" };
+    // #1270 SUA BUG THAT: cum song sinh /api/reqmortgages da co DealerCode/MortageDate/Remark (dto+wire),
+    // cum nay (dung chung bang, #57) chua tung noi day - DealerCode la cot BAT BUOC tren entity nen truoc
+    // day moi don tao qua /api/mortgages luon co DealerCode rong.
+    var m = new ReqMortgage { OrgId = t.OrgId, ReqRMNo = reqNo, MortageBankCode = dto.BankCode.Trim().ToUpperInvariant(), Status = "P",
+        DealerCode = dto.DealerCode ?? "", MortageDate = dto.MortageDate, Remark = dto.Remark };
     db.ReqMortgages.Add(m); await db.SaveChangesAsync();
     foreach (var v in vins)
         db.ReqMortgageCars.Add(new ReqMortgageCar { OrgId = t.OrgId, ReqMortgageId = m.Id, VIN = v, RMDtlStatus = "P" });
@@ -50053,7 +50058,7 @@ app.MapGet("/api/reqinvoices", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(r => r.Status == status);
     var items = await qy.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        reqIVNo = r.ReqRDInvoiceNo, r.Status, r.CreatedAt, r.ApprovedDate, r.ApprovedBy,
+        reqIVNo = r.ReqRDInvoiceNo, r.Status, r.CreatedAt, r.ApprovedDate, r.ApprovedBy, r.Note, r.DealerCode,   // #1269 §12
         cars = db.RedeemInvoiceRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id),
         carsPending = db.RedeemInvoiceRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id && c.RDReqIvDtlStatus == "P"),
     }).ToListAsync();
@@ -50073,7 +50078,7 @@ app.MapPost("/api/reqinvoices", async (
     {
         OrgId = t.OrgId, ReqRDInvoiceNo = no, CreatedDate = DateTime.Now, CreatedAt = DateTime.Now,
         VinCount = cars.Count, Status = "P",     // TConst.Stage.Pending (Biz.HTC.WH.cs:127385)
-        CreatedBy = user.Identity?.Name ?? "system",
+        CreatedBy = user.Identity?.Name ?? "system", Note = dto.Note, DealerCode = dto.DealerCode,   // #1269 SUA BUG THAT: cum song sinh /api/redeeminvoicerequests da co Note/DealerCode, cum nay (dung chung bang, #56) chua tung noi day
     };
     db.RedeemInvoiceRequests.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
@@ -51611,7 +51616,7 @@ app.MapGet("/api/reqredeems", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        reqDMNo = r.ReqRedeemNo, r.Status, r.CreatedAt, r.ApprovedDate, r.ApprovedBy,
+        reqDMNo = r.ReqRedeemNo, r.Status, r.CreatedAt, r.ApprovedDate, r.ApprovedBy, r.Note,   // #1268 §12
         cars = db.RedeemRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id),
         carsPending = db.RedeemRequestLines.Count(c => c.OrgId == t.OrgId && c.RequestId == r.Id && c.DMReqDtlStatus == "P"),
     }).ToListAsync();
@@ -51635,7 +51640,7 @@ app.MapPost("/api/reqredeems", async (
         OrgId = t.OrgId, ReqRedeemNo = no, CreatedDate = DateTime.Now, CreatedAt = DateTime.Now,
         DealerCode = cars.Select(c => c.DealerCode).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)),
         VinCount = cars.Count, Status = "P",          // TConst.Stage.Pending (Biz.HTC.WH.cs:126377)
-        CreatedBy = user.Identity?.Name ?? "system",
+        CreatedBy = user.Identity?.Name ?? "system", Note = dto.Note,   // #1268 SUA BUG THAT: cum song sinh /api/redeemrequests da co Note (dto+wire), cum nay (dung chung bang, #55) chua tung noi day
     };
     db.RedeemRequests.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
@@ -81008,7 +81013,7 @@ record VoucherUsage(MemberVoucher Voucher, decimal PointUsed);
 record WExtDto(string Vin, string? ItemCode, int ExtraMonths, decimal Fee);
 record InsFeeDto(string Code, string? InsCompanyCode, string? InsTypeCode, string? ContractNo, decimal Fee, decimal Percent, DateTime? EffStartDate, string? Status);
 record QuotaDto(string DealerCode, string ModelCode, string Period, int Qty, int? UsedQty);
-record MortgageDto(string BankCode, List<string>? Vins);
+record MortgageDto(string BankCode, List<string>? Vins, string? DealerCode = null, DateTime? MortageDate = null, string? Remark = null);
 record PmLineDto(string RefNo, decimal AmountAccum, decimal AmountCurrent);
 record PmDto(string DealerCode, string? BankAccountSend, string? BankAccountReceive, List<PmLineDto>? Lines);
 record GrtDto(string DealerCode, string BankCode, string? BankGrtNo, string? GrtType, decimal GrtValue, DateTime? GrtDate, DateTime? DateExpired);
@@ -82616,7 +82621,7 @@ record Dms40SoRootApproveLineDto(string? ModelCode, string? SpecCode, string? Co
 record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);
 record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime);
 record ReqInvoiceCarDto(string VIN, string? HTCInvoiceNo, string? InvoiceNoFactory, string? TCGInvoiceNo);
-record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars);
+record ReqInvoiceDto(List<ReqInvoiceCarDto>? Cars, string? Note = null, string? DealerCode = null);
 record DealerContractCarDto(string CarId, decimal UnitPrice);
 record DealerContractDto(string? DealerContractNo, string? DealerContractNoUser, string DealerCode, DateTime? ContractDate, List<DealerContractCarDto>? Cars);
 // Duyệt HĐ đại lý: nguồn cho sửa số HĐ người dùng + ngày HĐ ngay trong bước duyệt, và ghi Remark.
@@ -82658,7 +82663,7 @@ record InsApproveDto(string? Remark);
 record InsCarUpdateDto(int InsuranceDay, decimal InsAmount, string? Remark);
 record CarLocationDto(string VIN, string? LocationOld, string Location);
 record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);
-record ReqRedeemDto(List<ReqRedeemCarDto>? Cars);
+record ReqRedeemDto(List<ReqRedeemCarDto>? Cars, string? Note = null);
 record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescription, string? ColorCode, int Quantity, int MnfPlIdx);
 record MnfPlOrderDto(string OrdType, string? OrdMonth, string? Remark, List<MnfPlOrderLineDto>? Lines);
 record TestCarRegisterCarDto(string VIN, string? ModelCode);
