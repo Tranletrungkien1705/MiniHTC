@@ -10389,6 +10389,15 @@ app.MapGet("/api/transpdlv", async (AppDbContext db, ITenantContext t, string? t
         m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
         m.TranspReqNo, m.TranspReqType, m.RefOrdNo, m.FStorageCode, m.TStorageCode, m.DlvStartDate, m.DlvEndDate,
         m.GPSDvNo, m.DlvEndGPSDateTime,
+        // #1460 §12: nguồn `Sto_DlvMinutes_Get` (LIVE, BizHTC.Storage.DlvMinutes.cs:212) header SELECT là
+        //   `sdm.*` — TOÀN BỘ cột `Sto_DlvMinutes`, cùng lớp gap với #1458/#1459 (DealerDeal). Danh sách
+        //   trước đây chỉ trả 22 cột; bổ sung nốt các cột còn lại của entity để khớp `sdm.*`.
+        m.FAddress, m.TAddress, m.FProvinceCode, m.FDistrictCode, m.TProvinceCode, m.TDistrictCode,
+        m.PlateNo, m.DriverId, m.TPlateNo, m.TDriverId, m.TDriverName,
+        m.FRemark, m.TRemark, m.FStatusIaKm, m.TStatusIaKm, m.FStatusIaRemark, m.TStatusIaRemark,
+        m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy,
+        m.TGPSDvStatus, m.TFVCode, m.TPValSys, m.TPVCode, m.DlvEndGPSBy, m.GPSDvAddress, m.GPSDvResponse,
+        m.DlvEndDateTime, m.DlvEndBy, m.LogLUDateTime, m.LogLUBy,
         cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
