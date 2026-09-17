@@ -2528,7 +2528,8 @@ app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, 
     if (m is null) return Results.NotFound(new { reqNo });
     var cars = await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id)
         .Select(c => new { vin = c.VIN, c.ModelCode, c.EngineNo, dtlStatus = c.RMDtlStatus,
-            c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy }).ToListAsync();
+            c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy,
+            c.CQNo, c.CONo, c.DeclarationNo, c.CODate, c.CarId, c.DealerCode, c.FinishDate, c.FinishBy, c.ReqDMNo, c.Remark, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #1449 §12
     return Results.Ok(new { m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
         m.DealerCode, m.MortageDate, m.Remark,   // #1362 §12
         m.CreatedBy, m.LUDateTime, m.LUBy, m.ApprovedBy, m.FinishBy, m.LogLUDateTime, m.LogLUBy,   // #1430 §12
@@ -4760,6 +4761,7 @@ app.MapGet("/api/grtclaimexts", async (AppDbContext db, ITenantContext t, string
     {
         g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
         g.Remark, g.CancelDateTime, g.CancelBy, g.LUDateTime, g.LUBy,   // #191 §12: cột mới phải chiếu ở CẢ GET
+        g.LogLUDateTime, g.LogLUBy,   // #1451 §12
         cars = db.GrtClaimExtCars.Count(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -4793,7 +4795,10 @@ app.MapGet("/api/grtclaimexts/{no}/cars", async (string no, AppDbContext db, ITe
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
         .Select(c => new { c.CarId, c.VIN, c.GuaranteeNo, c.SignStatusDtl, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { g.GrtClaimExtNo, g.DealerCode, g.SignStatus, g.FileName, g.Remark, g.CancelDateTime, g.CancelBy, count = cars.Count, cars });
+    return Results.Ok(new { g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
+        g.Remark, g.CancelDateTime, g.CancelBy, g.LUDateTime, g.LUBy,   // #1450 §12
+        g.LogLUDateTime, g.LogLUBy,   // #1451 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 // Ký công văn gia hạn (upload file đã ký). Guard idempotent theo FileName (đã ký thì không ký lại).
