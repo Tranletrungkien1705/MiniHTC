@@ -26994,7 +26994,8 @@ app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SupplierCode.Contains(q!) || x.SupplierName!.Contains(q!));
     var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.DealerCode, x.FlagActive, x.ContactName, x.ContactPhone,   // #1031
-        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1345 §12
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt,
+        x.SupplierID }).ToListAsync();   // #1345 §12 + #1466 §12: nguon SerSupplierGet (LIVE) SELECT * — thieu khoa ky thuat SupplierID (#707, dung lam join key noi khac)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
