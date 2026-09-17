@@ -5204,7 +5204,7 @@ app.MapGet("/api/fnexpcalcs/{no}/lines", async (string no, AppDbContext db, ITen
     if (c is null) return Results.NotFound(new { no });
     var lines = await db.FnExpCalcLines.Where(l => l.OrgId == t.OrgId && l.FnExpCalcId == c.Id)
         .Select(l => new { l.CarId, l.SOCode, l.FnDepositAmount, l.FnDepositCountDate, l.FnGrtAmount, l.FnGrtCountDate, l.FnTotalAmount, l.PDAmount, l.TermActual }).ToListAsync();
-    return Results.Ok(new { c.CaNo, c.FnExpPercent, c.TotalFnExp, c.Status, count = lines.Count, lines });
+    return Results.Ok(new { c.CaNo, c.DealerCode, c.FnExpPercent, c.TotalFnExp, c.Status, c.CreatedAt, c.ApprovedAt, count = lines.Count, lines });   // #1403 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/fnexpcalcs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -10199,7 +10199,9 @@ app.MapGet("/api/planretails/{id}/lines", async (long id, AppDbContext db, ITena
         .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.Quantity }).ToListAsync();
     var byModel = await db.PlanRetailModels.Where(m => m.OrgId == t.OrgId && m.PlanRetailId == id)
         .Select(m => new { m.ModelCode, m.Quantity }).ToListAsync();
-    return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.DealerCode, h.PRStatus, count = lines.Count, lines, byModel });
+    return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.PlanTimesPrev, h.DealerCode, h.PRStatus,
+        h.ApprovedBy, h.ApprovedDate, h.CancelBy, h.CancelDate, h.CreatedBy, h.CreatedAt,   // #1402 §12
+        count = lines.Count, lines, byModel });
 }).RequireAuthorization();
 
 app.MapPost("/api/planretails/{id}/{action}", async (long id, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -59736,7 +59738,11 @@ app.MapGet("/api/reqpartprices/{no}/lines", async (string no, AppDbContext db, I
                            l.DateEffect, l.Remark, l.ReqPartPriceDtlStatus,
                            l.LogLUDateTime, l.LogLUBy,
                            lineTotal = l.ReqQty * l.QuotedPrice }).ToListAsync();
-    return Results.Ok(new { r.ReqNo, r.DMSStatus, r.TSTStatus, count = lines.Count, lines, quotedTotal = lines.Sum(x => x.lineTotal) });
+    return Results.Ok(new { r.ReqNo, r.DMSStatus, r.TSTStatus, r.CreatedAt, r.QuotedAt,
+        r.DealerCode, r.Description, r.TSTReqPartPriceID, r.TSTSentDate, r.IsUpdatePrice,
+        r.CreateBy, r.ApprDTime, r.ApprBy, r.FinishDTime, r.FinishBy, r.LUDTime, r.LUBy,
+        r.LogLUDateTime, r.LogLUBy,   // #1404 §12
+        count = lines.Count, lines, quotedTotal = lines.Sum(x => x.lineTotal) });
 }).RequireAuthorization();
 
 // DMS gửi (P→A)
