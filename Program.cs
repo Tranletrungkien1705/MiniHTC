@@ -46052,7 +46052,7 @@ app.MapGet("/api/avnpayments/{no}", async (string no, AppDbContext db, ITenantCo
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.AvnPaymentLines.Where(l => l.OrgId == t.OrgId && l.AvnPaymentId == h.Id).Select(l => new
     { l.Vin, l.AvnCode, l.AvnDate, l.InStorageDate, l.EngineNo, l.SerialNo, l.ModelCode, l.ModelName, l.SpecCode, l.SpecDescription, l.UnitPriceAVN }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalAmount, lines });
+    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalAmount, h.CreatedAt, lines });   // #1335 §12
 }).RequireAuthorization();
 
 // Khớp btnSave gốc: guard tháng bắt buộc, ≥1 VIN ("Không có dữ liệu"), đơn giá >= 0; tổng = Σ UnitPriceAVN.
@@ -78835,7 +78835,8 @@ app.MapGet("/api/roworkarisingquotamsts", async (AppDbContext db, ITenantContext
     if (!string.IsNullOrWhiteSpace(rowArisName)) qy = qy.Where(x => x.ROWArisName != null && x.ROWArisName!.Contains(rowArisName!.Trim()));
     if (!string.IsNullOrWhiteSpace(rowTypeDtlCode)) qy = qy.Where(x => x.ROWTypeDtlCode == rowTypeDtlCode!.Trim());
     var items = await qy.OrderBy(x => x.ROWArisCode).ThenBy(x => x.ROWTypeDtlCode).Take(1000)
-        .Select(x => new { x.Id, x.ROWArisCode, x.ROWArisName, x.ROWTypeDtlCode, x.FlagActive })
+        .Select(x => new { x.Id, x.ROWArisCode, x.ROWArisName, x.ROWTypeDtlCode, x.FlagActive,
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1334 §12
         .ToListAsync();
     return Results.Ok(new
     {
@@ -79010,7 +79011,7 @@ app.MapGet("/api/warrantyrenewalcategorymsts", async (AppDbContext db, ITenantCo
     var qy = db.WarrantyRenewalCategoryMsts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
     var items = await qy.OrderBy(x => x.WrtReneCateCode).Take(1000)
-        .Select(x => new { x.Id, x.WrtReneCateCode, x.WrtReneCateName, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.WrtReneCateCode, x.WrtReneCateName, x.FlagActive, x.CreatedAt, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1333 §12
     return Results.Ok(new
     {
         count = items.Count, items,
