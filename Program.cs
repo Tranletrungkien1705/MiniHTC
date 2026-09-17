@@ -15249,7 +15249,8 @@ app.MapGet("/api/partlocations", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(stock)) query = query.Where(x => x.StockNo == stock);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.LocationCode).Take(500)
-        .Select(x => new { x.LocationCode, x.LocationName, x.LocationType, x.LocationSurface, x.LocationHeight, x.StockNo, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.LocationCode, x.LocationName, x.LocationType, x.LocationSurface, x.LocationHeight, x.StockNo, x.FlagActive,
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1312 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -15355,7 +15356,8 @@ app.MapGet("/api/serviceitems", async (AppDbContext db, ITenantContext t, string
     var items = await query.OrderBy(x => x.SerCode).Take(500)
         // #297 §12: 6 cột bổ sung có mặt ở CẢ GET lẫn POST
         .Select(x => new { x.SerCode, x.SerName, x.Cost, x.Price, x.Model, x.Vat, x.Note, x.FlagActive,
-            x.DealerCode, x.SerTypeID, x.StdManHour, x.Factor, x.Status, x.FlagWarranty }).ToListAsync();
+            x.DealerCode, x.SerTypeID, x.StdManHour, x.Factor, x.Status, x.FlagWarranty,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt }).ToListAsync();   // #1314 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -15647,7 +15649,8 @@ app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(trade)) query = query.Where(x => x.TradeMarkCode == trade);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt }).ToListAsync();   // #1313 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
