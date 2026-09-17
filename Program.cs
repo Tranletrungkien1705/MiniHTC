@@ -45999,7 +45999,8 @@ app.MapGet("/api/partbackorders", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(plate)) qry = qry.Where(x => x.PlateNo.Contains(plate.ToUpper()));
     if (open == true) qry = qry.Where(x => x.QtyReturned < x.QtyOwed);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PlateNo, x.PartCode, x.PartName, x.CarType, x.DealerCode, x.StaffCode, x.QtyOwed, x.QtyReturned, remain = x.QtyOwed - x.QtyReturned, x.PromiseDate, x.OrderDate, x.ExpectedDate, x.Note }).ToListAsync();
+    { x.PlateNo, x.PartCode, x.PartName, x.CarType, x.DealerCode, x.StaffCode, x.QtyOwed, x.QtyReturned, remain = x.QtyOwed - x.QtyReturned, x.PromiseDate, x.OrderDate, x.ExpectedDate, x.Note,
+      x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1327 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47082,7 +47083,8 @@ app.MapGet("/api/extraworks", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ExtraWorkCode.Contains(q!) || (x.ExtraWorkName != null && x.ExtraWorkName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.ExtraWorkCode).Take(500)
-        .Select(x => new { x.ExtraWorkCode, x.ExtraWorkName, x.MaxPrice, x.Vat, x.Remark, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.ExtraWorkCode, x.ExtraWorkName, x.MaxPrice, x.Vat, x.Remark, x.FlagActive,
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1328 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -47169,7 +47171,8 @@ app.MapGet("/api/servicesuppliers", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.SupplierCode).Take(500)
-        .Select(x => new { x.SupplierCode, x.SupplierName, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.Address, x.DealerCode, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.SupplierCode, x.SupplierName, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.Address, x.DealerCode, x.FlagActive,
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1329 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
