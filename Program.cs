@@ -32587,7 +32587,7 @@ app.MapGet("/api/deliveryrequests/{id}/cars", async (long id, AppDbContext db, I
     if (h is null) return Results.NotFound(new { id });
     var cars = await db.DeliveryRequestDetails.Where(l => l.OrgId == t.OrgId && l.DeliveryRequestId == id)
         .Select(l => new { l.CarId, l.ModelCode, deliveryStartDate = l.DeliveryStartDate.HasValue ? l.DeliveryStartDate.Value.ToString("yyyy-MM-dd") : "", l.Remark }).ToListAsync();
-    return Results.Ok(new { h.DRNo, h.DealerCode, h.Status, cars });
+    return Results.Ok(new { h.DRNo, h.DealerCode, h.RequestDate, h.Status, h.Note, h.CreatedAt, h.UpdatedAt, cars });   // #1414 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/deliveryrequests/{id}/action", async (long id, DRActionDto dto, AppDbContext db, ITenantContext t) =>
@@ -32670,7 +32670,8 @@ app.MapGet("/api/estimateorders/{id}/lines", async (long id, AppDbContext db, IT
             l.QtyOrdCarID, l.QtyOrdNotCarID, l.QtyEOrdN1,
             l.QtyESellCusN0, l.QtyESellCusN1, l.QtyESellCusN2, l.QtyESellCusN3,
             l.PLEOrdDtlStatus, l.LUDateTime, l.LUBy, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
-    return Results.Ok(new { h.EstOrderNo, h.DealerCode, h.MonthEstimate, h.Status, lines });
+    return Results.Ok(new { h.EstOrderNo, h.DealerCode, h.MonthEstimate, h.HtcStaffInCharge, h.Status,
+        h.Appr1By, h.Appr1DTime, h.Appr2By, h.Appr2DTime, h.CancelBy, h.CancelDTime, h.CreatedAt, lines });   // #1415 §12
 }).RequireAuthorization();
 
 // 🔴 DUYỆT 2 CẤP + HUỶ DUYỆT — `Plan_EstimateOrder_Appr1` (BizHTC.zTemp.cs:54702) ·
@@ -80352,7 +80353,8 @@ app.MapGet("/api/gpsouts/{no}/devices", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var devices = await db.GpsOutDetails.Where(d => d.OrgId == t.OrgId && d.OutId == h.Id)
         .Select(d => new { d.GpsDvNo, d.GpsBoxNo, d.MapStatus, d.GPSOutStatusDtl, d.Remark, d.LogLUDateTime, d.LogLUBy }).ToListAsync();
-    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, status = h.GPSOutStatus, count = devices.Count, devices });
+    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, h.UserCodeReceived, h.Remark, status = h.GPSOutStatus, h.CreatedAt, h.CreateBy,
+        h.LUDateTime, h.LUBy, h.ApproveDateTime, h.ApproveBy, h.LogLUDateTime, h.LogLUBy, count = devices.Count, devices });   // #1416 §12
 }).RequireAuthorization();
 
 // ===== Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis) =====
@@ -80444,7 +80446,8 @@ app.MapGet("/api/gpsins/{no}/devices", async (string no, AppDbContext db, ITenan
     if (h is null) return Results.NotFound(new { no });
     var devices = await db.GpsInDetails.Where(d => d.OrgId == t.OrgId && d.InId == h.Id)
         .Select(d => new { d.GpsDvNo, d.GpsBoxNo, d.MapStatus, d.GPSInStatusDtl, d.Remark, d.LogLUDateTime, d.LogLUBy }).ToListAsync();
-    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, status = h.GPSInStatus, count = devices.Count, devices });
+    return Results.Ok(new { h.SFGPSInNo, h.StorageCode, h.GpsInType, h.Remark, status = h.GPSInStatus, h.CreatedAt, h.CreateBy,
+        h.LUDateTime, h.LUBy, h.ApproveDateTime, h.ApproveBy, h.LogLUDateTime, h.LogLUBy, count = devices.Count, devices });   // #1416 §12
 }).RequireAuthorization();
 
 // ---- #138: DUYỆT phiếu nhập/xuất kho GPS ----
