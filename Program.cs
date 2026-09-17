@@ -23222,6 +23222,7 @@ app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, str
         x.Id, x.PackageNo, x.PackageName, x.DealerCode, x.TakingTime, x.Creator, x.CreatedDate,
         x.IsPublicFlag, x.IsUserBasePrice, x.Description,
         x.ServiceTotal, x.PartTotal, x.GrandTotal, x.FlagActive,
+        x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt,   // #1353 §12
         services = db.ServicePackageServices.Count(s => s.OrgId == t.OrgId && s.ServicePackageId == x.Id),
         parts = db.ServicePackageParts.Count(p => p.OrgId == t.OrgId && p.ServicePackageId == x.Id)
     }).ToListAsync();
@@ -45354,7 +45355,8 @@ app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, stri
     //   ⇒ hai video cùng `IdxView` là hợp lệ ở nguồn. `ThenBy(FilePathVideoCode)` dưới đây làm thứ tự
     //   **xác định** — chặt hơn nguồn một cách CÓ CHỦ Ý, không phải port sai.
     var items = await qry.OrderBy(x => x.IdxView).ThenBy(x => x.FilePathVideoCode).Take(500)
-        .Select(x => new { x.FilePathVideoCode, x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.IdxView, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.FilePathVideoCode, x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.IdxView, x.FlagActive,
+            x.Remark, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1352 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -45365,7 +45367,8 @@ app.MapGet("/api/filepathvideos/for-tab", async (AppDbContext db, ITenantContext
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.FilePathVideoCode.Contains(q!) || x.FilePathVideoName!.Contains(q!));
     if (!string.IsNullOrWhiteSpace(active)) qry = qry.Where(x => x.FlagActive == active);
     var items = await qry.OrderBy(x => x.IdxView).ThenBy(x => x.FilePathVideoCode).Take(500)
-        .Select(x => new { x.FilePathVideoCode, x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.IdxView, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.FilePathVideoCode, x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.IdxView, x.FlagActive,
+            x.Remark, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1352 §12
     // Cờ giữ phát hiện #741: ở NGUỒN, bản ForTab quên đưa `strFilePathVideoNameList` vào nhãn log lỗi.
     return Results.Ok(new { count = items.Count, items, sameQueryAsCmCenter = true, logParamsMissingNameAtSource = true });
 }).RequireAuthorization();
@@ -78197,7 +78200,7 @@ app.MapGet("/api/roworktimes", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(roNo)) qy = qy.Where(x => x.RONo == roNo!.Trim());
     var items = await qy.OrderBy(x => x.PointDateTime).ThenBy(x => x.Id)
         .Select(x => new { x.Id, x.ROWTNo, x.RONo, x.ROID, x.PointDateTime,
-            x.FlagPlay, x.FlagBegin, x.FlagEnd, x.CreatedDate, x.CreatedBy })
+            x.FlagPlay, x.FlagBegin, x.FlagEnd, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1351 §12
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
