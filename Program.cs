@@ -33155,7 +33155,7 @@ app.MapGet("/api/maintpackages", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(x => x.TypeCode == type);
     var items = await q.OrderBy(x => x.ModelCode).ThenBy(x => x.Times).Take(500).Select(x => new
     {
-        x.Id, x.TypeCode, x.TypeName, x.Times, x.ModelCode, x.FlagActive,
+        x.Id, x.TypeCode, x.TypeName, x.Times, x.ModelCode, x.FlagActive, x.UpdatedAt,   // #1289 §12
         works = db.MaintPackageWorks.Count(w => w.OrgId == t.OrgId && w.MaintPackageId == x.Id),
         supplies = db.MaintPackageSupplies.Count(s => s.OrgId == t.OrgId && s.MaintPackageId == x.Id)
     }).ToListAsync();
@@ -33270,7 +33270,7 @@ app.MapGet("/api/maintworkitems", async (AppDbContext db, ITenantContext t, stri
     var qry = db.MaintWorkItems.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.WorkItemCode.Contains(q!) || x.WorkItemName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.WorkItemCode).Take(500).Select(x => new { x.Id, x.WorkItemCode, x.WorkItemName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.WorkItemCode).Take(500).Select(x => new { x.Id, x.WorkItemCode, x.WorkItemName, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1289 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -34252,7 +34252,7 @@ app.MapGet("/api/carstdopts", async (AppDbContext db, ITenantContext t, string? 
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.StdCode).Take(1000)
-        .Select(x => new { x.Id, x.ModelCode, x.StdCode, x.StdDesc, x.GradeCode, x.GradeDesc, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ModelCode, x.StdCode, x.StdDesc, x.GradeCode, x.GradeDesc, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1290 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -34289,7 +34289,7 @@ app.MapGet("/api/contracttypemodels", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(soType)) qry = qry.Where(x => x.SOType == soType);
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.SOType).ThenBy(x => x.ModelCode).Take(1000)
-        .Select(x => new { x.Id, x.SOType, x.PmtMethodNo, x.ModelCode, x.ContractType, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.SOType, x.PmtMethodNo, x.ModelCode, x.ContractType, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1290 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -34367,7 +34367,7 @@ app.MapGet("/api/maintworkcontents", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(item)) query = query.Where(x => x.ItemCode == item);
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.ItemCode).ThenBy(x => x.DisplayOrder).Take(1000)
-        .Select(x => new { x.Id, x.ContentCode, x.ItemCode, x.Content, x.DisplayOrder, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ContentCode, x.ItemCode, x.Content, x.DisplayOrder, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1291 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -39600,7 +39600,7 @@ app.MapGet("/api/emailserverconfigs", async (AppDbContext db, ITenantContext t, 
         x.IdConfig, x.DealerCode, x.MailServerAddress, x.MailServerUser,
         x.Port, x.TimeOut, x.EnableSSL,
         // Không trả mật khẩu ra danh sách; chỉ báo đã đặt hay chưa.
-        hasPassword = !string.IsNullOrEmpty(x.MailServerPassword),
+        hasPassword = !string.IsNullOrEmpty(x.MailServerPassword), x.CreatedAt,   // #1291 §12
     }).ToListAsync();
     return Results.Ok(new
     {
@@ -39738,7 +39738,7 @@ app.MapGet("/api/emailconfigsendauto", async (AppDbContext db, ITenantContext t,
         // #437 cờ cảnh báo rò phạm vi đại lý ở màn nguồn.
         dealerScopeLostOnSearchInSource = true,
         typeEmailName = x.TypeEmail is not null && cfg.TryGetValue(x.TypeEmail, out var te) ? te : null,
-        x.ConfigDate, x.AutoDate, x.AutoDay,
+        x.ConfigDate, x.AutoDate, x.AutoDay, x.CreatedAt,   // #1291 §12
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
