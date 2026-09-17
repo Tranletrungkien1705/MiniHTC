@@ -30749,7 +30749,7 @@ app.MapGet("/api/devicetypespecs", async (AppDbContext db, ITenantContext t, str
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/devicetypespecs", async (DeviceTypeSpecDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/devicetypespecs", async (DeviceTypeSpecDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var dtc = (dto.DeviceTypeCode ?? "").Trim();
     var spec = (dto.SpecCode ?? "").Trim();
@@ -30758,6 +30758,10 @@ app.MapPost("/api/devicetypespecs", async (DeviceTypeSpecDto dto, AppDbContext d
     var row = await db.DeviceTypeSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeviceTypeCode == dtc && x.SpecCode == spec);
     if (row is null) { row = new DeviceTypeSpec { OrgId = t.OrgId, DeviceTypeCode = dtc, SpecCode = spec }; db.DeviceTypeSpecs.Add(row); }
     row.DeviceTypeName = dto.DeviceTypeName; row.SpecDescription = dto.SpecDescription; row.UpdatedAt = DateTime.Now;
+    // #1277 SUA BUG THAT: doc-comment #188 (entity) ghi ro nguon `_Update` LUON ghi cap LogLUDateTime/LogLUBy,
+    // nhung endpoint truoc day chi ghi UpdatedAt (cot noi bo) - LogLUDateTime/LogLUBy hien dang chieu o GET
+    // nhung LUON NULL vi khong noi day.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.DeviceTypeCode, row.SpecCode, row.FlagActive });
@@ -30816,11 +30820,12 @@ app.MapDelete("/api/devicetypespecs/{id}", async (long id, AppDbContext db, ITen
     return Results.Ok(new { deleted = new { row.DeviceTypeCode, row.SpecCode } });
 }).RequireAuthorization();
 
-app.MapPost("/api/devicetypespecs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/devicetypespecs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.DeviceTypeSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();   // #1277 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
@@ -31876,7 +31881,7 @@ app.MapGet("/api/carinvoicespecs", async (AppDbContext db, ITenantContext t, str
     var qry = db.CarInvoiceSpecs.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SpecCode.Contains(q!) || x.SpecCodeInvoice!.Contains(q!) || x.CarType!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SpecCode).Take(500).Select(x => new { x.Id, x.SpecCode, x.SpecCodeInvoice, x.VehiclesType, x.NumberOfSeats, x.CarType, x.VAT, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SpecCode).Take(500).Select(x => new { x.Id, x.SpecCode, x.SpecCodeInvoice, x.VehiclesType, x.NumberOfSeats, x.CarType, x.VAT, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1278 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -32204,7 +32209,7 @@ app.MapGet("/api/loaithungs", async (AppDbContext db, ITenantContext t, string? 
     var qry = db.LoaiThungMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.LoaiThung.Contains(q!) || x.TenLoaiThung!.Contains(q!));
-    var items = await qry.OrderBy(x => x.LoaiThung).Take(500).Select(x => new { x.Id, x.LoaiThung, x.TenLoaiThung, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.LoaiThung).Take(500).Select(x => new { x.Id, x.LoaiThung, x.TenLoaiThung, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1278 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -32286,7 +32291,7 @@ app.MapGet("/api/contracttypes", async (AppDbContext db, ITenantContext t, strin
     var qry = db.ContractTypeMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractType.Contains(q!) || x.ContractTypeDesc!.Contains(q!));
-    var items = await qry.OrderBy(x => x.ContractType).Take(500).Select(x => new { x.Id, x.ContractType, x.ContractTypeDesc, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.ContractType).Take(500).Select(x => new { x.Id, x.ContractType, x.ContractTypeDesc, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1278 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -32453,7 +32458,7 @@ app.MapGet("/api/custpromotions", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderBy(x => x.CardNo).ThenBy(x => x.ProgramCode).Take(500).Select(x => new
     {
         x.Id, x.CardNo, x.ProgramCode, x.ProgramName, effDate = x.EffDate.HasValue ? x.EffDate.Value.ToString("yyyy-MM-dd") : "",
-        x.QtyAllocated, x.QtyUsed, remain = x.QtyAllocated - x.QtyUsed, x.Remark
+        x.QtyAllocated, x.QtyUsed, remain = x.QtyAllocated - x.QtyUsed, x.Remark, x.UpdatedAt   // #1279 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalRemain = items.Sum(i => i.remain), items });
 }).RequireAuthorization();
@@ -32557,7 +32562,7 @@ app.MapGet("/api/estimateorders", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.Id, x.EstOrderNo, x.DealerCode, x.MonthEstimate, x.HtcStaffInCharge, x.Status,
-        x.Appr1By, x.Appr1DTime, x.Appr2By, x.Appr2DTime, x.CancelBy, x.CancelDTime,
+        x.Appr1By, x.Appr1DTime, x.Appr2By, x.Appr2DTime, x.CancelBy, x.CancelDTime, x.CreatedAt,   // #1279 §12
         lines = db.EstimateOrderLines.Count(l => l.OrgId == t.OrgId && l.EstimateOrderId == x.Id),
         totalQty = db.EstimateOrderLines.Where(l => l.OrgId == t.OrgId && l.EstimateOrderId == x.Id).Sum(l => (int?)l.Quantity) ?? 0
     }).ToListAsync();
@@ -32653,7 +32658,7 @@ app.MapGet("/api/womappings", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(car)) q = q.Where(x => x.CarId.Contains(car!));
     if (!string.IsNullOrWhiteSpace(so)) q = q.Where(x => x.SoCode == so);
     var items = await q.OrderBy(x => x.CarId).Take(1000)
-        .Select(x => new { x.Id, x.CarId, x.ColorCode, x.ColorNameVN, x.Description, x.SoCode, x.WorkOrderNoTemp }).ToListAsync();
+        .Select(x => new { x.Id, x.CarId, x.ColorCode, x.ColorNameVN, x.Description, x.SoCode, x.WorkOrderNoTemp, x.UpdatedAt }).ToListAsync();   // #1279 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -32679,7 +32684,7 @@ app.MapGet("/api/saleplans", async (AppDbContext db, ITenantContext t, string? d
     if (year.HasValue) q = q.Where(x => x.YearPlan == year.Value);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.Id, x.DealerCode, x.ModelCode, x.YearPlan, x.Q1, x.Q2, x.Q3, x.Q4, total = x.Q1 + x.Q2 + x.Q3 + x.Q4, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.DealerCode, x.ModelCode, x.YearPlan, x.Q1, x.Q2, x.Q3, x.Q4, total = x.Q1 + x.Q2 + x.Q3 + x.Q4, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1279 §12
     return Results.Ok(new { count = items.Count, grandTotal = items.Sum(i => i.total), items });
 }).RequireAuthorization();
 
@@ -32716,7 +32721,7 @@ app.MapGet("/api/cabininfos", async (AppDbContext db, ITenantContext t, string? 
         x.Id, x.Vin, x.SpecCode, x.CabinCertificateNo,
         cabinCertificateDate = x.CabinCertificateDate.HasValue ? x.CabinCertificateDate.Value.ToString("yyyy-MM-dd") : "",
         x.CabinCONo, x.CabinInvoiceNo,
-        cabinInvoiceDate = x.CabinInvoiceDate.HasValue ? x.CabinInvoiceDate.Value.ToString("yyyy-MM-dd") : ""
+        cabinInvoiceDate = x.CabinInvoiceDate.HasValue ? x.CabinInvoiceDate.Value.ToString("yyyy-MM-dd") : "", x.UpdatedAt   // #1279 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
