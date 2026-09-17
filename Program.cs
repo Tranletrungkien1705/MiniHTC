@@ -12491,7 +12491,7 @@ app.MapGet("/api/emailsends", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
     var items = await q.OrderByDescending(x => x.Id).Take(500)
         .Select(x => new { x.BatchNo, x.Email, x.EmailType, x.Subject, x.Status, x.InvalidEmail,
-            x.FromAddress, x.CusId, x.IsAuto, x.DealerCode, x.FileAttachment, x.UserName, x.Note,
+            x.FromAddress, x.CusId, x.IsAuto, x.DealerCode, x.FileAttachment, x.UserName, x.Note, x.Body,   // #1356 §12
             sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "1"), pending = items.Count(i => i.Status == "0" && !i.InvalidEmail), invalid = items.Count(i => i.InvalidEmail), items });
 }).RequireAuthorization();
@@ -40765,7 +40765,7 @@ app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? 
         // #267 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
         .Select(x => new { x.ShareNo, x.DealerCode, x.PartCode, x.PartName, x.Unit, x.InStock, x.MinQuantity,
             x.QuantityShare, x.QuantityShareRequested, x.FlagLatest, x.Remark, x.Note, x.Status,
-            x.CreatedBy, x.LogLUBy, createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),
+            x.CreatedBy, x.LogLUDateTime, x.LogLUBy, createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),   // #1355 §12
             // #420 Cột SOPrice của nguồn là số 0 VIẾT CỨNG trong SQL — trả đúng vậy, kèm ghi chú.
             soPrice = 0.0m }).ToListAsync();
 
@@ -62621,7 +62621,8 @@ app.MapGet("/api/customercarebirthdays", async (
         x.CareBthId, x.CusId, x.DealerCode, x.DateBth, x.Status,
         statusText = birthdayCareStatusTexts.TryGetValue(x.Status, out var text) ? text : x.Status,
         x.ContactDate, x.Remark, x.CreatedDate,
-        x.CreatedBy, x.LogLuDateTime, x.LogLUBy   // #217 §12
+        x.CreatedBy, x.LogLuDateTime, x.LogLUBy,   // #217 §12
+        x.UpdatedAt, x.UpdatedBy   // #1354 §12
     }).ToList();
     // Nguồn trả bảng tóm tắt ("…_Sumary") BÊN CẠNH danh sách chi tiết ⇒ trả cả hai.
     return Results.Ok(new
