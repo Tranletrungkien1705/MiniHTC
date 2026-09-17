@@ -17812,16 +17812,17 @@ app.MapGet("/api/report/campaign-marketing", async (AppDbContext db, ITenantCont
 {
     var q = db.ServiceCampaigns.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
-    var cams = await q.OrderByDescending(x => x.Id).Select(x => new { x.Id, x.CamNo, x.CamName, x.ConditionDealer, x.Status, x.StartDate, x.EndDate }).ToListAsync();
+    var cams = await q.OrderByDescending(x => x.Id).Select(x => new { x.Id, x.CamNo, x.CamName, x.CamDesc, x.ConditionDealer, x.Status, x.StartDate, x.EndDate, x.CreatedAt }).ToListAsync();   // #1321 §12
     var partAgg = await db.ServiceCampaignParts.Where(p => p.OrgId == t.OrgId)
         .GroupBy(p => p.ServiceCampaignId)
         .Select(g => new { camId = g.Key, parts = g.Count(), avgDiscount = g.Average(x => x.PercentDiscount), maxDiscount = g.Max(x => x.PercentDiscount) }).ToListAsync();
     var pMap = partAgg.ToDictionary(x => x.camId, x => x);
     var rows = cams.Select(c => {
         pMap.TryGetValue(c.Id, out var pa);
-        return new { c.CamNo, c.CamName, c.ConditionDealer, c.Status,
+        return new { c.CamNo, c.CamName, c.CamDesc, c.ConditionDealer, c.Status,
             startDate = c.StartDate.HasValue ? c.StartDate.Value.ToString("yyyy-MM-dd") : "",
             endDate = c.EndDate.HasValue ? c.EndDate.Value.ToString("yyyy-MM-dd") : "",
+            c.CreatedAt,
             parts = pa?.parts ?? 0, avgDiscount = pa != null ? Math.Round(pa.avgDiscount, 1) : 0m, maxDiscount = pa?.maxDiscount ?? 0m };
     }).ToList();
     var byStatus = cams.GroupBy(c => c.Status).Select(g => new { status = g.Key, count = g.Count() }).ToList();
@@ -33988,7 +33989,7 @@ app.MapGet("/api/vinmodelorginalmsts", async (AppDbContext db, ITenantContext t,
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.VINCode).ThenBy(x => x.ModelCode).Take(1000)
-        .Select(x => new { x.Id, x.VINCode, x.ModelCode, x.OrginalCode, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.VINCode, x.ModelCode, x.OrginalCode, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1322 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -44635,7 +44636,8 @@ app.MapGet("/api/inscontracts", async (AppDbContext db, ITenantContext t, string
     {
         x.InContractNo, x.InContractCode, x.InsNo, x.InsName, x.PaymentLimit, x.TypePayment, x.FlagActive,
         startDate = x.StartDate.HasValue ? x.StartDate.Value.ToString("yyyy-MM-dd") : "",
-        finishDate = x.FinishDate.HasValue ? x.FinishDate.Value.ToString("yyyy-MM-dd") : ""
+        finishDate = x.FinishDate.HasValue ? x.FinishDate.Value.ToString("yyyy-MM-dd") : "",
+        x.LogLUDateTime, x.LogLUBy, x.CreatedAt   // #1323 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
