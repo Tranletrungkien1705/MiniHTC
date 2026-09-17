@@ -24041,7 +24041,7 @@ app.MapGet("/api/redeemrequests", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqRedeemNo.Contains(q!) || x.DealerCode!.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRedeemNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedDate, x.ApprovedBy,
-        x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #140 parity RD_ReqRedeem
+        x.Remark, x.LogLUDateTime, x.LogLUBy, x.Note }).ToListAsync();   // #140 parity RD_ReqRedeem + #1266 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -34619,7 +34619,7 @@ app.MapGet("/api/partcosts", async (AppDbContext db, ITenantContext t, string? d
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     var snaps = await qry.ToListAsync();
     var rows = snaps.GroupBy(x => new { x.PartCode, x.DealerCode }).Select(g => g.OrderByDescending(x => x.Id).First())
-        .Select(x => new { x.PartCode, x.PartName, x.DealerCode, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm") })
+        .Select(x => new { x.PartCode, x.PartName, x.DealerCode, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm"), x.Method })   // #1267 §12
         .OrderBy(x => x.PartCode).ToList();
     return Results.Ok(new { count = rows.Count, rows });
 }).RequireAuthorization();
@@ -49797,6 +49797,7 @@ app.MapGet("/api/htmvpdis", async (AppDbContext db, ITenantContext t, string? st
     {
         r.PDINo, r.Status, r.CreatedAt, r.DoneAt,
         r.ApprovedDate, r.ApprovedBy,   // #1235 §12
+        r.Remark, r.CreatedBy,   // #1265 §12
         cars = db.HtmvPdiDtls.Count(c => c.OrgId == t.OrgId && c.HtmvPdiId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
