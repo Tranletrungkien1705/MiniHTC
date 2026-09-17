@@ -24485,7 +24485,7 @@ app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(source)) qry = qry.Where(x => x.SourceType == source);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.OrderNo.Contains(q!) || x.CusName!.Contains(q!) || x.RONo!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Phone, x.Mobile, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Address, x.Phone, x.Mobile, x.Note, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt }).ToListAsync();   // #1425 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -45563,7 +45563,8 @@ app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, 
     //       nhưng hai điều kiện cắt trang thì BỊ COMMENT ⇒ trả hết. Port cắt thật và nói rõ.
     var total = await qry.CountAsync();
     var items = await qry.OrderBy(x => x.CamNo).Take(500).Select(x => new
-    { x.CamNo, x.CamName, x.CamDesc, x.EffDateStart, x.EffDateEnd, x.ConditionDealer, parts = db.CampaignMarketingParts.Count(p => p.OrgId == t.OrgId && p.CampaignId == x.Id) }).ToListAsync();
+    { x.CamNo, x.CamName, x.CamDesc, x.EffDateStart, x.EffDateEnd, x.WarrantyDateStart, x.WarrantyDateEnd, x.ConditionVin, x.ConditionPlateNo, x.ConditionDealer,   // #1426 §12
+      parts = db.CampaignMarketingParts.Count(p => p.OrgId == t.OrgId && p.CampaignId == x.Id) }).ToListAsync();
     return Results.Ok(new
     {
         count = items.Count, total, items,
@@ -68070,8 +68071,10 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     }).ToList();
     return Results.Ok(new
     {
-        r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status,
+        r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status, r.RejectNote,
         r.CusAddress, r.CusTel, r.CusTaxCode, r.ModelID, r.IsReRepair, r.ROType,   // #1264 §12
+        r.FlagCardExist, r.FlagIsDLQuery, r.Creator, r.CardNoInv, r.CardTypeInv, r.CardTypeExpectInv,
+        r.PointEndInv, r.PointRankTotalInv, r.PointConsumptionPrm, r.MemberNo, r.PointVoucher,   // #1427 §12
         services, parts,
         total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
     });
