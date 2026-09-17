@@ -42660,6 +42660,7 @@ app.MapGet("/api/bulletins/by-vin", async (AppDbContext db, ITenantContext t,
         // KHÔNG lấy theo số thông báo đóng cứng như nguồn — lấy đúng tệp của chính dòng này.
         b.FileAttachment,
         b.FlagActive, b.DateExpired,
+        b.CreatedDate, b.CreatedBy, b.LogLUDateTime, b.LogLUBy, b.CreatedAt,   // #1454 §12
     }).ToListAsync();
 
     return Results.Ok(new
@@ -42876,8 +42877,9 @@ app.MapGet("/api/bulletins/by-id/{bulletinNo}", async (string bulletinNo, AppDbC
     return Results.Ok(new
     {
         b.Id, b.BulletinNo, b.BulletinNoHMC, b.Remark, b.PartCode, b.PartName,
-        b.SerCode, b.SerName, b.DateExpired, b.FileNameAttachment, b.FlagActive,
+        b.SerCode, b.SerName, b.DateExpired, b.FileNameAttachment, b.FileAttachment, b.FlagActive,
         b.CreateDate, b.UserCreate,
+        b.CreatedDate, b.CreatedBy, b.LogLUDateTime, b.LogLUBy, b.CreatedAt,   // #1453 §12
         vinCount = vins.Count, vins,
         sourceRequiresAtLeastOneVin = "inner join Btl_Bulletin_VIN — ten ham noi Only By BulletinID nhung ban tin chua gan VIN thi tra RONG",
         hiddenBySource,
@@ -42900,7 +42902,8 @@ app.MapGet("/api/bulletins/{no}/details", async (string no, AppDbContext db, ITe
     return Results.Ok(new
     {
         row.BulletinNo, row.BulletinNoHMC, row.Remark, row.CreateDate, row.UserCreate,
-        row.DateExpired, row.FileNameAttachment, row.FlagActive,
+        row.DateExpired, row.FileNameAttachment, row.FileAttachment, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt,   // #1452 §12
         details, vins,
         pendingVins = vins.Count(v => v.Status == "P")
     });
