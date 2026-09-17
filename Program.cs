@@ -32820,21 +32820,25 @@ app.MapGet("/api/mininvbalances", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/mininvbalances", async (MinInvBalanceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mininvbalances", async (MinInvBalanceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var ml = (dto.ModelList ?? "").Trim();
     if (ml == "") return Results.BadRequest(new { error = "Thiếu danh sách model." });
     if (dto.TotalQty < 0) return Results.BadRequest(new { error = "Định mức không được âm." });
-    var b = new MinInvBalance { OrgId = t.OrgId, ModelList = ml, SpecMix = dto.SpecMix, DealerList = dto.DealerList, TotalQty = dto.TotalQty };
+    // #1280 SUA BUG THAT: LogLUDateTime/LogLUBy (cot map dung nguon #153) da chieu o GET nhung chua tung
+    // duoc ghi o dau - chi co UpdatedAt (cot rieng MiniHTC, doc-comment tu nhan la "dung thay" LogLUDateTime).
+    var b = new MinInvBalance { OrgId = t.OrgId, ModelList = ml, SpecMix = dto.SpecMix, DealerList = dto.DealerList, TotalQty = dto.TotalQty,
+        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() };
     db.MinInvBalances.Add(b); await db.SaveChangesAsync();
     return Results.Ok(new { b.Id });
 }).RequireAuthorization();
 
-app.MapPost("/api/mininvbalances/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mininvbalances/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var b = await db.MinInvBalances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (b is null) return Results.NotFound(new { id });
     b.FlagActive = b.FlagActive == "1" ? "0" : "1"; b.UpdatedAt = DateTime.Now;
+    b.LogLUDateTime = DateTime.Now; b.LogLUBy = (partnerUserCode ?? "system").Trim();   // #1280 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { b.Id, b.FlagActive });
 }).RequireAuthorization();
@@ -32887,7 +32891,7 @@ app.MapGet("/api/storages", async (AppDbContext db, ITenantContext t, string? q,
     if (!string.IsNullOrWhiteSpace(type)) query = query.Where(x => x.StorageType == type);
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.StorageCode).Take(1000)
-        .Select(x => new { x.Id, x.StorageCode, x.StorageName, x.StorageAddress, x.ProvinceCode, x.StorageType, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.StorageCode, x.StorageName, x.StorageAddress, x.ProvinceCode, x.StorageType, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1282 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -32940,7 +32944,7 @@ app.MapGet("/api/carstdoptions", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(model)) query = query.Where(x => x.ModelCode == model);
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.ModelCode).ThenBy(x => x.StdCode).Take(1000)
-        .Select(x => new { x.Id, x.ModelCode, x.StdCode, x.StdDesc, x.GradeCode, x.GradeDesc, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ModelCode, x.StdCode, x.StdDesc, x.GradeCode, x.GradeDesc, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1282 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -32974,7 +32978,7 @@ app.MapGet("/api/transporters", async (AppDbContext db, ITenantContext t, string
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.TransporterCode).Take(500).Select(x => new
     {
-        x.Id, x.TransporterCode, x.TransporterName, x.Address, x.PhoneNo, x.FaxNo, x.DirectorFullName, x.DirectorPhoneNo, x.ContactorPhoneNo, x.FlagActive,
+        x.Id, x.TransporterCode, x.TransporterName, x.Address, x.PhoneNo, x.FaxNo, x.DirectorFullName, x.DirectorPhoneNo, x.ContactorPhoneNo, x.FlagActive, x.UpdatedAt,   // #1282 §12
         cars = db.TransporterCars.Count(c => c.OrgId == t.OrgId && c.TransporterCode == x.TransporterCode),
         drivers = db.TransporterDrivers.Count(d => d.OrgId == t.OrgId && d.TransporterCode == x.TransporterCode)
     }).ToListAsync();
@@ -33074,7 +33078,7 @@ app.MapGet("/api/dealercas", async (AppDbContext db, ITenantContext t, string? d
         x.Id, x.DealerCode, x.CaSubject, x.CaIssuer, x.Serial,
         validFrom = x.ValidFrom.HasValue ? x.ValidFrom.Value.ToString("yyyy-MM-dd") : "",
         validTo = x.ValidTo.HasValue ? x.ValidTo.Value.ToString("yyyy-MM-dd") : "",
-        x.FlagActive, expired = x.ValidTo.HasValue && x.ValidTo.Value.Date < today
+        x.FlagActive, expired = x.ValidTo.HasValue && x.ValidTo.Value.Date < today, x.UpdatedAt   // #1282 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, expiredCount = items.Count(i => i.expired), items });
 }).RequireAuthorization();
@@ -33120,17 +33124,21 @@ app.MapPost("/api/storagerates", async (StorageRateDto dto, AppDbContext db, ITe
     if (sc == "" || mc == "") return Results.BadRequest(new { error = "Thiếu mã kho hoặc model." });
     if (dto.MBVal < 0 || dto.MTVal < 0 || dto.MNVal < 0) return Results.BadRequest(new { error = "Tỉ lệ không được âm." });
     var r = await db.StorageRates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == sc && x.ModelCode == mc && x.SpecCode == dto.SpecCode && x.ColorExtCode == dto.ColorExtCode);
-    if (r is null) { r = new StorageRate { OrgId = t.OrgId, StorageCode = sc, ModelCode = mc, SpecCode = dto.SpecCode, ColorExtCode = dto.ColorExtCode , LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" }; db.StorageRates.Add(r); }
+    if (r is null) { r = new StorageRate { OrgId = t.OrgId, StorageCode = sc, ModelCode = mc, SpecCode = dto.SpecCode, ColorExtCode = dto.ColorExtCode }; db.StorageRates.Add(r); }
     r.MBVal = dto.MBVal; r.MTVal = dto.MTVal; r.MNVal = dto.MNVal; r.UpdatedAt = DateTime.Now;
+    // #1281 SUA BUG THAT: LogLUDateTime/LogLUBy (cot map dung nguon #147) truoc day chi ghi LUC TAO,
+    // khong lam moi khi SUA hay toggle - moc "sua gan nhat" hien thi luon la moc TAO, khong bao gio doi.
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { r.Id, r.StorageCode, r.ModelCode, total = r.MBVal + r.MTVal + r.MNVal });
 }).RequireAuthorization();
 
-app.MapPost("/api/storagerates/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/storagerates/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var r = await db.StorageRates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (r is null) return Results.NotFound(new { id });
     r.FlagActive = r.FlagActive == "1" ? "0" : "1"; r.UpdatedAt = DateTime.Now;
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = (partnerUserCode ?? "system").Trim();   // #1281 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { r.Id, r.FlagActive });
 }).RequireAuthorization();
