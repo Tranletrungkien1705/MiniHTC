@@ -51097,7 +51097,10 @@ app.MapGet("/api/grtclaims/{no}/cars", async (string no, AppDbContext db, ITenan
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.GrtClaimDetails.Where(c => c.OrgId == t.OrgId && c.GrtClaimId == r.Id)
         .Select(c => new { c.VIN, c.UnitPrice, c.BankCode, c.VinSignStatus, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { r.GrtClaimNo, r.DealerCode, r.FlagisHTC, count = cars.Count, cars, total = cars.Sum(x => x.UnitPrice),
+    return Results.Ok(new { r.GrtClaimNo, r.DealerCode, r.ContractDate, r.FlagisHTC, r.Status, r.CreatedAt, r.IssuedAt,
+        r.SignStatus, r.SignDate, r.SignBy, r.FileSigned, r.CancelDate, r.CancelBy,
+        r.RejectDate, r.RejectBy, r.RejectRemark, r.LogLUDateTime, r.LogLUBy,   // #1367 §12
+        count = cars.Count, cars, total = cars.Sum(x => x.UnitPrice),
         signed = cars.Count(x => x.VinSignStatus == "A"), cancelled = cars.Count(x => x.VinSignStatus == "C") });
 }).RequireAuthorization();
 
@@ -53225,6 +53228,7 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
             l.ContractUpdateType, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode,
         c.SignDate, c.Status, c.VersionDTimeCurr,   // #130: mốc phiên bản hiện hành
+        c.DealerCode, c.SalesType, c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,   // #1368 §12
         count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
 }).RequireAuthorization();
 
@@ -80682,7 +80686,9 @@ app.MapGet("/api/retrievereqs/{no}/cars", async (string no, AppDbContext db, ITe
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.RetrieveReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
         .Select(c => new { c.Vin, c.StorageCode, c.DtlStatus, c.TranspReqType, c.RefOrdNo, c.CarId, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { r.TranspReqNo, r.Status, count = cars.Count, cars });
+    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.Status, r.CreatedAt, r.DecidedAt, r.TranspReqType,
+        r.TransportContractNo, r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,   // #1366 §12
+        count = cars.Count, cars });
 }).RequireAuthorization();
 
 app.MapPost("/api/retrievereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
