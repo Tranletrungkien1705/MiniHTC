@@ -42958,6 +42958,9 @@ app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? 
         x.QuoteNo, x.CusId, x.CusName, x.Mobile, x.ReceiveName, x.PaymentMethod, x.TotalAmount, x.Status,
         createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),
         x.SumAmountNoFactor,
+        // #1463 §12: entity ghi chú #1083 (Ser_Inv_Quote_Create/Update đều ghi các cột này) nhưng route
+        //   list chưa từng chiếu — cùng gap ở route `/{no}/lines` (đã vá kèm, xem dưới).
+        x.DealerCode, x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
         lines = db.PartQuoteLines.Count(l => l.OrgId == t.OrgId && l.PartQuoteId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -44647,6 +44650,7 @@ app.MapGet("/api/partquotes/{no}/lines", async (string no, AppDbContext db, ITen
         };
     }).ToList();
     return Results.Ok(new { h.QuoteNo, h.CusId, h.CusName, h.Mobile, h.ReceiveName, h.PaymentMethod, h.Status, h.TotalAmount, h.SumAmountNoFactor, h.CreatedAt,   // #1388 §12
+        h.DealerCode, h.Remark, h.CreatedDate, h.CreatedBy, h.LogLUDateTime, h.LogLUBy,   // #1464 §12: cung gap #1463
         count = lines.Count,
         // Tổng TÍNH LẠI từ dòng — nếu khác `TotalAmount` đang lưu thì dữ liệu đã lệch pha.
         totalAmountRecomputed = lines.Sum(x => x.amount),
@@ -75488,7 +75492,9 @@ app.MapGet("/api/partquotes/search-wh", async (AppDbContext db, ITenantContext t
 
     var quotes = await qq.OrderBy(x => x.QuoteNo).ThenBy(x => x.CreatedAt)
         .Select(x => new { x.Id, x.QuoteNo, x.CusId, x.CusName, x.Mobile, x.Status,
-                           x.TotalAmount, x.SumAmountNoFactor, x.CreatedAt }).ToListAsync();
+                           x.TotalAmount, x.SumAmountNoFactor, x.CreatedAt,
+                           // #1465 §12: route thu ba cua PartQuote cung thieu 6 cot nhu #1463/#1464
+                           x.DealerCode, x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
 
     object? lines = null;
     if (getDetail)
