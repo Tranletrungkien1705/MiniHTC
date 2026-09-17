@@ -26910,7 +26910,8 @@ app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SupplierCode.Contains(q!) || x.SupplierName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.DealerCode, x.FlagActive, x.ContactName, x.ContactPhone }).ToListAsync();   // #1031
+    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.DealerCode, x.FlagActive, x.ContactName, x.ContactPhone,   // #1031
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1345 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -28680,7 +28681,8 @@ app.MapGet("/api/serstocks", async (AppDbContext db, ITenantContext t, string? q
     var qry = db.SerStocks.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StockNo.Contains(q!) || x.StockName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.StockNo).Take(500).Select(x => new { x.Id, x.StockNo, x.StockName, x.Contact, x.Address, x.Email, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.StockNo).Take(500).Select(x => new { x.Id, x.StockNo, x.StockName, x.Contact, x.Address, x.Email, x.FlagActive,
+        x.TelePhone, x.Fax, x.Mobi, x.Manager, x.Description, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1347 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -30161,7 +30163,8 @@ app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string
     var qry = db.JDPowerTerms.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.JDPTermCode.Contains(q!) || x.JDPTermName!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.JDPTermCode, x.JDPTermName, x.StartDate, x.EndDate, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.JDPTermCode, x.JDPTermName, x.StartDate, x.EndDate, x.FlagActive,
+        x.UpdatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1346 §12
     return Results.Ok(new
     {
         count = items.Count, items,
