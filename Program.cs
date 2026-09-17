@@ -22183,7 +22183,8 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         x.CusName, x.CusAddress, x.CusTel, x.ModelID, x.BatteryNo, x.SerialNo,
         x.WarrantyRegistrationDate, x.WarrantyExpiresDate, x.WarrantyKM, x.Note,
         x.CusRequest, x.CarStatus, x.NaturalCode, x.CauseCode, x.StartDate, x.ROWTID,
-        x.ErrorCodeCD, x.ErrorCodePN, x.FlagReadySend, x.PartIDError, x.ApprovedBy, x.CreatedBy
+        x.ErrorCodeCD, x.ErrorCodePN, x.FlagReadySend, x.PartIDError, x.ApprovedBy, x.CreatedBy,
+        x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt   // #1306 §12
     }).ToListAsync();
     var withLabel = items.Select(i => new
     {
@@ -32503,6 +32504,7 @@ app.MapGet("/api/deliveryrequests", async (AppDbContext db, ITenantContext t, st
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.Id, x.DRNo, x.DealerCode, requestDate = x.RequestDate.HasValue ? x.RequestDate.Value.ToString("yyyy-MM-dd") : "", x.Status, x.Note,
+        x.CreatedAt, x.UpdatedAt,   // #1307 §12
         cars = db.DeliveryRequestDetails.Count(l => l.OrgId == t.OrgId && l.DeliveryRequestId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, pending = items.Count(i => i.Status == "Sent"), items });
@@ -32753,7 +32755,8 @@ app.MapGet("/api/paymentdiscountreqs", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.ReqNo, x.DealerCode, x.GuaranteeNo, x.BankGuaranteeNo, x.BankCode, x.SpecDescription, x.DiscountAmount, x.Status, x.Note
+        x.Id, x.ReqNo, x.DealerCode, x.GuaranteeNo, x.BankGuaranteeNo, x.BankCode, x.SpecDescription, x.DiscountAmount, x.Status, x.Note,
+        x.CreatedAt, x.UpdatedAt   // #1308 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.DiscountAmount),
         pending = items.Count(i => i.Status == "Draft"), approved = items.Count(i => i.Status == "Approved"), items });
