@@ -34028,7 +34028,8 @@ app.MapGet("/api/warrantyworkmsts", async (AppDbContext db, ITenantContext t, st
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.ROWWorkCode).ThenBy(x => x.ModelCode).Take(1000)
-        .Select(x => new { x.Id, x.ROWWID, x.ROWWorkCode, x.ROWWorkName, x.ModelCode, x.AppTypeCode, x.RateHour, x.RatePrice, x.Price, x.VAT, x.Remark, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ROWWID, x.ROWWorkCode, x.ROWWorkName, x.ModelCode, x.AppTypeCode, x.RateHour, x.RatePrice, x.Price, x.VAT, x.Remark, x.FlagActive,
+            x.UpdatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1348 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -45407,7 +45408,8 @@ app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(audType)) qry = qry.Where(x => x.ReceptionFAudType == audType);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");   // #1044
     var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.ReceptionFAudType).Take(500)
-        .Select(x => new { x.ModelCode, x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive }).ToListAsync();   // #1043/#1044
+        .Select(x => new { x.ModelCode, x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive,   // #1043/#1044
+            x.UpdatedAt, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1349 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -80726,7 +80728,7 @@ app.MapGet("/api/quotas", async (AppDbContext db, ITenantContext t, string? peri
     if (!string.IsNullOrWhiteSpace(period)) q = q.Where(x => x.Period == period);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     var rows = await q.OrderBy(x => x.Period).ThenBy(x => x.DealerCode).Take(500).Select(x => new
-    { x.DealerCode, x.ModelCode, x.Period, x.Qty, x.UsedQty, remain = x.Qty - x.UsedQty }).ToListAsync();
+    { x.DealerCode, x.ModelCode, x.Period, x.Qty, x.UsedQty, remain = x.Qty - x.UsedQty, x.UpdatedAt }).ToListAsync();   // #1350 §12
     return Results.Ok(new { count = rows.Count, totalQty = rows.Sum(r => r.Qty), totalUsed = rows.Sum(r => r.UsedQty), rows });
 }).RequireAuthorization();
 
