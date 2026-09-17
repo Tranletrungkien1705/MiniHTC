@@ -25052,7 +25052,7 @@ app.MapGet("/api/unitpricegps", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/unitpricegps", async (MstUnitPriceGpsDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/unitpricegps", async (MstUnitPriceGpsDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = (dto.ContractNo ?? "").Trim();
     if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng." });
@@ -25061,6 +25061,10 @@ app.MapPost("/api/unitpricegps", async (MstUnitPriceGpsDto dto, AppDbContext db,
     var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
     if (row is null) { row = new MstUnitPriceGPS { OrgId = t.OrgId, ContractNo = no }; db.MstUnitPriceGpsItems.Add(row); }
     row.UnitPrice = dto.UnitPrice; row.EffStartDate = dto.EffStartDate; row.UpdatedAt = DateTime.Now;
+    // #1284 SUA BUG THAT: LogLUDateTime/LogLUBy da chieu o GET va da ghi dung o endpoint field-mask rieng
+    // (POST .../{id}/update, dong ~25109) nhung endpoint tao/upsert nay chua tung ghi - dong moi tao
+    // vinh vien null cho toi khi co ai goi endpoint update rieng.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.ContractNo, row.UnitPrice, row.FlagActive });
@@ -34335,18 +34339,22 @@ app.MapPost("/api/rateapprordermodelmaxes", async (RateApprOrderModelMaxDto dto,
     if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
     if (dto.RateApprMax < 0) return Results.BadRequest(new { error = "Tỷ lệ duyệt tối đa không được âm." });
     var row = await db.RateApprOrderModelMaxes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ModelCode == model);
-    if (row is null) { row = new RateApprOrderModelMax { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model , LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" }; db.RateApprOrderModelMaxes.Add(row); }
+    if (row is null) { row = new RateApprOrderModelMax { OrgId = t.OrgId, DealerCode = dealer, ModelCode = model }; db.RateApprOrderModelMaxes.Add(row); }
     row.RateApprMax = dto.RateApprMax; row.UpdatedAt = DateTime.Now;
+    // #1285 SUA BUG THAT: LogLUDateTime/LogLUBy truoc day chi ghi LUC TAO (trong khoi khoi tao `new`),
+    // khong lam moi khi SUA - moc "sua gan nhat" luon la moc tao dau tien.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.DealerCode, row.ModelCode, row.RateApprMax, row.FlagActive });
 }).RequireAuthorization();
 
-app.MapPost("/api/rateapprordermodelmaxes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/rateapprordermodelmaxes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.RateApprOrderModelMaxes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();   // #1285 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
@@ -63399,11 +63407,12 @@ app.MapGet("/api/customercars", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.Vin.Contains(vin.ToUpper()));
     if (!string.IsNullOrWhiteSpace(cus)) q = q.Where(c => (c.CusName != null && c.CusName.Contains(cus)) || (c.CusPhone != null && c.CusPhone.Contains(cus)));
     var items = await q.OrderBy(c => c.PlateNo).Take(500).Select(c => new
-    { c.Vin, c.PlateNo, c.FrameNo, c.EngineNo, c.ModelCode, c.ColorCode, c.PlateColorCode, c.CusCode, c.CusName, c.CusPhone, c.SaleDate }).ToListAsync();
+    { c.Vin, c.PlateNo, c.FrameNo, c.EngineNo, c.ModelCode, c.ColorCode, c.PlateColorCode, c.CusCode, c.CusName, c.CusPhone, c.SaleDate,
+      c.TradeMarkCode, c.ProductYear, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy, c.UpdatedAt }).ToListAsync();   // #1283 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin) && string.IsNullOrWhiteSpace(dto.PlateNo))
         return Results.BadRequest(new { error = "Cần VIN hoặc biển số." });
@@ -63413,10 +63422,18 @@ app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITe
     CustomerCar? c = null;
     if (vin.Length > 0) c = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
     if (c is null && plate.Length > 0) c = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == "" && x.PlateNo == plate);
+    var isNew1280 = c is null;
     if (c is null) { c = new CustomerCar { OrgId = t.OrgId, Vin = vin, PlateNo = plate }; db.CustomerCars.Add(c); }
     else { if (vin.Length > 0) c.Vin = vin; if (plate.Length > 0) c.PlateNo = plate; }
     c.FrameNo = dto.FrameNo; c.EngineNo = dto.EngineNo; c.ModelCode = dto.ModelCode; c.ColorCode = dto.ColorCode; c.PlateColorCode = dto.PlateColorCode;
     c.CusCode = dto.CusCode; c.CusName = dto.CusName; c.CusPhone = dto.CusPhone; c.SaleDate = dto.SaleDate; c.UpdatedAt = DateTime.Now;
+    c.TradeMarkCode = dto.TradeMarkCode; c.ProductYear = dto.ProductYear;   // #1283 SUA BUG THAT #976: hai gia tri nhan tu import bi rot am tham
+    // #1283 SUA BUG THAT: doc-comment #1089 tren entity tu nhan "port dung theo duong import" (ghi du 4
+    // cot nhat ky khi TAO, LogLUDateTime/LogLUBy khi SUA) nhung day la DUY NHAT duong ghi cua CustomerCar
+    // va truoc day khong ghi cot nao trong 4 cot do - man hinh khong bao gio thay ai/khi nao tao/sua.
+    var by1283 = (partnerUserCode ?? "system").Trim(); var now1283 = DateTime.Now;
+    if (isNew1280) { c.CreatedDate = now1283; c.CreatedBy = by1283; }
+    c.LogLUDateTime = now1283; c.LogLUBy = by1283;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Vin, c.PlateNo, c.CusName });
 }).RequireAuthorization();
@@ -81281,7 +81298,7 @@ record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status,
     string? Remark = null, string? IsActive = null);   // #295
 record PartPriceImportRowDto(string? PartCode, string? PartName, decimal? Price, DateTime? EffectiveDate, string? Remark);   // #935
-record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);
+record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate, string? TradeMarkCode = null, int? ProductYear = null);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate,
     string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
 record CareContactDto(string? Result);
