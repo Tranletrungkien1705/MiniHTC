@@ -417,7 +417,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge, d.WarrantyStaffInCharge,   // #977
       d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
       d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status,
-      d.WsUrlAddr }).ToListAsync();   // #1223
+      d.WsUrlAddr, d.CreatedAt }).ToListAsync();   // #1223 + #1271 §12
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -952,7 +952,7 @@ app.MapGet("/api/plans", async (AppDbContext db, ITenantContext t, string? month
     if (!string.IsNullOrWhiteSpace(month)) q = q.Where(p => p.Month == month);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
     var rows = await q.OrderBy(p => p.Month).ThenBy(p => p.DealerCode).Take(500).Select(p => new
-    { p.DealerCode, p.ModelCode, p.Month, p.TargetQty, p.ActualQty, achieve = p.TargetQty == 0 ? 0 : Math.Round(p.ActualQty * 100.0 / p.TargetQty, 1) }).ToListAsync();
+    { p.DealerCode, p.ModelCode, p.Month, p.TargetQty, p.ActualQty, achieve = p.TargetQty == 0 ? 0 : Math.Round(p.ActualQty * 100.0 / p.TargetQty, 1), p.UpdatedAt }).ToListAsync();   // #1271 §12
     return Results.Ok(new { count = rows.Count, totalTarget = rows.Sum(r => r.TargetQty), totalActual = rows.Sum(r => r.ActualQty), rows });
 }).RequireAuthorization();
 
@@ -4851,7 +4851,7 @@ app.MapGet("/api/support/records", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(r => r.VIN.Contains(vin!.ToUpper()));
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
     var items = await q.OrderByDescending(r => r.Id).Take(500)
-        .Select(r => new { r.DealNo, r.VIN, r.DealerCode, r.Price, r.DeliveryDate, r.SalesManCode, r.BankCode, r.UpdatedAt }).ToListAsync();
+        .Select(r => new { r.DealNo, r.VIN, r.DealerCode, r.Price, r.DeliveryDate, r.SalesManCode, r.BankCode, r.UpdatedAt, r.CreatedAt }).ToListAsync();   // #1271 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -5409,7 +5409,7 @@ app.MapGet("/api/deals/records", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(r => r.VIN.Contains(vin!.ToUpper()));
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
     var items = await q.OrderByDescending(r => r.Id).Take(500)
-        .Select(r => new { r.DealNo, r.VIN, r.DealerCode, r.DealDate, r.PlateNo, r.SalesType, r.WarrantyNo, r.CustomerCode, r.VerifyStatus, r.UpdatedAt }).ToListAsync();
+        .Select(r => new { r.DealNo, r.VIN, r.DealerCode, r.DealDate, r.PlateNo, r.SalesType, r.WarrantyNo, r.CustomerCode, r.VerifyStatus, r.UpdatedAt, r.CreatedAt }).ToListAsync();   // #1272 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -15107,7 +15107,7 @@ app.MapGet("/api/smstemplates", async (AppDbContext db, ITenantContext t, string
     // #299: nguồn `SerSMSTemplateGet` có `strDealerCodeConditionList` — mẫu là của TỪNG đại lý.
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
     var rows = await query.OrderBy(x => x.DealerCode).ThenBy(x => x.SmsType).Take(500)
-        .Select(x => new { x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode, x.UpdatedAt }).ToListAsync();
+        .Select(x => new { x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode, x.UpdatedAt, x.CreatedAt }).ToListAsync();   // #1272 §12
     var items = rows.Select(x => new
     {
         tempId = x.Id, x.SmsType, x.SmsName, x.SmsBody, x.FlagActive, x.DealerCode,
@@ -23676,7 +23676,7 @@ app.MapGet("/api/serinsurances", async (AppDbContext db, ITenantContext t, strin
     var qry = db.SerInsurances.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InsNo.Contains(q!) || x.InsVieName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.InsNo).Take(500).Select(x => new { x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Phone, x.Fax, x.TaxCode, x.Description, x.FlagActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var items = await qry.OrderBy(x => x.InsNo).Take(500).Select(x => new { x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Phone, x.Fax, x.TaxCode, x.Description, x.FlagActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1272 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -24156,7 +24156,7 @@ app.MapGet("/api/trainingcourses", async (AppDbContext db, ITenantContext t, str
     var qry = db.TrainingCourses.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TrainingUserCode.Contains(q!) || x.TrainingName!.Contains(q!) || x.TrainerName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.TrainingUserCode).Take(500).Select(x => new { x.Id, x.TrainingUserCode, x.TrainingName, x.Department, x.DealerCode, x.TrainerCode, x.TrainerName, x.Description, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TrainingUserCode).Take(500).Select(x => new { x.Id, x.TrainingUserCode, x.TrainingName, x.Department, x.DealerCode, x.TrainerCode, x.TrainerName, x.Description, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1273 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -38010,7 +38010,7 @@ app.MapGet("/api/insdebits", async (AppDbContext db, ITenantContext t, string? q
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.DebitNo, x.InsNo, x.InsName, x.RONo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
-        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : ""
+        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : "", x.CreatedAt   // #1273 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalDebit = items.Sum(i => i.DebitAmount), totalPaid = items.Sum(i => i.PaidAmount), totalBalance = items.Sum(i => i.balance), items });
 }).RequireAuthorization();
@@ -38081,7 +38081,7 @@ app.MapGet("/api/supplierdebits", async (AppDbContext db, ITenantContext t, stri
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.Id, x.SupplierCode, x.StockInNo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
-        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : ""
+        debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : "", x.CreatedAt   // #1273 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalDebit = items.Sum(i => i.DebitAmount), totalPaid = items.Sum(i => i.PaidAmount), totalBalance = items.Sum(i => i.balance), items });
 }).RequireAuthorization();
