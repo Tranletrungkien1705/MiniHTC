@@ -17807,7 +17807,8 @@ app.MapGet("/api/servicequotations/{id}/detail", async (long id, AppDbContext db
         .Select(x => new { x.SerCode, x.SerName, x.StdManHour, x.ActManHour, x.Factor, x.Price, x.Vat, x.Amount }).ToListAsync();
     var parts = await db.ServiceQuotationParts.Where(x => x.OrgId == t.OrgId && x.ServiceQuotationId == id)
         .Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount }).ToListAsync();
-    return Results.Ok(new { h.QuoteNo, h.RONo, h.PlateNo, h.CusName, h.LaborTotal, h.PartTotal, h.Discount, h.VatAmount, h.GrandTotal, h.Status, labors, parts });
+    return Results.Ok(new { h.QuoteNo, h.RONo, h.Vin, h.PlateNo, h.CusName, h.LaborTotal, h.PartTotal, h.Discount, h.VatAmount, h.GrandTotal, h.Status, h.Note, h.CreatedAt,
+        h.InsuranceDeductible, h.InsuranceTotal, h.HasInsuranceItem, labors, parts });   // #1412 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/servicequotations/{id}/status", async (long id, ServiceQuotationStatusDto dto, AppDbContext db, ITenantContext t) =>
@@ -23990,7 +23991,7 @@ app.MapGet("/api/redeeminvoicerequests/{id}", async (long id, AppDbContext db, I
 {
     var h = await db.RedeemInvoiceRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var lines = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == id).Select(x => new { x.Id, x.VIN, x.CarId, x.ReqType }).ToListAsync();
+    var lines = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == id).Select(x => new { x.Id, x.VIN, x.CarId, x.ReqType, x.RDReqIvDtlStatus, x.ApprovedDate, x.ApprovedBy, x.Remark }).ToListAsync();   // #1413 §12
     return Results.Ok(new { header = new { h.Id, h.ReqRDInvoiceNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt, h.ApprovedDate, h.ApprovedBy, h.LogLUDateTime, h.LogLUBy }, lines });   // #1319 §12
 }).RequireAuthorization();
 
@@ -46489,7 +46490,7 @@ app.MapGet("/api/gpspayments/{no}", async (string no, AppDbContext db, ITenantCo
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.GpsPaymentLines.Where(l => l.OrgId == t.OrgId && l.GpsPaymentId == h.Id).Select(l => new
     { l.Vin, l.SpecCode, l.ModelCode, l.ModelName, l.GpsId, l.CostGPSStartDate, l.CostGPSEndDate, l.DeductDate, l.PriceGPS, l.PlanCostGPSDate, l.ActualCostGPSDate, l.AmountGPS }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalWithoutVAT, h.AmountVAT, h.TotalAfterVAT, lines });
+    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalWithoutVAT, h.AmountVAT, h.TotalAfterVAT, h.CreatedAt, lines });   // #1411 §12
 }).RequireAuthorization();
 
 // Khớp btnSave gốc: guard tháng thanh toán bắt buộc + ngày KT>=ngày BĐ; tự tính PlanCostGPSDate/ActualCostGPSDate/AmountGPS + VAT 10%.
