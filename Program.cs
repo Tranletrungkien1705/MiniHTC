@@ -31271,7 +31271,7 @@ app.MapGet("/api/cartestcars", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TestCarCode.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.TestCarCode, x.DealerCode, x.Remark, x.CreatedAt, x.TestCarStatus, x.ApprovedAt, x.ApprovedBy, x.RejectReason,
+    { x.TestCarCode, x.DealerCode, x.Remark, x.CreatedAt, x.TestCarStatus, x.ApprovedAt, x.ApprovedBy, x.RejectReason, x.FinishedDate, x.FinishedBy,   // #1421 §12
       lines = db.CarTestCarDtls.Count(l => l.OrgId == t.OrgId && l.TestCarId == x.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -31284,7 +31284,7 @@ app.MapGet("/api/cartestcars/{no}", async (string no, AppDbContext db, ITenantCo
     var lines = await db.CarTestCarDtls.Where(l => l.OrgId == t.OrgId && l.TestCarId == h.Id)
         .Select(l => new { l.CarId, l.VIN, l.ModelCode, l.SpecCode, l.SpecDescription, l.SoDonHang, l.ColorCode, l.ColorName, l.EffDateStart, l.EffDateEnd, l.UnitPriceActual,
             l.TestCarStatusDtl }).ToListAsync();
-    return Results.Ok(new { h.TestCarCode, h.DealerCode, h.Remark, h.CreatedAt, h.TestCarStatus, h.ApprovedAt, h.ApprovedBy, h.RejectReason, lines });
+    return Results.Ok(new { h.TestCarCode, h.DealerCode, h.Remark, h.CreatedAt, h.TestCarStatus, h.ApprovedAt, h.ApprovedBy, h.RejectReason, h.FinishedDate, h.FinishedBy, lines });   // #1421 §12
 }).RequireAuthorization();
 
 // Lưu đề nghị (khớp Car_TestCar_Save gốc: TestCarCode tự sinh nếu trống; đã tồn tại → thay toàn bộ dòng VIN, khớp hành vi "sửa đề nghị")
@@ -50194,7 +50194,7 @@ app.MapGet("/api/reqinvoices/{no}/cars", async (string no, AppDbContext db, ITen
         .Select(c => new { c.VIN, c.CarId, typeRDReqIv = c.ReqType, c.RDReqIvDtlStatus, c.DealerCode,
             c.MortageBankCode, c.ApprovedDate, c.ApprovedBy, c.Remark,
             c.HTCInvoiceNo, c.InvoiceNoFactory, c.TCGInvoiceNo }).ToListAsync();
-    return Results.Ok(new { reqIVNo = h.ReqRDInvoiceNo, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt,
+    return Results.Ok(new { reqIVNo = h.ReqRDInvoiceNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt,
         h.ApprovedDate, h.ApprovedBy, h.LogLUDateTime, h.LogLUBy, count = cars.Count, cars });   // #1419 §12
 }).RequireAuthorization();
 
@@ -51762,7 +51762,8 @@ app.MapGet("/api/reqredeems/{no}/cars", async (string no, AppDbContext db, ITena
     var cars = await db.RedeemRequestLines.Where(c => c.OrgId == t.OrgId && c.RequestId == h.Id)
         .Select(c => new { c.VIN, c.CarId, c.DealerCode, typeDMReq = c.RedeemType, c.MortageBankCode,
             c.DMReqDtlStatus, c.DRListCode, c.ApprovedDate, c.ApprovedBy, c.Remark }).ToListAsync();
-    return Results.Ok(new { reqDMNo = h.ReqRedeemNo, h.Status, count = cars.Count, cars });
+    return Results.Ok(new { reqDMNo = h.ReqRedeemNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt,
+        h.ApprovedDate, h.ApprovedBy, h.Remark, h.LogLUDateTime, h.LogLUBy, count = cars.Count, cars });   // #1420 §12
 }).RequireAuthorization();
 
 // 🔴🔴 DUYỆT GIẢI CHẤP THEO TỪNG VIN — đúng chiều của nguồn (Biz.HTC.WH.cs:126540-126624).
