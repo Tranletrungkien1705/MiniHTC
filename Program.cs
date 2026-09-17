@@ -1085,7 +1085,9 @@ app.MapGet("/api/planheaders/{code}/lines", async (string code, AppDbContext db,
             l.Id, l.ModelCode, l.BusinessPlanDtlStatus, l.VersionDtl, l.Rtl_TotalQtyDeal, l.BO_TotalQtyBO,
             l.Rtl_QtyM1, l.Rtl_QtyM2, l.Rtl_QtyM3, l.Rtl_QtyM4, l.Rtl_QtyM5, l.Rtl_QtyM6, l.Rtl_QtyM7, l.Rtl_QtyM8, l.Rtl_QtyM9, l.Rtl_QtyM10, l.Rtl_QtyM11, l.Rtl_QtyM12, l.Ord_QtyM1, l.Ord_QtyM2, l.Ord_QtyM3, l.Ord_QtyM4, l.Ord_QtyM5, l.Ord_QtyM6, l.Ord_QtyM7, l.Ord_QtyM8, l.Ord_QtyM9, l.Ord_QtyM10, l.Ord_QtyM11, l.Ord_QtyM12, l.BO_QtyM1, l.BO_QtyM2, l.BO_QtyM3, l.BO_QtyM4, l.BO_QtyM5, l.BO_QtyM6, l.BO_QtyM7, l.BO_QtyM8, l.BO_QtyM9, l.BO_QtyM10, l.BO_QtyM11, l.BO_QtyM12, 
         }).ToListAsync();
-    return Results.Ok(new { h.BusinessPlanCode, h.YearPlan, h.Status, h.Version, h.LogLUDateTime, h.LogLUBy, count = lines.Count, lines });
+    return Results.Ok(new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt,
+        h.Approve1By, h.Approve2By, h.TimesPlan, h.LogLUDateTime, h.LogLUBy,   // #1401 §12
+        count = lines.Count, lines });
 }).RequireAuthorization();
 
 app.MapPost("/api/planheaders/{code}/lines", async (
@@ -51854,7 +51856,7 @@ app.MapGet("/api/mnfplorders/{no}/lines", async (string no, AppDbContext db, ITe
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.MnfPlOrderDtls.Where(l => l.OrgId == t.OrgId && l.MnfPlOrderId == o.Id).OrderBy(l => l.MnfPlIdx)
         .Select(l => new { l.MnfPlIdx, l.ModelCode, l.SpecCode, l.SpecDescription, l.ColorCode, l.Quantity }).ToListAsync();
-    return Results.Ok(new { o.OrderNo, o.Status, count = lines.Count, lines, qty = lines.Sum(x => x.Quantity) });
+    return Results.Ok(new { o.OrderNo, o.OrdType, o.OrdMonth, o.Remark, o.Status, o.CreatedAt, o.SentAt, count = lines.Count, lines, qty = lines.Sum(x => x.Quantity) });   // #1399 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/mnfplorders/{no}/send", async (string no, AppDbContext db, ITenantContext t) =>
@@ -55926,7 +55928,7 @@ app.MapGet("/api/pocommands/{no}/lines", async (string no, AppDbContext db, ITen
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.POCommandLines.Where(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id)
         .Select(l => new { l.SpecCode, l.SpecDesc, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.LCTemp, l.Quantity }).ToListAsync();
-    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
+    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, o.CreatedAt, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });   // #1400 §12
 }).RequireAuthorization();
 
 // ⚠️ ĐÃ BỎ `/send`: nguồn KHÔNG có bước "gửi hãng" — `Ord_POCommand` không có cột trạng thái nào.
