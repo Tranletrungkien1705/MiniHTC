@@ -61345,6 +61345,95 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
     return Results.Ok(new { o.OrderPartNo, o.SupplierCode, lines = lines.Count, status = o.OrderPartStatus });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #1483 TẠO ĐƠN ĐẶT PHỤ TÙNG TST (`Ser_Order_Part_CreateTST`, LIVE, CHỈ CÓ TRÊN CÂY LAPTOP V20) =====
+// TRACE 4 tầng: WS `HTCWSCarSv/WSCarSv.asmx.cs:22706` (`[WebMethod] Ser_Order_Part_CreateTST`) →
+//   `_biz.Ser_Order_Part_CreateTST` (`BizCarSv.A.02.OrderPart.cs:1387`) → vỏ gọi `Ser_Order_Part_CreateX` (`:1520`).
+// 🔴 Hàm CHỈ CÓ TRÊN CÂY CHUẨN V20 (laptop) — cây 150 (`V20.2023.Release`) KHÔNG có (đã ghi ở #873/#874).
+//   Port theo cây CHUẨN V20 đúng luật "khi hai cây khác nhau thì port theo cây CHUẨN".
+// ⚠️ KHÁC `Ser_Order_Part_Save` (đã port ở `POST /api/orderparts`): hàm này KHÔNG có `FlagIsDelete`,
+//   KHÔNG có `PartGroupID`/`VIN`/`Remark`/`WarehouseCode`; thay vào đó nhận `strOrderPartNo` (số đơn do
+//   client cấp), `strDealerCode`, `strSupplierID`, `strDeliveryFormCode`, `strDeliveryLocationCode`,
+//   `strEstimatedDeliverDate` + DataSet dòng chi tiết. Đây là đường TẠO riêng cho đơn loại TST.
+// 🔴 NGUỒN KHÔNG kiểm `PartGroupID`/`DeliveryForm`/`VIN` như `_Save` — chỉ kiểm 2 guard:
+//   (1) `checkExistSupplier` — nhà cung cấp phải tồn tại (`Ser_Mst_Supplier` theo `SupplierID`);
+//   (2) `Mst_DeliveryLocation_CheckDB(Exist=Yes, Active)` — địa điểm giao phải tồn tại + `FlagActive` ∈ "1".
+//   ⇒ KHÔNG bê guard của `_Save` sang đây (đó là hàm khác).
+// 🔴 Header ghi 13 cột: DealerCode · OrderPartNo · SupplierID · DeliveryFormCode · DeliveryLocationCode ·
+//   EstimatedDeliverDate · OrderPartType=TST · OrderPartStatus=P · SupplierStatus=1 · CreateDTime · CreateBy ·
+//   LUDTime · LUBy · LogLUDateTime · LogLUBy. (DealerCode gán HAI LẦN ở nguồn — vô hại, giữ 1 lần.)
+// 🔴 Dòng chi tiết: `QtyAppr = QtyOrd` · `OrderPartStatusDtl = P` · `LogLU*`; sau khi insert, nguồn chạy
+//   `update` TÍNH LẠI 5 cột dẫn xuất (TPBeforeDc/UPAfterDc/TPAfterDc/ValVAT/TPAfterVAT) theo công thức
+//   `F=C(1-C/100)` — MiniHTC dùng `RecalcOrderPartLine` (đã có) cho cùng công thức.
+// ⚠️ Nguồn ghi vào Main + WH + (Dealer nếu `!bIsWSMain`) — MiniHTC một CSDL, ghi một lần.
+app.MapPost("/api/orderparts/tst", async (OrderPartTstCreateDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var orderPartNo = (dto.OrderPartNo ?? "").Trim().ToUpperInvariant();
+    if (orderPartNo.Length == 0) return Results.BadRequest(new { error = "Cần OrderPartNo (số đơn)." });
+    var dealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var supplierId = (dto.SupplierID ?? "").Trim();
+    var dlvLocCode = (dto.DeliveryLocationCode ?? "").Trim().ToUpperInvariant();
+
+    // guard (1): nhà cung cấp phải tồn tại — nguồn `checkExistSupplier` tra `Ser_Mst_Supplier` theo `SupplierID`.
+    if (supplierId.Length == 0 || !await db.SerMstSuppliers.AnyAsync(s => s.OrgId == t.OrgId && s.SupplierID == supplierId))
+        return Results.BadRequest(new { error = "Nhà cung cấp không tồn tại!", supplierId });
+
+    // guard (2): địa điểm giao phải tồn tại + đang hoạt động — nguồn `Mst_DeliveryLocation_CheckDB(Exist=Yes, Active)`.
+    var dlvLoc = await db.DeliveryLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DeliveryLocationCode == dlvLocCode && x.DealerCode == dealerCode);
+    if (dlvLoc is null)
+        return Results.BadRequest(new { error = "Địa điểm giao hàng không tồn tại!", deliveryLocationCode = dlvLocCode, dealerCode });
+    if (!(dlvLoc.FlagActive ?? "").Contains("1"))
+        return Results.BadRequest(new { error = "Địa điểm giao hàng không ở trạng thái hoạt động!", flagActive = dlvLoc.FlagActive });
+
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Chi tiết đơn đặt phụ tùng rỗng!" });
+
+    var now = DateTime.Now;
+    var o = new OrderPart
+    {
+        OrgId = t.OrgId, OrderPartNo = orderPartNo,
+        DealerCode = dealerCode, SupplierID = supplierId,
+        DeliveryFormCode = dto.DeliveryFormCode, DeliveryLocationCode = dlvLocCode,
+        EstimatedDeliverDate = dto.EstimatedDeliverDate,
+        OrderPartType = "TST",          // TConst.OrderPartType.TST
+        OrderPartStatus = "P",          // TConst.OrderPartStatus.Pending
+        SupplierStatus = "1",           // TConst.SupplierStatus.SS_1
+        CreatedAt = now, CreateBy = who,
+        LogLUDateTime = now, LogLUBy = who,
+    };
+    db.OrderParts.Add(o);
+    await db.SaveChangesAsync();
+
+    var newLines = new List<OrderPartLine>();
+    foreach (var l in lines)
+    {
+        var line = new OrderPartLine
+        {
+            OrgId = t.OrgId, OrderPartId = o.Id,
+            PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName,
+            OrderQty = l.OrderQty, Price = l.Price,
+            PartID = l.PartID, Unit = l.Unit, MinQuantity = l.MinQuantity, Remark = l.Remark,
+            // nguồn: `row["QtyAppr"] = row["QtyOrd"]`
+            QtyAppr = l.QtyAppr ?? l.OrderQty,
+            UPBeforeDc = l.UPBeforeDc ?? l.Price, DiscountRate = l.DiscountRate, VAT = l.VAT,
+            OrderPartStatusDtl = "P",   // TConst.OrderPartStatus.Pending
+            LogLUDateTime = now, LogLUBy = who,
+        };
+        // #382: tỷ lệ quy đổi + đơn vị nhập kho lấy từ MASTER TST (đơn TST ⇒ tra `TstExchangeUnits`).
+        var tst = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == line.PartCode);
+        line.ExchangeRate = tst?.ExchangeRate ?? 1.0m;
+        line.UnitStockIn = tst?.DMSUnit;
+        RecalcOrderPartLine(line);
+        db.OrderPartLines.Add(line);
+        newLines.Add(line);
+    }
+    RecalcOrderPartTotals(o, newLines);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { o.OrderPartNo, o.DealerCode, o.SupplierID, lines = lines.Count, status = o.OrderPartStatus });
+}).RequireAuthorization();
+
 // ===== 🔴 #389 SỬA ĐƠN ĐẶT PHỤ TÙNG (`FrmOrderPartModify` → `Ser_Part_OrderUpdate`) =====
 // TRACE 4 tầng: `FrmOrderPartModify.cs` → `orderPartService.Ser_Part_OrderUpdate`
 //   → `WSCarSv.asmx.cs:23510` → `BizCarSv.PartOrder.cs:1155` (khối `UpdatePartOrder` `:1338`).
@@ -81894,6 +81983,12 @@ record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLi
     string? DeliveryFormCode = null, string? DeliveryLocationCode = null,
     DateTime? EstimatedDeliverDate = null, string? VIN = null, string? Remark = null,
     string? OrderPartType = null);
+// #1483 §12: DTO màn TẠO đơn đặt phụ tùng TST (`Ser_Order_Part_CreateTST`, LIVE, chỉ có trên cây V20).
+//   Chữ ký nguồn: strOrderPartNo · strDealerCode · strSupplierID · strDeliveryFormCode ·
+//   strDeliveryLocationCode · strEstimatedDeliverDate + DataSet dòng chi tiết. KHÔNG có FlagIsDelete/PartGroupID/VIN.
+record OrderPartTstCreateDto(string? OrderPartNo, string? DealerCode, string? SupplierID,
+    string? DeliveryFormCode, string? DeliveryLocationCode, DateTime? EstimatedDeliverDate,
+    List<OrderPartLineDto>? Lines = null);
 
 // #234: 5 trường mà `Ser_Order_Part_Appr` gửi lên — CHỈ dùng cho action "approve".
 // #246: kết quả đồng bộ Bravo khi DUYỆT — nguồn chỉ ghi khi `Status == "OK"`.
