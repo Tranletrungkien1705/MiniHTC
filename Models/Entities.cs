@@ -7198,6 +7198,13 @@ public sealed class DeliveryOrder
     /// </summary>
     public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>
+    /// 🔴 #1475 `Car_DeliveryOrder.CreatedBy` — người lập lệnh giao. Nguồn ghi `strPartnerUserCode`
+    /// (`BizHTC.Car.cs:4406` `Rows[0]["CreatedBy"] = strPartnerUserCode`) và dùng làm bộ lọc
+    /// (`strCDOCreatedByConditionList`). `CarDeliveryOrderGet` SELECT `cdo.*` ⇒ route GET PHẢI echo
+    /// (bài học #539/#1466). Field do HỆ THỐNG sinh, KHÔNG nhập qua DTO.
+    /// </summary>
+    public string? CreatedBy { get; set; }
     public DateTime? DeliveredAt { get; set; }
     // Duyệt lệnh giao (FrmApproveDO) — duyệt 2 cấp; mỗi cấp ghi CẢ ngày LẪN người duyệt.
     public DateTime? Approved1At { get; set; }
@@ -13927,6 +13934,16 @@ public sealed class EmailSend
     public string? UserName { get; set; }
     /// <summary>Ghi chú / lý do lỗi gửi (Note/Remark) — port cũ không có chỗ ghi lỗi gửi.</summary>
     public string? Note { get; set; }
+
+    /// <summary>
+    /// 🔴 #1474 `Email_SendEmail.AutoTempId` — khoá trỏ về dòng hàng đợi người nhận
+    /// (`Email_SendEmailAutoTemp`) đã sinh ra email này. Nguồn ghi ở `ProcessSaveSendEmail`
+    /// (`SendMail.cs:599` `Rows[0]["AutoTempId"] = strAutoTempId`) và dùng lại làm khoá tra
+    /// (`:614` `GetTableContents(…, "AutoTempId", "=", strAutoTempId)`).
+    /// ⚠️ Field do HỆ THỐNG sinh (job tự động), KHÔNG nhập qua DTO — nhưng `Email_SendEmail_Get`
+    /// SELECT `t.*` nên route GET PHẢI echo ra (bài học #539/#1466).
+    /// </summary>
+    public string? AutoTempId { get; set; }
 
     public DateTime SendDate { get; set; } = DateTime.Now;
 }

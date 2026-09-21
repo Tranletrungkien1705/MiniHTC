@@ -12562,6 +12562,7 @@ app.MapGet("/api/emailsends", async (AppDbContext db, ITenantContext t, string? 
     var items = await q.OrderByDescending(x => x.Id).Take(500)
         .Select(x => new { x.BatchNo, x.Email, x.EmailType, x.Subject, x.Status, x.InvalidEmail,
             x.FromAddress, x.CusId, x.IsAuto, x.DealerCode, x.FileAttachment, x.UserName, x.Note, x.Body,   // #1356 §12
+            x.AutoTempId,   // #1474: nguồn Email_SendEmail_Get SELECT t.* ⇒ phải echo (bài học #539)
             sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "1"), pending = items.Count(i => i.Status == "0" && !i.InvalidEmail), invalid = items.Count(i => i.InvalidEmail), items });
 }).RequireAuthorization();
@@ -12906,6 +12907,7 @@ app.MapPost("/api/emails/run-auto-job", async (AppDbContext db, ITenantContext t
             FileAttachment = null,              // nguồn truyền chuỗi rỗng — job KHÔNG đính kèm
             UserName = null,                    // nguồn truyền chuỗi rỗng
             Note = null,
+            AutoTempId = row.AutoTempID,        // #1474: nguồn ProcessSaveSendEmail ghi row["AutoTempId"] (SendMail.cs:599)
             IsAuto = "1",
             SendDate = now,                     // nguồn: DateTime.Now lúc TẠO, không phải lúc gửi
         });
@@ -47052,7 +47054,8 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
     var items = await query.OrderBy(x => x.CavityNo).Take(500)
         // #296 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
         .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartWorkTime, x.FinishWorkTime, x.Note, x.FlagActive,
-            x.DealerCode, x.CavityType, x.Status, x.StartUseDate, x.FinishUseDate }).ToListAsync();
+            x.DealerCode, x.CavityType, x.Status, x.StartUseDate, x.FinishUseDate,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1476: nguồn Ser_CavityGet SELECT ca.* ⇒ echo đủ cột (POST đã ghi #1047, GET chưa echo)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -55443,7 +55446,7 @@ app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(o => o.DealerCode == dealer);
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
-        o.DoNo, o.DealerCode, o.Status, o.CreatedAt, o.DeliveredAt, o.Approved1At, o.Approved2At, o.RejectReason,
+        o.DoNo, o.DealerCode, o.Status, o.CreatedAt, o.CreatedBy, o.DeliveredAt, o.Approved1At, o.Approved2At, o.RejectReason,   // #1475 CreatedBy
         o.ApprovedBy1, o.ApprovedBy2, o.RejectedAt,   // #1231 §12
         o.DeliveryAddress, o.TransportCompanyName, o.TransportCompanyPhoneNo, o.TransportCompanyFaxNo, o.D4CDONo, o.D4CDOType,
         cars = db.DeliveryOrderCars.Count(c => c.OrgId == t.OrgId && c.DoId == o.Id)
@@ -55451,7 +55454,7 @@ app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
     var vins = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
@@ -55460,7 +55463,9 @@ app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db,
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "DO" + DateTime.Now.ToString("yyMMddHHmmss");
     // 🔴 Nguồn `CarDeliveryOrderCreate_New20181119` (Biz.HTC.WH.cs:49868) tạo lệnh là "P" ngay.
-    var o = new DeliveryOrder { OrgId = t.OrgId, DoNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P" };
+    // #1475: nguồn CarDeliveryOrderCreate ghi CreatedBy = strPartnerUserCode (người lập lệnh).
+    var whoDO = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var o = new DeliveryOrder { OrgId = t.OrgId, DoNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P", CreatedBy = whoDO };
     db.DeliveryOrders.Add(o); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.DeliveryOrderCars.Add(new DeliveryOrderCar { OrgId = t.OrgId, DoId = o.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, StorageCode = c.StorageCode, DeliveryExpectDate = c.DeliveryExpectDate });
@@ -55522,7 +55527,7 @@ app.MapPost("/api/deliveryorders/create-auto", async (DoCreateAutoDto dto, AppDb
             OrgId = t.OrgId, DoNo = doNo, DealerCode = dealerCode,
             DeliveryAddress = dlr.DealerAddress01,
             // chuỗi Create → Approve1 → Approve2 chạy liền ⇒ trạng thái cuối là "A2"
-            Status = "A2", CreatedAt = now,
+            Status = "A2", CreatedAt = now, CreatedBy = who,   // #1475 nguồn ghi CreatedBy = strPartnerUserCode
             Approved1At = now, ApprovedBy1 = who,
             Approved2At = now.AddSeconds(2), ApprovedBy2 = who,   // nguồn cộng 2 giây, giữ nguyên
             // Ba cot don vi van chuyen: nguon truyen vao CarDeliveryOrderCreateX qua tham so.

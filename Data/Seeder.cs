@@ -518,6 +518,8 @@ public static class Seeder
                 "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"Approved2At\" timestamp NULL",
                 "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"RejectReason\" text NULL",
                 "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"RejectedAt\" timestamp NULL",
+                // #1475: người lập lệnh giao (Car_DeliveryOrder.CreatedBy, BizHTC.Car.cs:4406)
+                "ALTER TABLE public.\"DeliveryOrders\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 // FrmDRApproved — thêm cột từ chối vào CarDocRequests đã tồn tại
                 "ALTER TABLE public.\"CarDocRequests\" ADD COLUMN IF NOT EXISTS \"RejectReason\" text NULL",
                 "ALTER TABLE public.\"CarDocRequests\" ADD COLUMN IF NOT EXISTS \"RejectedAt\" timestamp NULL",
@@ -851,6 +853,8 @@ public static class Seeder
                 "ALTER TABLE public.\"EmailSends\" ADD COLUMN IF NOT EXISTS \"FileAttachment\" text NULL",
                 "ALTER TABLE public.\"EmailSends\" ADD COLUMN IF NOT EXISTS \"UserName\" text NULL",
                 "ALTER TABLE public.\"EmailSends\" ADD COLUMN IF NOT EXISTS \"Note\" text NULL",
+                // #1474: khoá trỏ về dòng hàng đợi người nhận (Email_SendEmail.AutoTempId, SendMail.cs:599)
+                "ALTER TABLE public.\"EmailSends\" ADD COLUMN IF NOT EXISTS \"AutoTempId\" text NULL",
                 // Chuyển dữ liệu port cũ sang mã nguồn: Sent -> 1, Invalid -> 0 + cờ sai địa chỉ
                 "UPDATE public.\"EmailSends\" SET \"InvalidEmail\" = true WHERE \"Status\" = 'Invalid'",
                 "UPDATE public.\"EmailSends\" SET \"Status\" = '1' WHERE \"Status\" = 'Sent'",
