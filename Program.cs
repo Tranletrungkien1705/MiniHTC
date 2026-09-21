@@ -22563,6 +22563,9 @@ app.MapGet("/api/warrantyclaims/{id}/parts", async (long id, AppDbContext db, IT
             x.Id, x.ClaimId, x.PartCode, x.PartName, x.RowPartType, x.PartOrderType, x.PartOrderNo,
             x.Quantity, x.Price, x.Factor, x.Vat, x.InsurancePrice, x.ExpenseType, x.WarrantyStatus,
             x.FlagMainPart, x.Note, x.CreatedAt, x.UpdatedAt, x.ApprovedDate, x.ApprovedBy,   // #1448 §12
+            // #1468 §12: nguồn ProcessSaveROWarrantyReportItems (WarrantyReport.cs:169) ghi đủ 4 cột nhật ký
+            // (= strPartnerUserCode) cho dòng PHỤ TÙNG; POST /parts đã ghi nhưng GET này chưa echo ra.
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
             rowPartTypeName = rowPartTypeNames.ContainsKey(x.RowPartType) ? rowPartTypeNames[x.RowPartType] : x.RowPartType,
             amount = x.Quantity * x.Price * x.Factor,
         }).ToListAsync();
