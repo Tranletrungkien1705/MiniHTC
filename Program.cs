@@ -64888,7 +64888,9 @@ app.MapGet("/api/stockins/{no}/lines", async (string no, AppDbContext db, ITenan
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.VAT, lineTotal = l.Quantity * l.Price }).ToListAsync();
+        // #1469 §12: nguồn SerStockInGet (LIVE, WS asmx:14162) detail SELECT `sid.*` + `p.Unit`
+        // (Ser_Mst_Part) — entity PartStockInLine đã có Unit (#244) nhưng route chưa echo ra.
+        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.VAT, l.Unit, lineTotal = l.Quantity * l.Price }).ToListAsync();
     return Results.Ok(new { h.StockInNo, h.StockInDate, h.StockInType, h.WarehouseCode, h.Staff, h.Status, h.PostedAt,
         h.StockInID, h.StatusText, h.Description, h.UserCode,
         h.DriverName, h.DrivingLicense, h.DriverID, h.TruckNo, h.StockOutNo,
