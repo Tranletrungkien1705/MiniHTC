@@ -20566,7 +20566,10 @@ app.MapGet("/api/stockoutorders/search-wh", async (AppDbContext db, ITenantConte
     var qy = db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(stockOutOrderNo)) qy = qy.Where(x => x.OrderNo == stockOutOrderNo!.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
-    // 📌 SerStockOutOrder cua Mini KHONG co cot DealerCode/CusID/StockOutType => ba bo loc do chua ap duoc.
+    // #1470 §12: entity SerStockOutOrder DA co cot DealerCode (#263) — nguon SerStockOutOrderGetWH
+    // (LIVE, WS asmx:14890) ap `strDealerCodeConditionList` tren `t.DealerCode`; comment cu ("Mini KHONG co
+    // cot DealerCode") da LOI THOI. Ap lai bo loc dealerCode (bai hoc #540: tham so nhan vao phai duoc dung).
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim().ToUpperInvariant());
 
     var orders = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
 
@@ -20597,7 +20600,7 @@ app.MapGet("/api/stockoutorders/search-wh", async (AppDbContext db, ITenantConte
         count = items.Count, items, lines,
         droppedByCustomerJoin = items.Count(x => x.wouldBeDroppedByCustomerJoin == true),
         droppedByBackOrderFilter = items.Count(x => x.wouldBeDroppedByBackOrderFilter == true),
-        miniOrderHasNoDealerOrCusId = "SerStockOutOrder cua Mini luu CusName/Address/Phone TRUC TIEP tren don, khong co CusID/DealerCode/StockOutType => ba bo loc do chua ap duoc, ghi NO",
+        miniOrderHasNoDealerOrCusId = "DINH CHINH #1470: entity SerStockOutOrder DA co CusID/DealerCode/StockOutType tu #263/#293 => bo loc dealerCode nay DA ap duoc (nguon GetWH loc tren t.DealerCode); CusID/StockOutType van chua co tham so tuong ung o route nay",
         // ===== #661 =====
         correctionOfIssue643 = "DINH CHINH #643: phan dem 9 ham _New20240115 khong duoc dau day VAN DUNG, nhung ket luan tron mot tinh nang chua bao gio chay la SAI — bon ngay sau (19/01/2024) ho sua THANG vao ham dang chay, danh dau bang chu thich 20240119, dem duoc 11 site (Inventory.Stock.cs 1, Inventory.StockOut.cs 5, WH.cs 5)",
         twoRoutesForOneFeature = "dot them Ma kho trien khai theo HAI cach: (A) 15/01 tao 9 bien the _New20240115 — BI BO; (B) 19/01 sua thang ham dang chay — DUOC DUNG; tinh nang CO chay, chi la qua duong khac",
@@ -24533,7 +24536,9 @@ app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(source)) qry = qry.Where(x => x.SourceType == source);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.OrderNo.Contains(q!) || x.CusName!.Contains(q!) || x.RONo!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Address, x.Phone, x.Mobile, x.Note, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt }).ToListAsync();   // #1425 §12
+    // #1470 §12: nguồn SerStockOutOrderGet (LIVE, WS asmx:14803) header SELECT `si.*` ⇒ phải echo ĐỦ cột
+    // entity SerStockOutOrder (9 cột #263 + StockOutType/Description #293), không chỉ tập con #1425.
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Address, x.Phone, x.Mobile, x.Note, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt, x.RequestDeliveryTime, x.Priority, x.BackOrderIndex, x.StatusText, x.UserCode, x.CusID, x.DealerCode, x.LogLUDateTime, x.LogLUBy, x.StockOutType, x.Description }).ToListAsync();   // #1425 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -24603,7 +24608,8 @@ app.MapGet("/api/stockoutorders/{id}", async (long id, AppDbContext db, ITenantC
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && x.OrderId == id).Select(x => new { x.Id, x.PartCode, x.PartName, x.Unit, x.OrderQuantity }).ToListAsync();
-    return Results.Ok(new { header = new { h.Id, h.OrderNo, h.OrderDate, h.CusName, h.Address, h.Phone, h.Mobile, h.Note, h.TotalQty, h.Status, h.SourceType, h.RONo, h.CreatedBy, h.CreatedAt }, lines });
+    // #1470 §12: cùng nguồn SerStockOutOrderGet header `si.*` — detail route cũng phải echo đủ cột entity.
+    return Results.Ok(new { header = new { h.Id, h.OrderNo, h.OrderDate, h.CusName, h.Address, h.Phone, h.Mobile, h.Note, h.TotalQty, h.Status, h.SourceType, h.RONo, h.CreatedBy, h.CreatedAt, h.RequestDeliveryTime, h.Priority, h.BackOrderIndex, h.StatusText, h.UserCode, h.CusID, h.DealerCode, h.LogLUDateTime, h.LogLUBy, h.StockOutType, h.Description }, lines });
 }).RequireAuthorization();
 
 // Lệnh xuất theo lệnh sửa chữa (FrmStockOutOrderSvCreate) — bắt buộc số RO; xuất PT phục vụ RO
