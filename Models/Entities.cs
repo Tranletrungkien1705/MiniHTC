@@ -14684,6 +14684,23 @@ public sealed class ServiceStockInLine
     /// <summary>#1472 §12 — đơn vị tính, nguồn `SerStockInGet` detail SELECT `sid.*, p.Unit` (join Ser_Mst_Part).
     /// Là field ECHO (đọc từ Ser_Mst_Part), KHÔNG ghi vào Ser_Inv_StockInDetail lúc Create.</summary>
     public string? Unit { get; set; }
+
+    // #1490 §12 — 7 cột nguồn `Ser_Inv_StockInDetail` mà `SerStockInDetailCreate`
+    // (BizCarSv.Inventory.StockIn.cs:4535) ghi rõ ràng nhưng entity Mini chưa từng có (bài học #547).
+    /// <summary>Số phiếu nhập (Ser_Inv_StockInDetail.StockInNo) — nguồn ghi cùng dòng detail.</summary>
+    public string? StockInNo { get; set; }
+    /// <summary>Mã đại lý (Ser_Inv_StockInDetail.DealerCode).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Khoá kỹ thuật phụ tùng (Ser_Inv_StockInDetail.PartID) — KHÁC PartCode là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>Mô tả dòng nhập (Ser_Inv_StockInDetail.Description).</summary>
+    public string? Description { get; set; }
+    /// <summary>Vị trí KẾ HOẠCH nhập (Ser_Inv_StockInDetail.PlanLocationID).</summary>
+    public string? PlanLocationID { get; set; }
+    /// <summary>Nhật ký cập nhật (Ser_Inv_StockInDetail.LogLUDateTime).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>Người cập nhật cuối (Ser_Inv_StockInDetail.LogLUBy).</summary>
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phụ tùng nợ/chờ giao theo xe (outstanding part order) — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO (Ser_Part_OO, TCMotor).

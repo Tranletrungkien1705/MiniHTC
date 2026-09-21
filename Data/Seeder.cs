@@ -829,6 +829,14 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"VatAmount\" numeric NOT NULL DEFAULT 0",
                 // #1472 §12 — đơn vị tính (echo từ Ser_Mst_Part.Unit, nguồn SerStockInGet detail SELECT sid.*, p.Unit)
                 "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"Unit\" text NULL",
+                // #1490 §12 — 7 cột nguồn Ser_Inv_StockInDetail mà SerStockInDetailCreate (StockIn.cs:4535) ghi rõ
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"StockInNo\" text NULL",
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"PartID\" text NULL",
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"Description\" text NULL",
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"PlanLocationID\" text NULL",
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp with time zone NULL",
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 "ALTER TABLE public.\"ServiceStockIns\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 // Báo giá phụ tùng: tổng KHÔNG nhân hệ số, đúng cột SumAmount của nguồn (Inventory.Quote.cs:1777)
                 "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"SumAmountNoFactor\" numeric NOT NULL DEFAULT 0",

@@ -16538,7 +16538,7 @@ app.MapGet("/api/servicestockins/next-number", async (AppDbContext db, ITenantCo
 }).RequireAuthorization();
 
 // Tạo phiếu nhập (header + dòng; tính Amount=Qty*Price + tổng).
-app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext db, ITenantContext t, ClaimsPrincipal user) =>
 {
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
@@ -16556,7 +16556,10 @@ app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext d
         var vatAmount = l.Vat * l.Price * l.Quantity * 0.01m;
         var amount = totalBeforeVat + vatAmount;
         total += amount;
-        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, ActualLocationCode = l.ActualLocationCode, TotalBeforeVat = totalBeforeVat, VatAmount = vatAmount, Amount = amount });
+        // #1490 §12 — ghi 7 cột nguồn Ser_Inv_StockInDetail (SerStockInDetailCreate StockIn.cs:4535):
+        // StockInNo/DealerCode/PartID/Description/PlanLocationID + LogLUDateTime/LogLUBy (nhật ký do endpoint chụp).
+        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, ActualLocationCode = l.ActualLocationCode, TotalBeforeVat = totalBeforeVat, VatAmount = vatAmount, Amount = amount,
+            StockInNo = no, DealerCode = dto.DealerCode, PartID = l.PartID, Description = l.Description, PlanLocationID = l.PlanLocationID, LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
     }
     h.TotalAmount = total; await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, lines = lines.Count, totalAmount = total });
@@ -16568,7 +16571,8 @@ app.MapGet("/api/servicestockins/{no}/lines", async (string no, AppDbContext db,
     var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.ActualLocationCode, l.TotalBeforeVat, l.VatAmount, l.Amount, l.Unit }).ToListAsync();   // #1472 §12 — Unit echo (nguồn SerStockInGet detail SELECT sid.*, p.Unit)
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.ActualLocationCode, l.TotalBeforeVat, l.VatAmount, l.Amount, l.Unit,
+            l.StockInNo, l.DealerCode, l.PartID, l.Description, l.PlanLocationID, l.LogLUDateTime, l.LogLUBy }).ToListAsync();   // #1472 §12 — Unit echo; #1490 §12 — 7 cột nguồn Ser_Inv_StockInDetail
     return Results.Ok(new { h.StockInNo, h.SupplierCode, h.DealerCode, h.Status, h.TotalAmount, h.CreatedAt,
         stockInDate = h.StockInDate.HasValue ? h.StockInDate.Value.ToString("yyyy-MM-dd") : "",   // #1405 §12
         count = lines.Count, lines });
@@ -82658,7 +82662,10 @@ record CustomerWithCarsCarDto(string? FrameNo, string? PlateNo = null, string? P
 
 record ServiceCustomerImportDto(List<ServiceCustomerImportRow>? Rows);
 record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decimal QtyNeeded, string? Note, string? LoaiXe = null, string? CVDV = null, string? DealerCode = null, DateTime? NgayDatHang = null, DateTime? NgayVeDuKien = null, DateTime? NgayHenTra = null);
-record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0, string? ActualLocationCode = null);
+// #1490 §12: bổ sung 5 trường nguồn `Ser_Inv_StockInDetail` (PartID/Description/PlanLocationID + StockInNo/DealerCode).
+// `LogLUDateTime`/`LogLUBy` do endpoint chụp/ghi, không nhận từ client.
+record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0, string? ActualLocationCode = null,
+    string? PartID = null, string? Description = null, string? PlanLocationID = null, string? StockInNo = null, string? DealerCode = null);
 record StockDocVoidDto(string? ToStatus);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines, string? DealerCode = null);
 // #1489 §12: bổ sung 6 trường nguồn `Ser_Inv_StockOutDetail` (PartID/PlanLocationID/ActualLocationID/PartPriceId
