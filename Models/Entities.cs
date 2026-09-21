@@ -5967,6 +5967,19 @@ public sealed class WarrantyClaimPartItem
     public string PartCode { get; set; } = "";
     public string? PartName { get; set; }
 
+    // ===== 🔴 #1485 §12 BA CỘT nguồn `Ser_ROWarrantyReportPartItems` mà entity Mini THIẾU =====
+    // Nguồn: khối `insert into Ser_ROWarrantyReportPartItems` của `Ser_ROWarrantyReport_Update`
+    // (`BizCarSv.WarrantyReport.cs:1343-1390`) liệt kê 21 cột; entity Mini trước lượt này chỉ có 18.
+    //   · `PartID`     — khoá kỹ thuật phụ tùng (KHÁC `PartCode` là mã hiển thị, lấy qua join `Ser_MST_Part`).
+    //   · `PartTypeID` — loại phụ tùng (khoá kỹ thuật).
+    //   · `PartGroupID`— nhóm phụ tùng.
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (KHÁC `PartCode`).</summary>
+    public string? PartID { get; set; }
+    /// <summary>PartTypeID — loại phụ tùng (khoá kỹ thuật).</summary>
+    public string? PartTypeID { get; set; }
+    /// <summary>PartGroupID — nhóm phụ tùng.</summary>
+    public string? PartGroupID { get; set; }
+
     /// <summary>
     /// 🔴 LOẠI PHỤ TÙNG trong đề nghị bảo hành (`TConst.ROWPartType`) — trục mà port cũ THIẾU HẲN:
     /// "PTC" phụ tùng chính · "PTTT" phụ tùng thay thế · "VTP" vật tư phụ.

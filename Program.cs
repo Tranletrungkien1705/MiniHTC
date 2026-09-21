@@ -22572,6 +22572,8 @@ app.MapGet("/api/warrantyclaims/{id}/parts", async (long id, AppDbContext db, IT
             x.Id, x.ClaimId, x.PartCode, x.PartName, x.RowPartType, x.PartOrderType, x.PartOrderNo,
             x.Quantity, x.Price, x.Factor, x.Vat, x.InsurancePrice, x.ExpenseType, x.WarrantyStatus,
             x.FlagMainPart, x.Note, x.CreatedAt, x.UpdatedAt, x.ApprovedDate, x.ApprovedBy,   // #1448 §12
+            // #1485 §12: ba cot nguon `Ser_ROWarrantyReportPartItems` ma entity Mini thieu.
+            x.PartID, x.PartTypeID, x.PartGroupID,
             // #1468 §12: nguồn ProcessSaveROWarrantyReportItems (WarrantyReport.cs:169) ghi đủ 4 cột nhật ký
             // (= strPartnerUserCode) cho dòng PHỤ TÙNG; POST /parts đã ghi nhưng GET này chưa echo ra.
             x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
@@ -22658,6 +22660,8 @@ app.MapPost("/api/warrantyclaims/{id}/parts", async (
         Vat = dto.Vat, InsurancePrice = dto.InsurancePrice, ExpenseType = dto.ExpenseType,
         WarrantyStatus = dto.WarrantyStatus, FlagMainPart = rowPartType == "PTC" ? "1" : dto.FlagMainPart,
         Note = dto.Note,
+        // #1485 §12: ba cot nguon `Ser_ROWarrantyReportPartItems` ma entity Mini thieu.
+        PartID = dto.PartID, PartTypeID = dto.PartTypeID, PartGroupID = dto.PartGroupID,
         // #1116 §12: ProcessSaveROWarrantyReportItems ghi đủ 4 cột nhật ký = strPartnerUserCode.
         CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
         LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
@@ -83006,7 +83010,9 @@ record WarrantyClaimServiceItemDto(string? SerID = null, string? SerCode = null,
     // #1484 §12: bon cot nguon `Ser_ROWarrantyReportServiceItems` ma entity Mini thieu.
     string? TypeID = null, decimal? ActManHour = null, string? ExpenseType = null, decimal? InsurancePrice = null);
 
-record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
+record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note,
+    // #1485 §12: ba cot nguon `Ser_ROWarrantyReportPartItems` ma entity Mini thieu.
+    string? PartID = null, string? PartTypeID = null, string? PartGroupID = null);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
 // #268: `Creator` = bên tạo bước chuyển (nguồn truyền riêng, KHÁC tài khoản đăng nhập `CreatedBy`).
 // #397: dau vao duyet HANG LOAT (nguon: ..._HTCApproved_ForAuto, nhan MOT bang ho so).

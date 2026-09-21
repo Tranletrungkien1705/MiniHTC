@@ -1105,6 +1105,10 @@ public static class Seeder
         "ALTER TABLE public.\"WarrantyClaimServiceItems\" ADD COLUMN IF NOT EXISTS \"InsurancePrice\" numeric NULL",
         "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
         "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+        // #1485 ba cot nguon `Ser_ROWarrantyReportPartItems` ma entity Mini thieu (PartID/PartTypeID/PartGroupID)
+        "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"PartID\" text NULL",
+        "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"PartTypeID\" text NULL",
+        "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"PartGroupID\" text NULL",
         // #400 CUSDEBT — ten cot noi "cong no" nhung man Ton kho toi uu dung lam SO LUONG BO nhap tay
         "ALTER TABLE public.\"ServiceParts\" ADD COLUMN IF NOT EXISTS \"CusDebt\" numeric NULL",
         // #403 ky bao cao KPI — guard trung ky dua tren (DealerCode, RptYear, RptMonth)
