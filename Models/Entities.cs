@@ -14477,6 +14477,10 @@ public sealed class ServiceStockOutLine
 
     /// <summary>Thành tiền dòng = Quantity × Price × (1 + VAT%) — đúng biểu thức doanh thu của nguồn.</summary>
     public decimal Amount { get; set; }
+
+    /// <summary>#1471 §12 — đơn vị tính, nguồn `SerStockOutGet` detail SELECT `sid.*, p.Unit` (join Ser_Mst_Part).
+    /// Là field ECHO (đọc từ Ser_Mst_Part), KHÔNG ghi vào Ser_Inv_StockOutDetail lúc Create.</summary>
+    public string? Unit { get; set; }
 }
 
 /// <summary>Phiếu nhập kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockIn (TblSerInvStockIn, TCMotor).</summary>
@@ -14525,6 +14529,10 @@ public sealed class ServiceStockInLine
 
     /// <summary>Thành tiền đã gồm thuế = TotalBeforeVat + VatAmount.</summary>
     public decimal Amount { get; set; }
+
+    /// <summary>#1472 §12 — đơn vị tính, nguồn `SerStockInGet` detail SELECT `sid.*, p.Unit` (join Ser_Mst_Part).
+    /// Là field ECHO (đọc từ Ser_Mst_Part), KHÔNG ghi vào Ser_Inv_StockInDetail lúc Create.</summary>
+    public string? Unit { get; set; }
 }
 
 /// <summary>Phụ tùng nợ/chờ giao theo xe (outstanding part order) — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO (Ser_Part_OO, TCMotor).

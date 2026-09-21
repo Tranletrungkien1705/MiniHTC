@@ -800,6 +800,8 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceStockOutLines\" ADD COLUMN IF NOT EXISTS \"Price\" numeric NOT NULL DEFAULT 0",
                 "ALTER TABLE public.\"ServiceStockOutLines\" ADD COLUMN IF NOT EXISTS \"Vat\" numeric NOT NULL DEFAULT 0",
                 "ALTER TABLE public.\"ServiceStockOutLines\" ADD COLUMN IF NOT EXISTS \"Amount\" numeric NOT NULL DEFAULT 0",
+                // #1471 §12 — đơn vị tính (echo từ Ser_Mst_Part.Unit, nguồn SerStockOutGet detail SELECT sid.*, p.Unit)
+                "ALTER TABLE public.\"ServiceStockOutLines\" ADD COLUMN IF NOT EXISTS \"Unit\" text NULL",
                 "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"TotalAmount\" numeric NOT NULL DEFAULT 0",
                 "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"StockOutType\" text NULL",
                 // Chi tiết thanh toán nhà cung cấp (Ser_SupplierPaymentDtl, TCMotor): tiền theo QtyPay
@@ -809,6 +811,8 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"ActualLocationCode\" text NULL",
                 "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"TotalBeforeVat\" numeric NOT NULL DEFAULT 0",
                 "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"VatAmount\" numeric NOT NULL DEFAULT 0",
+                // #1472 §12 — đơn vị tính (echo từ Ser_Mst_Part.Unit, nguồn SerStockInGet detail SELECT sid.*, p.Unit)
+                "ALTER TABLE public.\"ServiceStockInLines\" ADD COLUMN IF NOT EXISTS \"Unit\" text NULL",
                 "ALTER TABLE public.\"ServiceStockIns\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 // Báo giá phụ tùng: tổng KHÔNG nhân hệ số, đúng cột SumAmount của nguồn (Inventory.Quote.cs:1777)
                 "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"SumAmountNoFactor\" numeric NOT NULL DEFAULT 0",

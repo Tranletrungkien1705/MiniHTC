@@ -10435,7 +10435,8 @@ app.MapGet("/api/transpdlv/{no}/cars", async (string no, AppDbContext db, ITenan
     var m = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlvMinutesNo == no);
     if (m is null) return Results.NotFound(new { no });
     var cars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
-        .Select(c => new { c.VIN, c.ModelCode }).ToListAsync();
+        .Select(c => new { c.VIN, c.ModelCode, c.FProvinceCode, c.TProvinceCode, c.FDistrictCode, c.TDistrictCode,
+            c.DriverCode, c.DlvStartDate, c.DlvEndDate }).ToListAsync();   // #1473 §12 — echo đủ 9 cột entity (route twin /api/dlvminutes/{no} đã đủ; bài học #533/#539/#1461)
     return Results.Ok(new { m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.ConfirmStatus, m.Remark, m.ConfirmDate, m.CreatedAt,
         m.FDlvMnStatus, m.TDlvMnStatus, m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy,
         m.TranspReqNo, m.TranspReqType, m.RefOrdNo, m.FStorageCode, m.TStorageCode, m.DlvStartDate, m.DlvEndDate,
@@ -16391,7 +16392,7 @@ app.MapGet("/api/servicestockouts/{no}/lines", async (string no, AppDbContext db
     var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount, l.Unit }).ToListAsync();   // #1471 §12 — Unit echo (nguồn SerStockOutGet detail SELECT sid.*, p.Unit)
     return Results.Ok(new { h.StockOutNo, h.ReceiverCode, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount,
         stockOutDate = h.StockOutDate.HasValue ? h.StockOutDate.Value.ToString("yyyy-MM-dd") : "",   // #1406 §12
         count = lines.Count, lines });
@@ -16550,7 +16551,7 @@ app.MapGet("/api/servicestockins/{no}/lines", async (string no, AppDbContext db,
     var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.ActualLocationCode, l.TotalBeforeVat, l.VatAmount, l.Amount }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.ActualLocationCode, l.TotalBeforeVat, l.VatAmount, l.Amount, l.Unit }).ToListAsync();   // #1472 §12 — Unit echo (nguồn SerStockInGet detail SELECT sid.*, p.Unit)
     return Results.Ok(new { h.StockInNo, h.SupplierCode, h.DealerCode, h.Status, h.TotalAmount, h.CreatedAt,
         stockInDate = h.StockInDate.HasValue ? h.StockInDate.Value.ToString("yyyy-MM-dd") : "",   // #1405 §12
         count = lines.Count, lines });
