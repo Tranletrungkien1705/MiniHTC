@@ -27709,6 +27709,10 @@ app.MapGet("/api/assignmentworks/search", async (AppDbContext db, ITenantContext
     if (rid.Length > 0) qy = qy.Where(x => x.ROID == rid);
     var rno = (roNo ?? "").Trim();
     if (rno.Length > 0) qy = qy.Where(x => x.RONo == rno);
+    // #1467 §12: nguon Ser_AssignmentWork_Get loc that theo ro.DealerCode (join Ser_RO qua ROID) — tham so
+    //   dealerCode o day truoc day NHAN vao nhung KHONG BAO GIO duoc ap dung (dieu kien bien mat, ho #410).
+    var dc = (dealerCode ?? "").Trim();
+    if (dc.Length > 0) qy = qy.Where(x => db.RepairOrders.Any(r => r.OrgId == t.OrgId && r.RONo == x.RONo && r.DealerCode == dc));
     var totalBeforeTop = await qy.CountAsync();
     var rows = await qy.OrderBy(x => x.Id).Skip(skip ?? 0).Take(Math.Min(take ?? 500, 2000))
         .Select(x => new { x.Id, x.ROID, x.RONo, x.WorkTypeStart, x.WorkTypeFinish,
