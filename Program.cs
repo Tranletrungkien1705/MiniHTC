@@ -16302,7 +16302,10 @@ app.MapGet("/api/servicestockouts/{no}", async (string no, AppDbContext db, ITen
     {
         h.StockOutNo, h.DealerCode, h.CusID, cusName = cus?.CusName, h.UserCode, userName = user?.UserName,
         h.TruckNo, h.ReceiverCode, h.StockOutDate, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount, h.CreatedAt,   // #1443 §12
-        lines = includeDetail ? lines.Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount }) : null,
+        // #1479 §12 — mảng `lines` lồng trong detail trước đây chỉ echo 6 cột, THIẾU `Unit` dù route twin
+        // `/api/servicestockouts/{no}/lines` đã echo đủ 7 cột từ #1471 (nguồn `SerStockOutGet` detail SELECT
+        // `sid.*, p.Unit`). Đúng khuôn bài học #533/#538/#1473: route detail tự viết lại object literal riêng nên bỏ sót.
+        lines = includeDetail ? lines.Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount, x.Unit }) : null,
         onlyExistsOnMachine150_996 = "#996: SerStockOutGet — BizCarSv.Inventory.StockOut.cs:3028",
         priceRankAndStockBalanceBlocksNotPorted = "Nguon con khoi #tbl_sbb (ton kho InStockQuantity theo PartID) va #tbl_tmpprice (gia hieu luc gan nhat qua RANK() OVER PARTITION BY PartId ORDER BY DateEffect DESC) khi strIsGetDetail=Active — day la du lieu TINH LAI de goi y gia luc xuat (khong phai du lieu da LUU tren dong phieu), Mini chua port; ghi NO",
     });
