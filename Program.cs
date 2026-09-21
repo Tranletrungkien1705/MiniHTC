@@ -16305,7 +16305,10 @@ app.MapGet("/api/servicestockouts/{no}", async (string no, AppDbContext db, ITen
         // #1479 §12 — mảng `lines` lồng trong detail trước đây chỉ echo 6 cột, THIẾU `Unit` dù route twin
         // `/api/servicestockouts/{no}/lines` đã echo đủ 7 cột từ #1471 (nguồn `SerStockOutGet` detail SELECT
         // `sid.*, p.Unit`). Đúng khuôn bài học #533/#538/#1473: route detail tự viết lại object literal riêng nên bỏ sót.
-        lines = includeDetail ? lines.Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount, x.Unit }) : null,
+        // #1489 §12 — mảng `lines` lồng cũng phải echo đủ cột như route `/lines` (bài học #544).
+        lines = includeDetail ? lines.Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount, x.Unit,
+            x.StockOutOrderID, x.StockOutOrderNo, x.DealerCode, x.PartID, x.PlanLocationID, x.ActualLocationID,
+            x.PartPriceId, x.PartPrice, x.PartVAT, x.LogLUDateTime, x.LogLUBy }) : null,
         onlyExistsOnMachine150_996 = "#996: SerStockOutGet — BizCarSv.Inventory.StockOut.cs:3028",
         priceRankAndStockBalanceBlocksNotPorted = "Nguon con khoi #tbl_sbb (ton kho InStockQuantity theo PartID) va #tbl_tmpprice (gia hieu luc gan nhat qua RANK() OVER PARTITION BY PartId ORDER BY DateEffect DESC) khi strIsGetDetail=Active — day la du lieu TINH LAI de goi y gia luc xuat (khong phai du lieu da LUU tren dong phieu), Mini chua port; ghi NO",
     });
@@ -16351,7 +16354,12 @@ app.MapPost("/api/servicestockouts", async (ServiceStockOutDto dto, AppDbContext
         // Thành tiền dòng xuất theo nguồn: Quantity * Price * (1 + VAT*0.01).
         var outLineAmount = l.Quantity * l.Price * (1 + l.Vat / 100m);
         totalAmount += outLineAmount;
-        db.ServiceStockOutLines.Add(new ServiceStockOutLine { OrgId = t.OrgId, ServiceStockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, Amount = outLineAmount });
+        // #1489 §12: nguồn `SerStockOutDetailCreate` (StockOut.cs:5375) ghi thêm StockOutOrderID/StockOutOrderNo/
+        // DealerCode/PartID/PlanLocationID/ActualLocationID/PartPriceId/PartPrice/PartVAT + LogLU* cho TỪNG dòng.
+        db.ServiceStockOutLines.Add(new ServiceStockOutLine { OrgId = t.OrgId, ServiceStockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, Amount = outLineAmount,
+            StockOutOrderID = l.StockOutOrderID, StockOutOrderNo = l.StockOutOrderNo, DealerCode = h.DealerCode, PartID = l.PartID,
+            PlanLocationID = l.PlanLocationID, ActualLocationID = l.ActualLocationID, PartPriceId = l.PartPriceId,
+            LogLUDateTime = DateTime.Now, LogLUBy = (dto.UserCode ?? "system").Trim() });
     }
     h.TotalQty = totalQty; h.TotalAmount = totalAmount; await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, lines = lines.Count, totalQty, totalAmount });
@@ -16397,7 +16405,11 @@ app.MapGet("/api/servicestockouts/{no}/lines", async (string no, AppDbContext db
     var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount, l.Unit }).ToListAsync();   // #1471 §12 — Unit echo (nguồn SerStockOutGet detail SELECT sid.*, p.Unit)
+        // #1471 §12 — Unit echo (nguồn SerStockOutGet detail SELECT sid.*, p.Unit)
+        // #1489 §12 — `sid.*` còn gồm StockOutOrderID/StockOutOrderNo/DealerCode/PartID/PlanLocationID/ActualLocationID/PartPriceId/PartPrice/PartVAT/LogLU*.
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount, l.Unit,
+            l.StockOutOrderID, l.StockOutOrderNo, l.DealerCode, l.PartID, l.PlanLocationID, l.ActualLocationID,
+            l.PartPriceId, l.PartPrice, l.PartVAT, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { h.StockOutNo, h.ReceiverCode, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount,
         stockOutDate = h.StockOutDate.HasValue ? h.StockOutDate.Value.ToString("yyyy-MM-dd") : "",   // #1406 §12
         count = lines.Count, lines });
@@ -23880,6 +23892,57 @@ app.MapDelete("/api/servicetrademarks/{id:long}", async (long id, AppDbContext d
     db.ServiceTradeMarks.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
+// ===== 🔴 #1486 `Ser_MST_ROWarrantyWork` — DANH MỤC CÔNG BẢO HÀNH HÃNG (CRUD 1:1) =====
+// Nguồn: `BizCarSv.AssignmentOfWork.cs` — `_Get` (:3388, SELECT `smroww.*`), `_Save` (:4036, insert/update),
+// `_Delete` (:5378, xoá CỨNG theo `ROWWorkCode`). Ba `[WebMethod]` LIVE ở `HTCWSCarSv/WSCarSv.asmx.cs`
+// (:36048/:36082/:36238) gọi thẳng bản trần ⇒ đây là bản LIVE. Bảng ở DB CommonCenter (dùng chung).
+// `_Get` lọc theo `ROWWorkCode`/`ROWWorkName`/`Model`/`FlagActive` (bài học #540: áp đủ tham số).
+app.MapGet("/api/rowwarrantyworks", async (AppDbContext db, ITenantContext t, string? rowWorkCode, string? rowWorkName, string? model, string? flagActive) =>
+{
+    var qry = db.ROWarrantyWorks.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(rowWorkCode)) qry = qry.Where(x => x.ROWWorkCode == rowWorkCode);
+    if (!string.IsNullOrWhiteSpace(rowWorkName)) qry = qry.Where(x => x.ROWWorkName != null && x.ROWWorkName.Contains(rowWorkName!));
+    if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.Model == model);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
+    var items = await qry.OrderBy(x => x.ROWWorkCode).Take(500).Select(x => new { x.Id, x.ROWWorkCode, x.ROWWorkName, x.Model,
+        x.RateHour, x.Price, x.RatePrice, x.VAT, x.Remark, x.AppTypeCode, x.FlagActive,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1486 §12 — echo đủ cột (nguồn SELECT smroww.*)
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// `Ser_MST_ROWarrantyWork_Save`: nguồn tra theo `ROWWorkCode` — có thì UPDATE (10 cột), chưa có thì INSERT
+// (13 cột, `FlagActive`='1' + `CreatedDate`/`CreatedBy`). Cả hai nhánh đều ghi `LogLUDateTime`/`LogLUBy`.
+app.MapPost("/api/rowwarrantyworks", async (ROWarrantyWorkDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var code = (dto.ROWWorkCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã công bảo hành (ROWWorkCode)." });
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    var row = await db.ROWarrantyWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == code);
+    if (row is null)
+    {
+        row = new ROWarrantyWork { OrgId = t.OrgId, ROWWorkCode = code, FlagActive = "1", CreatedDate = now, CreatedBy = who };
+        db.ROWarrantyWorks.Add(row);
+    }
+    row.ROWWorkName = dto.ROWWorkName; row.Model = dto.Model; row.RateHour = dto.RateHour; row.Price = dto.Price;
+    row.RatePrice = dto.RatePrice; row.VAT = dto.VAT; row.Remark = dto.Remark; row.AppTypeCode = dto.AppTypeCode;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ROWWorkCode, row.ROWWorkName, row.Model, row.FlagActive });
+}).RequireAuthorization();
+
+// `Ser_MST_ROWarrantyWork_Delete`: xoá CỨNG theo `ROWWorkCode`, KHÔNG kiểm tham chiếu (nguồn không có guard).
+app.MapDelete("/api/rowwarrantyworks/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = code.Trim();
+    var row = await db.ROWarrantyWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == c);
+    if (row is null) return Results.NotFound(new { code = c });
+    db.ROWarrantyWorks.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 // ===== Khách đến xem xe (CustomerVisit — port 1:1 FrmCusVisit, 2010.HTC/Sales/RetailContract) =====
@@ -65032,7 +65095,11 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     h.CreatedDate = now1086; h.CreatedBy = by1086; h.LogLUDateTime = now1086; h.LogLUBy = by1086;
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT });
+        // #1488 §12: nguồn `SerStockInDetailCreate` (StockIn.cs:4535) ghi thêm StockInNo/DealerCode/PartID/
+        // Description/PlanLocationID/ActualLocationID + LogLU* cho TỪNG dòng chi tiết.
+        db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT,
+            StockInNo = h.StockInNo, DealerCode = h.DealerCode, PartID = l.PartID, Description = l.Description,
+            PlanLocationID = l.PlanLocationID, ActualLocationID = l.ActualLocationID, LogLUDateTime = now1086, LogLUBy = by1086 });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
 }).RequireAuthorization();
@@ -65152,7 +65219,10 @@ app.MapGet("/api/stockins/{no}/lines", async (string no, AppDbContext db, ITenan
     var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id)
         // #1469 §12: nguồn SerStockInGet (LIVE, WS asmx:14162) detail SELECT `sid.*` + `p.Unit`
         // (Ser_Mst_Part) — entity PartStockInLine đã có Unit (#244) nhưng route chưa echo ra.
-        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.VAT, l.Unit, lineTotal = l.Quantity * l.Price }).ToListAsync();
+        // #1488 §12: `sid.*` còn gồm StockInNo/DealerCode/PartID/Description/PlanLocationID/ActualLocationID/LogLU*.
+        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, l.VAT, l.Unit,
+            l.StockInNo, l.DealerCode, l.PartID, l.Description, l.PlanLocationID, l.ActualLocationID, l.LogLUDateTime, l.LogLUBy,
+            lineTotal = l.Quantity * l.Price }).ToListAsync();
     return Results.Ok(new { h.StockInNo, h.StockInDate, h.StockInType, h.WarehouseCode, h.Staff, h.Status, h.PostedAt,
         h.StockInID, h.StatusText, h.Description, h.UserCode,
         h.DriverName, h.DrivingLicense, h.DriverID, h.TruckNo, h.StockOutNo,
@@ -81802,7 +81872,10 @@ record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? 
     // #1039: 4 cot con lai cua ban LIVE 2021 (#522 tu ghi "notPortedYet", chua ai vá).
     string? BodyPaintFilePath = null, string? CardNo = null, string? MemberNo = null, string? CardType = null);
 record ReceptionLinkDto(string RONO);
-record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
+// #1488 §12: bổ sung 6 trường nguồn `Ser_Inv_StockInDetail` (PartID/Description/PlanLocationID/ActualLocationID
+// + StockInNo/DealerCode do hệ thống suy từ header). `LogLU*` do endpoint ghi, không nhận từ client.
+record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT,
+    string? PartID = null, string? Description = null, string? PlanLocationID = null, string? ActualLocationID = null);
 // #265 §12: 12 trường bổ sung. Khối ĐIỀU CHỈNH (`IsAdjustment`/`Adjustment*`/`OldStockInID`) CỐ Ý
 //   không nhận từ client — do luồng tạo phiếu điều chỉnh sinh ra, chưa port (ghi nợ, giống #264).
 // #292: sửa phiếu NHẬP — KHÔNG có trường Status (nguồn không ghi cột đó khi sửa).
@@ -82588,7 +82661,11 @@ record ServicePartOODto(string PartCode, string? PartName, string PlateNo, decim
 record ServiceStockInLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price, decimal Vat = 0, string? ActualLocationCode = null);
 record StockDocVoidDto(string? ToStatus);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines, string? DealerCode = null);
-record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price = 0, decimal Vat = 0);
+// #1489 §12: bổ sung 6 trường nguồn `Ser_Inv_StockOutDetail` (PartID/PlanLocationID/ActualLocationID/PartPriceId
+// + StockOutOrderID/StockOutOrderNo). `PartPrice`/`PartVAT`/`LogLU*` do endpoint chụp/ghi, không nhận từ client.
+record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price = 0, decimal Vat = 0,
+    string? PartID = null, string? PlanLocationID = null, string? ActualLocationID = null, string? PartPriceId = null,
+    string? StockOutOrderID = null, string? StockOutOrderNo = null);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null, string? DealerCode = null,
     string? CusID = null, string? UserCode = null, string? TruckNo = null);   // #995/#996
 record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
@@ -83303,3 +83380,7 @@ record SuggestPriceLineDto(string? DeliveryFormCode, string? VINCode, string? DM
 
 // #1482: SerROStatusUpdatePaid_New20220926 — chuyển RO sang Paid + ghi mốc thanh toán. Nguồn nhận strStatusDate/strIsCusPaymentAll/strAmountFromMC/strPointTotal/objCrdDealSerRO/strAmountDiscountOther.
 record RoPaidDto(DateTime? StatusDate, string? IsCusPaymentAll, string? AmountFromMC, string? PointTotal, string? AmountDiscountOther, string? CrdDealSerRO);
+
+// #1486: Ser_MST_ROWarrantyWork_Save — danh mục công bảo hành hãng. Nguồn nhận ds_ListROWarrantyWork
+// (mỗi dòng: ROWWorkCode/ROWWorkName/Model/RateHour/Price/RatePrice/VAT/Remark/AppTypeCode).
+record ROWarrantyWorkDto(string? ROWWorkCode, string? ROWWorkName, string? Model, decimal? RateHour, decimal? Price, decimal? RatePrice, decimal? VAT, string? Remark, string? AppTypeCode, string? FlagActive = null);

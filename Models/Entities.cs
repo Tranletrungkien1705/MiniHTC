@@ -2828,6 +2828,26 @@ public sealed class PartStockInLine
 
     /// <summary>#244: đơn vị tính — nguồn lấy từ `Ser_MST_Part.Unit` qua join, màn tra hiển thị cột này.</summary>
     public string? Unit { get; set; }
+
+    // ===== #1488 §12 — cột nguồn `Ser_Inv_StockInDetail` mà entity Mini CHƯA TỪNG có =====
+    // Căn cứ: `SerStockInDetailCreate` (`BizCarSv.Inventory.StockIn.cs:4535`) ghi đủ các cột dưới đây
+    // (bài học #547: đối chiếu khối insert của hàm Create/Update với entity, không chỉ đọc SELECT).
+    /// <summary>StockInNo — số phiếu nhập (nguồn ghi ở dòng chi tiết, không chỉ header).</summary>
+    public string? StockInNo { get; set; }
+    /// <summary>DealerCode — đại lý của dòng nhập (nguồn ghi ở dòng chi tiết).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (`Ser_MST_Part.PartID`), KHÁC `PartCode` là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>Description — mô tả dòng nhập (nguồn chỉ ghi khi không rỗng).</summary>
+    public string? Description { get; set; }
+    /// <summary>PlanLocationID — vị trí KẾ HOẠCH (nguồn ghi khi trạng thái Pending).</summary>
+    public string? PlanLocationID { get; set; }
+    /// <summary>ActualLocationID — vị trí THỰC TẾ (nguồn ghi khi trạng thái Executing).</summary>
+    public string? ActualLocationID { get; set; }
+    /// <summary>LogLUDateTime — nhật ký sửa dòng (nguồn ghi mỗi lần Create/Update).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>LogLUBy — người sửa dòng.</summary>
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Tồn kho phụ tùng (Ser_Inv_PartStock): số tồn theo kho + mã PT + vị trí. Cập nhật khi Post phiếu nhập/xuất.</summary>
@@ -3763,6 +3783,43 @@ public sealed class ServiceTradeMark
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>
+/// 🔴 #1486 DANH MỤC CÔNG BẢO HÀNH HÃNG — `Ser_MST_ROWarrantyWork` (`BizCarSv.AssignmentOfWork.cs`).
+/// Bảng nằm ở DB `@strDBName_CommonCenter` (dùng chung, không phải DB đại lý).
+/// Ba `[WebMethod]` LIVE (`HTCWSCarSv/WSCarSv.asmx.cs:36048/36082/36238`):
+///   `Ser_MST_ROWarrantyWork_Get` → `_biz.Ser_MST_ROWarrantyWork_Get` (`:3388`, SELECT `smroww.*`)
+///   `Ser_MST_ROWarrantyWork_Save` → `_biz.Ser_MST_ROWarrantyWork_Save` (`:4036`, insert/update)
+///   `Ser_MST_ROWarrantyWork_Delete` → `_biz.Ser_MST_ROWarrantyWork_Delete` (`:5378`, xoá CỨNG theo `ROWWorkCode`).
+/// ⚠️ Bảng này còn được dùng làm NGUỒN GHI ĐÈ giá công khi `SerCode` trùng (xem #1177) — nhưng đó là
+/// đường ĐỌC chéo; entity này mô hình hoá chính danh mục để có route CRUD 1:1.
+/// </summary>
+public sealed class ROWarrantyWork
+{
+    public long Id { get; set; }                 // ROWWID (identity)
+    public Guid OrgId { get; set; }
+    /// <summary>ROWWorkCode — khoá tự nhiên nguồn dùng để tra/insert/delete (`t.ROWWorkCode = @...`).</summary>
+    public string ROWWorkCode { get; set; } = "";
+    public string? ROWWorkName { get; set; }
+    /// <summary>Model — mã dòng xe áp dụng (nguồn lọc `smroww.Model`).</summary>
+    public string? Model { get; set; }
+    /// <summary>RateHour — hệ số giờ công.</summary>
+    public decimal? RateHour { get; set; }
+    /// <summary>Price — đơn giá công.</summary>
+    public decimal? Price { get; set; }
+    /// <summary>RatePrice — hệ số giá.</summary>
+    public decimal? RatePrice { get; set; }
+    /// <summary>VAT — thuế suất.</summary>
+    public decimal? VAT { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>AppTypeCode — loại đơn (nguồn ghi ở cả nhánh update lẫn insert).</summary>
+    public string? AppTypeCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
@@ -14549,6 +14606,32 @@ public sealed class ServiceStockOutLine
     /// <summary>#1471 §12 — đơn vị tính, nguồn `SerStockOutGet` detail SELECT `sid.*, p.Unit` (join Ser_Mst_Part).
     /// Là field ECHO (đọc từ Ser_Mst_Part), KHÔNG ghi vào Ser_Inv_StockOutDetail lúc Create.</summary>
     public string? Unit { get; set; }
+
+    // ===== #1489 §12 — cột nguồn `Ser_Inv_StockOutDetail` mà entity Mini CHƯA TỪNG có =====
+    // Căn cứ: `SerStockOutDetailCreate` (`BizCarSv.Inventory.StockOut.cs:5375`) ghi đủ các cột dưới đây
+    // (bài học #547: đối chiếu khối insert của hàm Create/Update với entity, không chỉ đọc SELECT).
+    /// <summary>StockOutOrderID — mắt xích về phiếu YÊU CẦU xuất kho (`Ser_Inv_StockOutOrder`).</summary>
+    public string? StockOutOrderID { get; set; }
+    /// <summary>StockOutOrderNo — số phiếu yêu cầu xuất kho.</summary>
+    public string? StockOutOrderNo { get; set; }
+    /// <summary>DealerCode — đại lý của dòng xuất (nguồn ghi ở dòng chi tiết).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (`Ser_MST_Part.PartID`), KHÁC `PartCode` là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>PlanLocationID — vị trí KẾ HOẠCH.</summary>
+    public string? PlanLocationID { get; set; }
+    /// <summary>ActualLocationID — vị trí THỰC TẾ.</summary>
+    public string? ActualLocationID { get; set; }
+    /// <summary>PartPriceId — mã bảng giá phụ tùng áp dụng cho dòng.</summary>
+    public string? PartPriceId { get; set; }
+    /// <summary>PartPrice — giá chuẩn của phụ tùng (chụp từ `Ser_MST_Part.Price` lúc tạo).</summary>
+    public decimal? PartPrice { get; set; }
+    /// <summary>PartVAT — thuế chuẩn của phụ tùng (chụp từ `Ser_MST_Part.VAT` lúc tạo).</summary>
+    public decimal? PartVAT { get; set; }
+    /// <summary>LogLUDateTime — nhật ký sửa dòng (nguồn ghi mỗi lần Create/Update).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>LogLUBy — người sửa dòng.</summary>
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu nhập kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockIn (TblSerInvStockIn, TCMotor).</summary>
