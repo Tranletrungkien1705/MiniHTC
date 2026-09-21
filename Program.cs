@@ -60360,6 +60360,61 @@ app.MapGet("/api/ordercomplains/search-paged", async (AppDbContext db, ITenantCo
         miniFixLeftJoinInsteadOfInner = "Mini dung LEFT JOIN thay INNER JOIN danh muc (va #410): totalCount va so dong tra ve LUON khop, kem orphanTypeCount/orphanDealerCount de do phan khieu nai co danh muc treo",
     });
 }).RequireAuthorization();
+
+// ===== 🔴🔴 #1480 MÀN MỚI: PHIẾU ĐỀ XUẤT GIÁ — `Ser_Suggest_Price_Get` (LIVE, `BizCarSv.SuggestPrice.cs:992` vỏ → `…GetX:798` thân thật) =====
+// WS `HTCWSCarSv/WSCarSv.asmx.cs:36980` gọi bản trần (LIVE). 🔴 Hàm này nằm trong **9 hàm CHỈ CÓ TRÊN CÂY
+// LAPTOP (V20)** — cây 150 (`V20.2023.Release`) đã XOÁ HẲN (Program.cs #873/#874). Port theo cây CHUẨN V20
+// (laptop) đúng luật "khi hai cây khác nhau thì port theo cây CHUẨN".
+// Nguồn: header `ssp.*` (cả bảng `Ser_Suggest_Price`) + detail `sspdt.*` (cả bảng `Ser_Suggest_PriceDtl`),
+// paging động qua `strFt_WhereClause` (BuildWhere tham số hoá — MẪU ĐÚNG, khác #886/#887).
+// Cột header theo `Ser_Suggest_Price_SaveX` (`:93`): SuggestPriceNo/DealerCode/TSTSuggestPriceID/TSTSentDate/
+// CreateDTime/CreateBy/LUDTime/LUBy/Description/DMSSuggestPriceStatus/TSTSuggestPriceStatus/IsUpdatePrice/
+// LogLUDateTime/LogLUBy. Cột detail: SuggestPriceNo/DeliveryFormCode/VINCode/DMSPartCode/VieName/
+// SuggestPriceDtlStatus/Remark/LogLUDateTime/LogLUBy.
+// 📌 Mini: `GET /api/suggestprices` (list + paging) và `GET /api/suggestprices/{no}/lines` (detail).
+app.MapGet("/api/suggestprices", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? dmsStatus, string? tstStatus, int? start, int? count) =>
+{
+    var query = db.SuggestPrices.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) query = query.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(dmsStatus)) query = query.Where(x => x.DMSSuggestPriceStatus == dmsStatus);
+    if (!string.IsNullOrWhiteSpace(tstStatus)) query = query.Where(x => x.TSTSuggestPriceStatus == tstStatus);
+    var total = await query.CountAsync();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 500 ? count!.Value : 100;
+    var page = await query.OrderBy(x => x.SuggestPriceNo).Skip(skip).Take(take).ToListAsync();
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = page.Count,
+        items = page.Select(x => new
+        {
+            x.SuggestPriceNo, x.DealerCode, x.TSTSuggestPriceID, x.TSTSentDate, x.CreateDTime, x.CreateBy,
+            x.LUDTime, x.LUBy, x.Description, x.DMSSuggestPriceStatus, x.TSTSuggestPriceStatus, x.IsUpdatePrice,
+            x.LogLUDateTime, x.LogLUBy,
+            lines = db.SuggestPriceDtls.Count(l => l.OrgId == t.OrgId && l.SuggestPriceNo == x.SuggestPriceNo),
+        }),
+        onlyExistsOnLaptop1480 = "#1480: Ser_Suggest_Price_Get — BizCarSv.SuggestPrice.cs:992 (vo) / :798 (GetX than that), LIVE WS HTCWSCarSv/WSCarSv.asmx.cs:36980. Ham CHI CO TREN CAY LAPTOP V20; cay 150 da xoa han (xem #873/#874). Port theo cay CHUAN V20.",
+        pagingIsCorrectPattern = "strFt_WhereClause qua SqlUtils.BuildWhere(htSpCols tu MyBuildHTSupportedColumns, prefix @p_) => THAM SO HOA DUNG CACH (MAU DUNG, khac #886/#887)",
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/suggestprices/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var n = no.Trim().ToUpperInvariant();
+    var h = await db.SuggestPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SuggestPriceNo == n);
+    if (h is null) return Results.NotFound(new { no = n });
+    var lines = await db.SuggestPriceDtls.Where(l => l.OrgId == t.OrgId && l.SuggestPriceNo == n)
+        .Select(l => new { l.SuggestPriceNo, l.DeliveryFormCode, l.VINCode, l.DMSPartCode, l.VieName, l.SuggestPriceDtlStatus, l.Remark, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
+    return Results.Ok(new
+    {
+        h.SuggestPriceNo, h.DealerCode, h.TSTSuggestPriceID, h.TSTSentDate, h.CreateDTime, h.CreateBy,
+        h.LUDTime, h.LUBy, h.Description, h.DMSSuggestPriceStatus, h.TSTSuggestPriceStatus, h.IsUpdatePrice,
+        h.LogLUDateTime, h.LogLUBy,
+        count = lines.Count, lines,
+        onlyExistsOnLaptop1480 = "#1480: Ser_Suggest_Price_GetX detail SELECT sspdt.* — BizCarSv.SuggestPrice.cs:798",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, string? dms, string? tst, string? order) =>
 {
     var q = db.OrderComplains.Where(c => c.OrgId == t.OrgId);

@@ -16693,3 +16693,47 @@ public sealed class RptPartsOrderDetailPart
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+/// <summary>Phiếu ĐỀ XUẤT GIÁ (Ser_Suggest_Price) — port 1:1 `Ser_Suggest_Price_Get` (LIVE,
+/// `BizCarSv.SuggestPrice.cs:992` vỏ → `…GetX:798` thân thật; WS `HTCWSCarSv/WSCarSv.asmx.cs:36980`).
+/// 🔴 Hàm này nằm trong **9 hàm CHỈ CÓ TRÊN CÂY LAPTOP (V20)** — cây 150 (`V20.2023.Release`) đã XOÁ HẲN
+/// (xem Program.cs #873/#874). Port theo cây CHUẨN V20 (laptop) đúng luật "khi hai cây khác nhau thì port
+/// theo cây CHUẨN". Header SELECT `ssp.*` (cả bảng) + paging động qua `strFt_WhereClause`.</summary>
+public sealed class SuggestPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SuggestPriceNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? TSTSuggestPriceID { get; set; }
+    public DateTime? TSTSentDate { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
+    public string? Description { get; set; }
+    /// <summary>Trạng thái phía DMS (`DMSSuggestPriceStatus`) — nguồn dùng lớp hằng `TConst.DMSSuggestPriceStatus`.</summary>
+    public string? DMSSuggestPriceStatus { get; set; }
+    /// <summary>Trạng thái phía TST (`TSTSuggestPriceStatus`).</summary>
+    public string? TSTSuggestPriceStatus { get; set; }
+    /// <summary>Cờ cập nhật giá (`IsUpdatePrice`).</summary>
+    public string? IsUpdatePrice { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng phiếu ĐỀ XUẤT GIÁ (Ser_Suggest_PriceDtl) — port 1:1 `Ser_Suggest_Price_GetX`
+/// detail SELECT `sspdt.*` (cả bảng). Cột theo `Ser_Suggest_Price_SaveX` (`BizCarSv.SuggestPrice.cs:93`).</summary>
+public sealed class SuggestPriceDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SuggestPriceNo { get; set; } = "";
+    public string? DeliveryFormCode { get; set; }
+    public string? VINCode { get; set; }
+    public string? DMSPartCode { get; set; }
+    public string? VieName { get; set; }
+    public string? SuggestPriceDtlStatus { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
