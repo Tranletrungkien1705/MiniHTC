@@ -35622,6 +35622,8 @@ app.MapGet("/api/warrantyclaims/{id:long}/serviceitems", async (long id, AppDbCo
         itemId = i.Id, i.SerID, i.SerCode, i.SerName, i.ROWSerType, i.Factor, i.Price, i.VAT,
         i.StdManHour, i.WarrantyStatus, i.Note, i.BulletinID, i.CreatedDate, i.CreatedBy,
         i.ApprovedDate, i.ApprovedBy, i.LogLUDateTime, i.LogLUBy,   // #1236 §12
+        // #1484 §12: bon cot nguon `Ser_ROWarrantyReportServiceItems` ma entity Mini thieu.
+        i.TypeID, i.ActManHour, i.ExpenseType, i.InsurancePrice,
         servicePrice = i.Factor * i.Price + i.Factor * i.Price * i.VAT * 0.01m,
     }) });
 }).RequireAuthorization();
@@ -35646,6 +35648,9 @@ app.MapPost("/api/warrantyclaims/{id:long}/serviceitems", async (long id, Warran
         WarrantyStatus = dto.WarrantyStatus, Note = dto.Note,
         // ⚠️ Nguồn coi chuỗi "0" như RỖNG cho BulletinID (WarrantyReport.cs:246) — bỏ qua, không ghi.
         BulletinID = string.IsNullOrWhiteSpace(dto.BulletinID) || dto.BulletinID == "0" ? null : dto.BulletinID,
+        // #1484 §12: bon cot nguon `Ser_ROWarrantyReportServiceItems` ma entity Mini thieu.
+        TypeID = dto.TypeID, ActManHour = dto.ActManHour, ExpenseType = dto.ExpenseType,
+        InsurancePrice = dto.InsurancePrice,
         // #1116 SỬA BUG THẬT: nguồn ProcessSaveROWarrantyReportItems (WarrantyReport.cs:169) ghi đủ 4 cột
         // nhật ký = strPartnerUserCode (actor server) — port cũ nhận dto.CreatedBy từ client cho cả 2 cột.
         CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
@@ -82997,7 +83002,9 @@ record WarrantyAcceptRptRow(long RowId, string? RowNo, string? RONo, string? Fra
 record WarrantyClaimServiceItemDto(string? SerID = null, string? SerCode = null, string? SerName = null,
     string? ROWSerType = null, decimal Factor = 1, decimal Price = 0, decimal VAT = 0,
     decimal? StdManHour = null, string? WarrantyStatus = null, string? Note = null,
-    string? BulletinID = null, string? CreatedBy = null);
+    string? BulletinID = null, string? CreatedBy = null,
+    // #1484 §12: bon cot nguon `Ser_ROWarrantyReportServiceItems` ma entity Mini thieu.
+    string? TypeID = null, decimal? ActManHour = null, string? ExpenseType = null, decimal? InsurancePrice = null);
 
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);

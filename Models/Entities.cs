@@ -5929,6 +5929,22 @@ public sealed class WarrantyClaimServiceItem
     /// <summary>BULLETINID — bản tin kỹ thuật. ⚠️ Nguồn coi chuỗi **"0" như RỖNG** (bỏ qua, không ghi).</summary>
     public string? BulletinID { get; set; }
 
+    // ===== 🔴 #1484 §12 BỐN CỘT nguồn `Ser_ROWarrantyReportServiceItems` mà entity Mini THIẾU =====
+    // Nguồn: khối `insert into Ser_ROWarrantyReportServiceItems` của `Ser_ROWarrantyReport_Update`
+    // (`BizCarSv.WarrantyReport.cs:1200-1240`) liệt kê 20 cột; entity Mini trước lượt này chỉ có 16.
+    //   · `TypeID`        — loại công việc (khoá kỹ thuật, nguồn ghi ở `_Update`).
+    //   · `ActManHour`    — giờ công THỰC TẾ (khác `StdManHour` là định mức, lấy qua join `Ser_MST_Service`).
+    //   · `ExpenseType`   — loại chi phí (nguồn GET dựng hằng `'ROWARRANTY'`; `_Update` ghi lại từ bảng).
+    //   · `InsurancePrice`— giá bảo hiểm (cột riêng, KHÔNG phải `Price`).
+    /// <summary>TypeID — loại công việc (nguồn `_Update` ghi).</summary>
+    public string? TypeID { get; set; }
+    /// <summary>ActManHour — giờ công THỰC TẾ (khác `StdManHour` định mức).</summary>
+    public decimal? ActManHour { get; set; }
+    /// <summary>ExpenseType — loại chi phí (nguồn GET dựng hằng `'ROWARRANTY'`).</summary>
+    public string? ExpenseType { get; set; }
+    /// <summary>InsurancePrice — giá bảo hiểm (cột riêng, KHÔNG phải `Price`).</summary>
+    public decimal? InsurancePrice { get; set; }
+
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }

@@ -1098,6 +1098,11 @@ public static class Seeder
         // #396 moc duyet lan xuong DONG cong + DONG phu tung
         "ALTER TABLE public.\"WarrantyClaimServiceItems\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
         "ALTER TABLE public.\"WarrantyClaimServiceItems\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+        // #1484 bon cot nguon `Ser_ROWarrantyReportServiceItems` ma entity Mini thieu (TypeID/ActManHour/ExpenseType/InsurancePrice)
+        "ALTER TABLE public.\"WarrantyClaimServiceItems\" ADD COLUMN IF NOT EXISTS \"TypeID\" text NULL",
+        "ALTER TABLE public.\"WarrantyClaimServiceItems\" ADD COLUMN IF NOT EXISTS \"ActManHour\" numeric NULL",
+        "ALTER TABLE public.\"WarrantyClaimServiceItems\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text NULL",
+        "ALTER TABLE public.\"WarrantyClaimServiceItems\" ADD COLUMN IF NOT EXISTS \"InsurancePrice\" numeric NULL",
         "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
         "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
         // #400 CUSDEBT — ten cot noi "cong no" nhung man Ton kho toi uu dung lam SO LUONG BO nhap tay
