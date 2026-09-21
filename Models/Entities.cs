@@ -6307,6 +6307,28 @@ public sealed class CustomerCareMace
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #1477 §12 — 14 cột ECHO của nguồn `Ser_CustomerCareMace_Get` (LIVE, WS `WSCarSv.asmx.cs:9185`
+    // gọi bản trần) / bản kho `Ser_CustomerCareMace_Get_WH` (`WH.cs:22899`). SELECT nguồn liệt kê TƯỜNG MINH
+    // (không `alias.*`): `cus.CusName/Tel/Mobile/Email/ContName/ContAddress/ContEmail/ContTel/ContMobile`
+    // (join `Ser_Customer`), `car.PlateNo/TradeMarkCode` (join `Ser_Car`), `md.ModelName` (left join
+    // `ser_mst_model`), `ro.CheckInDate/Km` (join `ser_ro`), `t.MaceId` (khoá bảng). Đây là field ECHO
+    // (đọc từ bảng master qua join, KHÔNG ghi vào `Ser_CustomerCareMace` lúc Create — xem `ProcessSaveCareMace`
+    // `Customer.cs:12782`) ⇒ cần ở entity + Seeder + GET echo, KHÔNG cần ở DTO/POST (bài học #542).
+    // `MaceTypeText`/`StatusText` là CASE-derived (không phải cột) ⇒ tính trong projection, không cần cột entity.
+    public string? MaceId { get; set; }
+    public string? Tel { get; set; }
+    public string? Mobile { get; set; }
+    public string? Email { get; set; }
+    public string? ContName { get; set; }
+    public string? ContAddress { get; set; }
+    public string? ContEmail { get; set; }
+    public string? ContTel { get; set; }
+    public string? ContMobile { get; set; }
+    public string? PlateNo { get; set; }
+    public string? TradeMarkCode { get; set; }
+    public string? ModelName { get; set; }
+    public DateTime? CheckInDate { get; set; }
+    public decimal? Km { get; set; }
 }
 
 /// <summary>Phụ tùng nợ khách (Ser_Part_OO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor DMSCarSv/Services):

@@ -63116,7 +63116,16 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
     }
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark,
-      c.DealerCode, c.CusID, c.CarID, c.ROID, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #1248 §12
+      c.DealerCode, c.CusID, c.CarID, c.ROID, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy,
+      // ===== #1477 §12 — 14 cột ECHO của nguồn `Ser_CustomerCareMace_Get` (SELECT liệt kê tường minh,
+      // join Ser_Customer/Ser_Car/ser_mst_model/ser_ro). Trước đây route chỉ echo 18 cột bảng gốc, thiếu
+      // hết phần join ⇒ client không thấy tên/điện thoại/email khách, biển số/hãng xe, model, ngày vào xưởng, số km.
+      c.MaceId, c.Tel, c.Mobile, c.Email, c.ContName, c.ContAddress, c.ContEmail, c.ContTel, c.ContMobile,
+      c.PlateNo, c.TradeMarkCode, c.ModelName, c.CheckInDate, c.Km,
+      // CASE-derived của nguồn (không phải cột): MaceTypeText 1/2/3, StatusText 0/1/2 — không có else ⇒ NULL khi mã lạ.
+      MaceTypeText = c.MaceType == "1" ? "CVDV chỉ định" : c.MaceType == "2" ? "Thời hạn sau 6 tháng" : c.MaceType == "3" ? "Thời hạn theo tần suất vào xưởng" : null,
+      StatusText = c.Status == "0" ? "Chưa liên hệ" : c.Status == "1" ? "Đã liên hệ" : c.Status == "2" ? "Không liên hệ" : null,
+    }).ToListAsync();   // #1248 §12 + #1477 §12
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items,
         // ===== #663 =====
         maceTypeFilterBoundToNonExistentColumn = "BuildClause(and, t.CareType, strMaceTypeConditionList, …) — Ser_CustomerCareMace KHONG co cot CareType (danh sach cot day du doc tu khoi insert o Customer.cs:14145: MaceId, DealerCode, CreatedDate, CreatedBy, MaceRecomentDate, Status, ApointDate, Remark, CarID, CusID, MaceType, ContactDate, ROID, LogLUDateTime, LogLUBy); cot that la MaceType",
