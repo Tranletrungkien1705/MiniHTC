@@ -60415,6 +60415,85 @@ app.MapGet("/api/suggestprices/{no}/lines", async (string no, AppDbContext db, I
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #1481 `Ser_Suggest_Price_SaveTST` (LIVE, `BizCarSv.SuggestPrice.cs:664` vỏ → `…SaveX:93` thân thật; WS `HTCWSCarSv/WSCarSv.asmx.cs:36940`) =====
+// Cùng bảng `Ser_Suggest_Price`/`Ser_Suggest_PriceDtl` với #1480. Cũng là hàm CHỈ CÓ TRÊN CÂY LAPTOP V20.
+// Nguồn `SaveX`: (1) nếu `objFlagIsDelete=Yes` → XOÁ header+detail theo SuggestPriceNo (không tồn tại = thành công);
+// (2) nếu tồn tại và `DMSSuggestPriceStatus != Pending('P')` → ném `Ser_Suggest_Price_Save_InvalidDMSSuggestPriceStatus`;
+// (3) giữ `CreateDTime`/`CreateBy` của bản cũ (nếu có), ngược lại lấy now/user;
+// (4) XOÁ HẾT rồi INSERT LẠI header + detail (delete-then-insert, không update từng dòng);
+// (5) header set `DMSSuggestPriceStatus='P'`, `TSTSuggestPriceStatus='1'`, `IsUpdatePrice='P'`;
+// (6) mỗi dòng detail guard `Mst_DeliveryForm_CheckDB(Exist=Yes, Active)` + `Mst_VINModelOrginal_CheckDB(Exist=Yes, Active)`,
+//     set `SuggestPriceDtlStatus='P'`.
+// 📌 Mini: `POST /api/suggestprices` (upsert delete-then-insert, giữ nguyên guard + thông điệp nguồn).
+app.MapPost("/api/suggestprices", async (SuggestPriceSaveDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var isDelete = string.Equals(dto.FlagIsDelete, "Y", StringComparison.OrdinalIgnoreCase);
+    var noIn = (dto.SuggestPriceNo ?? "").Trim().ToUpperInvariant();
+    if (noIn.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số phiếu đề xuất giá." });
+    var existing = await db.SuggestPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SuggestPriceNo == noIn);
+    // Nguồn: chưa tồn tại + xoá => coi như thành công (goto Done).
+    if (existing is null && isDelete)
+        return Results.Ok(new { suggestPriceNo = noIn, deleted = true, note = "Phiếu không tồn tại — xoá coi như thành công (đúng nguồn)." });
+    // Nguồn: đã tồn tại mà DMSSuggestPriceStatus != Pending => chặn (Ser_Suggest_Price_Save_InvalidDMSSuggestPriceStatus).
+    if (existing is not null && existing.DMSSuggestPriceStatus != "P")
+        return Results.BadRequest(new { error = "Ser_Suggest_Price_Save_InvalidDMSSuggestPriceStatus", dmsSuggestPriceStatus = existing.DMSSuggestPriceStatus });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    if (isDelete)
+    {
+        var oldLines = await db.SuggestPriceDtls.Where(l => l.OrgId == t.OrgId && l.SuggestPriceNo == noIn).ToListAsync();
+        db.SuggestPriceDtls.RemoveRange(oldLines);
+        db.SuggestPrices.Remove(existing!);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { suggestPriceNo = noIn, deleted = true, removedLines = oldLines.Count });
+    }
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.DMSPartCode)).ToList();
+    // Guard TỪNG DÒNG của nguồn: Mst_DeliveryForm_CheckDB(Exist=Yes, Active) + Mst_VINModelOrginal_CheckDB(Exist=Yes, Active).
+    foreach (var l in lines)
+    {
+        var dfc = (l.DeliveryFormCode ?? "").Trim();
+        if (dfc.Length > 0)
+        {
+            var df = await db.MstDeliveryForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeliveryFormCode == dfc);
+            if (df is null) return Results.BadRequest(new { error = $"Hình thức giao hàng {dfc} không tồn tại.", deliveryFormCode = dfc });
+            if (df.FlagActive != "1") return Results.BadRequest(new { error = $"Hình thức giao hàng {dfc} đang ngừng hoạt động.", deliveryFormCode = dfc });
+        }
+        var vin = (l.VINCode ?? "").Trim();
+        if (vin.Length > 0)
+        {
+            var mvo = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vin);
+            if (mvo is null) return Results.BadRequest(new { error = $"Mã VIN gốc {vin} không tồn tại.", vinCode = vin });
+            if (mvo.FlagActive != "1") return Results.BadRequest(new { error = $"Mã VIN gốc {vin} đang ngừng hoạt động.", vinCode = vin });
+        }
+    }
+    // Nguồn: giữ CreateDTime/CreateBy của bản cũ; ngược lại lấy now/user.
+    var createDTime = existing?.CreateDTime ?? now;
+    var createBy = string.IsNullOrEmpty(existing?.CreateBy) ? who : existing!.CreateBy;
+    // Nguồn: XOÁ HẾT rồi INSERT LẠI (delete-then-insert).
+    var oldAll = await db.SuggestPriceDtls.Where(l => l.OrgId == t.OrgId && l.SuggestPriceNo == noIn).ToListAsync();
+    db.SuggestPriceDtls.RemoveRange(oldAll);
+    if (existing is not null) db.SuggestPrices.Remove(existing);
+    await db.SaveChangesAsync();
+    var h = new SuggestPrice
+    {
+        OrgId = t.OrgId, SuggestPriceNo = noIn, DealerCode = dto.DealerCode, Description = dto.Description,
+        CreateDTime = createDTime, CreateBy = createBy, LUDTime = now, LUBy = who,
+        DMSSuggestPriceStatus = "P", TSTSuggestPriceStatus = "1", IsUpdatePrice = "P",   // nguồn: Pending/Pending/Pending
+        LogLUDateTime = now, LogLUBy = who,
+    };
+    db.SuggestPrices.Add(h);
+    foreach (var l in lines)
+        db.SuggestPriceDtls.Add(new SuggestPriceDtl
+        {
+            OrgId = t.OrgId, SuggestPriceNo = noIn, DeliveryFormCode = l.DeliveryFormCode, VINCode = l.VINCode,
+            DMSPartCode = l.DMSPartCode, VieName = l.VieName, SuggestPriceDtlStatus = "P", Remark = l.Remark,
+            LogLUDateTime = now, LogLUBy = who,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.SuggestPriceNo, lines = lines.Count, dmsSuggestPriceStatus = h.DMSSuggestPriceStatus });
+}).RequireAuthorization();
+
 app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, string? dms, string? tst, string? order) =>
 {
     var q = db.OrderComplains.Where(c => c.OrgId == t.OrgId);
@@ -83057,3 +83136,6 @@ record RptKpiLegacyDto(
     decimal? AmountBPPayment, decimal? AmountBPWarranty, decimal? AmountBPLocal, decimal? AmountBPPaymentInsurance,
     decimal? AmountPartRO, decimal? AmountPartSO, decimal? AmountOill,
     decimal? AmountServiceGJ, decimal? AmountServiceBP, decimal? HourGJ, decimal? HourBP);
+// #1481: Ser_Suggest_Price_SaveTST — phiếu đề xuất giá (header + dòng). Nguồn nhận `objFlagIsDelete` + header + DataSet dòng.
+record SuggestPriceSaveDto(string? FlagIsDelete, string? SuggestPriceNo, string? DealerCode, string? Description, List<SuggestPriceLineDto>? Lines);
+record SuggestPriceLineDto(string? DeliveryFormCode, string? VINCode, string? DMSPartCode, string? VieName, string? Remark);
