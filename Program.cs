@@ -69966,6 +69966,59 @@ app.MapPost("/api/repairorders/{roId}/status", async (long roId, RoStatusChangeD
         twoMachinesVerified = "Service01.cs 17458 dong tren CA HAI may; md5 chuan hoa tren 150 = 5f863e0c KHOP laptop",
     });
 }).RequireAuthorization();
+
+// ===== 🔴🔴 #1482 `SerROStatusUpdatePaid_New20220926` (LIVE, `BizCarSv.ZTemp.cs:9065`; WS `HTCWSCarSv/WSCarSv.asmx.cs:11488` → `SerROToPaidStatus`) =====
+// 🔴 ĐÍNH CHÍNH #702: ghi chú cũ (Program.cs:59349) nói hai hàm `SerROStatusUpdatePaid_New20160628`/`_New20220926`
+//   là "MÃ CHẾT, nằm trong hàm bị comment trọn". SAI — ghi chú đó viết theo CÂY 150 (`V20.2023.Release`), nơi
+//   hai hàm này ĐÚNG là bị comment (dòng 8946/9753) và bản sống là `_New20221224`. Trên CÂY CHUẨN V20 (laptop)
+//   thì `_New20160628` (dòng 8747) và `_New20220926` (dòng 9065) đều **SỐNG** (không có `//`/`/* */`), và WS
+//   `HTCWSCarSv:11488` gọi thẳng `_New20220926`. ⇒ Port theo cây CHUẨN V20 (đúng luật "hai cây khác nhau thì
+//   port theo cây CHUẨN").
+// Nguồn: (1) RO phải tồn tại (nếu không → `SerROStatusUpdatePaid_RONotFound`); (2) trạng thái cũ PHẢI là
+//   `CheckEnd` (CEND) — kiểm HAI LẦN (trước và trong khối Save) → `SerROStatusUpdatePaid_InvalidStatus` /
+//   `_InvalidStatusPaid`; (3) nếu `CardNo` không rỗng mà `objCrdDealSerRO` rỗng → `_ExistCardButNoReCallMemberShip`;
+//   (4) ghi 7 cột: Status=Paid, PaidCreatedDate=`Convert.ToDateTime(strStatusDate).ToString("yyyy-MM-dd HH:mm")`
+//   (CẮT GIÂY), IsCusPaymentAll, AmountFromMC, PointTotal, AmountDiscountOther, LogLUDateTime, LogLUBy.
+//   (5) gọi API Loyalty `CrdDealSerRO_Add` (ngoài hệ — KHÔNG port, ghi nợ rõ).
+// 📌 Mini: `POST /api/repairorders/{roId}/paid`.
+app.MapPost("/api/repairorders/{roId}/paid", async (long roId, RoPaidDto dto,
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.Id == roId);
+    if (ro == null) return Results.BadRequest(new { error = "SerROStatusUpdatePaid_RONotFound", roId });
+    // Nguồn: trạng thái cũ PHẢI là CheckEnd (CEND). Mini lưu Status bằng chuỗi tiếng Anh (xem #1219).
+    var oldStatus = (ro.Status ?? "").Trim();
+    if (!string.Equals(oldStatus, "CheckEnd", StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = "SerROStatusUpdatePaid_InvalidStatus", roId, oldStatus, statusValid = "CheckEnd" });
+    // Nguồn: có CardNo mà không có objCrdDealSerRO => chặn.
+    if (!string.IsNullOrWhiteSpace(ro.CardNo) && string.IsNullOrWhiteSpace(dto.CrdDealSerRO))
+        return Results.BadRequest(new { error = "SerROStatusUpdatePaid_ExistCardButNoReCallMemberShip", roNo = ro.RONo, cardNo = ro.CardNo });
+    // Nguồn: StandardizeDouble — chuỗi rỗng/không phải số => 0.
+    static decimal StdDec(string? s) => decimal.TryParse((s ?? "").Trim(), out var v) ? v : 0m;
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    ro.Status = "Paid";
+    // Nguồn: PaidCreatedDate = Convert.ToDateTime(strStatusDate).ToString("yyyy-MM-dd HH:mm") — CẮT GIÂY.
+    var statusDate = dto.StatusDate ?? now;
+    ro.PaidCreatedDate = new DateTime(statusDate.Year, statusDate.Month, statusDate.Day, statusDate.Hour, statusDate.Minute, 0);
+    ro.IsCusPaymentAll = dto.IsCusPaymentAll;
+    ro.AmountFromMC = StdDec(dto.AmountFromMC);
+    ro.PointTotal = StdDec(dto.PointTotal);
+    ro.AmountDiscountOther = StdDec(dto.AmountDiscountOther);
+    ro.LogLUDateTime = now; ro.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        roId, roNo = ro.RONo, oldStatus, newStatus = ro.Status,
+        paidCreatedDate = ro.PaidCreatedDate, ro.IsCusPaymentAll, ro.AmountFromMC, ro.PointTotal, ro.AmountDiscountOther,
+        onlyExistsOnLaptop1482 = "#1482: SerROStatusUpdatePaid_New20220926 — BizCarSv.ZTemp.cs:9065, WS HTCWSCarSv/WSCarSv.asmx.cs:11488 (SerROToPaidStatus). Tren cay 150 ham nay BI COMMENT (dong 9753), ban song la _New20221224 => port theo cay CHUAN V20.",
+        retracts702 = "DINH CHINH #702: ghi chu cu noi _New20160628/_New20220926 la MA CHET — SAI tren cay V20 (ca hai deu SONG, dong 8747/9065). Ghi chu do viet theo cay 150.",
+        paidCreatedDateTruncatesSeconds = "nguon: Convert.ToDateTime(strStatusDate).ToString(\"yyyy-MM-dd HH:mm\") => CAT GIAY khi luu moc thanh toan",
+        loyaltyApiNotPorted = "Nguon con goi API Loyalty CrdDealSerRO_Add (WebClient POST JSON, _strUrlAPI_Loyalty) khi objCrdDealSerRO != null — he NGOAI, Mini chua port; ghi NO ro, khong bia.",
+        doubleStatusGuard = "Nguon kiem trang thai cu = CheckEnd HAI LAN (truoc khoi Save va trong khoi Save) => hai ma loi khac nhau (_InvalidStatus / _InvalidStatusPaid). Mini gop thanh mot guard (cung dieu kien).",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/_meta/rows0-without-guard-sweep", () => Results.Ok(new
 {
     trigger = "#812 (CarSv_SerCarUpdate_Key*) va #813 (Email_TempEmail_Update) — hai luot lien tiep cung khuon",
@@ -83139,3 +83192,6 @@ record RptKpiLegacyDto(
 // #1481: Ser_Suggest_Price_SaveTST — phiếu đề xuất giá (header + dòng). Nguồn nhận `objFlagIsDelete` + header + DataSet dòng.
 record SuggestPriceSaveDto(string? FlagIsDelete, string? SuggestPriceNo, string? DealerCode, string? Description, List<SuggestPriceLineDto>? Lines);
 record SuggestPriceLineDto(string? DeliveryFormCode, string? VINCode, string? DMSPartCode, string? VieName, string? Remark);
+
+// #1482: SerROStatusUpdatePaid_New20220926 — chuyển RO sang Paid + ghi mốc thanh toán. Nguồn nhận strStatusDate/strIsCusPaymentAll/strAmountFromMC/strPointTotal/objCrdDealSerRO/strAmountDiscountOther.
+record RoPaidDto(DateTime? StatusDate, string? IsCusPaymentAll, string? AmountFromMC, string? PointTotal, string? AmountDiscountOther, string? CrdDealSerRO);
