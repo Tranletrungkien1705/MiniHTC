@@ -63425,12 +63425,18 @@ app.MapGet("/api/customercaremaces/appointments", async (AppDbContext db, ITenan
             c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName,
             c.Status,
             statusText = c.Status == "0" ? "Chưa liên hệ" : c.Status == "1" ? "Đã liên hệ" : c.Status == "2" ? "Không liên hệ" : c.Status,
-            c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark
+            c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark,
+            // ===== #1478 §12 — nguồn `Ser_CustomerCareMaceApointDate_Get` (`Customer.cs:12187`) có CÙNG danh sách
+            // SELECT như `Ser_CustomerCareMace_Get` (14 cột ECHO + MaceTypeText/StatusText). Trước đây route chỉ
+            // echo 11 cột bảng gốc và tự thú "chưa nối các bảng đó" — nay entity đã có cột (#1477) nên echo đủ.
+            c.MaceId, c.Tel, c.Mobile, c.Email, c.ContName, c.ContAddress, c.ContEmail, c.ContTel, c.ContMobile,
+            c.PlateNo, c.TradeMarkCode, c.ModelName, c.CheckInDate, c.Km,
+            MaceTypeText = c.MaceType == "1" ? "CVDV chỉ định" : c.MaceType == "2" ? "Thời hạn sau 6 tháng" : c.MaceType == "3" ? "Thời hạn theo tần suất vào xưởng" : null,
         }).ToListAsync();
 
     return Results.Ok(new { count = items.Count, items,
         note = "Luôn lọc Status='1' (đã liên hệ) và ApointDate != null — hai điều kiện nằm CỨNG trong SQL nguồn.",
-        skipped = "Nguồn còn join Ser_Car (FrameNo) + ser_mst_model + ser_ro để hiện khung/model/lệnh sửa chữa — MiniHTC lưu Vin trên chính dòng, chưa nối các bảng đó, KHÔNG bịa." });
+        echoFieldsPorted = "#1478: nguồn Ser_CustomerCareMaceApointDate_Get (Customer.cs:12187) SELECT cùng danh sách như Ser_CustomerCareMace_Get — 14 cột ECHO (cus.Tel/Mobile/Email/ContName/ContAddress/ContEmail/ContTel/ContMobile, car.PlateNo/TradeMarkCode, md.ModelName, ro.CheckInDate/Km, t.MaceId) + MaceTypeText/StatusText đã echo đủ." });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #755 `OS_Ser_CustomerCareMace_Update` — CỔNG NGOÀI SỬA PHIẾU CHĂM SÓC MACE =====
