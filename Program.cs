@@ -36288,6 +36288,37 @@ app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext 
     return Results.Ok(new { count = rows.Count, totalOut = rows.Sum(r => r.totalOut), rows });
 }).RequireAuthorization();
 
+// ===== 🔴 #1507 BÁO CÁO NHẬP KHO PHỤ TÙNG — `Ser_InventoryReport_In` (LIVE, `BizCarSv.Inventory.Report.cs:1026`) =====
+// Nguồn: `ser_mst_part p` JOIN (subquery `si`) ON `p.PartID = si.PartID`; subquery = `ser_inv_stockindetail stid`
+//   INNER JOIN (`ser_inv_stockin sti` WHERE `status = 3` AND `StockInDate` trong [FromDate, ToDate] AND lọc
+//   DealerCode/SupplierCode) ON `stid.StockInID = sti.StockInID`
+//   INNER JOIN `ser_mst_location l` ON `stid.ActualLocationID = l.LocationID`.
+// Cột: `PartCode`, `Date` (StockInDate), `StockInNo`, `PartID`, `VieName`, `Unit`, `Quantity`, `Price`, `Total`,
+//   `VAT`, `VATAmount`, `Location` (LocationCode).
+// ⚠️ Nguồn lọc `status = 3` (hằng số trạng thái phiếu nhập đã duyệt); Mini dùng `Status == "Confirmed"` (cùng nghĩa).
+// ⚠️ Nguồn KHÔNG `ORDER BY`; Mini sắp theo `StockInDate` rồi `StockInNo` cho ổn định.
+app.MapGet("/api/report/inventory-in", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, string? dealer, string? supplier) =>
+{
+    var ins = db.ServiceStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
+    if (fromDate.HasValue) ins = ins.Where(o => o.StockInDate.HasValue && o.StockInDate.Value.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) ins = ins.Where(o => o.StockInDate.HasValue && o.StockInDate.Value.Date <= toDate.Value.Date);
+    if (!string.IsNullOrWhiteSpace(dealer)) ins = ins.Where(o => o.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(supplier)) ins = ins.Where(o => o.SupplierCode == supplier);
+    var rows = await (from l in db.ServiceStockInLines.Where(x => x.OrgId == t.OrgId)
+                      join h in ins on l.ServiceStockInId equals h.Id
+                      join p in db.ServiceParts.Where(x => x.OrgId == t.OrgId) on l.PartCode equals p.PartCode
+                      join loc in db.SerMstLocations.Where(x => x.OrgId == t.OrgId) on l.ActualLocationCode equals loc.LocationCode into lg
+                      from loc in lg.DefaultIfEmpty()
+                      select new
+                      {
+                          p.PartCode, date = h.StockInDate, h.StockInNo, p.PartID, vieName = p.PartName, p.Unit,
+                          l.Quantity, l.Price, total = l.TotalBeforeVat, l.Vat, l.VatAmount,
+                          location = loc != null ? loc.LocationCode : l.ActualLocationCode
+                      }).ToListAsync();
+    var ordered = rows.OrderBy(r => r.date ?? DateTime.MaxValue).ThenBy(r => r.StockInNo).ToList();
+    return Results.Ok(new { count = ordered.Count, totalAmount = ordered.Sum(r => r.total), rows = ordered });
+}).RequireAuthorization();
+
 // Top phụ tùng doanh thu: doanh thu = SL xuất (phiếu Confirmed) × giá bán hiện tại của PT, lọc khoảng ngày xuất.
 app.MapGet("/api/report/part-toprevenue", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, int? top) =>
 {
