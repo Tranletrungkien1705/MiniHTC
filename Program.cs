@@ -77594,6 +77594,78 @@ app.MapGet("/api/partquotes/search-wh", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #1531 TÌM KIẾM BÁO GIÁ PHỤ TÙNG (bản ĐẠI LÝ) `Ser_Inv_QuoteGet` (`Inventory.Quote.cs:1432-1683`) =====
+// 3B: laptop `:1432` md5 `3eaf4206` **LỆCH** máy 150 (`9c9a425c`): bản V20.2023.Release THÊM một cột
+//   `,cus.IDCardNo` trong SELECT `#tbl_quote_0` (diff chuẩn hoá `sed 's/[[:space:]]//g'`). Port theo cây CHUẨN V20
+//   (KHÔNG có `IDCardNo`) và ghi cờ `twoTreesDiffer`.
+// WS `HTCWSCarSv/WSCarSv.asmx.cs:19295` gọi THẲNG `_biz.Ser_Inv_QuoteGet(` (không hậu tố) ⇒ LIVE.
+//
+// 🔴 ĐÂY LÀ BẢN ANH EM CỦA `Ser_Inv_QuoteGet_WH` (#667, `WH.cs:30671`): DIFF chuẩn hoá hai thân cho thấy
+//   **giống hệt** trừ hai điểm: (1) chạy trên `_dbDealer` thay vì `_dbWH`; (2) bản ĐẠI LÝ (hàm này) có THÊM
+//   một cột `,sms.FlagInTST` trong SELECT chi tiết (`Ser_MST_Part`), bản WH KHÔNG có. MiniHTC một CSDL ⇒ cùng
+//   dữ liệu; giữ HAI route riêng để phủ đủ hai WebMethod (bài học #560).
+// 🔴 Toàn bộ bẫy nghiệp vụ của #667 áp nguyên: MỘT tên cột `StatusValue` HAI bảng mã không tương thích (họ A
+//   4 nhánh vs họ B 5 nhánh, thiếu `'2'`); lọc trạng thái chạy trên cột SUY RA `tt.StatusValue`; `left join`
+//   bị đổi thành `inner join` khi có lọc trạng thái phiếu xuất (phản ví dụ #414); một mệnh đề chạy trên hai
+//   bảng nhờ trùng alias `t`; `select t.* into #tbl_quote_0`/`select * into #tbl_quote`; số bảng kết quả THAY ĐỔI
+//   theo `strIsGetDetail`; `order by QuoteNo, CreatedDate` CÓ nghĩa.
+// ⚪ Bất đối xứng `Factor` (tổng header KHÔNG nhân hệ số, dòng chi tiết CÓ nhân) — đã ghi trên
+//   `PartQuote.SumAmountNoFactor`, hàm này lặp lại ĐÚNG hành vi đó.
+app.MapGet("/api/partquotes/search", async (AppDbContext db, ITenantContext t,
+    string? quoteNo, string? cusName, string? dealerCode, string? status,
+    DateTime? createdFrom, DateTime? createdTo, bool getDetail = false) =>
+{
+    var qq = db.PartQuotes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(quoteNo)) qq = qq.Where(x => x.QuoteNo == quoteNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusName)) qq = qq.Where(x => x.CusName != null && x.CusName.Contains(cusName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qq = qq.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (createdFrom is not null) qq = qq.Where(x => x.CreatedAt >= createdFrom);
+    if (createdTo is not null) qq = qq.Where(x => x.CreatedAt <= createdTo);
+    if (!string.IsNullOrWhiteSpace(status)) qq = qq.Where(x => x.Status == status!.Trim());
+
+    var quotes = await qq.OrderBy(x => x.QuoteNo).ThenBy(x => x.CreatedAt)
+        .Select(x => new { x.Id, x.QuoteNo, x.CusId, x.CusName, x.Mobile, x.Status,
+                           x.TotalAmount, x.SumAmountNoFactor, x.CreatedAt,
+                           x.DealerCode, x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+
+    object? lines = null;
+    if (getDetail)
+    {
+        var ids = quotes.Select(x => x.Id).ToList();
+        // Nguồn chi tiết: Ser_Inv_QuotePartItems sst inner join #tbl_quote t on QuoteID
+        //   left join Ser_MST_Part sms on PartID; cột Amount = Qty*Price*Factor + Qty*Price*0.01*VAT*Factor.
+        //   🔴 Bản ĐẠI LÝ (hàm này) trả THÊM `sms.FlagInTST` (bản WH #667 KHÔNG có).
+        var raw = await (from l in db.PartQuoteLines
+                         where l.OrgId == t.OrgId && ids.Contains(l.PartQuoteId)
+                         join p in db.ServiceParts on l.PartCode equals p.PartCode into pg
+                         from p in pg.DefaultIfEmpty()
+                         select new { l.PartQuoteId, l.PartCode, l.PartName, l.Unit, l.Quantity, l.UnitPrice,
+                                      l.Vat, l.Factor, l.PartPriceId, l.Note,
+                                      FlagInTST = p != null ? p.FlagInTST : null }).ToListAsync();
+        lines = raw.Select(x => new { x.PartQuoteId, x.PartCode, x.PartName, x.Unit, x.Quantity, x.UnitPrice,
+                                      x.Vat, x.Factor, x.PartPriceId, x.Note, x.FlagInTST,
+                                      amount = x.Quantity * x.UnitPrice * x.Factor
+                                             + x.Quantity * x.UnitPrice * 0.01m * x.Vat * x.Factor }).ToList();
+    }
+
+    return Results.Ok(new
+    {
+        count = quotes.Count, quotes, lines,
+        // ===== #1531 =====
+        twoTreesDiffer = "3B: Ser_Inv_QuoteGet laptop :1432 md5 3eaf4206 LECH may 150 9c9a425c — ban V20.2023.Release THEM cot ,cus.IDCardNo trong SELECT #tbl_quote_0; port theo cay CHUAN V20 (khong co IDCardNo)",
+        dealerTwinOfWh667 = "Ban anh em cua Ser_Inv_QuoteGet_WH (#667, WH.cs:30671): DIFF chuan hoa hai than giong het tru (1) chay tren _dbDealer thay vi _dbWH; (2) ban DAI LY co THEM cot ,sms.FlagInTST trong SELECT chi tiet (Ser_MST_Part), ban WH KHONG co. MiniHTC mot CSDL => cung du lieu; giu HAI route rieng (bai hoc #560)",
+        twoIncompatibleStatusValueMappings = "MOT TEN COT StatusValue, HAI BANG MA KHONG TUONG THICH (nhu #667). HO A (2 site: Inventory.Quote.cs:46 BuildGetQuoteCreatedSOxxx, :112 BuildGetQuoteCreatedSO) map null->1, so.Status 1->2, 2->3, 3->4 (4 nhanh). HO B (3 site: Inventory.Quote.cs:1528, :1815, WH.cs:30767) map null->1, 1->3, 3->4, 4->5, 5->6 (5 nhanh, KHONG co 2). Chi HO B khop hang TConst.Ser_Inv_Quote_Status: 1 Moi tao, 2 Bao gia HUY, 3 Da tao phieu xuat, 4 Da xuat, 5 Da dieu chinh, 6 Da huy phieu xuat",
+        statusCode2VanishesInFamilyB = "case cua ho B khong co nhanh 2 va khong co else => StatusValue NULL; bo loc lai chay tren tt.StatusValue => NULL khong khop bat ky gia tri loc nao => bao gia co phieu xuat o trang thai 2 BIEN MAT khoi moi lan loc theo trang thai, im lang (ho #656)",
+        statusFilterRunsOnDerivedColumn = "BuildClause(and, tt.StatusValue, strStatusConditionList, …) — StatusValue duoc tinh TU TRANG THAI PHIEU XUAT (so.Status), trong khi select t.* da mang san cot trang thai cua CHINH bao gia => trang thai bao gia huy (2) KHONG THE loc ra duoc vi case khong bao gio sinh 2",
+        positiveJoinOperatorSwitched = "DUONG TINH: nguon CO cho lam DUNG bay left-join-bi-WHERE-giet (#414): zzzzClauseOperatorJoin_StockOut = IsEmpty(strStockOutStatusConditionList) ? left join : inner join => khi co loc trang thai phieu xuat thi doi han sang inner join. Ghi lam PHAN VI DU",
+        oneClauseTwoTablesViaSharedAlias = "zzzzClauseWhere_DealerCodeConditionList dung theo t.DealerCode roi cam CA vao where ngoai (t = ser_inv_quote) LAN subquery select distinct … from Ser_Inv_StockOutDetail t (ho #617/#620/#663/#664)",
+        selectStarIntoTempTables = "select t.* into #tbl_quote_0 va select * into #tbl_quote => doi schema la doi hop dong API",
+        resultSetCountVariesByParam = "strIsGetDetail khac Active => token thanh -- Nothing. => DataSet tra 2 bang thay vi 3 => client tra Tables[2] se no; port tach han bang tham so getDetail",
+        negativeOrderByIsMeaningful = "AM TINH: order by QuoteNo, CreatedDate nam tren cau SELECT cuoi tra du lieu (#415)",
+        negativeFactorAsymmetryAlreadyKnown = "AM TINH: bat doi xung Factor (tong header khong nhan he so, dong chi tiet co nhan) DA GHI TU TRUOC tren entity PartQuote.SumAmountNoFactor; ham nay lap lai DUNG hanh vi do",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #666 CHI TIẾT NHẬP KHO PHỤ TÙNG `Ser_InvReportTotalStockInDetailRpt_WH` (`WH.cs:25716-25859`) =====
 // 3B: laptop `:25716` md5 `838cbedd` **KHỚP** máy 150 (lần md5 đầu tôi lệch vì HARDCODE số dòng cuối — xem bài học). WS `WSCarSv.asmx.cs` gọi thẳng (không hậu tố).
 // Theo luật #414, việc đầu tiên là **DIFF với anh em tổng hợp** `Ser_InvReportTotalStockInRpt_WH` (`:10623`)
