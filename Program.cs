@@ -64279,6 +64279,85 @@ app.MapGet("/api/servicecustomers/search", async (AppDbContext db, ITenantContex
         count = items.Count, items
     });
 }).RequireAuthorization();
+// ===== #1546 WebMethod (LIVE) chưa từng có route — DANH SÁCH KHÁCH HÀNG (bản `Ser_Customer_GetAll`) =====
+// Nguồn `Ser_Customer_GetAll` (`BizCarSv.Customer.cs:1414-1560`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:7198`
+//   gọi THẲNG `_biz.Ser_Customer_GetAll`). GREP TRƯỚC: Mini có `GET /api/servicecustomers/search` (port
+//   `Ser_Customer_GetNew` — twin WinForm) và `GET /api/servicecustomers/all-dl` (port `Ser_Customer_GetAllDL`
+//   #877) nhưng **KHÔNG** có route nào port WebMethod `Ser_Customer_GetAll` (grep tên hàm = 0 hit) ⇒ GAP thật.
+//   🔴 BÀI HỌC #560: tên hàm ≠ tên route Mini; `Ser_Customer_GetAll` (WebMethod, 7 bộ lọc) KHÁC
+//   `Ser_Customer_GetAllDL` (bản phân trang, #877) và KHÁC `Ser_Customer_GetNew` (twin WinForm).
+//
+// 🔴🔴🔴 BUG THẬT (bất đối xứng — port 1:1 GIỮ NGUYÊN): ba bộ lọc `PlateNo`/`FrameNo`/`EngineNo` của nguồn
+//   neo vào **`t.`** (bảng `Ser_Customer`), KHÔNG phải `car.` (bảng `ser_car`):
+//     `BuildClauseConditionSingle("and", "t.PlateNo", "like", "@strPlateNoPattern", …)`
+//     `BuildClauseConditionSingle("and", "t.FrameNo", "like", "@strFrameNoPattern", …)`
+//     `BuildClauseConditionSingle("and", "t.EngineNo", "like", "@strEngineNoPattern", …)`
+//   MỌI hàm anh em trong cùng file dùng `car.PlateNo`/`car.FrameNo`/`car.EngineNo` (dòng 908-910, 1327-1329);
+//   grep toàn cây V20: `t.PlateNo`/`t.FrameNo`/`t.EngineNo` trên `Ser_Customer` CHỈ xuất hiện DUY NHẤT trong
+//   hàm này ⇒ `Ser_Customer` KHÔNG có ba cột đó ⇒ khi truyền pattern KHÁC RỖNG, câu SQL nguồn ném lỗi
+//   "Invalid column name 'PlateNo'" (bị catch → trả DataSet lỗi). Khi pattern RỖNG, `BuildClauseConditionSingle`
+//   trả "" ⇒ điều kiện bị bỏ ⇒ chạy bình thường. Port 1:1: pattern rỗng = bỏ điều kiện; pattern khác rỗng =
+//   NÉM LỖI (mô phỏng đúng lỗi cột không tồn tại của nguồn) — KHÔNG thêm cột vào entity (thêm cột sẽ làm bộ lọc
+//   CHẠY ĐƯỢC, trái hành vi nguồn).
+//
+// ⚠️ Bộ lọc 1-2 là DANH SÁCH phân tách `|` qua `BuildClauseConditionList` (IN + xử lý token NULL/NOTNULL);
+//   bộ lọc 3 là `like` một giá trị; bộ lọc 7 là `=` một giá trị (`t.IsActive`).
+// ⚠️ `zzzzClauseSelectTopSql` được chèn THÔ vào đầu SELECT (nguồn: `select zzzzClauseSelectTopSql t.* from …`)
+//   ⇒ tham số `selectTopSql` là mảnh SQL do người gọi cung cấp (vd `top 100`). Port giữ nguyên hành vi chèn thô.
+// ⚠️ Nguồn KHÔNG `ORDER BY` ⇒ Mini sắp tường minh theo `CusCode` cho ổn định.
+// ⚠️ `Ser_Customer.CusID` → Mini `ServiceCustomer.CusCode`; `IsActive` → Mini `ServiceCustomer.FlagActive`.
+//   Entity `ServiceCustomer` đã đủ cột ⇒ KHÔNG cần §12.
+app.MapGet("/api/servicecustomers/get-all", async (AppDbContext db, ITenantContext t,
+    string? cusIdList, string? dealerCodeList, string? cusNamePattern,
+    string? plateNoPattern, string? frameNoPattern, string? engineNoPattern,
+    string? isActiveConditionList, string? selectTopSql) =>
+{
+    // 🔴 BUG nguồn: ba bộ lọc neo `t.PlateNo`/`t.FrameNo`/`t.EngineNo` trên `Ser_Customer` (cột KHÔNG tồn tại).
+    //   Pattern khác rỗng ⇒ SQL nguồn lỗi "Invalid column name". Port 1:1: ném lỗi tương đương.
+    if (!string.IsNullOrWhiteSpace(plateNoPattern) || !string.IsNullOrWhiteSpace(frameNoPattern)
+        || !string.IsNullOrWhiteSpace(engineNoPattern))
+        throw new InvalidOperationException(
+            "Ser_Customer_GetAll: Invalid column name 'PlateNo'/'FrameNo'/'EngineNo' — nguồn neo ba bộ lọc vào " +
+            "`t.` (bảng Ser_Customer) trong khi cột chỉ có ở `ser_car` (car.). Port 1:1 giữ nguyên lỗi của nguồn.");
+
+    var q = db.ServiceCustomers.Where(c => c.OrgId == t.OrgId);
+    // Bộ lọc 1: t.CusId — danh sách `|` (BuildClauseConditionList → IN, có xử lý NULL/NOTNULL).
+    if (!string.IsNullOrWhiteSpace(cusIdList))
+    {
+        var v = cusIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => v.Contains(c.CusCode));
+    }
+    // Bộ lọc 2: t.DealerCode — danh sách `|`.
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var v = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => c.DealerCode != null && v.Contains(c.DealerCode));
+    }
+    // Bộ lọc 3: t.CusName — like một giá trị.
+    if (!string.IsNullOrWhiteSpace(cusNamePattern))
+    {
+        var p = cusNamePattern!.Trim();
+        q = q.Where(c => c.CusName != null && c.CusName.Contains(p));
+    }
+    // Bộ lọc 7: t.IsActive — `=` một giá trị.
+    if (!string.IsNullOrWhiteSpace(isActiveConditionList))
+    {
+        var v = isActiveConditionList!.Trim();
+        q = q.Where(c => c.FlagActive == v);
+    }
+    // Nguồn KHÔNG `ORDER BY` ⇒ Mini sắp tường minh theo `CusCode` cho ổn định.
+    var items = await q.OrderBy(c => c.CusCode)
+        .Select(c => new { c.Id, c.CusCode, c.CusName, c.CusTypeID, c.Address, c.Mobile, c.Tel, c.Email,
+            c.TaxCode, c.Sex, c.DOB, c.DealerCode, c.ProvinceCode, c.DistrictCode, c.IDCardNo, c.FlagActive })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1546 = "#1546: Ser_Customer_GetAll — BizCarSv.Customer.cs:1414, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:7198",
+        sevenFilters = "t.CusId (list '|') | t.DealerCode (list '|') | t.CusName (like) | t.PlateNo (like) | t.FrameNo (like) | t.EngineNo (like) | t.IsActive (=)",
+        plateFrameEngineBug = "BUG NGUON: ba bo loc PlateNo/FrameNo/EngineNo neo `t.` (Ser_Customer) nhung cot chi co o ser_car (car.) — moi ham anh em dung car. => pattern khac rong lam SQL nguon loi 'Invalid column name'. Port 1:1 giu nguyen loi.",
+        selectTopSqlInjectedRaw = "zzzzClauseSelectTopSql chen THO vao dau SELECT (nguon: select zzzzClauseSelectTopSql t.* from Ser_Customer t) — tham so selectTopSql la manh SQL do nguoi goi cung cap.",
+        noOrderByInSource = "nguon KHONG ORDER BY; Mini sap theo CusCode cho on dinh",
+        twoTreesDiffer = "3B: than ham LECH giua V20 va V20.2023.Release — khac biet CHI o khoi finally (cay 150 co them vai dong log WriteLogAsync); SQL va 7 bo loc GIONG HET. Port theo cay CHUAN V20." });
+}).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #855 MÀN MỚI: XOÁ KHÁCH HÀNG DỊCH VỤ — `Ser_Customer_Delete` (`Customer.cs`) =====
 // laptop `V20:5259-5377` md5 `e301df1f` (119 dòng) · máy 150 `V20.2023.Release` md5 `af7582c3`. LIVE (4 vỏ bọc).
