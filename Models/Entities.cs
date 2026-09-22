@@ -16127,6 +16127,10 @@ public sealed class PartExtraMst
     public string PartCode { get; set; } = "";
     /// <summary>Tên tiếng Việt — nguồn đặt là `VieName` (không phải `PartName`).</summary>
     public string? VieName { get; set; }
+    /// <summary>#1547 §12 — `EngName` (tên tiếng Anh). Nguồn `Ser_MST_PartExtra_Save` (AssignmentOfWork.cs:6616)
+    /// GHI cột này ở CẢ hai nhánh nhưng LUÔN gán `DBNull.Value` (`dr["EngName"] = DBNull.Value;`) ⇒ cột
+    /// tồn tại trong bảng nhưng nguồn KHÔNG BAO GIỜ ghi giá trị thật (luôn NULL). Port 1:1: giữ cột + luôn null.</summary>
+    public string? EngName { get; set; }
     public string? Unit { get; set; }
     public decimal? Price { get; set; }
     /// <summary>Giới hạn tổng — nguồn đặt là `TotalLimit` (không phải `MaxQuantity`).</summary>

@@ -82501,8 +82501,8 @@ app.MapGet("/api/partextramsts", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(partCode)) qy = qy.Where(x => x.PartCode == partCode!.Trim());
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
     var items = await qy.OrderBy(x => x.PartCode).Take(1000)
-        .Select(x => new { x.Id, x.ROMSID, x.PartCode, x.VieName, x.Unit, x.Price, x.TotalLimit, x.FlagActive,
-            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1326 §12
+        .Select(x => new { x.Id, x.ROMSID, x.PartCode, x.VieName, x.EngName, x.Unit, x.Price, x.TotalLimit, x.FlagActive,
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1326 §12 · #1547 EngName
         .ToListAsync();
     return Results.Ok(new
     {
@@ -82535,6 +82535,10 @@ app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContex
         // Rỗng ⇒ null (khuôn DBNull của nguồn: gửi rỗng XOÁ).
         row.ROMSID = string.IsNullOrWhiteSpace(r.ROMSID) ? null : r.ROMSID;
         row.VieName = string.IsNullOrWhiteSpace(r.VieName) ? null : r.VieName;
+        // #1547 §12: nguồn `Ser_MST_PartExtra_Save` GHI cột `EngName` ở CẢ hai nhánh nhưng LUÔN gán
+        //   `DBNull.Value` (`dr["EngName"] = DBNull.Value;`) ⇒ cột tồn tại nhưng KHÔNG BAO GIỜ mang giá trị
+        //   thật. Port 1:1: luôn ghi null, KHÔNG lấy từ input (dù DTO có nhận để giữ hình dạng nguồn).
+        row.EngName = null;
         row.Unit = string.IsNullOrWhiteSpace(r.Unit) ? null : r.Unit;
         row.Price = r.Price;
         row.TotalLimit = r.TotalLimit;
@@ -85015,7 +85019,7 @@ record WarrantyRenewalCategoryDto(string? WrtReneCateCode, string? WrtReneCateNa
 record RoWorkArisingQuotaDto(string? ROWArisCode, string? ROWArisName, string? ROWTypeDtlCode, string? FlagActive);   // #539
 
 record PartExtraMstDto(string? PartCode, string? ROMSID, string? VieName, string? Unit,
-    decimal? Price, decimal? TotalLimit, string? FlagActive);   // #538
+    decimal? Price, decimal? TotalLimit, string? FlagActive, string? EngName);   // #538 · #1547 them EngName
 
 record WarrantyWorkDeleteDto(List<string>? ROWWorkCodes, string? Mode);   // #536
 
