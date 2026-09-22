@@ -24012,6 +24012,151 @@ app.MapDelete("/api/rowwarrantyworks/{code}", async (string code, AppDbContext d
     return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
+// ===== #1494 Danh mục ĐƯỜNG DẪN VIDEO (Ser_Mst_FilePathVideo — port 1:1 cụm CRUD, TCMotor DMSCarSv/Tab) =====
+// Nguồn: `Tab/BizCarSv.Tab.cs` — `_Get` (:1921, SELECT `smfpv.*`), `_Add` (:2172), `_Update` (:2431),
+// `_Delete` (:2731). Bốn `[WebMethod]` LIVE ở `HTCWSCarSv/WSCarSv.asmx.cs` (:32938/32980/33019/33061)
+// gọi THẲNG bản trần ⇒ đây là bản LIVE. Bảng ở DB CommonCenter (dùng chung).
+// `_Get` lọc theo `FilePathVideoCode`/`FilePathVideoName`/`FlagActive` (bài học #540: áp đủ tham số).
+app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, string? filePathVideoCode, string? filePathVideoName, string? flagActive) =>
+{
+    var qry = db.FilePathVideos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(filePathVideoCode)) qry = qry.Where(x => x.FilePathVideoCode == filePathVideoCode);
+    if (!string.IsNullOrWhiteSpace(filePathVideoName)) qry = qry.Where(x => x.FilePathVideoName != null && x.FilePathVideoName.Contains(filePathVideoName!));
+    if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
+    var items = await qry.OrderBy(x => x.FilePathVideoCode).Take(500).Select(x => new { x.Id, x.FilePathVideoCode, x.IdxView,
+        x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1494 §12 — echo đủ cột (nguồn SELECT smfpv.*)
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// `Ser_Mst_FilePathVideo_Add`: guard `FilePathVideoCode` rỗng ⇒ Raise; `CheckDB(Flag.No)` = mã PHẢI CHƯA tồn tại.
+// Ghi 9 cột: FilePathVideoCode/IdxView/FilePathVideoName/FilePathVideo/FilePathAvatar/Remark/FlagActive/LogLUDateTime/LogLUBy.
+app.MapPost("/api/filepathvideos", async (FilePathVideoDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var code = (dto.FilePathVideoCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã đường dẫn video (FilePathVideoCode)." });
+    var exists = await db.FilePathVideos.AnyAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == code);
+    if (exists) return Results.BadRequest(new { error = "Mã đường dẫn video đã tồn tại (nguồn CheckDB Flag.No)." });
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    var row = new MstFilePathVideo { OrgId = t.OrgId, FilePathVideoCode = code, FlagActive = "1" };
+    row.IdxView = dto.IdxView; row.FilePathVideoName = dto.FilePathVideoName; row.FilePathVideo = dto.FilePathVideo;
+    row.FilePathAvatar = dto.FilePathAvatar; row.Remark = dto.Remark;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    db.FilePathVideos.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FilePathVideoCode, row.FilePathVideoName, row.FlagActive });
+}).RequireAuthorization();
+
+// `Ser_Mst_FilePathVideo_Update`: guard `CheckDB(Flag.Yes)` = mã PHẢI tồn tại. Ghi CHỌN LỌC theo `Ft_Cols_Upd`
+// (IdxView/FilePathVideoName/FilePathVideo/FilePathAvatar/Remark/FlagActive) + luôn LogLUDateTime/LogLUBy.
+app.MapPut("/api/filepathvideos/{code}", async (string code, FilePathVideoDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var c = code.Trim();
+    var row = await db.FilePathVideos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == c);
+    if (row is null) return Results.NotFound(new { code = c });
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    row.IdxView = dto.IdxView; row.FilePathVideoName = dto.FilePathVideoName; row.FilePathVideo = dto.FilePathVideo;
+    row.FilePathAvatar = dto.FilePathAvatar; row.Remark = dto.Remark;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.FilePathVideoCode, row.FilePathVideoName, row.FlagActive });
+}).RequireAuthorization();
+
+// `Ser_Mst_FilePathVideo_Delete`: guard `CheckDB(Flag.Yes)` = mã PHẢI tồn tại; xoá CỨNG theo `FilePathVideoCode`.
+app.MapDelete("/api/filepathvideos/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = code.Trim();
+    var row = await db.FilePathVideos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == c);
+    if (row is null) return Results.NotFound(new { code = c });
+    db.FilePathVideos.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
+}).RequireAuthorization();
+
+// ===== #1495 Danh mục LỖI TIẾP NHẬN (Ser_Mst_ReceptionError — port 1:1, TCMotor DMSCarSv/Tab) =====
+// Nguồn: `Tab/BizCarSv.Tab.cs:1425` `Ser_Mst_ReceptionError_Get` (SELECT `smre.*`). `[WebMethod]` LIVE
+// ở `HTCWSCarSv/WSCarSv.asmx.cs:33091` gọi bản trần. Nguồn CHỈ có `_Get` ⇒ danh mục CHỈ ĐỌC.
+// Lọc theo `ReceptionErrorCode`/`FlagActive` (bài học #540: áp đủ tham số).
+app.MapGet("/api/receptionerrors", async (AppDbContext db, ITenantContext t, string? receptionErrorCode, string? flagActive) =>
+{
+    var qry = db.ReceptionErrors.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(receptionErrorCode)) qry = qry.Where(x => x.ReceptionErrorCode == receptionErrorCode);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
+    var items = await qry.OrderBy(x => x.ReceptionErrorCode).Take(500).Select(x => new { x.Id, x.ReceptionErrorCode,
+        x.ReceptionErrorName, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1495 §12 — echo đủ cột (nguồn SELECT smre.*)
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// ===== #1496 Danh mục ẢNH KIỂM TRA THEO DÒNG XE (Ser_Mst_ModelAudImage — port 1:1 cụm CRUD, TCMotor DMSCarSv/Tab) =====
+// Nguồn: `Tab/BizCarSv.Tab.cs` — `_Get` (:223, SELECT `smmai.*`), `_Add` (:493), `_Update` (:771),
+// `_Delete` (:1027). Bốn `[WebMethod]` LIVE ở `HTCWSCarSv/WSCarSv.asmx.cs` (:33168/33211/33246/33284)
+// gọi THẲNG bản trần. Khoá tự nhiên KÉP: `ModelCode` + `ReceptionFAudType`.
+// `_Get` lọc theo `ModelCode`/`ReceptionFAudType`/`FlagActive` (bài học #540: áp đủ tham số).
+app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, string? modelCode, string? receptionFAudType, string? flagActive) =>
+{
+    var qry = db.ModelAudImages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(modelCode)) qry = qry.Where(x => x.ModelCode == modelCode);
+    if (!string.IsNullOrWhiteSpace(receptionFAudType)) qry = qry.Where(x => x.ReceptionFAudType == receptionFAudType);
+    if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
+    var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.ReceptionFAudType).Take(500).Select(x => new { x.Id, x.ModelCode,
+        x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1496 §12 — echo đủ cột (nguồn SELECT smmai.*)
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// `Ser_Mst_ModelAudImage_Add`: guard `ModelCode` rỗng ⇒ Raise; `ReceptionFAudType` rỗng ⇒ Raise;
+// `CheckDB(Flag.No)` = cặp khoá PHẢI CHƯA tồn tại; `FilePath` rỗng ⇒ Raise.
+// Ghi 7 cột: ModelCode/ReceptionFAudType/FilePath/Remark/FlagActive/LogLUDateTime/LogLUBy.
+app.MapPost("/api/modelaudimages", async (ModelAudImageDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var modelCode = (dto.ModelCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(modelCode)) return Results.BadRequest(new { error = "Chưa nhập mã dòng xe (ModelCode)." });
+    var audType = (dto.ReceptionFAudType ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(audType)) return Results.BadRequest(new { error = "Chưa nhập loại kiểm tra (ReceptionFAudType)." });
+    var filePath = (dto.FilePath ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(filePath)) return Results.BadRequest(new { error = "Chưa nhập đường dẫn ảnh (FilePath)." });
+    var exists = await db.ModelAudImages.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == modelCode && x.ReceptionFAudType == audType);
+    if (exists) return Results.BadRequest(new { error = "Cặp (ModelCode, ReceptionFAudType) đã tồn tại (nguồn CheckDB Flag.No)." });
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    var row = new ModelAudImage { OrgId = t.OrgId, ModelCode = modelCode, ReceptionFAudType = audType, FlagActive = "1" };
+    row.FilePath = filePath; row.Remark = dto.Remark;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    db.ModelAudImages.Add(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ModelCode, row.ReceptionFAudType, row.FlagActive });
+}).RequireAuthorization();
+
+// `Ser_Mst_ModelAudImage_Update`: guard `CheckDB(Flag.Yes)` = cặp khoá PHẢI tồn tại; `FilePath` rỗng ⇒ Raise.
+// Ghi CHỌN LỌC theo `Ft_Cols_Upd` (FilePath/FlagActive) + luôn LogLUDateTime/LogLUBy.
+app.MapPut("/api/modelaudimages/{modelCode}/{receptionFAudType}", async (string modelCode, string receptionFAudType, ModelAudImageDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var mc = modelCode.Trim(); var at = receptionFAudType.Trim();
+    var row = await db.ModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == mc && x.ReceptionFAudType == at);
+    if (row is null) return Results.NotFound(new { modelCode = mc, receptionFAudType = at });
+    var filePath = (dto.FilePath ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(filePath)) return Results.BadRequest(new { error = "Chưa nhập đường dẫn ảnh (FilePath)." });
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    row.FilePath = filePath; row.Remark = dto.Remark;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.LogLUDateTime = now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ModelCode, row.ReceptionFAudType, row.FlagActive });
+}).RequireAuthorization();
+
+// `Ser_Mst_ModelAudImage_Delete`: guard `CheckDB(Flag.Yes)` = cặp khoá PHẢI tồn tại; xoá CỨNG theo cặp khoá.
+app.MapDelete("/api/modelaudimages/{modelCode}/{receptionFAudType}", async (string modelCode, string receptionFAudType, AppDbContext db, ITenantContext t) =>
+{
+    var mc = modelCode.Trim(); var at = receptionFAudType.Trim();
+    var row = await db.ModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == mc && x.ReceptionFAudType == at);
+    if (row is null) return Results.NotFound(new { modelCode = mc, receptionFAudType = at });
+    db.ModelAudImages.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = new { modelCode = mc, receptionFAudType = at } });
+}).RequireAuthorization();
+
 // ===== Khách đến xem xe (CustomerVisit — port 1:1 FrmCusVisit, 2010.HTC/Sales/RetailContract) =====
 app.MapGet("/api/customervisits", async (AppDbContext db, ITenantContext t, string? dealer, string? model, DateTime? from, DateTime? to) =>
 {
@@ -83485,3 +83630,5 @@ record RoPaidDto(DateTime? StatusDate, string? IsCusPaymentAll, string? AmountFr
 // #1486: Ser_MST_ROWarrantyWork_Save — danh mục công bảo hành hãng. Nguồn nhận ds_ListROWarrantyWork
 // (mỗi dòng: ROWWorkCode/ROWWorkName/Model/RateHour/Price/RatePrice/VAT/Remark/AppTypeCode).
 record ROWarrantyWorkDto(string? ROWWorkCode, string? ROWWorkName, string? Model, decimal? RateHour, decimal? Price, decimal? RatePrice, decimal? VAT, string? Remark, string? AppTypeCode, string? FlagActive = null);
+record FilePathVideoDto(string? FilePathVideoCode, string? IdxView, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, string? Remark, string? FlagActive = null);   // #1494 Ser_Mst_FilePathVideo
+record ModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath, string? Remark, string? FlagActive = null);   // #1496 Ser_Mst_ModelAudImage

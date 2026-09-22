@@ -272,6 +272,9 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CustomerVisit> CustomerVisits => Set<CustomerVisit>();
     public DbSet<ServiceTradeMark> ServiceTradeMarks => Set<ServiceTradeMark>();
     public DbSet<ROWarrantyWork> ROWarrantyWorks => Set<ROWarrantyWork>();   // #1486 Ser_MST_ROWarrantyWork
+    public DbSet<MstFilePathVideo> FilePathVideos => Set<MstFilePathVideo>();   // #1494 Ser_Mst_FilePathVideo
+    public DbSet<ReceptionError> ReceptionErrors => Set<ReceptionError>();   // #1495 Ser_Mst_ReceptionError
+    public DbSet<ModelAudImage> ModelAudImages => Set<ModelAudImage>();   // #1496 Ser_Mst_ModelAudImage
     public DbSet<MaintWorkItem> MaintWorkItems => Set<MaintWorkItem>();
     public DbSet<RateApprOrderModelMax> RateApprOrderModelMaxes => Set<RateApprOrderModelMax>();
     public DbSet<ContractTypeModel> ContractTypeModels => Set<ContractTypeModel>();

@@ -8030,6 +8030,84 @@ public sealed class SysObjectType
 }
 
 /// <summary>
+/// Danh mục ĐƯỜNG DẪN VIDEO (`Ser_Mst_FilePathVideo`) — port 1:1 cụm CRUD
+/// `Ser_Mst_FilePathVideo_Get/_Add/_Update/_Delete` (`Tab/BizCarSv.Tab.cs:1921/2172/2431/2731`).
+/// Bốn `[WebMethod]` LIVE (`HTCWSCarSv/WSCarSv.asmx.cs:32938/32980/33019/33061`) gọi THẲNG bản trần
+/// (không hậu tố ngày) ⇒ đây là bản LIVE. Bảng ở DB CommonCenter (dùng chung).
+/// Cột nguồn (entity ClientService `Ser_Mst_FilePathVideo.cs`): `FilePathVideoCode` (khoá tự nhiên),
+/// `IdxView`, `FilePathVideoName`, `FilePathVideo`, `FilePathAvatar`, `Remark`, `FlagActive`,
+/// `LogLUDateTime`, `LogLUBy`. `_Get` SELECT `smfpv.*` (cả bảng) + lọc `FilePathVideoCode`/
+/// `FilePathVideoName`/`FlagActive` (bài học #540: áp đủ tham số).
+/// 🔴 `_Add` guard: `FilePathVideoCode` rỗng ⇒ Raise; `CheckDB(Flag.No)` = mã PHẢI CHƯA tồn tại.
+/// 🔴 `_Update`/`_Delete` guard: `CheckDB(Flag.Yes)` = mã PHẢI tồn tại. `_Update` ghi CHỌN LỌC theo
+/// `Ft_Cols_Upd` (IdxView/FilePathVideoName/FilePathVideo/FilePathAvatar/Remark/FlagActive) + luôn
+/// `LogLUDateTime`/`LogLUBy`. `_Delete` xoá CỨNG theo `FilePathVideoCode`.
+/// </summary>
+public sealed class MstFilePathVideo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>FilePathVideoCode — khoá tự nhiên nguồn dùng để tra/insert/update/delete.</summary>
+    public string FilePathVideoCode { get; set; } = "";
+    public string? IdxView { get; set; }
+    public string? FilePathVideoName { get; set; }
+    public string? FilePathVideo { get; set; }
+    public string? FilePathAvatar { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Danh mục LỖI TIẾP NHẬN (`Ser_Mst_ReceptionError`) — port 1:1 `Ser_Mst_ReceptionError_Get`
+/// (`Tab/BizCarSv.Tab.cs:1425`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:33091` gọi bản trần).
+/// Nguồn CHỈ có `_Get` (không có Add/Update/Delete trong WS) ⇒ danh mục CHỈ ĐỌC.
+/// Cột nguồn (entity ClientService `Ser_Mst_ReceptionError.cs`): `ReceptionErrorCode` (khoá tự nhiên),
+/// `ReceptionErrorName`, `FlagActive`, `Remark`, `LogLUDateTime`, `LogLUBy`. `_Get` SELECT `smre.*`
+/// (cả bảng) + lọc `ReceptionErrorCode`/`FlagActive` (bài học #540: áp đủ tham số).
+/// </summary>
+public sealed class ReceptionError
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>ReceptionErrorCode — khoá tự nhiên nguồn dùng để tra.</summary>
+    public string ReceptionErrorCode { get; set; } = "";
+    public string? ReceptionErrorName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Danh mục ẢNH KIỂM TRA THEO DÒNG XE (`Ser_Mst_ModelAudImage`) — port 1:1 cụm CRUD
+/// `Ser_Mst_ModelAudImage_Get/_Add/_Update/_Delete` (`Tab/BizCarSv.Tab.cs:223/493/771/1027`).
+/// Bốn `[WebMethod]` LIVE (`HTCWSCarSv/WSCarSv.asmx.cs:33168/33211/33246/33284`) gọi THẲNG bản trần.
+/// Cột nguồn (entity ClientService `Ser_Mst_ModelAudImage.cs`): `ModelCode` + `ReceptionFAudType`
+/// (khoá tự nhiên KÉP), `FilePath`, `Remark`, `FlagActive`, `LogLUDateTime`, `LogLUBy`.
+/// `_Get` SELECT `smmai.*` (cả bảng) + lọc `ModelCode`/`ReceptionFAudType`/`FlagActive`.
+/// 🔴 `_Add` guard: `ModelCode` rỗng ⇒ Raise; `ReceptionFAudType` rỗng ⇒ Raise; `CheckDB(Flag.No)` =
+/// cặp khoá PHẢI CHƯA tồn tại; `Ser_Mst_ReceptionFAudType_CheckDB(Flag.Yes)` = loại phải tồn tại;
+/// `FilePath` rỗng ⇒ Raise. `_Update`/`_Delete` guard: `CheckDB(Flag.Yes)` = cặp khoá PHẢI tồn tại.
+/// `_Update` ghi CHỌN LỌC theo `Ft_Cols_Upd` (FilePath/FlagActive) + luôn `LogLUDateTime`/`LogLUBy`.
+/// </summary>
+public sealed class ModelAudImage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>ModelCode — phần 1 của khoá tự nhiên kép.</summary>
+    public string ModelCode { get; set; } = "";
+    /// <summary>ReceptionFAudType — phần 2 của khoá tự nhiên kép.</summary>
+    public string ReceptionFAudType { get; set; } = "";
+    public string? FilePath { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// Map NHÓM ↔ NGƯỜI DÙNG (`Map_SG_SU` — port 1:1 `SysSaveMapSysGroupSysUser_New20181119`,
 /// 2010.HTC `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:16421`; hàm đọc `SysGetMapSysGroupSysUser`
 /// ở `BizHTC.System.cs:659`). TWIN: cả WS 32-bit lẫn 64-bit **cùng bản** `_New20181119`.
