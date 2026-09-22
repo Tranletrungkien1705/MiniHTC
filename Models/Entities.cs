@@ -15695,6 +15695,11 @@ public sealed class SharePart
 
     public string? Note { get; set; }              // NOTE — ghi chú ở MASTER (TblSPSharePart.Note)
     public string? CreatedBy { get; set; }         // CREATEDBY
+    /// <summary>#1548 §12 — `CreatedDate` của nguồn `SP_SharePart` (INSERT `SP_SharePartCreate`,
+    /// `BizCarSv.PartOrder.cs:4702`). Nguồn ghi `CreatedDate = strTDate` (thời điểm hiện tại), **KHÔNG**
+    /// dùng tham số `strCreatedDate` client gửi (tham số đó bị LỜ — xem #832). Port cũ chỉ có `CreatedAt`
+    /// (cột quy ước Mini) mà thiếu hẳn cột `CreatedDate` nguồn dùng thật.</summary>
+    public DateTime? CreatedDate { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }

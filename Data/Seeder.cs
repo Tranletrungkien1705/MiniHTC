@@ -1578,6 +1578,8 @@ public static class Seeder
         "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"FlagLatest\" text NOT NULL DEFAULT '1'",
         "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"Note\" text",
         "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text",
+        // #1548 §12 — cot CreatedDate cua nguon SP_SharePart (INSERT SP_SharePartCreate ghi strTDate)
+        "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp",
         "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
         "ALTER TABLE public.\"ShareParts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #266 parity TblSerRO: 10 cot the hoi vien / diem (khoi phu cuoi lop hang)

@@ -42594,7 +42594,8 @@ app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(partCode)) query = query.Where(x => x.PartCode.Contains(partCode!));
     if (!string.IsNullOrWhiteSpace(partName)) query = query.Where(x => x.PartName != null && x.PartName.Contains(partName!));
     if (!string.IsNullOrWhiteSpace(createdBy)) query = query.Where(x => x.CreatedBy == createdBy);
-    if (createdDate.HasValue) query = query.Where(x => x.CreatedAt.Date == createdDate.Value.Date);
+    // #1548 §12: nguồn `SpSharePartGet` lọc `ssp.CreatedDate` (KHÔNG phải CreatedAt quy ước Mini).
+    if (createdDate.HasValue) query = query.Where(x => x.CreatedDate != null && x.CreatedDate.Value.Date == createdDate.Value.Date);
     // 🔴 Nguồn lọc QuantityShare > 0 ở phần chi tiết — mặc định giữ đúng vậy.
     var keepZero = includeZeroShare ?? false;
     if (!keepZero) query = query.Where(x => x.QuantityShare > 0);
@@ -42604,6 +42605,7 @@ app.MapGet("/api/shareparts", async (AppDbContext db, ITenantContext t, string? 
         .Select(x => new { x.ShareNo, x.DealerCode, x.PartCode, x.PartName, x.Unit, x.InStock, x.MinQuantity,
             x.QuantityShare, x.QuantityShareRequested, x.FlagLatest, x.Remark, x.Note, x.Status,
             x.CreatedBy, x.LogLUDateTime, x.LogLUBy, createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),   // #1355 §12
+            createdDate = x.CreatedDate != null ? x.CreatedDate.Value.ToString("yyyy-MM-dd") : null,   // #1548 §12
             // #420 Cột SOPrice của nguồn là số 0 VIẾT CỨNG trong SQL — trả đúng vậy, kèm ghi chú.
             soPrice = 0.0m }).ToListAsync();
 
@@ -42733,6 +42735,9 @@ app.MapPost("/api/shareparts", async (SharePartDto dto, AppDbContext db, ITenant
             InStock = inStock, MinQuantity = minQty,
             QuantityShareRequested = req, QuantityShare = actual,
             Remark = l.Remark, Note = dto.Note, Status = "Open", FlagLatest = "1",
+            // #1548 §12: nguồn `SP_SharePartCreate` ghi `CreatedDate = strTDate` (thời điểm hiện tại),
+            //   KHÔNG dùng tham số `strCreatedDate` client gửi (tham số đó bị LỜ). Port 1:1: ghi `now`.
+            CreatedDate = now,
             CreatedBy = (partnerUserCode ?? "system").Trim(), LogLUDateTime = now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
     }
