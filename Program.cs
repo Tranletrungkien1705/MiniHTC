@@ -15563,6 +15563,76 @@ app.MapGet("/api/serviceitems/search-full", async (AppDbContext db, ITenantConte
         echoAllColumnsFromStar = "#1498: nguon SELECT t.* => moi cot Ser_Mst_Service phai co o GET (bai hoc #539)",
     });
 }).RequireAuthorization();
+
+// ===== 🔴 #1517 `Ser_Mst_Service_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:2549`) — DANH MỤC DỊCH VỤ PHÂN TRANG =====
+// Nguồn `BizCarSv.Service.cs:966` — KHÁC `_New20210618` (#902, đã port ở `/api/serviceitems/search-full`):
+//   hàm này là bản CŨ, lọc theo `t.SerID` (list `|`) · `t.DealerCode` (list `|`) · `t.SerCode` **LIKE** ·
+//   `t.SerName` **LIKE** · `t.IsActive` (list `|`), phân trang `Row_Number() over (order by t.SerID desc)`
+//   cắt theo `MyRowIdx` [start+1 .. start+count], trả 2 bảng: `Ser_Service_Summary` (Count) + `Ser_Mst_Service`.
+//   Mỗi dòng kèm `isnull(mcsf.Factor, mct.CusFactor) Factor` từ left join `Ser_Mst_CusServiceFactor`
+//   (theo CusTypeID+SerID+DealerCode) và `Ser_Mst_CustomerType` (theo CusTypeID+DealerCode).
+// 🔴 HÀNG khác GIÁ TRỊ: `strIsActiveList = strIsActiveList.ToUpper().Replace("TRUE","1").Replace("FALSE","0")`
+//   — nguồn tự đổi TRUE/FALSE thành 1/0 TRƯỚC khi build clause ⇒ GIỮ NGUYÊN hành vi này.
+// 🔴 `if (string.IsNullOrEmpty(strCusTypeID)) strCusTypeID = "null";` rồi bake vào `ON mcsf.CusTypeID = @CusTypeID`
+//   ⇒ khi rỗng, SQL thành `= null` (literal, KHÔNG phải IS NULL) ⇒ join KHÔNG bao giờ khớp (dead-join, họ #887/#889).
+//   Mini: khi cusTypeId rỗng thì KHÔNG join (Factor = null) — tương đương kết quả dead-join, không bake SQL.
+// 📌 MiniHTC chưa có cột `SerID` riêng (bài học #30072): dùng `SerCode` làm khoá dịch vụ, `Id` làm thứ tự
+//   (tương đương `order by t.SerID desc`). `CusServiceFactor.SerID` của Mini lưu `SerCode` (xem #902).
+app.MapGet("/api/serviceitems/get", async (AppDbContext db, ITenantContext t,
+    string? serIdList, string? dealerCodeList, string? serCodePattern, string? serNamePattern,
+    string? cusTypeId, string? isActiveList, int? resultRecordStart, int? resultRecordCount) =>
+{
+    var qry = db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(serIdList))
+    {
+        var ids = serIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => ids.Contains(x.SerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var dlrs = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && dlrs.Contains(x.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(serCodePattern)) qry = qry.Where(x => x.SerCode.Contains(serCodePattern!));
+    if (!string.IsNullOrWhiteSpace(serNamePattern)) qry = qry.Where(x => x.SerName != null && x.SerName.Contains(serNamePattern!));
+    // HÀNG khác GIÁ TRỊ: nguồn đổi TRUE/FALSE -> 1/0 trước khi lọc IsActive.
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var act = isActiveList!.ToUpper().Replace("TRUE", "1").Replace("FALSE", "0")
+            .Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => act.Contains(x.FlagActive));
+    }
+
+    var total = await qry.CountAsync();
+    var start = resultRecordStart ?? 0;
+    var count = resultRecordCount is > 0 ? resultRecordCount!.Value : 100;
+    var page = await qry.OrderByDescending(x => x.Id).Skip(start).Take(count).ToListAsync();
+
+    // Factor: isnull(mcsf.Factor, mct.CusFactor). Nguồn dead-join khi CusTypeID rỗng ⇒ Mini bỏ join (Factor null).
+    Dictionary<string, decimal?> factorBySer = new();
+    if (!string.IsNullOrWhiteSpace(cusTypeId))
+    {
+        var serCodes = page.Select(x => x.SerCode).ToList();
+        var csf = await db.CusServiceFactors.Where(x => x.OrgId == t.OrgId && x.CusTypeID == cusTypeId && serCodes.Contains(x.SerID)).ToListAsync();
+        var ct = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == cusTypeId);
+        foreach (var s in page)
+            factorBySer[s.SerCode] = csf.FirstOrDefault(x => x.SerID == s.SerCode)?.Factor ?? ct?.CusFactor;
+    }
+
+    return Results.Ok(new
+    {
+        summary = new { myCount = total },
+        start, count = page.Count,
+        items = page.Select(s => new { s.SerCode, s.SerName, s.Cost, s.Price, s.Model, s.Vat, s.Note, s.FlagActive,
+            s.DealerCode, s.SerTypeID, s.StdManHour, s.Status, s.FlagWarranty,
+            s.CreatedDate, s.CreatedBy, s.LogLUDateTime, s.LogLUBy, s.CreatedAt,
+            factor = factorBySer.TryGetValue(s.SerCode, out var f) ? f : (decimal?)null }),
+        onlyLiveConfirmed1517 = "#1517: Ser_Mst_Service_Get — BizCarSv.Service.cs:966, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:2549",
+        isActiveTrueFalseRewrite = "HANG khac GIA TRI: nguon strIsActiveList.ToUpper().Replace(TRUE,1).Replace(FALSE,0) truoc khi build clause — Mini giu nguyen",
+        cusTypeIdEmptyIsDeadJoin = "nguon: if rong strCusTypeID = chuoi 'null' roi bake vao ON mcsf.CusTypeID = @CusTypeID => '= null' literal (khong phai IS NULL) => join khong bao gio khop (ho #887/#889). Mini: cusTypeId rong => khong join, Factor = null",
+        echoAllColumnsFromStar = "#1517: nguon SELECT t.* => moi cot Ser_Mst_Service phai co o GET (bai hoc #539)",
+    });
+}).RequireAuthorization();
 app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SerCode)) return Results.BadRequest(new { error = "Chưa nhập mã dịch vụ." });
@@ -16052,6 +16122,56 @@ app.MapGet("/api/sermstlocations", async (AppDbContext db, ITenantContext t,
             x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1315 §12
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// ===== 🔴 #1516 `Ser_Mst_Location_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:4843`) — GET DANH MỤC VỊ TRÍ KHO =====
+// Nguồn `BizCarSv.Master.cs:6630` — `select t.* from Ser_Mst_Location t` với 6 bộ lọc:
+//   `t.LocationID` (list `|`) · `t.LocationCode` (list `|`) · `t.DealerCode` (list `|`) ·
+//   `t.LocationName` **LIKE** · `t.LocationType` (list `|`) · `t.IsActive` (list `|`).
+// ⚠️ Route `/api/sermstlocations` (port từ WinForm `FrmLocationCreate`) chỉ lọc dealerCode/stockNo/all —
+//   KHÔNG có LocationIDList/LocationCodeList/LocationNamePattern(LIKE)/LocationTypeList ⇒ đây là GAP thật.
+// 📌 §12: entity `SerMstLocation` đã đủ cột (t.* = cả bảng) — không thêm field mới.
+app.MapGet("/api/serlocations/get", async (AppDbContext db, ITenantContext t,
+    string? locationIdList, string? locationCodeList, string? dealerCodeList,
+    string? locationNamePattern, string? locationTypeList, string? isActiveList) =>
+{
+    var qry = db.SerMstLocations.Where(x => x.OrgId == t.OrgId);
+    // BuildClauseConditionList("and", "t.LocationID", strLocationIDList, "|") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(locationIdList))
+    {
+        var ids = locationIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationID != null && ids.Contains(x.LocationID));
+    }
+    if (!string.IsNullOrWhiteSpace(locationCodeList))
+    {
+        var codes = locationCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationCode != null && codes.Contains(x.LocationCode));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var dlrs = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && dlrs.Contains(x.DealerCode));
+    }
+    // BuildClauseConditionSingle("and", "t.LocationName", "like", …) — LIKE, không phải khớp chính xác.
+    if (!string.IsNullOrWhiteSpace(locationNamePattern)) qry = qry.Where(x => x.LocationName != null && x.LocationName.Contains(locationNamePattern!));
+    if (!string.IsNullOrWhiteSpace(locationTypeList))
+    {
+        var types = locationTypeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationType != null && types.Contains(x.LocationType));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var act = isActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => act.Contains(x.IsActive));
+    }
+    var items = await qry.OrderBy(x => x.LocationCode)
+        .Select(x => new { x.Id, x.LocationID, x.LocationCode, x.LocationName, x.StockNo, x.DealerCode, x.IsActive,
+            x.LocationHight, x.LocationSurface, x.LocationType,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1516 = "#1516: Ser_Mst_Location_Get — BizCarSv.Master.cs:6630, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4843",
+        echoAllColumnsFromStar = "#1516: nguon SELECT t.* => moi cot Ser_Mst_Location phai co o GET (bai hoc #539)" });
 }).RequireAuthorization();
 
 app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
@@ -45615,6 +45735,32 @@ app.MapGet("/api/customertypes", async (AppDbContext db, ITenantContext t, strin
     var items = await query.OrderBy(x => x.CusTypeCode).Take(500)
         .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt }).ToListAsync();   // #1245 §12 + #1292 §12
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// ===== 🔴 #1518 `Ser_MST_CustomerType_GetAll` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:4694`) — DANH MỤC LOẠI KH =====
+// Nguồn `BizCarSv.Master.cs:6029` — `select t.* from Ser_MST_CustomerType t` với 3 bộ lọc:
+//   `t.CusTypeID` (list `|`) · `t.DealerCode` **LIKE** · `t.CusTypeName` **LIKE**.
+// ⚠️ Route `/api/customertypes` chỉ lọc q (contains code/name) + personType + active — KHÔNG có
+//   CusTypeIDList/DealerCodePattern(LIKE)/CusTypeNamePattern(LIKE) ⇒ đây là GAP thật.
+// 📌 §12: entity `CustomerType` đã đủ cột (t.* = cả bảng) — không thêm field mới.
+app.MapGet("/api/customertypes/getall", async (AppDbContext db, ITenantContext t,
+    string? cusTypeIdList, string? dealerCodePattern, string? cusTypeNamePattern) =>
+{
+    var qry = db.CustomerTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(cusTypeIdList))
+    {
+        var ids = cusTypeIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => ids.Contains(x.CusTypeCode));
+    }
+    // BuildClauseConditionSingle("and", "t.DealerCode", "like", …) — LIKE, không phải khớp chính xác.
+    if (!string.IsNullOrWhiteSpace(dealerCodePattern)) qry = qry.Where(x => x.DealerCode != null && x.DealerCode.Contains(dealerCodePattern!));
+    if (!string.IsNullOrWhiteSpace(cusTypeNamePattern)) qry = qry.Where(x => x.CusTypeName != null && x.CusTypeName.Contains(cusTypeNamePattern!));
+    var items = await qry.OrderBy(x => x.CusTypeCode)
+        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1518 = "#1518: Ser_MST_CustomerType_GetAll — BizCarSv.Master.cs:6029, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4694",
+        echoAllColumnsFromStar = "#1518: nguon SELECT t.* => moi cot Ser_MST_CustomerType phai co o GET (bai hoc #539)" });
 }).RequireAuthorization();
 
 // Upsert theo mã loại KH (GroupNo/mã trống = auto-gen).
