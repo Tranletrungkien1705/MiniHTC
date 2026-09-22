@@ -58500,6 +58500,58 @@ app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #1543 `SerGroupRepairGet` (LIVE, `BizCarSv.Service.cs:11631`, WS `HTCWSCarSv/WSCarSv.asmx.cs:5793`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC `GET /api/grouprepairs` ở trên (port WinForm
+//   FrmGroupRepairCreate, chỉ lọc `dealer`): hàm này lọc theo **NĂM danh sách `|`** qua `SqlUtils.BuildClause`.
+// Nguồn: `SELECT * FROM Ser_GroupRepair sp WHERE (1=1)` + 5 `BuildClause("and", "sp.<col>", <list>, "@p")`:
+//   `sp.GroupRID` · `sp.DealerCode` · `sp.GroupRNo` · `sp.GroupRName` · `sp.IsActive`. **Không `ORDER BY`**.
+// ⚠️ `BuildClause` bỏ IM LẶNG điều kiện khi đầu vào rỗng (luật #410) ⇒ tham số trống = bỏ điều kiện (trả trọn danh mục).
+// ⚠️ `BuildClause` nhận toán tử ở ĐẦU mỗi phần tử (`=`, `!=`, `LIKE`, `IN a,b`, `IS NULL`…) — port giữ đúng ngữ nghĩa
+//   bằng cách tách `|` rồi xử lý tiền tố; ở đây nguồn chỉ dùng dạng so khớp bằng (không tiền tố) nên giữ `Contains`.
+// 📌 Mini: `Ser_GroupRepair.GroupRNo` → `GroupRepair.GroupRCode`; `IsActive` → `Status`. Entity đủ cột ⇒ KHÔNG cần §12.
+// 3B: thân hàm md5 KHỚP giữa V20 và V20.2023.Release (`2de0ca2a`).
+app.MapGet("/api/grouprepairs/get", async (AppDbContext db, ITenantContext t,
+    string? groupRIDConditionList, string? dealerCodeConditionList, string? groupRNoConditionList,
+    string? groupRNameConditionList, string? isActiveConditionList) =>
+{
+    var qg = db.GroupRepairs.Where(g => g.OrgId == t.OrgId);
+    // BuildClause("and", "sp.<col>", <list>, "@p") — mọi bộ lọc là danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(groupRIDConditionList))
+    {
+        var v = groupRIDConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        qg = qg.Where(g => v.Contains(g.Id.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeConditionList))
+    {
+        var v = dealerCodeConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        qg = qg.Where(g => g.DealerCode != null && v.Contains(g.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(groupRNoConditionList))
+    {
+        var v = groupRNoConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        qg = qg.Where(g => v.Contains(g.GroupRCode));
+    }
+    if (!string.IsNullOrWhiteSpace(groupRNameConditionList))
+    {
+        var v = groupRNameConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        qg = qg.Where(g => v.Contains(g.GroupRName));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveConditionList))
+    {
+        var v = isActiveConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        qg = qg.Where(g => v.Contains(g.Status));
+    }
+    // Nguồn KHÔNG `ORDER BY` ⇒ Mini sắp tường minh theo `GroupRCode` cho ổn định.
+    var items = await qg.OrderBy(g => g.GroupRCode)
+        .Select(g => new { g.Id, g.GroupRCode, g.GroupRName, g.Note, g.Status, g.DealerCode,
+            g.LogLUDateTime, g.LogLUBy, g.CreatedDate, g.CreatedBy, g.UpdatedAt }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1543 = "#1543: SerGroupRepairGet — BizCarSv.Service.cs:11631, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:5793",
+        fiveBuildClauseFilters = "sp.GroupRID | sp.DealerCode | sp.GroupRNo | sp.GroupRName | sp.IsActive (BuildClause, danh sach '|')",
+        noOrderByInSource = "nguon KHONG ORDER BY; Mini sap theo GroupRCode cho on dinh",
+        twoTreesMatch = "3B: than ham SerGroupRepairGet md5 KHOP giua V20 va V20.2023.Release (2de0ca2a)" });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #847 MÀN MỚI: SỬA / XOÁ NHÓM SỬA CHỮA — `SerGroupRepair{Create,Update,Delete}` =====
 // `BizCarSv.Service.cs`, cả ba LIVE (`_biz.SerGroupRepair*`, **không** có biến thể hậu tố ngày nào):
 //   `:11161 Create` md5 `f4e12a3c` (189 dòng, 2 guard) · `:11350 Update` `84f09a77` (156, **3** guard) ·
