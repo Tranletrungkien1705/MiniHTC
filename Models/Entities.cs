@@ -15244,6 +15244,14 @@ public sealed class AppointmentServiceItem
     public decimal? StdManHour { get; set; }
 
     public string? Note { get; set; }
+
+    // ===== #1501 §12 — cột nguồn `Ser_AppServiceItems` chưa từng mô hình hoá =====
+    /// <summary>`Ser_AppServiceItems.ItemID` — khoá dòng của bảng con (nguồn trả trong SELECT).</summary>
+    public string? ItemID { get; set; }
+    /// <summary>`Ser_AppServiceItems.SerID` — ID công việc (khoá nối `Ser_Mst_Service`).</summary>
+    public string? SerID { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -15266,6 +15274,14 @@ public sealed class AppointmentPartItem
     public string? Unit { get; set; }
     public decimal Quantity { get; set; }
     public string? Note { get; set; }
+
+    // ===== #1501 §12 — cột nguồn `Ser_AppPartItems` chưa từng mô hình hoá =====
+    /// <summary>`Ser_AppPartItems.ItemID` — khoá dòng của bảng con (nguồn trả trong SELECT).</summary>
+    public string? ItemID { get; set; }
+    /// <summary>`Ser_AppPartItems.PartID` — ID phụ tùng (khoá nối `Ser_Mst_Part`).</summary>
+    public string? PartID { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Công nợ bảo hiểm (hãng BH nợ tiền bồi thường theo RO) — port 1:1 FrmInsDebitSearch (TblCusDebit type InsuranceDebit, TCMotor).</summary>

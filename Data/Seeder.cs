@@ -3341,6 +3341,16 @@ public static class Seeder
                 // LogLUDateTime/LogLUBy vo dieu kien ca tao lan sua - port cu chua tung mo hinh hoa.
                 "ALTER TABLE public.\"SerModelAudImages\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"SerModelAudImages\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1501: Ser_AppServiceItems / Ser_AppPartItems (bang con cua lich hen) thieu 4 cot nguon
+                // (ItemID/SerID|PartID/LogLUDateTime/LogLUBy) — entity ClientService co, port cu chua mo hinh hoa.
+                "ALTER TABLE public.\"AppointmentServiceItems\" ADD COLUMN IF NOT EXISTS \"ItemID\" text NULL",
+                "ALTER TABLE public.\"AppointmentServiceItems\" ADD COLUMN IF NOT EXISTS \"SerID\" text NULL",
+                "ALTER TABLE public.\"AppointmentServiceItems\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"AppointmentServiceItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                "ALTER TABLE public.\"AppointmentPartItems\" ADD COLUMN IF NOT EXISTS \"ItemID\" text NULL",
+                "ALTER TABLE public.\"AppointmentPartItems\" ADD COLUMN IF NOT EXISTS \"PartID\" text NULL",
+                "ALTER TABLE public.\"AppointmentPartItems\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"AppointmentPartItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

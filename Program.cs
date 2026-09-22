@@ -37412,6 +37412,8 @@ app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, IT
             x.StdManHour,
             stdManHourFromMaster = m?.StdManHour,
             x.Note,
+            // #1501 §12 — cột nguồn `Ser_AppServiceItems` nay đã mô hình hoá + echo.
+            x.ItemID, x.SerID, x.LogLUDateTime, x.LogLUBy,
         };
     }).ToList();
 
@@ -37440,6 +37442,8 @@ app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, IT
             inStock = st?.OnHand ?? 0m,
             inShipment = (decimal?)null,                 // #423: chưa có nguồn đúng, KHÔNG bịa 0
             InventoryQuantity = (decimal?)null,          // = inStock + inShipment ⇒ chưa tính được
+            // #1501 §12 — cột nguồn `Ser_AppPartItems` nay đã mô hình hoá + echo.
+            x.ItemID, x.PartID, x.LogLUDateTime, x.LogLUBy,
         };
     }).ToList();
 
@@ -74787,7 +74791,7 @@ app.MapGet("/api/appointments/lookup", async (AppDbContext db, ITenantContext t,
             app.ModelName, app.AppType, app.AppDateTime, app.AppFrom, app.AppTo,
             app.Status, app.CusRequest, app.Note, app.Creator,
         },
-        serviceItems = svc.Select(i => new { i.SerCode, i.SerName, i.StdManHour, i.Note }),
+        serviceItems = svc.Select(i => new { i.SerCode, i.SerName, i.StdManHour, i.Note, i.ItemID, i.SerID, i.LogLUDateTime, i.LogLUBy }),   // #1501 echo đủ cột nguồn
         // #1500 nguồn `zzB_Select_Ser_AppPartItems_zzE`: `mp.PartCode/EngName/VieName/Unit` (join Ser_Mst_Part),
         //   `rp.Quantity` trả HAI LẦN (`Quantity` + alias `Need`), `rp.Note`, và
         //   `(isnull(sb.TotalInStock,0)+isnull(sb.TotalInShipment,0)) InventoryQuantity` (join view tồn kho).
@@ -74807,6 +74811,7 @@ app.MapGet("/api/appointments/lookup", async (AppDbContext db, ITenantContext t,
                 inStock = st?.OnHand ?? 0m,
                 inShipment = (decimal?)null,                 // #423: chưa có nguồn đúng, KHÔNG bịa 0
                 InventoryQuantity = (decimal?)null,          // = inStock + inShipment ⇒ chưa tính được
+                x.ItemID, x.PartID, x.LogLUDateTime, x.LogLUBy,   // #1501 echo đủ cột nguồn
             };
         }).ToList(),
         // ===== #737 =====
