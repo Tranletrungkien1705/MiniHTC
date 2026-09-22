@@ -40781,6 +40781,103 @@ app.MapGet("/api/report/part-top-profit", async (AppDbContext db, ITenantContext
     });
 }).RequireAuthorization();
 
+// #1537 — Ser_InvReportPartTopProfit_WH (bản KHO) — WebMethod LIVE riêng, chưa từng có route.
+//   WS `HTCWSCarSv/WSCarSv.asmx.cs:30630` gọi THẲNG biz `Ser_InvReportPartTopProfit_WH`
+//   (`BizCarSv.WH.cs:6879`). Đây là ANH EM của `/api/report/part-top-profit` (#418, bản Main
+//   `Ser_InvReportPartTopProfit`, `Inventory.Report.cs:5929`). Diff hai thân hàm (đã bỏ khoảng
+//   trắng): GIỐNG HỆT ngoài phần định tuyến CSDL (`_dbDealer` vs `_dbWH`) + tên hàm/mã lỗi.
+//   MiniHTC một CSDL ⇒ cùng kết quả; giữ HAI route riêng để phủ đủ hai WebMethod (bài học #560).
+app.MapGet("/api/report/part-top-profit-wh", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? top, string? dealer, string? costingMethod) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+    var mcc = (costingMethod ?? "FIFO").Trim().ToUpperInvariant();
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && (dealer == null || x.DealerCode == dealer)
+            && x.Status != "4" && x.Status != "5"          // danh sách ĐEN, không phải trắng
+            && x.StockOutNo != null                        // `like '%%'` loại NULL ⇒ chỉ lô ĐÃ XUẤT
+            && x.DateOut != null && x.DateOut >= f && x.DateOut <= to
+            && x.DateIn != null && x.DateIn <= to)
+        .ToListAsync();
+
+    var inLines = (await db.PartStockInLines.Where(l => l.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(l => l.StockInId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var outLines = (await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(l => l.StockOutId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var partMaster = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var droppedNotInMaster = 0;
+    var rows = new List<dynamic>();
+    foreach (var g in inst.GroupBy(x => x.PartCode))
+    {
+        // LEFT join chết: nguồn đưa p.Dealercode vào WHERE ⇒ không có trong danh mục là MẤT DÒNG.
+        if (!partMaster.TryGetValue(g.Key, out var pm)) { droppedNotInMaster++; continue; }
+
+        decimal cost = 0m, sale = 0m;
+        foreach (var x in g)
+        {
+            inLines.TryGetValue(x.StockInId + "|" + x.PartCode, out var il);
+            outLines.TryGetValue(x.StockOutId + "|" + x.PartCode, out var ol);
+            var inPrice = il?.Price ?? x.SIPrice ?? 0m;      // isnull(sidd.Price, isnull(pf.SIPrice,0))
+            var inVat = il?.VAT ?? 0m;
+            var outPrice = ol?.Price ?? x.SOPrice ?? 0m;
+            var outVat = ol?.Vat ?? 0m;
+            cost += inPrice * x.Quantity + inVat * 0.01m * inPrice * x.Quantity;
+            sale += outPrice * x.Quantity + outVat * 0.01m * outPrice * x.Quantity;
+        }
+
+        rows.Add(new
+        {
+            partCode = g.Key, partName = pm.PartName, unit = pm.Unit,
+            tongGiaNhap = cost, tongGiaBan = sale, profit = sale - cost,
+            // Con số mà NGUỒN sẽ ra nếu đại lý không dùng FIFO: giá vốn coi như 0.
+            profitIfSourceBehaviour = mcc == "FIFO" ? sale - cost : sale,
+            instanceCount = g.Count(),
+        });
+    }
+
+    // Nguồn CÓ order by Profit desc, partcode — giữ đúng.
+    var ordered = rows.OrderByDescending(r => (decimal)r.profit).ThenBy(r => (string)r.partCode).ToList();
+    var n = top ?? 0;
+    var outRows = n > 0 ? ordered.Take(n).ToList() : ordered;
+
+    return Results.Ok(new
+    {
+        count = outRows.Count, fromDate = f, toDate = to, top = n > 0 ? n : (int?)null,
+        costingMethod = mcc,
+        zeroCostFallback = mcc != "FIFO",
+        zeroCostNote = mcc != "FIFO"
+            ? "NGUỒN sẽ trả TongGiaNhap = 0 vì tham số MCC của đại lý không phải FIFO (nhánh bình quân "
+              + "gia quyền đã bị COMMENT) ⇒ toàn bộ doanh thu bị báo là lợi nhuận. MiniHTC VẪN tính giá "
+              + "vốn thật (cột profit); xem profitIfSourceBehaviour để biết con số nguồn sẽ ra."
+            : "MCC = FIFO ⇒ nguồn và MiniHTC tính giống nhau.",
+        onlyLiveConfirmed1537 = "#1537: Ser_InvReportPartTopProfit_WH — BizCarSv.WH.cs:6879, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:30630 (goi thang khong hau to)",
+        whTwinIdentical = true,
+        whTwinNote = "Ser_InvReportPartTopProfit_WH (WH.cs:6879) diff với bản Main (Inventory.Report.cs:5929) "
+            + "GIỐNG HỆT ngoài phần định tuyến CSDL (_dbDealer vs _dbWH) + tên hàm/mã lỗi. Đếm chuỗi: "
+            + "Else '0' / paramcode='MCC' / like '%%' / GetAverageCost / order by Profit desc đều 1=1 hai bên "
+            + "⇒ LỖI GIÁ VỐN = 0 CÓ Ở CẢ HAI BẢN, sửa thì phải sửa cả hai.",
+        orderByNote = "Hàm này CÓ order by Profit desc, partcode trong chính câu lấy TOP ⇒ KHÔNG dính "
+            + "lỗi thiếu ORDER BY của #415.",
+        soldOnlyNote = "Nguồn lọc StockOutNo like '%%' — trông như không lọc, nhưng like LOẠI NULL "
+            + "⇒ thực chất chỉ lấy lô ĐÃ XUẤT.",
+        droppedNotInMaster,
+        droppedNotInMasterNote = droppedNotInMaster > 0
+            ? "Phụ tùng không có trong danh mục bị loại: nguồn left join ser_mst_part rồi đưa "
+              + "p.Dealercode vào WHERE ⇒ LEFT join chết (lệ #414)."
+            : null,
+        statusBlacklistNote = "Status not in ('4','5') là danh sách ĐEN — mã lạ hoặc NULL VẪN được tính.",
+        dateNote = "Ba mốc cùng lúc: DateOut trong khoảng, VÀ DateIn <= toDate (lô nhập sau kỳ bị loại).",
+        priceFallbackNote = "Giá lấy dòng chi tiết phiếu trước, không có mới lấy giá lưu ở lô "
+            + "(isnull(sidd.Price, isnull(pf.SIPrice,0))) — hai nguồn giá cho cùng một lô.",
+        rows = outRows,
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/report/part-top-revenue", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, int? top, string? warehouse) =>
 {
