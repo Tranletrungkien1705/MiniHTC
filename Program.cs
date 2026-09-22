@@ -40423,6 +40423,110 @@ app.MapGet("/api/report/part-top-rotate", async (AppDbContext db, ITenantContext
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1535 PHỤ TÙNG LUÂN CHUYỂN NHANH (bản KHO) `Ser_InvReportPartTopRotate_WH` =====
+// (`BizCarSv.WH.cs:6655-6900`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:30713` gọi THẲNG không hậu tố).
+// GREP TRƯỚC: Mini có `GET /api/report/part-top-rotate` (port `Ser_InvReportPartTopRotate` bản Main #417/#791)
+//   nhưng **KHÔNG** có route nào port bản KHO này (grep `Ser_InvReportPartTopRotate_WH` = 0 hit) ⇒ GAP thật.
+// 🔴 BẢN ANH EM của #417/#791: thân SQL GIỐNG HỆT bản Main (cùng #tbl_partin/#tbl_partout/#IN/#OUT/#tbl_Rotate,
+//   cùng `select @Top * from #tbl_Rotate`, cùng ORDER BY đảo chiều) — chỉ khác chạy trên `_dbWH` thay `_dbMain`.
+//   MiniHTC một CSDL ⇒ cùng kết quả; giữ HAI route riêng để phủ đủ hai WebMethod (bài học #560).
+// 🔴 `select @Top * from #tbl_Rotate` + `StringUtils.Replace(..., "@Top", strTop)` — `@Top` KHÔNG nằm trong cặp
+//   nháy ⇒ giá trị client ghép THẲNG thành cú pháp SQL (nặng hơn #768 vì ở đó chuỗi bị bake BÊN TRONG nháy).
+// 🔴 `and p.dealercode = '@DealerCode'` (2 chỗ) và `spi.DateIn/DateOut >= '@FromDate' / <= '@ToDate'` đều bake
+//   TRONG nháy đơn — cùng họ #768.
+// 🔴 `<= @ToDate` trên cột DATETIME ⇒ phiếu nhập/xuất lúc 08:00 ngày ToDate KHÔNG được tính (#415).
+// 🔴 `select ... into #IN / #OUT ... group by t.Partid order by t.partid` — ORDER BY trên SELECT INTO không giữ
+//   thứ tự, và câu trả về đã có order by riêng ⇒ chỉ tốn công sắp xếp.
+// 🔴 Nối TRONG `#IN t1 join #OUT t2` ⇒ phụ tùng CHỈ NHẬP mà chưa xuất lần nào trong kỳ biến mất hoàn toàn.
+// 🔴 `select DISTINCT` trên chín cột (gồm cả Quantity) RỒI mới sum/count ⇒ hai dòng chi tiết cùng phiếu, cùng
+//   phụ tùng, CÙNG số lượng bị gộp làm một ⇒ tổng số lượng và số lần đều ĐẾM THIẾU.
+// ⚠️ `Ser_Inv_StockIn.Status`/`Ser_Inv_StockOut.Status` = '3' viết dạng CHUỖI ở đây.
+// Entity `PartInstance`/`PartStockIn`/`PartStockOut`/`ServicePart` đã đủ cột ⇒ KHÔNG cần §12.
+app.MapGet("/api/report/part-top-rotate-wh", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? top, string? dealer) =>
+{
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && (dealer == null || x.DealerCode == dealer)).ToListAsync();
+    var stockIns = (await db.PartStockIns.Where(s => s.OrgId == t.OrgId && s.Status == "3")
+        .Select(s => s.Id).ToListAsync()).ToHashSet();
+    var stockOuts = (await db.PartStockOuts.Where(s => s.OrgId == t.OrgId && s.Status == "3")
+        .Select(s => s.Id).ToListAsync()).ToHashSet();
+    var partMaster = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.PartName, p.Unit }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    // --- #tbl_partin: DISTINCT trên bộ cột gồm cả Quantity ⇒ gộp dòng trùng (nguồn đếm thiếu).
+    var inKeys = inst.Where(x => x.StockInId != null && stockIns.Contains(x.StockInId!.Value)
+            && x.DateIn != null && x.DateIn >= f && x.DateIn <= to)
+        .Select(x => new { x.PartCode, x.StockInId, x.Quantity, x.DateIn })
+        .Distinct().ToList();
+    var outKeys = inst.Where(x => x.StockOutId != null && stockOuts.Contains(x.StockOutId!.Value)
+            && x.DateOut != null && x.DateOut >= f && x.DateOut <= to)
+        .Select(x => new { x.PartCode, x.StockOutId, x.Quantity, x.DateOut })
+        .Distinct().ToList();
+
+    var inAgg = inKeys.GroupBy(x => x.PartCode).ToDictionary(g => g.Key,
+        g => new { Qty = g.Sum(x => x.Quantity), Times = g.Count() });
+    var outAgg = outKeys.GroupBy(x => x.PartCode).ToDictionary(g => g.Key,
+        g => new { Qty = g.Sum(x => x.Quantity), Times = g.Count() });
+
+    // 🔴 Nối TRONG: chỉ giữ phụ tùng CÓ CẢ nhập LẪN xuất trong kỳ.
+    var both = inAgg.Keys.Intersect(outAgg.Keys).ToList();
+    var inOnly = inAgg.Keys.Except(outAgg.Keys).OrderBy(x => x).ToList();
+    var outOnly = outAgg.Keys.Except(inAgg.Keys).OrderBy(x => x).ToList();
+
+    var droppedNotInMaster = 0;
+    var rows = new List<dynamic>();
+    foreach (var code in both)
+    {
+        if (!partMaster.TryGetValue(code, out var pm)) { droppedNotInMaster++; continue; }
+        rows.Add(new
+        {
+            partCode = code, partName = pm.PartName, unit = pm.Unit,
+            inQuantity = inAgg[code].Qty, outQuantity = outAgg[code].Qty,
+            soLanNhap = inAgg[code].Times, soLanXuat = outAgg[code].Times,
+        });
+    }
+
+    // Giữ NGUYÊN hướng sắp của nguồn, kể cả chỗ nghi ngờ.
+    var ordered = rows
+        .OrderByDescending(r => (decimal)r.outQuantity)
+        .ThenBy(r => (decimal)r.inQuantity)
+        .ThenBy(r => (int)r.soLanXuat)
+        .ThenByDescending(r => (int)r.soLanNhap)
+        .ToList();
+    var n = top ?? 0;
+    var outRows = n > 0 ? ordered.Take(n).ToList() : ordered;
+
+    return Results.Ok(new
+    {
+        count = outRows.Count, fromDate = f, toDate = to, top = n > 0 ? n : (int?)null,
+        // ===== #1535 =====
+        onlyLiveConfirmed1535 = "#1535: Ser_InvReportPartTopRotate_WH — BizCarSv.WH.cs:6655, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:30713 (goi thang khong hau to)",
+        siblingOf417ButWh = "BAN ANH EM cua #417/#791: than SQL GIONG HET ban Main (cung #tbl_partin/#tbl_partout/#IN/#OUT/#tbl_Rotate, cung select @Top * from #tbl_Rotate, cung ORDER BY dao chieu) — chi khac chay tren _dbWH thay _dbMain. MiniHTC mot CSDL => cung ket qua; giu HAI route rieng de phu du hai WebMethod (bai hoc #560)",
+        sourceBakesTopTokenWithoutQuotes = "select @Top * from #tbl_Rotate + StringUtils.Replace(..., @Top, strTop) — @Top KHONG nam trong cap nhay => gia tri client ghep THANG thanh cu phap SQL (nang hon #768 vi o do chuoi bi bake BEN TRONG nhay)",
+        sourceBakesThreeParamsInsideQuotes = "and p.dealercode = @DealerCode (2 cho) va spi.DateIn/DateOut >= @FromDate / <= @ToDate deu bake TRONG nhay don — cung ho #768",
+        sourceLosesLastDay = "<= @ToDate tren cot DATETIME => phieu nhap/xuat luc 08:00 ngay ToDate KHONG duoc tinh (#415)",
+        sourceHasTwoUselessOrderBy = "select ... into #IN / #OUT ... group by t.Partid order by t.partid — ORDER BY tren SELECT INTO khong giu thu tu, va cau tra ve da co order by rieng => chi ton cong sap xep",
+        sortSpec = "outQuantity desc, inQuantity ASC, soLanXuat ASC, soLanNhap desc (nguyen van nguon)",
+        sortDirectionSuspect = true,
+        innerJoinDropped = new { inOnlyCount = inOnly.Count, outOnlyCount = outOnly.Count },
+        inOnly, outOnly,
+        innerJoinNote = "Nguon noi TRONG #IN voi #OUT => phu tung CHI NHAP ma chua xuat lan nao trong ky bien mat hoan toan — dung nhom hang U DONG, thu dang nhin thay nhat. Hang ban tu ton ky truoc (ky nay khong nhap) cung bien mat. Hai danh sach tren la phan bi loai.",
+        distinctUndercountNote = "Nguon select DISTINCT tren chin cot (gom ca Quantity) ROI moi sum/count => hai dong chi tiet cung phieu, cung phu tung, CUNG so luong bi gop lam mot => tong so luong va so lan deu DEM THIEU. MiniHTC tai hien dung de so khop WinForm.",
+        droppedNotInMaster,
+        deadLeftJoinNote = "left join ser_mst_part roi dua p.dealercode vao WHERE => LEFT join chet (le #414). and p.PartId is not null dat sau noi TRONG la dieu kien THUA.",
+        statusLiteralNote = "sti.Status = '3' viet dang CHUOI o day, nhung #415 cung y nghia lai viet = 3 dang SO.",
+        endDateExclusive = true,
+        endDateNote = "Moc <= toDate tren cot ngay => mat tron ngay cuoi neu cot co phan gio (le #415).",
+        twoTreesDiffer = "3B: ban V20.2023.Release cua Ser_InvReportPartTopRotate_WH la HAM KHAC HAN (bao cao lich su gia nhap Ser_ReportHistoryCost_WH). Port theo cay CHUAN V20.",
+        rows = outRows,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #1525 KHÁCH HÀNG KHÔNG QUAY LẠI — `Ser_ReportCustomerNotBack_WH` =====
 // Nguồn: `BizCarSv.Service.Report.cs:5844 Ser_ReportCustomerNotBack_WH` (LIVE, WS
 //   `HTCWSCarSv/WSCarSv.asmx.cs:24737` gọi bản trần). Endpoint: `GET /api/report/customer-not-back`.
