@@ -47815,6 +47815,31 @@ app.MapPost("/api/extraworks/{code}/toggle", async (string code, AppDbContext db
     return Results.Ok(new { x.ExtraWorkCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #1505 `Ser_MST_ROWorkArising_Delete` (LIVE, `BizCarSv.AssignmentOfWork.cs:6350-6495`) — ĐƯỜNG XOÁ CÒN THIẾU =====
+// Master `Ser_MST_ROWorkArising` đã port dưới tên `ExtraWorkMst` (`/api/extraworks` + `/toggle`), nhưng `_Delete`
+// CHƯA TỪNG có đường xoá. Nguồn là hàm **CmCenter** nhận `DataSet ds_ListROWorkArising` (bảng `Ser_MST_ROWorkArising`):
+//   · Với TỪNG dòng: `ROWArisCode` rỗng ⇒ ném `Ser_MST_ROWorkArisingSave_ROWArisCodeNotExistInList`;
+//     ngược lại gọi `CheckExistROWorkArising` (4 tham số) ⇒ mã KHÔNG tồn tại ⇒ ném `Ser_MST_ROWorkArising_NotFound`.
+//   · Rồi `delete Ser_MST_ROWorkArising where ROWArisCode = <mã>` chạy trên **CẢ HAI** CSDL (`_dbMain` + `_dbWH`).
+// ⚠️ Nguồn dùng `BuildClauseConditionList("and", "ROWArisCode", <mã>, "|")` — mã là một phần tử đơn nên thành
+//   `and ROWArisCode = '<mã>'`; Mini xoá theo đúng mã (không tách `|`).
+// ⚠️ Nguồn KHÔNG guard ràng buộc tham chiếu (khác `Ser_MST_PartGroup_Delete` #839) — xoá thẳng sau khi kiểm tồn tại.
+// ⚠️ Nguồn xoá CỨNG (không phải xoá mềm `FlagActive`).
+app.MapPost("/api/extraworks/delete", async (List<string> codes, AppDbContext db, ITenantContext t) =>
+{
+    var wanted = (codes ?? new()).Select(c => (c ?? "").Trim().ToUpperInvariant()).Where(c => c.Length > 0).Distinct().ToList();
+    if (wanted.Count == 0) return Results.BadRequest(new { error = "Ser_MST_ROWorkArisingSave_ROWArisCodeNotExistInList" });
+    var rows = await db.ExtraWorkMsts.Where(x => x.OrgId == t.OrgId && wanted.Contains(x.ExtraWorkCode)).ToListAsync();
+    // Guard nguồn: mọi mã gửi lên PHẢI tồn tại (CheckExistROWorkArising) — thiếu mã nào ⇒ ném Ser_MST_ROWorkArising_NotFound.
+    var found = rows.Select(x => x.ExtraWorkCode).ToHashSet();
+    var missing = wanted.Where(c => !found.Contains(c)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new { error = "Ser_MST_ROWorkArising_NotFound", missing });
+    db.ExtraWorkMsts.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = rows.Count, codes = wanted });
+}).RequireAuthorization();
+
 // ===== Nhà cung cấp phụ tùng dịch vụ (ServiceSupplier — port 1:1 FrmMstSupplierCreate, TCMotor) =====
 app.MapGet("/api/servicesuppliers", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? active) =>
 {
