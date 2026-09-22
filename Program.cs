@@ -19775,6 +19775,7 @@ app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? 
         x.GroupCode, x.GroupName, x.ParentCode,
         parentName = !string.IsNullOrEmpty(x.ParentCode) && nameMap.TryGetValue(x.ParentCode, out var pn) ? pn : null,
         x.OrderId, x.FlagActive,
+        x.DealerCode, x.FamilyID,   // #1508 echo DealerCode + FamilyID (nguon Ser_Mst_PartGroup_Get)
         x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy   // #1316 §12
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
@@ -24077,7 +24078,7 @@ app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TradeMarkCode.Contains(q!) || x.TradeMarkName!.Contains(q!));
     var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive,
-        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1343 §12
+        x.Logo, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1343 §12 + #1508 echo Logo (nguon t.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -29104,7 +29105,7 @@ app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, str
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
-    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.UpdatedAt }).ToListAsync();   // #1311 §12
+    var items = await qry.OrderBy(x => x.TypeName).Take(500).Select(x => new { x.Id, x.TypeName, x.FlagActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1311 §12 + #1508 echo LogLU* (nguon t.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 

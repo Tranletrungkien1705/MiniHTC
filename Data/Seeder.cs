@@ -3129,6 +3129,8 @@ public static class Seeder
                 // #1128: Ser_Mst_TradeMark_Update ghi LogLUDateTime/LogLUBy = strPartnerUserCode moi lan sua.
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1508: Ser_Mst_TradeMark_Get SELECT t.* tra DU cot bang nguon (bai hoc #539) - cot Logo chua tung mo hinh hoa.
+                "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"Logo\" text NULL",
                 // #1050: SerServicePackageCreate/Update ghi LogLUDateTime/LogLUBy o ca hai nhanh.
                 "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
@@ -3140,6 +3142,9 @@ public static class Seeder
                 // #1052: Ser_Mst_ServiceType_Create ghi CreatedDate/CreatedBy (da vá cho SerPartType o #963).
                 "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1508: Ser_Mst_ServiceType_Get SELECT t.* tra DU cot bang nguon (bai hoc #539) - Create ghi LogLUDateTime/LogLUBy.
+                "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"SerServiceTypes\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 // #1054: SerGroupRepairCreate ghi CreatedDate/CreatedBy (bo sot khi va LogLU* o #747).
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
@@ -3167,6 +3172,9 @@ public static class Seeder
                 "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1508: Ser_Mst_PartGroup_Get SELECT tuong minh co DealerCode + FamilyID (Create ghi DealerCode, tinh FamilyID).
+                "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"PartGroups\" ADD COLUMN IF NOT EXISTS \"FamilyID\" text NULL",
                 // #1072: Mst_Param_Create/_Update ghi LogLUDateTime/LogLUBy (khong co cot Created*).
                 "ALTER TABLE public.\"MstParams\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"MstParams\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",

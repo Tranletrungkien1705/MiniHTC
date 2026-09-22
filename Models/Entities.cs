@@ -3775,6 +3775,10 @@ public sealed class ServiceTradeMark
     /// được nhận ra nhưng chưa vá tận gốc.</summary>
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1508 §12 — `Ser_Mst_TradeMark_Get` (`BizCarSv.Master.cs:1515`, LIVE) SELECT `t.*` ⇒ trả ĐỦ mọi cột
+    // bảng `Ser_Mst_TradeMark` (bài học #539). Cột `Logo` có trong bảng nguồn nhưng CHƯA TỪNG được mô hình
+    // hoá ở Mini ⇒ GET bỏ sót. `_Create`/`_Update` KHÔNG ghi `Logo` (chỉ đọc) ⇒ field ECHO, không cần DTO/POST.
+    public string? Logo { get; set; }
     // #1049 §12 — `Ser_Mst_TradeMark_Create` (BizCarSv.Master.cs:1710, LIVE) ghi `CreatedDate`/`CreatedBy`.
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
@@ -3957,6 +3961,11 @@ public sealed class SerServiceType
     // vô điều kiện — cùng mẫu hình #453 (đã vá cho `SerPartType` ở #963 nhưng chưa vá cho bảng song sinh này).
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
+    // #1508 §12 — `Ser_Mst_ServiceType_Get` (`BizCarSv.Master.cs:5098`, LIVE) SELECT `t.*` ⇒ trả ĐỦ mọi cột
+    // bảng `Ser_MST_ServiceType` (bài học #539). `_Create` (`:5288`) ghi `LogLUDateTime`/`LogLUBy` =
+    // strPartnerUserCode; entity Mini chưa từng có hai cột này ⇒ GET bỏ sót.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
@@ -15058,6 +15067,11 @@ public sealed class PartGroup
     public int OrderId { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // #1508 §12 — `Ser_Mst_PartGroup_Get` (`BizCarSv.Master.cs:3713`, LIVE) SELECT tường minh có `DealerCode`
+    // và `FamilyID`; `_Create` (`:3930`) ghi `DealerCode` và tính `FamilyID` qua `dbo.Part_GetFamilyID`.
+    // Entity Mini chưa từng có hai cột này ⇒ GET bỏ sót. `FamilyID` là cột dẫn xuất (đường dẫn tổ tiên).
+    public string? DealerCode { get; set; }
+    public string? FamilyID { get; set; }
 
     // #1071 §12 — `Ser_MST_PartGroup_Create` (BizCarSv.Master.cs:3930, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
     // nhật ký; `_Update` (:4292) chỉ ghi lại `LogLUDateTime`/`LogLUBy` — cùng khuôn #1070.
