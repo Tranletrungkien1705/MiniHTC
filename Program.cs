@@ -58364,6 +58364,58 @@ app.MapDelete("/api/campaigns/{no}", async (string no, AppDbContext db, ITenantC
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code, guardNotPortable, sourceChecksOnDealerDbButDeletesOnMainAndWh = "nguon doc guard tren _dbDealer (noi co RO) nhung xoa tren _dbMain + _dbWH (noi co danh muc) — dung ca hai chieu" });
 }).RequireAuthorization();
+
+// ===== 🔴 #1544 `SerCampaignGet` (LIVE, `BizCarSv.Service.cs:10253`, WS `HTCWSCarSv/WSCarSv.asmx.cs:5643`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC `GET /api/campaigns` ở dưới (port WinForm
+//   FrmSer_CampaignMarketing, lọc `active` theo NGÀY + `dealerCode`): hàm này lọc theo **NĂM danh sách `|`**.
+// Nguồn: `SELECT sp.* FROM Ser_Campaign sp WHERE (1=1)` + 5 `SqlUtils.BuildClause("and", "sp.<col>", <list>, "@p")`:
+//   `sp.CamID` · `sp.DealerCode` · `sp.CamNo` · `sp.CamName` · `sp.IsActive`. **Không `ORDER BY`**.
+// ⚠️ `BuildClause` bỏ IM LẶNG điều kiện khi đầu vào rỗng (luật #410) ⇒ tham số trống = bỏ điều kiện (trả trọn danh mục).
+// 📌 Mini: `Ser_Campaign.CamID` → `Campaign.Id`; `IsActive` → `Campaign.Status`. Entity `Campaign` đủ cột ⇒ KHÔNG cần §12.
+// 3B: thân hàm LỆCH giữa hai cây — V20.2023.Release có THÊM một dòng `-- order by sp.StartDate desc` nhưng **BỊ COMMENT**
+//   (`--`), nên cả hai cây đều KHÔNG `ORDER BY`. Port theo cây CHUẨN V20 (không ORDER BY) + sắp tường minh cho ổn định.
+app.MapGet("/api/campaigns/get", async (AppDbContext db, ITenantContext t,
+    string? camIDConditionList, string? dealerCodeConditionList, string? camNoConditionList,
+    string? camNameConditionList, string? isActiveConditionList) =>
+{
+    var q = db.Campaigns.Where(c => c.OrgId == t.OrgId);
+    // BuildClause("and", "sp.<col>", <list>, "@p") — mọi bộ lọc là danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(camIDConditionList))
+    {
+        var v = camIDConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => v.Contains(c.Id.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeConditionList))
+    {
+        var v = dealerCodeConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => c.DealerCode != null && v.Contains(c.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(camNoConditionList))
+    {
+        var v = camNoConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => v.Contains(c.CamNo));
+    }
+    if (!string.IsNullOrWhiteSpace(camNameConditionList))
+    {
+        var v = camNameConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => v.Contains(c.CamName));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveConditionList))
+    {
+        var v = isActiveConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => v.Contains(c.Status));
+    }
+    // Nguồn KHÔNG `ORDER BY` ⇒ Mini sắp tường minh theo `CamNo` cho ổn định.
+    var items = await q.OrderBy(c => c.CamNo)
+        .Select(c => new { c.Id, c.CamNo, c.CamName, c.StartDate, c.FinishDate, c.Content, c.Status, c.DealerCode,
+            c.CreatedAt, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1544 = "#1544: SerCampaignGet — BizCarSv.Service.cs:10253, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:5643",
+        fiveBuildClauseFilters = "sp.CamID | sp.DealerCode | sp.CamNo | sp.CamName | sp.IsActive (BuildClause, danh sach '|')",
+        noOrderByInSource = "nguon KHONG ORDER BY; Mini sap theo CamNo cho on dinh",
+        twoTreesDiffer = "3B: V20.2023.Release co them dong '-- order by sp.StartDate desc' nhung BI COMMENT => ca hai cay deu khong ORDER BY; port theo cay CHUAN V20" });
+}).RequireAuthorization();
+
 // #913 §12: nguồn khoá trùng CamNo theo BỘ ĐÔI (CamNo, DealerCode) — CheckExistCamNo/CheckExistCamNoModify.
 app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? active, string? dealerCode) =>
 {
