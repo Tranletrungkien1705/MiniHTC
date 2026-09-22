@@ -14310,6 +14310,12 @@ public sealed class EmailBatch
     public string? AttachmentName { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 
+    // ===== 🔴 #1527 §12 — `Ser_Email_Attachment_Get` (SendMail.cs:5007, LIVE WS :21488) đọc
+    //   `Attachment` (nội dung tệp đính kèm cả lô) từ `Email_BatchSendEmail`; entity chưa từng có.
+    //   `Email_BatchSendEmailCreate` (:929) ghi cột này khi có tệp (byte[]).
+    /// <summary>Nội dung tệp đính kèm dùng chung cả lô (`Attachment`, byte[]).</summary>
+    public byte[]? Attachment { get; set; }
+
     // ===== #143 parity DMS40_Email_BatchSendEmail =====
     // Nguồn: DMS40/0.34.Contract.cs — `_SaveX` (12927) / `_Job_SaveX` (13853), csproj 125.
     // 🔴 Đây là HẠ TẦNG DÙNG CHUNG: hơn 20 chỗ trong hệ xếp mail vào bảng này (VietinBank,

@@ -14650,6 +14650,32 @@ app.MapGet("/api/emailbatches/{no}", async (string no, AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1527 TỆP ĐÍNH KÈM CỦA LÔ GỬI THƯ — `Ser_Email_Attachment_Get` =====
+// Nguồn: `BizCarSv.SendMail.cs:5007 Ser_Email_Attachment_Get` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:21488`
+//   gọi bản trần). Endpoint: `GET /api/emailbatches/{batchId}/attachments`.
+// ⚠️ GREP TRƯỚC: Mini có `/api/emailbatches/{no}` (chi tiết lô) nhưng **KHÔNG** có route nào port hàm này
+//   (grep `Ser_Email_Attachment_Get` = 0 hit) ⇒ GAP thật.
+// 🔴 Nguồn: `Select Attachment, AttachmentName From Email_BatchSendEmail Where BatchId = '@BatchId'
+//   And Attachment IS NOT NULL` — lọc theo **BatchId** (khoá IDENTITY), KHÔNG phải BatchNo.
+//   ⇒ Mini: `EmailBatch.Id` (long). `Attachment IS NOT NULL` ⇒ lô không có tệp bị loại.
+// 🔴 §12: entity `EmailBatch` chưa từng có cột `Attachment` (byte[]) — đã thêm + Seeder ALTER.
+app.MapGet("/api/emailbatches/{batchId:long}/attachments", async (long batchId, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.EmailBatches.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == batchId);
+    if (h is null) return Results.NotFound(new { batchId });
+    // `Attachment IS NOT NULL` ⇒ lô không có tệp trả danh sách rỗng.
+    var items = h.Attachment is null
+        ? new List<object>()
+        : new List<object> { new { attachmentName = h.AttachmentName, attachmentLength = h.Attachment.Length } };
+    return Results.Ok(new
+    {
+        batchId, batchNo = h.BatchNo, count = items.Count,
+        filtersByBatchIdNotBatchNo = "Nguồn lọc BatchId (khoá IDENTITY) — KHÁC BatchNo là số lô nghiệp vụ.",
+        attachmentIsNotNullFilter = "Nguồn `And Attachment IS NOT NULL` ⇒ lô không có tệp bị loại.",
+        items,
+    });
+}).RequireAuthorization();
+
 // #143: hàng chờ thật của worker — lô còn "P" VÀ đã tới giờ hẹn (nguồn dùng EffectDate để hẹn giờ).
 // ===== 🔴 #434 TRA ĐỢT GỬI THƯ (`Temp_Email_Get`) — tham số tên **"ngày TẠO"** nhưng lọc **"ngày GỬI"** =====
 // TRACE: `FrmEmail_Search` (`Views/SendEmail`, 375 dòng) → `EmailSendEmailService.Temp_Email_Get`
@@ -40394,6 +40420,160 @@ app.MapGet("/api/report/part-top-rotate", async (AppDbContext db, ITenantContext
         endDateExclusive = true,
         endDateNote = "Mốc <= toDate trên cột ngày ⇒ mất trọn ngày cuối nếu cột có phần giờ (lệ #415).",
         rows = outRows,
+    });
+}).RequireAuthorization();
+
+// ===== 🔴 #1525 KHÁCH HÀNG KHÔNG QUAY LẠI — `Ser_ReportCustomerNotBack_WH` =====
+// Nguồn: `BizCarSv.Service.Report.cs:5844 Ser_ReportCustomerNotBack_WH` (LIVE, WS
+//   `HTCWSCarSv/WSCarSv.asmx.cs:24737` gọi bản trần). Endpoint: `GET /api/report/customer-not-back`.
+// ⚠️ GREP TRƯỚC: Mini có nhiều route `/api/report/...` nhưng **KHÔNG** có route nào port hàm này
+//   (grep `Ser_ReportCustomerNotBack` = 0 hit) ⇒ GAP thật.
+// 🔴 GUARD `strDateCount` ∈ {6,12,24,36} — ngoài tập này ném `Ser_ReportCustomerNotBack_InputInvalid_DateCount`.
+//   Mốc lọc: `strDateSelect = now.AddDays(-dateCount*30).ToString("yyyy-MM-dd 00:00:00")` (30 ngày/tháng).
+// 🔴 `#tblCustomerAndCar`: `Ser_Car t inner join Ser_Customer f on t.CusID = f.CusID`
+//   lọc `t.CurrentServiceDate <= @strDate` AND `f.DealerCode = @strDealerCode` AND `f.IsActive = @strIsActive` (= "1").
+//   ⇒ xe CHƯA từng vào xưởng (`CurrentServiceDate` NULL) bị loại (so sánh NULL).
+// 🔴 Câu kết quả nối TRONG 6 bảng: `Ser_Customer f` · `Mst_Dealer mstd` · `Mst_District md` ·
+//   `Mst_Province mp` · `Ser_Car sc` · `Ser_MST_Model smm` ⇒ thiếu bất kỳ danh mục nào thì dòng BIẾN MẤT.
+//   Cột: `f.DealerCode, mstd.DealerName, f.CusName, f.Mobile, f.Address, f.DistrictCode, md.DistrictName,
+//   f.ProvinceCode, mp.ProvinceName, sc.PlateNo, sc.FrameNo, sc.ModelID, smm.ModelName, sc.ColorCode,
+//   sc.WarrantyExpiresDate, sc.CurrentKm, sc.CurrentServiceDate`.
+// ⚠️ Nguồn KHÔNG `ORDER BY` ⇒ Mini sắp tường minh theo (DealerCode, CusName, PlateNo).
+// ⚠️ `Ser_Car.ModelID` → Mini `ServiceCar.ModelCode`; `Ser_Customer.CusID` → Mini `ServiceCustomer.CusCode`.
+app.MapGet("/api/report/customer-not-back", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? dateCount) =>
+{
+    var dc = (dateCount ?? "").Trim();
+    if (dc != "6" && dc != "12" && dc != "24" && dc != "36")
+        return Results.BadRequest(new { error = "Ser_ReportCustomerNotBack_InputInvalid_DateCount", dateCount = dc });
+    var cut = DateTime.Now.AddDays(0 - Convert.ToInt16(dc) * 30);
+
+    var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId
+            && x.CurrentServiceDate != null && x.CurrentServiceDate <= cut).ToListAsync();
+    var custs = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId
+            && (dealerCode == null || x.DealerCode == dealerCode)
+            && x.FlagActive == "1").ToListAsync();
+    var custByCode = custs.GroupBy(x => x.CusCode).ToDictionary(g => g.Key, g => g.First());
+
+    // #tblCustomerAndCar: inner join Ser_Car t / Ser_Customer f on t.CusID = f.CusID.
+    var pairs = cars.Where(c => c.CusID != null && custByCode.ContainsKey(c.CusID!))
+        .Select(c => new { Car = c, Cus = custByCode[c.CusID!] }).ToList();
+
+    var dealers = (await db.Dealers.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var districts = (await db.MstDistricts.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.DistrictCode).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.MstProvinces.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.ServiceModels.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var droppedNoDealer = 0; var droppedNoDistrict = 0; var droppedNoProvince = 0; var droppedNoModel = 0;
+    var rows = new List<object>();
+    foreach (var p in pairs)
+    {
+        var cus = p.Cus; var car = p.Car;
+        if (cus.DealerCode == null || !dealers.TryGetValue(cus.DealerCode, out var dl)) { droppedNoDealer++; continue; }
+        if (cus.DistrictCode == null || !districts.TryGetValue(cus.DistrictCode, out var dt)) { droppedNoDistrict++; continue; }
+        if (cus.ProvinceCode == null || !provinces.TryGetValue(cus.ProvinceCode, out var pv)) { droppedNoProvince++; continue; }
+        if (car.ModelCode == null || !models.TryGetValue(car.ModelCode, out var md)) { droppedNoModel++; continue; }
+        rows.Add(new
+        {
+            dealerCode = cus.DealerCode, dealerName = dl.DealerName,
+            cusName = cus.CusName, mobile = cus.Mobile, address = cus.Address,
+            districtCode = cus.DistrictCode, districtName = dt.DistrictName,
+            provinceCode = cus.ProvinceCode, provinceName = pv.ProvinceName,
+            plateNo = car.PlateNo, frameNo = car.FrameNo, modelId = car.ModelCode, modelName = md.ModelName,
+            colorCode = car.ColorCode, warrantyExpiresDate = car.WarrantyExpiresDate,
+            currentKm = car.CurrentKm, currentServiceDate = car.CurrentServiceDate,
+        });
+    }
+    var ordered = rows.OrderBy(r => ((dynamic)r).dealerCode).ThenBy(r => ((dynamic)r).cusName)
+        .ThenBy(r => ((dynamic)r).plateNo).ToList();
+
+    return Results.Ok(new
+    {
+        count = ordered.Count, dealerCode, dateCount = dc, cutDate = cut,
+        sourceHasNoOrderBy = true,
+        innerJoinDropsRows = new { droppedNoDealer, droppedNoDistrict, droppedNoProvince, droppedNoModel },
+        innerJoinNote = "Nguồn nối TRONG 6 bảng (Ser_Customer/Mst_Dealer/Mst_District/Mst_Province/Ser_Car/Ser_MST_Model) "
+            + "⇒ thiếu bất kỳ danh mục nào thì dòng BIẾN MẤT im lặng. Bốn bộ đếm trên là phần bị loại.",
+        nullCurrentServiceDateDropped = "Xe CHƯA từng vào xưởng (CurrentServiceDate NULL) bị loại bởi so sánh <= @strDate.",
+        rows = ordered,
+    });
+}).RequireAuthorization();
+
+// ===== 🔴 #1526 LỊCH SỬ GIÁ NHẬP PHỤ TÙNG — `Ser_ReportHistoryCost_WH` =====
+// Nguồn: `BizCarSv.WH.cs:5911 Ser_ReportHistoryCost_WH` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:31044`
+//   gọi bản trần). Endpoint: `GET /api/report/history-cost`.
+// ⚠️ GREP TRƯỚC: Mini có nhiều route `/api/report/...` nhưng **KHÔNG** có route nào port hàm này
+//   (grep `Ser_ReportHistoryCost` = 0 hit) ⇒ GAP thật.
+// 🔴 GUARD `CheckPartNotFound(_dbWH, ..., strPartCode, strDealerCode)` — phụ tùng PHẢI tồn tại theo
+//   (PartCode, DealerCode); tra ra `strPartID` rồi mới lọc `spi.PartID='@PartID'`.
+// 🔴 Bảng 1 `Ser_ReportHistoryCost`: `ser_inv_partInstance spi` LEFT JOIN `Ser_Inv_StockInDetail sid`
+//   (on StockInID + DealerCode + PartID) JOIN `Ser_Inv_StockIn si` (on StockInID + DealerCode)
+//   lọc `spi.DateIn >= @FromDate and <= @ToDate` AND `spi.DealerCode = @DealerCode` AND `spi.PartID='@PartID'`
+//   AND `spi.Status not in ('4','5')` AND `si.Status not in ('4','5')`
+//   group by `spi.PartID, spi.LocationID, spi.StockInID, spi.StockInNo, spi.SIPrice, spi.DateIn`.
+//   Cột: `PartID, RefID (StockInID), RefNo (StockInNo), RefDate (DateIn), Remark = N'Nhập kho', LocationID,
+//   SLN (sum Quantity), TGN (sum Quantity*SIPrice + Quantity*SIPrice*0.01*VAT), Price (SIPrice)`.
+// 🔴 Bảng 2 `Ser_Mst_Part`: `PartID, PartCode, VieName, Unit, isnull(Location,'') Location` theo `PartID`.
+// ⚠️ `Ser_Inv_StockInDetail.VAT` → Mini `ServiceStockInLine.Vat`; `Ser_Inv_PartInstance.SIPrice` → `PartInstance.SIPrice`.
+// ⚠️ Nguồn KHÔNG `ORDER BY` ⇒ Mini sắp tường minh theo (RefDate, RefNo).
+app.MapGet("/api/report/history-cost", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var dl = (dealerCode ?? "").Trim();
+    var pc = (partCode ?? "").Trim();
+    var f = (fromDate ?? DateTime.Today.AddMonths(-1)).Date;
+    var to = (toDate ?? DateTime.Today).Date;
+
+    // CheckPartNotFound: phụ tùng phải tồn tại theo (PartCode, DealerCode).
+    var part = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.PartCode == pc && x.DealerCode == dl);
+    if (part is null)
+        return Results.BadRequest(new { error = "Ser_ReportHistoryCost_CheckPartNotFound", partCode = pc, dealerCode = dl });
+    var partId = part.PartID;
+
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && x.DealerCode == dl && x.PartID == partId
+            && x.DateIn != null && x.DateIn >= f && x.DateIn <= to
+            && x.Status != "4" && x.Status != "5")
+        .ToListAsync();
+    var stockInIds = inst.Where(x => x.StockInId != null).Select(x => x.StockInId!.Value).Distinct().ToList();
+    var heads = (await db.ServiceStockIns.Where(s => s.OrgId == t.OrgId && stockInIds.Contains(s.Id)
+            && s.DealerCode == dl && s.Status != "4" && s.Status != "5").ToListAsync())
+        .ToDictionary(s => s.Id);
+    var lines = (await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && stockInIds.Contains(l.ServiceStockInId)
+            && l.DealerCode == dl && l.PartID == partId).ToListAsync())
+        .GroupBy(l => l.ServiceStockInId).ToDictionary(g => g.Key, g => g.First());
+
+    // group by (PartID, LocationID, StockInID, StockInNo, SIPrice, DateIn)
+    var groups = inst.Where(x => x.StockInId != null && heads.ContainsKey(x.StockInId!.Value))
+        .GroupBy(x => new { x.PartID, x.LocationID, x.StockInId, x.StockInNo, x.SIPrice, x.DateIn })
+        .Select(g =>
+        {
+            var head = heads[g.Key.StockInId!.Value];
+            var line = lines.TryGetValue(g.Key.StockInId!.Value, out var ln) ? ln : null;
+            var vat = line?.Vat ?? 0m;
+            var sln = g.Sum(x => x.Quantity);
+            var price = g.Key.SIPrice ?? 0m;
+            var tgn = g.Sum(x => x.Quantity * (x.SIPrice ?? 0m)) + g.Sum(x => x.Quantity * (x.SIPrice ?? 0m)) * 0.01m * vat;
+            return new
+            {
+                partId = g.Key.PartID, refId = g.Key.StockInId, refNo = g.Key.StockInNo,
+                refDate = g.Key.DateIn, remark = "Nhập kho", locationId = g.Key.LocationID,
+                sln, tgn, price,
+            };
+        })
+        .OrderBy(r => r.refDate).ThenBy(r => r.refNo).ToList();
+
+    return Results.Ok(new
+    {
+        count = groups.Count, dealerCode = dl, partCode = pc, fromDate = f, toDate = to,
+        sourceHasNoOrderBy = true,
+        part = new { part.PartID, part.PartCode, vieName = part.PartName, part.Unit, location = part.Location ?? "" },
+        rows = groups,
     });
 }).RequireAuthorization();
 

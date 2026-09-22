@@ -2349,6 +2349,8 @@ public static class Seeder
         "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"BatchStatus\" text NOT NULL DEFAULT 'P'",
         "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
         "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        // #1527 §12 — Ser_Email_Attachment_Get doc cot Attachment (noi dung tep dinh kem ca lo).
+        "ALTER TABLE public.\"EmailBatches\" ADD COLUMN IF NOT EXISTS \"Attachment\" bytea",
         "CREATE TABLE IF NOT EXISTS public.\"EmailBatchCcs\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchNo\" text NOT NULL DEFAULT '', \"EmailCode\" text NOT NULL DEFAULT '', \"BatchStatusCC\" text NOT NULL DEFAULT 'P', \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
         "CREATE TABLE IF NOT EXISTS public.\"EmailBatchBccs\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchNo\" text NOT NULL DEFAULT '', \"EmailCode\" text NOT NULL DEFAULT '', \"BatchStatusBCC\" text NOT NULL DEFAULT 'P', \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
         "CREATE TABLE IF NOT EXISTS public.\"EmailBatchFileAttaches\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"BatchNo\" text NOT NULL DEFAULT '', \"FilePath\" text NOT NULL DEFAULT '', \"BatchStatusFA\" text NOT NULL DEFAULT 'P', \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
