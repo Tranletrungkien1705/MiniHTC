@@ -43057,6 +43057,149 @@ app.MapGet("/api/serviceparts/search-full", async (AppDbContext db, ITenantConte
         duplicateFilterBlockAppliedTwice = "LOC HAI LAN CUNG MOT KHOI 8 DIEU KIEN: #tbl_tem1 (k2) da loc du 8 dieu kien truoc khi cat trang (k4); khoi K8 sau do LAP LAI y het khoi 8 dieu kien ay tren #tbl_k7 (da duoc loc tu con cua #tbl_tem1) => tinh lai vo ich, khong sai ket qua nhung lang phi — ban sao-dan khoi SQL TRONG CHINH MOT HAM (ho #376)",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #1540 — `Ser_Mst_Part_Get_New20210618` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:3508` goi THANG `_New20210618`) =====
+// Nguon `BizCarSv.Service.cs:2682-3050` (md5 than ham KHOP giua V20 va V20.2023.Release).
+// GREP TRUOC: Mini co `GET /api/serviceparts/search-full` (port `Ser_Mst_Part_Get01` #887) va
+//   `/api/serviceparts/search-by-type` (port `Ser_Mst_Part_Get02` #889) nhung **KHONG** co route nao port
+//   `Ser_Mst_Part_Get_New20210618` (grep ten ham = 0 hit) ⇒ GAP that. 🔴 BAI HOC #560: WS `Ser_Mst_Part_Get`
+//   (WS:3508) KHONG goi biz `Ser_Mst_Part_Get` tran ma goi `_New20210618` ⇒ ten WS ≠ ten ham biz dang chay.
+// 🔴🔴🔴 HE SO GIA THEO LOAI KHACH CHET (ho #887/#889, ban sao-dan khoi K8): `LEFT JOIN Ser_Mst_CusPartFactor mcpf
+//   ON mcpf.CusTypeID = NULL` la LITERAL (luon UNKNOWN, khong phai IS NULL) ⇒ JOIN khong bao gio khop; va
+//   `strCusTypeID` duoc chuan hoa (`if empty then "null"`) roi dua vao `Replace(..., "@CusTypeID", strCusTypeID)`
+//   nhung token `@CusTypeID` KHONG XUAT HIEN o bat ky dau trong SQL ⇒ tham so CHET HAI LOP DOC LAP ⇒ cot `Factor`
+//   (`isnull(mcpf.Factor, mct.CusFactor)`) LUON NULL. Port 1:1: giu Factor = null (khong bia he so).
+// 🔴🔴🔴 INJECTION THAT: `strPartGroupIDList` noi chuoi TRUC TIEP vao literal SQL
+//   (`"AND ((pg.FamilyID LIKE '" + strPartGroupIDList + ".%') or (t.PartGroupID = '" + strPartGroupIDList + "'))"`)
+//   — 12 dieu kien loc khac deu qua `SqlUtils.BuildClause*`. Port tham so hoa (khong bia lo hong).
+// 🔴 `DateEffect <= '@strDateNow'` va `IsActive = '1'` bake TRONG nhay don (ho #768); `@strDateNow` = hom nay.
+// 🔴 `select DISTINCT t.*` (k4) va `select distinct t.*` (K9) — DISTINCT tren TOAN BO cot.
+// 🔴 `JOIN Ser_Mst_PartGroup pg` (k2) va `JOIN Ser_Mst_PartGroup pg`/`JOIN Ser_Mst_PartType pt` (K8) la INNER
+//   ⇒ phu tung KHONG co nhom/loai bi LOAI KHOI tap ung vien (k2) va khoi ket qua (K8).
+// 🔴 `inner JOIN ser_mst_part t` (K8) — INNER ⇒ phu tung khong co trong danh muc bi loai.
+// 🔴 `LEFT JOIN #tbl_vwSer_inv_stockbalancebypart sb ON k7.partid = sb.partid zzzzClauseWhereSBDealerCode` —
+//   dieu kien dai ly nam trong ON (khong phai WHERE) ⇒ LEFT join SONG (khac ho #414).
+// 🔴 `select @Top` khong co o day; `@MyRowIdx_Start`/`@MyRowIdx_End` = start+1 .. start+count (phan trang 1-based).
+// ⚪ `LEFT JOIN [CommonCenter].TST_Mst_Part tmp ON t.PartCode = tmp.TSTPartCode` — LEFT join SONG (khong co
+//   dieu kien TST trong WHERE) ⇒ TSTPartCode/TSTPrice/TSTPriceBefore co the NULL.
+// ⚠️ `Ser_inv_stockbalance` → Mini `SerInvStockBalance`; `Ser_Inv_Partprice` → Mini `PartPrice`;
+//   `Ser_Mst_CusPartFactor` → Mini `CusPartFactor`; `Ser_Mst_CustomerType` → Mini `CustomerType`;
+//   `Ser_Mst_PartGroup` → Mini `PartGroup`; `Ser_Mst_PartType` → Mini `SerPartType`; `TST_Mst_Part` → Mini `TstPart`.
+//   Entity `ServicePart`/`SerInvStockBalance`/`PartPrice`/`CusPartFactor`/`CustomerType`/`PartGroup`/`SerPartType`/`TstPart`
+//   da du cot ⇒ KHONG can §12.
+app.MapGet("/api/serviceparts/search-full-20210618", async (AppDbContext db, ITenantContext t,
+    string? partIdList, string? dealerCodeList, string? partCodePattern, string? partCodeList,
+    string? engNamePattern, string? vieNamePattern, string? cusTypeId, string? freqUsedList,
+    string? isActiveList, string? partGroupIdList, int? start, int? count) =>
+{
+    var partIds = (partIdList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var dealerCodes = (dealerCodeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var codeList = (partCodeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var freqUsed = (freqUsedList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    // Nguon: strIsActiveList.ToUpper().Replace("TRUE","1").Replace("FALSE","0") roi BuildClauseConditionList.
+    var isActive = (isActiveList ?? "").ToUpperInvariant().Replace("TRUE", "1").Replace("FALSE", "0")
+        .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    // k2: tap ung vien = Ser_MST_Part INNER JOIN Ser_Mst_PartGroup (phu tung khong co nhom bi loai).
+    var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
+    if (partIds.Count > 0) query = query.Where(x => x.PartID != null && partIds.Contains(x.PartID));
+    if (dealerCodes.Count > 0) query = query.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode));
+    if (!string.IsNullOrWhiteSpace(partCodePattern)) query = query.Where(x => x.PartCode.Contains(partCodePattern!));
+    if (codeList.Count > 0) query = query.Where(x => codeList.Contains(x.PartCode));
+    if (isActive.Count > 0) query = query.Where(x => isActive.Contains(x.FlagActive));
+    if (freqUsed.Count > 0) query = query.Where(x => x.FreqUsed != null && freqUsed.Contains(x.FreqUsed.Value.ToString()));
+    // Nguon: AND ((pg.FamilyID LIKE '<x>.%') or (t.PartGroupID = '<x>')) — noi chuoi truc tiep (injection).
+    // Port tham so hoa: khop MA nhom hoac nhom CHA truc tiep (Mini khong co FamilyID phan cap).
+    if (!string.IsNullOrWhiteSpace(partGroupIdList))
+    {
+        var childCodes = await db.PartGroups.Where(x => x.OrgId == t.OrgId && x.ParentCode == partGroupIdList)
+            .Select(x => x.GroupCode).ToListAsync();
+        query = query.Where(x => x.PartGroupCode == partGroupIdList || childCodes.Contains(x.PartGroupCode!));
+    }
+    // k2 INNER JOIN Ser_Mst_PartGroup ⇒ chi giu phu tung co nhom ton tai.
+    var groupCodes = await db.PartGroups.Where(x => x.OrgId == t.OrgId).Select(x => x.GroupCode).ToListAsync();
+    query = query.Where(x => x.PartGroupCode != null && groupCodes.Contains(x.PartGroupCode));
+    // Ten OR dung ngoac: khop TEN VIET **hoac** TEN ANH (nguon co ngoac day du).
+    if (!string.IsNullOrWhiteSpace(vieNamePattern) || !string.IsNullOrWhiteSpace(engNamePattern))
+    {
+        query = query.Where(x =>
+            (!string.IsNullOrWhiteSpace(vieNamePattern) && x.PartName != null && x.PartName.Contains(vieNamePattern!))
+            || (!string.IsNullOrWhiteSpace(engNamePattern) && x.EngName != null && x.EngName.Contains(engNamePattern!)));
+    }
+
+    var total = await query.CountAsync();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 1000 ? count!.Value : 100;
+    var page = await query.OrderBy(x => x.PartCode).Skip(skip).Take(take).ToListAsync();
+
+    // k5/k6: gia hieu luc = Ser_Inv_Partprice moi nhat co DateEffect <= hom nay va IsActive='1'.
+    var pagePartIds = page.Select(x => x.PartID).Where(x => x != null).Select(x => x!).ToList();
+    var today = DateTime.Now.Date;
+    var priceRows = await db.PartPrices.Where(x => x.OrgId == t.OrgId && x.IsActive == "1"
+        && x.EffectiveDate <= today && pagePartIds.Contains(x.PartCode)).ToListAsync();
+    var priceByPart = priceRows.GroupBy(x => x.PartCode)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveDate).First());
+
+    // k7a: ton kho = SUM(InStockQuantity)/SUM(InShipmentQuantity) theo DealerCode+PartID.
+    var balanceRows = await db.SerInvStockBalances.Where(x => x.OrgId == t.OrgId && pagePartIds.Contains(x.PartID!)).ToListAsync();
+    var balanceByPart = balanceRows.GroupBy(x => x.PartID!)
+        .ToDictionary(g => g.Key, g => (inStock: g.Sum(x => x.InStockQuantity), inShipment: g.Sum(x => x.InShipmentQuantity)));
+
+    // K8: PartGroup/PartType INNER join ⇒ chi giu phu tung co nhom VA loai ton tai.
+    var typeCodes = await db.SerPartTypes.Where(x => x.OrgId == t.OrgId).Select(x => x.TypeCode).ToListAsync();
+    var groupNameByCode = await db.PartGroups.Where(x => x.OrgId == t.OrgId)
+        .ToDictionaryAsync(x => x.GroupCode, x => x.GroupName);
+    var typeNameByCode = await db.SerPartTypes.Where(x => x.OrgId == t.OrgId && x.TypeCode != null)
+        .ToDictionaryAsync(x => x.TypeCode!, x => x.TypeName);
+
+    // K9: LEFT JOIN TST_Mst_Part theo PartCode = TSTPartCode.
+    var codes = page.Select(x => x.PartCode).ToList();
+    var tstRows = await db.TstParts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.TSTPartCode)).ToListAsync();
+    var tstByCode = tstRows.GroupBy(x => x.TSTPartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var items = page
+        .Where(p => p.PartGroupCode != null && groupNameByCode.ContainsKey(p.PartGroupCode)
+            && p.PartTypeID != null && typeCodes.Contains(p.PartTypeID))
+        .Select(p =>
+        {
+            var price = priceByPart.TryGetValue(p.PartCode, out var pr) ? pr : null;
+            var bal = balanceByPart.TryGetValue(p.PartID ?? "", out var b) ? b : (inStock: 0m, inShipment: 0m);
+            var tst = tstByCode.TryGetValue(p.PartCode, out var tp) ? tp : null;
+            return new
+            {
+                p.PartID, p.PartCode, p.PartName, p.EngName, p.Note, p.Unit, p.Location, p.VAT,
+                p.Quantity, p.MinQuantity, p.Cost, p.Price, p.Model, p.FlagActive, p.FreqUsed, p.FlagInTST,
+                p.PartGroupCode, p.PartTypeID, p.DealerCode,
+                partGroupName = p.PartGroupCode != null && groupNameByCode.TryGetValue(p.PartGroupCode, out var gn) ? gn : null,
+                partTypeName = p.PartTypeID != null && typeNameByCode.TryGetValue(p.PartTypeID, out var tn) ? tn : null,
+                // Nguon: isnull(mcpf.Factor, mct.CusFactor) — CHET (JOIN literal NULL + token @CusTypeID khong co cho cam) ⇒ LUON NULL.
+                factor = (decimal?)null,
+                inStockQuantity = bal.inStock,
+                inShipmentQuantity = bal.inShipment,
+                couldUseQuantity = bal.inStock - bal.inShipment,
+                inventoryQuantity = bal.inStock,
+                balanceLocationId = p.BalanceLocationId,
+                priceEffectTmp = price?.Price,
+                partPriceId = price?.Id,
+                priceEffect = price?.Price ?? p.Price,
+                tstPartCode = tst?.TSTPartCode,
+                tstPrice = tst?.TSTPrice,
+                tstPriceBefore = tst?.TSTPriceBefore,
+            };
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = items.Count,
+        items,
+        onlyLiveConfirmed1540 = "#1540: Ser_Mst_Part_Get_New20210618 — BizCarSv.Service.cs:2682, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:3508 (WS Ser_Mst_Part_Get goi THANG _New20210618)",
+        wsNameDiffersFromBizName = "BAI HOC #560: WS Ser_Mst_Part_Get (WS:3508) KHONG goi biz Ser_Mst_Part_Get tran ma goi _New20210618 => ten WS ≠ ten ham biz dang chay",
+        cusTypeFactorDeadTwoIndependentReasons = "HE SO GIA THEO LOAI KHACH CHET (ban sao-dan khoi K8, ho #887/#889): (1) LEFT JOIN Ser_Mst_CusPartFactor mcpf ON mcpf.CusTypeID = NULL la LITERAL (luon UNKNOWN) => JOIN khong bao gio khop; (2) strCusTypeID chuan hoa roi dua vao Replace token @CusTypeID nhung token do KHONG XUAT HIEN trong SQL => tham so CHET HAI LOP DOC LAP => cot Factor LUON NULL. Port 1:1 giu Factor = null",
+        partGroupIdInjection = "INJECTION THAT: strPartGroupIDList noi chuoi TRUC TIEP vao literal SQL (AND ((pg.FamilyID LIKE + x + .%) or (t.PartGroupID = + x + ))), 12 dieu kien loc khac deu qua SqlUtils.BuildClause*",
+        innerJoinsDropRows = "k2 JOIN Ser_Mst_PartGroup va K8 JOIN Ser_Mst_PartGroup/Ser_Mst_PartType deu INNER => phu tung khong co nhom/loai bi LOAI; K8 inner JOIN ser_mst_part => phu tung khong co trong danh muc bi loai",
+        leftJoinDealerInOnClause = "LEFT JOIN #tbl_vwSer_inv_stockbalancebypart sb ON k7.partid = sb.partid zzzzClauseWhereSBDealerCode — dieu kien dai ly nam trong ON (khong phai WHERE) => LEFT join SONG (khac ho #414)",
+        twoTreesMatch = "3B: than ham Ser_Mst_Part_Get_New20210618 md5 KHOP giua V20 va V20.2023.Release (8bf9b8da)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/serviceparts/{code}/inventory", async (string code, AppDbContext db, ITenantContext t,
     string? formula) =>
 {
