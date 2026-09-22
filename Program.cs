@@ -15525,11 +15525,16 @@ app.MapGet("/api/serviceitems/search-full", async (AppDbContext db, ITenantConte
     return Results.Ok(new
     {
         totalCount = total, start = skip, count = page.Count,
-        items = page.Select(s => new { s.SerCode, s.SerName, s.Cost, s.Price, s.Model, s.Vat, s.FlagActive, s.DealerCode,
+        // #1498 §12 — nguồn `Ser_Mst_Service_Get_New20210618` SELECT `t.*, isnull(mcsf.Factor, mct.CusFactor) Factor`
+        // ⇒ trả ĐỦ mọi cột `Ser_Mst_Service` (bài học #539: `t.*` = cả bảng). Port cũ chỉ chiếu 8 cột.
+        items = page.Select(s => new { s.SerCode, s.SerName, s.Cost, s.Price, s.Model, s.Vat, s.Note, s.FlagActive,
+            s.DealerCode, s.SerTypeID, s.StdManHour, s.Status, s.FlagWarranty,
+            s.CreatedDate, s.CreatedBy, s.LogLUDateTime, s.LogLUBy, s.CreatedAt,
             factor = factorBySer.TryGetValue(s.SerCode, out var f) ? f : (decimal?)null }),
         onlyLiveConfirmed902 = "#902: Ser_Mst_Service_Get_New20210618 — BizCarSv.Service.cs:1145, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:2686",
         cusTypeIdNakedInjectionAndDeadJoin = "@CusTypeID VUA LA INJECTION TRAN TRUI (KHONG NGOAC) VUA LA DEAD-JOIN — CA THU BA cua ho #887/#889: rong => strCusTypeID = literal chuoi null => SQL thanh mcsf.CusTypeID = null (khong phai IS NULL) => JOIN khong bao gio khop; co gia tri => strCusTypeID (WS caller tu gui) nhet KHONG NGOAC KHONG THAM SO HOA thang vao vi tri so sanh trong ON => INJECTION TRAN TRUI NHAT trong ho bake da gap dot nay, khong can ky thuat thoat chuoi",
         paginationPatternIsCorrect = "AM TINH: Row_Number() over (order by t.SerID desc) roi cat theo MyRowIdx la MAU DUNG, khong dinh #415 vi ROW_NUMBER() OVER(ORDER BY) co thu tu dam bao, khac SELECT INTO khong OVER",
+        echoAllColumnsFromStar = "#1498: nguon SELECT t.* => moi cot Ser_Mst_Service phai co o GET (bai hoc #539)",
     });
 }).RequireAuthorization();
 app.MapPost("/api/serviceitems", async (ServiceItemDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
@@ -15762,10 +15767,19 @@ app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ModelCode.Contains(q!.ToUpper()) || (x.ModelName != null && x.ModelName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(trade)) query = query.Where(x => x.TradeMarkCode == trade);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
-    var items = await query.OrderBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive,
-            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt }).ToListAsync();   // #1313 §12
-    return Results.Ok(new { count = items.Count, items });
+    var page = await query.OrderBy(x => x.ModelCode).Take(500).ToListAsync();
+    // #1499 §12 — nguồn `Ser_Mst_Model_Get_New20200203` (LIVE, WS :2285) SELECT
+    // `t.*, mcmstd.ModelCode mcmstd_ModelCode, mcmstd.ModelName mcmstd_ModelName` — 2 cột ECHO từ
+    // `LEFT JOIN Mst_CarModelStd mcmstd ON t.ModelCode = mcmstd.ModelCode` (bài học #542/#543).
+    var modelCodes = page.Select(x => x.ModelCode).Distinct().ToList();
+    var stdByCode = await db.CarModelStds.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode))
+        .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var items = page.Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt,   // #1313 §12
+        mcmstd_ModelCode = stdByCode.FirstOrDefault(m => m.ModelCode == x.ModelCode)?.ModelCode,   // #1499 ECHO
+        mcmstd_ModelName = stdByCode.FirstOrDefault(m => m.ModelCode == x.ModelCode)?.ModelName }).ToList();   // #1499 ECHO
+    return Results.Ok(new { count = items.Count, items,
+        echoColumnsFromJoin = "#1499: mcmstd_ModelCode/mcmstd_ModelName (join Mst_CarModelStd theo ModelCode) — 2 cot ECHO nguon tra ra (bai hoc #542/#543)" });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
@@ -56899,11 +56913,24 @@ app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? g
         query = query.Where(e => e.StartWorkDate > today
             || (e.FinishWorkDate != null && e.FinishWorkDate < today));
 
-    var items = await query.OrderBy(e => e.GroupRCode == null ? 0 : 1).ThenBy(e => e.GroupRCode)
-        .ThenBy(e => e.EngineerNo).Take(500)
-        .Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status, e.EngineerType,
-            e.DealerCode, e.StartWorkDate, e.FinishWorkDate, e.IsEngineer,   // #1000
-            e.UpdatedAt, e.CreatedDate, e.CreatedBy, e.LogLUDateTime, e.LogLUBy }).ToListAsync();   // #1341 §12
+    var page = await query.OrderBy(e => e.GroupRCode == null ? 0 : 1).ThenBy(e => e.GroupRCode)
+        .ThenBy(e => e.EngineerNo).Take(500).ToListAsync();
+    // #1497 §12 — nguồn `SerEngineerGet`/`SerEngineerGet01`/`SerEmployeeGetStatus`/`SerEngineerGet_New20190625`
+    // (LIVE) SELECT `sp.*, g.GroupRNo, g.GroupRName [, ms.StaffName TypeEngineer]` — 3 cột ECHO từ join
+    // `Ser_GroupRepair` (theo `sp.GroupRID = g.GroupRID`) + `Mst_Staff` (theo `sp.IsEngineer = ms.StaffCode`).
+    // Entity Mini chưa từng mô hình hoá 3 cột này ⇒ GET bỏ sót (bài học #542/#543). Echo lại qua tra cứu.
+    var groupCodes = page.Where(e => !string.IsNullOrWhiteSpace(e.GroupRCode)).Select(e => e.GroupRCode!).Distinct().ToList();
+    var grpByCode = await db.GroupRepairs.Where(g => g.OrgId == t.OrgId && groupCodes.Contains(g.GroupRCode))
+        .Select(g => new { g.GroupRCode, g.GroupRName }).ToListAsync();
+    var staffCodes = page.Where(e => !string.IsNullOrWhiteSpace(e.IsEngineer)).Select(e => e.IsEngineer!).Distinct().ToList();
+    var staffByCode = await db.MstStaffs.Where(s => s.OrgId == t.OrgId && staffCodes.Contains(s.StaffCode))
+        .Select(s => new { s.StaffCode, s.StaffName }).ToListAsync();
+    var items = page.Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.Status, e.EngineerType,
+        e.DealerCode, e.StartWorkDate, e.FinishWorkDate, e.IsEngineer,   // #1000
+        e.UpdatedAt, e.CreatedDate, e.CreatedBy, e.LogLUDateTime, e.LogLUBy,   // #1341 §12
+        GroupRNo = e.GroupRCode,   // #1497 ECHO `g.GroupRNo`
+        GroupRName = grpByCode.FirstOrDefault(g => g.GroupRCode == e.GroupRCode)?.GroupRName,   // #1497 ECHO `g.GroupRName`
+        TypeEngineer = staffByCode.FirstOrDefault(s => s.StaffCode == e.IsEngineer)?.StaffName }).ToList();   // #1497 ECHO `ms.StaffName TypeEngineer`
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -56913,6 +56940,7 @@ app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? g
         sourceStoresWorkDatesAsString = "guard co ve = '' — MiniHTC dung DateTime? nen chi con null",
         sourceOrdersByLeftJoinedColumn = "ORDER BY g.GroupRNo => nguoi chua gan nhom len dau",
         sourceUsesRawNolock = true,
+        echoColumnsFromJoins = "#1497: GroupRNo/GroupRName (join Ser_GroupRepair theo GroupRID) + TypeEngineer (join Mst_Staff theo IsEngineer=StaffCode) — 3 cot ECHO nguon tra ra, entity Mini chua tung mo hinh hoa (bai hoc #542/#543)",
     });
 }).RequireAuthorization();
 
