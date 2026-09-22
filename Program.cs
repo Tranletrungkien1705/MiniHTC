@@ -43200,6 +43200,167 @@ app.MapGet("/api/serviceparts/search-full-20210618", async (AppDbContext db, ITe
         twoTreesMatch = "3B: than ham Ser_Mst_Part_Get_New20210618 md5 KHOP giua V20 va V20.2023.Release (8bf9b8da)",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #1541 — `Ser_Mst_Part_SP_Get_WH` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:28696` goi THANG) =====
+// Nguon `BizCarSv.WH.cs:23920-24300` (md5 than ham KHOP giua V20 va V20.2023.Release).
+// GREP TRUOC: Mini co `Ser_Mst_Part_SP_Get` (ban dai ly, #493) nhung **KHONG** co route nao port ban `_WH`
+//   (grep `Ser_Mst_Part_SP_Get_WH` = 0 hit) ⇒ GAP that. 🔴 BAN ANH EM cua #493: cung khuon phu tung cham
+//   luan chuyen nhung chay tren `_dbWH` va them cot chia se (`SP_SharePart_Detail`). MiniHTC mot CSDL ⇒
+//   giu HAI route rieng (bai hoc #560).
+// 🔴🔴🔴 HE SO GIA THEO LOAI KHACH CHET (ban sao-dan khoi K8, ho #887/#889/#1540): `LEFT JOIN Ser_Mst_CusPartFactor
+//   mcpf ON mcpf.CusTypeID = NULL` la LITERAL ⇒ JOIN khong bao gio khop; token `@CusTypeID` khong xuat hien
+//   trong SQL ⇒ tham so CHET HAI LOP ⇒ cot `Factor` LUON NULL. Port 1:1: giu `factor = null`.
+// 🔴🔴🔴 INJECTION THAT: `strPartGroupIDList` noi chuoi TRUC TIEP vao literal SQL (giong #1540). Port tham so hoa.
+// 🔴 `DateEffect <= '@strDateNow'` va `IsActive = '1'` bake TRONG nhay don (ho #768).
+// 🔴 K8.1: `sisi.[Status] = '3'` va `siso.[Status] = '3'` (ket thuc) + `sisi.DealerCode = '@strDealerCode'`
+//   bake TRONG nhay don; `sisi.DealerCode = '@strDealerCode'` nam trong ON cua LEFT JOIN ⇒ LEFT join SONG.
+// 🔴 K10: `k9.KLuanChuyen >= '@iNotRotateFrom'` va `<= '@iNotRotateTo'` bake TRONG nhay don; `KLuanChuyen`
+//   = `DATEDIFF(DAY, MaxStockInDate, GETDATE())` — so ngay ke tu lan NHAP kho gan nhat (trang thai ket thuc).
+// 🔴 `INNER JOIN #tbl_k8a q ON t.PartID = q.PartID` (K9) — INNER ⇒ phu tung khong co dong nhap/xuat nao
+//   (MaxStockInDate NULL) bi LOAI. 🔴 `JOIN Ser_Mst_PartGroup pg`/`JOIN Ser_Mst_PartType pt` (K8) INNER.
+// 🔴 `inner JOIN ser_mst_part t` (K8) INNER. 🔴 `select DISTINCT t.*` (k4) va `select distinct t.*` (K9).
+// 🔴 Guard `iNotRotateFrom > iNotRotateTo` ⇒ nem `Ser_Mst_Part_SP_Get_InvalidRotate` (port: 400).
+// ⚠️ `Ser_Inv_StockInDetail` → Mini `PartStockInLine`; `Ser_Inv_StockIn` → Mini `PartStockIn`;
+//   `Ser_Inv_StockOutDetail` → Mini `PartStockOutLine`; `Ser_Inv_StockOut` → Mini `PartStockOut`;
+//   `SP_SharePart_Detail` → Mini `SharePart`. §12: them `PartID`/`DealerCode` vao `PartStockOutLine`.
+app.MapGet("/api/serviceparts/slow-rotate-wh", async (AppDbContext db, ITenantContext t,
+    string? partIdList, string? dealerCodeList, string? partCodePattern, string? engNamePattern,
+    string? vieNamePattern, string? cusTypeId, string? freqUsedList, string? isActiveList,
+    string? partGroupId, int? notRotateFrom, int? notRotateTo, int? start, int? count) =>
+{
+    // Guard nguon: iNotRotateFrom > iNotRotateTo ⇒ nem loi.
+    var f = notRotateFrom ?? 0;
+    var tto = notRotateTo ?? 0;
+    if (f > tto) return Results.BadRequest(new { error = "Ser_Mst_Part_SP_Get_InvalidRotate", from = f, to = tto });
+
+    var partIds = (partIdList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var dealerCodes = (dealerCodeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var freqUsed = (freqUsedList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var isActive = (isActiveList ?? "").ToUpperInvariant().Replace("TRUE", "1").Replace("FALSE", "0")
+        .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    // k2: tap ung vien = Ser_MST_Part INNER JOIN Ser_Mst_PartGroup.
+    var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
+    if (partIds.Count > 0) query = query.Where(x => x.PartID != null && partIds.Contains(x.PartID));
+    if (dealerCodes.Count > 0) query = query.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode));
+    if (!string.IsNullOrWhiteSpace(partCodePattern)) query = query.Where(x => x.PartCode.Contains(partCodePattern!));
+    if (isActive.Count > 0) query = query.Where(x => isActive.Contains(x.FlagActive));
+    if (freqUsed.Count > 0) query = query.Where(x => x.FreqUsed != null && freqUsed.Contains(x.FreqUsed.Value.ToString()));
+    if (!string.IsNullOrWhiteSpace(partGroupId))
+    {
+        var childCodes = await db.PartGroups.Where(x => x.OrgId == t.OrgId && x.ParentCode == partGroupId)
+            .Select(x => x.GroupCode).ToListAsync();
+        query = query.Where(x => x.PartGroupCode == partGroupId || childCodes.Contains(x.PartGroupCode!));
+    }
+    var groupCodes = await db.PartGroups.Where(x => x.OrgId == t.OrgId).Select(x => x.GroupCode).ToListAsync();
+    query = query.Where(x => x.PartGroupCode != null && groupCodes.Contains(x.PartGroupCode));
+    if (!string.IsNullOrWhiteSpace(vieNamePattern) || !string.IsNullOrWhiteSpace(engNamePattern))
+    {
+        query = query.Where(x =>
+            (!string.IsNullOrWhiteSpace(vieNamePattern) && x.PartName != null && x.PartName.Contains(vieNamePattern!))
+            || (!string.IsNullOrWhiteSpace(engNamePattern) && x.EngName != null && x.EngName.Contains(engNamePattern!)));
+    }
+
+    var total = await query.CountAsync();
+    var skip = start ?? 0;
+    var take = count is > 0 and <= 1000 ? count!.Value : 100;
+    var page = await query.OrderBy(x => x.PartCode).Skip(skip).Take(take).ToListAsync();
+
+    // k5/k6: gia hieu luc = Ser_Inv_Partprice moi nhat co DateEffect <= hom nay va IsActive='1'.
+    var pagePartIds = page.Select(x => x.PartID).Where(x => x != null).Select(x => x!).ToList();
+    var today = DateTime.Now.Date;
+    var priceRows = await db.PartPrices.Where(x => x.OrgId == t.OrgId && x.IsActive == "1"
+        && x.EffectiveDate <= today && pagePartIds.Contains(x.PartCode)).ToListAsync();
+    var priceByPart = priceRows.GroupBy(x => x.PartCode)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveDate).First());
+
+    // k1: ton kho = SUM(InStockQuantity)/SUM(InShipmentQuantity) theo DealerCode+PartID.
+    var balanceRows = await db.SerInvStockBalances.Where(x => x.OrgId == t.OrgId && pagePartIds.Contains(x.PartID!)).ToListAsync();
+    var balanceByPart = balanceRows.GroupBy(x => x.PartID!)
+        .ToDictionary(g => g.Key, g => (inStock: g.Sum(x => x.InStockQuantity), inShipment: g.Sum(x => x.InShipmentQuantity)));
+
+    // K8: PartGroup/PartType INNER join ⇒ chi giu phu tung co nhom VA loai ton tai.
+    var typeCodes = await db.SerPartTypes.Where(x => x.OrgId == t.OrgId).Select(x => x.TypeCode).ToListAsync();
+    var groupNameByCode = await db.PartGroups.Where(x => x.OrgId == t.OrgId)
+        .ToDictionaryAsync(x => x.GroupCode, x => x.GroupName);
+    var typeNameByCode = await db.SerPartTypes.Where(x => x.OrgId == t.OrgId && x.TypeCode != null)
+        .ToDictionaryAsync(x => x.TypeCode!, x => x.TypeName);
+
+    // K8.1: MaxStockInDate (phieu nhap ket thuc) / MaxStockOutDate (phieu xuat ket thuc) theo PartID+DealerCode.
+    var inLines = await db.PartStockInLines.Where(x => x.OrgId == t.OrgId && x.PartID != null && pagePartIds.Contains(x.PartID)).ToListAsync();
+    var inHeaders = await db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "3").ToListAsync();
+    var inHeaderById = inHeaders.ToDictionary(x => x.Id, x => x);
+    var maxStockInByPart = inLines
+        .Where(l => l.StockInId != 0 && inHeaderById.ContainsKey(l.StockInId))
+        .GroupBy(l => l.PartID!)
+        .ToDictionary(g => g.Key, g => g.Max(l => inHeaderById[l.StockInId].StockInDate));
+
+    var outLines = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && x.PartID != null && pagePartIds.Contains(x.PartID)).ToListAsync();
+    var outHeaders = await db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "3").ToListAsync();
+    var outHeaderById = outHeaders.ToDictionary(x => x.Id, x => x);
+    var maxStockOutByPart = outLines
+        .Where(l => l.StockOutId != 0 && outHeaderById.ContainsKey(l.StockOutId))
+        .GroupBy(l => l.PartID!)
+        .ToDictionary(g => g.Key, g => g.Max(l => outHeaderById[l.StockOutId].StockOutDateTime ?? outHeaderById[l.StockOutId].StockOutDate));
+
+    // K10: LEFT JOIN SP_SharePart_Detail theo PartID+DealerCode.
+    var shareRows = await db.ShareParts.Where(x => x.OrgId == t.OrgId && pagePartIds.Contains(x.PartCode)).ToListAsync();
+    var shareByPart = shareRows.GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var now = DateTime.Now;
+    var items = page
+        .Where(p => p.PartGroupCode != null && groupNameByCode.ContainsKey(p.PartGroupCode)
+            && p.PartTypeID != null && typeCodes.Contains(p.PartTypeID))
+        // K9 INNER JOIN #tbl_k8a ⇒ phu tung khong co dong nhap ket thuc nao bi loai.
+        .Where(p => p.PartID != null && maxStockInByPart.ContainsKey(p.PartID))
+        .Select(p =>
+        {
+            var price = priceByPart.TryGetValue(p.PartCode, out var pr) ? pr : null;
+            var bal = balanceByPart.TryGetValue(p.PartID ?? "", out var b) ? b : (inStock: 0m, inShipment: 0m);
+            var maxIn = maxStockInByPart.TryGetValue(p.PartID!, out var mi) ? mi : (DateTime?)null;
+            var maxOut = maxStockOutByPart.TryGetValue(p.PartID!, out var mo) ? mo : (DateTime?)null;
+            var share = shareByPart.TryGetValue(p.PartCode, out var sp) ? sp : null;
+            var kLuanChuyen = maxIn.HasValue ? (int)(now - maxIn.Value).TotalDays : (int?)null;
+            return new
+            {
+                p.PartID, p.PartCode, p.PartName, p.EngName, p.Unit, p.MinQuantity, p.Price, p.Model,
+                p.FlagActive, p.DealerCode,
+                partGroupName = p.PartGroupCode != null && groupNameByCode.TryGetValue(p.PartGroupCode, out var gn) ? gn : null,
+                partTypeName = p.PartTypeID != null && typeNameByCode.TryGetValue(p.PartTypeID, out var tn) ? tn : null,
+                // Nguon: isnull(mcpf.Factor, mct.CusFactor) — CHET (JOIN literal NULL + token @CusTypeID khong co cho cam) ⇒ LUON NULL.
+                factor = (decimal?)null,
+                inStockQuantity = bal.inStock,
+                inShipmentQuantity = bal.inShipment,
+                couldUseQuantity = bal.inStock - bal.inShipment,
+                inventoryQuantity = bal.inStock,
+                balanceLocationId = p.BalanceLocationId,
+                priceEffectTmp = price?.Price,
+                partPriceId = price?.Id,
+                priceEffect = price?.Price ?? p.Price,
+                maxStockInDate = maxIn,
+                maxStockOutDate = maxOut,
+                kLuanChuyen,
+                sspdQuantityShare = share?.QuantityShare,
+                remark = share?.Remark,
+            };
+        })
+        // K10: loc theo so ngay khong luan chuyen (bake trong nhay don o nguon).
+        .Where(x => x.kLuanChuyen.HasValue && x.kLuanChuyen.Value >= f && x.kLuanChuyen.Value <= tto)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        totalCount = total, start = skip, count = items.Count,
+        items,
+        onlyLiveConfirmed1541 = "#1541: Ser_Mst_Part_SP_Get_WH — BizCarSv.WH.cs:23920, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:28696 (WS goi THANG)",
+        siblingOf493 = "BAN ANH EM cua #493 (Ser_Mst_Part_SP_Get ban dai ly): cung khuon phu tung cham luan chuyen nhung chay tren _dbWH va them cot chia se (SP_SharePart_Detail). MiniHTC mot CSDL => giu HAI route rieng (bai hoc #560)",
+        cusTypeFactorDeadTwoIndependentReasons = "HE SO GIA THEO LOAI KHACH CHET (ban sao-dan khoi K8, ho #887/#889/#1540): (1) LEFT JOIN Ser_Mst_CusPartFactor mcpf ON mcpf.CusTypeID = NULL la LITERAL; (2) token @CusTypeID khong xuat hien trong SQL => tham so CHET HAI LOP => cot Factor LUON NULL. Port 1:1 giu Factor = null",
+        partGroupIdInjection = "INJECTION THAT: strPartGroupIDList noi chuoi TRUC TIEP vao literal SQL (giong #1540)",
+        innerJoinsDropRows = "K9 INNER JOIN #tbl_k8a => phu tung khong co dong nhap ket thuc nao (MaxStockInDate NULL) bi LOAI; K8 JOIN Ser_Mst_PartGroup/Ser_Mst_PartType INNER; K8 inner JOIN ser_mst_part INNER",
+        kLuanChuyenFormula = "KLuanChuyen = DATEDIFF(DAY, MaxStockInDate, GETDATE()) — so ngay ke tu lan NHAP kho gan nhat o trang thai ket thuc ('3'); loc >= '@iNotRotateFrom' va <= '@iNotRotateTo' (bake trong nhay don)",
+        guardInvalidRotate = "iNotRotateFrom > iNotRotateTo => nem Ser_Mst_Part_SP_Get_InvalidRotate (port: 400)",
+        twoTreesMatch = "3B: than ham Ser_Mst_Part_SP_Get_WH md5 KHOP giua V20 va V20.2023.Release (c87f4b88)",
+    });
+}).RequireAuthorization();
 app.MapGet("/api/serviceparts/{code}/inventory", async (string code, AppDbContext db, ITenantContext t,
     string? formula) =>
 {

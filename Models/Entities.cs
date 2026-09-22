@@ -2994,6 +2994,16 @@ public sealed class PartStockOutLine
     public string? PartName { get; set; }
     public string? Location { get; set; }
     public decimal Quantity { get; set; } = 1;
+
+    // ===== #1541 §12 — cột nguồn `Ser_Inv_StockOutDetail` mà entity Mini CHƯA TỪNG có =====
+    // Căn cứ: `Ser_Mst_Part_SP_Get_WH` (`BizCarSv.WH.cs:23920`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:28696`)
+    // khối K8.1 nối `Ser_Inv_StockOutDetail sisod ON sisod.PartID = k8.PartID AND sisod.DealerCode = k8.DealerCode`
+    // để tính `MaxStockOutDate` (ngày xuất kho gần nhất ở trạng thái kết thúc). Thiếu hai cột này thì không
+    // nối được dòng xuất về phụ tùng/đại lý ⇒ báo cáo phụ tùng chậm luân chuyển mất vế xuất.
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (`Ser_MST_Part.PartID`), KHÁC `PartCode` là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>DealerCode — đại lý của dòng xuất (nguồn ghi ở dòng chi tiết).</summary>
+    public string? DealerCode { get; set; }
 }
 
 /// <summary>Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate, TCMotor DMSCarSv/Inventory):

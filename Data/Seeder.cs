@@ -3373,6 +3373,9 @@ public static class Seeder
                 "ALTER TABLE public.\"AppointmentPartItems\" ADD COLUMN IF NOT EXISTS \"PartID\" text NULL",
                 "ALTER TABLE public.\"AppointmentPartItems\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"AppointmentPartItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #1541 §12 — `Ser_Inv_StockOutDetail.PartID`/`DealerCode` (nguồn `Ser_Mst_Part_SP_Get_WH` K8.1 nối theo hai cột này).
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"PartID\" text NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
