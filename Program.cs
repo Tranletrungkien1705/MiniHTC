@@ -24389,6 +24389,46 @@ app.MapDelete("/api/servicetrademarks/{id:long}", async (long id, AppDbContext d
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
+// ===== 🔴 #1519 `Ser_Mst_TradeMark_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:2113`) — GET DANH MỤC THƯƠNG HIỆU =====
+// Nguồn `BizCarSv.Master.cs:1515` — `select t.* from Ser_Mst_TradeMark t` với 4 bộ lọc:
+//   `t.TradeMarkCode` (list `|`, `BuildClauseConditionList`) · `t.TradeMarkName` **LIKE**
+//   (`BuildClauseConditionSingle`) · `t.DealerCode` (list `|`) · `t.IsActive` (list `|`).
+// ⚠️ Route `/api/servicetrademarks` (POST) + `/{id}/toggle` + DELETE đã có, nhưng KHÔNG có GET nào
+//   theo bộ lọc nguồn ⇒ đây là GAP thật (grep `Ser_Mst_TradeMark_Get` = 0 hit).
+// 📌 §12: entity `ServiceTradeMark` đã đủ cột (t.* = cả bảng, kể cả `Logo` #1508) — không thêm field mới.
+// 3B: hai cây nguồn (V20 vs V20.2023.Release) — thân hàm `Ser_Mst_TradeMark_Get` md5 KHỚP (1050e6fd).
+app.MapGet("/api/servicetrademarks/get", async (AppDbContext db, ITenantContext t,
+    string? tradeMarkCodeList, string? tradeMarkNamePattern, string? dealerCodeList, string? isActiveList) =>
+{
+    var qry = db.ServiceTradeMarks.Where(x => x.OrgId == t.OrgId);
+    // BuildClauseConditionList("and", "t.TradeMarkCode", strTradeMarkCodeList, "|") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(tradeMarkCodeList))
+    {
+        var codes = tradeMarkCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => codes.Contains(x.TradeMarkCode));
+    }
+    // BuildClauseConditionSingle("and", "t.TradeMarkName", "like", …) — LIKE, không phải khớp chính xác.
+    if (!string.IsNullOrWhiteSpace(tradeMarkNamePattern)) qry = qry.Where(x => x.TradeMarkName != null && x.TradeMarkName.Contains(tradeMarkNamePattern!));
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var dlrs = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && dlrs.Contains(x.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var act = isActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => act.Contains(x.FlagActive));
+    }
+    var items = await qry.OrderBy(x => x.TradeMarkCode)
+        .Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive, x.Logo,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1519 = "#1519: Ser_Mst_TradeMark_Get — BizCarSv.Master.cs:1515, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:2113",
+        echoAllColumnsFromStar = "#1519: nguon SELECT t.* => moi cot Ser_Mst_TradeMark phai co o GET (bai hoc #539)",
+        twoTreesMatch = "3B: than ham Ser_Mst_TradeMark_Get md5 KHOP giua V20 va V20.2023.Release (1050e6fd)" });
+}).RequireAuthorization();
+
 // ===== 🔴 #1486 `Ser_MST_ROWarrantyWork` — DANH MỤC CÔNG BẢO HÀNH HÃNG (CRUD 1:1) =====
 // Nguồn: `BizCarSv.AssignmentOfWork.cs` — `_Get` (:3388, SELECT `smroww.*`), `_Save` (:4036, insert/update),
 // `_Delete` (:5378, xoá CỨNG theo `ROWWorkCode`). Ba `[WebMethod]` LIVE ở `HTCWSCarSv/WSCarSv.asmx.cs`
@@ -29427,6 +29467,83 @@ app.MapDelete("/api/serservicetypes/{id:long}", async (long id, AppDbContext db,
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = id,
         noReferenceGuardNote = "Nguon Ser_Mst_ServiceType_Delete xoa CUNG khong kiem hang muc nao dang dung loai nay — giu dung, khong tu them rao chan." });
+}).RequireAuthorization();
+
+// ===== 🔴 #1520 `Ser_Mst_ServiceType_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:4507`) — GET DANH MỤC LOẠI DỊCH VỤ =====
+// Nguồn `BizCarSv.Master.cs:5098` — `select t.* from Ser_MST_ServiceType t` với 3 bộ lọc qua `SqlUtils.BuildClause`
+//   (KHÁC `BuildClauseConditionList`): `t.TypeID` · `t.DealerCode` · `t.TypeName` — mỗi bộ là danh sách `|`,
+//   mỗi phần tử có thể mang TIỀN TỐ TOÁN TỬ (`=`, `!=`, `>`, `<`, `>=`, `<=`, `LIKE`, `NOT LIKE`, `IS NULL`,
+//   `IS NOT NULL`, `IN`, `NOT IN`); thiếu toán tử ⇒ `nCase = 0` ⇒ mệnh đề **BỊ BỎ IM LẶNG** (#410).
+//   `BuildClause` còn `.ToUpper()` CẢ chuỗi điều kiện LẪN giá trị ⇒ so sánh luôn ở dạng HOA.
+// ⚠️ Route `/api/serservicetypes` (POST) + `/{id}/toggle` + DELETE đã có, nhưng KHÔNG có GET nào
+//   theo bộ lọc nguồn ⇒ đây là GAP thật (grep `Ser_Mst_ServiceType_Get` = 0 hit).
+// 📌 §12: entity `SerServiceType` đã đủ cột (t.* = cả bảng, kể cả `LogLU*` #1508) — không thêm field mới.
+// 3B: hai cây nguồn — thân hàm `Ser_Mst_ServiceType_Get` md5 KHỚP (3b6a1a2d).
+app.MapGet("/api/serservicetypes/get", async (AppDbContext db, ITenantContext t,
+    string? typeIdConditionList, string? dealerCodeConditionList, string? typeNameConditionList) =>
+{
+    var qry = db.SerServiceTypes.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "t.TypeID", strTypeIDConditionList, "@p", …) — danh sách `|`, mỗi phần tử có thể có toán tử.
+    if (!string.IsNullOrWhiteSpace(typeIdConditionList))
+    {
+        var conds = typeIdConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var raw in conds)
+        {
+            var c = raw.Trim().ToUpper();
+            if (c.Length < 1) continue;
+            if (c.StartsWith("IS NULL")) { qry = qry.Where(x => x.TypeName == null); continue; }
+            if (c.StartsWith("IS NOT NULL")) { qry = qry.Where(x => x.TypeName != null); continue; }
+            // TypeID là khoá số tự tăng — nguồn so sánh dạng chuỗi; Mini so theo Id (long).
+            if (c.StartsWith("=")) { var v = c.Substring(1).Trim(); if (long.TryParse(v, out var n)) qry = qry.Where(x => x.Id == n); continue; }
+            if (c.StartsWith("!=")) { var v = c.Substring(2).Trim(); if (long.TryParse(v, out var n)) qry = qry.Where(x => x.Id != n); continue; }
+            if (c.StartsWith(">=")) { var v = c.Substring(2).Trim(); if (long.TryParse(v, out var n)) qry = qry.Where(x => x.Id >= n); continue; }
+            if (c.StartsWith("<=")) { var v = c.Substring(2).Trim(); if (long.TryParse(v, out var n)) qry = qry.Where(x => x.Id <= n); continue; }
+            if (c.StartsWith(">")) { var v = c.Substring(1).Trim(); if (long.TryParse(v, out var n)) qry = qry.Where(x => x.Id > n); continue; }
+            if (c.StartsWith("<")) { var v = c.Substring(1).Trim(); if (long.TryParse(v, out var n)) qry = qry.Where(x => x.Id < n); continue; }
+            // Giá trị TRẦN (không toán tử) ⇒ nCase = 0 ⇒ nguồn BỎ IM LẶNG mệnh đề (#410) — giữ đúng, không lọc.
+        }
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeConditionList))
+    {
+        var conds = dealerCodeConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var raw in conds)
+        {
+            var c = raw.Trim().ToUpper();
+            if (c.Length < 1) continue;
+            if (c.StartsWith("IS NULL")) { qry = qry.Where(x => x.DealerCode == null); continue; }
+            if (c.StartsWith("IS NOT NULL")) { qry = qry.Where(x => x.DealerCode != null); continue; }
+            if (c.StartsWith("!=")) { var v = c.Substring(2).Trim(); qry = qry.Where(x => x.DealerCode != v); continue; }
+            if (c.StartsWith("=")) { var v = c.Substring(1).Trim(); qry = qry.Where(x => x.DealerCode == v); continue; }
+            if (c.StartsWith("LIKE")) { var v = c.Substring(4).Trim().Replace("%", ""); qry = qry.Where(x => x.DealerCode != null && x.DealerCode.ToUpper().Contains(v)); continue; }
+            if (c.StartsWith("NOT LIKE")) { var v = c.Substring(8).Trim().Replace("%", ""); qry = qry.Where(x => x.DealerCode == null || !x.DealerCode.ToUpper().Contains(v)); continue; }
+            // Giá trị TRẦN ⇒ nguồn bỏ im lặng mệnh đề (#410).
+        }
+    }
+    if (!string.IsNullOrWhiteSpace(typeNameConditionList))
+    {
+        var conds = typeNameConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        foreach (var raw in conds)
+        {
+            var c = raw.Trim().ToUpper();
+            if (c.Length < 1) continue;
+            if (c.StartsWith("IS NULL")) { qry = qry.Where(x => x.TypeName == null); continue; }
+            if (c.StartsWith("IS NOT NULL")) { qry = qry.Where(x => x.TypeName != null); continue; }
+            if (c.StartsWith("!=")) { var v = c.Substring(2).Trim(); qry = qry.Where(x => x.TypeName != v); continue; }
+            if (c.StartsWith("=")) { var v = c.Substring(1).Trim(); qry = qry.Where(x => x.TypeName == v); continue; }
+            if (c.StartsWith("LIKE")) { var v = c.Substring(4).Trim().Replace("%", ""); qry = qry.Where(x => x.TypeName != null && x.TypeName.ToUpper().Contains(v)); continue; }
+            if (c.StartsWith("NOT LIKE")) { var v = c.Substring(8).Trim().Replace("%", ""); qry = qry.Where(x => x.TypeName == null || !x.TypeName.ToUpper().Contains(v)); continue; }
+            // Giá trị TRẦN ⇒ nguồn bỏ im lặng mệnh đề (#410).
+        }
+    }
+    var items = await qry.OrderBy(x => x.TypeName)
+        .Select(x => new { x.Id, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1520 = "#1520: Ser_Mst_ServiceType_Get — BizCarSv.Master.cs:5098, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4507",
+        echoAllColumnsFromStar = "#1520: nguon SELECT t.* => moi cot Ser_MST_ServiceType phai co o GET (bai hoc #539)",
+        buildClauseSilentDrop = "#410: nguon dung SqlUtils.BuildClause (doi toan tu o dau chuoi); gia tri TRAN khong toan tu => nCase=0 => menh de BI BO IM LANG — Mini giu dung, khong loc",
+        buildClauseUppercasesBothSides = "BuildClause .ToUpper() CA chuoi dieu kien LAN gia tri => so sanh luon o dang HOA; Mini giu dung",
+        twoTreesMatch = "3B: than ham Ser_Mst_ServiceType_Get md5 KHOP giua V20 va V20.2023.Release (3b6a1a2d)" });
 }).RequireAuthorization();
 
 // ===== 🔴 #1058 MÀN CHƯA TỪNG PORT: `Mst_Ser_AppType` (loại lịch hẹn dịch vụ) =====
@@ -45761,6 +45878,39 @@ app.MapGet("/api/customertypes/getall", async (AppDbContext db, ITenantContext t
     return Results.Ok(new { count = items.Count, items,
         onlyLiveConfirmed1518 = "#1518: Ser_MST_CustomerType_GetAll — BizCarSv.Master.cs:6029, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4694",
         echoAllColumnsFromStar = "#1518: nguon SELECT t.* => moi cot Ser_MST_CustomerType phai co o GET (bai hoc #539)" });
+}).RequireAuthorization();
+
+// ===== 🔴 #1521 `Ser_MST_CustomerType_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:4662`) — GET LOẠI KH (bản CŨ) =====
+// Nguồn `BizCarSv.Master.cs:5918` — `select t.* from Ser_MST_CustomerType t with (nolock)` với 2 bộ lọc:
+//   `t.CusTypeID` (list `|`, `BuildClauseConditionList`) · `t.DealerCode` **LIKE** (`BuildClauseConditionSingle`).
+// ⚠️ KHÁC `Ser_MST_CustomerType_GetAll` (#1518, `:6029`): bản CŨ này lọc theo `CusTypeID` + `DealerCode` LIKE,
+//   KHÔNG có `CusTypeName` LIKE. Hai hàm là HAI WebMethod riêng (bài học #560) — route `/api/customertypes/getall`
+//   chỉ phủ bản `_GetAll` ⇒ bản `_Get` là GAP thật (grep `Ser_MST_CustomerType_Get` = 0 hit).
+// 🔴 `with (nolock)` = ĐỌC BẨN — giữ đúng hành vi nguồn (không thêm khoá).
+// 📌 §12: entity `CustomerType` đã đủ cột (t.* = cả bảng) — không thêm field mới.
+// 3B: hai cây nguồn — thân hàm `Ser_MST_CustomerType_Get` md5 KHỚP (d172f74f).
+app.MapGet("/api/customertypes/get", async (AppDbContext db, ITenantContext t,
+    string? cusTypeIdList, string? dealerCodePattern) =>
+{
+    var qry = db.CustomerTypes.Where(x => x.OrgId == t.OrgId);
+    // BuildClauseConditionList("and", "t.CusTypeID", strCusTypeIDList, "|") — danh sách phân tách bằng '|'.
+    // Nguồn lọc cột `CusTypeID`; Mini mô hình hoá cột đó thành `CusTypeCode` (xem #1518).
+    if (!string.IsNullOrWhiteSpace(cusTypeIdList))
+    {
+        var ids = cusTypeIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => ids.Contains(x.CusTypeCode));
+    }
+    // BuildClauseConditionSingle("and", "t.DealerCode", "like", …) — LIKE, không phải khớp chính xác.
+    if (!string.IsNullOrWhiteSpace(dealerCodePattern)) qry = qry.Where(x => x.DealerCode != null && x.DealerCode.Contains(dealerCodePattern!));
+    var items = await qry.OrderBy(x => x.CusTypeCode)
+        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1521 = "#1521: Ser_MST_CustomerType_Get — BizCarSv.Master.cs:5918, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4662",
+        echoAllColumnsFromStar = "#1521: nguon SELECT t.* => moi cot Ser_MST_CustomerType phai co o GET (bai hoc #539)",
+        readsDirty = "nguon: select t.* from Ser_MST_CustomerType t with (nolock) — DOC BAN; Mini giu dung hanh vi nguon",
+        differsFromGetAll = "#560: ban CU _Get loc theo CusTypeID + DealerCode LIKE; ban _GetAll (#1518) loc theo CusTypeID + DealerCode LIKE + CusTypeName LIKE — HAI WebMethod rieng",
+        twoTreesMatch = "3B: than ham Ser_MST_CustomerType_Get md5 KHOP giua V20 va V20.2023.Release (d172f74f)" });
 }).RequireAuthorization();
 
 // Upsert theo mã loại KH (GroupNo/mã trống = auto-gen).
