@@ -241,6 +241,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PartStockIn> PartStockIns => Set<PartStockIn>();
     public DbSet<PartStockInLine> PartStockInLines => Set<PartStockInLine>();
     public DbSet<PartStock> PartStocks => Set<PartStock>();
+    public DbSet<SerInvStockBalance> SerInvStockBalances => Set<SerInvStockBalance>();   // #1511
     public DbSet<PartStockOut> PartStockOuts => Set<PartStockOut>();
     public DbSet<PartStockOutLine> PartStockOutLines => Set<PartStockOutLine>();
     public DbSet<PartPrice> PartPrices => Set<PartPrice>();

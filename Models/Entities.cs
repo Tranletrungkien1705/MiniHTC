@@ -2863,6 +2863,29 @@ public sealed class PartStock
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>🔴 #1511 §12 — Tồn kho theo VỊ TRÍ (`Ser_Inv_StockBalance`), bảng nguồn CHƯA TỪNG có entity trong Mini.
+/// Nguồn `Ser_Mst_Part_PartExtra_Get` (`BizCarSv.Service.cs:4026`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:36303`) đọc
+/// bảng này để tính `InStockQuantity`/`InShipmentQuantity`/`CouldUseQuantity`/`InventoryQuantity`/`BalanceLocationId`.
+/// Cột nguồn (từ khối INSERT `BizCarSv.Inventory.Stock.cs:1499-1512`): `StockBalanceID`/`DealerCode`/`LocationCode`/
+/// `LocationID`/`PartID`/`InShipmentQuantity`/`InStockQuantity`/`CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy`.
+/// ⚠️ KHÁC `PartStock` (`Ser_Inv_PartStock`: WarehouseCode/PartCode/OnHand) — hai bảng khác nhau (bài học #554).</summary>
+public sealed class SerInvStockBalance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? StockBalanceID { get; set; }
+    public string? DealerCode { get; set; }
+    public string? LocationCode { get; set; }
+    public string? LocationID { get; set; }
+    public string? PartID { get; set; }
+    public decimal InShipmentQuantity { get; set; }
+    public decimal InStockQuantity { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Phiếu xuất kho phụ tùng (Ser_Inv_StockOut — port 1:1 FrmStockOutCreate, TCMotor DMSCarSv/Inventory):
 /// xuất phụ tùng khỏi kho. Draft → Posted (ghi sổ, TRỪ tồn PartStock, guard tồn không đủ).</summary>
 public sealed class PartStockOut

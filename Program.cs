@@ -19244,6 +19244,122 @@ app.MapGet("/api/serviceparts/multi-invsearch", async (AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1511 `Ser_Mst_Part_PartExtra_Get` (LIVE, `BizCarSv.Service.cs:4026`, WS `HTCWSCarSv/WSCarSv.asmx.cs:36303`) =====
+// Nguồn: `Ser_MST_Part t` INNER JOIN `Ser_Mst_PartGroup pg` INNER JOIN `Ser_MST_PartExtra smstpe` (on PartCode,
+//   `smstpe.FlagActive='1'`) — chỉ phụ tùng CÓ trong danh mục phụ tùng phát sinh. Lọc: `t.DealerCode` (list) ·
+//   `t.PartCode like` · (`t.VieName like` OR `t.EngName like` cùng `strPartNameList`) · `t.IsActive` (list).
+//   ⚠️ `strPartCodeList` dùng như PATTERN LIKE (không phải list) — nguồn `BuildClauseConditionSingle(..., "like", ...)`.
+//   ⚠️ `strPartNameList` áp cho CẢ `EngName` LẪN `VieName` (OR) — cùng một tham số hai cột.
+// Kết quả (K10) = cột `Ser_MST_Part` + ECHO: `TotalLimit` (smstpe) · `PartGroupName` (pg) · `PartTypeName` (pt) ·
+//   `Factor` (isnull(mcpf.Factor, mct.CusFactor) với `CusTypeID = NULL`) · `InStockQuantity`/`InShipmentQuantity`/
+//   `CouldUseQuantity`/`InventoryQuantity`/`BalanceLocationId` (từ `Ser_Inv_StockBalance`) · `PriceEffectTmp`/
+//   `PartPriceID` (giá hiệu lực mới nhất) · `PriceEffect = ISNULL(PriceEffectTmp, Price)` · `TSTPartCode`/`TSTPrice`/
+//   `TSTPriceBefore` (TST_Mst_Part).
+// ⚠️ Nguồn KHÔNG `ORDER BY` ở câu kết quả (chỉ trong `Row_Number`) ⇒ Mini sắp tường minh theo `PartCode`.
+// GREP TRƯỚC: Mini có `/api/partextramsts` (danh mục `Ser_MST_PartExtra`) nhưng KHÔNG có route nào port hàm này ⇒ GAP thật.
+app.MapGet("/api/serviceparts/part-extra", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? partCodeList, string? partNameList, string? isActiveList,
+    int? recordStart, int? recordCount) =>
+{
+    // Tập cơ sở: phụ tùng CÓ trong danh mục phụ tùng phát sinh đang hoạt động (INNER JOIN smstpe.FlagActive='1').
+    var extraCodes = await db.PartExtraMsts.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1")
+        .Select(x => x.PartCode).Distinct().ToListAsync();
+    var qy = db.ServiceParts.Where(x => x.OrgId == t.OrgId && extraCodes.Contains(x.PartCode));
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var dl = dealerCodeList.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        qy = qy.Where(x => x.DealerCode != null && dl.Contains(x.DealerCode));
+    }
+    // `t.PartCode like @strPartCodeList` — nguồn dùng PATTERN LIKE, không phải list.
+    if (!string.IsNullOrWhiteSpace(partCodeList))
+    {
+        var pat = partCodeList.Trim().Replace("%", "");
+        qy = qy.Where(x => x.PartCode.Contains(pat));
+    }
+    // `strPartNameList` áp cho CẢ EngName LẪN VieName (OR).
+    if (!string.IsNullOrWhiteSpace(partNameList))
+    {
+        var pat = partNameList.Trim().Replace("%", "");
+        qy = qy.Where(x => (x.EngName != null && x.EngName.Contains(pat)) || (x.PartName != null && x.PartName.Contains(pat)));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var norm = isActiveList.ToUpper().Replace("TRUE", "1").Replace("FALSE", "0");
+        var al = norm.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        qy = qy.Where(x => al.Contains(x.FlagActive));
+    }
+    var myCount = await qy.CountAsync();
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = recordCount is > 0 ? recordCount!.Value : myCount;
+    var parts = await qy.OrderBy(x => x.PartCode).Skip(start).Take(count).ToListAsync();
+
+    var partCodes = parts.Select(x => x.PartCode).Distinct().ToList();
+    var partIds = parts.Select(x => x.PartID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var groupCodes = parts.Select(x => x.PartGroupCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var typeIds = parts.Select(x => x.PartTypeID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var groups = await db.PartGroups.Where(x => x.OrgId == t.OrgId && groupCodes.Contains(x.GroupCode)).ToListAsync();
+    var types = await db.SerPartTypes.Where(x => x.OrgId == t.OrgId && typeIds.Contains(x.TypeCode)).ToListAsync();
+    var extras = await db.PartExtraMsts.Where(x => x.OrgId == t.OrgId && partCodes.Contains(x.PartCode)).ToListAsync();
+    // Giá hiệu lực mới nhất (RANK() OVER PARTITION BY PartId ORDER BY DateEffect DESC, rn=1, IsActive='1', DateEffect <= now).
+    var now = DateTime.Now;
+    var prices = await db.PartPrices.Where(x => x.OrgId == t.OrgId && partCodes.Contains(x.PartCode)
+            && x.IsActive == "1" && x.EffectiveDate <= now).ToListAsync();
+    var latestPrice = prices.GroupBy(x => x.PartCode)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveDate).First());
+    // Tồn kho theo vị trí (`Ser_Inv_StockBalance`): SUM(InStockQuantity)/SUM(InShipmentQuantity) theo PartID.
+    var balances = await db.SerInvStockBalances.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIds.Contains(x.PartID)).ToListAsync();
+    var balByPart = balances.GroupBy(x => x.PartID!)
+        .ToDictionary(g => g.Key, g => new
+        {
+            TotalInStock = g.Sum(x => x.InStockQuantity),
+            TotalInShipment = g.Sum(x => x.InShipmentQuantity),
+            LocationId = g.Max(x => x.LocationID),
+        });
+    // Hệ số giá: `isnull(mcpf.Factor, mct.CusFactor)` với `CusTypeID = NULL` (nguồn join cứng NULL).
+    var cpfNull = await db.CusPartFactors.Where(x => x.OrgId == t.OrgId && x.CusTypeID == null && x.PartID != null && partIds.Contains(x.PartID)).ToListAsync();
+    var cpfByPart = cpfNull.GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First().Factor);
+    var ctNull = await db.CustomerTypes.Where(x => x.OrgId == t.OrgId && x.CusTypeCode == null).ToListAsync();
+    var ctFactor = ctNull.Select(x => x.CusFactor).FirstOrDefault();
+    // TST_Mst_Part theo PartCode.
+    var tstParts = await db.TstParts.Where(x => x.OrgId == t.OrgId && partCodes.Contains(x.TSTPartCode)).ToListAsync();
+    var tstByCode = tstParts.GroupBy(x => x.TSTPartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var items = parts.Select(x =>
+    {
+        var grp = groups.FirstOrDefault(g => g.GroupCode == x.PartGroupCode);
+        var typ = types.FirstOrDefault(ty => ty.TypeCode == x.PartTypeID);
+        var ext = extras.FirstOrDefault(e => e.PartCode == x.PartCode);
+        var lp = latestPrice.TryGetValue(x.PartCode, out var p) ? p : null;
+        var bal = x.PartID != null && balByPart.TryGetValue(x.PartID, out var b) ? b : null;
+        var tst = tstByCode.TryGetValue(x.PartCode, out var tp) ? tp : null;
+        decimal? factor = (x.PartID != null && cpfByPart.TryGetValue(x.PartID, out var f)) ? f : ctFactor;
+        var inStock = bal?.TotalInStock ?? 0m;
+        var inShip = bal?.TotalInShipment ?? 0m;
+        return new
+        {
+            x.PartID, x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location,
+            x.Quantity, x.MinQuantity, x.PartGroupCode, x.PartTypeID, x.Model, x.Note, x.FlagActive,
+            x.DealerCode, x.VAT, x.FreqUsed, x.FlagInTST,
+            TotalLimit = ext?.TotalLimit,
+            PartGroupName = grp?.GroupName,
+            PartTypeName = typ?.TypeName,
+            Factor = factor,
+            PriceEffectTmp = lp?.Price,
+            PartPriceID = lp?.Id,
+            PriceEffect = lp?.Price ?? x.Price,
+            InStockQuantity = inStock,
+            InShipmentQuantity = inShip,
+            CouldUseQuantity = inStock - inShip,
+            InventoryQuantity = inStock,
+            BalanceLocationId = bal?.LocationId,
+            TSTPartCode = tst?.TSTPartCode,
+            TSTPrice = tst?.TSTPrice,
+            TSTPriceBefore = tst?.TSTPriceBefore,
+        };
+    }).ToList();
+    return Results.Ok(new { myCount, count = items.Count, items });
+}).RequireAuthorization();
+
 // Upsert theo mã phụ tùng.
 app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
@@ -64552,18 +64668,80 @@ app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITe
 }).RequireAuthorization();
 
 // ===== Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate) =====
+// 🔴 #1509 §12 — nguồn `Ser_Mst_PartPrice_Get` (`BizCarSv.Inventory.cs:1143`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:24959`)
+//   SELECT `part.PartCode, part.VieName, part.EngName, part.Price as OldPrice, part.VAT as OldVAT, part.FlagInTST, pp.*`
+//   (join `ser_mst_part part ON pp.Partid = part.partid`). Route cũ chỉ chiếu cột `pp.*` ⇒ THIẾU 5 cột ECHO từ bảng master
+//   (bài học #552: nguồn `alias.*` + join master ⇒ echo CẢ cột bảng gốc LẪN cột ECHO). Bổ sung: `VieName`/`EngName`/
+//   `OldPrice`/`OldVAT`/`FlagInTST` (tra `ServiceParts` theo `PartCode`). Field ECHO ⇒ KHÔNG cần DTO/POST (bài học #542).
 app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? part, string? onDate) =>
 {
     var q = db.PartPrices.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(part)) q = q.Where(p => p.PartCode.Contains(part.ToUpper()));
-    var items = await q.OrderBy(p => p.PartCode).ThenByDescending(p => p.EffectiveDate).Take(1000).Select(p => new
+    var rows = await q.OrderBy(p => p.PartCode).ThenByDescending(p => p.EffectiveDate).Take(1000).Select(p => new
     { p.Id, p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive,   // #295 §12
       p.UpdatedAt, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy }).ToListAsync();   // #1339 §12
+    // #1509: echo 5 cột từ `ser_mst_part` (join master) — nguồn trả kèm `pp.*`.
+    var codes1509 = rows.Select(x => x.PartCode).Distinct().ToList();
+    var parts1509 = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && codes1509.Contains(x.PartCode))
+        .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Price, x.VAT, x.FlagInTST }).ToListAsync();
+    var pmap1509 = parts1509.GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var items = rows.Select(p =>
+    {
+        pmap1509.TryGetValue(p.PartCode, out var mp);
+        return new
+        {
+            p.Id, p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive,
+            p.UpdatedAt, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy,
+            VieName = mp?.PartName, EngName = mp?.EngName, OldPrice = mp?.Price, OldVAT = mp?.VAT, FlagInTST = mp?.FlagInTST,
+        };
+    }).ToList();
     object? applicable = null;
     if (!string.IsNullOrWhiteSpace(part) && DateTime.TryParse(onDate, out var od))
         applicable = items.Where(x => x.PartCode == part.Trim().ToUpperInvariant() && x.EffectiveDate <= od)
             .OrderByDescending(x => x.EffectiveDate).FirstOrDefault();
     return Results.Ok(new { count = items.Count, applicable, items });
+}).RequireAuthorization();
+// ===== 🔴 #1510 `Ser_Mst_PartPrice_Get_ID_Date` (LIVE, `BizCarSv.Inventory.cs:1367`, WS `HTCWSCarSv/WSCarSv.asmx.cs:25015`) =====
+// Nguồn SELECT `pp.*` từ `Ser_Inv_PartPrice pp left join Ser_MST_Part part ON pp.partid = part.partid`,
+//   lọc theo `pp.PartID` (list) · `part.DealerCode` (list) · `pp.DateEffect` (list) · `pp.IsActive` (list).
+// ⚠️ Tham số `strPartCodePattern` CÓ trong chữ ký nhưng KHÔNG có clause nào dùng nó (bài học #540 — tham số CHẾT).
+// ⚠️ Nguồn KHÔNG `ORDER BY` ⇒ Mini sắp tường minh theo `PartCode` rồi `EffectiveDate` cho ổn định.
+// GREP TRƯỚC: Mini có `/api/partprices` (GET chung) nhưng KHÔNG có route nào port hàm này ⇒ GAP thật.
+app.MapGet("/api/partprices/by-id-date", async (AppDbContext db, ITenantContext t,
+    string? partIdList, string? dealerCodeList, string? isActiveList, string? dateEffect) =>
+{
+    var q = db.PartPrices.Where(p => p.OrgId == t.OrgId);
+    // `pp.PartID` — Mini lưu `PartCode` (khoá tự nhiên) nên tra `ServiceParts` để lấy PartID tương ứng.
+    if (!string.IsNullOrWhiteSpace(partIdList))
+    {
+        var ids = partIdList.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        var codes = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && ids.Contains(x.PartID))
+            .Select(x => x.PartCode).ToListAsync();
+        q = q.Where(p => codes.Contains(p.PartCode));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var dl = dealerCodeList.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        var codes = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.DealerCode != null && dl.Contains(x.DealerCode))
+            .Select(x => x.PartCode).ToListAsync();
+        q = q.Where(p => codes.Contains(p.PartCode));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var norm = isActiveList.ToUpper().Replace("TRUE", "1").Replace("FALSE", "0");
+        var al = norm.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        q = q.Where(p => p.IsActive != null && al.Contains(p.IsActive));
+    }
+    if (!string.IsNullOrWhiteSpace(dateEffect))
+    {
+        var de = dateEffect.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => DateTime.TryParse(s, out var d) ? d.Date : (DateTime?)null).Where(d => d != null).Select(d => d!.Value).ToList();
+        q = q.Where(p => de.Contains(p.EffectiveDate));
+    }
+    var items = await q.OrderBy(p => p.PartCode).ThenBy(p => p.EffectiveDate).Take(1000).Select(p => new
+    { p.Id, p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive,
+      p.UpdatedAt, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
