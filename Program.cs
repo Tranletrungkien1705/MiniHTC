@@ -77812,6 +77812,83 @@ app.MapGet("/api/report/total-stockin", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴 #1534 TỔNG HỢP CHI TIẾT XUẤT KHO PHỤ TÙNG (bản ĐẠI LÝ) `Ser_InvReportTotalStockOutDetailRpt` =====
+// (`BizCarSv.Inventory.Report.cs:1692-1800`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:13479` gọi THẲNG không hậu tố).
+// GREP TRƯỚC: Mini có `GET /api/report/stockout-detail-wh` (port `Ser_InvReportTotalStockOutDetailRpt_WH_New20230623` #668)
+//   nhưng **KHÔNG** có route nào port bản ĐẠI LÝ trần này (grep `Ser_InvReportTotalStockOutDetailRpt` = 0 hit ngoài `_WH`) ⇒ GAP thật.
+// 🔴 ĐÂY LÀ BẢN ANH EM NHƯNG KHÁC HẲN #668: bản trần đi từ `ser_inv_stockout so` (phiếu xuất) rồi nối xuống dòng,
+//   gộp theo `sod.PartID` (KHÔNG gộp theo Price/VAT) ⇒ MỘT mã phụ tùng ra MỘT dòng; bản `_WH_New20230623` (#668)
+//   đi từ dòng xuất + union nhánh thanh toán NCC. Hai báo cáo KHÔNG cộng ra nhau.
+// 🔴 `select so.* into #invstock` — `SELECT *` vào bảng tạm ⇒ đổi schema `Ser_Inv_StockOut` là đổi báo cáo.
+// 🔴 GUARD CHẾT (họ #407): `AND so.status = 3` đã loại mọi giá trị khác 3, nên `and so.Status not in ('4','5')`
+//   ngay dưới KHÔNG BAO GIỜ loại thêm dòng nào. Một vế so SỐ (`= 3`), một vế so CHUỖI (`not in ('4','5')`)
+//   trên CÙNG một cột ⇒ nếu `Status` là varchar, vế `= 3` ép kiểu cả cột sang số ⇒ mất index.
+// 🔴 `@FromDate`/`@ToDate`/`@DealerCode` nhúng THẲNG vào chuỗi SQL (StringUtils.Replace) — cùng bề mặt tiêm #413/#414.
+//   ⚪ `alParamsCoupleSql` rỗng nên không dính `[BAKE-PARAM-MIX]`.
+// 🔴 `so.StockOutTime <= '@ToDate'` trên cột datetime ⇒ mất trọn ngày cuối (lệ #415).
+// ⚪ **ÂM TÍNH — `ORDER BY p.PartCode` ở đây CÓ nghĩa** (luật #415): nằm trên câu SELECT cuối trả dữ liệu.
+// ⚪ **ÂM TÍNH — công thức thuế nhân TRƯỚC chia** (`(Q*P)+(Q*P*VAT*0.01)`) ⇒ không mất phần thập phân (họ #659).
+// ⚠️ `Ser_Inv_StockOutDetail.PartID` → Mini `ServiceStockOutLine.PartID`; `Ser_Mst_Part` → Mini `ServicePart`.
+//   Nguồn gộp theo `sod.PartID` nhưng đọc `p.PartCode/VieName/EngName/Unit` (join Ser_Mst_Part) ⇒ Mini gộp theo PartCode.
+// Entity `ServiceStockOut`/`ServiceStockOutLine`/`ServicePart` đã đủ cột ⇒ KHÔNG cần §12.
+app.MapGet("/api/report/total-stockout-detail", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+
+    var qo = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "Confirmed");
+    if (from is not null) qo = qo.Where(x => x.StockOutDate >= from);
+    if (to is not null) qo = qo.Where(x => x.StockOutDate <= to);   // #415 giữ 1:1 — KHÔNG cộng ngày
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qo = qo.Where(x => x.DealerCode == dealerCode!.Trim());
+    var outs = await qo.Select(x => new { x.Id, x.StockOutDate }).ToListAsync();
+    var outIds = outs.Select(x => x.Id).ToList();
+
+    var outLines = await db.ServiceStockOutLines
+        .Where(x => x.OrgId == t.OrgId && outIds.Contains(x.ServiceStockOutId))
+        .Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat })
+        .ToListAsync();
+
+    // Nguồn gộp theo sod.PartID rồi đọc p.PartCode/VieName/EngName/Unit (join Ser_Mst_Part).
+    // Mini gộp theo PartCode (khoá hiển thị) — cùng hình dạng MỘT mã MỘT dòng.
+    var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit }).ToListAsync();
+    var partMap = parts.GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.First());
+
+    var items = outLines.GroupBy(x => x.PartCode).Select(g =>
+    {
+        partMap.TryGetValue(g.Key, out var p);
+        return new
+        {
+            PartID = g.Key,
+            PartCode = g.Key,
+            VieName = p?.PartName,
+            EngName = p?.EngName,
+            Unit = p?.Unit,
+            Quantity = g.Sum(x => x.Quantity),
+            Amount = g.Sum(x => x.Quantity * x.Price + x.Quantity * x.Price * x.Vat * 0.01m),
+        };
+    }).OrderBy(x => x.PartCode).ToList();
+
+    var lastDayOutRows = to is null ? 0 : outs.Count(x => x.StockOutDate is not null && x.StockOutDate!.Value.Date == to);
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = items.Count, items,
+        // ===== #1534 =====
+        onlyLiveConfirmed1534 = "#1534: Ser_InvReportTotalStockOutDetailRpt — BizCarSv.Inventory.Report.cs:1692, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:13479 (goi thang khong hau to)",
+        siblingOf668ButDifferent = "BAN ANH EM NHUNG KHAC HAN #668: ban tran di tu ser_inv_stockout so (phieu xuat) roi noi xuong dong, gop theo sod.PartID (KHONG gop theo Price/VAT) => MOT ma phu tung ra MOT dong; ban _WH_New20230623 (#668) di tu dong xuat + union nhanh thanh toan NCC. Hai bao cao KHONG cong ra nhau",
+        selectStarInto = "select so.* into #invstock — SELECT * vao bang tam => doi schema Ser_Inv_StockOut la doi bao cao",
+        deadStatusGuard = "GUARD CHET (ho #407): AND so.status = 3 da loai moi gia tri khac 3, nen and so.Status not in (4,5) ngay duoi KHONG BAO GIO loai them dong nao. Mot ve so SO (= 3), mot ve so CHUOI (not in (4,5)) tren CUNG mot cot => neu Status la varchar, ve = 3 ep kieu ca cot sang so => mat index",
+        rawStringInterpolation = "@FromDate/@ToDate/@DealerCode nhung THANG vao chuoi SQL (StringUtils.Replace) — cung be mat tiem #413/#414; AM TINH: alParamsCoupleSql rong nen khong dinh [BAKE-PARAM-MIX]",
+        toDateLosesLastDay = "so.StockOutTime <= @ToDate tren cot datetime => mat tron ngay cuoi (le #415)",
+        stockOutRowsOnLastDay = lastDayOutRows,
+        orderByHasMeaning = "AM TINH: ORDER BY p.PartCode o day CO nghia (luat #415) — nam tren cau SELECT cuoi tra du lieu",
+        taxFormulaMultiplyBeforeDivide = "AM TINH: cong thuc thue nhan TRUOC chia ((Q*P)+(Q*P*VAT*0.01)) => khong mat phan thap phan (ho #659)",
+        twoTreesDiffer = "3B: ban V20.2023.Release cua Ser_InvReportTotalStockOutDetailRpt la HAM KHAC HAN (bao cao TotalStockOut voi DescriptionNote/StockOutType + union nhanh thanh toan NCC). Port theo cay CHUAN V20 (PartID/PartCode/VieName/EngName/Unit/Quantity/Amount gop theo PartID)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #666 CHI TIẾT NHẬP KHO PHỤ TÙNG `Ser_InvReportTotalStockInDetailRpt_WH` (`WH.cs:25716-25859`) =====
 // 3B: laptop `:25716` md5 `838cbedd` **KHỚP** máy 150 (lần md5 đầu tôi lệch vì HARDCODE số dòng cuối — xem bài học). WS `WSCarSv.asmx.cs` gọi thẳng (không hậu tố).
 // Theo luật #414, việc đầu tiên là **DIFF với anh em tổng hợp** `Ser_InvReportTotalStockInRpt_WH` (`:10623`)
