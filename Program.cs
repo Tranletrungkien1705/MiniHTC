@@ -77666,6 +77666,92 @@ app.MapGet("/api/partquotes/search", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #1532 BÁO CÁO NHẬP–XUẤT PHỤ TÙNG `Ser_InventoryReport_InOut` (`Inventory.Report.cs:1179-1350`) =====
+// 3B: laptop `:1179` md5 `004cfc1c` **KHỚP** máy 150. WS `HTCWSCarSv/WSCarSv.asmx.cs:13383` gọi THẲNG (không hậu tố) ⇒ LIVE.
+//
+// 🔴 NGUỒN LÀ MỘT `UNION` HAI NHÁNH KHÔNG ĐỐI XỨNG (nhánh XUẤT và nhánh NHẬP):
+//   · Nhánh XUẤT: `Ser_Inv_PartInstance pi` INNER JOIN (StockOutOrderStockOut → StockOut → StockOutOrder → Ser_RO)
+//     → `Ser_Mst_Part p` → `Ser_ROPartItems spi` (on ROID+PartID). Cột: Date=StockOutTime, OutQuantity=SUM(pi.Quantity),
+//     InQuantity='-', InPrice=ISNULL(spi.Price,0), Amount=SUM(pi.Quantity)*ISNULL(spi.Price,0), ROSupplierNo=RONo.
+//   · Nhánh NHẬP: `Ser_Inv_StockInDetail sid` INNER JOIN (Supplier → StockIn) → `Ser_Mst_Part p`. Cột:
+//     Date=StockInDate, InQuantity=SUM(ISNULL(sid.Quantity,0)), OutQuantity='-', InPrice=0, Amount=0, ROSupplierNo=SupplierCode.
+// 🔴 `@FromDate`/`@ToDate`/`@DealerCode` nhúng THẲNG vào chuỗi SQL (StringUtils.Replace) — cùng bề mặt tiêm #413/#414.
+// 🔴 `<= @ToDate` trên cột datetime ⇒ mất trọn ngày cuối (lệ #415).
+// 🔴 `InQuantity`/`OutQuantity` là CHUỖI '-' ở nhánh đối diện ⇒ cột trộn kiểu (số ở nhánh này, chuỗi ở nhánh kia).
+// 🔴 `Ser_Inv_StockOutOrder.ROID` → Mini `SerStockOutOrder.RONo` (xem #1529/#1530); `Ser_RO.RONo` cũng = `soo.RONo`.
+// ⚠️ `Ser_Inv_StockOut.StockOutTime` → Mini `PartStockOut.StockOutDateTime` (xem #308/#310).
+// Entity `PartInstance`/`SerStockOutOrderStockOut`/`PartStockOut`/`SerStockOutOrder`/`ServicePart`/`RoPartItem`/
+//   `ServiceStockIn`/`ServiceStockInLine`/`ServiceSupplier` đã đủ cột ⇒ KHÔNG cần §12.
+app.MapGet("/api/report/inventory-inout", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    // Nhánh XUẤT: PartInstance → StockOutOrderStockOut → StockOut → StockOutOrder → Part → RoPartItem
+    //   Nguồn: `Ser_ROPartItems spi ON so3.ROID = spi.ROID AND pi.PartID = spi.PartID`.
+    //   Mini: `SerStockOutOrder.RONo` = số RO → `RepairOrder.RONo` → `RoPartItem.RoId = RepairOrder.Id`.
+    var outRows = await (from pi in db.PartInstances
+                         join lk in db.SerStockOutOrderStockOuts on pi.StockOutId equals lk.StockOutId
+                         join so in db.PartStockOuts on lk.StockOutId equals so.Id
+                         join soo in db.SerStockOutOrders on lk.StockOutOrderId equals soo.Id
+                         join p in db.ServiceParts on pi.PartCode equals p.PartCode
+                         join ro in db.RepairOrders on soo.RONo equals ro.RONo into rog
+                         from ro in rog.DefaultIfEmpty()
+                         join spi in db.RoPartItems on new { RoId = ro != null ? ro.Id : 0L, PartCode = pi.PartCode }
+                              equals new { RoId = spi.RoId, PartCode = spi.PartCode } into spg
+                         from spi in spg.DefaultIfEmpty()
+                         where pi.OrgId == t.OrgId && so.OrgId == t.OrgId && soo.OrgId == t.OrgId
+                               && so.Status == "3"
+                               && so.StockOutDateTime >= fromDate && so.StockOutDateTime <= toDate
+                               && (dealerCode == null || so.DealerCode == dealerCode)
+                         group new { pi, spi, so, soo, p } by new { so.StockOutDateTime, p.PartName, p.PartCode, p.Unit, spi.UnitPrice, pi.PartID, soo.RONo } into g
+                         select new
+                         {
+                             Date = g.Key.StockOutDateTime,
+                             PartName = g.Key.PartName,
+                             PartCode = g.Key.PartCode,
+                             PartUnit = g.Key.Unit,
+                             InQuantity = "-",
+                             OutQuantity = g.Sum(x => x.pi.Quantity),
+                             InPrice = g.Key.UnitPrice,
+                             Amount = g.Sum(x => x.pi.Quantity) * g.Key.UnitPrice,
+                             ROSupplierNo = g.Key.RONo,
+                         }).ToListAsync();
+
+    // Nhánh NHẬP: StockInDetail → Supplier → StockIn → Part
+    var inRows = await (from sid in db.ServiceStockInLines
+                        join si in db.ServiceStockIns on sid.ServiceStockInId equals si.Id
+                        join p in db.ServiceParts on sid.PartCode equals p.PartCode
+                        join sup in db.ServiceSuppliers on si.SupplierCode equals sup.SupplierCode into supg
+                        from sup in supg.DefaultIfEmpty()
+                        where sid.OrgId == t.OrgId && si.OrgId == t.OrgId
+                              && si.Status == "3"
+                              && si.StockInDate >= fromDate && si.StockInDate <= toDate
+                              && (dealerCode == null || si.DealerCode == dealerCode)
+                        group new { sid, si, p, sup } by new { si.StockInDate, p.PartName, p.PartCode, p.Unit, sid.Price, sid.PartID, si.SupplierCode } into g
+                        select new
+                        {
+                            Date = g.Key.StockInDate,
+                            PartName = g.Key.PartName,
+                            PartCode = g.Key.PartCode,
+                            PartUnit = g.Key.Unit,
+                            InQuantity = g.Sum(x => x.sid.Quantity),
+                            OutQuantity = "-",
+                            InPrice = 0m,
+                            Amount = 0m,
+                            ROSupplierNo = g.Key.SupplierCode,
+                        }).ToListAsync();
+
+    var items = outRows.Cast<object>().Concat(inRows.Cast<object>()).ToList();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1532 = "#1532: Ser_InventoryReport_InOut — BizCarSv.Inventory.Report.cs:1179, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:13383",
+        unionTwoAsymmetricBranches = "Nguon la mot UNION hai nhanh KHONG DOI XUNG: nhanh XUAT (PartInstance->StockOutOrderStockOut->StockOut->StockOutOrder->Ser_RO->Part->RoPartItems) va nhanh NHAP (StockInDetail->Supplier->StockIn->Part)",
+        stringColumnsMixedTypes = "InQuantity/OutQuantity la CHUOI '-' o nhanh doi dien => cot tron kieu (so o nhanh nay, chuoi o nhanh kia)",
+        rawStringInterpolation = "@FromDate/@ToDate/@DealerCode nhung THANG vao chuoi SQL (StringUtils.Replace) — cung be mat tiem #413/#414",
+        toDateLosesLastDay = "<= @ToDate tren cot datetime => mat tron ngay cuoi (le #415)",
+        roidMappedToRono = "Ser_Inv_StockOutOrder.ROID -> Mini SerStockOutOrder.RONo (xem #1529/#1530); Ser_RO.RONo cung = soo.RONo",
+        stockOutTimeMapped = "Ser_Inv_StockOut.StockOutTime -> Mini PartStockOut.StockOutDateTime (xem #308/#310)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #666 CHI TIẾT NHẬP KHO PHỤ TÙNG `Ser_InvReportTotalStockInDetailRpt_WH` (`WH.cs:25716-25859`) =====
 // 3B: laptop `:25716` md5 `838cbedd` **KHỚP** máy 150 (lần md5 đầu tôi lệch vì HARDCODE số dòng cuối — xem bài học). WS `WSCarSv.asmx.cs` gọi thẳng (không hậu tố).
 // Theo luật #414, việc đầu tiên là **DIFF với anh em tổng hợp** `Ser_InvReportTotalStockInRpt_WH` (`:10623`)
