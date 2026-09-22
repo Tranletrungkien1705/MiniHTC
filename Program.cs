@@ -1947,7 +1947,33 @@ app.MapGet("/api/insurances/{insNo}/customers", async (string insNo, AppDbContex
         .Where(customer => customer.OrgId == tenant.OrgId && customer.ServiceInsuranceId == insuranceCompany.Id)
         .Select(customer => new { customer.CusId, customer.CusName, customer.Address, customer.Mobile, customer.Description })
         .ToListAsync();
-    return Results.Ok(new { insNo = insuranceCompany.InsNo, count = customers.Count, customers });
+    // #1514: nguồn `Ser_InsuranceGet` (BizCarSv.Service.cs:8956) khi `strIsGetDetail=Active` chạy khối Detail:
+    //   `select cgc.*, cus.CusName, cus.Address, cus.Tel, tg.INSVIENAME, tg.ADDRESS INSADDRESS, tg.TELEPHONE, tg.TAXCODE`
+    //   (inner join #Ser_Insurance tg ON cgc.InsNo=tg.InsNo AND cgc.DealerCode=tg.DealerCode;
+    //    left join ser_customer cus ON cgc.CusID=cus.CusID).
+    //   ⇒ cột ECHO `CusName`/`Address` (từ ser_customer, ĐÈ lên cột cùng tên của cgc) + `Tel` + 4 cột header
+    //     (`INSVIENAME`/`INSADDRESS`/`TELEPHONE`/`TAXCODE`). Port cũ bỏ sót toàn bộ (bài học #542/#552).
+    var cusIds = customers.Where(x => !string.IsNullOrWhiteSpace(x.CusId)).Select(x => x.CusId).Distinct().ToList();
+    var cusMap = (await database.ServiceCustomers.Where(x => x.OrgId == tenant.OrgId && cusIds.Contains(x.CusCode))
+            .Select(x => new { x.CusCode, x.CusName, x.Address, x.Tel }).ToListAsync())
+        .GroupBy(x => x.CusCode).ToDictionary(g => g.Key, g => g.First());
+    var customersEcho = customers.Select(x =>
+    {
+        cusMap.TryGetValue(x.CusId, out var cus);
+        return new
+        {
+            x.CusId,
+            CusName = cus?.CusName ?? x.CusName,   // ECHO đè lên cột cùng tên của cgc (nguồn: cus.CusName)
+            Address = cus?.Address ?? x.Address,   // ECHO đè lên cột cùng tên của cgc (nguồn: cus.Address)
+            Tel = cus?.Tel,                        // ECHO mới (nguồn: cus.Tel)
+            x.Mobile, x.Description,
+            INSVIENAME = insuranceCompany.InsVieName,
+            INSADDRESS = insuranceCompany.Address,
+            TELEPHONE = insuranceCompany.Telephone,
+            TAXCODE = insuranceCompany.Taxcode,
+        };
+    }).ToList();
+    return Results.Ok(new { insNo = insuranceCompany.InsNo, count = customersEcho.Count, customers = customersEcho });
 }).RequireAuthorization();
 
 // ===== Truy vấn hội viên Hyundai theo đại lý (port 1:1 FrmQuery_LoyaltyMember — TCMotor DMSCarSv/Services) =====
@@ -25835,7 +25861,17 @@ app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive, x.DealerCode,
         x.UpdatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1344 §12
-    return Results.Ok(new { count = items.Count, items });
+    // #1512: nguồn `Ser_InsuranceContractGet` (BizCarSv.Service.cs:14969) SELECT `icon.*, ins.InsVieName`
+    //   (LEFT JOIN ser_Insurance ins ON icon.InsNo = ins.InsNo AND icon.dealercode = ins.dealercode)
+    //   ⇒ cột ECHO `InsVieName` (tên hãng BH) LUÔN được trả ra. Port cũ bỏ sót (bài học #542/#552).
+    var insNos = items.Where(x => !string.IsNullOrWhiteSpace(x.InsNo)).Select(x => x.InsNo!).Distinct().ToList();
+    var insMap = (await db.SerInsurances.Where(x => x.OrgId == t.OrgId && insNos.Contains(x.InsNo))
+            .Select(x => new { x.InsNo, x.DealerCode, x.InsVieName }).ToListAsync())
+        .GroupBy(x => x.InsNo + "|" + (x.DealerCode ?? "")).ToDictionary(g => g.Key, g => g.First().InsVieName);
+    var itemsEcho = items.Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive, x.DealerCode,
+        x.UpdatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+        InsVieName = insMap.TryGetValue((x.InsNo ?? "") + "|" + (x.DealerCode ?? ""), out var v) ? v : null }).ToList();
+    return Results.Ok(new { count = itemsEcho.Count, items = itemsEcho });
 }).RequireAuthorization();
 
 app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
@@ -27468,7 +27504,18 @@ app.MapGet("/api/technicallibraries", async (AppDbContext db, ITenantContext t, 
         x.Id, x.TechnicalLibraryCode, x.DealerCode, x.PlateNo, x.Model, x.Engine, x.Gear, x.Version, x.ReRepairType,
         x.ReRepairRemark, x.ReRepairFeedback, x.ReRepairReason, x.ReRepairSolution, x.ExclusionTest, x.Type, x.IsActive, x.CreatedBy, x.CreatedAt
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    // #1513: nguồn `Ser_Technical_Library_GetWH` (BizCarSv.ZTemp.cs:25336) → thân thật `Ser_Technical_Library_GetX`
+    //   (:25044) SELECT `t.MyIdxSeq, srl.*, md.DealerName` (INNER JOIN Mst_Dealer md ON srl.DealerCode = md.DealerCode)
+    //   ⇒ cột ECHO `DealerName` LUÔN được trả ra. Port cũ bỏ sót (bài học #542/#552).
+    var dealerCodes = items.Where(x => !string.IsNullOrWhiteSpace(x.DealerCode)).Select(x => x.DealerCode!).Distinct().ToList();
+    var dealerMap = (await db.Dealers.Where(x => x.OrgId == t.OrgId && dealerCodes.Contains(x.DealerCode))
+            .Select(x => new { x.DealerCode, x.DealerName }).ToListAsync())
+        .GroupBy(x => x.DealerCode).ToDictionary(g => g.Key, g => g.First().DealerName);
+    var itemsEcho = items.Select(x => new {
+        x.Id, x.TechnicalLibraryCode, x.DealerCode, x.PlateNo, x.Model, x.Engine, x.Gear, x.Version, x.ReRepairType,
+        x.ReRepairRemark, x.ReRepairFeedback, x.ReRepairReason, x.ReRepairSolution, x.ExclusionTest, x.Type, x.IsActive, x.CreatedBy, x.CreatedAt,
+        DealerName = dealerMap.TryGetValue(x.DealerCode ?? "", out var dn) ? dn : null }).ToList();
+    return Results.Ok(new { count = itemsEcho.Count, items = itemsEcho });
 }).RequireAuthorization();
 
 app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
