@@ -29436,6 +29436,106 @@ app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? s
     });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #1542 — `Ser_StockAdj_Get` (bản ĐẠI LÝ, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:16829` goi THANG) =====
+// Nguon `BizCarSv.Inventory.Stock.cs:4427-4600` (md5 than ham KHOP giua V20 va V20.2023.Release).
+// GREP TRUOC: Mini co `GET /api/stockadjs` (port `Ser_StockAdj_Get_WH` #619) nhung **KHONG** co route nao port
+//   ban DAI LY `Ser_StockAdj_Get` (grep `Ser_StockAdj_Get\b` = 0 hit ngoai `_WH`) ⇒ GAP that. 🔴 BAN ANH EM cua
+//   #619: cung khuon phieu dieu chinh ton kho nhung chay tren `_dbDealer`; MiniHTC mot CSDL ⇒ giu HAI route
+//   rieng (bai hoc #560).
+// 🔴🔴 INNER JOIN SANG BANG NGUOI DUNG BANG *HAI* KHOA (#410 — mat dong luc DOC):
+//   `join sys_user u on tt.UserCreate = u.UserCode and tt.DealerCode = u.DealerCode` ⇒ phieu BIEN MAT neu nguoi
+//   tao bi xoa HOAC da chuyen dai ly. Port GIU phieu va dem so bi nuot (giong #619).
+// 🔴 `case tt.status when 0 then N'Moi tao' when 1 then N'Ket thuc' end` KHONG CO `else` ⇒ ngoai {0,1} ⇒ NULL.
+// 🔴🔴 KHOI CHI TIET NUOT DONG BANG `inner join ser_inv_stockbalance sb on td.partid = sb.partid and
+//   td.BalanceLocationId = sb.LocationId` ⇒ dong phu tung CHUA co ban ghi ton o kho can doi do bi LOAI.
+//   ⚪ Am tinh: `inner join Ser_MST_part` va `inner join #Ser_Inv_StockAdj` la DUNG Y.
+// 🔴 Khoi chi tiet chi sinh khi `strIsGetDetail == TConst.Flag.Active` (gia tri "1"); nguoc lai thay bang
+//   `-- Nothing.` ⇒ cho goi phai tu kiem `Tables.Count > 1`.
+// ⚠️ `[@strDBName_CommonCenter]` luon = `_strConfig_DBName_Main` (bai hoc #619) ⇒ Mini mot CSDL.
+// ⚠️ **Khong co `ORDER BY`** o ca hai cau; bang tam chi giu `StockAdjId` roi noi lai bang goc.
+// ⚠️ `Ser_Inv_StockAdj` → Mini `StockAdj`; `Ser_Inv_StockAdjDetail` → Mini `StockAdjLine`;
+//   `Ser_MST_part` → Mini `ServicePart`; `ser_inv_stockbalance` → Mini `SerInvStockBalance`; `sys_user` → Mini `SysUser`.
+//   Entity `StockAdj`/`StockAdjLine`/`ServicePart`/`SerInvStockBalance`/`SysUser` da du cot ⇒ KHONG can §12.
+app.MapGet("/api/stockadjs/dealer", async (AppDbContext db, ITenantContext t,
+    string? stockAdjIdList, string? dealerCodeList, string? stockAdjNoList, string? stockAdjDateList,
+    string? statusList, string? userCreateList, string? isGetDetail) =>
+{
+    var idList = (stockAdjIdList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var dealerCodes = (dealerCodeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var noList = (stockAdjNoList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var dateList = (stockAdjDateList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var statusListV = (statusList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+    var userList = (userCreateList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+
+    var q = db.StockAdjs.Where(x => x.OrgId == t.OrgId);
+    if (idList.Count > 0) q = q.Where(x => idList.Contains(x.Id.ToString()));
+    if (dealerCodes.Count > 0) q = q.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode));
+    if (noList.Count > 0) q = q.Where(x => noList.Contains(x.StockAdjNo));
+    if (dateList.Count > 0) q = q.Where(x => x.StockOutDate != null && dateList.Contains(x.StockOutDate.Value.ToString("yyyy-MM-dd")));
+    if (statusListV.Count > 0) q = q.Where(x => statusListV.Contains(x.AdjStatus));
+    if (userList.Count > 0) q = q.Where(x => x.CreatedBy != null && userList.Contains(x.CreatedBy));
+    var rows = await q.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+
+    // Nguon: join sys_user u on tt.UserCreate = u.UserCode AND tt.DealerCode = u.DealerCode (INNER ⇒ nuot phieu).
+    var users = await db.SysUsers.Where(u => u.OrgId == t.OrgId)
+        .Select(u => new { u.UserCode, u.UserName, u.DealerCode }).ToListAsync();
+
+    // Khoi chi tiet: chi sinh khi strIsGetDetail == "1" (TConst.Flag.Active).
+    var wantDetail = (isGetDetail ?? "").Trim() == "1";
+    List<object>? detail = null;
+    if (wantDetail)
+    {
+        var adjIds = rows.Select(x => x.Id).ToList();
+        var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && adjIds.Contains(l.StockAdjId)).ToListAsync();
+        // inner join Ser_MST_part p on td.partid = p.partId ⇒ chi giu dong co phu tung trong danh muc.
+        var partCodes = lines.Select(l => l.PartCode).Distinct().ToList();
+        var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && partCodes.Contains(p.PartCode))
+            .Select(p => new { p.PartCode, p.PartID, p.PartName, p.Unit }).ToListAsync();
+        var partByCode = parts.ToDictionary(p => p.PartCode, p => p);
+        // inner join ser_inv_stockbalance sb on td.partid = sb.partid and td.BalanceLocationId = sb.LocationId ⇒ nuot dong.
+        var balances = await db.SerInvStockBalances.Where(b => b.OrgId == t.OrgId).ToListAsync();
+        detail = lines
+            .Where(l => partByCode.ContainsKey(l.PartCode))
+            .Select(l =>
+            {
+                var part = partByCode[l.PartCode];
+                var bal = balances.FirstOrDefault(b => b.PartID == part.PartID && b.LocationID == l.BalanceLocation);
+                return new { l, part, bal };
+            })
+            .Where(x => x.bal is not null)   // inner join ser_inv_stockbalance ⇒ loai dong khong co ban ghi ton
+            .Select(x => (object)new
+            {
+                x.l.StockAdjId, x.l.PartCode, partName = x.part.PartName, unit = x.part.Unit,
+                x.l.QtyBalance, x.l.QtyAdjust, x.l.BalanceLocation, x.l.InStockLocation,
+                balanceQuantity = x.bal!.InStockQuantity,
+            })
+            .ToList();
+    }
+
+    var items = rows.Select(x => new
+    {
+        x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus,
+        x.CreatedBy, x.CreatedAt, x.ApprovedAt, x.LogLUDateTime, x.LogLUBy,
+        userName = users.FirstOrDefault(u => u.UserCode == x.CreatedBy && u.DealerCode == x.DealerCode)?.UserName,
+        // Nguon: case status when 0 / when 1 — KHONG co else ⇒ ngoai {0,1} la NULL.
+        statusText = x.AdjStatus == "0" ? "Mới tạo" : x.AdjStatus == "1" ? "Kết thúc" : null,
+    }).ToList();
+    var droppedByUserJoin = items.Count(x => x.userName is null);
+    return Results.Ok(new
+    {
+        count = items.Count, items, detail,
+        onlyLiveConfirmed1542 = "#1542: Ser_StockAdj_Get — BizCarSv.Inventory.Stock.cs:4427, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:16829 (WS goi THANG)",
+        siblingOf619 = "BAN ANH EM cua #619 (Ser_StockAdj_Get_WH): cung khuon phieu dieu chinh ton kho nhung chay tren _dbDealer; MiniHTC mot CSDL => giu HAI route rieng (bai hoc #560)",
+        droppedByInnerJoinSysUser = droppedByUserJoin,
+        sysUserJoinIsInnerOnTwoKeys = "nguon: join sys_user u on tt.UserCreate = u.UserCode AND tt.DealerCode = u.DealerCode => phieu BIEN MAT neu nguoi tao bi xoa HOAC da chuyen dai ly; port GIU phieu va dem so bi nuot",
+        statusTextHasNoElse = "case tt.status when 0 then Moi tao when 1 then Ket thuc end — khong co else => trang thai ngoai {0,1} tra NULL",
+        detailBlockDropsRowsByBalanceJoin = "khoi chi tiet: inner join ser_inv_stockbalance sb on td.partid = sb.partid and td.BalanceLocationId = sb.LocationId => dong phu tung CHUA co ban ghi ton o kho can doi do bi LOAI (am tinh: inner join Ser_MST_part va #Ser_Inv_StockAdj la dung y)",
+        detailOnlyWhenIsGetDetailActive = "khoi chi tiet chi sinh khi strIsGetDetail == TConst.Flag.Active (gia tri 1); nguoc lai thay bang -- Nothing. => cho goi phai tu kiem Tables.Count > 1",
+        noOrderByInSource = true,
+        twoTreesMatch = "3B: than ham Ser_StockAdj_Get md5 KHOP giua V20 va V20.2023.Release (ddb9a50a)",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockadjs", async (StockAdjDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
