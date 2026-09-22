@@ -1877,6 +1877,88 @@ app.MapGet("/api/insurances", async (AppDbContext database, ITenantContext tenan
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #1524 `SerInsuranceGet` (LIVE, `BizCarSv.Service.cs:8956`, WS `HTCWSCarSv/WSCarSv.asmx.cs:5477`) =====
+// Nguồn `SELECT * INTO #Ser_Insurance FROM Ser_Insurance sin` với **BỐN** bộ lọc dạng DANH SÁCH `|` (`BuildClause`):
+//   `sin.InsNo` · `sin.DealerCode` · `sin.InsVieName` · `sin.Address`.
+// Nếu `strIsGetDetail == Active` (TConst.Flag.Active = "1") thì trả THÊM bảng `Ser_InsuranceCustomer`:
+//   `select cgc.*, cus.CusName, cus.Address, cus.Tel, tg.INSVIENAME, tg.ADDRESS INSADDRESS, tg.TELEPHONE, tg.TAXCODE`
+//   `from Ser_InsuranceCustomer cgc inner join #Ser_Insurance tg ON cgc.InsNo=tg.InsNo and cgc.DealerCode=tg.DealerCode`
+//   `left join ser_customer cus ON cgc.CusID=cus.CusID` lọc theo `cus.CusID` (strCusIDConditionList).
+// ⚠️ KHÁC `GET /api/insurances` ở trên (port WinForm FrmInsuranceCreate/Modify, lọc `keyword` trên InsNo/InsVieName):
+//   hàm này lọc theo 4 DANH SÁCH `|` + trả bảng con tuỳ chọn. Đây là GAP thật (grep tên = 0 hit).
+// 📌 Mini: entity `ServiceInsurance` (bảng `ServiceInsurances`) là bản port của `Ser_Insurance`; bảng con
+//   `ServiceInsuranceCustomer` (FK `ServiceInsuranceId`) thay cho cặp khoá `(InsNo, DealerCode)` của nguồn.
+// 3B: hai cây nguồn (V20 vs V20.2023.Release) — thân hàm md5 KHỚP (4b274485).
+app.MapGet("/api/insurances/get", async (AppDbContext db, ITenantContext t,
+    string? insNoList, string? dealerCodeList, string? insVieNameList, string? addressList,
+    string? cusIdList, string? isGetDetail) =>
+{
+    var qry = db.ServiceInsurances.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "sin.<col>", <list>, "@p") — mọi bộ lọc đều là danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(insNoList))
+    {
+        var v = insNoList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.InsNo));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var v = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && v.Contains(x.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(insVieNameList))
+    {
+        var v = insVieNameList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.InsVieName));
+    }
+    if (!string.IsNullOrWhiteSpace(addressList))
+    {
+        var v = addressList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.Address));
+    }
+    var heads = await qry.OrderBy(x => x.InsNo).Select(x => new
+    {
+        x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Telephone, x.Fax, x.Website,
+        x.Taxcode, x.Description, x.Status, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+    }).ToListAsync();
+    // `strIsGetDetail == TConst.Flag.Active` ("1") ⇒ trả thêm bảng con.
+    var getDetail = string.Equals(isGetDetail, "1", StringComparison.OrdinalIgnoreCase);
+    List<object>? customers = null;
+    if (getDetail)
+    {
+        var headIds = heads.Select(h => h.Id).ToList();
+        var cq = db.ServiceInsuranceCustomers.Where(c => c.OrgId == t.OrgId && headIds.Contains(c.ServiceInsuranceId));
+        if (!string.IsNullOrWhiteSpace(cusIdList))
+        {
+            var v = cusIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+            cq = cq.Where(c => v.Contains(c.CusId));
+        }
+        var crows = await cq.ToListAsync();
+        // `left join ser_customer cus ON cgc.CusID=cus.CusID` — tra CusName/Address/Tel.
+        var cusIds = crows.Select(c => c.CusId).Distinct().ToList();
+        var cusMap = (await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && cusIds.Contains(c.CusCode))
+            .Select(c => new { c.CusCode, c.CusName, c.Address, c.Tel }).ToListAsync())
+            .GroupBy(c => c.CusCode).ToDictionary(g => g.Key, g => g.First());
+        var headMap = heads.ToDictionary(h => h.Id);
+        customers = crows.Select(c =>
+        {
+            cusMap.TryGetValue(c.CusId, out var cu);
+            headMap.TryGetValue(c.ServiceInsuranceId, out var hd);
+            return (object)new
+            {
+                c.Id, c.ServiceInsuranceId, c.CusId, c.CusName, c.Address, c.Mobile, c.Description,
+                // `cus.CusName, cus.Address, cus.Tel` (left join ser_customer)
+                CusNameFromCustomer = cu?.CusName, AddressFromCustomer = cu?.Address, TelFromCustomer = cu?.Tel,
+                // `tg.INSVIENAME, tg.ADDRESS INSADDRESS, tg.TELEPHONE, tg.TAXCODE` (join #Ser_Insurance)
+                INSVIENAME = hd?.InsVieName, INSADDRESS = hd?.Address, TELEPHONE = hd?.Telephone, TAXCODE = hd?.Taxcode,
+            };
+        }).ToList();
+    }
+    return Results.Ok(new { count = heads.Count, items = heads, customers,
+        onlyLiveConfirmed1524 = "#1524: SerInsuranceGet — BizCarSv.Service.cs:8956, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:5477",
+        detailGatedByFlag = "#1524: bang con Ser_InsuranceCustomer CHI tra khi strIsGetDetail == TConst.Flag.Active (\"1\")",
+        twoTreesMatch = "3B: than ham SerInsuranceGet md5 KHOP giua V20 va V20.2023.Release (4b274485)" });
+}).RequireAuthorization();
+
 app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext database, ITenantContext tenant, string? partnerUserCode) =>
 {
     // LUẬT 1-3 (ValidateInput): 3 trường bắt buộc, giữ nguyên văn thông báo form gốc.
@@ -16174,6 +16256,71 @@ app.MapGet("/api/serlocations/get", async (AppDbContext db, ITenantContext t,
         echoAllColumnsFromStar = "#1516: nguon SELECT t.* => moi cot Ser_Mst_Location phai co o GET (bai hoc #539)" });
 }).RequireAuthorization();
 
+// ===== 🔴 #1523 `SerLocationGet` (LIVE, `BizCarSv.Inventory.Master.cs:1065`, WS `HTCWSCarSv/WSCarSv.asmx.cs:13935`) =====
+// Nguồn `SELECT loc.* FROM Ser_Mst_Location loc` với **TÁM** bộ lọc dạng DANH SÁCH `|` (`BuildClause`):
+//   `loc.LocationID` · `loc.LocationCode` · `loc.DealerCode` · `loc.LocationName` · `loc.LocationType` ·
+//   `loc.LocationSurface` · `loc.LocationHight` · `loc.IsActive`.
+// ⚠️ KHÁC `Ser_Mst_Location_Get` (route `/api/serlocations/get` ở trên, Master.cs:6630): hàm đó chỉ có 6 bộ lọc
+//   (LocationID/Code/DealerCode/Name LIKE/Type/IsActive) và `LocationName` là **LIKE**; hàm NÀY có thêm
+//   `LocationSurface` + `LocationHight` và `LocationName` là **khớp danh sách** (không LIKE). Đây là GAP thật.
+// 3B: hai cây nguồn (V20 vs V20.2023.Release) — thân hàm md5 KHỚP (1865e6c5).
+app.MapGet("/api/serlocations/getbyfilter", async (AppDbContext db, ITenantContext t,
+    string? locationIdList, string? locationCodeList, string? dealerCodeList, string? locationNameList,
+    string? locationTypeList, string? locationSurfaceList, string? locationHightList, string? isActiveList) =>
+{
+    var qry = db.SerMstLocations.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "loc.<col>", <list>, "@p") — mọi bộ lọc đều là danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(locationIdList))
+    {
+        var v = locationIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationID != null && v.Contains(x.LocationID));
+    }
+    if (!string.IsNullOrWhiteSpace(locationCodeList))
+    {
+        var v = locationCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationCode != null && v.Contains(x.LocationCode));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var v = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && v.Contains(x.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(locationNameList))
+    {
+        var v = locationNameList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationName != null && v.Contains(x.LocationName));
+    }
+    if (!string.IsNullOrWhiteSpace(locationTypeList))
+    {
+        var v = locationTypeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationType != null && v.Contains(x.LocationType));
+    }
+    if (!string.IsNullOrWhiteSpace(locationSurfaceList))
+    {
+        var v = locationSurfaceList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationSurface != null && v.Contains(x.LocationSurface));
+    }
+    if (!string.IsNullOrWhiteSpace(locationHightList))
+    {
+        var v = locationHightList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.LocationHight != null && v.Contains(x.LocationHight));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var v = isActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.IsActive));
+    }
+    var items = await qry.OrderBy(x => x.LocationCode)
+        .Select(x => new { x.Id, x.LocationID, x.LocationCode, x.LocationName, x.StockNo, x.DealerCode, x.IsActive,
+            x.LocationHight, x.LocationSurface, x.LocationType,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1523 = "#1523: SerLocationGet — BizCarSv.Inventory.Master.cs:1065, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:13935",
+        differsFromSerMstLocationGet = "#1523: KHAC Ser_Mst_Location_Get (Master.cs:6630, route /api/serlocations/get): ham nay co THEM LocationSurface + LocationHight va LocationName khop DANH SACH (khong LIKE)",
+        twoTreesMatch = "3B: than ham SerLocationGet md5 KHOP giua V20 va V20.2023.Release (1865e6c5)" });
+}).RequireAuthorization();
+
 app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var lc = (dto.LocationCode ?? "").Trim().ToUpperInvariant();
@@ -27780,6 +27927,38 @@ app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string
         x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt,
         x.SupplierID }).ToListAsync();   // #1345 §12 + #1466 §12: nguon SerSupplierGet (LIVE) SELECT * — thieu khoa ky thuat SupplierID (#707, dung lam join key noi khac)
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// ===== 🔴 #1522 `SerSupplierGetForCode` (LIVE, `BizCarSv.Inventory.Master.cs:934`, WS `HTCWSCarSv/WSCarSv.asmx.cs:13840`) =====
+// Nguồn SELECT **CHỈ 4 cột** `sup.SupplierID, sup.SupplierName, sup.SupplierCode, sup.Address`
+//   từ `Ser_MST_Supplier sup` với HAI bộ lọc dạng DANH SÁCH `|` (`BuildClause`):
+//   `sup.DealerCode` (strDealerCodeConditionList) · `sup.IsActive` (strIsActiveConditionList).
+// ⚠️ KHÁC `SerSupplierGet` (route `/api/sersuppliers` ở trên): hàm này KHÔNG `SELECT *`, KHÔNG lọc `q`/`all`,
+//   và lọc DealerCode/IsActive theo DANH SÁCH `|` (không phải một giá trị). Đây là GAP thật (grep tên = 0 hit).
+// 3B: hai cây nguồn (V20 vs V20.2023.Release) — thân hàm md5 KHỚP (a8fe4869).
+app.MapGet("/api/sersuppliers/getforcode", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? isActiveList) =>
+{
+    var qry = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "sup.DealerCode", strDealerCodeConditionList, "@p") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var dl = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && dl.Contains(x.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var act = isActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => act.Contains(x.FlagActive));
+    }
+    // Nguồn chỉ chiếu 4 cột — giữ đúng, KHÔNG echo thêm (khác SerSupplierGet SELECT *).
+    var items = await qry.OrderBy(x => x.SupplierCode)
+        .Select(x => new { x.SupplierID, x.SupplierName, x.SupplierCode, x.Address })
+        .ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1522 = "#1522: SerSupplierGetForCode — BizCarSv.Inventory.Master.cs:934, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:13840",
+        sourceSelectsFourColumnsOnly = "#1522: nguon CHI chieu SupplierID/SupplierName/SupplierCode/Address (KHONG phai SELECT *) — khac SerSupplierGet",
+        twoTreesMatch = "3B: than ham SerSupplierGetForCode md5 KHOP giua V20 va V20.2023.Release (a8fe4869)" });
 }).RequireAuthorization();
 
 app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
