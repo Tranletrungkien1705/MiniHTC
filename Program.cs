@@ -5886,7 +5886,49 @@ app.MapGet("/api/sysobjects", async (AppDbContext db, ITenantContext t, string? 
         sourceInnerJoinsTwoCatalogs = "nguon: inner join Sys_ObjectType + inner join Sys_Partner => doi tuong thieu loai hoac thieu doi tac BIEN MAT khoi man chon doi tuong, khong bao gi",
         sourceHardcodesWebHtcFiveTimes = "WEBHTC dong cung 5 lan, tat ca trong BizCarSv.System.cs, KHONG co hang trong TERP.Constants => doi phai sua 5 cho va build lai; ca 5 deu o ham DOC",
         sourceCatalogsDoNotFilterWebHtc = "Ser_SysGetPartner va Ser_SysGetObjectType KHONG loc WEBHTC => o chon doi tac VAN hien WEBHTC nhung chon xong thi danh sach doi tuong RONG",
-        miniCannotReplicateJoins = "NO: Mini chua mo hinh hoa Sys_ObjectType / Sys_Partner => dem so dong se bi nuot thay vi bia hai bang rong (#738)",
+        miniCannotReplicateJoins = "#1491 DA GO NO: Mini da mo hinh hoa Sys_ObjectType (/api/sysobjecttypes) + Sys_Partner (/api/syspartners) => hai inner join cua Ser_SysGetObject nay tai hien duoc; xem hai route ngay duoi",
+    });
+}).RequireAuthorization();
+// ===== #1491 `Ser_SysGetPartner` (`BizCarSv.System.cs:830`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:807` gọi bản trần) =====
+// Nguồn: `select t.PartnerCode, t.PartnerName from Sys_Partner t with (nolock) where (1=1) zzzzClauseWherePartnerCodeList`
+//   — một `BuildClauseConditionList("and", "t.PartnerCode", strPartnerCodeList, "|")` (bake, có `ProtectInjection`),
+//   **KHÔNG guard** (`Raise` = 0, `StartsWith("and")` = 0) ⇒ gửi trần = trả TRỌN danh mục đối tác.
+//   🔴 Nguồn **KHÔNG** lọc `'WEBHTC'` (khác `Ser_SysGetObject` — #765): ô chọn đối tác vẫn hiện `WEBHTC`.
+app.MapGet("/api/syspartners", async (AppDbContext db, ITenantContext t, string? partnerCodeList) =>
+{
+    var qy = db.SysPartners.Where(x => x.OrgId == t.OrgId);
+    // Nguồn `BuildClauseConditionList` nhận danh sách phân tách bằng `|` (bake) — port nhận cùng dạng.
+    if (!string.IsNullOrWhiteSpace(partnerCodeList))
+    {
+        var codes = partnerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (codes.Length > 0) qy = qy.Where(x => codes.Contains(x.PartnerCode));
+    }
+    var items = await qy.OrderBy(x => x.PartnerCode).Select(x => new { x.PartnerCode, x.PartnerName }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        noGuardEmptyParamReturnsWholeCatalog = "Ser_SysGetPartner: mot BuildClauseConditionList tren t.PartnerCode, KHONG guard => tham so rong tra TRON danh muc (voi danh muc thi do la hanh vi binh thuong, khac #763)",
+        doesNotFilterWebHtc = "Ser_SysGetPartner KHONG loc WEBHTC => o chon doi tac VAN hien WEBHTC nhung chon xong thi Ser_SysGetObject tra RONG (#765)",
+    });
+}).RequireAuthorization();
+// ===== #1491 `Ser_SysGetObjectType` (`BizCarSv.System.cs:960`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:873` gọi bản trần) =====
+// Nguồn: `select t.ObjectType, t.ObjectTypeName from Sys_ObjectType t with (nolock) where (1=1) zzzzClauseWhereObjectTypeList`
+//   — một `BuildClauseConditionList("and", "t.ObjectType", strObjectTypeList, "|")` (bake, có `ProtectInjection`),
+//   **KHÔNG guard** ⇒ gửi trần = trả TRỌN danh mục loại đối tượng. 🔴 Nguồn **KHÔNG** lọc `'WEBHTC'`.
+app.MapGet("/api/sysobjecttypes", async (AppDbContext db, ITenantContext t, string? objectTypeList) =>
+{
+    var qy = db.SysObjectTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(objectTypeList))
+    {
+        var types = objectTypeList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (types.Length > 0) qy = qy.Where(x => types.Contains(x.ObjectType));
+    }
+    var items = await qy.OrderBy(x => x.ObjectType).Select(x => new { x.ObjectType, x.ObjectTypeName }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        noGuardEmptyParamReturnsWholeCatalog = "Ser_SysGetObjectType: mot BuildClauseConditionList tren t.ObjectType, KHONG guard => tham so rong tra TRON danh muc",
+        doesNotFilterWebHtc = "Ser_SysGetObjectType KHONG loc WEBHTC (khac Ser_SysGetObject — #765)",
     });
 }).RequireAuthorization();
 
@@ -18401,8 +18443,10 @@ app.MapGet("/api/report/correct-repair-rate", async (AppDbContext db, ITenantCon
 //   không liên quan gì tới phần còn lại của hàm ⇒ dấu vân tay khối chép từ báo cáo khác (họ #744/#745/#754).
 // 📌 Mini: `POST /api/report/part-supply-ability/snapshot` — **xoá kỳ cũ trước khi chèn** (khác nguồn CÓ CHỦ Ý)
 //   và trả về số dòng đã xoá để thấy rõ nguồn sẽ nhân đôi ở đúng chỗ nào.
-app.MapPost("/api/report/part-supply-ability/snapshot", async (AppDbContext db, ITenantContext t, string? dealer, string? monthReport) =>
+app.MapPost("/api/report/part-supply-ability/snapshot", async (RptAbilitySupplySnapshotDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
+    var dealer = dto.DealerCode;
+    var monthReport = dto.MonthReport;
     if (string.IsNullOrWhiteSpace(dealer)) return Results.BadRequest(new { error = "Cần mã đại lý." });
     if (string.IsNullOrWhiteSpace(monthReport)) return Results.BadRequest(new { error = "Cần kỳ báo cáo (yyyy-MM)." });
     var dl = dealer!.Trim().ToUpperInvariant();
@@ -18411,14 +18455,33 @@ app.MapPost("/api/report/part-supply-ability/snapshot", async (AppDbContext db, 
     var dlr = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl);
     if (dlr is null) return Results.NotFound(new { dealer = dl });
     if (dl == "VN101") return Results.BadRequest(new { error = "Đại lý test bị loại ở nguồn.", hardcodedInSourceSql = true });
-    // 📌 NỢ: Mini CHƯA mô hình hoá bảng chụp `Rpt_AbilitySupplyParts` (phần đọc ở #311/#686 tính trực tiếp,
-    //   không lưu snapshot). Không bịa một bảng rỗng rồi báo "da xoa 0 dong" (nguyên tắc #738).
-    const string snapshotTableMissing = "NO: Mini chua co bang chup Rpt_AbilitySupplyParts => buoc xoa-truoc-chen chua tai hien duoc";
-    await Task.CompletedTask;
+    // #1492 §12 — bảng chụp `Rpt_AbilitySupplyParts` đã được mô hình hoá (entity + Seeder).
+    // Nguồn: MỘT câu `insert into Rpt_AbilitySupplyParts (17 cột) select … from #input_Rpt_AbilitySupplyParts`,
+    //   `grep -c "delete"` = 0 ⇒ chạy lại job cùng MonthReport là CỘNG DỒN. Mini port XOÁ-TRƯỚC-CHÈN
+    //   (khác nguồn CÓ CHỦ Ý) và trả số dòng đã xoá để thấy rõ nguồn sẽ nhân đôi ở đúng chỗ nào.
+    var oldRows = await db.RptAbilitySupplyParts
+        .Where(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.MonthReport == mr).ToListAsync();
+    var deleted = oldRows.Count;
+    if (deleted > 0) { db.RptAbilitySupplyParts.RemoveRange(oldRows); }
+    var now = DateTime.Now;
+    var who = (partnerUserCode ?? "system").Trim();
+    var incoming = dto.Rows ?? new List<RptAbilitySupplyRowDto>();
+    foreach (var r in incoming)
+    {
+        db.RptAbilitySupplyParts.Add(new RptAbilitySupplyPart
+        {
+            OrgId = t.OrgId, DealerCode = dl, MonthReport = mr,
+            ROID = r.ROID, RONo = r.RONo, PlateNo = r.PlateNo, PartID = r.PartID, PartCode = r.PartCode,
+            VieName = r.VieName, Unit = r.Unit,
+            RequestQuantity = r.RequestQuantity, ResponseQuantity = r.ResponseQuantity, NotResponseQuantity = r.NotResponseQuantity,
+            StockOutTime = r.StockOutTime, CreateDTime = r.CreateDTime ?? now, CreateBy = r.CreateBy ?? who,
+            LogLUDTime = now, LogLUBy = who,
+        });
+    }
+    await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        dealer = dl, monthReport = mr, snapshotTableMissing,
-        rowsNotComputedHere = "NO: phan TINH so lieu di qua Rpt_AbilitySupplyParts_GetX (#311/#686 moi port phan DOC); endpoint nay hien chi tai hien buoc XOA-TRUOC-CHEN ma nguon thieu",
+        dealer = dl, monthReport = mr, deleted, inserted = incoming.Count,
         sourceInsertsWithoutDelete = "nguon: 1 cau insert into Rpt_AbilitySupplyParts, grep delete = 0 => chay lai job cung MonthReport la CONG DON, khong co cot lan chay de phan biet",
         sourceRegionSaysAllDealerButFiltersOne = "region // Call All Dealer nhung SQL co and t.DealerCode = @strDealerCode, va WS cung truyen tu ngoai vao",
         sourceHardcodesTestDealer = "and t.DealerCode not in (VN101) -- Dai ly idocNet Test: ma dai ly test dong cung trong SQL san xuat",
@@ -63845,6 +63908,32 @@ app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceCon
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, status = c.Status });
 }).RequireAuthorization();
+// ===== #1493 `Ser_CustomerCareDOB_Create` (`BizCarSv.Customer.cs:14105`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:8765`) =====
+// Nguồn upsert theo `CusCareID`: tra `top 1 *` — không có thì INSERT (CusCareID + ContactDate + Note),
+//   có thì UPDATE hai cột `ContactDate`/`Note` (danh sách cột hiệu lực `alColumnEffective`).
+//   Sau đó gọi `Ser_CustomerCareStatusUpdate(_dbDealer, strCusCareID, strStatus, strConatctDate, strPartnerUserCode)`
+//   cập nhật trạng thái phiếu CSKH cha. `ContactDate` nguồn lưu dạng chuỗi `yyyy-MM-dd`.
+//   ⚠️ Nguồn KHÔNG guard: `strCusCareID` rỗng vẫn ghi (khoá rỗng). Port thêm guard tối thiểu + nêu rõ.
+app.MapPost("/api/customercaredobs", async (CustomerCareDobDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var careNo = (dto.CusCareID ?? "").Trim();
+    if (careNo.Length == 0)
+        return Results.BadRequest(new { error = "Cần CusCareID.", sourceHasNoGuard = "nguon Ser_CustomerCareDOB_Create khong kiem rong CusCareID" });
+    var row = await db.CustomerCareDobs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == careNo);
+    var isNew = row is null;
+    if (isNew) { row = new CustomerCareDob { OrgId = t.OrgId, CareNo = careNo }; db.CustomerCareDobs.Add(row); }
+    // Nguồn chỉ ghi ContactDate khi chuỗi không rỗng; Note luôn ghi.
+    if (dto.ContactDate is not null) row!.ContactDate = dto.ContactDate;
+    row!.Note = dto.Note;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.CareNo, row.ContactDate, row.Note, created = isNew,
+        upsertByCusCareId = "nguon tra top 1 * theo CusCareID: khong co thi INSERT, co thi UPDATE ContactDate/Note (alColumnEffective)",
+        contactDateStoredAsString = "nguon luu ContactDate dang chuoi yyyy-MM-dd (Convert.ToDateTime(...).ToString(\"yyyy-MM-dd\"))",
+        alsoUpdatesParentCareStatus = "sau upsert nguon goi Ser_CustomerCareStatusUpdate(_dbDealer, CusCareID, Status, ContactDate, PartnerUserCode) cap nhat trang thai phieu CSKH cha",
+    });
+}).RequireAuthorization();
 
 // ===== 🔴 #281 TỔNG ĐÀI TRA KHÁCH + XE THEO SỐ ĐIỆN THOẠI — `Ser_CustomerCar_Get_ByPhone_New20180622` =====
 // Nguồn: `ERP.ICIC/TERP.BizCarSv/BizCarSv.Customer.cs:930` (hệ **CHỈ CÓ TRÊN LAPTOP**).
@@ -82469,6 +82558,11 @@ record MapSgSuSaveDto(List<string>? GroupCodes, List<MapSgSuRowDto>? Rows, strin
 record MapSgSoSaveDto(string? GroupCode, List<string>? ObjectCodes);
 // Danh mục màn hình/chức năng. ObjectType: WS | WSFUNC | APP | MENU | SCR | BTN.
 record SysObjectSaveDto(string? ObjectCode, string? ObjectType, string? ObjectName, string? ObjectCodeParent, string? ObjectCodeExec, string? PhysicalAssembly, string? PhysicalClass, string? FlagExecModal, string? PartnerCode, string? FlagActive);
+// #1492 — đầu vào job chụp khả năng cung ứng phụ tùng (tương ứng #input_Rpt_AbilitySupplyParts của nguồn).
+record RptAbilitySupplySnapshotDto(string? DealerCode, string? MonthReport, List<RptAbilitySupplyRowDto>? Rows);
+record RptAbilitySupplyRowDto(string? ROID, string? RONo, string? PlateNo, string? PartID, string? PartCode, string? VieName, string? Unit, decimal? RequestQuantity, decimal? ResponseQuantity, decimal? NotResponseQuantity, DateTime? StockOutTime, DateTime? CreateDTime, string? CreateBy);
+// #1493 — đầu vào upsert chăm sóc khách sinh nhật (Ser_CustomerCareDOB_Create).
+record CustomerCareDobDto(string? CusCareID, DateTime? ContactDate, string? Note);
 // Hợp đồng ngoại / L/C / Proforma Invoice. ContractNo của dòng PI do lệnh ký hợp đồng gán, không nhận từ client.
 record CtContractOverseaCreateDto(string? ContractNo, List<string>? PiRefNos);
 record CtContractOverseaKeyDto(string? ContractNo);

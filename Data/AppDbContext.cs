@@ -49,6 +49,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstBank> MstBanks => Set<MstBank>();
     public DbSet<SysUser> SysUsers => Set<SysUser>();
     public DbSet<SysObject> SysObjects => Set<SysObject>();
+    public DbSet<SysPartner> SysPartners => Set<SysPartner>();
+    public DbSet<SysObjectType> SysObjectTypes => Set<SysObjectType>();
     public DbSet<DealerCustomerUpdLog> DealerCustomerUpdLogs => Set<DealerCustomerUpdLog>();
     public DbSet<DlsDealSurvey> DlsDealSurveys => Set<DlsDealSurvey>();
     public DbSet<DlrContractCar> DlrContractCars => Set<DlrContractCar>();
@@ -301,6 +303,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RptDealerNetPriceDetail> RptDealerNetPriceDetails => Set<RptDealerNetPriceDetail>();            // #982
     public DbSet<RptPartsOrderDetail> RptPartsOrderDetails => Set<RptPartsOrderDetail>();            // #983
     public DbSet<RptPartsOrderDetailPart> RptPartsOrderDetailParts => Set<RptPartsOrderDetailPart>();            // #983
+    public DbSet<RptAbilitySupplyPart> RptAbilitySupplyParts => Set<RptAbilitySupplyPart>();            // #1492
     public DbSet<SuggestPrice> SuggestPrices => Set<SuggestPrice>();            // #1480
     public DbSet<SuggestPriceDtl> SuggestPriceDtls => Set<SuggestPriceDtl>();            // #1480
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();
@@ -387,6 +390,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CustomerCare> CustomerCares => Set<CustomerCare>();
     public DbSet<CustomerCareSurvey> CustomerCareSurveys => Set<CustomerCareSurvey>();
     public DbSet<CustomerCareMaintance> CustomerCareMaintances => Set<CustomerCareMaintance>();   // #218
+    public DbSet<CustomerCareDob> CustomerCareDobs => Set<CustomerCareDob>();   // #1493
     public DbSet<CustomerCareBirthday> CustomerCareBirthdays => Set<CustomerCareBirthday>();
     public DbSet<CustomerCareMace> CustomerCareMaces => Set<CustomerCareMace>();
     public DbSet<InsuranceAttachmentType> InsuranceAttachmentTypes => Set<InsuranceAttachmentType>();

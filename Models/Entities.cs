@@ -6153,9 +6153,25 @@ public sealed class CustomerCareMaintance
     public DateTime? UpdatedAt { get; set; }
     public string? UpdatedBy { get; set; }
 }
+/// <summary>
+/// Chăm sóc khách hàng nhân dịp SINH NHẬT — bảng `Ser_CustomerCareDOB` (port 1:1
+/// `Ser_CustomerCareDOB_Create`, `BizCarSv.Customer.cs:14105`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:8765`).
+/// Nguồn upsert theo `CusCareID`: tra `top 1 *` — không có thì INSERT, có thì UPDATE hai cột
+/// `ContactDate`/`Note` (danh sách cột hiệu lực `alColumnEffective`). Sau đó gọi
+/// `Ser_CustomerCareStatusUpdate(_dbDealer, …)` cập nhật trạng thái phiếu CSKH cha.
+/// Bảng chỉ có ba cột nghiệp vụ: `CusCareID` (khoá), `ContactDate`, `Note`.
+/// </summary>
+public sealed class CustomerCareDob
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số phiếu CSKH (`CusCareID`) — khoá upsert.</summary>
+    public string CareNo { get; set; } = "";
+    public DateTime? ContactDate { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
 
-/// <summary>Chăm sóc khách hàng nhân dịp SINH NHẬT
-/// port 1:1 FrmCSCCustomerCareDOB / FrmCustomerCareBth, TCMotor DMSCarSv/Customer).
 /// ⚠️ Là BẢNG RIÊNG ở nguồn, KHÔNG phải một loại của <see cref="CustomerCare"/>:
 /// có khoá riêng (CareBthId) và **bộ trạng thái riêng "0/1/2"**, khác hẳn PEND/CINFB/CIFB/REJ.
 /// </summary>
@@ -7982,6 +7998,35 @@ public sealed class SysObject
     public string? FlagExecModal { get; set; }
     public string? PartnerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+}
+/// <summary>
+/// Danh mục ĐỐI TÁC hệ thống (`Sys_Partner`) — port 1:1 `Ser_SysGetPartner`
+/// (`BizCarSv.System.cs:830`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:807` gọi bản trần).
+/// Nguồn SELECT tường minh HAI cột: `t.PartnerCode, t.PartnerName`; một `BuildClauseConditionList`
+/// trên `t.PartnerCode` (bake, có `ProtectInjection`), **KHÔNG guard** ⇒ gửi trần = trả trọn danh mục.
+/// 🔴 Nguồn **KHÔNG** lọc `'WEBHTC'` (khác `Ser_SysGetObject` — xem #765): ô chọn đối tác vẫn hiện `WEBHTC`,
+/// nhưng chọn nó xong thì `Ser_SysGetObject` trả rỗng vì chính nó lọc bỏ.
+/// </summary>
+public sealed class SysPartner
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PartnerCode { get; set; } = "";
+    public string? PartnerName { get; set; }
+}
+/// <summary>
+/// Danh mục LOẠI ĐỐI TƯỢNG hệ thống (`Sys_ObjectType`) — port 1:1 `Ser_SysGetObjectType`
+/// (`BizCarSv.System.cs:960`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:873` gọi bản trần).
+/// Nguồn SELECT tường minh HAI cột: `t.ObjectType, t.ObjectTypeName`; một `BuildClauseConditionList`
+/// trên `t.ObjectType` (bake, có `ProtectInjection`), **KHÔNG guard** ⇒ gửi trần = trả trọn danh mục.
+/// 🔴 Nguồn **KHÔNG** lọc `'WEBHTC'` (khác `Ser_SysGetObject` — xem #765).
+/// </summary>
+public sealed class SysObjectType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ObjectType { get; set; } = "";
+    public string? ObjectTypeName { get; set; }
 }
 
 /// <summary>
@@ -16809,8 +16854,38 @@ public sealed class RptPartsOrderDetail
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+/// <summary>
+/// Bảng CHỤP số liệu KHẢ NĂNG CUNG ỨNG PHỤ TÙNG theo tháng (`Rpt_AbilitySupplyParts`) — port 1:1
+/// `Rpt_AbilitySupplyParts_Save_AutoDealer` (`BizCarSv.Inventory.Report.cs:8702`, vỏ → thân thật
+/// `…_Save_AutoDealerX` `:9174`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:38516`).
+/// Nguồn ghi **MỘT** câu `insert into Rpt_AbilitySupplyParts (17 cột) select … from #input_Rpt_AbilitySupplyParts`
+/// — `grep -c "delete"` = **0** ⇒ chạy lại job cho CÙNG một `MonthReport` là **CỘNG DỒN** (không có cột lần chạy
+/// để phân biệt). Mini port **xoá kỳ cũ trước khi chèn** (khác nguồn CÓ CHỦ Ý) và trả số dòng đã xoá.
+/// </summary>
+public sealed class RptAbilitySupplyPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    /// <summary>`MonthReport` — kỳ chụp (yyyy-MM).</summary>
+    public string MonthReport { get; set; } = "";
+    public string? ROID { get; set; }
+    public string? RONo { get; set; }
+    public string? PlateNo { get; set; }
+    public string? PartID { get; set; }
+    public string? PartCode { get; set; }
+    public string? VieName { get; set; }
+    public string? Unit { get; set; }
+    public decimal? RequestQuantity { get; set; }
+    public decimal? ResponseQuantity { get; set; }
+    public decimal? NotResponseQuantity { get; set; }
+    public DateTime? StockOutTime { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 
-/// <summary>Bảng "ĐÃ TỪNG GỬI" của cụm POD (`Rpt_PartsOrderDetail_Part`) — khoá (OrderPartNo, PartID), KHÔNG
 /// lưu giá (khác <see cref="TstMstPartDnp"/>) vì cụm này không theo dõi thay đổi giá, chỉ theo dõi "đã gửi chưa".</summary>
 public sealed class RptPartsOrderDetailPart
 {
