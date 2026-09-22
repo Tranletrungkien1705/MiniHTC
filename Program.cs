@@ -78013,6 +78013,72 @@ app.MapGet("/api/report/total-stockin", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
+// ===== #1538 TỔNG HỢP NHẬP KHO PHỤ TÙNG (bản KHO) `Ser_InvReportTotalStockInRpt_WH` =====
+// (`BizCarSv.WH.cs:9359-9481`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:30318` gọi THẲNG không hậu tố).
+// GREP TRƯỚC: Mini có `GET /api/report/total-stockin` (port `Ser_InvReportTotalStockInRpt` bản Main #1533)
+//   nhưng **KHÔNG** có route nào port bản KHO này (grep `Ser_InvReportTotalStockInRpt_WH` = 0 hit) ⇒ GAP thật.
+// 🔴 BẢN ANH EM của #1533: diff hai thân hàm (đã bỏ khoảng trắng) GIỐNG HỆT ngoài phần định tuyến CSDL
+//   (`_dbDealer` vs `_dbWH`) + tên hàm/mã lỗi. MiniHTC một CSDL ⇒ cùng kết quả; giữ HAI route riêng
+//   để phủ đủ hai WebMethod (bài học #560).
+// 🔴 NGUỒN ĐI TỪ `ser_inv_PartInstance spi` (từng TEM phụ tùng) rồi mới nối xuống dòng phiếu nhập — KHÁC
+//   báo cáo "chi tiết" `Ser_InvReportTotalStockInDetailRpt` (#666) đi từ `Ser_Inv_StockIn so` (phiếu)
+//   ⇒ hai báo cáo KHÔNG cộng ra nhau (đã ghi ở #666).
+// 🔴 `left join Ser_Inv_StockInDetail sidd` rồi đọc `sidd.VAT` trong công thức VATAMOUNT ⇒ tem không có
+//   dòng chi tiết khớp thì `sidd.VAT` NULL ⇒ isnull=0 ⇒ VATAMOUNT=0 (mất thuế, im lặng).
+// 🔴 `join Ser_Inv_StockIn si` là INNER ⇒ tem không có phiếu nhập tương ứng thì dòng BIẾN MẤT.
+// 🔴 `@FromDate`/`@ToDate`/`@DealerCode` nhúng THẲNG vào chuỗi SQL (StringUtils.Replace) — cùng bề mặt tiêm #413/#414.
+// 🔴 `<= @ToDate` trên cột datetime ⇒ mất trọn ngày cuối (lệ #415).
+// 🔴 `si.Status not in ('4','5')` VÀ `spi.Status not in ('4','5')` — danh sách ĐEN trên CẢ HAI bảng.
+// ⚠️ `Ser_Inv_StockInDetail.VAT` → Mini `ServiceStockInLine.Vat`; `Ser_Inv_StockIn.SupplierID` → Mini `ServiceStockIn.SupplierCode`.
+// Entity `PartInstance`/`ServiceStockInLine`/`ServiceStockIn`/`ServiceSupplier` đã đủ cột ⇒ KHÔNG cần §12.
+app.MapGet("/api/report/total-stockin-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate, string? supplierId) =>
+{
+    var qry = from spi in db.PartInstances
+              join sidd in db.ServiceStockInLines
+                   on new { spi.DealerCode, spi.PartID, StockInId = spi.StockInId }
+                   equals new { sidd.DealerCode, sidd.PartID, StockInId = (long?)sidd.ServiceStockInId } into sg
+              from sidd in sg.DefaultIfEmpty()
+              join si in db.ServiceStockIns
+                   on new { sidd.DealerCode, StockInId = sidd.ServiceStockInId }
+                   equals new { si.DealerCode, StockInId = si.Id }
+              join sup in db.ServiceSuppliers on si.SupplierCode equals sup.SupplierCode into supg
+              from sup in supg.DefaultIfEmpty()
+              where spi.OrgId == t.OrgId && si.OrgId == t.OrgId
+                    && spi.DealerCode == dealerCode
+                    && spi.DateIn >= fromDate && spi.DateIn <= toDate
+                    && si.Status != "4" && si.Status != "5"
+                    && spi.Status != "4" && spi.Status != "5"
+                    && (supplierId == null || sup.SupplierCode == supplierId)
+              group new { spi, sidd, si, sup } by new { spi.StockInId, spi.StockInNo, si.SupplierCode, sup.SupplierName, spi.DateIn } into g
+              select new
+              {
+                  StockInID = g.Key.StockInId,
+                  StockInNo = g.Key.StockInNo,
+                  SupplierID = g.Key.SupplierCode,
+                  SupplierName = g.Key.SupplierName,
+                  DateIn = g.Key.DateIn,
+                  Remark = "Nhập kho",
+                  AMOUNT = g.Sum(x => (x.spi.Quantity) * (x.spi.SIPrice ?? 0m)),
+                  VATAMOUNT = g.Sum(x => (x.spi.Quantity) * (x.spi.SIPrice ?? 0m) * 0.01m * (x.sidd != null ? x.sidd.Vat : 0m)),
+                  SUMAMOUNT = g.Sum(x => (x.spi.Quantity) * (x.spi.SIPrice ?? 0m)
+                                       + (x.spi.Quantity) * (x.spi.SIPrice ?? 0m) * 0.01m * (x.sidd != null ? x.sidd.Vat : 0m)),
+              };
+    var items = await qry.ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1538 = "#1538: Ser_InvReportTotalStockInRpt_WH — BizCarSv.WH.cs:9359, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:30318 (goi thang khong hau to)",
+        whTwinIdentical = true,
+        whTwinNote = "Ser_InvReportTotalStockInRpt_WH (WH.cs:9359) diff với bản Main (Inventory.Report.cs:4598) GIỐNG HỆT ngoài phần định tuyến CSDL (_dbDealer vs _dbWH) + tên hàm/mã lỗi.",
+        startsFromPartInstanceNotStockIn = "Nguon di tu ser_inv_PartInstance spi (tung TEM phu tung) roi moi noi xuong dong phieu nhap — KHAC bao cao chi tiet #666 di tu Ser_Inv_StockIn so (phieu) => hai bao cao KHONG cong ra nhau",
+        leftJoinDetailLosesVat = "left join Ser_Inv_StockInDetail sidd roi doc sidd.VAT trong cong thuc VATAMOUNT => tem khong co dong chi tiet khop thi sidd.VAT NULL => isnull=0 => VATAMOUNT=0 (mat thue, im lang)",
+        innerJoinStockInDropsRows = "join Ser_Inv_StockIn si la INNER => tem khong co phieu nhap tuong ung thi dong BIEN MAT",
+        rawStringInterpolation = "@FromDate/@ToDate/@DealerCode nhung THANG vao chuoi SQL (StringUtils.Replace) — cung be mat tiem #413/#414",
+        toDateLosesLastDay = "<= @ToDate tren cot datetime => mat tron ngay cuoi (le #415)",
+        blacklistStatusBothTables = "si.Status not in (4,5) VA spi.Status not in (4,5) — danh sach DEN tren CA HAI bang",
+        vatMapped = "Ser_Inv_StockInDetail.VAT -> Mini ServiceStockInLine.Vat; Ser_Inv_StockIn.SupplierID -> Mini ServiceStockIn.SupplierCode",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #1534 TỔNG HỢP CHI TIẾT XUẤT KHO PHỤ TÙNG (bản ĐẠI LÝ) `Ser_InvReportTotalStockOutDetailRpt` =====
 // (`BizCarSv.Inventory.Report.cs:1692-1800`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:13479` gọi THẲNG không hậu tố).
 // GREP TRƯỚC: Mini có `GET /api/report/stockout-detail-wh` (port `Ser_InvReportTotalStockOutDetailRpt_WH_New20230623` #668)
