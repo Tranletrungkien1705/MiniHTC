@@ -32827,6 +32827,42 @@ app.MapPost("/api/sessions/{id}/kill", async (long id, AppDbContext db, ITenantC
     return Results.Ok(new { killed = id });
 }).RequireAuthorization();
 
+// ===== 🔴 #1515 `SysSessionCheck` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:1448`) — KIỂM TRA PHIÊN CÒN HỢP LỆ =====
+// Nguồn: `TBiz.CConfig.s_cmManager.CheckSessionInfo(strSessionIdCheck)` (ném lỗi nếu KHÔNG tìm thấy phiên)
+//   rồi `CheckSessionExpired` (ném lỗi nếu `(Now - DateTimeLastAccess).TotalMilliseconds > _nTimeOutMilliseconds`).
+//   `_nTimeOutMilliseconds` = `_strConfig_SessionTimeoutMilliseconds` = **15000000 ms = 250 phút** (Web.config:72).
+//   ⚠️ Route anh em `GET /api/sessions` (port cũ) dùng mặc định 30 phút — KHÁC giá trị nguồn; ở đây giữ ĐÚNG 250.
+//   Nguồn trả DataSet RỖNG khi hợp lệ (chỉ ném lỗi khi sai) ⇒ Mini trả `{ valid = true }` khi hợp lệ.
+app.MapGet("/api/sessions/check", async (string sessionId, AppDbContext db, ITenantContext t, int? expireMinutes) =>
+{
+    var sid = (sessionId ?? "").Trim();
+    if (sid.Length == 0) return Results.BadRequest(new { error = "CommonSessionInvalidSysSessionPassword", sessionId = sid });
+    var s = await db.AppSessions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SessionId == sid);
+    if (s is null) return Results.NotFound(new { error = "CommonSessionNotFound", sessionId = sid });
+    var mins = expireMinutes.GetValueOrDefault(250);   // nguồn: 15000000 ms
+    var expired = (DateTime.Now - s.DateTimeLastAccess).TotalMilliseconds > mins * 60000.0;
+    if (expired)
+        return Results.Ok(new { valid = false, error = "CommonSessionExpired", sessionId = sid,
+            dateTimeLastAccess = s.DateTimeLastAccess, dateTimeNow = DateTime.Now,
+            totalMilliseconds = (DateTime.Now - s.DateTimeLastAccess).TotalMilliseconds });
+    return Results.Ok(new { valid = true, sessionId = sid, s.UserCode, s.DateTimeLastAccess });
+}).RequireAuthorization();
+
+// ===== 🔴 #1515 `SysSessionUpdate` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:1571`) — CẬP NHẬT THỜI ĐIỂM TRUY CẬP CUỐI =====
+// Nguồn: `TBiz.CConfig.s_cmManager.SetLastAccess(strSessionIdUpdate, Convert.ToDateTime(strDateTimeLastAccess))`.
+//   Nguồn KHÔNG kiểm phiên tồn tại trước khi set (SetLastAccess trả bool, bị bỏ qua) ⇒ Mini cũng KHÔNG chặn,
+//   chỉ ghi khi tìm thấy dòng; nếu không có thì trả `updated = false` (không ném lỗi) — giữ đúng tính "im lặng" của nguồn.
+app.MapPost("/api/sessions/update", async (AppSessionUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var sid = (dto.SessionIdUpdate ?? "").Trim();
+    if (sid.Length == 0) return Results.BadRequest(new { error = "CommonSessionInvalidSysSessionPassword", sessionId = sid });
+    var s = await db.AppSessions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SessionId == sid);
+    if (s is null) return Results.Ok(new { updated = false, sessionId = sid });
+    s.DateTimeLastAccess = dto.DateTimeLastAccess ?? DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated = true, sessionId = sid, s.DateTimeLastAccess });
+}).RequireAuthorization();
+
 // ===== Đề nghị cân bằng kho (StoCBReq — port 1:1 FrmMngCBReq, TCMotor/Sales/Purchase) =====
 app.MapGet("/api/stocbreqs", async (AppDbContext db, ITenantContext t, string? status, string? no) =>
 {
@@ -83849,6 +83885,7 @@ record DocHandoverCarDto(string? VIN, string? ModelProductionCode, string? SpecD
 record StoRearCBDto(string? Remark, List<StoRearCBCarDto>? Cars);
 record StoRearCBCarDto(string? VIN, string? SpecCode, string? EngineNo, string? ColorCode, string? StorageCodeFrom, string? StorageCodeTo, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? CBReqNo, string? TenLoaiThung, string? Remark);
 record AppSessionDto(string? UserCode, string? LanguageCode, string? PartnerCode, string? PartnerUserCode, string? OtherInfo);
+record AppSessionUpdateDto(string? SessionIdUpdate, DateTime? DateTimeLastAccess);   // #1515 SysSessionUpdate
 record StoCBReqDto(string? Remark, List<StoCBReqCarDto>? Cars);
 record StoCBReqCarDto(string? VIN, string? ModelCode, string? SpecCode, string? EngineNo);
 record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string? SpecCode, string? DealerCode, string? DealerCodeBuyer, DateTime? ReceiveDate, DateTime? StoreDateExpired, DateTime? DeliveryDate, DateTime? WarrantyDate, DateTime? HTCVDateExpired, DateTime? DealerDateExpired);
