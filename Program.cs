@@ -65108,6 +65108,150 @@ app.MapGet("/api/customercares/search", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1545 `Ser_CustomerCare_GetNew_All` (LIVE, `BizCarSv.Customer.cs:15771`, WS `HTCWSCarSv/WSCarSv.asmx.cs:8523`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC `GET /api/customercares/search` ở trên (port
+//   `Ser_CustomerCare_GetNew`, twin WinForm): hàm này lọc theo **TÁM danh sách `|`** và có NHÁNH 24h riêng.
+// Nguồn: `SELECT cus.*, car.PlateNo/FrameNo/EngineNo/TradeMarkCode, md.ModelName, tt.Status, tt.CusCareID,
+//   c24.Note24 c24Note, tt.ContactDate, ro.CheckInDate/FinishedDate/ROID, 'LS-'+ro.RoNo RONO, ro.ActualDeliveryDate,
+//   c24.ROID RoId24, c24.FyourCSSH24/WFBasicNeeds24/YourCarProblem24/YourRIWN24/YourSatisfyQSv24/YourHopeOfOur24
+//   INTO #tblCustomerCare FROM Ser_CustomerCare tt inner join Ser_Customer cus on tt.CusID=cus.CusID
+//   join ser_car car on tt.carID=car.carID and tt.CusID=car.CusID left join Ser_CustomerCare24h c24 on tt.CusCareID=c24.CusCareID
+//   left join ser_ro ro on c24.Roid=ro.roid left join Ser_MST_Model md on car.modelid=md.modelID`.
+// 🔴🔴 HAI `inner join` (Ser_Customer + ser_car nối HAI cột) ⇒ phiếu CSKH thiếu khách HOẶC xe đã sang tên chủ khác
+//   BIẾN MẤT khỏi kết quả (luật #410). Port GIỮ phiếu và đếm số bị nuốt.
+// 🔴 BẢY `BuildClause("and", "<col>", <list>, "@p")`: `tt.CusCareID` · `tt.DealerCode` · `tt.CusID` · `cus.CusName` ·
+//   `car.FrameNo` · `car.PlateNo` · `tt.Status`. ⚠️ `BuildClause` bỏ IM LẶNG điều kiện khi đầu vào rỗng (luật #410).
+// 🔴🔴 THAM SỐ CHẾT: `zzzzClauseWhereCareTypeConditionList` (`tc.CareType`) được DỰNG nhưng **KHÔNG xuất hiện** trong
+//   câu SQL nào ⇒ bộ lọc CareType KHÔNG BAO GIỜ được áp (họ #540). `strCareTypeConditionList` chỉ có tác dụng DUY NHẤT
+//   là bật nhánh 24h khi bằng đúng chuỗi `"in 24h"`.
+// 🔴 NHÁNH 24h (câu thứ hai): `select tc.* from #tblCustomerCare tc left join ser_ro ro on tc.RoId24=ro.Roid
+//   WHERE tc.Roid24 is not null and ro.roid is not null [and datediff(hour, ro.ActualDeliveryDate, getdate()) <= 24]
+//   and Ro.IsReRepair = '1'` — điều kiện trên bảng LEFT `ro` ⇒ LEFT hoá INNER (luật #414).
+// ⚠️ Ba thủ tục sinh phiếu tự động (`ProcCusToCareDoB`/`ProcCusToCareManitance`/`ProcCusToCareManitanceByKm`) đều BỊ COMMENT ⇒ port dòng ACTIVE.
+// 📌 Mini: `Ser_CustomerCare` → `CustomerCare`; `Ser_CustomerCare24h` → `CustomerCareSurvey` (CareNo=CusCareID);
+//   `Ser_Customer` → `ServiceCustomer`; `ser_car` → `ServiceCar` (TradeMarkCode→TradeMark, ModelID→ModelCode);
+//   `Ser_MST_Model` → `ServiceModel`; `ser_ro` → `RepairOrder`. Entity đủ cột ⇒ KHÔNG cần §12.
+// 3B: thân hàm md5 KHỚP giữa V20 và V20.2023.Release (`30ce6e5d`).
+app.MapGet("/api/customercares/get-new-all", async (AppDbContext db, ITenantContext t,
+    string? carCareIDConditionList, string? dealerCodeConditionList, string? cusIDConditionList,
+    string? cusNameConditionList, string? frameNoConditionList, string? plateNoConditionList,
+    string? statusConditionList, string? careTypeConditionList) =>
+{
+    var cares = await db.CustomerCares.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var cusIds = cares.Select(c => c.CusID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var carIds = cares.Select(c => c.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var careNos = cares.Select(c => c.CareNo).Distinct().ToList();
+    var roNos = cares.Select(c => c.RONo).Where(x => x != null).Select(x => x!).Distinct().ToList();
+
+    var cusMap = (await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId && cusIds.Contains(x.CusCode))
+        .ToListAsync()).GroupBy(x => x.CusCode).ToDictionary(g => g.Key, g => g.First());
+    var carMap = (await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID!))
+        .ToListAsync()).GroupBy(x => x.CarID!).ToDictionary(g => g.Key, g => g.First());
+    var surveyMap = (await db.CustomerCareSurveys.Where(x => x.OrgId == t.OrgId && careNos.Contains(x.CareNo))
+        .ToListAsync()).GroupBy(x => x.CareNo).ToDictionary(g => g.Key, g => g.First());
+    var roMap = (await db.RepairOrders.Where(x => x.OrgId == t.OrgId && roNos.Contains(x.RONo))
+        .ToListAsync()).GroupBy(x => x.RONo).ToDictionary(g => g.Key, g => g.First());
+    var modelCodes = carMap.Values.Select(c => c.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var modelMap = (await db.ServiceModels.Where(x => x.OrgId == t.OrgId && modelCodes.Contains(x.ModelCode))
+        .ToListAsync()).GroupBy(x => x.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    // INNER join Ser_Customer + ser_car (nối HAI cột) — đếm số phiếu bị nuốt (luật #410).
+    var beforeJoin = cares.Count;
+    var joined = cares.Where(c => c.CusID != null && cusMap.ContainsKey(c.CusID)
+        && c.CarID != null && carMap.ContainsKey(c.CarID)
+        && carMap[c.CarID].CusID == c.CusID).ToList();
+    var droppedByInnerJoin = beforeJoin - joined.Count;
+
+    // Bảy BuildClause — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(carCareIDConditionList))
+    {
+        var v = carCareIDConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        joined = joined.Where(c => v.Contains(c.CareNo)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeConditionList))
+    {
+        var v = dealerCodeConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        joined = joined.Where(c => c.DealerCode != null && v.Contains(c.DealerCode)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(cusIDConditionList))
+    {
+        var v = cusIDConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        joined = joined.Where(c => c.CusID != null && v.Contains(c.CusID)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(cusNameConditionList))
+    {
+        var v = cusNameConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        joined = joined.Where(c => cusMap.TryGetValue(c.CusID!, out var cu) && v.Contains(cu.CusName)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(frameNoConditionList))
+    {
+        var v = frameNoConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        joined = joined.Where(c => carMap.TryGetValue(c.CarID!, out var ca) && v.Contains(ca.FrameNo)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(plateNoConditionList))
+    {
+        var v = plateNoConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        joined = joined.Where(c => carMap.TryGetValue(c.CarID!, out var ca) && ca.PlateNo != null && v.Contains(ca.PlateNo)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(statusConditionList))
+    {
+        var v = statusConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        joined = joined.Where(c => v.Contains(c.Status)).ToList();
+    }
+
+    var items = joined.Select(c =>
+    {
+        cusMap.TryGetValue(c.CusID!, out var cu);
+        carMap.TryGetValue(c.CarID!, out var ca);
+        surveyMap.TryGetValue(c.CareNo, out var sv);
+        roMap.TryGetValue(c.RONo ?? "", out var ro);
+        ServiceModel? md = null;
+        if (ca?.ModelCode != null) modelMap.TryGetValue(ca.ModelCode, out md);
+        return new
+        {
+            // cus.* (Ser_Customer)
+            CusID = c.CusID, CusName = cu?.CusName, CusAddress = cu?.Address, CusTel = cu?.Tel, CusMobile = cu?.Mobile,
+            // car.* (ser_car)
+            PlateNo = ca?.PlateNo, FrameNo = ca?.FrameNo, EngineNo = ca?.EngineNo, TradeMarkCode = ca?.TradeMark,
+            ModelName = md?.ModelName,
+            // tt.* (Ser_CustomerCare)
+            Status = c.Status, CusCareID = c.CareNo, ContactDate = c.ContactDate,
+            // ro.* (ser_ro) — Mini `RepairOrder` không có cột `ROID` riêng; `RONo` là khoá tự nhiên.
+            CheckInDate = ro?.CheckInDate, FinishedDate = ro?.FinishedDate, ROID = ro?.RONo,
+            RONO = ro?.RONo == null ? null : "LS-" + ro.RONo, ActualDeliveryDate = ro?.ActualDeliveryDate,
+            // c24.* (Ser_CustomerCare24h)
+            c24Note = sv?.Note, RoId24 = sv?.RONo,
+            FyourCSSH24 = sv?.FyourCSSH, WFBasicNeeds24 = sv?.WFBasicNeeds, YourCarProblem24 = sv?.YourCarProblem,
+            YourRIWN24 = sv?.YourRIWN, YourSatisfyQSv24 = sv?.YourSatisfyQSv, YourHopeOfOur24 = sv?.YourHopeOfOur,
+        };
+    }).ToList();
+
+    // Nhánh 24h: `left join ser_ro ro on tc.RoId24=ro.Roid WHERE tc.Roid24 is not null and ro.roid is not null
+    //   [and datediff(hour, ro.ActualDeliveryDate, getdate()) <= 24] and Ro.IsReRepair = '1'`.
+    // `tc.RoId24` = `c24.ROID` (mã lệnh của phiếu khảo sát 24h) — Mini lưu ở `CustomerCareSurvey.RONo`,
+    //   tra `RepairOrder` theo `RONo` (Mini không có cột `ROID` riêng; `RONo` là khoá tự nhiên).
+    var in24h = string.Equals(careTypeConditionList, "in 24h", StringComparison.Ordinal);
+    var branch24h = joined.Select(c =>
+    {
+        surveyMap.TryGetValue(c.CareNo, out var sv);
+        return new { c, sv };
+    }).Where(x => x.sv?.RONo != null && roMap.ContainsKey(x.sv.RONo!)
+        && roMap[x.sv.RONo!].IsReRepair == "1"
+        && (!in24h || (roMap[x.sv.RONo!].ActualDeliveryDate != null
+            && (DateTime.Now - roMap[x.sv.RONo!].ActualDeliveryDate!.Value).TotalHours <= 24)))
+        .Select(x => new { x.c.CareNo, x.c.CusID, x.c.CarID, RoId24 = x.sv!.RONo }).ToList();
+
+    return Results.Ok(new { count = items.Count, items, branch24hCount = branch24h.Count, branch24h,
+        onlyLiveConfirmed1545 = "#1545: Ser_CustomerCare_GetNew_All — BizCarSv.Customer.cs:15771, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:8523",
+        sevenBuildClauseFilters = "tt.CusCareID | tt.DealerCode | tt.CusID | cus.CusName | car.FrameNo | car.PlateNo | tt.Status (BuildClause, danh sach '|')",
+        deadCareTypeFilter = "zzzzClauseWhereCareTypeConditionList (tc.CareType) duoc DUNG nhung KHONG xuat hien trong cau SQL nao => bo loc CareType KHONG BAO GIO duoc ap (ho #540); strCareTypeConditionList chi co tac dung bat nhanh 24h khi bang dung chuoi 'in 24h'",
+        droppedByInnerJoin,
+        innerJoinsDropRows = "nguon inner join Ser_Customer + join ser_car (noi HAI cot tt.carID=car.carID and tt.CusID=car.CusID) => phieu CSKH thieu khach HOAC xe da sang ten chu khac BIEN MAT (luat #410)",
+        branch24hLeftJoinBecomesInner = "nhanh 24h: left join ser_ro ro nhung WHERE co ro.roid is not null + Ro.IsReRepair='1' => LEFT hoa INNER (luat #414)",
+        autoGenerateProcsCommentedOut = true,
+        twoTreesMatch = "3B: than ham Ser_CustomerCare_GetNew_All md5 KHOP giua V20 va V20.2023.Release (30ce6e5d)" });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #856 PARITY: CSKH THƯỜNG — **CẢ BA HÀM GHI CRUD ĐỀU CHẾT**, LUỒNG GHI THẬT NẰM CHỖ KHÁC =====
 // Mini đã có `/api/customercares` (+ `/contact`, `/close`, `/survey`) ⇒ **vòng parity, KHÔNG tăng bộ đếm màn**.
 //   `Customer.cs:10525 Ser_CustomerCare_Create` md5 `91f7284c` (193 dòng)
