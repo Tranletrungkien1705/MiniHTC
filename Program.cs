@@ -65764,6 +65764,136 @@ app.MapGet("/api/stockoutorders/{id:long}/stockouts", async (long id, AppDbConte
         blocksEdit = items.Any(x => x.Status == "1" || x.Status == "2" || x.Status == "3") });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #1529 `SerStockOutOrderStockOutGet` (LIVE, `BizCarSv.Inventory.StockOut.cs:6497`) =====
+// WS: `HTCWSCarSv/WSCarSv.asmx.cs:15327`. Bảng nối `Ser_Inv_StockOutOrderStockOut` (lệnh xuất ↔ phiếu xuất).
+// 3B: hai cây nguồn LỆCH — V20.2023.Release THÊM một dòng `and soo.StockOutType='1'` trong WHERE.
+//   Port theo cây CHUẨN V20 (KHÔNG có dòng đó) và ghi cờ twoTreesDiffer.
+//
+// Nguồn: `Ser_Inv_StockOutOrderStockOut sooso` JOIN `Ser_Inv_StockOutOrder soo` on StockOutOrderID
+//   LEFT JOIN `Ser_Inv_StockOut so` on StockOutID; trả `sooso.*` với 7 bộ lọc BuildClause (list `|`):
+//   soo.DealerCode · sooso.StockOutOrderID (×2, hai tham số khác nhau cùng cột) · sooso.StockOutOrderNo
+//   · soo.ROID · sooso.StockOutID · sooso.StockOutNo.
+// 🔴 BẤT ĐỐI XỨNG NGUỒN: hai tham số `strStockOutOrderStockOutIDConditionList` và `strStockOutOrderIDConditionList`
+//   đều lọc CÙNG cột `sooso.StockOutOrderID` — dấu vết chép dòng. Giữ đúng (hai tham số, cùng cột).
+// 🔴 `LEFT JOIN Ser_Inv_StockOut so` KHÔNG có điều kiện WHERE nào trên `so` ⇒ LEFT còn sống (không dùng cột `so`).
+// 📌 §12: entity `SerStockOutOrderStockOut`/`SerStockOutOrder` đã đủ cột — không thêm field mới.
+app.MapGet("/api/stockoutorderstockouts", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? stockOutOrderStockOutIdList, string? stockOutOrderIdList,
+    string? stockOutOrderNoList, string? roIdList, string? stockOutIdList, string? stockOutNoList) =>
+{
+    var qry = from lk in db.SerStockOutOrderStockOuts
+              join soo in db.SerStockOutOrders on lk.StockOutOrderId equals soo.Id
+              where lk.OrgId == t.OrgId && soo.OrgId == t.OrgId
+              select new { lk, soo };
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var v = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.soo.DealerCode != null && v.Contains(x.soo.DealerCode));
+    }
+    // Hai tham số nguồn cùng lọc cột sooso.StockOutOrderID (bất đối xứng nguồn).
+    if (!string.IsNullOrWhiteSpace(stockOutOrderStockOutIdList))
+    {
+        var v = stockOutOrderStockOutIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.lk.StockOutOrderId.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutOrderIdList))
+    {
+        var v = stockOutOrderIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.lk.StockOutOrderId.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutOrderNoList))
+    {
+        var v = stockOutOrderNoList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.lk.StockOutOrderNo != null && v.Contains(x.lk.StockOutOrderNo));
+    }
+    if (!string.IsNullOrWhiteSpace(roIdList))
+    {
+        var v = roIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.soo.RONo != null && v.Contains(x.soo.RONo));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutIdList))
+    {
+        var v = stockOutIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.lk.StockOutId.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutNoList))
+    {
+        var v = stockOutNoList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.lk.StockOutNo != null && v.Contains(x.lk.StockOutNo));
+    }
+    var items = await qry.OrderBy(x => x.lk.Id).Select(x => new
+    {
+        x.lk.Id, x.lk.StockOutOrderId, x.lk.StockOutOrderNo, x.lk.StockOutId, x.lk.StockOutNo,
+        x.lk.LogLUDateTime, x.lk.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1529 = "#1529: SerStockOutOrderStockOutGet — BizCarSv.Inventory.StockOut.cs:6497, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:15327",
+        twoTreesDiffer = "3B: V20.2023.Release THEM mot dong and soo.StockOutType='1' trong WHERE; port theo cay CHUAN V20 (khong co dong do)",
+        twoParamsSameColumn = "strStockOutOrderStockOutIDConditionList va strStockOutOrderIDConditionList deu loc CUNG cot sooso.StockOutOrderID — dau vet chep dong, giu dung",
+        leftJoinStockOutIsAlive = "LEFT JOIN Ser_Inv_StockOut so KHONG co dieu kien WHERE nao tren so => LEFT con song (khong dung cot so)",
+    });
+}).RequireAuthorization();
+
+// ===== 🔴🔴🔴 #1530 `SerStockOutOrderStockOutGetWH` (LIVE, `BizCarSv.Inventory.StockOut.cs:6653`) =====
+// WS: `HTCWSCarSv/WSCarSv.asmx.cs:15414`. Thân SQL GIỐNG HỆT `SerStockOutOrderStockOutGet` (#1529) —
+//   chỉ khác chạy trên `_dbWH` thay vì `_dbDealer`. MiniHTC một CSDL ⇒ cùng kết quả; giữ hai route riêng
+//   để phủ đủ hai WebMethod (bài học #560: hai WebMethod riêng dù thân giống).
+// 3B: hai cây nguồn — thân hàm md5 KHỚP sau chuẩn hoá (bebcdd551c6a0822ab5ced58d0ad0d8c).
+app.MapGet("/api/stockoutorderstockouts/wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? stockOutOrderStockOutIdList, string? stockOutOrderIdList,
+    string? stockOutOrderNoList, string? roIdList, string? stockOutIdList, string? stockOutNoList) =>
+{
+    var qry = from lk in db.SerStockOutOrderStockOuts
+              join soo in db.SerStockOutOrders on lk.StockOutOrderId equals soo.Id
+              where lk.OrgId == t.OrgId && soo.OrgId == t.OrgId
+              select new { lk, soo };
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var v = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.soo.DealerCode != null && v.Contains(x.soo.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutOrderStockOutIdList))
+    {
+        var v = stockOutOrderStockOutIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.lk.StockOutOrderId.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutOrderIdList))
+    {
+        var v = stockOutOrderIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.lk.StockOutOrderId.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutOrderNoList))
+    {
+        var v = stockOutOrderNoList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.lk.StockOutOrderNo != null && v.Contains(x.lk.StockOutOrderNo));
+    }
+    if (!string.IsNullOrWhiteSpace(roIdList))
+    {
+        var v = roIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.soo.RONo != null && v.Contains(x.soo.RONo));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutIdList))
+    {
+        var v = stockOutIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.lk.StockOutId.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutNoList))
+    {
+        var v = stockOutNoList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.lk.StockOutNo != null && v.Contains(x.lk.StockOutNo));
+    }
+    var items = await qry.OrderBy(x => x.lk.Id).Select(x => new
+    {
+        x.lk.Id, x.lk.StockOutOrderId, x.lk.StockOutOrderNo, x.lk.StockOutId, x.lk.StockOutNo,
+        x.lk.LogLUDateTime, x.lk.LogLUBy,
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1530 = "#1530: SerStockOutOrderStockOutGetWH — BizCarSv.Inventory.StockOut.cs:6653, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:15414",
+        twoTreesMatch = "3B: than ham SerStockOutOrderStockOutGetWH md5 KHOP giua V20 va V20.2023.Release (bebcdd551c6a0822ab5ced58d0ad0d8c)",
+        identicalToNonWhTwin = "#560: than SQL GIONG HET SerStockOutOrderStockOutGet (#1529) — chi khac chay tren _dbWH; MiniHTC mot CSDL => cung ket qua, giu hai route rieng de phu du hai WebMethod",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #304 ĐỒNG BỘ PHIẾU XUẤT SANG VELOCA (`OSVeloca_Ser_Inv_StockOut_*`) — chưa từng port =====
 // Nguồn: `BizCarSv.Inventory.StockOut.cs`; WS có **7** WebMethod cho trục này (StockIn 3 + StockOut 4).
 // TRACE TWIN: WS `:17685` gọi `..._GetByStockOutID_New20240606` ⇒ bản `_GetByStockOutID` (`:18670`) CHẾT.
@@ -78788,6 +78918,87 @@ app.MapGet("/api/report/inout-balance-wh", async (AppDbContext db, ITenantContex
         closingTempTableUsedOnlyAsFilter = "#tbl_close duoc noi vao CHI de loc (or tc.SLC != 0); cot ton cuoi tra ra la TINH LAI SLD+SLN-SLX chu khong phai so dem that tu bang tem => neu hai so lech, bao cao CHE MAT",
         twoOutflowValueColumns = "TGC = TGD + TGN - TGSON (gia VON xuat) — dung ke toan; nhung TGX (gia BAN xuat) van duoc tra ra canh do => nguoi doc tu tinh TGD+TGN-TGX se ra so khac",
         differentScreenFromStockInoutReport = "/api/report/stock-inout port tu man WinForm FrmReportInOutStock (tong theo PHIEU); ban WS nay tinh tren bang TEM ser_inv_partInstance, co chieu VI TRI (LocationID) va bon khoi ky => MAN KHAC",
+    });
+}).RequireAuthorization();
+
+// ===== 🔴🔴🔴 #1528 BÁO CÁO DANH SÁCH BÁO GIÁ XUẤT KHO — `Ser_Inv_StockOutOrderStockOut_WH` =====
+// Nguồn: `BizCarSv.WH.cs:6326` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:30963`).
+// 3B: hai cây nguồn — thân hàm md5 KHỚP sau chuẩn hoá (f022998468c2b569c5c39c04c9ba310a).
+//
+// Nguồn: `Ser_Inv_StockOut siso` left join `Ser_Inv_StockOutDetail sisod` on StockOutID
+//   left join `Ser_MST_Part pa` on PartID; lọc `siso.StockOutTime >= @FromDate and <= @ToDate`
+//   và `siso.StockOutType = '2'` (phiếu xuất THƯỜNG) + `('@DealerCode' is null or siso.DealerCode = '@DealerCode')`.
+//   Cột: StockOutNo · StockOutTime · PartID · PartCode · VieName · Price(GiaBan) · Quantity · VAT(VATBan)
+//   · PartPrice(GiaChuan) · PartVAT(VATChuan) · TriGia · varianceCost · SPIndex='1' · LogLUBy.
+//   TriGia = Price*Qty + Price*Qty*VAT*0.01; varianceCost = TriGia − (Price*Qty + pa.Price*Qty*pa.Vat*0.01).
+//   Câu cuối: round(TriGia,0) TriGia01 · round(varianceCost,0) ChenhLech · SoLuong = case when Quantity='0' then NULL else Quantity end.
+//   order by StockOutNo, SPIndex.
+//
+// 🔴 `@FromDate`/`@ToDate`/`@DealerCode` nhúng thẳng vào chuỗi SQL (StringUtils.Replace) — cùng bề mặt tiêm #413/#414.
+// 🔴 `<= @ToDate` trên cột datetime ⇒ mất trọn ngày cuối nếu cột có phần giờ (lệ #415). Giữ đúng, trả cờ endDateExclusive.
+// 🔴 `left join Ser_MST_Part pa` rồi đọc `pa.Price`/`pa.Vat` trong varianceCost ⇒ phụ tùng không có trong danh mục
+//   cho pa.Price/pa.Vat = NULL ⇒ isnull(...) = 0 ⇒ varianceCost = TriGia (chênh lệch giả). Giữ đúng.
+// 🔴 `SoLuong` trả NULL khi Quantity = '0' (so sánh CHUỖI) — cột số nhưng so với chuỗi '0'.
+// 📌 §12: entity `PartStockOut`/`PartStockOutLine`/`ServicePart` đã đủ cột — không thêm field mới.
+app.MapGet("/api/report/stockout-order-stockout-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = fromDate ?? DateTime.Today.AddMonths(-1);
+    var to = toDate ?? DateTime.Today;
+
+    var q0 = db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.StockOutType == "2");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q0 = q0.Where(x => x.DealerCode == dealerCode!.Trim());
+    // Nguồn: siso.StockOutTime >= @FromDate and <= @ToDate (mốc ngày, mất ngày cuối nếu cột có giờ).
+    q0 = q0.Where(x => x.StockOutDateTime != null && x.StockOutDateTime >= from && x.StockOutDateTime <= to);
+    var heads = await q0.Select(x => new { x.Id, x.StockOutNo, x.StockOutDateTime, x.LogLUBy }).ToListAsync();
+    var headIds = heads.Select(h => h.Id).ToHashSet();
+
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && headIds.Contains(l.StockOutId))
+        .Select(l => new { l.StockOutId, l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat }).ToListAsync();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartCode, p.Price, p.VAT }).ToListAsync();
+    var partByCode = parts.GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var headById = heads.ToDictionary(h => h.Id);
+
+    var rows = new List<dynamic>();
+    foreach (var l in lines)
+    {
+        var h = headById[l.StockOutId];
+        var price = l.Price ?? 0m;
+        var qty = l.Quantity;
+        var vat = l.Vat ?? 0m;
+        var triGia = price * qty + price * qty * vat * 0.01m;
+        partByCode.TryGetValue(l.PartCode, out var pa);
+        var paPrice = pa?.Price ?? 0m;
+        var paVat = pa?.VAT ?? 0m;
+        var varianceCost = triGia - (price * qty + paPrice * qty * paVat * 0.01m);
+        rows.Add(new
+        {
+            stockOutNo = h.StockOutNo, stockOutTime = h.StockOutDateTime,
+            partCode = l.PartCode, partName = l.PartName,
+            giaBan = price, quantity = qty, vatBan = vat,
+            giaChuan = paPrice, vatChuan = paVat,
+            triGia, varianceCost,
+            triGia01 = Math.Round(triGia, 0), chenhLech = Math.Round(varianceCost, 0),
+            // Nguồn: SoLuong = case when Quantity='0' then NULL else Quantity end (so sánh CHUỖI).
+            soLuong = qty.ToString() == "0" ? (decimal?)null : qty,
+            spIndex = "1", logLUBy = h.LogLUBy,
+        });
+    }
+    var ordered = rows.OrderBy(r => (string)r.stockOutNo).ThenBy(r => (string)r.spIndex).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = ordered.Count, rows = ordered,
+        // ===== #1528 =====
+        onlyLiveConfirmed1528 = "#1528: Ser_Inv_StockOutOrderStockOut_WH — BizCarSv.WH.cs:6326, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:30963",
+        twoTreesMatch = "3B: than ham Ser_Inv_StockOutOrderStockOut_WH md5 KHOP giua V20 va V20.2023.Release (f022998468c2b569c5c39c04c9ba310a)",
+        parametersAreBakedNotParameterised = "@FromDate/@ToDate/@DealerCode duoc thay bang StringUtils.Replace vao chuoi SQL => be mat tiem SQL o tham so do client truyen (ho BAKE-PARAM-MIX)",
+        endDateExclusive = true,
+        endDateNote = "Moc <= toDate tren cot StockOutTime (datetime) => phieu xuat trong ngay cuoi sau 0 gio BI LOAI (le #415).",
+        leftJoinPartKilledByVarianceCost = "left join Ser_MST_Part pa roi doc pa.Price/pa.Vat trong varianceCost => phu tung khong co trong danh muc cho pa.Price/pa.Vat = NULL => isnull(...) = 0 => varianceCost = TriGia (chenh lech gia). Giu dung.",
+        soLuongComparesNumberToString = "SoLuong = case when Quantity='0' then NULL else Quantity end — cot so nhung so sanh voi CHUOI '0'.",
+        stockOutTypeFilter = "siso.StockOutType = '2' (phieu xuat THUONG) — chi loai nay moi vao bao cao.",
     });
 }).RequireAuthorization();
 
