@@ -34997,6 +34997,84 @@ app.MapGet("/api/serassignmentworks/{roNo}/engineers", async (string roNo, AppDb
     });
 }).RequireAuthorization();
 
+// ===== #1539 KỸ THUẬT VIÊN THEO HẠNG MỤC DỊCH VỤ (bản KHO) `SerROServiceItemsEngineerGet_WH` =====
+// (`BizCarSv.WH.cs:1298-1420`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:31758` gọi THẲNG không hậu tố).
+// GREP TRƯỚC: Mini có endpoint RO detail (chứa khối `itemEngineers` + ghi chú parity #624) nhưng
+//   **KHÔNG** có route nào port WebMethod này (grep `SerROServiceItemsEngineerGet_WH` = 0 hit ngoài ghi chú) ⇒ GAP thật.
+// 🔴 BẢN ANH EM của `SerROServiceItemsEngineerGet` (bản đại lý, `Service01.cs:12039`): diff hai cổng đúng MỘT dòng
+//   — bản đại lý `left join [CommonCenter].[dbo].Ser_GroupRepair`, bản `_WH` `left join Ser_GroupRepair` (cục bộ).
+//   MiniHTC một CSDL ⇒ cùng kết quả; giữ HAI route riêng để phủ đủ hai WebMethod (bài học #560).
+// 🔴🔴🔴 CẢ HAI `left join` ĐỀU CHẾT (luật #414, câu hỏi thứ ba — WHERE có điều kiện trên bảng LEFT):
+//   `BuildClause("and", "sgr.DealerCode", …)` và `BuildClause("and", "se.DealerCode", …)` nằm ngay trong `where`
+//   ⇒ hễ người dùng lọc theo đại lý (màn kho LUÔN lọc), hai `left join` hoá INNER: hạng mục có KTV đã bị xoá
+//   khỏi danh mục MẤT DÒNG; KTV chưa gán nhóm sửa chữa cũng MẤT DÒNG.
+// 🔴 HAI ĐIỀU KIỆN, MỘT GIÁ TRỊ: cùng `strDealerCodeConditionList` đưa vào HAI `BuildClause` khác bảng ⇒ đòi
+//   KTV VÀ nhóm sửa chữa PHẢI CÙNG thuộc đại lý đó. Một ô nhập, hai ràng buộc — người dùng không hề biết.
+// 🔴 `sgr` NỐI QUA `se`, KHÔNG NỐI THẲNG (`on se.GroupRID = sgr.GroupRID`) ⇒ hai `left join` MẮC XÍCH.
+// 🔴 `#region //Check` RỖNG · **không `ORDER BY`** · `SELECT ris.*`.
+// 📌 MiniHTC: `GroupRepair` **không có cột `DealerCode`** ⇒ **không mô phỏng được** ràng buộc thứ hai — ghi nợ,
+//   không bịa. Port **giữ mọi dòng phân công** và đếm số dòng nguồn sẽ nuốt.
+// Entity `RoServiceItem`/`RoServiceItemEngineer`/`ServiceEngineer`/`GroupRepair` đã đủ cột ⇒ KHÔNG cần §12.
+app.MapGet("/api/report/ro-service-items-engineer-wh", async (AppDbContext db, ITenantContext t,
+    string? roId, string? dealerCode) =>
+{
+    var roIds = (roId ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(s => long.TryParse(s, out var v) ? v : (long?)null).Where(v => v.HasValue).Select(v => v!.Value).ToList();
+
+    var rawItemEngineers = await db.RoServiceItemEngineers.Where(e => e.OrgId == t.OrgId).ToListAsync();
+    var items = await db.RoServiceItems.Where(i => i.OrgId == t.OrgId)
+        .Select(i => new { i.Id, i.RoId, i.SerCode }).ToListAsync();
+    var itemById = items.ToDictionary(i => i.Id);
+
+    // Nguồn: inner join Ser_ROServiceItems rs on rs.ItemID = ris.ItemID ⇒ ris không có hạng mục khớp thì MẤT.
+    var joined = rawItemEngineers
+        .Where(e => itemById.ContainsKey(e.RoServiceItemId))
+        .Where(e => roIds.Count == 0 || roIds.Contains(itemById[e.RoServiceItemId].RoId))
+        .ToList();
+
+    var engMst = await db.ServiceEngineers.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.EngineerNo, x.EngineerName, x.GroupRCode, x.DealerCode }).ToListAsync();
+    var groups = await db.GroupRepairs.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.GroupRCode, x.GroupRName }).ToListAsync();
+
+    var rows = joined.Select(e =>
+    {
+        var it = itemById[e.RoServiceItemId];
+        var se = engMst.FirstOrDefault(x => x.EngineerNo == e.EngineerNo);
+        var gr = se?.GroupRCode == null ? null : groups.FirstOrDefault(g => g.GroupRCode == se.GroupRCode);
+        return (object)new
+        {
+            itemId = e.RoServiceItemId, roId = it.RoId, serCode = e.SerCode,
+            engineerNo = e.EngineerNo,
+            engineerName = se?.EngineerName,
+            engineerDealerCode = se?.DealerCode,
+            groupRCode = se?.GroupRCode,
+            groupRName = gr?.GroupRName,
+            wouldBeDroppedBySource = se is null || gr is null,
+        };
+    }).ToList();
+
+    var droppedByDealerFilter = joined.Count(e =>
+    {
+        var se = engMst.FirstOrDefault(x => x.EngineerNo == e.EngineerNo);
+        return se is null || se.GroupRCode == null || !groups.Any(g => g.GroupRCode == se.GroupRCode);
+    });
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        onlyLiveConfirmed1539 = "#1539: SerROServiceItemsEngineerGet_WH — BizCarSv.WH.cs:1298, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:31758 (goi thang khong hau to)",
+        whTwinNote = "SerROServiceItemsEngineerGet_WH (WH.cs:1298) diff với bản đại lý (Service01.cs:12039) đúng MOT dong: ban dai ly left join [CommonCenter].[dbo].Ser_GroupRepair, ban _WH left join Ser_GroupRepair cuc bo.",
+        droppedByDealerFilterInSource = droppedByDealerFilter,
+        bothLeftJoinsKilledByWhere = "BuildClause(and, sgr.DealerCode, …) va BuildClause(and, se.DealerCode, …) nam ngay trong where => he loc theo dai ly (man kho LUON loc), hai left join hoa INNER: hang muc co KTV da bi xoa khoi danh muc MAT DONG, va KTV chua gan nhom sua chua cung MAT DONG (luat #414 cau hoi thu ba)",
+        oneInputTwoConstraints = "cung mot strDealerCodeConditionList duoc dua vao HAI BuildClause khac bang => doi KTV VA nhom sua chua PHAI CUNG thuoc dai ly do; KTV cua dai ly A nam trong nhom dang ky o don vi khac se ROI — nguoi dung khong he biet",
+        chainedLeftJoins = "sgr noi qua se (on se.GroupRID = sgr.GroupRID) chu khong noi thang => hai left join MAC XICH: se rong thi sgr chac chan rong",
+        checkRegionEmptyInBothVariants = true,
+        noOrderByInSource = true,
+        groupRepairHasNoDealerCodeInMini = "MiniHTC: GroupRepair khong co cot DealerCode => KHONG mo phong duoc rang buoc thu hai (sgr.DealerCode) — ghi NO, khong bia",
+    });
+}).RequireAuthorization();
+
 // Lưu TRỌN danh sách kỹ thuật viên phân công (nguồn xoá hết rồi ghi lại — ProcessDelete… trước ProcessSave…),
 // rồi TỰ SINH lại bảng kỹ thuật viên theo từng hạng mục dịch vụ.
 app.MapPost("/api/serassignmentworks/{roNo}/engineers", async (
