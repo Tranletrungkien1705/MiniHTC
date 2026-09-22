@@ -74759,6 +74759,18 @@ app.MapGet("/api/appointments/lookup", async (AppDbContext db, ITenantContext t,
 
     var app = await db.ServiceAppointments.FirstAsync(x => x.Id == picked.Id);
     var svc = await db.AppointmentServiceItems.Where(i => i.OrgId == t.OrgId && i.AppNo == app.AppNo).ToListAsync();
+    // #1500 VÁ NỢ: nguồn `Ser_App_GetX_New20190624` trả BA bảng — bảng thứ ba là `Ser_AppPartItems`
+    //   (`zzB_Select_Ser_AppPartItems_zzE`, `BizCarSv.Tab.cs:2937`). Bản port cũ trả `partItems` RỖNG
+    //   ("Mini chưa mô hình hoá Ser_AppPartItems ⇒ ghi NỢ") — nhưng entity `AppointmentPartItem` ĐÃ có
+    //   từ lâu (dùng ở `/api/appointments/{no}/items` #544). Nay echo đúng như route twin đó.
+    var partRows = await db.AppointmentPartItems.Where(i => i.OrgId == t.OrgId && i.AppNo == app.AppNo).ToListAsync();
+    var partCodes = partRows.Select(x => x.PartCode).Where(x => x != null).Select(x => x!).ToList();
+    var partMaster = await db.ServiceParts.Where(m => m.OrgId == t.OrgId && partCodes.Contains(m.PartCode))
+        .Select(m => new { m.PartCode, m.PartName, m.Unit }).ToListAsync();
+    // Công thức của MÀN HẸN: tồn + hàng đang về. "Hàng đang về" chưa có nguồn đúng (#423) ⇒ null.
+    var stock = await db.PartStocks.Where(s => s.OrgId == t.OrgId && partCodes.Contains(s.PartCode))
+        .GroupBy(s => s.PartCode).Select(g => new { PartCode = g.Key, OnHand = g.Sum(x => x.OnHand) })
+        .ToListAsync();
 
     return Results.Ok(new
     {
@@ -74776,7 +74788,27 @@ app.MapGet("/api/appointments/lookup", async (AppDbContext db, ITenantContext t,
             app.Status, app.CusRequest, app.Note, app.Creator,
         },
         serviceItems = svc.Select(i => new { i.SerCode, i.SerName, i.StdManHour, i.Note }),
-        partItems = Array.Empty<object>(),   // Mini chưa mô hình hoá `Ser_AppPartItems` ⇒ ghi NỢ
+        // #1500 nguồn `zzB_Select_Ser_AppPartItems_zzE`: `mp.PartCode/EngName/VieName/Unit` (join Ser_Mst_Part),
+        //   `rp.Quantity` trả HAI LẦN (`Quantity` + alias `Need`), `rp.Note`, và
+        //   `(isnull(sb.TotalInStock,0)+isnull(sb.TotalInShipment,0)) InventoryQuantity` (join view tồn kho).
+        partItems = partRows.Select(x =>
+        {
+            var m = partMaster.FirstOrDefault(v => v.PartCode == x.PartCode);
+            var st = stock.FirstOrDefault(v => v.PartCode == x.PartCode);
+            return new
+            {
+                x.PartCode,
+                x.PartName, x.EngName, x.Unit,               // bản chụp trên dòng
+                partNameFromMaster = m?.PartName,            // nguồn lấy cột này (mp.VieName)
+                unitFromMaster = m?.Unit,
+                x.Quantity,
+                Need = x.Quantity,                           // alias TRÙNG giá trị, đúng nguồn
+                x.Note,
+                inStock = st?.OnHand ?? 0m,
+                inShipment = (decimal?)null,                 // #423: chưa có nguồn đúng, KHÔNG bịa 0
+                InventoryQuantity = (decimal?)null,          // = inStock + inShipment ⇒ chưa tính được
+            };
+        }).ToList(),
         // ===== #737 =====
         scalarAssignFromMultiRowSetPicksAnArbitraryAppointment = "GAN BIEN VO HUONG TU MOT TAP NHIEU DONG => TRA VE MOT CUOC HEN BAT KY: declare @ROID_App int; select @ROID_App = ro0.AppId from Ser_App ro0 where exists ( … ) — KHONG TOP, KHONG ORDER BY. Trong SQL Server, SELECT @var = col FROM … khop NHIEU DONG thi bien giu gia tri cua DONG CUOI CUNG THEO THU TU THUC THI — KHONG XAC DINH. Roi CA BA cau SELECT ket qua deu loc and ro.AppId = @ROID_App => nguoi dung tra theo TEN KHACH hoac BIEN SO ma co NHIEU lich hen => man hien MOT CUOC HEN NGAU NHIEN, khong phai danh sach, KHONG CANH BAO. Day la #411/#415 o dang GAN BIEN VO HUONG — CHUA GAP trong so (cac ca truoc la top 1/Rows[0]). Da do bang matchedCount/sourceWouldPickArbitrarily",
         sixFiltersOnlyChooseAnIdTheyDoNotFilterOutput = "SAU BO LOC CHI DUNG DE CHON RA MOT AppId, KHONG LOC KET QUA: ca sau BuildClauseConditionList (ro.AppId, ro.DealerCode, car.PlateNo, ro.AppNo, ro.AppDateTime, ro.CusName) nam BEN TRONG EXISTS; ket qua cuoi chi loc bang @ROID_App => BO LOC KHONG CO MAT O CAU TRA VE",
@@ -74785,7 +74817,10 @@ app.MapGet("/api/appointments/lookup", async (AppDbContext db, ITenantContext t,
         displayNamePrefersContactName = "TEN HIEN THI UU TIEN NGUOI LIEN HE: isnull(cus.ContName, cus.CusName) CusName => cot tra ve ten CusName nhung gia tri co the la TEN NGUOI LIEN HE. Doi ten cot lam mat dau vet nguon goc du lieu",
         stockJoinsAViewInAnotherDatabase = "BANG PHU TUNG NOI SANG VIEW O CSDL KHAC: left join [@strDBName_CommonCenter].[dbo].vwSer_inv_stockbalancebypart sb => ton kho lay tu VIEW o CSDL trung tam; view doi dinh nghia la DOI SO TON ma khong ai thay",
         wrongVersionInMyQueue = "HANG DOI CUA TOI GHI SAI BAN: toi liet ke Ser_App_Create_New20190621/_Update_New20190621, nhung WS goi Ser_App_Create_New20201230/_Update_New20201230 => hai ban _New20190621 cua create/update la MA CHET. Chi ham _Get moi con ban _New20190621 la LIVE => trong mot HO ham co hau to ngay, MOI THAO TAC CO THE DUNG O MOT MOC NGAY KHAC NHAU — khong suy tu ham anh em",
-        miniModelGap = "Mini chua mo hinh hoa Ser_AppPartItems => partItems tra rong; ghi NO",
+        miniModelGap = "DA VÁ #1500: Mini da mo hinh hoa Ser_AppPartItems (entity AppointmentPartItem) => partItems nay echo that (truoc day tra rong, ghi NO)",
+        inventoryFormulaOfThisScreen = "isnull(TotalInStock,0) + isnull(TotalInShipment,0)",
+        inShipmentNotModelled = "#423 — chua co nguon dung, tra null thay vi 0",
+        quantityReturnedTwiceInSource = "Quantity va alias Need",
     });
 }).RequireAuthorization();
 
