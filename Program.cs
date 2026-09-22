@@ -19093,6 +19093,157 @@ app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1502 TRA CỨU PHỤ TÙNG CHO MÀN LỆNH SỬA CHỮA — `Ser_Mst_Part_Get_ForROW` =====
+// Nguồn: `BizCarSv.Service.cs:3857 Ser_Mst_Part_Get_ForROW` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:3818`
+//   gọi bản trần). Endpoint: `GET /api/serviceparts/for-row`.
+// ⚠️ GREP TRƯỚC: MiniHTC có `/api/serviceparts` (GET chung) và `/api/serviceparts/...` nhiều route khác,
+//   nhưng **KHÔNG** có route nào port hàm này (grep `Ser_Mst_Part_Get_ForROW` = 0 hit). Đây là GAP thật.
+//
+// 🔴 Nguồn SELECT `f.*` (cả bảng `Ser_MST_Part`) — bài học #539: route phải echo ĐỦ cột entity.
+//   Bốn bộ lọc: `PartID`/`DealerCode`/`PartCode`/`IsActive` (tất cả qua `BuildClause`/`BuildClauseConditionList`).
+//   ⚠️ `DealerCode` dùng `BuildClauseConditionList` (danh sách `|`) — KHÁC ba bộ lọc kia dùng `BuildClause`.
+//   ⚠️ `IsActive` được chuẩn hoá `TRUE`→`1`, `FALSE`→`0` TRƯỚC khi lọc (nguồn `strIsActiveList.ToUpper().Replace(...)`).
+// 🔴 PHÂN TRANG: nguồn dùng `Row_Number() over (ORDER BY t.PartCode ASC)` rồi lọc `MyRowIdx` trong
+//   `[start+1, start+count]` (C# 0-based, SQL 1-based) ⇒ port `Skip(start).Take(count)` + trả `myCount`.
+//   ⚠️ Nguồn trả HAI bảng: `Ser_Part_Summary` (MyCount) + `Ser_Mst_Part` (dữ liệu) — port trả `myCount` + `items`.
+// ⚠️ Nguồn KHÔNG có `ORDER BY` ở câu kết quả (chỉ có trong `Row_Number`) ⇒ port sắp tường minh theo `PartCode`.
+app.MapGet("/api/serviceparts/for-row", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partId, string? partCode, string? isActive,
+    int? recordStart, int? recordCount) =>
+{
+    var qy = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(partId)) qy = qy.Where(x => x.PartID == partId!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(partCode)) qy = qy.Where(x => x.PartCode == partCode!.Trim());
+    // Nguồn chuẩn hoá TRUE/FALSE -> 1/0 trước khi lọc.
+    if (!string.IsNullOrWhiteSpace(isActive))
+    {
+        var act = isActive!.Trim().ToUpperInvariant().Replace("TRUE", "1").Replace("FALSE", "0");
+        qy = qy.Where(x => x.FlagActive == act);
+    }
+    var myCount = await qy.CountAsync();
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = recordCount is > 0 ? recordCount!.Value : myCount;
+    var items = await qy.OrderBy(x => x.PartCode).Skip(start).Take(count)
+        .Select(x => new
+        {
+            x.Id, x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location,
+            x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive, x.CreatedAt,
+            x.PartID, x.PartTypeID, x.DealerCode, x.VAT, x.InventoryQuantity,
+            x.TotalPrice, x.BalanceLocationId, x.FreqUsed, x.PriceEffect,
+            x.TSTPrice, x.TSTPriceBefore, x.FlagInTST, x.CusDebt,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+        }).ToListAsync();
+    return Results.Ok(new
+    {
+        myCount, count = items.Count, items,
+        sourceSelectsWholeTable = "f.* (ca bang Ser_MST_Part) — bai hoc #539",
+        dealerCodeUsesListClause = "DealerCode dung BuildClauseConditionList (danh sach |), ba bo loc kia dung BuildClause",
+        isActiveNormalized = "TRUE->1, FALSE->0 truoc khi loc (nguon strIsActiveList.ToUpper().Replace)",
+        pagingByRowNumber = "Row_Number() over (ORDER BY t.PartCode ASC), loc MyRowIdx trong [start+1, start+count]",
+        sourceHasNoOrderBy = "cau ket qua nguon KHONG co order by (chi co trong Row_Number) — port sap tuong minh theo PartCode",
+    });
+}).RequireAuthorization();
+
+// ===== 🔴 #1503 TRA CỨU NHIỀU PHỤ TÙNG THEO TỒN KHO — `Ser_Mst_Part_Get_Multi_InvSearch` =====
+// Nguồn: `BizCarSv.Service.cs:6581 Ser_Mst_Part_Get_Multi_InvSearch` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:4012`
+//   gọi bản trần). Endpoint: `GET /api/serviceparts/multi-invsearch`.
+// ⚠️ GREP TRƯỚC: MiniHTC có `/api/serviceparts` (GET chung, có `inStockOnly` #1004) nhưng **KHÔNG** có route
+//   nào port hàm này (grep `Ser_Mst_Part_Get_Multi_InvSearch` = 0 hit). Đây là GAP thật.
+//
+// 🔴 Nguồn SELECT `t.*` (cả bảng `Ser_Mst_Part`) + cột ECHO từ join (bài học #539/#542):
+//   `pg.GroupName PartGroupName` (join `Ser_Mst_PartGroup`), `pt.TypeName PartTypeName` (join `Ser_Mst_PartType`),
+//   `isnull(sb.InStockQuantity,0) InStockQuantity` + `sb.LocationId` + `sb.LocationCode` (join `ser_inv_StockBalance`),
+//   `tprice.Price PriceEffectTmp` + `tprice.PartPriceID` (join giá hiệu lực mới nhất từ `Ser_Inv_Partprice`).
+//   ⚠️ Cột dẫn xuất `ISNULL(t.PriceEffectTmp, t.Price) AS PriceEffect` — giá hiệu lực tính lúc đọc.
+// 🔴 GUARD CỨNG: `AND sb.InStockQuantity > 0` — CHỈ trả phụ tùng CÒN TỒN KHO (join `ser_inv_StockBalance` là
+//   INNER ⇒ phụ tùng không có dòng tồn kho bị loại hẳn).
+// ⚠️ `strPartGroupIDList` nối chuỗi TRỰC TIẾP (`pg.FamilyID LIKE '<ma>.%' or t.PartGroupID = '<ma>'`) —
+//   bề mặt SQL injection thật của nguồn; MiniHTC `PartGroup` chỉ có `ParentCode` một cấp, KHÔNG có `FamilyID`
+//   ⇒ port lọc theo `PartGroupCode` một cấp, ghi nợ rõ (cùng lý do đã ghi ở #1004).
+// ⚠️ `strCusTypeID` được gán `"null"` khi rỗng nhưng token `@CusTypeID` KHÔNG xuất hiện trong SQL ⇒ tham số
+//   CHẾT (bài học #540) — port bỏ qua, ghi cờ.
+// ⚠️ PHÂN TRANG: `Row_Number() over (order by t.PartId desc)` rồi lọc `MyRowIdx` trong `[start+1, start+count]`.
+//   Nguồn trả HAI bảng: `Ser_Part_Summary` (MyCount) + `Ser_Mst_Part` (dữ liệu).
+app.MapGet("/api/serviceparts/multi-invsearch", async (AppDbContext db, ITenantContext t,
+    string? partId, string? dealerCode, string? partCode, string? engName, string? vieName,
+    string? isActive, string? partGroupId, int? recordStart, int? recordCount) =>
+{
+    var qy = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(partId)) qy = qy.Where(x => x.PartID == partId!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(partCode)) qy = qy.Where(x => x.PartCode == partCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(engName)) qy = qy.Where(x => x.EngName != null && x.EngName!.Contains(engName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(vieName)) qy = qy.Where(x => x.PartName != null && x.PartName!.Contains(vieName!.Trim()));
+    if (!string.IsNullOrWhiteSpace(isActive))
+    {
+        var act = isActive!.Trim().ToUpperInvariant().Replace("TRUE", "1").Replace("FALSE", "0");
+        qy = qy.Where(x => x.FlagActive == act);
+    }
+    // Nguồn lọc theo dòng họ nhóm (FamilyID) — Mini chỉ có ParentCode một cấp ⇒ lọc một cấp, ghi nợ.
+    if (!string.IsNullOrWhiteSpace(partGroupId)) qy = qy.Where(x => x.PartGroupCode == partGroupId!.Trim());
+
+    // GUARD CỨNG: chỉ phụ tùng CÒN TỒN KHO (join ser_inv_StockBalance INNER + InStockQuantity > 0).
+    var stockByPart = await db.PartStocks.Where(x => x.OrgId == t.OrgId && x.OnHand > 0)
+        .GroupBy(x => x.PartCode)
+        .Select(g => new { PartCode = g.Key, InStock = g.Sum(x => x.OnHand), Location = g.Max(x => x.Location) })
+        .ToListAsync();
+    var stockMap = stockByPart.ToDictionary(x => x.PartCode, x => x);
+    var inStockCodes = stockMap.Keys.ToList();
+    qy = qy.Where(x => inStockCodes.Contains(x.PartCode));
+
+    var myCount = await qy.CountAsync();
+    var start = Math.Max(0, recordStart ?? 0);
+    var count = recordCount is > 0 ? recordCount!.Value : myCount;
+    var parts = await qy.OrderByDescending(x => x.PartID).Skip(start).Take(count).ToListAsync();
+
+    var groupCodes = parts.Select(x => x.PartGroupCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var groups = await db.PartGroups.Where(x => x.OrgId == t.OrgId && groupCodes.Contains(x.GroupCode)).ToListAsync();
+    var typeIds = parts.Select(x => x.PartTypeID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var types = await db.SerPartTypes.Where(x => x.OrgId == t.OrgId && typeIds.Contains(x.TypeCode)).ToListAsync();
+    var partCodes = parts.Select(x => x.PartCode).Distinct().ToList();
+    // Giá hiệu lực mới nhất (RANK() OVER PARTITION BY PartId ORDER BY DateEffect DESC, rn=1, IsActive='1', DateEffect <= now).
+    var now = DateTime.Now;
+    var prices = await db.PartPrices.Where(x => x.OrgId == t.OrgId && partCodes.Contains(x.PartCode)
+            && x.IsActive == "1" && x.EffectiveDate <= now)
+        .ToListAsync();
+    var latestPrice = prices.GroupBy(x => x.PartCode)
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.EffectiveDate).First());
+
+    var items = parts.Select(x =>
+    {
+        var st = stockMap.TryGetValue(x.PartCode, out var s) ? s : null;
+        var lp = latestPrice.TryGetValue(x.PartCode, out var p) ? p : null;
+        return new
+        {
+            x.Id, x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location,
+            x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive, x.CreatedAt,
+            x.PartID, x.PartTypeID, x.DealerCode, x.VAT, x.InventoryQuantity,
+            x.TotalPrice, x.BalanceLocationId, x.FreqUsed, x.PriceEffect,
+            x.TSTPrice, x.TSTPriceBefore, x.FlagInTST, x.CusDebt,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+            partGroupName = groups.FirstOrDefault(g => g.GroupCode == x.PartGroupCode)?.GroupName,
+            partTypeName = types.FirstOrDefault(pt => pt.TypeCode == x.PartTypeID)?.TypeName,
+            inStockQuantity = st?.InStock ?? 0m,
+            locationId = st?.Location,
+            locationCode = st?.Location,
+            priceEffectTmp = lp?.Price,
+            partPriceId = lp?.Id,
+            priceEffect = lp?.Price ?? x.Price,
+        };
+    }).ToList();
+    return Results.Ok(new
+    {
+        myCount, count = items.Count, items,
+        sourceSelectsWholeTable = "t.* (ca bang Ser_MST_Part) + cot ECHO tu join — bai hoc #539/#542",
+        hardGuardInStockOnly = "AND sb.InStockQuantity > 0 — chi tra phu tung CON TON KHO (join ser_inv_StockBalance INNER)",
+        priceEffectDerived = "ISNULL(t.PriceEffectTmp, t.Price) AS PriceEffect — gia hieu luc tinh luc doc",
+        partGroupFamilyFilterNotPorted = "nguon loc pg.FamilyID like '<ma>.%' or t.PartGroupID = '<ma>' (BAKE CHUOI TRUC TIEP). MiniHTC PartGroup chi co ParentCode mot cap, khong co FamilyID — loc mot cap, ghi NO.",
+        cusTypeIdDeadParam = "strCusTypeID gan 'null' khi rong nhung token @CusTypeID KHONG xuat hien trong SQL => tham so CHET (bai hoc #540)",
+        pagingByRowNumber = "Row_Number() over (order by t.PartId desc), loc MyRowIdx trong [start+1, start+count]",
+    });
+}).RequireAuthorization();
+
 // Upsert theo mã phụ tùng.
 app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
@@ -35065,6 +35216,77 @@ app.MapGet("/api/partcosts", async (AppDbContext db, ITenantContext t, string? d
         .Select(x => new { x.PartCode, x.PartName, x.DealerCode, x.AverageCost, x.OpeningQty, x.OpeningValue, x.InQty, x.InValue, x.TotalQty, x.TotalValue, x.FromDate, x.ToDate, calculatedAt = x.CalculatedAt.ToString("yyyy-MM-dd HH:mm"), x.Method })   // #1267 §12
         .OrderBy(x => x.PartCode).ToList();
     return Results.Ok(new { count = rows.Count, rows });
+}).RequireAuthorization();
+
+// ===== 🔴 #1504 GIÁ VỐN BÌNH QUÂN THEO LÔ NHẬP — `Ser_PartAverCostGet` =====
+// Nguồn: `BizCarSv.Inventory.Stock.cs:4320 Ser_PartAverCostGet` → thân thật `BuildGetAverageCost01` (`:3658`).
+//   LIVE (WS `HTCWSCarSv/WSCarSv.asmx.cs` gọi bản trần). Endpoint: `GET /api/partcosts/average`.
+// ⚠️ GREP TRƯỚC: MiniHTC có `/api/partcosts` (đọc `PartCostSnapshot` = `Ser_PartCost_Calculate`, bình quân
+//   THEO KỲ) nhưng **KHÔNG** có route nào đọc bảng `Ser_PartCost` (bình quân theo LÔ NHẬP). Hai bảng KHÁC
+//   nhau (bài học #538) — đây là GAP thật, thêm entity `PartCost` + DbSet + Seeder.
+//
+// 🔴 Nguồn SELECT `t.*` (cả bảng `Ser_PartCost`) + cột ECHO từ join (bài học #539/#542):
+//   `isnull(sb.InStockQuantity,0) InStockQuantity` (join `ser_inv_StockBalance`),
+//   `p.PartCode` + `p.VieName` + `p.Unit` + `p.Model` (join `ser_mst_part`).
+// 🔴 `BuildGetAverageCost01` lấy **mốc giá vốn MỚI NHẤT** mỗi phụ tùng: `Row_Number() over (PARTITION BY
+//   PartID ORDER BY CreatedDate DESC)` rồi lọc `rn = 1` ⇒ port `GroupBy(PartID).OrderByDescending(CreatedDate).First()`.
+// ⚠️ Bộ lọc `strDealerCode`/`strPartCode`/`strPartID` qua `BuildClause`; `strPartCode` lọc trên `p.PartCode`
+//   (bảng master), KHÔNG phải `t.PartCode` (bảng giá vốn không có cột PartCode).
+// ⚠️ Nguồn KHÔNG có `ORDER BY` ở câu kết quả ⇒ port sắp tường minh theo `PartCode`.
+app.MapGet("/api/partcosts/average", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? partCode, string? partId) =>
+{
+    var qy = db.PartCosts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(partId)) qy = qy.Where(x => x.PartID == partId!.Trim());
+    var all = await qy.ToListAsync();
+    // Mốc giá vốn MỚI NHẤT mỗi PartID (Row_Number PARTITION BY PartID ORDER BY CreatedDate DESC, rn=1).
+    var latest = all.GroupBy(x => x.PartID ?? "")
+        .Select(g => g.OrderByDescending(x => x.CreatedDate).ThenByDescending(x => x.Id).First())
+        .ToList();
+
+    // Join ser_mst_part (PartCode/VieName/Unit/Model) theo PartID.
+    var partIds = latest.Select(x => x.PartID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIds.Contains(x.PartID!)).ToListAsync();
+    var partByPartId = parts.GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+    // Lọc theo PartCode (trên bảng master p.PartCode).
+    if (!string.IsNullOrWhiteSpace(partCode))
+    {
+        var pc = partCode!.Trim();
+        latest = latest.Where(x => x.PartID != null && partByPartId.TryGetValue(x.PartID!, out var p) && p.PartCode == pc).ToList();
+    }
+
+    // Join ser_inv_StockBalance (InStockQuantity) theo PartCode.
+    var codes = latest.Select(x => x.PartID).Where(x => x != null && partByPartId.ContainsKey(x!))
+        .Select(x => partByPartId[x!].PartCode).Distinct().ToList();
+    var stockByPart = await db.PartStocks.Where(x => x.OrgId == t.OrgId && codes.Contains(x.PartCode))
+        .GroupBy(x => x.PartCode).Select(g => new { PartCode = g.Key, InStock = g.Sum(x => x.OnHand) }).ToListAsync();
+    var stockMap = stockByPart.ToDictionary(x => x.PartCode, x => x.InStock);
+
+    var items = latest.Select(x =>
+    {
+        var p = x.PartID != null && partByPartId.TryGetValue(x.PartID!, out var pp) ? pp : null;
+        return new
+        {
+            x.Id, x.DealerCode, x.PartID, x.StockInID, x.AverageCost,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+            partCode = p?.PartCode,
+            vieName = p?.PartName,
+            unit = p?.Unit,
+            model = p?.Model,
+            inStockQuantity = p != null && stockMap.TryGetValue(p.PartCode, out var q) ? q : 0m,
+        };
+    }).OrderBy(x => x.partCode).ToList();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        tableName = "Ser_PartCost",
+        notTheSameAs = "PartCostSnapshot (Ser_PartCost_Calculate, binh quan THEO KY) — hai bang khac nhau (bai hoc #538)",
+        sourceSelectsWholeTable = "t.* (ca bang Ser_PartCost) + cot ECHO tu join — bai hoc #539/#542",
+        latestPerPart = "Row_Number() over (PARTITION BY PartID ORDER BY CreatedDate DESC), loc rn=1 => moc gia von MOI NHAT moi phu tung",
+        partCodeFilterOnMaster = "strPartCode loc tren p.PartCode (bang master ser_mst_part), KHONG phai t.PartCode (bang gia von khong co cot PartCode)",
+        sourceHasNoOrderBy = "cau ket qua nguon KHONG co order by — port sap tuong minh theo PartCode",
+    });
 }).RequireAuthorization();
 
 // #992: `Ser_PartCostCalculateGet` (LIVE, `BizCarSv.Inventory.Stock.cs:4385`) — TRẢ 2 BẢNG như nguồn:

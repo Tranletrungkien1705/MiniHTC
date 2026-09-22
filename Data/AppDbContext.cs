@@ -250,6 +250,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceWarrantyClaimTransaction> ServiceWarrantyClaimTransactions => Set<ServiceWarrantyClaimTransaction>();
     public DbSet<WarrantyAttachment> WarrantyAttachments => Set<WarrantyAttachment>();
     public DbSet<PartCostSnapshot> PartCostSnapshots => Set<PartCostSnapshot>();
+    public DbSet<PartCost> PartCosts => Set<PartCost>();   // #1504
     public DbSet<ServicePackage> ServicePackages => Set<ServicePackage>();
     public DbSet<ServicePackageService> ServicePackageServices => Set<ServicePackageService>();
     public DbSet<ServicePackagePart> ServicePackageParts => Set<ServicePackagePart>();

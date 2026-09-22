@@ -5735,6 +5735,26 @@ public sealed class PartCostSnapshot
     public string? DealerCode { get; set; }
 }
 
+/// <summary>#1504 Giá vốn BÌNH QUÂN theo LÔ NHẬP (`Ser_PartCost`) — **KHÁC** `PartCostSnapshot`
+/// (vốn là `Ser_PartCost_Calculate`, bình quân THEO KỲ). Nguồn: `BizCarSv.Inventory.Stock.cs:3658
+/// BuildGetAverageCost01` (đọc) + `:3727 ProcessSaveAverageCost01` (ghi). Mỗi phiếu nhập để lại MỘT mốc
+/// giá vốn (`StockInID`), không ghi đè master phụ tùng. Endpoint: `GET /api/partcosts/average`.</summary>
+public sealed class PartCost
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    /// <summary>Khoá kỹ thuật phụ tùng (nguồn: `PartID`) — KHÁC `PartCode`.</summary>
+    public string? PartID { get; set; }
+    /// <summary>Phiếu nhập sinh ra mốc giá vốn này (nguồn: `StockInID`).</summary>
+    public string? StockInID { get; set; }
+    public decimal AverageCost { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>File đính kèm đề nghị bảo hành (ảnh/chứng từ theo ĐN) — port 1:1 FrmROAttachment (Ser_ROAttachment, TCMotor).</summary>
 public sealed class WarrantyAttachment
 {
