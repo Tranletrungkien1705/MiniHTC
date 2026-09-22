@@ -16151,6 +16151,34 @@ public sealed class ServiceSupplier
     public string? LogLUBy { get; set; }
 }
 
+/// <summary>#1506 Danh mục KHO phụ tùng dịch vụ (`Ser_Inv_Stock`) — port 1:1 `SerStockGet`
+/// (`BizCarSv.Inventory.Master.cs:1483`, LIVE) + `SerStockCreate`/`SerStockUpdate` (:1779/:1620).
+/// Bảng master kho CHƯA từng có entity/route trong Mini (grep `Ser_Inv_Stock` = 0).</summary>
+public sealed class ServiceStock
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockNo { get; set; } = "";
+    public string? StockName { get; set; }
+    public string? Contact { get; set; }
+    public string? Address { get; set; }
+    public string? Email { get; set; }
+    public string? TelePhone { get; set; }
+    public string? Fax { get; set; }
+    public string? Mobi { get; set; }
+    public string? Manager { get; set; }
+    public string? Description { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagActive { get; set; } = "1";   // IsActive
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1506 §12 — `SerStockCreate` ghi đủ 4 cột nhật ký khi TẠO; `SerStockUpdate` chỉ ghi LogLUDateTime/LogLUBy.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 /// <summary>Thời hạn bảo hành theo model (BH đại lý/HTV, km giới hạn, kỳ lưu kho) — port 1:1 FrmMngMst_WarrantyPeriod (Tbl_Mst_WarrantyPeriod, TCMotor).</summary>
 public sealed class WarrantyPeriodMst
 {

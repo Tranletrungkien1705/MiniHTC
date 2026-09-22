@@ -47840,6 +47840,49 @@ app.MapPost("/api/extraworks/delete", async (List<string> codes, AppDbContext db
     return Results.Ok(new { deleted = rows.Count, codes = wanted });
 }).RequireAuthorization();
 
+// ===== 🔴 #1506 DANH MỤC KHO PHỤ TÙNG DỊCH VỤ (`Ser_Inv_Stock`) — BẢNG MASTER CHƯA TỪNG CÓ TRONG MINI =====
+// Nguồn `BizCarSv.Inventory.Master.cs`: `SerStockGet` `:1483` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:5157`),
+// `SerStockCreate` `:1779`, `SerStockUpdate` `:1620`. grep `Ser_Inv_Stock` trong Mini = **0** ⇒ cả bảng lẫn route đều thiếu.
+// `SerStockGet`: `SELECT * FROM Ser_Inv_Stock` với 4 lọc (StockNo/DealerCode/StockName/Address) — mỗi lọc chỉ áp khi
+// tham số khác rỗng; KHÔNG ORDER BY trong nguồn (Mini sắp theo StockNo cho ổn định kết quả).
+app.MapGet("/api/servicestocks", async (AppDbContext db, ITenantContext t, string? stockNo, string? dealer, string? stockName, string? address) =>
+{
+    var q = db.ServiceStocks.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(stockNo)) q = q.Where(x => x.StockNo == stockNo);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(stockName)) q = q.Where(x => x.StockName != null && x.StockName.Contains(stockName!));
+    if (!string.IsNullOrWhiteSpace(address)) q = q.Where(x => x.Address != null && x.Address.Contains(address!));
+    var items = await q.OrderBy(x => x.StockNo).Take(500)
+        .Select(x => new { x.StockNo, x.StockName, x.Contact, x.Address, x.Email, x.TelePhone, x.Fax, x.Mobi, x.Manager, x.Description, x.DealerCode, x.FlagActive,
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1506 §12
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Upsert theo mã kho — `SerStockCreate` ghi đủ 4 cột nhật ký khi TẠO; `SerStockUpdate` chỉ ghi LogLUDateTime/LogLUBy.
+app.MapPost("/api/servicestocks", async (ServiceStockDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.StockNo)) return Results.BadRequest(new { error = "Chưa nhập mã kho." });
+    var code = dto.StockNo.Trim().ToUpperInvariant();
+    var by = (partnerUserCode ?? "system").Trim(); var now = DateTime.Now;
+    var ex = await db.ServiceStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == code);
+    if (ex is not null)
+    {
+        ex.StockName = dto.StockName; ex.Contact = dto.Contact; ex.Address = dto.Address; ex.Email = dto.Email;
+        ex.TelePhone = dto.TelePhone; ex.Fax = dto.Fax; ex.Mobi = dto.Mobi; ex.Manager = dto.Manager;
+        ex.Description = dto.Description; ex.DealerCode = dto.DealerCode;
+        ex.FlagActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim();
+        ex.LogLUDateTime = now; ex.LogLUBy = by;   // #1506: nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy
+        await db.SaveChangesAsync();
+        return Results.Ok(new { ex.StockNo, updated = true });
+    }
+    var r = new ServiceStock { OrgId = t.OrgId, StockNo = code, StockName = dto.StockName, Contact = dto.Contact, Address = dto.Address, Email = dto.Email,
+        TelePhone = dto.TelePhone, Fax = dto.Fax, Mobi = dto.Mobi, Manager = dto.Manager, Description = dto.Description, DealerCode = dto.DealerCode,
+        FlagActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim(),
+        CreatedDate = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by };   // #1506: nhánh TẠO ghi đủ 4 cột
+    db.ServiceStocks.Add(r); await db.SaveChangesAsync();
+    return Results.Ok(new { r.StockNo, updated = false });
+}).RequireAuthorization();
+
 // ===== Nhà cung cấp phụ tùng dịch vụ (ServiceSupplier — port 1:1 FrmMstSupplierCreate, TCMotor) =====
 app.MapGet("/api/servicesuppliers", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? active) =>
 {
@@ -83069,6 +83112,8 @@ record VinProductionYearDto(string VinChar, string ProductionYear, string? Assem
 record StorageGlobalMapDto(string StorageCode, string ModelCode);
 record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod);
 record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode);
+// #1506 Ser_Inv_Stock — SerStockCreate/SerStockUpdate (BizCarSv.Inventory.Master.cs:1779/:1620).
+record ServiceStockDto(string StockNo, string? StockName, string? Contact, string? Address, string? Email, string? TelePhone, string? Fax, string? Mobi, string? Manager, string? Description, string? DealerCode, string? IsActive);
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);

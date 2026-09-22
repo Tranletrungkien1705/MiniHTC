@@ -531,6 +531,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<StorageGlobalMap> StorageGlobalMaps => Set<StorageGlobalMap>();
     public DbSet<WarrantyPeriodMst> WarrantyPeriodMsts => Set<WarrantyPeriodMst>();
     public DbSet<ServiceSupplier> ServiceSuppliers => Set<ServiceSupplier>();
+    public DbSet<ServiceStock> ServiceStocks => Set<ServiceStock>();   // #1506 Ser_Inv_Stock
     public DbSet<ExtraWorkMst> ExtraWorkMsts => Set<ExtraWorkMst>();
     public DbSet<ExtraPartMst> ExtraPartMsts => Set<ExtraPartMst>();
     public DbSet<MaintenanceLevelMst> MaintenanceLevelMsts => Set<MaintenanceLevelMst>();
