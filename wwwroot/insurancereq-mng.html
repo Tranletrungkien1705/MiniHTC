@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Quản lý đề nghị bảo hiểm</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1240px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} h2{font-size:15px;margin:20px 0 6px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .pill{font-size:12px;padding:1px 8px;border-radius:99px;border:1px solid var(--line)}
+  .r{color:#dc2626} #msg{font-size:13px} .wrap{overflow-x:auto}
+  .note{font-size:12px;opacity:.7;border-left:3px solid var(--line);padding:6px 10px;margin:10px 0}
+</style></head>
+<body>
+<h1>Quản lý đề nghị bảo hiểm <span class="muted">(port 1:1 FrmMngInsuranceReq — Ins_InsuranceReq)</span></h1>
+<p class="muted">Trace: FrmMngInsuranceReq.cs:401 → SalesService.Ins_InsuranceReqSearch (:28576) → WS Ins_InsuranceReq_Get → biz. Tệp nguồn là UTF-16LE nên phải đọc bằng Select-String, grep bash im lặng.</p>
+
+<div class="bar">
+  <input id="no" placeholder="Số đề nghị (like)" style="width:170px">
+  <input id="cp" placeholder="Mã hãng BH (in: a,b)" style="width:170px">
+  <input id="tp" placeholder="Mã loại hình (in)" style="width:150px">
+  <input id="st" placeholder="Trạng thái (in: P,A,R)" style="width:160px">
+  <input id="df" type="date" title="Ngày tạo từ">
+  <input id="dt" type="date" title="Ngày tạo đến">
+  <input id="vn" placeholder="VIN (like)" style="width:150px">
+  <input id="ro" placeholder="Chứng từ gốc RefOrdNo (like)" style="width:220px">
+  <input id="tr" placeholder="Nhà vận chuyển (in)" style="width:170px">
+  <input id="ds" placeholder="Trạng thái DÒNG (in)" style="width:170px">
+  <input id="dl" placeholder="Đại lý (in, qua Car_Car)" style="width:190px">
+  <button class="primary" onclick="search()">Tìm kiếm</button>
+  <span id="msg"></span>
+</div>
+<div class="note">
+  Màn nguồn <b>KHÔNG có</b> guard "phải nhập ít nhất 1 điều kiện" (đã dò <code>MESS_WARNING_CONDITION_4SEARCH</code>
+  trong <code>FrmMngInsuranceReq.cs</code> → 0 hit) — khác <code>FrmMngCO</code>/<code>FrmMngLC</code>. Gọi rỗng là hợp lệ.
+  Ô <b>Số đề nghị</b> ở nguồn được áp <b>hai lần</b> (bảng đầu + bảng dòng), port giữ nguyên.
+</div>
+
+<h2>Đề nghị bảo hiểm (Ins_InsuranceReq)</h2>
+<div class="wrap">
+<table><thead><tr>
+  <th>Số đề nghị</th><th>Hãng BH</th><th>Tên hãng</th><th>Loại hình</th><th>Tên loại hình</th>
+  <th>Ngày hiệu lực</th><th>Trạng thái</th><th>Ngày tạo</th><th>Người tạo</th>
+  <th>Ngày duyệt</th><th>Người duyệt</th><th>Số xe</th><th>Tổng phí BH</th>
+</tr></thead>
+<tbody id="heads"><tr><td colspan="13" class="muted">Bấm Tìm kiếm.</td></tr></tbody></table>
+</div>
+
+<h2>Dòng xe (Ins_InsuranceReqDtl)</h2>
+<div class="wrap">
+<table><thead><tr>
+  <th>Số đề nghị</th><th>VIN</th><th>Ngày bắt đầu DK</th><th>Phí BH</th><th>Số ngày</th>
+  <th>Nơi đi</th><th>Nơi đến</th><th>Tỉnh đi</th><th>Tỉnh đến</th>
+  <th>Giá xe</th><th>Tỉ lệ</th><th>Nhà VC</th><th>RefOrdNo</th><th>RefOrdType</th>
+  <th>Ngày xuất kho</th><th>TT dòng</th>
+</tr></thead>
+<tbody id="lines"><tr><td colspan="16" class="muted">—</td></tr></tbody></table>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t,ok){ F("msg").textContent=t; F("msg").className=ok?"":"r"; }
+const e=v=>v==null?"":String(v); const d=v=>v?String(v).substring(0,10):"";
+// TConst.Stage — P chờ duyệt / A duyệt / R từ chối (KHÔNG có Draft/Confirmed/Cancelled).
+const badge=s=>({P:"Chờ duyệt",A:"Đã duyệt",R:"Từ chối"}[s]||s||"");
+async function search(){
+  await token();
+  const p=new URLSearchParams();
+  const m={no:"insReqNo",cp:"insCompanyCode",tp:"insTypeCode",st:"insReqStatus",vn:"vin",ro:"refOrdNo",tr:"transporterCode",ds:"insReqDtlStatus",dl:"dealerCode"};
+  for(const k in m){ const v=F(k).value.trim(); if(v) p.set(m[k],v); }
+  if(F("df").value) p.set("createdDateFrom",F("df").value);
+  if(F("dt").value) p.set("createdDateTo",F("dt").value);
+  const r=await fetch("/api/insurancereqs/search?"+p.toString(),{headers:H()});
+  const js=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(js.error||r.status),false); return; }
+  msg("Tìm thấy "+js.total+" đề nghị (hiện "+js.count+").",true);
+  F("heads").innerHTML=(js.items||[]).map(x=>`<tr><td><b>${e(x.insReqNo)}</b></td><td>${e(x.insCompanyCode)}</td>
+      <td>${e(x.insCompanyName)}</td><td>${e(x.insTypeCode)}</td><td>${e(x.insTypeName)}</td>
+      <td>${d(x.effectiveDate)}</td><td><span class="pill">${badge(x.insReqStatus)}</span></td>
+      <td>${d(x.createdAt)}</td><td>${e(x.createdBy)}</td><td>${d(x.approvedDate)}</td><td>${e(x.approvedBy)}</td>
+      <td>${e(x.cars)}</td><td>${e(x.totalInsAmount)}</td></tr>`).join("")
+    ||'<tr><td colspan="13" class="muted">Không tìm thấy dữ liệu.</td></tr>';
+  F("lines").innerHTML=(js.lines||[]).map(l=>`<tr><td>${e(l.insReqNo)}</td><td>${e(l.vin)}</td><td>${d(l.expectedStartDate)}</td>
+      <td>${e(l.insAmount)}</td><td>${e(l.insuranceDay)}</td><td>${e(l.locationFrom)}</td><td>${e(l.locationTo)}</td>
+      <td>${e(l.provinceCodeFrom)}</td><td>${e(l.provinceCodeTo)}</td><td>${e(l.price)}</td><td>${e(l.rate)}</td>
+      <td>${e(l.transporterCode)}</td><td>${e(l.refOrdNo)}</td><td>${e(l.refOrdType)}</td>
+      <td>${d(l.deliveryOutDate)}</td><td><span class="pill">${badge(l.insReqDtlStatus)}</span></td></tr>`).join("")
+    ||'<tr><td colspan="16" class="muted">—</td></tr>';
+}
+search();
+</script>
+</body></html>

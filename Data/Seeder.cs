@@ -2747,8 +2747,23 @@ public static class Seeder
                 // Yêu cầu bảo hiểm: 2 tầng trạng thái + cột người/ngày duyệt
                 "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",
                 "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
+                "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"EffectiveDate\" timestamp NULL",   // ngay hieu luc
+                "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",   // nguoi tao
+                "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",   // lan sua cuoi
+                "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",   // nguoi sua cuoi
                 "ALTER TABLE public.\"InsuranceReqs\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"InsReqDtlStatus\" text NOT NULL DEFAULT 'P'",
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"ProvinceCodeFrom\" text NULL",   // tinh di
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"ProvinceCodeTo\" text NULL",   // tinh den
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"RefOrdNo\" text NULL",   // so don tham chieu
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"RefOrdType\" text NULL",   // loai don tham chieu
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"DeliveryOutDate\" timestamp NULL",   // ngay xuat giao
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",   // nguoi duyet dong
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",   // ngay duyet dong
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",   // nguoi tao dong
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",   // ngay tao dong
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",   // lan sua cuoi
+                "ALTER TABLE public.\"InsuranceReqDtls\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",   // nguoi sua cuoi
                 // "Confirmed"/"Cancelled" của port cũ không có ở nguồn: Confirmed vẫn là chờ duyệt "P".
                 "UPDATE public.\"InsuranceReqs\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
                 "UPDATE public.\"InsuranceReqs\" SET \"Status\" = 'P' WHERE \"Status\" = 'Confirmed'",

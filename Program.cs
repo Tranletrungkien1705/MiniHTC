@@ -66268,9 +66268,15 @@ app.MapPost("/api/repairorders/{no}/appid", async (string no, string? appId, App
 // 📌 CHƯA port: `ProcessCreateAdditionalStockOutOrder`/`ProcessDeleteSOOSOByROID` (tạo/xoá phiếu xuất kho phụ
 //   trợ theo dòng phụ tùng còn lại) — cụm StockOutOrder riêng, nhiều overload lớn (`Inventory.StockOut.cs`),
 //   để dành fire chuyên biệt; ghi cờ rõ trong response, không mô phỏng.
-app.MapPost("/api/repairorders/{no}/lines", async (string no, List<RoServiceDto>? services, List<RoPartDto>? parts,
+// 🔴 VA 29/09: minimal API chi suy duoc MOT tham so body phuc hop. Chu ky cu nhan CA
+// List<RoServiceDto> services LAN List<RoPartDto> parts => app NEM
+// "Failure to infer one or more parameters" luc dung route table va KHONG khoi dong duoc.
+// Boc 2 danh sach vao mot dto roi tach lai ngay dong dau => than ham giu nguyen.
+app.MapPost("/api/repairorders/{no}/lines", async (string no, RoLinesBodyDto? body,
     AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
+    var services = body?.services;
+    var parts = body?.parts;
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
@@ -81118,6 +81124,249 @@ static string? ValidateVoucherLine(MemberVoucher voucher, decimal pointUsed, Dat
     return null;
 }
 
+
+// ================= 3 endpoint /search mang tu nhanh MiniHTC sang (29/09) =================
+// Nhanh -A da duoc chot la canonical; cong lam tren MiniHTC phai gop ve day.
+// KHONG dung endpoint san co cua -A: /api/insurancereqs cua -A chi co 3 bo loc,
+// con /search nay la bo loc DAY DU cua man WinForm (14 tham so).
+app.MapGet("/api/contractoverseas/search", async (
+    AppDbContext db, ITenantContext t,
+    string? contractNo, DateTime? createdDateFrom, DateTime? createdDateTo, string? refNo,
+    int? recordStart, int? recordCount) =>
+{
+    // escape ký tự đại diện của LIKE để người dùng nhập '%' hay '_' không thành wildcard.
+    static string Pat(string s) => "%" + s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+
+    var sContract = (contractNo ?? "").Trim();
+    var sRef = (refNo ?? "").Trim();
+
+    // GUARD nguồn — MESS_WARNING_CONDITION_4SEARCH.
+    if (sContract.Length == 0 && createdDateFrom is null && createdDateTo is null)
+        return Results.BadRequest(new
+        {
+            error = "Bạn phải nhập ít nhất một điều kiện tìm kiếm!",
+            guardNote = "FrmMngCO.cs:122-128 — guard chỉ xét contractNo + createdDateFrom + createdDateTo; refNo KHÔNG được tính.",
+        });
+
+    var qy = db.CtContractOverseas.Where(x => x.OrgId == t.OrgId);
+    var patContract = Pat(sContract);
+    if (sContract.Length > 0) qy = qy.Where(x => EF.Functions.Like(x.ContractNo, patContract, "\\"));
+    if (createdDateFrom is DateTime df) qy = qy.Where(x => x.CreatedDate >= df);
+    if (createdDateTo is DateTime dt2) qy = qy.Where(x => x.CreatedDate <= dt2);
+
+    // opid.RefNo like '%…%' — lọc hợp đồng theo số PI của DÒNG (giữ ngữ nghĩa nguồn).
+    if (sRef.Length > 0)
+    {
+        var p = Pat(sRef);
+        var nosByRef = db.OrdPerformanceInvoiceDetails
+            .Where(d => d.OrgId == t.OrgId && d.ContractNo != null && EF.Functions.Like(d.RefNo, p, "\\"))
+            .Select(d => d.ContractNo!);
+        qy = qy.Where(x => nosByRef.Contains(x.ContractNo));
+    }
+
+    // Phân trang đúng cặp @nFilterRecordStart / @nFilterRecordEnd của nguồn (Biz.HTC.WH.cs:30255-30262).
+    var start = Math.Max(recordStart ?? 0, 0);
+    var take = Math.Clamp(recordCount ?? 500, 1, 2000);
+    var total = await qy.CountAsync();                      // ---- Summary: select Count(0) MyCount
+    var items = await qy.OrderBy(x => x.ContractNo).Skip(start).Take(take)
+        .Select(x => new { x.ContractNo, x.CreatedDate, x.CreatedBy }).ToListAsync();
+
+    var nos = items.Select(i => i.ContractNo).ToList();
+    var pis = await db.OrdPerformanceInvoices.Where(p => p.OrgId == t.OrgId).ToListAsync();
+    var piByRef = pis.GroupBy(p => p.RefNo).ToDictionary(g => g.Key, g => g.First());
+    var rawLines = await db.OrdPerformanceInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && d.ContractNo != null && nos.Contains(d.ContractNo)).ToListAsync();
+    var piLines = rawLines.Select(d =>
+    {
+        piByRef.TryGetValue(d.RefNo, out var opi);
+        return new
+        {
+            d.ContractNo, d.RefNo, d.LCTemp, d.SpecCode, d.ModelCode, d.ColorCode,
+            d.WorkOrderNo, d.PortCode, d.PlantCode, d.Quantity,
+            // NĂM alias tiền tố OPI — đúng tên nguồn để đối chiếu cột 1-1.
+            OPIOrderMonth = opi?.OrderMonth,
+            OPIProductionMonth = opi?.ProductionMonth,
+            OPIExpectedMonth = opi?.ExpectedMonth,
+            OPICreatedDate = opi?.CreatedDate,
+            OPICreatedBy = opi?.CreatedBy,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        total, count = items.Count, items, piLines,
+        aliasNote = "OPIOrderMonth/OPIProductionMonth/OPIExpectedMonth/OPICreatedDate/OPICreatedBy la ALIAS cua Ord_PerformanceInvoice trong SQL nguon (Biz.HTC.WH.cs:30310-30314), khong phai cot cua Ord_PerformanceInvoiceDetail.",
+        deadJoinNote = "Nguon co dong '--left join CT_Declaration' BI COMMENT (Biz.HTC.WH.cs:30242-30243) => KHONG port join to khai hai quan.",
+        likeGapNote = "SQLite LIKE chi bo hoa/thuong voi ASCII: '%ngan%' khop 'NGAN' nhung '%Ngan%' co dau ('%Ngân%') KHONG khop '%NGÂN%'. Day la GAP 1-1 con lai so voi collation Viet cua SQL Server.",
+        whBranchNote = "Nguon co nhanh SearchContractOverseaWH doc DB Warehouse (cung bo loc). MiniHTC mot DB => nhanh WH la NO KHONG PORT.",
+    });
+}).RequireAuthorization();
+
+// ===== MÀN QUẢN LÝ L/C — port 1:1 `FrmMngLC` (bảng `CT_LC`) =====
+// Trace: `FrmMngLC.cs:118` → `svrSales.LCSelectItems(...)` →
+//        `SalesService.cs:16844` (dựng whereClause) → `WSHTC.asmx.cs:59967` `CT_LC_Get` →
+//        `:60025` `_biz.CT_LC_Get_New20181119` (bản LIVE, csproj dòng 272).
+// 🔴 NĂM bộ lọc đúng nguồn (`SalesService.cs:16858-16876`), TẤT CẢ trên bảng `CT_LC`:
+//      LCNo like '%…%' · BankName like '%…%' · ContractNo like '%…%' · CreatedDate >= · CreatedDate <=
+// 🔴 GUARD Ô TÌM (`FrmMngLC.cs:106-113`): phải có **ít nhất 1 trong 5** điều kiện trên.
+// ⚠️ `SalesService.cs:16899-16905` có một khối LINQ lọc `BankName` **BỊ COMMENT** — lọc BankName thật
+//    nằm ở `whereClause` gửi xuống SQL, KHÔNG lọc lại phía client. Không port khối comment đó.
+// ⚠️ Nguồn chỉ nạp 4 cột vào `LCCollection` (`:16913-16916`): LCNo · ContractNo · BankName · CreatedDate
+//    — `CreatedBy` có trong DB nhưng **màn không hiển thị**; port trả thêm cột này (siêu tập, không thiếu).
+
+
+app.MapGet("/api/ctlcs/search", async (
+    AppDbContext db, ITenantContext t,
+    string? lcNo, string? contractNo, string? bankName, DateTime? createdDateFrom, DateTime? createdDateTo,
+    int? recordStart, int? recordCount) =>
+{
+    static string Pat(string s) => "%" + s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+
+    var sLc = (lcNo ?? "").Trim();
+    var sCt = (contractNo ?? "").Trim();
+    var sBank = (bankName ?? "").Trim();
+
+    // GUARD nguồn — MESS_WARNING_CONDITION_4SEARCH (5 điều kiện).
+    if (sLc.Length == 0 && sCt.Length == 0 && sBank.Length == 0 && createdDateFrom is null && createdDateTo is null)
+        return Results.BadRequest(new
+        {
+            error = "Bạn phải nhập ít nhất một điều kiện tìm kiếm!",
+            guardNote = "FrmMngLC.cs:106-113 — guard xét đủ 5 ô: lcNo, contractNo, bankName, createdDateFrom, createdDateTo.",
+        });
+
+    var patLc = Pat(sLc); var patCt = Pat(sCt); var patBank = Pat(sBank);
+    var qy = db.CtLcs.Where(x => x.OrgId == t.OrgId);
+    if (sLc.Length > 0) qy = qy.Where(x => EF.Functions.Like(x.LCNo, patLc, "\\"));
+    if (sCt.Length > 0) qy = qy.Where(x => EF.Functions.Like(x.ContractNo, patCt, "\\"));
+    if (sBank.Length > 0) qy = qy.Where(x => x.BankName != null && EF.Functions.Like(x.BankName, patBank, "\\"));
+    if (createdDateFrom is DateTime df) qy = qy.Where(x => x.CreatedDate >= df);
+    if (createdDateTo is DateTime dt2) qy = qy.Where(x => x.CreatedDate <= dt2);
+
+    var start = Math.Max(recordStart ?? 0, 0);
+    var take = Math.Clamp(recordCount ?? 500, 1, 2000);
+    var total = await qy.CountAsync();
+    var items = await qy.OrderBy(x => x.LCNo).Skip(start).Take(take)
+        .Select(x => new { x.LCNo, x.ContractNo, x.BankName, x.CreatedDate, x.CreatedBy }).ToListAsync();
+
+    return Results.Ok(new
+    {
+        total, count = items.Count, items,
+        gridNote = "Man nguon chi do 4 cot ra luoi (LCNo/ContractNo/BankName/CreatedDate, SalesService.cs:16913-16916); CreatedBy tra them la sieu tap.",
+        likeGapNote = "BankName thuong co dau tieng Viet => day la cho bay #24 (SQLite LIKE ASCII-only) de lo nhat: tim '%ngan hang%' se KHONG ra 'Ngân hàng…'.",
+        whBranchNote = "Nhanh LCSelectItemsWH (DB Warehouse) khong port — MiniHTC mot DB.",
+    });
+}).RequireAuthorization();
+// ============================================================================================
+
+// Proforma Invoice — phần đầu + dòng. `ContractNo` của dòng do lệnh ký hợp đồng ngoại gán, KHÔNG nhận ở đây.
+
+
+app.MapGet("/api/insurancereqs/search", async (
+    AppDbContext db, ITenantContext t,
+    string? insReqNo, string? insCompanyCode, string? insTypeCode, string? insReqStatus,
+    DateTime? createdDateFrom, DateTime? createdDateTo,
+    string? vin, DateTime? expectedStartDateFrom, DateTime? expectedStartDateTo,
+    string? transporterCode, string? insReqDtlStatus, string? refOrdNo, string? dealerCode,
+    int? recordStart, int? recordCount) =>
+{
+    static string Pat(string s) => "%" + s.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_") + "%";
+    // toán tử `in` của nguồn nhận danh sách phân tách bằng dấu phẩy.
+    static List<string> InList(string? s) => (s ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.ToUpperInvariant()).Distinct().ToList();
+
+    var sNo = (insReqNo ?? "").Trim();
+    var sVin = (vin ?? "").Trim();
+    var sRefOrd = (refOrdNo ?? "").Trim();
+    var lstCompany = InList(insCompanyCode);
+    var lstType = InList(insTypeCode);
+    var lstStatus = InList(insReqStatus);
+    var lstTransp = InList(transporterCode);
+    var lstDtlStatus = InList(insReqDtlStatus);
+    var lstDealer = InList(dealerCode);
+
+    // ---- bảng ĐẦU: Ins_InsuranceReq ----
+    var qh = db.InsuranceReqs.Where(r => r.OrgId == t.OrgId);
+    var patNo = Pat(sNo);
+    if (sNo.Length > 0) qh = qh.Where(r => EF.Functions.Like(r.InsReqNo, patNo, "\\"));
+    if (lstCompany.Count > 0) qh = qh.Where(r => lstCompany.Contains(r.InsCompanyCode.ToUpper()));
+    if (lstType.Count > 0) qh = qh.Where(r => lstType.Contains(r.InsTypeCode.ToUpper()));
+    if (lstStatus.Count > 0) qh = qh.Where(r => lstStatus.Contains(r.Status.ToUpper()));
+    if (createdDateFrom is DateTime cf) qh = qh.Where(r => r.CreatedAt >= cf);
+    if (createdDateTo is DateTime ct) qh = qh.Where(r => r.CreatedAt <= ct);
+
+    // ---- bảng DÒNG: Ins_InsuranceReqDtl (mọi điều kiện dòng đều THU HẸP tập đầu) ----
+    var qd = db.InsuranceReqDtls.Where(d => d.OrgId == t.OrgId);
+    var dtlFiltered = false;
+    // 🔴 insReqNo áp LẦN THỨ HAI lên DÒNG — đúng nguồn :28624.
+    if (sNo.Length > 0)
+    {
+        var heads = db.InsuranceReqs.Where(r => r.OrgId == t.OrgId && EF.Functions.Like(r.InsReqNo, patNo, "\\")).Select(r => r.Id);
+        qd = qd.Where(d => heads.Contains(d.InsuranceReqId)); dtlFiltered = true;
+    }
+    if (sVin.Length > 0) { var p = Pat(sVin); qd = qd.Where(d => EF.Functions.Like(d.VIN, p, "\\")); dtlFiltered = true; }
+    if (sRefOrd.Length > 0) { var p = Pat(sRefOrd); qd = qd.Where(d => d.RefOrdNo != null && EF.Functions.Like(d.RefOrdNo, p, "\\")); dtlFiltered = true; }
+    if (lstTransp.Count > 0) { qd = qd.Where(d => d.TransporterCode != null && lstTransp.Contains(d.TransporterCode.ToUpper())); dtlFiltered = true; }
+    if (lstDtlStatus.Count > 0) { qd = qd.Where(d => lstDtlStatus.Contains(d.InsReqDtlStatus.ToUpper())); dtlFiltered = true; }
+    if (expectedStartDateFrom is DateTime ef) { qd = qd.Where(d => d.ExpectedStartDate >= ef); dtlFiltered = true; }
+    if (expectedStartDateTo is DateTime et) { qd = qd.Where(d => d.ExpectedStartDate <= et); dtlFiltered = true; }
+    if (lstDealer.Count > 0)
+    {
+        // cc.DealerCode — qua bảng XE theo VIN của dòng.
+        var vinsOfDealer = db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.DealerCode != null && lstDealer.Contains(c.DealerCode.ToUpper())).Select(c => c.VIN);
+        qd = qd.Where(d => vinsOfDealer.Contains(d.VIN)); dtlFiltered = true;
+    }
+    if (dtlFiltered)
+    {
+        var ids = qd.Select(d => d.InsuranceReqId);
+        qh = qh.Where(r => ids.Contains(r.Id));
+    }
+
+    var start = Math.Max(recordStart ?? 0, 0);
+    var take = Math.Clamp(recordCount ?? 500, 1, 2000);
+    var total = await qh.CountAsync();
+    var heads2 = await qh.OrderBy(r => r.InsReqNo).Skip(start).Take(take).ToListAsync();
+    var headIds = heads2.Select(r => r.Id).ToList();
+
+    var companies = await db.MstInsuranceCompanies.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var types = await db.MstInsuranceTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var dtls = await db.InsuranceReqDtls.Where(d => d.OrgId == t.OrgId && headIds.Contains(d.InsuranceReqId)).ToListAsync();
+
+    var items = heads2.Select(r => new
+    {
+        r.InsReqNo, r.InsCompanyCode, r.InsTypeCode,
+        // nguồn làm giàu tên hãng / tên loại hình từ hai master (SalesService.cs:28707-28708).
+        InsCompanyName = companies.FirstOrDefault(c => c.InsCompanyCode == r.InsCompanyCode)?.InsCompanyName,
+        InsTypeName = types.Where(x => x.InsCompanyCode == r.InsCompanyCode && x.InsTypeCode == r.InsTypeCode)
+                           .OrderByDescending(x => x.EffectiveDate).FirstOrDefault()?.InsTypeName,
+        InsReqStatus = r.Status,
+        r.EffectiveDate, r.CreatedAt, r.CreatedBy, r.ApprovedDate, r.ApprovedBy, r.Remark,
+        cars = dtls.Count(d => d.InsuranceReqId == r.Id),
+        totalInsAmount = dtls.Where(d => d.InsuranceReqId == r.Id).Sum(d => d.InsAmount),
+    }).ToList();
+
+    var lines = dtls.Select(d => new
+    {
+        InsReqNo = heads2.First(h => h.Id == d.InsuranceReqId).InsReqNo,
+        d.VIN, d.ExpectedStartDate, d.InsAmount, d.InsuranceDay,
+        d.LocationFrom, d.LocationTo, d.ProvinceCodeFrom, d.ProvinceCodeTo,
+        d.Price, d.Rate, d.TransporterCode, d.RefOrdNo, d.RefOrdType,
+        d.DeliveryOutDate, d.Remark, d.InsReqDtlStatus,
+        d.ApprovedBy, d.ApprovedDate, d.CreatedBy, d.CreatedDate,
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        total, count = items.Count, items, lines,
+        doubleFilterNote = "insReqNo duoc ap HAI LAN dung nguon (SalesService.cs:28598 tren bang DAU + :28624 tren bang DONG) — bo mot ben la lech so dong.",
+        operatorNote = "Toan tu nguon: LIKE cho insReqNo/vin/refOrdNo; IN (danh sach phay) cho insCompanyCode/insTypeCode/insReqStatus/transporterCode/insReqDtlStatus/dealerCode; >= <= cho createdDate.",
+        noGuardNote = "Man nguon KHONG co guard 'phai nhap it nhat 1 dieu kien' (grep MESS_WARNING_CONDITION_4SEARCH trong FrmMngInsuranceReq.cs = 0 hit) — khac FrmMngCO/FrmMngLC. Goi khong tham so la HOP LE.",
+        dealerScopeNote = "dealerCode loc qua Car_Car.DealerCode (alias cc, SalesService.cs:28645), KHONG phai cot cua Ins_InsuranceReq* — o day di qua CarVinMasters theo VIN cua dong.",
+        unusedParamNote = "Man nguon luon truyen RONG: expectedStartDateFrom/To, transporterCode, insReqDtlStatus, dealerCode (FrmMngInsuranceReq.cs:405-409). Van mo du tham so vi service la be mat dung chung.",
+        likeGapNote = "Dung EF.Functions.Like (khong Contains => tranh instr() phan biet hoa/thuong tren SQLite, bay #18). Phan CO DAU van lech collation Viet cua SQL Server — bay #24, khai bao la GAP.",
+    });
+}).RequireAuthorization();
+// ============================================================================================
+
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
@@ -82967,3 +83216,10 @@ record RptKpiLegacyDto(
     decimal? AmountBPPayment, decimal? AmountBPWarranty, decimal? AmountBPLocal, decimal? AmountBPPaymentInsurance,
     decimal? AmountPartRO, decimal? AmountPartSO, decimal? AmountOill,
     decimal? AmountServiceGJ, decimal? AmountServiceBP, decimal? HourGJ, decimal? HourBP);
+
+// DTO boc 2 danh sach cho /api/repairorders/{no}/lines (xem ghi chu tai endpoint).
+sealed class RoLinesBodyDto
+{
+    public List<RoServiceDto>? services { get; set; }
+    public List<RoPartDto>? parts { get; set; }
+}

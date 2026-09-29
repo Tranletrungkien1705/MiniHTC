@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Quản lý hợp đồng ngoại</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1180px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} h2{font-size:15px;margin:20px 0 6px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
+  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase} .r{color:#dc2626} #msg{font-size:13px}
+  .note{font-size:12px;opacity:.7;border-left:3px solid var(--line);padding:6px 10px;margin:10px 0}
+  .wrap{overflow-x:auto}
+</style></head>
+<body>
+<h1>Quản lý hợp đồng ngoại <span class="muted">(port 1:1 FrmMngCO — CT_ContractOversea)</span></h1>
+<p class="muted">Trace: FrmMngCO.cs:131 → SalesService.SearchContractOversea (:16388) → WSHTC.64 CT_ContractOversea_Get (:59812) → Biz.HTC.WH.cs CT_ContractOversea_GetX (:30215).</p>
+
+<div class="bar">
+  <input id="ct" placeholder="Số hợp đồng ngoại" style="width:190px">
+  <input id="df" type="date" title="Ngày tạo từ">
+  <input id="dt" type="date" title="Ngày tạo đến">
+  <input id="rf" placeholder="Số PI (RefNo)" style="width:150px">
+  <button class="primary" onclick="search()">Tìm kiếm</button>
+  <span id="msg"></span>
+</div>
+<div class="note">
+  Guard nguồn (FrmMngCO.cs:122-128): phải có <b>ít nhất 1 trong 3</b> ô — số hợp đồng / ngày tạo từ / ngày tạo đến.
+  Ô <b>Số PI</b> <i>không</i> được tính vào guard — đây là quirk của WinForm, port giữ nguyên.
+</div>
+
+<h2>Hợp đồng ngoại (CT_ContractOversea)</h2>
+<div class="wrap">
+<table><thead><tr><th>Số hợp đồng</th><th>Ngày tạo</th><th>Người tạo</th><th>Số dòng PI</th></tr></thead>
+<tbody id="heads"><tr><td colspan="4" class="muted">Nhập điều kiện rồi bấm Tìm kiếm.</td></tr></tbody></table>
+</div>
+
+<h2>Dòng Proforma Invoice (Ord_PerformanceInvoiceDetail + alias OPI*)</h2>
+<div class="wrap">
+<table><thead><tr>
+  <th>Hợp đồng</th><th>RefNo</th><th>LC tạm</th><th>Spec</th><th>Model</th><th>Màu</th>
+  <th>Work order</th><th>Cảng</th><th>Nhà máy</th><th>SL</th>
+  <th>OPIOrderMonth</th><th>OPIProductionMonth</th><th>OPIExpectedMonth</th>
+</tr></thead>
+<tbody id="lines"><tr><td colspan="13" class="muted">—</td></tr></tbody></table>
+</div>
+
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t,ok){ F("msg").textContent=t; F("msg").className=ok?"":"r"; }
+const e=v=>v==null?"":String(v);
+const d=v=>v?String(v).substring(0,10):"";
+async function search(){
+  await token();
+  const p=new URLSearchParams();
+  if(F("ct").value.trim()) p.set("contractNo",F("ct").value.trim());
+  if(F("df").value) p.set("createdDateFrom",F("df").value);
+  if(F("dt").value) p.set("createdDateTo",F("dt").value);
+  if(F("rf").value.trim()) p.set("refNo",F("rf").value.trim());
+  const r=await fetch("/api/contractoverseas/search?"+p.toString(),{headers:H()});
+  const js=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(js.error||r.status),false);
+    F("heads").innerHTML='<tr><td colspan="4" class="muted">—</td></tr>';
+    F("lines").innerHTML='<tr><td colspan="13" class="muted">—</td></tr>'; return; }
+  msg("Tìm thấy "+js.total+" hợp đồng (hiện "+js.count+").",true);
+  const lines=js.piLines||[];
+  F("heads").innerHTML=(js.items||[]).map(x=>`<tr><td><b>${e(x.contractNo)}</b></td><td>${d(x.createdDate)}</td>
+      <td>${e(x.createdBy)}</td><td>${lines.filter(l=>l.contractNo===x.contractNo).length}</td></tr>`).join("")
+    ||'<tr><td colspan="4" class="muted">Không tìm thấy dữ liệu.</td></tr>';
+  F("lines").innerHTML=lines.map(l=>`<tr><td>${e(l.contractNo)}</td><td>${e(l.refNo)}</td><td>${e(l.lcTemp)}</td>
+      <td>${e(l.specCode)}</td><td>${e(l.modelCode)}</td><td>${e(l.colorCode)}</td><td>${e(l.workOrderNo)}</td>
+      <td>${e(l.portCode)}</td><td>${e(l.plantCode)}</td><td>${e(l.quantity)}</td>
+      <td>${e(l.opiOrderMonth)}</td><td>${e(l.opiProductionMonth)}</td><td>${e(l.opiExpectedMonth)}</td></tr>`).join("")
+    ||'<tr><td colspan="13" class="muted">—</td></tr>';
+}
+</script>
+</body></html>

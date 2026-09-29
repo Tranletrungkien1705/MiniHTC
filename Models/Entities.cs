@@ -11633,6 +11633,13 @@ public sealed class InsuranceReq
     public string? ApprovedBy { get; set; }
     /// <summary>Ghi chú của người duyệt (`Ins_InsuranceReq.Remark`) — ghi cả khi duyệt lẫn khi từ chối.</summary>
     public string? Remark { get; set; }
+
+    // ===== 4 cot mang tu nhanh MiniHTC sang (29/09) — nhanh -A da chot la canonical.
+    // Nguon: Ins_InsuranceReq. Cac cot audit/hieu luc ma ban -A con thieu.
+    public DateTime? EffectiveDate { get; set; }    // ngay hieu luc bao hiem
+    public string? CreatedBy { get; set; }          // nguoi tao
+    public DateTime? LogLUDateTime { get; set; }    // lan sua cuoi
+    public string? LogLUBy { get; set; }            // nguoi sua cuoi
 }
 public sealed class InsuranceReqDtl
 {
@@ -11655,6 +11662,22 @@ public sealed class InsuranceReqDtl
     /// Guard: sửa dòng chỉ khi **"P"**; xoá dòng khi **"P" hoặc "A"**.
     /// </summary>
     public string InsReqDtlStatus { get; set; } = "P";
+
+
+    // ===== 11 cot mang tu nhanh MiniHTC sang (29/09) — nhom "cot bi bo quen" cua
+    // Ins_InsuranceReqDtl: duyet/tao cap DONG, tinh di-den, don tham chieu, ngay xuat giao.
+    // Nhanh -A da chot la canonical nen cong lam tren MiniHTC phai gop ve day.
+    public string? ProvinceCodeFrom { get; set; }   // tinh di
+    public string? ProvinceCodeTo { get; set; }   // tinh den
+    public string? RefOrdNo { get; set; }   // so don tham chieu
+    public string? RefOrdType { get; set; }   // loai don tham chieu
+    public DateTime? DeliveryOutDate { get; set; }   // ngay xuat giao
+    public string? ApprovedBy { get; set; }   // nguoi duyet dong
+    public DateTime? ApprovedDate { get; set; }   // ngay duyet dong
+    public string? CreatedBy { get; set; }   // nguoi tao dong
+    public DateTime? CreatedDate { get; set; }   // ngay tao dong
+    public DateTime? LogLUDateTime { get; set; }   // lan sua cuoi
+    public string? LogLUBy { get; set; }   // nguoi sua cuoi
 }
 
 /// <summary>Cập nhật vị trí xe trong bãi (Vin.Location) — port 1:1 FrmLocationCar (2010.HTC/Sales/Logistic). Cập nhật vị trí lưu bãi theo VIN.</summary>
