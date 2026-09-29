@@ -1526,6 +1526,12 @@ public sealed class GpsClaim
     public string GpsClaimNo { get; set; } = "";
     public string GpsDvNo { get; set; } = "";            // số thiết bị GPS
     public string? BeforeFixRemark { get; set; }         // tình trạng trước sửa
+    // ===== 4 cot port 1:1 tu GPSF_GPSClaim (FrmGPSF_GPSClaimMng), phan loai (A) CAN PORT.
+    // Bo tien to "GPS" cho khop cach dat ten san co (GpsDvNo, BeforeFixRemark).
+    public DateTime? ReceivedDateTime { get; set; }   // GPSReceivedDateTime — ngay gio nhan thiet bi
+    public DateTime? FinishFixExpectedDate { get; set; }   // GPSFinishFixExpectedDate — ngay du kien hoan tat sua
+    public DateTime? FinishFixDateTime { get; set; }   // GPSFinishFixDateTime — ngay gio hoan tat sua
+    public string? AfterFixRemark { get; set; }   // GPSAfterFixRemark — tinh trang/ghi chu SAU sua
     public string? Remark { get; set; }
     public string ClaimStatus { get; set; } = "Pending"; // Pending → Approved
     public string ReceivedStatus { get; set; } = "";     // '' → Progress → Finished
@@ -10641,6 +10647,19 @@ public sealed class InsuranceReq
     public string? ApprovedBy { get; set; }
     /// <summary>Ghi chú của người duyệt (`Ins_InsuranceReq.Remark`) — ghi cả khi duyệt lẫn khi từ chối.</summary>
     public string? Remark { get; set; }
+    /// <summary>🔴 #B401 — `Ins_InsuranceReq.EffectiveDate` (NGÀY HIỆU LỰC của biểu phí áp cho yêu cầu).
+    /// Bằng chứng: `TERP.HTCClient/DbServices/SalesService.cs:28703` đọc thẳng
+    /// `dtRowSc[TblIns_InsuranceReq.EffectiveDate]` khi dựng lưới màn **FrmMngInsuranceReq**;
+    /// từ điển `_audit/DB_COT.tsv` xác nhận cột DB thật là `EFFECTIVEDATE`.
+    /// ⚠️ Đây chính là phần thứ BA của khoá `Mst_InsuranceType` (InsCompanyCode + InsTypeCode +
+    /// EffectiveDate) ⇒ thiếu cột này thì **không tra lại được biểu phí đã áp**, chỉ tra được biểu phí
+    /// mới nhất. Bản port trước (chỉ theo FrmNewInsuranceReq) bỏ hẳn cột này.</summary>
+    public DateTime? EffectiveDate { get; set; }
+    /// <summary>`Ins_InsuranceReq.CreatedBy` — `SalesService.cs:28702`.</summary>
+    public string? CreatedBy { get; set; }
+    /// <summary>`Ins_InsuranceReq.LogLUDateTime` / `LogLUBy` (`DB_COT.tsv`) — cặp cột log chuẩn hệ nguồn.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 public sealed class InsuranceReqDtl
 {
@@ -10663,6 +10682,29 @@ public sealed class InsuranceReqDtl
     /// Guard: sửa dòng chỉ khi **"P"**; xoá dòng khi **"P" hoặc "A"**.
     /// </summary>
     public string InsReqDtlStatus { get; set; } = "P";
+    /// <summary>🔴 #B402 — `Ins_InsuranceReqDtl.ProvinceCodeFrom` / `ProvinceCodeTo`: tỉnh ĐI / tỉnh ĐẾN.
+    /// Bằng chứng: `SalesService.cs:28733-28734`. `LocationFrom`/`LocationTo` (đã có) là **địa chỉ chữ**,
+    /// KHÔNG thay được **mã tỉnh** — mã tỉnh mới là thứ tra được biểu phí vận chuyển
+    /// (`TranspFee.ProvinceCodeFrom/To`) ⇒ hai lớp khác nhau, không gộp.</summary>
+    public string? ProvinceCodeFrom { get; set; }
+    public string? ProvinceCodeTo { get; set; }
+    /// <summary>🔴 #B403 — `Ins_InsuranceReqDtl.RefOrdNo` / `RefOrdType`: CHỨNG TỪ GỐC sinh ra dòng bảo hiểm
+    /// (`SalesService.cs:28736-28737`). `RefOrdNo` là **một trong 13 ô tìm** của màn `FrmMngInsuranceReq`
+    /// (`FrmMngInsuranceReq.cs:383` `txtRefOrdNo` → tham số `strIIRDRefOrdNo`, lọc `like '%…%'` tại
+    /// `SalesService.cs:28638`) ⇒ thiếu cột thì **ô tìm đó không có gì để lọc**.</summary>
+    public string? RefOrdNo { get; set; }
+    public string? RefOrdType { get; set; }
+    /// <summary>`Ins_InsuranceReqDtl.DeliveryOutDate` — ngày xuất kho của xe, `SalesService.cs:28741`.</summary>
+    public DateTime? DeliveryOutDate { get; set; }
+    /// <summary>Duyệt/tạo ở cấp DÒNG (`SalesService.cs:28727-28730`) — nguồn lưu riêng trên dòng,
+    /// không dùng lại cột của đầu.</summary>
+    public string? ApprovedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    /// <summary>Cặp cột log chuẩn (`DB_COT.tsv`).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Cập nhật vị trí xe trong bãi (Vin.Location) — port 1:1 FrmLocationCar (2010.HTC/Sales/Logistic). Cập nhật vị trí lưu bãi theo VIN.</summary>
@@ -12407,6 +12449,16 @@ public sealed class QcDocReqCar
     public string ClearanceFormNo { get; set; } = ""; // so phieu thong quan
     public string DocDeliverTypeCode { get; set; } = "";
     public string DtlStatus { get; set; } = "Pending";
+
+    // ===== 7 cot port 1:1 tu QC_DocReqDtl (FrmMngQCDocReq), phan loai (A) CAN PORT.
+    // Dich da bo tien to "Mv_" theo quy uoc cu (xem OrderNo // Mv_OrderNo o tren).
+    public string OrdMonth { get; set; } = "";   // Mv_OrdMonth — thang dat hang SX (yyyy-MM)
+    public string? SpecDescription { get; set; }   // Mv_SpecDescription — mo ta spec
+    public string? ColorNameVN { get; set; }   // Vin_Color_VN_Combined — ten mau VN da ghep
+    public DateTime? FGFormDate { get; set; }   // Mv_FGFormDate — ngay cap phieu xuat xuong
+    public DateTime? QCIssueDate { get; set; }   // Mv_IssueDate — ngay cap giay chung nhan QC
+    public DateTime? ClearanceFormDate { get; set; }   // Mv_ClearanceFormDate — ngay to khai thong quan
+    public DateTime? PDIDate { get; set; }   // Mv_PDIDate — ngay PDI
 }
 
 /// <summary>Đơn hàng nâng cấp (Upgrade Order) — port 1:1 FrmUpgradeOrder + FrmUpgradeMngOrderHtc. Header.</summary>

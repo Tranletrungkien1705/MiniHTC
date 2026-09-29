@@ -24,7 +24,13 @@
 </div>
 <div class="grid" id="kpis"></div>
 <h3>Phân bố RO theo trạng thái</h3>
-<div class="wrap"><table><thead><tr><th>Trạng thái</th><th class="num">Số RO</th></tr></thead><tbody id="rows"><tr><td colspan="2" class="muted">Nhấn "Tải KPI".</td></tr></tbody></table></div>
+<div class="wrap"><h3 style="margin:18px 0 6px">Số lượt xe theo loại công việc <span class="muted">(port 1:1 FrmReportKPI)</span></h3>
+<table><thead><tr><th>Loại công việc</th><th style="text-align:right">Số lượt</th></tr></thead>
+<tbody id="loaiviec"></tbody></table>
+<h3 style="margin:18px 0 6px">Tổng số khoang <span class="muted">(port 1:1 FrmReportKPI)</span></h3>
+<table><thead><tr><th>Loại khoang</th><th style="text-align:right">Số lượng</th></tr></thead>
+<tbody id="khoang"></tbody></table>
+<table><thead><tr><th>Trạng thái</th><th class="num">Số RO</th></tr></thead><tbody id="rows"><tr><td colspan="2" class="muted">Nhấn "Tải KPI".</td></tr></tbody></table></div>
 
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
@@ -46,6 +52,19 @@ async function load(){ await token();
     <div class="kpi"><b>${M(d.avgTicket)}</b><span class="lbl">TB/hóa đơn</span></div>
     <div class="kpi"><b>${M(d.paidInvoices)}/${M(d.totalInvoices)}</b><span class="lbl">HĐ đã thu / tổng</span></div>
     <div class="kpi"><b style="color:${d.unpaidInvoices>0?'var(--bad)':'inherit'}">${M(d.unpaidInvoices)}</b><span class="lbl">HĐ chưa thu</span></div>`;
+  // 8 cot "Tong so khoang" (port 1:1 FrmReportKPI — BizCarSv.zzzzCode.cs:3632-3640)
+  var KH=[["CavityNumber","Tổng số khoang"],["CavityMaintainNumber","Khoang bảo dưỡng nhanh (BDN)"],
+    ["CavityRONumber","Khoang sửa chữa chung (SCC)"],["CavityCopperNumber","Khoang đồng (KD)"],
+    ["CavityBPNumber","Khoang sơn (KS)"],["CabinetPaintNumber","Buồng sơn (BS)"],
+    ["CavityParkingNumber","Buồng sơn/giao xe/đậu xe (KTN)"],["CavityOtherNumber","Khoang khác (KHAC)"]];
+  // 7 cot "so luot xe theo loai cong viec" (port 1:1 FrmReportKPI)
+  var LV=[["CountCarService","Tổng số lượt xe dịch vụ"],["CountBDD","Bảo dưỡng (BDD)"],
+    ["CountSCC","Sửa chữa chung (SCC)"],["CountSCD","Sửa chữa đồng (SCD)"],
+    ["CountSCS","Sửa chữa sơn (SCS)"],["CountPDI","PDI"],["CountSPK","Phụ kiện (SPK)"]];
+  var eLv=F("loaiviec"); if(eLv) eLv.innerHTML=LV.map(function(k){
+    return '<tr><td>'+k[1]+'</td><td style="text-align:right">'+M(d[k[0]])+'</td></tr>';}).join("");
+  var eKh=F("khoang"); if(eKh) eKh.innerHTML=KH.map(function(k){
+    return '<tr><td>'+k[1]+'</td><td style="text-align:right">'+M(d[k[0]])+'</td></tr>';}).join("");
   F("rows").innerHTML=(d.byStatus||[]).map(o=>`<tr><td><span class="pill">${ST[o.status]||o.status}</span></td><td class="num">${M(o.count)}</td></tr>`).join("")||'<tr><td colspan="2" class="muted">Không có RO.</td></tr>';
 }
 </script>
