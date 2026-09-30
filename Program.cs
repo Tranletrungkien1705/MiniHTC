@@ -19419,7 +19419,7 @@ app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, s
     var qry = db.ServiceTradeMarks.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TradeMarkCode.Contains(q!) || x.TradeMarkName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -19431,9 +19431,10 @@ app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbConte
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == code);
     if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code }; db.ServiceTradeMarks.Add(row); }
     row.TradeMarkName = dto.TradeMarkName; row.UpdatedAt = DateTime.Now;
+    if (dto.DealerCode != null) row.DealerCode = dto.DealerCode;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -55930,7 +55931,7 @@ record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, st
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
-record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive);
+record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode);
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);

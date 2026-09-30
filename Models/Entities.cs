@@ -2986,6 +2986,7 @@ public sealed class ServiceTradeMark
     public Guid OrgId { get; set; }
     public string TradeMarkCode { get; set; } = "";
     public string? TradeMarkName { get; set; }
+    public string? DealerCode { get; set; }   // port 1:1 SerMstTradeMark.DealerCode — đại lý sở hữu/phạm vi thương hiệu (FrmTradeMarkCreate:122)
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
 }
