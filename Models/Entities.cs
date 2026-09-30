@@ -14101,8 +14101,8 @@ public sealed class Cavity
     public string CavityNo { get; set; } = "";
     public string? CavityName { get; set; }
     public string? CompartmentType { get; set; }   // loại khoang (Tbl_Mst_Compartment)
-    public string? StartWorkTime { get; set; }      // giờ bắt đầu ca
-    public string? FinishWorkTime { get; set; }     // giờ kết thúc ca
+    public string? StartUseDate { get; set; }       // port 1:1 Cavity.StartUseDate (ngày bắt đầu sử dụng khoang — FrmCavityCreate)
+    public string? FinishUseDate { get; set; }      // port 1:1 Cavity.FinishUseDate
     public string? Note { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;

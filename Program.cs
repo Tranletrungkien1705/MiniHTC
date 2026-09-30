@@ -28667,7 +28667,7 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
     if (!string.IsNullOrWhiteSpace(compartment)) query = query.Where(x => x.CompartmentType == compartment);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.CavityNo).Take(500)
-        .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartWorkTime, x.FinishWorkTime, x.Note, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartUseDate, x.FinishUseDate, x.Note, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -28680,11 +28680,11 @@ app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantConte
     var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code);
     if (ex is not null)
     {
-        ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartWorkTime = dto.StartWorkTime; ex.FinishWorkTime = dto.FinishWorkTime; ex.Note = dto.Note; ex.FlagActive = "1";
+        ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate; ex.Note = dto.Note; ex.FlagActive = "1";
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.CavityNo, updated = true });
     }
-    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartWorkTime = dto.StartWorkTime, FinishWorkTime = dto.FinishWorkTime, Note = dto.Note, FlagActive = "1" };
+    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartUseDate = dto.StartUseDate, FinishUseDate = dto.FinishUseDate, Note = dto.Note, FlagActive = "1" };
     db.Cavities.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.CavityNo, updated = false });
 }).RequireAuthorization();
@@ -55783,7 +55783,7 @@ record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Pho
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
-record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartWorkTime, string? FinishWorkTime, string? Note);
+record CavityDto(string CavityNo, string? CavityName, string? CompartmentType, string? StartUseDate, string? FinishUseDate, string? Note);
 record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive);
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive);
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath);
