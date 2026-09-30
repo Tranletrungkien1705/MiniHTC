@@ -46,6 +46,7 @@ public sealed class Dealer
     public string? ShowroomAddress { get; set; }
     public string? GarageAddress { get; set; }
     public string? GarageManagerPhoneNo { get; set; }
+    public string? GaragePhoneNo { get; set; }        // port 1:1 Dealer.GaragePhoneNo (SĐT xưởng, khác GarageManagerPhoneNo — FrmDealer.cs:501)
     public string? GarageFaxNo { get; set; }
     public string? DirectorName { get; set; }
     public string? DirectorPhoneNo { get; set; }

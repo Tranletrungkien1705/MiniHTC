@@ -336,7 +336,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) 
     var items = await query.OrderBy(d => d.DealerCode).Select(d => new
     { d.DealerCode, d.DealerName, d.DealerType, d.BUCode, d.BuPattern, d.ProvinceCode, d.Address, d.Phone, d.Fax, d.Email, d.TaxCode,
       d.FlagDirect, d.FlagActive, d.DealerScale, d.MRKAMCode, d.DealerPhoneNo, d.DealerFaxNo, d.CompanyName, d.CompanyAddress, d.ShowroomAddress,
-      d.GarageAddress, d.GarageManagerPhoneNo, d.GarageFaxNo, d.DirectorName, d.DirectorPhoneNo, d.DirectorEmail,
+      d.GarageAddress, d.GarageManagerPhoneNo, d.GaragePhoneNo, d.GarageFaxNo, d.DirectorName, d.DirectorPhoneNo, d.DirectorEmail,
       d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
       d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
@@ -358,7 +358,7 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     d.Address = dto.Address; d.Phone = dto.Phone; d.Fax = dto.Fax; d.Email = dto.Email; d.TaxCode = dto.TaxCode;
     d.FlagDirect = dto.FlagDirect; d.FlagActive = dto.FlagActive; d.DealerScale = dto.DealerScale;
     d.DealerPhoneNo = dto.DealerPhoneNo; d.DealerFaxNo = dto.DealerFaxNo; d.CompanyName = dto.CompanyName; d.CompanyAddress = dto.CompanyAddress;
-    d.ShowroomAddress = dto.ShowroomAddress; d.GarageAddress = dto.GarageAddress; d.GarageManagerPhoneNo = dto.GarageManagerPhoneNo; d.GarageFaxNo = dto.GarageFaxNo;
+    d.ShowroomAddress = dto.ShowroomAddress; d.GarageAddress = dto.GarageAddress; d.GarageManagerPhoneNo = dto.GarageManagerPhoneNo; d.GaragePhoneNo = dto.GaragePhoneNo; d.GarageFaxNo = dto.GarageFaxNo;
     d.DirectorName = dto.DirectorName; d.DirectorPhoneNo = dto.DirectorPhoneNo; d.DirectorEmail = dto.DirectorEmail;
     d.SalesManagerName = dto.SalesManagerName; d.SalesManagerPhoneNo = dto.SalesManagerPhoneNo; d.SalesManagerEmail = dto.SalesManagerEmail;
     d.GarageManagerName = dto.GarageManagerName; d.GarageManagerEmail = dto.GarageManagerEmail;
@@ -55060,7 +55060,7 @@ record ImportDealerRowDto(string? DealerCode, string? DealerName, string? Dealer
     string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail, string? ContactName, string? FlagDirect, string? FlagActive, string? DealerScale, string? Remark);
 record DealerDto(string DealerCode, string DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode, string? Address, string? Phone, string? Fax, string? Email, string? TaxCode,
     string? FlagDirect, string? FlagActive, string? DealerScale, string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress,
-    string? GarageAddress, string? GarageManagerPhoneNo, string? GarageFaxNo, string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail,
+    string? GarageAddress, string? GarageManagerPhoneNo, string? GaragePhoneNo, string? GarageFaxNo, string? DirectorName, string? DirectorPhoneNo, string? DirectorEmail,
     string? SalesManagerName, string? SalesManagerPhoneNo, string? SalesManagerEmail, string? GarageManagerName, string? GarageManagerEmail,
     string? ContactName, string? Signer, string? SignerPosition, string? CtrNoSigner, string? CtrNoSignerPosition, string? Remark, string? HTCStaffInCharge,
     string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,

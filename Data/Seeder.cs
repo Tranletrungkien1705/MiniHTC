@@ -549,6 +549,7 @@ public static class Seeder
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"ShowroomAddress\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"GarageAddress\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"GarageManagerPhoneNo\" text NULL",
+                "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"GaragePhoneNo\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"GarageFaxNo\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"DirectorName\" text NULL",
                 "ALTER TABLE public.\"Dealers\" ADD COLUMN IF NOT EXISTS \"DirectorPhoneNo\" text NULL",
