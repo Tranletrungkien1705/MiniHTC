@@ -27176,7 +27176,7 @@ app.MapGet("/api/campaignmarketings/{no}", async (string no, AppDbContext db, IT
     if (c is null) return Results.NotFound(new { no });
     var parts = await db.CampaignMarketingParts.Where(p => p.OrgId == t.OrgId && p.CampaignId == c.Id).Select(p => new { p.PartCode, p.PercentDiscount }).ToListAsync();
     return Results.Ok(new
-    { c.CamNo, c.CamName, c.CamDesc, c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart, c.WarrantyDateEnd, c.ConditionVin, c.ConditionPlateNo, c.ConditionDealer, parts });
+    { c.CamNo, c.CamName, c.CamDesc, c.EffDateStart, c.EffDateEnd, c.WarrantyDateStart, c.WarrantyDateEnd, c.ConditionVin, c.ConditionPlateNo, c.ConditionDealer, c.ConditionFullVin, c.CamMarketingStatus, c.Remark, parts });
 }).RequireAuthorization();
 
 // Khớp checkForm() + btnApply_Click gốc: guard tên/nội dung/ngày bắt buộc, PercentDiscount 0-100, PartCode không trùng trong 1 lần tạo.
@@ -27199,7 +27199,8 @@ app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbCon
         OrgId = t.OrgId, CamNo = no, CamName = dto.CamName.Trim(), CamDesc = dto.CamDesc,
         EffDateStart = dto.EffDateStart.Value, EffDateEnd = dto.EffDateEnd.Value,
         WarrantyDateStart = dto.WarrantyDateStart, WarrantyDateEnd = dto.WarrantyDateEnd,
-        ConditionVin = dto.ConditionVin, ConditionPlateNo = dto.ConditionPlateNo, ConditionDealer = dto.ConditionDealer
+        ConditionVin = dto.ConditionVin, ConditionPlateNo = dto.ConditionPlateNo, ConditionDealer = dto.ConditionDealer,
+        ConditionFullVin = dto.ConditionFullVin, CamMarketingStatus = dto.CamMarketingStatus, Remark = dto.Remark
     };
     db.CampaignMarketings.Add(c); await db.SaveChangesAsync();
     foreach (var p in parts)
@@ -55295,7 +55296,7 @@ record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? Apoin
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
 record InsuranceAttachmentSaveDto(List<string>? Codes);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
-record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, List<CampaignMarketingPartDto>? Parts);
+record CampaignMarketingDto(string? CamName, string? CamDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVin, string? ConditionPlateNo, string? ConditionDealer, string? ConditionFullVin, string? CamMarketingStatus, string? Remark, List<CampaignMarketingPartDto>? Parts);
 record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note, string? DealerCode = null);
 record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTime? InStorageDate, string? EngineNo, string? SerialNo, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, decimal UnitPriceAVN);
 record AvnPaymentDto(DateTime? PmtMonth, List<AvnPaymentLineDto>? Lines);

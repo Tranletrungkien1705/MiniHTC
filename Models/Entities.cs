@@ -5020,6 +5020,9 @@ public sealed class CampaignMarketing
     public string? ConditionVin { get; set; }        // CSV
     public string? ConditionPlateNo { get; set; }     // CSV
     public string? ConditionDealer { get; set; }      // CSV
+    public string? ConditionFullVin { get; set; }     // CSV — port 1:1 Ser_CampaignMarketing.ConditionFullVIN (cờ điều kiện thứ 4, có bảng detail Ser_CampaignMarketingFullVIN)
+    public string? CamMarketingStatus { get; set; }   // trạng thái duyệt — port 1:1 (dùng nhiều trong BizCarSv.CampaignMarketing)
+    public string? Remark { get; set; }               // ghi chú — port 1:1 Ser_CampaignMarketing.Remark
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
