@@ -13483,6 +13483,7 @@ public sealed class ServiceModel
     public string? ModelName { get; set; }
     public string? TradeMarkCode { get; set; }
     public string? ProductionCode { get; set; }
+    public string? ModelID { get; set; }          // port 1:1 CarModel.ModelID ("model TM" — FrmModelCreate:167, FrmModelModify)
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;

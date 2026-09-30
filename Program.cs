@@ -17811,7 +17811,7 @@ app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(trade)) query = query.Where(x => x.TradeMarkCode == trade);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.ModelID, x.DealerCode, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -17823,11 +17823,11 @@ app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, I
     var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
     if (ex is not null)
     {
-        ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
+        ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.ModelID = dto.ModelID; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.ModelCode, updated = true });
     }
-    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, DealerCode = dto.DealerCode, FlagActive = "1" };
+    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, ModelID = dto.ModelID, DealerCode = dto.DealerCode, FlagActive = "1" };
     db.ServiceModels.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.ModelCode, updated = false });
 }).RequireAuthorization();
@@ -55811,7 +55811,7 @@ record StockDocVoidDto(string? ToStatus);
 record ServiceStockInDto(string? SupplierCode, DateTime? StockInDate, List<ServiceStockInLineDto>? Lines, string? DealerCode = null);
 record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantity, decimal Price = 0, decimal Vat = 0);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null);
-record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
+record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode, string? ModelID);
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
 record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
