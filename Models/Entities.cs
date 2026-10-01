@@ -4432,6 +4432,10 @@ public sealed class Dms40SoRootDetail
     // #208: nguồn cascade `SORStatusDtl` kèm `LogLU*` trên dòng chi tiết khi huỷ.
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#403 SL đặt hàng tháng N+1 (`DMS40_Ord_SalesOrderRootDetail.QtyMonthCalculationN1`, "2019-05-17: thêm cột số lượng đặt hàng tháng n+1")
+    /// — client nhập; DMS40_Ord_SalesOrderRoot_SaveX_New20220406 chặn RequestedQuantity + QtyMonthCalculationN1 &lt; 0.</summary>
+    public decimal QtyMonthCalculationN1 { get; set; }
 }
 
 /// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).</summary>

@@ -22966,7 +22966,7 @@ app.MapGet("/api/dms40/soroots/{no}", async (string no, AppDbContext db, ITenant
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.Dms40SoRootDetails.Where(l => l.OrgId == t.OrgId && l.SoRootId == h.Id)
         .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.UnitPriceInit, l.RequestedQuantity, l.Approved1Quantity, l.Approved2Quantity, l.CancelQuantityTotal, l.Remark,
-            l.RequestedDate, l.Approved1Date, l.Approved2Date, l.SORStatusDtl }).ToListAsync();
+            l.RequestedDate, l.Approved1Date, l.Approved2Date, l.SORStatusDtl, l.QtyMonthCalculationN1 }).ToListAsync();   // #403
     return Results.Ok(new { h.SORCode, h.SOType, h.DealerCode, h.SPCode, h.OrderMonth, h.ProductionMonth, h.ExpectedMonth, h.Status, h.CreatedAt, h.ApprDTime,
         h.FinishDTime, h.FinishBy, h.GeneratedSoCode, lines });
 }).RequireAuthorization();
@@ -22979,6 +22979,10 @@ app.MapPost("/api/dms40/soroots", async (Dms40SoRootDto dto, AppDbContext db, IT
     if (dto.OrderMonth is null) return Results.BadRequest(new { error = "Chưa chọn tháng đơn hàng." });
     var lines = dto.Lines ?? new List<Dms40SoRootLineDto>();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu model." });
+    // #403 DMS40_Ord_SalesOrderRoot_SaveX_New20220406 (DMS40/zTemp.0.30.Order.cs:6972): RequestedQuantity + QtyMonthCalculationN1 < 0 ⇒ _ỊnvalidValue.
+    foreach (var l in lines)
+        if (l.RequestedQuantity + l.QtyMonthCalculationN1 < 0)
+            return Results.BadRequest(new { error = $"Số lượng đặt + SL tháng N+1 âm ({l.ModelCode}/{l.SpecCode}).", code = "DMS40_Ord_SalesOrderRoot_Save_InvalidValue", l.RequestedQuantity, l.QtyMonthCalculationN1 });
 
     var no = string.IsNullOrWhiteSpace(dto.SORCode) ? "SOR" + DateTime.Now.ToString("yyMMddHHmmss") : dto.SORCode.Trim().ToUpperInvariant();
     if (await db.Dms40SoRoots.AnyAsync(x => x.OrgId == t.OrgId && x.SORCode == no))
@@ -22987,7 +22991,7 @@ app.MapPost("/api/dms40/soroots", async (Dms40SoRootDto dto, AppDbContext db, IT
     db.Dms40SoRoots.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.Dms40SoRootDetails.Add(new Dms40SoRootDetail { OrgId = t.OrgId, SoRootId = h.Id, ModelCode = l.ModelCode, SpecCode = l.SpecCode, ColorCode = l.ColorCode, UnitPriceInit = l.UnitPriceInit, RequestedQuantity = l.RequestedQuantity, Remark = l.Remark,
-            RequestedDate = l.RequestedDate, SORStatusDtl = "P" });
+            RequestedDate = l.RequestedDate, SORStatusDtl = "P", QtyMonthCalculationN1 = l.QtyMonthCalculationN1 });   // #403
     await db.SaveChangesAsync();
     return Results.Ok(new { h.SORCode, h.Status, lines = lines.Count });
 }).RequireAuthorization();
@@ -57674,7 +57678,7 @@ record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, s
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
 record HtmvPdiDto(List<HtmvPdiCarDto>? Cars, string? Remark = null);
 record HtmvPdiCarsActionDto(List<string>? Vins);
-record Dms40SoRootLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal UnitPriceInit, decimal RequestedQuantity, string? Remark, DateTime? RequestedDate = null);
+record Dms40SoRootLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal UnitPriceInit, decimal RequestedQuantity, string? Remark, DateTime? RequestedDate = null, decimal QtyMonthCalculationN1 = 0);   // #403
 record Dms40SoRootDto(string? SORCode, string? SOType, string? DealerCode, string? SPCode, DateTime? OrderMonth, List<Dms40SoRootLineDto>? Lines);
 record Dms40SoRootApproveLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal Approved1Quantity, DateTime? Approved1Date = null);
 record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);

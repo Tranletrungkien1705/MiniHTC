@@ -1755,6 +1755,7 @@ public static class Seeder
         "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"Approved1Date\" timestamp",
         "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"Approved2Date\" timestamp",
         "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"SORStatusDtl\" text",
+        "ALTER TABLE public.\"Dms40SoRootDetails\" ADD COLUMN IF NOT EXISTS \"QtyMonthCalculationN1\" numeric NOT NULL DEFAULT 0",   // #403
         // #162 side-effect ContractPackingListCreate_New20190923
         "CREATE TABLE IF NOT EXISTS public.\"VinMyStatuses\" (\"Id\" bigserial primary key, \"OrgId\" uuid NOT NULL, \"VIN\" text NOT NULL DEFAULT '', \"MapDateTime\" timestamp, \"DeliveryOutDate\" timestamp, \"LogLUDateTime\" timestamp NOT NULL DEFAULT now(), \"LogLUBy\" text)",
         "ALTER TABLE public.\"DeviceCars\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
