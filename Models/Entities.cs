@@ -2732,8 +2732,16 @@ public sealed class SerInsuranceContract
     public DateTime? FinishDate { get; set; }
     public string? InsNo { get; set; }
     public decimal PaymentLimit { get; set; }
-    public string FlagActive { get; set; } = "1";
+    /// <summary>#339 `Ser_InsuranceContract.IsActive` (rename từ `FlagActive` khớp nguồn).</summary>
+    public string IsActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+    // ===== #339 parity Ser_InsuranceContract — cột `Ser_InsuranceContractCreate` (BizCarSv.Service.cs:14376) ghi =====
+    /// <summary>`DealerCode` — xưởng sở hữu HĐ; PHẠM VI của dãy InContractCode và của 2 guard trùng.</summary>
+    public string? DealerCode { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đơn giá thuê thiết bị GPS (Mst_UnitPriceGPS) — port 1:1 FrmMst_UnitPriceGPS (2010.HTC/Sales/Product). Theo số hợp đồng: đơn giá GPS + ngày hiệu lực. Upsert-by-ContractNo.</summary>

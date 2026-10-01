@@ -15,7 +15,8 @@
 <h1>Hợp đồng bảo hiểm dịch vụ <span class="muted">(port 1:1 FrmInsuranceContractCreate/Search — TCMotor DMSCarSv)</span></h1>
 <div class="card"><h3 style="margin-top:0">Thêm / sửa</h3>
   <div class="grid4">
-    <div><label>Mã HĐ (auto)</label><input id="code" placeholder="để trống = tự sinh"></div>
+    <div><label>Đại lý *</label><input id="dlr" style="width:90px"></div>
+    <div><label>Mã HĐ (auto)</label><input id="code" placeholder="để trống = tự sinh HDBH-…"></div>
     <div><label>Số HĐ *</label><input id="no"></div>
     <div><label>Loại thanh toán *</label><input id="pay"></div>
     <div><label>Hãng BH</label><select id="ins"><option value="">— chọn —</option></select></div>
@@ -41,7 +42,7 @@ async function loadIns(){ await token();
   const r=await fetch("/api/serinsurances",{headers:Hh()}); const d=await r.json();
   F("ins").innerHTML='<option value="">— chọn —</option>'+(d.items||[]).map(o=>`<option value="${esc(o.insNo)}">${esc(o.insNo)} — ${esc(o.insVieName)}</option>`).join(""); }
 async function save(){ await token();
-  const body={InContractCode:v("code"),InContractNo:F("no").value,TypePayment:v("pay"),StartDate:v("start"),FinishDate:v("finish"),InsNo:v("ins"),PaymentLimit:Number(F("limit").value||0)};
+  const body={DealerCode:v("dlr"),InContractCode:v("code"),InContractNo:F("no").value,TypePayment:v("pay"),StartDate:v("start"),FinishDate:v("finish"),InsNo:v("ins"),PaymentLimit:Number(F("limit").value||0)};
   const r=await fetch("/api/insurancecontracts",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.inContractCode); reset(); load();
 }
@@ -49,7 +50,7 @@ function edit(o){ F("code").value=o.inContractCode; F("no").value=o.inContractNo
 async function toggle(id){ await token(); await fetch("/api/insurancecontracts/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
 async function load(){ await token();
   const r=await fetch("/api/insurancecontracts?all="+(F("all").checked)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.inContractCode)}</b></td><td>${esc(o.inContractNo)}</td><td>${esc(o.typePayment)}</td><td>${esc(o.insNo)}</td><td>${dshow(o.startDate)}</td><td>${dshow(o.finishDate)}</td><td class="num">${nf(o.paymentLimit)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có hợp đồng.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.isActive==='1'?'':'off'}"><td><b>${esc(o.inContractCode)}</b></td><td>${esc(o.inContractNo)}</td><td>${esc(o.typePayment)}</td><td>${esc(o.insNo)}</td><td>${dshow(o.startDate)}</td><td>${dshow(o.finishDate)}</td><td class="num">${nf(o.paymentLimit)}</td><td><span class="pill ${o.isActive==='1'?'y':'n'}">${o.isActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có hợp đồng.</td></tr>';
 }
 loadIns();
 </script>

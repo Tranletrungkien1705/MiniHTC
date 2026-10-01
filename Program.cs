@@ -20697,13 +20697,13 @@ app.MapPost("/api/unitpricegps/{id}/toggle", async (long id, AppDbContext db, IT
 app.MapGet("/api/insurancecontracts", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
     var qry = db.SerInsuranceContracts.Where(x => x.OrgId == t.OrgId);
-    if (all != true) qry = qry.Where(x => x.FlagActive == "1");
+    if (all != true) qry = qry.Where(x => x.IsActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InContractCode.Contains(q!) || x.InContractNo!.Contains(q!) || x.InsNo!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.InContractCode, x.InContractNo, x.TypePayment, x.StartDate, x.FinishDate, x.InsNo, x.PaymentLimit, x.IsActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var no = (dto.InContractNo ?? "").Trim();
     if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập số hợp đồng bảo hiểm." });
@@ -20715,24 +20715,45 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
     if (!string.IsNullOrWhiteSpace(code))
         row = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractCode == code) ?? new SerInsuranceContract { OrgId = t.OrgId };
     else row = new SerInsuranceContract { OrgId = t.OrgId };
+    var whoIc = user.Identity?.Name ?? "system"; var nowIc = DateTime.Now;
+    no = no.ToUpperInvariant();   // nguồn ghi `strInContractNo.ToUpper()`
     if (row.Id == 0)
     {
-        row.InContractCode = string.IsNullOrWhiteSpace(code) ? "IC" + DateTime.Now.ToString("yyMMddHHmmss") : code;
+        // #339 TẠO MỚI port 1:1 `Ser_InsuranceContractCreate` (BizCarSv.Service.cs:14376; WS WSCarSv.asmx.cs:25236):
+        //   InContractCode = `myUtil_GetCmSeqCode(_dbMain, "Ser_InsuranceContract", "InContractCode", "HDBH-", dealer)`
+        //   ⇒ **HDBH-DealerCode-yyMMdd-NNN** (nguồn KHÔNG dùng mã client gửi khi tạo; bản cũ tự sinh "IC"+timestamp).
+        //   Guard (theo thứ tự nguồn):
+        //   · `CheckExistInsContractNo_InsNo` (:14312): đã có HĐ cùng (InContractNo, InsNo, DealerCode) ⇒ `Ser_InsContractNo_InsNo_Exist`;
+        //   · `CheckTime` (:14343): đã có HĐ cùng (InsNo, DealerCode, StartDate, FinishDate) ⇒ `Ser_InsContractCheckTime`.
+        //   DealerCode nguồn lấy từ phiên ⇒ BẮT BUỘC qua DTO. Ghi CreatedDate/CreatedBy/LogLU như nguồn.
+        var dealerIc = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+        if (dealerIc == "") return Results.BadRequest(new { error = "Chưa chọn đại lý (xưởng) của hợp đồng bảo hiểm." });
+        if (await db.SerInsuranceContracts.AnyAsync(x => x.OrgId == t.OrgId && x.InContractNo == no && x.InsNo == dto.InsNo && x.DealerCode == dealerIc))
+            return Results.BadRequest(new { error = "Số hợp đồng bảo hiểm đã tồn tại với hãng bảo hiểm này.", code = "Ser_InsContractNo_InsNo_Exist" });
+        if (await db.SerInsuranceContracts.AnyAsync(x => x.OrgId == t.OrgId && x.InsNo == dto.InsNo && x.DealerCode == dealerIc
+                && x.StartDate == dto.StartDate && x.FinishDate == dto.FinishDate))
+            return Results.BadRequest(new { error = "Đã có hợp đồng của hãng bảo hiểm này cùng thời gian hiệu lực.", code = "Ser_InsContractCheckTime" });
+        var icPrefix = CmSeq.Pattern("HDBH-", dealerIc);
+        row.InContractCode = CmSeq.Next(await db.SerInsuranceContracts.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerIc && x.InContractCode.StartsWith(icPrefix))
+            .Select(x => x.InContractCode).ToListAsync(), icPrefix);
+        row.DealerCode = dealerIc; row.CreatedDate = nowIc; row.CreatedBy = whoIc;
         db.SerInsuranceContracts.Add(row);
     }
-    row.InContractNo = no; row.TypePayment = dto.TypePayment; row.StartDate = dto.StartDate; row.FinishDate = dto.FinishDate; row.InsNo = dto.InsNo; row.PaymentLimit = dto.PaymentLimit; row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    // ⚠️ NỢ: nhánh SỬA nguồn là hàm riêng `Ser_InsuranceContractUpdate` (guard CheckExistInsContract + CheckExistInsContractNoModify) — chưa port.
+    row.InContractNo = no; row.TypePayment = dto.TypePayment; row.StartDate = dto.StartDate; row.FinishDate = dto.FinishDate; row.InsNo = dto.InsNo; row.PaymentLimit = dto.PaymentLimit; row.UpdatedAt = nowIc;
+    row.LogLUDateTime = nowIc; row.LogLUBy = whoIc;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.IsActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.InContractCode, row.InContractNo, row.PaymentLimit, row.FlagActive });
+    return Results.Ok(new { row.Id, row.InContractCode, row.InContractNo, row.PaymentLimit, row.IsActive, row.DealerCode });
 }).RequireAuthorization();
 
 app.MapPost("/api/insurancecontracts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    row.IsActive = row.IsActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.IsActive });
 }).RequireAuthorization();
 
 // ===== Master quy đổi đơn vị TST↔DMS (TstExchangeUnit — port 1:1 FrmTST_Mst_Exchange_Unit, TCMotor DMSCarSv) =====
@@ -56679,7 +56700,7 @@ record ServicePackageDto(string? ServicePackageNo, string? ServicePackageName, L
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor, decimal? ActManHour = null, decimal? VAT = null, string? Note = null, string? ExpenseType = null, string? ROType = null);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor, decimal? Quantity = null, decimal? VAT = null, string? Note = null, string? ExpenseType = null);
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
-record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
+record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive, string? DealerCode = null);   // #339 DealerCode
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);
 record StockOutOrderStatusDto(string? ToStatus);
