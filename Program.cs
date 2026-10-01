@@ -19314,24 +19314,53 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
 app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
     var query = db.ServicePackages.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PackageNo.Contains(q!) || (x.PackageName != null && x.PackageName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ServicePackageNo.Contains(q!) || (x.ServicePackageName != null && x.ServicePackageName.Contains(q!)));
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.PackageNo, x.PackageName, x.ServiceTotal, x.PartTotal, x.GrandTotal, x.FlagActive,
+        x.Id, x.ServicePackageNo, x.ServicePackageName, x.DealerCode, x.TakingTime, x.Description, x.Creator,
+        x.CreatedDate, x.CreatedBy, x.IsPublicFlag, x.IsUserBasePrice, x.LogLUDateTime, x.LogLUBy,
+        x.ServiceTotal, x.PartTotal, x.GrandTotal, x.FlagActive,
         services = db.ServicePackageServices.Count(s => s.OrgId == t.OrgId && s.ServicePackageId == x.Id),
         parts = db.ServicePackageParts.Count(p => p.OrgId == t.OrgId && p.ServicePackageId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Tạo/cập nhật gói theo PackageNo: thay toàn bộ dòng CV + PT, tính tổng (Price×Factor mỗi dòng).
-app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext db, ITenantContext t) =>
+// #308 Tạo (ServicePackageID rỗng → SerServicePackageCreate) / sửa (có ID → SerServicePackageUpdate), BizCarSv.ServicePackage.cs:179/546.
+// Thay toàn bộ dòng CV + PT, tính tổng (Price×Factor mỗi dòng).
+app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var no = (dto.PackageNo ?? "").Trim();
-    if (no == "") return Results.BadRequest(new { error = "Thiếu mã gói dịch vụ." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var isCreate = dto.ServicePackageID is null;
+    var no = (dto.ServicePackageNo ?? "").Trim();
+    var name = (dto.ServicePackageName ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    ServicePackage? h = null;
+    if (!isCreate)
+    {
+        // CheckExistServicePackage → Ser_ServicePackageNo_NotFound
+        h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == dto.ServicePackageID);
+        if (h is null) return Results.NotFound(new { error = "Không tìm thấy gói dịch vụ (Ser_ServicePackageNo_NotFound).", dto.ServicePackageID });
+    }
+    // Create: CheckExistServicePackageNo chạy TRƯỚC CheckServicePackageFieldEmpty; Update: ngược lại (giữ thứ tự nguồn).
+    async Task<bool> NoExists() => await db.ServicePackages.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+        && x.ServicePackageNo.ToUpper() == no.ToUpper() && (isCreate || x.Id != dto.ServicePackageID));
+    if (isCreate && no != "" && await NoExists()) return Results.BadRequest(new { error = "Mã gói dịch vụ đã tồn tại ở đại lý (Ser_ServicePackageNo_Exist).", servicePackageNo = no });
+    // CheckServicePackageFieldEmpty
+    if (no == "") return Results.BadRequest(new { error = "Thiếu mã gói dịch vụ (Ser_ServicePackage_ServicePackageNoEmpty)." });
+    if (dealer == "") return Results.BadRequest(new { error = "Thiếu mã đại lý (Ser_ServicePackage_DealerEmpty)." });
+    if (name == "") return Results.BadRequest(new { error = "Thiếu tên gói dịch vụ (Ser_ServicePackage_ServicePackageNameEmpty)." });
+    if (!isCreate && await NoExists()) return Results.BadRequest(new { error = "Mã gói dịch vụ đã tồn tại ở đại lý (Ser_ServicePackageNo_Exist).", servicePackageNo = no });
+    // Guard form (FrmServicePackageCreate.CheckFieldEmpty/CheckFieldLength:770-830).
+    if (dto.TakingTime is null) return Results.BadRequest(new { error = "Thiếu thời gian thực hiện (TakingTime)." });
+    if (dto.TakingTime < 0) return Results.BadRequest(new { error = "Thời gian thực hiện phải trong khoảng 0..2147483647." });
+    if (no.Length > 50) return Results.BadRequest(new { error = "Mã gói dịch vụ tối đa 50 ký tự." });
+    if (name.Length > 200) return Results.BadRequest(new { error = "Tên gói dịch vụ tối đa 200 ký tự." });
+    if ((dto.Description ?? "").Length > 500) return Results.BadRequest(new { error = "Mô tả tối đa 500 ký tự." });
     var svcs = dto.Services ?? new(); var parts = dto.Parts ?? new();
-    if (svcs.Count == 0 && parts.Count == 0) return Results.BadRequest(new { error = "Gói phải có ít nhất 1 dòng công hoặc phụ tùng." });
+    // SerServicePackageCreate_ServiceTableNotBlank — CHỈ có ở Create (Update nguồn không chặn).
+    if (isCreate && svcs.Count == 0) return Results.BadRequest(new { error = "Phần công lao động không được trống! (SerServicePackageCreate_ServiceTableNotBlank)" });
     decimal svcTotal = 0, partTotal = 0;
     var svcRows = new List<ServicePackageService>();
     foreach (var s in svcs)
@@ -19351,16 +19380,42 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         partTotal += amt;
         partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt });
     }
-    var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PackageNo == no);
-    if (h is null) { h = new ServicePackage { OrgId = t.OrgId, PackageNo = no }; db.ServicePackages.Add(h); }
-    h.PackageName = dto.PackageName; h.ServiceTotal = svcTotal; h.PartTotal = partTotal; h.GrandTotal = svcTotal + partTotal; h.UpdatedAt = DateTime.Now;
+    static string? N(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
+    if (isCreate)
+    {
+        // Create: CreatedDate = ngày server (bỏ qua strCreatedDate client), CreatedBy = user; cột rỗng thì không gán.
+        h = new ServicePackage { OrgId = t.OrgId, CreatedDate = now.Date, CreatedBy = who };
+        db.ServicePackages.Add(h);
+    }
+    else
+    {
+        // Update: CreatedDate lấy từ client, rỗng ⇒ NULL (mọi cột tuỳ chọn rỗng đều về NULL).
+        h!.CreatedDate = DateTime.TryParse(dto.CreatedDate, out var cd) ? cd : null;
+    }
+    h.DealerCode = dealer; h.ServicePackageNo = no.ToUpperInvariant(); h.ServicePackageName = name;
+    h.TakingTime = dto.TakingTime; h.Description = N(dto.Description); h.Creator = N(dto.Creator);
+    h.IsPublicFlag = N(dto.IsPublicFlag); h.IsUserBasePrice = N(dto.IsUserBasePrice);
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    h.ServiceTotal = svcTotal; h.PartTotal = partTotal; h.GrandTotal = svcTotal + partTotal; h.UpdatedAt = now;
     await db.SaveChangesAsync();
     db.ServicePackageServices.RemoveRange(db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
     db.ServicePackageParts.RemoveRange(db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == h.Id));
     foreach (var s in svcRows) { s.ServicePackageId = h.Id; db.ServicePackageServices.Add(s); }
     foreach (var p in partRows) { p.ServicePackageId = h.Id; db.ServicePackageParts.Add(p); }
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.PackageNo, h.ServiceTotal, h.PartTotal, h.GrandTotal });
+    return Results.Ok(new { h.Id, h.ServicePackageNo, h.ServiceTotal, h.PartTotal, h.GrandTotal });
+}).RequireAuthorization();
+
+// #308 SerServicePackageDelete (BizCarSv.ServicePackage.cs:1165): xoá CỨNG dòng CV + PT rồi header.
+app.MapPost("/api/servicepackages/{id}/delete", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { error = "Không tìm thấy gói dịch vụ (Ser_ServicePackageNo_NotFound).", id });
+    db.ServicePackageServices.RemoveRange(db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id));
+    db.ServicePackageParts.RemoveRange(db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id));
+    db.ServicePackages.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { id, deleted = true });
 }).RequireAuthorization();
 
 app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, ITenantContext t) =>
@@ -19369,7 +19424,9 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
     if (h is null) return Results.NotFound(new { id });
     var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount }).ToListAsync();
     var parts = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.PartCode, x.PartName, x.Price, x.Factor, x.Amount }).ToListAsync();
-    return Results.Ok(new { h.PackageNo, h.PackageName, h.ServiceTotal, h.PartTotal, h.GrandTotal, services = svcs, parts });
+    return Results.Ok(new { h.Id, h.ServicePackageNo, h.ServicePackageName, h.DealerCode, h.TakingTime, h.Description, h.Creator,
+        h.CreatedDate, h.CreatedBy, h.IsPublicFlag, h.IsUserBasePrice, h.LogLUDateTime, h.LogLUBy,
+        h.ServiceTotal, h.PartTotal, h.GrandTotal, services = svcs, parts });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -56006,7 +56063,9 @@ record SalesmanDeptFixDto(long Id, string? DepartmentCode, string? SalesType);
 record CusInvoiceFixDto(long Id, string? CusInvoiceNo, string? CusInvoiceDate);
 record PlateNoFixDto(long Id, string? PlateNo);
 record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? CommonUnit);
-record ServicePackageDto(string PackageNo, string? PackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts);
+record ServicePackageDto(string? ServicePackageNo, string? ServicePackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts,
+    long? ServicePackageID = null, string? DealerCode = null, int? TakingTime = null, string? Description = null, string? Creator = null,
+    string? CreatedDate = null, string? IsPublicFlag = null, string? IsUserBasePrice = null);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);

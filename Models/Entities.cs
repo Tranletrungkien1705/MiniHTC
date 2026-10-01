@@ -2550,8 +2550,24 @@ public sealed class ServicePackage
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string PackageNo { get; set; } = "";
-    public string? PackageName { get; set; }
+    // #308 đổi tên khớp nguồn TblSerServicePackage (DbDefine.cs:1393): PackageNo/PackageName → ServicePackageNo/ServicePackageName.
+    public string ServicePackageNo { get; set; } = "";
+    public string? ServicePackageName { get; set; }
+    /// <summary>Đại lý sở hữu gói — mã gói duy nhất THEO đại lý (CheckExistServicePackageNo, BizCarSv.ServicePackage.cs:53).</summary>
+    public string DealerCode { get; set; } = "";
+    /// <summary>Thời gian thực hiện (số nguyên ≥0; ConvertTimeToStr nguồn đã bỏ quy đổi giờ:phút, giữ nguyên số).</summary>
+    public int? TakingTime { get; set; }
+    public string? Description { get; set; }
+    /// <summary>Người tạo do client nhập (`Creator`) — khác `CreatedBy` = user đăng nhập do biz tự gán.</summary>
+    public string? Creator { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>"1" Dùng chung / "0" Riêng tư.</summary>
+    public string? IsPublicFlag { get; set; }
+    /// <summary>"1" dùng giá cơ bản / "0" dùng giá riêng của gói (20121012).</summary>
+    public string? IsUserBasePrice { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public decimal ServiceTotal { get; set; }
     public decimal PartTotal { get; set; }
     public decimal GrandTotal { get; set; }

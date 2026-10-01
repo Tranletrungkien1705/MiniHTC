@@ -16,7 +16,9 @@
 <body>
 <h1>Gói dịch vụ <span class="muted">(port 1:1 FrmServicePackageCreate/Search — TCMotor/Services)</span></h1>
 <div class="card"><h3 style="margin-top:0">Tạo/sửa gói</h3>
-  <div class="row"><div><label>Mã gói *</label><input id="hNo" style="width:120px"></div><div style="flex:1"><label>Tên gói</label><input id="hName" style="width:100%"></div></div>
+  <div class="row"><div><label>Mã gói *</label><input id="hNo" style="width:120px"></div><div style="flex:1"><label>Tên gói *</label><input id="hName" style="width:100%"></div></div>
+  <div class="row"><div><label>Đại lý *</label><input id="hDlr" style="width:100px"></div><div><label>Thời gian TH *</label><input id="hTime" type="number" min="0" style="width:90px"></div><div><label>Người tạo</label><input id="hCreator" style="width:110px"></div><div><label>Ngày tạo (sửa)</label><input id="hDate" type="date"></div><label><input id="hPub" type="checkbox"> Dùng chung</label><label><input id="hBase" type="checkbox"> Dùng giá cơ bản</label><input id="hId" type="hidden"></div>
+  <div><label>Mô tả</label><input id="hDesc" style="width:100%"></div>
   <h3>Công dịch vụ (Mã CV [tab] Tên [tab] Đơn giá [tab] Hệ số)</h3>
   <textarea id="hSvcs" placeholder="CV01&#9;Thay dau&#9;100000&#9;1"></textarea>
   <h3>Phụ tùng (Mã PT [tab] Tên [tab] Đơn giá [tab] Hệ số)</h3>
@@ -24,8 +26,8 @@
   <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu gói</button><span id="msg" class="msg"></span></div>
 </div>
 <div class="row" style="margin:8px 0"><input id="q" placeholder="Mã/tên gói" style="width:200px"><button onclick="load()">Xem</button></div>
-<div class="wrap"><table><thead><tr><th>Mã gói</th><th>Tên</th><th class="num">Công</th><th class="num">PT</th><th class="num">Tổng</th><th class="num">CV</th><th class="num">PT#</th><th>TT</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="9" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+<div class="wrap"><table><thead><tr><th>Mã gói</th><th>Tên</th><th>ĐL</th><th class="num">TG</th><th>Dùng chung</th><th class="num">Công</th><th class="num">PT</th><th class="num">Tổng</th><th class="num">CV</th><th class="num">PT#</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="12" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
 <div class="card" id="det" style="display:none"><h3 style="margin-top:0">Chi tiết <span id="detName" class="muted"></span></h3><div id="detBody"></div></div>
 
 <script>
@@ -41,9 +43,15 @@ function parse4(v){ return v.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map
 async function save(){ await token();
   const svcs=parse4(F("hSvcs").value).map(c=>({SerCode:c[0]||"",SerName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1}));
   const parts=parse4(F("hParts").value).map(c=>({PartCode:c[0]||"",PartName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1}));
-  const r=await fetch("/api/servicepackages",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({PackageNo:F("hNo").value,PackageName:F("hName").value,Services:svcs,Parts:parts})});
-  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } m(`Đã lưu ${d.packageNo} (tổng ${M(d.grandTotal)})`); F("hSvcs").value="";F("hParts").value=""; load();
+  const r=await fetch("/api/servicepackages",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({ServicePackageID:F("hId").value?+F("hId").value:null,ServicePackageNo:F("hNo").value,ServicePackageName:F("hName").value,DealerCode:F("hDlr").value,TakingTime:F("hTime").value===""?null:+F("hTime").value,Description:F("hDesc").value,Creator:F("hCreator").value,CreatedDate:F("hDate").value||null,IsPublicFlag:F("hPub").checked?"1":"0",IsUserBasePrice:F("hBase").checked?"1":"0",Services:svcs,Parts:parts})});
+  const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } F("hId").value=""; m(`Đã lưu ${d.servicePackageNo} (tổng ${M(d.grandTotal)})`); F("hSvcs").value="";F("hParts").value=""; load();
 }
+async function del(id){ if(!confirm("Xoá gói dịch vụ?")) return; await token(); await fetch("/api/servicepackages/"+id+"/delete",{method:"POST",headers:H()}); load(); }
+async function edit(id){ await token(); const d=await (await fetch("/api/servicepackages/"+id+"/detail",{headers:H()})).json();
+  F("hId").value=d.id; F("hNo").value=d.servicePackageNo; F("hName").value=d.servicePackageName||""; F("hDlr").value=d.dealerCode||""; F("hTime").value=d.takingTime??""; F("hDesc").value=d.description||""; F("hCreator").value=d.creator||""; F("hDate").value=(d.createdDate||"").slice(0,10); F("hPub").checked=d.isPublicFlag==="1"; F("hBase").checked=d.isUserBasePrice==="1";
+  F("hSvcs").value=(d.services||[]).map(x=>[x.serCode,x.serName,x.price,x.factor].join("	")).join("
+"); F("hParts").value=(d.parts||[]).map(x=>[x.partCode,x.partName,x.price,x.factor].join("	")).join("
+"); m("Đang sửa "+d.servicePackageNo); }
 async function toggle(id){ await token(); await fetch("/api/servicepackages/"+id+"/toggle",{method:"POST",headers:H()}); load(); }
 async function detail(id,no){ await token(); const r=await fetch("/api/servicepackages/"+id+"/detail",{headers:H()}); const d=await r.json();
   F("det").style.display="block"; F("detName").textContent="— "+no;
@@ -55,7 +63,7 @@ async function detail(id,no){ await token(); const r=await fetch("/api/servicepa
 }
 async function load(){ await token();
   const r=await fetch("/api/servicepackages?q="+encodeURIComponent(F("q").value),{headers:H()}); const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.packageNo)}</b></td><td>${esc(o.packageName)}</td><td class="num">${M(o.serviceTotal)}</td><td class="num">${M(o.partTotal)}</td><td class="num tot">${M(o.grandTotal)}</td><td class="num">${o.services}</td><td class="num">${o.parts}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="detail(${o.id},'${esc(o.packageNo)}')">Chi tiết</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có gói.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.servicePackageNo)}</b></td><td>${esc(o.servicePackageName)}</td><td>${esc(o.dealerCode)}</td><td class="num">${o.takingTime??""}</td><td>${o.isPublicFlag==="1"?"Dùng chung":"Riêng tư"}</td><td class="num">${M(o.serviceTotal)}</td><td class="num">${M(o.partTotal)}</td><td class="num tot">${M(o.grandTotal)}</td><td class="num">${o.services}</td><td class="num">${o.parts}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="detail(${o.id},'${esc(o.servicePackageNo)}')">Chi tiết</button><button class="link" onclick="edit(${o.id})">Sửa</button><button class="link" onclick="del(${o.id})">Xoá</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="12" class="muted">Chưa có gói.</td></tr>';
 }
 </script>
 </body></html>
