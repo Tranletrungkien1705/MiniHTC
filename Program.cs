@@ -7418,6 +7418,9 @@ app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbCon
     // #342 hiệu ứng phụ nguồn: myPmt_Guarantee_Upd_DateEnd_Discount_New20181119(strPaymentNo) cho từng phiếu
     //   ⇒ #tbl_Grt_Id = distinct GuaranteeNo của Pmt_PaymentDetail thuộc phiếu.
     var confirmedNos = plan.Select(x => x.p.PaymentNo).ToList();
+    // #345 thứ tự nguồn (TCFIntergration.cs:6964): Car_Car.PaymentStatus TRƯỚC, rồi DateEnd_01/_Discount, rồi PostCheck.
+    var carsUpdated = 0;
+    foreach (var pn in confirmedNos) carsUpdated += await PmtCheck.UpdCarPaymentStatus(db, t.OrgId, pn, who);
     var grtNosTcf = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && confirmedNos.Contains(d.PaymentNo) && d.GuaranteeNo != null)
         .Select(d => d.GuaranteeNo!).Distinct().ToListAsync();
     // #343 thứ tự nguồn (TCFIntergration.cs:6973-6990): DateEnd_01 rồi DateEnd_Discount.
@@ -7431,8 +7434,8 @@ app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbCon
         if (bad344 is not null) { await txTcf.RollbackAsync(); return Results.BadRequest(bad344); }
     }
     await txTcf.CommitAsync();
-    return Results.Ok(new { confirmed = plan.Count, paymentNos = confirmedNos, guaranteesRecalculated = grtUpdated,
-        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, đẩy sao kê TCF." });
+    return Results.Ok(new { confirmed = plan.Count, paymentNos = confirmedNos, carsUpdated, guaranteesRecalculated = grtUpdated,
+        debt = "Chưa chạy: đẩy sao kê sang TCF (hiệu ứng ra ngoài, không tự bắn)." });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
@@ -56470,6 +56473,32 @@ record BankPmConfirmTcfRowDto(string? PaymentNo, string? AccountingRecordNo, Dat
 /// Giá xe NULL ⇒ phép trừ NULL ⇒ KHÔNG vi phạm (đúng SQL nguồn). MiniHTC: dòng BL khoá VIN ⇒ quy về CarId qua CarVinMasters.</summary>
 static class PmtCheck
 {
+    /// <summary>🔴 #345 Port 1:1 `myPayment_UpdateCarPaymentStatus_New20181119` (Biz.HTC.WH.cs:46017; gọi ở PaymentPaymentConfirm_New20181119,
+    /// PaymentPaymentUndoConfirm_New20181119, PaymentPaymentConfirm_MultiX). Với từng CarId của phiếu:
+    /// AmountTotal = Σ Pmt_PaymentDetail.Amount (MỌI dòng, kể cả dòng có GuaranteeNo — `bGuaranteeNoBeNull=false`) của phiếu
+    /// PaymentStatus **'F'** (bản 'A','F' đã comment); `Car_Car.PaymentStatus = |UnitPriceActual − AmountTotal| &lt; 0.001 ? "F" : "P"`
+    /// (giá xe NULL ⇒ Abs(NULL) ⇒ "P") + LogLU. Ghi Main + WH.</summary>
+    public static async Task<int> UpdCarPaymentStatus(AppDbContext db, Guid org, string paymentNo, string who)
+    {
+        var carIds = await db.PmtPaymentDetails.Where(d => d.OrgId == org && d.PaymentNo == paymentNo && d.CarId != null)
+            .Select(d => d.CarId!).Distinct().ToListAsync();
+        if (carIds.Count == 0) return 0;
+        var paid = (await (from d in db.PmtPaymentDetails
+                           join p in db.PmtPayments on d.PaymentNo equals p.PaymentNo
+                           where d.OrgId == org && p.OrgId == org && d.CarId != null && carIds.Contains(d.CarId) && p.PaymentStatus == "F"
+                           select new { d.CarId, d.Amount }).ToListAsync())
+            .GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Sum(x => x.Amount ?? 0m));
+        var cars = await db.CarVinMasters.Where(c => c.OrgId == org && c.CarId != null && carIds.Contains(c.CarId)).ToListAsync();
+        var now = DateTime.Now;
+        foreach (var c in cars)
+        {
+            var total = paid.TryGetValue(c.CarId!, out var v) ? v : 0m;
+            c.PaymentStatus = c.UnitPriceActual is decimal up && Math.Abs(up - total) < 0.001m ? "F" : "P";
+            c.LogLUDateTime = now; c.LogLUBy = who;
+        }
+        return cars.Count;
+    }
+
     public static async Task<object?> OverDeposit(AppDbContext db, Guid org, string paymentNo)
     {
         var carIds = await db.PmtPaymentDetails.Where(d => d.OrgId == org && d.PaymentNo == paymentNo && d.CarId != null)
