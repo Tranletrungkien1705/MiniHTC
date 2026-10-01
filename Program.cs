@@ -28258,57 +28258,37 @@ app.MapPost("/api/gpsinstalls/sync", async (AppDbContext db, ITenantContext t) =
     return Results.Ok(new { synced = pending.Count });
 }).RequireAuthorization();
 
-// ===== Thanh toán phí GPS theo tháng (GpsPayment — port 1:1 FrmTaoThanhToanGPS/FrmQuanLyThanhToanGPS, 2010.HTC Sales/Purchase) =====
+// ===== Thanh toán phí GPS theo tháng — ⛔ #387 HỢP NHẤT SONG SINH Pmt_PaymentGPS: GpsPayment ≡ PmtPaymentGps (cùng FrmTaoThanhToanGPS).
+// Bản chuẩn = PmtPaymentGps (/api/paymentgps). Route này là BÍ DANH giữ hình JSON cũ: TotalWithoutVAT = AmountTotal, AmountVAT = AmountTotal × VAT,
+// TotalAfterVAT = tổng hai. POST đi qua helper chuẩn PmtGpsCreate (công thức Pmt_PaymentGPS_Save).
 app.MapGet("/api/gpspayments", async (AppDbContext db, ITenantContext t, string? q) =>
 {
-    var qry = db.GpsPayments.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalWithoutVAT, x.AmountVAT, x.TotalAfterVAT, lines = db.GpsPaymentLines.Count(l => l.OrgId == t.OrgId && l.GpsPaymentId == x.Id) }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    var qry = db.PmtPaymentGpses.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PaymentGPSNo.Contains(q!));
+    var rows = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.PaymentGPSNo, x.PmtMonth, x.AmountTotal, x.VAT, x.PaymentGPSStatus, lines = db.PmtPaymentGpsDetails.Count(l => l.OrgId == t.OrgId && l.PaymentGPSNo == x.PaymentGPSNo) }).ToListAsync();
+    var items = rows.Select(x => { var v = Math.Round(x.AmountTotal * x.VAT, 0); return new
+    { PmtNo = x.PaymentGPSNo, x.PmtMonth, TotalWithoutVAT = x.AmountTotal, AmountVAT = v, TotalAfterVAT = x.AmountTotal + v, Status = x.PaymentGPSStatus, x.lines }; }).ToList();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/paymentgps" });
 }).RequireAuthorization();
 
 app.MapGet("/api/gpspayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var h = await db.GpsPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    var h = await db.PmtPaymentGpses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentGPSNo == no);
     if (h is null) return Results.NotFound(new { no });
-    var lines = await db.GpsPaymentLines.Where(l => l.OrgId == t.OrgId && l.GpsPaymentId == h.Id).Select(l => new
-    { l.Vin, l.SpecCode, l.ModelCode, l.ModelName, l.GpsId, l.CostGPSStartDate, l.CostGPSEndDate, l.DeductDate, l.PriceGPS, l.PlanCostGPSDate, l.ActualCostGPSDate, l.AmountGPS }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalWithoutVAT, h.AmountVAT, h.TotalAfterVAT, lines });
+    var lines = await db.PmtPaymentGpsDetails.Where(l => l.OrgId == t.OrgId && l.PaymentGPSNo == no).Select(l => new
+    { Vin = l.VIN, GpsId = l.GPSID, l.CostGPSStartDate, l.CostGPSEndDate, l.DeductDate, l.PriceGPS, l.PlanCostGPSDate, l.ActualCostGPSDate, l.AmountGPS, l.ContractGPS }).ToListAsync();
+    var v = Math.Round(h.AmountTotal * h.VAT, 0);
+    return Results.Ok(new { PmtNo = h.PaymentGPSNo, h.PmtMonth, TotalWithoutVAT = h.AmountTotal, AmountVAT = v, TotalAfterVAT = h.AmountTotal + v, Status = h.PaymentGPSStatus, lines, mergedInto = "/api/paymentgps" });
 }).RequireAuthorization();
 
-// Khớp btnSave gốc: guard tháng thanh toán bắt buộc + ngày KT>=ngày BĐ; tự tính PlanCostGPSDate/ActualCostGPSDate/AmountGPS + VAT 10%.
-app.MapPost("/api/gpspayments", async (GpsPaymentDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/gpspayments", async (GpsPaymentDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (dto.PmtMonth is null) return Results.BadRequest(new { error = "Chưa nhập tháng thanh toán" });
-    var lines = dto.Lines ?? new List<GpsPaymentLineDto>();
-    foreach (var l in lines)
-        if (l.CostGPSEndDate < l.CostGPSStartDate) return Results.BadRequest(new { error = "Ngày kết thúc tính phí phải lớn hơn hoặc bằng ngày bắt đầu!" });
-    foreach (var l in lines)
-        if (l.DeductDate < 0) return Results.BadRequest(new { error = "Ngày khấu trừ phải lớn hơn hoặc bằng 0" });
-
-    var no = "GPS" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new GpsPayment { OrgId = t.OrgId, PmtNo = no, PmtMonth = dto.PmtMonth.Value };
-    db.GpsPayments.Add(h); await db.SaveChangesAsync();
-
-    decimal total = 0;
-    foreach (var l in lines)
-    {
-        var plan = (int)(l.CostGPSEndDate.Date - l.CostGPSStartDate.Date).TotalDays + 1;
-        var actual = Math.Max(0, plan - l.DeductDate);
-        var amount = l.PriceGPS * actual;
-        total += amount;
-        db.GpsPaymentLines.Add(new GpsPaymentLine
-        {
-            OrgId = t.OrgId, GpsPaymentId = h.Id, Vin = (l.Vin ?? "").Trim().ToUpperInvariant(), SpecCode = l.SpecCode, ModelCode = l.ModelCode, ModelName = l.ModelName,
-            SpecDescription = l.SpecDescription, GpsId = l.GpsId, CostGPSStartDate = l.CostGPSStartDate, CostGPSEndDate = l.CostGPSEndDate, DeductDate = l.DeductDate,
-            PriceGPS = l.PriceGPS, ContractGPS = l.ContractGPS, PlanCostGPSDate = plan, ActualCostGPSDate = actual, AmountGPS = amount
-        });
-    }
-    h.TotalWithoutVAT = total; h.AmountVAT = Math.Round(total * 0.1m, 0); h.TotalAfterVAT = h.TotalWithoutVAT + h.AmountVAT;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.TotalWithoutVAT, h.AmountVAT, h.TotalAfterVAT, lines = lines.Count });
+    var rows = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.Vin))
+        .Select(l => new PmtGpsDtlDto(l.Vin!, null, l.GpsId, null, l.CostGPSStartDate, null, l.CostGPSEndDate, null, l.DeductDate, null, l.PriceGPS, 0, l.ContractGPS)).ToList();
+    return await PmtGpsCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth.Value.ToString("yyyy-MM"), 0, rows);
 }).RequireAuthorization();
 
 // ===== Thanh toán phí lưu kho theo tháng — ⛔ #386 HỢP NHẤT SONG SINH Pmt_PaymentStorage: StoragePayment ≡ PmtPaymentStorage. Bản chuẩn =
@@ -36026,24 +36006,47 @@ app.MapGet("/api/paymentgps/{no}", async (string no, AppDbContext db, ITenantCon
 }).RequireAuthorization();
 
 app.MapPost("/api/paymentgps", async (PmtGpsDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtGpsCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth, dto.VAT,
+        (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList())).RequireAuthorization();
+
+// #387 Tạo phiếu Pmt_PaymentGPS — công thức theo `Pmt_PaymentGPS_Save` (TERP.BizHTC/DMS40/0.34.Contract.cs:19116):
+//   PlanCostGPSDate = DATEDIFF(day, CostGPSStartDate, CostGPSEndDate) + 1; ActualCostGPSDate = Plan − cast(DeductDate as int) (nguồn KHÔNG kẹp ≥ 0);
+//   AmountGPS = Actual × PriceGPS; AmountTotal = Σ AmountGPS; VAT = 0.1 (thuế suất). DeductDate < 0 ⇒ Pmt_PaymentGPS_Save_InvalidDeductDate.
+//   ⛔ NỢ: nguồn tự lấy CostGPSStart/End từ ngày map GPS/giao xe và PriceGPS/ContractGPS từ Mst_UnitPriceGPS theo EffStartDate — ở đây client gửi.
+static async Task<IResult> PmtGpsCreate(AppDbContext db, Guid orgId, string who, string? month, decimal vat, List<PmtGpsDtlDto> rows)
 {
-    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
-    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
-    var no = "PGPS" + now.ToString("yyMMddHHmmss");
-    var h = new PmtPaymentGps { OrgId = t.OrgId, PaymentGPSNo = no, PmtMonth = dto.PmtMonth, CreateDateTime = now, CreateBy = who,
-        VAT = dto.VAT, AmountTotal = rows.Sum(x => x.AmountGPS), PaymentGPSStatus = "P",
-        HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
-    db.PmtPaymentGpses.Add(h);
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
     foreach (var r in rows)
-        db.PmtPaymentGpsDetails.Add(new PmtPaymentGpsDetail { OrgId = t.OrgId, PaymentGPSNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+    {
+        if (r.CostGPSStartDate is null || r.CostGPSEndDate is null) return Results.BadRequest(new { error = $"Thiếu ngày bắt đầu/kết thúc tính phí — VIN {r.VIN}." });
+        if (r.CostGPSEndDate < r.CostGPSStartDate) return Results.BadRequest(new { error = "Ngày kết thúc tính phí phải lớn hơn hoặc bằng ngày bắt đầu!" });
+        if ((r.DeductDate ?? 0) < 0) return Results.BadRequest(new { error = "Ngày khấu trừ phải lớn hơn hoặc bằng 0", code = "Pmt_PaymentGPS_Save_InvalidDeductDate" });
+    }
+    var now = DateTime.Now;
+    var no = "PGPS" + now.ToString("yyMMddHHmmss");
+    var h = new PmtPaymentGps { OrgId = orgId, PaymentGPSNo = no, PmtMonth = month, CreateDateTime = now, CreateBy = who,
+        VAT = vat == 0 ? 0.1m : vat, PaymentGPSStatus = "P", HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
+    db.PmtPaymentGpses.Add(h);
+    decimal total = 0;
+    foreach (var r in rows)
+    {
+        var plan = (int)(r.CostGPSEndDate!.Value.Date - r.CostGPSStartDate!.Value.Date).TotalDays + 1;
+        var actual = plan - (int)(r.DeductDate ?? 0);
+        var amount = actual * r.PriceGPS;
+        total += amount;
+        db.PmtPaymentGpsDetails.Add(new PmtPaymentGpsDetail { OrgId = orgId, PaymentGPSNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
             CarId = r.CarId, GPSID = r.GPSID, GPSStartDate = r.GPSStartDate, CostGPSStartDate = r.CostGPSStartDate, RetailDate = r.RetailDate,
-            CostGPSEndDate = r.CostGPSEndDate, PlanCostGPSDate = r.PlanCostGPSDate, DeductDate = r.DeductDate, ActualCostGPSDate = r.ActualCostGPSDate,
-            PriceGPS = r.PriceGPS, AmountGPS = r.AmountGPS, ContractGPS = r.ContractGPS, PaymentGPSDtlStatus = "P",
+            CostGPSEndDate = r.CostGPSEndDate, PlanCostGPSDate = plan, DeductDate = r.DeductDate ?? 0, ActualCostGPSDate = actual,
+            PriceGPS = r.PriceGPS, AmountGPS = amount, ContractGPS = r.ContractGPS, PaymentGPSDtlStatus = "P",
             LogLUDateTime = now, LogLUBy = who });
+    }
+    h.AmountTotal = total;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.PaymentGPSNo, h.PmtMonth, h.AmountTotal, status = h.PaymentGPSStatus, cars = rows.Count });
-}).RequireAuthorization();
+    var vatAmt = Math.Round(total * h.VAT, 0);
+    // PmtNo/TotalWithoutVAT/AmountVAT/TotalAfterVAT: hình JSON cũ của bí danh /api/gpspayments.
+    return Results.Ok(new { h.PaymentGPSNo, h.PmtMonth, h.AmountTotal, h.VAT, status = h.PaymentGPSStatus, cars = rows.Count,
+        PmtNo = h.PaymentGPSNo, TotalWithoutVAT = total, AmountVAT = vatAmt, TotalAfterVAT = total + vatAmt });
+}
 
 app.MapPost("/api/paymentgps/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? filePath) =>
 {
@@ -57587,7 +57590,8 @@ record SmOfMonthDto(string DealerCode, DateTime HRMonth, List<SmOfMonthDtlDto>? 
 record SalesManTypeCertificateDto(string? DepartmentCode, string? SMType, string? CertificateCode);   // #B245-B247
 
 // ---- #139: DTO 4 họ phiếu thanh toán dịch vụ theo xe ----
-record PmtGpsDtlDto(string VIN, string? CarId, string? GPSID, DateTime? GPSStartDate, DateTime? CostGPSStartDate, DateTime? RetailDate, DateTime? CostGPSEndDate, DateTime? PlanCostGPSDate, DateTime? DeductDate, DateTime? ActualCostGPSDate, decimal PriceGPS, decimal AmountGPS, string? ContractGPS);
+// #387 Plan/Actual = SỐ NGÀY (server tính, giá trị client bị bỏ qua), DeductDate = số ngày khấu trừ (float nguồn).
+record PmtGpsDtlDto(string VIN, string? CarId, string? GPSID, DateTime? GPSStartDate, DateTime? CostGPSStartDate, DateTime? RetailDate, DateTime? CostGPSEndDate, int? PlanCostGPSDate, decimal? DeductDate, int? ActualCostGPSDate, decimal PriceGPS, decimal AmountGPS, string? ContractGPS);
 record PmtGpsDto(string? PmtMonth, decimal VAT, List<PmtGpsDtlDto>? Details);
 record PmtAvnDtlDto(string VIN, string? EngineNo, DateTime? InStorageDate, DateTime? AVNDate, string? SerialNo, string? AVNCode, decimal UnitPriceAVN, string? FlagPmtAVN);
 record PmtAvnDto(string? PmtMonth, List<PmtAvnDtlDto>? Details);

@@ -1797,8 +1797,8 @@ public sealed class AvnPaymentLine
     public decimal UnitPriceAVN { get; set; }
 }
 
-/// <summary>Thanh toán phí GPS theo tháng (Pmt_PaymentGPS — port 1:1 FrmTaoThanhToanGPS/QuanLyThanhToanGPS, 2010.HTC Sales/Purchase):
-/// phiếu thu phí duy trì GPS theo tháng, gồm nhiều dòng VIN. Tự tính AmountGPS = PriceGPS × ActualCostGPSDate (ngày tính phí thực = ngày dự kiến − ngày khấu trừ).</summary>
+/// <summary>⛔ #387 DEPRECATED — SONG SINH của <see cref="PmtPaymentGps"/> (cùng bảng nguồn Pmt_PaymentGPS, cùng FrmTaoThanhToanGPS).
+/// Bản chuẩn = PmtPaymentGps (+Detail, duyệt/ký biz). /api/gpspayments là bí danh; Seeder chép dữ liệu cũ. KHÔNG ghi mới.</summary>
 public sealed class GpsPayment
 {
     public long Id { get; set; }
@@ -1811,7 +1811,7 @@ public sealed class GpsPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Dòng VIN trong phiếu thanh toán GPS — port 1:1 grid FrmTaoThanhToanGPS, 2010.HTC.</summary>
+/// <summary>⛔ #387 DEPRECATED — dòng của song sinh <see cref="GpsPayment"/>; bản chuẩn = <see cref="PmtPaymentGpsDetail"/>.</summary>
 public sealed class GpsPaymentLine
 {
     public long Id { get; set; }
@@ -8777,10 +8777,11 @@ public sealed class PmtPaymentGpsDetail
     public DateTime? CostGPSStartDate { get; set; }
     public DateTime? RetailDate { get; set; }
     public DateTime? CostGPSEndDate { get; set; }
-    public DateTime? PlanCostGPSDate { get; set; }
-    /// <summary>Ngày trừ (`DeductDate`) — dùng cắt bớt kỳ tính phí.</summary>
-    public DateTime? DeductDate { get; set; }
-    public DateTime? ActualCostGPSDate { get; set; }
+    /// <summary>#387 SỐ NGÀY dự kiến tính phí = DATEDIFF(day, CostGPSStartDate, CostGPSEndDate) + 1 (Pmt_PaymentGPS_Save — trước là DateTime, SAI kiểu).</summary>
+    public int? PlanCostGPSDate { get; set; }
+    public decimal? DeductDate { get; set; }   // #387 số ngày khấu trừ — nguồn ép "float", ≥ 0 (Pmt_PaymentGPS_Save_InvalidDeductDate)
+    /// <summary>#387 SỐ NGÀY thực tính phí = PlanCostGPSDate − cast(DeductDate as int). AmountGPS = ActualCostGPSDate × PriceGPS.</summary>
+    public int? ActualCostGPSDate { get; set; }
     public decimal PriceGPS { get; set; }
     public decimal AmountGPS { get; set; }
     /// <summary>Số hợp đồng GPS làm căn cứ tính tiền — endpoint xoá thiết bị đã join cột này (xem chú thích ở /api/gpsinstalls).</summary>
