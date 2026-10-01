@@ -5491,7 +5491,8 @@ public sealed class OrderComplain
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string ComplainNo { get; set; } = "";
+    /// <summary>#364 `OrderComplainNo` (rename từ `ComplainNo` khớp nguồn Ser_OrderComplain).</summary>
+    public string OrderComplainNo { get; set; } = "";
     public string OrderPartNo { get; set; } = "";       // đơn đặt PT liên quan
     public string? ComplainType { get; set; }
     public string? Content { get; set; }
@@ -5508,7 +5509,8 @@ public sealed class OrderComplain
 
     /// <summary>`TSTSolution` — phương án xử lý do phía NCC/TST nhập (client KHÔNG gửi lên).</summary>
     public string? Resolution { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.Now;   // CreateDTime
+    /// <summary>#364 `CreateDTime` (rename từ `CreatedAt` khớp nguồn).</summary>
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
 
     // ===== 🔴 #233: 16 cột nguồn `Ser_OrderComplain` mà port cũ THIẾU =====
     // Nguồn: `Entities/TST/Ser_OrderComplain.cs` + `Ser_OrderComplainService.Ser_OrderComplain_Save`

@@ -39,17 +39,17 @@ function msg(t){ F("msg").textContent=t; }
 async function save(){
   const r=await fetch("/api/ordercomplains",{method:"POST",headers:H(),body:JSON.stringify({orderPartNo:F("op").value,complainType:F("ty").value,content:F("ct").value})});
   const j=await r.json();
-  if(r.ok){ msg("Đã tạo "+j.complainNo+"."); F("op").value="";F("ct").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã tạo "+j.orderComplainNo+"."); F("op").value="";F("ct").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/ordercomplains?dms=${F("fd").value}&tst=${F("ft").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(c=>{
     let act="";
-    if(c.dmsStatus==="P") act=`<button class="sm" onclick="act('${c.complainNo}','send')">Gửi</button>`;
-    else if(c.tstStatus==="") act=`<button class="sm" onclick="act('${c.complainNo}','receive')">TST tiếp nhận</button>`;
-    else if(c.tstStatus==="Processing") act=`<button class="sm" onclick="act('${c.complainNo}','process')">Xử lý</button>`;
-    else if(c.tstStatus==="Pending") act=`<button class="sm" onclick="resolve('${c.complainNo}')">Giải quyết</button>`;
-    return `<tr><td><b>${c.complainNo}</b></td><td>${c.orderPartNo}</td><td>${c.complainType||"—"}</td><td class="muted">${c.content||"—"}</td>
+    if(c.dmsStatus==="P") act=`<button class="sm" onclick="act('${c.orderComplainNo}','send')">Gửi</button>`;
+    else if(c.tstStatus==="") act=`<button class="sm" onclick="act('${c.orderComplainNo}','receive')">TST tiếp nhận</button>`;
+    else if(c.tstStatus==="Processing") act=`<button class="sm" onclick="act('${c.orderComplainNo}','process')">Xử lý</button>`;
+    else if(c.tstStatus==="Pending") act=`<button class="sm" onclick="resolve('${c.orderComplainNo}')">Giải quyết</button>`;
+    return `<tr><td><b>${c.orderComplainNo}</b></td><td>${c.orderPartNo}</td><td>${c.complainType||"—"}</td><td class="muted">${c.content||"—"}</td>
       <td><span class="pill d-${c.dmsStatus}">${D[c.dmsStatus]||c.dmsStatus}</span></td>
       <td><span class="pill t-${c.tstStatus}">${T[c.tstStatus]||c.tstStatus}</span></td><td>${act}</td></tr>`;
   }).join("")||'<tr><td colspan="7" class="muted">Chưa có khiếu nại.</td></tr>';

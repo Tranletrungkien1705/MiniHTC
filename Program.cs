@@ -24984,7 +24984,7 @@ app.MapPost("/api/paymentdiscountreqs/{id}/status", async (long id, PaymentDisco
 app.MapGet("/api/ordercomplains/{no}/attachments", async (string no, AppDbContext db, ITenantContext t) =>
 {
     var cn = no.Trim();
-    if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
+    if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.OrderComplainNo == cn)) return Results.NotFound(new { no });
     var files = await db.OrderComplainAttachments.Where(a => a.OrgId == t.OrgId && a.OrderComplainNo == cn).OrderBy(a => a.Id)
         .Select(a => new { a.Id, a.OrderComplainNo, a.ImageName, a.ImagePath, a.OrderComplainImageType, a.FileNote,
             LogLUDTime = a.LogLUDTime.ToString("yyyy-MM-dd HH:mm"), a.LogLUBy }).ToListAsync();   // #363 tên cột nguồn
@@ -24994,7 +24994,7 @@ app.MapGet("/api/ordercomplains/{no}/attachments", async (string no, AppDbContex
 app.MapPost("/api/ordercomplains/{no}/attachments", async (string no, OcAttachDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var cn = no.Trim();
-    if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
+    if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.OrderComplainNo == cn)) return Results.NotFound(new { no });
     var fn = (dto.ImageName ?? "").Trim();
     if (fn == "") return Results.BadRequest(new { error = "Cần tên file đính kèm." });
     // #363 StdData nguồn: OrderComplainImageType StdParam (trim+upper); ImageName / ImagePath chỉ trim; LogLUDTime/By = lúc lưu.
@@ -52655,7 +52655,7 @@ app.MapGet("/api/ordercomplains", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(tst)) q = q.Where(c => c.TSTStatus == tst);
     if (!string.IsNullOrWhiteSpace(order)) q = q.Where(c => c.OrderPartNo.Contains(order.ToUpper()));
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    { c.ComplainNo, c.OrderPartNo, c.ComplainType, c.Content, c.DMSStatus, c.TSTStatus, c.Resolution, c.CreatedAt,
+    { c.OrderComplainNo, c.OrderPartNo, c.ComplainType, c.Content, c.DMSStatus, c.TSTStatus, c.Resolution, c.CreateDTime,
       // #233: 16 cột bổ sung — §12 yêu cầu có mặt ở CẢ GET lẫn POST.
       c.DealerCode, c.PartCode, c.VieName, c.Quantity, c.VINCode, c.RequestOrderNo,
       c.TSTOrderComplainNo, c.TSTEmployeeCode,
@@ -52710,7 +52710,7 @@ app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db,
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var c = new OrderComplain
     {
-        OrgId = t.OrgId, ComplainNo = no, OrderPartNo = orderNo,
+        OrgId = t.OrgId, OrderComplainNo = no, OrderPartNo = orderNo,
         ComplainType = dto.ComplainType, Content = content,
         DMSStatus = "P", TSTStatus = "1",   // nguồn set TSTStatus=1 (Chờ duyệt) NGAY khi tạo, không để rỗng
         DealerCode = dto.DealerCode,
@@ -52723,7 +52723,7 @@ app.MapPost("/api/ordercomplains", async (OrderComplainDto dto, AppDbContext db,
         CreateBy = who, LogLUDTime = DateTime.Now, LogLUBy = who,
     };
     db.OrderComplains.Add(c); await db.SaveChangesAsync();
-    return Results.Ok(new { c.ComplainNo, c.OrderPartNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus,
+    return Results.Ok(new { c.OrderComplainNo, c.OrderPartNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus,
                             c.DealerCode, c.PartCode, c.VieName, c.Quantity, c.VINCode, c.RequestOrderNo,
                             c.DeliveryDateTime, c.DeliveryBy, c.TransportUnit, c.DeliveryLocation,
                             c.ReceiveBy, c.AssembleDateTime, c.AssembleBy, c.CreateBy });
@@ -52763,7 +52763,7 @@ app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action
     if (action is not ("send" or "process" or "approve" or "reject"))
         return Results.BadRequest(new { error = "action = send|process|approve|reject" });
     no = no.Trim().ToUpperInvariant();
-    var c = await db.OrderComplains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ComplainNo == no);
+    var c = await db.OrderComplains.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainNo == no);
     if (c is null) return Results.NotFound(new { no });
 
     // Quy trạng thái port cũ về mã nguồn trước khi xét.
@@ -52820,7 +52820,7 @@ app.MapPost("/api/ordercomplains/{no}/{action}", async (string no, string action
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        c.ComplainNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus,
+        c.OrderComplainNo, dmsStatus = c.DMSStatus, tstStatus = c.TSTStatus,
         tstStatusName = complainTstStatusNames.TryGetValue(c.TSTStatus, out var tstName) ? tstName : c.TSTStatus
     });
 }).RequireAuthorization();
