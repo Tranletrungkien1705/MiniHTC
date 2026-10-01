@@ -3484,6 +3484,9 @@ public sealed class SerStockOutOrder
     /// <summary>#293 DESCRIPTION — mô tả lệnh xuất. Nguồn `SerStockOutOrderUpdate` ghi cột này
     /// (KHÁC `Note` port cũ đang dùng).</summary>
     public string? Description { get; set; }
+    /// <summary>#1555 §12 — `QuoteID` (Ser_Inv_StockOutOrder): nguồn `SerStockOutOrderCreate`
+    /// (`StockOut.cs:9605`) ghi khi lệnh xuất sinh từ BÁO GIÁ phụ tùng.</summary>
+    public string? QuoteID { get; set; }
 }
 
 /// <summary>

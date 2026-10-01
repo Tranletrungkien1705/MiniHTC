@@ -25465,7 +25465,7 @@ app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.OrderNo.Contains(q!) || x.CusName!.Contains(q!) || x.RONo!.Contains(q!));
     // #1470 §12: nguồn SerStockOutOrderGet (LIVE, WS asmx:14803) header SELECT `si.*` ⇒ phải echo ĐỦ cột
     // entity SerStockOutOrder (9 cột #263 + StockOutType/Description #293), không chỉ tập con #1425.
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Address, x.Phone, x.Mobile, x.Note, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt, x.RequestDeliveryTime, x.Priority, x.BackOrderIndex, x.StatusText, x.UserCode, x.CusID, x.DealerCode, x.LogLUDateTime, x.LogLUBy, x.StockOutType, x.Description }).ToListAsync();   // #1425 §12
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Address, x.Phone, x.Mobile, x.Note, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt, x.RequestDeliveryTime, x.Priority, x.BackOrderIndex, x.StatusText, x.UserCode, x.CusID, x.DealerCode, x.LogLUDateTime, x.LogLUBy, x.StockOutType, x.Description, x.QuoteID }).ToListAsync();   // #1425 §12 + #1555 QuoteID
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -25628,7 +25628,8 @@ app.MapPost("/api/stockoutorders", async (SerStockOutOrderDto dto, AppDbContext 
         OrderNo = string.IsNullOrWhiteSpace((dto.OrderNo ?? "").Trim()) ? "SOO" + DateTime.Now.ToString("yyMMddHHmmss") : dto.OrderNo!.Trim(),
         OrderDate = dto.OrderDate ?? DateTime.Now,
         CusName = dto.CusName, Address = dto.Address, Phone = dto.Phone, Mobile = dto.Mobile, Note = dto.Note,
-        TotalQty = lines.Sum(l => l.OrderQuantity), Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now
+        TotalQty = lines.Sum(l => l.OrderQuantity), Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now,
+        QuoteID = dto.QuoteID   // #1555: nguon SerStockOutOrderCreate ghi QuoteID khi lenh xuat sinh tu bao gia
     };
     db.SerStockOutOrders.Add(h);
     await db.SaveChangesAsync();
@@ -86086,7 +86087,7 @@ record SerInsuranceContractDto(string? InContractCode, string? InContractNo, str
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);
 record StockOutOrderStatusDto(string? ToStatus);
-record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
+record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines, string? QuoteID = null);
 // #293: sua lenh xuat kho - 12 truong cua SerStockOutOrderUpdate.
 record SerStockOutOrderUpdateDto(string? OrderNo, DateTime? OrderDate = null, DateTime? RequestDeliveryTime = null,
     string? Priority = null, string? Description = null, string? BackOrderIndex = null, string? Status = null,

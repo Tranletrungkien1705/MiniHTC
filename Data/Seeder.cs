@@ -1639,6 +1639,8 @@ public static class Seeder
         "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp",
         "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        // #1555 parity Ser_Inv_StockOutOrder: cot QuoteID (lien ket bao gia phu tung)
+        "ALTER TABLE public.\"SerStockOutOrders\" ADD COLUMN IF NOT EXISTS \"QuoteID\" text",
         // #262 parity TblTSTMSTPart: 13 cot DB THAT con thieu sau #245
         "ALTER TABLE public.\"TstParts\" ADD COLUMN IF NOT EXISTS \"TSTPriceBefore\" numeric",
         "ALTER TABLE public.\"TstParts\" ADD COLUMN IF NOT EXISTS \"TSTCost\" numeric",
