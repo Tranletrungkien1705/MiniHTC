@@ -18250,42 +18250,24 @@ app.MapPost("/api/servicemodels/import", async (ServiceModelImportDto dto, AppDb
 }).RequireAuthorization();
 
 // ===== Xuất kho phụ tùng dịch vụ (ServiceStockOut header-detail — port 1:1 FrmSerInventoryAccStockOut01, TCMotor) =====
+// ⛔ #378 HỢP NHẤT SONG SINH Ser_Inv_StockOut (khuôn #340): bản chuẩn = PartStockOut. GET đọc bản chuẩn (giữ hình JSON cũ:
+//   ReceiverCode = CusID, Status "Confirmed"/"Draft" ↔ mã "3"/"1"); mọi lệnh GHI trả 400 kèm route mới. Seeder #377 đã chép dữ liệu cũ.
 app.MapGet("/api/servicestockouts", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
-    var query = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.StockOutNo.Contains(q!) || (x.ReceiverCode != null && x.ReceiverCode.Contains(q!)));
-    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var query = db.PartStockOuts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.StockOutNo.Contains(q!) || (x.CusID != null && x.CusID.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) { var st = status == "Confirmed" ? "3" : status == "Draft" ? "1" : status; query = query.Where(x => x.Status == st); }
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.StockOutNo, x.ReceiverCode, x.TotalQty, x.Status,
-        stockOutDate = x.StockOutDate.HasValue ? x.StockOutDate.Value.ToString("yyyy-MM-dd") : "",
-        lines = db.ServiceStockOutLines.Count(l => l.OrgId == t.OrgId && l.ServiceStockOutId == x.Id)
+        x.StockOutNo, ReceiverCode = x.CusID, x.StockOutDate, x.StockOutType, Status = x.Status == "3" ? "Confirmed" : x.Status == "1" ? "Draft" : x.Status, StatusCode = x.Status,
+        TotalQty = db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == x.Id).Sum(l => (decimal?)l.Quantity) ?? 0,
+        TotalAmount = db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == x.Id).Sum(l => (decimal?)l.TotalPrice) ?? 0,
+        lines = db.PartStockOutLines.Count(l => l.OrgId == t.OrgId && l.StockOutId == x.Id)
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/stockouts" });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicestockouts", async (ServiceStockOutDto dto, AppDbContext db, ITenantContext t) =>
-{
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
-    if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng xuất phải lớn hơn 0." });
-    var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
-    // Loại phiếu mặc định "2" = phiếu xuất thường (loại DUY NHẤT được tính doanh thu bán ngoài).
-    var h = new ServiceStockOut { OrgId = t.OrgId, StockOutNo = no, ReceiverCode = dto.ReceiverCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Status = "Draft",
-        StockOutType = string.IsNullOrWhiteSpace(dto.StockOutType) ? "2" : dto.StockOutType.Trim() };
-    db.ServiceStockOuts.Add(h); await db.SaveChangesAsync();
-    decimal totalQty = 0m, totalAmount = 0m;
-    foreach (var l in lines)
-    {
-        totalQty += l.Quantity;
-        // Thành tiền dòng xuất theo nguồn: Quantity * Price * (1 + VAT*0.01).
-        var outLineAmount = l.Quantity * l.Price * (1 + l.Vat / 100m);
-        totalAmount += outLineAmount;
-        db.ServiceStockOutLines.Add(new ServiceStockOutLine { OrgId = t.OrgId, ServiceStockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, Amount = outLineAmount });
-    }
-    h.TotalQty = totalQty; h.TotalAmount = totalAmount; await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockOutNo, lines = lines.Count, totalQty, totalAmount });
-}).RequireAuthorization();
+app.MapPost("/api/servicestockouts", (ServiceStockOutDto dto) => Results.BadRequest(new { error = "Phiếu xuất kho đã hợp nhất vào bản chuẩn Ser_Inv_StockOut: /api/stockouts (+ /{no}/execute|post|reject).", route = "/api/stockouts", page = "/stockout.html" })).RequireAuthorization();
 
 // Doanh thu BÁN NGOÀI từ phiếu xuất thường — port 1:1 hai khối #tbl_Ser_Inv_StockOut_PartOut
 // và #tbl_Ser_Inv_StockOut_ShellOut của báo cáo tổng hợp (BizCarSv.HTC.BaoCaoTongHop).
@@ -18298,14 +18280,14 @@ app.MapGet("/api/report/stockout-revenue", async (
     { "D001", "D002", "D003", "D004", "D005", "D006", "D007", "D008", "0510000441", "0520000611" };
 
     // Nguồn lọc: Status='3' (đã xuất) + StockOutType='2' (phiếu xuất thường) + khoảng ngày xuất.
-    var headers = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed" && o.StockOutType == "2");
+    var headers = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3" && o.StockOutType == "2");
     if (from.HasValue) headers = headers.Where(o => o.StockOutDate >= from);
     if (to.HasValue) headers = headers.Where(o => o.StockOutDate <= to);
     var headerIds = await headers.Select(o => o.Id).ToListAsync();
 
-    var lines = await db.ServiceStockOutLines
-        .Where(l => l.OrgId == t.OrgId && headerIds.Contains(l.ServiceStockOutId))
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Amount }).ToListAsync();
+    var lines = await db.PartStockOutLines
+        .Where(l => l.OrgId == t.OrgId && headerIds.Contains(l.StockOutId))
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, Amount = l.TotalPrice }).ToListAsync();   // #378 bản chuẩn: TotalPrice
 
     var shellLines = lines.Where(l => shellPartCodes.Contains(l.PartCode)).ToList();
     var partLines = lines.Where(l => !shellPartCodes.Contains(l.PartCode)).ToList();
@@ -18324,102 +18306,47 @@ app.MapGet("/api/report/stockout-revenue", async (
 app.MapGet("/api/servicestockouts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
+    var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
-    var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.Amount }).ToListAsync();
-    return Results.Ok(new { h.StockOutNo, h.Status, h.StockOutType, h.TotalQty, h.TotalAmount, count = lines.Count, lines });
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, Vat = l.VAT, Amount = l.TotalPrice }).ToListAsync();
+    return Results.Ok(new { h.StockOutNo, Status = h.Status == "3" ? "Confirmed" : h.Status == "1" ? "Draft" : h.Status, count = lines.Count, lines, mergedInto = "/api/stockouts" });
 }).RequireAuthorization();
 
 // Xác nhận xuất kho: kiểm tồn đủ TẤT CẢ dòng trước, rồi TRỪ TỒN ServicePart (all-or-nothing).
-app.MapPost("/api/servicestockouts/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (h.Status == "Confirmed") return Results.BadRequest(new { error = "Phiếu đã xác nhận." });
-    var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id).ToListAsync();
-    var parts = new List<(ServicePart part, decimal qty)>();
-    foreach (var l in lines)
-    {
-        var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
-        if (part is null) return Results.BadRequest(new { error = $"Phụ tùng {l.PartCode} không có trong danh mục." });
-        if (part.Quantity < l.Quantity) return Results.BadRequest(new { error = $"Phụ tùng {l.PartCode} không đủ tồn (cần {l.Quantity}, còn {part.Quantity})." });
-        parts.Add((part, l.Quantity));
-    }
-    foreach (var (part, qty) in parts) part.Quantity -= qty;
-    h.Status = "Confirmed"; await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockOutNo, status = h.Status, partsUpdated = parts.Count });
-}).RequireAuthorization();
+app.MapPost("/api/servicestockouts/{no}/confirm", (string no) => Results.BadRequest(new { error = "Phiếu xuất kho đã hợp nhất vào bản chuẩn Ser_Inv_StockOut: /api/stockouts (+ /{no}/execute|post|reject).", route = $"/api/stockouts/{no}/execute + /post" })).RequireAuthorization();
 
 // ===== Nhập kho phụ tùng dịch vụ (ServiceStockIn header-detail — port 1:1 FrmSerInventoryAccStockIn, TCMotor) =====
+// ⛔ #378 HỢP NHẤT SONG SINH Ser_Inv_StockIn (khuôn #340): bản chuẩn = PartStockIn. SupplierCode = SupplierID, TotalAmount = Σ AfterTax.
 app.MapGet("/api/servicestockins", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
-    var query = db.ServiceStockIns.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.StockInNo.Contains(q!) || (x.SupplierCode != null && x.SupplierCode.Contains(q!)));
-    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var query = db.PartStockIns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.StockInNo.Contains(q!) || (x.SupplierID != null && x.SupplierID.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(status)) { var st = status == "Confirmed" ? "3" : status == "Draft" ? "1" : status; query = query.Where(x => x.Status == st); }
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.StockInNo, x.SupplierCode, x.TotalAmount, x.Status,
-        stockInDate = x.StockInDate.HasValue ? x.StockInDate.Value.ToString("yyyy-MM-dd") : "",
-        lines = db.ServiceStockInLines.Count(l => l.OrgId == t.OrgId && l.ServiceStockInId == x.Id)
+        x.StockInNo, SupplierCode = x.SupplierID, x.DealerCode, x.StockInDate, Status = x.Status == "3" ? "Confirmed" : x.Status == "1" ? "Draft" : x.Status, StatusCode = x.Status,
+        TotalAmount = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == x.Id).Sum(l => (decimal?)l.AfterTax) ?? 0,
+        lines = db.PartStockInLines.Count(l => l.OrgId == t.OrgId && l.StockInId == x.Id)
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/stockins" });
 }).RequireAuthorization();
 
 // Tạo phiếu nhập (header + dòng; tính Amount=Qty*Price + tổng).
-app.MapPost("/api/servicestockins", async (ServiceStockInDto dto, AppDbContext db, ITenantContext t) =>
-{
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
-    if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng nhập phải lớn hơn 0." });
-    var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new ServiceStockIn { OrgId = t.OrgId, StockInNo = no, SupplierCode = dto.SupplierCode, DealerCode = dto.DealerCode, StockInDate = dto.StockInDate ?? DateTime.Now, Status = "Draft" };
-    db.ServiceStockIns.Add(h); await db.SaveChangesAsync();
-    decimal total = 0m;
-    foreach (var l in lines)
-    {
-        // Nguồn (báo cáo nhập chi tiết) tách hẳn HAI cột, không gộp:
-        //   Total     = Quantity * Price                (TRƯỚC thuế)
-        //   VATAmount = VAT * Price * Quantity * 0.01   (RIÊNG phần thuế)
-        var totalBeforeVat = l.Quantity * l.Price;
-        var vatAmount = l.Vat * l.Price * l.Quantity * 0.01m;
-        var amount = totalBeforeVat + vatAmount;
-        total += amount;
-        db.ServiceStockInLines.Add(new ServiceStockInLine { OrgId = t.OrgId, ServiceStockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, Vat = l.Vat, ActualLocationCode = l.ActualLocationCode, TotalBeforeVat = totalBeforeVat, VatAmount = vatAmount, Amount = amount });
-    }
-    h.TotalAmount = total; await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockInNo, lines = lines.Count, totalAmount = total });
-}).RequireAuthorization();
+app.MapPost("/api/servicestockins", (ServiceStockInDto dto) => Results.BadRequest(new { error = "Phiếu nhập kho đã hợp nhất vào bản chuẩn Ser_Inv_StockIn: /api/stockins (+ /{no}/execute|post|reject).", route = "/api/stockins", page = "/stockin.html" })).RequireAuthorization();
 
 app.MapGet("/api/servicestockins/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
+    var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
-    var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, l.Vat, l.ActualLocationCode, l.TotalBeforeVat, l.VatAmount, l.Amount }).ToListAsync();
-    return Results.Ok(new { h.StockInNo, h.Status, h.TotalAmount, count = lines.Count, lines });
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id)
+        .Select(l => new { l.PartCode, l.PartName, l.Quantity, l.Price, Vat = l.VAT, ActualLocationCode = l.Location, TotalBeforeVat = l.BeforeTax, VatAmount = l.AfterTax - l.BeforeTax, Amount = l.AfterTax }).ToListAsync();
+    return Results.Ok(new { h.StockInNo, Status = h.Status == "3" ? "Confirmed" : h.Status == "1" ? "Draft" : h.Status, count = lines.Count, lines, mergedInto = "/api/stockins" });
 }).RequireAuthorization();
 
 // Xác nhận nhập kho: Draft->Confirmed + CỘNG TỒN vào ServicePart (tích hợp thật).
-app.MapPost("/api/servicestockins/{no}/confirm", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (h.Status == "Confirmed") return Results.BadRequest(new { error = "Phiếu đã xác nhận." });
-    var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id).ToListAsync();
-    int updated = 0;
-    foreach (var l in lines)
-    {
-        var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
-        if (part is not null) { part.Quantity += l.Quantity; updated++; }
-        else { db.ServiceParts.Add(new ServicePart { OrgId = t.OrgId, PartCode = l.PartCode, PartName = l.PartName, Quantity = l.Quantity, Price = l.Price, FlagActive = "1" }); updated++; }
-    }
-    h.Status = "Confirmed"; await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockInNo, status = h.Status, partsUpdated = updated });
-}).RequireAuthorization();
+app.MapPost("/api/servicestockins/{no}/confirm", (string no) => Results.BadRequest(new { error = "Phiếu nhập kho đã hợp nhất vào bản chuẩn Ser_Inv_StockIn: /api/stockins (+ /{no}/execute|post|reject).", route = $"/api/stockins/{no}/execute + /post" })).RequireAuthorization();
 
 // ===== Trạng thái phiếu kho: bộ ĐẦY ĐỦ theo nguồn (TConst.Ser_Inv_StockIn / Ser_Inv_StockOut) =====
 // 🔴 Port cũ chỉ có 2/5: Draft → Confirmed. Nguồn có 5, trong đó HAI trạng thái mang nghĩa HUỶ:
@@ -18459,56 +18386,10 @@ static string? ValidateStockDocVoidTarget(string[] voidStatuses, string currentS
 }
 
 // Huỷ / điều chỉnh PHIẾU NHẬP. Nếu phiếu đã duyệt (đã cộng tồn) thì phải TRỪ LẠI tồn.
-app.MapPost("/api/servicestockins/{no}/void", async (
-    string no, StockDocVoidDto dto, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.ServiceStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    var error = ValidateStockDocVoidTarget(stockDocVoidStatuses, h.Status, dto.ToStatus);
-    if (error is not null) return Results.BadRequest(new { error });
-
-    var reverted = 0;
-    if (h.Status == "Confirmed")
-    {
-        // Phiếu nhập đã duyệt thì đã CỘNG tồn ⇒ điều chỉnh phải TRỪ lại, nếu không tồn kho sẽ dôi ảo.
-        var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockInId == h.Id).ToListAsync();
-        foreach (var l in lines)
-        {
-            var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
-            if (part is not null) { part.Quantity -= l.Quantity; reverted++; }
-        }
-    }
-    h.Status = dto.ToStatus!.Trim();
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockInNo, status = h.Status, sourceCode = stockDocStatusSourceCodes[h.Status], partsReverted = reverted });
-}).RequireAuthorization();
+app.MapPost("/api/servicestockins/{no}/void", (string no) => Results.BadRequest(new { error = "Phiếu nhập kho đã hợp nhất vào bản chuẩn Ser_Inv_StockIn: /api/stockins (+ /{no}/execute|post|reject).", route = $"/api/stockins/{no}/reject" })).RequireAuthorization();
 
 // Huỷ / điều chỉnh PHIẾU XUẤT. Nếu phiếu đã duyệt (đã trừ tồn) thì phải CỘNG LẠI tồn.
-app.MapPost("/api/servicestockouts/{no}/void", async (
-    string no, StockDocVoidDto dto, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.ServiceStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    var error = ValidateStockDocVoidTarget(stockDocVoidStatuses, h.Status, dto.ToStatus);
-    if (error is not null) return Results.BadRequest(new { error });
-
-    var reverted = 0;
-    if (h.Status == "Confirmed")
-    {
-        // Phiếu xuất đã duyệt thì đã TRỪ tồn ⇒ điều chỉnh phải CỘNG lại.
-        var lines = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && l.ServiceStockOutId == h.Id).ToListAsync();
-        foreach (var l in lines)
-        {
-            var part = await db.ServiceParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PartCode == l.PartCode);
-            if (part is not null) { part.Quantity += l.Quantity; reverted++; }
-        }
-    }
-    h.Status = dto.ToStatus!.Trim();
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockOutNo, status = h.Status, sourceCode = stockDocStatusSourceCodes[h.Status], partsReverted = reverted });
-}).RequireAuthorization();
+app.MapPost("/api/servicestockouts/{no}/void", (string no) => Results.BadRequest(new { error = "Phiếu xuất kho đã hợp nhất vào bản chuẩn Ser_Inv_StockOut: /api/stockouts (+ /{no}/execute|post|reject).", route = $"/api/stockouts/{no}/reject" })).RequireAuthorization();
 
 // ===== Nhập phụ tùng nợ từ Excel (port 1:1 FrmImportSerPartOO — TCMotor DMSCarSv/Services) =====
 // Nguồn: btnImportExcel_Click (validate) + btnSave_Click (gọi partService.SerPartOOCreate từng dòng).
@@ -19144,8 +19025,8 @@ app.MapGet("/api/report/slow-rotation-parts", async (AppDbContext db, ITenantCon
 {
     var n = months is > 0 and <= 36 ? months.Value : 6;
     var cutoff = DateTime.Today.AddMonths(-n);
-    var outIds = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed" && o.StockOutDate.HasValue && o.StockOutDate >= cutoff).Select(o => o.Id);
-    var outByPart = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.ServiceStockOutId))
+    var outIds = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3" && o.StockOutDate >= cutoff).Select(o => o.Id);
+    var outByPart = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.StockOutId))
         .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
     var outMap = outByPart.ToDictionary(x => x.partCode, x => x.qty);
     var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1" && p.Quantity > 0)
@@ -26300,21 +26181,21 @@ app.MapPost("/api/partcosts/calculate", async (
     // Nguồn chốt mốc cuối kỳ tới HẾT NGÀY: CalculateDateTime = ToDate + " 23:59:59".
     var toDateEndOfDay = toDate.Date.AddDays(1).AddTicks(-1);
 
-    var confirmedStockInIds = db.ServiceStockIns
-        .Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed")
+    var confirmedStockInIds = db.PartStockIns
+        .Where(o => o.OrgId == t.OrgId && o.Status == "3")
         .Select(o => o.Id);
 
     var stockInLines = await (
-        from line in db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && confirmedStockInIds.Contains(l.ServiceStockInId))
-        join header in db.ServiceStockIns.Where(o => o.OrgId == t.OrgId) on line.ServiceStockInId equals header.Id
-        select new { line.PartCode, line.PartName, line.Quantity, line.Price, line.Vat, header.StockInDate }).ToListAsync();
+        from line in db.PartStockInLines.Where(l => l.OrgId == t.OrgId && confirmedStockInIds.Contains(l.StockInId))
+        join header in db.PartStockIns.Where(o => o.OrgId == t.OrgId) on line.StockInId equals header.Id
+        select new { line.PartCode, line.PartName, line.Quantity, line.Price, Vat = line.VAT, header.StockInDate }).ToListAsync();
 
     // Giá trị một dòng nhập ĐÃ GỒM THUẾ — đúng biểu thức TGN của nguồn.
     static decimal StockInLineValue(decimal quantity, decimal price, decimal vat)
         => quantity * price + vat * 0.01m * price * quantity;
 
-    var openingLines = stockInLines.Where(l => l.StockInDate.HasValue && l.StockInDate < fromDate).ToList();
-    var inPeriodLines = stockInLines.Where(l => l.StockInDate.HasValue && l.StockInDate >= fromDate && l.StockInDate <= toDateEndOfDay).ToList();
+    var openingLines = stockInLines.Where(l => l.StockInDate < fromDate).ToList();
+    var inPeriodLines = stockInLines.Where(l => l.StockInDate >= fromDate && l.StockInDate <= toDateEndOfDay).ToList();
 
     var partCodes = openingLines.Select(l => l.PartCode).Concat(inPeriodLines.Select(l => l.PartCode)).Distinct().ToList();
     if (partCodes.Count == 0) return Results.Ok(new { calculated = 0, message = "Chưa có phiếu nhập đã duyệt để tính giá vốn." });
@@ -26387,11 +26268,11 @@ app.MapGet("/api/report/optimal-reorder", async (AppDbContext db, ITenantContext
     var factor = leadFactor is > 0 and <= 12 ? leadFactor.Value : 1.5m; // hệ số thời gian giao + an toàn
     var now = DateTime.Now;
     var startMonth = new DateTime(now.Year, now.Month, 1).AddMonths(-5); // đầu tháng của 6 tháng gần nhất (gồm tháng này)
-    var confirmedIds = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed" && o.StockOutDate.HasValue && o.StockOutDate >= startMonth)
+    var confirmedIds = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3" && o.StockOutDate >= startMonth)
         .Select(o => new { o.Id, o.StockOutDate });
-    var lines = await (from l in db.ServiceStockOutLines.Where(x => x.OrgId == t.OrgId)
-                       join o in confirmedIds on l.ServiceStockOutId equals o.Id
-                       select new { l.PartCode, l.Quantity, date = o.StockOutDate!.Value }).ToListAsync();
+    var lines = await (from l in db.PartStockOutLines.Where(x => x.OrgId == t.OrgId)
+                       join o in confirmedIds on l.StockOutId equals o.Id
+                       select new { l.PartCode, l.Quantity, date = o.StockOutDate }).ToListAsync();
     var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PartCode, p.PartName, p.Quantity, p.MinQuantity }).ToListAsync();
     var pMap = parts.ToDictionary(p => p.PartCode, p => p);
     // Gom theo mã PT + 6 rổ tháng (index 0 = 5 tháng trước ... 5 = tháng này).
@@ -26472,24 +26353,24 @@ app.MapGet("/api/report/stockin-detail", async (
     AppDbContext db, ITenantContext t, DateTime? from, DateTime? to, string? dealer, string? supplier) =>
 {
     // Nguồn lọc: sti.status = 3 (đã duyệt) + khoảng StockInDate + DealerCode + SupplierID.
-    var headers = db.ServiceStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
+    var headers = db.PartStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "3");
     if (from.HasValue) headers = headers.Where(o => o.StockInDate >= from);
     if (to.HasValue) headers = headers.Where(o => o.StockInDate <= to);
     if (!string.IsNullOrWhiteSpace(dealer)) headers = headers.Where(o => o.DealerCode == dealer);
-    if (!string.IsNullOrWhiteSpace(supplier)) headers = headers.Where(o => o.SupplierCode == supplier);
+    if (!string.IsNullOrWhiteSpace(supplier)) headers = headers.Where(o => o.SupplierID == supplier);   // #378 bản chuẩn: SupplierID
 
-    var rows = await (from line in db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId)
-                      join header in headers on line.ServiceStockInId equals header.Id
+    var rows = await (from line in db.PartStockInLines.Where(l => l.OrgId == t.OrgId)
+                      join header in headers on line.StockInId equals header.Id
                       orderby header.StockInDate, header.StockInNo
                       select new
                       {
                           line.PartCode, line.PartName,
                           date = header.StockInDate, header.StockInNo,
-                          header.SupplierCode, header.DealerCode,
+                          SupplierCode = header.SupplierID, header.DealerCode,
                           line.Quantity, line.Price,
-                          total = line.TotalBeforeVat,
-                          line.Vat, vatAmount = line.VatAmount,
-                          location = line.ActualLocationCode
+                          total = line.BeforeTax,
+                          Vat = line.VAT, vatAmount = line.AfterTax - line.BeforeTax,   // #378 bản chuẩn: BeforeTax/AfterTax
+                          location = line.Location
                       }).Take(2000).ToListAsync();
 
     return Results.Ok(new
@@ -26506,14 +26387,14 @@ app.MapGet("/api/report/stockin-detail", async (
 // Nhập-xuất-tồn theo mã PT: tổng nhập (phiếu Confirmed), tổng xuất (phiếu Confirmed), tồn hiện tại (ServicePart.Quantity).
 app.MapGet("/api/report/stock-inout", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
 {
-    var ins = db.ServiceStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
-    var outs = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
-    if (fromDate.HasValue) { ins = ins.Where(o => o.StockInDate.HasValue && o.StockInDate.Value.Date >= fromDate.Value.Date); outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date >= fromDate.Value.Date); }
-    if (toDate.HasValue) { ins = ins.Where(o => o.StockInDate.HasValue && o.StockInDate.Value.Date <= toDate.Value.Date); outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date <= toDate.Value.Date); }
+    var ins = db.PartStockIns.Where(o => o.OrgId == t.OrgId && o.Status == "3");
+    var outs = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3");
+    if (fromDate.HasValue) { ins = ins.Where(o => o.StockInDate.Date >= fromDate.Value.Date); outs = outs.Where(o => o.StockOutDate.Date >= fromDate.Value.Date); }
+    if (toDate.HasValue) { ins = ins.Where(o => o.StockInDate.Date <= toDate.Value.Date); outs = outs.Where(o => o.StockOutDate.Date <= toDate.Value.Date); }
     var inIds = ins.Select(o => o.Id); var outIds = outs.Select(o => o.Id);
-    var inByPart = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId && inIds.Contains(l.ServiceStockInId))
+    var inByPart = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && inIds.Contains(l.StockInId))
         .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
-    var outByPart = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.ServiceStockOutId))
+    var outByPart = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.StockOutId))
         .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
     var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PartCode, p.PartName, p.Unit, p.Quantity }).ToListAsync();
     var inMap = inByPart.ToDictionary(x => x.partCode, x => x.qty);
@@ -26534,12 +26415,12 @@ app.MapGet("/api/report/stock-card", async (AppDbContext db, ITenantContext t, s
 {
     var code = (partCode ?? "").Trim();
     if (code == "") return Results.BadRequest(new { error = "Cần mã phụ tùng." });
-    var inMoves = await (from l in db.ServiceStockInLines.Where(x => x.OrgId == t.OrgId && x.PartCode == code)
-                         join h in db.ServiceStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "Confirmed") on l.ServiceStockInId equals h.Id
-                         select new { docNo = h.StockInNo, date = h.StockInDate, inQty = l.Quantity, outQty = 0m }).ToListAsync();
-    var outMoves = await (from l in db.ServiceStockOutLines.Where(x => x.OrgId == t.OrgId && x.PartCode == code)
-                          join h in db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "Confirmed") on l.ServiceStockOutId equals h.Id
-                          select new { docNo = h.StockOutNo, date = h.StockOutDate, inQty = 0m, outQty = l.Quantity }).ToListAsync();
+    var inMoves = await (from l in db.PartStockInLines.Where(x => x.OrgId == t.OrgId && x.PartCode == code)
+                         join h in db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "3") on l.StockInId equals h.Id
+                         select new { docNo = h.StockInNo, date = (DateTime?)h.StockInDate, inQty = l.Quantity, outQty = 0m }).ToListAsync();
+    var outMoves = await (from l in db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && x.PartCode == code)
+                          join h in db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "3") on l.StockOutId equals h.Id
+                          select new { docNo = h.StockOutNo, date = (DateTime?)h.StockOutDate, inQty = 0m, outQty = l.Quantity }).ToListAsync();
     var moves = inMoves.Concat(outMoves).OrderBy(m => m.date ?? DateTime.MaxValue).ThenBy(m => m.docNo).ToList();
     decimal bal = 0; var ledger = moves.Select(m => { bal += m.inQty - m.outQty; return new { m.docNo, date = m.date.HasValue ? m.date.Value.ToString("yyyy-MM-dd") : "", m.inQty, m.outQty, balance = bal }; }).ToList();
     return Results.Ok(new { partCode = code, totalIn = moves.Sum(m => m.inQty), totalOut = moves.Sum(m => m.outQty), closing = bal, ledger });
@@ -26570,8 +26451,8 @@ app.MapGet("/api/report/part-topprofit", async (AppDbContext db, ITenantContext 
 app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext t, int? top) =>
 {
     var n = top is > 0 and <= 200 ? top.Value : 20;
-    var confirmedIds = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed").Select(o => o.Id);
-    var rows = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && confirmedIds.Contains(l.ServiceStockOutId))
+    var confirmedIds = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3").Select(o => o.Id);
+    var rows = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && confirmedIds.Contains(l.StockOutId))
         .GroupBy(l => new { l.PartCode, l.PartName })
         .Select(g => new { g.Key.PartCode, g.Key.PartName, totalOut = g.Sum(x => x.Quantity), timesOut = g.Count() })
         .OrderByDescending(x => x.totalOut).Take(n).ToListAsync();
@@ -26582,11 +26463,11 @@ app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext 
 app.MapGet("/api/report/part-toprevenue", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, int? top) =>
 {
     var n = top is > 0 and <= 200 ? top.Value : 20;
-    var outs = db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "Confirmed");
-    if (fromDate.HasValue) outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date >= fromDate.Value.Date);
-    if (toDate.HasValue) outs = outs.Where(o => o.StockOutDate.HasValue && o.StockOutDate.Value.Date <= toDate.Value.Date);
+    var outs = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3");
+    if (fromDate.HasValue) outs = outs.Where(o => o.StockOutDate.Date >= fromDate.Value.Date);
+    if (toDate.HasValue) outs = outs.Where(o => o.StockOutDate.Date <= toDate.Value.Date);
     var outIds = outs.Select(o => o.Id);
-    var qtyByPart = await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.ServiceStockOutId))
+    var qtyByPart = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.StockOutId))
         .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
     var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PartCode, p.PartName, p.Unit, p.Price }).ToListAsync();
     var priceMap = parts.ToDictionary(p => p.PartCode, p => p);
@@ -26601,7 +26482,7 @@ app.MapGet("/api/report/part-toprevenue", async (AppDbContext db, ITenantContext
 // Biến động giá phụ tùng: từ các phiếu nhập kho — số lần giá khác nhau, giá thấp nhất/cao nhất theo mã PT.
 app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantContext t) =>
 {
-    var lines = await db.ServiceStockInLines.Where(l => l.OrgId == t.OrgId)
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId)
         .Select(l => new { l.PartCode, l.PartName, l.Price }).ToListAsync();
     var rows = lines.GroupBy(l => l.PartCode).Select(g => new
     {
@@ -26855,7 +26736,7 @@ app.MapPost("/api/supplierdebits", async (SupplierDebitDto dto, AppDbContext db,
     // audit 2026-09-03: CheckDebitAmount() gốc chặn số tiền nợ > dDefaultDebitAmount (số tiền phải trả = tổng phiếu nhập) — port trước thiếu guard này.
     if (!string.IsNullOrWhiteSpace(stockIn))
     {
-        var stockInTotal = await db.ServiceStockIns.Where(x => x.OrgId == t.OrgId && x.StockInNo == stockIn).Select(x => (decimal?)x.TotalAmount).FirstOrDefaultAsync();
+        var stockInTotal = await (from h in db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.StockInNo == stockIn) join l in db.PartStockInLines on h.Id equals l.StockInId select (decimal?)l.AfterTax).SumAsync();   // #378 tổng sau thuế các dòng (bản chuẩn không lưu TotalAmount)
         if (stockInTotal is not null)
         {
             var already = await db.SupplierDebits.Where(x => x.OrgId == t.OrgId && x.SupplierCode == supplier && x.StockInNo == stockIn).Select(x => x.DebitAmount).FirstOrDefaultAsync();
