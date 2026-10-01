@@ -14082,6 +14082,9 @@ public sealed class RoComplaintDiagnosticError
     public string ErrorCode { get; set; } = "";
     public string? ErrorName { get; set; }
     public string? ErrorTypeCode { get; set; }
+    // #1550 §12 - cot nguon ErrorDesc/Remark (Ser_MST_ROComplaintDiagnosticError) - port 1:1.
+    public string? ErrorDesc { get; set; }
+    public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }

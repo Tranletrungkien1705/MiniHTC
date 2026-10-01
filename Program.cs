@@ -11846,7 +11846,7 @@ app.MapGet("/api/complaintdiagerrors", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(errorTypeCode)) qy = qy.Where(x => x.ErrorTypeCode == errorTypeCode!.Trim());
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
     var items = await qy.OrderBy(x => x.ErrorCode).Take(500)
-        .Select(x => new { x.ErrorCode, x.ErrorName, x.ErrorTypeCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1227 §12
+        .Select(x => new { x.ErrorCode, x.ErrorName, x.ErrorTypeCode, x.ErrorDesc, x.Remark, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1227 §12 + #1550 ErrorDesc/Remark
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -11879,7 +11879,7 @@ app.MapPost("/api/complaintdiagerrors", async (List<ComplaintDiagErrorDto> rows,
             db.RoComplaintDiagnosticErrors.Add(row); byCode[code] = row; created++;
         }
         else updated++;
-        row!.ErrorName = r.ErrorName; row.ErrorTypeCode = r.ErrorTypeCode;
+        row!.ErrorName = r.ErrorName; row.ErrorTypeCode = r.ErrorTypeCode; row.ErrorDesc = r.ErrorDesc; row.Remark = r.Remark;   // #1550
         if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!;
         // #1096: nhanh TAO nguon ghi du 4 cot nhat ky; nhanh SUA chi ghi LogLUDateTime/LogLUBy.
         var now1096 = DateTime.Now;
@@ -85349,7 +85349,7 @@ record SmsResetPwdDto(string? PasswordNew = null);
 record RoWarrantyRenewalDto(string? VIN = null, string? WrtReneCateCode = null, string? Remark = null);
 record WarrantyWorkSyncRowDto(string? ROWWorkCode = null, string? ROWWorkName = null, decimal? RatePrice = null,
     decimal? Price = null, decimal? VAT = null, string? Remark = null, string? FlagActive = null);
-record ComplaintDiagErrorDto(string? ErrorCode = null, string? ErrorName = null, string? ErrorTypeCode = null, string? FlagActive = null);
+record ComplaintDiagErrorDto(string? ErrorCode = null, string? ErrorName = null, string? ErrorTypeCode = null, string? FlagActive = null, string? ErrorDesc = null, string? Remark = null);
 record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status, string? DealerCode = null);
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate,
     string? DealerCode = null, string? IsEngineer = null);   // #338/#1000 §12

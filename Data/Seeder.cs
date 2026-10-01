@@ -3303,6 +3303,8 @@ public static class Seeder
                 // #1096: RoComplaintDiagnosticError thieu CreatedDate/CreatedBy (Ser_MST_ROComplaintDiagnosticError_Save).
                 "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"ErrorDesc\" text NULL",
+                "ALTER TABLE public.\"RoComplaintDiagnosticErrors\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 // #1097: RoWarrantyRenewal thieu CreatedDate/CreatedBy (Ser_MST_ROWarrantyRenewal_Save).
                 "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
