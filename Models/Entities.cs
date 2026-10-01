@@ -2882,19 +2882,32 @@ public sealed class SerStockOutOrder
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string OrderNo { get; set; } = "";
-    public DateTime? OrderDate { get; set; }
+    public string StockOutOrderNo { get; set; } = "";
+    public DateTime? StockOutOrderTime { get; set; }
     public string? CusName { get; set; }
     public string? Address { get; set; }
     public string? Phone { get; set; }
     public string? Mobile { get; set; }
-    public string? Note { get; set; }
+    public string? Description { get; set; }
     public decimal TotalQty { get; set; }
     public string Status { get; set; } = "Created";
     public string SourceType { get; set; } = "CUS";   // CUS = đơn khách hàng; RO = theo lệnh sửa chữa (FrmStockOutOrderSvCreate)
     public string? RONo { get; set; }                  // số lệnh sửa chữa (khi SourceType=RO)
     public string? CreatedBy { get; set; }
-    public DateTime CreatedAt { get; set; }
+    public DateTime CreatedDate { get; set; }
+    // ===== #370 cột nguồn Ser_InvStockOutOrder — `SerStockOutOrderSave` (BizCarSv.Inventory.StockOut.cs; DbDefine TblSerInvStockOutOrder) =====
+    // Rename trên: OrderNo→StockOutOrderNo, OrderDate→StockOutOrderTime, Note→Description, CreatedAt→CreatedDate.
+    public DateTime? RequestDeliveryTime { get; set; }
+    public string? Priority { get; set; }
+    public string? BackOrderIndex { get; set; }
+    public string? UserCode { get; set; }
+    public string? CusID { get; set; }
+    public string? DealerCode { get; set; }
+    public string? QuoteID { get; set; }
+    /// <summary>`StockOutType` — nguồn gán TConst.Ser_Inv_PartInstance.OUTSTOCK = 2 (Const.Main.cs:263).</summary>
+    public string? StockOutType { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng chi tiết lệnh xuất kho theo đơn (Ser_InvStockOutOrderDetail) — thuộc SerStockOutOrder. Mã PT + tên + ĐVT + SL yêu cầu.</summary>

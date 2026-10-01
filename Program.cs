@@ -20558,8 +20558,8 @@ app.MapGet("/api/stockoutorders", async (AppDbContext db, ITenantContext t, stri
     var qry = db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(source)) qry = qry.Where(x => x.SourceType == source);
-    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.OrderNo.Contains(q!) || x.CusName!.Contains(q!) || x.RONo!.Contains(q!));
-    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.OrderNo, x.OrderDate, x.CusName, x.Phone, x.Mobile, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedAt }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StockOutOrderNo.Contains(q!) || x.CusName!.Contains(q!) || x.RONo!.Contains(q!));
+    var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.StockOutOrderNo, x.StockOutOrderTime, x.CusName, x.Phone, x.Mobile, x.TotalQty, x.Status, x.SourceType, x.RONo, x.CreatedBy, x.CreatedDate }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -20568,7 +20568,7 @@ app.MapGet("/api/stockoutorders/{id}", async (long id, AppDbContext db, ITenantC
     var h = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && x.OrderId == id).Select(x => new { x.Id, x.PartCode, x.PartName, x.Unit, x.OrderQuantity }).ToListAsync();
-    return Results.Ok(new { header = new { h.Id, h.OrderNo, h.OrderDate, h.CusName, h.Address, h.Phone, h.Mobile, h.Note, h.TotalQty, h.Status, h.SourceType, h.RONo, h.CreatedBy, h.CreatedAt }, lines });
+    return Results.Ok(new { header = new { h.Id, h.StockOutOrderNo, h.StockOutOrderTime, h.CusName, h.Address, h.Phone, h.Mobile, h.Description, h.TotalQty, h.Status, h.SourceType, h.RONo, h.CreatedBy, h.CreatedDate }, lines });
 }).RequireAuthorization();
 
 // Lệnh xuất theo lệnh sửa chữa (FrmStockOutOrderSvCreate) — bắt buộc số RO; xuất PT phục vụ RO
@@ -20581,21 +20581,32 @@ app.MapPost("/api/stockoutorders/sv", async (SerStockOutOrderSvDto dto, AppDbCon
     if (lines.Any(l => l.OrderQuantity <= 0)) return Results.BadRequest(new { error = "Số lượng yêu cầu phải lớn hơn 0." });
     var dup = lines.GroupBy(l => (l.PartCode ?? "").Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"Phụ tùng '{dup.Key}' bị trùng trong lệnh." });
+    static string? NE(string? v) => string.IsNullOrEmpty(v) ? null : v;   // "if (!IsEmpty) gán"
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    // #370 Số lệnh theo `SerStockOutOrderSave`: 'LX-' + DealerCode + '-2-' + yyMMdd(StockOutOrderTime) + '-' + NNN (max theo ĐL + StockOutType 2 + ngày, +1).
+    //   Nguồn KHÔNG nhận số do client gõ (port cũ cho tự nhập/“SOO”+giờ) ⇒ bỏ. DealerCode lấy từ phiên ở nguồn ⇒ ở đây bắt buộc qua DTO.
+    var dealerSo = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealerSo == "") return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "SerStockOutOrderSave_DealerCodeEmpty" });
+    var soTime = dto.StockOutOrderTime ?? DateTime.Now;
+    var soPrefix = $"LX-{dealerSo}-2-{soTime:yyMMdd}-";
+    var soNo = CmSeq.Next(await db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerSo && x.StockOutType == "2" && x.StockOutOrderNo.StartsWith(soPrefix))
+        .Select(x => x.StockOutOrderNo).ToListAsync(), soPrefix);
+    if (await db.SerStockOutOrders.AnyAsync(x => x.OrgId == t.OrgId && x.StockOutOrderNo == soNo))
+        return Results.BadRequest(new { error = $"Số lệnh {soNo} đã tồn tại.", code = "CheckExistStockOutOrderNo" });
     var h = new SerStockOutOrder
     {
         OrgId = t.OrgId,
-        OrderNo = string.IsNullOrWhiteSpace((dto.OrderNo ?? "").Trim()) ? "SOS" + DateTime.Now.ToString("yyMMddHHmmss") : dto.OrderNo!.Trim(),
-        OrderDate = dto.OrderDate ?? DateTime.Now,
-        CusName = dto.CusName, Note = dto.Note, RONo = dto.RONo!.Trim(), SourceType = "RO",
-        TotalQty = lines.Sum(l => l.OrderQuantity), Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now
+        StockOutOrderNo = soNo, StockOutOrderTime = soTime, DealerCode = dealerSo, StockOutType = "2",
+        RequestDeliveryTime = dto.RequestDeliveryTime, Priority = dto.Priority, BackOrderIndex = dto.BackOrderIndex, UserCode = NE(dto.UserCode), CusID = dto.CusID,
+        CusName = dto.CusName, Description = dto.Description, RONo = dto.RONo!.Trim(), SourceType = "RO", QuoteID = NE(dto.QuoteID),
+        TotalQty = lines.Sum(l => l.OrderQuantity), Status = "Created", CreatedBy = who, CreatedDate = DateTime.Now, LogLUDateTime = DateTime.Now, LogLUBy = who
     };
     db.SerStockOutOrders.Add(h);
     await db.SaveChangesAsync();
     foreach (var l in lines)
         db.SerStockOutOrderLines.Add(new SerStockOutOrderLine { OrgId = t.OrgId, OrderId = h.Id, PartCode = (l.PartCode ?? "").Trim(), PartName = l.PartName, Unit = l.Unit, OrderQuantity = l.OrderQuantity });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.OrderNo, h.RONo, h.TotalQty, h.Status, lineCount = lines.Count });
+    return Results.Ok(new { h.Id, h.StockOutOrderNo, h.RONo, h.TotalQty, h.Status, lineCount = lines.Count });
 }).RequireAuthorization();
 
 app.MapPost("/api/stockoutorders", async (SerStockOutOrderDto dto, AppDbContext db, ITenantContext t, HttpContext http) =>
@@ -20607,21 +20618,32 @@ app.MapPost("/api/stockoutorders", async (SerStockOutOrderDto dto, AppDbContext 
     if (lines.Any(l => l.OrderQuantity <= 0)) return Results.BadRequest(new { error = "Số lượng yêu cầu phải lớn hơn 0." });
     var dup = lines.GroupBy(l => (l.PartCode ?? "").Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"Phụ tùng '{dup.Key}' bị trùng trong lệnh." });
+    static string? NE(string? v) => string.IsNullOrEmpty(v) ? null : v;   // "if (!IsEmpty) gán"
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    // #370 Số lệnh theo `SerStockOutOrderSave`: 'LX-' + DealerCode + '-2-' + yyMMdd(StockOutOrderTime) + '-' + NNN (max theo ĐL + StockOutType 2 + ngày, +1).
+    //   Nguồn KHÔNG nhận số do client gõ (port cũ cho tự nhập/“SOO”+giờ) ⇒ bỏ. DealerCode lấy từ phiên ở nguồn ⇒ ở đây bắt buộc qua DTO.
+    var dealerSo = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealerSo == "") return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "SerStockOutOrderSave_DealerCodeEmpty" });
+    var soTime = dto.StockOutOrderTime ?? DateTime.Now;
+    var soPrefix = $"LX-{dealerSo}-2-{soTime:yyMMdd}-";
+    var soNo = CmSeq.Next(await db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerSo && x.StockOutType == "2" && x.StockOutOrderNo.StartsWith(soPrefix))
+        .Select(x => x.StockOutOrderNo).ToListAsync(), soPrefix);
+    if (await db.SerStockOutOrders.AnyAsync(x => x.OrgId == t.OrgId && x.StockOutOrderNo == soNo))
+        return Results.BadRequest(new { error = $"Số lệnh {soNo} đã tồn tại.", code = "CheckExistStockOutOrderNo" });
     var h = new SerStockOutOrder
     {
         OrgId = t.OrgId,
-        OrderNo = string.IsNullOrWhiteSpace((dto.OrderNo ?? "").Trim()) ? "SOO" + DateTime.Now.ToString("yyMMddHHmmss") : dto.OrderNo!.Trim(),
-        OrderDate = dto.OrderDate ?? DateTime.Now,
-        CusName = dto.CusName, Address = dto.Address, Phone = dto.Phone, Mobile = dto.Mobile, Note = dto.Note,
-        TotalQty = lines.Sum(l => l.OrderQuantity), Status = "Created", CreatedBy = who, CreatedAt = DateTime.Now
+        StockOutOrderNo = soNo, StockOutOrderTime = soTime, DealerCode = dealerSo, StockOutType = "2",
+        RequestDeliveryTime = dto.RequestDeliveryTime, Priority = dto.Priority, BackOrderIndex = dto.BackOrderIndex, UserCode = NE(dto.UserCode), CusID = dto.CusID,
+        CusName = dto.CusName, Address = dto.Address, Phone = dto.Phone, Mobile = dto.Mobile, Description = dto.Description, QuoteID = NE(dto.QuoteID),
+        TotalQty = lines.Sum(l => l.OrderQuantity), Status = "Created", CreatedBy = who, CreatedDate = DateTime.Now, LogLUDateTime = DateTime.Now, LogLUBy = who
     };
     db.SerStockOutOrders.Add(h);
     await db.SaveChangesAsync();
     foreach (var l in lines)
         db.SerStockOutOrderLines.Add(new SerStockOutOrderLine { OrgId = t.OrgId, OrderId = h.Id, PartCode = (l.PartCode ?? "").Trim(), PartName = l.PartName, Unit = l.Unit, OrderQuantity = l.OrderQuantity });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.OrderNo, h.TotalQty, h.Status, lineCount = lines.Count });
+    return Results.Ok(new { h.Id, h.StockOutOrderNo, h.TotalQty, h.Status, lineCount = lines.Count });
 }).RequireAuthorization();
 
 // 🔴 Bộ trạng thái ĐẦY ĐỦ của lệnh xuất kho (TConst.Ser_Inv_StockOutOrder) — port cũ mới có 3/7.
@@ -57323,9 +57345,11 @@ record SerInsuranceContractDto(string? InContractCode, string? InContractNo, str
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);
 record StockOutOrderStatusDto(string? ToStatus);
-record SerStockOutOrderDto(string? OrderNo, DateTime? OrderDate, string? CusName, string? Address, string? Phone, string? Mobile, string? Note, List<SerStockOutOrderLineDto>? Lines);
+record SerStockOutOrderDto(string? DealerCode, DateTime? StockOutOrderTime, string? CusName, string? Address, string? Phone, string? Mobile, string? Description, List<SerStockOutOrderLineDto>? Lines,
+    DateTime? RequestDeliveryTime = null, string? Priority = null, string? BackOrderIndex = null, string? UserCode = null, string? CusID = null, string? QuoteID = null);   // #370
 record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit, decimal OrderQuantity);
-record SerStockOutOrderSvDto(string? OrderNo, DateTime? OrderDate, string? RONo, string? CusName, string? Note, List<SerStockOutOrderLineDto>? Lines);
+record SerStockOutOrderSvDto(string? DealerCode, DateTime? StockOutOrderTime, string? RONo, string? CusName, string? Description, List<SerStockOutOrderLineDto>? Lines,
+    DateTime? RequestDeliveryTime = null, string? Priority = null, string? BackOrderIndex = null, string? UserCode = null, string? CusID = null, string? QuoteID = null);   // #370
 record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive, string? SMCerNo = null, string? Remark = null);
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
 record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? TrainingDtlCode = null, string? SMName = null, string? FlagActive = null);

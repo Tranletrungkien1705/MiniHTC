@@ -17,7 +17,7 @@
 <h1>Lệnh xuất kho phụ tùng theo đơn KH <span class="muted">(port 1:1 FrmStockOutOrderCreate — TCMotor DMSCarSv/Inventory)</span></h1>
 <div class="card"><h3 style="margin-top:0">Lệnh mới</h3>
   <div class="grid4">
-    <div><label>Số lệnh</label><input id="no" placeholder="để trống = tự sinh"></div>
+    <div><label>Đại lý *</label><input id="dlr" placeholder="mã ĐL (số lệnh tự sinh LX-ĐL-2-yyMMdd-NNN)"></div>
     <div><label>Ngày lệnh</label><input id="date" type="date"></div>
     <div><label>Tên khách hàng *</label><input id="cus"></div>
     <div><label>Điện thoại</label><input id="phone"></div>
@@ -47,9 +47,9 @@ function addLine(){ const tr=document.createElement("tr");
 function recalc(){ let tot=0; F("lb").querySelectorAll(".qt").forEach(e=>tot+=Number(e.value||0)); F("tot").textContent=nf(tot); }
 async function save(){ await token();
   const lines=[...F("lb").querySelectorAll("tr")].map(tr=>({PartCode:tr.querySelector(".pc").value,PartName:tr.querySelector(".pn").value,Unit:tr.querySelector(".un").value,OrderQuantity:Number(tr.querySelector(".qt").value||0)}));
-  const body={OrderNo:v("no"),OrderDate:v("date"),CusName:v("cus"),Address:v("addr"),Phone:v("phone"),Mobile:v("mobile"),Note:v("note"),Lines:lines};
+  const body={DealerCode:v("dlr"),StockOutOrderTime:v("date"),CusName:v("cus"),Address:v("addr"),Phone:v("phone"),Mobile:v("mobile"),Description:v("note"),Lines:lines};
   const r=await fetch("/api/stockoutorders",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.orderNo+" — tổng SL "+nf(d.totalQty)); F("lb").innerHTML=""; ["no","cus","addr","phone","mobile","note"].forEach(i=>F(i).value=""); recalc(); load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.stockOutOrderNo+" — tổng SL "+nf(d.totalQty)); F("lb").innerHTML=""; ["no","cus","addr","phone","mobile","note"].forEach(i=>F(i).value=""); recalc(); load();
 }
 async function act(id,a){ await token(); const r=await fetch("/api/stockoutorders/"+id+"/"+a,{method:"POST",headers:Hh()}); const d=await r.json(); if(!r.ok) say("Lỗi: "+(d.error||r.status)); load(); }
 async function detail(id,no){ await token(); const r=await fetch("/api/stockoutorders/"+id,{headers:Hh()}); const d=await r.json();
@@ -57,7 +57,7 @@ async function detail(id,no){ await token(); const r=await fetch("/api/stockouto
   F("db").innerHTML=(d.lines||[]).map(o=>`<tr><td>${esc(o.partCode)}</td><td>${esc(o.partName)}</td><td>${esc(o.unit)}</td><td class="num">${nf(o.orderQuantity)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Không có dòng.</td></tr>'; F("detail").scrollIntoView(); }
 async function load(){ await token();
   const r=await fetch("/api/stockoutorders?status="+encodeURIComponent(F("fst").value)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.orderNo)}</b></td><td>${dshow(o.orderDate)}</td><td>${esc(o.cusName)}</td><td>${esc(o.phone)}</td><td class="num">${nf(o.totalQty)}</td><td><span class="pill st-${esc(o.status)}">${esc(o.status)}</span></td><td><button class="link" onclick="detail(${o.id},'${esc(o.orderNo)}')">Xem</button>${o.status==='Created'?`<button class="link" onclick="act(${o.id},'issue')">Xuất</button><button class="link" onclick="act(${o.id},'reject')">Từ chối</button>`:''}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có lệnh.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.stockOutOrderNo)}</b></td><td>${dshow(o.stockOutOrderTime)}</td><td>${esc(o.cusName)}</td><td>${esc(o.phone)}</td><td class="num">${nf(o.totalQty)}</td><td><span class="pill st-${esc(o.status)}">${esc(o.status)}</span></td><td><button class="link" onclick="detail(${o.id},'${esc(o.stockOutOrderNo)}')">Xem</button>${o.status==='Created'?`<button class="link" onclick="act(${o.id},'issue')">Xuất</button><button class="link" onclick="act(${o.id},'reject')">Từ chối</button>`:''}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có lệnh.</td></tr>';
 }
 addLine();
 </script>
