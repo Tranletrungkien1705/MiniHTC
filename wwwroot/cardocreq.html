@@ -51,7 +51,7 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/cardocrequests?status=${F("fst").value}&dealer=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act="";   // #374 nút Duyệt/Từ chối cũ gọi /complete, /reject KHÔNG tồn tại (404) — đã gỡ; duyệt đầu đề nghị A1/A2 chưa port.
+    let act=o.status==="P"?`<button class="sm" onclick="approve1('${o.requestNo}')">Duyệt</button>`:"";   // #375 CarDocReqApprove1
     return `<tr><td><b>${o.requestNo}</b> <a href="#" class="cars" onclick="cars('${o.requestNo}');return false">xem xe</a></td><td>${o.dealerCode||""}</td><td>${o.receivedPerson}</td><td>${o.cars}</td>
       <td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.requestNo}"></tr>`;
   }).join("")||'<tr><td colspan="7" class="muted">Chưa có DR.</td></tr>';
@@ -61,6 +61,7 @@ async function cars(no){
   const d=await (await fetch(`/api/cardocrequests/${no}/cars`,{headers:H()})).json();
   row.innerHTML=`<td colspan="7"><div class="cars">${(d.cars||[]).map(c=>`Xe <b>${c.carId}</b>${c.remark?" · "+c.remark:""}${c.deliveryStartDate?" · giao "+new Date(c.deliveryStartDate).toLocaleDateString("vi-VN"):""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
 }
-addCar(); load();
+addCar(); async function approve1(no){ const r=await fetch(`/api/cardocrequests/${no}/approve1`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+load();
 </script>
 </body></html>

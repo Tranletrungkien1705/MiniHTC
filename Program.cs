@@ -48575,6 +48575,34 @@ app.MapGet("/api/cardocrequests/{no}/cars", async (string no, AppDbContext db, I
 //    · `_ExistRedeem` — `RD_ReqRedeemDtl` join **`DRListCode` VÀ `VIN`**, chỉ dòng `DMReqDtlStatus not in ('R','C')`;
 //    · `_ExistRDInvoice` — `RD_ReqInvoiceDtl` join **CHỈ theo `VIN`** (KHÔNG kèm `DRListCode` — khác hẳn
 //      nhánh giải chấp ngay bên trên; chép nhầm là đổi hẳn nghiệp vụ), dòng `RDReqIvDtlStatus not in ('R','C')`.
+// #375 Duyệt ĐẦU đề nghị — port `CarDocReqApprove1_New20190722` (BizHTC.zTemp.cs:10375; WS WSHTC.64 — LIVE, bản _New20181119 không còn gọi).
+//   myCar_CheckCarDocReq: tồn tại + DRListStatus ∈ {P}. TypeCRR = NORMAL ⇒ A2 (ghi ApprovedDate2/By2 cùng lúc); loại khác ⇒ A1.
+//   ApprovedDate1/By1 luôn ghi. DÒNG: DRDtlStatus + ApprovedDate1/By1 (+Date2/By2 khi NORMAL) + LogLU*.
+//   🔴 LỖI NGUỒN ghi nhận: câu UPDATE dòng dùng @DRDtlStatus/@LogLUDateTime/@LogLUBy/@strDRListCode nhưng ExecNonQuery KHÔNG truyền
+//   tham số ⇒ T-SQL "Must declare the scalar variable" ⇒ cả giao dịch rollback. Port theo Ý ĐỊNH: dòng nhận cùng trạng thái với đầu.
+//   Gửi email (DMS40_Email_BatchSendEmail_SendCarDocReq*) — hệ ngoài, không port.
+app.MapPost("/api/cardocrequests/{no}/approve1", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
+    if (r is null) return Results.BadRequest(new { error = $"Không tìm thấy đề nghị {no}.", code = "myCar_CheckCarDocReq_NotExist" });
+    if (r.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang '{r.Status}', chỉ duyệt được khi 'P'.", code = "myCar_CheckCarDocReq_StatusNotMatched", r.Status });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var isNormal = string.Equals(r.TypeCRR, "NORMAL", StringComparison.OrdinalIgnoreCase);
+    r.Status = isNormal ? "A2" : "A1";
+    if (isNormal) { r.ApprovedDate2 = now; r.ApprovedBy2 = who; }
+    r.ApprovedDate1 = now; r.ApprovedBy1 = who;
+    var lines = await db.CarDocRequestCars.Where(x => x.OrgId == t.OrgId && x.RequestId == r.Id).ToListAsync();
+    foreach (var l in lines)
+    {
+        l.DRDtlStatus = r.Status; l.ApprovedDate1 = now; l.ApprovedBy1 = who;
+        if (isNormal) { l.ApprovedDate2 = now; l.ApprovedBy2 = who; }
+        l.LogLUDateTime = now; l.LogLUBy = who;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RequestNo, r.Status, r.TypeCRR, lines = lines.Count, r.ApprovedDate1, r.ApprovedBy1, r.ApprovedDate2, r.ApprovedBy2 });
+}).RequireAuthorization();
+
 app.MapPost("/api/cardocrequests/{no}/cars/cancel", async (string no, CdrCancelDto dto,
     AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {

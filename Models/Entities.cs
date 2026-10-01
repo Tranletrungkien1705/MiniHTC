@@ -6292,6 +6292,10 @@ public sealed class CarDocRequest
     /// (`Biz.HTC.WH.cs:83709-83711`) ⇒ thiếu cột này thì guard chéo NORMAL↔SPECIAL không kiểm được.
     /// Mặc định NORMAL — khớp luồng tạo đề nghị hiện có của port.</summary>
     public string TypeCRR { get; set; } = "NORMAL";
+    // ===== #375 cột duyệt `CarDocReqApprove1_New20190722` (BizHTC.zTemp.cs:10375) =====
+    public DateTime? ApprovedDate1 { get; set; }
+    public string? ApprovedBy1 { get; set; }
+    public string? ApprovedBy2 { get; set; }
 }
 public sealed class CarDocRequestCar
 {
@@ -6328,6 +6332,11 @@ public sealed class CarDocRequestCar
     public string? CancelBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== #375 cột duyệt `CarDocReqApprove1_New20190722` (BizHTC.zTemp.cs:10375) =====
+    public DateTime? ApprovedDate1 { get; set; }
+    public string? ApprovedBy1 { get; set; }
+    public DateTime? ApprovedDate2 { get; set; }
+    public string? ApprovedBy2 { get; set; }
 }
 
 /// <summary>
