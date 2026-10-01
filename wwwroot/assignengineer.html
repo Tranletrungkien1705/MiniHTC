@@ -42,7 +42,7 @@ function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key
 function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
 async function loadGroups(){ await token();
   const d=await (await fetch("/api/grouprepairs",{headers:Hh()})).json();
-  F("fg").innerHTML='<option value="">Tất cả</option>'+(d.items||[]).map(g=>`<option value="${esc(g.groupRCode)}">${esc(g.groupRName)}</option>`).join(""); }
+  F("fg").innerHTML='<option value="">Tất cả</option>'+(d.items||[]).map(g=>`<option value="${esc(g.groupRNo)}">${esc(g.groupRName)}</option>`).join(""); }
 function renderTbl(id,rows){ F(id).innerHTML=rows.map((e,i)=>`<tr class="picked" onclick="pick('${id}',${i})"><td>${esc(e.engineerNo)}</td><td>${esc(e.engineerName)}</td><td>${esc(e.groupRCode)}</td></tr>`).join(""); }
 function render(){ renderTbl("tbAvail",avail); renderTbl("tbPicked",picked); }
 function pick(id,i){ if(id==="tbAvail"){ picked.push(avail.splice(i,1)[0]); } else { avail.push(picked.splice(i,1)[0]); } render(); }

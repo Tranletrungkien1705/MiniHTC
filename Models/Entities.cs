@@ -5693,15 +5693,25 @@ public sealed class ReqPartPriceLine
 
 /// <summary>Nhóm sửa chữa (Ser_GroupRepair — port 1:1 FrmGroupRepairCreate, TCMotor DMSCarSv/Admin):
 /// nhóm tổ sửa chữa (Đồng/Sơn/Máy/Điện...). Engineer thuộc 1 nhóm.</summary>
+/// #356 parity `SerGroupRepairCreate/Update/Delete` (BizCarSv.Service.cs:11161/11350/11506, WS WSCarSv.asmx.cs:5875-5966).
+/// `GroupRID` nguồn = identity (`select @@Identity`) ⇒ ánh xạ `Id`, lộ ra API dưới tên GroupRID.
 public sealed class GroupRepair
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string GroupRCode { get; set; } = "";
+    /// <summary>#356 `GroupRNo` (rename từ `GroupRCode` khớp nguồn) — nguồn lưu `ToUpper()`; duy nhất theo (GroupRNo, DealerCode).</summary>
+    public string GroupRNo { get; set; } = "";
     public string GroupRName { get; set; } = "";
     public string? Note { get; set; }
-    public string Status { get; set; } = "1";
-    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    /// <summary>#356 `IsActive` (rename từ `Status`). Create: chỉ gán khi gửi khác rỗng; Update: rỗng ⇒ NULL (DBNull).</summary>
+    public string? IsActive { get; set; } = "1";
+    /// <summary>#356 `LogLUDateTime` (rename từ `UpdatedAt`).</summary>
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    // ===== #356 cột nguồn port cũ thiếu =====
+    public string? DealerCode { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Kỹ thuật viên dịch vụ (Ser_Engineer — port 1:1 FrmEngineerCreate + FrmEmployeeCreate/Search, TCMotor DMSCarSv/Admin):

@@ -16,10 +16,10 @@
 
 <h3>Nhóm sửa chữa</h3>
 <div class="bar">
-  <input id="gc" placeholder="Mã nhóm *" style="width:100px"><input id="gn" placeholder="Tên nhóm *" style="width:160px"><input id="gnote" placeholder="Ghi chú" style="width:140px">
+  <input id="gdl" placeholder="Đại lý *" style="width:80px"><input id="gc" placeholder="Mã nhóm *" style="width:100px"><input id="gn" placeholder="Tên nhóm *" style="width:160px"><input id="gnote" placeholder="Ghi chú" style="width:140px">
   <button class="primary" onclick="saveGroup()">Lưu nhóm</button><span id="gmsg"></span>
 </div>
-<table><thead><tr><th>Mã nhóm</th><th>Tên nhóm</th><th>Ghi chú</th><th>Số KTV</th></tr></thead><tbody id="grows"><tr><td colspan="4" class="muted">…</td></tr></tbody></table>
+<table><thead><tr><th>Mã nhóm</th><th>Tên nhóm</th><th>Đại lý</th><th>Ghi chú</th><th>Số KTV</th><th></th></tr></thead><tbody id="grows"><tr><td colspan="4" class="muted">…</td></tr></tbody></table>
 
 <h3>Kỹ thuật viên / Nhân viên <span class="muted">(gộp FrmEngineerCreate + FrmEmployeeCreate — cùng bảng Ser_Engineer)</span></h3>
 <div class="bar">
@@ -39,16 +39,17 @@ async function token(){ if(TOKEN) return TOKEN;
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
   TOKEN=(await r.json()).access_token; return TOKEN; }
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+async function delGroup(id){ if(!confirm("Xoá nhóm?")) return; const r=await fetch(`/api/grouprepairs/${id}/delete`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) loadGroups(); else F("gmsg").textContent="Lỗi: "+(j.error||r.status); }
 async function saveGroup(){
-  const r=await fetch("/api/grouprepairs",{method:"POST",headers:H(),body:JSON.stringify({groupRCode:F("gc").value,groupRName:F("gn").value,note:F("gnote").value})});
-  const j=await r.json(); if(r.ok){ F("gmsg").textContent="Đã lưu "+j.groupRCode; F("gc").value="";F("gn").value=""; loadGroups(); } else F("gmsg").textContent="Lỗi: "+(j.error||r.status);
+  const r=await fetch("/api/grouprepairs",{method:"POST",headers:H(),body:JSON.stringify({GroupRNo:F("gc").value,GroupRName:F("gn").value,Note:F("gnote").value,DealerCode:F("gdl").value,IsActive:"1"})});
+  const j=await r.json(); if(r.ok){ F("gmsg").textContent="Đã lưu "+j.groupRNo; F("gc").value="";F("gn").value=""; loadGroups(); } else F("gmsg").textContent="Lỗi: "+(j.error||r.status);
 }
 async function loadGroups(){ await token();
   const d=await (await fetch("/api/grouprepairs",{headers:H()})).json();
-  F("grows").innerHTML=(d.items||[]).map(g=>`<tr><td><b>${g.groupRCode}</b></td><td>${g.groupRName}</td><td class="muted">${g.note||"—"}</td><td>${g.engineers}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có nhóm.</td></tr>';
-  const opts='<option value="">— Nhóm SC —</option>'+(d.items||[]).map(g=>`<option value="${g.groupRCode}">${g.groupRCode} - ${g.groupRName}</option>`).join("");
+  F("grows").innerHTML=(d.items||[]).map(g=>`<tr><td><b>${g.groupRNo}</b></td><td>${g.groupRName}</td><td>${g.dealerCode||"—"}</td><td class="muted">${g.note||"—"}</td><td>${g.engineers}</td><td><button onclick="delGroup(${g.groupRID})">Xoá</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có nhóm.</td></tr>';
+  const opts='<option value="">— Nhóm SC —</option>'+(d.items||[]).map(g=>`<option value="${g.groupRNo}">${g.groupRNo} - ${g.groupRName}</option>`).join("");
   F("eg").innerHTML=opts;
-  F("fg").innerHTML='<option value="">Tất cả nhóm</option>'+(d.items||[]).map(g=>`<option value="${g.groupRCode}">${g.groupRName}</option>`).join("");
+  F("fg").innerHTML='<option value="">Tất cả nhóm</option>'+(d.items||[]).map(g=>`<option value="${g.groupRNo}">${g.groupRName}</option>`).join("");
 }
 async function saveEng(){
   const body={engineerNo:F("en").value,engineerName:F("ename").value,groupRCode:F("eg").value,note:F("enote").value,

@@ -52024,23 +52024,83 @@ app.MapPost("/api/campaigns/contacts/{id:long}/contacted", async (long id, AppDb
 }).RequireAuthorization();
 
 // ===== Nhóm sửa chữa (Ser_GroupRepair — port 1:1 FrmGroupRepairCreate) =====
-app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t) =>
+// #356 parity 1:1 TCMotor V20 BizCarSv.Service.cs:
+//   · Create `SerGroupRepairCreate` (:11161): CheckExistGroupRNo (trùng GroupRNo+DealerCode, KHÔNG xét IsActive) ⇒ `Ser_GroupRepairNo_Exist`;
+//     CheckGroupRFieldEmpty ⇒ `Ser_GroupRepair_GroupRepairNoEmpty` / `_DealerEmpty` / `_GroupRepairNameEmpty`. GroupRNo.ToUpper();
+//     Note / IsActive chỉ gán khi khác rỗng; CreatedDate/By + LogLU* = lúc tạo; GroupRID = @@Identity.
+//   · Update `SerGroupRepairUpdate` (:11350): CheckExistGroupR(GroupRID) + field-empty + CheckExistGroupRNoModify (trùng với nhóm KHÁC
+//     đang IsActive = 1). Ghi DealerCode, GroupRNo, GroupRName, Note (kể cả rỗng), IsActive (rỗng ⇒ NULL), LogLU*.
+//   · Delete `SerGroupRepairDelete` (:11506): CheckExistGroupR rồi xoá theo GroupRID — nguồn KHÔNG kiểm KTV đang thuộc nhóm.
+//   ⚠️ Nợ: Ser_Engineer nguồn nối nhóm qua `GROUPRID` (số); MiniHTC ServiceEngineer vẫn nối theo mã (`GroupRCode` = GroupRNo).
+app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, long? groupRID, string? dealerCode, string? groupRNo, string? groupRName, string? isActive) =>
 {
-    var items = await db.GroupRepairs.Where(g => g.OrgId == t.OrgId).OrderBy(g => g.GroupRCode)
-        .Select(g => new { g.GroupRCode, g.GroupRName, g.Note, g.Status, engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRCode) }).ToListAsync();
+    var q = db.GroupRepairs.Where(g => g.OrgId == t.OrgId);
+    if (groupRID is not null) q = q.Where(g => g.Id == groupRID);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(g => g.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(groupRNo)) q = q.Where(g => g.GroupRNo.Contains(groupRNo.Trim().ToUpper()));
+    if (!string.IsNullOrWhiteSpace(groupRName)) q = q.Where(g => g.GroupRName.Contains(groupRName.Trim()));
+    if (!string.IsNullOrWhiteSpace(isActive)) q = q.Where(g => g.IsActive == isActive);
+    var items = await q.OrderBy(g => g.GroupRNo)
+        .Select(g => new
+        {
+            GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.DealerCode, g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy,
+            engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRNo)
+        }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITenantContext t) =>
+// Create (GroupRID rỗng) hoặc Update (có GroupRID) — giữ một route như port cũ.
+app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.GroupRCode) || string.IsNullOrWhiteSpace(dto.GroupRName))
-        return Results.BadRequest(new { error = "Cần GroupRCode và GroupRName." });
-    var code = dto.GroupRCode.Trim().ToUpperInvariant();
-    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRCode == code);
-    if (g is null) { g = new GroupRepair { OrgId = t.OrgId, GroupRCode = code }; db.GroupRepairs.Add(g); }
-    g.GroupRName = dto.GroupRName; g.Note = dto.Note; g.Status = dto.Status ?? "1"; g.UpdatedAt = DateTime.Now;
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    var no = (dto.GroupRNo ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var name = (dto.GroupRName ?? "").Trim();
+    GroupRepair? g = null;
+    if (dto.GroupRID is not null)
+    {
+        g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == dto.GroupRID);
+        if (g is null) return Results.BadRequest(new { error = $"Không tìm thấy nhóm sửa chữa GroupRID={dto.GroupRID}.", code = "Ser_GroupRepair_NotExist" });
+    }
+    // CheckGroupRFieldEmpty
+    if (no.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã nhóm sửa chữa.", code = "Ser_GroupRepair_GroupRepairNoEmpty" });
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa có mã đại lý.", code = "Ser_GroupRepair_DealerEmpty" });
+    if (name.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên nhóm sửa chữa.", code = "Ser_GroupRepair_GroupRepairNameEmpty" });
+    var noUp = no.ToUpperInvariant();
+    if (g is null)
+    {
+        // CheckExistGroupRNo — so khớp nguyên văn GroupRNo + DealerCode (không xét IsActive)
+        if (await db.GroupRepairs.AnyAsync(x => x.OrgId == t.OrgId && x.GroupRNo == noUp && x.DealerCode == dealer))
+            return Results.BadRequest(new { error = $"Mã nhóm {noUp} đã tồn tại ở đại lý {dealer}.", code = "Ser_GroupRepairNo_Exist" });
+        g = new GroupRepair
+        {
+            OrgId = t.OrgId, DealerCode = dealer, GroupRNo = noUp, GroupRName = name,
+            Note = string.IsNullOrEmpty(dto.Note) ? null : dto.Note, IsActive = string.IsNullOrEmpty(dto.IsActive) ? null : dto.IsActive,
+            CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who
+        };
+        db.GroupRepairs.Add(g);
+    }
+    else
+    {
+        // CheckExistGroupRNoModify — trùng với nhóm KHÁC đang hoạt động
+        if (await db.GroupRepairs.AnyAsync(x => x.OrgId == t.OrgId && x.GroupRNo == noUp && x.DealerCode == dealer && x.Id != g.Id && x.IsActive == "1"))
+            return Results.BadRequest(new { error = $"Mã nhóm {noUp} đã tồn tại ở đại lý {dealer}.", code = "Ser_GroupRepairNo_Exist" });
+        g.DealerCode = dealer; g.GroupRNo = noUp; g.GroupRName = name; g.Note = dto.Note;
+        g.IsActive = string.IsNullOrEmpty(dto.IsActive) ? null : dto.IsActive;
+        g.LogLUDateTime = now; g.LogLUBy = who;
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { g.GroupRCode, g.GroupRName });
+    return Results.Ok(new { GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.DealerCode, g.IsActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/grouprepairs/{groupRID:long}/delete", async (long groupRID, AppDbContext db, ITenantContext t) =>
+{
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == groupRID);
+    if (g is null) return Results.BadRequest(new { error = $"Không tìm thấy nhóm sửa chữa GroupRID={groupRID}.", code = "Ser_GroupRepair_NotExist" });
+    db.GroupRepairs.Remove(g);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = groupRID });
 }).RequireAuthorization();
 
 // ===== Kỹ thuật viên (Ser_Engineer — port 1:1 FrmEngineerCreate) =====
@@ -56384,7 +56444,7 @@ record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = nu
     string? ReqPartPriceNo = null, string? FlagIsDelete = null, string? FlagIsCheck = null);
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
-record GroupRepairDto(string GroupRCode, string GroupRName, string? Note, string? Status);
+record GroupRepairDto(string? GroupRNo, string? GroupRName, string? Note, string? IsActive, string? DealerCode = null, long? GroupRID = null);   // #356 rename khớp nguồn
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? Status, string? EngineerType, DateTime? StartWorkDate, DateTime? FinishWorkDate);
 /// <summary>
 /// 1 khách hàng được chọn vào chiến dịch (lưới FrmCamp_CustomerList).
