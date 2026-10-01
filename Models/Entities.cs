@@ -2890,7 +2890,9 @@ public sealed class SerStockOutOrder
     public string? Mobile { get; set; }
     public string? Description { get; set; }
     public decimal TotalQty { get; set; }
-    public string Status { get; set; } = "Created";
+    /// <summary>#371 mã nguồn TblSerInvStockOutOrder.Status*Value: 1 Mới tạo · 2 Đã gửi · 3 Đã hủy · 4 Đang chờ · 5 Chấp nhận ·
+    /// 6 Đã tạo phiếu xuất · 7 Kết thúc · 8 Đã điều chỉnh. Port cũ lưu tên (Created/Submitted/…) ⇒ Seeder đổi sang mã.</summary>
+    public string Status { get; set; } = "1";
     public string SourceType { get; set; } = "CUS";   // CUS = đơn khách hàng; RO = theo lệnh sửa chữa (FrmStockOutOrderSvCreate)
     public string? RONo { get; set; }                  // số lệnh sửa chữa (khi SourceType=RO)
     public string? CreatedBy { get; set; }
