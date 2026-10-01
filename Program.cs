@@ -18874,35 +18874,59 @@ app.MapPost("/api/servicecars/warranty-reg-batch", async (List<WarrantyRegRowDto
 }).RequireAuthorization();
 
 // ===== Danh mục phụ tùng dịch vụ (ServicePart — port 1:1 FrmPart/FrmPartSearch, TCMotor) =====
-app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active) =>
+// #310 GET theo Ser_Mst_Part_Get (BizCarSv.Service.cs:2296): PriceEffect = giá áp dụng mới nhất (Ser_Inv_PartPrice active,
+// DateEffect ≤ hôm nay, RANK theo DateEffect desc) — không có thì = Price; TSTPrice = TST_Mst_Part.TSTPrice cùng mã.
+app.MapGet("/api/serviceparts", async (AppDbContext db, ITenantContext t, string? q, string? group, string? active, string? freqUsed, string? flagInTST) =>
 {
     var query = db.ServiceParts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PartCode.Contains(q!.ToUpper()) || (x.PartName != null && x.PartName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(group)) query = query.Where(x => x.PartGroupCode == group);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
-    var items = await query.OrderBy(x => x.PartCode).Take(500)
-        .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location, x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive,
-            lowStock = x.Quantity < x.MinQuantity }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(freqUsed)) query = query.Where(x => x.FreqUsed == freqUsed);
+    if (!string.IsNullOrWhiteSpace(flagInTST)) query = query.Where(x => x.FlagInTST == flagInTST);
+    var rows = await query.OrderBy(x => x.PartCode).Take(500).ToListAsync();
+    var codes = rows.Select(r => r.PartCode).ToList();
+    var tomorrow = DateTime.Today.AddDays(1);
+    var prices = await db.PartPrices.Where(p => p.OrgId == t.OrgId && codes.Contains(p.PartCode) && p.Status == "1" && p.EffectiveDate < tomorrow)
+        .Select(p => new { p.PartCode, p.Price, p.EffectiveDate }).ToListAsync();
+    var tst = await db.TstParts.Where(p => p.OrgId == t.OrgId && codes.Contains(p.TSTPartCode)).Select(p => new { p.TSTPartCode, p.TSTPrice }).ToListAsync();
+    var typeIds = rows.Where(r => r.PartTypeID != null).Select(r => r.PartTypeID!.Value).Distinct().ToList();
+    var types = await db.SerPartTypes.Where(p => p.OrgId == t.OrgId && typeIds.Contains(p.Id)).ToDictionaryAsync(p => p.Id, p => p.TypeName);
+    var items = rows.Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location, x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive,
+            x.PartTypeID, PartTypeName = x.PartTypeID is long tid && types.TryGetValue(tid, out var tn) ? tn : null, x.VAT, x.FreqUsed, x.FlagInTST,
+            PriceEffect = prices.Where(p => p.PartCode == x.PartCode).OrderByDescending(p => p.EffectiveDate).Select(p => (decimal?)p.Price).FirstOrDefault() ?? x.Price,
+            TSTPrice = tst.Where(p => p.TSTPartCode == x.PartCode).Select(p => (decimal?)p.TSTPrice).FirstOrDefault(),
+            lowStock = x.Quantity < x.MinQuantity }).ToList();
     return Results.Ok(new { count = items.Count, lowStockCount = items.Count(i => i.lowStock), items });
 }).RequireAuthorization();
 
-// Upsert theo mã phụ tùng.
+// Upsert theo mã phụ tùng: chưa có → Ser_Mst_Part_Create_20210303 (LIVE ở HTCWSCarSv:4141); đã có → Ser_Mst_Part_Update.
 app.MapPost("/api/serviceparts", async (ServicePartDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
     if (string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa nhập tên phụ tùng." });
     if (dto.Price < 0 || dto.Cost < 0) return Results.BadRequest(new { error = "Giá/chi phí không hợp lệ." });
+    if (dto.FreqUsed is not (null or "" or "Y" or "N")) return Results.BadRequest(new { error = "FreqUsed chỉ nhận Y/N." });
+    if (dto.PartTypeID is long ptid && !await db.SerPartTypes.AnyAsync(p => p.OrgId == t.OrgId && p.Id == ptid))
+        return Results.BadRequest(new { error = "Loại phụ tùng không tồn tại.", dto.PartTypeID });
     var code = dto.PartCode.Trim().ToUpperInvariant();
     var ex = await db.ServiceParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
     if (ex is not null)
     {
-        ex.PartName = dto.PartName; ex.EngName = dto.EngName; ex.Unit = dto.Unit; ex.Price = dto.Price; ex.Cost = dto.Cost; ex.Location = dto.Location; ex.Quantity = dto.Quantity; ex.MinQuantity = dto.MinQuantity; ex.PartGroupCode = dto.PartGroupCode; ex.Model = dto.Model; ex.Note = dto.Note; ex.FlagActive = "1";
+        // Ser_Mst_Part_Update: phụ tùng phải đang hoạt động (Ser_Part_NotActive); KHÔNG ghi Price, KHÔNG đổi FlagInTST.
+        if (ex.FlagActive != "1") return Results.BadRequest(new { error = "Phụ tùng đã ngừng hoạt động, không sửa được (Ser_Part_NotActive).", ex.PartCode });
+        ex.PartName = dto.PartName; ex.EngName = dto.EngName; ex.Unit = dto.Unit; ex.Cost = dto.Cost; ex.Location = dto.Location; ex.Quantity = dto.Quantity; ex.MinQuantity = dto.MinQuantity; ex.PartGroupCode = dto.PartGroupCode; ex.Model = dto.Model; ex.Note = dto.Note; ex.FlagActive = "1";
+        ex.PartTypeID = dto.PartTypeID; ex.VAT = dto.VAT; ex.FreqUsed = string.IsNullOrEmpty(dto.FreqUsed) ? "N" : dto.FreqUsed;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.PartCode, updated = true });
+        return Results.Ok(new { ex.PartCode, updated = true, ex.Price, ex.FlagInTST });
     }
-    var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, EngName = dto.EngName, Unit = dto.Unit, Price = dto.Price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1" };
+    var r = new ServicePart { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, EngName = dto.EngName, Unit = dto.Unit, Price = dto.Price, Cost = dto.Cost, Location = dto.Location, Quantity = dto.Quantity, MinQuantity = dto.MinQuantity, PartGroupCode = dto.PartGroupCode, Model = dto.Model, Note = dto.Note, FlagActive = "1",
+        PartTypeID = dto.PartTypeID, VAT = dto.VAT, FreqUsed = string.IsNullOrEmpty(dto.FreqUsed) ? "N" : dto.FreqUsed, FlagInTST = "0" };
+    // Trùng mã TST_Mst_Part (không lọc IsActive) ⇒ FlagInTST='1' và Tên, ĐVT, VAT, Giá bán lấy theo TST.
+    var tp = await db.TstParts.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.TSTPartCode == code);
+    if (tp is not null) { r.PartName = tp.VieName; r.Unit = tp.Unit; r.VAT = tp.VAT; r.Price = tp.TSTPrice; r.FlagInTST = "1"; }
     db.ServiceParts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.PartCode, updated = false });
+    return Results.Ok(new { r.PartCode, updated = false, r.Price, r.FlagInTST });
 }).RequireAuthorization();
 
 app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
@@ -55967,7 +55991,7 @@ record BulletinVinStatusDto(string? Status);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
-record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note);
+record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note, long? PartTypeID = null, decimal? VAT = null, string? FreqUsed = null);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
     // #222 parity: 8 trường của CarUpdate
     string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);

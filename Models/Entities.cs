@@ -13741,6 +13741,14 @@ public sealed class ServicePart
     public string? Note { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // #310 cột nguồn TblSerMSTPart (DbDefine) — Ser_Mst_Part_Create_20210303 / Ser_Mst_Part_Update (BizCarSv.Service.cs:4871/5407).
+    /// <summary>Loại phụ tùng (`PartTypeID` → SerPartType.Id).</summary>
+    public long? PartTypeID { get; set; }
+    public decimal? VAT { get; set; }
+    /// <summary>Hay dùng (`FreqUsed`): "Y"/"N" (Flag.Yes/No — KHÔNG phải 1/0).</summary>
+    public string? FreqUsed { get; set; }
+    /// <summary>Có trong danh mục TST HTC (`FlagInTST`): "1" khi tạo mới trùng mã TST_Mst_Part, "0" ngược lại. Sửa KHÔNG đổi cờ.</summary>
+    public string FlagInTST { get; set; } = "0";
 }
 
 /// <summary>Nhóm phụ tùng phân cấp (cha-con) — port 1:1 FrmPartGroup (TblSerMSTPartGroup, TCMotor).</summary>
