@@ -1427,9 +1427,16 @@ public sealed class RetrieveRequest
     public string DealerCode { get; set; } = "";
     public string TransporterCode { get; set; } = "";
     public string? Reason { get; set; }               // lý do thu hồi
-    public string Status { get; set; } = "Pending";
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? DecidedAt { get; set; }
+    /// <summary>
+    /// 🔴 #312 đổi tên khớp nguồn `TblStoTranspReq.TranspReqStatus` (port cũ: `Status`) + mã `TConst.Stage`:
+    /// "P" chờ duyệt → "A" duyệt / "R" từ chối (Sto_TranspReq_Approve_New20181119, Biz.HTC.WH.cs:108029).
+    /// Từ chối được cả phiếu đã duyệt (P hoặc A → R).
+    /// </summary>
+    public string TranspReqStatus { get; set; } = "P";
+    /// <summary>#312 đổi tên khớp nguồn (`CreatedDate`, port cũ: `CreatedAt`).</summary>
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    /// <summary>#312 đổi tên khớp nguồn (`ApprovedDate`, port cũ: `DecidedAt`) — nguồn ghi cho cả duyệt lẫn từ chối.</summary>
+    public DateTime? ApprovedDate { get; set; }
     public string TranspReqType { get; set; } = "Retrieve"; // Retrieve|StorageRearrCB|StorageRearrange — port FrmMngRearCBTranspReq/FrmMngRearrangeTranspReq (dùng chung bảng StoTranspReq)
 
     // ===== #156 parity Sto_TranspReq (nguồn: DataWH/Biz.HTC.WH.cs, csproj 272) —
@@ -1459,7 +1466,9 @@ public sealed class RetrieveReqCar
     public long ReqId { get; set; }
     public string Vin { get; set; } = "";
     public string? StorageCode { get; set; }
-    public string DtlStatus { get; set; } = "Pending";
+    /// <summary>#312 đổi tên khớp nguồn `TblStoTranspReqDtl.TranspReqDtlStatus` (port cũ: `DtlStatus`);
+    /// nguồn đặt = trạng thái phiếu khi duyệt/từ chối (`srtrd.TranspReqDtlStatus = t.TranspReqStatus`).</summary>
+    public string TranspReqDtlStatus { get; set; } = "P";
 
     // ===== #156 parity Sto_TranspReqDtl (Biz.HTC.WH.cs:110501) =====
     /// <summary>

@@ -36359,7 +36359,7 @@ app.MapPost("/api/dlvminutes/{no}/update-enddate", async (string no, DlvUpdEndDa
     {
         // Dòng YCVT quyết định lan sang chứng từ NÀO — guard `TranspReqDtlStatus ∈ {"A","F"}`.
         var dtl = await db.RetrieveReqCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin
-            && (x.DtlStatus == "A" || x.DtlStatus == "F"));
+            && (x.TranspReqDtlStatus == "A" || x.TranspReqDtlStatus == "F"));
         if (dtl is null) { skipped.Add($"{vin}: không có dòng yêu cầu vận chuyển ở trạng thái A/F"); continue; }
         var reqType = (dtl.TranspReqType ?? "").Trim().ToUpperInvariant();
 
@@ -54818,12 +54818,15 @@ string[] _transpReqTypes = { "Retrieve", "StorageRearrCB", "StorageRearrange" };
 string _transpReqPrefix(string type) => type switch { "StorageRearrCB" => "RCB", "StorageRearrange" => "RRG", _ => "RTR" };
 app.MapGet("/api/retrievereqs", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? type) =>
 {
-    var q = db.RetrieveRequests.Where(r => r.OrgId == t.OrgId && r.TranspReqTypeHeaderOnly == (string.IsNullOrWhiteSpace(type) ? "Retrieve" : type));
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    // #312 lọc theo cột loại ở đầu phiếu mà POST thực sự ghi (`TranspReqType`) — bản cũ lọc `TranspReqTypeHeaderOnly`
+    // (POST không bao giờ gán) ⇒ phiếu mới tạo KHÔNG BAO GIỜ hiện ra.
+    var typ = string.IsNullOrWhiteSpace(type) ? "Retrieve" : type;
+    var q = db.RetrieveRequests.Where(r => r.OrgId == t.OrgId && r.TranspReqType == typ);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.TranspReqStatus == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.Status, r.CreatedAt, r.DecidedAt, r.TranspReqTypeHeaderOnly,
+        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.TranspReqStatus, r.CreatedDate, r.ApprovedDate, r.TranspReqType, r.TranspReqTypeHeaderOnly,
         // #156 parity Sto_TranspReq.
         r.TransportContractNo, r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,
         cars = db.RetrieveReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
@@ -54843,20 +54846,20 @@ app.MapPost("/api/retrievereqs", async (RetrieveReqDto dto, AppDbContext db, ITe
     var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = _transpReqPrefix(type) + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new RetrieveRequest { OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "Pending", TranspReqType = type ,
+    var r = new RetrieveRequest { OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), Reason = dto.Reason, TranspReqStatus = "P", TranspReqType = type ,
         // #156 parity Sto_TranspReq.
         TransportContractNo = dto.TransportContractNo, CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
         LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.RetrieveRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.RetrieveReqCars.Add(new RetrieveReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), StorageCode = c.StorageCode, DtlStatus = "Pending" ,
+        db.RetrieveReqCars.Add(new RetrieveReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), StorageCode = c.StorageCode, TranspReqDtlStatus = "P" ,
             // #156 parity Sto_TranspReqDtl — loại nằm ở DÒNG; nếu client chưa gửi thì lấy loại của phiếu.
             TranspReqType = c.TranspReqType ?? type, RefOrdNo = c.RefOrdNo,
             // 🔴 luật nguồn (Biz.HTC.WH.cs:109610): điều chuyển kho ⇒ CarId để NULL.
             CarId = ((c.TranspReqType ?? type) is "STORAGEREARRANGE" or "STORAGEREARRCB") ? null : c.CarId,
             LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, cars = vins.Count, status = r.Status });
+    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, cars = vins.Count, r.TranspReqStatus });
 }).RequireAuthorization();
 
 app.MapGet("/api/retrievereqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -54865,23 +54868,29 @@ app.MapGet("/api/retrievereqs/{no}/cars", async (string no, AppDbContext db, ITe
     var r = await db.RetrieveRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.RetrieveReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
-        .Select(c => new { c.Vin, c.StorageCode, c.DtlStatus, c.TranspReqType, c.RefOrdNo, c.CarId, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { r.TranspReqNo, r.Status, count = cars.Count, cars });
+        .Select(c => new { c.Vin, c.StorageCode, c.TranspReqDtlStatus, c.TranspReqType, c.RefOrdNo, c.CarId, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+    return Results.Ok(new { r.TranspReqNo, r.TranspReqStatus, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/retrievereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// #312 Sto_TranspReq_Approve_New20181119 (Biz.HTC.WH.cs:108029, strFlagUnapprove): duyệt chỉ từ "P" → "A";
+// từ chối ("Được hủy các YCVT A khi chưa có BBGN") từ "P" HOẶC "A" → "R". Cả hai đều ghi ApprovedDate/ApprovedBy,
+// dòng chi tiết nhận đúng trạng thái phiếu. ⚠️ Chưa port check BBGN (Sto_DlvMinutes) khi hủy phiếu đã duyệt.
+app.MapPost("/api/retrievereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.RetrieveRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối yêu cầu Đang xử lý." });
-    r.Status = action == "approve" ? "Approved" : "Rejected"; r.DecidedAt = DateTime.Now;
-    var dtl = r.Status;
+    var approve = action == "approve";
+    if (approve ? r.TranspReqStatus != "P" : r.TranspReqStatus is not ("P" or "A"))
+        return Results.BadRequest(new { error = "Trạng thái yêu cầu vận chuyển không hợp lệ (Sto_TranspReq_Approve_InvalidSRTReqStatus).",
+            current = r.TranspReqStatus, validList = approve ? "P" : "P,A" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    r.TranspReqStatus = approve ? "A" : "R"; r.ApprovedDate = now.Date; r.ApprovedBy = who; r.LogLUDateTime = now; r.LogLUBy = who;
     foreach (var c in await db.RetrieveReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id).ToListAsync())
-        c.DtlStatus = dtl;
+        c.TranspReqDtlStatus = r.TranspReqStatus;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.TranspReqNo, status = r.Status });
+    return Results.Ok(new { r.TranspReqNo, r.TranspReqStatus, r.ApprovedDate, r.ApprovedBy });
 }).RequireAuthorization();
 
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
