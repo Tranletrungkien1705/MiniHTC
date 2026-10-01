@@ -54539,7 +54539,9 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     {
         OrgId = t.OrgId, RONo = no, LicensePlate = dto.LicensePlate.Trim().ToUpperInvariant(), Vin = dto.Vin, CusName = dto.CusName, Km = dto.Km,
         CheckInDate = dto.CheckInDate ?? DateTime.Now, PlanedDeliveryDate = dto.PlanedDeliveryDate, CusRequest = dto.CusRequest,
-        CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HRO",
+        // 🔴 #392 Ser_RO_Create_New20220926 (BizCarSv.ZTemp.cs:6258, thân :489) ghi Status = Ser_RO_Stage.Create = "CRE" — bản ghi Ser_RO lúc này
+        //   CHÍNH LÀ BÁO GIÁ (FrmQuotation). Chỉ khi bấm "Tạo RO" (Ser_RO_CreateRO) mới sang HRO ⇒ POST /api/repairorders/{no}/create-ro.
+        CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "CRE",
         // 4 cột phục vụ màn Lịch sử dịch vụ (FrmServiceHistory); DealerCode là khoá của luật CanShowDetail
         DealerCode = dealerRo,
         TrademarkNameModel = dto.TrademarkNameModel, ColorCode = dto.ColorCode, Assistant = dto.Assistant
@@ -54681,6 +54683,8 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     if (r is null) return Results.NotFound(new { no });
     if (r.Status == "REJ") return Results.BadRequest(new { error = "Lệnh đã bị từ chối, không thể chuyển trạng thái." });
     var target = RoCode(dto.ToStatus);
+    // #392 báo giá (CRE/PRT) chỉ sang HRO qua Ser_RO_CreateRO (đổi trạng thái + sinh lệnh xuất LX-RONo) — không cho /advance đi tắt.
+    if (r.Status is "CRE" or "PRT") return Results.BadRequest(new { error = "Lệnh đang ở giai đoạn báo giá — dùng \"Tạo RO\" (Ser_RO_CreateRO).", route = $"/api/repairorders/{r.RONo}/create-ro" });
     var curIdx = Array.IndexOf(_roFlow, r.Status);
     var tgtIdx = Array.IndexOf(_roFlow, target);
     if (tgtIdx < 0) return Results.BadRequest(new { error = "ToStatus không hợp lệ. Chuỗi: HasRO→InGarage→Repaired→CheckEnd→Paid→Finished" });
@@ -54717,6 +54721,49 @@ app.MapPost("/api/repairorders/{no}/setstatus", async (
     r.Status = target;
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, status = r.Status, name = roStatusSourceCodes.FirstOrDefault(kv => kv.Value == target).Key });
+}).RequireAuthorization();
+
+// #392 TẠO RO TỪ BÁO GIÁ — port `Ser_RO_CreateRO` (BizCarSv.Service01.cs:6776; WS WSCarSv.asmx.cs:11157; FrmQuotation.cs:6385/7538).
+//   (1) Status = CRE ⇒ HRO + ROCreateBy/ROCreateDate + LogLU* (trạng thái khác: KHÔNG đổi, vẫn chạy bước 2 — đúng nguồn).
+//   (2) Nếu RO có phụ tùng (CheckNoPartInRO = false): tìm lệnh xuất 'LX-' + RONo; CHƯA có ⇒ tạo (Priority 1, BackOrderIndex 0,
+//       Status 5 = Chấp nhận, Description "Tạo từ lệnh sửa chữa", UserCode = Creator, CusID, DealerCode, StockOutType 1) + dòng = phụ tùng RO;
+//       ĐÃ có và Status = 5 ⇒ xoá dòng cũ, chèn lại từ phụ tùng RO; trạng thái khác ⇒ giữ nguyên. Trả StockOutOrderID như nguồn.
+app.MapPost("/api/repairorders/{no}/create-ro", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no, code = "Ser_RO_CreateRO" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var converted = false;
+    if (r.Status == "CRE")
+    {
+        r.Status = "HRO"; r.ROCreateBy = who; r.ROCreateDate = now; r.LogLUDateTime = now; r.LogLUBy = who; converted = true;
+    }
+    var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id).ToListAsync();
+    SerStockOutOrder? so = null; var soAction = "none";
+    if (parts.Count > 0)
+    {
+        var soNo = "LX-" + r.RONo;
+        so = await db.SerStockOutOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutOrderNo == soNo);
+        if (so is null)
+        {
+            so = new SerStockOutOrder { OrgId = t.OrgId, StockOutOrderNo = soNo, StockOutOrderTime = now.Date, RequestDeliveryTime = null, Priority = "1",
+                Description = "Tạo từ lệnh sửa chữa", BackOrderIndex = "0", Status = "5", UserCode = r.Creator, CusID = r.CusID, CusName = r.CusName,
+                SourceType = "RO", RONo = r.RONo, DealerCode = r.DealerCode, StockOutType = "1", TotalQty = parts.Sum(p => p.NeedQty),
+                CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who };
+            db.SerStockOutOrders.Add(so); await db.SaveChangesAsync(); soAction = "created";
+        }
+        else if (so.Status == "5")
+        {
+            db.SerStockOutOrderLines.RemoveRange(await db.SerStockOutOrderLines.Where(l => l.OrgId == t.OrgId && l.OrderId == so.Id).ToListAsync());
+            so.TotalQty = parts.Sum(p => p.NeedQty); so.LogLUDateTime = now; so.LogLUBy = who; soAction = "refreshed";
+        }
+        if (soAction != "none")
+            foreach (var p in parts)
+                db.SerStockOutOrderLines.Add(new SerStockOutOrderLine { OrgId = t.OrgId, OrderId = so.Id, PartCode = p.PartCode, PartName = p.PartName, Unit = p.Unit, OrderQuantity = p.NeedQty });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, status = r.Status, converted, r.ROCreateBy, r.ROCreateDate, StockOutOrderID = so?.Id, StockOutOrderNo = so?.StockOutOrderNo, stockOutOrder = soAction });
 }).RequireAuthorization();
 
 // Từ chối lệnh sửa chữa (port 1:1 FrmROReject, TCMotor DMSCarSv): set Rejected + ghi lý do.

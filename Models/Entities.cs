@@ -2305,6 +2305,10 @@ public sealed class RepairOrder
     public string? QuanDoc { get; set; }
     public DateTime? ScheduleDate { get; set; }
     public DateTime? StartDate { get; set; }
+
+    // ===== #392 Ser_RO_CreateRO (BizCarSv.Service01.cs:6776): khi chuyển báo giá CRE → HRO ghi người/ngày tạo RO =====
+    public string? ROCreateBy { get; set; }
+    public DateTime? ROCreateDate { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>

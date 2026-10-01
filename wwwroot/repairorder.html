@@ -46,7 +46,7 @@
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const FLOW=["HRO","INGA","RPRD","CEND","PAID","FNS"];
-const LBL={"HRO":"Mới tạo","INGA":"Vào xưởng","RPRD":"Sửa xong","CEND":"Kiểm tra cuối","PAID":"Đã thanh toán","FNS":"Hoàn tất"};
+const LBL={"CRE":"Báo giá","PRT":"Đã in báo giá","HRO":"Đã có RO","INGA":"Vào xưởng","RPRD":"Sửa xong","CEND":"Kiểm tra cuối","PAID":"Đã thanh toán","FNS":"Hoàn tất"};
 const n=x=>Number(x||0).toLocaleString("vi-VN");
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
@@ -71,12 +71,14 @@ async function load(){ await token();
   const d=await (await fetch(`/api/repairorders?status=${F("fst").value}&plate=${encodeURIComponent(F("q").value)}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(r=>{
     const i=FLOW.indexOf(r.status); const next=i>=0&&i<FLOW.length-1?FLOW[i+1]:null;
-    const act=next?`<button class="sm" onclick="adv('${r.rONo}','${next}')">→ ${LBL[next]}</button>`:"";
+    // #392 CRE/PRT = báo giá (Ser_RO_Create) ⇒ nút "Tạo RO" (Ser_RO_CreateRO: → HRO + lệnh xuất LX-RONo khi có phụ tùng).
+    const act=(r.status==="CRE"||r.status==="PRT")?`<button class="sm" onclick="createRo('${r.rONo}')">Tạo RO</button>`:next?`<button class="sm" onclick="adv('${r.rONo}','${next}')">→ ${LBL[next]}</button>`:"";
     return `<tr><td><b>${r.rONo}</b> <a href="#" class="det" onclick="detail('${r.rONo}');return false">chi tiết</a></td><td>${r.licensePlate}</td><td>${r.cusName||"—"}</td>
       <td>${r.services}CV/${r.parts}PT</td><td class="n">${n(r.total)}</td>
       <td><span class="pill">${LBL[r.status]||r.status}</span></td><td>${act}</td></tr><tr id="x-${r.rONo}"></tr>`;
   }).join("")||'<tr><td colspan="7" class="muted">Chưa có RO.</td></tr>';
 }
+async function createRo(no){ const r=await fetch(`/api/repairorders/${no}/create-ro`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok){ msg("Đã tạo RO "+no+(j.stockOutOrderNo?(" — lệnh xuất "+j.stockOutOrderNo):"")); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 async function adv(no,to){ const r=await fetch(`/api/repairorders/${no}/advance`,{method:"POST",headers:H(),body:JSON.stringify({toStatus:to})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function detail(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
