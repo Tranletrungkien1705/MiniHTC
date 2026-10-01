@@ -10544,18 +10544,41 @@ public sealed class GrtClaimDetail
 /// <summary>Đề nghị chiết khấu thanh toán sớm BL/LC theo VIN (Req_PaymentDiscount + Dtl — port 1:1 FrmReq_PaymentDiscount/FrmMngReq_PaymentDiscount, 2010.HTC/Sales):
 /// 3 giai đoạn (Phase1/2/3), mỗi giai đoạn: AmountPhase (gốc BL/LC còn lại) × DiscountPercentPhase/100 × DiscountDateNumberPhase/365 = DiscountPricePhase (chiết khấu được hưởng khi trả sớm).
 /// TotalDiscountPrice = Σ 3 giai đoạn. Status: Draft(đại lý lập)→Sent(gửi HTC)→Approved/Rejected.</summary>
+/// 🔴 #317 port lại theo biz LIVE `BizHTC.PaymentDiscount.cs` (SaveX:2501, HTCApprove/Reject_New20221212, HTCCancel, DlrSign, HTCSign):
+/// BA trục trạng thái (Const.Main.DMS40.cs): `PmtDctStatus` NS chưa ký → S đã ký → F hoàn thành (khi mọi BL đã nhập CK thực trả) · C huỷ;
+/// `HTCSignStatus` P → A (HTC duyệt) → A2 (HTC ký) · R từ chối · C huỷ; `DlrSignStatus` P → A1 (đại lý ký).
+/// Port cũ dùng 1 trục tự đặt Draft→Sent→Approved/Rejected (không có bước ký) ⇒ bỏ.
 public sealed class ReqPaymentDiscount
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string ReqNo { get; set; } = "";
+    /// <summary>Số đề nghị (`PaymentDiscountNo`, port cũ: `ReqNo`) — nguồn sinh "yyyyMMdd-NNN/DNCK/{DealerCode}".</summary>
+    public string PaymentDiscountNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
-    public DateTime? PGDateEndFrom { get; set; }   // ngày tất toán BL từ
-    public DateTime? PGDateEndTo { get; set; }     // ngày tất toán BL đến
-    public string Status { get; set; } = "Draft";
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? SentAt { get; set; }
-    public DateTime? DecidedAt { get; set; }
+    public DateTime? PGDateEndFrom { get; set; }   // ngày tất toán BL từ (DateEndFrom)
+    public DateTime? PGDateEndTo { get; set; }     // ngày tất toán BL đến (DateEndTo)
+    public string? FilePath { get; set; }
+    /// <summary>Ngày lập (`CreateDTime`, port cũ: `CreatedAt`).</summary>
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? HTCApprDTime { get; set; }
+    public string? HTCApprBy { get; set; }
+    public DateTime? DlrSignDTime { get; set; }
+    public string? DlrSignBy { get; set; }
+    public DateTime? HTCSignDTime { get; set; }
+    public string? HTCSignBy { get; set; }
+    public DateTime? RejectDTime { get; set; }
+    public string? RejectBy { get; set; }
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    /// <summary>NS · S · F · C (port cũ: `Status`).</summary>
+    public string PmtDctStatus { get; set; } = "NS";
+    public string DlrSignStatus { get; set; } = "P";
+    public string HTCSignStatus { get; set; } = "P";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng VIN trong đề nghị chiết khấu TT sớm — port 1:1 grid FrmReq_PaymentDiscount, 2010.HTC.</summary>
@@ -10583,6 +10606,15 @@ public sealed class ReqPaymentDiscountLine
     public decimal DiscountPricePhase3 { get; set; }   // tự tính
     public decimal TotalAmount { get; set; }
     public decimal TotalDiscountPrice { get; set; }    // tự tính = Σ 3 giai đoạn
+    // ===== #317 cột nguồn TblReq_PaymentDiscountDtl =====
+    /// <summary>Bảo lãnh chứa xe (`GuaranteeNo`) — khoá nối sang Pmt_Guarantee để nhập CK thực trả.</summary>
+    public string? GuaranteeNo { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal? UnitPrice { get; set; }
+    /// <summary>Trạng thái dòng (`PmtDctDtlStatus`): NS khi lập, sau đó nhận đúng giá trị trục HTC/ĐL vừa ghi (A, R, C, A1, A2).</summary>
+    public string PmtDctDtlStatus { get; set; } = "NS";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Yêu cầu đóng thùng (Sto_CBReq + Detail) — port 1:1 FrmNewCBReq (2010.HTC/Sales/Purchase). Đóng thùng lô xe xuất khẩu theo VIN, kho đi→kho đến + loại đóng thùng.</summary>
