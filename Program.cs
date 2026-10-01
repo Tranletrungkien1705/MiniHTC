@@ -11931,9 +11931,10 @@ app.MapPost("/api/rowarrantyrenewals", async (List<RoWarrantyRenewalDto> rows, A
         var isNew1097 = row is null;
         if (row is null) { row = new RoWarrantyRenewal { OrgId = t.OrgId, VIN = vin, WrtReneCateCode = cate }; db.RoWarrantyRenewals.Add(row); }
         row.Remark = r.Remark;
+        row.WrtReneDate = r.WrtReneDate;   // #1551: nguon ghi WrtReneDate o CA hai nhanh
         // #1097: nhanh TAO nguon ghi du 4 cot nhat ky; nhanh SUA chi ghi LogLUDateTime/LogLUBy.
         var by1097 = (partnerUserCode ?? "system").Trim(); var now1097 = DateTime.Now;
-        if (isNew1097) { row.CreatedDate = now1097; row.CreatedBy = by1097; }
+        if (isNew1097) { row.CreatedDate = now1097; row.CreatedBy = by1097; row.FlagActive = "1"; }   // #1551: nguon hardcode FlagActive=1 khi TAO
         row.LogLUDateTime = now1097; row.LogLUBy = by1097;
         saved++;
     }
@@ -85346,7 +85347,7 @@ record WarrantyClaimUpdateDto(string? CusName = null, string? CusAddress = null,
     string? ModelID = null, string? BatteryNo = null, string? SerialNo = null,
     DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null, decimal? WarrantyKM = null);
 record SmsResetPwdDto(string? PasswordNew = null);
-record RoWarrantyRenewalDto(string? VIN = null, string? WrtReneCateCode = null, string? Remark = null);
+record RoWarrantyRenewalDto(string? VIN = null, string? WrtReneCateCode = null, string? Remark = null, DateTime? WrtReneDate = null, string? FlagActive = null);
 record WarrantyWorkSyncRowDto(string? ROWWorkCode = null, string? ROWWorkName = null, decimal? RatePrice = null,
     decimal? Price = null, decimal? VAT = null, string? Remark = null, string? FlagActive = null);
 record ComplaintDiagErrorDto(string? ErrorCode = null, string? ErrorName = null, string? ErrorTypeCode = null, string? FlagActive = null, string? ErrorDesc = null, string? Remark = null);

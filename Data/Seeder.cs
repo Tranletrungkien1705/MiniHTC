@@ -3308,6 +3308,8 @@ public static class Seeder
                 // #1097: RoWarrantyRenewal thieu CreatedDate/CreatedBy (Ser_MST_ROWarrantyRenewal_Save).
                 "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"WrtReneDate\" timestamp NULL",
+                "ALTER TABLE public.\"RoWarrantyRenewals\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NULL",
                 // #1098: WarrantyRenewalCategoryMst thieu LogLUDateTime/LogLUBy (Ser_MST_ROWarrantyRenewalCategory_Save).
                 "ALTER TABLE public.\"WarrantyRenewalCategoryMsts\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"WarrantyRenewalCategoryMsts\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",

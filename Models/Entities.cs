@@ -14101,6 +14101,10 @@ public sealed class RoWarrantyRenewal
     public Guid OrgId { get; set; }
     public string VIN { get; set; } = "";
     public string? WrtReneCateCode { get; set; }
+    // #1551 §12 - cot nguon WrtReneDate/FlagActive (Ser_MST_ROWarrantyRenewal) - port 1:1.
+    // ROWRID nguon = @@Identity (khoa chinh tu tang) => da bieu dien bang Id, KHONG them cot trung.
+    public DateTime? WrtReneDate { get; set; }
+    public string? FlagActive { get; set; }
     public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
