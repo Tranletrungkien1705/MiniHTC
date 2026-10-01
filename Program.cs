@@ -15950,7 +15950,7 @@ app.MapPost("/api/emailsends", async (EmailSendDto dto, AppDbContext db, ITenant
     if (!string.IsNullOrWhiteSpace(dto.EmailType))
     {
         emailType = dto.EmailType.Trim().ToUpperInvariant();
-        var tpl = await db.EmailTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TempType == emailType && x.FlagActive == "1");
+        var tpl = await db.EmailTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TempTypeEmail == emailType && x.IsActive == "1");
         if (tpl is null) return Results.BadRequest(new { error = $"Không tìm thấy mẫu email đang bật cho loại {emailType}." });
         subject = tpl.TempSubject ?? ""; body = tpl.TempBody;
     }
@@ -17944,40 +17944,47 @@ app.MapGet("/api/report/emailsends", async (AppDbContext db, ITenantContext t, D
 app.MapGet("/api/emailtemplates", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
     var query = db.EmailTemplates.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.TempType.Contains(q!.ToUpper()) || (x.TempSubject != null && x.TempSubject.Contains(q!)) || (x.TempName != null && x.TempName.Contains(q!)));
-    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
-    var items = await query.OrderBy(x => x.TempType).Take(500)
-        .Select(x => new { x.TempType, x.TempName, x.TempSubject, x.TempBody, x.FileAttachment, x.FlagActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.TempTypeEmail.Contains(q!.ToUpper()) || (x.TempSubject != null && x.TempSubject.Contains(q!)) || (x.TempName != null && x.TempName.Contains(q!)));
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.IsActive == active);
+    var items = await query.OrderBy(x => x.TempTypeEmail).Take(500)
+        .Select(x => new
+        {
+            x.TempTypeEmail, x.TempName, x.TempSubject, x.TempBody, x.TempFileAttachment, x.IsActive, updatedAt = x.UpdatedAt.ToString("yyyy-MM-dd HH:mm"),
+            // #354 nhãn DẪN XUẤT `TextType` y như CASE của nguồn (Email_TempEmail_Create / Get) — mã khác ⇒ null.
+            TextType = x.TempTypeEmail == "1" ? "Thông báo chiến dịch" : x.TempTypeEmail == "2" ? "Nhắc bảo dưỡng" : x.TempTypeEmail == "3" ? "Mừng sinh nhật"
+                     : x.TempTypeEmail == "4" ? "Hẹn khách hàng" : x.TempTypeEmail == "5" ? "Khuyến mại" : x.TempTypeEmail == "6" ? "Thông báo sửa xong"
+                     : x.TempTypeEmail == "7" ? "Khác" : x.TempTypeEmail == "0" ? "" : null
+        }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Upsert theo loại email (tiêu đề bắt buộc — giống guard txtTempSubject WinForm).
 app.MapPost("/api/emailtemplates", async (EmailTemplateDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.TempType)) return Results.BadRequest(new { error = "Chưa chọn loại email." });
+    if (string.IsNullOrWhiteSpace(dto.TempTypeEmail)) return Results.BadRequest(new { error = "Chưa chọn loại email." });
     if (string.IsNullOrWhiteSpace(dto.TempSubject)) return Results.BadRequest(new { error = "Chưa nhập tiêu đề email." });
     if (string.IsNullOrWhiteSpace(dto.TempBody)) return Results.BadRequest(new { error = "Chưa nhập nội dung email." });
-    var type = dto.TempType.Trim().ToUpperInvariant();
-    var ex = await db.EmailTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TempType == type);
+    var type = dto.TempTypeEmail.Trim().ToUpperInvariant();
+    var ex = await db.EmailTemplates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TempTypeEmail == type);
     if (ex is not null)
     {
-        ex.TempName = dto.TempName; ex.TempSubject = dto.TempSubject; ex.TempBody = dto.TempBody; ex.FileAttachment = dto.FileAttachment; ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+        ex.TempName = dto.TempName; ex.TempSubject = dto.TempSubject; ex.TempBody = dto.TempBody; ex.TempFileAttachment = dto.TempFileAttachment; ex.IsActive = "1"; ex.UpdatedAt = DateTime.Now;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.TempType, updated = true });
+        return Results.Ok(new { ex.TempTypeEmail, updated = true });
     }
-    var r = new EmailTemplate { OrgId = t.OrgId, TempType = type, TempName = dto.TempName, TempSubject = dto.TempSubject, TempBody = dto.TempBody, FileAttachment = dto.FileAttachment, FlagActive = "1" };
+    var r = new EmailTemplate { OrgId = t.OrgId, TempTypeEmail = type, TempName = dto.TempName, TempSubject = dto.TempSubject, TempBody = dto.TempBody, TempFileAttachment = dto.TempFileAttachment, IsActive = "1" };
     db.EmailTemplates.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.TempType, updated = false });
+    return Results.Ok(new { r.TempTypeEmail, updated = false });
 }).RequireAuthorization();
 
 app.MapPost("/api/emailtemplates/{type}/toggle", async (string type, AppDbContext db, ITenantContext t) =>
 {
     type = type.Trim().ToUpperInvariant();
-    var x = await db.EmailTemplates.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.TempType == type);
+    var x = await db.EmailTemplates.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.TempTypeEmail == type);
     if (x is null) return Results.NotFound(new { type });
-    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.IsActive = x.IsActive == "1" ? "0" : "1";
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.TempType, flagActive = x.FlagActive });
+    return Results.Ok(new { x.TempTypeEmail, isActive = x.IsActive });
 }).RequireAuthorization();
 
 // ===== Mẫu tin nhắn SMS (SmsTemplate — port 1:1 FrmSMSTemplate, TCMotor) =====
@@ -56816,7 +56823,7 @@ record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Pri
 record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);
-record EmailTemplateDto(string TempType, string? TempName, string? TempSubject, string? TempBody, string? FileAttachment);
+record EmailTemplateDto(string TempTypeEmail, string? TempName, string? TempSubject, string? TempBody, string? TempFileAttachment);   // #354 rename khớp nguồn
 record SmsBatchStatusDto(string? ToStatus);
 
 // #231: `PerformBy` = người bấm huỷ (nguồn truyền `SystemGlobal.Instance.user.UserCode`);

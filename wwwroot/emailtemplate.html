@@ -21,7 +21,7 @@
 <p class="muted">Soạn mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm). Mỗi loại 1 mẫu — nhập lại = cập nhật. Tiêu đề bắt buộc.</p>
 <div class="card"><h3 style="margin-top:0">Thêm / cập nhật mẫu email</h3>
   <div class="row" style="margin-bottom:8px">
-    <div><label>Loại email *</label><input id="fType" style="width:140px" placeholder="MAINT"></div>
+    <div><label>Loại email *</label><select id="fType"><option value="1">1 — Thông báo chiến dịch</option><option value="2">2 — Nhắc bảo dưỡng</option><option value="3">3 — Mừng sinh nhật</option><option value="4">4 — Hẹn khách hàng</option><option value="5">5 — Khuyến mại</option><option value="6">6 — Thông báo sửa xong</option><option value="7">7 — Khác</option></select></div>
     <div style="flex:1;min-width:150px"><label>Tên mô tả</label><input id="fName" style="width:100%"></div>
     <div><label>File đính kèm</label><input id="fFile" style="width:150px" placeholder="mau.pdf"></div>
   </div>
@@ -43,20 +43,20 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3000); }
 async function save(){ await token();
-  const body={TempType:F("fType").value,TempName:F("fName").value,TempSubject:F("fSubject").value,TempBody:F("fBody").value,FileAttachment:F("fFile").value};
+  const body={TempTypeEmail:F("fType").value,TempName:F("fName").value,TempSubject:F("fSubject").value,TempBody:F("fBody").value,TempFileAttachment:F("fFile").value};
   const r=await fetch("/api/emailtemplates",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
-  msg(d.updated?"Đã cập nhật "+d.tempType:"Đã thêm "+d.tempType); F("fType").value="";F("fSubject").value="";F("fBody").value=""; load();
+  msg(d.updated?"Đã cập nhật "+d.tempTypeEmail:"Đã thêm "+d.tempTypeEmail);F("fSubject").value="";F("fBody").value=""; load();
 }
 async function toggle(ty){ await token();
   const r=await fetch("/api/emailtemplates/"+encodeURIComponent(ty)+"/toggle",{method:"POST",headers:H()});
   if(!r.ok){ msg("Lỗi"); return; } load();
 }
-function edit(o){ F("fType").value=o.tempType;F("fName").value=o.tempName||"";F("fSubject").value=o.tempSubject||"";F("fBody").value=o.tempBody;F("fFile").value=o.fileAttachment||""; window.scrollTo(0,0); }
+function edit(o){ F("fType").value=o.tempTypeEmail;F("fName").value=o.tempName||"";F("fSubject").value=o.tempSubject||"";F("fBody").value=o.tempBody;F("fFile").value=o.tempFileAttachment||""; window.scrollTo(0,0); }
 async function load(){ await token();
   const r=await fetch("/api/emailtemplates?q="+encodeURIComponent(F("qQ").value),{headers:H()});
   const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.tempType}</b></td><td>${esc(o.tempSubject)}</td><td>${esc((o.tempBody||"").slice(0,60))}${(o.tempBody||"").length>60?"…":""}</td><td>${esc(o.fileAttachment)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.tempType}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có mẫu.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.tempTypeEmail}</b> <span class="muted">${esc(o.textType||"")}</span></td><td>${esc(o.tempSubject)}</td><td>${esc((o.tempBody||"").slice(0,60))}${(o.tempBody||"").length>60?"…":""}</td><td>${esc(o.tempFileAttachment)}</td><td><span class="pill ${o.isActive==='1'?'on':'off'}">${o.isActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.tempType}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có mẫu.</td></tr>';
 }
 </script>
 </body></html>

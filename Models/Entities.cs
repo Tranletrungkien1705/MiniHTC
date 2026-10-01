@@ -13680,12 +13680,17 @@ public sealed class EmailTemplate
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string TempType { get; set; } = "";   // loại email
+    /// <summary>#354 `Email_TempEmail.TempTypeEmail` (rename từ `TempType` khớp nguồn). Mã nguồn '0'…'7'
+    /// (nhãn dẫn xuất `TextType` ở Get, BizCarSv.SendMail.cs Email_TempEmail_Create: 1 Thông báo chiến dịch · 2 Nhắc bảo dưỡng ·
+    /// 3 Mừng sinh nhật · 4 Hẹn khách hàng · 5 Khuyến mại · 6 Thông báo sửa xong · 7 Khác). Dữ liệu cũ dạng chữ tự do giữ nguyên.</summary>
+    public string TempTypeEmail { get; set; } = "";
     public string? TempName { get; set; }
     public string? TempSubject { get; set; }
     public string TempBody { get; set; } = "";
-    public string? FileAttachment { get; set; }
-    public string FlagActive { get; set; } = "1";
+    /// <summary>#354 `TempFileAttachment` (rename từ `FileAttachment` khớp nguồn).</summary>
+    public string? TempFileAttachment { get; set; }
+    /// <summary>#354 `IsActive` (rename từ `FlagActive` khớp nguồn; nguồn gán Flag.Active lúc tạo).</summary>
+    public string IsActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
