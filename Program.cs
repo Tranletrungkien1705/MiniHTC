@@ -53424,7 +53424,6 @@ app.MapPost("/api/servicecustomers/import", async (ServiceCustomerImportDto dto,
 // ===== Chăm sóc khách hàng (Ser_CustomerCare — port 1:1 FrmCustomerCare) =====
 // #220 parity: mã loại phiếu CSKH đúng `TConst.SerCareType` (Const.Main.cs:349) — viết THƯỜNG.
 string[] _careTypes = { "24h", "72h", "dob", "man" };
-string[] _maceStatuses = { "Pending", "Contacted", "NotContacted" };
 app.MapGet("/api/customercares", async (AppDbContext db, ITenantContext t, string? type, string? status, string? plate) =>
 {
     var q = db.CustomerCares.Where(c => c.OrgId == t.OrgId);
@@ -53780,15 +53779,17 @@ app.MapPost("/api/customercares/{no}/survey", async (
 }).RequireAuthorization();
 
 // ===== Chăm sóc KH chương trình MACE hãng (CustomerCareMace — port 1:1 FrmCustomerCareMace/Update/ApointDate, TCMotor DMSCarSv/Customer) =====
+// #373 TConst.SerCareMaceStatus: "0" Chưa liên hệ · "1" Đã liên hệ · "2" Không liên hệ. Tên cũ vẫn nhận để không vỡ client.
+static string MaceCode(string? v) => (v ?? "").Trim() switch { "Pending" => "0", "Contacted" => "1", "NotContacted" => "2", var x => x };
 app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, string? maceType, string? status, string? vin) =>
 {
     var q = db.CustomerCareMaces.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(maceType)) q = q.Where(c => c.MaceType == maceType);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
+    if (!string.IsNullOrWhiteSpace(status)) { var stM = MaceCode(status); q = q.Where(c => c.Status == stM); }
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.Vin != null && c.Vin.Contains(vin.ToUpper()));
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark }).ToListAsync();
-    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "0"), items });
 }).RequireAuthorization();
 
 // Tạo bản ghi MACE (WinForm gốc chỉ search vì nguồn phát sinh từ hãng — thêm POST để nhập tay tương đương)
@@ -53979,7 +53980,7 @@ app.MapPost("/api/customercaremaces", async (CustomerCareMaceDto dto, AppDbConte
     var c = new CustomerCareMace
     {
         OrgId = t.OrgId, CareNo = no, MaceType = maceType, RONo = dto.RONo, Vin = dto.Vin?.Trim().ToUpperInvariant(),
-        CusName = dto.CusName, MaceRecomentDate = dto.MaceRecomentDate, Status = "Pending"
+        CusName = dto.CusName, MaceRecomentDate = dto.MaceRecomentDate, Status = "0"
     };
     db.CustomerCareMaces.Add(c); await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, c.MaceType, status = c.Status });
@@ -53991,13 +53992,13 @@ app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceCon
     no = no.Trim().ToUpperInvariant();
     var c = await db.CustomerCareMaces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CareNo == no);
     if (c is null) return Results.NotFound(new { no });
-    var status = (dto.Status ?? "").Trim();
-    if (!_maceStatuses.Contains(status)) return Results.BadRequest(new { error = "Status = Pending|Contacted|NotContacted" });
-    if (status == "Contacted" && dto.ContactDate is null)
+    var status = MaceCode(dto.Status);   // #373 nhận mã 0/1/2 hoặc tên cũ
+    if (status is not ("0" or "1" or "2")) return Results.BadRequest(new { error = "Status = 0 (Chưa liên hệ) | 1 (Đã liên hệ) | 2 (Không liên hệ)" });
+    if (status == "1" && dto.ContactDate is null)
         return Results.BadRequest(new { error = "Bạn chưa nhập Ngày liên hệ. Hãy nhập Ngày liên hệ để cập nhật tình trạng liên hệ." });
     c.Status = status; c.Remark = dto.Remark;
-    c.ContactDate = status == "Contacted" ? dto.ContactDate : null;
-    c.ApointDate = status == "Contacted" ? dto.ApointDate : null;
+    c.ContactDate = status == "1" ? dto.ContactDate : null;
+    c.ApointDate = status == "1" ? dto.ApointDate : null;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CareNo, status = c.Status });
 }).RequireAuthorization();

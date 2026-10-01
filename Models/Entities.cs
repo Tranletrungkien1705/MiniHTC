@@ -5325,7 +5325,9 @@ public sealed class CustomerCareMace
     public string? RONo { get; set; }
     public string? Vin { get; set; }
     public string? CusName { get; set; }
-    public string Status { get; set; } = "Pending";  // Pending(Chưa liên hệ)/Contacted(Đã liên hệ)/NotContacted(Không liên hệ)
+    /// <summary>#373 TConst.SerCareMaceStatus (DMSCarSv Const.Main.cs:365): "0" Chưa liên hệ · "1" Đã liên hệ · "2" Không liên hệ.
+    /// Port cũ lưu Pending/Contacted/NotContacted ⇒ các báo cáo đếm theo mã (0/1/2) và màn lịch hẹn (Status="1") luôn ra 0.</summary>
+    public string Status { get; set; } = "0";
     public DateTime? ContactDate { get; set; }
     public DateTime? ApointDate { get; set; }
     public DateTime? MaceRecomentDate { get; set; }
