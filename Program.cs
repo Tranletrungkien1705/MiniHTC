@@ -30710,15 +30710,31 @@ app.MapGet("/api/masters/dealer-salesgroup-types", async (
 {
     var q = db.DealerSalesGroupTypes.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
-    var items = await q.OrderBy(x => x.SGroupTypeCode).ToListAsync();
-    return Results.Ok(new
-    {
-        count = items.Count,
-        Mst_DealerSalesGroupType = items,
-        readOnlyNote = "Mst_DealerSalesGroupType KHONG co form quan tri: chi duoc MasterInit nap MOT LAN vao ListSGroupType (TERP.HTCClient/Common/MasterInit.cs:65,108,281) de do combobox => CHI DOC tren thuc te, DU CO trong danh sach trang cua cua ghi chung. Khong sinh endpoint ghi.",
-        whitelistCaveatNote = "Day la ca 'co trong whitelist nhung van chi doc' - bo sung cho quy trinh ba buoc o #B165: buoc 3 (co form quan tri khong) van la buoc quyet dinh."
-    });
+    var items = await q.OrderBy(x => x.SalesGroupType)
+        .Select(x => new { x.SalesGroupType, x.SalesGroupTypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, Mst_DealerSalesGroupType = items });
 }).RequireAuthorization();
+
+// #321 FrmSalesGroupType.btnApply_Click (Views/Admin/Dealer/FrmSalesGroupType.cs:181-246) → SaveMasterDataTable(Mst_DealerSalesGroupType):
+// mã ToUpper().Trim(); dòng NEW ⇒ thêm, EDIT ⇒ sửa tên, DELETE ⇒ xoá. Form chỉ ghi 2 cột SalesGroupType + SalesGroupTypeName.
+app.MapPost("/api/masters/dealer-salesgroup-types", async (DealerSalesGroupTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.SalesGroupType ?? "").ToUpper().Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Thiếu mã nhóm loại bán (SalesGroupType)." });
+    var r = await db.DealerSalesGroupTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesGroupType == code);
+    if (dto.FlagIsDelete == "1")
+    {
+        if (r is null) return Results.NotFound(new { error = "Không tìm thấy nhóm loại bán.", code });
+        db.DealerSalesGroupTypes.Remove(r); await db.SaveChangesAsync();
+        return Results.Ok(new { salesGroupType = code, deleted = true });
+    }
+    var updated = r is not null;
+    if (r is null) { r = new DealerSalesGroupType { OrgId = t.OrgId, SalesGroupType = code }; db.DealerSalesGroupTypes.Add(r); }
+    r.SalesGroupTypeName = dto.SalesGroupTypeName;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.SalesGroupType, r.SalesGroupTypeName, r.FlagActive, updated });
+}).RequireAuthorization();
+
 
 // ===== #B170/#B171 PHÍ BẢO HIỂM THEO HỢP ĐỒNG — `Mst_InsuranceFee_Save` (`DataWH/Biz.HTC.WH.cs`)
 //       + màn `FrmMst_InsuranceFee` =====
@@ -56485,6 +56501,7 @@ record CarTestCarLineDto(string? CarId, string? Vin, string? ModelCode, string? 
 record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, List<CarTestCarLineDto>? Lines);
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
+record DealerSalesGroupTypeDto(string? SalesGroupType, string? SalesGroupTypeName, string? FlagIsDelete = null);
 record MstQualificationDto(string? QualificationCode, string? QualificationName, string? Remark, string? FlagActive);
 record MstPositionDto(string? PositionCode, string? PositionDesc, string? FlagActive);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive, string? FlagEmail = null);

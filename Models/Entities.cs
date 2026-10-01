@@ -9721,14 +9721,16 @@ public sealed class SalesOrderTypeMst
     public string Status { get; set; } = "1";
 }
 
-/// <summary>🔴 #B169 — `Mst_DealerSalesGroupType`: **nhóm loại bán của đại lý**. Không có form quản
-/// trị; client chỉ **nạp danh sách một lần** vào `MasterInit.ListSGroupType`.</summary>
+/// <summary>🔴 #B169 — `Mst_DealerSalesGroupType`: **nhóm loại bán của đại lý**.
+/// 🔴 #321 SỬA KẾT LUẬN #B169: nguồn CÓ form quản trị `Views/Admin/Dealer/FrmSalesGroupType.cs` (mở từ FrmMain.cs:2016, có trong csproj)
+/// — btnApply ghi qua SaveMasterDataTable (thêm/sửa/xoá, mã ToUpper). Đổi tên cột khớp TblSGroupType: SGroupTypeCode→SalesGroupType,
+/// SGroupTypeName→SalesGroupTypeName.</summary>
 public sealed class DealerSalesGroupType
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string SGroupTypeCode { get; set; } = "";
-    public string? SGroupTypeName { get; set; }
+    public string SalesGroupType { get; set; } = "";
+    public string? SalesGroupTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
 }
 
