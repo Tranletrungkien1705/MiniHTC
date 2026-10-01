@@ -36458,7 +36458,7 @@ app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? 
         m.DlvMinutesNo, m.TransporterCode, m.DealerCode, m.FDlvMnStatus, m.TDlvMnStatus,
         m.FApprovedDate, m.FApprovedBy, m.TApprovedDate, m.TApprovedBy, m.CreatedAt,
         m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFInputDate, m.TFInputBy,
-        m.TFVCode, m.TPValSys, m.TPVCode, m.GPSDvNo, m.DlvEndDateTime, m.DlvEndBy,
+        m.TFVCode, m.TFValSys, m.TPValSys, m.TPVCode, m.GPSDvNo, m.DlvEndDateTime, m.DlvEndBy,
         cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -36469,12 +36469,25 @@ app.MapPost("/api/dlvminutes", async (DlvMinutesDto dto, AppDbContext db, ITenan
     if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Cần VIN." });
     if (string.IsNullOrWhiteSpace(dto.TransporterCode)) return Results.BadRequest(new { error = "Cần đơn vị vận tải." });
     var no = "DLV" + DateTime.Now.ToString("yyMMddHHmmss");
+    // #327 "Get TFVCode,TFValSys" — Sto_DlvMinutes_Create_New20190416 (Biz.HTC.WH.cs:88380-88432): tra Mst_TranspFee
+    // ⋈ Mst_TranspFeeVer(FlagActive='1') theo model của VIN (Car_VIN) + tỉnh/huyện đi-đến + nhà vận tải; CHỈ khi ra
+    // ĐÚNG 1 dòng mới gán TFVCode/TFValSys/TFValReal (= ValFee), ngược lại để NULL. Nguồn KHÔNG nhận TFVCode từ client
+    // ⇒ dto.TFVCode (port cũ #169) bị bỏ qua.
+    var dlvVin = dto.VIN.Trim().ToUpperInvariant(); var trCode = dto.TransporterCode.Trim();
+    var vinModel = await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.VIN == dlvVin).Select(v => v.ModelCode).FirstOrDefaultAsync();
+    var activeVers = db.TranspFeeVers.Where(v => v.OrgId == t.OrgId && v.FlagActive == "1").Select(v => v.TFVCode);
+    var fees = vinModel is null ? new List<TranspFee>() : await db.TranspFees.Where(f => f.OrgId == t.OrgId
+            && f.TFVCode != null && activeVers.Contains(f.TFVCode) && f.ModelCode == vinModel
+            && f.ProvinceCodeFrom == dto.FProvinceCode && f.DistrictCodeFrom == dto.FDistrictCode
+            && f.ProvinceCodeTo == dto.TProvinceCode && f.DistrictCodeTo == dto.TDistrictCode
+            && f.TransporterCode == trCode).ToListAsync();
+    var fee = fees.Count == 1 ? fees[0] : null;
     var m = new TranspDlvConfirm
     {
-        OrgId = t.OrgId, DlvMinutesNo = no, TransporterCode = dto.TransporterCode.Trim(),
+        OrgId = t.OrgId, DlvMinutesNo = no, TransporterCode = trCode,
         FDlvMnStatus = "P", TDlvMnStatus = "P",     // hai phía duyệt ĐỘC LẬP (TConst.Stage)
         // #169: bản biểu phí áp cho biên bản — bước xác nhận đọc lại cột này để tra ExpectedDays.
-        TFVCode = dto.TFVCode,
+        TFVCode = fee?.TFVCode, TFValSys = fee?.ValFee, TFValReal = fee?.ValFee ?? 0m,
     };
     db.TranspDlvConfirms.Add(m); await db.SaveChangesAsync();
 
@@ -36500,7 +36513,7 @@ app.MapPost("/api/dlvminutes", async (DlvMinutesDto dto, AppDbContext db, ITenan
         });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.DlvMinutesNo, vin = dto.VIN.Trim().ToUpperInvariant() });
+    return Results.Ok(new { m.DlvMinutesNo, vin = dto.VIN.Trim().ToUpperInvariant(), m.TFVCode, m.TFValSys, m.TFValReal });
 }).RequireAuthorization();
 
 app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>

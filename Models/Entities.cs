@@ -12982,6 +12982,10 @@ public sealed class TranspDlvConfirm
     /// <summary>Mã bản biểu phí vận chuyển áp cho biên bản (`TFVCode`) — khoá tra `Mst_TranspFee`
     /// để lấy `ExpectedDays`, tức số ngày vận chuyển ĐỊNH MỨC của tuyến.</summary>
     public string? TFVCode { get; set; }
+    /// <summary>#327 Cước vận tải THEO BẢNG PHÍ (`Sto_DlvMinutes.TFValSys`) — Sto_DlvMinutes_Create_New20190416
+    /// (Biz.HTC.WH.cs:88380-88432) tra Mst_TranspFee ⋈ Mst_TranspFeeVer(FlagActive='1') theo 6 khoá
+    /// (tỉnh/huyện đi, tỉnh/huyện đến, nhà vận tải, model của VIN); CHỈ khi ra ĐÚNG 1 dòng mới gán = ValFee.</summary>
+    public decimal? TFValSys { get; set; }
     /// <summary>
     /// 🔴 Tiền phạt trễ hạn **HỆ THỐNG TỰ TÍNH** khi đại lý xác nhận (`TPValSys`), bậc thang GIẢM DẦN:
     /// với n = (DlvEndDate − DlvStartDate).Days − ExpectedDays ngày trễ,

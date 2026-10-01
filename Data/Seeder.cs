@@ -1374,6 +1374,8 @@ public static class Seeder
         "ALTER TABLE public.\"StoRearCBDtls\" ADD COLUMN IF NOT EXISTS \"ConfirmBy\" text",
         // #169 parity Sto_DlvMinutes_Confirm_New20190416
         "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TFVCode\" text",
+        // #327 cước vận tải theo bảng phí / thực tế (Sto_DlvMinutes.TFValSys / TFValReal)
+        "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TFValSys\" numeric NULL",  // TFValReal đã có (NOT NULL DEFAULT 0)
         "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TPValSys\" numeric NOT NULL DEFAULT 0",
         "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"TPVCode\" text",
         "ALTER TABLE public.\"TranspDlvConfirms\" ADD COLUMN IF NOT EXISTS \"GPSDvNo\" text",
