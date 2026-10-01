@@ -2429,6 +2429,12 @@ public static class Seeder
                 "ALTER TABLE public.\"VatHtcInvoices\" ADD COLUMN IF NOT EXISTS \"OS_HDDT_InvoiceCode\" text NULL",   // #B118
                 "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",   // #B232
                 "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",   // #B232
+                // #332 Pmt_Payment — 5 cột TCF (PaymentPaymentConfirm_MultiX).
+                "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"TCF_MaGiaoDich\" text NULL",
+                "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"TCF_RemarkTranfer\" text NULL",
+                "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"TCF_AutoId\" text NULL",
+                "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"TCF_BSInputNo\" text NULL",
+                "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"FlagDMS_TCF\" text NULL",
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",   // #B203
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"VisitDTime\" timestamp NULL",   // #B203
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",   // #B203

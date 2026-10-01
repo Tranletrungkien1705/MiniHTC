@@ -7237,6 +7237,7 @@ app.MapGet("/api/bankpms", async (AppDbContext db, ITenantContext t, string? dea
     {
         p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount,
         p.PaymentStatus, p.AccountingRecordNo, p.CreatedDate, p.ApprovedDate, p.InterestRate, p.LoanPeriod,
+        p.PaymentEndDate, p.TCF_MaGiaoDich, p.TCF_RemarkTranfer, p.TCF_AutoId, p.TCF_BSInputNo, p.FlagDMS_TCF, p.LogLUDateTime, p.LogLUBy,   // #332
         cars = db.PmtPaymentDetails.Count(c => c.OrgId == t.OrgId && c.PaymentNo == p.PaymentNo)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -7359,6 +7360,50 @@ app.MapPost("/api/bankpms/interest-rate", async (BankPmInterestDto dto, AppDbCon
 
 // Sửa thanh toán — xác nhận ngày hết hạn TT + số ghi sổ theo lô (port 1:1 FrmEditPMPayEndDate, Sales/Payment; PmConfirmDateEnd).
 // Import danh sách (PaymentNo, AccountingRecordNo, PaymentEndDate) -> cập nhật từng phiếu tìm theo PaymentNo; báo matched/notFound.
+// ===== #332 XÁC NHẬN THANH TOÁN + đối soát TCF (port 1:1 `PaymentPaymentConfirm_MultiAndpushTCF` →
+//   `PaymentPaymentConfirm_MultiX`, TCFIntergration/BizHTC.TCFIntergration.cs:6626/6740). Nguồn chạy trong MỘT
+//   giao dịch, lỗi bất kỳ dòng nào ⇒ rollback cả lô ⇒ ở đây KIỂM HẾT rồi mới ghi. Guard theo thứ tự nguồn:
+//   1) bảng rỗng ⇒ `_PaymentInvalid`; 2) phiếu tồn tại & đang **A** (`myPayment_CheckPayment` Stage.Approved);
+//   3) AccountingRecordNo rỗng ⇒ `_AccountingRecordNoInvalid`; 4) PaymentEndDate rỗng ⇒ `_PaymentEndDateInvalid`;
+//   5) "Check TCF": TCF_AutoId / TCF_BSInputNo / PaymentEndDate rỗng HOẶC FlagDMS_TCF != '1' ⇒ `_DataTCFInvalid`.
+//   Ghi: PaymentStatus = **F** + AccountingRecordNo/PaymentEndDate + 5 cột TCF + LogLU.
+//   ⚠️ 1:1 nguồn: `ConfirmDate`/`ConfirmBy` được ÉP thêm cột nhưng KHÔNG gán ⇒ câu update ghi **NULL** (giữ đúng).
+//   🔴 NỢ hiệu ứng phụ chưa port: myPayment_UpdateCarPaymentStatus_New20181119 (Car_Car), myPmt_Guarantee_Upd_DateEnd_01 /
+//   _DateEnd_Discount, PostCheck myPmt_Payment_CheckTotalValue, và đẩy sang TCF `OS_DMS_TCF_WA_OSDMS_Bank_BankStatementDtl_UpdateX`
+//   (hiệu ứng RA NGOÀI — không tự bắn). Nguồn ghi song song _dbMain + _dbWH.
+app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var rows = (dto.Rows ?? new()).ToList();
+    if (rows.Count == 0) return Results.BadRequest(new { error = "PaymentPaymentConfirm_MultiAndpushTCF_PaymentInvalid" });
+    var plan = new List<(PmtPayment p, BankPmConfirmTcfRowDto r)>();
+    foreach (var r in rows)
+    {
+        var no = (r.PaymentNo ?? "").Trim().ToUpperInvariant();
+        var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+        if (p is null) return Results.BadRequest(new { error = $"Phiếu thanh toán '{no}' không tồn tại.", code = "Payment_CheckPayment_PaymentNoNotFound" });
+        if (p.PaymentStatus != "A") return Results.BadRequest(new { error = $"Phiếu thanh toán '{no}' không ở trạng thái đã duyệt (A).", code = "Payment_CheckPayment_StatusNotMatched", current = p.PaymentStatus });
+        if (string.IsNullOrWhiteSpace(r.AccountingRecordNo)) return Results.BadRequest(new { error = "PaymentPaymentConfirm_MultiAndpushTCF_AccountingRecordNoInvalid", paymentNo = no });
+        if (r.PaymentEndDate is null) return Results.BadRequest(new { error = "PaymentPaymentConfirm_MultiAndpushTCF_PaymentEndDateInvalid", paymentNo = no });
+        plan.Add((p, r));
+    }
+    var bad = plan.FirstOrDefault(x => string.IsNullOrWhiteSpace(x.r.TCF_AutoId) || string.IsNullOrWhiteSpace(x.r.TCF_BSInputNo) || x.r.FlagDMS_TCF != "1");
+    if (bad.p is not null) return Results.BadRequest(new { error = "PaymentPaymentConfirm_MultiAndpushTCF_DataTCFInvalid", paymentNo = bad.p.PaymentNo,
+        rule = "TCF_AutoId / TCF_BSInputNo / PaymentEndDate không được rỗng và FlagDMS_TCF phải = '1'" });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    foreach (var (p, r) in plan)
+    {
+        p.PaymentStatus = "F";
+        p.AccountingRecordNo = r.AccountingRecordNo!.Trim(); p.PaymentEndDate = r.PaymentEndDate!.Value.Date;
+        p.TCF_MaGiaoDich = r.TCF_MaGiaoDich?.Trim(); p.TCF_RemarkTranfer = r.TCF_RemarkTranfer;
+        p.TCF_AutoId = r.TCF_AutoId!.Trim(); p.TCF_BSInputNo = r.TCF_BSInputNo!.Trim(); p.FlagDMS_TCF = r.FlagDMS_TCF;
+        p.ConfirmDate = null; p.ConfirmBy = null;   // 1:1 nguồn (xem ghi chú đầu khối)
+        p.LogLUDateTime = now; p.LogLUBy = who;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { confirmed = plan.Count, paymentNos = plan.Select(x => x.p.PaymentNo),
+        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, Pmt_Guarantee.DateEnd/_Discount, CheckTotalValue, đẩy sao kê TCF." });
+}).RequireAuthorization();
+
 app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
 {
     var qry = db.PmtPayments.Where(p => p.OrgId == t.OrgId);
@@ -56293,6 +56338,9 @@ record BankPmCtktDto(string NewAccountingRecordNo);
 record BankPmInterestRowDto(string? PaymentNo, decimal? InterestRate, int? LoanPeriod);
 record BankPmInterestDto(List<BankPmInterestRowDto>? Rows);
 record PmConfirmEndDateDto(List<PmEndDateRowDto>? Lines);
+record BankPmConfirmTcfRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate, string? TCF_RemarkTranfer,
+    string? TCF_AutoId, string? TCF_BSInputNo, string? FlagDMS_TCF, string? TCF_MaGiaoDich);   // #332
+record BankPmConfirmTcfDto(List<BankPmConfirmTcfRowDto>? Rows);   // #332
 record PmEndDateRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate);
 record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);

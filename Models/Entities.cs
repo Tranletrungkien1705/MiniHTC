@@ -11757,6 +11757,19 @@ public sealed class PmtPayment
     /// </summary>
     public decimal? LoanPeriod { get; set; }
     public decimal? InterestRate { get; set; }
+
+    // ===== #332 parity Pmt_Payment — 5 cột đối soát sao kê TCF, ghi bởi `PaymentPaymentConfirm_MultiX`
+    //       (TCFIntergration/BizHTC.TCFIntergration.cs:6740, gọi từ WS `PaymentPaymentConfirm_MultiAndpushTCF`).
+    /// <summary>Mã giao dịch bên TCF (`TCF_MaGiaoDich`) — FrmMngPM "Mã giao dịch từ TCF".</summary>
+    public string? TCF_MaGiaoDich { get; set; }
+    /// <summary>Nội dung chuyển tiền theo sao kê TCF (`TCF_RemarkTranfer`; nguồn viết "Tranfer" — giữ nguyên).</summary>
+    public string? TCF_RemarkTranfer { get; set; }
+    /// <summary>Khoá dòng sao kê bên TCF (`TCF_AutoId`) — BẮT BUỘC khi xác nhận.</summary>
+    public string? TCF_AutoId { get; set; }
+    /// <summary>Số chứng từ nhập sao kê bên TCF (`TCF_BSInputNo`) — BẮT BUỘC khi xác nhận.</summary>
+    public string? TCF_BSInputNo { get; set; }
+    /// <summary>Cờ đã khớp DMS↔TCF (`FlagDMS_TCF`; client gửi từ cột `StatusMapTCF`) — PHẢI = "1" mới xác nhận được.</summary>
+    public string? FlagDMS_TCF { get; set; }
 }
 
 /// <summary>
