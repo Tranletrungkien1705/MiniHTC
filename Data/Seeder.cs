@@ -1331,6 +1331,9 @@ public static class Seeder
         "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"DateEnd_Discount\" timestamp NULL",
         "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
         "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+        // #349 hợp nhất song sinh Pmt_Guarantee: chép Guarantees (/api/grts cũ) → BankGuarantees (bản chuẩn) — idempotent theo (OrgId, GuaranteeNo).
+        //   Từ vựng trạng thái tự đặt Pending/Approved ⇒ TConst.Stage P/A.
+        "INSERT INTO public.\"BankGuarantees\" (\"OrgId\", \"GuaranteeNo\", \"BankGuaranteeNo\", \"DealerCode\", \"BankCode\", \"BankCodeMonitor\", \"GuaranteeType\", \"TotalAmount\", \"DateOpen\", \"DateExpired\", \"Status\", \"CreatedAt\", \"ApprovedAt\") SELECT g.\"OrgId\", g.\"GrtNo\", COALESCE(g.\"BankGrtNo\", ''), g.\"DealerCode\", g.\"BankCode\", COALESCE(g.\"BankCodeMonitor\", ''), g.\"GrtType\", g.\"GrtValue\", g.\"GrtDate\", g.\"DateExpired\", CASE g.\"Status\" WHEN 'Pending' THEN 'P' WHEN 'Approved' THEN 'A' ELSE g.\"Status\" END, g.\"CreatedAt\", g.\"ApprovedAt\" FROM public.\"Guarantees\" g WHERE NOT EXISTS (SELECT 1 FROM public.\"BankGuarantees\" x WHERE x.\"OrgId\" = g.\"OrgId\" AND x.\"GuaranteeNo\" = g.\"GrtNo\")",
         "UPDATE public.\"BankGuarantees\" SET \"GuaranteeType\" = 'BL' WHERE \"GuaranteeType\" IN ('0','1')",
         "UPDATE public.\"BankCarMortages\" SET \"GuaranteeType\" = 'BL' WHERE \"GuaranteeType\" IN ('0','1')",
         // #185 parity cum Mst_InvoiceSetup_* (64-bit only)

@@ -2425,61 +2425,40 @@ app.MapPost("/api/pms/{pmNo}/{action}", async (string pmNo, string action, AppDb
 }).RequireAuthorization();
 
 // ===== Bảo lãnh / LC ngân hàng (Guarantee — port 1:1 FrmNewGrt/FrmMngGrt + FrmEditGrtExpiredDate) =====
+// ⛔ #349 HỢP NHẤT THỰC THỂ SONG TRÙNG Pmt_Guarantee: `/api/grts` (entity `Guarantee`, trạng thái tự đặt Pending/Approved)
+// và `/api/bankgrts` (entity `BankGuarantee`, TConst.Stage P/A/F/C) cùng là bảng nguồn `Pmt_Guarantee`. Bản CHUẨN = BankGuarantee
+// (21 tham chiếu, chi tiết `BankGuaranteeDtls.GuaranteeId` trỏ vào nó, hiệu ứng phụ #342-#345 ghi vào nó).
+// ⇒ GET /api/grts đọc bản chuẩn (giữ hình JSON cũ); mọi lệnh GHI cũ trả 400 kèm route mới; Seeder chép dữ liệu `Guarantees` sang.
 app.MapGet("/api/grts", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
 {
-    var q = db.Guarantees.Where(g => g.OrgId == t.OrgId);
+    var q = db.BankGuarantees.Where(g => g.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(g => g.Status == status);
-    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(g => g.GrtType == type);
+    if (!string.IsNullOrWhiteSpace(type)) q = q.Where(g => g.GuaranteeType == type);
     var now = DateTime.Now;
-    var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
+    var items = (await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
-        g.GrtNo, g.BankGrtNo, g.DealerCode, g.BankCode, g.GrtType, g.GrtValue, g.GrtDate, g.DateExpired, g.Status,
+        GrtNo = g.GuaranteeNo, BankGrtNo = g.BankGuaranteeNo, g.DealerCode, g.BankCode, GrtType = g.GuaranteeType, GrtValue = g.TotalAmount,
+        GrtDate = g.DateOpen, g.DateExpired, g.Status, g.DateEnd, g.DateEnd_Discount,
         expired = g.DateExpired != null && g.DateExpired < now
-    }).ToListAsync();
-    return Results.Ok(new { count = items.Count, totalValue = items.Sum(x => x.GrtValue), items });
+    }).ToListAsync());
+    return Results.Ok(new { count = items.Count, totalValue = items.Sum(x => x.GrtValue), items, mergedInto = "/api/bankgrts" });
 }).RequireAuthorization();
 
-app.MapPost("/api/grts", async (GrtDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/grts", () => Results.BadRequest(new
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
-    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Cần BankCode (ngân hàng bảo lãnh)." });
-    if (dto.GrtValue <= 0) return Results.BadRequest(new { error = "Giá trị bảo lãnh phải > 0." });
-    var type = string.IsNullOrWhiteSpace(dto.GrtType) ? "BL" : dto.GrtType.Trim().ToUpperInvariant();
-    if (type is not ("BL" or "LCTC" or "LCUP" or "EPLC")) return Results.BadRequest(new { error = "GrtType = BL|LCTC|LCUP|EPLC" });
-    var grtNo = "GRT" + DateTime.Now.ToString("yyMMddHHmmss");
-    var g = new Guarantee
-    {
-        OrgId = t.OrgId, GrtNo = grtNo, BankGrtNo = dto.BankGrtNo, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
-        BankCode = dto.BankCode.Trim().ToUpperInvariant(),
-        GrtType = type, GrtValue = dto.GrtValue,
-        GrtDate = dto.GrtDate ?? DateTime.Now, DateExpired = dto.DateExpired, Status = "Pending"
-    };
-    db.Guarantees.Add(g); await db.SaveChangesAsync();
-    return Results.Ok(new { g.GrtNo, g.BankCode, g.GrtType, g.GrtValue, status = g.Status });
-}).RequireAuthorization();
+    error = "Bảo lãnh đã hợp nhất vào /api/bankgrts (bản chuẩn Pmt_Guarantee).", route = "/api/bankgrts", page = "/bankgrt.html"
+})).RequireAuthorization();
 
-app.MapPost("/api/grts/{grtNo}/approve", async (string grtNo, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/grts/{grtNo}/approve", (string grtNo) => Results.BadRequest(new
 {
-    grtNo = grtNo.Trim().ToUpperInvariant();
-    var g = await db.Guarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtNo == grtNo);
-    if (g is null) return Results.NotFound(new { grtNo });
-    if (g.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt bảo lãnh Mới tạo." });
-    g.Status = "Approved"; g.ApprovedAt = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { g.GrtNo, status = g.Status });
-}).RequireAuthorization();
+    error = "Bảo lãnh đã hợp nhất — duyệt qua /api/bankgrts/{no}/approve.", route = $"/api/bankgrts/{grtNo}/approve"
+})).RequireAuthorization();
 
-// Sửa ngày hết hạn (FrmEditGrtExpiredDate / FrmEditGrtEndDate)
-app.MapPost("/api/grts/{grtNo}/expiry", async (string grtNo, GrtExpiryDto dto, AppDbContext db, ITenantContext t) =>
+// Sửa ngày hết hạn (FrmEditGrtExpiredDate / FrmEditGrtEndDate) — đã có ở bản chuẩn.
+app.MapPost("/api/grts/{grtNo}/expiry", (string grtNo) => Results.BadRequest(new
 {
-    grtNo = grtNo.Trim().ToUpperInvariant();
-    var g = await db.Guarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GrtNo == grtNo);
-    if (g is null) return Results.NotFound(new { grtNo });
-    if (dto.DateExpired is null) return Results.BadRequest(new { error = "Cần DateExpired." });
-    g.DateExpired = dto.DateExpired;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { g.GrtNo, g.DateExpired });
-}).RequireAuthorization();
+    error = "Bảo lãnh đã hợp nhất — sửa hạn qua /api/bankgrts/{no}/edit-expiry.", route = $"/api/bankgrts/{grtNo}/edit-expiry"
+})).RequireAuthorization();
 
 // ===== Danh sách hóa đơn xuất bán (InvoiceList — port 1:1 FrmNewInvoice/FrmMngInvoice) =====
 app.MapGet("/api/invoicelists", async (AppDbContext db, ITenantContext t) =>
@@ -20046,8 +20025,9 @@ app.MapPost("/api/redeeminvoicereqs/{no}/approve-lines", async (string no, ReqIn
 
         // 🔴 Guard nguồn: một VIN chỉ được có ĐÚNG MỘT bảo lãnh còn hiệu lực (trạng thái "A" hoặc "F"
         //    ở CẢ bảng đầu lẫn dòng). Nhiều hơn một ⇒ nguồn NÉM LỖI (GuaranteeNoNotOnly).
+        // #349 SỬA JOIN CHÉO SONG SINH: GuaranteeId của BankGuaranteeDtls trỏ vào BankGuarantees.Id (không phải Guarantees.Id).
         var grtDtls = await (from d in db.BankGuaranteeDtls
-                             join g in db.Guarantees on d.GuaranteeId equals g.Id
+                             join g in db.BankGuarantees on d.GuaranteeId equals g.Id
                              where d.OrgId == t.OrgId && d.VIN == vin
                                 && (g.Status == "A" || g.Status == "F")
                                 && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F")
@@ -20139,15 +20119,16 @@ app.MapPost("/api/redeeminvoicerequests", async (RedeemInvoiceRequestDto dto, Ap
 
         // (5) phải có ĐÚNG MỘT bảo lãnh, và loại bảo lãnh QUYẾT ĐỊNH loại đề nghị:
         //     GuaranteeType "BL" ⇒ BANKBL;  "LCTC" hoặc "LCUP" ⇒ BANKLC.
+        // #349 SỬA JOIN CHÉO SONG SINH (xem trên) — loại bảo lãnh ở bản chuẩn là `GuaranteeType` (BL/LCTC/LCUP/EPLC).
         var grts = await (from d in db.BankGuaranteeDtls
-                          join g in db.Guarantees on d.GuaranteeId equals g.Id
+                          join g in db.BankGuarantees on d.GuaranteeId equals g.Id
                           where d.OrgId == t.OrgId && d.VIN == vin
                           select g).ToListAsync();
         if (grts.Count == 0)
             return Results.BadRequest(new { error = $"VIN {vin}: không tìm thấy bảo lãnh (Pmt_GuaranteeDetail).", vin });
         if (grts.Count > 1)
             return Results.BadRequest(new { error = $"VIN {vin}: có {grts.Count} bảo lãnh — nguồn chỉ cho phép 1.", vin });
-        var grtType = (grts[0].GrtType ?? "").Trim().ToUpperInvariant();
+        var grtType = (grts[0].GuaranteeType ?? "").Trim().ToUpperInvariant();
         if (grtType == "BL" && reqType != "BANKBL")
             return Results.BadRequest(new { error = $"VIN {vin}: bảo lãnh loại BL thì loại đề nghị phải là BANKBL (đang \"{reqType}\").", vin });
         if ((grtType == "LCTC" || grtType == "LCUP") && reqType != "BANKLC")
