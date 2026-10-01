@@ -1446,6 +1446,8 @@ public static class Seeder
         "ALTER TABLE public.\"RedeemInvoiceRequestLines\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
         "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
+        // #318 giá trị bảo lãnh gốc (Pmt_GuaranteeDetail.GuaranteeValueOrg) — dữ liệu cũ để NULL (không biết giá trị gốc thật).
+        "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"GrtValueOrg\" numeric NULL",
         "ALTER TABLE public.\"Guarantees\" ADD COLUMN IF NOT EXISTS \"BankCodeMonitor\" text",
         "ALTER TABLE public.\"Guarantees\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NOT NULL DEFAULT now()",
         "ALTER TABLE public.\"Guarantees\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",

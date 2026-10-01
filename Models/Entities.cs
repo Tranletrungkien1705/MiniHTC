@@ -12072,6 +12072,9 @@ public sealed class BankGuaranteeDtl
     public long GuaranteeId { get; set; }
     public string VIN { get; set; } = "";
     public decimal GrtValue { get; set; }
+    /// <summary>#318 Giá trị bảo lãnh GỐC (cột nguồn `Pmt_GuaranteeDetail.GuaranteeValueOrg`, hằng TblGuaranteeDetail.GrtValueOrg) —
+    /// nguồn gán = GuaranteeValue lúc TẠO và không đổi khi sửa giá trị (FrmEditGrtValue hiển thị song song). Null với dữ liệu cũ trước #318.</summary>
+    public decimal? GrtValueOrg { get; set; }
     public decimal GrtPercent { get; set; }
     public decimal DiscountValue { get; set; }
     public decimal DiscountPercent { get; set; }

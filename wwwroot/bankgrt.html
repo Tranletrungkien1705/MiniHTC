@@ -58,7 +58,7 @@
 <tbody id="rows"><tr><td colspan="14" class="muted">Đang tải…</td></tr></tbody></table></div>
 <div class="card" id="detCard" style="display:none">
   <b>Chi tiết xe — <span id="detNo"></span></b>
-  <div class="wrap"><table><thead><tr><th>VIN</th><th class="num">Giá trị BL</th><th class="num">% BL</th><th class="num">Chiết khấu</th><th class="num">% CK</th><th>Ngày BĐ</th><th>Ngày cảnh báo</th><th>Ngày hết hạn</th></tr></thead>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th class="num">Giá trị BL</th><th class="num">GT BL gốc</th><th class="num">% BL</th><th class="num">Chiết khấu</th><th class="num">% CK</th><th>Ngày BĐ</th><th>Ngày cảnh báo</th><th>Ngày hết hạn</th></tr></thead>
   <tbody id="detRows"></tbody></table></div>
 </div>
 <script>
@@ -97,7 +97,7 @@ async function load(){ await token();
 async function detail(no){
   const d=await (await fetch(`/api/bankgrts/${no}/cars`,{headers:H()})).json();
   F("detCard").style.display=""; F("detNo").textContent=no;
-  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td class="num">${money(c.grtValue)}</td><td class="num">${c.grtPercent}</td><td class="num">${money(c.discountValue)}</td><td class="num">${c.discountPercent}</td><td>${(c.dateStart||"").substring(0,10)}</td><td>${(c.dateWarning||"").substring(0,10)}</td><td>${(c.dateExpired||"").substring(0,10)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Không có xe.</td></tr>';
+  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td class="num">${money(c.grtValue)}</td><td class="num">${c.grtValueOrg==null?"—":money(c.grtValueOrg)}</td><td class="num">${c.grtPercent}</td><td class="num">${money(c.discountValue)}</td><td class="num">${c.discountPercent}</td><td>${(c.dateStart||"").substring(0,10)}</td><td>${(c.dateWarning||"").substring(0,10)}</td><td>${(c.dateExpired||"").substring(0,10)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có xe.</td></tr>';
 }
 // #316 PaymentGuaranteeUpdate: ngày + giá trị CK thực trả đi cặp; các cột khác gửi lại giá trị hiện có.
 async function updDiscount(ev,o){ ev.stopPropagation();
