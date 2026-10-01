@@ -72,7 +72,8 @@ async function save(){
 async function load(){ await token();
   const d=await (await fetch(`/api/bankpms?dealer=${F("qd").value}&pmNo=${F("qn").value}&status=${F("qs").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    const act=o.paymentStatus==="A"?`<button class="sm ok" onclick="confirmTcf('${o.paymentNo}')">Xác nhận TCF</button>`:o.paymentStatus==="P"?`<button class="sm ok" onclick="decide('${o.paymentNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.paymentNo}','reject')">Từ chối</button>`:"";
+    const act=o.paymentStatus==="A"?`<button class="sm ok" onclick="confirmOne('${o.paymentNo}')">Xác nhận</button> <button class="sm ok" onclick="confirmTcf('${o.paymentNo}')">Xác nhận TCF</button>`
+      :o.paymentStatus==="F"?`<button class="sm bad" onclick="undoConfirm('${o.paymentNo}')">Hủy xác nhận</button>`:o.paymentStatus==="P"?`<button class="sm ok" onclick="decide('${o.paymentNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.paymentNo}','reject')">Từ chối</button>`:"";
     return `<tr onclick="detail('${o.paymentNo}')"><td><b>${o.paymentNo}</b></td><td>${o.dealerCode}</td><td>${o.bankCodeSend||"–"}→${o.bankCodeReceive||"–"}</td><td>${o.funds||""}</td><td class="num">${money(o.totalAmount)}</td><td class="num">${o.cars}</td><td>${o.accountingRecordNo||"—"}</td><td>${o.paymentEndDate?new Date(o.paymentEndDate).toLocaleDateString("vi-VN"):""}</td><td>${o.tcF_MaGiaoDich||""}</td><td><span class="pill s-${o.paymentStatus}">${ST[o.paymentStatus]||o.paymentStatus}</span></td><td onclick="event.stopPropagation()">${act}</td></tr>`;
   }).join("")||'<tr><td colspan="11" class="muted">Chưa có phiếu thanh toán.</td></tr>';
 }
@@ -85,6 +86,18 @@ async function decide(no,act){
   const r=await fetch(`/api/bankpms/${no}/${act}`,{method:"POST",headers:H()});
   const j=await r.json();
   if(r.ok){ msg(`${no}: ${ST[j.paymentStatus]||j.paymentStatus}${j.accountingRecordNo?" / GS "+j.accountingRecordNo:""}`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+// #346 Xác nhận đơn lẻ / Hủy xác nhận (PaymentPaymentConfirm / PaymentPaymentUndoConfirm).
+async function confirmOne(no){
+  const acc=prompt("Số ghi sổ kế toán (≥ 5 ký tự):"); if(acc===null) return;
+  const end=prompt("Ngày hết hạn thanh toán (yyyy-mm-dd):")||null;
+  const r=await fetch(`/api/bankpms/${no}/confirm`,{method:"POST",headers:H(),body:JSON.stringify({accountingRecordNo:acc,paymentEndDate:end})});
+  const j=await r.json(); if(r.ok){ msg(`${no}: đã xác nhận (F)`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function undoConfirm(no){
+  if(!confirm("Hủy xác nhận phiếu "+no+"?")) return;
+  const r=await fetch(`/api/bankpms/${no}/undo-confirm`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok){ msg(`${no}: đã hủy xác nhận (A)`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 // #332 Xác nhận thanh toán + đối soát TCF (PaymentPaymentConfirm_MultiAndpushTCF) — chỉ phiếu đang "A".
 async function confirmTcf(no){

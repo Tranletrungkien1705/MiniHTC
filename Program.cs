@@ -7438,6 +7438,58 @@ app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbCon
         debt = "Chưa chạy: đẩy sao kê sang TCF (hiệu ứng ra ngoài, không tự bắn)." });
 }).RequireAuthorization();
 
+// ===== #346 XÁC NHẬN thanh toán ĐƠN LẺ + HỦY XÁC NHẬN (port 1:1 `PaymentPaymentConfirm_New20181119` /
+//   `PaymentPaymentUndoConfirm_New20181119`, 2010.HTC Biz.HTC.WH.cs:45650 / 45855; WS WSHTC.asmx.cs:10763 / 10893). =====
+//   Confirm: guard phiếu tồn tại + **A**; AccountingRecordNo dài < `TConst.HTCConst.MinLengthCode` (=5) ⇒
+//     `PaymentPaymentConfirm_InvalidAccountingRecordNo` (guard ngày hết hạn của nguồn ĐÃ COMMENT ⇒ không port);
+//     ghi PaymentStatus=F + AccountingRecordNo + PaymentEndDate + **ConfirmDate = hôm nay, ConfirmBy = người dùng**
+//     (KHÁC bản TCF #332 vốn ghi NULL); rồi Car_Car.PaymentStatus → DateEnd_01 → DateEnd_Discount → PostCheck CheckTotalValue.
+//   UndoConfirm: guard phiếu **F**; CHỈ đặt lại PaymentStatus=A (ConfirmDate/By giữ nguyên — dòng gán đã comment; KHÔNG LogLU);
+//     rồi Car_Car.PaymentStatus → DateEnd_01 → DateEnd_Discount; KHÔNG PostCheck.
+//   ⚠️ NỢ RBAC: nguồn gọi `myCommon_CheckHTCDirect(FlagDirect=Active)` — MiniHTC chưa có mô hình ability người dùng.
+app.MapPost("/api/bankpms/{no}/confirm", async (string no, BankPmConfirmDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = (no ?? "").Trim().ToUpperInvariant();
+    var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.BadRequest(new { error = $"Phiếu thanh toán '{no}' không tồn tại.", code = "Payment_CheckPayment_PaymentNoNotFound" });
+    if (p.PaymentStatus != "A") return Results.BadRequest(new { error = $"Phiếu thanh toán '{no}' không ở trạng thái đã duyệt (A).", code = "Payment_CheckPayment_StatusNotMatched", current = p.PaymentStatus });
+    var acc = (dto.AccountingRecordNo ?? "").Trim();
+    if (acc.Length < 5) return Results.BadRequest(new { error = "PaymentPaymentConfirm_InvalidAccountingRecordNo", minLength = 5 });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    await using var tx = await db.Database.BeginTransactionAsync();
+    p.PaymentStatus = "F"; p.AccountingRecordNo = acc; p.PaymentEndDate = dto.PaymentEndDate?.Date;
+    p.ConfirmDate = now.Date; p.ConfirmBy = who;
+    await db.SaveChangesAsync();
+    var cars = await PmtCheck.UpdCarPaymentStatus(db, t.OrgId, no, who);
+    var grtNos = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && d.PaymentNo == no && d.GuaranteeNo != null).Select(d => d.GuaranteeNo!).Distinct().ToListAsync();
+    await GrtDiscount.UpdDateEnd01(db, t.OrgId, grtNos, who);
+    await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, grtNos, who);
+    await db.SaveChangesAsync();
+    var bad = await PmtCheck.OverDeposit(db, t.OrgId, no);
+    if (bad is not null) { await tx.RollbackAsync(); return Results.BadRequest(bad); }
+    await tx.CommitAsync();
+    return Results.Ok(new { p.PaymentNo, p.PaymentStatus, p.AccountingRecordNo, p.PaymentEndDate, p.ConfirmDate, p.ConfirmBy, carsUpdated = cars, guarantees = grtNos.Count });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankpms/{no}/undo-confirm", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = (no ?? "").Trim().ToUpperInvariant();
+    var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.BadRequest(new { error = $"Phiếu thanh toán '{no}' không tồn tại.", code = "Payment_CheckPayment_PaymentNoNotFound" });
+    if (p.PaymentStatus != "F") return Results.BadRequest(new { error = $"Phiếu thanh toán '{no}' chưa xác nhận (F) nên không hủy xác nhận được.", code = "Payment_CheckPayment_StatusNotMatched", current = p.PaymentStatus });
+    var who = user.Identity?.Name ?? "system";
+    await using var tx = await db.Database.BeginTransactionAsync();
+    p.PaymentStatus = "A";   // 1:1 nguồn: ConfirmDate/ConfirmBy giữ nguyên, không ghi LogLU trên phiếu
+    await db.SaveChangesAsync();
+    var cars = await PmtCheck.UpdCarPaymentStatus(db, t.OrgId, no, who);
+    var grtNos = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && d.PaymentNo == no && d.GuaranteeNo != null).Select(d => d.GuaranteeNo!).Distinct().ToListAsync();
+    await GrtDiscount.UpdDateEnd01(db, t.OrgId, grtNos, who);
+    await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, grtNos, who);
+    await db.SaveChangesAsync();
+    await tx.CommitAsync();
+    return Results.Ok(new { p.PaymentNo, p.PaymentStatus, carsUpdated = cars, guarantees = grtNos.Count });
+}).RequireAuthorization();
+
 app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
 {
     var qry = db.PmtPayments.Where(p => p.OrgId == t.OrgId);
@@ -56581,6 +56633,7 @@ static class GrtDiscount
     }
 }
 record BankPmConfirmTcfDto(List<BankPmConfirmTcfRowDto>? Rows);   // #332
+record BankPmConfirmDto(string? AccountingRecordNo, DateTime? PaymentEndDate);   // #346
 record PmEndDateRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate);
 record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
