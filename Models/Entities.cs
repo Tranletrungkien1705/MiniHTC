@@ -12366,6 +12366,11 @@ public sealed class VatInvoice
     // #195b: nguồn ghi `LogLUDateTime`/`LogLUBy` trên CHÍNH bảng `VAT_HTCInvoice` (khối huỷ hoá đơn gốc).
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== #348 HỢP NHẤT song sinh VAT_HTCInvoice: 2 cột trước đây chỉ có ở `VatHtcInvoice` (bản không có writer) =====
+    /// <summary>`InvoiceIDType` — cùng `InvoiceIDCode` tạo PHẠM VI dãy số (`VAT_HTCInvoice_GenHTCInvoiceNo`, #B116).</summary>
+    public string? InvoiceIDType { get; set; }
+    /// <summary>`FlagisHTC` — pháp nhân; hàm huỷ HĐĐT tìm theo CẶP (HTCInvoiceCode, FlagisHTC) (#B118).</summary>
+    public string? FlagisHTC { get; set; }
     // ===== #330 parity — 4 cột "lý do / biên bản" ghi bởi `VAT_HTCInvoice_UpdateAdj_DeleteReasonX` (BizHTC.HDDTIntergration.cs:464) =====
     // Form gọi khi IN biên bản thu hồi (BBTH: chỉ truyền lý do + số biên bản ⇒ 2 cột nội dung bị GHI ĐÈ rỗng)
     // hoặc biên bản điều chỉnh (BBĐC: truyền đủ 4). Số biên bản lấy từ dãy `Seq_InvoicePrintNo` (/api/invoiceprintno/next).
