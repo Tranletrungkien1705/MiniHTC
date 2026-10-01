@@ -15612,11 +15612,15 @@ app.MapPost("/api/smssends/estimate", (SmsEstimateDto dto) =>
 app.MapGet("/api/smssends", async (AppDbContext db, ITenantContext t, string? mobile, string? status, string? batch) =>
 {
     var q = db.SmsSends.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(mobile)) q = q.Where(x => x.Mobile.Contains(mobile!));
+    if (!string.IsNullOrWhiteSpace(mobile)) q = q.Where(x => x.CustomerPhoneNo.Contains(mobile!));
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
     var items = await q.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.BatchNo, x.Mobile, x.SmsType, x.Contents, x.Status, x.InvalidMobile,
+        .Select(x => new { x.BatchNo, x.CustomerPhoneNo, x.SmsType, x.Contents, x.Status, x.InvalidMobile,
+            // #357 cặp ngữ cảnh A10..A16 (tên nguồn)
+            x.SendId, x.SupplierPhoneNo, x.BranchName, x.FlagReply,
+            x.A10Name, x.A10Value, x.A11Name, x.A11Value, x.A12Name, x.A12Value, x.A13Name, x.A13Value,
+            x.A14Name, x.A14Value, x.A15Name, x.A15Value, x.A16Name, x.A16Value,
             x.FlagANSI, x.TelCo, x.BatchType, x.CostType, x.ProjectCode, x.UnitPrice, x.MsgParts, x.Cost, x.TryCount,
             sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
     return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "F"), invalid = items.Count(i => i.InvalidMobile),
@@ -15665,7 +15669,7 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
                          join car in db.ServiceCars.Where(x => x.OrgId == t.OrgId) on c.CusCode equals car.CusID into gj
                          from car in gj.DefaultIfEmpty()
                          select new { c.Mobile, c.CusCode, c.CusName, c.Address,
-                                      carId = car != null ? car.FrameNo : null,
+                                      carId = car != null ? car.CarID : null,   // #357 A13Value = TblSerCar.CarID (SmsOutService.cs:169), không phải FrameNo
                                       plateNo = car != null ? car.PlateNo : null,
                                       tradeMark = car != null ? car.TradeMark : null,
                                       modelCode = car != null ? car.ModelCode : null }).ToListAsync();
@@ -15703,7 +15707,7 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
         {
             // Số sai định dạng: nguồn coi là lô lỗi (Reject), kèm cờ riêng để biết lỗi do SỐ chứ không do gửi.
             invalid++; invalids.Add(m);
-            db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, Mobile = m ?? "", SmsType = smsType, Contents = content, Status = "R", InvalidMobile = true,
+            db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, CustomerPhoneNo = m ?? "", SmsType = smsType, Contents = content, Status = "R", InvalidMobile = true,
                 FlagANSI = isAnsi, TelCo = telCo, BatchType = batchType, CostType = costType, ProjectCode = dto.ProjectCode });
             continue;
         }
@@ -15723,7 +15727,7 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
             var parts = SmsCost.Parts(piece.Length, isAnsi, batchType, telCo);
             db.SmsSends.Add(new SmsSend
             {
-                OrgId = t.OrgId, BatchNo = no, Mobile = std, SmsType = smsType, Contents = piece, Status = "P",
+                OrgId = t.OrgId, BatchNo = no, CustomerPhoneNo = std, SmsType = smsType, Contents = piece, Status = "P",
                 FlagANSI = isAnsi, TelCo = telCo, BatchType = batchType, CostType = costType,
                 ProjectCode = dto.ProjectCode, UnitPrice = dto.UnitPrice,
                 MsgParts = parts, Cost = dto.UnitPrice * parts,
@@ -15733,13 +15737,17 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
                 // Gửi bằng đầu số ⇒ nguồn ghi chuỗi RỖNG (không phải null) cho BranchName.
                 BranchName = senderKind == "BrandName" ? dto.BrandName : "",
                 FlagReply = "0",
-                CusID = who?.CusCode, CusName = who?.CusName,
-                Address = who?.Address, CarID = who?.CarId,
-                PlateNo = who?.PlateNo,
+                // #357 tên cột nguồn: AxxName = hằng tên trường, AxxValue = giá trị (SmsOutService.cs:160-177).
+                A10Name = "CUSID", A10Value = who?.CusCode,
+                A11Name = "CUSNAME", A11Value = who?.CusName,
+                A12Name = "ADDRESS", A12Value = who?.Address,
+                A13Name = "CARID", A13Value = who?.CarId,
+                A14Name = "PLATENO", A14Value = who?.PlateNo,
                 // A15 của nguồn ghép "TradeMarkCode|ModelName"; chỉ ghi khi có ít nhất một vế.
-                TradeMarkModel = who is null || (who.TradeMark is null && who.ModelCode is null)
+                A15Name = "TRADEMODEL",
+                A15Value = who is null || (who.TradeMark is null && who.ModelCode is null)
                                  ? null : $"{who.TradeMark}|{who.ModelCode}",
-                SendType = smsType,
+                A16Name = "SENDTYPE", A16Value = smsType,
             });
             queued++;
         }

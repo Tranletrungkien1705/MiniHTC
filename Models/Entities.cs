@@ -13650,7 +13650,8 @@ public sealed class SmsSend
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string BatchNo { get; set; } = "";
-    public string Mobile { get; set; } = "";
+    /// <summary>#357 `CustomerPhoneNo` (rename từ `Mobile` khớp nguồn TblSMS_Send.CustomerPhoneNo — SmsOutService.cs:143).</summary>
+    public string CustomerPhoneNo { get; set; } = "";
     public string? SmsType { get; set; }
     public string Contents { get; set; } = "";
 
@@ -13736,13 +13737,22 @@ public sealed class SmsSend
 
     // A10..A16: nguồn lưu ngữ cảnh người nhận dưới dạng CẶP (AxxName, AxxValue) — túi thuộc tính chung.
     // Ở đường gửi này 7 cặp LUÔN mang đúng 7 nghĩa dưới đây nên port thành cột có tên thật.
-    public string? CusID { get; set; }              // A10  CUSID
-    public string? CusName { get; set; }            // A11  CUSNAME
-    public string? Address { get; set; }            // A12  ADDRESS
-    public string? CarID { get; set; }              // A13  CARID
-    public string? PlateNo { get; set; }            // A14  PLATENO
-    public string? TradeMarkModel { get; set; }     // A15  "TradeMarkCode|ModelName" (ghép bằng |)
-    public string? SendType { get; set; }           // A16  SENDTYPE (loại tin gửi)
+    // #357 Cặp cột ngữ cảnh người nhận ĐÚNG tên vật lý nguồn (SmsOutService.SMS_Batch_Send :160-177): AxxName = hằng tên trường,
+    //      AxxValue = giá trị. Rename từ CusID/CusName/Address/CarID/PlateNo/TradeMarkModel/SendType.
+    public string? A10Name { get; set; }             // hằng "CUSID"
+    public string? A10Value { get; set; }            // trước #357: CusID
+    public string? A11Name { get; set; }             // hằng "CUSNAME"
+    public string? A11Value { get; set; }            // trước #357: CusName
+    public string? A12Name { get; set; }             // hằng "ADDRESS"
+    public string? A12Value { get; set; }            // trước #357: Address
+    public string? A13Name { get; set; }             // hằng "CARID"
+    public string? A13Value { get; set; }            // trước #357: CarID
+    public string? A14Name { get; set; }             // hằng "PLATENO"
+    public string? A14Value { get; set; }            // trước #357: PlateNo
+    public string? A15Name { get; set; }             // hằng "TRADEMODEL"
+    public string? A15Value { get; set; }            // trước #357: TradeMarkModel
+    public string? A16Name { get; set; }             // hằng "SENDTYPE"
+    public string? A16Value { get; set; }            // trước #357: SendType
 }
 
 /// <summary>Mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm) — port 1:1 FrmEmail_TempEmailCreate (TblEmail_TempEmail, TCMotor).</summary>

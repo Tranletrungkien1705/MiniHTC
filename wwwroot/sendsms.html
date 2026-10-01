@@ -58,7 +58,7 @@ async function load(){ await token();
   const r=await fetch("/api/smssends?mobile="+encodeURIComponent(F("qMobile").value)+"&status="+F("qStatus").value,{headers:H()});
   const d=await r.json();
   if(!F("kpi").innerHTML) F("kpi").innerHTML=`<div class="box"><b>${d.count}</b><span>Tổng log</span></div><div class="box"><b class="s-Sent">${d.sent}</b><span>Đã gửi</span></div><div class="box"><b class="s-Invalid">${d.invalid}</b><span>Số sai</span></div>`;
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td>${o.batchNo}</td><td><b>${esc(o.mobile)}</b></td><td>${esc(o.smsType)}</td><td>${esc((o.contents||"").slice(0,50))}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.sendDate}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có log.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td>${o.batchNo}</td><td><b>${esc(o.customerPhoneNo)}</b></td><td>${esc(o.smsType)}</td><td>${esc((o.contents||"").slice(0,50))}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.sendDate}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có log.</td></tr>';
 }
 </script>
 </body></html>
