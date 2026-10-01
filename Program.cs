@@ -80987,7 +80987,7 @@ app.MapGet("/api/roattachfiles", async (AppDbContext db, ITenantContext t,
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = (isGetDetail == false) ? new List<object>() : all.Skip(skip).Take(take)
-        .Select(x => (object)new { x.Id, x.RONo, x.ROFileType, x.ROFilePath, x.ROFileName, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => (object)new { x.Id, x.RONo, x.ROFileType, x.ROFilePath, x.ROFileName, x.Remark, x.LogLUDateTime, x.LogLUBy })   // #1552 echo Remark
         .ToList();
 
     return Results.Ok(new
@@ -82914,6 +82914,7 @@ app.MapPost("/api/repairorders/{no}/attachfiles", async (string no, RoAttachFile
     {
         OrgId = t.OrgId, RONo = no, ROFileType = fileType,
         ROFilePath = dto.ROFilePath, ROFileName = dto.ROFileName,
+        Remark = null,   // #1552: nguon LUON ghi null (input dat null // Remark) - KHONG lay tu dto
         LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
     });
     await db.SaveChangesAsync();
@@ -85002,7 +85003,7 @@ record OsAppointmentUpdateDto(string? DealerCode = null, string? CusID = null, s
 //   RONG / "0" / null => khach KHONG tra het => ghi no hang bao hiem (ba gia tri nhu nhau).
 // #341: TotalActHours ghi kem o buoc Repaired (rong = giu nguyen).
 record RoDispatchDto(string? DPRemark, string? EngineerID, string? CavityID);   // #917
-record RoAttachFileDto(string? ROFileType, string? ROFilePath, string? ROFileName, string? FlagIsDelete, string? LogLUBy);   // #931
+record RoAttachFileDto(string? ROFileType, string? ROFilePath, string? ROFileName, string? FlagIsDelete, string? LogLUBy, string? Remark = null);   // #931 + #1552 Remark
 record RoServiceItemStatusDto(long ItemID, string? Status);   // #922
 record RoServiceItemEngineerDto(long ItemID, string? EngineerNo);   // #924
 

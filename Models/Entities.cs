@@ -16484,6 +16484,9 @@ public sealed class RoAttachFile
     public string ROFileType { get; set; } = "";
     public string? ROFilePath { get; set; }
     public string? ROFileName { get; set; }
+    // #1552 §12 - cot nguon Remark (Ser_ROAttachFile) - port 1:1. Nguon LUON ghi null (input dat null // Remark).
+    // ROID nguon = khoa noi lenh sua chua => da bieu dien bang RONo, KHONG them cot trung.
+    public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
