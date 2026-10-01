@@ -31568,7 +31568,8 @@ app.MapGet("/api/carspecs", async (AppDbContext db, ITenantContext t, string? mo
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.SpecCode.Contains(q) || (c.SpecDesc != null && c.SpecDesc.Contains(q)));
     var items = await query.OrderByDescending(c => c.Id).Take(500)
         .Select(c => new { c.SpecCode, c.ModelCode, c.StdOptCode, c.GradeCode, c.OCNCode, c.SpecDesc, c.RootSpec, c.NumberOfSeats, c.FlagAmbulance, c.FlagActive,
-            c.AssemblyStatus, c.FlagInvoiceFactory, c.FlagDepositPmt, c.OriginNo, c.QuotaDate }).ToListAsync();
+            c.AssemblyStatus, c.FlagInvoiceFactory, c.FlagDepositPmt, c.OriginNo, c.QuotaDate,
+            c.SpecGroupCode, c.SpecDescriptionSX, c.CrtProductName, c.CrtTypeCode, c.LoaiThung, c.Remark }).ToListAsync();   // #360
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -31594,8 +31595,14 @@ app.MapPost("/api/carspecs", async (CarSpecDto dto, AppDbContext db, ITenantCont
         if (!string.Equals(rootSpec.ModelCode, dto.ModelCode, StringComparison.OrdinalIgnoreCase))
             return Results.BadRequest(new { error = $"RootSpec {root} không hợp lệ. Các specCode cùng RootSpec phải cùng ModelCode." });
     }
+    // #360 LoaiThung là ô chọn từ Mst_LoaiThung (FrmCarSpec Foton) ⇒ giá trị gửi lên phải có trong master đang hoạt động.
+    var loaiThung = string.IsNullOrWhiteSpace(dto.LoaiThung) ? null : dto.LoaiThung.Trim();
+    if (loaiThung is not null && !await db.LoaiThungMsts.AnyAsync(x => x.OrgId == t.OrgId && x.LoaiThung == loaiThung && x.FlagActive == "1"))
+        return Results.BadRequest(new { error = $"Loại thùng {loaiThung} không có trong danh mục.", code = "Mst_LoaiThung_NotExist", LoaiThung = loaiThung });
     var c = new CarSpec
     {
+        SpecGroupCode = string.IsNullOrWhiteSpace(dto.SpecGroupCode) ? null : dto.SpecGroupCode.Trim(), SpecDescriptionSX = dto.SpecDescriptionSX,
+        CrtProductName = dto.CrtProductName, CrtTypeCode = dto.CrtTypeCode, LoaiThung = loaiThung, Remark = dto.Remark,   // #360
         OrgId = t.OrgId, SpecCode = code, ModelCode = dto.ModelCode, StdOptCode = dto.StdOptCode, GradeCode = dto.GradeCode, OCNCode = dto.OCNCode,
         SpecDesc = dto.SpecDesc, RootSpec = root, NumberOfSeats = dto.NumberOfSeats, FlagAmbulance = dto.FlagAmbulance == "1" ? "1" : "0", FlagActive = "1",
         AssemblyStatus = dto.AssemblyStatus, FlagInvoiceFactory = flagInv, FlagDepositPmt = dto.FlagDepositPmt == "1" ? "1" : "0",
@@ -57414,7 +57421,8 @@ record PaymentTermDto(
     int? GuaranteeDays, int? DepositDutyEndDays, int? GuaranteeEndDays, int? DepositDealDateDays,
     List<PaymentTermDetailDto>? Details);
 record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance,
-    string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate);
+    string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate,
+    string? SpecGroupCode = null, string? SpecDescriptionSX = null, string? CrtProductName = null, string? CrtTypeCode = null, string? LoaiThung = null, string? Remark = null);   // #360
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
 /// <summary>Ký số một file ngân hàng — nguồn `RQ_BankingTransactions_SignBankFile` nhận

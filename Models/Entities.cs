@@ -10101,6 +10101,15 @@ public sealed class CarSpec
     public string? OriginNo { get; set; }            // bắt buộc nếu AssemblyStatus=CBU
     public DateTime? QuotaDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #360 cột biến thể TCMotor/Foton (DbDefine TblCarSpec; FrmCarSpec Foton :61-94) — lưu qua SaveMasterDataTable, Frm KHÔNG kiểm =====
+    /// <summary>`SpecGroupCode` — lookup Mst_CarSpecGroup; biz Foton dùng ở Car_Car_UpdOrderPolicyX (phải = "XEDAUKEO", BizHTC.Car.cs:25538).</summary>
+    public string? SpecGroupCode { get; set; }
+    public string? SpecDescriptionSX { get; set; }   // mô tả spec theo nhà sản xuất
+    public string? CrtProductName { get; set; }
+    public string? CrtTypeCode { get; set; }
+    /// <summary>`LoaiThung` — lookup Mst_LoaiThung (FrmCarSpec Foton :177).</summary>
+    public string? LoaiThung { get; set; }
+    public string? Remark { get; set; }
 }
 
 /// <summary>Giá màn hình AVN (Mst_UnitPriceAVN) — port 1:1 FrmMst_AVNPrice (2010.HTC/Admin/Product). Đơn giá màn hình AVN theo mã + ngày hiệu lực.</summary>

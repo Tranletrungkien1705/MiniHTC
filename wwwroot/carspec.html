@@ -28,6 +28,12 @@
     <div><label>Grade</label><input id="gr"></div>
     <div><label>OCN</label><input id="ocn"></div>
     <div><label>Spec gốc (RootSpec) *</label><input id="rs"></div>
+    <div><label>Nhóm spec (SpecGroupCode)</label><input id="sg"></div>
+    <div><label>Mô tả SX (SpecDescriptionSX)</label><input id="dsx"></div>
+    <div><label>Tên SP (CrtProductName)</label><input id="cpn"></div>
+    <div><label>Loại (CrtTypeCode)</label><input id="ctc"></div>
+    <div><label>Loại thùng</label><input id="lt"></div>
+    <div><label>Ghi chú</label><input id="rmk"></div>
     <div><label>Số chỗ</label><input id="ns" type="number"></div>
     <div><label>Mô tả</label><input id="ds"></div>
     <div><label>Lắp ráp</label><select id="as"><option value="">—</option><option value="CKD">CKD</option><option value="CBU">CBU</option></select></div>
@@ -40,8 +46,8 @@
     <button class="primary" onclick="create()">Lưu Spec</button><span id="msg"></span></div>
 </div>
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Tìm mã/mô tả" oninput="load()" style="width:150px"><input id="qm" placeholder="Lọc model" oninput="load()" style="width:100px"><select id="fa" onchange="load()"><option value="">Tất cả</option><option value="1">Hoạt động</option><option value="0">Ngừng</option></select></div>
-<table><thead><tr><th>Mã Spec</th><th>Model</th><th>Grade</th><th>OCN</th><th>Số chỗ</th><th>Mô tả</th><th>Cứu thương</th><th>TT</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Mã Spec</th><th>Model</th><th>Grade</th><th>OCN</th><th>Số chỗ</th><th>Mô tả</th><th>Nhóm / Loại thùng</th><th>Cứu thương</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 async function token(){ if(TOKEN) return TOKEN;
@@ -51,7 +57,8 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const body={specCode:F("sc").value,modelCode:F("md").value,stdOptCode:F("so").value,gradeCode:F("gr").value,oCNCode:F("ocn").value,specDesc:F("ds").value,rootSpec:F("rs").value,numberOfSeats:parseInt(F("ns").value)||null,flagAmbulance:F("amb").checked?"1":"0",assemblyStatus:F("as").value,flagInvoiceFactory:F("inv").checked?"1":"0",flagDepositPmt:F("dep").checked?"1":"0",originNo:F("on").value,quotaDate:F("qd").value||null};
+  const body={specCode:F("sc").value,modelCode:F("md").value,stdOptCode:F("so").value,gradeCode:F("gr").value,oCNCode:F("ocn").value,specDesc:F("ds").value,rootSpec:F("rs").value,numberOfSeats:parseInt(F("ns").value)||null,flagAmbulance:F("amb").checked?"1":"0",assemblyStatus:F("as").value,flagInvoiceFactory:F("inv").checked?"1":"0",flagDepositPmt:F("dep").checked?"1":"0",originNo:F("on").value,quotaDate:F("qd").value||null,
+    specGroupCode:F("sg").value||null,specDescriptionSX:F("dsx").value||null,crtProductName:F("cpn").value||null,crtTypeCode:F("ctc").value||null,loaiThung:F("lt").value||null,remark:F("rmk").value||null};
   const r=await fetch("/api/carspecs",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
   if(r.ok){ msg("Đã lưu "+j.specCode); ["sc","md","so","gr","ocn","rs","ns","ds","on","qd"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
@@ -59,8 +66,8 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/carspecs?q=${F("q").value}&model=${F("qm").value}&active=${F("fa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.specCode}</b></td><td>${o.modelCode||""}</td><td>${o.gradeCode||""}</td><td>${o.oCNCode||""}</td><td>${o.numberOfSeats||""}</td><td>${o.specDesc||""}</td><td>${o.flagAmbulance==="1"?"✓":""}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.specCode}')">Đổi TT</button></td></tr>`
-  ).join("")||'<tr><td colspan="9" class="muted">Chưa có spec.</td></tr>';
+    `<tr><td><b>${o.specCode}</b></td><td>${o.modelCode||""}</td><td>${o.gradeCode||""}</td><td>${o.oCNCode||""}</td><td>${o.numberOfSeats||""}</td><td>${o.specDesc||""}</td><td>${o.specGroupCode||""} / ${o.loaiThung||""}</td><td>${o.flagAmbulance==="1"?"✓":""}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.specCode}')">Đổi TT</button></td></tr>`
+  ).join("")||'<tr><td colspan="10" class="muted">Chưa có spec.</td></tr>';
 }
 async function toggle(c){ const r=await fetch(`/api/carspecs/${c}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 load();
