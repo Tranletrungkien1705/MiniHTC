@@ -18563,7 +18563,7 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
         x.FrameNo, x.PlateNo, x.EngineNo, x.ModelCode, x.ColorCode, x.TradeMark, x.ProductYear, x.CurrentKm, x.CusName, x.CusMobile, x.FlagActive,
         x.MemberCarID, x.DealerCode, x.CusID,
         // #222 §12: 8 trường mới phải chiếu ở CẢ GET
-        x.CarID, x.SalesCarID, x.DateBuyCar, x.InsNo, x.InsContractNo, x.InsStartDate, x.InsFinishedDate, x.Note,
+        x.CarID, x.SalesCarID, x.DateBuyCar, x.InsNo, x.InsContractNo, x.InsStartDate, x.InsFinishedDate, x.Note, x.PlateColorCode,
         warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -18579,7 +18579,7 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
     if (ex is not null)
     {
         if (dto.CurrentKm < ex.CurrentKm) return Results.BadRequest(new { error = $"Số km mới ({dto.CurrentKm}) không được nhỏ hơn số km hiện tại ({ex.CurrentKm})." });
-        ex.PlateNo = dto.PlateNo; ex.EngineNo = dto.EngineNo; ex.ModelCode = dto.ModelCode; ex.ColorCode = dto.ColorCode; ex.TradeMark = dto.TradeMark; ex.ProductYear = dto.ProductYear; ex.CurrentKm = dto.CurrentKm; ex.WarrantyDate = dto.WarrantyDate; ex.CusName = dto.CusName; ex.CusMobile = dto.CusMobile; ex.FlagActive = "1";
+        ex.PlateNo = dto.PlateNo; ex.EngineNo = dto.EngineNo; ex.ModelCode = dto.ModelCode; ex.ColorCode = dto.ColorCode; ex.TradeMark = dto.TradeMark; ex.ProductYear = dto.ProductYear; ex.CurrentKm = dto.CurrentKm; ex.WarrantyDate = dto.WarrantyDate; ex.CusName = dto.CusName; ex.CusMobile = dto.CusMobile; ex.FlagActive = "1"; ex.PlateColorCode = dto.PlateColorCode;   // #382
         // 🔴 #223: sweep hai-nhánh phát hiện `CusID`/`DealerCode` CHỈ được gán khi TẠO MỚI ⇒ sửa xe đã có
         //    thì hai trường này không bao giờ đổi được. Nguồn `CarUpdate` CÓ gửi cả hai
         //    (`_serCar.CusID`, `_serCar.DealerCode` — MstCarService.cs:109) ⇒ phải cập nhật.
@@ -18602,7 +18602,7 @@ app.MapPost("/api/servicecars", async (ServiceCarDto dto, AppDbContext db, ITena
     var r = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, PlateNo = dto.PlateNo, EngineNo = dto.EngineNo, ModelCode = dto.ModelCode, ColorCode = dto.ColorCode, TradeMark = dto.TradeMark, ProductYear = dto.ProductYear, CurrentKm = dto.CurrentKm, WarrantyDate = dto.WarrantyDate, CusName = dto.CusName, CusMobile = dto.CusMobile,
         MemberCarID = dto.MemberCarID, DealerCode = dto.DealerCode, CusID = dto.CusID, FlagActive = "1",
         // #222 parity: 8 trường của `CarUpdate`
-        CarID = dto.CarID, SalesCarID = dto.SalesCarID, DateBuyCar = dto.DateBuyCar, InsNo = dto.InsNo, InsContractNo = dto.InsContractNo, InsStartDate = dto.InsStartDate, InsFinishedDate = dto.InsFinishedDate, Note = dto.Note };
+        CarID = dto.CarID, SalesCarID = dto.SalesCarID, DateBuyCar = dto.DateBuyCar, InsNo = dto.InsNo, InsContractNo = dto.InsContractNo, InsStartDate = dto.InsStartDate, InsFinishedDate = dto.InsFinishedDate, Note = dto.Note, PlateColorCode = dto.PlateColorCode };
     db.ServiceCars.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.FrameNo, updated = false });
 }).RequireAuthorization();
@@ -53930,34 +53930,32 @@ app.MapPost("/api/customercaremaces/{no}/contact", async (string no, CareMaceCon
     return Results.Ok(new { c.CareNo, status = c.Status });
 }).RequireAuthorization();
 
-// ===== Xe của khách hàng (Ser_Car — port 1:1 FrmCustomerCar) =====
+// ===== Xe của khách hàng — ⛔ #382 HỢP NHẤT SONG SINH Ser_Car: CustomerCar ≡ ServiceCar (cùng TblSerCar). Bản chuẩn = ServiceCar.
+// Route giữ tham số + hình JSON cũ (Vin = FrameNo, CusCode = CusID, CusPhone = CusMobile, SaleDate = DateBuyCar) nhưng đọc/ghi bản chuẩn.
+// Khoá nguồn là FrameNo (VIN) ⇒ ghi KHÔNG có VIN/số khung bị chặn như /api/servicecars ("Chưa nhập số khung (VIN).").
 app.MapGet("/api/customercars", async (AppDbContext db, ITenantContext t, string? plate, string? vin, string? cus) =>
 {
-    var q = db.CustomerCars.Where(c => c.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(c => c.PlateNo.Contains(plate.ToUpper()));
-    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.Vin.Contains(vin.ToUpper()));
-    if (!string.IsNullOrWhiteSpace(cus)) q = q.Where(c => (c.CusName != null && c.CusName.Contains(cus)) || (c.CusPhone != null && c.CusPhone.Contains(cus)));
+    var q = db.ServiceCars.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(c => c.PlateNo != null && c.PlateNo.Contains(plate.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.FrameNo.Contains(vin.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(cus)) q = q.Where(c => (c.CusName != null && c.CusName.Contains(cus)) || (c.CusMobile != null && c.CusMobile.Contains(cus)));
     var items = await q.OrderBy(c => c.PlateNo).Take(500).Select(c => new
-    { c.Vin, c.PlateNo, c.FrameNo, c.EngineNo, c.ModelCode, c.ColorCode, c.PlateColorCode, c.CusCode, c.CusName, c.CusPhone, c.SaleDate }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    { Vin = c.FrameNo, c.PlateNo, c.FrameNo, c.EngineNo, c.ModelCode, c.ColorCode, c.PlateColorCode, CusCode = c.CusID, c.CusName, CusPhone = c.CusMobile, SaleDate = c.DateBuyCar }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/servicecars" });
 }).RequireAuthorization();
 
 app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.Vin) && string.IsNullOrWhiteSpace(dto.PlateNo))
-        return Results.BadRequest(new { error = "Cần VIN hoặc biển số." });
-    var vin = (dto.Vin ?? "").Trim().ToUpperInvariant();
+    var vin = (string.IsNullOrWhiteSpace(dto.Vin) ? dto.FrameNo ?? "" : dto.Vin).Trim().ToUpperInvariant();
+    if (vin.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN).", route = "/api/servicecars" });
     var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
-    // upsert theo VIN nếu có, ngược lại theo biển số
-    CustomerCar? c = null;
-    if (vin.Length > 0) c = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == vin);
-    if (c is null && plate.Length > 0) c = await db.CustomerCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Vin == "" && x.PlateNo == plate);
-    if (c is null) { c = new CustomerCar { OrgId = t.OrgId, Vin = vin, PlateNo = plate }; db.CustomerCars.Add(c); }
-    else { if (vin.Length > 0) c.Vin = vin; if (plate.Length > 0) c.PlateNo = plate; }
-    c.FrameNo = dto.FrameNo; c.EngineNo = dto.EngineNo; c.ModelCode = dto.ModelCode; c.ColorCode = dto.ColorCode; c.PlateColorCode = dto.PlateColorCode;
-    c.CusCode = dto.CusCode; c.CusName = dto.CusName; c.CusPhone = dto.CusPhone; c.SaleDate = dto.SaleDate; c.UpdatedAt = DateTime.Now;
+    var c = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FrameNo == vin);
+    if (c is null) { c = new ServiceCar { OrgId = t.OrgId, FrameNo = vin, FlagActive = "1" }; db.ServiceCars.Add(c); }
+    if (plate.Length > 0) c.PlateNo = plate;
+    c.EngineNo = dto.EngineNo; c.ModelCode = dto.ModelCode; c.ColorCode = dto.ColorCode; c.PlateColorCode = dto.PlateColorCode;
+    c.CusID = dto.CusCode; c.CusName = dto.CusName; c.CusMobile = dto.CusPhone; c.DateBuyCar = dto.SaleDate?.ToString("yyyy-MM-dd");
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.Vin, c.PlateNo, c.CusName });
+    return Results.Ok(new { Vin = c.FrameNo, c.PlateNo, c.CusName });
 }).RequireAuthorization();
 
 // ===== Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate) =====
@@ -57178,7 +57176,8 @@ record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note, long? PartTypeID = null, decimal? VAT = null, string? FreqUsed = null);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
     // #222 parity: 8 trường của CarUpdate
-    string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null);
+    string? CarID = null, string? SalesCarID = null, string? DateBuyCar = null, string? InsNo = null, string? InsContractNo = null, string? InsStartDate = null, string? InsFinishedDate = null, string? Note = null,
+    string? PlateColorCode = null);   // #382 TblSerCar.PlateColorCode
 record ServiceCarMemberDto(string? DealerCode, string? CusID, string? MemberCarID);
 record ServicePartImportRow(string? PartCode, string? PartName, string? Unit, decimal Price, decimal MinQuantity);
 record ServicePartImportDto(List<ServicePartImportRow>? Rows);

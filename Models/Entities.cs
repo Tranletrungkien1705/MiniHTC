@@ -2618,8 +2618,9 @@ public sealed class PartPrice
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Xe của khách hàng (Ser_Car — port 1:1 FrmCustomerCar, TCMotor DMSCarSv/Customer):
-/// registry xe dịch vụ, gắn khách↔xe (VIN/biển số/số máy/số khung/model/màu). Reception/RO tham chiếu.</summary>
+/// <summary>⛔ #382 DEPRECATED — SONG SINH của <see cref="ServiceCar"/> (cùng bảng nguồn Ser_Car / TblSerCar).
+/// Bản chuẩn = ServiceCar (khoá FrameNo = VIN, đã parity CarUpdate #222). Route /api/customercars đọc/ghi bản chuẩn; Seeder chép dữ liệu cũ
+/// (Vin→FrameNo, CusCode→CusID, CusPhone→CusMobile, SaleDate→DateBuyCar). Giữ lớp để đọc dữ liệu cũ, KHÔNG ghi mới.</summary>
 public sealed class CustomerCar
 {
     public long Id { get; set; }
@@ -14181,6 +14182,10 @@ public sealed class ServiceCar
 
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #382 [c] gộp song sinh Ser_Car — cột nguồn TblSerCar.PlateColorCode (mang từ bản CustomerCar) =====
+    /// <summary>Màu biển số (`PLATECOLORCODE`, DbDefine TblSerCar:1590).</summary>
+    public string? PlateColorCode { get; set; }
 }
 
 /// <summary>Danh mục phụ tùng dịch vụ (master lõi) — port 1:1 FrmPart (TblSerMSTPart, TCMotor).</summary>

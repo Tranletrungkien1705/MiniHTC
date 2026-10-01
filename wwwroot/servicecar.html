@@ -26,6 +26,7 @@
     <div><label>Số máy</label><input id="fEngine"></div>
     <div><label>Model</label><input id="fModel"></div>
     <div><label>Màu</label><input id="fColor"></div>
+    <div><label>Màu biển</label><input id="fPlateColor"></div>
     <div><label>Nhãn hiệu</label><input id="fTrade"></div>
     <div><label>Năm SX</label><input id="fYear" type="number"></div>
     <div><label>Số km</label><input id="fKm" type="number"></div>
@@ -52,7 +53,7 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
 async function save(){ await token();
-  const body={FrameNo:F("fVin").value,PlateNo:F("fPlate").value,EngineNo:F("fEngine").value,ModelCode:F("fModel").value,ColorCode:F("fColor").value,TradeMark:F("fTrade").value,ProductYear:+F("fYear").value||null,CurrentKm:+F("fKm").value||0,WarrantyDate:F("fWar").value||null,CusName:F("fCus").value,CusMobile:F("fMobile").value};
+  const body={FrameNo:F("fVin").value,PlateNo:F("fPlate").value,EngineNo:F("fEngine").value,ModelCode:F("fModel").value,ColorCode:F("fColor").value,PlateColorCode:F("fPlateColor").value,TradeMark:F("fTrade").value,ProductYear:+F("fYear").value||null,CurrentKm:+F("fKm").value||0,WarrantyDate:F("fWar").value||null,CusName:F("fCus").value,CusMobile:F("fMobile").value};
   const r=await fetch("/api/servicecars",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
   msg(d.updated?"Đã cập nhật "+d.frameNo:"Đã thêm "+d.frameNo); F("fVin").value=""; load();
@@ -61,7 +62,7 @@ async function toggle(vin){ await token();
   const r=await fetch("/api/servicecars/"+encodeURIComponent(vin)+"/toggle",{method:"POST",headers:H()});
   if(!r.ok){ msg("Lỗi"); return; } load();
 }
-function edit(o){ F("fVin").value=o.frameNo;F("fPlate").value=o.plateNo||"";F("fEngine").value=o.engineNo||"";F("fModel").value=o.modelCode||"";F("fColor").value=o.colorCode||"";F("fTrade").value=o.tradeMark||"";F("fYear").value=o.productYear||"";F("fKm").value=o.currentKm;F("fWar").value=o.warrantyDate||"";F("fCus").value=o.cusName||"";F("fMobile").value=o.cusMobile||""; window.scrollTo(0,0); }
+function edit(o){ F("fVin").value=o.frameNo;F("fPlate").value=o.plateNo||"";F("fEngine").value=o.engineNo||"";F("fModel").value=o.modelCode||"";F("fColor").value=o.colorCode||"";F("fPlateColor").value=o.plateColorCode||"";F("fTrade").value=o.tradeMark||"";F("fYear").value=o.productYear||"";F("fKm").value=o.currentKm;F("fWar").value=o.warrantyDate||"";F("fCus").value=o.cusName||"";F("fMobile").value=o.cusMobile||""; window.scrollTo(0,0); }
 async function load(){ await token();
   const r=await fetch("/api/servicecars?q="+encodeURIComponent(F("qQ").value)+"&model="+encodeURIComponent(F("qModel").value),{headers:H()});
   const d=await r.json();
