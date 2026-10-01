@@ -3245,7 +3245,7 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark }).ToListAsync();
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark }).ToListAsync();
     return Results.Ok(new { d.DocReqNo, d.Status, d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy, count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
 }).RequireAuthorization();
 
@@ -24509,7 +24509,24 @@ app.MapPost("/api/carvinmasters/{vin}/billno-mortage", async (
     // Side-effect 2/3: `Pmt_GuaranteeDetail.DateWarning` (`:62253-62256`) — chỉ khi có bảo lãnh khớp.
     // ⚠️ NỢ: công thức `dtimeDateWarning` nguồn tính từ cấu hình bảo lãnh; MiniHTC chưa có tầng đó
     //    ⇒ **KHÔNG suy công thức**, để nguyên và ghi nợ (luật "không đoán công thức rồi ghi DB").
-    // Side-effect 3/3: update `Car_DocReqDtl` khi có `MortageEndDate` — cũng ghi nợ, chưa port.
+    // Side-effect 3/3 (#328): `myCar_DocReqDtl_Upd_LoanSupportDateEnd` (Biz.HTC.WH.cs:59928, gọi ở :60586) — khi CÓ MortageEndDate:
+    //   lấy dòng ĐẦU TIÊN Car_DocReqDtl ⋈ Car_DocReqList của VIN với DRListStatus ∉ {R,C}, DRDtlStatus ∉ {R,C}, TypeCRR='DEALER';
+    //   LoanSupportDateEnd = MortageEndDate + LoanSupportDay(của DANH SÁCH, null ⇒ 0) rồi ghi cho (DRListCode, VIN).
+    DateTime? loanSupportDateEnd = null; long? loanSupportDocReqId = null;
+    if (newEnd is not null)
+    {
+        var dr = await (from x in db.DocReqCars join h in db.DocReqs on x.DocReqId equals h.Id
+                        where x.OrgId == t.OrgId && x.Vin == v && h.Status != "R" && h.Status != "C"
+                              && x.DRDtlStatus != "R" && x.DRDtlStatus != "C" && h.TypeCRR == "DEALER"
+                        select new { x.DocReqId, h.LoanSupportDay }).FirstOrDefaultAsync();
+        if (dr is not null)
+        {
+            loanSupportDateEnd = newEnd.Value.Date.AddDays(dr.LoanSupportDay ?? 0); loanSupportDocReqId = dr.DocReqId;
+            foreach (var x in await db.DocReqCars.Where(x => x.OrgId == t.OrgId && x.DocReqId == dr.DocReqId && x.Vin == v).ToListAsync())
+            { x.LoanSupportDateEnd = loanSupportDateEnd; }   // nguồn ghi kèm LogLUDateTime — DocReqCar Mini chưa có cột này (nợ)
+            written.Add("Car_DocReqDtl.LoanSupportDateEnd");
+        }
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new
     {

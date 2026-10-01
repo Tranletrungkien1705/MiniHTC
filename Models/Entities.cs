@@ -6034,6 +6034,10 @@ public sealed class DocReqCar
     /// huỷ từ **"A1" hoặc "A2"**.
     /// </summary>
     public string DRDtlStatus { get; set; } = "P";
+    /// <summary>#328 Hạn hỗ trợ vay vốn (`Car_DocReqDtl.LoanSupportDateEnd`) — CHỈ ghi bởi hiệu ứng phụ
+    /// `myCar_DocReqDtl_Upd_LoanSupportDateEnd` (Biz.HTC.WH.cs:59928) của Car_VIN_Upd_BillNoAndMgrEndDate_New20191217:
+    /// = MortageEndDate + Car_DocReqList.LoanSupportDay (null ⇒ 0).</summary>
+    public DateTime? LoanSupportDateEnd { get; set; }
     /// <summary>Ngày/người duyệt cấp 1 của DÒNG — chỉ luồng **TCG** dùng: `CarDocReqTCGDtlApprove2`
     /// ghi CẢ BỐN cột duyệt cùng lúc vì duyệt một lần là qua cả hai cấp.</summary>
     public DateTime? ApprovedDate1 { get; set; }
