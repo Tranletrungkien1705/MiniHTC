@@ -12231,11 +12231,13 @@ public sealed class BankTmCar
 ///   ⇒ **màn CHỈ ĐỌC** của cổng ngân hàng trên bảng `Pmt_Payment`; cổng `TERP.WSBank` chỉ có 2 lệnh ghi,
 ///   đều thuộc cụm `DMS40_DlrCtr_CancelBankMD_*`. Các lệnh GHI phiếu thanh toán nằm ở cổng WSHTC
 ///   (`PaymentPaymentCreate/Approve/Reject/Cancel/Confirm`) — <see cref="PmtPayment"/> mới là bản port đúng.
-/// 🔴 NỢ HỢP NHẤT (chưa làm ở lượt này vì cần đối chiếu nguồn từng cột): <see cref="PmtPaymentDetail"/>
-///   hiện chỉ có 4 cột dữ liệu (CarId/GuaranteeNo/DlrCtrNo/Amount) trong khi <see cref="BankPaymentCar"/>
-///   có thêm 11 cột (VIN, ModelCode, SpecCode, SOCode, ColorCode, AmountAccum, PercentAccum,
-///   UnitPriceActual, AmountCurrent, PercentCurrent, BankGuaranteeNo). Phải soi `Pmt_PaymentDetail` ở nguồn
-///   rồi mới gộp — KHÔNG gộp mù.
+/// ✅ ĐÃ ĐỐI CHIẾU (2026-10-01): DbDefine `TblPMDetail` (2010.HTC canonical) ghi rõ cột DB thật của `Pmt_PaymentDetail`
+///   = PaymentNo, Amount(=AmountCurrent), CarId, GuaranteeNo, DlrCtrNo, InterestRate, LoanPeriod — <see cref="PmtPaymentDetail"/>
+///   ĐÃ ĐỦ. 11 cột "thừa" của <see cref="BankPaymentCar"/> KHÔNG phải cột bảng: AmountAccum = PMPDAMOUNTTOTAL
+///   ("service tính toán trả về"), PercentAccum/PercentCurrent/AmountTotal/PercentTotal = "sinh ra để client hiển thị
+///   tính toán" (PercentTotal = PercentAccum + PercentCurrent, FrmNewPM:145 / FrmDealerNewDlvMinutes:682);
+///   VIN/ModelCode/SpecCode/SOCode/ColorCode/UnitPriceActual/BankGuaranteeNo = cột GHÉP từ xe/bảo lãnh.
+///   ⇒ KHÔNG thêm các cột đó vào bảng; khi gộp chỉ cần tính/ghép ở GET.
 /// </summary>
 public sealed class BankPayment
 {
