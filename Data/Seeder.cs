@@ -2900,6 +2900,10 @@ public static class Seeder
                 "ALTER TABLE public.\"StockAdjs\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"StockAdjLines\" ADD COLUMN IF NOT EXISTS \"BalanceLocation\" text NULL",
                 "ALTER TABLE public.\"StockAdjLines\" ADD COLUMN IF NOT EXISTS \"InStockLocation\" text NULL",
+                // #1554 parity Ser_Inv_StockAdjDetail: 3 cot PartID/LogLUBy/LogLUDateTime
+                "ALTER TABLE public.\"StockAdjLines\" ADD COLUMN IF NOT EXISTS \"PartID\" text NULL",
+                "ALTER TABLE public.\"StockAdjLines\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                "ALTER TABLE public.\"StockAdjLines\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "UPDATE public.\"StockAdjs\" SET \"AdjStatus\" = '0' WHERE \"AdjStatus\" = 'Draft'",
                 "UPDATE public.\"StockAdjs\" SET \"AdjStatus\" = '1' WHERE \"AdjStatus\" = 'Approved'",
                 // 'Rejected' KHÔNG map được (nguồn không có nhánh huỷ) — giữ nguyên để không mất dấu vết dữ liệu cũ.

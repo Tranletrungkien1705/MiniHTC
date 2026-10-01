@@ -3975,6 +3975,10 @@ public sealed class StockAdjLine
     public string? BalanceLocation { get; set; }
     /// <summary>Kho ĐÍCH (`Ser_Inv_StockAdjDetail.InStockLocationID`) — nơi số lượng được chuyển sang.</summary>
     public string? InStockLocation { get; set; }
+    // #1554 §12 - cot nguon PartID/LogLUBy/LogLUDateTime (Ser_Inv_StockAdjDetail) - port 1:1.
+    public string? PartID { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
 }
 
 /// <summary>Master loại công việc dịch vụ (Ser_MST_ServiceType) — port 1:1 FrmServiceTypeCreate/Search (TCMotor DMSCarSv). Tên loại công việc + cờ hoạt động.</summary>

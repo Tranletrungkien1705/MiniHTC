@@ -29557,7 +29557,7 @@ app.MapPost("/api/stockadjs", async (StockAdjDto dto, AppDbContext db, ITenantCo
         LogLUDateTime = now1075, LogLUBy = by };
     db.StockAdjs.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.StockAdjLines.Add(new StockAdjLine { OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim(), PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust, BalanceLocation = l.BalanceLocation, InStockLocation = l.InStockLocation });
+        db.StockAdjLines.Add(new StockAdjLine { OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim(), PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust, BalanceLocation = l.BalanceLocation, InStockLocation = l.InStockLocation, PartID = l.PartID, LogLUBy = by, LogLUDateTime = now1075 });   // #1554
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockAdjNo, lines = lines.Count });
 }).RequireAuthorization();
@@ -29567,7 +29567,7 @@ app.MapGet("/api/stockadjs/{no}/lines", async (string no, AppDbContext db, ITena
     var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust, l.BalanceLocation, l.InStockLocation }).ToListAsync();
+        .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust, l.BalanceLocation, l.InStockLocation, l.PartID, l.LogLUBy, l.LogLUDateTime }).ToListAsync();   // #1554
     // #619: khối chi tiết của nguồn dùng `inner join ser_inv_stockbalance sb on td.partid = sb.partid
     //       and td.BalanceLocationId = sb.LocationId` ⇒ dòng chưa có bản ghi tồn ở kho cân đối bị LOẠI.
     var droppedByBalanceJoin = lines.Count(l => string.IsNullOrWhiteSpace(l.BalanceLocation));
@@ -86139,7 +86139,7 @@ record MstOrderComplainImageTypeDto(string? OrderComplainImageType, string? Orde
 record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo, string? FilePath, string? FileName);   // #632
 record ReceptionFAudTypeMstDto(string? ReceptionFAudType, string? ReceptionFAudTypeName, string? FlagActive, string? Remark);   // #627
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
-record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
+record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null, string? PartID = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive, string? DealerCode = null);
 record SerAppTypeMstDto(string? AppTypeCode, string? AppTypeName, string? FlagActive = null);   // #1058
 record MstStaffDto(string? StaffCode, string? StaffName, string? FlagActive = null);   // #1059
