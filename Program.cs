@@ -122,6 +122,8 @@ var MasterMovedCategories = new Dictionary<string, string>(StringComparer.Ordina
     ["Qualification"] = "/api/mstqualifications",             // #319 Mst_Qualification
     ["SalesGroupType"] = "/api/masters/dealer-salesgroup-types", // #321 Mst_DealerSalesGroupType
     ["Bank"] = "/api/mstbanks",                               // #324 Mst_Bank (đủ 15 cột ở #311)
+    ["Province"] = "/api/mstprovinces",                       // #325 Mst_Province (#227)
+    ["District"] = "/api/mstdistricts",                       // #325 Mst_District (khoá cặp ProvinceCode+DistrictCode)
 };
 // Catalog: mỗi mục = 1 màn Frm gốc của 2010.HTC.
 var MasterCatalog = new (string Cat, string Label)[]
@@ -135,7 +137,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("InsType", "Loại bảo hiểm (FrmMstInsType)"),
     ("Maintenance", "Bảo dưỡng (FrmMaintenance)"),
     ("Department", "Phòng ban (FrmMngDepartment)"),
-    ("District", "Quận/Huyện (FrmDistrict)"),
     ("Discount", "Chiết khấu (FrmDiscount)"),
     ("BusinessStatus", "Tình trạng KD (FrmBusinessStatus)"),
     ("Group", "Nhóm (FrmMngGroup)"),
@@ -146,7 +147,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("StaffType", "Loại nhân viên (FrmStaffType)"),
     ("CarCancelReason", "Lý do hủy (FrmUpdateCar_Status)"),
     ("Model", "Model xe (FrmModel)"),
-    ("Province", "Tỉnh/Thành (FrmProvince)"),
     ("DealerBank", "Ngân hàng đại lý (FrmDealerBank)"),
     ("BusinessPlan", "Kế hoạch KD (FrmMngBusinessPlan)"),
     ("CarSpec", "Cấu hình xe (FrmCarSpec)"),
@@ -2784,11 +2784,11 @@ app.MapGet("/api/transpfees/versions/history", async (
     var hist = await db.TranspFeeHists.Where(h => h.OrgId == t.OrgId).ToListAsync();
 
     // BỐN inner join danh mục địa lý: thiếu một mã là LOẠI dòng.
-    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
-        .Select(m => new { m.Code, m.Name }).ToListAsync());
+    var provinces = (await db.MstProvinces.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất tỉnh */
+        .Select(m => new { Code = m.ProvinceCode, Name = m.ProvinceName ?? "" }).ToListAsync());
     var provName = provinces.GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First().Name);
-    var districts = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "District")
-        .Select(m => new { m.Code, m.Name }).ToListAsync());
+    var districts = (await db.MstDistricts.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất huyện */
+        .Select(m => new { Code = m.DistrictCode, Name = m.DistrictName ?? "" }).ToListAsync());
     var distName = districts.GroupBy(d => d.Code).ToDictionary(g => g.Key!, g => g.First().Name);
 
     var beforeGeo = hist.Count;
@@ -4662,8 +4662,8 @@ app.MapGet("/api/reports/car-sold-ctm-care", async (
     var droppedNoCarCar = sold.Count(x => !carByVin.ContainsKey(x.CarId));
     sold = sold.Where(x => carByVin.ContainsKey(x.CarId)).ToList();      // `inner join Car_Car`
 
-    var provinces = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
-        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync();
+    var provinces = await db.MstProvinces.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất tỉnh */
+        .Select(m => new { Code = m.ProvinceCode, Name = m.ProvinceName ?? "", ParentCode = m.AreaCode }).ToListAsync();
     var areas = await db.Areas.Where(a => a.OrgId == t.OrgId).Select(a => new { a.AreaCode, a.AreaName }).ToListAsync();
 
     var items = sold.Select(x =>
@@ -4711,8 +4711,8 @@ app.MapGet("/api/reports/dealer-delivery-periods", async (
     // `#tbl_Dealer` / `#tbl_AreaDealer` / `#tbl_Mst_Dealer` — cây Dealer → Province → Area.
     var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
         .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
-    var provinces = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
-        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync();
+    var provinces = await db.MstProvinces.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất tỉnh */
+        .Select(m => new { Code = m.ProvinceCode, Name = m.ProvinceName ?? "", ParentCode = m.AreaCode }).ToListAsync();
     var areas = await db.Areas.Where(a => a.OrgId == t.OrgId)
         .Select(a => new { a.AreaCode, a.AreaName }).ToListAsync();
 
@@ -50141,12 +50141,12 @@ app.MapGet("/api/os/dealercustomers", async (
     var myCount = all.Count;                        // `MyCount` đếm TRƯỚC khi cắt trang
     var page = all.OrderBy(c => c.CustomerCode, StringComparer.Ordinal).Skip(start).Take(count).ToList();
 
-    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
-        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync())
+    var provinces = (await db.MstProvinces.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất tỉnh */
+        .Select(m => new { Code = m.ProvinceCode, Name = m.ProvinceName ?? "", ParentCode = m.AreaCode }).ToListAsync())
         .GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First());
     // `left join Mst_District` theo CẶP (DistrictCode, ProvinceCode).
-    var districts = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "District")
-        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync())
+    var districts = (await db.MstDistricts.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất huyện */
+        .Select(m => new { Code = m.DistrictCode, Name = m.DistrictName ?? "", ParentCode = m.ProvinceCode }).ToListAsync())
         .GroupBy(d => (d.Code ?? "", d.ParentCode ?? "")).ToDictionary(g => g.Key, g => g.First());
 
     var items = page.Select(c =>
@@ -50262,8 +50262,8 @@ app.MapGet("/api/icic/rpt-ssi", async (
         .GroupBy(c => (c.ModelCode ?? "", c.ColorCode ?? "")).ToDictionary(g => g.Key, g => g.First());
     var custs = (await db.DealerCustomers.Where(c => c.OrgId == t.OrgId).ToListAsync())
         .GroupBy(c => (c.DealerCode, c.CustomerCode)).ToDictionary(g => g.Key, g => g.First());
-    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
-        .Select(m => new { m.Code, m.Name }).ToListAsync())
+    var provinces = (await db.MstProvinces.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất tỉnh */
+        .Select(m => new { Code = m.ProvinceCode, Name = m.ProvinceName ?? "" }).ToListAsync())
         .GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First().Name);
     var dealsByNo = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId)
         .Select(d => new { d.DealNo, d.DealerCode, d.DealerCodeBuyer }).ToListAsync())
@@ -50389,8 +50389,8 @@ app.MapGet("/api/icic/dealercustomers", async (
     // `Row_Number() over (order by dlsdc.FullName asc)` — sắp theo TÊN.
     var page = all.OrderBy(c => c.FullName, StringComparer.Ordinal).Skip(start).Take(count).ToList();
 
-    var provinces = (await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Province")
-        .Select(m => new { m.Code, m.Name, m.ParentCode }).ToListAsync())
+    var provinces = (await db.MstProvinces.Where(m => m.OrgId == t.OrgId) /* #325 nguồn duy nhất tỉnh */
+        .Select(m => new { Code = m.ProvinceCode, Name = m.ProvinceName ?? "", ParentCode = m.AreaCode }).ToListAsync())
         .GroupBy(p => p.Code).ToDictionary(g => g.Key!, g => g.First());
 
     var items = page.Select(c =>
