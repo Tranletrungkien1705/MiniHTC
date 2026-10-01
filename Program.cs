@@ -124,6 +124,23 @@ var MasterMovedCategories = new Dictionary<string, string>(StringComparer.Ordina
     ["Bank"] = "/api/mstbanks",                               // #324 Mst_Bank (đủ 15 cột ở #311)
     ["Province"] = "/api/mstprovinces",                       // #325 Mst_Province (#227)
     ["District"] = "/api/mstdistricts",                       // #325 Mst_District (khoá cặp ProvinceCode+DistrictCode)
+    // #326 16 danh mục còn lại đã có bảng riêng (0 chỗ đọc Masters) — dữ liệu cũ trong Masters vẫn GET được, chỉ chặn GHI.
+    ["Department"] = "/api/departments",
+    ["Discount"] = "/api/discounts",
+    ["PortType"] = "/api/masters/port-types",
+    ["SalesOrderType"] = "/api/masters/salesorder-types",
+    ["DealerBank"] = "/api/dealerbanks",
+    ["BusinessPlan"] = "/api/plans",
+    ["CarSpec"] = "/api/carspecs",
+    ["CarOCN"] = "/api/carocns",
+    ["Marriage"] = "/api/masters/marriages",
+    ["PaymentTerm"] = "/api/paymenttermmsts",
+    ["DealerZone"] = "/api/dealerzones",
+    ["InvoiceSetup"] = "/api/invoicesetups",
+    ["StorageRate"] = "/api/storagerates",
+    ["DevicePrice"] = "/api/deviceprices",
+    ["CarModelStd"] = "/api/carmodelstds",
+    ["Zone"] = "/api/zones",
 };
 // Catalog: mỗi mục = 1 màn Frm gốc của 2010.HTC.
 var MasterCatalog = new (string Cat, string Label)[]
@@ -136,36 +153,21 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("InsCompany", "Công ty bảo hiểm (FrmMstInsCompany)"),
     ("InsType", "Loại bảo hiểm (FrmMstInsType)"),
     ("Maintenance", "Bảo dưỡng (FrmMaintenance)"),
-    ("Department", "Phòng ban (FrmMngDepartment)"),
-    ("Discount", "Chiết khấu (FrmDiscount)"),
     ("BusinessStatus", "Tình trạng KD (FrmBusinessStatus)"),
     ("Group", "Nhóm (FrmMngGroup)"),
     ("PaymentType", "Hình thức thanh toán (FrmPaymentType)"),
-    ("PortType", "Loại cảng (FrmPortType)"),
-    ("SalesOrderType", "Loại đơn bán (FrmSalesOrderType)"),
     ("SalesType", "Loại bán hàng (FrmSalesType)"),
     ("StaffType", "Loại nhân viên (FrmStaffType)"),
     ("CarCancelReason", "Lý do hủy (FrmUpdateCar_Status)"),
     ("Model", "Model xe (FrmModel)"),
-    ("DealerBank", "Ngân hàng đại lý (FrmDealerBank)"),
-    ("BusinessPlan", "Kế hoạch KD (FrmMngBusinessPlan)"),
-    ("CarSpec", "Cấu hình xe (FrmCarSpec)"),
-    ("CarOCN", "OCN xe (FrmCarOCN)"),
-    ("Marriage", "Tình trạng hôn nhân (FrmMst_Marriage)"),
-    ("PaymentTerm", "Điều khoản thanh toán (FrmMst_Dieu_Khoan_ThanhToan)"),
-    ("DealerZone", "Vùng đại lý (FrmMst_DealerZone)"),
     ("CarSpecInvoice", "Cấu hình HĐ (FrmCarSpecInvoice)"),
-    ("InvoiceSetup", "Thiết lập hóa đơn (FrmMst_InvoiceSetup)"),
     ("CarAllocationArea", "Phân bổ xe theo vùng (FrmMst_CarAllocationByArea)"),
     ("SalesInvThreshold", "Ngưỡng tồn kho bán (FrmMstSalesInventoryThreshold)"),
     ("DealerInvThreshold", "Ngưỡng tồn ĐL (FrmMst_DealerInventoryThreshold)"),
     ("Training", "Khóa đào tạo (FrmMst_TrainingMng)"),
     ("SalesManCert", "Chứng chỉ NVBH (FrmMst_SalesManCertificateMng)"),
-    ("StorageRate", "Định mức lưu kho (FrmMst_StorageRate)"),
-    ("DevicePrice", "Giá thiết bị (FrmMst_DevicePrice_Spec)"),
     // ---- TCMotor (2021.1) master code/name ĐÃ verify Ser_MST (giữ dạng catalog) ----
     ("WarrantyImageType", "Loại ảnh bảo hành (FrmMstWarrantyImageTypeMng: ROWPTCODE/NAME) [TCMotor]"),
-    ("CarModelStd", "Model chuẩn (FrmMstCarModelStd) [TCMotor]"),
     ("WarrantyExtItem", "Hạng mục gia hạn BH (FrmMstWarrantyExtensionItemMng: WRTRENECATE) [TCMotor]"),
     // (BOM đã port dedicated /api/boms — bỏ stub dup; ExtraWork/ExtraParts có cột giá/VAT → port dedicated; gỡ ~38 generic bịa + 15 TCMotor bịa)
     ("CostType", "Loại chi phí (FrmMst_QuanLyLoaiChiPhi)"),
@@ -176,7 +178,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("OrderComplainType", "Loại khiếu nại đơn PT (FrmMst_OrderComplainTypeMng) [TCMotor]"),
     ("OrderComplainImageType", "Loại ảnh khiếu nại (FrmMst_OrderComplainImageTypeMng) [TCMotor]"),
     ("CustomerBase", "Nguồn gốc khách hàng (FrmCustomerBase)"),
-    ("Zone", "Vùng miền (FrmMst_Zone) [2025]"),
     ("Plant", "Nhà máy sản xuất (FrmPlant)"),
 };
 
