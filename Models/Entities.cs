@@ -6273,7 +6273,9 @@ public sealed class CarDocRequest
     public string DealerCode { get; set; } = "";
     public string ReceivedPerson { get; set; } = "";
     public string ReceivedAddress { get; set; } = "";
-    public string Status { get; set; } = "Draft"; // Draft → Done(duyệt) / Rejected(từ chối)
+    /// <summary>#374 `Car_DocReqList.DRListStatus` theo TConst.Stage: P chờ · A1/A2 duyệt cấp 1/2 · A · F hoàn tất · R từ chối · C huỷ
+    /// (Biz.HTC.WH.cs:80091-80109, :81656). Port cũ Draft/Done/Rejected ⇒ báo cáo lọc "A" (dòng 5229/44294) luôn rỗng.</summary>
+    public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? DoneAt { get; set; }
     public string? RejectReason { get; set; }     // FrmDRApproved — từ chối

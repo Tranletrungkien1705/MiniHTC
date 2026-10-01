@@ -15050,7 +15050,7 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
 {
     var q = db.CarDocRequests.Where(r => r.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(status)) { var stR = status.Trim() switch { "Draft" => "P", "Done" => "F", "Rejected" => "R", var x => x }; q = q.Where(r => r.Status == stR); }   // #374
     if (from is not null) q = q.Where(r => r.CreatedAt >= from.Value.Date);
     if (to is not null) q = q.Where(r => r.CreatedAt < to.Value.Date.AddDays(1));
     var reqs = await q.ToListAsync();
@@ -15060,13 +15060,13 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     var m = carAgg.ToDictionary(x => x.Key, x => x.cars);
     int Cars(long id) => m.TryGetValue(id, out var v) ? v : 0;
     var byDealer = reqs.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
-        .Select(g => new { dealerCode = g.Key, count = g.Count(), cars = g.Sum(r => Cars(r.Id)), done = g.Count(r => r.Status == "Done"), rejected = g.Count(r => r.Status == "Rejected") }).OrderByDescending(x => x.cars).ToList();
+        .Select(g => new { dealerCode = g.Key, count = g.Count(), cars = g.Sum(r => Cars(r.Id)), done = g.Count(r => r.Status == "F"), rejected = g.Count(r => r.Status == "R") }).OrderByDescending(x => x.cars).ToList();
     var byStatus = reqs.GroupBy(r => r.Status).Select(g => new { status = g.Key, count = g.Count() }).OrderByDescending(x => x.count).ToList();
     var detail = reqs.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.RequestNo, r.DealerCode, r.ReceivedPerson, cars = Cars(r.Id), r.Status, r.RejectReason, createdAt = r.CreatedAt.ToString("yyyy-MM-dd")
     }).ToList();
-    return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "Done"), rejected = reqs.Count(r => r.Status == "Rejected"), byDealer, byStatus, detail });
+    return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "F"), rejected = reqs.Count(r => r.Status == "R"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
 // ===== Báo cáo hồ sơ hỗ trợ bán hàng (port 1:1 báo cáo SupportRecord) — tái dùng SupportRecord =====
@@ -48510,7 +48510,12 @@ app.MapGet("/api/foreigncontracts/{no}/lines", async (string no, AppDbContext db
 app.MapGet("/api/cardocrequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
     var query = db.CarDocRequests.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(r => r.Status == status);
+    // #374 DRListStatus mã nguồn; vẫn nhận tên cũ Draft/Done/Rejected để không vỡ client.
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        var stC = status.Trim() switch { "Draft" => "P", "Done" => "F", "Rejected" => "R", var x => x };
+        query = query.Where(r => r.Status == stC);
+    }
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(r => r.DealerCode == dealer);
     var items = await query.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
@@ -48533,7 +48538,7 @@ app.MapPost("/api/cardocrequests", async (CarDocRequestDto dto, AppDbContext db,
     var typeCRR = string.IsNullOrWhiteSpace(dto.TypeCRR) ? "NORMAL" : dto.TypeCRR.Trim().ToUpperInvariant();
     if (typeCRR is not ("NORMAL" or "SPECIAL" or "DEALER" or "DEALERTCG"))
         return Results.BadRequest(new { error = $"TypeCRR '{typeCRR}' không hợp lệ.", allowed = new[] { "NORMAL", "SPECIAL", "DEALER", "DEALERTCG" } });
-    var r = new CarDocRequest { OrgId = t.OrgId, RequestNo = no, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), ReceivedPerson = dto.ReceivedPerson.Trim(), ReceivedAddress = dto.ReceivedAddress.Trim(), Status = "Draft", TypeCRR = typeCRR };
+    var r = new CarDocRequest { OrgId = t.OrgId, RequestNo = no, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), ReceivedPerson = dto.ReceivedPerson.Trim(), ReceivedAddress = dto.ReceivedAddress.Trim(), Status = "P", TypeCRR = typeCRR };   // #374 TConst.Stage.Pending
     db.CarDocRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
         db.CarDocRequestCars.Add(new CarDocRequestCar { OrgId = t.OrgId, RequestId = r.Id, CarId = c.CarId.Trim().ToUpperInvariant(), Remark = c.Remark, DeliveryStartDate = c.DeliveryStartDate });
@@ -48690,8 +48695,8 @@ app.MapDelete("/api/cardocrequests/{no}/cars/{carId}", async (string no, string 
         return Results.BadRequest(new { error = $"Chỉ xoá được dòng đang ở trạng thái huỷ 'C' (đang '{line.DRDtlStatus}') — phải HUỶ trước rồi mới xoá." });
     // GUARD 2 — đề nghị phải thuộc P,A1,A2,F.
     var listStatus = r.Status;
-    if (listStatus is not ("P" or "A1" or "A2" or "F" or "Draft" or "Done"))
-        return Results.BadRequest(new { error = $"Đề nghị phải thuộc 'P,A1,A2,F' (đang '{listStatus}').", note = "Từ vựng Draft/Done của port cũ là nợ đã ghi ở #209." });
+    if (listStatus is not ("P" or "A1" or "A2" or "F"))
+        return Results.BadRequest(new { error = $"Đề nghị phải thuộc 'P,A1,A2,F' (đang '{listStatus}')." });
 
     // GUARD 3 — chéo Normal ↔ SPECIAL.
     if (string.Equals(r.TypeCRR, "NORMAL", StringComparison.OrdinalIgnoreCase))
@@ -48765,8 +48770,7 @@ app.MapDelete("/api/cardocrequests/{no}/cars/{carId}", async (string no, string 
 //     ⇒ chặn với `CarDocReqDtlReject_ExistAnotherSpecial` — *muốn huỷ ĐN Normal phải huỷ ĐN Special trước*.
 //
 // Nguồn ghi trên DÒNG: `DRDtlStatus = Stage.Rejected ("R")` · `RejectDate` · `RejectBy` · `Remark` · `LogLU*`.
-// ⚠️ NỢ: `CarDocRequest.Status` của port đang dùng từ vựng `Draft/Done/Rejected` — nguồn dùng `DRListStatus`
-//    với bộ P/A1/A2/F/R/C. Đổi sẽ lan ra nhiều endpoint ⇒ để lượt riêng (giữ "một biến").
+// #374 đã đổi `CarDocRequest.Status` sang `DRListStatus` P/A1/A2/A/F/R/C (Seeder chuyển Draft/Done/Rejected → P/F/R).
 app.MapPost("/api/cardocrequests/{no}/cars/{carId}/reject", async (string no, string carId,
     SoRejectDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {

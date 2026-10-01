@@ -12,7 +12,7 @@
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
   .kpi{display:flex;gap:10px;flex-wrap:wrap} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:18px;display:block} .box span{font-size:11px;opacity:.7}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Done{color:var(--ok)} .s-Rejected{color:var(--bad)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-P{color:var(--warn)} .s-F{color:var(--ok)} .s-R{color:var(--bad)}
   #msg{font-size:13px}
 </style></head>
 <body>
@@ -20,7 +20,7 @@
 <p class="muted">Tổng hợp đề nghị giao tài liệu theo đại lý / trạng thái. Nguồn = màn Đề nghị giao tài liệu.</p>
 <div class="bar">
   <div><label>Đại lý</label><input id="qd" style="width:90px"></div>
-  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Done">Đã duyệt</option><option value="Rejected">Từ chối</option></select></div>
+  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="P">Nháp</option><option value="F">Đã duyệt</option><option value="R">Từ chối</option></select></div>
   <div><label>Từ ngày</label><input id="qf" type="date"></div>
   <div><label>Đến</label><input id="qt" type="date"></div>
   <button class="primary" onclick="run()">Xem báo cáo</button><span id="msg"></span>
@@ -32,7 +32,7 @@
 <div class="wrap"><table><thead><tr><th>Số ĐN</th><th>Đại lý</th><th>Người nhận</th><th class="num">Số xe</th><th>Trạng thái</th><th>Lý do từ chối</th><th>Ngày</th></tr></thead><tbody id="rows"><tr><td colspan="7" class="muted">Nhấn "Xem báo cáo".</td></tr></tbody></table></div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const ST={Draft:"Nháp",Done:"Đã duyệt",Rejected:"Từ chối"};
+const ST={"P":"Chờ duyệt","A1":"Duyệt cấp 1","A2":"Duyệt cấp 2","A":"Đã duyệt","F":"Hoàn tất","R":"Từ chối","C":"Huỷ"};   // #374
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
