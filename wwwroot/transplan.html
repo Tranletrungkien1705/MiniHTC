@@ -11,26 +11,29 @@
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
-  .p-Pending{color:var(--warn)} .p-Finished{color:var(--ok)} #msg{font-size:13px}
+  .p-P{color:var(--warn)} .p-F{color:var(--ok)} #msg{font-size:13px}
 </style></head>
 <body>
 <h1>Kế hoạch vận chuyển xe từ kho <span class="muted">(port 1:1 FrmMngPlanTransport / FrmListPlanTransport — Sto_TranspPlan)</span></h1>
 <div class="bar">
   <input id="vp" placeholder="VIN kế hoạch *" style="width:130px"><input id="md" placeholder="Model *" style="width:90px">
   <input id="dl" placeholder="Đại lý *" style="width:90px"><input id="st" placeholder="Kho" style="width:80px">
-  <input id="fp" placeholder="Từ tỉnh" style="width:80px"><input id="tprov" placeholder="Đến tỉnh" style="width:80px">
+  <input id="vin" placeholder="VIN thật" style="width:140px"><select id="frv" title="FlagRealVin"><option value="1">VIN thật (1)</option><option value="0">VIN giả (0)</option></select>
+  <input id="fp" placeholder="Từ tỉnh" style="width:80px"><input id="fdist" placeholder="Từ huyện" style="width:80px"><input id="tprov" placeholder="Đến tỉnh" style="width:80px"><input id="tdist" placeholder="Đến huyện" style="width:80px">
   <input id="tp" placeholder="Nhà VC" style="width:90px"><input id="ed" type="date" title="Ngày dự kiến">
   <button class="primary" onclick="save()">Lưu KH</button>
 </div>
 <div class="bar">
-  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Pending">Chờ duyệt</option><option value="Finished">Đã duyệt</option></select>
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="P">Chờ chốt</option><option value="F">Đã chốt</option></select>
+  <select id="ffrv" onchange="load()"><option value="">VIN thật + giả</option><option value="1">Chỉ VIN thật</option><option value="2">Chỉ VIN giả</option></select>
   <span style="flex:1"></span><span id="msg"></span>
 </div>
-<table><thead><tr><th>VIN KH</th><th>Model</th><th>Đại lý</th><th>Kho</th><th>Tuyến</th><th>Nhà VC</th><th>Dự kiến</th><th>Trạng thái</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>VIN KH</th><th>VIN thật</th><th>Model</th><th>Đại lý</th><th>Kho</th><th>Tuyến</th><th>Nhà VC</th><th>Dự kiến</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={Pending:"Chờ duyệt",Finished:"Đã duyệt"};
+// Mã TPStatus nguồn TConst.Stage (#314): P chờ → F đã chốt
+const LBL={P:"Chờ chốt",F:"Đã chốt"};
 const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"—";
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
@@ -39,19 +42,19 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function save(){
-  const b={vinPlan:F("vp").value,modelCode:F("md").value,dealerCode:F("dl").value,storageCode:F("st").value,fProvinceCode:F("fp").value,tProvinceCode:F("tprov").value,transporterCode:F("tp").value,expectedDate:F("ed").value||null};
+  const b={vinPlan:F("vp").value,modelCode:F("md").value,dealerCode:F("dl").value,storageCode:F("st").value,vin:F("vin").value,flagRealVin:F("frv").value,fProvinceCode:F("fp").value,fDistrictCode:F("fdist").value,tProvinceCode:F("tprov").value,tDistrictCode:F("tdist").value,transporterCode:F("tp").value,expectedDate:F("ed").value||null};
   const r=await fetch("/api/transplans",{method:"POST",headers:H(),body:JSON.stringify(b)});
   const j=await r.json();
   if(r.ok){ msg("Đã lưu KH "+j.vinPlan+"."); F("vp").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
-  const d=await (await fetch("/api/transplans?status="+F("fst").value,{headers:H()})).json();
+  const d=await (await fetch("/api/transplans?status="+F("fst").value+"&flagRealVin="+F("ffrv").value,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(p=>{
-    let act=p.status==="Pending"?`<button class="sm" onclick="approve('${p.vinPlan}')">Duyệt</button>`:"";
-    return `<tr><td><b>${p.vinPlan}</b></td><td>${p.modelCode}</td><td>${p.dealerCode}</td><td>${p.storageCode||"—"}</td>
+    let act=p.tpStatus==="P"?`<button class="sm" onclick="approve('${p.vinPlan}')">Duyệt</button>`:"";
+    return `<tr><td><b>${p.vinPlan}</b></td><td>${p.flagRealVin==="1"?p.vin:"<span class=muted>(giả)</span>"}</td><td>${p.modelCode}</td><td>${p.dealerCode}</td><td>${p.storageCode||"—"}</td>
       <td>${(p.fProvinceCode||"?")+"→"+(p.tProvinceCode||"?")}</td><td>${p.transporterCode||"—"}</td><td>${day(p.expectedDate)}</td>
-      <td><span class="pill p-${p.status}">${LBL[p.status]||p.status}</span></td><td>${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="9" class="muted">Chưa có kế hoạch.</td></tr>';
+      <td><span class="pill p-${p.tpStatus}">${LBL[p.tpStatus]||p.tpStatus}</span></td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="10" class="muted">Chưa có kế hoạch.</td></tr>';
 }
 async function approve(vp){ const r=await fetch(`/api/transplans/${vp}/approve`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 load();

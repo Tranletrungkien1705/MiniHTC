@@ -1403,8 +1403,14 @@ public sealed class TransportPlan
     public string? TDistrictCode { get; set; }
     public string? TransporterCode { get; set; }
     public DateTime? ExpectedDate { get; set; }
-    public string Status { get; set; } = "Pending";  // Pending → Finished
+    /// <summary>🔴 #314 đổi tên khớp nguồn `TblStoTranspPlan.TPStatus` (port cũ: `Status`) + mã `TConst.Stage`:
+    /// "P" chờ → "F" đã chốt (Sto_TranspPlanApproved_New20181119, Biz.HTC.WH.cs:101767). Port cũ: Pending/Finished.</summary>
+    public string TPStatus { get; set; } = "P";
     public DateTime? ApprovedDate { get; set; }
+    /// <summary>#314 người chốt kế hoạch (`ApprovedBy`) — nguồn ghi cùng ApprovedDate.</summary>
+    public string? ApprovedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 
     /// <summary>
     /// 🔴 TRỤC TRẠNG THÁI THỨ HAI — phía NHÀ VẬN CHUYỂN duyệt (`Sto_TranspPlan.TransporterStatus`),

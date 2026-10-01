@@ -3066,43 +3066,63 @@ app.MapPost("/api/holidays/reset", async (HolidayResetDto dto, AppDbContext db, 
 }).RequireAuthorization();
 
 // ===== Kế hoạch vận chuyển xe từ kho (Sto_TranspPlan — port 1:1 FrmMngPlanTransport/FrmListPlanTransport) =====
-app.MapGet("/api/transplans", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+// #314 FlagRealVin KHÔNG phải cột DB: Sto_TranspPlanGet_New20181115 (BizHTC.Storage.cs:1739) tính
+// CASE WHEN VIN rỗng THEN '0' ELSE '1'; Frm lọc flagRealVin "1" = VIN thật, "2" = VIN giả (FrmMngPlanTransport:290).
+app.MapGet("/api/transplans", async (AppDbContext db, ITenantContext t, string? status, string? dealer, string? flagRealVin) =>
 {
     var q = db.TransportPlans.Where(p => p.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.TPStatus == status);
+    if (flagRealVin == "1") q = q.Where(p => p.Vin != null && p.Vin != "");
+    else if (flagRealVin == "2") q = q.Where(p => p.Vin == null || p.Vin == "");
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
-    { p.VINPlan, p.Vin, p.ModelCode, p.DealerCode, p.StorageCode, p.FProvinceCode, p.TProvinceCode, p.TransporterCode, p.ExpectedDate, p.Status, p.ApprovedDate,
+    { p.VINPlan, p.Vin, p.ModelCode, p.DealerCode, p.StorageCode, p.FProvinceCode, p.TProvinceCode, p.TransporterCode, p.ExpectedDate, p.TPStatus, p.ApprovedDate, p.ApprovedBy,
+      FlagRealVin = (p.Vin == null || p.Vin == "") ? "0" : "1", p.LogLUDateTime, p.LogLUBy,
       p.FDistrictCode, p.TDistrictCode, p.TransporterStatus, p.TransporterAppDate, p.TransporterAppBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/transplans", async (TransPlanDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transplans", async (TransPlanDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.VINPlan) || string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
         return Results.BadRequest(new { error = "Cần VINPlan, DealerCode và ModelCode." });
     var vp = dto.VINPlan.Trim().ToUpperInvariant();
     var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vp);
-    if (p is null) { p = new TransportPlan { OrgId = t.OrgId, VINPlan = vp, Status = "Pending" }; db.TransportPlans.Add(p); }
-    else if (p.Status == "Finished") return Results.BadRequest(new { error = "KH đã duyệt, không sửa được." });
-    p.Vin = dto.Vin; p.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); p.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+    // Sto_TranspPlanUpdate_New20181119: chỉ sửa khi TPStatus = "P" (Sto_TranspPlanUpdate_InvalidTPStatus).
+    if (p is not null && p.TPStatus != "P") return Results.BadRequest(new { error = "KH đã chốt, không sửa được (Sto_TranspPlanUpdate_InvalidTPStatus).", p.TPStatus });
+    // FlagRealVin đầu vào (Sto_TranspPlanCreate_New20181119:99391): "1" ⇒ lưu VIN thật (bắt buộc có), "0" ⇒ VIN = NULL; không gửi ⇒ giữ hành vi cũ.
+    var frv = (dto.FlagRealVin ?? "").Trim();
+    if (frv.Length > 0 && frv is not ("0" or "1")) return Results.BadRequest(new { error = "Dữ liệu không đúng! FlagRealVin chỉ nhận giá trị 0 và 1" });
+    if (frv == "1" && string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "FlagRealVin = 1 nhưng chưa nhập VIN thật." });
+    if (p is null) { p = new TransportPlan { OrgId = t.OrgId, VINPlan = vp, TPStatus = "P" }; db.TransportPlans.Add(p); }
+    p.Vin = frv == "0" ? null : (string.IsNullOrWhiteSpace(dto.Vin) ? null : dto.Vin.Trim().ToUpperInvariant());
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; p.LogLUDateTime = DateTime.Now; p.LogLUBy = who; p.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); p.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
     p.StorageCode = dto.StorageCode; p.FProvinceCode = dto.FProvinceCode; p.TProvinceCode = dto.TProvinceCode;
     p.FDistrictCode = dto.FDistrictCode; p.TDistrictCode = dto.TDistrictCode;
     p.TransporterCode = dto.TransporterCode; p.ExpectedDate = dto.ExpectedDate;
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.VINPlan, p.DealerCode, p.ModelCode, status = p.Status });
+    return Results.Ok(new { p.VINPlan, p.DealerCode, p.ModelCode, p.Vin, p.TPStatus, FlagRealVin = string.IsNullOrEmpty(p.Vin) ? "0" : "1" });
 }).RequireAuthorization();
 
-// Duyệt KH (StoTranspPlanApproved → Finished)
-app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbContext db, ITenantContext t) =>
+// #314 Chốt KH — Sto_TranspPlanApproved_New20181119 (Biz.HTC.WH.cs:101767): TPStatus "P" → "F"; 8 guard theo đúng thứ tự nguồn,
+// mỗi guard một mã lỗi riêng ("Chỉ được chốt VIN thật"). Ghi ApprovedDate/By + LUDate/LUBy + LogLU*.
+app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     vinPlan = vinPlan.Trim().ToUpperInvariant();
     var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vinPlan);
     if (p is null) return Results.NotFound(new { vinPlan });
-    if (p.Status == "Finished") return Results.BadRequest(new { error = "KH đã duyệt." });
-    p.Status = "Finished"; p.ApprovedDate = DateTime.Now;
+    if (p.TPStatus != "P") return Results.BadRequest(new { error = "Trạng thái KH không hợp lệ (Sto_TranspPlanApproved_InvalidStatus).", p.TPStatus });
+    if (string.IsNullOrWhiteSpace(p.Vin)) return Results.BadRequest(new { error = "Chỉ được chốt VIN thật (Sto_TranspPlanApproved_InvalidRealVin).", p.VINPlan });
+    if (p.ExpectedDate is null) return Results.BadRequest(new { error = "Chưa có ngày dự kiến (Sto_TranspPlanApproved_InvalidExpectedDate)." });
+    if (string.IsNullOrWhiteSpace(p.TransporterCode)) return Results.BadRequest(new { error = "Chưa có đơn vị vận tải (Sto_TranspPlanApproved_InvalidTransporterCode)." });
+    if (string.IsNullOrWhiteSpace(p.FProvinceCode)) return Results.BadRequest(new { error = "Chưa có tỉnh đi (Sto_TranspPlanApproved_InvalidFProvinceCode)." });
+    if (string.IsNullOrWhiteSpace(p.FDistrictCode)) return Results.BadRequest(new { error = "Chưa có huyện đi (Sto_TranspPlanApproved_InvalidFDistrictCode)." });
+    if (string.IsNullOrWhiteSpace(p.TProvinceCode)) return Results.BadRequest(new { error = "Chưa có tỉnh đến (Sto_TranspPlanApproved_InvalidTProvinceCode)." });
+    if (string.IsNullOrWhiteSpace(p.TDistrictCode)) return Results.BadRequest(new { error = "Chưa có huyện đến (Sto_TranspPlanApproved_InvalidTDistrictCode)." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    p.TPStatus = "F"; p.ApprovedDate = now; p.ApprovedBy = who; p.LogLUDateTime = now; p.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.VINPlan, status = p.Status });
+    return Results.Ok(new { p.VINPlan, p.TPStatus, p.ApprovedDate, p.ApprovedBy });
 }).RequireAuthorization();
 
 // 🔴 NHÀ VẬN CHUYỂN DUYỆT / TỪ CHỐI kế hoạch vận chuyển — trục trạng thái THỨ HAI, độc lập duyệt nội bộ.
@@ -55472,7 +55492,7 @@ record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDt
 record TmActionDto(string? FilePath = null);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
-record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null);
+record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null, string? FlagRealVin = null);
 record RetrieveReqCarDto(string Vin, string? StorageCode, string? TranspReqType = null, string? RefOrdNo = null, string? CarId = null);
 record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars, string? TranspReqType, string? TransportContractNo = null);
 record VinPairDto(string FVIN, string RVIN);
