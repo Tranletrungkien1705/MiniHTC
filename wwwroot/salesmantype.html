@@ -16,10 +16,10 @@
 <body>
 <h1>Loại NVBH theo phòng ban <span class="muted">(port 1:1 FrmStaffType — TCMotor)</span></h1>
 <div class="card"><h3 style="margin-top:0">Thêm / sửa</h3>
-  <div class="row"><div><label>Mã phòng ban *</label><input id="dept" style="width:120px"></div><div><label>Loại NVBH *</label><input id="smt" style="width:120px"></div><div style="flex:1"><label>Tên loại</label><input id="name" style="width:100%"></div><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
+  <div class="row"><div><label>Mã phòng ban *</label><input id="dept" style="width:120px"></div><div><label>Loại NVBH *</label><input id="smt" style="width:120px"></div><div style="flex:1"><label>Tên loại</label><input id="name" style="width:100%"></div><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="femail" style="width:auto"> Bắt buộc Email</label><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
 </div>
 <div class="row" style="margin:8px 0"><input id="qDept" placeholder="Phòng ban" style="width:120px"><input id="q" placeholder="Loại / tên" style="width:150px"><label style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="all" style="width:auto"> Cả đã tắt</label><button onclick="load()">Xem</button></div>
-<table><thead><tr><th>Phòng ban</th><th>Loại NVBH</th><th>Tên loại</th><th>TT</th><th></th></tr></thead><tbody id="tb"><tr><td colspan="5" class="muted">Nhấn "Xem".</td></tr></tbody></table>
+<table><thead><tr><th>Phòng ban</th><th>Loại NVBH</th><th>Tên loại</th><th>Bắt buộc Email</th><th>TT</th><th></th></tr></thead><tbody id="tb"><tr><td colspan="6" class="muted">Nhấn "Xem".</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
 async function token(){ if(TOKEN) return TOKEN;
@@ -28,13 +28,13 @@ async function token(){ if(TOKEN) return TOKEN;
 function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
 function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
 async function save(){ await token();
-  const r=await fetch("/api/salesmantypes",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({DepartmentCode:F("dept").value,SMType:F("smt").value,SMTypeName:F("name").value})});
+  const r=await fetch("/api/salesmantypes",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({DepartmentCode:F("dept").value,SMType:F("smt").value,SMTypeName:F("name").value,FlagEmail:F("femail").checked?"1":"0"})});
   const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã lưu ${d.departmentCode}/${d.smType}`); F("smt").value="";F("name").value=""; load();
 }
 async function toggle(id){ await token(); await fetch("/api/salesmantypes/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
 async function load(){ await token();
   const r=await fetch("/api/salesmantypes?all="+(F("all").checked)+"&dept="+encodeURIComponent(F("qDept").value)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.departmentCode)}</b></td><td>${esc(o.smType)}</td><td>${esc(o.smTypeName)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có loại NVBH.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.departmentCode)}</b></td><td>${esc(o.smType)}</td><td>${esc(o.smTypeName)}</td><td>${o.flagEmail==="1"?"✔":""}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có loại NVBH.</td></tr>';
 }
 </script>
 </body></html>

@@ -3456,6 +3456,11 @@ public sealed class SalesManType
     public string? SMTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+    /// <summary>#315 `TblSalesManType.FlagEmail` — "1" ⇒ NV thuộc loại này BẮT BUỘC có Email
+    /// (guard Mst_SalesMan_Update_InvalidSMEmail, Biz.HTC.WH.cs:18695).</summary>
+    public string FlagEmail { get; set; } = "0";
+    public DateTime? LogLUDate { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B245 — Ma trận chứng chỉ **theo LOẠI nhân viên** (`Mst_SalesManTypeCertificate`),

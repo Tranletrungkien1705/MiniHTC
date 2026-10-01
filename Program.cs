@@ -472,6 +472,15 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
     if (string.IsNullOrWhiteSpace(dto.PositionCode)) return Results.BadRequest(new { error = "Chưa nhập Chức vụ!" });
     if (!string.IsNullOrWhiteSpace(dto.Email) && !System.Text.RegularExpressions.Regex.IsMatch(dto.Email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
         return Results.BadRequest(new { error = "Email không hợp lệ!" });
+    // #315 Mst_SalesManType_CheckDB_New20180619(dept, SMType, exist=1, FlagActive=1) + luật FlagEmail của nguồn
+    // (Mst_SalesMan_Update_New20230306 / CreateMulti_New20230306, Biz.HTC.WH.cs:18684-18712 / 20901):
+    // "Đối với loại nhân viên có FlagEmail = 1 then bắt buộc nhập Email" ⇒ Mst_SalesMan_Update_InvalidSMEmail.
+    var smTypeRow = await db.SalesManTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.DepartmentCode == dto.DepartmentCode.Trim() && x.SMType == dto.SalesType.Trim());
+    if (smTypeRow is null || smTypeRow.FlagActive != "1")
+        return Results.BadRequest(new { error = $"Loại nhân viên {dto.SalesType}/{dto.DepartmentCode} không tồn tại hoặc ngừng hoạt động (Mst_SalesManType)." });
+    if (smTypeRow.FlagEmail == "1" && string.IsNullOrWhiteSpace(dto.Email))
+        return Results.BadRequest(new { error = $"Loại nhân viên {smTypeRow.SMType} bắt buộc nhập Email (Mst_SalesMan_Update_InvalidSMEmail)." });
     if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập Địa chỉ!" });
     if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { error = "Chưa chọn Quê quán!" });
     if (string.IsNullOrWhiteSpace(dto.Specialized)) return Results.BadRequest(new { error = "Chưa nhập Chuyên ngành!" });
@@ -23081,11 +23090,11 @@ app.MapGet("/api/salesmantypes", async (AppDbContext db, ITenantContext t, strin
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dept)) qry = qry.Where(x => x.DepartmentCode == dept);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMType.Contains(q!) || x.SMTypeName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.DepartmentCode).ThenBy(x => x.SMType).Take(500).Select(x => new { x.Id, x.DepartmentCode, x.SMType, x.SMTypeName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.DepartmentCode).ThenBy(x => x.SMType).Take(500).Select(x => new { x.Id, x.DepartmentCode, x.SMType, x.SMTypeName, x.FlagEmail, x.FlagActive, x.LogLUDate, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/salesmantypes", async (SalesManTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/salesmantypes", async (SalesManTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var dept = (dto.DepartmentCode ?? "").Trim();
     var smt = (dto.SMType ?? "").Trim();
@@ -23093,10 +23102,15 @@ app.MapPost("/api/salesmantypes", async (SalesManTypeDto dto, AppDbContext db, I
     if (string.IsNullOrWhiteSpace(smt)) return Results.BadRequest(new { error = "Chưa nhập loại NVBH." });
     var row = await db.SalesManTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DepartmentCode == dept && x.SMType == smt);
     if (row is null) { row = new SalesManType { OrgId = t.OrgId, DepartmentCode = dept, SMType = smt }; db.SalesManTypes.Add(row); }
+    // #315 FlagEmail ("1" ⇒ NV thuộc loại này bắt buộc có Email) — cột nguồn TblSalesManType.FlagEmail; chỉ nhận 0/1.
+    if (!string.IsNullOrWhiteSpace(dto.FlagEmail) && dto.FlagEmail.Trim() is not ("0" or "1"))
+        return Results.BadRequest(new { error = "FlagEmail chỉ nhận 0/1." });
     row.SMTypeName = dto.SMTypeName; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    if (!string.IsNullOrWhiteSpace(dto.FlagEmail)) row.FlagEmail = dto.FlagEmail.Trim();
+    row.LogLUDate = DateTime.Now; row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.DepartmentCode, row.SMType, row.SMTypeName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.DepartmentCode, row.SMType, row.SMTypeName, row.FlagEmail, row.FlagActive });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesmantypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -56272,7 +56286,7 @@ record CarTestCarLineDto(string? CarId, string? Vin, string? ModelCode, string? 
 record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, List<CarTestCarLineDto>? Lines);
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
-record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive);
+record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive, string? FlagEmail = null);
 record CarVinCBImportDto(List<CarVinCBRowDto>? Rows);
 record CarVinCBRowDto(string? VIN, string? CBNo, DateTime? CBDate, DateTime? DateDeliveryCBInvoice);
 record InvoiceRecallImportDto(string? Reason, List<string?>? InvoiceNos);
