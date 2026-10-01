@@ -18,12 +18,12 @@
 <div class="card">
   <b>Nhập/cập nhật xe PDI (batch, upsert theo VIN)</b> <span class="muted">— số chìa / AVN / ắc quy</span>
   <div class="bar" style="margin:10px 0"><span style="flex:1"></span><button class="primary" onclick="save()">Lưu</button><span id="msg"></span></div>
-  <div class="wrap"><table id="ctbl"><thead><tr><th>VIN *</th><th>Model</th><th>Spec</th><th>Màu</th><th>Order MMS</th><th>Số máy</th><th>Số chìa</th><th>AVN serial</th><th>Số ắc quy</th><th>Ghi chú</th><th></th></tr></thead><tbody id="ctb"></tbody></table></div>
+  <div class="wrap"><table id="ctbl"><thead><tr><th>VIN *</th><th>Model</th><th>Spec</th><th>Màu</th><th>Order MMS</th><th>Số máy</th><th>Số chìa</th><th>AVN serial</th><th>Số ắc quy</th><th>Ghi chú</th><th>Tháng ĐH MMS</th><th>Tháng SX thực</th><th>Đời xe</th><th></th></tr></thead><tbody id="ctb"></tbody></table></div>
   <button class="sm" style="margin-top:6px" onclick="addRow()">+ Thêm xe</button>
 </div>
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc VIN" oninput="load()" style="width:140px"></div>
-<div class="wrap"><table><thead><tr><th>VIN</th><th>Model</th><th>Số máy</th><th>Số chìa</th><th>AVN serial</th><th>Số ắc quy</th><th>Cập nhật</th></tr></thead>
-<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="wrap"><table><thead><tr><th>VIN</th><th>Model</th><th>Số máy</th><th>Số chìa</th><th>AVN serial</th><th>Số ắc quy</th><th>Tháng SX thực</th><th>Đời xe</th><th>Cập nhật</th></tr></thead>
+<tbody id="rows"><tr><td colspan="9" class="muted">Đang tải…</td></tr></tbody></table></div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const dt=d=>d? new Date(d).toLocaleString("vi-VN"):"";
@@ -34,10 +34,10 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 function addRow(){ const tr=document.createElement("tr");
-  tr.innerHTML=`<td><input class="vin" style="width:110px"></td><td><input class="md" style="width:60px"></td><td><input class="sp" style="width:55px"></td><td><input class="cl" style="width:50px"></td><td><input class="om" style="width:80px"></td><td><input class="en" style="width:80px"></td><td><input class="kn" style="width:70px"></td><td><input class="av" style="width:80px"></td><td><input class="bt" style="width:70px"></td><td><input class="rm" style="width:80px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  tr.innerHTML=`<td><input class="vin" style="width:110px"></td><td><input class="md" style="width:60px"></td><td><input class="sp" style="width:55px"></td><td><input class="cl" style="width:50px"></td><td><input class="om" style="width:80px"></td><td><input class="en" style="width:80px"></td><td><input class="kn" style="width:70px"></td><td><input class="av" style="width:80px"></td><td><input class="bt" style="width:70px"></td><td><input class="rm" style="width:80px"></td><td><input class="omm" placeholder="yyyy-MM" style="width:70px"></td><td><input class="oma" placeholder="yyyy-MM" style="width:70px"></td><td><input class="vy" style="width:50px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
   F("ctb").appendChild(tr); }
 async function save(){
-  const rows=[...F("ctb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value,modelCode:tr.querySelector(".md").value,specCode:tr.querySelector(".sp").value,colorCode:tr.querySelector(".cl").value,orderNoMMS:tr.querySelector(".om").value,engineNo:tr.querySelector(".en").value,keyNo:tr.querySelector(".kn").value,aVNSerialNo:tr.querySelector(".av").value,batteryNo:tr.querySelector(".bt").value,remark:tr.querySelector(".rm").value,flagActive:"1"})).filter(r=>r.vin);
+  const rows=[...F("ctb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value,modelCode:tr.querySelector(".md").value,specCode:tr.querySelector(".sp").value,colorCode:tr.querySelector(".cl").value,orderNoMMS:tr.querySelector(".om").value,engineNo:tr.querySelector(".en").value,keyNo:tr.querySelector(".kn").value,aVNSerialNo:tr.querySelector(".av").value,batteryNo:tr.querySelector(".bt").value,remark:tr.querySelector(".rm").value,ordMonthMMS:tr.querySelector(".omm").value||null,orderMonthActual:tr.querySelector(".oma").value||null,vINYear:tr.querySelector(".vy").value||null,flagActive:"1"})).filter(r=>r.vin);
   const r=await fetch("/api/storagepdivins",{method:"POST",headers:H(),body:JSON.stringify(rows)});
   const j=await r.json();
   if(r.ok){ msg(`${j.message} (thêm ${j.inserted}, sửa ${j.updated}).`); F("ctb").innerHTML="";addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
@@ -45,8 +45,8 @@ async function save(){
 async function load(){ await token();
   const d=await (await fetch(`/api/storagepdivins?vin=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.vin}</b></td><td>${o.modelCode||""}</td><td>${o.engineNo||""}</td><td>${o.keyNo||""}</td><td>${o.aVNSerialNo||""}</td><td>${o.batteryNo||""}</td><td>${dt(o.updatedAt)}</td></tr>`
-  ).join("")||'<tr><td colspan="7" class="muted">Chưa có xe PDI.</td></tr>';
+    `<tr><td><b>${o.vin}</b></td><td>${o.modelCode||""}</td><td>${o.engineNo||""}</td><td>${o.keyNo||""}</td><td>${o.avnSerialNo||""}</td><td>${o.batteryNo||""}</td><td>${(o.orderMonthActual||"").slice(0,7)}</td><td>${o.vinYear||""}</td><td>${dt(o.updatedAt)}</td></tr>`
+  ).join("")||'<tr><td colspan="9" class="muted">Chưa có xe PDI.</td></tr>';
 }
 addRow(); load();
 </script>

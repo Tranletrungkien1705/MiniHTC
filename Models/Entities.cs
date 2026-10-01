@@ -10366,6 +10366,13 @@ public sealed class StoragePdiVin
     public string? PDIStorageStatus { get; set; }
 
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    // ===== #361 cột nguồn `PDI_VIN_SaveX_New20230424` (Biz.HTC.WH.cs:84935, WS DMS_PDI_VIN_Save_New20230424) =====
+    /// <summary>`OrdMonthMMS` — StdMonth ⇒ "yyyy-MM-01".</summary>
+    public string? OrdMonthMMS { get; set; }
+    /// <summary>`OrderMonthActual` — StdMonth ⇒ "yyyy-MM-01"; được đọc lại làm ProductionMonth (Biz.HTC.WH.cs:32799/35320).</summary>
+    public string? OrderMonthActual { get; set; }
+    /// <summary>`VINYear` — đời xe (StdParam: trim + upper); "20230426 HuongTTT: Đời xe" (:35334).</summary>
+    public string? VINYear { get; set; }
 }
 
 /// <summary>

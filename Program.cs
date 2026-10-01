@@ -37560,7 +37560,7 @@ app.MapGet("/api/storagepdivins", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(c => c.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(c => c.FlagActive == active);
     var items = await q.OrderByDescending(c => c.Id).Take(500)
-        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.OrderNoMMS, c.EngineNo, c.KeyNo, c.AVNSerialNo, c.BatteryNo, c.FlagActive, c.Remark, c.FinishDTime, c.PDIStorageStatus, c.OrderNoMMSDelivery, c.OrdCategoryTypeMMSDelivery, c.UpdatedAt }).ToListAsync();
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode, c.OrderNoMMS, c.EngineNo, c.KeyNo, c.AVNSerialNo, c.BatteryNo, c.FlagActive, c.Remark, c.FinishDTime, c.PDIStorageStatus, c.OrderNoMMSDelivery, c.OrdCategoryTypeMMSDelivery, c.UpdatedAt, c.OrdMonthMMS, c.OrderMonthActual, c.VINYear }).ToListAsync();   // #361
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -37570,13 +37570,28 @@ app.MapPost("/api/storagepdivins", async (List<StoragePdiVinDto> dto, AppDbConte
     if (rows.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
     var dupe = rows.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    // #361 TUtils.CUtils.StandardizeMonth: rỗng ⇒ null; không phải ngày ⇒ lỗi (Convert.ToDateTime ném); ngoài 1900..2100 ⇒ lỗi; còn lại "yyyy-MM-01".
+    static (string? v, bool ok) StdMonth(string? x)
+    {
+        if (string.IsNullOrWhiteSpace(x)) return (null, true);
+        if (!DateTime.TryParse(x.Trim(), System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var d)) return (null, false);
+        if (d < new DateTime(1900, 1, 1) || d > new DateTime(2100, 1, 1)) return (null, false);
+        return (d.ToString("yyyy-MM") + "-01", true);
+    }
+    foreach (var c in rows)
+    {
+        foreach (var (name, val) in new[] { ("OrdMonthMMS", c.OrdMonthMMS), ("OrderMonthActual", c.OrderMonthActual) })
+            if (!StdMonth(val).ok) return Results.BadRequest(new { error = $"VIN {c.VIN}: {name} không phải tháng hợp lệ.", code = "StdMonth_Invalid", field = name, value = val });
+    }
     int inserted = 0, updated = 0;
     foreach (var c in rows)
     {
         var vin = c.VIN.Trim().ToUpperInvariant();
+        var ordMonthMMS = StdMonth(c.OrdMonthMMS).v; var orderMonthActual = StdMonth(c.OrderMonthActual).v;
+        var vinYear = string.IsNullOrWhiteSpace(c.VINYear) ? null : c.VINYear.Trim().ToUpperInvariant();   // StdParam
         var ex = await db.StoragePdiVins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
-        if (ex is null) { db.StoragePdiVins.Add(new StoragePdiVin { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, OrderNoMMS = c.OrderNoMMS, EngineNo = c.EngineNo, KeyNo = c.KeyNo, AVNSerialNo = c.AVNSerialNo, BatteryNo = c.BatteryNo, FlagActive = c.FlagActive == "0" ? "0" : "1", Remark = c.Remark, FinishDTime = c.FinishDTime, PDIStorageStatus = c.PDIStorageStatus }); inserted++; }
-        else { ex.ModelCode = c.ModelCode; ex.SpecCode = c.SpecCode; ex.ColorCode = c.ColorCode; ex.OrderNoMMS = c.OrderNoMMS; ex.EngineNo = c.EngineNo; ex.KeyNo = c.KeyNo; ex.AVNSerialNo = c.AVNSerialNo; ex.BatteryNo = c.BatteryNo; ex.Remark = c.Remark; ex.FinishDTime = c.FinishDTime ?? ex.FinishDTime; ex.PDIStorageStatus = c.PDIStorageStatus ?? ex.PDIStorageStatus; ex.UpdatedAt = DateTime.Now; updated++; }
+        if (ex is null) { db.StoragePdiVins.Add(new StoragePdiVin { OrgId = t.OrgId, VIN = vin, ModelCode = c.ModelCode, SpecCode = c.SpecCode, ColorCode = c.ColorCode, OrderNoMMS = c.OrderNoMMS, EngineNo = c.EngineNo, KeyNo = c.KeyNo, AVNSerialNo = c.AVNSerialNo, BatteryNo = c.BatteryNo, FlagActive = c.FlagActive == "0" ? "0" : "1", Remark = c.Remark, FinishDTime = c.FinishDTime, PDIStorageStatus = c.PDIStorageStatus, OrdMonthMMS = ordMonthMMS, OrderMonthActual = orderMonthActual, VINYear = vinYear }); inserted++; }
+        else { ex.ModelCode = c.ModelCode; ex.SpecCode = c.SpecCode; ex.ColorCode = c.ColorCode; ex.OrderNoMMS = c.OrderNoMMS; ex.EngineNo = c.EngineNo; ex.KeyNo = c.KeyNo; ex.AVNSerialNo = c.AVNSerialNo; ex.BatteryNo = c.BatteryNo; ex.Remark = c.Remark; ex.FinishDTime = c.FinishDTime ?? ex.FinishDTime; ex.PDIStorageStatus = c.PDIStorageStatus ?? ex.PDIStorageStatus; ex.OrdMonthMMS = ordMonthMMS; ex.OrderMonthActual = orderMonthActual; ex.VINYear = vinYear; ex.UpdatedAt = DateTime.Now; updated++; }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, inserted, updated, message = "Lưu thành công!" });
@@ -57525,7 +57540,8 @@ record Dms40SoRootLineDto(string? ModelCode, string? SpecCode, string? ColorCode
 record Dms40SoRootDto(string? SORCode, string? SOType, string? DealerCode, string? SPCode, DateTime? OrderMonth, List<Dms40SoRootLineDto>? Lines);
 record Dms40SoRootApproveLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal Approved1Quantity, DateTime? Approved1Date = null);
 record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);
-record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime, string? PDIStorageStatus = null);   // #B251
+record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime, string? PDIStorageStatus = null,   // #B251
+    string? OrdMonthMMS = null, string? OrderMonthActual = null, string? VINYear = null);   // #361
 record MnfPlOrderStatisticDto(List<MnfPlMmsRowDto>? MmsRows, string? OrderStatusQtyReturn);   // #B251-B253
 record MasterPiDto(List<MasterPiCkdRowDto>? CkdRows);   // #B299-B301 - CKD lay tu WS nha may
 record MasterSanXuatDto(List<string>? CacheKeys, List<MasterPiCkdRowDto>? CkdRows);   // #B302-B304
