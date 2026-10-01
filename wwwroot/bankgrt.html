@@ -25,7 +25,7 @@
     <div><label>Đại lý *</label><input id="dl" style="width:90px"></div>
     <div><label>NH bảo lãnh *</label><input id="bk" style="width:90px"></div>
     <div><label>Số BL của NH</label><input id="bno" style="width:110px"></div>
-    <div><label>Loại BL</label><select id="gt"><option value="0">NH giám sát</option><option value="1">NH phát hành</option></select></div>
+    <div><label>Loại BL</label><select id="gt"><option value="BL">BL — Bảo lãnh</option><option value="LCTC">LCTC — LC trả chậm</option><option value="LCUP">LCUP — LC Upas</option><option value="EPLC">EPLC</option></select></div>
     <div><label>Kỳ hạn (tháng)</label><input id="tm" type="number" style="width:80px" value="12"></div>
     <div><label>Ngày mở</label><input id="do" type="date" style="width:140px"></div>
     <div><label>Ngày hết hạn</label><input id="de" type="date" style="width:140px"></div>
@@ -91,7 +91,7 @@ async function load(){ await token();
     let act="";
     if(o.status==="P") act=`<button class="sm ok" onclick="decide('${o.guaranteeNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.guaranteeNo}','reject')">Từ chối</button>`;
     else if(o.status==="A"){ if(o.flagSettled!=="1") act=`<button class="sm warn" onclick="decide('${o.guaranteeNo}','settle')">Tất toán</button> `; act+=`<button class="sm" onclick="updDiscount(event,${JSON.stringify(o).replace(/"/g,"&quot;")})">Nhập CK thực trả</button>`; }
-    return `<tr onclick="detail('${o.guaranteeNo}')"><td><b>${o.guaranteeNo}</b></td><td>${o.dealerCode}</td><td>${o.bankCode}</td><td>${o.guaranteeType==="1"?"NH phát hành":"NH giám sát"}</td><td class="num">${o.term}</td><td class="num">${money(o.totalAmount)}</td><td class="num">${o.cars}</td><td>${(o.dateRecieveGrtRoot||"").substring(0,10)||"—"}</td><td>${(o.discountPmtDate||"").substring(0,10)||"—"}</td><td class="num">${o.discountPmtValue==null?"—":money(o.discountPmtValue)}</td><td class="num">${o.fee==null?"—":money(o.fee)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.flagSettled==="1"?"✓ Đã TT":"—"}</td><td>${act}</td></tr>`;
+    return `<tr onclick="detail('${o.guaranteeNo}')"><td><b>${o.guaranteeNo}</b></td><td>${o.dealerCode}</td><td>${o.bankCode}</td><td title="${o.guaranteeType}">${o.guaranteeTypeName||o.guaranteeType||"—"}</td><td class="num">${o.term}</td><td class="num">${money(o.totalAmount)}</td><td class="num">${o.cars}</td><td>${(o.dateRecieveGrtRoot||"").substring(0,10)||"—"}</td><td>${(o.discountPmtDate||"").substring(0,10)||"—"}</td><td class="num">${o.discountPmtValue==null?"—":money(o.discountPmtValue)}</td><td class="num">${o.fee==null?"—":money(o.fee)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.flagSettled==="1"?"✓ Đã TT":"—"}</td><td>${act}</td></tr>`;
   }).join("")||'<tr><td colspan="14" class="muted">Chưa có bảo lãnh.</td></tr>';
 }
 async function detail(no){

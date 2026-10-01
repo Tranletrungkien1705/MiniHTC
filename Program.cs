@@ -6680,8 +6680,13 @@ app.MapGet("/api/bankgrts/rbac", () => Results.Ok(new
     note = "Nguồn RẼ NHÁNH tầng lọc theo vai trò ngân hàng (TERP.BizBank/Report.cs:703-713); pattern rỗng = xem tất cả (nội bộ HTC).",
 })).RequireAuthorization();
 
+// #320 "Loại bảo lãnh/LC" — nguồn KHÔNG có bảng/biz: FrmNewGrt.cs:283-290 / FrmMngGrt.cs:270-277 dựng lookup CỨNG 4 dòng
+// (TblGuaranteeType: GuaranteeType + GuaranteeTypeName), mã theo TConst.GuaranteeType.
+static string GuaranteeTypeName(string? code) => code switch
+{ "BL" => "Bảo lãnh", "LCTC" => "LC trả chậm", "LCUP" => "LC Upas", "EPLC" => "EPLC", _ => code ?? "" };
 app.MapGet("/api/bankgrts/statuses", () => Results.Ok(new
 {
+    guaranteeTypes = new[] { "BL", "LCTC", "LCUP", "EPLC" }.Select(c => new { GuaranteeType = c, GuaranteeTypeName = GuaranteeTypeName(c) }),
     statuses = new[] {
         new { code = "P", name = "Chờ duyệt" },
         new { code = "A", name = "Đã duyệt" },
@@ -6717,7 +6722,8 @@ app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? de
     }
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
-        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
+        g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, // biểu thức CASE (EF không dịch được local function) — cùng bảng mã với GuaranteeTypeName()
+        GuaranteeTypeName = g.GuaranteeType == "BL" ? "Bảo lãnh" : g.GuaranteeType == "LCTC" ? "LC trả chậm" : g.GuaranteeType == "LCUP" ? "LC Upas" : g.GuaranteeType == "EPLC" ? "EPLC" : g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
         g.DiscountPmtDate, g.DiscountPmtValue, g.Fee,
         cars = db.BankGuaranteeDtls.Count(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
     }).ToListAsync();
