@@ -1381,6 +1381,7 @@ public static class Seeder
         "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"Note\" text",
         // #382 ServiceCars: cột nguồn TblSerCar.PlateColorCode.
         "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"PlateColorCode\" text",
+        "ALTER TABLE public.\"ServiceCars\" ADD COLUMN IF NOT EXISTS \"CurrentServiceDate\" timestamp NULL",   // #401
         // #382 [c] chép song sinh CustomerCars → ServiceCars (cùng Ser_Car). Khoá FrameNo = VIN (rỗng thì số khung); xe KHÔNG có VIN/số khung
         //   không có khoá nguồn ⇒ không chép (vẫn nằm ở CustomerCars). Khử trùng (OrgId, FrameNo); SaleDate → DateBuyCar dạng chuỗi yyyy-MM-dd.
         "INSERT INTO public.\"ServiceCars\" (\"OrgId\", \"FrameNo\", \"PlateNo\", \"EngineNo\", \"ModelCode\", \"ColorCode\", \"PlateColorCode\", \"CusID\", \"CusName\", \"CusMobile\", \"DateBuyCar\", \"CurrentKm\", \"FlagActive\", \"CreatedAt\") SELECT o.\"OrgId\", upper(coalesce(nullif(trim(o.\"Vin\"), ''), nullif(trim(o.\"FrameNo\"), ''))), o.\"PlateNo\", o.\"EngineNo\", o.\"ModelCode\", o.\"ColorCode\", o.\"PlateColorCode\", o.\"CusCode\", o.\"CusName\", o.\"CusPhone\", substr(CAST(o.\"SaleDate\" AS text), 1, 10), 0, '1', o.\"UpdatedAt\" FROM public.\"CustomerCars\" o WHERE upper(coalesce(nullif(trim(o.\"Vin\"), ''), nullif(trim(o.\"FrameNo\"), ''))) IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.\"ServiceCars\" x WHERE x.\"OrgId\" = o.\"OrgId\" AND x.\"FrameNo\" = upper(coalesce(nullif(trim(o.\"Vin\"), ''), nullif(trim(o.\"FrameNo\"), ''))))",

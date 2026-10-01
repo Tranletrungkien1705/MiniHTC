@@ -18564,7 +18564,7 @@ app.MapGet("/api/servicecars", async (AppDbContext db, ITenantContext t, string?
         x.FrameNo, x.PlateNo, x.EngineNo, x.ModelCode, x.ColorCode, x.TradeMark, x.ProductYear, x.CurrentKm, x.CusName, x.CusMobile, x.FlagActive,
         x.MemberCarID, x.DealerCode, x.CusID,
         // #222 §12: 8 trường mới phải chiếu ở CẢ GET
-        x.CarID, x.SalesCarID, x.DateBuyCar, x.InsNo, x.InsContractNo, x.InsStartDate, x.InsFinishedDate, x.Note, x.PlateColorCode,
+        x.CarID, x.SalesCarID, x.DateBuyCar, x.InsNo, x.InsContractNo, x.InsStartDate, x.InsFinishedDate, x.Note, x.PlateColorCode, x.CurrentServiceDate,
         warrantyDate = x.WarrantyDate.HasValue ? x.WarrantyDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -54699,7 +54699,21 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     r.Status = target;
     // Nguồn FrmServiceHistory sắp xếp "order by ro.finisheddate desc" → phải đóng dấu mốc khi RO hoàn tất,
     // và ActualDeliveryDate ("Giờ giao xe thực tế") cũng chốt tại thời điểm giao xe.
-    if (target == "FNS") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
+    if (target == "FNS")
+    {
+        r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now;
+        // #401 "Kết thúc" giao xe (SerROToFinishedStatusAndUpdateCusCare_New20190621, ZTemp.cs:11399): xe (Ser_Car theo CarID) nhận
+        //   CurrentKm = Ser_RO.Km và CurrentServiceDate = Ser_RO.FinishedDate. Km của RO là chuỗi ⇒ chỉ ghi khi đọc được số.
+        if (!string.IsNullOrEmpty(r.CarID))
+        {
+            var car = await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CarID == r.CarID);
+            if (car is not null)
+            {
+                car.CurrentServiceDate = r.FinishedDate;
+                if (decimal.TryParse((r.Km ?? "").Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var kmRo)) car.CurrentKm = kmRo;
+            }
+        }
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate });
 }).RequireAuthorization();

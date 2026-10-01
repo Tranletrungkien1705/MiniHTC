@@ -14257,6 +14257,10 @@ public sealed class ServiceCar
     // ===== #382 [c] gộp song sinh Ser_Car — cột nguồn TblSerCar.PlateColorCode (mang từ bản CustomerCar) =====
     /// <summary>Màu biển số (`PLATECOLORCODE`, DbDefine TblSerCar:1590).</summary>
     public string? PlateColorCode { get; set; }
+
+    /// <summary>#401 Ngày làm dịch vụ gần nhất (`Ser_Car.CurrentServiceDate`) — nguồn ghi khi bấm "Kết thúc" giao xe
+    /// (SerROToFinishedStatusAndUpdateCusCare_New20190621, ZTemp.cs:11399): = Ser_RO.FinishedDate, kèm CurrentKm = Ser_RO.Km.</summary>
+    public DateTime? CurrentServiceDate { get; set; }
 }
 
 /// <summary>Danh mục phụ tùng dịch vụ (master lõi) — port 1:1 FrmPart (TblSerMSTPart, TCMotor).</summary>
