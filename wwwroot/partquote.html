@@ -23,6 +23,7 @@
 <p class="muted">Lập báo giá phụ tùng cho khách hàng dịch vụ: thông tin KH + danh sách phụ tùng (SL × đơn giá × VAT). Thành tiền và tổng tính tự động. Vòng trạng thái Nháp → Gửi → Duyệt.</p>
 <div class="card"><h3 style="margin-top:0">Lập báo giá mới</h3>
   <div class="grid">
+    <div><label>Đại lý *</label><input id="hDealer" style="width:90px"></div>
     <div><label>Mã KH</label><input id="hCusId"></div>
     <div><label>Tên KH</label><input id="hCusName"></div>
     <div><label>Điện thoại</label><input id="hMobile"></div>
@@ -63,7 +64,7 @@ function calc(){ let tot=0; document.querySelectorAll("#lrows tr").forEach(tr=>{
 }
 async function save(){ await token();
   const lines=[...document.querySelectorAll("#lrows tr")].map(tr=>({PartCode:tr.querySelector(".c").value,PartName:tr.querySelector(".n").value,Unit:tr.querySelector(".u").value,Quantity:+tr.querySelector(".q").value||0,UnitPrice:+tr.querySelector(".p").value||0,Vat:+tr.querySelector(".v").value||0})).filter(l=>l.PartCode);
-  const body={CusId:F("hCusId").value,CusName:F("hCusName").value,Mobile:F("hMobile").value,ReceiveName:F("hReceive").value,PaymentMethod:F("hPay").value,Remark:F("hRemark").value,Lines:lines};
+  const body={DealerCode:F("hDealer").value,CusId:F("hCusId").value,CusName:F("hCusName").value,Mobile:F("hMobile").value,ReceiveName:F("hReceive").value,PaymentMethod:F("hPay").value,Remark:F("hRemark").value,Lines:lines};
   const r=await fetch("/api/partquotes",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
   msg("Đã lưu "+d.quoteNo+" ("+M(d.totalAmount)+")"); F("lrows").innerHTML="";addRow(); load();

@@ -793,6 +793,13 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceStockIns\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 // Báo giá phụ tùng: tổng KHÔNG nhân hệ số, đúng cột SumAmount của nguồn (Inventory.Quote.cs:1777)
                 "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"SumAmountNoFactor\" numeric NOT NULL DEFAULT 0",
+                // #338 Ser_Inv_Quote — DealerCode/Creator/CreatedBy/IsActive/LogLU.
+                "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"Creator\" text NULL",
+                "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"IsActive\" text NOT NULL DEFAULT '1'",
+                "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PartQuotes\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 // Trạng thái RIÊNG từng dòng đơn đặt phụ tùng (Ser_Order_PartDtl.ORDERPARTSTATUSDTL, TCMotor)
                 "ALTER TABLE public.\"OrderPartLines\" ADD COLUMN IF NOT EXISTS \"OrderPartStatusDtl\" text NOT NULL DEFAULT 'P'",
                 // Cờ số ĐT sai định dạng ở lô SMS (tách khỏi Status để không lẫn với kết quả gửi)

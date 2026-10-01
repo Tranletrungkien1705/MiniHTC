@@ -14246,6 +14246,16 @@ public sealed class PartQuote
     /// </summary>
     public decimal SumAmountNoFactor { get; set; }
     public string Status { get; set; } = "Draft";   // Draft -> Sent -> Approved / Cancelled
+    // ===== #338 parity Ser_Inv_Quote — cột `Ser_Inv_Quote_Create` (BizCarSv.Inventory.Quote.cs:159) ghi mà port cũ thiếu =====
+    /// <summary>`DealerCode` — xưởng lập báo giá; cũng là PHẠM VI dãy số QuoteNo (CmSeq).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>`Creator` (mã người lập — client gửi `SystemGlobal.Instance.user.UserCode`) và `CreatedBy` (người gọi API).</summary>
+    public string? Creator { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>`IsActive` — nguồn gán `TConst.Flag.Active` ("1") lúc tạo.</summary>
+    public string IsActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

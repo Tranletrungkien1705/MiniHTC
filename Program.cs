@@ -27187,7 +27187,7 @@ app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.QuoteNo, x.CusId, x.CusName, x.Mobile, x.ReceiveName, x.PaymentMethod, x.TotalAmount, x.Status,
+        x.QuoteNo, x.DealerCode, x.Creator, x.CreatedBy, x.IsActive, x.CusId, x.CusName, x.Mobile, x.ReceiveName, x.PaymentMethod, x.TotalAmount, x.Status,
         createdAt = x.CreatedAt.ToString("yyyy-MM-dd"),
         x.SumAmountNoFactor,
         lines = db.PartQuoteLines.Count(l => l.OrgId == t.OrgId && l.PartQuoteId == x.Id)
@@ -27196,13 +27196,24 @@ app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? 
 }).RequireAuthorization();
 
 // Tạo báo giá (header + dòng phụ tùng; tính Amount=Qty*Price*(1+VAT/100) + tổng).
-app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partquotes", async (PartQuoteDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
     if (lines.Any(l => l.Quantity <= 0)) return Results.BadRequest(new { error = "Số lượng phải lớn hơn 0." });
-    var no = "PQ" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PartQuote { OrgId = t.OrgId, QuoteNo = no, CusId = dto.CusId, CusName = dto.CusName, Mobile = dto.Mobile, ReceiveName = dto.ReceiveName, PaymentMethod = dto.PaymentMethod, Remark = dto.Remark, Status = "Draft" };
+    // #338 QuoteNo port 1:1 `Ser_Inv_Quote_Create` (BizCarSv.Inventory.Quote.cs:296):
+    //   `myUtil_GetCmSeqCode(_dbDealer, "Ser_Inv_Quote", "QuoteNo", "", strDealerCode)` ⇒ DealerCode-yyMMdd-NNN.
+    //   Bản cũ "PQ"+yyMMddHHmmss trùng khi tạo cùng giây. DealerCode nguồn lấy từ phiên (SystemGlobal.strDealerCode) ⇒ BẮT BUỘC.
+    //   Ghi thêm Creator / CreatedBy / IsActive="1" / LogLU như nguồn (:311-324).
+    //   ⚠️ NỢ: nguồn gán Status = Flag.Active ("1") lúc tạo; MiniHTC còn dùng "Draft"→Sent→Approved/Cancelled tự đặt.
+    var dealerPq = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealerPq == "") return Results.BadRequest(new { error = "Chưa chọn đại lý (xưởng) lập báo giá." });
+    var pqPrefix = CmSeq.Pattern("", dealerPq);
+    var no = CmSeq.Next(await db.PartQuotes.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerPq && x.QuoteNo.StartsWith(pqPrefix))
+        .Select(x => x.QuoteNo).ToListAsync(), pqPrefix);
+    var whoPq = user.Identity?.Name ?? "system"; var nowPq = DateTime.Now;
+    var h = new PartQuote { OrgId = t.OrgId, QuoteNo = no, CusId = dto.CusId, CusName = dto.CusName, Mobile = dto.Mobile, ReceiveName = dto.ReceiveName, PaymentMethod = dto.PaymentMethod, Remark = dto.Remark, Status = "Draft",
+        DealerCode = dealerPq, Creator = string.IsNullOrWhiteSpace(dto.Creator) ? whoPq : dto.Creator.Trim(), CreatedBy = whoPq, IsActive = "1", LogLUDateTime = nowPq, LogLUBy = whoPq };
     db.PartQuotes.Add(h); await db.SaveChangesAsync();
     decimal total = 0m, sumAmountNoFactor = 0m;
     foreach (var l in lines)
@@ -56891,7 +56902,8 @@ record CusDebitDto(string? CusId, string? CusName, string? RONo, decimal DebitAm
 record SerPaymentAllocateDto(string? DealerCode, string? SubjectKey, decimal PaymentAmount, string? PayPersonName, string? PayPersonIDCardNo, DateTime? PayDate, string? Note);
 record CusDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
 record PartQuoteLineDto(string PartCode, string? PartName, string? Unit, decimal Quantity, decimal UnitPrice, decimal Vat, decimal? Factor = null, string? PartPriceId = null, string? Note = null);
-record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines);
+record PartQuoteDto(string? CusId, string? CusName, string? Mobile, string? ReceiveName, string? PaymentMethod, string? Remark, List<PartQuoteLineDto>? Lines,
+    string? DealerCode = null, string? Creator = null);   // #338
 record CustomerGroupDto(string? GroupNo, string? GroupName, string? Description);
 record CustomerGroupMemberDto(string CusId, string? CusName, string? Mobile, string? Address);
 record InvoiceIDDto(string InvoiceIDCode, string InvoiceIDType, DateTime? EffectiveDate);
