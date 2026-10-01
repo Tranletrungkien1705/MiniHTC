@@ -18629,113 +18629,41 @@ app.MapPost("/api/servicecars/{vin}/toggle", async (string vin, AppDbContext db,
     return Results.Ok(new { x.FrameNo, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
-// ===== Báo giá sửa chữa (ServiceQuotation — port 1:1 FrmQuotation, TCMotor) =====
+// ===== Báo giá sửa chữa — ⛔ #393 HỢP NHẤT SONG SINH: báo giá FrmQuotation = Ser_RO giai đoạn CRE/PRT (bản chuẩn RepairOrder, #392).
+// Route này là BÍ DANH CHỈ ĐỌC giữ hình JSON cũ (QuoteNo = RONo, PlateNo = LicensePlate, LaborTotal = Σ tiền công, PartTotal = Σ SL×đơn giá,
+// Status = mã Ser_RO_Stage). Tạo báo giá = POST /api/repairorders (ra CRE); "duyệt" = POST /api/repairorders/{no}/create-ro; huỷ = /reject.
 app.MapGet("/api/servicequotations", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
-    var query = db.ServiceQuotations.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.QuoteNo.Contains(q!) || (x.RONo != null && x.RONo.Contains(q!)) || (x.PlateNo != null && x.PlateNo.Contains(q!)));
-    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    var query = db.RepairOrders.Where(x => x.OrgId == t.OrgId && (x.Status == "CRE" || x.Status == "PRT"));
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.RONo.Contains(q!) || x.LicensePlate.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(status)) { var st = RoCode(status); query = query.Where(x => x.Status == st); }
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.Id, x.QuoteNo, x.RONo, x.Vin, x.PlateNo, x.CusName, x.LaborTotal, x.PartTotal, x.Discount, x.VatAmount, x.GrandTotal, x.Status,
-        // GAP đã vá: phần bảo hiểm trước đây không được trả về
-        x.HasInsuranceItem, x.InsuranceDeductible, x.InsuranceTotal
+        x.Id, QuoteNo = x.RONo, x.RONo, x.Vin, PlateNo = x.LicensePlate, x.CusName,
+        LaborTotal = db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == x.Id).Sum(s => (decimal?)s.Amount) ?? 0,
+        PartTotal = db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == x.Id).Sum(p => (decimal?)(p.NeedQty * p.UnitPrice)) ?? 0,
+        x.Status, InsuranceDeductible = x.InsuranceDeductible ?? 0
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, totalValue = items.Sum(i => i.GrandTotal), items });
+    var rows = items.Select(x => new { x.Id, x.QuoteNo, x.RONo, x.Vin, x.PlateNo, x.CusName, x.LaborTotal, x.PartTotal, GrandTotal = x.LaborTotal + x.PartTotal, x.Status, x.InsuranceDeductible }).ToList();
+    return Results.Ok(new { count = rows.Count, totalValue = rows.Sum(i => i.GrandTotal), items = rows, mergedInto = "/api/repairorders" });
 }).RequireAuthorization();
 
-// Tạo báo giá: dòng công (giờ tt × đơn giá × hệ số) + dòng phụ tùng (SL × đơn giá), mỗi dòng cộng VAT; trừ chiết khấu.
-app.MapPost("/api/servicequotations", async (ServiceQuotationDto dto, AppDbContext db, ITenantContext t) =>
-{
-    var labors = dto.Labors ?? new();
-    var parts = dto.Parts ?? new();
-    if (labors.Count == 0 && parts.Count == 0) return Results.BadRequest(new { error = "Báo giá phải có ít nhất 1 dòng công hoặc phụ tùng." });
-    decimal laborBase = 0, partBase = 0, vatAmt = 0;
-    var laborRows = new List<ServiceQuotationLabor>();
-    foreach (var l in labors)
-    {
-        if (string.IsNullOrWhiteSpace(l.SerCode)) return Results.BadRequest(new { error = "Có dòng công thiếu mã CV." });
-        var factor = l.Factor <= 0 ? 1 : l.Factor;
-        var baseAmt = l.ActManHour * l.Price * factor;
-        var amt = Math.Round(baseAmt * (1 + l.Vat / 100), 2);
-        laborBase += baseAmt; vatAmt += amt - baseAmt;
-        laborRows.Add(new ServiceQuotationLabor
-        {
-            OrgId = t.OrgId, SerCode = l.SerCode.Trim(), SerName = l.SerName, StdManHour = l.StdManHour,
-            ActManHour = l.ActManHour, Factor = factor, Price = l.Price, Vat = l.Vat, Amount = amt,
-            // GAP đã vá: phân loại chi phí + phần bảo hiểm chi trả (2 cột lưới gốc bị bỏ sót)
-            ExpenseType = (l.ExpenseType ?? "").Trim(), InsurancePrice = l.InsurancePrice
-        });
-    }
-    var partRows = new List<ServiceQuotationPart>();
-    foreach (var p in parts)
-    {
-        if (string.IsNullOrWhiteSpace(p.PartCode)) return Results.BadRequest(new { error = "Có dòng phụ tùng thiếu mã." });
-        var baseAmt = p.Quantity * p.Price;
-        var amt = Math.Round(baseAmt * (1 + p.Vat / 100), 2);
-        partBase += baseAmt; vatAmt += amt - baseAmt;
-        partRows.Add(new ServiceQuotationPart
-        {
-            OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName,
-            Quantity = p.Quantity, Price = p.Price, Vat = p.Vat, Amount = amt,
-            // GAP đã vá: phân loại chi phí + phần bảo hiểm chi trả (2 cột lưới gốc bị bỏ sót)
-            ExpenseType = (p.ExpenseType ?? "").Trim(), InsurancePrice = p.InsurancePrice
-        });
-    }
-    var discount = dto.Discount < 0 ? 0 : dto.Discount;
-    var grand = laborBase + partBase + vatAmt - discount;
-    if (grand < 0) return Results.BadRequest(new { error = "Chiết khấu vượt tổng giá trị báo giá." });
-
-    // 🔴 GAP đã vá — luật checkInsuranceDeductible() của FrmQuotation:
-    // "Mức khấu trừ bảo hiểm" CHỈ áp dụng khi báo giá có ÍT NHẤT 1 dòng ExpenseType = ROInsurance
-    // (quét CẢ lưới công LẪN lưới phụ tùng). Không có dòng bảo hiểm → ô bị ẩn ⇒ mức khấu trừ phải = 0.
-    const string InsuranceExpenseType = "ROInsurance";
-    var hasInsuranceItem =
-        laborRows.Any(labor => string.Equals(labor.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase)) ||
-        partRows.Any(part => string.Equals(part.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase));
-
-    var insuranceDeductible = dto.InsuranceDeductible < 0 ? 0 : dto.InsuranceDeductible;
-    if (!hasInsuranceItem && insuranceDeductible > 0)
-        return Results.BadRequest(new { error = "Báo giá không có dòng bảo hiểm, không nhập được mức khấu trừ bảo hiểm." });
-
-    // Tổng phần bảo hiểm = tiền các dòng có ExpenseType = ROInsurance (dùng cho báo cáo/đối soát BH).
-    var insuranceTotal =
-        laborRows.Where(labor => string.Equals(labor.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase)).Sum(labor => labor.Amount) +
-        partRows.Where(part => string.Equals(part.ExpenseType, InsuranceExpenseType, StringComparison.OrdinalIgnoreCase)).Sum(part => part.Amount);
-
-    var no = "QT" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new ServiceQuotation { OrgId = t.OrgId, QuoteNo = no, RONo = dto.RONo, Vin = dto.Vin, PlateNo = dto.PlateNo, CusName = dto.CusName,
-        LaborTotal = laborBase, PartTotal = partBase, Discount = discount, VatAmount = Math.Round(vatAmt, 2), GrandTotal = Math.Round(grand, 2), Status = "Draft", Note = dto.Note,
-        // GAP đã vá: phần bảo hiểm của báo giá
-        HasInsuranceItem = hasInsuranceItem, InsuranceDeductible = insuranceDeductible, InsuranceTotal = Math.Round(insuranceTotal, 2) };
-    db.ServiceQuotations.Add(h); await db.SaveChangesAsync();
-    foreach (var l in laborRows) { l.ServiceQuotationId = h.Id; db.ServiceQuotationLabors.Add(l); }
-    foreach (var p in partRows) { p.ServiceQuotationId = h.Id; db.ServiceQuotationParts.Add(p); }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.QuoteNo, h.LaborTotal, h.PartTotal, h.VatAmount, h.GrandTotal });
-}).RequireAuthorization();
+app.MapPost("/api/servicequotations", (ServiceQuotationDto dto) =>
+    Results.BadRequest(new { error = "Báo giá = lệnh sửa chữa giai đoạn CRE (Ser_RO_Create). Tạo qua /api/repairorders.", route = "/api/repairorders", page = "/repairorder.html" })).RequireAuthorization();
 
 app.MapGet("/api/servicequotations/{id}/detail", async (long id, AppDbContext db, ITenantContext t) =>
 {
-    var h = await db.ServiceQuotations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    var h = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var labors = await db.ServiceQuotationLabors.Where(x => x.OrgId == t.OrgId && x.ServiceQuotationId == id)
-        .Select(x => new { x.SerCode, x.SerName, x.StdManHour, x.ActManHour, x.Factor, x.Price, x.Vat, x.Amount }).ToListAsync();
-    var parts = await db.ServiceQuotationParts.Where(x => x.OrgId == t.OrgId && x.ServiceQuotationId == id)
-        .Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat, x.Amount }).ToListAsync();
-    return Results.Ok(new { h.QuoteNo, h.RONo, h.PlateNo, h.CusName, h.LaborTotal, h.PartTotal, h.Discount, h.VatAmount, h.GrandTotal, h.Status, labors, parts });
+    var labors = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == id).ToListAsync();
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == id).ToListAsync();
+    return Results.Ok(new { QuoteNo = h.RONo, h.RONo, PlateNo = h.LicensePlate, h.CusName, h.Status,
+        labors = labors.Select(x => new { x.SerCode, x.SerName, x.Amount, x.ExpenseType }), parts = parts.Select(x => new { x.PartCode, x.PartName, Quantity = x.NeedQty, Price = x.UnitPrice, x.ExpenseType }),
+        mergedInto = $"/api/repairorders/{h.RONo}" });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicequotations/{id}/status", async (long id, ServiceQuotationStatusDto dto, AppDbContext db, ITenantContext t) =>
-{
-    var h = await db.ServiceQuotations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (h is null) return Results.NotFound(new { id });
-    var s = (dto.Status ?? "").Trim();
-    if (s != "Draft" && s != "Approved" && s != "Cancelled") return Results.BadRequest(new { error = "Trạng thái không hợp lệ." });
-    if (h.Status == "Approved" && s == "Draft") return Results.BadRequest(new { error = "Báo giá đã duyệt không thể quay lại Nháp." });
-    h.Status = s; await db.SaveChangesAsync();
-    return Results.Ok(new { h.Id, h.Status });
-}).RequireAuthorization();
+app.MapPost("/api/servicequotations/{id}/status", (long id, ServiceQuotationStatusDto dto) =>
+    Results.BadRequest(new { error = "Duyệt báo giá = Tạo RO (Ser_RO_CreateRO); huỷ = từ chối RO.", route = "/api/repairorders/{no}/create-ro | /reject" })).RequireAuthorization();
 
 // ===== Thống kê bảo hành theo chiều (report tái-dùng ServiceWarrantyClaim — port 1:1 FrmChartWarrantyDealer/Month + FrmTK_WarrantyModel, TCMotor) =====
 // dimension: dealer | month | type. Đếm số ĐN + tổng tiền + số đã chấp thuận, gộp theo chiều.
@@ -54562,6 +54490,10 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     r.ServiceStatus = "0"; r.LogLUDateTime = nowRo; r.LogLUBy = whoRo; r.CreatedDate = nowRo; r.CreatedBy = whoRo;
     r.LevelOfInspection = lvlRo;
     r.InsuranceDeductible = decimal.TryParse((dto.InsuranceDeductible ?? "").Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var dedRo) ? dedRo : 0m;
+    // #393 luật checkInsuranceDeductible() của FrmQuotation (mang từ bản song sinh ServiceQuotation): ô "Mức khấu trừ bảo hiểm" CHỈ hiện khi có
+    //   ít nhất 1 dòng (công hoặc phụ tùng) ExpenseType = ROINSURANCE ⇒ không có dòng bảo hiểm mà nhập khấu trừ > 0 ⇒ từ chối.
+    if (!anyIns && r.InsuranceDeductible > 0)
+        return Results.BadRequest(new { error = "Lệnh không có dòng bảo hiểm, không nhập được mức khấu trừ bảo hiểm.", code = "checkInsuranceDeductible" });
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
     // Nguồn nối phiếu tiếp nhận ↔ RO qua Ser_RO.ReceptionFNo; MiniHTC giữ thêm Reception.RONO (#355 guard xoá) ⇒ đồng bộ.
     if (recRo is not null && string.IsNullOrWhiteSpace(recRo.RONO)) { recRo.RONO = r.RONo; await db.SaveChangesAsync(); }

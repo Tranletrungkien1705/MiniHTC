@@ -2642,7 +2642,9 @@ public sealed class CustomerCar
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Báo giá sửa chữa (header: theo RO, tổng công + phụ tùng + VAT) — port 1:1 FrmQuotation (TblSerRO/Quotation, TCMotor).</summary>
+/// <summary>⛔ #393 DEPRECATED — SONG SINH của <see cref="RepairOrder"/> giai đoạn báo giá: ở nguồn FrmQuotation, báo giá = bản ghi Ser_RO
+/// Status CRE/PRT (Ser_RO_Create_New20220926) + dòng Ser_ROServiceItems/PartItems; "duyệt" = Ser_RO_CreateRO (CRE→HRO). Mã QT…, trạng thái
+/// Draft/Approved/Cancelled và bảng Labor/Part riêng là tự đặt. /api/servicequotations đọc RO ở CRE/PRT; ghi ⇒ 400. KHÔNG ghi mới.</summary>
 public sealed class ServiceQuotation
 {
     public long Id { get; set; }
