@@ -11737,28 +11737,50 @@ app.MapGet("/api/mstbanks", async (AppDbContext db, ITenantContext t, string? ba
     if (!string.IsNullOrWhiteSpace(parent)) qy = qy.Where(x => x.BankCodeParent == parent);
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
     var items = await qy.OrderBy(x => x.BankCode)
-        .Select(x => new { x.BankCode, x.BankName, x.BankCodeParent, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.BankCode, x.BankName, x.BankCodeParent, x.FlagActive,
+            x.BankBUCode, x.BankBUPattern, x.PhoneNo, x.FaxNo, x.Address, x.FlagPaymentBank, x.FlagMortageBank,
+            x.FlagMonitorBank, x.PICEmail, x.BenBankCode, x.NumberOfGuaranteeExt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #311 FrmBank.btnApply_Click (Admin/Product/FrmBank.cs:308): mã đã có → SỬA (SetModified), chưa có → THÊM (SetAdded)
+// qua SaveMasterDataTable — port cũ chặn "đã tồn tại" là SAI hành vi nguồn.
 app.MapPost("/api/mstbanks", async (MstBankDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = (dto.BankCode ?? "").Trim();
     if (code.Length < 1) return Results.BadRequest(new { error = "Mã ngân hàng rỗng." });
-    if (await db.MstBanks.AnyAsync(x => x.OrgId == t.OrgId && x.BankCode == code))
-        return Results.BadRequest(new { error = $"Ngân hàng {code} đã tồn tại." });
+    // Guard Frm: FlagActive / FlagPaymentBank chỉ nhận "0"/"1" (MSG_WARNING_INVALID_DATA_TYPE); PICEmail phải hợp lệ.
+    var flagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim();
+    if (flagActive is not ("0" or "1")) return Results.BadRequest(new { error = "FlagActive chỉ nhận 0/1." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagPaymentBank) && dto.FlagPaymentBank.Trim() is not ("0" or "1"))
+        return Results.BadRequest(new { error = "FlagPaymentBank chỉ nhận 0/1." });
+    var email = (dto.PICEmail ?? "").Trim();
+    if (email.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
+        return Results.BadRequest(new { error = $"Email '{email}' không hợp lệ!" });
     var parent = (dto.BankCodeParent ?? "").Trim();
     // Có khai báo ngân hàng mẹ thì mẹ phải tồn tại (cấu trúc cha–con của master này).
     if (parent.Length > 0 && !await db.MstBanks.AnyAsync(x => x.OrgId == t.OrgId && x.BankCode == parent))
         return Results.BadRequest(new { error = $"Ngân hàng mẹ {parent} không tồn tại." });
-    db.MstBanks.Add(new MstBank
-    {
-        OrgId = t.OrgId, BankCode = code, BankName = dto.BankName,
-        BankCodeParent = parent.Length > 0 ? parent : null,
-        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!,
-    });
+    static string? N(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+    var b = await db.MstBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankCode == code);
+    var updated = b is not null;
+    if (b is null) { b = new MstBank { OrgId = t.OrgId, BankCode = code }; db.MstBanks.Add(b); }
+    b.BankName = dto.BankName; b.BankCodeParent = parent.Length > 0 ? parent : null; b.FlagActive = flagActive;
+    b.BankBUCode = N(dto.BankBUCode); b.BankBUPattern = N(dto.BankBUPattern); b.PhoneNo = N(dto.PhoneNo); b.FaxNo = N(dto.FaxNo);
+    b.Address = N(dto.Address); b.FlagPaymentBank = N(dto.FlagPaymentBank); b.FlagMortageBank = N(dto.FlagMortageBank);
+    b.FlagMonitorBank = N(dto.FlagMonitorBank); b.PICEmail = email.Length > 0 ? email : null; b.BenBankCode = N(dto.BenBankCode);
+    b.NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt;
     await db.SaveChangesAsync();
-    return Results.Ok(new { bankCode = code });
+    return Results.Ok(new { bankCode = code, updated });
+}).RequireAuthorization();
+
+// #311 FrmBank xoá dòng lưới DB (EditStatus DELETE → drowTmp.Delete() → SaveMasterDataTable).
+app.MapPost("/api/mstbanks/{code}/delete", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var b = await db.MstBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankCode == code.Trim());
+    if (b is null) return Results.NotFound(new { error = "Không tìm thấy ngân hàng.", code });
+    db.MstBanks.Remove(b); await db.SaveChangesAsync();
+    return Results.Ok(new { bankCode = b.BankCode, deleted = true });
 }).RequireAuthorization();
 
 // ===== 🔴 #227 DANH MỤC TỈNH/THÀNH — `Mst_Province_Get` (BizCarSv.Master.cs:8588) =====
@@ -55913,7 +55935,10 @@ record DealerMrkamCodeDto(string? DealerCode, string? MRKAMCode);
 // Sinh mã dùng chung: SequenceType + tiền tố/hậu tố do người gọi truyền.
 record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPostfix);
 // Ba master còn nợ. Mst_District khoá là CẶP (ProvinceCode, DistrictCode).
-record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive);
+record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive,
+    string? BankBUCode = null, string? BankBUPattern = null, string? PhoneNo = null, string? FaxNo = null, string? Address = null,
+    string? FlagPaymentBank = null, string? FlagMortageBank = null, string? FlagMonitorBank = null, string? PICEmail = null,
+    string? BenBankCode = null, int? NumberOfGuaranteeExt = null);
 record MstProvinceDto(string? ProvinceCode, string? ProvinceName = null, string? AreaCode = null, string? FlagActive = null);
 record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive);
 record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);

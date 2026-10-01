@@ -6758,6 +6758,23 @@ public sealed class MstBank
     /// <summary>Mã ngân hàng mẹ — rỗng nghĩa là bản ghi gốc, không phải chi nhánh.</summary>
     public string? BankCodeParent { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #311 đủ cột nguồn TblBank (DbDefine.cs:1566) — màn FrmBank (Admin/Product) lưu cả bộ qua SaveMasterDataTable.
+    public string? BankBUCode { get; set; }
+    public string? BankBUPattern { get; set; }
+    public string? PhoneNo { get; set; }
+    public string? FaxNo { get; set; }
+    public string? Address { get; set; }
+    /// <summary>NH thanh toán ("0"/"1" — Frm chặn giá trị khác khi import).</summary>
+    public string? FlagPaymentBank { get; set; }
+    /// <summary>NH nhận thế chấp ("0"/"1").</summary>
+    public string? FlagMortageBank { get; set; }
+    /// <summary>NH giám sát (20140719, "0"/"1") — dùng ở FrmMngGrt/FrmBankTransportMinutes.</summary>
+    public string? FlagMonitorBank { get; set; }
+    /// <summary>Email người phụ trách — Frm kiểm Util.IsValidEmail khi import.</summary>
+    public string? PICEmail { get; set; }
+    public string? BenBankCode { get; set; }
+    /// <summary>Số lần gia hạn bảo lãnh tối đa.</summary>
+    public int? NumberOfGuaranteeExt { get; set; }
 }
 
 /// <summary>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Ngân hàng</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1200px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px}
+  label{font-size:12px;opacity:.75;display:block}
+  input,button,select{font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;width:100%;box-sizing:border-box}
+  button{cursor:pointer;width:auto} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:0;color:var(--accent);padding:2px 6px}
+  .wrap{overflow-x:auto} table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+</style></head>
+<body>
+<h1>Danh mục ngân hàng <span class="muted">(port 1:1 FrmBank — Mst_Bank)</span></h1>
+<div class="card">
+  <div class="grid">
+    <div><label>Mã NH *</label><input id="fCode"></div>
+    <div><label>Tên NH</label><input id="fName"></div>
+    <div><label>Mã NH mẹ</label><input id="fParent"></div>
+    <div><label>BU code</label><input id="fBU"></div>
+    <div><label>BU pattern</label><input id="fBUP"></div>
+    <div><label>Điện thoại</label><input id="fPhone"></div>
+    <div><label>Fax</label><input id="fFax"></div>
+    <div><label>Địa chỉ</label><input id="fAddr"></div>
+    <div><label>Email phụ trách</label><input id="fEmail"></div>
+    <div><label>Mã NH thụ hưởng</label><input id="fBen"></div>
+    <div><label>Số lần gia hạn BL</label><input id="fExt" type="number" min="0"></div>
+    <div><label>Hoạt động</label><select id="fActive"><option value="1">1</option><option value="0">0</option></select></div>
+    <div><label>NH thanh toán</label><select id="fPay"><option value="0">0</option><option value="1">1</option></select></div>
+    <div><label>NH thế chấp</label><select id="fMort"><option value="0">0</option><option value="1">1</option></select></div>
+    <div><label>NH giám sát</label><select id="fMon"><option value="0">0</option><option value="1">1</option></select></div>
+  </div>
+  <div style="margin-top:10px"><button class="primary" onclick="save()">Lưu (thêm / sửa theo mã)</button> <span id="msg" class="muted"></span></div>
+</div>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>Mẹ</th><th>BU</th><th>ĐT</th><th>Email PIC</th><th>TT</th><th>Thế chấp</th><th>Giám sát</th><th>Gia hạn</th><th>HĐ</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="12" class="muted">Đang tải…</td></tr></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s??"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+function msg(t){ F("msg").textContent=t; }
+let ROWS=[];
+async function save(){ await token();
+  const body={BankCode:F("fCode").value,BankName:F("fName").value,BankCodeParent:F("fParent").value,FlagActive:F("fActive").value,
+    BankBUCode:F("fBU").value,BankBUPattern:F("fBUP").value,PhoneNo:F("fPhone").value,FaxNo:F("fFax").value,Address:F("fAddr").value,
+    FlagPaymentBank:F("fPay").value,FlagMortageBank:F("fMort").value,FlagMonitorBank:F("fMon").value,PICEmail:F("fEmail").value,
+    BenBankCode:F("fBen").value,NumberOfGuaranteeExt:F("fExt").value===""?null:+F("fExt").value};
+  const r=await fetch("/api/mstbanks",{method:"POST",headers:H(),body:JSON.stringify(body)}); const d=await r.json();
+  if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; } msg((d.updated?"Đã sửa ":"Đã thêm ")+d.bankCode); load(); }
+function edit(i){ const o=ROWS[i];
+  F("fCode").value=o.bankCode; F("fName").value=o.bankName||""; F("fParent").value=o.bankCodeParent||""; F("fActive").value=o.flagActive||"1";
+  F("fBU").value=o.bankBUCode||""; F("fBUP").value=o.bankBUPattern||""; F("fPhone").value=o.phoneNo||""; F("fFax").value=o.faxNo||""; F("fAddr").value=o.address||"";
+  F("fPay").value=o.flagPaymentBank||"0"; F("fMort").value=o.flagMortageBank||"0"; F("fMon").value=o.flagMonitorBank||"0"; F("fEmail").value=o.picEmail||"";
+  F("fBen").value=o.benBankCode||""; F("fExt").value=o.numberOfGuaranteeExt??""; window.scrollTo(0,0); }
+async function del(code){ if(!confirm("Xoá ngân hàng "+code+"?")) return; await token();
+  const r=await fetch("/api/mstbanks/"+encodeURIComponent(code)+"/delete",{method:"POST",headers:H()}); const d=await r.json();
+  msg(r.ok?"Đã xoá "+code:"Lỗi: "+(d.error||r.status)); load(); }
+async function load(){ await token();
+  const d=await (await fetch("/api/mstbanks",{headers:H()})).json(); ROWS=d.items||[];
+  F("rows").innerHTML=ROWS.map((o,i)=>`<tr><td><b>${esc(o.bankCode)}</b></td><td>${esc(o.bankName)}</td><td>${esc(o.bankCodeParent)}</td><td>${esc(o.bankBUCode)}</td><td>${esc(o.phoneNo)}</td><td>${esc(o.picEmail)}</td>
+    <td>${o.flagPaymentBank==="1"?"✔":""}</td><td>${o.flagMortageBank==="1"?"✔":""}</td><td>${o.flagMonitorBank==="1"?"✔":""}</td><td>${o.numberOfGuaranteeExt??""}</td><td>${o.flagActive}</td>
+    <td><button class="link" onclick="edit(${i})">Sửa</button><button class="link" onclick="del('${esc(o.bankCode)}')">Xoá</button></td></tr>`).join("")||'<tr><td colspan="12" class="muted">Chưa có ngân hàng.</td></tr>';
+}
+load();
+</script>
+</body></html>
