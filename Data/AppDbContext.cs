@@ -609,5 +609,17 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
         b.Entity<Dealer>().HasIndex(x => new { x.OrgId, x.DealerCode }).IsUnique();
         // Pin table name (DbSet "DlvMinutesSet" — tránh EF map nhầm tên khác với CREATE TABLE)
         b.Entity<DlvMinutes>().ToTable("DlvMinutesSet");
+
+        // #347 CHỈ SQLite (verify local): provider SQLite KHÔNG dịch được Sum/Avg/Min/Max trên `decimal`
+        // ("SQLite cannot apply aggregate operator 'Sum' on expressions of type 'decimal'") ⇒ 14 projection GET trả 500,
+        // grinder không verify được. Lưu decimal dưới dạng REAL/double trên SQLite để aggregate chạy trong SQL.
+        // Postgres (production) KHÔNG đổi: numeric giữ nguyên độ chính xác.
+        if (Database.IsSqlite())
+        {
+            var dec2dbl = new Microsoft.EntityFrameworkCore.Storage.ValueConversion.ValueConverter<decimal, double>(v => (double)v, v => (decimal)v);
+            foreach (var p in b.Model.GetEntityTypes().SelectMany(e => e.GetProperties())
+                         .Where(p => p.ClrType == typeof(decimal) || p.ClrType == typeof(decimal?)))
+                p.SetValueConverter(dec2dbl);
+        }
     }
 }
