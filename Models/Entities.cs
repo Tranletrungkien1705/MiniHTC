@@ -5892,11 +5892,19 @@ public sealed class ServiceEngineer
     public string EngineerName { get; set; } = "";
     public string? GroupRCode { get; set; }
     public string? Note { get; set; }
-    public string Status { get; set; } = "1";
-    public string? EngineerType { get; set; }      // 1=CVDV,2=KTV sửa chữa chung,3=KTV đồng sơn,4=Khác
+    public string IsActive { get; set; } = "1";   // #396 rename Status→IsActive (Ser_Engineer.IsActive)
+    /// <summary>#396 rename EngineerType→IsEngineer: nguồn Ser_Engineer.IsEngineer chính là "loại nhân viên" (FrmEmployeeCreate: lookEngineerType.EditValue = IsEngineer;
+    /// SerEngineerCreate01/Update01 ghi). Mã: 1=CVDV, 2=KTV sửa chữa chung, 3=KTV đồng sơn, 4=Khác.</summary>
+    public string? IsEngineer { get; set; }
     public DateTime? StartWorkDate { get; set; }
     public DateTime? FinishWorkDate { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    // ===== #396 parity SerEngineerCreate01/Update01 (BizCarSv.Service.cs:12474) =====
+    public string? DealerCode { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chiến dịch dịch vụ/marketing (Ser_Campaign — port 1:1 FrmCampaignCreate, TCMotor DMSCarSv/Admin):
@@ -13333,7 +13341,7 @@ public sealed class TranspDlvConfirm
     /// <summary>#327 Cước vận tải THEO BẢNG PHÍ (`Sto_DlvMinutes.TFValSys`) — Sto_DlvMinutes_Create_New20190416
     /// (Biz.HTC.WH.cs:88380-88432) tra Mst_TranspFee ⋈ Mst_TranspFeeVer(FlagActive='1') theo 6 khoá
     /// (tỉnh/huyện đi, tỉnh/huyện đến, nhà vận tải, model của VIN); CHỈ khi ra ĐÚNG 1 dòng mới gán = ValFee.</summary>
-    public decimal? TFValSys { get; set; }
+    public decimal? TFValSys { get; set; }
     /// <summary>
     /// 🔴 Tiền phạt trễ hạn **HỆ THỐNG TỰ TÍNH** khi đại lý xác nhận (`TPValSys`), bậc thang GIẢM DẦN:
     /// với n = (DlvEndDate − DlvStartDate).Days − ExpectedDays ngày trễ,

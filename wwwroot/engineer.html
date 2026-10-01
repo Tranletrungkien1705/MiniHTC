@@ -53,7 +53,7 @@ async function loadGroups(){ await token();
 }
 async function saveEng(){
   const body={engineerNo:F("en").value,engineerName:F("ename").value,groupRCode:F("eg").value,note:F("enote").value,
-    engineerType:F("etype").value||null,startWorkDate:F("estart").value||null,finishWorkDate:F("efinish").value||null};
+    isEngineer:F("etype").value||null,startWorkDate:F("estart").value||null,finishWorkDate:F("efinish").value||null};
   const r=await fetch("/api/engineers",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json(); if(r.ok){ F("emsg").textContent="Đã lưu "+j.engineerNo; F("en").value="";F("ename").value=""; loadEng(); } else F("emsg").textContent="Lỗi: "+(j.error||r.status);
 }
@@ -61,7 +61,7 @@ const ETYPE={"1":"CVDV","2":"KTV chung","3":"KTV đồng sơn","4":"Khác"};
 const dshow=s=>s?String(s).slice(0,10):"—";
 async function loadEng(){ await token();
   const d=await (await fetch(`/api/engineers?group=${F("fg").value}&q=${encodeURIComponent(F("q").value)}`,{headers:H()})).json();
-  F("erows").innerHTML=(d.items||[]).map(e=>`<tr><td><b>${e.engineerNo}</b></td><td>${e.engineerName}</td><td>${e.groupRCode||"—"}</td><td>${ETYPE[e.engineerType]||"—"}</td><td>${dshow(e.startWorkDate)}</td><td>${dshow(e.finishWorkDate)}</td><td class="muted">${e.note||"—"}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có KTV.</td></tr>';
+  F("erows").innerHTML=(d.items||[]).map(e=>`<tr><td><b>${e.engineerNo}</b></td><td>${e.engineerName}</td><td>${e.groupRCode||"—"}</td><td>${ETYPE[e.isEngineer]||"—"}</td><td>${dshow(e.startWorkDate)}</td><td>${dshow(e.finishWorkDate)}</td><td class="muted">${e.note||"—"}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có KTV.</td></tr>';
 }
 (async()=>{ await loadGroups(); await loadEng(); })();
 </script>
