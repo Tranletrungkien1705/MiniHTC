@@ -18150,7 +18150,7 @@ app.MapGet("/api/serviceitems", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(model)) query = query.Where(x => x.Model == model);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.SerCode).Take(500)
-        .Select(x => new { x.SerCode, x.SerName, x.Cost, x.Price, x.Model, x.Vat, x.Note, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.SerCode, x.SerName, x.Cost, x.Price, x.Model, x.Vat, x.Note, x.FlagActive, x.FlagWarranty, x.StdManHour, x.DealerCode, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -25907,6 +25907,50 @@ app.MapPost("/api/warrantyworkmsts/import", async (
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { added, updated, total = lines.Count, message = "Import thành công!" });
+}).RequireAuthorization();
+
+// #397 ÁP công việc bảo hành cho đại lý — port `Ser_MST_ROWarrantyWork_Save_Dealer` (BizCarSv.AssignmentOfWork.cs:3523; WS LIVE).
+//   Mỗi ROWWorkCode: lấy dòng Ser_MST_ROWarrantyWork ĐẦU TIÊN theo mã (nguồn không lọc model — Rows[0]); không có ⇒ nguồn văng
+//   IndexOutOfRange (rollback) ⇒ ở đây 400. Tìm Ser_MST_Service SerCode = ROWWorkCode:
+//     CÓ ⇒ cập nhật Model, SerName(=ROWWorkName), Price, Cost(=RatePrice), VAT, Note(=Remark), StdManHour(=RateHour), FlagWarranty=1, LogLU*;
+//     CHƯA ⇒ tạo mới thêm SerCode, StdManHour rỗng ⇒ 1, DealerCode, SerTypeID=1, IsActive=1, CreatedBy + LogLU*.
+//   🔴 Ghi nhận nguồn: guard Ser_RO_Create_NotFound_ROService_FlagWarranty (ZTemp.cs:6136) dùng `select count(0)` ⇒ luôn 1 dòng ⇒
+//      KHÔNG BAO GIỜ chặn ở LIVE ⇒ CỐ Ý không port (port theo ý định sẽ từ chối dữ liệu hệ thật vẫn nhận).
+app.MapPost("/api/warrantyworkmsts/apply-dealer", async (WarrantyWorkDealerDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var codes = (dto.ROWWorkCodes ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x != "").Distinct().ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Chưa chọn công việc bảo hành." });
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    int created = 0, updated = 0;
+    foreach (var code in codes)
+    {
+        var w = await db.WarrantyWorkMsts.Where(x => x.OrgId == t.OrgId && x.ROWWorkCode == code).OrderBy(x => x.Id).FirstOrDefaultAsync();
+        if (w is null) return Results.BadRequest(new { error = $"Không tìm thấy công việc bảo hành {code}.", code = "Ser_MST_ROWarrantyWork_Save", ROWWorkCode = code });
+        var s = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == code);
+        if (s is null)
+        {
+            s = new ServiceItemMst { OrgId = t.OrgId, SerCode = code, StdManHour = w.RateHour == 0 ? 1 : w.RateHour, DealerCode = dealer, SerTypeID = 1, FlagActive = "1", CreatedBy = who };
+            db.ServiceItemMsts.Add(s); created++;
+        }
+        else { s.StdManHour = w.RateHour; updated++; }
+        s.Model = string.IsNullOrEmpty(w.ModelCode) ? null : w.ModelCode; s.SerName = w.ROWWorkName; s.Price = w.Price; s.Cost = w.RatePrice; s.Vat = w.VAT;
+        s.Note = string.IsNullOrEmpty(w.Remark) ? null : w.Remark; s.FlagWarranty = "1"; s.LogLUDateTime = now; s.LogLUBy = who;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealer, created, updated });
+}).RequireAuthorization();
+
+// #397 GỠ — port `Ser_MST_ROWarrantyWork_Delete_Dealer` (:5304): dịch vụ SerCode = ROWWorkCode ⇒ FlagWarranty = 0 + LogLU* (không xoá dòng).
+app.MapPost("/api/warrantyworkmsts/unapply-dealer", async (WarrantyWorkDealerDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var codes = (dto.ROWWorkCodes ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x != "").Distinct().ToList();
+    if (codes.Count == 0) return Results.BadRequest(new { error = "Chưa chọn công việc bảo hành." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var rows = await db.ServiceItemMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.SerCode)).ToListAsync();
+    foreach (var s in rows) { s.FlagWarranty = "0"; s.LogLUDateTime = now; s.LogLUBy = who; }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { unflagged = rows.Count });
 }).RequireAuthorization();
 
 app.MapPost("/api/warrantyworkmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -57143,6 +57187,7 @@ record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCod
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
 record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
+record WarrantyWorkDealerDto(string? DealerCode, List<string?>? ROWWorkCodes);   // #397
 record ServiceItemImportRow(string? SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note);
 record ServiceItemImportDto(List<ServiceItemImportRow>? Rows);
 record SmsTemplateDto(string SmsType, string? SmsName, string? SmsBody);

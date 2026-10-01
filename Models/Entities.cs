@@ -14040,6 +14040,18 @@ public sealed class ServiceItemMst
     public string? Note { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #397 parity Ser_MST_Service — cột do `Ser_MST_ROWarrantyWork_Save_Dealer` / `_Delete_Dealer` ghi
+    //       (BizCarSv.AssignmentOfWork.cs:3523 / 5304, WS LIVE) khi áp/gỡ công việc bảo hành cho đại lý =====
+    /// <summary>Cờ "công việc bảo hành chính" (1/0). Save_Dealer bật 1, Delete_Dealer tắt 0.</summary>
+    public string FlagWarranty { get; set; } = "0";
+    /// <summary>Giờ công định mức (= RateHour của công việc BH; rỗng ⇒ "1" khi tạo mới).</summary>
+    public decimal? StdManHour { get; set; }
+    public string? DealerCode { get; set; }
+    public int? SerTypeID { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Danh mục model xe dịch vụ (mã/tên/nhãn hiệu/mã SX) — port 1:1 FrmModel/FrmImportModel (TblModel, TCMotor).</summary>

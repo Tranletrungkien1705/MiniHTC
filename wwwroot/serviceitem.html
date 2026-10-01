@@ -40,7 +40,7 @@
   <div><label>Lọc model</label><input id="qModel" style="width:100px"></div>
   <button onclick="load()">Xem danh sách</button>
 </div>
-<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">Giá vốn</th><th class="num">Giá bán</th><th>Model</th><th class="num">VAT%</th><th>TT</th><th></th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th class="num">Giá vốn</th><th class="num">Giá bán</th><th>Model</th><th class="num">VAT%</th><th>BH</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
@@ -73,7 +73,7 @@ function edit(o){ F("fCode").value=o.serCode;F("fName").value=o.serName||"";F("f
 async function load(){ await token();
   const r=await fetch("/api/serviceitems?q="+encodeURIComponent(F("qQ").value)+"&model="+encodeURIComponent(F("qModel").value),{headers:H()});
   const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.serCode}</b></td><td>${esc(o.serName)}</td><td class="num">${M(o.cost)}</td><td class="num">${M(o.price)}</td><td>${esc(o.model)}</td><td class="num">${o.vat}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.serCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dịch vụ.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.serCode}</b></td><td>${esc(o.serName)}</td><td class="num">${M(o.cost)}</td><td class="num">${M(o.price)}</td><td>${esc(o.model)}</td><td class="num">${o.vat}</td><td>${o.flagWarranty==="1"?"✔":""}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.serCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dịch vụ.</td></tr>';
 }
 </script>
 </body></html>

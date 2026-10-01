@@ -45,10 +45,14 @@ async function save(){ await token();
   const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.rowWorkCode+"/"+d.modelCode); reset(); load();
 }
 function edit(o){ F("code").value=o.rowWorkCode; F("name").value=o.rowWorkName||""; F("model").value=o.modelCode; F("apptype").value=o.appTypeCode||""; F("rh").value=o.rateHour; F("rp").value=o.ratePrice; F("price").value=o.price; F("vat").value=o.vat; F("remark").value=o.remark||""; window.scrollTo(0,0); }
+// #397 áp/gỡ công việc BH cho đại lý (Ser_MST_ROWarrantyWork_Save_Dealer / _Delete_Dealer) — ghi danh mục dịch vụ, FlagWarranty.
+async function applyDealer(code,on){ await token(); const dl=on?prompt("Mã đại lý áp dụng:",""):""; if(on&&dl===null) return;
+  const r=await fetch("/api/warrantyworkmsts/"+(on?"apply-dealer":"unapply-dealer"),{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({DealerCode:dl,ROWWorkCodes:[code]})});
+  const d=await r.json(); say(r.ok?(on?`Đã áp dụng (${d.created} mới, ${d.updated} cập nhật)`:`Đã gỡ ${d.unflagged}`):"Lỗi: "+(d.error||r.status)); }
 async function toggle(id){ await token(); await fetch("/api/warrantyworkmsts/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
 async function load(){ await token();
   const r=await fetch("/api/warrantyworkmsts?all="+(F("all").checked)+"&model="+encodeURIComponent(F("fmodel").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.rowWorkCode)}</b></td><td>${esc(o.rowWorkName)}</td><td>${esc(o.modelCode)}</td><td class="num">${nf(o.rateHour)}</td><td class="num">${nf(o.ratePrice)}</td><td class="num">${nf(o.price)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.rowWorkCode)}</b></td><td>${esc(o.rowWorkName)}</td><td>${esc(o.modelCode)}</td><td class="num">${nf(o.rateHour)}</td><td class="num">${nf(o.ratePrice)}</td><td class="num">${nf(o.price)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle(${o.id})">Đổi</button><button class="link" onclick="applyDealer('${esc(o.rowWorkCode)}',true)">Áp ĐL</button><button class="link" onclick="applyDealer('${esc(o.rowWorkCode)}',false)">Gỡ</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>
