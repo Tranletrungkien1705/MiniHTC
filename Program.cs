@@ -6779,6 +6779,7 @@ app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? de
         g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, // biểu thức CASE (EF không dịch được local function) — cùng bảng mã với GuaranteeTypeName()
         GuaranteeTypeName = g.GuaranteeType == "BL" ? "Bảo lãnh" : g.GuaranteeType == "LCTC" ? "LC trả chậm" : g.GuaranteeType == "LCUP" ? "LC Upas" : g.GuaranteeType == "EPLC" ? "EPLC" : g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
         g.DiscountPmtDate, g.DiscountPmtValue, g.Fee,
+        g.DateEnd_Discount, g.LogLUDateTime, g.LogLUBy,   // #342
         cars = db.BankGuaranteeDtls.Count(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -7406,8 +7407,15 @@ app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbCon
         p.LogLUDateTime = now; p.LogLUBy = who;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { confirmed = plan.Count, paymentNos = plan.Select(x => x.p.PaymentNo),
-        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, Pmt_Guarantee.DateEnd/_Discount, CheckTotalValue, đẩy sao kê TCF." });
+    // #342 hiệu ứng phụ nguồn: myPmt_Guarantee_Upd_DateEnd_Discount_New20181119(strPaymentNo) cho từng phiếu
+    //   ⇒ #tbl_Grt_Id = distinct GuaranteeNo của Pmt_PaymentDetail thuộc phiếu.
+    var confirmedNos = plan.Select(x => x.p.PaymentNo).ToList();
+    var grtNosTcf = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && confirmedNos.Contains(d.PaymentNo) && d.GuaranteeNo != null)
+        .Select(d => d.GuaranteeNo!).Distinct().ToListAsync();
+    var grtUpdated = await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, grtNosTcf, who);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { confirmed = plan.Count, paymentNos = confirmedNos, guaranteesRecalculated = grtUpdated,
+        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, Pmt_Guarantee.DateEnd (_01), CheckTotalValue, đẩy sao kê TCF." });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
@@ -56424,6 +56432,52 @@ record BankPmInterestDto(List<BankPmInterestRowDto>? Rows);
 record PmConfirmEndDateDto(List<PmEndDateRowDto>? Lines);
 record BankPmConfirmTcfRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate, string? TCF_RemarkTranfer,
     string? TCF_AutoId, string? TCF_BSInputNo, string? FlagDMS_TCF, string? TCF_MaGiaoDich);   // #332
+/// <summary>🔴 #342 Port 1:1 `myPmt_Guarantee_Upd_DateEnd_Discount_New20181119` (2010.HTC Biz.HTC.WH.cs:39804).
+/// Với mỗi bảo lãnh liên quan: tổng thanh toán từng xe = Σ Pmt_PaymentDetail.Amount của phiếu **PaymentStatus='F'**
+/// (chỉ khi bảo lãnh A/F), ngày = Max(PaymentEndDate); giá trị cần trả của dòng = min(GuaranteeValue, Car_Car.UnitPriceActual)
+/// (giá xe NULL ⇒ lấy GuaranteeValue — đúng nhánh `else` của CASE nguồn). Bảo lãnh "tất toán" khi KHÔNG còn dòng
+/// (A/F, FlagDtlDiscount='1') có giá trị cần trả > đã trả ⇒ DateEnd_Discount = Max(ngày) của các dòng đó; ngược lại NULL.
+/// MiniHTC: dòng BL khoá theo VIN ⇒ nối sang CarId/UnitPriceActual qua `CarVinMasters`.</summary>
+static class GrtDiscount
+{
+    public static async Task<int> UpdDateEndDiscount(AppDbContext db, Guid org, IEnumerable<string> guaranteeNos, string who)
+    {
+        var nos = guaranteeNos.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+        if (nos.Count == 0) return 0;
+        var grts = await db.BankGuarantees.Where(g => g.OrgId == org && nos.Contains(g.GuaranteeNo)).ToListAsync();
+        var activeNos = grts.Where(g => g.Status == "A" || g.Status == "F").Select(g => g.GuaranteeNo).ToList();
+        var pays = await (from d in db.PmtPaymentDetails
+                          join p in db.PmtPayments on d.PaymentNo equals p.PaymentNo
+                          where d.OrgId == org && p.OrgId == org && d.GuaranteeNo != null && activeNos.Contains(d.GuaranteeNo) && p.PaymentStatus == "F"
+                          select new { d.GuaranteeNo, d.CarId, d.Amount, p.PaymentEndDate }).ToListAsync();
+        var sums = pays.GroupBy(x => (x.GuaranteeNo, x.CarId))
+            .ToDictionary(g => g.Key, g => (Amount: g.Sum(x => x.Amount ?? 0m), Date: g.Max(x => x.PaymentEndDate)));
+        var ids = grts.Select(g => g.Id).ToList();
+        var dtls = await db.BankGuaranteeDtls.Where(d => d.OrgId == org && ids.Contains(d.GuaranteeId)).ToListAsync();
+        var vins = dtls.Select(d => d.VIN).Distinct().ToList();
+        var cars = (await db.CarVinMasters.Where(c => c.OrgId == org && vins.Contains(c.VIN)).Select(c => new { c.VIN, c.CarId, c.UnitPriceActual }).ToListAsync())
+            .GroupBy(c => c.VIN).ToDictionary(g => g.Key, g => g.First());
+        var now = DateTime.Now;
+        foreach (var g in grts)
+        {
+            DateTime? done = null;
+            if (g.Status == "A" || g.Status == "F")
+            {
+                var lines = dtls.Where(d => d.GuaranteeId == g.Id && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F") && d.FlagDtlDiscount == "1")
+                    .Select(d =>
+                    {
+                        cars.TryGetValue(d.VIN, out var c);
+                        var paid = c?.CarId is string cid && sums.TryGetValue((g.GuaranteeNo, cid), out var s) ? s : (Amount: 0m, Date: (DateTime?)null);
+                        var need = c?.UnitPriceActual is decimal up && d.GrtValue > up ? up : d.GrtValue;
+                        return (need, paid.Amount, paid.Date);
+                    }).ToList();
+                if (lines.All(l => !(l.need > l.Amount))) done = lines.Select(l => l.Date).Max();
+            }
+            g.DateEnd_Discount = done; g.LogLUDateTime = now; g.LogLUBy = who;
+        }
+        return grts.Count;
+    }
+}
 record BankPmConfirmTcfDto(List<BankPmConfirmTcfRowDto>? Rows);   // #332
 record PmEndDateRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate);
 record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);

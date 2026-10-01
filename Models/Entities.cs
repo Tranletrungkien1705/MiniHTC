@@ -12153,6 +12153,12 @@ public sealed class BankGuarantee
     /// `PaymentGuaranteeCreate_InvalidNumberOfDaysDeferredPayment`. Các loại khác không dùng.
     /// </summary>
     public int? NumberOfDaysDeferredPayment { get; set; }
+    /// <summary>🔴 #342 `Pmt_Guarantee.DateEnd_Discount` — ngày TẤT TOÁN phần chiết khấu: = ngày tiền về LỚN NHẤT khi
+    /// MỌI dòng chi tiết (A/F, FlagDtlDiscount='1') đã được thanh toán đủ `min(GuaranteeValue, Car_Car.UnitPriceActual)`;
+    /// chưa đủ ⇒ **NULL** (update LEFT JOIN). Chỉ ghi bởi `myPmt_Guarantee_Upd_DateEnd_Discount_New20181119` (Biz.HTC.WH.cs:39804).</summary>
+    public DateTime? DateEnd_Discount { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết bảo lãnh theo VIN (Pmt_GuaranteeDetail) — port 1:1 FrmBankGrt detail.</summary>

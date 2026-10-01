@@ -1327,6 +1327,10 @@ public static class Seeder
         "ALTER TABLE public.\"MstUnitPriceGpsItems\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text",
         // #186 SUA BUG: GuaranteeType la BL/LCTC/LCUP/EPLC, KHONG phai co 0/1
         "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"NumberOfDaysDeferredPayment\" integer",
+        // #342 Pmt_Guarantee.DateEnd_Discount + LogLU (myPmt_Guarantee_Upd_DateEnd_Discount_New20181119).
+        "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"DateEnd_Discount\" timestamp NULL",
+        "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+        "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
         "UPDATE public.\"BankGuarantees\" SET \"GuaranteeType\" = 'BL' WHERE \"GuaranteeType\" IN ('0','1')",
         "UPDATE public.\"BankCarMortages\" SET \"GuaranteeType\" = 'BL' WHERE \"GuaranteeType\" IN ('0','1')",
         // #185 parity cum Mst_InvoiceSetup_* (64-bit only)
