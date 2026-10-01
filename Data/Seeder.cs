@@ -3130,6 +3130,7 @@ public static class Seeder
                 // #1129: Ser_Mst_Model_Update_New20200203 (strIsActive) ghi LogLUDateTime/LogLUBy moi lan sua.
                 "ALTER TABLE public.\"ServiceModels\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"ServiceModels\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                "ALTER TABLE public.\"ServiceModels\" ADD COLUMN IF NOT EXISTS \"IsActive\" text NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"ServiceTradeMarks\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 // #1128: Ser_Mst_TradeMark_Update ghi LogLUDateTime/LogLUBy = strPartnerUserCode moi lan sua.

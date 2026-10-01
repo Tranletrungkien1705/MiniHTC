@@ -14714,6 +14714,8 @@ public sealed class ServiceModel
     public string? ProductionCode { get; set; }
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1549 §12 - cot nguon Ser_MST_Model.IsActive (varchar) - port 1:1.
+    public string? IsActive { get; set; }
     // ===== #1049 §12 — `Ser_Mst_Model_Create_New20200203` (BizCarSv.Master.cs:2623, LIVE qua WS gateway)
     // ghi `CreatedDate`/`CreatedBy` — cùng mẫu hình #453 (ServiceAppointment/Cavity/ServiceEngineer).
     public DateTime? CreatedDate { get; set; }

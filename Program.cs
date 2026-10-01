@@ -15978,7 +15978,7 @@ app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, strin
     var modelCodes = page.Select(x => x.ModelCode).Distinct().ToList();
     var stdByCode = await db.CarModelStds.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode))
         .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
-    var items = page.Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive,
+    var items = page.Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.DealerCode, x.FlagActive, x.IsActive,   // #1549 ECHO cot nguon IsActive
         x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt,   // #1313 §12
         mcmstd_ModelCode = stdByCode.FirstOrDefault(m => m.ModelCode == x.ModelCode)?.ModelCode,   // #1499 ECHO
         mcmstd_ModelName = stdByCode.FirstOrDefault(m => m.ModelCode == x.ModelCode)?.ModelName }).ToList();   // #1499 ECHO
@@ -15994,7 +15994,7 @@ app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, I
     var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
     if (ex is not null)
     {
-        ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
+        ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1"; ex.IsActive = dto.IsActive;   // #1549
         // #1129 §12: nguồn `_Update_New20200203` (có tham số strIsActive) LUÔN ghi LogLUDateTime/LogLUBy —
         // entity chưa từng có cột này, nhánh SỬA-QUA-UPSERT bỏ sót hoàn toàn.
         ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = (partnerUserCode ?? "system").Trim();
@@ -16002,7 +16002,7 @@ app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, I
         return Results.Ok(new { ex.ModelCode, updated = true });
     }
     // #1049: Ser_Mst_Model_Create_New20200203 ghi CreatedDate/CreatedBy VÔ ĐIỀU KIỆN lúc tạo.
-    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, DealerCode = dto.DealerCode, FlagActive = "1",
+    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, DealerCode = dto.DealerCode, FlagActive = "1", IsActive = dto.IsActive,   // #1549
         CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
         // #1129 §12: nguồn Create cũng ghi LogLUDateTime/LogLUBy cùng lúc với Created*.
         LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() };
@@ -85885,7 +85885,7 @@ record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantit
     string? StockOutOrderID = null, string? StockOutOrderNo = null);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null, string? DealerCode = null,
     string? CusID = null, string? UserCode = null, string? TruckNo = null);   // #995/#996
-record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
+record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode, string? IsActive = null);
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
 record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note,
