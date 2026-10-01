@@ -27339,51 +27339,40 @@ app.MapPost("/api/partquotes/{no}/{action}", async (string no, string action, Ap
     return Results.Ok(new { h.QuoteNo, status = h.Status, sourceCode = partQuoteStatusSourceCodes[next] });
 }).RequireAuthorization();
 
-// ===== Hợp đồng bảo hiểm dịch vụ (InsContract — port 1:1 FrmInsuranceContractCreate/Search, TCMotor) =====
+// ===== Hợp đồng bảo hiểm dịch vụ — ⛔ #340 HỢP NHẤT THỰC THỂ SONG TRÙNG =====
+// `/api/inscontracts` trước đây ghi vào entity RIÊNG `InsContract` (khoá InContractNo, tự sinh "IC"+timestamp, KHÔNG guard),
+// trong khi `/api/insurancecontracts` ghi `SerInsuranceContract` — **cùng bảng nguồn `Ser_InsuranceContract`**
+// (cùng màn FrmInsuranceContractCreate/Search). Bản CHUẨN = `SerInsuranceContract` (#339: mã HDBH-…, 2 guard nguồn).
+// ⇒ GET đọc từ bản chuẩn (giữ nguyên hình dạng JSON cũ, InsName tra từ master `SerInsurances`); mọi lệnh GHI trên route cũ
+//    trả 400 kèm route mới để không còn đường ghi né guard. Dữ liệu cũ trong `InsContracts` được Seeder chép sang (idempotent).
 app.MapGet("/api/inscontracts", async (AppDbContext db, ITenantContext t, string? q, string? ins, string? active) =>
 {
-    var query = db.InsContracts.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.InContractNo.Contains(q!) || (x.InsName != null && x.InsName.Contains(q!)));
+    var query = db.SerInsuranceContracts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => (x.InContractNo != null && x.InContractNo.Contains(q!)) || x.InContractCode.Contains(q!));
     if (!string.IsNullOrWhiteSpace(ins)) query = query.Where(x => x.InsNo == ins);
-    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.IsActive == active);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
-        x.InContractNo, x.InContractCode, x.InsNo, x.InsName, x.PaymentLimit, x.TypePayment, x.FlagActive,
+        x.InContractNo, x.InContractCode, x.InsNo,
+        InsName = db.SerInsurances.Where(s => s.OrgId == t.OrgId && s.InsNo == x.InsNo).Select(s => s.InsVieName).FirstOrDefault(),
+        x.PaymentLimit, x.TypePayment, FlagActive = x.IsActive, x.DealerCode,
         startDate = x.StartDate.HasValue ? x.StartDate.Value.ToString("yyyy-MM-dd") : "",
         finishDate = x.FinishDate.HasValue ? x.FinishDate.Value.ToString("yyyy-MM-dd") : ""
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/insurancecontracts" });
 }).RequireAuthorization();
 
-// Tạo/cập nhật HĐ bảo hiểm (số HĐ trống = auto-gen). Guard ngày hết hạn >= ngày hiệu lực.
-app.MapPost("/api/inscontracts", async (InsContractDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/inscontracts", () => Results.BadRequest(new
 {
-    if (string.IsNullOrWhiteSpace(dto.InsNo)) return Results.BadRequest(new { error = "Chưa chọn nhà bảo hiểm." });
-    if (dto.PaymentLimit < 0) return Results.BadRequest(new { error = "Hạn mức chi trả không hợp lệ." });
-    if (dto.StartDate.HasValue && dto.FinishDate.HasValue && dto.FinishDate < dto.StartDate)
-        return Results.BadRequest(new { error = "Ngày hết hạn phải sau ngày hiệu lực." });
-    var no = string.IsNullOrWhiteSpace(dto.InContractNo) ? "IC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.InContractNo.Trim().ToUpperInvariant();
-    var ex = await db.InsContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractNo == no);
-    if (ex is not null)
-    {
-        ex.InContractCode = dto.InContractCode; ex.InsNo = dto.InsNo; ex.InsName = dto.InsName; ex.StartDate = dto.StartDate; ex.FinishDate = dto.FinishDate; ex.PaymentLimit = dto.PaymentLimit; ex.TypePayment = dto.TypePayment; ex.FlagActive = "1";
-        await db.SaveChangesAsync();
-        return Results.Ok(new { ex.InContractNo, updated = true });
-    }
-    var r = new InsContract { OrgId = t.OrgId, InContractNo = no, InContractCode = dto.InContractCode, InsNo = dto.InsNo, InsName = dto.InsName, StartDate = dto.StartDate, FinishDate = dto.FinishDate, PaymentLimit = dto.PaymentLimit, TypePayment = dto.TypePayment, FlagActive = "1" };
-    db.InsContracts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.InContractNo, updated = false });
-}).RequireAuthorization();
+    error = "Hợp đồng bảo hiểm đã hợp nhất vào /api/insurancecontracts (bản chuẩn Ser_InsuranceContract, có guard nguồn).",
+    route = "/api/insurancecontracts", page = "/insurancecontract.html"
+})).RequireAuthorization();
 
-app.MapPost("/api/inscontracts/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/inscontracts/{no}/toggle", (string no) => Results.BadRequest(new
 {
-    no = no.Trim().ToUpperInvariant();
-    var x = await db.InsContracts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.InContractNo == no);
-    if (x is null) return Results.NotFound(new { no });
-    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { x.InContractNo, flagActive = x.FlagActive });
-}).RequireAuthorization();
+    error = "Hợp đồng bảo hiểm đã hợp nhất — bật/tắt qua /api/insurancecontracts/{id}/toggle.",
+    route = "/api/insurancecontracts/{id}/toggle", no
+})).RequireAuthorization();
 
 // ===== Tham số cấu hình dịch vụ theo đại lý (DealerServiceOption — port 1:1 FrmDealerServiceOptional, TCMotor) =====
 // Catalog SerParamCode: 5 toggle auth + 6 giá trị số (profit rate / đơn giá công).
