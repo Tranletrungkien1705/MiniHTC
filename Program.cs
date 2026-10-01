@@ -21264,44 +21264,22 @@ app.MapPost("/api/jdpowerterms/{id}/toggle", async (long id, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
-// ===== Chi tiết thanh toán PDI theo xe (PdiStoragePayment — port 1:1 FrmSuaThanhToanPDI, 2010.HTC) =====
+// ===== Chi tiết thanh toán PDI theo xe — ⛔ #391 PdiStoragePayment là port SAI của Pmt_PaymentPDIDetail (bản chuẩn PmtPaymentPdiDetail).
+// FrmSuaThanhToanPDI: StoreDate/DeliveryOutDate CHỈ ĐỌC (_lstColNotAllowEdit), chỉ sửa CostInCheck/CostOutCheck qua Pmt_PaymentPDI_UpdateMulti.
+// GET đọc bản chuẩn (giữ hình JSON cũ; Model/Spec/Màu không lưu ở chi tiết ⇒ null); import ngày ⇒ 400 + route sửa phí.
 app.MapGet("/api/pdistoragepayments", async (AppDbContext db, ITenantContext t, string? vin, string? dealer) =>
 {
-    var q = db.PdiStoragePayments.Where(x => x.OrgId == t.OrgId);
+    var q = db.PmtPaymentPdiDetails.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
-    var items = (await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.VIN, x.ModelCode, x.SpecCode, x.ColorExtName, x.StorageCodeInit, x.DealerCode, x.StoreDate, x.DeliveryOutDate, x.UpdatedBy, x.UpdatedAt
-    }).ToListAsync())
-    .Select(x => new { x.Id, x.VIN, x.ModelCode, x.SpecCode, x.ColorExtName, x.StorageCodeInit, x.DealerCode, x.StoreDate, x.DeliveryOutDate, x.UpdatedBy, x.UpdatedAt,
-        storageDays = (x.StoreDate.HasValue && x.DeliveryOutDate.HasValue) ? (int)(x.DeliveryOutDate.Value.Date - x.StoreDate.Value.Date).TotalDays : (int?)null }).ToList();
-    return Results.Ok(new { count = items.Count, items });
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
+        x.Id, x.VIN, x.PmtPDINo, ModelCode = (string?)null, SpecCode = (string?)null, ColorExtName = (string?)null, x.StorageCodeInit, x.DealerCode,
+        x.StoreDate, DeliveryOutDate = (DateTime?)null, x.CostInCheck, x.CostOutCheck, UpdatedBy = x.LogLUBy, UpdatedAt = x.LogLUDateTime }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/paymentpdi/{no}" });
 }).RequireAuthorization();
 
-app.MapPost("/api/pdistoragepayments/import", async (PdiPaymentImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
-{
-    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có xe để cập nhật." });
-    var dup = rows.GroupBy(r => r.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong file." });
-    foreach (var r in rows)
-        if (r.StoreDate.HasValue && r.DeliveryOutDate.HasValue && r.DeliveryOutDate < r.StoreDate)
-            return Results.BadRequest(new { error = $"VIN {r.VIN}: ngày xuất kho phải >= ngày nhập kho." });
-    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var vins = rows.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToHashSet();
-    var existing = await db.PdiStoragePayments.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
-    var byVin = existing.ToDictionary(x => x.VIN, x => x);
-    int added = 0, updated = 0; var now = DateTime.Now;
-    foreach (var r in rows)
-    {
-        var vin = r.VIN!.Trim().ToUpperInvariant();
-        if (!byVin.TryGetValue(vin, out var row)) { row = new PdiStoragePayment { OrgId = t.OrgId, VIN = vin }; db.PdiStoragePayments.Add(row); added++; } else updated++;
-        row.ModelCode = r.ModelCode; row.SpecCode = r.SpecCode; row.ColorExtName = r.ColorExtName; row.StorageCodeInit = r.StorageCodeInit; row.DealerCode = r.DealerCode;
-        row.StoreDate = r.StoreDate; row.DeliveryOutDate = r.DeliveryOutDate; row.UpdatedBy = by; row.UpdatedAt = now;
-    }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { added, updated });
-}).RequireAuthorization();
+app.MapPost("/api/pdistoragepayments/import", (PdiPaymentImportDto dto) =>
+    Results.BadRequest(new { error = "Ngày nhập/xuất kho trên phiếu PDI là CHỈ ĐỌC ở nguồn (FrmSuaThanhToanPDI). Chỉ sửa phí kiểm tra vào/ra theo VIN.", route = "/api/paymentpdi/{no}/update", page = "/pdifeepayment.html" })).RequireAuthorization();
 
 // ===== Cập nhật trạng thái xe (CarStatusUpdate — port 1:1 FrmUpdateCar_Status, 2010.HTC) =====
 app.MapGet("/api/carstatusupdates", async (AppDbContext db, ITenantContext t, string? carId, string? ttc, string? cptc) =>
@@ -36461,6 +36439,9 @@ static async Task<IResult> PmtPdiUpdate(AppDbContext db, Guid orgId, string who,
         var r = rows.FirstOrDefault(x => string.Equals((x.Vin ?? "").Trim(), d.VIN, StringComparison.OrdinalIgnoreCase));
         if (r is null) continue;
         d.CostInCheck = r.CostInCheck; d.CostOutCheck = r.CostOutCheck; d.LogLUDateTime = now; d.LogLUBy = who;
+        // #391 FrmSuaThanhToanPDI (load lưới): StoreDate rỗng ⇒ CostInCheck = "0" trước khi người dùng sửa/gửi ⇒ dòng chưa nhập kho không tính phí kiểm tra vào.
+        //   (Vế DeliveryOutDate rỗng ⇒ CostOutCheck = 0 chưa port: PmtPaymentPdiDetail chưa có cột DeliveryOutDate — Get nguồn join ra.)
+        if (d.StoreDate is null) d.CostInCheck = 0;
     }
     var total = dtls.Sum(d => d.CostInCheck + d.CostOutCheck);
     h.TotalAmount = total; h.AmountVAT = total * 0.1m; h.TotalAmountAfterVAT = total + total * 0.1m;

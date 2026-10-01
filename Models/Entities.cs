@@ -3367,7 +3367,9 @@ public sealed class JDPowerTerm
     public DateTime UpdatedAt { get; set; }
 }
 
-/// <summary>Chi tiết thanh toán PDI theo xe (Pmt_PaymentPDIDetail) — port 1:1 FrmSuaThanhToanPDI (2010.HTC). Sửa ngày nhập kho/xuất kho từng VIN; StorageDays = xuất - nhập. Upsert theo VIN.</summary>
+/// <summary>⛔ #391 DEPRECATED — port SAI của Pmt_PaymentPDIDetail (bản chuẩn <see cref="PmtPaymentPdiDetail"/>). FrmSuaThanhToanPDI để StoreDate/DeliveryOutDate trong
+/// `_lstColNotAllowEdit` (CHỈ ĐỌC) và chỉ gửi VIN + CostInCheck + CostOutCheck lên Pmt_PaymentPDI_UpdateMulti ⇒ "sửa/import ngày nhập-xuất kho theo VIN" là
+/// chức năng TỰ BỊA. /api/pdistoragepayments GET đọc bản chuẩn, import ⇒ 400. Bảng giữ để đọc dữ liệu cũ (không có chỗ tương ứng ở nguồn ⇒ không chép).</summary>
 public sealed class PdiStoragePayment
 {
     public long Id { get; set; }
