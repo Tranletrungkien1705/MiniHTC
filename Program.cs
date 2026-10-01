@@ -24985,25 +24985,32 @@ app.MapGet("/api/ordercomplains/{no}/attachments", async (string no, AppDbContex
 {
     var cn = no.Trim();
     if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
-    var files = await db.OrderComplainAttachments.Where(a => a.OrgId == t.OrgId && a.ComplainNo == cn).OrderBy(a => a.Id)
-        .Select(a => new { a.Id, a.FileName, a.ImageType, a.FileNote, createdAt = a.CreatedAt.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
+    var files = await db.OrderComplainAttachments.Where(a => a.OrgId == t.OrgId && a.OrderComplainNo == cn).OrderBy(a => a.Id)
+        .Select(a => new { a.Id, a.OrderComplainNo, a.ImageName, a.ImagePath, a.OrderComplainImageType, a.FileNote,
+            LogLUDTime = a.LogLUDTime.ToString("yyyy-MM-dd HH:mm"), a.LogLUBy }).ToListAsync();   // #363 tên cột nguồn
     return Results.Ok(new { complainNo = cn, count = files.Count, files });
 }).RequireAuthorization();
 
-app.MapPost("/api/ordercomplains/{no}/attachments", async (string no, OcAttachDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/ordercomplains/{no}/attachments", async (string no, OcAttachDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var cn = no.Trim();
     if (!await db.OrderComplains.AnyAsync(x => x.OrgId == t.OrgId && x.ComplainNo == cn)) return Results.NotFound(new { no });
-    var fn = (dto.FileName ?? "").Trim();
+    var fn = (dto.ImageName ?? "").Trim();
     if (fn == "") return Results.BadRequest(new { error = "Cần tên file đính kèm." });
-    var a = new OrderComplainAttachment { OrgId = t.OrgId, ComplainNo = cn, FileName = fn, ImageType = dto.ImageType, FileNote = dto.FileNote };
+    // #363 StdData nguồn: OrderComplainImageType StdParam (trim+upper); ImageName / ImagePath chỉ trim; LogLUDTime/By = lúc lưu.
+    var a = new OrderComplainAttachment
+    {
+        OrgId = t.OrgId, OrderComplainNo = cn, ImageName = fn, ImagePath = string.IsNullOrWhiteSpace(dto.ImagePath) ? null : dto.ImagePath.Trim(),
+        OrderComplainImageType = string.IsNullOrWhiteSpace(dto.OrderComplainImageType) ? null : dto.OrderComplainImageType.Trim().ToUpperInvariant(),
+        FileNote = dto.FileNote, LogLUDTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? "system"
+    };
     db.OrderComplainAttachments.Add(a); await db.SaveChangesAsync();
-    return Results.Ok(new { a.Id, a.FileName });
+    return Results.Ok(new { a.Id, a.ImageName, a.OrderComplainImageType });
 }).RequireAuthorization();
 
 app.MapDelete("/api/ordercomplains/{no}/attachments/{attId}", async (string no, long attId, AppDbContext db, ITenantContext t) =>
 {
-    var a = await db.OrderComplainAttachments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ComplainNo == no.Trim() && x.Id == attId);
+    var a = await db.OrderComplainAttachments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainNo == no.Trim() && x.Id == attId);
     if (a is null) return Results.NotFound(new { attId });
     db.OrderComplainAttachments.Remove(a); await db.SaveChangesAsync();
     return Results.Ok(new { deleted = attId });
@@ -57331,7 +57338,7 @@ record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, in
 record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);
 record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);
 record PaymentDiscountStatusDto(string Status, string? Note);
-record OcAttachDto(string FileName, string? ImageType, string? FileNote);
+record OcAttachDto(string? ImageName, string? OrderComplainImageType, string? FileNote, string? ImagePath = null);   // #363 tên cột nguồn
 record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, decimal TotalQty);
 record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);
 record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);

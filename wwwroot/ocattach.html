@@ -21,11 +21,12 @@
 <div class="row">
   <div><label>Tên file</label><input id="fName" style="width:180px" placeholder="anh1.jpg"></div>
   <div><label>Loại ảnh</label><input id="fType" style="width:120px"></div>
+  <div><label>Đường dẫn</label><input id="fPath" style="width:200px"></div>
   <div style="flex:1"><label>Ghi chú</label><input id="fNote" style="width:100%"></div>
   <button class="primary" onclick="addFile()">Thêm</button><span id="msg2" class="msg"></span>
 </div>
-<div class="wrap"><table><thead><tr><th>ID</th><th>Tên file</th><th>Loại ảnh</th><th>Ghi chú</th><th>Thời gian</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="6" class="muted">Nhập số khiếu nại rồi "Xem file".</td></tr></tbody></table></div>
+<div class="wrap"><table><thead><tr><th>ID</th><th>Tên file</th><th>Đường dẫn</th><th>Loại ảnh</th><th>Ghi chú</th><th>Thời gian</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="7" class="muted">Nhập số khiếu nại rồi "Xem file".</td></tr></tbody></table></div>
 
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
@@ -40,11 +41,11 @@ async function loadFiles(){ await token(); const no=F("cNo").value.trim(); if(!n
   const r=await fetch("/api/ordercomplains/"+encodeURIComponent(no)+"/attachments",{headers:H()}); const d=await r.json();
   if(!r.ok){ m("msg",d.error||"Không thấy KN "+no); F("rows").innerHTML=""; return; }
   m("msg",d.complainNo+" — "+d.count+" file");
-  F("rows").innerHTML=(d.files||[]).map(o=>`<tr><td>${o.id}</td><td><b>${esc(o.fileName)}</b></td><td>${esc(o.imageType)}</td><td>${esc(o.fileNote)}</td><td>${esc(o.createdAt)}</td><td><button class="link del" onclick="delFile('${esc(d.complainNo)}',${o.id})">Xóa</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có file.</td></tr>';
+  F("rows").innerHTML=(d.files||[]).map(o=>`<tr><td>${o.id}</td><td><b>${esc(o.imageName)}</b></td><td>${esc(o.imagePath)}</td><td>${esc(o.orderComplainImageType)}</td><td>${esc(o.fileNote)}</td><td>${esc(o.logLUDTime)}</td><td><button class="link del" onclick="delFile('${esc(d.complainNo)}',${o.id})">Xóa</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có file.</td></tr>';
 }
 async function addFile(){ await token(); const no=F("cNo").value.trim(); if(!no){ m("msg2","Cần số KN."); return; }
-  const r=await fetch("/api/ordercomplains/"+encodeURIComponent(no)+"/attachments",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({FileName:F("fName").value,ImageType:F("fType").value,FileNote:F("fNote").value})});
-  const d=await r.json(); if(!r.ok){ m("msg2","Lỗi: "+(d.error||r.status)); return; } m("msg2","Đã thêm "+d.fileName); F("fName").value="";F("fNote").value=""; loadFiles();
+  const r=await fetch("/api/ordercomplains/"+encodeURIComponent(no)+"/attachments",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({ImageName:F("fName").value,OrderComplainImageType:F("fType").value,ImagePath:F("fPath").value,FileNote:F("fNote").value})});
+  const d=await r.json(); if(!r.ok){ m("msg2","Lỗi: "+(d.error||r.status)); return; } m("msg2","Đã thêm "+d.imageName); F("fName").value="";F("fNote").value=""; loadFiles();
 }
 async function delFile(no,id){ await token(); await fetch("/api/ordercomplains/"+encodeURIComponent(no)+"/attachments/"+id,{method:"DELETE",headers:H()}); loadFiles(); }
 </script>

@@ -4101,11 +4101,20 @@ public sealed class OrderComplainAttachment
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string ComplainNo { get; set; } = "";
-    public string FileName { get; set; } = "";
-    public string? ImageType { get; set; }   // loại ảnh (OrderComplainImageType)
+    // #363 tên cột ĐÚNG bảng nguồn `Ser_OrderComplainAttachFile` (DbDefine V20; ghi trong Ser_OrderComplain_SaveX — BizCarSv.SuggestPrice.cs:4159-4391):
+    /// <summary>`OrderComplainNo` (rename từ `ComplainNo`).</summary>
+    public string OrderComplainNo { get; set; } = "";
+    /// <summary>`ImageName` (rename từ `FileName`) — nguồn chỉ trim ("" StdData).</summary>
+    public string ImageName { get; set; } = "";
+    /// <summary>`OrderComplainImageType` (rename từ `ImageType`) — StdParam (trim + upper).</summary>
+    public string? OrderComplainImageType { get; set; }
+    /// <summary>`ImagePath` — đường dẫn file (port cũ thiếu).</summary>
+    public string? ImagePath { get; set; }
+    /// <summary>⚠️ KHÔNG có trong nguồn — giữ lại để không mất dữ liệu port cũ.</summary>
     public string? FileNote { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>`LogLUDTime` (rename từ `CreatedAt`).</summary>
+    public DateTime LogLUDTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Định mức tồn tối thiểu (theo model/spec/đại lý) — port 1:1 FrmSt_MinInvBalance (TblSt_MinInvBalance, Admin/Product 2010.HTC).</summary>
