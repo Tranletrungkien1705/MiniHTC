@@ -1766,8 +1766,8 @@ public sealed class GpsTransaction
     public string? CreateBy { get; set; }
 }
 
-/// <summary>Thanh toán phí AVN (áo vỏ nylon) theo tháng (Pmt_PaymentAVN — port 1:1 FrmTaoThanhToanAVN, 2010.HTC Sales/Purchase):
-/// phiếu thu phí phụ kiện AVN theo tháng, nhiều dòng VIN, đơn giá cố định/xe, tổng = Σ UnitPriceAVN.</summary>
+/// <summary>⛔ #384 DEPRECATED — SONG SINH của <see cref="PmtPaymentAvn"/> (cùng bảng nguồn Pmt_PaymentAVN, cùng FrmTaoThanhToanAVN).
+/// Bản chuẩn = PmtPaymentAvn (+ PmtPaymentAvnDetail, đủ cột nguồn + luồng duyệt/ký). /api/avnpayments là bí danh; Seeder chép dữ liệu cũ. KHÔNG ghi mới.</summary>
 public sealed class AvnPayment
 {
     public long Id { get; set; }
@@ -1778,7 +1778,7 @@ public sealed class AvnPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Dòng VIN trong phiếu thanh toán AVN — port 1:1 grid FrmTaoThanhToanAVN, 2010.HTC.</summary>
+/// <summary>⛔ #384 DEPRECATED — dòng của song sinh <see cref="AvnPayment"/>; bản chuẩn = <see cref="PmtPaymentAvnDetail"/>.</summary>
 public sealed class AvnPaymentLine
 {
     public long Id { get; set; }

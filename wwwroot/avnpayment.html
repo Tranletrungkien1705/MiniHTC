@@ -16,7 +16,7 @@
 <div class="card"><h3 style="margin-top:0">Tạo phiếu thanh toán</h3>
   <div class="row"><label>Tháng thanh toán *</label><input id="month" type="month"></div>
   <h3>Danh sách VIN</h3>
-  <table id="lineTbl"><thead><tr><th>VIN</th><th>Model</th><th>Số máy</th><th style="width:100px">Đơn giá AVN</th><th></th></tr></thead>
+  <table id="lineTbl"><thead><tr><th>VIN</th><th>Mã AVN</th><th>Số máy</th><th style="width:100px">Đơn giá AVN</th><th></th></tr></thead>
   <tbody id="lineRows"></tbody></table>
   <button onclick="addLine()">+ Thêm VIN</button>
   <div class="row" style="margin-top:10px"><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
@@ -36,14 +36,15 @@ function addLine(){ const tr=document.createElement("tr"); tr.className="linerow
   F("lineRows").appendChild(tr); }
 addLine();
 async function save(){ await token();
-  const lines=[...F("lineRows").querySelectorAll("tr")].map(tr=>({Vin:tr.querySelector(".lv").value,ModelName:tr.querySelector(".lm").value,EngineNo:tr.querySelector(".le").value,UnitPriceAVN:+tr.querySelector(".lp").value||0})).filter(l=>l.Vin);
-  const body={PmtMonth:F("month").value?F("month").value+"-01":null,Lines:lines};
-  const r=await fetch("/api/avnpayments",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.pmtNo+" — tổng "+M(d.totalAmount)); F("lineRows").innerHTML=""; addLine(); load();
+  // #384 ghi bản chuẩn Pmt_PaymentAVN (/api/paymentavn); tháng "yyyy-MM" như deMonth nguồn.
+  const details=[...F("lineRows").querySelectorAll("tr")].map(tr=>({VIN:tr.querySelector(".lv").value,AVNCode:tr.querySelector(".lm").value||null,EngineNo:tr.querySelector(".le").value||null,UnitPriceAVN:+tr.querySelector(".lp").value||0})).filter(l=>l.VIN);
+  const body={PmtMonth:F("month").value||null,Details:details};
+  const r=await fetch("/api/paymentavn",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.paymentAVNNo+" — tổng "+M(d.amountTotal)); F("lineRows").innerHTML=""; addLine(); load();
 }
 async function load(){ await token();
-  const r=await fetch("/api/avnpayments?q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.pmtNo)}</b></td><td>${String(o.pmtMonth).slice(0,7)}</td><td class="num">${M(o.totalAmount)}</td><td>${o.lines}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có phiếu.</td></tr>';
+  const r=await fetch("/api/paymentavn",{headers:Hh()}); const d=await r.json(); const kw=F("q").value.trim().toUpperCase();
+  F("tb").innerHTML=(d.items||[]).filter(o=>!kw||o.paymentAVNNo.includes(kw)).map(o=>`<tr><td><b>${esc(o.paymentAVNNo)}</b> <span class="muted">${esc(o.paymentAVNStatus)}</span></td><td>${esc(o.pmtMonth)}</td><td class="num">${M(o.amountTotal)}</td><td>${o.cars}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có phiếu.</td></tr>';
 }
 </script>
 </body></html>

@@ -27881,46 +27881,33 @@ app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db,
     return Results.Ok(new { row.OOPlateNo, row.PartCode, row.DealerCode, row.SoLuongNo, row.SoLuongTra, isNew });
 }).RequireAuthorization();
 
-// ===== Thanh toán phí AVN theo tháng (AvnPayment — port 1:1 FrmTaoThanhToanAVN, 2010.HTC Sales/Purchase) =====
+// ===== Thanh toán phí AVN theo tháng — ⛔ #384 HỢP NHẤT SONG SINH Pmt_PaymentAVN: AvnPayment ≡ PmtPaymentAvn (cùng FrmTaoThanhToanAVN).
+// Bản chuẩn = PmtPaymentAvn (/api/paymentavn: đủ cột nguồn + duyệt A1/A2/huỷ/ký). Route này là BÍ DANH (cùng màn, cùng luật):
+// GET đọc bản chuẩn giữ hình JSON cũ; POST tạo phiếu chuẩn qua cùng hàm PmtAvnCreate (guard btnSave nguồn).
 app.MapGet("/api/avnpayments", async (AppDbContext db, ITenantContext t, string? q) =>
 {
-    var qry = db.AvnPayments.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
+    var qry = db.PmtPaymentAvns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PaymentAVNNo.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalAmount, lines = db.AvnPaymentLines.Count(l => l.OrgId == t.OrgId && l.AvnPaymentId == x.Id) }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    { PmtNo = x.PaymentAVNNo, x.PmtMonth, TotalAmount = x.AmountTotal, x.PaymentAVNStatus, lines = db.PmtPaymentAvnDetails.Count(l => l.OrgId == t.OrgId && l.PaymentAVNNo == x.PaymentAVNNo) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/paymentavn" });
 }).RequireAuthorization();
 
 app.MapGet("/api/avnpayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var h = await db.AvnPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    var h = await db.PmtPaymentAvns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentAVNNo == no);
     if (h is null) return Results.NotFound(new { no });
-    var lines = await db.AvnPaymentLines.Where(l => l.OrgId == t.OrgId && l.AvnPaymentId == h.Id).Select(l => new
-    { l.Vin, l.AvnCode, l.AvnDate, l.InStorageDate, l.EngineNo, l.SerialNo, l.ModelCode, l.ModelName, l.SpecCode, l.SpecDescription, l.UnitPriceAVN }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalAmount, lines });
+    var lines = await db.PmtPaymentAvnDetails.Where(l => l.OrgId == t.OrgId && l.PaymentAVNNo == no).Select(l => new
+    { Vin = l.VIN, AvnCode = l.AVNCode, AvnDate = l.AVNDate, l.InStorageDate, l.EngineNo, l.SerialNo, l.UnitPriceAVN }).ToListAsync();
+    return Results.Ok(new { PmtNo = h.PaymentAVNNo, h.PmtMonth, TotalAmount = h.AmountTotal, h.PaymentAVNStatus, lines, mergedInto = "/api/paymentavn" });
 }).RequireAuthorization();
 
-// Khớp btnSave gốc: guard tháng bắt buộc, ≥1 VIN ("Không có dữ liệu"), đơn giá >= 0; tổng = Σ UnitPriceAVN.
-app.MapPost("/api/avnpayments", async (AvnPaymentDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/avnpayments", async (AvnPaymentDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (dto.PmtMonth is null) return Results.BadRequest(new { error = "Chưa chọn tháng thanh toán" });
-    var lines = dto.Lines ?? new List<AvnPaymentLineDto>();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
-    foreach (var l in lines)
-        if (l.UnitPriceAVN < 0) return Results.BadRequest(new { error = "Giá trị phải lớn hơn hoặc bằng 0!" });
-
-    var no = "AVN" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new AvnPayment { OrgId = t.OrgId, PmtNo = no, PmtMonth = dto.PmtMonth.Value, TotalAmount = lines.Sum(l => l.UnitPriceAVN) };
-    db.AvnPayments.Add(h); await db.SaveChangesAsync();
-    foreach (var l in lines)
-        db.AvnPaymentLines.Add(new AvnPaymentLine
-        {
-            OrgId = t.OrgId, AvnPaymentId = h.Id, Vin = (l.Vin ?? "").Trim().ToUpperInvariant(), AvnCode = l.AvnCode, AvnDate = l.AvnDate, InStorageDate = l.InStorageDate,
-            EngineNo = l.EngineNo, SerialNo = l.SerialNo, ModelCode = l.ModelCode, ModelName = l.ModelName, SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, UnitPriceAVN = l.UnitPriceAVN
-        });
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.TotalAmount, lines = lines.Count });
+    var rows = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.Vin))
+        .Select(l => new PmtAvnDtlDto(l.Vin!, l.EngineNo, l.InStorageDate, l.AvnDate, l.SerialNo, l.AvnCode, l.UnitPriceAVN, null)).ToList();
+    return await PmtAvnCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth?.ToString("yyyy-MM"), rows);
 }).RequireAuthorization();
 
 // ===== Đồng bộ ngày xuất kho VIN-GPS sang Veloca (GpsInstall — port 1:1 FrmDongBoNgayXuatKho, 2010.HTC/StoFGPS) =====
@@ -36266,22 +36253,32 @@ app.MapGet("/api/paymentavn/{no}", async (string no, AppDbContext db, ITenantCon
 }).RequireAuthorization();
 
 app.MapPost("/api/paymentavn", async (PmtAvnDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtAvnCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth,
+        (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList())).RequireAuthorization();
+
+// #384 Tạo phiếu Pmt_PaymentAVN — guard theo btnSave FrmTaoThanhToanAVN (đúng THỨ TỰ + nguyên văn): lưới rỗng ⇒ "Không có dữ liệu";
+//   chưa chọn tháng ⇒ "Chưa chọn tháng thanh toán"; tháng lưu theo deMonth.EditMask "yyyy-MM". Đơn giá âm bị chặn (giữ luật bản port cũ).
+static async Task<IResult> PmtAvnCreate(AppDbContext db, Guid orgId, string who, string? month, List<PmtAvnDtlDto> rows)
 {
-    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
-    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
+    if (string.IsNullOrWhiteSpace(month)) return Results.BadRequest(new { error = "Chưa chọn tháng thanh toán" });
+    if (!DateTime.TryParse(month.Trim().Length == 7 ? month.Trim() + "-01" : month.Trim(), out var monthDate))
+        return Results.BadRequest(new { error = "Tháng thanh toán không hợp lệ (yyyy-MM)." });
+    if (rows.Any(r => r.UnitPriceAVN < 0)) return Results.BadRequest(new { error = "Giá trị phải lớn hơn hoặc bằng 0!" });
+    var now = DateTime.Now;
     var no = "PAVN" + now.ToString("yyMMddHHmmss");
-    var h = new PmtPaymentAvn { OrgId = t.OrgId, PaymentAVNNo = no, PmtMonth = dto.PmtMonth, CreateDateTime = now, CreateBy = who,
+    var h = new PmtPaymentAvn { OrgId = orgId, PaymentAVNNo = no, PmtMonth = monthDate.ToString("yyyy-MM"), CreateDateTime = now, CreateBy = who,
         AmountTotal = rows.Sum(x => x.UnitPriceAVN), PaymentAVNStatus = "P",
         HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
     db.PmtPaymentAvns.Add(h);
     foreach (var r in rows)
-        db.PmtPaymentAvnDetails.Add(new PmtPaymentAvnDetail { OrgId = t.OrgId, PaymentAVNNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+        db.PmtPaymentAvnDetails.Add(new PmtPaymentAvnDetail { OrgId = orgId, PaymentAVNNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
             EngineNo = r.EngineNo, InStorageDate = r.InStorageDate, AVNDate = r.AVNDate, SerialNo = r.SerialNo, AVNCode = r.AVNCode,
             UnitPriceAVN = r.UnitPriceAVN, FlagPmtAVN = r.FlagPmtAVN, PaymentAVNDtlStatus = "P", LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.PaymentAVNNo, h.PmtMonth, h.AmountTotal, status = h.PaymentAVNStatus, cars = rows.Count });
-}).RequireAuthorization();
+    // PmtNo/TotalAmount: hình JSON cũ của /api/avnpayments (bí danh).
+    return Results.Ok(new { h.PaymentAVNNo, PmtNo = h.PaymentAVNNo, h.PmtMonth, h.AmountTotal, TotalAmount = h.AmountTotal, status = h.PaymentAVNStatus, cars = rows.Count });
+}
 
 app.MapPost("/api/paymentavn/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? filePath) =>
 {
