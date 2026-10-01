@@ -26387,7 +26387,7 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     if (date.HasValue) { var d0 = date.Value.Date; var d1 = d0.AddDays(1); q = q.Where(x => x.AppFrom >= d0 && x.AppFrom < d1); }
     var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
     {
-        x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
+        x.Id, x.AppNo, x.DealerCode, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
         appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.AppStatus, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
         serviceItems = db.AppointmentServiceItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo),
         partItems = db.AppointmentPartItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo)
@@ -26425,8 +26425,21 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         if (string.IsNullOrWhiteSpace(line.PartCode))
             return Results.BadRequest(new { error = "Phụ tùng không có trong kho!" });
 
-    var no = "APP" + DateTime.Now.ToString("yyMMddHHmmss");
-    var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
+    // #336 Số lịch hẹn port 1:1 `myUtil_GetCmSeqCode` (BizCarSv.Common.cs:814, gọi ở Appointment.cs:251 với
+    //   Prefix = "", bảng Ser_App, cột AppNo): định dạng **DealerCode-yyMMdd-NNN**, reset MỖI NGÀY, PHẠM VI theo
+    //   đại lý; NNN = 3 ký tự cuối của Max(AppNo) khớp mẫu + 1. Rồi `CheckExistAppNo` (đã tồn tại ⇒ lỗi).
+    //   Bản cũ "APP"+yyMMddHHmmss ⇒ 2 lịch tạo cùng giây TRÙNG số (đã gặp khi verify #335).
+    //   Nguồn lấy DealerCode từ phiên người dùng; MiniHTC chưa có đại lý-theo-phiên ⇒ nhận qua DTO, BẮT BUỘC.
+    var dealerApp = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealerApp == "") return Results.BadRequest(new { error = "Chưa chọn đại lý (xưởng) của lịch hẹn." });
+    var seqPrefix = $"{dealerApp}-{DateTime.Now:yyMMdd}-";
+    var maxNo = (await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerApp && x.AppNo.StartsWith(seqPrefix))
+        .Select(x => x.AppNo).ToListAsync()).OrderByDescending(x => x, StringComparer.Ordinal).FirstOrDefault();
+    var nextSeq = maxNo is null ? 1 : (int.TryParse(maxNo[^3..], out var lastSeq) ? lastSeq + 1 : 1);
+    var no = seqPrefix + nextSeq.ToString("000");
+    if (await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerApp && x.AppNo == no))
+        return Results.BadRequest(new { error = $"Số lịch hẹn {no} đã tồn tại.", code = "Ser_App_CheckExistAppNo" });
+    var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, DealerCode = dealerApp, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
         CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, AppStatus = "1",
         EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest };
     db.ServiceAppointments.Add(a);
@@ -56830,7 +56843,7 @@ record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl 
 record WarrantyClaimActionDto(string Action, string? Note);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
-record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null);
+record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null, string? DealerCode = null);   // #336 DealerCode
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);

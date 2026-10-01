@@ -752,6 +752,8 @@ public static class Seeder
                 "UPDATE public.\"ServiceAppointments\" SET \"AppStatus\" = CASE \"AppStatus\" WHEN 'Booked' THEN '1' WHEN 'Confirmed' THEN '2' WHEN 'Arrived' THEN '3' WHEN 'Cancelled' THEN '4' ELSE \"AppStatus\" END WHERE \"AppStatus\" IN ('Booked','Confirmed','Arrived','Cancelled')",
                 "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #336 Ser_App.DealerCode (phạm vi dãy số AppNo DealerCode-yyMMdd-NNN).
+                "ALTER TABLE public.\"ServiceAppointments\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 // Báo giá phụ tùng: hệ số giảm giá + bảng giá áp dụng + ghi chú dòng (Ser_Inv_QuotePartItems, TCMotor)
                 "ALTER TABLE public.\"PartQuoteLines\" ADD COLUMN IF NOT EXISTS \"Factor\" numeric NOT NULL DEFAULT 1",
                 "ALTER TABLE public.\"PartQuoteLines\" ADD COLUMN IF NOT EXISTS \"PartPriceId\" text NULL",

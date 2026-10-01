@@ -13987,6 +13987,9 @@ public sealed class ServiceAppointment
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string AppNo { get; set; } = "";
+    /// <summary>#336 `Ser_App.DealerCode` — đại lý (xưởng) của lịch hẹn; cũng là PHẠM VI dãy số AppNo
+    /// (`myUtil_GetCmSeqCode` lọc `t.DealerCode = @strDealerCode`).</summary>
+    public string? DealerCode { get; set; }
     public string? CavityName { get; set; }        // khoang/bay sửa chữa
     public string? PlateNo { get; set; }
     public string? CusName { get; set; }
