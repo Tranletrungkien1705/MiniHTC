@@ -20713,7 +20713,14 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
     SerInsuranceContract row;
     var code = (dto.InContractCode ?? "").Trim();
     if (!string.IsNullOrWhiteSpace(code))
-        row = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractCode == code) ?? new SerInsuranceContract { OrgId = t.OrgId };
+    {
+        // #341 Có mã ⇒ nhánh SỬA = `Ser_InsuranceContractUpdate` (BizCarSv.Service.cs:14756; WS WSCarSv.asmx.cs:25280).
+        //   Guard `CheckExistInsContract` (:14223): HĐ phải TỒN TẠI ⇒ `Ser_InsContractNo_NotFound` — bản cũ gặp mã lạ
+        //   thì âm thầm TẠO MỚI (sai nguồn: nguồn tạo mới là hàm khác, luôn tự sinh mã HDBH-).
+        var found = await db.SerInsuranceContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InContractCode == code);
+        if (found is null) return Results.BadRequest(new { error = $"Không tìm thấy hợp đồng bảo hiểm {code}.", code = "Ser_InsContractNo_NotFound" });
+        row = found;
+    }
     else row = new SerInsuranceContract { OrgId = t.OrgId };
     var whoIc = user.Identity?.Name ?? "system"; var nowIc = DateTime.Now;
     no = no.ToUpperInvariant();   // nguồn ghi `strInContractNo.ToUpper()`
@@ -20739,7 +20746,17 @@ app.MapPost("/api/insurancecontracts", async (SerInsuranceContractDto dto, AppDb
         row.DealerCode = dealerIc; row.CreatedDate = nowIc; row.CreatedBy = whoIc;
         db.SerInsuranceContracts.Add(row);
     }
-    // ⚠️ NỢ: nhánh SỬA nguồn là hàm riêng `Ser_InsuranceContractUpdate` (guard CheckExistInsContract + CheckExistInsContractNoModify) — chưa port.
+    else
+    {
+        // #341 Guard `CheckExistInsContractNoModify` (:14250): trùng (InContractNo, DealerCode, InsNo) với HĐ KHÁC đang
+        //   IsActive = "1" ⇒ `Ser_InsContractNo_Exist`. Nhánh sửa KHÔNG kiểm `CheckTime` (chỉ hàm tạo mới có).
+        //   DealerCode nguồn ghi lại từ phiên (strDealerCode) — giữ DealerCode hiện có của HĐ, chỉ nhận DTO nếu HĐ cũ chưa có.
+        var dealerUpd = string.IsNullOrWhiteSpace(row.DealerCode) ? (dto.DealerCode ?? "").Trim().ToUpperInvariant() : row.DealerCode!;
+        if (await db.SerInsuranceContracts.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.InContractNo == no
+                && x.DealerCode == dealerUpd && x.IsActive == "1" && x.InsNo == dto.InsNo))
+            return Results.BadRequest(new { error = "Số hợp đồng bảo hiểm đã tồn tại.", code = "Ser_InsContractNo_Exist" });
+        if (dealerUpd != "") row.DealerCode = dealerUpd;
+    }
     row.InContractNo = no; row.TypePayment = dto.TypePayment; row.StartDate = dto.StartDate; row.FinishDate = dto.FinishDate; row.InsNo = dto.InsNo; row.PaymentLimit = dto.PaymentLimit; row.UpdatedAt = nowIc;
     row.LogLUDateTime = nowIc; row.LogLUBy = whoIc;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.IsActive = dto.FlagActive!;
