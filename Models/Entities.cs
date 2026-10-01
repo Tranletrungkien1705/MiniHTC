@@ -2262,6 +2262,41 @@ public sealed class RepairOrder
     public string? Assistant { get; set; }             // Ser_RO.Assistant — cố vấn dịch vụ
     public DateTime? ActualDeliveryDate { get; set; }  // Ser_RO.ActualDeliveryDate — "Giờ giao xe thực tế"
     public DateTime? FinishedDate { get; set; }        // Ser_RO.FinishedDate — khoá sắp xếp (order by desc)
+    // ===== #367 cột header Ser_RO port cũ thiếu — `Ser_RO_Create_New20220926` (BizCarSv.ZTemp.cs:6258, WS WSCarSv.asmx.cs:10782) ====
+    public string? Creator { get; set; }
+    public string? CusID { get; set; }
+    public string? CusAddress { get; set; }
+    public string? CusTel { get; set; }
+    public string? PlanedDuration { get; set; }
+    public string? CarWashRequested { get; set; }
+    public string? UseSHPart { get; set; }
+    public string? PayByCard { get; set; }
+    public string? ReceptionFNo { get; set; }   // phiếu tiếp nhận (#355) — StandardizeParam, phải tồn tại
+    public DateTime? ReminderMaintanceDate { get; set; }   // hẹn bảo dưỡng lần sau (ngày) — client gọi "ReminderDate"
+    public string? ReminderMaintanceKm { get; set; }   // hẹn bảo dưỡng lần sau (km) — client gọi "ReminderKm"
+    public string? WorkDoneSoon { get; set; }
+    public string? TermsOfRepair { get; set; }   // điều khoản sửa chữa — client gọi "TermOfUse"
+    public string? CarID { get; set; }
+    public string? InsNo { get; set; }
+    public string? InvoiceBy { get; set; }
+    public string? AdvisoryCode { get; set; }
+    public string? AdvisoryPhone { get; set; }
+    public string? IsReRepair { get; set; }
+    public DateTime? ModifyDate { get; set; }
+    public string? ModifyBy { get; set; }
+    public string? EngineerID { get; set; }   // nguồn gán DBNull lúc tạo
+    public string? FlagPause { get; set; }   // nguồn gán Flag.Active "1" lúc tạo
+    public string? CardNo { get; set; }
+    public string? FlagOnlyPoint { get; set; }   // rỗng ⇒ "0", khác ⇒ StandardizeFlag
+    public string? ROType { get; set; }
+    public string? DlrPDIReqNo { get; set; }   // chỉ giữ khi ROType = "PDI", ngược lại ""
+    public string? ServiceStatus { get; set; }   // nguồn gán Flag.Inactive "0" lúc tạo
+    public string? LevelOfInspection { get; set; }   // "1" | "2" | "3" — Ser_RO_CheckInput_InvalidLevelOfInspection
+    public decimal? InsuranceDeductible { get; set; }   // StandardizeDouble(…, 0)
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>

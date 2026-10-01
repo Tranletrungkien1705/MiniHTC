@@ -54555,9 +54555,21 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LicensePlate)) return Results.BadRequest(new { error = "Cần biển số (LicensePlate)." });
+    // #367 Check Input Master của `Ser_RO_Create_New20220926` (BizCarSv.ZTemp.cs:6258 — dòng 135-160 thân hàm):
+    //   ReceptionFNo (StandardizeParam) có ⇒ phải tồn tại · Assistant bắt buộc · LevelOfInspection ∈ {1,2,3}.
+    var recNo = string.IsNullOrWhiteSpace(dto.ReceptionFNo) ? null : dto.ReceptionFNo.Trim().ToUpperInvariant();
+    Reception? recRo = null;
+    if (recNo is not null)
+    {
+        recRo = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == recNo);
+        if (recRo is null) return Results.BadRequest(new { error = $"Phiếu tiếp nhận {recNo} không tồn tại.", code = "Ser_ReceptionF_CheckDB_NotExist", ReceptionFNo = recNo });
+    }
+    if (string.IsNullOrWhiteSpace(dto.Assistant)) return Results.BadRequest(new { error = "Chưa chọn cố vấn dịch vụ (Assistant).", code = "Ser_RO_Check_Assistant_IsNull" });
+    var lvlRo = (dto.LevelOfInspection ?? "").Trim();
+    if (lvlRo is not ("1" or "2" or "3")) return Results.BadRequest(new { error = "Cấp kiểm tra phải là 1, 2 hoặc 3.", code = "Ser_RO_CheckInput_InvalidLevelOfInspection", LevelOfInspection = lvlRo });
     // #337 Số RO port 1:1 `Ser_RO_Create_New20220926` (BizCarSv.ZTemp.cs:6258 — file <Compile> trong csproj; WS
     //   WSCarSv.asmx.cs:10782): `myUtil_GetCmSeqCode(_dbDealer, "Ser_RO", "RONo", "", strDealerCode)` ⇒
     //   **DealerCode-yyMMdd-NNN** (reset theo ngày, phạm vi đại lý) rồi `CheckExistRONo`. Bản cũ "RO"+yyMMddHHmmss
@@ -54578,7 +54590,25 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         DealerCode = dealerRo,
         TrademarkNameModel = dto.TrademarkNameModel, ColorCode = dto.ColorCode, Assistant = dto.Assistant
     };
+    // #367 gán cột header đúng thứ tự/luật nguồn (dt_Ser_RO.Rows[0][…] — thân hàm dòng 344-424).
+    var whoRo = user.Identity?.Name ?? "system"; var nowRo = DateTime.Now;
+    static string? NE(string? v) => string.IsNullOrEmpty(v) ? null : v;   // "if (!IsEmpty(x)) gán" ⇒ rỗng giữ NULL
+    r.Creator = dto.Creator; r.CusID = dto.CusID; r.CusAddress = dto.CusAddress; r.CusTel = dto.CusTel; r.PlanedDuration = dto.PlanedDuration;
+    r.CarWashRequested = dto.CarWashRequested; r.UseSHPart = dto.UseSHPart; r.PayByCard = dto.PayByCard;
+    r.ReceptionFNo = recNo;
+    r.ReminderMaintanceDate = dto.ReminderMaintanceDate?.Date; r.ReminderMaintanceKm = dto.ReminderMaintanceKm; r.WorkDoneSoon = dto.WorkDoneSoon;
+    r.TermsOfRepair = NE(dto.TermsOfRepair); r.CarID = NE(dto.CarID); r.InsNo = NE(dto.InsNo); r.InvoiceBy = NE(dto.InvoiceBy);
+    r.AdvisoryCode = NE(dto.AdvisoryCode); r.AdvisoryPhone = NE(dto.AdvisoryPhone); r.IsReRepair = NE(dto.IsReRepair);
+    r.ModifyDate = dto.ModifyDate?.Date; r.ModifyBy = NE(dto.ModifyBy);
+    r.EngineerID = null; r.FlagPause = "1"; r.CardNo = NE(dto.CardNo);
+    r.FlagOnlyPoint = string.IsNullOrEmpty(dto.FlagOnlyPoint) ? "0" : (dto.FlagOnlyPoint.Trim() is "" or "0" ? "0" : "1");
+    r.ROType = dto.ROType; r.DlrPDIReqNo = dto.ROType == "PDI" ? dto.DlrPDIReqNo : "";
+    r.ServiceStatus = "0"; r.LogLUDateTime = nowRo; r.LogLUBy = whoRo; r.CreatedDate = nowRo; r.CreatedBy = whoRo;
+    r.LevelOfInspection = lvlRo;
+    r.InsuranceDeductible = decimal.TryParse((dto.InsuranceDeductible ?? "").Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var dedRo) ? dedRo : 0m;
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
+    // Nguồn nối phiếu tiếp nhận ↔ RO qua Ser_RO.ReceptionFNo; MiniHTC giữ thêm Reception.RONO (#355 guard xoá) ⇒ đồng bộ.
+    if (recRo is not null && string.IsNullOrWhiteSpace(recRo.RONO)) { recRo.RONO = r.RONo; await db.SaveChangesAsync(); }
     foreach (var s in dto.Services ?? new())
     {
         if (string.IsNullOrWhiteSpace(s.SerCode)) continue;
@@ -54626,6 +54656,11 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     return Results.Ok(new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status,
+        // #367 header Ser_RO
+        r.DealerCode, r.Assistant, r.Creator, r.CusID, r.CusAddress, r.CusTel, r.PlanedDuration, r.CarWashRequested, r.UseSHPart, r.PayByCard,
+        r.ReceptionFNo, r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.WorkDoneSoon, r.TermsOfRepair, r.CarID, r.InsNo, r.InvoiceBy,
+        r.AdvisoryCode, r.AdvisoryPhone, r.IsReRepair, r.ModifyDate, r.ModifyBy, r.EngineerID, r.FlagPause, r.CardNo, r.FlagOnlyPoint,
+        r.ROType, r.DlrPDIReqNo, r.ServiceStatus, r.LevelOfInspection, r.InsuranceDeductible, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy,
         services, parts,
         total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
     });
@@ -56402,7 +56437,14 @@ record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null);
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0);
-record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null);
+record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,
+    // #367 tham số Ser_RO_Create_New20220926
+    string? Creator = null, string? CusID = null, string? CusAddress = null, string? CusTel = null, string? PlanedDuration = null,
+    string? CarWashRequested = null, string? UseSHPart = null, string? PayByCard = null, string? ReceptionFNo = null,
+    DateTime? ReminderMaintanceDate = null, string? ReminderMaintanceKm = null, string? WorkDoneSoon = null, string? TermsOfRepair = null,
+    string? CarID = null, string? InsNo = null, string? InvoiceBy = null, string? AdvisoryCode = null, string? AdvisoryPhone = null,
+    string? IsReRepair = null, DateTime? ModifyDate = null, string? ModifyBy = null, string? CardNo = null, string? FlagOnlyPoint = null,
+    string? ROType = null, string? DlrPDIReqNo = null, string? LevelOfInspection = null, string? InsuranceDeductible = null);
 record RoAdvanceDto(string ToStatus);
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);

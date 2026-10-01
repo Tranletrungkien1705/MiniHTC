@@ -23,6 +23,11 @@
     <input id="dlr" placeholder="Đại lý *" style="width:80px"><input id="lp" placeholder="Biển số *" style="width:110px"><input id="vin" placeholder="VIN" style="width:120px">
     <input id="cn" placeholder="Chủ xe" style="width:120px"><input id="km" placeholder="Số km" style="width:80px">
     <input id="cr" placeholder="Yêu cầu KH" style="width:160px"><label class="muted"><input type="checkbox" id="cw"> Khách chờ</label>
+    <input id="asst" placeholder="CVDV (Assistant) *" style="width:120px">
+    <select id="lvl" title="Cấp kiểm tra *"><option value="1">Cấp KT 1</option><option value="2">Cấp KT 2</option><option value="3">Cấp KT 3</option></select>
+    <input id="rcp" placeholder="Số phiếu tiếp nhận" style="width:130px">
+    <label class="muted">Hẹn BD <input id="rmd" type="date"></label><input id="rmk" placeholder="Km hẹn BD" style="width:90px">
+    <input id="tor" placeholder="Điều khoản sửa chữa" style="width:150px">
   </div>
   <h3>Công việc dịch vụ</h3>
   <table id="stbl"><thead><tr><th>Mã CV</th><th>Tên CV</th><th>Nguyên nhân</th><th>KTV</th><th class="n">Tiền công</th><th></th></tr></thead><tbody id="stb"></tbody></table>
@@ -58,7 +63,7 @@ function addPart(){ const tr=document.createElement("tr");
 async function create(){
   const services=[...F("stb").querySelectorAll("tr")].map(tr=>({serCode:tr.querySelector(".sc").value,serName:tr.querySelector(".sn").value,cause:tr.querySelector(".ca").value,engineer:tr.querySelector(".en").value,amount:Number(tr.querySelector(".am").value||0)})).filter(s=>s.serCode);
   const parts=[...F("ptb").querySelectorAll("tr")].map(tr=>({partCode:tr.querySelector(".pc").value,partName:tr.querySelector(".pn").value,unit:tr.querySelector(".un").value,needQty:Number(tr.querySelector(".qt").value||1),unitPrice:Number(tr.querySelector(".up").value||0)})).filter(p=>p.partCode);
-  const r=await fetch("/api/repairorders",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dlr").value,licensePlate:F("lp").value,vin:F("vin").value,cusName:F("cn").value,km:F("km").value,cusRequest:F("cr").value,cusWaiting:F("cw").checked,services,parts})});
+  const r=await fetch("/api/repairorders",{method:"POST",headers:H(),body:JSON.stringify({assistant:F("asst").value,levelOfInspection:F("lvl").value,receptionFNo:F("rcp").value||null,reminderMaintanceDate:F("rmd").value||null,reminderMaintanceKm:F("rmk").value||null,termsOfRepair:F("tor").value||null,dealerCode:F("dlr").value,licensePlate:F("lp").value,vin:F("vin").value,cusName:F("cn").value,km:F("km").value,cusRequest:F("cr").value,cusWaiting:F("cw").checked,services,parts})});
   const j=await r.json();
   if(r.ok){ msg("Đã tạo "+j.rONo+"."); F("stb").innerHTML="";F("ptb").innerHTML="";addSer();addPart(); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
