@@ -13649,7 +13649,8 @@ public sealed class SmsSend
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string BatchNo { get; set; } = "";
+    /// <summary>#358 `BatchId` (rename từ `BatchNo` khớp nguồn TblSMS_Send.BatchId — SmsOutService.cs:139).</summary>
+    public string BatchId { get; set; } = "";
     /// <summary>#357 `CustomerPhoneNo` (rename từ `Mobile` khớp nguồn TblSMS_Send.CustomerPhoneNo — SmsOutService.cs:143).</summary>
     public string CustomerPhoneNo { get; set; } = "";
     public string? SmsType { get; set; }
@@ -13663,7 +13664,8 @@ public sealed class SmsSend
     /// KHÔNG đánh dấu "đã gửi" ngay lúc tạo như port cũ.
     /// `FrmSMSMng` đọc lại lô lỗi bằng chính "R".
     /// </summary>
-    public string Status { get; set; } = "P";
+    /// #358 `SendStatus` (rename từ `Status` khớp nguồn TblSMS_Send.SendStatus).
+    public string SendStatus { get; set; } = "P";
 
     /// <summary>Số điện thoại không hợp lệ (port cũ đánh dấu bằng Status="Invalid" — nay tách thành cờ riêng).</summary>
     public bool InvalidMobile { get; set; }

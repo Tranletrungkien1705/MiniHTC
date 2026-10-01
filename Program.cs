@@ -15613,17 +15613,17 @@ app.MapGet("/api/smssends", async (AppDbContext db, ITenantContext t, string? mo
 {
     var q = db.SmsSends.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(mobile)) q = q.Where(x => x.CustomerPhoneNo.Contains(mobile!));
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
-    if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchNo == batch);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.SendStatus == status);
+    if (!string.IsNullOrWhiteSpace(batch)) q = q.Where(x => x.BatchId == batch);
     var items = await q.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.BatchNo, x.CustomerPhoneNo, x.SmsType, x.Contents, x.Status, x.InvalidMobile,
+        .Select(x => new { x.BatchId, x.CustomerPhoneNo, x.SmsType, x.Contents, x.SendStatus, x.InvalidMobile,
             // #357 cặp ngữ cảnh A10..A16 (tên nguồn)
             x.SendId, x.SupplierPhoneNo, x.BranchName, x.FlagReply,
             x.A10Name, x.A10Value, x.A11Name, x.A11Value, x.A12Name, x.A12Value, x.A13Name, x.A13Value,
             x.A14Name, x.A14Value, x.A15Name, x.A15Value, x.A16Name, x.A16Value,
             x.FlagANSI, x.TelCo, x.BatchType, x.CostType, x.ProjectCode, x.UnitPrice, x.MsgParts, x.Cost, x.TryCount,
             sendDate = x.SendDate.ToString("yyyy-MM-dd HH:mm") }).ToListAsync();
-    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.Status == "F"), invalid = items.Count(i => i.InvalidMobile),
+    return Results.Ok(new { count = items.Count, sent = items.Count(i => i.SendStatus == "F"), invalid = items.Count(i => i.InvalidMobile),
         totalParts = items.Sum(i => i.MsgParts), totalCost = items.Sum(i => i.Cost), items });
 }).RequireAuthorization();
 
@@ -15707,7 +15707,7 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
         {
             // Số sai định dạng: nguồn coi là lô lỗi (Reject), kèm cờ riêng để biết lỗi do SỐ chứ không do gửi.
             invalid++; invalids.Add(m);
-            db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchNo = no, CustomerPhoneNo = m ?? "", SmsType = smsType, Contents = content, Status = "R", InvalidMobile = true,
+            db.SmsSends.Add(new SmsSend { OrgId = t.OrgId, BatchId = no, CustomerPhoneNo = m ?? "", SmsType = smsType, Contents = content, SendStatus = "R", InvalidMobile = true,
                 FlagANSI = isAnsi, TelCo = telCo, BatchType = batchType, CostType = costType, ProjectCode = dto.ProjectCode });
             continue;
         }
@@ -15727,7 +15727,7 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
             var parts = SmsCost.Parts(piece.Length, isAnsi, batchType, telCo);
             db.SmsSends.Add(new SmsSend
             {
-                OrgId = t.OrgId, BatchNo = no, CustomerPhoneNo = std, SmsType = smsType, Contents = piece, Status = "P",
+                OrgId = t.OrgId, BatchId = no, CustomerPhoneNo = std, SmsType = smsType, Contents = piece, SendStatus = "P",
                 FlagANSI = isAnsi, TelCo = telCo, BatchType = batchType, CostType = costType,
                 ProjectCode = dto.ProjectCode, UnitPrice = dto.UnitPrice,
                 MsgParts = parts, Cost = dto.UnitPrice * parts,
@@ -15754,10 +15754,10 @@ app.MapPost("/api/smssends", async (SmsSendDto dto, AppDbContext db, ITenantCont
     }
     // Tiền ước tính của lô = tổng tiền các dòng chờ gửi (nguồn: Sum(UnitPrice * MyPartCount)).
     await db.SaveChangesAsync();
-    var totalParts = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == no && !x.InvalidMobile).SumAsync(x => x.MsgParts);
+    var totalParts = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchId == no && !x.InvalidMobile).SumAsync(x => x.MsgParts);
     batch.CostInit = dto.UnitPrice * totalParts;
     await db.SaveChangesAsync();
-    return Results.Ok(new { batchNo = no, queued, invalid, invalids, contentLength = content.Length,
+    return Results.Ok(new { batchId = no, queued, invalid, invalids, contentLength = content.Length,
         isAnsi, messagesPerRecipient = msgPerRecipient.Count == 0 ? 0 : msgPerRecipient.Max(),
         totalParts, totalCost = batch.CostInit,
         batch = new { batch.BatchId, batch.BatchType, batch.ContentsTemplate, batch.EffectDTime, batch.EffectStatus, batch.CostInit } });
@@ -15796,10 +15796,10 @@ app.MapGet("/api/smsbatches", async (AppDbContext db, ITenantContext t, string? 
                            x.EffectStatus, x.Remark, x.CostInit, x.CostActual, x.CreatedDTime, x.CreatedBy,
                            x.CancelDTime, x.CancelBy,
                            // MYCOUNT_* của nguồn là cột TÍNH, không lưu — đếm tại chỗ.
-                           countPending = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "P"),
-                           countProgress = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "G"),
-                           countFinish = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "F"),
-                           countReject = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchNo == x.BatchId && s.Status == "R") })
+                           countPending = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchId == x.BatchId && s.SendStatus == "P"),
+                           countProgress = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchId == x.BatchId && s.SendStatus == "G"),
+                           countFinish = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchId == x.BatchId && s.SendStatus == "F"),
+                           countReject = db.SmsSends.Count(s => s.OrgId == t.OrgId && s.BatchId == x.BatchId && s.SendStatus == "R") })
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -15813,18 +15813,18 @@ app.MapPost("/api/smssends/{batchNo}/status", async (
     if (!smsStageNames.ContainsKey(target))
         return Results.BadRequest(new { error = $"Trạng thái hợp lệ: {string.Join(", ", smsStageNames.Keys)}" });
 
-    var rows = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == batchNo).ToListAsync();
+    var rows = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchId == batchNo).ToListAsync();
     if (rows.Count == 0) return Results.NotFound(new { batchNo });
 
     var updated = 0;
     foreach (var row in rows)
     {
-        var current = smsLegacyStatusMap.TryGetValue(row.Status, out var mapped) ? mapped : row.Status;
+        var current = smsLegacyStatusMap.TryGetValue(row.SendStatus, out var mapped) ? mapped : row.SendStatus;
         // Số sai định dạng đã chốt lỗi từ đầu — không đổi theo kết quả gửi của lô.
         if (row.InvalidMobile) continue;
         // Đã kết thúc (F/C) thì không đổi nữa.
         if (current is "F" or "C") continue;
-        row.Status = target; updated++;
+        row.SendStatus = target; updated++;
 
         // 🔴 #231 CHỐT TIỀN THỰC khi lô gửi xong: nguồn đặt `ss.CostActual = t.UnitPrice * t.MyPartCount`
         //    (BizSMS.SMS.cs:262) — trước đó `CostActual` vẫn là 0, chỉ có `CostInit` (ở đây là `Cost`).
@@ -15884,11 +15884,11 @@ app.MapPost("/api/smsbatches/{batchId}/cancel", async (
                                       accountCodeOwner = hdr.AccountCode }, statusCode: 403);
     }
 
-    var sends = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchNo == batchId).ToListAsync();
+    var sends = await db.SmsSends.Where(x => x.OrgId == t.OrgId && x.BatchId == batchId).ToListAsync();
 
     // (4) tiền hoàn lấy từ CostActual (tiền THỰC), tính TRƯỚC khi đưa về 0
     var refund = sends.Sum(x => x.CostActual);
-    foreach (var s in sends) { s.Status = "C"; s.CostActual = 0m; }
+    foreach (var s in sends) { s.SendStatus = "C"; s.CostActual = 0m; }
 
     // (3) đầu lô
     hdr.EffectStatus = "C";
