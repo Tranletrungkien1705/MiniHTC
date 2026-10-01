@@ -11314,6 +11314,15 @@ public sealed class CarVinMaster
     /// Nguồn **chỉ ghi khi khác rỗng VÀ khác `DateTime.MinValue.ToString("yyyy-MM-dd")`**
     /// (`BizHTC.Car.cs:1653`) — tức chuỗi `"0001-01-01"` được coi là **RỖNG**, không phải ngày thật.</summary>
     public DateTime? InspectionDate { get; set; }
+
+    // ===== #329 parity `Car_VIN` — 4 cột đồng bộ từ MMS (`Car_VIN_UpdAutoVINHTMVX_New20230306`, Biz.HTC.WH.cs:133329) =====
+    /// <summary>`Car_VIN.OrderNoMnfPlMMS` — **số đơn hàng** sản xuất bên MMS. Lưới xe FrmMngRM_ReqMortgage hiển thị "Số Đơn hàng".</summary>
+    public string? OrderNoMnfPlMMS { get; set; }
+    /// <summary>`Car_VIN.MMSDocReqIdx` — **STT nội bộ** (DbDefine: "STT nội bộ"); lưới thế chấp đọc ra alias `cv_MMSDocReqIdx`.</summary>
+    public string? MMSDocReqIdx { get; set; }
+    /// <summary>`Car_VIN.MMSDocReqNo` / `MMSDocReqApprDTime` — số + thời điểm duyệt yêu cầu chứng từ bên MMS (ghi cùng lô).</summary>
+    public string? MMSDocReqNo { get; set; }
+    public DateTime? MMSDocReqApprDTime { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>

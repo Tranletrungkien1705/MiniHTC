@@ -2520,6 +2520,11 @@ public static class Seeder
                 "ALTER TABLE public.\"RptCarAllocationByAreas\" ADD COLUMN IF NOT EXISTS \"SpecCode\" text NULL",
                 // §12 #B360 — Car_Car.MapVINDate (moc loc chinh cua Rpt_CarAllocationByArea_Get_RealTimeX).
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MapVINDate\" timestamp NULL",
+                // #329 Car_VIN — 4 cột đồng bộ MMS (Car_VIN_UpdAutoVINHTMVX_New20230306).
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"OrderNoMnfPlMMS\" text NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MMSDocReqIdx\" text NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MMSDocReqNo\" text NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MMSDocReqApprDTime\" timestamp NULL",
                 // §12 #B365 — Ord_SalesOrder.ApprovedDate2 (bo loc chinh cua Rpt_PenaltyPmtDelay).
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"ApprovedDate2\" timestamp NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }

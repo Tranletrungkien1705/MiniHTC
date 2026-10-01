@@ -3,7 +3,7 @@
 <title>MiniHTC — Thế chấp xe</title>
 <style>
   :root{color-scheme:light dark;--line:#8883;--accent:#2563eb;--ok:#16a34a;--warn:#d97706}
-  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:940px;margin:24px auto;padding:0 16px;line-height:1.5}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1180px;margin:24px auto;padding:0 16px;line-height:1.5}
   h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
   .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
   .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -11,30 +11,58 @@
   textarea{width:100%;min-height:64px;resize:vertical} button{cursor:pointer}
   button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
   button.sm{padding:4px 9px;font-size:12px}
-  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  .wrap{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
   th{opacity:.7;font-size:11px;text-transform:uppercase}
+  tr.sel{background:#2563eb1a} tr.h{cursor:pointer}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
-  .p-Pending{color:var(--warn)} .p-Approved{color:var(--accent)} .p-Finished{color:var(--ok)}
-  #msg{font-size:13px} .cars{font-size:12px;opacity:.8}
+  .p-P{color:var(--warn)} .p-A{color:var(--accent)} .p-F{color:var(--ok)}
+  #msg{font-size:13px}
+  label{font-size:12px;opacity:.75}
 </style></head>
 <body>
-<h1>Đề nghị thế chấp xe <span class="muted">(port 1:1 FrmNewRM_ReqMortgage / FrmMngRM_ReqMortgage — RM_ReqMortgage)</span></h1>
+<h1>Đề nghị thế chấp xe <span class="muted">(port 1:1 FrmNewRM_ReqMortgage / FrmMngRM_ReqMortgage — RM_ReqMortgage + RM_ReqMortgageDtl)</span></h1>
 <div class="card">
   <b>Tạo đề nghị mới</b>
   <div class="bar" style="margin:10px 0">
-    <input id="bank" placeholder="Mã ngân hàng nhận thế chấp *" style="width:230px">
-    <span style="flex:1"></span><button class="primary" onclick="create()">Tạo đề nghị</button><span id="msg"></span>
+    <select id="bank" style="width:260px"><option value="">— Ngân hàng nhận thế chấp * —</option></select>
+    <span style="flex:1"></span><button class="primary" onclick="create()">Tạo đề nghị</button>
   </div>
   <textarea id="vins" placeholder="Danh sách VIN (mỗi dòng 1 VIN, hoặc cách nhau dấu phẩy)"></textarea>
 </div>
-<div class="bar" style="margin:10px 0">
-  <select id="fst" onchange="load()"><option value="">Tất cả trạng thái</option><option value="Pending">Mới tạo</option><option value="Approved">Đang thế chấp</option><option value="Finished">Đã giải chấp</option></select>
+<div class="card">
+  <b>Tìm kiếm</b>
+  <div class="bar" style="margin:10px 0">
+    <input id="qno" placeholder="Số đề nghị" style="width:150px">
+    <input id="qcar" placeholder="Mã xe (CarID)" style="width:140px">
+    <input id="qvin" placeholder="Số VIN" style="width:160px">
+    <select id="qbank"><option value="">Ngân hàng bàn giao: tất cả</option></select>
+    <select id="qst"><option value="">TT đề nghị: Tất cả</option><option value="P">Mới tạo</option><option value="A">Đang thế chấp</option><option value="F">Đã giải chấp</option></select>
+    <select id="qdst"><option value="">TT chi tiết: Tất cả</option><option value="P">Mới tạo</option><option value="A">Đã duyệt</option><option value="F">Đã giải chấp</option></select>
+  </div>
+  <div class="bar">
+    <label>Ngày duyệt từ</label><input type="date" id="qaf"><label>đến</label><input type="date" id="qat">
+    <label>Ngày tạo từ</label><input type="date" id="qcf"><label>đến</label><input type="date" id="qct">
+    <span style="flex:1"></span><button class="primary" onclick="load()">Tìm kiếm</button>
+  </div>
 </div>
-<table><thead><tr><th>Số ĐN</th><th>Ngân hàng</th><th>Trạng thái</th><th>Số xe</th><th>Ngày tạo</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<div id="msg"></div>
+<div class="wrap"><table><thead><tr><th>#</th><th>Số đề nghị thế chấp</th><th>Ngày tạo</th><th>Trạng thái</th><th>Người tạo</th><th>Số xe</th></tr></thead>
+<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="card">
+  <div class="bar"><b>Danh sách xe</b> <span id="curNo" class="muted"></span><span style="flex:1"></span>
+    <button onclick="approve()">Duyệt chi tiết đã chọn</button></div>
+  <div class="wrap"><table><thead><tr><th><input type="checkbox" onclick="checkAll(this)"></th><th>#</th>
+    <th>STT nội bộ</th><th>Số khung</th><th>Mã model</th><th>Số máy</th><th>Số đăng kiểm</th><th>Số nguồn gốc</th><th>Số TKHQ</th><th>Ngày tờ khai nguồn gốc</th>
+    <th>Ngân hàng bàn giao tài sản</th><th>Số Đơn hàng</th><th>Trạng thái ĐNGT</th><th>Trạng thái chi tiết ĐN thế chấp</th>
+    <th>Ngày duyệt đề nghị thế chấp</th><th>Người duyệt</th><th>Số đề nghị giải chấp</th><th>Ngày giải chấp</th></tr></thead>
+  <tbody id="cars"><tr><td colspan="18" class="muted">Chọn một đề nghị.</td></tr></tbody></table></div>
+</div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={Pending:"Mới tạo",Approved:"Đang thế chấp",Finished:"Đã giải chấp"};
+const LBL={P:"Mới tạo",A:"Đang thế chấp",F:"Đã giải chấp",C:"Đã huỷ"};
+const LBLD={P:"Mới tạo",A:"Đã duyệt",F:"Đã giải chấp"};
+let CUR=null, CARS=[];
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -42,18 +70,23 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 function fmt(d){ return d? new Date(d).toLocaleString("vi-VN"):""; }
+function fd(d){ return d? new Date(d).toLocaleDateString("vi-VN"):""; }
+function e(s){ return (s??"").toString().replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+async function banks(){ await token();
+  const d=await (await fetch("/api/mstbanks",{headers:H()})).json();
+  const o=(d.items||[]).map(b=>`<option value="${e(b.bankCode)}">${e(b.bankCode)} — ${e(b.bankName)}</option>`).join("");
+  F("bank").insertAdjacentHTML("beforeend",o); F("qbank").insertAdjacentHTML("beforeend",o); }
 async function load(){ await token();
-  const d=await (await fetch("/api/mortgages?status="+F("fst").value,{headers:H()})).json();
-  F("rows").innerHTML=(d.items||[]).map(m=>{
-    let act="";
-    if(m.status==="Pending") act=`<button class="sm" onclick="act('${m.reqRMNo}','approve')">Duyệt thế chấp</button>`;
-    else if(m.status==="Approved") act=`<button class="sm" onclick="act('${m.reqRMNo}','finish')">Giải chấp</button>`;
-    return `<tr><td><b>${m.reqRMNo}</b></td><td>${m.bankCode}</td>
-      <td><span class="pill p-${m.status}">${LBL[m.status]||m.status}</span></td>
-      <td>${m.cars} <a href="#" onclick="cars('${m.reqRMNo}');return false" class="cars">xem</a></td>
-      <td>${fmt(m.createdAt)}</td><td>${act}</td></tr>
-      <tr id="c-${m.reqRMNo}"></tr>`;
-  }).join("")||'<tr><td colspan="6" class="muted">Chưa có đề nghị.</td></tr>';
+  const p=new URLSearchParams({no:F("qno").value,carId:F("qcar").value,vin:F("qvin").value,bank:F("qbank").value,
+    status:F("qst").value,dtlStatus:F("qdst").value,approveFrom:F("qaf").value,approveTo:F("qat").value,createFrom:F("qcf").value,createTo:F("qct").value});
+  for(const [k,v] of [...p]) if(!v) p.delete(k);
+  const d=await (await fetch("/api/mortgages?"+p,{headers:H()})).json();
+  const it=d.items||[];
+  if(!it.length) msg("Không tìm thấy dữ liệu."); else msg("");
+  F("rows").innerHTML=it.map((m,i)=>`<tr class="h" id="h-${e(m.reqRMNo)}" onclick="cars('${e(m.reqRMNo)}')"><td>${i+1}</td><td><b>${e(m.reqRMNo)}</b></td>
+      <td>${fmt(m.createdAt)}</td><td><span class="pill p-${m.status}">${LBL[m.status]||e(m.status)}</span></td><td>${e(m.createdBy)}</td><td>${m.cars}</td></tr>`).join("")
+    ||'<tr><td colspan="6" class="muted">Chưa có đề nghị.</td></tr>';
+  if(it.length) cars(it[0].reqRMNo); else { CUR=null; F("cars").innerHTML='<tr><td colspan="18" class="muted">—</td></tr>'; }
 }
 async function create(){
   const vins=F("vins").value.split(/[\n,]/).map(s=>s.trim()).filter(Boolean);
@@ -61,15 +94,30 @@ async function create(){
   const j=await r.json();
   if(r.ok){ msg("Đã tạo "+j.reqRMNo+" ("+j.cars+" xe)."); F("vins").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
-async function act(no,a){
-  const r=await fetch(`/api/mortgages/${no}/${a}`,{method:"POST",headers:H()});
-  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status));
-}
 async function cars(no){
-  const row=F("c-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
-  const d=await (await fetch(`/api/mortgages/${no}/cars`,{headers:H()})).json();
-  row.innerHTML=`<td colspan="6"><div class="cars">${(d.cars||[]).map(c=>`VIN <b>${c.vin}</b> · ${c.dtlStatus}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
+  CUR=no; document.querySelectorAll("tr.h").forEach(x=>x.classList.toggle("sel",x.id==="h-"+no)); F("curNo").textContent=no;
+  const d=await (await fetch(`/api/mortgages/${encodeURIComponent(no)}/cars`,{headers:H()})).json();
+  CARS=d.cars||[];
+  F("cars").innerHTML=CARS.map((c,i)=>`<tr><td><input type="checkbox" class="ck" data-i="${i}"></td><td>${i+1}</td>
+    <td>${e(c.cv_MMSDocReqIdx)}</td><td><b>${e(c.vin)}</b></td><td>${e(c.modelCode)}</td><td>${e(c.engineNo)}</td><td>${e(c.cqNo)}</td><td>${e(c.coNo)}</td>
+    <td>${e(c.declarationNo)}</td><td>${fd(c.coDate)}</td><td>${e(c.rmrm_MortageBankCode)}</td><td>${e(c.orderNoMnfPlMMS)}</td><td>${e(c.cdrd_DRDtlStatus)}</td>
+    <td><span class="pill p-${c.rmrmd_RMDtlStatus}">${LBLD[c.rmrmd_RMDtlStatus]||e(c.rmrmd_RMDtlStatus)}</span></td>
+    <td>${fmt(c.rmrmd_ApprovedDate)}</td><td>${e(c.rmrmd_ApprovedBy)}</td><td>${e(c.rdrrd_ReqDMNo)}</td><td>${fmt(c.rdrrd_ApprovedDate)}</td></tr>`).join("")
+    ||'<tr><td colspan="18" class="muted">—</td></tr>';
 }
-load();
+function checkAll(x){ document.querySelectorAll(".ck").forEach(c=>c.checked=x.checked); }
+async function approve(){
+  if(!CUR||!CARS.length){ msg("Chưa có dữ liệu"); return; }
+  const sel=[...document.querySelectorAll(".ck:checked")].map(c=>CARS[+c.dataset.i]);
+  if(!sel.length){ msg("Chưa tích chọn xe để duyệt!"); return; }
+  if(sel.some(c=>c.rmrmd_RMDtlStatus!=="P")){ msg("Trạng thái chi tiết đề nghị không hợp lệ!"); return; }
+  if(!confirm("Duyệt chi tiết Đề nghị thế chấp?")) return;
+  for(const c of sel){
+    const r=await fetch(`/api/reqmortgages/${encodeURIComponent(CUR)}/approve-vin?vin=${encodeURIComponent(c.vin)}`,{method:"POST",headers:H()});
+    if(!r.ok){ const j=await r.json().catch(()=>({})); msg("Lỗi: "+(j.error||r.status)); return; }
+  }
+  msg("Duyệt thành công"); const no=CUR; await load(); cars(no);
+}
+banks(); load();
 </script>
 </body></html>
