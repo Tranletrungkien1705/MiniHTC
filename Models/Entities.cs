@@ -13995,7 +13995,12 @@ public sealed class ServiceAppointment
     public string? AppType { get; set; }           // loại hẹn (BD/SC...)
     public DateTime AppFrom { get; set; }
     public DateTime AppTo { get; set; }
-    public string Status { get; set; } = "Booked"; // Booked -> Arrived -> Done / Cancelled
+    /// <summary>🔴 #335 `Ser_App.AppStatus` (rename từ `Status` khớp nguồn) — mã nguồn THẬT là "1".."5"
+    /// (biz ghi thẳng: BizCarSv.TVO.cs:1697 `AppStatus = "1"`; Get dịch nhãn ở BizCarSv.Appointment.cs:1527):
+    /// "1" Mới tạo · "2" Xác nhận · "3" Tiếp nhận · "4" Hủy · "5" Đã liên hệ và chưa xác nhận.
+    /// ⚠️ Hằng `TConst.Ser_App` (CREA/CONF/REJ/ACCE) KHÔNG được dùng để ghi — port cũ map nhầm theo hằng này.
+    /// "Done" là trạng thái port cũ tự thêm (không có ở nguồn) — giữ đọc được, không cho đặt mới.</summary>
+    public string AppStatus { get; set; } = "1";
     public string? Note { get; set; }
     public string? EngineerNo { get; set; }        // CVDV nhận lịch hẹn — port bổ sung FrmQuotationApp
     public string? QuoteNo { get; set; }           // Báo giá ước tính gắn theo lịch hẹn (FK mềm tới ServiceQuotation.QuoteNo)
@@ -14004,6 +14009,9 @@ public sealed class ServiceAppointment
     public string? CusRequest { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>#335 `Ser_App.LogLUDateTime/LogLUBy` — `Ser_App_UpdateStatus` ghi cùng AppStatus.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

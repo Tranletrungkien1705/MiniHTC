@@ -26383,12 +26383,12 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
 {
     var q = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plate!));
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.AppStatus == status);
     if (date.HasValue) { var d0 = date.Value.Date; var d1 = d0.AddDays(1); q = q.Where(x => x.AppFrom >= d0 && x.AppFrom < d1); }
     var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
     {
         x.Id, x.AppNo, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
-        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.Status, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
+        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.AppStatus, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
         serviceItems = db.AppointmentServiceItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo),
         partItems = db.AppointmentPartItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo)
     }).ToListAsync();
@@ -26407,7 +26407,7 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         if (hasCavityMaster && !await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId && c.CavityName == cavity))
             return Results.BadRequest(new { error = "Khoang/bay không có trong danh mục: " + cavity });
         // Chống đặt chồng giờ cùng 1 khoang (bỏ qua lệnh đã hủy).
-        var overlap = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity && x.Status != "Cancelled"
+        var overlap = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity && x.AppStatus != "4"
             && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
         if (overlap) return Results.BadRequest(new { error = "Khoang " + cavity + " đã có lịch trùng khung giờ." });
     }
@@ -26427,7 +26427,7 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
 
     var no = "APP" + DateTime.Now.ToString("yyMMddHHmmss");
     var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
-        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, Status = "Booked",
+        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, AppStatus = "1",
         EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest };
     db.ServiceAppointments.Add(a);
 
@@ -26446,7 +26446,7 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
             Unit = line.Unit, Quantity = line.Quantity, Note = line.Note
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { a.Id, a.AppNo, a.Status, serviceItems = serviceItems.Count, partItems = partItems.Count });
+    return Results.Ok(new { a.Id, a.AppNo, a.AppStatus, serviceItems = serviceItems.Count, partItems = partItems.Count });
 }).RequireAuthorization();
 
 // Nội dung đặt trước của lịch hẹn: danh sách dịch vụ + phụ tùng khách yêu cầu.
@@ -26461,44 +26461,48 @@ app.MapGet("/api/appointments/{no}/items", async (string no, AppDbContext db, IT
         .Select(x => new { x.PartCode, x.PartName, x.EngName, x.Unit, x.Quantity, x.Note }).ToListAsync();
     return Results.Ok(new
     {
-        a.AppNo, a.PlateNo, a.CusName, a.CusRequest, a.AppFrom, a.AppTo, a.Status,
+        a.AppNo, a.PlateNo, a.CusName, a.CusRequest, a.AppFrom, a.AppTo, a.AppStatus,
         services, parts,
         // Tổng giờ công định mức — cơ sở ước tính thời gian giữ khoang cho lịch hẹn.
         totalStdManHour = services.Sum(s => s.StdManHour ?? 0)
     });
 }).RequireAuthorization();
 
-// 🔴 Trạng thái lịch hẹn theo ĐÚNG nguồn (TConst.Ser_App) — port cũ thiếu bước XÁC NHẬN.
-// Nguồn: CREA (mới tạo) → CONF (xác nhận) → ACCE (tiếp nhận, xe đã tới xưởng) · REJ (huỷ).
-// "Confirmed" là bước gọi khách xác nhận TRƯỚC khi tới — thiếu nó thì không phân biệt được
-// lịch mới đặt với lịch khách đã xác nhận sẽ đến (cơ sở để xưởng giữ khoang).
+// 🔴 #335 Trạng thái lịch hẹn theo ĐÚNG mã LƯU của nguồn (`Ser_App.AppStatus` = "1".."5").
+//   Port cũ map theo hằng `TConst.Ser_App` (CREA/CONF/ACCE/REJ) — hằng đó KHÔNG được dùng để ghi (grep toàn
+//   TERP.BizCarSv: mọi chỗ gán AppStatus đều là chuỗi số; FrmAppList lọc `IN (1,2,3,4,5)`).
 var appointmentStatusSourceCodes = new Dictionary<string, string>
 {
-    ["Booked"] = "CREA",       // Mới tạo
-    ["Confirmed"] = "CONF",    // Xác nhận  ← port cũ THIẾU
-    ["Arrived"] = "ACCE",      // Tiếp nhận (xe đã tới)
-    ["Cancelled"] = "REJ",     // Huỷ
-    // "Done" KHÔNG có trong TConst.Ser_App — port cũ tự thêm. Giữ cho dữ liệu cũ, đánh dấu rõ.
-    ["Done"] = "(port-only)",
+    ["1"] = "Mới tạo",
+    ["2"] = "Xác nhận",
+    ["3"] = "Tiếp nhận",
+    ["4"] = "Hủy",
+    ["5"] = "Đã liên hệ và chưa xác nhận",   // ← port cũ THIẾU (FrmAppList chkDaLH / FrmQuotationApp btnDaLHChuaXN)
 };
 
+// 🔴 #335 Biz `Ser_App_UpdateStatus` (BizCarSv.Appointment.cs:1812) KHÔNG kiểm chuyển tiếp — luật thật nằm ở UI:
+//   FrmQuotationApp.cs:1066-1115 bật/tắt nút theo AppStatus (Confirm→"2", Cancel→"4", DaLHChuaXN→"5"),
+//   "3" chỉ đặt khi TẠO RO từ báo giá (FrmQuotation.cs:2647/2696) và nút CreateRO chỉ bật ở "2"/"3".
+//   ⇒ Bảng dưới = đúng tập nút được BẬT ở từng trạng thái. Lưu ý: "4" Hủy KHÔNG phải trạng thái cuối
+//   (nguồn vẫn bật Xác nhận + Đã liên hệ) — port cũ coi Hủy là cuối là sai.
 var appointmentTransitions = new Dictionary<string, string[]>
 {
-    ["Booked"] = new[] { "Confirmed", "Arrived", "Cancelled" },
-    ["Confirmed"] = new[] { "Arrived", "Cancelled" },
-    ["Arrived"] = new[] { "Done", "Cancelled" },
-    ["Done"] = Array.Empty<string>(),
-    ["Cancelled"] = Array.Empty<string>(),
+    ["1"] = new[] { "2", "4", "5" },
+    ["2"] = new[] { "3", "4" },
+    ["3"] = Array.Empty<string>(),
+    ["4"] = new[] { "2", "5" },
+    ["5"] = new[] { "2", "4" },
+    ["Done"] = Array.Empty<string>(),   // dữ liệu port cũ — không có ở nguồn
 };
 
 app.MapGet("/api/appointments/statuses", () => Results.Ok(new
 {
-    statuses = appointmentStatusSourceCodes.Select(kv => new { status = kv.Key, sourceCode = kv.Value }),
+    statuses = appointmentStatusSourceCodes.Select(kv => new { appStatus = kv.Key, name = kv.Value }),
     transitions = appointmentTransitions.Select(kv => new { from = kv.Key, to = kv.Value }),
     note = "Done không có ở nguồn (TConst.Ser_App chỉ có CREA/CONF/ACCE/REJ) — giữ cho dữ liệu port cũ."
 })).RequireAuthorization();
 
-app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var a = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (a is null) return Results.NotFound(new { id });
@@ -26506,10 +26510,10 @@ app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDt
     if (!appointmentStatusSourceCodes.ContainsKey(s))
         return Results.BadRequest(new { error = $"Trạng thái hợp lệ: {string.Join(", ", appointmentStatusSourceCodes.Keys)}" });
     // Chỉ cho đi theo bảng chuyển tiếp — port cũ cho nhảy tự do giữa mọi trạng thái.
-    if (!appointmentTransitions.TryGetValue(a.Status, out var allowedNext) || !allowedNext.Contains(s))
-        return Results.BadRequest(new { error = $"Không thể chuyển từ '{a.Status}' sang '{s}'. Cho phép: {string.Join(", ", allowedNext ?? Array.Empty<string>())}" });
-    a.Status = s; await db.SaveChangesAsync();
-    return Results.Ok(new { a.Id, a.Status, sourceCode = appointmentStatusSourceCodes[s] });
+    if (!appointmentTransitions.TryGetValue(a.AppStatus, out var allowedNext) || !allowedNext.Contains(s))
+        return Results.BadRequest(new { error = $"Không thể chuyển từ '{a.AppStatus}' sang '{s}'. Cho phép: {string.Join(", ", allowedNext ?? Array.Empty<string>())}" });
+    a.AppStatus = s; a.LogLUDateTime = DateTime.Now; a.LogLUBy = user.Identity?.Name ?? "system"; await db.SaveChangesAsync();   // nguồn ghi AppStatus + LogLUDateTime/LogLUBy
+    return Results.Ok(new { a.Id, a.AppStatus, name = appointmentStatusSourceCodes[s] });
 }).RequireAuthorization();
 
 // Bảng trạng thái khoang/bay theo ngày: mỗi khoang trong danh mục + lịch hẹn CÒN HIỆU LỰC của khoang đó
@@ -26518,8 +26522,8 @@ app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantCont
 {
     var d0 = (date ?? DateTime.Today).Date; var d1 = d0.AddDays(1);
     var cavities = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1").OrderBy(c => c.CavityName).Select(c => c.CavityName).ToListAsync();
-    var apps = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityName != null && x.Status != "Cancelled" && x.AppFrom >= d0 && x.AppFrom < d1)
-        .OrderBy(x => x.AppFrom).Select(x => new { x.CavityName, x.AppNo, x.PlateNo, x.CusName, x.ModelName, x.Status, appFrom = x.AppFrom.ToString("HH:mm"), appTo = x.AppTo.ToString("HH:mm") }).ToListAsync();
+    var apps = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityName != null && x.AppStatus != "4" && x.AppFrom >= d0 && x.AppFrom < d1)
+        .OrderBy(x => x.AppFrom).Select(x => new { x.CavityName, x.AppNo, x.PlateNo, x.CusName, x.ModelName, x.AppStatus, appFrom = x.AppFrom.ToString("HH:mm"), appTo = x.AppTo.ToString("HH:mm") }).ToListAsync();
     var board = cavities.Select(cv => new { cavityName = cv, appointments = apps.Where(a => a.CavityName == cv).ToList() }).ToList();
     return Results.Ok(new { date = d0.ToString("yyyy-MM-dd"), totalCavity = cavities.Count, totalApp = apps.Count, board });
 }).RequireAuthorization();

@@ -12,7 +12,7 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
   button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
   table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Booked{color:var(--accent)} .s-Arrived{color:var(--warn)} .s-Done{color:var(--ok)} .s-Cancelled{color:var(--bad);text-decoration:line-through}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-1{color:var(--accent)} .s-2{color:var(--ok)} .s-3{color:var(--warn)} .s-5{color:var(--accent)} .s-Done{color:var(--ok)} .s-4{color:var(--bad);text-decoration:line-through}
   .msg{font-size:13px;margin-left:6px}
   .tabs{display:flex;gap:6px;margin:10px 0} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
   .bays{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:10px}
@@ -45,7 +45,7 @@
 <div class="row" style="margin:8px 0">
   <div><label>Ngày</label><input id="qDate" type="date"></div>
   <div><label>Biển số</label><input id="qPlate" style="width:110px"></div>
-  <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option value="Booked">Đã đặt</option><option value="Arrived">Đã đến</option><option value="Done">Xong</option><option value="Cancelled">Hủy</option></select></div>
+  <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option value="1">Mới tạo</option><option value="2">Xác nhận</option><option value="3">Tiếp nhận</option><option value="4">Hủy</option><option value="5">Đã liên hệ và chưa xác nhận</option></select></div>
   <button onclick="load()">Xem lịch</button>
 </div>
 <div class="wrap"><table><thead><tr><th>Số hẹn</th><th>Khoang</th><th>Biển số</th><th>KH</th><th>Model</th><th>CVDV</th><th>Từ</th><th>Đến</th><th>TT</th><th>Thao tác</th></tr></thead>
@@ -60,7 +60,8 @@
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
-const ST={Booked:"Đã đặt",Arrived:"Đã đến",Done:"Xong",Cancelled:"Hủy"};
+// #335 mã Ser_App.AppStatus của nguồn ("1".."5"); "Done" là dữ liệu port cũ.
+const ST={"1":"Mới tạo","2":"Xác nhận","3":"Tiếp nhận","4":"Hủy","5":"Đã liên hệ và chưa xác nhận",Done:"Xong (port cũ)"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -80,20 +81,23 @@ async function setStatus(id,s){ await token();
   const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
 }
 function act(o){ let h="";
-  if(o.status==="Booked") h+=`<button class="link" onclick="setStatus(${o.id},'Arrived')">Đến</button>`;
-  if(o.status==="Arrived") h+=`<button class="link" onclick="setStatus(${o.id},'Done')">Xong</button>`;
-  if(o.status!=="Done"&&o.status!=="Cancelled") h+=`<button class="link" onclick="setStatus(${o.id},'Cancelled')">Hủy</button>`;
+  // #335 đúng tập nút nguồn bật theo trạng thái (FrmQuotationApp.cs:1066-1115); "3" Tiếp nhận đặt khi tạo RO từ báo giá.
+  const s=o.appStatus;
+  if(s==="1"||s==="4"||s==="5") h+=`<button class="link" onclick="setStatus(${o.id},'2')">Xác nhận</button>`;
+  if(s==="2") h+=`<button class="link" onclick="setStatus(${o.id},'3')">Tiếp nhận</button>`;
+  if(s==="1"||s==="4") h+=`<button class="link" onclick="setStatus(${o.id},'5')">Đã LH chưa XN</button>`;
+  if(s==="1"||s==="2"||s==="5") h+=`<button class="link" onclick="setStatus(${o.id},'4')">Hủy</button>`;
   return h; }
 async function load(){ await token();
   const p=new URLSearchParams(); if(F("qDate").value)p.set("date",F("qDate").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qStatus").value)p.set("status",F("qStatus").value);
   const r=await fetch("/api/appointments?"+p.toString(),{headers:H()}); const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.appNo)}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td>${esc(o.modelName)}</td><td>${esc(o.engineerNo)||"—"}</td><td>${esc(o.appFrom)}</td><td>${esc(o.appTo)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có lịch hẹn.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.appNo)}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td>${esc(o.modelName)}</td><td>${esc(o.engineerNo)||"—"}</td><td>${esc(o.appFrom)}</td><td>${esc(o.appTo)}</td><td><span class="pill s-${o.appStatus}">${ST[o.appStatus]||o.appStatus}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có lịch hẹn.</td></tr>';
 }
 async function board(){ await token();
   const p=new URLSearchParams(); if(F("bDate").value)p.set("date",F("bDate").value);
   const r=await fetch("/api/appointments/cavity-board?"+p.toString(),{headers:H()}); const d=await r.json();
   m("msg2",`${d.date}: ${d.totalCavity} khoang, ${d.totalApp} lịch`);
-  F("bays").innerHTML=(d.board||[]).map(b=>`<div class="bay"><h4>${esc(b.cavityName)}</h4>${(b.appointments||[]).map(a=>`<div class="slot"><b>${esc(a.appFrom)}-${esc(a.appTo)}</b> ${esc(a.plateNo)} <span class="pill s-${a.status}">${ST[a.status]||a.status}</span><br><span class="muted">${esc(a.cusName)} · ${esc(a.modelName)}</span></div>`).join("")||'<div class="slot muted">Trống</div>'}</div>`).join("")||'<div class="muted">Chưa có khoang nào (khai báo ở Danh mục khoang).</div>';
+  F("bays").innerHTML=(d.board||[]).map(b=>`<div class="bay"><h4>${esc(b.cavityName)}</h4>${(b.appointments||[]).map(a=>`<div class="slot"><b>${esc(a.appFrom)}-${esc(a.appTo)}</b> ${esc(a.plateNo)} <span class="pill s-${a.appStatus}">${ST[a.appStatus]||a.appStatus}</span><br><span class="muted">${esc(a.cusName)} · ${esc(a.modelName)}</span></div>`).join("")||'<div class="slot muted">Trống</div>'}</div>`).join("")||'<div class="muted">Chưa có khoang nào (khai báo ở Danh mục khoang).</div>';
 }
 </script>
 </body></html>
