@@ -13,8 +13,8 @@
   #msg{font-size:13px} .ni{width:150px}
 </style></head>
 <body>
-<h1>Cập nhật chứng từ kế toán <span class="muted">(port 1:1 FrmUpdateChungTuKT — số ghi sổ KT trên phiếu TT đã duyệt)</span></h1>
-<p class="muted">Chỉ phiếu thanh toán <b>đã duyệt</b> mới cập nhật được số chứng từ (AccountingRecordNo). Ghi old→new.</p>
+<h1>Cập nhật chứng từ kế toán <span class="muted">(port 1:1 FrmUpdateChungTuKT → Pmt_Payment_UpdateFinancial — số ghi sổ KT trên phiếu TT đã hoàn tất)</span></h1>
+<p class="muted">Chỉ phiếu thanh toán <b>đã hoàn tất (F)</b> mới cập nhật được số chứng từ (AccountingRecordNo) — đúng guard nguồn <code>Pmt_Payment_CheckDB(…, Stage.Finished)</code>. Ghi old→new.</p>
 <div class="bar">
   <input id="qn" placeholder="Lọc số phiếu" oninput="load()" style="width:120px">
   <input id="qd" placeholder="Lọc đại lý" oninput="load()" style="width:100px">
@@ -32,10 +32,10 @@ function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-T
 function msg(t){ F("msg").textContent=t; }
 function money(n){ return (n||0).toLocaleString("vi-VN"); }
 async function load(){ await token();
-  const d=await (await fetch(`/api/bankpms?dealer=${F("qd").value}&pmNo=${F("qn").value}&status=Approved`,{headers:H()})).json();
+  const d=await (await fetch(`/api/bankpms?dealer=${F("qd").value}&pmNo=${F("qn").value}&status=F`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
     `<tr><td><b>${o.paymentNo}</b></td><td>${o.dealerCode}</td><td class="num">${money(o.totalAmount)}</td><td>${o.accountingRecordNo||"—"}</td><td><input class="ni" id="n_${o.paymentNo}" placeholder="Số CT mới"></td><td><button class="sm ok" onclick="save('${o.paymentNo}')">Cập nhật</button></td></tr>`
-  ).join("")||'<tr><td colspan="6" class="muted">Không có phiếu đã duyệt.</td></tr>';
+  ).join("")||'<tr><td colspan="6" class="muted">Không có phiếu đã hoàn tất.</td></tr>';
 }
 async function save(no){
   const v=F("n_"+no).value.trim(); if(!v){ msg("Chưa nhập số CT mới cho "+no); return; }

@@ -7318,15 +7318,21 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
 }).RequireAuthorization();
 
 // Cập nhật số chứng từ kế toán trên phiếu TT (port 1:1 FrmUpdateChungTuKT, Sales/Payment) — ghi old->new.
-app.MapPost("/api/bankpms/{no}/ctkt", async (string no, BankPmCtktDto dto, AppDbContext db, ITenantContext t) =>
+// #333 Trace: FrmUpdateChungTuKT.btnSave → SalesService.UpdateCTKT (map NewAccountingRecordNo → AccountingRecordNo)
+//   → WS `Pmt_Payment_UpdateFinancial` (TCFIntergration.cs:2771) — CÙNG hàm với /api/payments/update-financial.
+//   🔴 Guard nguồn = `Pmt_Payment_CheckDB(…, TConst.Stage.Finished)` ⇒ CHỈ phiếu "F". Bản cũ so với chuỗi
+//   "Approved" (từ vựng cũ; PaymentStatus nay là P/A/R/F/C) ⇒ KHÔNG BAO GIỜ qua được. Ghi 3 cột như nguồn
+//   (AccountingRecordNo + LogLUDateTime/LogLUBy).
+app.MapPost("/api/bankpms/{no}/ctkt", async (string no, BankPmCtktDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
     if (p is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.NewAccountingRecordNo)) return Results.BadRequest(new { error = "Chưa nhập số chứng từ kế toán mới." });
-    if (p.PaymentStatus != "Approved") return Results.BadRequest(new { error = "Chỉ cập nhật chứng từ trên phiếu đã duyệt." });
+    if (p.PaymentStatus != "F") return Results.BadRequest(new { error = "Chỉ cập nhật chứng từ trên phiếu thanh toán đã hoàn tất (F).", code = "Pmt_Payment_CheckDB_StatusNotMatched", current = p.PaymentStatus });
     var oldNo = p.AccountingRecordNo;
     p.AccountingRecordNo = dto.NewAccountingRecordNo.Trim();
+    p.LogLUDateTime = DateTime.Now; p.LogLUBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PaymentNo, oldAccountingRecordNo = oldNo, newAccountingRecordNo = p.AccountingRecordNo });
 }).RequireAuthorization();
