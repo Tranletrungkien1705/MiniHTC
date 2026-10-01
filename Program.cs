@@ -20935,12 +20935,15 @@ app.MapPost("/api/technicallibraries/{id}/toggle", async (long id, AppDbContext 
 }).RequireAuthorization();
 
 // ===== Master nhà cung cấp phụ tùng (SerMstSupplier — port 1:1 FrmMstSupplierCreate/Search, TCMotor DMSCarSv) =====
-app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
+// #380 bản CHUẨN của Ser_MST_Supplier (song sinh ServiceSupplier đã gộp vào). Nguồn: MstSupplierService.MstSupplierSearch/GetAll
+//   lọc theo strDealerCode; ValidateInput (FrmMstSupplierCreate:80-99) bắt buộc Mã + Tên + Địa chỉ.
+app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealer) =>
 {
     var qry = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SupplierCode.Contains(q!) || x.SupplierName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.FlagActive }).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.DealerCode, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -20948,10 +20951,13 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
 {
     var code = (dto.SupplierCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
+    if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp." });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập địa chỉ." });
     if (!string.IsNullOrWhiteSpace(dto.Phone) && !dto.Phone!.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')')) return Results.BadRequest(new { error = "Số điện thoại không hợp lệ." });
-    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
+    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code.ToUpper());
     if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code }; db.SerMstSuppliers.Add(row); }
     row.SupplierName = dto.SupplierName; row.Address = dto.Address; row.Phone = dto.Phone; row.Fax = dto.Fax; row.UpdatedAt = DateTime.Now;
+    row.ContactName = dto.ContactName; row.ContactPhone = dto.ContactPhone; row.DealerCode = dto.DealerCode;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.FlagActive });
@@ -29447,42 +29453,40 @@ app.MapPost("/api/extraworks/{code}/toggle", async (string code, AppDbContext db
     return Results.Ok(new { x.ExtraWorkCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
-// ===== Nhà cung cấp phụ tùng dịch vụ (ServiceSupplier — port 1:1 FrmMstSupplierCreate, TCMotor) =====
+// ===== Nhà cung cấp phụ tùng dịch vụ — ⛔ #380 HỢP NHẤT SONG SINH: ServiceSupplier ≡ SerMstSupplier (cùng Ser_MST_Supplier,
+// cùng FrmMstSupplierCreate). Bản chuẩn = SerMstSupplier. Route cũ giữ tham số/hình JSON nhưng ĐỌC/GHI bảng chuẩn (cùng màn ⇒ bí danh).
 app.MapGet("/api/servicesuppliers", async (AppDbContext db, ITenantContext t, string? q, string? dealer, string? active) =>
 {
-    var query = db.ServiceSuppliers.Where(x => x.OrgId == t.OrgId);
+    var query = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.SupplierCode.Contains(q!) || (x.SupplierName != null && x.SupplierName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.SupplierCode).Take(500)
         .Select(x => new { x.SupplierCode, x.SupplierName, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.Address, x.DealerCode, x.FlagActive }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/sersuppliers" });
 }).RequireAuthorization();
 
-// Upsert theo mã nhà cung cấp.
+// Upsert theo mã nhà cung cấp — cùng luật nguồn với /api/sersuppliers (Mã + Tên + Địa chỉ bắt buộc).
 app.MapPost("/api/servicesuppliers", async (ServiceSupplierDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
     if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp." });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập địa chỉ." });
     var code = dto.SupplierCode.Trim().ToUpperInvariant();
-    var ex = await db.ServiceSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
-    if (ex is not null)
-    {
-        ex.SupplierName = dto.SupplierName; ex.Phone = dto.Phone; ex.Fax = dto.Fax; ex.ContactName = dto.ContactName; ex.ContactPhone = dto.ContactPhone; ex.Address = dto.Address; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1";
-        await db.SaveChangesAsync();
-        return Results.Ok(new { ex.SupplierCode, updated = true });
-    }
-    var r = new ServiceSupplier { OrgId = t.OrgId, SupplierCode = code, SupplierName = dto.SupplierName, Phone = dto.Phone, Fax = dto.Fax, ContactName = dto.ContactName, ContactPhone = dto.ContactPhone, Address = dto.Address, DealerCode = dto.DealerCode, FlagActive = "1" };
-    db.ServiceSuppliers.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.SupplierCode, updated = false });
+    var ex = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code);
+    var updated = ex is not null;
+    if (ex is null) { ex = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code }; db.SerMstSuppliers.Add(ex); }
+    ex.SupplierName = dto.SupplierName; ex.Phone = dto.Phone; ex.Fax = dto.Fax; ex.ContactName = dto.ContactName; ex.ContactPhone = dto.ContactPhone; ex.Address = dto.Address; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { ex.SupplierCode, updated });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicesuppliers/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
-    var x = await db.ServiceSuppliers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SupplierCode == code);
+    var x = await db.SerMstSuppliers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SupplierCode.ToUpper() == code);
     if (x is null) return Results.NotFound(new { code });
-    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1"; x.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { x.SupplierCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
@@ -57307,7 +57311,8 @@ record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit,
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
 record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
-record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive);
+record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive,
+    string? ContactName = null, string? ContactPhone = null, string? DealerCode = null);   // #380
 record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive);

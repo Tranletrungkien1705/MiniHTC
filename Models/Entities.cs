@@ -3258,6 +3258,11 @@ public sealed class SerMstSupplier
     public string? Fax { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    // ===== #380 [c] gộp song sinh Ser_MST_Supplier — cột nguồn DbDefine TblSerMstSupplier (DEALERCODE/CONTACTNAME/CONTACTPHONE) =====
+    public string? DealerCode { get; set; }
+    public string? ContactName { get; set; }
+    public string? ContactPhone { get; set; }
 }
 
 /// <summary>Phiếu điều chỉnh tồn kho (header) — port 1:1 FrmStockAdjCreate/Search (TCMotor DMSCarSv). Điều chỉnh SL tồn phụ tùng, duyệt theo trạng thái.</summary>
@@ -14684,7 +14689,8 @@ public sealed class ExtraWorkMst
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Nhà cung cấp phụ tùng dịch vụ (mã/tên/liên hệ/địa chỉ) — port 1:1 FrmMstSupplierCreate (TblSerMstSupplier, TCMotor).</summary>
+/// <summary>⛔ #380 DEPRECATED — SONG SINH của <see cref="SerMstSupplier"/> (cùng bảng nguồn Ser_MST_Supplier / TblSerMstSupplier, cùng FrmMstSupplierCreate).
+/// Bản chuẩn = SerMstSupplier (trùng tên entity nguồn). Route /api/servicesuppliers đã trỏ sang bản chuẩn; Seeder chép dữ liệu cũ. Giữ lớp để đọc dữ liệu cũ, KHÔNG ghi mới.</summary>
 public sealed class ServiceSupplier
 {
     public long Id { get; set; }
