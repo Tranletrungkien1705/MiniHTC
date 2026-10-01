@@ -278,6 +278,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SalesManType> SalesManTypes => Set<SalesManType>();
     public DbSet<MstQualification> MstQualifications => Set<MstQualification>();   // #319
     public DbSet<MstPosition> MstPositions => Set<MstPosition>();                  // #319
+    public DbSet<MstPort> MstPorts => Set<MstPort>();                              // #322
     public DbSet<SalesManTypeCertificate> SalesManTypeCertificates => Set<SalesManTypeCertificate>();   // #B245
     public DbSet<CarVinCBInfo> CarVinCBInfos => Set<CarVinCBInfo>();
     public DbSet<InvoiceRecall> InvoiceRecalls => Set<InvoiceRecall>();

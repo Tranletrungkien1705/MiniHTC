@@ -9699,6 +9699,21 @@ public sealed class BankDealer
     public string? LogLUBy { get; set; }
 }
 
+/// <summary>#322 `Mst_Port` — danh mục CẢNG (TblPort; DbTable.Tbl_Port = "Mst_Port"). Form quản trị `Views/Admin/Dealer/FrmPort.cs`
+/// (mở từ FrmMain) — btnApply ghi qua SaveMasterDataTable: PortCode/PortType/ProvinceCode ToUpper().Trim(); mọi ô bắt buộc trừ địa chỉ
+/// (gviewExcel_ValidatingEditor). ⚠️ Hằng `TblPort.Address` = chuỗi "PORTADDRESS" ⇒ cột thật là PortAddress.</summary>
+public sealed class MstPort
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PortCode { get; set; } = "";
+    public string? PortName { get; set; }
+    public string? PortAddress { get; set; }
+    /// <summary>Loại cảng (→ Mst_PortType.PortType).</summary>
+    public string? PortType { get; set; }
+    public string? ProvinceCode { get; set; }
+}
+
 /// <summary>🔴 #B167 — `Mst_PortType`: **loại cảng**. ⚠️ Cột thật là **`PORTTYPE`/`PORTTYPENAME`**
 /// (hằng C# tên `PortTypeCode`/`PortTypeName` nhưng **giá trị chuỗi khác tên hằng**).</summary>
 public sealed class PortTypeMst

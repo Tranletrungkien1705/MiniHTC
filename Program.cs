@@ -23162,6 +23162,40 @@ app.MapPost("/api/carvininvoiceinfos/import", async (CarVinInvoiceImportDto dto,
     return Results.Ok(new { added, updated });
 }).RequireAuthorization();
 
+// ===== #322 Danh mục cảng (Mst_Port — FrmPort, Admin/Dealer) =====
+app.MapGet("/api/mstports", async (AppDbContext db, ITenantContext t, string? portType, string? province) =>
+{
+    var q = db.MstPorts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(portType)) q = q.Where(x => x.PortType == portType.Trim().ToUpper());
+    if (!string.IsNullOrWhiteSpace(province)) q = q.Where(x => x.ProvinceCode == province.Trim().ToUpper());
+    var items = await q.OrderBy(x => x.PortCode).Select(x => new { x.PortCode, x.PortName, x.PortAddress, x.PortType, x.ProvinceCode }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// FrmPort.btnApply_Click: mã đã có ⇒ SỬA, chưa có ⇒ THÊM; dòng DELETE ⇒ xoá (FlagIsDelete="1").
+app.MapPost("/api/mstports", async (MstPortDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.PortCode ?? "").ToUpper().Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Thiếu mã cảng (PortCode)." });
+    var r = await db.MstPorts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PortCode == code);
+    if (dto.FlagIsDelete == "1")
+    {
+        if (r is null) return Results.NotFound(new { error = "Không tìm thấy cảng.", code });
+        db.MstPorts.Remove(r); await db.SaveChangesAsync();
+        return Results.Ok(new { portCode = code, deleted = true });
+    }
+    // gviewExcel_ValidatingEditor: mọi ô bắt buộc (MSG_WARNING_EMPTY_VALUE) trừ địa chỉ.
+    if (string.IsNullOrWhiteSpace(dto.PortName)) return Results.BadRequest(new { error = "Tên cảng không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.PortType)) return Results.BadRequest(new { error = "Loại cảng không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { error = "Mã tỉnh không được để trống." });
+    var updated = r is not null;
+    if (r is null) { r = new MstPort { OrgId = t.OrgId, PortCode = code }; db.MstPorts.Add(r); }
+    r.PortName = dto.PortName; r.PortAddress = dto.PortAddress;
+    r.PortType = dto.PortType.ToUpper().Trim(); r.ProvinceCode = dto.ProvinceCode.ToUpper().Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.PortCode, r.PortName, r.PortAddress, r.PortType, r.ProvinceCode, updated });
+}).RequireAuthorization();
+
 // ===== #319 Danh mục trình độ (Mst_Qualification) & chức vụ (Mst_Position) — nguồn chỉ có *_Get trên WS; lưu = upsert theo mã =====
 app.MapGet("/api/mstqualifications", async (AppDbContext db, ITenantContext t, string? flagActive) =>
 {
@@ -56502,6 +56536,7 @@ record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, Li
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
 record DealerSalesGroupTypeDto(string? SalesGroupType, string? SalesGroupTypeName, string? FlagIsDelete = null);
+record MstPortDto(string? PortCode, string? PortName, string? PortAddress, string? PortType, string? ProvinceCode, string? FlagIsDelete = null);
 record MstQualificationDto(string? QualificationCode, string? QualificationName, string? Remark, string? FlagActive);
 record MstPositionDto(string? PositionCode, string? PositionDesc, string? FlagActive);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive, string? FlagEmail = null);

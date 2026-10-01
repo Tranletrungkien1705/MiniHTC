@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Danh mục cảng</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
+  .bar{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+  input,button{font:inherit;padding:6px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit;min-width:0}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.link{border:0;color:var(--accent)}
+  .wrap{overflow-x:auto} table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:11px;text-transform:uppercase}
+</style></head>
+<body>
+<h1>Danh mục cảng <span class="muted">(port 1:1 FrmPort — Mst_Port)</span></h1>
+<div class="bar"><input id="c" placeholder="Mã cảng *" style="width:100px"><input id="n" placeholder="Tên cảng *" style="flex:1"><input id="a" placeholder="Địa chỉ" style="flex:1">
+  <input id="t" placeholder="Loại cảng *" style="width:100px"><input id="p" placeholder="Mã tỉnh *" style="width:90px"><button class="primary" onclick="save()">Lưu</button></div>
+<p id="msg" class="muted"></p>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>Địa chỉ</th><th>Loại</th><th>Tỉnh</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+<script>
+let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s??"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;");
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
+let ROWS=[];
+async function post(b){ await token(); const r=await fetch("/api/mstports",{method:"POST",headers:H(),body:JSON.stringify(b)}); const j=await r.json(); F("msg").textContent=r.ok?"Đã lưu.":"Lỗi: "+(j.error||r.status); load(); }
+function save(){ post({PortCode:F("c").value,PortName:F("n").value,PortAddress:F("a").value,PortType:F("t").value,ProvinceCode:F("p").value}); }
+function del(i){ const o=ROWS[i]; if(confirm("Xoá cảng "+o.portCode+"?")) post({PortCode:o.portCode,FlagIsDelete:"1"}); }
+function edit(i){ const o=ROWS[i]; F("c").value=o.portCode; F("n").value=o.portName||""; F("a").value=o.portAddress||""; F("t").value=o.portType||""; F("p").value=o.provinceCode||""; }
+async function load(){ await token();
+  const d=await (await fetch("/api/mstports",{headers:H()})).json(); ROWS=d.items||[];
+  F("rows").innerHTML=ROWS.map((o,i)=>`<tr><td><b>${esc(o.portCode)}</b></td><td>${esc(o.portName)}</td><td>${esc(o.portAddress)}</td><td>${esc(o.portType)}</td><td>${esc(o.provinceCode)}</td><td><button class="link" onclick="edit(${i})">Sửa</button><button class="link" onclick="del(${i})">Xoá</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Trống.</td></tr>';
+}
+load();
+</script>
+</body></html>
