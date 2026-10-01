@@ -23243,7 +23243,8 @@ app.MapGet("/api/carvininvoiceinfos", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(x => x.MortageBankCode == bank);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.VIN, x.InvoiceNoFactory, x.InvoiceFactoryDate, x.BillNo, x.CQNo, x.CONo, x.MortageBankCode, x.MortageStartDate, x.MortageEndDate, x.RedeemDate, x.UpdatedBy, x.UpdatedAt
+        x.Id, x.VIN, x.InvoiceNoFactory, x.InvoiceFactoryDate, x.BillNo, x.CQNo, x.CONo, x.MortageBankCode, x.MortageStartDate, x.MortageEndDate, x.RedeemDate, x.UpdatedBy, x.UpdatedAt,
+        x.InvoiceFactorySearch, x.InvoiceSpecName, x.InvoiceNoTransferred, x.InvoiceTransferredSearch, x.InvoiceTransferredDate   // #400
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, redeemed = items.Count(x => x.RedeemDate != null), items });
 }).RequireAuthorization();
@@ -23269,6 +23270,12 @@ app.MapPost("/api/carvininvoiceinfos/import", async (CarVinInvoiceImportDto dto,
         if (!byVin.TryGetValue(vin, out var row)) { row = new CarVinInvoiceInfo { OrgId = t.OrgId, VIN = vin }; db.CarVinInvoiceInfos.Add(row); added++; } else updated++;
         row.InvoiceNoFactory = r.InvoiceNoFactory; row.InvoiceFactoryDate = r.InvoiceFactoryDate; row.BillNo = r.BillNo; row.CQNo = r.CQNo; row.CONo = r.CONo;
         row.MortageBankCode = r.MortageBankCode; row.MortageStartDate = r.MortageStartDate; row.MortageEndDate = r.MortageEndDate; row.RedeemDate = r.RedeemDate;
+        // #400 FrmCapNhatThongTinHoaDon: ô rỗng trong Excel ⇒ GIỮ giá trị đang có (dr[x] = IsNullOrEmpty(excel) ? rowDB : excel, :208-218).
+        if (!string.IsNullOrEmpty(r.InvoiceFactorySearch)) row.InvoiceFactorySearch = r.InvoiceFactorySearch;
+        if (!string.IsNullOrEmpty(r.InvoiceSpecName)) row.InvoiceSpecName = r.InvoiceSpecName.Trim();   // biz StdString
+        if (!string.IsNullOrEmpty(r.InvoiceNoTransferred)) row.InvoiceNoTransferred = r.InvoiceNoTransferred;
+        if (!string.IsNullOrEmpty(r.InvoiceTransferredSearch)) row.InvoiceTransferredSearch = r.InvoiceTransferredSearch;
+        if (r.InvoiceTransferredDate is not null) row.InvoiceTransferredDate = r.InvoiceTransferredDate;
         row.UpdatedBy = by; row.UpdatedAt = now;
     }
     await db.SaveChangesAsync();
@@ -57388,7 +57395,8 @@ record GrtStartRowDto(string? VIN, DateTime? DateStart, DateTime? DateExpired, d
 record CarTestCarLineDto(string? CarId, string? Vin, string? ModelCode, string? SpecCode, string? SpecDescription, string? SoDonHang, string? ColorCode, string? ColorName, DateTime? EffDateStart, DateTime? EffDateEnd, decimal UnitPriceActual);
 record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, List<CarTestCarLineDto>? Lines);
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
-record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
+record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate,
+    string? InvoiceFactorySearch = null, string? InvoiceSpecName = null, string? InvoiceNoTransferred = null, string? InvoiceTransferredSearch = null, DateTime? InvoiceTransferredDate = null);   // #400
 record DealerSalesGroupTypeDto(string? SalesGroupType, string? SalesGroupTypeName, string? FlagIsDelete = null);
 record MstPortDto(string? PortCode, string? PortName, string? PortAddress, string? PortType, string? ProvinceCode, string? FlagIsDelete = null);
 record MstQualificationDto(string? QualificationCode, string? QualificationName, string? Remark, string? FlagActive);

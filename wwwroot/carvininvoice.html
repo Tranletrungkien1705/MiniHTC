@@ -23,7 +23,7 @@
 </div>
 <div class="card"><div class="row"><div><label>VIN</label><input id="qVin" style="width:160px"></div><div><label>NH thế chấp</label><input id="qBank" style="width:120px"></div><button onclick="load()">Xem</button></div>
   <div id="kpi" class="muted" style="margin:6px 0"></div>
-  <div class="wrap"><table><thead><tr><th>VIN</th><th>Số HĐ NM</th><th>Ngày HĐ NM</th><th>Bill</th><th>CQ</th><th>CO</th><th>NH TC</th><th>TC từ</th><th>TC đến</th><th>Giải chấp</th><th>Bởi</th></tr></thead>
+  <div class="wrap"><table><thead><tr><th>VIN</th><th>Số HĐ NM</th><th>Ngày HĐ NM</th><th>Bill</th><th>CQ</th><th>CO</th><th>NH TC</th><th>TC từ</th><th>TC đến</th><th>Giải chấp</th><th>Tên spec HĐ</th><th>HĐ chuyển nhượng</th><th>Bởi</th></tr></thead>
   <tbody id="tb"><tr><td colspan="11" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
 </div>
 <script>
@@ -35,7 +35,7 @@ function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key
 function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4500); }
 const D=v=>(v||"").trim()||null;
 async function doImport(){ await token();
-  const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{VIN:(c[0]||"").trim(),InvoiceNoFactory:D(c[1]),InvoiceFactoryDate:D(c[2]),BillNo:D(c[3]),CQNo:D(c[4]),CONo:D(c[5]),MortageBankCode:D(c[6]),MortageStartDate:D(c[7]),MortageEndDate:D(c[8]),RedeemDate:D(c[9])};});
+  const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{VIN:(c[0]||"").trim(),InvoiceNoFactory:D(c[1]),InvoiceFactoryDate:D(c[2]),BillNo:D(c[3]),CQNo:D(c[4]),CONo:D(c[5]),MortageBankCode:D(c[6]),MortageStartDate:D(c[7]),MortageEndDate:D(c[8]),RedeemDate:D(c[9]),InvoiceFactorySearch:D(c[10]),InvoiceSpecName:D(c[11]),InvoiceNoTransferred:D(c[12]),InvoiceTransferredSearch:D(c[13]),InvoiceTransferredDate:D(c[14])};   /* #400 cột 11-15 */});
   const r=await fetch("/api/carvininvoiceinfos/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
   const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Thêm ${d.added}, cập nhật ${d.updated}`); F("rows").value=""; load();
 }
@@ -43,7 +43,7 @@ async function load(){ await token();
   const qs=new URLSearchParams({vin:F("qVin").value,bank:F("qBank").value});
   const r=await fetch("/api/carvininvoiceinfos?"+qs,{headers:Hh()}); const d=await r.json();
   F("kpi").textContent=`${d.count} xe — đã giải chấp: ${d.redeemed}`;
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.invoiceNoFactory)}</td><td>${dt(o.invoiceFactoryDate)}</td><td>${esc(o.billNo)}</td><td>${esc(o.cqNo)}</td><td>${esc(o.coNo)}</td><td>${esc(o.mortageBankCode)}</td><td>${dt(o.mortageStartDate)}</td><td>${dt(o.mortageEndDate)}</td><td>${dt(o.redeemDate)}</td><td>${esc(o.updatedBy)}</td></tr>`).join("")||'<tr><td colspan="11" class="muted">Chưa có dữ liệu.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.invoiceNoFactory)}</td><td>${dt(o.invoiceFactoryDate)}</td><td>${esc(o.billNo)}</td><td>${esc(o.cqNo)}</td><td>${esc(o.coNo)}</td><td>${esc(o.mortageBankCode)}</td><td>${dt(o.mortageStartDate)}</td><td>${dt(o.mortageEndDate)}</td><td>${dt(o.redeemDate)}</td><td>${esc(o.invoiceSpecName)}</td><td>${esc(o.invoiceNoTransferred)} ${dt(o.invoiceTransferredDate)}</td><td>${esc(o.updatedBy)}</td></tr>`).join("")||'<tr><td colspan="11" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>

@@ -3639,6 +3639,14 @@ public sealed class CarVinInvoiceInfo
     public DateTime? RedeemDate { get; set; }
     public string? UpdatedBy { get; set; }
     public DateTime UpdatedAt { get; set; }
+
+    // ===== #400 parity Car_VIN (FrmCapNhatThongTinHoaDon): nhánh hoá đơn NHÀ MÁY `Car_VIN_UpdMulti_InvoiceFactory_New20210111`
+    //       (BizHTC.Car.cs:1701, WS LIVE) + nhánh hoá đơn CHUYỂN NHƯỢNG `Car_VIN_UpdMulti_InvoiceTransferred` (:2150). Cột *Search do client nhập (Excel). =====
+    public string? InvoiceFactorySearch { get; set; }
+    public string? InvoiceSpecName { get; set; }
+    public string? InvoiceNoTransferred { get; set; }
+    public string? InvoiceTransferredSearch { get; set; }
+    public DateTime? InvoiceTransferredDate { get; set; }
 }
 
 /// <summary>Master loại nhân viên bán hàng theo phòng ban (Mst_SalesManType) — port 1:1 FrmStaffType (TCMotor). Khóa kép (DepartmentCode × SMType).</summary>
