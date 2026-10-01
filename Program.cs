@@ -837,8 +837,15 @@ app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContex
     if ((cvmC.FlagActive ?? "1") != "1")
         return Results.BadRequest(new { error = $"Xe {vinC} đang không hoạt động — không huỷ lại được." });
     // guard 3 — còn phát sinh thanh toán thì KHÔNG huỷ.
-    if (await db.PmtLines.AnyAsync(x => x.OrgId == t.OrgId && x.RefNo == vinC))
-        return Results.BadRequest(new { error = $"Xe {vinC} đã phát sinh thanh toán — tổng thanh toán phải bằng 0." });
+    // #350 port 1:1 `CarCarCancel_New20181119` (Biz.HTC.WH.cs:58290-58309) + `mySql_GetClauseSelect_ForGetCarPaymentTotal`:
+    //   Σ Pmt_PaymentDetail.Amount theo **CarId**, chỉ phiếu PaymentStatus ∈ {A,F}; khác 0 ⇒ `CarCarCancel_PaymentMustBeZero`.
+    //   Bản cũ đọc bảng SONG SINH `PmtLines` (RefNo = VIN) ⇒ bỏ sót mọi thanh toán thật ở PmtPaymentDetails.
+    var carIdC = string.IsNullOrWhiteSpace(cvmC.CarId) ? vinC : cvmC.CarId!;
+    var paidC = (await (from d in db.PmtPaymentDetails join p in db.PmtPayments on d.PaymentNo equals p.PaymentNo
+                        where d.OrgId == t.OrgId && p.OrgId == t.OrgId && d.CarId == carIdC && (p.PaymentStatus == "A" || p.PaymentStatus == "F")
+                        select d.Amount).ToListAsync()).Sum(a => a ?? 0m);
+    if (paidC != 0m)
+        return Results.BadRequest(new { error = $"Xe {vinC} đã phát sinh thanh toán — tổng thanh toán phải bằng 0.", code = "CarCarCancel_PaymentMustBeZero", AmountTotal = paidC });
     // guard 4 — đã nằm trong lệnh giao xe thì KHÔNG huỷ.
     if (await db.DeliveryOrderCars.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vinC))
         return Results.BadRequest(new { error = $"Xe {vinC} đang nằm trong lệnh giao xe — không huỷ được." });
@@ -2369,60 +2376,43 @@ app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, 
 
 // ===== Phiếu chi / thanh toán (Pmt_Payment — port 1:1 FrmNewPM/FrmMngPM) =====
 // Header + dòng chi. TotalAmount = Σ AmountCurrent; AmountTotal(dòng) = AmountAccum + AmountCurrent. Pending → Approved/Rejected.
+// ⛔ #350 HỢP NHẤT THỰC THỂ SONG TRÙNG Pmt_Payment: `/api/pms` (entity `PmtVoucher`/`PmtLine`, trạng thái tự đặt Pending/Approved,
+// dòng khoá RefNo) và `/api/bankpms` (+ /api/pmtpayments; entity `PmtPayment`/`PmtPaymentDetail`, TConst.Stage P/A/F/R) cùng là
+// bảng nguồn `Pmt_Payment`/`Pmt_PaymentDetail`. Bản CHUẨN = PmtPayment (mọi hiệu ứng phụ #332/#342-#346 chạy trên nó).
+// ⇒ GET /api/pms đọc bản chuẩn (giữ hình JSON cũ); ghi cũ trả 400 kèm route mới; Seeder chép dữ liệu song sinh sang.
 app.MapGet("/api/pms", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
 {
-    var q = db.PmtVouchers.Where(p => p.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
+    var q = db.PmtPayments.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.PaymentStatus == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.PMNo, p.DealerCode, p.BankAccountSend, p.BankAccountReceive, p.TotalAmount, p.Status, p.CreatedAt, p.DecidedAt,
-        lines = db.PmtLines.Count(l => l.OrgId == t.OrgId && l.VoucherId == p.Id)
+        PMNo = p.PaymentNo, p.DealerCode, p.BankAccountSend, p.BankAccountReceive, TotalAmount = p.TotalAmount ?? 0m,
+        Status = p.PaymentStatus, CreatedAt = p.CreatedDate, DecidedAt = p.ApprovedDate,
+        lines = db.PmtPaymentDetails.Count(l => l.OrgId == t.OrgId && l.PaymentNo == p.PaymentNo)
     }).ToListAsync();
-    return Results.Ok(new { count = items.Count, total = items.Sum(x => x.TotalAmount), items });
+    return Results.Ok(new { count = items.Count, total = items.Sum(x => x.TotalAmount), items, mergedInto = "/api/bankpms" });
 }).RequireAuthorization();
 
-app.MapPost("/api/pms", async (PmDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/pms", () => Results.BadRequest(new
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
-    var lines = (dto.Lines ?? new List<PmLineDto>()).Where(l => !string.IsNullOrWhiteSpace(l.RefNo) && l.AmountCurrent > 0).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng chi (RefNo + AmountCurrent > 0)." });
-    var pmNo = "PM" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p = new PmtVoucher
-    {
-        OrgId = t.OrgId, PMNo = pmNo, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
-        BankAccountSend = dto.BankAccountSend, BankAccountReceive = dto.BankAccountReceive,
-        TotalAmount = lines.Sum(l => l.AmountCurrent), Status = "Pending"
-    };
-    db.PmtVouchers.Add(p);
-    await db.SaveChangesAsync();
-    foreach (var l in lines)
-        db.PmtLines.Add(new PmtLine { OrgId = t.OrgId, VoucherId = p.Id, RefNo = l.RefNo.Trim().ToUpperInvariant(), AmountAccum = l.AmountAccum, AmountCurrent = l.AmountCurrent });
-    await db.SaveChangesAsync();
-    return Results.Ok(new { p.PMNo, p.DealerCode, total = p.TotalAmount, lines = lines.Count, status = p.Status });
-}).RequireAuthorization();
+    error = "Phiếu thanh toán đã hợp nhất vào /api/bankpms (bản chuẩn Pmt_Payment).", route = "/api/bankpms", page = "/bankpm.html"
+})).RequireAuthorization();
 
 app.MapGet("/api/pms/{pmNo}/lines", async (string pmNo, AppDbContext db, ITenantContext t) =>
 {
     pmNo = pmNo.Trim().ToUpperInvariant();
-    var p = await db.PmtVouchers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMNo == pmNo);
+    var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == pmNo);
     if (p is null) return Results.NotFound(new { pmNo });
-    var lines = await db.PmtLines.Where(l => l.OrgId == t.OrgId && l.VoucherId == p.Id)
-        .Select(l => new { l.RefNo, l.AmountAccum, l.AmountCurrent, amountTotal = l.AmountAccum + l.AmountCurrent }).ToListAsync();
-    return Results.Ok(new { p.PMNo, p.DealerCode, p.TotalAmount, p.Status, count = lines.Count, lines });
+    var lines = await db.PmtPaymentDetails.Where(l => l.OrgId == t.OrgId && l.PaymentNo == pmNo)
+        .Select(l => new { RefNo = l.CarId, AmountCurrent = l.Amount ?? 0m, l.GuaranteeNo }).ToListAsync();
+    return Results.Ok(new { PMNo = p.PaymentNo, p.DealerCode, p.TotalAmount, Status = p.PaymentStatus, count = lines.Count, lines });
 }).RequireAuthorization();
 
-app.MapPost("/api/pms/{pmNo}/{action}", async (string pmNo, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/pms/{pmNo}/{action}", (string pmNo, string action) => Results.BadRequest(new
 {
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
-    pmNo = pmNo.Trim().ToUpperInvariant();
-    var p = await db.PmtVouchers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMNo == pmNo);
-    if (p is null) return Results.NotFound(new { pmNo });
-    if (p.Status != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt/từ chối phiếu Chờ duyệt." });
-    p.Status = action == "approve" ? "Approved" : "Rejected"; p.DecidedAt = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { p.PMNo, status = p.Status });
-}).RequireAuthorization();
+    error = "Phiếu thanh toán đã hợp nhất — duyệt/từ chối qua /api/bankpms/{no}/approve|reject.", route = $"/api/bankpms/{pmNo}/{action}"
+})).RequireAuthorization();
 
 // ===== Bảo lãnh / LC ngân hàng (Guarantee — port 1:1 FrmNewGrt/FrmMngGrt + FrmEditGrtExpiredDate) =====
 // ⛔ #349 HỢP NHẤT THỰC THỂ SONG TRÙNG Pmt_Guarantee: `/api/grts` (entity `Guarantee`, trạng thái tự đặt Pending/Approved)

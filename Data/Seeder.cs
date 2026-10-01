@@ -2473,6 +2473,10 @@ public static class Seeder
                 "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"TCF_AutoId\" text NULL",
                 "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"TCF_BSInputNo\" text NULL",
                 "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"FlagDMS_TCF\" text NULL",
+                // #350 hợp nhất song sinh Pmt_Payment: chép PmtVouchers/PmtLines (/api/pms cũ) → PmtPayments/PmtPaymentDetails (bản chuẩn).
+                //   Pending/Approved/Rejected ⇒ P/A/R; dòng: RefNo (VIN/số HĐ) → CarId, AmountCurrent → Amount. Idempotent theo PaymentNo.
+                "INSERT INTO public.\"PmtPayments\" (\"OrgId\", \"PaymentNo\", \"DealerCode\", \"BankAccountSend\", \"BankAccountReceive\", \"TotalAmount\", \"PaymentStatus\", \"CreatedDate\", \"ApprovedDate\") SELECT v.\"OrgId\", v.\"PMNo\", v.\"DealerCode\", v.\"BankAccountSend\", v.\"BankAccountReceive\", v.\"TotalAmount\", CASE v.\"Status\" WHEN 'Pending' THEN 'P' WHEN 'Approved' THEN 'A' WHEN 'Rejected' THEN 'R' ELSE v.\"Status\" END, v.\"CreatedAt\", v.\"DecidedAt\" FROM public.\"PmtVouchers\" v WHERE NOT EXISTS (SELECT 1 FROM public.\"PmtPayments\" x WHERE x.\"OrgId\" = v.\"OrgId\" AND x.\"PaymentNo\" = v.\"PMNo\")",
+                "INSERT INTO public.\"PmtPaymentDetails\" (\"OrgId\", \"PaymentNo\", \"CarId\", \"Amount\") SELECT l.\"OrgId\", v.\"PMNo\", l.\"RefNo\", l.\"AmountCurrent\" FROM public.\"PmtLines\" l JOIN public.\"PmtVouchers\" v ON v.\"Id\" = l.\"VoucherId\" WHERE NOT EXISTS (SELECT 1 FROM public.\"PmtPaymentDetails\" x WHERE x.\"OrgId\" = l.\"OrgId\" AND x.\"PaymentNo\" = v.\"PMNo\" AND x.\"CarId\" = l.\"RefNo\")",
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",   // #B203
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"VisitDTime\" timestamp NULL",   // #B203
                 "ALTER TABLE public.\"CtmVisits\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",   // #B203
