@@ -6565,15 +6565,17 @@ app.MapPost("/api/invoicesetups/{model}/toggle", async (string model, AppDbConte
     return Results.Ok(new { s.ModelCode, flagActive = s.FlagActive });
 }).RequireAuthorization();
 
-// ===== Ngưỡng tồn kho bán hàng (SalesInventoryThreshold — port 1:1 FrmMstSalesInventoryThreshold, 2010.HTC/Admin/Product) =====
+// ===== Ngưỡng bán hàng — ⛔ #389 HỢP NHẤT SONG SINH Mst_MngRateTonKhoBanHang: SalesInventoryThreshold ≡ MngRateTonKhoBanHang. Bản chuẩn port đúng
+// `_Get`/`_Save` (/api/dms40/mngrate-tonkho-banhang). Route này là BÍ DANH: GET đọc bản chuẩn (FlagActive luôn "1" — nguồn không có cờ);
+// POST = _Save một dòng (xoá theo khoá đôi rồi chèn, guard nguồn ModelCode phải tồn tại); /toggle ⇒ 400 (nguồn không có "tắt" — muốn bỏ thì xoá).
 app.MapGet("/api/salesinvthresholds", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? active) =>
 {
-    var q = db.SalesInventoryThresholds.Where(x => x.OrgId == t.OrgId);
+    var q = db.MngRateTonKhoBanHangs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
-    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    if (active == "0") q = q.Where(x => false);
+    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, FlagActive = "1", x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/dms40/mngrate-tonkho-banhang" });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesinvthresholds", async (SalesInvThresholdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -6582,22 +6584,18 @@ app.MapPost("/api/salesinvthresholds", async (SalesInvThresholdDto dto, AppDbCon
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
     if (dto.NguongBH < 0) return Results.BadRequest(new { error = "Ngưỡng bán hàng không hợp lệ." });
     var dl = dto.DealerCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
-    var ex = await db.SalesInventoryThresholds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md);
-    if (ex is not null) { ex.NguongBH = dto.NguongBH; ex.FlagActive = "1"; await db.SaveChangesAsync(); return Results.Ok(new { ex.DealerCode, ex.ModelCode, ex.NguongBH, updated = true }); }
-    var x2 = new SalesInventoryThreshold { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, NguongBH = dto.NguongBH, FlagActive = "1", Remark = dto.Remark, LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
-    db.SalesInventoryThresholds.Add(x2); await db.SaveChangesAsync();
-    return Results.Ok(new { x2.DealerCode, x2.ModelCode, x2.NguongBH, updated = false });
+    if (!await db.CarModelStds.AnyAsync(m => m.OrgId == t.OrgId && m.ModelCode == md))
+        return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Save_InvalidModelCode", check = new { ModelCode = md } });
+    var ex = await db.MngRateTonKhoBanHangs.Where(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md).ToListAsync();
+    db.MngRateTonKhoBanHangs.RemoveRange(ex);   // _Save: xoá theo khoá đôi rồi chèn lại
+    db.MngRateTonKhoBanHangs.Add(new MngRateTonKhoBanHang { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, NguongBH = dto.NguongBH, Remark = dto.Remark,
+        LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { DealerCode = dl, ModelCode = md, dto.NguongBH, updated = ex.Count > 0 });
 }).RequireAuthorization();
 
-app.MapPost("/api/salesinvthresholds/{dealer}/{model}/toggle", async (string dealer, string model, AppDbContext db, ITenantContext t) =>
-{
-    dealer = dealer.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
-    var x = await db.SalesInventoryThresholds.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dealer && v.ModelCode == model);
-    if (x is null) return Results.NotFound(new { dealer, model });
-    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
-}).RequireAuthorization();
+app.MapPost("/api/salesinvthresholds/{dealer}/{model}/toggle", (string dealer, string model) =>
+    Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang không có cờ hiệu lực — muốn bỏ thì XOÁ (_Save FlagIsDelete=1).", route = "/api/dms40/mngrate-tonkho-banhang/save" })).RequireAuthorization();
 
 // ===== Xe thế chấp tại ngân hàng (BankCarMortage — port 1:1 FrmBankCarMortage + FrmDeliveryPlan, cụm Bank) =====
 // Màn 1: tra cứu list xe đang thế chấp (dealer/bank/vin/socode/ngày giao tài sản).
@@ -29456,46 +29454,42 @@ app.MapDelete("/api/vinproductionyears/{vinChar}/{asm}", async (string vinChar, 
     return Results.Ok(new { deleted = vinChar });
 }).RequireAuthorization();
 
-// ===== Biên độ tỉ lệ đặt hàng/kế hoạch (OrderAmplitude — port 1:1 FrmMstTiLeDatHangKeHoach, Admin/Product) =====
+// ===== Biên độ tỉ lệ đặt hàng/kế hoạch — ⛔ #389 HỢP NHẤT SONG SINH Mst_AmplitudeApprOrd: OrderAmplitude ≡ AmplitudeApprOrd (FrmMstTiLeDatHangKeHoach).
+// Bản chuẩn port đúng `_Get`/`_Save` (/api/dms40/amplitude-appr-ord). Route này là BÍ DANH: GET đọc chuẩn + tên ĐL/model bằng join (nguồn chỉ lưu MÃ);
+// POST = _Save một dòng (guard ModelCode); /toggle ⇒ 400 (nguồn không có cờ hiệu lực).
 app.MapGet("/api/orderamplitudes", async (AppDbContext db, ITenantContext t, string? dealer, string? model, string? active) =>
 {
-    var q = db.OrderAmplitudes.Where(x => x.OrgId == t.OrgId);
+    var q = db.AmplitudeApprOrds.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
-    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
+    if (active == "0") q = q.Where(x => false);
     var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.DealerCode, x.DealerName, x.ModelCode, x.ModelName, x.AmplitudeOrdMax, x.AmplitudePlanMax, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+        .Select(x => new { x.DealerCode,
+            DealerName = db.Dealers.Where(d => d.OrgId == t.OrgId && d.DealerCode == x.DealerCode).Select(d => d.DealerName).FirstOrDefault(),
+            x.ModelCode,
+            ModelName = db.CarModelStds.Where(m => m.OrgId == t.OrgId && m.ModelCode == x.ModelCode).Select(m => m.ModelName).FirstOrDefault(),
+            x.AmplitudeOrdMax, x.AmplitudePlanMax, FlagActive = "1", x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/dms40/amplitude-appr-ord" });
 }).RequireAuthorization();
 
-// Upsert theo (đại lý + model): mỗi cặp 1 biên độ; nhập lại = cập nhật.
 app.MapPost("/api/orderamplitudes", async (OrderAmplitudeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
     if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa chọn model." });
     if (dto.AmplitudeOrdMax < 0 || dto.AmplitudePlanMax < 0) return Results.BadRequest(new { error = "Biên độ không hợp lệ." });
     var dl = dto.DealerCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
-    var ex = await db.OrderAmplitudes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md);
-    if (ex is not null)
-    {
-        ex.DealerName = dto.DealerName; ex.ModelName = dto.ModelName; ex.AmplitudeOrdMax = dto.AmplitudeOrdMax; ex.AmplitudePlanMax = dto.AmplitudePlanMax; ex.FlagActive = "1";
-        await db.SaveChangesAsync();
-        return Results.Ok(new { ex.DealerCode, ex.ModelCode, updated = true });
-    }
-    var r = new OrderAmplitude { OrgId = t.OrgId, DealerCode = dl, DealerName = dto.DealerName, ModelCode = md, ModelName = dto.ModelName, AmplitudeOrdMax = dto.AmplitudeOrdMax, AmplitudePlanMax = dto.AmplitudePlanMax, FlagActive = "1" , LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
-    db.OrderAmplitudes.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.DealerCode, r.ModelCode, updated = false });
+    if (!await db.CarModelStds.AnyAsync(m => m.OrgId == t.OrgId && m.ModelCode == md))
+        return Results.BadRequest(new { error = "Mst_AmplitudeApprOrd_Save_InvalidModelCode", check = new { ModelCode = md } });
+    var ex = await db.AmplitudeApprOrds.Where(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md).ToListAsync();
+    db.AmplitudeApprOrds.RemoveRange(ex);   // _Save: xoá theo khoá đôi rồi chèn lại
+    db.AmplitudeApprOrds.Add(new AmplitudeApprOrd { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, AmplitudeOrdMax = dto.AmplitudeOrdMax, AmplitudePlanMax = dto.AmplitudePlanMax,
+        LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { DealerCode = dl, ModelCode = md, updated = ex.Count > 0 });
 }).RequireAuthorization();
 
-app.MapPost("/api/orderamplitudes/{dealer}/{model}/toggle", async (string dealer, string model, AppDbContext db, ITenantContext t) =>
-{
-    dealer = dealer.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
-    var x = await db.OrderAmplitudes.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dealer && v.ModelCode == model);
-    if (x is null) return Results.NotFound(new { dealer, model });
-    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { x.DealerCode, x.ModelCode, flagActive = x.FlagActive });
-}).RequireAuthorization();
+app.MapPost("/api/orderamplitudes/{dealer}/{model}/toggle", (string dealer, string model) =>
+    Results.BadRequest(new { error = "Mst_AmplitudeApprOrd không có cờ hiệu lực — muốn bỏ thì XOÁ (_Save FlagIsDelete=1).", route = "/api/dms40/amplitude-appr-ord/save" })).RequireAuthorization();
 
 // ===== Tham số hệ thống PDI (ParamPdi — port 1:1 FrmMst_ParamPDI, Admin/Dealer) =====
 app.MapGet("/api/parampdis", async (AppDbContext db, ITenantContext t, string? code) =>
@@ -57111,7 +57105,7 @@ record DlvApproveDto(string? Side);
 record DlvUpdateDealerDto(string? DealerCode, string? TAddress, DateTime? DlvEndDate, string? TRemark);
 record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? TransactionDate, string? DeliveryType, string? SalesType);
 record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, string? SpecDesc, int QtyOrder, int QtyDelivered);
-record SalesInvThresholdDto(string DealerCode, string ModelCode, int NguongBH, string? Remark = null);
+record SalesInvThresholdDto(string DealerCode, string ModelCode, decimal NguongBH, string? Remark = null);   // #389 NguongBH decimal như bản chuẩn
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartDate);
 record InventoryCostDto(string StorageCode, string? StorageName, string CostTypeCode, string? CostTypeName, decimal UnitPrice);

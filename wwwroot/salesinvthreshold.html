@@ -40,10 +40,10 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/salesinvthresholds?dealer=${F("qd").value}&model=${F("qm").value}&active=${F("fa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.dealerCode}</b></td><td>${o.modelCode}</td><td class="num">${o.nguongBH}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.dealerCode}','${o.modelCode}')">Đổi TT</button></td></tr>`
+    `<tr><td><b>${o.dealerCode}</b></td><td>${o.modelCode}</td><td class="num">${o.nguongBH}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.dealerCode}','${o.modelCode}')">Xoá</button></td></tr>`
   ).join("")||'<tr><td colspan="5" class="muted">Chưa có ngưỡng.</td></tr>';
 }
-async function toggle(dl,md){ const r=await fetch(`/api/salesinvthresholds/${dl}/${md}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function toggle(dl,md){ /* #389 nguồn không có cờ hiệu lực ⇒ xoá qua _Save FlagIsDelete=1 */ const r=await fetch(`/api/dms40/mngrate-tonkho-banhang/save`,{method:"POST",headers:H(),body:JSON.stringify({FlagIsDelete:"1",Rows:[{DealerCode:dl,ModelCode:md}]})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 load();
 </script>
 </body></html>

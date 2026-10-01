@@ -9563,7 +9563,8 @@ public sealed class InvoiceSetup
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>Ngưỡng tồn kho bán hàng (Mst_MngRateTonKhoBanHang) — port 1:1 FrmMstSalesInventoryThreshold (2010.HTC/Admin/Product). Ngưỡng bán hàng (NguongBH) theo đại lý + model.</summary>
+/// <summary>⛔ #389 DEPRECATED — SONG SINH của <see cref="MngRateTonKhoBanHang"/> (cùng bảng nguồn Mst_MngRateTonKhoBanHang). Bản chuẩn port đúng
+/// `_Get`/`_Save` (NguongBH decimal, KHÔNG có FlagActive). Route /api/salesinvthresholds là bí danh; Seeder chép dòng còn hiệu lực. KHÔNG ghi mới.</summary>
 public sealed class SalesInventoryThreshold
 {
     public long Id { get; set; }
@@ -14762,7 +14763,8 @@ public sealed class VinProductionYear
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Biên độ tỉ lệ đặt hàng/kế hoạch theo đại lý + model — port 1:1 FrmMstTiLeDatHangKeHoach (Tbl_Mst_AmplitudeApprOrd).</summary>
+/// <summary>⛔ #389 DEPRECATED — SONG SINH của <see cref="AmplitudeApprOrd"/> (cùng bảng nguồn Mst_AmplitudeApprOrd, FrmMstTiLeDatHangKeHoach). Bản chuẩn port đúng
+/// `_Get`/`_Save` (không FlagActive, tên ĐL/model lấy bằng join). Route /api/orderamplitudes là bí danh; Seeder chép dòng còn hiệu lực. KHÔNG ghi mới.</summary>
 public sealed class OrderAmplitude
 {
     public long Id { get; set; }

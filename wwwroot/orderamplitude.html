@@ -55,13 +55,14 @@ async function save(){ await token();
   F("fOrd").value="";F("fPlan").value=""; load();
 }
 async function toggle(dl,md){ await token();
-  const r=await fetch("/api/orderamplitudes/"+encodeURIComponent(dl)+"/"+encodeURIComponent(md)+"/toggle",{method:"POST",headers:H()});
+  // #389 nguồn không có cờ hiệu lực ⇒ xoá qua _Save FlagIsDelete=1
+  const r=await fetch("/api/dms40/amplitude-appr-ord/save",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({FlagIsDelete:"1",Rows:[{DealerCode:dl,ModelCode:md}]})});
   if(!r.ok){ msg("Lỗi"); return; } load();
 }
 async function load(){ await token();
   const r=await fetch("/api/orderamplitudes?dealer="+encodeURIComponent(F("qDl").value)+"&model="+encodeURIComponent(F("qMd").value),{headers:H()});
   const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.dealerCode}</b></td><td>${o.dealerName||""}</td><td>${o.modelCode}</td><td>${o.modelName||""}</td><td class="num">${o.amplitudeOrdMax}</td><td class="num">${o.amplitudePlanMax}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'Hiệu lực':'Ngưng'}</span></td><td><button class="link" onclick="toggle('${o.dealerCode}','${o.modelCode}')">Đổi TT</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.dealerCode}</b></td><td>${o.dealerName||""}</td><td>${o.modelCode}</td><td>${o.modelName||""}</td><td class="num">${o.amplitudeOrdMax}</td><td class="num">${o.amplitudePlanMax}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'Hiệu lực':'Ngưng'}</span></td><td><button class="link" onclick="toggle('${o.dealerCode}','${o.modelCode}')">Xoá</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>
