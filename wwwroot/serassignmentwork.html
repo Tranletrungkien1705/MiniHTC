@@ -18,6 +18,7 @@
 </div>
 <div class="card" id="stagesCard" style="display:none">
   <h3 style="margin-top:0">7 công đoạn — RO <span id="roShow"></span></h3>
+  <div class="row" style="margin-bottom:6px"><div><label>CĐ mở tiến độ (WorkTypeStart)</label><select id="wts"><option value=""></option></select></div><div><label>CĐ đóng tiến độ (WorkTypeFinish)</label><select id="wtf"><option value=""></option></select></div><button class="primary" onclick="savePlan()">Lưu phân công (khoang + kế hoạch)</button></div>
   <div class="wrap"><table><thead><tr><th>Mã CĐ</th><th>Khoang</th><th>KH bắt đầu</th><th>KH kết thúc</th><th>TT bắt đầu</th><th>TT kết thúc</th><th></th></tr></thead><tbody id="tb"></tbody></table></div>
 </div>
 <script>
@@ -33,6 +34,8 @@ async function load(){ await token();
   const ro=F("ro").value; if(!ro){ say("Chưa nhập số RO."); return; }
   const r=await fetch("/api/serassignmentworks/"+encodeURIComponent(ro),{headers:Hh()}); const d=await r.json();
   F("roShow").textContent=d.roNo; F("stagesCard").style.display="block";
+  for(const id of ["wts","wtf"]) F(id).innerHTML='<option value=""></option>'+STAGES.map(s=>`<option>${s}</option>`).join("");
+  if(d.assignment){ F("wts").value=d.assignment.workTypeStart||""; F("wtf").value=d.assignment.workTypeFinish||""; }
   const byCode={}; (d.stages||[]).forEach(s=>byCode[s.stageCode]=s);
   F("tb").innerHTML=STAGES.map(sc=>{ const s=byCode[sc]||{}; return `<tr>
     <td><b>${sc}</b></td>
@@ -41,12 +44,20 @@ async function load(){ await token();
     <td><input class="pf" data-sc="${sc}" type="datetime-local" value="${dtval(s.planFinish)}"></td>
     <td><input class="as" data-sc="${sc}" type="datetime-local" value="${dtval(s.actualStart)}"></td>
     <td><input class="af" data-sc="${sc}" type="datetime-local" value="${dtval(s.actualFinish)}"></td>
-    <td><button class="link" onclick="saveStage('${sc}')">Lưu</button></td>
+    <td><button class="link" onclick="saveStage('${sc}')">Lưu giờ TT</button></td>
   </tr>`; }).join("");
+}
+/* #405 Lưu phân công = Ser_AssignmentWork_Create/Update: gửi cả 7 công đoạn (khoang + kế hoạch) theo tên trường nguồn. */
+async function savePlan(){ await token();
+  const body={WorkTypeStart:F("wts").value||null,WorkTypeFinish:F("wtf").value||null};
+  STAGES.forEach(sc=>{ const tr=[...F("tb").querySelectorAll("tr")].find(r=>r.querySelector(`.cav[data-sc="${sc}"]`));
+    body[sc+"CavityID"]=tr.querySelector(".cav").value||null; body[sc+"PlanStartDTime"]=tr.querySelector(".ps").value||null; body[sc+"PlanFinishDTime"]=tr.querySelector(".pf").value||null; });
+  const r=await fetch("/api/serassignmentworks/"+encodeURIComponent(F("ro").value),{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(d.created?"Đã tạo phân công":"Đã cập nhật phân công"); load();
 }
 async function saveStage(sc){ await token();
   const tr=[...F("tb").querySelectorAll("tr")].find(r=>r.querySelector(`.cav[data-sc="${sc}"]`));
-  const body={StageCode:sc,CavityId:tr.querySelector(".cav").value||null,PlanStart:tr.querySelector(".ps").value||null,PlanFinish:tr.querySelector(".pf").value||null,ActualStart:tr.querySelector(".as").value||null,ActualFinish:tr.querySelector(".af").value||null};
+  const body={StageCode:sc,ActualStart:tr.querySelector(".as").value||null,ActualFinish:tr.querySelector(".af").value||null};   /* #405 chỉ giờ thực tế */
   const r=await fetch("/api/serassignmentworks/"+encodeURIComponent(F("ro").value)+"/stage",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu công đoạn "+d.stageCode);
 }

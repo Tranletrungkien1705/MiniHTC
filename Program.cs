@@ -25669,17 +25669,84 @@ app.MapPost("/api/warrantyextensiondatelogs/{id}/toggle", async (long id, AppDbC
 }).RequireAuthorization();
 
 // ===== Phân công công đoạn sửa chữa theo RO (SerAssignmentWork header-detail — port 1:1 FrmSer_AssignmentWork, TCMotor DMSCarSv/Services) =====
+// ===== #405 Ser_AssignmentWork bảng RỘNG (1:1 nguồn) — bộ truy cập cột theo mã công đoạn =====
+static (string? Cav, DateTime? PS, DateTime? PF, DateTime? AS, DateTime? AF) SawStage(SerAssignmentWork h, string sc) => sc switch
+{
+        "SCC" => (h.SCCCavityID, h.SCCPlanStartDTime, h.SCCPlanFinishDTime, h.SCCActualStartDTime, h.SCCActualFinishDTime),
+        "SCD" => (h.SCDCavityID, h.SCDPlanStartDTime, h.SCDPlanFinishDTime, h.SCDActualStartDTime, h.SCDActualFinishDTime),
+        "SCN" => (h.SCNCavityID, h.SCNPlanStartDTime, h.SCNPlanFinishDTime, h.SCNActualStartDTime, h.SCNActualFinishDTime),
+        "SCS" => (h.SCSCavityID, h.SCSPlanStartDTime, h.SCSPlanFinishDTime, h.SCSActualStartDTime, h.SCSActualFinishDTime),
+        "SCDB" => (h.SCDBCavityID, h.SCDBPlanStartDTime, h.SCDBPlanFinishDTime, h.SCDBActualStartDTime, h.SCDBActualFinishDTime),
+        "SCLR" => (h.SCLRCavityID, h.SCLRPlanStartDTime, h.SCLRPlanFinishDTime, h.SCLRActualStartDTime, h.SCLRActualFinishDTime),
+        "SCKSC" => (h.SCKSCCavityID, h.SCKSCPlanStartDTime, h.SCKSCPlanFinishDTime, h.SCKSCActualStartDTime, h.SCKSCActualFinishDTime),
+    _ => (null, null, null, null, null)
+};
+// Ghi kế hoạch: nguồn CHỈ ghi khi tham số KHÁC RỖNG (`if (!StringUtils.IsEmpty(x)) row[x] = x`) ⇒ rỗng giữ giá trị cũ.
+static void SawSetPlan(SerAssignmentWork h, string sc, string? cav, DateTime? ps, DateTime? pf)
+{
+    switch (sc)
+    {
+        case "SCC": if (cav != null) h.SCCCavityID = cav; if (ps.HasValue) h.SCCPlanStartDTime = ps; if (pf.HasValue) h.SCCPlanFinishDTime = pf; break;
+        case "SCD": if (cav != null) h.SCDCavityID = cav; if (ps.HasValue) h.SCDPlanStartDTime = ps; if (pf.HasValue) h.SCDPlanFinishDTime = pf; break;
+        case "SCN": if (cav != null) h.SCNCavityID = cav; if (ps.HasValue) h.SCNPlanStartDTime = ps; if (pf.HasValue) h.SCNPlanFinishDTime = pf; break;
+        case "SCS": if (cav != null) h.SCSCavityID = cav; if (ps.HasValue) h.SCSPlanStartDTime = ps; if (pf.HasValue) h.SCSPlanFinishDTime = pf; break;
+        case "SCDB": if (cav != null) h.SCDBCavityID = cav; if (ps.HasValue) h.SCDBPlanStartDTime = ps; if (pf.HasValue) h.SCDBPlanFinishDTime = pf; break;
+        case "SCLR": if (cav != null) h.SCLRCavityID = cav; if (ps.HasValue) h.SCLRPlanStartDTime = ps; if (pf.HasValue) h.SCLRPlanFinishDTime = pf; break;
+        case "SCKSC": if (cav != null) h.SCKSCCavityID = cav; if (ps.HasValue) h.SCKSCPlanStartDTime = ps; if (pf.HasValue) h.SCKSCPlanFinishDTime = pf; break;
+    }
+}
+static void SawSetActual(SerAssignmentWork h, string sc, DateTime? a, DateTime? f)
+{
+    switch (sc)
+    {
+        case "SCC": if (a.HasValue) h.SCCActualStartDTime = a; if (f.HasValue) h.SCCActualFinishDTime = f; break;
+        case "SCD": if (a.HasValue) h.SCDActualStartDTime = a; if (f.HasValue) h.SCDActualFinishDTime = f; break;
+        case "SCN": if (a.HasValue) h.SCNActualStartDTime = a; if (f.HasValue) h.SCNActualFinishDTime = f; break;
+        case "SCS": if (a.HasValue) h.SCSActualStartDTime = a; if (f.HasValue) h.SCSActualFinishDTime = f; break;
+        case "SCDB": if (a.HasValue) h.SCDBActualStartDTime = a; if (f.HasValue) h.SCDBActualFinishDTime = f; break;
+        case "SCLR": if (a.HasValue) h.SCLRActualStartDTime = a; if (f.HasValue) h.SCLRActualFinishDTime = f; break;
+        case "SCKSC": if (a.HasValue) h.SCKSCActualStartDTime = a; if (f.HasValue) h.SCKSCActualFinishDTime = f; break;
+    }
+}
+// Guard `MyCheck(Update)_SerAssignmentWork_PlanDateTime_Cavity_20211007` (BizCarSv.AssignmentOfWork.cs:2621/2857):
+//   có phân công KHÁC (bản Update loại `t.ROID != @strROID`; bản Create không loại) mà ở BẤT KỲ công đoạn nào cùng khoang
+//   và khung kế hoạch cũ CHỨA HẲN mốc bắt đầu MỚI hoặc mốc kết thúc MỚI (so sánh NGHIÊM `<`/`>`) ⇒ lỗi.
+//   🔴 Ghi nhận nguồn: KHÔNG bắt trường hợp khung MỚI bao trọn khung cũ, và trùng đúng mốc không tính — port nguyên.
+//   Khoang/mốc rỗng: nguồn không bao giờ lưu khoang rỗng (chỉ gán khi khác rỗng) và so sánh với '' luôn sai ⇒ bỏ qua.
+static string? SawPlanConflict(List<SerAssignmentWork> others, string? cav, DateTime? ps, DateTime? pf)
+{
+    if (string.IsNullOrEmpty(cav)) return null;
+    foreach (var o in others)
+        foreach (var sc in new[] { "SCC", "SCD", "SCN", "SCS", "SCDB", "SCLR", "SCKSC" })
+        {
+            var s = SawStage(o, sc);
+            if (s.Cav != cav || s.PS is null || s.PF is null) continue;
+            if ((ps.HasValue && s.PS < ps && s.PF > ps) || (pf.HasValue && s.PS < pf && s.PF > pf)) return o.RONo;
+        }
+    return null;
+}
+
 var assignmentWorkStages = new[] { "SCC", "SCD", "SCDB", "SCKSC", "SCLR", "SCN", "SCS" };
 app.MapGet("/api/serassignmentworks/{roNo}", async (string roNo, AppDbContext db, ITenantContext t) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
     var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
     if (h is null) return Results.Ok(new { roNo, exists = false, stages = Array.Empty<object>() });
-    var stages = await db.SerAssignmentWorkStages.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id)
-        .Select(x => new { x.StageCode, x.CavityId, x.PlanStart, x.PlanFinish, x.ActualStart, x.ActualFinish }).ToListAsync();
+    // #405 đọc từ cột RỘNG; `stages` giữ hình JSON cũ (dẫn xuất) cho trang.
+    var stages = assignmentWorkStages.Select(sc => { var s = SawStage(h, sc); return new { StageCode = sc, CavityId = s.Cav, PlanStart = s.PS, PlanFinish = s.PF, ActualStart = s.AS, ActualFinish = s.AF }; })
+        .Where(s => s.CavityId != null || s.PlanStart != null || s.PlanFinish != null || s.ActualStart != null || s.ActualFinish != null).ToList();
+    var wide = new {
+            h.SCCCavityID, h.SCCPlanStartDTime, h.SCCPlanFinishDTime, h.SCCActualStartDTime, h.SCCActualFinishDTime,
+            h.SCDCavityID, h.SCDPlanStartDTime, h.SCDPlanFinishDTime, h.SCDActualStartDTime, h.SCDActualFinishDTime,
+            h.SCNCavityID, h.SCNPlanStartDTime, h.SCNPlanFinishDTime, h.SCNActualStartDTime, h.SCNActualFinishDTime,
+            h.SCSCavityID, h.SCSPlanStartDTime, h.SCSPlanFinishDTime, h.SCSActualStartDTime, h.SCSActualFinishDTime,
+            h.SCDBCavityID, h.SCDBPlanStartDTime, h.SCDBPlanFinishDTime, h.SCDBActualStartDTime, h.SCDBActualFinishDTime,
+            h.SCLRCavityID, h.SCLRPlanStartDTime, h.SCLRPlanFinishDTime, h.SCLRActualStartDTime, h.SCLRActualFinishDTime,
+            h.SCKSCCavityID, h.SCKSCPlanStartDTime, h.SCKSCPlanFinishDTime, h.SCKSCActualStartDTime, h.SCKSCActualFinishDTime,
+            h.WorkTypeStart, h.WorkTypeFinish, h.CreateDTime, h.CreateBy, h.LogLUDateTime, h.LogLUBy };
     var engineers = await db.SerAssignmentWorkEngineers.Where(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id)
         .Select(x => new { x.EngineerNo, x.WorkType, x.UpdatedAt, x.UpdatedBy }).ToListAsync();
-    return Results.Ok(new { roNo, exists = true, h.UpdatedAt, stages, engineers });
+    return Results.Ok(new { roNo, exists = true, h.UpdatedAt, assignment = wide, stages, engineers });
 }).RequireAuthorization();
 
 // Danh sách kỹ thuật viên phân công cho RO + hiệu ứng tự sinh sang từng hạng mục dịch vụ.
@@ -25775,21 +25842,72 @@ app.MapPost("/api/serassignmentworks/{roNo}/engineers", async (
     return Results.Ok(new { roNo, engineers = lines.Count, itemEngineersDerived = derivedCount });
 }).RequireAuthorization();
 
-app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t) =>
+// #405 LƯU PHÂN CÔNG (kế hoạch 7 công đoạn) — FrmSer_AssignmentWork gọi Create khi RO chưa có phân công, ngược lại Update.
+//   Create = `Ser_AssignmentWork_CreateX` (:203): RO phải tồn tại + Status = HRO (MyCheck_Ser_RO :2398), guard trùng khoang
+//            KHÔNG loại RO hiện tại; ghi CreateDTime/CreateBy + LogLU*.
+//   Update = `Ser_AssignmentWork_UpdateX` (:584): RO phải tồn tại (không xét trạng thái); khoang khác rỗng phải có trong
+//            danh mục (CheckExistCavity ⇒ Ser_CavityNo_NotFound); guard trùng khoang LOẠI RO hiện tại; ghi LogLU*.
+//   Cả hai: chỉ ghi tham số khác rỗng; WorkTypeStart/WorkTypeFinish do client tính (Frm so mốc kế hoạch SCC/SCD/SCS).
+app.MapPost("/api/serassignmentworks/{roNo}", async (string roNo, SerAssignmentWorkSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    roNo = roNo.Trim().ToUpperInvariant();
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    var isCreate = h is null;
+    if (ro is null) return Results.BadRequest(new { error = $"Không tìm thấy RO {roNo}.", code = isCreate ? "Ser_AssignmentWork_Create_RONotFound" : "Ser_AssignmentWork_Update_RONotFound" });
+    if (isCreate && ro.Status != "HRO")
+        return Results.BadRequest(new { error = $"RO {roNo} đang ở trạng thái {ro.Status}, chỉ phân công được khi đã lập lệnh (HRO).", code = "Ser_AssignmentWork_Create_InvalidROStatus", ro.Status });
+    (string? Cav, DateTime? PS, DateTime? PF) In(string sc) => sc switch
+    {
+        "SCC" => (dto.SCCCavityID, dto.SCCPlanStartDTime, dto.SCCPlanFinishDTime),
+        "SCD" => (dto.SCDCavityID, dto.SCDPlanStartDTime, dto.SCDPlanFinishDTime),
+        "SCN" => (dto.SCNCavityID, dto.SCNPlanStartDTime, dto.SCNPlanFinishDTime),
+        "SCS" => (dto.SCSCavityID, dto.SCSPlanStartDTime, dto.SCSPlanFinishDTime),
+        "SCDB" => (dto.SCDBCavityID, dto.SCDBPlanStartDTime, dto.SCDBPlanFinishDTime),
+        "SCLR" => (dto.SCLRCavityID, dto.SCLRPlanStartDTime, dto.SCLRPlanFinishDTime),
+        "SCKSC" => (dto.SCKSCCavityID, dto.SCKSCPlanStartDTime, dto.SCKSCPlanFinishDTime),
+        _ => (null, null, null)
+    };
+    var others = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId && x.RONo != roNo).ToListAsync();
+    var stages = new[] { "SCC", "SCD", "SCN", "SCS", "SCDB", "SCLR", "SCKSC" };
+    foreach (var sc in stages)
+    {
+        var (cav, ps, pf) = In(sc);
+        cav = string.IsNullOrWhiteSpace(cav) ? null : cav.Trim();
+        if (!isCreate && cav != null && !await db.Cavities.AnyAsync(x => x.OrgId == t.OrgId && x.CavityNo == cav))
+            return Results.BadRequest(new { error = $"Công đoạn {sc}: khoang {cav} không tồn tại.", code = "Ser_CavityNo_NotFound", stage = sc });
+        var hit = SawPlanConflict(others, cav, ps, pf);
+        if (hit != null)
+            return Results.BadRequest(new { error = $"Công đoạn {sc}: khoang {cav} đã có kế hoạch trùng giờ ở RO {hit}.", code = isCreate ? "Ser_AssignmentWork_Create_InvalidPlanStartDTimeOrPlanFinishDTime" : "Ser_AssignmentWork_Update_InvalidPlanStartDTimeOrPlanFinishDTime", stage = sc, conflictRONo = hit });
+    }
+    if (isCreate) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo, CreateDTime = now, CreateBy = who }; db.SerAssignmentWorks.Add(h); }
+    foreach (var sc in stages) { var (cav, ps, pf) = In(sc); SawSetPlan(h!, sc, string.IsNullOrWhiteSpace(cav) ? null : cav.Trim(), ps, pf); }
+    if (!string.IsNullOrWhiteSpace(dto.WorkTypeStart)) h!.WorkTypeStart = dto.WorkTypeStart.Trim().ToUpperInvariant();
+    if (!string.IsNullOrWhiteSpace(dto.WorkTypeFinish)) h!.WorkTypeFinish = dto.WorkTypeFinish.Trim().ToUpperInvariant();
+    h!.LogLUDateTime = now; h.LogLUBy = who; h.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { roNo, created = isCreate, h.WorkTypeStart, h.WorkTypeFinish });
+}).RequireAuthorization();
+
+// #405 GHI GIỜ THỰC TẾ một công đoạn (nguồn: `Ser_AssignmentWork_Update_ForTab`, WS máy tính bảng :821).
+//   Khoang/kế hoạch KHÔNG còn nhận ở đây (⇒ 400, dùng POST /api/serassignmentworks/{roNo}); phân công phải tồn tại.
+//   📌 NỢ #406: hậu xử lý nguồn — co PlanFinish theo ActualFinish, ReCheck ActualStart/Finish theo khoang,
+//      đồng bộ trạng thái RO (WorkTypeStart ⇒ INGA + Ser_ROWorkTime; WorkTypeFinish ⇒ RPRD) — CHƯA port.
+app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
     var stageCode = (dto.StageCode ?? "").Trim().ToUpperInvariant();
     if (!assignmentWorkStages.Contains(stageCode)) return Results.BadRequest(new { error = "Mã công đoạn không hợp lệ (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS)." });
-    if (dto.PlanStart.HasValue && dto.PlanFinish.HasValue && dto.PlanFinish < dto.PlanStart) return Results.BadRequest(new { error = "Kế hoạch kết thúc trước kế hoạch bắt đầu." });
-    if (dto.ActualStart.HasValue && dto.ActualFinish.HasValue && dto.ActualFinish < dto.ActualStart) return Results.BadRequest(new { error = "Thực tế kết thúc trước thực tế bắt đầu." });
+    if (!string.IsNullOrWhiteSpace(dto.CavityId) || dto.PlanStart.HasValue || dto.PlanFinish.HasValue)
+        return Results.BadRequest(new { error = "Khoang/kế hoạch lưu qua POST /api/serassignmentworks/{roNo} (Create/Update có guard trùng khoang).", newRoute = $"/api/serassignmentworks/{roNo}" });
     var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
-    if (h is null) { h = new SerAssignmentWork { OrgId = t.OrgId, RONo = roNo }; db.SerAssignmentWorks.Add(h); await db.SaveChangesAsync(); }
-    var stage = await db.SerAssignmentWorkStages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AssignmentWorkId == h.Id && x.StageCode == stageCode);
-    if (stage is null) { stage = new SerAssignmentWorkStage { OrgId = t.OrgId, AssignmentWorkId = h.Id, StageCode = stageCode }; db.SerAssignmentWorkStages.Add(stage); }
-    stage.CavityId = dto.CavityId; stage.PlanStart = dto.PlanStart; stage.PlanFinish = dto.PlanFinish; stage.ActualStart = dto.ActualStart; stage.ActualFinish = dto.ActualFinish;
-    h.UpdatedAt = DateTime.Now;
+    if (h is null) return Results.BadRequest(new { error = $"RO {roNo} chưa có phân công.", code = "Ser_AssignmentWork_Update_ForTab" });
+    SawSetActual(h, stageCode, dto.ActualStart, dto.ActualFinish);
+    h.LogLUDateTime = DateTime.Now; h.LogLUBy = user.Identity?.Name ?? "system"; h.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { roNo, stageCode, stage.CavityId, stage.PlanStart, stage.PlanFinish, stage.ActualStart, stage.ActualFinish });
+    var s = SawStage(h, stageCode);
+    return Results.Ok(new { roNo, stageCode, CavityId = s.Cav, PlanStart = s.PS, PlanFinish = s.PF, ActualStart = s.AS, ActualFinish = s.AF });
 }).RequireAuthorization();
 
 // ===== Mã VIN gốc theo model (VinModelOrginalMst — port 1:1 FrmVINModelOrginal, TCMotor DMSCarSv/Admin) =====
@@ -57516,6 +57634,7 @@ record WarrantyExtensionDateLogDto(string? VIN, string? RONo, string? ExtCategor
 record SerAssignmentWorkEngineerLineDto(string? EngineerNo, string? WorkType);
 record SerAssignmentWorkEngineersDto(List<SerAssignmentWorkEngineerLineDto>? Engineers);
 record SerAssignmentWorkStageDto(string? StageCode, string? CavityId, DateTime? PlanStart, DateTime? PlanFinish, DateTime? ActualStart, DateTime? ActualFinish);
+record SerAssignmentWorkSaveDto(string? WorkTypeStart = null, string? WorkTypeFinish = null, string? SCCCavityID = null, DateTime? SCCPlanStartDTime = null, DateTime? SCCPlanFinishDTime = null, string? SCDCavityID = null, DateTime? SCDPlanStartDTime = null, DateTime? SCDPlanFinishDTime = null, string? SCNCavityID = null, DateTime? SCNPlanStartDTime = null, DateTime? SCNPlanFinishDTime = null, string? SCSCavityID = null, DateTime? SCSPlanStartDTime = null, DateTime? SCSPlanFinishDTime = null, string? SCDBCavityID = null, DateTime? SCDBPlanStartDTime = null, DateTime? SCDBPlanFinishDTime = null, string? SCLRCavityID = null, DateTime? SCLRPlanStartDTime = null, DateTime? SCLRPlanFinishDTime = null, string? SCKSCCavityID = null, DateTime? SCKSCPlanStartDTime = null, DateTime? SCKSCPlanFinishDTime = null);   // #405 tên trường = tham số Ser_AssignmentWork_Create/Update
 record MaintWorkContentDto(string ContentCode, string? ItemCode, string? Content, int DisplayOrder);
 record DealInfoFixDto(long Id, string? DealDate, string? CtmCareFlag);
 record SalesTypeFixDto(long Id, string? SalesType);

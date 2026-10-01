@@ -4875,6 +4875,59 @@ public sealed class SerAssignmentWork
     public Guid OrgId { get; set; }
     public string RONo { get; set; } = "";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    // ===== #405 parity Ser_AssignmentWork — bảng RỘNG 1:1 như nguồn (Ser_AssignmentWork_CreateX / UpdateX,
+    //       BizCarSv.AssignmentOfWork.cs:203/584): 7 công đoạn × (CavityID, Plan/Actual Start/Finish DTime)
+    //       + WorkTypeStart/WorkTypeFinish (công đoạn mở/đóng tiến độ RO) + CreateDTime/CreateBy/LogLU*.
+    //       Thay bảng con chuẩn hoá SerAssignmentWorkStage (⛔ DEPRECATED, dữ liệu đã chuyển sang các cột này). =====
+    // SCC
+    public string? SCCCavityID { get; set; }
+    public DateTime? SCCPlanStartDTime { get; set; }
+    public DateTime? SCCPlanFinishDTime { get; set; }
+    public DateTime? SCCActualStartDTime { get; set; }
+    public DateTime? SCCActualFinishDTime { get; set; }
+    // SCD
+    public string? SCDCavityID { get; set; }
+    public DateTime? SCDPlanStartDTime { get; set; }
+    public DateTime? SCDPlanFinishDTime { get; set; }
+    public DateTime? SCDActualStartDTime { get; set; }
+    public DateTime? SCDActualFinishDTime { get; set; }
+    // SCN
+    public string? SCNCavityID { get; set; }
+    public DateTime? SCNPlanStartDTime { get; set; }
+    public DateTime? SCNPlanFinishDTime { get; set; }
+    public DateTime? SCNActualStartDTime { get; set; }
+    public DateTime? SCNActualFinishDTime { get; set; }
+    // SCS
+    public string? SCSCavityID { get; set; }
+    public DateTime? SCSPlanStartDTime { get; set; }
+    public DateTime? SCSPlanFinishDTime { get; set; }
+    public DateTime? SCSActualStartDTime { get; set; }
+    public DateTime? SCSActualFinishDTime { get; set; }
+    // SCDB
+    public string? SCDBCavityID { get; set; }
+    public DateTime? SCDBPlanStartDTime { get; set; }
+    public DateTime? SCDBPlanFinishDTime { get; set; }
+    public DateTime? SCDBActualStartDTime { get; set; }
+    public DateTime? SCDBActualFinishDTime { get; set; }
+    // SCLR
+    public string? SCLRCavityID { get; set; }
+    public DateTime? SCLRPlanStartDTime { get; set; }
+    public DateTime? SCLRPlanFinishDTime { get; set; }
+    public DateTime? SCLRActualStartDTime { get; set; }
+    public DateTime? SCLRActualFinishDTime { get; set; }
+    // SCKSC
+    public string? SCKSCCavityID { get; set; }
+    public DateTime? SCKSCPlanStartDTime { get; set; }
+    public DateTime? SCKSCPlanFinishDTime { get; set; }
+    public DateTime? SCKSCActualStartDTime { get; set; }
+    public DateTime? SCKSCActualFinishDTime { get; set; }
+    public string? WorkTypeStart { get; set; }
+    public string? WorkTypeFinish { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -4917,6 +4970,8 @@ public sealed class RoServiceItemEngineer
     public string EngineerNo { get; set; } = "";
 }
 
+/// <summary>⛔ DEPRECATED (#405): nguồn KHÔNG có bảng con — 35 cột công đoạn nằm thẳng trên SerAssignmentWork.
+/// Seeder chuyển dữ liệu sang cột rộng; giữ class để không mất dữ liệu cũ, KHÔNG ghi mới.</summary>
 /// <summary>Dòng công đoạn trong phân công RO — thuộc SerAssignmentWork. StageCode (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) + khoang gán + kế hoạch/thực tế bắt đầu-kết thúc.</summary>
 public sealed class SerAssignmentWorkStage
 {
