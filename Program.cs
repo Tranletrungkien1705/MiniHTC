@@ -2217,7 +2217,7 @@ app.MapGet("/api/servicehistory/{roId:long}/detail", async (long roId, AppDbCont
         return Results.Ok(new { r.RONo, canShowDetail = 0, mode = "PartsOnly", partCount = parts.Count, parts });
 
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount }).ToListAsync();
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.CamMarketingNo, s.FlagAccrual, s.Remark }).ToListAsync();
     return Results.Ok(new { r.RONo, canShowDetail = 1, mode = "Full", services, partCount = parts.Count, parts });
 }).RequireAuthorization();
 
@@ -54570,6 +54570,42 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     if (string.IsNullOrWhiteSpace(dto.Assistant)) return Results.BadRequest(new { error = "Chưa chọn cố vấn dịch vụ (Assistant).", code = "Ser_RO_Check_Assistant_IsNull" });
     var lvlRo = (dto.LevelOfInspection ?? "").Trim();
     if (lvlRo is not ("1" or "2" or "3")) return Results.BadRequest(new { error = "Cấp kiểm tra phải là 1, 2 hoặc 3.", code = "Ser_RO_CheckInput_InvalidLevelOfInspection", LevelOfInspection = lvlRo });
+    // #369 Check Input Detail (thân hàm dòng 163-320) — chạy TRƯỚC khi sinh số RO như nguồn.
+    static string RoFlag(string? v) { var x = (v ?? "").Trim(); return x == "" || x == "0" ? "0" : "1"; }   // StandardizeFlag
+    var svcIn = dto.Services ?? new();
+    if (svcIn.Count == 0) return Results.BadRequest(new { error = "Bảng dịch vụ không được rỗng.", code = "Ser_RO_Create_ServiceTableNotBlank" });
+    var camNos = svcIn.Select(s => s.CamMarketingNo).Concat((dto.Parts ?? new()).Select(p => p.CamMarketingNo))
+        .Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!.Trim()).Distinct().ToList();
+    var camOk = await db.CampaignMarketings.Where(c => c.OrgId == t.OrgId && camNos.Contains(c.CamMarketingNo) && c.CamMarketingStatus == "A")
+        .Select(c => c.CamMarketingNo).ToListAsync();
+    foreach (var s in svcIn)
+    {
+        if (string.IsNullOrEmpty(s.SerCode)) return Results.BadRequest(new { error = "Dịch vụ không có trong danh mục.", code = "Ser_RO_Check_ServiceNotInList" });
+        if (string.IsNullOrEmpty(s.ExpenseType)) return Results.BadRequest(new { error = $"Dịch vụ {s.SerCode}: chưa chọn đối tượng thanh toán.", code = "Ser_RO_Create_Check_Service_Invalid_ExpenseType" });
+        if (string.IsNullOrEmpty(s.ROType)) return Results.BadRequest(new { error = $"Dịch vụ {s.SerCode}: chưa chọn loại công việc.", code = "Ser_RO_Create_Check_Service_Invalid_ROType" });
+        if (!string.IsNullOrWhiteSpace(s.CamMarketingNo) && !camOk.Contains(s.CamMarketingNo.Trim()))
+            return Results.BadRequest(new { error = $"Chiến dịch {s.CamMarketingNo} không tồn tại hoặc chưa duyệt.", code = "Ser_CampaignMarketing_CheckDB", CamMarketingNo = s.CamMarketingNo });
+        if (string.Equals(s.ROType, "BDD", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(s.ExpenseType, "ROREPAIR", StringComparison.OrdinalIgnoreCase) && !string.Equals(s.ExpenseType, "LOCAL", StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = $"Dịch vụ {s.SerCode}: bảo dưỡng định kỳ (BDD) chỉ cho thanh toán ROREPAIR/LOCAL.", code = "Ser_RO_Create_InvalidService_ExpenseType", s.ROType, s.ExpenseType });
+    }
+    foreach (var p in dto.Parts ?? new())
+    {
+        if (string.IsNullOrEmpty(p.PartCode)) return Results.BadRequest(new { error = "Phụ tùng không có trong kho.", code = "Ser_RO_Check_PartNotInStock" });
+        if (!string.IsNullOrWhiteSpace(p.CamMarketingNo) && !camOk.Contains(p.CamMarketingNo.Trim()))
+            return Results.BadRequest(new { error = $"Chiến dịch {p.CamMarketingNo} không tồn tại hoặc chưa duyệt.", code = "Ser_CampaignMarketing_CheckDB", CamMarketingNo = p.CamMarketingNo });
+        if (string.IsNullOrEmpty(p.ExpenseType)) return Results.BadRequest(new { error = $"Phụ tùng {p.PartCode}: chưa chọn đối tượng thanh toán.", code = "Ser_RO_Create_Check_Part_InvalidExpenseType" });
+        if (p.ExpenseType.ToUpperInvariant() is not ("ROREPAIR" or "LOCAL" or "ROINSURANCE" or "ROWARRANTY"))
+            return Results.BadRequest(new { error = $"Phụ tùng {p.PartCode}: đối tượng thanh toán không hợp lệ.", code = "Ser_RO_Create_InvalidPart_ExpenseType", p.ExpenseType });
+    }
+    // Có dòng bảo hiểm ⇒ CheckExistInsNoInCar(CarID, DealerCode): xe tìm thấy mà InsNo rỗng ⇒ Ser_Insurance_NotExist (BizCarSv.Service01.cs:359).
+    var anyIns = svcIn.Any(s => s.ExpenseType == "ROINSURANCE") || (dto.Parts ?? new()).Any(p => p.ExpenseType == "ROINSURANCE");
+    if (anyIns)
+    {
+        var carIns = await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CarID == dto.CarID && c.DealerCode == dto.DealerCode);
+        if (carIns is not null && string.IsNullOrEmpty(carIns.InsNo))
+            return Results.BadRequest(new { error = "Xe chưa có thông tin bảo hiểm.", code = "Ser_Insurance_NotExist", dto.CarID });
+    }
     // #337 Số RO port 1:1 `Ser_RO_Create_New20220926` (BizCarSv.ZTemp.cs:6258 — file <Compile> trong csproj; WS
     //   WSCarSv.asmx.cs:10782): `myUtil_GetCmSeqCode(_dbDealer, "Ser_RO", "RONo", "", strDealerCode)` ⇒
     //   **DealerCode-yyMMdd-NNN** (reset theo ngày, phạm vi đại lý) rồi `CheckExistRONo`. Bản cũ "RO"+yyMMddHHmmss
@@ -54615,7 +54651,8 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền hạng mục DỊCH VỤ theo nguồn: Factor * Price * (1 + VAT*0.01) — KHÔNG có cột Quantity riêng.
         // Client cũ vẫn truyền thẳng Amount; có Price thì tính lại cho đúng công thức nguồn.
         var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
-        db.RoServiceItems.Add(new RoServiceItem { OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour });
+        db.RoServiceItems.Add(new RoServiceItem { ExpenseType = s.ExpenseType, CamMarketingNo = string.IsNullOrWhiteSpace(s.CamMarketingNo) ? null : s.CamMarketingNo.Trim(), FlagAccrual = RoFlag(s.FlagAccrual), Remark = (s.Remark ?? "").Trim(),   // #369
+            OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause, Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price, Vat = s.Vat, ActManHour = s.ActManHour });
     }
     foreach (var p in dto.Parts ?? new())
     {
@@ -54623,7 +54660,8 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         // Tiền dòng PHỤ TÙNG theo nguồn: Factor * Quantity * Price * (1 + VAT*0.01).
         var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
         var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
-        db.RoPartItems.Add(new RoPartItem { OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note });
+        db.RoPartItems.Add(new RoPartItem { ExpenseType = p.ExpenseType, CamMarketingNo = string.IsNullOrWhiteSpace(p.CamMarketingNo) ? null : p.CamMarketingNo.Trim(), FlagAccrual = RoFlag(p.FlagAccrual),   // #369
+            OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
@@ -54650,9 +54688,9 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
     var services = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == r.Id)
-        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount }).ToListAsync();
+        .Select(s => new { s.SerCode, s.SerName, s.Cause, s.Result, s.Engineer, s.ROType, s.Factor, s.Price, s.Vat, s.ActManHour, s.Amount, s.ExpenseType, s.CamMarketingNo, s.FlagAccrual, s.Remark }).ToListAsync();
     var parts = await db.RoPartItems.Where(p => p.OrgId == t.OrgId && p.RoId == r.Id)
-        .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note }).ToListAsync();
+        .Select(p => new { p.PartCode, p.PartName, p.Unit, p.NeedQty, p.UnitPrice, p.Factor, p.Vat, lineTotal = p.Amount, p.Note, p.ExpenseType, p.CamMarketingNo, p.FlagAccrual }).ToListAsync();
     return Results.Ok(new
     {
         r.RONo, r.LicensePlate, r.Vin, r.CusName, r.Km, r.CheckInDate, r.PlanedDeliveryDate, r.CusRequest, r.CarStatus, r.CusWaiting, r.Status,
@@ -56471,8 +56509,10 @@ record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal Pen
 record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTypeCode, string DeviceCode, string? DeviceName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
-record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null);
-record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0);
+record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null,
+    string? ExpenseType = null, string? CamMarketingNo = null, string? FlagAccrual = null, string? Remark = null);   // #369
+record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0,
+    string? ExpenseType = null, string? CamMarketingNo = null, string? FlagAccrual = null);   // #369
 record RoHeaderUpdateDto(string? LevelOfInspection, string? Assistant, string? Engineer, string? QA, string? Operator, string? QuanDoc,
     string? CusID, string? CusName, string? CusAddress, string? CusTel, DateTime? ScheduleDate, DateTime? CheckInDate, DateTime? StartDate, DateTime? FinishedDate,
     string? PlanedDuration, string? CusRequest, string? CarStatus, bool CusWaiting, string? CarWashRequested, string? UseSHPart, string? PayByCard, string? Km,

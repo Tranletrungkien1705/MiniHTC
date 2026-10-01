@@ -30,10 +30,10 @@
     <input id="tor" placeholder="Điều khoản sửa chữa" style="width:150px">
   </div>
   <h3>Công việc dịch vụ</h3>
-  <table id="stbl"><thead><tr><th>Mã CV</th><th>Tên CV</th><th>Nguyên nhân</th><th>KTV</th><th class="n">Tiền công</th><th></th></tr></thead><tbody id="stb"></tbody></table>
+  <table id="stbl"><thead><tr><th>Mã CV</th><th>Tên CV</th><th>Nguyên nhân</th><th>KTV</th><th>Thanh toán</th><th>Loại CV</th><th class="n">Tiền công</th><th></th></tr></thead><tbody id="stb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addSer()">+ Công việc</button>
   <h3>Phụ tùng</h3>
-  <table id="ptbl"><thead><tr><th>Mã PT</th><th>Tên PT</th><th>ĐVT</th><th class="n">SL</th><th class="n">Đơn giá</th><th></th></tr></thead><tbody id="ptb"></tbody></table>
+  <table id="ptbl"><thead><tr><th>Mã PT</th><th>Tên PT</th><th>ĐVT</th><th class="n">SL</th><th class="n">Đơn giá</th><th>Thanh toán</th><th></th></tr></thead><tbody id="ptb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addPart()">+ Phụ tùng</button>
   <div class="bar" style="margin-top:10px"><span style="flex:1"></span><button class="primary" onclick="create()">Tạo RO</button><span id="msg"></span></div>
 </div>
@@ -55,14 +55,14 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 function addSer(){ const tr=document.createElement("tr");
-  tr.innerHTML=`<td><input class="sc" style="width:80px"></td><td><input class="sn" style="width:120px"></td><td><input class="ca" style="width:120px"></td><td><input class="en" style="width:90px"></td><td class="n"><input class="am" type="number" style="width:90px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  tr.innerHTML=`<td><input class="sc" style="width:80px"></td><td><input class="sn" style="width:120px"></td><td><input class="ca" style="width:120px"></td><td><input class="en" style="width:90px"></td><td><select class="ex"><option value="ROREPAIR">Khách trả</option><option value="LOCAL">Nội bộ</option><option value="ROINSURANCE">Bảo hiểm</option><option value="ROWARRANTY">Bảo hành</option><option value="GENERAL">Chung</option></select></td><td><select class="rt"><option value="SCC">SCC</option><option value="BDD">BDD</option><option value="SCD">SCD</option><option value="SCS">SCS</option><option value="PDI">PDI</option><option value="SPK">SPK</option></select></td><td class="n"><input class="am" type="number" style="width:90px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
   F("stb").appendChild(tr); }
 function addPart(){ const tr=document.createElement("tr");
-  tr.innerHTML=`<td><input class="pc" style="width:80px"></td><td><input class="pn" style="width:120px"></td><td><input class="un" style="width:60px"></td><td class="n"><input class="qt" type="number" value="1" style="width:60px;text-align:right"></td><td class="n"><input class="up" type="number" style="width:90px;text-align:right"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  tr.innerHTML=`<td><input class="pc" style="width:80px"></td><td><input class="pn" style="width:120px"></td><td><input class="un" style="width:60px"></td><td class="n"><input class="qt" type="number" value="1" style="width:60px;text-align:right"></td><td class="n"><input class="up" type="number" style="width:90px;text-align:right"></td><td><select class="ex"><option value="ROREPAIR">Khách trả</option><option value="LOCAL">Nội bộ</option><option value="ROINSURANCE">Bảo hiểm</option><option value="ROWARRANTY">Bảo hành</option></select></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
   F("ptb").appendChild(tr); }
 async function create(){
-  const services=[...F("stb").querySelectorAll("tr")].map(tr=>({serCode:tr.querySelector(".sc").value,serName:tr.querySelector(".sn").value,cause:tr.querySelector(".ca").value,engineer:tr.querySelector(".en").value,amount:Number(tr.querySelector(".am").value||0)})).filter(s=>s.serCode);
-  const parts=[...F("ptb").querySelectorAll("tr")].map(tr=>({partCode:tr.querySelector(".pc").value,partName:tr.querySelector(".pn").value,unit:tr.querySelector(".un").value,needQty:Number(tr.querySelector(".qt").value||1),unitPrice:Number(tr.querySelector(".up").value||0)})).filter(p=>p.partCode);
+  const services=[...F("stb").querySelectorAll("tr")].map(tr=>({serCode:tr.querySelector(".sc").value,serName:tr.querySelector(".sn").value,cause:tr.querySelector(".ca").value,engineer:tr.querySelector(".en").value,expenseType:tr.querySelector(".ex").value,rOType:tr.querySelector(".rt").value,amount:Number(tr.querySelector(".am").value||0)})).filter(s=>s.serCode);
+  const parts=[...F("ptb").querySelectorAll("tr")].map(tr=>({partCode:tr.querySelector(".pc").value,partName:tr.querySelector(".pn").value,unit:tr.querySelector(".un").value,needQty:Number(tr.querySelector(".qt").value||1),unitPrice:Number(tr.querySelector(".up").value||0),expenseType:tr.querySelector(".ex").value})).filter(p=>p.partCode);
   const r=await fetch("/api/repairorders",{method:"POST",headers:H(),body:JSON.stringify({assistant:F("asst").value,levelOfInspection:F("lvl").value,receptionFNo:F("rcp").value||null,reminderMaintanceDate:F("rmd").value||null,reminderMaintanceKm:F("rmk").value||null,termsOfRepair:F("tor").value||null,dealerCode:F("dlr").value,licensePlate:F("lp").value,vin:F("vin").value,cusName:F("cn").value,km:F("km").value,cusRequest:F("cr").value,cusWaiting:F("cw").checked,services,parts})});
   const j=await r.json();
   if(r.ok){ msg("Đã tạo "+j.rONo+"."); F("stb").innerHTML="";F("ptb").innerHTML="";addSer();addPart(); load(); } else msg("Lỗi: "+(j.error||r.status));

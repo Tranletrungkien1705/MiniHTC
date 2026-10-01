@@ -2343,6 +2343,11 @@ public sealed class RoServiceItem
     public decimal? ActManHour { get; set; }
 
     public decimal Amount { get; set; }                // tiền công
+    // ===== #369 Ser_ROServiceItems — cột dòng Ser_RO_Create_New20220926 =====
+    public string? ExpenseType { get; set; }   // đối tượng thanh toán TConst.Ser_ROType: ROREPAIR · ROINSURANCE · ROWARRANTY · LOCAL · GENERAL — bắt buộc
+    public string? CamMarketingNo { get; set; }   // chiến dịch marketing (phải tồn tại + CamMarketingStatus "A")
+    public string? FlagAccrual { get; set; }   // StandardizeFlag
+    public string? Remark { get; set; }   // trim
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
@@ -2370,6 +2375,10 @@ public sealed class RoPartItem
     public decimal Amount { get; set; }
 
     public string? Note { get; set; }
+    // ===== #369 Ser_ROPartItems — cột dòng Ser_RO_Create_New20220926 =====
+    public string? ExpenseType { get; set; }   // chỉ ROREPAIR · LOCAL · ROINSURANCE · ROWARRANTY
+    public string? CamMarketingNo { get; set; }
+    public string? FlagAccrual { get; set; }   // StandardizeFlag
 }
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):
