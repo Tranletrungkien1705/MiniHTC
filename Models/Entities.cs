@@ -6543,6 +6543,16 @@ public sealed class VatTcgInvoice
     public string? ApprovedBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    // ===== #330 parity — 4 cột "lý do / biên bản" ghi bởi `VAT_TCGInvoice_UpdateAdj_DeleteReasonX` (BizHTC.HDDTIntergration.cs:13381) =====
+    // Form gọi khi IN biên bản thu hồi (BBTH: chỉ truyền lý do + số biên bản ⇒ 2 cột nội dung bị GHI ĐÈ rỗng)
+    // hoặc biên bản điều chỉnh (BBĐC: truyền đủ 4). Số biên bản lấy từ dãy `Seq_InvoicePrintNo` (/api/invoiceprintno/next).
+    /// <summary>Lý do điều chỉnh/thay thế (`Adj_DeleteReason`).</summary>
+    public string? Adj_DeleteReason { get; set; }
+    /// <summary>Nội dung trước / sau điều chỉnh (`BeforeAdj_DeleteRemark` / `AfterAdj_DeleteRemark`).</summary>
+    public string? BeforeAdj_DeleteRemark { get; set; }
+    public string? AfterAdj_DeleteRemark { get; set; }
+    /// <summary>Số biên bản đã in (`InvoicePrintNo`).</summary>
+    public string? InvoicePrintNo { get; set; }
 }
 
 /// <summary>
@@ -12323,6 +12333,16 @@ public sealed class VatInvoice
     // #195b: nguồn ghi `LogLUDateTime`/`LogLUBy` trên CHÍNH bảng `VAT_HTCInvoice` (khối huỷ hoá đơn gốc).
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== #330 parity — 4 cột "lý do / biên bản" ghi bởi `VAT_HTCInvoice_UpdateAdj_DeleteReasonX` (BizHTC.HDDTIntergration.cs:464) =====
+    // Form gọi khi IN biên bản thu hồi (BBTH: chỉ truyền lý do + số biên bản ⇒ 2 cột nội dung bị GHI ĐÈ rỗng)
+    // hoặc biên bản điều chỉnh (BBĐC: truyền đủ 4). Số biên bản lấy từ dãy `Seq_InvoicePrintNo` (/api/invoiceprintno/next).
+    /// <summary>Lý do điều chỉnh/thay thế (`Adj_DeleteReason`).</summary>
+    public string? Adj_DeleteReason { get; set; }
+    /// <summary>Nội dung trước / sau điều chỉnh (`BeforeAdj_DeleteRemark` / `AfterAdj_DeleteRemark`).</summary>
+    public string? BeforeAdj_DeleteRemark { get; set; }
+    public string? AfterAdj_DeleteRemark { get; set; }
+    /// <summary>Số biên bản đã in (`InvoicePrintNo`).</summary>
+    public string? InvoicePrintNo { get; set; }
     /// <summary>
     /// 🔴 MÃ TRA CỨU hoá đơn điện tử (`OS_HDDT_InvoiceCode` — nguồn chú thích thẳng: *"Số tra cứu hóa đơn"*).
     /// ⚠️ Mã này **do hệ HDDT/TVAN CẤP** qua `OS_MstSvTVAN_MstSv_Seq_Common_Get`

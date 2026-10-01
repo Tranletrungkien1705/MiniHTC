@@ -7401,6 +7401,7 @@ app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string?
     {
         v.HTCInvoiceCode, v.HTCInvoiceNo, v.InvoiceIDCode, v.HTCInvoiceDate, v.VAT, v.DealerCode, v.BankCode, v.SourceInvoiceName, v.InvoiceAdjType, v.RootHTCInvoiceNo, v.OS_HDDT_InvoiceCode, v.VatHTCStatus, v.CreatedAt,
         v.ApprovedDate, v.ApprovedBy,
+        v.Adj_DeleteReason, v.InvoicePrintNo, v.BeforeAdj_DeleteRemark, v.AfterAdj_DeleteRemark, v.LogLUDateTime, v.LogLUBy,   // #330
         v.OS_HDDT_RefNo, v.HddtSyncedAt, v.PaymentMethodCode, v.SourceInvoiceCode, v.RefNo,   // #195 §12
         v.ValGoodsNotTaxable, v.ValGoodsNotChargeTax, v.ValGoodsVAT5, v.ValVAT5, v.ValGoodsVAT10, v.ValVAT10,
         v.TotalValInvoice, v.TotalValVAT, v.TotalValPmt, v.CurrencyCode, v.CurrencyRate,
@@ -8757,6 +8758,7 @@ app.MapGet("/api/tcginvoices", async (AppDbContext db, ITenantContext t, string?
         x.VatTCGStatus, x.TCGInvoiceNo, x.TCGInvoiceDate, x.OS_HDDT_InvoiceCode, x.OS_HDDT_RefNo,
         x.VAT, x.FlagView, x.TInvoiceCode, x.FlagImport,
         x.CreatedDate, x.CreatedBy, x.ApprovedDate, x.ApprovedBy, x.LogLUDateTime, x.LogLUBy,
+        x.Adj_DeleteReason, x.InvoicePrintNo, x.BeforeAdj_DeleteRemark, x.AfterAdj_DeleteRemark,   // #330
     }).ToListAsync();
     var codes = items.Select(i => i.TCGInvoiceCode).ToList();
     var dtls = await db.VatTcgInvoiceDetails.Where(d => d.OrgId == t.OrgId && codes.Contains(d.TCGInvoiceCode))
@@ -11414,6 +11416,40 @@ app.MapPost("/api/cars/get-list", async (
 }).RequireAuthorization();
 
 // Xoá cả hoá đơn (nguồn `VAT_TCGInvoiceDelete`) — chỉ khi còn "P".
+// ===== #330 Lưu lý do điều chỉnh/thay thế + số biên bản (port 1:1 `VAT_HTCInvoice_UpdateAdj_DeleteReason`
+//   / `VAT_TCGInvoice_UpdateAdj_DeleteReason`, BizHTC.HDDTIntergration.cs:464 / :13381; gọi từ FrmMngHTCInvoice:1972/2171
+//   và FrmMngTCGInvoice:1623/1793 ngay TRƯỚC khi in BBTH/BBĐC). Nguồn:
+//   · guard DUY NHẤT: hoá đơn phải TỒN TẠI (`myCheck_VAT_*Invoice` FlagExist=Active, KHÔNG kiểm trạng thái);
+//   · GHI ĐÈ cả 4 cột (thiếu ⇒ rỗng — BBTH chỉ truyền lý do + số BB nên 2 cột nội dung bị xoá) + LogLUDateTime/By;
+//   · ghi song song _dbMain + _dbWH (nợ _dbWH chung fleet).
+app.MapPost("/api/vatinvoices/{code}/adj-deletereason", async (string code, AdjDeleteReasonDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = (code ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "VAT_HTCInvoice_UpdateAdj_DeleteReason_Input_HTCInvoiceTblInvalid" });
+    var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
+    if (v is null) return Results.BadRequest(new { error = $"Hoá đơn HTC '{code}' không tồn tại.", code = "VAT_HTCInvoice_CheckDB_HTCInvoiceCodeNotFound" });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    v.Adj_DeleteReason = dto.Adj_DeleteReason ?? ""; v.InvoicePrintNo = dto.InvoicePrintNo ?? "";
+    v.BeforeAdj_DeleteRemark = dto.BeforeAdj_DeleteRemark ?? ""; v.AfterAdj_DeleteRemark = dto.AfterAdj_DeleteRemark ?? "";
+    v.LogLUDateTime = now; v.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { v.HTCInvoiceCode, v.Adj_DeleteReason, v.InvoicePrintNo, v.BeforeAdj_DeleteRemark, v.AfterAdj_DeleteRemark, v.LogLUDateTime, v.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/tcginvoices/{code}/adj-deletereason", async (string code, AdjDeleteReasonDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = (code ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "VAT_TCGInvoice_UpdateAdj_DeleteReason_Input_TCGInvoiceTblInvalid" });
+    var v = await db.VatTcgInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TCGInvoiceCode == code);
+    if (v is null) return Results.BadRequest(new { error = $"Hoá đơn TCG '{code}' không tồn tại.", code = "VAT_TCGInvoice_CheckDB_TCGInvoiceCodeNotFound" });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    v.Adj_DeleteReason = dto.Adj_DeleteReason ?? ""; v.InvoicePrintNo = dto.InvoicePrintNo ?? "";
+    v.BeforeAdj_DeleteRemark = dto.BeforeAdj_DeleteRemark ?? ""; v.AfterAdj_DeleteRemark = dto.AfterAdj_DeleteRemark ?? "";
+    v.LogLUDateTime = now; v.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { v.TCGInvoiceCode, v.Adj_DeleteReason, v.InvoicePrintNo, v.BeforeAdj_DeleteRemark, v.AfterAdj_DeleteRemark, v.LogLUDateTime, v.LogLUBy });
+}).RequireAuthorization();
+
 app.MapPost("/api/tcginvoices/delete", async (TcgInvoiceKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
     var code = (dto.TCGInvoiceCode ?? "").Trim();
@@ -56362,6 +56398,7 @@ record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, str
 record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);
 record TcgInvoiceApproveDto(string? TCGInvoiceCode, bool? Approve, string? TCGInvoiceNo, DateTime? TCGInvoiceDate);
 record TcgInvoiceKeyDto(string? TCGInvoiceCode);
+record AdjDeleteReasonDto(string? Adj_DeleteReason, string? InvoicePrintNo, string? BeforeAdj_DeleteRemark, string? AfterAdj_DeleteRemark);   // #330
 record TcgInvoiceDetailKeyDto(string? TCGInvoiceCode, string? VIN);
 record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);

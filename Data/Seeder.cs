@@ -2412,6 +2412,15 @@ public static class Seeder
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQNo\" text NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"InspectionDate\" timestamp NULL",   // #B112
                 "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"InvoiceIDCode\" text NULL",   // #B115 - nua kia cua PHAM VI day so
+                // #330 VAT_HTCInvoice / VAT_TCGInvoice — UpdateAdj_DeleteReason (lý do + số biên bản + nội dung trước/sau).
+                "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"Adj_DeleteReason\" text NULL",
+                "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"BeforeAdj_DeleteRemark\" text NULL",
+                "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"AfterAdj_DeleteRemark\" text NULL",
+                "ALTER TABLE public.\"VatInvoices\" ADD COLUMN IF NOT EXISTS \"InvoicePrintNo\" text NULL",
+                "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"Adj_DeleteReason\" text NULL",
+                "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"BeforeAdj_DeleteRemark\" text NULL",
+                "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"AfterAdj_DeleteRemark\" text NULL",
+                "ALTER TABLE public.\"VatTcgInvoices\" ADD COLUMN IF NOT EXISTS \"InvoicePrintNo\" text NULL",
                 "ALTER TABLE public.\"VatHtcInvoices\" ADD COLUMN IF NOT EXISTS \"InvoiceIDCode\" text NULL",   // #B116
                 "ALTER TABLE public.\"VatHtcInvoices\" ADD COLUMN IF NOT EXISTS \"OS_HDDT_InvoiceCode\" text NULL",   // #B118
                 "ALTER TABLE public.\"PmtPayments\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",   // #B232

@@ -38,7 +38,7 @@
   <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Draft">Nháp</option><option value="Issued">Đã phát hành</option><option value="Deleted">Đã xóa</option></select>
   <select id="qa" onchange="load()"><option value="">HĐ gốc + ĐC</option><option value="root">HĐ gốc</option><option value="adj">HĐ điều chỉnh</option></select>
 </div>
-<div class="wrap"><table><thead><tr><th>Mã HĐ</th><th>Số HĐ</th><th>Ký hiệu</th><th>Đại lý</th><th class="num">VAT%</th><th>Loại</th><th class="num">Tổng giá</th><th class="num">Số xe</th><th>Trạng thái</th><th></th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Mã HĐ</th><th>Số HĐ</th><th>Ký hiệu</th><th>Đại lý</th><th class="num">VAT%</th><th>Loại</th><th class="num">Tổng giá</th><th class="num">Số xe</th><th>Trạng thái</th><th>Số biên bản</th><th>Lý do điều chỉnh/thay thế</th><th>Nội dung trước điều chỉnh</th><th>Nội dung sau điều chỉnh</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table></div>
 <div class="card" id="detCard" style="display:none">
   <b>Chi tiết xe — <span id="detNo"></span></b>
@@ -59,35 +59,45 @@ function addRow(){ const tr=document.createElement("tr"); tr.className="carrow";
   F("carRows").appendChild(tr); }
 function collect(){ return [...document.querySelectorAll("#carRows tr")].map(tr=>({
   vin:tr.querySelector(".c-vin").value, modelCode:tr.querySelector(".c-md").value, engineNo:tr.querySelector(".c-eng").value,
-  brandName:tr.querySelector(".c-br").value, invoiceNoFactory:tr.querySelector(".c-nm").value, hTCUnitPrice:+tr.querySelector(".c-up").value||0})).filter(c=>c.vin.trim()); }
+  brandName:tr.querySelector(".c-br").value, invoiceNoFactory:tr.querySelector(".c-nm").value, htcUnitPrice:+tr.querySelector(".c-up").value||0})).filter(c=>c.vin.trim()); }
 async function save(){
   const b={dealerCode:F("dl").value,invoiceIDCode:F("iid").value,vat:+F("vat").value||10,bankCode:F("bk").value,sourceInvoiceName:F("src").value,invoiceAdjType:F("adj").value,rootHTCInvoiceNo:F("root").value,cars:collect()};
   const r=await fetch("/api/vatinvoices",{method:"POST",headers:H(),body:JSON.stringify(b)});
   const j=await r.json();
-  if(r.ok){ msg(`Đã tạo ${j.hTCInvoiceCode} (${j.cars} xe)`); F("carRows").innerHTML=""; addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg(`Đã tạo ${j.htcInvoiceCode} (${j.cars} xe)`); F("carRows").innerHTML=""; addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/vatinvoices?dealer=${F("qd").value}&invNo=${F("qn").value}&status=${F("qs").value}&adjType=${F("qa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
     let act="";
-    if(o.vatHTCStatus==="Draft") act=`<button class="sm ok" onclick="issue('${o.hTCInvoiceCode}')">Phát hành</button>`;
-    else if(o.vatHTCStatus==="Issued") act=`<button class="sm bad" onclick="del('${o.hTCInvoiceCode}')">Xóa</button>`;
-    return `<tr onclick="detail('${o.hTCInvoiceCode}')"><td><b>${o.hTCInvoiceCode}</b></td><td>${o.hTCInvoiceNo||"—"}</td><td>${o.invoiceIDCode}</td><td>${o.dealerCode}</td><td class="num">${o.vat}</td><td>${o.invoiceAdjType||"Gốc"}</td><td class="num">${money(o.totalPrice)}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.vatHTCStatus}">${ST[o.vatHTCStatus]||o.vatHTCStatus}</span></td><td onclick="event.stopPropagation()">${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="10" class="muted">Chưa có hóa đơn.</td></tr>';
+    if(o.vatHTCStatus==="Draft") act=`<button class="sm ok" onclick="issue('${o.htcInvoiceCode}')">Phát hành</button>`;
+    else if(o.vatHTCStatus==="Issued") act=`<button class="sm bad" onclick="del('${o.htcInvoiceCode}')">Xóa</button>`;
+    return `<tr onclick="detail('${o.htcInvoiceCode}')"><td><b>${o.htcInvoiceCode}</b></td><td>${o.htcInvoiceNo||"—"}</td><td>${o.invoiceIDCode}</td><td>${o.dealerCode}</td><td class="num">${o.vat}</td><td>${o.invoiceAdjType||"Gốc"}</td><td class="num">${money(o.totalPrice)}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.vatHTCStatus}">${ST[o.vatHTCStatus]||o.vatHTCStatus}</span></td><td>${o.invoicePrintNo||""}</td><td>${o.adj_DeleteReason||""}</td><td>${o.beforeAdj_DeleteRemark||""}</td><td>${o.afterAdj_DeleteRemark||""}</td><td onclick="event.stopPropagation()">${act} <button class="sm" onclick="adjReason('${o.htcInvoiceCode}')">Lý do/BB</button></td></tr>`;
+  }).join("")||'<tr><td colspan="14" class="muted">Chưa có hóa đơn.</td></tr>';
 }
 async function detail(code){
   const d=await (await fetch(`/api/vatinvoices/${code}/cars`,{headers:H()})).json();
   F("detCard").style.display=""; F("detNo").textContent=code;
-  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${c.modelCode||""}</td><td>${c.specCode||""}</td><td>${c.engineNo||""}</td><td>${c.brandName||""}</td><td>${c.carType||""}</td><td>${c.invoiceNoFactory||""}</td><td>${c.productionYear||""}</td><td class="num">${money(c.hTCUnitPrice)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có xe.</td></tr>';
+  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${c.modelCode||""}</td><td>${c.specCode||""}</td><td>${c.engineNo||""}</td><td>${c.brandName||""}</td><td>${c.carType||""}</td><td>${c.invoiceNoFactory||""}</td><td>${c.productionYear||""}</td><td class="num">${money(c.htcUnitPrice)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có xe.</td></tr>';
 }
 async function issue(code){
   const r=await fetch(`/api/vatinvoices/${code}/issue`,{method:"POST",headers:H()});
-  const j=await r.json(); if(r.ok){ msg(`${code}: phát hành, số HĐ ${j.hTCInvoiceNo} (${j.oS_HDDT_InvoiceCode})`); load(); } else msg("Lỗi: "+(j.error||r.status));
+  const j=await r.json(); if(r.ok){ msg(`${code}: phát hành, số HĐ ${j.htcInvoiceNo} (${j.oS_HDDT_InvoiceCode})`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function del(code){
   const reason=prompt("Lý do xóa hóa đơn:"); if(reason===null) return;
   const r=await fetch(`/api/vatinvoices/${code}/delete?reason=${encodeURIComponent(reason)}`,{method:"POST",headers:H()});
   const j=await r.json(); if(r.ok){ msg(`${code}: đã xóa (${j.deleteReason})`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+// #330 Lưu lý do + số biên bản trước khi in BBTH/BBĐC (VAT_HTCInvoice_UpdateAdj_DeleteReason) — GHI ĐÈ cả 4 cột như nguồn.
+async function adjReason(code){
+  const reason=prompt("Lý do điều chỉnh/thay thế:"); if(reason===null) return;
+  const printNo=prompt("Số biên bản:")??"";
+  const before=prompt("Nội dung trước điều chỉnh (để trống nếu là biên bản thu hồi):")??"";
+  const after=prompt("Nội dung sau điều chỉnh:")??"";
+  const r=await fetch(`/api/vatinvoices/${code}/adj-deletereason`,{method:"POST",headers:H(),
+    body:JSON.stringify({adj_DeleteReason:reason,invoicePrintNo:printNo,beforeAdj_DeleteRemark:before,afterAdj_DeleteRemark:after})});
+  const j=await r.json(); if(r.ok){ msg(`${code}: đã lưu lý do / số biên bản ${j.invoicePrintNo}`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 addRow(); load();
 </script>
