@@ -44751,13 +44751,28 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(customer)) q = q.Where(c => c.CustomerCode == customer || c.CustomerName.Contains(customer));
-    var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    // #334 `PmtType` của lưới FrmSupportDlr_Contract_UpdateBankCode / FrmSearchForDlr_Contract_Update KHÔNG phải cột DB:
+    //   client tự suy ra ở `SalesService.cs:23862` (ERP.V15.2025) — BankName rỗng ⇒ "Trả thẳng", ngược lại ⇒ "Trả góp".
+    //   (DMS.Sales DealerRetail.cs:16879 cũng ghi rõ "Server side không nhận PmtType riêng".) ⇒ chỉ trả giá trị DẪN XUẤT.
+    //   Tổng tiền cộng phía client (Sum(decimal) không dịch được trên SQLite) — kết quả trên Postgres không đổi.
+    var rowsDc = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
+    {
+        c.Id, c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
+        c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
+        c.BankCode, BankName = db.MstBanks.Where(b => b.OrgId == t.OrgId && b.BankCode == c.BankCode).Select(b => b.BankName).FirstOrDefault(),
+        lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
+    }).ToListAsync();
+    var idsDc = rowsDc.Select(r => r.Id).ToList();
+    var totalsDc = (await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && idsDc.Contains(l.ContractId))
+            .Select(l => new { l.ContractId, l.TotalAmountAfterVAT }).ToListAsync())
+        .GroupBy(l => l.ContractId).ToDictionary(g => g.Key, g => g.Sum(x => x.TotalAmountAfterVAT));
+    var items = rowsDc.Select(c => new
     {
         c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
-        lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
-        total = db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id).Sum(l => (decimal?)l.TotalAmountAfterVAT) ?? 0
-    }).ToListAsync();
+        c.BankCode, c.BankName, PmtType = string.IsNullOrEmpty(c.BankName) ? "Trả thẳng" : "Trả góp",   // #334
+        c.lines, total = totalsDc.TryGetValue(c.Id, out var tv) ? tv : 0m,
+    }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
