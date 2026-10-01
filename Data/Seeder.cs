@@ -1757,6 +1757,9 @@ public static class Seeder
         // #236 parity Ser_Order_Part: 2 cot tong THAT ma POCO client khong khai
         "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"TotalValOrderBeforeDc\" numeric",
         "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"TotalValOrderAfterDc\" numeric",
+        // #1553 parity Ser_Order_Part: 2 cot vet sua cuoi LUDTime/LUBy
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"LUDTime\" timestamp NULL",
+        "ALTER TABLE public.\"OrderParts\" ADD COLUMN IF NOT EXISTS \"LUBy\" text NULL",
         // #236 xoa gia tri ValDiscount do #235 tinh SAI (no khong phai tong chiet khau dau don)
         "UPDATE public.\"OrderParts\" SET \"ValDiscount\" = NULL",
         // #235 parity Ser_Order_PartDtl: 17 cot thieu (khoi gia + SL duyet + vet ghi)

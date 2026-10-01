@@ -6714,6 +6714,9 @@ public sealed class OrderPart
     public string? CreateBy { get; set; }
     public string? ApprBy { get; set; }
     public string? FinishBy { get; set; }
+    // #1553 §12 - cot nguon LUDTime/LUBy (Ser_Order_Part) - port 1:1 (vet sua cuoi cap he thong phu).
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }

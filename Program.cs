@@ -63567,6 +63567,8 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
         OrderPartType = string.IsNullOrWhiteSpace(dto.OrderPartType) ? null : dto.OrderPartType!.Trim().ToUpperInvariant(),
         SupplierStatus = "1",   // TConst.SupplierStatus.SS_1 — chờ NCC duyệt
         CreateBy = who, LogLUDateTime = DateTime.Now, LogLUBy = who,
+        // #1553: nguon INSERT ghi t.LUDTime/t.LUBy tu input (vet sua cuoi cap he thong phu).
+        LUDTime = dto.LUDTime ?? DateTime.Now, LUBy = dto.LUBy ?? who,
     };
     if (existing is not null)
     {
@@ -85273,7 +85275,7 @@ record OrderPartDto(string SupplierCode, string? WarehouseCode, List<OrderPartLi
     string? DealerCode = null, string? SupplierID = null, string? PartGroupID = null,
     string? DeliveryFormCode = null, string? DeliveryLocationCode = null,
     DateTime? EstimatedDeliverDate = null, string? VIN = null, string? Remark = null,
-    string? OrderPartType = null);
+    string? OrderPartType = null, DateTime? LUDTime = null, string? LUBy = null);
 // #1483 §12: DTO màn TẠO đơn đặt phụ tùng TST (`Ser_Order_Part_CreateTST`, LIVE, chỉ có trên cây V20).
 //   Chữ ký nguồn: strOrderPartNo · strDealerCode · strSupplierID · strDeliveryFormCode ·
 //   strDeliveryLocationCode · strEstimatedDeliverDate + DataSet dòng chi tiết. KHÔNG có FlagIsDelete/PartGroupID/VIN.
