@@ -26432,11 +26432,9 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
     //   Nguồn lấy DealerCode từ phiên người dùng; MiniHTC chưa có đại lý-theo-phiên ⇒ nhận qua DTO, BẮT BUỘC.
     var dealerApp = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
     if (dealerApp == "") return Results.BadRequest(new { error = "Chưa chọn đại lý (xưởng) của lịch hẹn." });
-    var seqPrefix = $"{dealerApp}-{DateTime.Now:yyMMdd}-";
-    var maxNo = (await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerApp && x.AppNo.StartsWith(seqPrefix))
-        .Select(x => x.AppNo).ToListAsync()).OrderByDescending(x => x, StringComparer.Ordinal).FirstOrDefault();
-    var nextSeq = maxNo is null ? 1 : (int.TryParse(maxNo[^3..], out var lastSeq) ? lastSeq + 1 : 1);
-    var no = seqPrefix + nextSeq.ToString("000");
+    var seqPrefix = CmSeq.Pattern("", dealerApp);
+    var no = CmSeq.Next(await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerApp && x.AppNo.StartsWith(seqPrefix))
+        .Select(x => x.AppNo).ToListAsync(), seqPrefix);
     if (await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerApp && x.AppNo == no))
         return Results.BadRequest(new { error = $"Số lịch hẹn {no} đã tồn tại.", code = "Ser_App_CheckExistAppNo" });
     var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, DealerCode = dealerApp, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
@@ -54164,14 +54162,24 @@ app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string
 app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LicensePlate)) return Results.BadRequest(new { error = "Cần biển số (LicensePlate)." });
-    var no = "RO" + DateTime.Now.ToString("yyMMddHHmmss");
+    // #337 Số RO port 1:1 `Ser_RO_Create_New20220926` (BizCarSv.ZTemp.cs:6258 — file <Compile> trong csproj; WS
+    //   WSCarSv.asmx.cs:10782): `myUtil_GetCmSeqCode(_dbDealer, "Ser_RO", "RONo", "", strDealerCode)` ⇒
+    //   **DealerCode-yyMMdd-NNN** (reset theo ngày, phạm vi đại lý) rồi `CheckExistRONo`. Bản cũ "RO"+yyMMddHHmmss
+    //   trùng khi tạo cùng giây. DealerCode nguồn lấy từ phiên ⇒ ở đây BẮT BUỘC qua DTO.
+    var dealerRo = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealerRo == "") return Results.BadRequest(new { error = "Chưa chọn đại lý (xưởng) của lệnh sửa chữa." });
+    var roPrefix = CmSeq.Pattern("", dealerRo);
+    var no = CmSeq.Next(await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealerRo && x.RONo.StartsWith(roPrefix))
+        .Select(x => x.RONo).ToListAsync(), roPrefix);
+    if (await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerRo && x.RONo == no))
+        return Results.BadRequest(new { error = $"Số lệnh sửa chữa {no} đã tồn tại.", code = "Ser_RO_CheckExistRONo" });
     var r = new RepairOrder
     {
         OrgId = t.OrgId, RONo = no, LicensePlate = dto.LicensePlate.Trim().ToUpperInvariant(), Vin = dto.Vin, CusName = dto.CusName, Km = dto.Km,
         CheckInDate = dto.CheckInDate ?? DateTime.Now, PlanedDeliveryDate = dto.PlanedDeliveryDate, CusRequest = dto.CusRequest,
         CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HasRO",
         // 4 cột phục vụ màn Lịch sử dịch vụ (FrmServiceHistory); DealerCode là khoá của luật CanShowDetail
-        DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
+        DealerCode = dealerRo,
         TrademarkNameModel = dto.TrademarkNameModel, ColorCode = dto.ColorCode, Assistant = dto.Assistant
     };
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
@@ -56843,6 +56851,19 @@ record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl 
 record WarrantyClaimActionDto(string Action, string? Note);
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
+/// <summary>#337 Port 1:1 `myUtil_GetCmSeqCode` (TCMotor BizCarSv.Common.cs:814) — dãy số dùng chung của
+/// Ser_App.AppNo / Ser_RO.RONo / Ser_Inv_Quote.QuoteNo / Ser_Inv_StockAdj.StockAdjNo / Ser_InsuranceContract ("HDBH-"):
+/// mẫu `{Prefix}{DealerCode}-{yyMMdd}-NNN`, reset MỖI NGÀY, NNN = 3 ký tự cuối của Max(mã khớp mẫu) + 1 (không có ⇒ 001).</summary>
+static class CmSeq
+{
+    public static string Pattern(string prefixForSearch, string dealerCode) => $"{prefixForSearch}{dealerCode}-{DateTime.Now:yyMMdd}-";
+    public static string Next(IEnumerable<string> existing, string pattern)
+    {
+        var max = existing.OrderByDescending(x => x, StringComparer.Ordinal).FirstOrDefault();
+        var seq = max is null ? 1 : (int.TryParse(max[^3..], out var last) ? last + 1 : 1);
+        return pattern + seq.ToString("000");
+    }
+}
 record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null, string? DealerCode = null);   // #336 DealerCode
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
