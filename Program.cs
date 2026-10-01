@@ -25224,7 +25224,7 @@ app.MapPost("/api/dealercas/{id}/toggle", async (long id, AppDbContext db, ITena
     return Results.Ok(new { ca.Id, ca.FlagActive });
 }).RequireAuthorization();
 
-// ===== Tỉ lệ phân bổ kho theo miền (StorageRate — port 1:1 FrmMst_StorageRate, Admin/DMS40 2010.HTC) =====
+// ===== Tỉ lệ phân bổ kho theo miền (StorageRate — port 1:1 FrmMst_StorageRate, Admin/DMS40 2010.HTC; bảng nguồn Mst_StorageAreaRate — #390) =====
 app.MapGet("/api/storagerates", async (AppDbContext db, ITenantContext t, string? storage, string? model) =>
 {
     var q = db.StorageRates.Where(x => x.OrgId == t.OrgId);
@@ -25240,10 +25240,17 @@ app.MapPost("/api/storagerates", async (StorageRateDto dto, AppDbContext db, ITe
 {
     var sc = (dto.StorageCode ?? "").Trim(); var mc = (dto.ModelCode ?? "").Trim();
     if (sc == "" || mc == "") return Results.BadRequest(new { error = "Thiếu mã kho hoặc model." });
-    if (dto.MBVal < 0 || dto.MTVal < 0 || dto.MNVal < 0) return Results.BadRequest(new { error = "Tỉ lệ không được âm." });
+    if (dto.MBVal < 0 || dto.MTVal < 0 || dto.MNVal < 0) return Results.BadRequest(new { error = "Tỉ lệ không được âm.", code = "Mst_StorageAreaRate_Save_InvalidValue" });
+    // #390 guard nguồn `Mst_StorageAreaRate_Save` (0.01.Master.cs:9519): |MB+MT+MN − 100| > Default_Epsilon (0.0001) ⇒ InvalidValue;
+    //   myCommon_CheckModel(tồn tại, FlagActive=1). (CheckStorage/CheckSpecCode/CheckMatchingModelAndColorExt chưa port — bảng đích MiniHTC chưa rõ.)
+    if (Math.Abs(dto.MBVal + dto.MTVal + dto.MNVal - 100m) > 0.0001m)
+        return Results.BadRequest(new { error = $"Tổng tỉ lệ 3 miền phải bằng 100 (hiện {dto.MBVal + dto.MTVal + dto.MNVal}).", code = "Mst_StorageAreaRate_Save_InvalidValue" });
+    if (!await db.CarModelStds.AnyAsync(m => m.OrgId == t.OrgId && m.ModelCode == mc && m.FlagActive == "1"))
+        return Results.BadRequest(new { error = $"Model {mc} không tồn tại hoặc đã ngừng.", code = "myCommon_CheckModel" });
     var r = await db.StorageRates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == sc && x.ModelCode == mc && x.SpecCode == dto.SpecCode && x.ColorExtCode == dto.ColorExtCode);
     if (r is null) { r = new StorageRate { OrgId = t.OrgId, StorageCode = sc, ModelCode = mc, SpecCode = dto.SpecCode, ColorExtCode = dto.ColorExtCode , LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" }; db.StorageRates.Add(r); }
     r.MBVal = dto.MBVal; r.MTVal = dto.MTVal; r.MNVal = dto.MNVal; r.UpdatedAt = DateTime.Now;
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";   // #390 _Save ghi LogLU* mọi lần
     await db.SaveChangesAsync();
     return Results.Ok(new { r.Id, r.StorageCode, r.ModelCode, total = r.MBVal + r.MTVal + r.MNVal });
 }).RequireAuthorization();

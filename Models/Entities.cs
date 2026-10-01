@@ -4502,7 +4502,9 @@ public sealed class DealerCA
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Tỉ lệ phân bổ kho theo model/spec/màu cho 3 miền (Bắc/Trung/Nam) — port 1:1 FrmMst_StorageRate (Tbl_Auto_MapVIN_StorageRate, Admin/DMS40 2010.HTC).</summary>
+/// <summary>Tỉ lệ phân bổ kho theo model/spec/màu cho 3 miền (Bắc/Trung/Nam) — port 1:1 FrmMst_StorageRate (Admin/DMS40 2010.HTC).
+/// 🔴 #390 ĐÍNH CHÍNH bảng nguồn: form chỉ MƯỢN hằng cột `Tbl_Auto_MapVIN_StorageRate`, còn đọc/ghi qua `Mst_StorageAreaRate_Get/_Save`
+/// (DMS40/0.01.Master.cs:9013/9519) ⇒ bảng thật = **Mst_StorageAreaRate**. KHÔNG phải song sinh của <see cref="AutoMapVinStorageRate"/> (Auto_MapVIN_StorageRate).</summary>
 public sealed class StorageRate
 {
     public long Id { get; set; }
