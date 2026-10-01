@@ -483,6 +483,13 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
         return Results.BadRequest(new { error = $"Loại nhân viên {smTypeRow.SMType} bắt buộc nhập Email (Mst_SalesMan_Update_InvalidSMEmail)." });
     if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập Địa chỉ!" });
     if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { error = "Chưa chọn Quê quán!" });
+    // #319 Mst_Qualification_CheckDB(exist=1, active=1) — cả Update_New20230306 lẫn CreateMulti_New20230306.
+    var qualCode = (dto.QualificationCode ?? "").Trim();
+    if (!await db.MstQualifications.AnyAsync(x => x.OrgId == t.OrgId && x.QualificationCode == qualCode && x.FlagActive == "1"))
+        return Results.BadRequest(new { error = $"Trình độ chuyên môn {qualCode} không tồn tại hoặc ngừng hoạt động (Mst_Qualification)." });
+    // #319 Update_New20230306 bắt buộc SMPosition (InvalidSMPosition).
+    if (string.IsNullOrWhiteSpace(dto.Position)) return Results.BadRequest(new { error = "Chưa nhập Chức vụ (Mst_SalesMan_Update_InvalidSMPosition)." });
+
     if (string.IsNullOrWhiteSpace(dto.Specialized)) return Results.BadRequest(new { error = "Chưa nhập Chuyên ngành!" });
     if (string.IsNullOrWhiteSpace(dto.QualificationCode)) return Results.BadRequest(new { error = "Chưa chọn Trình độ chuyên môn!" });
     if (string.IsNullOrWhiteSpace(dto.CertificateCode)) return Results.BadRequest(new { error = "Chưa chọn Chứng chỉ!" });
@@ -497,6 +504,14 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
     }
     var code = string.IsNullOrWhiteSpace(dto.SalesManCode) ? "NV" + DateTime.Now.ToString("yyMMddHHmmss") : dto.SalesManCode.Trim().ToUpperInvariant();
     var s = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code);
+    // #319 TẠO MỚI (CreateMulti_New20230306) đối chiếu CẢ SMPosition lẫn SMPostionCode với Mst_Position (exist + active);
+    //      SỬA (Update_New20230306) KHÔNG đối chiếu danh mục chức vụ — giữ đúng khác biệt của nguồn.
+    if (s is null)
+    {
+        foreach (var pc in new[] { dto.Position!.Trim(), dto.PositionCode!.Trim() }.Distinct())
+            if (!await db.MstPositions.AnyAsync(x => x.OrgId == t.OrgId && x.PositionCode == pc && x.FlagActive == "1"))
+                return Results.BadRequest(new { error = $"Chức vụ {pc} không tồn tại hoặc ngừng hoạt động (Mst_Position)." });
+    }
     if (s is null) { s = new SalesMan { OrgId = t.OrgId, SalesManCode = code }; db.SalesMen.Add(s); }
     s.SalesManName = dto.SalesManName.Trim(); s.DealerCode = dto.DealerCode; s.DepartmentCode = dto.DepartmentCode; s.SalesType = dto.SalesType;
     s.Phone = dto.Phone; s.Email = dto.Email; s.Status = dto.Status ?? "1";
@@ -23139,6 +23154,51 @@ app.MapPost("/api/carvininvoiceinfos/import", async (CarVinInvoiceImportDto dto,
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { added, updated });
+}).RequireAuthorization();
+
+// ===== #319 Danh mục trình độ (Mst_Qualification) & chức vụ (Mst_Position) — nguồn chỉ có *_Get trên WS; lưu = upsert theo mã =====
+app.MapGet("/api/mstqualifications", async (AppDbContext db, ITenantContext t, string? flagActive) =>
+{
+    var q = db.MstQualifications.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.QualificationCode).Select(x => new { x.QualificationCode, x.QualificationName, x.Remark, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstqualifications", async (MstQualificationDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.QualificationCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Thiếu mã trình độ." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "FlagActive chỉ nhận 0/1." });
+    var r = await db.MstQualifications.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.QualificationCode == code);
+    var updated = r is not null;
+    if (r is null) { r = new MstQualification { OrgId = t.OrgId, QualificationCode = code }; db.MstQualifications.Add(r); }
+    r.QualificationName = dto.QualificationName; r.Remark = dto.Remark; r.FlagActive = fa;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.QualificationCode, r.QualificationName, r.Remark, r.FlagActive, updated });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstpositions", async (AppDbContext db, ITenantContext t, string? flagActive) =>
+{
+    var q = db.MstPositions.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    var items = await q.OrderBy(x => x.PositionCode).Select(x => new { x.PositionCode, x.PositionDesc, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstpositions", async (MstPositionDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.PositionCode ?? "").Trim();
+    if (code.Length == 0) return Results.BadRequest(new { error = "Thiếu mã chức vụ." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "FlagActive chỉ nhận 0/1." });
+    var r = await db.MstPositions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PositionCode == code);
+    var updated = r is not null;
+    if (r is null) { r = new MstPosition { OrgId = t.OrgId, PositionCode = code }; db.MstPositions.Add(r); }
+    r.PositionDesc = dto.PositionDesc; r.FlagActive = fa;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.PositionCode, r.PositionDesc, r.FlagActive, updated });
 }).RequireAuthorization();
 
 // ===== Master loại NVBH theo phòng ban (SalesManType — port 1:1 FrmStaffType, TCMotor) =====
@@ -56419,6 +56479,8 @@ record CarTestCarLineDto(string? CarId, string? Vin, string? ModelCode, string? 
 record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, List<CarTestCarLineDto>? Lines);
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate);
+record MstQualificationDto(string? QualificationCode, string? QualificationName, string? Remark, string? FlagActive);
+record MstPositionDto(string? PositionCode, string? PositionDesc, string? FlagActive);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive, string? FlagEmail = null);
 record CarVinCBImportDto(List<CarVinCBRowDto>? Rows);
 record CarVinCBRowDto(string? VIN, string? CBNo, DateTime? CBDate, DateTime? DateDeliveryCBInvoice);

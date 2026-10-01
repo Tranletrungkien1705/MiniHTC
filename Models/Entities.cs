@@ -3463,6 +3463,30 @@ public sealed class SalesManType
     public string? LogLUBy { get; set; }
 }
 
+/// <summary>#319 `Mst_Qualification` — danh mục TRÌNH ĐỘ chuyên môn (TblMst_Qualification: QualificationCode, QualificationName, Remark, FlagActive).
+/// Nguồn: Mst_Qualification_Get_New20181119 (WSHTC.64:78546); Mst_SalesMan_* gọi Mst_Qualification_CheckDB(exist=1, active=1).</summary>
+public sealed class MstQualification
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string QualificationCode { get; set; } = "";
+    public string? QualificationName { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>#319 `Mst_Position` — danh mục CHỨC VỤ (TblMst_Position: PositionCode, PositionDesc, FlagActive).
+/// Nguồn: Mst_Position_Get_New20210326 (WSHTC.64:6395); Mst_SalesMan_CreateMulti_New20230306 gọi Mst_Position_CheckDB_New20210415
+/// cho CẢ SMPosition lẫn SMPostionCode (exist + active).</summary>
+public sealed class MstPosition
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PositionCode { get; set; } = "";
+    public string? PositionDesc { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 /// <summary>🔴 #B245 — Ma trận chứng chỉ **theo LOẠI nhân viên** (`Mst_SalesManTypeCertificate`),
 /// khoá ba `DepartmentCode × SMType × CertificateCode`.
 /// ⚠️ **BẢNG THỨ BA, đừng lẫn**: <see cref="SalesManType"/> (`Mst_SalesManType`) là danh mục loại NV;
