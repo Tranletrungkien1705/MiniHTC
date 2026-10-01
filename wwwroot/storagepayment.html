@@ -17,7 +17,7 @@
 <div class="card"><h3 style="margin-top:0">Tạo phiếu thanh toán lưu kho</h3>
   <div class="row"><label>Tháng thanh toán *</label><input id="month" type="month"></div>
   <h3>Danh sách VIN — phí che phủ + phí lưu kho</h3>
-  <table id="lineTbl"><thead><tr><th>VIN</th><th>Model</th><th>Đại lý</th><th style="width:100px">Phí che phủ</th><th style="width:100px">Phí lưu kho</th><th></th></tr></thead>
+  <table id="lineTbl"><thead><tr><th>VIN</th><th>Ngày lưu kho</th><th>Đại lý</th><th style="width:100px">Phí che phủ</th><th style="width:100px">Phí lưu kho</th><th></th></tr></thead>
   <tbody id="lineRows"></tbody></table>
   <button onclick="addLine()">+ Thêm VIN</button>
   <div class="row" style="margin-top:10px"><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
@@ -33,27 +33,30 @@ async function token(){ if(TOKEN) return TOKEN;
 function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
 function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4000); }
 function addLine(){ const tr=document.createElement("tr"); tr.className="linerow";
-  tr.innerHTML=`<td><input class="lv"></td><td><input class="lm"></td><td><input class="ld"></td><td><input class="lc" type="number" value="0"></td><td><input class="ls" type="number" value="0"></td><td><button class="link" onclick="this.closest('tr').remove()">Xóa</button></td>`;
+  tr.innerHTML=`<td><input class="lv"></td><td><input class="lm" type="date"></td><td><input class="ld"></td><td><input class="lc" type="number" value="0"></td><td><input class="ls" type="number" value="0"></td><td><button class="link" onclick="this.closest('tr').remove()">Xóa</button></td>`;
   F("lineRows").appendChild(tr); }
 addLine();
 async function save(){ await token();
-  const lines=[...F("lineRows").querySelectorAll("tr")].map(tr=>({Vin:tr.querySelector(".lv").value,ModelName:tr.querySelector(".lm").value,DealerCode:tr.querySelector(".ld").value,CostCoat:+tr.querySelector(".lc").value||0,CostStorage:+tr.querySelector(".ls").value||0})).filter(l=>l.Vin);
-  const body={PmtMonth:F("month").value?F("month").value+"-01":null,Lines:lines};
-  const r=await fetch("/api/storagepayments",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.pmtNo+" — tổng "+M(d.amountTotal)); F("lineRows").innerHTML=""; addLine(); load();
+  // #386 ghi bản chuẩn Pmt_PaymentStorage (/api/paymentstorage). TotalAmount dòng = phí che phủ + phí lưu kho (đã gồm VAT), VAT = thuế suất 0.1.
+  if(!F("month").value){ say("Lỗi: Chưa nhập tháng thanh toán"); return; }
+  const details=[...F("lineRows").querySelectorAll("tr")].map(tr=>({VIN:tr.querySelector(".lv").value,StorageDate:tr.querySelector(".lm").value||null,DealerCode:tr.querySelector(".ld").value||null,CostCoat:+tr.querySelector(".lc").value||0,CostStorage:+tr.querySelector(".ls").value||0})).filter(l=>l.VIN);
+  const body={PmtMonth:F("month").value,VAT:0.1,Details:details};
+  const r=await fetch("/api/paymentstorage",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.paymentStorageNo+" — tổng "+M(d.amountTotal)); F("lineRows").innerHTML=""; addLine(); load();
 }
 async function act(no,path,method){ await token();
-  const url = path ? `/api/storagepayments/${encodeURIComponent(no)}/${path}` : `/api/storagepayments/${encodeURIComponent(no)}`;
+  const url = path ? `/api/paymentstorage/${encodeURIComponent(no)}/${path}` : `/api/paymentstorage/${encodeURIComponent(no)}`;
   const r=await fetch(url,{method:method||"POST",headers:Hh()});
   const d=await r.json(); say(r.ok? "OK "+no : "Lỗi: "+(d.error||r.status)); load();
 }
 async function load(){ await token();
   const r=await fetch("/api/storagepayments?q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.pmtNo)}</b></td><td>${String(o.pmtMonth).slice(0,7)}</td><td class="num">${M(o.totalBeforeVAT)}</td><td class="num">${M(o.vatAmount)}</td><td class="num">${M(o.amountTotal)}</td>
-  <td><span class="pill">${esc(o.htvSignStatus)}</span> ${o.htvSignStatus==="P"?`<button class="link" onclick="act('${esc(o.pmtNo)}','htvsign')">Ký HTV</button>`:""}</td>
-  <td><span class="pill">${esc(o.tcmsSignStatus)}</span> ${o.tcmsSignStatus==="P"?`<button class="link" onclick="act('${esc(o.pmtNo)}','tcmssign')">Ký TCMS</button>`:""}</td>
+  F("tb").innerHTML=(d.items||[]).map(o=>{ const no=esc(o.pmtNo); const unsigned=o.htvSignStatus==="P"&&o.tcmsSignStatus==="P";
+  return `<tr><td><b>${no}</b></td><td>${esc(o.pmtMonth)}</td><td class="num">${M(o.totalBeforeVAT)}</td><td class="num">${M(o.vatAmount)}</td><td class="num">${M(o.amountTotal)}</td>
+  <td><span class="pill">${esc(o.htvSignStatus)}</span> ${(o.status==="A2"&&o.tcmsSignStatus==="A"&&o.htvSignStatus==="P")?`<button class="link" onclick="act('${no}','sign-htv')">Ký HTV</button>`:""}</td>
+  <td><span class="pill">${esc(o.tcmsSignStatus)}</span> ${(o.status==="A2"&&o.tcmsSignStatus==="P")?`<button class="link" onclick="act('${no}','sign-tcms')">Ký TCMS</button>`:""}</td>
   <td><span class="pill">${esc(o.status)}</span></td>
-  <td>${o.status==="P"?`<button class="link" onclick="act('${esc(o.pmtNo)}','deny')">Từ chối</button>`:""}${(o.status==="C"||o.status==="P")?`<button class="link" onclick="act('${esc(o.pmtNo)}','','DELETE')">Xóa</button>`:""}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có phiếu.</td></tr>';
+  <td>${(o.status==="P"&&unsigned)?`<button class="link" onclick="act('${no}','approve1')">Duyệt 1</button><button class="link" onclick="act('${no}','cancel')">Từ chối</button>`:""}${(o.status==="A1"&&unsigned)?`<button class="link" onclick="act('${no}','approve2')">Duyệt 2</button>`:""}${((o.status==="C"||o.status==="P")&&unsigned)?`<button class="link" onclick="act('${no}','','DELETE')">Xóa</button>`:""}</td></tr>`; }).join("")||'<tr><td colspan="9" class="muted">Chưa có phiếu.</td></tr>';
 }
 </script>
 </body></html>

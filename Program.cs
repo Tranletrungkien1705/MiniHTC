@@ -28311,118 +28311,54 @@ app.MapPost("/api/gpspayments", async (GpsPaymentDto dto, AppDbContext db, ITena
     return Results.Ok(new { h.PmtNo, h.TotalWithoutVAT, h.AmountVAT, h.TotalAfterVAT, lines = lines.Count });
 }).RequireAuthorization();
 
-// ===== Thanh toán phí lưu kho theo tháng (StoragePayment — port 1:1 FrmQuanLyThanhToanLuuKho/FrmSuaThanhToanLuuKho, 2010.HTC Sales/Purchase) =====
+// ===== Thanh toán phí lưu kho theo tháng — ⛔ #386 HỢP NHẤT SONG SINH Pmt_PaymentStorage: StoragePayment ≡ PmtPaymentStorage. Bản chuẩn =
+// PmtPaymentStorage (/api/paymentstorage). Route này là BÍ DANH giữ hình JSON cũ: AmountTotal = AmountTotal (đã gồm VAT), TotalBeforeVAT = AmountTotal/1.1,
+// VatAmount = phần chênh, Status = PaymentStorageStatus. Tạo/sửa đi qua bản chuẩn; ký/từ chối/xoá ⇒ 400 + route chuẩn (biz ký đòi A2 + TCMS trước).
 app.MapGet("/api/storagepayments", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
-    var qry = db.StoragePayments.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
-    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status,
-      lines = db.StoragePaymentLines.Count(l => l.OrgId == t.OrgId && l.StoragePaymentId == x.Id) }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    var qry = db.PmtPaymentStorages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PaymentStorageNo.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.PaymentStorageStatus == status);
+    var rows = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    { x.PaymentStorageNo, x.PmtMonth, x.AmountTotal, x.HTVSignStatus, x.TCMSSignStatus, x.PaymentStorageStatus,
+      lines = db.PmtPaymentStorageDetails.Count(l => l.OrgId == t.OrgId && l.PaymentStorageNo == x.PaymentStorageNo) }).ToListAsync();
+    var items = rows.Select(x => { var before = Math.Round(x.AmountTotal / 1.1m, 0); return new
+    { PmtNo = x.PaymentStorageNo, x.PmtMonth, TotalBeforeVAT = before, VatAmount = x.AmountTotal - before, x.AmountTotal,
+      HtvSignStatus = x.HTVSignStatus, TcmsSignStatus = x.TCMSSignStatus, Status = x.PaymentStorageStatus, x.lines }; }).ToList();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/paymentstorage" });
 }).RequireAuthorization();
 
 app.MapGet("/api/storagepayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    var h = await db.PmtPaymentStorages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentStorageNo == no);
     if (h is null) return Results.NotFound(new { no });
-    var lines = await db.StoragePaymentLines.Where(l => l.OrgId == t.OrgId && l.StoragePaymentId == h.Id).Select(l => new
-    { l.Vin, l.ModelCode, l.ModelName, l.SpecCode, l.SpecDescription, l.ColorExtNameVN, l.DealerCode, l.StorageDate, l.DeliveryOutDate, l.CostCoat, l.CostStorage, l.TotalAmount, l.Remark }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, lines });
+    var lines = await db.PmtPaymentStorageDetails.Where(l => l.OrgId == t.OrgId && l.PaymentStorageNo == no).Select(l => new
+    { Vin = l.VIN, l.DealerCode, l.StorageDate, l.DeliveryOutDate, l.CostCoat, l.CostStorage, l.TotalAmount, l.Remark }).ToListAsync();
+    var before = Math.Round(h.AmountTotal / 1.1m, 0);
+    return Results.Ok(new { PmtNo = h.PaymentStorageNo, h.PmtMonth, TotalBeforeVAT = before, VatAmount = h.AmountTotal - before, h.AmountTotal,
+        HtvSignStatus = h.HTVSignStatus, TcmsSignStatus = h.TCMSSignStatus, Status = h.PaymentStorageStatus, lines, mergedInto = "/api/paymentstorage" });
 }).RequireAuthorization();
 
-// Khớp DSXe/DSThanhToan gốc: TotalAmount(dòng)=CostCoat+CostStorage (đã gồm VAT); AmountTotal(header)=Σ dòng; TotalBeforeVAT=AmountTotal/1.1; VatAmount=AmountTotal-TotalBeforeVAT.
-app.MapPost("/api/storagepayments", async (StoragePaymentDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/storagepayments", async (StoragePaymentDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (dto.PmtMonth is null) return Results.BadRequest(new { error = "Chưa nhập tháng thanh toán" });
-    var lines = dto.Lines ?? new List<StoragePaymentLineDto>();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
-
-    var no = "LK" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new StoragePayment { OrgId = t.OrgId, PmtNo = no, PmtMonth = dto.PmtMonth.Value };
-    db.StoragePayments.Add(h); await db.SaveChangesAsync();
-
-    decimal total = 0;
-    foreach (var l in lines)
-    {
-        var amount = l.CostCoat + l.CostStorage;
-        total += amount;
-        db.StoragePaymentLines.Add(new StoragePaymentLine
-        {
-            OrgId = t.OrgId, StoragePaymentId = h.Id, Vin = (l.Vin ?? "").Trim().ToUpperInvariant(), ModelCode = l.ModelCode, ModelName = l.ModelName,
-            SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, ColorExtNameVN = l.ColorExtNameVN, DealerCode = l.DealerCode,
-            StorageDate = l.StorageDate, DeliveryOutDate = l.DeliveryOutDate, CostCoat = l.CostCoat, CostStorage = l.CostStorage, TotalAmount = amount, Remark = l.Remark
-        });
-    }
-    h.AmountTotal = total; h.TotalBeforeVAT = Math.Round(total / 1.1m, 0); h.VatAmount = h.AmountTotal - h.TotalBeforeVAT;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, lines = lines.Count });
+    var rows = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.Vin))
+        .Select(l => new PmtStorageDtlDto(l.Vin!, null, null, l.StorageDate, null, l.DeliveryOutDate, l.DealerCode, null, null, null, 0, 0, 0, l.CostCoat, l.CostStorage, 0, l.Remark)).ToList();
+    return await PmtStorageCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth.Value.ToString("yyyy-MM"), 0, rows);
 }).RequireAuthorization();
 
-// Sửa (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnEdit_Click gốc) — CHỈ sửa CostCoat/CostStorage từng dòng theo VIN, KHÔNG thêm/bớt dòng.
-app.MapPut("/api/storagepayments/{no}/edit", async (string no, StoragePaymentEditDto dto, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
-        return Results.BadRequest(new { error = "Chỉ có thể sửa khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
-    var rows = dto.Lines ?? new List<StoragePaymentEditLineDto>();
-    decimal total = 0;
-    var allLines = await db.StoragePaymentLines.Where(l => l.OrgId == t.OrgId && l.StoragePaymentId == h.Id).ToListAsync();
-    foreach (var l in allLines)
-    {
-        var row = rows.FirstOrDefault(r => string.Equals(r.Vin, l.Vin, StringComparison.OrdinalIgnoreCase));
-        if (row is not null) { l.CostCoat = row.CostCoat; l.CostStorage = row.CostStorage; l.TotalAmount = row.CostCoat + row.CostStorage; }
-        total += l.TotalAmount;
-    }
-    h.AmountTotal = total; h.TotalBeforeVAT = Math.Round(total / 1.1m, 0); h.VatAmount = h.AmountTotal - h.TotalBeforeVAT;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal });
-}).RequireAuthorization();
+app.MapPut("/api/storagepayments/{no}/edit", async (string no, StoragePaymentEditDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtStorageUpdate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", no, dto.Lines ?? new())).RequireAuthorization();
 
-// Ký HTV / Ký TCMS (chỉ khi Status=P, khớp btnHTVSign/btnTCMSSign gốc)
-app.MapPost("/api/storagepayments/{no}/{side}sign", async (string no, string side, AppDbContext db, ITenantContext t) =>
-{
-    if (side != "htv" && side != "tcms") return Results.NotFound();
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "P") return Results.BadRequest(new { error = "Chỉ có thể ký khi trạng thái thanh toán là P" });
-    if (side == "htv") { h.HtvSignStatus = "A"; h.HtvSignAt = DateTime.Now; } else { h.TcmsSignStatus = "A"; h.TcmsSignAt = DateTime.Now; }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.HtvSignStatus, h.TcmsSignStatus });
-}).RequireAuthorization();
+app.MapPost("/api/storagepayments/{no}/{side}sign", (string no, string side) =>
+    Results.BadRequest(new { error = "Ký phiếu lưu kho theo biz: TCMS ký khi phiếu đã duyệt A2, HTV ký sau TCMS.", route = $"/api/paymentstorage/{no}/sign-{side}" })).RequireAuthorization();
 
-// Từ chối (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnDeny_Click gốc)
-app.MapPost("/api/storagepayments/{no}/deny", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
-        return Results.BadRequest(new { error = "Chỉ có thể từ chối khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
-    h.Status = "C";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.Status });
-}).RequireAuthorization();
+app.MapPost("/api/storagepayments/{no}/deny", (string no) =>
+    Results.BadRequest(new { error = "Từ chối = huỷ phiếu (Pmt_PaymentStorage_Cancel).", route = $"/api/paymentstorage/{no}/cancel" })).RequireAuthorization();
 
-// Xóa (khớp btnDelete_Click gốc: Status C hoặc P, và cả 2 bên CHƯA ký (P))
-app.MapDelete("/api/storagepayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.StoragePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (!((h.Status == "C" || h.Status == "P") && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
-        return Results.BadRequest(new { error = "Chưa có thể xóa khi trạng thái thanh toán là C hoặc P\nVà trạng thái ký của HTV và TCMS là P" });
-    var lines = db.StoragePaymentLines.Where(l => l.OrgId == t.OrgId && l.StoragePaymentId == h.Id);
-    db.StoragePaymentLines.RemoveRange(lines);
-    db.StoragePayments.Remove(h);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = no });
-}).RequireAuthorization();
+app.MapDelete("/api/storagepayments/{no}", (string no) =>
+    Results.BadRequest(new { error = "Xoá phiếu lưu kho qua bản chuẩn (Pmt_PaymentStorage_Delete).", route = $"DELETE /api/paymentstorage/{no}" })).RequireAuthorization();
 
 // ===== Thanh toán phí PDI theo tháng — ⛔ #385 HỢP NHẤT SONG SINH Pmt_PaymentPDI: PdiFeePayment ≡ PmtPaymentPdi. Bản chuẩn = PmtPaymentPdi
 // (/api/paymentpdi). Route này là BÍ DANH giữ hình JSON cũ: TotalBeforeVAT = TotalAmount, VatAmount = AmountVAT, AmountTotal = TotalAmountAfterVAT,
@@ -36293,26 +36229,72 @@ app.MapGet("/api/paymentstorage/{no}", async (string no, AppDbContext db, ITenan
 }).RequireAuthorization();
 
 app.MapPost("/api/paymentstorage", async (PmtStorageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtStorageCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth, dto.VAT,
+        (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList())).RequireAuthorization();
+
+// #386 Sửa phí che phủ/lưu kho từng VIN — port `Pmt_PaymentStorage_UpdateMulti` (TERP.BizHTC/DMS40/0.34.Contract.cs:26588; màn FrmSuaThanhToanLuuKho).
+app.MapPost("/api/paymentstorage/{no}/update", async (string no, StoragePaymentEditDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtStorageUpdate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", no, dto.Lines ?? new())).RequireAuthorization();
+
+// #386 Tạo phiếu Pmt_PaymentStorage (nguồn: JOB Job_Pmt_PaymentStorage_Create :26054 — thuật toán sinh chưa port; đây là lối vào tay).
+//   Như job + UpdateMulti: TotalAmount(dòng) = CostCoat + CostStorage (ĐÃ gồm VAT); AmountTotal = Σ dòng; VAT = 0.1 là THUẾ SUẤT (literal '0.1').
+static async Task<IResult> PmtStorageCreate(AppDbContext db, Guid orgId, string who, string? month, decimal vat, List<PmtStorageDtlDto> rows)
 {
-    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
-    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
+    if (rows.Any(r => r.CostCoat < 0)) return Results.BadRequest(new { error = "Phí che phủ không hợp lệ (< 0).", code = "Pmt_PaymentStorage_UpdateMulti_InvalidCostCoat" });
+    if (rows.Any(r => r.CostStorage < 0)) return Results.BadRequest(new { error = "Phí lưu kho không hợp lệ (< 0).", code = "Pmt_PaymentStorage_UpdateMulti_InvalidCostStorage" });
+    var now = DateTime.Now;
     var no = "PSTO" + now.ToString("yyMMddHHmmss");
-    var h = new PmtPaymentStorage { OrgId = t.OrgId, PaymentStorageNo = no, PmtMonth = dto.PmtMonth, CreateDateTime = now,
-        CreateBy = who, VAT = dto.VAT == 0 ? 0.1m : dto.VAT,   // nguồn ghi thẳng literal '0.1' khi JOB tạo phiếu
-        AmountTotal = rows.Sum(x => x.TotalAmount), PaymentStorageStatus = "P",
+    var h = new PmtPaymentStorage { OrgId = orgId, PaymentStorageNo = no, PmtMonth = month, CreateDateTime = now,
+        CreateBy = who, VAT = vat == 0 ? 0.1m : vat,   // nguồn ghi thẳng literal '0.1' khi JOB tạo phiếu
+        AmountTotal = rows.Sum(x => x.CostCoat + x.CostStorage), PaymentStorageStatus = "P",
         HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
     db.PmtPaymentStorages.Add(h);
     foreach (var r in rows)
-        db.PmtPaymentStorageDetails.Add(new PmtPaymentStorageDetail { OrgId = t.OrgId, PaymentStorageNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+        db.PmtPaymentStorageDetails.Add(new PmtPaymentStorageDetail { OrgId = orgId, PaymentStorageNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
             CarId = r.CarId, StorageCodeInit = r.StorageCodeInit, StorageDate = r.StorageDate, ApprovedDate2 = r.ApprovedDate2,
             DeliveryOutDate = r.DeliveryOutDate, DealerCode = r.DealerCode, InCostStorageDate = r.InCostStorageDate,
             LevelStorage = r.LevelStorage, OutCostStorageDate = r.OutCostStorageDate, CostStorageMonth = r.CostStorageMonth,
             PriceCoat = r.PriceCoat, PriceStorage = r.PriceStorage, CostCoat = r.CostCoat, CostStorage = r.CostStorage,
-            TotalAmount = r.TotalAmount, PaymentStorageDtlStatus = "P", Remark = r.Remark, LogLUDateTime = now, LogLUBy = who });
+            TotalAmount = r.CostCoat + r.CostStorage, PaymentStorageDtlStatus = "P", Remark = r.Remark, LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.PaymentStorageNo, h.PmtMonth, h.AmountTotal, status = h.PaymentStorageStatus, cars = rows.Count });
-}).RequireAuthorization();
+    var before = Math.Round(h.AmountTotal / 1.1m, 0);
+    // PmtNo/TotalBeforeVAT/VatAmount: hình JSON cũ của bí danh /api/storagepayments (trước VAT = AmountTotal/1.1 như báo cáo nguồn :27409).
+    return Results.Ok(new { h.PaymentStorageNo, h.PmtMonth, h.AmountTotal, h.VAT, status = h.PaymentStorageStatus, cars = rows.Count,
+        PmtNo = h.PaymentStorageNo, TotalBeforeVAT = before, VatAmount = h.AmountTotal - before });
+}
+
+// #386 `Pmt_PaymentStorage_UpdateMulti`: Pmt_PaymentStorage_CheckDB(tồn tại, Confirm=P, HTVSign=P, TCMSSign=P); mỗi dòng CostCoat ≥ 0, CostStorage ≥ 0;
+//   TotalAmount(dòng) = CostCoat + CostStorage; UPDATE dòng theo (PaymentStorageNo, VIN) gồm Remark + LogLU*; header AmountTotal = Σ TotalAmount + LogLU*.
+//   🔴 LỖI NGUỒN: #tblSum_Temp JOIN chi tiết với #input CHỈ theo PaymentStorageNo ⇒ mỗi dòng chi tiết bị cộng N lần (N = số dòng gửi lên);
+//      thêm CAST AS BIGINT cắt phần lẻ từng dòng. Port theo Ý ĐỊNH: AmountTotal = Σ TotalAmount mọi dòng của phiếu.
+static async Task<IResult> PmtStorageUpdate(AppDbContext db, Guid orgId, string who, string no, List<StoragePaymentEditLineDto> rows)
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentStorages.FirstOrDefaultAsync(x => x.OrgId == orgId && x.PaymentStorageNo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var err = PmtGuard(h.PaymentStorageStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+    if (err is not null) return Results.BadRequest(new { error = err });
+    foreach (var r in rows)
+    {
+        if (r.CostCoat < 0) return Results.BadRequest(new { error = $"Phí che phủ không hợp lệ (< 0) — VIN {r.Vin}.", code = "Pmt_PaymentStorage_UpdateMulti_InvalidCostCoat" });
+        if (r.CostStorage < 0) return Results.BadRequest(new { error = $"Phí lưu kho không hợp lệ (< 0) — VIN {r.Vin}.", code = "Pmt_PaymentStorage_UpdateMulti_InvalidCostStorage" });
+    }
+    var now = DateTime.Now;
+    var dtls = await db.PmtPaymentStorageDetails.Where(x => x.OrgId == orgId && x.PaymentStorageNo == no).ToListAsync();
+    foreach (var d in dtls)
+    {
+        var r = rows.FirstOrDefault(x => string.Equals((x.Vin ?? "").Trim(), d.VIN, StringComparison.OrdinalIgnoreCase));
+        if (r is null) continue;
+        d.CostCoat = r.CostCoat; d.CostStorage = r.CostStorage; d.TotalAmount = r.CostCoat + r.CostStorage; d.Remark = r.Remark ?? d.Remark;
+        d.LogLUDateTime = now; d.LogLUBy = who;
+    }
+    h.AmountTotal = dtls.Sum(d => d.TotalAmount);
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    var before = Math.Round(h.AmountTotal / 1.1m, 0);
+    return Results.Ok(new { h.PaymentStorageNo, h.AmountTotal, h.VAT, PmtNo = h.PaymentStorageNo, TotalBeforeVAT = before, VatAmount = h.AmountTotal - before });
+}
 
 // Xoá phiếu (`Pmt_PaymentStorage_Delete`, 27612).
 // 🔴 Đọc guard theo CHỮ KÝ hàm, KHÔNG theo comment tại chỗ gọi: chữ ký là
@@ -56531,7 +56513,7 @@ record MnfVinGpsDto(string? VIN, string? VINReal, string? GPSNo);
 record GpsInstallMapDto(string Vin, string GpsNo);
 record StoragePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? ColorExtNameVN, string? DealerCode, DateTime? StorageDate, DateTime? DeliveryOutDate, decimal CostCoat, decimal CostStorage, string? Remark);
 record StoragePaymentDto(DateTime? PmtMonth, List<StoragePaymentLineDto>? Lines);
-record StoragePaymentEditLineDto(string? Vin, decimal CostCoat, decimal CostStorage);
+record StoragePaymentEditLineDto(string? Vin, decimal CostCoat, decimal CostStorage, string? Remark = null);   // #386 UpdateMulti ghi cả Remark
 record StoragePaymentEditDto(List<StoragePaymentEditLineDto>? Lines);
 record PdiFeePaymentLineDto(string? Vin, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? ColorExtName, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate, decimal CostInCheck, decimal CostOutCheck);
 record PdiFeePaymentDto(DateTime? PmtMonth, List<PdiFeePaymentLineDto>? Lines);

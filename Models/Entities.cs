@@ -1918,10 +1918,9 @@ public sealed class GpsInstall
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Thanh toán phí lưu kho theo tháng (Pmt_PaymentStorage — port 1:1 FrmQuanLyThanhToanLuuKho/FrmSuaThanhToanLuuKho, 2010.HTC Sales/Purchase):
-/// mỗi dòng VIN có phí lưu kho + phí che phủ, TotalAmount(dòng)=CostCoat+CostStorage (đã gồm VAT), AmountTotal(header)=Σ dòng,
-/// TotalBeforeVAT=AmountTotal/1.1, VatAmount=AmountTotal-TotalBeforeVAT. Trạng thái P(mới tạo)→A1→A2→F(đã ký)/C(từ chối/hủy);
-/// ký HTV + ký TCMS độc lập (P=chưa ký/A=đã ký); sửa/từ chối/xóa CHỈ khi Status=P và cả 2 bên CHƯA ký (=P, khớp guard gốc).</summary>
+/// <summary>⛔ #386 DEPRECATED — SONG SINH của <see cref="PmtPaymentStorage"/> (cùng bảng nguồn Pmt_PaymentStorage). Bản chuẩn = PmtPaymentStorage
+/// (đủ cột nguồn + luồng duyệt/ký biz). Cách tính của bản này (Σ dòng ĐÃ gồm VAT, trước VAT = Σ/1.1) KHỚP nguồn họ Lưu kho.
+/// /api/storagepayments là bí danh; Seeder chép dữ liệu cũ. KHÔNG ghi mới.</summary>
 public sealed class StoragePayment
 {
     public long Id { get; set; }
@@ -1939,7 +1938,7 @@ public sealed class StoragePayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Dòng VIN trong phiếu thanh toán lưu kho — port 1:1 grid FrmQuanLyThanhToanLuuKho, 2010.HTC.</summary>
+/// <summary>⛔ #386 DEPRECATED — dòng của song sinh <see cref="StoragePayment"/>; bản chuẩn = <see cref="PmtPaymentStorageDetail"/>.</summary>
 public sealed class StoragePaymentLine
 {
     public long Id { get; set; }
