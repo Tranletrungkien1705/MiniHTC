@@ -26023,27 +26023,29 @@ app.MapPost("/api/paymenttermmsts/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
-// ===== Tùy chọn tiêu chuẩn theo model+hạng (CarStdOpt — port 1:1 FrmStandarOption, TCMotor DMSales.Foton/Admin/Product) =====
+// ===== Tùy chọn tiêu chuẩn theo model+hạng — ⛔ #379 HỢP NHẤT SONG SINH: CarStdOpt (Foton) ≡ CarStdOption (2010.HTC), cùng bảng
+// Car_Std_Opt (TblCarStdOpt) + cùng FrmStandarOption. Bản chuẩn = CarStdOption. Route /api/carstdopts giữ nguyên tham số/hình JSON
+// nhưng ĐỌC/GHI bảng chuẩn (cùng màn, cùng luật ⇒ bí danh, không phải 400). Seeder đã chép dữ liệu cũ sang.
 app.MapGet("/api/carstdopts", async (AppDbContext db, ITenantContext t, string? model, bool? all) =>
 {
-    var qry = db.CarStdOpts.Where(x => x.OrgId == t.OrgId);
+    var qry = db.CarStdOptions.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.StdCode).Take(1000)
         .Select(x => new { x.Id, x.ModelCode, x.StdCode, x.StdDesc, x.GradeCode, x.GradeDesc, x.FlagActive }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/carstdoptions" });
 }).RequireAuthorization();
 
 app.MapPost("/api/carstdopts", async (CarStdOptDto dto, AppDbContext db, ITenantContext t) =>
 {
-    var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
-    var std = (dto.StdCode ?? "").Trim().ToUpperInvariant();
+    var model = (dto.ModelCode ?? "").Trim();
+    var std = (dto.StdCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
     if (string.IsNullOrWhiteSpace(std)) return Results.BadRequest(new { error = "Chưa nhập mã tùy chọn tiêu chuẩn." });
     if (string.IsNullOrWhiteSpace(dto.StdDesc)) return Results.BadRequest(new { error = "Chưa nhập mô tả tùy chọn tiêu chuẩn." });
     if (string.IsNullOrWhiteSpace(dto.GradeDesc)) return Results.BadRequest(new { error = "Chưa nhập mô tả phân cấp." });
-    var row = await db.CarStdOpts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.StdCode == std);
-    if (row is null) { row = new CarStdOpt { OrgId = t.OrgId, ModelCode = model, StdCode = std }; db.CarStdOpts.Add(row); }
+    var row = await db.CarStdOptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode.ToUpper() == model.ToUpper() && x.StdCode.ToUpper() == std.ToUpper());
+    if (row is null) { row = new CarStdOption { OrgId = t.OrgId, ModelCode = model.ToUpperInvariant(), StdCode = std.ToUpperInvariant() }; db.CarStdOptions.Add(row); }
     row.StdDesc = dto.StdDesc; row.GradeCode = dto.GradeCode; row.GradeDesc = dto.GradeDesc; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
@@ -26052,7 +26054,7 @@ app.MapPost("/api/carstdopts", async (CarStdOptDto dto, AppDbContext db, ITenant
 
 app.MapPost("/api/carstdopts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
-    var row = await db.CarStdOpts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    var row = await db.CarStdOptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();

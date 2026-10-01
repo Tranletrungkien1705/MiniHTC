@@ -4606,7 +4606,8 @@ public sealed class ContractTypeModel
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Tùy chọn tiêu chuẩn theo model+hạng (Car_Std_Opt) — port 1:1 FrmStandarOption (TCMotor DMSales.Foton/Admin/Product). Composite key ModelCode+StdCode → mô tả + GradeCode/GradeDesc. Upsert.</summary>
+/// <summary>⛔ #379 DEPRECATED — SONG SINH của <see cref="CarStdOption"/> (cùng bảng nguồn Car_Std_Opt / TblCarStdOpt, cùng FrmStandarOption).
+/// Bản chuẩn = CarStdOption (2010.HTC). Route /api/carstdopts đã trỏ sang bản chuẩn; Seeder chép dữ liệu cũ. Giữ lớp để đọc dữ liệu cũ, KHÔNG ghi mới.</summary>
 public sealed class CarStdOpt
 {
     public long Id { get; set; }
