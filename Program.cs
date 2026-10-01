@@ -54661,6 +54661,7 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
         r.ReceptionFNo, r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.WorkDoneSoon, r.TermsOfRepair, r.CarID, r.InsNo, r.InvoiceBy,
         r.AdvisoryCode, r.AdvisoryPhone, r.IsReRepair, r.ModifyDate, r.ModifyBy, r.EngineerID, r.FlagPause, r.CardNo, r.FlagOnlyPoint,
         r.ROType, r.DlrPDIReqNo, r.ServiceStatus, r.LevelOfInspection, r.InsuranceDeductible, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy,
+        r.Engineer, r.QA, r.Operator, r.QuanDoc, r.ScheduleDate, r.StartDate, r.FinishedDate,   // #368
         services, parts,
         total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
     });
@@ -54682,6 +54683,41 @@ app.MapPost("/api/repairorders/{no}/services/{serCode}/engineers", async (string
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
+// #368 Sửa HEADER lệnh sửa chữa — port 1:1 `Ser_RO_Update_New20220926` (BizCarSv.ZTemp.cs:13209; WS Ser_RO_Update).
+//   Check Input: LevelOfInspection ∈ {1,2,3}. Ghi đè (SaveData alEffectiveColumn) các cột header; ScheduleDate/CheckInDate dùng
+//   Convert.ToDateTime ⇒ bắt buộc; StartDate/FinishedDate chỉ ghi khi có; ReminderMaintanceDate rỗng ⇒ xoá; IsReRepair chỉ ghi khi có.
+//   FlagBackLSC = "1" và RO đang InGarage/Repaired/CheckEnd ⇒ quay về HasRO (nguồn còn đẩy RO sang HyundaiMe — hệ ngoài, không port).
+//   ⚠️ NỢ: phần cập nhật dòng dịch vụ/phụ tùng của hàm này chưa port.
+app.MapPost("/api/repairorders/{no}/update", async (string no, RoHeaderUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var lvl = (dto.LevelOfInspection ?? "").Trim();
+    if (lvl is not ("1" or "2" or "3")) return Results.BadRequest(new { error = "Cấp kiểm tra phải là 1, 2 hoặc 3.", code = "Ser_RO_CheckInput_InvalidLevelOfInspection", LevelOfInspection = lvl });
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (dto.ScheduleDate is null || dto.CheckInDate is null)
+        return Results.BadRequest(new { error = "Thiếu ngày hẹn (ScheduleDate) hoặc ngày vào xưởng (CheckInDate).", code = "Ser_RO_Update_InvalidDate" });
+    r.Assistant = dto.Assistant; r.Engineer = dto.Engineer; r.QA = dto.QA; r.Operator = dto.Operator; r.QuanDoc = dto.QuanDoc;
+    r.CusID = dto.CusID; r.CusName = dto.CusName; r.CusAddress = dto.CusAddress; r.CusTel = dto.CusTel;
+    r.ScheduleDate = dto.ScheduleDate; r.CheckInDate = dto.CheckInDate.Value;
+    if (dto.StartDate is not null) r.StartDate = dto.StartDate;
+    if (dto.FinishedDate is not null) r.FinishedDate = dto.FinishedDate;
+    r.PlanedDuration = dto.PlanedDuration; r.CusRequest = dto.CusRequest; r.CarStatus = dto.CarStatus; r.CusWaiting = dto.CusWaiting;
+    r.CarWashRequested = dto.CarWashRequested; r.UseSHPart = dto.UseSHPart; r.PayByCard = dto.PayByCard; r.Km = dto.Km;
+    r.ReminderMaintanceDate = dto.ReminderMaintanceDate?.Date;   // rỗng ⇒ "" (xoá)
+    r.ReminderMaintanceKm = dto.ReminderMaintanceKm; r.WorkDoneSoon = dto.WorkDoneSoon; r.ROType = dto.ROType; r.TermsOfRepair = dto.TermsOfRepair;
+    r.CarID = dto.CarID; r.InsNo = dto.InsNo; r.InvoiceBy = dto.InvoiceBy; r.AdvisoryCode = dto.AdvisoryCode; r.AdvisoryPhone = dto.AdvisoryPhone;
+    r.ModifyDate = dto.ModifyDate; r.ModifyBy = dto.ModifyBy; r.CardNo = dto.CardNo;
+    if (!string.IsNullOrEmpty(dto.IsReRepair)) r.IsReRepair = dto.IsReRepair;
+    r.FlagOnlyPoint = dto.FlagOnlyPoint; r.LevelOfInspection = lvl;
+    var backLsc = dto.FlagBackLSC == "1" && r.Status is "Repaired" or "CheckEnd" or "InGarage";
+    if (backLsc) r.Status = "HasRO";
+    r.InsuranceDeductible = decimal.TryParse((dto.InsuranceDeductible ?? "").Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ded) ? ded : 0m;
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.Status, backLSC = backLsc, r.LevelOfInspection, r.ScheduleDate, r.StartDate });
+}).RequireAuthorization();
+
 app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -56437,6 +56473,12 @@ record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
 record RoServiceDto(string SerCode, string? SerName, string? Cause, string? Engineer, decimal Amount, string? ROType = null, decimal Factor = 0, decimal Price = 0, decimal Vat = 0, decimal? ActManHour = null);
 record RoPartDto(string PartCode, string? PartName, string? Unit, decimal NeedQty, decimal UnitPrice, string? Note, decimal Factor = 0, decimal Vat = 0);
+record RoHeaderUpdateDto(string? LevelOfInspection, string? Assistant, string? Engineer, string? QA, string? Operator, string? QuanDoc,
+    string? CusID, string? CusName, string? CusAddress, string? CusTel, DateTime? ScheduleDate, DateTime? CheckInDate, DateTime? StartDate, DateTime? FinishedDate,
+    string? PlanedDuration, string? CusRequest, string? CarStatus, bool CusWaiting, string? CarWashRequested, string? UseSHPart, string? PayByCard, string? Km,
+    DateTime? ReminderMaintanceDate, string? ReminderMaintanceKm, string? WorkDoneSoon, string? ROType, string? TermsOfRepair, string? CarID, string? InsNo,
+    string? InvoiceBy, string? AdvisoryCode, string? AdvisoryPhone, DateTime? ModifyDate, string? ModifyBy, string? CardNo, string? IsReRepair,
+    string? FlagOnlyPoint, string? FlagBackLSC, string? InsuranceDeductible);   // #368 Ser_RO_Update_New20220926
 record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string? Km, DateTime? CheckInDate, DateTime? PlanedDeliveryDate, string? CusRequest, string? CarStatus, bool CusWaiting, List<RoServiceDto>? Services, List<RoPartDto>? Parts, string? DealerCode = null, string? TrademarkNameModel = null, string? ColorCode = null, string? Assistant = null,
     // #367 tham số Ser_RO_Create_New20220926
     string? Creator = null, string? CusID = null, string? CusAddress = null, string? CusTel = null, string? PlanedDuration = null,

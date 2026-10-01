@@ -2297,6 +2297,13 @@ public sealed class RepairOrder
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== #368 cột header Ser_RO do `Ser_RO_Update_New20220926` (BizCarSv.ZTemp.cs:13209) ghi — port cũ thiếu ====
+    public string? Engineer { get; set; }
+    public string? QA { get; set; }
+    public string? Operator { get; set; }
+    public string? QuanDoc { get; set; }
+    public DateTime? ScheduleDate { get; set; }
+    public DateTime? StartDate { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
