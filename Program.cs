@@ -18063,11 +18063,11 @@ app.MapGet("/api/partlocations", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(stock)) query = query.Where(x => x.StockNo == stock);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.LocationCode).Take(500)
-        .Select(x => new { x.LocationCode, x.LocationName, x.LocationType, x.LocationSurface, x.LocationHeight, x.StockNo, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.LocationCode, x.LocationName, x.LocationType, x.LocationSurface, x.LocationHight, x.StockNo, x.FlagActive, x.DealerCode, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #395
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/partlocations", async (PartLocationDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partlocations", async (PartLocationDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.LocationCode)) return Results.BadRequest(new { error = "Chưa nhập mã vị trí." });
     if (string.IsNullOrWhiteSpace(dto.LocationName)) return Results.BadRequest(new { error = "Chưa nhập tên vị trí." });
@@ -18075,11 +18075,14 @@ app.MapPost("/api/partlocations", async (PartLocationDto dto, AppDbContext db, I
     var ex = await db.PartLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == code);
     if (ex is not null)
     {
-        ex.LocationName = dto.LocationName; ex.LocationType = dto.LocationType; ex.LocationSurface = dto.LocationSurface; ex.LocationHeight = dto.LocationHeight; ex.StockNo = dto.StockNo; ex.FlagActive = "1";
+        ex.LocationName = dto.LocationName; ex.LocationType = dto.LocationType; ex.LocationSurface = dto.LocationSurface; ex.LocationHight = dto.LocationHight; ex.StockNo = dto.StockNo; ex.FlagActive = "1";
+        ex.DealerCode = dto.DealerCode ?? ex.DealerCode; ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = user.Identity?.Name ?? "system";   // #395 Ser_Mst_Location_Update
         await db.SaveChangesAsync();
         return Results.Ok(new { ex.LocationCode, updated = true });
     }
-    var r = new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = dto.LocationName, LocationType = dto.LocationType, LocationSurface = dto.LocationSurface, LocationHeight = dto.LocationHeight, StockNo = dto.StockNo, FlagActive = "1" };
+    var whoLoc = user.Identity?.Name ?? "system";   // #395 Ser_Mst_Location_Create: DealerCode + CreatedBy + LogLU*
+    var r = new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = dto.LocationName, LocationType = dto.LocationType, LocationSurface = dto.LocationSurface, LocationHight = dto.LocationHight, StockNo = dto.StockNo, FlagActive = "1",
+        DealerCode = dto.DealerCode, CreatedBy = whoLoc, LogLUDateTime = DateTime.Now, LogLUBy = whoLoc };
     db.PartLocations.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new { r.LocationCode, updated = false });
 }).RequireAuthorization();
@@ -18109,8 +18112,8 @@ app.MapPost("/api/partlocations/import", async (PartLocationImportDto dto, AppDb
         if (string.IsNullOrWhiteSpace(r.LocationName)) { errors.Add(new { line, code, error = "Thiếu tên vị trí." }); continue; }
         if (!seen.Add(code)) { errors.Add(new { line, code, error = "Mã vị trí bị trùng trong file nhập." }); continue; }
         var ex = await db.PartLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationCode == code);
-        if (ex is not null) { ex.LocationName = r.LocationName; ex.LocationType = r.LocationType; ex.LocationSurface = r.LocationSurface; ex.LocationHeight = r.LocationHeight; ex.StockNo = r.StockNo; ex.FlagActive = "1"; updated++; }
-        else { db.PartLocations.Add(new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = r.LocationName, LocationType = r.LocationType, LocationSurface = r.LocationSurface, LocationHeight = r.LocationHeight, StockNo = r.StockNo, FlagActive = "1" }); created++; }
+        if (ex is not null) { ex.LocationName = r.LocationName; ex.LocationType = r.LocationType; ex.LocationSurface = r.LocationSurface; ex.LocationHight = r.LocationHight; ex.StockNo = r.StockNo; ex.FlagActive = "1"; updated++; }
+        else { db.PartLocations.Add(new PartLocation { OrgId = t.OrgId, LocationCode = code, LocationName = r.LocationName, LocationType = r.LocationType, LocationSurface = r.LocationSurface, LocationHight = r.LocationHight, StockNo = r.StockNo, FlagActive = "1" }); created++; }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, created, updated, errorCount = errors.Count, errors });
@@ -20840,7 +20843,7 @@ app.MapGet("/api/technicallibraries", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TechnicalLibraryCode.Contains(q!) || x.ReRepairRemark!.Contains(q!) || x.ReRepairReason!.Contains(q!) || x.PlateNo!.Contains(q!));
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new {
         x.Id, x.TechnicalLibraryCode, x.DealerCode, x.PlateNo, x.Model, x.Engine, x.Gear, x.ReRepairType,
-        x.ReRepairRemark, x.ReRepairReason, x.ReRepairSolution, x.ExclusionTest, x.IsActive, x.CreatedBy, x.CreatedAt
+        x.ReRepairRemark, x.ReRepairReason, x.ReRepairSolution, x.ReRepairFeedback, x.ExclusionTest, x.IsActive, x.CreatedBy, x.CreatedAt
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -20853,7 +20856,7 @@ app.MapPost("/api/technicallibraries", async (TechnicalLibraryDto dto, AppDbCont
     var row = new TechnicalLibrary {
         OrgId = t.OrgId, TechnicalLibraryCode = "TLIB" + DateTime.Now.ToString("yyMMddHHmmss"),
         DealerCode = dto.DealerCode, PlateNo = dto.PlateNo, Model = dto.Model.Trim(), Engine = dto.Engine, Gear = dto.Gear, ReRepairType = dto.ReRepairType,
-        ReRepairRemark = dto.ReRepairRemark, ReRepairReason = dto.ReRepairReason, ReRepairSolution = dto.ReRepairSolution, ExclusionTest = dto.ExclusionTest,
+        ReRepairRemark = dto.ReRepairRemark, ReRepairReason = dto.ReRepairReason, ReRepairSolution = dto.ReRepairSolution, ReRepairFeedback = dto.ReRepairFeedback, ExclusionTest = dto.ExclusionTest,   // #395
         IsActive = "1", CreatedBy = by, CreatedAt = DateTime.Now
     };
     db.TechnicalLibraries.Add(row);
@@ -20912,10 +20915,10 @@ app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, IT
 app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? status, string? no) =>
 {
     var q = db.StockAdjs.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.AdjStatus == status);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.StockAdjNo.Contains(no!));
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockOutDate, x.Remark, x.AdjStatus, x.CreatedBy, x.CreatedAt, x.ApprovedAt,
+        x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockAdjDate, x.UserCreate, x.Remark, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedAt,
         lines = db.StockAdjLines.Count(l => l.OrgId == t.OrgId && l.StockAdjId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -20934,7 +20937,7 @@ app.MapPost("/api/stockadjs", async (StockAdjDto dto, AppDbContext db, ITenantCo
     if (no.Length == 0) return Results.BadRequest(new { error = "Bạn chưa nhập số phiếu điều chỉnh." });
     if (await db.StockAdjs.AnyAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no))
         return Results.BadRequest(new { error = $"Số phiếu {no} đã tồn tại!" });
-    var h = new StockAdj { OrgId = t.OrgId, StockAdjNo = no, StorageCode = dto.StorageCode, DealerCode = dto.DealerCode, StockOutDate = dto.StockOutDate ?? DateTime.Now, Remark = dto.Remark, AdjStatus = "0", CreatedBy = by, CreatedAt = DateTime.Now };
+    var h = new StockAdj { OrgId = t.OrgId, StockAdjNo = no, StorageCode = dto.StorageCode, DealerCode = dto.DealerCode, StockAdjDate = dto.StockAdjDate ?? DateTime.Now, Remark = dto.Remark, Status = "0", CreatedBy = by, CreatedAt = DateTime.Now, UserCreate = dto.UserCreate };   // #395 UserCreate
     db.StockAdjs.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         db.StockAdjLines.Add(new StockAdjLine { OrgId = t.OrgId, StockAdjId = h.Id, PartCode = l.PartCode!.Trim(), PartName = l.PartName, Unit = l.Unit, QtyBalance = l.QtyBalance, QtyAdjust = l.QtyAdjust, BalanceLocation = l.BalanceLocation, InStockLocation = l.InStockLocation });
@@ -20948,7 +20951,7 @@ app.MapGet("/api/stockadjs/{no}/lines", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id)
         .Select(l => new { l.PartCode, l.PartName, l.Unit, l.QtyBalance, l.QtyAdjust, l.BalanceLocation, l.InStockLocation }).ToListAsync();
-    return Results.Ok(new { h.StockAdjNo, h.AdjStatus, h.LogLUDateTime, h.LogLUBy, count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines });
+    return Results.Ok(new { h.StockAdjNo, h.Status, h.LogLUDateTime, h.LogLUBy, count = lines.Count, totalAdjust = lines.Sum(x => x.QtyAdjust), lines });
 }).RequireAuthorization();
 
 // 🔴 KẾT THÚC phiếu điều chỉnh — port `ProcessFinishStockOutAdj` (BizCarSv.Inventory.StockAdj.cs:240-378).
@@ -20970,8 +20973,8 @@ app.MapPost("/api/stockadjs/{no}/update", async (string no, StockAdjDto dto, App
     if (h is null) return Results.NotFound(new { no });
 
     // 🔴 `Ser_StockAdj_NotAllowFinish`: phiếu đã kết thúc ("1") thì không sửa được nữa.
-    if (h.AdjStatus != "0")
-        return Results.BadRequest(new { error = $"Phiếu đang ở trạng thái '{h.AdjStatus}' — chỉ sửa được phiếu Mới tạo (0)." });
+    if (h.Status != "0")
+        return Results.BadRequest(new { error = $"Phiếu đang ở trạng thái '{h.Status}' — chỉ sửa được phiếu Mới tạo (0)." });
 
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng phụ tùng." });
@@ -21006,7 +21009,8 @@ app.MapPost("/api/stockadjs/{no}/update", async (string no, StockAdjDto dto, App
     var now = DateTime.Now;
     if (dto.StorageCode is not null) h.StorageCode = dto.StorageCode;
     if (dto.DealerCode is not null) h.DealerCode = dto.DealerCode;
-    if (dto.StockOutDate is not null) h.StockOutDate = dto.StockOutDate;
+    if (dto.StockAdjDate is not null) h.StockAdjDate = dto.StockAdjDate;
+    if (dto.UserCreate is not null) h.UserCreate = dto.UserCreate;   // #395 Ser_StockAdj_Update ghi UserCreate
     h.Remark = dto.Remark;
     h.LogLUDateTime = now; h.LogLUBy = who;
 
@@ -21021,7 +21025,7 @@ app.MapPost("/api/stockadjs/{no}/update", async (string no, StockAdjDto dto, App
             BalanceLocation = l.BalanceLocation, InStockLocation = l.InStockLocation
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockAdjNo, h.AdjStatus, replaced = old.Count, lines = lines.Count, h.LogLUDateTime, h.LogLUBy });
+    return Results.Ok(new { h.StockAdjNo, h.Status, replaced = old.Count, lines = lines.Count, h.LogLUDateTime, h.LogLUBy });
 }).RequireAuthorization();
 
 // 🔴 `Ser_StockAdj_Delete` (4829): guard DUY NHẤT là **`Status == Finished` thì chặn**
@@ -21031,7 +21035,7 @@ app.MapDelete("/api/stockadjs/{no}", async (string no, AppDbContext db, ITenantC
     no = no.Trim().ToUpperInvariant();
     var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.AdjStatus == "1")
+    if (h.Status == "1")
         return Results.BadRequest(new { error = "Phiếu đã kết thúc — không xoá được." });
     var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id).ToListAsync();
     db.StockAdjLines.RemoveRange(lines);
@@ -21045,7 +21049,7 @@ app.MapPost("/api/stockadjs/{no}/finish", async (string no, AppDbContext db, ITe
     no = no.Trim().ToUpperInvariant();
     var h = await db.StockAdjs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockAdjNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.AdjStatus != "0") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu ở trạng thái Mới tạo." });
+    if (h.Status != "0") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu ở trạng thái Mới tạo." });
     var lines = await db.StockAdjLines.Where(l => l.OrgId == t.OrgId && l.StockAdjId == h.Id).ToListAsync();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Phiếu không có dòng phụ tùng." });
 
@@ -21076,9 +21080,9 @@ app.MapPost("/api/stockadjs/{no}/finish", async (string no, AppDbContext db, ITe
         }
         dst.OnHand += l.QtyAdjust; dst.UpdatedAt = DateTime.Now;
     }
-    h.AdjStatus = "1"; h.ApprovedAt = DateTime.Now;
+    h.Status = "1"; h.ApprovedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockAdjNo, status = h.AdjStatus, statusName = "Kết thúc", adjustedLines = lines.Count });
+    return Results.Ok(new { h.StockAdjNo, status = h.Status, statusName = "Kết thúc", adjustedLines = lines.Count });
 }).RequireAuthorization();
 
 // ===== Master loại công việc DV (SerServiceType — port 1:1 FrmServiceTypeCreate/Search, TCMotor DMSCarSv) =====
@@ -57263,10 +57267,10 @@ record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string?
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 record TstPartDto(string? TSTPartCode, string? VieNameHTC, string? VieName, string? EngName, string? Unit, decimal VAT, decimal TSTPrice, string? PartGroup, string? PartType, string? FlagActive);
-record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest);
+record TechnicalLibraryDto(string? DealerCode, string? PlateNo, string? Model, string? Engine, string? Gear, string? ReRepairType, string? ReRepairRemark, string? ReRepairReason, string? ReRepairSolution, string? ExclusionTest, string? ReRepairFeedback = null);   // #395
 record SerSupplierDto(string? SupplierCode, string? SupplierName, string? Address, string? Phone, string? Fax, string? FlagActive,
     string? ContactName = null, string? ContactPhone = null, string? DealerCode = null);   // #380
-record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockOutDate, string? Remark, List<StockAdjLineDto>? Lines);
+record StockAdjDto(string? StockAdjNo, string? StorageCode, string? DealerCode, DateTime? StockAdjDate, string? Remark, List<StockAdjLineDto>? Lines, string? UserCreate = null);   // #395 khớp Ser_Inv_StockAdj
 record StockAdjLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyBalance, decimal QtyAdjust, string? BalanceLocation = null, string? InStockLocation = null);
 record SerServiceTypeDto(string? TypeName, string? FlagActive);
 record SerStockDto(string? StockNo, string? StockName, string? Contact, string? Address, string? Email, string? FlagActive);
@@ -57463,8 +57467,8 @@ record ServiceCampaignStatusDto(string Status);
 record SmsAccountDto(string AccountName, decimal InitBalance,
     string? AccountCode = null, decimal OverdraftThreshold = 0, string? FlagActive = null, string? FlagSysAdmin = null);
 record SmsAccountTxDto(string TRefType, decimal Value, string? Note);
-record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
-record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHeight, string? StockNo);
+record PartLocationDto(string LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHight, string? StockNo, string? DealerCode = null);   // #395
+record PartLocationImportRow(string? LocationCode, string? LocationName, string? LocationType, decimal LocationSurface, decimal LocationHight, string? StockNo);
 record PartLocationImportDto(List<PartLocationImportRow>? Rows);
 record InventoryImportRow(string? PartCode, string? LocationCode, decimal Quantity);
 record InventoryImportDto(List<InventoryImportRow>? Rows);

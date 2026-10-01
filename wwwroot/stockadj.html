@@ -47,7 +47,7 @@ async function load(){ await token();
   const qs=new URLSearchParams({no:F("qNo").value,status:F("qStatus").value});
   const r=await fetch("/api/stockadjs?"+qs,{headers:Hh()}); const d=await r.json();
   F("kpi").textContent=`${d.count} phiếu`;
-  F("rows").innerHTML=(d.items||[]).map(o=>{const s=st[o.adjStatus]||['?',''];return `<tr><td><b>${esc(o.stockAdjNo)}</b></td><td>${esc(o.storageCode)}</td><td>${o.lines}</td><td>${esc(o.remark)}</td><td>${esc(o.createdBy)}</td><td><span class="pill ${s[1]}">${s[0]}</span></td><td><button class="link" onclick="detail('${esc(o.stockAdjNo)}')">PT</button>${o.adjStatus==='Draft'?`<button class="link" onclick="act('${esc(o.stockAdjNo)}','approve')">Duyệt</button><button class="link rej" onclick="act('${esc(o.stockAdjNo)}','reject')">Từ chối</button>`:''}</td></tr>`;}).join("")||'<tr><td colspan="7" class="muted">Chưa có phiếu.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>{const s=st[o.status]||['?',''];return `<tr><td><b>${esc(o.stockAdjNo)}</b></td><td>${esc(o.storageCode)}</td><td>${o.lines}</td><td>${esc(o.remark)}</td><td>${esc(o.createdBy)}</td><td><span class="pill ${s[1]}">${s[0]}</span></td><td><button class="link" onclick="detail('${esc(o.stockAdjNo)}')">PT</button>${o.status==='Draft'?`<button class="link" onclick="act('${esc(o.stockAdjNo)}','approve')">Duyệt</button><button class="link rej" onclick="act('${esc(o.stockAdjNo)}','reject')">Từ chối</button>`:''}</td></tr>`;}).join("")||'<tr><td colspan="7" class="muted">Chưa có phiếu.</td></tr>';
 }
 </script>
 </body></html>

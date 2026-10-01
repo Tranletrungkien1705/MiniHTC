@@ -56,13 +56,13 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function M(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},4000); }
 async function save(){ await token();
-  const body={LocationCode:F("fCode").value,LocationName:F("fName").value,LocationType:F("fType").value,LocationSurface:+F("fSurf").value||0,LocationHeight:+F("fHi").value||0,StockNo:F("fStock").value};
+  const body={LocationCode:F("fCode").value,LocationName:F("fName").value,LocationType:F("fType").value,LocationSurface:+F("fSurf").value||0,LocationHight:+F("fHi").value||0,StockNo:F("fStock").value};
   const r=await fetch("/api/partlocations",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ M("msg","Lỗi: "+(d.error||r.status)); return; }
   M("msg",d.updated?"Đã cập nhật "+d.locationCode:"Đã thêm "+d.locationCode); F("fCode").value="";F("fName").value=""; load();
 }
 async function importLoc(){ await token();
-  const rows=F("taLoc").value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l).map(l=>{const c=l.split(/\t|,/).map(s=>s.trim());return {LocationCode:c[0]||"",LocationName:c[1]||"",LocationType:c[2]||"",LocationSurface:+c[3]||0,LocationHeight:+c[4]||0,StockNo:c[5]||""};});
+  const rows=F("taLoc").value.split(/\r?\n/).map(l=>l.trim()).filter(l=>l).map(l=>{const c=l.split(/\t|,/).map(s=>s.trim());return {LocationCode:c[0]||"",LocationName:c[1]||"",LocationType:c[2]||"",LocationSurface:+c[3]||0,LocationHight:+c[4]||0,StockNo:c[5]||""};});
   if(!rows.length){ M("msg2","Chưa có dữ liệu"); return; }
   const r=await fetch("/api/partlocations/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
   const d=await r.json(); if(!r.ok){ M("msg2","Lỗi: "+(d.error||r.status)); return; }
@@ -79,11 +79,11 @@ async function toggle(c){ await token();
   const r=await fetch("/api/partlocations/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
   if(!r.ok){ M("msg","Lỗi"); return; } load();
 }
-function edit(o){ F("fCode").value=o.locationCode;F("fName").value=o.locationName||"";F("fType").value=o.locationType||"";F("fSurf").value=o.locationSurface;F("fHi").value=o.locationHeight;F("fStock").value=o.stockNo||""; window.scrollTo(0,0); }
+function edit(o){ F("fCode").value=o.locationCode;F("fName").value=o.locationName||"";F("fType").value=o.locationType||"";F("fSurf").value=o.locationSurface;F("fHi").value=o.locationHight;F("fStock").value=o.stockNo||""; window.scrollTo(0,0); }
 async function load(){ await token();
   const r=await fetch("/api/partlocations?q="+encodeURIComponent(F("qQ").value),{headers:H()});
   const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.locationCode}</b></td><td>${esc(o.locationName)}</td><td>${esc(o.locationType)}</td><td class="num">${o.locationSurface}</td><td class="num">${o.locationHeight}</td><td>${esc(o.stockNo)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.locationCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có vị trí.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.locationCode}</b></td><td>${esc(o.locationName)}</td><td>${esc(o.locationType)}</td><td class="num">${o.locationSurface}</td><td class="num">${o.locationHight}</td><td>${esc(o.stockNo)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.locationCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có vị trí.</td></tr>';
 }
 </script>
 </body></html>

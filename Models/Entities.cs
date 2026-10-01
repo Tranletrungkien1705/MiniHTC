@@ -3265,6 +3265,9 @@ public sealed class TechnicalLibrary
     public string IsActive { get; set; } = "1";
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
+
+    /// <summary>#395 phản hồi sau sửa lại (`ReRepairFeedback` nvarchar(500)) — Ser_Technical_Library_Add/_Save (BizCarSv.ZTemp.cs:25628/25996) ghi.</summary>
+    public string? ReRepairFeedback { get; set; }
 }
 
 /// <summary>Master nhà cung cấp phụ tùng (Ser_MST_Supplier) — port 1:1 FrmMstSupplierCreate/Search (TCMotor DMSCarSv). Mã + tên + địa chỉ + SĐT + fax.</summary>
@@ -3300,10 +3303,11 @@ public sealed class StockAdj
     /// ⚠️ Port cũ dùng "Draft"/"Approved"/**"Rejected"** — sai mã, và **"Rejected" là trạng thái BỊA**:
     /// nguồn KHÔNG có nhánh huỷ phiếu điều chỉnh (khác phiếu xuất kho vốn có FrmSOReject).
     /// </summary>
-    public string AdjStatus { get; set; } = "0";
-    /// <summary>Ngày điều chỉnh do NGƯỜI DÙNG nhập (`Ser_Inv_StockOutAdj.StockOutDate`) — không phải ngày tạo bản ghi.</summary>
-    public DateTime? StockOutDate { get; set; }
-    /// <summary>Đại lý thực hiện (`Ser_Inv_StockOutAdj.DealerCode`) — trục phân tách dữ liệu của nguồn.</summary>
+    public string Status { get; set; } = "0";   // #395 rename AdjStatus→Status (Ser_Inv_StockAdj.Status)
+    /// <summary>#395 Ngày điều chỉnh do NGƯỜI DÙNG nhập — `Ser_Inv_StockAdj.StockAdjDate` (Ser_StockAdj_Create :4980). Trước dẫn nhầm bảng
+    /// Ser_Inv_StockOutAdj.StockOutDate (cụm khác) ⇒ rename khớp nguồn.</summary>
+    public DateTime? StockAdjDate { get; set; }
+    /// <summary>Đại lý thực hiện (`Ser_Inv_StockAdj.DealerCode`) — trục phân tách dữ liệu của nguồn.</summary>
     public string? DealerCode { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
@@ -3315,6 +3319,9 @@ public sealed class StockAdj
     /// trên bảng `Ser_Inv_StockAdj` (KHÁC bảng `Ser_Inv_StockOutAdj` của cụm `StockOutAdjCreate`).</summary>
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#395 người lập phiếu do người dùng chọn (`Ser_Inv_StockAdj.UserCreate`, Ser_StockAdj_Create/_Update) — khác CreatedBy (tài khoản hệ thống).</summary>
+    public string? UserCreate { get; set; }
 }
 
 /// <summary>Chi tiết phiếu điều chỉnh tồn kho — port 1:1 StockAdj detail (TCMotor DMSCarSv).</summary>
@@ -13999,10 +14006,16 @@ public sealed class PartLocation
     public string? LocationName { get; set; }
     public string? LocationType { get; set; }
     public decimal LocationSurface { get; set; }
-    public decimal LocationHeight { get; set; }
+    public decimal LocationHight { get; set; }   // #395 rename khớp nguồn Ser_MST_Location.LocationHight (nguồn viết sai chính tả — giữ 1:1)
     public string? StockNo { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #395 parity Ser_Mst_Location_Create/_Update (BizCarSv.Master.cs:6848/7299) =====
+    public string? DealerCode { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Danh mục dịch vụ/công (master: mã/tên/giá vốn/giá bán/model/VAT) — port 1:1 FrmService/FrmImportService (TblSerMSTService, TCMotor).</summary>
