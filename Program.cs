@@ -14599,7 +14599,7 @@ app.MapGet("/api/report/summary", async (AppDbContext db, ITenantContext t) =>
         // #B09: bỏ `confirmed` — `DLS_Deal` không có cột trạng thái (Draft/Confirmed/Cancelled là BỊA).
         wholesaleDeals = new { count = wsDeals.Count, totalAmount = wsAmount },
         guarantees = new { count = grt.Count, approved = grt.Count(g => g.Status == "Approved"), debit = grt.Where(g => g.Status == "Approved" && g.FlagSettled != "1").Sum(g => g.TotalAmount), settled = grt.Count(g => g.FlagSettled == "1") },
-        payments = new { count = pm.Count, approved = pm.Count(p => p.PaymentStatus == "Approved"), totalAmount = pm.Sum(p => p.TotalAmount) },
+        payments = new { count = pm.Count, approved = pm.Count(p => p.PaymentStatus == "A" /* #351: từ vựng Stage (migration #202 Approved→A) */), totalAmount = pm.Sum(p => p.TotalAmount) },
         dealerContracts = new { count = dc },
         backOrder = new { totalOrder = bo.Sum(b => b.QtyOrder), totalDelivered = bo.Sum(b => b.QtyDelivered), backOrder = bo.Sum(b => b.QtyOrder - b.QtyDelivered) }
     };
@@ -14653,7 +14653,7 @@ app.MapGet("/api/report/payment", async (AppDbContext db, ITenantContext t, stri
     if (to is not null) q = q.Where(p => p.CreatedDate < to.Value.Date.AddDays(1));
     var recs = await q.ToListAsync();
     var byBank = recs.GroupBy(p => string.IsNullOrEmpty(p.BankCodeReceive) ? "(chưa rõ)" : p.BankCodeReceive)
-        .Select(g => new { bankCode = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount), approved = g.Count(x => x.PaymentStatus == "Approved") })
+        .Select(g => new { bankCode = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount), approved = g.Count(x => x.PaymentStatus == "A" /* #351: từ vựng Stage (migration #202 Approved→A) */) })
         .OrderByDescending(x => x.totalAmount).ToList();
     var byStatus = recs.GroupBy(p => p.PaymentStatus).Select(g => new { status = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.count).ToList();
     var byFunds = recs.GroupBy(p => string.IsNullOrEmpty(p.Funds) ? "(chưa rõ)" : p.Funds).Select(g => new { funds = g.Key, count = g.Count(), totalAmount = g.Sum(x => x.TotalAmount) }).OrderByDescending(x => x.totalAmount).ToList();
@@ -14662,7 +14662,7 @@ app.MapGet("/api/report/payment", async (AppDbContext db, ITenantContext t, stri
         p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds, p.TotalAmount, p.PaymentStatus, p.AccountingRecordNo,
         createdAt = p.CreatedDate.ToString("yyyy-MM-dd")
     }).ToList();
-    return Results.Ok(new { total = recs.Count, totalAmount = recs.Sum(p => p.TotalAmount), approvedAmount = recs.Where(p => p.PaymentStatus == "Approved").Sum(p => p.TotalAmount), byBank, byStatus, byFunds, detail });
+    return Results.Ok(new { total = recs.Count, totalAmount = recs.Sum(p => p.TotalAmount), approvedAmount = recs.Where(p => p.PaymentStatus == "A" /* #351: từ vựng Stage (migration #202 Approved→A) */).Sum(p => p.TotalAmount), byBank, byStatus, byFunds, detail });
 }).RequireAuthorization();
 
 // ===== Báo cáo hóa đơn VAT HTC (port 1:1 báo cáo VAT_HTCInvoice) — tái dùng VatInvoice + VatInvoiceCar =====
