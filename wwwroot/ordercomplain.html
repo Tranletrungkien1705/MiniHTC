@@ -23,13 +23,13 @@
 </div>
 <div class="bar">
   <select id="fd" onchange="load()"><option value="">DMS: tất cả</option><option value="P">Mới tạo</option><option value="A">Đã gửi</option></select>
-  <select id="ft" onchange="load()"><option value="">TST: tất cả</option><option value="Processing">Chờ duyệt</option><option value="Pending">Đang xử lý</option><option value="Resolved">Đã xử lý</option></select>
+  <select id="ft" onchange="load()"><option value="">TST: tất cả</option><option value="1">1 — Chờ duyệt</option><option value="15">15 — Đang xử lý</option><option value="21">21 — Không chấp thuận</option><option value="31">31 — Chấp thuận</option></select>
 </div>
 <table><thead><tr><th>Số KN</th><th>Đơn đặt</th><th>Loại</th><th>Nội dung</th><th>DMS</th><th>TST</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const D={P:"Mới tạo",A:"Đã gửi"}, T={"":"—",Processing:"Chờ duyệt",Pending:"Đang xử lý",Resolved:"Đã xử lý"};
+const D={P:"Mới tạo",A:"Đã gửi"}, T={"1":"Chờ duyệt","15":"Đang xử lý","21":"Không chấp thuận","31":"Chấp thuận"};   // #365 mã TSTStatus nguồn (complainTstStatusNames)
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -46,16 +46,18 @@ async function load(){ await token();
   F("rows").innerHTML=(d.items||[]).map(c=>{
     let act="";
     if(c.dmsStatus==="P") act=`<button class="sm" onclick="act('${c.orderComplainNo}','send')">Gửi</button>`;
-    else if(c.tstStatus==="") act=`<button class="sm" onclick="act('${c.orderComplainNo}','receive')">TST tiếp nhận</button>`;
-    else if(c.tstStatus==="Processing") act=`<button class="sm" onclick="act('${c.orderComplainNo}','process')">Xử lý</button>`;
-    else if(c.tstStatus==="Pending") act=`<button class="sm" onclick="resolve('${c.orderComplainNo}')">Giải quyết</button>`;
+    else if(c.dmsStatus==="A" && (c.tstStatus==="1"||c.tstStatus==="15")){
+      // #365 backend: process 1→15; approve→31 / reject→21 từ 1|15 (bắt buộc nội dung kết luận)
+      if(c.tstStatus==="1") act=`<button class="sm" onclick="act('${c.orderComplainNo}','process')">Xử lý</button> `;
+      act+=`<button class="sm" onclick="resolve('${c.orderComplainNo}','approve')">Chấp thuận</button> <button class="sm" onclick="resolve('${c.orderComplainNo}','reject')">Không chấp thuận</button>`;
+    }
     return `<tr><td><b>${c.orderComplainNo}</b></td><td>${c.orderPartNo}</td><td>${c.complainType||"—"}</td><td class="muted">${c.content||"—"}</td>
       <td><span class="pill d-${c.dmsStatus}">${D[c.dmsStatus]||c.dmsStatus}</span></td>
       <td><span class="pill t-${c.tstStatus}">${T[c.tstStatus]||c.tstStatus}</span></td><td>${act}</td></tr>`;
   }).join("")||'<tr><td colspan="7" class="muted">Chưa có khiếu nại.</td></tr>';
 }
 async function act(no,a){ const r=await fetch(`/api/ordercomplains/${no}/${a}`,{method:"POST",headers:H(),body:JSON.stringify({})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
-async function resolve(no){ const rs=prompt("Cách giải quyết:"); if(rs===null) return; const r=await fetch(`/api/ordercomplains/${no}/resolve`,{method:"POST",headers:H(),body:JSON.stringify({resolution:rs})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function resolve(no,a){ const rs=prompt("Nội dung kết luận:"); if(rs===null) return; const r=await fetch(`/api/ordercomplains/${no}/${a}`,{method:"POST",headers:H(),body:JSON.stringify({resolution:rs})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 load();
 </script>
 </body></html>
