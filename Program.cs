@@ -23986,41 +23986,101 @@ app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, App
 
 // ===== Bảo hành xe tồn kho (InvCarWarranty — port 1:1 FrmMngInv_CarWarranty, TCMotor) =====
 // Theo dõi mốc bảo hành theo VIN (nhận/hết lưu kho/giao/bảo hành/hết hạn HTCV+ĐL) + gửi KH xác nhận BH.
-app.MapGet("/api/invcarwarranties", async (AppDbContext db, ITenantContext t, string? vin, string? dealer, string? model) =>
+// #359 parity Foton BizHTC.MasterData.cs (WS WSHTC.64 :44654/44724/44792):
+//   · Tạo = `Inv_CarWarranty_AddX` (gọi từ luồng bán lẻ): VIN CHƯA tồn tại (myCheck_Inv_CarWarranty FlagExist = Inactive);
+//     CarWarrantyStatus = SORStatus.Pending "P"; CreateDTime/By + LUDateTime/LUBy + LogLU* = lúc tạo. Port cũ upsert ghi đè mọi cột ⇒ bỏ.
+//   · Sửa = `Inv_CarWarrantyUpdate` (:17778): nhận BẢNG dòng; mỗi dòng VIN phải tồn tại; DealerDateExpired < WarrantyDate
+//     ⇒ `Inv_CarWarrantyUpdate_InvalidValue`; CHỈ ghi WarrantyDate, DealerDateExpired, Remark, LogLU*. Bảng rỗng ⇒ `_TableDetailBeBlank`.
+//   · Kích hoạt = `Inv_CarWarrantyActive` (:18741): VIN + CustomerPhoneNo phải khớp 1 dòng ⇒ CustomerConfirmDate = hôm nay.
+//     🔴 LỖI NGUỒN ghi nhận: câu UPDATE viết `where (1=1);` rồi `and mwp.VIN = @strVIN` ở statement SAU ⇒ T-SQL lỗi cú pháp, cả batch
+//     không chạy (nếu chạy được thì cập nhật MỌI dòng). Port theo Ý ĐỊNH (lọc đúng VIN). Gọi WS CarSv UpdateWarrantyRegistrationDate_SBHOnline
+//     (hệ ngoài) KHÔNG port.
+//   ⚠️ myCommon_CheckHTCDirect của Update chưa port (nợ RBAC chung).
+app.MapGet("/api/invcarwarranties", async (AppDbContext db, ITenantContext t, string? vin, string? dealer, string? model, string? status) =>
 {
     var q = db.InvCarWarranties.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!));
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.CarWarrantyStatus == status);
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
         x.Id, x.VIN, x.PlateNo, x.ModelCode, x.SpecCode, x.DealerCode, x.DealerCodeBuyer,
-        x.ReceiveDate, x.StoreDateExpired, x.DeliveryDate, x.WarrantyDate, x.CustomerConfirmDate, x.HTCVDateExpired, x.DealerDateExpired
+        x.ReceiveDate, x.StoreDateExpired, x.DeliveryDate, x.WarrantyDate, x.CustomerConfirmDate, x.HTCVDateExpired, x.DealerDateExpired,
+        x.WarrantyKm, x.ColorCode, x.EngineNo, x.WarrantyType, x.Remark, x.CustomerCode, x.CustomerName, x.CustomerPhoneNo,
+        x.CarWarrantyStatus, x.CreateDTime, x.CreateBy, x.LUDateTime, x.LUBy, x.LogLUDateTime, x.LogLUBy
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, confirmed = items.Count(x => x.CustomerConfirmDate != null), items });
 }).RequireAuthorization();
 
-app.MapPost("/api/invcarwarranties", async (InvCarWarrantyDto dto, AppDbContext db, ITenantContext t) =>
+// Tạo — Inv_CarWarranty_AddX
+app.MapPost("/api/invcarwarranties", async (InvCarWarrantyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(vin)) return Results.BadRequest(new { error = "Chưa nhập VIN." });
-    var row = await db.InvCarWarranties.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
-    if (row is null) { row = new InvCarWarranty { OrgId = t.OrgId, VIN = vin }; db.InvCarWarranties.Add(row); }
-    row.PlateNo = dto.PlateNo; row.ModelCode = dto.ModelCode; row.SpecCode = dto.SpecCode; row.DealerCode = dto.DealerCode; row.DealerCodeBuyer = dto.DealerCodeBuyer;
-    row.ReceiveDate = dto.ReceiveDate; row.StoreDateExpired = dto.StoreDateExpired; row.DeliveryDate = dto.DeliveryDate; row.WarrantyDate = dto.WarrantyDate;
-    row.HTCVDateExpired = dto.HTCVDateExpired; row.DealerDateExpired = dto.DealerDateExpired; row.UpdatedAt = DateTime.Now;
+    if (await db.InvCarWarranties.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin))
+        return Results.BadRequest(new { error = $"VIN {vin} đã có bản ghi bảo hành.", code = "myCheck_Inv_CarWarranty_FlagExist", VIN = vin });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    static string? P(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim().ToUpperInvariant();   // StdParam
+    var row = new InvCarWarranty
+    {
+        OrgId = t.OrgId, VIN = vin, PlateNo = dto.PlateNo, ModelCode = P(dto.ModelCode), SpecCode = P(dto.SpecCode), DealerCode = P(dto.DealerCode),
+        DealerCodeBuyer = dto.DealerCodeBuyer, ReceiveDate = dto.ReceiveDate, StoreDateExpired = dto.StoreDateExpired, DeliveryDate = dto.DeliveryDate,
+        WarrantyDate = dto.WarrantyDate, CustomerConfirmDate = null, HTCVDateExpired = dto.HTCVDateExpired, DealerDateExpired = dto.DealerDateExpired,
+        WarrantyKm = dto.WarrantyKm, ColorCode = P(dto.ColorCode), EngineNo = P(dto.EngineNo), WarrantyType = P(dto.WarrantyType), Remark = dto.Remark,
+        CustomerCode = dto.CustomerCode, CustomerName = dto.CustomerName, CustomerPhoneNo = dto.CustomerPhoneNo,
+        CarWarrantyStatus = "P", CreateDTime = now, CreateBy = who, LUDateTime = now, LUBy = who, LogLUDateTime = now, LogLUBy = who
+    };
+    db.InvCarWarranties.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.VIN, row.ModelCode });
+    return Results.Ok(new { row.Id, row.VIN, row.ModelCode, row.CarWarrantyStatus });
 }).RequireAuthorization();
 
-// Gửi KH xác nhận bảo hành → set CustomerConfirmDate = hôm nay.
-app.MapPost("/api/invcarwarranties/{id}/confirm", async (long id, AppDbContext db, ITenantContext t) =>
+// Sửa hàng loạt — Inv_CarWarrantyUpdate
+app.MapPost("/api/invcarwarranties/update", async (InvCarWarrantyUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var row = await db.InvCarWarranties.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.CustomerConfirmDate = DateTime.Now; row.UpdatedAt = DateTime.Now;
+    var rows = dto.Inv_CarWarranty ?? new();
+    if (rows.Count < 1) return Results.BadRequest(new { error = "Bảng dữ liệu rỗng.", code = "Inv_CarWarrantyUpdate_TableDetailBeBlank" });
+    var targets = new List<(InvCarWarranty row, InvCarWarrantyUpdateRow input)>();
+    foreach (var r in rows)
+    {
+        var vin = (r.VIN ?? "").Trim().ToUpperInvariant();
+        if (r.WarrantyDate is null || r.DealerDateExpired is null)
+            return Results.BadRequest(new { error = $"VIN {vin}: thiếu ngày bảo hành / ngày hết hạn ĐL.", code = "Inv_CarWarrantyUpdate_InvalidValue", VIN = vin });   // Convert.ToDateTime ném lỗi
+        if (r.DealerDateExpired < r.WarrantyDate)
+            return Results.BadRequest(new { error = $"VIN {vin}: ngày hết hạn đại lý nhỏ hơn ngày bảo hành.", code = "Inv_CarWarrantyUpdate_InvalidValue", VIN = vin, r.WarrantyDate, r.DealerDateExpired });
+        var row = await db.InvCarWarranties.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (row is null) return Results.BadRequest(new { error = $"Không tìm thấy VIN {vin}.", code = "myCheck_Inv_CarWarranty_NotExist", VIN = vin });
+        targets.Add((row, r));
+    }
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    foreach (var (row, r) in targets)
+    {
+        row.WarrantyDate = r.WarrantyDate; row.DealerDateExpired = r.DealerDateExpired; row.Remark = r.Remark;
+        row.LogLUDateTime = now; row.LogLUBy = who;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated = targets.Count });
+}).RequireAuthorization();
+
+// Kích hoạt bảo hành (KH xác nhận) — Inv_CarWarrantyActive
+app.MapPost("/api/invcarwarranties/active", async (InvCarWarrantyActiveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    var phone = (dto.CustomerPhoneNo ?? "").Trim().ToUpperInvariant();
+    if (vin.Length == 0) return Results.BadRequest(new { error = "Chưa nhập VIN.", code = "Inv_CarWarrantyActive_InputVINNotFound" });
+    if (phone.Length == 0) return Results.BadRequest(new { error = "Chưa nhập SĐT khách hàng.", code = "Inv_CarWarrantyActive_InputCustomerPhoneNoNotFound" });
+    var row = await db.InvCarWarranties.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.CustomerPhoneNo == phone);
+    if (row is null) return Results.BadRequest(new { error = "VIN và SĐT khách hàng không khớp.", code = "Inv_CarWarrantyActive_VINAndCustomerPhoneNoNotFound", VIN = vin, CustomerPhoneNo = phone });
+    row.CustomerConfirmDate = DateTime.Today; row.LogLUDateTime = DateTime.Now; row.LogLUBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.VIN, row.CustomerConfirmDate });
 }).RequireAuthorization();
+
+// Route cũ xác nhận theo Id (không kiểm SĐT) — nguồn không có ⇒ trỏ sang /active.
+app.MapPost("/api/invcarwarranties/{id}/confirm", (long id) => Results.BadRequest(new
+{
+    error = "Kích hoạt bảo hành phải qua /api/invcarwarranties/active (VIN + SĐT khách hàng, Inv_CarWarrantyActive).", route = "/api/invcarwarranties/active"
+})).RequireAuthorization();
 
 // ===== Master loại thùng (LoaiThungMst — port 1:1 FrmMst_LoaiThung, TCMotor) =====
 app.MapGet("/api/loaithungs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
@@ -57216,7 +57276,13 @@ record StoRearCBCarDto(string? VIN, string? SpecCode, string? EngineNo, string? 
 record AppSessionDto(string? UserCode, string? LanguageCode, string? PartnerCode, string? PartnerUserCode, string? OtherInfo);
 record StoCBReqDto(string? Remark, List<StoCBReqCarDto>? Cars);
 record StoCBReqCarDto(string? VIN, string? ModelCode, string? SpecCode, string? EngineNo);
-record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string? SpecCode, string? DealerCode, string? DealerCodeBuyer, DateTime? ReceiveDate, DateTime? StoreDateExpired, DateTime? DeliveryDate, DateTime? WarrantyDate, DateTime? HTCVDateExpired, DateTime? DealerDateExpired);
+record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string? SpecCode, string? DealerCode, string? DealerCodeBuyer, DateTime? ReceiveDate, DateTime? StoreDateExpired, DateTime? DeliveryDate, DateTime? WarrantyDate, DateTime? HTCVDateExpired, DateTime? DealerDateExpired,
+    // #359 cột AddX
+    string? WarrantyKm = null, string? ColorCode = null, string? EngineNo = null, string? WarrantyType = null, string? Remark = null,
+    string? CustomerCode = null, string? CustomerName = null, string? CustomerPhoneNo = null);
+record InvCarWarrantyUpdateRow(string? VIN, DateTime? WarrantyDate, DateTime? DealerDateExpired, string? Remark);   // #359
+record InvCarWarrantyUpdateDto(List<InvCarWarrantyUpdateRow>? Inv_CarWarranty);
+record InvCarWarrantyActiveDto(string? VIN, string? CustomerPhoneNo);
 record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
 record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);
 record MsgDlvCarLineDto(string? CarId, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate);

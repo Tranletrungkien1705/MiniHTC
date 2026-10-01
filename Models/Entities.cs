@@ -3807,7 +3807,24 @@ public sealed class InvCarWarranty
     public DateTime? CustomerConfirmDate { get; set; }
     public DateTime? HTCVDateExpired { get; set; }
     public DateTime? DealerDateExpired { get; set; }
-    public DateTime UpdatedAt { get; set; }
+    /// <summary>#359 `LogLUDateTime` (rename từ `UpdatedAt` khớp nguồn).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    // ===== #359 cột nguồn port cũ thiếu — `Inv_CarWarranty_AddX` (Foton BizHTC.MasterData.cs, insert 28 cột) =====
+    public string? WarrantyKm { get; set; }
+    public string? ColorCode { get; set; }
+    public string? EngineNo { get; set; }
+    public string? WarrantyType { get; set; }
+    public string? Remark { get; set; }
+    public string? CustomerCode { get; set; }
+    public string? CustomerName { get; set; }
+    public string? CustomerPhoneNo { get; set; }
+    /// <summary>`CarWarrantyStatus` — AddX gán `TConst.SORStatus.Pending` = "P" (Const.Main.DMS40.cs:55).</summary>
+    public string? CarWarrantyStatus { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master loại thùng đóng gói xe — port 1:1 FrmMst_LoaiThung (Mst_LoaiThung, TCMotor). LoaiThung = mã, TenLoaiThung = tên.</summary>
