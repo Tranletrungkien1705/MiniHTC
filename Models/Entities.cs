@@ -13524,6 +13524,12 @@ public sealed class EmailAutoConfig
     public string? Description { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    // ===== #353 parity Email_ConfigSendAuto — `Email_ConfigSendAuto_Create` (BizCarSv.SendMail.cs:1124) ghi; port cũ thiếu =====
+    /// <summary>`AutoDate` — ngày gửi khi SendMode = "1" (gửi 1 lần); form gửi rỗng ở chế độ khác (FrmAutoSendConfig.Create).</summary>
+    public DateTime? AutoDate { get; set; }
+    /// <summary>`AutoDay` — thứ trong tuần khi SendMode = "3" (gửi hằng tuần); rỗng ở chế độ khác. Giá trị = tên `System.DayOfWeek`
+    /// tiếng Anh ("Monday"…"Sunday") vì lukDayofWeek nạp `DayOfWeek.X` vào DataColumn kiểu string (FrmAutoSendConfig.cs:196-216).</summary>
+    public string? AutoDay { get; set; }
 }
 
 /// <summary>

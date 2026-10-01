@@ -46,14 +46,16 @@
     <div><label>Giờ gửi (HH:mm) *</label><input id="cTime" style="width:100px" placeholder="08:00"></div>
     <div><label>Từ ngày</label><input id="cStart" type="date"></div>
     <div><label>Đến ngày</label><input id="cEnd" type="date"></div>
-    <div><label>Chế độ</label><input id="cMode" style="width:120px" placeholder="Daily"></div>
+    <div><label>Chế độ</label><select id="cMode"><option value="1">1 — Gửi 1 lần</option><option value="2" selected>2 — Hằng ngày</option><option value="3">3 — Hằng tuần</option></select></div>
+    <div><label>Ngày gửi (chế độ 1)</label><input id="cAutoDate" type="date"></div>
+    <div><label>Thứ (chế độ 3)</label><select id="cAutoDay"><option value="">—</option><option value="Monday">Thứ 2</option><option value="Tuesday">Thứ 3</option><option value="Wednesday">Thứ 4</option><option value="Thursday">Thứ 5</option><option value="Friday">Thứ 6</option><option value="Saturday">Thứ 7</option><option value="Sunday">Chủ nhật</option></select></div>
   </div>
   <div style="margin-top:8px"><label>Mô tả</label><input id="cDesc" style="width:100%"></div>
   <div class="row" style="margin-top:8px"><button class="primary" onclick="saveCfg()">Lưu cấu hình</button><span id="msg2" class="msg"></span></div>
 </div>
 <div class="row" style="margin:8px 0"><button onclick="loadCfg()">Xem cấu hình</button></div>
-<div class="wrap"><table><thead><tr><th>Loại</th><th>Giờ</th><th>Từ</th><th>Đến</th><th>Chế độ</th><th>Mô tả</th><th>TT</th><th></th></tr></thead>
-<tbody id="cfgRows"><tr><td colspan="8" class="muted">Nhấn "Xem cấu hình".</td></tr></tbody></table></div>
+<div class="wrap"><table><thead><tr><th>Loại</th><th>Giờ</th><th>Từ</th><th>Đến</th><th>Chế độ</th><th>Ngày gửi</th><th>Thứ</th><th>Mô tả</th><th>TT</th><th></th></tr></thead>
+<tbody id="cfgRows"><tr><td colspan="10" class="muted">Nhấn "Xem cấu hình".</td></tr></tbody></table></div>
 </div>
 
 <script>
@@ -79,7 +81,7 @@ async function loadLog(){ await token();
   F("logRows").innerHTML=(d.items||[]).map(o=>`<tr><td>${esc(o.batchNo)}</td><td>${esc(o.email)}</td><td>${esc(o.emailType)}</td><td>${esc(o.subject)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${esc(o.sendDate)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có log.</td></tr>';
 }
 async function saveCfg(){ await token();
-  const body={EmailType:F("cType").value,AutoTime:F("cTime").value,StartDate:F("cStart").value||null,EndDate:F("cEnd").value||null,SendMode:F("cMode").value,Description:F("cDesc").value};
+  const body={EmailType:F("cType").value,AutoTime:F("cTime").value,StartDate:F("cStart").value||null,EndDate:F("cEnd").value||null,SendMode:F("cMode").value,Description:F("cDesc").value,AutoDate:F("cAutoDate").value||null,AutoDay:F("cAutoDay").value||null};
   const r=await fetch("/api/emailautoconfigs",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ m("msg2","Lỗi: "+(d.error||r.status)); return; }
   m("msg2","Đã lưu "+d.emailType+" @ "+d.autoTime); loadCfg();
@@ -89,7 +91,7 @@ async function toggleCfg(id){ await token();
 }
 async function loadCfg(){ await token();
   const r=await fetch("/api/emailautoconfigs",{headers:H()}); const d=await r.json();
-  F("cfgRows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.emailType)}</b></td><td>${esc(o.autoTime)}</td><td>${D(o.startDate)}</td><td>${D(o.endDate)}</td><td>${esc(o.sendMode)}</td><td>${esc(o.description)}</td><td>${o.flagActive==="1"?"Bật":"Tắt"}</td><td><button class="link" onclick="toggleCfg(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có cấu hình.</td></tr>';
+  F("cfgRows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.emailType)}</b></td><td>${esc(o.autoTime)}</td><td>${D(o.startDate)}</td><td>${D(o.endDate)}</td><td>${esc(o.sendMode)}</td><td>${D(o.autoDate)}</td><td>${esc(o.autoDay)}</td><td>${esc(o.description)}</td><td>${o.flagActive==="1"?"Bật":"Tắt"}</td><td><button class="link" onclick="toggleCfg(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có cấu hình.</td></tr>';
 }
 </script>
 </body></html>

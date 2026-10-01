@@ -17856,7 +17856,7 @@ app.MapGet("/api/emailbatches", async (AppDbContext db, ITenantContext t, string
 app.MapGet("/api/emailautoconfigs", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.EmailAutoConfigs.Where(c => c.OrgId == t.OrgId).OrderBy(c => c.EmailType)
-        .Select(c => new { c.Id, c.EmailType, c.AutoTime, startDate = c.StartDate, endDate = c.EndDate, c.SendMode, c.Description, c.FlagActive }).ToListAsync();
+        .Select(c => new { c.Id, c.EmailType, c.AutoTime, startDate = c.StartDate, endDate = c.EndDate, c.SendMode, c.Description, c.FlagActive, c.AutoDate, c.AutoDay }).ToListAsync();
     return Results.Ok(new { items });
 }).RequireAuthorization();
 
@@ -17874,8 +17874,12 @@ app.MapPost("/api/emailautoconfigs", async (EmailAutoConfigDto dto, AppDbContext
     if (c is null) { c = new EmailAutoConfig { OrgId = t.OrgId, EmailType = type }; db.EmailAutoConfigs.Add(c); }
     c.AutoTime = time; c.StartDate = dto.StartDate; c.EndDate = dto.EndDate;
     c.SendMode = dto.SendMode; c.Description = dto.Description; c.UpdatedAt = DateTime.Now;
+    // #353 1:1 FrmAutoSendConfig.Create: SendMode "1" (gửi 1 lần) ⇒ AutoDate = ngày chọn; "3" (hằng tuần) ⇒ AutoDay = thứ;
+    //   chế độ khác form gửi rỗng ⇒ NULL. Biz nguồn KHÔNG kiểm (ghi thẳng, rỗng ⇒ DBNull).
+    c.AutoDate = dto.SendMode == "1" ? dto.AutoDate?.Date : null;
+    c.AutoDay = dto.SendMode == "3" && !string.IsNullOrWhiteSpace(dto.AutoDay) ? dto.AutoDay!.Trim() : null;
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.Id, c.EmailType, c.AutoTime });
+    return Results.Ok(new { c.Id, c.EmailType, c.AutoTime, c.SendMode, c.AutoDate, c.AutoDay });
 }).RequireAuthorization();
 
 app.MapPost("/api/emailautoconfigs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
@@ -57117,7 +57121,7 @@ record SupplierDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string?
 record SmsAutoConfigDto(string SmsType, string AutoTime, DateTime? EffectDate, string? SendMode, string? Description);
 record EmailSendDto(string? EmailType, string? Subject, string? Body, List<string>? Emails, bool? ToAllCustomers, string? FromAddress = null, string? DealerCode = null, string? SendBy = null, string? AttachmentName = null, DateTime? EffectDate = null, bool? IsAuto = null, string? ConfigCode = null, string? TEmailCode = null, string? WSPath = null, List<string>? Cc = null, List<string>? Bcc = null, List<string>? Files = null);
 record EmailBatchStatusDto(string? Status, string? Note);
-record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description);
+record EmailAutoConfigDto(string EmailType, string AutoTime, DateTime? StartDate, DateTime? EndDate, string? SendMode, string? Description, DateTime? AutoDate = null, string? AutoDay = null);   // #353
 record ServiceCampaignDto(string CamNo, string? CamName, string? CamDesc, string? ConditionDealer, DateTime? StartDate, DateTime? EndDate, List<ServiceCampaignPartDto>? Parts);
 record ServiceCampaignPartDto(string PartCode, string? PartName, decimal PercentDiscount);
 record ServiceCampaignStatusDto(string Status);
