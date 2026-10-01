@@ -7412,10 +7412,12 @@ app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbCon
     var confirmedNos = plan.Select(x => x.p.PaymentNo).ToList();
     var grtNosTcf = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && confirmedNos.Contains(d.PaymentNo) && d.GuaranteeNo != null)
         .Select(d => d.GuaranteeNo!).Distinct().ToListAsync();
+    // #343 thứ tự nguồn (TCFIntergration.cs:6973-6990): DateEnd_01 rồi DateEnd_Discount.
+    await GrtDiscount.UpdDateEnd01(db, t.OrgId, grtNosTcf, who);
     var grtUpdated = await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, grtNosTcf, who);
     await db.SaveChangesAsync();
     return Results.Ok(new { confirmed = plan.Count, paymentNos = confirmedNos, guaranteesRecalculated = grtUpdated,
-        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, Pmt_Guarantee.DateEnd (_01), CheckTotalValue, đẩy sao kê TCF." });
+        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, CheckTotalValue, đẩy sao kê TCF." });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
@@ -56440,7 +56442,16 @@ record BankPmConfirmTcfRowDto(string? PaymentNo, string? AccountingRecordNo, Dat
 /// MiniHTC: dòng BL khoá theo VIN ⇒ nối sang CarId/UnitPriceActual qua `CarVinMasters`.</summary>
 static class GrtDiscount
 {
-    public static async Task<int> UpdDateEndDiscount(AppDbContext db, Guid org, IEnumerable<string> guaranteeNos, string who)
+    /// <summary>#343 Port 1:1 `myPmt_Guarantee_Upd_DateEnd_01_New20181119` (Biz.HTC.WH.cs:39559) — CÙNG thuật toán với
+    /// DateEnd_Discount nhưng **KHÔNG lọc FlagDtlDiscount** (nguồn comment `--and s.FlagDtlDiscount = '1' --20150109 --Không check
+    /// xem có Chiết khấu hay không`) và ghi vào **`Pmt_Guarantee.DateEnd`** (chưa tất toán ⇒ NULL, update LEFT JOIN).</summary>
+    public static Task<int> UpdDateEnd01(AppDbContext db, Guid org, IEnumerable<string> guaranteeNos, string who)
+        => Recalc(db, org, guaranteeNos, who, discountOnly: false);
+
+    public static Task<int> UpdDateEndDiscount(AppDbContext db, Guid org, IEnumerable<string> guaranteeNos, string who)
+        => Recalc(db, org, guaranteeNos, who, discountOnly: true);
+
+    static async Task<int> Recalc(AppDbContext db, Guid org, IEnumerable<string> guaranteeNos, string who, bool discountOnly)
     {
         var nos = guaranteeNos.Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
         if (nos.Count == 0) return 0;
@@ -56463,7 +56474,7 @@ static class GrtDiscount
             DateTime? done = null;
             if (g.Status == "A" || g.Status == "F")
             {
-                var lines = dtls.Where(d => d.GuaranteeId == g.Id && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F") && d.FlagDtlDiscount == "1")
+                var lines = dtls.Where(d => d.GuaranteeId == g.Id && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F") && (!discountOnly || d.FlagDtlDiscount == "1"))
                     .Select(d =>
                     {
                         cars.TryGetValue(d.VIN, out var c);
@@ -56473,7 +56484,8 @@ static class GrtDiscount
                     }).ToList();
                 if (lines.All(l => !(l.need > l.Amount))) done = lines.Select(l => l.Date).Max();
             }
-            g.DateEnd_Discount = done; g.LogLUDateTime = now; g.LogLUBy = who;
+            if (discountOnly) g.DateEnd_Discount = done; else g.DateEnd = done;
+            g.LogLUDateTime = now; g.LogLUBy = who;
         }
         return grts.Count;
     }
