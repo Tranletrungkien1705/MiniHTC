@@ -14340,12 +14340,13 @@ public sealed class ServiceAppointment
     /// <summary>#336 `Ser_App.DealerCode` — đại lý (xưởng) của lịch hẹn; cũng là PHẠM VI dãy số AppNo
     /// (`myUtil_GetCmSeqCode` lọc `t.DealerCode = @strDealerCode`).</summary>
     public string? DealerCode { get; set; }
-    public string? CavityName { get; set; }        // khoang/bay sửa chữa
+    /// <summary>#399 rename CavityName→CavityID (Ser_App.CavityID — khoá khoang; MiniHTC lưu Cavity.CavityNo). Tên khoang lấy bằng join.</summary>
+    public string? CavityID { get; set; }
     public string? PlateNo { get; set; }
     public string? CusName { get; set; }
     public string? Mobile { get; set; }
     public string? ModelName { get; set; }
-    public string? AppType { get; set; }           // loại hẹn (BD/SC...)
+    public string? AppTypeCode { get; set; }   // #399 rename AppType→AppTypeCode (Ser_App.AppTypeCode)
     public DateTime AppFrom { get; set; }
     public DateTime AppTo { get; set; }
     /// <summary>🔴 #335 `Ser_App.AppStatus` (rename từ `Status` khớp nguồn) — mã nguồn THẬT là "1".."5"
@@ -14355,7 +14356,7 @@ public sealed class ServiceAppointment
     /// "Done" là trạng thái port cũ tự thêm (không có ở nguồn) — giữ đọc được, không cho đặt mới.</summary>
     public string AppStatus { get; set; } = "1";
     public string? Note { get; set; }
-    public string? EngineerNo { get; set; }        // CVDV nhận lịch hẹn — port bổ sung FrmQuotationApp
+    public string? CVDVCode { get; set; }      // #399 rename EngineerNo→CVDVCode (Ser_App.CVDVCode — CVDV nhận lịch, FrmQuotationApp lueCVDV)
     public string? QuoteNo { get; set; }           // Báo giá ước tính gắn theo lịch hẹn (FK mềm tới ServiceQuotation.QuoteNo)
 
     /// <summary>Yêu cầu của khách khi đặt lịch (Ser_App.CusRequest).</summary>
@@ -14365,6 +14366,11 @@ public sealed class ServiceAppointment
     /// <summary>#335 `Ser_App.LogLUDateTime/LogLUBy` — `Ser_App_UpdateStatus` ghi cùng AppStatus.</summary>
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#399 Ser_App.FirstContactDateTime — thời điểm liên hệ đầu (helper Function_UtilsSerApp, ZTemp.cs:18633, gọi từ Ser_App_Update_New20201230).
+    /// Ghi chú ánh xạ: nguồn tách NGÀY+GIỜ — AppDateTimeFrom+AppTimeFrom = BẮT ĐẦU (FrmAppList/FrmShowCavityStatus hiển thị) ↔ AppFrom;
+    /// AppDateTime+AppTime = KẾT THÚC ↔ AppTo. MiniHTC gộp thành DateTime (khác biểu diễn, cùng nghĩa).</summary>
+    public DateTime? FirstContactDateTime { get; set; }
 }
 
 /// <summary>

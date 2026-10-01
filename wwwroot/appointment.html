@@ -26,7 +26,7 @@
 <div id="pane1">
 <div class="card"><h3 style="margin-top:0">Đặt lịch hẹn</h3>
   <div class="row">
-    <div><label>Khoang/bay</label><input id="fCav" style="width:110px" placeholder="Bay 1"></div>
+    <div><label>Mã khoang/bay</label><input id="fCav" style="width:110px" placeholder="KH01"></div>
     <div><label>Đại lý *</label><input id="fDealer" style="width:90px"></div>
     <div><label>Biển số</label><input id="fPlate" style="width:110px"></div>
     <div><label>Khách hàng</label><input id="fCus" style="width:150px"></div>
@@ -72,7 +72,7 @@ function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)
 function tab(n){ F("pane1").style.display=n===1?"block":"none"; F("pane2").style.display=n===2?"block":"none"; F("t1").className="tab"+(n===1?" on":""); F("t2").className="tab"+(n===2?" on":""); }
 async function book(){ await token();
   if(!F("fFrom").value||!F("fTo").value){ m("msg","Cần giờ bắt đầu và kết thúc."); return; }
-  const body={DealerCode:F("fDealer").value,CavityName:F("fCav").value,PlateNo:F("fPlate").value,CusName:F("fCus").value,Mobile:F("fMob").value,ModelName:F("fModel").value,AppType:F("fType").value,AppFrom:F("fFrom").value,AppTo:F("fTo").value,Note:F("fNote").value,EngineerNo:F("fEng").value||null,QuoteNo:F("fQuote").value||null};
+  const body={DealerCode:F("fDealer").value,CavityID:F("fCav").value,PlateNo:F("fPlate").value,CusName:F("fCus").value,Mobile:F("fMob").value,ModelName:F("fModel").value,AppTypeCode:F("fType").value,AppFrom:F("fFrom").value,AppTo:F("fTo").value,Note:F("fNote").value,CVDVCode:F("fEng").value||null,QuoteNo:F("fQuote").value||null};
   const r=await fetch("/api/appointments",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
   m("msg","Đã đặt "+d.appNo); load();
@@ -92,7 +92,7 @@ function act(o){ let h="";
 async function load(){ await token();
   const p=new URLSearchParams(); if(F("qDate").value)p.set("date",F("qDate").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qStatus").value)p.set("status",F("qStatus").value);
   const r=await fetch("/api/appointments?"+p.toString(),{headers:H()}); const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.appNo)}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td>${esc(o.modelName)}</td><td>${esc(o.engineerNo)||"—"}</td><td>${esc(o.appFrom)}</td><td>${esc(o.appTo)}</td><td><span class="pill s-${o.appStatus}">${ST[o.appStatus]||o.appStatus}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có lịch hẹn.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.appNo)}</b></td><td>${esc(o.cavityName||o.cavityID)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.cusName)}</td><td>${esc(o.modelName)}</td><td>${esc(o.cvdvCode)||"—"}</td><td>${esc(o.appFrom)}</td><td>${esc(o.appTo)}</td><td><span class="pill s-${o.appStatus}">${ST[o.appStatus]||o.appStatus}</span></td><td>${act(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có lịch hẹn.</td></tr>';
 }
 async function board(){ await token();
   const p=new URLSearchParams(); if(F("bDate").value)p.set("date",F("bDate").value);

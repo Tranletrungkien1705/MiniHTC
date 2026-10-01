@@ -26479,8 +26479,8 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     if (date.HasValue) { var d0 = date.Value.Date; var d1 = d0.AddDays(1); q = q.Where(x => x.AppFrom >= d0 && x.AppFrom < d1); }
     var items = await q.OrderBy(x => x.AppFrom).Take(500).Select(x => new
     {
-        x.Id, x.AppNo, x.DealerCode, x.CavityName, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppType,
-        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.AppStatus, x.Note, x.EngineerNo, x.QuoteNo, x.CusRequest,
+        x.Id, x.AppNo, x.DealerCode, x.CavityID, CavityName = db.Cavities.Where(cv => cv.OrgId == t.OrgId && cv.CavityNo == x.CavityID).Select(cv => cv.CavityName).FirstOrDefault(), x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppTypeCode,
+        appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.AppStatus, x.Note, x.CVDVCode, x.QuoteNo, x.CusRequest, x.FirstContactDateTime,
         serviceItems = db.AppointmentServiceItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo),
         partItems = db.AppointmentPartItems.Count(i => i.OrgId == t.OrgId && i.AppNo == x.AppNo)
     }).ToListAsync();
@@ -26491,19 +26491,22 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
 app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (dto.AppTo <= dto.AppFrom) return Results.BadRequest(new { error = "Giờ kết thúc phải sau giờ bắt đầu." });
-    var cavity = (dto.CavityName ?? "").Trim();
+    // #399 Ser_App.CavityID = mã khoang (Cavity.CavityNo). Client cũ gửi CavityName ⇒ quy về mã theo danh mục.
+    var cavity = (dto.CavityID ?? "").Trim().ToUpperInvariant();
+    if (cavity == "" && !string.IsNullOrWhiteSpace(dto.CavityName))
+        cavity = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.CavityName == dto.CavityName.Trim()).Select(c => c.CavityNo).FirstOrDefaultAsync() ?? dto.CavityName.Trim();
     if (cavity != "")
     {
         // Kiểm tra khoang có tồn tại trong danh mục Cavity (nếu đã khai báo).
         var hasCavityMaster = await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId);
-        if (hasCavityMaster && !await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId && c.CavityName == cavity))
+        if (hasCavityMaster && !await db.Cavities.AnyAsync(c => c.OrgId == t.OrgId && c.CavityNo == cavity))
             return Results.BadRequest(new { error = "Khoang/bay không có trong danh mục: " + cavity });
         // Chống đặt chồng giờ cùng 1 khoang (bỏ qua lệnh đã hủy).
-        var overlap = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityName == cavity && x.AppStatus != "4"
+        var overlap = await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.CavityID == cavity && x.AppStatus != "4"
             && x.AppFrom < dto.AppTo && dto.AppFrom < x.AppTo);
         if (overlap) return Results.BadRequest(new { error = "Khoang " + cavity + " đã có lịch trùng khung giờ." });
     }
-    var engineerNo = (dto.EngineerNo ?? "").Trim().ToUpperInvariant();
+    var engineerNo = (dto.CVDVCode ?? dto.EngineerNo ?? "").Trim().ToUpperInvariant();   // #399 CVDVCode (EngineerNo cũ vẫn nhận)
     if (engineerNo != "" && !await db.ServiceEngineers.AnyAsync(e => e.OrgId == t.OrgId && e.EngineerNo == engineerNo))
         return Results.BadRequest(new { error = "CVDV không tồn tại: " + engineerNo });
     // TWIN đã trace: WS gọi `Ser_App_Create_New20201230` (BizCarSv.ZTemp.cs) — KHÔNG phải `Ser_App_Create` trần.
@@ -26529,9 +26532,9 @@ app.MapPost("/api/appointments", async (AppointmentDto dto, AppDbContext db, ITe
         .Select(x => x.AppNo).ToListAsync(), seqPrefix);
     if (await db.ServiceAppointments.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerApp && x.AppNo == no))
         return Results.BadRequest(new { error = $"Số lịch hẹn {no} đã tồn tại.", code = "Ser_App_CheckExistAppNo" });
-    var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, DealerCode = dealerApp, CavityName = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
-        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppType = dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, AppStatus = "1",
-        EngineerNo = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest };
+    var a = new ServiceAppointment { OrgId = t.OrgId, AppNo = no, DealerCode = dealerApp, CavityID = cavity == "" ? null : cavity, PlateNo = dto.PlateNo,
+        CusName = dto.CusName, Mobile = dto.Mobile, ModelName = dto.ModelName, AppTypeCode = dto.AppTypeCode ?? dto.AppType, AppFrom = dto.AppFrom, AppTo = dto.AppTo, Note = dto.Note, AppStatus = "1",
+        CVDVCode = engineerNo == "" ? null : engineerNo, QuoteNo = dto.QuoteNo, CusRequest = dto.CusRequest, FirstContactDateTime = dto.FirstContactDateTime };
     db.ServiceAppointments.Add(a);
 
     foreach (var line in serviceItems)
@@ -26624,10 +26627,10 @@ app.MapPost("/api/appointments/{id}/status", async (long id, AppointmentStatusDt
 app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantContext t, DateTime? date) =>
 {
     var d0 = (date ?? DateTime.Today).Date; var d1 = d0.AddDays(1);
-    var cavities = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1").OrderBy(c => c.CavityName).Select(c => c.CavityName).ToListAsync();
-    var apps = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityName != null && x.AppStatus != "4" && x.AppFrom >= d0 && x.AppFrom < d1)
-        .OrderBy(x => x.AppFrom).Select(x => new { x.CavityName, x.AppNo, x.PlateNo, x.CusName, x.ModelName, x.AppStatus, appFrom = x.AppFrom.ToString("HH:mm"), appTo = x.AppTo.ToString("HH:mm") }).ToListAsync();
-    var board = cavities.Select(cv => new { cavityName = cv, appointments = apps.Where(a => a.CavityName == cv).ToList() }).ToList();
+    var cavities = await db.Cavities.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1").OrderBy(c => c.CavityName).Select(c => new { c.CavityNo, c.CavityName }).ToListAsync();
+    var apps = await db.ServiceAppointments.Where(x => x.OrgId == t.OrgId && x.CavityID != null && x.AppStatus != "4" && x.AppFrom >= d0 && x.AppFrom < d1)
+        .OrderBy(x => x.AppFrom).Select(x => new { x.CavityID, x.AppNo, x.PlateNo, x.CusName, x.ModelName, x.AppStatus, appFrom = x.AppFrom.ToString("HH:mm"), appTo = x.AppTo.ToString("HH:mm") }).ToListAsync();
+    var board = cavities.Select(cv => new { cavityID = cv.CavityNo, cavityName = cv.CavityName, appointments = apps.Where(a => a.CavityID == cv.CavityNo).ToList() }).ToList();   // #399 nối theo mã khoang
     return Results.Ok(new { date = d0.ToString("yyyy-MM-dd"), totalCavity = cavities.Count, totalApp = apps.Count, board });
 }).RequireAuthorization();
 
@@ -57497,7 +57500,8 @@ static class CmSeq
         return pattern + seq.ToString("000");
     }
 }
-record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null, string? DealerCode = null);   // #336 DealerCode
+record AppointmentDto(string? CavityName, string? PlateNo, string? CusName, string? Mobile, string? ModelName, string? AppType, DateTime AppFrom, DateTime AppTo, string? Note, string? EngineerNo, string? QuoteNo, string? CusRequest = null, List<AppointmentServiceItemDto>? ServiceItems = null, List<AppointmentPartItemDto>? PartItems = null, string? DealerCode = null,
+    string? CavityID = null, string? AppTypeCode = null, string? CVDVCode = null, DateTime? FirstContactDateTime = null);   // #399 tên trường khớp Ser_App (CavityName/AppType/EngineerNo cũ vẫn nhận)   // #336 DealerCode
 record AppointmentStatusDto(string Status);
 record InsDebitDto(string? InsNo, string? InsName, string? RONo, decimal DebitAmount, DateTime? DebitDate, string? Note);
 record InsDebitPaymentDto(decimal PaymentAmount, DateTime? PayDate, string? Note, string? DealerCode = null, string? PayPersonName = null, string? PayPersonIDCardNo = null);
