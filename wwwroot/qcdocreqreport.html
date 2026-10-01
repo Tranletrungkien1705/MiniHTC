@@ -13,7 +13,7 @@
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
   .kpi{display:flex;gap:10px;flex-wrap:wrap} .box{border:1px solid var(--line);border-radius:10px;padding:8px 12px} .box b{font-size:18px;display:block} .box span{font-size:11px;opacity:.7}
   .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px} @media(max-width:640px){.cols{grid-template-columns:1fr}}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Pending{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Cancel{color:var(--bad)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-PENDING{color:var(--warn)} .s-APPROVE{color:var(--ok)} .s-CANCEL{color:var(--bad)}
   #msg{font-size:13px}
 </style></head>
 <body>
@@ -22,7 +22,7 @@
 <div class="bar">
   <div><label>Model</label><input id="qm" style="width:90px"></div>
   <div><label>Loại giao HS</label><input id="qd" style="width:90px"></div>
-  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="Pending">Chờ duyệt</option><option value="Approved">Đã duyệt</option><option value="Cancel">Đã hủy</option></select></div>
+  <div><label>Trạng thái</label><select id="qs"><option value="">Tất cả</option><option value="PENDING">Chờ duyệt</option><option value="APPROVE">Đã duyệt</option><option value="CANCEL">Đã hủy</option></select></div>
   <button class="primary" onclick="run()">Xem báo cáo</button><span id="msg"></span>
 </div>
 <div class="kpi" id="kpi" style="margin:8px 0"></div>
@@ -34,7 +34,7 @@
 <div class="wrap"><table><thead><tr><th>Số YC</th><th>Người lập</th><th class="num">Số xe</th><th>Trạng thái</th><th>Ngày</th></tr></thead><tbody id="rows"><tr><td colspan="5" class="muted">Nhấn "Xem báo cáo".</td></tr></tbody></table></div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const ST={Pending:"Chờ duyệt",Approved:"Đã duyệt",Cancel:"Đã hủy"};
+const ST={PENDING:"Chờ duyệt",APPROVE:"Đã duyệt",CANCEL:"Đã hủy"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -48,7 +48,7 @@ async function run(){ await token(); msg("");
   F("kpi").innerHTML=`<div class="box"><b>${d.total}</b><span>Số YC</span></div><div class="box"><b>${d.totalCars}</b><span>Số xe</span></div><div class="box"><b>${d.approved}</b><span>Đã duyệt</span></div>`;
   F("mRows").innerHTML=(d.byModel||[]).map(o=>`<tr><td><b>${o.modelCode}</b></td><td class="num">${o.cars}</td></tr>`).join("")||'<tr><td colspan="2" class="muted">—</td></tr>';
   F("dRows").innerHTML=(d.byDeliver||[]).map(o=>`<tr><td>${o.deliverType}</td><td class="num">${o.cars}</td></tr>`).join("")||'<tr><td colspan="2" class="muted">—</td></tr>';
-  F("rows").innerHTML=(d.detail||[]).map(o=>`<tr><td><b>${o.docReqNo}</b></td><td>${o.createBy||""}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.docReqStatus}">${ST[o.docReqStatus]||o.docReqStatus}</span></td><td>${o.createdAt}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Không có dữ liệu.</td></tr>';
+  F("rows").innerHTML=(d.detail||[]).map(o=>`<tr><td><b>${o.docReqNo}</b></td><td>${o.createBy||""}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.docReqStatus}">${ST[o.docReqStatus]||o.docReqStatus}</span></td><td>${o.createDTime}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">Không có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>

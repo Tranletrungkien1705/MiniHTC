@@ -13,7 +13,7 @@
   button.ok{color:#fff;background:var(--ok);border-color:var(--ok)} button.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} .wrap{overflow-x:auto}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Pending{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Cancel{color:var(--bad)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-PENDING{color:var(--warn)} .s-APPROVE{color:var(--ok)} .s-CANCEL{color:var(--bad)}
   #msg{font-size:13px} .carrow input{width:90px}
 </style></head>
 <body>
@@ -26,7 +26,7 @@
 </div>
 <div class="bar" style="margin:10px 0">
   <input id="qn" placeholder="Lọc số YC" oninput="load()" style="width:130px">
-  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Pending">Đang xử lý</option><option value="Approved">Đã duyệt</option><option value="Cancel">Hủy</option></select>
+  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="PENDING">Đang xử lý</option><option value="APPROVE">Đã duyệt</option><option value="CANCEL">Hủy</option></select>
 </div>
 <div class="wrap"><table><thead><tr><th>Số YC</th><th>Người tạo</th><th>Ngày tạo</th><th class="num">Số xe</th><th>Trạng thái</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table></div>
@@ -36,7 +36,7 @@
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const ST={Pending:"Đang xử lý",Approved:"Đã duyệt",Cancel:"Hủy"};
+const ST={PENDING:"Đang xử lý",APPROVE:"Đã duyệt",CANCEL:"Hủy"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -58,14 +58,14 @@ async function save(){
 async function load(){ await token();
   const d=await (await fetch(`/api/qcdocreqs?no=${F("qn").value}&status=${F("qs").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    const act=o.docReqStatus==="Pending"?`<button class="sm ok" onclick="decide('${o.docReqNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.docReqNo}','cancel')">Hủy</button>`:"";
-    return `<tr onclick="detail('${o.docReqNo}')"><td><b>${o.docReqNo}</b></td><td>${o.createBy||""}</td><td>${(o.createdAt||"").substring(0,10)}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.docReqStatus}">${ST[o.docReqStatus]||o.docReqStatus}</span></td><td onclick="event.stopPropagation()">${act}</td></tr>`;
+    const act=o.docReqStatus==="PENDING"?`<button class="sm ok" onclick="decide('${o.docReqNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.docReqNo}','cancel')">Hủy</button>`:"";
+    return `<tr onclick="detail('${o.docReqNo}')"><td><b>${o.docReqNo}</b></td><td>${o.createBy||""}</td><td>${(o.createDTime||"").substring(0,10)}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.docReqStatus}">${ST[o.docReqStatus]||o.docReqStatus}</span></td><td onclick="event.stopPropagation()">${act}</td></tr>`;
   }).join("")||'<tr><td colspan="6" class="muted">Chưa có yêu cầu.</td></tr>';
 }
 async function detail(no){
   const d=await (await fetch(`/api/qcdocreqs/${no}/cars`,{headers:H()})).json();
   F("detCard").style.display=""; F("detNo").textContent=no;
-  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${c.orderNo||""}</td><td>${c.modelCode||""}</td><td>${c.colorCode||""}</td><td>${c.engineNo||""}</td><td>${c.originNo||""}</td><td>${c.fGFormNo||""}</td><td>${c.qCNo||""}</td><td>${c.clearanceFormNo||""}</td><td><span class="pill s-${c.dtlStatus}">${ST[c.dtlStatus]||c.dtlStatus}</span></td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có xe.</td></tr>';
+  F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${c.orderNo||""}</td><td>${c.modelCode||""}</td><td>${c.colorCode||""}</td><td>${c.engineNo||""}</td><td>${c.originNo||""}</td><td>${c.fGFormNo||""}</td><td>${c.qCNo||""}</td><td>${c.clearanceFormNo||""}</td><td><span class="pill s-${c.docReqDtlStatus}">${ST[c.docReqDtlStatus]||c.docReqDtlStatus}</span></td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có xe.</td></tr>';
 }
 async function decide(no,act){
   const r=await fetch(`/api/qcdocreqs/${no}/${act}`,{method:"POST",headers:H()});

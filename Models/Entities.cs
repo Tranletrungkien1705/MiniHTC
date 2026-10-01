@@ -12825,9 +12825,17 @@ public sealed class QcDocReq
     public Guid OrgId { get; set; }
     public string DocReqNo { get; set; } = "";
     public string CreateBy { get; set; } = "";
-    public string DocReqStatus { get; set; } = "Pending";   // Pending -> Approved / Cancel
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? ApprovedAt { get; set; }
+    /// <summary>#372 TConst.Stage.*Full (Const.Main.cs:123-125): "PENDING" · "APPROVE" · "CANCEL" — port cũ Pending/Approved/Cancel.</summary>
+    public string DocReqStatus { get; set; } = "PENDING";
+    /// <summary>#372 `CreateDTime` (rename từ CreatedAt).</summary>
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    /// <summary>#372 `ApprDTime` (rename từ ApprovedAt).</summary>
+    public DateTime? ApprDTime { get; set; }
+    // ===== #372 cột nguồn TblQC_DocReq (DbDefine.cs:4086) =====
+    public string? ApprBy { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết chứng từ QC theo VIN (QC_DocReqDtl) — port 1:1 FrmMngQCDocReq detail.</summary>
@@ -12847,7 +12855,8 @@ public sealed class QcDocReqCar
     public string QCNo { get; set; } = "";           // so phieu QC
     public string ClearanceFormNo { get; set; } = ""; // so phieu thong quan
     public string DocDeliverTypeCode { get; set; } = "";
-    public string DtlStatus { get; set; } = "Pending";
+    /// <summary>#372 `DocReqDtlStatus` (rename từ DtlStatus, TblQC_DocReqDtl) — PENDING/APPROVE/CANCEL.</summary>
+    public string DocReqDtlStatus { get; set; } = "PENDING";
 }
 
 /// <summary>Đơn hàng nâng cấp (Upgrade Order) — port 1:1 FrmUpgradeOrder + FrmUpgradeMngOrderHtc. Header.</summary>
