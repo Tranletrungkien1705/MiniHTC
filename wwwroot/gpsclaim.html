@@ -12,7 +12,7 @@
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
-  .c-Pending{color:var(--warn)} .c-Approved{color:var(--accent)} .r-Progress{color:var(--prog)} .r-Finished{color:var(--ok)} .f-Finished{color:var(--ok)}
+  .c-P{color:var(--warn)} .c-A{color:var(--accent)} .r-G{color:var(--prog)} .r-F{color:var(--ok)} .f-G{color:var(--prog)} .f-F{color:var(--ok)}
   #msg{font-size:13px}
 </style></head>
 <body>
@@ -23,18 +23,20 @@
     <input id="dv" placeholder="Số thiết bị GPS *" style="width:150px">
     <input id="bf" placeholder="Tình trạng trước sửa" style="width:200px">
     <input id="rm" placeholder="Ghi chú" style="width:180px">
+    <input id="img" placeholder="Tên ảnh lỗi (ERROR) *" style="width:170px">
     <span style="flex:1"></span><button class="primary" onclick="create()">Tạo claim</button><span id="msg"></span>
   </div>
 </div>
 <div class="bar" style="margin:10px 0">
-  <select id="fst" onchange="load()"><option value="">Tất cả claim</option><option value="Pending">Mới tạo</option><option value="Approved">Đã duyệt</option></select>
+  <select id="fst" onchange="load()"><option value="">Tất cả claim</option><option value="P">Chờ duyệt</option><option value="A">Đã duyệt</option></select>
   <input id="q" placeholder="Lọc thiết bị" oninput="load()" style="width:120px">
 </div>
-<table><thead><tr><th>Số claim</th><th>Thiết bị</th><th>Claim</th><th>Nhận TB</th><th>Sửa</th><th>Trước sửa</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Số claim</th><th>Thiết bị</th><th>Claim</th><th>Nhận TB</th><th>Sửa</th><th>Loại xử lý</th><th>Trước sửa</th><th>Ảnh lỗi</th><th>Ảnh sau sửa</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const CL={Pending:"Mới tạo",Approved:"Đã duyệt"}, RC={"":"—",Progress:"Đang sửa",Finished:"Đã nhận xong"}, FX={"":"—",Finished:"Đã sửa"};
+// Mã trạng thái nguồn TConst: Claim P/A · Received P/G/F · Fix P/G/F
+const CL={P:"Chờ duyệt",A:"Đã duyệt"}, RC={P:"Chưa gửi",G:"Chờ tiếp nhận",F:"Đã tiếp nhận"}, FX={P:"Chưa xử lý",G:"Đang xử lý",F:"Hoàn thành"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -42,25 +44,32 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const r=await fetch("/api/gpsclaims",{method:"POST",headers:H(),body:JSON.stringify({gpsDvNo:F("dv").value,beforeFixRemark:F("bf").value,remark:F("rm").value})});
+  const r=await fetch("/api/gpsclaims",{method:"POST",headers:H(),body:JSON.stringify({gpsDvNo:F("dv").value,gpsBeforeFixRemark:F("bf").value,remark:F("rm").value,files:F("img").value?[{fileIndex:1,gpsFileName:F("img").value,gpsFilePath:F("img").value,gpsFileType:"ERROR"}]:[]})});
   const j=await r.json();
-  if(r.ok){ msg("Đã tạo "+j.gpsClaimNo+"."); F("dv").value="";F("bf").value="";F("rm").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã tạo "+j.gpsClaimNo+"."); F("dv").value="";F("bf").value="";F("rm").value="";F("img").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/gpsclaims?claimStatus=${F("fst").value}&device=${encodeURIComponent(F("q").value)}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(g=>{
     let act="";
-    if(g.claimStatus==="Pending") act=`<button class="sm" onclick="act('${g.gpsClaimNo}','approve')">Duyệt</button>`;
-    else if(g.receivedStatus==="") act=`<button class="sm" onclick="act('${g.gpsClaimNo}','receive')">Nhận TB sửa</button>`;
-    else if(g.receivedStatus==="Progress") act=`<button class="sm" onclick="act('${g.gpsClaimNo}','finish')">Hoàn tất sửa</button>`;
+    if(g.gpsClaimStatus==="P") act=`<button class="sm" onclick="act('${g.gpsClaimNo}','approve')">Duyệt</button>`;
+    else if(g.gpsReceivedStatus==="G") act=`<button class="sm" onclick="act('${g.gpsClaimNo}','receive')">Tiếp nhận</button>`;
+    else if(g.gpsReceivedStatus==="F"&&g.gpsFixStatus==="G") act=`<select id="et-${g.gpsClaimNo}"><option value="">-- loại xử lý --</option><option value="ERRINGUARANTEE">Lỗi trong ĐK BH</option><option value="ERRNOTINGUARANTEE">Lỗi ngoài ĐK BH</option><option value="UNERROR">Không phải lỗi</option></select>
+      <input id="ed-${g.gpsClaimNo}" type="date" title="Ngày dự kiến xong (chỉ lỗi trong ĐK BH)"> <button class="sm" onclick="upd('${g.gpsClaimNo}')">Lưu xử lý</button>
+      <input id="af-${g.gpsClaimNo}" placeholder="Sau sửa" style="width:90px"> <button class="sm" onclick="fin('${g.gpsClaimNo}')">Hoàn thành</button>`;
     return `<tr><td><b>${g.gpsClaimNo}</b></td><td>${g.gpsDvNo}</td>
-      <td><span class="pill c-${g.claimStatus}">${CL[g.claimStatus]||g.claimStatus}</span></td>
-      <td><span class="pill r-${g.receivedStatus}">${RC[g.receivedStatus]||g.receivedStatus}</span></td>
-      <td><span class="pill f-${g.fixStatus}">${FX[g.fixStatus]||g.fixStatus}</span></td>
-      <td class="muted">${g.beforeFixRemark||"—"}</td><td>${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="7" class="muted">Chưa có claim.</td></tr>';
+      <td><span class="pill c-${g.gpsClaimStatus}">${CL[g.gpsClaimStatus]||g.gpsClaimStatus}</span></td>
+      <td><span class="pill r-${g.gpsReceivedStatus}">${RC[g.gpsReceivedStatus]||g.gpsReceivedStatus}</span></td>
+      <td><span class="pill f-${g.gpsFixStatus}">${FX[g.gpsFixStatus]||g.gpsFixStatus}</span></td>
+      <td>${g.gpsErrorType||"—"}</td><td class="muted">${g.gpsBeforeFixRemark||"—"}</td>
+      <td class="muted">${g.errorImage||"—"}</td><td class="muted">${g.afterFixImage||"—"}</td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="10" class="muted">Chưa có claim.</td></tr>';
 }
-async function act(no,a){ const r=await fetch(`/api/gpsclaims/${no}/${a}`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function act(no,a,body){ const r=await fetch(`/api/gpsclaims/${no}/${a}`,{method:"POST",headers:H(),body:JSON.stringify(body||{})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+// UpdAfterReceive: Frm gửi đủ 3 cột trong Ft_Cols_Upd; ngày dự kiến chỉ mở khi ERRINGUARANTEE (reposLueGPSErrType_EditValueChanged).
+function upd(no){ const et=F("et-"+no).value; if(!et){ msg("Vui lòng chọn loại xử lý!"); return; }
+  act(no,"updinfo",{gpsErrorType:et,gpsFinishFixExpectedDate:et==="ERRINGUARANTEE"?F("ed-"+no).value:null,ftColsUpd:"GPSF_GPSClaim.GPSErrorType,GPSF_GPSClaim.GPSFinishFixExpectedDate,GPSF_GPSClaim.Remark,"}); }
+function fin(no){ act(no,"finish",{gpsAfterFixRemark:F("af-"+no).value}); }
 load();
 </script>
 </body></html>

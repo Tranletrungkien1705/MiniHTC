@@ -54480,50 +54480,143 @@ app.MapPost("/api/gpsclaims/{no}/files", async (string no, List<GpsClaimFileDto>
     return Results.Ok(new { gpsClaimNo = no, saved = files.Count });
 }).RequireAuthorization();
 
-app.MapGet("/api/gpsclaims", async (AppDbContext db, ITenantContext t, string? claimStatus, string? device) =>
+// ===== #307: KHIẾU NẠI THIẾT BỊ GPS (GPSF_GPSClaim) — port 1:1 BizHTC.ZTempGPS.cs (csproj) =====
+// SaveX:5500 · ApproveX:5994 · ReceiveX:6201 · UpdAfterReceiveX:6409 · FinishGPSFixX:6509 · CheckDB:4728.
+// Trục trạng thái (TConst, Const.Main.StorageFG.1.cs:46-64): Claim P→A · Received P→G→F · Fix P→G→F.
+// ErrorImage/AfterFixImage KHÔNG phải cột DB: Frm Mng (btnSearch_Click:357-392) gán = GPSFileName của file
+// ĐẦU TIÊN loại ERROR/FIX trong GPSF_GPSClaimAttachFile ⇒ tính ở GET.
+app.MapGet("/api/gpsclaims", async (AppDbContext db, ITenantContext t, string? claimStatus, string? device,
+    string? gpsFixStatus, DateTime? createFrom, DateTime? createTo, DateTime? receiveFrom, DateTime? receiveTo,
+    DateTime? finishFixFrom, DateTime? finishFixTo) =>
 {
     var q = db.GpsClaims.Where(g => g.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(claimStatus)) q = q.Where(g => g.ClaimStatus == claimStatus);
+    if (!string.IsNullOrWhiteSpace(claimStatus)) q = q.Where(g => g.GPSClaimStatus == claimStatus);
+    if (!string.IsNullOrWhiteSpace(gpsFixStatus)) q = q.Where(g => g.GPSFixStatus == gpsFixStatus);
     if (!string.IsNullOrWhiteSpace(device)) q = q.Where(g => g.GpsDvNo.Contains(device.ToUpper()));
-    var items = await q.OrderByDescending(g => g.Id).Take(500)
-        .Select(g => new { g.GpsClaimNo, g.GpsDvNo, g.BeforeFixRemark, g.Remark, g.ClaimStatus, g.ReceivedStatus, g.FixStatus, g.CreatedAt }).ToListAsync();
+    if (createFrom is not null) q = q.Where(g => g.CreateDateTime >= createFrom);
+    if (createTo is not null) q = q.Where(g => g.CreateDateTime <= createTo);
+    if (receiveFrom is not null) q = q.Where(g => g.GPSReceivedDateTime >= receiveFrom);
+    if (receiveTo is not null) q = q.Where(g => g.GPSReceivedDateTime <= receiveTo);
+    if (finishFixFrom is not null) q = q.Where(g => g.GPSFinishFixDateTime >= finishFixFrom);
+    if (finishFixTo is not null) q = q.Where(g => g.GPSFinishFixDateTime <= finishFixTo);
+    var rows = await q.OrderByDescending(g => g.Id).Take(500)
+        .Select(g => new { g.GpsClaimNo, g.GpsDvNo, g.CreateDateTime, g.CreateBy, g.LUDateTime, g.LUBy,
+            g.ApproveDateTime, g.ApproveBy, g.GPSReceivedDateTime, g.GPSReceivedBy, g.GPSReceivedStatus,
+            g.GPSErrorType, g.GPSFixStatus, g.GPSBeforeFixRemark, g.GPSAfterFixRemark, g.GPSFinishFixExpectedDate,
+            g.GPSFinishFixDateTime, g.GPSFinishFixBy, g.GPSClaimStatus, g.Remark, g.LogLUDateTime, g.LogLUBy }).ToListAsync();
+    var nos = rows.Select(r => r.GpsClaimNo).ToList();
+    var files = await db.GpsClaimAttachFiles.Where(x => x.OrgId == t.OrgId && nos.Contains(x.GPSClaimNo))
+        .OrderBy(x => x.FileIndex).Select(x => new { x.GPSClaimNo, x.GPSFileType, x.GPSFileName }).ToListAsync();
+    var items = rows.Select(r => new { r.GpsClaimNo, r.GpsDvNo, r.CreateDateTime, r.CreateBy, r.LUDateTime, r.LUBy,
+        r.ApproveDateTime, r.ApproveBy, r.GPSReceivedDateTime, r.GPSReceivedBy, r.GPSReceivedStatus,
+        r.GPSErrorType, r.GPSFixStatus, r.GPSBeforeFixRemark, r.GPSAfterFixRemark, r.GPSFinishFixExpectedDate,
+        r.GPSFinishFixDateTime, r.GPSFinishFixBy, r.GPSClaimStatus, r.Remark, r.LogLUDateTime, r.LogLUBy,
+        ErrorImage = files.FirstOrDefault(f => f.GPSClaimNo == r.GpsClaimNo && f.GPSFileType == "ERROR")?.GPSFileName,
+        AfterFixImage = files.FirstOrDefault(f => f.GPSClaimNo == r.GpsClaimNo && f.GPSFileType == "FIX")?.GPSFileName }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/gpsclaims", async (GpsClaimDto dto, AppDbContext db, ITenantContext t) =>
+// GPSF_GPSClaim_SaveX: tạo/sửa (xoá-rồi-chèn lại cả claim lẫn file) hoặc xoá (FlagIsDelete="1").
+app.MapPost("/api/gpsclaims", async (GpsClaimDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.GpsDvNo)) return Results.BadRequest(new { error = "Cần số thiết bị GPS (GpsDvNo)." });
-    var no = "GPSC" + DateTime.Now.ToString("yyMMddHHmmss");
-    var g = new GpsClaim { OrgId = t.OrgId, GpsClaimNo = no, GpsDvNo = dto.GpsDvNo.Trim().ToUpperInvariant(), BeforeFixRemark = dto.BeforeFixRemark, Remark = dto.Remark, ClaimStatus = "Pending" };
-    db.GpsClaims.Add(g); await db.SaveChangesAsync();
-    return Results.Ok(new { g.GpsClaimNo, g.GpsDvNo, claimStatus = g.ClaimStatus });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var isDelete = dto.FlagIsDelete == "1";
+    var no = string.IsNullOrWhiteSpace(dto.GpsClaimNo) ? "GPSC" + now.ToString("yyMMddHHmmss") : dto.GpsClaimNo.Trim().ToUpperInvariant();
+    var dv = (dto.GpsDvNo ?? "").Trim().ToUpperInvariant();
+    var old = await db.GpsClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsClaimNo == no);
+    if (old is null && isDelete) return Results.Ok(new { gpsClaimNo = no, deleted = false }); // nguồn: goto MyCodeLabel_Done
+    // GPSF_GPSClaim_Save_InvalidGPSClaimStatus: chỉ sửa/xoá khi claim còn P.
+    if (old is not null && old.GPSClaimStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ sửa/xoá phiếu khiếu nại trạng thái chờ duyệt (P).", gpsClaimStatus = old.GPSClaimStatus });
+    if (string.IsNullOrWhiteSpace(dv)) return Results.BadRequest(new { error = "Cần số thiết bị GPS (GpsDvNo)." });
+    // Sto_StoBalanceGPS_CheckDB("STOGPS", dv, exist=1, block="", InStatus="0", MapStatus="0"): TB phải có tồn ở kho STOGPS, đã xuất kho và chưa gắn xe.
+    var bal = await db.GpsBalances.FirstOrDefaultAsync(b => b.OrgId == t.OrgId && b.StorageCode == "STOGPS" && b.GpsDvNo == dv);
+    if (bal is null) return Results.BadRequest(new { error = "Không tìm thấy thiết bị trong tồn kho STOGPS (Sto_StoBalanceGPS_CheckDB_StoBalanceGPSNotFound).", gpsDvNo = dv });
+    if (bal.InStatus != "0") return Results.BadRequest(new { error = "Thiết bị đang nằm trong kho (InStatus phải = 0).", inStatus = bal.InStatus });
+    if (bal.MapStatus != "0") return Results.BadRequest(new { error = "Thiết bị đang gắn xe (MapStatus phải = 0).", mapStatus = bal.MapStatus });
+    var files = (dto.Files ?? new()).ToList();
+    // GPSF_GPSClaim_Save_GPSClaimAttachFileTableBlank: lưu (không xoá) bắt buộc có file đính kèm.
+    if (!isDelete && files.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 file đính kèm (GPSF_GPSClaimAttachFile)." });
+    db.GpsClaimAttachFiles.RemoveRange(await db.GpsClaimAttachFiles.Where(x => x.OrgId == t.OrgId && x.GPSClaimNo == no).ToListAsync());
+    if (old is not null) db.GpsClaims.Remove(old);
+    if (!isDelete)
+    {
+        // Nguồn có đọc CreateDateTime/CreateBy cũ nhưng dòng chèn lại dùng dtimeTDate/strPartnerUserCode ⇒ sửa = đặt lại ngày tạo (giữ đúng hành vi đang chạy).
+        db.GpsClaims.Add(new GpsClaim { OrgId = t.OrgId, GpsClaimNo = no, GpsDvNo = dv, CreateDateTime = now, CreateBy = who,
+            LUDateTime = now, LUBy = who, GPSReceivedStatus = "P", GPSFixStatus = "P", GPSClaimStatus = "P",
+            GPSBeforeFixRemark = (dto.GPSBeforeFixRemark ?? "").Trim(), Remark = (dto.Remark ?? "").Trim(),
+            LogLUDateTime = now, LogLUBy = who });
+        foreach (var f in files)
+            db.GpsClaimAttachFiles.Add(new GpsClaimAttachFile { OrgId = t.OrgId, GPSClaimNo = no, FileIndex = f.FileIndex,
+                GPSFilePath = f.GPSFilePath ?? "", GPSFileName = f.GPSFileName ?? "", GPSFileType = f.GPSFileType ?? "",
+                Remark = f.Remark ?? "", LogLUDateTime = now, LogLUBy = who });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { gpsClaimNo = no, gpsDvNo = dv, deleted = isDelete, gpsClaimStatus = isDelete ? null : "P" });
 }).RequireAuthorization();
 
-// Chuyển trạng thái: approve (Claim→Approved), receive (Received→Progress), finish (Received→Finished + Fix→Finished)
-app.MapPost("/api/gpsclaims/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+// approve (ApproveX) · receive (ReceiveX) · updinfo (UpdAfterReceiveX) · finish (FinishGPSFixX).
+app.MapPost("/api/gpsclaims/{no}/{action}", async (string no, string action, GpsClaimActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("approve" or "receive" or "finish")) return Results.BadRequest(new { error = "action = approve|receive|finish" });
+    if (action is not ("approve" or "receive" or "updinfo" or "finish")) return Results.BadRequest(new { error = "action = approve|receive|updinfo|finish" });
+    dto ??= new GpsClaimActionDto(null, null, null, null, null, null);
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
     no = no.Trim().ToUpperInvariant();
     var g = await db.GpsClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GpsClaimNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "Không tìm thấy phiếu khiếu nại (GPSF_GPSClaim_CheckDB_GPSClaimNoNotFound).", no });
+    // GPSF_GPSClaim_CheckDB: so khớp lần lượt Received → Fix → Claim với danh sách cho phép của từng hàm.
+    IResult? Check(string recv, string fix, string claim)
+    {
+        if (recv.Length > 0 && g.GPSReceivedStatus != recv) return Results.BadRequest(new { error = "Trạng thái tiếp nhận không hợp lệ.", expected = recv, gpsReceivedStatus = g.GPSReceivedStatus });
+        if (fix.Length > 0 && g.GPSFixStatus != fix) return Results.BadRequest(new { error = "Trạng thái xử lý không hợp lệ.", expected = fix, gpsFixStatus = g.GPSFixStatus });
+        if (claim.Length > 0 && g.GPSClaimStatus != claim) return Results.BadRequest(new { error = "Trạng thái phiếu khiếu nại không hợp lệ.", expected = claim, gpsClaimStatus = g.GPSClaimStatus });
+        return null;
+    }
+    var remark = (dto.Remark ?? "").Trim();
     if (action == "approve")
     {
-        if (g.ClaimStatus != "Pending") return Results.BadRequest(new { error = "Chỉ duyệt claim Mới tạo." });
-        g.ClaimStatus = "Approved"; g.ApprovedAt = DateTime.Now;
+        if (Check("P", "", "P") is { } bad) return bad;
+        g.ApproveDateTime = now; g.ApproveBy = who; g.GPSReceivedStatus = "G"; g.GPSClaimStatus = "A"; g.Remark = remark;
+        g.LUDateTime = now; g.LUBy = who; g.LogLUDateTime = now; g.LogLUBy = who;
     }
     else if (action == "receive")
     {
-        if (g.ClaimStatus != "Approved") return Results.BadRequest(new { error = "Chưa duyệt claim." });
-        if (g.ReceivedStatus == "Finished") return Results.BadRequest(new { error = "Đã hoàn tất." });
-        g.ReceivedStatus = "Progress";
+        if (Check("G", "", "A") is { } bad) return bad;
+        g.GPSReceivedDateTime = now; g.GPSReceivedBy = who; g.GPSReceivedStatus = "F"; g.GPSFixStatus = "G"; g.Remark = remark;
+        g.LUDateTime = now; g.LUBy = who; g.LogLUDateTime = now; g.LogLUBy = who;
+    }
+    else if (action == "updinfo")
+    {
+        if (Check("F", "G", "A") is { } bad) return bad;
+        var ft = (dto.FtColsUpd ?? "").Trim().ToUpperInvariant();
+        if (ft.Contains("GPSF_GPSCLAIM.GPSERRORTYPE"))
+        {
+            var et = (dto.GPSErrorType ?? "").Trim().ToUpperInvariant();
+            // Mst_GPSErrorType_CheckDB(exist=1, FlagActive=1)
+            if (!await db.GpsErrorTypes.AnyAsync(x => x.OrgId == t.OrgId && x.GPSErrorType == et && x.FlagActive == "1"))
+                return Results.BadRequest(new { error = "Loại xử lý không tồn tại hoặc ngừng hoạt động (Mst_GPSErrorType).", gpsErrorType = et });
+            g.GPSErrorType = et;
+        }
+        if (ft.Contains("GPSF_GPSCLAIM.GPSFINISHFIXEXPECTEDDATE"))
+            g.GPSFinishFixExpectedDate = DateTime.TryParse(dto.GPSFinishFixExpectedDate, out var d) ? d.Date : null;
+        // Nguồn có tính bUpd_Remark nhưng KHÔNG ghi Remark, cũng không đổi LUDateTime — chỉ LogLU*.
+        g.LogLUDateTime = now; g.LogLUBy = who;
     }
     else // finish
     {
-        if (g.ReceivedStatus != "Progress") return Results.BadRequest(new { error = "Chưa nhận thiết bị (Progress)." });
-        g.ReceivedStatus = "Finished"; g.FixStatus = "Finished";
+        if (Check("F", "G", "A") is { } bad) return bad;
+        // GPSF_GPSClaim_FinishGPSFix_InvalidGPSErrorType
+        if (string.IsNullOrWhiteSpace(g.GPSErrorType)) return Results.BadRequest(new { error = "Chưa chọn loại xử lý (GPSErrorType) — lưu thông tin xử lý trước." });
+        g.GPSAfterFixRemark = (dto.GPSAfterFixRemark ?? "").Trim(); g.GPSFinishFixDateTime = now; g.GPSFinishFixBy = who;
+        g.GPSFixStatus = "F"; g.Remark = remark; g.LUDateTime = now; g.LUBy = who; g.LogLUDateTime = now; g.LogLUBy = who;
+        // Nguồn chỉ INSERT thêm file FIX (không xoá file cũ).
+        foreach (var f in dto.Files ?? new())
+            db.GpsClaimAttachFiles.Add(new GpsClaimAttachFile { OrgId = t.OrgId, GPSClaimNo = no, FileIndex = f.FileIndex,
+                GPSFilePath = f.GPSFilePath ?? "", GPSFileName = f.GPSFileName ?? "", GPSFileType = f.GPSFileType ?? "",
+                Remark = f.Remark ?? "", LogLUDateTime = now, LogLUBy = who });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { g.GpsClaimNo, g.ClaimStatus, g.ReceivedStatus, g.FixStatus });
+    return Results.Ok(new { g.GpsClaimNo, g.GPSClaimStatus, g.GPSReceivedStatus, g.GPSFixStatus, g.GPSErrorType });
 }).RequireAuthorization();
 
 // ===== Cập nhật trạng thái đóng thùng (CarVINUpdate_TypeCB — port 1:1 FrmUpdateVIN_TypeCB) =====
@@ -55241,7 +55334,8 @@ record VinPackingRowDto(string Vin, string? LoaiThung, string? ActualSpec, strin
 record VinPackingDto(List<VinPackingRowDto>? Items);
 record VinActualSpecRowDto(string Vin, string? ActualSpec, string? SerialNo, string? AVNCode, DateTime? AVNDate, string? AVNScreenSerialNo);
 record VinActualSpecDto(List<VinActualSpecRowDto>? Rows);
-record GpsClaimDto(string GpsDvNo, string? BeforeFixRemark, string? Remark);
+record GpsClaimDto(string? GpsDvNo, string? GPSBeforeFixRemark, string? Remark, string? GpsClaimNo = null, string? FlagIsDelete = null, List<GpsClaimFileDto>? Files = null);
+record GpsClaimActionDto(string? Remark, string? GPSErrorType, string? GPSFinishFixExpectedDate, string? FtColsUpd, string? GPSAfterFixRemark, List<GpsClaimFileDto>? Files);
 record GpsInDevDto(string GpsDvNo, string? GpsBoxNo, string? Remark);
 record GpsInDto(string? GpsInType, string StorageCode, string? Remark, List<GpsInDevDto>? Devices);
 record GpsOutDto(string StorageCode, string? UserCodeReceived, string? Remark, List<GpsInDevDto>? Devices);

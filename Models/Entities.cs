@@ -1520,19 +1520,39 @@ public sealed class GpsClaimAttachFile
     public string? LogLUBy { get; set; }
 }
 
+/// 🔴 #307 — đổi tên cột khớp nguồn 1:1 (`TblGPSF_GPSClaim`, DbDefine.cs:3687) + trạng thái dùng MÃ nguồn
+/// (`TConst.GPSClaimStatus` P/A · `GPSReceivedStatus` P/G/F · `GPSFixStatus` P/G/F, Const.Main.StorageFG.1.cs:46-64)
+/// thay cho nhãn tự đặt cũ (Pending/Approved/Progress/Finished).
 public sealed class GpsClaim
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string GpsClaimNo { get; set; } = "";
     public string GpsDvNo { get; set; } = "";            // số thiết bị GPS
-    public string? BeforeFixRemark { get; set; }         // tình trạng trước sửa
+    public DateTime CreateDateTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    public DateTime? GPSReceivedDateTime { get; set; }
+    public string? GPSReceivedBy { get; set; }
+    /// <summary>P chưa gửi → G chờ tiếp nhận (sau duyệt) → F đã tiếp nhận.</summary>
+    public string GPSReceivedStatus { get; set; } = "P";
+    /// <summary>Loại xử lý (`Mst_GPSErrorType`): ERRINGUARANTEE / ERRNOTINGUARANTEE / UNERROR.</summary>
+    public string? GPSErrorType { get; set; }
+    /// <summary>P chưa xử lý → G đang xử lý (sau tiếp nhận) → F hoàn thành.</summary>
+    public string GPSFixStatus { get; set; } = "P";
+    public string? GPSBeforeFixRemark { get; set; }      // tình trạng trước sửa
+    public string? GPSAfterFixRemark { get; set; }       // kết quả sau sửa
+    public DateTime? GPSFinishFixExpectedDate { get; set; }
+    public DateTime? GPSFinishFixDateTime { get; set; }
+    public string? GPSFinishFixBy { get; set; }
+    /// <summary>P chờ duyệt → A đã duyệt.</summary>
+    public string GPSClaimStatus { get; set; } = "P";
     public string? Remark { get; set; }
-    public string ClaimStatus { get; set; } = "Pending"; // Pending → Approved
-    public string ReceivedStatus { get; set; } = "";     // '' → Progress → Finished
-    public string FixStatus { get; set; } = "";          // '' → Finished
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? ApprovedAt { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu nhập kho thiết bị GPS (StoF_GPSIn — port 1:1 FrmStoF_GPSIn/FrmMngStoF_GPSIn, StoFGPS):
