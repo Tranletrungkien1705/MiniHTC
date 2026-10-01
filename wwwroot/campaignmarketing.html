@@ -46,14 +46,14 @@ function addPartRow(){ const tr=document.createElement("tr"); tr.className="part
 addPartRow();
 async function save(){ await token();
   const parts=[...F("partRows").querySelectorAll("tr")].map(tr=>({PartCode:tr.querySelector(".pc").value,PercentDiscount:+tr.querySelector(".pd").value||0})).filter(p=>p.PartCode);
-  const body={CamName:F("name").value,CamDesc:F("desc").value,EffDateStart:F("start").value||null,EffDateEnd:F("end").value||null,
-    ConditionVin:F("cvin").value||null,ConditionPlateNo:F("cplate").value||null,ConditionDealer:F("cdealer").value||null,Parts:parts};
+  const body={CamMarketingName:F("name").value,CamMarketingDesc:F("desc").value,EffDateStart:F("start").value||null,EffDateEnd:F("end").value||null,
+    ConditionVIN:F("cvin").value||null,ConditionPlateNo:F("cplate").value||null,ConditionDealer:F("cdealer").value||null,Parts:parts};
   const r=await fetch("/api/campaignmarketings",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.camNo+" ("+d.partsCount+" PT)"); F("name").value=""; F("desc").value=""; F("partRows").innerHTML=""; addPartRow(); load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã tạo "+d.camMarketingNo+" ("+d.partsCount+" PT)"); F("name").value=""; F("desc").value=""; F("partRows").innerHTML=""; addPartRow(); load();
 }
 async function load(){ await token();
   const r=await fetch("/api/campaignmarketings?q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.camNo)}</b></td><td>${esc(o.camName)}</td><td>${String(o.effDateStart).slice(0,10)}</td><td>${String(o.effDateEnd).slice(0,10)}</td><td>${esc(o.conditionDealer)||"—"}</td><td>${o.parts}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có chiến dịch.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.camMarketingNo)}</b></td><td>${esc(o.camMarketingName)}</td><td>${String(o.effDateStart).slice(0,10)}</td><td>${String(o.effDateEnd).slice(0,10)}</td><td>${esc(o.conditionDealer)||"—"}</td><td>${o.parts}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có chiến dịch.</td></tr>';
 }
 </script>
 </body></html>

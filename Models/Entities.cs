@@ -5218,20 +5218,22 @@ public sealed class CampaignMarketing
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string CamNo { get; set; } = "";
-    public string CamName { get; set; } = "";
-    public string? CamDesc { get; set; }
+    public string CamMarketingNo { get; set; } = "";
+    public string CamMarketingName { get; set; } = "";
+    public string? CamMarketingDesc { get; set; }
     public DateTime EffDateStart { get; set; }
     public DateTime EffDateEnd { get; set; }
     public DateTime? WarrantyDateStart { get; set; }
     public DateTime? WarrantyDateEnd { get; set; }
-    public string? ConditionVin { get; set; }        // CSV
+    public string? ConditionVIN { get; set; }        // CSV
     public string? ConditionPlateNo { get; set; }     // CSV
     public string? ConditionDealer { get; set; }      // CSV
-    public string? ConditionFullVin { get; set; }     // CSV — port 1:1 Ser_CampaignMarketing.ConditionFullVIN (cờ điều kiện thứ 4, có bảng detail Ser_CampaignMarketingFullVIN)
+    public string? ConditionFullVIN { get; set; }     // CSV — port 1:1 Ser_CampaignMarketing.ConditionFullVIN (cờ điều kiện thứ 4, có bảng detail Ser_CampaignMarketingFullVIN)
     public string? CamMarketingStatus { get; set; }   // trạng thái duyệt — port 1:1 (dùng nhiều trong BizCarSv.CampaignMarketing)
     public string? Remark { get; set; }               // ghi chú — port 1:1 Ser_CampaignMarketing.Remark
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>#366 tên cột nguồn Ser_CampaignMarketing (DbDefine V20): CamMarketingNo/Name/Desc, ConditionVIN/FullVIN, CreateDTime/CreateBy.</summary>
+    public DateTime CreateDTime { get; set; } = DateTime.Now;
+    public string? CreateBy { get; set; }
 }
 
 /// <summary>Phụ tùng khuyến mãi trong chiến dịch marketing (dòng) — port 1:1 grid gridCPart, TCMotor.</summary>
