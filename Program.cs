@@ -6808,7 +6808,7 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
 }).RequireAuthorization();
 
 // Sửa bảo lãnh — cập nhật ngày hết hạn + ngày kết thúc theo VIN (port 1:1 FrmEditGrtExpiredDate, TCMotor/Sales/Payment).
-app.MapPost("/api/bankgrts/{no}/edit-expiry", async (string no, GrtExpiryEditDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/bankgrts/{no}/edit-expiry", async (string no, GrtExpiryEditDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
@@ -6830,11 +6830,17 @@ app.MapPost("/api/bankgrts/{no}/edit-expiry", async (string no, GrtExpiryEditDto
         updated++;
     }
     await db.SaveChangesAsync();
+    // #352 hiệu ứng phụ nguồn (lối vào theo GuaranteeNo): myPmt_Guarantee_Upd_DateEnd_01 + _DateEnd_Discount — có ở
+    //   PaymentGuaranteeApprove_*_20210111 (Biz.HTC.WH.My.cs:10861/11319), PaymentGuaranteeDetailUpdate_New20191225 (TCF :1936),
+    //   Pmt_GuaranteeDetail_UpdateDateExpired_Cal/_20210111 (TCF :2405/:3399), PaymentGuaranteeDetailCancel_New20230306 (WH :42505).
+    await GrtDiscount.UpdDateEnd01(db, t.OrgId, new[] { no }, user.Identity?.Name ?? "system");
+    await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, new[] { no }, user.Identity?.Name ?? "system");
+    await db.SaveChangesAsync();
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // Cập nhật giá trị bảo lãnh theo VIN (port 1:1 FrmEditGrtValue, 2010.HTC).
-app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
@@ -6854,6 +6860,12 @@ app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto d
     }
     // cập nhật lại tổng giá trị bảo lãnh trên header
     g.TotalAmount = cars.Sum(c => c.GrtValue);
+    await db.SaveChangesAsync();
+    // #352 hiệu ứng phụ nguồn (lối vào theo GuaranteeNo): myPmt_Guarantee_Upd_DateEnd_01 + _DateEnd_Discount — có ở
+    //   PaymentGuaranteeApprove_*_20210111 (Biz.HTC.WH.My.cs:10861/11319), PaymentGuaranteeDetailUpdate_New20191225 (TCF :1936),
+    //   Pmt_GuaranteeDetail_UpdateDateExpired_Cal/_20210111 (TCF :2405/:3399), PaymentGuaranteeDetailCancel_New20230306 (WH :42505).
+    await GrtDiscount.UpdDateEnd01(db, t.OrgId, new[] { g.GuaranteeNo }, user.Identity?.Name ?? "system");
+    await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, new[] { g.GuaranteeNo }, user.Identity?.Name ?? "system");
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, totalAmount = g.TotalAmount, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
@@ -7023,7 +7035,16 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (
         g.FlagSettled = "1"; g.SettledAt = DateTime.Now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled, g.TermActual, g.TermWarning, g.RemarkReject });
+    if (action is "approve" or "reject")
+    {
+    // #352 hiệu ứng phụ nguồn (lối vào theo GuaranteeNo): myPmt_Guarantee_Upd_DateEnd_01 + _DateEnd_Discount — có ở
+    //   PaymentGuaranteeApprove_*_20210111 (Biz.HTC.WH.My.cs:10861/11319), PaymentGuaranteeDetailUpdate_New20191225 (TCF :1936),
+    //   Pmt_GuaranteeDetail_UpdateDateExpired_Cal/_20210111 (TCF :2405/:3399), PaymentGuaranteeDetailCancel_New20230306 (WH :42505).
+        await GrtDiscount.UpdDateEnd01(db, t.OrgId, new[] { g.GuaranteeNo }, user.Identity?.Name ?? "system");
+        await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, new[] { g.GuaranteeNo }, user.Identity?.Name ?? "system");
+        await db.SaveChangesAsync();
+    }
+    return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled, g.TermActual, g.TermWarning, g.RemarkReject, g.DateEnd, g.DateEnd_Discount });
 }).RequireAuthorization();
 
 // ===== Lệnh xuất xe - NH xác nhận nhận xe (BankDeliveryOrder — port 1:1 FrmBankDO, cụm Bank) =====
