@@ -15,19 +15,21 @@
 <body>
 <h1>BOM định mức bảo dưỡng <span class="muted">(header-detail, port 1:1 FrmMstBOMMng — TCMotor)</span></h1>
 <div class="bar">
-  <input id="bc" placeholder="Mã BOM *" style="width:110px"><input id="mc" placeholder="Model *" style="width:100px"><input id="ml" placeholder="Cấp BD (1000km...)" style="width:130px">
-  <button class="primary" onclick="saveBom()">Lưu BOM</button><span id="msg"></span>
+  <input id="bc" placeholder="Mã BOM *" style="width:110px"><input id="bd" placeholder="Mô tả BOM" style="width:200px"><input id="rm" placeholder="Ghi chú" style="width:160px">
+  <label style="display:flex;gap:4px;align-items:center"><input type="checkbox" id="fa" checked style="width:auto"> Hiệu lực</label>
+  <button class="primary" onclick="saveBom()">Lưu BOM</button><button onclick="newBom()">BOM mới</button><span id="msg"></span>
 </div>
-<h3>Danh sách BOM (click để xem dòng)</h3>
-<table><thead><tr><th>Mã</th><th>Model</th><th>Cấp BD</th><th>Số dòng</th></tr></thead><tbody id="boms"><tr><td colspan="4" class="muted">Đang tải…</td></tr></tbody></table>
-<h3>Dòng phụ tùng của BOM: <span id="cur" class="muted">(chọn 1 BOM)</span></h3>
+<p class="muted">#394 theo nguồn Mst_BOM_Add/_Update: BOM lưu CẢ đầu và danh sách dòng trong một lần (sửa = gửi lại toàn bộ dòng).</p>
+<h3>Danh sách BOM (click để sửa)</h3>
+<table><thead><tr><th>Mã</th><th>Mô tả</th><th>Hiệu lực</th><th>Số dòng</th></tr></thead><tbody id="boms"><tr><td colspan="4" class="muted">Đang tải…</td></tr></tbody></table>
+<h3>Dòng phụ tùng: <span id="cur" class="muted">(BOM mới)</span></h3>
 <div class="bar">
-  <input id="ps" placeholder="SKU phụ tùng" style="width:130px"><input id="pn" placeholder="Tên PT" style="width:180px"><input id="qt" placeholder="SL" value="1" style="width:60px">
-  <button class="primary" onclick="addLine()">Thêm dòng</button>
+  <input id="ps" placeholder="Mã phụ tùng" style="width:130px"><input id="pn" placeholder="Tên PT" style="width:180px"><input id="un" placeholder="ĐVT" style="width:70px"><input id="qt" placeholder="SL tối thiểu" value="1" style="width:90px">
+  <button onclick="addLine()">+ Thêm dòng</button>
 </div>
-<table><thead><tr><th>SKU</th><th>Tên</th><th>SL</th><th></th></tr></thead><tbody id="lines"><tr><td colspan="4" class="muted">—</td></tr></tbody></table>
+<table><thead><tr><th>Mã PT</th><th>Tên</th><th>ĐVT</th><th>SL tối thiểu</th><th></th></tr></thead><tbody id="lines"><tr><td colspan="5" class="muted">—</td></tr></tbody></table>
 <script>
-let TOKEN=null, CUR=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+let TOKEN=null, CUR=null, DRAFT=[]; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -37,24 +39,25 @@ function msg(t,ok){ F("msg").textContent=t; F("msg").className=ok?"":"r"; }
 async function loadBoms(){ await token();
   const d=await (await fetch("/api/boms",{headers:H()})).json();
   F("boms").innerHTML=(d.items||[]).map(b=>`<tr onclick="pick('${b.bomCode}')" style="cursor:pointer" class="${b.bomCode===CUR?'sel':''}">
-    <td><b>${b.bomCode}</b></td><td>${b.modelCode}</td><td>${b.maintLevel||""}</td><td>${b.lines}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có BOM.</td></tr>';
+    <td><b>${b.bomCode}</b></td><td>${b.bomDesc||""}</td><td>${b.flagActive==="1"?"Có":"Không"}</td><td>${b.lines}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có BOM.</td></tr>';
 }
-async function saveBom(){
-  const r=await fetch("/api/boms",{method:"POST",headers:H(),body:JSON.stringify({bomCode:F("bc").value,modelCode:F("mc").value,maintLevel:F("ml").value})});
-  if(r.ok){ msg("Đã lưu BOM.",true); loadBoms(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
+function renderLines(){
+  F("lines").innerHTML=DRAFT.map((l,i)=>`<tr><td><b>${l.partCode}</b></td><td>${l.partName||""}</td><td>${l.unit||""}</td><td>${l.qtyMin}</td>
+    <td><span class="act r" onclick="DRAFT.splice(${i},1);renderLines()">Bỏ</span></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có dòng.</td></tr>';
 }
-async function pick(c){ CUR=c; F("cur").textContent=c; loadBoms(); loadLines(); }
-async function loadLines(){ if(!CUR){ return; } await token();
-  const d=await (await fetch(`/api/boms/${CUR}/lines`,{headers:H()})).json();
-  F("lines").innerHTML=(d.lines||[]).map(l=>`<tr><td><b>${l.partSku}</b></td><td>${l.partName||""}</td><td>${l.qty}</td>
-    <td><span class="act r" onclick="delLine(${l.id})">Xoá</span></td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dòng.</td></tr>';
+function newBom(){ CUR=null; DRAFT=[]; F("bc").value="";F("bd").value="";F("rm").value="";F("fa").checked=true; F("bc").disabled=false; F("cur").textContent="(BOM mới)"; renderLines(); loadBoms(); }
+async function pick(c){ await token(); const d=await (await fetch(`/api/boms/${c}/lines`,{headers:H()})).json();
+  CUR=c; F("bc").value=c; F("bc").disabled=true; F("bd").value=d.bomDesc||""; F("rm").value=d.remark||""; F("fa").checked=d.flagActive==="1"; F("cur").textContent=c;
+  DRAFT=(d.lines||[]).map(l=>({partCode:l.partCode,partName:l.partName,unit:l.unit,qtyMin:l.qtyMin})); renderLines(); loadBoms(); }
+function addLine(){ if(!F("ps").value.trim()){ msg("Nhập mã phụ tùng.",false); return; }
+  DRAFT.push({partCode:F("ps").value.trim(),partName:F("pn").value,unit:F("un").value,qtyMin:Number(F("qt").value||1)}); F("ps").value="";F("pn").value=""; renderLines(); }
+async function saveBom(){ await token();
+  const lines=DRAFT.map(l=>({PartCode:l.partCode,PartName:l.partName,Unit:l.unit,QtyMin:l.qtyMin}));
+  const r = CUR
+    ? await fetch(`/api/boms/${CUR}/update`,{method:"POST",headers:H(),body:JSON.stringify({BOMDesc:F("bd").value,Remark:F("rm").value,FlagActive:F("fa").checked?"1":"0",Lines:lines})})
+    : await fetch("/api/boms",{method:"POST",headers:H(),body:JSON.stringify({BomCode:F("bc").value,BOMDesc:F("bd").value,Remark:F("rm").value,Lines:lines})});
+  const j=await r.json(); if(r.ok){ msg("Đã lưu BOM "+j.bomCode+".",true); CUR=j.bomCode; F("bc").disabled=true; loadBoms(); } else msg("Lỗi: "+(j.error||r.status),false);
 }
-async function addLine(){ if(!CUR){ msg("Chọn BOM trước.",false); return; }
-  const r=await fetch(`/api/boms/${CUR}/lines`,{method:"POST",headers:H(),body:JSON.stringify({partSku:F("ps").value,partName:F("pn").value,qty:Number(F("qt").value||1)})});
-  if(r.ok){ msg("Đã thêm dòng.",true); F("ps").value="";F("pn").value=""; loadLines(); loadBoms(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
-}
-async function delLine(id){ const r=await fetch("/api/boms/lines/"+id,{method:"DELETE",headers:H()});
-  if(r.ok){ loadLines(); loadBoms(); } }
-loadBoms();
+renderLines(); loadBoms();
 </script>
 </body></html>

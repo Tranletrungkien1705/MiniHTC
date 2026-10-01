@@ -475,10 +475,16 @@ public sealed class Bom
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string BomCode { get; set; } = "";
-    public string ModelCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";     // ⚠️ cột RIÊNG MiniHTC — Mst_BOM nguồn không có
     public string? MaintLevel { get; set; }   // cấp bảo dưỡng (1000km/5000km...)
-    public string Status { get; set; } = "1";
+    public string FlagActive { get; set; } = "1";   // #394 rename Status→FlagActive (Mst_BOM.FlagActive)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #394 parity Mst_BOM (Mst_BOM_Add/_Update, BizCarSv.ZTemp.cs:22637/22999) =====
+    public string? BOMDesc { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng BOM: 1 phụ tùng + số lượng định mức.</summary>
@@ -487,9 +493,14 @@ public sealed class BomLine
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long BomId { get; set; }
-    public string PartSku { get; set; } = "";
+    public string PartCode { get; set; } = "";   // #394 rename PartSku→PartCode (Mst_BOMDtl.PartCode)
     public string? PartName { get; set; }
-    public decimal Qty { get; set; } = 1;
+    public decimal QtyMin { get; set; } = 1;     // #394 rename Qty→QtyMin (Mst_BOMDtl.QtyMin — định mức tối thiểu)
+
+    // ===== #394 parity Mst_BOMDtl =====
+    public string? Unit { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Gia hạn bảo hành (FrmMstWarrantyExtension — TCMotor): mua thêm thời hạn BH cho xe.</summary>

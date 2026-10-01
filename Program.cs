@@ -1708,25 +1708,54 @@ app.MapPost("/api/pos/{no}/{action}", async (string no, string action, AppDbCont
 }).RequireAuthorization();
 
 // ===== BOM định mức bảo dưỡng (header-detail, port 1:1 FrmMstBOMMng — TCMotor) =====
+// #394 parity Mst_BOM_Add / Mst_BOM_Update (BizCarSv.ZTemp.cs:22637 / 22999; WS WSCarSv.asmx.cs:32599): nguồn CHỈ có 2 lệnh ghi —
+//   Add = đầu + ≥1 dòng trong MỘT lệnh; Update = sửa từng phần đầu (Ft_Cols_Upd: BOMDesc/Remark/FlagActive) + XOÁ dòng cũ, chèn lại ≥1 dòng.
+//   Thêm/xoá TỪNG dòng lẻ là lối tự đặt ⇒ 400 + route. ModelCode/MaintLevel là cột RIÊNG MiniHTC (nguồn không có) — giữ, không bắt buộc.
 app.MapGet("/api/boms", async (AppDbContext db, ITenantContext t, string? model) =>
 {
     var q = db.Boms.Where(b => b.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(b => b.ModelCode.Contains(model));
     var items = await q.OrderBy(b => b.BomCode).Select(b => new
-    { b.BomCode, b.ModelCode, b.MaintLevel, b.Status, lines = db.BomLines.Count(l => l.OrgId == t.OrgId && l.BomId == b.Id) }).ToListAsync();
+    { b.BomCode, b.BOMDesc, b.Remark, b.FlagActive, b.ModelCode, b.MaintLevel, b.LogLUDateTime, b.LogLUBy, lines = db.BomLines.Count(l => l.OrgId == t.OrgId && l.BomId == b.Id) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t) =>
+// Mst_BOM_Add: BOMCode rỗng ⇒ InvalidBOMCode; đã có ⇒ Mst_BOM_CheckDB (FlagExist=No); thiếu bảng dòng ⇒ BOMDtlTblNotFound; 0 dòng ⇒ BOMDtlTblInvalid.
+app.MapPost("/api/boms", async (BomDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.BomCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
-        return Results.BadRequest(new { error = "Cần BomCode và ModelCode." });
-    var code = dto.BomCode.Trim().ToUpperInvariant();
-    var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
-    if (b is null) { b = new Bom { OrgId = t.OrgId, BomCode = code }; db.Boms.Add(b); }
-    b.ModelCode = dto.ModelCode.Trim().ToUpperInvariant(); b.MaintLevel = dto.MaintLevel; b.Status = dto.Status ?? "1";
+    var code = (dto.BomCode ?? "").Trim().ToUpperInvariant();
+    if (code == "") return Results.BadRequest(new { error = "Chưa nhập mã BOM.", code = "Mst_BOM_Add_InvalidBOMCode" });
+    if (await db.Boms.AnyAsync(x => x.OrgId == t.OrgId && x.BomCode == code)) return Results.BadRequest(new { error = $"BOM {code} đã tồn tại.", code = "Mst_BOM_CheckDB_Exist" });
+    if (dto.Lines is null) return Results.BadRequest(new { error = "Thiếu bảng dòng phụ tùng.", code = "Mst_BOM_Add_BOMDtlTblNotFound" });
+    if (dto.Lines.Count < 1) return Results.BadRequest(new { error = "BOM phải có ít nhất 1 dòng phụ tùng.", code = "Mst_BOM_Add_BOMDtlTblInvalid" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    var b = new Bom { OrgId = t.OrgId, BomCode = code, BOMDesc = (dto.BOMDesc ?? "").Trim(), Remark = (dto.Remark ?? "").Trim(), FlagActive = "1",
+        ModelCode = (dto.ModelCode ?? "").Trim().ToUpperInvariant(), MaintLevel = dto.MaintLevel, LogLUDateTime = now, LogLUBy = who };
+    db.Boms.Add(b); await db.SaveChangesAsync();
+    foreach (var l in dto.Lines)
+        db.BomLines.Add(new BomLine { OrgId = t.OrgId, BomId = b.Id, PartCode = (l.PartCode ?? "").Trim().ToUpperInvariant(), PartName = l.PartName, Unit = l.Unit, QtyMin = l.QtyMin, LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { b.BomCode, b.ModelCode, b.MaintLevel });
+    return Results.Ok(new { b.BomCode, b.BOMDesc, b.FlagActive, lines = dto.Lines.Count });
+}).RequireAuthorization();
+
+// Mst_BOM_Update: BOM phải tồn tại; đầu sửa TỪNG PHẦN (null = không sửa ⇔ không có trong Ft_Cols_Upd); bảng dòng bắt buộc ≥1 ⇒ xoá hết rồi chèn lại.
+app.MapPost("/api/boms/{code}/update", async (string code, BomUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
+    if (b is null) return Results.NotFound(new { error = $"BOM {code} không tồn tại.", code = "Mst_BOM_CheckDB_NotExist" });
+    if (dto.Lines is null) return Results.BadRequest(new { error = "Thiếu bảng dòng phụ tùng.", code = "Mst_BOM_Update_BOMDtlTblNotFound" });
+    if (dto.Lines.Count < 1) return Results.BadRequest(new { error = "BOM phải có ít nhất 1 dòng phụ tùng.", code = "Mst_BOM_Update_BOMDtlTblInvalid" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    if (dto.BOMDesc is not null) b.BOMDesc = dto.BOMDesc.Trim();
+    if (dto.Remark is not null) b.Remark = dto.Remark.Trim();
+    if (dto.FlagActive is not null) b.FlagActive = dto.FlagActive.Trim();
+    b.LogLUDateTime = now; b.LogLUBy = who;
+    db.BomLines.RemoveRange(await db.BomLines.Where(l => l.OrgId == t.OrgId && l.BomId == b.Id).ToListAsync());
+    foreach (var l in dto.Lines)
+        db.BomLines.Add(new BomLine { OrgId = t.OrgId, BomId = b.Id, PartCode = (l.PartCode ?? "").Trim().ToUpperInvariant(), PartName = l.PartName, Unit = l.Unit, QtyMin = l.QtyMin, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { b.BomCode, b.BOMDesc, b.FlagActive, lines = dto.Lines.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/boms/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
@@ -1734,29 +1763,15 @@ app.MapGet("/api/boms/{code}/lines", async (string code, AppDbContext db, ITenan
     code = code.Trim().ToUpperInvariant();
     var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
     if (b is null) return Results.NotFound(new { code });
-    var lines = await db.BomLines.Where(l => l.OrgId == t.OrgId && l.BomId == b.Id).Select(l => new { l.Id, l.PartSku, l.PartName, l.Qty }).ToListAsync();
-    return Results.Ok(new { bom = b.BomCode, count = lines.Count, lines });
+    var lines = await db.BomLines.Where(l => l.OrgId == t.OrgId && l.BomId == b.Id).Select(l => new { l.Id, l.PartCode, l.PartName, l.Unit, l.QtyMin }).ToListAsync();
+    return Results.Ok(new { bom = b.BomCode, b.BOMDesc, b.Remark, b.FlagActive, count = lines.Count, lines });
 }).RequireAuthorization();
 
-app.MapPost("/api/boms/{code}/lines", async (string code, BomLineDto dto, AppDbContext db, ITenantContext t) =>
-{
-    code = code.Trim().ToUpperInvariant();
-    var b = await db.Boms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BomCode == code);
-    if (b is null) return Results.NotFound(new { code });
-    if (string.IsNullOrWhiteSpace(dto.PartSku)) return Results.BadRequest(new { error = "Cần PartSku." });
-    var line = new BomLine { OrgId = t.OrgId, BomId = b.Id, PartSku = dto.PartSku.Trim().ToUpperInvariant(), PartName = dto.PartName, Qty = dto.Qty <= 0 ? 1 : dto.Qty };
-    db.BomLines.Add(line);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { bom = code, line.PartSku, line.Qty });
-}).RequireAuthorization();
+app.MapPost("/api/boms/{code}/lines", (string code) =>
+    Results.BadRequest(new { error = "Nguồn không thêm dòng lẻ — sửa BOM bằng Mst_BOM_Update (gửi lại toàn bộ dòng).", route = $"/api/boms/{code}/update" })).RequireAuthorization();
 
-app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
-{
-    var l = await db.BomLines.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (l is null) return Results.NotFound(new { id });
-    db.BomLines.Remove(l); await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = id });
-}).RequireAuthorization();
+app.MapDelete("/api/boms/lines/{id:long}", (long id) =>
+    Results.BadRequest(new { error = "Nguồn không xoá dòng lẻ — sửa BOM bằng Mst_BOM_Update (gửi lại toàn bộ dòng).", route = "/api/boms/{code}/update" })).RequireAuthorization();
 
 // ===== Hãng bảo hiểm + khách hàng thuộc hãng (port 1:1 FrmInsuranceCreate/Modify — TCMotor DMSCarSv/Admin) =====
 // Nguồn: ValidateInput() + checkInsuranceExist() + gviewPart_ValidateRow() + mst.SerInsuranceCreate.
@@ -56237,8 +56252,10 @@ record PODto(string SupplierCode, string? Note, decimal Total);
 // Đơn mua xe từ hãng (Ord_PurchaseOrder) — nguồn không có trạng thái, chỉ cờ FlagActive.
 record PurchaseOrderDto(string? POCode, List<PurchaseOrderLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
 record PurchaseOrderLineDto(string SpecCode, string? ModelCode, string? ColorCode, int Quantity);
-record BomDto(string BomCode, string ModelCode, string? MaintLevel, string? Status);
-record BomLineDto(string PartSku, string? PartName, decimal Qty);
+// #394 Mst_BOM_Add: đầu + dòng; ModelCode/MaintLevel riêng MiniHTC (tuỳ chọn).
+record BomDto(string? BomCode, string? BOMDesc, string? Remark, List<BomLineDto>? Lines, string? ModelCode = null, string? MaintLevel = null);
+record BomUpdateDto(string? BOMDesc, string? Remark, string? FlagActive, List<BomLineDto>? Lines);   // #394 Mst_BOM_Update
+record BomLineDto(string? PartCode, string? PartName, string? Unit, decimal QtyMin);   // #394 cột Mst_BOMDtl
 record ComplaintDto(string PlateNo, string ClaimNo, DateTime? CreatDate, DateTime? ReceiveDate, string? DealerCode, string? CusRequest, string? ProcessDetail);
 
 
