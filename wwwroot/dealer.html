@@ -21,7 +21,7 @@
   <input id="bup" placeholder="BuPattern *"><input id="pv" placeholder="Tỉnh *"><input id="dt" placeholder="Loại đại lý"><input id="ds" placeholder="Quy mô">
   <input id="addr" placeholder="Địa chỉ" style="grid-column:span 2"><input id="ph" placeholder="Điện thoại"><input id="fx" placeholder="Fax">
   <input id="em" placeholder="Email"><input id="tx" placeholder="Mã số thuế"><input id="cpn" placeholder="Tên công ty"><input id="cpnAddr" placeholder="Địa chỉ ĐKKD">
-  <input id="dir" placeholder="Giám đốc"><input id="dirPh" placeholder="Mobile GĐ"><input id="contact" placeholder="Người liên lạc"><input id="remark" placeholder="Ghi chú">
+  <input id="dir" placeholder="Giám đốc"><input id="dirPh" placeholder="Mobile GĐ"><input id="contact" placeholder="Người liên lạc"><input id="remark" placeholder="Ghi chú"><input id="tckt" placeholder="Email TCKT"><label><input type="checkbox" id="fdt"> Đối tác</label>
   <select id="st"><option value="1">Hiệu lực</option><option value="0">Ngừng</option></select>
   <select id="fd"><option value="">FlagDirect: —</option><option value="1">Trực tiếp</option><option value="0">Không</option></select>
   <select id="ftcg"><option value="">FlagTCG: —</option><option value="1">Có</option><option value="0">Không</option></select>
@@ -57,7 +57,8 @@ async function save(){
     dealerType:F("dt").value||null,dealerScale:F("ds").value||null,
     address:F("addr").value,phone:F("ph").value,fax:F("fx").value,email:F("em").value,taxCode:F("tx").value,
     companyName:F("cpn").value||null,companyAddress:F("cpnAddr").value||null,directorName:F("dir").value||null,directorPhoneNo:F("dirPh").value||null,
-    contactName:F("contact").value||null,remark:F("remark").value||null,flagDirect:F("fd").value||null,flagTCG:F("ftcg").value||null,status:F("st").value});
+    contactName:F("contact").value||null,remark:F("remark").value||null,flagDirect:F("fd").value||null,flagTCG:F("ftcg").value||null,status:F("st").value,
+    flagDoiTac:F("fdt").checked?"1":"0",tCKTEmail:F("tckt").value||null});
   const r=await fetch("/api/dealers",{method:"POST",headers:H(),body});
   if(r.ok){ msg("Đã lưu.",true); ["c","n","bu","bup","dt","ds","addr","ph","fx","em","tx","cpn","cpnAddr","dir","dirPh","contact","remark"].forEach(i=>F(i).value=""); load(); }
   else msg("Lỗi: "+((await r.json()).error||r.status),false);

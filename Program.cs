@@ -347,7 +347,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q) 
       d.SalesManagerName, d.SalesManagerPhoneNo, d.SalesManagerEmail, d.GarageManagerName, d.GarageManagerEmail,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge,
       d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
-      d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status }).ToListAsync();
+      d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status, d.FlagDoiTac, d.TCKTEmail }).ToListAsync();   // #362
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -374,8 +374,9 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     d.DealerAddress01 = dto.DealerAddress01; d.DealerAddress02 = dto.DealerAddress02; d.DealerAddress03 = dto.DealerAddress03; d.DealerAddress04 = dto.DealerAddress04; d.DealerAddress05 = dto.DealerAddress05;
     d.FlagTCG = dto.FlagTCG; d.FlagOrdTCG = dto.FlagOrdTCG; d.FlagAutoLXX = dto.FlagAutoLXX; d.FlagAutoMapVIN = dto.FlagAutoMapVIN; d.FlagAutoSOAppr = dto.FlagAutoSOAppr;
     d.Status = dto.Status ?? "1";
+    d.FlagDoiTac = dto.FlagDoiTac == "1" ? "1" : "0"; d.TCKTEmail = string.IsNullOrWhiteSpace(dto.TCKTEmail) ? null : dto.TCKTEmail.Trim();   // #362
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DealerCode, d.DealerName, d.Status });
+    return Results.Ok(new { d.DealerCode, d.DealerName, d.Status, d.FlagDoiTac, d.TCKTEmail });
 }).RequireAuthorization();
 
 // Import hàng loạt data thật từ Mst_Dealer (SQL nguồn 2010.HTC) — dedupe theo DealerCode.
@@ -56192,7 +56193,8 @@ record DealerDto(string DealerCode, string DealerName, string? DealerType, strin
     string? SalesManagerName, string? SalesManagerPhoneNo, string? SalesManagerEmail, string? GarageManagerName, string? GarageManagerEmail,
     string? ContactName, string? Signer, string? SignerPosition, string? CtrNoSigner, string? CtrNoSignerPosition, string? Remark, string? HTCStaffInCharge,
     string? DealerAddress01, string? DealerAddress02, string? DealerAddress03, string? DealerAddress04, string? DealerAddress05,
-    string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status);
+    string? FlagTCG, string? FlagOrdTCG, string? FlagAutoLXX, string? FlagAutoMapVIN, string? FlagAutoSOAppr, string? Status,
+    string? FlagDoiTac = null, string? TCKTEmail = null);   // #362
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? SalesType, string? Phone, string? Email, string? Status,
     string? Gender, DateTime? DateOfBirth, string? Address, string? ProvinceCode, string? QualificationCode, string? Specialized, string? YearExperience,

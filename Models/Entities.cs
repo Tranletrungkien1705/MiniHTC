@@ -73,6 +73,11 @@ public sealed class Dealer
     public string? FlagAutoLXX { get; set; }
     public string? FlagAutoMapVIN { get; set; }
     public string? FlagAutoSOAppr { get; set; }
+    // ===== #362 cột biến thể TCMotor/Foton (FrmDealer Foton :130/:160, lưu qua SaveMasterDataTable — Frm không kiểm) =====
+    /// <summary>`FlagDoiTac` — đại lý là đối tác; import Excel Foton gán "0" (FrmDealer :592). Đọc ở FrmDMS40_CT_DealerContract (:222, = "1").</summary>
+    public string? FlagDoiTac { get; set; } = "0";
+    /// <summary>`TCKTEmail` — email phòng Tài chính kế toán của đại lý.</summary>
+    public string? TCKTEmail { get; set; }
 }
 
 /// <summary>Bảng giá xe (Mst_CarPrice) — port 1:1 FrmCarPrice: giá theo Model/Spec/Color.</summary>
