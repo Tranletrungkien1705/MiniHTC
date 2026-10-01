@@ -30492,6 +30492,8 @@ app.MapGet("/api/masters/disbursement-types", async (
 // 🔴 `_Update` **cập nhật TỪNG PHẦN**, chỉ **BỐN** cột có cờ: `FlagBankGrt` · `FlagBankPmt` ·
 //   `FlagActive` · `Remark`. **`DealerCode`/`BankCode` KHÔNG có cờ** ⇒ **khoá bất biến**
 //   (luật `C0-…quadragesimus`).
+// ⛔ #388 HỢP NHẤT SONG SINH Mst_BankDealer: bốn cửa dưới đây đọc/ghi BẢN CHUẨN DealerBank (bảng DealerBanks — cùng nguồn với /api/dealerbanks).
+//   Create/Update theo bản LIVE WS64 `_Create_20230922` / `_Update_20230922` (Biz.HTC.WH.cs) — thêm 5 cột BankBranchCode/Name, CreditContractNo/Date, CreditAmount.
 // 🔴 `_Delete` **XOÁ THẬT** (`dtDB.Rows[0].Delete()` + `SaveData`), sau khi `CheckDB` xác nhận tồn tại.
 // 🔴🔴 **`LogLUDateTime` ở cụm này CHỈ LƯU NGÀY, MẤT GIỜ**:
 //     `drDB["LogLUDateTime"] = Utils.CUtils.StandardizeDate(DateTime.Now);`
@@ -30504,7 +30506,7 @@ app.MapGet("/api/masters/bank-dealers", async (
     AppDbContext db, ITenantContext t, string? dealerCode, string? bankCode, string? flagActive,
     int? recordStart, int? recordCount) =>
 {
-    var q = db.BankDealers.Where(x => x.OrgId == t.OrgId);
+    var q = db.DealerBanks.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim());
     if (!string.IsNullOrWhiteSpace(bankCode)) q = q.Where(x => x.BankCode == bankCode.Trim());
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
@@ -30530,6 +30532,7 @@ app.MapGet("/api/masters/bank-dealers", async (
             MyIdxSeq = start + i,
             x.DealerCode, x.BankCode, x.FlagBankGrt, x.FlagBankPmt, x.FlagActive, x.Remark,
             x.LogLUDateTime, x.LogLUBy,
+            x.BankBranchCode, x.BankBranchName, x.CreditContractNo, x.CreditContractDate, x.CreditAmount,   // #388 cột bản _20230922
             mb_BankName = banks.TryGetValue(x.BankCode, out var bn) ? bn : null,
             md_DealerName = dealers.TryGetValue(x.DealerCode, out var dn) ? dn : null
         }),
@@ -30547,7 +30550,7 @@ app.MapPost("/api/masters/bank-dealers", async (
     var bk = (dto.BankCode ?? "").Trim();
 
     // 🔴 Guard 1 — cặp (đại lý, ngân hàng) chưa được khai.
-    var dup = await db.BankDealers.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.BankCode == bk);
+    var dup = await db.DealerBanks.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.BankCode == bk);
     if (dup)
         return Results.BadRequest(new
         {
@@ -30566,16 +30569,19 @@ app.MapPost("/api/masters/bank-dealers", async (
             note = "Nguon goi Mst_Bank_CheckDB - guard RIENG; thieu no se cho khai ngan hang KHONG TON TAI."
         });
 
-    var x2 = new BankDealer
+    if ((dto.CreditAmount ?? 0) < 0) return Results.BadRequest(new { error = "Phải >= 0!" });
+    var x2 = new DealerBank
     {
         OrgId = t.OrgId, DealerCode = dl, BankCode = bk,
-        FlagBankGrt = dto.FlagBankGrt, FlagBankPmt = dto.FlagBankPmt,
+        FlagBankGrt = string.IsNullOrWhiteSpace(dto.FlagBankGrt) ? "0" : dto.FlagBankGrt!, FlagBankPmt = string.IsNullOrWhiteSpace(dto.FlagBankPmt) ? "0" : dto.FlagBankPmt!,
+        BankBranchCode = dto.BankBranchCode, BankBranchName = dto.BankBranchName, CreditContractNo = dto.CreditContractNo,
+        CreditContractDate = dto.CreditContractDate, CreditAmount = dto.CreditAmount ?? 0,   // #388 _Create_20230922
         FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim(),
         Remark = dto.Remark,
         LogLUDateTime = DateTime.Now,
         LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"
     };
-    db.BankDealers.Add(x2);
+    db.DealerBanks.Add(x2);
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -30594,11 +30600,16 @@ app.MapPut("/api/masters/bank-dealers/{dealerCode}/{bankCode}", async (
 {
     var dl = (dealerCode ?? "").Trim();
     var bk = (bankCode ?? "").Trim();
-    var x = await db.BankDealers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.BankCode == bk);
+    var x = await db.DealerBanks.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.BankCode == bk);
     if (x is null) return Results.NotFound(new { dealerCode = dl, bankCode = bk });
 
-    // 🔴 CHỈ BỐN cột có cờ bUpd_*; khoá (DealerCode, BankCode) BẤT BIẾN.
+    // 🔴 #388 bản LIVE `Mst_BankDealer_Update_20230922`: CHÍN cột có cờ bUpd_* (null = không sửa); khoá (DealerCode, BankCode) BẤT BIẾN.
     var written = new List<string>();
+    if (dto.CreditContractNo is not null) { x.CreditContractNo = dto.CreditContractNo; written.Add("CreditContractNo"); }
+    if (dto.CreditContractDate is not null) { x.CreditContractDate = dto.CreditContractDate; written.Add("CreditContractDate"); }
+    if (dto.CreditAmount is not null) { if (dto.CreditAmount < 0) return Results.BadRequest(new { error = "Phải >= 0!" }); x.CreditAmount = dto.CreditAmount.Value; written.Add("CreditAmount"); }
+    if (dto.BankBranchCode is not null) { x.BankBranchCode = dto.BankBranchCode; written.Add("BankBranchCode"); }
+    if (dto.BankBranchName is not null) { x.BankBranchName = dto.BankBranchName; written.Add("BankBranchName"); }
     if (dto.FlagBankGrt is not null) { x.FlagBankGrt = dto.FlagBankGrt; written.Add("FlagBankGrt"); }
     if (dto.FlagBankPmt is not null) { x.FlagBankPmt = dto.FlagBankPmt; written.Add("FlagBankPmt"); }
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) { x.FlagActive = dto.FlagActive.Trim(); written.Add("FlagActive"); }
@@ -30612,7 +30623,7 @@ app.MapPut("/api/masters/bank-dealers/{dealerCode}/{bankCode}", async (
         x.DealerCode, x.BankCode, x.FlagBankGrt, x.FlagBankPmt, x.FlagActive, x.Remark,
         x.LogLUDateTime, x.LogLUBy,
         columnsWritten = written,
-        partialUpdateNote = "Cap nhat TUNG PHAN, chi BON cot co co bUpd_*: FlagBankGrt, FlagBankPmt, FlagActive, Remark. DealerCode/BankCode KHONG co co => KHOA BAT BIEN (luat C0-...quadragesimus).",
+        partialUpdateNote = "#388 Cap nhat TUNG PHAN theo Mst_BankDealer_Update_20230922: CHIN cot co co bUpd_* (CreditContractNo/Date, CreditAmount, BankBranchCode/Name, FlagBankGrt, FlagBankPmt, FlagActive, Remark). DealerCode/BankCode KHOA BAT BIEN.",
         twoDbNote = "Nguon SaveData hai lan (_dbMain va _dbWH)."
     });
 }).RequireAuthorization();
@@ -30622,7 +30633,7 @@ app.MapDelete("/api/masters/bank-dealers/{dealerCode}/{bankCode}", async (
 {
     var dl = (dealerCode ?? "").Trim();
     var bk = (bankCode ?? "").Trim();
-    var x = await db.BankDealers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.BankCode == bk);
+    var x = await db.DealerBanks.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.DealerCode == dl && v.BankCode == bk);
     if (x is null)
         return Results.NotFound(new
         {
@@ -30632,7 +30643,7 @@ app.MapDelete("/api/masters/bank-dealers/{dealerCode}/{bankCode}", async (
         });
 
     // 🔴 XOÁ THẬT — `dtDB.Rows[0].Delete()` + SaveData.
-    db.BankDealers.Remove(x);
+    db.DealerBanks.Remove(x);
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -56649,8 +56660,10 @@ record MngRateTonKhoBanHangSaveDto(string? FlagIsDelete, List<MngRateTonKhoBanHa
 record AmplitudeApprOrdRowDto(string? DealerCode, string? ModelCode, decimal? AmplitudeOrdMax, decimal? AmplitudePlanMax);   // #B154
 record AmplitudeApprOrdSaveDto(string? FlagIsDelete, List<AmplitudeApprOrdRowDto>? Rows);   // #B154
 record MapVinSupplyDistSumUpdDto(string? SPDBSName, string? FlagActive);   // #B157
-record BankDealerCreateDto(string? DealerCode, string? BankCode, string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark);   // #B162
-record BankDealerUpdDto(string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark);   // #B163
+record BankDealerCreateDto(string? DealerCode, string? BankCode, string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark,
+    string? BankBranchCode = null, string? BankBranchName = null, string? CreditContractNo = null, DateTime? CreditContractDate = null, decimal? CreditAmount = null);   // #B162 + #388 _Create_20230922
+record BankDealerUpdDto(string? FlagBankGrt, string? FlagBankPmt, string? FlagActive, string? Remark,
+    string? BankBranchCode = null, string? BankBranchName = null, string? CreditContractNo = null, DateTime? CreditContractDate = null, decimal? CreditAmount = null);   // #B163 + #388 _Update_20230922
 record CommonSaveTableDto(string? DbTableName, string? DsTableName);   // #B165
 record CommonSaveMasterDto(List<CommonSaveTableDto>? Tables);   // #B165
 record CarAllocationValidateDto(decimal? MBPercent, decimal? MTPercent, decimal? MNPercent);   // #B166

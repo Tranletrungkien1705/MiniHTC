@@ -9931,7 +9931,9 @@ public sealed class DisbursementType
     public string FlagActive { get; set; } = "1";
 }
 
-/// <summary>🔴 #B161–#B164 — `Mst_BankDealer`: **ngân hàng của đại lý**, khoá đôi
+/// <summary>⛔ #388 DEPRECATED — SONG SINH của <see cref="DealerBank"/> (cùng bảng nguồn Mst_BankDealer). Bản chuẩn = DealerBank: có đủ cột của
+/// bản LIVE `Mst_BankDealer_Create_20230922`/`_Update_20230922` (BankBranch*, Credit*). Route /api/masters/bank-dealers đọc/ghi bản chuẩn; Seeder chép.
+/// (mô tả cũ) 🔴 #B161–#B164 — `Mst_BankDealer`: **ngân hàng của đại lý**, khoá đôi
 /// `(DealerCode, BankCode)`. Hai cờ **độc lập**: `FlagBankGrt` (ngân hàng **bảo lãnh**) và
 /// `FlagBankPmt` (ngân hàng **thanh toán**) — một ngân hàng có thể giữ một, cả hai, hoặc không vai nào.</summary>
 public sealed class BankDealer
