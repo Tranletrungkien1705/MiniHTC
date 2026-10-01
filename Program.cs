@@ -115,6 +115,13 @@ app.MapDelete("/api/areas/{code}", async (string code, AppDbContext db, ITenantC
 }).RequireAuthorization();
 
 // ===== Master generic (port 1:1 loạt Frm masters code/name) =====
+// #323 Các category đã chuyển sang bảng RIÊNG (đủ cột nguồn) — CẤM ghi qua bảng chung để không còn 2 nguồn sự thật.
+var MasterMovedCategories = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+{
+    ["Position"] = "/api/mstpositions",                       // #319 Mst_Position
+    ["Qualification"] = "/api/mstqualifications",             // #319 Mst_Qualification
+    ["SalesGroupType"] = "/api/masters/dealer-salesgroup-types", // #321 Mst_DealerSalesGroupType
+};
 // Catalog: mỗi mục = 1 màn Frm gốc của 2010.HTC.
 var MasterCatalog = new (string Cat, string Label)[]
 {
@@ -132,10 +139,8 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("Discount", "Chiết khấu (FrmDiscount)"),
     ("BusinessStatus", "Tình trạng KD (FrmBusinessStatus)"),
     ("Group", "Nhóm (FrmMngGroup)"),
-    ("Position", "Chức vụ (FrmMst_Position)"),
     ("PaymentType", "Hình thức thanh toán (FrmPaymentType)"),
     ("PortType", "Loại cảng (FrmPortType)"),
-    ("SalesGroupType", "Nhóm bán hàng (FrmSalesGroupType)"),
     ("SalesOrderType", "Loại đơn bán (FrmSalesOrderType)"),
     ("SalesType", "Loại bán hàng (FrmSalesType)"),
     ("StaffType", "Loại nhân viên (FrmStaffType)"),
@@ -147,7 +152,6 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("CarSpec", "Cấu hình xe (FrmCarSpec)"),
     ("CarOCN", "OCN xe (FrmCarOCN)"),
     ("Marriage", "Tình trạng hôn nhân (FrmMst_Marriage)"),
-    ("Qualification", "Trình độ (FrmMst_Qualification)"),
     ("PaymentTerm", "Điều khoản thanh toán (FrmMst_Dieu_Khoan_ThanhToan)"),
     ("DealerZone", "Vùng đại lý (FrmMst_DealerZone)"),
     ("CarSpecInvoice", "Cấu hình HĐ (FrmCarSpecInvoice)"),
@@ -197,6 +201,8 @@ var MasterParentRule = new Dictionary<string, string> { ["District"] = "Province
 
 app.MapPost("/api/master/{cat}", async (string cat, MasterDto dto, AppDbContext db, ITenantContext t) =>
 {
+    if (MasterMovedCategories.TryGetValue(cat, out var movedTo))
+        return Results.BadRequest(new { error = $"Danh mục '{cat}' đã chuyển sang bảng riêng — dùng {movedTo}." });
     if (string.IsNullOrWhiteSpace(dto.Code) || string.IsNullOrWhiteSpace(dto.Name))
         return Results.BadRequest(new { error = "Cần Code và Name." });
     var code = dto.Code.Trim().ToUpperInvariant();
