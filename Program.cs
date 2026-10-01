@@ -18403,7 +18403,8 @@ app.MapPost("/api/servicestockouts/{no}/void", (string no) => Results.BadRequest
 app.MapPost("/api/servicepartoos/import", async (
     ImportPartOORequest request,
     AppDbContext database,
-    ITenantContext tenant) =>
+    ITenantContext tenant,
+    System.Security.Claims.ClaimsPrincipal httpUser) =>
 {
     var importRows = request.Rows ?? new List<ImportPartOORowDto>();
     // Nguồn: file rỗng → "File excel import không có dữ liệu"
@@ -18435,87 +18436,71 @@ app.MapPost("/api/servicepartoos/import", async (
     if (missingPartCode is not null)
         return Results.BadRequest(new { error = $"Mã phụ tùng '{missingPartCode}' không có trong hệ thống!" });
 
-    // --- Pha 3: mọi dòng hợp lệ → tạo phụ tùng nợ (nguồn gọi SerPartOOCreate từng dòng) ---
-    var createdCount = 0;
+    // --- Pha 2b (#383): 3 luật biz `Ser_Part_OO_Create` mà SerPartOOCreate áp cho TỪNG dòng — kiểm hết TRƯỚC khi ghi (all-or-nothing).
     foreach (var row in importRows)
     {
-        database.ServicePartOOs.Add(new ServicePartOO
+        var rowPlate = row.OOPlateNo.Trim();
+        var rowOwed = decimal.Parse(row.SoLuongNo.Trim());
+        var rowReturned = string.IsNullOrWhiteSpace(row.SoLuongTra) ? 0 : decimal.Parse(row.SoLuongTra.Trim());
+        if (rowOwed <= 0) return Results.BadRequest(new { error = "Phải nhập số lượng nợ", plate = rowPlate, part = row.PartCode });
+        if (rowPlate.Length < 8 || rowPlate.Length > 10) return Results.BadRequest(new { error = "Biển số phải từ 8 đến 10 ký tự!", plate = rowPlate });
+        if (rowReturned > rowOwed) return Results.BadRequest(new { error = "Số lượng trả không được lớn hơn số lượng nợ!", plate = rowPlate, part = row.PartCode });
+    }
+
+    // --- Pha 3: mọi dòng hợp lệ → ghi phụ tùng nợ vào BẢN CHUẨN PartBackorder (#383; nguồn gọi SerPartOOCreate từng dòng).
+    //     Khoá nguồn (PartID, OOPlateNo) ⇒ dòng trùng khoá cập nhật dòng đã có thay vì tạo bản thứ hai.
+    var createdCount = 0; var updatedCount = 0;
+    var importUser = httpUser.Identity?.Name ?? "system"; var importNow = DateTime.Now;
+    foreach (var row in importRows)
+    {
+        var plate = row.OOPlateNo.Trim().ToUpperInvariant();
+        var code = row.PartCode.Trim().ToUpperInvariant();
+        var target = database.PartBackorders.Local.FirstOrDefault(x => x.OrgId == tenant.OrgId && x.OOPlateNo == plate && x.PartCode == code)
+            ?? await database.PartBackorders.FirstOrDefaultAsync(x => x.OrgId == tenant.OrgId && x.OOPlateNo == plate && x.PartCode == code);
+        if (target is null)
         {
-            OrgId = tenant.OrgId,
-            OONo = $"OO-{DateTime.Now:yyMMddHHmmss}-{createdCount + 1:D3}",
-            PartCode = row.PartCode.Trim().ToUpperInvariant(),
-            PlateNo = row.OOPlateNo.Trim().ToUpperInvariant(),
-            QtyNeeded = decimal.Parse(row.SoLuongNo.Trim()),
-            QtyFulfilled = string.IsNullOrWhiteSpace(row.SoLuongTra) ? 0 : decimal.Parse(row.SoLuongTra.Trim()),
-            LoaiXe = row.LoaiXe,
-            CVDV = row.CVDV,
-            Note = row.GhiChu,
-            DealerCode = request.DealerCode?.Trim().ToUpperInvariant(),
-            NgayDatHang = ParseOptionalDate(row.NgayDatHang),
-            NgayVeDuKien = ParseOptionalDate(row.NgayVeDuKien),
-            NgayHenTra = ParseOptionalDate(row.NgayHenTra),
-            Status = "Open"
-        });
-        createdCount++;
+            target = new PartBackorder { OrgId = tenant.OrgId, OOPlateNo = plate, PartCode = code, CreatedDate = importNow, CreatedBy = importUser };
+            database.PartBackorders.Add(target); createdCount++;
+        }
+        else updatedCount++;
+        target.SoLuongNo = decimal.Parse(row.SoLuongNo.Trim());
+        target.SoLuongTra = string.IsNullOrWhiteSpace(row.SoLuongTra) ? 0 : decimal.Parse(row.SoLuongTra.Trim());
+        target.LoaiXe = row.LoaiXe; target.CVDV = row.CVDV; target.GhiChu = row.GhiChu;
+        target.DealerCode = request.DealerCode?.Trim().ToUpperInvariant();
+        target.NgayDatHang = ParseOptionalDate(row.NgayDatHang);
+        target.NgayVeDuKien = ParseOptionalDate(row.NgayVeDuKien);
+        target.NgayHenTra = ParseOptionalDate(row.NgayHenTra);
+        target.LogLUDateTime = importNow; target.LogLUBy = importUser;
     }
     await database.SaveChangesAsync();
 
-    return Results.Ok(new { imported = createdCount, message = "Đã tạo phụ tùng nợ thành công" });
+    return Results.Ok(new { imported = createdCount, updated = updatedCount, message = "Đã tạo phụ tùng nợ thành công" });
 }).RequireAuthorization();
 
-// ===== Phụ tùng nợ/chờ giao theo xe (ServicePartOO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor) =====
+// ===== Phụ tùng nợ/chờ giao theo xe — ⛔ #383 HỢP NHẤT SONG SINH Ser_Part_OO: bản chuẩn = PartBackorder (/api/partbackorders).
+// GET đọc bản chuẩn, giữ hình JSON cũ (QtyNeeded = SoLuongNo, QtyFulfilled = SoLuongTra, Status suy ra Open/Fulfilled — nguồn KHÔNG có
+// mã phiếu OONo hay trạng thái; OONo trả null). GHI trả 400 kèm route mới: nguồn trả hàng bằng cách SỬA SoLuongTra (Ser_Part_OO_Update).
 app.MapGet("/api/servicepartoos", async (AppDbContext db, ITenantContext t, string? part, string? plate, string? status) =>
 {
-    var query = db.ServicePartOOs.Where(x => x.OrgId == t.OrgId);
+    var query = db.PartBackorders.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(part)) query = query.Where(x => x.PartCode.Contains(part!.ToUpper()) || (x.PartName != null && x.PartName.Contains(part!)));
-    if (!string.IsNullOrWhiteSpace(plate)) query = query.Where(x => x.PlateNo == plate);
-    if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(plate)) query = query.Where(x => x.OOPlateNo == plate);
+    if (status == "Open") query = query.Where(x => x.SoLuongTra < x.SoLuongNo);
+    else if (status == "Fulfilled") query = query.Where(x => x.SoLuongTra >= x.SoLuongNo);
     var items = await query.OrderByDescending(x => x.Id).Take(500)
         .Select(x => new
         {
-            x.OONo, x.PartCode, x.PartName, x.PlateNo, x.QtyNeeded, x.QtyFulfilled,
-            remaining = x.QtyNeeded - x.QtyFulfilled, x.Note, x.Status,
-            // GAP đã vá: 6 cột TblSer_Part_OO trước đây không được trả về
+            OONo = (string?)null, x.PartCode, x.PartName, PlateNo = x.OOPlateNo, QtyNeeded = x.SoLuongNo, QtyFulfilled = x.SoLuongTra,
+            remaining = x.SoLuongNo - x.SoLuongTra, Note = x.GhiChu, Status = x.SoLuongTra >= x.SoLuongNo ? "Fulfilled" : "Open",
             x.LoaiXe, x.CVDV, x.DealerCode, x.NgayDatHang, x.NgayVeDuKien, x.NgayHenTra,
-            createdAt = x.CreatedAt.ToString("yyyy-MM-dd")
+            createdAt = x.CreatedDate.ToString("yyyy-MM-dd")
         }).ToListAsync();
-    return Results.Ok(new { count = items.Count, openCount = items.Count(i => i.Status == "Open"), items });
+    return Results.Ok(new { count = items.Count, openCount = items.Count(i => i.Status == "Open"), items, mergedInto = "/api/partbackorders" });
 }).RequireAuthorization();
 
-// Tạo phiếu nợ phụ tùng (SL nợ > 0).
-app.MapPost("/api/servicepartoos", async (ServicePartOODto dto, AppDbContext db, ITenantContext t) =>
-{
-    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
-    if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Chưa nhập biển số xe." });
-    if (dto.QtyNeeded <= 0) return Results.BadRequest(new { error = "Số lượng nợ phải lớn hơn 0." });
-    var no = "OO" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new ServicePartOO
-    {
-        OrgId = t.OrgId, OONo = no, PartCode = dto.PartCode.Trim().ToUpperInvariant(), PartName = dto.PartName,
-        PlateNo = dto.PlateNo.Trim(), QtyNeeded = dto.QtyNeeded, QtyFulfilled = 0, Note = dto.Note, Status = "Open",
-        // GAP đã vá: nhận đủ 6 cột TblSer_Part_OO
-        LoaiXe = dto.LoaiXe, CVDV = dto.CVDV, DealerCode = dto.DealerCode?.Trim().ToUpperInvariant(),
-        NgayDatHang = dto.NgayDatHang, NgayVeDuKien = dto.NgayVeDuKien, NgayHenTra = dto.NgayHenTra
-    };
-    db.ServicePartOOs.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.OONo });
-}).RequireAuthorization();
+app.MapPost("/api/servicepartoos", (ServicePartOODto dto) => Results.BadRequest(new { error = "Phụ tùng nợ đã hợp nhất vào bản chuẩn Ser_Part_OO: /api/partbackorders (khoá biển số + mã PT).", route = "/api/partbackorders", page = "/partbackorder.html" })).RequireAuthorization();
 
-// Giao phụ tùng (cấn trừ SL nợ; không vượt SL còn thiếu; đủ -> Fulfilled).
-app.MapPost("/api/servicepartoos/{no}/fulfill", async (string no, ServicePartFulfillDto dto, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var x = await db.ServicePartOOs.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.OONo == no);
-    if (x is null) return Results.NotFound(new { no });
-    if (x.Status == "Fulfilled") return Results.BadRequest(new { error = "Phiếu đã giao đủ." });
-    if (dto.Qty <= 0) return Results.BadRequest(new { error = "Số lượng giao phải lớn hơn 0." });
-    var remaining = x.QtyNeeded - x.QtyFulfilled;
-    if (dto.Qty > remaining) return Results.BadRequest(new { error = $"Số lượng giao vượt số còn thiếu ({remaining})." });
-    x.QtyFulfilled += dto.Qty;
-    if (x.QtyFulfilled >= x.QtyNeeded) x.Status = "Fulfilled";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { x.OONo, qtyFulfilled = x.QtyFulfilled, remaining = x.QtyNeeded - x.QtyFulfilled, status = x.Status });
-}).RequireAuthorization();
+app.MapPost("/api/servicepartoos/{no}/fulfill", (string no, ServicePartFulfillDto dto) => Results.BadRequest(new { error = "Nguồn trả phụ tùng bằng cách cập nhật SoLuongTra (Ser_Part_OO_Update): POST /api/partbackorders.", route = "/api/partbackorders" })).RequireAuthorization();
 
 // ===== Nhập phụ tùng hàng loạt từ Excel (port 1:1 FrmImportPart, TCMotor) — tái dùng ServicePart =====
 app.MapPost("/api/serviceparts/import", async (ServicePartImportDto dto, AppDbContext db, ITenantContext t) =>
@@ -18993,10 +18978,12 @@ app.MapGet("/api/report/vehicle-frequency", async (AppDbContext db, ITenantConte
 // Tỉ lệ đáp ứng = tổng SL đã giao / tổng SL cần, theo mã PT (từ đơn phụ tùng nợ/chờ giao).
 app.MapGet("/api/report/part-supply-ability", async (AppDbContext db, ITenantContext t) =>
 {
-    var agg = await db.ServicePartOOs.Where(x => x.OrgId == t.OrgId)
+    // #383 đọc BẢN CHUẨN Ser_Part_OO (PartBackorder): cần = SoLuongNo, đã giao = SoLuongTra, còn mở = SoLuongTra < SoLuongNo.
+    var agg = (await db.PartBackorders.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.PartCode, x.SoLuongNo, x.SoLuongTra }).ToListAsync())
         .GroupBy(x => x.PartCode)
-        .Select(g => new { partCode = g.Key, needed = g.Sum(x => x.QtyNeeded), fulfilled = g.Sum(x => x.QtyFulfilled), orders = g.Count(), openOrders = g.Count(x => x.Status == "Open") })
-        .ToListAsync();
+        .Select(g => new { partCode = g.Key, needed = g.Sum(x => x.SoLuongNo), fulfilled = g.Sum(x => x.SoLuongTra), orders = g.Count(), openOrders = g.Count(x => x.SoLuongTra < x.SoLuongNo) })
+        .ToList();
     var rows = agg.Select(a => new { a.partCode, a.needed, a.fulfilled, backorder = a.needed - a.fulfilled, a.orders, a.openOrders,
             fillRate = a.needed > 0 ? Math.Round(a.fulfilled / a.needed * 100, 1) : 100m })
         .OrderBy(r => r.fillRate).ThenByDescending(r => r.backorder).ToList();
@@ -27852,40 +27839,46 @@ app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbCon
 }).RequireAuthorization();
 
 // ===== Phụ tùng nợ khách (PartBackorder — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor DMSCarSv/Services) =====
-app.MapGet("/api/partbackorders", async (AppDbContext db, ITenantContext t, string? plate, bool? open) =>
+// #383 BẢN CHUẨN Ser_Part_OO (song sinh ServicePartOO gộp vào). Trường JSON = tên cột nguồn TblSer_Part_OO.
+app.MapGet("/api/partbackorders", async (AppDbContext db, ITenantContext t, string? plate, bool? open, string? part, string? dealer) =>
 {
     var qry = db.PartBackorders.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(plate)) qry = qry.Where(x => x.PlateNo.Contains(plate.ToUpper()));
-    if (open == true) qry = qry.Where(x => x.QtyReturned < x.QtyOwed);
+    if (!string.IsNullOrWhiteSpace(plate)) qry = qry.Where(x => x.OOPlateNo.Contains(plate.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(part)) qry = qry.Where(x => x.PartCode.Contains(part.ToUpper()) || (x.PartName != null && x.PartName.Contains(part)));
+    if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (open == true) qry = qry.Where(x => x.SoLuongTra < x.SoLuongNo);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PlateNo, x.PartCode, x.PartName, x.CarType, x.DealerCode, x.StaffCode, x.QtyOwed, x.QtyReturned, remain = x.QtyOwed - x.QtyReturned, x.PromiseDate, x.OrderDate, x.ExpectedDate, x.Note }).ToListAsync();
+    { x.OOPlateNo, x.PartCode, x.PartName, x.LoaiXe, x.DealerCode, x.CVDV, x.SoLuongNo, x.SoLuongTra, remain = x.SoLuongNo - x.SoLuongTra, x.NgayHenTra, x.NgayDatHang, x.NgayVeDuKien, x.GhiChu,
+      x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Khớp ValidateInput() của form + 3 luật CHỈ CÓ TRONG BIZ (Ser_Part_OO_Create / _Update).
 // Khoá tra cứu (biển số, mã phụ tùng) ĐÃ ĐÚNG với nguồn: biz Update cũng tra theo (PartID, OOPlateNo).
-app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partbackorders", async (PartBackorderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
+    var plate = (dto.OOPlateNo ?? "").Trim().ToUpperInvariant();
     var code = (dto.PartCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa có phụ tùng" });
     if (string.IsNullOrWhiteSpace(plate)) return Results.BadRequest(new { error = "Phải nhập biển số" });
     // Biz chặn biển số ngoài khoảng 8–10 ký tự (Ser_Part_OO_Create_Invalid_BienSo) — form KHÔNG có luật này.
     if (plate.Length < 8 || plate.Length > 10) return Results.BadRequest(new { error = "Biển số phải từ 8 đến 10 ký tự!" });
-    if (dto.QtyOwed <= 0) return Results.BadRequest(new { error = "Phải nhập số lượng nợ" });
+    if (dto.SoLuongNo <= 0) return Results.BadRequest(new { error = "Phải nhập số lượng nợ" });
     // Biz chặn số lượng trả vượt số lượng nợ ở CẢ nhánh tạo lẫn nhánh sửa.
-    if (dto.QtyReturned < 0) return Results.BadRequest(new { error = "Số lượng trả không được âm!" });
-    if (dto.QtyReturned > dto.QtyOwed) return Results.BadRequest(new { error = "Số lượng trả không được lớn hơn số lượng nợ!" });
+    if (dto.SoLuongTra < 0) return Results.BadRequest(new { error = "Số lượng trả không được âm!" });
+    if (dto.SoLuongTra > dto.SoLuongNo) return Results.BadRequest(new { error = "Số lượng trả không được lớn hơn số lượng nợ!" });
 
-    var row = await db.PartBackorders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate && x.PartCode == code);
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var row = await db.PartBackorders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OOPlateNo == plate && x.PartCode == code);
     var isNew = row is null;
-    if (isNew) { row = new PartBackorder { OrgId = t.OrgId, PlateNo = plate, PartCode = code }; db.PartBackorders.Add(row); }
-    row!.PartName = dto.PartName; row.CarType = dto.CarType; row.StaffCode = dto.StaffCode;
+    if (isNew) { row = new PartBackorder { OrgId = t.OrgId, OOPlateNo = plate, PartCode = code, CreatedDate = now, CreatedBy = who }; db.PartBackorders.Add(row); }
+    row!.PartName = dto.PartName; row.LoaiXe = dto.LoaiXe; row.CVDV = dto.CVDV;
     row.DealerCode = dto.DealerCode;
-    row.QtyOwed = dto.QtyOwed; row.QtyReturned = dto.QtyReturned;
-    row.PromiseDate = dto.PromiseDate; row.OrderDate = dto.OrderDate; row.ExpectedDate = dto.ExpectedDate; row.Note = dto.Note;
+    row.SoLuongNo = dto.SoLuongNo; row.SoLuongTra = dto.SoLuongTra;
+    row.NgayHenTra = dto.NgayHenTra; row.NgayDatHang = dto.NgayDatHang; row.NgayVeDuKien = dto.NgayVeDuKien; row.GhiChu = dto.GhiChu;
+    row.LogLUDateTime = now; row.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.PlateNo, row.PartCode, row.DealerCode, row.QtyOwed, row.QtyReturned, isNew });
+    return Results.Ok(new { row.OOPlateNo, row.PartCode, row.DealerCode, row.SoLuongNo, row.SoLuongTra, isNew });
 }).RequireAuthorization();
 
 // ===== Thanh toán phí AVN theo tháng (AvnPayment — port 1:1 FrmTaoThanhToanAVN, 2010.HTC Sales/Purchase) =====
@@ -56544,7 +56537,8 @@ record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
 record InsuranceAttachmentSaveDto(List<string>? Codes);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 record CampaignMarketingDto(string? CamMarketingName, string? CamMarketingDesc, DateTime? EffDateStart, DateTime? EffDateEnd, DateTime? WarrantyDateStart, DateTime? WarrantyDateEnd, string? ConditionVIN, string? ConditionPlateNo, string? ConditionDealer, string? ConditionFullVIN, string? CamMarketingStatus, string? Remark, List<CampaignMarketingPartDto>? Parts);
-record PartBackorderDto(string? PlateNo, string? PartCode, string? PartName, string? CarType, string? StaffCode, decimal QtyOwed, decimal QtyReturned, DateTime? PromiseDate, DateTime? OrderDate, DateTime? ExpectedDate, string? Note, string? DealerCode = null);
+// #383 trường = tên cột nguồn TblSer_Part_OO (PartCode ≈ PartID).
+record PartBackorderDto(string? OOPlateNo, string? PartCode, string? PartName, string? LoaiXe, string? CVDV, decimal SoLuongNo, decimal SoLuongTra, DateTime? NgayHenTra, DateTime? NgayDatHang, DateTime? NgayVeDuKien, string? GhiChu, string? DealerCode = null);
 record AvnPaymentLineDto(string? Vin, string? AvnCode, DateTime? AvnDate, DateTime? InStorageDate, string? EngineNo, string? SerialNo, string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, decimal UnitPriceAVN);
 record AvnPaymentDto(DateTime? PmtMonth, List<AvnPaymentLineDto>? Lines);
 record GpsPaymentLineDto(string? Vin, string? SpecCode, string? ModelCode, string? ModelName, string? SpecDescription, string? GpsId, DateTime CostGPSStartDate, DateTime CostGPSEndDate, int DeductDate, decimal PriceGPS, string? ContractGPS);

@@ -5367,26 +5367,31 @@ public sealed class CustomerCareMace
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Phụ tùng nợ khách (Ser_Part_OO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO, TCMotor DMSCarSv/Services):
-/// PT hết hàng nhưng đã hứa khách theo biển số, chờ đặt hàng về trả tiếp. Upsert theo (PlateNo, PartCode).</summary>
+/// <summary>Phụ tùng nợ khách (Ser_Part_OO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO + biz Ser_Part_OO_Create/_Update, TCMotor DMSCarSv):
+/// PT hết hàng nhưng đã hứa khách theo biển số, chờ đặt hàng về trả tiếp. Khoá nguồn (PartID, OOPlateNo) ⇒ upsert theo (OOPlateNo, PartCode).
+/// #383 BẢN CHUẨN của Ser_Part_OO (song sinh ServicePartOO gộp vào); tên cột RENAME khớp DbDefine TblSer_Part_OO.
+/// Lệch có chủ ý: nguồn `PartID` (int, khoá Mst_Part) ⇔ `PartCode` (mã PT của MiniHTC); `PartName` chỉ để hiển thị.</summary>
 public sealed class PartBackorder
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string PlateNo { get; set; } = "";
-    public string PartCode { get; set; } = "";
+    public string OOPlateNo { get; set; } = "";     // OOPLATENO — biển số
+    public string PartCode { get; set; } = "";      // ≈ PARTID
     public string? PartName { get; set; }
-    public string? CarType { get; set; }
-    public string? StaffCode { get; set; }         // CVDV
+    public string? LoaiXe { get; set; }             // LOAIXE
+    public string? CVDV { get; set; }               // CVDV — cố vấn dịch vụ
     /// <summary>Đại lý ghi nhận khoản nợ phụ tùng (Ser_Part_OO.DealerCode).</summary>
     public string? DealerCode { get; set; }
-    public decimal QtyOwed { get; set; }
-    public decimal QtyReturned { get; set; }
-    public DateTime? PromiseDate { get; set; }      // NgayHenTra
-    public DateTime? OrderDate { get; set; }        // NgayDatHang
-    public DateTime? ExpectedDate { get; set; }     // NgayVeDK
-    public string? Note { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public decimal SoLuongNo { get; set; }          // SOLUONGNO — SL nợ khách
+    public decimal SoLuongTra { get; set; }         // SOLUONGTRA — SL đã trả
+    public DateTime? NgayHenTra { get; set; }       // NGAYHENTRA
+    public DateTime? NgayDatHang { get; set; }      // NGAYDATHANG
+    public DateTime? NgayVeDuKien { get; set; }     // NGAYVEDUKIEN
+    public string? GhiChu { get; set; }             // GHICHU
+    public DateTime CreatedDate { get; set; } = DateTime.Now;   // CreatedDate (biz Create)
+    public string? CreatedBy { get; set; }          // CreatedBy (biz Create)
+    public DateTime? LogLUDateTime { get; set; }    // LOGLUDATETIME
+    public string? LogLUBy { get; set; }            // LOGLUBY
 }
 
 /// <summary>Khách hàng dịch vụ (Ser_Customer — port 1:1 FrmCustomerInfo, TCMotor DMSCarSv/Customer):
@@ -14098,7 +14103,8 @@ public sealed class ServiceStockInLine
     public decimal Amount { get; set; }
 }
 
-/// <summary>Phụ tùng nợ/chờ giao theo xe (outstanding part order) — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO (Ser_Part_OO, TCMotor).</summary>
+/// <summary>⛔ #383 DEPRECATED — SONG SINH của <see cref="PartBackorder"/> (cùng bảng nguồn Ser_Part_OO). OONo/Status là từ vựng tự đặt (nguồn không có).
+/// Route /api/servicepartoos đọc bản chuẩn; import + báo cáo khả năng cung ứng đã trỏ sang bản chuẩn; Seeder chép dữ liệu cũ. KHÔNG ghi mới.</summary>
 public sealed class ServicePartOO
 {
     public long Id { get; set; }

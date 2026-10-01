@@ -21,6 +21,7 @@
     <div style="flex:1;min-width:160px"><label>Tên PT *</label><input id="name" style="width:100%"></div>
     <div><label>Loại xe</label><input id="cartype" style="width:110px"></div>
     <div><label>CVDV</label><input id="staff" style="width:100px"></div>
+    <div><label>Mã đại lý</label><input id="dealer" style="width:100px"></div>
   </div>
   <div class="row">
     <div><label>SL nợ *</label><input id="qtyowed" type="number" style="width:100px"></div>
@@ -42,14 +43,14 @@ async function token(){ if(TOKEN) return TOKEN;
 function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
 function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3800); }
 async function save(){ await token();
-  const body={PlateNo:F("plate").value,PartCode:F("code").value,PartName:F("name").value,CarType:F("cartype").value,StaffCode:F("staff").value,
-    QtyOwed:+F("qtyowed").value||0,QtyReturned:+F("qtyret").value||0,PromiseDate:F("promise").value||null,OrderDate:F("order").value||null,ExpectedDate:F("expect").value||null,Note:F("note").value};
+  const body={OOPlateNo:F("plate").value,PartCode:F("code").value,PartName:F("name").value,LoaiXe:F("cartype").value,CVDV:F("staff").value,DealerCode:F("dealer").value||null,
+    SoLuongNo:+F("qtyowed").value||0,SoLuongTra:+F("qtyret").value||0,NgayHenTra:F("promise").value||null,NgayDatHang:F("order").value||null,NgayVeDuKien:F("expect").value||null,GhiChu:F("note").value};
   const r=await fetch("/api/partbackorders",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify(body)});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say((d.isNew?"Đã tạo ":"Đã cập nhật ")+d.plateNo+"/"+d.partCode); load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say((d.isNew?"Đã tạo ":"Đã cập nhật ")+d.ooPlateNo+"/"+d.partCode); load();
 }
 async function load(){ await token();
   const r=await fetch(`/api/partbackorders?plate=${encodeURIComponent(F("q").value)}&open=${F("onlyopen").checked}`,{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.plateNo)}</b></td><td>${esc(o.partCode)}</td><td>${esc(o.partName)}</td><td class="num">${o.qtyOwed}</td><td class="num">${o.qtyReturned}</td><td class="num">${o.remain}</td><td>${o.promiseDate?String(o.promiseDate).slice(0,10):"—"}</td><td><span class="pill ${o.remain<=0?'y':'n'}">${o.remain<=0?'Đã trả đủ':'Còn nợ'}</span></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có PT nợ.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.ooPlateNo)}</b></td><td>${esc(o.partCode)}</td><td>${esc(o.partName)}</td><td class="num">${o.soLuongNo}</td><td class="num">${o.soLuongTra}</td><td class="num">${o.remain}</td><td>${o.ngayHenTra?String(o.ngayHenTra).slice(0,10):"—"}</td><td><span class="pill ${o.remain<=0?'y':'n'}">${o.remain<=0?'Đã trả đủ':'Còn nợ'}</span></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có PT nợ.</td></tr>';
 }
 </script>
 </body></html>
