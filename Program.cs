@@ -19061,7 +19061,7 @@ app.MapGet("/api/report/service-kpi", async (AppDbContext db, ITenantContext t, 
     if (toDate.HasValue) qro = qro.Where(x => x.CheckInDate.HasValue && x.CheckInDate.Value.Date <= toDate.Value.Date);
     var ros = await qro.Select(x => x.Status).ToListAsync();
     var totalRO = ros.Count;
-    var finished = ros.Count(s => s == "Finished");
+    var finished = ros.Count(s => s == "FNS");   // #376 Ser_RO_Stage.Finished
     var byStatus = ros.GroupBy(s => s).Select(g => new { status = g.Key, count = g.Count() }).ToList();
     // Tỉ lệ hoàn tất (giao xe) — proxy cho "sửa đúng, hoàn thành".
     var correctRate = totalRO > 0 ? Math.Round((decimal)finished / totalRO * 100, 1) : 0m;
@@ -52056,7 +52056,7 @@ app.MapPost("/api/serviceinvoices", async (ServiceInvoiceDto dto, AppDbContext d
     var roNo = dto.RONo.Trim().ToUpperInvariant();
     var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
     if (ro is null) return Results.NotFound(new { error = $"Không tìm thấy RO {roNo}." });
-    if (ro.Status is "HasRO" or "InGarage") return Results.BadRequest(new { error = "RO chưa sửa xong, chưa lập hóa đơn được." });
+    if (ro.Status is "HRO" or "INGA") return Results.BadRequest(new { error = "RO chưa sửa xong, chưa lập hóa đơn được." });   // #376 mã Ser_RO_Stage
     if (await db.ServiceInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.RONo == roNo && x.Status == "Paid"))
         return Results.BadRequest(new { error = "RO đã có hóa đơn thanh toán." });
     var svcTotal = await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && s.RoId == ro.Id).SumAsync(s => (decimal?)s.Amount) ?? 0;
@@ -52110,7 +52110,7 @@ app.MapPost("/api/serviceinvoices/{no}/pay", async (string no, AppDbContext db, 
     inv.Status = "Paid"; inv.PaidAt = DateTime.Now;
     var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == inv.RONo);
     string? roAdvanced = null;
-    if (ro is not null && ro.Status == "CheckEnd") { ro.Status = "Paid"; roAdvanced = "Paid"; }
+    if (ro is not null && ro.Status == "CEND") { ro.Status = "PAID"; roAdvanced = "PAID"; }   // #376
     await db.SaveChangesAsync();
     return Results.Ok(new { inv.InvoiceNo, status = inv.Status, roAdvancedTo = roAdvanced });
 }).RequireAuthorization();
@@ -54552,7 +54552,7 @@ app.MapPost("/api/stockreqs/{no}/issue", async (string no, AppDbContext db, ITen
 
 // ===== Lệnh sửa chữa RO (Ser_RO — port 1:1 FrmRepairOrder, TCMotor DMSCarSv) =====
 // Luồng chính của lệnh sửa chữa (6 bước đi thẳng).
-string[] _roFlow = { "HasRO", "InGarage", "Repaired", "CheckEnd", "Paid", "Finished" };
+string[] _roFlow = { "HRO", "INGA", "RPRD", "CEND", "PAID", "FNS" };
 
 // 🔴 Bộ trạng thái ĐẦY ĐỦ của nguồn (TConst.Ser_ROStatus) — port cũ mới có 6/12.
 // Sáu trạng thái NGOÀI luồng thẳng nhưng có thật trong nghiệp vụ xưởng:
@@ -54573,24 +54573,30 @@ var roStatusSourceCodes = new Dictionary<string, string>
     ["Finished"] = "FNS",           // Đã hoàn thành
     ["NotResponding"] = "NORE",     // Chưa dùng
 };
+// #376 Ser_RO.Status LƯU MÃ nguồn; tên cũ (khoá của roStatusSourceCodes) vẫn nhận qua RoCode để không vỡ client.
+static string RoCode(string? v) => (v ?? "").Trim() switch
+{
+    "Created" => "CRE", "PrintedQuote" => "PRT", "Wait4Part" => "W4P", "HasPart" => "HPA", "HasRO" => "HRO", "Rejected" => "REJ",
+    "InGarage" => "INGA", "CheckEnd" => "CEND", "Repaired" => "RPRD", "Paid" => "PAID", "Finished" => "FNS", "NotResponding" => "NORE", var x => x
+};
 
 // Nhóm trạng thái dùng để TÌM KIẾM (TConst.Ser_RO_Stage4Search) — KHÔNG suy được từ luồng:
 // ⚠️ "Sửa xong" gồm CẢ `Paid`; và nhóm "Hủy, Hẹn lại" gồm Wait4Part/HasPart/NotResponding
 //    nhưng KHÔNG gồm `Rejected` — đúng nguyên văn nguồn, không tự sắp lại cho "hợp lý".
 var roStage4Search = new Dictionary<string, string[]>
 {
-    ["Wait4Repair"] = new[] { "Created", "PrintedQuote", "HasRO" },   // Chờ sửa (CRE,PRT,HRO)
-    ["Repairing"] = new[] { "InGarage" },                             // Đang sửa (INGA)
-    ["Repaired"] = new[] { "Repaired", "Paid" },                      // Sửa xong (RPRD,PAID)
-    ["Finished"] = new[] { "Finished" },                              // Đã giao xe (FNS)
-    ["Cancel"] = new[] { "Wait4Part", "HasPart", "NotResponding" },    // Hủy, Hẹn lại (W4P,HPA,NORE)
+    ["Wait4Repair"] = new[] { "CRE", "PRT", "HRO" },   // Chờ sửa (CRE,PRT,HRO)
+    ["Repairing"] = new[] { "INGA" },                             // Đang sửa (INGA)
+    ["Repaired"] = new[] { "RPRD", "PAID" },                      // Sửa xong (RPRD,PAID)
+    ["Finished"] = new[] { "FNS" },                              // Đã giao xe (FNS)
+    ["Cancel"] = new[] { "W4P", "HPA", "NORE" },    // Hủy, Hẹn lại (W4P,HPA,NORE)
 };
 
 /// <summary>
 /// RO được coi là ĐÃ HOÀN TẤT (căn cứ sinh chăm sóc khách hàng, thống kê xe đã làm dịch vụ).
-/// Nguồn dùng đúng cặp `ro.Status in ('PAID','FNS')` — KHÔNG phải chỉ mỗi "Finished".
+/// Nguồn dùng đúng cặp `ro.Status in ('PAID','FNS')` — KHÔNG phải chỉ mỗi "FNS".
 /// </summary>
-string[] roCompletedStatuses = { "Paid", "Finished" };
+string[] roCompletedStatuses = { "PAID", "FNS" };
 
 // Danh mục trạng thái RO + nhóm tìm kiếm, để client dựng bộ lọc đúng như WinForm.
 app.MapGet("/api/repairorders/statuses", () => Results.Ok(new
@@ -54604,7 +54610,7 @@ app.MapGet("/api/repairorders/statuses", () => Results.Ok(new
 app.MapGet("/api/repairorders", async (AppDbContext db, ITenantContext t, string? status, string? plate, string? stage) =>
 {
     var q = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(status)) { var stRo = RoCode(status); q = q.Where(r => r.Status == stRo); }
     // Lọc theo NHÓM trạng thái tìm kiếm của nguồn (Wait4Repair/Repairing/Repaired/Finished/Cancel).
     if (!string.IsNullOrWhiteSpace(stage) && roStage4Search.TryGetValue(stage, out var stageStatuses))
         q = q.Where(r => stageStatuses.Contains(r.Status));
@@ -54686,7 +54692,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     {
         OrgId = t.OrgId, RONo = no, LicensePlate = dto.LicensePlate.Trim().ToUpperInvariant(), Vin = dto.Vin, CusName = dto.CusName, Km = dto.Km,
         CheckInDate = dto.CheckInDate ?? DateTime.Now, PlanedDeliveryDate = dto.PlanedDeliveryDate, CusRequest = dto.CusRequest,
-        CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HasRO",
+        CarStatus = dto.CarStatus, CusWaiting = dto.CusWaiting, Status = "HRO",
         // 4 cột phục vụ màn Lịch sử dịch vụ (FrmServiceHistory); DealerCode là khoá của luật CanShowDetail
         DealerCode = dealerRo,
         TrademarkNameModel = dto.TrademarkNameModel, ColorCode = dto.ColorCode, Assistant = dto.Assistant
@@ -54735,7 +54741,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
 // Bảng theo dõi tiến độ RO (Ser_RO_Stage — port 1:1 FrmTrackingProcess): kanban theo trạng thái
 app.MapGet("/api/repairorders/board", async (AppDbContext db, ITenantContext t) =>
 {
-    var flow = new[] { "HasRO", "InGarage", "Repaired", "CheckEnd", "Paid", "Finished" };
+    var flow = new[] { "HRO", "INGA", "RPRD", "CEND", "PAID", "FNS" };
     var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId).OrderByDescending(r => r.Id).Take(1000)
         .Select(r => new { r.RONo, r.LicensePlate, r.CusName, r.Km, r.PlanedDeliveryDate, r.CusWaiting, r.Status }).ToListAsync();
     var columns = flow.Select(st => new
@@ -54813,8 +54819,8 @@ app.MapPost("/api/repairorders/{no}/update", async (string no, RoHeaderUpdateDto
     r.ModifyDate = dto.ModifyDate; r.ModifyBy = dto.ModifyBy; r.CardNo = dto.CardNo;
     if (!string.IsNullOrEmpty(dto.IsReRepair)) r.IsReRepair = dto.IsReRepair;
     r.FlagOnlyPoint = dto.FlagOnlyPoint; r.LevelOfInspection = lvl;
-    var backLsc = dto.FlagBackLSC == "1" && r.Status is "Repaired" or "CheckEnd" or "InGarage";
-    if (backLsc) r.Status = "HasRO";
+    var backLsc = dto.FlagBackLSC == "1" && r.Status is "RPRD" or "CEND" or "INGA";
+    if (backLsc) r.Status = "HRO";
     r.InsuranceDeductible = decimal.TryParse((dto.InsuranceDeductible ?? "").Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ded) ? ded : 0m;
     r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
@@ -54826,8 +54832,8 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status == "Rejected") return Results.BadRequest(new { error = "Lệnh đã bị từ chối, không thể chuyển trạng thái." });
-    var target = (dto.ToStatus ?? "").Trim();
+    if (r.Status == "REJ") return Results.BadRequest(new { error = "Lệnh đã bị từ chối, không thể chuyển trạng thái." });
+    var target = RoCode(dto.ToStatus);
     var curIdx = Array.IndexOf(_roFlow, r.Status);
     var tgtIdx = Array.IndexOf(_roFlow, target);
     if (tgtIdx < 0) return Results.BadRequest(new { error = "ToStatus không hợp lệ. Chuỗi: HasRO→InGarage→Repaired→CheckEnd→Paid→Finished" });
@@ -54835,7 +54841,7 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     r.Status = target;
     // Nguồn FrmServiceHistory sắp xếp "order by ro.finisheddate desc" → phải đóng dấu mốc khi RO hoàn tất,
     // và ActualDeliveryDate ("Giờ giao xe thực tế") cũng chốt tại thời điểm giao xe.
-    if (target == "Finished") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
+    if (target == "FNS") { r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now; }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate });
 }).RequireAuthorization();
@@ -54852,18 +54858,18 @@ app.MapPost("/api/repairorders/{no}/setstatus", async (
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
 
-    var target = (dto.ToStatus ?? "").Trim();
-    string[] offFlowStatuses = { "Created", "PrintedQuote", "Wait4Part", "HasPart", "Rejected", "NotResponding" };
+    var target = RoCode(dto.ToStatus);
+    string[] offFlowStatuses = { "CRE", "PRT", "W4P", "HPA", "REJ", "NORE" };
     if (!offFlowStatuses.Contains(target))
         return Results.BadRequest(new { error = $"Trạng thái ngoài luồng hợp lệ: {string.Join(", ", offFlowStatuses)}. Muốn tiến theo chuỗi thì dùng /advance." });
 
     // Đã huỷ hoặc đã hoàn tất thì không rẽ nhánh nữa.
-    if (r.Status == "Rejected") return Results.BadRequest(new { error = "Lệnh đã bị từ chối, không thể chuyển trạng thái." });
-    if (r.Status == "Finished") return Results.BadRequest(new { error = "Lệnh đã hoàn thành, không thể chuyển trạng thái." });
+    if (r.Status == "REJ") return Results.BadRequest(new { error = "Lệnh đã bị từ chối, không thể chuyển trạng thái." });
+    if (r.Status == "FNS") return Results.BadRequest(new { error = "Lệnh đã hoàn thành, không thể chuyển trạng thái." });
 
     r.Status = target;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, status = r.Status, sourceCode = roStatusSourceCodes[target] });
+    return Results.Ok(new { r.RONo, status = r.Status, name = roStatusSourceCodes.FirstOrDefault(kv => kv.Value == target).Key });
 }).RequireAuthorization();
 
 // Từ chối lệnh sửa chữa (port 1:1 FrmROReject, TCMotor DMSCarSv): set Rejected + ghi lý do.
@@ -54873,8 +54879,8 @@ app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, 
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
     if (r is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.Note)) return Results.BadRequest(new { error = "Chưa nhập lý do từ chối." });
-    if (r.Status is "Finished" or "Rejected") return Results.BadRequest(new { error = "Lệnh đã kết thúc/đã từ chối, không thể từ chối." });
-    r.Status = "Rejected"; r.RejectNote = dto.Note.Trim(); r.RejectedAt = DateTime.Now;
+    if (r.Status is "FNS" or "REJ") return Results.BadRequest(new { error = "Lệnh đã kết thúc/đã từ chối, không thể từ chối." });
+    r.Status = "REJ"; r.RejectNote = dto.Note.Trim(); r.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.Status, r.RejectNote });
 }).RequireAuthorization();

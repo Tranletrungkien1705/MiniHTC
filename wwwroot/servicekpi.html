@@ -29,7 +29,7 @@
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
-const ST={HasRO:"Chờ sửa",InGarage:"Đang sửa",Repaired:"Sửa xong",CheckEnd:"Đã kiểm",Paid:"Đã thu",Finished:"Đã giao xe"};
+const ST={"HRO":"Chờ sửa","INGA":"Đang sửa","RPRD":"Sửa xong","CEND":"Đã kiểm","PAID":"Đã thu","FNS":"Đã giao xe"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});

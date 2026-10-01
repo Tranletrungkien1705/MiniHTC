@@ -2249,7 +2249,9 @@ public sealed class RepairOrder
     public string? CusRequest { get; set; }            // yêu cầu KH
     public string? CarStatus { get; set; }             // tình trạng tiếp nhận xe
     public bool CusWaiting { get; set; }               // khách chờ
-    public string Status { get; set; } = "HasRO";      // HasRO→InGarage→Repaired→CheckEnd→Paid→Finished
+    /// <summary>#376 mã nguồn TConst.Ser_RO_Stage (DMSCarSv Const.Main.cs:174-185): CRE PRT W4P HPA HRO REJ INGA CEND RPRD PAID FNS NORE.
+    /// Port cũ lưu tên (HasRO/InGarage/…) ⇒ Seeder đổi; API vẫn nhận tên cũ qua RoCode.</summary>
+    public string Status { get; set; } = "HRO";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     // Từ chối lệnh sửa chữa (FrmROReject)
     public string? RejectNote { get; set; }

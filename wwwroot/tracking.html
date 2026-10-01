@@ -13,7 +13,7 @@
   .cnt{background:var(--line);border-radius:999px;padding:0 8px;font-size:11px}
   .cardro{border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin-top:6px;font-size:12px}
   .cardro b{font-size:13px} .wait{color:var(--warn)} .plate{font-weight:700}
-  .s-HasRO .colh{color:var(--warn)} .s-InGarage .colh{color:var(--prog)} .s-Repaired .colh{color:var(--cyan)} .s-CheckEnd .colh{color:var(--accent)} .s-Paid .colh{color:var(--ok)} .s-Finished .colh{color:var(--ok)}
+  .s-HRO .colh{color:var(--warn)} .s-INGA .colh{color:var(--prog)} .s-RPRD .colh{color:var(--cyan)} .s-CEND .colh{color:var(--accent)} .s-PAID .colh{color:var(--ok)} .s-FNS .colh{color:var(--ok)}
   @media(max-width:900px){ .board{grid-template-columns:repeat(2,1fr)} }
 </style></head>
 <body>
@@ -22,7 +22,7 @@
 <div class="board" id="board"></div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={HasRO:"Mới tạo",InGarage:"Đang sửa",Repaired:"Sửa xong",CheckEnd:"Kiểm tra cuối",Paid:"Đã TT",Finished:"Đã giao xe"};
+const LBL={"HRO":"Mới tạo","INGA":"Đang sửa","RPRD":"Sửa xong","CEND":"Kiểm tra cuối","PAID":"Đã TT","FNS":"Đã giao xe"};
 const day=d=>d? new Date(d).toLocaleDateString("vi-VN"):"";
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},

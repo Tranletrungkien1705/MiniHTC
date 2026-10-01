@@ -16,7 +16,7 @@
 </style></head>
 <body>
 <h1>Lệnh sửa chữa (RO) <span class="muted">(port 1:1 FrmRepairOrder — TCMotor Ser_RO)</span></h1>
-<div class="muted stepper">Quy trình: HasRO → InGarage → Repaired → CheckEnd → Paid → Finished</div>
+<div class="muted stepper">Quy trình: HRO Lập lệnh → INGA Vào xưởng → RPRD Sửa xong → CEND Kiểm tra cuối → PAID Đã thanh toán → FNS Hoàn tất</div>
 <div class="card">
   <b>Tạo lệnh sửa chữa</b>
   <div class="bar" style="margin:10px 0">
@@ -38,15 +38,15 @@
   <div class="bar" style="margin-top:10px"><span style="flex:1"></span><button class="primary" onclick="create()">Tạo RO</button><span id="msg"></span></div>
 </div>
 <div class="bar" style="margin:10px 0">
-  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="HasRO">Mới tạo</option><option value="InGarage">Vào xưởng</option><option value="Repaired">Sửa xong</option><option value="CheckEnd">Kiểm tra cuối</option><option value="Paid">Đã thanh toán</option><option value="Finished">Hoàn tất</option></select>
+  <select id="fst" onchange="load()"><option value="">Tất cả</option><option value="HRO">Mới tạo</option><option value="INGA">Vào xưởng</option><option value="RPRD">Sửa xong</option><option value="CEND">Kiểm tra cuối</option><option value="PAID">Đã thanh toán</option><option value="FNS">Hoàn tất</option></select>
   <input id="q" placeholder="Lọc biển số" oninput="load()" style="width:120px">
 </div>
 <table><thead><tr><th>Số RO</th><th>Biển số</th><th>Chủ xe</th><th>CV/PT</th><th class="n">Tổng tiền</th><th>Trạng thái</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="7" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const FLOW=["HasRO","InGarage","Repaired","CheckEnd","Paid","Finished"];
-const LBL={HasRO:"Mới tạo",InGarage:"Vào xưởng",Repaired:"Sửa xong",CheckEnd:"Kiểm tra cuối",Paid:"Đã thanh toán",Finished:"Hoàn tất"};
+const FLOW=["HRO","INGA","RPRD","CEND","PAID","FNS"];
+const LBL={"HRO":"Mới tạo","INGA":"Vào xưởng","RPRD":"Sửa xong","CEND":"Kiểm tra cuối","PAID":"Đã thanh toán","FNS":"Hoàn tất"};
 const n=x=>Number(x||0).toLocaleString("vi-VN");
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
