@@ -24,11 +24,13 @@
   <div class="row" style="margin-top:6px">
     <div><label>Điện thoại</label><input id="tPhone" style="width:120px"></div><div><label>Fax</label><input id="tFax" style="width:110px"></div>
     <div><label>Giám đốc</label><input id="tDir" style="width:150px"></div><div><label>SĐT GĐ</label><input id="tDirP" style="width:120px"></div>
+    <div><label>Người liên hệ</label><input id="tCon" style="width:150px"></div><div><label>SĐT liên hệ</label><input id="tConP" style="width:120px"></div>
+    <div><label>Số HĐ vận chuyển</label><input id="tCtr" style="width:140px"></div><div><label>Ghi chú</label><input id="tRmk" style="width:200px"></div>
     <button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span>
   </div>
 </div>
 <div class="row" style="margin:8px 0"><input id="q" placeholder="Mã/tên NVT" style="width:200px"><button onclick="load()">Xem</button></div>
-<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>ĐT</th><th>Giám đốc</th><th>Xe</th><th>Tài xế</th><th>TT</th><th></th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên</th><th>ĐT</th><th>Giám đốc</th><th>Số HĐ VC</th><th>Người liên hệ</th><th>SĐT liên hệ</th><th>Ghi chú</th><th>Xe</th><th>Tài xế</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
 
 <div class="card" id="sub" style="display:none"><h3 style="margin-top:0">Chi tiết <span id="subName" class="muted"></span></h3>
@@ -48,13 +50,13 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
 async function save(){ await token();
-  const r=await fetch("/api/transporters",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({TransporterCode:F("tCode").value,TransporterName:F("tName").value,Address:F("tAddr").value,PhoneNo:F("tPhone").value,FaxNo:F("tFax").value,DirectorFullName:F("tDir").value,DirectorPhoneNo:F("tDirP").value})});
+  const r=await fetch("/api/transporters",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({TransporterCode:F("tCode").value,TransporterName:F("tName").value,Address:F("tAddr").value,PhoneNo:F("tPhone").value,FaxNo:F("tFax").value,DirectorFullName:F("tDir").value,DirectorPhoneNo:F("tDirP").value,ContactorFullName:F("tCon").value,ContactorPhoneNo:F("tConP").value,TransportContractNo:F("tCtr").value,Remark:F("tRmk").value})});
   const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; } m("msg","Đã lưu "+d.transporterCode); F("tCode").value=""; load();
 }
 async function toggle(code){ await token(); await fetch("/api/transporters/"+encodeURIComponent(code)+"/toggle",{method:"POST",headers:H()}); load(); }
 async function load(){ await token();
   const r=await fetch("/api/transporters?q="+encodeURIComponent(F("q").value),{headers:H()}); const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.transporterCode)}</b></td><td>${esc(o.transporterName)}</td><td>${esc(o.phoneNo)}</td><td>${esc(o.directorFullName)}</td><td>${o.cars}</td><td>${o.drivers}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="openSub('${esc(o.transporterCode)}')">Xe/TX</button><button class="link" onclick="toggle('${esc(o.transporterCode)}')">Đổi</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có NVT.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.transporterCode)}</b></td><td>${esc(o.transporterName)}</td><td>${esc(o.phoneNo)}</td><td>${esc(o.directorFullName)}</td><td>${esc(o.transportContractNo)}</td><td>${esc(o.contactorFullName)}</td><td>${esc(o.contactorPhoneNo)}</td><td>${esc(o.remark)}</td><td>${o.cars}</td><td>${o.drivers}</td><td>${o.flagActive==='1'?'Bật':'Tắt'}</td><td><button class="link" onclick="openSub('${esc(o.transporterCode)}')">Xe/TX</button><button class="link" onclick="toggle('${esc(o.transporterCode)}')">Đổi</button></td></tr>`).join("")||'<tr><td colspan="12" class="muted">Chưa có NVT.</td></tr>';
 }
 async function openSub(code){ CUR=code; F("sub").style.display="block"; F("subName").textContent="— "+code; loadCars(); loadDrivers(); }
 async function loadCars(){ await token();

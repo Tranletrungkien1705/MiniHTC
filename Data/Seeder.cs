@@ -186,6 +186,10 @@ public static class Seeder
                 "ALTER TABLE public.\"SalesManCertificates\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 // #84 Transporter: thêm ContactorPhoneNo (TblTranspoter.ContactorPhoneNo, FrmTransporter line 45)
                 "ALTER TABLE public.\"Transporters\" ADD COLUMN IF NOT EXISTS \"ContactorPhoneNo\" text NULL",
+                // #331 Mst_Transporter — 3 cột FrmTransporter lưu qua SaveMasterDataTable mà port cũ thiếu.
+                "ALTER TABLE public.\"Transporters\" ADD COLUMN IF NOT EXISTS \"ContactorFullName\" text NULL",
+                "ALTER TABLE public.\"Transporters\" ADD COLUMN IF NOT EXISTS \"TransportContractNo\" text NULL",
+                "ALTER TABLE public.\"Transporters\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 // #77 WOMapping: thêm WorkOrderNoTemp (core field FrmWO_Mapping.CarCarMapWorkOrder)
                 "ALTER TABLE public.\"WOMappings\" ADD COLUMN IF NOT EXISTS \"WorkOrderNoTemp\" text NULL",
                 // #48 SalesManViolate: thêm SMType + SmDateOfBirth (snapshot denorm từ DlSalesMan tại thời điểm vi phạm)

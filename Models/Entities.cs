@@ -4259,6 +4259,12 @@ public sealed class Transporter
     public string? DirectorFullName { get; set; }
     public string? DirectorPhoneNo { get; set; }
     public string? ContactorPhoneNo { get; set; }  // WinForm TblTranspoter.ContactorPhoneNo (line 45)
+    /// <summary>#331 `Mst_Transporter.ContactorFullName` — người liên hệ (FrmTransporter.cs:44, sửa được trên lưới).</summary>
+    public string? ContactorFullName { get; set; }
+    /// <summary>#331 `TransportContractNo` — số hợp đồng vận chuyển (FrmTransporter.cs:43).</summary>
+    public string? TransportContractNo { get; set; }
+    /// <summary>#331 `Remark` — ghi chú (FrmTransporter.cs:46).</summary>
+    public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

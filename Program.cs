@@ -24929,6 +24929,7 @@ app.MapGet("/api/transporters", async (AppDbContext db, ITenantContext t, string
     var items = await query.OrderBy(x => x.TransporterCode).Take(500).Select(x => new
     {
         x.Id, x.TransporterCode, x.TransporterName, x.Address, x.PhoneNo, x.FaxNo, x.DirectorFullName, x.DirectorPhoneNo, x.ContactorPhoneNo, x.FlagActive,
+        x.ContactorFullName, x.TransportContractNo, x.Remark,   // #331
         cars = db.TransporterCars.Count(c => c.OrgId == t.OrgId && c.TransporterCode == x.TransporterCode),
         drivers = db.TransporterDrivers.Count(d => d.OrgId == t.OrgId && d.TransporterCode == x.TransporterCode)
     }).ToListAsync();
@@ -24943,6 +24944,8 @@ app.MapPost("/api/transporters", async (TransporterDto dto, AppDbContext db, ITe
     if (s is null) { s = new Transporter { OrgId = t.OrgId, TransporterCode = code }; db.Transporters.Add(s); }
     s.TransporterName = dto.TransporterName; s.Address = dto.Address; s.PhoneNo = dto.PhoneNo; s.FaxNo = dto.FaxNo;
     s.DirectorFullName = dto.DirectorFullName; s.DirectorPhoneNo = dto.DirectorPhoneNo; s.ContactorPhoneNo = dto.ContactorPhoneNo; s.UpdatedAt = DateTime.Now;
+    // #331 nguồn SaveMasterDataTable ghi NGUYÊN dòng lưới ⇒ 3 cột này cũng được ghi đè.
+    s.ContactorFullName = dto.ContactorFullName; s.TransportContractNo = dto.TransportContractNo; s.Remark = dto.Remark;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.Id, s.TransporterCode });
 }).RequireAuthorization();
@@ -56714,7 +56717,8 @@ record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, d
 record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);
 record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);
 record CarStdOptionDto(string ModelCode, string StdCode, string? StdDesc, string? GradeCode, string? GradeDesc);
-record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo, string? ContactorPhoneNo);
+record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo, string? ContactorPhoneNo,
+    string? ContactorFullName = null, string? TransportContractNo = null, string? Remark = null);   // #331
 record TransporterCarDto(string PlateNo);
 record TransporterDriverDto(string DriverId, string? DriverFullName, string? DriverLicenseNo, string? DriverPhoneNo);
 record DealerCADto(string DealerCode, string? CaSubject, string? CaIssuer, string? Serial, DateTime? ValidFrom, DateTime? ValidTo);
