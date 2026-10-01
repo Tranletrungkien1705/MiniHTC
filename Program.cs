@@ -6703,6 +6703,7 @@ app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? de
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
         g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
+        g.DiscountPmtDate, g.DiscountPmtValue, g.Fee,
         cars = db.BankGuaranteeDtls.Count(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -6872,6 +6873,32 @@ app.MapPost("/api/bankgrts/date-recieve-root", async (GrtDateRecieveRootDto dto,
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+}).RequireAuthorization();
+
+// #316 Cập nhật bảo lãnh — PaymentGuaranteeUpdate_New20221212 (Biz.HTC.WH.cs, LIVE WSHTC.64:9171) ← FrmMngGrt.UpdateGrtWorker:2120.
+// Guard: bảo lãnh phải tồn tại + đã duyệt "A" (myPayment_CheckGuarantee); ngày & giá trị CK thực trả đi CẶP
+// (InvalidDiscountPmtDate / InvalidDiscountPmtValue). Ghi: BankGuaranteeNo, DateExpired, DiscountPmtDate/Value, DateRecieveGrtRoot, Fee.
+// ⚠️ NỢ: guard "phải có Đề nghị chiết khấu đã ký (Req_PaymentDiscount.PmtDctStatus='S', dòng A2) gắn bảo lãnh" và hậu xử lý
+//    "mọi BL trong đề nghị đã nhập CK ⇒ đề nghị → 'F' + gửi email" CHƯA port được: ReqPaymentDiscountLine của Mini không có
+//    GuaranteeNo và trạng thái đề nghị còn nhãn tự đặt ("Draft") ⇒ ghi BLOCKED, không bịa.
+app.MapPost("/api/bankgrts/{no}/update", async (string no, GrtUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { error = "Không tìm thấy bảo lãnh.", no });
+    if (g.Status != "A") return Results.BadRequest(new { error = $"Chỉ cập nhật bảo lãnh đã duyệt (đang: {g.Status}).", g.Status });
+    var hasVal = dto.DiscountPmtValue is not null; var hasDate = dto.DiscountPmtDate is not null;
+    if (hasVal && !hasDate) return Results.BadRequest(new { error = "Có giá trị chiết khấu thực trả nhưng thiếu ngày (PaymentGuaranteeUpdate_InvalidDiscountPmtDate)." });
+    if (!hasVal && hasDate) return Results.BadRequest(new { error = "Có ngày chiết khấu thực trả nhưng thiếu giá trị (PaymentGuaranteeUpdate_InvalidDiscountPmtValue)." });
+    // Nguồn ghi đè cả 6 cột theo đúng giá trị gửi lên (rỗng ⇒ NULL).
+    g.BankGuaranteeNo = (dto.BankGuaranteeNo ?? "").Trim();
+    g.DateExpired = dto.DateExpired;
+    g.DiscountPmtDate = dto.DiscountPmtDate?.Date;
+    g.DiscountPmtValue = dto.DiscountPmtValue;
+    g.DateRecieveGrtRoot = dto.DateRecieveGrtRoot;
+    g.Fee = dto.Fee;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { g.GuaranteeNo, g.BankGuaranteeNo, g.DateExpired, g.DiscountPmtDate, g.DiscountPmtValue, g.DateRecieveGrtRoot, g.Fee });
 }).RequireAuthorization();
 
 app.MapPost("/api/bankgrts/{no}/{action}", async (
@@ -56275,6 +56302,7 @@ record DealerDealAttachBatchDto(List<DealerDealAttachRowDto>? Rows);
 record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
 record GrtDeferredEditDto(List<GrtDeferredRowDto>? Lines);
 record GrtDeferredRowDto(string? VIN, int DeferredPaymentDays);
+record GrtUpdateDto(string? BankGuaranteeNo, DateTime? DateExpired, DateTime? DiscountPmtDate, decimal? DiscountPmtValue, DateTime? DateRecieveGrtRoot, decimal? Fee);
 record GrtDateRecieveRootDto(List<GrtDateRecieveRootRowDto>? Rows);
 record GrtDateRecieveRootRowDto(string? BankGuaranteeNo, DateTime? DateRecieveGrtRoot);
 record DealerStorageLocalDto(string? DealerCode, string? StorageCode, string? StorageName, string? DealerName, string? FlagActive);

@@ -14,7 +14,7 @@
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
-  .s-Draft{color:var(--warn)} .s-Approved{color:var(--ok)} .s-Rejected{color:var(--bad)}
+  .s-P{color:var(--warn)} .s-A{color:var(--ok)} .s-R{color:var(--bad)}
   #msg{font-size:13px} .carrow input{width:92px}
 </style></head>
 <body>
@@ -50,12 +50,12 @@
 <div class="bar" style="margin:10px 0">
   <input id="qd" placeholder="Lọc đại lý" oninput="load()" style="width:100px">
   <input id="qn" placeholder="Lọc số BL" oninput="load()" style="width:110px">
-  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Draft">Chờ duyệt</option><option value="Approved">Đã duyệt</option><option value="Rejected">Từ chối</option></select>
+  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="P">Chờ duyệt</option><option value="A">Đã duyệt</option><option value="R">Từ chối</option></select>
   <select id="qt" onchange="load()"><option value="">Mọi loại BL</option><option value="0">NH giám sát</option><option value="1">NH phát hành</option></select>
   <select id="qst" onchange="load()"><option value="">Tất toán: tất cả</option><option value="0">Chưa tất toán</option><option value="1">Đã tất toán</option></select>
 </div>
-<div class="wrap"><table><thead><tr><th>Số BL</th><th>Đại lý</th><th>NH</th><th>Loại BL</th><th class="num">Kỳ hạn</th><th class="num">Tổng GT BL</th><th class="num">Số xe</th><th>Ngày nhận gốc</th><th>Trạng thái</th><th>Tất toán</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table></div>
+<div class="wrap"><table><thead><tr><th>Số BL</th><th>Đại lý</th><th>NH</th><th>Loại BL</th><th class="num">Kỳ hạn</th><th class="num">Tổng GT BL</th><th class="num">Số xe</th><th>Ngày nhận gốc</th><th>Ngày trả CK</th><th class="num">CK thực trả</th><th class="num">Phí</th><th>Trạng thái</th><th>Tất toán</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="14" class="muted">Đang tải…</td></tr></tbody></table></div>
 <div class="card" id="detCard" style="display:none">
   <b>Chi tiết xe — <span id="detNo"></span></b>
   <div class="wrap"><table><thead><tr><th>VIN</th><th class="num">Giá trị BL</th><th class="num">% BL</th><th class="num">Chiết khấu</th><th class="num">% CK</th><th>Ngày BĐ</th><th>Ngày cảnh báo</th><th>Ngày hết hạn</th></tr></thead>
@@ -63,7 +63,8 @@
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const ST={Draft:"Chờ duyệt",Approved:"Đã duyệt",Rejected:"Từ chối"};
+// Mã GuaranteeStatus nguồn TConst.Stage (API đã đổi sang P/A/R từ trước — trang này còn nhãn cũ nên nút Duyệt/Tất toán không bao giờ hiện; sửa ở #316)
+const ST={P:"Chờ duyệt",A:"Đã duyệt",R:"Từ chối"};
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -88,16 +89,23 @@ async function load(){ await token();
   const d=await (await fetch(`/api/bankgrts?dealer=${F("qd").value}&grtNo=${F("qn").value}&status=${F("qs").value}&type=${F("qt").value}&settled=${F("qst").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
     let act="";
-    if(o.status==="Draft") act=`<button class="sm ok" onclick="decide('${o.guaranteeNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.guaranteeNo}','reject')">Từ chối</button>`;
-    else if(o.status==="Approved"&&o.flagSettled!=="1") act=`<button class="sm warn" onclick="decide('${o.guaranteeNo}','settle')">Tất toán</button>`;
-    return `<tr onclick="detail('${o.guaranteeNo}')"><td><b>${o.guaranteeNo}</b></td><td>${o.dealerCode}</td><td>${o.bankCode}</td><td>${o.guaranteeType==="1"?"NH phát hành":"NH giám sát"}</td><td class="num">${o.term}</td><td class="num">${money(o.totalAmount)}</td><td class="num">${o.cars}</td><td>${(o.dateRecieveGrtRoot||"").substring(0,10)||"—"}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.flagSettled==="1"?"✓ Đã TT":"—"}</td><td>${act}</td></tr>`;
-  }).join("")||'<tr><td colspan="11" class="muted">Chưa có bảo lãnh.</td></tr>';
+    if(o.status==="P") act=`<button class="sm ok" onclick="decide('${o.guaranteeNo}','approve')">Duyệt</button> <button class="sm bad" onclick="decide('${o.guaranteeNo}','reject')">Từ chối</button>`;
+    else if(o.status==="A"){ if(o.flagSettled!=="1") act=`<button class="sm warn" onclick="decide('${o.guaranteeNo}','settle')">Tất toán</button> `; act+=`<button class="sm" onclick="updDiscount(event,${JSON.stringify(o).replace(/"/g,"&quot;")})">Nhập CK thực trả</button>`; }
+    return `<tr onclick="detail('${o.guaranteeNo}')"><td><b>${o.guaranteeNo}</b></td><td>${o.dealerCode}</td><td>${o.bankCode}</td><td>${o.guaranteeType==="1"?"NH phát hành":"NH giám sát"}</td><td class="num">${o.term}</td><td class="num">${money(o.totalAmount)}</td><td class="num">${o.cars}</td><td>${(o.dateRecieveGrtRoot||"").substring(0,10)||"—"}</td><td>${(o.discountPmtDate||"").substring(0,10)||"—"}</td><td class="num">${o.discountPmtValue==null?"—":money(o.discountPmtValue)}</td><td class="num">${o.fee==null?"—":money(o.fee)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.flagSettled==="1"?"✓ Đã TT":"—"}</td><td>${act}</td></tr>`;
+  }).join("")||'<tr><td colspan="14" class="muted">Chưa có bảo lãnh.</td></tr>';
 }
 async function detail(no){
   const d=await (await fetch(`/api/bankgrts/${no}/cars`,{headers:H()})).json();
   F("detCard").style.display=""; F("detNo").textContent=no;
   F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td class="num">${money(c.grtValue)}</td><td class="num">${c.grtPercent}</td><td class="num">${money(c.discountValue)}</td><td class="num">${c.discountPercent}</td><td>${(c.dateStart||"").substring(0,10)}</td><td>${(c.dateWarning||"").substring(0,10)}</td><td>${(c.dateExpired||"").substring(0,10)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Không có xe.</td></tr>';
 }
+// #316 PaymentGuaranteeUpdate: ngày + giá trị CK thực trả đi cặp; các cột khác gửi lại giá trị hiện có.
+async function updDiscount(ev,o){ ev.stopPropagation();
+  const d=prompt("Ngày trả CK cho ĐL (yyyy-mm-dd), để trống = xoá:", (o.discountPmtDate||"").substring(0,10)); if(d===null) return;
+  const v=prompt("Giá trị CK thực trả, để trống = xoá:", o.discountPmtValue??""); if(v===null) return;
+  const b={bankGuaranteeNo:o.bankGuaranteeNo,dateExpired:o.dateExpired,dateRecieveGrtRoot:o.dateRecieveGrtRoot,fee:o.fee,discountPmtDate:d||null,discountPmtValue:v===""?null:+v};
+  const r=await fetch(`/api/bankgrts/${o.guaranteeNo}/update`,{method:"POST",headers:H(),body:JSON.stringify(b)}); const j=await r.json();
+  if(r.ok){ msg(`${o.guaranteeNo}: đã lưu CK thực trả.`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 async function decide(no,act){ event.stopPropagation();
   const r=await fetch(`/api/bankgrts/${no}/${act}`,{method:"POST",headers:H()});
   const j=await r.json();

@@ -1220,6 +1220,8 @@ public static class Seeder
         // #B24 loc bao lanh du dieu kien de nghi chiet khau thanh toan
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"SOCode\" text NULL",
         "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"DiscountPmtValue\" numeric NULL",
+        // #316 cột nguồn Pmt_Guarantee.DiscountPmtDate + Fee
+        "ALTER TABLE public.\"BankGuarantees\" ADD COLUMN IF NOT EXISTS \"DiscountPmtDate\" timestamp NULL, ADD COLUMN IF NOT EXISTS \"Fee\" numeric NULL",
         // #B27 Car_VIN.FlagDocReq
         "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagDocReq\" text NULL",
         // #B28 Car_Car.UnitPriceActual - mau so cua nguong CBU 30% / CKD 15%

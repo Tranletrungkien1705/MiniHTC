@@ -11995,6 +11995,11 @@ public sealed class BankGuarantee
     public string FlagSettled { get; set; } = "0";        // 1 = da tat toan
     /// <summary>#B24 Giá trị chiết khấu THỰC TRẢ đại lý (`Pmt_Guarantee.DiscountPmtValue`) — bộ lọc của `CarCarGet_ForReqPaymentDiscountX_20230310` đòi cột này **is null** (chưa trả chiết khấu).</summary>
     public decimal? DiscountPmtValue { get; set; }
+    /// <summary>#316 Ngày đại lý thanh toán chiết khấu cho HTC (`Pmt_Guarantee.DiscountPmtDate`) — đi CẶP với
+    /// <see cref="DiscountPmtValue"/> (PaymentGuaranteeUpdate_New20221212: có cái này mà thiếu cái kia ⇒ lỗi).</summary>
+    public DateTime? DiscountPmtDate { get; set; }
+    /// <summary>#316 Phí phát hành BL/LC (`Pmt_Guarantee.Fee`) — nguồn ghi cùng lượt cập nhật bảo lãnh.</summary>
+    public decimal? Fee { get; set; }
     public string Remark { get; set; } = "";
 
     /// <summary>Lý do TỪ CHỐI (`RemarkReject`) — nguồn ghi riêng, không dùng chung `Remark`.</summary>
