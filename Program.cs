@@ -54093,27 +54093,94 @@ app.MapGet("/api/partstock", async (AppDbContext db, ITenantContext t, string? w
 }).RequireAuthorization();
 
 // ===== Phiếu tiếp nhận xe dịch vụ (Ser_ReceptionF — port 1:1 FrmSerReceptionFMng) =====
-app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? status, string? plate) =>
+// #355 parity 1:1 TCMotor DMSCarSv V20 (BizCarSv.Tab.cs):
+//   · Tạo  = `Ser_ReceptionF_ReceptionX_New20210704` (:10599; WS Ser_ReceptionF_Reception → _New20210704). Ghi 23 cột Ser_ReceptionF
+//     (ReceptionFStatus = P, DeliveryDateTime/By NULL, LU* = Log* = lúc tạo) + Ser_ReceptionFDtl (ReceptionFStatusDtl = P)
+//     + Ser_ReceptionFAttachFile. Kiểm: Mst_Dealer tồn tại + active · CheckExistCarID (Ser_Car) · LevelOfInspection ∈ {1,2,3}.
+//   · Giao xe = `Ser_ReceptionF_DeliveryX_New20180921` (:11673): phiếu PHẢI đang P ⇒ A; DeliveryDateTime/By, BodyPaintFilePath,
+//     Remark, LU*/Log*; dòng Dtl gửi lên: DeliveryAudStatus (StdFlag), ReceptionFStatusDtl = A, Remark (ghi đè, kể cả rỗng); chèn file.
+//     ⚠️ Nguồn KHÔNG đòi đã có RO — port cũ chặn "Chưa gắn RO" là luật tự đặt ⇒ bỏ.
+//   · Xoá = `Ser_ReceptionF_DeleteX_New20180921` (BizCarSv.ZTemp.cs:18153 — ZTemp nhưng LIVE): phiếu phải tồn tại; đã có RO
+//     ⇒ `Ser_ReceptionF_DeleteX_ExistRONotDeleter` (FrmSerReceptionFMng.btnDelete: "Không thể xóa phiếu … đã tạo báo giá!");
+//     xoá AttachFile → Dtl → đầu phiếu.
+//   ⚠️ Quirk nguồn ghi nhận, KHÔNG sửa: Ser_Mst_ReceptionFAudit_CheckDB gọi KHÔNG truyền mã đầu mục ⇒ không kiểm mã từng dòng.
+static string RcpFlag(string? v) { var x = (v ?? "").Trim(); return x == "" || x == "0" ? "0" : "1"; }   // TUtils.StandardizeFlag
+app.MapGet("/api/receptions", async (AppDbContext db, ITenantContext t, string? status, string? plate, string? dealerCode) =>
 {
     var q = db.Receptions.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.ReceptionFStatus == status);
     if (!string.IsNullOrWhiteSpace(plate)) q = q.Where(r => r.PlateNo.Contains(plate.ToUpper()));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(r => r.DealerCode == dealerCode);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
-    { r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest, r.RONO, r.Status, r.CreatedAt, r.DeliveredAt }).ToListAsync();
-    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "Pending"), items });
+    {
+        r.ReceptionFNo, r.PlateNo, r.ModelName, r.CusName, r.CusPhoneNo, r.CusRequest, r.RONO, r.ReceptionFStatus, r.CreatedDateTime, r.DeliveryDateTime,
+        r.DealerCode, r.CusID, r.CarID, r.Km, r.FuelLevel, r.LevelOfInspection, r.AppStatus, r.BackRepairStatus, r.WarrantlyStatus,
+        r.InsuaranceStatus, r.BodyPaintFilePath, r.Remark, r.CreatedBy, r.DeliveryBy, r.LUDateTime, r.LUBy, r.LogLUDateTime, r.LogLUBy
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, pending = items.Count(x => x.ReceptionFStatus == "P"), items });
 }).RequireAuthorization();
 
-app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/receptions/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Cần biển số (PlateNo)." });
-    var no = "RCP" + DateTime.Now.ToString("yyMMddHHmmss");
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var dtl = await db.ReceptionFDtls.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no).OrderBy(x => x.Id)
+        .Select(x => new { x.ReceptionFAudCode, x.ReceptionFAudType, x.ReceptionAudStatus, x.DeliveryAudStatus, x.ReceptionFStatusDtl, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var files = await db.ReceptionFAttachFiles.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no).OrderBy(x => x.Id)
+        .Select(x => new { x.FileIndex, x.ReceptionFileType, x.ReceptionFilePath, x.ReceptionFileName, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = r, Ser_ReceptionFDtl = dtl, Ser_ReceptionFAttachFile = files });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    var no = string.IsNullOrWhiteSpace(dto.ReceptionFNo) ? "RCP" + now.ToString("yyMMddHHmmss") : dto.ReceptionFNo.Trim().ToUpperInvariant();
+    if (await db.Receptions.AnyAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no))
+        return Results.BadRequest(new { error = $"Phiếu {no} đã tồn tại.", ReceptionFNo = no });
+    // Mst_Dealer_CheckDB(strDealerCode, FlagExist = Yes, FlagActive = Active)
+    var dealer = (dto.DealerCode ?? "").Trim();
+    if (!await db.Dealers.AnyAsync(d => d.OrgId == t.OrgId && d.DealerCode == dealer && d.Status == "1"))
+        return Results.BadRequest(new { error = $"Đại lý '{dealer}' không tồn tại hoặc ngừng hoạt động.", code = "Mst_Dealer_CheckDB", DealerCode = dealer });
+    // CheckExistCarID (Ser_Car)
+    var carId = (dto.CarID ?? "").Trim();
+    var car = carId.Length == 0 ? null : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == carId);
+    if (car is null) return Results.BadRequest(new { error = $"Xe '{carId}' không tồn tại (Ser_Car).", code = "CheckExistCarID", CarID = carId });
+    var lvl = (dto.LevelOfInspection ?? "").Trim();
+    if (lvl is not ("1" or "2" or "3"))
+        return Results.BadRequest(new { error = "Cấp kiểm tra phải là 1, 2 hoặc 3.", code = "Ser_ReceptionF_CheckInput_InvalidLevelOfInspection", LevelOfInspection = lvl });
+    decimal km = decimal.TryParse((dto.Km ?? "").Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var k) ? k : 0m;
     var r = new Reception
     {
-        OrgId = t.OrgId, ReceptionFNo = no, PlateNo = dto.PlateNo.Trim().ToUpperInvariant(), ModelName = dto.ModelName,
-        CusName = dto.CusName, CusAddress = dto.CusAddress, CusPhoneNo = dto.CusPhoneNo, CusRequest = dto.CusRequest, Status = "Pending"
+        OrgId = t.OrgId, ReceptionFNo = no,
+        PlateNo = (string.IsNullOrWhiteSpace(dto.PlateNo) ? car.PlateNo ?? "" : dto.PlateNo).Trim().ToUpperInvariant(),
+        ModelName = dto.ModelName ?? car.ModelCode, CusName = dto.CusName ?? car.CusName, CusAddress = dto.CusAddress, CusPhoneNo = dto.CusPhoneNo ?? car.CusMobile,
+        DealerCode = dealer, CusID = string.IsNullOrWhiteSpace(dto.CusID) ? null : dto.CusID.Trim(), CarID = carId, Km = km,
+        FuelLevel = (dto.FuelLevel ?? "").Trim(), LevelOfInspection = lvl,
+        AppStatus = RcpFlag(dto.AppStatus), BackRepairStatus = RcpFlag(dto.BackRepairStatus),
+        WarrantlyStatus = RcpFlag(dto.WarrantlyStatus), InsuaranceStatus = RcpFlag(dto.InsuaranceStatus),
+        CusRequest = (dto.CusRequest ?? "").Trim(), BodyPaintFilePath = (dto.BodyPaintFilePath ?? "").Trim(), Remark = (dto.Remark ?? "").Trim(),
+        CreatedDateTime = now, CreatedBy = who, DeliveryDateTime = null, DeliveryBy = null,
+        LUDateTime = now, LUBy = who, ReceptionFStatus = "P", LogLUDateTime = now, LogLUBy = who
     };
-    db.Receptions.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReceptionFNo, r.PlateNo, status = r.Status });
+    db.Receptions.Add(r);
+    foreach (var d in dto.Ser_ReceptionFDtl ?? new())
+        db.ReceptionFDtls.Add(new ReceptionFDtl
+        {
+            OrgId = t.OrgId, ReceptionFNo = no, ReceptionFAudCode = (d.ReceptionFAudCode ?? "").Trim().ToUpperInvariant(),
+            ReceptionFAudType = (d.ReceptionFAudType ?? "").Trim().ToUpperInvariant(), ReceptionAudStatus = RcpFlag(d.ReceptionAudStatus),
+            DeliveryAudStatus = null, ReceptionFStatusDtl = "P", Remark = d.Remark, LogLUDateTime = now, LogLUBy = who
+        });
+    foreach (var f in dto.Ser_ReceptionFAttachFile ?? new())
+        db.ReceptionFAttachFiles.Add(new ReceptionFAttachFile
+        {
+            OrgId = t.OrgId, ReceptionFNo = no, FileIndex = (f.FileIndex ?? "").Trim().ToUpperInvariant(), ReceptionFilePath = f.ReceptionFilePath,
+            ReceptionFileName = f.ReceptionFileName, ReceptionFileType = (f.ReceptionFileType ?? "").Trim().ToUpperInvariant(), Remark = f.Remark,
+            LogLUDateTime = now, LogLUBy = who
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionFNo, r.PlateNo, r.ReceptionFStatus, r.LevelOfInspection, r.Km });
 }).RequireAuthorization();
 
 // Gắn RO (kiểm tra RO tồn tại — tích hợp RepairOrder)
@@ -54131,17 +54198,54 @@ app.MapPost("/api/receptions/{no}/linkro", async (string no, ReceptionLinkDto dt
     return Results.Ok(new { r.ReceptionFNo, r.RONO });
 }).RequireAuthorization();
 
-// Giao xe (Approved) — cần đã gắn RO
-app.MapPost("/api/receptions/{no}/deliver", async (string no, AppDbContext db, ITenantContext t) =>
+// Giao xe — Ser_ReceptionF_DeliveryX_New20180921
+app.MapPost("/api/receptions/{no}/deliver", async (string no, ReceptionDeliveryDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
     if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "Pending") return Results.BadRequest(new { error = "Chỉ giao xe cho phiếu Tiếp nhận." });
-    if (string.IsNullOrWhiteSpace(r.RONO)) return Results.BadRequest(new { error = "Chưa gắn RO, không thể giao xe." });
-    r.Status = "Approved"; r.DeliveredAt = DateTime.Now;
+    if (r.ReceptionFStatus != "P")
+        return Results.BadRequest(new { error = "Chỉ giao xe cho phiếu đang Tiếp nhận (P).", code = "Ser_ReceptionF_CheckDB_StatusNotMatched", ReceptionFStatus = r.ReceptionFStatus });
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    r.ReceptionFStatus = "A"; r.DeliveryDateTime = now; r.DeliveryBy = who;
+    r.BodyPaintFilePath = (dto?.BodyPaintFilePath ?? "").Trim(); r.Remark = (dto?.Remark ?? "").Trim();
+    r.LUDateTime = now; r.LUBy = who; r.LogLUDateTime = now; r.LogLUBy = who;
+    var dtls = await db.ReceptionFDtls.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no).ToListAsync();
+    var updated = 0;
+    foreach (var d in dto?.Ser_ReceptionFDtl ?? new())
+    {
+        var code = (d.ReceptionFAudCode ?? "").Trim().ToUpperInvariant(); var type = (d.ReceptionFAudType ?? "").Trim().ToUpperInvariant();
+        foreach (var x in dtls.Where(x => x.ReceptionFAudCode == code && x.ReceptionFAudType == type))   // update … inner join theo 3 khoá
+        {
+            x.DeliveryAudStatus = RcpFlag(d.DeliveryAudStatus); x.ReceptionFStatusDtl = "A"; x.Remark = d.Remark;
+            x.LogLUDateTime = now; x.LogLUBy = who; updated++;
+        }
+    }
+    foreach (var f in dto?.Ser_ReceptionFAttachFile ?? new())
+        db.ReceptionFAttachFiles.Add(new ReceptionFAttachFile
+        {
+            OrgId = t.OrgId, ReceptionFNo = no, FileIndex = (f.FileIndex ?? "").Trim().ToUpperInvariant(), ReceptionFilePath = f.ReceptionFilePath,
+            ReceptionFileName = f.ReceptionFileName, ReceptionFileType = (f.ReceptionFileType ?? "").Trim().ToUpperInvariant(), Remark = f.Remark,
+            LogLUDateTime = now, LogLUBy = who
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.ReceptionFNo, status = r.Status });
+    return Results.Ok(new { r.ReceptionFNo, r.ReceptionFStatus, r.DeliveryDateTime, r.DeliveryBy, dtlUpdated = updated });
+}).RequireAuthorization();
+
+// Xoá — Ser_ReceptionF_DeleteX_New20180921
+app.MapPost("/api/receptions/{no}/delete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (!string.IsNullOrWhiteSpace(r.RONO))
+        return Results.BadRequest(new { error = "Không thể xóa phiếu tiếp nhận/giao xe đã tạo báo giá!", code = "Ser_ReceptionF_DeleteX_ExistRONotDeleter", r.RONO });
+    db.ReceptionFAttachFiles.RemoveRange(db.ReceptionFAttachFiles.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no));
+    db.ReceptionFDtls.RemoveRange(db.ReceptionFDtls.Where(x => x.OrgId == t.OrgId && x.ReceptionFNo == no));
+    db.Receptions.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
 // ===== Phiếu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition) =====
@@ -56144,7 +56248,15 @@ record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
-record ReceptionDto(string PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest);
+record ReceptionDto(string? PlateNo, string? ModelName, string? CusName, string? CusAddress, string? CusPhoneNo, string? CusRequest,
+    // #355 tham số Ser_ReceptionF_Reception_New20210704
+    string? ReceptionFNo = null, string? DealerCode = null, string? CusID = null, string? CarID = null, string? Km = null, string? FuelLevel = null,
+    string? LevelOfInspection = null, string? AppStatus = null, string? BackRepairStatus = null, string? WarrantlyStatus = null,
+    string? InsuaranceStatus = null, string? BodyPaintFilePath = null, string? Remark = null,
+    List<ReceptionFDtlDto>? Ser_ReceptionFDtl = null, List<ReceptionFAttachFileDto>? Ser_ReceptionFAttachFile = null);
+record ReceptionFDtlDto(string? ReceptionFAudCode, string? ReceptionFAudType, string? ReceptionAudStatus = null, string? DeliveryAudStatus = null, string? Remark = null);
+record ReceptionFAttachFileDto(string? FileIndex, string? ReceptionFilePath, string? ReceptionFileName, string? ReceptionFileType, string? Remark = null);
+record ReceptionDeliveryDto(string? BodyPaintFilePath, string? Remark, List<ReceptionFDtlDto>? Ser_ReceptionFDtl = null, List<ReceptionFAttachFileDto>? Ser_ReceptionFAttachFile = null);   // #355
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
 record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines);

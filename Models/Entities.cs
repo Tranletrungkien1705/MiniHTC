@@ -2360,22 +2360,82 @@ public sealed class StockReqLine
 }
 
 /// <summary>Phiếu tiếp nhận xe dịch vụ (Ser_ReceptionF — port 1:1 FrmSerReceptionFMng, TCMotor DMSCarSv):
-/// front-desk tiếp nhận xe khách, có thể gắn RO. Pending(Tiếp nhận) → Approved(Giao xe).</summary>
+/// front-desk tiếp nhận xe khách, có thể gắn RO.
+/// #355 parity: ghi theo `Ser_ReceptionF_ReceptionX_New20210704` (BizCarSv.Tab.cs:10599, WS Ser_ReceptionF_Reception) và
+/// `Ser_ReceptionF_DeliveryX_New20180921` (:11673). `Ser_ReceptionF_Add` LIVE là no-op (AddX bị comment) ⇒ không port.</summary>
 public sealed class Reception
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string ReceptionFNo { get; set; } = "";
-    public string PlateNo { get; set; } = "";          // biển số
+    public string PlateNo { get; set; } = "";          // biển số (hiển thị — nguồn join Ser_Car theo CarID)
     public string? ModelName { get; set; }
     public string? CusName { get; set; }
     public string? CusAddress { get; set; }
     public string? CusPhoneNo { get; set; }
     public string? CusRequest { get; set; }
     public string? RONO { get; set; }                  // RO liên kết (nếu đã lập lệnh)
-    public string Status { get; set; } = "Pending";    // Pending(Tiếp nhận) → Approved(Giao xe)
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? DeliveredAt { get; set; }
+    /// <summary>#355 `ReceptionFStatus` (rename từ `Status`) — TConst.ReceptionFStatus (Const.Main.cs:212): **P** Tiếp nhận · **A** Giao xe.
+    /// Port cũ tự đặt "Pending"/"Approved" — Seeder đổi dữ liệu cũ sang P/A.</summary>
+    public string ReceptionFStatus { get; set; } = "P";
+    /// <summary>#355 `CreatedDateTime` (rename từ `CreatedAt`).</summary>
+    public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    /// <summary>#355 `DeliveryDateTime` (rename từ `DeliveredAt`) — ghi khi giao xe (DeliveryX).</summary>
+    public DateTime? DeliveryDateTime { get; set; }
+    // ===== #355 cột nguồn port cũ thiếu (DbDefine TblSer_ReceptionF) =====
+    public string? DealerCode { get; set; }
+    public string? CusID { get; set; }
+    public string? CarID { get; set; }
+    /// <summary>`Km` — nguồn StandardizeDouble(strKm, 0.0): rỗng/không phải số ⇒ 0.</summary>
+    public decimal? Km { get; set; }
+    public string? FuelLevel { get; set; }
+    /// <summary>`LevelOfInspection` — chỉ nhận "1" | "2" | "3" (`Ser_ReceptionF_CheckInput_InvalidLevelOfInspection`).</summary>
+    public string? LevelOfInspection { get; set; }
+    /// <summary>4 cờ StandardizeFlag ("" / "0" ⇒ "0", khác ⇒ "1"): có hẹn · sửa lại · bảo hành · bảo hiểm.</summary>
+    public string? AppStatus { get; set; }
+    public string? BackRepairStatus { get; set; }
+    public string? WarrantlyStatus { get; set; }
+    public string? InsuaranceStatus { get; set; }
+    public string? BodyPaintFilePath { get; set; }
+    public string? Remark { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? DeliveryBy { get; set; }
+    public DateTime? LUDateTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#355 Dòng kiểm tra xe lúc tiếp nhận / giao (Ser_ReceptionFDtl). Khoá nguồn = (ReceptionFNo, ReceptionFAudCode, ReceptionFAudType).
+/// Tạo ở ReceptionX (ReceptionAudStatus, ReceptionFStatusDtl = "P"); DeliveryX cập nhật DeliveryAudStatus + ReceptionFStatusDtl = "A" + Remark.</summary>
+public sealed class ReceptionFDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";
+    public string ReceptionFAudCode { get; set; } = "";
+    public string ReceptionFAudType { get; set; } = "";
+    public string? ReceptionAudStatus { get; set; }
+    public string? DeliveryAudStatus { get; set; }
+    public string? ReceptionFStatusDtl { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#355 File đính kèm phiếu tiếp nhận (Ser_ReceptionFAttachFile) — chèn thêm ở cả ReceptionX lẫn DeliveryX.</summary>
+public sealed class ReceptionFAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";
+    public string FileIndex { get; set; } = "";
+    public string? ReceptionFileType { get; set; }
+    public string? ReceptionFilePath { get; set; }
+    public string? ReceptionFileName { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate, TCMotor DMSCarSv/Inventory):
