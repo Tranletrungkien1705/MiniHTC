@@ -203,10 +203,13 @@ public sealed class CarRetrieve
     public DateTime? ExpectedEndDate { get; set; }       // ngày dự kiến kết thúc thu hồi (BẮT BUỘC)
     public string? FlagEarlyCancel { get; set; }         // cờ xe sắp hủy (từ Car, read-only)
     public string? RetrieveRemark { get; set; }          // ghi chú (TblCarRetrieveDetail.Remark)
-    /// <summary>🔴 TConst.Stage: "P" chờ duyệt → "A" duyệt / "R" từ chối (sửa ở #117).</summary>
-    public string Status { get; set; } = "P";
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-    public DateTime? ApprovedAt { get; set; }
+    /// <summary>🔴 TConst.Stage: "P" chờ duyệt → "A" duyệt / "R" từ chối (sửa ở #117).
+    /// #313 đổi tên khớp nguồn `TblCarRetrieve.RetrieveStatus` (port cũ: `Status`).</summary>
+    public string RetrieveStatus { get; set; } = "P";
+    /// <summary>#313 đổi tên khớp nguồn `TblCarRetrieve.CreatedDate` (port cũ: `CreatedAt`).</summary>
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    /// <summary>#313 đổi tên khớp nguồn `TblCarRetrieve.ApprovedDate` (port cũ: `ApprovedAt`).</summary>
+    public DateTime? ApprovedDate { get; set; }
 
     // ===== #159 side-effect `Sto_DlvMinutes_Approve_New20190416` (Biz.HTC.WH.cs:138340, csproj 272) =====
     // Duyệt biên bản giao xe GHI NGƯỢC "ngày xuất kho" lên CHỨNG TỪ NGUỒN của xe. Bốn nhánh theo loại

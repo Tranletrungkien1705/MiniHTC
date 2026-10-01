@@ -660,13 +660,28 @@ app.MapPost("/api/pdi/{code}/{action}", async (string code, string action, PdiRe
 app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? status, string? orderNo) =>
 {
     var q = db.CarRetrieves.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.Status == status);
+    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.RetrieveStatus == status);
     if (!string.IsNullOrWhiteSpace(orderNo)) q = q.Where(r => r.RetrieveOrderNo == orderNo);
-    var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
-    { r.Code, r.RetrieveOrderNo, r.Vin, r.DealerCode, r.StorageCode, r.ExpectedStartDate, r.ExpectedEndDate,
-      r.FlagEarlyCancel, r.RetrieveRemark, r.DeliveryOrderNo, r.Status, r.RetrieveDtlStatus,
-      r.CreatedAt, r.CreatedBy, r.ApprovedAt, r.ApprovedBy,
-      r.RetrieveOutDate, r.RetrieveEndDate, r.LogLUDateTime, r.LogLUBy }).ToListAsync();
+    var rows = await q.OrderByDescending(r => r.Id).Take(500).ToListAsync();
+    // #313 LastDeliveryOrderNo / LastStorageCode / LastDeliveryOutDate KHÔNG phải cột DB: nguồn
+    // (SalesService.SearchCarRetrieve:9354 ← BaseService.SearchCarAndJoinInfo ← CarCarGetList) ghép từ LỆNH GIAO
+    // hiện tại của xe (Delivery_Order_No, CDOD.StorageCode, CDOD.DeliveryOutDate). Mini: dòng DO mới nhất theo VIN.
+    var vins = rows.Select(r => r.Vin).Distinct().ToList();
+    var lastDo = (await (from c in db.DeliveryOrderCars
+                         join d in db.DeliveryOrders on c.DoId equals d.Id
+                         where c.OrgId == t.OrgId && vins.Contains(c.Vin)
+                         select new { c.Id, c.Vin, d.DoNo, c.StorageCode, c.DeliveryOutDate }).ToListAsync())
+        .GroupBy(x => x.Vin).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
+    var items = rows.Select(r =>
+    {
+        lastDo.TryGetValue(r.Vin, out var ld);
+        return new
+        { r.Code, r.RetrieveOrderNo, r.Vin, r.DealerCode, r.StorageCode, r.ExpectedStartDate, r.ExpectedEndDate,
+          r.FlagEarlyCancel, r.RetrieveRemark, r.DeliveryOrderNo, r.RetrieveStatus, r.RetrieveDtlStatus,
+          r.CreatedDate, r.CreatedBy, r.ApprovedDate, r.ApprovedBy,
+          r.RetrieveOutDate, r.RetrieveEndDate, r.LogLUDateTime, r.LogLUBy,
+          LastDeliveryOrderNo = ld?.DoNo, LastStorageCode = ld?.StorageCode, LastDeliveryOutDate = ld?.DeliveryOutDate };
+    }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -697,11 +712,11 @@ app.MapPost("/api/retrieves", async (RetrieveDto dto, AppDbContext db, ITenantCo
         ExpectedStartDate = dto.ExpectedStartDate, ExpectedEndDate = dto.ExpectedEndDate,
         FlagEarlyCancel = dto.FlagEarlyCancel, RetrieveRemark = dto.RetrieveRemark,
         DeliveryOrderNo = "", // nguồn luôn ghi rỗng khi tạo
-        Status = "P", RetrieveDtlStatus = "P",
+        RetrieveStatus = "P", RetrieveDtlStatus = "P",
         CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
     };
     db.CarRetrieves.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.Code, r.RetrieveOrderNo, r.Vin, r.StorageCode, status = r.Status });
+    return Results.Ok(new { r.Code, r.RetrieveOrderNo, r.Vin, r.StorageCode, r.RetrieveStatus });
 }).RequireAuthorization();
 
 app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -711,13 +726,13 @@ app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action,
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
     if (r is null) return Results.NotFound(new { code });
     // 🔴 Mã trạng thái theo `TConst.Stage` của nguồn: "P" → "A" / "R" (sửa ở #117).
-    if (r.Status != "P") return Results.BadRequest(new { error = $"Sai trạng thái (đang '{r.Status}', cần 'P')." });
-    r.Status = action == "approve" ? "A" : "R";
-    r.RetrieveDtlStatus = r.Status; // bản phẳng: đầu và dòng là một, đồng bộ luôn
-    r.ApprovedAt = DateTime.Now;
+    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = $"Sai trạng thái (đang '{r.RetrieveStatus}', cần 'P')." });
+    r.RetrieveStatus = action == "approve" ? "A" : "R";
+    r.RetrieveDtlStatus = r.RetrieveStatus; // bản phẳng: đầu và dòng là một, đồng bộ luôn
+    r.ApprovedDate = DateTime.Now;
     r.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.Code, r.Vin, status = r.Status });
+    return Results.Ok(new { r.Code, r.Vin, r.RetrieveStatus });
 }).RequireAuthorization();
 
 // Sửa dòng thu hồi — nguồn `StorageCarRetrieveDetailUpdate` (Biz.HTC.WH.cs:70205) ghi
@@ -727,7 +742,7 @@ app.MapPost("/api/retrieves/{code}/detail", async (string code, RetrieveDetailDt
     code = code.Trim().ToUpperInvariant();
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
     if (r is null) return Results.NotFound(new { code });
-    if (r.Status != "P") return Results.BadRequest(new { error = $"Đang '{r.Status}', chỉ sửa được khi 'P'." });
+    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = $"Đang '{r.RetrieveStatus}', chỉ sửa được khi 'P'." });
     if (!string.IsNullOrWhiteSpace(dto.StorageCode)) r.StorageCode = dto.StorageCode!.Trim().ToUpperInvariant();
     if (dto.ExpectedStartDate is not null) r.ExpectedStartDate = dto.ExpectedStartDate;
     if (dto.ExpectedEndDate is not null) r.ExpectedEndDate = dto.ExpectedEndDate;
@@ -743,7 +758,7 @@ app.MapPost("/api/retrieves/{code}/detail-delete", async (string code, AppDbCont
     code = code.Trim().ToUpperInvariant();
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
     if (r is null) return Results.NotFound(new { code });
-    if (r.Status != "P") return Results.BadRequest(new { error = $"Đang '{r.Status}', chỉ xoá được khi 'P'." });
+    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = $"Đang '{r.RetrieveStatus}', chỉ xoá được khi 'P'." });
     db.CarRetrieves.Remove(r);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code });

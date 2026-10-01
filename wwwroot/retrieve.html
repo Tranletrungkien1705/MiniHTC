@@ -3,7 +3,7 @@
 <title>MiniHTC — Thu hồi xe</title>
 <style>
   :root{color-scheme:light dark;--line:#8883;--accent:#2563eb}
-  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:960px;margin:24px auto;padding:0 16px;line-height:1.5}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1200px;margin:24px auto;padding:0 16px;line-height:1.5}
   h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
   .bar{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap;align-items:center}
   input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
@@ -15,11 +15,13 @@
 <body>
 <h1>Thu hồi xe <span class="muted">(port 1:1 FrmMngCarRetrieve)</span></h1>
 <div class="bar">
-  <input id="vin" placeholder="VIN *" style="width:180px"><input id="dl" placeholder="Đại lý" style="width:110px"><input id="rs" placeholder="Lý do" style="width:200px">
+  <input id="vin" placeholder="VIN *" style="width:170px"><input id="dl" placeholder="Đại lý" style="width:100px"><input id="sto" placeholder="Kho nhận *" style="width:100px">
+  <label class="muted">Bắt đầu DK * <input id="sd" type="date"></label><label class="muted">Kết thúc DK * <input id="ed" type="date"></label>
+  <input id="rs" placeholder="Ghi chú" style="width:160px">
   <button class="primary" onclick="create()">Tạo yêu cầu thu hồi</button><span id="msg"></span>
 </div>
-<table><thead><tr><th>Mã</th><th>VIN</th><th>Đại lý</th><th>Lý do</th><th>Trạng thái</th><th></th></tr></thead>
-<tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Mã</th><th>Số lệnh</th><th>VIN</th><th>Đại lý</th><th>Kho nhận</th><th>DO cuối</th><th>Kho cuối</th><th>Ngày xuất cuối</th><th>Trạng thái</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="10" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 async function token(){ if(TOKEN) return TOKEN;
@@ -28,19 +30,21 @@ async function token(){ if(TOKEN) return TOKEN;
   TOKEN=(await r.json()).access_token; return TOKEN; }
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t,ok){ F("msg").textContent=t; F("msg").className=ok?"":"r"; }
-const badge=s=>({Requested:"Chờ duyệt",Approved:"Đã duyệt",Retrieved:"Đã thu hồi",Rejected:"Từ chối"}[s]||s);
+// Mã trạng thái nguồn TConst.Stage (#117/#313): P chờ duyệt · A duyệt · R từ chối
+const badge=s=>({P:"Chờ duyệt",A:"Đã duyệt",R:"Từ chối"}[s]||s);
+const D=v=>v?String(v).slice(0,10):"";
 async function load(){ await token();
   const d=await (await fetch("/api/retrieves",{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(x=>{
     let a="";
-    if(x.status==="Requested") a=`<span class="act" onclick="act('${x.code}','approve')">Duyệt</span><span class="act r" onclick="act('${x.code}','reject')">Từ chối</span>`;
-    else if(x.status==="Approved") a=`<span class="act" onclick="act('${x.code}','retrieve')">Thu hồi</span>`;
-    return `<tr><td><b>${x.code}</b></td><td>${x.vin}</td><td>${x.dealerCode||""}</td><td>${x.reason||""}</td>
-      <td><span class="pill">${badge(x.status)}</span></td><td>${a}</td></tr>`;
-  }).join("")||'<tr><td colspan="6" class="muted">Chưa có yêu cầu thu hồi.</td></tr>';
+    if(x.retrieveStatus==="P") a=`<span class="act" onclick="act('${x.code}','approve')">Duyệt</span><span class="act r" onclick="act('${x.code}','reject')">Từ chối</span>`;
+    return `<tr><td><b>${x.code}</b></td><td>${x.retrieveOrderNo||""}</td><td>${x.vin}</td><td>${x.dealerCode||""}</td><td>${x.storageCode||""}</td>
+      <td>${x.lastDeliveryOrderNo||""}</td><td>${x.lastStorageCode||""}</td><td>${D(x.lastDeliveryOutDate)}</td>
+      <td><span class="pill">${badge(x.retrieveStatus)}</span></td><td>${a}</td></tr>`;
+  }).join("")||'<tr><td colspan="10" class="muted">Chưa có yêu cầu thu hồi.</td></tr>';
 }
 async function create(){
-  const r=await fetch("/api/retrieves",{method:"POST",headers:H(),body:JSON.stringify({vin:F("vin").value,dealerCode:F("dl").value,reason:F("rs").value})});
+  const r=await fetch("/api/retrieves",{method:"POST",headers:H(),body:JSON.stringify({vin:F("vin").value,dealerCode:F("dl").value,storageCode:F("sto").value,expectedStartDate:F("sd").value||null,expectedEndDate:F("ed").value||null,retrieveRemark:F("rs").value})});
   if(r.ok){ msg("Đã tạo.",true); F("vin").value="";F("rs").value=""; load(); } else msg("Lỗi: "+((await r.json()).error||r.status),false);
 }
 async function act(code,a){
