@@ -7273,7 +7273,14 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
             CarId = string.IsNullOrWhiteSpace(c.CarId) ? c.VIN.Trim().ToUpperInvariant() : c.CarId!.Trim(),
             GuaranteeNo = c.GuaranteeNo, DlrCtrNo = c.DlrCtrNo, Amount = c.AmountCurrent
         });
-    await db.SaveChangesAsync();
+    // #344 PostCheck `myPmt_Payment_CheckTotalValue` (Pmt_Payment_Save_* MBBank.cs:3650) — vi phạm ⇒ rollback.
+    await using (var tx344b = await db.Database.BeginTransactionAsync())
+    {
+        await db.SaveChangesAsync();
+        var bad344b = await PmtCheck.OverDeposit(db, t.OrgId, no);
+        if (bad344b is not null) { await tx344b.RollbackAsync(); return Results.BadRequest(bad344b); }
+        await tx344b.CommitAsync();
+    }
     return Results.Ok(new { p2.PaymentNo, cars = cars.Count, totalAmount = p2.TotalAmount });
 }).RequireAuthorization();
 
@@ -7397,6 +7404,7 @@ app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbCon
     if (bad.p is not null) return Results.BadRequest(new { error = "PaymentPaymentConfirm_MultiAndpushTCF_DataTCFInvalid", paymentNo = bad.p.PaymentNo,
         rule = "TCF_AutoId / TCF_BSInputNo / PaymentEndDate không được rỗng và FlagDMS_TCF phải = '1'" });
     var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    await using var txTcf = await db.Database.BeginTransactionAsync();   // #344 nguồn một giao dịch — PostCheck lỗi ⇒ rollback cả lô
     foreach (var (p, r) in plan)
     {
         p.PaymentStatus = "F";
@@ -7416,8 +7424,15 @@ app.MapPost("/api/bankpms/confirm-tcf", async (BankPmConfirmTcfDto dto, AppDbCon
     await GrtDiscount.UpdDateEnd01(db, t.OrgId, grtNosTcf, who);
     var grtUpdated = await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, grtNosTcf, who);
     await db.SaveChangesAsync();
+    // #344 PostCheck nguồn (TCFIntergration.cs:6996) chạy cho TỪNG phiếu, sau các cập nhật.
+    foreach (var pn in confirmedNos)
+    {
+        var bad344 = await PmtCheck.OverDeposit(db, t.OrgId, pn);
+        if (bad344 is not null) { await txTcf.RollbackAsync(); return Results.BadRequest(bad344); }
+    }
+    await txTcf.CommitAsync();
     return Results.Ok(new { confirmed = plan.Count, paymentNos = confirmedNos, guaranteesRecalculated = grtUpdated,
-        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, CheckTotalValue, đẩy sao kê TCF." });
+        debt = "Chưa chạy: cập nhật Car_Car.PaymentStatus, đẩy sao kê TCF." });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankpms/enddate", async (AppDbContext db, ITenantContext t, string? q) =>
@@ -45844,7 +45859,14 @@ app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbCont
             CarId = r.CarId!.Trim(), GuaranteeNo = r.GuaranteeNo, DlrCtrNo = r.DlrCtrNo, Amount = r.Amount,
             LoanPeriod = loanPeriodLine, InterestRate = interestRateLine,   // #155: rót từ bảng đầu theo cờ Funds
         });
-    await db.SaveChangesAsync();
+    // #344 PostCheck `myPmt_Payment_CheckTotalValue` (MBBank.cs:521) — ghi trong giao dịch rồi kiểm; vi phạm ⇒ rollback.
+    await using (var tx344 = await db.Database.BeginTransactionAsync())
+    {
+        await db.SaveChangesAsync();
+        var bad344 = await PmtCheck.OverDeposit(db, t.OrgId, no);
+        if (bad344 is not null) { await tx344.RollbackAsync(); return Results.BadRequest(bad344); }
+        await tx344.CommitAsync();
+    }
     return Results.Ok(new { paymentNo = no, details = rows.Count, status = "P" });
 }).RequireAuthorization();
 
@@ -56440,6 +56462,45 @@ record BankPmConfirmTcfRowDto(string? PaymentNo, string? AccountingRecordNo, Dat
 /// (giá xe NULL ⇒ lấy GuaranteeValue — đúng nhánh `else` của CASE nguồn). Bảo lãnh "tất toán" khi KHÔNG còn dòng
 /// (A/F, FlagDtlDiscount='1') có giá trị cần trả > đã trả ⇒ DateEnd_Discount = Max(ngày) của các dòng đó; ngược lại NULL.
 /// MiniHTC: dòng BL khoá theo VIN ⇒ nối sang CarId/UnitPriceActual qua `CarVinMasters`.</summary>
+/// <summary>🔴 #344 Port 1:1 PostCheck `myPmt_Payment_CheckTotalValue` (2010.HTC BizHTC.Payment.cs:2247) — gọi SAU khi ghi ở
+/// PaymentPaymentCreate_New20191202 (MBBank.cs:521), Pmt_Payment_Save_* (MBBank.cs:1922/2764/3650) và PaymentPaymentConfirm_MultiX
+/// (TCFIntergration.cs:6996). Với từng CarId của phiếu: round(UnitPriceActual − Σ cọc − Σ bảo lãnh, 2) **< 0** ⇒ lỗi
+/// `CmApp_Pmt_Payment_DtlPositive_AccumulateOverDeposit` (giao dịch nguồn rollback). Σ cọc = Amount của Pmt_PaymentDetail
+/// **GuaranteeNo IS NULL** thuộc phiếu PaymentStatus ∈ {P,A,F}; Σ bảo lãnh = GuaranteeValue dòng BL GuaranteeDetailStatus ∈ {P,A,F}.
+/// Giá xe NULL ⇒ phép trừ NULL ⇒ KHÔNG vi phạm (đúng SQL nguồn). MiniHTC: dòng BL khoá VIN ⇒ quy về CarId qua CarVinMasters.</summary>
+static class PmtCheck
+{
+    public static async Task<object?> OverDeposit(AppDbContext db, Guid org, string paymentNo)
+    {
+        var carIds = await db.PmtPaymentDetails.Where(d => d.OrgId == org && d.PaymentNo == paymentNo && d.CarId != null)
+            .Select(d => d.CarId!).Distinct().ToListAsync();
+        if (carIds.Count == 0) return null;
+        var deposits = await (from d in db.PmtPaymentDetails
+                              join p in db.PmtPayments on d.PaymentNo equals p.PaymentNo
+                              where d.OrgId == org && p.OrgId == org && d.CarId != null && carIds.Contains(d.CarId) && d.GuaranteeNo == null
+                                    && (p.PaymentStatus == "P" || p.PaymentStatus == "A" || p.PaymentStatus == "F")
+                              select new { d.CarId, d.Amount }).ToListAsync();
+        var cars = await db.CarVinMasters.Where(c => c.OrgId == org && c.CarId != null && carIds.Contains(c.CarId))
+            .Select(c => new { c.CarId, c.VIN, c.UnitPriceActual }).ToListAsync();
+        var vins = cars.Select(c => c.VIN).ToList();
+        var grts = await db.BankGuaranteeDtls.Where(g => g.OrgId == org && vins.Contains(g.VIN)
+                && (g.GuaranteeDetailStatus == "P" || g.GuaranteeDetailStatus == "A" || g.GuaranteeDetailStatus == "F"))
+            .Select(g => new { g.VIN, g.GrtValue }).ToListAsync();
+        foreach (var cid in carIds)
+        {
+            var car = cars.FirstOrDefault(c => c.CarId == cid);
+            if (car?.UnitPriceActual is not decimal price) continue;   // NULL ⇒ không vi phạm
+            var dep = deposits.Where(x => x.CarId == cid).Sum(x => x.Amount ?? 0m);
+            var grt = grts.Where(g => g.VIN == car.VIN).Sum(g => g.GrtValue);
+            var over = Math.Round(price - dep - grt, 2);
+            if (over < 0)
+                return new { error = "CmApp_Pmt_Payment_DtlPositive_AccumulateOverDeposit",
+                    message = "Tổng tiền cọc + giá trị bảo lãnh vượt giá trị xe.", PaymentNo = paymentNo, CarId = cid,
+                    UnitPriceActual = price, TotalAmount = dep, TotalGuaranteeValue = grt, MyOverValue = over };
+        }
+        return null;
+    }
+}
 static class GrtDiscount
 {
     /// <summary>#343 Port 1:1 `myPmt_Guarantee_Upd_DateEnd_01_New20181119` (Biz.HTC.WH.cs:39559) — CÙNG thuật toán với
