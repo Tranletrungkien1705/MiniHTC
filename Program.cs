@@ -28424,118 +28424,51 @@ app.MapDelete("/api/storagepayments/{no}", async (string no, AppDbContext db, IT
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
-// ===== Thanh toán phí PDI theo tháng (PdiFeePayment — port 1:1 FrmQuanLyThanhToanPDI/FrmSuaThanhToanPDI, 2010.HTC Sales/Purchase) =====
+// ===== Thanh toán phí PDI theo tháng — ⛔ #385 HỢP NHẤT SONG SINH Pmt_PaymentPDI: PdiFeePayment ≡ PmtPaymentPdi. Bản chuẩn = PmtPaymentPdi
+// (/api/paymentpdi). Route này là BÍ DANH giữ hình JSON cũ: TotalBeforeVAT = TotalAmount, VatAmount = AmountVAT, AmountTotal = TotalAmountAfterVAT,
+// Status = PmtPDIStatus. Tạo/sửa/từ chối(=cancel)/xoá đi qua bản chuẩn (cùng guard biz). Ký ⇒ 400: biz ký đòi phiếu đã duyệt A2 + TCMS ký trước HTV.
 app.MapGet("/api/pdifeepayments", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
-    var qry = db.PdiFeePayments.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtNo.Contains(q!));
-    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
+    var qry = db.PmtPaymentPdis.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.PmtPDINo.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.PmtPDIStatus == status);
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.PmtNo, x.PmtMonth, x.TotalBeforeVAT, x.VatAmount, x.AmountTotal, x.HtvSignStatus, x.TcmsSignStatus, x.Status,
-      lines = db.PdiFeePaymentLines.Count(l => l.OrgId == t.OrgId && l.PdiFeePaymentId == x.Id) }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    { PmtNo = x.PmtPDINo, x.PmtMonth, TotalBeforeVAT = x.TotalAmount, VatAmount = x.AmountVAT, AmountTotal = x.TotalAmountAfterVAT,
+      HtvSignStatus = x.HTVSignStatus, TcmsSignStatus = x.TCMSSignStatus, Status = x.PmtPDIStatus,
+      lines = db.PmtPaymentPdiDetails.Count(l => l.OrgId == t.OrgId && l.PmtPDINo == x.PmtPDINo) }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/paymentpdi" });
 }).RequireAuthorization();
 
 app.MapGet("/api/pdifeepayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
-    var h = await db.PdiFeePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
+    var h = await db.PmtPaymentPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtPDINo == no);
     if (h is null) return Results.NotFound(new { no });
-    var lines = await db.PdiFeePaymentLines.Where(l => l.OrgId == t.OrgId && l.PdiFeePaymentId == h.Id).Select(l => new
-    { l.Vin, l.ModelCode, l.ModelName, l.SpecCode, l.SpecDescription, l.ColorExtName, l.DealerCode, l.StoreDate, l.DeliveryOutDate, l.CostInCheck, l.CostOutCheck, l.TotalPrice }).ToListAsync();
-    return Results.Ok(new { h.PmtNo, h.PmtMonth, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, h.HtvSignStatus, h.TcmsSignStatus, h.Status, lines });
+    var lines = await db.PmtPaymentPdiDetails.Where(l => l.OrgId == t.OrgId && l.PmtPDINo == no).Select(l => new
+    { Vin = l.VIN, l.DealerCode, l.StoreDate, l.CostInCheck, l.CostOutCheck, TotalPrice = l.CostInCheck + l.CostOutCheck }).ToListAsync();
+    return Results.Ok(new { PmtNo = h.PmtPDINo, h.PmtMonth, TotalBeforeVAT = h.TotalAmount, VatAmount = h.AmountVAT, AmountTotal = h.TotalAmountAfterVAT,
+        HtvSignStatus = h.HTVSignStatus, TcmsSignStatus = h.TCMSSignStatus, Status = h.PmtPDIStatus, lines, mergedInto = "/api/paymentpdi" });
 }).RequireAuthorization();
 
-// Khớp DSXe gốc: TotalPrice(dòng)=CostInCheck+CostOutCheck (đã gồm VAT); AmountTotal(header)=Σ dòng; TotalBeforeVAT=AmountTotal/1.1; VatAmount=AmountTotal-TotalBeforeVAT.
-app.MapPost("/api/pdifeepayments", async (PdiFeePaymentDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/pdifeepayments", async (PdiFeePaymentDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (dto.PmtMonth is null) return Results.BadRequest(new { error = "Chưa nhập tháng thanh toán" });
-    var lines = dto.Lines ?? new List<PdiFeePaymentLineDto>();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
-
-    var no = "PDIFEE" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PdiFeePayment { OrgId = t.OrgId, PmtNo = no, PmtMonth = dto.PmtMonth.Value };
-    db.PdiFeePayments.Add(h); await db.SaveChangesAsync();
-
-    decimal total = 0;
-    foreach (var l in lines)
-    {
-        var amount = l.CostInCheck + l.CostOutCheck;
-        total += amount;
-        db.PdiFeePaymentLines.Add(new PdiFeePaymentLine
-        {
-            OrgId = t.OrgId, PdiFeePaymentId = h.Id, Vin = (l.Vin ?? "").Trim().ToUpperInvariant(), ModelCode = l.ModelCode, ModelName = l.ModelName,
-            SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, ColorExtName = l.ColorExtName, DealerCode = l.DealerCode,
-            StoreDate = l.StoreDate, DeliveryOutDate = l.DeliveryOutDate, CostInCheck = l.CostInCheck, CostOutCheck = l.CostOutCheck, TotalPrice = amount
-        });
-    }
-    h.AmountTotal = total; h.TotalBeforeVAT = Math.Round(total / 1.1m, 0); h.VatAmount = h.AmountTotal - h.TotalBeforeVAT;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal, lines = lines.Count });
+    var rows = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.Vin))
+        .Select(l => new PmtPdiDtlDto(l.Vin!, null, l.StoreDate, null, null, null, l.DealerCode, l.CostInCheck, l.CostOutCheck)).ToList();
+    return await PmtPdiCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth.Value.ToString("yyyy-MM"), rows);
 }).RequireAuthorization();
 
-// Sửa (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnEdit_Click gốc) — CHỈ sửa CostInCheck/CostOutCheck từng dòng theo VIN.
-app.MapPut("/api/pdifeepayments/{no}/edit", async (string no, PdiFeePaymentEditDto dto, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.PdiFeePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
-        return Results.BadRequest(new { error = "Chỉ có thể sửa khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
-    var rows = dto.Lines ?? new List<PdiFeePaymentEditLineDto>();
-    decimal total = 0;
-    var allLines = await db.PdiFeePaymentLines.Where(l => l.OrgId == t.OrgId && l.PdiFeePaymentId == h.Id).ToListAsync();
-    foreach (var l in allLines)
-    {
-        var row = rows.FirstOrDefault(r => string.Equals(r.Vin, l.Vin, StringComparison.OrdinalIgnoreCase));
-        if (row is not null) { l.CostInCheck = row.CostInCheck; l.CostOutCheck = row.CostOutCheck; l.TotalPrice = row.CostInCheck + row.CostOutCheck; }
-        total += l.TotalPrice;
-    }
-    h.AmountTotal = total; h.TotalBeforeVAT = Math.Round(total / 1.1m, 0); h.VatAmount = h.AmountTotal - h.TotalBeforeVAT;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.TotalBeforeVAT, h.VatAmount, h.AmountTotal });
-}).RequireAuthorization();
+app.MapPut("/api/pdifeepayments/{no}/edit", async (string no, PdiFeePaymentEditDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtPdiUpdate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", no, dto.Lines ?? new())).RequireAuthorization();
 
-// Ký HTV / Ký TCMS (chỉ khi Status=P, khớp btnHTVSign/btnTCMSSign gốc)
-app.MapPost("/api/pdifeepayments/{no}/{side}sign", async (string no, string side, AppDbContext db, ITenantContext t) =>
-{
-    if (side != "htv" && side != "tcms") return Results.NotFound();
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.PdiFeePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "P") return Results.BadRequest(new { error = "Chỉ có thể ký khi trạng thái thanh toán là P" });
-    if (side == "htv") { h.HtvSignStatus = "A"; h.HtvSignAt = DateTime.Now; } else { h.TcmsSignStatus = "A"; h.TcmsSignAt = DateTime.Now; }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.HtvSignStatus, h.TcmsSignStatus });
-}).RequireAuthorization();
+app.MapPost("/api/pdifeepayments/{no}/{side}sign", (string no, string side) =>
+    Results.BadRequest(new { error = "Ký phiếu PDI theo biz: TCMS ký khi phiếu đã duyệt A2, HTV ký sau TCMS.", route = $"/api/paymentpdi/{no}/sign-{side}" })).RequireAuthorization();
 
-// Từ chối (chỉ khi Status=P và cả 2 bên CHƯA ký (P), khớp btnDeny_Click gốc)
-app.MapPost("/api/pdifeepayments/{no}/deny", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.PdiFeePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (!(h.Status == "P" && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
-        return Results.BadRequest(new { error = "Chỉ có thể từ chối khi trạng thái thanh toán là P\nVà trạng thái ký của HTV và TCMS là P" });
-    h.Status = "C";
-    await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtNo, h.Status });
-}).RequireAuthorization();
+app.MapPost("/api/pdifeepayments/{no}/deny", (string no) =>
+    Results.BadRequest(new { error = "Từ chối = huỷ phiếu (Pmt_PaymentPDI_Cancel).", route = $"/api/paymentpdi/{no}/cancel" })).RequireAuthorization();
 
-// Xóa (khớp btnDelete_Click gốc: Status C hoặc P, và cả 2 bên CHƯA ký (P))
-app.MapDelete("/api/pdifeepayments/{no}", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim().ToUpperInvariant();
-    var h = await db.PdiFeePayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (!((h.Status == "C" || h.Status == "P") && h.HtvSignStatus == "P" && h.TcmsSignStatus == "P"))
-        return Results.BadRequest(new { error = "Chưa có thể xóa khi trạng thái thanh toán là C hoặc P\nVà trạng thái ký của HTV và TCMS là P" });
-    var lines = db.PdiFeePaymentLines.Where(l => l.OrgId == t.OrgId && l.PdiFeePaymentId == h.Id);
-    db.PdiFeePaymentLines.RemoveRange(lines);
-    db.PdiFeePayments.Remove(h);
-    await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = no });
-}).RequireAuthorization();
+app.MapDelete("/api/pdifeepayments/{no}", (string no) =>
+    Results.BadRequest(new { error = "Xoá phiếu PDI qua bản chuẩn (Pmt_PaymentPDI_Delete).", route = $"DELETE /api/paymentpdi/{no}" })).RequireAuthorization();
 
 // ===== Thanh toán phí vận tải + bảo hiểm theo tháng (TransportInsPayment — port 1:1 FrmQuanLyThanhToanVanTaiBaoHiem/FrmTaoThanhToanVanTaiBaoHiem, 2010.HTC Sales/Purchase) =====
 
@@ -36119,7 +36052,7 @@ app.MapDelete("/api/salesmanofmonth/{dealer}/{month}", async (string dealer, Dat
 //    TCMSApproveAndSign  : Doc="A2", HTV="P", TCMS="P"  → TCMS="A"    (KHÔNG đổi Doc)
 //    HTVApproveAndSign   : Doc="A2", HTV="P", TCMS="A"  → HTV="A" + Doc="F"
 // ⇒ TCMS luôn ký TRƯỚC HTV, và chỉ chữ ký HTV mới đóng phiếu.
-string? PmtGuard(string doc, string htv, string tcms, string okDoc, string okHtv, string okTcms)
+static string? PmtGuard(string doc, string htv, string tcms, string okDoc, string okHtv, string okTcms)   // #385 static: dùng trong helper PmtPdi*
 {
     if (!okDoc.Split(',').Contains(doc)) return $"Trạng thái phiếu phải thuộc ({okDoc}), hiện là \"{doc}\".";
     if (!okHtv.Split(',').Contains(htv)) return $"Trạng thái ký HTV phải thuộc ({okHtv}), hiện là \"{htv}\".";
@@ -36477,24 +36410,68 @@ app.MapGet("/api/paymentpdi/{no}", async (string no, AppDbContext db, ITenantCon
 }).RequireAuthorization();
 
 app.MapPost("/api/paymentpdi", async (PmtPdiDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtPdiCreate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", dto.PmtMonth,
+        (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList())).RequireAuthorization();
+
+// #385 Sửa phí kiểm tra từng VIN — port `Pmt_PaymentPDI_UpdateMulti` (TERP.BizHTC/DMS40/0.34.Contract.cs:30484; màn FrmSuaThanhToanPDI).
+app.MapPost("/api/paymentpdi/{no}/update", async (string no, PdiFeePaymentEditDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+    await PmtPdiUpdate(db, t.OrgId, user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", no, dto.Lines ?? new())).RequireAuthorization();
+
+// #385 Tạo phiếu Pmt_PaymentPDI (nguồn sinh bằng JOB Job_Pmt_PaymentPDI_Create — chưa port; đây là lối vào tay).
+//   Tiền theo công thức biz UpdateMulti: TotalAmount = Σ(CostInCheck + CostOutCheck) (TRƯỚC VAT), AmountVAT = Σ×0.1, sau VAT = Σ×1.1.
+static async Task<IResult> PmtPdiCreate(AppDbContext db, Guid orgId, string who, string? month, List<PmtPdiDtlDto> rows)
 {
-    var rows = (dto.Details ?? new()).Where(x => !string.IsNullOrWhiteSpace(x.VIN)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Phiếu phải có ít nhất 1 xe." });
-    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu" });
+    if (rows.Any(r => r.CostInCheck < 0)) return Results.BadRequest(new { error = "Phí kiểm tra đầu vào không hợp lệ (< 0).", code = "Pmt_PaymentPDI_UpdateMulti_InvalidCostInCheck" });
+    if (rows.Any(r => r.CostOutCheck < 0)) return Results.BadRequest(new { error = "Phí kiểm tra đầu ra không hợp lệ (< 0).", code = "Pmt_PaymentPDI_UpdateMulti_InvalidCostOutCheck" });
+    var now = DateTime.Now;
     var no = "PPDI" + now.ToString("yyMMddHHmmss");
     var total = rows.Sum(x => x.CostInCheck + x.CostOutCheck);
-    var h = new PmtPaymentPdi { OrgId = t.OrgId, PmtPDINo = no, PmtMonth = dto.PmtMonth, CreateDTime = now, CreateBy = who,
-        TotalAmount = total, AmountVAT = dto.AmountVAT, TotalAmountAfterVAT = total + dto.AmountVAT, PmtPDIStatus = "P",
+    var h = new PmtPaymentPdi { OrgId = orgId, PmtPDINo = no, PmtMonth = month, CreateDTime = now, CreateBy = who,
+        TotalAmount = total, AmountVAT = total * 0.1m, TotalAmountAfterVAT = total + total * 0.1m, PmtPDIStatus = "P",
         HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
     db.PmtPaymentPdis.Add(h);
     foreach (var r in rows)
-        db.PmtPaymentPdiDetails.Add(new PmtPaymentPdiDetail { OrgId = t.OrgId, PmtPDINo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
+        db.PmtPaymentPdiDetails.Add(new PmtPaymentPdiDetail { OrgId = orgId, PmtPDINo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
             CarId = r.CarId, StoreDate = r.StoreDate, StorageCodeInit = r.StorageCodeInit, DlvStartDate = r.DlvStartDate,
             DlvMnNo = r.DlvMnNo, DealerCode = r.DealerCode, CostInCheck = r.CostInCheck, CostOutCheck = r.CostOutCheck,
             PmtPDIStatusDtl = "P", LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.PmtPDINo, h.PmtMonth, h.TotalAmountAfterVAT, status = h.PmtPDIStatus, cars = rows.Count });
-}).RequireAuthorization();
+    // PmtNo/TotalBeforeVAT/VatAmount/AmountTotal: hình JSON cũ của bí danh /api/pdifeepayments.
+    return Results.Ok(new { h.PmtPDINo, h.PmtMonth, h.TotalAmount, h.AmountVAT, h.TotalAmountAfterVAT, status = h.PmtPDIStatus, cars = rows.Count,
+        PmtNo = h.PmtPDINo, TotalBeforeVAT = h.TotalAmount, VatAmount = h.AmountVAT, AmountTotal = h.TotalAmountAfterVAT });
+}
+
+// #385 `Pmt_PaymentPDI_UpdateMulti`: Pmt_PaymentPDI_CheckDB(tồn tại, PmtPDIStatus=P, HTVSign=P, TCMSSign=P); mỗi dòng CostInCheck ≥ 0,
+//   CostOutCheck ≥ 0 (🔴 LỖI NGUỒN :30609 kiểm lại dblCostInCheck thay vì dblCostOutCheck ⇒ guard đầu ra không bao giờ bắn — port theo Ý ĐỊNH);
+//   UPDATE dòng theo (PmtPDINo, VIN) + LogLU*; header tính lại TotalAmount=Σ, AmountVAT=Σ×0.1, TotalAmountAfterVAT=Σ×1.1, LU*/LogLU*.
+static async Task<IResult> PmtPdiUpdate(AppDbContext db, Guid orgId, string who, string no, List<PdiFeePaymentEditLineDto> rows)
+{
+    no = no.Trim().ToUpperInvariant();
+    var h = await db.PmtPaymentPdis.FirstOrDefaultAsync(x => x.OrgId == orgId && x.PmtPDINo == no);
+    if (h is null) return Results.NotFound(new { no });
+    var err = PmtGuard(h.PmtPDIStatus, h.HTVSignStatus, h.TCMSSignStatus, "P", "P", "P");
+    if (err is not null) return Results.BadRequest(new { error = err });
+    foreach (var r in rows)
+    {
+        if (r.CostInCheck < 0) return Results.BadRequest(new { error = $"Phí kiểm tra đầu vào không hợp lệ (< 0) — VIN {r.Vin}.", code = "Pmt_PaymentPDI_UpdateMulti_InvalidCostInCheck" });
+        if (r.CostOutCheck < 0) return Results.BadRequest(new { error = $"Phí kiểm tra đầu ra không hợp lệ (< 0) — VIN {r.Vin}.", code = "Pmt_PaymentPDI_UpdateMulti_InvalidCostOutCheck" });
+    }
+    var now = DateTime.Now;
+    var dtls = await db.PmtPaymentPdiDetails.Where(x => x.OrgId == orgId && x.PmtPDINo == no).ToListAsync();
+    foreach (var d in dtls)
+    {
+        var r = rows.FirstOrDefault(x => string.Equals((x.Vin ?? "").Trim(), d.VIN, StringComparison.OrdinalIgnoreCase));
+        if (r is null) continue;
+        d.CostInCheck = r.CostInCheck; d.CostOutCheck = r.CostOutCheck; d.LogLUDateTime = now; d.LogLUBy = who;
+    }
+    var total = dtls.Sum(d => d.CostInCheck + d.CostOutCheck);
+    h.TotalAmount = total; h.AmountVAT = total * 0.1m; h.TotalAmountAfterVAT = total + total * 0.1m;
+    h.LUDateTime = now; h.LUBy = who; h.LogLUDateTime = now; h.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.PmtPDINo, h.TotalAmount, h.AmountVAT, h.TotalAmountAfterVAT,
+        PmtNo = h.PmtPDINo, TotalBeforeVAT = h.TotalAmount, VatAmount = h.AmountVAT, AmountTotal = h.TotalAmountAfterVAT });
+}
 
 app.MapDelete("/api/paymentpdi/{no}", async (string no, AppDbContext db, ITenantContext t) =>
 {

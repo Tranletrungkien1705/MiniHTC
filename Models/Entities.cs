@@ -1960,9 +1960,9 @@ public sealed class StoragePaymentLine
     public string? Remark { get; set; }
 }
 
-/// <summary>Thanh toán phí PDI theo tháng (Pmt_PaymentPDI — port 1:1 FrmQuanLyThanhToanPDI/FrmSuaThanhToanPDI, 2010.HTC Sales/Purchase):
-/// cùng cấu trúc/guard với StoragePayment — mỗi dòng VIN có phí kiểm tra vào (CostInCheck) + phí kiểm tra ra (CostOutCheck),
-/// TotalPrice(dòng)=CostInCheck+CostOutCheck; sửa/từ chối/xóa CHỈ khi Status=P và cả 2 bên CHƯA ký (=P, khớp guard gốc).</summary>
+/// <summary>⛔ #385 DEPRECATED — SONG SINH của <see cref="PmtPaymentPdi"/> (cùng bảng nguồn Pmt_PaymentPDI). Bản chuẩn = PmtPaymentPdi
+/// (đủ cột nguồn + luồng duyệt/ký của biz). Bản này từng tính TotalBeforeVAT = Σ/1.1 — SAI so với biz Pmt_PaymentPDI_UpdateMulti
+/// (TotalAmount = Σ phí là TRƯỚC VAT, VAT = 10%). /api/pdifeepayments là bí danh; Seeder chép dữ liệu cũ. KHÔNG ghi mới.</summary>
 public sealed class PdiFeePayment
 {
     public long Id { get; set; }
@@ -1980,7 +1980,7 @@ public sealed class PdiFeePayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Dòng VIN trong phiếu thanh toán PDI — port 1:1 grid FrmQuanLyThanhToanPDI, 2010.HTC.</summary>
+/// <summary>⛔ #385 DEPRECATED — dòng của song sinh <see cref="PdiFeePayment"/>; bản chuẩn = <see cref="PmtPaymentPdiDetail"/>.</summary>
 public sealed class PdiFeePaymentLine
 {
     public long Id { get; set; }
