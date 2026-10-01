@@ -54101,8 +54101,9 @@ app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? s
     if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
     var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
     {
-        s.StockOutNo, s.StockOutDate, s.StockOutType, s.WarehouseCode, s.Reason, s.Status, s.PostedAt,
-        lines = db.PartStockOutLines.Count(l => l.OrgId == t.OrgId && l.StockOutId == s.Id)
+        s.StockOutNo, s.StockOutDate, s.StockOutType, s.WarehouseCode, s.Reason, s.Status, s.PostedAt, s.DealerCode, s.CusID, s.Description, s.TwinSrcId,   // #377
+        lines = db.PartStockOutLines.Count(l => l.OrgId == t.OrgId && l.StockOutId == s.Id),
+        totalPrice = db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == s.Id).Sum(l => (decimal?)l.TotalPrice) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -54113,10 +54114,13 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
     var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PartStockOut { OrgId = t.OrgId, StockOutNo = no, StockOutDate = dto.StockOutDate ?? DateTime.Now, StockOutType = dto.StockOutType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "1" };
+    var h = new PartStockOut { OrgId = t.OrgId, StockOutNo = no, StockOutDate = dto.StockOutDate ?? DateTime.Now, StockOutType = dto.StockOutType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "1",
+        DealerCode = dto.DealerCode, CusID = dto.CusID, Description = dto.Description };   // #377
     db.PartStockOuts.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity });
+        // #377 TotalPrice = Quantity * Price * (1 + VAT*0.01) — thành tiền dòng xuất theo nguồn.
+        db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity,
+            Price = l.Price, VAT = l.VAT, TotalPrice = l.Quantity * l.Price * (1 + l.VAT / 100m) });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
 }).RequireAuthorization();
@@ -54209,8 +54213,10 @@ app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? st
     if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
     var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
     {
-        s.StockInNo, s.StockInDate, s.StockInType, s.WarehouseCode, s.Staff, s.Status, s.PostedAt,
+        s.StockInNo, s.StockInDate, s.StockInType, s.WarehouseCode, s.Staff, s.Status, s.PostedAt, s.DealerCode, s.SupplierID, s.Description, s.TwinSrcId,   // #377
         lines = db.PartStockInLines.Count(l => l.OrgId == t.OrgId && l.StockInId == s.Id),
+        afterTax = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)l.AfterTax) ?? 0,
+        beforeTax = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)l.BeforeTax) ?? 0,
         total = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)(l.Quantity * l.Price)) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -54222,10 +54228,13 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
     var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "1" };
+    var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "1",
+        DealerCode = dto.DealerCode, SupplierID = dto.SupplierID, Description = dto.Description };   // #377
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT });
+        // #377 BeforeTax = Quantity*Price (trước thuế), AfterTax = BeforeTax + VAT*Price*Quantity*0.01 — như báo cáo nhập chi tiết nguồn.
+        db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT,
+            BeforeTax = l.Quantity * l.Price, AfterTax = l.Quantity * l.Price + l.VAT * l.Price * l.Quantity * 0.01m });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
 }).RequireAuthorization();
@@ -56614,9 +56623,11 @@ record ReceptionFAttachFileDto(string? FileIndex, string? ReceptionFilePath, str
 record ReceptionDeliveryDto(string? BodyPaintFilePath, string? Remark, List<ReceptionFDtlDto>? Ser_ReceptionFDtl = null, List<ReceptionFAttachFileDto>? Ser_ReceptionFAttachFile = null);   // #355
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
-record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines);
-record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity);
-record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines);
+record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines,
+    string? DealerCode = null, string? SupplierID = null, string? Description = null);   // #377
+record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price = 0, decimal VAT = 0);   // #377
+record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines,
+    string? DealerCode = null, string? CusID = null, string? Description = null);   // #377
 record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate);

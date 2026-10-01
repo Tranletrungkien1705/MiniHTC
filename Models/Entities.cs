@@ -2519,6 +2519,12 @@ public sealed class PartStockIn
     public string? RejectReason { get; set; }
     public string? RejectedBy { get; set; }
     public DateTime? RejectedAt { get; set; }
+    // ===== #377 [c] gộp song sinh Ser_Inv_Stock* — cột nguồn (DbDefine TblSerInv*) mang từ bản Service* sang bản chuẩn =====
+    public string? DealerCode { get; set; }
+    public string? SupplierID { get; set; }
+    public string? Description { get; set; }
+    /// <summary>#377 chỉ phục vụ chép song sinh: Id của bản Service* gốc (null = phiếu tạo trên bản chuẩn). Nối dòng theo cột này, KHÔNG theo số phiếu (hai bản cùng sinh số "SI/SO"+giờ ⇒ có thể trùng).</summary>
+    public long? TwinSrcId { get; set; }
 }
 
 /// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>
@@ -2533,6 +2539,9 @@ public sealed class PartStockInLine
     public decimal Quantity { get; set; } = 1;
     public decimal Price { get; set; }
     public decimal VAT { get; set; }
+    // ===== #377 [c] gộp song sinh Ser_Inv_Stock* — cột nguồn (DbDefine TblSerInv*) mang từ bản Service* sang bản chuẩn =====
+    public decimal BeforeTax { get; set; }
+    public decimal AfterTax { get; set; }
 }
 
 /// <summary>Tồn kho phụ tùng (Ser_Inv_PartStock): số tồn theo kho + mã PT + vị trí. Cập nhật khi Post phiếu nhập/xuất.</summary>
@@ -2569,6 +2578,12 @@ public sealed class PartStockOut
     public string? RejectReason { get; set; }
     public string? RejectedBy { get; set; }
     public DateTime? RejectedAt { get; set; }
+    // ===== #377 [c] gộp song sinh Ser_Inv_Stock* — cột nguồn (DbDefine TblSerInv*) mang từ bản Service* sang bản chuẩn =====
+    public string? DealerCode { get; set; }
+    public string? CusID { get; set; }
+    public string? Description { get; set; }
+    /// <summary>#377 chỉ phục vụ chép song sinh: Id của bản Service* gốc (null = phiếu tạo trên bản chuẩn). Nối dòng theo cột này, KHÔNG theo số phiếu (hai bản cùng sinh số "SI/SO"+giờ ⇒ có thể trùng).</summary>
+    public long? TwinSrcId { get; set; }
 }
 
 /// <summary>Dòng phụ tùng xuất (Ser_Inv_StockOutDetail): mã PT + vị trí + SL.</summary>
@@ -2581,6 +2596,10 @@ public sealed class PartStockOutLine
     public string? PartName { get; set; }
     public string? Location { get; set; }
     public decimal Quantity { get; set; } = 1;
+    // ===== #377 [c] gộp song sinh Ser_Inv_Stock* — cột nguồn (DbDefine TblSerInv*) mang từ bản Service* sang bản chuẩn =====
+    public decimal Price { get; set; }
+    public decimal VAT { get; set; }
+    public decimal TotalPrice { get; set; }
 }
 
 /// <summary>Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate, TCMotor DMSCarSv/Inventory):
