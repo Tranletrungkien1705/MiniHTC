@@ -8336,17 +8336,31 @@ app.MapGet("/api/woschedules", async (AppDbContext db, ITenantContext t, string?
 
 app.MapPost("/api/woschedules", async (WoScheduleDto dto, AppDbContext db, ITenantContext t) =>
 {
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.WorkOrderNo) && l.QtyOrder > 0).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Lịch sản xuất trống hoặc số lượng đặt hàng <= 0." });
+    // #404 WO_Schedule_Add_New20181115 (BizHTC.WorkOrder.cs:360-440): QtyOrder < 0 ⇒ _InvalidQtyOrder; bốn cột
+    //   QtyProduct / QtyCurrProduct / QtyCurrEstimate / QtyCFOrder phải 0 ≤ x ≤ QtyOrder ⇒ 400 (port cũ KẸP QtyProduct — sai nguồn).
+    //   QtyOrder = 0 hợp lệ ở nguồn ⇒ không còn lọc bỏ dòng SL 0.
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.WorkOrderNo)).ToList();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Lịch sản xuất trống." });
+    foreach (var l in lines)
+    {
+        if (l.QtyOrder < 0) return Results.BadRequest(new { error = $"{l.WorkOrderNo}: SL đặt hàng âm.", code = "WO_Schedule_Add_InvalidQtyOrder", l.QtyOrder });
+        foreach (var (name, v) in new[] { ("QtyProduct", l.QtyProduct), ("QtyCurrProduct", l.QtyCurrProduct), ("QtyCurrEstimate", l.QtyCurrEstimate), ("QtyCFOrder", l.QtyCFOrder) })
+            if (v < 0 || v > l.QtyOrder)
+                return Results.BadRequest(new { error = $"{l.WorkOrderNo}: {name} = {v} phải nằm trong [0, {l.QtyOrder}].", code = "WO_Schedule_Add_Invalid" + name, l.QtyOrder });
+    }
     var dupe = lines.GroupBy(l => l.WorkOrderNo.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"Số lệnh SX {dupe.Key} bị trùng!" });
     var no = "WOS" + DateTime.Now.ToString("yyMMddHHmmss");
+    // #404 nguồn khoá WO_Schedule theo CreatedDate (tới giây) ⇒ hai lần tạo cùng giây vỡ PK ⇒ báo lỗi; port cũ tạo TRÙNG số lịch.
+    if (await db.WoSchedules.AnyAsync(x => x.OrgId == t.OrgId && x.ScheduleNo == no))
+        return Results.BadRequest(new { error = $"Lịch {no} đã tồn tại, thử lại sau 1 giây.", code = "WO_Schedule_Add_ExistCreatedDate" });
     var s2 = new WoSchedule { OrgId = t.OrgId, ScheduleNo = no, CreatedBy = dto.CreatedBy ?? "system", Status = "Open" };
     db.WoSchedules.Add(s2); await db.SaveChangesAsync();
     foreach (var l in lines)
     {
-        var prod = Math.Max(0, Math.Min(l.QtyProduct, l.QtyOrder));
-        db.WoScheduleLines.Add(new WoScheduleLine { OrgId = t.OrgId, WoScheduleId = s2.Id, WorkOrderNo = l.WorkOrderNo.Trim(), ModelCode = l.ModelCode ?? "", SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "", QtyOrder = l.QtyOrder, QtyProduct = prod, QtyRemain = l.QtyOrder - prod, CreatedDate = DateTime.Now, QtyRemainOrder = l.QtyRemainOrder ?? 0m });
+        var prod = l.QtyProduct;
+        db.WoScheduleLines.Add(new WoScheduleLine { OrgId = t.OrgId, WoScheduleId = s2.Id, WorkOrderNo = l.WorkOrderNo.Trim(), ModelCode = l.ModelCode ?? "", SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "", QtyOrder = l.QtyOrder, QtyProduct = prod, QtyRemain = l.QtyOrder - prod, CreatedDate = DateTime.Now, QtyRemainOrder = l.QtyRemainOrder ?? 0m,
+            QtyCurrProduct = l.QtyCurrProduct, QtyCurrEstimate = l.QtyCurrEstimate, QtyCFOrder = l.QtyCFOrder });   // #404
     }
     await db.SaveChangesAsync();
     // Neu tat ca dong da du SL -> Closed
@@ -8360,7 +8374,8 @@ app.MapGet("/api/woschedules/{no}/lines", async (string no, AppDbContext db, ITe
     var s = await db.WoSchedules.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ScheduleNo == no);
     if (s is null) return Results.NotFound(new { no });
     var lines = await db.WoScheduleLines.Where(l => l.OrgId == t.OrgId && l.WoScheduleId == s.Id)
-        .Select(l => new { l.WorkOrderNo, l.ModelCode, l.SpecCode, l.ColorCode, l.QtyOrder, l.QtyProduct, l.QtyRemain, l.CreatedDate, l.QtyRemainOrder }).ToListAsync();
+        .Select(l => new { l.WorkOrderNo, l.ModelCode, l.SpecCode, l.ColorCode, l.QtyOrder, l.QtyProduct, l.QtyRemain, l.CreatedDate, l.QtyRemainOrder,
+            l.QtyCurrProduct, l.QtyCurrEstimate, QtyCurrTotal = l.QtyCurrProduct + l.QtyCurrEstimate, l.QtyCFOrder }).ToListAsync();   // #404 QtyCurrTotal dẫn xuất như Get nguồn
     return Results.Ok(new { s.ScheduleNo, s.Status, count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -57042,7 +57057,7 @@ record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
 record FnExpCalcLineDto(string CarId, string? SOCode, decimal FnDepositAmount, int FnDepositCountDate, decimal FnGrtAmount, int FnGrtCountDate, decimal PDAmount, int TermActual);
 record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineDto>? Lines);
-record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct, decimal? QtyRemainOrder);
+record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct, decimal? QtyRemainOrder, int QtyCurrProduct = 0, int QtyCurrEstimate = 0, int QtyCFOrder = 0);   // #404
 record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
 record WoProduceDto(int Qty);
 record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice, string? CarId = null, string? DealNoPrevious = null, string? PlateNo = null, DateTime? DeliveryDate = null, string? DeliveryStatus = null, string? CtrCarId = null);

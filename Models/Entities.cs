@@ -13059,6 +13059,16 @@ public sealed class WoScheduleLine
     /// <summary>`WO_ScheduleDetail.QtyRemainOrder` — SL **chưa có lịch SX**. Nguồn dùng để tính
     /// `QtyPlan = QtyOrder - QtyProduct - QtyRemainOrder`; không suy ra được từ 3 cột cũ.</summary>
     public decimal QtyRemainOrder { get; set; }
+
+    // ===== #404 parity `WO_ScheduleDetail` — `WO_Schedule_Add_New20181115` (BizHTC.WorkOrder.cs:174, WS LIVE) =====
+    //       Ba cột do client nhập (Excel FrmImportETAInDetail: CURRPROD / CURREXPT / CFORDER, kiểu int);
+    //       biz chặn mỗi cột 0 ≤ x ≤ QtyOrder. `QtyCurrTotal` KHÔNG lưu: Get tính QtyCurrProduct + QtyCurrEstimate.
+    /// <summary>SL sản xuất trong kỳ (`QtyCurrProduct`).</summary>
+    public int QtyCurrProduct { get; set; }
+    /// <summary>SL dự kiến trong kỳ (`QtyCurrEstimate`).</summary>
+    public int QtyCurrEstimate { get; set; }
+    /// <summary>SL xác nhận đơn hàng (`QtyCFOrder`).</summary>
+    public int QtyCFOrder { get; set; }
 }
 
 /// <summary>Giao dịch bán buôn xe ĐL→ĐL (Deal To Dealer) — port 1:1 FrmNewDealToDealer. Header.</summary>

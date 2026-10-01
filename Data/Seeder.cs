@@ -2874,6 +2874,10 @@ public static class Seeder
                 "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"CarDueDate\" timestamp NULL",
                 "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyRemainOrder\" numeric NOT NULL DEFAULT 0",
+                // #404 WO_ScheduleDetail: QtyCurrProduct / QtyCurrEstimate / QtyCFOrder (WO_Schedule_Add_New20181115).
+                "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyCurrProduct\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyCurrEstimate\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"QtyCFOrder\" integer NOT NULL DEFAULT 0",
                 // §12 #B341/#B342/#B343 — quy trình ký HĐ nguyên tắc (Rpt_PrincipleContract).
                 "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"DealerSignStatus\" text NULL",
                 "ALTER TABLE public.\"PrincipleContracts\" ADD COLUMN IF NOT EXISTS \"DealerSignDTime\" timestamp NULL",

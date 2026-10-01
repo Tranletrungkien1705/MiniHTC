@@ -21,7 +21,7 @@
 <div class="card">
   <b>Tạo lịch (header + dòng lệnh SX)</b>
   <div class="bar" style="margin-top:10px"><div><label>Người tạo</label><input id="cb" style="width:120px" value="admin"></div></div>
-  <table style="margin-top:10px"><thead><tr><th>Số lệnh SX</th><th>Model</th><th>Đặc tả</th><th>Màu</th><th class="num">SL đặt</th><th class="num">SL đã SX</th><th></th></tr></thead><tbody id="lRows"></tbody></table>
+  <table style="margin-top:10px"><thead><tr><th>Số lệnh SX</th><th>Model</th><th>Đặc tả</th><th>Màu</th><th class="num">SL đặt</th><th class="num">SL đã SX</th><th class="num">SX trong kỳ</th><th class="num">Dự kiến kỳ</th><th class="num">SL xác nhận</th><th></th></tr></thead><tbody id="lRows"></tbody></table>
   <div class="bar" style="margin-top:8px"><button class="sm" onclick="addRow()">+ Thêm dòng</button><button class="primary" onclick="save()">Tạo lịch</button><span id="msg"></span></div>
 </div>
 <div class="bar" style="margin:10px 0">
@@ -32,7 +32,7 @@
 <tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table></div>
 <div class="card" id="detCard" style="display:none">
   <b>Chi tiết lệnh SX — <span id="detNo"></span></b>
-  <div class="wrap"><table><thead><tr><th>Số lệnh SX</th><th>Model</th><th>Đặc tả</th><th>Màu</th><th class="num">SL đặt</th><th class="num">SL đã SX</th><th class="num">SL còn lại</th><th>Ghi nhận SX</th></tr></thead><tbody id="detRows"></tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>Số lệnh SX</th><th>Model</th><th>Đặc tả</th><th>Màu</th><th class="num">SL đặt</th><th class="num">SL đã SX</th><th class="num">SL còn lại</th><th class="num">SX+DK kỳ</th><th class="num">SL xác nhận</th><th>Ghi nhận SX</th></tr></thead><tbody id="detRows"></tbody></table></div>
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id); let CUR=null;
@@ -44,11 +44,11 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 function addRow(){ const tr=document.createElement("tr"); tr.className="lrow";
-  tr.innerHTML=`<td><input class="c-wo"></td><td><input class="c-md"></td><td><input class="c-sp"></td><td><input class="c-cl"></td><td class="num"><input class="c-qo" type="number" value="10"></td><td class="num"><input class="c-qp" type="number" value="0"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
+  tr.innerHTML=`<td><input class="c-wo"></td><td><input class="c-md"></td><td><input class="c-sp"></td><td><input class="c-cl"></td><td class="num"><input class="c-qo" type="number" value="10"></td><td class="num"><input class="c-qp" type="number" value="0"></td><td class="num"><input class="c-cp" type="number" value="0"></td><td class="num"><input class="c-ce" type="number" value="0"></td><td class="num"><input class="c-cf" type="number" value="0"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
   F("lRows").appendChild(tr); }
 function collect(){ return [...document.querySelectorAll("#lRows tr")].map(tr=>({
   workOrderNo:tr.querySelector(".c-wo").value, modelCode:tr.querySelector(".c-md").value, specCode:tr.querySelector(".c-sp").value,
-  colorCode:tr.querySelector(".c-cl").value, qtyOrder:+tr.querySelector(".c-qo").value||0, qtyProduct:+tr.querySelector(".c-qp").value||0})).filter(l=>l.workOrderNo.trim()); }
+  colorCode:tr.querySelector(".c-cl").value, qtyOrder:+tr.querySelector(".c-qo").value||0, qtyProduct:+tr.querySelector(".c-qp").value||0, qtyCurrProduct:+tr.querySelector(".c-cp").value||0, qtyCurrEstimate:+tr.querySelector(".c-ce").value||0, qtyCFOrder:+tr.querySelector(".c-cf").value||0})).filter(l=>l.workOrderNo.trim()); }
 async function save(){
   const r=await fetch("/api/woschedules",{method:"POST",headers:H(),body:JSON.stringify({createdBy:F("cb").value,lines:collect()})});
   const j=await r.json();
@@ -67,7 +67,7 @@ async function detail(no){ CUR=no;
   F("detCard").style.display=""; F("detNo").textContent=no;
   F("detRows").innerHTML=(d.lines||[]).map(l=>{
     const done=l.qtyRemain<=0;
-    return `<tr><td><b>${l.workOrderNo}</b></td><td>${l.modelCode||""}</td><td>${l.specCode||""}</td><td>${l.colorCode||""}</td><td class="num">${l.qtyOrder}</td><td class="num">${l.qtyProduct}</td><td class="num">${l.qtyRemain}</td><td>${done?'<span class="pill s-Closed">Đủ</span>':`<input type="number" id="p_${l.workOrderNo}" style="width:70px" placeholder="SL"> <button class="sm ok" onclick="produce('${l.workOrderNo}')">Ghi nhận</button>`}</td></tr>`;
+    return `<tr><td><b>${l.workOrderNo}</b></td><td>${l.modelCode||""}</td><td>${l.specCode||""}</td><td>${l.colorCode||""}</td><td class="num">${l.qtyOrder}</td><td class="num">${l.qtyProduct}</td><td class="num">${l.qtyRemain}</td><td class="num" title="SX ${l.qtyCurrProduct} + DK ${l.qtyCurrEstimate}">${l.qtyCurrTotal}</td><td class="num">${l.qtyCFOrder}</td><td>${done?'<span class="pill s-Closed">Đủ</span>':`<input type="number" id="p_${l.workOrderNo}" style="width:70px" placeholder="SL"> <button class="sm ok" onclick="produce('${l.workOrderNo}')">Ghi nhận</button>`}</td></tr>`;
   }).join("")||'<tr><td colspan="8" class="muted">Không có dòng.</td></tr>';
 }
 async function produce(wo){
