@@ -19,10 +19,10 @@
   <div class="row"><div><label>Mã gói *</label><input id="hNo" style="width:120px"></div><div style="flex:1"><label>Tên gói *</label><input id="hName" style="width:100%"></div></div>
   <div class="row"><div><label>Đại lý *</label><input id="hDlr" style="width:100px"></div><div><label>Thời gian TH *</label><input id="hTime" type="number" min="0" style="width:90px"></div><div><label>Người tạo</label><input id="hCreator" style="width:110px"></div><div><label>Ngày tạo (sửa)</label><input id="hDate" type="date"></div><label><input id="hPub" type="checkbox"> Dùng chung</label><label><input id="hBase" type="checkbox"> Dùng giá cơ bản</label><input id="hId" type="hidden"></div>
   <div><label>Mô tả</label><input id="hDesc" style="width:100%"></div>
-  <h3>Công dịch vụ (Mã CV [tab] Tên [tab] Đơn giá [tab] Hệ số)</h3>
-  <textarea id="hSvcs" placeholder="CV01&#9;Thay dau&#9;100000&#9;1"></textarea>
-  <h3>Phụ tùng (Mã PT [tab] Tên [tab] Đơn giá [tab] Hệ số)</h3>
-  <textarea id="hParts" placeholder="PT01&#9;Loc dau&#9;150000&#9;1"></textarea>
+  <h3>Công dịch vụ (Mã CV [tab] Tên [tab] Đơn giá [tab] Hệ số [tab] Đối tượng TT ROREPAIR/LOCAL/ROINSURANCE/ROWARRANTY [tab] Loại CV BDD/SCC/SCD/SCS/PDI/SPK)</h3>
+  <textarea id="hSvcs" placeholder="CV01&#9;Thay dau&#9;100000&#9;1&#9;ROREPAIR&#9;BDD"></textarea>
+  <h3>Phụ tùng (Mã PT [tab] Tên [tab] Đơn giá [tab] Hệ số [tab] Số lượng [tab] Đối tượng TT)</h3>
+  <textarea id="hParts" placeholder="PT01&#9;Loc dau&#9;150000&#9;1&#9;1&#9;ROREPAIR"></textarea>
   <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu gói</button><span id="msg" class="msg"></span></div>
 </div>
 <div class="row" style="margin:8px 0"><input id="q" placeholder="Mã/tên gói" style="width:200px"><button onclick="load()">Xem</button></div>
@@ -41,16 +41,16 @@ function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-
 function m(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
 function parse4(v){ return v.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>l.split(/\t|,/).map(x=>x.trim())); }
 async function save(){ await token();
-  const svcs=parse4(F("hSvcs").value).map(c=>({SerCode:c[0]||"",SerName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1}));
-  const parts=parse4(F("hParts").value).map(c=>({PartCode:c[0]||"",PartName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1}));
+  const svcs=parse4(F("hSvcs").value).map(c=>({SerCode:c[0]||"",SerName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1,ExpenseType:c[4]||"",ROType:c[5]||""}));
+  const parts=parse4(F("hParts").value).map(c=>({PartCode:c[0]||"",PartName:c[1]||"",Price:+(c[2]||0)||0,Factor:+(c[3]||1)||1,Quantity:c[4]===undefined||c[4]===""?null:+c[4],ExpenseType:c[5]||""}));
   const r=await fetch("/api/servicepackages",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({ServicePackageID:F("hId").value?+F("hId").value:null,ServicePackageNo:F("hNo").value,ServicePackageName:F("hName").value,DealerCode:F("hDlr").value,TakingTime:F("hTime").value===""?null:+F("hTime").value,Description:F("hDesc").value,Creator:F("hCreator").value,CreatedDate:F("hDate").value||null,IsPublicFlag:F("hPub").checked?"1":"0",IsUserBasePrice:F("hBase").checked?"1":"0",Services:svcs,Parts:parts})});
   const d=await r.json(); if(!r.ok){ m("Lỗi: "+(d.error||r.status)); return; } F("hId").value=""; m(`Đã lưu ${d.servicePackageNo} (tổng ${M(d.grandTotal)})`); F("hSvcs").value="";F("hParts").value=""; load();
 }
 async function del(id){ if(!confirm("Xoá gói dịch vụ?")) return; await token(); await fetch("/api/servicepackages/"+id+"/delete",{method:"POST",headers:H()}); load(); }
 async function edit(id){ await token(); const d=await (await fetch("/api/servicepackages/"+id+"/detail",{headers:H()})).json();
   F("hId").value=d.id; F("hNo").value=d.servicePackageNo; F("hName").value=d.servicePackageName||""; F("hDlr").value=d.dealerCode||""; F("hTime").value=d.takingTime??""; F("hDesc").value=d.description||""; F("hCreator").value=d.creator||""; F("hDate").value=(d.createdDate||"").slice(0,10); F("hPub").checked=d.isPublicFlag==="1"; F("hBase").checked=d.isUserBasePrice==="1";
-  F("hSvcs").value=(d.services||[]).map(x=>[x.serCode,x.serName,x.price,x.factor].join("	")).join("
-"); F("hParts").value=(d.parts||[]).map(x=>[x.partCode,x.partName,x.price,x.factor].join("	")).join("
+  F("hSvcs").value=(d.services||[]).map(x=>[x.serCode,x.serName,x.price,x.factor,x.expenseType||"",x.roType||""].join("	")).join("
+"); F("hParts").value=(d.parts||[]).map(x=>[x.partCode,x.partName,x.price,x.factor,x.quantity??"",x.expenseType||""].join("	")).join("
 "); m("Đang sửa "+d.servicePackageNo); }
 async function toggle(id){ await token(); await fetch("/api/servicepackages/"+id+"/toggle",{method:"POST",headers:H()}); load(); }
 async function detail(id,no){ await token(); const r=await fetch("/api/servicepackages/"+id+"/detail",{headers:H()}); const d=await r.json();

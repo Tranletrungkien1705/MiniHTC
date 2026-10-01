@@ -2586,6 +2586,16 @@ public sealed class ServicePackageService
     public decimal Price { get; set; }
     public decimal Factor { get; set; } = 1;
     public decimal Amount { get; set; }
+    // #309 cột nguồn TblSerServicePackageServiceItems (DbDefine.cs:1434) — ProcessSaveServicePackageServiceItem (biz:896).
+    public decimal? ActManHour { get; set; }
+    public decimal? VAT { get; set; }
+    public string? Note { get; set; }
+    /// <summary>Đối tượng thanh toán (`Ser_ROType`): ROREPAIR / ROINSURANCE / ROWARRANTY / LOCAL / GENERAL.</summary>
+    public string? ExpenseType { get; set; }
+    /// <summary>Loại công việc (`Ser_ROType_New`): BDD / SCC / SCD / SCS / PDI / SPK.</summary>
+    public string? ROType { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong gói dịch vụ — port 1:1 FrmServicePackageCreate grid PT, TCMotor.</summary>
@@ -2598,7 +2608,16 @@ public sealed class ServicePackagePart
     public string? PartName { get; set; }
     public decimal Price { get; set; }
     public decimal Factor { get; set; } = 1;
+    /// <summary>Thành tiền = Price × Factor × Quantity (Frm gviewPart:1022).</summary>
     public decimal Amount { get; set; }
+    // #309 cột nguồn TblSerServicePackagePartItems (DbDefine.cs:1415) — ProcessSaveServicePackagePartItem (biz:1031).
+    public decimal? Quantity { get; set; }
+    public decimal? VAT { get; set; }
+    public string? Note { get; set; }
+    /// <summary>Đối tượng thanh toán (`Ser_ROType`): ROREPAIR / LOCAL / ROINSURANCE / ROWARRANTY.</summary>
+    public string? ExpenseType { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng sao kê ngân hàng — port 1:1 FrmBank_BankStatement (TCMotor/Sales/Payment). Import Excel sao kê, đối soát (reconcile) với mã thanh toán DMS qua PaymentCodeDMS.</summary>

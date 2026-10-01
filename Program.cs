@@ -19363,22 +19363,42 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
     if (isCreate && svcs.Count == 0) return Results.BadRequest(new { error = "Phần công lao động không được trống! (SerServicePackageCreate_ServiceTableNotBlank)" });
     decimal svcTotal = 0, partTotal = 0;
     var svcRows = new List<ServicePackageService>();
+    // #309 Guard dòng (biz:378-475) — CHỈ ở Create; SerServicePackageUpdate KHÔNG kiểm dòng (0 hit ExpenseType/Raise trong 546-788).
+    static bool Eq(string? a, string b) => string.Equals((a ?? "").Trim(), b, StringComparison.OrdinalIgnoreCase);
     foreach (var s in svcs)
     {
-        if (string.IsNullOrWhiteSpace(s.SerCode)) return Results.BadRequest(new { error = "Có dòng công thiếu mã." });
+        if (string.IsNullOrWhiteSpace(s.SerCode)) return Results.BadRequest(new { error = "Có dòng công thiếu mã (SerServicePackageCreate_ServiceNotInList)." });
+        if (isCreate)
+        {
+            if (string.IsNullOrWhiteSpace(s.ExpenseType)) return Results.BadRequest(new { error = "Dòng công thiếu đối tượng thanh toán (SerServicePackageCreate_Invalid_ExpenseType).", s.SerCode });
+            if (string.IsNullOrWhiteSpace(s.ROType)) return Results.BadRequest(new { error = "Dòng công thiếu loại công việc (SerServicePackageCreate_Invalid_ROType).", s.SerCode });
+            // ROType=BDD (bảo dưỡng) chỉ cho ExpenseType ROREPAIR hoặc LOCAL.
+            if (Eq(s.ROType, "BDD") && !Eq(s.ExpenseType, "ROREPAIR") && !Eq(s.ExpenseType, "LOCAL"))
+                return Results.BadRequest(new { error = "Công BDD chỉ cho đối tượng thanh toán ROREPAIR/LOCAL (SerServicePackageCreate_Invalid_ExpenseType).", s.SerCode, s.ROType, s.ExpenseType });
+        }
         var f = s.Factor <= 0 ? 1 : s.Factor; var amt = Math.Round(s.Price * f, 2);
         svcTotal += amt;
-        svcRows.Add(new ServicePackageService { OrgId = t.OrgId, SerCode = s.SerCode.Trim(), SerName = s.SerName, Price = s.Price, Factor = f, Amount = amt });
+        // Nguồn ProcessSaveServicePackageServiceItem KHÔNG gán LogLU* cho dòng công (chỉ dòng PT có) ⇒ để NULL.
+        svcRows.Add(new ServicePackageService { OrgId = t.OrgId, SerCode = s.SerCode.Trim(), SerName = s.SerName, Price = s.Price, Factor = f, Amount = amt,
+            ActManHour = s.ActManHour, VAT = s.VAT, Note = N(s.Note), ExpenseType = N(s.ExpenseType), ROType = N(s.ROType) });
     }
     var partRows = new List<ServicePackagePart>();
     var seenP = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     foreach (var p in parts)
     {
-        if (string.IsNullOrWhiteSpace(p.PartCode)) return Results.BadRequest(new { error = "Có dòng PT thiếu mã." });
+        if (string.IsNullOrWhiteSpace(p.PartCode)) return Results.BadRequest(new { error = "Có dòng PT thiếu mã (SerServicePackageCreate_PartNotInStock)." });
         if (!seenP.Add(p.PartCode.Trim())) return Results.BadRequest(new { error = "Trùng mã PT trong gói: " + p.PartCode });
-        var f = p.Factor <= 0 ? 1 : p.Factor; var amt = Math.Round(p.Price * f, 2);
+        if (isCreate)
+        {
+            if (string.IsNullOrWhiteSpace(p.ExpenseType)) return Results.BadRequest(new { error = "Dòng PT thiếu đối tượng thanh toán (SerServicePackageCreate_Part_InvalidExpenseType).", p.PartCode });
+            if (!Eq(p.ExpenseType, "ROREPAIR") && !Eq(p.ExpenseType, "LOCAL") && !Eq(p.ExpenseType, "ROINSURANCE") && !Eq(p.ExpenseType, "ROWARRANTY"))
+                return Results.BadRequest(new { error = "Đối tượng thanh toán PT phải là ROREPAIR/LOCAL/ROINSURANCE/ROWARRANTY (SerServicePackageCreate_InvalidPart_ExpenseType).", p.PartCode, p.ExpenseType });
+        }
+        // Thành tiền PT = Price × Factor × Quantity (Frm:1022); Quantity rỗng coi như 1 (dòng mới Frm:491 Amount = Price).
+        var f = p.Factor <= 0 ? 1 : p.Factor; var qty = p.Quantity ?? 1; var amt = Math.Round(p.Price * f * qty, 2);
         partTotal += amt;
-        partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt });
+        partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt,
+            Quantity = p.Quantity, VAT = p.VAT, Note = N(p.Note), ExpenseType = N(p.ExpenseType), LogLUDateTime = now, LogLUBy = who });
     }
     static string? N(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
     if (isCreate)
@@ -19422,8 +19442,8 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
 {
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount }).ToListAsync();
-    var parts = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.PartCode, x.PartName, x.Price, x.Factor, x.Amount }).ToListAsync();
+    var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount, x.ActManHour, x.VAT, x.Note, x.ExpenseType, x.ROType, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var parts = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.PartCode, x.PartName, x.Price, x.Factor, x.Amount, x.Quantity, x.VAT, x.Note, x.ExpenseType, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { h.Id, h.ServicePackageNo, h.ServicePackageName, h.DealerCode, h.TakingTime, h.Description, h.Creator,
         h.CreatedDate, h.CreatedBy, h.IsPublicFlag, h.IsUserBasePrice, h.LogLUDateTime, h.LogLUBy,
         h.ServiceTotal, h.PartTotal, h.GrandTotal, services = svcs, parts });
@@ -56066,8 +56086,8 @@ record MaintSupplyDto(string Code, string? Name, string? StandardUnit, string? C
 record ServicePackageDto(string? ServicePackageNo, string? ServicePackageName, List<SpSvcDto>? Services, List<SpPartDto>? Parts,
     long? ServicePackageID = null, string? DealerCode = null, int? TakingTime = null, string? Description = null, string? Creator = null,
     string? CreatedDate = null, string? IsPublicFlag = null, string? IsUserBasePrice = null);
-record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor);
-record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor);
+record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor, decimal? ActManHour = null, decimal? VAT = null, string? Note = null, string? ExpenseType = null, string? ROType = null);
+record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor, decimal? Quantity = null, decimal? VAT = null, string? Note = null, string? ExpenseType = null);
 record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive);
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
