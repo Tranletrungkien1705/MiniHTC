@@ -1760,26 +1760,28 @@ app.MapDelete("/api/boms/lines/{id:long}", async (long id, AppDbContext db, ITen
 
 // ===== Hãng bảo hiểm + khách hàng thuộc hãng (port 1:1 FrmInsuranceCreate/Modify — TCMotor DMSCarSv/Admin) =====
 // Nguồn: ValidateInput() + checkInsuranceExist() + gviewPart_ValidateRow() + mst.SerInsuranceCreate.
+// ⛔ #381 HỢP NHẤT SONG SINH Ser_Insurance: bản chuẩn = SerInsurance (master /api/serinsurances). Route này giữ hình JSON cũ
+//   (Status = FlagActive) nhưng đọc/ghi bản chuẩn; khách hàng thuộc hãng nối qua ServiceInsuranceCustomer.SerInsuranceId.
 app.MapGet("/api/insurances", async (AppDbContext database, ITenantContext tenant, string? keyword) =>
 {
-    var insuranceQuery = database.ServiceInsurances.Where(insurance => insurance.OrgId == tenant.OrgId);
+    var insuranceQuery = database.SerInsurances.Where(insurance => insurance.OrgId == tenant.OrgId);
     if (!string.IsNullOrWhiteSpace(keyword))
     {
         var searchKeyword = keyword.Trim();
         insuranceQuery = insuranceQuery.Where(insurance =>
-            insurance.InsNo.Contains(searchKeyword) || insurance.InsVieName.Contains(searchKeyword));
+            insurance.InsNo.Contains(searchKeyword) || (insurance.InsVieName != null && insurance.InsVieName.Contains(searchKeyword)));
     }
     var items = await insuranceQuery.OrderBy(insurance => insurance.InsNo)
         .Select(insurance => new
         {
             insurance.Id, insurance.InsNo, insurance.InsVieName, insurance.InsEngName, insurance.Address,
             insurance.Email, insurance.Telephone, insurance.Fax, insurance.Website, insurance.Taxcode,
-            insurance.Description, insurance.Status,
+            insurance.Description, Status = insurance.FlagActive, insurance.DealerCode,
             customers = database.ServiceInsuranceCustomers
-                .Count(customer => customer.OrgId == tenant.OrgId && customer.ServiceInsuranceId == insurance.Id)
+                .Count(customer => customer.OrgId == tenant.OrgId && customer.SerInsuranceId == insurance.Id)
         })
         .ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new { count = items.Count, items, mergedInto = "/api/serinsurances" });
 }).RequireAuthorization();
 
 app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext database, ITenantContext tenant) =>
@@ -1795,8 +1797,8 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
     var insuranceNo = request.InsNo.Trim().ToUpperInvariant();
 
     // LUẬT 4 (checkInsuranceExist): mã hãng BH đã tồn tại thì KHÔNG cho tạo mới.
-    var alreadyExists = await database.ServiceInsurances
-        .AnyAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo == insuranceNo);
+    var alreadyExists = await database.SerInsurances
+        .AnyAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo.ToUpper() == insuranceNo);
     if (alreadyExists)
         return Results.BadRequest(new { error = "Hãng bảo hiểm đã tồn tại!" });
 
@@ -1805,7 +1807,7 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
     var validationError = ValidateInsuranceCustomerRows(customerRows);
     if (validationError is not null) return Results.BadRequest(new { error = validationError });
 
-    var insuranceCompany = new ServiceInsurance
+    var insuranceCompany = new SerInsurance
     {
         OrgId = tenant.OrgId,
         InsNo = insuranceNo,
@@ -1813,16 +1815,17 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
         InsEngName = request.InsEngName,
         Address = request.Address.Trim(),
         Email = request.Email, Telephone = request.Telephone, Fax = request.Fax,
-        Website = request.Website, Taxcode = request.Taxcode, Description = request.Description
+        Website = request.Website, Taxcode = request.Taxcode, Description = request.Description,
+        DealerCode = request.DealerCode, UpdatedAt = DateTime.Now
     };
-    database.ServiceInsurances.Add(insuranceCompany);
+    database.SerInsurances.Add(insuranceCompany);
     await database.SaveChangesAsync();
 
     foreach (var customerRow in customerRows)
         database.ServiceInsuranceCustomers.Add(new ServiceInsuranceCustomer
         {
             OrgId = tenant.OrgId,
-            ServiceInsuranceId = insuranceCompany.Id,
+            SerInsuranceId = insuranceCompany.Id,
             CusId = customerRow.CusId.Trim().ToUpperInvariant(),
             CusName = customerRow.CusName,
             Address = customerRow.Address,
@@ -1837,12 +1840,12 @@ app.MapPost("/api/insurances", async (ServiceInsuranceDto request, AppDbContext 
 app.MapGet("/api/insurances/{insNo}/customers", async (string insNo, AppDbContext database, ITenantContext tenant) =>
 {
     var insuranceNo = insNo.Trim().ToUpperInvariant();
-    var insuranceCompany = await database.ServiceInsurances
-        .FirstOrDefaultAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo == insuranceNo);
+    var insuranceCompany = await database.SerInsurances
+        .FirstOrDefaultAsync(insurance => insurance.OrgId == tenant.OrgId && insurance.InsNo.ToUpper() == insuranceNo);
     if (insuranceCompany is null) return Results.NotFound(new { error = "Không tồn tại." });
 
     var customers = await database.ServiceInsuranceCustomers
-        .Where(customer => customer.OrgId == tenant.OrgId && customer.ServiceInsuranceId == insuranceCompany.Id)
+        .Where(customer => customer.OrgId == tenant.OrgId && customer.SerInsuranceId == insuranceCompany.Id)
         .Select(customer => new { customer.CusId, customer.CusName, customer.Address, customer.Mobile, customer.Description })
         .ToListAsync();
     return Results.Ok(new { insNo = insuranceCompany.InsNo, count = customers.Count, customers });
@@ -19748,23 +19751,28 @@ app.MapPost("/api/servicepackages/{id}/toggle", async (long id, AppDbContext db,
 }).RequireAuthorization();
 
 // ===== Master hãng bảo hiểm DV (SerInsurance — port 1:1 FrmInsuranceCreate/Search, TCMotor DMSCarSv) =====
+// #381 bản CHUẨN của Ser_Insurance (song sinh ServiceInsurance đã gộp vào). Cột theo TblInsurance (Telephone/Taxcode/Website/DealerCode);
+//   ValidateInput bắt buộc InsNo + InsVieName + Address (nguyên văn thông báo form gốc). Màn này tạo + sửa (FrmInsuranceModify) ⇒ upsert.
 app.MapGet("/api/serinsurances", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
     var qry = db.SerInsurances.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.InsNo.Contains(q!) || x.InsVieName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.InsNo).Take(500).Select(x => new { x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Phone, x.Fax, x.TaxCode, x.Description, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.InsNo).Take(500).Select(x => new { x.Id, x.InsNo, x.InsVieName, x.InsEngName, x.Address, x.Email, x.Telephone, x.Fax, x.Website, x.Taxcode, x.Description, x.DealerCode, x.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 app.MapPost("/api/serinsurances", async (SerInsuranceDto dto, AppDbContext db, ITenantContext t) =>
 {
     var no = (dto.InsNo ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập mã hãng bảo hiểm." });
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Phải nhập vào mã hãng bảo hiểm" });
+    if (string.IsNullOrWhiteSpace(dto.InsVieName)) return Results.BadRequest(new { error = "Phải nhập vào tên tiếng việt" });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Phải nhập vào địa chỉ" });
     if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
-    var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo == no);
+    var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo.ToUpper() == no.ToUpper());
     if (row is null) { row = new SerInsurance { OrgId = t.OrgId, InsNo = no }; db.SerInsurances.Add(row); }
-    row.InsVieName = dto.InsVieName; row.InsEngName = dto.InsEngName; row.Address = dto.Address; row.Email = dto.Email; row.Phone = dto.Phone; row.Fax = dto.Fax; row.TaxCode = dto.TaxCode; row.Description = dto.Description; row.UpdatedAt = DateTime.Now;
+    row.InsVieName = dto.InsVieName; row.InsEngName = dto.InsEngName; row.Address = dto.Address; row.Email = dto.Email; row.Telephone = dto.Telephone; row.Fax = dto.Fax; row.Taxcode = dto.Taxcode; row.Description = dto.Description; row.UpdatedAt = DateTime.Now;
+    row.Website = dto.Website; row.DealerCode = dto.DealerCode;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.InsNo, row.InsVieName, row.FlagActive });
@@ -56337,7 +56345,8 @@ record ServiceInsuranceDto(
     string Address,        // địa chỉ (bắt buộc)
     string? InsEngName, string? Email, string? Telephone, string? Fax,
     string? Website, string? Taxcode, string? Description,
-    List<InsuranceCustomerDto>? Customers
+    List<InsuranceCustomerDto>? Customers,
+    string? DealerCode = null   // #381 TblInsurance.DealerCode
 );
 
 // ----- Nhập phụ tùng nợ từ Excel (FrmImportSerPartOO) -----
@@ -57287,7 +57296,8 @@ record ServicePackageDto(string? ServicePackageNo, string? ServicePackageName, L
     string? CreatedDate = null, string? IsPublicFlag = null, string? IsUserBasePrice = null);
 record SpSvcDto(string SerCode, string? SerName, decimal Price, decimal Factor, decimal? ActManHour = null, decimal? VAT = null, string? Note = null, string? ExpenseType = null, string? ROType = null);
 record SpPartDto(string PartCode, string? PartName, decimal Price, decimal Factor, decimal? Quantity = null, decimal? VAT = null, string? Note = null, string? ExpenseType = null);
-record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Phone, string? Fax, string? TaxCode, string? Description, string? FlagActive);
+record SerInsuranceDto(string? InsNo, string? InsVieName, string? InsEngName, string? Address, string? Email, string? Telephone, string? Fax, string? Taxcode, string? Description, string? FlagActive,
+    string? Website = null, string? DealerCode = null);   // #381 tên trường khớp TblInsurance
 record SerInsuranceContractDto(string? InContractCode, string? InContractNo, string? TypePayment, DateTime? StartDate, DateTime? FinishDate, string? InsNo, decimal PaymentLimit, string? FlagActive, string? DealerCode = null);   // #339 DealerCode
 record MstUnitPriceGpsDto(string? ContractNo, decimal UnitPrice, DateTime? EffStartDate, string? FlagActive);
 record UnitPriceGpsUpdateDto(string? FtColsUpd, string? ContractNo = null, decimal UnitPrice = 0, DateTime? EffStartDate = null);

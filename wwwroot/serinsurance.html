@@ -15,9 +15,10 @@
 <h1>Hãng bảo hiểm dịch vụ <span class="muted">(port 1:1 FrmInsuranceCreate/Search — TCMotor DMSCarSv)</span></h1>
 <div class="card"><h3 style="margin-top:0">Thêm / sửa</h3>
   <div class="grid4">
-    <div><label>Mã hãng *</label><input id="no"></div><div><label>Tên Việt</label><input id="vie"></div><div><label>Tên Anh</label><input id="eng"></div><div><label>MST</label><input id="tax"></div>
-    <div style="grid-column:span 2"><label>Địa chỉ</label><input id="addr" style="width:100%"></div><div><label>Điện thoại</label><input id="phone"></div><div><label>Fax</label><input id="fax"></div>
+    <div><label>Mã hãng *</label><input id="no"></div><div><label>Tên Việt *</label><input id="vie"></div><div><label>Tên Anh</label><input id="eng"></div><div><label>MST</label><input id="tax"></div>
+    <div style="grid-column:span 2"><label>Địa chỉ *</label><input id="addr" style="width:100%"></div><div><label>Điện thoại</label><input id="phone"></div><div><label>Fax</label><input id="fax"></div>
     <div style="grid-column:span 2"><label>Email</label><input id="email" style="width:100%"></div><div style="grid-column:span 2"><label>Mô tả</label><input id="desc" style="width:100%"></div>
+    <div style="grid-column:span 2"><label>Website</label><input id="web" style="width:100%"></div><div><label>Mã đại lý</label><input id="dealer"></div>
   </div>
   <div class="row" style="margin-top:8px"><button class="primary" onclick="save()">Lưu</button><span id="msg" class="msg"></span></div>
 </div>
@@ -32,13 +33,13 @@ function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key
 function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3800); }
 const v=id=>F(id).value||null;
 async function save(){ await token();
-  const r=await fetch("/api/serinsurances",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({InsNo:F("no").value,InsVieName:v("vie"),InsEngName:v("eng"),Address:v("addr"),Email:v("email"),Phone:v("phone"),Fax:v("fax"),TaxCode:v("tax"),Description:v("desc")})});
+  const r=await fetch("/api/serinsurances",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({InsNo:F("no").value,InsVieName:v("vie"),InsEngName:v("eng"),Address:v("addr"),Email:v("email"),Telephone:v("phone"),Fax:v("fax"),Taxcode:v("tax"),Description:v("desc"),Website:v("web"),DealerCode:v("dealer")})});
   const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say("Đã lưu "+d.insNo); F("no").value=""; load();
 }
 async function toggle(id){ await token(); await fetch("/api/serinsurances/"+id+"/toggle",{method:"POST",headers:Hh()}); load(); }
 async function load(){ await token();
   const r=await fetch("/api/serinsurances?all="+(F("all").checked)+"&q="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.insNo)}</b></td><td>${esc(o.insVieName)}</td><td>${esc(o.insEngName)}</td><td>${esc(o.address)}</td><td>${esc(o.phone)}</td><td>${esc(o.email)}</td><td>${esc(o.taxCode)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có hãng BH.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr class="${o.flagActive==='1'?'':'off'}"><td><b>${esc(o.insNo)}</b></td><td>${esc(o.insVieName)}</td><td>${esc(o.insEngName)}</td><td>${esc(o.address)}</td><td>${esc(o.telephone)}</td><td>${esc(o.email)}</td><td>${esc(o.taxcode)}</td><td><span class="pill ${o.flagActive==='1'?'y':'n'}">${o.flagActive==='1'?'Bật':'Tắt'}</span></td><td><button class="link" onclick="toggle(${o.id})">Đổi</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Chưa có hãng BH.</td></tr>';
 }
 </script>
 </body></html>

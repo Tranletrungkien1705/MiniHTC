@@ -2812,12 +2812,16 @@ public sealed class SerInsurance
     public string? InsEngName { get; set; }
     public string? Address { get; set; }
     public string? Email { get; set; }
-    public string? Phone { get; set; }
+    public string? Telephone { get; set; }   // #381 rename khớp TblInsurance.Telephone (TELEPHONE)
     public string? Fax { get; set; }
-    public string? TaxCode { get; set; }
+    public string? Taxcode { get; set; }     // #381 rename khớp TblInsurance.Taxcode (TAXCODE)
     public string? Description { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    // ===== #381 [c] gộp song sinh Ser_Insurance — cột nguồn TblInsurance (DbDefine:445) còn thiếu =====
+    public string? Website { get; set; }
+    public string? DealerCode { get; set; }
 }
 
 /// <summary>Master quy đổi đơn vị TST↔DMS (TST_Mst_Exchange_Unit) — port 1:1 FrmTST_Mst_Exchange_Unit (TCMotor DMSCarSv). Theo mã phụ tùng TST: đơn vị TST/DMS + tỷ lệ quy đổi.</summary>
@@ -14952,8 +14956,8 @@ public sealed class DealerMemberQuery
 }
 
 /// <summary>
-/// Hãng bảo hiểm (Ser_Insurance — FrmInsuranceCreate/Modify, TCMotor DMSCarSv/Admin).
-/// Header khai báo hãng BH; kèm lưới khách hàng thuộc hãng (xem <see cref="ServiceInsuranceCustomer"/>).
+/// ⛔ #381 DEPRECATED — SONG SINH của <see cref="SerInsurance"/> (cùng bảng nguồn Ser_Insurance / TblInsurance, cùng FrmInsuranceCreate).
+/// Bản chuẩn = SerInsurance; route /api/insurances đã đọc/ghi bản chuẩn, Seeder chép dữ liệu cũ. Giữ lớp để đọc dữ liệu cũ, KHÔNG ghi mới.
 /// </summary>
 public sealed class ServiceInsurance
 {
@@ -14982,6 +14986,8 @@ public sealed class ServiceInsuranceCustomer
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long ServiceInsuranceId { get; set; }
+    /// <summary>#381 khoá tới hãng BH bản CHUẨN <see cref="SerInsurance"/> (ServiceInsuranceId chỉ còn cho dữ liệu cũ; dòng mới = 0).</summary>
+    public long? SerInsuranceId { get; set; }
     public string CusId { get; set; } = "";        // gridCusID — bắt buộc + duy nhất trong hãng
     public string? CusName { get; set; }           // gridCusName
     public string? Address { get; set; }           // gridAddress
