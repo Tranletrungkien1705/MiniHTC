@@ -10968,6 +10968,10 @@ public sealed class ReqPaymentDiscountLine
     public string PmtDctDtlStatus { get; set; } = "NS";
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#402 Cờ xe bảo lãnh ĐÃ HUỶ (`Req_PaymentDiscountDtl.FlagGuaranteeCarCancel`): Req_PaymentDiscount_Get tính = 1 khi bảo lãnh/xe nằm trong
+    /// #tbl_Pmt_Guarantee_Filter_3, client gửi lại khi lưu; Req_PaymentDiscount_SaveX (BizHTC.PaymentDiscount.cs:2501) chuẩn hoá StdFlag rồi ghi.</summary>
+    public string FlagGuaranteeCarCancel { get; set; } = "0";
 }
 
 /// <summary>Yêu cầu đóng thùng (Sto_CBReq + Detail) — port 1:1 FrmNewCBReq (2010.HTC/Sales/Purchase). Đóng thùng lô xe xuất khẩu theo VIN, kho đi→kho đến + loại đóng thùng.</summary>

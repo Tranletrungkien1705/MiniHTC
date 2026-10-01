@@ -55935,7 +55935,7 @@ app.MapGet("/api/reqpaymentdiscounts/{no}", async (string no, AppDbContext db, I
       l.PaymentEndDatePhase1, l.AmountPhase1, l.DiscountDateNumberPhase1, l.DiscountPercentPhase1, l.DiscountPricePhase1,
       l.PaymentEndDatePhase2, l.AmountPhase2, l.DiscountDateNumberPhase2, l.DiscountPercentPhase2, l.DiscountPricePhase2,
       l.PaymentEndDatePhase3, l.AmountPhase3, l.DiscountDateNumberPhase3, l.DiscountPercentPhase3, l.DiscountPricePhase3,
-      l.TotalAmount, l.TotalDiscountPrice, l.PmtDctDtlStatus, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
+      l.TotalAmount, l.TotalDiscountPrice, l.PmtDctDtlStatus, l.LogLUDateTime, l.LogLUBy, l.FlagGuaranteeCarCancel }).ToListAsync();   // #402
     return Results.Ok(new { h.PaymentDiscountNo, h.DealerCode, h.PGDateEndFrom, h.PGDateEndTo, h.CreateDTime, h.CreateBy,
         h.PmtDctStatus, h.DlrSignStatus, h.HTCSignStatus, h.HTCApprDTime, h.HTCApprBy, h.DlrSignDTime, h.DlrSignBy,
         h.HTCSignDTime, h.HTCSignBy, h.RejectDTime, h.RejectBy, h.CancelDTime, h.CancelBy, lines });
@@ -55993,6 +55993,7 @@ app.MapPost("/api/reqpaymentdiscounts", async (ReqPaymentDiscountDto dto, AppDbC
         {
             OrgId = t.OrgId, ReqId = h.Id, VIN = (l.Vin ?? "").Trim().ToUpperInvariant(), CarId = l.CarId,
             GuaranteeNo = string.IsNullOrWhiteSpace(l.GuaranteeNo) ? null : l.GuaranteeNo.Trim().ToUpperInvariant(), DealerCode = dealer, UnitPrice = l.UnitPrice,
+            FlagGuaranteeCarCancel = (l.FlagGuaranteeCarCancel ?? "").Trim() == "1" ? "1" : "0",   // #402 StdFlag
             PaymentEndDatePhase1 = l.PaymentEndDatePhase1, AmountPhase1 = l.AmountPhase1, DiscountDateNumberPhase1 = l.DiscountDateNumberPhase1, DiscountPercentPhase1 = l.DiscountPercentPhase1, DiscountPricePhase1 = d1,
             PaymentEndDatePhase2 = l.PaymentEndDatePhase2, AmountPhase2 = l.AmountPhase2, DiscountDateNumberPhase2 = l.DiscountDateNumberPhase2, DiscountPercentPhase2 = l.DiscountPercentPhase2, DiscountPricePhase2 = d2,
             PaymentEndDatePhase3 = l.PaymentEndDatePhase3, AmountPhase3 = l.AmountPhase3, DiscountDateNumberPhase3 = l.DiscountDateNumberPhase3, DiscountPercentPhase3 = l.DiscountPercentPhase3, DiscountPricePhase3 = d3,
@@ -56587,7 +56588,7 @@ record ReqPaymentDiscountLineDto(string? Vin, string? CarId,
     DateTime? PaymentEndDatePhase1, decimal AmountPhase1, int DiscountDateNumberPhase1, decimal DiscountPercentPhase1,
     DateTime? PaymentEndDatePhase2, decimal AmountPhase2, int DiscountDateNumberPhase2, decimal DiscountPercentPhase2,
     DateTime? PaymentEndDatePhase3, decimal AmountPhase3, int DiscountDateNumberPhase3, decimal DiscountPercentPhase3,
-    string? GuaranteeNo = null, decimal? UnitPrice = null);
+    string? GuaranteeNo = null, decimal? UnitPrice = null, string? FlagGuaranteeCarCancel = null);   // #402
 record ReqPaymentDiscountDto(string? DealerCode, DateTime? PGDateEndFrom, DateTime? PGDateEndTo, List<ReqPaymentDiscountLineDto>? Lines,
     string? PaymentDiscountNo = null, string? FlagIsDelete = null);
 record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOutCheck);

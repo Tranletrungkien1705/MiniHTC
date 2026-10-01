@@ -828,6 +828,7 @@ public static class Seeder
                 "ALTER TABLE public.\"ReqPaymentDiscountLines\" ADD COLUMN IF NOT EXISTS \"GuaranteeNo\" text NULL, ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL, ADD COLUMN IF NOT EXISTS \"UnitPrice\" numeric NULL, ADD COLUMN IF NOT EXISTS \"PmtDctDtlStatus\" text NOT NULL DEFAULT 'NS', ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL, ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 "UPDATE public.\"ReqPaymentDiscountLines\" l SET \"PmtDctDtlStatus\" = h.\"HTCSignStatus\" FROM public.\"ReqPaymentDiscounts\" h WHERE l.\"ReqId\" = h.\"Id\" AND l.\"PmtDctDtlStatus\" = 'NS' AND h.\"HTCSignStatus\" IN ('A','R')",
                 "ALTER TABLE public.\"ReqPaymentDiscountLines\" RENAME COLUMN \"Vin\" TO \"VIN\"",
+                "ALTER TABLE public.\"ReqPaymentDiscountLines\" ADD COLUMN IF NOT EXISTS \"FlagGuaranteeCarCancel\" text NOT NULL DEFAULT '0'",   // #402
                 "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"FlagDtlDiscount\" text NULL",
                 "ALTER TABLE public.\"HtmvPdiDtls\" ADD COLUMN IF NOT EXISTS \"PdiResult\" text NOT NULL DEFAULT 'Pending'",
                 "ALTER TABLE public.\"Areas\" ADD COLUMN IF NOT EXISTS \"AreaRootCode\" text NULL",
