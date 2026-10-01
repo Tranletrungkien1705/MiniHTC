@@ -25890,10 +25890,22 @@ app.MapPost("/api/serassignmentworks/{roNo}", async (string roNo, SerAssignmentW
     return Results.Ok(new { roNo, created = isCreate, h.WorkTypeStart, h.WorkTypeFinish });
 }).RequireAuthorization();
 
-// #405 GHI GIỜ THỰC TẾ một công đoạn (nguồn: `Ser_AssignmentWork_Update_ForTab`, WS máy tính bảng :821).
-//   Khoang/kế hoạch KHÔNG còn nhận ở đây (⇒ 400, dùng POST /api/serassignmentworks/{roNo}); phân công phải tồn tại.
-//   📌 NỢ #406: hậu xử lý nguồn — co PlanFinish theo ActualFinish, ReCheck ActualStart/Finish theo khoang,
-//      đồng bộ trạng thái RO (WorkTypeStart ⇒ INGA + Ser_ROWorkTime; WorkTypeFinish ⇒ RPRD) — CHƯA port.
+// #406 GHI GIỜ THỰC TẾ một công đoạn — port `Ser_AssignmentWork_Update_ForTab` (BizCarSv.AssignmentOfWork.cs:821-1465,
+//   WS máy tính bảng; StageCode = tham số strWorkType). Khoang/kế hoạch KHÔNG nhận ở đây (⇒ 400, dùng POST /api/serassignmentworks/{roNo}).
+//   Thứ tự nguồn (một giao dịch — bất kỳ lỗi nào ⇒ rollback toàn bộ, ở đây ⇒ 400 TRƯỚC SaveChanges):
+//   (1) Ghi ActualStart/ActualFinish khác rỗng. ActualFinish nằm NGHIÊM trong khung kế hoạch (PS < AF < PF, cả hai mốc KH có)
+//       ⇒ CO PlanFinishDTime = ActualFinish.
+//   (2) ReCheck SAU khi ghi (tính cả dòng vừa ghi): `MyCheck_SerAssignmentWork_ActualStartDTime_Cavity` / `_ActualFinishDTime_Cavity`
+//       (:3024/:3113) — có phân công mà khoang công đoạn BẤT KỲ = khoang của công đoạn này VÀ giờ thực tế công đoạn BẤT KỲ
+//       chứa NGHIÊM mốc mới ⇒ Ser_AssignmentWork_Update_InvalidActualStartDTime / _InvalidActualFinishDTime.
+//       🔴 Ghi nhận nguồn: điều kiện khoang và điều kiện giờ KHÔNG ghép cặp theo công đoạn (OR riêng từng vế) — port nguyên.
+//   (3) Đồng bộ tiến độ RO (`SerROStatusUpdateForAssignmentWork`, Service01.cs:9144) — CHỈ với SCC/SCD/SCS (switch nguồn):
+//       StageCode = WorkTypeStart & có ActualStart ⇒ INGA: trạng thái cũ phải CRE/PRT/HRO (⇒ Ser_RO_UpdateStatus_InvalidStatusInGarage),
+//           ghi StartDate = ActualStart (tới phút) + LogLU*.
+//       StageCode = WorkTypeFinish & có ActualFinish ⇒ RPRD: trạng thái cũ phải INGA (⇒ _InvalidStatusRepaired), FlagPause = "0"
+//           ⇒ _InvalidFlagPause; ghi FinishedDate = ActualFinish (tới phút) + LogLU*.
+//   📌 NỢ (chưa có entity/tầng ở MiniHTC, `/advance` cũng chưa có): Ser_ROWorkTime (INGA mở / RPRD đóng), TotalActHours,
+//      xoá + tạo Ser_CustomerCareMace theo ProcessGetLastestMace ở nhánh RPRD. Đẩy Hyundai ME = hệ ngoài, không port.
 app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssignmentWorkStageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     roNo = roNo.Trim().ToUpperInvariant();
@@ -25901,13 +25913,59 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
     if (!assignmentWorkStages.Contains(stageCode)) return Results.BadRequest(new { error = "Mã công đoạn không hợp lệ (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS)." });
     if (!string.IsNullOrWhiteSpace(dto.CavityId) || dto.PlanStart.HasValue || dto.PlanFinish.HasValue)
         return Results.BadRequest(new { error = "Khoang/kế hoạch lưu qua POST /api/serassignmentworks/{roNo} (Create/Update có guard trùng khoang).", newRoute = $"/api/serassignmentworks/{roNo}" });
-    var h = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+    var all = await db.SerAssignmentWorks.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var h = all.FirstOrDefault(x => x.RONo == roNo);
     if (h is null) return Results.BadRequest(new { error = $"RO {roNo} chưa có phân công.", code = "Ser_AssignmentWork_Update_ForTab" });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    // (1) ghi + co kế hoạch
     SawSetActual(h, stageCode, dto.ActualStart, dto.ActualFinish);
-    h.LogLUDateTime = DateTime.Now; h.LogLUBy = user.Identity?.Name ?? "system"; h.UpdatedAt = DateTime.Now;
+    var cur = SawStage(h, stageCode);
+    var planFinishShrunk = false;
+    if (dto.ActualFinish.HasValue && cur.PS.HasValue && cur.PF.HasValue && dto.ActualFinish > cur.PS && dto.ActualFinish < cur.PF)
+    { SawSetPlan(h, stageCode, null, null, dto.ActualFinish); planFinishShrunk = true; }
+    // (2) ReCheck theo khoang (sau ghi, tính cả dòng hiện tại)
+    var stagesAll = new[] { "SCC", "SCD", "SCN", "SCS", "SCDB", "SCLR", "SCKSC" };
+    string? ActualHit(string? cav, DateTime x)
+    {
+        if (string.IsNullOrEmpty(cav)) return null;   // nguồn so `= ''` với cột NULL ⇒ không khớp dòng nào
+        foreach (var o in all)
+        {
+            var st = stagesAll.Select(sc => SawStage(o, sc)).ToList();
+            if (st.Any(s => s.Cav == cav) && st.Any(s => s.AS < x && s.AF > x)) return o.RONo;
+        }
+        return null;
+    }
+    if (dto.ActualStart.HasValue && ActualHit(cur.Cav, dto.ActualStart.Value) is { } hs)
+        return Results.BadRequest(new { error = $"Giờ bắt đầu thực tế trùng khoang {cur.Cav} đang sửa ở RO {hs}.", code = "Ser_AssignmentWork_Update_InvalidActualStartDTime", conflictRONo = hs });
+    if (dto.ActualFinish.HasValue && ActualHit(cur.Cav, dto.ActualFinish.Value) is { } hf)
+        return Results.BadRequest(new { error = $"Giờ kết thúc thực tế trùng khoang {cur.Cav} đang sửa ở RO {hf}.", code = "Ser_AssignmentWork_Update_InvalidActualFinishDTime", conflictRONo = hf });
+    // (3) đồng bộ tiến độ RO
+    string? roStatusTo = null;
+    if (stageCode is "SCC" or "SCD" or "SCS")
+    {
+        var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == roNo);
+        static DateTime Minute(DateTime d) => new(d.Year, d.Month, d.Day, d.Hour, d.Minute, 0);
+        if (stageCode == h.WorkTypeStart && dto.ActualStart.HasValue)
+        {
+            if (ro is null) return Results.BadRequest(new { error = $"Không tìm thấy RO {roNo}.", code = "Ser_RO_NotFound" });
+            if (ro.Status is not ("CRE" or "PRT" or "HRO"))
+                return Results.BadRequest(new { error = $"RO {roNo} đang {ro.Status} — chỉ vào sửa chữa từ CRE/PRT/HRO.", code = "Ser_RO_UpdateStatus_InvalidStatusInGarage", ro.Status });
+            ro.Status = "INGA"; ro.StartDate = Minute(dto.ActualStart.Value); ro.LogLUDateTime = now; ro.LogLUBy = who; roStatusTo = "INGA";
+        }
+        if (stageCode == h.WorkTypeFinish && dto.ActualFinish.HasValue)
+        {
+            if (ro is null) return Results.BadRequest(new { error = $"Không tìm thấy RO {roNo}.", code = "Ser_RO_NotFound" });
+            if (ro.Status != "INGA")
+                return Results.BadRequest(new { error = $"RO {roNo} đang {ro.Status} — chỉ sửa xong từ INGA.", code = "Ser_RO_UpdateStatus_InvalidStatusRepaired", ro.Status });
+            if (ro.FlagPause == "0")
+                return Results.BadRequest(new { error = $"RO {roNo} đang tạm dừng (FlagPause = 0).", code = "Ser_RO_UpdateStatus_InvalidFlagPause" });
+            ro.Status = "RPRD"; ro.FinishedDate = Minute(dto.ActualFinish.Value); ro.LogLUDateTime = now; ro.LogLUBy = who; roStatusTo = "RPRD";
+        }
+    }
+    h.LogLUDateTime = now; h.LogLUBy = who; h.UpdatedAt = now;
     await db.SaveChangesAsync();
     var s = SawStage(h, stageCode);
-    return Results.Ok(new { roNo, stageCode, CavityId = s.Cav, PlanStart = s.PS, PlanFinish = s.PF, ActualStart = s.AS, ActualFinish = s.AF });
+    return Results.Ok(new { roNo, stageCode, CavityId = s.Cav, PlanStart = s.PS, PlanFinish = s.PF, ActualStart = s.AS, ActualFinish = s.AF, planFinishShrunk, roStatusTo });
 }).RequireAuthorization();
 
 // ===== Mã VIN gốc theo model (VinModelOrginalMst — port 1:1 FrmVINModelOrginal, TCMotor DMSCarSv/Admin) =====
