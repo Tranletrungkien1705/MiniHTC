@@ -121,11 +121,11 @@ var MasterMovedCategories = new Dictionary<string, string>(StringComparer.Ordina
     ["Position"] = "/api/mstpositions",                       // #319 Mst_Position
     ["Qualification"] = "/api/mstqualifications",             // #319 Mst_Qualification
     ["SalesGroupType"] = "/api/masters/dealer-salesgroup-types", // #321 Mst_DealerSalesGroupType
+    ["Bank"] = "/api/mstbanks",                               // #324 Mst_Bank (đủ 15 cột ở #311)
 };
 // Catalog: mỗi mục = 1 màn Frm gốc của 2010.HTC.
 var MasterCatalog = new (string Cat, string Label)[]
 {
-    ("Bank", "Ngân hàng (FrmBank)"),
     ("Color", "Màu xe (FrmColor)"),
     ("DealerType", "Loại đại lý (FrmDealerType)"),
     ("CarCancelType", "Lý do hủy xe (FrmCarCancelType)"),
@@ -29701,7 +29701,8 @@ app.MapPost("/api/dealerbanks", async (DealerBankDto dto, AppDbContext db, ITena
     if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Mã ngân hàng không được để trống!" });
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Mã đại lý không được để trống!" });
     var bk = dto.BankCode.Trim().ToUpperInvariant(); var dl = dto.DealerCode.Trim().ToUpperInvariant();
-    if (!await db.Masters.AnyAsync(m => m.OrgId == t.OrgId && m.Category == "Bank" && m.Code == bk && m.Status == "1"))
+    // #324 đọc danh mục ngân hàng từ bảng riêng MstBanks (trước đọc bảng chung Masters.Category="Bank" ⇒ 2 nguồn sự thật).
+    if (!await db.MstBanks.AnyAsync(m => m.OrgId == t.OrgId && m.BankCode == bk && m.FlagActive == "1"))
         return Results.BadRequest(new { error = $"Mã ngân hàng {bk} không hợp lệ!" });
     if (!await db.Dealers.AnyAsync(d => d.OrgId == t.OrgId && d.DealerCode == dl && d.Status == "1"))
         return Results.BadRequest(new { error = $"Mã đại lý {dl} không hợp lệ!" });
