@@ -19158,39 +19158,61 @@ app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? 
 {
     var query = db.PartGroups.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.GroupCode.Contains(q!.ToUpper()) || (x.GroupName != null && x.GroupName.Contains(q!)));
-    if (!string.IsNullOrWhiteSpace(parent)) query = query.Where(x => x.ParentCode == parent);
+    var byId = await db.PartGroups.Where(x => x.OrgId == t.OrgId).ToDictionaryAsync(x => x.Id, x => new { x.GroupCode, x.GroupName });
+    if (!string.IsNullOrWhiteSpace(parent))
+    {
+        // #408 lọc nhóm cha nhận Id (ParentID) hoặc mã nhóm cha.
+        long? pid = long.TryParse(parent, out var pidNum) ? pidNum : byId.Where(kv => kv.Value.GroupCode == parent.Trim().ToUpperInvariant()).Select(kv => (long?)kv.Key).FirstOrDefault();
+        query = query.Where(x => x.ParentID == pid);
+    }
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var all = await query.OrderBy(x => x.OrderId).ThenBy(x => x.GroupCode).Take(1000).ToListAsync();
-    var nameMap = await db.PartGroups.Where(x => x.OrgId == t.OrgId).ToDictionaryAsync(x => x.GroupCode, x => x.GroupName);
     var items = all.Select(x => new
     {
-        x.GroupCode, x.GroupName, x.ParentCode,
-        parentName = !string.IsNullOrEmpty(x.ParentCode) && nameMap.TryGetValue(x.ParentCode, out var pn) ? pn : null,
-        x.OrderId, x.FlagActive
+        x.Id, x.GroupCode, x.GroupName, x.ParentID,
+        parentCode = x.ParentID is { } p1 && byId.TryGetValue(p1, out var pg1) ? pg1.GroupCode : null,   // dẫn xuất hiển thị
+        parentName = x.ParentID is { } p2 && byId.TryGetValue(p2, out var pg2) ? pg2.GroupName : null,
+        x.OrderId, x.FlagActive, x.DealerCode, x.CreatedBy, x.LogLUDateTime, x.LogLUBy
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Upsert theo mã nhóm (guard: nhóm cha phải tồn tại + không tự trỏ chính nó).
-app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenantContext t) =>
+// Upsert theo mã nhóm = `Ser_MST_PartGroup_Create` (mới) / `_Update` (đã có) — BizCarSv.Master.cs:3840/4200.
+//   #408 ParentID = khoá (Id) nhóm cha như nguồn; Update: rỗng ⇒ NULL (nguồn gán DBNull + alEffectiveColumn), Create: rỗng ⇒ không gán.
+//   Vẫn nhận `ParentCode` kiểu cũ (đổi ra Id). Guard nhóm cha tồn tại + không tự trỏ là guard MiniHTC giữ lại (nguồn chọn từ lookup).
+//   Ghi DealerCode, CreatedBy (tạo) + LogLU* (cả hai) như nguồn.
+app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.GroupCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhóm." });
     if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "Chưa nhập tên nhóm." });
     var code = dto.GroupCode.Trim().ToUpperInvariant();
-    var parent = string.IsNullOrWhiteSpace(dto.ParentCode) ? null : dto.ParentCode.Trim().ToUpperInvariant();
-    if (parent == code) return Results.BadRequest(new { error = "Nhóm cha không được trùng chính nó." });
-    if (parent != null && !await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.GroupCode == parent))
-        return Results.BadRequest(new { error = $"Nhóm cha {parent} không tồn tại." });
     var ex = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
+    long? parentId = dto.ParentID;
+    if (parentId is null && !string.IsNullOrWhiteSpace(dto.ParentCode))
+    {
+        var pc = dto.ParentCode.Trim().ToUpperInvariant();
+        var pg = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == pc);
+        if (pg is null) return Results.BadRequest(new { error = $"Nhóm cha {pc} không tồn tại." });
+        parentId = pg.Id;
+    }
+    if (parentId is not null)
+    {
+        if (ex is not null && parentId == ex.Id) return Results.BadRequest(new { error = "Nhóm cha không được trùng chính nó." });
+        if (!await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.Id == parentId)) return Results.BadRequest(new { error = $"Nhóm cha (ParentID {parentId}) không tồn tại." });
+    }
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var dealer = string.IsNullOrWhiteSpace(dto.DealerCode) ? null : dto.DealerCode.Trim().ToUpperInvariant();
     if (ex is not null)
     {
-        ex.GroupName = dto.GroupName; ex.ParentCode = parent; ex.OrderId = dto.OrderId; ex.FlagActive = "1";
+        ex.GroupName = dto.GroupName; ex.ParentID = parentId; ex.OrderId = dto.OrderId; ex.FlagActive = "1";
+        ex.DealerCode = dealer ?? ex.DealerCode; ex.LogLUDateTime = now; ex.LogLUBy = who;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.GroupCode, updated = true });
+        return Results.Ok(new { ex.Id, ex.GroupCode, ex.ParentID, updated = true });
     }
-    var r = new PartGroup { OrgId = t.OrgId, GroupCode = code, GroupName = dto.GroupName, ParentCode = parent, OrderId = dto.OrderId, FlagActive = "1" };
+    var r = new PartGroup { OrgId = t.OrgId, GroupCode = code, GroupName = dto.GroupName, ParentID = parentId, OrderId = dto.OrderId, FlagActive = "1",
+        DealerCode = dealer, CreatedBy = who, LogLUDateTime = now, LogLUBy = who };
     db.PartGroups.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.GroupCode, updated = false });
+    return Results.Ok(new { r.Id, r.GroupCode, r.ParentID, updated = false });
 }).RequireAuthorization();
 
 app.MapPost("/api/partgroups/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
@@ -57405,7 +57427,7 @@ record BulletinVinDto(string? VinNo, string? DealerCode, string? Status);
 record BulletinVinStatusDto(string? Status);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
-record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId);
+record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId, long? ParentID = null, string? DealerCode = null);   // #408 ParentID = tên nguồn; ParentCode giữ tương thích
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note, long? PartTypeID = null, decimal? VAT = null, string? FreqUsed = null);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,
     // #222 parity: 8 trường của CarUpdate

@@ -23,7 +23,7 @@
   <div class="row">
     <div><label>Mã nhóm *</label><input id="fCode" style="width:110px" placeholder="ENGINE"></div>
     <div style="flex:1;min-width:140px"><label>Tên nhóm *</label><input id="fName" style="width:100%"></div>
-    <div><label>Nhóm cha</label><input id="fParent" style="width:110px" placeholder="(gốc)"></div>
+    <div><label>Nhóm cha</label><select id="fParent" style="width:180px"><option value="">(gốc)</option></select></div>
     <div><label>Thứ tự</label><input id="fOrder" type="number" style="width:80px" value="0"></div>
     <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
   </div>
@@ -45,7 +45,7 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
 async function save(){ await token();
-  const body={GroupCode:F("fCode").value,GroupName:F("fName").value,ParentCode:F("fParent").value,OrderId:+F("fOrder").value||0};
+  const body={GroupCode:F("fCode").value,GroupName:F("fName").value,ParentID:F("fParent").value?+F("fParent").value:null,OrderId:+F("fOrder").value||0};   /* #408 ParentID */
   const r=await fetch("/api/partgroups",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
   msg(d.updated?"Đã cập nhật "+d.groupCode:"Đã thêm "+d.groupCode); F("fCode").value="";F("fName").value=""; load();
@@ -54,10 +54,12 @@ async function toggle(c){ await token();
   const r=await fetch("/api/partgroups/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
   if(!r.ok){ msg("Lỗi"); return; } load();
 }
-function edit(o){ F("fCode").value=o.groupCode;F("fName").value=o.groupName||"";F("fParent").value=o.parentCode||"";F("fOrder").value=o.orderId; window.scrollTo(0,0); }
+function edit(o){ F("fCode").value=o.groupCode;F("fName").value=o.groupName||"";F("fParent").value=o.parentID??"";F("fOrder").value=o.orderId; window.scrollTo(0,0); }
 async function load(){ await token();
   const r=await fetch("/api/partgroups?q="+encodeURIComponent(F("qQ").value)+"&parent="+encodeURIComponent(F("qParent").value),{headers:H()});
   const d=await r.json();
+  const all=await (await fetch("/api/partgroups",{headers:H()})).json();   /* #408 danh sách nhóm cha theo Id */
+  F("fParent").innerHTML='<option value="">(gốc)</option>'+(all.items||[]).map(g=>`<option value="${g.id}">${esc(g.groupCode)} — ${esc(g.groupName)}</option>`).join("");
   F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.groupCode}</b></td><td>${esc(o.groupName)}</td><td>${o.parentCode?esc(o.parentCode)+(o.parentName?" — "+esc(o.parentName):""):'<span class="muted">(gốc)</span>'}</td><td class="num">${o.orderId}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.groupCode}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có nhóm.</td></tr>';
 }
 </script>

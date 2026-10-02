@@ -14379,10 +14379,17 @@ public sealed class PartGroup
     public Guid OrgId { get; set; }
     public string GroupCode { get; set; } = "";
     public string? GroupName { get; set; }
-    public string? ParentCode { get; set; }   // nhóm cha (self-ref theo GroupCode); rỗng = gốc
+    /// <summary>#408 rename ParentCode→ParentID khớp `Ser_MST_PartGroup.ParentID`: nguồn trỏ nhóm cha bằng KHOÁ
+    /// `PartGroupID` (identity) chứ không bằng mã ⇒ ở đây = <c>PartGroup.Id</c> của nhóm cha; null = nhóm gốc.</summary>
+    public long? ParentID { get; set; }
     public int OrderId { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #408 parity Ser_MST_PartGroup_Create/_Update (BizCarSv.Master.cs:3840/4200) =====
+    public string? DealerCode { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Công nợ khách hàng dịch vụ (theo RO) — port 1:1 FrmCusDebitCreate (TblCusDebit, TCMotor).</summary>
