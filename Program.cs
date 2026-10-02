@@ -19484,7 +19484,13 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
     else if (wtype.ROWTypeDtlCode is not ("A" or "B" or "C"))
         return Results.BadRequest(new { error = "Chưa nhập phụ tùng lỗi (chỉ loại chi tiết A/B/C được bỏ trống).", code = "Ser_WarrantyReport_Create_InvalidPartIDError", wtype.ROWTypeDtlCode });
     var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
-    var no = S(dto.ROWNo) ?? "WC" + now.ToString("yyMMddHHmmss");
+    // #415 ROWNo nguồn = SỐ RO (FrmWarrantyReport.cs:1434 truyền `RONo // as ROWNo`; mỗi RO chỉ 1 báo cáo ⇒ duy nhất).
+    //   Không có RO (MiniHTC cho phép) ⇒ "BH-" + DealerCode + "-" + yyMMdd + "-" + NNN thay cho "WC"+giờ (trùng cùng giây).
+    var bhDealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var bhPat = CmSeq.Pattern("BH-", bhDealer);
+    var no = S(dto.ROWNo) ?? roNo ?? CmSeq.Next(await db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId && x.ROWNo.StartsWith(bhPat)).Select(x => x.ROWNo).ToListAsync(), bhPat);
+    if (await db.ServiceWarrantyClaims.AnyAsync(x => x.OrgId == t.OrgId && x.ROWNo == no))
+        return Results.BadRequest(new { error = $"Số báo cáo bảo hành {no} đã tồn tại.", code = "Ser_WarrantyReportCode_Exist" });
     var c = new ServiceWarrantyClaim { OrgId = t.OrgId, ROWNo = no, DealerCode = dto.DealerCode, RONo = roNo,
         Vin = dto.Vin, PlateNo = dto.PlateNo, WarrantyType = dto.WarrantyType, PartCode = dto.PartCode, Description = dto.Description,
         Amount = dto.Amount, WarrantyStatus = "PEND", WarrantySerCode = dto.WarrantySerCode,
@@ -54458,7 +54464,11 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
-    var no = "SO" + DateTime.Now.ToString("yyMMddHHmmss");
+    // #415 số phiếu xuất theo nguồn InvStockOutService.GenerateStockOutNo: "PX-" + DealerCode + "-" + yyMMdd + "-" + NNN (đếm theo ngày,
+    //   theo đại lý). Port cũ "SO"+yyMMddHHmmss TRÙNG khi tạo 2 phiếu cùng giây ⇒ /post|/reject theo số chọn nhầm phiếu.
+    var soDealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var soPat = CmSeq.Pattern("PX-", soDealer);
+    var no = CmSeq.Next(await db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.StockOutNo.StartsWith(soPat)).Select(x => x.StockOutNo).ToListAsync(), soPat);
     var h = new PartStockOut { OrgId = t.OrgId, StockOutNo = no, StockOutDate = dto.StockOutDate ?? DateTime.Now, StockOutType = dto.StockOutType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Reason = dto.Reason, Status = "1",
         DealerCode = dto.DealerCode, CusID = dto.CusID, Description = dto.Description };   // #377
     db.PartStockOuts.Add(h); await db.SaveChangesAsync();
@@ -54629,7 +54639,11 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
-    var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
+    // #415 số phiếu nhập theo nguồn InvStockInService.GenerateStockInNo: "PN-" + DealerCode + "-" + yyMMdd + "-" + NNN.
+    //   Port cũ "SI"+yyMMddHHmmss TRÙNG cùng giây (phát hiện ở #411).
+    var siDealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var siPat = CmSeq.Pattern("PN-", siDealer);
+    var no = CmSeq.Next(await db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.StockInNo.StartsWith(siPat)).Select(x => x.StockInNo).ToListAsync(), siPat);
     var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "1",
         DealerCode = dto.DealerCode, SupplierID = dto.SupplierID, Description = dto.Description, OrderPartId = dto.OrderPartId };   // #377 #411
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
