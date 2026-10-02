@@ -19804,7 +19804,13 @@ app.MapGet("/api/warrantyclaims/{id}/transactions", async (long id, AppDbContext
 //   🔴 Nguồn KHÔNG chặn theo trạng thái hiện tại (mọi hàm chỉ `CheckExistROWarrantyReport` = tồn tại) và Note KHÔNG bắt buộc ⇒ BỎ bảng
 //      chuyển tiếp + "phải ghi lý do" tự đặt của port cũ (guard chặt hơn nguồn). Giữ luật nguồn "phải có 1 CVC" ở submit (#413).
 //   Mọi hành động: LogLU*; có Note ⇒ 1 dòng Ser_ROWarrantyReportTransaction (CurrentStatus = trạng thái mới).
-//   📌 NỢ: Btl_Bulletin_VIN (bulletin theo VIN khi SENT/ACCE) và cập nhật WarrantyStatus từng dòng theo lưới — chưa port.
+//   #424 submit/revert (= Ser_ROWarrantyReportUpdateStatus:6998) ⇒ `ProcessUpdateStatusItem` (:3689): WarrantyStatus của MỌI dòng
+//        công việc + phụ tùng = trạng thái mới (chỉ cột này). review/reject/approve KHÔNG gọi hàm đó (dòng giữ trạng thái riêng).
+//   #424 Btl_Bulletin_VIN (`UpdateBulletinDetail`, BizCarSv.Bulletin.cs:4227) cho mỗi bản tin (BulletinID ≠ NULL) trên dòng công việc,
+//        khoá (bản tin, số khung xe của RO):
+//        · SENT (UpdateStatus:7120): dòng VIN phải có ⇒ Blt_Bulletin_NotFound; Status = P, DealerCode = NULL (nguồn truyền strDealer rỗng).
+//        · approve với trạng thái ACCE (HTCApproved_New20230112:7665): phải có ⇒ Blt_Bulletin_NotFound; đã F ⇒ Blt_Bulletin_HTCApproved;
+//          Status = F, DealerCode = đại lý của xe. Ghi LogLU* cho dòng VIN.
 app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -19819,6 +19825,35 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
         var svcs = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).Select(x => x.ROWSerType).ToListAsync();
         if (svcs.Count > 0 && !svcs.Contains("CVC"))
             return Results.BadRequest(new { error = "Báo cáo bảo hành phải có 1 công việc chính!", code = "Ser_WarrantyReport_Create_InvalidROWSerType" });
+    }
+    if (act is "submit" or "revert")
+    {
+        // #424 ProcessUpdateStatusItem: mọi dòng công việc + phụ tùng nhận trạng thái mới.
+        foreach (var sv in await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync()) sv.WarrantyStatus = to;
+        foreach (var pt in await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync()) pt.WarrantyStatus = to;
+    }
+    if (to == "SENT" && act == "submit" || to == "ACCE" && act == "approve")
+    {
+        // #424 Btl_Bulletin_VIN theo bản tin trên dòng công việc × số khung xe của RO.
+        var bltIds = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id && x.BulletinID != null)
+            .Select(x => x.BulletinID!.Value).Distinct().ToListAsync();
+        if (bltIds.Count > 0)
+        {
+            var ro = string.IsNullOrWhiteSpace(c.RONo) ? null : await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == c.RONo);
+            var frameNo = (ro?.Vin ?? c.Vin ?? "").Trim().ToUpperInvariant();
+            var bltNos = await db.Bulletins.Where(x => x.OrgId == t.OrgId && bltIds.Contains(x.Id)).Select(x => new { x.Id, x.BulletinNo }).ToListAsync();
+            foreach (var bid in bltIds)
+            {
+                var bno = bltNos.FirstOrDefault(x => x.Id == bid)?.BulletinNo;
+                var bv = bno is null ? null : await db.BulletinVins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == bno && x.VinNo == frameNo);
+                if (bv is null) return Results.BadRequest(new { error = $"Bản tin {bno ?? bid.ToString()} không áp dụng cho xe {frameNo}.", code = "Blt_Bulletin_NotFound", bulletinID = bid, vinNo = frameNo });
+                if (to == "ACCE" && bv.Status == "F")
+                    return Results.BadRequest(new { error = $"Xe {frameNo} đã được duyệt thực hiện bản tin {bno}.", code = "Blt_Bulletin_HTCApproved", bulletinID = bid, vinNo = frameNo });
+                bv.DealerCode = to == "ACCE" ? (string.IsNullOrWhiteSpace(ro?.DealerCode) ? null : ro!.DealerCode) : null;
+                bv.Status = to == "ACCE" ? "F" : "P";
+                bv.LogLUDateTime = now; bv.LogLUBy = who;
+            }
+        }
     }
     if (act == "approve")
     {
@@ -27803,7 +27838,7 @@ app.MapGet("/api/bulletins/{no}/details", async (string no, AppDbContext db, ITe
     var details = await db.BulletinDtls.Where(d => d.OrgId == t.OrgId && d.BulletinNo == no)
         .Select(d => new { d.SerCode, d.SerName, d.PartCode, d.PartName }).ToListAsync();
     var vins = await db.BulletinVins.Where(v => v.OrgId == t.OrgId && v.BulletinNo == no)
-        .Select(v => new { v.VinNo, v.DealerCode, v.Status }).ToListAsync();
+        .Select(v => new { v.VinNo, v.DealerCode, v.Status, v.LogLUDateTime, v.LogLUBy }).ToListAsync();
     return Results.Ok(new
     {
         row.BulletinNo, row.BulletinNoHMC, row.Remark, row.CreateDate, row.UserCreate,
@@ -27815,7 +27850,7 @@ app.MapGet("/api/bulletins/{no}/details", async (string no, AppDbContext db, ITe
 
 // Đại lý cập nhật trạng thái xử lý của MỘT xe trên bản tin (FrmBulletinDealerSearch).
 app.MapPost("/api/bulletins/{no}/vins/{vin}/status", async (
-    string no, string vin, BulletinVinStatusDto dto, AppDbContext db, ITenantContext t) =>
+    string no, string vin, BulletinVinStatusDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     vin = vin.Trim().ToUpperInvariant();
@@ -27824,8 +27859,9 @@ app.MapPost("/api/bulletins/{no}/vins/{vin}/status", async (
     var status = (dto.Status ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(status)) return Results.BadRequest(new { error = "Chưa chọn trạng thái." });
     row.Status = status;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = user.Identity?.Name ?? "system";   // #424
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.BulletinNo, row.VinNo, row.Status });
+    return Results.Ok(new { row.BulletinNo, row.VinNo, row.Status, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/bulletins/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>

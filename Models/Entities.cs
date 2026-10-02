@@ -14725,6 +14725,10 @@ public sealed class BulletinVin
 
     /// <summary>Trạng thái xử lý RIÊNG của xe này. Nguồn đọc `isnull(bv.Status,'P')` ⇒ mặc định "P" (chờ xử lý).</summary>
     public string Status { get; set; } = "P";
+
+    /// <summary>#424 Lần cập nhật cuối (LOGLUDATETIME/LOGLUBY) — nguồn `UpdateBulletinDetail` (BizCarSv.Bulletin.cs:4227) ghi khi báo cáo BH gửi/duyệt.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Báo giá phụ tùng dịch vụ (header) — port 1:1 FrmPartQuotation (TblSerInvQuote, TCMotor).</summary>
