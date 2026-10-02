@@ -2316,6 +2316,13 @@ public sealed class RepairOrder
     public string? QuanDoc { get; set; }
     public DateTime? ScheduleDate { get; set; }
     public DateTime? StartDate { get; set; }
+    // ===== #407 parity Ser_RO — mốc do `SerROStatusUpdate` (BizCarSv.Service01.cs:8754) ghi khi chuyển trạng thái =====
+    /// <summary>Ngày kiểm tra cuối (`CheckEndDate`) — ghi khi RPRD → CEND, = strStatusDate tới phút.</summary>
+    public DateTime? CheckEndDate { get; set; }
+    /// <summary>Ngày thanh toán xong (`PaidCreatedDate`) — ghi khi CEND → PAID, = strStatusDate tới phút.</summary>
+    public DateTime? PaidCreatedDate { get; set; }
+    /// <summary>`IsCusPaymentAll`: "1" khách trả toàn bộ · "0" ghi nợ cho bảo hiểm — ghi khi CEND → PAID (lưu nguyên tham số).</summary>
+    public string? IsCusPaymentAll { get; set; }
 
     // ===== #392 Ser_RO_CreateRO (BizCarSv.Service01.cs:6776): khi chuyển báo giá CRE → HRO ghi người/ngày tạo RO =====
     public string? ROCreateBy { get; set; }

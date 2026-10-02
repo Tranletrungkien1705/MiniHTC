@@ -54822,6 +54822,7 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
         r.AdvisoryCode, r.AdvisoryPhone, r.IsReRepair, r.ModifyDate, r.ModifyBy, r.EngineerID, r.FlagPause, r.CardNo, r.FlagOnlyPoint,
         r.ROType, r.DlrPDIReqNo, r.ServiceStatus, r.LevelOfInspection, r.InsuranceDeductible, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy,
         r.Engineer, r.QA, r.Operator, r.QuanDoc, r.ScheduleDate, r.StartDate, r.FinishedDate,   // #368
+        r.CheckEndDate, r.PaidCreatedDate, r.IsCusPaymentAll, r.ActualDeliveryDate,   // #407
         services, parts,
         total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
     });
@@ -54878,7 +54879,14 @@ app.MapPost("/api/repairorders/{no}/update", async (string no, RoHeaderUpdateDto
     return Results.Ok(new { r.RONo, r.Status, backLSC = backLsc, r.LevelOfInspection, r.ScheduleDate, r.StartDate });
 }).RequireAuthorization();
 
-app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t) =>
+// #407 /advance = `SerROStatusUpdate` (BizCarSv.Service01.cs:8754; FrmTrackingProcess) + FNS = `SerROToFinishedStatusAndUpdateCusCare_New20190621`.
+//   Mỗi bước ghi mốc = strStatusDate (tới phút; Convert.ToDateTime ⇒ bắt buộc có) + LogLU*:
+//     INGA ⇒ StartDate · RPRD ⇒ (FlagPause = "0" ⇒ Ser_RO_UpdateStatus_InvalidFlagPause) FinishedDate · CEND ⇒ CheckEndDate
+//     · PAID ⇒ PaidCreatedDate + IsCusPaymentAll (lưu nguyên tham số) · FNS ⇒ ActualDeliveryDate = ngày nếu có, rỗng ⇒ GIỮ (nguồn gán
+//     DBNull nhưng KHÔNG đưa vào alColumnEffective). 🔴 Port cũ ghi FinishedDate = Now ở FNS — SAI: FinishedDate là mốc SỬA XONG (RPRD).
+//   📌 NỢ: Ser_ROWorkTime (INGA/RPRD), TotalActHours, CareMace ở RPRD; Ser_ReceptionF phải Approve ở FNS; INGA nguồn nhận cả CRE/PRT
+//      nhưng MiniHTC giữ quyết định #392 (báo giá đi qua create-ro).
+app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
@@ -54890,13 +54898,24 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     var curIdx = Array.IndexOf(_roFlow, r.Status);
     var tgtIdx = Array.IndexOf(_roFlow, target);
     if (tgtIdx < 0) return Results.BadRequest(new { error = "ToStatus không hợp lệ. Chuỗi: HasRO→InGarage→Repaired→CheckEnd→Paid→Finished" });
-    if (tgtIdx != curIdx + 1) return Results.BadRequest(new { error = $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}." });
-    r.Status = target;
-    // Nguồn FrmServiceHistory sắp xếp "order by ro.finisheddate desc" → phải đóng dấu mốc khi RO hoàn tất,
-    // và ActualDeliveryDate ("Giờ giao xe thực tế") cũng chốt tại thời điểm giao xe.
+    var invalidCode = target switch { "INGA" => "Ser_RO_UpdateStatus_InvalidStatusInGarage", "RPRD" => "Ser_RO_UpdateStatus_InvalidStatusRepaired", "CEND" => "Ser_RO_UpdateStatus_InvalidStatusCheckEnd", "PAID" => "Ser_RO_UpdateStatus_InvalidStatusPaid", _ => "Ser_RO_UpdateStatus_InvalidStatusFinished" };
+    if (tgtIdx != curIdx + 1) return Results.BadRequest(new { error = $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}.", code = invalidCode });
+    DateTime? sd = dto.StatusDate is { } d0 ? new DateTime(d0.Year, d0.Month, d0.Day, d0.Hour, d0.Minute, 0) : null;
+    if (target is ("INGA" or "RPRD" or "CEND" or "PAID") && sd is null)
+        return Results.BadRequest(new { error = "Chưa nhập ngày chuyển trạng thái (StatusDate).", code = "SerROStatusUpdate" });
+    if (target == "RPRD" && r.FlagPause == "0")
+        return Results.BadRequest(new { error = $"RO {r.RONo} đang tạm dừng (FlagPause = 0).", code = "Ser_RO_UpdateStatus_InvalidFlagPause" });
+    r.Status = target; r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
+    switch (target)
+    {
+        case "INGA": r.StartDate = sd; break;
+        case "RPRD": r.FinishedDate = sd; break;
+        case "CEND": r.CheckEndDate = sd; break;
+        case "PAID": r.PaidCreatedDate = sd; r.IsCusPaymentAll = dto.IsCusPaymentAll; break;
+    }
     if (target == "FNS")
     {
-        r.FinishedDate = DateTime.Now; r.ActualDeliveryDate ??= DateTime.Now;
+        if (sd is not null) r.ActualDeliveryDate = sd;
         // #401 "Kết thúc" giao xe (SerROToFinishedStatusAndUpdateCusCare_New20190621, ZTemp.cs:11399): xe (Ser_Car theo CarID) nhận
         //   CurrentKm = Ser_RO.Km và CurrentServiceDate = Ser_RO.FinishedDate. Km của RO là chuỗi ⇒ chỉ ghi khi đọc được số.
         if (!string.IsNullOrEmpty(r.CarID))
@@ -54910,7 +54929,7 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         }
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, status = r.Status, r.FinishedDate, r.ActualDeliveryDate });
+    return Results.Ok(new { r.RONo, status = r.Status, r.StartDate, r.FinishedDate, r.CheckEndDate, r.PaidCreatedDate, r.IsCusPaymentAll, r.ActualDeliveryDate });
 }).RequireAuthorization();
 
 // Chuyển sang trạng thái NGOÀI luồng thẳng (nguồn có nhưng port cũ thiếu hẳn):
@@ -56712,7 +56731,7 @@ record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string?
     string? CarID = null, string? InsNo = null, string? InvoiceBy = null, string? AdvisoryCode = null, string? AdvisoryPhone = null,
     string? IsReRepair = null, DateTime? ModifyDate = null, string? ModifyBy = null, string? CardNo = null, string? FlagOnlyPoint = null,
     string? ROType = null, string? DlrPDIReqNo = null, string? LevelOfInspection = null, string? InsuranceDeductible = null);
-record RoAdvanceDto(string ToStatus);
+record RoAdvanceDto(string ToStatus, DateTime? StatusDate = null, string? IsCusPaymentAll = null);   // #407 tham số SerROStatusUpdate
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);

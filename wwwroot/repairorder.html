@@ -79,7 +79,10 @@ async function load(){ await token();
   }).join("")||'<tr><td colspan="7" class="muted">Chưa có RO.</td></tr>';
 }
 async function createRo(no){ const r=await fetch(`/api/repairorders/${no}/create-ro`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok){ msg("Đã tạo RO "+no+(j.stockOutOrderNo?(" — lệnh xuất "+j.stockOutOrderNo):"")); load(); } else msg("Lỗi: "+(j.error||r.status)); }
-async function adv(no,to){ const r=await fetch(`/api/repairorders/${no}/advance`,{method:"POST",headers:H(),body:JSON.stringify({toStatus:to})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+/* #407 SerROStatusUpdate: gửi ngày chuyển trạng thái (giờ hiện tại, theo giờ máy) + IsCusPaymentAll khi thanh toán. */
+async function adv(no,to){ const now=new Date(); const sd=new Date(now.getTime()-now.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  const body={toStatus:to,statusDate:sd}; if(to==="PAID") body.isCusPaymentAll=confirm("Khách trả toàn bộ? (OK = trả toàn bộ, Cancel = ghi nợ bảo hiểm)")?"1":"0";
+  const r=await fetch(`/api/repairorders/${no}/advance`,{method:"POST",headers:H(),body:JSON.stringify(body)}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function detail(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/repairorders/${no}`,{headers:H()})).json();
