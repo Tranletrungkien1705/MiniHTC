@@ -6014,7 +6014,9 @@ public sealed class ServiceEngineer
     public Guid OrgId { get; set; }
     public string EngineerNo { get; set; } = "";
     public string EngineerName { get; set; } = "";
-    public string? GroupRCode { get; set; }
+    /// <summary>#421 rename GroupRCode→GroupRID khớp `Ser_Engineer.GroupRID` — nguồn nối nhóm sửa chữa bằng KHOÁ số
+    /// (SerEngineerCreate01/Update01: rỗng ⇒ NULL, không kiểm nhóm tồn tại) ⇒ = <c>GroupRepair.Id</c>.</summary>
+    public long? GroupRID { get; set; }
     public string? Note { get; set; }
     public string IsActive { get; set; } = "1";   // #396 rename Status→IsActive (Ser_Engineer.IsActive)
     /// <summary>#396 rename EngineerType→IsEngineer: nguồn Ser_Engineer.IsEngineer chính là "loại nhân viên" (FrmEmployeeCreate: lookEngineerType.EditValue = IsEngineer;

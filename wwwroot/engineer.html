@@ -47,12 +47,12 @@ async function saveGroup(){
 async function loadGroups(){ await token();
   const d=await (await fetch("/api/grouprepairs",{headers:H()})).json();
   F("grows").innerHTML=(d.items||[]).map(g=>`<tr><td><b>${g.groupRNo}</b></td><td>${g.groupRName}</td><td>${g.dealerCode||"—"}</td><td class="muted">${g.note||"—"}</td><td>${g.engineers}</td><td><button onclick="delGroup(${g.groupRID})">Xoá</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có nhóm.</td></tr>';
-  const opts='<option value="">— Nhóm SC —</option>'+(d.items||[]).map(g=>`<option value="${g.groupRNo}">${g.groupRNo} - ${g.groupRName}</option>`).join("");
+  const opts='<option value="">— Nhóm SC —</option>'+(d.items||[]).map(g=>`<option value="${g.groupRID}">${g.groupRNo} - ${g.groupRName}</option>`).join("");   /* #421 GroupRID */
   F("eg").innerHTML=opts;
-  F("fg").innerHTML='<option value="">Tất cả nhóm</option>'+(d.items||[]).map(g=>`<option value="${g.groupRNo}">${g.groupRName}</option>`).join("");
+  F("fg").innerHTML='<option value="">Tất cả nhóm</option>'+(d.items||[]).map(g=>`<option value="${g.groupRID}">${g.groupRName}</option>`).join("");
 }
 async function saveEng(){
-  const body={engineerNo:F("en").value,engineerName:F("ename").value,groupRCode:F("eg").value,note:F("enote").value,
+  const body={engineerNo:F("en").value,engineerName:F("ename").value,groupRID:F("eg").value?+F("eg").value:null,note:F("enote").value,
     isEngineer:F("etype").value||null,startWorkDate:F("estart").value||null,finishWorkDate:F("efinish").value||null};
   const r=await fetch("/api/engineers",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json(); if(r.ok){ F("emsg").textContent="Đã lưu "+j.engineerNo; F("en").value="";F("ename").value=""; loadEng(); } else F("emsg").textContent="Lỗi: "+(j.error||r.status);
@@ -61,7 +61,7 @@ const ETYPE={"1":"CVDV","2":"KTV chung","3":"KTV đồng sơn","4":"Khác"};
 const dshow=s=>s?String(s).slice(0,10):"—";
 async function loadEng(){ await token();
   const d=await (await fetch(`/api/engineers?group=${F("fg").value}&q=${encodeURIComponent(F("q").value)}`,{headers:H()})).json();
-  F("erows").innerHTML=(d.items||[]).map(e=>`<tr><td><b>${e.engineerNo}</b></td><td>${e.engineerName}</td><td>${e.groupRCode||"—"}</td><td>${ETYPE[e.isEngineer]||"—"}</td><td>${dshow(e.startWorkDate)}</td><td>${dshow(e.finishWorkDate)}</td><td class="muted">${e.note||"—"}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có KTV.</td></tr>';
+  F("erows").innerHTML=(d.items||[]).map(e=>`<tr><td><b>${e.engineerNo}</b></td><td>${e.engineerName}</td><td>${e.groupRNo||"—"}</td><td>${ETYPE[e.isEngineer]||"—"}</td><td>${dshow(e.startWorkDate)}</td><td>${dshow(e.finishWorkDate)}</td><td class="muted">${e.note||"—"}</td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có KTV.</td></tr>';
 }
 (async()=>{ await loadGroups(); await loadEng(); })();
 </script>

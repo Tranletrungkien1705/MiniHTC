@@ -52592,7 +52592,7 @@ app.MapPost("/api/campaigns/contacts/{id:long}/contacted", async (long id, AppDb
 //   · Update `SerGroupRepairUpdate` (:11350): CheckExistGroupR(GroupRID) + field-empty + CheckExistGroupRNoModify (trùng với nhóm KHÁC
 //     đang IsActive = 1). Ghi DealerCode, GroupRNo, GroupRName, Note (kể cả rỗng), IsActive (rỗng ⇒ NULL), LogLU*.
 //   · Delete `SerGroupRepairDelete` (:11506): CheckExistGroupR rồi xoá theo GroupRID — nguồn KHÔNG kiểm KTV đang thuộc nhóm.
-//   ⚠️ Nợ: Ser_Engineer nguồn nối nhóm qua `GROUPRID` (số); MiniHTC ServiceEngineer vẫn nối theo mã (`GroupRCode` = GroupRNo).
+//   #421 ServiceEngineer nối nhóm qua GroupRID (= GroupRepair.Id) như Ser_Engineer.GROUPRID.
 app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, long? groupRID, string? dealerCode, string? groupRNo, string? groupRName, string? isActive) =>
 {
     var q = db.GroupRepairs.Where(g => g.OrgId == t.OrgId);
@@ -52605,7 +52605,7 @@ app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, long? 
         .Select(g => new
         {
             GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.DealerCode, g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy,
-            engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRCode == g.GroupRNo)
+            engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRID == g.Id)   // #421
         }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -52668,10 +52668,19 @@ app.MapPost("/api/grouprepairs/{groupRID:long}/delete", async (long groupRID, Ap
 app.MapGet("/api/engineers", async (AppDbContext db, ITenantContext t, string? group, string? q) =>
 {
     var query = db.ServiceEngineers.Where(e => e.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(group)) query = query.Where(e => e.GroupRCode == group);
+    var groups = await db.GroupRepairs.Where(g => g.OrgId == t.OrgId).ToDictionaryAsync(g => g.Id, g => new { g.GroupRNo, g.GroupRName });
+    if (!string.IsNullOrWhiteSpace(group))
+    {
+        // #421 lọc nhóm nhận GroupRID hoặc mã nhóm (GroupRNo).
+        long? gid = long.TryParse(group, out var gnum) ? gnum : groups.Where(kv => kv.Value.GroupRNo == group.Trim().ToUpperInvariant()).Select(kv => (long?)kv.Key).FirstOrDefault();
+        query = query.Where(e => e.GroupRID == gid);
+    }
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(e => e.EngineerName.Contains(q) || e.EngineerNo.Contains(q.ToUpper()));
-    var items = await query.OrderBy(e => e.EngineerNo).Take(500)
-        .Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.Note, e.IsActive, e.IsEngineer, e.StartWorkDate, e.FinishWorkDate, e.DealerCode, e.CreatedBy, e.LogLUDateTime, e.LogLUBy }).ToListAsync();   // #396
+    var rowsE = await query.OrderBy(e => e.EngineerNo).Take(500).ToListAsync();
+    var items = rowsE.Select(e => new { e.EngineerNo, e.EngineerName, e.GroupRID,
+            groupRNo = e.GroupRID is { } g1 && groups.TryGetValue(g1, out var gr1) ? gr1.GroupRNo : null,     // dẫn xuất hiển thị
+            groupRName = e.GroupRID is { } g2 && groups.TryGetValue(g2, out var gr2) ? gr2.GroupRName : null,
+            e.Note, e.IsActive, e.IsEngineer, e.StartWorkDate, e.FinishWorkDate, e.DealerCode, e.CreatedBy, e.LogLUDateTime, e.LogLUBy }).ToList();   // #396 #421
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -52687,10 +52696,19 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
     var whoEng = user.Identity?.Name ?? "system";   // #396 Create01 ghi CreatedBy + LogLU*; Update01 ghi LogLU*
     if (e is null) { e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no, CreatedBy = whoEng }; db.ServiceEngineers.Add(e); }
     e.LogLUDateTime = DateTime.Now; e.LogLUBy = whoEng; if (dto.DealerCode is not null) e.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
-    e.EngineerName = dto.EngineerName; e.GroupRCode = dto.GroupRCode?.Trim().ToUpperInvariant(); e.Note = dto.Note; e.IsActive = dto.IsActive ?? "1";
+    // #421 GroupRID như nguồn (rỗng ⇒ NULL, nguồn không kiểm nhóm); GroupRCode cũ (mã) vẫn nhận ⇒ đổi ra Id (mã không có ⇒ 400).
+    long? groupRID = dto.GroupRID;
+    if (groupRID is null && !string.IsNullOrWhiteSpace(dto.GroupRCode))
+    {
+        var gc = dto.GroupRCode.Trim().ToUpperInvariant();
+        var gr = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupRNo == gc);
+        if (gr is null) return Results.BadRequest(new { error = $"Nhóm sửa chữa {gc} không tồn tại.", code = "Ser_GroupRepairNo_NotFound" });
+        groupRID = gr.Id;
+    }
+    e.EngineerName = dto.EngineerName; e.GroupRID = groupRID; e.Note = dto.Note; e.IsActive = dto.IsActive ?? "1";
     e.IsEngineer = dto.IsEngineer; e.StartWorkDate = dto.StartWorkDate; e.FinishWorkDate = dto.FinishWorkDate; e.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRCode, e.IsEngineer, e.StartWorkDate, e.FinishWorkDate });
+    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRID, e.IsEngineer, e.StartWorkDate, e.FinishWorkDate });
 }).RequireAuthorization();
 
 // ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
@@ -57470,7 +57488,7 @@ record ReqPartPriceDto(List<ReqPartPriceLineDto>? Lines, string? DealerCode = nu
 record ReqQuoteItemDto(string? PartCode, decimal QuotedPrice);
 record ReqQuoteDto(List<ReqQuoteItemDto>? Quotes);
 record GroupRepairDto(string? GroupRNo, string? GroupRName, string? Note, string? IsActive, string? DealerCode = null, long? GroupRID = null);   // #356 rename khớp nguồn
-record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? IsActive, string? IsEngineer, DateTime? StartWorkDate, DateTime? FinishWorkDate, string? DealerCode = null);   // #396 tên trường = Ser_Engineer
+record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? IsActive, string? IsEngineer, DateTime? StartWorkDate, DateTime? FinishWorkDate, string? DealerCode = null, long? GroupRID = null);   // #396 tên trường = Ser_Engineer   // #421 GroupRID
 /// <summary>
 /// 1 khách hàng được chọn vào chiến dịch (lưới FrmCamp_CustomerList).
 /// Nguồn đặt Status="2" (Chưa liên hệ) cho mọi dòng mới thêm.
