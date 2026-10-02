@@ -57,8 +57,17 @@
 <div class="wrap"><table><thead><tr><th>Số ĐN</th><th>Đại lý</th><th>RO</th><th>VIN</th><th>Biển số</th><th>Loại</th><th class="num">Tiền</th><th>Trạng thái</th><th>Ghi chú HTC</th><th>Thao tác</th></tr></thead>
 <tbody id="rows"><tr><td colspan="10" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
 
+<div class="card" id="detCard" style="display:none"><h3 style="margin-top:0">Chi tiết báo cáo <span id="detNo"></span> <button class="link" onclick="F('detCard').style.display='none'">đóng</button></h3>
+  <div class="row"><div><label>Mã công việc</label><input id="sSer" style="width:100px"></div>
+    <div><label>Loại CV</label><select id="sType"><option value="CVC">CVC — công việc chính</option><option value="CVPSN">CVPSN — phát sinh</option></select></div>
+    <div><label>Giá</label><input id="sPrice" type="number" style="width:90px"></div><div><label>Hệ số</label><input id="sFactor" type="number" style="width:60px" value="1"></div>
+    <div><label>Ghi chú</label><input id="sNote" style="width:160px"></div><button onclick="addSvc()">+ Công việc</button><span id="msg3" class="msg"></span></div>
+  <div class="wrap"><table><thead><tr><th>Mã CV</th><th>Loại</th><th class="num">Giá</th><th class="num">Hệ số</th><th>Ghi chú</th><th></th></tr></thead><tbody id="svcRows"></tbody></table></div>
+  <h3>Phụ tùng</h3><div class="wrap"><table><thead><tr><th>Mã PT</th><th>Loại</th><th>Nguồn gốc</th><th class="num">SL</th><th class="num">Giá</th></tr></thead><tbody id="ptRows"></tbody></table></div>
+  <h3>Lịch sử</h3><div class="wrap"><table><thead><tr><th>Thời điểm</th><th>Người</th><th>Trạng thái</th><th>Ghi chú</th></tr></thead><tbody id="trRows"></tbody></table></div>
+</div>
 <script>
-let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+let TOKEN=null, DET=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
 const ST={PEND:"Chưa gửi",SENT:"Chờ xem xét",CONF:"Chờ duyệt",ACCE:"Chấp thuận",REJ:"Từ chối",REVERT:"Hoàn trả"};   /* #412 TConst.Ser_WarrantyReport_Status */
 async function token(){ if(TOKEN) return TOKEN;
@@ -81,7 +90,18 @@ async function act(id,action){ await token();
   const r=await fetch("/api/warrantyclaims/"+id+"/action",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Action:action,Note:note})});
   const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
 }
-function acts(o){ let h="";
+/* #413 dòng công việc (Ser_ROWarrantyReportServiceItems) + phụ tùng + lịch sử (Ser_ROWarrantyReportTransaction) */
+async function detail(id,no){ await token(); DET=id; F("detNo").textContent=no; F("detCard").style.display="block";
+  const [s,p,tr]=await Promise.all(["services","parts","transactions"].map(k=>fetch(`/api/warrantyclaims/${id}/${k}`,{headers:H()}).then(r=>r.json())));
+  F("svcRows").innerHTML=(s.items||[]).map(x=>`<tr><td><b>${esc(x.serID)}</b></td><td>${esc(x.rowSerType)}</td><td class="num">${M(x.price)}</td><td class="num">${x.factor??""}</td><td>${esc(x.note)}</td><td><button class="link" onclick="delSvc(${x.id})">×</button></td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có công việc.</td></tr>';
+  F("ptRows").innerHTML=(p.items||[]).map(x=>`<tr><td>${esc(x.partCode)}</td><td>${esc(x.rowPartType)}</td><td>${esc(x.partOrderType)}</td><td class="num">${x.quantity}</td><td class="num">${M(x.price)}</td></tr>`).join("")||'<tr><td colspan="5" class="muted">—</td></tr>';
+  F("trRows").innerHTML=(tr.items||[]).map(x=>`<tr><td>${esc((x.createdDate||"").replace("T"," ").slice(0,16))}</td><td>${esc(x.createdBy)}</td><td>${esc(ST[x.currentStatus]||x.currentStatus)}</td><td>${esc(x.note)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">—</td></tr>'; }
+async function addSvc(){ await token();
+  const body={SerID:F("sSer").value,ROWSerType:F("sType").value,Price:F("sPrice").value===""?null:+F("sPrice").value,Factor:F("sFactor").value===""?null:+F("sFactor").value,Note:F("sNote").value||null};
+  const r=await fetch(`/api/warrantyclaims/${DET}/services`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)}); const d=await r.json();
+  if(!r.ok){ m("msg3","Lỗi: "+(d.error||r.status)); return; } F("sSer").value=""; detail(DET,F("detNo").textContent); }
+async function delSvc(lid){ await token(); await fetch(`/api/warrantyclaims/${DET}/services/${lid}`,{method:"DELETE",headers:H()}); detail(DET,F("detNo").textContent); }
+function acts(o){ let h=`<button class="link" onclick="detail(${o.id},'${esc(o.rowNo)}')">Chi tiết</button>`;
   if(o.warrantyStatus==="PEND"||o.warrantyStatus==="REVERT") h+=`<button class="link" onclick="act(${o.id},'submit')">Gửi</button>`;
   if(o.warrantyStatus==="SENT") h+=`<button class="link" onclick="act(${o.id},'review')">Tiếp nhận</button>`;
   if(o.warrantyStatus==="CONF") h+=`<button class="link" onclick="act(${o.id},'approve')">Duyệt</button>`;

@@ -15319,3 +15319,47 @@ public sealed class SerPartOrderDetail
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>#413 DÒNG CÔNG VIỆC của báo cáo bảo hành (`Ser_ROWarrantyReportServiceItems` — 1-n theo ROWID;
+/// `ProcessSaveROWarrantyReportItems_20220218`, BizCarSv.WarrantyReport.cs:738). `ROWSerType` (TConst.ROWSerType):
+/// "CVC" công việc chính (đúng 1, phải thuộc master công việc BH — Ser_MST_Service.FlagWarranty=1) · "CVPSN" công việc phát sinh.</summary>
+public sealed class WarrantyClaimServiceItem
+{
+    public long Id { get; set; }                  // = ItemID
+    public Guid OrgId { get; set; }
+    public long ClaimId { get; set; }             // = ROWID (ServiceWarrantyClaim.Id)
+    public string SerID { get; set; } = "";       // mã công việc (ServiceItemMst.SerCode)
+    public string? TypeID { get; set; }
+    public decimal? Factor { get; set; }
+    public decimal? Price { get; set; }
+    public decimal? ActManHour { get; set; }
+    public decimal? VAT { get; set; }
+    public string? Note { get; set; }
+    public string? ExpenseType { get; set; }
+    public string? WarrantyStatus { get; set; }
+    public decimal? InsurancePrice { get; set; }
+    public long? BulletinID { get; set; }         // nguồn: rỗng hoặc "0" ⇒ không ghi
+    public string ROWSerType { get; set; } = "";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#413 LỊCH SỬ ghi chú/trạng thái của báo cáo bảo hành (`Ser_ROWarrantyReportTransaction` —
+/// `ProcessSaveSerROWarrantyReportTransaction`, :1492): ghi khi tạo có Note (CurrentStatus PEND) và khi đổi trạng thái kèm Note.</summary>
+public sealed class WarrantyClaimTransaction
+{
+    public long Id { get; set; }                  // = ROWRTransactionID
+    public Guid OrgId { get; set; }
+    public long ClaimId { get; set; }             // = ROWID
+    public string? Creator { get; set; }
+    public string? Note { get; set; }
+    public string? CurrentStatus { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}

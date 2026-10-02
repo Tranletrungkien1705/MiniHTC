@@ -19493,6 +19493,8 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
         NaturalCode = S(dto.NaturalCode), CauseCode = S(dto.CauseCode), Km = S(dto.Km), CarID = S(dto.CarID), ROWTID = rowtid,
         ErrorCodePN = S(dto.ErrorCodePN), ErrorCodeCD = S(dto.ErrorCodeCD), PartIDError = partErr, CreatedBy = who, LogLUDateTime = now, LogLUBy = who };
     db.ServiceWarrantyClaims.Add(c); await db.SaveChangesAsync();
+    if (S(dto.Note) is { } noteNew)   // #413 ProcessSaveSerROWarrantyReportTransaction(ROWID, Creator, PEND, Note)
+    { db.WarrantyClaimTransactions.Add(new WarrantyClaimTransaction { OrgId = t.OrgId, ClaimId = c.Id, Creator = c.Creator, Note = noteNew, CurrentStatus = "PEND", CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who }); await db.SaveChangesAsync(); }
     return Results.Ok(new { c.Id, c.ROWNo, c.WarrantyStatus });
 }).RequireAuthorization();
 
@@ -19655,6 +19657,9 @@ app.MapPost("/api/warrantyclaims/{id}/parts", async (
         var hasPtc = await db.WarrantyClaimPartItems
             .AnyAsync(x => x.OrgId == t.OrgId && x.ClaimId == id && x.RowPartType == "PTC");
         if (hasPtc) return Results.BadRequest(new { error = "Báo cáo bảo hành chỉ có 1 phụ tùng chính!" });
+        // #413 nguồn (:960): PTC phải là Ser_MST_Part FlagInTST = '1' ⇒ "{mã} không thuộc danh sách phụ tùng chính!".
+        if (!await db.ServiceParts.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == partCode && x.FlagInTST == "1"))
+            return Results.BadRequest(new { error = $"{partCode} không thuộc danh sách phụ tùng chính!", code = "Ser_WarrantyReport_Create_InvalidROWPartType" });
     }
 
     // Guard 3 (nguồn): nguồn gốc phụ tùng bắt buộc và chỉ nhận TST/OTHER.
@@ -19725,7 +19730,64 @@ app.MapDelete("/api/warrantyclaims/{id}/parts/{lineId}", async (
     return Results.Ok(new { deleted = lineId });
 }).RequireAuthorization();
 
-app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t) =>
+// ===== #413 DÒNG CÔNG VIỆC báo cáo bảo hành (Ser_ROWarrantyReportServiceItems) — `ProcessSaveROWarrantyReportItems_20220218` (:738) =====
+//   Mỗi dòng: ROWSerType BẮT BUỘC ("CV{mã} loại công việc không được trống!") ∈ {CVC, CVPSN}; CVC chỉ ĐÚNG 1 ("chỉ có 1 công việc chính!")
+//   và phải thuộc master công việc BH (Ser_MST_Service.FlagWarranty = 1 ⇒ ServiceItemMst.FlagWarranty, #397) ⇒ _InvalidROWSerType.
+//   Luật "có dòng công việc thì PHẢI có 1 CVC" nguồn kiểm lúc Create (gửi cả bảng); MiniHTC thêm từng dòng ⇒ kiểm ở bước Gửi (submit).
+//   BulletinID rỗng hoặc "0" ⇒ không ghi. Factor/Price/VAT/Note/WarrantyStatus chỉ ghi khi có; CreatedDate/By + LogLU*.
+app.MapGet("/api/warrantyclaims/{id}/services", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).OrderBy(x => x.Id)
+        .Select(x => new { x.Id, ItemID = x.Id, x.ClaimId, x.SerID, x.TypeID, x.Factor, x.Price, x.ActManHour, x.VAT, x.Note, x.ExpenseType, x.WarrantyStatus,
+            x.InsurancePrice, x.BulletinID, x.ROWSerType, x.CreatedDate, x.CreatedBy, x.ApprovedDate, x.ApprovedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyclaims/{id}/services", async (long id, WarrantyClaimServiceItemDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.NotFound(new { error = "Không tìm thấy báo cáo bảo hành." });
+    var serId = (dto.SerID ?? "").Trim().ToUpperInvariant();
+    if (serId.Length == 0) return Results.BadRequest(new { error = "Chưa chọn công việc." });
+    var st = (dto.ROWSerType ?? "").Trim().ToUpperInvariant();
+    if (st.Length == 0) return Results.BadRequest(new { error = $"CV{serId} loại công việc không được trống!", code = "Ser_WarrantyReport_Create_InvalidROWSerType" });
+    if (st is not ("CVC" or "CVPSN")) return Results.BadRequest(new { error = $"Loại công việc không hợp lệ (CVC/CVPSN), nhận: {st}.", code = "Ser_WarrantyReport_Create_InvalidROWSerType" });
+    if (st == "CVC")
+    {
+        if (await db.WarrantyClaimServiceItems.AnyAsync(x => x.OrgId == t.OrgId && x.ClaimId == id && x.ROWSerType == "CVC"))
+            return Results.BadRequest(new { error = "Báo cáo bảo hành chỉ có 1 công việc chính!", code = "Ser_WarrantyReport_Create_InvalidROWSerType" });
+        if (!await db.ServiceItemMsts.AnyAsync(x => x.OrgId == t.OrgId && x.SerCode == serId && x.FlagWarranty == "1"))
+            return Results.BadRequest(new { error = $"{serId} không thuộc Mst công việc bảo hành!", code = "Ser_WarrantyReport_Create_InvalidROWSerType" });
+    }
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var row = new WarrantyClaimServiceItem
+    {
+        OrgId = t.OrgId, ClaimId = id, SerID = serId, TypeID = string.IsNullOrWhiteSpace(dto.TypeID) ? null : dto.TypeID.Trim(), Factor = dto.Factor, Price = dto.Price,
+        ActManHour = dto.ActManHour, VAT = dto.VAT, Note = string.IsNullOrEmpty(dto.Note) ? null : dto.Note, ExpenseType = string.IsNullOrEmpty(dto.ExpenseType) ? null : dto.ExpenseType,
+        WarrantyStatus = string.IsNullOrEmpty(dto.WarrantyStatus) ? null : dto.WarrantyStatus, InsurancePrice = dto.InsurancePrice,
+        BulletinID = dto.BulletinID is > 0 ? dto.BulletinID : null, ROWSerType = st, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who
+    };
+    db.WarrantyClaimServiceItems.Add(row); await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SerID, row.ROWSerType });
+}).RequireAuthorization();
+
+app.MapDelete("/api/warrantyclaims/{id}/services/{lineId}", async (long id, long lineId, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.WarrantyClaimServiceItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ClaimId == id && x.Id == lineId);
+    if (row is null) return Results.NotFound(new { lineId });
+    db.WarrantyClaimServiceItems.Remove(row); await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = lineId });
+}).RequireAuthorization();
+
+// #413 LỊCH SỬ ghi chú/trạng thái (Ser_ROWarrantyReportTransaction).
+app.MapGet("/api/warrantyclaims/{id}/transactions", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.WarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).OrderBy(x => x.Id)
+        .Select(x => new { x.Id, ROWRTransactionID = x.Id, x.ClaimId, x.Creator, x.Note, x.CurrentStatus, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (c is null) return Results.NotFound(new { id });
@@ -19744,11 +19806,22 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
     if (!rule.from.Contains(c.WarrantyStatus)) return Results.BadRequest(new { error = $"Không thể '{act}' khi đang ở trạng thái {c.WarrantyStatus}." });
     if ((act == "reject" || act == "revert") && string.IsNullOrWhiteSpace(dto.Note))
         return Results.BadRequest(new { error = "Từ chối/hoàn trả phải ghi lý do." });
+    // #413 luật nguồn lúc Create: có dòng công việc thì PHẢI có đúng 1 CVC ("Báo cáo bảo hành phải có 1 công việc chính!").
+    if (act == "submit")
+    {
+        var svcs = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).Select(x => x.ROWSerType).ToListAsync();
+        if (svcs.Count > 0 && !svcs.Contains("CVC"))
+            return Results.BadRequest(new { error = "Báo cáo bảo hành phải có 1 công việc chính!", code = "Ser_WarrantyReport_Create_InvalidROWSerType" });
+    }
     c.WarrantyStatus = rule.to;
     // Mốc duyệt dùng cho job đẩy HMC (nguồn lọc ApprovedDate trên đề nghị đang ở "CONF").
     if (rule.to == "CONF") c.ApprovedDate = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
-    c.UpdatedAt = DateTime.Now;
+    c.UpdatedAt = DateTime.Now; c.LogLUDateTime = DateTime.Now; c.LogLUBy = user.Identity?.Name ?? "system";
+    // #413 đổi trạng thái kèm ghi chú ⇒ 1 dòng lịch sử (nguồn: ItemStatus_Update → ProcessSaveSerROWarrantyReportTransaction, :3924).
+    if (!string.IsNullOrWhiteSpace(dto.Note))
+        db.WarrantyClaimTransactions.Add(new WarrantyClaimTransaction { OrgId = t.OrgId, ClaimId = c.Id, Creator = c.LogLUBy, Note = dto.Note!.Trim(), CurrentStatus = c.WarrantyStatus,
+            CreatedDate = DateTime.Now, CreatedBy = c.LogLUBy, LogLUDateTime = DateTime.Now, LogLUBy = c.LogLUBy });
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.WarrantyStatus });
 }).RequireAuthorization();
@@ -58029,6 +58102,8 @@ record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? P
     string? CauseCode = null, string? Km = null, string? Note = null, string? CarID = null, string? ROWTID = null, string? ErrorCodePN = null, string? ErrorCodeCD = null,
     string? PartIDError = null);   // #412 tham số Ser_ROWarrantyReport_Create_20220218
 record WarrantyAttachmentDto(string FileName, string? FileNote);
+record WarrantyClaimServiceItemDto(string? SerID, string? ROWSerType, string? TypeID = null, decimal? Factor = null, decimal? Price = null, decimal? ActManHour = null, decimal? VAT = null,
+    string? Note = null, string? ExpenseType = null, string? WarrantyStatus = null, decimal? InsurancePrice = null, long? BulletinID = null);   // #413 cột Ser_ROWarrantyReportServiceItems
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
 record WarrantyClaimActionDto(string Action, string? Note);

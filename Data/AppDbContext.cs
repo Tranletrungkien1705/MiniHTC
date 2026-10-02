@@ -365,6 +365,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SerPartOrder> SerPartOrders => Set<SerPartOrder>();               // #410 Ser_Part_Order
     public DbSet<SerPartOrderDetail> SerPartOrderDetails => Set<SerPartOrderDetail>(); // #410 Ser_Part_OrderDetail
     public DbSet<WarrantyClaimPartItem> WarrantyClaimPartItems => Set<WarrantyClaimPartItem>();
+    public DbSet<WarrantyClaimServiceItem> WarrantyClaimServiceItems => Set<WarrantyClaimServiceItem>();   // #413 Ser_ROWarrantyReportServiceItems
+    public DbSet<WarrantyClaimTransaction> WarrantyClaimTransactions => Set<WarrantyClaimTransaction>();   // #413 Ser_ROWarrantyReportTransaction
     public DbSet<StorageTransaction> StorageTransactions => Set<StorageTransaction>();
     public DbSet<BusinessPlanDtl> BusinessPlanDtls => Set<BusinessPlanDtl>();
     public DbSet<BankingTransBankFile> BankingTransBankFiles => Set<BankingTransBankFile>();
