@@ -55320,6 +55320,14 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         return Results.BadRequest(new { error = "Chưa nhập ngày chuyển trạng thái (StatusDate).", code = "SerROStatusUpdate" });
     if (target == "RPRD" && r.FlagPause == "0")
         return Results.BadRequest(new { error = $"RO {r.RONo} đang tạm dừng (FlagPause = 0).", code = "Ser_RO_UpdateStatus_InvalidFlagPause" });
+    // #416 FNS = SerROToFinishedStatusAndUpdateCusCare_New20190621 (ZTemp.cs:10911): RO có ReceptionFNo ⇒ Ser_ReceptionF_CheckDB(Exist = Yes,
+    //   StatusList = Approve "A" — đã giao xe): không có ⇒ _ReceptionFNoNotFound; khác "A" ⇒ _ReceptionFNoNotMatched.
+    if (target == "FNS" && !string.IsNullOrWhiteSpace(r.ReceptionFNo))
+    {
+        var rf = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == r.ReceptionFNo);
+        if (rf is null) return Results.BadRequest(new { error = $"Không tìm thấy phiếu tiếp nhận {r.ReceptionFNo}.", code = "Ser_ReceptionF_CheckDB_ReceptionFNoNotFound" });
+        if (rf.ReceptionFStatus != "A") return Results.BadRequest(new { error = $"Phiếu tiếp nhận {r.ReceptionFNo} chưa giao xe (trạng thái {rf.ReceptionFStatus}).", code = "Ser_ReceptionF_CheckDB_ReceptionFNoNotMatched", rf.ReceptionFStatus });
+    }
     r.Status = target; r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
     switch (target)
     {
