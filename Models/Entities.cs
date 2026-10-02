@@ -5175,6 +5175,8 @@ public sealed class ServiceWarrantyClaim
     public string? ErrorCodePN { get; set; }
     public string? ErrorCodeCD { get; set; }
     public string? PartIDError { get; set; }
+    /// <summary>#425 Cờ "sẵn sàng gửi" (Ser_ROWarrantyReport.FlagReadySend) — chỉ `Ser_ROWarrantyReport_Update_V2` ghi, khi tham số khác rỗng.</summary>
+    public string? FlagReadySend { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }

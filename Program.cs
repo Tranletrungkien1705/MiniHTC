@@ -19443,7 +19443,8 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
     {
         x.Id, x.ROWNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.WarrantyStatus, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HMCApiQtyA, x.ClmNoSrl, x.HtcNote, x.WarrantySerCode, x.ApprovedDate,
         x.Creator, x.Assistant, x.CusID, x.CusName, x.CusAddress, x.CusTel, x.CheckInDate, x.StartDate, x.FinishedDate, x.CusRequest, x.CarStatus,   // #412
-        x.NaturalCode, x.CauseCode, x.Km, x.CarID, x.ROWTID, x.ErrorCodePN, x.ErrorCodeCD, x.PartIDError, x.CreatedAt, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.ApprovedBy
+        x.NaturalCode, x.CauseCode, x.Km, x.CarID, x.ROWTID, x.ErrorCodePN, x.ErrorCodeCD, x.PartIDError, x.CreatedAt, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.ApprovedBy,
+        x.FlagReadySend   // #425
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.Amount),
         pending = items.Count(i => i.WarrantyStatus == "PEND"), sent = items.Count(i => i.WarrantyStatus == "SENT"),
@@ -19879,6 +19880,88 @@ app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActi
             Note = dto.Note!.Trim(), CurrentStatus = to, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.WarrantyStatus, c.ApprovedDate, c.ApprovedBy });
+}).RequireAuthorization();
+
+// #425 SỬA đầu báo cáo BH = `Ser_ROWarrantyReport_Update_V2` (BizCarSv.WarrantyReport.cs:3257). Thứ tự nguồn:
+//   CheckExistROWarrantyReport ⇒ ROWTID rỗng/không có ⇒ Ser_WarrantyReport_Update_InvalidROWTID ⇒ ErrorCodePN/CD rỗng ⇒ _Update_InvalidErrorCodePN/CD
+//   ⇒ PartIDError có thì phải TST, rỗng chỉ khi ROWTypeDtlCode ∈ {A,B,C} ⇒ _Update_InvalidPartIDError.
+//   Ghi: DealerCode + ROID(RONo) LUÔN gán (kể cả rỗng); các cột còn lại chỉ khi khác rỗng (ROWNo, Creator, CreatedDate, Assistant, Cus*, CheckInDate,
+//   FinishedDate, CusRequest, CarStatus, NaturalCode, CauseCode, Km, CreatedBy, CarID, ROWTID, ErrorCodePN/CD, PartIDError, FlagReadySend).
+//   Nguồn KHÔNG ghi LogLU*, KHÔNG chặn theo trạng thái, KHÔNG dùng Note; khối xoá/tạo lại dòng CV/PT đã comment ⇒ dòng sửa qua /services, /parts.
+app.MapPost("/api/warrantyclaims/{id}/update", async (long id, WarrantyClaimUpdateDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.BadRequest(new { error = "Không tìm thấy báo cáo bảo hành.", code = "Ser_WarrantyReport_NotFound" });
+    static string? S(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+    var rowtid = S(dto.ROWTID);
+    var wtype = rowtid is null ? null : (await db.ROWarrantyTypes.Where(x => x.OrgId == t.OrgId).ToListAsync()).FirstOrDefault(x => x.ROWTID == rowtid || x.Id.ToString() == rowtid);
+    if (wtype is null) return Results.BadRequest(new { error = "Không tìm thấy loại BCBH hoặc loại chi tiết BH!", code = "Ser_WarrantyReport_Update_InvalidROWTID", ROWTID = rowtid });
+    if (S(dto.ErrorCodePN) is null) return Results.BadRequest(new { error = "Chưa nhập mã lỗi PN.", code = "Ser_WarrantyReport_Update_InvalidErrorCodePN" });
+    if (S(dto.ErrorCodeCD) is null) return Results.BadRequest(new { error = "Chưa nhập mã lỗi CD.", code = "Ser_WarrantyReport_Update_InvalidErrorCodeCD" });
+    var partErr = S(dto.PartIDError);
+    if (partErr != null)
+    {
+        if (!await db.ServiceParts.AnyAsync(x => x.OrgId == t.OrgId && x.PartCode == partErr && x.FlagInTST == "1"))
+            return Results.BadRequest(new { error = "Không tìm thấy phụ tùng lỗi hoặc phụ tùng lỗi không phải phụ tùng TST!", code = "Ser_WarrantyReport_Update_InvalidPartIDError", PartIDError = partErr });
+    }
+    else if (wtype.ROWTypeDtlCode is not ("A" or "B" or "C"))
+        return Results.BadRequest(new { error = "Chưa nhập phụ tùng lỗi (chỉ loại chi tiết A/B/C được bỏ trống).", code = "Ser_WarrantyReport_Update_InvalidPartIDError", wtype.ROWTypeDtlCode });
+    if (S(dto.ROWNo) is { } rn) c.ROWNo = rn;
+    c.DealerCode = S(dto.DealerCode); c.RONo = S(dto.RONo)?.ToUpperInvariant();
+    if (S(dto.Creator) is { } cr) c.Creator = cr;
+    if (dto.CreatedDate is { } cd) c.CreatedAt = cd;
+    if (S(dto.Assistant) is { } asst) c.Assistant = asst;
+    if (S(dto.CusID) is { } ci) c.CusID = ci;
+    if (S(dto.CusName) is { } cn) c.CusName = cn;
+    if (S(dto.CusAddress) is { } ca) c.CusAddress = ca;
+    if (S(dto.CusTel) is { } ct) c.CusTel = ct;
+    if (dto.CheckInDate is { } chk) c.CheckInDate = chk;
+    if (dto.FinishedDate is { } fd) c.FinishedDate = fd;
+    if (S(dto.CusRequest) is { } rq) c.CusRequest = rq;
+    if (S(dto.CarStatus) is { } cs) c.CarStatus = cs;
+    if (S(dto.NaturalCode) is { } nc) c.NaturalCode = nc;
+    if (S(dto.CauseCode) is { } cc) c.CauseCode = cc;
+    if (S(dto.Km) is { } km) c.Km = km;
+    if (S(dto.CreatedBy) is { } cb) c.CreatedBy = cb;
+    if (S(dto.CarID) is { } car) c.CarID = car;
+    c.ROWTID = rowtid; c.ErrorCodePN = S(dto.ErrorCodePN); c.ErrorCodeCD = S(dto.ErrorCodeCD);
+    if (partErr != null) c.PartIDError = partErr;
+    if (S(dto.FlagReadySend) is { } frs) c.FlagReadySend = frs;
+    c.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.ROWNo, c.DealerCode, c.RONo, c.ROWTID, c.PartIDError, c.FlagReadySend, c.WarrantyStatus });
+}).RequireAuthorization();
+
+// #425 CẬP NHẬT TRẠNG THÁI theo lưới = `Ser_ROWarrantyReport_ItemStatus_Update_V2` (:6638):
+//   CheckExist ⇒ ErrorCodePN/CD rỗng ⇒ Ser_ROWarrantyReport_ItemStatus_Update_V2_InvalidErrorCodePN/CD (nguồn gán vào hàng nhưng KHÔNG đưa
+//   vào alColumnEffective ⇒ hai mã lỗi CHỈ là guard, không được lưu). DealerCode luôn gán; CusRequest/CarStatus/FinishedDate/WarrantyStatus
+//   khi khác rỗng; StartDate cắt về ngày; LogLU*. Sau đó ProcessUpdateStatusItem(ROWID, WarrantyStatus) — nguồn truyền nguyên tham số kể cả
+//   rỗng ⇒ mọi dòng CV/PT nhận đúng giá trị đó; Note ⇒ 1 dòng Ser_ROWarrantyReportTransaction (CurrentStatus = WarrantyStatus).
+//   ⛔ BLOCKED: khi SENT nguồn gọi ROWarrantyReport_Approve_Check (:3979 → DMSSale_ROWarrantyReport_Approve_Check :4538) = gọi WS ngoài
+//   DMS.Sales WSHTC64 kiểm hợp đồng/VIN/hạn giao 6 tháng — MiniHTC không có kênh tích hợp đó.
+app.MapPost("/api/warrantyclaims/{id}/item-status", async (long id, WarrantyClaimItemStatusDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.BadRequest(new { error = "Không tìm thấy báo cáo bảo hành.", code = "Ser_WarrantyReport_NotFound" });
+    static string? S(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+    if (S(dto.ErrorCodePN) is null) return Results.BadRequest(new { error = "Chưa nhập mã lỗi PN.", code = "Ser_ROWarrantyReport_ItemStatus_Update_V2_InvalidErrorCodePN" });
+    if (S(dto.ErrorCodeCD) is null) return Results.BadRequest(new { error = "Chưa nhập mã lỗi CD.", code = "Ser_ROWarrantyReport_ItemStatus_Update_V2_InvalidErrorCodeCD" });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var st = (dto.WarrantyStatus ?? "").Trim().ToUpperInvariant();
+    c.DealerCode = S(dto.DealerCode);
+    if (S(dto.CusRequest) is { } rq) c.CusRequest = rq;
+    if (S(dto.CarStatus) is { } cs) c.CarStatus = cs;
+    if (dto.StartDate is { } sd) c.StartDate = sd.Date;
+    if (dto.FinishedDate is { } fd) c.FinishedDate = fd;
+    if (st != "") c.WarrantyStatus = st;
+    c.UpdatedAt = now; c.LogLUDateTime = now; c.LogLUBy = who;
+    foreach (var sv in await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync()) sv.WarrantyStatus = st;
+    foreach (var pt in await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync()) pt.WarrantyStatus = st;
+    if (S(dto.Note) is { } note)
+        db.WarrantyClaimTransactions.Add(new WarrantyClaimTransaction { OrgId = t.OrgId, ClaimId = c.Id, Creator = S(dto.Creator) ?? who, Note = note,
+            CurrentStatus = st, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.Id, c.WarrantyStatus, c.DealerCode, c.StartDate, c.FinishedDate });
 }).RequireAuthorization();
 
 // #414 XOÁ báo cáo bảo hành — `Ser_ROWarrantyReport_Delete_New20191121`: không có ⇒ _ROWID_NotFound; SENT/CONF ⇒ _NotDelete_Sent;
@@ -58420,6 +58503,12 @@ record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? P
     string? CauseCode = null, string? Km = null, string? Note = null, string? CarID = null, string? ROWTID = null, string? ErrorCodePN = null, string? ErrorCodeCD = null,
     string? PartIDError = null);   // #412 tham số Ser_ROWarrantyReport_Create_20220218
 record WarrantyAttachmentDto(string FileName, string? FileNote);
+record WarrantyClaimUpdateDto(string? ROWNo = null, string? DealerCode = null, string? RONo = null, string? Creator = null, DateTime? CreatedDate = null, string? Assistant = null,
+    string? CusID = null, string? CusName = null, string? CusAddress = null, string? CusTel = null, DateTime? CheckInDate = null, DateTime? FinishedDate = null,
+    string? CusRequest = null, string? CarStatus = null, string? NaturalCode = null, string? CauseCode = null, string? Km = null, string? CreatedBy = null, string? CarID = null,
+    string? ROWTID = null, string? ErrorCodePN = null, string? ErrorCodeCD = null, string? PartIDError = null, string? FlagReadySend = null);   // #425 tham số Update_V2
+record WarrantyClaimItemStatusDto(string? DealerCode = null, string? Note = null, string? WarrantyStatus = null, string? CusRequest = null, string? CarStatus = null,
+    string? ErrorCodePN = null, string? ErrorCodeCD = null, string? Creator = null, DateTime? StartDate = null, DateTime? FinishedDate = null);   // #425 ItemStatus_Update_V2
 record WarrantyClaimServiceItemDto(string? SerID, string? ROWSerType, string? TypeID = null, decimal? Factor = null, decimal? Price = null, decimal? ActManHour = null, decimal? VAT = null,
     string? Note = null, string? ExpenseType = null, string? WarrantyStatus = null, decimal? InsurancePrice = null, long? BulletinID = null);   // #413 cột Ser_ROWarrantyReportServiceItems
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
