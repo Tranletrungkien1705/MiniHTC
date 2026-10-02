@@ -15227,3 +15227,62 @@ public sealed class GpsMstProvince
     public string GPSProvinceCode { get; set; } = "";
     public string? GPSProvinceName { get; set; }
 }
+
+/// <summary>#410 Đơn đặt phụ tùng của ĐẠI LÝ gửi HTC (`Ser_Part_Order` — TCMotor BizCarSv.PartOrder.cs; màn FrmOrderPartCreate/Modify/Search).
+/// ⚠️ KHÁC <see cref="OrderPart"/> (`Ser_Order_Part` — đơn TST gửi NCC). Trạng thái `TConst.Ser_OrderPart`:
+/// "1" Mới tạo · "CONF" Xác nhận · "2" Hàng đang về (nhập kho một phần) · "3" Kết thúc.</summary>
+public sealed class SerPartOrder
+{
+    public long Id { get; set; }                 // = OrderPartID
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string? OrderNo { get; set; }         // DH-{DealerCode}-{yyMMdd}-NNN (client GenerateOrderPartNo), ToUpper
+    public string? OrderNoUser { get; set; }     // số đơn do người dùng đặt, ToUpper
+    public DateTime? CreateDate { get; set; }    // ngày đơn (client gửi ngày máy chủ)
+    public string? Status { get; set; }
+    public DateTime? ReceivePartDate { get; set; }
+    public DateTime? SendDate { get; set; }
+    public long? SupplierID { get; set; }        // = SerMstSupplier.Id (nguồn Ser_Mst_Supplier.SupplierID)
+    public string? UserCreate { get; set; }
+    public string? UserApproved { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? TypeOrder { get; set; }
+    public string? HTCConfirm { get; set; }      // client đại lý luôn gửi rỗng ⇒ chỉ ghi khi có
+    public string? PartialShipment { get; set; } // chkPartialShipment.Checked.ToString() ⇒ "True"/"False"
+    public string? TypeTransport { get; set; }   // "1" chuyển phát nhanh · "0" khác
+    public string? VIN { get; set; }
+    public string? ConfirmNo { get; set; }
+    public string? CusCharges { get; set; }      // đơn vị chịu phí (issue 1017)
+    public string IsActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#410 Dòng đơn đặt phụ tùng đại lý (`Ser_Part_OrderDetail` — `Ser_Part_OrderDetailCreate`, PartOrder.cs:637).
+/// `DeliveryQuantity` = SL đã nhập kho theo đơn (cộng dồn khi lập phiếu nhập — #411).</summary>
+public sealed class SerPartOrderDetail
+{
+    public long Id { get; set; }                 // = OrderPartDetailID
+    public Guid OrgId { get; set; }
+    public long OrderPartID { get; set; }
+    public string PartID { get; set; } = "";
+    public decimal Quantity { get; set; }
+    public decimal? Factor { get; set; }
+    public decimal? VAT { get; set; }
+    public decimal? Cost { get; set; }
+    public decimal? Discount { get; set; }
+    public string? Note { get; set; }
+    public string? Model { get; set; }
+    public string? HTCConfirm { get; set; }
+    public decimal? MIP { get; set; }
+    public decimal? OO { get; set; }
+    public decimal? BO { get; set; }
+    public decimal? OH { get; set; }
+    public decimal? SOQ { get; set; }
+    public string? ICC { get; set; }
+    public decimal? DeliveryQuantity { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}

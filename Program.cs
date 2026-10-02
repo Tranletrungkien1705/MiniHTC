@@ -19153,6 +19153,154 @@ app.MapPost("/api/serviceparts/{code}/toggle", async (string code, AppDbContext 
     return Results.Ok(new { x.PartCode, flagActive = x.FlagActive });
 }).RequireAuthorization();
 
+// ===== #410 ĐƠN ĐẶT PHỤ TÙNG ĐẠI LÝ → HTC (`Ser_Part_Order` — TCMotor BizCarSv.PartOrder.cs; FrmOrderPartCreate/Modify/Search) =====
+var serPartOrderStatusNames = new Dictionary<string, string> { ["1"] = "Mới tạo", ["CONF"] = "Xác nhận", ["2"] = "Hàng đang về", ["3"] = "Kết thúc" };   // TConst.Ser_OrderPart
+
+app.MapGet("/api/serpartorders", async (AppDbContext db, ITenantContext t, string? dealer, string? status, string? q) =>
+{
+    var qy = db.SerPartOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer.Trim().ToUpper());
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    if (!string.IsNullOrWhiteSpace(q)) qy = qy.Where(x => (x.OrderNo != null && x.OrderNo.Contains(q.ToUpper())) || (x.OrderNoUser != null && x.OrderNoUser.Contains(q.ToUpper())) || (x.VIN != null && x.VIN.Contains(q)));
+    var rows = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    var sups = await db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId).ToDictionaryAsync(x => x.Id, x => new { x.SupplierCode, x.SupplierName });
+    var items = rows.Select(x => new
+    {
+        x.Id, OrderPartID = x.Id, x.DealerCode, x.OrderNo, x.OrderNoUser, x.CreateDate, x.Status,
+        NewStatus = x.Status != null && serPartOrderStatusNames.TryGetValue(x.Status, out var sn) ? sn : x.Status,   // nguồn: case op.status → N'Mới tạo'…
+        x.ReceivePartDate, x.SendDate, x.SupplierID,
+        SupplierCode = x.SupplierID is { } s1 && sups.TryGetValue(s1, out var sp1) ? sp1.SupplierCode : null,
+        SupplierName = x.SupplierID is { } s2 && sups.TryGetValue(s2, out var sp2) ? sp2.SupplierName : null,
+        x.UserCreate, x.UserApproved, x.ApprovedDate, x.TypeOrder, x.HTCConfirm, x.PartialShipment, x.TypeTransport, x.VIN, x.ConfirmNo, x.CusCharges,
+        x.IsActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/serpartorders/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.SerPartOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var lines = await db.SerPartOrderDetails.Where(x => x.OrgId == t.OrgId && x.OrderPartID == id).OrderBy(x => x.Id)
+        .Select(x => new { x.Id, OrderPartDetailID = x.Id, x.OrderPartID, x.PartID, x.Quantity, x.Factor, x.VAT, x.Cost, x.Discount, x.Note, x.Model, x.HTCConfirm,
+            x.MIP, x.OO, x.BO, x.OH, x.SOQ, x.ICC, x.DeliveryQuantity, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = h, NewStatus = h.Status != null && serPartOrderStatusNames.TryGetValue(h.Status, out var sn) ? sn : h.Status, lines });
+}).RequireAuthorization();
+
+// Kiểm dòng chi tiết — CheckStockInDetailEmpty / CheckPartIDEmpty / CheckQuantityEmpty (StockIn.cs:416/252/273, dùng lại cho đơn đặt)
+// + FrmOrderPartCreate.Validate_PartList ("Số lượng phải >0"). VIN khác rỗng ⇒ chi tiết được phép RỖNG (nhánh if strVIN của nguồn).
+IResult? SerPartOrderCheckLines(string? vin, List<SerPartOrderLineDto>? lines)
+{
+    var ls = lines ?? new();
+    if (string.IsNullOrEmpty(vin) && ls.Count == 0)
+        return Results.BadRequest(new { error = "Chưa có dòng phụ tùng.", code = "Ser_Inv_StockIn_StockInDetailEmpty" });
+    foreach (var l in ls)
+    {
+        if (string.IsNullOrWhiteSpace(l.PartID)) return Results.BadRequest(new { error = "Dòng thiếu mã phụ tùng.", code = "Ser_Inv_StockInDetail_PartIDEmpty" });
+        if (l.Quantity is null) return Results.BadRequest(new { error = $"Phụ tùng {l.PartID}: phải nhập số lượng.", code = "Ser_Inv_StockInDetail_QuantityEmpty" });
+        if (l.Quantity <= 0) return Results.BadRequest(new { error = $"Phụ tùng {l.PartID}: số lượng phải > 0.", code = "Validate_PartList" });
+    }
+    return null;
+}
+void SerPartOrderAddLines(AppDbContext db, Guid org, long orderPartId, List<SerPartOrderLineDto>? lines, string who, DateTime now)
+{
+    foreach (var l in lines ?? new())
+        db.SerPartOrderDetails.Add(new SerPartOrderDetail
+        {
+            OrgId = org, OrderPartID = orderPartId, PartID = l.PartID!.Trim(), Quantity = l.Quantity ?? 0, Factor = l.Factor, VAT = l.VAT, Cost = l.Cost, Discount = l.Discount,
+            Note = l.Note, Model = string.IsNullOrEmpty(l.Model) ? null : l.Model, HTCConfirm = string.IsNullOrEmpty(l.HTCConfirm) ? null : l.HTCConfirm,
+            MIP = l.MIP, OO = l.OO, BO = l.BO, OH = l.OH, SOQ = l.SOQ, ICC = string.IsNullOrEmpty(l.ICC) ? null : l.ICC, LogLUDateTime = now, LogLUBy = who
+        });
+}
+static string? SerPoStr(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+
+// TẠO = `Ser_Part_OrderCreate` (PartOrder.cs:756). Guard: OrderNo trùng (cùng đại lý) ⇒ Ser_OrderPart_Exist; OrderNoUser trùng ⇒
+//   Ser_OrderPart_OrderNoUser_Exist (nguồn so `=` với tham số — rỗng không khớp vì cột chỉ được ghi khi khác rỗng); dòng chi tiết như trên.
+//   🔴 Create KHÔNG kiểm ConfirmNo (chỉ Update kiểm). OrderNo rỗng ⇒ sinh DH-{Dealer}-{yyMMdd}-NNN (client GenerateOrderPartNo).
+//   Chỉ ghi tham số khác rỗng; OrderNo/OrderNoUser ToUpper; IsActive "1"; CreatedDate/By + LogLU*.
+app.MapPost("/api/serpartorders", async (SerPartOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    if (dealer == "") return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+    var orderNo = SerPoStr(dto.OrderNo)?.ToUpper();
+    if (orderNo is null)
+    {
+        var pat = CmSeq.Pattern("DH-", dealer);
+        orderNo = CmSeq.Next(await db.SerPartOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.OrderNo != null && x.OrderNo.StartsWith(pat)).Select(x => x.OrderNo!).ToListAsync(), pat);
+    }
+    if (await db.SerPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.OrderNo == orderNo))
+        return Results.BadRequest(new { error = $"Số đơn {orderNo} đã tồn tại.", code = "Ser_OrderPart_Exist" });
+    var orderNoUser = SerPoStr(dto.OrderNoUser)?.ToUpper();
+    if (orderNoUser != null && await db.SerPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.OrderNoUser == orderNoUser))
+        return Results.BadRequest(new { error = $"Số đơn người dùng {orderNoUser} đã tồn tại.", code = "Ser_OrderPart_OrderNoUser_Exist" });
+    if (SerPartOrderCheckLines(SerPoStr(dto.VIN), dto.Lines) is { } bad) return bad;
+    if (dto.SupplierID is { } sid && !await db.SerMstSuppliers.AnyAsync(x => x.OrgId == t.OrgId && x.Id == sid))
+        return Results.BadRequest(new { error = $"Nhà cung cấp {sid} không tồn tại." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var h = new SerPartOrder
+    {
+        OrgId = t.OrgId, DealerCode = dealer, OrderNo = orderNo, OrderNoUser = orderNoUser, CreateDate = dto.CreateDate ?? now.Date,
+        Status = SerPoStr(dto.Status) ?? "1", ReceivePartDate = dto.ReceivePartDate, SendDate = dto.SendDate, SupplierID = dto.SupplierID,
+        UserCreate = SerPoStr(dto.UserCreate), UserApproved = SerPoStr(dto.UserApproved), ApprovedDate = dto.ApprovedDate, TypeOrder = SerPoStr(dto.TypeOrder),
+        HTCConfirm = SerPoStr(dto.HTCConfirm), PartialShipment = SerPoStr(dto.PartialShipment), TypeTransport = SerPoStr(dto.TypeTransport), VIN = SerPoStr(dto.VIN),
+        ConfirmNo = SerPoStr(dto.ConfirmNo), CusCharges = SerPoStr(dto.CusCharges), IsActive = "1", CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who
+    };
+    db.SerPartOrders.Add(h); await db.SaveChangesAsync();
+    SerPartOrderAddLines(db, t.OrgId, h.Id, dto.Lines, who, now);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, OrderPartID = h.Id, h.OrderNo, h.Status, lines = (dto.Lines ?? new()).Count });
+}).RequireAuthorization();
+
+// SỬA = `Ser_Part_OrderUpdate` → `UpdatePartOrder` (PartOrder.cs:1155/1265). Thứ tự guard nguồn:
+//   (1) OrderNoUser trùng đơn KHÁC cùng đại lý ⇒ Ser_OrderPart_Exist (mã nguồn dùng _Exist, không phải _OrderNoUser_Exist);
+//   (2) ConfirmNo trùng (cùng đại lý) ⇒ Ser_OrderPart_ConfirmNo_Exist — 🔴 nguồn KHÔNG loại chính đơn đang sửa ⇒ lưu lại đơn
+//       đã có ConfirmNo với CÙNG số sẽ bị chặn (port nguyên); (3) đơn phải tồn tại theo OrderPartID + DealerCode.
+//   Ghi header: rỗng ⇒ NULL cho OrderNoUser/ReceivePartDate/ApprovedDate/UserCreate/ConfirmNo/CusCharges; các cột còn lại chỉ ghi khi
+//   có. CreateDate KHÔNG đổi. Chi tiết: XOÁ HẾT rồi tạo lại (VIN có + không gửi dòng ⇒ giữ nguyên dòng cũ).
+//   🔴 Xoá-tạo-lại làm MẤT DeliveryQuantity đã nhập kho của các dòng (đúng nguồn).
+app.MapPost("/api/serpartorders/{id:long}/update", async (long id, SerPartOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var dealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var orderNoUser = SerPoStr(dto.OrderNoUser)?.ToUpper();
+    if (orderNoUser != null && await db.SerPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.OrderNoUser == orderNoUser && x.Id != id))
+        return Results.BadRequest(new { error = $"Số đơn người dùng {orderNoUser} đã tồn tại.", code = "Ser_OrderPart_Exist" });
+    var confirmNo = SerPoStr(dto.ConfirmNo);
+    if (confirmNo != null && await db.SerPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ConfirmNo == confirmNo))
+        return Results.BadRequest(new { error = $"Số xác nhận {confirmNo} đã tồn tại.", code = "Ser_OrderPart_ConfirmNo_Exist" });
+    var h = await db.SerPartOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id && x.DealerCode == dealer);
+    if (h is null) return Results.BadRequest(new { error = "không tồn tại đơn hàng này", code = "Ser_Part_OrderUpdate" });
+    var vin = SerPoStr(dto.VIN);
+    var replaceLines = vin is null || (dto.Lines?.Count ?? 0) > 0;
+    if (replaceLines && SerPartOrderCheckLines(vin, dto.Lines) is { } bad) return bad;
+    if (dto.SupplierID is { } sid && !await db.SerMstSuppliers.AnyAsync(x => x.OrgId == t.OrgId && x.Id == sid))
+        return Results.BadRequest(new { error = $"Nhà cung cấp {sid} không tồn tại." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    if (dto.SupplierID is not null) h.SupplierID = dto.SupplierID;
+    if (SerPoStr(dto.OrderNo) is { } on) h.OrderNo = on.ToUpper();
+    h.OrderNoUser = orderNoUser;
+    if (SerPoStr(dto.Status) is { } st) h.Status = st;
+    h.ReceivePartDate = dto.ReceivePartDate;
+    h.ApprovedDate = dto.ApprovedDate;
+    if (dto.SendDate is not null) h.SendDate = dto.SendDate;
+    h.UserCreate = SerPoStr(dto.UserCreate);
+    if (SerPoStr(dto.UserApproved) is { } ua) h.UserApproved = ua;
+    if (SerPoStr(dto.TypeOrder) is { } to) h.TypeOrder = to;
+    if (SerPoStr(dto.HTCConfirm) is { } hc) h.HTCConfirm = hc;
+    if (SerPoStr(dto.PartialShipment) is { } ps) h.PartialShipment = ps;
+    if (SerPoStr(dto.TypeTransport) is { } tt) h.TypeTransport = tt;
+    if (vin is not null) h.VIN = vin;
+    h.ConfirmNo = confirmNo;
+    h.CusCharges = SerPoStr(dto.CusCharges);
+    h.LogLUDateTime = now; h.LogLUBy = who;
+    if (replaceLines)
+    {
+        db.SerPartOrderDetails.RemoveRange(await db.SerPartOrderDetails.Where(x => x.OrgId == t.OrgId && x.OrderPartID == id).ToListAsync());
+        SerPartOrderAddLines(db, t.OrgId, id, dto.Lines, who, now);
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.OrderNo, h.Status, h.ConfirmNo, linesReplaced = replaceLines });
+}).RequireAuthorization();
+
 // ===== Nhóm phụ tùng phân cấp (PartGroup — port 1:1 FrmPartGroup, TCMotor) =====
 app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? q, string? parent, string? active) =>
 {
@@ -57453,6 +57601,12 @@ record BulletinVinDto(string? VinNo, string? DealerCode, string? Status);
 record BulletinVinStatusDto(string? Status);
 record BulletinDto(string? BulletinNo, string? Remark, string? PartCode, string? PartName, string? SerCode, string? SerName, DateTime? DateExpired, string? FileNameAttachment, string? BulletinNoHMC = null, DateTime? CreateDate = null, string? UserCreate = null, List<BulletinDtlDto>? Details = null, List<BulletinVinDto>? Vins = null);
 record SharePartDto(string DealerCode, string PartCode, string? PartName, string? Unit, decimal InStock, decimal QuantityShare, string? Remark);
+record SerPartOrderLineDto(string? PartID, decimal? Quantity, decimal? Factor = null, decimal? VAT = null, decimal? Cost = null, decimal? Discount = null, string? Note = null, string? Model = null,
+    string? HTCConfirm = null, decimal? MIP = null, decimal? OO = null, decimal? BO = null, decimal? OH = null, decimal? SOQ = null, string? ICC = null);   // #410 cột Ser_Part_OrderDetail
+record SerPartOrderDto(string? DealerCode, string? OrderNo = null, string? OrderNoUser = null, DateTime? CreateDate = null, string? Status = null, DateTime? ReceivePartDate = null,
+    DateTime? SendDate = null, long? SupplierID = null, string? UserCreate = null, string? UserApproved = null, DateTime? ApprovedDate = null, string? TypeOrder = null,
+    string? HTCConfirm = null, string? PartialShipment = null, string? TypeTransport = null, string? VIN = null, string? ConfirmNo = null, string? CusCharges = null,
+    List<SerPartOrderLineDto>? Lines = null);   // #410 tham số Ser_Part_OrderCreate/Update
 record PartGroupDto(string GroupCode, string? GroupName, string? ParentCode, int OrderId, long? ParentID = null, string? DealerCode = null);   // #408 ParentID = tên nguồn; ParentCode giữ tương thích
 record ServicePartDto(string PartCode, string? PartName, string? EngName, string? Unit, decimal Price, decimal Cost, string? Location, decimal Quantity, decimal MinQuantity, string? PartGroupCode, string? Model, string? Note, long? PartTypeID = null, decimal? VAT = null, string? FreqUsed = null);
 record ServiceCarDto(string FrameNo, string? PlateNo, string? EngineNo, string? ModelCode, string? ColorCode, string? TradeMark, int? ProductYear, decimal CurrentKm, DateTime? WarrantyDate, string? CusName, string? CusMobile, string? MemberCarID = null, string? DealerCode = null, string? CusID = null,

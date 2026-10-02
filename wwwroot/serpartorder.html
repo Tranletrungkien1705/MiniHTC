@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MiniHTC — Đơn đặt phụ tùng đại lý</title>
+<style>
+  :root{color-scheme:light dark;--line:#8883;--accent:#7c3aed;--ok:#16a34a}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;max-width:1100px;margin:24px auto;padding:0 16px;line-height:1.5}
+  h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px} h3{font-size:14px;margin:16px 0 4px}
+  .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  label{font-size:12px;opacity:.7;display:block;margin-bottom:2px}
+  input,button,select{font:inherit;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px} th,td{text-align:left;padding:5px 7px;border-bottom:1px solid var(--line)}
+  th{opacity:.7;font-size:10.5px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
+  #msg{font-size:13px;margin-left:6px} td input{width:70px;padding:4px 6px}
+</style></head>
+<body>
+<h1>Đơn đặt phụ tùng đại lý → HTC <span class="muted">(port 1:1 FrmOrderPartCreate/Modify/Search — Ser_Part_Order, TCMotor)</span></h1>
+<p class="muted">Trạng thái: 1 Mới tạo · CONF Xác nhận · 2 Hàng đang về · 3 Kết thúc. Số đơn trống ⇒ tự sinh DH-{ĐL}-{yyMMdd}-NNN. Có VIN thì được để trống dòng phụ tùng.</p>
+<div class="card"><h3 style="margin-top:0">Lập / sửa đơn <span id="editing" class="muted"></span></h3>
+  <div class="row">
+    <div><label>Đại lý *</label><input id="fDealer" style="width:90px"></div>
+    <div><label>Số đơn</label><input id="fOrderNo" style="width:170px" placeholder="(tự sinh)"></div>
+    <div><label>Số đơn người dùng</label><input id="fOrderNoUser" style="width:130px"></div>
+    <div><label>NCC (Id)</label><input id="fSupplier" type="number" style="width:80px"></div>
+    <div><label>Loại đơn</label><input id="fTypeOrder" style="width:80px"></div>
+    <div><label>Ngày gửi</label><input id="fSendDate" type="date"></div>
+    <div><label>VIN</label><input id="fVIN" style="width:150px"></div>
+    <div><label>Số xác nhận</label><input id="fConfirmNo" style="width:110px"></div>
+    <div><label>Đơn vị chịu phí</label><input id="fCusCharges" style="width:110px"></div>
+    <div><label>Người tạo đơn</label><input id="fUserCreate" style="width:110px"></div>
+    <div><label><input type="checkbox" id="fPartial"> Giao từng phần</label></div>
+    <div><label><input type="checkbox" id="fTransport" checked> Chuyển phát nhanh</label></div>
+    <div><label><input type="checkbox" id="fConfirm"> Xác nhận (CONF)</label></div>
+  </div>
+  <div class="wrap"><table><thead><tr><th>Mã PT *</th><th>SL *</th><th>Giá</th><th>VAT</th><th>CK</th><th>Hệ số</th><th>Model</th><th>HTC xác nhận</th><th>MIP</th><th>OO</th><th>BO</th><th>OH</th><th>SOQ</th><th>ICC</th><th>Ghi chú</th><th></th></tr></thead><tbody id="lines"></tbody></table></div>
+  <div class="row" style="margin-top:8px"><button onclick="addLine()">+ Dòng</button><button class="primary" onclick="save()">Lưu</button><button onclick="resetForm()">Đơn mới</button><span id="msg"></span></div>
+</div>
+<div class="row" style="margin:8px 0">
+  <div><label>Đại lý</label><input id="qDealer" style="width:90px"></div>
+  <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option>1</option><option>CONF</option><option>2</option><option>3</option></select></div>
+  <div><label>Tìm số đơn/VIN</label><input id="qQ" style="width:160px"></div>
+  <button onclick="load()">Xem danh sách</button>
+</div>
+<div class="wrap"><table><thead><tr><th>Số đơn</th><th>Số ĐN người dùng</th><th>ĐL</th><th>NCC</th><th>Ngày</th><th>VIN</th><th>Xác nhận</th><th>TT</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="9" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
+<script>
+let TOKEN=null, EDIT=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
+const esc=s=>(s??"").toString().replace(/&/g,"&amp;").replace(/</g,"&lt;");
+const COLS=["partID","quantity","cost","vat","discount","factor","model","htcConfirm","mip","oo","bo","oh","soq","icc","note"];
+const NUM=new Set(["quantity","cost","vat","discount","factor","mip","oo","bo","oh","soq"]);
+async function token(){ if(TOKEN) return TOKEN;
+  const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
+    body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
+  TOKEN=(await r.json()).access_token; return TOKEN; }
+function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
+function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
+function addLine(o){ o=o||{}; const tr=document.createElement("tr");
+  tr.innerHTML=COLS.map(c=>`<td><input data-c="${c}" ${NUM.has(c)?'type="number" step="any"':''} value="${esc(o[c])}"></td>`).join("")+`<td><button class="link" onclick="this.closest('tr').remove()">×</button></td>`;
+  F("lines").appendChild(tr); }
+function resetForm(){ EDIT=null; F("editing").textContent=""; ["fOrderNo","fOrderNoUser","fVIN","fConfirmNo","fCusCharges","fUserCreate"].forEach(i=>F(i).value=""); F("lines").innerHTML=""; addLine(); }
+function body(){
+  const lines=[...F("lines").querySelectorAll("tr")].map(tr=>{ const o={}; tr.querySelectorAll("input").forEach(i=>{ const c=i.dataset.c; o[c]=i.value===""?null:(NUM.has(c)?+i.value:i.value); }); return o; }).filter(o=>o.partID||o.quantity!=null);
+  return {DealerCode:F("fDealer").value,OrderNo:F("fOrderNo").value||null,OrderNoUser:F("fOrderNoUser").value||null,SupplierID:F("fSupplier").value?+F("fSupplier").value:null,
+    TypeOrder:F("fTypeOrder").value||null,SendDate:F("fSendDate").value||null,VIN:F("fVIN").value||null,ConfirmNo:F("fConfirmNo").value||null,CusCharges:F("fCusCharges").value||null,
+    UserCreate:F("fUserCreate").value||null,PartialShipment:F("fPartial").checked?"True":"False",TypeTransport:F("fTransport").checked?"1":"0",
+    Status:EDIT?(F("fConfirm").checked?"CONF":"1"):"1",Lines:lines}; }
+async function save(){ await token();
+  const url=EDIT?`/api/serpartorders/${EDIT}/update`:"/api/serpartorders";
+  const r=await fetch(url,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body())});
+  const d=await r.json(); if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
+  msg((EDIT?"Đã cập nhật ":"Đã tạo ")+d.orderNo); await open_(d.id); load(); }
+async function open_(id){ await token(); const d=await (await fetch(`/api/serpartorders/${id}`,{headers:H()})).json(); const h=d.header;
+  EDIT=id; F("editing").textContent="— đang sửa "+h.orderNo+" ("+(d.newStatus||h.status)+")";
+  F("fDealer").value=h.dealerCode; F("fOrderNo").value=h.orderNo||""; F("fOrderNoUser").value=h.orderNoUser||""; F("fSupplier").value=h.supplierID??"";
+  F("fTypeOrder").value=h.typeOrder||""; F("fSendDate").value=(h.sendDate||"").slice(0,10); F("fVIN").value=h.vin||""; F("fConfirmNo").value=h.confirmNo||"";
+  F("fCusCharges").value=h.cusCharges||""; F("fUserCreate").value=h.userCreate||""; F("fPartial").checked=h.partialShipment==="True"; F("fTransport").checked=h.typeTransport!=="0";
+  F("fConfirm").checked=h.status==="CONF"; F("lines").innerHTML=""; (d.lines||[]).forEach(l=>addLine(l)); if(!(d.lines||[]).length) addLine(); window.scrollTo(0,0); }
+async function load(){ await token();
+  const d=await (await fetch(`/api/serpartorders?dealer=${encodeURIComponent(F("qDealer").value)}&status=${encodeURIComponent(F("qStatus").value)}&q=${encodeURIComponent(F("qQ").value)}`,{headers:H()})).json();
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.orderNo)}</b></td><td>${esc(o.orderNoUser)}</td><td>${esc(o.dealerCode)}</td><td>${esc(o.supplierName||o.supplierCode)}</td><td>${esc((o.createDate||"").slice(0,10))}</td><td>${esc(o.vin)}</td><td>${esc(o.confirmNo)}</td><td><span class="pill">${esc(o.newStatus)}</span></td><td><button class="link" onclick="open_(${o.id})">Mở</button></td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có đơn.</td></tr>';
+}
+resetForm();
+</script>
+</body></html>
