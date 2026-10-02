@@ -23595,6 +23595,49 @@ app.MapPost("/api/carvininvoiceinfos/import", async (CarVinInvoiceImportDto dto,
             return Results.BadRequest(new { error = $"VIN {r.VIN}: ngày kết thúc thế chấp phải >= ngày bắt đầu." });
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var vins = rows.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToHashSet();
+    // #420 Guard nhánh HOÁ ĐƠN NHÀ MÁY = `Car_VIN_UpdMulti_InvoiceFactory_New20210111` (BizHTC.Car.cs:1701, WS LIVE). Mode "factory"
+    //   (mặc định khi có dòng nhập InvoiceNoFactory/InvoiceFactoryDate); "transferred" = nhánh chuyển nhượng (guard riêng — nợ).
+    //   Mỗi VIN: myCar_CheckVIN (phải có ⇒ CommonAppData_CarVINNotFound) → myVIN_CheckCanHoaDon (Car.Profile.cs:85: spec CKD HOẶC
+    //   Mst_CarSpec.FlagInvoiceFactory = "1" ⇒ PHẢI có HĐ nhà máy; không có spec ⇒ CarVINUpdate_InvalidVIN):
+    //     không được HĐ mà nhập số/ngày ⇒ _InvalidvinFlagInvoiceFactory; được HĐ: số rỗng ⇒ _InvalidInvoiceNoFactory, ngày rỗng ⇒
+    //     _InvalidInvoiceFactoryDate, Car_VIN.CODate rỗng ⇒ _InvalidVIN; nhập số HĐ mà Car_VIN.CONo rỗng ⇒ _CONoIsNotNull.
+    //   Hiệu ứng lên Car_VIN (CarVinMaster): đủ hồ sơ (DocumentsStatus + CONo [+ CODate + số/ngày HĐ khi được HĐ]) ⇒
+    //     StatusMortageEnd = "A" (TConst.Stage.Approved) + LogDateTimeStatusMortageEnd = bây giờ ⇒ DRFullDocDate = mốc đó.
+    var modeFactory = string.Equals(dto.Mode, "factory", StringComparison.OrdinalIgnoreCase)
+        || (dto.Mode is null && rows.Any(r => !string.IsNullOrWhiteSpace(r.InvoiceNoFactory) || r.InvoiceFactoryDate.HasValue));
+    if (modeFactory)
+    {
+        var masters = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
+        var specCodes = masters.Select(m => m.SpecCode).Where(s => s != null).Distinct().ToList();
+        var specs = await db.CarSpecs.Where(x => x.OrgId == t.OrgId && specCodes.Contains(x.SpecCode)).ToListAsync();
+        foreach (var (r, i) in rows.Select((r, i) => (r, i)))
+        {
+            var vin = r.VIN!.Trim().ToUpperInvariant();
+            var cv = masters.FirstOrDefault(m => m.VIN == vin);
+            if (cv is null) return Results.BadRequest(new { error = $"Dòng {i + 1}: VIN {vin} không tồn tại.", code = "CommonAppData_CarVINNotFound", vin });
+            var sp = specs.FirstOrDefault(s => s.SpecCode == cv.SpecCode);
+            if (sp is null) return Results.BadRequest(new { error = $"Dòng {i + 1}: VIN {vin} không có spec hợp lệ.", code = "CarVINUpdate_InvalidVIN", vin });
+            var can = string.Equals(sp.AssemblyStatus, "CKD", StringComparison.OrdinalIgnoreCase) || (sp.FlagInvoiceFactory ?? "").Trim() == "1";
+            var invNo = (r.InvoiceNoFactory ?? "").Trim();
+            var docOk = !string.IsNullOrWhiteSpace(cv.DocumentsStatus); var coOk = !string.IsNullOrWhiteSpace(cv.CONo);
+            string? statusEnd = cv.StatusMortageEnd; DateTime? logEnd = cv.LogDateTimeStatusMortageEnd;
+            if (!can)
+            {
+                if (invNo != "") return Results.BadRequest(new { error = $"Dòng {i + 1}: VIN {vin} không thuộc diện hoá đơn nhà máy nhưng có nhập hoá đơn.", code = "Car_VIN_UpdMulti_InvoiceFactory_CarVINTbl_InvalidvinFlagInvoiceFactory", vin });
+                if (docOk && coOk) { statusEnd = "A"; logEnd = DateTime.Today; }
+            }
+            else
+            {
+                if (invNo == "") return Results.BadRequest(new { error = $"Dòng {i + 1}: VIN {vin} chưa có số hoá đơn nhà máy.", code = "Car_VIN_UpdMulti_InvoiceFactory_CarVINTbl_InvalidInvoiceNoFactory", vin });
+                if (r.InvoiceFactoryDate is null) return Results.BadRequest(new { error = $"Dòng {i + 1}: VIN {vin} chưa có ngày hoá đơn nhà máy.", code = "Car_VIN_UpdMulti_InvoiceFactory_CarVINTbl_InvalidInvoiceFactoryDate", vin });
+                if (cv.CODate is null) return Results.BadRequest(new { error = $"Dòng {i + 1}: VIN {vin} chưa có ngày CO.", code = "Car_VIN_UpdMulti_InvoiceFactory_CarVINTbl_InvalidVIN", vin });
+                if (docOk && coOk) { statusEnd = "A"; logEnd = DateTime.Now; }
+            }
+            if (invNo != "" && !coOk) return Results.BadRequest(new { error = $"Dòng {i + 1}: VIN {vin} chưa có số CO nên chưa nhập được hoá đơn.", code = "Car_VIN_UpdMulti_InvoiceFactory_CarVINTbl_CONoIsNotNull", vin });
+            if (!string.IsNullOrEmpty(statusEnd) && logEnd is not null) { cv.StatusMortageEnd = statusEnd; cv.LogDateTimeStatusMortageEnd = logEnd; cv.DRFullDocDate = logEnd; }
+            cv.LogLUDateTime = DateTime.Now; cv.LogLUBy = by;
+        }
+    }
     var existing = await db.CarVinInvoiceInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
     var byVin = existing.ToDictionary(x => x.VIN, x => x);
     int added = 0, updated = 0; var now = DateTime.Now;
@@ -58180,7 +58223,7 @@ record GrtStartEditDto(List<GrtStartRowDto>? Lines);
 record GrtStartRowDto(string? VIN, DateTime? DateStart, DateTime? DateExpired, decimal? GrtValue, string? FlagDtlDiscount);
 record CarTestCarLineDto(string? CarId, string? Vin, string? ModelCode, string? SpecCode, string? SpecDescription, string? SoDonHang, string? ColorCode, string? ColorName, DateTime? EffDateStart, DateTime? EffDateEnd, decimal UnitPriceActual);
 record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, List<CarTestCarLineDto>? Lines);
-record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows);
+record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows, string? Mode = null);   // #420 Mode: factory | transferred
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate,
     string? InvoiceFactorySearch = null, string? InvoiceSpecName = null, string? InvoiceNoTransferred = null, string? InvoiceTransferredSearch = null, DateTime? InvoiceTransferredDate = null);   // #400
 record DealerSalesGroupTypeDto(string? SalesGroupType, string? SalesGroupTypeName, string? FlagIsDelete = null);
