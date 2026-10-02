@@ -26277,6 +26277,7 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
                 return Results.BadRequest(new { error = $"RO {roNo} đang tạm dừng (FlagPause = 0).", code = "Ser_RO_UpdateStatus_InvalidFlagPause" });
             if (await RoWorkTimeAdd(db, ro, dto.ActualFinish.Value, "1", "0", "1", who) is { } badWt2) return badWt2;   // #418
             if (RoTotalActHours(await RoWorkTimesOf(db, t.OrgId, ro.Id)) is { } hrsS) ro.TotalActHours = hrsS;
+            await RoCareMaceOnRepaired(db, ro, dto.ActualFinish.Value, who);   // #419
             ro.Status = "RPRD"; ro.FinishedDate = Minute(dto.ActualFinish.Value); ro.LogLUDateTime = now; ro.LogLUBy = who; roStatusTo = "RPRD";
         }
     }
@@ -54176,7 +54177,8 @@ app.MapGet("/api/customercaremaces", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(status)) { var stM = MaceCode(status); q = q.Where(c => c.Status == stM); }
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.Vin != null && c.Vin.Contains(vin.ToUpper()));
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark }).ToListAsync();
+    { c.CareNo, c.MaceType, c.RONo, c.Vin, c.CusName, c.Status, c.ContactDate, c.ApointDate, c.MaceRecomentDate, c.Remark,
+      c.DealerCode, c.CarID, c.CusID, c.CreatedAt, c.CreatedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #419
     return Results.Ok(new { count = items.Count, pending = items.Count(x => x.Status == "0"), items });
 }).RequireAuthorization();
 
@@ -55307,6 +55309,44 @@ app.MapPost("/api/repairorders/{no}/appid", async (string no, RoAppIdDto dto, Ap
     return Results.Ok(new { r.RONo, r.AppId });
 }).RequireAuthorization();
 
+// ===== #419 CHĂM SÓC MACE khi RO sang RPRD — SerROStatusUpdate (Service01.cs:9236-9262) =====
+//   (1) `ProcessDeleteCareMace(DealerCode, CarId, "0")` (Customer.cs:13187): xoá MACE CHƯA LIÊN HỆ ("0") của xe tại đại lý.
+//   (2) `ProcessGetLastestMace` (Service01.cs:14084): M3 — RO có ReminderMaintanceDate (CVDV chỉ định) ⇒ ngày đó, MaceType "1";
+//       ngược lại các RO của xe tại đại lý (order by ROID): ≤ 1 RO ⇒ tần suất 6 tháng, > 1 ⇒ Σ ngày giữa CheckInDate liên tiếp /
+//       ((số RO − 1) × 30) (CHIA NGUYÊN, = 0 ⇒ 1); M1 = ngày sửa xong + tần suất (tháng), M2 = ngày sửa xong + 6 tháng;
+//       M1 < M2 ⇒ M1, MaceType "3"; ngược lại M2, MaceType "2".
+//   (3) `ProcessSaveCareMace`: DealerCode, CreatedDate/By, MaceRecomentDate (ngày), Status "0", CarId, CusId, MaceType, ROID, LogLU*.
+//   ⚠️ Nguồn: CarId rỗng ⇒ SQL xoá "CarId=" lỗi cú pháp; CheckInDate rỗng ⇒ Convert văng — MiniHTC: bỏ qua bước xoá / dòng thiếu ngày.
+async Task RoCareMaceOnRepaired(AppDbContext db, RepairOrder ro, DateTime finished, string who)
+{
+    var dealer = ro.DealerCode; var car = ro.CarID; var now = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(car))
+        db.CustomerCareMaces.RemoveRange(await db.CustomerCareMaces.Where(x => x.OrgId == ro.OrgId && x.DealerCode == dealer && x.Status == "0" && x.CarID == car).ToListAsync());
+    string maceType; DateTime rec;
+    if (ro.ReminderMaintanceDate is { } rm) { maceType = "1"; rec = rm.Date; }
+    else
+    {
+        var hist = await db.RepairOrders.Where(x => x.OrgId == ro.OrgId && x.DealerCode == dealer && (string.IsNullOrWhiteSpace(car) || x.CarID == car))
+            .OrderBy(x => x.Id).Select(x => x.CheckInDate).ToListAsync();
+        var dates = hist.Where(d => d.HasValue).Select(d => d!.Value).ToList();
+        int freq;
+        if (hist.Count <= 1) freq = 6;
+        else
+        {
+            var days = 0;
+            for (var k = 1; k < dates.Count; k++) days += (dates[k] - dates[k - 1]).Days;
+            freq = days / ((hist.Count - 1) * 30);
+            if (freq == 0) freq = 1;
+        }
+        var m1 = finished.Date.AddMonths(freq); var m2 = finished.Date.AddMonths(6);
+        if (m1 < m2) { maceType = "3"; rec = m1; } else { maceType = "2"; rec = m2; }
+    }
+    var pat = CmSeq.Pattern("MC-", (dealer ?? "").ToUpperInvariant());
+    var existing = (await db.CustomerCareMaces.Where(x => x.OrgId == ro.OrgId && x.CareNo.StartsWith(pat)).Select(x => x.CareNo).ToListAsync());
+    db.CustomerCareMaces.Add(new CustomerCareMace { OrgId = ro.OrgId, CareNo = CmSeq.Next(existing, pat), MaceType = maceType, RONo = ro.RONo, Vin = ro.Vin, CusName = ro.CusName,
+        Status = "0", MaceRecomentDate = rec, DealerCode = dealer, CarID = car, CusID = ro.CusID, CreatedAt = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });
+}
+
 // ===== #418 GIỜ CÔNG RO (Ser_ROWorkTime) =====
 // `InsertSer_ROWorkTime` (BizCarSv.zzzzCode.cs:208): RO phải tồn tại; trạng thái ∈ CRE/PRT/HRO/INGA/RPRD ⇒ _InvalidROStatus; mốc cắt về phút;
 // ROWTNo = {yyMM}WT{NNNNN}. Gọi TRƯỚC khi đổi trạng thái RO (nguồn kiểm trên bản ghi DB chưa lưu).
@@ -55411,6 +55451,7 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     {
         if (await RoWorkTimeAdd(db, r, sd!.Value, "1", "0", "1", user.Identity?.Name ?? "system") is { } badWtB) return badWtB;
         if (RoTotalActHours(await RoWorkTimesOf(db, t.OrgId, r.Id)) is { } hrsA) r.TotalActHours = hrsA;
+        await RoCareMaceOnRepaired(db, r, sd!.Value, user.Identity?.Name ?? "system");   // #419
     }
     r.Status = target; r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
     switch (target)

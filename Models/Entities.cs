@@ -5508,6 +5508,14 @@ public sealed class CustomerCareMace
     public DateTime? MaceRecomentDate { get; set; }
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #419 parity Ser_CustomerCareMace — `ProcessSaveCareMace` (BizCarSv.Customer.cs:12783) khi RO sang RPRD =====
+    public string? DealerCode { get; set; }
+    public string? CarID { get; set; }
+    public string? CusID { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phụ tùng nợ khách (Ser_Part_OO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO + biz Ser_Part_OO_Create/_Update, TCMotor DMSCarSv):
