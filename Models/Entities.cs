@@ -5144,6 +5144,8 @@ public sealed class ServiceWarrantyClaim
     /// trạng thái "CONF", nên ở đây ghi mốc này khi đề nghị CHUYỂN VÀO trạng thái Confirmed.
     /// </summary>
     public DateTime? ApprovedDate { get; set; }
+    /// <summary>#414 `Ser_ROWarrantyReport.ApprovedBy` — HTC duyệt (`Ser_ROWarrantyReport_HTCApproved_New20230112`).</summary>
+    public string? ApprovedBy { get; set; }
 
     public string? HtcNote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
@@ -5223,6 +5225,9 @@ public sealed class WarrantyClaimPartItem
     /// <summary>Cờ phụ tùng chính (FlagMainPart) — nguồn lưu tách khỏi <see cref="RowPartType"/>.</summary>
     public string? FlagMainPart { get; set; }
     public string? Note { get; set; }
+    /// <summary>#414 HTC duyệt ghi ApprovedDate/ApprovedBy cho TỪNG dòng (HTCApproved_New20230112).</summary>
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

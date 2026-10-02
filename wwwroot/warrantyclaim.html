@@ -87,7 +87,8 @@ async function create2(){ await token();
 async function act(id,action){ await token();
   let note=null;
   if(action==="reject"||action==="revert"){ note=prompt("Lý do "+(action==="reject"?"từ chối":"hoàn trả")+":"); if(!note) return; }
-  const r=await fetch("/api/warrantyclaims/"+id+"/action",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Action:action,Note:note})});
+  const body={Action:action,Note:note}; if(action==="approve"){ body.ApprovedDate=new Date().toISOString().slice(0,10); }   /* #414 HTCApproved: ngày duyệt */
+  const r=await fetch("/api/warrantyclaims/"+id+"/action",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
 }
 /* #413 dòng công việc (Ser_ROWarrantyReportServiceItems) + phụ tùng + lịch sử (Ser_ROWarrantyReportTransaction) */
@@ -106,7 +107,9 @@ function acts(o){ let h=`<button class="link" onclick="detail(${o.id},'${esc(o.r
   if(o.warrantyStatus==="SENT") h+=`<button class="link" onclick="act(${o.id},'review')">Tiếp nhận</button>`;
   if(o.warrantyStatus==="CONF") h+=`<button class="link" onclick="act(${o.id},'approve')">Duyệt</button>`;
   if(o.warrantyStatus==="SENT"||o.warrantyStatus==="CONF") h+=`<button class="link" onclick="act(${o.id},'reject')">Từ chối</button><button class="link" onclick="act(${o.id},'revert')">Hoàn trả</button>`;
+  if(o.warrantyStatus==="PEND"||o.warrantyStatus==="REJ"||o.warrantyStatus==="REVERT") h+=`<button class="link" onclick="del(${o.id})">Xoá</button>`;   /* #414 Delete_New20191121 */
   return h; }
+async function del(id){ if(!confirm("Xoá báo cáo bảo hành?")) return; await token(); const r=await fetch("/api/warrantyclaims/"+id,{method:"DELETE",headers:H()}); const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load(); }
 async function load(){ await token();
   const p=new URLSearchParams(); if(F("qStatus").value)p.set("status",F("qStatus").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qVin").value)p.set("vin",F("qVin").value);
   const r=await fetch("/api/warrantyclaims?"+p.toString(),{headers:H()}); const d=await r.json();

@@ -1194,6 +1194,9 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ErrorCodePN\" text NULL",
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ErrorCodeCD\" text NULL",
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"PartIDError\" text NULL",
+                "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",   // #414
+                "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"ApprovedDate\" timestamp NULL",   // #414
+                "ALTER TABLE public.\"WarrantyClaimPartItems\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",   // #414
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"ServiceWarrantyClaims\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",

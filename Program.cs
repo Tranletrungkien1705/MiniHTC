@@ -19443,7 +19443,7 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
     {
         x.Id, x.ROWNo, x.DealerCode, x.RONo, x.Vin, x.PlateNo, x.WarrantyType, x.PartCode, x.Description, x.Amount, x.WarrantyStatus, x.HMCApiStatus, x.SyncHMCDateTime, x.ClmRcptNo, x.HMCApiQtyA, x.ClmNoSrl, x.HtcNote, x.WarrantySerCode, x.ApprovedDate,
         x.Creator, x.Assistant, x.CusID, x.CusName, x.CusAddress, x.CusTel, x.CheckInDate, x.StartDate, x.FinishedDate, x.CusRequest, x.CarStatus,   // #412
-        x.NaturalCode, x.CauseCode, x.Km, x.CarID, x.ROWTID, x.ErrorCodePN, x.ErrorCodeCD, x.PartIDError, x.CreatedAt, x.CreatedBy, x.LogLUDateTime, x.LogLUBy
+        x.NaturalCode, x.CauseCode, x.Km, x.CarID, x.ROWTID, x.ErrorCodePN, x.ErrorCodeCD, x.PartIDError, x.CreatedAt, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.ApprovedBy
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(i => i.Amount),
         pending = items.Count(i => i.WarrantyStatus == "PEND"), sent = items.Count(i => i.WarrantyStatus == "SENT"),
@@ -19626,7 +19626,7 @@ app.MapGet("/api/warrantyclaims/{id}/parts", async (long id, AppDbContext db, IT
         {
             x.Id, x.ClaimId, x.PartCode, x.PartName, x.RowPartType, x.PartOrderType, x.PartOrderNo,
             x.Quantity, x.Price, x.Factor, x.Vat, x.InsurancePrice, x.ExpenseType, x.WarrantyStatus,
-            x.FlagMainPart, x.Note, x.CreatedAt, x.UpdatedAt,
+            x.FlagMainPart, x.Note, x.CreatedAt, x.UpdatedAt, x.ApprovedDate, x.ApprovedBy,   // #414
             rowPartTypeName = rowPartTypeNames.ContainsKey(x.RowPartType) ? rowPartTypeNames[x.RowPartType] : x.RowPartType,
             amount = x.Quantity * x.Price * x.Factor,
         }).ToListAsync();
@@ -19787,43 +19787,74 @@ app.MapGet("/api/warrantyclaims/{id}/transactions", async (long id, AppDbContext
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #414 LUỒNG TRẠNG THÁI báo cáo bảo hành — map 1:1 về các hàm nguồn (BizCarSv.WarrantyReport.cs):
+//   submit  ⇒ `Ser_ROWarrantyReportUpdateStatus` (:6998) NewStatus = SENT (đại lý gửi HTC)
+//   revert  ⇒ `Ser_ROWarrantyReportUpdateStatus` NewStatus = REVERT (HTC trả lại — TConst HTCRevert)
+//   review  ⇒ `Ser_ROWarrantyReport_HTCConfirm` (:7230) ⇒ CONF
+//   reject  ⇒ `Ser_ROWarrantyReport_HTCReject` (:9670) ⇒ REJ
+//   approve ⇒ `Ser_ROWarrantyReport_HTCApproved_New20230112` (:7458): WarrantyStatus = tham số (mặc định ACCE; CONF = "đã gửi HMC, chờ duyệt"),
+//             ApprovedDate (phải ≥ CreatedDate ⇒ _HTCApproved_InvalidApproved; rỗng ⇒ nguồn Convert.ToDateTime(null)=MinValue ⇒ cũng lỗi) +
+//             ApprovedBy cho đầu phiếu VÀ từng dòng công việc/phụ tùng; DealerCode/CusRequest/CarStatus/NaturalCode/CauseCode ghi đè khi có.
+//   🔴 Nguồn KHÔNG chặn theo trạng thái hiện tại (mọi hàm chỉ `CheckExistROWarrantyReport` = tồn tại) và Note KHÔNG bắt buộc ⇒ BỎ bảng
+//      chuyển tiếp + "phải ghi lý do" tự đặt của port cũ (guard chặt hơn nguồn). Giữ luật nguồn "phải có 1 CVC" ở submit (#413).
+//   Mọi hành động: LogLU*; có Note ⇒ 1 dòng Ser_ROWarrantyReportTransaction (CurrentStatus = trạng thái mới).
+//   📌 NỢ: Btl_Bulletin_VIN (bulletin theo VIN khi SENT/ACCE) và cập nhật WarrantyStatus từng dòng theo lưới — chưa port.
 app.MapPost("/api/warrantyclaims/{id}/action", async (long id, WarrantyClaimActionDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (c is null) return Results.NotFound(new { id });
+    if (c is null) return Results.BadRequest(new { error = "Không tìm thấy báo cáo bảo hành.", code = "Ser_WarrantyReport_NotFound" });
     var act = (dto.Action ?? "").Trim().ToLowerInvariant();
-    // (action, các trạng thái nguồn hợp lệ, trạng thái đích)
-    (string[] from, string to) rule = act switch
-    {
-        "submit"  => (new[] { "PEND", "REVERT" }, "SENT"),
-        "review"  => (new[] { "SENT" }, "CONF"),
-        "approve" => (new[] { "CONF" }, "ACCE"),
-        "reject"  => (new[] { "SENT", "CONF" }, "REJ"),
-        "revert"  => (new[] { "SENT", "CONF" }, "REVERT"),
-        _ => (Array.Empty<string>(), "")
-    };
-    if (rule.to == "") return Results.BadRequest(new { error = "Hành động không hợp lệ." });
-    if (!rule.from.Contains(c.WarrantyStatus)) return Results.BadRequest(new { error = $"Không thể '{act}' khi đang ở trạng thái {c.WarrantyStatus}." });
-    if ((act == "reject" || act == "revert") && string.IsNullOrWhiteSpace(dto.Note))
-        return Results.BadRequest(new { error = "Từ chối/hoàn trả phải ghi lý do." });
-    // #413 luật nguồn lúc Create: có dòng công việc thì PHẢI có đúng 1 CVC ("Báo cáo bảo hành phải có 1 công việc chính!").
+    var to = act switch { "submit" => "SENT", "revert" => "REVERT", "review" => "CONF", "reject" => "REJ",
+        "approve" => string.IsNullOrWhiteSpace(dto.WarrantyStatus) ? "ACCE" : dto.WarrantyStatus.Trim().ToUpperInvariant(), _ => "" };
+    if (to == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (submit/revert/review/reject/approve)." });
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
     if (act == "submit")
     {
         var svcs = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).Select(x => x.ROWSerType).ToListAsync();
         if (svcs.Count > 0 && !svcs.Contains("CVC"))
             return Results.BadRequest(new { error = "Báo cáo bảo hành phải có 1 công việc chính!", code = "Ser_WarrantyReport_Create_InvalidROWSerType" });
     }
-    c.WarrantyStatus = rule.to;
-    // Mốc duyệt dùng cho job đẩy HMC (nguồn lọc ApprovedDate trên đề nghị đang ở "CONF").
-    if (rule.to == "CONF") c.ApprovedDate = DateTime.Now;
+    if (act == "approve")
+    {
+        var created = (c.CreatedAt).Date;
+        if (dto.ApprovedDate is null || created > dto.ApprovedDate.Value.Date)
+            return Results.BadRequest(new { error = $"Ngày duyệt phải ≥ ngày lập báo cáo ({created:yyyy-MM-dd}).", code = "Ser_ROWarrantyReport_HTCApproved_InvalidApproved" });
+        var appr = dto.ApprovedDate.Value.Date;
+        static string? S(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+        if (S(dto.DealerCode) is { } dl) c.DealerCode = dl;
+        if (S(dto.CusRequest) is { } cr) c.CusRequest = cr;
+        if (S(dto.CarStatus) is { } cs) c.CarStatus = cs;
+        if (S(dto.NaturalCode) is { } nc) c.NaturalCode = nc;
+        if (S(dto.CauseCode) is { } cc) c.CauseCode = cc;
+        c.ApprovedDate = appr; c.ApprovedBy = who;
+        foreach (var sv in await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync()) { sv.ApprovedDate = appr; sv.ApprovedBy = who; sv.LogLUDateTime = now; sv.LogLUBy = who; }
+        foreach (var pt in await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync()) { pt.ApprovedDate = appr; pt.ApprovedBy = who; pt.UpdatedAt = now; }
+    }
+    c.WarrantyStatus = to;
     if (!string.IsNullOrWhiteSpace(dto.Note)) c.HtcNote = dto.Note;
-    c.UpdatedAt = DateTime.Now; c.LogLUDateTime = DateTime.Now; c.LogLUBy = user.Identity?.Name ?? "system";
-    // #413 đổi trạng thái kèm ghi chú ⇒ 1 dòng lịch sử (nguồn: ItemStatus_Update → ProcessSaveSerROWarrantyReportTransaction, :3924).
+    c.UpdatedAt = now; c.LogLUDateTime = now; c.LogLUBy = who;
     if (!string.IsNullOrWhiteSpace(dto.Note))
-        db.WarrantyClaimTransactions.Add(new WarrantyClaimTransaction { OrgId = t.OrgId, ClaimId = c.Id, Creator = c.LogLUBy, Note = dto.Note!.Trim(), CurrentStatus = c.WarrantyStatus,
-            CreatedDate = DateTime.Now, CreatedBy = c.LogLUBy, LogLUDateTime = DateTime.Now, LogLUBy = c.LogLUBy });
+        db.WarrantyClaimTransactions.Add(new WarrantyClaimTransaction { OrgId = t.OrgId, ClaimId = c.Id, Creator = string.IsNullOrWhiteSpace(dto.Creator) ? who : dto.Creator.Trim(),
+            Note = dto.Note!.Trim(), CurrentStatus = to, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.Id, c.WarrantyStatus });
+    return Results.Ok(new { c.Id, c.WarrantyStatus, c.ApprovedDate, c.ApprovedBy });
+}).RequireAuthorization();
+
+// #414 XOÁ báo cáo bảo hành — `Ser_ROWarrantyReport_Delete_New20191121`: không có ⇒ _ROWID_NotFound; SENT/CONF ⇒ _NotDelete_Sent;
+//   ACCE ⇒ _NotDelete_Accept; còn lại (PEND/REJ/REVERT) xoá lịch sử → dòng công việc → dòng phụ tùng → đính kèm → đầu phiếu.
+app.MapDelete("/api/warrantyclaims/{id}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (c is null) return Results.BadRequest(new { error = "Không tìm thấy báo cáo bảo hành.", code = "Ser_WarrantyReport_ROWID_NotFound" });
+    if (c.WarrantyStatus is "SENT" or "CONF") return Results.BadRequest(new { error = "Báo cáo đã gửi HTC, không xoá được.", code = "Ser_WarrantyReport_NotDelete_Sent" });
+    if (c.WarrantyStatus == "ACCE") return Results.BadRequest(new { error = "Báo cáo đã được chấp nhận, không xoá được.", code = "Ser_WarrantyReport_NotDelete_Accept" });
+    db.WarrantyClaimTransactions.RemoveRange(await db.WarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync());
+    db.WarrantyClaimServiceItems.RemoveRange(await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync());
+    db.WarrantyClaimPartItems.RemoveRange(await db.WarrantyClaimPartItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync());
+    db.WarrantyAttachments.RemoveRange(await db.WarrantyAttachments.Where(x => x.OrgId == t.OrgId && x.ServiceWarrantyClaimId == id).ToListAsync());
+    db.ServiceWarrantyClaims.Remove(c);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id, c.ROWNo });
 }).RequireAuthorization();
 
 // ===== Gói dịch vụ (ServicePackage — port 1:1 FrmServicePackageCreate/Search, TCMotor/Services) =====
@@ -58106,7 +58137,8 @@ record WarrantyClaimServiceItemDto(string? SerID, string? ROWSerType, string? Ty
     string? Note = null, string? ExpenseType = null, string? WarrantyStatus = null, decimal? InsurancePrice = null, long? BulletinID = null);   // #413 cột Ser_ROWarrantyReportServiceItems
 record WarrantyClaimPartItemDto(string? PartCode, string? PartName, string? RowPartType, string? PartOrderType, string? PartOrderNo, decimal Quantity, decimal Price, decimal Factor, decimal Vat, decimal InsurancePrice, string? ExpenseType, string? WarrantyStatus, string? FlagMainPart, string? Note);
 record WarrantyHmcSyncDto(string? ToStatus, string? ClmRcptNo, string? ClmNoSrl = null);
-record WarrantyClaimActionDto(string Action, string? Note);
+record WarrantyClaimActionDto(string Action, string? Note, DateTime? ApprovedDate = null, string? WarrantyStatus = null, string? DealerCode = null,
+    string? CusRequest = null, string? CarStatus = null, string? NaturalCode = null, string? CauseCode = null, string? Creator = null);   // #414 tham số HTCApproved/UpdateStatus
 record AppointmentServiceItemDto(string? SerCode, string? SerName, decimal? StdManHour, string? Note);
 record AppointmentPartItemDto(string? PartCode, string? PartName, string? EngName, string? Unit, decimal Quantity, string? Note);
 /// <summary>#337 Port 1:1 `myUtil_GetCmSeqCode` (TCMotor BizCarSv.Common.cs:814) — dãy số dùng chung của
