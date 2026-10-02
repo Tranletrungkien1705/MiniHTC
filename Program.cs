@@ -54723,20 +54723,29 @@ app.MapPost("/api/stockins/{no}/reject", async (string no, StockRejectDto dto, A
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { error = "Bạn chưa nhập lý do hủy phiếu nhập." });
-    // 🔴 Nguồn (`StockIn.cs:6476-6489`) chỉ `CheckExistStockIn` rồi gán Reject — **KHÔNG chặn trạng thái**.
-    // Port cũ chặn `!= "Draft"` là guard CHẶT HƠN nguồn (sai chiều). Đã bỏ để đúng 1:1.
-    // ⚠️ Hệ quả nguồn: huỷ phiếu đã Kết thúc KHÔNG hoàn lại tồn kho — đã ghi C0-bug4 để người quyết.
+    // #417 HUỶ = `SerStockInReject` (StockIn.cs:4689 — hàm WS LIVE; ghi chú cũ trỏ :6476 là bản KHÁC, đã lỗi thời):
+    //   (a) FrmStockInModify chỉ BẬT btnReject khi phiếu Finished (:415-422) và biz cần PartInstance INSTOCK của phiếu (chỉ sinh lúc
+    //       Kết thúc — phiếu chưa kết thúc ⇒ Rows[0] văng) ⇒ chỉ huỷ phiếu "3".
+    //   (b) Mỗi dòng: CheckStockInPartInstanceReject — phụ tùng của phiếu đã XUẤT (OUTSTOCK) ⇒ Ser_Inv_PartInstancePartOutNotReject;
+    //       rồi PartInstance → REJECT và Ser_Inv_StockBalance.InStockQuantity −= SL (HOÀN TỒN). MiniHTC không theo dõi từng chiếc
+    //       ⇒ tương đương: tồn (kho, mã, vị trí) < SL nhập = đã xuất một phần ⇒ chặn; ngược lại OnHand −= SL.
+    //   (c) Issue 968 trả DeliveryQuantity đơn đặt PT (#411). 📌 NỢ: SP_SharePart_Detail, xoá giá vốn (DeletePartCost).
+    if (h.Status != "3")
+        return Results.BadRequest(new { error = "Chỉ huỷ được phiếu nhập đã Kết thúc (3).", code = "SerStockInReject", h.Status });
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
-    // #411 Issue 968 — trả lại DeliveryQuantity cho đơn đặt PT. ⚠️ CHỈ khi phiếu đã Kết thúc ("3"): DeliveryQuantity chỉ được
-    //   cộng lúc Kết thúc; trừ cho phiếu chưa Kết thúc sẽ làm SAI số giao (LIVE `SerStockInReject` còn hoàn PartInstance/tồn —
-    //   chưa port, xem nợ [h]).
-    object? orderEffect = null;
-    if (h.Status == "3")
+    var siLines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id).ToListAsync();
+    var stocks = new List<(PartStock S, decimal Q)>();
+    foreach (var l in siLines)
     {
-        var siLines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id).ToListAsync();
-        h.Status = "5";
-        orderEffect = await SerPartOrderApplyStockIn(db, t.OrgId, h, siLines, reject: true, who: who);
+        var loc = l.Location ?? "";
+        var st = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == loc);
+        if (st is null || st.OnHand < l.Quantity)
+            return Results.BadRequest(new { error = $"Phụ tùng {l.PartCode} của phiếu đã xuất kho, không huỷ được phiếu nhập.", code = "Ser_Inv_PartInstancePartOutNotReject", l.PartCode, onHand = st?.OnHand ?? 0, l.Quantity });
+        stocks.Add((st, l.Quantity));
     }
+    foreach (var (st, q) in stocks) { st.OnHand -= q; st.UpdatedAt = DateTime.Now; }
+    h.Status = "5";
+    object? orderEffect = await SerPartOrderApplyStockIn(db, t.OrgId, h, siLines, reject: true, who: who);
     h.Status = "5"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, status = h.Status, h.OrderPartId, orderEffect });

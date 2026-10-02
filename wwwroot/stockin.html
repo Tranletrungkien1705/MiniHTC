@@ -27,7 +27,7 @@
   <table id="ltbl"><thead><tr><th>Mã PT</th><th>Tên PT</th><th>Vị trí</th><th class="n">SL</th><th class="n">Đơn giá</th><th class="n">VAT%</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
   <button class="sm" style="margin-top:6px" onclick="addLine()">+ Dòng PT</button>
 </div>
-<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="Draft">Nháp</option><option value="Posted">Đã ghi sổ</option></select><input id="q" placeholder="Lọc kho" oninput="load()" style="width:100px"></div>
+<div class="bar" style="margin:10px 0"><select id="fst" onchange="load()"><option value="">Tất cả</option><option value="1">Mới tạo</option><option value="2">Tiến hành</option><option value="3">Kết thúc</option><option value="5">Đã hủy</option></select><input id="q" placeholder="Lọc kho" oninput="load()" style="width:100px"></div>
 <table><thead><tr><th>Số phiếu</th><th>Kho</th><th>Dòng</th><th class="n">Tổng tiền</th><th>Trạng thái</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="6" class="muted">Đang tải…</td></tr></tbody></table>
 </div>
@@ -39,7 +39,7 @@
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const LBL={Draft:"Nháp",Posted:"Đã ghi sổ",Rejected:"Đã hủy"}; const n=x=>Number(x||0).toLocaleString("vi-VN");
+const LBL={"1":"Mới tạo","2":"Tiến hành","3":"Kết thúc","5":"Đã hủy"};   /* #417 TConst.Ser_Inv_StockIn */ const n=x=>Number(x||0).toLocaleString("vi-VN");
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -59,11 +59,13 @@ async function create(){
 async function load(){ await token();
   const d=await (await fetch(`/api/stockins?status=${F("fst").value}&warehouse=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(s=>{
-    let act=s.status==="Draft"?`<button class="sm" onclick="post('${s.stockInNo}')">Ghi sổ (tăng tồn)</button> <button class="sm" onclick="reject('${s.stockInNo}')">Hủy</button>`:"";
+    /* #417 trạng thái nguồn Ser_Inv_StockIn: 1 Mới tạo → 2 Tiến hành → 3 Kết thúc (tăng tồn); Huỷ chỉ khi 3 (FrmStockInModify btnReject) */
+    let act=s.status==="1"?`<button class="sm" onclick="exec_('${s.stockInNo}')">Tiến hành</button>`:s.status==="2"?`<button class="sm" onclick="post('${s.stockInNo}')">Kết thúc (tăng tồn)</button>`:s.status==="3"?`<button class="sm" onclick="reject('${s.stockInNo}')">Hủy (hoàn tồn)</button>`:"";
     return `<tr><td><b>${s.stockInNo}</b> <a href="#" class="det" onclick="lines('${s.stockInNo}');return false">xem</a></td><td>${s.warehouseCode}</td><td>${s.lines}</td>
       <td class="n">${n(s.total)}</td><td><span class="pill p-${s.status}">${LBL[s.status]||s.status}</span></td><td>${act}</td></tr><tr id="x-${s.stockInNo}"></tr>`;
   }).join("")||'<tr><td colspan="6" class="muted">Chưa có phiếu.</td></tr>';
 }
+async function exec_(no){ const r=await fetch(`/api/stockins/${no}/execute`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok){ msg("Đã chuyển Tiến hành "+no); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 async function post(no){ const r=await fetch(`/api/stockins/${no}/post`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok){ msg("Đã ghi sổ, tăng tồn "+j.postedLines+" PT."); load(); } else msg("Lỗi: "+(j.error||r.status)); }
 async function reject(no){ const rs=prompt("Lý do hủy phiếu nhập:",""); if(rs===null) return;
   const r=await fetch(`/api/stockins/${no}/reject`,{method:"POST",headers:H(),body:JSON.stringify({reason:rs})});
