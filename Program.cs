@@ -36684,17 +36684,43 @@ static async Task<IResult> PmtAvnCreate(AppDbContext db, Guid orgId, string who,
     if (string.IsNullOrWhiteSpace(month)) return Results.BadRequest(new { error = "Chưa chọn tháng thanh toán" });
     if (!DateTime.TryParse(month.Trim().Length == 7 ? month.Trim() + "-01" : month.Trim(), out var monthDate))
         return Results.BadRequest(new { error = "Tháng thanh toán không hợp lệ (yyyy-MM)." });
-    if (rows.Any(r => r.UnitPriceAVN < 0)) return Results.BadRequest(new { error = "Giá trị phải lớn hơn hoặc bằng 0!" });
+    // #422 ĐỊNH GIÁ PHÍA SERVER = `Pmt_PaymentAVN_SaveX_20210811` (DMS40/0.34.Contract.cs:22878; WS Pmt_PaymentAVN_Save): client CHỈ
+    //   gửi VIN; mỗi VIN theo thứ tự: (1) đã nằm trong phiếu khác còn hiệu lực (dòng ∉ R/C VÀ phiếu ∉ R/C) ⇒ Pmt_PaymentAVN_Save_InvalidVin;
+    //   (2) Car_VIN không có ⇒ _InvalidVIN; (3) đơn giá = Mst_UnitPriceAVN theo AVNCode của xe, EffDateTime ≤ AVNDate, mới nhất (KHÔNG lọc
+    //   FlagActive — dòng nguồn đã comment) ⇒ không có ⇒ _InvalidAVNCode. Dòng nhận EngineNo/StoreDate(InStorageDate)/SerialNo/AVNDate/AVNCode
+    //   từ xe, UnitPriceAVN từ bảng giá, FlagPmtAVN = 0, trạng thái P; AmountTotal = Σ UnitPriceAVN.
+    //   MiniHTC: EngineNo/StoreDate/SerialNo ở CarVinMaster, AVNCode/AVNDate ở VinPacking (FrmUpdateCVActualSpec — song sinh cột Car_VIN).
+    //   Giá client gửi lên BỊ BỎ QUA (guard "Giá trị phải ≥ 0" của port cũ không còn ý nghĩa).
+    var vinsAvn = rows.Select(r => (r.VIN ?? "").Trim().ToUpperInvariant()).ToList();
+    var busy = await (from d in db.PmtPaymentAvnDetails
+                      join p in db.PmtPaymentAvns on new { d.OrgId, d.PaymentAVNNo } equals new { p.OrgId, p.PaymentAVNNo }
+                      where d.OrgId == orgId && vinsAvn.Contains(d.VIN) && d.PaymentAVNDtlStatus != "R" && d.PaymentAVNDtlStatus != "C"
+                            && p.PaymentAVNStatus != "R" && p.PaymentAVNStatus != "C"
+                      select new { d.VIN, d.PaymentAVNNo, p.PaymentAVNStatus }).ToListAsync();
+    var cars = await db.CarVinMasters.Where(x => x.OrgId == orgId && vinsAvn.Contains(x.VIN)).ToListAsync();
+    var packs = await db.VinPackings.Where(x => x.OrgId == orgId && vinsAvn.Contains(x.Vin)).ToListAsync();
+    var prices = await db.AVNPrices.Where(x => x.OrgId == orgId).ToListAsync();
     var now = DateTime.Now;
     var no = "PAVN" + now.ToString("yyMMddHHmmss");
+    var dtls = new List<PmtPaymentAvnDetail>();
+    foreach (var vin in vinsAvn)
+    {
+        var b = busy.FirstOrDefault(x => x.VIN == vin);
+        if (b is not null) return Results.BadRequest(new { error = $"VIN {vin} đã thuộc phiếu thanh toán AVN {b.PaymentAVNNo} ({b.PaymentAVNStatus}).", code = "Pmt_PaymentAVN_Save_InvalidVin", vin, b.PaymentAVNNo });
+        var cv = cars.FirstOrDefault(x => x.VIN == vin);
+        if (cv is null) return Results.BadRequest(new { error = $"VIN {vin} không tồn tại.", code = "Pmt_PaymentAVN_Save_InvalidVIN", vin });
+        var pk = packs.FirstOrDefault(x => x.Vin == vin);
+        var price = pk?.AVNCode is { } ac && pk.AVNDate is { } ad
+            ? prices.Where(x => x.AVNCode == ac && x.EffDateTime <= ad).OrderByDescending(x => x.EffDateTime).FirstOrDefault() : null;
+        if (price is null) return Results.BadRequest(new { error = $"VIN {vin}: không tìm thấy đơn giá AVN cho mã {pk?.AVNCode}.", code = "Pmt_PaymentAVN_Save_InvalidAVNCode", vin, AVNCode = pk?.AVNCode });
+        dtls.Add(new PmtPaymentAvnDetail { OrgId = orgId, PaymentAVNNo = no, VIN = vin, EngineNo = cv.EngineNo, InStorageDate = cv.StoreDate, AVNDate = pk!.AVNDate,
+            SerialNo = cv.SerialNo, AVNCode = pk.AVNCode, UnitPriceAVN = price.UnitPriceAVN, FlagPmtAVN = "0", PaymentAVNDtlStatus = "P", LogLUDateTime = now, LogLUBy = who });
+    }
     var h = new PmtPaymentAvn { OrgId = orgId, PaymentAVNNo = no, PmtMonth = monthDate.ToString("yyyy-MM"), CreateDateTime = now, CreateBy = who,
-        AmountTotal = rows.Sum(x => x.UnitPriceAVN), PaymentAVNStatus = "P",
+        AmountTotal = dtls.Sum(x => x.UnitPriceAVN), PaymentAVNStatus = "P",
         HTVSignStatus = "P", TCMSSignStatus = "P", LogLUDateTime = now, LogLUBy = who };
     db.PmtPaymentAvns.Add(h);
-    foreach (var r in rows)
-        db.PmtPaymentAvnDetails.Add(new PmtPaymentAvnDetail { OrgId = orgId, PaymentAVNNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
-            EngineNo = r.EngineNo, InStorageDate = r.InStorageDate, AVNDate = r.AVNDate, SerialNo = r.SerialNo, AVNCode = r.AVNCode,
-            UnitPriceAVN = r.UnitPriceAVN, FlagPmtAVN = r.FlagPmtAVN, PaymentAVNDtlStatus = "P", LogLUDateTime = now, LogLUBy = who });
+    db.PmtPaymentAvnDetails.AddRange(dtls);
     await db.SaveChangesAsync();
     // PmtNo/TotalAmount: hình JSON cũ của /api/avnpayments (bí danh).
     return Results.Ok(new { h.PaymentAVNNo, PmtNo = h.PaymentAVNNo, h.PmtMonth, h.AmountTotal, TotalAmount = h.AmountTotal, status = h.PaymentAVNStatus, cars = rows.Count });
