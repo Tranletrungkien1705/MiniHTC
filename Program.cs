@@ -36567,9 +36567,25 @@ static async Task<IResult> PmtGpsCreate(AppDbContext db, Guid orgId, string who,
     foreach (var r in rows)
     {
         if (r.CostGPSStartDate is null || r.CostGPSEndDate is null) return Results.BadRequest(new { error = $"Thiếu ngày bắt đầu/kết thúc tính phí — VIN {r.VIN}." });
-        if (r.CostGPSEndDate < r.CostGPSStartDate) return Results.BadRequest(new { error = "Ngày kết thúc tính phí phải lớn hơn hoặc bằng ngày bắt đầu!" });
+        if (r.CostGPSEndDate < r.CostGPSStartDate) return Results.BadRequest(new { error = "Ngày kết thúc tính phí phải lớn hơn hoặc bằng ngày bắt đầu!", code = "Pmt_PaymentGPS_Save_InvalidCostGPSDate" });
+        // #423 `Pmt_PaymentGPS_SaveX` (0.34.Contract.cs:19255) — theo đúng thứ tự từng VIN: VIN đã ở phiếu GPS KHÁC còn hiệu lực
+        //   (dòng ∉ R/C & phiếu ∉ R/C) ⇒ mã nguồn copy-paste `Pmt_PaymentAVN_Save_InvalidVin`; Car_VIN ⋈ Car_Car phải có (lấy CarId — nguồn
+        //   Rows[0] văng) ⇒ 400; PriceGPS < 0 ⇒ _InvalidPriceGPS; DeductDate < 0 ⇒ _InvalidDeductDate.
+        //   ⚠️ Kết luận #387 "Save tự suy ngày tính phí / giá GPS" là SAI: CostGPSStart/End, DeductDate, PriceGPS do CLIENT gửi; server chỉ
+        //   kiểm + tính Plan/Actual/Amount; GPSID/GPSStartDate/RetailDate/ContractGPS bị gán NULL (bỏ giá trị client).
+        var vinG = r.VIN.Trim().ToUpperInvariant();
+        var busyG = await (from d in db.PmtPaymentGpsDetails
+                           join p in db.PmtPaymentGpses on new { d.OrgId, d.PaymentGPSNo } equals new { p.OrgId, p.PaymentGPSNo }
+                           where d.OrgId == orgId && d.VIN == vinG && d.PaymentGPSDtlStatus != "R" && d.PaymentGPSDtlStatus != "C" && p.PaymentGPSStatus != "R" && p.PaymentGPSStatus != "C"
+                           select new { d.PaymentGPSNo, p.PaymentGPSStatus }).FirstOrDefaultAsync();
+        if (busyG is not null) return Results.BadRequest(new { error = $"VIN {vinG} đã thuộc phiếu thanh toán GPS {busyG.PaymentGPSNo} ({busyG.PaymentGPSStatus}).", code = "Pmt_PaymentAVN_Save_InvalidVin", vin = vinG, busyG.PaymentGPSNo });
+        if (!await db.CarVinMasters.AnyAsync(x => x.OrgId == orgId && x.VIN == vinG && x.CarId != null && x.CarId != ""))
+            return Results.BadRequest(new { error = $"VIN {vinG} không tồn tại hoặc chưa có xe (Car_Car).", code = "Pmt_PaymentGPS_Save", vin = vinG });
+        if (r.PriceGPS < 0) return Results.BadRequest(new { error = "Giá GPS phải lớn hơn hoặc bằng 0", code = "Pmt_PaymentGPS_Save_InvalidPriceGPS", vin = vinG });
         if ((r.DeductDate ?? 0) < 0) return Results.BadRequest(new { error = "Ngày khấu trừ phải lớn hơn hoặc bằng 0", code = "Pmt_PaymentGPS_Save_InvalidDeductDate" });
     }
+    var vinsG = rows.Select(r => r.VIN.Trim().ToUpperInvariant()).ToList();
+    var carIds = await db.CarVinMasters.Where(x => x.OrgId == orgId && vinsG.Contains(x.VIN)).Select(x => new { x.VIN, x.CarId }).ToListAsync();
     var now = DateTime.Now;
     var no = "PGPS" + now.ToString("yyMMddHHmmss");
     var h = new PmtPaymentGps { OrgId = orgId, PaymentGPSNo = no, PmtMonth = month, CreateDateTime = now, CreateBy = who,
@@ -36583,9 +36599,9 @@ static async Task<IResult> PmtGpsCreate(AppDbContext db, Guid orgId, string who,
         var amount = actual * r.PriceGPS;
         total += amount;
         db.PmtPaymentGpsDetails.Add(new PmtPaymentGpsDetail { OrgId = orgId, PaymentGPSNo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
-            CarId = r.CarId, GPSID = r.GPSID, GPSStartDate = r.GPSStartDate, CostGPSStartDate = r.CostGPSStartDate, RetailDate = r.RetailDate,
+            CarId = carIds.FirstOrDefault(c => c.VIN == r.VIN.Trim().ToUpperInvariant())?.CarId, GPSID = null, GPSStartDate = null, CostGPSStartDate = r.CostGPSStartDate, RetailDate = null,   // #423
             CostGPSEndDate = r.CostGPSEndDate, PlanCostGPSDate = plan, DeductDate = r.DeductDate ?? 0, ActualCostGPSDate = actual,
-            PriceGPS = r.PriceGPS, AmountGPS = amount, ContractGPS = r.ContractGPS, PaymentGPSDtlStatus = "P",
+            PriceGPS = r.PriceGPS, AmountGPS = amount, ContractGPS = null, PaymentGPSDtlStatus = "P",   // #423 nguồn gán NULL
             LogLUDateTime = now, LogLUBy = who });
     }
     h.AmountTotal = total;
