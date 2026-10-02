@@ -5088,7 +5088,8 @@ public sealed class ServiceWarrantyClaim
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string ClaimNo { get; set; } = "";
+    /// <summary>#412 rename ClaimNo→ROWNo (`Ser_ROWarrantyReport.ROWNo` — số báo cáo bảo hành).</summary>
+    public string ROWNo { get; set; } = "";
     public string? DealerCode { get; set; }
     public string? RONo { get; set; }
     public string? Vin { get; set; }
@@ -5098,7 +5099,9 @@ public sealed class ServiceWarrantyClaim
     public string? Description { get; set; }
     public decimal Amount { get; set; }
     // Pending(Chưa gửi) -> Sent(Chờ xem xét) -> Confirmed(Chờ duyệt) -> Accepted/Rejected; Reverted(HTC hoàn trả) quay lại đại lý.
-    public string Status { get; set; } = "Pending";
+    /// <summary>#412 rename Status→WarrantyStatus, mã `TConst.Ser_WarrantyReport_Status`: PEND chưa gửi · SENT đã gửi HTC ·
+    /// CONF HTC xác nhận (đã gửi HMC, chờ duyệt) · ACCE chấp nhận · REJ từ chối · REVERT HTC trả lại. (Port cũ: Pending/Sent/… tự đặt.)</summary>
+    public string WarrantyStatus { get; set; } = "PEND";
 
     /// <summary>
     /// 🔴 TRỤC TRẠNG THÁI THỨ HAI — đồng bộ đề nghị sang API của HÃNG HMC (TConst.HMCApiStatus),
@@ -5145,6 +5148,30 @@ public sealed class ServiceWarrantyClaim
     public string? HtcNote { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    // ===== #412 parity header `Ser_ROWarrantyReport` — `Ser_ROWarrantyReport_Create_20220218` (BizCarSv.WarrantyReport.cs:2015, WS LIVE) =====
+    public string? Creator { get; set; }
+    public string? Assistant { get; set; }
+    public string? CusID { get; set; }
+    public string? CusName { get; set; }
+    public string? CusAddress { get; set; }
+    public string? CusTel { get; set; }
+    public DateTime? CheckInDate { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? FinishedDate { get; set; }
+    public string? CusRequest { get; set; }
+    public string? CarStatus { get; set; }
+    public string? NaturalCode { get; set; }
+    public string? CauseCode { get; set; }
+    public string? Km { get; set; }
+    public string? CarID { get; set; }
+    public string? ROWTID { get; set; }
+    public string? ErrorCodePN { get; set; }
+    public string? ErrorCodeCD { get; set; }
+    public string? PartIDError { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

@@ -13,7 +13,7 @@
   .tabs{display:flex;gap:6px;margin:10px 0;flex-wrap:wrap} .tab{padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer} .tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
   .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-top:10px} .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
-  .s-Draft{color:var(--warn)} .s-Active{color:var(--ok)} .s-Closed{opacity:.6} .s-Sent{color:var(--info)} .s-Confirmed{color:var(--accent)} .s-Accepted{color:var(--ok)} .s-Rejected{color:var(--bad)} .s-Reverted{color:var(--warn)}
+  .s-Draft{color:var(--warn)} .s-Active{color:var(--ok)} .s-Closed{opacity:.6} .s-Sent{color:var(--info)} .s-Confirmed{color:var(--accent)} .s-Accepted{color:var(--ok)} .s-Rejected{color:var(--bad)} .s-Reverted{color:var(--warn)} .s-SENT{color:var(--info)} .s-CONF{color:var(--accent)} .s-ACCE{color:var(--ok)} .s-REJ{color:var(--bad)} .s-REVERT{color:var(--warn)}
 </style></head>
 <body>
 <h1>Báo cáo chiến dịch & bảo hành DMS <span class="muted">(port 1:1 FrmReportCamMarketingHTC + FrmRpt_DMSSer_Rpt_DMSClaim — TCMotor)</span></h1>
@@ -35,7 +35,7 @@
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
 const CST={Draft:"Nháp",Active:"Kích hoạt",Closed:"Đóng"};
-const WST={Sent:"Chờ xem xét",Confirmed:"Chờ duyệt",Accepted:"Chấp thuận",Rejected:"Từ chối",Reverted:"Hoàn trả"};
+const WST={SENT:"Chờ xem xét",CONF:"Chờ duyệt",ACCE:"Chấp thuận",REJ:"Từ chối",REVERT:"Hoàn trả"};   /* #412 TConst.Ser_WarrantyReport_Status */
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -51,7 +51,7 @@ async function repB(){ await token();
   const p=new URLSearchParams(); if(F("bFrom").value)p.set("fromDate",F("bFrom").value); if(F("bTo").value)p.set("toDate",F("bTo").value);
   const r=await fetch("/api/report/dms-claim?"+p.toString(),{headers:H()}); const d=await r.json();
   F("bKpi").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">ĐN gửi DMS</span></div><div class="kpi"><b style="color:var(--ok)">${d.accepted}</b><span class="muted">Chấp thuận</span></div><div class="kpi"><b>${d.acceptRate}%</b><span class="muted">Tỉ lệ duyệt</span></div><div class="kpi"><b>${M(d.totalAmount)}</b><span class="muted">Tổng tiền</span></div>`;
-  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.claimNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.vin)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.warrantyType)}</td><td class="num">${M(o.amount)}</td><td><span class="pill s-${o.status}">${WST[o.status]||o.status}</span></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có ĐN gửi DMS.</td></tr>';
+  F("bRows").innerHTML=(d.rows||[]).map(o=>`<tr><td><b>${esc(o.rowNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.vin)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.warrantyType)}</td><td class="num">${M(o.amount)}</td><td><span class="pill s-${o.warrantyStatus}">${WST[o.warrantyStatus]||o.warrantyStatus}</span></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Không có ĐN gửi DMS.</td></tr>';
 }
 </script>
 </body></html>

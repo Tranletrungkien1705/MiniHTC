@@ -50,7 +50,7 @@ function tab(x){ ["A","B"].forEach(k=>{ F("pane"+k).style.display=k===x?"block":
 async function loadFiles(){ await token(); const id=+F("cId").value; if(!id){ m("msg","Cần ID."); return; }
   const r=await fetch("/api/warrantyclaims/"+id+"/attachments",{headers:H()}); const d=await r.json();
   if(!r.ok){ m("msg",d.error||"Không thấy ĐN "+id); F("fRows").innerHTML=""; return; }
-  m("msg","ĐN "+d.claimNo+" — "+d.count+" file");
+  m("msg","ĐN "+d.rowNo+" — "+d.count+" file");
   F("fRows").innerHTML=(d.files||[]).map(o=>`<tr><td>${o.id}</td><td><b>${esc(o.fileName)}</b></td><td>${esc(o.fileNote)}</td><td>${esc(o.createdAt)}</td><td><button class="link del" onclick="delFile(${id},${o.id})">Xóa</button></td></tr>`).join("")||'<tr><td colspan="5" class="muted">Chưa có file.</td></tr>';
 }
 async function addFile(){ await token(); const id=+F("cId").value; if(!id){ m("msg2","Cần ID đề nghị."); return; }

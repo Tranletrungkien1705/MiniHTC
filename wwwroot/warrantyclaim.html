@@ -13,7 +13,7 @@
   button.link{border:none;background:none;color:var(--accent);padding:2px 6px}
   table{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)} th{opacity:.7;font-size:11px;text-transform:uppercase} td.num,th.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
   .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}
-  .s-Pending{color:var(--warn)} .s-Sent{color:var(--info)} .s-Confirmed{color:var(--accent)} .s-Accepted{color:var(--ok)} .s-Rejected{color:var(--bad)} .s-Reverted{color:var(--warn)}
+  .s-PEND{color:var(--warn)} .s-SENT{color:var(--info)} .s-CONF{color:var(--accent)} .s-ACCE{color:var(--ok)} .s-REJ{color:var(--bad)} .s-REVERT{color:var(--warn)}
   .msg{font-size:13px;margin-left:6px}
   .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-top:10px}
   .kpi{border:1px solid var(--line);border-radius:10px;padding:10px} .kpi b{font-size:18px;display:block}
@@ -32,12 +32,23 @@
     <div><label>Mã PT</label><input id="fPart" style="width:100px"></div>
     <div><label>Số tiền</label><input id="fAmount" type="number" style="width:120px" value="0"></div>
   </div>
+  <div class="row" style="margin-top:8px">
+    <div><label>Loại BCBH (ROWTID) *</label><input id="fROWTID" style="width:90px"></div>
+    <div><label>Mã lỗi PN *</label><input id="fPN" style="width:90px"></div>
+    <div><label>Mã lỗi CD *</label><input id="fCD" style="width:90px"></div>
+    <div><label>PT lỗi (TST)</label><input id="fPartErr" style="width:100px"></div>
+    <div><label>Hiện tượng</label><input id="fNatural" style="width:90px"></div>
+    <div><label>Nguyên nhân</label><input id="fCause" style="width:90px"></div>
+    <div><label>Km</label><input id="fKm" style="width:80px"></div>
+    <div><label>Khách hàng</label><input id="fCus" style="width:140px"></div>
+    <div><label>Ngày bắt đầu SC</label><input id="fStart" type="date"></div>
+  </div>
   <div class="row" style="margin-top:8px"><div style="flex:1"><label>Mô tả lỗi/bảo hành</label><input id="fDesc" style="width:100%"></div>
   <button class="primary" onclick="create2()">Tạo (Chưa gửi)</button><span id="msg" class="msg"></span></div>
 </div>
 
 <div class="row" style="margin:8px 0">
-  <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option value="Pending">Chưa gửi</option><option value="Sent">Chờ xem xét</option><option value="Confirmed">Chờ duyệt</option><option value="Accepted">Chấp thuận</option><option value="Rejected">Từ chối</option><option value="Reverted">Hoàn trả</option></select></div>
+  <div><label>Trạng thái</label><select id="qStatus"><option value="">(tất cả)</option><option value="PEND">Chưa gửi</option><option value="SENT">Chờ xem xét</option><option value="CONF">Chờ duyệt</option><option value="ACCE">Chấp thuận</option><option value="REJ">Từ chối</option><option value="REVERT">Hoàn trả</option></select></div>
   <div><label>Biển số</label><input id="qPlate" style="width:110px"></div>
   <div><label>VIN</label><input id="qVin" style="width:120px"></div>
   <button onclick="load()">Xem</button>
@@ -49,7 +60,7 @@
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const M=n=>Math.round(+n||0).toLocaleString("vi-VN"); const esc=s=>(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;");
-const ST={Pending:"Chưa gửi",Sent:"Chờ xem xét",Confirmed:"Chờ duyệt",Accepted:"Chấp thuận",Rejected:"Từ chối",Reverted:"Hoàn trả"};
+const ST={PEND:"Chưa gửi",SENT:"Chờ xem xét",CONF:"Chờ duyệt",ACCE:"Chấp thuận",REJ:"Từ chối",REVERT:"Hoàn trả"};   /* #412 TConst.Ser_WarrantyReport_Status */
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -57,10 +68,12 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function m(id,t){ F(id).textContent=t; setTimeout(()=>{if(F(id).textContent===t)F(id).textContent="";},3500); }
 async function create2(){ await token();
-  const body={DealerCode:F("fDealer").value,RONo:F("fRO").value,Vin:F("fVin").value,PlateNo:F("fPlate").value,WarrantyType:F("fType").value,PartCode:F("fPart").value,Description:F("fDesc").value,Amount:+F("fAmount").value||0};
+  const body={DealerCode:F("fDealer").value,RONo:F("fRO").value,Vin:F("fVin").value,PlateNo:F("fPlate").value,WarrantyType:F("fType").value,PartCode:F("fPart").value,Description:F("fDesc").value,Amount:+F("fAmount").value||0,
+    ROWTID:F("fROWTID").value||null,ErrorCodePN:F("fPN").value||null,ErrorCodeCD:F("fCD").value||null,PartIDError:F("fPartErr").value||null,
+    NaturalCode:F("fNatural").value||null,CauseCode:F("fCause").value||null,Km:F("fKm").value||null,CusName:F("fCus").value||null,StartDate:F("fStart").value||null};
   const r=await fetch("/api/warrantyclaims",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json(); if(!r.ok){ m("msg","Lỗi: "+(d.error||r.status)); return; }
-  m("msg","Đã tạo "+d.claimNo); load();
+  m("msg","Đã tạo "+d.rowNo); load();
 }
 async function act(id,action){ await token();
   let note=null;
@@ -69,16 +82,16 @@ async function act(id,action){ await token();
   const d=await r.json(); if(!r.ok){ alert(d.error||r.status); return; } load();
 }
 function acts(o){ let h="";
-  if(o.status==="Pending"||o.status==="Reverted") h+=`<button class="link" onclick="act(${o.id},'submit')">Gửi</button>`;
-  if(o.status==="Sent") h+=`<button class="link" onclick="act(${o.id},'review')">Tiếp nhận</button>`;
-  if(o.status==="Confirmed") h+=`<button class="link" onclick="act(${o.id},'approve')">Duyệt</button>`;
-  if(o.status==="Sent"||o.status==="Confirmed") h+=`<button class="link" onclick="act(${o.id},'reject')">Từ chối</button><button class="link" onclick="act(${o.id},'revert')">Hoàn trả</button>`;
+  if(o.warrantyStatus==="PEND"||o.warrantyStatus==="REVERT") h+=`<button class="link" onclick="act(${o.id},'submit')">Gửi</button>`;
+  if(o.warrantyStatus==="SENT") h+=`<button class="link" onclick="act(${o.id},'review')">Tiếp nhận</button>`;
+  if(o.warrantyStatus==="CONF") h+=`<button class="link" onclick="act(${o.id},'approve')">Duyệt</button>`;
+  if(o.warrantyStatus==="SENT"||o.warrantyStatus==="CONF") h+=`<button class="link" onclick="act(${o.id},'reject')">Từ chối</button><button class="link" onclick="act(${o.id},'revert')">Hoàn trả</button>`;
   return h; }
 async function load(){ await token();
   const p=new URLSearchParams(); if(F("qStatus").value)p.set("status",F("qStatus").value); if(F("qPlate").value)p.set("plate",F("qPlate").value); if(F("qVin").value)p.set("vin",F("qVin").value);
   const r=await fetch("/api/warrantyclaims?"+p.toString(),{headers:H()}); const d=await r.json();
   F("kpis").innerHTML=`<div class="kpi"><b>${d.count}</b><span class="muted">Tổng ĐN</span></div><div class="kpi"><b style="color:var(--warn)">${d.pending}</b><span class="muted">Chưa gửi</span></div><div class="kpi"><b style="color:var(--info)">${d.sent}</b><span class="muted">Chờ xem xét</span></div><div class="kpi"><b style="color:var(--ok)">${d.accepted}</b><span class="muted">Chấp thuận</span></div><div class="kpi"><b>${M(d.totalAmount)}</b><span class="muted">Tổng tiền</span></div>`;
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.claimNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.rONo)}</td><td>${esc(o.vin)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.warrantyType)}</td><td class="num">${M(o.amount)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${esc(o.htcNote)}</td><td>${acts(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có đề nghị.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.rowNo)}</b></td><td>${esc(o.dealerCode)}</td><td>${esc(o.roNo)}</td><td>${esc(o.vin)}</td><td>${esc(o.plateNo)}</td><td>${esc(o.warrantyType)}</td><td class="num">${M(o.amount)}</td><td><span class="pill s-${o.warrantyStatus}">${ST[o.warrantyStatus]||o.warrantyStatus}</span></td><td>${esc(o.htcNote)}</td><td>${acts(o)}</td></tr>`).join("")||'<tr><td colspan="10" class="muted">Không có đề nghị.</td></tr>';
 }
 </script>
 </body></html>
