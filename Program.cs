@@ -54755,9 +54755,18 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
         .Select(x => x.RONo).ToListAsync(), roPrefix);
     if (await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerRo && x.RONo == no))
         return Results.BadRequest(new { error = $"Số lệnh sửa chữa {no} đã tồn tại.", code = "Ser_RO_CheckExistRONo" });
+    // #409 FrmQuotation tạo báo giá TỪ lịch hẹn (IsApp): sau SerROCreate gọi `Ser_RO_UpdateAppId` + `Ser_App_UpdateStatus(app, "3")`
+    //   (Tiếp nhận). Nguồn tra `Ser_App ... AppId = @` rồi Rows[0] ⇒ lịch hẹn không có thì văng ⇒ ở đây chặn TRƯỚC khi tạo.
+    ServiceAppointment? appRo = null;
+    if (dto.AppId is { } appIdRo)
+    {
+        appRo = await db.ServiceAppointments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == appIdRo);
+        if (appRo is null) return Results.BadRequest(new { error = $"Không tìm thấy lịch hẹn {appIdRo}.", code = "Ser_App_UpdateStatus", dto.AppId });
+    }
     var r = new RepairOrder
     {
         OrgId = t.OrgId, RONo = no, LicensePlate = dto.LicensePlate.Trim().ToUpperInvariant(), Vin = dto.Vin, CusName = dto.CusName, Km = dto.Km,
+        AppId = dto.AppId,   // #409
         CheckInDate = dto.CheckInDate ?? DateTime.Now, PlanedDeliveryDate = dto.PlanedDeliveryDate, CusRequest = dto.CusRequest,
         // 🔴 #392 Ser_RO_Create_New20220926 (BizCarSv.ZTemp.cs:6258, thân :489) ghi Status = Ser_RO_Stage.Create = "CRE" — bản ghi Ser_RO lúc này
         //   CHÍNH LÀ BÁO GIÁ (FrmQuotation). Chỉ khi bấm "Tạo RO" (Ser_RO_CreateRO) mới sang HRO ⇒ POST /api/repairorders/{no}/create-ro.
@@ -54787,6 +54796,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
     if (!anyIns && r.InsuranceDeductible > 0)
         return Results.BadRequest(new { error = "Lệnh không có dòng bảo hiểm, không nhập được mức khấu trừ bảo hiểm.", code = "checkInsuranceDeductible" });
     db.RepairOrders.Add(r); await db.SaveChangesAsync();
+    if (appRo is not null) { appRo.AppStatus = "3"; appRo.LogLUDateTime = DateTime.Now; appRo.LogLUBy = user.Identity?.Name ?? "system"; }   // #409 Ser_App_UpdateStatus "3"
     // Nguồn nối phiếu tiếp nhận ↔ RO qua Ser_RO.ReceptionFNo; MiniHTC giữ thêm Reception.RONO (#355 guard xoá) ⇒ đồng bộ.
     if (recRo is not null && string.IsNullOrWhiteSpace(recRo.RONO)) { recRo.RONO = r.RONo; await db.SaveChangesAsync(); }
     foreach (var s in dto.Services ?? new())
@@ -54808,7 +54818,7 @@ app.MapPost("/api/repairorders", async (RepairOrderDto dto, AppDbContext db, ITe
             OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit, NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount, Note = p.Note });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status });
+    return Results.Ok(new { r.RONo, r.LicensePlate, status = r.Status, r.AppId, appStatus = appRo?.AppStatus });
 }).RequireAuthorization();
 
 // Bảng theo dõi tiến độ RO (Ser_RO_Stage — port 1:1 FrmTrackingProcess): kanban theo trạng thái
@@ -54845,6 +54855,7 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
         r.ROType, r.DlrPDIReqNo, r.ServiceStatus, r.LevelOfInspection, r.InsuranceDeductible, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy,
         r.Engineer, r.QA, r.Operator, r.QuanDoc, r.ScheduleDate, r.StartDate, r.FinishedDate,   // #368
         r.CheckEndDate, r.PaidCreatedDate, r.IsCusPaymentAll, r.ActualDeliveryDate,   // #407
+        r.AppId,   // #409
         services, parts,
         total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
     });
@@ -54899,6 +54910,19 @@ app.MapPost("/api/repairorders/{no}/update", async (string no, RoHeaderUpdateDto
     r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RONo, r.Status, backLSC = backLsc, r.LevelOfInspection, r.ScheduleDate, r.StartDate });
+}).RequireAuthorization();
+
+// #409 GẮN LỊCH HẸN cho RO — port `Ser_RO_UpdateAppId` (BizCarSv.Appointment.cs:1955; WS WSCarSv.asmx.cs:23866).
+//   Gọi từ FrmQuotationApp (tạo lịch hẹn từ báo giá) và FrmQuotation. Nguồn: lấy Ser_RO theo ROID (Rows[0] ⇒ không có thì văng),
+//   ghi AppId (nguyên tham số, KHÔNG kiểm lịch hẹn) + LogLU*. Không đổi trạng thái lịch hẹn ở hàm này.
+app.MapPost("/api/repairorders/{no}/appid", async (string no, RoAppIdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.BadRequest(new { error = $"Không tìm thấy RO {no}.", code = "Ser_RO_UpdateAppId" });
+    r.AppId = dto.AppId; r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.AppId });
 }).RequireAuthorization();
 
 // #407 /advance = `SerROStatusUpdate` (BizCarSv.Service01.cs:8754; FrmTrackingProcess) + FNS = `SerROToFinishedStatusAndUpdateCusCare_New20190621`.
@@ -56752,7 +56776,9 @@ record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string?
     DateTime? ReminderMaintanceDate = null, string? ReminderMaintanceKm = null, string? WorkDoneSoon = null, string? TermsOfRepair = null,
     string? CarID = null, string? InsNo = null, string? InvoiceBy = null, string? AdvisoryCode = null, string? AdvisoryPhone = null,
     string? IsReRepair = null, DateTime? ModifyDate = null, string? ModifyBy = null, string? CardNo = null, string? FlagOnlyPoint = null,
-    string? ROType = null, string? DlrPDIReqNo = null, string? LevelOfInspection = null, string? InsuranceDeductible = null);
+    string? ROType = null, string? DlrPDIReqNo = null, string? LevelOfInspection = null, string? InsuranceDeductible = null,
+    long? AppId = null);   // #409 tạo báo giá từ lịch hẹn (FrmQuotation IsApp)
+record RoAppIdDto(long? AppId);   // #409 Ser_RO_UpdateAppId
 record RoAdvanceDto(string ToStatus, DateTime? StatusDate = null, string? IsCusPaymentAll = null);   // #407 tham số SerROStatusUpdate
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);

@@ -2323,6 +2323,9 @@ public sealed class RepairOrder
     public DateTime? PaidCreatedDate { get; set; }
     /// <summary>`IsCusPaymentAll`: "1" khách trả toàn bộ · "0" ghi nợ cho bảo hiểm — ghi khi CEND → PAID (lưu nguyên tham số).</summary>
     public string? IsCusPaymentAll { get; set; }
+    /// <summary>#409 `Ser_RO.AppId` — lịch hẹn gắn với báo giá/RO (= <c>ServiceAppointment.Id</c>). Ghi bởi `Ser_RO_UpdateAppId`
+    /// (BizCarSv.Appointment.cs:1955) từ FrmQuotation (tạo báo giá từ lịch hẹn) và FrmQuotationApp (tạo lịch hẹn từ báo giá).</summary>
+    public long? AppId { get; set; }
 
     // ===== #392 Ser_RO_CreateRO (BizCarSv.Service01.cs:6776): khi chuyển báo giá CRE → HRO ghi người/ngày tạo RO =====
     public string? ROCreateBy { get; set; }
