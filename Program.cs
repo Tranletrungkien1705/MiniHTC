@@ -26265,6 +26265,7 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
             if (ro is null) return Results.BadRequest(new { error = $"Không tìm thấy RO {roNo}.", code = "Ser_RO_NotFound" });
             if (ro.Status is not ("CRE" or "PRT" or "HRO"))
                 return Results.BadRequest(new { error = $"RO {roNo} đang {ro.Status} — chỉ vào sửa chữa từ CRE/PRT/HRO.", code = "Ser_RO_UpdateStatus_InvalidStatusInGarage", ro.Status });
+            if (await RoWorkTimeAdd(db, ro, dto.ActualStart.Value, "1", "1", "0", who) is { } badWt1) return badWt1;   // #418
             ro.Status = "INGA"; ro.StartDate = Minute(dto.ActualStart.Value); ro.LogLUDateTime = now; ro.LogLUBy = who; roStatusTo = "INGA";
         }
         if (stageCode == h.WorkTypeFinish && dto.ActualFinish.HasValue)
@@ -26274,6 +26275,8 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
                 return Results.BadRequest(new { error = $"RO {roNo} đang {ro.Status} — chỉ sửa xong từ INGA.", code = "Ser_RO_UpdateStatus_InvalidStatusRepaired", ro.Status });
             if (ro.FlagPause == "0")
                 return Results.BadRequest(new { error = $"RO {roNo} đang tạm dừng (FlagPause = 0).", code = "Ser_RO_UpdateStatus_InvalidFlagPause" });
+            if (await RoWorkTimeAdd(db, ro, dto.ActualFinish.Value, "1", "0", "1", who) is { } badWt2) return badWt2;   // #418
+            if (RoTotalActHours(await RoWorkTimesOf(db, t.OrgId, ro.Id)) is { } hrsS) ro.TotalActHours = hrsS;
             ro.Status = "RPRD"; ro.FinishedDate = Minute(dto.ActualFinish.Value); ro.LogLUDateTime = now; ro.LogLUBy = who; roStatusTo = "RPRD";
         }
     }
@@ -55234,6 +55237,7 @@ app.MapGet("/api/repairorders/{no}", async (string no, AppDbContext db, ITenantC
         r.Engineer, r.QA, r.Operator, r.QuanDoc, r.ScheduleDate, r.StartDate, r.FinishedDate,   // #368
         r.CheckEndDate, r.PaidCreatedDate, r.IsCusPaymentAll, r.ActualDeliveryDate,   // #407
         r.AppId,   // #409
+        r.TotalActHours,   // #418
         services, parts,
         total = services.Sum(s => s.Amount) + parts.Sum(p => p.lineTotal)
     });
@@ -55303,6 +55307,70 @@ app.MapPost("/api/repairorders/{no}/appid", async (string no, RoAppIdDto dto, Ap
     return Results.Ok(new { r.RONo, r.AppId });
 }).RequireAuthorization();
 
+// ===== #418 GIỜ CÔNG RO (Ser_ROWorkTime) =====
+// `InsertSer_ROWorkTime` (BizCarSv.zzzzCode.cs:208): RO phải tồn tại; trạng thái ∈ CRE/PRT/HRO/INGA/RPRD ⇒ _InvalidROStatus; mốc cắt về phút;
+// ROWTNo = {yyMM}WT{NNNNN}. Gọi TRƯỚC khi đổi trạng thái RO (nguồn kiểm trên bản ghi DB chưa lưu).
+async Task<IResult?> RoWorkTimeAdd(AppDbContext db, RepairOrder ro, DateTime point, string play, string begin, string end, string who)
+{
+    if (ro.Status is not ("CRE" or "PRT" or "HRO" or "INGA" or "RPRD"))
+        return Results.BadRequest(new { error = $"RO {ro.RONo} trạng thái {ro.Status} không ghi được giờ công.", code = "InsertSer_ROWorkTime_InvalidROStatus" });
+    var prefix = DateTime.Now.ToString("yyMM") + "WT";
+    var last = (await db.RoWorkTimes.Where(x => x.OrgId == ro.OrgId && x.ROWTNo.StartsWith(prefix)).Select(x => x.ROWTNo).ToListAsync())
+        .Concat(db.RoWorkTimes.Local.Where(x => x.Id == 0 && x.ROWTNo.StartsWith(prefix)).Select(x => x.ROWTNo)).ToList();
+    var seq = (last.Select(x => int.TryParse(x[prefix.Length..], out var v) ? v : 0).DefaultIfEmpty(0).Max() + 1) % 100000;
+    var now = DateTime.Now;
+    db.RoWorkTimes.Add(new RoWorkTime { OrgId = ro.OrgId, ROWTNo = prefix + seq.ToString("00000"), RoId = ro.Id, RONo = ro.RONo,
+        PointDateTime = new DateTime(point.Year, point.Month, point.Day, point.Hour, point.Minute, 0), FlagPlay = play, FlagBegin = begin, FlagEnd = end,
+        CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });   // KHÔNG SaveChanges: cùng giao dịch với bước gọi
+    return null;
+}
+// Mốc giờ công của RO = đã lưu + đang chờ lưu trong change tracker.
+async Task<List<RoWorkTime>> RoWorkTimesOf(AppDbContext db, Guid org, long roId) =>
+    (await db.RoWorkTimes.Where(x => x.OrgId == org && x.RoId == roId).ToListAsync())
+        .Concat(db.RoWorkTimes.Local.Where(x => x.OrgId == org && x.RoId == roId && x.Id == 0)).Distinct().ToList();
+// `GetTotalActualHours` (:507): sắp mốc theo PointDateTime (MyIdxSeq 0..m-1); CHỈ khi có ĐÚNG 1 mốc FlagEnd = 1: n = 1, cộng phút
+// (mốc[m-n-1] → mốc[m-n]), n += 2 ⇒ các cặp lùi dần từ mốc cuối (bỏ qua các khoảng tạm dừng); / 60, làm tròn 2 số.
+// ⚠️ Nguồn: không đúng 1 mốc kết thúc ⇒ không có tập kết quả ⇒ Tables[0] văng (RPRD rollback). MiniHTC: trả null ⇒ giữ TotalActHours.
+static decimal? RoTotalActHours(List<RoWorkTime> rows)
+{
+    var ws = rows.OrderBy(x => x.PointDateTime).ThenBy(x => x.Id).ToList();
+    if (ws.Count(x => x.FlagEnd == "1") != 1) return null;
+    var m = ws.Count; double minutes = 0;
+    for (var n = 1; n < m; n += 2) minutes += (ws[m - n].PointDateTime - ws[m - n - 1].PointDateTime).TotalMinutes;
+    return Math.Round((decimal)(minutes / 60.0), 2);
+}
+
+// #418 TẠM DỪNG / CHẠY LẠI = `Ser_AssignmentWork_UpdateFlagPause` (BizCarSv.AssignmentOfWork.cs:1466). Tham số FlagPause "1" = DỪNG.
+//   Phân công RO phải có (nguồn Rows[0]) ⇒ ghi WorkTypePause + LogLU*; RO phải INGA/RPRD ⇒ Ser_RO_UpdateFlagPause_InvalidStatus;
+//   Ser_RO.FlagPause = ĐẢO (dừng ⇒ "0", chạy ⇒ "1") + LogLU*; thêm mốc giờ công: bây giờ, FlagPlay = dừng ? 1 : 0, Begin/End = 0.
+app.MapPost("/api/repairorders/{no}/pause", async (string no, RoPauseDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.BadRequest(new { error = $"Không tìm thấy RO {no}.", code = "Ser_RO_UpdateFlagPause_NotFoundRO" });
+    var aw = await db.SerAssignmentWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (aw is null) return Results.BadRequest(new { error = $"RO {no} chưa có phân công.", code = "Ser_AssignmentWork_UpdateFlagPause_NotFoundRO" });
+    if (r.Status is not ("RPRD" or "INGA"))
+        return Results.BadRequest(new { error = $"RO {no} đang {r.Status} — chỉ tạm dừng/chạy lại khi INGA/RPRD.", code = "Ser_RO_UpdateFlagPause_InvalidStatus", r.Status });
+    var pause = (dto.FlagPause ?? "").Trim() == "1";
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    aw.WorkTypePause = dto.WorkTypePause; aw.LogLUDateTime = now; aw.LogLUBy = who;
+    if (await RoWorkTimeAdd(db, r, now, pause ? "1" : "0", "0", "0", who) is { } bad) return bad;
+    r.FlagPause = pause ? "0" : "1"; r.LogLUDateTime = now; r.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.RONo, r.FlagPause, paused = pause, aw.WorkTypePause });
+}).RequireAuthorization();
+
+app.MapGet("/api/repairorders/{no}/worktimes", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { no });
+    var items = await db.RoWorkTimes.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).OrderBy(x => x.PointDateTime).ThenBy(x => x.Id)
+        .Select(x => new { x.ROWTNo, x.PointDateTime, x.FlagPlay, x.FlagBegin, x.FlagEnd, x.CreatedBy }).ToListAsync();
+    return Results.Ok(new { r.RONo, r.TotalActHours, count = items.Count, items });
+}).RequireAuthorization();
+
 // #407 /advance = `SerROStatusUpdate` (BizCarSv.Service01.cs:8754; FrmTrackingProcess) + FNS = `SerROToFinishedStatusAndUpdateCusCare_New20190621`.
 //   Mỗi bước ghi mốc = strStatusDate (tới phút; Convert.ToDateTime ⇒ bắt buộc có) + LogLU*:
 //     INGA ⇒ StartDate · RPRD ⇒ (FlagPause = "0" ⇒ Ser_RO_UpdateStatus_InvalidFlagPause) FinishedDate · CEND ⇒ CheckEndDate
@@ -55336,6 +55404,13 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         var rf = await db.Receptions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFNo == r.ReceptionFNo);
         if (rf is null) return Results.BadRequest(new { error = $"Không tìm thấy phiếu tiếp nhận {r.ReceptionFNo}.", code = "Ser_ReceptionF_CheckDB_ReceptionFNoNotFound" });
         if (rf.ReceptionFStatus != "A") return Results.BadRequest(new { error = $"Phiếu tiếp nhận {r.ReceptionFNo} chưa giao xe (trạng thái {rf.ReceptionFStatus}).", code = "Ser_ReceptionF_CheckDB_ReceptionFNoNotMatched", rf.ReceptionFStatus });
+    }
+    // #418 Ser_ROWorkTime: INGA ⇒ mốc bắt đầu, RPRD ⇒ mốc kết thúc + TotalActHours (SerROStatusUpdate :8879/:9228).
+    if (target == "INGA" && await RoWorkTimeAdd(db, r, sd!.Value, "1", "1", "0", user.Identity?.Name ?? "system") is { } badWtA) return badWtA;
+    if (target == "RPRD")
+    {
+        if (await RoWorkTimeAdd(db, r, sd!.Value, "1", "0", "1", user.Identity?.Name ?? "system") is { } badWtB) return badWtB;
+        if (RoTotalActHours(await RoWorkTimesOf(db, t.OrgId, r.Id)) is { } hrsA) r.TotalActHours = hrsA;
     }
     r.Status = target; r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
     switch (target)
@@ -57164,7 +57239,8 @@ record RepairOrderDto(string LicensePlate, string? Vin, string? CusName, string?
     string? IsReRepair = null, DateTime? ModifyDate = null, string? ModifyBy = null, string? CardNo = null, string? FlagOnlyPoint = null,
     string? ROType = null, string? DlrPDIReqNo = null, string? LevelOfInspection = null, string? InsuranceDeductible = null,
     long? AppId = null);   // #409 tạo báo giá từ lịch hẹn (FrmQuotation IsApp)
-record RoAppIdDto(long? AppId);   // #409 Ser_RO_UpdateAppId
+record RoAppIdDto(long? AppId);
+record RoPauseDto(string? FlagPause, string? WorkTypePause = null);   // #418 Ser_AssignmentWork_UpdateFlagPause   // #409 Ser_RO_UpdateAppId
 record RoAdvanceDto(string ToStatus, DateTime? StatusDate = null, string? IsCusPaymentAll = null);   // #407 tham số SerROStatusUpdate
 record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);

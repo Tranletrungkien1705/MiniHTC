@@ -200,6 +200,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DevicePrice> DevicePrices => Set<DevicePrice>();
     public DbSet<TcgSalePrice> TcgSalePrices => Set<TcgSalePrice>();
     public DbSet<RepairOrder> RepairOrders => Set<RepairOrder>();
+    public DbSet<RoWorkTime> RoWorkTimes => Set<RoWorkTime>();   // #418 Ser_ROWorkTime
     public DbSet<RoServiceItem> RoServiceItems => Set<RoServiceItem>();
     public DbSet<RoPartItem> RoPartItems => Set<RoPartItem>();
     public DbSet<StockReq> StockReqs => Set<StockReq>();

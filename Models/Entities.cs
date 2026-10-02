@@ -2326,6 +2326,8 @@ public sealed class RepairOrder
     /// <summary>#409 `Ser_RO.AppId` — lịch hẹn gắn với báo giá/RO (= <c>ServiceAppointment.Id</c>). Ghi bởi `Ser_RO_UpdateAppId`
     /// (BizCarSv.Appointment.cs:1955) từ FrmQuotation (tạo báo giá từ lịch hẹn) và FrmQuotationApp (tạo lịch hẹn từ báo giá).</summary>
     public long? AppId { get; set; }
+    /// <summary>#418 `Ser_RO.TotalActHours` — tổng giờ sửa thực tế (GetTotalActualHours) ghi khi RO sang RPRD.</summary>
+    public decimal? TotalActHours { get; set; }
 
     // ===== #392 Ser_RO_CreateRO (BizCarSv.Service01.cs:6776): khi chuyển báo giá CRE → HRO ghi người/ngày tạo RO =====
     public string? ROCreateBy { get; set; }
@@ -4941,6 +4943,8 @@ public sealed class SerAssignmentWork
     public string? CreateBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    /// <summary>#418 `WorkTypePause` — công đoạn đang tạm dừng (Ser_AssignmentWork_UpdateFlagPause).</summary>
+    public string? WorkTypePause { get; set; }
 }
 
 /// <summary>
@@ -15363,6 +15367,26 @@ public sealed class WarrantyClaimTransaction
     public string? Creator { get; set; }
     public string? Note { get; set; }
     public string? CurrentStatus { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#418 Mốc giờ công sửa chữa của RO (`Ser_ROWorkTime` — `InsertSer_ROWorkTime`, BizCarSv.zzzzCode.cs:208):
+/// INGA ⇒ mốc BẮT ĐẦU (FlagPlay 1, FlagBegin 1); RPRD ⇒ mốc KẾT THÚC (FlagPlay 1, FlagEnd 1); tạm dừng/chạy lại
+/// (`Ser_AssignmentWork_UpdateFlagPause`) ⇒ mốc FlagPlay 1 (dừng) / 0 (chạy lại). Tổng giờ thực tế = `GetTotalActualHours`.</summary>
+public sealed class RoWorkTime
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROWTNo { get; set; } = "";     // {yyMM}WT{NNNNN} (SequenceTypeDMS.ROWorkTime, format "{0}{1}{2:00000}")
+    public long RoId { get; set; }                // = ROID (RepairOrder.Id)
+    public string RONo { get; set; } = "";
+    public DateTime PointDateTime { get; set; }   // tới phút
+    public string FlagPlay { get; set; } = "0";
+    public string FlagBegin { get; set; } = "0";
+    public string FlagEnd { get; set; } = "0";
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
