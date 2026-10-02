@@ -19172,7 +19172,7 @@ app.MapGet("/api/serpartorders", async (AppDbContext db, ITenantContext t, strin
         SupplierCode = x.SupplierID is { } s1 && sups.TryGetValue(s1, out var sp1) ? sp1.SupplierCode : null,
         SupplierName = x.SupplierID is { } s2 && sups.TryGetValue(s2, out var sp2) ? sp2.SupplierName : null,
         x.UserCreate, x.UserApproved, x.ApprovedDate, x.TypeOrder, x.HTCConfirm, x.PartialShipment, x.TypeTransport, x.VIN, x.ConfirmNo, x.CusCharges,
-        x.IsActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy
+        x.IsActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.FinishDate   // #411
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -19183,7 +19183,8 @@ app.MapGet("/api/serpartorders/{id:long}", async (long id, AppDbContext db, ITen
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.SerPartOrderDetails.Where(x => x.OrgId == t.OrgId && x.OrderPartID == id).OrderBy(x => x.Id)
         .Select(x => new { x.Id, OrderPartDetailID = x.Id, x.OrderPartID, x.PartID, x.Quantity, x.Factor, x.VAT, x.Cost, x.Discount, x.Note, x.Model, x.HTCConfirm,
-            x.MIP, x.OO, x.BO, x.OH, x.SOQ, x.ICC, x.DeliveryQuantity, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+            x.MIP, x.OO, x.BO, x.OH, x.SOQ, x.ICC, x.DeliveryQuantity, x.LastDateDelivery, x.LogLUDateTime, x.LogLUBy,
+            RemainQuantity = x.Quantity - (x.DeliveryQuantity ?? 0) }).ToListAsync();   // #411
     return Results.Ok(new { header = h, NewStatus = h.Status != null && serPartOrderStatusNames.TryGetValue(h.Status, out var sn) ? sn : h.Status, lines });
 }).RequireAuthorization();
 
@@ -54420,6 +54421,7 @@ app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? st
     var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
     {
         s.StockInNo, s.StockInDate, s.StockInType, s.WarehouseCode, s.Staff, s.Status, s.PostedAt, s.DealerCode, s.SupplierID, s.Description, s.TwinSrcId,   // #377
+        s.OrderPartId,   // #411
         lines = db.PartStockInLines.Count(l => l.OrgId == t.OrgId && l.StockInId == s.Id),
         afterTax = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)l.AfterTax) ?? 0,
         beforeTax = db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == s.Id).Sum(l => (decimal?)l.BeforeTax) ?? 0,
@@ -54428,14 +54430,70 @@ app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? st
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #411 Cập nhật trạng thái đơn đặt PT đại lý theo nhập kho — `UpdatePurchaseOrderStatus` (PartOrder.cs:3590):
+//   Status = tham số; "3" Kết thúc ⇒ FinishDate = hôm nay, trạng thái khác ⇒ FinishDate = NULL; LogLU*.
+static void SerPartOrderSetStatus(SerPartOrder o, string status, string who)
+{
+    o.Status = status; o.FinishDate = status == "3" ? DateTime.Today : null; o.LogLUDateTime = DateTime.Now; o.LogLUBy = who;
+}
+// #411 Cộng / trừ DeliveryQuantity của đơn theo dòng phiếu nhập cùng mã phụ tùng.
+//   KẾT THÚC phiếu (`SerStockInStatusUpdateToFinished_New20200118`, StockIn.cs:4147 — WS LIVE): mỗi dòng đơn × mỗi dòng phiếu cùng PartId
+//     ⇒ DeliveryQuantity += SL, LastDateDelivery = hôm nay; isAbleToFinish = mọi dòng còn lại ≤ 0; có cập nhật ⇒ "3" hoặc "2".
+//   HUỶ phiếu (`SerStockInReject`, :4689 — Issue 968): DeliveryQuantity −= SL (không âm; ≤ 0 ⇒ 0); LastDateDelivery = 0 ⇒ NULL,
+//     còn lại ⇒ StockInDate MỚI NHẤT của phiếu Kết thúc khác cùng đơn có mã đó; trạng thái: đủ ⇒ "3", không dòng nào đã giao ⇒ "CONF"
+//     (lùi về Xác nhận), còn lại ⇒ "2".
+//   So mã: nguồn so chuỗi chính xác; MiniHTC viết hoa mã ở phiếu nhập ⇒ so không phân biệt hoa thường.
+async Task<object?> SerPartOrderApplyStockIn(AppDbContext db, Guid org, PartStockIn si, List<PartStockInLine> siLines, bool reject, string who)
+{
+    if (si.OrderPartId is not { } opId) return null;
+    var order = await db.SerPartOrders.FirstOrDefaultAsync(x => x.OrgId == org && x.Id == opId);
+    if (order is null) return null;
+    var dlines = await db.SerPartOrderDetails.Where(x => x.OrgId == org && x.OrderPartID == opId).ToListAsync();
+    bool isUpdate = false, ableToFinish = true, confirmRollback = true;
+    foreach (var d in dlines)
+    {
+        foreach (var l in siLines.Where(l => string.Equals(l.PartCode, d.PartID, StringComparison.OrdinalIgnoreCase)))
+        {
+            isUpdate = true;
+            var qty = d.DeliveryQuantity ?? 0;
+            if (!reject) { d.DeliveryQuantity = qty + l.Quantity; d.LastDateDelivery = DateTime.Today; }
+            else
+            {
+                d.DeliveryQuantity = qty - l.Quantity > 0 ? qty - l.Quantity : 0;
+                if (d.DeliveryQuantity <= 0) d.LastDateDelivery = null;
+                else
+                {
+                    var partCode = l.PartCode;
+                    var lastIn = await (from s in db.PartStockIns
+                                        join sl in db.PartStockInLines on s.Id equals sl.StockInId
+                                        where s.OrgId == org && s.Status == "3" && s.OrderPartId == opId && s.Id != si.Id && sl.PartCode == partCode
+                                        orderby s.StockInDate descending
+                                        select (DateTime?)s.StockInDate).FirstOrDefaultAsync();
+                    d.LastDateDelivery = lastIn;
+                }
+            }
+        }
+        var remain = d.Quantity - (d.DeliveryQuantity ?? 0);
+        if (remain > 0) ableToFinish = false;
+        if ((d.DeliveryQuantity ?? 0) > 0) confirmRollback = false;
+    }
+    if (!isUpdate) return new { order.Id, order.OrderNo, updated = false };
+    var st = ableToFinish ? "3" : (reject && confirmRollback ? "CONF" : "2");
+    SerPartOrderSetStatus(order, st, who);
+    return new { order.Id, order.OrderNo, updated = true, status = order.Status, order.FinishDate };
+}
+
 app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantContext t) =>
 {
+    // #411 phiếu nhập theo đơn đặt PT đại lý: đơn phải tồn tại.
+    if (dto.OrderPartId is { } opIdIn && !await db.SerPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.Id == opIdIn))
+        return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt phụ tùng {opIdIn}." });
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
     var no = "SI" + DateTime.Now.ToString("yyMMddHHmmss");
     var h = new PartStockIn { OrgId = t.OrgId, StockInNo = no, StockInDate = dto.StockInDate ?? DateTime.Now, StockInType = dto.StockInType, WarehouseCode = dto.WarehouseCode.Trim().ToUpperInvariant(), Staff = dto.Staff, Status = "1",
-        DealerCode = dto.DealerCode, SupplierID = dto.SupplierID, Description = dto.Description };   // #377
+        DealerCode = dto.DealerCode, SupplierID = dto.SupplierID, Description = dto.Description, OrderPartId = dto.OrderPartId };   // #377 #411
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
         // #377 BeforeTax = Quantity*Price (trước thuế), AfterTax = BeforeTax + VAT*Price*Quantity*0.01 — như báo cáo nhập chi tiết nguồn.
@@ -54482,7 +54540,7 @@ app.MapPost("/api/stockins/{no}/revert", async (string no, AppDbContext db, ITen
     return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Mới tạo" });
 }).RequireAuthorization();
 
-app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
@@ -54501,8 +54559,9 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
     // 🔴 Luật nguồn 2025-01-24 (dongnt, StockIn.cs:4605-4609): khi Kết thúc thì **StockInDate lấy theo
     //    THỜI ĐIỂM DUYỆT**, không giữ ngày nhập lúc lập phiếu. Chỉ phiếu NHẬP có luật này, phiếu XUẤT không.
     h.Status = "3"; h.StockInDate = DateTime.Now; h.PostedAt = DateTime.Now;
+    var orderEffect = await SerPartOrderApplyStockIn(db, t.OrgId, h, lines, reject: false, who: user.Identity?.Name ?? "system");   // #411 cộng DeliveryQuantity
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count });
+    return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count, h.OrderPartId, orderEffect });
 }).RequireAuthorization();
 
 // Hủy phiếu nhập kho (port 1:1 FrmSIReject, TCMotor DMSCarSv/Inventory). Chỉ hủy khi còn Draft.
@@ -54516,9 +54575,19 @@ app.MapPost("/api/stockins/{no}/reject", async (string no, StockRejectDto dto, A
     // Port cũ chặn `!= "Draft"` là guard CHẶT HƠN nguồn (sai chiều). Đã bỏ để đúng 1:1.
     // ⚠️ Hệ quả nguồn: huỷ phiếu đã Kết thúc KHÔNG hoàn lại tồn kho — đã ghi C0-bug4 để người quyết.
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    // #411 Issue 968 — trả lại DeliveryQuantity cho đơn đặt PT. ⚠️ CHỈ khi phiếu đã Kết thúc ("3"): DeliveryQuantity chỉ được
+    //   cộng lúc Kết thúc; trừ cho phiếu chưa Kết thúc sẽ làm SAI số giao (LIVE `SerStockInReject` còn hoàn PartInstance/tồn —
+    //   chưa port, xem nợ [h]).
+    object? orderEffect = null;
+    if (h.Status == "3")
+    {
+        var siLines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id).ToListAsync();
+        h.Status = "5";
+        orderEffect = await SerPartOrderApplyStockIn(db, t.OrgId, h, siLines, reject: true, who: who);
+    }
     h.Status = "5"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockInNo, status = h.Status });
+    return Results.Ok(new { h.StockInNo, status = h.Status, h.OrderPartId, orderEffect });
 }).RequireAuthorization();
 
 // Tồn kho phụ tùng (Ser_Inv_PartStock — báo cáo tồn, đọc bởi FrmPartStockSearch/ReportStockBalance)
@@ -56944,7 +57013,7 @@ record ReceptionDeliveryDto(string? BodyPaintFilePath, string? Remark, List<Rece
 record ReceptionLinkDto(string RONO);
 record StockInLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price, decimal VAT);
 record StockInDto(DateTime? StockInDate, string? StockInType, string WarehouseCode, string? Staff, List<StockInLineDto>? Lines,
-    string? DealerCode = null, string? SupplierID = null, string? Description = null);   // #377
+    string? DealerCode = null, string? SupplierID = null, string? Description = null, long? OrderPartId = null);   // #377 #411
 record StockOutLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, decimal Price = 0, decimal VAT = 0);   // #377
 record StockOutDto(DateTime? StockOutDate, string? StockOutType, string WarehouseCode, string? Reason, List<StockOutLineDto>? Lines,
     string? DealerCode = null, string? CusID = null, string? Description = null);   // #377

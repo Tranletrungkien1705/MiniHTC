@@ -2549,6 +2549,9 @@ public sealed class PartStockIn
     public string? Description { get; set; }
     /// <summary>#377 chỉ phục vụ chép song sinh: Id của bản Service* gốc (null = phiếu tạo trên bản chuẩn). Nối dòng theo cột này, KHÔNG theo số phiếu (hai bản cùng sinh số "SI/SO"+giờ ⇒ có thể trùng).</summary>
     public long? TwinSrcId { get; set; }
+    /// <summary>#411 `Ser_Inv_StockIn.OrderPartId` — phiếu nhập theo đơn đặt phụ tùng đại lý (= <see cref="SerPartOrder"/>.Id).
+    /// Kết thúc phiếu ⇒ cộng `DeliveryQuantity` của đơn; huỷ phiếu ⇒ trừ lại.</summary>
+    public long? OrderPartId { get; set; }
 }
 
 /// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>
@@ -15253,6 +15256,7 @@ public sealed class SerPartOrder
     public string? VIN { get; set; }
     public string? ConfirmNo { get; set; }
     public string? CusCharges { get; set; }      // đơn vị chịu phí (issue 1017)
+    public DateTime? FinishDate { get; set; }    // #411 UpdatePurchaseOrderStatus: = hôm nay khi "3" Kết thúc, khác ⇒ NULL
     public string IsActive { get; set; } = "1";
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
@@ -15283,6 +15287,8 @@ public sealed class SerPartOrderDetail
     public decimal? SOQ { get; set; }
     public string? ICC { get; set; }
     public decimal? DeliveryQuantity { get; set; }
+    /// <summary>#411 Ngày nhập kho gần nhất theo dòng (`LastDateDelivery`).</summary>
+    public DateTime? LastDateDelivery { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }

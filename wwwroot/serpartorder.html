@@ -35,7 +35,7 @@
     <div><label><input type="checkbox" id="fTransport" checked> Chuyển phát nhanh</label></div>
     <div><label><input type="checkbox" id="fConfirm"> Xác nhận (CONF)</label></div>
   </div>
-  <div class="wrap"><table><thead><tr><th>Mã PT *</th><th>SL *</th><th>Giá</th><th>VAT</th><th>CK</th><th>Hệ số</th><th>Model</th><th>HTC xác nhận</th><th>MIP</th><th>OO</th><th>BO</th><th>OH</th><th>SOQ</th><th>ICC</th><th>Ghi chú</th><th></th></tr></thead><tbody id="lines"></tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>Mã PT *</th><th>SL *</th><th>Giá</th><th>VAT</th><th>CK</th><th>Hệ số</th><th>Model</th><th>HTC xác nhận</th><th>MIP</th><th>OO</th><th>BO</th><th>OH</th><th>SOQ</th><th>ICC</th><th>Ghi chú</th><th>Đã nhập</th><th></th></tr></thead><tbody id="lines"></tbody></table></div>
   <div class="row" style="margin-top:8px"><button onclick="addLine()">+ Dòng</button><button class="primary" onclick="save()">Lưu</button><button onclick="resetForm()">Đơn mới</button><span id="msg"></span></div>
 </div>
 <div class="row" style="margin:8px 0">
@@ -58,7 +58,7 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},3500); }
 function addLine(o){ o=o||{}; const tr=document.createElement("tr");
-  tr.innerHTML=COLS.map(c=>`<td><input data-c="${c}" ${NUM.has(c)?'type="number" step="any"':''} value="${esc(o[c])}"></td>`).join("")+`<td><button class="link" onclick="this.closest('tr').remove()">×</button></td>`;
+  tr.innerHTML=COLS.map(c=>`<td><input data-c="${c}" ${NUM.has(c)?'type="number" step="any"':''} value="${esc(o[c])}"></td>`).join("")+`<td class="num" title="${esc((o.lastDateDelivery||"").slice(0,10))}">${o.deliveryQuantity??""}</td><td><button class="link" onclick="this.closest('tr').remove()">×</button></td>`;
   F("lines").appendChild(tr); }
 function resetForm(){ EDIT=null; F("editing").textContent=""; ["fOrderNo","fOrderNoUser","fVIN","fConfirmNo","fCusCharges","fUserCreate"].forEach(i=>F(i).value=""); F("lines").innerHTML=""; addLine(); }
 function body(){
