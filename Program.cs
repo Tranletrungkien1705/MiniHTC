@@ -15782,6 +15782,7 @@ string[] MktAttachTypes = { "DESIGNIMAGE", "ACTUALIMAGE", "CONTRACT", "INVOICE" 
 
 app.MapGet("/api/mktfeeattaches", async (AppDbContext db, ITenantContext t, string? feeCode, string? activityCode, string? fileAttachType) =>
 {
+    // #5530
     var qy = db.MktFeeDetailAttaches.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(feeCode)) qy = qy.Where(x => x.MKTFeeCode == feeCode);
     if (!string.IsNullOrWhiteSpace(activityCode)) qy = qy.Where(x => x.MKTActivityCode == activityCode);
@@ -15797,6 +15798,7 @@ app.MapGet("/api/mktfeeattaches", async (AppDbContext db, ITenantContext t, stri
 // Nộp hồ sơ MỘT loại: thay thế trọn bộ file của đúng loại đó.
 app.MapPost("/api/mktfeeattaches/save", async (MktFeeAttachSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    // #5530
     var code = (dto.MKTFeeCode ?? "").Trim();
     var act = (dto.MKTActivityCode ?? "").Trim();
     var kind = (dto.FileAttachType ?? "").Trim().ToUpperInvariant();
