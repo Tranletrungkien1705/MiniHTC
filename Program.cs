@@ -631,6 +631,39 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
     return Results.Ok(new { s.SalesManCode, s.SalesManName, s.Status });
 }).RequireAuthorization();
 
+// ===== #5692 BÁO CÁO THEO DÕI CẬP NHẬT NVBH THEO ĐẠI LÝ — `FrmRptUpdSalesManByDealer` (2010.HTC, CHUA_CO) =====
+// Nguồn: `ReportService.Rpt_UpdSalesManByDelear(bool dataWH)` → WS `Rpt_UpdSalesManByDelear`/`_WH`
+//   (`WSHTC.asmx.cs:31901`) → biz LIVE `Rpt_UpdSalesManByDelear_New20181115` (`BizHTC.zzzzCode.cs:16448`,
+//   `_dbMain` — bản `_WH` cùng SQL chạy `_dbWH`, Mini 1 CSDL nên gộp 1 route như #5684/#296/#1544).
+// SQL: với mỗi đại lý ACTIVE, lấy NVBH có `LastestUpdDateTime` MỚI NHẤT (`top 1 … order by … desc`,
+//   KHÔNG lọc SMStatus/SalesType), rồi `inner join Mst_SalesMan` theo SMCode ⇒ đại lý KHÔNG có bất kỳ
+//   NVBH nào bị LOẠI khỏi kết quả (inner join rớt NULL SMCode).
+// 🔴 Guard nguồn: `myCommon_CheckHTCDirect` bị COMMENT TRỌN (dòng 16499-16503) ⇒ KHÔNG guard — giữ đúng,
+//   không tự thêm `flagDirect`. `@strBUPatternOfUser` nạp nhưng SQL không dùng (ca thứ 11 của họ lỗi đã
+//   ghi ở #B45-#B53/#B269...) ⇒ scope BU VÔ HIỆU ở nguồn — port KHÔNG tự thêm lọc theo người gọi.
+// 📌 §12: `Mst_Dealer`→`Dealer` (BUCode/Status/DealerName đủ), `Mst_SalesMan`→`SalesMan`
+//   (`LastestUpdDateTime` đã có từ #B269, SalesManCode=SMCode) — KHÔNG cần entity mới.
+app.MapGet("/api/reports/upd-salesman-by-dealer", async (AppDbContext db, ITenantContext t) =>
+{
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId && d.Status == "1").ToListAsync();
+    var salesMen = await db.SalesMen.Where(s => s.OrgId == t.OrgId).ToListAsync();
+    var items = dealers
+        .Select(d => new { d.DealerCode, d.DealerName,
+            latest = salesMen.Where(s => s.DealerCode == d.DealerCode)
+                .OrderByDescending(s => s.LastestUpdDateTime).FirstOrDefault() })
+        .Where(x => x.latest != null)   // inner join Mst_SalesMan theo SMCode => dai ly khong co NVBH nao bi roi
+        .Select(x => new { x.DealerCode, x.DealerName, SMCode = x.latest!.SalesManCode, x.latest.LastestUpdDateTime })
+        .OrderBy(x => x.DealerCode, StringComparer.Ordinal)
+        .ToList();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        singleDbNote = "#5692: nguon co 2 ham (Main/WH) chay CUNG SQL tren 2 DB khac nhau qua dataWH; Mini 1 DB nen gop 1 route.",
+        sourceNoGuardNote = "#5692: myCommon_CheckHTCDirect bi comment tron o nguon => KHONG co guard, port giu dung khong tu them flagDirect.",
+        buScopeDeadNote = "#5692: @strBUPatternOfUser nap nhung SQL khong dung mot lan nao (ca thu 11 cua ho loi nay, sau #B45-#B53/#B269) => scope theo nguoi goi VO HIEU o nguon, port khong tu them loc.",
+    });
+}).RequireAuthorization();
+
 // #5589 — Sửa PHÒNG BAN / LOẠI NVBH theo lô (Support_Mst_SalesMan_UpdateDepartmentAndSMType —
 // 2010.HTC Biz.HTC.WH.hkt.cs:7470). TWIN: chỉ `TERP.WSHTC.64` (99643). =====
 // 🔴 Nguồn có **BA nhánh update** tuỳ trường nào thực sự đổi (cả hai / chỉ phòng ban / chỉ loại) —
