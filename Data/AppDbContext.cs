@@ -498,8 +498,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<VatInvoiceCar> VatInvoiceCars => Set<VatInvoiceCar>();
     public DbSet<GrtClaimExt> GrtClaimExts => Set<GrtClaimExt>();
     public DbSet<GrtClaimExtCar> GrtClaimExtCars => Set<GrtClaimExtCar>();
-    public DbSet<SupportRecord> SupportRecords => Set<SupportRecord>();
-    public DbSet<SupportPatchLog> SupportPatchLogs => Set<SupportPatchLog>();
     public DbSet<ReqMortgage> ReqMortgages => Set<ReqMortgage>();
     public DbSet<ReqMortgageCar> ReqMortgageCars => Set<ReqMortgageCar>();
     public DbSet<QcDocReq> QcDocReqs => Set<QcDocReq>();

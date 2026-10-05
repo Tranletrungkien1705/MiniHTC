@@ -14786,34 +14786,11 @@ public sealed class GrtClaimExtCar
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>Bản ghi hỗ trợ sửa dữ liệu (Deal/HĐ theo VIN) — port 1:1 cụm Support (FrmSupportUpdatePrice/CarDeliveryDate/SMCode/BankCode).</summary>
-public sealed class SupportRecord
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string DealNo { get; set; } = "";
-    public string VIN { get; set; } = "";
-    public string DealerCode { get; set; } = "";
-    public decimal Price { get; set; }
-    public DateTime? DeliveryDate { get; set; }
-    public string SalesManCode { get; set; } = "";
-    public string BankCode { get; set; } = "";
-    public DateTime UpdatedAt { get; set; } = DateTime.Now;
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-}
-
-/// <summary>Log patch từng field (audit old→new) — port 1:1 cụm Support (bulk field-fix).</summary>
-public sealed class SupportPatchLog
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public long SupportRecordId { get; set; }
-    public string VIN { get; set; } = "";
-    public string Field { get; set; } = "";      // price/deliveryDate/salesManCode/bankCode
-    public string OldValue { get; set; } = "";
-    public string NewValue { get; set; } = "";
-    public DateTime PatchedAt { get; set; } = DateTime.Now;
-}
+// #5612 — ĐÃ XOÁ SupportRecord/SupportPatchLog (bảng tự tạo gộp giá/ngày giao/mã NVBH/mã NH khoá theo
+// VIN, ghép NHẦM DealerDeal.BankCode với Dlr_Contract.BankCode làm một). Cả 4 trường đã có route riêng
+// đúng khoá/đúng guard/đúng bảng lịch sử từ trước: POST /api/dealdetail/update-price, POST
+// /api/cardeliverydate/update, POST /api/deals/update-bankcode, POST /api/dlrcontracts/{no}/patch.
+// Mẫu "2 nguồn sự thật" lần thứ 7 (sau #4301/#4901/#4988/#5119/#5187/#5420). Chi tiết: Program.cs.
 
 /// <summary>Đề nghị thế chấp xe (RM_ReqMortgage) — port 1:1 FrmNewRM_ReqMortgage + FrmMngRM_ReqMortgage. Header.</summary>
 public sealed class ReqMortgage

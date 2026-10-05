@@ -8568,70 +8568,20 @@ app.MapDelete("/api/grtclaimexts/{no}", async (string no, AppDbContext db, ITena
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
-// ===== Hỗ trợ sửa dữ liệu theo VIN (SupportRecord — port 1:1 cụm Support: giá/ngày giao/mã NVBH/mã NH) =====
-app.MapGet("/api/support/records", async (AppDbContext db, ITenantContext t, string? dealNo, string? vin, string? dealer) =>
-{
-    var q = db.SupportRecords.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(dealNo)) q = q.Where(r => r.DealNo.Contains(dealNo!));
-    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(r => r.VIN.Contains(vin!.ToUpper()));
-    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
-    var items = await q.OrderByDescending(r => r.Id).Take(500)
-        .Select(r => new { r.DealNo, r.VIN, r.DealerCode, r.Price, r.DeliveryDate, r.SalesManCode, r.BankCode, r.UpdatedAt, r.CreatedAt }).ToListAsync();   // #1271 §12
-    return Results.Ok(new { count = items.Count, items });
-}).RequireAuthorization();
-
-app.MapPost("/api/support/records", async (SupportRecordDto dto, AppDbContext db, ITenantContext t) =>
-{
-    if (string.IsNullOrWhiteSpace(dto.VIN)) return Results.BadRequest(new { error = "Chưa nhập số khung (VIN)." });
-    var vin = dto.VIN.Trim().ToUpperInvariant();
-    var ex = await db.SupportRecords.FirstOrDefaultAsync(r => r.OrgId == t.OrgId && r.VIN == vin);
-    if (ex is not null)
-    {
-        ex.DealNo = dto.DealNo ?? ""; ex.DealerCode = dto.DealerCode ?? ""; ex.Price = dto.Price; ex.DeliveryDate = dto.DeliveryDate; ex.SalesManCode = dto.SalesManCode ?? ""; ex.BankCode = dto.BankCode ?? ""; ex.UpdatedAt = DateTime.Now;
-        await db.SaveChangesAsync();
-        return Results.Ok(new { ex.VIN, updated = true });
-    }
-    var r2 = new SupportRecord { OrgId = t.OrgId, DealNo = dto.DealNo ?? "", VIN = vin, DealerCode = dto.DealerCode ?? "", Price = dto.Price, DeliveryDate = dto.DeliveryDate, SalesManCode = dto.SalesManCode ?? "", BankCode = dto.BankCode ?? "" };
-    db.SupportRecords.Add(r2); await db.SaveChangesAsync();
-    return Results.Ok(new { r2.VIN, updated = false });
-}).RequireAuthorization();
-
-// Patch 1 field (audit old->new). field = price|deliveryDate|salesManCode|bankCode.
-app.MapPost("/api/support/records/{vin}/patch", async (string vin, SupportPatchDto dto, AppDbContext db, ITenantContext t) =>
-{
-    vin = vin.Trim().ToUpperInvariant();
-    var r = await db.SupportRecords.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
-    if (r is null) return Results.NotFound(new { vin });
-    var field = (dto.Field ?? "").Trim();
-    if (field is not ("price" or "deliveryDate" or "salesManCode" or "bankCode")) return Results.BadRequest(new { error = "Field không hợp lệ (price|deliveryDate|salesManCode|bankCode)." });
-    if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
-    string oldVal;
-    switch (field)
-    {
-        case "price":
-            if (!decimal.TryParse(dto.Value, out var newPrice) || newPrice < 0) return Results.BadRequest(new { error = "Giá không hợp lệ." });
-            oldVal = r.Price.ToString(); r.Price = newPrice; break;
-        case "deliveryDate":
-            if (!DateTime.TryParse(dto.Value, out var newDate)) return Results.BadRequest(new { error = "Ngày giao không hợp lệ." });
-            oldVal = r.DeliveryDate?.ToString("yyyy-MM-dd") ?? ""; r.DeliveryDate = newDate; break;
-        case "salesManCode":
-            oldVal = r.SalesManCode; r.SalesManCode = dto.Value.Trim(); break;
-        default: // bankCode
-            oldVal = r.BankCode; r.BankCode = dto.Value.Trim(); break;
-    }
-    r.UpdatedAt = DateTime.Now;
-    db.SupportPatchLogs.Add(new SupportPatchLog { OrgId = t.OrgId, SupportRecordId = r.Id, VIN = vin, Field = field, OldValue = oldVal, NewValue = dto.Value.Trim() });
-    await db.SaveChangesAsync();
-    return Results.Ok(new { r.VIN, field, oldValue = oldVal, newValue = dto.Value.Trim() });
-}).RequireAuthorization();
-
-app.MapGet("/api/support/records/{vin}/history", async (string vin, AppDbContext db, ITenantContext t) =>
-{
-    vin = vin.Trim().ToUpperInvariant();
-    var logs = await db.SupportPatchLogs.Where(l => l.OrgId == t.OrgId && l.VIN == vin)
-        .OrderByDescending(l => l.Id).Take(200).Select(l => new { l.Field, l.OldValue, l.NewValue, l.PatchedAt }).ToListAsync();
-    return Results.Ok(new { vin, count = logs.Count, logs });
-}).RequireAuthorization();
+// #5612 — ĐÃ XOÁ `SupportRecord`/`SupportPatchLog` (bảng tự tạo gộp giá/ngày giao/mã NVBH/mã NH vào
+// 1 record khoá theo VIN). Cả 4 trường ĐÃ CÓ route riêng, đúng khoá, đúng guard, đúng bảng lịch sử
+// TỪ TRƯỚC (grep xác nhận code vẫn còn, không phải xoá nhầm):
+//   - Price        → `POST /api/dealdetail/update-price` (DealerDealDetail.Price, khoá DealNo+CarId,
+//                     guard VIN tồn tại, log `DlsDealDetailHisUpdPrice`).
+//   - DeliveryDate → `POST /api/cardeliverydate/update` (DealerDealDetail.DeliveryDate).
+//   - BankCode     → `POST /api/deals/update-bankcode` (DealerDeal.BankCode, guard DealerCodeBuyer rỗng,
+//                     log `DealUpdBankCodeHis`) — KHÁC HẲN `Dlr_Contract.BankCode` (xem dưới).
+//   - SalesManCode → `POST /api/dlrcontracts/{no}/patch` field=bankCode|salesType|salesManCode
+//                     (Dlr_Contract, log `DlrContractUpd{BankCode,SalesType,SMCode}His` riêng từng trường).
+// SupportRecord GHÉP NHẦM 2 THỰC THỂ KHÁC NHAU làm một (BankCode của `DealerDeal` != BankCode của
+// `DlrContract`), khoá sai (VIN thay vì DealNo/DlrContractNo+CarId), KHÔNG guard gì — mẫu "2 nguồn sự
+// thật" lần thứ 7 (sau #4301/#4901/#4988/#5119/#5187/#5420). `wwwroot/support.html` là UI DUY NHẤT gọi
+// route cũ — đã viết lại thành trang ghi chú trỏ sang 4 route thật (chưa có UI riêng cho các route đó).
 
 // ===== Đề nghị thế chấp xe (ReqMortgage — port 1:1 FrmNewRM_ReqMortgage + FrmMngRM_ReqMortgage, Sales/Payment) =====
 app.MapGet("/api/reqmortgages", async (AppDbContext db, ITenantContext t, string? bank, string? no, string? status) =>
@@ -17911,27 +17861,11 @@ app.MapGet("/api/report/cardocreq", async (AppDbContext db, ITenantContext t, st
     return Results.Ok(new { total = reqs.Count, totalCars = reqs.Sum(r => Cars(r.Id)), done = reqs.Count(r => r.Status == "F"), rejected = reqs.Count(r => r.Status == "R"), byDealer, byStatus, detail });
 }).RequireAuthorization();
 
-// ===== Báo cáo hồ sơ hỗ trợ bán hàng (port 1:1 báo cáo SupportRecord) — tái dùng SupportRecord =====
-app.MapGet("/api/report/support", async (AppDbContext db, ITenantContext t, string? dealer, string? bank, string? salesMan) =>
-{
-    var q = db.SupportRecords.Where(r => r.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
-    if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(r => r.BankCode == bank);
-    if (!string.IsNullOrWhiteSpace(salesMan)) q = q.Where(r => r.SalesManCode == salesMan);
-    var rows = await q.ToListAsync();
-    var byDealer = rows.GroupBy(r => string.IsNullOrEmpty(r.DealerCode) ? "(chưa rõ)" : r.DealerCode)
-        .Select(g => new { dealerCode = g.Key, cars = g.Count(), amount = g.Sum(x => x.Price) }).OrderByDescending(x => x.amount).ToList();
-    var byBank = rows.GroupBy(r => string.IsNullOrEmpty(r.BankCode) ? "(không vay)" : r.BankCode)
-        .Select(g => new { bankCode = g.Key, cars = g.Count(), amount = g.Sum(x => x.Price) }).OrderByDescending(x => x.cars).ToList();
-    var bySalesMan = rows.GroupBy(r => string.IsNullOrEmpty(r.SalesManCode) ? "(chưa rõ)" : r.SalesManCode)
-        .Select(g => new { salesManCode = g.Key, cars = g.Count(), amount = g.Sum(x => x.Price) }).OrderByDescending(x => x.cars).ToList();
-    var detail = rows.OrderByDescending(r => r.Id).Take(500).Select(r => new
-    {
-        r.DealNo, r.VIN, r.DealerCode, r.SalesManCode, r.BankCode, price = r.Price,
-        deliveryDate = r.DeliveryDate.HasValue ? r.DeliveryDate.Value.ToString("yyyy-MM-dd") : ""
-    }).ToList();
-    return Results.Ok(new { total = rows.Count, totalAmount = rows.Sum(r => r.Price), withLoan = rows.Count(r => !string.IsNullOrEmpty(r.BankCode)), byDealer, byBank, bySalesMan, detail });
-}).RequireAuthorization();
+// #5612 — ĐÃ XOÁ `/api/report/support` cùng lúc với `SupportRecord`. Báo cáo này không có nguồn thật
+// tương ứng (không tìm thấy report nào trong BizHTC gộp Price+BankCode+SalesManCode theo VIN) — tự dựng
+// để hiển thị dữ liệu của bảng giả `SupportRecord`, cũng ghép nhầm `DealerDeal` với `Dlr_Contract` y hệt
+// bảng gốc. `wwwroot/supportreport.html` (UI duy nhất gọi route này, không ai trỏ tới) đã viết lại thành
+// trang ghi chú.
 
 // #5420 — Báo cáo giao dịch bán xe: đổi nguồn từ DealRecord (đã xoá, xem docstring entity) sang
 // DealerDeal/DealerDealDetail (bảng thật đang dùng). CtmCareFlag là cờ "0"/"1" (không phải chuỗi tự do
@@ -109569,8 +109503,6 @@ record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaim
 record GrtClaimExtSignDto(string FileName, string? Remark = null);
 /// <summary>Huỷ công văn gia hạn — nguồn `Pmt_GrtClaimExt_Cancel` chỉ nhận `objGrtClaimExtNo` + `objRemark`.</summary>
 record GrtClaimExtCancelDto(string? Remark = null);
-record SupportRecordDto(string VIN, string? DealNo, string? DealerCode, decimal Price, DateTime? DeliveryDate, string? SalesManCode, string? BankCode);
-record SupportPatchDto(string Field, string Value);
 record DlrContractPatchDto(string Field, string Value);
 record DlvMinutesPatchDto(string Field, string Value);
 /// <summary>Một dòng lưới của FrmSupport_BBGN_UpdateProvinceAndDistrict: 1 VIN trong biên bản + 4 cột giá trị mới.</summary>
