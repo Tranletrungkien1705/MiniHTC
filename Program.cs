@@ -30285,8 +30285,16 @@ app.MapPost("/api/warrantyclaims/{id}/update", async (long id, WarrantyClaimUpda
 //   vào alColumnEffective ⇒ hai mã lỗi CHỈ là guard, không được lưu). DealerCode luôn gán; CusRequest/CarStatus/FinishedDate/WarrantyStatus
 //   khi khác rỗng; StartDate cắt về ngày; LogLU*. Sau đó ProcessUpdateStatusItem(ROWID, WarrantyStatus) — nguồn truyền nguyên tham số kể cả
 //   rỗng ⇒ mọi dòng CV/PT nhận đúng giá trị đó; Note ⇒ 1 dòng Ser_ROWarrantyReportTransaction (CurrentStatus = WarrantyStatus).
-//   ⛔ BLOCKED: khi SENT nguồn gọi ROWarrantyReport_Approve_Check (:3979 → DMSSale_ROWarrantyReport_Approve_Check :4538) = gọi WS ngoài
-//   DMS.Sales WSHTC64 kiểm hợp đồng/VIN/hạn giao 6 tháng — MiniHTC không có kênh tích hợp đó.
+//   ⛔ MỘT guard con BLOCKED: `ROWarrantyReport_Approve_Check` (:3979) gọi `DMSSale_ROWarrantyReport_Approve_Check` (:4538)
+//   TRƯỚC HẾT ở MỌI nhánh (WS ngoài DMS.Sales WSHTC64 kiểm hợp đồng/VIN/hạn giao 6 tháng) — MiniHTC không có kênh tích hợp đó,
+//   giữ BLOCKED cho riêng mảnh này.
+// ===== 🔴🔴🔴 [hợp nhất twin-port, queue sau #551] CHÍN guard con CÒN LẠI của cascade KHÔNG phụ thuộc WS — port sang từ
+// `POST /api/warrantyclaims/{claimId}/items/{itemId}/status` (route #775/#1016-#1025, có đủ 9 guard nhưng KHÔNG trang nào
+// gọi — xem log) — vì route NÀY (`/item-status`) mới là route THẬT `wwwroot/warrantyclaim.html:121` gọi, và tham số hàm
+// nguồn `Ser_ROWarrantyReport_ItemStatus_Update_V2` thực ra KHÔNG có `itemId` (chỉ `strROWID` = khoá CLAIM) — route song
+// sinh kia tự thêm `itemId` không có trong nguồn. Nguồn gọi `ROWarrantyReport_Approve_Check` SAU khi save + SAU
+// `ProcessUpdateStatusItem` nhưng TRONG CÙNG transaction — guard lỗi thì rollback toàn bộ ⇒ hành vi quan sát được TƯƠNG
+// ĐƯƠNG chạy guard TRƯỚC SaveChangesAsync (đọc giá trị ĐÃ patch của chính lượt gọi này, vd FinishedDate vừa gửi lên).
 app.MapPost("/api/warrantyclaims/{id}/item-status", async (long id, WarrantyClaimItemStatusDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var c = await db.ServiceWarrantyClaims.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -30301,6 +30309,218 @@ app.MapPost("/api/warrantyclaims/{id}/item-status", async (long id, WarrantyClai
     if (S(dto.CarStatus) is { } cs) c.CarStatus = cs;
     if (dto.StartDate is { } sd) c.StartDate = sd.Date;
     if (dto.FinishedDate is { } fd) c.FinishedDate = fd;
+    if (st == "SENT")
+    {
+        // ===== #1016 `…_CreatedDateAndWarrantyRegisDateAndKM` (WarrantyReport.cs:5220) =====
+        if (c.WarrantyKM is null)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM", message = "Số Km của BCBH trống!" });
+        if (c.WarrantyKM >= 20000)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM", message = "Số Km của BCBH lớn hơn 20,000KM!" });
+        if (c.WarrantyRegistrationDate is null)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyRegisDate", message = "Ngày ĐKBH của BCBH trống!" });
+        if (c.WarrantyRegistrationDate.Value.AddDays(360) < c.CreatedAt)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCreatedDateAndWarrantyRegisDate",
+                message = "Ngày gửi BCBH - Ngày bảo hành > 12 tháng!" });
+
+        // ===== #1017 `…_WarrantyFile` (WarrantyReport.cs:4905) =====
+        if (!string.IsNullOrWhiteSpace(c.ROWTID))
+        {
+            var wt = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWTID == c.ROWTID);
+            if (wt is not null)
+            {
+                var requiredCodes = await db.ROWarrantyTypePhotos
+                    .Where(x => x.OrgId == t.OrgId && x.ROWarrantyTypeId == wt.Id && x.ROWPTCode != "KHAC")
+                    .Join(db.RoWarrantyPhotoTypes.Where(p => p.OrgId == t.OrgId && p.FlagActive == "1"),
+                        rp => rp.ROWPTCode, pt => pt.ROWPTCode, (rp, pt) => rp.ROWPTCode)
+                    .Distinct().ToListAsync();
+                if (requiredCodes.Count > 0)
+                {
+                    var uploadedCodes = await db.RoAttachments
+                        .Where(x => x.OrgId == t.OrgId && x.RONo == c.RONo && x.ROWPTCode != null)
+                        .Select(x => x.ROWPTCode!).ToListAsync();
+                    var missingPhotoTypes = requiredCodes.Except(uploadedCodes).ToList();
+                    if (missingPhotoTypes.Count > 0)
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile",
+                            message = "BCBH chưa đủ loại ảnh!", missingPhotoTypes });
+                }
+            }
+        }
+
+        // ===== #1018 `…_WarrantyFile_VIN` / `_KM` (WarrantyReport.cs:6289/6378) =====
+        var vinAttachments = await db.RoAttachments
+            .Where(x => x.OrgId == t.OrgId && x.RONo == c.RONo && x.ROWPTCode == "VIN").ToListAsync();
+        if (vinAttachments.Count != 1)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_VIN",
+                message = vinAttachments.Count == 0 ? "BCBH chưa có ảnh VIN!" : "BCBH có nhiều hơn 1 ảnh VIN!" });
+        if (!string.Equals((vinAttachments[0].Remark ?? "").Trim(), (c.Vin ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_VIN",
+                message = "Giá trị của ảnh VIN không trùng với số VIN của xe!" });
+
+        var kmAttachments = await db.RoAttachments
+            .Where(x => x.OrgId == t.OrgId && x.RONo == c.RONo && x.ROWPTCode == "KM").ToListAsync();
+        if (kmAttachments.Count != 1)
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_KM",
+                message = kmAttachments.Count == 0 ? "BCBH chưa có ảnh KM!" : "BCBH có nhiều hơn 1 ảnh KM!" });
+        if (!string.Equals((kmAttachments[0].Remark ?? "").Trim(), c.WarrantyKM!.Value.ToString(), StringComparison.Ordinal))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidWarrantyFile_KM",
+                message = "Giá trị của ảnh KM không trùng với số Km của báo giá!" });
+
+        // ===== #1019 `…_FinishedDate` / `_BatteryNo` (WarrantyReport.cs:4833/4721) =====
+        var rowType = (c.ROWTypeCode ?? "").Trim().ToUpperInvariant();
+        var rowTypeDtl = (c.ROWTypeDtlCode ?? "").Trim().ToUpperInvariant();
+        var isBTC = rowType == "BT" && rowTypeDtl == "C";
+        var isTCR = rowType == "TC" && rowTypeDtl == "R";
+        if (!isBTC && !isTCR)
+        {
+            if (c.FinishedDate is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidRO_FinishedDate",
+                    message = "BCBH chưa có ngày sửa xong!" });
+            if (c.FinishedDate.Value.AddDays(7) < c.CreatedAt)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidRO_FinishedDate",
+                    message = "Ngày gửi BCBH - Ngày sửa xong <= 7!" });
+        }
+        if (rowTypeDtl == "B" && string.IsNullOrWhiteSpace(c.BatteryNo))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidBatteryNo",
+                message = "VIN không có mã Ắc quy!" });
+
+        // ===== #1021 `…_CVC` (WarrantyReport.cs:4963) =====
+        if (!isTCR)
+        {
+            var cvcItems = await db.WarrantyClaimServiceItems
+                .Where(x => x.OrgId == t.OrgId && x.ClaimId == id && x.ROWSerType == "CVC").ToListAsync();
+            if (cvcItems.Count != 1)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = cvcItems.Count == 0 ? "BCBH chưa có công việc chính!" : "BCBH có nhiều hơn công việc chính!" });
+            var cvcCode = (cvcItems[0].SerCode ?? "").Trim().ToUpperInvariant();
+            var cvcMst = await db.ServiceItemMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SerCode == cvcCode);
+            if (cvcMst is null || cvcMst.FlagWarranty != "1")
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = $"{cvcCode} không thuộc Mst công việc bảo hành!" });
+        }
+
+        // ===== #1025 `…_CreatedDate_OtherROActualDeliveryDate` (WarrantyReport.cs:5483) — CHỈ (PT,S) =====
+        if (rowType == "PT" && rowTypeDtl == "S")
+        {
+            if (c.WarrantyKM is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM",
+                    message = "Số Km của BCBH trống!" });
+            var mainPart = await db.WarrantyClaimPartItems.FirstOrDefaultAsync(x =>
+                x.OrgId == t.OrgId && x.ClaimId == id && x.RowPartType == "PTC");
+            if (mainPart is not null && !string.IsNullOrWhiteSpace(c.Vin))
+            {
+                var otherRO = await (from ro in db.RepairOrders
+                                      join rp in db.RoPartItems on ro.Id equals rp.RoId
+                                      where ro.OrgId == t.OrgId && ro.Vin == c.Vin && ro.RONo != c.RONo
+                                          && ro.ActualDeliveryDate != null && ro.Status != "Rejected"
+                                          && rp.PartCode == mainPart.PartCode
+                                      orderby ro.ActualDeliveryDate descending
+                                      select new { ro.RONo, ro.ActualDeliveryDate, ro.Km }).FirstOrDefaultAsync();
+                if (otherRO is not null)
+                {
+                    if (otherRO.ActualDeliveryDate!.Value.AddMonths(6) < c.CreatedAt)
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCreatedDate_OtherROActualDeliveryDate",
+                            message = "Phụ tùng chính đã được thay thế hơn 6 tháng trước!", otherRO.RONo });
+                    if (string.IsNullOrWhiteSpace(otherRO.Km))
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidOtherKM",
+                            message = "Số KM của báo giá có phụ tùng chính gần nhất trống!", otherRO.RONo });
+                    if (Convert.ToDouble(otherRO.Km) > (double)c.WarrantyKM.Value)
+                        return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidOtherKM",
+                            message = "Số Km của báo giá có phụ tùng chính gần nhất lớn hơn Km của BCBH!", otherRO.RONo, otherRO.Km });
+                }
+            }
+        }
+
+        // ===== #1022 `…_WarrantyExpiresDateAndWarrantyKM` (WarrantyReport.cs:6490) — CHỈ (SB,A)/(SB,P)/(SB,W) =====
+        if (rowType == "SB" && (rowTypeDtl == "A" || rowTypeDtl == "P" || rowTypeDtl == "W"))
+        {
+            if (string.IsNullOrWhiteSpace(c.CarID))
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy thông tin xe của BCBH!" });
+            if (c.FinishedDate is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidFinishedDate",
+                    message = "Ngày sửa xong của BCBH trống!" });
+            if (c.WarrantyKM is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM",
+                    message = "Số Km của BCBH trống!" });
+            var car = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == c.CarID);
+            if (car is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy thông tin xe của BCBH!" });
+            if (car.WarrantyExpiresDate is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy ngày hết hạn bảo hành của xe!" });
+            if (car.WarrantyKM is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCarID",
+                    message = "Không tìm thấy Km giới hạn BH của xe!" });
+            if (c.FinishedDate.Value.Date > car.WarrantyExpiresDate.Value.Date)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidFinishedDate",
+                    message = "Ngày sửa xong > Ngày hết hạn bảo hành của xe tạo BCBH!" });
+            if (c.WarrantyKM.Value > car.WarrantyKM.Value)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidKM",
+                    message = "Số Km của BCBH > Số KM giới hạn bảo hành của xe tạo BCBH!" });
+        }
+
+        // ===== `…_SerialNo` (WarrantyReport.cs:4699) — CHỈ *,A =====
+        if (rowTypeDtl == "A" && string.IsNullOrWhiteSpace(c.SerialNo))
+            return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidSerialNo",
+                message = "VIN không có mã AVN!" });
+        // ===== `…_PartIDError` (WarrantyReport.cs:6467) — CHỈ (PT,S)/(TC,R) =====
+        if ((rowType == "PT" && rowTypeDtl == "S") || (rowType == "TC" && rowTypeDtl == "R"))
+        {
+            if (string.IsNullOrWhiteSpace(c.PartIDError))
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidPartIDError",
+                    message = "Báo cáo bảo hành chưa có phụ tùng lỗi!" });
+        }
+
+        // ===== #1024 `…_Bulletin` (WarrantyReport.cs:6151) — CHỈ (BT,C) =====
+        if (rowType == "BT" && rowTypeDtl == "C")
+        {
+            var cvc = await db.WarrantyClaimServiceItems.FirstOrDefaultAsync(x =>
+                x.OrgId == t.OrgId && x.ClaimId == id && x.ROWSerType == "CVC");
+            if (cvc is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "BCBH chưa có công việc chính hoặc chưa có công việc chính theo bản tin kỹ thuật!" });
+            var bulletinNo = cvc.BulletinID is { } bidc ? (await db.Bulletins.Where(x => x.OrgId == t.OrgId && x.Id == bidc).Select(x => x.BulletinNo).FirstOrDefaultAsync()) ?? "" : "";
+            if (bulletinNo.Length == 0)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "Công việc chính chưa chọn bản tin kỹ thuật!" });
+            var bulletin = await db.Bulletins.FirstOrDefaultAsync(x =>
+                x.OrgId == t.OrgId && x.BulletinNo == bulletinNo && x.FlagActive == "1");
+            if (bulletin is null)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "BCBH chưa có công việc chính hoặc chưa có công việc chính theo bản tin kỹ thuật!" });
+            var dtlOk = await db.BulletinDtls.AnyAsync(x => x.OrgId == t.OrgId && x.BulletinNo == bulletinNo
+                && x.SerCode == cvc.SerCode);
+            if (!dtlOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "Công việc chính không có trong bản tin kỹ thuật!" });
+            var vinOk = !string.IsNullOrWhiteSpace(c.Vin) && await db.BulletinVins.AnyAsync(x =>
+                x.OrgId == t.OrgId && x.BulletinNo == bulletinNo && x.VinNo == c.Vin && x.Status == "P");
+            if (!vinOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidCVC",
+                    message = "Không tìm thấy bản tin kỹ thuật của VIN!" });
+            if (bulletin.DateExpired is null || bulletin.DateExpired.Value.Date < DateTime.Now.Date)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidBulletin",
+                    message = "Số bản tin kỹ thuật hết hạn!" });
+        }
+
+        // ===== #1020 `…_ComplaintDiagnosticError` (WarrantyReport.cs:5886) — CHỈ (XM,*)/(SB,*) =====
+        if (rowType == "XM" || rowType == "SB")
+        {
+            var pnCode = (c.ErrorCodePN ?? "").Trim().ToUpperInvariant();
+            var cdCode = (c.ErrorCodeCD ?? "").Trim().ToUpperInvariant();
+            var pnOk = pnCode.Length > 0 && await db.RoComplaintDiagnosticErrors.AnyAsync(x =>
+                x.OrgId == t.OrgId && x.ErrorCode == pnCode && x.ErrorTypeCode == "PN" && x.FlagActive == "1");
+            if (!pnOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidComplaintDiagnosticError",
+                    message = "Không tìm thấy mã lỗi phàn nàn!" });
+            var cdOk = cdCode.Length > 0 && await db.RoComplaintDiagnosticErrors.AnyAsync(x =>
+                x.OrgId == t.OrgId && x.ErrorCode == cdCode && x.ErrorTypeCode == "CD" && x.FlagActive == "1");
+            if (!cdOk)
+                return Results.BadRequest(new { error = "DMSSer_ROWarrantyReport_Approve_Check_InvalidComplaintDiagnosticError",
+                    message = "Không tìm thấy mã lỗi chẩn đoán!" });
+        }
+    }
     if (st != "") c.WarrantyStatus = st;
     c.UpdatedAt = now; c.LogLUDateTime = now; c.LogLUBy = who;
     foreach (var sv in await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id).ToListAsync()) sv.WarrantyStatus = st;
