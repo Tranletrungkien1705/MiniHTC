@@ -108162,16 +108162,34 @@ app.MapPost("/api/partextramsts", async (List<PartExtraMstDto> rows, AppDbContex
 
 app.MapPost("/api/partextramsts/delete", async (List<string> partCodes, AppDbContext db, ITenantContext t) =>
 {
-    var codes = (partCodes ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
-    if (codes.Count == 0) return Results.BadRequest(new { error = "Cần danh sách PartCode." });
-    var rows = await db.PartExtraMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.PartCode)).ToListAsync();
-    db.PartExtraMsts.RemoveRange(rows);
+    // #1594 §12 parity `Ser_MST_PartExtra_Delete` (AssignmentOfWork.cs:6895): nguồn duyệt TỪNG dòng input,
+    //   (a) PartCode rỗng => Raise `Ser_MST_PartExtraSave_PartExIDNotExistInList`;
+    //   (b) `CheckExistPartExtra` (AssignmentOfWork.cs:6869) => không thấy dòng nào => Raise `Ser_MST_PartExtra_NotFound`.
+    //   Port cũ XOÁ IM LẶNG (0 dòng cho mã không tồn tại) — mất hẳn guard. Nay giữ đúng: dừng cả lô khi có mã sai.
+    var raw = partCodes ?? new();
+    if (raw.Count == 0) return Results.BadRequest(new { error = "Cần danh sách PartCode." });
+    var codes = new List<string>();
+    foreach (var c in raw)
+    {
+        var code = (c ?? "").Trim();
+        if (code.Length == 0)
+            return Results.BadRequest(new { error = "Ser_MST_PartExtraSave_PartExIDNotExistInList", message = "PartCode rỗng trong danh sách xoá." });
+        codes.Add(code);
+    }
+    // CheckExistPartExtra: mỗi PartCode phải tồn tại, nếu không nguồn ném Ser_MST_PartExtra_NotFound.
+    var existing = await db.PartExtraMsts.Where(x => x.OrgId == t.OrgId && codes.Contains(x.PartCode)).ToListAsync();
+    var existingCodes = existing.Select(x => x.PartCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var missing = codes.Where(c => !existingCodes.Contains(c)).ToList();
+    if (missing.Count > 0)
+        return Results.BadRequest(new { error = "Ser_MST_PartExtra_NotFound", message = "Có PartCode không tồn tại trong danh mục phụ tùng phát sinh.", missing });
+    db.PartExtraMsts.RemoveRange(existing);
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        requested = codes.Count, deleted = rows.Count,
+        requested = codes.Count, deleted = existing.Count,
         sourceDeleteIsNotParameterised = "BuildClauseConditionList + ExecNonQuery khong tham so (nhu #536)",
         deletesMainAndWhOnly = true,
+        guardRestored = "#1594: CheckExistPartExtra (Ser_MST_PartExtra_NotFound) + PartCode rong (Ser_MST_PartExtraSave_PartExIDNotExistInList)",
     });
 }).RequireAuthorization();
 
