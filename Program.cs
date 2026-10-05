@@ -93037,6 +93037,45 @@ app.MapPost("/api/stockreqs/{id:long}/finish", async (long id, AppDbContext db, 
         sourceHasNoStatusGuard = "nguon KHONG kiem trang thai hien tai (khac /issue cua port cu) => dat FNS tu bat ky trang thai nao",
         sourceKeyIsNumericStkReqID = "nguon nhan strStockRequisitionID (StkReqID so), KHONG phai so phieu" });
 }).RequireAuthorization();
+// ===== 🔴 #1584 `Ser_ROStockRequisition_Create` (LIVE, `BizCarSv.Inventory.cs:412`, WS `HTCWSCarSv/WSCarSv.asmx.cs:3385`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC `/api/stockreqs` POST ở trên (port cũ tự đặt
+//   `ReqNo = "PX-"+RONo`, `Status = "Draft"`, kéo phụ tùng từ RO): hàm nguồn KHÔNG sinh số phiếu, KHÔNG kéo dòng,
+//   và đặt `Status = Constants.Ser_RO_StockRequisition.Create` = **"CRE"** (`Const.Main.cs:198`).
+// Nguồn: `GetSchema(_dbMain, "Ser_ROStockRequisition")` → 1 dòng mới với `DealerCode`/`ROID`/`Status`/`CreatedDate`
+//   → `SaveData` → `select @@Identity` → trả `sr.*` + `r.Assistant` + `r.RONo` + `c.PlateNo` + `c.FrameNo`
+//   (join `Ser_RO` theo `sr.ROID = r.ROID`, join `Ser_Customer` theo `r.CusID = c.CusID`).
+// 🔴 Nguồn KHÔNG guard gì (`#region // Check:` RỖNG) — không kiểm RO tồn tại, không kiểm trùng phiếu.
+//   Port 1:1: KHÔNG chặn trùng; nhưng Mini cần `RONo` để nối nên tra RO theo `ROID` (số) — không thấy thì trả 404
+//   (nguồn sẽ tạo dòng mồ côi rồi join ra RỖNG vì `join` (không phải `left join`) — port ghi rõ khác biệt này).
+// 3B: md5 thân hàm (412-549) KHỚP giữa V20 và V20.2023.Release (e72983fce4a1a4b5a6bf4a5f56da7356).
+app.MapPost("/api/stockreqs/create-from-ro", async (long roId, string? dealerCode, AppDbContext db, ITenantContext t) =>
+{
+    // Nguồn nhận strROID (khoá số Ser_RO.ROID) + strDealerCode; Mini tra RO theo Id (ROID).
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == roId);
+    if (ro is null)
+        return Results.NotFound(new { roId,
+            sourceWouldReturnEmptyJoin = "nguon KHONG guard: tao dong Ser_ROStockRequisition voi ROID khong ton tai roi `join Ser_RO` (khong phai left join) => ket qua RONG, dong mo coi van nam trong bang" });
+    // Nguồn KHÔNG sinh số phiếu (bảng nguồn không có cột ReqNo) — Mini để rỗng, KHÔNG tự bịa "PX-".
+    var h = new StockReq
+    {
+        OrgId = t.OrgId,
+        ReqNo = "",
+        RONo = ro.RONo,
+        Status = "CRE",   // Constants.Ser_RO_StockRequisition.Create (Const.Main.cs:198)
+        CreatedAt = DateTime.Now,
+        DealerCode = dealerCode ?? ro.DealerCode,
+        Assistant = ro.Assistant,
+        PlateNo = ro.LicensePlate,   // Ser_Customer.PlateNo ↔ RepairOrder.LicensePlate
+        FrameNo = ro.Vin              // Ser_Customer.FrameNo ↔ số khung/VIN
+    };
+    db.StockReqs.Add(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.ReqNo, h.RONo, status = h.Status, h.CreatedAt, h.DealerCode, h.Assistant, h.PlateNo, h.FrameNo,
+        sourceSetsCreateCode = "nguon dat Status = Constants.Ser_RO_StockRequisition.Create = 'CRE' (Const.Main.cs:198)",
+        sourceHasNoGuard = "nguon #region // Check: RONG — khong kiem RO ton tai, khong kiem trung phieu",
+        sourceReturnsJoinedRow = "nguon tra sr.* + r.Assistant + r.RONo + c.PlateNo + c.FrameNo (join Ser_RO + Ser_Customer)",
+        sourceKeyIsNumericROID = "nguon nhan strROID (khoa so Ser_RO.ROID), KHONG phai so RO" });
+}).RequireAuthorization();
 
 // ===== Lệnh sửa chữa RO (Ser_RO — port 1:1 FrmRepairOrder, TCMotor DMSCarSv) =====
 // Luồng chính của lệnh sửa chữa (6 bước đi thẳng).
