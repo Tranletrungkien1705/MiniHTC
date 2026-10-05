@@ -2680,6 +2680,11 @@ public sealed class RoPartItem
     public decimal Amount { get; set; }
 
     public string? Note { get; set; }
+    // #1589 §12 - cot nguon PartID (Ser_ROPartItems) - port 1:1.
+    // Nguon SerStockOutOrderGet01 (Inventory.StockOut.cs:7780) join `rop.roid=soo.ROID and rop.PartID=soo.partid`
+    // de lay Price/VAT cua dong phu tung RO; Ser_ROPartItems co CA PartID lan PartCode (xem dr["PartID"]
+    // o ZTemp.cs:886/1400, Service01.cs:4988). Mini truoc day chi co PartCode => khong join duoc theo PartID.
+    public string? PartID { get; set; }
     // ===== #369 Ser_ROPartItems — cột dòng Ser_RO_Create_New20220926 =====
     public string? ExpenseType { get; set; }   // chỉ ROREPAIR · LOCAL · ROINSURANCE · ROWARRANTY
     public string? CamMarketingNo { get; set; }
@@ -3641,6 +3646,11 @@ public sealed class SerStockOutOrder
     public string Status { get; set; } = "1";
     public string SourceType { get; set; } = "CUS";   // CUS = đơn khách hàng; RO = theo lệnh sửa chữa (FrmStockOutOrderSvCreate)
     public string? RONo { get; set; }                  // số lệnh sửa chữa (khi SourceType=RO)
+    // #1589 §12 - cot nguon ROID (Ser_Inv_StockOutOrder) - port 1:1.
+    // Nguon SerStockOutOrderGet01 (Inventory.StockOut.cs:7780) loc `and t.ROID is not null` va join
+    // `soo.ROID=so.ROID`; SerStockOutOrderGetByROID (:9137) ghi/ doc thang cot nay. Mini truoc day chi co
+    // RONo (chuoi) => khong loc/join duoc theo khoa so ROID.
+    public string? ROID { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime CreatedDate { get; set; }
     // ===== #370 cột nguồn Ser_InvStockOutOrder — `SerStockOutOrderSave` (BizCarSv.Inventory.StockOut.cs; DbDefine TblSerInvStockOutOrder) =====
@@ -3706,6 +3716,10 @@ public sealed class SerStockOutOrderLine
     public string? PartName { get; set; }
     public string? Unit { get; set; }
     public decimal OrderQuantity { get; set; }
+    // #1589 §12 - cot nguon PartID (Ser_Inv_StockOutOrderDetail) - port 1:1.
+    // Nguon SerStockOutOrderGet01 (Inventory.StockOut.cs:7780) join `sod.PartID = soo.PartID` va
+    // `sod.PartID = p.PartID` (Ser_MST_Part) => thieu cot nay khong noi duoc dong lenh xuat ve phu tung.
+    public string? PartID { get; set; }
 }
 
 /// <summary>Chứng chỉ nhân viên bán hàng (Mst_SalesManCertificate) — port 1:1 FrmMst_SalesManCertificateCreate/Mng/Update (2010.HTC/Admin/Product). Gán chứng chỉ cho NVBH theo mã Hyundai + loại NV + hiệu lực. KHÁC catalog Certificate (code/name) — đây là bản GÁN có hạn. Upsert by (SMHyundaiCode+CertificateCode).</summary>
