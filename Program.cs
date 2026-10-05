@@ -75910,6 +75910,50 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
         count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
 }).RequireAuthorization();
 
+// ===== #5748 BÁO CÁO HỢP ĐỒNG ĐẠI LÝ (port 1:1 FrmContractReportForDealer, Views/Report) =====
+// TRACE: ReportService.GetDealerContractReport -> WS ContractDealerContractGetReport (LIVE qua
+// _New20181115, xem WSHTC.64/WSHTC.asmx.cs:7632) -> biz ContractDealerContractGetReport_New20181115
+// (BizHTC.Contract.cs:547). Nguồn trả dataset nhiều bảng: CT_DealerContract (header, lọc theo
+// DealerContractNo+DealerCode, BU-scoped) + (nếu strIsGetDetail='1') CT_DealerContractDetail gộp theo
+// (Spec,UnitPrice) qua join Car_Car/Mst_CarSpec + danh sách SOCode phân biệt qua Car_Car + Mst_Dealer +
+// Rpt_PrincipleContract (cùng lọc theo DealerCode).
+// ⚠️ GHI NỢ CÓ CHỦ Ý phần "detail gộp theo Spec+UnitPrice": nguồn CT_DealerContractDetail có cột
+// UnitPrice RIÊNG từng xe (CarId); DlrContractCar (Mini) KHÔNG có cột UnitPrice tương đương và CHƯA xác
+// nhận write-path nào của Mini từng ghi giá trị này lúc gán xe vào hợp đồng — thêm cột + verify nguồn gốc
+// giá trị là hạng mục riêng (schema change + rà 2 write-site `new DlrContractCar`), KHÔNG đoán/mặc định
+// giá trị. Phần còn lại (header/dealer/principleContract/soCodes) KHÔNG cần cột này, port đủ.
+app.MapGet("/api/dlrcontracts/{no}/report", async (string no, AppDbContext db, ITenantContext t, string? getDetail) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == c.DealerCode);
+    var principleContracts = await db.PrincipleContracts.Where(x => x.OrgId == t.OrgId && x.DealerCode == c.DealerCode)
+        .Select(x => new { x.PrincipleContractNo, x.BankInfo, x.PrincipleContractDate, x.PrincipleContractExpectedDate,
+            x.Representative, x.JobTitle, x.FlagActive }).ToListAsync();
+
+    object? soCodes = null;
+    if (string.Equals(getDetail, "1", StringComparison.OrdinalIgnoreCase))
+    {
+        var carIds = await db.DlrContractCars.Where(x => x.OrgId == t.OrgId && x.DlrContractNo == no)
+            .Select(x => x.CtrCarId).ToListAsync();
+        soCodes = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.CarId != null && carIds.Contains(x.CarId!)
+            && x.SOCode != null).Select(x => x.SOCode!).Distinct().OrderBy(s => s).ToListAsync();
+    }
+
+    return Results.Ok(new
+    {
+        header = new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode, c.SignDate,
+            c.Status, c.DealerCode, c.SalesType, c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime },
+        dealer = dealer is null ? null : new { dealer.DealerCode, dealer.DealerName, dealer.Address, dealer.Phone, dealer.Email },
+        principleContracts,
+        soCodes,
+        detailBySpecDebtNote = string.Equals(getDetail, "1", StringComparison.OrdinalIgnoreCase)
+            ? "Chua port: nguon gop CT_DealerContractDetail theo (SpecCode,UnitPrice) qua join Car_Car — can them cot UnitPrice vao DlrContractCar + xac nhan write-path truoc, xem #5748."
+            : null,
+    });
+}).RequireAuthorization();
+
 // Sửa số lượng theo dòng model/spec/màu (port 1:1 FrmMngRetailContractHistory btnFlagDone01_Click, Sales/RetailContract)
 app.MapPost("/api/dlrcontracts/{no}/update-qty", async (string no, DlrContractQtyDto dto, AppDbContext db, ITenantContext t) =>
 {
