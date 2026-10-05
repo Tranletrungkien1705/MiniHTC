@@ -60382,10 +60382,10 @@ app.MapPost("/api/avnprices/{code}/toggle", async (string code, AppDbContext db,
     return Results.Ok(new { a.AVNCode, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
-// ===== Điều kiện tự động tạo DO (DOATCondition — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto,
+// ===== #2104 Điều kiện tự động tạo DO (DOATCondition — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto,
 // 2010.HTC/Sales; biz LIVE `Mst_DOATCondition_Add_New20180124` → `_AddX_New20190124`, BizHTC/DMS40/0.01.Master.cs:2104/3415,
 // xác nhận LIVE qua WS `Mst_DOATCondition_Add` tại WSHTC.asmx.cs:24635) =====
-// 🔴 [nợ port, sửa 05/10/2026] `DOATConditionCode` KHÔNG phải mã server tự sinh theo timestamp — nguồn để
+// 🔴 [nợ port, sửa 05/10/2026, #2104] `DOATConditionCode` KHÔNG phải mã server tự sinh theo timestamp — nguồn để
 // CLIENT tự chọn/sửa mã (form gợi ý qua `GetDOATConditionCode()` nhưng ô nhập vẫn sửa được), biz validate
 // bằng `Mst_DOATCondition_CheckDB(strFlagExistToCheck=Inactive)` = mã PHẢI CHƯA tồn tại. Port cũ bỏ qua
 // hoàn toàn, luôn tự sinh `"DOAT"+timestamp`.
