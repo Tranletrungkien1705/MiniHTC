@@ -18,9 +18,9 @@
 <h1>Sao kê ngân hàng <span class="muted">(port 1:1 FrmBank_BankStatement — TCMotor/Sales/Payment)</span></h1>
 
 <div class="card"><h3 style="margin-top:0">Import sao kê (dán từ Excel)</h3>
-  <div class="row"><div><label>Số sao kê / lô *</label><input id="iNo" style="width:160px" placeholder="SK-2026-09"></div></div>
-  <p class="muted" style="margin:8px 0 2px">Mỗi dòng: <b>Ngày GD [tab] Mã GD [tab] Nợ [tab] Có [tab] Số dư [tab] Nội dung [tab] NH nhận [tab] TK nhận [tab] Người gửi</b></p>
-  <textarea id="iLines" placeholder="2026-09-01&#9;TX001&#9;0&#9;5000000&#9;15000000&#9;CK mua xe HD001&#9;VCB&#9;0123456&#9;NGUYEN VAN A"></textarea>
+  <p class="muted" style="margin:4px 0">Số sao kê (<code>BSTM...</code>) do server tự sinh RIÊNG cho từng dòng — không phải mã chung cho cả lô (đúng nguồn <code>Seq_Common_MyGet</code>, không phải ô nhập tay).</p>
+  <p class="muted" style="margin:8px 0 2px">Mỗi dòng (9 cột bắt buộc trừ ghi chú): <b>Ngày GD [tab] Mã GD [tab] Nợ [tab] Có * [tab] Số dư [tab] Nội dung * [tab] NH nhận [tab] TK nhận * [tab] Người gửi [tab] Mã ĐL gửi * [tab] Mã ĐL nhận * [tab] Loại GD(0/1) *</b></p>
+  <textarea id="iLines" placeholder="2026-09-01&#9;TX001&#9;0&#9;5000000&#9;15000000&#9;CK mua xe HD001&#9;VCB&#9;0123456&#9;NGUYEN VAN A&#9;D001&#9;D002&#9;1"></textarea>
   <div class="row" style="margin-top:8px"><button class="primary" onclick="imp()">Import</button><span id="imsg" class="msg"></span></div>
 </div>
 
@@ -33,8 +33,8 @@
   <button onclick="load()">Xem</button>
 </div>
   <div class="kpi" id="kpi"></div>
-  <div class="wrap"><table><thead><tr><th>Ngày GD</th><th>Mã GD</th><th class="num">Nợ</th><th class="num">Có</th><th class="num">Số dư</th><th>Nội dung</th><th>NH nhận</th><th>Người gửi</th><th>Mã TT DMS</th><th>Đối soát</th><th></th></tr></thead>
-  <tbody id="rows"><tr><td colspan="11" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
+  <div class="wrap"><table><thead><tr><th>Số sao kê</th><th>Ngày GD</th><th>Mã GD</th><th class="num">Nợ</th><th class="num">Có</th><th class="num">Số dư</th><th>Nội dung</th><th>NH nhận</th><th>Người gửi</th><th>Mã CTKT</th><th>Mã TT DMS</th><th>Đối soát</th><th></th></tr></thead>
+  <tbody id="rows"><tr><td colspan="13" class="muted">Nhấn "Xem".</td></tr></tbody></table></div>
 </div>
 
 <script>
@@ -49,20 +49,27 @@ function say(el,t){ F(el).textContent=t; setTimeout(()=>{if(F(el).textContent===
 function num(x){ return +(String(x||"").replace(/[.,\s]/g,m=>m===","?".":""))||0; }
 async function imp(){ await token();
   const rows=F("iLines").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>l.split(/\t/));
-  const lines=rows.map(c=>({TransactionDate:c[0]||"",TransactionCode:c[1]||"",DebitVal:num(c[2]),CreditVal:num(c[3]),BalanceVal:num(c[4]),RemittanceDetail:c[5]||"",BankReceiveCode:c[6]||"",AccountReceiveNo:c[7]||"",AccountSendName:c[8]||""}));
-  const r=await fetch("/api/bankstatements/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({BStatementNo:F("iNo").value,Lines:lines})});
+  const lines=rows.map(c=>({TransactionDate:c[0]||"",TransactionCode:c[1]||"",DebitVal:c[2]?num(c[2]):null,CreditVal:c[3]?num(c[3]):null,BalanceVal:c[4]?num(c[4]):null,RemittanceDetail:c[5]||"",BankReceiveCode:c[6]||"",AccountReceiveNo:c[7]||"",AccountSendName:c[8]||"",DealerSendCode:c[9]||"",DealerReceiveCode:c[10]||"",FlagTnxType:c[11]||""}));
+  const r=await fetch("/api/bankstatements/import",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Lines:lines})});
   const d=await r.json(); if(!r.ok){ say("imsg","Lỗi: "+(d.error||r.status)); return; }
   say("imsg",`Đã thêm ${d.added}, bỏ trùng ${d.skipped}`); F("iLines").value=""; load();
 }
 async function match(id,cur){ await token(); const code=prompt("Mã thanh toán DMS để đối soát (để trống = huỷ):",cur||"");
   if(code===null) return; await fetch("/api/bankstatements/"+id+"/match",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({PaymentCodeDMS:code})}); load();
 }
+async function updVoucher(tc,cur){ await token(); const v=prompt("Số chứng từ kế toán cho mã GD "+tc+":",cur||"");
+  if(v===null) return; await fetch("/api/bankstatements/update-actvoucher",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Lines:[{TransactionCode:tc,ActVoucherCode:v}]})}); load();
+}
+async function updRemittance(tc,cur){ await token(); const v=prompt("Nội dung chuyển tiền (bắt buộc) cho mã GD "+tc+":",cur||"");
+  if(v===null) return; if(!v.trim()){ alert("Nội dung chuyển tiền không được để trống!"); return; }
+  await fetch("/api/bankstatements/update-remittance",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({Lines:[{TransactionCode:tc,RemittanceDetail:v}]})}); load();
+}
 async function del(id){ await token(); if(!confirm("Xoá dòng sao kê này?")) return; await fetch("/api/bankstatements/"+id,{method:"DELETE",headers:H()}); load(); }
 async function load(){ await token();
   const qs=new URLSearchParams({q:F("q").value,bankReceive:F("fBank").value,match:F("fMatch").value,dateFrom:F("fFrom").value,dateTo:F("fTo").value});
   const r=await fetch("/api/bankstatements?"+qs,{headers:H()}); const d=await r.json();
   F("kpi").innerHTML=`<span>Dòng: <b>${d.count}</b></span><span>Tổng nợ: <b>${M(d.totDebit)}</b></span><span>Tổng có: <b>${M(d.totCredit)}</b></span><span class="y">Đã khớp: <b>${d.matched}</b></span><span class="n">Chưa: <b>${d.unmatched}</b></span>`;
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td>${esc(o.transactionDate)}</td><td>${esc(o.transactionCode)}</td><td class="num">${M(o.debitVal)}</td><td class="num">${M(o.creditVal)}</td><td class="num">${M(o.balanceVal)}</td><td>${esc(o.remittanceDetail)}</td><td>${esc(o.bankReceiveCode)}</td><td>${esc(o.accountSendName)}</td><td>${esc(o.paymentCodeDMS)}</td><td><span class="pill ${o.matchStatus==='Y'?'y':'n'}">${o.matchStatus==='Y'?'Đã khớp':'Chưa'}</span></td><td><button class="link" onclick="match(${o.id},'${esc(o.paymentCodeDMS)}')">Đối soát</button><button class="link" onclick="del(${o.id})">Xoá</button></td></tr>`).join("")||'<tr><td colspan="11" class="muted">Chưa có dòng sao kê.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td>${esc(o.bStatementNo)}</td><td>${esc(o.transactionDate)}</td><td>${esc(o.transactionCode)}</td><td class="num">${M(o.debitVal)}</td><td class="num">${M(o.creditVal)}</td><td class="num">${M(o.balanceVal)}</td><td>${esc(o.remittanceDetail)}</td><td>${esc(o.bankReceiveCode)}</td><td>${esc(o.accountSendName)}</td><td>${esc(o.actVoucherCode)}</td><td>${esc(o.paymentCodeDMS)}</td><td><span class="pill ${o.matchStatus==='Y'?'y':'n'}">${o.matchStatus==='Y'?'Đã khớp':'Chưa'}</span></td><td><button class="link" onclick="match(${o.id},'${esc(o.paymentCodeDMS)}')">Đối soát</button><button class="link" onclick="updVoucher('${esc(o.transactionCode)}','${esc(o.actVoucherCode)}')">CTKT</button><button class="link" onclick="updRemittance('${esc(o.transactionCode)}','${esc(o.remittanceDetail)}')">ND CK</button><button class="link" onclick="del(${o.id})">Xoá</button></td></tr>`).join("")||'<tr><td colspan="13" class="muted">Chưa có dòng sao kê.</td></tr>';
 }
 </script>
 </body></html>

@@ -4244,6 +4244,12 @@ public static class Seeder
                 "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"PartVAT\" numeric NULL",
                 "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // [nợ port] 5 cột nguồn Bank_BankStatement (BizHTC.MasterData.cs:10206-10233) chưa có.
+                "ALTER TABLE public.\"BankStatementLines\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"BankStatementLines\" ADD COLUMN IF NOT EXISTS \"BSStatus\" text NOT NULL DEFAULT '1'",
+                "ALTER TABLE public.\"BankStatementLines\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"BankStatementLines\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"BankStatementLines\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

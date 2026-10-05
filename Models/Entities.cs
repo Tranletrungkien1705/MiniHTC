@@ -3416,6 +3416,12 @@ public sealed class BankStatementLine
     public string? DealerReceiveCode { get; set; }
     public string MatchStatus { get; set; } = "N";      // N=chưa đối soát, Y=đã khớp PaymentCodeDMS
     public DateTime CreatedAt { get; set; }
+    // ===== [nợ port] 5 cột nguồn Bank_BankStatement (BizHTC.MasterData.cs:10206-10233) chưa có =====
+    public string? Remark { get; set; }
+    public string BSStatus { get; set; } = "1";          // nguồn luôn ghi Active lúc tạo (TConst.Flag.Active)
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master hãng bảo hiểm dịch vụ (Ser_Insurance) — port 1:1 FrmInsuranceCreate/Search (TCMotor DMSCarSv). Mã + tên Việt/Anh + địa chỉ + email/SĐT/fax + MST + mô tả.</summary>
