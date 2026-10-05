@@ -18103,6 +18103,89 @@ app.MapGet("/api/report/cbreq", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { total = reqs.Count, totalCars = lines.Count, confirmed = reqs.Count(r => r.CBReqStatus == "A"), byRoute, byType, byStatus, detail });
 }).RequireAuthorization();
 
+// ===== #5706 BÁO CÁO PIVOT TÌNH TRẠNG ĐÓNG THÙNG — `FrmPivotRearrangeCB` (2010.HTC, CHUA_CO) =====
+// KHÁC route `/api/report/cbreq` ở trên (đó là báo cáo ĐỀ NGHỊ cân bằng kho `Sto_CBReq`; đây là báo cáo
+// LỆNH điều chuyển đã duyệt `Sto_RearrangeCB`, lọc xe CHƯA đóng thùng, theo dõi số ngày tồn).
+// Nguồn: `ReportService.ReportPivotRearrangeCB(strDateReport, dataWH)` → WS `RptPivot_RearrangeCB`/`_WH`
+//   → biz LIVE `RptPivot_RearrangeCB_New20181115` (`BizHTC.ReportCar.cs:1143`, `_dbMain`; bản `_WH` cùng SQL
+//   chạy `_dbWH` — Mini 1 CSDL nên gộp 1 route, mẫu #5684/#296/#1544). Guard nguồn `myCommon_CheckHTCDirect`
+//   ACTIVE ⇒ port giữ `flagDirect`.
+// SQL: lọc `Sto_RearrangeCBDetail` (status='A') + `Sto_RearrangeCB` (status='A') + `Car_VIN.TypeCB='N'`
+//   (xe CHƯA đóng thùng), rồi LEFT JOIN `Sto_CBReqDetail` (qua `CBReqNo`→`CBReqNo`+VIN) lấy `LoaiThung`,
+//   `Mst_CarModel`/`Mst_CarSpec`/`Mst_CarColor` lấy tên hiển thị, tính `RangeDate = DATEDIFF(day,
+//   ApprovedDate, strTDate)` rồi bucket thành nhãn (dải ngày tồn kho), `TOTAL=1.0` (pivot dựng ở UI).
+// 📌 §12 đã xác nhận: cột nguồn `Sto_CBReqDetail.LoaiThung` (mã) ĐÃ port thành `StoCBReqDtl.TypeCB`
+//   (đổi tên theo quy ước `CarVinMaster.TypeCB`, xem chú thích hợp nhất song trùng `#B63`) — KHÔNG cần
+//   cột mới. `Mst_CarModel` → `Masters` (Category="Model"); `Mst_CarSpec.SpecDescription` → `CarSpec.SpecDesc`;
+//   `Mst_CarColor.Color{Ext,Int}NameVN` → `MstCarColor.Color{Ext,Int}NameVN` — đủ cột, không cần §12 mới.
+app.MapGet("/api/reports/pivot-rearrangecb", async (AppDbContext db, ITenantContext t, string? flagDirect, DateTime? tDate) =>
+{
+    if (flagDirect == "0") return Results.BadRequest(new { error = "CommonAppData_HTCDirectInvalid" });
+    var reportDate = (tDate ?? DateTime.Now).Date;
+
+    var cbs = await db.StoRearCBs.Where(x => x.OrgId == t.OrgId && x.RearCBStatus == "A").ToListAsync();
+    var cbMap = cbs.ToDictionary(x => x.Id);
+    var cbIds = cbs.Select(x => x.Id).ToHashSet();
+    var details = await db.StoRearCBDtls.Where(x => x.OrgId == t.OrgId && x.RearCBDtlStatus == "A" && cbIds.Contains(x.StoRearCBId)).ToListAsync();
+
+    var vins = details.Select(d => d.VIN).Distinct().ToList();
+    // #tbl_..._Filter: inner join Car_VIN cv ... where cv.TypeCB = 'N' (xe CHUA dong thung).
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN) && c.TypeCB == "N")
+        .ToDictionaryAsync(c => c.VIN);
+
+    var cbReqNos = details.Select(d => d.CBReqNo).Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
+    var cbReqByNo = (await db.StoCBReqs.Where(x => x.OrgId == t.OrgId && cbReqNos.Contains(x.CBReqNo)).ToListAsync())
+        .ToDictionary(x => x.CBReqNo);
+    var cbReqIds = cbReqByNo.Values.Select(x => x.Id).ToHashSet();
+    var cbReqDtls = await db.StoCBReqDtls.Where(x => x.OrgId == t.OrgId && cbReqIds.Contains(x.StoCBReqId)).ToListAsync();
+
+    var models = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Model").ToDictionaryAsync(m => m.Code, m => m.Name);
+    var specDescs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToDictionaryAsync(s => s.SpecCode, s => s.SpecDesc);
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync();
+
+    // Công thức bucket ĐÚNG 1:1 nguồn (BizHTC.ReportCar.cs:1266-1275), kể cả nhánh `else` CHẾT
+    // (mọi RangeDate nguyên đều rơi vào 1 trong 7 nhánh `when` phía trên).
+    static string RangeLabel(int d)
+    {
+        if (d < 0) return "      < 0";
+        if (d >= 0 && d <= 5) return "     0-5";
+        if (d >= 6 && d <= 10) return "    6-10";
+        if (d >= 11 && d <= 15) return "   11-15";
+        if (d >= 16 && d <= 20) return "  16-20";
+        if (d >= 21 && d <= 25) return " 21-25";
+        if (d >= 25) return "Trên 25";
+        return "00-15";   // nhanh else CHET o nguon (moi so nguyen da roi vao 1 trong 7 nhanh tren) - giu dung 1:1
+    }
+
+    var items = new List<object>();
+    foreach (var d in details)
+    {
+        if (!cars.TryGetValue(d.VIN, out var cv)) continue;   // inner join Car_VIN + TypeCB='N'
+        var cb = cbMap[d.StoRearCBId];
+        var approvedDate = (cb.ApprovedDate ?? reportDate).Date;
+        var rangeDate = (reportDate - approvedDate).Days;
+        string? scdLoaiThung = null;
+        if (!string.IsNullOrEmpty(d.CBReqNo) && cbReqByNo.TryGetValue(d.CBReqNo, out var cbReq))
+            scdLoaiThung = cbReqDtls.FirstOrDefault(x => x.StoCBReqId == cbReq.Id && x.VIN == d.VIN)?.TypeCB;
+        var color = colors.FirstOrDefault(c => c.ModelCode == cv.ModelCode && c.ColorCode == cv.ColorCode);
+        items.Add(new
+        {
+            d.VIN, cb.StoRearCBNo, d.StorageCodeTo,
+            colorExtNameVN = color?.ColorExtNameVN, colorIntNameVN = color?.ColorIntNameVN,
+            scdLoaiThung,   // #5706: Sto_CBReqDetail.LoaiThung -> StoCBReqDtl.TypeCB
+            cv.ModelCode, modelName = models.GetValueOrDefault(cv.ModelCode ?? ""),
+            specDesc = cv.ActualSpec != null ? specDescs.GetValueOrDefault(cv.ActualSpec) : null,
+            approvedDate = cb.ApprovedDate, rangeDate, rangeDateLabel = RangeLabel(rangeDate),
+            total = 1.0,
+        });
+    }
+    return Results.Ok(new
+    {
+        count = items.Count, items, reportDate = reportDate.ToString("yyyy-MM-dd"),
+        pivotNote = "#5706: TOTAL=1.0 moi dong - pivot that (theo StorageCodeTo x RangeDateLabel) dung o UI, giong nguon (PivotGridControl client).",
+    });
+}).RequireAuthorization();
+
 // ===== Tài khoản ngân hàng (BankAccount — port 1:1 FrmMstAccountBank, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string? bank, string? dealer, string? active) =>
 {
