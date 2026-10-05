@@ -57076,6 +57076,45 @@ app.MapGet("/api/insuranceattachments/get", async (AppDbContext db, ITenantConte
         cusIdFilterAppliesToCustomerQueryOnly = true
     });
 }).RequireAuthorization();
+// ===== 🔴 #1587 `SerInsuranceAttachmentCreate` — WebMethod LIVE KHONG DAU VET =====
+// Nguon: `BizCarSv.Service.cs:7754 SerInsuranceAttachmentCreate` (LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:17863`).
+// KHAC `POST /api/insuranceattachments/{roNo}` (#port cu, theo `RONo` chuoi + nhan danh sach Code):
+//   ham nguon nay nhan `ROID` (so) + `DealerCode` + DataSet `Ser_InsuranceAttachment` (cot CODE/NOTE/MstAttachmentID).
+// Hanh vi port 1:1:
+//   (1) `DeleteInsuranceAttachment(strDealerCode, strROID)`: xoa MOI dong `Ser_InsuranceAttachment`
+//       co `ROID = @ROID and DealerCode = @DealerCode` (xoa-roi-chen VO DIEU KIEN, khong kiem gi).
+//   (2) `InsertInsuranceAttachment(...)`: voi MOI dong trong DataSet, chen 1 dong voi
+//       `DealerCode = strDealerCode`, `ROID = strROID`, `Code = row["CODE"]`, `Note = row["NOTE"]`,
+//       `MstAttachmentID = row["MstAttachmentID"]`, `CreatedDate`/`LogLUDateTime = dtimeSys`,
+//       `CreatedBy`/`LogLUBy = strPartnerUserCode`.
+//   (3) Tra dataset RONG (ham khong tra du lieu).
+//   (4) ⚠️ Nguon KHONG guard: `dsInsuranceAttachment.Tables["Ser_InsuranceAttachment"]` no NullReference
+//       neu thieu bang (ho #626/#627) => port tra 400.
+// 📌 Mini: `Ser_InsuranceAttachment` -> `InsuranceAttachment`; `ROID` (so) bieu dien qua `RONo` (chuoi) theo quy uoc Mini.
+app.MapPost("/api/insuranceattachments/create", async (InsuranceAttachmentCreateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    if (dto is null || dto.Rows is null)
+        return Results.BadRequest(new { error = "Thieu bang Ser_InsuranceAttachment (nguon se NullReference).", sourceWouldThrowNullReference = true });
+    var roNo = (dto.ROID ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    // (1) DeleteInsuranceAttachment — xoa MOI dong cung ROID + DealerCode.
+    var old = db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == roNo && x.DealerCode == dealer);
+    db.InsuranceAttachments.RemoveRange(old);
+    // (2) InsertInsuranceAttachment — chen tung dong.
+    var who = (partnerUserCode ?? "system").Trim(); var now = DateTime.Now;
+    foreach (var r in dto.Rows)
+    {
+        db.InsuranceAttachments.Add(new InsuranceAttachment
+        {
+            OrgId = t.OrgId, RONo = roNo, DealerCode = dealer,
+            AttachmentCode = (r.Code ?? "").Trim(), Note = r.Note, MstAttachmentID = r.MstAttachmentID,
+            CreatedAt = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who
+        });
+    }
+    await db.SaveChangesAsync();
+    // (3) Tra dataset RONG (nguon khong tra du lieu).
+    return Results.Ok(new { roID = roNo, dealerCode = dealer, count = dto.Rows.Count });
+}).RequireAuthorization();
 
 // ===== Chiến dịch marketing HTC gửi đại lý (CampaignMarketing — port 1:1 FrmSer_CampaignMarketing/Mng, TCMotor DMSCarSv/Ser_CampaignMarketing) =====
 app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, string? q) =>
@@ -110572,6 +110611,9 @@ record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? 
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
 record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
 record InsuranceAttachmentSaveDto(List<string>? Codes, Dictionary<string, string?>? Notes = null, string? DealerCode = null);   // #998: Notes theo Code; #1558: DealerCode (nguon strDealerCode)
+// #1587 `SerInsuranceAttachmentCreate` — DataSet `Ser_InsuranceAttachment` (cot CODE/NOTE/MstAttachmentID) + ROID/DealerCode.
+record InsuranceAttachmentCreateRowDto(string? Code, string? Note, long? MstAttachmentID);
+record InsuranceAttachmentCreateDto(string? ROID, string? DealerCode, List<InsuranceAttachmentCreateRowDto>? Rows);
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 // #392: dau vao duyet chien dich marketing. Remark = null khi rong (dung nguon).
 record CampaignApproveDto(string? ApprBy, string? Remark);
