@@ -33055,11 +33055,17 @@ app.MapPost("/api/unitpricegps/{id}/update", async (long id, UnitPriceGpsUpdateD
         row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
+// #5628 — Guard trước đây CHỈ kiểm `GpsPaymentLines` — bảng CŨ trước hợp nhất song sinh #387, chỉ còn
+// dùng làm nguồn di chuyển dữ liệu 1 lần (Seeder.cs:2979-2981) sang bảng chuẩn `PmtPaymentGpsDetails`
+// (nơi MỌI thanh toán GPS mới thật sự ghi qua `/api/gpspayments` → `PmtGpsCreate`). Guard cũ luôn trả
+// `used=false` cho dữ liệu tạo SAU hợp nhất ⇒ cho xoá đơn giá hợp đồng GPS đang thực sự được dùng.
+// Kiểm cả hai bảng (an toàn cho cả trường hợp môi trường chưa chạy migrate dữ liệu cũ).
 app.MapPost("/api/unitpricegps/{id}/delete", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.MstUnitPriceGpsItems.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id });
-    var used = await db.GpsPaymentLines.AnyAsync(x => x.OrgId == t.OrgId && x.ContractGPS == row.ContractNo);
+    var used = await db.PmtPaymentGpsDetails.AnyAsync(x => x.OrgId == t.OrgId && x.ContractGPS == row.ContractNo)
+        || await db.GpsPaymentLines.AnyAsync(x => x.OrgId == t.OrgId && x.ContractGPS == row.ContractNo);
     if (used)
         return Results.BadRequest(new { error = $"Hợp đồng GPS {row.ContractNo} đã được dùng ở thanh toán GPS — không xoá được." });
     db.MstUnitPriceGpsItems.Remove(row);
