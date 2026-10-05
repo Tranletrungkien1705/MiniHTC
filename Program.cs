@@ -20953,6 +20953,72 @@ app.MapGet("/api/mngreportdatamonth", async (AppDbContext db, ITenantContext t, 
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== #5730 BÁO CÁO BÁN BUÔN NPP — `FrmBaoCaoBanBuon` (2021.1.TCMotor/DMSales.Foton, CHUA_CO) =====
+// Nguồn: `ReportService.Rpt_WholeSaleNPP_Get(...)` → WS (DMSales.Foton `TERP.WSHTC.64/WSHTC.asmx.cs:45230`)
+//   → biz `Rpt_WholeSaleNPP_Get` (`BizHTC.Car.cs:4692`, KHÔNG guard — `myCommon_GetAbilityOfUser` bị comment).
+// SQL: lọc `VAT_HTCInvoice` (status='F' đã chốt) INNER JOIN `VAT_HTCInvoiceDetail`, LEFT JOIN `Mst_Dealer`/
+//   `Car_VIN`/`Car_Car`/`Mst_CarModel`/`Mst_CarSpec`/`Mst_CarColor`/`Mst_LoaiThung` lấy tên hiển thị.
+//   `DONGIA = round(HTCUnitPrice / (HTCVAT/100 + 1), 0)` (đơn giá TRƯỚC thuế); `TIENTHUEGTGT = HTCUnitPrice
+//   - DONGIA` (tiền thuế GTGT); `ProductionYear = left(ProductionMonth, 4)`.
+// 📌 §12: `VAT_HTCInvoice`→`VatHtcInvoice`, `VAT_HTCInvoiceDetail`→`VatHtcInvoiceDetail`, `Car_Car`+`Car_VIN`
+//   →`CarVinMaster`, `Mst_CarModel`→`Masters`(Category=Model), `Mst_CarSpec`→`CarSpec`, `Mst_CarColor`→
+//   `MstCarColor`, `Mst_LoaiThung`→`Masters`(Category=LoaiThung qua `CarSpec.LoaiThung`) — đủ cột, không
+//   cần entity/cột mới.
+app.MapGet("/api/reports/wholesale-npp", async (
+    AppDbContext db, ITenantContext t, string? dealerCode, string? dlrCtrNo, string? vin,
+    DateTime? htcInvoiceDateFrom, DateTime? htcInvoiceDateTo, string? htcInvoiceNo) =>
+{
+    var q = db.VatHtcInvoices.Where(x => x.OrgId == t.OrgId && x.VatHTCStatus == "F");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(htcInvoiceNo)) q = q.Where(x => x.HTCInvoiceNo == htcInvoiceNo);
+    if (htcInvoiceDateFrom is DateTime df) q = q.Where(x => x.HTCInvoiceDate >= df.Date);
+    if (htcInvoiceDateTo is DateTime dt) q = q.Where(x => x.HTCInvoiceDate < dt.Date.AddDays(1));
+    var invoices = await q.ToListAsync();
+    var codes = invoices.Select(x => x.HTCInvoiceCode).ToHashSet();
+
+    var detQ = db.VatHtcInvoiceDetails.Where(x => x.OrgId == t.OrgId && codes.Contains(x.HTCInvoiceCode));
+    if (!string.IsNullOrWhiteSpace(vin)) detQ = detQ.Where(x => x.VIN == vin);
+    var details = await detQ.ToListAsync();
+
+    var vins = details.Select(d => d.VIN).Distinct().ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToDictionaryAsync(c => c.VIN);
+    if (!string.IsNullOrWhiteSpace(dlrCtrNo)) cars = cars.Where(kv => kv.Value.DlrCtrNo == dlrCtrNo).ToDictionary(kv => kv.Key, kv => kv.Value);
+
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).ToDictionaryAsync(d => d.DealerCode, d => d.DealerName);
+    var models = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Model").ToDictionaryAsync(m => m.Code, m => m.Name);
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToDictionaryAsync(s => s.SpecCode, s => s);
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync();
+    var loaiThungs = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "LoaiThung").ToDictionaryAsync(m => m.Code, m => m.Name);
+    var invByCode = invoices.ToDictionary(x => x.HTCInvoiceCode);
+
+    var items = new List<object>();
+    foreach (var d in details)
+    {
+        if (!cars.TryGetValue(d.VIN, out var cv)) continue;   // khop filter dlrCtrNo (neu co) qua cars da loc
+        var vh = invByCode[d.HTCInvoiceCode];
+        var spec = cv.SpecCode != null ? specs.GetValueOrDefault(cv.SpecCode) : null;
+        var color = colors.FirstOrDefault(c => c.ColorCode == cv.ColorCode && c.ModelCode == cv.ModelCode);
+        var htcUnitPrice = d.HTCUnitPrice ?? 0m;
+        var htcVat = d.HTCVAT ?? 0m;
+        var donGia = Math.Round(htcUnitPrice / (htcVat / 100m + 1), 0);
+        items.Add(new
+        {
+            vh.DealerCode, dealerName = dealers.GetValueOrDefault(vh.DealerCode ?? ""),
+            cv.ModelCode, modelName = cv.ModelCode != null ? models.GetValueOrDefault(cv.ModelCode) : null,
+            specDescription = spec?.SpecDesc,
+            vin = d.VIN, cv.EngineNo, cv.ColorCode,
+            colorName = color is null ? null : (color.ColorExtNameVN + "/" + color.ColorIntNameVN),
+            productionYear = d.ProductionMonth != null && d.ProductionMonth.Length >= 4 ? d.ProductionMonth.Substring(0, 4) : null,
+            assemblyStatus = spec?.AssemblyStatus,
+            tenLoaiThung = spec?.LoaiThung != null ? loaiThungs.GetValueOrDefault(spec.LoaiThung) : null,
+            cv.DlrCtrNo,
+            vh.HTCInvoiceDate, vh.HTCInvoiceNo,
+            donGia, tienThueGTGT = htcUnitPrice - donGia, htcUnitPrice,
+        });
+    }
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // ===== #B193 XOÁ HẠN MỨC KHUYẾN MÃI HÀNG LOẠT — `Mst_Quota_DelMulti` → `Mst_Quota_DelMultiX_New20220406`
 //       (`DMS40/0.01.Master.cs`) =====
 // Cửa public `:5251` là **vỏ** gọi thân thật `Mst_Quota_DelMultiX_New20220406` `:4916`.
