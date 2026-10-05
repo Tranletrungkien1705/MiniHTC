@@ -16719,8 +16719,9 @@ app.MapPost("/api/carsvlogs", async (CarSvLogDto dto, AppDbContext db, ITenantCo
 }).RequireAuthorization();
 
 // ===== Nhật ký gọi API GPS (GPS_LogGPS — port 1:1 GPS_LogGPS_Add,
-// 2010.HTC StorageFG/BizHTC.ConnGPSVelocaDMS.cs:1476) =====
-// 🔴 Mỗi lần gọi API ghi HAI dòng chung một `LogId`: "RQ" trước khi gửi (Status rỗng) và
+// 2010.HTC StorageFG/BizHTC.ConnGPSVelocaDMS.cs:1476) ===== #4217
+// 🔴 Mỗi lần gọi API ghi HAI dòng chung một `LogId`: "RQ" trước khi gửi (Status rỗng ở lời gọi, nhưng
+//    nguồn CHUẨN HOÁ rỗng→"NOTDATA" ngay trong GPS_LogGPS_Add:1503 trước khi lưu DB) và
 //    "RS" sau khi nhận (Status = kết quả, hoặc "FALSE" khi lỗi). Endpoint dưới đây phơi đúng mô hình đó.
 // 🔴 `FunctionType` theo `TConst.TypeCallGPS`: MAPVIN · OUTSTO · GETADDRESSONLINE · SEARCHADDRESSS ·
 //    DMSUNMAPVIN (giữ nguyên "SEARCHADDRESSS" thừa một chữ S của nguồn).
@@ -16749,11 +16750,13 @@ app.MapPost("/api/gpscalllogs", async (GpsCallLogDto dto, AppDbContext db, ITena
     if (fnType is not null && !okTypes.Contains(fnType))
         return Results.BadRequest(new { error = $"FunctionType không hợp lệ. Cho phép: {string.Join(", ", okTypes)}." });
     var logId = string.IsNullOrWhiteSpace(dto.LogId) ? Guid.NewGuid().ToString("N") : dto.LogId!.Trim();
+    // #4217 — nguồn StandardizeParam(Status) rồi ép "NOTDATA" nếu rỗng (ConnGPSVelocaDMS.cs:1502-1503), KHÔNG để rỗng như port cũ.
+    var status = logType == "RQ" ? "" : (dto.Status ?? "");
+    if (string.IsNullOrEmpty(status)) status = "NOTDATA";
     var row = new GpsCallLog
     {
         OrgId = t.OrgId, LogId = logId, LogType = logType,
-        // Nguồn để Status RỖNG ở dòng RQ; "FALSE" khi lỗi phía RS.
-        Status = logType == "RQ" ? "" : dto.Status,
+        Status = status,
         Exception = dto.Exception, DataSend = dto.DataSend, DataResponse = dto.DataResponse,
         IDMSKey = dto.IDMSKey, FunctionName = dto.FunctionName, FunctionType = fnType,
         Trycount = string.IsNullOrWhiteSpace(dto.Trycount) ? "1" : dto.Trycount, // nguồn luôn truyền "1"
