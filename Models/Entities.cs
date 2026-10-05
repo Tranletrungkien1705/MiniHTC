@@ -4363,16 +4363,10 @@ public sealed class CarActiveStatus
     public string? UpdatedBy { get; set; }
 }
 
-/// <summary>Cập nhật spec theo CarID — port 1:1 FrmUpdateSpec_CarID (2010.HTC). Batch đổi SpecCode cho xe (import Excel), upsert theo CarId.</summary>
-public sealed class CarSpecUpdate
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string CarId { get; set; } = "";
-    public string SpecCode { get; set; } = "";
-    public string? UpdatedBy { get; set; }
-    public DateTime UpdatedAt { get; set; }
-}
+// #5119 — ĐÃ XOÁ CarSpecUpdate (bảng tự tạo CarId+SpecCode, chỉ guard "spec active"): trùng nghiệp vụ với
+// CarVinMaster.SpecCode (Car_Car.SpecCode). Nguồn thật: CarCar_UpdateMultiSpecCode (WSHTC.asmx.cs:13421)
+// → BizHTC.zTemp.cs:32 (1 overload, không ambiguity). Cùng mẫu "2 nguồn sự thật" lần thứ 4 (sau
+// ForeignContract #4301/CarActualPrice #4901/CarContractType #4988).
 
 /// <summary>Thông tin dữ liệu đăng kiểm/thị phần (Mst_RegistrationInfo) — port 1:1 FrmMst_ThongTinDuLieuDangKiem_ThiPhan (2010.HTC). Số liệu đăng kiểm theo (năm × tỉnh): SL + % + tổng tiền.</summary>
 public sealed class RegistrationInfo

@@ -39337,13 +39337,18 @@ app.MapPost("/api/caractivestatuses/import", async (
     return Results.Ok(new { added, updated });
 }).RequireAuthorization();
 
-// ===== Cập nhật spec theo CarID (CarSpecUpdate — port 1:1 FrmUpdateSpec_CarID, 2010.HTC) =====
+// #5119 — ĐÃ XOÁ "/api/carspecupdates*" (CarSpecUpdate, bảng tự tạo KHÔNG đủ guard): trùng nghiệp vụ với
+// CarVinMaster.SpecCode (Car_Car.SpecCode). Nguồn thật: CarCar_UpdateMultiSpecCode (WSHTC.asmx.cs:13421) →
+// BizHTC.zTemp.cs:32-341 (myCar_CheckCar: xe tồn tại+Active+FlagAllowChangeVIN=Yes+VINFreeStatus=Active —
+// GUARD CỐT LÕI "xe chưa map VIN" bị thiếu hoàn toàn ở bản cũ; myCommon_CheckMatchingModelAndSpecCode:
+// spec mới PHẢI cùng ModelCode với xe — cũng thiếu hoàn toàn). Cùng mẫu "2 nguồn sự thật" lần thứ 4.
 app.MapGet("/api/carspecupdates", async (AppDbContext db, ITenantContext t, string? carId, string? spec) =>
 {
-    var q = db.CarSpecUpdates.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
+    var q = db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.CarId != null);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId!.Contains(carId!));
     if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(x => x.SpecCode == spec);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CarId, x.SpecCode, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.LogLUDateTime).Take(500)
+        .Select(x => new { x.CarId, x.SpecCode, x.LogLUBy, x.LogLUDateTime }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -39353,24 +39358,41 @@ app.MapPost("/api/carspecupdates/import", async (CarSpecUpdImportDto dto, AppDbC
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để cập nhật (cần CarId + Spec)." });
     var dup = rows.GroupBy(r => r.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng trong file." });
-    // WinForm line 98-101: spec phải active trong hệ thống
-    var specCodes = rows.Select(r => r.SpecCode!.Trim()).ToHashSet();
-    var activeSpecs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId && specCodes.Contains(s.SpecCode) && s.FlagActive == "1").Select(s => s.SpecCode).ToListAsync()).ToHashSet();
-    var invalidSpec = rows.FirstOrDefault(r => !activeSpecs.Contains(r.SpecCode!.Trim()));
-    if (invalidSpec != null) return Results.BadRequest(new { error = $"Spec '{invalidSpec.SpecCode}' không tồn tại hoặc đang InActive." });
-    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
     var ids = rows.Select(r => r.CarId!.Trim()).ToHashSet();
-    var existing = await db.CarSpecUpdates.Where(x => x.OrgId == t.OrgId && ids.Contains(x.CarId)).ToListAsync();
-    var byId = existing.ToDictionary(x => x.CarId, x => x);
-    int added = 0, updated = 0; var now = DateTime.Now;
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null && ids.Contains(c.CarId!)).ToListAsync();
+    var byId = cars.ToDictionary(c => c.CarId!);
+    // Guard nguồn myCar_CheckCar: xe phải tồn tại.
+    var notFound = ids.Where(id => !byId.ContainsKey(id)).ToList();
+    if (notFound.Count > 0) return Results.BadRequest(new { error = $"Không tìm thấy xe: {string.Join(", ", notFound.Take(10))}." });
+    var inactive = cars.Where(c => c.FlagActive == "0").Select(c => c.CarId).ToList();
+    if (inactive.Count > 0) return Results.BadRequest(new { error = $"Xe đã ngưng hoạt động: {string.Join(", ", inactive.Take(10))}." });
+    // Guard nguồn: FlagAllowChangeVIN phải = Yes.
+    var noChange = cars.Where(c => c.FlagAllowChangeVIN != "1").Select(c => c.CarId).ToList();
+    if (noChange.Count > 0) return Results.BadRequest(new { error = $"Xe không cho phép đổi (FlagAllowChangeVIN≠Yes): {string.Join(", ", noChange.Take(10))}." });
+    // Guard CỐT LÕI nguồn: xe PHẢI CHƯA map VIN (VINFreeStatus = Active).
+    var vinMapped = cars.Where(c => c.VINFreeStatus != "1").Select(c => c.CarId).ToList();
+    if (vinMapped.Count > 0) return Results.BadRequest(new { error = $"Xe đã map VIN — không đổi spec được: {string.Join(", ", vinMapped.Take(10))}." });
+
+    var specCodes = rows.Select(r => r.SpecCode!.Trim()).ToHashSet();
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId && specCodes.Contains(s.SpecCode) && s.FlagActive == "1").ToListAsync())
+        .ToDictionary(s => s.SpecCode);
+    // Guard nguồn myCommon_CheckSpecCode: spec mới phải tồn tại + active.
+    var invalidSpec = rows.FirstOrDefault(r => !specs.ContainsKey(r.SpecCode!.Trim()));
+    if (invalidSpec != null) return Results.BadRequest(new { error = $"Spec '{invalidSpec.SpecCode}' không tồn tại hoặc đang InActive." });
+    // Guard nguồn myCommon_CheckMatchingModelAndSpecCode: spec mới phải cùng ModelCode với xe.
+    var mismatch = rows.FirstOrDefault(r => specs[r.SpecCode!.Trim()].ModelCode != byId[r.CarId!.Trim()].ModelCode);
+    if (mismatch != null) return Results.BadRequest(new { error = $"Spec '{mismatch.SpecCode}' không cùng model với xe {mismatch.CarId}." });
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     foreach (var r in rows)
     {
-        var cid = r.CarId!.Trim();
-        if (!byId.TryGetValue(cid, out var row)) { row = new CarSpecUpdate { OrgId = t.OrgId, CarId = cid }; db.CarSpecUpdates.Add(row); added++; } else updated++;
-        row.SpecCode = r.SpecCode!.Trim(); row.UpdatedBy = by; row.UpdatedAt = now;
+        var row = byId[r.CarId!.Trim()];
+        row.SpecCode = r.SpecCode!.Trim(); row.LogLUBy = by; row.LogLUDateTime = now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { added, updated });
+    return Results.Ok(new { updated = rows.Count });
 }).RequireAuthorization();
 
 // ===== Thông tin dữ liệu đăng kiểm/thị phần (RegistrationInfo — port 1:1 FrmMst_ThongTinDuLieuDangKiem_ThiPhan, 2010.HTC) =====

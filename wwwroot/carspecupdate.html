@@ -13,7 +13,7 @@
 </style></head>
 <body>
 <h1>Cập nhật spec theo CarID <span class="muted">(port 1:1 FrmUpdateSpec_CarID — 2010.HTC)</span></h1>
-<p class="muted">Batch đổi mã spec cho xe theo CarID (import Excel), upsert theo CarId.</p>
+<p class="muted">Batch đổi mã spec cho xe CHƯA map VIN (import Excel) — xe phải tồn tại + đang hoạt động + cho phép đổi VIN + chưa map VIN; spec mới phải tồn tại, đang hoạt động và cùng model với xe.</p>
 <div class="card"><h3 style="margin-top:0">Import</h3>
   <p class="muted" style="margin:2px 0">Mỗi dòng, tab: <b>CarId | Spec mới</b></p>
   <textarea id="rows" placeholder="CAR001&#9;CR-2.0"></textarea>
@@ -32,13 +32,13 @@ function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent
 async function doImport(){ await token();
   const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{CarId:(c[0]||"").trim(),SpecCode:(c[1]||"").trim()};});
   const r=await fetch("/api/carspecupdates/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Thêm ${d.added}, cập nhật ${d.updated}`); F("rows").value=""; load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã cập nhật ${d.updated} xe`); F("rows").value=""; load();
 }
 async function load(){ await token();
   const qs=new URLSearchParams({carId:F("qCar").value,spec:F("qSpec").value});
   const r=await fetch("/api/carspecupdates?"+qs,{headers:Hh()}); const d=await r.json();
   F("kpi").textContent=`${d.count} xe`;
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.carId)}</b></td><td>${esc(o.specCode)}</td><td>${esc(o.updatedBy)}</td><td>${dts(o.updatedAt)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dữ liệu.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.carId)}</b></td><td>${esc(o.specCode)}</td><td>${esc(o.logLUBy)}</td><td>${dts(o.logLUDateTime)}</td></tr>`).join("")||'<tr><td colspan="4" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>

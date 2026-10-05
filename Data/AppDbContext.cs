@@ -329,7 +329,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RoMaintanceSetting> RoMaintanceSettings => Set<RoMaintanceSetting>();   // #846
     public DbSet<PdiStoragePayment> PdiStoragePayments => Set<PdiStoragePayment>();
     public DbSet<CarStatusUpdate> CarStatusUpdates => Set<CarStatusUpdate>();
-    public DbSet<CarSpecUpdate> CarSpecUpdates => Set<CarSpecUpdate>();
     public DbSet<CarActiveStatus> CarActiveStatuses => Set<CarActiveStatus>();
     public DbSet<RegistrationInfo> RegistrationInfos => Set<RegistrationInfo>();
     public DbSet<CabinCertificate> CabinCertificates => Set<CabinCertificate>();
