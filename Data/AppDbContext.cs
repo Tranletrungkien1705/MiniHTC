@@ -468,8 +468,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DeliveryOrderCar> DeliveryOrderCars => Set<DeliveryOrderCar>();
     public DbSet<DocReq> DocReqs => Set<DocReq>();
     public DbSet<DocReqCar> DocReqCars => Set<DocReqCar>();
-    public DbSet<ForeignContract> ForeignContracts => Set<ForeignContract>();
-    public DbSet<ForeignContractLine> ForeignContractLines => Set<ForeignContractLine>();
     public DbSet<CarDocRequest> CarDocRequests => Set<CarDocRequest>();
     public DbSet<CarDocRequestCar> CarDocRequestCars => Set<CarDocRequestCar>();
     public DbSet<VinMyStatus> VinMyStatuses => Set<VinMyStatus>();

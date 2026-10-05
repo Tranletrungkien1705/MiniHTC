@@ -78058,46 +78058,11 @@ app.MapGet("/api/packinglists/{no}/vins", async (string no, AppDbContext db, ITe
     return Results.Ok(new { p.PLNo, p.LcNo, count = vins.Count, vins });
 }).RequireAuthorization();
 
-// ===== Hợp đồng ngoại (ForeignContract/CO — port 1:1 FrmNewCO/FrmMngCO, DMSales.Foton) =====
-app.MapGet("/api/foreigncontracts", async (AppDbContext db, ITenantContext t, string? q) =>
-{
-    var query = db.ForeignContracts.Where(c => c.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(q)) query = query.Where(c => c.ContractNo.Contains(q));
-    var items = await query.OrderByDescending(c => c.Id).Take(500).Select(c => new
-    {
-        c.ContractNo, c.CreatedAt,
-        lines = db.ForeignContractLines.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id)
-    }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
-}).RequireAuthorization();
-
-app.MapPost("/api/foreigncontracts", async (ForeignContractDto dto, AppDbContext db, ITenantContext t) =>
-{
-    if (string.IsNullOrWhiteSpace(dto.ContractNo)) return Results.BadRequest(new { error = "Cần số hợp đồng ngoại." });
-    var no = dto.ContractNo.Trim();
-    if (await db.ForeignContracts.AnyAsync(c => c.OrgId == t.OrgId && c.ContractNo == no))
-        return Results.BadRequest(new { error = $"Số hợp đồng {no} đã tồn tại!" });
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.LcTemp)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa chọn LC_Temp nào." });
-    var dupe = lines.GroupBy(l => (l.RefNo?.Trim() ?? "") + "|" + l.LcTemp.Trim()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = "Dòng LC_Temp bị trùng!" });
-    var c = new ForeignContract { OrgId = t.OrgId, ContractNo = no };
-    db.ForeignContracts.Add(c); await db.SaveChangesAsync();
-    foreach (var l in lines)
-        db.ForeignContractLines.Add(new ForeignContractLine { OrgId = t.OrgId, ContractId = c.Id, RefNo = l.RefNo?.Trim() ?? "", LcTemp = l.LcTemp.Trim() });
-    await db.SaveChangesAsync();
-    return Results.Ok(new { c.ContractNo, lines = lines.Count });
-}).RequireAuthorization();
-
-app.MapGet("/api/foreigncontracts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
-{
-    no = no.Trim();
-    var c = await db.ForeignContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
-    if (c is null) return Results.NotFound(new { no });
-    var lines = await db.ForeignContractLines.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id)
-        .Select(l => new { l.RefNo, l.LcTemp }).ToListAsync();
-    return Results.Ok(new { c.ContractNo, count = lines.Count, lines });
-}).RequireAuthorization();
+// #4301 — ĐÃ XOÁ "/api/foreigncontracts*" (ForeignContract/ForeignContractLine, bảng tự tạo free-form
+// RefNo+LcTemp): trùng nghiệp vụ với "/api/contractoverseas*" (CtContractOversea, ~dòng 12235) — bản ĐÓ
+// mới đúng kiến trúc nguồn thật (CO "claim" dòng PI có sẵn qua ContractContractOverseaCreate_New20181119,
+// đủ guard MinLength(5)/not-found/belong-to-another-contract). Bản free-form là code chết từ fire trước
+// khi có bản đúng — wwwroot/forcontract.html đã trỏ lại sang /api/contractoverseas*.
 
 // ===== Đề nghị giấy tờ xe (CarDocRequest/DR — port 1:1 FrmNewDR/FrmMngDR, DMSales.Foton) =====
 app.MapGet("/api/cardocrequests", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
@@ -109232,8 +109197,6 @@ record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = 
 record DocReqCarActionDto(string? Remark);
 record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);
 record DocReqSupportDto(List<DocReqSupportRowDto>? Rows);
-record ForeignContractLineDto(string? RefNo, string LcTemp);
-record ForeignContractDto(string ContractNo, List<ForeignContractLineDto>? Lines);
 record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate, string? CarDocReqTypeCRR = null);
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars, string? TypeCRR);
 // #B39 — DTO 1:1 voi CancelCDRDetail(strDRListCode, List<string> lstVin) + Remark cua alColumnEffective

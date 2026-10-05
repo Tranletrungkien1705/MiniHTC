@@ -7876,22 +7876,13 @@ public sealed class DocReqCar
     public int? LoanSupportDay { get; set; }                 // số ngày hỗ trợ vay vốn
 }
 
-/// <summary>Hợp đồng ngoại (CO) — port 1:1 FrmNewCO/FrmMngCO (DMSales.Foton). Gom nhiều dòng LC_Temp của PI vào 1 số hợp đồng ngoại.</summary>
-public sealed class ForeignContract
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string ContractNo { get; set; } = "";
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-}
-public sealed class ForeignContractLine
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public long ContractId { get; set; }
-    public string RefNo { get; set; } = "";
-    public string LcTemp { get; set; } = "";
-}
+// #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
+// với CtContractOversea/OrdPerformanceInvoiceDetail (dòng ~8434/8490) — bản ĐÓ mới đúng kiến trúc nguồn
+// (CO "claim" dòng PI đã tồn tại qua ContractContractOverseaCreate_New20181119, có đủ guard MinLength/
+// not-found/belong-to-another-contract). Bản free-form này là code chết từ fire trước khi có bản đúng,
+// chỉ còn 1 route backend + 1 trang wwwroot dùng nó — đã trỏ lại wwwroot/forcontract.html sang
+// /api/contractoverseas* thay vì vá thêm guard vào kiến trúc sai (tránh "2 nguồn sự thật" — xem
+// RULES-auto-grind.md mục MasterCatalog #319/#321).
 
 /// <summary>Đề nghị giấy tờ xe (DR / CDR) — port 1:1 FrmNewDR/FrmMngDR (DMSales.Foton). Yêu cầu làm giấy tờ cho lô xe, giao tới người/địa chỉ nhận.</summary>
 public sealed class CarDocRequest

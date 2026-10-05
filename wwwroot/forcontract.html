@@ -7,23 +7,25 @@
   h1{font-size:20px;margin:0 0 2px} .muted{opacity:.65;font-size:13px}
   .card{border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0}
   .bar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  input,button,select{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
-  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
+  input,button,select,textarea{font:inherit;padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:transparent;color:inherit}
+  textarea{width:100%;min-height:70px;font-family:ui-monospace,monospace;font-size:12px}
+  button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.danger{background:#dc2626;color:#fff;border-color:#dc2626} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase}
-  #msg{font-size:13px} .cars{font-size:12px;opacity:.85} #ltbl td,#ltbl th{padding:4px 6px}
+  #msg{font-size:13px} .cars{font-size:12px;opacity:.85}
 </style></head>
 <body>
-<h1>Hợp đồng ngoại (CO) <span class="muted">(port 1:1 FrmNewCO — ForeignContract)</span></h1>
+<h1>Hợp đồng ngoại (CO) <span class="muted">(port 1:1 ContractContractOverseaCreate/Delete — CtContractOversea)</span></h1>
 <div class="card">
-  <b>Tạo hợp đồng ngoại</b>
-  <div class="bar" style="margin:10px 0"><input id="cno" placeholder="Số hợp đồng ngoại *" style="width:180px"><span style="flex:1"></span><button class="primary" onclick="create()">Lưu HĐ</button><span id="msg"></span></div>
-  <table id="ltbl"><thead><tr><th>Số Ref (PI)</th><th>Số LC tạm *</th><th></th></tr></thead><tbody id="ltb"></tbody></table>
-  <button class="sm" style="margin-top:6px" onclick="addLine()">+ Thêm LC_Temp</button>
+  <b>Ký hợp đồng ngoại</b> <span class="muted">— gán số hợp đồng cho các dòng Proforma Invoice (PI) chưa thuộc hợp đồng nào</span>
+  <div class="bar" style="margin:10px 0"><input id="cno" placeholder="Số hợp đồng ngoại * (≥5 ký tự)" style="width:220px"></div>
+  <div class="muted" style="margin-bottom:4px">Số Ref (PI) cần gán — mỗi dòng 1 mã, phải là Ref đã tồn tại và chưa thuộc hợp đồng khác:</div>
+  <textarea id="refs" placeholder="RF001&#10;RF002"></textarea>
+  <div class="bar" style="margin-top:8px"><button class="primary" onclick="create()">Ký hợp đồng</button><span id="msg"></span></div>
 </div>
 <div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc số HĐ" oninput="load()" style="width:150px"></div>
-<table><thead><tr><th>Số hợp đồng ngoại</th><th>Số dòng LC</th><th>Ngày tạo</th></tr></thead>
-<tbody id="rows"><tr><td colspan="3" class="muted">Đang tải…</td></tr></tbody></table>
+<table><thead><tr><th>Số hợp đồng ngoại</th><th>Ngày tạo</th><th>Người tạo</th><th></th></tr></thead>
+<tbody id="rows"><tr><td colspan="4" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
@@ -33,26 +35,26 @@ async function token(){ if(TOKEN) return TOKEN;
   TOKEN=(await r.json()).access_token; return TOKEN; }
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
-function addLine(){ const tr=document.createElement("tr");
-  tr.innerHTML=`<td><input class="rf" style="width:150px"></td><td><input class="lc" style="width:150px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
-  F("ltb").appendChild(tr); }
 async function create(){
-  const lines=[...F("ltb").querySelectorAll("tr")].map(tr=>({refNo:tr.querySelector(".rf").value,lcTemp:tr.querySelector(".lc").value})).filter(l=>l.lcTemp);
-  const r=await fetch("/api/foreigncontracts",{method:"POST",headers:H(),body:JSON.stringify({contractNo:F("cno").value,lines})});
+  await token();
+  const piRefNos=F("refs").value.split("\n").map(s=>s.trim()).filter(Boolean);
+  const r=await fetch("/api/contractoverseas/create",{method:"POST",headers:H(),body:JSON.stringify({contractNo:F("cno").value,piRefNos})});
   const j=await r.json();
-  if(r.ok){ msg("Đã tạo "+j.contractNo+" ("+j.lines+" dòng LC)."); F("ltb").innerHTML="";addLine(); F("cno").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã ký "+j.contractNo+" ("+j.piLinesLinked+" dòng PI)."); F("cno").value=""; F("refs").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function del(no){
+  if(!confirm("Xoá hợp đồng "+no+"? Các dòng PI đã gán sẽ được nhả ra.")) return;
+  await token();
+  const r=await fetch("/api/contractoverseas/delete",{method:"POST",headers:H(),body:JSON.stringify({contractNo:no})});
+  const j=await r.json();
+  if(r.ok) load(); else alert("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
-  const d=await (await fetch(`/api/foreigncontracts?q=${F("q").value}`,{headers:H()})).json();
+  const d=await (await fetch(`/api/contractoverseas?contractNo=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.contractNo}</b> <a href="#" class="cars" onclick="lines('${o.contractNo}');return false">xem LC</a></td><td>${o.lines}</td><td>${day(o.createdAt)}</td></tr><tr id="x-${o.contractNo}"></tr>`
-  ).join("")||'<tr><td colspan="3" class="muted">Chưa có hợp đồng ngoại.</td></tr>';
+    `<tr><td><b>${o.contractNo}</b></td><td>${day(o.createdDate)}</td><td>${o.createdBy||""}</td><td><button class="sm danger" onclick="del('${o.contractNo}')">Xoá</button></td></tr>`
+  ).join("")||'<tr><td colspan="4" class="muted">Chưa có hợp đồng ngoại.</td></tr>';
 }
-async function lines(no){
-  const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
-  const d=await (await fetch(`/api/foreigncontracts/${no}/lines`,{headers:H()})).json();
-  row.innerHTML=`<td colspan="3"><div class="cars">${(d.lines||[]).map(l=>`LC <b>${l.lcTemp}</b>${l.refNo?" · Ref "+l.refNo:""}`).join(" &nbsp;|&nbsp; ")||"—"}</div></td>`;
-}
-addLine(); load();
+load();
 </script>
 </body></html>
