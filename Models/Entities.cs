@@ -2862,6 +2862,13 @@ public sealed class PartInstance
     /// <summary>#472 `SIVAT` — %VAT lúc nhập, dùng trong công thức giá trị tồn của báo cáo kho:
     /// `Price*Qty + SIVAT*0.01*Price*Qty`.</summary>
     public decimal? SIVAT { get; set; }
+    // #1556 §12 - cot nguon SOVAT/RefType (Ser_Inv_PartInstance) - port 1:1.
+    // Nguon SerImpPartInstance (BizCarSv.Inventory.Stock.cs:1288) ghi SOVAT (tu strSOVAT, rong => DBNull)
+    // va RefType = Constants.Ser_Inv_PartInstance.INSTOCK (=1, "Con trong kho").
+    /// <summary>`SOVAT` — %VAT lúc xuất bán của lô (đối ứng `SIVAT`).</summary>
+    public decimal? SOVAT { get; set; }
+    /// <summary>`RefType` — loại tham chiếu nghiệp vụ; nguồn ghi hằng `INSTOCK` = 1 khi nhập lô.</summary>
+    public string? RefType { get; set; }
     public DateTime? DateIn { get; set; }
     public DateTime? DateOut { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;

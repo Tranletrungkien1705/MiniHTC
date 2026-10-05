@@ -90569,7 +90569,9 @@ app.MapPost("/api/partinstances/import", async (List<PartInstanceImportRowDto> r
         {
             OrgId = t.OrgId, DealerCode = dl, PartCode = partCode, LocationID = locCode,
             StockInNo = row.StockInNo, Status = row.Status, Quantity = row.Quantity, DateIn = row.DateIn,
-            SIPrice = row.SIPrice, SOPrice = row.SOPrice, SIVAT = row.SIVAT,
+            SIPrice = row.SIPrice, SOPrice = row.SOPrice, SIVAT = row.SIVAT, SOVAT = row.SOVAT,
+            // #1556 §12: nguon SerImpPartInstance luon ghi RefType = Constants.Ser_Inv_PartInstance.INSTOCK (=1).
+            RefType = "1",
             CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
             LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         };
@@ -109723,7 +109725,8 @@ record PartInstanceImportRowDto(string? DealerCode,
     DateTime? DateIn,
     decimal? SIPrice,
     decimal? SOPrice,
-    decimal? SIVAT);   // merge session-a
+    decimal? SIVAT,
+    decimal? SOVAT);   // #1556 §12 cot nguon SOVAT (Ser_Inv_PartInstance)
 record RoMaintanceSettingDto(long? ROMSID,
     decimal? Km,
     string? Maintances,
