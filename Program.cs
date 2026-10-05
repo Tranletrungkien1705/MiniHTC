@@ -24508,6 +24508,160 @@ app.MapPost("/api/servicecustomers/update-and-create-car", async (ServiceCustome
         note = "Nguon: OS_Ser_CustomerUpdateCarCreate (WS:34730) -> Ser_CustomerUpdateCarCreate (Customer.cs:6448). WS truyen cung strIsNormal='1' => guard CheckExistCusType('KHACHLE'); IsActive nhan chuoi rong (khong phai DBNull).",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #1566 `CarSv_Ser_CustomerCar_SalesCreate` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:35601`) =====
+// Hàm biz LIVE: `BizCarSv.Customer.cs:17087-17550 CarSv_Ser_CustomerCar_SalesCreate_New20180622`
+//   (WS gọi thẳng bản `_New20180622`). GREP TRƯỚC: Mini có `POST /api/servicecustomers/create01` (#961),
+//   `POST /api/servicecustomers/create-fordms` (#1036), `POST /api/servicecars/register-new` nhưng KHÔNG có
+//   route TÍCH HỢP "tạo khách theo SalesCusID + tạo xe" (mục B NIGHT-QUEUE).
+// 🔴 Hành vi nguồn port 1:1:
+//   (1) Tra khách theo CẶP (SalesCusID, DealerCode) trên `_dbDealer`; CÓ thì DÙNG LẠI CusID (KHÔNG cập nhật khách).
+//   (2) Guard DealerCode tồn tại + Active (`Mst_Dealer_CheckDB`).
+//   (3) Guard ProvinceCode/DistrictCode tồn tại — CHỈ khi mã non-rỗng.
+//   (4) Guard Gender: nếu non-rỗng thì PHẢI là "1" hoặc "0" (Flag.Active/Inactive).
+//   (5) Tạo khách: `Sex = Convert.ToInt16(strGender)` ⇒ rỗng ném FormatException (nguồn KHÔNG guard rỗng).
+//       `IsContact = true` khi ContName RỖNG, ngược lại false (đảo nghĩa tên cột — giữ đúng nguồn).
+//       `Tel`/`Mobile` cùng nhận `strPhone`; `ContTel`/`ContMobile` cùng nhận `strContPhone`.
+//   (6) Xe: `ProcessSaveCar01_New20180622` — chèn `Ser_MST_Model` cho model CHƯA có (ProductionCode=ModelCode,
+//       TradeMarkCode="HYUNDAI", IsActive=1), rồi chèn `Ser_Car` với 14 cột (KHÔNG ghi ProductYear/SerialNo/
+//       BatteryNo/Ins*/WarrantyExpiresDate/WarrantyKM/PlateColorCode — bản này KHÔNG có).
+//       `PlateNo` rỗng ⇒ gán `DealerCode + VIN`. Guard trùng VIN (FrameNo) và trùng PlateNo (Active, cùng đại lý).
+//       `DateBuyCar` = DealDate (chuỗi yyyy-MM-dd) VÀ `WarrantyRegistrationDate` = CÙNG DealDate.
+//       `ModelID` tra lại theo (DealerCode, ProductionCode=ModelCode, IsActive='1').
+//   (7) `select @@Identity` lấy CusID/CarID — Mini dùng Id tự tăng.
+app.MapPost("/api/servicecars/sales-create", async (ServiceCustomerCarSalesCreateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var dl = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
+    var salesCusId = (dto.SalesCusID ?? "").Trim();
+    // (2) Guard đại lý tồn tại + Active (Mst_Dealer_CheckDB FlagExist=Yes, FlagActive=Active).
+    var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl);
+    if (dealer is null) return Results.BadRequest(new { error = "Mst_Dealer_CheckDB_NotFound", dealerCode = dl });
+    if (dealer.FlagActive != "1") return Results.BadRequest(new { error = "Mst_Dealer_CheckDB_Inactive", dealerCode = dl });
+    // (3) Guard tỉnh/huyện — chỉ khi mã non-rỗng.
+    var prov = (dto.ProvinceCode ?? "").Trim().ToUpperInvariant();
+    var dist = (dto.DistrictCode ?? "").Trim().ToUpperInvariant();
+    if (prov.Length > 0 && !await db.MstProvinces.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == prov))
+        return Results.BadRequest(new { error = "Ser_CustomerCar_SalesCreate_InvalidProvinceCode", provinceCode = prov });
+    if (dist.Length > 0 && !await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == prov && x.DistrictCode == dist))
+        return Results.BadRequest(new { error = "Ser_CustomerCar_SalesCreate_InvalidDistrictCode", provinceCode = prov, districtCode = dist });
+    // (4) Guard giới tính: non-rỗng thì phải là "1" hoặc "0".
+    var gender = (dto.Gender ?? "").Trim();
+    if (gender.Length > 0 && gender != "1" && gender != "0")
+        return Results.BadRequest(new { error = "CarSv_Ser_CustomerCar_SalesCreate_InvalidGender", gender });
+    // (1) Tra khách theo CẶP (SalesCusID, DealerCode) — CÓ thì dùng lại, KHÔNG cập nhật.
+    var existing = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+        && x.SalesCusID == salesCusId && x.DealerCode == dl);
+    string cusCode;
+    bool customerCreated;
+    if (existing is not null)
+    {
+        cusCode = existing.CusCode;
+        customerCreated = false;
+    }
+    else
+    {
+        // (5) Tạo khách. `Sex = Convert.ToInt16(strGender)` — rỗng ném FormatException (nguồn không guard).
+        short sex;
+        try { sex = Convert.ToInt16(gender); }
+        catch (FormatException) { return Results.BadRequest(new { error = "FormatException", detail = "Convert.ToInt16(strGender) — nguon KHONG guard rong, gia tri khong phai so se nem FormatException.", gender }); }
+        var contName = (dto.ContName ?? "").Trim();
+        cusCode = "CUS" + DateTime.Now.ToString("yyMMddHHmmssfff");
+        var c = new ServiceCustomer
+        {
+            OrgId = t.OrgId, CusCode = cusCode, DealerCode = dl,
+            SalesCusID = salesCusId.Length > 0 ? salesCusId : null,
+            CusName = dto.CusName ?? "",
+            Address = dto.Address,
+            Tel = dto.Phone, Mobile = dto.Phone,
+            TaxCode = dto.TaxCode,
+            ContName = dto.ContName, ContAddress = dto.ContAddress,
+            ContTel = dto.ContPhone, ContMobile = dto.ContPhone,
+            FlagActive = "1",
+            IDCardNo = string.IsNullOrEmpty(dto.IDCardNo) ? null : dto.IDCardNo,
+            ProvinceCode = prov.Length > 0 ? prov : null,
+            DistrictCode = dist.Length > 0 ? dist : null,
+            Sex = sex.ToString(),
+            DOB = dto.DOB,
+            // Nguồn: IsContact = true khi ContName RỖNG, ngược lại false (đảo nghĩa tên cột).
+            IsContact = contName.Length == 0 ? "1" : "0",
+            LogLUDateTime = DateTime.Now,
+            LogLUBy = (partnerUserCode ?? "carsv-api").Trim(),
+        };
+        db.ServiceCustomers.Add(c);
+        customerCreated = true;
+    }
+    // (6) Xe — ProcessSaveCar01_New20180622.
+    var carsOut = new List<object>();
+    if (dto.Cars is not null && dto.Cars.Count > 0)
+    {
+        foreach (var carDto in dto.Cars)
+        {
+            var vin = (carDto.VIN ?? "").Trim().ToUpperInvariant();
+            if (vin.Length == 0) return Results.BadRequest(new { error = "SaveCusFromSale_VINNotEmpty" });
+            var plate = (carDto.PlateNo ?? "").Trim().ToUpperInvariant();
+            if (plate.Length == 0) plate = dl + vin;   // nguồn: PlateNo rỗng ⇒ DealerCode + VIN
+            // Guard trùng VIN (FrameNo) Active trong đại lý.
+            if (await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId && x.FrameNo == vin && x.FlagActive == "1" && x.DealerCode == dl))
+                return Results.Conflict(new { error = "SalesLog_Ser_FrameNo_Exist", vin, dealerCode = dl });
+            // Guard trùng PlateNo Active trong đại lý.
+            if (await db.ServiceCars.AnyAsync(x => x.OrgId == t.OrgId && x.PlateNo == plate && x.FlagActive == "1" && x.DealerCode == dl))
+                return Results.Conflict(new { error = "SalesLog_Ser_PlateNo_Exist", plateNo = plate, dealerCode = dl });
+            // Chèn Ser_MST_Model nếu model chưa có (ProductionCode = ModelCode, TradeMarkCode = "HYUNDAI").
+            var modelCode = (carDto.ModelCode ?? "").Trim().ToUpperInvariant();
+            long? modelId = null;
+            if (modelCode.Length > 0)
+            {
+                var mdl = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+                    && x.ProductionCode == modelCode && x.DealerCode == dl && x.FlagActive == "1");
+                if (mdl is null)
+                {
+                    mdl = new ServiceModel
+                    {
+                        OrgId = t.OrgId, DealerCode = dl, TradeMarkCode = "HYUNDAI",
+                        ProductionCode = modelCode, ModelName = carDto.ModelName,
+                        FlagActive = "1", LogLUDateTime = DateTime.Now,
+                        LogLUBy = (partnerUserCode ?? "carsv-api").Trim(),
+                    };
+                    db.ServiceModels.Add(mdl);
+                    await db.SaveChangesAsync();
+                }
+                modelId = mdl.Id;
+            }
+            // DateBuyCar = DealDate (chuỗi yyyy-MM-dd) VÀ WarrantyRegistrationDate = CÙNG DealDate.
+            string? dateBuyCar = null;
+            DateTime? warrantyReg = null;
+            if (carDto.DealDate is not null)
+            {
+                dateBuyCar = carDto.DealDate.Value.ToString("yyyy-MM-dd");
+                warrantyReg = carDto.DealDate.Value.Date;
+            }
+            var car = new ServiceCar
+            {
+                OrgId = t.OrgId, DealerCode = dl, CusID = cusCode,
+                PlateNo = plate, FrameNo = vin,
+                EngineNo = string.IsNullOrEmpty(carDto.EngineNo) ? null : carDto.EngineNo,
+                ColorCode = string.IsNullOrEmpty(carDto.ColorExtNameVN) ? null : carDto.ColorExtNameVN.Trim(),
+                DateBuyCar = dateBuyCar,
+                WarrantyRegistrationDate = warrantyReg,
+                TradeMark = "HYUNDAI",
+                SalesCarID = string.IsNullOrEmpty(carDto.CarID) ? null : carDto.CarID,
+                CurrentKm = 0,
+                FlagActive = "1",
+                ModelCode = modelId is not null ? modelCode : null,
+                LogLUDateTime = DateTime.Now,
+                LogLUBy = (partnerUserCode ?? "carsv-api").Trim(),
+            };
+            db.ServiceCars.Add(car);
+            await db.SaveChangesAsync();
+            carsOut.Add(new { car.PlateNo, car.FrameNo, car.ModelCode, car.SalesCarID });
+        }
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        cusCode, customerCreated, cars = carsOut,
+        note = "Nguon: CarSv_Ser_CustomerCar_SalesCreate (WS:35601) -> CarSv_Ser_CustomerCar_SalesCreate_New20180622 (Customer.cs:17087). Tra khach theo CAP (SalesCusID, DealerCode): CO thi DUNG LAI CusID (khong cap nhat khach). IsContact = true khi ContName RONG (dao nghia ten cot). Sex = Convert.ToInt16(strGender) — rong nem FormatException (nguon khong guard). Xe: ProcessSaveCar01_New20180622 ghi 14 cot (KHONG co ProductYear/SerialNo/BatteryNo/Ins*/WarrantyExpiresDate/WarrantyKM/PlateColorCode).",
+    });
+}).RequireAuthorization();
 
 // 🔴 GÁN MÃ XE HỘI VIÊN (Loyalty) cho xe dịch vụ — port `CarSv_SerCarUpdate_MemberCarID`
 // (`DMS-Loyalty/DMS/TERP.BizDMS/Biz.zzzz.iNOS.CarSv.cs:2630-2770`, hệ CHỈ có trên máy 150).
@@ -110143,6 +110297,14 @@ record ServiceCustomerUpdateCarDto(string? CusID, string? DealerCode, string? Cu
     string? Mobile, string? Note, string? ContName, string? ContSex, string? ContMobile, string? ProvinceCode,
     string? DistrictCode, string? IsActive = null, string? PartnerUserCode = null,
     ServiceCustomerUpdateCarCarDto? Car = null);
+// #1566: `CarSv_Ser_CustomerCar_SalesCreate` (WS:35601) -> `CarSv_Ser_CustomerCar_SalesCreate_New20180622`
+//   (Customer.cs:17087). WS nhận 14 tham số khách + `ds_car` (DataSet). Mini nhận `Cars` là danh sách dòng xe.
+record ServiceCustomerCarSalesCreateCarDto(string? VIN, string? PlateNo, string? EngineNo, string? ColorExtNameVN,
+    DateTime? DealDate, string? CarID, string? ModelCode, string? ModelName);
+record ServiceCustomerCarSalesCreateDto(string? DealerCode, string? SalesCusID, string? CusName, string? Address,
+    string? Phone, string? TaxCode, string? ContName, string? ContAddress, string? ContPhone, string? IDCardNo,
+    string? ProvinceCode, string? DistrictCode, string? Gender, DateTime? DOB,
+    List<ServiceCustomerCarSalesCreateCarDto>? Cars = null);
 record PartInstanceImportLineDto(string? PartCode,
     string? LocationCode,
     string? StockNo,
