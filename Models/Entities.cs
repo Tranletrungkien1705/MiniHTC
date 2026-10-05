@@ -4246,13 +4246,17 @@ public sealed class SerPartType
     // ===== #963 §12 — nguồn `Ser_MST_PartType` (Ser_Mst_PartType_Get/_Create/_Update/_Delete) có 3 cột
     //   port cũ thiếu: `TypeCode` (mã nghiệp vụ, KHÁC TypeName), `DealerCode` (phạm vi trùng lặp/lọc —
     //   thiếu thì TypeName trùng bị chặn TOÀN HỆ THỐNG thay vì chỉ trong CÙNG đại lý), `CreatedDate`/`CreatedBy`.
-    public string? TypeCode { get; set; }
-    public string? DealerCode { get; set; }
-    public DateTime? CreatedDate { get; set; }
-    public string? CreatedBy { get; set; }
-}
-
-/// <summary>#1058 §12 — MÀN CHƯA TỪNG PORT: `Mst_Ser_AppType` (loại lịch hẹn), một trong ~20 bảng nằm trong
+        public string? TypeCode { get; set; }
+        public string? DealerCode { get; set; }
+        public DateTime? CreatedDate { get; set; }
+        public string? CreatedBy { get; set; }
+        // ===== #1593 §12 — nguồn `Ser_Mst_PartType_Create` (BizCarSv.Master.cs:4650) và `_Update` (:4890) ghi
+        //   `LogLUDateTime`/`LogLUBy` (Create: vô điều kiện cùng CreatedDate/CreatedBy; Update: trong
+        //   `alColumnEffective`). Port cũ thiếu hẳn 2 cột nhật ký ⇒ mất dấu vết lần sửa cuối.
+        public DateTime? LogLUDateTime { get; set; }
+        public string? LogLUBy { get; set; }
+    }
+    /// <summary>#1058 §12 — MÀN CHƯA TỪNG PORT: `Mst_Ser_AppType` (loại lịch hẹn), một trong ~20 bảng nằm trong
 /// whitelist `myCommon_GetSupportedTable` (BizCarSv.Common.cs:631) mà biz KHÔNG có hàm Create/Update RIÊNG —
 /// ghi/đọc qua CƠ CHẾ CHUNG `CommonSaveMasterData`/`CommonGetMasterData` (:1199/:1314): client gửi nguyên
 /// DataSet đã đổi (Added/Modified/Deleted), server `SaveData` THẲNG không kiểm nghiệp vụ nào khác ngoài

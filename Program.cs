@@ -38054,7 +38054,7 @@ app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!) || (x.TypeCode != null && x.TypeCode.Contains(q!)));
     var items = await qry.OrderBy(x => x.TypeName).Take(500)
-        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.UpdatedAt }).ToListAsync();   // #1274 §12
+        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1274 §12 + #1593
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -38077,7 +38077,9 @@ app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbConte
         if (await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dealerCode))
             return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
         // #1053: strPartnerUserCode thật của nguồn — sửa hằng "api" tự chế thành tham số theo đúng convention.
-        row = new SerPartType { OrgId = t.OrgId, TypeCode = typeCode, DealerCode = dealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() };
+        // #1593: nguồn _Create ghi CẢ 4 cột nhật ký (CreatedDate/CreatedBy/LogLUDateTime/LogLUBy) cùng strTDate.
+        var now1593 = DateTime.Now;
+        row = new SerPartType { OrgId = t.OrgId, TypeCode = typeCode, DealerCode = dealerCode, CreatedDate = now1593, CreatedBy = (partnerUserCode ?? "system").Trim(), LogLUDateTime = now1593, LogLUBy = (partnerUserCode ?? "system").Trim() };
         db.SerPartTypes.Add(row);
     }
     else
@@ -38090,9 +38092,11 @@ app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbConte
     }
     row.TypeName = name;
     row.UpdatedAt = DateTime.Now;
+    // #1593: nguồn _Update ghi LogLUDateTime/LogLUBy trong alColumnEffective (cả hai nhánh Create/Update).
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.DealerCode, row.FlagActive });
+    return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.DealerCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/serparttypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>

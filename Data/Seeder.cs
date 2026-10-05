@@ -189,6 +189,9 @@ public static class Seeder
                 "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                // #1593 Ser_MST_PartType thieu LogLUDateTime/LogLUBy (nguon _Create/_Update deu ghi 2 cot nhat ky nay).
+                "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"SerPartTypes\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 // #907 Ser_InsuranceContract.DealerCode — khoa guard trung lap (InContractNo, InsNo, DealerCode)
                 "ALTER TABLE public.\"SerInsuranceContracts\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
                 "ALTER TABLE public.\"GroupRepairs\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
