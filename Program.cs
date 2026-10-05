@@ -15052,7 +15052,11 @@ app.MapGet("/api/mstdoctypes", async (AppDbContext db, ITenantContext t, string?
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// ⚠️ Quirk nguồn: lọc theo `EvenType` nhưng select ra `DocType` — giữ cả hai cột.
+// #5644 — Mst_EvenType (`BizHTC.Marketing.cs:12438-12647`). Nguồn CHỈ có `_Get` (select `met.*`) +
+// `_CheckDB` (dùng làm guard FK, vd `MRK_Campaign_Save`) — KHÔNG hàm Save/Add, master chỉ DBA nạp
+// (cùng mẫu `#5556`/`#5564`/`#5636`). Xác nhận đúng 2 cột thật `EvenType`+`DocType`, không có cột nào
+// khác (grep toàn bộ usage không thấy cột thứ 3). ⚠️ Quirk nguồn: lọc theo `EvenType` nhưng select ra
+// `DocType` — giữ cả hai cột.
 app.MapGet("/api/msteventypes", async (AppDbContext db, ITenantContext t, string? evenType) =>
 {
     var qy = db.MstEvenTypes.Where(x => x.OrgId == t.OrgId);
