@@ -32380,6 +32380,50 @@ app.MapGet("/api/filepathvideos/get", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1580 `Ser_Mst_FilePathVideo_GetForTab` (LIVE, `Tab/BizCarSv.Tab.cs:2049`, WS `HTCWSCarSvTab/WSCarSvTab.asmx.cs:5951`) =====
+// BẢN SINH ĐÔI của #1579: gọi CÙNG helper `Ser_Mst_FilePathVideo_GetX` (`Tab/BizCarSv.Tab.cs:1780`) với ĐÚNG cùng
+//   tham số ⇒ thân SQL GIỐNG HỆT. Khác DUY NHẤT: tên hàm + mã lỗi mặc định (`Ser_Mst_FilePathVideo_GetForTab`).
+//   Theo bài học #564, hai WebMethod sinh đôi vẫn là HAI đơn vị ⇒ port hai route riêng.
+// 3B: md5 thân `GetX` (1780-1920) KHỚP giữa V20 và V20.2023.Release (232e713aced707e25d1d3584ca6a5d47).
+app.MapGet("/api/filepathvideos/get-fortab", async (AppDbContext db, ITenantContext t,
+    string? filePathVideoCodeList, string? filePathVideoNameList, string? flagActiveList, string? isGetDetail) =>
+{
+    var qry = db.FilePathVideos.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(filePathVideoCodeList))
+    {
+        var v = filePathVideoCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.FilePathVideoCode));
+    }
+    if (!string.IsNullOrWhiteSpace(filePathVideoNameList))
+    {
+        var v = filePathVideoNameList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.FilePathVideoName != null && v.Contains(x.FilePathVideoName));
+    }
+    if (!string.IsNullOrWhiteSpace(flagActiveList))
+    {
+        var v = flagActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.FlagActive != null && v.Contains(x.FlagActive));
+    }
+    var all = await qry.OrderBy(x => x.FilePathVideoCode).ToListAsync();
+    var distinctCodes = all.Select(x => x.FilePathVideoCode).Distinct().Count();
+    var getDetail = !string.IsNullOrEmpty(isGetDetail);
+    var items = getDetail
+        ? all.Select(x => (object)new { x.Id, x.FilePathVideoCode, x.IdxView, x.FilePathVideoName, x.FilePathVideo,
+            x.FilePathAvatar, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToList()
+        : new List<object>();
+    return Results.Ok(new
+    {
+        myCountAsSource = distinctCodes,
+        count = items.Count, items,
+        twinOf1579 = "Ser_Mst_FilePathVideo_GetForTab goi CUNG helper Ser_Mst_FilePathVideo_GetX voi DUNG cung tham so => than SQL giong het #1579; khac duy nhat ten ham + ma loi mac dinh (#564)",
+        detailFlagNotFollowingConvention = "bGet_Ser_Mst_FilePathVideo = (str != null && str.Length > 0) — BAT KY chuoi khac rong cung bat khoi chi tiet (khong so TConst.Flag.Yes)",
+        pagingIsDisabled = "hai dong phan trang bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        orderByOnSelectIntoOnly = "order by nam tren SELECT ... INTO nen khong quyet dinh thu tu tra ve (#415); cau ket qua KHONG co ORDER BY — port sap tuong minh",
+        buildClauseNote = "BuildClause('and','smfpv.<col>',<list>,'@p'): cat theo '|', danh sach rong => BO HAN menh de",
+    });
+}).RequireAuthorization();
+
 // `Ser_Mst_FilePathVideo_Add`: guard `FilePathVideoCode` rỗng ⇒ Raise; `CheckDB(Flag.No)` = mã PHẢI CHƯA tồn tại.
 // Ghi 9 cột: FilePathVideoCode/IdxView/FilePathVideoName/FilePathVideo/FilePathAvatar/Remark/FlagActive/LogLUDateTime/LogLUBy.
 app.MapPost("/api/filepathvideos", async (FilePathVideoDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
