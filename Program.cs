@@ -60382,7 +60382,23 @@ app.MapPost("/api/avnprices/{code}/toggle", async (string code, AppDbContext db,
     return Results.Ok(new { a.AVNCode, flagActive = a.FlagActive });
 }).RequireAuthorization();
 
-// ===== Điều kiện tự động tạo DO (DOATCondition — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto, 2010.HTC/Sales) =====
+// ===== Điều kiện tự động tạo DO (DOATCondition — port 1:1 FrmNewSetupConditionForDOAuto/FrmMngSetupConditionForDOAuto,
+// 2010.HTC/Sales; biz LIVE `Mst_DOATCondition_Add_New20180124` → `_AddX_New20190124`, BizHTC/DMS40/0.01.Master.cs:2104/3415,
+// xác nhận LIVE qua WS `Mst_DOATCondition_Add` tại WSHTC.asmx.cs:24635) =====
+// 🔴 [nợ port, sửa 05/10/2026] `DOATConditionCode` KHÔNG phải mã server tự sinh theo timestamp — nguồn để
+// CLIENT tự chọn/sửa mã (form gợi ý qua `GetDOATConditionCode()` nhưng ô nhập vẫn sửa được), biz validate
+// bằng `Mst_DOATCondition_CheckDB(strFlagExistToCheck=Inactive)` = mã PHẢI CHƯA tồn tại. Port cũ bỏ qua
+// hoàn toàn, luôn tự sinh `"DOAT"+timestamp`.
+// 🔴 Biz bắt buộc 5 cờ (FlagCQEndDate/FlagTaxPaymentDate/FlagPtmCoc/FlagDutyComplete/FlagModel) KHÔNG được
+// rỗng (ném `_InvalidFlag*` riêng từng cờ) — port cũ coi rỗng = "0" lặng lẽ.
+// ⚪ **KIỂM TRA ÂM TÍNH quan trọng**: form WinForm (`btnApply_Click`) có BUG COPY-PASTE thật — nhánh `else`
+// của `FlagDutyComplete` nhầm xoá `strValFrom/strValTo` (biến của PmtCoc) thay vì biến DutyComplete của
+// chính nó, có thể xoá mất % PmtCoc hợp lệ khi tắt cờ DutyComplete. ĐỌC TRỌN biz layer (`AddX_New20190124`,
+// :2326-2368) xác nhận biz XỬ LÝ ĐÚNG, ĐỘC LẬP từng cặp (ép 0 khi cờ tắt, không đụng cặp kia) — bug chỉ ở
+// tầng client WinForm (không có khái niệm tương đương trong MiniHTC vì API chỉ có 1 tầng). Port theo biz
+// (đúng), KHÔNG tái hiện bug client.
+// 📌 Khoảng 0-100% không có trong biz nhưng CÓ trong client (`txtPercentFrom_Validating`/`txtPercentTo_Validating`)
+// — giữ nguyên (port cũ đã có đúng).
 app.MapGet("/api/doatconditions", async (AppDbContext db, ITenantContext t, string? active) =>
 {
     var q = db.DOATConditions.Where(c => c.OrgId == t.OrgId);
@@ -60391,16 +60407,22 @@ app.MapGet("/api/doatconditions", async (AppDbContext db, ITenantContext t, stri
     {
         c.DOATConditionCode, c.EffDateStart, c.EffDateEnd, c.FlagCQEndDate, c.FlagTaxPaymentDate, c.FlagPtmCoc, c.PtmCocFrom, c.PtmCocTo,
         c.FlagDutyComplete, c.DutyCompleteFrom, c.DutyCompleteTo, c.FlagModel, c.FlagActive, c.CreatedAt,
+        c.CreatedBy, c.LogLUDateTime, c.LogLUBy,
         models = db.DOATConditionModels.Count(m => m.OrgId == t.OrgId && m.DOATConditionId == c.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/doatconditions", async (DOATConditionDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/doatconditions", async (DOATConditionDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (dto.EffDateStart is null) return Results.BadRequest(new { error = "Vui lòng chọn Ngày hiệu lực từ!" });
     if (dto.EffDateEnd is null) return Results.BadRequest(new { error = "Vui lòng chọn Ngày hiệu lực đến!" });
     if (dto.EffDateEnd < dto.EffDateStart) return Results.BadRequest(new { error = "Ngày hiệu lực đến phải >= ngày hiệu lực từ." });
+    if (string.IsNullOrWhiteSpace(dto.FlagCQEndDate)) return Results.BadRequest(new { error = "Mst_DOATCondition_Add_InvalidFlagCQEndDate" });
+    if (string.IsNullOrWhiteSpace(dto.FlagTaxPaymentDate)) return Results.BadRequest(new { error = "Mst_DOATCondition_Add_InvalidFlagTaxPaymentDate" });
+    if (string.IsNullOrWhiteSpace(dto.FlagPtmCoc)) return Results.BadRequest(new { error = "Mst_DOATCondition_Add_InvalidFlagPtmCoc" });
+    if (string.IsNullOrWhiteSpace(dto.FlagDutyComplete)) return Results.BadRequest(new { error = "Mst_DOATCondition_Add_InvalidFlagDutyComplete" });
+    if (string.IsNullOrWhiteSpace(dto.FlagModel)) return Results.BadRequest(new { error = "Mst_DOATCondition_Add_InvalidFlagModel" });
     var flagPtm = dto.FlagPtmCoc == "1"; var flagDuty = dto.FlagDutyComplete == "1"; var flagModel = dto.FlagModel == "1";
     if (flagPtm)
     {
@@ -60417,14 +60439,20 @@ app.MapPost("/api/doatconditions", async (DOATConditionDto dto, AppDbContext db,
     }
     var models = (dto.Models ?? new()).Where(m => !string.IsNullOrWhiteSpace(m)).Distinct().ToList();
     if (flagModel && models.Count == 0) return Results.BadRequest(new { error = "Vui lòng chọn danh sách model!" });
-    var no = "DOAT" + DateTime.Now.ToString("yyMMddHHmmss");
+    // Mst_DOATCondition_CheckDB(Inactive): mã PHẢI CHƯA tồn tại — client tự chọn, rỗng thì Mini tự gợi ý.
+    var no = string.IsNullOrWhiteSpace(dto.DOATConditionCode) ? "DOAT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.DOATConditionCode.Trim().ToUpperInvariant();
+    if (await db.DOATConditions.AnyAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == no))
+        return Results.BadRequest(new { error = $"Mã điều kiện {no} đã tồn tại.", code = "Mst_DOATCondition_CheckDB_Existed" });
+    var by = (partnerUserCode ?? "system").Trim(); var now = DateTime.Now;
     var c = new DOATCondition
     {
         OrgId = t.OrgId, DOATConditionCode = no, EffDateStart = dto.EffDateStart.Value, EffDateEnd = dto.EffDateEnd.Value,
         FlagCQEndDate = dto.FlagCQEndDate == "1" ? "1" : "0", FlagTaxPaymentDate = dto.FlagTaxPaymentDate == "1" ? "1" : "0",
-        FlagPtmCoc = flagPtm ? "1" : "0", PtmCocFrom = dto.PtmCocFrom, PtmCocTo = dto.PtmCocTo,
-        FlagDutyComplete = flagDuty ? "1" : "0", DutyCompleteFrom = dto.DutyCompleteFrom, DutyCompleteTo = dto.DutyCompleteTo,
-        FlagModel = flagModel ? "1" : "0", FlagActive = "1"
+        // Biz: cờ tắt => ép 0, ĐỘC LẬP từng cặp (không tái hiện bug chéo cặp của client WinForm).
+        FlagPtmCoc = flagPtm ? "1" : "0", PtmCocFrom = flagPtm ? dto.PtmCocFrom : 0, PtmCocTo = flagPtm ? dto.PtmCocTo : 0,
+        FlagDutyComplete = flagDuty ? "1" : "0", DutyCompleteFrom = flagDuty ? dto.DutyCompleteFrom : 0, DutyCompleteTo = flagDuty ? dto.DutyCompleteTo : 0,
+        FlagModel = flagModel ? "1" : "0", FlagActive = "1",
+        CreatedAt = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by,
     };
     db.DOATConditions.Add(c); await db.SaveChangesAsync();
     if (flagModel)
@@ -60443,12 +60471,13 @@ app.MapGet("/api/doatconditions/{code}/models", async (string code, AppDbContext
     return Results.Ok(new { c.DOATConditionCode, count = models.Count, models });
 }).RequireAuthorization();
 
-app.MapPost("/api/doatconditions/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/doatconditions/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var c = await db.DOATConditions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == code);
     if (c is null) return Results.NotFound(new { code });
     c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { c.DOATConditionCode, flagActive = c.FlagActive });
 }).RequireAuthorization();
@@ -110842,7 +110871,7 @@ record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string
     string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate,
     string? SpecGroupCode = null, string? SpecDescriptionSX = null, string? CrtProductName = null, string? CrtTypeCode = null, string? LoaiThung = null, string? Remark = null);   // #360
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
-record DOATConditionDto(DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
+record DOATConditionDto(string? DOATConditionCode, DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
 /// <summary>Ký số một file ngân hàng — nguồn `RQ_BankingTransactions_SignBankFile` nhận
 /// `objRQ_BankingTransNo` + `objBFileIndex` + `objFileName` + base64 + `objSerialNumber`.</summary>
 record BankFileSignDto(string SerialNumber, string? FileName = null, string? FilePath = null);

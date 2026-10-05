@@ -12260,6 +12260,10 @@ public sealed class DOATCondition
     public string FlagModel { get; set; } = "0";        // giới hạn theo danh sách model
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #2104 Mst_DOATCondition_AddX_New20190124 (BizHTC/DMS40/0.01.Master.cs:2104) ghi thêm =====
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 public sealed class DOATConditionModel
 {
