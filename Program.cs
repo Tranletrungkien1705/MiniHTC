@@ -71909,29 +71909,34 @@ static async Task<IResult> BankMarketSum01Async(
     }
     else // paymentloan
     {
-        var payments = await db.BankPayments.Where(p => p.OrgId == t.OrgId
+        // 🔴 #B368 FIX-FORWARD (2026-10-06): fire trước dùng NHẦM BankPayment/BankPaymentCar — hai entity
+        //   ĐÃ BỊ #203 đánh dấu CHẾT (không còn write-path nào ghi vào, xem /api/bankpms) từ TRƯỚC fire đó.
+        //   Bảng SỐNG đúng nguồn Pmt_Payment/Pmt_PaymentDetail là PmtPayment/PmtPaymentDetail (#155/#203).
+        //   Đổi lại cho đúng — nếu không, route này LUÔN rỗng trong thực tế dù code "chạy đúng" khi test.
+        var payments = await db.PmtPayments.Where(p => p.OrgId == t.OrgId
             && p.Funds == "0" && p.PaymentStatus == "F"
             && p.PaymentEndDate != null && p.PaymentEndDate >= from && p.PaymentEndDate < to.AddDays(1)).ToListAsync();
         if (scopedDealerCode != null) payments = payments.Where(p => string.Equals(p.DealerCode, scopedDealerCode, StringComparison.OrdinalIgnoreCase)).ToList();
         if (scopedBankCode != null) payments = payments.Where(p => string.Equals(p.BankLending, scopedBankCode, StringComparison.OrdinalIgnoreCase)).ToList();
 
-        var paymentIds = payments.Select(p => p.Id).ToHashSet();
-        var paymentCars = (await db.BankPaymentCars.Where(c => c.OrgId == t.OrgId).ToListAsync())
-            .Where(c => paymentIds.Contains(c.PaymentId)).ToList();
-        var vins = paymentCars.Select(c => c.VIN).Distinct().ToList();
-        var carsByVin = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync())
-            .ToDictionary(c => c.VIN, StringComparer.OrdinalIgnoreCase);
-        var carsByPayment = paymentCars.GroupBy(c => c.PaymentId).ToDictionary(g => g.Key, g => g.ToList());
+        var paymentNos = payments.Select(p => p.PaymentNo).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var paymentDtls = (await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId).ToListAsync())
+            .Where(d => paymentNos.Contains(d.PaymentNo)).ToList();
+        var carIds = paymentDtls.Select(d => d.CarId).Distinct().ToList();
+        var carsById = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null && carIds.Contains(c.CarId!)).ToListAsync())
+            .ToDictionary(c => c.CarId!, StringComparer.OrdinalIgnoreCase);
+        var dtlsByPayment = paymentDtls.GroupBy(d => d.PaymentNo, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
         foreach (var p in payments)
         {
             // inner join Pmt_PaymentDetail + Car_Car ⇒ cần ÍT NHẤT 1 dòng xe hợp lệ.
-            if (!carsByPayment.TryGetValue(p.Id, out var pcars)) continue;
+            if (!dtlsByPayment.TryGetValue(p.PaymentNo, out var pdtls)) continue;
             string? carFlagIsHTC = null;
             var matched = false;
-            foreach (var pc in pcars)
+            foreach (var pd in pdtls)
             {
-                if (!carsByVin.TryGetValue(pc.VIN, out var car)) continue;
+                if (!carsById.TryGetValue(pd.CarId, out var car)) continue;
                 carFlagIsHTC ??= car.FlagisHTC;
                 if (!string.IsNullOrWhiteSpace(flagIsHTC) && car.FlagisHTC != flagIsHTC) continue;
                 matched = true; break;
@@ -71939,21 +71944,22 @@ static async Task<IResult> BankMarketSum01Async(
             if (!matched) continue;
             // inner join Mst_Bank theo BankCodeSend/BankCodeReceive ở câu detail nguồn — port chỉ cần bank
             // PHÁT HÀNH (BankLending) để gộp BankCodeParent, giữ BankCodeSend/Receive ở Detail để đối chiếu.
-            bankByCode.TryGetValue(p.BankLending, out var mbLending);
-            var bankCodeParent = mbLending?.BankCodeParent ?? p.BankLending;
+            bankByCode.TryGetValue(p.BankLending ?? "", out var mbLending);
+            var bankCodeParent = mbLending?.BankCodeParent ?? p.BankLending ?? "";
             var monthKey = new DateTime(p.PaymentEndDate!.Value.Year, p.PaymentEndDate.Value.Month, 1);
+            var totalAmount = p.TotalAmount ?? 0m;
             var interestRate = p.InterestRate ?? 0m;
-            var totalInterestAmount = p.TotalAmount * interestRate / 100m;
-            bankByCode.TryGetValue(p.BankCodeReceive, out var mbReceive);
-            bankByCode.TryGetValue(p.BankCodeSend, out var mbSend);
-            rows.Add((bankCodeParent, p.DealerCode, monthKey, p.TotalAmount, totalInterestAmount, new
+            var totalInterestAmount = totalAmount * interestRate / 100m;
+            bankByCode.TryGetValue(p.BankCodeReceive ?? "", out var mbReceive);
+            bankByCode.TryGetValue(p.BankCodeSend ?? "", out var mbSend);
+            rows.Add((bankCodeParent, p.DealerCode, monthKey, totalAmount, totalInterestAmount, new
             {
                 paymentNo = p.PaymentNo, paymentStatus = p.PaymentStatus,
                 bankCodeReceive = p.BankCodeReceive, bankNameReceive = mbReceive?.BankName,
                 bankCodeSend = p.BankCodeSend, bankNameSend = mbSend?.BankName, funds = p.Funds,
                 bankLending = p.BankLending, bankCodeParent, dealerCode = p.DealerCode,
                 dealerName = dealerByCode.GetValueOrDefault(p.DealerCode)?.DealerName,
-                paymentEndDate = p.PaymentEndDate, totalAmount = p.TotalAmount,
+                paymentEndDate = p.PaymentEndDate, totalAmount,
                 interestRate, totalInterestAmount, flagIsHTC = carFlagIsHTC
             }));
         }
@@ -72047,7 +72053,8 @@ static async Task<IResult> BankMarketSum01Async(
         twinTableCountNote = "HAI SINH DOI LECH SO BANG TRA VE: ban Guarantee dat ten 5 bang (_Month, Pmt_Guarantee, _01, _01_AllMonth, _01_Dealer); ban PaymentLoan chi 4 - dong '//dsGetData.Tables[nIdxTable++].TableName = \"Rpt_PmtGuaranteeBankMarketSum_01_AllMonth\";' BI COMMENT va VAN MANG TEN CUA BAN GUARANTEE => CHIEU SAO CHEP XAC DINH DUOC (PaymentLoan chep tu Guarantee) VA hop dong API cua hai ban KHAC NHAU THAT.",
         argLabelWrongNote = "NHAN DOI SO SAI - ca thu TU ve nhan (sau #region #B365/#B366): o vo Guarantee, ', strPMGDateEndConditionList // strGuaranteeStatus' va ', strDateOpenFrom // strDateOpenTo'. DA KIEM DANH SACH THAM SO THAT cua ...01X: vi tri do dung la strPMGDateEndConditionList => WIRING DUNG, CHI NHAN SAI. Ghi la LOI NHAN, KHONG bao thanh loi truyen tham so.",
         rbacNote = "RBAC: myCommon_CheckHTCDirect / strBUPatternOfUser / MBBankBUPattern / myHTC_RemoveInfo_ = 0 HIT; '--and (@strDealerCode is null or t.DealerCode like @strDealerCode)' BI COMMENT va '//myCache_Mst_Distributor_ViewAbility_Get(...)' BI COMMENT; nhung zzzzClauseWhere_strDealerCodeConditionList (tu BuildClause, param @p) VAN SONG => loc theo DANH SACH DAI LY NGUOI DUNG CHON, cong loc THEO NGAN HANG => KHONG phai lo, nhung pham vi den tu THAM SO, khong tu QUYEN cua user.",
-        gapFixNote = "#B368/#B369 DONG NO (2026-10-06): BankGuarantee+BankGuaranteeDtl / BankPayment+BankPaymentCar / MstBank.BankBUPattern NAY DA DU entity => tra du so lieu thi phan (Month/Detail/Sum/AllMonth/Dealer) thay vi khung rong. DON GIAN HOA pham vi ngan hang: loc TRUC TIEP theo BankCode khop tham so 'bankCode' (KHONG tai hien chuoi BankBUCode LIKE BankBUPattern noi tay cua nguon - tranh lap lai bug nhay-dong-long #B368). 'grtPaidStatus' (paid/unpaid) la tham so MOI thay cho chuoi dieu kien tho nguon gui qua strPMGDateEndConditionList. AllMonth (chi ban Guarantee) GIU DUNG hanh vi nguon: MarketPercent/FeeAvg la TONG CONG DON cac % theo-thang (Sum cua Sum), KHONG phai tinh lai trung binh trong so - so co the vuot 100%, dung nhu SQL goc."
+        gapFixNote = "#B368/#B369 DONG NO (2026-10-06): BankGuarantee+BankGuaranteeDtl / BankPayment+BankPaymentCar / MstBank.BankBUPattern NAY DA DU entity => tra du so lieu thi phan (Month/Detail/Sum/AllMonth/Dealer) thay vi khung rong. DON GIAN HOA pham vi ngan hang: loc TRUC TIEP theo BankCode khop tham so 'bankCode' (KHONG tai hien chuoi BankBUCode LIKE BankBUPattern noi tay cua nguon - tranh lap lai bug nhay-dong-long #B368). 'grtPaidStatus' (paid/unpaid) la tham so MOI thay cho chuoi dieu kien tho nguon gui qua strPMGDateEndConditionList. AllMonth (chi ban Guarantee) GIU DUNG hanh vi nguon: MarketPercent/FeeAvg la TONG CONG DON cac % theo-thang (Sum cua Sum), KHONG phai tinh lai trung binh trong so - so co the vuot 100%, dung nhu SQL goc.",
+        fixForwardNote = "SUA TIEP (2026-10-06, cung ngay): ban 'paymentloan' luc dau DUNG NHAM BankPayment/BankPaymentCar - hai entity DA bi #203 (tu TRUOC) danh dau CHET (khong con write-path nao ghi vao, xem /api/bankpms chi ghi PmtPayment/PmtPaymentDetail). Phat hien khi quet debtNote khac va doc lai code cu - DOI SANG PmtPayment/PmtPaymentDetail (dung nguon Pmt_Payment/Pmt_PaymentDetail, #155/#203). Ban 'guarantee' (BankGuarantee/BankGuaranteeDtl) KHONG bi anh huong - van la entity SONG (xem /api/bankgrts hoac POST tuong duong ghi vao do)."
     });
 }
 
