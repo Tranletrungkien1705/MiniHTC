@@ -91402,6 +91402,162 @@ app.MapGet("/api/stockoutorders/get01", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1591 `SerStockOutOrderGet02` (WebMethod LIVE khong dau vet) =====
+// Nguon: `BizCarSv.Inventory.StockOut.cs:8218` (`SerStockOutOrderGet02`); WS LIVE `HTCWSCarSv/WSCarSv.asmx.cs:14993`.
+// Route moi: `GET /api/stockoutorders/get02` (Program.cs). Tham so: stockOutOrderIdList, dealerCodeList, roIdList (danh sach '|').
+// ⚠️ BAN SINH DOI cua `SerStockOutOrderGet01` (#1590): cung K1-K10 nhung KHAC hai diem:
+//   (a) loc trang thai phieu xuat la `so.[Status] = '3'` (KHONG phai `NOT IN ('4')`);
+//   (b) K6 (gia) join `Ser_ROPartItems t` + `ser_mst_part smp` va ap `strROIDConditionList` len `t.ROID`.
+//   Bai hoc #564: hai WebMethod sinh doi khac DUNG mot dong van la HAI don vi => port hai route rieng.
+// Hanh vi port 1:1 (K1-K9):
+//   K1 `select t.*, (select max(StockOutOrderID) from Ser_Inv_StockOutOrder tt where t.roid=tt.roid) MaxStockOutOrderID
+//      into #tblInv_StockOutOrder from Ser_Inv_StockOutOrder t where 1=1 <dealerCode> and t.ROID is not null <stockOutOrderID> <roID>`;
+//   K2 `select * from #tblInv_StockOutOrder where backorderindex=0`;
+//   K3 `#tbl_OrderTemp` = SUM(sod.Quantity) group by (soo.ROID, sod.PartID) join Ser_Inv_StockOut so where so.Status = '3';
+//   K4 `#tbl_soo` = Ser_Inv_StockOutOrderDetail join #tblInv_StockOutOrder where BackOrderIndex=0;
+//   K5 `#tbl_sbb` = SUM(InStockQuantity) group by (PartID, DealerCode) where InStockQuantity>0 <dealerCode>;
+//   K6 `#tbl_so` = SUM(sod.Quantity) group by (tso.ROID, sod.PartID) join Ser_Inv_StockOut where Status = '3';
+//   K7 `#tmpprice` = RANK() OVER(PARTITION BY PartId ORDER BY DateEffect DESC) join Ser_ROPartItems t + ser_mst_part smp,
+//      where DateEffect <= hom nay and IsActive='1' <roID>; K8 `#tprice` where rn=1;
+//   K9 ket qua: `isnull(soo.Quantity,0)-isnull(so.Quantity,0) Quantity, isnull(soo.Quantity,0) SOOQuantity,
+//      isnull(soo.Quantity,0)-isnull(so.Quantity,0) OrderQuantity, isnull(tso.Quantity,0) SOQuantity, soo.Partid,
+//      p.PartCode, p.VieName, p.Unit, Isnull(rop.Price,0) Price, Isnull(rop.VAT,0) VAT, isnull(sbb.InStockQuantity,0),
+//      sbb.LocationID BalanceLocationID/PlanLocationID/ActualLocationID, soo.MaxStockOutOrderID StockOutOrderID,
+//      soo.StockOutOrderNo, tprice.PartPriceID PartPriceID` from #tbl_soo soo left join #tbl_so ... left join Ser_MST_Part p
+//      left join Ser_ROPartItems rop on rop.roid=soo.ROID and rop.PartID=soo.partid left join #tbl_OrderTemp tso
+//      left join #tbl_sbb sbb left join #tprice tprice on rop.PartID=tprice.PartID;
+//   K10 `select * from #tblInv_StockOutOrder t join Ser_Inv_StockOutOrderStockOut sisooso on sisooso.StockOutOrderID=t.StockOutOrderID
+//      left join Ser_Inv_StockOut siso on siso.StockOutID=sisooso.StockOutID where siso.Status = '3' <dealerCodeSOOSO>
+//      order by sisooso.StockOutOrderID, sisooso.StockOutID`.
+//   (5) 3 bo loc la danh sach '|' qua `SqlUtils.BuildClause("and", <col>, <list>, "@p")`, rong => BO menh de;
+//   ⚠️ `strDealerCodeConditionList` ap cho RAT NHIEU alias: `t.DealerCode` (K1/K5), `siso.DealerCode` (K10),
+//      `sod.DealerCode` (K3/K4), `smp.DealerCode` (K7), `so.DealerCode` (K3), `s.DealerCode` (K4), `p.DealerCode` (K9).
+// Luu y: Route `GET /api/stockoutorders` (#port cu) KHAC han — day la WebMethod RIENG (bai hoc #561/#564).
+//   §12: 3 cot nguon da them o #1590 (`SerStockOutOrder.ROID`, `SerStockOutOrderLine.PartID`, `RoPartItem.PartID`).
+//   ⚠️ `PartPrice` Mini bieu dien bang `PartCode` (khong co PartID) nen noi gia theo `PartCode`.
+// 3B: md5 than ham `SerStockOutOrderGet02` LECH giua V20 va V20.2023.Release. Diff sau chuan hoa:
+//   ban Release THEM `and tt.StockOutType='1'` / `and t.StockOutType='1'` o K1 (x2).
+//   Port theo cay CHUAN V20 (KHONG co StockOutType filter) — ghi chu su khac biet.
+app.MapGet("/api/stockoutorders/get02", async (AppDbContext db, ITenantContext t,
+    string? stockOutOrderIdList, string? dealerCodeList, string? roIdList) =>
+{
+    static List<string> SplitList(string? s) => string.IsNullOrWhiteSpace(s)
+        ? new List<string>()
+        : s!.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+    var orderIds = SplitList(stockOutOrderIdList);
+    var dealers = SplitList(dealerCodeList);
+    var roIds = SplitList(roIdList);
+    // ---- K1: #tblInv_StockOutOrder ----
+    var q1 = db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && x.ROID != null);
+    if (dealers.Count > 0) q1 = q1.Where(x => x.DealerCode != null && dealers.Contains(x.DealerCode!));
+    if (orderIds.Count > 0) q1 = q1.Where(x => orderIds.Contains(x.Id.ToString()));
+    if (roIds.Count > 0) q1 = q1.Where(x => x.ROID != null && roIds.Contains(x.ROID!));
+    var tblInv = await q1.ToListAsync();
+    var maxByRoid = tblInv.GroupBy(x => x.ROID ?? "").ToDictionary(g => g.Key, g => g.Max(x => x.Id));
+    // ---- K2: chi lay BackOrderIndex = 0 ----
+    var tblInvBack0 = tblInv.Where(x => (x.BackOrderIndex ?? "") == "0").ToList();
+    var back0Ids = tblInvBack0.Select(x => x.Id).ToList();
+    var roidByOrderId = tblInvBack0.ToDictionary(x => x.Id, x => x.ROID ?? "");
+    // ---- K3: #tbl_OrderTemp = SUM(sod.Quantity) group by (soo.ROID, sod.PartID) where so.Status = '3' ----
+    var soLines = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var soHeaders = await db.PartStockOuts.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var soStatusById = soHeaders.ToDictionary(x => x.Id, x => x.Status);
+    var orderTemp = soLines
+        .Where(l => l.StockOutOrderID != null && back0Ids.Contains(l.StockOutOrderID!.Value)
+            && soStatusById.TryGetValue(l.StockOutId, out var st) && st == "3")
+        .GroupBy(l => new { Roid = roidByOrderId.TryGetValue(l.StockOutOrderID!.Value, out var r) ? r : "", l.PartID })
+        .Select(g => new { g.Key.Roid, g.Key.PartID, Quantity = g.Sum(x => x.Quantity) })
+        .ToList();
+    var orderTempMap = orderTemp.Where(x => x.PartID != null).GroupBy(x => (x.Roid, x.PartID!)).ToDictionary(g => g.Key, g => g.First().Quantity);
+    // ---- K4: #tbl_soo = Ser_Inv_StockOutOrderDetail join #tblInv_StockOutOrder where BackOrderIndex=0 ----
+    var orderLines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && back0Ids.Contains(x.OrderId)).ToListAsync();
+    var tblSoo = orderLines.Select(l => new
+    {
+        l.PartID,
+        l.OrderQuantity,
+        Roid = roidByOrderId.TryGetValue(l.OrderId, out var r) ? r : "",
+        MaxStockOutOrderID = maxByRoid.TryGetValue(roidByOrderId.TryGetValue(l.OrderId, out var r2) ? r2 : "", out var mx) ? mx : 0,
+        StockOutOrderNo = tblInvBack0.FirstOrDefault(o => o.Id == l.OrderId)?.StockOutOrderNo
+    }).ToList();
+    // ---- K5: #tbl_sbb = SUM(InStockQuantity) group by (PartID, DealerCode) where InStockQuantity>0 ----
+    var sbbQ = db.SerInvStockBalances.Where(x => x.OrgId == t.OrgId && x.InStockQuantity > 0);
+    if (dealers.Count > 0) sbbQ = sbbQ.Where(x => x.DealerCode != null && dealers.Contains(x.DealerCode!));
+    var sbb = await sbbQ.GroupBy(x => new { x.PartID, x.DealerCode })
+        .Select(g => new { g.Key.PartID, g.Key.DealerCode, InStockQuantity = g.Sum(x => x.InStockQuantity), LocationID = g.Max(x => x.LocationID) })
+        .ToListAsync();
+    var sbbMap = sbb.Where(x => x.PartID != null).GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+    // ---- K6: #tbl_so = SUM(sod.Quantity) group by (tso.ROID, sod.PartID) where s.Status = '3' ----
+    var tblSo = soLines
+        .Where(l => l.StockOutOrderID != null && back0Ids.Contains(l.StockOutOrderID!.Value)
+            && soStatusById.TryGetValue(l.StockOutId, out var st) && st == "3")
+        .GroupBy(l => new { Roid = roidByOrderId.TryGetValue(l.StockOutOrderID!.Value, out var r) ? r : "", l.PartID })
+        .Select(g => new { g.Key.Roid, g.Key.PartID, Quantity = g.Sum(x => x.Quantity) })
+        .ToList();
+    var soMap = tblSo.Where(x => x.PartID != null).GroupBy(x => (x.Roid, x.PartID!)).ToDictionary(g => g.Key, g => g.First().Quantity);
+    // ---- K7/K8: #tprice = gia moi nhat <= hom nay, IsActive='1' (theo PartCode vi Mini PartPrice khong co PartID) ----
+    var today = DateTime.Now.Date;
+    var prices = await db.PartPrices.Where(x => x.OrgId == t.OrgId && x.IsActive == "1" && x.EffectiveDate <= today)
+        .OrderByDescending(x => x.EffectiveDate).ToListAsync();
+    var priceMap = prices.GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.First());
+    // ---- K9: ket qua dong lenh xuat ----
+    var partIds = tblSoo.Where(x => x.PartID != null).Select(x => x.PartID!).Distinct().ToList();
+    var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIds.Contains(x.PartID!))
+        .Select(x => new { x.PartID, x.PartCode, x.PartName, x.Unit }).ToListAsync();
+    var partMap = parts.Where(x => x.PartID != null).GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+    var roPartItems = await db.RoPartItems.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var roPartMap = roPartItems.Where(x => x.PartID != null).GroupBy(x => (x.RoId.ToString(), x.PartID!)).ToDictionary(g => g.Key, g => g.First());
+    var detailRows = tblSoo.Select(soo =>
+    {
+        partMap.TryGetValue(soo.PartID ?? "", out var p);
+        sbbMap.TryGetValue(soo.PartID ?? "", out var sb);
+        soMap.TryGetValue((soo.Roid, soo.PartID ?? ""), out var soQty);
+        orderTempMap.TryGetValue((soo.Roid, soo.PartID ?? ""), out var tsoQty);
+        roPartMap.TryGetValue((soo.Roid, soo.PartID ?? ""), out var rop);
+        priceMap.TryGetValue(p?.PartCode ?? "", out var pr);
+        var sooQty = soo.OrderQuantity;
+        return new
+        {
+            quantity = sooQty - soQty,
+            sooQuantity = sooQty,
+            orderQuantity = sooQty - soQty,
+            soQuantity = tsoQty,
+            partid = soo.PartID,
+            partCode = p?.PartCode,
+            vieName = p?.PartName,
+            unit = p?.Unit,
+            price = rop?.UnitPrice ?? 0,
+            vat = rop?.Vat ?? 0,
+            inStockQuantity = sb?.InStockQuantity ?? 0,
+            balanceLocationID = sb?.LocationID,
+            planLocationID = sb?.LocationID,
+            actualLocationID = sb?.LocationID,
+            stockOutOrderID = soo.MaxStockOutOrderID,
+            stockOutOrderNo = soo.StockOutOrderNo,
+            partPriceID = pr?.Id
+        };
+    }).ToList();
+    // ---- K10: #tblInv_StockOutOrder join Ser_Inv_StockOutOrderStockOut left join Ser_Inv_StockOut where Status = '3' ----
+    var links = await db.SerStockOutOrderStockOuts.Where(x => x.OrgId == t.OrgId && back0Ids.Contains(x.StockOutOrderId)).ToListAsync();
+    var linkRows = links.Select(lk =>
+    {
+        var so = soHeaders.FirstOrDefault(h => h.Id == lk.StockOutId);
+        return new { lk.StockOutOrderId, lk.StockOutId, lk.StockOutOrderNo, lk.StockOutNo, soStatus = so?.Status, soDealerCode = so?.DealerCode };
+    }).Where(x => x.soStatus == "3")
+      .Where(x => dealers.Count == 0 || (x.soDealerCode != null && dealers.Contains(x.soDealerCode!)))
+      .OrderBy(x => x.StockOutOrderId).ThenBy(x => x.StockOutId).ToList();
+    return Results.Ok(new
+    {
+        ser_Inv_StockOutOrder = tblInvBack0,
+        ser_Inv_StockOutOrderDetail = detailRows,
+        ser_Inv_StockOutOrderStockOut = linkRows,
+        sourceTables = "K1 #tblInv_StockOutOrder; K2 backorderindex=0; K3 #tbl_OrderTemp; K4 #tbl_soo; K5 #tbl_sbb; K6 #tbl_so; K7/K8 #tprice; K9 detail; K10 SOOSO",
+        statusFilterIsEquals3 = "KHAC Get01 (#1590): loc trang thai phieu xuat la so.[Status] = '3' (KHONG phai NOT IN ('4'))",
+        dealerCodeFilterAppliesToManyAliases = "strDealerCodeConditionList ap cho t.DealerCode (K1/K5), siso.DealerCode (K10), sod.DealerCode (K3/K4), smp.DealerCode (K7), so.DealerCode (K3), s.DealerCode (K4), p.DealerCode (K9)",
+        twoTreesDiffer = "3B: ban V20.2023.Release THEM `and t.StockOutType='1'` o K1 (x2); port theo cay CHUAN V20 (KHONG co filter nay)",
+        partPriceJoinedByPartCode = "Mini PartPrice bieu dien bang PartCode (khong co PartID) nen noi gia theo PartCode"
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
