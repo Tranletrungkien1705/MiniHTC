@@ -41594,10 +41594,10 @@ app.MapPost("/api/carhisorderpolicies", async (CarHisOrderPolicyDto dto, AppDbCo
     return Results.Ok(new { row.Id, row.CarId, row.OrderPolicyCode, row.LogLUBy, row.LogLUDateTime });
 }).RequireAuthorization();
 
-// ===== Sao kê ngân hàng (BankStatementLine — port 1:1 FrmBank_BankStatement, TCMotor/Sales/Payment
+// ===== #10393 Sao kê ngân hàng (BankStatementLine — port 1:1 FrmBank_BankStatement, TCMotor/Sales/Payment
 // DMSales.Foton; biz `Bank_BankStatement_Add/_UpdActVoucherCode/_UpdRemittanceDetail/_DeleteMulti`,
 // BizHTC.MasterData.cs:9895/10393/10729/11066) =====
-// 🔴 [nợ port, sửa 05/10/2026] `BStatementNo` KHÔNG phải số sao kê/lô do người dùng nhập — nguồn
+// 🔴 [nợ port, sửa 05/10/2026, #10393] `BStatementNo` KHÔNG phải số sao kê/lô do người dùng nhập — nguồn
 // `StdDataInTable` KHÔNG đọc cột này từ client (dòng bị comment), mà SINH MỖI DÒNG một mã riêng qua
 // `Seq_Common_MyGet(TConst.SequenceTypeDMS.BStmNo)` NGAY TRONG vòng lặp từng dòng (:10135-10186) — tức
 // MỖI DÒNG sao kê có `BStatementNo` RIÊNG, không phải một mã chung cho cả lô. Bản port cũ bắt client
