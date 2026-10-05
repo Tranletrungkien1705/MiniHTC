@@ -513,8 +513,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<HmcReport> HmcReports => Set<HmcReport>();
     public DbSet<WholesaleDeal> WholesaleDeals => Set<WholesaleDeal>();
     public DbSet<WholesaleDealCar> WholesaleDealCars => Set<WholesaleDealCar>();
-    public DbSet<DealRecord> DealRecords => Set<DealRecord>();
-    public DbSet<DealPatchLog> DealPatchLogs => Set<DealPatchLog>();
     public DbSet<SbhOnline> SbhOnlines => Set<SbhOnline>();
     public DbSet<GpsVinSync> GpsVinSyncs => Set<GpsVinSync>();
     public DbSet<TranspDlvConfirm> TranspDlvConfirms => Set<TranspDlvConfirm>();
