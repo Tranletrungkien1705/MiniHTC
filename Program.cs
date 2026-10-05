@@ -92718,6 +92718,57 @@ app.MapPost("/api/repairorders/{no}/mark-repaired", async (string no, AppDbConte
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1563 `Ser_RO_Update_Maintance` — CẬP NHẬT NHẮC BẢO DƯỠNG =====
+// Nguồn: `BizCarSv.ServiceUpdate.cs:2870 Ser_RO_Update_Maintance_New20210704` (LIVE — WS `WSCarSv.asmx.cs:11014`
+// gọi bản `_New20210704`). Bản trần `Ser_RO_Update_Maintance` (không hậu tố) là bản CŨ.
+//
+// 🔴 **HAI GUARD, VÀ CẢ HAI ĐỀU LÀ "KHÔNG"**: (1) RO phải tồn tại (else `RONotExist`);
+//   (2) trạng thái KHÔNG được là `PAID`/`FNS` (else `InvalidStatus`) — nguồn chặn sửa nhắc bảo dưỡng
+//   trên lệnh đã thanh toán/đã giao xe.
+// 🔴 **`Km` BỊ COMMENT**: dòng `//dt_Ser_RO.Rows[0]["Km"] = strKm;` nằm trong nguồn nhưng bị comment ⇒
+//   tham số `strKm` được nhận mà **KHÔNG BAO GIỜ ghi**. Port giữ 1:1: KHÔNG cập nhật `Km`.
+// ⚠️ `ReminderMaintanceDate`: nguồn gán `""` khi rỗng, ngược lại `Convert.ToDateTime(...).ToString("yyyy-MM-dd")`.
+// ⚠️ Sau khi ghi `Ser_RO`, nguồn còn cập nhật `Ser_CustomerCareMace.MaceRecomentDate = ro.ReminderMaintanceDate`
+//   cho MỌI dòng có `ROID` khớp (không lọc gì thêm).
+app.MapPost("/api/repairorders/{no}/maintance", async (string no, RoMaintanceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.NotFound(new { error = "RONotExist", no });
+    if (r.Status == "PAID" || r.Status == "FNS")
+        return Results.BadRequest(new { error = "InvalidStatus", status = r.Status });
+
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    // Nguồn: rỗng ⇒ "", ngược lại format yyyy-MM-dd. Mini lưu `DateTime?` ⇒ parse thẳng.
+    r.ReminderMaintanceDate = string.IsNullOrWhiteSpace(dto.ReminderMaintanceDate)
+        ? (DateTime?)null
+        : (DateTime.TryParse(dto.ReminderMaintanceDate, out var rd) ? rd : null);
+    r.ReminderMaintanceKm = dto.ReminderMaintanceKm;
+    r.WorkDoneSoon = dto.WorkDoneSoon;
+    r.CardNo = dto.CardNo;
+    // ⚠️ `Km` KHÔNG được ghi — dòng gán ở nguồn bị COMMENT (giữ 1:1).
+    r.LogLUDateTime = now;
+    r.LogLUBy = who;
+
+    // Nguồn: `update Ser_CustomerCareMace set MaceRecomentDate = <ro.ReminderMaintanceDate> where ROID = <ro.ROID>`.
+    //   `Ser_CustomerCareMace.ROID` là CHUỖI; nguồn nối `t.ROID = ro.ROID` (Ser_RO.ROID số) ⇒ Mini nối với `RepairOrder.Id`.
+    var roIdStr = r.Id.ToString();
+    var maces = await db.CustomerCareMaces.Where(x => x.OrgId == t.OrgId && x.ROID == roIdStr).ToListAsync();
+    foreach (var m in maces) m.MaceRecomentDate = r.ReminderMaintanceDate;
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        r.RONo, r.ReminderMaintanceDate, r.ReminderMaintanceKm, r.WorkDoneSoon, r.CardNo,
+        maceRowsUpdated = maces.Count,
+        sourceFunctionName = "Ser_RO_Update_Maintance_New20210704",
+        kmParameterAcceptedButNeverWritten = "nguon co dong //dt_Ser_RO.Rows[0][Km] = strKm; BI COMMENT => tham so strKm nhan ma KHONG BAO GIO ghi (giu 1:1)",
+        guards = "RONotExist (RO phai ton tai) + InvalidStatus (khong duoc PAID/FNS)",
+        maceUpdateUnfiltered = "nguon update Ser_CustomerCareMace.MaceRecomentDate cho MOI dong co ROID khop, khong loc them",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/statusnames", (string? screen) =>
 {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
@@ -108560,6 +108611,9 @@ record RoAdvanceDto(string ToStatus,
     string? LogLUBy = null,
     string? CrdDealSerROJson = null,
     string? CrdDealSerRODtlJson = null);
+// #1563 `Ser_RO_Update_Maintance_New20210704` — nhắc bảo dưỡng. `Km` KHÔNG có trong DTO vì nguồn không ghi nó.
+record RoMaintanceDto(string? ReminderMaintanceDate, string? ReminderMaintanceKm, string? WorkDoneSoon, string? CardNo);
+
 record RepairOrderUpdateDto(DateTime? ScheduleDate,
     DateTime? CheckInDate,
     string? Assistant = null,
