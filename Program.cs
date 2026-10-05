@@ -15561,8 +15561,11 @@ app.MapPost("/api/mrkcampaigns/approve", async (MrkCampaignKeyDto dto, AppDbCont
     return Results.Ok(new { no, status = "A", detailsSynced = dtls.Count });
 }).RequireAuthorization();
 
-// ===== Hồ sơ KPI / giải ngân marketing theo quý (MRK_KPIDisbursment — port 1:1 cụm 2 hàm
-// Get(15243) / Save(15545), 2010.HTC BizHTC.Marketing.cs). TWIN: 2/2, cả WS 32-bit lẫn 64-bit. =====
+// #5548 — Hồ sơ KPI / giải ngân marketing theo quý (MRK_KPIDisbursment — port 1:1 cụm 2 hàm
+// Get(15243) / Save(15545), 2010.HTC BizHTC.Marketing.cs). TWIN: 2/2, cả WS 32-bit lẫn 64-bit
+// (xác nhận lại qua grep WSHTC.asmx.cs + WSHTC/App_Code/WSHTC.cs, mỗi hàm trúng cả 2 bên). Audit cũ
+// (delete-only khi FlagIsDelete="1", upsert giữ CreatedDateTime/CreatedBy bản cũ, so sánh IgnoreCase
+// giữ nguyên dạng chữ khi ghi) đã khớp đủ với nguồn — chỉ THIẾU TAG #NNN, bổ sung, KHÔNG đổi hành vi. =====
 // 🔴 MỘT hàm Save làm CẢ HAI việc: `strFlagIsDelete = "1"` thì CHỈ XOÁ; ngược lại là UPSERT
 //    (xoá theo khoá bốn rồi chèn lại). Nguồn KHÔNG có hàm Delete riêng — port giữ đúng hình dạng đó.
 // 🔴 `KPIDisbursmentType` (TConst.KPIDisburmentType — tên lớp hằng thiếu chữ s so với tên cột):
@@ -15573,6 +15576,7 @@ string[] MrkKpiDisbTypes = { "KPICOMMIT", "KPIRESULT", "KPIDBTable" };
 
 app.MapGet("/api/mrkkpidisbursments", async (AppDbContext db, ITenantContext t, string? year, string? quaterCode, string? dealerCode, string? type) =>
 {
+    // #5548
     var qy = db.MrkKpiDisbursments.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.KPIDisbursmentYear == year);
     if (!string.IsNullOrWhiteSpace(quaterCode)) qy = qy.Where(x => x.QuaterCode == quaterCode);
@@ -15590,6 +15594,7 @@ app.MapGet("/api/mrkkpidisbursments", async (AppDbContext db, ITenantContext t, 
 
 app.MapPost("/api/mrkkpidisbursments/save", async (MrkKpiDisbursmentSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    // #5548
     var year = (dto.KPIDisbursmentYear ?? "").Trim();
     var quater = (dto.QuaterCode ?? "").Trim();
     var dealer = (dto.DealerCode ?? "").Trim();
