@@ -71788,30 +71788,213 @@ static async Task<IResult> BankMarketSum01Async(
     AppDbContext db, ITenantContext t, string kind,
     DateTime? dateOpenFrom, DateTime? dateOpenTo,
     string? dealerCode, string? bankCode, string? guaranteeType, string? flagIsHTC,
+    string? grtPaidStatus,
     string? isGetDetail, string? isGetSum, string? isGetDealer)
 {
-    // 🔴 Phạm vi ở nguồn = (a) danh sách đại lý người dùng chọn (BuildClause, param thật)
-    //    + (b) BankBUPattern tra từ Mst_Bank rồi NƯỚNG chuỗi. Port dùng tham số hoá cho cả hai.
-    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync())
+    // 🔴 #B368/#B369 GAP-FIX (2026-10-06): BankGuarantee+BankGuaranteeDtl / BankPayment+BankPaymentCar /
+    //   MstBank.BankBUPattern NAY DA DU entity — đóng nợ cũ (trước trả khung rỗng). ĐƠN GIẢN HOÁ phạm vi
+    //   ngân hàng: lọc TRỰC TIẾP theo BankCode khớp tham số `bankCode` — KHÔNG tái hiện chuỗi
+    //   `BankBUCode LIKE BankBUPattern` nối tay của nguồn (nơi có bug nháy-đóng-lồng #B368, "KHÔNG tự vá"
+    //   theo ghi chú gốc) vì đó là build chuỗi SQL thủ công không áp dụng ở EF. `grtPaidStatus`
+    //   ("paid"/"unpaid") thay cho chuỗi điều kiện thô nguồn gửi qua `strPMGDateEndConditionList`.
+    var from = (dateOpenFrom ?? new DateTime(1900, 1, 1)).Date;
+    var to = (dateOpenTo ?? new DateTime(2100, 1, 1)).Date;
+
+    var allBanks = await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync();
+    var bankByCode = allBanks.ToDictionary(b => b.BankCode, StringComparer.OrdinalIgnoreCase);
+    var banks = allBanks
         .Where(b => string.IsNullOrWhiteSpace(bankCode)
                  || string.Equals(b.BankCode, bankCode!.Trim(), StringComparison.OrdinalIgnoreCase))
         .ToList();
+    var scopedBankCode = string.IsNullOrWhiteSpace(bankCode) ? null : bankCode!.Trim();
 
-    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+    var allDealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var dealerByCode = allDealers.ToDictionary(d => d.DealerCode, StringComparer.OrdinalIgnoreCase);
+    var dealers = allDealers
         .Where(d => string.IsNullOrWhiteSpace(dealerCode)
                  || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
         .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
-
-    // ⚠️ NỢ — KHÔNG ĐOÁN: Pmt_Guarantee / Pmt_Payment chưa đủ ⇒ khung rỗng, không bịa số thị phần.
-    var monthRows = Array.Empty<object>();
-    var detailRows = Array.Empty<object>();
-    var sumRows = Array.Empty<object>();
-    var dealerRows = Array.Empty<object>();
+    var scopedDealerCode = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode!.Trim();
 
     var wantDetail = isGetDetail == "1";
     var wantSum = isGetSum == "1";
     var wantDealer = isGetDealer == "1";
     var isGuarantee = kind == "guarantee";
+
+    // Dòng giao dịch đã gộp (1 guarantee hoặc 1 payment) — đủ để dựng cả Month/Sum/Dealer/Detail.
+    var rows = new List<(string BankCodeParent, string DealerCode, DateTime MonthKey, decimal Amount, decimal SecondaryAmount, object DetailRow)>();
+
+    if (isGuarantee)
+    {
+        var guarantees = await db.BankGuarantees.Where(g => g.OrgId == t.OrgId
+            && g.Status == "A" && g.DateOpen >= from && g.DateOpen < to.AddDays(1)).ToListAsync();
+        if (!string.IsNullOrWhiteSpace(guaranteeType)) guarantees = guarantees.Where(g => g.GuaranteeType == guaranteeType).ToList();
+        if (scopedDealerCode != null) guarantees = guarantees.Where(g => string.Equals(g.DealerCode, scopedDealerCode, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (scopedBankCode != null) guarantees = guarantees.Where(g => string.Equals(g.BankCode, scopedBankCode, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (grtPaidStatus == "paid") guarantees = guarantees.Where(g => g.DateEnd != null).ToList();
+        else if (grtPaidStatus == "unpaid") guarantees = guarantees.Where(g => g.DateEnd == null).ToList();
+
+        var guaranteeIds = guarantees.Select(g => g.Id).ToHashSet();
+        var activeDtls = (await db.BankGuaranteeDtls.Where(d => d.OrgId == t.OrgId && d.GuaranteeDetailStatus == "A").ToListAsync())
+            .Where(d => guaranteeIds.Contains(d.GuaranteeId)).ToList();
+        var vins = activeDtls.Select(d => d.VIN).Distinct().ToList();
+        var carsByVin = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync())
+            .ToDictionary(c => c.VIN, StringComparer.OrdinalIgnoreCase);
+        var dtlsByGuarantee = activeDtls.GroupBy(d => d.GuaranteeId).ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var g in guarantees)
+        {
+            // inner join Pmt_GuaranteeDetail (active) + Car_Car ⇒ cần ÍT NHẤT 1 dòng xe hợp lệ.
+            if (!dtlsByGuarantee.TryGetValue(g.Id, out var dtls)) continue;
+            string? carFlagIsHTC = null;
+            var matched = false;
+            foreach (var d in dtls)
+            {
+                if (!carsByVin.TryGetValue(d.VIN, out var car)) continue;
+                carFlagIsHTC ??= car.FlagisHTC;
+                if (!string.IsNullOrWhiteSpace(flagIsHTC) && car.FlagisHTC != flagIsHTC) continue;
+                matched = true; break;
+            }
+            if (!matched) continue;
+
+            bankByCode.TryGetValue(g.BankCode, out var mb);
+            var bankCodeParent = mb?.BankCodeParent ?? g.BankCode;
+            var monthKey = new DateTime(g.DateOpen!.Value.Year, g.DateOpen.Value.Month, 1);
+            var fee = g.Fee ?? 0m;
+            var totalAmountFee = g.TotalAmount * fee / 100m;
+            rows.Add((bankCodeParent, g.DealerCode, monthKey, g.TotalAmount, totalAmountFee, new
+            {
+                guaranteeNo = g.GuaranteeNo, bankGuaranteeNo = g.BankGuaranteeNo,
+                dealerName = dealerByCode.GetValueOrDefault(g.DealerCode)?.DealerName,
+                guaranteeType = g.GuaranteeType, dateOpen = g.DateOpen, dateEnd = g.DateEnd, guaranteeStatus = g.Status,
+                bankCode = g.BankCode, bankCodeParent, totalAmount = g.TotalAmount, fee, totalAmountFee,
+                flagIsHTC = carFlagIsHTC
+            }));
+        }
+    }
+    else // paymentloan
+    {
+        var payments = await db.BankPayments.Where(p => p.OrgId == t.OrgId
+            && p.Funds == "0" && p.PaymentStatus == "F"
+            && p.PaymentEndDate != null && p.PaymentEndDate >= from && p.PaymentEndDate < to.AddDays(1)).ToListAsync();
+        if (scopedDealerCode != null) payments = payments.Where(p => string.Equals(p.DealerCode, scopedDealerCode, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (scopedBankCode != null) payments = payments.Where(p => string.Equals(p.BankLending, scopedBankCode, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        var paymentIds = payments.Select(p => p.Id).ToHashSet();
+        var paymentCars = (await db.BankPaymentCars.Where(c => c.OrgId == t.OrgId).ToListAsync())
+            .Where(c => paymentIds.Contains(c.PaymentId)).ToList();
+        var vins = paymentCars.Select(c => c.VIN).Distinct().ToList();
+        var carsByVin = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync())
+            .ToDictionary(c => c.VIN, StringComparer.OrdinalIgnoreCase);
+        var carsByPayment = paymentCars.GroupBy(c => c.PaymentId).ToDictionary(g => g.Key, g => g.ToList());
+
+        foreach (var p in payments)
+        {
+            // inner join Pmt_PaymentDetail + Car_Car ⇒ cần ÍT NHẤT 1 dòng xe hợp lệ.
+            if (!carsByPayment.TryGetValue(p.Id, out var pcars)) continue;
+            string? carFlagIsHTC = null;
+            var matched = false;
+            foreach (var pc in pcars)
+            {
+                if (!carsByVin.TryGetValue(pc.VIN, out var car)) continue;
+                carFlagIsHTC ??= car.FlagisHTC;
+                if (!string.IsNullOrWhiteSpace(flagIsHTC) && car.FlagisHTC != flagIsHTC) continue;
+                matched = true; break;
+            }
+            if (!matched) continue;
+            // inner join Mst_Bank theo BankCodeSend/BankCodeReceive ở câu detail nguồn — port chỉ cần bank
+            // PHÁT HÀNH (BankLending) để gộp BankCodeParent, giữ BankCodeSend/Receive ở Detail để đối chiếu.
+            bankByCode.TryGetValue(p.BankLending, out var mbLending);
+            var bankCodeParent = mbLending?.BankCodeParent ?? p.BankLending;
+            var monthKey = new DateTime(p.PaymentEndDate!.Value.Year, p.PaymentEndDate.Value.Month, 1);
+            var interestRate = p.InterestRate ?? 0m;
+            var totalInterestAmount = p.TotalAmount * interestRate / 100m;
+            bankByCode.TryGetValue(p.BankCodeReceive, out var mbReceive);
+            bankByCode.TryGetValue(p.BankCodeSend, out var mbSend);
+            rows.Add((bankCodeParent, p.DealerCode, monthKey, p.TotalAmount, totalInterestAmount, new
+            {
+                paymentNo = p.PaymentNo, paymentStatus = p.PaymentStatus,
+                bankCodeReceive = p.BankCodeReceive, bankNameReceive = mbReceive?.BankName,
+                bankCodeSend = p.BankCodeSend, bankNameSend = mbSend?.BankName, funds = p.Funds,
+                bankLending = p.BankLending, bankCodeParent, dealerCode = p.DealerCode,
+                dealerName = dealerByCode.GetValueOrDefault(p.DealerCode)?.DealerName,
+                paymentEndDate = p.PaymentEndDate, totalAmount = p.TotalAmount,
+                interestRate, totalInterestAmount, flagIsHTC = carFlagIsHTC
+            }));
+        }
+    }
+
+    var monthRows = rows.Select(r => r.MonthKey).Distinct().OrderBy(m => m)
+        .Select(m => (object)new { monthOpen = m }).ToArray();
+    var detailRows = rows.Select(r => r.DetailRow).ToArray();
+
+    object[] sumRows = Array.Empty<object>();
+    object[] allMonthRows = Array.Empty<object>();
+    object[] dealerRows = Array.Empty<object>();
+
+    if (wantSum)
+    {
+        var totalAllByMonth = rows.GroupBy(r => r.MonthKey).ToDictionary(g => g.Key, g => g.Sum(x => x.Amount));
+        var byBankMonth = rows.GroupBy(r => (r.BankCodeParent, r.MonthKey))
+            .Select(g => new
+            {
+                bankCodeParent = g.Key.BankCodeParent, monthOpen = g.Key.MonthKey,
+                totalAmount = g.Sum(x => x.Amount), secondarySum = g.Sum(x => x.SecondaryAmount)
+            }).OrderBy(x => x.monthOpen).ToList();
+
+        sumRows = byBankMonth.Select(x =>
+        {
+            var totalAll = totalAllByMonth.GetValueOrDefault(x.monthOpen);
+            var marketPercent = totalAll != 0 ? x.totalAmount / totalAll * 100 : 0m;
+            var avg = x.totalAmount != 0 ? x.secondarySum / x.totalAmount * 100 : 0m;
+            bankByCode.TryGetValue(x.bankCodeParent, out var mb);
+            return isGuarantee
+                ? (object)new { bankCodeParent = x.bankCodeParent, bankName = mb?.BankName, monthOpen = x.monthOpen, totalAmount = x.totalAmount, marketPercent, feeAvg = avg }
+                : new { bankCodeParent = x.bankCodeParent, bankName = mb?.BankName, monthOpen = x.monthOpen, totalAmount = x.totalAmount, marketPercent, interestRateAvg = avg };
+        }).ToArray();
+
+        // 🔴 _01_AllMonth CHỈ bản Guarantee có (nguồn comment hẳn ở bản PaymentLoan, #B368/#B369).
+        //   Giữ ĐÚNG hành vi nguồn: MarketPercent/FeeAvg là TỔNG CỘNG DỒN các % theo-tháng (Sum), KHÔNG
+        //   phải tính lại trung bình trọng số — số liệu kết quả có thể vượt 100%, đúng như SQL gốc.
+        if (isGuarantee)
+        {
+            allMonthRows = byBankMonth.GroupBy(x => x.bankCodeParent).Select(g =>
+            {
+                var totalAmount = g.Sum(x => x.totalAmount);
+                var marketPercentSum = g.Sum(x =>
+                {
+                    var totalAll = totalAllByMonth.GetValueOrDefault(x.monthOpen);
+                    return totalAll != 0 ? x.totalAmount / totalAll * 100 : 0m;
+                });
+                var feeAvgSum = g.Sum(x => x.totalAmount != 0 ? x.secondarySum / x.totalAmount * 100 : 0m);
+                return (object)new { bankCodeParent = g.Key, totalAmount, marketPercent = marketPercentSum, feeAvg = feeAvgSum };
+            }).ToArray();
+        }
+    }
+
+    if (wantDealer)
+    {
+        var totalAllByMonthDealer = rows.GroupBy(r => (r.MonthKey, r.DealerCode))
+            .ToDictionary(g => g.Key, g => g.Sum(x => x.Amount));
+        dealerRows = rows.GroupBy(r => (r.BankCodeParent, r.DealerCode, r.MonthKey))
+            .Select(g => new
+            {
+                bankCodeParent = g.Key.BankCodeParent, dealerCode = g.Key.DealerCode, monthOpen = g.Key.MonthKey,
+                totalAmount = g.Sum(x => x.Amount), secondarySum = g.Sum(x => x.SecondaryAmount)
+            })
+            .OrderBy(x => x.monthOpen)
+            .Select(x =>
+            {
+                var totalAll = totalAllByMonthDealer.GetValueOrDefault((x.monthOpen, x.dealerCode));
+                var marketPercent = totalAll != 0 ? x.totalAmount / totalAll * 100 : 0m;
+                var avg = x.totalAmount != 0 ? x.secondarySum / x.totalAmount * 100 : 0m;
+                bankByCode.TryGetValue(x.bankCodeParent, out var mb);
+                dealerByCode.TryGetValue(x.dealerCode, out var d);
+                return isGuarantee
+                    ? (object)new { bankCodeParent = x.bankCodeParent, bankName = mb?.BankName, dealerCode = x.dealerCode, dealerName = d?.DealerName, monthOpen = x.monthOpen, totalAmount = x.totalAmount, marketPercent, feeAvg = avg }
+                    : new { bankCodeParent = x.bankCodeParent, bankName = mb?.BankName, dealerCode = x.dealerCode, dealerName = d?.DealerName, monthOpen = x.monthOpen, totalAmount = x.totalAmount, marketPercent, interestRateAvg = avg };
+            }).ToArray();
+    }
 
     return Results.Ok(new
     {
@@ -71821,7 +72004,7 @@ static async Task<IResult> BankMarketSum01Async(
         Month = monthRows,                                  // Tables[0] — luôn có
         Detail = wantDetail ? detailRows : null,            // Pmt_Guarantee / Pmt_Payment
         Sum = wantSum ? sumRows : null,
-        AllMonth = isGuarantee && wantSum ? Array.Empty<object>() : null,   // 🔴 CHỈ bản Guarantee có
+        AllMonth = isGuarantee && wantSum ? allMonthRows : null,   // 🔴 CHỈ bản Guarantee có
         Dealer = wantDealer ? dealerRows : null,
         sixthScopeAxisNote = "TRUC PHAM VI THU SAU: Mst_Bank.BankBUPattern - PHAM VI THEO NGAN HANG. Sau BUPattern (dai ly), DealerCode (#B335), che cot IsHTCDirect (#B354), MBBankBUPattern (#B359) va ViewAbility_Get theo nha phan phoi (#B361) - day la truc thu SAU. VA NO KHONG BI TAT (khac #B359/#B361): dong param-runtime '--and (@strBankBUPattern is null or mb.BankBUCode like @strBankBUPattern)' BI COMMENT, nhung pham vi duoc DUNG LAI BANG CACH KHAC - ghep chuoi thu cong tu DB: zzzzClauseWhere_strBankBUPatternConditionList += \"mb.BankBUCode like '\" + ... (noi bang ' or '). BO LOC VAN CO HIEU LUC; chi doi tu PARAM RUNTIME sang NUONG CHUOI. BAI HOC QUY TRINH: thay dong pham vi bi comment CHUA DU de ket luan la lo - phai tim xem CO BAN DUNG LAI BANG CHUOI o cho khac khong.",
         quoteInsideSanitiserBugNote = "BUG THAT - DAU NHAY DONG BI DUA VAO TRONG LOI GOI BO CHUAN HOA, o CA HAI ban, moi ban 2 cho => tong 4 CHO, chung to DA DUOC CHEP: '... + TUtils.CUtils.StandardizeParam(dtDB_Mst_Bank.Rows[i][\"BankBUPattern\"] + \"'\");'. Dau nhay DONG CHUOI SQL nam BEN TRONG StandardizeParam(...). Dung phai la '... + StandardizeParam(row[\"BankBUPattern\"]) + \"'\";'. Neu StandardizeParam ESCAPE/NHAN DOI dau nhay (dung viec cua mot bo chuan hoa chong injection) thi NHAY DONG BI BIEN DANG => VO CU PHAP SQL => bao cao loi. Neu no KHONG dung toi dau nhay thi cau chay dung - nhung khi do BO CHUAN HOA KHONG BAO VE GI CA. HAI KHA NANG, CA HAI DEU SAI. KHONG TU VA.",
@@ -71829,17 +72012,17 @@ static async Task<IResult> BankMarketSum01Async(
         twinTableCountNote = "HAI SINH DOI LECH SO BANG TRA VE: ban Guarantee dat ten 5 bang (_Month, Pmt_Guarantee, _01, _01_AllMonth, _01_Dealer); ban PaymentLoan chi 4 - dong '//dsGetData.Tables[nIdxTable++].TableName = \"Rpt_PmtGuaranteeBankMarketSum_01_AllMonth\";' BI COMMENT va VAN MANG TEN CUA BAN GUARANTEE => CHIEU SAO CHEP XAC DINH DUOC (PaymentLoan chep tu Guarantee) VA hop dong API cua hai ban KHAC NHAU THAT.",
         argLabelWrongNote = "NHAN DOI SO SAI - ca thu TU ve nhan (sau #region #B365/#B366): o vo Guarantee, ', strPMGDateEndConditionList // strGuaranteeStatus' va ', strDateOpenFrom // strDateOpenTo'. DA KIEM DANH SACH THAM SO THAT cua ...01X: vi tri do dung la strPMGDateEndConditionList => WIRING DUNG, CHI NHAN SAI. Ghi la LOI NHAN, KHONG bao thanh loi truyen tham so.",
         rbacNote = "RBAC: myCommon_CheckHTCDirect / strBUPatternOfUser / MBBankBUPattern / myHTC_RemoveInfo_ = 0 HIT; '--and (@strDealerCode is null or t.DealerCode like @strDealerCode)' BI COMMENT va '//myCache_Mst_Distributor_ViewAbility_Get(...)' BI COMMENT; nhung zzzzClauseWhere_strDealerCodeConditionList (tu BuildClause, param @p) VAN SONG => loc theo DANH SACH DAI LY NGUOI DUNG CHON, cong loc THEO NGAN HANG => KHONG phai lo, nhung pham vi den tu THAM SO, khong tu QUYEN cua user.",
-        debtNote = "NO - KHONG DOAN: Pmt_Guarantee / Pmt_Payment / Mst_Bank.BankBUPattern chua du => tra khung + co; KHONG bia so thi phan."
+        gapFixNote = "#B368/#B369 DONG NO (2026-10-06): BankGuarantee+BankGuaranteeDtl / BankPayment+BankPaymentCar / MstBank.BankBUPattern NAY DA DU entity => tra du so lieu thi phan (Month/Detail/Sum/AllMonth/Dealer) thay vi khung rong. DON GIAN HOA pham vi ngan hang: loc TRUC TIEP theo BankCode khop tham so 'bankCode' (KHONG tai hien chuoi BankBUCode LIKE BankBUPattern noi tay cua nguon - tranh lap lai bug nhay-dong-long #B368). 'grtPaidStatus' (paid/unpaid) la tham so MOI thay cho chuoi dieu kien tho nguon gui qua strPMGDateEndConditionList. AllMonth (chi ban Guarantee) GIU DUNG hanh vi nguon: MarketPercent/FeeAvg la TONG CONG DON cac % theo-thang (Sum cua Sum), KHONG phai tinh lai trung binh trong so - so co the vuot 100%, dung nhu SQL goc."
     });
 }
 
 app.MapGet("/api/reports/guarantee-bank-market-sum01", async (
     AppDbContext db, ITenantContext t,
     DateTime? dateOpenFrom, DateTime? dateOpenTo, string? dealerCode, string? bankCode,
-    string? guaranteeType, string? flagIsHTC,
+    string? guaranteeType, string? flagIsHTC, string? grtPaidStatus,
     string? isGetDetail, string? isGetSum, string? isGetDealer) =>
     await BankMarketSum01Async(db, t, "guarantee", dateOpenFrom, dateOpenTo, dealerCode, bankCode,
-        guaranteeType, flagIsHTC, isGetDetail, isGetSum, isGetDealer)).RequireAuthorization();
+        guaranteeType, flagIsHTC, grtPaidStatus, isGetDetail, isGetSum, isGetDealer)).RequireAuthorization();
 
 app.MapGet("/api/reports/paymentloan-bank-market-sum01", async (
     AppDbContext db, ITenantContext t,
@@ -71847,7 +72030,7 @@ app.MapGet("/api/reports/paymentloan-bank-market-sum01", async (
     string? guaranteeType, string? flagIsHTC,
     string? isGetDetail, string? isGetSum, string? isGetDealer) =>
     await BankMarketSum01Async(db, t, "paymentloan", dateOpenFrom, dateOpenTo, dealerCode, bankCode,
-        guaranteeType, flagIsHTC, isGetDetail, isGetSum, isGetDealer)).RequireAuthorization();
+        guaranteeType, flagIsHTC, null, isGetDetail, isGetSum, isGetDealer)).RequireAuthorization();
 
 // ===== #B370 LỊCH SỬ SỬA KHÁCH HÀNG ĐẠI LÝ — `Rpt_SupportDealerCustomerHistory_WH`
 //       (`TERP.BizHTC/DMS40/zTemp.Report.cs:11157`) =====
