@@ -71619,6 +71619,10 @@ app.MapGet("/api/reports/dmsser-car-warranty-info", async (
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
     var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
         .GroupBy(c => (c.ModelCode ?? "") + "|" + (c.ColorCode ?? "")).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 #B371-color GAP-FIX: Mst_District nay da co, noi khop (ProvinceCode, DistrictCode) — LEFT JOIN
+    //   dung nguon (huyen thieu van giu dong, khac tinh la INNER JOIN bat buoc o tren).
+    var districts = (await db.MstDistricts.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(x => (x.ProvinceCode, x.DistrictCode)).ToDictionary(g => g.Key, g => g.First());
 
     var rows = new List<object>();
     var droppedNoColorMaster = 0;
@@ -71644,11 +71648,13 @@ app.MapGet("/api/reports/dmsser-car-warranty-info", async (
             ? null
             : color.ColorExtNameVN + "/" + color.ColorIntNameVN;
 
+        var districtName = cus.DistrictCode != null && districts.TryGetValue((cus.ProvinceCode, cus.DistrictCode), out var dist)
+            ? dist.DistrictName : null;
         rows.Add(new
         {
             cus.CustomerCode, cus.FullName, cus.PhoneNo, cus.IDCardNo,
             prov.ProvinceCode, prov.ProvinceName,
-            cus.DistrictCode, DistrictName = (string?)null,     // left join — thiếu huyện vẫn giữ dòng
+            cus.DistrictCode, DistrictName = districtName,      // left join — thiếu huyện vẫn giữ dòng
             cus.Address,
             d.PlateNo, cv.VIN, cv.EngineNo,
             TradeMarkCode = "Hyundai",                          // 🔴 hằng ghi CỨNG trong SQL nguồn
@@ -71657,9 +71663,9 @@ app.MapGet("/api/reports/dmsser-car-warranty-info", async (
             cv.ColorCode, ColorName = colorName,
             BatteryNo = (string?)null, cv.SerialNo,             // ⚠️ NỢ: Car_VIN.BatteryNo chưa có
             d.DeliveryDate,
-            WarrantyExpiresDate = (DateTime?)null,              // ⚠️ NỢ
-            CusConfirmedWarrantyDate = (DateTime?)null,         // ⚠️ NỢ
-            WarrantyKM = (decimal?)null,                        // ⚠️ NỢ
+            d.WarrantyExpiresDate,
+            d.CusConfirmedWarrantyDate,
+            WarrantyKM = (decimal?)null,                        // ⚠️ NỢ: Dls_DealDetail.WarrantyKM chưa có
             head.DealNo, head.DealerCode
         });
     }
@@ -71674,7 +71680,8 @@ app.MapGet("/api/reports/dmsser-car-warranty-info", async (
         colorConcatNullNote = "BUG THAT - NOI CHUOI TEN MAU: MOT VE NULL => MAT TRANG CA COT. 'mcc.ColorExtNameVN + '/' + mcc.ColorIntNameVN ColorName' - trong T-SQL X + NULL = NULL (CONCAT_NULL_YIELDS_NULL ON) => xe THIEU MOT trong hai ten mau => ColorName NULL HOAN TOAN, khong phai hien mot nua. Nguoi doc tuong 'chua co mau' trong khi thuc ra CO MOT MAU. Dung CONCAT(...) hoac IsNull moi dung.",
         innerJoinDropsNote = "HAI inner join LAM MAT DONG IM LANG: 'inner join Mst_CarColor mcc on cv.ColorCode = mcc.ColorCode and cv.ModelCode = mcc.ModelCode' => xe KHONG KHOP CAP (model, mau) trong master => BIEN MAT khoi bao cao bao hanh; 'inner join Mst_Province mp on f.ProvinceCode = mp.ProvinceCode' => khach THIEU TINH => BIEN MAT. Trong khi Mst_District lai la LEFT JOIN => TINH BAT BUOC, HUYEN KHONG - bat doi xung, de tuong ca hai deu khong bat buoc. Xem droppedNoColorMaster / droppedNoProvince.",
         hardcodedBrandNote = "'Hyundai' TradeMarkCode - NHAN HIEU GHI CUNG TRONG SQL, khong doc tu master. 'and t.DealerCodeBuyer is null --Chi lay giao dich ban le' => loai giao dich ban cho dai ly khac. Hai bo loc VIN/PlateNo di qua BuildClause('@p') => THAM SO RUNTIME (an toan). Ham chi mo _dbWH (khong dung _dbMain) => doi chung tot cho luat C0-...tricesimusprimus.",
-        debtNote = "NO - KHONG DOAN: Car_VIN.BatteryNo, Dls_DealDetail.WarrantyExpiresDate / CusConfirmedWarrantyDate / WarrantyKM, va Mst_District.DistrictName chua co => de NULL."
+        colorGapFixNote = "GAP-FIX (2026-10-06, #B371): Dls_DealDetail.WarrantyExpiresDate/CusConfirmedWarrantyDate (DealerDealDetail) va Mst_District.DistrictName (MstDistrict) NAY DA CO => noi dung, DistrictName LEFT JOIN theo (ProvinceCode, DistrictCode) dung nguon.",
+        debtNote = "NO - KHONG DOAN: Car_VIN.BatteryNo va Dls_DealDetail.WarrantyKM van chua co trong MiniHTC => hai cot do de NULL."
     });
 }).RequireAuthorization();
 
