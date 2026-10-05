@@ -90605,10 +90605,13 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     h.CreatedDate = now1086; h.CreatedBy = by1086; h.LogLUDateTime = now1086; h.LogLUBy = by1086;
     db.PartStockIns.Add(h); await db.SaveChangesAsync();
     foreach (var l in lines)
-        // #1488 §12: nguồn `SerStockInDetailCreate` (StockIn.cs:4535) ghi thêm StockInNo/DealerCode/PartID/
-        // Description/PlanLocationID/ActualLocationID + LogLU* cho TỪNG dòng chi tiết.
+        // #429 ĐÍNH CHÍNH #1488: chú thích nói ghi StockInNo/DealerCode/PartID/Description nhưng thân hàm
+        //   CHỈ gán PlanLocationID/ActualLocationID/LogLU* — bốn cột đầu bị BỊA vào chú thích rồi quên ghi.
+        //   Nguồn `SerStockInDetailCreate` (StockIn.cs:4535) ghi VÔ ĐIỀU KIỆN StockInNo/DealerCode/PartID/
+        //   Quantity; Description CHỈ khi khác rỗng (như PlanLocationID/ActualLocationID/Price/VAT).
         db.PartStockInLines.Add(new PartStockInLine { OrgId = t.OrgId, StockInId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity, Price = l.Price, VAT = l.VAT,
             BeforeTax = l.Quantity * l.Price, AfterTax = l.Quantity * l.Price + l.VAT * l.Price * l.Quantity * 0.01m,
+            StockInNo = h.StockInNo, DealerCode = h.DealerCode, PartID = l.PartID, Description = l.Description,
             PlanLocationID = l.PlanLocationID, ActualLocationID = l.ActualLocationID, LogLUDateTime = now1086, LogLUBy = by1086 });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
