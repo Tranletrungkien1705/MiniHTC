@@ -100758,7 +100758,144 @@ app.MapGet("/api/repairorders/status-realtime-wh", async (AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
-// ===== 🔴🔴🔴 #680 THÔNG TIN BẢO HÀNH XE (LẤY TỪ DMS.SALES) `Rpt_DMSSer_Car_Warranty_Information_WH` =====
+// ===== 🔴🔴🔴 #1564 BẢNG TRẠNG THÁI XƯỞNG THỜI GIAN THỰC (BẢN TRẦN) `Ser_RO_GetStatusList_ForStatusRealTime` =====
+// (`BizCarSv.Service01.cs:1261-1600`, LIVE — WS `WSCarSv.asmx.cs:10546` gọi thẳng, không hậu tố).
+// Đây là BẢN SINH ĐÔI của #682 (`…_ForStatusRealTime_WH_New20230220`). 📐 **DIFF hai bản** (luật #414):
+//   · Bản này đọc `_dbDealer` (DB đại lý); bản `_WH` đọc `_dbWH` (DB kho).
+//   · Bản này `select ro.*` (bản `_WH` liệt kê cột tường minh + `isnull(ro.X, car.X)`).
+//   · Bản này có thêm bộ lọc `strPlanedDeliveryDateList` + `strStatusList` + `strDealerCodeList`.
+//   · Bản này lọc `strQuotationNoList` (bản `_WH` là `strRONo`).
+//
+// 🔴🔴🔴 **BẢNG CHÂN TRỊ BA Ô TICK THIẾU ĐÚNG MỘT TỔ HỢP — VÀ ĐÓ LÀ TỔ HỢP NGUY HIỂM NHẤT**:
+//   Nguồn có **7 nhánh `if`** cho ba cờ (Đang sửa chữa · Chờ giao xe · Tạm dừng): `1-0-0` · `0-1-0` · `0-0-1` ·
+//   `1-1-0` · `1-0-1` · `0-1-1` · `1-1-1`. **KHÔNG có nhánh `0-0-0`** ⇒ `zzzzClauseWhereStausAndFlagPause`
+//   giữ nguyên **chuỗi rỗng** ⇒ **không lọc trạng thái gì cả** ⇒ **bỏ tick cả ba ô thì màn hiện MỌI lệnh**,
+//   kể cả `REJ` (lệnh huỷ) và `FNS` (đã giao xe) — trong khi đúng nghiệp vụ phải là **không hiện gì**.
+// 🔴🔴🔴 **`FlagPause` MANG NGHĨA NGƯỢC VỚI TÊN — VÀ ĐÓ LÀ CHỦ ĐÍCH**: nhánh "Đang sửa chữa" ⇒
+//   `ro.[Status] IN (N'INGA') AND ro.FlagPause = '1'`; nhánh "Tạm dừng" ⇒ `… AND ro.FlagPause = '0'`.
+//   Kiểm chéo 7/7 nhánh nhất quán ⇒ trong hệ này `FlagPause = '1'` = **ĐANG CHẠY**, `= '0'` = **TẠM DỪNG**.
+//   Chép NGUYÊN VĂN, "sửa cho đúng tên cờ" là **đảo ngược cả màn hình**.
+// 🔴🔴 **PHÂN TRANG CHẠY NGƯỢC CHIỀU HIỂN THỊ**: `Row_Number() over (order by ro.PlanedDeliveryDate **asc**)`
+//   nhưng lưới `ORDER BY ro.PlanedDeliveryDate **desc**` ⇒ "trang 2" **không nối tiếp** trang 1.
+//   ⚪ Khác #626: phân trang ở đây **CÓ chạy thật** (`ro.MyRowIdx >= @MyRowIdx_Start and <= @MyRowIdx_End`).
+//   🔴 `TOP 500` dính #415: `ORDER BY` nằm trên `SELECT … INTO` nên **không có hiệu lực**.
+// 🔴🔴 **`Count(0) MyCount` ĐẾM SAU KHI ĐÃ CẮT `TOP 500`** ⇒ tổng tối đa là 500, không phải tổng thật.
+// 🔴🔴 **MỘT THAM SỐ NGÀY RÀNG VÀO HAI CỘT KHÁC KIỂU**: `strCheckInDate` dùng **hai lần** —
+//   `BuildClause("and", "ro.CheckInDate", …)` (K1, cột **datetime**) **và** `BuildClause("and", "tpro.tmpCheckInDate", …)`
+//   (K3, cột **chuỗi** `yyyy-MM-dd`) ⇒ điều kiện bị áp **hai lần**.
+// 🔴 **Lặp lại hai lỗi của #679**: (a) `car.FrameNo`/`car.PlateNo` cắm vào K1 mà K1 chỉ có `FROM ser_ro ro`
+//   ⇒ **alias `car` không tồn tại**; (b) `Replace("BG-","")` bỏ sót tiền tố `LS-`.
+// 🔴 **`inner join ser_Customer` + `inner join ser_car`** ⇒ lệnh không khớp bộ ba `(CarID, CusID, DealerCode)`
+//   **biến mất** (#410). Port đếm `droppedByCustomerCarJoin`.
+app.MapGet("/api/repairorders/status-realtime", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? status, string? frameNo, string? plateNo, string? roNo,
+    string? planedDeliveryDate, string? checkInDate,
+    bool? dangSuaChua, bool? choGiaoXe, bool? tamDung,
+    int? recordStart, int? recordCount) =>
+{
+    var f1 = dangSuaChua == true; var f2 = choGiaoXe == true; var f3 = tamDung == true;
+
+    var qr = db.RepairOrders.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qr = qr.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(status)) qr = qr.Where(x => x.Status == status!.Trim());
+    if (!string.IsNullOrWhiteSpace(frameNo)) qr = qr.Where(x => x.Vin != null && x.Vin.Contains(frameNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(plateNo)) qr = qr.Where(x => x.LicensePlate.Contains(plateNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(roNo))
+    {
+        // Nguồn: Replace("BG-","") — BỎ SÓT tiền tố "LS-" (lỗi #679). Port giữ 1:1.
+        var stripped = roNo!.Trim().Replace("BG-", "");
+        qr = qr.Where(x => x.RONo == stripped);
+    }
+    if (!string.IsNullOrWhiteSpace(planedDeliveryDate) && DateTime.TryParse(planedDeliveryDate, out var pdd))
+        qr = qr.Where(x => x.PlanedDeliveryDate != null && x.PlanedDeliveryDate.Value.Date == pdd.Date);
+    if (!string.IsNullOrWhiteSpace(checkInDate) && DateTime.TryParse(checkInDate, out var cid))
+        qr = qr.Where(x => x.CheckInDate != null && x.CheckInDate.Value.Date == cid.Date);
+
+    // Bảng chân trị 7 nhánh của nguồn, chép NGUYÊN VĂN (FlagPause 1 = đang chạy, 0 = tạm dừng).
+    // #1216 SUA BUG THAT: cung ho #1213/#1215 — RepairOrder.Status luu chuoi tieng Anh, khong phai ma nguon tho.
+    var waiting = new[] { "CheckEnd", "Repaired", "Paid" };
+    if (f1 && !f2 && !f3) qr = qr.Where(x => x.Status == "InGarage" && x.FlagPause == "1");
+    else if (!f1 && f2 && !f3) qr = qr.Where(x => waiting.Contains(x.Status));
+    else if (!f1 && !f2 && f3) qr = qr.Where(x => x.Status == "InGarage" && x.FlagPause == "0");
+    else if (f1 && f2 && !f3) qr = qr.Where(x => (x.Status == "InGarage" && x.FlagPause == "1") || waiting.Contains(x.Status));
+    else if (f1 && !f2 && f3) qr = qr.Where(x => x.Status == "InGarage");
+    else if (!f1 && f2 && f3) qr = qr.Where(x => waiting.Contains(x.Status) || (x.Status == "InGarage" && x.FlagPause == "0"));
+    else if (f1 && f2 && f3) qr = qr.Where(x => x.Status == "InGarage" || waiting.Contains(x.Status));
+    // else: tổ hợp 0-0-0 — nguồn KHÔNG có nhánh nên không lọc gì. Port giữ 1:1 và nêu cờ.
+
+    // #415: nguồn cắt TOP 500 TRƯỚC khi sắp (ORDER BY trên SELECT … INTO vô nghĩa). Port sắp trước rồi cắt.
+    var capped = await qr.OrderByDescending(x => x.PlanedDeliveryDate).Take(500)
+        .Select(x => new { x.RONo, x.DealerCode, x.Status, x.FlagPause, x.PlanedDeliveryDate,
+                           x.CheckInDate, x.CusName, x.CusID, x.CarID, plateNo = x.LicensePlate, frameNo = x.Vin }).ToListAsync();
+    var totalUncapped = await qr.CountAsync();
+
+    // inner join ser_Customer + ser_car (bộ ba CarID/CusID/DealerCode) ⇒ lệnh không khớp BIẾN MẤT (#410).
+    var cusIds = capped.Select(x => x.CusID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var carIds = capped.Select(x => x.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var cus = await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && cusIds.Contains(c.CusCode)).ToListAsync();
+    var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.CarID)).ToListAsync();
+    var modelCodes = cars.Select(c => c.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var models = await db.ServiceModels.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode)).ToListAsync();
+    var tmCodes = cars.Select(c => c.TradeMark).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var tms = await db.ServiceTradeMarks.Where(m => m.OrgId == t.OrgId && tmCodes.Contains(m.TradeMarkCode)).ToListAsync();
+
+    var joined = capped.Where(x =>
+        x.CusID != null && cus.Any(c => c.CusCode == x.CusID && c.DealerCode == x.DealerCode) &&
+        x.CarID != null && cars.Any(c => c.CarID == x.CarID && c.CusID == x.CusID && c.DealerCode == x.DealerCode)).ToList();
+    var droppedByCustomerCarJoin = capped.Count - joined.Count;
+
+    string StatusName(string st) => st switch
+    {
+        "CRE" or "PRT" or "HRO" => "Chờ sửa",
+        "INGA" => "Đang sửa",
+        "RPRD" => "Sửa xong",
+        "CEND" => "Kiểm tra cuối cùng",
+        "PAID" => "Thanh toán xong",
+        "FNS" => "Đã giao xe",
+        _ => "Không xác định",
+    };
+
+    var skip = recordStart is > 0 ? recordStart!.Value : 0;
+    var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 500;
+    // Nguồn đánh số ASC rồi hiển thị DESC ⇒ trang không liền mạch. Port đánh số CÙNG CHIỀU hiển thị.
+    var rows = joined.Skip(skip).Take(take).Select(x =>
+    {
+        var car = cars.FirstOrDefault(c => c.CarID == x.CarID);
+        var c = cus.FirstOrDefault(z => z.CusCode == x.CusID);
+        var mdl = car?.ModelCode == null ? null : models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
+        var tm = car?.TradeMark == null ? null : tms.FirstOrDefault(m => m.TradeMarkCode == car.TradeMark);
+        return new
+        {
+            x.RONo, roNoDisplay = "BG-" + x.RONo, x.DealerCode,
+            statusCode = x.Status, statusName = StatusName(x.Status),
+            x.FlagPause, x.PlanedDeliveryDate, x.CheckInDate,
+            tmpCheckInDate = x.CheckInDate?.ToString("yyyy-MM-dd"),
+            cusName = c?.CusName ?? x.CusName, plateNo = x.plateNo, frameNo = x.frameNo,
+            modelName = mdl?.ModelName, tradeMarkName = tm?.TradeMarkName,
+            tradeMarkNameModel = (tm?.TradeMarkName ?? "") + " - " + (mdl?.ModelName ?? ""),
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count, rows,
+        myCountAsSourceWouldReport = joined.Count,   // nguồn đếm SAU khi cắt TOP 500
+        totalUncapped,
+        droppedByCustomerCarJoin,
+        // ===== #1564 =====
+        twinOf682 = "ban sinh doi cua #682 (…_ForStatusRealTime_WH_New20230220); DIFF: ban nay doc _dbDealer (khong phai _dbWH), select ro.* (khong liet ke cot), co them loc PlanedDeliveryDate/Status/DealerCode, va loc strQuotationNoList (ban _WH la strRONo)",
+        allThreeUncheckedShowsEverything = "BANG CHAN TRI THIEU TO HOP 0-0-0 => khong loc trang thai gi => bo tick ca ba o thi man hien MOI lenh, ke ca REJ va FNS",
+        noFilterBecauseAllUnchecked = !f1 && !f2 && !f3,
+        flagPauseMeansOppositeOfItsName = "FlagPause = 1 nghia la DANG CHAY, = 0 nghia la DANG TAM DUNG (7/7 nhanh nhat quan). Chep NGUYEN VAN",
+        pagingRunsOppositeToDisplayOrder = "nguon danh so ASC (Row_Number over order by PlanedDeliveryDate asc) nhung luoi hien DESC => trang 2 khong noi tiep trang 1. Port danh so CUNG CHIEU hien thi",
+        top500BeforeOrderBy = "TOP 500 dinh #415: ORDER BY nam tren SELECT … INTO nen KHONG co hieu luc => 500 dong BAT KY roi moi danh so/phan trang",
+        pagingActuallyRunsHere = "AM TINH: khac #626, phan trang o day CO chay that (ro.MyRowIdx >= @MyRowIdx_Start and <= @MyRowIdx_End)",
+        myCountIsCappedAt500 = "Count(0) MyCount DEM SAU KHI DA CAT TOP 500 => tong toi da 500, khong phai tong that. Port tra ca totalUncapped",
+        oneDateParamBoundToTwoColumnsOfDifferentTypes = "strCheckInDate dung HAI LAN: BuildClause(ro.CheckInDate) o K1 (datetime) VA BuildClause(tpro.tmpCheckInDate) o K3 (chuoi yyyy-MM-dd) => dieu kien bi ap HAI LAN",
+        repeatsTwoBugsFrom679 = "(a) car.FrameNo/car.PlateNo cam vao K1 ma K1 chi co FROM ser_ro ro => alias car KHONG TON TAI; (b) Replace(BG-, rong) bo sot tien to LS-",
+        innerJoinDropsRows = "inner join ser_Customer + ser_car theo bo ba (CarID, CusID, DealerCode) => lenh khong khop BIEN MAT (#410). Port dem droppedByCustomerCarJoin",
+    });
+}).RequireAuthorization();
 // (`BizCarSv.Report.Special.Warranty.cs:3801-3944`, md5 `43760db3` **KHỚP** máy 150.
 //  WS `WSCarSv.asmx.cs:28493` gọi thẳng — không hậu tố, không vỏ bọc.)
 //
