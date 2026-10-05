@@ -70229,7 +70229,14 @@ app.MapPost("/api/carcolorchanges", async (List<CarColorChangeDto> dto, AppDbCon
     });
 }).RequireAuthorization();
 
-// ===== Hợp đồng nguyên tắc (PrincipleContract — port 1:1 FrmPrincipleContractNew/Mng, 2010.HTC/Sales) =====
+// #5676 — Hợp đồng nguyên tắc (PrincipleContract — port 1:1 FrmPrincipleContractNew (Views/Sales, tạo
+// hàng loạt qua Excel) + FrmPrincipleContract (Views/Admin/Dealer, "Mng": lưới đầy đủ CRUD+import)).
+// 2 WinForm khác thư mục nhưng CÙNG thao tác trên 1 bảng (`Rpt_PrincipleContract`). Route create/list/
+// sign-workflow (NPPApprove/DlrApprove1/DlrApprove2, xem dưới) đã port đủ, có guard thật (§B341-343).
+// 🔴 Gap tìm thấy: "Mng" cho XOÁ + SỬA trường gốc qua `SaveMasterDataTable`→`CommonSaveMasterData_New
+// 20181119` (`Biz.HTC.WH.cs:152`) — guard DUY NHẤT là `myCommon_CheckHTCDirect(Active)`, không có guard
+// nghiệp vụ nào khác (cơ chế lưu bảng-master DÙNG CHUNG cho ~40 màn Admin khác, không riêng cho HĐ
+// nguyên tắc) — port cũ thiếu cả xoá lẫn sửa trường gốc. Đã thêm, theo đúng guard RBAC `flagDirect`.
 app.MapGet("/api/principlecontracts", async (AppDbContext db, ITenantContext t, string? dealer) =>
 {
     var q = db.PrincipleContracts.Where(p => p.OrgId == t.OrgId);
@@ -70261,6 +70268,38 @@ app.MapPost("/api/principlecontracts", async (PrincipleContractDto dto, AppDbCon
     };
     db.PrincipleContracts.Add(p); await db.SaveChangesAsync();
     return Results.Ok(new { p.PrincipleContractNo, p.DealerCode });
+}).RequireAuthorization();
+
+// #5676 — Sửa trường gốc (Mng — "DealerCode" KHÔNG sửa được, nguồn khoá cột này trong
+// `_lstColNotAllowEdit`). Guard `flagDirect` theo `myCommon_CheckHTCDirect` của `CommonSaveMasterData`.
+app.MapPost("/api/principlecontracts/{no}/edit", async (string no, PrincipleContractEditDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
+{
+    if (flagDirect == "0") return Results.BadRequest(new { error = "CommonAppData_HTCDirectInvalid" });
+    var p = await db.PrincipleContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PrincipleContractNo == no.Trim());
+    if (p is null) return Results.NotFound(new { no });
+    if (string.IsNullOrWhiteSpace(dto.BankInfo)) return Results.BadRequest(new { error = "Thông tin ngân hàng không được để trống." });
+    if (dto.PrincipleContractDate is null) return Results.BadRequest(new { error = "Ngày HĐ nguyên tắc không được để trống." });
+    if (dto.PrincipleContractExpectedDate is null) return Results.BadRequest(new { error = "Ngày kết thúc HĐ không được để trống." });
+    if (dto.PrincipleContractDate > dto.PrincipleContractExpectedDate) return Results.BadRequest(new { error = "Ngày HĐ không được lớn hơn ngày kết thúc HĐ." });
+    if (string.IsNullOrWhiteSpace(dto.Representative)) return Results.BadRequest(new { error = "Người đại diện không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.JobTitle)) return Results.BadRequest(new { error = "Chức danh không được để trống." });
+    p.BankInfo = dto.BankInfo.Trim(); p.PrincipleContractDate = dto.PrincipleContractDate.Value;
+    p.PrincipleContractExpectedDate = dto.PrincipleContractExpectedDate.Value;
+    p.Representative = dto.Representative.Trim(); p.JobTitle = dto.JobTitle.Trim();
+    p.LogLUDateTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PrincipleContractNo, p.BankInfo, p.Representative, p.JobTitle });
+}).RequireAuthorization();
+
+// #5676 — Xoá (Mng). Guard `flagDirect` — cơ chế lưu bảng-master nguồn không có guard nghiệp vụ khác.
+app.MapPost("/api/principlecontracts/{no}/delete", async (string no, AppDbContext db, ITenantContext t, string? flagDirect) =>
+{
+    if (flagDirect == "0") return Results.BadRequest(new { error = "CommonAppData_HTCDirectInvalid" });
+    var p = await db.PrincipleContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PrincipleContractNo == no.Trim());
+    if (p is null) return Results.NotFound(new { no });
+    db.PrincipleContracts.Remove(p);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
 
@@ -111246,6 +111285,7 @@ record TestCarRegisterCarDto(string VIN, string? ModelCode);
 record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractApproveDto(string PrincipleContractNo, string? PartnerUserCode = null, string? FilePath = null);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle, string? DealerSignStatus = null, DateTime? DealerSignDTime = null, string? DealerSignBy = null, string? NPPSignStatus = null, DateTime? NPPSignDTime = null, string? NPPSignBy = null, string? FlagActive = null, DateTime? CreateDTime = null, string? FilePath = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record PrincipleContractEditDto(string? BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string? Representative, string? JobTitle);
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email, string? FlagActive = null);
 record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email,
