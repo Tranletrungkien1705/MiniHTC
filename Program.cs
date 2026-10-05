@@ -20931,6 +20931,28 @@ app.MapPost("/api/mngquotas/upd-multi", async (MngQuotaUpdDto dto, AppDbContext 
     return Results.Ok(new { version, changed, missing });
 }).RequireAuthorization();
 
+// ===== #5724 SỔ ĐĂNG KÝ FILE BÁO CÁO THÁNG — `FrmMng_ReportData_Month` (2010.HTC, CHUA_CO) =====
+// Nguồn: `ReportService.Mng_ReportData_Month_Get(rptMonth, rptName)` → WS → biz
+//   `Mng_ReportData_Month_Get` (`BizHTC.Report.cs:39383`) → helper `_GetX` (`:39506`, phân trang chuẩn
+//   `MyIdxSeq`, KHÔNG guard, KHÔNG join — chỉ 1 bảng `Mng_ReportData_Month`, 5 cột thật: `AutoID`/
+//   `RptMonth`/`RptName`/`FilePath`/`FilePathDtl`). Nguồn CHỈ có `_Get` (grep toàn WS/biz: 0 hit
+//   `_Create`/`_Update`/`_Delete`) — file Excel do JOB NGOÀI sinh sẵn rồi ghi đường dẫn vào bảng này;
+//   màn chỉ tra cứu + tải file đã có, KHÔNG bịa lệnh ghi.
+// 📌 §12: entity `MngReportDataMonth` mới (bảng chưa từng có) — đủ 5 cột nguồn.
+app.MapGet("/api/mngreportdatamonth", async (AppDbContext db, ITenantContext t, string? rptMonth, string? rptName) =>
+{
+    var q = db.MngReportDataMonths.Where(x => x.OrgId == t.OrgId);
+    // Nguồn khớp CHÍNH XÁC (AddWhereClause "="), không phải LIKE.
+    // So sanh theo KHOANG trong ngay (khong dung == truc tiep) - EF Core/SQLite luu DateTime dang TEXT,
+    // == so sanh CHUOI TUYET DOI nen lech sai so phan-giay se khop-nham-that; khoang ngay thi khong bi anh huong.
+    if (!string.IsNullOrWhiteSpace(rptMonth) && DateTime.TryParse(rptMonth, out var rm))
+    { var rmNext = rm.Date.AddDays(1); q = q.Where(x => x.RptMonth >= rm.Date && x.RptMonth < rmNext); }
+    if (!string.IsNullOrWhiteSpace(rptName)) q = q.Where(x => x.RptName == rptName);
+    var items = await q.OrderBy(x => x.AutoID).Take(2000)
+        .Select(x => new { x.AutoID, x.RptMonth, x.RptName, x.FilePath, x.FilePathDtl }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 // ===== #B193 XOÁ HẠN MỨC KHUYẾN MÃI HÀNG LOẠT — `Mst_Quota_DelMulti` → `Mst_Quota_DelMultiX_New20220406`
 //       (`DMS40/0.01.Master.cs`) =====
 // Cửa public `:5251` là **vỏ** gọi thân thật `Mst_Quota_DelMultiX_New20220406` `:4916`.

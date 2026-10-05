@@ -18777,3 +18777,20 @@ public sealed class SuggestPriceDtl
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>
+/// #5724 — Sổ đăng ký file báo cáo tháng SINH SẴN bởi job (`Mng_ReportData_Month`) — port 1:1
+/// `FrmMng_ReportData_Month`. Bảng CHỈ 5 cột thật (`AutoID`/`RptMonth`/`RptName`/`FilePath`/`FilePathDtl`),
+/// KHÔNG join, KHÔNG guard — nguồn CHỈ có `_Get` (không `_Create`/`_Update`/`_Delete` nào), file Excel do
+/// batch job bên ngoài sinh ra rồi ghi đường dẫn vào đây; màn chỉ TRA CỨU + tải file đã có — không bịa lệnh ghi.
+/// </summary>
+public sealed class MngReportDataMonth
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long AutoID { get; set; }
+    public DateTime? RptMonth { get; set; }
+    public string RptName { get; set; } = "";
+    public string? FilePath { get; set; }
+    public string? FilePathDtl { get; set; }
+}
