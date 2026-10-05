@@ -34200,6 +34200,49 @@ app.MapGet("/api/tstexchangeunits", async (AppDbContext db, ITenantContext t, st
     var items = await qry.OrderBy(x => x.TSTPartCode).Take(500).Select(x => new { x.Id, x.TSTPartCode, x.VieName, x.TSTUnit, x.DMSUnit, x.ExchangeRate, x.FlagActive, x.UpdatedAt, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1342 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
+// ===== 🔴 #1582 `TST_Mst_Exchange_Unit_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:34189`) — BẢN PHÂN TRANG =====
+// Nguồn `BizCarSv.Service.cs:17925` — `select distinct identity(bigint,0,1) MyIdxSeq, t.TSTPartCode into #tbl_..._Draft
+//   from TST_Mst_Exchange_Unit t where(1=1) zzzzClauseWhere_strTSTPartCodeList order by t.TSTPartCode desc;
+//   select Count(0) MyCount from #...; select t.MyIdxSeq, f.* from #..._Filter t inner join TST_Mst_Exchange_Unit f on t.TSTPartCode = f.TSTPartCode`.
+// ⚠️ Route `/api/tstexchangeunits` (GET) chỉ lọc `q`/`all` — KHÔNG có phân trang `strFt_RecordStart`/`strFt_RecordCount`
+//   và KHÔNG có bộ lọc danh sách `strTSTPartCodeList` (phân tách '|') ⇒ đây là GAP thật (WebMethod không dấu vết).
+// Hành vi port 1:1: (1) `strTSTPartCodeList` là DANH SÁCH '|' qua `SqlUtils.BuildClause("and", "t.TSTPartCode", <list>, "@p")`;
+//   danh sách rỗng => BỎ HẲN mệnh đề => trả TRỌN danh mục; (2) `Convert.ToInt64(strFt_RecordStart)` KHÔNG guard rỗng
+//   => FormatException (họ #626/#627) — port trả 400 thay vì nổ; (3) `order by` nằm trên `SELECT ... INTO` chỉ ảnh hưởng
+//   cách ĐÁNH SỐ identity, KHÔNG quyết định thứ tự trả về (#415) — câu kết quả KHÔNG có ORDER BY => port sắp tường minh
+//   theo TSTPartCode; (4) `MyIdxSeq` cắt trang `[nFilterRecordStart, nFilterRecordStart+nFilterRecordCount-1]`;
+//   (5) `Count(0)` trên bảng DISTINCT(TSTPartCode) => đếm mã phân biệt.
+// 📌 §12: entity `TstExchangeUnit` đã đủ cột (`f.*` = cả bảng) — không thêm field mới.
+// 3B: hai cây nguồn — thân hàm `TST_Mst_Exchange_Unit_Get` md5 KHỚP (126d39a5).
+app.MapGet("/api/tstexchangeunits/get", async (AppDbContext db, ITenantContext t,
+    string? ftRecordStart, string? ftRecordCount, string? tstPartCodeList) =>
+{
+    // Convert.ToInt64(strFt_RecordStart) KHÔNG guard rỗng => FormatException (họ #626/#627).
+    if (string.IsNullOrWhiteSpace(ftRecordStart) || !long.TryParse(ftRecordStart, out var nFilterRecordStart))
+        return Results.BadRequest(new { error = "Tham số ftRecordStart không hợp lệ (nguồn Convert.ToInt64 ném FormatException khi rỗng).", ftRecordStart });
+    if (string.IsNullOrWhiteSpace(ftRecordCount) || !long.TryParse(ftRecordCount, out var nFilterRecordCount))
+        return Results.BadRequest(new { error = "Tham số ftRecordCount không hợp lệ (nguồn Convert.ToInt64 ném FormatException khi rỗng).", ftRecordCount });
+    var nFilterRecordEnd = nFilterRecordStart + nFilterRecordCount - 1;
+    var qry = db.TstExchangeUnits.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "t.TSTPartCode", strTSTPartCodeList, "@p") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(tstPartCodeList))
+    {
+        var codes = tstPartCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => codes.Contains(x.TSTPartCode));
+    }
+    // Count(0) trên bảng DISTINCT(TSTPartCode) => đếm mã phân biệt.
+    var myCount = await qry.Select(x => x.TSTPartCode).Distinct().CountAsync();
+    // MyIdxSeq đánh số 0..n-1 theo thứ tự identity; cắt trang [start, end].
+    var page = await qry.OrderBy(x => x.TSTPartCode)
+        .Skip((int)nFilterRecordStart).Take((int)nFilterRecordCount)
+        .Select(x => new { x.Id, x.TSTPartCode, x.VieName, x.TSTUnit, x.DMSUnit, x.ExchangeRate, x.FlagActive, x.UpdatedAt, x.LogLUDateTime, x.LogLUBy })
+        .ToListAsync();
+    return Results.Ok(new { myCount, count = page.Count, items = page,
+        onlyLiveConfirmed1582 = "#1582: TST_Mst_Exchange_Unit_Get — BizCarSv.Service.cs:17925, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:34189",
+        echoAllColumnsFromStar = "#1582: nguon SELECT f.* => moi cot TST_Mst_Exchange_Unit phai co o GET (bai hoc #539)",
+        orderByOnSelectInto = "#415: order by nam tren SELECT ... INTO chi anh huong cach danh so identity, KHONG quyet dinh thu tu tra ve; cau ket qua KHONG co ORDER BY => port sap tuong minh theo TSTPartCode",
+        twoTreesMatch = "3B: than ham TST_Mst_Exchange_Unit_Get md5 KHOP giua V20 va V20.2023.Release (126d39a5)" });
+}).RequireAuthorization();
 
 app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
