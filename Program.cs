@@ -31067,8 +31067,59 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
 {
     var h = await db.ServicePackages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
-    var svcs = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Amount, x.ActManHour, x.VAT, x.Note, x.ExpenseType, x.ROType, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
-    var parts = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).Select(x => new { x.PartCode, x.PartName, x.Price, x.Factor, x.Amount, x.Quantity, x.VAT, x.Note, x.ExpenseType, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    // ===== 🔴 #551 HAI BỘ GIÁ SONG SONG — nguồn `SerServicePackageGetSearchCreateRO`
+    // (`BizCarSv.ServicePackage.cs:1707` phần/`:1758` dịch vụ). Port cũ chỉ trả giá CHỐT trên gói
+    // (Price/Amount) — thiếu bộ giá HIỆN HÀNH trong danh mục (NewPrice/NewVAT/NewAmount) để màn tạo
+    // lệnh sửa chữa từ gói cho người dùng thấy chênh lệch giá từ lúc lập gói đến hôm nay.
+    var svcRows551 = await db.ServicePackageServices.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).ToListAsync();
+    var svcCodes551 = svcRows551.Select(x => x.SerCode).ToList();
+    var svcMaster551 = (await db.ServiceItemMsts.Where(m => m.OrgId == t.OrgId && svcCodes551.Contains(m.SerCode))
+        .Select(m => new { m.SerCode, m.Price, m.Vat, m.StdManHour, m.FlagWarranty }).ToListAsync())
+        .GroupBy(m => m.SerCode).ToDictionary(g => g.Key, g => g.First());
+    var svcs = svcRows551.Select(x =>
+    {
+        svcMaster551.TryGetValue(x.SerCode, out var m);
+        return new
+        {
+            x.SerCode, x.SerName, x.Price, x.Factor, x.Amount, x.ActManHour, x.VAT, x.Note, x.ExpenseType, x.ROType, x.LogLUDateTime, x.LogLUBy,
+            StdManHour = m?.StdManHour, NewPrice = m?.Price, NewVAT = m?.Vat,
+            NewAmount = m is null ? (decimal?)null : x.Factor * m.Price,
+            FlagWarranty = m?.FlagWarranty,
+            PriceChanged = m is not null && m.Price != x.Price,
+            // Ba cột nguồn ghi HẰNG SỐ CỨNG (không đọc từ đâu) — giữ để khớp hình dạng khi tạo RO từ gói.
+            WarrantyStatus = "", InsurancePrice = 0.0m, CamID = "",
+        };
+    }).ToList();
+
+    var partRows551 = await db.ServicePackageParts.Where(x => x.OrgId == t.OrgId && x.ServicePackageId == id).ToListAsync();
+    var partCodes551 = partRows551.Select(x => x.PartCode).ToList();
+    var partMaster551 = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId && partCodes551.Contains(p.PartCode))
+        .Select(p => new { p.PartCode, p.PartID, p.Price, p.VAT, p.FlagInTST }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var today551 = DateTime.Now.Date;
+    var prices551 = await db.PartPrices.Where(p => p.OrgId == t.OrgId && partCodes551.Contains(p.PartCode)
+            && p.EffectiveDate <= today551 && p.IsActive == "1")
+        .Select(p => new { p.Id, p.PartCode, p.Price, p.PriceVAT, p.EffectiveDate }).ToListAsync();
+    var stock551 = await db.PartStocks.Where(s => s.OrgId == t.OrgId && partCodes551.Contains(s.PartCode))
+        .GroupBy(s => s.PartCode).Select(g => new { PartCode = g.Key, OnHand = g.Sum(x => x.OnHand) }).ToListAsync();
+    var parts = partRows551.Select(x =>
+    {
+        partMaster551.TryGetValue(x.PartCode, out var p);
+        var eff = prices551.Where(e => e.PartCode == x.PartCode)
+            .OrderByDescending(e => e.EffectiveDate).ThenByDescending(e => e.Id).FirstOrDefault();
+        var newPrice551 = eff?.Price ?? p?.Price;
+        return new
+        {
+            x.PartCode, x.PartName, x.Price, x.Factor, x.Amount, x.Quantity, x.VAT, x.Note, x.ExpenseType, x.LogLUDateTime, x.LogLUBy,
+            NewVAT = p?.VAT, NewPrice = newPrice551,
+            NewAmount = newPrice551 is null ? (decimal?)null : x.Factor * newPrice551 * x.Quantity,
+            PartPriceId = eff?.Id, FlagInTST = p?.FlagInTST,
+            InventoryQuantity = stock551.FirstOrDefault(s => s.PartCode == x.PartCode)?.OnHand ?? 0m,
+            PriceChanged = newPrice551 is not null && newPrice551 != x.Price,
+            WarrantyStatus = "", InsurancePrice = 0.0m, CamID = "",
+        };
+    }).ToList();
+
     return Results.Ok(new { h.Id, h.ServicePackageNo, h.ServicePackageName, h.DealerCode, h.TakingTime, h.Description, h.Creator,
         h.CreatedDate, h.CreatedBy, h.IsPublicFlag, h.IsUserBasePrice, h.LogLUDateTime, h.LogLUBy,
         h.ServiceTotal, h.PartTotal, h.GrandTotal, services = svcs, parts });
