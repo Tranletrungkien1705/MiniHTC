@@ -1241,7 +1241,10 @@ app.MapPost("/api/testdrives/{code}/{action}", async (string code, string action
     return Results.Ok(new { x.Code, status = x.Status });
 }).RequireAuthorization();
 
-// ===== Yêu cầu bảo hành dịch vụ TCMotor (port 1:1 Warranty Claim) =====
+// ===== Yêu cầu bảo hành dịch vụ TCMotor (port 1:1 Warranty Claim) ===== #4512
+// 🔴 Đã audit: KHÔNG tìm thấy màn WinForm/biz nguồn cụ thể nào khớp tên/entity này ở cả
+//    2010.HTC/50.Source lẫn 2021.1.TCMotor — comment nguồn mơ hồ, không trích hàm/dòng.
+//    Kết luận: tính năng tự phát sinh của MiniHTC (không phải port 1:1), ngoài phạm vi audit source.
 app.MapGet("/api/wclaims", async (AppDbContext db, ITenantContext t, string? status) =>
 {
     var q = db.WarrantyClaims.Where(c => c.OrgId == t.OrgId);
@@ -12225,7 +12228,7 @@ app.MapPost("/api/tcginvoices/detail-delete", async (TcgInvoiceDetailKeyDto dto,
 
 // ===== Hợp đồng ngoại (CT_ContractOversea) · L/C (CT_LC) · Proforma Invoice
 // (Ord_PerformanceInvoice + Detail) — port 1:1 `ContractContractOverseaCreate`(32211)/`Delete`(32497),
-// `ContractLCCreate`(33077)/`Delete`(33273), 2010.HTC Biz.HTC.WH.cs.
+// `ContractLCCreate`(33077)/`Delete`(33273), 2010.HTC Biz.HTC.WH.cs. #4409
 // TWIN: cả WS 32-bit lẫn 64-bit CÙNG bản `_New20181119`. =====
 // 🔴 Bảng hợp đồng ngoại chỉ có 3 cột nghiệp vụ — nội dung thật nằm ở `Ord_PerformanceInvoiceDetail`.
 //    MỘT lệnh Create ghi CẢ HAI bảng và **gán `ContractNo` xuống từng dòng PI** (dòng 32485-32486)
@@ -12297,7 +12300,7 @@ app.MapPost("/api/contractoverseas/delete", async (CtContractOverseaKeyDto dto, 
     return Results.Ok(new { deleted = no, piLinesUnlinked = lines.Count });
 }).RequireAuthorization();
 
-// ⚠️ Route là `/api/ctlcs`, KHÔNG phải `/api/lcs`: `/api/lcs` đã thuộc L/C của DMSales.Foton
+// #4409 — ⚠️ Route là `/api/ctlcs`, KHÔNG phải `/api/lcs`: `/api/lcs` đã thuộc L/C của DMSales.Foton
 //    (entity `LettersOfCredit`, ~dòng 21400) — BẢNG KHÁC HẲN với `CT_LC` của 2010.HTC, không được gộp.
 app.MapGet("/api/ctlcs", async (AppDbContext db, ITenantContext t, string? lcNo, string? contractNo) =>
 {
@@ -16477,7 +16480,9 @@ app.MapPost("/api/mktactivities/delete", async (MktActivityKeyDto dto, AppDbCont
 
 // ===== Hạn mức & thanh toán marketing theo năm/đại lý (Rpt_Marketing — port 1:1 cụm 5 hàm
 // Rpt_MarketingGet/Create/UpdateMulti/Update/Approve_New20181115, 2010.HTC BizHTC.Marketing.cs
-// 1617 / 1811 / 2182 / 2567 / 2822). TWIN: cả WS 32-bit lẫn 64-bit gọi cùng bản _New20181115. =====
+// 1617 / 1811 / 2182 / 2567 / 2822). TWIN: cả WS 32-bit lẫn 64-bit gọi cùng bản _New20181115. #4578
+// Re-verify: WSHTC.cs:30665 + WSHTC.asmx.cs:42297 cùng dispatch Rpt_MarketingUpdateMulti_New20181115;
+// BizHTC.Marketing.cs:2182 khớp đúng chữ ký (objMKTYear, DSData) — xác nhận lại citation chính xác. =====
 // 🔴 RptStatus theo TConst.Stage: tạo = "P", duyệt = "A".
 // 🔴 DUYỆT THEO NĂM, không theo đại lý: nguồn chạy `where MKTYear = @strMKTYear` — một phát cả năm.
 // 🔴 UpdateMulti = XOÁ TRẮNG cả năm rồi INSERT lại (không sửa từng dòng); dòng mới về "P".
@@ -16870,7 +16875,9 @@ app.MapPost("/api/planretails/{id}/{action}", async (long id, string action, App
     return Results.Ok(new { h.Id, status = h.PRStatus });
 }).RequireAuthorization();
 
-// Tra LỊCH SỬ đẩy SBH online (`Rpt_PushSBHOnline_History`).
+// Tra LỊCH SỬ đẩy SBH online (`Rpt_PushSBHOnline_History`). #4697
+// Re-verify: SBHOnline_HistoryCreate/Rpt_PushSBHOnline_History tồn tại thật trong
+// TERP.BizHTC/DataWH/Biz.HTC.WH.cs + BizHTC.DealerSales.cs — khớp citation ở 2 điểm ghi (dòng dưới).
 app.MapGet("/api/sbhonline/push-history", async (AppDbContext db, ITenantContext t, string? vin, string? dealNo) =>
 {
     var qy = db.SbhOnlinePushHistories.Where(h => h.OrgId == t.OrgId);
@@ -39152,9 +39159,9 @@ app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDb
     });
 }).RequireAuthorization();
 
-// ===== Huỷ / phục hồi xe hàng loạt (CarActiveStatus — port 1:1 FrmCapNhatTTHuyXe, 2010.HTC Views/Sales) =====
+// ===== Huỷ / phục hồi xe hàng loạt (CarActiveStatus — port 1:1 FrmCapNhatTTHuyXe, 2010.HTC Views/Sales) ===== #4631
 // TWIN đã trace: SalesService.Car_Car_UpdSpecial_HuyXe / _PhucHoi
-//   → biz Car_Car_UpdSpecial_HuyXeX / Car_Car_UpdSpecial_PhucHoiX (TERP.BizHTC/DataWH/Biz.HTC.WH.cs).
+//   → biz Car_Car_UpdSpecial_HuyXeX (Biz.HTC.WH.cs:60697) / Car_Car_UpdSpecial_PhucHoiX (:60485) — re-verify khớp.
 // Form nhập Excel đúng MỘT cột mã xe (header dòng 2), rồi bấm "Hủy xe" hoặc "Active xe" cho cả lô.
 
 /// <summary>Chuẩn hoá + kiểm danh sách mã xe của lô: bắt buộc nhập, không trùng (đúng thứ tự kiểm của form).</summary>
