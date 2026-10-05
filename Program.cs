@@ -71144,7 +71144,12 @@ app.MapGet("/api/reports/hrsalesman-typearea", async (
         areaFilterViaTempTableNote = "TypeArea loc vung DI VONG QUA BANG TAM: #tbl_Mst_Area_Filter (t.AreaCode = '@strAreaCode') -> #tbl_Mst_Area (t.AreaBUPattern like f.AreaBUPattern) -> inner join #tbl_Mst_Area tma on mp.AreaCode = tma.AreaCode; dong truc tiep '--and ma.AreaCode = @strAreaCode' BI COMMENT => dung luat C0-...quadragesimusnonus (CO BAN DUNG LAI => KHONG phai lo). [BAKE-PARAM-MIX]: '@strAreaCode' nuong trong nhay.",
         rbacNote = "RBAC to hop (1) o CA HAI: myCommon_CheckHTCDirect(...) ACTIVE, KHONG bi comment => CO CONG => KHONG phai lo (du @strBUPatternOfUser bind ma SQL khong dung). Da grep DU SAU TRUC: chi hai hit la cong + dong bind => ket luan vung.",
         twinTableShapeNote = "HAI TWIN LECH SO BANG VA LECH CA TEN: TypeArea -> 3 bang (Rpt_HR_SalesMan_ForMonth / _ForQuy / _ForYear); TypeDealer -> 2 bang (Rpt_HR_SalesMan_TypeDealerMaster / Rpt_HR_SalesMan_TypeDealer_Month). HOP DONG API KHAC HAN NHAU du la 'cap sinh doi' - cung khuon #B368/#B369. Them: md.FlagActive = '1' xuat hien 3 LAN o TypeArea nhung chi 2 LAN o TypeDealer => mot cau cua TypeDealer KHONG loc dai ly con hoat dong => them mot nguon lech so.",
-        debtNote = "NO - KHONG DOAN: HR_SalesManOfMonth / HR_SalesManOfMonthDtl + Mst_Area/AreaBUPattern chua co trong MiniHTC => tra khung + co."
+        // #5752: HR_SalesManOfMonth/Dtl DA CO (tu #141, xem sibling /hrsalesman-typedealer da port o #5750)
+        // — phan do cua debtNote cu da STALE, sua lai cho dung. Chan con lai DUY NHAT: Mst_Area (Mini)
+        // KHONG co cot AreaBUPattern (xac nhan grep 0 hit) nen KHONG the dung nguyen co che "mo rong vung
+        // con qua LIKE AreaBUPattern" cua nguon — them cot nay can hieu format pattern that + ra soat
+        // write-path FrmArea (man quan tri Mst_Area) truoc, chua lam trong fire nay.
+        debtNote = "NO - KHONG DOAN: Mst_Area (Mini) chua co cot AreaBUPattern => khong dung duoc co che mo rong vung con cua nguon; HR_SalesManOfMonth/Dtl DA CO tu #141 (khong con la ly do chan)."
     });
 }).RequireAuthorization();
 
