@@ -6142,6 +6142,17 @@ public sealed class InsuranceAttachment
     /// riêng cho TỪNG dòng tài liệu đã tích chọn (khác `InsuranceAttachmentType.Note` là mô tả LOẠI tài
     /// liệu) — port cũ thiếu hẳn cột này, mất ghi chú người dùng nhập khi tích chọn.</summary>
     public string? Note { get; set; }
+    // #1558 §12 - 5 cot nguon (Ser_InsuranceAttachment) - port 1:1.
+    // Nguon InsertInsuranceAttachment (BizCarSv.Service.cs:7628) ghi DealerCode/MstAttachmentID/CreatedBy/
+    // LogLUDateTime/LogLUBy (CreatedDate da map sang CreatedAt quy uoc Mini).
+    /// <summary>`DealerCode` — đại lý sở hữu dòng tài liệu (nguồn ghi từ tham số `strDealerCode`).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>`MstAttachmentID` — khoá về danh mục loại tài liệu (`Ser_MST_Attachment`).</summary>
+    public long? MstAttachmentID { get; set; }
+    /// <summary>`CreatedBy` — người tạo dòng (nguồn: `strPartnerUserCode`).</summary>
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

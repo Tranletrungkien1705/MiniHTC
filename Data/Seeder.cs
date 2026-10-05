@@ -3946,6 +3946,12 @@ public static class Seeder
                 "ALTER TABLE public.\"ServiceStockOuts\" ADD COLUMN IF NOT EXISTS \"TruckNo\" text NULL",
                 // #998: InsertInsuranceAttachment ghi Note rieng tung dong, port cu thieu cot nay.
                 "ALTER TABLE public.\"InsuranceAttachments\" ADD COLUMN IF NOT EXISTS \"Note\" text NULL",
+                // #1558 §12: 5 cot nguon Ser_InsuranceAttachment (DealerCode/MstAttachmentID/CreatedBy/LogLUDateTime/LogLUBy).
+                "ALTER TABLE public.\"InsuranceAttachments\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                "ALTER TABLE public.\"InsuranceAttachments\" ADD COLUMN IF NOT EXISTS \"MstAttachmentID\" bigint NULL",
+                "ALTER TABLE public.\"InsuranceAttachments\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"InsuranceAttachments\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"InsuranceAttachments\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
                 // #1000: SerEngineerCreate01/Update01 ghi rieng IsEngineer, khac Status(IsActive).
                 "ALTER TABLE public.\"ServiceEngineers\" ADD COLUMN IF NOT EXISTS \"IsEngineer\" text NULL",
                 // #1008: Ser_Insurance khoa trung theo (InsNo, DealerCode), khong phai InsNo toan cuc.
