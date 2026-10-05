@@ -32323,6 +32323,63 @@ app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, stri
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #1579 `Ser_Mst_FilePathVideo_Get` (LIVE, `Tab/BizCarSv.Tab.cs:1921`, WS `HTCWSCarSv/WSCarSv.asmx.cs:32938`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC `GET /api/filepathvideos` ở trên (port CRUD #1494,
+//   lọc đơn trị) — hàm này lọc theo **BA danh sách `|`** (`BuildClause`) và có cờ `strIsGet_Ser_Mst_FilePathVideo`.
+// Nguồn `Ser_Mst_FilePathVideo_GetX` (`Tab/BizCarSv.Tab.cs:1780`):
+//   `select distinct identity(bigint,0,1) MyIdxSeq, smfpv.FilePathVideoCode into #…_Draft from Ser_Mst_FilePathVideo smfpv
+//    where(1=1) <3 mệnh đề BuildClause> order by smfpv.FilePathVideoCode;`
+//   rồi `select Count(0) MyCount from #…_Draft` (bảng Summary) và (nếu bật cờ) `select t.MyIdxSeq, smfpv.* from
+//   #…_Filter t inner join Ser_Mst_FilePathVideo smfpv on t.FilePathVideoCode = smfpv.FilePathVideoCode`.
+// 🔴 HAI dòng phân trang (`t.MyIdxSeq >= @nFilterRecordStart` / `<= @nFilterRecordEnd`) bị COMMENT trong nguồn
+//   ⇒ MyIdxSeq chỉ để ĐÁNH SỐ, KHÔNG cắt trang (bài học #415).
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` KHÔNG guard rỗng ⇒ FormatException (họ #626/#627) — port nhận chuỗi,
+//   không tự parse (không có tham số phân trang thật).
+// 🔴 `bGet_Ser_Mst_FilePathVideo = (str != null && str.Length > 0)` — BẤT KỲ chuỗi khác rỗng đều BẬT khối chi tiết
+//   (không so `TConst.Flag.Yes`); chuỗi rỗng/null ⇒ chỉ trả bảng Summary.
+// 🔴 `order by` nằm trên `SELECT … INTO` ⇒ chỉ ảnh hưởng cách đánh số identity, KHÔNG quyết định thứ tự trả về
+//   (bài học #415); câu kết quả KHÔNG có ORDER BY ⇒ port sắp tường minh theo FilePathVideoCode.
+app.MapGet("/api/filepathvideos/get", async (AppDbContext db, ITenantContext t,
+    string? filePathVideoCodeList, string? filePathVideoNameList, string? flagActiveList, string? isGetDetail) =>
+{
+    var qry = db.FilePathVideos.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "smfpv.<col>", <list>, "@p") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(filePathVideoCodeList))
+    {
+        var v = filePathVideoCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.FilePathVideoCode));
+    }
+    if (!string.IsNullOrWhiteSpace(filePathVideoNameList))
+    {
+        var v = filePathVideoNameList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.FilePathVideoName != null && v.Contains(x.FilePathVideoName));
+    }
+    if (!string.IsNullOrWhiteSpace(flagActiveList))
+    {
+        var v = flagActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.FlagActive != null && v.Contains(x.FlagActive));
+    }
+    var all = await qry.OrderBy(x => x.FilePathVideoCode).ToListAsync();
+    // Nguồn: Count(0) trên bảng DISTINCT(FilePathVideoCode) ⇒ đếm mã phân biệt.
+    var distinctCodes = all.Select(x => x.FilePathVideoCode).Distinct().Count();
+    // bGet_Ser_Mst_FilePathVideo = (str != null && str.Length > 0) — bất kỳ chuỗi khác rỗng đều BẬT.
+    var getDetail = !string.IsNullOrEmpty(isGetDetail);
+    var items = getDetail
+        ? all.Select(x => (object)new { x.Id, x.FilePathVideoCode, x.IdxView, x.FilePathVideoName, x.FilePathVideo,
+            x.FilePathAvatar, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToList()
+        : new List<object>();
+    return Results.Ok(new
+    {
+        myCountAsSource = distinctCodes,   // nguồn: Count(0) trên bảng DISTINCT(FilePathVideoCode)
+        count = items.Count, items,
+        detailFlagNotFollowingConvention = "bGet_Ser_Mst_FilePathVideo = (str != null && str.Length > 0) — BAT KY chuoi khac rong cung bat khoi chi tiet (khong so TConst.Flag.Yes)",
+        pagingIsDisabled = "hai dong phan trang (MyIdxSeq >= @nFilterRecordStart / <= @nFilterRecordEnd) bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        orderByOnSelectIntoOnly = "order by smfpv.FilePathVideoCode nam tren SELECT ... INTO nen chi anh huong cach danh so identity, khong quyet dinh thu tu tra ve (#415); cau ket qua KHONG co ORDER BY — port sap tuong minh",
+        buildClauseNote = "BuildClause('and','smfpv.<col>',<list>,'@p'): cat theo '|', danh sach rong => BO HAN menh de (khong phai 'in ()')",
+    });
+}).RequireAuthorization();
+
 // `Ser_Mst_FilePathVideo_Add`: guard `FilePathVideoCode` rỗng ⇒ Raise; `CheckDB(Flag.No)` = mã PHẢI CHƯA tồn tại.
 // Ghi 9 cột: FilePathVideoCode/IdxView/FilePathVideoName/FilePathVideo/FilePathAvatar/Remark/FlagActive/LogLUDateTime/LogLUBy.
 app.MapPost("/api/filepathvideos", async (FilePathVideoDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
