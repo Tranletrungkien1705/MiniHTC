@@ -9130,11 +9130,14 @@ public sealed class MstKpi
 }
 
 /// <summary>Master LOẠI KPI (`Mst_KPIType` — `Mst_KPIType_Get_New20181115`, dòng 7949). Cờ cũng là `FlagAcitve`.</summary>
+/// <summary>🔴 #5652 — `Mst_KPIType` (`BizHTC.Marketing.cs:7589-7835`). `KPITypeName` là cột thật của
+/// chính bảng này (`Mst_KPI_Get` join sang lấy `mkpit.KPITypeName`) — port cũ thiếu, chỉ có mã.</summary>
 public sealed class MstKpiType
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string KPIType { get; set; } = "";
+    public string? KPITypeName { get; set; }
     public string FlagAcitve { get; set; } = "1";
 }
 

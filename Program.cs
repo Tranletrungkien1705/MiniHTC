@@ -15013,6 +15013,9 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
     return Results.Ok(new { r.Id, r.DealerCode, r.DateReport, r.Status });
 }).RequireAuthorization();
 
+// #5652 — Mst_KPI (`BizHTC.Marketing.cs:7589-7835`). Nguồn CHỈ có Get/CheckDB, không Save/Add — master
+// chỉ DBA nạp (cùng mẫu #5556/#5564/#5636/#5644). `Mst_KPI_Get` join sang `Mst_KPIType` lấy thêm
+// `KPITypeName` — cột thật thuộc `MstKpiType`, Mini trước đây thiếu (đã bổ sung, xem `/api/mstkpitypes`).
 app.MapGet("/api/mstkpis", async (AppDbContext db, ITenantContext t, string? kpiCode, string? kpiType, string? flagAcitve) =>
 {
     var qy = db.MstKpis.Where(x => x.OrgId == t.OrgId);
@@ -15024,12 +15027,13 @@ app.MapGet("/api/mstkpis", async (AppDbContext db, ITenantContext t, string? kpi
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #5652 — KPITypeName là cột thật của Mst_KPIType, Mini trước đây thiếu (xem comment ở /api/mstkpis).
 app.MapGet("/api/mstkpitypes", async (AppDbContext db, ITenantContext t, string? kpiType, string? flagAcitve) =>
 {
     var qy = db.MstKpiTypes.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(kpiType)) qy = qy.Where(x => x.KPIType == kpiType);
     if (!string.IsNullOrWhiteSpace(flagAcitve)) qy = qy.Where(x => x.FlagAcitve == flagAcitve);
-    var items = await qy.OrderBy(x => x.KPIType).Select(x => new { x.KPIType, x.FlagAcitve }).ToListAsync();
+    var items = await qy.OrderBy(x => x.KPIType).Select(x => new { x.KPIType, x.KPITypeName, x.FlagAcitve }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
