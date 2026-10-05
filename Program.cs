@@ -92769,6 +92769,33 @@ app.MapPost("/api/receptions/{no}/delete", async (string no, AppDbContext db, IT
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
+// ===== 🔴🔴🔴 #1576 `Ser_ReceptionF_Add` — WebMethod LIVE NHƯNG THÂN RỖNG (KHÔNG LÀM GÌ) =====
+// TRACE: WS `HTCWSCarSv/WSCarSv.asmx.cs:32279` `[WebMethod] Ser_ReceptionF_Add` → `_biz.Ser_ReceptionF_Add`
+//   (`BizCarSv.Tab.cs:6196-6320`).
+// 🔴 TOÀN BỘ phần việc bị COMMENT: khối `#region // Ser_ReceptionF_AddX:` gọi `Ser_ReceptionF_AddX(...)`
+//   bị bọc trong `//` (dòng 6280-6300) ⇒ hàm CHỈ mở transaction, ghi request log, validate TID,
+//   rồi COMMIT và trả về `mdsFinal` RỖNG. KHÔNG ghi bảng nào, KHÔNG đọc bảng nào.
+//   ⇒ Đây là WebMethod "xác chết": vỏ còn công bố, thân đã bị gỡ. Port 1:1 = trả dataset rỗng,
+//     KHÔNG tạo phiếu tiếp nhận (khác hẳn `Ser_ReceptionF_Reception` — bản THẬT SỰ tạo phiếu, đã port
+//     ở `POST /api/receptions`).
+// ⚠️ Đừng nhầm với `Ser_ReceptionF_Reception` (#796): hai WebMethod KHÁC NHAU, cùng họ tên gần giống.
+//   `_Add` = rỗng; `_Reception` = tạo phiếu thật.
+// 📌 Mini: `POST /api/receptions/add` — trả `{ created = false }` + cờ giải thích, KHÔNG ghi DB.
+app.MapPost("/api/receptions/add", (ReceptionAddDto dto) =>
+{
+    // Nguồn: thân hàm rỗng (Ser_ReceptionF_AddX bị COMMENT) ⇒ KHÔNG có gì để ghi.
+    return Results.Ok(new
+    {
+        created = false,
+        receptionFNo = dto.ReceptionFNo,
+        dealerCode = dto.DealerCode,
+        carId = dto.CarID,
+        sourceBodyIsCommentedOut = "#1576: BizCarSv.Tab.cs:6280-6300 — khoi #region // Ser_ReceptionF_AddX: goi Ser_ReceptionF_AddX(...) bi boc trong // => ham chi mo transaction + ghi request log + validate TID roi COMMIT, tra mdsFinal RONG. KHONG ghi bang nao.",
+        notTheSameAsReception = "Ser_ReceptionF_Add (rong) KHAC Ser_ReceptionF_Reception (#796 — tao phieu that, da port o POST /api/receptions). Hai WebMethod khac nhau, ten gan giong.",
+        emptyDatasetReturned = "nguon tra mdsFinal rong (AcceptChanges) — khong co bang ket qua nao.",
+    });
+}).RequireAuthorization();
+
 // ===== Phiếu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition) =====
 // GAP parity đã vá (đối chiếu BizCarSv.Inventory.cs Ser_ROStockRequisition_Get + FrmROStockRequisition.txtNo_KeyDown):
 // nguồn BỎ TIỀN TỐ "LS-" (số LSC) / "PX-" (số phiếu xuất) / "BG-" (số báo giá) TRƯỚC khi khớp theo RONo.
@@ -109802,6 +109829,19 @@ record ReceptionDeliveryDto(string? BodyPaintFilePath,
     string? Remark,
     List<ReceptionFDtlDto>? Ser_ReceptionFDtl = null,
     List<ReceptionFAttachFileDto>? Ser_ReceptionFAttachFile = null);
+// #1576 — DTO cho `Ser_ReceptionF_Add` (WebMethod LIVE nhung than RONG). Nhan dung 11 tham so nghiep vu
+// cua nguon (strReceptionFNo..strCusRequest) de client cu goi duoc, nhung KHONG ghi DB.
+record ReceptionAddDto(string? ReceptionFNo = null,
+    string? DealerCode = null,
+    string? CusID = null,
+    string? CarID = null,
+    string? Km = null,
+    string? FuelLevel = null,
+    string? AppStatus = null,
+    string? BackRepairStatus = null,
+    string? WarrantlyStatus = null,
+    string? InsuaranceStatus = null,
+    string? CusRequest = null);
 record WarrantyRenewalCategoryDto(string? WrtReneCateCode,
     string? WrtReneCateName,
     string? FlagActive);   // merge session-a
