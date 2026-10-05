@@ -15077,6 +15077,12 @@ app.MapGet("/api/mstfiletypes", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #5636 — Master nguồn chi (Mst_Disbursment, `BizHTC.Marketing.cs:13204-13413`). Nguồn CHỈ có
+// `Mst_Disbursment_Get` + `_CheckDB` (guard tồn tại/active), KHÔNG có hàm Save/Add nào — master này chỉ
+// được DBA nạp trực tiếp, không qua UI (cùng mẫu MrkMstAreaMarket #5556/MstOrderComplainImageType #5564).
+// GET-only khớp đúng. ⚠️ Lệch chính tả nội bộ nguồn (không phải lỗi Mini): cột SQL thật là
+// `DisburmentCode` (thiếu chữ "s") nhưng tham số điều kiện là `strMDDisbursmentCodeConditionList` (đủ
+// "s") — Mini theo tên tham số, không theo tên cột thô, không có cột Name/mô tả nào khác bị bỏ sót.
 app.MapGet("/api/mstdisbursments", async (AppDbContext db, ITenantContext t, string? disbursmentCode) =>
 {
     var qy = db.MstDisbursments.Where(x => x.OrgId == t.OrgId);
