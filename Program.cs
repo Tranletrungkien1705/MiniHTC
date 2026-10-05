@@ -25581,6 +25581,322 @@ app.MapGet("/api/report/correct-repair-rate", async (AppDbContext db, ITenantCon
         brokenOrConditionKeptAsIs = "Nguon viet (ReceptionFNo is not null or ReceptionFNo != '') — dung 'or' nen chuoi RONG van lot qua, chi NULL bi loai; giu 1:1 khi scope=wh, khong tu sua thanh 'and'.",
     });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #1567 `Report_KPIGet_Real_WH` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:29421`) =====
+// Hàm biz LIVE: `BizCarSv.WH.cs:18168-19420 Report_KPIGet_Real_WH_New20221101` (WS gọi thẳng bản `_New20221101`).
+// GREP TRƯỚC: Mini có `GET /api/report/service-kpi` (#? — bản khác) nhưng KHÔNG có route phục vụ WebMethod
+//   `Report_KPIGet_Real_WH` (mục B NIGHT-QUEUE).
+// 🔴 Hành vi nguồn port 1:1:
+//   (1) Guard ngày: `strDateFrom` chuẩn hoá; `strDateTo + " 23:59:59"` chuẩn hoá; rỗng ⇒ lỗi
+//       `Report_KPIGet_Real_InvalidDateFrom` / `_InvalidDateTo`.
+//   (2) Lọc đại lý: `strDealerCode` non-rỗng ⇒ thêm điều kiện `md.DealerCode = @DealerCode` (Mst_Dealer)
+//       VÀ `sr.DealerCode = @DealerCode` (Ser_RO).
+//   (3) `#tbl_Ser_RO`: `ActualDeliveryDate` trong [from, to] VÀ `status in ('FNS')`.
+//   (4) Nhân sự: `Ser_Engineer` IsActive='1' + điều kiện ngày làm việc (null/null HOẶC Start<=from & Finish null
+//       HOẶC Start<=from & Finish>=to). Đếm theo `IsEngineer` (CVDV/BDN/SCC/KTVD/KTVS/NVPT/KHAC).
+//   (5) Khoang: `Ser_Cavity` IsActive='1' + điều kiện ngày (StartUseDate/FinishUseDate). Đếm theo `CavityType`.
+//   (6) Đơn giá nhân công: `Mst_Param` ParamCode in (UnitPriceBDN/SCC/SCD/SCS).
+//   (7) Doanh thu công: `Ser_ROServiceItems` nhóm theo (ROType, ExpenseType) — 18 tổ hợp (BDD/SCC/SCD/SCS/PDI/SPK ×
+//       ROREPAIR/ROWARRANTY/ROINSURANCE/LOCAL). Công thức: `SUM(isnull(Factor,0)*isnull(Price,0)*(1+VAT*0.01))`.
+//   (8) Doanh thu phụ tùng: `Ser_ROPartItems` nhóm theo ExpenseType, LOẠI dòng có `PartCode in @strListShellCode`
+//       (dầu nhớt) — riêng nhóm Shell thì CHỈ lấy dòng `PartCode in @strListShellCode`.
+//   (9) Phụ kiện: `Ser_ROPartItems` FlagAccessory='1' → `SUM(Price*Quantity*(1+VAT*0.01))`.
+//   (10) Bán ra ngoài: `Ser_Inv_StockOut` Status='3' + StockOutType='2' + StockOutDateTime trong kỳ, nối
+//       `Ser_Inv_StockOutDetail` + `Ser_Inv_StockOutOrderStockOut` + `Ser_Inv_StockOutOrder`; tách dầu nhớt
+//       (PartCode in list) vs phụ tùng thường (not in list) vs phụ kiện (FlagAccessory='1').
+//   (11) Số ngày làm việc = số NGÀY DISTINCT có RO (ActualDeliveryDate) theo đại lý.
+//   (12) Giờ công thực tế = SUM(datediff(MINUTE, StartDate, FinishedDate))/60.
+//   (13) 20 chỉ số dẫn xuất cuối (CarPerAdviserDay, WorkHourPerCarRO, ... EmploymentRate) — guard chia 0.
+//   (14) Trả 2 bảng: `Report_KPI` (chỉ số) + `Mst_Dealer` (danh mục đại lý).
+// ⚠️ Nguồn dùng `@strListShellCode` dạng `in (...)` — Mini nhận `listShellCode` phân tách `|`.
+app.MapGet("/api/reports/kpi/real-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? dateFrom, string? dateTo, string? listShellCode) =>
+{
+    // (1) Guard ngày — nguồn: StandardizeDTime(strDateFrom) và StandardizeDTime(strDateTo + " 23:59:59").
+    if (!DateTime.TryParse(dateFrom, out var from))
+        return Results.BadRequest(new { error = "Report_KPIGet_Real_InvalidDateFrom", dateFrom });
+    if (!DateTime.TryParse(dateTo, out var toRaw))
+        return Results.BadRequest(new { error = "Report_KPIGet_Real_InvalidDateTo", dateTo });
+    var to = toRaw.Date.AddDays(1).AddSeconds(-1);   // " 23:59:59"
+    var dl = (dealerCode ?? "").Trim().ToUpperInvariant();
+    var shellCodes = (listShellCode ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+    // (2) Danh mục đại lý (Mst_Dealer) — lọc theo DealerCode nếu non-rỗng.
+    var dealerQ = db.Dealers.Where(x => x.OrgId == t.OrgId);
+    if (dl.Length > 0) dealerQ = dealerQ.Where(x => x.DealerCode == dl);
+    var dealers = await dealerQ.ToListAsync();
+    var dealerCodes = dealers.Select(x => x.DealerCode).ToList();
+    // (3) #tbl_Ser_RO — ActualDeliveryDate trong kỳ + status in ('FNS').
+    var roQ = db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Status == "FNS"
+        && x.ActualDeliveryDate != null && x.ActualDeliveryDate >= from && x.ActualDeliveryDate <= to);
+    if (dl.Length > 0) roQ = roQ.Where(x => x.DealerCode == dl);
+    var ros = await roQ.ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+    // (4) Nhân sự — Ser_Engineer IsActive='1' + điều kiện ngày làm việc.
+    var engQ = db.ServiceEngineers.Where(x => x.OrgId == t.OrgId && x.IsActive == "1"
+        && dealerCodes.Contains(x.DealerCode ?? "")
+        && ((x.StartWorkDate == null && x.FinishWorkDate == null)
+            || (x.StartWorkDate <= from && x.FinishWorkDate == null)
+            || (x.StartWorkDate <= from && x.FinishWorkDate >= to)));
+    var engineers = await engQ.ToListAsync();
+    // (5) Khoang — Ser_Cavity IsActive='1' + điều kiện ngày sử dụng.
+    var cavQ = db.Cavities.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1"
+        && dealerCodes.Contains(x.DealerCode ?? "")
+        && ((x.StartUseDate == null && x.FinishUseDate == null)
+            || (string.Compare(x.StartUseDate, from.ToString("yyyy-MM-dd")) <= 0 && x.FinishUseDate == null)
+            || (string.Compare(x.StartUseDate, from.ToString("yyyy-MM-dd")) <= 0 && string.Compare(x.FinishUseDate, to.ToString("yyyy-MM-dd")) >= 0)));
+    var cavities = await cavQ.ToListAsync();
+    // (6) Đơn giá nhân công — Mst_Param.
+    var paramCodes = new[] { "UnitPriceBDN", "UnitPriceSCC", "UnitPriceSCD", "UnitPriceSCS", "SerProfitRate", "PartProfitRate" };
+    var paramQ = db.MstParams.Where(x => x.OrgId == t.OrgId && paramCodes.Contains(x.ParamCode)
+        && dealerCodes.Contains(x.DealerCode));
+    var paramRows = await paramQ.ToListAsync();
+    double ParamVal(string code) => paramRows.Where(x => x.ParamCode == code)
+        .Select(x => double.TryParse(x.ParamValue, out var v) ? v : 0).DefaultIfEmpty(0).Sum();
+    // (7) Doanh thu công — Ser_ROServiceItems nhóm theo (DealerCode, ROType, ExpenseType).
+    var svcItems = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    var roDealer = ros.ToDictionary(x => x.Id, x => x.DealerCode ?? "");
+    double SvcAmt(string roType, string expenseType) => svcItems
+        .Where(x => x.ROType == roType && x.ExpenseType == expenseType)
+        .Sum(x => (double)x.Factor * (double)x.Price * (1 + (double)x.Vat * 0.01));
+    // (8) Doanh thu phụ tùng — Ser_ROPartItems nhóm theo ExpenseType, loại dầu nhớt (PartCode in list).
+    var partItems = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    double PartAmt(string expenseType) => partItems
+        .Where(x => x.ExpenseType == expenseType && !shellCodes.Contains(x.PartCode))
+        .Sum(x => (double)x.Factor * (double)x.NeedQty * (double)x.UnitPrice * (1 + (double)x.Vat * 0.01));
+    double PartShellAmt() => partItems
+        .Where(x => shellCodes.Contains(x.PartCode))
+        .Sum(x => (double)x.Factor * (double)x.NeedQty * (double)x.UnitPrice * (1 + (double)x.Vat * 0.01));
+    // (9) Phụ kiện — FlagAccessory='1'.
+    double AccessoryAmt() => partItems
+        .Where(x => x.FlagAccessory == "1")
+        .Sum(x => (double)x.UnitPrice * (double)x.NeedQty * (1 + (double)x.Vat * 0.01));
+    // (10) Bán ra ngoài — Ser_Inv_StockOut Status='3' + StockOutType='2' + StockOutDateTime trong kỳ.
+    var soQ = db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "3" && x.StockOutType == "2"
+        && x.StockOutDateTime != null && x.StockOutDateTime >= from && x.StockOutDateTime <= to);
+    var stockOuts = await soQ.ToListAsync();
+    var soIds = stockOuts.Select(x => x.Id).ToList();
+    var soLines = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && soIds.Contains(x.StockOutId)).ToListAsync();
+    // Nối Ser_Inv_StockOutOrderStockOut + Ser_Inv_StockOutOrder để lấy ROID (dùng cho nhánh phụ kiện).
+    var soLinks = await db.SerStockOutOrderStockOuts.Where(x => x.OrgId == t.OrgId && soIds.Contains(x.StockOutId)).ToListAsync();
+    var soOrderIds = soLinks.Select(x => x.StockOutOrderId).Distinct().ToList();
+    var soOrders = await db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && soOrderIds.Contains(x.Id)).ToListAsync();
+    var soOrderByLink = soLinks.GroupBy(x => x.StockOutId).ToDictionary(g => g.Key, g => g.First().StockOutOrderId);
+    var soOrderRo = soOrders.ToDictionary(x => x.Id, x => x.RONo);
+    // Phụ tùng bán ra ngoài (không dầu nhớt, không phụ kiện).
+    double PartOutAmt() => soLines
+        .Where(l => !shellCodes.Contains(l.PartCode))
+        .Sum(l => (double)l.Quantity * (double)(l.Price ?? 0) * (1 + (double)l.VAT * 0.01));
+    // Dầu nhớt bán ra ngoài.
+    double ShellOutAmt() => soLines
+        .Where(l => shellCodes.Contains(l.PartCode))
+        .Sum(l => (double)l.Quantity * (double)(l.Price ?? 0) * (1 + (double)l.VAT * 0.01));
+    // Phụ kiện bán ra ngoài — nối dòng xuất với Ser_ROPartItems theo (ROID, PartID) FlagAccessory='1'.
+    var roPartByKey = partItems.Where(x => x.FlagAccessory == "1")
+        .GroupBy(x => (x.RoId, x.PartCode)).ToDictionary(g => g.Key, g => g.First());
+    double AccessoryOutAmt()
+    {
+        double sum = 0;
+        foreach (var l in soLines)
+        {
+            if (!soOrderByLink.TryGetValue(l.StockOutId, out var orderId)) continue;
+            if (!soOrderRo.TryGetValue(orderId, out var roNo) || roNo is null) continue;
+            var ro = ros.FirstOrDefault(r => r.RONo == roNo);
+            if (ro is null) continue;
+            if (roPartByKey.ContainsKey((ro.Id, l.PartCode)))
+                sum += (double)l.Quantity * (double)(l.Price ?? 0) * (1 + (double)l.VAT * 0.01);
+        }
+        return sum;
+    }
+    // (11) Số ngày làm việc = số NGÀY DISTINCT có RO theo đại lý.
+    int WorkDayQty(string dealer) => ros.Where(x => (x.DealerCode ?? "") == dealer && x.ActualDeliveryDate != null)
+        .Select(x => x.ActualDeliveryDate!.Value.Date).Distinct().Count();
+    // (12) Giờ công thực tế = SUM(datediff(MINUTE, StartDate, FinishedDate))/60.
+    double WorkMinute(string dealer) => ros.Where(x => (x.DealerCode ?? "") == dealer
+        && x.StartDate != null && x.FinishedDate != null)
+        .Sum(x => (x.FinishedDate!.Value - x.StartDate!.Value).TotalMinutes);
+    // Đếm theo IsEngineer / CavityType.
+    int EngCount(string dealer, string type) => engineers.Count(x => (x.DealerCode ?? "") == dealer && x.IsEngineer == type);
+    int CavCount(string dealer, string type) => cavities.Count(x => (x.DealerCode ?? "") == dealer && x.CavityType == type);
+    int RoCountByType(string dealer, string roType, string? expenseType) => ros
+        .Where(x => (x.DealerCode ?? "") == dealer
+            && svcItems.Any(s => s.RoId == x.Id && s.ROType == roType && (expenseType == null || s.ExpenseType == expenseType)))
+        .Count();
+    var report = new List<object>();
+    foreach (var d in dealers)
+    {
+        var dc = d.DealerCode;
+        // I. Nhân sự.
+        int employeeNumber = engineers.Count(x => (x.DealerCode ?? "") == dc);
+        int advisoryNumber = EngCount(dc, "CVDV");
+        int serviceTechnicianQty = EngCount(dc, "BDN");
+        int enginerNumber = EngCount(dc, "SCC");
+        int enginerBP = EngCount(dc, "KTVD");
+        int paintingTechnicianQty = EngCount(dc, "KTVS");
+        int sparePartsStaff = EngCount(dc, "NVPT");
+        int staffOrther = EngCount(dc, "KHAC");
+        // II. Khoang.
+        int cavityNumber = cavities.Count(x => (x.DealerCode ?? "") == dc);
+        int cavityMaintainNumber = CavCount(dc, "BDN");
+        int cavityRONumber = CavCount(dc, "SCC");
+        int cavityOtherNumber = CavCount(dc, "KHAC");
+        int cavityCopperNumber = CavCount(dc, "KD");
+        int cavityBPNumber = CavCount(dc, "KS");
+        int cabinetPaintNumber = CavCount(dc, "BS");
+        int cavityParkingNumber = CavCount(dc, "BS");
+        // III. Đơn giá nhân công.
+        double unitPriceBDN = ParamVal("UnitPriceBDN");
+        double unitPriceSCC = ParamVal("UnitPriceSCC");
+        double unitPriceSCD = ParamVal("UnitPriceSCD");
+        double unitPriceSCS = ParamVal("UnitPriceSCS");
+        double unitPrice = unitPriceBDN + unitPriceSCC + unitPriceSCD + unitPriceSCS;
+        // IV. Giờ làm việc.
+        int workDayQty = WorkDayQty(dc);
+        double workHourQty = (cavityCopperNumber + cavityBPNumber + cabinetPaintNumber) * workDayQty * 8;
+        double svcBDD = SvcAmt("BDD", "ROREPAIR") + SvcAmt("BDD", "LOCAL");
+        double svcSCC = SvcAmt("SCC", "ROREPAIR") + SvcAmt("SCC", "ROWARRANTY") + SvcAmt("SCC", "ROINSURANCE") + SvcAmt("SCC", "LOCAL");
+        double svcSCD = SvcAmt("SCD", "ROREPAIR") + SvcAmt("SCD", "ROWARRANTY") + SvcAmt("SCD", "ROINSURANCE") + SvcAmt("SCD", "LOCAL");
+        double svcSCS = SvcAmt("SCS", "ROREPAIR") + SvcAmt("SCS", "ROWARRANTY") + SvcAmt("SCS", "ROINSURANCE") + SvcAmt("SCS", "LOCAL");
+        double workHourBDNQty = unitPriceBDN == 0 ? 0 : Math.Round(Math.Round(svcBDD, 0) / unitPriceBDN, 0);
+        double workHourSCCQty = unitPriceSCC == 0 ? 0 : Math.Round(Math.Round(svcSCC, 0) / unitPriceSCC, 0);
+        double workHourSCDQty = unitPriceSCD == 0 ? 0 : Math.Round(Math.Round(svcSCD, 0) / unitPriceSCD, 0);
+        double workHourSCSQty = unitPriceSCS == 0 ? 0 : Math.Round(Math.Round(svcSCS, 0) / unitPriceSCS, 0);
+        double workHourFeeQty = workHourBDNQty + workHourSCCQty + workHourSCDQty + workHourSCSQty;
+        double workHourActualQty = Math.Round(WorkMinute(dc) / 60, 1);
+        // V. Tỷ lệ lợi nhuận gộp.
+        double serProfitRate = ParamVal("SerProfitRate");
+        double partProfitRate = ParamVal("PartProfitRate");
+        // B.I. Tổng lượt xe.
+        int countCarService = ros.Count(x => (x.DealerCode ?? "") == dc);
+        int countBDD = RoCountByType(dc, "BDD", null);
+        int countBDDRoRepair = RoCountByType(dc, "BDD", "ROREPAIR");
+        int countBDDLocal = RoCountByType(dc, "BDD", "LOCAL");
+        int countSCC = RoCountByType(dc, "SCC", null);
+        int countSCCRoRepair = RoCountByType(dc, "SCC", "ROREPAIR");
+        int countSCCRoWarranty = RoCountByType(dc, "SCC", "ROWARRANTY");
+        int countSCCRoInsurance = RoCountByType(dc, "SCC", "ROINSURANCE");
+        int countSCCLocal = RoCountByType(dc, "SCC", "LOCAL");
+        int countSCD = RoCountByType(dc, "SCD", null);
+        int countSCDRoRepair = RoCountByType(dc, "SCD", "ROREPAIR");
+        int countSCDRoWarranty = RoCountByType(dc, "SCD", "ROWARRANTY");
+        int countSCDRoInsurance = RoCountByType(dc, "SCD", "ROINSURANCE");
+        int countSCDLocal = RoCountByType(dc, "SCD", "LOCAL");
+        int countSCS = RoCountByType(dc, "SCS", null);
+        int countSCSRoRepair = RoCountByType(dc, "SCS", "ROREPAIR");
+        int countSCSRoWarranty = RoCountByType(dc, "SCS", "ROWARRANTY");
+        int countSCSRoInsurance = RoCountByType(dc, "SCS", "ROINSURANCE");
+        int countSCSLocal = RoCountByType(dc, "SCS", "LOCAL");
+        int countPDI = RoCountByType(dc, "PDI", null);
+        int countPDIRoRepair = RoCountByType(dc, "PDI", "ROREPAIR");
+        int countPDILocal = RoCountByType(dc, "PDI", "LOCAL");
+        int countSPK = RoCountByType(dc, "SPK", null);
+        int countSPKRoRepair = RoCountByType(dc, "SPK", "ROREPAIR");
+        int countSPKLocal = RoCountByType(dc, "SPK", "LOCAL");
+        // B.II. Doanh thu công.
+        double serviceAmountBDD = Math.Round(svcBDD, 0);
+        double serviceAmountSCC = Math.Round(svcSCC, 0);
+        double serviceAmountSCD = Math.Round(svcSCD, 0);
+        double serviceAmountSCS = Math.Round(svcSCS, 0);
+        double serviceAmountPDI = Math.Round(SvcAmt("PDI", "ROREPAIR") + SvcAmt("PDI", "LOCAL"), 0);
+        double serviceAmountSPK = Math.Round(SvcAmt("SPK", "ROREPAIR") + SvcAmt("SPK", "LOCAL"), 0);
+        double serviceAmount = Math.Round(serviceAmountBDD + serviceAmountSCC + serviceAmountSCD + serviceAmountSCS + serviceAmountPDI + serviceAmountSPK, 0);
+        // B.III. Doanh thu phụ tùng.
+        double partAmountNotShell = Math.Round(PartAmt("ROREPAIR") + PartAmt("ROWARRANTY") + PartAmt("ROINSURANCE") + PartAmt("LOCAL"), 0);
+        double partAmountShell = Math.Round(PartShellAmt(), 0);
+        double accessoryAmountAfterVAT = Math.Round(AccessoryAmt(), 0);
+        double partAmountOut = Math.Round(PartOutAmt(), 0);
+        double shellAmountOut = Math.Round(ShellOutAmt(), 0);
+        double accessoryAmountOut = Math.Round(AccessoryOutAmt(), 0);
+        double allPartAmount = Math.Round(partAmountNotShell + partAmountShell + accessoryAmountAfterVAT + partAmountOut + shellAmountOut + accessoryAmountOut, 0);
+        // Dẫn xuất cuối (guard chia 0).
+        double carPerAdviserDay = (advisoryNumber == 0 || workDayQty == 0) ? 0 : Math.Round((double)countCarService / advisoryNumber / workDayQty, 0);
+        double workHourPerCarRO = countCarService == 0 ? 0 : Math.Round(workHourActualQty / countCarService, 0);
+        double cavityQtyPerEngineerBDNSCC = (enginerNumber == 0 || (serviceTechnicianQty / (double)enginerNumber) == 0) ? 0
+            : Math.Round((cavityMaintainNumber + cavityRONumber) / (serviceTechnicianQty / (double)enginerNumber), 0);
+        double countBDDPerCavityMaintain = (cavityMaintainNumber == 0 || workDayQty == 0) ? 0 : Math.Round((double)countBDD / cavityMaintainNumber / workDayQty, 0);
+        double countSCCPerCavityRO = (cavityRONumber == 0 || workDayQty == 0) ? 0 : Math.Round((double)countSCC / cavityRONumber / workDayQty, 0);
+        double countSCDPerCavityCopper = (cavityCopperNumber == 0 || workDayQty == 0) ? 0 : Math.Round((double)countSCD / cavityCopperNumber / workDayQty, 0);
+        double countSCSPerCavityBP = (cavityBPNumber == 0 || workDayQty == 0) ? 0 : Math.Round((double)countSCS / cavityBPNumber / workDayQty, 0);
+        double countSCSPerCabinetPaint = (cabinetPaintNumber == 0 || workDayQty == 0) ? 0 : Math.Round((double)countSCS / cabinetPaintNumber / workDayQty, 0);
+        double revenuePerAdviser = advisoryNumber == 0 ? 0 : Math.Round((serviceAmount + allPartAmount) / advisoryNumber, 0);
+        double revenuePerKTVBDN = serviceTechnicianQty == 0 ? 0 : Math.Round(serviceAmountBDD / serviceTechnicianQty, 0);
+        double revenuePerKTVSCC = enginerNumber == 0 ? 0 : Math.Round(serviceAmountSCC / enginerNumber, 0);
+        double revenuePerKTVSCD = enginerBP == 0 ? 0 : Math.Round(serviceAmountSCD / enginerBP, 0);
+        double revenuePerKTVSCS = paintingTechnicianQty == 0 ? 0 : Math.Round(serviceAmountSCS / paintingTechnicianQty, 0);
+        double laborProductivity = workHourActualQty == 0 ? 0 : Math.Round(workHourFeeQty / workHourActualQty, 0);
+        double serviceProductivity = workHourQty == 0 ? 0 : Math.Round(workHourFeeQty / workHourQty, 0);
+        double employmentRate = workHourQty == 0 ? 0 : Math.Round(workHourFeeQty / workHourQty, 0);
+        report.Add(new
+        {
+            DealerCode = dc,
+            // I. Nhân sự
+            EmployeeNumber = employeeNumber, AdvisoryNumber = advisoryNumber, ServiceTechnicianQty = serviceTechnicianQty,
+            EnginerNumber = enginerNumber, EnginerBP = enginerBP, PaintingTechnicianQty = paintingTechnicianQty,
+            SparePartsStaff = sparePartsStaff, StaffOrther = staffOrther,
+            // II. Khoang
+            CavityNumber = cavityNumber, CavityMaintainNumber = cavityMaintainNumber, CavityRONumber = cavityRONumber,
+            CavityOtherNumber = cavityOtherNumber, CavityCopperNumber = cavityCopperNumber, CavityBPNumber = cavityBPNumber,
+            CabinetPaintNumber = cabinetPaintNumber, CavityParkingNumber = cavityParkingNumber,
+            // III. Đơn giá nhân công
+            UnitPrice = unitPrice, UnitPriceBDN = unitPriceBDN, UnitPriceSCC = unitPriceSCC, UnitPriceSCD = unitPriceSCD, UnitPriceSCS = unitPriceSCS,
+            // IV. Giờ làm việc
+            WorkHourKTV = 0, WorkDayQty = workDayQty, WorkHourQty = workHourQty, WorkHourFeeQty = workHourFeeQty,
+            WorkHourBDNQty = workHourBDNQty, WorkHourSCCQty = workHourSCCQty, WorkHourSCDQty = workHourSCDQty, WorkHourSCSQty = workHourSCSQty,
+            WorkHourActualQty = workHourActualQty,
+            // V. Tỷ lệ lợi nhuận gộp
+            ProfitRate = 0, SerProfitRate = serProfitRate, PartProfitRate = partProfitRate,
+            // B.I. Lượt xe
+            CountCarService = countCarService, CountBDD = countBDD, CountBDDRoRepair = countBDDRoRepair, CountBDDLocal = countBDDLocal,
+            CountBDDLocal_SCL = 0, CountBDDLocal_Khac = 0,
+            CountSCC = countSCC, CountSCCRoRepair = countSCCRoRepair, CountSCCRoWarranty = countSCCRoWarranty,
+            CountSCCRoInsurance = countSCCRoInsurance, CountSCCLocal = countSCCLocal, CountSCCLocal_SCL = 0, CountSCCLocal_Khac = 0,
+            CountSCD = countSCD, CountSCDRoRepair = countSCDRoRepair, CountSCDRoWarranty = countSCDRoWarranty,
+            CountSCDRoInsurance = countSCDRoInsurance, CountSCDLocal = countSCDLocal, CountSCDLocal_SCL = 0, CountSCDLocal_Khac = 0,
+            CountSCS = countSCS, CountSCSRoRepair = countSCSRoRepair, CountSCSRoWarranty = countSCSRoWarranty,
+            CountSCSRoInsurance = countSCSRoInsurance, CountSCSLocal = countSCSLocal, CountSCSLocal_SCL = 0, CountSCSLocal_Khac = 0,
+            CountPDI = countPDI, CountPDIRoRepair = countPDIRoRepair, CountPDILocal = countPDILocal,
+            CountSPK = countSPK, CountSPKRoRepair = countSPKRoRepair, CountSPKLocal = countSPKLocal,
+            // B.II. Doanh thu công
+            ServiceAmount = serviceAmount, ServiceAmountBDD = serviceAmountBDD,
+            ServiceAmountBDDRoRepair = Math.Round(SvcAmt("BDD", "ROREPAIR"), 0), ServiceAmountBDDLocal = Math.Round(SvcAmt("BDD", "LOCAL"), 0),
+            ServiceAmountBDDLocal_SCL = 0, ServiceAmountBDDLocal_Khac = 0,
+            ServiceAmountSCC = serviceAmountSCC, ServiceAmountSCCRoRepair = Math.Round(SvcAmt("SCC", "ROREPAIR"), 0),
+            ServiceAmountSCCRoWarranty = Math.Round(SvcAmt("SCC", "ROWARRANTY"), 0), ServiceAmountSCCRoInsurance = Math.Round(SvcAmt("SCC", "ROINSURANCE"), 0),
+            ServiceAmountSCCLocal = Math.Round(SvcAmt("SCC", "LOCAL"), 0), ServiceAmountSCCLocal_SCL = 0, ServiceAmountSCCLocal_Khac = 0,
+            ServiceAmountSCD = serviceAmountSCD, ServiceAmountSCDRoRepair = Math.Round(SvcAmt("SCD", "ROREPAIR"), 0),
+            ServiceAmountSCDRoWarranty = Math.Round(SvcAmt("SCD", "ROWARRANTY"), 0), ServiceAmountSCDRoInsurance = Math.Round(SvcAmt("SCD", "ROINSURANCE"), 0),
+            ServiceAmountSCDLocal = Math.Round(SvcAmt("SCD", "LOCAL"), 0), ServiceAmountSCDLocal_SCL = 0, ServiceAmountSCDLocal_Khac = 0,
+            ServiceAmountSCS = serviceAmountSCS, ServiceAmountSCSRoRepair = Math.Round(SvcAmt("SCS", "ROREPAIR"), 0),
+            ServiceAmountSCSRoWarranty = Math.Round(SvcAmt("SCS", "ROWARRANTY"), 0), ServiceAmountSCSRoInsurance = Math.Round(SvcAmt("SCS", "ROINSURANCE"), 0),
+            ServiceAmountSCSLocal = Math.Round(SvcAmt("SCS", "LOCAL"), 0), ServiceAmountSCSLocal_SCL = 0, ServiceAmountSCSLocal_Khac = 0,
+            ServiceAmountPDI = serviceAmountPDI, ServiceAmountPDIRoRepair = Math.Round(SvcAmt("PDI", "ROREPAIR"), 0), ServiceAmountPDILocal = Math.Round(SvcAmt("PDI", "LOCAL"), 0),
+            ServiceAmountSPK = serviceAmountSPK, ServiceAmountSPKRoRepair = Math.Round(SvcAmt("SPK", "ROREPAIR"), 0), ServiceAmountSPKLocal = Math.Round(SvcAmt("SPK", "LOCAL"), 0),
+            // B.III. Doanh thu phụ tùng
+            AllPartAmount = allPartAmount, PartAmountNotShell = partAmountNotShell,
+            PartAmountRoRepair = Math.Round(PartAmt("ROREPAIR"), 0), PartAmountRoWarranty = Math.Round(PartAmt("ROWARRANTY"), 0),
+            PartAmountRoInsurance = Math.Round(PartAmt("ROINSURANCE"), 0), PartAmountLocal = Math.Round(PartAmt("LOCAL"), 0),
+            PartAmountShell = partAmountShell, AccessoryAmountAfterVAT = accessoryAmountAfterVAT,
+            PartAmountOut = partAmountOut, ShellAmountOut = shellAmountOut, AccessoryAmountOut = accessoryAmountOut,
+            // B.IV. Quản lý hoạt động xưởng
+            CountWorkTime = 0, CountWorkTime_DBD = 0, CountWorkTime_SCC = 0, CountWorkTime_SCD = 0, CountWorkTime_SCS = 0,
+            // Dẫn xuất
+            CarPerAdviserDay = carPerAdviserDay, WorkHourPerCarRO = workHourPerCarRO,
+            CavityQtyPerEngineerBDNSCC = cavityQtyPerEngineerBDNSCC, CountBDDPerCavityMaintain = countBDDPerCavityMaintain,
+            CountSCCPerCavityRO = countSCCPerCavityRO, CountSCDPerCavityCopper = countSCDPerCavityCopper,
+            CountSCSPerCavityBP = countSCSPerCavityBP, CountSCSPerCabinetPaint = countSCSPerCabinetPaint,
+            RevenuePerAdviser = revenuePerAdviser, RevenuePerKTVBDN = revenuePerKTVBDN, RevenuePerKTVSCC = revenuePerKTVSCC,
+            RevenuePerKTVSCD = revenuePerKTVSCD, RevenuePerKTVSCS = revenuePerKTVSCS,
+            LaborProductivity = laborProductivity, ServiceProductivity = serviceProductivity, EmploymentRate = employmentRate,
+        });
+    }
+    return Results.Ok(new
+    {
+        Report_KPI = report,
+        Mst_Dealer = dealers.Select(x => new { x.DealerCode, x.DealerName }),
+        note = "Nguon: Report_KPIGet_Real_WH (WS:29421) -> Report_KPIGet_Real_WH_New20221101 (BizCarSv.WH.cs:18168). Guard ngay: from rong => Report_KPIGet_Real_InvalidDateFrom; to rong => _InvalidDateTo; to chuan hoa ' 23:59:59'. Loc dai ly ap CA md.DealerCode lan sr.DealerCode. #tbl_Ser_RO: ActualDeliveryDate trong ky + status in ('FNS'). Nhan su/khoang co dieu kien ngay lam viec. Doanh thu cong 18 to hop (ROType x ExpenseType). Phu tung loai dau nhot (PartCode in listShellCode); nhom Shell CHI lay dau nhot. Ban ra ngoai: StockOut Status='3' + StockOutType='2'. Tra 2 bang Report_KPI + Mst_Dealer.",
+        shellCodeNote = "listShellCode phan tach '|' — nguon dung 'in (...)' voi danh sach ma dau nhot.",
+        zeroGuardNote = "20 chi so dan xuat cuoi deu co guard chia 0 (nguon: case when <mau> = 0 then 0 else Round(...)).",
+    });
+}).RequireAuthorization();
 
 // ===== 🔴 #311 KHẢ NĂNG CUNG ỨNG PHỤ TÙNG — viết lại theo nguồn `Rpt_AbilitySupplyParts` =====
 // Nguồn: `BizCarSv.Inventory.Report.cs:8303` (LIVE). 🆕 Đến được nhờ rà **17 hit "lệch trục"** của sweep
