@@ -8136,9 +8136,24 @@ public sealed class SalesOrder
     /// Từ vựng: `"0"` / `"1"` (form chỉ gửi khi giá trị thuộc đúng hai giá trị này, `:611-617`).</summary>
     public string? FlagPmtDelayDone { get; set; }
 }
-/// <summary>Lượt duyệt tự động đơn hàng DMS40 (D4OSORA — port 1:1 FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade):
-/// chọn luật (Rule1/Rule2/Rule2A/Rule3/RuleCancel) rồi chạy 1 lượt duyệt/hủy hàng loạt SO đang chờ (Status=Sent).
-/// RuleCancel → chuyển các SO Sent thành Rejected; các luật khác → duyệt thẳng lên Approved2 (bỏ qua Approved1, khớp "duyệt tự động").</summary>
+/// <summary>🔴 #5481 — Lượt duyệt tự động đơn hàng DMS40 (FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade).
+/// LIVE biz = `DMS40_Ord_SalesOrderRoot_ApprAuto_New20210522` (`BizHTC.Order.cs:28-1477`, qua WS
+/// `WSHTC.asmx.cs:20946` — tên KHÔNG hậu tố cũng tồn tại nhưng KHÔNG được WS gọi, chỉ bản `_New20210522` LIVE).
+/// **NỢ LỚN, CHƯA PORT ĐÚNG THUẬT TOÁN** — hàm biz dài ~1450 dòng, gọi ≥6 hàm con riêng
+/// (`ApprTemp_SaveX`, `ApprSupply1_ProcessX`/`ApprSupply2_ProcessX` theo 2 vòng cung-cầu,
+/// `ApprDemand_Save_Ord_SalesOrderX_New20210522` với `ApprovedDate` khác nhau theo rule — Rule1
+/// dùng ngày 08, nhánh khác dùng ngày 05 trong tháng —, `Appr_SaveFinishAutoX`). Route Mini hiện tại
+/// (`/api/dms40/so-root-approvals/run`) chỉ "duyệt/hủy hàng loạt mọi SO đang chờ" — HOÀN TOÀN không phải
+/// thuật toán thật, quá phức tạp để port trong 1 đơn vị DoD, giữ nguyên hành vi stub, KHÔNG half-implement.
+/// **Phát hiện cụ thể, SAI NGỮ NGHĨA (không phải đơn giản hoá có chủ đích)**:
+///  1. Rule1/Rule2/Rule2A/Rule3: nguồn PHÂN BỔ theo hạn mức cung (2 vòng Supply1/Supply2) rồi mới ghi
+///     demand — không phải "duyệt tất cả". Mini coi cả 4 luật NHƯ NHAU (approve thẳng mọi SO `Status=="P"`).
+///  2. **`RuleCancel` không phải "hủy"**: nguồn thật gọi `Appr_SaveFinishAutoX` — CHỈ tác động SO
+///     `SOType=Plan`, `LUDTime` nằm trong khung 2→1 tháng trước (`BizHTC.Order.cs:447-448`), loại trừ
+///     status Cancel/Finished/Pending (`:463`) — đưa các SO này sang **Finished** (tự động đóng đơn cũ
+///     không ai xử lý), KHÔNG PHẢI hủy toàn bộ đơn đang chờ như Mini đang làm.
+/// **Chưa sửa hành vi** (chỉ audit + ghi nợ) vì sửa 1 phần mà thiếu thuật toán cung-cầu đầy đủ sẽ tạo
+/// nửa-vời còn nguy hiểm hơn giữ nguyên stub rõ ràng — cần nhiều đơn vị DoD riêng để port đủ.</summary>
 public sealed class Dms40SoRootApproval
 {
     public long Id { get; set; }

@@ -77915,7 +77915,14 @@ app.MapPost("/api/salesorders/{no}/recalc-duedates", async (
     });
 }).RequireAuthorization();
 
-// ===== Duyệt tự động đơn hàng theo luật (D4OSORA — port 1:1 FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade) =====
+// ===== Duyệt tự động đơn hàng theo luật (D4OSORA, FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade) =====
+// #5481 — STUB, CHƯA ĐÚNG THUẬT TOÁN. LIVE biz = DMS40_Ord_SalesOrderRoot_ApprAuto_New20210522
+// (BizHTC.Order.cs:28-1477, qua WSHTC.asmx.cs:20946) — thuật toán PHÂN BỔ CUNG-CẦU 2 vòng (Supply1/
+// Supply2) theo rule, dài ~1450 dòng gọi >=6 hàm con riêng. RuleCancel KHÔNG PHẢI "hủy" — nguồn thật
+// (Appr_SaveFinishAutoX, :441-509) chỉ chuyển SO SOType=Plan, LUDTime cách đây 2->1 tháng, loại trừ
+// Cancel/Finished/Pending, sang FINISHED (tự đóng đơn cũ không ai xử lý) — route dưới đây đang hủy/duyệt
+// BLANKET mọi SO Status=="P", sai ngữ nghĩa cả 2 nhánh. Xem docstring Models/Entities.cs:Dms40SoRootApproval
+// để biết chi tiết + lý do CHƯA port đủ trong 1 đơn vị DoD (tránh half-implement thuật toán phức tạp).
 string[] _d4OsoraRules = { "Rule1", "Rule2", "Rule2A", "Rule3", "RuleCancel" };
 app.MapGet("/api/dms40/so-root-approvals", async (AppDbContext db, ITenantContext t) =>
 {
@@ -77924,8 +77931,8 @@ app.MapGet("/api/dms40/so-root-approvals", async (AppDbContext db, ITenantContex
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Khớp btnApprove_Click gốc: chọn luật rồi chạy 1 lượt — RuleCancel hủy hàng loạt SO đang chờ (Sent→Rejected);
-// các luật khác duyệt tự động hàng loạt SO đang chờ (Sent→Approved2, bỏ qua Approved1).
+// #5481 — hành vi HIỆN TẠI là stub (xem comment phía trên): blanket approve/cancel mọi SO Status=="P",
+// KHÔNG khớp thuật toán cung-cầu/FinishAuto thật. Giữ nguyên để không half-implement; đã ghi nợ đầy đủ.
 app.MapPost("/api/dms40/so-root-approvals/run", async (Dms40ApproveDto dto, AppDbContext db, ITenantContext t) =>
 {
     var rule = (dto.RuleType ?? "").Trim();
