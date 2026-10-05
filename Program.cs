@@ -58129,6 +58129,29 @@ app.MapPost("/api/payments/update-interest-loan", async (
 // 📌 **NỢ — KHÔNG ĐOÁN CÔNG THỨC**: `_Calc` (117 dòng) tính sáu chỉ tiêu từ dữ liệu bán hàng/dân số
 //   theo tỉnh chưa có trong MiniHTC ⇒ endpoint `calc` **chỉ dựng khung** (đầu + dòng theo khu vực gốc
 //   + dòng theo đại lý), **mọi chỉ tiêu để `null`**, cờ `figuresNotComputed`.
+// 🔴 #B236-list GAP-FIX (2026-10-06): WinForm (`FrmBCChiTieuKinhDoanhKyVong`) co man LIET KE/TIM KIEM
+//   (`Rpt_SalesExpectedTarget_Get` voi strFt_WhereClause tu do: RptSaleExpTgNo LIKE, YearRpt =,
+//   CreateDTime range) CHUA duoc port truoc do - chi co route lay THEO DUNG 1 SO (/{no}). Them route
+//   LIET KE nay. Nguon KHONG loc quyen (dong 'inner join Mst_Dealer... Must inner join to filter
+//   AbilityOfUser' BI COMMENT, khong co ban dung lai bang chuoi khac) - port GIU DUNG, khong tu bit.
+app.MapGet("/api/reports/sales-expected-target", async (
+    AppDbContext db, ITenantContext t,
+    string? rptSaleExpTgNo, int? yearRpt, DateTime? createdFrom, DateTime? createdTo) =>
+{
+    var q = db.SalesExpectedTargets.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(rptSaleExpTgNo)) q = q.Where(x => x.RptSaleExpTgNo.Contains(rptSaleExpTgNo));
+    if (yearRpt != null) q = q.Where(x => x.YearRpt == yearRpt);
+    if (createdFrom != null) q = q.Where(x => x.CreateDTime != null && x.CreateDTime >= createdFrom.Value.Date);
+    if (createdTo != null) q = q.Where(x => x.CreateDTime != null && x.CreateDTime < createdTo.Value.Date.AddDays(1));
+    var items = await q.OrderBy(x => x.RptSaleExpTgNo).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count,
+        Rpt_SalesExpectedTarget = items,
+        rbacOpenNote = "Nguon KHONG loc quyen: dong 'inner join Mst_Dealer md -- Must inner join to filter AbilityOfUser / on rptsaleexptg.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' BI COMMENT, grep toan than khong co ban dung lai bang chuoi khac => KHONG phai lo, la thiet ke mo CO CHU DICH."
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/reports/sales-expected-target/{no}", async (
     string no, AppDbContext db, ITenantContext t) =>
 {
