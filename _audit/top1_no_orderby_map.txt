@@ -1,0 +1,87 @@
+🔴 LECH TRUC  BizCarSv.A.02.OrderPart.cs:1820   select pf.StockInDate   |   order by pf.CreatedDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Bulletin.cs:4241   select top 1 t.FileAttachment
+🟠 KHONG ORDER BY + DOC DONG  BizCarSv.Common.cs:648   select top 1 t.ParamValue
+🔴 LECH TRUC  BizCarSv.Inventory.Report.cs:8536   select f.StockOutID   |   order by f.StockOutNo
+🔴 LECH TRUC  BizCarSv.Inventory.Report.cs:8549   select f.StockOutTime   |   order by f.StockOutNo
+🔴 LECH TRUC  BizCarSv.Inventory.Report.cs:9055   select f.StockOutID   |   order by f.StockOutNo
+🔴 LECH TRUC  BizCarSv.Inventory.Report.cs:9068   select f.StockOutTime   |   order by f.StockOutNo
+🔴 LECH TRUC  BizCarSv.Inventory.Report.cs:9617   select f.StockOutID   |   order by f.StockOutNo
+🔴 LECH TRUC  BizCarSv.Inventory.Report.cs:9630   select f.StockOutTime   |   order by f.StockOutNo
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:13941   select top 1 sooso.StockOutOrderID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:14085   select top 1 sooso.StockOutOrderID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:14292   select top 1 sooso.StockOutOrderID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:14434   select top 1 sooso.StockOutOrderID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:19231   select top 1 Round
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:19241   select top 1 f.UnitCode
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:19822   select top 1 f.VAT
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:19830   select top 1 f.UPOut
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Inventory.StockOut.cs:19842   select top 1 f.UnitCode
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Master.cs:7811   select top 1 t.DealerCode
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.cs:4493   select top 1 t.PartID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.cs:4500   select top 1 t.PartID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:83   select top 1 rpt
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:196   select top 1 rpt.DealerCode
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:6542   select top 1 select
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:6744   select top 1 select
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:6950   select top 1 ROID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:6961   select top 1 select
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:7185   select top 1 ROID
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service.Report.cs:7196   select top 1 select
+🟠 KHONG ORDER BY + DOC DONG  BizCarSv.Service.RO.cs:4966   select top 1 cc
+🟠 KHONG ORDER BY + DOC DONG  BizCarSv.Service.RO.cs:5023   select top 1 t
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:16815   select top 1 JDPStartDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:16819   select top 1 JPDEndDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:16872   select top 1 JDPStartDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:16873   select top 1 JPDEndDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:17060   select top 1 JDPStartDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:17064   select top 1 JPDEndDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:17117   select top 1 JDPStartDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.Service01.cs:17118   select top 1 JPDEndDate
+🔴 LECH TRUC  BizCarSv.Tab.cs:8487   select t_ro.RONo   |   order by t_ro.CreatedDate
+🔴 LECH TRUC  BizCarSv.TVO.cs:534   select ro.ROID   |   order by ro.LogLUDateTime
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:9247   select top 1 f.SerCode
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:9559   select top 1 t
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:14736   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:14755   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:15100   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:15119   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:17854   select top 1 t.ActualDeliveryDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WarrantyReport.cs:18235   select top 1 t.ActualDeliveryDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WH.cs:20071   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WH.cs:20090   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WH.cs:20432   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WH.cs:20451   select top 1 itemid
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WH.cs:33434   select top 1 t.ActualDeliveryDate
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.WH.cs:33816   select top 1 t.ActualDeliveryDate
+🟠 KHONG ORDER BY + DOC DONG  BizCarSv.ZTemp.cs:13795   select top 1 cc
+🟠 KHONG ORDER BY + DOC DONG  BizCarSv.ZTemp.cs:13852   select top 1 t
+🟠 KHONG ORDER BY + DOC DONG  BizCarSv.ZTemp.cs:14794   select top 1 cc
+🟠 KHONG ORDER BY + DOC DONG  BizCarSv.ZTemp.cs:14851   select top 1 t
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.ZTemp.cs:16523   select top 1 g.GroupRepairType
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.ZTemp.cs:16586   select top 1 f.RepairCabinCode
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.ZTemp.cs:16605   select top 1 f.PlanStartDTimeUTC
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.ZTemp.cs:16614   select top 1 f.PlanEndDTimeUTC
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.ZTemp.cs:16623   select top 1 f.ActualStartDTimeUTC
+🟡 KHONG ORDER BY (chua ro)  BizCarSv.ZTemp.cs:16632   select top 1 f.ActualEndDTimeUTC
+
+TONG: 9 LECH, 56 khong-order-by DANG LO, 38 guard (vo hai, da loai), 8 khop truc, 6 order-nam-trong-select (vo hai, #370)
+
+
+=== #374 DOI CHIEU 56 site voi MiniHTC ===
+39 site / 18 ham DA CO DAU VET trong MiniHTC.
+17 site / 12 ham CHUA THAY DAU VET:
+   3x OSVeloca_Ser_Inv_StockOut_GetByStockOutID_New20240606 (StockOut.cs:19822)  <-- #368 DA port phan bao cao cover, matcher khong nhan ra vi ghi ten BANG TAM chu khong ghi ten HAM
+   2x OSVeloca_Ser_Inv_StockOut_GetByStockOutID (StockOut.cs:19231)  <-- twin cu, can trace
+   2x Ser_Mst_Part_Delete (Service.cs:4493)  <-- PORT o #374
+   2x Rpt_Vehicle_Service_Frequency_WH (Service.Report.cs:7185)
+   1x Blt_Bulletin_Get_byVin_ForTab (Bulletin.cs:4241)
+   1x myUtils_GetParamsRaw (Common.cs:648)
+   1x SerMasterInitGet (Master.cs:7811)
+   1x Mst_ReportHeader_Get (Service.Report.cs:83)
+   1x Mst_ReportHeader_Getnew (Service.Report.cs:196)
+   1x Rpt_Correct_Repair_Rate_WH (Service.Report.cs:6744)
+   1x Ser_ROWarrantyReportHTC_Get_OnlyOneROWID_WH (WH.cs:33434)
+   1x Ser_ROWarrantyReportHTC_Get_OnlyOneROWID_WH_New20230417 (WH.cs:33816)
+
+CANH BAO: matcher doi chieu theo TEN HAM. MiniHTC nhieu cho ghi ten BANG TAM / ten endpoint
+thay vi ten ham nguon => danh sach "chua thay dau vet" co the DUOI dem. Phai xac minh tay tung muc.

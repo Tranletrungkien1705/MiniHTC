@@ -10,6 +10,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SerFilePathVideo> SerFilePathVideos => Set<SerFilePathVideo>();
     public DbSet<SerModelAudImage> SerModelAudImages => Set<SerModelAudImage>();
     public DbSet<Dealer> Dealers => Set<Dealer>();
+    // #375: tiêu đề báo cáo theo đại lý (Mst_ReportHeader)
+    public DbSet<ReportHeader> ReportHeaders => Set<ReportHeader>();
     public DbSet<CarPrice> CarPrices => Set<CarPrice>();
     public DbSet<SalesMan> SalesMen => Set<SalesMan>();
     public DbSet<PdiRequest> PdiRequests => Set<PdiRequest>();
@@ -47,6 +49,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstBank> MstBanks => Set<MstBank>();
     public DbSet<SysUser> SysUsers => Set<SysUser>();
     public DbSet<SysObject> SysObjects => Set<SysObject>();
+    public DbSet<SysPartner> SysPartners => Set<SysPartner>();
+    public DbSet<SysObjectType> SysObjectTypes => Set<SysObjectType>();
     public DbSet<DealerCustomerUpdLog> DealerCustomerUpdLogs => Set<DealerCustomerUpdLog>();
     public DbSet<DlsDealSurvey> DlsDealSurveys => Set<DlsDealSurvey>();
     public DbSet<DlrContractCar> DlrContractCars => Set<DlrContractCar>();
@@ -104,6 +108,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<OrdPerformanceInvoiceDetail> OrdPerformanceInvoiceDetails => Set<OrdPerformanceInvoiceDetail>();
     public DbSet<MapSysGroupSysUser> MapSysGroupSysUsers => Set<MapSysGroupSysUser>();
     public DbSet<MapSysGroupSysObject> MapSysGroupSysObjects => Set<MapSysGroupSysObject>();
+    public DbSet<TstMstPartGroup> TstMstPartGroups => Set<TstMstPartGroup>();   // #767
+    public DbSet<TstMstPartType> TstMstPartTypes => Set<TstMstPartType>();      // #767
     public DbSet<SysGroup> SysGroups => Set<SysGroup>();
     public DbSet<VatTcgInvoice> VatTcgInvoices => Set<VatTcgInvoice>();
     public DbSet<VatTcgInvoiceDetail> VatTcgInvoiceDetails => Set<VatTcgInvoiceDetail>();
@@ -111,12 +117,35 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<MstProvince> MstProvinces => Set<MstProvince>();   // #227
     public DbSet<MstDealerSalesType> MstDealerSalesTypes => Set<MstDealerSalesType>();
     public DbSet<MstKpi> MstKpis => Set<MstKpi>();
+    // #329: ban ghi BAO CAO KPI xuong dich vu (Report_KPI)
+    public DbSet<ReportKpi> ReportKpis => Set<ReportKpi>();
+    public DbSet<ReportDashboard> ReportDashboards => Set<ReportDashboard>();   // #730
+    public DbSet<CusPartFactor> CusPartFactors => Set<CusPartFactor>();         // #734
+    public DbSet<CusServiceFactor> CusServiceFactors => Set<CusServiceFactor>(); // #735
+    public DbSet<SerMstLocation> SerMstLocations => Set<SerMstLocation>();       // #738
+    // #722: bang KPI the he CU (Rpt_KPI, bo GJ/BP) — KHAC ReportKpi (Report_KPI, bo BDD/SCC/SCD/SCS).
+    public DbSet<RptKpiLegacy> RptKpiLegacies => Set<RptKpiLegacy>();
     public DbSet<MstKpiType> MstKpiTypes => Set<MstKpiType>();
     public DbSet<MrkMstAreaMarket> MrkMstAreaMarkets => Set<MrkMstAreaMarket>();
     public DbSet<MstDocType> MstDocTypes => Set<MstDocType>();
     public DbSet<MstEvenType> MstEvenTypes => Set<MstEvenType>();
     public DbSet<MstQuater> MstQuaters => Set<MstQuater>();
     public DbSet<MstFileType> MstFileTypes => Set<MstFileType>();
+    public DbSet<UploadedFile> UploadedFiles => Set<UploadedFile>();   // #523
+    public DbSet<ReceptionDetail> ReceptionDetails => Set<ReceptionDetail>();   // #524
+    public DbSet<ReceptionAttachFile> ReceptionAttachFiles => Set<ReceptionAttachFile>();   // #525
+    public DbSet<ReceptionFAuditMst> ReceptionFAuditMsts => Set<ReceptionFAuditMst>();   // #526
+    public DbSet<ReceptionFAudTypeMst> ReceptionFAudTypeMsts => Set<ReceptionFAudTypeMst>();   // #627
+    public DbSet<RoAttachFile> RoAttachFiles => Set<RoAttachFile>();   // #631
+    public DbSet<ReceptionAttachFileMst> ReceptionAttachFileMsts => Set<ReceptionAttachFileMst>();   // #632
+    public DbSet<MstDeliveryForm> MstDeliveryForms => Set<MstDeliveryForm>();   // #634
+    public DbSet<MstOrderComplainType> MstOrderComplainTypes => Set<MstOrderComplainType>();   // #633
+    public DbSet<MstOrderComplainImageType> MstOrderComplainImageTypes => Set<MstOrderComplainImageType>();   // #633
+    public DbSet<SerReceptionError> SerReceptionErrors => Set<SerReceptionError>();   // #909
+    public DbSet<RoWorkTime> RoWorkTimes => Set<RoWorkTime>();   // #532
+    public DbSet<PartExtraMst> PartExtraMsts => Set<PartExtraMst>();   // #538
+    public DbSet<RoWorkArisingQuotaMst> RoWorkArisingQuotaMsts => Set<RoWorkArisingQuotaMst>();   // #539
+    public DbSet<WarrantyRenewalCategoryMst> WarrantyRenewalCategoryMsts => Set<WarrantyRenewalCategoryMst>();   // #541
     public DbSet<MstDisbursment> MstDisbursments => Set<MstDisbursment>();
     public DbSet<MstDoc> MstDocs => Set<MstDoc>();
     public DbSet<MrkCampaignDLRegister> MrkCampaignDLRegisters => Set<MrkCampaignDLRegister>();
@@ -142,6 +171,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ServiceInsurance> ServiceInsurances => Set<ServiceInsurance>();
     public DbSet<ServiceInsuranceCustomer> ServiceInsuranceCustomers => Set<ServiceInsuranceCustomer>();
     public DbSet<MemberVoucher> MemberVouchers => Set<MemberVoucher>();
+    public DbSet<LoyaltyCard> LoyaltyCards => Set<LoyaltyCard>();   // #463
+    public DbSet<MstParam> MstParams => Set<MstParam>();
+    public DbSet<MstVinModelOrginal> MstVinModelOrginals => Set<MstVinModelOrginal>();            // #472
+    public DbSet<ServiceMstService> ServiceMstServices => Set<ServiceMstService>();   // #488
     public DbSet<RoVoucherUse> RoVoucherUses => Set<RoVoucherUse>();
     public DbSet<WarrantyExtension> WarrantyExts => Set<WarrantyExtension>();
     public DbSet<InsuranceFee> InsuranceFees => Set<InsuranceFee>();
@@ -200,24 +233,29 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DevicePrice> DevicePrices => Set<DevicePrice>();
     public DbSet<TcgSalePrice> TcgSalePrices => Set<TcgSalePrice>();
     public DbSet<RepairOrder> RepairOrders => Set<RepairOrder>();
-    public DbSet<RoWorkTime> RoWorkTimes => Set<RoWorkTime>();   // #418 Ser_ROWorkTime
     public DbSet<RoServiceItem> RoServiceItems => Set<RoServiceItem>();
     public DbSet<RoPartItem> RoPartItems => Set<RoPartItem>();
+    public DbSet<RoAttachment> RoAttachments => Set<RoAttachment>();   // #253
     public DbSet<StockReq> StockReqs => Set<StockReq>();
     public DbSet<StockReqLine> StockReqLines => Set<StockReqLine>();
     public DbSet<Reception> Receptions => Set<Reception>();
     public DbSet<ReceptionFDtl> ReceptionFDtls => Set<ReceptionFDtl>();                   // #355 Ser_ReceptionFDtl
     public DbSet<ReceptionFAttachFile> ReceptionFAttachFiles => Set<ReceptionFAttachFile>(); // #355 Ser_ReceptionFAttachFile
+    public DbSet<PartInstance> PartInstances => Set<PartInstance>();   // #416
     public DbSet<PartStockIn> PartStockIns => Set<PartStockIn>();
     public DbSet<PartStockInLine> PartStockInLines => Set<PartStockInLine>();
     public DbSet<PartStock> PartStocks => Set<PartStock>();
+    public DbSet<SerInvStockBalance> SerInvStockBalances => Set<SerInvStockBalance>();   // #1511
     public DbSet<PartStockOut> PartStockOuts => Set<PartStockOut>();
     public DbSet<PartStockOutLine> PartStockOutLines => Set<PartStockOutLine>();
     public DbSet<PartPrice> PartPrices => Set<PartPrice>();
     public DbSet<CustomerCar> CustomerCars => Set<CustomerCar>();
     public DbSet<ServiceWarrantyClaim> ServiceWarrantyClaims => Set<ServiceWarrantyClaim>();
+    // #268: nhật ký chuyển trạng thái đề nghị bảo hành (Ser_ROWarrantyReportTransaction)
+    public DbSet<ServiceWarrantyClaimTransaction> ServiceWarrantyClaimTransactions => Set<ServiceWarrantyClaimTransaction>();
     public DbSet<WarrantyAttachment> WarrantyAttachments => Set<WarrantyAttachment>();
     public DbSet<PartCostSnapshot> PartCostSnapshots => Set<PartCostSnapshot>();
+    public DbSet<PartCost> PartCosts => Set<PartCost>();   // #1504
     public DbSet<ServicePackage> ServicePackages => Set<ServicePackage>();
     public DbSet<ServicePackageService> ServicePackageServices => Set<ServicePackageService>();
     public DbSet<ServicePackagePart> ServicePackageParts => Set<ServicePackagePart>();
@@ -226,6 +264,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SerInsuranceContract> SerInsuranceContracts => Set<SerInsuranceContract>();
     public DbSet<MstUnitPriceGPS> MstUnitPriceGpsItems => Set<MstUnitPriceGPS>();
     public DbSet<SerStockOutOrder> SerStockOutOrders => Set<SerStockOutOrder>();
+    // #294: bảng nối lệnh xuất ↔ phiếu xuất (Ser_Inv_StockOutOrderStockOut) — quan hệ NHIỀU-NHIỀU
+    public DbSet<SerStockOutOrderStockOut> SerStockOutOrderStockOuts => Set<SerStockOutOrderStockOut>();
     public DbSet<SerStockOutOrderLine> SerStockOutOrderLines => Set<SerStockOutOrderLine>();
     public DbSet<SalesManCertificate> SalesManCertificates => Set<SalesManCertificate>();
     public DbSet<TrainingCourse> TrainingCourses => Set<TrainingCourse>();
@@ -237,6 +277,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerSalesMan> DealerSalesMen => Set<DealerSalesMan>();
     public DbSet<CustomerVisit> CustomerVisits => Set<CustomerVisit>();
     public DbSet<ServiceTradeMark> ServiceTradeMarks => Set<ServiceTradeMark>();
+    public DbSet<ROWarrantyWork> ROWarrantyWorks => Set<ROWarrantyWork>();   // #1486 Ser_MST_ROWarrantyWork
+    public DbSet<MstFilePathVideo> FilePathVideos => Set<MstFilePathVideo>();   // #1494 Ser_Mst_FilePathVideo
+    public DbSet<ReceptionError> ReceptionErrors => Set<ReceptionError>();   // #1495 Ser_Mst_ReceptionError
+    public DbSet<ModelAudImage> ModelAudImages => Set<ModelAudImage>();   // #1496 Ser_Mst_ModelAudImage
     public DbSet<MaintWorkItem> MaintWorkItems => Set<MaintWorkItem>();
     public DbSet<RateApprOrderModelMax> RateApprOrderModelMaxes => Set<RateApprOrderModelMax>();
     public DbSet<ContractTypeModel> ContractTypeModels => Set<ContractTypeModel>();
@@ -245,8 +289,13 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<ComplaintErrorCode> ComplaintErrorCodes => Set<ComplaintErrorCode>();
     public DbSet<ROWarrantyType> ROWarrantyTypes => Set<ROWarrantyType>();
     public DbSet<ROWarrantyTypePhoto> ROWarrantyTypePhotos => Set<ROWarrantyTypePhoto>();
+    public DbSet<RoWarrantyPhotoType> RoWarrantyPhotoTypes => Set<RoWarrantyPhotoType>();   // #850
     public DbSet<WarrantyWorkMst> WarrantyWorkMsts => Set<WarrantyWorkMst>();
     public DbSet<CompartmentMst> CompartmentMsts => Set<CompartmentMst>();
+    public DbSet<HyundaiMeOutbox> HyundaiMeOutboxes => Set<HyundaiMeOutbox>();   // #586
+    public DbSet<OrderInshipment> OrderInshipments => Set<OrderInshipment>();   // #609
+    public DbSet<NetworkMst> NetworkMsts => Set<NetworkMst>();   // #566
+    public DbSet<PlateColorMst> PlateColorMsts => Set<PlateColorMst>();   // #520
     public DbSet<StaffMst> StaffMsts => Set<StaffMst>();
     public DbSet<VinModelOrginalMst> VinModelOrginalMsts => Set<VinModelOrginalMst>();
     public DbSet<ExtraWorkLimitationMst> ExtraWorkLimitationMsts => Set<ExtraWorkLimitationMst>();
@@ -257,6 +306,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RoServiceItemEngineer> RoServiceItemEngineers => Set<RoServiceItemEngineer>();
     public DbSet<TstExchangeUnit> TstExchangeUnits => Set<TstExchangeUnit>();
     public DbSet<TstPart> TstParts => Set<TstPart>();
+    public DbSet<TstPartTemp> TstPartTemps => Set<TstPartTemp>();   // #247
+    public DbSet<TstMstPartDnp> TstMstPartDnps => Set<TstMstPartDnp>();            // #982
+    public DbSet<RptDealerNetPrice> RptDealerNetPrices => Set<RptDealerNetPrice>();            // #982
+    public DbSet<RptDealerNetPriceDetail> RptDealerNetPriceDetails => Set<RptDealerNetPriceDetail>();            // #982
+    public DbSet<RptPartsOrderDetail> RptPartsOrderDetails => Set<RptPartsOrderDetail>();            // #983
+    public DbSet<RptPartsOrderDetailPart> RptPartsOrderDetailParts => Set<RptPartsOrderDetailPart>();            // #983
+    public DbSet<RptAbilitySupplyPart> RptAbilitySupplyParts => Set<RptAbilitySupplyPart>();            // #1492
+    public DbSet<SuggestPrice> SuggestPrices => Set<SuggestPrice>();            // #1480
+    public DbSet<SuggestPriceDtl> SuggestPriceDtls => Set<SuggestPriceDtl>();            // #1480
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();
     public DbSet<SerMstSupplier> SerMstSuppliers => Set<SerMstSupplier>();
     public DbSet<StockAdj> StockAdjs => Set<StockAdj>();
@@ -264,7 +322,11 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SerServiceType> SerServiceTypes => Set<SerServiceType>();
     public DbSet<SerStock> SerStocks => Set<SerStock>();
     public DbSet<SerPartType> SerPartTypes => Set<SerPartType>();
+    public DbSet<SerAppTypeMst> SerAppTypeMsts => Set<SerAppTypeMst>();   // #1058
+    public DbSet<MstStaff> MstStaffs => Set<MstStaff>();   // #1059
     public DbSet<JDPowerTerm> JDPowerTerms => Set<JDPowerTerm>();
+    public DbSet<JDPowerTermDtl> JDPowerTermDtls => Set<JDPowerTermDtl>();   // #842
+    public DbSet<RoMaintanceSetting> RoMaintanceSettings => Set<RoMaintanceSetting>();   // #846
     public DbSet<PdiStoragePayment> PdiStoragePayments => Set<PdiStoragePayment>();
     public DbSet<CarStatusUpdate> CarStatusUpdates => Set<CarStatusUpdate>();
     public DbSet<CarSpecUpdate> CarSpecUpdates => Set<CarSpecUpdate>();
@@ -341,12 +403,17 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<CustomerCare> CustomerCares => Set<CustomerCare>();
     public DbSet<CustomerCareSurvey> CustomerCareSurveys => Set<CustomerCareSurvey>();
     public DbSet<CustomerCareMaintance> CustomerCareMaintances => Set<CustomerCareMaintance>();   // #218
+    public DbSet<CustomerCareDob> CustomerCareDobs => Set<CustomerCareDob>();   // #1493
     public DbSet<CustomerCareBirthday> CustomerCareBirthdays => Set<CustomerCareBirthday>();
     public DbSet<CustomerCareMace> CustomerCareMaces => Set<CustomerCareMace>();
     public DbSet<InsuranceAttachmentType> InsuranceAttachmentTypes => Set<InsuranceAttachmentType>();
     public DbSet<InsuranceAttachment> InsuranceAttachments => Set<InsuranceAttachment>();
     public DbSet<CampaignMarketing> CampaignMarketings => Set<CampaignMarketing>();
     public DbSet<CampaignMarketingPart> CampaignMarketingParts => Set<CampaignMarketingPart>();
+    public DbSet<CampaignMarketingFullVin> CampaignMarketingFullVins => Set<CampaignMarketingFullVin>();   // #482
+    public DbSet<CampaignMarketingVin> CampaignMarketingVins => Set<CampaignMarketingVin>();               // #483
+    public DbSet<CampaignMarketingPlateNo> CampaignMarketingPlateNos => Set<CampaignMarketingPlateNo>();   // #483
+    public DbSet<CampaignMarketingDealer> CampaignMarketingDealers => Set<CampaignMarketingDealer>();      // #483
     public DbSet<PartBackorder> PartBackorders => Set<PartBackorder>();
     public DbSet<AvnPayment> AvnPayments => Set<AvnPayment>();
     public DbSet<AvnPaymentLine> AvnPaymentLines => Set<AvnPaymentLine>();
@@ -368,6 +435,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<WarrantyClaimPartItem> WarrantyClaimPartItems => Set<WarrantyClaimPartItem>();
     public DbSet<WarrantyClaimServiceItem> WarrantyClaimServiceItems => Set<WarrantyClaimServiceItem>();   // #413 Ser_ROWarrantyReportServiceItems
     public DbSet<WarrantyClaimTransaction> WarrantyClaimTransactions => Set<WarrantyClaimTransaction>();   // #413 Ser_ROWarrantyReportTransaction
+    // #303: dòng CÔNG của đề nghị bảo hành (Ser_ROWarrantyReportServiceItems)
     public DbSet<StorageTransaction> StorageTransactions => Set<StorageTransaction>();
     public DbSet<BusinessPlanDtl> BusinessPlanDtls => Set<BusinessPlanDtl>();
     public DbSet<BankingTransBankFile> BankingTransBankFiles => Set<BankingTransBankFile>();
@@ -475,6 +543,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<StorageGlobalMap> StorageGlobalMaps => Set<StorageGlobalMap>();
     public DbSet<WarrantyPeriodMst> WarrantyPeriodMsts => Set<WarrantyPeriodMst>();
     public DbSet<ServiceSupplier> ServiceSuppliers => Set<ServiceSupplier>();
+    public DbSet<ServiceStock> ServiceStocks => Set<ServiceStock>();   // #1506 Ser_Inv_Stock
     public DbSet<ExtraWorkMst> ExtraWorkMsts => Set<ExtraWorkMst>();
     public DbSet<ExtraPartMst> ExtraPartMsts => Set<ExtraPartMst>();
     public DbSet<MaintenanceLevelMst> MaintenanceLevelMsts => Set<MaintenanceLevelMst>();
@@ -486,6 +555,14 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<BulletinDtl> BulletinDtls => Set<BulletinDtl>();
     public DbSet<BulletinVin> BulletinVins => Set<BulletinVin>();
     public DbSet<SharePart> ShareParts => Set<SharePart>();
+    // #290: cấu hình gửi email tự động (Email_ConfigSendAuto — DMSCarSv)
+    public DbSet<EmailServerConfig> EmailServerConfigs => Set<EmailServerConfig>();   // #433
+    public DbSet<EmailConfigSendAuto> EmailConfigSendAutos => Set<EmailConfigSendAuto>();
+    // #287: đơn đặt phụ tùng gửi NCC (Ser_Part_Order — KHÁC Ser_Order_Part của TST)
+    public DbSet<SupplierPartOrder> SupplierPartOrders => Set<SupplierPartOrder>();
+    public DbSet<SupplierPartOrderLine> SupplierPartOrderLines => Set<SupplierPartOrderLine>();
+    // #272: nhật ký đẩy NoShow sang HCC (HCC_NoShow_CreateOSX — chỉ có trên máy 150)
+    public DbSet<HccNoShowPush> HccNoShowPushes => Set<HccNoShowPush>();
     public DbSet<PartGroup> PartGroups => Set<PartGroup>();
     public DbSet<ServicePart> ServiceParts => Set<ServicePart>();
     public DbSet<ServiceCar> ServiceCars => Set<ServiceCar>();
@@ -508,10 +585,15 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SupplierDebitPayment> SupplierDebitPayments => Set<SupplierDebitPayment>();
     public DbSet<SmsAutoConfig> SmsAutoConfigs => Set<SmsAutoConfig>();
     public DbSet<EmailSend> EmailSends => Set<EmailSend>();
+    // #300: hàng đợi NGƯỜI NHẬN của lô gửi tự động (Email_SendEmailAutoTemp)
+    public DbSet<EmailSendAutoTemp> EmailSendAutoTemps => Set<EmailSendAutoTemp>();
     public DbSet<EmailAutoConfig> EmailAutoConfigs => Set<EmailAutoConfig>();
     public DbSet<DeliveryLocation> DeliveryLocations => Set<DeliveryLocation>();   // #232
     public DbSet<ServiceCampaign> ServiceCampaigns => Set<ServiceCampaign>();
     public DbSet<ServiceCampaignPart> ServiceCampaignParts => Set<ServiceCampaignPart>();
+    public DbSet<RoComplaintDiagnosticError> RoComplaintDiagnosticErrors => Set<RoComplaintDiagnosticError>();   // #784
+    public DbSet<RoHistory> RoHistories => Set<RoHistory>();   // #827
+    public DbSet<RoWarrantyRenewal> RoWarrantyRenewals => Set<RoWarrantyRenewal>();   // #782
     public DbSet<SmsAccount> SmsAccounts => Set<SmsAccount>();
     public DbSet<SmsBrandName> SmsBrandNames => Set<SmsBrandName>();   // #230
     public DbSet<SmsPriceSend> SmsPriceSends => Set<SmsPriceSend>();   // #228
@@ -558,7 +640,6 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<AutoEstDlvPlanStorage> AutoEstDlvPlanStorages => Set<AutoEstDlvPlanStorage>();   // #B135 cache dai ly x kho x model
     public DbSet<TranspFeeVer> TranspFeeVers => Set<TranspFeeVer>();       // #B90 dau phien ban CPVT
     public DbSet<TranspFeeHist> TranspFeeHists => Set<TranspFeeHist>();   // #B90 anh chup dong phi theo phien ban
-    public DbSet<SysPartner> SysPartners => Set<SysPartner>();                 // #B96 danh muc doi tac he thong
     public DbSet<SysObjectTypeMst> SysObjectTypeMsts => Set<SysObjectTypeMst>();   // #B96 danh muc loai doi tuong phan quyen
     public DbSet<Department> Departments => Set<Department>();   // #B98 danh muc phong ban (Mst_Department)
     public DbSet<PaymentTerm> PaymentTerms => Set<PaymentTerm>();

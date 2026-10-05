@@ -1,0 +1,103 @@
+🟠 EstimateOrderLine:
+     QtySellCustomer   [dan xuat tai BizHTC.zTemp.cs:18561]
+     QtySellDealer   [dan xuat tai BizHTC.zTemp.cs:18570]
+     QtyInStock   [dan xuat tai BizHTC.zTemp.cs:18579]
+     QtyBuyDealer   [dan xuat tai BizHTC.zTemp.cs:18597]
+     QtyUnKnown   [dan xuat tai BizHTC.zTemp.cs:18606]
+     QtyBOChuaXuatKho   [dan xuat tai BizHTC.zTemp.cs:18615]
+     QtyBOKhongVINQuaKhu   [dan xuat tai BizHTC.zTemp.cs:18633]
+     QtyBOKhongVINHienTai   [dan xuat tai BizHTC.zTemp.cs:18642]
+     QtyBOKhongVINTuongLai   [dan xuat tai BizHTC.zTemp.cs:18651]
+     QtyOrdNotCarID   [dan xuat tai BizHTC.zTemp.cs:34177]
+🟠 VatInvoice:
+     ValGoodsNotTaxable   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:237]
+     ValGoodsNotChargeTax   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:245]
+     ValGoodsVAT5   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:253]
+     ValGoodsVAT10   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:269]
+     TotalValInvoice   [dan xuat tai BizHTC.InvoiceHTC_TCG.cs:226]
+     TotalValVAT   [dan xuat tai BizCarSv.Inventory.StockIn.cs:9498]
+     TotalValPmt   [dan xuat tai BizCarSv.ZTemp.cs:16089]
+🟠 FnExpCalcLine:
+     FnDepositAmount   [dan xuat tai BizHTC.zTemp.cs:36202]
+     FnDepositCountDate   [dan xuat tai BizHTC.zTemp.cs:36142]
+     FnGrtAmount   [dan xuat tai BizHTC.zTemp.cs:36210]
+     FnGrtCountDate   [dan xuat tai BizHTC.zTemp.cs:36152]
+     FnTotalAmount   [dan xuat tai BizHTC.zTemp.cs:36239]
+🟠 Quota:
+     QtyCondition   [dan xuat tai Biz.HTC.WH.cs:75910]
+     QtyPromotion   [dan xuat tai Biz.HTC.WH.cs:75911]
+🟠 PdiFeePaymentLine:
+     CostInCheck   [dan xuat tai 0.34.Contract.cs:29629]
+     CostOutCheck   [dan xuat tai 0.34.Contract.cs:29635]
+🟠 OrderPartLine:
+     ExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1731]
+     TotalQuantityInExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1763]
+🟠 OrdOrderPlanHtmvDetail:
+     QtySalesOrderP   [dan xuat tai zTemp.0.30.Order.cs:9117]
+     QtyStockDealer   [dan xuat tai zTemp.0.30.Order.cs:9120]
+🟠 HrSalesManOfMonth:
+     QtySMWorking   [dan xuat tai BizHTC.zzzzCode.cs:12859]
+     QtySMNoWorking   [dan xuat tai BizHTC.zzzzCode.cs:12874]
+🟠 HrSalesManOfMonthDtl:
+     ListDealerHyundai   [dan xuat tai Biz.HTC.WH.Rel.20230823.cs:17777]
+     ViolateNumber   [dan xuat tai CommonSQLQuery.cs:1500]
+🟠 PmtPaymentStorageDetail:
+     InCostStorageDate   [dan xuat tai 0.34.Contract.cs:26207]
+     OutCostStorageDate   [dan xuat tai 0.34.Contract.cs:26267]
+🟠 PmtPaymentPdiDetail:
+     CostInCheck   [dan xuat tai 0.34.Contract.cs:29629]
+     CostOutCheck   [dan xuat tai 0.34.Contract.cs:29635]
+🟠 PmtLine:
+     AmountAccum   [dan xuat tai BizHTC.Common.cs:1630]
+🟠 GpsPayment:
+     TotalAfterVAT   [dan xuat tai 0.34.Contract.cs:26318]
+🟠 StoragePayment:
+     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
+🟠 PdiFeePayment:
+     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
+🟠 TransportInsPayment:
+     TotalBeforeVAT   [dan xuat tai 0.34.Contract.cs:26319]
+🟠 SalesManViolate:
+     ViolateNumber   [dan xuat tai CommonSQLQuery.cs:1500]
+🟠 PartStockIn:
+     FlagOrderNCC   [dan xuat tai BizCarSv.Inventory.StockIn.cs:3545]
+🟠 TstExchangeUnit:
+     ExchangeRate   [dan xuat tai BizCarSv.A.02.OrderPart.cs:1731]
+🟠 StockAdjLine:
+     QtyBalance   [dan xuat tai RptSQLQuery.cs:705]
+🟠 Dms40SoRootDetail:
+     CancelQuantityTotal   [dan xuat tai Delete.BizHTC.zTemp.cs:23003]
+🟠 PartCostSnapshot:
+     TotalValue   [dan xuat tai BizHTC.zTemp.cs:8348]
+🟠 SysObject:
+     ObjectType   [dan xuat tai BizCarSv.ZTemp.cs:16186]
+🟠 PmtPaymentPdi:
+     TotalAmountAfterVAT   [dan xuat tai BizCarSv.WH.cs:21666]
+🟠 RqBankingTransCtr:
+     AssemblyStatus   [dan xuat tai BizHTC.Report.cs:12027]
+🟠 RqBankingTransWrtCtr:
+     AssemblyStatus   [dan xuat tai BizHTC.Report.cs:12027]
+🟠 CarSpec:
+     AssemblyStatus   [dan xuat tai BizHTC.Report.cs:12027]
+🟠 BankingTrans:
+     DisbursementDate   [dan xuat tai BizHTC.VietinBank.cs:792]
+🟠 DlrContractDetail:
+     TotalAmountAfterVAT   [dan xuat tai BizCarSv.WH.cs:21666]
+🟠 BankCarMortage:
+     DeliveryRangeType   [dan xuat tai BizHTC.Report.cs:4049]
+🟠 BankGuaranteeDtl:
+     DiscountValue   [dan xuat tai BizHTC.Report.cs:13171]
+🟠 BankPaymentCar:
+     AmountAccum   [dan xuat tai BizHTC.Common.cs:1630]
+🟠 ServiceStockInLine:
+     TotalBeforeVat   [dan xuat tai 0.34.Contract.cs:26319]
+🟠 PartQuoteLine:
+     AmountBeforeVat   [dan xuat tai BizCarSv.Inventory.Quote.cs:2071]
+🟠 VinProductionYear:
+     AssemblyStatus   [dan xuat tai BizHTC.Report.cs:12027]
+
+TONG: nguon co 6849 cot GHI, 2150 ten trong nhu DAN XUAT; 62 property MiniHTC CON nghi la DAN XUAT (tren 35 entity).
+   (1 cot da kiem tay o #381 va LOAI — xem danh sach CLEARED dau file)
+⚠️  Day chi la GOI Y — phai mo ham Create/Update cua nguon xac nhan truoc khi sua.
+⚠️  DIEM MU: 859/6061 lenh SaveData KHONG liet ke cot (ghi moi cot client gui)
+    => voi nhung bang do, "0 hit ghi" KHONG chung minh duoc gi.

@@ -15,8 +15,34 @@ public sealed class Area
 }
 
 /// <summary>Đại lý (Mst_Dealer) — port 1:1 FrmDealer (2010.HTC/Admin/Dealer).</summary>
+/// <summary>🔴 #375 §12 TIÊU ĐỀ BÁO CÁO theo đại lý (`Mst_ReportHeader`) — phần đầu thư in trên mọi
+/// biểu mẫu. **BA nơi trong nguồn đọc bảng này với BA hành vi khác nhau**, xem `/api/reportheaders`.</summary>
+public sealed class ReportHeader
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string? DealerName { get; set; }
+    public string? CompanyName { get; set; }
+    public string? CompanyAddress { get; set; }
+    public string? Website { get; set; }
+    /// <summary>🔴 Tên cột nói 'phòng trưng bày' nhưng nguồn trả ra dưới nhãn **Tel**.</summary>
+    public string? Showroom1 { get; set; }
+    /// <summary>🔴 Trả ra dưới nhãn **Fax**.</summary>
+    public string? Showroom2 { get; set; }
+    /// <summary>🔴 Trả ra dưới nhãn **Mobile**.</summary>
+    public string? Showroom3 { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class Dealer
 {
+    /// <summary>🔴 #395 §12 ĐỊA CHỈ WEB SERVICE CỦA ĐẠI LÝ (`WSUrlAddr` trong `CmCt_Mst_Network`).
+    /// HTC duyệt đề nghị bảo hành xong **gọi thẳng web service của đại lý**
+    /// (`Ser_ROWarrantyReport_HTCApproved_ForDealer`); thiếu địa chỉ này thì nguồn **ném lỗi**
+    /// `Ser_ROWarrantyReport_WSUrlAddr_NotFound` và **KHÔNG duyệt**. Xem
+    /// `POST /api/warrantyclaims/{id}/action`.</summary>
+    public string? WsUrlAddr { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string DealerCode { get; set; } = "";
@@ -63,6 +89,11 @@ public sealed class Dealer
     public string? CtrNoSignerPosition { get; set; }
     public string? Remark { get; set; }
     public string? HTCStaffInCharge { get; set; }
+    /// <summary>🔴 #977 §12 `Mst_Dealer.WarrantyStaffInCharge` — cột RIÊNG, KHÁC `HTCStaffInCharge` (nhân
+    /// viên phụ trách CHUNG). Nguồn `Ser_ROWarrantyReportHTC_Get_New20230417` (`BizCarSv.WarrantyReport.cs:
+    /// 17780`, máy 150) dùng cột này làm CẢ mệnh đề lọc (`strWarrantyStaffInChargeConditionList`) LẪN cột
+    /// trả về (`dl.WarrantyStaffInCharge`) — cho biết NHÂN VIÊN HTC phụ trách xử lý bảo hành của đại lý đó.</summary>
+    public string? WarrantyStaffInCharge { get; set; }
     public string? DealerAddress01 { get; set; }
     public string? DealerAddress02 { get; set; }
     public string? DealerAddress03 { get; set; }
@@ -78,6 +109,18 @@ public sealed class Dealer
     public string? FlagDoiTac { get; set; } = "0";
     /// <summary>`TCKTEmail` — email phòng Tài chính kế toán của đại lý.</summary>
     public string? TCKTEmail { get; set; }
+
+    // ===== 🔴 #269: hai mã ĐĂNG KÝ VỚI HỆ HCC (`Mst_Dealer.OrgHCCID` / `NetworkHCCID`) =====
+    /// <summary>`OrgHCCID` — mã tổ chức bên HCC. **Cổng chặn của cả job NoShow**: nguồn lọc
+    /// `and md.OrgHCCID is not null` ở CẢ HAI câu (chọn đại lý và ghép dữ liệu) ⇒ đại lý chưa đăng ký
+    /// HCC thì không bao giờ được đẩy.</summary>
+    /// <summary>🔴 #335 FLAGDEALERHTC — đại lý có thuộc mạng lưới **HTC** hay không. Job sinh KPI của
+    /// nguồn lọc `and t.FlagDealerHTC = '1'` **cùng với** `FlagActive = '1'` và loại đích danh `VN101`
+    /// (đại lý idocNet Test). Thiếu cột này thì không thể lọc đúng đại lý được sinh báo cáo.</summary>
+    public string? FlagDealerHTC { get; set; }
+    public string? OrgHCCID { get; set; }
+    /// <summary>`NetworkHCCID` — mã mạng lưới bên HCC (khác `NetworkID` của bảng `CmCt_Mst_Network`).</summary>
+    public string? NetworkHCCID { get; set; }
 }
 
 /// <summary>Bảng giá xe (Mst_CarPrice) — port 1:1 FrmCarPrice: giá theo Model/Spec/Color.</summary>
@@ -485,15 +528,22 @@ public sealed class Bom
     public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
 }
 
 /// <summary>Dòng BOM: 1 phụ tùng + số lượng định mức.</summary>
 public sealed class BomLine
 {
+    // ===== 🔴 #720 §12 — hai cột nguồn `Mst_BOMDtl` dùng để nối, mà bản port thiếu.
+    //   Nguồn: `inner join Mst_BOMDtl mbdt on mb.**BOMCode** = mbdt.BOMCode`
+    //          `inner join Ser_MST_Part smp on mbdt.**PartCode** = smp.PartCode`
+    //   ⚠️ `BomId` (khoá ngoại số) KHÔNG thay được `BOMCode`: nguồn nối bằng **mã chuỗi** giữa hai CSDL.
+    public string? BOMCode { get; set; }
+    public string? PartCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long BomId { get; set; }
-    public string PartCode { get; set; } = "";   // #394 rename PartSku→PartCode (Mst_BOMDtl.PartCode)
     public string? PartName { get; set; }
     public decimal QtyMin { get; set; } = 1;     // #394 rename Qty→QtyMin (Mst_BOMDtl.QtyMin — định mức tối thiểu)
 
@@ -572,7 +622,12 @@ public sealed class Quota
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 
-    // --- ⛔ Bốn cột dưới đây KHÔNG có ở nguồn (port cũ hiểu sai). Giữ để đọc dữ liệu cũ, không ghi mới. ---
+    // #1259 CẬP NHẬT (thay ghi chú cũ "port cũ hiểu sai... không ghi mới" — không còn đúng): bốn cột dưới
+    // đây KHÔNG thuộc `Mst_Quota` gốc nhưng vẫn là tính năng SỐNG, KHÁC HẲN — "hạn mức xe theo model+kỳ"
+    // (`/api/quotas`, `/api/quotas/adjust`), dùng CHUNG bảng vật lý `Quotas` với `Mst_Quota` (khoá bằng
+    // `QuotaCode`, bắt buộc) nhưng khoá riêng của cụm này là `ModelCode` (bắt buộc, luôn rỗng ở dòng
+    // `Mst_Quota`). Cả hai `GET` đã lọc riêng để không dính dòng "rác" của nhau (`QuotaCode`/`ModelCode`
+    // rỗng) — xem `GET /api/mstquotas` và `GET /api/quotas`.
     public string ModelCode { get; set; } = "";
     public string Period { get; set; } = "";   // YYYYMM
     public int Qty { get; set; }
@@ -2247,12 +2302,24 @@ public sealed class TcgSalePrice
 /// header lệnh sửa chữa xe tại xưởng dịch vụ. HasRO→InGarage→Repaired→CheckEnd→Paid→Finished.</summary>
 public sealed class RepairOrder
 {
+    /// <summary>🔴 #446 §12 APPID — khoá nối LỆNH SỬA về CUỘC HẸN sinh ra nó.
+    /// Nguồn lọc `BuildClauseConditionList("and", "ro.**AppId**", strAppId, "|")` trong
+    /// `Ser_RO_Get_ByAppId` (`BizCarSv.Appointment.cs:2086`) — đây là cách màn lịch hẹn biết
+    /// "cuộc hẹn này đã có báo giá chưa" để đổi nhãn nút giữa *Tạo báo giá* và *Xem báo giá*.
+    /// Thiếu cột này thì **không có đường nào đi từ cuộc hẹn sang báo giá**.</summary>
+    public long? AppId { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string RONo { get; set; } = "";
     public string LicensePlate { get; set; } = "";     // biển số
     public string? Vin { get; set; }
-    public string? CusName { get; set; }               // chủ xe
+    /// <summary>
+    /// ⚠️ #301 SỬA CHÚ THÍCH SAI: đây **KHÔNG phải "chủ xe"**. Nguồn tách hẳn hai khái niệm:
+    ///   `CusName   = isnull(ro.CusName, isnull(cus.ContName, cus.CusName))` — **người mang xe đến**
+    ///   `OwnerName = cus.CusName` (thẳng, không dự phòng)                   — **chủ xe** trên hồ sơ
+    /// Xe công ty đi bảo dưỡng thì hai tên này khác nhau; gộp làm một là mất thông tin đối chiếu.
+    /// </summary>
+    public string? CusName { get; set; }
     public string? Km { get; set; }                    // số km
     public DateTime? CheckInDate { get; set; }         // khách tới
     public DateTime? PlanedDeliveryDate { get; set; }  // dự kiến giao
@@ -2269,74 +2336,229 @@ public sealed class RepairOrder
     // Bổ sung 2026-09-05 cho màn Lịch sử dịch vụ (FrmServiceHistory) — lưới gốc hiển thị các cột này;
     // nguồn `Ser_ServiceHistory_Get` (BizCarSv.Service01.cs:432) select `ro.*` join Ser_Customer + Ser_Car.
     public string? DealerCode { get; set; }            // Ser_RO.DealerCode — dùng cho luật CanShowDetail
+
+    /// <summary>
+    /// 🔴 #283 CREATOR — người lập lệnh sửa chữa (`Ser_RO.Creator`). Cần cho màn tra CHÉO ĐẠI LÝ của tổng
+    /// đài iCIC: cột này bị **CHE thành `******`** khi đại lý gọi API xem lệnh của đại lý khác.
+    /// </summary>
+    public string? Creator { get; set; }
+
+    /// <summary>
+    /// 🔴 #310 RECEPTIONFNO — phiếu TIẾP NHẬN sinh ra lệnh này. Port cũ chỉ có chiều ngược
+    /// (<c>Reception.RONO</c>) và là **một cột đơn** ⇒ mô hình hoá quan hệ **1-1**.
+    /// Nguồn là **1-nhiều**: `Ser_ReceptionF_Delivery` (`Tab.cs:8487`) lấy số lệnh bằng
+    ///   `select top 1 t_ro.RONo from Ser_RO t_ro where t.ReceptionFNo = t_ro.ReceptionFNo order by t_ro.CreatedDate desc`
+    /// ⇒ **một phiếu tiếp nhận có thể sinh NHIỀU lệnh**, màn giao xe hiện **lệnh TẠO GẦN NHẤT**.
+    /// ⚠️ Ngay trên đó, dòng đọc thẳng `--, ro.RONo` **đã bị comment** — luật B: port dòng ĐANG CHẠY.
+    /// </summary>
+    public string? ReceptionFNo { get; set; }
+
+    // ===== 🔴 #320 PARITY VỚI BẢN LIVE `Ser_RO_Create_New20230220` (`Service.RO.cs:3001`) =====
+    // 🆕 Tìm bằng sweep MỚI `_audit/sweep_twin_column_delta.js`: so **TẬP CỘT ĐƯỢC GHI** giữa các bản
+    //   cùng gốc. Cụm `Ser_RO_Create` có **9 bản**, chênh tới **28 cột**: bản LIVE ghi **61** cột,
+    //   bản trần chỉ **51**. Port cũ có 50 ⇒ thiếu 30 (3 trong đó chỉ là đổi tên).
+    // ⚠️ TRACE TWIN đã làm: WS `:10603` gọi `_New20230220` ⇒ 8 bản còn lại CHẾT.
+    public string? AdvisoryCode { get; set; }        // CVDV tư vấn
+    public string? AdvisoryPhone { get; set; }
+    /// <summary>CARID — khoá kỹ thuật của xe, **KHÁC** `Vin` (số khung). Nguồn ghép xe theo cột này.</summary>
+    public string? CarID { get; set; }
+    public string? CarWashRequested { get; set; }    // khách yêu cầu rửa xe
+    public string? CusTypeID { get; set; }           // loại KH — bản chụp trên lệnh (chuỗi isnull #301)
+    public string? DlrPDIReqNo { get; set; }         // số yêu cầu PDI của đại lý
+    public string? EngineerID { get; set; }
+    /// <summary>#917 §12 — nguồn `Ser_RO_UpdateDPTD` (`BizCarSv.Service01.cs:9241`, LIVE) ghi CẢ BA cột
+    /// `DPRemark`/`EngineerID`/`CavityID` trong CÙNG một lần điều phối; port cũ chỉ có `EngineerID`.</summary>
+    public string? DPRemark { get; set; }
+    /// <summary>CavityID điều phối ở cấp LỆNH (khác `Ser_App.CavityID` của lịch hẹn) — nguồn `Ser_RO_UpdateDPTD`.</summary>
+    public string? CavityID { get; set; }
+    public string? FlagOnlyPoint { get; set; }
+    public string? FlagPause { get; set; }           // tạm dừng sửa chữa
+
+    // ===== 🔴 #341 HAI MỐC còn thiếu của chuỗi trạng thái (`SerROStatusUpdate`) =====
+    /// <summary>CHECKENDDATE — mốc **KIỂM TRA CUỐI CÙNG** (bước `CheckEnd`).
+    /// Nguồn lưu `"yyyy-MM-dd HH:mm"` ⇒ cắt GIÂY, như mọi mốc khác của lệnh.</summary>
+    public DateTime? CheckEndDate { get; set; }
+
+    /// <summary>TOTALACTHOURS — **tổng giờ công thực tế** của lệnh, ghi kèm ở bước `Repaired`.
+    /// ⚠️ Nguồn chỉ ghi khi tham số **khác rỗng** (`if (!IsEmpty(strTotalActHours))`) ⇒ rỗng thì
+    /// GIỮ NGUYÊN giá trị cũ — khác nhóm "rỗng = xoá" của đường sửa xe (#334).</summary>
+    public decimal? TotalActHours { get; set; }
+    public string? IDCardNo { get; set; }            // CMND/CCCD — bản chụp trên lệnh (chuỗi isnull #301)
+    public string? InsNo { get; set; }               // số đơn bảo hiểm
+    public decimal? InsuranceDeductible { get; set; }// mức khấu trừ bảo hiểm
+    public string? InvoiceBy { get; set; }
+    public string? LevelOfInspection { get; set; }   // mức kiểm tra
+    public string? ModifyBy { get; set; }
+    public DateTime? ModifyDate { get; set; }
+    public string? PayByCard { get; set; }
+    public string? PlanedDuration { get; set; }     // thời lượng dự kiến
+    public DateTime? ReminderMaintanceDate { get; set; }  // nhắc bảo dưỡng (nguồn viết thiếu chữ "e": Maintance)
+    public string? ReminderMaintanceKm { get; set; }
+    public string? ServiceStatus { get; set; }       // ⚠️ KHÁC `Status` (trạng thái lệnh) — trục riêng
+    public string? TermsOfRepair { get; set; }
+    public string? UseSHPart { get; set; }           // dùng phụ tùng SH
+    public string? WorkDoneSoon { get; set; }        // yêu cầu làm nhanh
+    public string? CreatedBy { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+
+    // ===== 🔴 #321 PARITY `Ser_RO_Update_New20230220` (`Service.RO.cs:4069`) =====
+    // Cụm `Ser_RO_Update` có **8 bản**, chênh **23 cột**; WS `:10794` gọi `_New20230220` ⇒ 7 bản kia CHẾT.
+    // Bản Update ghi **7 cột mà bản Create KHÔNG có** — đây là các trường phát sinh TRONG QUÁ TRÌNH sửa.
+
+    /// <summary>🔴 BỐN VAI TRÒ KỸ THUẬT ghi cùng chỗ với `Assistant` (cố vấn dịch vụ, đã có):
+    /// `Engineer` kỹ thuật viên · `QA` kiểm định · `Operator` thợ vận hành · `QuanDoc` **quản đốc**.
+    /// ⚠️ Cả năm ghi **VÔ ĐIỀU KIỆN** (`Rows[0]["X"] = strX` + `alEffectiveColumn.Add`) ⇒ truyền rỗng là
+    ///    **XOÁ** người đang gán, không phải "giữ nguyên". Khác hẳn nhóm ngày bên dưới.</summary>
+    public string? Engineer { get; set; }
+    public string? QA { get; set; }
+    public string? Operator { get; set; }
+    /// <summary>QUANDOC — quản đốc xưởng (nguồn để nguyên tiếng Việt không dấu trong tên cột).</summary>
+    public string? QuanDoc { get; set; }
+
+    /// <summary>
+    /// 🔴 SCHEDULEDATE — ngày HẸN vào xưởng. Ghi **VÔ ĐIỀU KIỆN** qua
+    /// `Convert.ToDateTime(strScheduleDate).ToString("yyyy-MM-dd HH:mm")`.
+    /// ⚠️ **KHÔNG có guard rỗng** ⇒ nguồn **ném `FormatException`** nếu tham số rỗng/không parse được.
+    ///    Cùng rủi ro với `CheckInDate` (cũng vô điều kiện), trong khi `StartDate`/`FinishedDate` thì CÓ guard.
+    ///    Bất đối xứng này CÓ THẬT trong một hàm — xem chú thích ở endpoint.
+    /// ⚠️ Định dạng `"yyyy-MM-dd HH:mm"` ⇒ nguồn **cắt mất GIÂY** khi lưu.
+    /// </summary>
+    public DateTime? ScheduleDate { get; set; }
+
+    /// <summary>STARTDATE — giờ BẮT ĐẦU sửa. Nguồn CÓ guard `if (IsNullOrEmpty) {} else {…}` ⇒ rỗng thì
+    /// **GIỮ NGUYÊN** giá trị cũ (đối xứng với `FinishedDate`).</summary>
+    public DateTime? StartDate { get; set; }
+
     public string? TrademarkNameModel { get; set; }    // Ser_RO.TrademarkNameModel — hiệu/dòng xe
-    public string? ColorCode { get; set; }             // Ser_Car.ColorCode — màu xe
+    public string? ColorCode { get; set; }             // #301: ro.ColorCode (BẢN CHỤP), car chỉ dự phòng
+
+    // ===== 🔴 #301 BẢN CHỤP KHÁCH + XE TRÊN CHÍNH LỆNH SỬA CHỮA =====
+    // Nguồn LIVE `Ser_RO_GetStatusList02_WH_New20230220` (`BizCarSv.Service.RO.cs:840`, đọc ở :990-1035)
+    // trả **mọi** thông tin khách/xe qua `isnull(ro.X, <master>.X)` ⇒ **lệnh giữ bản chụp của riêng nó,
+    // bảng master chỉ là DỰ PHÒNG**. Sửa hồ sơ khách/xe hôm nay **không được** làm đổi lệnh của năm ngoái.
+    // Port cũ đọc thẳng cột của lệnh, không có cột chụp nào trong số này ⇒ mất cả bản chụp lẫn dự phòng.
+    public string? CusID { get; set; }
+    public string? CusAddress { get; set; }
+    public string? CusTel { get; set; }
+    public string? CusMobile { get; set; }
+    public string? CusTaxCode { get; set; }
+    public string? ModelID { get; set; }
+    public string? EngineNo { get; set; }
+    public string? TradeMarkCode { get; set; }
+    public string? BatteryNo { get; set; }
+    public string? SerialNo { get; set; }
+    public DateTime? WarrantyRegistrationDate { get; set; }
+    public DateTime? WarrantyExpiresDate { get; set; }
+    public decimal? WarrantyKM { get; set; }
     public string? Assistant { get; set; }             // Ser_RO.Assistant — cố vấn dịch vụ
     public DateTime? ActualDeliveryDate { get; set; }  // Ser_RO.ActualDeliveryDate — "Giờ giao xe thực tế"
     public DateTime? FinishedDate { get; set; }        // Ser_RO.FinishedDate — khoá sắp xếp (order by desc)
     // ===== #367 cột header Ser_RO port cũ thiếu — `Ser_RO_Create_New20220926` (BizCarSv.ZTemp.cs:6258, WS WSCarSv.asmx.cs:10782) ====
-    public string? Creator { get; set; }
-    public string? CusID { get; set; }
-    public string? CusAddress { get; set; }
-    public string? CusTel { get; set; }
-    public string? PlanedDuration { get; set; }
-    public string? CarWashRequested { get; set; }
-    public string? UseSHPart { get; set; }
-    public string? PayByCard { get; set; }
-    public string? ReceptionFNo { get; set; }   // phiếu tiếp nhận (#355) — StandardizeParam, phải tồn tại
-    public DateTime? ReminderMaintanceDate { get; set; }   // hẹn bảo dưỡng lần sau (ngày) — client gọi "ReminderDate"
-    public string? ReminderMaintanceKm { get; set; }   // hẹn bảo dưỡng lần sau (km) — client gọi "ReminderKm"
-    public string? WorkDoneSoon { get; set; }
-    public string? TermsOfRepair { get; set; }   // điều khoản sửa chữa — client gọi "TermOfUse"
-    public string? CarID { get; set; }
-    public string? InsNo { get; set; }
-    public string? InvoiceBy { get; set; }
-    public string? AdvisoryCode { get; set; }
-    public string? AdvisoryPhone { get; set; }
     public string? IsReRepair { get; set; }
-    public DateTime? ModifyDate { get; set; }
-    public string? ModifyBy { get; set; }
-    public string? EngineerID { get; set; }   // nguồn gán DBNull lúc tạo
-    public string? FlagPause { get; set; }   // nguồn gán Flag.Active "1" lúc tạo
     public string? CardNo { get; set; }
-    public string? FlagOnlyPoint { get; set; }   // rỗng ⇒ "0", khác ⇒ StandardizeFlag
     public string? ROType { get; set; }
-    public string? DlrPDIReqNo { get; set; }   // chỉ giữ khi ROType = "PDI", ngược lại ""
-    public string? ServiceStatus { get; set; }   // nguồn gán Flag.Inactive "0" lúc tạo
-    public string? LevelOfInspection { get; set; }   // "1" | "2" | "3" — Ser_RO_CheckInput_InvalidLevelOfInspection
-    public decimal? InsuranceDeductible { get; set; }   // StandardizeDouble(…, 0)
     public DateTime? CreatedDate { get; set; }
-    public string? CreatedBy { get; set; }
-    public DateTime? LogLUDateTime { get; set; }
-    public string? LogLUBy { get; set; }
     // ===== #368 cột header Ser_RO do `Ser_RO_Update_New20220926` (BizCarSv.ZTemp.cs:13209) ghi — port cũ thiếu ====
-    public string? Engineer { get; set; }
-    public string? QA { get; set; }
-    public string? Operator { get; set; }
-    public string? QuanDoc { get; set; }
-    public DateTime? ScheduleDate { get; set; }
-    public DateTime? StartDate { get; set; }
     // ===== #407 parity Ser_RO — mốc do `SerROStatusUpdate` (BizCarSv.Service01.cs:8754) ghi khi chuyển trạng thái =====
-    /// <summary>Ngày kiểm tra cuối (`CheckEndDate`) — ghi khi RPRD → CEND, = strStatusDate tới phút.</summary>
-    public DateTime? CheckEndDate { get; set; }
     /// <summary>Ngày thanh toán xong (`PaidCreatedDate`) — ghi khi CEND → PAID, = strStatusDate tới phút.</summary>
     public DateTime? PaidCreatedDate { get; set; }
     /// <summary>`IsCusPaymentAll`: "1" khách trả toàn bộ · "0" ghi nợ cho bảo hiểm — ghi khi CEND → PAID (lưu nguyên tham số).</summary>
     public string? IsCusPaymentAll { get; set; }
-    /// <summary>#409 `Ser_RO.AppId` — lịch hẹn gắn với báo giá/RO (= <c>ServiceAppointment.Id</c>). Ghi bởi `Ser_RO_UpdateAppId`
-    /// (BizCarSv.Appointment.cs:1955) từ FrmQuotation (tạo báo giá từ lịch hẹn) và FrmQuotationApp (tạo lịch hẹn từ báo giá).</summary>
-    public long? AppId { get; set; }
-    /// <summary>#418 `Ser_RO.TotalActHours` — tổng giờ sửa thực tế (GetTotalActualHours) ghi khi RO sang RPRD.</summary>
-    public decimal? TotalActHours { get; set; }
 
     // ===== #392 Ser_RO_CreateRO (BizCarSv.Service01.cs:6776): khi chuyển báo giá CRE → HRO ghi người/ngày tạo RO =====
     public string? ROCreateBy { get; set; }
     public DateTime? ROCreateDate { get; set; }
+
+    // ===== 🔴 #266: 10 cột THẺ HỘI VIÊN / ĐIỂM của `TblSerRO` (DbDefine.cs:864-875) =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261) — chúng nằm ở KHỐI PHỤ cuối lớp hằng.
+    // ⚠️ TRACE: chỉ file `Views/Services/FrmInvoice.cs` (SỐNG, md5 `4c587940` — KHỚP 2 máy) dùng thật.
+    //    Các file `FrmInvoice - Copy.cs` / `- Copy (2).cs` **KHÔNG có trong .csproj ⇒ DEAD**, không tin.
+
+    /// <summary>FLAGCARDEXIST — khách có thẻ hội viên hay không.</summary>
+    public string? FlagCardExist { get; set; }
+    /// <summary>FLAGISDLQUERY — đã tra cứu thông tin hội viên hay chưa.</summary>
+    public string? FlagIsDLQuery { get; set; }
+
+
+    /// <summary>
+    /// 🔴 Nhóm hậu tố **`Inv`** = **CHỐT tại thời điểm lập HOÁ ĐƠN** (snapshot), KHÔNG phải giá trị hiện
+    /// tại của thẻ. Cùng họ với cặp `CostInit`/`CostActual` (#231): hoá đơn phải giữ số liệu lúc phát hành,
+    /// điểm/hạng đổi sau đó không được làm đổi hoá đơn cũ.
+    /// </summary>
+    public string? CardNoInv { get; set; }            // CARDNOINV — số thẻ lúc lập hoá đơn
+    public string? CardTypeInv { get; set; }          // CARDTYPEINV — hạng thẻ lúc lập hoá đơn
+    public string? CardTypeExpectInv { get; set; }    // CARDTYPEEXPECTINV — hạng DỰ KIẾN sau giao dịch
+    public decimal? PointEndInv { get; set; }         // POINTENDINV — điểm cuối kỳ
+    public decimal? PointRankTotalInv { get; set; }   // POINTRANKTOTALINV — tổng điểm xét hạng
+    public decimal? PointConsumptionPrm { get; set; } // POINTCONSUMPTIONPRM — điểm tiêu dùng
+
+    // ===== 🔴 #328 PARITY `SerROStatusUpdatePaid_New20230228` (`Service.RO.cs:5736`) =====
+    // TRACE TWIN: WS `:11483` gọi bản `_New20230228`; bản `_New20230220` ở `:11428` **đã bị comment**
+    //   ⇒ trong 7 bản của cụm này, bản có ngày MỚI NHẤT thắng — nhưng chỉ biết được nhờ đọc WS.
+
+
+    public decimal? AmountFromMC { get; set; }        // tiền do hãng (MC) chi trả
+    /// <summary>POINTTOTAL — **điểm tích XÉT HẠNG** của hội viên (chú thích nguồn).
+    /// ⚠️ KHÁC `PointRankTotalInv` = **điểm tích TIÊU DÙNG**. Hai loại điểm, tên gần giống nhau.</summary>
+    public decimal? PointTotal { get; set; }
+    public decimal? AmountDiscountOther { get; set; } // giảm giá khác
+
+    public string? MemberNo { get; set; }             // MEMBERNO — số hội viên (FrmInvoice.cs:707)
+
+    /// <summary>
+    /// 🔴 POINTVOUCHER — điểm quy đổi thành TIỀN GIẢM. `FrmInvoice.cs:648`:
+    ///   `AmountFinal = TongTienSauThue − AmountDiscount − AmountDiscountOther − PointVoucher`
+    /// ⇒ **trừ THẲNG vào tiền cuối cùng**, không phải chỉ để hiển thị.
+    /// (:1634 còn trừ tiếp `AmountFromMC` khi tính tổng sau sửa chữa.)
+    /// </summary>
+    public decimal? PointVoucher { get; set; }
+
+    // ===== 🔴 #277b: hai cột LỌC của màn chăm sóc 72h — nguồn đọc chúng ở **ĐẦU LỆNH** (`ro.`), không
+    //   phải ở dòng hạng mục. MiniHTC vốn chỉ có `RoServiceItem.ROType` (loại công việc TỪNG DÒNG) ⇒
+    //   nếu join nhầm sang đó thì lọc PDI sẽ sai hẳn tầng.
+
+    /// <summary>
+    /// 🔴 #271 `Ser_RO.SyncVelocaFlag` — LSC này đã đồng bộ sang hệ **Veloca** hay chưa ("1" = rồi).
+    /// Nguồn (`BizCarSv.ZTemp.cs:17559`) chỉ cho lấy LSC **chưa đồng bộ**:
+    ///   `and (t.SyncVelocaFlag is null or t.SyncVelocaFlag = '0')`
+    /// kèm chú thích của tác giả: *"trước phục vụ test nên mở cho 1 RO được đồng bộ nhiều lần"* ⇒ cờ này
+    /// là **chốt chống đồng bộ lặp**, không phải cột trang trí.
+    /// ⚠️ Cờ chỉ có ở nhánh LẤY MỘT LSC; nhánh TÌM KIẾM danh sách **không** lọc cờ này.
+    /// </summary>
+    public string? SyncVelocaFlag { get; set; }
+
+    /// <summary>
+    /// 🔴 #704 `Ser_RO.SyncVelocaDTime` — mốc thời gian đi kèm cờ trên. Nguồn
+    /// `OSVeloca_Ser_RO_UpdSyncVelocaFlag` ghi **cả hai** trong một câu `update`:
+    /// `set t.SyncVelocaFlag = '1', t.SyncVelocaDTime = @strLogLUDateTime`.
+    /// ⚠️ Nguồn tính `DateTime.Now` **ba lần** cho ba CSDL ⇒ ba giá trị có thể lệch giây.
+    /// </summary>
+    public DateTime? SyncVelocaDTime { get; set; }
+    // ===== #464 §12: hai khối JSON giao dịch Loyalty mà WebMethod thật KHÔNG nhận =====
+    /// <summary>`Crd_DealSerRO` dạng JSON — client dựng và gửi, nhưng WS live không khai tham số này.
+    /// MiniHTC nhận và LƯU để không mất dữ liệu (lệch nguồn CỐ Ý).</summary>
+    public string? CrdDealSerROJson { get; set; }
+    /// <summary>`Crd_DealSerRODtl` (danh sách dòng) dạng JSON — cùng lý do trên.</summary>
+    public string? CrdDealSerRODtlJson { get; set; }
 }
 
 /// <summary>Dòng công việc dịch vụ trong RO (Ser_RO_ServiceItems): mã CV + nguyên nhân + kết quả + kỹ thuật viên.</summary>
-public sealed class RoServiceItem
+// #827 Ser_ROHistory — lich su lenh sua chua (nguon: BizCarSv.Service01.cs:14298 SerROHistoryGet).
+// Khoa doc duoc tu Ser_RO_Delete (:5891): ROHID (khoa) + ROID. Cac cot khac CHUA biet — nguon dung select *.
+public sealed class RoHistory
 {
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROHID { get; set; } = "";
+    public string ROID { get; set; } = "";
+    public string Status { get; set; } = "";
+    public string? Reason { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class RoServiceItem{
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long RoId { get; set; }
@@ -2370,15 +2592,70 @@ public sealed class RoServiceItem
     /// <summary>Giờ công thực tế (ACTMANHOUR).</summary>
     public decimal? ActManHour { get; set; }
 
+    /// <summary>🔴 #342 INSURANCEPRICE — **giá hãng bảo hiểm đã duyệt** cho dòng này.
+    /// Quy tắc tính tiền công nợ bảo hiểm rẽ theo chính cột này:
+    ///   `when InsurancePrice > 0 then InsurancePrice` ⇒ dùng **NGUYÊN GIÁ THOẢ THUẬN**,
+    ///     KHÔNG nhân `Factor`, KHÔNG cộng VAT;
+    ///   `when isnull(InsurancePrice,0) <= 0 then <công thức thường>` ⇒ tính như dòng bình thường.
+    /// ⇒ Thiếu cột này thì mọi dòng rơi vào nhánh thường và số công nợ **luôn sai** khi có giá duyệt.</summary>
+    public decimal? InsurancePrice { get; set; }
     public decimal Amount { get; set; }                // tiền công
     // ===== #369 Ser_ROServiceItems — cột dòng Ser_RO_Create_New20220926 =====
     public string? ExpenseType { get; set; }   // đối tượng thanh toán TConst.Ser_ROType: ROREPAIR · ROINSURANCE · ROWARRANTY · LOCAL · GENERAL — bắt buộc
     public string? CamMarketingNo { get; set; }   // chiến dịch marketing (phải tồn tại + CamMarketingStatus "A")
     public string? FlagAccrual { get; set; }   // StandardizeFlag
     public string? Remark { get; set; }   // trim
+
+    /// <summary>🔴 #367 CAMID — mã **chương trình khuyến mại** áp cho dòng dịch vụ. Nguồn gửi Veloca
+    /// (`Table 20`) lọc mã này trên CHÍNH hai bảng dòng RO ⇒ **không có cột này thì bảng khuyến mại
+    /// gửi sang Veloca VĨNH VIỄN RỖNG**, chứ không phải "chưa có dữ liệu".</summary>
+    public string? CamID { get; set; }
+    /// <summary>#922 §12 — nguồn `Ser_ROServiceItems.Status` (khác `RepairOrder.Status` cấp LỆNH): trạng
+    /// thái HOÀN THÀNH của TỪNG hạng mục, cập nhật hàng loạt theo ItemID qua `Ser_RORepair_Update_
+    /// ServiceItemsStatus` — CHẶN sửa khi RO đã CheckEnd/Paid/Finished. Port cũ hoàn toàn chưa có cột này.</summary>
+    public string? Status { get; set; }
+    // ===== #969 §12 — đọc thấy ở `Ser_RO_GetX` (BizCarSv.Tab.cs:925-965): `Ser_ROServiceItems` còn
+    // `CamMarketingNo` (số phiếu marketing campaign, KHÁC `CamID` — mã khuyến mại) và `FlagAccrual`
+    // (cờ tích luỹ/dồn, nguồn không giải thích thêm) mà entity chưa từng có chỗ chứa.
+    // ===== #972 §12 — nguồn `Ser_ROServiceItems` (đọc thấy ở `Ser_ROInvoice_Get_New20220926`,
+    // `Service01.cs:4374-4396`) có CẢ HAI cột `Note` và `Remark` — HAI CỘT KHÁC NHAU, không phải một cột
+    // bị đặt tên nhầm như doc-comment cũ (#949) từng suy đoán. Port cũ chưa có cột nào trong hai cột này.
+    public string? Note { get; set; }
+    // #1051 §12 — `Ser_RO_Create_New20220926` (ZTemp.cs:6879-6880) ghi `LogLUDateTime`/`LogLUBy` cho
+    // MỖI dòng dịch vụ lúc tạo RO — entity chưa từng có chỗ chứa.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng trong RO (Ser_RO_PartItems): mã PT + ĐVT + SL cần + đơn giá.</summary>
+/// <summary>
+/// #253 ẢNH ĐÍNH KÈM LỆNH SỬA CHỮA `Ser_RO_Attachment` — port 1:1
+/// `Views/Services/FrmROAttachment.cs` (407 dòng, md5 `d81f1052` — KHỚP 2 máy).
+/// Cột lấy từ hằng của form (:26-30): `ID` · `IMAGE` · `IMAGEPATH` · `IMAGENAME` + khoá `RONO`.
+/// ⚠️ `RONo` hiển thị được form ghép tiền tố `"LS-"` (:203) — đó là **định dạng HIỂN THỊ**,
+///    KHÔNG lưu vào DB; port giữ mã trần.
+/// </summary>
+public sealed class RoAttachment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RONo { get; set; } = "";
+    public string ImageName { get; set; } = "";   // IMAGENAME — tên file, bị 4 guard (xem endpoint)
+    public string? ImagePath { get; set; }        // IMAGEPATH (thêm 2016-07-16 theo comment nguồn)
+    /// <summary>#879 §12 FLAGHMC — cờ "ảnh này có gửi lên HMC không". Nguồn `Ser_ROAttachment_UpdateFlagHMC`
+    /// (chỉ có trên cây `V20.2023.Release`) chỉ nhận đúng hai giá trị `Flag.Active`/`Flag.Inactive`.</summary>
+    public string? FlagHMC { get; set; }
+    /// <summary>#910 §12 — nguồn `Ser_ROAttachment_UpdateAttachmentType` (`BizCarSv.Service01.cs:12466`, LIVE)
+    /// ghi 3 cột này (`AttachmentType`, `ROWPTCode`, `Remark`) với GUARD: chặn sửa nếu RO đã có đề nghị bảo
+    /// hành (`Ser_ROWarrantyReport` = <see cref="ServiceWarrantyClaim"/>) đang ở trạng thái Sent/Accepted/
+    /// Confirmed — port cũ không có cả 3 cột lẫn guard.</summary>
+    public string? AttachmentType { get; set; }
+    /// <summary>ROWPTCode — mã loại ảnh báo cáo bảo hành (`RoWarrantyPhotoType`), rỗng ⇒ NULL ở nguồn.</summary>
+    public string? ROWPTCode { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class RoPartItem
 {
     public long Id { get; set; }
@@ -2407,6 +2684,30 @@ public sealed class RoPartItem
     public string? ExpenseType { get; set; }   // chỉ ROREPAIR · LOCAL · ROINSURANCE · ROWARRANTY
     public string? CamMarketingNo { get; set; }
     public string? FlagAccrual { get; set; }   // StandardizeFlag
+
+    /// <summary>🔴 #337 FLAGACCESSORY — dòng này là **PHỤ KIỆN** hay phụ tùng sửa chữa.
+    /// Báo cáo KPI cộng doanh thu phụ tùng với `and sri.FlagAccessory = '0'` ⇒ **loại phụ kiện ra**;
+    /// phụ kiện được cộng riêng ở nhóm khác. Từ vựng cờ "1"/"0".</summary>
+    public string? FlagAccessory { get; set; }
+
+    /// <summary>🔴 #342 INSURANCEPRICE — **giá hãng bảo hiểm đã duyệt** cho dòng này.
+    /// Quy tắc tính tiền công nợ bảo hiểm rẽ theo chính cột này:
+    ///   `when InsurancePrice > 0 then InsurancePrice` ⇒ dùng **NGUYÊN GIÁ THOẢ THUẬN**,
+    ///     KHÔNG nhân `Factor`, KHÔNG cộng VAT;
+    ///   `when isnull(InsurancePrice,0) <= 0 then <công thức thường>` ⇒ tính như dòng bình thường.
+    /// ⇒ Thiếu cột này thì mọi dòng rơi vào nhánh thường và số công nợ **luôn sai** khi có giá duyệt.</summary>
+    public decimal? InsurancePrice { get; set; }
+
+    /// <summary>#367 CamID — khuyến mại áp cho dòng phụ tùng (xem <see cref="RoServiceItem.CamID"/>).</summary>
+    public string? CamID { get; set; }
+    // ===== #969 §12 — cùng cặp cột thiếu như RoServiceItem, đọc thấy ở `Ser_RO_GetX` (BizCarSv.Tab.cs:979-1017).
+    // ===== #972 §12 — nguồn `Ser_ROPartItems` cũng có CẢ `Note` (đã có) LẪN `Remark` (chưa có) — hai cột
+    // khác nhau, đọc thấy ở `Ser_ROInvoice_Get_New20220926` (`Service01.cs:4398-4413`).
+    public string? Remark { get; set; }
+    // #1051 §12 — `Ser_RO_Create_New20220926` (ZTemp.cs:6944-6945) ghi `LogLUDateTime`/`LogLUBy` cho
+    // MỖI dòng phụ tùng lúc tạo RO — cùng gap như RoServiceItem.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):
@@ -2488,6 +2789,15 @@ public sealed class Reception
     public string? LUBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== MERGE session-a #271/#522/#1039 — cột nguồn Ser_ReceptionF mà nhánh master chưa có =====
+    /// <summary>🔴 SAI CHÍNH TẢ TRONG NGUỒN: `strRemarkErrOrther` — ghi chú lỗi khác lúc tiếp nhận (chép nguyên văn).</summary>
+    public string? RemarkErrOrther { get; set; }
+    /// <summary>#271 Lịch hẹn mà phiếu tiếp nhận thực hiện (`AppId` nguồn) — có thì đóng lịch hẹn HCC (HCC_Appointment_FinishOSX).</summary>
+    public string? AppNo { get; set; }
+    /// <summary>#1039 Thẻ hội viên quét lúc tiếp nhận (`strCardNo`/`strMemberNo`/`strCardType`).</summary>
+    public string? CardNo { get; set; }
+    public string? MemberNo { get; set; }
+    public string? CardType { get; set; }
 }
 
 /// <summary>#355 Dòng kiểm tra xe lúc tiếp nhận / giao (Ser_ReceptionFDtl). Khoá nguồn = (ReceptionFNo, ReceptionFAudCode, ReceptionFAudType).
@@ -2524,6 +2834,46 @@ public sealed class ReceptionFAttachFile
 
 /// <summary>Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate, TCMotor DMSCarSv/Inventory):
 /// nhập phụ tùng vào kho. Draft → Posted (ghi sổ, tăng tồn PartStock).</summary>
+/// <summary>🔴 #416 MỘT LẦN LƯU KHO CỦA MỘT PHỤ TÙNG (`Ser_Inv_PartInstance`) — bản ghi nối
+/// **phiếu NHẬP** với **phiếu XUẤT** của cùng một lô hàng ở cùng một vị trí kho.
+/// Đây là bảng mà mọi báo cáo lãi/lỗ phụ tùng dựa vào: không có nó thì không ghép được
+/// giá vốn với giá bán theo từng lô.</summary>
+public sealed class PartInstance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartID { get; set; }
+    /// <summary>⚠️ Nguồn lọc `Status not in ('4','5')` — **danh sách ĐEN**, không phải danh sách trắng.</summary>
+    public string? Status { get; set; }
+    public string? StockInNo { get; set; }
+    public long? StockInId { get; set; }
+    /// <summary>⚠️ Nguồn lọc `StockOutNo like '%%'` — trông như không lọc gì, nhưng `like` **loại NULL**
+    /// ⇒ thực chất là "chỉ lấy lô ĐÃ XUẤT". Một bộ lọc nghiệp vụ trá hình.</summary>
+    public string? StockOutNo { get; set; }
+    public long? StockOutId { get; set; }
+    public string? LocationID { get; set; }
+    public decimal Quantity { get; set; }
+    /// <summary>Giá nhập của lô (dự phòng khi dòng chi tiết phiếu nhập không có giá).</summary>
+    public decimal? SIPrice { get; set; }
+    /// <summary>Giá xuất của lô (dự phòng khi dòng chi tiết phiếu xuất không có giá).</summary>
+    public decimal? SOPrice { get; set; }
+    /// <summary>#472 `SIVAT` — %VAT lúc nhập, dùng trong công thức giá trị tồn của báo cáo kho:
+    /// `Price*Qty + SIVAT*0.01*Price*Qty`.</summary>
+    public decimal? SIVAT { get; set; }
+    public DateTime? DateIn { get; set; }
+    public DateTime? DateOut { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1180 §12 — nguon SerImpPartInstance (BizCarSv.Inventory.Stock.cs:1038+300-356) ghi du 4 cot nhat ky
+    // khi ghi tay mot lo ton kho qua kenh import doi tac.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class PartStockIn
 {
     public long Id { get; set; }
@@ -2554,6 +2904,63 @@ public sealed class PartStockIn
     /// <summary>#411 `Ser_Inv_StockIn.OrderPartId` — phiếu nhập theo đơn đặt phụ tùng đại lý (= <see cref="SerPartOrder"/>.Id).
     /// Kết thúc phiếu ⇒ cộng `DeliveryQuantity` của đơn; huỷ phiếu ⇒ trừ lại.</summary>
     public long? OrderPartId { get; set; }
+
+    // ===== 🔴 #244: 4 cột nguồn `Ser_Inv_StockIn` mà màn tra PT-cho-phiếu-thanh-toán CẦN =====
+    // Nguồn `Ser_Mst_Part_GetForSupplierPayment` (BizCarSv.Inventory.StockOut.cs:14890) select đủ 4 cột này.
+    public string? TSTRequestNo { get; set; }   // số yêu cầu xuất NCC
+    public string? BillNo { get; set; }         // số hoá đơn NCC
+
+    // ===== 🔴 #265: 16 cột nguồn `TblSerInvStockIn` (DbDefine.cs:1122-1148) mà port cũ THIẾU =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
+    public string? StockInID { get; set; }
+
+    /// <summary>
+    /// 🔴 #305 FLAGSYNCVELOCA — cờ đã đồng bộ phiếu NHẬP sang Veloca ("0" chưa · "1" đã).
+    /// Bộ lọc nguồn nhận **ba** giá trị: rỗng = **LẤY CẢ HAI** (`'' = @strFlagSyncVeloca or …`).
+    /// </summary>
+    public string FlagSyncVeloca { get; set; } = "0";
+
+    /// <summary>
+    /// 🔴 #305 SYNCVELOCADTIME — **THỜI ĐIỂM** đồng bộ, cột RIÊNG với cờ.
+    /// `OSVeloca_Ser_Inv_StockIn_UpdFlagSyncVeloca` (`StockIn.cs:9716`) ghi **cả hai cùng lúc**:
+    /// `set t.FlagSyncVeloca = '1', t.SyncVelocaDTime = @strLogLUDateTime`.
+    /// ⚠️ Và nguồn cho **lọc theo khoảng** `SyncVelocaDTimeFrom/To` ⇒ không phải cột trang trí:
+    /// thiếu nó thì không tra được "đã đẩy những phiếu nào trong khung giờ X".
+    /// ⚠️ Nguồn **cố ý KHÔNG** đụng `LogLUDateTime`/`LogLUBy` (hai dòng đó bị comment) — đồng bộ sang
+    /// đối tác **không tính là người dùng sửa chứng từ**.
+    /// </summary>
+    public DateTime? SyncVelocaDTime { get; set; }
+
+    public string? StatusText { get; set; }     // nguồn lưu CẢ NHÃN trạng thái
+    public string? UserCode { get; set; }
+
+    // --- khối VẬN CHUYỂN (4) — giống phiếu xuất (#264) ---
+    public string? DriverName { get; set; }
+    public string? DrivingLicense { get; set; }
+    public string? DriverID { get; set; }
+    public string? TruckNo { get; set; }
+
+    /// <summary>STOCKOUTNO — số phiếu XUẤT tương ứng (nhập do kho khác xuất sang).</summary>
+    public string? StockOutNo { get; set; }
+
+    // --- khối ĐIỀU CHỈNH (5) ---
+    /// <summary>🔴 `IsAdjustment` — phiếu nhập có **CỜ RIÊNG** đánh dấu là phiếu điều chỉnh,
+    /// KHÁC phiếu xuất (#264) vốn chỉ có `OldStockOutID`. Ở đây có **cả cờ lẫn Old ID**.</summary>
+    public string? IsAdjustment { get; set; }
+    public string? AdjustmentBy { get; set; }
+    public DateTime? AdjustmentDate { get; set; }
+    public string? AdjustmentNote { get; set; }
+    public string? OldStockInID { get; set; }
+
+    public string? OrderPartNo { get; set; }
+    public string? FlagOrderNCC { get; set; }
+
+    /// <summary>#1086 §12 — nguồn `SerStockInCreate` (StockIn.cs:635) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `SerStockInUpdate` (:1463) chỉ ghi LogLUDateTime/LogLUBy khi SỬA.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng nhập (Ser_Inv_StockInDetail): mã PT + vị trí + SL + đơn giá + VAT.</summary>
@@ -2571,6 +2978,29 @@ public sealed class PartStockInLine
     // ===== #377 [c] gộp song sinh Ser_Inv_Stock* — cột nguồn (DbDefine TblSerInv*) mang từ bản Service* sang bản chuẩn =====
     public decimal BeforeTax { get; set; }
     public decimal AfterTax { get; set; }
+
+    /// <summary>#244: đơn vị tính — nguồn lấy từ `Ser_MST_Part.Unit` qua join, màn tra hiển thị cột này.</summary>
+    public string? Unit { get; set; }
+
+    // ===== #1488 §12 — cột nguồn `Ser_Inv_StockInDetail` mà entity Mini CHƯA TỪNG có =====
+    // Căn cứ: `SerStockInDetailCreate` (`BizCarSv.Inventory.StockIn.cs:4535`) ghi đủ các cột dưới đây
+    // (bài học #547: đối chiếu khối insert của hàm Create/Update với entity, không chỉ đọc SELECT).
+    /// <summary>StockInNo — số phiếu nhập (nguồn ghi ở dòng chi tiết, không chỉ header).</summary>
+    public string? StockInNo { get; set; }
+    /// <summary>DealerCode — đại lý của dòng nhập (nguồn ghi ở dòng chi tiết).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (`Ser_MST_Part.PartID`), KHÁC `PartCode` là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>Description — mô tả dòng nhập (nguồn chỉ ghi khi không rỗng).</summary>
+    public string? Description { get; set; }
+    /// <summary>PlanLocationID — vị trí KẾ HOẠCH (nguồn ghi khi trạng thái Pending).</summary>
+    public string? PlanLocationID { get; set; }
+    /// <summary>ActualLocationID — vị trí THỰC TẾ (nguồn ghi khi trạng thái Executing).</summary>
+    public string? ActualLocationID { get; set; }
+    /// <summary>LogLUDateTime — nhật ký sửa dòng (nguồn ghi mỗi lần Create/Update).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>LogLUBy — người sửa dòng.</summary>
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Tồn kho phụ tùng (Ser_Inv_PartStock): số tồn theo kho + mã PT + vị trí. Cập nhật khi Post phiếu nhập/xuất.</summary>
@@ -2584,6 +3014,29 @@ public sealed class PartStock
     public string? Location { get; set; }
     public decimal OnHand { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>🔴 #1511 §12 — Tồn kho theo VỊ TRÍ (`Ser_Inv_StockBalance`), bảng nguồn CHƯA TỪNG có entity trong Mini.
+/// Nguồn `Ser_Mst_Part_PartExtra_Get` (`BizCarSv.Service.cs:4026`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:36303`) đọc
+/// bảng này để tính `InStockQuantity`/`InShipmentQuantity`/`CouldUseQuantity`/`InventoryQuantity`/`BalanceLocationId`.
+/// Cột nguồn (từ khối INSERT `BizCarSv.Inventory.Stock.cs:1499-1512`): `StockBalanceID`/`DealerCode`/`LocationCode`/
+/// `LocationID`/`PartID`/`InShipmentQuantity`/`InStockQuantity`/`CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy`.
+/// ⚠️ KHÁC `PartStock` (`Ser_Inv_PartStock`: WarehouseCode/PartCode/OnHand) — hai bảng khác nhau (bài học #554).</summary>
+public sealed class SerInvStockBalance
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? StockBalanceID { get; set; }
+    public string? DealerCode { get; set; }
+    public string? LocationCode { get; set; }
+    public string? LocationID { get; set; }
+    public string? PartID { get; set; }
+    public decimal InShipmentQuantity { get; set; }
+    public decimal InStockQuantity { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu xuất kho phụ tùng (Ser_Inv_StockOut — port 1:1 FrmStockOutCreate, TCMotor DMSCarSv/Inventory):
@@ -2604,6 +3057,8 @@ public sealed class PartStockOut
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? PostedAt { get; set; }
+
+    // `RejectBy`/`RejectDate`/`RejectDescription` của nguồn — port đặt tên `Rejected*`, giữ nguyên.
     public string? RejectReason { get; set; }
     public string? RejectedBy { get; set; }
     public DateTime? RejectedAt { get; set; }
@@ -2613,11 +3068,74 @@ public sealed class PartStockOut
     public string? Description { get; set; }
     /// <summary>#377 chỉ phục vụ chép song sinh: Id của bản Service* gốc (null = phiếu tạo trên bản chuẩn). Nối dòng theo cột này, KHÔNG theo số phiếu (hai bản cùng sinh số "SI/SO"+giờ ⇒ có thể trùng).</summary>
     public long? TwinSrcId { get; set; }
+
+    // ===== 🔴 #264: 13 cột nguồn `TblSerInvStockOut` (DbDefine.cs:1257-1283) mà port cũ THIẾU =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
+
+    /// <summary>
+    /// 🔴 #304 FLAGSYNCVELOCA — cờ **đã đồng bộ phiếu xuất sang Veloca**, port cũ THIẾU HẲN.
+    /// Nguồn đặt `Flag.Inactive` ("0") **ngay khi tạo** phiếu (4 chỗ: `StockOut.cs:704/753/1222/1271`,
+    /// ghi vào cả DB đại lý lẫn DB kho), rồi `OSVeloca_Ser_Inv_StockOut_UpdFlagSyncVeloca` nâng lên "1".
+    /// Bộ lọc của nguồn nhận **ba** giá trị: "0" chưa đồng bộ · "1" đã đồng bộ · **"" = LẤY CẢ HAI**
+    /// (`StockOut.cs:18468` + mệnh đề `( '' = @strFlagSyncVeloca or siso.FlagSyncVeloca = @… )`).
+    /// </summary>
+    public string FlagSyncVeloca { get; set; } = "0";
+
+    /// <summary>🔴 #305 SYNCVELOCADTIME — #304 port cờ nhưng **THIẾU mốc thời gian đi kèm**.
+    /// Nguồn `UpdFlagSyncVeloca` ghi CẢ HAI cùng lúc và cho lọc theo khoảng thời gian đồng bộ.</summary>
+    public DateTime? SyncVelocaDTime { get; set; }
+
+    /// <summary>#304 STOCKOUTDATETIME — mốc thời gian dùng để tính giá vốn bình quân và để đẩy sang
+    /// Veloca (`ApprDTimeUTC`). Khác <see cref="StockOutDate"/> ở chỗ có GIỜ.</summary>
+    public DateTime? StockOutDateTime { get; set; }
+
+    public string? StockOutTypeText { get; set; }   // STOCKOUTTYPETEXT — nguồn lưu CẢ NHÃN loại xuất
+    public string? StatusText { get; set; }         // STATUSTEXT — nguồn lưu CẢ NHÃN trạng thái
+    public string? UserCode { get; set; }
+
+    // --- khối VẬN CHUYỂN (4 cột) — phiếu xuất có thông tin xe + tài xế ---
+    public string? TruckNo { get; set; }
+    public string? DriverName { get; set; }
+    public string? DriverID { get; set; }
+    public string? DrivingLicense { get; set; }
+
+    /// <summary>
+    /// --- khối ĐIỀU CHỈNH (5 cột) — 🔴 đây là thứ giải thích mã trạng thái **"4" Điều chỉnh**:
+    /// phiếu cũ **không bị sửa tại chỗ** mà bị một phiếu MỚI thay, và phiếu mới trỏ ngược về phiếu cũ
+    /// bằng `OldStockOutID`/`OldStockOutNo`. Thiếu cặp này thì mất dấu vết chuỗi điều chỉnh.
+    /// </summary>
+    public string? AdjustmentBy { get; set; }
+    public DateTime? AdjustmentDate { get; set; }
+    public string? AdjustmentNote { get; set; }
+    public string? OldStockOutID { get; set; }
+    public string? OldStockOutNo { get; set; }
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    /// <summary>#1087 §12 — nguồn `SerStockOutCreate` (StockOut.cs:520) còn ghi `CreatedDate`/`CreatedBy`
+    /// khi TẠO (port cũ đã có `LogLUDateTime/LogLUBy` từ #264 nhưng thiếu cặp Created*) — cùng khuôn
+    /// `PartStockIn` (#1086, mirror chiều nhập).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Dòng phụ tùng xuất (Ser_Inv_StockOutDetail): mã PT + vị trí + SL.</summary>
 public sealed class PartStockOutLine
 {
+    // 🔴 #368 §12 — năm cột dưới đây là ĐẦU VÀO của báo cáo tổng hợp phiếu xuất
+    //   (`#tbl_InvF_InventoryOutCover_*`). Thiếu chúng thì báo cáo chỉ ra được SỐ LƯỢNG,
+    //   mọi cột tiền đều bằng 0 mà không báo lỗi.
+    /// <summary>Đơn giá xuất trên dòng phiếu (`Ser_Inv_StockOutDetail.Price`).</summary>
+    public decimal? Price { get; set; }
+    /// <summary>Đơn vị tính — nguồn lấy từ MASTER phụ tùng qua `left join`, không nằm trên dòng phiếu.</summary>
+    public string? UnitCode { get; set; }
+    /// <summary>🔴 Hệ số của dòng LỆNH SỬA CHỮA tương ứng, nếu dòng xuất này gắn với một RO.
+    /// Có giá trị ⇒ đơn giá xuất tính theo `RoFactor × RoPrice` (giá tính cho KHÁCH),
+    /// **không** theo <see cref="Price"/> (giá kho). Xem endpoint `/api/stockouts/cover`.</summary>
+    public decimal? RoFactor { get; set; }
+    /// <summary>Đơn giá của dòng lệnh sửa chữa tương ứng (xem <see cref="RoFactor"/>).</summary>
+    public decimal? RoPrice { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long StockOutId { get; set; }
@@ -2626,9 +3144,18 @@ public sealed class PartStockOutLine
     public string? Location { get; set; }
     public decimal Quantity { get; set; } = 1;
     // ===== #377 [c] gộp song sinh Ser_Inv_Stock* — cột nguồn (DbDefine TblSerInv*) mang từ bản Service* sang bản chuẩn =====
-    public decimal Price { get; set; }
     public decimal VAT { get; set; }
     public decimal TotalPrice { get; set; }
+
+    // ===== #1541 §12 — cột nguồn `Ser_Inv_StockOutDetail` mà entity Mini CHƯA TỪNG có =====
+    // Căn cứ: `Ser_Mst_Part_SP_Get_WH` (`BizCarSv.WH.cs:23920`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:28696`)
+    // khối K8.1 nối `Ser_Inv_StockOutDetail sisod ON sisod.PartID = k8.PartID AND sisod.DealerCode = k8.DealerCode`
+    // để tính `MaxStockOutDate` (ngày xuất kho gần nhất ở trạng thái kết thúc). Thiếu hai cột này thì không
+    // nối được dòng xuất về phụ tùng/đại lý ⇒ báo cáo phụ tùng chậm luân chuyển mất vế xuất.
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (`Ser_MST_Part.PartID`), KHÁC `PartCode` là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>DealerCode — đại lý của dòng xuất (nguồn ghi ở dòng chi tiết).</summary>
+    public string? DealerCode { get; set; }
 }
 
 /// <summary>Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate, TCMotor DMSCarSv/Inventory):
@@ -2644,7 +3171,22 @@ public sealed class PartPrice
     public decimal PriceVAT { get; set; }
     public DateTime EffectiveDate { get; set; }
     public string Status { get; set; } = "1";
+
+    // ===== 🔴 #295 parity `TblSer_Inv_PartPrice` (DbDefine.cs:1990-1999): 2 cột port cũ THIẾU =====
+    /// <summary>REMARK — ghi chú cho mốc giá.</summary>
+    public string? Remark { get; set; }
+    /// <summary>ISACTIVE — cờ hiệu lực, **CỘT RIÊNG, KHÁC `Status`** đã có. Nguồn giữ cả hai:
+    /// `Status` là trạng thái nghiệp vụ của mốc giá, `IsActive` là cờ bật/tắt bản ghi.</summary>
+    public string? IsActive { get; set; }
+
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1084 §12 — nguồn `Ser_Mst_PartPrice_Create` (Inventory.cs:553) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `Ser_Mst_PartPrice_Update` (:742) chỉ ghi LogLUDateTime/LogLUBy khi SỬA.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>⛔ #382 DEPRECATED — SONG SINH của <see cref="ServiceCar"/> (cùng bảng nguồn Ser_Car / TblSerCar).
@@ -2666,6 +3208,20 @@ public sealed class CustomerCar
     public string? CusPhone { get; set; }
     public DateTime? SaleDate { get; set; }            // ngày bán xe
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    // ===== #976 §12 — nguồn `ProcessCarCreate`/`ProcessCarUpdate` (gọi từ `Ser_Customer_Import`,
+    // `BizCarSv.Customer.cs:7677-7760`) truyền `strTradeMarkCode`/`strProductYear` nhưng entity chưa có
+    // chỗ chứa ⇒ hai giá trị nhận từ import bị RỚT ÂM THẦM (không lỗi, chỉ không lưu).
+    public string? TradeMarkCode { get; set; }
+    public int? ProductYear { get; set; }
+
+    /// <summary>#1089 §12 — nguồn `ProcessCarCreate`/`ProcessCarUpdate` (Car.cs:1731/1970, gọi từ
+    /// `Ser_Customer_Import`, Customer.cs:7677/7740) ghi đủ 4 cột nhật ký khi TẠO; `Update` chỉ ghi
+    /// LogLUDateTime/LogLUBy. ⚠️ Nhánh tạo xe qua `SerCarCreate` (UI thường, Car.cs:80) KHÔNG hề ghi
+    /// audit-column nào trên `Ser_Car` — CHỈ đường IMPORT mới có; port đúng theo đường import này.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>⛔ #393 DEPRECATED — SONG SINH của <see cref="RepairOrder"/> giai đoạn báo giá: ở nguồn FrmQuotation, báo giá = bản ghi Ser_RO
@@ -2755,10 +3311,13 @@ public sealed class ServicePackage
     public string? IsUserBasePrice { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== #548 §12 CÁC CỘT MÀ `SerServicePackageUpdate` GHI =====
     public decimal ServiceTotal { get; set; }
     public decimal PartTotal { get; set; }
     public decimal GrandTotal { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1050 §12 — `SerServicePackageCreate`/`Update` (BizCarSv.ServicePackage.cs:303/706) ghi
+    // `LogLUDateTime`/`LogLUBy` ở CẢ HAI nhánh (Create vô điều kiện, Update qua `alColumnEffective`).
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -2769,18 +3328,22 @@ public sealed class ServicePackageService
     public Guid OrgId { get; set; }
     public long ServicePackageId { get; set; }
     public string SerCode { get; set; } = "";
+    // ===== #552 §12 BA CỘT NỮA MÀ `ProcessSaveServicePackageServiceItem` GHI =====
+    /// <summary>Giờ công THỰC TẾ của dòng (`ActManHour`) — khác `StdManHour` (định mức, nằm ở danh mục).</summary>
+    public decimal? ActManHour { get; set; }
+    public decimal? VAT { get; set; }
+    public string? Note { get; set; }
+    /// <summary>#547 §12 ĐỐI TƯỢNG THANH TOÁN của dòng công (`TConst.Ser_ROType`:
+    /// `ROREPAIR · ROINSURANCE · ROWARRANTY · LOCAL · GENERAL`). Nguồn **bắt buộc**, rỗng là ném lỗi.</summary>
+    public string? ExpenseType { get; set; }
+    /// <summary>#547 §12 LOẠI CÔNG VIỆC (`TConst.Ser_ROType_**New**`: `BDD · SCC · SCD · SCS · PDI · SPK`).
+    /// ⚠️ Hai lớp hằng tên gần giống nhau nhưng **khác hẳn nghĩa** — xem chú thích endpoint.</summary>
+    public string? ROType { get; set; }
     public string? SerName { get; set; }
     public decimal Price { get; set; }
     public decimal Factor { get; set; } = 1;
     public decimal Amount { get; set; }
     // #309 cột nguồn TblSerServicePackageServiceItems (DbDefine.cs:1434) — ProcessSaveServicePackageServiceItem (biz:896).
-    public decimal? ActManHour { get; set; }
-    public decimal? VAT { get; set; }
-    public string? Note { get; set; }
-    /// <summary>Đối tượng thanh toán (`Ser_ROType`): ROREPAIR / ROINSURANCE / ROWARRANTY / LOCAL / GENERAL.</summary>
-    public string? ExpenseType { get; set; }
-    /// <summary>Loại công việc (`Ser_ROType_New`): BDD / SCC / SCD / SCS / PDI / SPK.</summary>
-    public string? ROType { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -2792,17 +3355,19 @@ public sealed class ServicePackagePart
     public Guid OrgId { get; set; }
     public long ServicePackageId { get; set; }
     public string PartCode { get; set; } = "";
+    // ===== #552 §12 CÁC CỘT MÀ `ProcessSaveServicePackagePartItem` GHI =====
+    /// <summary>SỐ LƯỢNG phụ tùng trong gói (`Quantity`) — trước nay MiniHTC **chỉ có `Factor`**,
+    /// nên gói hai cái lọc dầu và gói một cái **không phân biệt được**.</summary>
+    public decimal? Quantity { get; set; }
+    public decimal? VAT { get; set; }
+    public string? Note { get; set; }
+    public string? ExpenseType { get; set; }
     public string? PartName { get; set; }
     public decimal Price { get; set; }
     public decimal Factor { get; set; } = 1;
     /// <summary>Thành tiền = Price × Factor × Quantity (Frm gviewPart:1022).</summary>
     public decimal Amount { get; set; }
     // #309 cột nguồn TblSerServicePackagePartItems (DbDefine.cs:1415) — ProcessSaveServicePackagePartItem (biz:1031).
-    public decimal? Quantity { get; set; }
-    public decimal? VAT { get; set; }
-    public string? Note { get; set; }
-    /// <summary>Đối tượng thanh toán (`Ser_ROType`): ROREPAIR / LOCAL / ROINSURANCE / ROWARRANTY.</summary>
-    public string? ExpenseType { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -2854,6 +3419,10 @@ public sealed class SerInsurance
     // ===== #381 [c] gộp song sinh Ser_Insurance — cột nguồn TblInsurance (DbDefine:445) còn thiếu =====
     public string? Website { get; set; }
     public string? DealerCode { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master quy đổi đơn vị TST↔DMS (TST_Mst_Exchange_Unit) — port 1:1 FrmTST_Mst_Exchange_Unit (TCMotor DMSCarSv). Theo mã phụ tùng TST: đơn vị TST/DMS + tỷ lệ quy đổi.</summary>
@@ -2868,12 +3437,35 @@ public sealed class TstExchangeUnit
     public decimal ExchangeRate { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>#1118 §12 — nguồn `TST_Mst_Exchange_Unit_Add`/`_Update` (Service.cs:18093/18386) ghi
+    /// `LogLUDateTime`/`LogLUBy` (= strPartnerUserCode) ở CẢ HAI nhánh (bảng không có CreatedDate/CreatedBy).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master phụ tùng TST (TST_Mst_Part) — port 1:1 FrmTST_Mst_Part (TCMotor DMSCarSv).
 /// Mã + tên HTC/Việt/Anh + đơn vị + VAT + giá TST + nhóm/loại.
 /// #212: đồng bộ cả bảng từ hệ TST/Bravo qua `TST_SavePartAll` (BizCarSv.Bravo.cs:79) — xem
 /// `POST /api/tstparts/sync-all`. Lệnh đó chỉ ghi `TSTPartCode` · `TSTPrice` · `LUDTime`.</summary>
+/// <summary>
+/// #247 BẢNG TẠM PHỤ TÙNG TST `TST_Mst_Part_Temp` — nguồn `TST_Mst_Part_Temp_Get`
+/// (BizCarSv.Bravo.cs:223, md5 `44509215` — khớp 2 máy).
+/// 🔴 KHÁC `TST_Mst_Part` (lớp <see cref="TstPart"/>): đây là bảng **TẠM**, và trong TOÀN BỘ solution
+///    DMSCarSv **chỉ có đường ĐỌC** — không hàm nào ghi vào nó, không màn client nào gọi.
+///    ⇒ dữ liệu do hệ NGOÀI nạp; API này phục vụ hệ ngoài qua gateway `WSCarSv.asmx.cs:40231`.
+/// ⚠️ Nguồn `select t.*` nên chỉ **hai cột được xác nhận** (từ hai bộ lọc): `TSTPartCode` · `TSTVieName`.
+///    KHÔNG bịa thêm cột (luật `C0-trecentesimusquadragesimusseptimus`).
+/// ⚠️ Tên cột tên-tiếng-Việt ở đây là `TSTVieName`, KHÁC `VieName` của bảng chính.
+/// </summary>
+public sealed class TstPartTemp
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public string? TSTVieName { get; set; }
+}
+
 public sealed class TstPart
 {
     public long Id { get; set; }
@@ -2884,7 +3476,75 @@ public sealed class TstPart
     public string? EngName { get; set; }
     public string? Unit { get; set; }
     public decimal VAT { get; set; }
+
+    /// <summary>
+    /// 🔴 #245: nguồn có **BỐN loại giá** (xem dưới); cột này tương ứng `TSTPriceNormal` (giá thường).
+    /// Giữ tên `TSTPrice` để không vỡ dữ liệu + lệnh đồng bộ đã có (#212).
+    /// </summary>
     public decimal TSTPrice { get; set; }
+
+    // ===== 🔴 #245: 16 cột nguồn `TST_Mst_Part_Get01` mà port cũ THIẾU =====
+    // Nguồn `BizCarSv.Service.cs:18409` (md5 5e5d6f20 — khớp 2 máy) gọi API Bravo rồi **ánh xạ tên**
+    // từ trường Bravo sang cột DMS. Bảng ánh xạ (:18545-18567) — tên hai bên KHÁC HẲN nhau:
+    //   ItemCode→TSTPartCode · ItemName→VieName · StandardPrice→TSTPriceList · UnitPrice→TSTPriceNormal
+    //   · UrgentPrice→TSTPriceUrgent · WarrantyPrice→TSTPriceWarranty · QtyDA→DongAnhStockStatus
+    //   · QtyCM→CaiMepStockStatus · QtyHM→HoChiMinhStockStatus · Comment→Remark · Model→ModelList
+    //   · List_ItemCode_New→TSTPartCodeNew · List_ItemCode_Old→TSTPartCodeOld
+
+    // ===== 🔴 #262 ĐÍNH CHÍNH #245 — phân biệt CỘT DB vs CỘT CỦA DATATABLE API =====
+    // Sweep #261 chỉ ra `TblTSTMSTPart` (DbDefine.cs:695-721) là **lớp hằng của BẢNG DB** `TST_Mst_Part`.
+    // Đối chiếu với bảng ánh xạ Bravo mà #245 dùng (`TST_Mst_Part_Get01`, BizCarSv.Service.cs:18517-18567):
+    //   bảng đó dựng một `DataTable` **TRONG BỘ NHỚ** để TRẢ VỀ client — KHÔNG phải schema bảng DB.
+    // ⇒ Hai hệ tên cho cùng khái niệm:
+    //     DataTable API (#245)      |  CỘT DB THẬT (DbDefine)
+    //     `TSTPriceWarranty`        |  `TSTWarrantyPrice`
+    //     `TSTPriceUrgent`          |  `TSTUrgentPrice`
+    //     `TSTPriceList` (StandardPrice) |  *(không có cột DB tương ứng)*
+    //     `TaxRate`, `*StockStatus`, `TSTPartCodeNew/Old` |  *(không có cột DB — chỉ có ở phản hồi Bravo)*
+    // ⇒ GIỮ các cột #245 (chúng phục vụ dữ liệu trả từ Bravo) nhưng **bổ sung cột DB thật còn thiếu**,
+    //   và ghi rõ nhóm nào là gì để lượt sau không nhầm khi map schema.
+
+    // --- 13 CỘT DB THẬT còn thiếu (TblTSTMSTPart) ---
+    public decimal? TSTPriceBefore { get; set; }     // TSTPRICEBEFORE — giá kỳ trước
+    public decimal? TSTCost { get; set; }            // TSTCOST
+    public DateTime? DateEffect { get; set; }        // DATEEFFECT — ngày hiệu lực giá
+    public string? TSTUnit { get; set; }             // TSTUNIT — đơn vị theo NCC, KHÁC `Unit`
+    public string? GroupCode { get; set; }           // GROUPCODE (MiniHTC đang có `PartGroup` — giữ cả hai)
+    public string? GroupName { get; set; }
+    public string? TypeCode { get; set; }            // TYPECODE (MiniHTC đang có `PartType`)
+    public string? TypeName { get; set; }
+    public decimal? TSTWarrantyPrice { get; set; }   // TSTWARRANTYPRICE — tên DB của giá bảo hành
+    public decimal? TSTUrgentPrice { get; set; }     // TSTURGENTPRICE   — tên DB của giá gấp
+    public string? UpdateBy { get; set; }            // UPDATEBY
+    public DateTime? UpdateDateTime { get; set; }    // UPDATEDATETIME
+    public string? LUBy { get; set; }                // LUBY (đã có LUDTime)
+
+    /// <summary>MinOrderQuantity — số lượng đặt tối thiểu của NCC. (có ở CẢ hai hệ tên)</summary>
+    public decimal? MinOrderQuantity { get; set; }
+
+    // --- 🔴 BỐN loại giá: port cũ gộp còn MỘT ⇒ mất giá niêm yết / giá gấp / giá bảo hành ---
+    public decimal? TSTPriceList { get; set; }       // StandardPrice — giá niêm yết
+    public decimal? TSTPriceUrgent { get; set; }     // UrgentPrice   — giá đặt GẤP
+    public decimal? TSTPriceWarranty { get; set; }   // WarrantyPrice — giá dùng cho BẢO HÀNH
+
+    /// <summary>TaxRate — thuế suất do NCC trả về (khác `VAT` vốn của bảng PT nội bộ).</summary>
+    public decimal? TaxRate { get; set; }
+
+    // --- 🔴 tồn kho theo BA KHO của NCC (tên cột nguồn là *StockStatus* nhưng giá trị là Qty*) ---
+    public string? DongAnhStockStatus { get; set; }      // QtyDA
+    public string? CaiMepStockStatus { get; set; }       // QtyCM
+    public string? HoChiMinhStockStatus { get; set; }    // QtyHM
+
+    // --- mã thay thế: NCC trả về DANH SÁCH mã mới/cũ của cùng phụ tùng ---
+    public string? TSTPartCodeNew { get; set; }
+    public string? TSTPartCodeOld { get; set; }
+
+    public string? Remark { get; set; }      // Comment
+    public string? ModelList { get; set; }   // Model — danh sách xe áp dụng
+    public decimal? Length { get; set; }
+    public decimal? Width { get; set; }
+    public decimal? Height { get; set; }
+
     public string? PartGroup { get; set; }
     public string? PartType { get; set; }
     public string FlagActive { get; set; } = "1";
@@ -2896,6 +3556,10 @@ public sealed class TstPart
 /// <summary>Thư viện kỹ thuật (Ser_InsuranceContract) — port 1:1 FrmInsuranceContractCreate/Search (TCMotor DMSCarSv/Admin). Theo mã HĐ (auto): số HĐ + loại thanh toán + hiệu lực + hãng BH (InsNo→SerInsurance) + hạn mức.</summary>
 public sealed class SerInsuranceContract
 {
+    /// <summary>🔴 #907 §12 `DealerCode` — nguồn `Ser_InsuranceContract{Create,Update,Get}`
+    /// (`BizCarSv.Service.cs:13694/:14074/:14287`) khoá TOÀN BỘ guard trùng lặp theo bộ ba
+    /// `(InContractNo, InsNo, DealerCode)` — thiếu cột này thì không tái hiện được đúng phạm vi đại lý.</summary>
+    public string? DealerCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string InContractCode { get; set; } = "";
@@ -2909,12 +3573,11 @@ public sealed class SerInsuranceContract
     public string IsActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
     // ===== #339 parity Ser_InsuranceContract — cột `Ser_InsuranceContractCreate` (BizCarSv.Service.cs:14376) ghi =====
-    /// <summary>`DealerCode` — xưởng sở hữu HĐ; PHẠM VI của dãy InContractCode và của 2 guard trùng.</summary>
-    public string? DealerCode { get; set; }
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
 }
 
 /// <summary>Đơn giá thuê thiết bị GPS (Mst_UnitPriceGPS) — port 1:1 FrmMst_UnitPriceGPS (2010.HTC/Sales/Product). Theo số hợp đồng: đơn giá GPS + ngày hiệu lực. Upsert-by-ContractNo.</summary>
@@ -2965,6 +3628,44 @@ public sealed class SerStockOutOrder
     public string? QuoteID { get; set; }
     /// <summary>`StockOutType` — nguồn gán TConst.Ser_Inv_PartInstance.OUTSTOCK = 2 (Const.Main.cs:263).</summary>
     public string? StockOutType { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    // ===== 🔴 #263: 9 cột nguồn `TblSerInvStockOutOrder` (DbDefine.cs:1306-1320) mà port cũ THIẾU =====
+    // Tìm bằng sweep `_audit/sweep_tblconst_tail.js` (#261).
+
+    /// <summary>STATUSTEXT — nguồn lưu **cả nhãn** cạnh mã trạng thái (xem bộ hằng ở Program.cs).</summary>
+    public string? StatusText { get; set; }
+
+
+
+}
+
+/// <summary>
+/// 🔴 #294 BẢNG NỐI LỆNH XUẤT ↔ PHIẾU XUẤT — `Ser_Inv_StockOutOrderStockOut`
+/// (lớp hằng `TblSerInvStockOutOrderStockOut`, `DbDefine.cs:1378-1387`).
+/// Đây chính là bảng mà #293 **chưa có** nên phải dùng xấp xỉ; nay port thật ⇒ gỡ xấp xỉ đó.
+///
+/// 🔴 QUAN HỆ **NHIỀU-NHIỀU**: một lệnh xuất có thể sinh **NHIỀU** phiếu xuất (giao nhiều đợt —
+/// xem `BackOrderIndex` "lần đặt lại"), nên nguồn tách hẳn bảng nối thay vì để một cột khoá ngoại.
+/// Người ghi: `SerStockOutOrderStockOutCreate` (`StockOut.cs:7952`), được gọi từ **`SerStockOutCreate`**
+/// (bản LIVE, `:540`) ⇒ **link sinh ra đúng lúc TẠO PHIẾU XUẤT từ một lệnh**.
+/// (Hai chỗ gọi còn lại nằm trong `SerStockOutCreate_New20240115`/`SerStockOutUpdate_New20240115` — bản
+/// CHẾT đã xác định ở #292.)
+/// </summary>
+public sealed class SerStockOutOrderStockOut
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>STOCKOUTORDERID / STOCKOUTORDERNO — lệnh xuất (giữ CẢ khoá lẫn số, đúng như nguồn).</summary>
+    public long StockOutOrderId { get; set; }
+    public string? StockOutOrderNo { get; set; }
+
+    /// <summary>STOCKOUTID / STOCKOUTNO — phiếu xuất sinh ra từ lệnh trên.</summary>
+    public long StockOutId { get; set; }
+    public string? StockOutNo { get; set; }
+
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -3258,7 +3959,55 @@ public sealed class ServiceTradeMark
     public string? TradeMarkName { get; set; }
     public string? DealerCode { get; set; }   // port 1:1 SerMstTradeMark.DealerCode — đại lý sở hữu/phạm vi thương hiệu (FrmTradeMarkCreate:122)
     public string FlagActive { get; set; } = "1";
+    // #1508 §12 — `Ser_Mst_TradeMark_Get` (`BizCarSv.Master.cs:1515`, LIVE) SELECT `t.*` ⇒ trả ĐỦ mọi cột
+    // bảng `Ser_Mst_TradeMark` (bài học #539). Cột `Logo` có trong bảng nguồn nhưng CHƯA TỪNG được mô hình
+    // hoá ở Mini ⇒ GET bỏ sót. `_Create`/`_Update` KHÔNG ghi `Logo` (chỉ đọc) ⇒ field ECHO, không cần DTO/POST.
+    public string? Logo { get; set; }
+    // #1049 §12 — `Ser_Mst_TradeMark_Create` (BizCarSv.Master.cs:1710, LIVE) ghi `CreatedDate`/`CreatedBy`.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    // #1128 §12 — `Ser_Mst_TradeMark_Update` (BizCarSv.Master.cs:1918-1993) ghi `LogLUDateTime`/`LogLUBy` =
+    // strPartnerUserCode mỗi lần sửa (kể cả chỉ đổi `IsActive`) — entity chưa từng có chỗ chứa.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
+}
+
+/// <summary>
+/// 🔴 #1486 DANH MỤC CÔNG BẢO HÀNH HÃNG — `Ser_MST_ROWarrantyWork` (`BizCarSv.AssignmentOfWork.cs`).
+/// Bảng nằm ở DB `@strDBName_CommonCenter` (dùng chung, không phải DB đại lý).
+/// Ba `[WebMethod]` LIVE (`HTCWSCarSv/WSCarSv.asmx.cs:36048/36082/36238`):
+///   `Ser_MST_ROWarrantyWork_Get` → `_biz.Ser_MST_ROWarrantyWork_Get` (`:3388`, SELECT `smroww.*`)
+///   `Ser_MST_ROWarrantyWork_Save` → `_biz.Ser_MST_ROWarrantyWork_Save` (`:4036`, insert/update)
+///   `Ser_MST_ROWarrantyWork_Delete` → `_biz.Ser_MST_ROWarrantyWork_Delete` (`:5378`, xoá CỨNG theo `ROWWorkCode`).
+/// ⚠️ Bảng này còn được dùng làm NGUỒN GHI ĐÈ giá công khi `SerCode` trùng (xem #1177) — nhưng đó là
+/// đường ĐỌC chéo; entity này mô hình hoá chính danh mục để có route CRUD 1:1.
+/// </summary>
+public sealed class ROWarrantyWork
+{
+    public long Id { get; set; }                 // ROWWID (identity)
+    public Guid OrgId { get; set; }
+    /// <summary>ROWWorkCode — khoá tự nhiên nguồn dùng để tra/insert/delete (`t.ROWWorkCode = @...`).</summary>
+    public string ROWWorkCode { get; set; } = "";
+    public string? ROWWorkName { get; set; }
+    /// <summary>Model — mã dòng xe áp dụng (nguồn lọc `smroww.Model`).</summary>
+    public string? Model { get; set; }
+    /// <summary>RateHour — hệ số giờ công.</summary>
+    public decimal? RateHour { get; set; }
+    /// <summary>Price — đơn giá công.</summary>
+    public decimal? Price { get; set; }
+    /// <summary>RatePrice — hệ số giá.</summary>
+    public decimal? RatePrice { get; set; }
+    /// <summary>VAT — thuế suất.</summary>
+    public decimal? VAT { get; set; }
+    public string? Remark { get; set; }
+    /// <summary>AppTypeCode — loại đơn (nguồn ghi ở cả nhánh update lẫn insert).</summary>
+    public string? AppTypeCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
@@ -3277,12 +4026,24 @@ public sealed class TechnicalLibrary
     public string? ReRepairReason { get; set; }    // nguyên nhân
     public string? ReRepairSolution { get; set; }  // giải pháp
     public string? ExclusionTest { get; set; }
+    /// <summary>#1029 §12 — nguồn `Ser_Technical_Library_Save`/`_Update` ghi cả ba cột này, port cũ thiếu
+    /// hoàn toàn (chỉ có Add/Approve/Delete).</summary>
+    public string? Version { get; set; }
+    public string? ReRepairFeedback { get; set; }
+    /// <summary>TYPE (`TConst.Ser_Technical_LibraryType`): "0" Thông thường · "1" Phản tu (ReRepair) —
+    /// quyết định dãy số hiệu (`TeckLibPAN`/`TeckLibPHT`) khi nguồn tự sinh mã.</summary>
+    public string? Type { get; set; }
     public string IsActive { get; set; } = "1";
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
 
-    /// <summary>#395 phản hồi sau sửa lại (`ReRepairFeedback` nvarchar(500)) — Ser_Technical_Library_Add/_Save (BizCarSv.ZTemp.cs:25628/25996) ghi.</summary>
-    public string? ReRepairFeedback { get; set; }
+
+    /// <summary>#1090 §12 — nguồn `Ser_Technical_Library_Add`/`_Save` (ZTemp.cs:25471/25774) còn ghi
+    /// `CreatedDate` (khác `CreatedAt` do port tự đặt) + `LogLUDateTime`/`LogLUBy` khi TẠO; `_Update`
+    /// (:26395) KHÔNG đụng các cột này (đã ghi rõ ở #1029: chỉ sửa đúng 12 cột nghiệp vụ).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master nhà cung cấp phụ tùng (Ser_MST_Supplier) — port 1:1 FrmMstSupplierCreate/Search (TCMotor DMSCarSv). Mã + tên + địa chỉ + SĐT + fax.</summary>
@@ -3291,17 +4052,32 @@ public sealed class SerMstSupplier
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string SupplierCode { get; set; } = "";
+    /// <summary>🔴 #707 `Ser_Mst_Supplier.SupplierID` — khoá kỹ thuật, **KHÁC** `SupplierCode`.
+    /// Nguồn `OSVeloca_Ser_Inv_StockIn_Get` nối `sisi.SupplierID = sms.SupplierID`, không nối bằng mã.</summary>
+    public string? SupplierID { get; set; }
     public string? SupplierName { get; set; }
     public string? Address { get; set; }
     public string? Phone { get; set; }
     public string? Fax { get; set; }
+    /// <summary>#574 §12 Hai cột người liên hệ — nguồn `SerSupplierDebitDetailGet` chọn `d.ContactName`,
+    /// `d.ContactPhone` ở bảng danh mục nhà cung cấp (bản bảo hiểm sinh đôi chọn `TelePhone`/`Email`).</summary>
+    public string? ContactName { get; set; }
+    public string? ContactPhone { get; set; }
+    /// <summary>#911 §12 `DealerCode` — nguồn `checkExistSupplierCode`/`checkExistSupplierCodeModify`
+    /// (`BizCarSv.Inventory.Master.cs`) khoá trùng mã theo BỘ BA `(SupplierCode, DealerCode, IsActive)`,
+    /// và `Create`/`Update` đều GHI cột này. Port cũ (#818) đã vá 2 gap guard nhưng CHƯA hề mô hình hoá cột
+    /// này — mọi nhà cung cấp bị coi là DÙNG CHUNG TOÀN ORG, không tách theo đại lý.</summary>
+    public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1073 §12 — `SerSupplierCreate` (BizCarSv.Inventory.Master.cs:362, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký; `SerSupplierUpdate` (:560) chỉ ghi lại `LogLUDateTime`/`LogLUBy` — cùng khuôn #1070/#1071.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 
     // ===== #380 [c] gộp song sinh Ser_MST_Supplier — cột nguồn DbDefine TblSerMstSupplier (DEALERCODE/CONTACTNAME/CONTACTPHONE) =====
-    public string? DealerCode { get; set; }
-    public string? ContactName { get; set; }
-    public string? ContactPhone { get; set; }
 }
 
 /// <summary>Phiếu điều chỉnh tồn kho (header) — port 1:1 FrmStockAdjCreate/Search (TCMotor DMSCarSv). Điều chỉnh SL tồn phụ tùng, duyệt theo trạng thái.</summary>
@@ -3357,15 +4133,34 @@ public sealed class StockAdjLine
     public string? BalanceLocation { get; set; }
     /// <summary>Kho ĐÍCH (`Ser_Inv_StockAdjDetail.InStockLocationID`) — nơi số lượng được chuyển sang.</summary>
     public string? InStockLocation { get; set; }
+    // #1554 §12 - cot nguon PartID/LogLUBy/LogLUDateTime (Ser_Inv_StockAdjDetail) - port 1:1.
+    public string? PartID { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
 }
 
 /// <summary>Master loại công việc dịch vụ (Ser_MST_ServiceType) — port 1:1 FrmServiceTypeCreate/Search (TCMotor DMSCarSv). Tên loại công việc + cờ hoạt động.</summary>
 public sealed class SerServiceType
 {
+    /// <summary>🔴 #906 §12 `Ser_MST_ServiceType.DealerCode` — nguồn `Ser_Mst_ServiceType_Create/Update/Delete`
+    /// (`BizCarSv.Master.cs:5171/:5326/:5471`) nhận/lưu cột này; mỗi đại lý có DANH SÁCH LOẠI DỊCH VỤ RIÊNG,
+    /// khoá thật của bảng là `TypeID` tự tăng — KHÔNG phải `TypeName`. Port cũ thiếu cột này nên ẩn khoá
+    /// upsert theo `TypeName` TOÀN CỤC ⇒ hai đại lý cùng đặt tên loại DV giống nhau sẽ VÔ TÌNH DÙNG CHUNG một
+    /// dòng thay vì có hai dòng riêng theo nguồn.</summary>
+    public string? DealerCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string TypeName { get; set; } = "";
     public string FlagActive { get; set; } = "1";
+    // #1052 §12 — `Ser_Mst_ServiceType_Create` (BizCarSv.Master.cs:5288, LIVE) ghi `CreatedDate`/`CreatedBy`
+    // vô điều kiện — cùng mẫu hình #453 (đã vá cho `SerPartType` ở #963 nhưng chưa vá cho bảng song sinh này).
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    // #1508 §12 — `Ser_Mst_ServiceType_Get` (`BizCarSv.Master.cs:5098`, LIVE) SELECT `t.*` ⇒ trả ĐỦ mọi cột
+    // bảng `Ser_MST_ServiceType` (bài học #539). `_Create` (`:5288`) ghi `LogLUDateTime`/`LogLUBy` =
+    // strPartnerUserCode; entity Mini chưa từng có hai cột này ⇒ GET bỏ sót.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
@@ -3380,6 +4175,22 @@ public sealed class SerStock
     public string? Address { get; set; }
     public string? Email { get; set; }
     public string FlagActive { get; set; } = "1";
+
+    // ===== #1074 §12 — `SerStockCreate` (BizCarSv.Inventory.Master.cs:1856-1872) nhận **11** tham số,
+    // port cũ chỉ giữ 4 (StockName/Contact/Address/Email) — 6 cột nghiệp vụ + 4 cột nhật ký sau đây
+    // CHƯA TỪNG có chỗ chứa. `SerStockUpdate` (:1710-1719) ghi lại 8 cột nghiệp vụ (KHÔNG có DealerCode)
+    // + LogLU* (KHÔNG có Created* — chỉ set MỘT LẦN lúc tạo).
+    public string? TelePhone { get; set; }
+    public string? Fax { get; set; }
+    public string? Mobi { get; set; }
+    public string? Manager { get; set; }
+    public string? Description { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime UpdatedAt { get; set; }
 }
 
@@ -3391,6 +4202,43 @@ public sealed class SerPartType
     public string TypeName { get; set; } = "";
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    // ===== #963 §12 — nguồn `Ser_MST_PartType` (Ser_Mst_PartType_Get/_Create/_Update/_Delete) có 3 cột
+    //   port cũ thiếu: `TypeCode` (mã nghiệp vụ, KHÁC TypeName), `DealerCode` (phạm vi trùng lặp/lọc —
+    //   thiếu thì TypeName trùng bị chặn TOÀN HỆ THỐNG thay vì chỉ trong CÙNG đại lý), `CreatedDate`/`CreatedBy`.
+    public string? TypeCode { get; set; }
+    public string? DealerCode { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+}
+
+/// <summary>#1058 §12 — MÀN CHƯA TỪNG PORT: `Mst_Ser_AppType` (loại lịch hẹn), một trong ~20 bảng nằm trong
+/// whitelist `myCommon_GetSupportedTable` (BizCarSv.Common.cs:631) mà biz KHÔNG có hàm Create/Update RIÊNG —
+/// ghi/đọc qua CƠ CHẾ CHUNG `CommonSaveMasterData`/`CommonGetMasterData` (:1199/:1314): client gửi nguyên
+/// DataSet đã đổi (Added/Modified/Deleted), server `SaveData` THẲNG không kiểm nghiệp vụ nào khác ngoài
+/// whitelist tên bảng — nên port cũng đơn giản như một master danh mục thường (không có guard đặc thù).</summary>
+public sealed class SerAppTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string AppTypeCode { get; set; } = "";
+    public string? AppTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#1059 §12 — MÀN CHƯA TỪNG PORT: `Mst_Staff` (danh mục nhân viên chung), cùng whitelist
+/// `myCommon_GetSupportedTable` như `Mst_Ser_AppType` (#1058) — cùng cơ chế `CommonGetMasterData`/
+/// `CommonSaveMasterData`, KHÔNG có hàm Create/Update riêng. `TblMst_Staff` (DbDefine.cs:565) xác nhận
+/// ĐÚNG 3 cột thật: StaffCode/StaffName/FlagActive — không có cột log nào (khác đa số master khác).</summary>
+public sealed class MstStaff
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StaffCode { get; set; } = "";
+    public string? StaffName { get; set; }
+    public string FlagActive { get; set; } = "1";
 }
 
 /// <summary>Master kỳ khảo sát JD Power (Ser_MST_JDPowerTerm) — port 1:1 FrmJDPowerTermCreate/Search (TCMotor DMSCarSv). Mã kỳ + nội dung + ngày bắt đầu/kết thúc.</summary>
@@ -3404,6 +4252,27 @@ public sealed class JDPowerTerm
     public DateTime? EndDate { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+
+    /// <summary>#1085 §12 — nguồn `JDPowerTerm_Create` (Service01.cs:14945) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `JDPowerTerm_Update` (:15381) KHÔNG hề đụng các cột này (chỉ ghi `JDPTermName`/`FlagActive`) — gap thật
+    /// của chính nguồn, không port thêm cho Update.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Chi tiết kỳ khảo sát JD Power (JDP_Mst_JDPowerTermDtl) — #842 TRẢ NỢ ghi ở #26657: danh sách VIN thuộc một kỳ. Nguồn chỉ Create ghi và Delete xoá, không đường nào SỬA.</summary>
+public sealed class JDPowerTermDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string JDPTermCode { get; set; } = "";
+    public string VIN { get; set; } = "";
+    public string? PlateNo { get; set; }
+    public string? CusCode { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>⛔ #391 DEPRECATED — port SAI của Pmt_PaymentPDIDetail (bản chuẩn <see cref="PmtPaymentPdiDetail"/>). FrmSuaThanhToanPDI để StoreDate/DeliveryOutDate trong
@@ -4241,7 +5110,8 @@ public sealed class PaymentDiscountReq
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>File đính kèm khiếu nại đơn phụ tùng — port 1:1 FrmSer_OrderComplainAttachment (Ser_OrderComplainAttachment, TCMotor/TST).</summary>
+/// <summary>File đính kèm khiếu nại đơn phụ tùng — port 1:1 FrmSer_OrderComplainAttachment (nguồn thật `Ser_OrderComplainAttachFile`,
+/// `BizCarSv.SuggestPrice.cs:3316 Ser_OrderComplain_Save`, LIVE).</summary>
 public sealed class OrderComplainAttachment
 {
     public long Id { get; set; }
@@ -4766,6 +5636,17 @@ public sealed class ROWarrantyTypePhoto
     public string? ROWPTName { get; set; }
 }
 
+/// <summary>Danh mục LOẠI ẢNH chứng minh bảo hành (Ser_MST_ROWarrantyPhotoType, nằm ở DB CommonCenter) — #850.
+/// Trước đây MiniHTC chỉ mô hình hoá bảng CHI TIẾT <see cref="ROWarrantyTypePhoto"/>, thiếu hẳn danh mục gốc.</summary>
+public sealed class RoWarrantyPhotoType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROWPTCode { get; set; } = "";
+    public string? ROWPTName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 /// <summary>
 /// Hạng mục công bảo hành theo model — port 1:1 FrmMstWarrantyWorkMng (TCMotor DMSCarSv/Admin).
 /// ⚠️ Tên bảng THẬT ở nguồn là <c>Ser_MST_ROWarrantyWork</c> (biz Ser_MST_ROWarrantyWork_Get);
@@ -4791,9 +5672,90 @@ public sealed class WarrantyWorkMst
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1095 §12 — nguồn `Ser_MST_ROWarrantyWork_Save` (AssignmentOfWork.cs:4036, bản GỐC của chuỗi
+    /// chép #785/#786/#1092/#1093/#1094) ghi đủ 4 cột nhật ký khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy
+    /// (CreatedDate/CreatedBy bị COMMENT).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Khoang/ngăn kho (Mst_Compartment) — port 1:1 FrmMst_Compartment (TCMotor DMSCarSv/Admin). Mã + tên khoang. Upsert-by-code + toggle.</summary>
+/// <summary>#520 Danh mục **màu biển số** (`Mst_PlateColor`) — port 1:1 `Mst_PlateColor_Get`
+/// (`BizCarSv.Master.cs:5743`), sống qua **kênh ClientService** (`Mst_PlateColorService.cs:40`), xem #519.</summary>
+/// <summary>#566 §12 Danh mục **mạng lưới** (`CmCt_Mst_Network`) — mỗi bản ghi là một hệ thống con
+/// (một đại lý hoặc HTC) kèm **các địa chỉ dịch vụ** để hệ khác gọi sang.</summary>
+/// <summary>#586 §12 Hộp thư đi Hyundai Me — nguồn **không có bảng này**: hàng đợi nằm trong bộ nhớ
+/// (`ConcurrentQueue`) và gói bị `TryDequeue` **trước** khi đẩy, nên đẩy lỗi là **mất vĩnh viễn**.
+/// MiniHTC **cố ý lệch**: ghi gói xuống DB trước, đánh dấu sau, để còn phát lại được.</summary>
+public sealed class HyundaiMeOutbox
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string Kind { get; set; } = "";          // "ro" | "app"
+    public string RefNo { get; set; } = "";         // RONo hoặc AppNo
+    public string? Endpoint { get; set; }           // webhook/push-service-status | webhook/push-appointment
+    public string? Payload { get; set; }
+    public string Status { get; set; } = "PENDING"; // PENDING | SENT | FAILED
+    public int AttemptCount { get; set; }
+    public string? LastError { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? SentAt { get; set; }
+}
+
+/// <summary>#609 §12 Dòng "hàng đang về" (`Ser_Inv_OrderInshipment`). Nguồn **ghi được** bảng này
+/// (`Ser_Inv_OrderInshipment_Create`) nhưng **không đọc ra được** (#603: bản `_GetAll` hỏng câu SQL,
+/// bản `_GetAll_01` đọc bảng khác) ⇒ MiniHTC **cố ý** làm đủ cả ghi lẫn đọc.</summary>
+public sealed class OrderInshipment
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? PartCode { get; set; }
+    public string? RONo { get; set; }
+    public decimal? Quantity { get; set; }
+    public decimal? Vat { get; set; }
+    public string? Note { get; set; }
+    public DateTime? ReceivePartDate { get; set; }
+    public DateTime? OrderPartDate { get; set; }
+    public string IsActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+public sealed class NetworkMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string NetworkID { get; set; } = "";
+    public string? NetworkName { get; set; }
+    public string? GroupNetworkID { get; set; }
+    public string? CoreAddr { get; set; }
+    public string? PingAddr { get; set; }
+    public string? XSysAddr { get; set; }
+    public string? WSUrlAddr { get; set; }
+    public string? DBUrlAddr { get; set; }
+    public string? WAUrlAddr { get; set; }
+    public string? FlagActive { get; set; }
+    public DateTime? LogLUDTimeUTC { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class PlateColorMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PlateColorCode { get; set; } = "";
+    public string? PlateColorName { get; set; }
+    /// <summary>Mã màu dạng HEX để vẽ trên giao diện (`Mst_PlateColor.ColorHexCode`).</summary>
+    public string? ColorHexCode { get; set; }
+    /// <summary>Thứ tự hiển thị — nguồn `order by t.IndexColor` (**không** sắp theo mã/tên).</summary>
+    public int? IndexColor { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 public sealed class CompartmentMst
 {
     public long Id { get; set; }
@@ -4884,8 +5846,90 @@ public sealed class WarrantyExtensionDateLog
 }
 
 /// <summary>Phân công công đoạn sửa chữa theo RO (Ser_AssignmentWork header) — port 1:1 FrmSer_AssignmentWork (TCMotor DMSCarSv/Services). Header theo RO; 7 công đoạn (SCC/SCD/SCDB/SCKSC/SCLR/SCN/SCS) mỗi công đoạn gán khoang (Cavity) + kế hoạch/thực tế bắt đầu-kết thúc → SerAssignmentWorkStage.</summary>
+/// <summary>#532 NHẬT KÝ THỜI GIAN LÀM VIỆC trên lệnh sửa chữa (`Ser_ROWorkTime`) — mỗi dòng là
+/// **một mốc bấm giờ**: bắt đầu / kết thúc / chạy-dừng. Nguồn: `BizCarSv.zzzzCode.cs:208
+/// InsertSer_ROWorkTime` (bản thứ HAI trong file — bản ở `:25` có chú thích `// _dbAction ????`).</summary>
+public sealed class RoWorkTime
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số nhật ký, nguồn xin từ `SequenceGetForDMS_Util(… SequenceTypeDMS.ROWorkTime …)`.</summary>
+    public string ROWTNo { get; set; } = "";
+    [System.ComponentModel.DataAnnotations.Schema.Column("ROIDSrc")]   // merge: tránh đụng cột RoId (SQLite/Postgres không phân biệt hoa thường khi không quote)
+    public string? ROID { get; set; }
+    public string RONo { get; set; } = "";
+    /// <summary>Mốc bấm giờ (`StandardizeDTime` ⇒ giữ cả giờ, khác `StandardizeDate` của #530).</summary>
+    public DateTime PointDateTime { get; set; }
+    /// <summary>Cờ CHẠY/DỪNG — chỉ nhận "1"/"0"; ở luồng tạm dừng nguồn truyền `bPause ? Yes : No`.</summary>
+    public string FlagPlay { get; set; } = "";
+    public string FlagBegin { get; set; } = "";
+    public string FlagEnd { get; set; } = "";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    // ===== merge session-a: các thuộc tính của bản RoWorkTime thứ hai (song sinh cùng tên) =====
+    public long RoId { get; set; }                // = ROID (RepairOrder.Id)
+}
+
+// ===== #528 §12 KẾ HOẠCH PHÂN CÔNG THEO **BẢY** CÔNG ĐOẠN (Ser_AssignmentWork) =====
+// Nguồn `BizCarSv.AssignmentOfWork.cs:203 Ser_AssignmentWork_CreateX` nhận **21** tham số kế hoạch:
+//   bảy nhóm `SCC / SCD / SCN / SCS / SCDB / SCLR / SCKSC` × ba cột (bắt đầu · kết thúc · khoang).
 public sealed class SerAssignmentWork
 {
+    /// <summary>Khoá lệnh sửa chữa — nguồn `Convert.ToInt32(strROID)` (KHÔNG guard rỗng).</summary>
+    public string? ROID { get; set; }
+    public DateTime? SCCPlanStartDTime { get; set; }
+    public DateTime? SCCPlanFinishDTime { get; set; }
+    public string? SCCCavityID { get; set; }
+    public DateTime? SCDPlanStartDTime { get; set; }
+    public DateTime? SCDPlanFinishDTime { get; set; }
+    public string? SCDCavityID { get; set; }
+    public DateTime? SCNPlanStartDTime { get; set; }
+    public DateTime? SCNPlanFinishDTime { get; set; }
+    public string? SCNCavityID { get; set; }
+    public DateTime? SCSPlanStartDTime { get; set; }
+    public DateTime? SCSPlanFinishDTime { get; set; }
+    public string? SCSCavityID { get; set; }
+    public DateTime? SCDBPlanStartDTime { get; set; }
+    public DateTime? SCDBPlanFinishDTime { get; set; }
+    public string? SCDBCavityID { get; set; }
+    public DateTime? SCLRPlanStartDTime { get; set; }
+    public DateTime? SCLRPlanFinishDTime { get; set; }
+    public string? SCLRCavityID { get; set; }
+    public DateTime? SCKSCPlanStartDTime { get; set; }
+    public DateTime? SCKSCPlanFinishDTime { get; set; }
+    public string? SCKSCCavityID { get; set; }
+    /// <summary>#531 §12 Cờ **PHÁT SINH** (`FlagArise`) — khác `FlagPause`: cột này được ghi
+    /// **ngay trên bảng phân công** và **KHÔNG đảo giá trị**.</summary>
+    public string? FlagArise { get; set; }
+    /// <summary>#531 §12 Loại công việc phát sinh (`WorkTypeArise`).</summary>
+    public string? WorkTypeArise { get; set; }
+    /// <summary>#530 §12 Loại công việc lúc TẠM DỪNG (`WorkTypePause`) — cột **duy nhất** mà
+    /// `Ser_AssignmentWork_UpdateFlagPause` thực sự ghi vào bảng này.</summary>
+    public string? WorkTypePause { get; set; }
+    // ===== #529 §12 MỐC THỰC TẾ theo bảy công đoạn (Ser_AssignmentWork.SC*Actual*DTime) =====
+    public DateTime? SCCActualStartDTime { get; set; }
+    public DateTime? SCCActualFinishDTime { get; set; }
+    public DateTime? SCDActualStartDTime { get; set; }
+    public DateTime? SCDActualFinishDTime { get; set; }
+    public DateTime? SCNActualStartDTime { get; set; }
+    public DateTime? SCNActualFinishDTime { get; set; }
+    public DateTime? SCSActualStartDTime { get; set; }
+    public DateTime? SCSActualFinishDTime { get; set; }
+    public DateTime? SCDBActualStartDTime { get; set; }
+    public DateTime? SCDBActualFinishDTime { get; set; }
+    public DateTime? SCLRActualStartDTime { get; set; }
+    public DateTime? SCLRActualFinishDTime { get; set; }
+    public DateTime? SCKSCActualStartDTime { get; set; }
+    public DateTime? SCKSCActualFinishDTime { get; set; }
+    /// <summary>Loại công việc lúc BẮT ĐẦU / KẾT THÚC (`WorkTypeStart` / `WorkTypeFinish`).</summary>
+    public string? WorkTypeStart { get; set; }
+    public string? WorkTypeFinish { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string RONo { get; set; } = "";
@@ -4896,55 +5940,12 @@ public sealed class SerAssignmentWork
     //       + WorkTypeStart/WorkTypeFinish (công đoạn mở/đóng tiến độ RO) + CreateDTime/CreateBy/LogLU*.
     //       Thay bảng con chuẩn hoá SerAssignmentWorkStage (⛔ DEPRECATED, dữ liệu đã chuyển sang các cột này). =====
     // SCC
-    public string? SCCCavityID { get; set; }
-    public DateTime? SCCPlanStartDTime { get; set; }
-    public DateTime? SCCPlanFinishDTime { get; set; }
-    public DateTime? SCCActualStartDTime { get; set; }
-    public DateTime? SCCActualFinishDTime { get; set; }
     // SCD
-    public string? SCDCavityID { get; set; }
-    public DateTime? SCDPlanStartDTime { get; set; }
-    public DateTime? SCDPlanFinishDTime { get; set; }
-    public DateTime? SCDActualStartDTime { get; set; }
-    public DateTime? SCDActualFinishDTime { get; set; }
     // SCN
-    public string? SCNCavityID { get; set; }
-    public DateTime? SCNPlanStartDTime { get; set; }
-    public DateTime? SCNPlanFinishDTime { get; set; }
-    public DateTime? SCNActualStartDTime { get; set; }
-    public DateTime? SCNActualFinishDTime { get; set; }
     // SCS
-    public string? SCSCavityID { get; set; }
-    public DateTime? SCSPlanStartDTime { get; set; }
-    public DateTime? SCSPlanFinishDTime { get; set; }
-    public DateTime? SCSActualStartDTime { get; set; }
-    public DateTime? SCSActualFinishDTime { get; set; }
     // SCDB
-    public string? SCDBCavityID { get; set; }
-    public DateTime? SCDBPlanStartDTime { get; set; }
-    public DateTime? SCDBPlanFinishDTime { get; set; }
-    public DateTime? SCDBActualStartDTime { get; set; }
-    public DateTime? SCDBActualFinishDTime { get; set; }
     // SCLR
-    public string? SCLRCavityID { get; set; }
-    public DateTime? SCLRPlanStartDTime { get; set; }
-    public DateTime? SCLRPlanFinishDTime { get; set; }
-    public DateTime? SCLRActualStartDTime { get; set; }
-    public DateTime? SCLRActualFinishDTime { get; set; }
     // SCKSC
-    public string? SCKSCCavityID { get; set; }
-    public DateTime? SCKSCPlanStartDTime { get; set; }
-    public DateTime? SCKSCPlanFinishDTime { get; set; }
-    public DateTime? SCKSCActualStartDTime { get; set; }
-    public DateTime? SCKSCActualFinishDTime { get; set; }
-    public string? WorkTypeStart { get; set; }
-    public string? WorkTypeFinish { get; set; }
-    public DateTime? CreateDTime { get; set; }
-    public string? CreateBy { get; set; }
-    public DateTime? LogLUDateTime { get; set; }
-    public string? LogLUBy { get; set; }
-    /// <summary>#418 `WorkTypePause` — công đoạn đang tạm dừng (Ser_AssignmentWork_UpdateFlagPause).</summary>
-    public string? WorkTypePause { get; set; }
 }
 
 /// <summary>
@@ -5051,6 +6052,31 @@ public sealed class PartCostSnapshot
 
     public string Method { get; set; } = "Average"; // Average | FIFO
     public DateTime CalculatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #992 §12 — nguồn `Ser_PartCostCalculateGet`/`SerAverageCost` luôn nhận VÀ lọc theo
+    /// `strDealerCode` (`Ser_PartCost_Calculate.DealerCode`) — port cũ tính giá vốn GỘP CHUNG mọi đại lý
+    /// trong cùng Org, không tách theo đại lý như nguồn.</summary>
+    public string? DealerCode { get; set; }
+}
+
+/// <summary>#1504 Giá vốn BÌNH QUÂN theo LÔ NHẬP (`Ser_PartCost`) — **KHÁC** `PartCostSnapshot`
+/// (vốn là `Ser_PartCost_Calculate`, bình quân THEO KỲ). Nguồn: `BizCarSv.Inventory.Stock.cs:3658
+/// BuildGetAverageCost01` (đọc) + `:3727 ProcessSaveAverageCost01` (ghi). Mỗi phiếu nhập để lại MỘT mốc
+/// giá vốn (`StockInID`), không ghi đè master phụ tùng. Endpoint: `GET /api/partcosts/average`.</summary>
+public sealed class PartCost
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    /// <summary>Khoá kỹ thuật phụ tùng (nguồn: `PartID`) — KHÁC `PartCode`.</summary>
+    public string? PartID { get; set; }
+    /// <summary>Phiếu nhập sinh ra mốc giá vốn này (nguồn: `StockInID`).</summary>
+    public string? StockInID { get; set; }
+    public decimal AverageCost { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>File đính kèm đề nghị bảo hành (ảnh/chứng từ theo ĐN) — port 1:1 FrmROAttachment (Ser_ROAttachment, TCMotor).</summary>
@@ -5085,11 +6111,62 @@ public sealed class InsuranceAttachment
     public string RONo { get; set; } = "";
     public string AttachmentCode { get; set; } = "";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #998 §12 — nguồn `InsertInsuranceAttachment` (`BizCarSv.Service.cs:6852`) ghi cột `Note`
+    /// riêng cho TỪNG dòng tài liệu đã tích chọn (khác `InsuranceAttachmentType.Note` là mô tả LOẠI tài
+    /// liệu) — port cũ thiếu hẳn cột này, mất ghi chú người dùng nhập khi tích chọn.</summary>
+    public string? Note { get; set; }
+}
+
+/// <summary>
+/// 🔴 #268 NHẬT KÝ CHUYỂN TRẠNG THÁI của đề nghị bảo hành — `Ser_ROWarrantyReportTransaction`.
+/// Nguồn: `BizCarSv.WarrantyReport.cs:1701 ProcessSaveSerROWarrantyReportTransaction` —
+/// **10 chỗ gọi**, tức MỌI lần đổi trạng thái đều ghi lại một dòng. Port cũ thiếu hẳn bảng này ⇒
+/// đề nghị chỉ còn trạng thái HIỆN TẠI, mất sạch dấu vết ai đổi, khi nào, vì sao.
+///
+/// ⚠️ Lớp hằng `TblSerROWarrantyReportTransaction` (DbDefine.cs:947-960) chỉ liệt kê **6** cột, còn câu
+/// INSERT thật ghi **9** (thêm `CreatedBy`, `LogLUDateTime`, `LogLUBy`). Lại một lần `Tbl*` thiếu cột —
+/// nguồn sự thật là CÂU GHI.
+/// ⚠️ Nguồn gõ sai chính tả ngay trong hằng: `ROWRTransactionID = "ROWRTRANACTIONID"` (thiếu chữ "S" —
+/// TRAN**A**CTION). Giữ nguyên khi grep DB nguồn; port dùng tên đúng chính tả.
+/// </summary>
+public sealed class ServiceWarrantyClaimTransaction
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>ROWID — đề nghị bảo hành mà dòng nhật ký này thuộc về.</summary>
+    public long ClaimId { get; set; }
+
+    /// <summary>CREATOR — **người/bên tạo bước chuyển** (do WS truyền vào), KHÁC `CreatedBy` là tài
+    /// khoản đăng nhập thực hiện. Nguồn giữ cả hai vì đại lý có thể thao tác thay cho người khác.</summary>
+    public string? Creator { get; set; }
+
+    /// <summary>CURRENTSTATUS — trạng thái ĐÍCH sau bước chuyển (`Ser_WarrantyReport_Status`).</summary>
+    public string CurrentStatus { get; set; } = "";
+
+    /// <summary>NOTE — lý do; nguồn bắt buộc với từ chối/hoàn trả.</summary>
+    public string? Note { get; set; }
+
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đề nghị bảo hành dịch vụ (đại lý gửi HTC duyệt theo RO) — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved (Ser_ROWarrantyReport, TCMotor).</summary>
 public sealed class ServiceWarrantyClaim
 {
+    // 🔴 #369 §12 — HAI mã phân loại BCBH. Nguồn dùng CHÚNG để chọn **luật duyệt nào áp dụng**,
+    //   và hai luật đó **ngược chiều nhau** (xem `/api/warrantyclaims/{id}/approve-check`).
+    //   Thiếu chúng ⇒ không có cách nào biết phải áp luật nào, mọi hồ sơ sẽ bị xét bằng một luật
+    //   duy nhất — sai đúng một nửa số trường hợp.
+    /// <summary>Loại BCBH: `XM` xe mới chưa bán · `SB` sau bán (mặc định) · `PT` bảo hành phụ tùng
+    /// · `TC` thiện chí · `BT` bản tin/chiến dịch.</summary>
+    public string? ROWTypeCode { get; set; }
+    /// <summary>Loại chi tiết: `A` AVN · `B` ắc quy · `P` sơn · `W` thông thường · `S` phụ tùng
+    /// · `R` thiện chí · `C` bản tin/chiến dịch.</summary>
+    public string? ROWTypeDtlCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     /// <summary>#412 rename ClaimNo→ROWNo (`Ser_ROWarrantyReport.ROWNo` — số báo cáo bảo hành).</summary>
@@ -5152,34 +6229,61 @@ public sealed class ServiceWarrantyClaim
     public string? ApprovedBy { get; set; }
 
     public string? HtcNote { get; set; }
+
+    // ===== 🔴 #302 CỘT THẬT CỦA `Ser_ROWarrantyReport` MÀ PORT CŨ THIẾU =====
+    // Nguồn LIVE `Ser_ROWarrantyReport_Get_New20230417` (`WarrantyReport.cs:13388`) trả `td.*` —
+    // dưới đây là các cột trong `td.*` mà MiniHTC chưa có chỗ chứa.
+    public string? ROID { get; set; }           // khoá lệnh sửa chữa (nguồn join `td.ROID = ro.ROID`)
+    public string? CusID { get; set; }
+    public string? CarID { get; set; }
+    public string? Creator { get; set; }
+    public string? Assistant { get; set; }      // cố vấn dịch vụ
+    public string? Km { get; set; }
+    public DateTime? CheckInDate { get; set; }
+    public DateTime? FinishedDate { get; set; }
+    public string? CusRequest { get; set; }     // yêu cầu của khách
+    public string? CarStatus { get; set; }      // tình trạng xe lúc tiếp nhận
+    public string? NaturalCode { get; set; }    // mã HIỆN TƯỢNG
+    public string? CauseCode { get; set; }      // mã NGUYÊN NHÂN
+    public DateTime? StartDate { get; set; }
+    public string? ROWTID { get; set; }         // loại bảo hành (`Ser_MST_ROWarrantyType`)
+    public string? ErrorCodeCD { get; set; }
+    public string? ErrorCodePN { get; set; }
+    public string? FlagReadySend { get; set; }  // sẵn sàng gửi hãng
+    public string? PartIDError { get; set; }    // phụ tùng LỖI (join `Ser_MST_Part` để lấy mã + tên)
+    public string? CreatedBy { get; set; }
+
+    // ===== 🔴 #322 BẢN CHỤP KHÁCH + XE **TRÊN CHÍNH PHIẾU BẢO HÀNH** =====
+    // Nguồn LIVE `Ser_ROWarrantyReport_Update_V2` (`WarrantyReport.cs:4174`) GHI 34 cột, trong đó có
+    // khối khách/xe dưới đây — port cũ (#302) chỉ lấy cột từ hàm **Get** nên bỏ sót chúng.
+    //
+    // ⚠️ NGHỊCH LÝ CÓ THẬT, ghi lại để không ai "sửa cho hợp lý":
+    //   hàm **Update GHI** bản chụp này lên phiếu, nhưng hàm **Get LIVE** (`_New20230417`, #302) lại
+    //   **ĐỌC từ LỆNH SỬA CHỮA** (`ro.FrameNo`/`ro.PlateNo`/`ro.Warranty*`) chứ không đọc mấy cột này.
+    //   ⇒ Bản chụp trên phiếu **được ghi nhưng KHÔNG được màn chi tiết dùng**. Vẫn phải port: các màn/báo
+    //     cáo khác đọc thẳng bảng, và mất cột thì mất dữ liệu lịch sử.
+    public string? CusName { get; set; }
+    public string? CusAddress { get; set; }
+    public string? CusTel { get; set; }
+    public string? ModelID { get; set; }
+    public string? BatteryNo { get; set; }
+    public string? SerialNo { get; set; }
+    public DateTime? WarrantyRegistrationDate { get; set; }
+    public DateTime? WarrantyExpiresDate { get; set; }
+    public decimal? WarrantyKM { get; set; }
+    /// <summary>NOTE — ghi chú của ĐỀ NGHỊ. ⚠️ KHÁC `HtcNote` (ghi chú của HTC khi duyệt/từ chối).</summary>
+    public string? Note { get; set; }
+
+    // #1144 §12 — `Ser_ROWarrantyReport_HTCConfirm` (WarrantyReport.cs:7230) / `_HTCReject` (:9670) đều ghi
+    // `WarrantyStatus`/`LogLUDateTime`/`LogLUBy` trong CÙNG một `alColumnEffective` — entity (header) chưa
+    // từng có 2 cột này (khác `ServiceWarrantyClaimTransaction` đã vá ở #1113).
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 
     // ===== #412 parity header `Ser_ROWarrantyReport` — `Ser_ROWarrantyReport_Create_20220218` (BizCarSv.WarrantyReport.cs:2015, WS LIVE) =====
-    public string? Creator { get; set; }
-    public string? Assistant { get; set; }
-    public string? CusID { get; set; }
-    public string? CusName { get; set; }
-    public string? CusAddress { get; set; }
-    public string? CusTel { get; set; }
-    public DateTime? CheckInDate { get; set; }
-    public DateTime? StartDate { get; set; }
-    public DateTime? FinishedDate { get; set; }
-    public string? CusRequest { get; set; }
-    public string? CarStatus { get; set; }
-    public string? NaturalCode { get; set; }
-    public string? CauseCode { get; set; }
-    public string? Km { get; set; }
-    public string? CarID { get; set; }
-    public string? ROWTID { get; set; }
-    public string? ErrorCodePN { get; set; }
-    public string? ErrorCodeCD { get; set; }
-    public string? PartIDError { get; set; }
-    /// <summary>#425 Cờ "sẵn sàng gửi" (Ser_ROWarrantyReport.FlagReadySend) — chỉ `Ser_ROWarrantyReport_Update_V2` ghi, khi tham số khác rỗng.</summary>
-    public string? FlagReadySend { get; set; }
-    public string? CreatedBy { get; set; }
-    public DateTime? LogLUDateTime { get; set; }
-    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -5188,8 +6292,78 @@ public sealed class ServiceWarrantyClaim
 /// ĐÚNG 1 phụ tùng, không có số lượng / đơn giá / VAT / nguồn gốc PT ⇒ mất toàn bộ chiều chi tiết
 /// và mọi luật kiểm tra theo dòng của nguồn (BizCarSv.WarrantyReport.cs:960-1290, máy 150 canonical).
 /// </summary>
+/// <summary>
+/// 🔴 #303 DÒNG CÔNG của đề nghị bảo hành — `Ser_ROWarrantyReportServiceItems`, **chưa từng port**.
+/// Port cũ chỉ có dòng PHỤ TÙNG (<see cref="WarrantyClaimPartItem"/>) ⇒ đề nghị bảo hành **chỉ có
+/// tiền phụ tùng, không có tiền công** — báo cáo chấp thuận bảo hành thiếu hẳn một nửa số tiền.
+/// Cột lấy từ bản đồ ghi thật `lstMapFN` (`WarrantyReport.cs:206-217`), không lấy theo lưới.
+/// </summary>
+public sealed class WarrantyClaimServiceItem
+{
+    /// <summary>🔴 #396 §12 Mốc duyệt LAN xuống dòng công khi HTC duyệt đề nghị.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>#396 §12 Người duyệt, lan xuống dòng công.</summary>
+    public string? ApprovedBy { get; set; }
+    public long Id { get; set; }                 // ItemID
+    public Guid OrgId { get; set; }
+    /// <summary>ROWID — khoá về đề nghị bảo hành.</summary>
+    public long ClaimId { get; set; }
+
+    public string SerID { get; set; } = "";           // khoá dịch vụ (join `Ser_MST_Service` lấy mã + tên)
+    public string? SerCode { get; set; }
+    public string? SerName { get; set; }
+
+    /// <summary>
+    /// 🔴 ROWSerType (`TConst.ROWSerType`, `Const.Main.cs:483`): **"CVC" công việc chính** · "CVPSN".
+    /// Báo cáo chấp thuận chỉ lấy **MỘT** dòng đại diện — `top 1 itemid … where ROWSerType = 'CVC'`.
+    /// ⚠️ Cột này **KHÔNG có trong `lstMapFN` của hàm Create** ⇒ nguồn không ghi nó lúc tạo, nhưng báo cáo
+    ///    LẠI LỌC theo nó. Dòng nào chưa được đặt "CVC" ở đâu đó sẽ **không bao giờ ra báo cáo**.
+    /// </summary>
+    public string ROWSerType { get; set; } = "";
+
+    public decimal? Factor { get; set; }
+    public decimal? Price { get; set; }
+    public decimal? VAT { get; set; }
+    /// <summary>Giờ công định mức, nguồn lấy qua join `ser_mst_service.StdManHour` (xem #297).</summary>
+    public decimal? StdManHour { get; set; }
+
+    /// <summary>Trạng thái RIÊNG của dòng. ⚠️ Báo cáo chấp thuận **KHÔNG lọc theo cột này**
+    /// (`--AND rwrs.WarrantyStatus = 'ACCE'` đã bị comment) — xem chú thích ở endpoint báo cáo.</summary>
+    public string? WarrantyStatus { get; set; }
+
+    public string? Note { get; set; }
+    /// <summary>BULLETINID — bản tin kỹ thuật. ⚠️ Nguồn coi chuỗi **"0" như RỖNG** (bỏ qua, không ghi).</summary>
+    public long? BulletinID { get; set; }
+
+    // ===== 🔴 #1484 §12 BỐN CỘT nguồn `Ser_ROWarrantyReportServiceItems` mà entity Mini THIẾU =====
+    // Nguồn: khối `insert into Ser_ROWarrantyReportServiceItems` của `Ser_ROWarrantyReport_Update`
+    // (`BizCarSv.WarrantyReport.cs:1200-1240`) liệt kê 20 cột; entity Mini trước lượt này chỉ có 16.
+    //   · `TypeID`        — loại công việc (khoá kỹ thuật, nguồn ghi ở `_Update`).
+    //   · `ActManHour`    — giờ công THỰC TẾ (khác `StdManHour` là định mức, lấy qua join `Ser_MST_Service`).
+    //   · `ExpenseType`   — loại chi phí (nguồn GET dựng hằng `'ROWARRANTY'`; `_Update` ghi lại từ bảng).
+    //   · `InsurancePrice`— giá bảo hiểm (cột riêng, KHÔNG phải `Price`).
+    /// <summary>TypeID — loại công việc (nguồn `_Update` ghi).</summary>
+    public string? TypeID { get; set; }
+    /// <summary>ActManHour — giờ công THỰC TẾ (khác `StdManHour` định mức).</summary>
+    public decimal? ActManHour { get; set; }
+    /// <summary>ExpenseType — loại chi phí (nguồn GET dựng hằng `'ROWARRANTY'`).</summary>
+    public string? ExpenseType { get; set; }
+    /// <summary>InsurancePrice — giá bảo hiểm (cột riêng, KHÔNG phải `Price`).</summary>
+    public decimal? InsurancePrice { get; set; }
+
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    // ===== merge session-a: các thuộc tính của bản WarrantyClaimServiceItem thứ hai (song sinh cùng tên) =====
+}
+
 public sealed class WarrantyClaimPartItem
 {
+    /// <summary>🔴 #396 §12 Mốc duyệt LAN xuống dòng phụ tùng khi HTC duyệt đề nghị.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>#396 §12 Người duyệt, lan xuống dòng phụ tùng.</summary>
+    public string? ApprovedBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
 
@@ -5199,6 +6373,19 @@ public sealed class WarrantyClaimPartItem
     /// <summary>PartID/PartCode — mã phụ tùng.</summary>
     public string PartCode { get; set; } = "";
     public string? PartName { get; set; }
+
+    // ===== 🔴 #1485 §12 BA CỘT nguồn `Ser_ROWarrantyReportPartItems` mà entity Mini THIẾU =====
+    // Nguồn: khối `insert into Ser_ROWarrantyReportPartItems` của `Ser_ROWarrantyReport_Update`
+    // (`BizCarSv.WarrantyReport.cs:1343-1390`) liệt kê 21 cột; entity Mini trước lượt này chỉ có 18.
+    //   · `PartID`     — khoá kỹ thuật phụ tùng (KHÁC `PartCode` là mã hiển thị, lấy qua join `Ser_MST_Part`).
+    //   · `PartTypeID` — loại phụ tùng (khoá kỹ thuật).
+    //   · `PartGroupID`— nhóm phụ tùng.
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (KHÁC `PartCode`).</summary>
+    public string? PartID { get; set; }
+    /// <summary>PartTypeID — loại phụ tùng (khoá kỹ thuật).</summary>
+    public string? PartTypeID { get; set; }
+    /// <summary>PartGroupID — nhóm phụ tùng.</summary>
+    public string? PartGroupID { get; set; }
 
     /// <summary>
     /// 🔴 LOẠI PHỤ TÙNG trong đề nghị bảo hành (`TConst.ROWPartType`) — trục mà port cũ THIẾU HẲN:
@@ -5231,11 +6418,15 @@ public sealed class WarrantyClaimPartItem
     /// <summary>Cờ phụ tùng chính (FlagMainPart) — nguồn lưu tách khỏi <see cref="RowPartType"/>.</summary>
     public string? FlagMainPart { get; set; }
     public string? Note { get; set; }
-    /// <summary>#414 HTC duyệt ghi ApprovedDate/ApprovedBy cho TỪNG dòng (HTCApproved_New20230112).</summary>
-    public DateTime? ApprovedDate { get; set; }
-    public string? ApprovedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1116 §12 — nguồn `ProcessSaveROWarrantyReportItems` (WarrantyReport.cs:169) ghi đủ 4 cột
+    /// nhật ký (= strPartnerUserCode, actor server) cho CẢ dòng công lẫn dòng phụ tùng — port cũ thiếu hẳn.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chăm sóc khách hàng sau dịch vụ (Ser_CustomerCare — port 1:1 FrmCustomerCare, TCMotor DMSCarSv/Customer):
@@ -5276,6 +6467,16 @@ public sealed class CustomerCare
     public string? IsSendmail { get; set; }
     public string? Note { get; set; }
 
+
+    /// <summary>#278 DealerCode — đại lý của phiếu CSKH. Bản tổng đài iCIC lọc **danh sách đại lý bị
+    /// loại** trên CẢ BA bảng (tt/cus/car); MiniHTC gộp về một cột trên phiếu.</summary>
+    public string? DealerCode { get; set; }
+    // ===== 🔴 #457 §12 HAI KHOÁ THẬT của phiếu CSKH (`Ser_CustomerCare.CusID` / `.CarID`) =====
+    /// <summary>`CusID` — nguồn nối `inner join Ser_Customer cus on tt.CusID = cus.CusID`.</summary>
+    public string? CusID { get; set; }
+    /// <summary>`CarID` — nguồn nối `join ser_car car on tt.carID = car.carID **and tt.CusID = car.CusID**`
+    /// (nối HAI cột, và là INNER) ⇒ xe đã sang tên chủ khác thì phiếu CSKH biến mất khỏi danh sách.</summary>
+    public string? CarID { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ContactedAt { get; set; }
 }
@@ -5302,9 +6503,25 @@ public sealed class CustomerCareMaintance
     public DateTime? UpdatedAt { get; set; }
     public string? UpdatedBy { get; set; }
 }
+/// <summary>
+/// Chăm sóc khách hàng nhân dịp SINH NHẬT — bảng `Ser_CustomerCareDOB` (port 1:1
+/// `Ser_CustomerCareDOB_Create`, `BizCarSv.Customer.cs:14105`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:8765`).
+/// Nguồn upsert theo `CusCareID`: tra `top 1 *` — không có thì INSERT, có thì UPDATE hai cột
+/// `ContactDate`/`Note` (danh sách cột hiệu lực `alColumnEffective`). Sau đó gọi
+/// `Ser_CustomerCareStatusUpdate(_dbDealer, …)` cập nhật trạng thái phiếu CSKH cha.
+/// Bảng chỉ có ba cột nghiệp vụ: `CusCareID` (khoá), `ContactDate`, `Note`.
+/// </summary>
+public sealed class CustomerCareDob
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Số phiếu CSKH (`CusCareID`) — khoá upsert.</summary>
+    public string CareNo { get; set; } = "";
+    public DateTime? ContactDate { get; set; }
+    public string? Note { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
 
-/// <summary>Chăm sóc khách hàng nhân dịp SINH NHẬT
-/// port 1:1 FrmCSCCustomerCareDOB / FrmCustomerCareBth, TCMotor DMSCarSv/Customer).
 /// ⚠️ Là BẢNG RIÊNG ở nguồn, KHÔNG phải một loại của <see cref="CustomerCare"/>:
 /// có khoá riêng (CareBthId) và **bộ trạng thái riêng "0/1/2"**, khác hẳn PEND/CINFB/CIFB/REJ.
 /// </summary>
@@ -5459,6 +6676,20 @@ public sealed class CustomerCareSurvey
 /// + danh sách phụ tùng khuyến mãi kèm % giảm.</summary>
 public sealed class CampaignMarketing
 {
+    // 🏆🔴🔴 #914 PORT TRÙNG LẶP với ServiceCampaign (Models/Entities.cs, route `/api/servicecampaigns`) —
+    // CẢ HAI tự nhận port 1:1 CÙNG một màn `FrmSer_CampaignMarketing`/`Ser_CampaignMarketing`, độc lập, đều
+    // LIVE. Bảng NÀY (`CampaignMarketing`/`/api/campaignmarketings`) đầy đủ hơn: có luồng duyệt lan 6 bảng
+    // con (#798), điều kiện VIN/biển số/khoảng ngày bảo hành. `ServiceCampaign` chỉ có Draft/Active/Closed +
+    // điều kiện đại lý, không có duyệt. Giữ CẢ HAI (không xoá, tránh gãy caller) — route MỚI dùng bảng này.
+    // ===== 🔴 #392 §12 TRẠNG THÁI + DẤU DUYỆT của chiến dịch marketing =====
+    /// <summary>Trạng thái: `P` = chờ duyệt (Pending) · `A` = đã duyệt (Approve).
+    /// 🔴 Khi duyệt, nguồn **lan trạng thái này xuống SÁU bảng con** — xem
+    /// `POST /api/campaignmarketings/{no}/approve`.</summary>
+    public string CamMarketingStatus { get; set; } = "P";
+    /// <summary>Thời điểm duyệt (`ApprDTime`).</summary>
+    public DateTime? ApprDTime { get; set; }
+    /// <summary>Người duyệt (`ApprBy`).</summary>
+    public string? ApprBy { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string CamMarketingNo { get; set; } = "";
@@ -5472,16 +6703,22 @@ public sealed class CampaignMarketing
     public string? ConditionPlateNo { get; set; }     // CSV
     public string? ConditionDealer { get; set; }      // CSV
     public string? ConditionFullVIN { get; set; }     // CSV — port 1:1 Ser_CampaignMarketing.ConditionFullVIN (cờ điều kiện thứ 4, có bảng detail Ser_CampaignMarketingFullVIN)
-    public string? CamMarketingStatus { get; set; }   // trạng thái duyệt — port 1:1 (dùng nhiều trong BizCarSv.CampaignMarketing)
     public string? Remark { get; set; }               // ghi chú — port 1:1 Ser_CampaignMarketing.Remark
     /// <summary>#366 tên cột nguồn Ser_CampaignMarketing (DbDefine V20): CamMarketingNo/Name/Desc, ConditionVIN/FullVIN, CreateDTime/CreateBy.</summary>
     public DateTime CreateDTime { get; set; } = DateTime.Now;
     public string? CreateBy { get; set; }
+
+    /// <summary>#1117 §12 — nguồn `Ser_CampaignMarketing_Create_20220926` (LIVE qua WS gateway) ghi
+    /// `LogLUDateTime`/`LogLUBy` (= strPartnerUserCode) — bảng KHÔNG có CreatedDate/CreatedBy.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phụ tùng khuyến mãi trong chiến dịch marketing (dòng) — port 1:1 grid gridCPart, TCMotor.</summary>
 public sealed class CampaignMarketingPart
 {
+    /// <summary>#392 §12 Trạng thái LAN từ chiến dịch cha khi duyệt (`CamMarketingPartStatus`).</summary>
+    public string? CamMarketingPartStatus { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long CampaignId { get; set; }
@@ -5493,6 +6730,7 @@ public sealed class CampaignMarketingPart
 /// chương trình CSKH riêng theo MaceType (mã do hãng quy định), khác CustomerCare thường (24h/72h/DOB/Maint).
 /// WinForm gốc chỉ SEARCH + cập nhật trạng thái liên hệ (không tạo tay từng bản — nguồn phát sinh từ hãng);
 /// ở đây thêm POST tạo để có đường nhập liệu thủ công tương đương.</summary>
+// ===== #490 §12: bốn khoá/cột của `Ser_CustomerCareMace` mà bản port cũ chưa có =====
 public sealed class CustomerCareMace
 {
     public long Id { get; set; }
@@ -5509,21 +6747,58 @@ public sealed class CustomerCareMace
     public DateTime? ApointDate { get; set; }
     public DateTime? MaceRecomentDate { get; set; }
     public string? Remark { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.Now;
-
-    // ===== #419 parity Ser_CustomerCareMace — `ProcessSaveCareMace` (BizCarSv.Customer.cs:12783) khi RO sang RPRD =====
+    /// <summary>#490 `DealerCode` — nguồn lọc `t.DealerCode` và ghi từ `Ser_RO.DealerCode`.</summary>
     public string? DealerCode { get; set; }
-    public string? CarID { get; set; }
+    /// <summary>#490 `CusID` / `CarID` — hai khoá nối sang khách và xe (nguồn nối `t.CusID = cus.CusID`,
+    /// `t.CarId = car.CarId`; vế `and t.cusId = car.CusId` **đã bị COMMENT** ở nguồn).</summary>
     public string? CusID { get; set; }
+    public string? CarID { get; set; }
+    /// <summary>#490 `ROID` — nguồn nối `join ser_ro ro on t.ROID = ro.ROID` (**INNER**).</summary>
+    public string? ROID { get; set; }
+    /// <summary>#490 `CreatedDate` — nguồn ghi mốc tạo phiếu nhắc.</summary>
+    public DateTime? CreatedDate { get; set; }
+    // #1156 §12 — `ProcessSaveCareMace` (Customer.cs:12782-12800, gọi từ `OS_Ser_CustomerCareMace_Update`)
+    // ghi `CreatedBy`/`LogLUDateTime`/`LogLUBy` = strPartnerUserCode mỗi lần "sửa" (nguồn thực chất chèn
+    // dòng mới) — entity Mini chưa từng có 3 cột này dù dùng mô hình sửa-tại-chỗ.
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== #419 parity Ser_CustomerCareMace — `ProcessSaveCareMace` (BizCarSv.Customer.cs:12783) khi RO sang RPRD =====
+    // ===== #1477 §12 — 14 cột ECHO của nguồn `Ser_CustomerCareMace_Get` (LIVE, WS `WSCarSv.asmx.cs:9185`
+    // gọi bản trần) / bản kho `Ser_CustomerCareMace_Get_WH` (`WH.cs:22899`). SELECT nguồn liệt kê TƯỜNG MINH
+    // (không `alias.*`): `cus.CusName/Tel/Mobile/Email/ContName/ContAddress/ContEmail/ContTel/ContMobile`
+    // (join `Ser_Customer`), `car.PlateNo/TradeMarkCode` (join `Ser_Car`), `md.ModelName` (left join
+    // `ser_mst_model`), `ro.CheckInDate/Km` (join `ser_ro`), `t.MaceId` (khoá bảng). Đây là field ECHO
+    // (đọc từ bảng master qua join, KHÔNG ghi vào `Ser_CustomerCareMace` lúc Create — xem `ProcessSaveCareMace`
+    // `Customer.cs:12782`) ⇒ cần ở entity + Seeder + GET echo, KHÔNG cần ở DTO/POST (bài học #542).
+    // `MaceTypeText`/`StatusText` là CASE-derived (không phải cột) ⇒ tính trong projection, không cần cột entity.
+    public string? MaceId { get; set; }
+    public string? Tel { get; set; }
+    public string? Mobile { get; set; }
+    public string? Email { get; set; }
+    public string? ContName { get; set; }
+    public string? ContAddress { get; set; }
+    public string? ContEmail { get; set; }
+    public string? ContTel { get; set; }
+    public string? ContMobile { get; set; }
+    public string? PlateNo { get; set; }
+    public string? TradeMarkCode { get; set; }
+    public string? ModelName { get; set; }
+    public DateTime? CheckInDate { get; set; }
+    public decimal? Km { get; set; }
 }
 
 /// <summary>Phụ tùng nợ khách (Ser_Part_OO — port 1:1 FrmNewSerPartOO/FrmMngSerPartOO + biz Ser_Part_OO_Create/_Update, TCMotor DMSCarSv):
 /// PT hết hàng nhưng đã hứa khách theo biển số, chờ đặt hàng về trả tiếp. Khoá nguồn (PartID, OOPlateNo) ⇒ upsert theo (OOPlateNo, PartCode).
 /// #383 BẢN CHUẨN của Ser_Part_OO (song sinh ServicePartOO gộp vào); tên cột RENAME khớp DbDefine TblSer_Part_OO.
-/// Lệch có chủ ý: nguồn `PartID` (int, khoá Mst_Part) ⇔ `PartCode` (mã PT của MiniHTC); `PartName` chỉ để hiển thị.</summary>
+/// Lệch có chủ ý: nguồn `PartID` (int, khoá Mst_Part) ⇔ `PartCode` (mã PT của MiniHTC); `PartName` chỉ để hiển thị.
+/// 🏆🔴🔴 #912 PORT TRÙNG LẶP với <see cref="ServicePartOO"/> — CÙNG bảng nguồn `Ser_Part_OO`/`TblSer_Part_OO`,
+/// CÙNG hai form `FrmNewSerPartOO/FrmMngSerPartOO`, được port ĐỘC LẬP HAI LẦN dưới hai tên entity/route khác
+/// nhau (`/api/partbackorders` vs `/api/servicepartoos`). Bảng NÀY khớp ĐÚNG khoá tự nhiên của nguồn
+/// `(PartID, OOPlateNo)` — dùng `(PlateNo, PartCode)` làm khoá, không có số phiếu tự sinh. Giữ CẢ HAI (không
+/// xoá bản kia, tránh gãy caller đang dùng) — xem endpoint để biết bản nào là chính cho tính năng mới.</summary>
 public sealed class PartBackorder
 {
     public long Id { get; set; }
@@ -5551,6 +6826,13 @@ public sealed class PartBackorder
 /// customer master dịch vụ (cá nhân/tổ chức) + người liên hệ. CustomerCar/Care tham chiếu theo CusCode.</summary>
 public sealed class ServiceCustomer
 {
+    // ===== 🔴 #715 §12 — BỐN CỘT NHẬT KÝ nguồn ghi ở CẢ HAI bảng song song của `ProcessCustomerCreate`
+    //   (`dt_Ser_Customer` cho DB chính và `dt_Ser_Customer_WH` cho DB kho + DB đại lý) mà bản port thiếu hẳn.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string CusCode { get; set; } = "";
@@ -5566,6 +6848,8 @@ public sealed class ServiceCustomer
     public string? ContName { get; set; }              // người liên hệ (tổ chức)
     public string? ContMobile { get; set; }
     public string? ContTel { get; set; }
+    // #301: ContAddress ĐÃ CÓ sẵn phía dưới (dòng ~5415) — không khai lại. Nguồn dùng nó làm
+    //   DỰ PHÒNG CẤP 3 cho địa chỉ trên lệnh sửa chữa: isnull(ro.CusAddress, isnull(cus.Address, cus.ContAddress)).
 
     // ===== #221 parity `CustomerCreate` / `CustomerUpdate` (DMSCarSv —
     //       TERP.HTCServiceClient/DbServices/MstCustomerService.cs:72 / :249) =====
@@ -5581,6 +6865,11 @@ public sealed class ServiceCustomer
     /// <summary>Website (khách doanh nghiệp).</summary>
     public string? Website { get; set; }
     /// <summary>Số CMND/CCCD.</summary>
+    /// <summary>🔴 #362 SALESCUSID — **mã khách hàng bên hệ SALES**. Đồng bộ sang Veloca ưu tiên mã này,
+    /// chỉ rơi về mã CarSv khi nó trống. Chú thích nguồn (`20240401`): *"Dùng mã KH Sales để đồng bộ từ
+    /// CarSv → VelocaDV… Mục đích: 1 KH được đồng bộ ở cả DMS và Veloca đều có 1 mã KH người dùng duy nhất"*.
+    /// ⇒ Thiếu cột này thì mọi khách sang Veloca đều mang mã CarSv ⇒ **hỏng đúng mục đích hợp nhất mã**.</summary>
+    public string? SalesCusID { get; set; }
     public string? IDCardNo { get; set; }
     /// <summary>Ngân hàng giao dịch.</summary>
     public string? Bank { get; set; }
@@ -5602,6 +6891,11 @@ public sealed class ServiceCustomer
     public string? Note { get; set; }
 
     public string? ContEmail { get; set; }
+
+    /// <summary>#269 `Ser_Customer.IsActive` (đặt tên `FlagActive` theo lệ của `ServiceCar`).
+    /// Job NoShow lọc **theo cờ của KHÁCH HÀNG**, không phải cờ của XE — đọc kỹ alias trong nguồn:
+    /// `and cus.IsActive = @strIsActive`.</summary>
+    public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -5609,6 +6903,27 @@ public sealed class ServiceCustomer
 /// đơn mua phụ tùng gửi nhà cung cấp. OrderPartStatus: Pending(Mới tạo)→Approved(Đã gửi NCC)→Finished(Hoàn thành).</summary>
 public sealed class OrderPart
 {
+    // ===== 🔴 #389 §12 TÁM CỘT của màn SỬA đơn đặt phụ tùng (`Ser_Part_OrderUpdate`) =====
+    //   Nguồn ghi 19 cột trong `alColumnEffective`; MiniHTC trước lượt này thiếu tám cột dưới đây,
+    //   nên màn sửa không thể port đủ. Xem `PUT /api/orderparts/{no}`.
+    /// <summary>Số đơn do NGƯỜI DÙNG tự đặt (`OrderNoUser`) — khác số hệ thống sinh.
+    /// 🔴 Thuộc nhóm **rỗng = XOÁ** (nguồn có nhánh `else → DBNull`).</summary>
+    public string? OrderNoUser { get; set; }
+    /// <summary>Ngày nhận hàng (`ReceivePartDate`). 🔴 **rỗng = XOÁ**.</summary>
+    public DateTime? ReceivePartDate { get; set; }
+    /// <summary>Ngày duyệt (`ApprovedDate`). 🔴 **rỗng = XOÁ**.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>Số xác nhận của HTC (`ConfirmNo`, issue 985 — có guard trùng riêng).
+    /// 🔴 **rỗng = XOÁ**.</summary>
+    public string? ConfirmNo { get; set; }
+    /// <summary>Phí khách chịu (`CusCharges`, issue 1017). 🔴 **rỗng = XOÁ**.</summary>
+    public string? CusCharges { get; set; }
+    /// <summary>Cờ HTC đã xác nhận (`HTCConfirm`). ⚠️ **rỗng = GIỮ** (không có nhánh else).</summary>
+    public string? HTCConfirm { get; set; }
+    /// <summary>Cho giao hàng từng phần (`PartialShipment`). ⚠️ **rỗng = GIỮ**.</summary>
+    public string? PartialShipment { get; set; }
+    /// <summary>Hình thức vận chuyển (`TypeTransport`). ⚠️ **rỗng = GIỮ**.</summary>
+    public string? TypeTransport { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string OrderPartNo { get; set; } = "";
@@ -5691,6 +7006,9 @@ public sealed class OrderPart
     public string? CreateBy { get; set; }
     public string? ApprBy { get; set; }
     public string? FinishBy { get; set; }
+    // #1553 §12 - cot nguon LUDTime/LUBy (Ser_Order_Part) - port 1:1 (vet sua cuoi cap he thong phu).
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -5732,6 +7050,42 @@ public sealed class OrderPartLine
 
     public string? OrderSuppierNo { get; set; }    // số đơn NCC (nguồn viết thiếu chữ "l")
     public string? TSTID { get; set; }
+
+    // ===== 🔴 #307 HAI ĐƠN VỊ TRÊN CÙNG MỘT DÒNG (`Ser_Order_Part_Get`, `A.02.OrderPart.cs:1782`) =====
+    // Nguồn trả **hai** cột đơn vị và chúng **khác nhau**:
+    //   `part_Unit`        = đơn vị ĐẶT HÀNG   — TST: `ISNULL(tmeu.TSTUnit, part.Unit)` · OTHER: `part.Unit`
+    //   `part_UnitStockIn` = đơn vị NHẬP KHO   — **LUÔN** `part.Unit` (của master), không bao giờ đổi
+    // ⇒ đơn đặt TST tính bằng **đơn vị BÁN của hãng** (thùng/hộp), kho nhập bằng **đơn vị lẻ**.
+    //   Port cũ chỉ có MỘT cột `Unit` ⇒ không phân biệt được, mọi số lượng bị hiểu cùng một đơn vị.
+    public string? UnitStockIn { get; set; }
+
+    /// <summary>
+    /// 🔴 SL QUY ĐỔI ĐƠN VỊ BÁN. Nguồn: `OTHER` ⇒ **hằng 1.0**; `TST` ⇒ `ISNULL(tmeu.ExchangeRate, 1.0)`
+    /// (tra `Ser_Mst_TSTExchangeUnit` theo `PartCode = TSTPartCode`).
+    /// ⚠️ Khối `case` **KHÔNG có `else`** ⇒ loại đơn ngoài hai giá trị cho ra **NULL**, không phải 1.0.
+    /// Lưu lại trên dòng để số liệu cũ không đổi khi master tỷ lệ quy đổi thay đổi về sau.
+    /// </summary>
+    public decimal? ExchangeRate { get; set; }
+
+    /// <summary>
+    /// Cột N — tổng SL đã nhập kho theo đơn này (chỉ phiếu nhập **Kết thúc**).
+    /// 🔴 #312 ĐÍNH CHÍNH #307: hai cột này là **DẪN XUẤT**, nguồn KHÔNG lưu chúng trên dòng đơn đặt.
+    /// `Ser_Order_Part_Get` dựng chúng trong temp `#tbl_Ser_Order_PartDtl_StockInDetail` bằng cách
+    /// **SUM dòng phiếu NHẬP KHO** (`Ser_Inv_StockInDetail`) của các phiếu `Status = '3'`, gom theo
+    /// (`OrderPartNo`, `PartID`). #307 thêm chúng làm cột LƯU + cho ghi qua DTO ⇒ giá trị chỉ là thứ
+    /// client gửi lên, **không bao giờ phản ánh lượng đã nhập thật**.
+    /// ⇒ Giữ cột để đọc dữ liệu cũ, nhưng endpoint nay **TÍNH LẠI** từ phiếu nhập (xem Program.cs #312).
+    /// </summary>
+    public decimal? TotalQuantityIn { get; set; }
+
+    /// <summary>
+    /// Cột L — `TotalQuantityIn` quy về ĐƠN VỊ ĐẶT.
+    /// 🔴 #312: công thức của nguồn là **CHIA**: `TST ⇒ TotalQuantityIn / ExchangeRate` ·
+    /// `OTHER ⇒ TotalQuantityIn` (không đổi). **Ngược chiều** với cột M (SL chưa về ĐV bán) vốn **NHÂN**
+    /// tỷ lệ — hai phép ngược nhau trong CÙNG một màn, rất dễ port nhầm chiều.
+    /// ⚠️ Khối `case` **không có `else`** ⇒ loại đơn lạ cho ra **NULL**.
+    /// </summary>
+    public decimal? TotalQuantityInExchangeRate { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 
@@ -5896,8 +7250,22 @@ public sealed class SupplierPaymentLine
     public string? StockInID { get; set; }
     public string? StockInNo { get; set; }
 
-    public decimal? QtyInventory { get; set; }   // tồn tại thời điểm lập phiếu
+    public decimal? QtyInventory { get; set; }   // tồn tại thời điểm lập phiếu (tổng)
     public string? LocationID { get; set; }      // vị trí kho
+
+    // ===== 🔴 #260: 3 cột nguồn `Ser_SupplierPaymentDtl` mà #237 còn THIẾU =====
+    // `DbDefine.cs:3150-3152` — ba cột này nằm TÁCH RIÊNG dưới khối chính của lớp hằng nên dễ bỏ sót.
+
+    /// <summary>
+    /// 🔴 `InStockQuantity` — chú thích NGUYÊN VĂN của nguồn (DbDefine.cs:3152):
+    /// "Tồn kho theo **vị trí**, dùng để check số lượng trả ko đc vượt quá".
+    /// ⚠️ KHÁC <see cref="QtyInventory"/> (tồn TỔNG tại thời điểm lập phiếu). Guard "số lượng trả"
+    ///    so với cột NÀY, không phải cột kia.
+    /// </summary>
+    public decimal? InStockQuantity { get; set; }
+
+    public string? LocationCode { get; set; }    // enrich theo LocationID
+    public string? LocationName { get; set; }
 
     /// <summary>SupplierPaymentDtlStatus — trạng thái RIÊNG của dòng (`TConst.SupplierPaymentStatus` P/A).</summary>
     public string SupplierPaymentDtlStatus { get; set; } = "P";
@@ -6033,6 +7401,13 @@ public sealed class ServiceEngineer
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+
+    // ===== #1048 §12 — `SerEngineerCreate01` (BizCarSv.Service.cs:12587) ghi VÔ ĐIỀU KIỆN
+    // CreatedDate/CreatedBy lúc TẠO + LogLUDateTime/LogLUBy (cả TẠO lẫn SỬA, `alColumnEffective`) —
+    // cùng nhóm thiếu sót hệ thống đã vá cho ServiceCustomer(#715)/ServiceCar(#716)/Cavity(#1047).
+    /// <summary>`Ser_Engineer.CreatedDate` (`strTDate` lúc tạo).</summary>
+    public DateTime? CreatedDate { get; set; }
 }
 
 /// <summary>Chiến dịch dịch vụ/marketing (Ser_Campaign — port 1:1 FrmCampaignCreate, TCMotor DMSCarSv/Admin):
@@ -6047,7 +7422,19 @@ public sealed class Campaign
     public DateTime? FinishDate { get; set; }
     public string? Content { get; set; }
     public string Status { get; set; } = "1";
+    /// <summary>#913 §12 `DealerCode` — nguồn `CheckExistCamNo`/`CheckExistCamNoModify`
+    /// (`BizCarSv.Service.cs:293`) khoá trùng `CamNo` theo BỘ ĐÔI `(CamNo, DealerCode)`, và `Create`/`Update`
+    /// đều GHI cột này (khuôn giống #906/#907/#911) — port cũ chưa hề mô hình hoá.</summary>
+    public string? DealerCode { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1079 §12 — nguồn `SerCampaignCreate` (Service.cs:9698) chỉ ghi CreatedDate/CreatedBy/LogLUDateTime/LogLUBy
+    /// trên BẢN SAO WH (`dt_Cam_WH`), KHÔNG ghi trên bản Main (`dt_Cam`); `SerCampaignUpdate` (:9903) lại ghi
+    /// LogLUDateTime/LogLUBy trên CHÍNH bản Main. MiniHTC một DB ⇒ hợp nhất: TẠO set đủ 4 cột, SỬA chỉ set 2 cột LogLU*.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Liên hệ trong chiến dịch (Ser_CamContact): xe/khách trong danh sách chiến dịch + trạng thái liên hệ.</summary>
@@ -6077,6 +7464,16 @@ public sealed class CampaignContact
     // 2 cột của Ser_CamContact được thêm khi đưa KH vào chiến dịch
     public DateTime? ContactDate { get; set; }  // TblSer_CamContact.ContactDate — ngày đã liên hệ
     public string? Remark { get; set; }         // TblSer_CamContact.Remark — ghi chú liên hệ
+
+    // #1076 §12 — `Ser_CamContactCreate` (BizCarSv.Service.cs:10745, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký. `Ser_CamContactUpdate` (#731, xoá-sạch-rồi-chèn-lại) KHÔNG chủ động gán 4 cột này trong
+    // vòng lặp dựng dòng (chỉ copy CusID/CarID/Status/ContactDate/Remark từ client) — khối "Insert…in
+    // Data WH" phía sau CHỈ SELECT lại rồi copy sang WH, không phải gán mới (đúng caveat lesson #455-b)
+    // ⇒ CHỈ wire 4 cột này ở nhánh TẠO, KHÔNG port cho nhánh XOÁ-CHÈN-LẠI.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice, TCMotor DMSCarSv/Services):
@@ -6288,6 +7685,13 @@ public sealed class DeliveryOrder
     /// </summary>
     public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>
+    /// 🔴 #1475 `Car_DeliveryOrder.CreatedBy` — người lập lệnh giao. Nguồn ghi `strPartnerUserCode`
+    /// (`BizHTC.Car.cs:4406` `Rows[0]["CreatedBy"] = strPartnerUserCode`) và dùng làm bộ lọc
+    /// (`strCDOCreatedByConditionList`). `CarDeliveryOrderGet` SELECT `cdo.*` ⇒ route GET PHẢI echo
+    /// (bài học #539/#1466). Field do HỆ THỐNG sinh, KHÔNG nhập qua DTO.
+    /// </summary>
+    public string? CreatedBy { get; set; }
     public DateTime? DeliveredAt { get; set; }
     // Duyệt lệnh giao (FrmApproveDO) — duyệt 2 cấp; mỗi cấp ghi CẢ ngày LẪN người duyệt.
     public DateTime? Approved1At { get; set; }
@@ -6802,6 +8206,14 @@ public sealed class DealerDeal
     public string? DlrContractNo { get; set; }
     public string? BankCode { get; set; }                // mã ngân hàng tài trợ (Support sửa)
     public string? CtmCareFlag { get; set; }             // cờ kiểm chứng CSKH (EditDeal_KiemChung)
+    /// <summary>
+    /// 🔴 #279 `FlagInitDeal` — cờ giao dịch KHỞI TẠO. Báo cáo SSI loại các dòng này
+    /// (`and dd.FlagInitDeal = '0'`, `BizHTC.DealerSales.cs:6601`).
+    /// ⚠️ `WholesaleDeal` đã có cột cùng tên từ trước — **khác bảng, khác nghiệp vụ**; grep thấy tên cột
+    /// "đã có" mà kết luận không cần thêm là bẫy (xem #277 với `ROType`).
+    /// </summary>
+    public string? FlagInitDeal { get; set; }
+
     // ===== #196 parity `OSHCC_DLS_Deal_UpdCtmCareFlagX_New20260805` (HCC/BizHTC.HCC.cs:3654, CHỈ có trên máy 150) =====
     /// <summary>Mốc DUYỆT kiểm chứng — nguồn ghi cùng lúc 3 cột này với `CtmCareFlag`.</summary>
     public DateTime? CtmCareUpdDate { get; set; }
@@ -6816,14 +8228,6 @@ public sealed class DealerDeal
     public string? DealerCodeBuyer { get; set; }
     public string? SalesManCode { get; set; }
 
-    /// <summary>
-    /// 🔴 #B08 `DLS_Deal.FlagInitDeal` — cờ "giao dịch KHỞI TẠO". Là một trong 7 bộ lọc của
-    /// `DealerSalesDealGet_Car_New20181115` (`zzzzClauseWhere_strDLSDFlagInitDealConditionList`,
-    /// `BizHTC.DealerSales.cs:3565`) và là điều kiện **`dd.FlagInitDeal = '0'`** trong hai báo cáo GPS
-    /// (chuỗi `Dls_DealDetail → DLS_Deal → Mst_Dealer`). Không có cột này thì không tách được giao dịch
-    /// khởi tạo khỏi giao dịch bán thật.
-    /// </summary>
-    public string FlagInitDeal { get; set; } = "0";
 
     // ===== #B09 HỢP NHẤT SONG TRÙNG #5 — `DLS_Deal` là bảng nguồn DUY NHẤT cho cả bán lẻ lẫn bán buôn ĐL→ĐL.
     //      `WholesaleDeal` (⛔ deprecated) từng là bộ RIÊNG ⇒ xe bán buôn KHÔNG hiện ở màn tìm xe (#B08)
@@ -6886,6 +8290,13 @@ public sealed class DealerDealDetail
     /// **guard GHI-MỘT-LẦN**: đã có giá trị ⇒ ném `CommonAppData_CusConfirmedWarrantyDateFound`.
     /// ⚠️ Xem cảnh báo RBAC ở endpoint `/api/os/dealdetails/confirm-warranty`.</summary>
     public DateTime? CusConfirmedWarrantyDate { get; set; }
+
+    /// <summary>
+    /// 🔴 #273 `Dls_DealDetail.WarrantyExpiresDate` — ngày hết hạn bảo hành của CHIẾC XE trong hợp đồng.
+    /// Cần cho payload tạo hội viên Loyalty (`WarrantyExpiryDate`) ở bước duyệt kiểm chứng bán lẻ.
+    /// Nguồn: `TERP.BizHTC/HCC/BizHTC.HCC.cs:3856` (hàm `..._New20260805` — **chỉ có trên máy 150**).
+    /// </summary>
+    public DateTime? WarrantyExpiresDate { get; set; }
 }
 
 /// <summary>
@@ -7104,6 +8515,114 @@ public sealed class SysObject
     public string? PartnerCode { get; set; }
     public string FlagActive { get; set; } = "1";
 }
+/// <summary>
+/// Danh mục ĐỐI TÁC hệ thống (`Sys_Partner`) — port 1:1 `Ser_SysGetPartner`
+/// (`BizCarSv.System.cs:830`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:807` gọi bản trần).
+/// Nguồn SELECT tường minh HAI cột: `t.PartnerCode, t.PartnerName`; một `BuildClauseConditionList`
+/// trên `t.PartnerCode` (bake, có `ProtectInjection`), **KHÔNG guard** ⇒ gửi trần = trả trọn danh mục.
+/// 🔴 Nguồn **KHÔNG** lọc `'WEBHTC'` (khác `Ser_SysGetObject` — xem #765): ô chọn đối tác vẫn hiện `WEBHTC`,
+/// nhưng chọn nó xong thì `Ser_SysGetObject` trả rỗng vì chính nó lọc bỏ.
+/// </summary>
+public sealed class SysPartner
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PartnerCode { get; set; } = "";
+    public string? PartnerName { get; set; }
+    // ===== merge session-a: các thuộc tính của bản SysPartner thứ hai (song sinh cùng tên) =====
+}
+/// <summary>
+/// Danh mục LOẠI ĐỐI TƯỢNG hệ thống (`Sys_ObjectType`) — port 1:1 `Ser_SysGetObjectType`
+/// (`BizCarSv.System.cs:960`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:873` gọi bản trần).
+/// Nguồn SELECT tường minh HAI cột: `t.ObjectType, t.ObjectTypeName`; một `BuildClauseConditionList`
+/// trên `t.ObjectType` (bake, có `ProtectInjection`), **KHÔNG guard** ⇒ gửi trần = trả trọn danh mục.
+/// 🔴 Nguồn **KHÔNG** lọc `'WEBHTC'` (khác `Ser_SysGetObject` — xem #765).
+/// </summary>
+public sealed class SysObjectType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ObjectType { get; set; } = "";
+    public string? ObjectTypeName { get; set; }
+}
+
+/// <summary>
+/// Danh mục ĐƯỜNG DẪN VIDEO (`Ser_Mst_FilePathVideo`) — port 1:1 cụm CRUD
+/// `Ser_Mst_FilePathVideo_Get/_Add/_Update/_Delete` (`Tab/BizCarSv.Tab.cs:1921/2172/2431/2731`).
+/// Bốn `[WebMethod]` LIVE (`HTCWSCarSv/WSCarSv.asmx.cs:32938/32980/33019/33061`) gọi THẲNG bản trần
+/// (không hậu tố ngày) ⇒ đây là bản LIVE. Bảng ở DB CommonCenter (dùng chung).
+/// Cột nguồn (entity ClientService `Ser_Mst_FilePathVideo.cs`): `FilePathVideoCode` (khoá tự nhiên),
+/// `IdxView`, `FilePathVideoName`, `FilePathVideo`, `FilePathAvatar`, `Remark`, `FlagActive`,
+/// `LogLUDateTime`, `LogLUBy`. `_Get` SELECT `smfpv.*` (cả bảng) + lọc `FilePathVideoCode`/
+/// `FilePathVideoName`/`FlagActive` (bài học #540: áp đủ tham số).
+/// 🔴 `_Add` guard: `FilePathVideoCode` rỗng ⇒ Raise; `CheckDB(Flag.No)` = mã PHẢI CHƯA tồn tại.
+/// 🔴 `_Update`/`_Delete` guard: `CheckDB(Flag.Yes)` = mã PHẢI tồn tại. `_Update` ghi CHỌN LỌC theo
+/// `Ft_Cols_Upd` (IdxView/FilePathVideoName/FilePathVideo/FilePathAvatar/Remark/FlagActive) + luôn
+/// `LogLUDateTime`/`LogLUBy`. `_Delete` xoá CỨNG theo `FilePathVideoCode`.
+/// </summary>
+public sealed class MstFilePathVideo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>FilePathVideoCode — khoá tự nhiên nguồn dùng để tra/insert/update/delete.</summary>
+    public string FilePathVideoCode { get; set; } = "";
+    public string? IdxView { get; set; }
+    public string? FilePathVideoName { get; set; }
+    public string? FilePathVideo { get; set; }
+    public string? FilePathAvatar { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Danh mục LỖI TIẾP NHẬN (`Ser_Mst_ReceptionError`) — port 1:1 `Ser_Mst_ReceptionError_Get`
+/// (`Tab/BizCarSv.Tab.cs:1425`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:33091` gọi bản trần).
+/// Nguồn CHỈ có `_Get` (không có Add/Update/Delete trong WS) ⇒ danh mục CHỈ ĐỌC.
+/// Cột nguồn (entity ClientService `Ser_Mst_ReceptionError.cs`): `ReceptionErrorCode` (khoá tự nhiên),
+/// `ReceptionErrorName`, `FlagActive`, `Remark`, `LogLUDateTime`, `LogLUBy`. `_Get` SELECT `smre.*`
+/// (cả bảng) + lọc `ReceptionErrorCode`/`FlagActive` (bài học #540: áp đủ tham số).
+/// </summary>
+public sealed class ReceptionError
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>ReceptionErrorCode — khoá tự nhiên nguồn dùng để tra.</summary>
+    public string ReceptionErrorCode { get; set; } = "";
+    public string? ReceptionErrorName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// Danh mục ẢNH KIỂM TRA THEO DÒNG XE (`Ser_Mst_ModelAudImage`) — port 1:1 cụm CRUD
+/// `Ser_Mst_ModelAudImage_Get/_Add/_Update/_Delete` (`Tab/BizCarSv.Tab.cs:223/493/771/1027`).
+/// Bốn `[WebMethod]` LIVE (`HTCWSCarSv/WSCarSv.asmx.cs:33168/33211/33246/33284`) gọi THẲNG bản trần.
+/// Cột nguồn (entity ClientService `Ser_Mst_ModelAudImage.cs`): `ModelCode` + `ReceptionFAudType`
+/// (khoá tự nhiên KÉP), `FilePath`, `Remark`, `FlagActive`, `LogLUDateTime`, `LogLUBy`.
+/// `_Get` SELECT `smmai.*` (cả bảng) + lọc `ModelCode`/`ReceptionFAudType`/`FlagActive`.
+/// 🔴 `_Add` guard: `ModelCode` rỗng ⇒ Raise; `ReceptionFAudType` rỗng ⇒ Raise; `CheckDB(Flag.No)` =
+/// cặp khoá PHẢI CHƯA tồn tại; `Ser_Mst_ReceptionFAudType_CheckDB(Flag.Yes)` = loại phải tồn tại;
+/// `FilePath` rỗng ⇒ Raise. `_Update`/`_Delete` guard: `CheckDB(Flag.Yes)` = cặp khoá PHẢI tồn tại.
+/// `_Update` ghi CHỌN LỌC theo `Ft_Cols_Upd` (FilePath/FlagActive) + luôn `LogLUDateTime`/`LogLUBy`.
+/// </summary>
+public sealed class ModelAudImage
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>ModelCode — phần 1 của khoá tự nhiên kép.</summary>
+    public string ModelCode { get; set; } = "";
+    /// <summary>ReceptionFAudType — phần 2 của khoá tự nhiên kép.</summary>
+    public string ReceptionFAudType { get; set; } = "";
+    public string? FilePath { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
 
 /// <summary>
 /// Map NHÓM ↔ NGƯỜI DÙNG (`Map_SG_SU` — port 1:1 `SysSaveMapSysGroupSysUser_New20181119`,
@@ -7118,6 +8637,11 @@ public sealed class SysObject
 /// </summary>
 public sealed class MapSysGroupSysUser
 {
+    /// <summary>🔴 #762 §12 DEALERCODE — nguồn `Ser_SysSaveMapSysGroupSysUser` xoá theo
+    /// `where t.DealerCode = @DealerCode` và chuẩn hoá cột này cùng `GroupCode`/`UserCode`.
+    /// Thiếu nó thì không thể tách ánh xạ nhóm↔người theo đại lý.</summary>
+    public string? DealerCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string GroupCode { get; set; } = "";
@@ -7189,8 +8713,35 @@ public sealed class SysUser
 /// Việc gán người dùng vào nhóm và gán quyền nằm ở các bảng map riêng
 /// (`SysSaveMapSysGroupSysUser`, `SysSaveMapSysGroupSysObject`) — **chưa port**, ghi nợ.
 /// </summary>
+/// <summary>#767 Nhóm phụ tùng của hệ TST (`TST_Mst_PartGroup`) — danh mục đọc qua `TST_Mst_PartGroup_Get`.</summary>
+public sealed class TstMstPartGroup
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string GroupCode { get; set; } = "";
+    public string? GroupName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
+/// <summary>#767 Loại phụ tùng của hệ TST (`TST_Mst_PartType`) — hàm đọc là bản sinh đôi của `…PartGroup_Get`.</summary>
+public sealed class TstMstPartType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TypeCode { get; set; } = "";
+    public string? TypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 public sealed class SysGroup
 {
+    /// <summary>🔴 #764 §12 ISREADONLY — nguồn `Ser_SysGetGroup` lọc `and t.IsReadOnly **is null**`
+    /// (không phải `= '0'`) ⇒ nhóm có giá trị `'0'` cũng bị loại. Cột PHẢI có để tái hiện được luật đó.</summary>
+    public string? IsReadOnly { get; set; }
+
+    /// <summary>#764 §12 DEALERCODE — nguồn lọc `t.DealerCode` qua `BuildClauseConditionList(..., "|")`.</summary>
+    public string? DealerCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string GroupCode { get; set; } = "";
@@ -7268,6 +8819,9 @@ public sealed class MstDistrict
     public string DistrictCode { get; set; } = "";
     public string? DistrictName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #702: nguon `Mst_District_Get` co BuildClause tren `md.CreatedDate` va `md.CreatedBy`.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>
@@ -7318,6 +8872,225 @@ public sealed class SeqCounter
 /// `BizHTC.Marketing.cs` dòng 7808 / 8080 / 11961. Giữ nguyên, KHÔNG "sửa" thành `FlagActive`
 /// kẻo lệch tên cột với hệ nguồn.
 /// </summary>
+/// <summary>
+/// 🔴 #329 BÁO CÁO KPI XƯỞNG DỊCH VỤ — `Report_KPI` (`Report_KPICreate_New20221101`,
+/// `BizCarSv.zzzzCode.cs:1150`). MiniHTC mới có **danh mục** KPI (`MstKpi`/`MstKpiType`), **chưa có
+/// bản ghi báo cáo**. Đây là cụm lệch LỚN NHẤT của sweep #320: **44 cột** giữa hai bản.
+///
+/// TRACE TWIN: WS `:27809` gọi `Report_KPICreate_**New20221101**` (100 cột) ⇒ bản trần (56 cột) CHẾT.
+/// ⚠️ Cả hai bản nằm trong `zzzzCode.cs` — tên file gợi ý "code rác", **nhưng bản LIVE lại ở đó**.
+///   Không được loại một hàm chỉ vì tên file; chỉ WS mới quyết định.
+/// ⚠️ Sweep đánh dấu ⚠️ (ủy quyền ghi) cho cả hai ⇒ số cột có thể còn hụt; đã đối chiếu tay danh sách
+///   `[\"X\"] =` trong trọn thân hàm để lấy đủ 100.
+///
+/// 🔴 TỪ VỰNG LOẠI CÔNG VIỆC (lặp trong hầu hết tên cột) — **SCC** · **SCD** · **SCS** · **SPK** ·
+/// **BDD** · **BDN**; mỗi loại lại chia theo NGUỒN TIỀN: `…RoRepair` (sửa chữa) · `…RoInsurance`
+/// (bảo hiểm) · `…RoWarranty` (bảo hành) · `…Local` (nội bộ). Đừng gộp bốn nguồn tiền làm một.
+/// </summary>
+/// <summary>🔴 #722 Báo cáo KPI **THẾ HỆ CŨ** — bảng `Rpt_KPI` (bộ cột **GJ/BP**).
+/// ⚠️ **KHÁC HẲN** <see cref="ReportKpi"/> vốn map bảng `Report_KPI` (bộ **BDD/SCC/SCD/SCS/PDI/SPK**).
+/// Hai bảng **cùng tồn tại**, chỉ chia sẻ nhóm cột nhân sự/khoang (`EnginerNumber`, `CavityRONumber`,
+/// `StaffOrther`…). Đối chứng: `Report_KPI` **không có** `CountPaymentGJ`/`AmountOill`/`AmountGJWarranty`.
+/// Nguồn đọc: `RptKPIGetWithParams`; nguồn ghi: `RptKPICreate`/`RptKPIUpdate`.
+/// ⚠️ Giữ NGUYÊN VĂN lỗi chính tả của nguồn: `AmountOill` (đúng là Oil), `CountOrtherBP`/`StaffOrther` (đúng là Other).</summary>
+public sealed class RptKpiLegacy
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? AutoID { get; set; }
+    public string? DealerCode { get; set; }
+    public string? RptYear { get; set; }
+    public string? RptMonth { get; set; }
+    public string? RptBy { get; set; }
+    public string? Status { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public decimal? EnginerNumber { get; set; }
+    public decimal? AdvisoryNumber { get; set; }
+    public decimal? EnginerBP { get; set; }
+    public decimal? StaffOrther { get; set; }
+    public decimal? CavityRONumber { get; set; }
+    public decimal? CavityBPNumber { get; set; }
+    public decimal? CavityParkingNumber { get; set; }
+    public decimal? CountPaymentGJ { get; set; }
+    public decimal? CountWarrantyGJ { get; set; }
+    public decimal? CountLocalGJ { get; set; }
+    public decimal? CountRepairedGJ { get; set; }
+    public decimal? CountOtherGJ { get; set; }
+    public decimal? CountPaymentBP { get; set; }
+    public decimal? CountWarrantyBP { get; set; }
+    public decimal? CountLocalBP { get; set; }
+    public decimal? CountRepairedBP { get; set; }
+    public decimal? CountOrtherBP { get; set; }
+    public decimal? CountInsurancePaymentBP { get; set; }
+    public decimal? AmountGJWarranty { get; set; }
+    public decimal? AmountGJLocal { get; set; }
+    public decimal? AmountGJPayment { get; set; }
+    public decimal? AmountBPPayment { get; set; }
+    public decimal? AmountBPWarranty { get; set; }
+    public decimal? AmountBPLocal { get; set; }
+    public decimal? AmountBPPaymentInsurance { get; set; }
+    public decimal? AmountPartRO { get; set; }
+    public decimal? AmountPartSO { get; set; }
+    public decimal? AmountOill { get; set; }
+    public decimal? AmountServiceGJ { get; set; }
+    public decimal? AmountServiceBP { get; set; }
+    public decimal? HourGJ { get; set; }
+    public decimal? HourBP { get; set; }
+}
+/// <summary>🔴 #730 Dashboard hàng ngày theo đại lý (`Report_Dashboard`) — sinh bởi
+/// `Report_DashboardCreate_AutoDealer` (`BizCarSv.ZTemp.cs:33738`) qua **anti-join** trên cặp
+/// `(DealerCode, DateReport)`. `DateReport` lưu **dạng chuỗi** đúng như nguồn (bị bake vào SQL).</summary>
+public sealed class ReportDashboard
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? DateReport { get; set; }
+    public decimal? QtyROCreated { get; set; }
+    public decimal? QtyROFinished { get; set; }
+    public decimal? TotalAmountService { get; set; }
+    public decimal? TotalAmountServiceVAT { get; set; }
+    public decimal? TotalAmountPart { get; set; }
+    public decimal? TotalAmountPartVAT { get; set; }
+    public decimal? TotalAmountPartQuote { get; set; }
+    public decimal? TotalAmountPartQuoteVAT { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class ReportKpi
+{
+    // ===== 🔴 #403 §12 KỲ BÁO CÁO — ba cột khung mà bản port cũ THIẾU HẲN =====
+    //   Nguồn `RptKPICreate` **luôn** gán `RptYear` · `RptMonth` · `RptBy` (cùng `DealerCode`,
+    //   `Status`), và guard `CheckExistRptKPIYearMonth` dựa trên đúng bộ ba (đại lý, năm, tháng).
+    //   Không có hai cột kỳ này thì **báo cáo KPI không có danh tính kỳ** và guard trùng kỳ
+    //   **không thể viết được**.
+    /// <summary>Năm của kỳ báo cáo (`RptYear`).</summary>
+    public string? RptYear { get; set; }
+    /// <summary>Tháng của kỳ báo cáo (`RptMonth`).</summary>
+    public string? RptMonth { get; set; }
+    /// <summary>Người lập báo cáo (`RptBy`) — khác <see cref="CreatedBy"/> của tầng port.</summary>
+    public string? RptBy { get; set; }
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public decimal? AccessoryAmountAfterVAT { get; set; }
+    public decimal? AccessoryAmountOut { get; set; }
+    public decimal? AdvisoryNumber { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public decimal? CabinetPaintNumber { get; set; }
+    public decimal? CarPerAdviserDay { get; set; }
+    public decimal? CavityBPNumber { get; set; }
+    public decimal? CavityCopperNumber { get; set; }
+    public decimal? CavityMaintainNumber { get; set; }
+    public decimal? CavityOtherNumber { get; set; }
+    public decimal? CavityParkingNumber { get; set; }
+    public decimal? CavityQtyPerEngineerBDNSCC { get; set; }
+    public decimal? CavityRONumber { get; set; }
+    public decimal? CountBDD { get; set; }
+    public decimal? CountBDDLocal { get; set; }
+    public decimal? CountBDDPerCavityMaintain { get; set; }
+    public decimal? CountBDDRoRepair { get; set; }
+    public decimal? CountCarService { get; set; }
+    public decimal? CountSCC { get; set; }
+    public decimal? CountSCCLocal { get; set; }
+    public decimal? CountSCCPerCavityRO { get; set; }
+    public decimal? CountSCCRoInsurance { get; set; }
+    public decimal? CountSCCRoRepair { get; set; }
+    public decimal? CountSCCRoWarranty { get; set; }
+    public decimal? CountSCD { get; set; }
+    public decimal? CountSCDLocal { get; set; }
+    public decimal? CountSCDPerCavityCopper { get; set; }
+    public decimal? CountSCDRoInsurance { get; set; }
+    public decimal? CountSCDRoRepair { get; set; }
+    public decimal? CountSCDRoWarranty { get; set; }
+    public decimal? CountSCS { get; set; }
+    public decimal? CountSCSLocal { get; set; }
+    public decimal? CountSCSPerCabinetPaint { get; set; }
+    public decimal? CountSCSPerCavityBP { get; set; }
+    public decimal? CountSCSRoInsurance { get; set; }
+    public decimal? CountSCSRoRepair { get; set; }
+    public decimal? CountSCSRoWarranty { get; set; }
+    public decimal? CountSPK { get; set; }
+    public decimal? CountSPKLocal { get; set; }
+    // #335: ba cot PDI — co trong 105 cot cua Report_KPICreateX_New20221101 nhung KHONG
+    //   nam trong 98 cot ma #329 port tu Report_KPICreate_New20221101. Chinh la mot phan
+    //   cua do lech 61 vs 105 da ghi o #330.
+    public decimal? CountPDI { get; set; }
+    public decimal? CountPDIRoRepair { get; set; }
+    public decimal? CountPDILocal { get; set; }
+    public decimal? CountSPKRoRepair { get; set; }
+    public DateTime? DateReport { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal? EmploymentRate { get; set; }
+    // ===== 🔴 #339 SỬA KIỂU: ba cột dưới đây là **SỐ ĐẾM**, không phải chuỗi =====
+    // Nguồn: `(select count(0) from #tbl_Ser_Engineer where IsEngineer='KTVD') EnginerBP` …
+    // #329 sinh entity bằng bảng phân loại theo TÊN cột và xếp nhầm ba cột này vào nhóm text
+    //   (`EnginerBP` · `SparePartsStaff` · `StaffOrther`), trong khi hai cột **cùng nhóm nghiệp vụ**
+    //   là `ServiceTechnicianQty` / `PaintingTechnicianQty` lại đúng `decimal?` vì tên có đuôi "Qty".
+    //   ⇒ Phân loại theo TÊN là nguồn lỗi; phải theo **biểu thức SQL sinh ra cột**.
+    public decimal? EnginerBP { get; set; }
+    public decimal? EnginerNumber { get; set; }
+    public decimal? LaborProductivity { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public decimal? PaintingTechnicianQty { get; set; }
+    public decimal? PartAmountLocal { get; set; }
+    public decimal? PartAmountOut { get; set; }
+    public decimal? PartAmountRoInsurance { get; set; }
+    public decimal? PartAmountRoRepair { get; set; }
+    public decimal? PartAmountRoWarranty { get; set; }
+    public decimal? PartAmountShell { get; set; }
+    public decimal? PartProfitRate { get; set; }
+    public decimal? RevenuePerAdviser { get; set; }
+    public decimal? RevenuePerKTVBDN { get; set; }
+    public decimal? RevenuePerKTVSCC { get; set; }
+    public decimal? RevenuePerKTVSCD { get; set; }
+    public decimal? RevenuePerKTVSCS { get; set; }
+    public decimal? SerProfitRate { get; set; }
+    public decimal? ServiceAmountBDDLocal { get; set; }
+    public decimal? ServiceAmountBDDRoRepair { get; set; }
+    public decimal? ServiceAmountSCCLocal { get; set; }
+    public decimal? ServiceAmountSCCRoInsurance { get; set; }
+    public decimal? ServiceAmountSCCRoRepair { get; set; }
+    public decimal? ServiceAmountSCCRoWarranty { get; set; }
+    public decimal? ServiceAmountSCDLocal { get; set; }
+    public decimal? ServiceAmountSCDRoInsurance { get; set; }
+    public decimal? ServiceAmountSCDRoRepair { get; set; }
+    public decimal? ServiceAmountSCDRoWarranty { get; set; }
+    public decimal? ServiceAmountSCSLocal { get; set; }
+    public decimal? ServiceAmountSCSRoInsurance { get; set; }
+    public decimal? ServiceAmountSCSRoRepair { get; set; }
+    public decimal? ServiceAmountSCSRoWarranty { get; set; }
+    public decimal? ServiceAmountSPKLocal { get; set; }
+    // #336: hai cot doanh thu tien cong PDI — cung nhom thieu voi 3 cot CountPDI* cua #335.
+    public decimal? ServiceAmountPDIRoRepair { get; set; }
+    public decimal? ServiceAmountPDILocal { get; set; }
+    public decimal? ServiceAmountSPKRoRepair { get; set; }
+    public decimal? ServiceProductivity { get; set; }
+    public decimal? ServiceTechnicianQty { get; set; }
+    public decimal? ShellAmountOut { get; set; }
+    public decimal? SparePartsStaff { get; set; }
+    public decimal? StaffOrther { get; set; }
+    public string? Status { get; set; }
+    public decimal? UnitPriceBDN { get; set; }
+    public decimal? UnitPriceSCC { get; set; }
+    public decimal? UnitPriceSCD { get; set; }
+    public decimal? UnitPriceSCS { get; set; }
+    public decimal? WorkDayQty { get; set; }
+    public decimal? WorkHourActualQty { get; set; }
+    public decimal? WorkHourBDNQty { get; set; }
+    public decimal? WorkHourFeeQty { get; set; }
+    public decimal? WorkHourPerCarRO { get; set; }
+    public decimal? WorkHourQty { get; set; }
+    public decimal? WorkHourSCCQty { get; set; }
+    public decimal? WorkHourSCDQty { get; set; }
+    public decimal? WorkHourSCSQty { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
 public sealed class MstKpi
 {
     public long Id { get; set; }
@@ -7389,6 +9162,25 @@ public sealed class MstQuater
 }
 
 /// <summary>Master LOẠI FILE (`Mst_FileType` — `Mst_FileType_Get_New20181115`, dòng 13008).</summary>
+/// <summary>#523 Tệp tải lên (`UploadFile_ForTab` — `BizCarSv.UploadFile.cs:1986`).
+/// Nguồn ghi ra **đĩa** dưới `UploadedFiles\`; MiniHTC lưu **nội dung trong DB** (lệch CỐ Ý,
+/// vì nền chạy không có đĩa bền) và giữ nguyên `FilePath` mà nguồn trả về.</summary>
+public sealed class UploadedFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Tên tệp SAU khi nguồn gắn tiền tố `yyyyMMdd_HHmmss_fff`.</summary>
+    public string FileName { get; set; } = "";
+    /// <summary>Đường dẫn nguồn trả về: `UploadedFiles\&lt;FileName&gt;` (bản ghi LẦN HAI).</summary>
+    public string FilePath { get; set; } = "";
+    /// <summary>Phần mở rộng VIẾT HOA — nguồn kiểm bằng `Mst_FileTypeUpload_CheckDB`.</summary>
+    public string? FileTypeCode { get; set; }
+    public byte[]? Content { get; set; }
+    public long SizeBytes { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+}
+
 public sealed class MstFileType
 {
     public long Id { get; set; }
@@ -9172,6 +10964,13 @@ public sealed class RqBankingTransPmt
     public string? PaymentBankCode { get; set; }
     public decimal LoanLimit { get; set; }
     public decimal AmountDisbursed { get; set; }
+
+    /// <summary>🔴 #276 `TransactionID` — mã giao dịch do **VIB** cấp khi đẩy file ký GIẢI NGÂN.
+    /// Nguồn `VIB_BankTransactionFile` (`BizHTC.VPBank.cs:5262`, cây **chỉ có trên máy 150**) ghi nó vào
+    /// **MỌI dòng** `RQ_BankingTransPmt` của đề nghị (`update … where RQ_BankingTransNo = @…`, không lọc
+    /// thêm gì) ⇒ mã giao dịch gắn theo ĐỀ NGHỊ, không theo từng dòng thanh toán.</summary>
+    public string? TransactionID { get; set; }
+
     public string BkTransPmtStatus { get; set; } = "P";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
@@ -9257,6 +11056,10 @@ public sealed class RqBankingTransGrt
     public string? GrtRecDepartment { get; set; }
     public string? GrtRecPersonAddress { get; set; }
     public DateTime? DisbursementRequestDate { get; set; }
+    /// <summary>#276 `TransactionID` do VIB cấp khi đẩy file ký BẢO LÃNH — nhánh song song với
+    /// <see cref="RqBankingTransPmt.TransactionID"/>.</summary>
+    public string? TransactionID { get; set; }
+
     public string BkTransGrtStatus { get; set; } = "P";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
@@ -9874,18 +11677,6 @@ public sealed class Department
     public string? Remark { get; set; }
 }
 
-/// <summary>
-/// 🔴 #B96 — **Danh mục ĐỐI TÁC hệ thống** (`Sys_Partner`). Mọi lời gọi WS của 2010.HTC đều mang
-/// `strPartnerCode`; bảng này là nơi khai báo hợp lệ. Port cũ **không có** ⇒ `PartnerCode` là chuỗi
-/// tự do, không đối chiếu được. Nguồn: `SysGetPartner_New20181115` (`BizHTC.System.cs:807`).
-/// </summary>
-public sealed class SysPartner
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string PartnerCode { get; set; } = "";
-    public string? PartnerName { get; set; }
-}
 
 /// <summary>
 /// 🔴 #B96 — **Danh mục LOẠI ĐỐI TƯỢNG phân quyền** (`Sys_ObjectType`). Port cũ để **CỨNG trong C#**
@@ -10502,6 +12293,13 @@ public sealed class BankingTrans
 
     /// <summary>Mã tham chiếu do ngân hàng cấp khi báo kết quả về (`RefBankCode`).</summary>
     public string? RefBankCode { get; set; }
+
+    /// <summary>
+    /// 🔴 #276 `LoanType` — loại hồ sơ VIB đã đẩy file ký cho đề nghị này (`DISBURSEMENT` / `GUARANTEE`).
+    /// **RỖNG = VIB CHƯA từng đẩy file lần nào** — nguồn dùng đúng dấu hiệu này để chặn: lần đầu mà xin
+    /// `ReSign = "Y"` (ký lại) là vô lý ⇒ ném lỗi.
+    /// </summary>
+    public string? LoanType { get; set; }
     /// <summary>Ghi chú của ngân hàng trả về (`BankRemark`).</summary>
     public string? BankRemark { get; set; }
     public DateTime? BankUpdatedAt { get; set; }
@@ -11190,6 +12988,13 @@ public sealed class MstInsuranceCompany
     public Guid OrgId { get; set; }
     public string InsCompanyCode { get; set; } = "";
     public string? InsCompanyName { get; set; }
+    /// <summary>#569 §12 Bốn cột hồ sơ hãng bảo hiểm — nguồn `SerInsuranceDebitSearch` chọn thêm
+    /// `si.Address`, `si.Fax`, `si.Website` (hai cột sau có chú thích *"huongkt add (menu danh sách hãng
+    /// bảo hiểm nợ)"*) và `si.InsVieName` dùng làm tên hiển thị.</summary>
+    public string? Address { get; set; }
+    public string? Tel { get; set; }
+    public string? Fax { get; set; }
+    public string? Website { get; set; }
     public string FlagActive { get; set; } = "1";
     /// <summary>🔴 #B172 — bốn cột nguồn **2010.HTC** (`Mst_InsuranceCompanyCreate_New20181119` ghi
     /// đủ 8 cột) mà bản port trước (từ hệ `ERP.V15.DMSSales.Real`) **không có**.</summary>
@@ -12758,6 +14563,15 @@ public sealed class VatInvoice
     public string HTCInvoiceCode { get; set; } = "";
     public string HTCInvoiceNo { get; set; } = "";       // so HD (gan khi phat hanh)
     public string InvoiceIDCode { get; set; } = "";       // ky hieu HD
+
+    /// <summary>
+    /// 🔴 #274 `VAT_HTCInvoice.InvoiceIDType` — LOẠI ký hiệu hoá đơn. Nguồn
+    /// (`BizHTC.HDDTIntergration.cs:9038 VAT_HTCInvoiceImportNew_New20190816`) chặn thẳng:
+    /// `if (strInvoiceIDType != TConst.InvoiceType.HTC) throw ..._InvalidInvoiceIDType`
+    /// ⇒ đường nhập chỉ nhận hoá đơn loại **HTC**. Cột này còn là ĐIỀU KIỆN LỌC khi tìm hoá đơn liền kề
+    /// để kiểm ngày (xem guard cận dưới/cận trên) — thiếu nó thì lọc sai tập so sánh.
+    /// </summary>
+    public string InvoiceIDType { get; set; } = "HTC";
     public decimal VAT { get; set; } = 10;
     public string DealerCode { get; set; } = "";
     public string BankCode { get; set; } = "";
@@ -12775,8 +14589,6 @@ public sealed class VatInvoice
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
     // ===== #348 HỢP NHẤT song sinh VAT_HTCInvoice: 2 cột trước đây chỉ có ở `VatHtcInvoice` (bản không có writer) =====
-    /// <summary>`InvoiceIDType` — cùng `InvoiceIDCode` tạo PHẠM VI dãy số (`VAT_HTCInvoice_GenHTCInvoiceNo`, #B116).</summary>
-    public string? InvoiceIDType { get; set; }
     /// <summary>`FlagisHTC` — pháp nhân; hàm huỷ HĐĐT tìm theo CẶP (HTCInvoiceCode, FlagisHTC) (#B118).</summary>
     public string? FlagisHTC { get; set; }
     // ===== #330 parity — 4 cột "lý do / biên bản" ghi bởi `VAT_HTCInvoice_UpdateAdj_DeleteReasonX` (BizHTC.HDDTIntergration.cs:464) =====
@@ -13569,6 +15381,22 @@ public sealed class BankingTransBankFile
     public string? SerialNumber { get; set; }
     public string? LogLUBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
+
+    // ===== 🔴 #275: VỊ TRÍ ĐẶT Ô CHỮ KÝ trên file, do NGÂN HÀNG báo ngược về =====
+    // Nguồn: `ERP.DMS.HTC.VPBank.WS/TERP.BizHTC/BizHTC.VPBank.cs:6285 UpdateTransBankFile` —
+    //   cây `ERP.DMS.HTC.VPBank.WS` **CHỈ CÓ TRÊN MÁY 150** (laptop không có thư mục này).
+    // Luồng hai bước: ngân hàng gọi `GetTransBankFile` lấy các file `SignStatus = 'P', rồi gọi
+    //   `UpdateTransBankFile` báo lại **trang số mấy và toạ độ/kích thước ô ký**.
+    /// <summary>PAGEIDX — trang đặt chữ ký. Nguồn kiểm `IsInteger64` (**số nguyên**).</summary>
+    public long? PageIdx { get; set; }
+    /// <summary>ELEMENTX/Y/WIDTH/HEIGHT — toạ độ và kích thước ô ký.
+    /// ⚠️ Nguồn kiểm bốn giá trị này bằng `IsNumeric` (**cho phép thập phân**), KHÁC `PageIdx` — đừng
+    /// "làm cho đồng bộ" thành số nguyên hết.</summary>
+    public decimal? ElementX { get; set; }
+    public decimal? ElementY { get; set; }
+    public decimal? ElementWidth { get; set; }
+    public decimal? ElementHeight { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -13676,7 +15504,10 @@ public sealed class DeliveryLocation
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).</summary>
+/// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).
+/// 🏆🔴🔴 #914 PORT TRÙNG LẶP với <see cref="CampaignMarketing"/> — xem chú thích bên đó. Bảng đó đầy đủ
+/// hơn (có duyệt lan 6 bảng con, điều kiện VIN/biển số); bảng NÀY đơn giản hơn, KHÔNG xoá để tránh gãy
+/// caller đang dùng `/api/servicecampaigns/*`.</summary>
 public sealed class ServiceCampaign
 {
     public long Id { get; set; }
@@ -13730,8 +15561,57 @@ public sealed class SmsPriceSend
 }
 
 /// <summary>Tài khoản SMS trả trước (số dư) — port 1:1 FrmSMSAccountMng (TblSMS_Account, TCMotor).</summary>
+/// <summary>#782 Gia hạn bảo hành theo VIN (`Ser_MST_ROWarrantyRenewal`) — mỗi dòng gắn một loại gia hạn
+/// (`WrtReneCateCode` → `Ser_MST_ROWarrantyRenewalCategory`, đã port ở #541).</summary>
+/// <summary>#784 Danh mục lỗi khiếu nại / chẩn đoán (`Ser_MST_ROComplaintDiagnosticError`).</summary>
+public sealed class RoComplaintDiagnosticError
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ErrorCode { get; set; } = "";
+    public string? ErrorName { get; set; }
+    public string? ErrorTypeCode { get; set; }
+    // #1550 §12 - cot nguon ErrorDesc/Remark (Ser_MST_ROComplaintDiagnosticError) - port 1:1.
+    public string? ErrorDesc { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    /// <summary>#1096 §12 — nguồn `Ser_MST_ROComplaintDiagnosticError_Save` (AssignmentOfWork.cs:7834, đời thứ
+    /// ba của chuỗi chép #785/#786) ghi đủ 4 cột nhật ký khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+}
+
+public sealed class RoWarrantyRenewal
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string VIN { get; set; } = "";
+    public string? WrtReneCateCode { get; set; }
+    // #1551 §12 - cot nguon WrtReneDate/FlagActive (Ser_MST_ROWarrantyRenewal) - port 1:1.
+    // ROWRID nguon = @@Identity (khoa chinh tu tang) => da bieu dien bang Id, KHONG them cot trung.
+    public DateTime? WrtReneDate { get; set; }
+    public string? FlagActive { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    /// <summary>#1097 §12 — nguồn `Ser_MST_ROWarrantyRenewal_Save` (AssignmentOfWork.cs:8487, đời thứ năm của
+    /// chuỗi chép #785/#786/#1092/#1093/#1094/#1096) ghi đủ 4 cột nhật ký khi TẠO; nhánh SỬA chỉ ghi
+    /// LogLUDateTime/LogLUBy (CreatedDate/CreatedBy bị COMMENT).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+}
+
 public sealed class SmsAccount
 {
+    /// <summary>🔴 #781 §12 `Sms_Account.SmsAccountPassword` — mật khẩu tài khoản SMS.
+    /// Nguồn `SmsAccountPassword_ResetCache` ghi **thẳng chuỗi rõ** vào cột này (cùng bệnh #760).
+    /// Mini lưu **băm** (`…Hash`) — khác nguồn CÓ CHỦ Ý.</summary>
+    public string? SmsAccountPasswordHash { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string AccountName { get; set; } = "";
@@ -13811,6 +15691,16 @@ public sealed class EmailSend
     /// chỉ khi gửi xong mới cập nhật "1" (`BizCarSv.SendMail.cs:616`). Port cũ đánh dấu
     /// "Sent" NGAY LÚC TẠO ⇒ không phân biệt được "đã xếp hàng" với "đã gửi".
     /// Giữ đọc được dữ liệu cũ: "Sent" ⇒ "1", "Invalid" ⇒ "0" + <see cref="InvalidEmail"/>.
+    ///
+    /// 🔴 #300 SỬA LẠI: trạng thái **KHÔNG chỉ có hai giá trị**. Báo cáo LIVE
+    /// `Email_ReportCusReceivedEmail` (`SendMail.cs:4630`) ánh xạ **BA**:
+    ///   `'0'` Chưa gửi · `'1'` Thành công · `'2'` **Thất bại**  (whitelist — **không có `else`**
+    ///   ⇒ mã lạ và NULL cho ra **nhãn NULL**, ô trống trên lưới).
+    /// Giá trị do **người gọi truyền vào** (`:322` `strStatus`, `:520` `strStatusNew`) nên `'2'` là giá trị
+    /// hợp lệ mà job ghi khi gửi hỏng. Mô hình cũ chỉ mô tả "0"/"1" ⇒ **không có chỗ ghi GỬI HỎNG**,
+    /// mọi lần gửi thất bại bị kẹt ở "0" (trông như còn trong hàng đợi).
+    /// ⚠️ Nguồn ghi **DBNull khi tham số rỗng** (`:318`) ⇒ NULL cũng là giá trị thật.
+    /// ⚠️ ĐỪNG lẫn với <see cref="EmailSendAutoTemp.Status"/>: bảng kia dùng SỐ và có mã **-1**.
     /// </summary>
     public string Status { get; set; } = "0";
 
@@ -13834,7 +15724,73 @@ public sealed class EmailSend
     /// <summary>Ghi chú / lý do lỗi gửi (Note/Remark) — port cũ không có chỗ ghi lỗi gửi.</summary>
     public string? Note { get; set; }
 
+    /// <summary>
+    /// 🔴 #1474 `Email_SendEmail.AutoTempId` — khoá trỏ về dòng hàng đợi người nhận
+    /// (`Email_SendEmailAutoTemp`) đã sinh ra email này. Nguồn ghi ở `ProcessSaveSendEmail`
+    /// (`SendMail.cs:599` `Rows[0]["AutoTempId"] = strAutoTempId`) và dùng lại làm khoá tra
+    /// (`:614` `GetTableContents(…, "AutoTempId", "=", strAutoTempId)`).
+    /// ⚠️ Field do HỆ THỐNG sinh (job tự động), KHÔNG nhập qua DTO — nhưng `Email_SendEmail_Get`
+    /// SELECT `t.*` nên route GET PHẢI echo ra (bài học #539/#1466).
+    /// </summary>
+    public string? AutoTempId { get; set; }
+
     public DateTime SendDate { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// 🔴 #300 BẢNG TẠM GỬI EMAIL TỰ ĐỘNG — `Email_SendEmailAutoTemp` (`BizCarSv.SendMail.cs:3829/4052`),
+/// **chưa từng port**. Đây là **hàng đợi NGƯỜI NHẬN** của một lô gửi tự động: mỗi khách một dòng, dựng
+/// sẵn `Subject`/`Body` đã ghép biến, rồi job mới đọc ra gửi và ghi kết quả sang `EmailSend`.
+/// Thiếu bảng này thì **không biết một lô nhắm tới bao nhiêu khách**, chỉ biết đã gửi được bao nhiêu.
+///
+/// Hai `[WebMethod]` LIVE: `Email_SendEmailAutoTemp_Create` (`WSCarSv.asmx.cs:22308`) ·
+/// `_Update` (`:22396`). Hai hàm đọc LIVE: `Temp_Email_Get` (`:22929`) · `Temp_Email_Get_Detail`.
+/// ⚠️ Bảng nằm ở DB `@strDBName_CommonCenter` (dùng chung), không phải DB đại lý.
+/// </summary>
+public sealed class EmailSendAutoTemp
+{
+    /// <summary>🔴 #709 `Email_SendEmailAutoTemp.AutoTempID` — **khoá** mà `Email_SendEmailAutoTemp_Update`
+    /// dùng để tra (`GetTableContents(…, "AutoTempID", "=", …)`), và là một trong năm bộ lọc của `_Get`.</summary>
+    public string? AutoTempID { get; set; }
+
+    public long Id { get; set; }                 // AutoTempID
+    public Guid OrgId { get; set; }
+
+    /// <summary>BATCHID — lô mà dòng này thuộc về. ⚠️ **KHÔNG có trong chữ ký `_Create`**: nguồn gán ở
+    /// chỗ khác (lúc dựng lô), nên dòng vừa tạo có thể còn mồ côi.</summary>
+    public string? BatchId { get; set; }
+
+    public string? DealerCode { get; set; }
+    public string? CusID { get; set; }
+    public string? CusEmail { get; set; }
+    public string? Subject { get; set; }
+    public string? Body { get; set; }
+
+    /// <summary>CURRENTDATE — ngày ghi nhận dòng (nguồn nhận dạng CHUỖI).</summary>
+    public string? CurrentDate { get; set; }
+
+    /// <summary>TYPEEMAIL — 1..7, cùng bảng mã với `EmailSend.EmailType`.</summary>
+    public string? TypeEmail { get; set; }
+
+    /// <summary>CONFIGAUTOID — cấu hình gửi tự động sinh ra dòng này.</summary>
+    public string? ConfigAutoID { get; set; }
+
+    /// <summary>
+    /// 🔴 STATUS — **bảng mã SỐ, có mã ÂM**, khác hẳn cờ "1"/"0" của <see cref="EmailSend"/>:
+    ///   `1` Thành công · `-1` **Thất bại** · `0` Chưa gửi · **`else` ⇒ "Lỗi"**
+    /// (`Temp_Email_Get_Detail`, `SendMail.cs:5497` — viết `when 1`/`when -1`/`when 0` KHÔNG nháy).
+    /// ⚠️ Có nhánh `else` ⇒ **blacklist**: NULL và mọi mã lạ đều hiện "Lỗi", không phải ô trống.
+    /// ⚠️ Nguồn ghi **DBNull khi tham số rỗng** (`:3960`/`:4191`) ⇒ NULL là giá trị THẬT, hiển thị "Lỗi".
+    /// </summary>
+    public string? Status { get; set; }
+
+    /// <summary>SENDTYPE — kiểu gửi của dòng.</summary>
+    public string? SendType { get; set; }
+
+    /// <summary>REMARK — ghi chú/lý do lỗi, `Temp_Email_Get_Detail` trả kèm trạng thái.</summary>
+    public string? Remark { get; set; }
+
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 }
 
 /// <summary>
@@ -13859,6 +15815,12 @@ public sealed class EmailBatch
     /// </summary>
     public string? AttachmentName { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== 🔴 #1527 §12 — `Ser_Email_Attachment_Get` (SendMail.cs:5007, LIVE WS :21488) đọc
+    //   `Attachment` (nội dung tệp đính kèm cả lô) từ `Email_BatchSendEmail`; entity chưa từng có.
+    //   `Email_BatchSendEmailCreate` (:929) ghi cột này khi có tệp (byte[]).
+    /// <summary>Nội dung tệp đính kèm dùng chung cả lô (`Attachment`, byte[]).</summary>
+    public byte[]? Attachment { get; set; }
 
     // ===== #143 parity DMS40_Email_BatchSendEmail =====
     // Nguồn: DMS40/0.34.Contract.cs — `_SaveX` (12927) / `_Job_SaveX` (13853), csproj 125.
@@ -14117,6 +16079,18 @@ public sealed class SmsSend
 /// <summary>Mẫu email theo loại nghiệp vụ (tiêu đề + nội dung + file đính kèm) — port 1:1 FrmEmail_TempEmailCreate (TblEmail_TempEmail, TCMotor).</summary>
 public sealed class EmailTemplate
 {
+    /// <summary>🔴 #711 `Email_TempEmail.TempIDEmail` — **khoá** mà `Email_TempEmail_Cancel` tra
+    /// (`GetTableContents(…, "top 1 *", "", "TempIDEmail", "=", …)`), và là một bộ lọc của `Email_TempEmail_Get`.
+    /// ⚠️ Nguồn tra bằng `top 1` **không `ORDER BY`** và **không** lọc theo đại lý ⇒ khoá này không được bảo đảm
+    /// duy nhất trong nguồn.</summary>
+    public string? TempIDEmail { get; set; }
+
+    // ===== 🔴 #438 §12 DEALERCODE — cột nguồn LỌC bằng mà bản port THIẾU HẲN =====
+    //   `Email_TempEmail_Get` nhận `strDealerCode`, biz dựng `BuildClause("and", "tmp.**DealerCode**", …)`,
+    //   và **cả hai** lời gọi của `FrmEmail_TempEmailList` đều truyền `SystemGlobal.strDealerCode`.
+    //   ⇒ Mẫu thư là dữ liệu **theo từng đại lý**, không phải dùng chung. Thiếu cột này thì mọi đại lý
+    //     nhìn chung một tập mẫu — sai mô hình dữ liệu, và §12 KHÔNG bắt được (lệ #403: cột thiếu HẲN).
+    public string? DealerCode { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     /// <summary>#354 `Email_TempEmail.TempTypeEmail` (rename từ `TempType` khớp nguồn). Mã nguồn '0'…'7'
@@ -14137,12 +16111,39 @@ public sealed class EmailTemplate
 /// <summary>Mẫu tin nhắn SMS theo loại nghiệp vụ (nội dung + trạng thái) — port 1:1 FrmSMSTemplate (TblSMS_Template, TCMotor).</summary>
 public sealed class SmsTemplate
 {
-    public long Id { get; set; }
+    public long Id { get; set; }                // = TempID của nguồn (identity)
     public Guid OrgId { get; set; }
     public string SmsType { get; set; } = "";   // loại: MAINT/BIRTHDAY/PROMO/...
+
+    /// <summary>
+    /// 🔴 #299 DEALERCODE — port cũ THIẾU HẲN, và đây là **lỗi ghi đè chéo đại lý**.
+    /// Nguồn `SerSMSTemplateCreate`/`Update` (`BizCarSv.Master.cs:7982/8156`) đều nhận `strDealerCode` và
+    /// `SerSMSTemplateGet` lọc theo `strDealerCodeConditionList` ⇒ **mỗi đại lý có bộ mẫu SMS RIÊNG**.
+    /// Port cũ upsert theo `SmsType` trong một `OrgId` ⇒ đại lý A sửa mẫu là **ĐÈ mẫu của đại lý B**.
+    /// </summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>⚠️ `SmsName` **KHÔNG có trong `Ser_SMSTemplate`** — phát minh của port cũ. Nguồn chỉ có
+    /// bốn trường nghiệp vụ: `DealerCode` · `SMSType` · `SMSBody` · `IsActive`. Giữ để không vỡ client cũ.</summary>
     public string? SmsName { get; set; }
+
+    /// <summary>⚠️ Nguồn cho `SMSBody` = **DBNull** khi rỗng (`Master.cs:8045`), KHÔNG chặn.</summary>
     public string SmsBody { get; set; } = "";
+
+    /// <summary>
+    /// 🔴 #299 ISACTIVE — ba điểm lệch với port cũ:
+    ///  (1) Nguồn ghi **DBNull khi tham số rỗng**, không ép "1". Port cũ luôn ép `"1"` ⇒ **không tạo được
+    ///      mẫu đang TẮT**, phải tạo rồi toggle.
+    ///  (2) Nhãn của nguồn so **SỐ không nháy** (`when 0` / `when 1`), khác mọi chỗ khác trong hệ so `'1'` chuỗi.
+    ///  (3) Có nhánh `else N'Không kích hoạt'` ⇒ **NULL hiển thị là "Không kích hoạt"**, không phải nhãn rỗng.
+    /// ⚠️ Từ vựng nhãn theo MÀN (luật `C0-...` #286/#289): màn này là **"Kích hoạt/Không kích hoạt"**,
+    ///    còn `Ser_Customer` (`Customer.cs:2213`) dùng **"Hoạt động/Không hoạt động"** cho CÙNG cột `IsActive`.
+    /// </summary>
     public string FlagActive { get; set; } = "1";
+
+    // 🔴 #299 `NewIsActive` là **HẰNG CHẾT** (cùng dạng `NewStatus` ở #298): nguồn viết
+    //   `select tmp.* , case tmp.IsActive … end as NewIsActive` — nếu bảng có cột thật thì `tmp.*` đã trả
+    //   rồi ⇒ trùng tên cột, DataTable vỡ. Vậy nó chỉ là nhãn tính lúc đọc. KHÔNG port thành cột.
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
@@ -14166,6 +16167,12 @@ public sealed class PartLocation
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    // #1184 §12 — cung nguon voi SerMstLocation: Ser_Mst_Location_Import (BizCarSv.Master.cs:7371+127-131
+    // tao, +213-215 sua) ghi du 4 cot nhat ky khi tao va cap LogLUDateTime/LogLUBy khi sua. PartLocation la
+    // ban port THU HAI cua cung man nguon (FrmImportLocation) — trung voi SerMstLocation (#937b), giu
+    // doc lap khong gop (dung tien le #489), vá audit-trail rieng cho bang nay.
+    public DateTime? CreatedDate { get; set; }
 }
 
 /// <summary>Danh mục dịch vụ/công (master: mã/tên/giá vốn/giá bán/model/VAT) — port 1:1 FrmService/FrmImportService (TblSerMSTService, TCMotor).</summary>
@@ -14180,20 +16187,45 @@ public sealed class ServiceItemMst
     public string? Model { get; set; }
     public decimal Vat { get; set; }
     public string? Note { get; set; }
-    public string FlagActive { get; set; } = "1";
+    public string FlagActive { get; set; } = "1";   // ISACTIVE của nguồn
+
+    // ===== 🔴 #297 parity `TblSerMSTService` (DbDefine.cs:748-762): 6 cột port cũ THIẾU =====
+    // 🆕 Từ sweep "Tbl* có CẢ Status LẪN IsActive" (#295/#296).
+    public string? DealerCode { get; set; }
+
+    /// <summary>SERTYPEID — loại dịch vụ (`Ser_Mst_ServiceType`). Nguồn ghi **DBNull khi rỗng**,
+    /// không ghi chuỗi rỗng.</summary>
+    public string? SerTypeID { get; set; }
+
+    /// <summary>🔴 STDMANHOUR — **giờ công ĐỊNH MỨC** của dịch vụ. Đây là nguồn định mức cho các bảng
+    /// dùng lại (`RoServiceItem`/`ServiceQuotationLabor` đã có cột cùng tên); thiếu ở DANH MỤC nghĩa là
+    /// không có chỗ nào khai định mức gốc.</summary>
+    public decimal? StdManHour { get; set; }
+
+    /// <summary>FACTOR — hệ số giá của dịch vụ.</summary>
+    public decimal? Factor { get; set; }
+
+    /// <summary>STATUS — trạng thái nghiệp vụ, **KHÁC `FlagActive`** (cờ bật/tắt bản ghi).</summary>
+    public string? Status { get; set; }
+
+    /// <summary>
+    /// 🔴 FLAGWARRANTY — dịch vụ này là **CÔNG BẢO HÀNH của hãng**. Nguồn mặc định `Inactive` và CHỈ bật
+    /// khi `SerCode` trùng một công bảo hành đang hiệu lực trong `Ser_MST_ROWarrantyWork` — xem luật ghi đè
+    /// ở `POST /api/serviceitems`.
+    /// </summary>
+    public string? FlagWarranty { get; set; }
+
+    // #1130 §12 — `Ser_Mst_Service_Create` (Service.cs:1344) ghi đủ 4 cột nhật ký; `_Update` (:1823, có tham
+    // số strIsActive) chỉ ghi lại LogLUDateTime/LogLUBy — entity chưa từng có chỗ chứa cả bốn.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 
     // ===== #397 parity Ser_MST_Service — cột do `Ser_MST_ROWarrantyWork_Save_Dealer` / `_Delete_Dealer` ghi
     //       (BizCarSv.AssignmentOfWork.cs:3523 / 5304, WS LIVE) khi áp/gỡ công việc bảo hành cho đại lý =====
-    /// <summary>Cờ "công việc bảo hành chính" (1/0). Save_Dealer bật 1, Delete_Dealer tắt 0.</summary>
-    public string FlagWarranty { get; set; } = "0";
-    /// <summary>Giờ công định mức (= RateHour của công việc BH; rỗng ⇒ "1" khi tạo mới).</summary>
-    public decimal? StdManHour { get; set; }
-    public string? DealerCode { get; set; }
-    public int? SerTypeID { get; set; }
-    public string? CreatedBy { get; set; }
-    public DateTime? LogLUDateTime { get; set; }
-    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Danh mục model xe dịch vụ (mã/tên/nhãn hiệu/mã SX) — port 1:1 FrmModel/FrmImportModel (TblModel, TCMotor).</summary>
@@ -14208,10 +16240,34 @@ public sealed class ServiceModel
     public string? ModelID { get; set; }          // port 1:1 CarModel.ModelID ("model TM" — FrmModelCreate:167, FrmModelModify)
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1549 §12 - cot nguon Ser_MST_Model.IsActive (varchar) - port 1:1.
+    public string? IsActive { get; set; }
+    // ===== #1049 §12 — `Ser_Mst_Model_Create_New20200203` (BizCarSv.Master.cs:2623, LIVE qua WS gateway)
+    // ghi `CreatedDate`/`CreatedBy` — cùng mẫu hình #453 (ServiceAppointment/Cavity/ServiceEngineer).
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    // #1129 §12 — `Ser_Mst_Model_Create_New20200203` ghi cả 4 cột; `_Update_New20200203` (LIVE qua WS, có
+    // tham số `strIsActive`) chỉ ghi lại LogLUDateTime/LogLUBy = strPartnerUserCode — entity chưa từng có.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Phiếu xuất kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockOut01 (TblSerInvStockOut, TCMotor).</summary>
+/// <summary>Thiết lập mốc bảo dưỡng theo số km (Ser_MST_ROMaintanceSetting) — #846 port 1:1 màn thiết lập bảo dưỡng, TCMotor DMSCarSv. Mỗi dòng = một mốc Km + danh sách hạng mục.</summary>
+public sealed class RoMaintanceSetting
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long ROMSID { get; set; }
+    public decimal? Km { get; set; }
+    public string? Maintances { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
 public sealed class ServiceStockOut
 {
     public long Id { get; set; }
@@ -14232,6 +16288,19 @@ public sealed class ServiceStockOut
 
     public string Status { get; set; } = "Draft"; // Draft -> Confirmed (trừ tồn)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #995 §12 — nguồn `SerStockOutGetMaxStockOutNo`/`_V2` LUÔN lọc theo `strDealerCodeConditionList`
+    /// (`Ser_Inv_StockOut.DealerCode`) khi cấp số chứng từ — port cũ chưa có cột này nên chưa cấp số theo
+    /// đúng phạm vi đại lý (giống nợ đã vá cho `ServiceStockIn` ở #994).</summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>🔴 #996 §12 — nguồn `SerStockOutGet` join `Ser_Customer su on t.CusID = su.CusID` để trả
+    /// tên khách nhận hàng — port cũ chỉ có `ReceiverCode` (mã thô), không có khoá khách hàng thật.</summary>
+    public string? CusID { get; set; }
+    /// <summary>🔴 #996 §12 — nguồn join `Sys_user suser on t.UserCode = suser.UserCode` để trả tên
+    /// người lập phiếu.</summary>
+    public string? UserCode { get; set; }
+    public string? TruckNo { get; set; }
 }
 
 /// <summary>Dòng phiếu xuất kho phụ tùng (detail) — port 1:1 FrmSerInventoryAccStockOut01 grid, TCMotor.</summary>
@@ -14252,6 +16321,36 @@ public sealed class ServiceStockOutLine
 
     /// <summary>Thành tiền dòng = Quantity × Price × (1 + VAT%) — đúng biểu thức doanh thu của nguồn.</summary>
     public decimal Amount { get; set; }
+
+    /// <summary>#1471 §12 — đơn vị tính, nguồn `SerStockOutGet` detail SELECT `sid.*, p.Unit` (join Ser_Mst_Part).
+    /// Là field ECHO (đọc từ Ser_Mst_Part), KHÔNG ghi vào Ser_Inv_StockOutDetail lúc Create.</summary>
+    public string? Unit { get; set; }
+
+    // ===== #1489 §12 — cột nguồn `Ser_Inv_StockOutDetail` mà entity Mini CHƯA TỪNG có =====
+    // Căn cứ: `SerStockOutDetailCreate` (`BizCarSv.Inventory.StockOut.cs:5375`) ghi đủ các cột dưới đây
+    // (bài học #547: đối chiếu khối insert của hàm Create/Update với entity, không chỉ đọc SELECT).
+    /// <summary>StockOutOrderID — mắt xích về phiếu YÊU CẦU xuất kho (`Ser_Inv_StockOutOrder`).</summary>
+    public string? StockOutOrderID { get; set; }
+    /// <summary>StockOutOrderNo — số phiếu yêu cầu xuất kho.</summary>
+    public string? StockOutOrderNo { get; set; }
+    /// <summary>DealerCode — đại lý của dòng xuất (nguồn ghi ở dòng chi tiết).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>PartID — khoá kỹ thuật phụ tùng (`Ser_MST_Part.PartID`), KHÁC `PartCode` là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>PlanLocationID — vị trí KẾ HOẠCH.</summary>
+    public string? PlanLocationID { get; set; }
+    /// <summary>ActualLocationID — vị trí THỰC TẾ.</summary>
+    public string? ActualLocationID { get; set; }
+    /// <summary>PartPriceId — mã bảng giá phụ tùng áp dụng cho dòng.</summary>
+    public string? PartPriceId { get; set; }
+    /// <summary>PartPrice — giá chuẩn của phụ tùng (chụp từ `Ser_MST_Part.Price` lúc tạo).</summary>
+    public decimal? PartPrice { get; set; }
+    /// <summary>PartVAT — thuế chuẩn của phụ tùng (chụp từ `Ser_MST_Part.VAT` lúc tạo).</summary>
+    public decimal? PartVAT { get; set; }
+    /// <summary>LogLUDateTime — nhật ký sửa dòng (nguồn ghi mỗi lần Create/Update).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>LogLUBy — người sửa dòng.</summary>
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phiếu nhập kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockIn (TblSerInvStockIn, TCMotor).</summary>
@@ -14300,6 +16399,27 @@ public sealed class ServiceStockInLine
 
     /// <summary>Thành tiền đã gồm thuế = TotalBeforeVat + VatAmount.</summary>
     public decimal Amount { get; set; }
+
+    /// <summary>#1472 §12 — đơn vị tính, nguồn `SerStockInGet` detail SELECT `sid.*, p.Unit` (join Ser_Mst_Part).
+    /// Là field ECHO (đọc từ Ser_Mst_Part), KHÔNG ghi vào Ser_Inv_StockInDetail lúc Create.</summary>
+    public string? Unit { get; set; }
+
+    // #1490 §12 — 7 cột nguồn `Ser_Inv_StockInDetail` mà `SerStockInDetailCreate`
+    // (BizCarSv.Inventory.StockIn.cs:4535) ghi rõ ràng nhưng entity Mini chưa từng có (bài học #547).
+    /// <summary>Số phiếu nhập (Ser_Inv_StockInDetail.StockInNo) — nguồn ghi cùng dòng detail.</summary>
+    public string? StockInNo { get; set; }
+    /// <summary>Mã đại lý (Ser_Inv_StockInDetail.DealerCode).</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>Khoá kỹ thuật phụ tùng (Ser_Inv_StockInDetail.PartID) — KHÁC PartCode là mã hiển thị.</summary>
+    public string? PartID { get; set; }
+    /// <summary>Mô tả dòng nhập (Ser_Inv_StockInDetail.Description).</summary>
+    public string? Description { get; set; }
+    /// <summary>Vị trí KẾ HOẠCH nhập (Ser_Inv_StockInDetail.PlanLocationID).</summary>
+    public string? PlanLocationID { get; set; }
+    /// <summary>Nhật ký cập nhật (Ser_Inv_StockInDetail.LogLUDateTime).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>Người cập nhật cuối (Ser_Inv_StockInDetail.LogLUBy).</summary>
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>⛔ #383 DEPRECATED — SONG SINH của <see cref="PartBackorder"/> (cùng bảng nguồn Ser_Part_OO). OONo/Status là từ vựng tự đặt (nguồn không có).
@@ -14325,11 +16445,27 @@ public sealed class ServicePartOO
     public DateTime? NgayDatHang { get; set; }         // TblSer_Part_OO.NgayDatHang — ngày đặt hàng
     public DateTime? NgayVeDuKien { get; set; }        // TblSer_Part_OO.NgayVeDuKien — ngày về dự kiến
     public DateTime? NgayHenTra { get; set; }          // TblSer_Part_OO.NgayHenTra — ngày hẹn trả khách
+
+    /// <summary>#1081 §12 — nguồn `Ser_Part_OO_Create` (Service.cs:15794) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `Ser_Part_OO_Update` (:16042) chỉ ghi LogLUDateTime/LogLUBy khi SỬA. Chỉ vá bản `ServicePartOO`
+    /// ("route chính" theo #912) — twin `PartBackorder` (`/api/partbackorders`) giữ nguyên, chờ 1 fire
+    /// riêng đối chiếu/hợp nhất hai route cùng bảng nguồn.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Xe khách trong hệ thống dịch vụ (biển số/khung/máy/km/bảo hành) — port 1:1 FrmCarInfo (TblSerCar, TCMotor).</summary>
 public sealed class ServiceCar
 {
+    // ===== 🔴 #716 §12 — BỐN CỘT NHẬT KÝ `ProcessCarCreate/_Update` ghi mà bản port thiếu hẳn.
+    //   ĐÚNG bốn cột vừa vá cho `ServiceCustomer` ở #715 ⇒ thiếu sót CÓ HỆ THỐNG.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string FrameNo { get; set; } = "";   // VIN — khóa
@@ -14368,6 +16504,28 @@ public sealed class ServiceCar
     //      nguồn `TradeMarkCode` → entity `TradeMark`
     //      nguồn `ModelID`       → entity `ModelCode`
     //      nguồn `IsActive`      → entity `FlagActive`
+    /// <summary>🔴 #332 PLATECOLORCODE — **màu biển số** (trắng / vàng / xanh). Ở VN màu biển phân loại
+    /// xe **cá nhân · kinh doanh vận tải · công vụ** ⇒ đây là thuộc tính PHÁP LÝ, không phải màu sắc.
+    /// Bản `CustomerCar` (phía bán hàng) đã có cột này từ lâu; `ServiceCar` (`Ser_Car`, phía dịch vụ)
+    /// **thiếu** — chính là toàn bộ độ lệch giữa hai đường ghi LIVE của `CarSv_Ser_CustomerCar_Create`.</summary>
+    public string? PlateColorCode { get; set; }
+
+    // ===== 🔴 #333 SÁU CỘT của họ `ProcessSaveCar01` — **KHÔNG kênh nào ghi đủ cả sáu** =====
+    // Ma trận kênh ⇄ cột (đo bằng tập cột ghi thật, xem chú thích ở `POST /api/servicecars`).
+    /// <summary>SERIALNO — mã **đài AVN** (chú thích nguồn `20210508` "Cập nhật mã đài AVN").</summary>
+    public string? SerialNo { get; set; }
+    /// <summary>BATTERYNO — mã **bình ắc quy** (chú thích nguồn `20210508`).</summary>
+    public string? BatteryNo { get; set; }
+    /// <summary>PRODUCTIONCODE — mã lô sản xuất. CHỈ kênh `_New20180622` (Sales + MBS) ghi.</summary>
+    public string? ProductionCode { get; set; }
+    /// <summary>CUSCONFIRMEDWARRANTYDATE — ngày khách XÁC NHẬN bảo hành. CHỈ kênh `_SBHOnline`.
+    /// ⚠️ Kênh đó ghi khi **TẠO**, nhưng ở nhánh **SỬA** ba cột bảo hành bị **comment cả khối**
+    /// (`//20210408`) ⇒ tạo thì lưu, sửa thì **rơi im lặng**. Xem chú thích ở endpoint.</summary>
+    public DateTime? CusConfirmedWarrantyDate { get; set; }
+    /// <summary>WARRANTYEXPIRESDATE — ngày hết hạn bảo hành. Cùng nhóm bất đối xứng tạo/sửa ở trên.</summary>
+    public DateTime? WarrantyExpiresDate { get; set; }
+    /// <summary>WARRANTYKM — số km hết hạn bảo hành. Cùng nhóm bất đối xứng tạo/sửa ở trên.</summary>
+    public decimal? WarrantyKM { get; set; }
     /// <summary>Mã xe nội bộ của hệ dịch vụ (`CarID`) — khác `FrameNo` (số khung).</summary>
     public string? CarID { get; set; }
     /// <summary>Mã xe bên hệ BÁN HÀNG (`SalesCarID`) — cầu nối sang cụm Car_Car.</summary>
@@ -14385,21 +16543,30 @@ public sealed class ServiceCar
     /// <summary>Ghi chú xe (`Note`).</summary>
     public string? Note { get; set; }
 
+    /// <summary>
+    /// 🔴 #269 `Ser_Car.CurrentServiceDate` — **lần vào xưởng GẦN NHẤT**. Là khoá của job NoShow:
+    /// xe có ngày này rơi vào cửa sổ quá khứ ⇒ khách **quá hạn chưa quay lại**.
+    /// Nguồn: `TERP.BizCarSv/HCCIntergration/BizCarSv.HCC.cs:381 HCC_NoShow_CreateOS` —
+    /// hàm **CHỈ CÓ TRÊN MÁY 150**, laptop grep ra 0 dòng.
+    /// </summary>
+    public DateTime? CurrentServiceDate { get; set; }
+
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 
     // ===== #382 [c] gộp song sinh Ser_Car — cột nguồn TblSerCar.PlateColorCode (mang từ bản CustomerCar) =====
-    /// <summary>Màu biển số (`PLATECOLORCODE`, DbDefine TblSerCar:1590).</summary>
-    public string? PlateColorCode { get; set; }
 
-    /// <summary>#401 Ngày làm dịch vụ gần nhất (`Ser_Car.CurrentServiceDate`) — nguồn ghi khi bấm "Kết thúc" giao xe
-    /// (SerROToFinishedStatusAndUpdateCusCare_New20190621, ZTemp.cs:11399): = Ser_RO.FinishedDate, kèm CurrentKm = Ser_RO.Km.</summary>
-    public DateTime? CurrentServiceDate { get; set; }
 }
 
 /// <summary>Danh mục phụ tùng dịch vụ (master lõi) — port 1:1 FrmPart (TblSerMSTPart, TCMotor).</summary>
 public sealed class ServicePart
 {
+    /// <summary>🔴 #400 §12 CUSDEBT — tên cột nói 'công nợ khách' nhưng màn **Tồn kho tối ưu**
+    /// dùng nó làm **số lượng BO (hàng đặt bù) NHẬP TAY**: form khai
+    /// `private const string colBO = "CUSDEBT"; //Nhap truc tiep` — và khai **hai lần** cùng một cột
+    /// (`colBO` và `colCusDebt` đều = `"CUSDEBT"`).
+    /// ⇒ Đọc tên cột mà hiểu là công nợ là **sai nghĩa**. Xem `POST /api/serviceparts/update-bo`.</summary>
+    public decimal? CusDebt { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string PartCode { get; set; } = "";
@@ -14414,7 +16581,7 @@ public sealed class ServicePart
     public string? PartGroupCode { get; set; }
     public string? Model { get; set; }
     public string? Note { get; set; }
-    public string FlagActive { get; set; } = "1";
+    public string FlagActive { get; set; } = "1";   // IsActive
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     // #310 cột nguồn TblSerMSTPart (DbDefine) — Ser_Mst_Part_Create_20210303 / Ser_Mst_Part_Update (BizCarSv.Service.cs:4871/5407).
     /// <summary>Loại phụ tùng (`PartTypeID` → SerPartType.Id).</summary>
@@ -14424,6 +16591,39 @@ public sealed class ServicePart
     public string? FreqUsed { get; set; }
     /// <summary>Có trong danh mục TST HTC (`FlagInTST`): "1" khi tạo mới trùng mã TST_Mst_Part, "0" ngược lại. Sửa KHÔNG đổi cờ.</summary>
     public string FlagInTST { get; set; } = "0";
+
+    // ===== 🔴 #261: 12 cột nguồn `TblSerMSTPart` (DbDefine.cs:663-693) mà port cũ THIẾU =====
+    // Tìm ra bằng sweep "lớp Tbl* có hằng nằm SAU DÒNG TRỐNG" (sinh từ bài học #260).
+
+    // --- 5 cột thuộc KHỐI CHÍNH ---
+    public string? PartID { get; set; }              // PARTID — khoá kỹ thuật, khác PartCode
+    public string? DealerCode { get; set; }          // DEALERCODE — phụ tùng theo đại lý
+    /// <summary>🔴 #380 § **CỘT DẪN XUẤT, KHÔNG PHẢI CỘT LƯU** — nguồn KHÔNG hề ghi cột này ở đâu;
+    /// mọi nơi đều TÍNH lúc đọc: `(isnull(sb.TotalInStock,0) + isnull(sb.TotalInShipment,0))`.
+    /// ⚠️ Nguồn có **HAI công thức khác nhau** cho cùng tên cột:
+    ///   · `Appointment.cs:1323/2299` và `Service.RO.cs:362` = **tồn kho + hàng đang về**
+    ///   · `PartOrder.cs:4415`        = **CHỈ tồn kho** (không cộng hàng đang về)
+    /// ⇒ Cùng một tên, hai nghĩa tuỳ màn. Giữ cột để tương thích nhưng **KHÔNG nhận từ client**
+    /// (xem endpoint tạo/sửa phụ tùng) — trước lượt này client gửi số nào cũng thành 'tồn kho'.</summary>
+    public decimal? InventoryQuantity { get; set; }  // INVENTORYQUANTITY — KHÁC Quantity
+
+    // --- 7 cột thuộc KHỐI PHỤ (nằm sau dòng trống, :684-692) ---
+    public decimal? TotalPrice { get; set; }
+    public string? BalanceLocationId { get; set; }
+    public DateTime? PriceEffect { get; set; }       // PRICEEFFECT — mốc hiệu lực giá
+
+    /// <summary>🔴 `TSTPrice` / `TSTPriceBefore` — giá NCC hiện tại và giá TRƯỚC ĐÓ.
+    /// Cặp này cho biết giá vừa đổi; thiếu vế sau thì không đối chiếu được biến động giá.</summary>
+    public decimal? TSTPrice { get; set; }
+    public decimal? TSTPriceBefore { get; set; }
+
+
+    // #1134 §12 — `Ser_Mst_Part_Create_20210303` (Service.cs:4871, LIVE) ghi đủ 4 cột nhật ký lúc tạo;
+    // `Ser_Mst_Part_Update` (:5407, có strIsActive) chỉ ghi lại LogLUDateTime/LogLUBy — entity chưa từng có.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Nhóm phụ tùng phân cấp (cha-con) — port 1:1 FrmPartGroup (TblSerMSTPartGroup, TCMotor).</summary>
@@ -14444,6 +16644,14 @@ public sealed class PartGroup
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // #1508 §12 — `Ser_Mst_PartGroup_Get` (`BizCarSv.Master.cs:3713`, LIVE) SELECT tường minh có `DealerCode`
+    // và `FamilyID`; `_Create` (`:3930`) ghi `DealerCode` và tính `FamilyID` qua `dbo.Part_GetFamilyID`.
+    // Entity Mini chưa từng có hai cột này ⇒ GET bỏ sót. `FamilyID` là cột dẫn xuất (đường dẫn tổ tiên).
+    public string? FamilyID { get; set; }
+
+    // #1071 §12 — `Ser_MST_PartGroup_Create` (BizCarSv.Master.cs:3930, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký; `_Update` (:4292) chỉ ghi lại `LogLUDateTime`/`LogLUBy` — cùng khuôn #1070.
+    public DateTime? CreatedDate { get; set; }
 }
 
 /// <summary>Công nợ khách hàng dịch vụ (theo RO) — port 1:1 FrmCusDebitCreate (TblCusDebit, TCMotor).</summary>
@@ -14452,6 +16660,20 @@ public sealed class CusDebit
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string DebitNo { get; set; } = "";
+    /// <summary>#557 §12 Đại lý của công nợ — nguồn **bắt buộc** ở `checkCusDebitFieldEmpty` và dùng
+    /// làm **nửa khoá xoá** (`where DealerCode = @DealerCode and CusDebitID = @CusDebitID`).</summary>
+    public string? DealerCode { get; set; }
+    // ===== #555 §12 MỘT BẢNG, BA LOẠI CÔNG NỢ =====
+    /// <summary>Loại công nợ — nguồn dùng **cùng bảng `Ser_CusDebit`** cho cả ba màn, phân biệt bằng
+    /// hằng literal: **"1"** khách hàng · **"2"** bảo hiểm · **"3"** nhà cung cấp.</summary>
+    public string DebitType { get; set; } = "1";
+    /// <summary>Số đơn bảo hiểm — khoá lọc của công nợ loại **"2"**.</summary>
+    public string? InsNo { get; set; }
+    /// <summary>Mã nhà cung cấp — khoá lọc của công nợ loại **"3"**.</summary>
+    public string? SupplierCode { get; set; }
+    /// <summary>Khoá phiếu nhập kho — công nợ loại "3" nối `Ser_Inv_StockIn` qua cột này
+    /// (loại "1"/"2" nối `Ser_RO` qua `ROID` — **hai khoá nối khác nhau trên cùng bảng**).</summary>
+    public string? StockInID { get; set; }
     public string? CusId { get; set; }
     public string? CusName { get; set; }
     public string? RONo { get; set; }
@@ -14461,6 +16683,13 @@ public sealed class CusDebit
     public string? Note { get; set; }
     public string Status { get; set; } = "Open"; // Open -> Paid
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1082 §12 — nguồn `SerCusDebitCreate` (Debit.cs:432) ghi đủ 4 cột nhật ký khi TẠO;
+    /// `SerCusDebitUpdate` (:645) chỉ ghi LogLUDateTime/LogLUBy khi SỬA.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thu tiền trên công nợ khách hàng — port 1:1 FrmCusPaymentCreate (TblPayment, TCMotor).</summary>
@@ -14515,15 +16744,97 @@ public sealed class ServiceAppointment
     /// <summary>Yêu cầu của khách khi đặt lịch (Ser_App.CusRequest).</summary>
     public string? CusRequest { get; set; }
 
+    // ===== 🔴 #270: khoá tra cứu + trục ĐẨY SANG HCC =====
+    // Nguồn: `BizCarSv.Tab.cs:4780 Ser_App_Create_ForTab` gọi `HCC_Appointment_AddOSX`
+    //   (`HCCIntergration/BizCarSv.HCC.cs:28`) NGAY SAU khi ghi `Ser_App`.
+    // 🔴 Khối gọi này **CHỈ CÓ TRÊN MÁY 150** — bản laptop của cùng file KHÔNG có (diff toàn file: đúng
+    //   một khối 19 dòng này là thay đổi thực chất duy nhất).
+    public string? CusID { get; set; }             // Ser_App.CusID
+    public string? Vin { get; set; }               // Ser_Car.FrameNo của xe được hẹn
+
+    /// <summary>
+    /// 🔴 #319 CARID — khoá kỹ thuật của XE, **KHÁC** <see cref="Vin"/> (số khung).
+    /// Nguồn `Ser_App_Create_ForTab` ghi `dt_Ser_App.Rows[0]["CarID"]` — nhưng **CHỈ ở bản máy 150**;
+    /// bản laptop `V20.2023.Release.V2` của cùng hàm KHÔNG ghi cột này (file lệch **+18 dòng**).
+    /// ⚠️ Các truy vấn khác của nguồn ghép xe theo `CarID` (vd bảo hành: `td.CarID = car.CarID`, #302),
+    ///    nên thiếu `CarID` thì lịch hẹn không nối được sang hồ sơ xe theo đúng khoá của hệ.
+    /// </summary>
+    public string? CarID { get; set; }
+
+    // ===== 🔴 #323 NGUỒN TÁCH **NGÀY** VÀ **GIỜ** THÀNH HAI CỘT RIÊNG — hai cặp =====
+    // Nguồn ghi qua helper dùng chung `Function_UtilsSerApp` (`ZTemp.cs:23228`, 16 cột):
+    //   `AppDateTime`     = `Convert.ToDateTime(str).ToString("yyyy-MM-dd")`  ⇒ **CHỈ NGÀY**
+    //   `AppTime`         = ghi **CHUỖI THÔ**, không convert, không kiểm định dạng
+    //   `AppDateTimeFrom` / `AppTimeFrom` = cặp thứ hai, cùng quy tắc
+    //
+    // 🔴 **TÊN CỘT NÓI DỐI**: `AppDateTime` nghe như có cả giờ, thực tế **chỉ chứa NGÀY**.
+    //    Giờ nằm ở `AppTime` dạng chuỗi tự do (nguồn không parse ⇒ có thể là "08:30", "8h30"…).
+    // 🔴 Hai cột ghi **ĐỘC LẬP** (mỗi cột một guard `if (!IsEmpty(...))`) ⇒ nguồn cho phép
+    //    **có ngày mà không có giờ**, hoặc ngược lại. Port cũ gộp thành `AppFrom`/`AppTo` kiểu `DateTime`
+    //    ⇒ **không biểu diễn được** hai trạng thái đó, và ép chuỗi giờ tự do phải parse được.
+    // ⇒ Giữ 4 cột THÔ đúng như nguồn; `AppFrom`/`AppTo` vẫn là tiện ích đã dùng, không bỏ.
+    public string? AppDateTime { get; set; }        // CHỈ ngày, "yyyy-MM-dd"
+    public string? AppTime { get; set; }            // giờ, CHUỖI THÔ
+    public string? AppDateTimeFrom { get; set; }    // CHỈ ngày, "yyyy-MM-dd"
+    public string? AppTimeFrom { get; set; }        // giờ, CHUỖI THÔ
+
+
+
+    /// <summary>
+    /// Trạng thái đẩy lịch hẹn sang HCC — cùng bộ mã với trục HMC của đề nghị bảo hành:
+    /// "P" chờ đẩy · "A" đẩy thành công · "R" đẩy lỗi. `null` = không thuộc diện đẩy.
+    /// ⚠️ Nguồn CHỈ đẩy ở nhánh **`_ForTab`** (kênh máy tính bảng); nhánh tạo lịch hẹn thường KHÔNG đẩy.
+    /// </summary>
+    public string? HCCPushStatus { get; set; }
+    public DateTime? HCCPushDateTime { get; set; }
+    public string? HCCPushNote { get; set; }
+
+    /// <summary>
+    /// 🔴 #271 Trục ĐÓNG lịch hẹn ở HCC (`HCC_Appointment_FinishOSX`), TÁCH RIÊNG khỏi trục MỞ
+    /// (<see cref="HCCPushStatus"/>) vì nguồn gọi ở **hai hàm khác nhau, hai thời điểm khác nhau**:
+    /// mở lúc tạo lịch hẹn (`Ser_App_Create_ForTab`), đóng lúc TIẾP NHẬN XE
+    /// (`Ser_ReceptionF_Reception_New20210727`). Dùng chung một cột sẽ mất dấu một trong hai.
+    /// Cùng bộ mã "P"/"A"/"R".
+    /// </summary>
+    public string? HCCFinishStatus { get; set; }
+    public DateTime? HCCFinishDateTime { get; set; }
+
+    // ===== 🔴 #282 PARITY `TblSerAppRO` (DbDefine.cs:878-903, md5 `d373e758` — KHỚP 2 máy): 8 cột THẬT
+    //   của bảng `Ser_App` mà port cũ thiếu. Đối chiếu **đủ 23 hằng** của lớp, không lấy theo lưới màn hình.
+
+    /// <summary>CREATOR — người tạo lịch hẹn. Nguồn truyền riêng, KHÁC tài khoản đăng nhập.</summary>
+    public string? Creator { get; set; }
+
+    public string? CusAddress { get; set; }    // CUSADDRESS
+    public string? CusTel { get; set; }        // CUSTEL — số bàn, KHÁC `Mobile` đã có
+    public string? InsNo { get; set; }         // INSNO — số đơn bảo hiểm gắn theo lịch hẹn
+
+
+    /// <summary>
+    /// 🔴 SOURCE — **NGUỒN TẠO** lịch hẹn, là cột THẬT trong DB (`TblSerAppRO.Source`).
+    /// ⚠️ Tham số `Channel` mà port thêm ở #270 (để quyết định có đẩy HCC hay không) là **do port tự đặt**,
+    /// không có trong nguồn; nay `Channel` được ghi xuống chính cột `Source` này khi client không gửi
+    /// `Source` riêng — để dữ liệu port khớp cột nguồn thay vì sinh khái niệm mới.
+    /// </summary>
+    public string? Source { get; set; }
+
+    /// <summary>🔴 FIRSTCONTACTDATETIME / LASTCONTACTDATETIME — mốc liên hệ **LẦN ĐẦU** và **GẦN NHẤT**
+    /// với khách của lịch hẹn. Đây là phần nghiệp vụ TỔNG ĐÀI: một lịch hẹn có thể phải gọi nhiều lần,
+    /// giữ cả hai mốc mới đo được "bao lâu mới liên hệ được lần đầu".</summary>
+    public DateTime? FirstContactDateTime { get; set; }
+    public DateTime? LastContactDateTime { get; set; }
+
+    // ===== #1046 §12 — nguồn `Ser_App_Create_New20201230` (ZTemp.cs:19269) nhận riêng `strCreatedDate`
+    // và CHỈ ghi cột `Ser_App.CreatedDate` khi tham số khác rỗng (khác `CreatedAt` do port tự đặt =
+    // DateTime.Now lúc insert — hai giá trị có thể LỆCH NHAU nếu client backfill dữ liệu cũ).
+    /// <summary>`Ser_App.CreatedDate` — do CLIENT truyền (`strCreatedDate`), khác `CreatedAt` (server tự set).</summary>
+    public DateTime? CreatedDate { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     /// <summary>#335 `Ser_App.LogLUDateTime/LogLUBy` — `Ser_App_UpdateStatus` ghi cùng AppStatus.</summary>
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 
-    /// <summary>#399 Ser_App.FirstContactDateTime — thời điểm liên hệ đầu (helper Function_UtilsSerApp, ZTemp.cs:18633, gọi từ Ser_App_Update_New20201230).
-    /// Ghi chú ánh xạ: nguồn tách NGÀY+GIỜ — AppDateTimeFrom+AppTimeFrom = BẮT ĐẦU (FrmAppList/FrmShowCavityStatus hiển thị) ↔ AppFrom;
-    /// AppDateTime+AppTime = KẾT THÚC ↔ AppTo. MiniHTC gộp thành DateTime (khác biểu diễn, cùng nghĩa).</summary>
-    public DateTime? FirstContactDateTime { get; set; }
 }
 
 /// <summary>
@@ -14543,6 +16854,14 @@ public sealed class AppointmentServiceItem
     public decimal? StdManHour { get; set; }
 
     public string? Note { get; set; }
+
+    // ===== #1501 §12 — cột nguồn `Ser_AppServiceItems` chưa từng mô hình hoá =====
+    /// <summary>`Ser_AppServiceItems.ItemID` — khoá dòng của bảng con (nguồn trả trong SELECT).</summary>
+    public string? ItemID { get; set; }
+    /// <summary>`Ser_AppServiceItems.SerID` — ID công việc (khoá nối `Ser_Mst_Service`).</summary>
+    public string? SerID { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -14565,6 +16884,14 @@ public sealed class AppointmentPartItem
     public string? Unit { get; set; }
     public decimal Quantity { get; set; }
     public string? Note { get; set; }
+
+    // ===== #1501 §12 — cột nguồn `Ser_AppPartItems` chưa từng mô hình hoá =====
+    /// <summary>`Ser_AppPartItems.ItemID` — khoá dòng của bảng con (nguồn trả trong SELECT).</summary>
+    public string? ItemID { get; set; }
+    /// <summary>`Ser_AppPartItems.PartID` — ID phụ tùng (khoá nối `Ser_Mst_Part`).</summary>
+    public string? PartID { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Công nợ bảo hiểm (hãng BH nợ tiền bồi thường theo RO) — port 1:1 FrmInsDebitSearch (TblCusDebit type InsuranceDebit, TCMotor).</summary>
@@ -14642,6 +16969,233 @@ public sealed class SupplierDebitPayment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// 🔴 #272 NHẬT KÝ MỘT LƯỢT ĐẨY "khách quá hạn chưa quay lại" (NoShow) SANG HCC.
+/// Nguồn: `HCCIntergration/BizCarSv.HCC.cs:485 HCC_NoShow_CreateOSX` (**chỉ có trên máy 150**) —
+/// mỗi ĐẠI LÝ trong vòng lặp là **một lượt đẩy riêng**, nên nhật ký cũng theo đại lý + loại nhắc.
+/// Cặp với danh sách ứng viên ở `GET /api/hcc/noshow` (#269).
+/// </summary>
+public sealed class HccNoShowPush
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    /// <summary>"6Month" hoặc "12Month" — nguồn chỉ sinh hai giá trị này (#269).</summary>
+    public string NoShowType { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+
+    /// <summary>Cửa sổ đã dùng để chọn ứng viên — lưu lại để đối soát về sau,
+    /// vì cửa sổ trượt theo ngày chạy job.</summary>
+    public DateTime WindowFrom { get; set; }
+    public DateTime WindowTo { get; set; }
+
+    /// <summary>Số ứng viên trong lượt. 🔴 Nguồn KHÔNG gọi HCC khi danh sách rỗng: guard
+    /// `if (!IsNullOrEmpty(strOrgID))` mà `strOrgID` chỉ được gán BÊN TRONG vòng lặp dòng ⇒ danh sách
+    /// rỗng thì nó ở lại `null`. Một guard "có dòng nào không" NGUỴ TRANG thành guard "có OrgID không".</summary>
+    public int CandidateCount { get; set; }
+
+    /// <summary>"P" chờ đẩy · "A" đẩy xong · "R" lỗi — cùng bộ mã với các trục HCC/HMC khác.</summary>
+    public string PushStatus { get; set; } = "P";
+    public DateTime? PushDateTime { get; set; }
+    public string? PushNote { get; set; }
+
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// 🔴 #287 ĐƠN ĐẶT PHỤ TÙNG GỬI NHÀ CUNG CẤP — bảng `Ser_Part_Order`.
+/// ⚠️ **KHÁC HẲN** `Ser_Order_Part` (đơn đặt phụ tùng TST, đã port thành `OrderPart` ở #234): hai bảng
+/// tên **đảo chữ** của nhau, khác bộ mã trạng thái, khác nghiệp vụ. Đừng gộp.
+/// Nguồn cột: `BizCarSv.PartOrder.cs:756 Ser_Part_OrderCreate` (18 trường header).
+/// </summary>
+public sealed class SupplierPartOrder
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+
+    public string OrderNo { get; set; } = "";
+    /// <summary>ORDERNOUSER — số đơn do NGƯỜI DÙNG đặt, khác số hệ thống sinh.</summary>
+    public string? OrderNoUser { get; set; }
+    public DateTime? CreateDate { get; set; }
+    public string? DealerCode { get; set; }
+
+    /// <summary>
+    /// 🔴 STATUS — **BỘ MÃ TRỘN**: cột này chứa CẢ mã SỐ lẫn mã CHỮ. Nguồn
+    /// (`Ser_Part_OrderGet_StatusList`, `PartOrder.cs:2614-2623`) ánh xạ:
+    ///   `'1'` Mới tạo · `'CONF'` Xác nhận · `'2'` Hàng đang về · `'3'` Hoàn thành
+    /// ⚠️ Chỉ **một** mã chữ (`CONF`) xen giữa ba mã số — dấu vết một đợt đổi sang mã chữ làm DỞ DANG.
+    /// Bản CHẾT `..._StatusList01` có bộ chữ đầy đủ (`CREA/CONF/REJ/FINS/CANC`) nhưng WS **không gọi**.
+    /// ⚠️ Nguồn **KHÔNG có nhánh ELSE** ⇒ mã ngoài bốn giá trị trên cho ra **NULL**, không phải chuỗi rỗng.
+    /// </summary>
+    public string? Status { get; set; }
+
+    public DateTime? ReceivePartDate { get; set; }
+    public DateTime? SendDate { get; set; }
+    public string? SupplierID { get; set; }
+    public string? UserCreate { get; set; }
+    public string? UserApproved { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? TypeOrder { get; set; }
+    public string? HTCConfirm { get; set; }
+    /// <summary>PARTIALSHIPMENT — cho phép giao HÀNG TỪNG PHẦN hay không.</summary>
+    public string? PartialShipment { get; set; }
+    public string? TypeTransport { get; set; }
+    public string? VIN { get; set; }
+    public string? ConfirmNo { get; set; }
+    /// <summary>CUSCHARGES — đơn vị chịu phí (nguồn ghi chú "Đơn vị chịu phí Issue").</summary>
+    public string? CusCharges { get; set; }
+
+    /// <summary>
+    /// 🔴 #298 ISACTIVE — **cờ XOÁ MỀM**, port #287 THIẾU HẲN.
+    /// `Ser_Part_OrderCreate` ghi thẳng `= Constants.Flag.Active` (`PartOrder.cs:944`), và hàm LIVE
+    /// `Ser_Part_OrderGet` lọc `and si.IsActive = '1'` ở **BA** chỗ (temp-table lọc, `#tblTemp`, và bản
+    /// `_StatusList`). Thiếu cột này ⇒ danh sách trả về **CẢ đơn đã xoá**.
+    /// ⚠️ `IsActive` **KHÁC** `Status`: `Status` là bước nghiệp vụ (1/CONF/2/3), `IsActive` là còn/đã xoá.
+    /// Nguồn giữ CẢ HAI trên cùng bảng (luật `C0-quingentesimusquartus`).
+    /// </summary>
+    public string FlagActive { get; set; } = "1";
+
+    // 🔴 #298 `TblSer_Part_Order.NewStatus` là **HẰNG CHẾT** — KHÔNG port thành cột.
+    //   Chứng minh bằng cấu trúc, không phải phỏng đoán: mọi câu SELECT sinh ra nó đều viết
+    //   `select si.* ... case ... end as NewStatus`. Nếu bảng THẬT có cột `NewStatus` thì `si.*` đã trả
+    //   nó rồi ⇒ alias trùng tên, DataTable dựng lên sẽ vỡ. Vậy nó **chỉ là nhãn tính lúc đọc**.
+    //   ⚠️ Và nhãn đó **KHÔNG THỐNG NHẤT** — ba bảng mã khác nhau cho CÙNG cột `Status`:
+    //     (a) sau khi TẠO (`PartOrder.cs:958`):  1=Mới tạo · 2=**Đã gửi** · 3=**Đã duyệt**
+    //     (b) `_StatusList01` (CHẾT, :2286):     CREA/CONF/REJ/FINS/CANC
+    //     (c) LIVE `_StatusList` (:2612):        1=Mới tạo · CONF=Xác nhận · 2=**Hàng đang về** · 3=**Hoàn thành**
+    //   (a) và (c) **mâu thuẫn**: cùng mã '2'/'3' mà nghĩa khác hẳn. #287 đã lấy (c) — giữ nguyên vì đó là
+    //   bảng LIVE của màn danh sách; ghi lại (a) để ai đọc log sau khi TẠO không tưởng là port sai.
+
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1114 §12 — nguồn `Ser_Part_OrderCreate` (PartOrder.cs:756) ghi `LogLUDateTime`/`LogLUBy`
+    /// (= strPartnerUserCode) trên header — port cũ chưa có cột, và dòng chi tiết đang tái dùng nhầm
+    /// `UserCreate` (client) cho `LogLUBy` thay vì actor server.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#287 Dòng của đơn đặt phụ tùng NCC (`Ser_Part_OrderDetail`).</summary>
+public sealed class SupplierPartOrderLine
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long SupplierPartOrderId { get; set; }
+    public string PartCode { get; set; } = "";
+    public string? PartName { get; set; }
+    /// <summary>SL ĐẶT.</summary>
+    public decimal Quantity { get; set; }
+    /// <summary>🔴 SL ĐÃ GIAO — cùng với <see cref="Quantity"/> **SINH RA** trạng thái giao hàng,
+    /// xem chú thích ở endpoint (trạng thái đó KHÔNG lưu thành cột).</summary>
+    public decimal DeliveryQuantity { get; set; }
+    /// <summary>⚠️ `Price`/`Amount` **KHÔNG có trong `Ser_Part_OrderDetail`** — là phát minh của port cũ.
+    /// Tiền thật của nguồn tính từ `Cost` + `VAT` (xem dưới). Giữ hai cột này để không vỡ client cũ.</summary>
+    public decimal Price { get; set; }
+    public decimal Amount { get; set; }
+    public string? Note { get; set; }
+
+    // ===== 🔴 #298 CỘT THẬT CỦA `Ser_Part_OrderDetail` MÀ PORT #287 THIẾU =====
+    // ⚠️ Nguồn cột KHÔNG lấy được từ `TblSer_Part_OrderDetail` (DbDefine): lớp hằng đó **THIẾU 6 tên**
+    //   (`MIP`/`OO`/`BO`/`OH`/`SOQ`/`ICC`) mà `Ser_Part_OrderDetailCreate` (`PartOrder.cs:664-720`) ghi thật.
+    //   ⇒ **DbDefine KHÔNG phải danh sách cột đầy đủ** — phải đối chiếu hàm Create, y như bài học POCO ở #236.
+
+    /// <summary>PARTID — khoá kỹ thuật của phụ tùng; nguồn join `Ser_Mst_Part` **theo PartID**,
+    /// không theo `PartCode` (PartCode chỉ là cột enrich `p.PartCode`).</summary>
+    public string? PartID { get; set; }
+
+    public decimal? Factor { get; set; }        // hệ số
+    public decimal? Cost { get; set; }          // 🔴 ĐƠN GIÁ THẬT dùng để tính tiền (KHÔNG phải Price)
+    public decimal? VAT { get; set; }           // % VAT
+
+    /// <summary>🔴 DISCOUNT — nguồn **ghi cột này nhưng KHÔNG dùng nó ở bất kỳ công thức tiền nào**:
+    /// `BeforeTax = Cost*Quantity` · `AfterTax = Cost*Quantity*(100+VAT)/100` · `Amount = Sum(AfterTax)`.
+    /// Chiết khấu **không được trừ**. Đây là hành vi của nguồn, không phải thiếu sót của port.</summary>
+    public decimal? Discount { get; set; }
+
+    public string? Model { get; set; }
+    public string? HTCConfirm { get; set; }
+    public DateTime? LastDateDelivery { get; set; }   // lần giao gần nhất
+
+    // --- 6 mã KẾ HOẠCH PHỤ TÙNG, chỉ có trong hàm Create (DbDefine không khai) ---
+    public decimal? MIP { get; set; }
+    public decimal? OO { get; set; }
+    public decimal? BO { get; set; }
+    public decimal? OH { get; set; }
+    public decimal? SOQ { get; set; }
+    public decimal? ICC { get; set; }
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    // 🔴 #298 HAI HẰNG CHẾT nữa trong `TblSer_Part_OrderDetail` — KHÔNG port thành cột:
+    //   `PendingDeliveryQty` : nguồn TÍNH lúc đọc (:2044) — `DeliveryQuantity is null` ⇒ lấy trọn `Quantity`;
+
+    //                          `Quantity-DeliveryQuantity <= 0` ⇒ 0; còn lại ⇒ hiệu. (Kẹp sàn 0, không âm.)
+    //   `OrderQuantity`      : mọi chỗ đọc đều viết `0 OrderQuantity` (hằng số 0, :3433) ⇒ chưa từng dùng.
+}
+
+/// <summary>
+/// 🔴 #290 CẤU HÌNH GỬI EMAIL TỰ ĐỘNG — `Email_ConfigSendAuto` (`BizCarSv.SendMail.cs:1124`).
+/// Năm `[WebMethod]` sống: Create · Update · Delete · Get · Cancel (`WSCarSv.asmx.cs:21500-21827`).
+/// Cột lấy từ **chữ ký `Email_ConfigSendAuto_Create`** (11 trường nghiệp vụ), không lấy theo lưới.
+/// </summary>
+/// <summary>🔴 #433 CẤU HÌNH MÁY CHỦ THƯ (`Email_Config`) — **KHÁC** <see cref="EmailConfigSendAuto"/>
+/// (cái kia là lịch gửi tự động). Đây là thông số SMTP: địa chỉ, cổng, tài khoản, mật khẩu, SSL, thời gian chờ.</summary>
+public sealed class EmailServerConfig
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`IDCONFIG` — khoá do nguồn sinh khi tạo.</summary>
+    public string IdConfig { get; set; } = "";
+    /// <summary>⚠️ Nguồn ĐỌC có lọc đại lý (`Email_Config_Get(SystemGlobal.strDealerCode, …)`, thêm 2012)
+    /// nhưng khi GHI lại truyền **chuỗi rỗng** ⇒ bản ghi tạo ra không mang mã đại lý.</summary>
+    public string? DealerCode { get; set; }
+    public string? MailServerAddress { get; set; }
+    public string? MailServerUser { get; set; }
+    /// <summary>🔴 Nguồn lưu **NGUYÊN VĂN**, không băm không mã hoá.</summary>
+    public string? MailServerPassword { get; set; }
+    public string? Port { get; set; }
+    public string? TimeOut { get; set; }
+    /// <summary>⚠️ Nguồn lưu chuỗi `"True"`/`"False"` (từ `Convert.ToString(chk.Checked)`), **không** phải
+    /// `"1"`/`"0"` như quy ước cờ của hệ; lúc đọc lại so `== "False"`.</summary>
+    public string? EnableSSL { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+public sealed class EmailConfigSendAuto
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+
+    /// <summary>AUTOTIME — GIỜ gửi trong ngày. Nguồn hiển thị `right(AutoTime, 11)` ⇒ cột lưu chuỗi dài hơn
+    /// phần hiển thị; port giữ nguyên chuỗi, KHÔNG tự cắt.</summary>
+    public string? AutoTime { get; set; }
+    public DateTime? StartDate { get; set; }
+    public DateTime? EndDate { get; set; }
+    public string? Description { get; set; }
+
+    /// <summary>SENDMODE — `1` Gửi một lần · `2` Gửi hàng ngày · `3` Gửi hàng tuần.</summary>
+    public string? SendMode { get; set; }
+
+    /// <summary>ISACTIVE — `0` Không kích hoạt · `1` Kích hoạt.</summary>
+    public string? IsActive { get; set; }
+
+    /// <summary>
+    /// TYPEEMAIL — loại email tự động: `1`..`7` (xem bảng nhãn ở endpoint).
+    /// ⚠️ Màn LỊCH SỬ GỬI còn có mã `0` với **nhãn RỖNG** (`then N''`) và gọi mã `3` là "Chúc mừng SN"
+    /// thay vì "Mừng sinh nhật" — hai bảng nhãn khác nhau cho cùng cột (luật nhãn-theo-màn #286).
+    /// </summary>
+    public string? TypeEmail { get; set; }
+
+    public DateTime? ConfigDate { get; set; }
+    /// <summary>AUTODATE / AUTODAY — NGÀY trong tháng và THỨ trong tuần để chạy; đi kèm `SendMode`.</summary>
+    public string? AutoDate { get; set; }
+    public string? AutoDay { get; set; }
+
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Chia sẻ phụ tùng giữa đại lý (đại lý đăng PT tồn sẵn để chia sẻ) — port 1:1 FrmSharePart (TblSPSharePart, TCMotor).</summary>
 public sealed class SharePart
 {
@@ -14653,15 +17207,48 @@ public sealed class SharePart
     public string? PartName { get; set; }
     public string? Unit { get; set; }
     public decimal InStock { get; set; }        // INSTOCKQUANTITY: tồn hiện tại
-    public decimal QuantityShare { get; set; }  // SL sẵn sàng chia sẻ
+    public decimal QuantityShare { get; set; }  // SL sẵn sàng chia sẻ (đã KẸP — xem #267)
     public string? Remark { get; set; }
     public string Status { get; set; } = "Open"; // Open -> Closed
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== 🔴 #267: cột/luật nguồn `SP_SharePart` + `SP_SharePart_Detail` mà port cũ THIẾU =====
+    // Nguồn: `BizCarSv.PartOrder.cs:4702 SP_SharePartCreate` (md5 `9483ca4a` — KHỚP 2 máy)
+    //      + `Views/PartOrder/FrmSharePart.cs:222 btnShare_Click` (md5 `0b8022ef` — KHỚP 2 máy).
+
+    /// <summary>MINQUANTITY — **tồn tối thiểu** của phụ tùng, CHỐT lúc đăng chia sẻ.
+    /// Đây là chân kia của công thức trần chia sẻ: `SoLuongDcChiaSe = InStock − MinQuantity`.</summary>
+    public decimal MinQuantity { get; set; }
+
+    /// <summary>🔴 SL đại lý **YÊU CẦU** trước khi bị kẹp. Nguồn ghi đè thẳng `QuantityShare` bằng
+    /// `SoLuongChiaSeThucTe` (`UPDATE … SET QuantityShare = t.SoLuongChiaSeThucTe`) nên **mất dấu số gốc**;
+    /// port giữ lại số gốc để đối soát được vì sao SL lưu khác SL gửi.</summary>
+    public decimal QuantityShareRequested { get; set; }
+
+    /// <summary>🔴 FLAGLATEST — nguồn ghi `Flag.Active` khi tạo. Cột này **KHÔNG có trong lớp hằng**
+    /// `TblSPSharePart` (DbDefine.cs:283-292) — chỉ lộ ra ở câu INSERT. Lại một bằng chứng: lớp `Tbl*`
+    /// KHÔNG phải danh sách cột đầy đủ, câu ghi mới là nguồn sự thật.</summary>
+    public string FlagLatest { get; set; } = "1";
+
+    public string? Note { get; set; }              // NOTE — ghi chú ở MASTER (TblSPSharePart.Note)
+    public string? CreatedBy { get; set; }         // CREATEDBY
+    /// <summary>#1548 §12 — `CreatedDate` của nguồn `SP_SharePart` (INSERT `SP_SharePartCreate`,
+    /// `BizCarSv.PartOrder.cs:4702`). Nguồn ghi `CreatedDate = strTDate` (thời điểm hiện tại), **KHÔNG**
+    /// dùng tham số `strCreatedDate` client gửi (tham số đó bị LỜ — xem #832). Port cũ chỉ có `CreatedAt`
+    /// (cột quy ước Mini) mà thiếu hẳn cột `CreatedDate` nguồn dùng thật.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thông báo kỹ thuật (bulletin) — số/nội dung/PT-DV liên quan/hết hạn/file — port 1:1 FrmBulletinHTCCreate (Tbl_Blt_Bulletin, TCMotor).</summary>
 public sealed class Bulletin
 {
+    /// <summary>🔴 #377 §12 FILEATTACHMENT — **nội dung/tên tệp đính kèm**, KHÁC
+    /// <see cref="FileNameAttachment"/> (chỉ là tên hiển thị). Nguồn trả cột này bằng một truy vấn
+    /// con **đóng cứng số thông báo `'TEST201911'`** ⇒ mọi dòng nhận tệp của **một bản ghi TEST**.
+    /// Xem `/api/bulletins/by-vin`.</summary>
+    public string? FileAttachment { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string BulletinNo { get; set; } = "";
@@ -14687,6 +17274,15 @@ public sealed class Bulletin
 
     /// <summary>Người phát hành bản tin (USERCREATE).</summary>
     public string? UserCreate { get; set; }
+
+    // #1057 §12 — `Blt_BulletinCreate_20210224` (BizCarSv.Bulletin.cs:1617, LIVE qua WS gateway) ghi VÔ
+    // ĐIỀU KIỆN 4 cột nhật ký `CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy` — KHÁC `CreateDate` ở trên
+    // (ngày PHÁT HÀNH bản tin, do client truyền). `Blt_BulletinUpdate_20210224` KHÔNG ghi lại 4 cột này.
+    /// <summary>`Btl_Bulletin.CreatedDate` — mốc ghi bản ghi (server, `strTDate`), KHÁC `CreateDate` (ngày phát hành).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
@@ -14770,6 +17366,8 @@ public sealed class PartQuote
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    public DateTime? CreatedDate { get; set; }
 }
 
 /// <summary>Dòng báo giá phụ tùng (detail) — port 1:1 FrmPartQuotation grid, TCMotor.</summary>
@@ -14799,7 +17397,20 @@ public sealed class PartQuoteLine
 
     public string? Note { get; set; }
 
-    /// <summary>Thành tiền TRƯỚC thuế, đã nhân hệ số (nguồn trả cột AmountBeforeVAT).</summary>
+    /// <summary>
+    /// Thành tiền TRƯỚC thuế, đã nhân hệ số.
+    /// 🔴 #313 PHÂN LOẠI: nguồn **KHÔNG lưu** hai cột tiền này. `Ser_Inv_QuotePartItems` chỉ có
+    /// `Quantity`/`Price`/`Factor`/`VAT`; `Amount` và `AmountBeforeVAT` được **TÍNH lúc ĐỌC**
+    /// (`BizCarSv.Inventory.Quote.cs:2070-2071`, Issue 813):
+    ///   `Amount          = Qty*Price*Factor + Qty*Price*0.01*VAT*Factor`
+    ///   `AmountBeforeVAT = Qty*Price*Factor`
+    /// Đã kiểm: **không có** chỗ nào ghi hai tên này (`Rows[0][…]` / `strFN` / `alColumnEffective`).
+    ///
+    /// MiniHTC tính lúc GHI rồi LƯU lại. Khác #312 ở chỗ **client không gửi được** (DTO không nhận),
+    /// nên không có lỗ hổng "gửi gì cũng thành tiền". Rủi ro còn lại là **LỆCH PHA**: nếu sau này có
+    /// đường sửa `Quantity`/`UnitPrice`/`Factor`/`Vat` mà quên tính lại thì hai cột này ôi.
+    /// ⇒ Endpoint đọc nay **TÍNH LẠI** như nguồn và trả kèm giá trị lưu để đối chiếu.
+    /// </summary>
     public decimal AmountBeforeVat { get; set; }
 
     public decimal Amount { get; set; }
@@ -14819,6 +17430,11 @@ public sealed class InsContract
     public decimal PaymentLimit { get; set; }
     public string? TypePayment { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1148 §12 — cùng nguồn `Ser_InsuranceContractCreate`/`_Update` (Service.cs:14376/14756, có strIsActive)
+    // đã xác nhận ghi LogLUDateTime/LogLUBy ở entity song song `SerInsuranceContract` (#1126) — bảng này
+    // (port cũ hơn, thiếu cả DealerCode) chưa từng có 2 cột nhật ký.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -14833,8 +17449,66 @@ public sealed class DealerServiceOption
 }
 
 /// <summary>Loại khách hàng dịch vụ (hệ số giá, cá nhân/tổ chức) — port 1:1 FrmCusTypeCreate (Ser_CusType, TCMotor).</summary>
+/// <summary>🔴 #734 Hệ số giá phụ tùng theo loại khách (`Ser_Mst_CusPartFactor`).
+/// Nguồn dùng `COALESCE(cpf.Factor, ct.CusFactor, 1)` ⇒ **ba tầng dự phòng**, tầng cuối là `1`.</summary>
+/// <summary>🔴 #735 Hệ số giá **dịch vụ** theo loại khách (`Ser_Mst_CusServiceFactor`).
+/// ⚠️ Nguồn tra bảng này ở **CSDL TRUNG TÂM** (`[@strDBName_CommonCenter].[dbo].`), khác
+/// <see cref="CusPartFactor"/> vốn ở CSDL hiện hành.</summary>
+/// <summary>🔴 #738 Vị trí kho (`Ser_Mst_Location`) — trả nợ #708.
+/// Khoá nghiệp vụ là **cặp** `(DealerCode, LocationID)`; nguồn xoá có **ba** guard ràng buộc tham chiếu
+/// (tồn kho · phiếu nhập · phiếu xuất) — hàm xoá có guard tốt nhất trong tầng biz này.</summary>
+public sealed class SerMstLocation
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? DealerCode { get; set; }
+    public string? LocationID { get; set; }
+    public string? LocationCode { get; set; }
+    public string? LocationName { get; set; }
+    public string? StockNo { get; set; }
+    public string IsActive { get; set; } = "1";
+
+    // ===== 🔴 #937 §12 companion-scan (#400): `Ser_Mst_Location_Create`/`_Update` ghi ba cột này,
+    // port cũ (#848) bỏ sót cả ba — thêm cho khớp Create/Update nguồn. =====
+    public string? LocationHight { get; set; }
+    public string? LocationSurface { get; set; }
+    public string? LocationType { get; set; }
+
+    // #1070 §12 — `Ser_Mst_Location_Create` (BizCarSv.Master.cs:6851, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // nhật ký; `Ser_Mst_Location_Update` (:7301) chỉ ghi lại `LogLUDateTime`/`LogLUBy` (không có CreatedDate/
+    // CreatedBy — đúng nguồn, cột Created chỉ set MỘT LẦN lúc tạo).
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class CusServiceFactor
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? SerID { get; set; }
+    public string? CusTypeID { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal? Factor { get; set; }
+}
+
+public sealed class CusPartFactor
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string? PartID { get; set; }
+    public string? CusTypeID { get; set; }
+    public string? DealerCode { get; set; }
+    public decimal? Factor { get; set; }
+}
+
 public sealed class CustomerType
 {
+    /// <summary>🔴 #715 §12 `Ser_MST_CustomerType.DealerCode` — `CheckExistCusType` tra danh mục theo BỘ BA
+    /// (`CusTypeName`, `DealerCode`, `IsActive`); bản port thiếu cột này nên guard mất một chiều phạm vi.</summary>
+    public string? DealerCode { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string CusTypeCode { get; set; } = "";
@@ -14854,6 +17528,23 @@ public sealed class CustomerGroup
     public string? GroupName { get; set; }
     public string? Description { get; set; }
     public string FlagActive { get; set; } = "1";
+
+    // ===== #1077 §12 — `SerCustomerGroupCreate` (BizCarSv.Service.cs:8457) nhận 9 tham số, port cũ chỉ
+    // giữ 3 (GroupNo/GroupName/Description) — thiếu HẲN 5 cột nghiệp vụ + DealerCode.
+    public string? Address { get; set; }
+    public string? Email { get; set; }
+    public string? TelePhone { get; set; }
+    public string? Fax { get; set; }
+    public string? TaxCode { get; set; }
+    public string? DealerCode { get; set; }
+    /// <summary>🔴 HẰNG≠GIÁ TRỊ / hành vi lạ ĐÃ XÁC NHẬN: `SerCustomerGroupUpdate` (:8289) GHI ĐÈ
+    /// `CreatedDate`/`CreatedBy` bằng thời điểm SỬA (không chỉ set lúc tạo) — giữ ĐÚNG hành vi này,
+    /// không "sửa cho đúng nghĩa" dù tên cột nói khác.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -14880,7 +17571,33 @@ public sealed class Cavity
     public string? StartUseDate { get; set; }       // port 1:1 Cavity.StartUseDate (ngày bắt đầu sử dụng khoang — FrmCavityCreate)
     public string? FinishUseDate { get; set; }      // port 1:1 Cavity.FinishUseDate
     public string? Note { get; set; }
-    public string FlagActive { get; set; } = "1";
+    public string FlagActive { get; set; } = "1";   // ISACTIVE của nguồn (đặt tên theo lệ port)
+
+    // ===== 🔴 #296 parity `TblSerCavity` (DbDefine.cs:1621-1632): 5 cột port cũ THIẾU =====
+    // 🆕 Tìm qua sweep "lớp Tbl* có CẢ `Status` LẪN `IsActive`" (sinh từ #295) — 6 lớp, đây là một.
+    public string? DealerCode { get; set; }
+
+    /// <summary>CAVITYTYPE — loại khoang theo nguồn.
+    /// ⚠️ Port cũ có `CompartmentType` (từ `Tbl_Mst_Compartment`) — **KHÁC cột này**; giữ cả hai.</summary>
+    public string? CavityType { get; set; }
+
+    /// <summary>STATUS — trạng thái nghiệp vụ của khoang, **KHÁC `FlagActive`** (cờ bật/tắt bản ghi).
+    /// Nguồn giữ CẢ HAI (luật `C0-quingentesimusquartus`).</summary>
+    public string? Status { get; set; }
+
+
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    // ===== #1047 §12 — `Ser_CavityCreate` (BizCarSv.Service.cs:13548) ghi VÔ ĐIỀU KIỆN cả 4 cột
+    // CreatedDate/CreatedBy/LogLUDateTime/LogLUBy lúc TẠO (cùng giá trị strTDate/strPartnerUserCode) —
+    // port cũ chỉ wire LogLUDateTime/LogLUBy ở nhánh SỬA (`Ser_CavityUpdate`), thiếu hẳn cột Created* +
+    // thiếu LogLU* ở nhánh TẠO. Đúng mẫu #715/#716 đã vá cho ServiceCustomer/ServiceCar.
+    /// <summary>`Ser_Cavity.CreatedDate` (`strTDate` lúc tạo).</summary>
+    public DateTime? CreatedDate { get; set; }
+    /// <summary>`Ser_Cavity.CreatedBy` (`strPartnerUserCode` lúc tạo).</summary>
+    public string? CreatedBy { get; set; }
+
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -14894,6 +17611,80 @@ public sealed class MaintenanceLevelMst
     public string? Note { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>#541 Danh mục **LOẠI GIA HẠN BẢO HÀNH** (`Ser_MST_ROWarrantyRenewalCategory`).
+/// Chính là nửa còn lại của khoá upsert ở `WarrantyExtensionDateLog.ExtCategoryCode` (`WrtReneCateCode`)
+/// — trước nay MiniHTC dùng mã đó **mà không có danh mục** để đối chiếu.</summary>
+public sealed class WarrantyRenewalCategoryMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string WrtReneCateCode { get; set; } = "";
+    public string? WrtReneCateName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1098 §12 — nguồn `Ser_MST_ROWarrantyRenewalCategory_Save` (AssignmentOfWork.cs:9081) chỉ ghi
+    /// `LogLUDateTime`/`LogLUBy` ở CẢ Create lẫn Update (bảng KHÔNG có CreatedDate/CreatedBy — khuôn 2-cột
+    /// như `Mst_Param` #1072).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#539 ĐỊNH MỨC công phát sinh **theo loại bảo hành chi tiết** (`Ser_MST_ROWorkArisingQuota`).
+/// Khoá nghiệp vụ = (`ROWArisCode`, `ROWTypeDtlCode`). Nguồn kiểm `ROWTypeDtlCode` phải có trong
+/// `Ser_MST_ROWarrantyType` — nhưng **chỉ ở nhánh THÊM MỚI** (xem chú thích endpoint).</summary>
+public sealed class RoWorkArisingQuotaMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ROWArisCode { get; set; } = "";
+    public string? ROWArisName { get; set; }
+    /// <summary>Mã loại bảo hành CHI TIẾT — khoá ngoại tới `Ser_MST_ROWarrantyType.ROWTypeDtlCode`.</summary>
+    public string ROWTypeDtlCode { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1093 §12 — nguồn `Ser_MST_ROWorkArisingQuota_Save` (AssignmentOfWork.cs:7166) ghi đủ 4 cột
+    /// nhật ký khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy (CreatedDate/CreatedBy bị COMMENT trong
+    /// nguồn — cùng khuôn với `ExtraWorkMst` #1092, hai bảng chị em cùng cụm ROWorkArising).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#538 Phụ tùng phát sinh **của CommonCenter** (`Ser_MST_PartExtra`) — **KHÁC** `ExtraPartMst`
+/// (vốn port từ `Tbl_Mst_Extra_Parts_Mng`). Hai bảng khác nhau, cùng nói về "phụ tùng phát sinh":
+/// bảng này có thêm `ROMSID` (khoá bộ định mức) và dùng tên cột `VieName`/`TotalLimit`.</summary>
+public sealed class PartExtraMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Khoá bộ định mức — nguồn cho lọc `t.ROMSID`; `ExtraPartMst` **không có** cột này.</summary>
+    public string? ROMSID { get; set; }
+    public string PartCode { get; set; } = "";
+    /// <summary>Tên tiếng Việt — nguồn đặt là `VieName` (không phải `PartName`).</summary>
+    public string? VieName { get; set; }
+    /// <summary>#1547 §12 — `EngName` (tên tiếng Anh). Nguồn `Ser_MST_PartExtra_Save` (AssignmentOfWork.cs:6616)
+    /// GHI cột này ở CẢ hai nhánh nhưng LUÔN gán `DBNull.Value` (`dr["EngName"] = DBNull.Value;`) ⇒ cột
+    /// tồn tại trong bảng nhưng nguồn KHÔNG BAO GIỜ ghi giá trị thật (luôn NULL). Port 1:1: giữ cột + luôn null.</summary>
+    public string? EngName { get; set; }
+    public string? Unit { get; set; }
+    public decimal? Price { get; set; }
+    /// <summary>Giới hạn tổng — nguồn đặt là `TotalLimit` (không phải `MaxQuantity`).</summary>
+    public decimal? TotalLimit { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1094 §12 — nguồn `Ser_MST_PartExtra_Save` (AssignmentOfWork.cs:6540) ghi đủ 4 cột nhật ký
+    /// khi TẠO; nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy (CreatedDate/CreatedBy bị COMMENT — cùng khuôn
+    /// với cả cụm chép khối #785/#786: `ExtraWorkMst` #1092, `RoWorkArisingQuotaMst` #1093).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Phụ tùng phát sinh (mã/tên/ĐVT/giá/SL tối đa) — port 1:1 FrmMstExtraPartsMng (Tbl_Mst_Extra_Parts_Mng, TCMotor).</summary>
@@ -14922,6 +17713,14 @@ public sealed class ExtraWorkMst
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1092 §12 — nguồn `Ser_MST_ROWorkArising_Save` (AssignmentOfWork.cs:5948) ghi đủ 4 cột nhật ký
+    /// khi TẠO (dòng mới); khi SỬA (dòng đã tồn tại) hai dòng gán CreatedDate/CreatedBy bị chính nguồn COMMENT
+    /// (`//dr["CreatedDate"] = …`) — chỉ LogLUDateTime/LogLUBy active ở nhánh sửa.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>⛔ #380 DEPRECATED — SONG SINH của <see cref="SerMstSupplier"/> (cùng bảng nguồn Ser_MST_Supplier / TblSerMstSupplier, cùng FrmMstSupplierCreate).
@@ -14940,6 +17739,42 @@ public sealed class ServiceSupplier
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1189 §12 — ServiceSupplier la ban port THU HAI cua cung man nguon FrmMstSupplierCreate (trung
+    // SerMstSupplier/#1073). SerSupplierCreate (BizCarSv.Inventory.Master.cs:259+103-107) ghi du 4 cot
+    // nhat ky khi tao; SerSupplierUpdate (:451) chi ghi LogLUDateTime/LogLUBy khi sua.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#1506 Danh mục KHO phụ tùng dịch vụ (`Ser_Inv_Stock`) — port 1:1 `SerStockGet`
+/// (`BizCarSv.Inventory.Master.cs:1483`, LIVE) + `SerStockCreate`/`SerStockUpdate` (:1779/:1620).
+/// Bảng master kho CHƯA từng có entity/route trong Mini (grep `Ser_Inv_Stock` = 0).</summary>
+public sealed class ServiceStock
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string StockNo { get; set; } = "";
+    public string? StockName { get; set; }
+    public string? Contact { get; set; }
+    public string? Address { get; set; }
+    public string? Email { get; set; }
+    public string? TelePhone { get; set; }
+    public string? Fax { get; set; }
+    public string? Mobi { get; set; }
+    public string? Manager { get; set; }
+    public string? Description { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagActive { get; set; } = "1";   // IsActive
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1506 §12 — `SerStockCreate` ghi đủ 4 cột nhật ký khi TẠO; `SerStockUpdate` chỉ ghi LogLUDateTime/LogLUBy.
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Thời hạn bảo hành theo model (BH đại lý/HTV, km giới hạn, kỳ lưu kho) — port 1:1 FrmMngMst_WarrantyPeriod (Tbl_Mst_WarrantyPeriod, TCMotor).</summary>
@@ -15045,6 +17880,10 @@ public sealed class DelayTransport
 /// mã model + tên, dùng làm danh mục model tham chiếu cho các màn dịch vụ khác.</summary>
 public sealed class CarModelStd
 {
+    /// <summary>🔴 #727 §12 `Mst_CarModelStd.Remark` — `_Add` và `_Update` đều ghi cột này;
+    /// ⚠️ `_Update` còn **VIẾT HOA** nó qua `StandardizeParam` trong khi `_Add` chỉ `.Trim()`.</summary>
+    public string? Remark { get; set; }
+
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string ModelCode { get; set; } = "";
@@ -15071,7 +17910,199 @@ public sealed class SerFilePathVideo
     public string? FilePathAvatar { get; set; }
     public int IdxView { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #1055 §12 — `Ser_Mst_FilePathVideo_Add`/`_Update` (Tab/BizCarSv.Tab.cs:2172/2431) ghi `Remark`
+    // (allow-list `strFt_Cols_Upd` ở nhánh sửa) + `LogLUDateTime`/`LogLUBy` (vô điều kiện cả hai nhánh).
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>#627 Master **LOẠI đầu mục kiểm tra** (`Ser_Mst_ReceptionFAudType`) — nửa còn thiếu của cặp
+/// master ở #526. Nguồn: `BizCarSv.Tab.cs:14738 Ser_Mst_ReceptionFAudType_GetX`.
+/// 🔴 **HẰNG SAI CHÍNH TẢ — GIỮ NGUYÊN VĂN**: tên cột thật trong `DbDefine.cs` là **`RECEPTIOND…`**
+/// (chữ **D**, không phải **F**): `RECEPTIONDAUDTYPE` · `RECEPTIONDAUDTYPENAME` · và ở bảng anh em
+/// `RECEPTIONDAUDNAME`. Trong khi bảng **giao dịch** `TblSer_ReceptionFDtl` lại dùng `RECEPTIONFAUDTYPE`
+/// (chữ **F**) cho **cùng một cột logic**. Đếm trong chính `DbDefine.cs`: `RECEPTIOND*` = **4**,
+/// `RECEPTIONFAUDTYPE` = **1**. ⇒ Hai master sai chính tả, bảng chi tiết viết đúng. **CẤM "sửa cho đúng".**</summary>
+/// <summary>#631 File đính kèm của LỆNH SỬA CHỮA theo **loại file** (`Ser_ROAttachFile`).
+/// ⚠️ **KHÁC** `Ser_ROAttachment` (#622 — ảnh, khoá theo lệnh + tên ảnh). Bảng này khoá hợp
+/// (`ROID`, `ROFileType`) và lưu **đường dẫn + tên file**, không lưu blob.
+/// Cột nguồn (`DbDefine.cs:343`): `ROID` · `ROFILETYPE` · `ROFILEPATH` · `ROFILENAME` ·
+/// `LOGLUDATETIME` · `LOGLUBY` — lần này **không** có hằng sai chính tả (đối chứng với #627).</summary>
+/// <summary>#632 MASTER file đính kèm mẫu của phiếu tiếp nhận (`Ser_Mst_ReceptionAttachFile`),
+/// khoá `ReceptionAttachFileNo`. ⚠️ **KHÁC** <see cref="ReceptionAttachFile"/> (file thật của TỪNG phiếu).
+/// Cột nguồn (`DbDefine.cs`): `ReceptionAttachFileNo` · `FilePath` · `FileName` · `CreatedDateTime` ·
+/// `CreatedBy` · `FlagActive` · `LogLUDateTime` · `LogLUBy`.</summary>
+/// <summary>#633 Master **LOẠI khiếu nại** đơn phụ tùng (`Mst_OrderComplainType`), khoá
+/// `OrderComplainType`. Nguồn chỉ có hàm ĐỌC (`Mst_OrderComplainType_Get`) — **không có** Create/Update
+/// trong tầng biz ⇒ danh mục được nuôi thẳng trong DB.</summary>
+/// <summary>#634 Master **HÌNH THỨC GIAO XE** (`Mst_DeliveryForm`), khoá **một cột** `DeliveryFormCode`.
+/// ⚠️ Khác <see cref="DeliveryLocation"/> (`Mst_DeliveryLocation`) — bảng kia khoá **hợp**
+/// (`DeliveryLocationCode`, `DealerCode`), xem #635.
+/// Nguồn chỉ có hàm ĐỌC; `Mst_DeliveryForm_CheckDB` tồn tại nhưng **không ai gọi** (mã chết).</summary>
+public sealed class MstDeliveryForm
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DeliveryFormCode { get; set; } = "";
+    public string? DeliveryFormName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class MstOrderComplainType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderComplainType { get; set; } = "";
+    public string? OrderComplainTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#909 Danh mục LỖI TIẾP NHẬN (`Ser_Mst_ReceptionError`, `TERP.BizCarSv/Tab/BizCarSv.Tab.cs:1425`, LIVE),
+/// khoá `ReceptionErrorCode`. Cột lấy từ `TERP.HTCService.ClientService/Entities/Ser_Mst_ReceptionError.cs`
+/// (khớp `smre.*`). Nguồn chỉ có hàm ĐỌC — không có Create/Update/Delete trong toàn bộ solution ⇒ danh mục
+/// được nuôi thẳng trong DB, giống <see cref="MstOrderComplainType"/>.</summary>
+public sealed class SerReceptionError
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionErrorCode { get; set; } = "";
+    public string? ReceptionErrorName { get; set; }
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#633 Master **LOẠI ẢNH** của khiếu nại (`Mst_OrderComplainImageType`), khoá
+/// `OrderComplainImageType`. 🔴 Cột tên **KHÔNG** đối xứng với bảng anh em: nguồn lọc bằng
+/// `mocit.OrderComplainImage**Name**` (bỏ chữ "Type"), không phải `OrderComplainImageTypeName`.
+/// Giữ **nguyên văn**.</summary>
+public sealed class MstOrderComplainImageType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string OrderComplainImageType { get; set; } = "";
+    /// <summary>Cột nguồn: **`OrderComplainImageName`** — bỏ chữ "Type", khác bảng anh em.</summary>
+    public string? OrderComplainImageName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class ReceptionAttachFileMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionAttachFileNo { get; set; } = "";
+    public string? FilePath { get; set; }
+    public string? FileName { get; set; }
+    public DateTime? CreatedDateTime { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>Nguồn gán cứng `TConst.Flag.Active` = **"1"** lúc tạo, không nhận từ client.</summary>
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class RoAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RONo { get; set; } = "";
+    public string ROFileType { get; set; } = "";
+    public string? ROFilePath { get; set; }
+    public string? ROFileName { get; set; }
+    // #1552 §12 - cot nguon Remark (Ser_ROAttachFile) - port 1:1. Nguon LUON ghi null (input dat null // Remark).
+    // ROID nguon = khoa noi lenh sua chua => da bieu dien bang RONo, KHONG them cot trung.
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+public sealed class ReceptionFAudTypeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Cột DB nguồn: **`RECEPTIONDAUDTYPE`** (sai chính tả, giữ nguyên).</summary>
+    public string ReceptionFAudType { get; set; } = "";
+    /// <summary>Cột DB nguồn: **`RECEPTIONDAUDTYPENAME`**.</summary>
+    public string? ReceptionFAudTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#526 Master **ĐẦU MỤC KIỂM TRA** khi tiếp nhận/giao xe (`Ser_Mst_ReceptionFAudit`).
+/// Nguồn: `BizCarSv.Tab.cs:14946 Ser_Mst_ReceptionFAudit_Get` → thân thật `…_GetX` (`:15070`).
+/// Khoá hợp = (`ReceptionFAudCode`, `ReceptionFAudType`) — nguồn nối bằng **cả hai** cột.</summary>
+public sealed class ReceptionFAuditMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFAudCode { get; set; } = "";
+    public string ReceptionFAudType { get; set; } = "";
+    public string? ReceptionFAudName { get; set; }
+    public string FlagActive { get; set; } = "1";
+    // #1056 §12 — `Ser_Mst_ReceptionFAudit_GetX` (BizCarSv.Tab.cs:15170) trả `smrfa.*` — ĐỦ cả bảng —
+    // nhưng GET của Mini chỉ chiếu 4 cột, bỏ sót IDX/Remark/LogLUDateTime/LogLUBy dù bảng có sẵn.
+    // Bảng nguồn KHÔNG có Add/Update trong TERP.BizCarSv (chỉ Get) — dữ liệu do hệ CmCenter khác nạp,
+    // nên đây là gap ở TẦNG HIỂN THỊ, không phải tầng ghi.
+    public int? Idx { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>#525 TỆP ĐÍNH KÈM phiếu tiếp nhận (`Ser_ReceptionFAttachFile`) — ảnh/tệp chụp lúc nhận xe.
+/// Nguồn: cùng hàm `Ser_ReceptionF_ReceptionX_New20210727`, khối
+/// `#region //// Refine and Check Ser_ReceptionFAttachFile`.</summary>
+public sealed class ReceptionAttachFile
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";
+    /// <summary>Số thứ tự tệp trong phiếu (`FileIndex`, chuẩn hoá `StdParam`).</summary>
+    public string? FileIndex { get; set; }
+    /// <summary>🔴 Nguồn lưu **ĐƯỜNG DẪN**, không lưu nội dung — chuỗi thô, `StdDataInTable` dùng
+    /// mã `""` nên **không chuẩn hoá gì cả** (giữ nguyên khoảng trắng/hoa thường).</summary>
+    public string? ReceptionFilePath { get; set; }
+    public string? ReceptionFileName { get; set; }
+    /// <summary>Loại tệp (`StdParam`).</summary>
+    public string? ReceptionFileType { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>#524 CHI TIẾT phiếu tiếp nhận (`Ser_ReceptionFDtl`) — mỗi dòng là **một đầu mục kiểm tra**
+/// khi nhận xe. Nguồn: `Ser_ReceptionF_ReceptionX_New20210727` (`ZTemp.cs:21199`), khối
+/// `#region //// Refine and Check Ser_ReceptionFDtl` + ba lần `SaveTemp` (Main/WH/Dealer).</summary>
+public sealed class ReceptionDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ReceptionFNo { get; set; } = "";
+    /// <summary>Mã đầu mục kiểm tra — nguồn tra `Ser_Mst_ReceptionFAudit_CheckDB(code, type, exist, active)`.</summary>
+    public string ReceptionFAudCode { get; set; } = "";
+    public string ReceptionFAudType { get; set; } = "";
+    /// <summary>Kết quả kiểm khi TIẾP NHẬN (nguồn chuẩn hoá bằng `StdFlag` ⇒ cờ "1"/"0").</summary>
+    public string? ReceptionAudStatus { get; set; }
+    /// <summary>🔴 Nguồn **tạo cột này rồi KHÔNG BAO GIỜ GÁN** trong hàm tiếp nhận ⇒ luôn rỗng;
+    /// chỉ khâu GIAO XE mới điền. Xem chú thích tại endpoint.</summary>
+    public string? DeliveryAudStatus { get; set; }
+    /// <summary>Trạng thái dòng — nguồn gán cứng `TConst.ReceptionFStatus.Pending` = **"P"**.</summary>
+    public string ReceptionFStatusDtl { get; set; } = "P";
+    public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Ảnh mẫu trên phiếu tiếp nhận-giao xe (Ser_Mst_ModelAudImage — port 1:1 FrmSerMstModelAudImageCreate/Search, TCMotor DMSCarSv/Admin):
@@ -15084,7 +18115,18 @@ public sealed class SerModelAudImage
     public string ModelCode { get; set; } = "";
     public string ReceptionFAudType { get; set; } = "";
     public string? FilePath { get; set; }
+    /// <summary>#1043 §12 — nguồn `Ser_Mst_ModelAudImage_Add`/`_Update` (Tab/BizCarSv.Tab.cs) đều nhận và
+    /// ghi cột này, port cũ chưa từng mô hình hoá.</summary>
+    public string? Remark { get; set; }
+    /// <summary>#1044 §12 — cột `FLAGACTIVE` xác nhận qua entity mirror ở tầng ClientService
+    /// (`Entities/Ser_Mst_ModelAudImage.cs`) — nguồn `_Update` CÓ THỂ bật/tắt (guard theo danh sách cột
+    /// được phép sửa `strFt_Cols_Upd`), port cũ hoàn toàn chưa mô hình hoá cột này (chỉ hard-delete).</summary>
+    public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    /// <summary>#1208 §12 — nguồn `Ser_Mst_ModelAudImage_Add`/`_Update` (Tab/BizCarSv.Tab.cs) ghi cả hai
+    /// cột này VÔ ĐIỀU KIỆN (cả tạo lẫn sửa) — port cũ chưa từng mô hình hoá.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master code/name/status generic — port 1:1 loạt Frm masters (Bank/Color/DealerType/CarCancelType/...).</summary>
@@ -15207,6 +18249,18 @@ public sealed class ServiceInsurance
     public string? Description { get; set; }
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>🔴 #1008 §12 — nguồn `checkCreateExistSerIns`/`checkExistSerIns` (`Service.cs:8532/8371`)
+    /// khoá trùng theo BỘ ĐÔI `(InsNo, DealerCode)`, KHÔNG phải `InsNo` toàn cục — port cũ chưa có cột này
+    /// nên chặn trùng SAI PHẠM VI (một mã hãng BH bị khoá cho MỌI đại lý thay vì chỉ trong cùng đại lý).</summary>
+    public string? DealerCode { get; set; }
+
+    /// <summary>#1078 §12 — nguồn `SerInsuranceCreate`/`SerInsuranceUpdate` (`Service.cs:9308/8371`) ghi cả
+    /// bốn cột nhật ký (`CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy`) — port cũ chỉ có `CreatedAt` chung.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -15345,33 +18399,6 @@ public sealed class SerPartOrderDetail
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>#413 DÒNG CÔNG VIỆC của báo cáo bảo hành (`Ser_ROWarrantyReportServiceItems` — 1-n theo ROWID;
-/// `ProcessSaveROWarrantyReportItems_20220218`, BizCarSv.WarrantyReport.cs:738). `ROWSerType` (TConst.ROWSerType):
-/// "CVC" công việc chính (đúng 1, phải thuộc master công việc BH — Ser_MST_Service.FlagWarranty=1) · "CVPSN" công việc phát sinh.</summary>
-public sealed class WarrantyClaimServiceItem
-{
-    public long Id { get; set; }                  // = ItemID
-    public Guid OrgId { get; set; }
-    public long ClaimId { get; set; }             // = ROWID (ServiceWarrantyClaim.Id)
-    public string SerID { get; set; } = "";       // mã công việc (ServiceItemMst.SerCode)
-    public string? TypeID { get; set; }
-    public decimal? Factor { get; set; }
-    public decimal? Price { get; set; }
-    public decimal? ActManHour { get; set; }
-    public decimal? VAT { get; set; }
-    public string? Note { get; set; }
-    public string? ExpenseType { get; set; }
-    public string? WarrantyStatus { get; set; }
-    public decimal? InsurancePrice { get; set; }
-    public long? BulletinID { get; set; }         // nguồn: rỗng hoặc "0" ⇒ không ghi
-    public string ROWSerType { get; set; } = "";
-    public DateTime? CreatedDate { get; set; }
-    public string? CreatedBy { get; set; }
-    public DateTime? ApprovedDate { get; set; }
-    public string? ApprovedBy { get; set; }
-    public DateTime? LogLUDateTime { get; set; }
-    public string? LogLUBy { get; set; }
-}
 
 /// <summary>#413 LỊCH SỬ ghi chú/trạng thái của báo cáo bảo hành (`Ser_ROWarrantyReportTransaction` —
 /// `ProcessSaveSerROWarrantyReportTransaction`, :1492): ghi khi tạo có Note (CurrentStatus PEND) và khi đổi trạng thái kèm Note.</summary>
@@ -15389,22 +18416,360 @@ public sealed class WarrantyClaimTransaction
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>#418 Mốc giờ công sửa chữa của RO (`Ser_ROWorkTime` — `InsertSer_ROWorkTime`, BizCarSv.zzzzCode.cs:208):
-/// INGA ⇒ mốc BẮT ĐẦU (FlagPlay 1, FlagBegin 1); RPRD ⇒ mốc KẾT THÚC (FlagPlay 1, FlagEnd 1); tạm dừng/chạy lại
-/// (`Ser_AssignmentWork_UpdateFlagPause`) ⇒ mốc FlagPlay 1 (dừng) / 0 (chạy lại). Tổng giờ thực tế = `GetTotalActualHours`.</summary>
-public sealed class RoWorkTime
+
+
+// ===== 🔴 #463 THẺ HỘI VIÊN LOYALTY (`Crd_Card`) — dùng ở tab hội viên của `FrmQuotation` =====
+/// <summary>Ảnh chụp thẻ hội viên lấy từ **API Loyalty** (`CrdCard/WA_OSCarSv_Crd_Card_Get`), không phải
+/// bảng của DMSCarSv. Nguồn trả 39 cột kiểu `object`; ở đây giữ các cột nghiệp vụ thật sự được màn dùng.</summary>
+public sealed class LoyaltyCard
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
-    public string ROWTNo { get; set; } = "";     // {yyMM}WT{NNNNN} (SequenceTypeDMS.ROWorkTime, format "{0}{1}{2:00000}")
-    public long RoId { get; set; }                // = ROID (RepairOrder.Id)
-    public string RONo { get; set; } = "";
-    public DateTime PointDateTime { get; set; }   // tới phút
-    public string FlagPlay { get; set; } = "0";
-    public string FlagBegin { get; set; } = "0";
-    public string FlagEnd { get; set; } = "0";
+    /// <summary>`CardNo` — số thẻ.</summary>
+    public string CardNo { get; set; } = "";
+    /// <summary>`MemberNo` — số hội viên (khoá lọc chính).</summary>
+    public string MemberNo { get; set; } = "";
+    public string? NetworkID { get; set; }
+    public string? RankPolicyCode { get; set; }
+    /// <summary>`CardTypeUse` / `CardTypeInit` — hạng đang dùng và hạng khởi tạo (taxonomy I/N/S/G/P).</summary>
+    public string? CardTypeUse { get; set; }
+    public string? CardTypeInit { get; set; }
+    public string? CardTypeUsePrev { get; set; }
+    public string? CardNoPrev { get; set; }
+    /// <summary>`CardStatus` — trạng thái THẺ. ⚠️ KHÁC `Crd_Member.MemberStatus` mà bộ lọc dùng.</summary>
+    public string? CardStatus { get; set; }
+    public DateTime? EffDateStart { get; set; }
+    public DateTime? EffDateEnd { get; set; }
+    public DateTime? CardActiveDate { get; set; }
+    /// <summary>Ba cặp Total/Block/Avail — điểm, tiền, lượt ghé.</summary>
+    public decimal PointTotal { get; set; }
+    public decimal PointBlock { get; set; }
+    public decimal PointAvail { get; set; }
+    public decimal AmountTotal { get; set; }
+    public decimal AmountBlock { get; set; }
+    public decimal AmountAvail { get; set; }
+    public decimal QtyVisitTotal { get; set; }
+    public decimal QtyVisitBlock { get; set; }
+    public decimal QtyVisitAvail { get; set; }
+    public decimal PointBonus { get; set; }
+    public decimal PointCardRank { get; set; }
+    public decimal TotalAmountPeriod { get; set; }
+    public string? FlagExceptionally { get; set; }
+    public string? DLCodeExceptionally { get; set; }
+    public string? Remark { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+
+// ===== #472 THAM SỐ CẤU HÌNH THEO ĐẠI LÝ (`Mst_Param`) =====
+/// <summary>Nguồn tra `Mst_Param` theo bộ ba `DealerCode` + `ParamCode` + `ParamType`.
+/// Ca dùng đầu tiên: `ParamCode = ParamType = "MCC"` quyết định **phương pháp tính giá vốn**
+/// (`"FIFO"` hay không) trong báo cáo tồn kho.</summary>
+/// <summary>Danh mục ánh xạ ĐẦU VIN → model + mã nguồn gốc (`Mst_VINModelOrginal` — port 1:1
+/// `Mst_VINModelOrginal_Get/Create/Update/Delete/Import`, TCMotor DMSCarSv/Admin).
+/// 🔴 **Tên bảng nguồn viết SAI CHÍNH TẢ**: `Orginal` (thiếu chữ `i`, đúng phải là `Original`).
+/// Giữ **nguyên văn** theo luật HẰNG ≠ GIÁ TRỊ — "sửa cho đúng" là trỏ sai bảng/cột.
+/// 🔴 `VINCode` chỉ dài **4 hoặc 5** ký tự (guard của `_Create`) và chỉ gồm chữ-số
+/// (regex chặn `[^a-zA-Z0-9]`). Chính vì có **hai độ dài** mà các báo cáo nối bằng
+/// `on (left(VIN,4) = VINCode or left(VIN,5) = VINCode)` — nguồn gốc của bẫy nở dòng đã ghi ở #651/#655.</summary>
+public sealed class MstVinModelOrginal
+{
+    // ===== 🔴 #726 §12 — hai cột nhật ký `Mst_VINModelOrginal_Import`/`_Update` GHI mà bản port thiếu.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>Đầu số VIN — 4 hoặc 5 ký tự, chỉ chữ và số (giữ nguyên chính tả cột nguồn).</summary>
+    public string VINCode { get; set; } = "";
+    public string? ModelCode { get; set; }
+    /// <summary>Mã nguồn gốc xe — tên cột nguồn viết `OrginalCode` (thiếu `i`). Giữ nguyên văn.</summary>
+    public string? OrginalCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? Remark { get; set; }
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+public sealed class MstParam
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ParamCode { get; set; } = "";
+    public string ParamType { get; set; } = "";
+    public string? ParamValue { get; set; }
+    public string? Description { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // #1072 §12 — `Mst_Param_Create`/`_Update` (BizCarSv.Master.cs:976/1147, LIVE) ghi `LogLUDateTime`/
+    // `LogLUBy` (KHÔNG có `CreatedDate`/`CreatedBy` — bảng này chỉ có 2 cột log, không có 2 cột Created).
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+
+// ===== 🔴 #482 DANH SÁCH VIN ĐẦY ĐỦ CỦA CHIẾN DỊCH (`Ser_CampaignMarketingFullVIN`) =====
+/// <summary>Bảng con thứ **năm** của chiến dịch marketing — bốn bảng kia (`VIN`, `PlateNo`, `Dealer`,
+/// `Part`) đã ghi nợ ở #392/#393. Chỉ nhánh **KHO** (`Ser_CampaignMarketing_Get_WH`) trả bảng này
+/// ra kết quả; nhánh đại lý thì không ⇒ đây là khác biệt **HÌNH DẠNG KẾT QUẢ**, không phải bộ lọc.</summary>
+public sealed class CampaignMarketingFullVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`CamMarketingNo` — khoá nối sang chiến dịch (nguồn nối theo SỐ, không theo Id).</summary>
+    public string CamNo { get; set; } = "";
+    public string VinNo { get; set; } = "";
+    /// <summary>`CamMarketingFullVINStatus` — trạng thái lan theo bước duyệt (#392): `P` chờ · `A` đã duyệt.</summary>
+    public string? CamMarketingFullVinStatus { get; set; }
+    /// <summary>`MyIdxSeq` — nguồn `order by t.MyIdxSeq asc` (thứ tự do bảng lọc quyết định).</summary>
+    public int MyIdxSeq { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+
+// ===== 🔴 #483 BA BẢNG CON CÒN LẠI CỦA CHIẾN DỊCH MARKETING (trả nốt nợ #392/#393) =====
+// Nguồn ghi cả năm bảng con trong CÙNG một hàm `Ser_CampaignMarketing_Create/Update`
+//   (`CampaignMarketing/BizCarSv.CampaignMarketing.cs:5205-5310`), mỗi bảng một `#region // SaveDB …`.
+// ⚠️ Cả ba đều đặt trạng thái khởi tạo = `TConst.CamMarketingStatus.Pending`; mở hằng
+//   (`TERP.Constants/CampaignMarketing/Const.Main.BE.cs:23`) thì **giá trị thật là "P"**, và bảng mã
+//   **chỉ có HAI** giá trị: `Pending = "P"` · `Approve = "A"` — **không có mã từ chối**.
+// ⚠️ Hai cột nhật ký `LogLUDTime`/`LogLUBy` ở cả ba khối **đều bị COMMENT** ⇒ port dòng ACTIVE:
+//   ba bảng con này **không lưu vết người sửa**. Đây là hành vi thật của nguồn, không phải thiếu sót port.
+// 🔴 Nguồn ghi **SONG SONG hai CSDL**: `_dbMain.SaveData(...)` rồi `_dbWH.SaveData(...)` cùng một
+//   `DataTable` ⇒ ghi kép Main + Kho. MiniHTC một CSDL ⇒ ghi một lần, nêu cờ `dualWriteInSource`.
+/// <summary>`Ser_CampaignMarketingVIN` — danh sách VIN được chỉ định thủ công cho chiến dịch.
+/// Khác `CampaignMarketingFullVin` (#482): bảng kia là danh sách ĐẦY ĐỦ do hệ sinh ra.</summary>
+public sealed class CampaignMarketingVin
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    /// <summary>Nguồn đặt tên cột là `VIN` (không phải `VinNo` như bảng FullVIN) — giữ đúng phân biệt.</summary>
+    public string VIN { get; set; } = "";
+    public string? CamMarketingVinStatus { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#1119 §12 — nguồn `Ser_CampaignMarketing_Create_20220926` ghi `LogLUDateTime`/`LogLUBy`
+    /// (= strPartnerUserCode) CHỈ cho bảng VIN — ba bảng con còn lại (PlateNo/Dealer/FullVIN) có dòng gán
+    /// tương tự nhưng bị CHÍNH NGUỒN COMMENT (không active), không port cho ba bảng đó.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>`Ser_CampaignMarketingPlateNo` — chỉ định theo BIỂN SỐ.
+/// ⚠️ Nguồn chỉ ghi **`StartPlateNo`**; grep toàn cụm **không có `EndPlateNo`** ⇒ đây là DANH SÁCH biển số,
+/// KHÔNG phải KHOẢNG biển số, dù tên cột có chữ "Start" gợi ý ngược lại.</summary>
+public sealed class CampaignMarketingPlateNo
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    public string StartPlateNo { get; set; } = "";
+    public string? CamMarketingPlateNoStatus { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>`Ser_CampaignMarketingDealer` — phạm vi đại lý áp dụng chiến dịch.</summary>
+public sealed class CampaignMarketingDealer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CamNo { get; set; } = "";
+    public string DealerCode { get; set; } = "";
+    public string? CamMarketingDealerStatus { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+
+// ===== 🔴 #488 DANH MỤC DỊCH VỤ CHUẨN (`Ser_MST_Service`) — trước nay CHƯA mô hình hoá =====
+/// <summary>Báo cáo chênh lệch giá (`Ser_ReportRoVarianceCost`) so **giá bán trên lệnh** với **giá chuẩn**
+/// của danh mục. Phía phụ tùng đã có `ServicePart.Price/VAT`; phía **dịch vụ** thì thiếu hẳn bảng chuẩn
+/// ⇒ không có bảng này thì báo cáo **không tồn tại được** (đúng loại "cột/bảng THIẾU HẲN" mà §12 không bắt).
+/// 🏆🔴🔴🔴 #925 PORT TRÙNG LẶP MỘT CHIỀU — bảng NÀY hoàn toàn KHÔNG có đường ghi (không `MapPost`/`MapPut`
+/// nào chạm tới `ServiceMstServices` — chỉ có 2 report đọc), trong khi <see cref="ServiceItemMst"/> (#297,
+/// ghi qua `POST /api/serviceitems`, đã cài đúng luật ghi đè từ `Ser_MST_ROWarrantyWork`) MỚI LÀ nguồn dữ
+/// liệu thật của `Ser_MST_Service`. Hai report từng đọc bảng NÀY đã được sửa sang đọc
+/// <see cref="ServiceItemMst"/> (xem sửa ở `/api/cusservicefactors` và báo cáo chênh lệch giá RO) — bảng NÀY
+/// giữ lại KHÔNG xoá (tránh gãy schema cũ) nhưng không còn được đọc.</summary>
+public sealed class ServiceMstService
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`SerID` — khoá nối từ dòng dịch vụ của lệnh (`Ser_ROServiceItems.SerID`).</summary>
+    public string SerID { get; set; } = "";
+    public string SerCode { get; set; } = "";
+    public string? SerName { get; set; }
+    /// <summary>`Price` — **giá CHUẨN** (giá danh mục), đối chiếu với giá bán trên lệnh.</summary>
+    public decimal Price { get; set; }
+    /// <summary>`Vat` — %VAT chuẩn.</summary>
+    public decimal Vat { get; set; }
+    public decimal? StdManHour { get; set; }
+    public string? DealerCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>
+/// 🔴 #982 §12 — bản chụp GIÁ BẢO HÀNH đã GỬI HMC lần gần nhất cho mỗi PT (`TST_Mst_Part_DNP`) — port 1:1
+/// `Rpt_DMSSer_DealerNetPrice_{LastGet,PartGet,SendHMC}` (`BizCarSv.Report.Special.Warranty.cs:4376-5069`,
+/// TCMotor DMSCarSv, chỉ có trên máy 150). Dùng để PHÁT HIỆN PT nào vừa đổi `TSTWarrantyPrice` kể từ lần
+/// gửi trước (`t.TSTWarrantyPrice &lt;&gt; f.TSTWarrantyPrice` hoặc chưa từng gửi `f.TSTPartCode is null`).
+/// </summary>
+public sealed class TstMstPartDnp
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public decimal? TSTWarrantyPrice { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// 🔴 #982 §12 — HEADER một đợt gửi bảng giá bảo hành PT (DNP) sang HMC (`Rpt_DealerNetPrice`) — mỗi lần
+/// bấm "Gửi HMC" sinh đúng 1 dòng ở đây + N dòng chi tiết ở <see cref="RptDealerNetPriceDetail"/>.
+/// </summary>
+public sealed class RptDealerNetPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>RptID nguồn — khoá tự tăng THẬT của nguồn (`@@Identity` ngay sau insert header), khác `Id`
+    /// nội bộ Mini. `RptDealerNetPriceDetail.RptID` nối về đây.</summary>
+    public long RptID { get; set; }
+    public DateTime CreatedDateTime { get; set; }
+    public string? CreatedBy { get; set; }
+    /// <summary>Đường dẫn file `A26AX_DNP_yyyyMMdd.txt` đã sinh (nguồn còn SFTP file này lên HMC — xem
+    /// ghi chú "KHÔNG SFTP" ở endpoint `send-hmc`).</summary>
+    public string? FilePath { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng chi tiết một đợt gửi DNP (`Rpt_DealerNetPriceDetail`) — 1-n theo <see cref="RptDealerNetPrice.RptID"/>.</summary>
+public sealed class RptDealerNetPriceDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RptID { get; set; }
+    public string TSTPartCode { get; set; } = "";
+    public DateTime? UpdateDateTime { get; set; }
+    /// <summary>Giá quy đổi gửi HMC (nguồn `ROUND(TSTWarrantyPrice/100,0)`, đơn vị "trăm đồng").</summary>
+    public int TSTPrice { get; set; }
+    public decimal? TSTWarrantyPrice { get; set; }
+    /// <summary>Giá LẦN GỬI TRƯỚC (từ `TST_Mst_Part_DNP` cũ, trước khi ghi đè) — NULL nếu lần đầu gửi PT này.</summary>
+    public decimal? TSTWarrantyPriceOld { get; set; }
+    public string? EngName { get; set; }
+    public string? VieName { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// 🔴 #983 §12 — HEADER một đợt gửi CHI TIẾT ĐƠN ĐẶT PT (POD = Parts Order Detail) sang HMC
+/// (`Rpt_PartsOrderDetail`) — port 1:1 `Rpt_DMSSer_PartsOrderDetail_{LastGet,PartGet,SendHMC,SendHMC_Auto}`
+/// (`BizCarSv.Report.Special.Warranty.cs:5179-5877`, TCMotor DMSCarSv, chỉ có trên máy 150).
+/// Khác cụm DNP (#982, theo dõi GIÁ thay đổi): cụm này báo cáo đơn đặt PT đã DUYỆT ĐỦ SỐ LƯỢNG
+/// (`QtyAppr = QtyOrd`), giao qua NCC (`DeliveryFormCode='2'`), NCC đã xác nhận (`SupplierStatus in ('2','4')`),
+/// và CHƯA TỪNG gửi HMC (theo dõi bằng khoá (OrderPartNo, PartID) trên <see cref="RptPartsOrderDetailPart"/>,
+/// không phải theo GIÁ như DNP).
+/// </summary>
+public sealed class RptPartsOrderDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RptID { get; set; }
+    public DateTime CreatedDateTime { get; set; }
+    public string? CreatedBy { get; set; }
+    public string? FilePath { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+/// <summary>
+/// Bảng CHỤP số liệu KHẢ NĂNG CUNG ỨNG PHỤ TÙNG theo tháng (`Rpt_AbilitySupplyParts`) — port 1:1
+/// `Rpt_AbilitySupplyParts_Save_AutoDealer` (`BizCarSv.Inventory.Report.cs:8702`, vỏ → thân thật
+/// `…_Save_AutoDealerX` `:9174`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:38516`).
+/// Nguồn ghi **MỘT** câu `insert into Rpt_AbilitySupplyParts (17 cột) select … from #input_Rpt_AbilitySupplyParts`
+/// — `grep -c "delete"` = **0** ⇒ chạy lại job cho CÙNG một `MonthReport` là **CỘNG DỒN** (không có cột lần chạy
+/// để phân biệt). Mini port **xoá kỳ cũ trước khi chèn** (khác nguồn CÓ CHỦ Ý) và trả số dòng đã xoá.
+/// </summary>
+public sealed class RptAbilitySupplyPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    /// <summary>`MonthReport` — kỳ chụp (yyyy-MM).</summary>
+    public string MonthReport { get; set; } = "";
+    public string? ROID { get; set; }
+    public string? RONo { get; set; }
+    public string? PlateNo { get; set; }
+    public string? PartID { get; set; }
+    public string? PartCode { get; set; }
+    public string? VieName { get; set; }
+    public string? Unit { get; set; }
+    public decimal? RequestQuantity { get; set; }
+    public decimal? ResponseQuantity { get; set; }
+    public decimal? NotResponseQuantity { get; set; }
+    public DateTime? StockOutTime { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// lưu giá (khác <see cref="TstMstPartDnp"/>) vì cụm này không theo dõi thay đổi giá, chỉ theo dõi "đã gửi chưa".</summary>
+public sealed class RptPartsOrderDetailPart
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public long RptID { get; set; }
+    public string OrderPartNo { get; set; } = "";
+    public string PartID { get; set; } = "";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+/// <summary>Phiếu ĐỀ XUẤT GIÁ (Ser_Suggest_Price) — port 1:1 `Ser_Suggest_Price_Get` (LIVE,
+/// `BizCarSv.SuggestPrice.cs:992` vỏ → `…GetX:798` thân thật; WS `HTCWSCarSv/WSCarSv.asmx.cs:36980`).
+/// 🔴 Hàm này nằm trong **9 hàm CHỈ CÓ TRÊN CÂY LAPTOP (V20)** — cây 150 (`V20.2023.Release`) đã XOÁ HẲN
+/// (xem Program.cs #873/#874). Port theo cây CHUẨN V20 (laptop) đúng luật "khi hai cây khác nhau thì port
+/// theo cây CHUẨN". Header SELECT `ssp.*` (cả bảng) + paging động qua `strFt_WhereClause`.</summary>
+public sealed class SuggestPrice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SuggestPriceNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? TSTSuggestPriceID { get; set; }
+    public DateTime? TSTSentDate { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
+    public string? Description { get; set; }
+    /// <summary>Trạng thái phía DMS (`DMSSuggestPriceStatus`) — nguồn dùng lớp hằng `TConst.DMSSuggestPriceStatus`.</summary>
+    public string? DMSSuggestPriceStatus { get; set; }
+    /// <summary>Trạng thái phía TST (`TSTSuggestPriceStatus`).</summary>
+    public string? TSTSuggestPriceStatus { get; set; }
+    /// <summary>Cờ cập nhật giá (`IsUpdatePrice`).</summary>
+    public string? IsUpdatePrice { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>Dòng phiếu ĐỀ XUẤT GIÁ (Ser_Suggest_PriceDtl) — port 1:1 `Ser_Suggest_Price_GetX`
+/// detail SELECT `sspdt.*` (cả bảng). Cột theo `Ser_Suggest_Price_SaveX` (`BizCarSv.SuggestPrice.cs:93`).</summary>
+public sealed class SuggestPriceDtl
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string SuggestPriceNo { get; set; } = "";
+    public string? DeliveryFormCode { get; set; }
+    public string? VINCode { get; set; }
+    public string? DMSPartCode { get; set; }
+    public string? VieName { get; set; }
+    public string? SuggestPriceDtlStatus { get; set; }
+    public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
