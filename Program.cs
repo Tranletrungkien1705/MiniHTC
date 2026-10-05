@@ -16602,16 +16602,19 @@ app.MapPost("/api/rptmarketing/approve", async (RptMarketingApproveDto dto, AppD
     return Results.Ok(new { approved = rows.Count, mktYear = year, rptStatus = "A" });
 }).RequireAuthorization();
 
-// ===== Nhật ký gọi API SBHOnline (OS_SBHOnline_Log — port 1:1 OS_SBHOnline_Log_Create,
+// #5597 — Nhật ký gọi API SBHOnline (OS_SBHOnline_Log — port 1:1 OS_SBHOnline_Log_Create,
 // 2010.HTC BizHTC.DealerSales.cs:4433; 17 điểm gọi ở Biz.HTC.WH.cs + Biz.HTC.WH.hkt.cs) =====
 // 🔴 HAI trục tên khác nhau: `FuncCall` = hàm nghiệp vụ ERP kích hoạt (DealerSalesDealCreate /
 //    DealerSalesDealUpdateMulti / DealerSalesDealDelete); `FuncCode` = lệnh API SBHOnline
 //    (fleet_owner_create / fleet_owner_update / fleet_create / fleet_update / fleet_car_id).
 // 🔴 `ErrCode` KHÔNG phải mã số: "0" = thành công, ngược lại là THÔNG ĐIỆP lỗi nguyên văn
 //    (`response.errorMessage`, hoặc `ex.Message + "/" + response.errorMessage`).
-// 🔴 Nguồn KHÔNG có guard nào và catch nuốt trọn ⇒ POST không bao giờ trả 4xx vì lý do nghiệp vụ.
+// 🔴 Nguồn KHÔNG có guard nào (`#region // Check` RỖNG, xác nhận lại tại chỗ) và catch nuốt trọn
+//    (không rollback, không trả lỗi ra ngoài) ⇒ POST không bao giờ trả 4xx vì lý do nghiệp vụ — đây là
+//    log ghi-và-quên, lỗi khi GHI LOG không được phép làm hỏng giao dịch nghiệp vụ chính đang gọi nó.
 app.MapGet("/api/sbhonlineapilogs", async (AppDbContext db, ITenantContext t, string? dealNo, string? carId, string? funcCall, string? funcCode, string? createdBy, bool? onlyError) =>
 {
+    // #5597
     var qy = db.SbhOnlineApiLogs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealNo)) qy = qy.Where(x => x.DealNo == dealNo);
     if (!string.IsNullOrWhiteSpace(carId)) qy = qy.Where(x => x.CarId == carId);
@@ -16630,7 +16633,7 @@ app.MapGet("/api/sbhonlineapilogs", async (AppDbContext db, ITenantContext t, st
 
 app.MapPost("/api/sbhonlineapilogs", async (SbhOnlineApiLogDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    // Nguồn không kiểm tra gì cả (region Check rỗng) — giữ nguyên, chỉ chuẩn hoá khoảng trắng.
+    // #5597 — Nguồn không kiểm tra gì cả (region Check rỗng) — giữ nguyên, chỉ chuẩn hoá khoảng trắng.
     db.SbhOnlineApiLogs.Add(new SbhOnlineApiLog
     {
         OrgId = t.OrgId,
