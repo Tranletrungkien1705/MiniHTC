@@ -15140,7 +15140,12 @@ public sealed class WholesaleDealCar
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>Bản ghi giao dịch bán xe để sửa field — port 1:1 cụm FrmEditDeal_* (DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung).</summary>
+/// <summary>Bản ghi giao dịch bán xe để sửa field — port 1:1 cụm FrmEditDeal_* (DealDate/PlateNo/SalesType/SoBaoHanh/KHGD/KiemChung).
+/// #5301 Re-verify: nguồn chỉ tìm thấy ở 2010.HTC (`Views/SalesDealer/FrmEditDeal_*.cs`), KHÔNG có ở TCMotor.
+/// `WarrantyNo` SAI BẢN CHẤT — màn "SoBaoHanh" nguồn thật là UPLOAD FILE ảnh/PDF giấy bảo hành
+/// (`Dls_DealAttachFile.DlsFileName`/`DlsFilePath`), KHÔNG phải trường text — patch action bị vô hiệu hoá,
+/// xem route. `VerifyStatus` cũng sai kiểu: nguồn `DLS_Deal.CtmCareFlag` chỉ là cờ 0/1, API CHỈ cho reset
+/// 1 CHIỀU Active("1")→Inactive("0") (không cho đặt giá trị tuỳ ý) — xem guard ở route patch.</summary>
 public sealed class DealRecord
 {
     public long Id { get; set; }
@@ -15151,9 +15156,11 @@ public sealed class DealRecord
     public DateTime? DealDate { get; set; }        // ngay giao dich
     public string PlateNo { get; set; } = "";       // bien so
     public string SalesType { get; set; } = "";      // kieu ban
-    public string WarrantyNo { get; set; } = "";     // so bao hanh (SoBaoHanh)
-    public string CustomerCode { get; set; } = "";   // KH giao dich (KHGD)
-    public string VerifyStatus { get; set; } = "";   // kiem chung (KiemChung)
+    public string WarrantyNo { get; set; } = "";     // so bao hanh (SoBaoHanh) — KHÔNG patch được, xem docstring
+    public string CustomerCode { get; set; } = "";   // KH giao dich (KHGD) — nguồn thật còn 2 field Holder/Driver, NỢ
+    public string VerifyStatus { get; set; } = "";   // kiem chung (KiemChung) — cờ 0/1, chỉ reset 1 chiều
+    /// <summary>`DLS_Deal.FlagInitDeal` — guard `myDealerSales_CheckDeal(..., "0", ...)`: PHẢI = "0" mới cho patch field. Mặc định "0" (có thể sửa) khi tạo mới.</summary>
+    public string FlagInitDeal { get; set; } = "0";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }

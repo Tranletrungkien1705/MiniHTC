@@ -4262,6 +4262,8 @@ public static class Seeder
                 "ALTER TABLE public.\"DOATSettingTimes\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
                 "ALTER TABLE public.\"DOATSettingTimes\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
                 "ALTER TABLE public.\"DOATSettingTimes\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                // #5301 DLS_Deal.FlagInitDeal — guard myDealerSales_CheckDeal(..., "0", ...) phải = "0" mới cho patch field (FrmEditDeal_*).
+                "ALTER TABLE public.\"DealRecords\" ADD COLUMN IF NOT EXISTS \"FlagInitDeal\" text NOT NULL DEFAULT '0'",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

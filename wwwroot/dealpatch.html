@@ -59,7 +59,7 @@ async function load(){ await token();
   const d=await (await fetch(`/api/deals/records?dealNo=${F("qn").value}&vin=${F("qv").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
     `<tr><td><b>${o.dealNo}</b></td><td>${o.vin||""}</td><td>${o.dealerCode||""}</td><td>${(o.dealDate||"").substring(0,10)}</td><td>${o.plateNo||""}</td><td>${o.salesType||""}</td><td>${o.warrantyNo||""}</td><td>${o.customerCode||""}</td><td>${o.verifyStatus||""}</td>
-    <td><button class="sm" onclick="patch('${o.dealNo}','dealDate')">Ngày</button> <button class="sm" onclick="patch('${o.dealNo}','plateNo')">Biển</button> <button class="sm" onclick="patch('${o.dealNo}','salesType')">Kiểu</button> <button class="sm" onclick="patch('${o.dealNo}','warrantyNo')">BH</button> <button class="sm" onclick="patch('${o.dealNo}','customerCode')">KHGD</button> <button class="sm" onclick="patch('${o.dealNo}','verifyStatus')">KC</button> <button class="sm" onclick="history('${o.dealNo}')">Sử</button></td></tr>`
+    <td><button class="sm" onclick="patch('${o.dealNo}','dealDate')">Ngày</button> <button class="sm" onclick="patch('${o.dealNo}','plateNo')">Biển</button> <button class="sm" onclick="patch('${o.dealNo}','salesType')">Kiểu</button> <button class="sm" onclick="patch('${o.dealNo}','customerCode')">KHGD</button> <button class="sm" onclick="resetVerify('${o.dealNo}')">Huỷ kiểm chứng</button> <button class="sm" onclick="history('${o.dealNo}')">Sử</button></td></tr>`
   ).join("")||'<tr><td colspan="10" class="muted">Chưa có GD.</td></tr>';
 }
 async function patch(no,field){
@@ -67,6 +67,12 @@ async function patch(no,field){
   const r=await fetch(`/api/deals/records/${no}/patch`,{method:"POST",headers:H(),body:JSON.stringify({field,value:val})});
   const j=await r.json();
   if(r.ok){ msg(`${no}: ${FN[field]} ${j.oldValue||"(rỗng)"} → ${j.newValue}`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function resetVerify(no){
+  if(!confirm(`Huỷ kiểm chứng (CSKH) cho GD ${no}?`)) return;
+  const r=await fetch(`/api/deals/records/${no}/patch`,{method:"POST",headers:H(),body:JSON.stringify({field:"verifyStatus"})});
+  const j=await r.json();
+  if(r.ok){ msg(`${no}: đã huỷ kiểm chứng`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function history(no){
   const d=await (await fetch(`/api/deals/records/${no}/history`,{headers:H()})).json();

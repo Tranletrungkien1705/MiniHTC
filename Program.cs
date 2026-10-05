@@ -9456,31 +9456,59 @@ app.MapPost("/api/deals/records", async (DealRecordDto dto, AppDbContext db, ITe
     return Results.Ok(new { r2.DealNo, updated = false });
 }).RequireAuthorization();
 
-// Patch 1 field GD (audit old->new). field = dealDate|plateNo|salesType|warrantyNo|customerCode|verifyStatus.
-app.MapPost("/api/deals/records/{dealNo}/patch", async (string dealNo, DealPatchDto dto, AppDbContext db, ITenantContext t) =>
+// #5301 — Patch 1 field GD (audit old->new). field = dealDate|plateNo|salesType|customerCode|verifyStatus.
+// Re-verify qua 6 form FrmEditDeal_* (2010.HTC, không có bản TCMotor) — trace WS xác nhận bản LIVE
+// (vd DealerSalesDealUpdateDealDateMulti_New20230306, WSHTC.asmx.cs:26453) → biz Biz.HTC.WH.My.cs.
+// Guard CHUNG mọi field (myCommon_CheckHTCDirect + myDealerSales_CheckDeal FlagInitDeal="0") — port cũ
+// (field KHÔNG rỗng) là guard DUY NHẤT, hoàn toàn thiếu RBAC + trạng thái giao dịch.
+// warrantyNo KHÔNG patch được qua đây nữa: màn "SoBaoHanh" nguồn thật là upload file đính kèm
+// (Dls_DealAttachFile), không phải trường text — field patch cũ map sai bản chất, vô hiệu hoá thay vì
+// giả lập 1 guard không có thật. verifyStatus đổi đúng ngữ nghĩa: cờ 0/1, CHỈ reset 1 chiều 1→0
+// (DealerSalesDealUpdateMulti_CtmCareFlag) — bỏ qua `dto.Value` client gửi.
+// NỢ rõ: dealDate còn 3 guard so ngày chéo bảng (hợp đồng/BBGN/model bảo hành) + side-effect ghi 3 bảng
+// khác (Biz.HTC.WH.My.cs:18468-18660) — CHƯA port, chỉ áp guard chung + parse ngày hợp lệ.
+// NỢ rõ: customerCode nguồn sửa CẢ BA Buyer/Holder/Driver, Mini chỉ có 1 field.
+app.MapPost("/api/deals/records/{dealNo}/patch", async (string dealNo, DealPatchDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được sửa thông tin giao dịch." });
     dealNo = dealNo.Trim();
     var r = await db.DealRecords.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == dealNo);
     if (r is null) return Results.NotFound(new { dealNo });
+    if (r.FlagInitDeal != "0") return Results.BadRequest(new { error = $"Giao dịch {dealNo} đang ở trạng thái không cho sửa (FlagInitDeal='{r.FlagInitDeal}')." });
     var field = (dto.Field ?? "").Trim();
-    if (field is not ("dealDate" or "plateNo" or "salesType" or "warrantyNo" or "customerCode" or "verifyStatus")) return Results.BadRequest(new { error = "Field không hợp lệ (dealDate|plateNo|salesType|warrantyNo|customerCode|verifyStatus)." });
-    if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
-    string oldVal;
+    if (field is not ("dealDate" or "plateNo" or "salesType" or "customerCode" or "verifyStatus"))
+        return Results.BadRequest(new { error = "Field không hợp lệ (dealDate|plateNo|salesType|customerCode|verifyStatus). warrantyNo KHÔNG sửa qua đây — nguồn là upload file, không phải trường text." });
+    string oldVal, newVal;
     switch (field)
     {
         case "dealDate":
-            if (!DateTime.TryParse(dto.Value, out var newDate)) return Results.BadRequest(new { error = "Ngày giao dịch không hợp lệ." });
-            oldVal = r.DealDate?.ToString("yyyy-MM-dd") ?? ""; r.DealDate = newDate; break;
-        case "plateNo": oldVal = r.PlateNo; r.PlateNo = dto.Value.Trim(); break;
-        case "salesType": oldVal = r.SalesType; r.SalesType = dto.Value.Trim(); break;
-        case "warrantyNo": oldVal = r.WarrantyNo; r.WarrantyNo = dto.Value.Trim(); break;
-        case "customerCode": oldVal = r.CustomerCode; r.CustomerCode = dto.Value.Trim(); break;
-        default: oldVal = r.VerifyStatus; r.VerifyStatus = dto.Value.Trim(); break;
+            if (string.IsNullOrWhiteSpace(dto.Value) || !DateTime.TryParse(dto.Value, out var newDate)) return Results.BadRequest(new { error = "Ngày giao dịch không hợp lệ." });
+            oldVal = r.DealDate?.ToString("yyyy-MM-dd") ?? ""; newVal = newDate.ToString("yyyy-MM-dd"); r.DealDate = newDate; break;
+        case "plateNo":
+            if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+            oldVal = r.PlateNo; newVal = dto.Value.Trim(); r.PlateNo = newVal; break;
+        case "salesType":
+            if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+            newVal = dto.Value.Trim();
+            // Guard nguồn mySalesType_CheckSalesType: SalesType mới phải tồn tại + active trong Mst_DealerSalesType.
+            if (!await db.MstDealerSalesTypes.AnyAsync(x => x.OrgId == t.OrgId && x.SalesType == newVal && x.FlagActive == "1"))
+                return Results.BadRequest(new { error = $"Kiểu bán '{newVal}' không tồn tại hoặc ngừng hoạt động." });
+            oldVal = r.SalesType; r.SalesType = newVal; break;
+        case "customerCode":
+            if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
+            newVal = dto.Value.Trim();
+            // Guard nguồn: mã KH phải tồn tại trong DLS_DealerCustomer.
+            if (!await db.DealerCustomers.AnyAsync(x => x.OrgId == t.OrgId && x.CustomerCode == newVal))
+                return Results.BadRequest(new { error = $"Khách hàng '{newVal}' không tồn tại." });
+            oldVal = r.CustomerCode; r.CustomerCode = newVal; break;
+        default: // verifyStatus — cờ 0/1, CHỈ reset 1 chiều Active("1")→Inactive("0"); bỏ qua dto.Value.
+            if (r.VerifyStatus != "1") return Results.BadRequest(new { error = $"Giao dịch {dealNo} chưa ở trạng thái đã kiểm chứng (VerifyStatus='{r.VerifyStatus}') — không có gì để huỷ." });
+            oldVal = r.VerifyStatus; newVal = "0"; r.VerifyStatus = newVal; break;
     }
     r.UpdatedAt = DateTime.Now;
-    db.DealPatchLogs.Add(new DealPatchLog { OrgId = t.OrgId, DealRecordId = r.Id, DealNo = dealNo, Field = field, OldValue = oldVal, NewValue = dto.Value.Trim() });
+    db.DealPatchLogs.Add(new DealPatchLog { OrgId = t.OrgId, DealRecordId = r.Id, DealNo = dealNo, Field = field, OldValue = oldVal, NewValue = newVal });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.DealNo, field, oldValue = oldVal, newValue = dto.Value.Trim() });
+    return Results.Ok(new { r.DealNo, field, oldValue = oldVal, newValue = newVal });
 }).RequireAuthorization();
 
 app.MapGet("/api/deals/records/{dealNo}/history", async (string dealNo, AppDbContext db, ITenantContext t) =>
@@ -109593,7 +109621,7 @@ record WoProduceDto(int Qty);
 record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice, string? CarId = null, string? DealNoPrevious = null, string? PlateNo = null, DateTime? DeliveryDate = null, string? DeliveryStatus = null, string? CtrCarId = null);
 record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars, string? DealerCode = null, string? SalesType = null, DateTime? DealDate = null, string? CustomerCodeHolder = null, string? CustomerCodeDriver = null, string? FlagInitDeal = null, string? DlrContractNo = null);
 record DealRecordDto(string DealNo, string? VIN, string? DealerCode, DateTime? DealDate, string? PlateNo, string? SalesType, string? WarrantyNo, string? CustomerCode, string? VerifyStatus);
-record DealPatchDto(string Field, string Value);
+record DealPatchDto(string Field, string? Value = null);
 record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate, DateTime? WarrantyExpiresDate = null);
 record SbhBatchDto(List<string>? Vins);
 // Kế hoạch bán lẻ: khoá nghiệp vụ PlanMonth + PlanTimes + DealerCode.
