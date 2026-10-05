@@ -105335,6 +105335,60 @@ app.MapGet("/api/receptionattachfilemsts", async (AppDbContext db, ITenantContex
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1578 `Ser_Mst_ReceptionAttachFile_Get` (LIVE WS `HTCWSCarSvTab/WSCarSvTab.asmx.cs:4064`) =====
+// Vo `Ser_Mst_ReceptionAttachFile_Get` (`BizCarSv.Tab.cs:14028`) -> than `Ser_Mst_ReceptionAttachFile_GetX` (`:14416-14550`).
+// Nguon: `select distinct identity(bigint,0,1) MyIdxSeq, semratf.ReceptionAttachFileNo into #tbl_..._Draft
+//   from Ser_Mst_ReceptionAttachFile semratf where(1=1) zzzzClauseWhere_strReceptionAttachFileNoList
+//   zzzzClauseWhere_strFlagActiveList order by semratf.ReceptionAttachFileNo;
+//   select Count(0) MyCount from #...;
+//   select t.MyIdxSeq, semratf.* from #tbl..._Filter t inner join Ser_Mst_ReceptionAttachFile semratf
+//   on t.ReceptionAttachFileNo = semratf.ReceptionAttachFileNo`.
+// 🔴 HAI bo loc dang DANH SACH '|' qua `SqlUtils.BuildClause("and", "semratf.<col>", <list>, "@p")`:
+//   `semratf.ReceptionAttachFileNo`, `semratf.FlagActive`. Danh sach rong => BO HAN menh de => tra TRON danh muc.
+// 🔴 `bGet_Ser_Mst_ReceptionAttachFile = (str != null && str.Length > 0)` — BAT KY chuoi khac rong cung BAT
+//   khoi chi tiet (khong so TConst.Flag.Yes).
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` KHONG guard rong => FormatException (ho #626/#627); hai dong phan trang
+//   bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang.
+// 🔴 `order by` tren `SELECT ... INTO` chi anh huong cach danh so identity, KHONG quyet dinh thu tu tra ve (#415)
+//   — cau ket qua KHONG co ORDER BY => port sap tuong minh theo ReceptionAttachFileNo.
+// 🔴 Count(0) tren bang DISTINCT(ReceptionAttachFileNo) — o day distinct tren MOT cot khoa chinh nen Count = so ban ghi that.
+// 📌 Mini: `GET /api/receptionattachfilemsts/get` — route `/api/receptionattachfilemsts` (#632) loc gia tri DON
+//   (no/flagActive) => day la GAP that (WebMethod khong dau vet).
+app.MapGet("/api/receptionattachfilemsts/get", async (AppDbContext db, ITenantContext t,
+    string? receptionAttachFileNoList, string? flagActiveList, string? isGetDetail) =>
+{
+    var qy = db.ReceptionAttachFileMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(receptionAttachFileNoList))
+    {
+        var v = receptionAttachFileNoList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qy = qy.Where(x => v.Contains(x.ReceptionAttachFileNo));
+    }
+    if (!string.IsNullOrWhiteSpace(flagActiveList))
+    {
+        var v = flagActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qy = qy.Where(x => v.Contains(x.FlagActive));
+    }
+    var all = await qy.OrderBy(x => x.ReceptionAttachFileNo).ToListAsync();
+    // Nguon: Count(0) tren bang DISTINCT(ReceptionAttachFileNo) — distinct tren MOT cot khoa chinh => Count = so ban ghi that.
+    var distinctNos = all.Select(x => x.ReceptionAttachFileNo).Distinct().Count();
+    // bGet_Ser_Mst_ReceptionAttachFile = (str != null && str.Length > 0) — bat ky chuoi khac rong deu BAT.
+    var getDetail = !string.IsNullOrEmpty(isGetDetail);
+    var items = getDetail
+        ? all.Select(x => (object)new { x.Id, x.ReceptionAttachFileNo, x.FilePath, x.FileName, x.CreatedDateTime, x.CreatedBy, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToList()
+        : new List<object>();
+    return Results.Ok(new
+    {
+        myCountAsSource = distinctNos,   // nguon: Count(0) tren bang DISTINCT(ReceptionAttachFileNo)
+        count = items.Count, items,
+        buildClauseNote = "BuildClause('and','semratf.<col>',<list>,'@p'): cat theo '|', danh sach rong => BO HAN menh de (khong phai 'in ()')",
+        detailFlagNotFollowingConvention = "bGet_Ser_Mst_ReceptionAttachFile = (str != null && str.Length > 0) — BAT KY chuoi khac rong cung bat, khong so TConst.Flag.Yes",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        pagingCommentedOut = "hai dong phan trang bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang",
+        orderByOnSelectIntoOnly = "order by semratf.ReceptionAttachFileNo nam tren SELECT ... INTO nen chi anh huong cach danh so identity, khong quyet dinh thu tu tra ve (#415); cau ket qua KHONG co ORDER BY — port sap tuong minh",
+        distinctIsHarmlessHere = "distinct o day tren MOT cot ReceptionAttachFileNo (dung khoa chinh) nen Count(0) = so ban ghi that (khac #631 distinct tren CAP khong phai khoa day du)",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/receptionattachfilemsts", async (ReceptionAttachFileMstDto dto, AppDbContext db,
     ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
