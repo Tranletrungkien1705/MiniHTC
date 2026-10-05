@@ -42883,7 +42883,8 @@ app.MapPost("/api/maintpackages/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { p.Id, p.FlagActive });
 }).RequireAuthorization();
 
-// ===== Vật tư bảo dưỡng (MaintSupply — port 1:1 FrmSupplies, Admin/Maintenance 2010.HTC) =====
+// ===== Vật tư bảo dưỡng (MaintSupply — port 1:1 FrmSupplies, Admin/Maintenance 2010.HTC; biz LIVE qua WS = Mst_Part_Create/Update/Delete_New20181119, Biz.HTC.WH.cs #2201) =====
+// Lưu ý nguồn: Mst_Part_Create_New20181119 có bug GHI ĐÈ PartUnitCodeStd=PartUnitCodeDefault (CommonUnit nhập ở form bị MẤT khi tạo mới) — Mini KHÔNG port bug này, lưu đúng cả 2 trường độc lập (tốt hơn nguồn, giống tiền lệ DOATCondition/CustomerCareMace).
 app.MapGet("/api/maintsupplies", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
     var query = db.MaintSupplies.Where(x => x.OrgId == t.OrgId);
@@ -42898,6 +42899,7 @@ app.MapPost("/api/maintsupplies", async (MaintSupplyDto dto, AppDbContext db, IT
 {
     var code = (dto.Code ?? "").Trim();
     if (code == "") return Results.BadRequest(new { error = "Thiếu mã vật tư." });
+    if (string.IsNullOrWhiteSpace(dto.Name)) return Results.BadRequest(new { error = "Thiếu tên vật tư." });   // #2201 — Mst_Part_Create/Update_InvalidPartName (PartName.Length<1)
     var s = await db.MaintSupplies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
     if (s is null) { s = new MaintSupply { OrgId = t.OrgId, Code = code }; db.MaintSupplies.Add(s); }
     s.Name = dto.Name; s.StandardUnit = dto.StandardUnit; s.CommonUnit = dto.CommonUnit; s.UpdatedAt = DateTime.Now;
@@ -42912,6 +42914,16 @@ app.MapPost("/api/maintsupplies/{code}/toggle", async (string code, AppDbContext
     s.FlagActive = s.FlagActive == "1" ? "0" : "1"; s.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.Code, s.FlagActive });
+}).RequireAuthorization();
+
+app.MapPost("/api/maintsupplies/{code}/delete", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    // #2201 — port Mst_Part_Delete_New20181119: guard duy nhất là CheckDB(exist=Yes); check quyền myCommon_GetAbilityOfUser bị COMMENT ở nguồn (vô hiệu hoá), không check FK tham chiếu (DB tự raise nếu vi phạm).
+    var s = await db.MaintSupplies.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code.Trim());
+    if (s is null) return Results.NotFound(new { code });
+    db.MaintSupplies.Remove(s);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code = s.Code, deleted = true });
 }).RequireAuthorization();
 
 app.MapPost("/api/maintsupplies/import", async (List<MaintSupplyDto> rows, AppDbContext db, ITenantContext t) =>

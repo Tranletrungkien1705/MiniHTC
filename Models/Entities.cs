@@ -5510,7 +5510,7 @@ public sealed class MaintPackageSupply
     public decimal Qty { get; set; }
 }
 
-/// <summary>Vật tư bảo dưỡng (master mã/tên/ĐVT chuẩn+thường) — port 1:1 FrmSupplies (Admin/Maintenance, 2010.HTC).</summary>
+/// <summary>Vật tư bảo dưỡng (master mã/tên/ĐVT chuẩn+thường) — port 1:1 FrmSupplies (Admin/Maintenance, 2010.HTC). #2201</summary>
 public sealed class MaintSupply
 {
     public long Id { get; set; }
