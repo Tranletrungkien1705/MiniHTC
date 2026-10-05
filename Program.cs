@@ -59519,6 +59519,8 @@ app.MapGet("/api/masters/gps-error-types", async (
     });
 }).RequireAuthorization();
 
+// #5660 — Mst_Marriage (`Biz.HTC.WH.cs:191522/191826` — xác nhận lại đúng số dòng đã ghi, `--order by
+// mm.MarriageCode` quả thật bị comment). Nguồn chỉ có `_Get`+`_CheckDB`, không Save — master DBA nạp.
 app.MapGet("/api/masters/marriages", async (
     AppDbContext db, ITenantContext t, string? marriageCode, string? flagActive,
     int? recordStart, int? recordCount) =>
