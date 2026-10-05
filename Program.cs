@@ -54048,6 +54048,86 @@ app.MapGet("/api/stockins/paper-report", async (AppDbContext db, ITenantContext 
                 noGuardInSource = "nguon khong co #region Check => khong chan tham so rong",
             });
         }).RequireAuthorization();
+        // ===== 🔴 #1598 `SerInventoryAccStockOut01` (WebMethod LIVE khong dau vet) =====
+        // Nguon: `BizCarSv.Inventory.Report.cs:4912` (`SerInventoryAccStockOut01`); WS LIVE `HTCWSCarSv/WSCarSv.asmx.cs:19477`.
+        // Route moi: `GET /api/stockouts/acc-report` (Program.cs). Tham so: dealerCode, fromDate, toDate.
+        // Hanh vi port 1:1: (1) `#invstock` = `ser_inv_stockout so` loc `so.status = 3` + `so.StockOutTime >= FromDate`
+        //   + `<= ToDate` + `so.DealerCode = <dealer>`; (2) `inner join Ser_Inv_StockOutDetail sod ON tso.StockOutID = sod.StockOutID`
+        //   (INNER => phieu khong co dong chi tiet BI ROI); (3) `INNER JOIN Ser_Mst_Part p ON sod.PartID = p.PartID`
+        //   (INNER => phu tung khong con trong danh muc BI ROI); (4) `left join ser_Inv_StockOutOrder soo ON sod.StockOutOrderID=soo.StockOutOrderID`;
+        //   (5) `left join ser_ro ro ON soo.ROID=ro.ROID`; (6) `GROUP BY sod.PartID, tso.StockOutNo, tso.StockOutTime, p.PartCode,
+        //   p.VieName, p.EngName, p.Unit, sod.Price, sod.VAT, soo.StockOutOrderNo, ro.RONo` voi `sum(isnull(sod.Quantity,0)) Quantity`;
+        //   (7) cot tien: `Amount = sum((Quantity*Price)+(Quantity*Price*VAT*0.01))`; `ORDER BY tso.StockOutNo, tso.StockOutTime, p.PartCode`.
+        // ⚠️ Nguon KHONG guard tham so rong (khong `#region Check`) => port bat buoc dealerCode + fromDate + toDate (tra 400).
+        // ⚠️ `strDealerCode` nguon nhét thẳng vào `so.DealerCode ='@DealerCode'` (KHONG phai danh sach '|') => port nhan 1 ma dai ly.
+        // ⚠️ `so.StockOutTime` (cot ngay gio) map sang `PartStockOut.StockOutDateTime` (KHONG phai `StockOutDate`).
+        // Entity `PartStockOut`/`PartStockOutLine`/`ServicePart`/`SerStockOutOrder`/`RepairOrder` da du cot => KHONG them cot moi (khong can §12).
+        app.MapGet("/api/stockouts/acc-report", async (AppDbContext db, ITenantContext t,
+            string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+        {
+            if (string.IsNullOrWhiteSpace(dealerCode) || fromDate is null || toDate is null)
+                return Results.BadRequest(new { error = "Can dealerCode + fromDate + toDate — nguon khong guard tham so rong." });
+            var dl = dealerCode!.Trim();
+            var from = fromDate!.Value; var to = toDate!.Value;
+            // (1) phieu xuat Ket thuc trong khoang ngay cua dai ly.
+            var heads = await db.PartStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "3"
+                && x.DealerCode == dl && x.StockOutDateTime != null && x.StockOutDateTime >= from && x.StockOutDateTime <= to).ToListAsync();
+            var headIds = heads.Select(h => h.Id).ToList();
+            var headById = heads.ToDictionary(h => h.Id, h => h);
+            // (2) INNER JOIN dong chi tiet theo StockOutID.
+            var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && headIds.Contains(l.StockOutId)).ToListAsync();
+            // (3) INNER JOIN Ser_Mst_Part theo PartID => phu tung khong con trong danh muc BI ROI.
+            var partIds = lines.Select(l => l.PartID).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().ToList();
+            var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIds.Contains(x.PartID!)).ToListAsync();
+            var partById = parts.Where(x => x.PartID != null).GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+            // (4) left join Ser_Inv_StockOutOrder theo StockOutOrderID.
+            var orderIds = lines.Select(l => l.StockOutOrderID).Where(x => x != null).Select(x => x!.Value).Distinct().ToList();
+            var orders = await db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.Id)).ToListAsync();
+            var orderById = orders.ToDictionary(x => x.Id, x => x);
+            // (5) left join ser_ro theo soo.ROID=ro.ROID.
+            var roIds = orders.Select(o => o.ROID).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().ToList();
+            var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RONo)).ToListAsync();
+            var roByNo = ros.GroupBy(x => x.RONo).ToDictionary(g => g.Key, g => g.First());
+            var droppedLinesByPartJoin = lines.Count(l => string.IsNullOrWhiteSpace(l.PartID) || !partById.ContainsKey(l.PartID!));
+            // (6) GROUP BY + (7) cot tien.
+            var items = lines
+                .Where(l => !string.IsNullOrWhiteSpace(l.PartID) && partById.ContainsKey(l.PartID!))
+                .Select(l =>
+                {
+                    var h = headById[l.StockOutId];
+                    var p = partById[l.PartID!];
+                    orderById.TryGetValue(l.StockOutOrderID ?? 0, out var soo);
+                    var roNo = soo?.ROID != null && roByNo.TryGetValue(soo.ROID, out var ro) ? ro.RONo : null;
+                    return new { l, h, p, soo, roNo };
+                })
+                .GroupBy(x => new { x.l.PartID, x.h.StockOutNo, x.h.StockOutDateTime, x.p.PartCode, x.p.PartName, x.p.EngName, x.p.Unit, x.l.Price, x.l.VAT, x.soo?.StockOutOrderNo, x.roNo })
+                .Select(g =>
+                {
+                    var f = g.First();
+                    var qty = g.Sum(x => x.l.Quantity);
+                    var price = f.l.Price ?? 0; var vat = f.l.VAT;
+                    return new
+                    {
+                        partID = f.l.PartID, stockOutNo = f.h.StockOutNo, date = f.h.StockOutDateTime,
+                        stockOutOrderNo = f.soo?.StockOutOrderNo, roNo = f.roNo,
+                        partCode = f.p.PartCode, vieName = f.p.PartName, engName = f.p.EngName, unit = f.p.Unit,
+                        quantity = qty, price, vat,
+                        amount = qty * price + qty * price * vat * 0.01m,
+                    };
+                })
+                .OrderBy(x => x.stockOutNo).ThenBy(x => x.date).ThenBy(x => x.partCode).ToList();
+            return Results.Ok(new
+            {
+                count = items.Count, items,
+                sourceInnerJoinsDropRows = "Ser_Inv_StockOutDetail (theo StockOutID) va Ser_Mst_Part (theo PartID) deu INNER JOIN => dong khong con trong danh muc bi roi im lang",
+                droppedLinesByPartJoin,
+                statusFilterIsFinishedOnly = "nguon loc so.status = 3 (Ket thuc) — phieu Moi tao/Tien hanh/Huy KHONG vao bao cao",
+                dealerParamIsSingleNotList = "strDealerCode nguon nhét thẳng vào so.DealerCode ='@DealerCode' (khong phai danh sach '|')",
+                dateColumnIsStockOutTime = "so.StockOutTime (cot ngay gio) map sang PartStockOut.StockOutDateTime (KHONG phai StockOutDate)",
+                moneyColumns = "Amount = sum((Quantity*Price)+(Quantity*Price*VAT*0.01))",
+                noGuardInSource = "nguon khong co #region Check => khong chan tham so rong",
+            });
+        }).RequireAuthorization();
         // ===== 🔴🔴 #581 TRA BẢN TIN THEO VIN — **HAI WS GỌI HAI BẢN, ĐỌC HAI DB KHÁC NHAU** =====
 // Nguồn có **năm** bản cùng tên gốc `Blt_Bulletin_Get_byVin` (`:2987` trần · `_New20180625` `:3155` ·
 //   `_New20191104` `:3367` · `_New20210618` `:3585` · `_New20221114` `:3796`). Hai bản **đang sống**:
