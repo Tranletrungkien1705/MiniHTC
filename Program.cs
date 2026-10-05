@@ -90328,6 +90328,42 @@ app.MapDelete("/api/partprices/{id:long}", async (long id, AppDbContext db, ITen
     await db.SaveChangesAsync();
     return Results.Ok(new { p.Id, p.PartCode, p.EffectiveDate, p.IsActive });
 }).RequireAuthorization();
+// ===== 🔴🔴🔴 #1568 `Ser_Mst_PartPrice_Update` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:24873`) =====
+// Hàm biz LIVE: `BizCarSv.Inventory.cs:742-930 Ser_Mst_PartPrice_Update`.
+// GREP TRƯỚC: Mini có `POST /api/partprices` (upsert theo PartCode+EffectiveDate — KHÁC nguồn `_Create`),
+//   `DELETE /api/partprices/{id}` (#934), `POST /api/partprices/import` (#935) nhưng KHÔNG có route SỬA theo
+//   `PartPriceID` (mục B NIGHT-QUEUE).
+// 🔴 Hành vi nguồn port 1:1:
+//   (1) Nguồn nhận `strPartPriceID` + `strPartID` + `strPriceOut` + `strDateEffect` + `strRemark` + `strIsActive`.
+//   (2) `UPDATE Ser_Inv_PartPrice SET PartID, Price, DateEffect, Remark, IsActive, LogLUDateTime, LogLUBy
+//       WHERE PartPriceID = @PartPriceID` — CHỈ ghi 2 cột nhật ký (KHÔNG đụng CreatedDate/CreatedBy).
+//   (3) Trả về DataSet `Ser_Inv_PartPrice` với các cột PartPriceID/PartID/Price/DateEffect/Remark/IsActive.
+//   (4) Nguồn KHÔNG guard tồn tại — nếu PartPriceID không có thì UPDATE 0 dòng, vẫn trả OK (giữ 1:1).
+// ⚠️ Mini dùng `Id` (khoá kỹ thuật) làm `PartPriceID`; `PartID` nguồn là số nhưng Mini lưu `PartCode` (khoá tự nhiên)
+//   — nhận `PartCode` để tra, giữ đúng ngữ nghĩa "đổi phụ tùng của mốc giá".
+app.MapPut("/api/partprices/{id:long}", async (long id, PartPriceUpdateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    // (4) Nguồn không guard tồn tại — UPDATE 0 dòng vẫn OK. Mini trả NotFound để rõ ràng nhưng KHÔNG ném lỗi nghiệp vụ.
+    if (p is null) return Results.NotFound(new { error = "Ser_Inv_PartPrice_NotFound", partPriceId = id });
+    // (2) Ghi PartID/Price/DateEffect/Remark/IsActive + LogLUDateTime/LogLUBy (KHÔNG đụng CreatedDate/CreatedBy).
+    if (!string.IsNullOrWhiteSpace(dto.PartCode)) p.PartCode = dto.PartCode!.Trim().ToUpperInvariant();
+    if (dto.Price is not null) p.Price = dto.Price.Value;
+    if (dto.EffectiveDate is not null) p.EffectiveDate = dto.EffectiveDate.Value.Date;
+    p.Remark = dto.Remark;
+    if (dto.IsActive is not null) p.IsActive = dto.IsActive.Trim();
+    p.LogLUDateTime = DateTime.Now;
+    p.LogLUBy = (partnerUserCode ?? "system").Trim();
+    p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    // (3) Trả về đúng shape DataSet nguồn.
+    return Results.Ok(new
+    {
+        PartPriceID = p.Id, PartID = p.PartCode, Price = p.Price, DateEffect = p.EffectiveDate.ToString("yyyy-MM-dd"),
+        p.Remark, p.IsActive,
+        note = "Nguon: Ser_Mst_PartPrice_Update (WS:24873) -> Ser_Mst_PartPrice_Update (Inventory.cs:742). UPDATE theo PartPriceID, CHI ghi LogLUDateTime/LogLUBy (khong dung CreatedDate/CreatedBy). Nguon KHONG guard ton tai.",
+    });
+}).RequireAuthorization();
 
 // ===== 🔴🔴 #935 `Ser_Mst_PartPrice_Import` (LIVE, `BizCarSv.Inventory.cs:891`) — NHẬP HÀNG LOẠT TỪ EXCEL, CHƯA CÓ =====
 // Nguồn nhận DataSet Excel (cột `PARTCODE`/`VIENAME`/`PRICE`/`PARTID`/`DATEEFFECT`/`REMARK`), lặp từng dòng:
@@ -109658,6 +109694,9 @@ record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status,
     string? Remark = null, string? IsActive = null);   // #295
 record PartPriceImportRowDto(string? PartCode, string? PartName, decimal? Price, DateTime? EffectiveDate, string? Remark);   // #935
+// #1568: `Ser_Mst_PartPrice_Update` (WS:24873) -> `Ser_Mst_PartPrice_Update` (Inventory.cs:742).
+//   Nguồn nhận strPartPriceID + strPartID + strPriceOut + strDateEffect + strRemark + strIsActive.
+record PartPriceUpdateDto(string? PartCode, decimal? Price, DateTime? EffectiveDate, string? Remark, string? IsActive);
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate, string? TradeMarkCode = null, int? ProductYear = null);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate,
     string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
