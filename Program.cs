@@ -28471,9 +28471,14 @@ app.MapGet("/api/report/warranty-chart", async (AppDbContext db, ITenantContext 
     var from = (reportDateFrom ?? DateTime.Today.AddMonths(-3)).Date;
     var to = (reportDateTo ?? DateTime.Today).Date;
 
-    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
+    // #5742: from/to duoc tinh nhung CHUA TUNG duoc ap dung loc — route tra ve TOAN BO claim
+    // (khong gioi han theo reportDateFrom/reportDateTo) tu khi tao o #655. Nguon loc theo
+    // srr.CreatedDate (ngay gui BCBH); Mini khong co cot CreatedDate rieng, dung CreatedAt
+    // (duoc gan DateTime.Now luc tao claim, tuong duong ngu nghia).
+    var qy = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId
+        && x.CreatedAt >= from && x.CreatedAt < to.AddDays(1));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode!.Trim());
-    var claims = await qy.Select(x => new { x.Id, x.ROWNo, x.DealerCode, x.Vin, x.Amount, x.WarrantyStatus }).ToListAsync();
+    var claims = await qy.Select(x => new { x.Id, x.ROWNo, x.DealerCode, x.Vin, x.Amount, x.WarrantyStatus, x.CreatedAt }).ToListAsync();
 
     var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId)
         .Select(c => new { c.FrameNo, c.ModelCode, c.TradeMark }).ToListAsync();
@@ -28481,7 +28486,7 @@ app.MapGet("/api/report/warranty-chart", async (AppDbContext db, ITenantContext 
     var joined = claims.Select(c =>
     {
         var car = c.Vin == null ? null : cars.FirstOrDefault(x => x.FrameNo == c.Vin);
-        return new { c.Id, c.ROWNo, c.DealerCode, c.Vin, c.Amount, modelCode = car?.ModelCode,
+        return new { c.Id, c.ROWNo, c.DealerCode, c.Vin, c.Amount, c.CreatedAt, modelCode = car?.ModelCode,
                      tradeMark = car?.TradeMark };
     }).ToList();
 
@@ -28491,11 +28496,16 @@ app.MapGet("/api/report/warranty-chart", async (AppDbContext db, ITenantContext 
     var byModel = joined.GroupBy(x => x.modelCode)
         .Select(g => new { modelCode = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) })
         .OrderBy(x => x.modelCode).ToList();
+    // #5742: dong no "_ByMonth" (nguon: CONVERT(varchar(7),srr.CreatedDate,126) — nhom theo thang,
+    // dinh dang "yyyy-MM" de thu tu chuoi = thu tu thoi gian, giong quy uoc #655 dateGroupingUsesIso).
+    var byMonth = joined.GroupBy(x => x.CreatedAt.ToString("yyyy-MM"))
+        .Select(g => new { month = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) })
+        .OrderBy(x => x.month).ToList();
 
     return Results.Ok(new
     {
         fromDate = from, toDate = to,
-        byDealer, byModel,
+        byDealer, byModel, byMonth,
         // ===== #655 =====
         mechanismBehindTheCommonCenterStory = "tim ra CO CHE: StringUtils.Replace(sql, @strDBName_CommonCenter., dbAction == _dbDealer ? [<DBName_Main>].[dbo]. : chuoi RONG) => chay tren _dbDealer thi GOI CHEO sang Main, chay tren _dbWH/_dbMain thi doc CUC BO; day chinh la loi giai thich cho chuoi quan sat #619/#621/#624/#625/#636/#652",
         reinforcesRetractionInIssue619 = "cung co them phan RUT LAI o #619: @strDBName_CommonCenter KHONG he la mot DB rieng — no chi la TIEN TO TUY CHON, va gia tri duy nhat tung duoc gan la ten DB Main",
@@ -28507,7 +28517,16 @@ app.MapGet("/api/report/warranty-chart", async (AppDbContext db, ITenantContext 
         debugLinesAreCommentedHere = "AM TINH: dong -- select \"\" #tbl_x,* from #tbl_x o day DA duoc comment — NGUOC voi #654 noi dong tuong tu con ACTIVE va van tra ve client",
         unionAllAggregationIsCorrect = "AM TINH: khoi union all gop tien phu tung va tien cong roi sum() theo ROWID — hop le, khong nhan doi (moi nhanh chi dong gop cot cua minh)",
         dateGroupingUsesIso = "CONVERT(varchar(10)/(7), CreatedDate, 126) de gom ngay/thang — style 126 ISO nen thu tu chuoi = thu tu thoi gian",
-        sourceReturnsFourTables = "nguon tra BON bang: …_ByDealer, …_ByMonth, …_ByArea, …_ByModelB; port moi dung hai (byDealer, byModel) vi MiniHTC chua mo hinh hoa VUNG (Area) va thang bao cao — ghi NO",
+        sourceReturnsFourTables = "nguon tra BON bang: …_ByDealer, …_ByMonth, …_ByArea, …_ByModelB; port dung hai (byDealer, byModel)",
+        // #5742 SUA LAI LY DO NO (ban ghi cu "_ByArea thieu vi MiniHTC chua mo hinh hoa VUNG" SAI —
+        // doc toan van BizCarSv.ZTemp.cs:910-1199 (V20.2023.Release.V2) xac nhan "_ByArea" KHONG phai
+        // dia ly/Mst_Area: la "t.Orginal" = mvo.OrginalCode lay qua left join Mst_VINModelOrginal (bang
+        // tra cuu XUAT XU theo tien to VIN — vd HMC/HMI/HTMV), MOT bang Mini CHUA CO entity nao tuong
+        // duong. "_ByModelB" dung CUNG join nay (mvo.ModelCode) nen chung 1 nguyen nhan chan. Join con
+        // biet la BUGGY o nguon (left join VOI "or" 2 do dai tien to VIN => 1 BCBH bi dem HAI LAN, xem
+        // #655 vinPrefixJoinThirdCaseButLeftJoin) — neu port sau nay PHAI tu sua loi dem trung nay,
+        // KHONG port y nguyen. "_ByMonth" da BO SUNG o #5742 (xem truong byMonth duoi day).
+        byAreaByModelBBlockedReason = "can entity Mst_VINModelOrginal (VINCode prefix -> OrginalCode/ModelCode) CHUA TON TAI trong Mini; them entity nay la hang muc MASTER DATA moi (can man quan tri rieng), khong phai sua report don thuan — ghi NO cho fire dau tu rieng",
     });
 }).RequireAuthorization();
 
