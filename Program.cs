@@ -105788,6 +105788,60 @@ app.MapGet("/api/receptionfaudtypemsts", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #1577 `Ser_Mst_ReceptionFAudType_Get` (LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:26419`) =====
+// Vo `Ser_Mst_ReceptionFAudType_Get` (`BizCarSv.Tab.cs:14614`) -> than `Ser_Mst_ReceptionFAudType_GetX` (`:14725-14890`).
+// Nguon: `select distinct identity(bigint,0,1) MyIdxSeq, smrfat.ReceptionFAudType into #tbl_..._Draft
+//   from Ser_Mst_ReceptionFAudType smrfat where(1=1) zzzzClauseWhere_strReceptionFAudTypeList
+//   zzzzClauseWhere_strFlagActiveList order by smrfat.ReceptionFAudType;
+//   select Count(0) MyCount from #...;
+//   select t.MyIdxSeq, smrfat.* from #tbl..._Filter t inner join Ser_Mst_ReceptionFAudType smrfat
+//   on t.ReceptionFAudType = smrfat.ReceptionFAudType`.
+// 🔴 HAI bo loc dang DANH SACH '|' qua `SqlUtils.BuildClause("and", "smrfat.<col>", <list>, "@p")`:
+//   `smrfat.ReceptionFAudType`, `smrfat.FlagActive`. Danh sach rong => BO HAN menh de => tra TRON danh muc.
+// 🔴 `bGet_Ser_Mst_ReceptionFAudType = (str != null && str.Length > 0)` — BAT KY chuoi khac rong cung BAT
+//   khoi chi tiet (khong so TConst.Flag.Yes).
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` KHONG guard rong => FormatException (ho #626/#627); hai dong phan trang
+//   bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang.
+// 🔴 `order by` tren `SELECT ... INTO` chi anh huong cach danh so identity, KHONG quyet dinh thu tu tra ve (#415)
+//   — cau ket qua KHONG co ORDER BY => port sap tuong minh theo ReceptionFAudType.
+// 🔴 Count(0) tren bang DISTINCT(ReceptionFAudType) => dem ma phan biet.
+// 📌 Mini: `GET /api/receptionfaudtypemsts/get` — route `/api/receptionfaudtypemsts` (#627) loc gia tri DON
+//   (type/flagActive) va KHONG co isGetDetail => day la GAP that (WebMethod khong dau vet).
+app.MapGet("/api/receptionfaudtypemsts/get", async (AppDbContext db, ITenantContext t,
+    string? receptionFAudTypeList, string? flagActiveList, string? isGetDetail) =>
+{
+    var qy = db.ReceptionFAudTypeMsts.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(receptionFAudTypeList))
+    {
+        var v = receptionFAudTypeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qy = qy.Where(x => v.Contains(x.ReceptionFAudType));
+    }
+    if (!string.IsNullOrWhiteSpace(flagActiveList))
+    {
+        var v = flagActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qy = qy.Where(x => v.Contains(x.FlagActive));
+    }
+    var all = await qy.OrderBy(x => x.ReceptionFAudType).ToListAsync();
+    // Nguon: Count(0) tren bang DISTINCT(ReceptionFAudType) => dem ma phan biet.
+    var distinctCodes = all.Select(x => x.ReceptionFAudType).Distinct().Count();
+    // bGet_Ser_Mst_ReceptionFAudType = (str != null && str.Length > 0) — bat ky chuoi khac rong deu BAT.
+    var getDetail = !string.IsNullOrEmpty(isGetDetail);
+    var items = getDetail
+        ? all.Select(x => (object)new { x.Id, x.ReceptionFAudType, x.ReceptionFAudTypeName, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToList()
+        : new List<object>();
+    return Results.Ok(new
+    {
+        myCountAsSource = distinctCodes,   // nguon: Count(0) tren bang DISTINCT(ReceptionFAudType)
+        count = items.Count, items,
+        buildClauseNote = "BuildClause('and','smrfat.<col>',<list>,'@p'): cat theo '|', danh sach rong => BO HAN menh de (khong phai 'in ()')",
+        detailFlagNotFollowingConvention = "bGet_Ser_Mst_ReceptionFAudType = (str != null && str.Length > 0) — BAT KY chuoi khac rong cung bat, khong so TConst.Flag.Yes",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        pagingCommentedOut = "hai dong phan trang bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang",
+        orderByOnSelectIntoOnly = "order by smrfat.ReceptionFAudType nam tren SELECT ... INTO nen chi anh huong cach danh so identity, khong quyet dinh thu tu tra ve (#415); cau ket qua KHONG co ORDER BY — port sap tuong minh",
+        dbColumnNamesAreMisspelledVerbatim = "cot DB thuc su ten RECEPTIONDAUDTYPE / RECEPTIONDAUDTYPENAME (chu D, khong phai F) — giu NGUYEN VAN",
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/receptionfaudtypemsts", async (ReceptionFAudTypeMstDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
