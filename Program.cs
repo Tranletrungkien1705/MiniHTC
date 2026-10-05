@@ -91672,12 +91672,138 @@ app.MapGet("/api/stockoutorders/get02", async (AppDbContext db, ITenantContext t
         sourceTables = "K1 #tblInv_StockOutOrder; K2 backorderindex=0; K3 #tbl_OrderTemp; K4 #tbl_soo; K5 #tbl_sbb; K6 #tbl_so; K7/K8 #tprice; K9 detail; K10 SOOSO",
         statusFilterIsEquals3 = "KHAC Get01 (#1590): loc trang thai phieu xuat la so.[Status] = '3' (KHONG phai NOT IN ('4'))",
         dealerCodeFilterAppliesToManyAliases = "strDealerCodeConditionList ap cho t.DealerCode (K1/K5), siso.DealerCode (K10), sod.DealerCode (K3/K4), smp.DealerCode (K7), so.DealerCode (K3), s.DealerCode (K4), p.DealerCode (K9)",
-        twoTreesDiffer = "3B: ban V20.2023.Release THEM `and t.StockOutType='1'` o K1 (x2); port theo cay CHUAN V20 (KHONG co filter nay)",
-        partPriceJoinedByPartCode = "Mini PartPrice bieu dien bang PartCode (khong co PartID) nen noi gia theo PartCode"
-    });
-}).RequireAuthorization();
-
-app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+                twoTreesDiffer = "3B: ban V20.2023.Release THEM `and t.StockOutType='1'` o K1 (x2); port theo cay CHUAN V20 (KHONG co filter nay)",
+                partPriceJoinedByPartCode = "Mini PartPrice bieu dien bang PartCode (khong co PartID) nen noi gia theo PartCode"
+            });
+        }).RequireAuthorization();
+        // ===== 🔴 #1596 `SerStockOutOrderGetAll` (WebMethod LIVE khong dau vet) =====
+        // Nguon: `BizCarSv.Inventory.StockOut.cs:8663` (`SerStockOutOrderGetAll`); WS LIVE `HTCWSCarSv/WSCarSv.asmx.cs:15026`.
+        // Route moi: `GET /api/stockoutorders/getall` (Program.cs).
+        // Tham so (danh sach '|'): stockOutOrderIdList, dealerCodeList, stockOutOrderNoList, stockOutOrderDateList,
+        //   roIdList, statusList, stockOutTypeList, cusNameList, isGetDetail.
+        // Hanh vi port 1:1:
+        //   K1 `#tbl_Ser_Inv_StockOutOrder` = `Ser_Inv_StockOutOrder si` LEFT JOIN (distinct StockOutID/StockOutOrderID/DealerCode
+        //      tu `Ser_Inv_StockOutDetail sod` loc sod.StockOutOrderID + sod.DealerCode) `sodd` ON si.StockOutOrderID=sodd.StockOutOrderID,
+        //      WHERE loc si.StockOutOrderID/DealerCode/StockOutOrderNo/StockOutOrderTime/ROID/Status/StockOutType + `BackOrderIndex=0`;
+        //      SELECT `si.*, sodd.StockOutID`.
+        //   K2 bang ket qua 1 = `#tbl_Ser_Inv_StockOutOrder si` INNER JOIN `Ser_Customer cus` ON si.CusID=cus.CusID
+        //      LEFT JOIN `ser_car car` ON cus.CusID=car.CarID, WHERE loc cus.CusName;
+        //      SELECT `si.*, cus.CusName, cus.Address, Isnull(cus.Tel,cus.Mobile) Phone, cus.Tel cusTel, cus.Mobile cusMobile, car.PlateNo`.
+        //   K3 (chi khi isGetDetail = '1') bang ket qua 2 = `#tbl_Ser_Inv_StockOutOrder t` INNER JOIN `Ser_Inv_StockOutOrderDetail sid`
+        //      ON t.StockOutOrderID=sid.StockOutOrderID INNER JOIN `Ser_Mst_Part p` ON sid.PartID=p.PartID
+        //      LEFT JOIN `Ser_ROPartItems rop` ON rop.roid=t.ROID and rop.PartID=sid.partid;
+        //      SELECT `sid.PartID, t.StockOutOrderID, sid.Quantity OrderQuantity, t.StockOutOrderNo, p.Unit, p.VieName, p.PartCode,
+        //      Isnull(rop.Price,0) Price, Isnull(rop.VAT,0) VAT`.
+        // ⚠️ `strIsGetDetail` so sanh `TConst.Flag.Active` = "1" (KHONG phai 'Y').
+        // ⚠️ `strStockOutOrderDateConditionList` loc tren `si.StockOutOrderTime` (cot ngay gio), KHONG phai cot ngay rieng.
+        // ⚠️ `strDealerCodeConditionList` ap cho CA `si.DealerCode` (K1) LAN `sod.DealerCode` (subquery K1).
+        // ⚠️ `strStockOutOrderIDConditionList` ap cho CA `si.StockOutOrderID` (K1) LAN `sod.StockOutOrderID` (subquery K1).
+        // ⚠️ `si.*` gom ca cot `StockOutID` lay tu join `sodd` (khong nam tren bang chinh) — tra kem o `stockOutID`.
+        // 3B: md5 than ham LECH giua V20 va V20.2023.Release. Diff sau chuan hoa: ban Release COMMENT `car.PlateNo`
+        //   va THEM `siso.StockNo`/`sis.StockName`/`sr.RONo`/`sr.PlateNo` (join them Ser_RO + Ser_Inv_StockOut + Ser_Inv_Stock,
+        //   danh dau 20240119). Port theo cay CHUAN V20 (giu `car.PlateNo`, KHONG co StockNo/StockName/RONo/PlateNo cua sr).
+        app.MapGet("/api/stockoutorders/getall", async (AppDbContext db, ITenantContext t,
+            string? stockOutOrderIdList, string? dealerCodeList, string? stockOutOrderNoList, string? stockOutOrderDateList,
+            string? roIdList, string? statusList, string? stockOutTypeList, string? cusNameList, string? isGetDetail) =>
+        {
+            static List<string> SplitList(string? s) => string.IsNullOrWhiteSpace(s)
+                ? new List<string>()
+                : s!.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+            var orderIds = SplitList(stockOutOrderIdList);
+            var dealers = SplitList(dealerCodeList);
+            var orderNos = SplitList(stockOutOrderNoList);
+            var orderDates = SplitList(stockOutOrderDateList);
+            var roIds = SplitList(roIdList);
+            var statuses = SplitList(statusList);
+            var stockOutTypes = SplitList(stockOutTypeList);
+            var cusNames = SplitList(cusNameList);
+            var getDetail = string.Equals(isGetDetail, "1", StringComparison.Ordinal);
+            // ---- K1: #tbl_Ser_Inv_StockOutOrder (si LEFT JOIN sodd) + BackOrderIndex=0 ----
+            var q1 = db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId);
+            if (orderIds.Count > 0) q1 = q1.Where(x => orderIds.Contains(x.Id.ToString()));
+            if (dealers.Count > 0) q1 = q1.Where(x => x.DealerCode != null && dealers.Contains(x.DealerCode!));
+            if (orderNos.Count > 0) q1 = q1.Where(x => x.StockOutOrderNo != null && orderNos.Contains(x.StockOutOrderNo!));
+            if (orderDates.Count > 0) q1 = q1.Where(x => x.StockOutOrderTime != null && orderDates.Contains(x.StockOutOrderTime!.Value.ToString("yyyy-MM-dd HH:mm:ss")));
+            if (roIds.Count > 0) q1 = q1.Where(x => x.ROID != null && roIds.Contains(x.ROID!));
+            if (statuses.Count > 0) q1 = q1.Where(x => statuses.Contains(x.Status));
+            if (stockOutTypes.Count > 0) q1 = q1.Where(x => x.StockOutType != null && stockOutTypes.Contains(x.StockOutType!));
+            var tblInv = (await q1.ToListAsync()).Where(x => (x.BackOrderIndex ?? "") == "0").ToList();
+            var back0Ids = tblInv.Select(x => x.Id).ToList();
+            // sodd: distinct StockOutID/StockOutOrderID/DealerCode tu Ser_Inv_StockOutDetail (loc sod.StockOutOrderID + sod.DealerCode).
+            var sodQ = db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && x.StockOutOrderID != null && back0Ids.Contains(x.StockOutOrderID!.Value));
+            if (orderIds.Count > 0) sodQ = sodQ.Where(x => orderIds.Contains(x.StockOutOrderID!.Value.ToString()));
+            if (dealers.Count > 0) sodQ = sodQ.Where(x => x.DealerCode != null && dealers.Contains(x.DealerCode!));
+            var sodd = (await sodQ.Select(x => new { x.StockOutId, StockOutOrderID = x.StockOutOrderID!.Value, x.DealerCode }).ToListAsync())
+                .GroupBy(x => new { x.StockOutId, x.StockOutOrderID, x.DealerCode }).Select(g => g.First()).ToList();
+            var stockOutIdByOrder = sodd.GroupBy(x => x.StockOutOrderID).ToDictionary(g => g.Key, g => g.First().StockOutId);
+            // ---- K2: bang ket qua 1 (INNER JOIN Ser_Customer, LEFT JOIN ser_car) ----
+            var cusIds = tblInv.Where(x => x.CusID != null).Select(x => x.CusID!).Distinct().ToList();
+            var cusList = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId && cusIds.Contains(x.CusCode)).ToListAsync();
+            var cusMap = cusList.GroupBy(x => x.CusCode).ToDictionary(g => g.Key, g => g.First());
+            var carList = await db.ServiceCars.Where(x => x.OrgId == t.OrgId).ToListAsync();
+            // Nguon: `left join ser_car car on cus.CusID=car.CarID` — Mini bieu dien `Ser_Car.CusID` (ma KH) bang `ServiceCar.CusID`.
+            var carByCusId = carList.GroupBy(x => x.CusID ?? "").ToDictionary(g => g.Key, g => g.First());
+            var headerRows = tblInv
+                .Where(x => x.CusID != null && cusMap.ContainsKey(x.CusID!))
+                .Where(x => cusNames.Count == 0 || (cusMap.TryGetValue(x.CusID!, out var c) && c.CusName != null && cusNames.Contains(c.CusName)))
+                .Select(x =>
+                {
+                    cusMap.TryGetValue(x.CusID!, out var cus);
+                    carByCusId.TryGetValue(x.CusID!, out var car);
+                    return new
+                    {
+                        x.Id, x.OrgId, x.StockOutOrderNo, x.StockOutOrderTime, x.CusName, x.Address, x.Phone, x.Mobile,
+                        x.Description, x.TotalQty, x.Status, x.SourceType, x.RONo, x.ROID, x.CreatedBy, x.CreatedDate,
+                        x.RequestDeliveryTime, x.Priority, x.BackOrderIndex, x.UserCode, x.CusID, x.DealerCode, x.QuoteID,
+                        x.StockOutType, x.LogLUDateTime, x.LogLUBy, x.StatusText,
+                        stockOutID = stockOutIdByOrder.TryGetValue(x.Id, out var soid) ? (long?)soid : null,
+                        cusName = cus?.CusName, cusAddress = cus?.Address,
+                        phone = !string.IsNullOrEmpty(cus?.Tel) ? cus!.Tel : cus?.Mobile,
+                        cusTel = cus?.Tel, cusMobile = cus?.Mobile, plateNo = car?.PlateNo
+                    };
+                }).ToList();
+            // ---- K3: bang ket qua 2 (chi khi isGetDetail = '1') ----
+            var detailRows = new List<object>();
+            if (getDetail)
+            {
+                var orderLines = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && back0Ids.Contains(x.OrderId)).ToListAsync();
+                var partIds = orderLines.Where(x => x.PartID != null).Select(x => x.PartID!).Distinct().ToList();
+                var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && partIds.Contains(x.PartID!))
+                    .Select(x => new { x.PartID, x.PartCode, x.PartName, x.Unit }).ToListAsync();
+                var partMap = parts.Where(x => x.PartID != null).GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+                var roidByOrderId = tblInv.ToDictionary(x => x.Id, x => x.ROID ?? "");
+                var roPartItems = await db.RoPartItems.Where(x => x.OrgId == t.OrgId).ToListAsync();
+                var roPartMap = roPartItems.Where(x => x.PartID != null).GroupBy(x => (x.RoId.ToString(), x.PartID!)).ToDictionary(g => g.Key, g => g.First());
+                detailRows = orderLines.Select(l =>
+                {
+                    partMap.TryGetValue(l.PartID ?? "", out var p);
+                    var roid = roidByOrderId.TryGetValue(l.OrderId, out var r) ? r : "";
+                    roPartMap.TryGetValue((roid, l.PartID ?? ""), out var rop);
+                    return (object)new
+                    {
+                        partID = l.PartID,
+                        stockOutOrderID = l.OrderId,
+                        orderQuantity = l.OrderQuantity,
+                        stockOutOrderNo = tblInv.FirstOrDefault(o => o.Id == l.OrderId)?.StockOutOrderNo,
+                        unit = p?.Unit, vieName = p?.PartName, partCode = p?.PartCode,
+                        price = rop?.UnitPrice ?? 0, vat = rop?.Vat ?? 0
+                    };
+                }).ToList();
+            }
+            return Results.Ok(new
+            {
+                ser_Inv_StockOutOrder = headerRows,
+                ser_Inv_StockOutOrderDetail = detailRows,
+                sourceTables = "K1 #tbl_Ser_Inv_StockOutOrder (si LEFT JOIN sodd) + BackOrderIndex=0; K2 header (INNER JOIN Ser_Customer, LEFT JOIN ser_car); K3 detail (chi khi isGetDetail='1')",
+                isGetDetailFlag = "strIsGetDetail so sanh TConst.Flag.Active = '1' (KHONG phai 'Y')",
+                dateFilterColumn = "strStockOutOrderDateConditionList loc tren si.StockOutOrderTime (cot ngay gio)",
+                dealerCodeFilterAppliesToBoth = "strDealerCodeConditionList ap cho CA si.DealerCode (K1) LAN sod.DealerCode (subquery K1)",
+                stockOutOrderIdFilterAppliesToBoth = "strStockOutOrderIDConditionList ap cho CA si.StockOutOrderID (K1) LAN sod.StockOutOrderID (subquery K1)",
+                stockOutIDFromJoin = "si.* gom cot StockOutID lay tu join sodd (khong nam tren bang chinh) — tra kem o stockOutID",
+                twoTreesDiffer = "3B: ban V20.2023.Release COMMENT car.PlateNo va THEM siso.StockNo/sis.StockName/sr.RONo/sr.PlateNo (20240119); port theo cay CHUAN V20"
+            });
+        }).RequireAuthorization();
+        app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
