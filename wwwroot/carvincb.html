@@ -15,7 +15,7 @@
 </style></head>
 <body>
 <h1>Hồ sơ phiếu thùng theo VIN <span class="muted">(port 1:1 FrmUpdateCarVIN_CBInvoice — TCMotor)</span></h1>
-<p class="muted">Cập nhật số/ngày phiếu xuất xưởng có thùng (CB) + ngày giao phiếu cho xe theo lô (import), upsert theo VIN.</p>
+<p class="muted">Cập nhật số/ngày phiếu thùng (CB) + ngày giao phiếu cho xe theo lô (import) — VIN phải tồn tại + đang hoạt động; số/ngày phiếu CB đòi xe đã có Số/Ngày nguồn gốc + đang đóng thùng (TypeCB='Y'); ngày giao phiếu chỉ áp dụng xe model HR/HR-CKD.</p>
 <div class="card"><h3 style="margin-top:0">Import cập nhật</h3>
   <p class="muted" style="margin:2px 0">Mỗi dòng, tab: <b>VIN | Số phiếu CB | Ngày CB (yyyy-mm-dd) | Ngày giao phiếu</b></p>
   <textarea id="rows" placeholder="VIN00001&#9;CB-001&#9;2026-09-01&#9;2026-09-03"></textarea>
@@ -33,14 +33,14 @@ async function token(){ if(TOKEN) return TOKEN;
 function Hh(x){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, x||{}); }
 function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},4500); }
 async function doImport(){ await token();
-  const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{VIN:(c[0]||"").trim(),CBNo:(c[1]||"").trim(),CBDate:(c[2]||"").trim()||null,DateDeliveryCBInvoice:(c[3]||"").trim()||null};});
+  const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{VIN:(c[0]||"").trim(),CBNo:(c[1]||"").trim()||null,CBDate:(c[2]||"").trim()||null,DateDeliveryCBInvoice:(c[3]||"").trim()||null};});
   const r=await fetch("/api/carvincbinfos/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Thêm ${d.added}, cập nhật ${d.updated}`); F("rows").value=""; load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã cập nhật ${d.updated} xe`); F("rows").value=""; load();
 }
 async function load(){ await token();
   const r=await fetch("/api/carvincbinfos?vin="+encodeURIComponent(F("q").value),{headers:Hh()}); const d=await r.json();
   F("kpi").textContent=`${d.count} xe`;
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.cbNo)}</td><td>${dt(o.cbDate)}</td><td>${dt(o.dateDeliveryCBInvoice)}</td><td>${esc(o.updatedBy)}</td><td>${dts(o.updatedAt)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có dữ liệu.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.vin)}</b></td><td>${esc(o.cbNo)}</td><td>${dt(o.cbDate)}</td><td>${dt(o.dateDeliveryCBInvoice)}</td><td>${esc(o.logLUBy)}</td><td>${dts(o.logLUDateTime)}</td></tr>`).join("")||'<tr><td colspan="6" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>

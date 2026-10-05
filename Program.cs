@@ -40952,12 +40952,19 @@ app.MapPost("/api/salesmantypes/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
-// ===== Hồ sơ phiếu thùng theo VIN (CarVinCBInfo — port 1:1 FrmUpdateCarVIN_CBInvoice, TCMotor) =====
+// #5187 — ĐÃ XOÁ "/api/carvincbinfos*" (CarVinCBInfo, bảng tự tạo không đủ guard): trùng nghiệp vụ với
+// CarVinMaster.CBNo/CBDate/DateDeliveryCBInvoice. Nguồn thật TCMotor: 2 hàm biz riêng
+// CarVINUpdateMulti_CBInfo (BizHTC.Car.cs:6400, lưu CBNo+CBDate — đòi CONo+CODate đã có sẵn + TypeCB='Y')
+// và CarVINUpdateMulti_DateDeliveryCBInvoice (:6168, lưu DateDeliveryCBInvoice — đòi ModelCode∈{HR,HR-CKD}
+// + TypeCB∈{Y,N}). Mini gộp 1 route (đơn giản hoá có chủ ý) nhưng port đủ guard tồn tại của cả 2 hàm.
+// NỢ: nguồn còn side-effect tự set StatusMortageEnd="F" khi đủ 7 điều kiện (gồm InvoiceNoFactory/
+// InvoiceFactoryDate — Mini chưa có 2 cột này) — chưa port, xem docstring CarVinMaster.CBNo.
 app.MapGet("/api/carvincbinfos", async (AppDbContext db, ITenantContext t, string? vin) =>
 {
-    var q = db.CarVinCBInfos.Where(x => x.OrgId == t.OrgId);
+    var q = db.CarVinMasters.Where(x => x.OrgId == t.OrgId && (x.CBNo != null || x.DateDeliveryCBInvoice != null));
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.VIN, x.CBNo, x.CBDate, x.DateDeliveryCBInvoice, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.LogLUDateTime).Take(500)
+        .Select(x => new { x.VIN, x.CBNo, x.CBDate, x.DateDeliveryCBInvoice, x.LogLUBy, x.LogLUDateTime }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -40967,19 +40974,51 @@ app.MapPost("/api/carvincbinfos/import", async (CarVinCBImportDto dto, AppDbCont
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có xe để cập nhật." });
     var dup = rows.GroupBy(r => r.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong file." });
-    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
     var vins = rows.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToHashSet();
-    var existing = await db.CarVinCBInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync();
-    var byVin = existing.ToDictionary(x => x.VIN, x => x);
-    int added = 0, updated = 0; var now = DateTime.Now;
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+    var byVin = cars.ToDictionary(c => c.VIN);
+    // Guard nguồn myCar_CheckVIN: VIN phải tồn tại + active.
+    var notFound = vins.Where(v => !byVin.ContainsKey(v)).ToList();
+    if (notFound.Count > 0) return Results.BadRequest(new { error = $"Không tìm thấy VIN: {string.Join(", ", notFound.Take(10))}." });
+    var inactive = cars.Where(c => c.FlagActive == "0").Select(c => c.VIN).ToList();
+    if (inactive.Count > 0) return Results.BadRequest(new { error = $"VIN đã ngưng hoạt động: {string.Join(", ", inactive.Take(10))}." });
+
     foreach (var r in rows)
     {
-        var vin = r.VIN!.Trim().ToUpperInvariant();
-        if (!byVin.TryGetValue(vin, out var row)) { row = new CarVinCBInfo { OrgId = t.OrgId, VIN = vin }; db.CarVinCBInfos.Add(row); added++; } else updated++;
-        row.CBNo = r.CBNo; row.CBDate = r.CBDate; row.DateDeliveryCBInvoice = r.DateDeliveryCBInvoice; row.UpdatedBy = by; row.UpdatedAt = now;
+        var car = byVin[r.VIN!.Trim().ToUpperInvariant()];
+        // Nhánh CBInfo: CBNo+CBDate phải CÙNG CÓ hoặc CÙNG RỖNG (nguồn: InvalidCBNo_CBDate).
+        if ((r.CBNo is not null) != (r.CBDate is not null))
+            return Results.BadRequest(new { error = $"VIN {car.VIN}: Số phiếu thùng và Ngày phiếu thùng phải nhập CÙNG NHAU." });
+        if (r.CBNo is not null)
+        {
+            // Guard nguồn: VIN phải đã có CONo+CODate (InvalidCoDate_CoNO) và TypeCB='Y' (InvalidTypeCB).
+            if (string.IsNullOrWhiteSpace(car.CONo) || car.CODate is null)
+                return Results.BadRequest(new { error = $"VIN {car.VIN}: chưa có Số/Ngày nguồn gốc (CONo/CODate) — không ghi được phiếu thùng." });
+            if (car.TypeCB != "Y")
+                return Results.BadRequest(new { error = $"VIN {car.VIN}: trạng thái đóng thùng (TypeCB) phải là 'Y'." });
+        }
+        // Nhánh DateDeliveryCBInvoice: ModelCode∈{HR,HR-CKD}, TypeCB∈{Y,N} (nguồn: InvalidModelCode/InvalidTypeCB).
+        if (r.DateDeliveryCBInvoice is not null)
+        {
+            if (car.ModelCode != "HR" && car.ModelCode != "HR-CKD")
+                return Results.BadRequest(new { error = $"VIN {car.VIN}: chỉ xe model HR/HR-CKD mới có ngày giao hồ sơ đóng thùng." });
+            if (car.TypeCB != "Y" && car.TypeCB != "N")
+                return Results.BadRequest(new { error = $"VIN {car.VIN}: trạng thái đóng thùng (TypeCB) phải là 'Y' hoặc 'N'." });
+        }
+    }
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    foreach (var r in rows)
+    {
+        var car = byVin[r.VIN!.Trim().ToUpperInvariant()];
+        if (r.CBNo is not null) { car.CBNo = r.CBNo; car.CBDate = r.CBDate; }
+        if (r.DateDeliveryCBInvoice is not null) car.DateDeliveryCBInvoice = r.DateDeliveryCBInvoice;
+        car.LogLUBy = by; car.LogLUDateTime = now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { added, updated });
+    return Results.Ok(new { updated = rows.Count });
 }).RequireAuthorization();
 
 // ===== Thu hồi hóa đơn HTCV (InvoiceRecall — port 1:1 FrmThuHoiHD, TCMotor) =====

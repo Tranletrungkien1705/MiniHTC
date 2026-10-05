@@ -4610,18 +4610,10 @@ public sealed class SalesManTypeCertificate
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Hồ sơ phiếu thùng theo VIN — port 1:1 FrmUpdateCarVIN_CBInvoice (Car_VIN CB info, TCMotor). Batch cập nhật số/ngày phiếu xuất xưởng có thùng (CB) + ngày giao phiếu, upsert theo VIN.</summary>
-public sealed class CarVinCBInfo
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string VIN { get; set; } = "";
-    public string? CBNo { get; set; }
-    public DateTime? CBDate { get; set; }
-    public DateTime? DateDeliveryCBInvoice { get; set; }
-    public string? UpdatedBy { get; set; }
-    public DateTime UpdatedAt { get; set; }
-}
+// #5187 — ĐÃ XOÁ CarVinCBInfo (bảng tự tạo VIN+CBNo/CBDate/DateDeliveryCBInvoice, không đủ guard): trùng
+// nghiệp vụ với CarVinMaster.CBNo/CBDate/DateDeliveryCBInvoice (cột trực tiếp trên Car_VIN). Cùng mẫu
+// "2 nguồn sự thật" lần thứ 5 (sau ForeignContract #4301/CarActualPrice #4901/CarContractType #4988/
+// CarSpecUpdate #5119).
 
 /// <summary>Thu hồi hóa đơn HTCV — port 1:1 FrmThuHoiHD (VAT_HTCVInvoice_Invoice_Deleted, TCMotor). Import danh sách số HĐ để thu hồi (đánh dấu đã xóa); ghi log + đếm khớp InvoiceLine.</summary>
 public sealed class InvoiceRecall
@@ -13564,6 +13556,16 @@ public sealed class CarVinMaster
     /// <summary>`Car_VIN.CQNo` / `CONo` — số chứng nhận chất lượng / số C/O.</summary>
     public string? CQNo { get; set; }
     public string? CONo { get; set; }
+
+    /// <summary>#5187 Hồ sơ phiếu thùng (`Car_VIN.CBNo`/`CBDate`/`DateDeliveryCBInvoice`) —
+    /// `CarVINUpdateMulti_CBInfo`/`_DateDeliveryCBInvoice` (TCMotor `BizHTC.Car.cs:6400`/`:6168`).
+    /// `CBNo`+`CBDate` PHẢI cùng có hoặc cùng rỗng; nguồn còn đòi `CONo`+`CODate` đã có sẵn + `TypeCB='Y'`
+    /// trước khi cho ghi CB info (xem guard tại route). `DateDeliveryCBInvoice` đòi `ModelCode` ∈
+    /// {HR,HR-CKD} + `TypeCB` ∈ {Y,N}. NỢ: nguồn còn side-effect tự set `StatusMortageEnd`="F" khi đủ 7
+    /// điều kiện (gồm `InvoiceNoFactory`/`InvoiceFactoryDate` — Mini CHƯA có 2 cột này) — chưa port.</summary>
+    public string? CBNo { get; set; }
+    public DateTime? CBDate { get; set; }
+    public DateTime? DateDeliveryCBInvoice { get; set; }
 
     /// <summary>🔴 #B112 — `Car_VIN.InspectionDate`: **ngày kiểm định** khi đóng thùng.
     /// Nguồn **chỉ ghi khi khác rỗng VÀ khác `DateTime.MinValue.ToString("yyyy-MM-dd")`**
