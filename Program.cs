@@ -13522,7 +13522,7 @@ app.MapPost("/api/dealers/update-mrkamcode", async (DealerMrkamCodeDto dto, AppD
     var code = (dto.MRKAMCode ?? "").Trim();
     var row = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer);
     if (row is null) return Results.NotFound(new { error = $"Không có đại lý {dealer}." });
-    // Guard nguồn: vùng thị trường phải tồn tại trong MRK_Mst_AreaMarket.
+    // #5556 — Guard nguồn: vùng thị trường phải tồn tại trong MRK_Mst_AreaMarket.
     if (!await db.MrkMstAreaMarkets.AnyAsync(x => x.OrgId == t.OrgId && x.MRKAMCode == code))
         return Results.BadRequest(new { error = $"Vùng thị trường {code} không tồn tại." });
     row.MRKAMCode = code;
@@ -15068,12 +15068,13 @@ app.MapGet("/api/mstkpitypes", async (AppDbContext db, ITenantContext t, string?
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #5556 — nguồn chỉ có Get/CheckDB, không có Save/CRUD riêng nào cho master này (DBA nạp trực tiếp).
 app.MapGet("/api/mrkareamarkets", async (AppDbContext db, ITenantContext t, string? mrkamCode, string? flagAcitve) =>
 {
     var qy = db.MrkMstAreaMarkets.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(mrkamCode)) qy = qy.Where(x => x.MRKAMCode == mrkamCode);
     if (!string.IsNullOrWhiteSpace(flagAcitve)) qy = qy.Where(x => x.FlagAcitve == flagAcitve);
-    var items = await qy.OrderBy(x => x.MRKAMCode).Select(x => new { x.MRKAMCode, x.FlagAcitve }).ToListAsync();
+    var items = await qy.OrderBy(x => x.MRKAMCode).Select(x => new { x.MRKAMCode, x.MRKAMName, x.FlagAcitve }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 

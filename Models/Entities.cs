@@ -9133,16 +9133,22 @@ public sealed class MstKpiType
     public string FlagAcitve { get; set; } = "1";
 }
 
-/// <summary>
-/// Master VÙNG THỊ TRƯỜNG marketing (`MRK_Mst_AreaMarket` — `MRK_Mst_AreaMarket_Get_New20181115`,
-/// dòng 11828). Cờ cũng là `FlagAcitve` (sai chính tả nguyên văn).
-/// Master này là đích của `Mst_Dealer_UpdateMRKAMCode` (gán vùng cho đại lý) — hàm đó **chưa port**.
-/// </summary>
+/// <summary>🔴 #5556 — Master VÙNG THỊ TRƯỜNG marketing (`MRK_Mst_AreaMarket` — `MRK_Mst_AreaMarket_Get_New20181115`,
+/// `BizHTC.Marketing.cs:11828`, SELECT `mrkmam.*` — toàn bộ cột). Cờ cũng là `FlagAcitve` (sai chính tả
+/// nguyên văn). Nguồn CHỈ có hàm `_Get` + `_CheckDB` (guard tồn tại/active) — KHÔNG có hàm Save/Add/Update
+/// nào cho bảng này (grep toàn `BizHTC.Marketing.cs` không ra), cũng không có WinForm quản lý riêng (grep
+/// `Views/**/*AreaMarket*` 0 hit) — master này chỉ được nạp bằng DBA script, không qua UI. Route Mini hiện
+/// tại (GET-only + dùng làm FK-guard ở `/api/dealers/update-mrkamcode`) khớp đúng — không phải gap thiếu CRUD.
+/// `MRKAMName` (tên vùng) ĐÃ THÊM — cột thật, dùng trong nhiều join khác (`mrkma.MRKAMName`, ví dụ
+/// `BizHTC.Marketing.cs:8706` et al.) nhưng Mini trước đây CHỈ có `MRKAMCode`+`FlagAcitve`, thiếu tên hiển thị.
+/// Sửa docstring cũ SAI: `Mst_Dealer_UpdateMRKAMCode` ghi "chưa port" nhưng route
+/// `/api/dealers/update-mrkamcode` (Program.cs) ĐÃ CÓ SẴN — claim cũ bị stale.</summary>
 public sealed class MrkMstAreaMarket
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string MRKAMCode { get; set; } = "";
+    public string? MRKAMName { get; set; }
     public string FlagAcitve { get; set; } = "1";
 }
 
