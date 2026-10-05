@@ -32131,25 +32131,58 @@ app.MapGet("/api/trainingcourses/{id}/participants", async (long id, AppDbContex
 
 app.MapPost("/api/trainingcourses/{id}/participants", async (long id, TrainingParticipantDto dto, AppDbContext db, ITenantContext t) =>
 {
+    // #3401 — trace Mst_TrainingDtl_CreateMulti_New20210415 (Biz.HTC.WH.cs, LIVE qua WS Mst_TrainingDtl_CreateMulti)
     var course = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (course is null) return Results.NotFound(new { id });
+    if (course.FlagActive != "1") return Results.BadRequest(new { error = "Khóa đào tạo đã ngừng hoạt động." });   // Mst_Training_CheckDB(Yes, Active)
     var sm = (dto.SMHyundaiCode ?? "").Trim();
     if (string.IsNullOrWhiteSpace(sm)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH." });
     if (dto.OrganizeDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày tổ chức." });
-    var exists = await db.TrainingParticipants.AnyAsync(x => x.OrgId == t.OrgId && x.CourseId == id && x.SMHyundaiCode == sm && x.OrganizeDate == dto.OrganizeDate);
-    if (exists) return Results.BadRequest(new { error = $"NVBH {sm} đã tham gia khóa này vào ngày đó." });
+    if (string.IsNullOrWhiteSpace(dto.Place)) return Results.BadRequest(new { error = "Chưa nhập địa điểm." });   // Mst_TrainingDtl_CreateMulti_InvalidPlace
+    var salesMan = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == sm);
+    if (salesMan is null) return Results.BadRequest(new { error = $"Mã NVBH {sm} không tồn tại." });   // Mst_SalesMan_CheckDB(Yes, Active)
+    if (salesMan.Status != "1") return Results.BadRequest(new { error = $"NVBH {sm} đã ngừng hoạt động." });
+    // Nguồn check trùng TOÀN HỆ THỐNG theo (SMHyundaiCode, OrganizeDate) — KHÔNG giới hạn theo khóa hiện tại
+    // (1 NVBH không thể học bất kỳ khóa nào khác trong cùng 1 ngày, không riêng khóa này).
+    var dup = await db.TrainingParticipants.Where(x => x.OrgId == t.OrgId && x.SMHyundaiCode == sm && x.OrganizeDate == dto.OrganizeDate).Select(x => new { x.CourseId }).FirstOrDefaultAsync();
+    if (dup is not null)
+    {
+        var dupCourse = await db.TrainingCourses.Where(c => c.OrgId == t.OrgId && c.Id == dup.CourseId).Select(c => c.TrainingName).FirstOrDefaultAsync();
+        return Results.BadRequest(new { error = $"NVBH {sm} đã tham gia khóa \"{dupCourse}\" vào ngày đó." });
+    }
     var p = new TrainingParticipant
     {
         OrgId = t.OrgId, CourseId = id,
         // Mã bản ghi tham gia (TRAININGDTLCODE) — định danh thật của nguồn, sinh khi client không truyền.
+        // Nguồn xin mã từ SequenceGetForDMS(TrainingDtlCode); Mini không có sequence server tương đương nên sinh theo timestamp (chủ đích đơn giản hoá, vẫn duy nhất).
         TrainingDtlCode = string.IsNullOrWhiteSpace(dto.TrainingDtlCode) ? "TDT" + DateTime.Now.ToString("yyMMddHHmmssfff") : dto.TrainingDtlCode.Trim(),
-        SMHyundaiCode = sm, SMName = dto.SMName, OrganizeDate = dto.OrganizeDate,
+        SMHyundaiCode = sm, SMName = dto.SMName ?? salesMan.SalesManName, OrganizeDate = dto.OrganizeDate,
         FormalityTraining = dto.FormalityTraining, Place = dto.Place,
         ResultIn = dto.ResultIn, ResultOut = dto.ResultOut,
         FlagActive = dto.FlagActive == "0" ? "0" : "1",
         UpdatedAt = DateTime.Now
     };
     db.TrainingParticipants.Add(p);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.SMHyundaiCode, p.OrganizeDate });
+}).RequireAuthorization();
+
+app.MapPut("/api/trainingcourses/{id}/participants/{pid}", async (long id, long pid, TrainingParticipantDto dto, AppDbContext db, ITenantContext t, ClaimsPrincipal user) =>
+{
+    // #3401 — port Mst_TrainingDtl_Update_New20210415: chỉ cập nhật SMCode/FormalityTraining/OrganizeDate/Place/ResultIn/ResultOut (KHÔNG cập nhật TrainingCode dù vẫn validate course tồn tại+active).
+    var p = await db.TrainingParticipants.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CourseId == id && x.Id == pid);
+    if (p is null) return Results.NotFound(new { pid });
+    var course = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (course is null || course.FlagActive != "1") return Results.BadRequest(new { error = "Khóa đào tạo không hợp lệ hoặc đã ngừng hoạt động." });
+    var sm = (dto.SMHyundaiCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(sm)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH." });
+    var salesMan = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == sm);
+    if (salesMan is null) return Results.BadRequest(new { error = $"Mã NVBH {sm} không tồn tại." });
+    if (salesMan.Status != "1") return Results.BadRequest(new { error = $"NVBH {sm} đã ngừng hoạt động." });
+    p.SMHyundaiCode = sm; p.SMName = dto.SMName ?? salesMan.SalesManName;
+    p.FormalityTraining = dto.FormalityTraining; p.OrganizeDate = dto.OrganizeDate; p.Place = dto.Place;
+    p.ResultIn = dto.ResultIn; p.ResultOut = dto.ResultOut;
+    p.UpdatedAt = DateTime.Now; p.UpdatedBy = user.Identity?.Name;   // LogLUBy
     await db.SaveChangesAsync();
     return Results.Ok(new { p.Id, p.SMHyundaiCode, p.OrganizeDate });
 }).RequireAuthorization();
