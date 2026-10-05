@@ -74936,6 +74936,7 @@ app.MapPost("/api/dealattachfiles/updatemulti", async (DealAttachSaveDto dto, Ap
 
 app.MapGet("/api/guaranteeattachfiles", async (AppDbContext db, ITenantContext t, string? guaranteeNo) =>
 {
+    // #5572
     var qy = db.PmtGuaranteeAttachFiles.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(guaranteeNo)) qy = qy.Where(x => x.GuaranteeNo == guaranteeNo);
     var items = await qy.OrderBy(x => x.GuaranteeNo).ThenBy(x => x.FileIndex).Select(x => new
@@ -74944,26 +74945,62 @@ app.MapGet("/api/guaranteeattachfiles", async (AppDbContext db, ITenantContext t
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/guaranteeattachfiles/save", async (GuaranteeAttachSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+// #5572 — PaymentGuarantee_SaveFile (BizHTC.TCFIntergration.cs:4843, WSHTC.asmx.cs:9241, 1 overload
+// duy nhất không hậu tố _NewYYYYMMDD — hiếm nhưng có thật). Nguồn:
+//  1) myPayment_CheckGuarantee bắt buộc GuaranteeNo PHẢI TỒN TẠI trong Pmt_Guarantee (không check status).
+//  2) Từng dòng bắt buộc GrtFilePath/GrtFileName không rỗng, FileSizeInBytes > 0 (else throw).
+//  3) RBAC+trạng thái lệch nhau giữa THÊM và XOÁ, chỉ áp cho đại lý (FlagDirect inactive — HTC-direct
+//     luôn được phép cả hai): THÊM cần GuaranteeStatus ∈ {A,P}; XOÁ cần GuaranteeStatus = P.
+//  4) Diff THÊM/XOÁ theo khoá GrtFileName (không phải FileIndex) so với dữ liệu đang có trong DB.
+//  5) SaveDB là REPLACE-ALL: xoá sạch rồi insert lại toàn bộ danh sách gửi lên — KHÔNG phải upsert theo
+//     FileIndex (cũ port SAI chỗ này: dùng FileIndex client gửi làm khoá, không bao giờ xoá dòng bị bỏ).
+//  6) FileIndex do SERVER tự đánh số lại theo thứ tự mảng gửi lên (i+1), bỏ qua FileIndex client gửi.
+// KHÔNG port: giới hạn tổng dung lượng 5MB (toàn bộ khối "PortCheck Total size <= 5MB" bị COMMENT
+// TRONG NGUỒN — dòng chết, không phải quy tắc đang chạy) và logic di chuyển/đổi tên file vật lý trên đĩa
+// (chi tiết hạ tầng lưu trữ gốc, không áp dụng cho kiến trúc Mini).
+app.MapPost("/api/guaranteeattachfiles/save", async (GuaranteeAttachSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
 {
     var no = (dto.GuaranteeNo ?? "").Trim();
     if (no.Length < 1) return Results.BadRequest(new { error = "Số bảo lãnh rỗng." });
+    var grt = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (grt is null) return Results.NotFound(new { error = $"Không tìm thấy bảo lãnh {no}." });
+
+    var files = dto.Files ?? new();
+    foreach (var f in files)
+    {
+        if (string.IsNullOrWhiteSpace(f.FilePath)) return Results.BadRequest(new { error = "Có file thiếu đường dẫn (GrtFilePath)." });
+        if (string.IsNullOrWhiteSpace(f.FileName)) return Results.BadRequest(new { error = "Có file thiếu tên (GrtFileName)." });
+        if ((f.FileSizeInBytes ?? 0) <= 0) return Results.BadRequest(new { error = $"File {f.FileName} có kích thước không hợp lệ." });
+    }
+
+    var existing = await db.PmtGuaranteeAttachFiles.Where(x => x.OrgId == t.OrgId && x.GuaranteeNo == no).ToListAsync();
+    var existingNames = existing.Select(x => x.GrtFileName).ToHashSet();
+    var incomingNames = files.Select(f => f.FileName!).ToHashSet();
+    var addingCount = incomingNames.Except(existingNames).Count();
+    var deletingCount = existingNames.Except(incomingNames).Count();
+
+    if ((flagDirect ?? "").Trim() == "0")
+    {
+        if (addingCount > 0 && grt.Status != "A" && grt.Status != "P")
+            return Results.BadRequest(new { error = $"Bảo lãnh đang '{grt.Status}', đại lý chỉ được thêm file khi 'A' hoặc 'P'." });
+        if (deletingCount > 0 && grt.Status != "P")
+            return Results.BadRequest(new { error = $"Bảo lãnh đang '{grt.Status}', đại lý chỉ được xoá file khi 'P'." });
+    }
+
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
-    var saved = 0;
-    foreach (var f in dto.Files ?? new())
-    {
-        var idx = f.FileIndex ?? 0;
-        var row = await db.PmtGuaranteeAttachFiles.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no && x.FileIndex == idx);
-        if (row is null) { row = new PmtGuaranteeAttachFile { OrgId = t.OrgId, GuaranteeNo = no, FileIndex = idx }; db.PmtGuaranteeAttachFiles.Add(row); }
-        row.GrtFilePath = f.FilePath; row.GrtFileName = f.FileName;
-        row.FileSizeInBytes = f.FileSizeInBytes;   // chỉ bảng này có
-        row.GrtFileRemark = f.Remark;
-        row.LogLUDateTime = now; row.LogLUBy = who;
-        saved++;
-    }
+    db.PmtGuaranteeAttachFiles.RemoveRange(existing);
+    var idx = 0;
+    foreach (var f in files)
+        db.PmtGuaranteeAttachFiles.Add(new PmtGuaranteeAttachFile
+        {
+            OrgId = t.OrgId, GuaranteeNo = no, FileIndex = ++idx,
+            GrtFilePath = f.FilePath, GrtFileName = f.FileName,
+            FileSizeInBytes = f.FileSizeInBytes, GrtFileRemark = f.Remark,
+            LogLUDateTime = now, LogLUBy = who,
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { guaranteeNo = no, saved });
+    return Results.Ok(new { guaranteeNo = no, saved = files.Count, added = addingCount, deleted = deletingCount });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankingtransattachfiles", async (AppDbContext db, ITenantContext t, string? transNo, string? flagPush) =>
