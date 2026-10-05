@@ -32383,6 +32383,56 @@ app.MapGet("/api/receptionerrors", async (AppDbContext db, ITenantContext t, str
         x.ReceptionErrorName, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1495 §12 — echo đủ cột (nguồn SELECT smre.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
+// ===== 🔴 #1574 `Ser_Mst_ReceptionError_GetForTab` (LIVE WS `HTCWSCarSvTab/WSCarSvTab.asmx.cs:6030`) =====
+// Nguồn: `Tab/BizCarSv.Tab.cs:1270` (vỏ) -> `Ser_Mst_ReceptionError_GetX` (`:1578-1720`).
+// KHÁC `Ser_Mst_ReceptionError_Get` (#1495, đã port ở `/api/receptionerrors`): bản ForTab có THÊM
+//   phân trang (bị COMMENT) + cờ `strIsGet_Ser_Mst_ReceptionError` + bảng Summary đếm DISTINCT mã.
+// Nguồn: `select distinct identity(bigint,0,1) MyIdxSeq, smre.ReceptionErrorCode into #tbl_..._Draft
+//   from Ser_Mst_ReceptionError smre where(1=1) zzzzClauseWhere_strReceptionErrorCodeList
+//   zzzzClauseWhere_strFlagActiveList order by smre.ReceptionErrorCode; select Count(0) MyCount from #...;
+//   select t.MyIdxSeq, smre.* from #tbl..._Filter t inner join Ser_Mst_ReceptionError smre on t.ReceptionErrorCode = smre.ReceptionErrorCode`.
+// 🔴 HAI bộ lọc dạng DANH SÁCH '|' qua `SqlUtils.BuildClause` (bài học #410): `smre.ReceptionErrorCode`,
+//   `smre.FlagActive`. Danh sách rỗng ⇒ BỎ HẲN mệnh đề ⇒ trả TRỌN danh mục.
+// 🔴 `bGet_Ser_Mst_ReceptionError = (str != null && str.Length > 0)` — BẤT KỲ chuỗi khác rỗng đều BẬT
+//   khối chi tiết (không so `TConst.Flag.Yes`); chuỗi rỗng/null ⇒ chỉ trả bảng Summary.
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` KHÔNG guard rỗng ⇒ FormatException (họ #626/#627); hai dòng
+//   phân trang bị COMMENT ⇒ MyIdxSeq chỉ dùng để đánh số, KHÔNG cắt trang.
+// 🔴 `order by` nằm trên `SELECT … INTO` ⇒ chỉ ảnh hưởng cách đánh số identity, KHÔNG quyết định thứ tự
+//   trả về (bài học #415); câu kết quả KHÔNG có ORDER BY ⇒ port sắp tường minh theo ReceptionErrorCode.
+app.MapGet("/api/receptionerrors/get", async (AppDbContext db, ITenantContext t,
+    string? receptionErrorCodeList, string? flagActiveList, string? isGetDetail) =>
+{
+    var qry = db.ReceptionErrors.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "smre.<col>", <list>, "@p") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(receptionErrorCodeList))
+    {
+        var v = receptionErrorCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.ReceptionErrorCode));
+    }
+    if (!string.IsNullOrWhiteSpace(flagActiveList))
+    {
+        var v = flagActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.FlagActive != null && v.Contains(x.FlagActive));
+    }
+    var all = await qry.OrderBy(x => x.ReceptionErrorCode).ToListAsync();
+    // Nguồn: Count(0) trên bảng DISTINCT(ReceptionErrorCode) ⇒ đếm mã phân biệt.
+    var distinctCodes = all.Select(x => x.ReceptionErrorCode).Distinct().Count();
+    // bGet_Ser_Mst_ReceptionError = (str != null && str.Length > 0) — bất kỳ chuỗi khác rỗng đều BẬT.
+    var getDetail = !string.IsNullOrEmpty(isGetDetail);
+    var items = getDetail
+        ? all.Select(x => (object)new { x.Id, x.ReceptionErrorCode, x.ReceptionErrorName, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToList()
+        : new List<object>();
+    return Results.Ok(new
+    {
+        myCountAsSource = distinctCodes,   // nguồn: Count(0) trên bảng DISTINCT(ReceptionErrorCode)
+        count = items.Count, items,
+        detailFlagNotFollowingConvention = "bGet_Ser_Mst_ReceptionError = (str != null && str.Length > 0) — BAT KY chuoi khac rong cung bat khoi chi tiet (khong so TConst.Flag.Yes)",
+        pagingIsDisabled = "hai dong phan trang (MyIdxSeq >= @nFilterRecordStart / <= @nFilterRecordEnd) bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        orderByOnSelectIntoOnly = "order by smre.ReceptionErrorCode nam tren SELECT ... INTO nen chi anh huong cach danh so identity, khong quyet dinh thu tu tra ve (#415); cau ket qua KHONG co ORDER BY — port sap tuong minh",
+        buildClauseNote = "BuildClause('and','smre.<col>',<list>,'@p'): cat theo '|', danh sach rong => BO HAN menh de (khong phai 'in ()')",
+    });
+}).RequireAuthorization();
 
 // ===== #1496 Danh mục ẢNH KIỂM TRA THEO DÒNG XE (Ser_Mst_ModelAudImage — port 1:1 cụm CRUD, TCMotor DMSCarSv/Tab) =====
 // Nguồn: `Tab/BizCarSv.Tab.cs` — `_Get` (:223, SELECT `smmai.*`), `_Add` (:493), `_Update` (:771),
