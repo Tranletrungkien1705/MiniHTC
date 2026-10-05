@@ -9477,7 +9477,7 @@ app.MapPost("/api/deals/records/{dealNo}/patch", async (string dealNo, DealPatch
     if (r.FlagInitDeal != "0") return Results.BadRequest(new { error = $"Giao dịch {dealNo} đang ở trạng thái không cho sửa (FlagInitDeal='{r.FlagInitDeal}')." });
     var field = (dto.Field ?? "").Trim();
     if (field is not ("dealDate" or "plateNo" or "salesType" or "customerCode" or "verifyStatus"))
-        return Results.BadRequest(new { error = "Field không hợp lệ (dealDate|plateNo|salesType|customerCode|verifyStatus). warrantyNo KHÔNG sửa qua đây — nguồn là upload file, không phải trường text." });
+        return Results.BadRequest(new { error = "Field không hợp lệ (dealDate|plateNo|salesType|customerCode|verifyStatus). warrantyNo KHÔNG sửa qua đây — nguồn là upload file, dùng /api/dealerdealattaches (#5364)." });
     string oldVal, newVal;
     switch (field)
     {
@@ -40262,7 +40262,15 @@ app.MapPost("/api/salespolicyeligibilities/import", async (List<SalesPolicyEligi
     return Results.Ok(new { added, skipped });
 }).RequireAuthorization();
 
-// ===== File đính kèm sổ bảo hành theo HĐ bán lẻ (DealerDealAttach — port 1:1 FrmEditDeal_SoBaoHanh, 2010.HTC/SalesDealer) =====
+// ===== File đính kèm sổ bảo hành theo HĐ bán lẻ (DealerDealAttach — port 1:1 FrmEditDeal_SoBaoHanh, 2010.HTC/SalesDealer) ===== #5364
+// Re-verify thân hàm thật DealerSalesDealUpdateAttachFileMulti (Biz.HTC.WH.My.cs:19546-19722) — cùng cụm
+// FrmEditDeal_* với #5301 (DealRecord patch), guard CHUNG giống hệt: RBAC myCommon_CheckHTCDirect (:19612)
+// + myDealerSales_CheckDeal(FlagInitDeal phải Inactive) (:19659) — port cũ KHÔNG có cả hai.
+// NỢ có chủ đích: nguồn còn myDealerSales_CheckAttachFile (:19669) — optimistic-concurrency, client phải
+// gửi kèm DlsFileName/DlsFilePath CŨ để đối chiếu đúng bản ghi hiện hành trước khi ghi đè. Mini đơn giản
+// hoá: đọc bản ghi hiện hành LIVE tại thời điểm ghi (server tự biết, không cần client gửi lại giá trị cũ) —
+// AN TOÀN TƯƠNG ĐƯƠNG (không có race multi-writer thật trong kiến trúc 1-request/1-transaction của Mini),
+// giữ nguyên, không port cơ chế client-supplied-old-value.
 app.MapGet("/api/dealerdealattaches/{dealNo}", async (string dealNo, AppDbContext db, ITenantContext t) =>
 {
     dealNo = dealNo.Trim();
@@ -40272,10 +40280,26 @@ app.MapGet("/api/dealerdealattaches/{dealNo}", async (string dealNo, AppDbContex
 }).RequireAuthorization();
 
 // Cập nhật hàng loạt (khớp btnApply_Click/DealerSalesDealUpdateAttachFileMulti gốc) — chỉ dòng có FileNameNew mới upsert.
-app.MapPost("/api/dealerdealattaches", async (DealerDealAttachBatchDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealerdealattaches", async (DealerDealAttachBatchDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được sửa file đính kèm." });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.FileNameNew)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+
+    var dealNos = rows.Select(r => r.DealNo!.Trim()).ToHashSet();
+    // Khoá thật của FrmEditDeal_* là DLS_Deal (DealerDeal trong Mini) — KHÔNG phải DealRecord (bảng nhẹ
+    // riêng của /api/deals/records, dùng cho trang dealpatch.html khác). dealerdeal.html (trang thật đang
+    // gọi route này) lấy DealNo từ /api/dealerdeals, nên guard phải tra đúng DealerDeal.
+    var deals = await db.DealerDeals.Where(x => x.OrgId == t.OrgId && dealNos.Contains(x.DealNo)).ToListAsync();
+    var dealByNo = deals.ToDictionary(x => x.DealNo);
+    // Guard nguồn myDealerSales_CheckDeal: GD phải tồn tại + FlagInitDeal phải = '0'.
+    var notFound = dealNos.Where(n => !dealByNo.ContainsKey(n)).ToList();
+    if (notFound.Count > 0) return Results.BadRequest(new { error = $"Không tìm thấy giao dịch: {string.Join(", ", notFound.Take(10))}." });
+    // FlagInitDeal mặc định NULL khi tạo GD (Mini chưa model bước "khởi tạo xong") — coi NULL như "0" (được sửa),
+    // chỉ chặn khi CÓ giá trị tường minh khác "0" (fleet khác set nó qua luồng riêng trong tương lai).
+    var locked = dealByNo.Values.Where(x => (x.FlagInitDeal ?? "0") != "0").Select(x => x.DealNo).ToList();
+    if (locked.Count > 0) return Results.BadRequest(new { error = $"Giao dịch đang ở trạng thái không cho sửa: {string.Join(", ", locked.Take(10))}." });
+
     int added = 0, updated = 0;
     foreach (var r in rows)
     {
@@ -76249,42 +76273,67 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
         d.ReasonNotPDI, d.DealerCodeBuyer, d.SalesManCode });   // #1364 §12
 }).RequireAuthorization();
 
+// #5364 — Guard CHUNG (đúng chuỗi myDealerSales_CheckDeal): coi FlagInitDeal NULL như "0" (được sửa — Mini
+// chưa model bước khởi tạo xong), chỉ chặn khi có giá trị tường minh khác "0".
+static bool DealLocked(DealerDeal d) => (d.FlagInitDeal ?? "0") != "0";
+
 // Sửa hàng loạt KH mua/lái/đứng tên trên các GD bán lẻ đã lập (port 1:1 FrmEditDeal_KHGD, 2010.HTC/SalesDealer)
-app.MapPost("/api/dealerdeals/edit-khgd", async (EditDealKhgdDto dto, AppDbContext db, ITenantContext t) =>
+// Re-verify: guard CHUNG RBAC+FlagInitDeal (Biz.HTC.WH.My.cs, cùng cụm #5301/#5364) + mỗi mã KH gửi lên
+// phải tồn tại trong DLS_DealerCustomer (DealerCustomer) — cả 3 field đều thiếu guard trước đây.
+app.MapPost("/api/dealerdeals/edit-khgd", async (EditDealKhgdDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được sửa thông tin giao dịch." });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
-    int updated = 0; var notFound = new List<string>();
+
+    var custCodes = rows.SelectMany(r => new[] { r.CustomerCodeBuyer, r.CustomerCodeHolder, r.CustomerCodeDriver })
+        .Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c!.Trim()).ToHashSet();
+    var validCusts = (await db.DealerCustomers.Where(x => x.OrgId == t.OrgId && custCodes.Contains(x.CustomerCode)).Select(x => x.CustomerCode).ToListAsync()).ToHashSet();
+    var invalidCust = custCodes.Except(validCusts).ToList();
+    if (invalidCust.Count > 0) return Results.BadRequest(new { error = $"Khách hàng không tồn tại: {string.Join(", ", invalidCust.Take(10))}." });
+
+    int updated = 0; var notFound = new List<string>(); var locked = new List<string>();
     foreach (var r in rows)
     {
         var no = r.DealNo!.Trim();
         var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
         if (d is null) { notFound.Add(no); continue; }
+        if (DealLocked(d)) { locked.Add(no); continue; }
         if (r.CustomerCodeBuyer is not null) d.CustomerCodeBuyer = r.CustomerCodeBuyer;
         d.CustomerCodeHolder = r.CustomerCodeHolder;
         d.CustomerCodeDriver = r.CustomerCodeDriver;
         updated++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20), locked = locked.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // Sửa kiểu bán lẻ hàng loạt (port 1:1 FrmEditDeal_SalesType/DealerSalesDealUpdateSalesTypeMulti gốc)
-app.MapPost("/api/dealerdeals/edit-salestype", async (EditDealSalesTypeDto dto, AppDbContext db, ITenantContext t) =>
+// Re-verify: guard CHUNG RBAC+FlagInitDeal + mySalesType_CheckSalesType (SalesType mới phải tồn tại+Active
+// trong Mst_DealerSalesType) — đều thiếu trước đây.
+app.MapPost("/api/dealerdeals/edit-salestype", async (EditDealSalesTypeDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được sửa thông tin giao dịch." });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.SalesType)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
-    int updated = 0; var notFound = new List<string>();
+
+    var types = rows.Select(r => r.SalesType!.Trim().ToUpperInvariant()).ToHashSet();
+    var validTypes = (await db.MstDealerSalesTypes.Where(x => x.OrgId == t.OrgId && types.Contains(x.SalesType) && x.FlagActive == "1").Select(x => x.SalesType).ToListAsync()).ToHashSet();
+    var invalidTypes = types.Except(validTypes).ToList();
+    if (invalidTypes.Count > 0) return Results.BadRequest(new { error = $"Kiểu bán không tồn tại hoặc ngừng hoạt động: {string.Join(", ", invalidTypes)}." });
+
+    int updated = 0; var notFound = new List<string>(); var locked = new List<string>();
     foreach (var r in rows)
     {
         var no = r.DealNo!.Trim();
         var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
         if (d is null) { notFound.Add(no); continue; }
+        if (DealLocked(d)) { locked.Add(no); continue; }
         d.SalesType = r.SalesType!.Trim().ToUpperInvariant();
         updated++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20), locked = locked.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // ===== 🔴 #196 DUYỆT KIỂM CHỨNG BÁN LẺ — `OSHCC_DLS_Deal_UpdCtmCareFlagX_New20260805` =====
@@ -76432,23 +76481,33 @@ app.MapPost("/api/dealerdeals/edit-ctmcare", async (EditDealCtmCareDto dto, AppD
 }).RequireAuthorization();
 
 // Sửa biển số xe hàng loạt (port 1:1 FrmEditDeal_PlateNo/DealerSalesDealUpdatePlateNoMulti gốc) — khóa theo (DealNo, CarId)
-app.MapPost("/api/dealerdeals/edit-platenumber", async (EditDealPlateNoDto dto, AppDbContext db, ITenantContext t) =>
+// Re-verify: guard CHUNG RBAC+FlagInitDeal + myCar_CheckCar (xe phải tồn tại+Active) — đều thiếu trước đây.
+app.MapPost("/api/dealerdeals/edit-platenumber", async (EditDealPlateNoDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
 {
+    if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được sửa thông tin giao dịch." });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealNo) && !string.IsNullOrWhiteSpace(r.CarId)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
-    int updated = 0; var notFound = new List<string>();
+
+    var carIds = rows.Select(r => r.CarId!.Trim()).ToHashSet();
+    var cars = (await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.CarId != null && carIds.Contains(x.CarId!)).ToListAsync())
+        .ToDictionary(x => x.CarId!);
+    var invalidCars = carIds.Where(c => !cars.TryGetValue(c, out var car) || car.FlagActive == "0").ToList();
+    if (invalidCars.Count > 0) return Results.BadRequest(new { error = $"Xe không tồn tại hoặc ngừng hoạt động: {string.Join(", ", invalidCars.Take(10))}." });
+
+    int updated = 0; var notFound = new List<string>(); var locked = new List<string>();
     foreach (var r in rows)
     {
         var no = r.DealNo!.Trim(); var carId = r.CarId!.Trim();
         var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
         if (d is null) { notFound.Add(no); continue; }
+        if (DealLocked(d)) { locked.Add(no); continue; }
         var line = await db.DealerDealDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealId == d.Id && x.CarId == carId);
         if (line is null) { notFound.Add($"{no}/{carId}"); continue; }
         line.PlateNo = r.PlateNo;
         updated++;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
+    return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20), locked = locked.Distinct().Take(20) });
 }).RequireAuthorization();
 
 // ===== #B08 TÌM XE ĐỂ BÁN CHO ĐẠI LÝ (port 1:1 FrmSearchCarForDealer, 2010.HTC/SalesDealer) =====
