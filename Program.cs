@@ -91401,6 +91401,49 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Kết thúc", postedLines = lines.Count });
 }).RequireAuthorization();
+// ===== 🔴 #1573 `SerStockOutGetMaxStockOutNo` (LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:14656`) =====
+// WS gọi `SerStockOutGetMaxStockOutNo_V2` (`BizCarSv.Inventory.StockOut.cs:3733-3860`).
+// Nguồn: `SELECT MAX(si.StockOutNo) AS MaxStockOutNo, convert(varchar,getdate(),12) AS CurrentDate
+//   FROM Ser_Inv_StockOut si WHERE (1=1) and si.StockOutNo like '%' + convert(varchar,getdate(),12) + '%'
+//   zzzzClauseWhere_strStokOutNoLengthConditionList zzzzClauseWhere_strDealerCodeConditionList`.
+// 🔴 `convert(varchar,getdate(),12)` = kiểu 12 của SQL Server = **`yymmdd`** (6 ký tự, KHÔNG dấu phân cách).
+//   ⇒ lọc `StockOutNo LIKE '%<yymmdd>%'` (số phiếu chứa ngày hôm nay) rồi mới lấy MAX ⇒ "số phiếu lớn nhất
+//   TRONG NGÀY". Đây là hàm sinh số phiếu kế tiếp cho màn xuất kho.
+// 🔴 HAI bộ lọc dạng DANH SÁCH '|' qua `SqlUtils.BuildClause` (bài học #410): `si.DealerCode` và
+//   `LEN(si.StockOutNo)`. BuildClause `.Trim().ToUpper()` rồi cắt theo '|'; mỗi token PHẢI mở đầu bằng
+//   toán tử (`=`, `!=`, `>=`, `<=`, `>`, `<`, `LIKE`, `NOT LIKE`, `IS NULL`, `IS NOT NULL`, `IN`, `NOT IN`);
+//   token KHÔNG có toán tử bị BỎ QUA (nCase=0); danh sách rỗng ⇒ BỎ HẲN mệnh đề ⇒ trả MAX toàn bảng.
+// ⚠️ Nguồn KHÔNG guard gì (`#region //Check` RỖNG) và KHÔNG có `order by`.
+// ⚠️ `MAX()` trên tập rỗng trả NULL ⇒ nguồn trả `MaxStockOutNo = DBNull` (KHÔNG lỗi).
+app.MapGet("/api/stockouts/max-stockout-no", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeConditionList, string? stockOutNoLengthList) =>
+{
+    // convert(varchar,getdate(),12) = yymmdd (SQL style 12).
+    var yymmdd = DateTime.Now.ToString("yyMMdd");
+    var q = db.PartStockOuts.Where(s => s.OrgId == t.OrgId && s.StockOutNo.Contains(yymmdd));
+    // BuildClause("and", "si.<col>", <list>, "@p") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(dealerCodeConditionList))
+    {
+        var v = dealerCodeConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        q = q.Where(s => s.DealerCode != null && v.Contains(s.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(stockOutNoLengthList))
+    {
+        var v = stockOutNoLengthList!.Split('|', StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => int.TryParse(x.Trim(), out var n) ? n : (int?)null).Where(x => x.HasValue).Select(x => x!.Value).ToList();
+        q = q.Where(s => v.Contains(s.StockOutNo.Length));
+    }
+    var maxNo = await q.Select(s => s.StockOutNo).OrderByDescending(x => x).FirstOrDefaultAsync();
+    return Results.Ok(new
+    {
+        maxStockOutNo = maxNo,          // nguồn: MAX(si.StockOutNo) — rỗng ⇒ null (nguồn trả DBNull)
+        currentDate = yymmdd,           // nguồn: convert(varchar,getdate(),12) = yymmdd
+        sourceHasNoGuard = true,
+        sourceHasNoOrderBy = true,
+        likeTodayFilter = "nguon loc StockOutNo LIKE '%<yymmdd>%' truoc khi MAX => so lon nhat TRONG NGAY",
+        buildClauseNote = "BuildClause('and','si.<col>',<list>,'@p'): cat theo '|', danh sach rong => BO HAN menh de (khong phai 'in ()')",
+    });
+}).RequireAuthorization();
 
 // ===== 🏆🔴🔴🔴 #936 `MigratePartInstance` (LIVE, `StockOut.cs:4602`) — NGUỒN TỰ VIẾT JOB BÙ DỮ LIỆU CHO ĐÚNG =====
 // NỢ CỦA `Ser_Inv_PartInstance` không ĐÃ tự nguồn thừa nhận: nguồn có sẵn một WS MỘT-LẦN
