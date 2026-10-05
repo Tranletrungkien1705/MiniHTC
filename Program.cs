@@ -23474,10 +23474,44 @@ app.MapGet("/api/romaintancesettings", async (AppDbContext db, ITenantContext t,
         .OrderBy(x => x.Km)
         .Select(x => new { x.Id, x.ROMSID, x.Km, x.Maintances, x.DealerCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
-}).RequireAuthorization();
-
-app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
+        return Results.Ok(new { count = items.Count, items });
+    }).RequireAuthorization();
+    // ===== 🔴 #1572 `Ser_MST_ROMaintanceSetting_Get` (LIVE, `BizCarSv.Master.cs:10121`, WS `HTCWSCarSv/WSCarSv.asmx.cs:27710`) =====
+    // Nguồn `select t.* into #tmpsmroms from [CommonCenter].[dbo].Ser_MST_ROMaintanceSetting t with (nolock)
+    //   where (1=1) zzzzClauseWhereROMSIDList zzzzClauseWhereKmList; select tmpsmroms.* from #tmpsmroms tmpsmroms where (1=1)`
+    //   — HAI bộ lọc dạng DANH SÁCH `|` qua `SqlUtils.BuildClause("and", "t.<col>", <list>, "@p", ref params)`.
+    // ⚠️ Route `/api/romaintancesettings` (port từ WinForm #846) lọc `dealerCode` đơn — KHÔNG có ROMSIDList/KmList
+    //   ⇒ đây là GAP thật (WebMethod không dấu vết).
+    // 🔴 Hành vi nguồn port 1:1: `BuildClause` cắt chuỗi theo `|`, mỗi token là MỘT điều kiện; danh sách rỗng ⇒
+    //   BỎ HẲN mệnh đề ⇒ tham số rỗng trả TRỌN danh mục. `select t.*` ⇒ echo MỌI cột (bài học #539).
+    // ⚠️ WS khai `strFunctionName = "SerSupplierGet"` (SAI TÊN — copy từ hàm khác) nhưng gọi đúng biz `Ser_MST_ROMaintanceSetting_Get`.
+    // 📌 §12: entity `RoMaintanceSetting` đã đủ cột — không thêm field mới.
+    app.MapGet("/api/romaintancesettings/get", async (AppDbContext db, ITenantContext t,
+        string? romsidList, string? kmList) =>
+    {
+        var qry = db.RoMaintanceSettings.Where(x => x.OrgId == t.OrgId);
+        // BuildClause("and", "t.ROMSID", strROMSIDList, "@p") — danh sách phân tách bằng '|'.
+        if (!string.IsNullOrWhiteSpace(romsidList))
+        {
+            var v = romsidList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+            qry = qry.Where(x => v.Contains(x.ROMSID.ToString()));
+        }
+        if (!string.IsNullOrWhiteSpace(kmList))
+        {
+            var v = kmList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+            qry = qry.Where(x => x.Km != null && v.Contains(x.Km.Value.ToString()));
+        }
+        var items = await qry.Select(x => new
+        {
+            x.Id, x.ROMSID, x.Km, x.Maintances, x.DealerCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy
+        }).ToListAsync();
+        return Results.Ok(new { count = items.Count, items,
+            onlyLiveConfirmed1572 = "#1572: Ser_MST_ROMaintanceSetting_Get — BizCarSv.Master.cs:10121, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:27710",
+            echoAllColumnsFromStar = "#1572: nguon select t.* => moi cot Ser_MST_ROMaintanceSetting phai co o GET (bai hoc #539)",
+            buildClauseNote = "2 bo loc qua BuildClause('and','t.<col>',<list>,'@p') => danh sach RONG => BO HAN menh de",
+            wsFunctionNameIsWrong = "WS khai strFunctionName = SerSupplierGet (SAI TEN, copy tu ham khac) nhung goi dung biz Ser_MST_ROMaintanceSetting_Get" });
+    }).RequireAuthorization();
+    app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
     AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var lines = dto.Items ?? new List<RoMaintanceSettingDto>();
