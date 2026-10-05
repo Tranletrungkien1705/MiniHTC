@@ -20846,15 +20846,35 @@ app.MapPost("/api/soratemaxes", async (SoRateMaxAddDto dto, AppDbContext db, ITe
 // Nguồn: DMS40/0.01.Master.cs (csproj 122) — Mng_Quota_UpdMultiX_New20230306 (6158).
 // 🔴 CHỈ có ở WS 64-bit (_biz.Mng_Quota_Get, _biz.Mng_Quota_UpdMulti); WS 32-bit không có hàm nào.
 // Khoá kép (DealerCode, SpecCode). Nguồn CHỈ SỬA dòng đã có (guard CheckDB với Flag.Yes), không thêm mới.
+// 🔴 #5712 GAP THẬT — màn `FrmRptQuotaForDealer` (CHUA_CO trong manifest) gọi `SalesService.Mng_Quota_Get`
+//   → biz `Mng_Quota_GetX_New20220406` (`0.01.Master.cs:5973`) — `select mgq.*, md.DealerName,
+//   mcs.SpecDescription, mcm.ModelCode, mcm.ModelName from Mng_Quota mgq left join Mst_Dealer md
+//   left join Mst_CarSpec mcs left join Mst_CarModel mcm` — route GET đã có (#146) THIẾU đúng 4 cột
+//   ECHO hiển thị này (bài học #539/#1466: alias.* + join master ⇒ echo cả cột join). Bổ sung.
 app.MapGet("/api/mngquotas", async (AppDbContext db, ITenantContext t, string? dealer, string? spec, string? flagActive) =>
 {
     var q = db.MngQuotas.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(spec)) q = q.Where(x => x.SpecCode == spec);
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
-    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.SpecCode).Take(2000).Select(x => new {
-        x.DealerCode, x.SpecCode, x.QtyQuota, x.FlagActive, x.UpdateDTime, x.UpdateBy,
-        x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    var rows = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.SpecCode).Take(2000).ToListAsync();
+    // #5712: echo DealerName/ModelCode/ModelName/SpecDescription qua left join (nguồn FrmRptQuotaForDealer).
+    var dealerNames = await db.Dealers.Where(d => d.OrgId == t.OrgId).ToDictionaryAsync(d => d.DealerCode, d => d.DealerName);
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToDictionaryAsync(s => s.SpecCode, s => new { s.ModelCode, s.SpecDesc });
+    var models = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "Model").ToDictionaryAsync(m => m.Code, m => m.Name);
+    var items = rows.Select(x =>
+    {
+        specs.TryGetValue(x.SpecCode, out var sp);
+        return new
+        {
+            x.DealerCode, x.SpecCode, x.QtyQuota, x.FlagActive, x.UpdateDTime, x.UpdateBy,
+            x.LogLUDateTime, x.LogLUBy,
+            dealerName = dealerNames.GetValueOrDefault(x.DealerCode),
+            modelCode = sp?.ModelCode,
+            modelName = sp?.ModelCode != null ? models.GetValueOrDefault(sp.ModelCode) : null,
+            specDescription = sp?.SpecDesc,
+        };
+    }).ToList();
     return Results.Ok(new { count = items.Count, totalQty = items.Sum(i => i.QtyQuota), items });
 }).RequireAuthorization();
 
