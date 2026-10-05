@@ -5348,7 +5348,13 @@ public sealed class Dms40SoRootDetail
     public decimal QtyMonthCalculationN1 { get; set; }
 }
 
-/// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).</summary>
+/// <summary>Hạn bảo hành theo model (tháng + km) — port 1:1 FrmWarrantyExpires (TblMst_WarrantyExpires, Admin/Product 2010.HTC).
+/// #4823 Re-verify: KHÔNG có hàm biz riêng — nguồn lưu qua framework chung `SaveMasterDataTable` (BaseService.cs:1173)
+/// → WS `CommonSaveMasterData` (WSHTC.asmx.cs:506) → `CommonSaveMasterData_New20181119` (Biz.HTC.WH.cs:152, bảng
+/// "Mst_WarrantyExpires" trong whitelist BizHTC.Common.cs:856) — generic ADO.NET SaveData theo RowState, không có
+/// guard nghiệp vụ riêng ngoài validate-ô-lưới client (bắt buộc không rỗng, WarrantyExpires/WarrantyKM phải nguyên
+/// ≥0). Insert-vs-update ở nguồn quyết theo SNAPSHOT lúc Reload (dễ race nếu 2 người cùng sửa); Mini check LIVE
+/// tại thời điểm ghi — AN TOÀN HƠN nguồn, giữ nguyên (cải tiến có chủ ý).</summary>
 public sealed class WarrantyExpires
 {
     public long Id { get; set; }
@@ -5356,7 +5362,7 @@ public sealed class WarrantyExpires
     public string ModelCode { get; set; } = "";
     public string? ModelName { get; set; }
     public int WarrantyMonths { get; set; }
-    public decimal WarrantyKM { get; set; }
+    public int WarrantyKM { get; set; }   // nguồn Int32 (DbDefine.cs:5201) — sửa từ decimal cho khớp kiểu cột thật
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }

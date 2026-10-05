@@ -42562,6 +42562,8 @@ app.MapDelete("/api/mininvbalances/{id}", async (long id, AppDbContext db, ITena
 // ===== Hạn bảo hành theo model (WarrantyExpires — port 1:1 FrmWarrantyExpires, Admin/Product 2010.HTC) =====
 app.MapGet("/api/warrantyexpires", async (AppDbContext db, ITenantContext t, string? q, string? active) =>
 {
+    // #4823 — re-verify: KHÔNG có hàm biz riêng, nguồn lưu qua framework chung CommonSaveMasterData_New20181119
+    // (Biz.HTC.WH.cs:152, bảng "Mst_WarrantyExpires" whitelist BizHTC.Common.cs:856) — xem docstring entity WarrantyExpires.
     var query = db.WarrantyExpiresList.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.ModelCode.Contains(q!) || (x.ModelName != null && x.ModelName.Contains(q!)));
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
@@ -110686,7 +110688,7 @@ record OcAttachDto(string? ImageName,
     string? ImagePath,
     string? FileNote);   // #363 tên cột nguồn
 record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, decimal TotalQty);
-record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, decimal WarrantyKM);
+record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, int WarrantyKM);
 record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);
 record CarStdOptionDto(string ModelCode, string StdCode, string? StdDesc, string? GradeCode, string? GradeDesc);
 record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo, string? ContactorPhoneNo,
