@@ -92975,6 +92975,26 @@ app.MapPost("/api/stockreqs/{no}/issue", async (string no, AppDbContext db, ITen
     return Results.Ok(new { h.ReqNo, status = h.Status });
 }).RequireAuthorization();
 
+// ===== 🔴 #1581 `Ser_ROStockRequisition_Finish` (LIVE, `BizCarSv.Inventory.cs:296`, WS `HTCWSCarSv/WSCarSv.asmx.cs:3268`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC `/api/stockreqs/{no}/issue` ở trên (port cũ dùng
+//   từ vựng tự đặt "Draft"/"Issued"): hàm nguồn đặt `Status = Constants.Ser_RO_StockRequisition.Finish` = **"FNS"**
+//   (`Const.Main.cs:200`), và nhận khoá **số** `strStockRequisitionID` (StkReqID), KHÔNG phải số phiếu.
+// Nguồn: `GetTableContents(_dbMain, "Ser_ROStockRequisition", "top 1 *", "", "StkReqID", "=", strStockRequisitionID)`
+//   rồi `Rows[0]["Status"] = Finish; SaveData(..., ["Status"])`.
+// 🔴 Nguồn KHÔNG guard: `Rows[0]` nổ `IndexOutOfRange` nếu mã không tồn tại (họ #626/#627) — port trả 404 thay vì nổ.
+// 🔴 Nguồn KHÔNG kiểm trạng thái hiện tại (khác `/issue` của port cũ) ⇒ đặt FNS từ bất kỳ trạng thái nào.
+app.MapPost("/api/stockreqs/{id:long}/finish", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.StockReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id, sourceWouldThrowIndexOutOfRange = "nguon GetTableContents(...).Rows[0] khong kiem Rows.Count => ma khong ton tai la IndexOutOfRange (ho #626/#627)" });
+    h.Status = "FNS";   // Constants.Ser_RO_StockRequisition.Finish (Const.Main.cs:200)
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.ReqNo, status = h.Status,
+        sourceSetsFinishCode = "nguon dat Status = Constants.Ser_RO_StockRequisition.Finish = 'FNS' (Const.Main.cs:200)",
+        sourceHasNoStatusGuard = "nguon KHONG kiem trang thai hien tai (khac /issue cua port cu) => dat FNS tu bat ky trang thai nao",
+        sourceKeyIsNumericStkReqID = "nguon nhan strStockRequisitionID (StkReqID so), KHONG phai so phieu" });
+}).RequireAuthorization();
+
 // ===== Lệnh sửa chữa RO (Ser_RO — port 1:1 FrmRepairOrder, TCMotor DMSCarSv) =====
 // Luồng chính của lệnh sửa chữa (6 bước đi thẳng).
 string[] _roFlow = { "HRO", "INGA", "RPRD", "CEND", "PAID", "FNS" };
