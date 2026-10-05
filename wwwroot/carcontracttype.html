@@ -15,7 +15,7 @@
 </style></head>
 <body>
 <h1>Gán loại hợp đồng cho xe <span class="muted">(port 1:1 FrmUpdContractTypeForCar — TCMotor)</span></h1>
-<p class="muted">Cập nhật loại hợp đồng (ContractType) cho xe theo lô (import từ Excel), khớp/upsert theo CarId.</p>
+<p class="muted">Cập nhật loại hợp đồng (ContractType) cho xe đang hoạt động theo lô (import từ Excel) — xe phải tồn tại + đang hoạt động, loại HĐ phải có trong danh mục và đang hoạt động.</p>
 <div class="card"><h3 style="margin-top:0">Import cập nhật</h3>
   <p class="muted" style="margin:2px 0">Mỗi dòng, tab: <b>CarId | Model | Spec | Màu | SO | Loại HĐ mới</b></p>
   <textarea id="rows" placeholder="CAR001&#9;CRETA&#9;CR-2.0&#9;WHITE&#9;SO1&#9;TCG"></textarea>
@@ -36,13 +36,13 @@ function say(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent
 async function doImport(){ await token();
   const rows=F("rows").value.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(l=>{const c=l.split(/\t/);return{CarId:(c[0]||"").trim(),ModelCode:(c[1]||"").trim(),SpecCode:(c[2]||"").trim(),ColorCode:(c[3]||"").trim(),SOCode:(c[4]||"").trim(),ContractType:(c[5]||"").trim()};});
   const r=await fetch("/api/carcontracttypes/import",{method:"POST",headers:Hh({"Content-Type":"application/json"}),body:JSON.stringify({Rows:rows})});
-  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Thêm ${d.added}, cập nhật ${d.updated}`); F("rows").value=""; load();
+  const d=await r.json(); if(!r.ok){ say("Lỗi: "+(d.error||r.status)); return; } say(`Đã cập nhật ${d.updated} xe`); F("rows").value=""; load();
 }
 async function load(){ await token();
   const qs=new URLSearchParams({carId:F("qCar").value,contractType:F("qType").value});
   const r=await fetch("/api/carcontracttypes?"+qs,{headers:Hh()}); const d=await r.json();
   F("kpi").textContent=`${d.count} xe`;
-  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.carId)}</b></td><td>${esc(o.modelCode)}</td><td>${esc(o.specCode)}</td><td>${esc(o.colorCode)}</td><td>${esc(o.soCode)}</td><td>${esc(o.contractType)}</td><td>${esc(o.updatedBy)}</td><td>${dts(o.updatedAt)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
+  F("tb").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.carId)}</b></td><td>${esc(o.modelCode)}</td><td>${esc(o.specCode)}</td><td>${esc(o.colorCode)}</td><td>${esc(o.soCode)}</td><td>${esc(o.contractType)}</td><td>${esc(o.logLUBy)}</td><td>${dts(o.logLUDateTime)}</td></tr>`).join("")||'<tr><td colspan="8" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>

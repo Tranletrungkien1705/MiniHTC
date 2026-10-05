@@ -40985,13 +40985,19 @@ app.MapPost("/api/invoicerecalls/import", async (InvoiceRecallImportDto dto, App
     return Results.Ok(new { recalled, skipped, matchedInvoice = matched });
 }).RequireAuthorization();
 
-// ===== Gán loại hợp đồng cho xe (CarContractType — port 1:1 FrmUpdContractTypeForCar, TCMotor) =====
+// #4988 — ĐÃ XOÁ "/api/carcontracttypes*" (CarContractType, bảng tự tạo KHÔNG guard): trùng nghiệp vụ với
+// CarVinMaster.ContractType (cột mirror trên Car_Car). Nguồn thật: Update_ContractTypeForCarX
+// (TERP.BizHTC/DMS40/zTemp.0.31.Car.cs:180-380, WS Update_ContractTypeForCar WSHTC.asmx.cs:43290, chỉ
+// 1 overload — xác nhận LIVE qua WS). ModelCode/SpecCode/ColorCode/SOCode chỉ derive/join lúc hiển thị ở
+// nguồn, KHÔNG gửi lên WS, KHÔNG persist — bảng cũ lưu các cột này là model hoá sai. Cùng mẫu "2 nguồn sự
+// thật" như ForeignContract #4301/CarActualPrice #4901.
 app.MapGet("/api/carcontracttypes", async (AppDbContext db, ITenantContext t, string? carId, string? contractType) =>
 {
-    var q = db.CarContractTypes.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
+    var q = db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.ContractType != null);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.VIN.Contains(carId!.Trim().ToUpperInvariant()));
     if (!string.IsNullOrWhiteSpace(contractType)) q = q.Where(x => x.ContractType == contractType);
-    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CarId, x.ModelCode, x.SpecCode, x.ColorCode, x.SOCode, x.ContractType, x.UpdatedBy, x.UpdatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(x => x.LogLUDateTime).Take(500)
+        .Select(x => new { carId = x.VIN, x.ModelCode, x.SpecCode, x.ColorCode, x.SOCode, x.ContractType, x.LogLUBy, x.LogLUDateTime }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -41003,19 +41009,32 @@ app.MapPost("/api/carcontracttypes/import", async (CarContractTypeImportDto dto,
     if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng trong file." });
     var bad = rows.FirstOrDefault(r => string.IsNullOrWhiteSpace(r.ContractType));
     if (bad != null) return Results.BadRequest(new { error = $"CarId {bad.CarId}: thiếu loại hợp đồng mới." });
+
+    var ids = rows.Select(r => r.CarId!.Trim().ToUpperInvariant()).ToHashSet();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && ids.Contains(c.VIN)).ToListAsync();
+    var byId = cars.ToDictionary(c => c.VIN);
+    // Guard nguồn myCar_CheckCar(exist=Active, active=Active): xe PHẢI tồn tại và đang hoạt động.
+    var notFound = ids.Where(id => !byId.ContainsKey(id)).ToList();
+    if (notFound.Count > 0) return Results.BadRequest(new { error = $"Không tìm thấy xe: {string.Join(", ", notFound.Take(10))}." });
+    var inactive = cars.Where(c => c.FlagActive == "0").Select(c => c.VIN).ToList();
+    if (inactive.Count > 0) return Results.BadRequest(new { error = $"Xe đã ngưng hoạt động: {string.Join(", ", inactive.Take(10))}." });
+
+    var types = rows.Select(r => r.ContractType!.Trim()).Distinct().ToList();
+    var validTypes = await db.ContractTypeMsts.Where(c => c.OrgId == t.OrgId && types.Contains(c.ContractType) && c.FlagActive == "1")
+        .Select(c => c.ContractType).ToListAsync();
+    // Guard nguồn: ContractType phải tồn tại + active trong Mst_ContractType.
+    var invalidTypes = types.Except(validTypes).ToList();
+    if (invalidTypes.Count > 0) return Results.BadRequest(new { error = $"Loại hợp đồng không tồn tại hoặc ngừng hoạt động: {string.Join(", ", invalidTypes)}." });
+
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var ids = rows.Select(r => r.CarId!.Trim()).ToHashSet();
-    var existing = await db.CarContractTypes.Where(x => x.OrgId == t.OrgId && ids.Contains(x.CarId)).ToListAsync();
-    var byId = existing.ToDictionary(x => x.CarId, x => x);
-    int added = 0, updated = 0; var now = DateTime.Now;
+    var now = DateTime.Now;
     foreach (var r in rows)
     {
-        var cid = r.CarId!.Trim();
-        if (!byId.TryGetValue(cid, out var row)) { row = new CarContractType { OrgId = t.OrgId, CarId = cid }; db.CarContractTypes.Add(row); added++; } else updated++;
-        row.ModelCode = r.ModelCode; row.SpecCode = r.SpecCode; row.ColorCode = r.ColorCode; row.SOCode = r.SOCode; row.ContractType = r.ContractType!.Trim(); row.UpdatedBy = by; row.UpdatedAt = now;
+        var row = byId[r.CarId!.Trim().ToUpperInvariant()];
+        row.ContractType = r.ContractType!.Trim(); row.LogLUBy = by; row.LogLUDateTime = now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { added, updated });
+    return Results.Ok(new { updated = rows.Count });
 }).RequireAuthorization();
 
 // ===== Kích hoạt lại xe đã hủy (CarReactivation — port 1:1 FrmReactiveCar, TCMotor) =====

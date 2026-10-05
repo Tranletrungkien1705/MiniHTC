@@ -4641,20 +4641,11 @@ public sealed class InvoiceRecall
     public bool MatchedInvoice { get; set; }   // có khớp 1 dòng InvoiceLine không
 }
 
-/// <summary>Gán loại hợp đồng cho xe — port 1:1 FrmUpdContractTypeForCar (TCMotor). Batch cập nhật ContractType theo CarId (import Excel), upsert theo CarId.</summary>
-public sealed class CarContractType
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string CarId { get; set; } = "";
-    public string? ModelCode { get; set; }
-    public string? SpecCode { get; set; }
-    public string? ColorCode { get; set; }
-    public string? SOCode { get; set; }
-    public string ContractType { get; set; } = "";
-    public string? UpdatedBy { get; set; }
-    public DateTime UpdatedAt { get; set; }
-}
+// #4988 — ĐÃ XOÁ CarContractType (bảng tự tạo lưu CarId+ModelCode/SpecCode/ColorCode/SOCode+ContractType,
+// KHÔNG guard CarId/ContractType tồn tại): trùng nghiệp vụ với CarVinMaster.ContractType (cột mirror trực
+// tiếp trên Car_Car, port qua Update_ContractTypeForCarX) — ModelCode/SpecCode/ColorCode/SOCode ở nguồn chỉ
+// derive/join lúc hiển thị, KHÔNG persist. Cùng mẫu "2 nguồn sự thật" như ForeignContract #4301/
+// CarActualPrice #4901. wwwroot/carcontracttype.html đã trỏ lại CarVinMaster.
 
 /// <summary>Kích hoạt lại xe đã hủy — port 1:1 FrmReactiveCar (TCMotor). Chọn xe đã hủy (CarCancel Approved) → kích hoạt lại; ghi log + đổi CarCancel.Status='Reactivated'.</summary>
 public sealed class CarReactivation
@@ -13397,6 +13388,13 @@ public sealed class CarVinMaster
     /// <summary>#B24 Mã đơn hàng của xe (`Car_Car.SOCode`) — mốc nối xe sang `Ord_SalesOrder` để đọc
     /// chính sách bán `SPCode`. Bộ lọc chiết khấu thanh toán loại xe thuộc đơn có SPCode "KCK"/"NG".</summary>
     public string? SOCode { get; set; }
+    /// <summary>#4988 Loại hợp đồng của xe (`Car_Car.ContractType`) — `Update_ContractTypeForCarX`
+    /// (`TERP.BizHTC/DMS40/zTemp.0.31.Car.cs:180-380`, WS `Update_ContractTypeForCar` WSHTC.asmx.cs:43290).
+    /// KHÔNG phải bảng riêng — cột mirror trực tiếp trên Car_Car (port cũ tự tạo bảng `CarContractType`
+    /// lưu kèm ModelCode/SpecCode/ColorCode/SOCode là SAI nguồn: các field đó chỉ derive/join lúc hiển thị
+    /// trên grid nguồn, không được gửi lên WS, không persist — cùng mẫu "2 nguồn sự thật" như
+    /// ForeignContract #4301/CarActualPrice #4901).</summary>
+    public string? ContractType { get; set; }
     /// <summary>#B23 Trạng thái GIAO của xe (`Car_Car.DeliveryStatus`) — `Car_BigUpdate_CDOD_New20181115`
     /// (`BizHTC.Storage.DlvMinutes.cs:6003`) đặt **`Stage.Finished` = "F"** kèm chú thích nguồn
     /// *"Đánh dấu Car_Car.DeliveryStatus là Xe đã được giao tới Đại lý"*. Guard cùng hàm đòi trạng thái
