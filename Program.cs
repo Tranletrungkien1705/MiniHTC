@@ -2637,12 +2637,18 @@ app.MapGet("/api/servicehistory/{roId:long}/detail", async (long roId, AppDbCont
     return Results.Ok(new { r.RONo, canShowDetail = 1, mode = "Full", services, partCount = parts.Count, parts });
 }).RequireAuthorization();
 
-// ===== Chi tiết khiếu nại theo xe (port 1:1 FrmChiTietKhieuNai — TCMotor DMSCarSv/Services) =====
-// Nguồn: iCIC_ListClaimByPlateNo (BizCarSv.ZTemp.cs) — proxy sang HCC API DmsClaimGetByPlateNo.
-// Luật gốc: BẮT BUỘC nhập biển số, để trống thì báo "Chưa nhập biển số!" và KHÔNG tra cứu.
-// Lưới gốc read-only 6 cột: ClaimNo/CreatDate/ReceiveDate/DealerCode/CusRequest/ProcessDetail.
+// #5604 — Chi tiết khiếu nại theo xe (port 1:1 FrmChiTietKhieuNai — TCMotor DMSCarSv/Services).
+// Nguồn: iCIC_ListClaimByPlateNo (BizCarSv.ZTemp.cs:3502) — PROXY THUẦN sang HCC API
+// DmsClaimGetByPlateNo (postWebApi_DmsClaimGetByPlateNo), KHÔNG LƯU GÌ ở local DB — xác nhận lại:
+// toàn hàm chỉ convert response HCC thành DataTable rồi trả về, không SaveData/ExecQuery nào. Cùng mẫu
+// "nguồn là proxy vendor ngoài" với GpsVinSync (#5512)/MstOrderComplainImageType (#5564) — bảng
+// `ServiceComplaints` (cache cục bộ, nạp qua POST) là thay thế hợp lý cho vendor HCC Mini không gọi được.
+// Luật gốc: BẮT BUỘC nhập biển số, để trống thì báo "Chưa nhập biển số!" và KHÔNG tra cứu — đối chiếu
+// FrmChiTietKhieuNai.cs:70 khớp nguyên văn. Lưới gốc READ-ONLY (AllowEdit=false cả 6 cột) 6 cột đúng thứ
+// tự: ClaimNo/CreatDate/ReceiveDate/DealerCode/CusRequest/ProcessDetail.
 app.MapGet("/api/complaints", async (AppDbContext db, ITenantContext t, string? plateNo) =>
 {
+    // #5604
     if (string.IsNullOrWhiteSpace(plateNo))
         return Results.BadRequest(new { error = "Chưa nhập biển số!" });   // đúng thông báo form gốc
     var plate = plateNo.Trim().ToUpperInvariant();
@@ -2654,6 +2660,7 @@ app.MapGet("/api/complaints", async (AppDbContext db, ITenantContext t, string? 
     return Results.Ok(new { plateNo = plate, count = items.Count, items });
 }).RequireAuthorization();
 
+// #5604 — POST là phần thêm của port (seed cache cục bộ) — nguồn không có hàm ghi, chỉ đọc live từ HCC.
 app.MapPost("/api/complaints", async (ComplaintDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PlateNo)) return Results.BadRequest(new { error = "Chưa nhập biển số!" });
