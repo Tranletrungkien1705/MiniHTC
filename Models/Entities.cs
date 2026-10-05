@@ -4896,7 +4896,12 @@ public sealed class ContractTypeMst
     public DateTime UpdatedAt { get; set; }
 }
 
-/// <summary>Master thời gian chạy DOAT (Dealer Order Allocation Time) — port 1:1 FrmMst_DOATSettingTime (Mst_DOATSettingTime, TCMotor). Cấu hình 2 khung giờ auto tạo lệnh giao xe (First/Second run).</summary>
+/// <summary>Master thời gian chạy DOAT (Dealer Order Allocation Time) — port 1:1 FrmMst_DOATSettingTime (Mst_DOATSettingTime, TCMotor). Cấu hình 2 khung giờ auto tạo lệnh giao xe (First/Second run).
+/// #5248 Re-verify: giờ chạy thật lấy từ param hệ thống cố định (JOB_DOATSTIMEFIRST/SECOND), KHÔNG lưu
+/// theo bản ghi — cột FirstRunDTime/SecondRunDTime của nguồn bị COMMENT ở hàm Add LIVE, không port đúng.
+/// Guard cốt lõi: `Mst_DOATSettingTime_Add` (BizHTC.MasterData.cs:14409/14419-14434) set bản ghi mới
+/// FlagActive="1" RỒI deactivate MỌI bản ghi khác — tại 1 thời điểm chỉ có ĐÚNG 1 bản ghi active.
+/// `Mst_DOATSettingTime_Get` chỉ trả bản ghi FlagActive="1" (SQL :14221).</summary>
 public sealed class DOATSettingTime
 {
     public long Id { get; set; }
@@ -4904,7 +4909,11 @@ public sealed class DOATSettingTime
     public string DOATSTNo { get; set; } = "";
     public string FlagFirstRunTime { get; set; } = "0";
     public string FlagSecondRunTime { get; set; } = "0";
+    public string FlagActive { get; set; } = "1";
+    public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Lịch sử chính sách đơn hàng theo xe — port 1:1 FrmMngHisOrderPolicy (Car_CarHisOrderPolicy, TCMotor/Sales/Purchase). Ghi nhận chính sách đơn hàng áp cho từng xe (theo SO + CarId) kèm log kiểm toán.</summary>

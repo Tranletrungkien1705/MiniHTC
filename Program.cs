@@ -41686,27 +41686,43 @@ app.MapPost("/api/contracttypes/{id}/toggle", async (long id, AppDbContext db, I
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
-// ===== Master khung giờ chạy DOAT (DOATSettingTime — port 1:1 FrmMst_DOATSettingTime, TCMotor) =====
-// Cấu hình 2 khung giờ auto tạo lệnh giao xe. Số DOATSTNo tự sinh; add tạo bản ghi cấu hình mới.
+// #5248 — re-verify: Mst_DOATSettingTime_Add (BizHTC.MasterData.cs:14377-14435) set bản ghi mới
+// FlagActive="1" RỒI deactivate MỌI bản ghi khác (:14419-14434) — tại 1 thời điểm chỉ ĐÚNG 1 bản ghi
+// active. Mst_DOATSettingTime_Get chỉ trả bản ghi FlagActive="1" (SQL :14221), không phải "200 gần nhất".
+// DOATSTNo sinh qua DB sequence dạng {yyMM}DOATST{seq:00000} (Seq_DOATSTNo, BizHTC.MasterData.cs:197/241-251)
+// — port cũ dùng "DOAT"+giờ:phút:giây client-side, sai thuật toán + có rủi ro trùng mã cùng giây.
 app.MapGet("/api/doatsettingtimes", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.DOATSettingTimes.Where(x => x.OrgId == t.OrgId).OrderByDescending(x => x.Id).Take(200)
-        .Select(x => new { x.Id, x.DOATSTNo, x.FlagFirstRunTime, x.FlagSecondRunTime, x.CreatedAt }).ToListAsync();
-    return Results.Ok(new { count = items.Count, latest = items.FirstOrDefault(), items });
+        .Select(x => new { x.Id, x.DOATSTNo, x.FlagFirstRunTime, x.FlagSecondRunTime, x.FlagActive, x.CreatedAt }).ToListAsync();
+    // Nguồn chỉ quan tâm đúng 1 bản ghi active — "latest" PHẢI là bản ghi đó, không phải bản ghi mới tạo gần nhất theo Id.
+    var active = items.FirstOrDefault(x => x.FlagActive == "1");
+    return Results.Ok(new { count = items.Count, latest = active, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/doatsettingtimes", async (DOATSettingTimeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/doatsettingtimes", async (DOATSettingTimeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var no = "DOAT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var yyMM = now.ToString("yyMM");
+    var counter = await db.SeqCounters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SeqTableName == "Seq_DOATSTNo");
+    if (counter is null) { counter = new SeqCounter { OrgId = t.OrgId, SeqTableName = "Seq_DOATSTNo", LastValue = 0 }; db.SeqCounters.Add(counter); }
+    counter.LastValue += 1;
+    var no = $"{yyMM}DOATST{(counter.LastValue % 100000):00000}";
+
+    // Guard nguồn: bản ghi mới active, mọi bản ghi khác bị deactivate.
+    var othersActive = await db.DOATSettingTimes.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1").ToListAsync();
+    foreach (var x in othersActive) { x.FlagActive = "0"; x.LogLUDateTime = now; x.LogLUBy = by; }
+
     var row = new DOATSettingTime {
         OrgId = t.OrgId, DOATSTNo = no,
         FlagFirstRunTime = dto.FlagFirstRunTime == true ? "1" : "0",
         FlagSecondRunTime = dto.FlagSecondRunTime == true ? "1" : "0",
-        CreatedAt = DateTime.Now
+        FlagActive = "1", CreatedBy = by, CreatedAt = now,
     };
     db.DOATSettingTimes.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.DOATSTNo, row.FlagFirstRunTime, row.FlagSecondRunTime });
+    return Results.Ok(new { row.Id, row.DOATSTNo, row.FlagFirstRunTime, row.FlagSecondRunTime, row.FlagActive });
 }).RequireAuthorization();
 
 // ===== Lịch sử chính sách đơn hàng theo xe (CarHisOrderPolicy — port 1:1 FrmMngHisOrderPolicy, TCMotor/Sales/Purchase) =====

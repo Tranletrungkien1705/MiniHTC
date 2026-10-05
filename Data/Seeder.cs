@@ -4257,6 +4257,11 @@ public static class Seeder
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CBNo\" text NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CBDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"DateDeliveryCBInvoice\" timestamp NULL",
+                // #5248 Mst_DOATSettingTime_Add (BizHTC.MasterData.cs:14409/14419-14434) ghi FlagActive + audit cols, port cũ thiếu.
+                "ALTER TABLE public.\"DOATSettingTimes\" ADD COLUMN IF NOT EXISTS \"FlagActive\" text NOT NULL DEFAULT '1'",
+                "ALTER TABLE public.\"DOATSettingTimes\" ADD COLUMN IF NOT EXISTS \"CreatedBy\" text NULL",
+                "ALTER TABLE public.\"DOATSettingTimes\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"DOATSettingTimes\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
