@@ -27578,6 +27578,53 @@ app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? 
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
+// ===== 🔴 #1570 `Ser_Mst_PartGroup_Get` (LIVE, `BizCarSv.Master.cs:3713`, WS `HTCWSCarSv/WSCarSv.asmx.cs:2973`) =====
+// Nguồn `select [PartGroupID],[DealerCode],isnull([ParentID],0) ParentID,[FamilyID],[OrderID],[GroupCode],
+//   [GroupName],[IsActive],[LogLUDateTime],[LogLUBy] from ser_mst_partgroup t where (1=1)
+//   zzzzClauseWherePartGroupIDList zzzzClauseWhereDealerCodeList zzzzClauseWhereIsActiveList order by orderid`
+//   — BA bộ lọc dạng DANH SÁCH `|` (`BuildClauseConditionList(..., "|")`), KHÔNG guard ⇒ tham số rỗng trả TRỌN danh mục.
+// ⚠️ Route `/api/partgroups` (port từ WinForm FrmPartGroup) lọc q/parent/active — KHÔNG có PartGroupIDList/
+//   DealerCodeList/IsActiveList ⇒ đây là GAP thật (WebMethod không dấu vết).
+// 🔴 Hành vi nguồn port 1:1: `strIsActiveList = strIsActiveList.ToUpper().Replace("TRUE","1").Replace("FALSE","0")`
+//   TRƯỚC khi dựng mệnh đề ⇒ client gửi "true"/"false" (mọi kiểu hoa/thường) thành "1"/"0".
+//   `isnull(ParentID,0)` ⇒ nhóm gốc trả ParentID = 0 (KHÔNG phải null). `order by orderid` (KHÔNG phụ).
+// 📌 §12: entity `PartGroup` đã đủ cột (IsActive ↔ FlagActive) — không thêm field mới.
+app.MapGet("/api/partgroups/get", async (AppDbContext db, ITenantContext t,
+    string? partGroupIdList, string? dealerCodeList, string? isActiveList) =>
+{
+    var qry = db.PartGroups.Where(x => x.OrgId == t.OrgId);
+    // BuildClauseConditionList("and", "t.PartGroupID", strPartGroupIDList, "|") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(partGroupIdList))
+    {
+        var ids = partGroupIdList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => ids.Contains(x.Id.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var dlrs = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && dlrs.Contains(x.DealerCode));
+    }
+    // 🔴 Nguồn chuẩn hoá TRUE/FALSE → 1/0 TRƯỚC khi lọc (giữ nguyên thứ tự Replace như nguồn).
+    if (!string.IsNullOrWhiteSpace(isActiveList))
+    {
+        var norm = isActiveList!.ToUpper().Replace("TRUE", "1").Replace("FALSE", "0");
+        var act = norm.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => act.Contains(x.FlagActive));
+    }
+    var all = await qry.OrderBy(x => x.OrderId).ToListAsync();
+    var items = all.Select(x => new
+    {
+        PartGroupID = x.Id, x.DealerCode,
+        ParentID = x.ParentID ?? 0,   // isnull([ParentID], 0) — nhóm gốc trả 0, KHÔNG null
+        x.FamilyID, OrderID = x.OrderId, x.GroupCode, x.GroupName,
+        IsActive = x.FlagActive, x.LogLUDateTime, x.LogLUBy
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1570 = "#1570: Ser_Mst_PartGroup_Get — BizCarSv.Master.cs:3713, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:2973",
+        separatorNote = "BuildClauseConditionList(..., '|') - dau ngan la ONG '|', khong phai dau phay.",
+        isActiveRefineNote = "nguon: strIsActiveList.ToUpper().Replace(TRUE,1).Replace(FALSE,0) truoc khi dung menh de",
+        parentIdZeroNote = "isnull([ParentID],0) => nhom goc tra ParentID=0 (khong phai null)" });
+}).RequireAuthorization();
 
 // Upsert theo mã nhóm = `Ser_MST_PartGroup_Create` (mới) / `_Update` (đã có) — BizCarSv.Master.cs:3840/4200.
 //   #408 ParentID = khoá (Id) nhóm cha như nguồn; Update: rỗng ⇒ NULL (nguồn gán DBNull + alEffectiveColumn), Create: rỗng ⇒ không gán.
