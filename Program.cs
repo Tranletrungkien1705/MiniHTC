@@ -32449,6 +32449,63 @@ app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, stri
         x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1496 §12 — echo đủ cột (nguồn SELECT smmai.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
+// ===== 🔴 #1575 `Ser_Mst_ModelAudImage_GetForTab` (LIVE WS `HTCWSCarSvTab/WSCarSvTab.asmx.cs:6429`) =====
+// Nguồn: `Tab/BizCarSv.Tab.cs:95` (vỏ) -> `Ser_Mst_ModelAudImage_GetX` (`:349-500`).
+// KHÁC `Ser_Mst_ModelAudImage_Get` (#1496, đã port ở `/api/modelaudimages`): bản ForTab có THÊM
+//   phân trang (bị COMMENT) + cờ `strIsGet_Ser_Mst_ModelAudImage` + bảng Summary đếm DISTINCT cặp khoá.
+// Nguồn: `select distinct identity(bigint,0,1) MyIdxSeq, smmai.ModelCode, smmai.ReceptionFAudType
+//   into #tbl_..._Draft from Ser_Mst_ModelAudImage smmai where(1=1) zzzzClauseWhere_strModelCodeList
+//   zzzzClauseWhere_strReceptionFAudTypeList zzzzClauseWhere_strFlagActiveList
+//   order by smmai.ModelCode, smmai.ReceptionFAudType; select Count(0) MyCount from #...;
+//   select t.MyIdxSeq, smmai.* from #tbl..._Filter t inner join Ser_Mst_ModelAudImage smmai
+//   on t.ModelCode = smmai.ModelCode and t.ReceptionFAudType = smmai.ReceptionFAudType`.
+// 🔴 BA bộ lọc dạng DANH SÁCH '|' qua `SqlUtils.BuildClause` (bài học #410): `smmai.ModelCode`,
+//   `smmai.ReceptionFAudType`, `smmai.FlagActive`. Danh sách rỗng ⇒ BỎ HẲN mệnh đề ⇒ trả TRỌN danh mục.
+// 🔴 `bGet_Ser_Mst_ModelAudImage = (str != null && str.Length > 0)` — BẤT KỲ chuỗi khác rỗng đều BẬT
+//   khối chi tiết (không so `TConst.Flag.Yes`); chuỗi rỗng/null ⇒ chỉ trả bảng Summary.
+// 🔴 `Convert.ToInt64(strFt_RecordStart)` KHÔNG guard rỗng ⇒ FormatException (họ #626/#627); hai dòng
+//   phân trang bị COMMENT ⇒ MyIdxSeq chỉ dùng để đánh số, KHÔNG cắt trang.
+// 🔴 `order by` nằm trên `SELECT … INTO` ⇒ chỉ ảnh hưởng cách đánh số identity, KHÔNG quyết định thứ tự
+//   trả về (bài học #415); câu kết quả KHÔNG có ORDER BY ⇒ port sắp tường minh theo (ModelCode, ReceptionFAudType).
+app.MapGet("/api/modelaudimages/get", async (AppDbContext db, ITenantContext t,
+    string? modelCodeList, string? receptionFAudTypeList, string? flagActiveList, string? isGetDetail) =>
+{
+    var qry = db.ModelAudImages.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "smmai.<col>", <list>, "@p") — danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(modelCodeList))
+    {
+        var v = modelCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.ModelCode));
+    }
+    if (!string.IsNullOrWhiteSpace(receptionFAudTypeList))
+    {
+        var v = receptionFAudTypeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.ReceptionFAudType));
+    }
+    if (!string.IsNullOrWhiteSpace(flagActiveList))
+    {
+        var v = flagActiveList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.FlagActive != null && v.Contains(x.FlagActive));
+    }
+    var all = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.ReceptionFAudType).ToListAsync();
+    // Nguồn: Count(0) trên bảng DISTINCT(ModelCode, ReceptionFAudType) ⇒ đếm cặp khoá phân biệt.
+    var distinctPairs = all.Select(x => new { x.ModelCode, x.ReceptionFAudType }).Distinct().Count();
+    // bGet_Ser_Mst_ModelAudImage = (str != null && str.Length > 0) — bất kỳ chuỗi khác rỗng đều BẬT.
+    var getDetail = !string.IsNullOrEmpty(isGetDetail);
+    var items = getDetail
+        ? all.Select(x => (object)new { x.Id, x.ModelCode, x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToList()
+        : new List<object>();
+    return Results.Ok(new
+    {
+        myCountAsSource = distinctPairs,   // nguồn: Count(0) trên bảng DISTINCT(ModelCode, ReceptionFAudType)
+        count = items.Count, items,
+        detailFlagNotFollowingConvention = "bGet_Ser_Mst_ModelAudImage = (str != null && str.Length > 0) — BAT KY chuoi khac rong cung bat khoi chi tiet (khong so TConst.Flag.Yes)",
+        pagingIsDisabled = "hai dong phan trang (MyIdxSeq >= @nFilterRecordStart / <= @nFilterRecordEnd) bi COMMENT => MyIdxSeq chi de danh so, KHONG cat trang",
+        recordStartHasNoGuard = "Convert.ToInt64(strFt_RecordStart) khong guard rong => FormatException (ho #626/#627)",
+        orderByOnSelectIntoOnly = "order by smmai.ModelCode, smmai.ReceptionFAudType nam tren SELECT ... INTO nen chi anh huong cach danh so identity, khong quyet dinh thu tu tra ve (#415); cau ket qua KHONG co ORDER BY — port sap tuong minh",
+        buildClauseNote = "BuildClause('and','smmai.<col>',<list>,'@p'): cat theo '|', danh sach rong => BO HAN menh de (khong phai 'in ()')",
+    });
+}).RequireAuthorization();
 
 // `Ser_Mst_ModelAudImage_Add`: guard `ModelCode` rỗng ⇒ Raise; `ReceptionFAudType` rỗng ⇒ Raise;
 // `CheckDB(Flag.No)` = cặp khoá PHẢI CHƯA tồn tại; `FilePath` rỗng ⇒ Raise.
