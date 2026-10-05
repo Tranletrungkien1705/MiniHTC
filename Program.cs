@@ -105793,6 +105793,49 @@ app.MapGet("/api/roattachfiles", async (AppDbContext db, ITenantContext t,
         differentTableFromIssue622 = "Ser_ROAttachFile (khoa hop ROID + ROFileType, luu duong dan + ten file) KHAC Ser_ROAttachment (#622 — anh, co cot blob Image); ten gan giong, de gop nham",
     });
 }).RequireAuthorization();
+// ===== 🔴 #1585 `Ser_ROAttachFile_Save` (LIVE, `BizCarSv.Tab.cs:426` → thân `Ser_ROAttachFile_SaveX` `:1608`, WS `HTCWSCarSvTab/WSCarSvTab.asmx.cs:3304`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). Bổ sung cặp GHI cho `GET /api/roattachfiles` (#631).
+// Nguồn: (1) `Ser_RO_CheckDB(dbAction, strROID, TConst.Flag.Yes, "")` — guard RO PHẢI tồn tại, không có thì ném
+//   `Ser_RO_CheckDB_RONotFound`; (2) `bIsDelete = StringEqual(strFlagIsDelete, TConst.Flag.Yes)` — TÍNH nhưng
+//   **KHÔNG BAO GIỜ DÙNG LẠI** (bài học #966): nguồn LUÔN xoá-rồi-chèn VÔ ĐIỀU KIỆN, `strFlagIsDelete` là tham số CHẾT;
+//   (3) `delete from Ser_ROAttachFile where ROID = @strROID and ROFileType = @strROFileType` (xoá MỌI file cùng loại);
+//   (4) `insert` MỘT dòng với `Remark = null` (nguồn đặt cứng null), `LogLUDateTime = dtimeSys`, `LogLUBy = strPartnerUserCode`;
+//   (5) trả dataset RỖNG (hàm `void`).
+// ⚠️ Nguồn dùng khoá `ROID` (số) — Mini `RoAttachFile` biểu diễn bằng `RONo` (chuỗi) ⇒ nhận `roId` (số) rồi tra `RONo`.
+// 3B: md5 thân `SaveX` (1608-1812) KHỚP giữa V20 và V20.2023.Release sau khi canh lệch 2 dòng chữ ký (48c0bc6d31febb904d27577d2e7bc6bb).
+app.MapPost("/api/roattachfiles", async (RoAttachFileSaveDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    // (1) Ser_RO_CheckDB(..., TConst.Flag.Yes, "") — guard RO phải tồn tại.
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == dto.ROID);
+    if (ro is null)
+        return Results.BadRequest(new { error = "Ser_RO_CheckDB_RONotFound", checkObjROID = dto.ROID,
+            sourceGuard = "Ser_RO_CheckDB(dbAction, strROID, TConst.Flag.Yes, \"\") nem Ser_RO_CheckDB_RONotFound khi khong thay RO" });
+    var roNo = ro.RONo;
+    var fileType = (dto.ROFileType ?? "").Trim();
+    // (3) Xoá MỌI dòng cùng (ROID, ROFileType) — nguồn xoá-rồi-chèn VÔ ĐIỀU KIỆN (strFlagIsDelete là tham số CHẾT, #966).
+    var old = await db.RoAttachFiles.Where(x => x.OrgId == t.OrgId && x.RONo == roNo && x.ROFileType == fileType).ToListAsync();
+    if (old.Count > 0) db.RoAttachFiles.RemoveRange(old);
+    // (4) Chèn MỘT dòng; Remark = null (nguồn đặt cứng null).
+    var row = new RoAttachFile
+    {
+        OrgId = t.OrgId,
+        RONo = roNo,
+        ROFileType = fileType,
+        ROFilePath = (dto.ROFilePath ?? "").Trim(),
+        ROFileName = (dto.ROFileName ?? "").Trim(),
+        Remark = null,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = partnerUserCode
+    };
+    db.RoAttachFiles.Add(row);
+    await db.SaveChangesAsync();
+    // (5) Nguồn trả dataset RỖNG (hàm void) — port trả tóm tắt thao tác.
+    return Results.Ok(new { deleted = old.Count, inserted = 1, roNo, roFileType = fileType,
+        sourceReturnsEmptyDataset = "Ser_ROAttachFile_SaveX la ham void => nguon tra dataset RONG",
+        flagIsDeleteIsDeadParam = "#966: strFlagIsDelete duoc TINH (bIsDelete) nhung KHONG BAO GIO dung lai — nguon LUON xoa-roi-chen vo dieu kien",
+        remarkAlwaysNull = "nguon dat cung Remark = null khi insert",
+        sourceKeyIsNumericROID = "nguon nhan strROID (khoa so Ser_RO.ROID), KHONG phai so RO" });
+}).RequireAuthorization();
 
 // ===== 🔴🔴 #630 MÀN HOME MÁY TÍNH BẢNG — LỆNH SỬA CHỮA `Ser_RO_HomeX` (`Tab.cs:1225`) =====
 // 3B: laptop `:1225` md5 `19fd2b73` **KHỚP** máy 150 `:1225`. Hoàn tất **bộ ba** Home (#628 · #629 · #630).
@@ -110193,6 +110236,8 @@ record RoRejectDto(string? Note);
 record RoEngineersDto(List<string>? EngineerNos);
 record StockReqLineDto(string PartCode, string? PartName, string? Location, decimal Quantity, string? Unit);
 record StockReqDto(string RONo, bool FromRO, List<StockReqLineDto>? Lines, string? DealerCode = null, string? Assistant = null, string? PlateNo = null, string? FrameNo = null, string? Note = null);
+// #1585 `Ser_ROAttachFile_Save` — nguồn nhận strFlagIsDelete (THAM SỐ CHẾT, #966) + strROID/strROFileType/strROFilePath/strROFileName.
+record RoAttachFileSaveDto(long ROID, string? ROFileType, string? ROFilePath, string? ROFileName, string? FlagIsDelete = null);
 // merge master+session-a: hợp tham số record (chú thích nguồn xem lịch sử git hai nhánh)
 record ReceptionDto(string? PlateNo,
     string? ModelName,
