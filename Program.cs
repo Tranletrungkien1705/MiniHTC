@@ -82500,6 +82500,56 @@ app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, long? 
         }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
+// ===== 🔴 #1571 `SerGroupRepairGet` (LIVE, `BizCarSv.Service.cs:11631`, WS `HTCWSCarSv/WSCarSv.asmx.cs:5793`) =====
+// Nguồn `SELECT * FROM Ser_GroupRepair sp WHERE (1=1) zzzzClauseWhere_strGroupRIDConditionList
+//   zzzzClauseWhere_strDealerCodeConditionList zzzzClauseWhere_strGroupRNoConditionList
+//   zzzzClauseWhere_strGroupRNameConditionList zzzzClauseWhere_strIsActiveConditionList`
+//   — NĂM bộ lọc dạng DANH SÁCH `|` qua `SqlUtils.BuildClause("and", "sp.<col>", <list>, "@p", ref params)`.
+// ⚠️ Route `/api/grouprepairs` (port từ WinForm FrmGroupRepairCreate) lọc groupRID/dealerCode/groupRNo/groupRName/isActive
+//   dạng GIÁ TRỊ ĐƠN (GroupRNo/GroupRName dùng `Contains`) — KHÔNG có 5 danh sách `|` ⇒ đây là GAP thật (WebMethod không dấu vết).
+// 🔴 Hành vi nguồn port 1:1: `BuildClause` cắt chuỗi theo `|`, mỗi token là MỘT điều kiện; token rỗng bị bỏ;
+//   danh sách rỗng ⇒ BỎ HẲN mệnh đề (KHÔNG phải `in ()`) ⇒ tham số rỗng trả TRỌN danh mục. `SELECT *` ⇒ echo MỌI cột.
+// 📌 §12: entity `GroupRepair` đã đủ cột — không thêm field mới.
+app.MapGet("/api/grouprepairs/get", async (AppDbContext db, ITenantContext t,
+    string? groupRIDConditionList, string? dealerCodeConditionList, string? groupRNoConditionList,
+    string? groupRNameConditionList, string? isActiveConditionList) =>
+{
+    var qry = db.GroupRepairs.Where(x => x.OrgId == t.OrgId);
+    // BuildClause("and", "sp.<col>", <list>, "@p") — mọi bộ lọc đều là danh sách phân tách bằng '|'.
+    if (!string.IsNullOrWhiteSpace(groupRIDConditionList))
+    {
+        var v = groupRIDConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.Id.ToString()));
+    }
+    if (!string.IsNullOrWhiteSpace(dealerCodeConditionList))
+    {
+        var v = dealerCodeConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.DealerCode != null && v.Contains(x.DealerCode));
+    }
+    if (!string.IsNullOrWhiteSpace(groupRNoConditionList))
+    {
+        var v = groupRNoConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.GroupRNo));
+    }
+    if (!string.IsNullOrWhiteSpace(groupRNameConditionList))
+    {
+        var v = groupRNameConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => v.Contains(x.GroupRName));
+    }
+    if (!string.IsNullOrWhiteSpace(isActiveConditionList))
+    {
+        var v = isActiveConditionList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        qry = qry.Where(x => x.IsActive != null && v.Contains(x.IsActive));
+    }
+    var items = await qry.Select(g => new
+    {
+        GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.DealerCode, g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1571 = "#1571: SerGroupRepairGet — BizCarSv.Service.cs:11631, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:5793",
+        echoAllColumnsFromStar = "#1571: nguon SELECT * => moi cot Ser_GroupRepair phai co o GET (bai hoc #539)",
+        buildClauseNote = "5 bo loc qua BuildClause('and','sp.<col>',<list>,'@p') => danh sach RONG => BO HAN menh de (khong phai 'in ()')" });
+}).RequireAuthorization();
 
 // Create (GroupRID rỗng) hoặc Update (có GroupRID) — giữ một route như port cũ.
 app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
