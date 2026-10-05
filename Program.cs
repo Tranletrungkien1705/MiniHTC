@@ -93373,13 +93373,33 @@ app.MapPost("/api/repairorders/{no}/maintance", async (string no, RoMaintanceDto
         maceRowsUpdated = maces.Count,
         sourceFunctionName = "Ser_RO_Update_Maintance_New20210704",
         kmParameterAcceptedButNeverWritten = "nguon co dong //dt_Ser_RO.Rows[0][Km] = strKm; BI COMMENT => tham so strKm nhan ma KHONG BAO GIO ghi (giu 1:1)",
-        guards = "RONotExist (RO phai ton tai) + InvalidStatus (khong duoc PAID/FNS)",
-        maceUpdateUnfiltered = "nguon update Ser_CustomerCareMace.MaceRecomentDate cho MOI dong co ROID khop, khong loc them",
-    });
-}).RequireAuthorization();
-
-app.MapGet("/api/repairorders/statusnames", (string? screen) =>
-{
+                guards = "RONotExist (RO phai ton tai) + InvalidStatus (khong duoc PAID/FNS)",
+                maceUpdateUnfiltered = "nguon update Ser_CustomerCareMace.MaceRecomentDate cho MOI dong co ROID khop, khong loc them",
+            });
+        }).RequireAuthorization();
+        // ===== #1569 `Ser_RO_UpdateAmountFromMC` (LIVE, `BizCarSv.zzzzCode.cs:4688`, WS `HTCWSCarSv/WSCarSv.asmx.cs:11508`) =====
+        // Cap nhat 2 cot chiet khau tren lenh sua chua: `AmountFromMC` (tien hang MC chi tra) + `AmountDiscountOther` (giam gia khac).
+        // 🔴 Guard nguon `Ser_RO_CheckDB(_dbDealer, strROID, Flag.Active, "CEND", out dtDB_Ser_RO)`:
+        //   (1) RO phai TON TAI (Active) — khong co => `Ser_RO_CheckDB_RONotFound`;
+        //   (2) `strStatusListToCheck = "CEND"` va nguon kiem `!strStatusListToCheck.Contains(Status)` => Status phai CHUA "CEND"
+        //       (CheckEnd = kiem tra cuoi cung) — nguoc lai `Ser_RO_CheckDB_StatusNotMatch`.
+        // ⚠️ Nguon nhan `object objAmountFromMC`/`objAmountDiscountOther` (co the DBNull) va gan THANG vao cot => Mini dung `decimal?`.
+        // ⚠️ Nguon ghi CA 3 CSDL (Main/WH/Dealer) — Mini 1 CSDL nen chi 1 lan ghi.
+        app.MapPost("/api/repairorders/{no}/amount-from-mc", async (string no, RoAmountFromMcDto dto, AppDbContext db, ITenantContext t) =>
+        {
+            no = no.Trim().ToUpperInvariant();
+            var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+            if (r is null) return Results.NotFound(new { error = "Ser_RO_CheckDB_RONotFound", no });
+            // strStatusListToCheck = "CEND" — nguon dung Contains nen chi can Status CHUA chuoi "CEND".
+            if (!(r.Status ?? "").Contains("CEND"))
+                return Results.BadRequest(new { error = "Ser_RO_CheckDB_StatusNotMatch", status = r.Status, required = "CEND" });
+            r.AmountFromMC = dto.AmountFromMC;
+            r.AmountDiscountOther = dto.AmountDiscountOther;
+            await db.SaveChangesAsync();
+            return Results.Ok(new { r.RONo, r.AmountFromMC, r.AmountDiscountOther, sourceFunctionName = "Ser_RO_UpdateAmountFromMC" });
+        }).RequireAuthorization();
+        app.MapGet("/api/repairorders/statusnames", (string? screen) =>
+        {
     var key = string.IsNullOrWhiteSpace(screen) ? "rosearch" : screen!.Trim().ToLowerInvariant();
     if (!roStatusDisplayNamesByScreen.TryGetValue(key, out var map))
         return Results.BadRequest(new { error = "screen phải là một trong: "
@@ -109359,6 +109379,8 @@ record RoAdvanceDto(string ToStatus,
     string? CrdDealSerRODtlJson = null);
 // #1563 `Ser_RO_Update_Maintance_New20210704` — nhắc bảo dưỡng. `Km` KHÔNG có trong DTO vì nguồn không ghi nó.
 record RoMaintanceDto(string? ReminderMaintanceDate, string? ReminderMaintanceKm, string? WorkDoneSoon, string? CardNo);
+// #1569 `Ser_RO_UpdateAmountFromMC` — 2 cột chiết khấu trên lệnh sửa chữa (nguồn nhận `object` có thể DBNull ⇒ `decimal?`).
+record RoAmountFromMcDto(decimal? AmountFromMC, decimal? AmountDiscountOther);
 
 record RepairOrderUpdateDto(DateTime? ScheduleDate,
     DateTime? CheckInDate,
