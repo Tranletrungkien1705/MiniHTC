@@ -16492,6 +16492,7 @@ static bool MktYearValid(string y) =>
 
 app.MapGet("/api/rptmarketing", async (AppDbContext db, ITenantContext t, string? mktYear, string? dealerCode, string? rptStatus) =>
 {
+    // #4578 (tag lặp lại trong thân route — header cụm bị helper MktYearValid chắn khỏi backward-scan)
     var qy = db.RptMarketings.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(mktYear)) qy = qy.Where(x => x.MKTYear == mktYear);
     if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.DealerCode == dealerCode);
@@ -39183,6 +39184,7 @@ static (List<string>? CarIds, string? Error) NormalizeCarIdBatch(List<string>? r
 
 app.MapGet("/api/caractivestatuses", async (AppDbContext db, ITenantContext t, string? carId, string? flagActive) =>
 {
+    // #4631 (tag lặp lại trong thân route — header cụm bị helper NormalizeCarIdBatch chắn khỏi backward-scan)
     var q = db.CarActiveStatuses.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId.Contains(carId!));
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
