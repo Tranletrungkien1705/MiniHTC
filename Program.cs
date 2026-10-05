@@ -104201,6 +104201,12 @@ app.MapPost("/api/mstordercomplaintypes", async (MstOrderComplainTypeDto dto, Ap
                             writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
 }).RequireAuthorization();
 
+// #5564 — Mst_OrderComplainImageType (DMSCarSv, TERP.BizCarSv/Mst_OrderComplainImageTypeService.cs):
+// nguồn CHỈ có hàm `Get` (grep service + `FrmMst_OrderComplainImageTypeMng.cs` xác nhận form "Mng" cũng
+// CHỈ ĐỌC — `SetGridDbEditableStatus(false,...)`, không `btnSave_Click` nào) — khớp đúng 5 cột thật
+// (`OrderComplainImageType`/`OrderComplainImageName`/`FlagActive`/`LogLUDateTime`/`LogLUBy`, DbDefine.cs:2941).
+// POST dưới đây là phần thêm của port (ghi rõ `writeIsPortAddition`), không có trong nguồn — chấp nhận được
+// vì master này cần cách nạp dữ liệu nào đó cho Mini (nguồn thật nạp thẳng DB, Mini không có quyền đó).
 app.MapGet("/api/mstordercomplainimagetypes", async (AppDbContext db, ITenantContext t,
     string? type, string? name, string? flagActive, int? recordStart, int? recordCount) =>
 {
@@ -104226,6 +104232,7 @@ app.MapGet("/api/mstordercomplainimagetypes", async (AppDbContext db, ITenantCon
 app.MapPost("/api/mstordercomplainimagetypes", async (MstOrderComplainImageTypeDto dto, AppDbContext db,
     ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    // #5564
     var code = (dto.OrderComplainImageType ?? "").Trim();
     if (code.Length == 0) return Results.BadRequest(new { error = "Chua nhap loai anh khieu nai." });
     var by = user.Identity?.Name ?? "system";
