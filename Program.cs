@@ -29551,8 +29551,9 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
     // trong CÙNG DataSet — port cũ có endpoint riêng (`ServiceWarrantyClaimTransactions`) nhưng chưa từng
     // nhúng vào chính #895 khi `includeDetail=true`.
     var claimTransactions = includeDetail
-        ? await db.ServiceWarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId) && x.CurrentStatus != "PEND").ToListAsync()
-        : new List<ServiceWarrantyClaimTransaction>();
+        // merge: doc tu bang THUC SU duoc ghi (ban twin ServiceWarrantyClaimTransaction chua tung co dong INSERT)
+        ? await db.WarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId) && x.CurrentStatus != "PEND").ToListAsync()
+        : new List<WarrantyClaimTransaction>();
     static string? WarrantyStatusText(string? code) => code switch
     {
         "SENT" => "Chờ xem xét", "PEND" => "Chưa gửi", "CONF" => "Chờ duyệt",
@@ -33166,7 +33167,7 @@ app.MapGet("/api/rowarranty-reports", async (AppDbContext db, ITenantContext t,
     }).ToList();
 
     var claimIds = claims.Select(c => c.Id).ToList();
-    var trans = await db.ServiceWarrantyClaimTransactions
+    var trans = await db.WarrantyClaimTransactions   // merge: xem ghi chu o #984
         .Where(x => x.OrgId == t.OrgId && claimIds.Contains(x.ClaimId))
         .OrderBy(x => x.Id)                       // bản LIVE THÊM order by rt.ROWRTransactionID
         .Select(x => new { x.Id, x.ClaimId, x.Creator, x.CurrentStatus, x.CreatedDate, x.Note })
@@ -94437,7 +94438,7 @@ app.MapGet("/api/repairorders/warranty-lookup", async (AppDbContext db, ITenantC
     }).ToList();
 
     var transactions = claim is null ? new List<object>()
-        : (await db.ServiceWarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && x.ClaimId == claim.Id)
+        : (await db.WarrantyClaimTransactions.Where(x => x.OrgId == t.OrgId && x.ClaimId == claim.Id)
             .OrderBy(x => x.Id).ToListAsync())
             .Select(x => new { x.Id, claim.ROWNo, x.ClaimId, x.Creator, x.CreatedDate, x.CurrentStatus, x.Note })
             .Cast<object>().ToList();
