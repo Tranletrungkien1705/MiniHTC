@@ -29666,6 +29666,7 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         x.ModelID, x.BatteryNo, x.SerialNo,
         x.WarrantyRegistrationDate, x.WarrantyExpiresDate, x.WarrantyKM, x.Note,
         x.UpdatedAt,   // #1306 §12
+        x.CreatedDate,   // #1557 §12
     }).ToListAsync();
     var withLabel = items.Select(i => new
     {
@@ -29681,6 +29682,7 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         i.CusRequest, i.CarStatus, i.NaturalCode, i.CauseCode, i.StartDate, i.ROWTID,
         i.ErrorCodeCD, i.ErrorCodePN, i.FlagReadySend, i.PartIDError, i.ApprovedBy, i.CreatedBy,
         i.LogLUDateTime, i.LogLUBy, i.CreatedAt, i.UpdatedAt,   // #1440 §12
+        i.CreatedDate,   // #1557 §12
     }).ToList();
     // #466: ba bảng bắt buộc của nguồn (Ser_RO · Ser_Customer · ser_car) — đếm dòng bị nuốt.
     var roNos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId).Select(x => x.RONo).ToListAsync();
@@ -29765,6 +29767,8 @@ app.MapPost("/api/warrantyclaims", async (WarrantyClaimDto dto, AppDbContext db,
         CheckInDate = dto.CheckInDate, StartDate = dto.StartDate?.Date, FinishedDate = dto.FinishedDate, CusRequest = S(dto.CusRequest), CarStatus = S(dto.CarStatus),
         NaturalCode = S(dto.NaturalCode), CauseCode = S(dto.CauseCode), Km = S(dto.Km), CarID = S(dto.CarID), ROWTID = rowtid,
         ErrorCodePN = S(dto.ErrorCodePN), ErrorCodeCD = S(dto.ErrorCodeCD), PartIDError = partErr, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+        // #1557 §12: nguon Ser_ROWarrantyReport_Create ghi CreatedDate = strTDate (thoi diem tao).
+        CreatedDate = dto.CreatedDate ?? now,
         // merge session-a #302/#322: bản chụp xe + ROID
         ROID = dto.ROID, ModelID = dto.ModelID, BatteryNo = dto.BatteryNo, SerialNo = dto.SerialNo,
         WarrantyRegistrationDate = dto.WarrantyRegistrationDate, WarrantyExpiresDate = dto.WarrantyExpiresDate, WarrantyKM = dto.WarrantyKM,
@@ -110564,7 +110568,7 @@ record WarrantyClaimDto(string? DealerCode, string? RONo, string? Vin, string? P
     DateTime? CheckInDate = null, DateTime? StartDate = null, DateTime? FinishedDate = null, string? CusRequest = null, string? CarStatus = null, string? NaturalCode = null,
     string? CauseCode = null, string? Km = null, string? Note = null, string? CarID = null, string? ROWTID = null, string? ErrorCodePN = null, string? ErrorCodeCD = null,
     string? PartIDError = null,   // #412
-    string? ROID = null, string? ROWTypeCode = null, string? ROWTypeDtlCode = null, string? FlagReadySend = null, string? CreatedBy = null, string? ModelID = null, string? BatteryNo = null, string? SerialNo = null, DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null, decimal? WarrantyKM = null);   // merge session-a #302/#322/#369 tham số Ser_ROWarrantyReport_Create_20220218
+    string? ROID = null, string? ROWTypeCode = null, string? ROWTypeDtlCode = null, string? FlagReadySend = null, string? CreatedBy = null, string? ModelID = null, string? BatteryNo = null, string? SerialNo = null, DateTime? WarrantyRegistrationDate = null, DateTime? WarrantyExpiresDate = null, decimal? WarrantyKM = null, DateTime? CreatedDate = null);   // merge session-a #302/#322/#369 tham số Ser_ROWarrantyReport_Create_20220218 + #1557 CreatedDate
 record WarrantyAttachmentDto(string FileName, string? FileNote);
 // #303: một dòng của báo cáo chấp thuận bảo hành (`SerWarrantyAcceptRpt_New20230417`).
 // #407 Một DÒNG của báo cáo chấp thuận bảo hành mức chi tiết (`SerWarrantyAcceptRpt_GetAll`).

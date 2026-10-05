@@ -6305,10 +6305,12 @@ public sealed class ServiceWarrantyClaim
     // từng có 2 cột này (khác `ServiceWarrantyClaimTransaction` đã vá ở #1113).
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
-
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
-
+    // #1557 §12 - cot nguon CreatedDate (Ser_ROWarrantyReport) - port 1:1.
+    // Nguon Ser_ROWarrantyReport_Create (WarrantyReport.cs:1894) INSERT ghi CreatedDate = strTDate (thoi diem tao),
+    // KHAC CreatedAt quy uoc Mini. Port cu chi co CreatedAt nen mat moc tao that cua phieu.
+    public DateTime? CreatedDate { get; set; }
     // ===== #412 parity header `Ser_ROWarrantyReport` — `Ser_ROWarrantyReport_Create_20220218` (BizCarSv.WarrantyReport.cs:2015, WS LIVE) =====
 }
 
