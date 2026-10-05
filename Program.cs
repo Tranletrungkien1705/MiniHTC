@@ -13201,6 +13201,28 @@ app.MapGet("/api/files/from-path", async (string filepath, AppDbContext db, ITen
     return Results.Ok(new { filepath, fileTypeCode, base64 = Convert.ToBase64String(bytes), length = bytes.Length });
 }).RequireAuthorization();
 
+// ===== 🔴 #1561 `GetFileFromPathForTab` — BẢN SINH ĐÔI CỦA #1560, KHÁC ĐÚNG MỘT CHỖ =====
+// Nguồn: `BizCarSv.UploadFile.cs:2062 GetFileFromPathForTab` (LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:243`).
+// ⚠️ KHÁC `GetFileFromPath` (#1560) ĐÚNG MỘT DÒNG: bản này đọc `System.IO.File.ReadAllBytes(filepath)`
+//    TRỰC TIẾP (đường dẫn TUYỆT ĐỐI), KHÔNG qua `Server.MapPath` (dòng MapPath bị COMMENT trong nguồn).
+//    Phần còn lại (đuôi UPPERCASE + `Mst_FileTypeUpload_CheckDB` + base64 vào Remark) GIỐNG HỆT.
+// ⚠️ `strErrorCodeDefault` là CHUỖI THÔ "GetFileFromPathForTab" (không phải hằng `TError.ErrCarSv.…`) —
+//    nằm trong nhóm 9 mã lỗi không có trong danh mục (bài học #781). Giữ nguyên chuỗi thô.
+app.MapGet("/api/files/from-path-tab", async (string filepath, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(filepath)) return Results.BadRequest(new { error = "Chưa nhập đường dẫn tệp (filepath)." });
+    var ext = System.IO.Path.GetExtension(filepath);
+    var fileTypeCode = string.IsNullOrEmpty(ext) ? "" : ext.ToUpperInvariant();
+    var known = await db.MstFileTypes.AnyAsync(x => x.OrgId == t.OrgId && x.FileType == fileTypeCode);
+    if (!known)
+        return Results.BadRequest(new { error = "Loại tệp không có trong danh mục (Mst_FileTypeUpload_CheckDB_FileTypeNotFound).", fileTypeCode, sourceErrorCode = "GetFileFromPathForTab" });
+    // Nguồn đọc TRỰC TIẾP đường dẫn tuyệt đối (KHÔNG MapPath) — port 1:1.
+    if (!System.IO.File.Exists(filepath))
+        return Results.NotFound(new { error = "Không tìm thấy tệp.", filepath });
+    var bytes = await System.IO.File.ReadAllBytesAsync(filepath);
+    return Results.Ok(new { filepath, fileTypeCode, base64 = Convert.ToBase64String(bytes), length = bytes.Length });
+}).RequireAuthorization();
+
 app.MapPost("/api/tst/send-partinfo", async (List<TstSendPartRowDto> rows, AppDbContext db, ITenantContext t) =>
 {
     if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Danh sách phụ tùng rỗng." });
