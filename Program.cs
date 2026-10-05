@@ -13173,6 +13173,34 @@ app.MapPost("/api/upload/check-filename", (UploadNameCheckDto dto) =>
         sourceDeadFunction = "UploadFile20180803 (hau to ngay #413) khong duoc WS goi => CHET, cung khuon MoveFileNew_New20190529 o #758",
     });
 }).RequireAuthorization();
+
+// ===== 🔴 #1560 `GetFileFromPath` — ĐỌC TỆP THEO ĐƯỜNG DẪN SERVER, TRẢ BASE64 =====
+// Nguồn: `BizCarSv.UploadFile.cs:1943 GetFileFromPath` (LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:26508`).
+//   (a) Lấy ĐUÔI tệp (UPPERCASE) từ `filepath`; rỗng đuôi ⇒ `strFileTypeCode` = "".
+//   (b) `Mst_FileTypeUpload_CheckDB(FileTypeCode, Flag.Yes)` — tra `Mst_FileTypeUpload` theo `FileTypeCode`;
+//       KHÔNG có dòng ⇒ ném `Mst_FileTypeUpload_CheckDB_FileTypeNotFound` (đuôi tệp phải nằm trong danh mục).
+//   (c) `HttpContext.Current.Server.MapPath(filepath)` → đọc bytes → `Convert.ToBase64String` → trả ở `Remark`.
+// ⚠️ Nguồn KHÔNG kiểm traversal/đường dẫn tuyệt đối — port 1:1 giữ nguyên hành vi (chỉ đọc trong thư mục gốc web).
+// 📌 Mini chưa có tầng lưu tệp ⇒ đọc theo `WebRootPath` (tương đương `Server.MapPath`).
+app.MapGet("/api/files/from-path", async (string filepath, AppDbContext db, ITenantContext t, IWebHostEnvironment env) =>
+{
+    if (string.IsNullOrWhiteSpace(filepath)) return Results.BadRequest(new { error = "Chưa nhập đường dẫn tệp (filepath)." });
+    var ext = System.IO.Path.GetExtension(filepath);
+    var fileTypeCode = string.IsNullOrEmpty(ext) ? "" : ext.ToUpperInvariant();
+    // Mst_FileTypeUpload_CheckDB(FileTypeCode, Flag.Yes) — phải có trong danh mục, nếu không ném.
+    var known = await db.MstFileTypes.AnyAsync(x => x.OrgId == t.OrgId && x.FileType == fileTypeCode);
+    if (!known)
+        return Results.BadRequest(new { error = "Loại tệp không có trong danh mục (Mst_FileTypeUpload_CheckDB_FileTypeNotFound).", fileTypeCode });
+    // Server.MapPath(filepath) — Mini: gốc web + đường dẫn tương đối.
+    var root = env.WebRootPath ?? env.ContentRootPath;
+    var rel = filepath.Replace('/', System.IO.Path.DirectorySeparatorChar).TrimStart(System.IO.Path.DirectorySeparatorChar);
+    var full = System.IO.Path.GetFullPath(System.IO.Path.Combine(root, rel));
+    if (!System.IO.File.Exists(full))
+        return Results.NotFound(new { error = "Không tìm thấy tệp.", filepath });
+    var bytes = await System.IO.File.ReadAllBytesAsync(full);
+    return Results.Ok(new { filepath, fileTypeCode, base64 = Convert.ToBase64String(bytes), length = bytes.Length });
+}).RequireAuthorization();
+
 app.MapPost("/api/tst/send-partinfo", async (List<TstSendPartRowDto> rows, AppDbContext db, ITenantContext t) =>
 {
     if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Danh sách phụ tùng rỗng." });
