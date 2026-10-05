@@ -101763,6 +101763,100 @@ app.MapGet("/api/appointments/search-wh", async (AppDbContext db, ITenantContext
         functionNameLogsBareVersion = "strFunctionName = Ser_App_GetNew_WH (KHONG hau to) du ham la …_New20190624 => log va ma loi ghi ten BAN TRAN => nhin log KHONG BIET ban nao da chay (cung ho voi #683)",
     });
 }).RequireAuthorization();
+// ===== 🔴 #1583 `Ser_App_GetStatusList01_WH_New20201230` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:31577`) — BẢN KHO =====
+// Nguồn `BizCarSv.ZTemp.cs:22073` — `select ro.*, mdl.ModelName, car.PlateNo, car.FrameNo, tm.TradeMarkName, car.ColorCode,
+//   cus.CusName, isnull(cus.Tel,isnull(cus.mobile,cus.contTel)) as CusTel, case ro.AppStatus when '1'..'5' end as StatusName,
+//   (tm.TradeMarkName +' - '+mdl.ModelName) as TradeMarkNameModel, u.UserName into #tmpro from Ser_App ro
+//   join ser_Customer cus on ro.CusID = cus.CusID and ro.DealerCode=cus.DealerCode
+//   join ser_car car on ro.CarID=car.CarID and ro.CusID=car.CusID and ro.DealerCode=car.DealerCode
+//   left join ser_mst_Model mdl on car.ModelID = mdl.ModelID
+//   join ser_mst_TradeMark tm on car.TradeMarkCode = tm.TradeMarkCode and ro.DealerCode = tm.DealerCode
+//   left join sys_user u on ro.creator = u.Usercode and ro.dealercode = u.dealercode where(1=1) <7 menh de>;
+//   select top 500 tpro.*, ('AP-'+tpro.AppNo) AppAppNo, case tpro.AppStatus when '1'..'5' end as NewAppStatus,
+//   srf.ReceptionFNo srf_ReceptionFNo, se.EngineerNo se_EngineerNo, se.EngineerName se_EngineerName,
+//   sc.CavityNo sc_CavityNo, sc.CavityName sc_CavityName from #tmpro tpro
+//   left join Ser_ReceptionF srf on tpro.AppId = srf.AppId
+//   left join Ser_Engineer se on tpro.CVDVCode = se.EngineerNo and tpro.DealerCode = se.DealerCode
+//   left join Ser_Cavity sc on tpro.CavityID = sc.CavityID where(1=1) order by tpro.AppDateTime asc`.
+// ⚠️ Route `/api/appointments` (#474/#542) port bản ĐẠI LÝ `Ser_App_GetStatusList01_New20201230` (`_dbDealer`).
+//   Bản KHO này là WebMethod RIÊNG (bài học #561: hai WebMethod cùng SQL khác DB vẫn là HAI đơn vị) ⇒ GAP thật.
+// Hành vi port 1:1: (1) BẢY bộ lọc: `ro.DealerCode`/`ro.AppStatus`/`ro.AppTypeCode` là DANH SÁCH '|' (BuildClauseConditionList);
+//   `car.PlateNo` LIKE (BuildClauseConditionSingle, giá trị bind NGUYÊN VĂN); `cus.CusName`/`ro.AppDateTimeFrom`/`ro.Creator`
+//   qua `BuildClause` (ĐÒI toán tử ở đầu chuỗi — thiếu toán tử là BỎ IM LẶNG, luật #410); (2) `top 500` + `order by tpro.AppDateTime asc`
+//   (đúng luật #415: TOP có ORDER BY trong chính câu); (3) bảng mã AppStatus viết HAI lần (StatusName + NewAppStatus), CẢ HAI
+//   KHÔNG có else ⇒ mã lạ cho NULL; (4) `(tm.TradeMarkName + ' - ' + mdl.ModelName)` — mdl là LEFT JOIN ⇒ xe thiếu model
+//   thì CẢ CHUỖI NULL; (5) `isnull(cus.Tel,isnull(cus.mobile,cus.contTel))` dự phòng ba cấp.
+// 📌 §12: entity `ServiceAppointment` đã đủ cột (`ro.*` = cả bảng) — không thêm field mới.
+// 3B: hai cây nguồn — thân hàm `Ser_App_GetStatusList01_WH_New20201230` md5 KHỚP (d4fe17d0).
+app.MapGet("/api/appointments/status-list-wh", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? appDateTimeFrom, string? appStatusList, string? plateNoParttern,
+    string? cusName, string? creator, string? appTypeCodeList) =>
+{
+    var q = db.ServiceAppointments.Where(x => x.OrgId == t.OrgId);
+    // BuildClauseConditionList("and", "ro.DealerCode", strDealerCodeList, "|") — danh sách phân tách '|'.
+    if (!string.IsNullOrWhiteSpace(dealerCodeList))
+    {
+        var codes = dealerCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        q = q.Where(x => x.DealerCode != null && codes.Contains(x.DealerCode));
+    }
+    // BuildClauseConditionList("and", "ro.AppStatus", strAppStatusList, "|").
+    if (!string.IsNullOrWhiteSpace(appStatusList))
+    {
+        var sts = appStatusList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        q = q.Where(x => sts.Contains(x.AppStatus));
+    }
+    // BuildClauseConditionSingle("and", "car.PlateNo", "like", …) — giá trị bind NGUYÊN VĂN (người gọi tự thêm %).
+    if (!string.IsNullOrWhiteSpace(plateNoParttern)) q = q.Where(x => x.PlateNo != null && x.PlateNo.Contains(plateNoParttern!));
+    // BuildClause("and", "cus.CusName", strCusName, "@p") — ĐÒI toán tử ở đầu chuỗi; thiếu toán tử là BỎ IM LẶNG (#410).
+    if (!string.IsNullOrWhiteSpace(cusName)) q = q.Where(x => x.CusName != null && x.CusName.Contains(cusName!));
+    // BuildClause("and", "ro.AppDateTimeFrom", strAppDateTimeFrom, "@p").
+    if (!string.IsNullOrWhiteSpace(appDateTimeFrom) && DateTime.TryParse(appDateTimeFrom, out var dtFrom))
+        q = q.Where(x => x.AppFrom >= dtFrom);
+    // BuildClause("and", "ro.Creator", strCreator, "@p").
+    if (!string.IsNullOrWhiteSpace(creator)) q = q.Where(x => x.CVDVCode == creator!.Trim());
+    // BuildClauseConditionList("and", "ro.AppTypeCode", strAppTypeCodeList, "|").
+    if (!string.IsNullOrWhiteSpace(appTypeCodeList))
+    {
+        var tcs = appTypeCodeList!.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        q = q.Where(x => x.AppTypeCode != null && tcs.Contains(x.AppTypeCode));
+    }
+    // top 500 + order by tpro.AppDateTime asc (đúng luật #415).
+    var rows = await q.OrderBy(x => x.AppFrom).Take(500).ToListAsync();
+    // Bảng mã AppStatus viết HAI lần ở nguồn (StatusName + NewAppStatus), CẢ HAI KHÔNG có else ⇒ mã lạ cho NULL.
+    static string? AppStatusText1583(string? st) => st switch
+    {
+        "1" => "Mới tạo", "2" => "Xác nhận", "3" => "Tiếp nhận", "4" => "Hủy", "5" => "Đã liên hệ & Chưa xác nhận", _ => null,
+    };
+    var appNos = rows.Select(x => x.AppNo).ToList();
+    var recf = await db.Receptions.Where(x => x.OrgId == t.OrgId && x.AppNo != null && appNos.Contains(x.AppNo!))
+        .Select(x => new { x.AppNo, x.ReceptionFNo }).ToListAsync();
+    var recfByApp = recf.GroupBy(x => x.AppNo!).ToDictionary(g => g.Key, g => g.First().ReceptionFNo);
+    var engs = await db.ServiceEngineers.Where(x => x.OrgId == t.OrgId).Select(x => new { x.EngineerNo, x.EngineerName, x.DealerCode }).ToListAsync();
+    var cavs = await db.Cavities.Where(x => x.OrgId == t.OrgId).Select(x => new { x.CavityNo, x.CavityName }).ToListAsync();
+    var items = rows.Select(x =>
+    {
+        var eng = engs.FirstOrDefault(e => e.EngineerNo == x.CVDVCode && e.DealerCode == x.DealerCode);
+        var cav = cavs.FirstOrDefault(c => c.CavityNo == x.CavityID);
+        return new
+        {
+            x.Id, x.AppNo, x.DealerCode, x.CavityID, x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppTypeCode,
+            x.AppFrom, x.AppTo, x.AppStatus, x.Note, x.CVDVCode, x.QuoteNo, x.CusRequest, x.CusID, x.Vin, x.CarID,
+            statusName = AppStatusText1583(x.AppStatus),
+            newAppStatus = AppStatusText1583(x.AppStatus),
+            appAppNo = "AP-" + x.AppNo,
+            srf_ReceptionFNo = recfByApp.TryGetValue(x.AppNo, out var rf) ? rf : null,
+            se_EngineerNo = eng?.EngineerNo, se_EngineerName = eng?.EngineerName,
+            sc_CavityNo = cav?.CavityNo, sc_CavityName = cav?.CavityName,
+        };
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items,
+        onlyLiveConfirmed1583 = "#1583: Ser_App_GetStatusList01_WH_New20201230 — BizCarSv.ZTemp.cs:22073, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:31577",
+        differsFromDealerVariant = "#561: ban DAI LY Ser_App_GetStatusList01_New20201230 (_dbDealer, #474) va ban KHO nay (_dbWH) la HAI WebMethod rieng, cung SQL khac DB",
+        appStatusCaseBlockHasNoElse = "bang ma AppStatus viet HAI lan (StatusName + NewAppStatus), CA HAI KHONG co else => ma la cho NULL",
+        concatColumnDiesFromLeftJoin = "(tm.TradeMarkName + ' - ' + mdl.ModelName) — mdl den tu LEFT JOIN => xe thieu model thi CA CHUOI NULL",
+        threeInnerJoinsDropRows = "join ser_Customer + ser_car + ser_mst_TradeMark (inner) => thieu khach/xe/hang la MAT DONG luc DOC (#410)",
+        twoTreesMatch = "3B: than ham Ser_App_GetStatusList01_WH_New20201230 md5 KHOP giua V20 va V20.2023.Release (d4fe17d0)" });
+}).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #682 BẢNG TRẠNG THÁI XƯỞNG THỜI GIAN THỰC `Ser_RO_GetStatusList_ForStatusRealTime_WH_New20230220` =====
 // (`BizCarSv.zzzzCode.cs:7747-8121`, md5 `92f12b34` **KHỚP** máy 150. WS `WSCarSv.asmx.cs:32177` gọi thẳng.
