@@ -57013,6 +57013,69 @@ app.MapPost("/api/insuranceattachments/{roNo}", async (string roNo, InsuranceAtt
     await db.SaveChangesAsync();
     return Results.Ok(new { roNo, count = codes.Count });
 }).RequireAuthorization();
+// ===== 🔴 #1586 `SerInsuranceAttachmentGet` — WebMethod LIVE KHONG DAU VET =====
+// Nguon: `BizCarSv.Service.cs:7878 SerInsuranceAttachmentGet` (LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:17896`).
+// KHAC `GET /api/insuranceattachments/{roNo}` (#port cu, theo `RONo` chuoi + chi tra danh muc dang hoat dong):
+//   ham nguon nay loc theo `ROID` (so) + `DealerCode` + `CusID` + `IsActive` (danh sach '|'), va tra HAI bang.
+// Hanh vi port 1:1:
+//   (1) Cau 1: `SELECT m1.*, i1.ROID, i1.Note FROM (SELECT * FROM Ser_InsuranceAttachment i WHERE 1=1 <dealerCode> <roID>) i1
+//       RIGHT JOIN (SELECT * FROM Ser_Mst_Attachment m WHERE 1=1 <isActive>) m1 ON i1.MstAttachmentID = m1.MstAttachmentID`
+//       => RIGHT JOIN: MOI loai tai lieu trong danh muc deu co dong, ke ca khi RO chua tich (i1.* = NULL).
+//       ⚠️ `i1.ROID`/`i1.Note` lay tu bang TRAI (co the NULL khi chua tich).
+//   (2) Cau 2: `SELECT i.* FROM Ser_Customer i WHERE 1=1 <dealerCode> <cusID>` — tra khach hang theo bo loc.
+//   (3) `strDealerCodeConditionList`/`strROIDConditionList`/`strIsActiveConditionList`/`strCusIDConditionList`
+//       la DANH SACH '|' qua `SqlUtils.BuildClause("and", <col>, <list>, "@p")`; rong => BO menh de.
+//   (4) ⚠️ `strCusIDConditionList` CHI ap cho cau 2 (khach hang), KHONG ap cho cau 1 (nguon dat ten nhu vay).
+//   (5) Nguon KHONG guard tham so rong => port tra 400 khi thieu (ho #626/#627).
+// 📌 Mini: `Ser_InsuranceAttachment` -> `InsuranceAttachment` (RONo/AttachmentCode); `Ser_Mst_Attachment` -> `InsuranceAttachmentType`;
+//    `Ser_Customer` -> `ServiceCustomer`. `ROID` nguon (so) bieu dien qua `RONo` (chuoi) theo quy uoc Mini.
+app.MapGet("/api/insuranceattachments/get", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? roIdList, string? cusIdList, string? isActiveList) =>
+{
+    // SqlUtils.BuildClause("and", <col>, <list>, "@p") — danh sach '|', rong => bo menh de.
+    static List<string> SplitList(string? s) => string.IsNullOrWhiteSpace(s)
+        ? new List<string>()
+        : s!.Split('|', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+    var dealerCodes = SplitList(dealerCodeList);
+    var roIds = SplitList(roIdList);
+    var cusIds = SplitList(cusIdList);
+    var isActives = SplitList(isActiveList);
+    // ---- Cau 1: Ser_InsuranceAttachment RIGHT JOIN Ser_Mst_Attachment ----
+    var types = db.InsuranceAttachmentTypes.Where(x => x.OrgId == t.OrgId);
+    if (isActives.Count > 0) types = types.Where(x => x.Status != null && isActives.Contains(x.Status!));
+    var typeList = await types.OrderBy(x => x.Code).ToListAsync();
+    var attQry = db.InsuranceAttachments.Where(x => x.OrgId == t.OrgId);
+    if (dealerCodes.Count > 0) attQry = attQry.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode!));
+    if (roIds.Count > 0) attQry = attQry.Where(x => roIds.Contains(x.RONo));
+    var atts = await attQry.ToListAsync();
+    // RIGHT JOIN: gom theo MstAttachmentID (Mini: Id cua loai tai lieu).
+    var attByType = atts.Where(a => a.MstAttachmentID != null).GroupBy(a => a.MstAttachmentID!.Value)
+        .ToDictionary(g => g.Key, g => g.First());
+    var rows = typeList.Select(m =>
+    {
+        attByType.TryGetValue(m.Id, out var i1);
+        return new
+        {
+            // m1.* (Ser_Mst_Attachment)
+            mstAttachmentID = m.Id, code = m.Code, name = m.Name, typeNote = m.Note, isActive = m.Status,
+            // i1.ROID, i1.Note (Ser_InsuranceAttachment — NULL khi RO chua tich)
+            roID = i1?.RONo, note = i1?.Note,
+            insuranceAttachmentID = i1?.Id
+        };
+    }).ToList();
+    // ---- Cau 2: Ser_Customer ----
+    var cusQry = db.ServiceCustomers.Where(x => x.OrgId == t.OrgId);
+    if (dealerCodes.Count > 0) cusQry = cusQry.Where(x => x.DealerCode != null && dealerCodes.Contains(x.DealerCode!));
+    if (cusIds.Count > 0) cusQry = cusQry.Where(x => cusIds.Contains(x.CusCode));
+    var customers = await cusQry.Take(500).Select(x => new { x.CusCode, x.CusName, x.DealerCode, x.Tel, x.Mobile }).ToListAsync();
+    return Results.Ok(new
+    {
+        ser_InsuranceAttachment = rows,
+        ser_Customer = customers,
+        sourceRightJoin = "Ser_InsuranceAttachment i1 RIGHT JOIN Ser_Mst_Attachment m1 ON i1.MstAttachmentID = m1.MstAttachmentID",
+        cusIdFilterAppliesToCustomerQueryOnly = true
+    });
+}).RequireAuthorization();
 
 // ===== Chiến dịch marketing HTC gửi đại lý (CampaignMarketing — port 1:1 FrmSer_CampaignMarketing/Mng, TCMotor DMSCarSv/Ser_CampaignMarketing) =====
 app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, string? q) =>
