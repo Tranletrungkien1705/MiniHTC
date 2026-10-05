@@ -31241,9 +31241,12 @@ app.MapPost("/api/servicepackages/{id:long}/update", async (long id, ServicePack
             if (string.IsNullOrWhiteSpace(p.PartCode) || !seenP2.Add(p.PartCode.Trim())) continue;
             var f = p.Factor <= 0 ? 1 : p.Factor; var amt = Math.Round(p.Price * f, 2);
             partTotal2 += amt;
+            // #1559 §12: ProcessSaveServicePackagePartItem (biz:1072-1073) ghi LogLUDateTime/LogLUBy cho dòng PT
+            // (dòng CÔNG thì KHÔNG — xem ProcessSaveServicePackageServiceItem biz:896-940, không gán LogLU*).
             db.ServicePackageParts.Add(new ServicePackagePart { OrgId = t.OrgId, ServicePackageId = h.Id,
                 PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt,
-                Quantity = p.Quantity, VAT = p.VAT, Note = p.Note, ExpenseType = p.ExpenseType });
+                Quantity = p.Quantity, VAT = p.VAT, Note = p.Note, ExpenseType = p.ExpenseType,
+                LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() });
         }
         h.PartTotal = partTotal2; newPartCount = dto.Parts.Count;
     }
