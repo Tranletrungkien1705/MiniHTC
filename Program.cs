@@ -83273,11 +83273,60 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
     }
     e.EngineerName = dto.EngineerName; e.GroupRID = groupRID; e.Note = dto.Note; e.IsActive = dto.IsActive ?? "1";
     e.IsEngineer = dto.IsEngineer; e.StartWorkDate = dto.StartWorkDate; e.FinishWorkDate = dto.FinishWorkDate; e.UpdatedAt = DateTime.Now;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRID, e.IsEngineer, e.StartWorkDate, e.FinishWorkDate, e.DealerCode });
-}).RequireAuthorization();
-
-// ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
+        await db.SaveChangesAsync();
+        return Results.Ok(new { e.EngineerNo, e.EngineerName, e.GroupRID, e.IsEngineer, e.StartWorkDate, e.FinishWorkDate, e.DealerCode });
+    }).RequireAuthorization();
+    // ===== 🔴 #1597 `SerEngineerCreate01` (WebMethod LIVE khong dau vet) =====
+    // Nguon: `BizCarSv.Service.cs:12474` (`SerEngineerCreate01`); WS LIVE `HTCWSCarSv/WSCarSv.asmx.cs:21815`.
+    // Route moi: `POST /api/engineers/create01` (Program.cs).
+    // ⚠️ KHAC han `POST /api/engineers` (#port cu, upsert theo EngineerNo, KHONG guard ton tai): day la WebMethod RIENG
+    //   (bai hoc #561/#564) — nguon `SerEngineerCreate01` LUON INSERT dong MOI va NEM LOI neu (EngineerNo, DealerCode) da ton tai.
+    // Hanh vi port 1:1:
+    //   (1) `CheckExistEngineerNo` (`Service.cs:576`): tra `top 1 * from Ser_Engineer where EngineerNo = <no> and DealerCode = <dealer>`
+    //       => co dong => Raise `Ser_EngineerNo_Exist` (KHONG loc IsActive — khac `CheckExistEngineerNoModify`).
+    //   (2) `CheckEngineerFieldEmpty` (`Service.cs:719`): EngineerNo rong => `Ser_Engineer_EngineerNoEmpty`;
+    //       DealerCode rong => `Ser_Engineer_DealerEmpty`; EngineerName rong => `Ser_Engineer_EngineerNameEmpty`.
+    //   (3) INSERT: `EngineerNo = strEngineerNo.ToUpper()`; `GroupRID` rong => DBNull; `Note`/`IsActive`/`IsEngineer`
+    //       chi gan khi khac rong; `StartWorkDate`/`FinishWorkDate` rong => DBNull; ghi VO DIEU KIEN 4 cot nhat ky
+    //       `CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy` = strTDate + strPartnerUserCode.
+    //   (4) Tra ve `EngineerID` (khoa tu tang) — Mini tra `Id`.
+    // ⚠️ Nguon ghi ca `_dbMain` LAN `_dbWH` LAN `_dbDealer` (3 CSDL) — Mini 1 CSDL, giu dung nghiep vu 1 dong.
+    // 3B: md5 than ham `SerEngineerCreate01` KHOP giua V20 va V20.2023.Release sau khi chuan hoa (diff sau `sed s/[[:space:]]//g` = IDENTICAL).
+    app.MapPost("/api/engineers/create01", async (EngineerDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+    {
+        var no = (dto.EngineerNo ?? "").Trim();
+        var dealer = (dto.DealerCode ?? "").Trim();
+        var name = (dto.EngineerName ?? "").Trim();
+        // CheckEngineerFieldEmpty (thu tu nguon: No -> Dealer -> Name).
+        if (no == "") return Results.BadRequest(new { error = "Thiếu mã nhân viên (Ser_Engineer_EngineerNoEmpty)." });
+        if (dealer == "") return Results.BadRequest(new { error = "Thiếu mã đại lý (Ser_Engineer_DealerEmpty)." });
+        if (name == "") return Results.BadRequest(new { error = "Thiếu tên nhân viên (Ser_Engineer_EngineerNameEmpty)." });
+        var noUpper = no.ToUpperInvariant();
+        // CheckExistEngineerNo: (EngineerNo, DealerCode) — KHONG loc IsActive.
+        var exists = await db.ServiceEngineers.AnyAsync(x => x.OrgId == t.OrgId && x.EngineerNo == noUpper && x.DealerCode == dealer);
+        if (exists) return Results.BadRequest(new { error = "Mã nhân viên đã tồn tại ở đại lý (Ser_EngineerNo_Exist).", engineerNo = noUpper, dealerCode = dealer });
+        var who = (partnerUserCode ?? "system").Trim();
+        var now = DateTime.Now;
+        var e = new ServiceEngineer
+        {
+            OrgId = t.OrgId,
+            EngineerNo = noUpper,
+            EngineerName = name,
+            DealerCode = dealer,
+            GroupRID = dto.GroupRID,                       // rong => NULL (nguon khong kiem nhom ton tai)
+            Note = string.IsNullOrWhiteSpace(dto.Note) ? null : dto.Note,
+            IsActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!,
+            IsEngineer = string.IsNullOrWhiteSpace(dto.IsEngineer) ? null : dto.IsEngineer,
+            StartWorkDate = dto.StartWorkDate,             // rong => NULL
+            FinishWorkDate = dto.FinishWorkDate,           // rong => NULL
+            CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+            UpdatedAt = now,
+        };
+        db.ServiceEngineers.Add(e);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { e.Id, e.EngineerNo, e.EngineerName, e.DealerCode, e.GroupRID, e.IsActive, e.IsEngineer, e.StartWorkDate, e.FinishWorkDate });
+    }).RequireAuthorization();
+    // ===== Yêu cầu báo giá phụ tùng (Req_PartPrice — port 1:1 FrmReq_PartPrice/Mng) =====
 // ===== 🔴 #238 XIN BÁO GIÁ PHỤ TÙNG — parity `Req_PartPrice` + `Req_PartPriceDtl` (DMSCarSv/TST) =====
 // Tầng ghi `Req_PartPriceService.cs:254` `Req_PartPrice_Save` gửi: ReqPartPriceNo · DealerCode · Description
 //   + bộ dòng, kèm **HAI cờ**: `strFlagIsDelete` và `strFlagIsCheck` (cờ thứ hai chưa port — ghi nợ).
