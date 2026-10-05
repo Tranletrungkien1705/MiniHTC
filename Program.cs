@@ -16923,7 +16923,15 @@ app.MapPost("/api/sbhonline/pushbatch", async (SbhBatchDto dto, AppDbContext db,
     return Results.Ok(new { pushed = rows.Count, message = "Đẩy thành công!" });
 }).RequireAuthorization();
 
-// ===== Đồng bộ VIN↔GPS từ file (GpsVinSync — port 1:1 FrmDongBoVIN, StoFGPS) =====
+// #5512 — Đồng bộ VIN↔GPS từ file (GpsVinSync — port 1:1 FrmDongBoVIN, StoFGPS). Đã audit kỹ: nguồn
+// thật (FrmDongBoVIN.cs) KHÔNG có bất kỳ WS/biz nào — `btnDongBoVin_Click` gọi THẲNG API bên thứ 3
+// Veloca (`Util.APIVeloca + "/DMSUpdateVIN"` qua `GPSService.VelocaMethodGet`, DbServices/StoFGPS/
+// GPSService.cs) và KHÔNG LƯU GÌ ở server HTC — không `_dbService`, không bảng DB nào cho màn này.
+// Giữ bảng `GpsVinSyncs` (log lịch sử tra cứu được) là đúng đắn — thay thế hợp lý cho vendor ngoài
+// Mini không gọi được, không phải gap. Cả 5 validate đã khớp 1:1 nguồn (`btnImportExcel_Click`):
+// VIN/GPS/TIMEMAP rỗng, TIMEMAP sai kiểu ngày, VIN+GPSNO lặp TRONG FILE (đối chiếu từng cặp — Mini
+// dùng HashSet, cùng ngữ nghĩa O(n²) gốc). `btnClose_Click` nguồn gọi GetAddressByGPSNo thay vì đóng
+// form (This.Close() bị comment) — code chết/vestigial phía nguồn, không port.
 app.MapGet("/api/gpsvinsync", async (AppDbContext db, ITenantContext t, string? vin, string? gpsId, string? batch) =>
 {
     var q = db.GpsVinSyncs.Where(s => s.OrgId == t.OrgId);
