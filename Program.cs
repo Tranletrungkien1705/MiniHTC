@@ -55545,11 +55545,16 @@ app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITe
     var row = await db.CarModelStds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
     var isNew = row is null;
     if (isNew) { row = new CarModelStd { OrgId = t.OrgId, ModelCode = code }; db.CarModelStds.Add(row); }
-    row!.ModelName = dto.ModelName; row.FlagActive = dto.FlagActive ?? "1"; row.UpdatedAt = DateTime.Now;
-    // #1187 SUA BUG THAT (§12 GAP): entity da co cot Remark tu #727 (Mst_CarModelStd_Add/_Update deu ghi
-    // cot nay: _Add chi .Trim(), _Update qua StandardizeParam = Trim().ToUpper()) nhung endpoint chua tung
-    // gan dto.Remark vao row — cot roi mat im lang moi lan tao/sua.
-    row.Remark = isNew ? dto.Remark?.Trim() : dto.Remark?.Trim().ToUpperInvariant();
+    // #427 ĐÍNH CHÍNH #1187: `Mst_CarModelStd_Update` (Tab/BizCarSv.Tab.cs:3646) stage `strRemark` vào temp
+    //   table nhưng KHÔNG đưa vào `zzB_Update_Mst_CarModelStd_ClauseSet_zzE` (SET chỉ có ModelName có điều
+    //   kiện `bUpd_ModelName` + FlagActive có điều kiện `bUpd_FlagActive` + LogLU*) ⇒ sửa KHÔNG BAO GIỜ ghi
+    //   Remark, dù client gửi gì. `_Add` (:3390) THÌ CÓ ghi Remark (insert liệt kê cột `Remark`, chỉ `.Trim()`,
+    //   KHÔNG ToUpper). Caller WinForm (`MstCarModelStdService.Mst_CarModelStd_Update`) hard-code
+    //   `strFtColUpd` LUÔN gồm cả `ModelName` + `FlagActive` ⇒ hai cột đó LUÔN được cập nhật trong thực tế.
+    //   #1187 đã SAI khi bịa thêm nhánh ghi Remark lúc sửa — port lại đúng: chỉ ghi khi TẠO, không đụng lúc sửa.
+    row!.ModelName = isNew ? dto.ModelName?.Trim() : dto.ModelName?.Trim().ToUpperInvariant();
+    row.FlagActive = dto.FlagActive ?? "1"; row.UpdatedAt = DateTime.Now;
+    if (isNew) row.Remark = dto.Remark?.Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.ModelCode, row.ModelName, row.FlagActive, isNew });
 }).RequireAuthorization();
@@ -81966,7 +81971,6 @@ app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, A
 
     var modelCode = StandardizeParam(code);      // giống `_Add`: mã luôn viết hoa ⇒ nhất quán
     var modelName = StandardizeParam(dto.ModelName);   // 🔴 KHÁC `_Add` (`_Add` chỉ `.Trim()`)
-    var remark = StandardizeParam(dto.Remark);         // 🔴 KHÁC `_Add`
 
     // Nguồn `_Update` CHỈ kiểm ModelName rỗng (không kiểm ModelCode rỗng — CheckDB bắt hộ).
     if (modelName.Length == 0)
@@ -81986,7 +81990,11 @@ app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, A
         && string.Equals(row.ModelName, modelName, StringComparison.OrdinalIgnoreCase);
 
     row.ModelName = modelName;
-    row.Remark = remark;
+    // #427 ĐÍNH CHÍNH #727: `strRemark` CÓ được stage vào `#input_Mst_CarModelStd` nhưng
+    //   `zzB_Update_Mst_CarModelStd_ClauseSet_zzE` (câu SET thật) chỉ gồm LogLU* + ModelName (có điều kiện
+    //   `bUpd_ModelName`) + FlagActive (có điều kiện `bUpd_FlagActive`) — KHÔNG có `t.Remark = f.Remark`
+    //   ⇒ `_Update` KHÔNG BAO GIỜ ghi Remark xuống DB, bất kể giá trị gửi lên. #727 kết luận "Remark cũng bị
+    //   viết hoa khi sửa" là SAI — Remark hoàn toàn không đổi lúc sửa; chỉ ModelName mới bị viết hoa.
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
     await db.SaveChangesAsync();
 
@@ -81994,8 +82002,8 @@ app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, A
     {
         row.Id, row.ModelCode, row.ModelName, row.Remark, row.FlagActive, updated = true,
         nameChangedOnlyByCasing,
-        // ===== #727 =====
-        updateUppercasesNameButAddDoesNot = "ModelName VA Remark BI VIET HOA KHI SUA NHUNG GIU NGUYEN KHI THEM: _Add dung string.Format({0}, objModelName).Trim() (giu nguyen chu), _Update dung SqlUtils.StandardizeParam(objModelName) = Convert.ToString(x).Trim().ToUpper(). Da mo dinh nghia CA HAI ban (CommonUtils/DataUtils.cs:1200 va TERP.Utils/Utils.cs:222) — GIONG HET NHAU. => them Santa Fe thi luu Santa Fe; sau do SUA BAT KY TRUONG NAO => ModelName thanh SANTA FE va Remark (cau ghi chu tieng Viet) CUNG BI VIET HOA TOAN BO => MAT DU LIEU HIEN THI, IM LANG, DO CHINH THAO TAC SUA. ModelCode thi CA HAI ham deu StandardizeParam => nhat quan. Da do bang nameChangedOnlyByCasing",
+        // ===== #727 (đã đính chính #427) =====
+        updateUppercasesNameButAddDoesNot = "CHI ModelName bi viet hoa khi SUA, giu nguyen khi THEM: _Add dung string.Format({0}, objModelName).Trim() (giu nguyen chu), _Update dung SqlUtils.StandardizeParam(objModelName) = Convert.ToString(x).Trim().ToUpper(). Da mo dinh nghia CA HAI ban (CommonUtils/DataUtils.cs:1200 va TERP.Utils/Utils.cs:222) — GIONG HET NHAU. => them Santa Fe thi luu Santa Fe; sau do SUA BAT KY TRUONG NAO => ModelName thanh SANTA FE => MAT DU LIEU HIEN THI, IM LANG, DO CHINH THAO TAC SUA. ModelCode thi CA HAI ham deu StandardizeParam => nhat quan. Da do bang nameChangedOnlyByCasing. (#427: Remark KHONG bi anh huong — xem ghi chu rieng o tren, _Update khong ghi Remark xuong DB.)",
         guardCountsDifferAcrossThreeWriters = "#404 — SO GUARD LECH HAN (dem CMyException.Raise): _Add = 2, _Update = 1, _Delete = 0. _Add kiem ModelCode rong VA ModelName rong roi CheckDB(Flag.No) = khong duoc ton tai; _Update CHI kiem ModelName rong roi CheckDB(Flag.Yes) = phai ton tai (ModelCode rong KHONG LOT vi CheckDB se khong tim thay => nem NotFound, TINH CO AN TOAN, chi khac THONG DIEP — dung khuon #689); _Delete KHONG co validate rieng nao, chi CheckDB(Flag.Yes) voi strFlagActiveListToCheck = '' => XOA DUOC CA ban ghi dang ngung lan dang hoat dong",
         updateTakesExtraParams = "_Update nhan them objFt_Cols_Upd (danh sach cot duoc phep cap nhat) va objFlagActive ma _Add khong co => cung khuon chi-ghi-cot-duoc-chi-dinh o #714 (alEffectiveColumn), va CHI SUA MOI DOI DUOC TRANG THAI HOAT DONG — giong het ket luan #715 cho ProcessCustomer*",
         negativeCommentedDsDataIsResidue = "AM TINH: khoi dsData bi comment trong _Update (//DataSet dsData = TUtils.CUtils.StdDS(...)) la TAN DU, khong phai tinh nang bi tat — dem dsData trong toan ham chi ra cac dong da comment (dung luat #719)",
