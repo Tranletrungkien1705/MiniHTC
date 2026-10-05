@@ -107362,27 +107362,60 @@ app.MapGet("/api/gpsouts/{no}/devices", async (string no, AppDbContext db, ITena
         h.LUDateTime, h.LUBy, h.ApproveDateTime, h.ApproveBy, h.LogLUDateTime, h.LogLUBy, count = devices.Count, devices });   // #1416 §12
 }).RequireAuthorization();
 
-// ===== Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis) =====
-app.MapGet("/api/pointregis", async (AppDbContext db, ITenantContext t, string? dealer) =>
+// #5581 — Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis). Nguồn chỉ có 3 thao
+// tác tách biệt: Create (nhập Excel, mọi cột), Update (CHỈ sửa FlagActive, `objFtColsUpd` build đúng 1
+// cột — toạ độ/tên/đại lý BẤT BIẾN sau khi tạo), Delete. Port cũ gộp thành 1 POST upsert cho phép sửa
+// MỌI cột của bản ghi đã tồn tại — sai ngữ nghĩa, tách lại đúng 3 route.
+app.MapGet("/api/pointregis", async (AppDbContext db, ITenantContext t, string? dealer, string? flagActive) =>
 {
     var q = db.PointRegises.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(p => p.FlagActive == flagActive);
     var items = await q.OrderBy(p => p.PointRegisCode).Take(1000)
-        .Select(p => new { p.PointRegisCode, p.DealerCode, p.PointRegisName, p.MapLatitude, p.MapLongitude, p.Radius }).ToListAsync();
+        .Select(p => new { p.PointRegisCode, p.DealerCode, p.PointRegisName, p.MapLatitude, p.MapLongitude, p.Radius, p.FlagActive }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// Mst_PointRegis_Create — chỉ tạo mới (nhập Excel); mã đã tồn tại thì từ chối, KHÔNG âm thầm ghi đè.
 app.MapPost("/api/pointregis", async (PointRegisDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PointRegisCode) || string.IsNullOrWhiteSpace(dto.DealerCode))
         return Results.BadRequest(new { error = "Cần PointRegisCode và DealerCode." });
     var code = dto.PointRegisCode.Trim().ToUpperInvariant();
-    var p = await db.PointRegises.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PointRegisCode == code);
-    if (p is null) { p = new PointRegis { OrgId = t.OrgId, PointRegisCode = code }; db.PointRegises.Add(p); }
-    p.DealerCode = dto.DealerCode.Trim().ToUpperInvariant(); p.PointRegisName = dto.PointRegisName ?? "";
-    p.MapLatitude = dto.MapLatitude; p.MapLongitude = dto.MapLongitude; p.Radius = dto.Radius; p.UpdatedAt = DateTime.Now;
+    if (await db.PointRegises.AnyAsync(x => x.OrgId == t.OrgId && x.PointRegisCode == code))
+        return Results.BadRequest(new { error = $"Mã địa điểm {code} đã tồn tại — chỉ sửa được FlagActive qua /api/pointregis/toggle-active." });
+    var p = new PointRegis
+    {
+        OrgId = t.OrgId, PointRegisCode = code, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        PointRegisName = dto.PointRegisName ?? "", MapLatitude = dto.MapLatitude, MapLongitude = dto.MapLongitude,
+        Radius = dto.Radius, FlagActive = "1", UpdatedAt = DateTime.Now,
+    };
+    db.PointRegises.Add(p);
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.PointRegisCode, p.DealerCode, p.MapLatitude, p.MapLongitude, p.Radius });
+    return Results.Ok(new { p.PointRegisCode, p.DealerCode, p.MapLatitude, p.MapLongitude, p.Radius, p.FlagActive });
+}).RequireAuthorization();
+
+// Mst_PointRegis_Update — CHỈ sửa FlagActive, đúng theo objFtColsUpd của nguồn.
+app.MapPost("/api/pointregis/toggle-active", async (PointRegisToggleDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.PointRegisCode ?? "").Trim().ToUpperInvariant();
+    var p = await db.PointRegises.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PointRegisCode == code);
+    if (p is null) return Results.NotFound(new { error = $"Không có địa điểm {code}." });
+    p.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "0" : dto.FlagActive!;
+    p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PointRegisCode, p.FlagActive });
+}).RequireAuthorization();
+
+// Mst_PointRegis_Delete.
+app.MapPost("/api/pointregis/delete", async (PointRegisToggleDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.PointRegisCode ?? "").Trim().ToUpperInvariant();
+    var p = await db.PointRegises.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PointRegisCode == code);
+    if (p is null) return Results.NotFound(new { error = $"Không có địa điểm {code}." });
+    db.PointRegises.Remove(p);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
 // ===== Phiếu nhập kho thiết bị GPS (StoF_GPSIn — port 1:1 FrmStoF_GPSIn/FrmMngStoF_GPSIn) =====
@@ -108562,6 +108595,7 @@ record GpsInDevDto(string GpsDvNo, string? GpsBoxNo, string? Remark);
 record GpsInDto(string? GpsInType, string StorageCode, string? Remark, List<GpsInDevDto>? Devices);
 record GpsOutDto(string StorageCode, string? UserCodeReceived, string? Remark, List<GpsInDevDto>? Devices);
 record PointRegisDto(string PointRegisCode, string DealerCode, string? PointRegisName, double MapLatitude, double MapLongitude, double Radius);
+record PointRegisToggleDto(string? PointRegisCode, string? FlagActive);
 record GpsMapDto(string GpsDvNo, string Vin, string? DealerCode, string? DealerName, string? Address, string? StorageCode);
 record SmViolateDto(string SalesManCode, string? SalesManName, string? DealerCode, string ViolateTypeId, DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? IdentityCardNo, string? PhoneNo, string? SMType, string? SmDateOfBirth, string? Remark);
 record DlSalesManDto(string SMCode, string SMName, string? DealerCode, string? SMStatus, string? Sex, DateTime? DateOfBirth, string? PhoneNo, string? IdentityCardNo,

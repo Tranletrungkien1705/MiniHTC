@@ -1741,8 +1741,12 @@ public sealed class GpsOutDetail
     public string? LogLUBy { get; set; }
 }
 
-/// <summary>Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis, StoFGPS):
-/// geofence điểm giao/nhận xe: toạ độ + bán kính, để đối chiếu GPS xe giao đúng địa điểm.</summary>
+/// <summary>🔴 #5581 — Địa điểm nhận xe của đại lý (Mst_PointRegis — port 1:1 FrmMst_PointRegis, StoFGPS):
+/// geofence điểm giao/nhận xe: toạ độ + bán kính, để đối chiếu GPS xe giao đúng địa điểm.
+/// Nguồn CHỈ cho sửa đúng 1 cột trên bản ghi đã tạo: `Mst_PointRegis_Update(item, objFtColsUpd)` build
+/// `objFtColsUpd` CHỈ gồm `FlagActive` (`FrmMst_PointRegis.cs:394-396`) — mọi cột khác (toạ độ/tên/đại lý)
+/// BẤT BIẾN sau khi tạo, chỉ nhập mới qua Excel import (`Mst_PointRegis_Create`). `FlagActive` THIẾU HẲN
+/// ở port cũ — cũng là cột DUY NHẤT thật sự sửa được.</summary>
 public sealed class PointRegis
 {
     public long Id { get; set; }
@@ -1753,6 +1757,7 @@ public sealed class PointRegis
     public double MapLatitude { get; set; }
     public double MapLongitude { get; set; }
     public double Radius { get; set; }               // bán kính (m)
+    public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
