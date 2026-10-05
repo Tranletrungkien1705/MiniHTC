@@ -15766,10 +15766,13 @@ app.MapPost("/api/mrkscopelimits/approve", async (MrkScopeLimitKeyDto dto, AppDb
     return Results.Ok(new { no, status = "A", detailsSynced = dtls.Count });
 }).RequireAuthorization();
 
-// ===== File đính kèm của dòng chi phí marketing (MKT_MarketingFeeDetailAttach — port 1:1 cụm 4 hàm
+// #5530 — File đính kèm của dòng chi phí marketing (MKT_MarketingFeeDetailAttach — port 1:1 cụm 4 hàm
 // Get(4990) / Save(5169) / Approved(5603) / Rejected(5888), 2010.HTC BizHTC.Marketing.cs).
-// TWIN: 4/4 hàm, cả WS 32-bit lẫn 64-bit. Đây là mắt xích ghi `Status*` mà `Finished` (#106) và
-// `UpdateHTCLimit` (#107) chỉ ĐỌC. =====
+// TWIN: 4/4 hàm, cả WS 32-bit lẫn 64-bit (xác nhận lại qua grep WSHTC.asmx.cs + WSHTC/App_Code/WSHTC.cs,
+// mỗi hàm 1 trúng cả 2 bên — đúng như ghi chú cũ). Đây là mắt xích ghi `Status*` mà `Finished` (#106) và
+// `UpdateHTCLimit` (#107) chỉ ĐỌC. Audit cũ (delete+reinsert theo từng loại hồ sơ, "M" không phải "R",
+// chặn nộp lại khi đã "A") đã khớp đủ với nguồn — chỉ THIẾU TAG #NNN khiến entity-scan coi là chưa audit,
+// bổ sung tag, KHÔNG đổi hành vi. =====
 // 🔴 TỪ CHỐI hồ sơ ghi trạng thái **"M" (Stage.Modify)**, KHÔNG phải "R" — đúng chỗ mà hằng số
 //    `Stage.Modify` chú thích "Chỉ dùng cho Marketing". Nghĩa là *trả lại cho đại lý sửa*, không phải bác bỏ.
 // 🔴 `Save` XOÁ rồi INSERT lại **theo TỪNG LOẠI hồ sơ**: nộp lại ảnh thiết kế không đụng hợp đồng/hoá đơn.
