@@ -3156,6 +3156,25 @@ public sealed class PartStockOutLine
     public string? PartID { get; set; }
     /// <summary>DealerCode — đại lý của dòng xuất (nguồn ghi ở dòng chi tiết).</summary>
     public string? DealerCode { get; set; }
+
+    // ===== #428 §12 — 9 cột `Ser_Inv_StockOutDetail` mà `SerStockOutDetailCreate` (BizCarSv.Inventory.
+    //   StockOut.cs:5375, dùng chung bởi 7 nơi gọi gồm cả `SerStockOutCreate` :520) GHI cho MỌI dòng xuất,
+    //   nhưng cả write path (`POST /api/stockouts`) lẫn GET canonical (`/{no}/lines`) đều chưa từng đụng tới.</summary>
+    /// <summary>Lệnh xuất kho sinh ra phiếu này (nếu có) — nguồn ghi CẢ khoá lẫn số của lệnh trên dòng.</summary>
+    public long? StockOutOrderID { get; set; }
+    public string? StockOutOrderNo { get; set; }
+    /// <summary>Vị trí kho DỰ KIẾN lấy hàng — nguồn chỉ gán khi client gửi khác rỗng (giữ NULL nếu không).</summary>
+    public string? PlanLocationID { get; set; }
+    /// <summary>Vị trí kho THỰC TẾ đã lấy hàng — cùng quy tắc với <see cref="PlanLocationID"/>.</summary>
+    public string? ActualLocationID { get; set; }
+    public string? PartPriceId { get; set; }
+    /// <summary>Giá phụ tùng CHỤP TỪ `Ser_MST_Part.Price` lúc tạo dòng — KHÁC <see cref="Price"/> (đơn giá
+    /// client gửi lên cho dòng này); nguồn luôn ghi, mặc định "0" khi không tìm thấy phụ tùng.</summary>
+    public decimal? PartPrice { get; set; }
+    /// <summary>VAT CHỤP TỪ `Ser_MST_Part.VAT` — KHÁC <see cref="VAT"/> (VAT client gửi cho dòng).</summary>
+    public decimal? PartVAT { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Giá bán phụ tùng theo ngày hiệu lực (Ser_Inv_PartPrice — port 1:1 FrmPartPriceCreate, TCMotor DMSCarSv/Inventory):

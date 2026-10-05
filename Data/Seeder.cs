@@ -4234,6 +4234,16 @@ public static class Seeder
                 // #1541 §12 — `Ser_Inv_StockOutDetail.PartID`/`DealerCode` (nguồn `Ser_Mst_Part_SP_Get_WH` K8.1 nối theo hai cột này).
                 "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"PartID\" text NULL",
                 "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",
+                // #428 §12 — 9 cột `Ser_Inv_StockOutDetail` do `SerStockOutDetailCreate` (StockOut.cs:5375) ghi cho MỌI dòng xuất.
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"StockOutOrderID\" bigint NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"StockOutOrderNo\" text NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"PlanLocationID\" text NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"ActualLocationID\" text NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"PartPriceId\" text NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"PartPrice\" numeric NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"PartVAT\" numeric NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PartStockOutLines\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });

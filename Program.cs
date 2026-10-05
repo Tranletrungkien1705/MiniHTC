@@ -89508,6 +89508,7 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
     // 🔴 #294: nguồn `SerStockOutCreate` (`StockOut.cs:540`) gọi `SerStockOutOrderStockOutCreate` ⇒ khi phiếu
     //   xuất được tạo **TỪ MỘT LỆNH XUẤT**, ghi một dòng vào bảng nối. Quan hệ NHIỀU-NHIỀU: một lệnh có thể
     //   sinh nhiều phiếu (giao nhiều đợt). Nguồn lưu CẢ khoá lẫn SỐ của hai phía.
+    long? stockOutOrderId428 = null; string? stockOutOrderNo428 = null;
     if (!string.IsNullOrWhiteSpace(dto.StockOutOrderNo))
     {
         var soNo = dto.StockOutOrderNo!.Trim().ToUpperInvariant();
@@ -89522,11 +89523,29 @@ app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantCo
             LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
         });
         await db.SaveChangesAsync();
+        stockOutOrderId428 = soo.Id; stockOutOrderNo428 = soo.StockOutOrderNo;   // #428 ghi xuống TỪNG dòng, không chỉ bảng nối
     }
+    // #428: `SerStockOutDetailCreate` (StockOut.cs:5375) chụp Price/VAT từ `Ser_MST_Part` tại lúc tạo —
+    //   KHÁC `Price`/`VAT` client gửi cho từng dòng (xem chú thích entity `PartPrice`/`PartVAT`).
+    var partCodes428 = lines.Select(l => l.PartCode.Trim().ToUpperInvariant()).Distinct().ToList();
+    var partSnap428 = (await db.ServiceParts.Where(p => p.OrgId == t.OrgId && partCodes428.Contains(p.PartCode))
+        .Select(p => new { p.PartCode, p.PartID, p.Price, p.VAT }).ToListAsync())
+        .GroupBy(p => p.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var nowLine428 = DateTime.Now; var whoLine428 = (partnerUserCode ?? "system").Trim();
     foreach (var l in lines)
+    {
+        var code428 = l.PartCode.Trim().ToUpperInvariant();
+        partSnap428.TryGetValue(code428, out var snap428);
         // #377 TotalPrice = Quantity * Price * (1 + VAT*0.01) — thành tiền dòng xuất theo nguồn.
         db.PartStockOutLines.Add(new PartStockOutLine { OrgId = t.OrgId, StockOutId = h.Id, PartCode = l.PartCode.Trim().ToUpperInvariant(), PartName = l.PartName, Location = l.Location, Quantity = l.Quantity,
+            // #428 §12: PartID/DealerCode (#1541) + 7 cột `Ser_Inv_StockOutDetail` chưa từng ghi.
+            PartID = snap428?.PartID, DealerCode = h.DealerCode,
+            StockOutOrderID = stockOutOrderId428, StockOutOrderNo = stockOutOrderNo428,
+            PlanLocationID = l.PlanLocationID, ActualLocationID = l.ActualLocationID, PartPriceId = l.PartPriceId,
+            PartPrice = snap428?.Price ?? 0, PartVAT = snap428?.VAT ?? 0,
+            LogLUDateTime = nowLine428, LogLUBy = whoLine428,
             Price = l.Price, VAT = l.VAT, UnitCode = l.UnitCode, RoFactor = l.RoFactor, RoPrice = l.RoPrice, TotalPrice = l.Quantity * l.Price * (1 + l.VAT / 100m) });
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, h.WarehouseCode, lines = lines.Count, status = h.Status });
 }).RequireAuthorization();
@@ -89888,7 +89907,11 @@ app.MapGet("/api/stockouts/{no}/lines", async (string no, AppDbContext db, ITena
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
     var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id)
-        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, Vat = l.VAT, l.UnitCode, l.RoFactor, l.RoPrice }).ToListAsync();   // #368 §12
+        .Select(l => new { l.PartCode, l.PartName, l.Location, l.Quantity, l.Price, Vat = l.VAT, l.UnitCode, l.RoFactor, l.RoPrice,
+            l.TotalPrice, l.PartID, l.DealerCode,   // #1541 §12 — có trên entity, chưa từng echo
+            // #428 §12 — 7 cột `Ser_Inv_StockOutDetail` do `SerStockOutDetailCreate` ghi (StockOut.cs:5375).
+            l.StockOutOrderID, l.StockOutOrderNo, l.PlanLocationID, l.ActualLocationID, l.PartPriceId,
+            l.PartPrice, l.PartVAT, l.LogLUDateTime, l.LogLUBy }).ToListAsync();   // #368 §12
     return Results.Ok(new { h.StockOutNo, h.StockOutDate, h.StockOutType, h.WarehouseCode, h.Reason, h.Status, h.PostedAt,
         h.StockOutTypeText, h.StatusText, h.UserCode, h.CusID, h.DealerCode, h.Description,
         h.TruckNo, h.DriverName, h.DriverID, h.DrivingLicense,
@@ -108344,7 +108367,11 @@ record StockOutLineDto(string PartCode,
     decimal VAT = 0,
     string? UnitCode = null,
     decimal? RoFactor = null,
-    decimal? RoPrice = null);
+    decimal? RoPrice = null,
+    // #428: tham số `SerStockOutDetailCreate` (StockOut.cs:5375) — rỗng ⇒ KHÔNG ghi (giữ NULL), đúng nguồn.
+    string? PlanLocationID = null,
+    string? ActualLocationID = null,
+    string? PartPriceId = null);
 record StockOutDto(DateTime? StockOutDate,
     string? StockOutType,
     string WarehouseCode,
