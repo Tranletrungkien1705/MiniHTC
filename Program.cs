@@ -34262,6 +34262,63 @@ app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext
     return Results.Ok(new { row.Id, row.TSTPartCode, row.ExchangeRate, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== 🔴 #1599 `TST_Mst_Exchange_Unit_Add` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:34225`) — THÊM MỚI (INSERT-ONLY) =====
+// Nguồn `BizCarSv.Service.cs:18093` (md5 vùng 18093-18409 = 57e24c93, KHỚP giữa V20 và V20.2023.Release — 3B).
+// ⚠️ KHÁC hẳn `POST /api/tstexchangeunits` ở trên: route kia là UPSERT (tạo-hoặc-sửa) theo TSTPartCode, còn
+//   `_Add` là INSERT THUẦN với guard "CHƯA tồn tại": `TST_Mst_Exchange_Unit_CheckDB(..., TConst.Flag.No, ...)`
+//   ⇒ mã đã có thì ném `TST_Mst_Exchange_CheckDB_TSTPartCodeExist` (KHÔNG ghi đè). Đây là GAP thật (grep tên hàm = 0 hit).
+// Nguồn nhận DataSet bảng `TST_Mst_Exchange_Unit` (nhiều dòng); mỗi dòng kiểm:
+//   (1) TSTPartCode rỗng ⇒ `..._Add_Invalid_TSTPartCode`; (2) CheckDB Flag.No ⇒ đã tồn tại ⇒ `..._TSTPartCodeExist`;
+//   (3) VieName rỗng ⇒ `..._Add_Invalid_VieName`, rồi Trim + bỏ ký tự `'`; (4) TSTUnit rỗng ⇒ `..._Add_Invalid_TSTUnit`;
+//   (5) DMSUnit rỗng ⇒ `..._Add_Invalid_DMSUnit`; (6) ExchangeRate rỗng ⇒ `..._Add_Invalid_ExchangeRate`;
+//   (7) ExchangeRate <= 0 ⇒ `..._Add_Invalid_ExchangeRate`.
+// Bảng rỗng ⇒ `TST_Mst_Exchange_Unit_Add_PartExchangeTableNotBlank`.
+// INSERT ghi 7 cột: TSTPartCode, VieName, TSTUnit, DMSUnit, ExchangeRate, LogLUDateTime, LogLUBy — KHÔNG ghi IsActive/FlagActive.
+// 📌 §12: entity `TstExchangeUnit` đã đủ cột — không thêm field mới.
+app.MapPost("/api/tstexchangeunits/add", async (List<TstExchangeUnitDto> rows, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "TST_Mst_Exchange_Unit_Add_PartExchangeTableNotBlank", message = "Bảng TST_Mst_Exchange_Unit rỗng." });
+    var by = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    var added = new List<object>();
+    for (var i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i];
+        var code = (r.TSTPartCode ?? "").Trim();
+        if (code.Length == 0)
+            return Results.BadRequest(new { error = "TST_Mst_Exchange_Unit_Add_Invalid_TSTPartCode", line = i + 1 });
+        // CheckDB(Flag.No): mã ĐÃ tồn tại ⇒ ném (khác route upsert ở trên).
+        if (await db.TstExchangeUnits.AnyAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code))
+            return Results.Conflict(new { error = "TST_Mst_Exchange_CheckDB_TSTPartCodeExist", line = i + 1, tstPartCode = code });
+        var vieName = (r.VieName ?? "").Trim();
+        if (vieName.Length == 0)
+            return Results.BadRequest(new { error = "TST_Mst_Exchange_Unit_Add_Invalid_VieName", line = i + 1, tstPartCode = code });
+        vieName = vieName.Replace("'", "");   // nguồn: Trim().Replace("'", "")
+        var tstUnit = (r.TSTUnit ?? "").Trim();
+        if (tstUnit.Length == 0)
+            return Results.BadRequest(new { error = "TST_Mst_Exchange_Unit_Add_Invalid_TSTUnit", line = i + 1, tstPartCode = code });
+        var dmsUnit = (r.DMSUnit ?? "").Trim();
+        if (dmsUnit.Length == 0)
+            return Results.BadRequest(new { error = "TST_Mst_Exchange_Unit_Add_Invalid_DMSUnit", line = i + 1, tstPartCode = code });
+        if (r.ExchangeRate <= 0)
+            return Results.BadRequest(new { error = "TST_Mst_Exchange_Unit_Add_Invalid_ExchangeRate", line = i + 1, tstPartCode = code });
+        db.TstExchangeUnits.Add(new TstExchangeUnit
+        {
+            OrgId = t.OrgId, TSTPartCode = code, VieName = vieName, TSTUnit = tstUnit, DMSUnit = dmsUnit,
+            ExchangeRate = r.ExchangeRate, LogLUDateTime = now, LogLUBy = by,
+        });
+        added.Add(new { code, vieName, tstUnit, dmsUnit, r.ExchangeRate });
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { added = added.Count, items = added,
+        onlyLiveConfirmed1599 = "#1599: TST_Mst_Exchange_Unit_Add — BizCarSv.Service.cs:18093, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:34225",
+        insertOnlyNotUpsert = "nguon _Add la INSERT THUAN voi guard CheckDB(Flag.No) => ma da ton tai thi NEM, KHONG ghi de (khac POST /api/tstexchangeunits la upsert)",
+        doesNotWriteFlagActive = "nguon INSERT chi 7 cot (TSTPartCode/VieName/TSTUnit/DMSUnit/ExchangeRate/LogLUDateTime/LogLUBy) — KHONG ghi IsActive/FlagActive",
+        vieNameStripsApostrophe = "nguon: drPartItem[VieName] = ...Trim().Replace(\"'\", \"\") — bo ky tu nhay don",
+        twoTreesMatch = "3B: than ham TST_Mst_Exchange_Unit_Add md5 KHOP giua V20 va V20.2023.Release (57e24c93)" });
+}).RequireAuthorization();
+
 app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
