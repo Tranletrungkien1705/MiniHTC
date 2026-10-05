@@ -631,12 +631,16 @@ app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantCon
     return Results.Ok(new { s.SalesManCode, s.SalesManName, s.Status });
 }).RequireAuthorization();
 
-// ===== Sửa PHÒNG BAN / LOẠI NVBH theo lô (Support_Mst_SalesMan_UpdateDepartmentAndSMType —
+// #5589 — Sửa PHÒNG BAN / LOẠI NVBH theo lô (Support_Mst_SalesMan_UpdateDepartmentAndSMType —
 // 2010.HTC Biz.HTC.WH.hkt.cs:7470). TWIN: chỉ `TERP.WSHTC.64` (99643). =====
 // 🔴 Nguồn có **BA nhánh update** tuỳ trường nào thực sự đổi (cả hai / chỉ phòng ban / chỉ loại) —
 //    chỉ ghi đúng cột đã đổi, không đụng cột kia. Giá trị mới để trống ⇒ **giữ giá trị hiện tại**.
 // 🔴 Guard nguồn: cặp (`DepartmentCode`, `SMType`) mới phải tồn tại trong `Mst_SalesManType`
 //    (master khoá kép) — MiniHTC CÓ master này nên guard đã port đủ.
+// 🔴 2 guard THIẾU, phát hiện khi đọc lại đầy đủ `:7620-7651`: (1) `SMStatus` KHÔNG được = "0" —
+//    nhân viên "đã nghỉ việc ở đại lý này" bị chặn sửa (`SaleManOffThisDealer`); (2) cả hai trường mới
+//    (`DepartmentCodeNew`+`SMTypeNew`) RỖNG CÙNG LÚC là lỗi input (`DepartmentCodeAndSalesTypeIsNotNull`,
+//    nguồn từ chối 400 dù "không đổi gì" — không phải chỉ bỏ qua lặng lẽ). Đã thêm cả hai.
 app.MapGet("/api/salesmen/dept-smtype-history", async (AppDbContext db, ITenantContext t, string? smCode) =>
 {
     var qy = db.SalesManUpdDeptSMTypeHiss.Where(h => h.OrgId == t.OrgId);
@@ -648,6 +652,7 @@ app.MapGet("/api/salesmen/dept-smtype-history", async (AppDbContext db, ITenantC
 
 app.MapPost("/api/salesmen/update-dept-smtype", async (SalesManUpdDeptDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    // #5589
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.SMCode)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Chưa chọn nhân viên nào." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -656,8 +661,11 @@ app.MapPost("/api/salesmen/update-dept-smtype", async (SalesManUpdDeptDto dto, A
     foreach (var r in rows)
     {
         var code = r.SMCode!.Trim().ToUpperInvariant();
+        if (string.IsNullOrWhiteSpace(r.DepartmentCodeNew) && string.IsNullOrWhiteSpace(r.SMTypeNew))
+            return Results.BadRequest(new { error = $"{code}: mã phòng ban + loại NVBH không được cùng rỗng." });
         var sm = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code);
         if (sm is null) return Results.BadRequest(new { error = $"Không tìm thấy nhân viên {code}." });
+        if (sm.Status == "0") return Results.BadRequest(new { error = $"Nhân viên {code} đã nghỉ việc ở đại lý này." });
 
         var deptOld = sm.DepartmentCode ?? "";
         var typeOld = sm.SalesType ?? "";
