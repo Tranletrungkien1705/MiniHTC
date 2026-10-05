@@ -27498,9 +27498,50 @@ app.MapGet("/api/tvo/customers-used-service", async (AppDbContext db, ITenantCon
                           createDateTime = r.CheckInDate, r.LogLUDateTime,
                       }).Skip(0).Take(n).ToListAsync();
 
+    // #1562 — nhánh `union all` với `TVO_Ser_RO_RollbackStatus` (nguồn `BizCarSv.TVO.cs:279`):
+    //   dòng đã THU HỒI trạng thái được thêm vào kết quả để mobile biết mà xoá khỏi máy.
+    //   Nguồn tính `DeletionTime = CASE WHEN t.AutoId = 0 THEN null ELSE t.LogLUDateTime END`,
+    //   `IsDeleted = CASE WHEN t.AutoId = 0 THEN '0' ELSE '1' END` ⇒ dòng rollback có `AutoID != 0`.
+    //   ⚠️ Nguồn KHÔNG lọc `AutoID` ở nhánh union ⇒ dòng `AutoID = 0` (nếu có) cũng lọt vào như dòng thường.
+    //   ⚠️ `TVO_Ser_RO_RollbackStatus.ROID` là CHUỖI; nguồn nối `t.ROID = ro.ROID` (Ser_RO.ROID số) ⇒ Mini
+    //      nối `rb.ROID` với `RepairOrder.Id` (khoá số tương ứng `Ser_RO.ROID`).
+    var rbRaw = await db.TvoSerRoRollbackStatuses.Where(x => x.OrgId == t.OrgId
+                    && x.LogLUDateTime != null && x.LogLUDateTime >= f && x.LogLUDateTime < toEx)
+                .OrderBy(x => x.LogLUDateTime).ToListAsync();
+    var rbRoIds = rbRaw.Select(x => long.TryParse(x.ROID, out var v) ? v : 0L).Where(v => v != 0).Distinct().ToList();
+    var rbRos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && rbRoIds.Contains(x.Id)).ToListAsync();
+    var rbCusIds = rbRaw.Select(x => x.CusID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var rbCus = await db.ServiceCustomers.Where(x => x.OrgId == t.OrgId && rbCusIds.Contains(x.CusCode)).ToListAsync();
+    var rbVins = rbRos.Select(x => x.Vin).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var rbCars = await db.CustomerCars.Where(x => x.OrgId == t.OrgId && rbVins.Contains(x.FrameNo)).ToListAsync();
+    var rollbackRows = rbRaw.Select(rb =>
+    {
+        var r = long.TryParse(rb.ROID, out var rid) ? rbRos.FirstOrDefault(z => z.Id == rid) : null;
+        var c = rb.CusID == null ? null : rbCus.FirstOrDefault(z => z.CusCode == rb.CusID);
+        var car = r?.Vin == null ? null : rbCars.FirstOrDefault(z => z.FrameNo == r.Vin);
+        return new
+        {
+            cusId = rb.CusID, roId = r == null ? 0L : r.Id, RONo = r == null ? null : r.RONo,
+            customerCode = c == null ? null : c.CusCode,
+            customerName = c == null ? (r == null ? null : r.CusName) : c.CusName,
+            customerMobile = c == null ? (r == null ? null : r.CusMobile) : c.Mobile,
+            ActualDeliveryDate = r == null ? (DateTime?)null : r.ActualDeliveryDate,
+            customerAddress = r == null ? null : r.CusAddress,
+            CarID = r == null ? null : r.CarID, plateNo = r == null ? null : r.LicensePlate,
+            vin = car == null ? (r == null ? null : r.Vin) : car.FrameNo,
+            modelCode = car == null ? null : car.ModelCode,
+            DealerCode = r == null ? null : r.DealerCode,
+            deletionTime = rb.AutoID == 0 ? (DateTime?)null : rb.LogLUDateTime,
+            isDeleted = rb.AutoID == 0 ? "0" : "1",
+            createDateTime = r == null ? (DateTime?)null : r.CheckInDate, LogLUDateTime = rb.LogLUDateTime,
+        };
+    }).ToList();
+
+    var allRows = rows.Concat(rollbackRows).ToList();
+
     return Results.Ok(new
     {
-        count = rows.Count, rows,
+        count = allRows.Count, rows = allRows,
         criteria = new { status = "FNS", roTypes = ROTYPES, expenseTypes = EXPENSES, feeGreaterThanZero = true },
         sourceCartesianJoinOnRollbackTable = "left join TVO_Ser_RO_RollbackStatus tvo_ro ON t.ROID = ro.ROID — dieu kien KHONG nhac tvo_ro => no dong, va khong cot nao cua no duoc chon",
         sourceLeftJoinTurnedInnerByWhere = "rosi.ROType/ExpenseType nam trong WHERE tren bang left join",
@@ -27509,7 +27550,7 @@ app.MapGet("/api/tvo/customers-used-service", async (AppDbContext db, ITenantCon
         sourceCusAddressDeclared200ButGets30 = true,
         dateUpperBoundFixed = "nguon <= @strToDate (mat ngay cuoi); port dung < ngay ke tiep",
         pagingAlwaysFromZero = "nguon: nFilterRecordStart = 0 co dinh, khong co tham so trang",
-        rollbackRowsNotModelled = "TVO_Ser_RO_RollbackStatus chua co trong MiniHTC => moi dong isDeleted=0",
+        rollbackRowsModelled = "#1562 — TVO_Ser_RO_RollbackStatus da co entity/DbSet; dong AutoID != 0 tra isDeleted=1 + deletionTime=LogLUDateTime (dung nguon)",
     });
 }).RequireAuthorization();
 
@@ -46237,9 +46278,22 @@ app.MapGet("/api/warranty-online/ro-service", async (AppDbContext db, ITenantCon
     if (!string.IsNullOrWhiteSpace(frameNo)) q0 = q0.Where(x => x.Vin == frameNo!.Trim());
 
     var rows = await q0.OrderBy(x => x.LogLUDateTime).Take(take).ToListAsync();
-    var roIds = rows.Select(r => r.Id).ToList();
-    var vins = rows.Select(r => r.Vin).Where(x => x != null).Select(x => x!).Distinct().ToList();
-    var dealerCodes = rows.Select(r => r.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+
+    // #1562 — nhánh `union all` với `TVO_Ser_RO_RollbackStatus` (nguồn `BizCarSv.TVO.cs:3136`).
+    //   ⚠️ Nguồn COMMENT hai cột `DeletionTime`/`DeletionStatus` ⇒ dòng đã thu hồi LẪN VÀO như dòng thường,
+    //   client KHÔNG có cách nào phân biệt (khác #561/#564 nơi hai cột đó còn sống). Port giữ 1:1.
+    //   ⚠️ `TVO_Ser_RO_RollbackStatus.ROID` là CHUỖI ⇒ nối với `RepairOrder.Id` (khoá số tương ứng `Ser_RO.ROID`).
+    var rbRaw = await db.TvoSerRoRollbackStatuses.Where(x => x.OrgId == t.OrgId
+                    && x.LogLUDateTime != null && x.LogLUDateTime >= f && x.LogLUDateTime < toEx)
+                .OrderBy(x => x.LogLUDateTime).ToListAsync();
+    var rbRoIds = rbRaw.Select(x => long.TryParse(x.ROID, out var v) ? v : 0L).Where(v => v != 0).Distinct().ToList();
+    var rbRos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && rbRoIds.Contains(x.Id)).ToListAsync();
+    var rollbackRows = rbRaw.Select(rb => long.TryParse(rb.ROID, out var rid) ? rbRos.FirstOrDefault(z => z.Id == rid) : null)
+                            .Where(r => r != null && STATUSES.Contains(r.Status)).Select(r => r!).Take(take).ToList();
+    var allRows = rows.Concat(rollbackRows).ToList();
+    var roIds = allRows.Select(r => r.Id).ToList();
+    var vins = allRows.Select(r => r.Vin).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var dealerCodes = allRows.Select(r => r.DealerCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
 
     var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync();
     var modelCodes = cars.Select(c => c.ModelCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
@@ -46255,7 +46309,7 @@ app.MapGet("/api/warranty-online/ro-service", async (AppDbContext db, ITenantCon
     //   rieng trong MiniHTC (khong bia): lay ten tu chinh dong RO va bao nợ qua co partCatalogNotModelled.
     var droppedServicesByCatalogJoin = serRows.Count(x => !serMst.Any(m => m.SerCode == x.SerCode));
 
-    var items = rows.Select(r =>
+    var items = allRows.Select(r =>
     {
         var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
         var mdl = car?.ModelCode == null ? null : models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
@@ -46285,7 +46339,7 @@ app.MapGet("/api/warranty-online/ro-service", async (AppDbContext db, ITenantCon
         statusListDiffersFrom564 = "ban nay RPRD/PAID/FNS (CO PAID); #564 thieu PAID => viec thieu o #564 la SOT, khong phai quy uoc",
         pdiNotExcludedHere = "ban nay BO dieu kien isnull(ro.DlrPDIReqNo, rong)=rong => so bao hanh tinh ca lenh PDI",
         noCartesianJoinHere = "ban nay KHONG co left join tvo_ro => loi tich de-cac o #561/#564 la CHEP TAY",
-        rollbackRowsIndistinguishable = "union all van con nhung hai cot DeletionTime/DeletionStatus deu bi comment => dong da thu hoi lan vao nhu dong thuong",
+        rollbackRowsIndistinguishable = "#1562 — union all voi TVO_Ser_RO_RollbackStatus da mo hinh; hai cot DeletionTime/DeletionStatus bi comment o nguon => dong da thu hoi lan vao nhu dong thuong (giu 1:1)",
         dealerNameTruncated = "Convert(nvarchar, md.DealerName, 50) — 50 la STYLE, van cat 30",
         partCatalogNotModelled = "MiniHTC chua co bang danh muc phu tung => khong do duoc so dong nguon lam roi qua inner join Ser_MST_Part",
         droppedServicesByCatalogJoin,
@@ -46349,6 +46403,21 @@ app.MapGet("/api/tvo/ro-service-status", async (AppDbContext db, ITenantContext 
     var droppedByStatusFilter = pool.Count(r => !STATUSES.Contains(r.Status));
     var rows = pool.Where(r => STATUSES.Contains(r.Status)).Take(take).ToList();
 
+    // #1562 — nhánh `union all` với `TVO_Ser_RO_RollbackStatus` (nguồn `BizCarSv.TVO.cs:2740`).
+    //   Nguồn tính `DeletionTime`/`DeletionStatus` từ `t.AutoId` (0 = thường, khác 0 = đã thu hồi).
+    //   ⚠️ Nguồn đặt `where ro.Status in (...)` trên bảng LEFT ⇒ hoá INNER ⇒ dòng báo xoá mà trạng thái
+    //   hiện tại không nằm trong 7 mã (hoặc bản ghi đã mất) bị loại — cơ chế báo xoá TỰ VÔ HIỆU.
+    //   Port giữ 1:1: dòng báo xoá cũng bị lọc theo trạng thái như nguồn, và đếm số dòng bị loại.
+    //   ⚠️ `TVO_Ser_RO_RollbackStatus.ROID` là CHUỖI ⇒ nối với `RepairOrder.Id` (khoá số tương ứng `Ser_RO.ROID`).
+    var rbRaw = await db.TvoSerRoRollbackStatuses.Where(x => x.OrgId == t.OrgId
+                    && x.LogLUDateTime != null && x.LogLUDateTime >= f && x.LogLUDateTime < toEx)
+                .OrderBy(x => x.LogLUDateTime).ToListAsync();
+    var rbRoIds = rbRaw.Select(x => long.TryParse(x.ROID, out var v) ? v : 0L).Where(v => v != 0).Distinct().ToList();
+    var rbRos = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && rbRoIds.Contains(x.Id)).ToListAsync();
+    var rollbackPool = rbRaw.Select(rb => new { rb, r = long.TryParse(rb.ROID, out var rid) ? rbRos.FirstOrDefault(z => z.Id == rid) : null }).ToList();
+    var droppedRollbackByStatusFilter = rollbackPool.Count(x => x.r == null || !STATUSES.Contains(x.r.Status));
+    var rollbackRows = rollbackPool.Where(x => x.r != null && STATUSES.Contains(x.r.Status)).Take(take).ToList();
+
     var vins = rows.Select(r => r.Vin).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var cusIds = rows.Select(r => r.CusID).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var cars = await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync();
@@ -46391,11 +46460,50 @@ app.MapGet("/api/tvo/ro-service-status", async (AppDbContext db, ITenantContext 
         };
     }).ToList();
 
+    // #1562 — dòng báo xoá từ `TVO_Ser_RO_RollbackStatus` (nguồn `BizCarSv.TVO.cs:2740`):
+    //   `DeletionTime = CASE WHEN t.AutoId = 0 THEN null ELSE t.LogLUDateTime END`,
+    //   `DeletionStatus = CASE WHEN t.AutoId = 0 THEN '0' ELSE '1' END`.
+    var rollbackItems = rollbackRows.Select(x =>
+    {
+        var r = x.r!;
+        var car = r.Vin == null ? null : cars.FirstOrDefault(c => c.FrameNo == r.Vin);
+        var c = r.CusID == null ? null : cus.FirstOrDefault(z => z.CusCode == r.CusID);
+        var mdl = car?.ModelCode == null ? null : models.FirstOrDefault(m => m.ModelCode == car.ModelCode);
+        return new
+        {
+            cusId = r.CusID, roId = r.Id,
+            roNo = r.RONo,
+            roNoDisplay = "BG-" + r.RONo,
+            customerCode = c?.CusCode, customerName = c?.CusName,
+            customerMobile = c?.Mobile, customerIDCardNo = c?.IDCardNo,
+            r.CarID, plateNo = r.LicensePlate, vin = r.Vin,
+            tradeMarkCode = car?.TradeMark, modelCode = car?.ModelCode, modelName = mdl?.ModelName,
+            checkInDateTime = r.CheckInDate, actualDeliveryDateTime = r.ActualDeliveryDate,
+            planedDeliveryDateTime = r.PlanedDeliveryDate,
+            statusCode = r.Status, statusName = StatusName(r.Status),
+            r.CusRequest,
+            r.DealerCode, r.Km, creatorCode = r.Creator,
+            deletionTime = x.rb.AutoID == 0 ? (DateTime?)null : x.rb.LogLUDateTime,
+            deletionStatus = x.rb.AutoID == 0 ? "0" : "1",
+            createDateTime = r.CreatedAt, logLUDateTime = x.rb.LogLUDateTime, r.FlagPause,
+        };
+    }).ToList();
+
+    var allItems = items.Concat(rollbackItems.Select(x => new
+    {
+        x.cusId, x.roId, x.roNo, x.roNoDisplay, x.customerCode, x.customerName, x.customerMobile,
+        x.customerIDCardNo, x.CarID, x.plateNo, x.vin, x.tradeMarkCode, x.modelCode, x.modelName,
+        x.checkInDateTime, x.actualDeliveryDateTime, x.planedDeliveryDateTime, x.statusCode, x.statusName,
+        x.CusRequest, x.DealerCode, x.Km, x.creatorCode, x.deletionTime, x.deletionStatus,
+        x.createDateTime, LogLUDateTime = x.logLUDateTime, x.FlagPause,
+    })).ToList();
+
     return Results.Ok(new
     {
-        count = items.Count, items,
+        count = allItems.Count, items = allItems,
         deletionMechanismSelfDefeating = "union all them dong bao xoa, roi where ro.Status in (...) tren bang LEFT hoa INNER => chinh nhung dong do bi loai",
         droppedByStatusFilter,
+        droppedRollbackByStatusFilter,
         statusWhitelist = STATUSES,
         paidStatusMissingIssue981 = "nhanh case PAID bi comment VA where cung khong liet ke PAID => xe da thanh toan chua giao bien mat",
         duplicateColumnNameRONo = "hai cot cung ten RONo trong mot SELECT (so tran va 'BG-'+RONo) => ADO.NET doi ten cot thu hai thanh RONo1",
@@ -46403,7 +46511,7 @@ app.MapGet("/api/tvo/ro-service-status", async (AppDbContext db, ITenantContext 
         sourceTruncatesStringsAt30 = "Convert(nvarchar, x, 30) — ke ca CusRequest",
         dateUpperBoundFixed = "nguon <= @strToDate; port dung < ngay ke tiep",
         pdiExcludedOnPurpose = "isnull(ro.DlrPDIReqNo, rong) = rong — co chu thich Khong lay BG PDI",
-        rollbackRowsNotModelled = "TVO_Ser_RO_RollbackStatus chua co trong MiniHTC => deletionStatus=0",
+        rollbackRowsModelled = "#1562 — TVO_Ser_RO_RollbackStatus da co entity/DbSet; dong AutoID != 0 tra deletionStatus=1 + deletionTime=LogLUDateTime (dung nguon)",
     });
 }).RequireAuthorization();
 

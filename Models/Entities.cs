@@ -18812,3 +18812,29 @@ public sealed class SuggestPriceDtl
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
+
+/// <summary>
+/// 🔴 #1562 BẢNG THU HỒI TRẠNG THÁI LỆNH SỬA CHỮA — `TVO_Ser_RO_RollbackStatus` (nguồn TVO).
+/// Nguồn CHỈ ĐỌC bảng này (3 câu báo cáo, đều là nhánh `union all` báo XOÁ cho ứng dụng mobile TVO):
+///   · `HTCMobileTVO_GetCustomersUsedService` (`BizCarSv.TVO.cs:279`)
+///   · `HTCMobileTVO_GetSerRoService`         (`BizCarSv.TVO.cs:2740`)
+///   · `SoBaoHanhOnline_GetSerRoService`      (`BizCarSv.TVO.cs:3136`)
+/// KHÔNG có hàm nào trong TERP.BizCarSv ghi bảng này — dữ liệu do hệ TVO đẩy sang.
+/// Cột dùng thật (đúng 5 cột trong mọi câu `union all`): `CusID`, `ROID`, `LogLUDateTime`, `LogLUBy`, `AutoID`.
+/// ⚠️ `AutoID` là cờ báo xoá: `= 0` dòng thường · `!= 0` dòng đã thu hồi (xem `DeletionTime`/`IsDeleted`).
+/// </summary>
+public sealed class TvoSerRoRollbackStatus
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    /// <summary>`CusID` — mã khách hàng (nối `Ser_Customer.CusID`).</summary>
+    public string? CusID { get; set; }
+    /// <summary>`ROID` — mã lệnh sửa chữa bị thu hồi trạng thái (nối `Ser_RO.ROID`).</summary>
+    public string? ROID { get; set; }
+    /// <summary>`LogLUDateTime` — mốc thu hồi; nguồn dùng làm `DeletionTime` khi `AutoID != 0`.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>`LogLUBy` — người/bên thu hồi.</summary>
+    public string? LogLUBy { get; set; }
+    /// <summary>`AutoID` — cờ báo xoá: `0` dòng thường · khác `0` dòng đã thu hồi.</summary>
+    public long AutoID { get; set; }
+}

@@ -687,6 +687,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<StoFMaintainMain> StoFMaintainMains => Set<StoFMaintainMain>();
     public DbSet<CtmVisit> CtmVisits => Set<CtmVisit>();
     public DbSet<DriveTest> DriveTests => Set<DriveTest>();
+    public DbSet<TvoSerRoRollbackStatus> TvoSerRoRollbackStatuses => Set<TvoSerRoRollbackStatus>();
     protected override void OnModelCreating(ModelBuilder b)
     {
         // #149: Sys_ValidateId — nguồn dùng CHÍNH khoá chính làm khoá chống trùng lệnh.
