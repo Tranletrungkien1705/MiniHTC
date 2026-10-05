@@ -73841,10 +73841,11 @@ app.MapGet("/api/reports/grpdealer-instock01", async (
             && !string.Equals(head.DealerCodeBuyer, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
         if (!(d.DeliveryDate != null && d.DeliveryDate <= asOf)) continue;   // giao tới đại lý trong kỳ
         cvsAll.TryGetValue(d.CarId, out var cv);
-        // ⚠️ NỢ: Car_Car.CreatedDate và CarCancelDate chưa có trong MiniHTC ⇒ HAI điều kiện kỳ của
-        //   nguồn (`cc.CreatedDate <= @strTDate`, `cc.CarCancelDate is null or > @strTDate`) CHƯA áp
-        //   dụng được. Ghi nợ, KHÔNG đoán giá trị thay thế.
         if (cv == null) continue;
+        // 🔴 #B348-date GAP-FIX: Car_Car.CreatedDate/CarCancelDate nay da co (CarVinMaster) — ap dung
+        //   DUNG hai dieu kien ky cua nguon (ban nay GIU, khac Retail01 da comment - xem periodFilterNote).
+        if (!(cv.CreatedDate != null && cv.CreatedDate <= asOf)) continue;
+        if (!(cv.CarCancelDate == null || cv.CarCancelDate > asOf)) continue;
         owner.Add((head, d));
     }
 
@@ -73893,7 +73894,7 @@ app.MapGet("/api/reports/grpdealer-instock01", async (
         reverseFilterNote = "Nguon dung KY THUAT LOC NGUOC (chu thich '(*1) Su dung ky thuat loc nguoc'): #tblCarInStock = #tblCarOwner LEFT JOIN #tblCarSold ON CarId+DealNo WHERE cs.CarId is null => loai tru cac xe DA BAN THUC SU TRONG KY.",
         dealerActiveFilterNote = "KHAC Retail01: helper ban _New20180726 truyen \"and md.FlagActive = '1'\" => bao cao TON KHO chi tinh dai ly con hoat dong, bao cao BAN LE thi khong loc => khung dong dai ly cua hai bao cao KHAC NHAU.",
         periodFilterNote = "Ban nay GIU du hai dieu kien ky ma Retail01 da comment: 'and cc.CreatedDate <= @strTDate' va 'and (cc.CarCancelDate is null or cc.CarCancelDate > @strTDate)'. Chi tiet o periodFilterMismatchNote cua /api/reports/grpdealer-retail01.",
-        debtNote = "NO: cot Car_Car.CreatedDate va Car_Car.CarCancelDate CHUA CO trong MiniHTC => HAI dieu kien ky cua nguon (cc.CreatedDate <= @strTDate va cc.CarCancelDate is null or > @strTDate) CHUA AP DUNG DUOC. Da ghi no, KHONG doan gia tri thay the. Luu y: day chinh la hai dieu kien ma ban Retail01 DA COMMENT o nguon - xem periodFilterMismatchNote."
+        dateGapFixNote = "GAP-FIX (2026-10-06, #B348): Car_Car.CreatedDate/CarCancelDate (CarVinMaster) nay da co => AP DUNG DUNG hai dieu kien ky cua nguon (CreatedDate <= asOf; CarCancelDate is null or > asOf), KHONG con de NULL/bo qua nhu truoc."
     });
 }).RequireAuthorization();
 // ===== #B344/#B345 PIVOT LÁI THỬ & THĂM KHÁCH HÀNG — cặp SINH ĐÔI LỆCH NHAU
