@@ -70606,6 +70606,16 @@ static string DutyDaysRangeAsSource(int? dutyDays)
     return "00-02";      // 🔴 else của nguồn — gom cả NULL lẫn d <= 0
 }
 
+// #B346 — RptSQLQuery.cs: RefDate <= @strTDate => DlvImmediate; @strTDate < RefDate < @strTDate_Next1Week
+// => DlvThisWeek; @strTDate_Next1Week <= RefDate < @strTDate_Next2Week => DlvNextWeek; else => DlvOverNextWeek.
+static string DeliveryRangeTypeOf(DateTime refDate, DateTime tDate, DateTime next1Week, DateTime next2Week)
+{
+    if (refDate <= tDate) return "DlvImmediate";
+    if (tDate < refDate && refDate < next1Week) return "DlvThisWeek";
+    if (next1Week <= refDate && refDate < next2Week) return "DlvNextWeek";
+    return "DlvOverNextWeek";
+}
+
 
 
 
@@ -74152,8 +74162,11 @@ app.MapGet("/api/reports/htc-cardocreq", async (
             //   DutyDays <= 0 (giao TRƯỚC hạn) và DutyDays NULL đều rơi vào nhóm THẬT '00-02'.
             DutyDays_Range = DutyDaysRangeAsSource(
                 x.Head?.ApprovedDate2 == null ? (int?)null : (int)(tDate - x.Head.ApprovedDate2.Value.Date).TotalDays),
-            RefDate = (DateTime?)null,
-            DeliveryRangeType = (string?)null,
+            // 🔴 #B346-date GAP-FIX: Car_VIN.CVCQStartDate/CVCQExpectedDate (CarVinMaster.CQStartDate/
+            //   CQExpectedDate) nay da co => noi dung RefDate + phan nhom DeliveryRangeType dung cong thuc
+            //   nguon (RptSQLQuery.cs: RefDate <= @strTDate / tDate_Next1Week / tDate_Next2Week).
+            RefDate = x.Cv?.CQStartDate ?? x.Cv?.CQExpectedDate ?? new DateTime(2100, 1, 1),
+            DeliveryRangeType = DeliveryRangeTypeOf(x.Cv?.CQStartDate ?? x.Cv?.CQExpectedDate ?? new DateTime(2100, 1, 1), beginThisWeek, next1Week, next2Week),
             TOTAL = 1.0m
         }).ToList();
 
@@ -74191,7 +74204,8 @@ app.MapGet("/api/reports/htc-cardocreq", async (
         goodThresholdNote = "DOI CHUNG TOT: nguong dung '>= 100.0', KHONG phai '= 100' tren so thuc (khac #B278).",
         dynamicTableCountNote = "DOI CHUNG TOT ve so bang dong: cau chi tiet nam sau 'if (@strIsGetDetail = 1)' (T-SQL, KHONG begin/end) nen SO BANG TRA VE THAY DOI 2<->3; phia C# xu DUNG bang con tro chay 'int nIdx = 0; if (StringEqual(strIsGetDetail, Flag.Active)) { Tables[nIdx++].TableName = tblDetail; } Tables[nIdx++].TableName = strFunctionName;' - khong hard-code chi so. Ghi lai lam mau.",
         dateMaxLiteralNote = "@strTDateMax duoc bind (TConst.DateTimeSpecial.DateMax) nhung SQL dung LITERAL '2100-01-01' kem chu thich '--- @strTDateMax ---------' => tham so bi thay bang HANG CHEP TAY. Da doi chieu Const.Main.cs:302 DateMax = '2100-01-01' => HIEN DANG TRUNG; rui ro tiem an neu hang doi. @strHTCDealerName nhan HTCDealerCode - lan thu SAU.",
-        debtNote = "NO - KHONG DOAN CONG THUC: DutyCompletedPercent = (Deposit.AmountTotal + pmgd.GuaranteeValue) / cc.UnitPriceActual * 100 va DutyDays = DateDiff(day, cdrl.ApprovedDate2, @strTDate). Tang Pmt_GuaranteeDetail.GuaranteeValue, Car_DocReqList.ApprovedDate2, Car_VIN.CVCQStartDate/CVCQExpectedDate CHUA CO => de NULL, moi o dem theo dai tra 0, KHONG tu suy ra so."
+        dateGapFixNote = "GAP-FIX (2026-10-06, #B346): Car_DocRequest.ApprovedDate2 (DutyDays) va Car_VIN.CVCQStartDate/CVCQExpectedDate (CarVinMaster.CQStartDate/CQExpectedDate, RefDate+DeliveryRangeType) NAY DA CO => noi dung dung cong thuc nguon. CHI CON DutyCompletedPercent (can Deposit.AmountTotal, tang caching coc chua port) la con NO THAT - KHONG cong rieng pmgd.GuaranteeValue vao de gia lap vi cong thuc goc la TONG hai ve, thieu mot ve thi KHONG DUOC coi la dung mot phan.",
+        debtNote = "NO - KHONG DOAN CONG THUC: DutyCompletedPercent = (Deposit.AmountTotal + pmgd.GuaranteeValue) / cc.UnitPriceActual * 100 van de NULL vi Deposit.AmountTotal (tang caching coc) chua co trong MiniHTC - moi o dem theo dai DutyCompletedPercent_* van tra 0, KHONG tu suy ra so."
     });
 }).RequireAuthorization();
 // ===== #B341/#B342/#B343 HỢP ĐỒNG NGUYÊN TẮC — TRA CỨU + TOÀN BỘ CHUỖI KÝ 3 BƯỚC
