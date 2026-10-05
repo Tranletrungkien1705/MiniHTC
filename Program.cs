@@ -90351,18 +90351,29 @@ app.MapPost("/api/stockouts/{no}/finish-transfer", async (string no, StockOutFin
     h.Status = "3"; h.PostedAt = DateTime.Now;
 
     var now = DateTime.Now;
+    // #430 ĐÍNH CHÍNH #919: `ProcessFinishStockInAdj` (Stock.cs:3085) gọi `CreateStockIn` (StockIn.cs:1618)
+    //   với `strDealerCode` = CHÍNH dealer của phiếu xuất nguồn (điều chuyển ở lại trong cùng đại lý, chỉ
+    //   đổi kho) + `strDescription` = literal CỐ ĐỊNH "Nhập cho xuất điều chuyển:" — cả hai bị bỏ sót.
     var stockIn = new PartStockIn
     {
         OrgId = t.OrgId, StockInNo = "SIADJ" + now.ToString("yyMMddHHmmss"),
         WarehouseCode = destWarehouse, StockInType = "2" /* StockInAdj */, Status = "3" /* Finished ngay, đúng nguồn */,
         StockInDate = now, PostedAt = now, StockOutNo = no,
+        DealerCode = h.DealerCode, Description = "Nhập cho xuất điều chuyển:",
     };
     db.PartStockIns.Add(stockIn);
+    // #430 SỬA BUG THẬT: `stockIn.Id` đọc TRƯỚC khi SaveChangesAsync gán khoá ⇒ luôn bằng 0 ⇒ MỌI dòng nhập
+    //   tạo ra ở đây KHÔNG BAO GIỜ nối được với header (StockInId=0 ≠ Id thật) — phiếu nhập đích hiện ra
+    //   nhưng GET .../lines luôn rỗng. Phải lưu header trước để có ID thật rồi mới dựng dòng.
+    await db.SaveChangesAsync();
     foreach (var l in lines)
+        // #430: `CreateStockIn` → `SerStockInDetailCreate` (StockIn.cs:4535) ghi PartID VÔ ĐIỀU KIỆN cho
+        //   mỗi dòng — copy từ dòng xuất nguồn (đã có `PartID` từ #428), trước đây bị bỏ sót.
         db.PartStockInLines.Add(new PartStockInLine
         {
             OrgId = t.OrgId, StockInId = stockIn.Id, PartCode = l.PartCode, PartName = l.PartName,
             Location = l.Location, Quantity = l.Quantity, Price = l.Price ?? 0, VAT = l.VAT, Unit = l.UnitCode,
+            PartID = l.PartID, DealerCode = h.DealerCode, StockInNo = stockIn.StockInNo,
         });
     foreach (var l in lines)
     {
