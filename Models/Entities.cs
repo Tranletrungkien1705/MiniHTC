@@ -14282,15 +14282,10 @@ public sealed class DlrPdiRequestDetail
     public string? DlrContractNo { get; set; }
 }
 
-/// <summary>Giá xe thực tế theo VIN (UpdateCarPrice) — port 1:1 FrmUpdateCar (DMSales.Foton). Cập nhật đơn giá thực tế cho từng xe (batch).</summary>
-public sealed class CarActualPrice
-{
-    public long Id { get; set; }
-    public Guid OrgId { get; set; }
-    public string CarId { get; set; } = "";   // VIN/CarID
-    public decimal UnitPriceActual { get; set; }
-    public DateTime UpdatedAt { get; set; } = DateTime.Now;
-}
+// #4901 — ĐÃ XOÁ CarActualPrice (bảng tự tạo CarId+UnitPriceActual, không guard): trùng nghiệp vụ với
+// CarVinMaster.UnitPriceActual/PaymentStatus (#B28/#B30, đã port đủ guard thật qua /api/cars/{carId}/update01,
+// ~dòng 38787) — cùng mẫu hình "2 nguồn sự thật" như ForeignContract (#4301). wwwroot/updatecar.html đã
+// trỏ lại /api/cars/{carId}/update01 + /api/cars/prices.
 
 /// <summary>Xe đang thế chấp tại ngân hàng — port 1:1 FrmBankCarMortage + FrmDeliveryPlan (cụm Bank).</summary>
 public sealed class BankCarMortage

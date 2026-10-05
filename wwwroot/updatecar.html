@@ -11,19 +11,22 @@
   button{cursor:pointer} button.primary{background:var(--accent);color:#fff;border-color:var(--accent)} button.sm{padding:4px 9px;font-size:12px}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums}
-  #msg{font-size:13px} #ctbl td,#ctbl th{padding:4px 6px}
+  #msg{font-size:13px;white-space:pre-line} #ctbl td,#ctbl th{padding:4px 6px}
+  label.chk{display:inline-flex;align-items:center;gap:5px;font-size:13px}
 </style></head>
 <body>
-<h1>Cập nhật giá xe thực tế theo VIN <span class="muted">(port 1:1 FrmUpdateCar — CarActualPrice)</span></h1>
+<h1>Cập nhật giá xe thực tế <span class="muted">(port 1:1 FrmUpdateCar — CarCarUpdate01, theo VIN)</span></h1>
 <div class="card">
-  <b>Cập nhật giá (batch)</b> <span class="muted">— nhập mã xe + giá mới, upsert theo VIN</span>
-  <div class="bar" style="margin:10px 0"><span style="flex:1"></span><button class="primary" onclick="save()">Lưu giá</button><span id="msg"></span></div>
-  <table id="ctbl"><thead><tr><th>Mã xe / VIN *</th><th>Giá mới *</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
-  <button class="sm" style="margin-top:6px" onclick="addRow()">+ Thêm dòng</button>
+  <b>Cập nhật giá (từng xe một — đúng nguồn: mỗi dòng 1 lời gọi riêng)</b>
+  <div class="muted">Chỉ sửa được khi xe đang trạng thái thanh toán "Pending" (P). Người dùng phòng Sales chọn thêm ô bên dưới — sẽ bị chặn nếu xe đã có bảo lãnh.</div>
+  <div class="bar" style="margin:8px 0"><label class="chk"><input type="checkbox" id="isSales"> Tôi thuộc phòng Sales</label></div>
+  <table id="ctbl"><thead><tr><th>VIN *</th><th>Giá mới *</th><th></th></tr></thead><tbody id="ctb"></tbody></table>
+  <div class="bar" style="margin-top:6px"><button class="sm" onclick="addRow()">+ Thêm dòng</button><span style="flex:1"></span><button class="primary" onclick="save()">Lưu giá</button></div>
+  <div id="msg"></div>
 </div>
-<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc mã xe" oninput="load()" style="width:150px"></div>
-<table><thead><tr><th>Mã xe / VIN</th><th class="num">Giá thực tế</th><th>Cập nhật lúc</th></tr></thead>
-<tbody id="rows"><tr><td colspan="3" class="muted">Đang tải…</td></tr></tbody></table>
+<div class="bar" style="margin:10px 0"><input id="q" placeholder="Lọc VIN" oninput="load()" style="width:150px"></div>
+<table><thead><tr><th>VIN</th><th class="num">Giá thực tế</th><th>Trạng thái TT</th><th>Cập nhật lúc</th></tr></thead>
+<tbody id="rows"><tr><td colspan="4" class="muted">Đang tải…</td></tr></tbody></table>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
 const money=n=>(n||0).toLocaleString("vi-VN"); const day=d=>d? new Date(d).toLocaleString("vi-VN"):"";
@@ -37,16 +40,25 @@ function addRow(){ const tr=document.createElement("tr");
   tr.innerHTML=`<td><input class="vin" style="width:160px"></td><td><input class="pr" type="number" style="width:130px"></td><td><button class="sm" onclick="this.closest('tr').remove()">×</button></td>`;
   F("ctb").appendChild(tr); }
 async function save(){
-  const rows=[...F("ctb").querySelectorAll("tr")].map(tr=>({carId:tr.querySelector(".vin").value,unitPriceActual:parseFloat(tr.querySelector(".pr").value)||0})).filter(r=>r.carId);
-  const r=await fetch("/api/caractualprices",{method:"POST",headers:H(),body:JSON.stringify(rows)});
-  const j=await r.json();
-  if(r.ok){ msg(`Đã cập nhật ${j.total} xe (thêm ${j.inserted}, sửa ${j.updated}).`); F("ctb").innerHTML="";addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
+  await token();
+  const rows=[...F("ctb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value.trim(),price:parseFloat(tr.querySelector(".pr").value)})).filter(r=>r.vin && !isNaN(r.price));
+  if(!rows.length){ msg("Chưa nhập dòng nào hợp lệ."); return; }
+  const isSales=F("isSales").checked?"1":"0";
+  let ok=0, lines=[];
+  for(const r of rows){
+    const resp=await fetch(`/api/cars/${encodeURIComponent(r.vin)}/update01`,{method:"POST",headers:H(),
+      body:JSON.stringify({unitPriceActualNew:r.price,isUserFromSales:isSales})});
+    const j=await resp.json();
+    if(resp.ok){ ok++; lines.push(`${r.vin}: OK`); } else lines.push(`${r.vin}: Lỗi — ${j.error||resp.status}`);
+  }
+  msg(`Đã cập nhật ${ok}/${rows.length} xe.\n`+lines.join("\n"));
+  F("ctb").innerHTML=""; addRow(); load();
 }
 async function load(){ await token();
-  const d=await (await fetch(`/api/caractualprices?car=${F("q").value}`,{headers:H()})).json();
+  const d=await (await fetch(`/api/cars/prices?car=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.carId}</b></td><td class="num">${money(o.unitPriceActual)}</td><td>${day(o.updatedAt)}</td></tr>`
-  ).join("")||'<tr><td colspan="3" class="muted">Chưa có giá xe.</td></tr>';
+    `<tr><td><b>${o.vin}</b></td><td class="num">${money(o.unitPriceActual)}</td><td>${o.paymentStatus||""}</td><td>${day(o.logLUDateTime)}</td></tr>`
+  ).join("")||'<tr><td colspan="4" class="muted">Chưa có giá xe.</td></tr>';
 }
 addRow(); load();
 </script>

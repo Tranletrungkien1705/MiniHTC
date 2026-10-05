@@ -38838,6 +38838,18 @@ app.MapPost("/api/cars/{carId}/update01", async (
         salesGuardNote = "Kiểm 'đã có bảo lãnh' CHỈ chạy khi IsUserFromSales='1'; nút 'Chặn Map Vin' truyền rỗng nên bỏ qua."
     });
 }).RequireAuthorization();
+
+// #4901 — GET phụ trợ cho UI FrmUpdateCar (updatecar.html): liệt kê giá thực tế hiện có trên CarVinMaster
+// (đã có sẵn cột UnitPriceActual/PaymentStatus #B28/#B30 — KHÔNG tạo entity riêng, tránh "2 nguồn sự thật"
+// như vụ ForeignContract #4301).
+app.MapGet("/api/cars/prices", async (AppDbContext db, ITenantContext t, string? car) =>
+{
+    var q = db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.UnitPriceActual != null);
+    if (!string.IsNullOrWhiteSpace(car)) q = q.Where(c => c.VIN.Contains(car.Trim().ToUpperInvariant()));
+    var items = await q.OrderByDescending(c => c.LogLUDateTime).Take(500)
+        .Select(c => new { c.VIN, c.UnitPriceActual, c.PaymentStatus, c.LogLUDateTime }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
 app.MapGet("/api/cars/for-dealer-create-cdr", async (
     AppDbContext db, ITenantContext t, string? vins, string? buPattern) =>
 {
@@ -81415,34 +81427,11 @@ async Task<IResult> DlrContractCancelSetStatusMulti(
     });
 }
 
-// ===== Cập nhật giá xe thực tế theo VIN (CarActualPrice — port 1:1 FrmUpdateCar, DMSales.Foton) =====
-app.MapGet("/api/caractualprices", async (AppDbContext db, ITenantContext t, string? car) =>
-{
-    var q = db.CarActualPrices.Where(c => c.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(car)) q = q.Where(c => c.CarId.Contains(car.Trim().ToUpperInvariant()));
-    var items = await q.OrderByDescending(c => c.UpdatedAt).Take(500)
-        .Select(c => new { c.CarId, c.UnitPriceActual, c.UpdatedAt }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
-}).RequireAuthorization();
-
-app.MapPost("/api/caractualprices", async (List<CarPriceUpdateDto> dto, AppDbContext db, ITenantContext t) =>
-{
-    var rows = (dto ?? new()).Where(d => !string.IsNullOrWhiteSpace(d.CarId)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Mã xe bắt buộc nhập." });
-    if (rows.Any(d => d.UnitPriceActual <= 0)) return Results.BadRequest(new { error = "Giá mới không hợp lệ (phải > 0)." });
-    var dupe = rows.GroupBy(d => d.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"Mã xe {dupe.Key} bị trùng!" });
-    int inserted = 0, updated = 0;
-    foreach (var d in rows)
-    {
-        var car = d.CarId.Trim().ToUpperInvariant();
-        var ex = await db.CarActualPrices.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CarId == car);
-        if (ex is null) { db.CarActualPrices.Add(new CarActualPrice { OrgId = t.OrgId, CarId = car, UnitPriceActual = d.UnitPriceActual }); inserted++; }
-        else { ex.UnitPriceActual = d.UnitPriceActual; ex.UpdatedAt = DateTime.Now; updated++; }
-    }
-    await db.SaveChangesAsync();
-    return Results.Ok(new { total = rows.Count, inserted, updated });
-}).RequireAuthorization();
+// #4901 — ĐÃ XOÁ "/api/caractualprices*" (CarActualPrice, bảng tự tạo CarId+UnitPriceActual, KHÔNG guard
+// PaymentStatus/vai trò Sales): trùng nghiệp vụ với "/api/cars/{carId}/update01" (CarVinMaster, ~dòng 38787)
+// — bản ĐÓ mới port đủ guard thật của CarCarUpdate01_New20181119 (PaymentStatus='P', 3 guard tồn tại khi
+// IsUserFromSales='1'). Cùng mẫu hình "2 nguồn sự thật" như ForeignContract (#4301). wwwroot/updatecar.html
+// đã trỏ lại /api/cars/{carId}/update01 + GET /api/cars/prices.
 
 // ===== Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, DMSales.Foton) =====
 app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month, string? flagActive) =>
@@ -109237,7 +109226,6 @@ record SoFlagDoneDto(string? SOCode, string? FlagPmtDelayDone);
 record InsReqVinRow(string Vin, string RefOrdType, string? RefOrdNo, string? DtlStatus, DateTime? CreatedAt, string? LocationFrom, string? LocationTo);
 record Dms40ApproveDto(string? RuleType);
 record SoRenameDto(string? NewSoCode);
-record CarPriceUpdateDto(string CarId, decimal UnitPriceActual);
 record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT);
 record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars);
 record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNoUser, string? SalesManCode, List<DealerDealCarDto>? Cars);
