@@ -74746,11 +74746,14 @@ app.MapPost("/api/woscheduledates/add", async (WoScheduleDateAddDto dto, AppDbCo
     return Results.Ok(new { added, skippedZero, note = "Dòng có QtyPlan = 0 bị bỏ qua, đúng như nguồn." });
 }).RequireAuthorization();
 
-// ===== THIẾT BỊ kèm dòng hoá đơn HTC (VAT_HTCInvoiceDeviceDetail) =====
-// Nguồn: `HDDTIntergration/BizHTC.HDDTIntergration.cs:4140`.
+// #5620 — THIẾT BỊ kèm dòng hoá đơn HTC (VAT_HTCInvoiceDeviceDetail) =====
+// Nguồn: `HDDTIntergration/BizHTC.HDDTIntergration.cs:4120-4140`.
 // 🔴 `SpecCode` của bảng này lấy từ cột **`ActualSpec`** của bảng đầu vào (dòng 4131) — tức **spec THỰC TẾ
 //    của xe**, KHÔNG phải spec khai trên chứng từ. Port theo phản xạ "SpecCode ← SpecCode" là ghi sai dữ liệu.
 // Khoá dòng = bộ (HTCInvoiceCode, VIN, DeviceCode): một xe trên hoá đơn kèm được nhiều thiết bị.
+// 🔴 Guard THIẾU, bổ sung: nguồn ghi các dòng này NGAY TRONG cùng giao dịch TẠO hoá đơn (`VAT_HTCInvoice`
+//    luôn tồn tại theo cấu trúc hàm) — route Mini là endpoint ĐỘC LẬP (gọi riêng sau khi tạo hoá đơn),
+//    thiếu guard `HTCInvoiceCode` phải tồn tại ⇒ có thể tạo dòng thiết bị MỒ CÔI nếu gọi sai mã.
 app.MapGet("/api/invoicedevicedetails", async (AppDbContext db, ITenantContext t, string? htcInvoiceCode, string? vin) =>
 {
     var qy = db.VatHtcInvoiceDeviceDetails.Where(x => x.OrgId == t.OrgId);
@@ -74767,8 +74770,11 @@ app.MapGet("/api/invoicedevicedetails", async (AppDbContext db, ITenantContext t
 
 app.MapPost("/api/invoicedevicedetails/save", async (InvoiceDeviceSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    // #5620
     var code = (dto.HTCInvoiceCode ?? "").Trim();
     if (code.Length < 1) return Results.BadRequest(new { error = "Mã hoá đơn HTC rỗng." });
+    if (!await db.VatHtcInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code))
+        return Results.BadRequest(new { error = $"Không tìm thấy hoá đơn HTC {code}." });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN) && !string.IsNullOrWhiteSpace(r.DeviceCode)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng thiết bị rỗng." });
 
