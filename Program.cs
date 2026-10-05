@@ -71148,21 +71148,79 @@ app.MapGet("/api/reports/hrsalesman-typearea", async (
     });
 }).RequireAuthorization();
 
+// #5750 DONG NO #B381 (xem khoi chu thich #B380/#B381 phia tren): HrSalesManOfMonth/Dtl da co entity
+// tu #141 (truoc do #B381 chua biet/chua ra soat lai) => port du theo dung cong thuc nguon
+// (BizHTC.zzzzCode.cs:14509, Rpt_HRSalesMan_TypeDealer_New20230306), khong con blocked.
 app.MapGet("/api/reports/hrsalesman-typedealer", async (
     AppDbContext db, ITenantContext t, string? dealerCode, string? smType,
     string? hrMonthFrom, string? hrMonthTo) =>
 {
+    var dCode = string.IsNullOrWhiteSpace(dealerCode) ? "" : dealerCode.Trim().ToUpperInvariant();
+    var sType = string.IsNullOrWhiteSpace(smType) ? "" : smType.Trim();
+    var from = string.IsNullOrWhiteSpace(hrMonthFrom) ? new DateTime(1900, 1, 1) : DateTime.Parse(hrMonthFrom!).Date;
+    from = new DateTime(from.Year, from.Month, 1);
+    var to = string.IsNullOrWhiteSpace(hrMonthTo) ? new DateTime(2100, 1, 1) : DateTime.Parse(hrMonthTo!).Date;
+    to = new DateTime(to.Year, to.Month, 1);
+    // Hai "cua so" thang lech nhau 1 thang (dung nguyen cong thuc nguon):
+    var workStart = from; var workEnd = to.AddMonths(1).AddDays(-1);
+    var noWorkStart = from.AddMonths(1); var noWorkEnd = to.AddMonths(2).AddDays(-1);
+
+    var activeDealerCodes = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1")
+        .Select(d => d.DealerCode).ToListAsync()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var dealerNameByCode = (await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync())
+        .ToDictionary(d => d.DealerCode, d => d.DealerName, StringComparer.OrdinalIgnoreCase);
+    // inner join Mst_Province -> inner join Mst_Area: chi giu tinh co AreaCode VA AreaCode do ton tai o Area.
+    var areaCodes = (await db.Areas.Where(a => a.OrgId == t.OrgId).Select(a => a.AreaCode).ToListAsync())
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var provincesWithArea = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId && p.AreaCode != null).ToListAsync())
+        .Where(p => areaCodes.Contains(p.AreaCode!)).Select(p => p.ProvinceCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    static int Quy(DateTime m) => m.Month < 4 ? 1 : m.Month < 7 ? 2 : m.Month < 10 ? 3 : 4;
+
+    var dtl = await db.HrSalesManOfMonthDtls.Where(x => x.OrgId == t.OrgId && x.HRMonth != null
+        && ((dCode == "" || x.DealerCode.ToUpper() == dCode))
+        && (sType == "" || x.SMType == sType)).ToListAsync();
+    dtl = dtl.Where(x => activeDealerCodes.Contains(x.DealerCode)
+        && x.ProvinceCode != null && provincesWithArea.Contains(x.ProvinceCode)).ToList();
+
+    var working = dtl.Where(x => x.HRMonth!.Value >= workStart && x.HRMonth.Value <= workEnd
+            && (x.SMStatus == "1" || x.SMStatus == "2"))
+        .GroupBy(x => (DealerCode: x.DealerCode.ToUpperInvariant(), HRMonth: x.HRMonth!.Value, SMType: x.SMType ?? ""))
+        .ToDictionary(g => g.Key, g => (decimal)g.Select(x => x.SMCode).Count());
+    var noWorking = dtl.Where(x => x.HRMonth!.Value >= noWorkStart && x.HRMonth.Value <= noWorkEnd && x.SMStatus == "0")
+        .GroupBy(x => (DealerCode: x.DealerCode.ToUpperInvariant(), HRMonth: x.HRMonth!.Value.AddMonths(-1), SMType: x.SMType ?? ""))
+        .ToDictionary(g => g.Key, g => (decimal)g.Select(x => x.SMCode).Count());
+
+    var allKeys = working.Keys.Union(noWorking.Keys).Distinct().ToList();
+    var detail = allKeys.Select(k => new
+    {
+        DealerCode = k.DealerCode, k.SMType, HRMonth = k.HRMonth, Quy = Quy(k.HRMonth), Year = k.HRMonth.Year,
+        TotalQtySMWorking = working.TryGetValue(k, out var w) ? w : 0m,
+        TotalQtySMNoWorking = noWorking.TryGetValue(k, out var nw) ? nw : 0m,
+        DealerName = dealerNameByCode.TryGetValue(k.DealerCode, out var dn) ? dn : null,
+    }).OrderBy(x => x.DealerCode).ThenBy(x => x.HRMonth).ThenBy(x => x.SMType).ToList();
+
+    var master = detail
+        .Select(x => new { DealerCode = dCode == "" ? "ALL" : x.DealerCode, SMType = sType == "" ? "ALL" : x.SMType,
+            x.HRMonth, x.Quy, x.Year, x.TotalQtySMWorking, x.TotalQtySMNoWorking })
+        .GroupBy(x => (x.DealerCode, x.SMType, x.HRMonth, x.Quy, x.Year))
+        .Select(g => new { g.Key.DealerCode, g.Key.SMType, g.Key.HRMonth, g.Key.Quy, g.Key.Year,
+            TotalQtySMWorking = g.Sum(x => x.TotalQtySMWorking), TotalQtySMNoWorking = g.Sum(x => x.TotalQtySMNoWorking),
+            DealerName = g.Key.DealerCode == "ALL" ? "Tất cả" : (dealerNameByCode.TryGetValue(g.Key.DealerCode, out var dn2) ? dn2 : null) })
+        .OrderBy(x => x.DealerCode).ThenBy(x => x.HRMonth).ThenBy(x => x.SMType).ToList();
+
     return Results.Ok(new
     {
-        count = 0,
-        Rpt_HR_SalesMan_TypeDealerMaster = Array.Empty<object>(),   // Tables[0]
-        Rpt_HR_SalesMan_TypeDealer_Month = Array.Empty<object>(),   // Tables[1]
+        count = detail.Count,
+        Rpt_HR_SalesMan_TypeDealerMaster = master,   // Tables[0]
+        Rpt_HR_SalesMan_TypeDealer_Month = detail,   // Tables[1]
         filtersEcho = new { dealerCode, smType, hrMonthFrom, hrMonthTo },
         documentedScopeRelaxationNote = "CHU THICH NGUON GHI RO YEU CAU BO LOC - CHI TIET NHAT TU TRUOC TOI NAY: '/* 20221026. HuongTTT: NC: Xem bao cao theo dai ly thi xem duoc du lieu cua TAT CA cac dai ly / Xem bao cao theo dai ly thi xem duoc du lieu cua TAT CA cac Loai nhan vien */' roi '--and hrsmom.DealerCode = @strDealerCode -- 20221026' va '--and hrsmomdt.SMType = @strSMType -- 20221026' BI COMMENT, thay bang 'and (N'@strDealerCode' = '' or hrsmom.DealerCode = '@strDealerCode')' va tuong tu cho SMType. => Dieu kien CUNG doi thanh BO LOC TUY CHON (rong => xem tat ca), kem NGAY + TEN NGUOI + LY DO NGHIEP VU (NC). Day la Y DINH DUOC GHI RO NHAT trong campaign - hon han '//cho phan quyen thoai mai' cua #B345. KHONG phai xoa nham. GHI DUNG MUC: ket qua la NGUOI XEM BAO CAO THEO DAI LY THAY DU LIEU MOI DAI LY - do la QUYET DINH NGHIEP VU DA DUOC DUYET, khong phai loi.",
         relaxedAtDifferentTimesNote = "HAI BAN NOI LONG O HAI THOI DIEM KHAC NHAU: TypeDealer 20221026 (bo ca DealerCode lan SMType); TypeArea 20230407 ('Cho phep tim All Loai NV -> Rem query nay lai', chi bo SMType). => Trong khoang giua hai moc, hai bao cao co MUC LOC KHAC NHAU.",
         twinProvinceSourceNote = "Xem ghi chu day du o /api/reports/hrsalesman-typearea (twinProvinceSourceNote): ban NAY noi tinh qua hrsmomdt.ProvinceCode (tinh cua DONG NHAN VIEN), ban kia qua md.ProvinceCode (tinh cua DAI LY).",
         rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE => CO CONG => khong phai lo.",
-        debtNote = "NO - KHONG DOAN: HR_SalesManOfMonth / HR_SalesManOfMonthDtl chua co trong MiniHTC => tra khung + co."
+        noWorkWindowShiftNote = "#5750: cua so NoWorking LECH 1 THANG VE TRUOC so voi Working (noWorkStart=from+1m, noWorkEnd=to+2m-1d), va HRMonth tra ve cua dong NoWorking bi tru lui 1 thang (DATEADD(Month,-1,...)) — snapshot thang SAU moi biet nhan vien da nghi o THANG TRUOC (SMStatus='0' chi xuat hien tu snapshot ke tiep), dung nguyen cong thuc nguon khong doan.",
     });
 }).RequireAuthorization();
 
