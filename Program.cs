@@ -63209,21 +63209,28 @@ app.MapGet("/api/reports/dealer-stock01", async (
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 #B354-color GAP-FIX: nối Mst_CarColor khớp (ModelCode, ColorCode) — DÙNG LOOKUP (không phải
+    //   Dictionary) để giữ đúng hành vi "đếm nhân lên" của nguồn khi master màu có bản ghi TRÙNG cặp đó
+    //   (xem elevenColumnGroupNote cũ): mỗi bản ghi khớp sinh RIÊNG một dòng trước khi gộp 11 cột.
+    var colorLookup = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .ToLookup(c => (c.ModelCode, c.ColorCode));
 
     var rows = cars
-        .Select(v =>
+        .SelectMany(v =>
         {
             specs.TryGetValue(v.SpecCode ?? "", out var sp);
             models.TryGetValue(v.ModelCode ?? "", out var mm);
-            return new
+            var matched = colorLookup[(v.ModelCode ?? "", v.ColorCode ?? "")].ToList();
+            IEnumerable<MstCarColor?> colorRows = matched.Count > 0 ? matched : new MstCarColor?[] { null };
+            return colorRows.Select(cc => new
             {
                 v.DealerCode,
                 ModelCode = mm?.ModelCode, ModelName = mm?.ModelName,
                 SpecCode = sp?.SpecCode, SpecDescription = sp?.SpecDesc, OCNCode = sp?.OCNCode,
                 v.ColorCode,
-                ColorExtName = (string?)null, ColorExtNameVN = (string?)null,      // 📌 NỢ: Mst_CarColor
-                ColorIntName = (string?)null, ColorIntNameVN = (string?)null
-            };
+                ColorExtName = cc?.ColorExtName, ColorExtNameVN = cc?.ColorExtNameVN,
+                ColorIntName = cc?.ColorIntName, ColorIntNameVN = cc?.ColorIntNameVN
+            });
         })
         // 🔴 Gộp theo 11 cột.
         .GroupBy(x => (x.DealerCode, x.ModelCode, x.ModelName, x.SpecCode, x.SpecDescription,
@@ -63254,7 +63261,7 @@ app.MapGet("/api/reports/dealer-stock01", async (
         specSourceNote = "Mst_CarSpec join theo cc.SpecCode (spec cua Car_Car) - KHAC #B305/#B308/#B311 (deu join theo cv.ActualSpec). CUNG HE, HAI NGUON SPEC KHAC NHAU; port nham cot => sai mo ta xe va sai nhom gop.",
         elevenColumnGroupNote = "Gop theo 11 COT: DealerCode + ModelCode/ModelName + SpecCode/SpecDescription/OCNCode + ColorCode/ColorExtName/ColorExtNameVN/ColorIntName/ColorIntNameVN, dem Count(0) CountCar. Count(0) dem DONG SAU JOIN: left join Mst_CarColor khop (ModelCode, ColorCode) - neu master mau co ban ghi TRUNG cap do thi DEM NHAN LEN.",
         singleTableNote = "Tra MOT bang: Tables[0] = 'RptStatistic_DealerStock01' - KHONG co cau debug bi bo quen (khac #B290/#B296/#B299/#B308/#B311).",
-        debtNote = "NO: Mst_CarColor chua noi => bon cot ten mau tra NULL. Khong bia."
+        colorGapFixNote = "GAP-FIX (2026-10-06): Mst_CarColor (MstCarColor) nay da co => bon cot ten mau (ColorExtName/ColorExtNameVN/ColorIntName/ColorIntNameVN) noi dung theo (ModelCode,ColorCode), GIU DUNG hanh vi 'dem nhan len' khi master mau co nhieu ban ghi trung cap do (dung ToLookup, khong phai Dictionary)."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/master-banbuon-htc", async (
@@ -63283,9 +63290,12 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
     var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.FlagActive == "1").ToListAsync())
         .Where(v => v.CarId != null)
         .GroupBy(v => v.CarId!).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 #B311-color GAP-FIX: Mst_CarColor nay da co, noi khop (ModelCode, ColorCode) tren cv.ModelCode.
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
 
     var raw = new List<object>();
-    var keys = new List<(string? Model, string? ModelName, string? Spec, string? SpecDesc, string? Color, string Month)>();
+    var keys = new List<(string? Model, string? ModelName, string? Spec, string? SpecDesc, string? Color, string? ColorExtNameVN, string? ColorIntNameVN, string Month)>();
     var droppedNoDealerScope = new List<object>();
     foreach (var c in doCars)
     {
@@ -63299,6 +63309,7 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
         var mon = c.DeliveryOutDate!.Value.ToString("yyyy-MM");
         var modelName = (cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null;
         var specDesc = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null;
+        colors.TryGetValue((cv.ModelCode ?? "", cv.ColorCode ?? ""), out var cc);
 
         raw.Add(new
         {
@@ -63307,7 +63318,7 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
             CVModelCode = cv.ModelCode, CVModelName = modelName,
             cv.ActualSpec, AC_SpecDescription = specDesc,
             CVColorCode = cv.ColorCode,
-            CVColorExtNameVN = (string?)null, CVColorIntNameVN = (string?)null,  // 📌 NỢ: Mst_CarColor
+            CVColorExtNameVN = cc?.ColorExtNameVN, CVColorIntNameVN = cc?.ColorIntNameVN,
             DeliveryOrderNo = (string?)null,        // 📌 NỢ: số lệnh xuất xe chưa nối
             c.DeliveryOutDate, c.ConfirmStatus,
             MDDealerCode = dlrCode,
@@ -63315,12 +63326,12 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
             ColumnMonth = mon,
             Total = 1                                // 🔴 cột hằng `1 Total` của helper
         });
-        keys.Add((cv.ModelCode, modelName, cv.ActualSpec, specDesc, cv.ColorCode, mon));
+        keys.Add((cv.ModelCode, modelName, cv.ActualSpec, specDesc, cv.ColorCode, cc?.ColorExtNameVN, cc?.ColorIntNameVN, mon));
     }
 
     // ✅ Gộp MỘT TẦNG — ColumnMonth đã là tháng ngay từ bảng tạm.
     var summary = keys
-        .GroupBy(k => (k.Model, k.ModelName, k.Spec, k.SpecDesc, k.Color, k.Month))
+        .GroupBy(k => (k.Model, k.ModelName, k.Spec, k.SpecDesc, k.Color, k.ColorExtNameVN, k.ColorIntNameVN, k.Month))
         .Select(g => new
         {
             CVModelCode = g.Key.Model,
@@ -63328,7 +63339,8 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
             CVActualSpec = g.Key.Spec,
             AC_SpecDescription = g.Key.SpecDesc,
             CVColorCode = g.Key.Color,
-            ColorName = (string?)null,               // 🔴 nguồn nối bằng '+' ⇒ NULL lan
+            // 🔴 nguồn nối bằng '+' ⇒ một vế NULL là cả chuỗi NULL (giữ đúng, không coi null là "").
+            ColorName = (g.Key.ColorExtNameVN == null || g.Key.ColorIntNameVN == null) ? null : g.Key.ColorExtNameVN + "/" + g.Key.ColorIntNameVN,
             ColumnMonth = g.Key.Month,
             Total = g.Count()                        // Sum(1 Total) ⇒ đếm xe
         })
@@ -63347,7 +63359,8 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
         totalConstNote = "Sum(t.Total) voi Total la cot hang '1 Total' cua helper mySql_Rpt_GetClauseColumn_CarAndVINInfo_01 => thuc chat la DEM XE. Helper nay con keo theo ~90 cot (CT_TKHQ, Pmt_Guarantee, CT_PackingList, ...).",
         concatAndVarcharNote = "ColorName = (CVColorExtNameVN + '/' + CVColorIntNameVN) => MOT VE NULL LA CA CHUOI NULL. left(cdod.DeliveryOutDate, 7) => cot LUU VARCHAR.",
         modelNameSourceNote = "ModelName = mcm_CV.ModelName join theo cv.ModelCode (helper) - giong #B308, KHAC #B305 (join theo mcs.ModelCode).",
-        debtNote = "NO: Mst_CarColor (CVColorExtNameVN/CVColorIntNameVN => ColorName), so lenh xuat xe (DeliveryOrderNo), va cac cot con lai cua helper CarAndVINInfo_01 chua noi => tra NULL. Khong bia."
+        colorGapFixNote = "GAP-FIX (2026-10-06, #B311): Mst_CarColor nay da co => CVColorExtNameVN/CVColorIntNameVN (raw) va ColorName (summary, = ColorExtNameVN + \"/\" + ColorIntNameVN, mot ve NULL la ca chuoi NULL) da noi dung.",
+        debtNote = "NO: so lenh xuat xe (DeliveryOrderNo) va cac cot con lai cua helper CarAndVINInfo_01 (~90 cot: CT_TKHQ, Pmt_Guarantee, CT_PackingList...) chua noi => tra NULL. Khong bia."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/master-shipping", async (
@@ -63360,6 +63373,9 @@ app.MapGet("/api/reports/master-shipping", async (
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 #B308-color GAP-FIX: Mst_CarColor nay da co, noi khop (cv.ModelCode, cv.ColorCode).
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
 
     // 🔴 Lọc kỳ CHỈ theo ShippingDateStart (ngày lên tàu).
     var pls = (await db.PackingLists
@@ -63374,7 +63390,7 @@ app.MapGet("/api/reports/master-shipping", async (
     // #tbl_shipping_Raw — inner PackingList; `left join Mst_CarSpec` + where AssemblyStatus ⇒ INNER.
     var raw = new List<object>();
     var droppedNoSpec = new List<object>();
-    var rawKeys = new List<(string? Model, string? Spec, string? Color, string MonthStart, string? MonthEnd, string Vin)>();
+    var rawKeys = new List<(string? Model, string? Spec, string? Color, string? ColorExtNameVN, string? ColorIntNameVN, string MonthStart, string? MonthEnd, string Vin)>();
     foreach (var cv in cars)
     {
         if (!pls.TryGetValue(cv.PackingListNo!, out var pl)) continue;
@@ -63383,6 +63399,7 @@ app.MapGet("/api/reports/master-shipping", async (
 
         var monStart = pl.ShippingDateStart.ToString("yyyy-MM");
         var monEnd = pl.ShippingDateEnd?.ToString("yyyy-MM");
+        colors.TryGetValue((cv.ModelCode ?? "", cv.ColorCode ?? ""), out var cc);
         raw.Add(new
         {
             tbl_shipping_Raw = (string?)null,           // ⚠️ cột rác của câu debug bị bỏ quên
@@ -63390,13 +63407,13 @@ app.MapGet("/api/reports/master-shipping", async (
             pl.ShippingDateStart, pl.ShippingDateEnd,
             ShippingMonthStart = monStart, ShippingMonthEnd = monEnd
         });
-        rawKeys.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, monStart, monEnd, cv.VIN));
+        rawKeys.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, cc?.ColorExtNameVN, cc?.ColorIntNameVN, monStart, monEnd, cv.VIN));
     }
 
     // 🔴 ĐIỀU KIỆN THẬT: tháng lên tàu KHÁC tháng cập cảng, HOẶC chưa cập cảng.
     var summary = rawKeys
         .Where(x => x.MonthEnd == null || x.MonthStart != x.MonthEnd)
-        .GroupBy(x => (x.Model, x.Spec, x.Color, x.MonthStart, x.MonthEnd))
+        .GroupBy(x => (x.Model, x.Spec, x.Color, x.ColorExtNameVN, x.ColorIntNameVN, x.MonthStart, x.MonthEnd))
         .Select(g => new
         {
             CVModelCode = g.Key.Model,
@@ -63405,7 +63422,8 @@ app.MapGet("/api/reports/master-shipping", async (
             // 🔴 ModelName theo cv.ModelCode (KHÁC #B305 dùng mcs.ModelCode).
             ModelName = (g.Key.Model != null && models.TryGetValue(g.Key.Model, out var mm)) ? mm.ModelName : null,
             AC_SpecDescription = (g.Key.Spec != null && specs.TryGetValue(g.Key.Spec, out var sp)) ? sp.SpecDesc : null,
-            ColorName = (string?)null,                 // 📌 NỢ: Mst_CarColor chưa nối
+            // 🔴 nối bằng '+' ⇒ một vế NULL là cả chuỗi NULL.
+            ColorName = (g.Key.ColorExtNameVN == null || g.Key.ColorIntNameVN == null) ? null : g.Key.ColorExtNameVN + "/" + g.Key.ColorIntNameVN,
             ColumnMonth = g.Key.MonthStart,
             ShippingMonthEnd = g.Key.MonthEnd,
             Total = g.Count()
@@ -63425,7 +63443,7 @@ app.MapGet("/api/reports/master-shipping", async (
         forgottenDebugSelectNote = "CAU DEBUG BI BO QUEN, KHONG COMMENT: 'select null tbl_shipping_Raw, t.* from #tbl_shipping_Raw t;' => tro thanh Tables[0] = 'Table_Shipping_ChiTiet' - HOP DONG API, lan thu TU (sau #B290, #B296, #B299). Cot dau luon null.",
         varcharAndConcatNote = "left(cpl.ShippingDateStart, 7) / left(cpl.ShippingDateEnd, 7) => HAI cot ngay LUU VARCHAR. ColorName = ColorExtNameVN + '/' + ColorIntNameVN => MOT VE NULL LA CA CHUOI NULL.",
         rbacNote = "RBAC - to hop (1): CheckHTCDirect ACTIVE; @strBUPatternOfUser nap nhung SQL khong dung => co cong. Guard ngay: To rong => DateMax. Loc ky CHI theo ShippingDateStart.",
-        debtNote = "NO: Mst_CarColor chua noi => ColorName tra NULL. Khong bia."
+        colorGapFixNote = "GAP-FIX (2026-10-06, #B308): Mst_CarColor nay da co => ColorName noi dung (= ColorExtNameVN + \"/\" + ColorIntNameVN, mot ve NULL la ca chuoi NULL)."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/master-nhaphang", async (
@@ -63438,6 +63456,10 @@ app.MapGet("/api/reports/master-nhaphang", async (
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 #B305-color GAP-FIX: Mst_CarColor nay da co, noi khop (cv.ModelCode, cv.ColorCode) —
+    //   KHAC ModelName (noi theo mcs.ModelCode cua SPEC, xem twoModelCodesNote).
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
 
     var pls = (await db.PackingLists
             .Where(p => p.OrgId == t.OrgId && p.ShippingDateEnd != null
@@ -63449,14 +63471,15 @@ app.MapGet("/api/reports/master-nhaphang", async (
 
     var detail = new List<object>();
     var droppedNoSpec = new List<object>();
-    var cbuRows = new List<(string? Model, string? Spec, string? Color, string Month)>();
-    var ckdRows = new List<(string? Model, string? Spec, string? Color, string Month)>();
+    var cbuRows = new List<(string? Model, string? Spec, string? Color, string? ColorExtNameVN, string? ColorIntNameVN, string Month)>();
+    var ckdRows = new List<(string? Model, string? Spec, string? Color, string? ColorExtNameVN, string? ColorIntNameVN, string Month)>();
 
     foreach (var cv in allCars)
     {
         // 🔴 left join + where AssemblyStatus ⇒ INNER: spec thiếu ⇒ RƠI KHỎI CẢ HAI nhánh.
         if (cv.ActualSpec is null || !specs.TryGetValue(cv.ActualSpec, out var sp))
         { droppedNoSpec.Add(new { cv.VIN, cv.ActualSpec }); continue; }
+        colors.TryGetValue((cv.ModelCode ?? "", cv.ColorCode ?? ""), out var cc);
 
         if (sp.AssemblyStatus == "CBU")
         {
@@ -63469,7 +63492,7 @@ app.MapGet("/api/reports/master-nhaphang", async (
                 AssemblyStatus = sp.AssemblyStatus,
                 ShippingDateEnd_Or_CoDate = pl.ShippingDateEnd
             });
-            cbuRows.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, mon));
+            cbuRows.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, cc?.ColorExtNameVN, cc?.ColorIntNameVN, mon));
         }
         else if (sp.AssemblyStatus == "CKD")
         {
@@ -63482,13 +63505,13 @@ app.MapGet("/api/reports/master-nhaphang", async (
                 AssemblyStatus = sp.AssemblyStatus,
                 ShippingDateEnd_Or_CoDate = cv.CODate
             });
-            ckdRows.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, mon));
+            ckdRows.Add((cv.ModelCode, cv.ActualSpec, cv.ColorCode, cc?.ColorExtNameVN, cc?.ColorIntNameVN, mon));
         }
     }
 
     // Gộp (tương đương HAI tầng của nguồn: theo ngày rồi theo tháng — kết quả cuối giống nhau).
-    List<object> Aggregate(List<(string? Model, string? Spec, string? Color, string Month)> src, string asm) =>
-        src.GroupBy(x => (x.Model, x.Spec, x.Color, x.Month))
+    List<object> Aggregate(List<(string? Model, string? Spec, string? Color, string? ColorExtNameVN, string? ColorIntNameVN, string Month)> src, string asm) =>
+        src.GroupBy(x => (x.Model, x.Spec, x.Color, x.ColorExtNameVN, x.ColorIntNameVN, x.Month))
            .Select(g =>
            {
                // 🔴 ModelName lấy theo mcs.ModelCode (model của SPEC), KHÔNG phải cv.ModelCode.
@@ -63500,7 +63523,8 @@ app.MapGet("/api/reports/master-nhaphang", async (
                    CVColorCode = g.Key.Color,
                    ModelName = (specModelCode != null && models.TryGetValue(specModelCode, out var mm)) ? mm.ModelName : null,
                    AC_SpecDescription = (g.Key.Spec != null && specs.TryGetValue(g.Key.Spec, out var sp3)) ? sp3.SpecDesc : null,
-                   ColorName = (string?)null,          // 📌 NỢ: Mst_CarColor chưa nối
+                   // 🔴 nối bằng '+' ⇒ một vế NULL là cả chuỗi NULL.
+                   ColorName = (g.Key.ColorExtNameVN == null || g.Key.ColorIntNameVN == null) ? null : g.Key.ColorExtNameVN + "/" + g.Key.ColorIntNameVN,
                    ColumnMonth = g.Key.Month,
                    AssemblyStatus = asm,
                    Total = g.Count()
@@ -63524,7 +63548,7 @@ app.MapGet("/api/reports/master-nhaphang", async (
         unionNote = "'union' (KHONG 'union all') o ca cau chi tiet (cv.* union cv.*) lan cau tong (#tbl_CBU union #tbl_CKD) => KHU TRUNG TOAN COT - rat ton kem; va union hai 'cv.*' doi hoi CUNG SO COT, CUNG THU TU => doi schema Car_VIN la GAY CAU LENH.",
         concatNullNote = "ColorName = ColorExtNameVN + '/' + ColorIntNameVN (noi bang '+') => MOT VE NULL LA CA CHUOI NULL (nhu #B299). 'left(cpl.ShippingDateEnd, 7)' => cot LUU VARCHAR.",
         rbacNote = "RBAC - to hop (1): CheckHTCDirect ACTIVE; @strBUPatternOfUser nap nhung SQL khong dung => co cong. Guard ngay: To rong => TConst.DateTimeSpecial.DateMax.",
-        debtNote = "NO: Mst_CarColor chua noi => ColorName tra NULL. Khong bia."
+        colorGapFixNote = "GAP-FIX (2026-10-06, #B305): Mst_CarColor nay da co => ColorName noi dung, khop theo cv.ModelCode (KHAC ModelName noi theo mcs.ModelCode cua SPEC, xem twoModelCodesNote)."
     });
 }).RequireAuthorization();
 app.MapPost("/api/reports/master-sanxuat", async (
@@ -63756,6 +63780,9 @@ app.MapGet("/api/reports/master-banle", async (
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 #B296-color GAP-FIX: Mst_CarColor nay da co, noi khop (ModelCode, ColorCode).
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
 
     var detail = new List<object>();
     foreach (var f in info1)
@@ -63785,6 +63812,7 @@ app.MapGet("/api/reports/master-banle", async (
         if (sttLabel != "SELLCUSTOMER") continue;        // 🔴 #tbl_Info4 chỉ giữ MỘT nhãn
 
         cvs.TryGetValue(f.CarId, out var cv);
+        colors.TryGetValue((cv?.ModelCode ?? "", cv?.ColorCode ?? ""), out var cc);
         detail.Add(new
         {
             tbl_Info4 = (string?)null,                   // ⚠️ cột rác của câu debug bị bỏ quên
@@ -63793,7 +63821,9 @@ app.MapGet("/api/reports/master-banle", async (
             ModelName = (cv?.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null,
             ActualSpec = cv?.ActualSpec,
             AC_SpecDescription = (cv?.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
-            CVColorCode = cv?.ColorCode, ColorName = (string?)null,   // 📌 NỢ: Mst_CarColor chưa nối
+            // 🔴 nối bằng '+' ⇒ một vế NULL là cả chuỗi NULL (cùng khuôn #B299/#B305/#B308).
+            CVColorCode = cv?.ColorCode,
+            ColorName = (cc?.ColorExtNameVN == null || cc?.ColorIntNameVN == null) ? null : cc.ColorExtNameVN + "/" + cc.ColorIntNameVN,
             ColumnMonth = f.Dtl.DeliveryDate?.ToString("yyyy-MM"),
             DLSDDealNo = f.Deal.DealNo,
             DLSDDealerCodeSource = f.SourceCode,
@@ -63837,7 +63867,8 @@ app.MapGet("/api/reports/master-banle", async (
         fakeDealNote = "'dlsdd.DealNoPrevious is not null' - 'loc bo nhung Deal_Gia' (khuon #B242/#B257).",
         forgottenDebugSelectNote = "CAU DEBUG BI BO QUEN, KHONG COMMENT: 'select null tbl_Info4, f.* From #tbl_Info4 f;' => tro thanh Tables[0] = 'Table_Banle_Detail' - HOP DONG API (lan thu HAI, sau #B290). Cot dau luon null.",
         summaryKeyNote = "Bang tong gom theo BAY cot (CVModelCode, ModelName, ActualSpec, AC_SpecDescription, CVColorCode, ColorName, ColumnMonth) voi count(t.CarId) Total, order by ColumnMonth.",
-        debtNote = "NO: Mst_CarColor chua noi => ColorName tra NULL; Dlr_Contract/Mst_SalesMan (DCDlrContractNo, DSMSMCode/DSMSMName) chua noi. Khong bia."
+        colorGapFixNote = "GAP-FIX (2026-10-06, #B296): Mst_CarColor nay da co => ColorName noi dung (= ColorExtNameVN + \"/\" + ColorIntNameVN, mot ve NULL la ca chuoi NULL).",
+        debtNote = "NO: Dlr_Contract/Mst_SalesMan (DCDlrContractNo, DSMSMCode/DSMSMName) chua noi. Khong bia."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/pi-instock", async (
@@ -64305,6 +64336,9 @@ app.MapGet("/api/reports/pivot-rearrange-cb", async (
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 #B281-color GAP-FIX: Mst_CarColor nay da co, noi khop (cv.ModelCode, cv.ColorCode).
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
     // Nối `Sto_CBReqDetail` theo CẶP (VIN, CBReqNo) để lấy LoaiThung.
     var cbReqHeads = (await db.StoCBReqs.Where(h => h.OrgId == t.OrgId).ToListAsync()).ToDictionary(h => h.Id);
     var cbReqLines = await db.StoCBReqDtls.Where(d => d.OrgId == t.OrgId && vins.Contains(d.VIN)).ToListAsync();
@@ -64347,6 +64381,7 @@ app.MapGet("/api/reports/pivot-rearrange-cb", async (
             loaiThung = d?.Remark;   // MiniHTC lưu tên loại thùng ở dòng lệnh (TenLoaiThung) — xem note
         }
 
+        colors.TryGetValue((cv.ModelCode ?? "", cv.ColorCode ?? ""), out var cc);
         rows.Add(new
         {
             ttVIN = l.VIN,
@@ -64355,7 +64390,7 @@ app.MapGet("/api/reports/pivot-rearrange-cb", async (
             cv.VIN, cv.ModelCode, cv.SpecCode, cv.ActualSpec, cv.ColorCode, cv.EngineNo, cv.TypeCB,
             ModelName = (cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null,
             SpecDescription = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
-            ColorIntNameVN = (string?)null, ColorExtNameVN = (string?)null,   // 📌 NỢ: Mst_CarColor chưa nối
+            ColorIntNameVN = cc?.ColorIntNameVN, ColorExtNameVN = cc?.ColorExtNameVN,
             head.ApprovedDate,
             RangeDate = rangeDate,
             SCDLoaiThung = loaiThung ?? l.TenLoaiThung,
@@ -64378,7 +64413,7 @@ app.MapGet("/api/reports/pivot-rearrange-cb", async (
         baseFilterNote = "Ba dieu kien loc nen: src2.RearCBStatus in ('A') (lenh dong thung DA DUYET); src.RearCBDtlStatus in ('A') (dong da duyet); cv.TypeCB in ('N') (chi xe LOAI THUNG N).",
         starSelectNote = "'select distinct ... cv.*' - lay TOAN BO cot Car_VIN vao bang tam; them/bot cot o Car_VIN se DOI LUON CAU TRUC BAO CAO. Port tra tap cot da liet ke ro.",
         joinNote = "Noi Sto_CBReqDetail bang CAP (VIN, CBReqNo) de lay LoaiThung; Mst_CarSpec join theo cv.ActualSpec (khong phai SpecCode) - cung bay #B239/#B242/#B272. Cot hang 1.0 TOTAL cho pivot (giong #B242).",
-        debtNote = "NO: Mst_CarColor chua noi (ColorIntNameVN/ColorExtNameVN tra NULL), khong bia."
+        colorGapFixNote = "GAP-FIX (2026-10-06, #B281): Mst_CarColor nay da co => ColorIntNameVN/ColorExtNameVN noi dung theo (cv.ModelCode, cv.ColorCode)."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/bl-quahan-dathanhtoan", async (
