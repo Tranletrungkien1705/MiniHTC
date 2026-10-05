@@ -53974,11 +53974,81 @@ app.MapGet("/api/stockins/paper-report", async (AppDbContext db, ITenantContext 
         threeMoneyColumnsNoneIncludeVat = "Cost = Price; TotalPrice = Price*Quantity (TRUOC thue); VAT = VAT*Price*Quantity*0.01",
         noRoundingAnywhereInSource = "khong co Math.Round/Convert => so le di thang ra giay",
         detailTableOmittedWhenFlagOff = "zzzzClauseSelect_Inv_StockInDetail bi thay bang chuoi -- Nothing. => ket qua chi co HAI bang",
-        functionLivesInUnrelatedFile = "Blt_SerStockInPaperRpt nam trong BizCarSv.Bulletin.cs du la nghiep vu kho",
-    });
-}).RequireAuthorization();
-
-// ===== 🔴🔴 #581 TRA BẢN TIN THEO VIN — **HAI WS GỌI HAI BẢN, ĐỌC HAI DB KHÁC NHAU** =====
+                functionLivesInUnrelatedFile = "Blt_SerStockInPaperRpt nam trong BizCarSv.Bulletin.cs du la nghiep vu kho",
+            });
+        }).RequireAuthorization();
+        // ===== 🔴 #1595 `SerInventoryAccStockIn` — BÁO CÁO NHẬP KHO THEO ĐẠI LÝ + KHOẢNG NGÀY =====
+        // Nguồn: `BizCarSv.Inventory.Report.cs:4744` (`SerInventoryAccStockIn`); WS LIVE `HTCWSCarSv/WSCarSv.asmx.cs:19444`.
+        // Tham số: strDealerCodeList (1 đại lý — nguồn nhét thẳng vào `sti.DealerCode ='@DealerCode'`), strFromDate, strToDate.
+        // Hành vi port 1:1: (1) lọc `ser_inv_stockin sti` `status = 3` (Kết thúc) + `StockInDate >= FromDate` + `<= ToDate`
+        //   + `DealerCode = <dealer>`; (2) `left join ser_mst_supplier spp on sti.SupplierID=spp.SupplierID and sti.DealerCode=spp.DealerCode`;
+        //   (3) `inner join ser_inv_stockindetail stid on stid.StockInID = sti.StockInID`;
+        //   (4) `inner join ser_mst_location l on stid.ActualLocationID = l.LocationID` (⚠️ INNER ⇒ dòng có vị trí thực tế
+        //   không còn trong danh mục vị trí BỊ RƠI); (5) `group by stid.PartID, stid.Quantity, l.LocationCode, sti.StockInDate,
+        //   sti.StockInNo, stid.Price, stid.VAT, sti.SupplierID, sti.SupplierCode, sti.SupplierName` với `sum(stid.Quantity) Quantity`;
+        //   (6) `inner join ser_mst_part p on p.PartID = si.PartID` (⚠️ INNER ⇒ phụ tùng không còn trong danh mục BỊ RƠI);
+        //   (7) cột tiền: `Total = Quantity*Price` (TRƯỚC thuế), `VATAmount = VAT*Price*Quantity*0.01`; `ORDER BY si.StockInNo, si.StockInDate`.
+        // ⚠️ Nguồn KHÔNG guard tham số rỗng (không `#region Check`) ⇒ port bắt buộc dealerCode + fromDate + toDate.
+        // ⚠️ `strDealerCodeList` nguồn nhét thẳng vào SQL (không phải danh sách '|') — port nhận 1 mã đại lý.
+        app.MapGet("/api/stockins/acc-report", async (AppDbContext db, ITenantContext t,
+            string? dealerCode, DateTime? fromDate, DateTime? toDate) =>
+        {
+            if (string.IsNullOrWhiteSpace(dealerCode) || fromDate is null || toDate is null)
+                return Results.BadRequest(new { error = "Can dealerCode + fromDate + toDate — nguon khong guard tham so rong." });
+            var dl = dealerCode!.Trim();
+            var from = fromDate!.Value; var to = toDate!.Value;
+            // (1) phiếu nhập Kết thúc trong khoảng ngày của đại lý.
+            var heads = await db.PartStockIns.Where(x => x.OrgId == t.OrgId && x.Status == "3"
+                && x.DealerCode == dl && x.StockInDate >= from && x.StockInDate <= to).ToListAsync();
+            var headIds = heads.Select(h => h.Id).ToList();
+            var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && headIds.Contains(l.StockInId)).ToListAsync();
+            // (4) INNER JOIN Ser_MST_Location theo ActualLocationID ⇒ dòng có vị trí thực tế không còn trong danh mục BỊ RƠI.
+            var locIds = lines.Select(l => l.ActualLocationID).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().ToList();
+            var locs = await db.PartLocations.Where(x => x.OrgId == t.OrgId && locIds.Contains(x.LocationCode)).ToListAsync();
+            var locByCode = locs.ToDictionary(x => x.LocationCode, x => x);
+            // (6) INNER JOIN Ser_MST_Part theo PartID ⇒ phụ tùng không còn trong danh mục BỊ RƠI.
+            var partIds = lines.Select(l => l.PartID).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().ToList();
+            var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && partIds.Contains(x.PartID!)).ToListAsync();
+            var partById = parts.Where(x => x.PartID != null).GroupBy(x => x.PartID!).ToDictionary(g => g.Key, g => g.First());
+            // (2) left join Ser_MST_Supplier theo (SupplierID, DealerCode).
+            var supIds = heads.Select(h => h.SupplierID).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x!).Distinct().ToList();
+            var sups = await db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && supIds.Contains(x.SupplierID!)).ToListAsync();
+            var headById = heads.ToDictionary(h => h.Id, h => h);
+            var droppedLinesByLocationJoin = lines.Count(l => string.IsNullOrWhiteSpace(l.ActualLocationID) || !locByCode.ContainsKey(l.ActualLocationID!));
+            var droppedLinesByPartJoin = lines.Count(l => string.IsNullOrWhiteSpace(l.PartID) || !partById.ContainsKey(l.PartID!));
+            var items = lines
+                .Where(l => !string.IsNullOrWhiteSpace(l.ActualLocationID) && locByCode.ContainsKey(l.ActualLocationID!)
+                         && !string.IsNullOrWhiteSpace(l.PartID) && partById.ContainsKey(l.PartID!))
+                .Select(l =>
+                {
+                    var h = headById[l.StockInId];
+                    var p = partById[l.PartID!];
+                    var loc = locByCode[l.ActualLocationID!];
+                    var sup = h.SupplierID == null ? null : sups.FirstOrDefault(s => s.SupplierID == h.SupplierID);
+                    var qty = l.Quantity;
+                    var price = l.Price;
+                    var vat = l.VAT;
+                    return new
+                    {
+                        p.PartCode, Date = h.StockInDate, h.StockInNo, p.PartID, VieName = p.PartName, p.Unit,
+                        Quantity = qty, Price = price, Total = qty * price, VAT = vat,
+                        VATAmount = vat * price * qty * 0.01m, Location = loc.LocationCode,
+                        SupplierCode = sup?.SupplierCode, SupplierName = sup?.SupplierName,
+                    };
+                })
+                .OrderBy(x => x.StockInNo).ThenBy(x => x.Date).ToList();
+            return Results.Ok(new
+            {
+                count = items.Count, items,
+                sourceInnerJoinsDropRows = "Ser_Mst_Location (theo ActualLocationID) va Ser_Mst_Part (theo PartID) deu INNER JOIN => dong khong con trong danh muc bi roi im lang",
+                droppedLinesByLocationJoin, droppedLinesByPartJoin,
+                statusFilterIsFinishedOnly = "nguon loc sti.status = 3 (Ket thuc) — phieu Moi tao/Tien hanh/Huy KHONG vao bao cao",
+                dealerParamIsSingleNotList = "strDealerCodeList nguon nhét thẳng vào sti.DealerCode ='@DealerCode' (khong phai danh sach '|')",
+                moneyColumns = "Total = Quantity*Price (TRUOC thue); VATAmount = VAT*Price*Quantity*0.01",
+                noGuardInSource = "nguon khong co #region Check => khong chan tham so rong",
+            });
+        }).RequireAuthorization();
+        // ===== 🔴🔴 #581 TRA BẢN TIN THEO VIN — **HAI WS GỌI HAI BẢN, ĐỌC HAI DB KHÁC NHAU** =====
 // Nguồn có **năm** bản cùng tên gốc `Blt_Bulletin_Get_byVin` (`:2987` trần · `_New20180625` `:3155` ·
 //   `_New20191104` `:3367` · `_New20210618` `:3585` · `_New20221114` `:3796`). Hai bản **đang sống**:
 //     `HTCWSCarSv**Tab**/WSCarSvTab.asmx.cs:6169`  → `Blt_Bulletin_Get_byVin_**New20191104**`
