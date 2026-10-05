@@ -77927,6 +77927,10 @@ app.MapGet("/api/storagetransactions/reftypes", () => Results.Ok(new
 app.MapGet("/api/storagetransactions", async (
     AppDbContext db, ITenantContext t, string? vin, string? refNo, string? refType, string? storageCode) =>
 {
+    // #4762 — re-verify: Sto_StorageTransaction_AddX (Biz.HTC.WH.cs:212240) guard list khớp đúng (TableBeBlank/
+    // DuplicateVIN/VINIsEmpty/RefNoIsEmpty/RefTypeIsEmpty/StorageCodeIsEmpty active; StorageCodeToIsEmpty/
+    // DTimeToIsEmpty bị comment :212369/:212393 — Mini không port đúng 2 guard đã tắt này). FlagInDay SQL
+    // (:212425-212442) khớp đúng logic Mini: kho ĐẾN của dòng cũ = kho ĐI dòng mới, cùng ngày.
     var qy = db.StorageTransactions.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(vin)) qy = qy.Where(x => x.Vin == vin);
     if (!string.IsNullOrWhiteSpace(refNo)) qy = qy.Where(x => x.RefNo == refNo);
