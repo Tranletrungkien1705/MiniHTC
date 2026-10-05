@@ -90785,11 +90785,56 @@ app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenant
     var by1084 = (partnerUserCode ?? "system").Trim(); var now1084 = DateTime.Now;
     if (isNew1084) { p.CreatedDate = now1084; p.CreatedBy = by1084; }
     p.LogLUDateTime = now1084; p.LogLUBy = by1084;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate });
-}).RequireAuthorization();
-
-// ===== 🔴 #934 `Ser_Mst_PartPrice_Delete` (LIVE, `BizCarSv.Inventory.cs:1507`) — CHƯA TỪNG có đường xoá =====
+        await db.SaveChangesAsync();
+        return Results.Ok(new { p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate });
+    }).RequireAuthorization();
+    // ===== 🔴 #1592 `Ser_Mst_PartPrice_Create` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:24873`) =====
+    // Hàm biz LIVE: `BizCarSv.Inventory.cs:553-739 Ser_Mst_PartPrice_Create`.
+    // GREP TRƯỚC: Mini có `POST /api/partprices` (upsert theo PartCode+EffectiveDate — KHÁC nguồn `_Create`),
+    //   `PUT /api/partprices/{id}` (#1568), `DELETE /api/partprices/{id}` (#934), `POST /api/partprices/import` (#935)
+    //   nhưng KHÔNG có route nào port hàm `_Create` (mục B NIGHT-QUEUE).
+    // 🔴 Hành vi nguồn port 1:1:
+    //   (1) Nguồn nhận `strPartID` + `strPriceOut` + `strDateEffect` + `strRemark` + `strIsActive`.
+    //   (2) INSERT một dòng MỚI vào `Ser_Inv_PartPrice` với PartID/Price/DateEffect/Remark/IsActive +
+    //       ĐỦ 4 cột nhật ký (CreatedDate/CreatedBy/LogLUDateTime/LogLUBy = thời điểm tạo + strPartnerUserCode).
+    //   (3) Lấy `select @@Identity ID` rồi trả DataSet `Ser_Inv_PartPrice` với PartPriceID/PartID/Price/DateEffect/Remark/IsActive.
+    //   (4) ⚠️ Nguồn KHÔNG guard tồn tại/trùng — LUÔN chèn dòng mới (KHÁC hẳn upsert `POST /api/partprices`).
+    //   (5) ⚠️ Dội về client: `dr["PartID"] = Int32.Parse(strPartID)` và `dr["Price"] = double.Parse(strPriceOut)`
+    //       — `double.Parse` theo CULTURE tiến trình (bẫy #844); Mini trả số đã lưu, ghi chú sự khác biệt.
+    // ⚠️ Mini dùng `PartCode` (khoá tự nhiên) thay `PartID` số — nhận `PartCode` để tra, giữ đúng ngữ nghĩa.
+    app.MapPost("/api/partprices/create", async (PartPriceCreateDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+    {
+        if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Cần PartCode." });
+        if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Cần EffectiveDate." });
+        var code = dto.PartCode.Trim().ToUpperInvariant();
+        var ed = dto.EffectiveDate.Value.Date;
+        var by = (partnerUserCode ?? "system").Trim();
+        var now = DateTime.Now;
+        // (2) INSERT dòng MỚI — nguồn KHÔNG guard trùng, LUÔN chèn (giữ 1:1).
+        var p = new PartPrice
+        {
+            OrgId = t.OrgId,
+            PartCode = code,
+            Price = dto.Price,
+            EffectiveDate = ed,
+            Remark = dto.Remark,
+            IsActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim(),
+            Status = "1",
+            UpdatedAt = now,
+            CreatedDate = now, CreatedBy = by,
+            LogLUDateTime = now, LogLUBy = by,
+        };
+        db.PartPrices.Add(p);
+        await db.SaveChangesAsync();
+        // (3) Trả về đúng shape DataSet nguồn (PartPriceID = Id tự tăng).
+        return Results.Ok(new
+        {
+            PartPriceID = p.Id, PartID = p.PartCode, Price = p.Price,
+            DateEffect = p.EffectiveDate.ToString("yyyy-MM-dd"), p.Remark, p.IsActive,
+            note = "Nguon: Ser_Mst_PartPrice_Create (WS:24873) -> Ser_Mst_PartPrice_Create (Inventory.cs:553). INSERT dong MOI, ghi du 4 cot nhat ky, KHONG guard trung. Doi ve client nguon dung double.Parse(strPriceOut) theo culture tien trinh (bay #844) — Mini tra so da luu.",
+        });
+    }).RequireAuthorization();
+    // ===== 🔴 #934 `Ser_Mst_PartPrice_Delete` (LIVE, `BizCarSv.Inventory.cs:1507`) — CHƯA TỪNG có đường xoá =====
 // Nguồn xoá MỀM (`IsActive` → Inactive, không xoá cứng) theo `PartPriceID`, với HAI guard:
 //   1) Mốc giá phải tồn tại và đang Active (`Ser_PartPrice_NotActive`).
 //   2) CHẶN xoá nếu phụ tùng tương ứng đang `FlagInTST = Active` **và** `IsActive = Active` trong `Ser_Mst_Part`
@@ -111151,6 +111196,9 @@ record PartPriceImportRowDto(string? PartCode, string? PartName, decimal? Price,
 // #1568: `Ser_Mst_PartPrice_Update` (WS:24873) -> `Ser_Mst_PartPrice_Update` (Inventory.cs:742).
 //   Nguồn nhận strPartPriceID + strPartID + strPriceOut + strDateEffect + strRemark + strIsActive.
 record PartPriceUpdateDto(string? PartCode, decimal? Price, DateTime? EffectiveDate, string? Remark, string? IsActive);
+// #1592: `Ser_Mst_PartPrice_Create` (WS:24873) -> `Ser_Mst_PartPrice_Create` (Inventory.cs:553).
+//   Nguồn nhận strPartID + strPriceOut + strDateEffect + strRemark + strIsActive (KHÔNG có PartName/VAT/Status).
+record PartPriceCreateDto(string? PartCode, decimal Price, DateTime? EffectiveDate, string? Remark, string? IsActive);
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate, string? TradeMarkCode = null, int? ProductYear = null);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate,
     string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
