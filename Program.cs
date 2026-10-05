@@ -21347,11 +21347,22 @@ app.MapPost("/api/pdi/dtl/update-repair", async (
 //    THUẬT TOÁN tính để một vòng riêng — không bịa công thức.
 // ✅ Nguồn `_Create` XOÁ theo OrderPlanNo trước khi ghi (delete-then-insert) ⇒ idempotent;
 //    khác `HR_SalesManOfMonth` (#141) vốn không xoá và nhân đôi khi chạy lại.
-app.MapGet("/api/orderplanhtmv", async (AppDbContext db, ITenantContext t, string? no, string? flagIsMonth) =>
+// 🔴 #5698 GAP THẬT — màn tìm kiếm `FrmBCDuBaoDatHangHTMV` (`Views/Report/`, CHUA_CO trong manifest) gọi
+//   `SalesService.Ord_OrderPlan_HTMV_Get(reportType, code, dateFrom, dateTo)` → WS `Ord_OrderPlan_HTMV_Get`
+//   (`WSHTC.asmx.cs:92368`) → biz `Ord_OrderPlan_HTMV_GetX` (`zTemp.0.30.Order.cs:8975`, dùng chung bởi
+//   wrapper Main `:9200` và WH `:9326`). Client tự dựng `strWhereClause` từ 4 tham số:
+//     `FlagIsMonth = @reportType` · `OrderPlanNo = @code` · `CreatedDate >= @dateFrom 00:00:00` ·
+//     `CreatedDate <= @dateTo 23:59:59` — lọc theo **`CreatedDate`**, KHÔNG phải `PeriodDate`.
+//   Route GET đã có (#144) THIẾU đúng 2 bộ lọc ngày này — bổ sung `dateFrom`/`dateTo` cho đủ 4 bộ lọc nguồn.
+app.MapGet("/api/orderplanhtmv", async (AppDbContext db, ITenantContext t, string? no, string? flagIsMonth,
+    DateTime? dateFrom, DateTime? dateTo) =>
 {
     var q = db.OrdOrderPlanHtmvs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.OrderPlanNo.Contains(no!));
     if (!string.IsNullOrWhiteSpace(flagIsMonth)) q = q.Where(x => x.FlagIsMonth == flagIsMonth);
+    // #5698: nguồn lọc CreatedDate (ngày TẠO kế hoạch), khớp [dateFrom 00:00:00, dateTo 23:59:59].
+    if (dateFrom is DateTime df) q = q.Where(x => x.CreatedDate >= df.Date);
+    if (dateTo is DateTime dt) q = q.Where(x => x.CreatedDate <= dt.Date.AddDays(1).AddTicks(-1));
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
         x.OrderPlanNo, x.PeriodDate, x.FlagIsMonth, x.CreatedDate, x.CreatedBy, x.UpdateDTime, x.UpdateBy,
         x.LogLUDateTime, x.LogLUBy,
