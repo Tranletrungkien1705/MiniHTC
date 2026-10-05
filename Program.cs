@@ -72091,6 +72091,75 @@ app.MapGet("/api/reports/paymentloan-bank-market-sum01", async (
     await BankMarketSum01Async(db, t, "paymentloan", dateOpenFrom, dateOpenTo, dealerCode, bankCode,
         guaranteeType, flagIsHTC, null, isGetDetail, isGetSum, isGetDealer)).RequireAuthorization();
 
+// ===== #5736 TỈ LỆ NGÂN HÀNG CHO VAY END-USER — `FrmBaoCaoTiLeNganHangChoVayEndUser` (2010.HTC, CHUA_CO) =====
+// Nguồn: `ReportService.Rpt_DLSDealLoanEUBankMarketSum_01_Main` → WS cùng tên (WSHTC.asmx.cs:92860,
+//   KHÔNG có overload `_New...` khác — dispatch thẳng) → biz `Rpt_DLSDealLoanEUBankMarketSum_01X`
+//   (`BizHTC.Report.cs:29778`). SQL: `DLS_Deal`(SalesType≠'F7', BankCode is not null) join `Dls_DealDetail`
+//   (đếm số XE/deal) + `Mst_Bank` (tên NH) — CHỈ 3 bảng, KHÔNG macro phức tạp — bounded.
+// ✅ Công thức `BankPercent = Cast(Qty as float)/Cast(QtyAll as float)*100` dùng THẲNG, KHÔNG
+//   IsNull/case bảo vệ chia-0 (3 biến thể có guard đều bị comment) — nhưng chia-0 KHÔNG THỂ xảy ra cấu trúc:
+//   `#tbl_Root` (và do đó mọi (bank,month) được tính) luôn xuất phát từ `#tbl_Dls_DealDetail` có ít nhất
+//   1 dòng, nên `QtyAll` (gộp theo tháng, không theo bank) luôn ≥ 1 cho bất kỳ tháng nào xuất hiện.
+// 🔴 Tab "Chi tiết" của form (`Rpt_DLSDealDetailLoanEUBankMarketSum_01_Main`) phức tạp hơn NHIỀU: ~16 bảng
+//   (DLS_Deal/Dls_DealDetail/Car_Car/Car_VIN/Mst_Dealer/Mst_Province×3/DLS_DealerCustomer×2/Mst_District×2/
+//   Mst_Area×2/Mst_Bank/CT_PackingList/DLS_Deal tự-nối/`Dlr_ContractDtl`/Mst_CarSpec) và cần
+//   `Dlr_ContractDtl` (entity CHƯA CÓ trong MiniHTC) — KHÔNG BOUNDED, ghi nợ, không port tab này.
+app.MapGet("/api/reports/dlsdeal-loan-eu-bankmarketsum01", async (
+    AppDbContext db, ITenantContext t,
+    DateTime? dealDateFrom, DateTime? dealDateTo, string? bankCode, string? dealerCode) =>
+{
+    var from = (dealDateFrom ?? new DateTime(1900, 1, 1)).Date;
+    var to = (dealDateTo ?? new DateTime(2100, 1, 1)).Date;
+
+    var deals = await db.DealerDeals.Where(d => d.OrgId == t.OrgId
+        && d.SalesType != "F7" && d.BankCode != null
+        && d.DealDate >= from && d.DealDate < to.AddDays(1)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(bankCode))
+        deals = deals.Where(d => string.Equals(d.BankCode, bankCode!.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+        deals = deals.Where(d => string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+
+    var dealIds = deals.Select(d => d.Id).ToHashSet();
+    // #tbl_Dls_DealDetail: 1 dòng cho MỖI (CarId, DealNo) — đếm số XE của từng deal.
+    var carCountByDeal = (await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId).ToListAsync())
+        .Where(x => dealIds.Contains(x.DealId))
+        .GroupBy(x => x.DealId)
+        .ToDictionary(g => g.Key, g => g.Count());
+
+    var rows = deals
+        .Where(d => carCountByDeal.ContainsKey(d.Id))     // inner join Dls_DealDetail — deal không xe thì KHÔNG vào #tbl_Dls_DealDetail
+        .Select(d => new { d.BankCode, MonthKey = new DateTime(d.DealDate.Year, d.DealDate.Month, 1), Qty = carCountByDeal[d.Id] })
+        .ToList();
+
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(b => b.BankCode, StringComparer.OrdinalIgnoreCase);
+
+    var totalAllByMonth = rows.GroupBy(r => r.MonthKey).ToDictionary(g => g.Key, g => g.Sum(x => x.Qty));
+    var sumRows = rows.GroupBy(r => (r.BankCode, r.MonthKey))
+        .Select(g => new { bankCode = g.Key.BankCode, monthOpen = g.Key.MonthKey, qty = g.Sum(x => x.Qty) })
+        .OrderBy(x => x.monthOpen)
+        .Select(x =>
+        {
+            var qtyAll = totalAllByMonth.GetValueOrDefault(x.monthOpen);
+            banks.TryGetValue(x.bankCode ?? "", out var mb);
+            return new
+            {
+                bankCode = x.bankCode, bankName = mb?.BankName, monthOpen = x.monthOpen,
+                qty = x.qty, qtyAll,
+                // 🔴 GIỮ ĐÚNG công thức nguồn: chia thẳng, KHÔNG IsNull/case — xem ghi chú header.
+                bankPercent = (decimal)x.qty / (decimal)qtyAll * 100m
+            };
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        count = sumRows.Count,
+        Rpt_DLSDealLoanEUBankMarketSum_01 = sumRows,
+        detailTabNotPortedNote = "Tab 'Chi tiet' cua form (Rpt_DLSDealDetailLoanEUBankMarketSum_01_Main) can Dlr_ContractDtl (CHUA CO trong MiniHTC) + ~16 bang join (DLS_DealerCustomer x2, Mst_Province x3, Mst_District x2, Mst_Area x2...) - KHONG BOUNDED, GHI NO, khong port.",
+        noDivideByZeroGuardNote = "Cong thuc nguon 'BankPercent = Cast(Qty as float)/Cast(QtyAll as float)*100' dung THANG, KHONG IsNull/case bao ve chia-0 (ba bien the co guard deu bi comment) - nhung chia-0 KHONG THE xay ra CAU TRUC: #tbl_Root (va do do moi (bank,month) duoc tinh) luon xuat phat tu #tbl_Dls_DealDetail co it nhat 1 dong, nen QtyAll (gop theo thang, khong theo bank) luon >= 1 cho bat ky thang nao xuat hien."
+    });
+}).RequireAuthorization();
+
 // ===== #B370 LỊCH SỬ SỬA KHÁCH HÀNG ĐẠI LÝ — `Rpt_SupportDealerCustomerHistory_WH`
 //       (`TERP.BizHTC/DMS40/zTemp.Report.cs:11157`) =====
 // **3B khớp cả 2 máy — `zTemp.Report.cs` KHÔNG lệch offset (15713 dòng cả 2 máy)**:
