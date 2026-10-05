@@ -72252,6 +72252,42 @@ app.MapGet("/api/reports/car-allocation-by-area-realtime", async (
     });
 }).RequireAuthorization();
 
+// ===== #5684 BÁO CÁO TỒN KHO HTC — `FrmTonkhoHTC` (2010.HTC, CHUA_CO trong manifest) =====
+// Nguồn: `ReportService.ReportTonKhoHTC(bool dataWH)` → WS `RptStockInHTC`/`RptStockInHTC_WH`
+//   (`TERP.WSHTC.64/WSHTC.asmx.cs:28118/73961`) → biz LIVE `RptStockInHTC_New20181115`
+//   (`BizHTC.Report.cs:2940`, chạy `_dbMain`) / `RptStockInHTC_WH_New20181119`
+//   (`Biz.HTC.WH.cs:158629`, chạy `_dbWH`) — **CÙNG MỘT SQL**, chỉ khác DB thực thi:
+//     `select cc.ModelCode, cc.ColorCode, cc.SpecCode, count(cc.CarId) Total from Car_Car cc
+//      where cc.VIN is not null and cc.DealerCode = 'HTC'
+//        and cc.CarId not in (select cdod.CarId from Car_DeliveryOrderDetail cdod where cdod.DeliveryOutDate is not null)
+//      group by cc.ModelCode, cc.ColorCode, cc.SpecCode`
+// Guard duy nhất: `myCommon_CheckHTCDirect(Active)` (quy ước `flagDirect` toàn repo).
+// 📌 Mini MỘT CSDL (không tách Main/WH) ⇒ tham số `dataWH` của nguồn không còn ý nghĩa — MỘT route,
+//   kết quả giống nhau dù nguồn gọi nhánh nào (cùng mẫu đã ghi ở #296/#1544).
+// 📌 `Car_Car` → `CarVinMaster` (CarId/VIN/ModelCode/ColorCode/SpecCode/DealerCode đã có đủ §12);
+//   `Car_DeliveryOrderDetail` → `DeliveryOrderCar` (CarId/DeliveryOutDate đã có đủ, xem #175).
+// ⚠️ Nguồn KHÔNG lọc `FlagActive` — giữ đúng, không tự thêm lọc để tránh bịa thêm điều kiện nguồn không có.
+app.MapGet("/api/reports/tonkho-htc", async (AppDbContext db, ITenantContext t, string? flagDirect) =>
+{
+    if (flagDirect == "0") return Results.BadRequest(new { error = "CommonAppData_HTCDirectInvalid" });
+    var deliveredCarIds = await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.CarId != null && x.DeliveryOutDate != null)
+        .Select(x => x.CarId!).Distinct().ToListAsync();
+    var cars = await db.CarVinMasters
+        .Where(c => c.OrgId == t.OrgId && c.DealerCode == "HTC" && c.VIN != "").ToListAsync();
+    var items = cars.Where(c => c.CarId == null || !deliveredCarIds.Contains(c.CarId))
+        .GroupBy(c => new { c.ModelCode, c.ColorCode, c.SpecCode })
+        .Select(g => new { g.Key.ModelCode, g.Key.ColorCode, g.Key.SpecCode, Total = g.Count() })
+        .OrderBy(x => x.ModelCode, StringComparer.Ordinal).ThenBy(x => x.ColorCode, StringComparer.Ordinal).ThenBy(x => x.SpecCode, StringComparer.Ordinal)
+        .ToList();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        singleDbNote = "#5684: nguon co 2 ham (Main/WH) chay CUNG SQL tren 2 DB khac nhau qua tham so dataWH cua ReportTonKhoHTC; Mini 1 DB nen ca hai nga cho CUNG ket qua — khong tach route.",
+        sourceNoFlagActiveFilter = "#5684: nguon KHONG loc FlagActive tren Car_Car — giu dung, khong tu them dieu kien nguon khong co.",
+    });
+}).RequireAuthorization();
+
 // ===== #B361 LỊCH SỬ ĐỔI MÀU XE — `Rpt_CarColorChangeHistory_WH`
 //       (vỏ `TERP.BizHTC/DMS40/zTemp.Report.cs:10641` → `Rpt_CarColorChangeHistoryX`,
 //        `TERP.BizHTC/DataWH/Biz.HTC.WH.cs:195750`) =====
