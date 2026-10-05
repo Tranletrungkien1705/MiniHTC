@@ -15069,6 +15069,9 @@ app.MapGet("/api/msteventypes", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #5668 — Mst_Quater (`BizHTC.Marketing.cs:12697-12906`). Nguồn CHỈ có `_Get`+`_CheckDB`, không Save —
+// master DBA nạp (cùng mẫu `#5556`/`#5564`/`#5636`/`#5644`). Toàn bộ `BizHTC.Marketing.cs` chỉ tham
+// chiếu đúng 1 cột `QuaterCode` (grep xác nhận) — không có Name/StartDate/EndDate nào bị bỏ sót.
 app.MapGet("/api/mstquaters", async (AppDbContext db, ITenantContext t, string? quaterCode) =>
 {
     var qy = db.MstQuaters.Where(x => x.OrgId == t.OrgId);
