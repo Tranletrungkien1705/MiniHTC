@@ -71409,32 +71409,51 @@ app.MapGet("/api/reports/report-cardocreq", async (
 
     // 🔴 Toàn bộ chuỗi bổ sung là LEFT JOIN ⇒ giữ dòng kể cả khi thiếu hồ sơ/bảo lãnh.
     var carIds = cars.Where(v => v.CarId != null).Select(v => v.CarId!).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var vins = cars.Select(v => v.VIN).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    // 🔴 #B375 GAP-FIX: điều kiện "NOT IN ('R','C')" của nguồn nằm trong ON của cdrd (Car_DocReqDtl =
+    //   CarDocRequestCar.DRDtlStatus) — KHÔNG phải trên cdrl (Car_DocReqList = CarDocRequest.Status/DRListStatus,
+    //   không lọc trạng thái trong hàm này). Bản port trước lọc NHẦM field (reqs.Status) ⇒ sửa lại đúng chỗ.
     var reqCars = (await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId).ToListAsync())
-        .Where(c => carIds.Contains(c.CarId)).ToList();
+        .Where(c => carIds.Contains(c.CarId) && c.DRDtlStatus != "R" && c.DRDtlStatus != "C").ToList();
     var reqs = (await db.CarDocRequests.Where(r => r.OrgId == t.OrgId).ToListAsync())
-        .Where(r => r.Status != "R" && r.Status != "C")           // NOT IN ('R','C') — đặt trong ON ở nguồn
         .ToDictionary(r => r.Id);
     var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    // ⭐ #B375 GAP-FIX: Pmt_GuaranteeDetail/Pmt_Guarantee/Mst_Bank nay DA DU entity (BankGuaranteeDtl/
+    //   BankGuarantee/MstBank) — đóng nợ cũ, nối đủ chuỗi pgd (GuaranteeDetailStatus NOT IN ('R','C'), đặt
+    //   trong ON) -> pg -> mb.
+    var pgds = (await db.BankGuaranteeDtls.Where(d => d.OrgId == t.OrgId
+            && d.GuaranteeDetailStatus != "R" && d.GuaranteeDetailStatus != "C").ToListAsync())
+        .Where(d => vins.Contains(d.VIN))
+        .GroupBy(d => d.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var guarantees = (await db.BankGuarantees.Where(g => g.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(g => g.Id);
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(b => b.BankCode);
 
     var byCar = reqCars.GroupBy(c => c.CarId).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
 
     var rows = cars.Select(v =>
     {
-        var rc = v.CarId != null && byCar.TryGetValue(v.CarId, out var lst)
-            ? lst.FirstOrDefault(x => reqs.ContainsKey(x.RequestId)) : null;
+        var rc = v.CarId != null && byCar.TryGetValue(v.CarId, out var lst) ? lst.FirstOrDefault() : null;
         var head = rc != null && reqs.TryGetValue(rc.RequestId, out var h) ? h : null;
+        pgds.TryGetValue(v.VIN, out var pgd);
+        BankGuarantee? pg = pgd != null && guarantees.TryGetValue(pgd.GuaranteeId, out var gg) ? gg : null;
+        MstBank? mb = pg?.BankCode != null && banks.TryGetValue(pg.BankCode, out var bk) ? bk : null;
         return new
         {
             v.VIN, v.CarId, v.DealerCode, v.ModelCode, v.SpecCode, v.ColorCode,
             v.MortageEndDate, v.MortageStartDate,
-            StatusMortageEnd = (string?)null,                     // ⚠️ NỢ
+            StatusMortageEnd = v.StatusMortageEnd,
             CDRLDRListCode = head?.RequestNo,
             CDRLCreatedDate = head?.CreatedAt,
-            CDRDDRDtlStatus = head?.Status,
-            // ⚠️ NỢ — KHÔNG ĐOÁN: Pmt_GuaranteeDetail / Pmt_Guarantee / Mst_Bank chưa đủ.
-            PGDDateStart = (DateTime?)null, PGDGuaranteeNo = (string?)null,
-            PGBankCode = (string?)null, MBBankName = (string?)null,
+            CDRDDRDtlStatus = rc?.DRDtlStatus,
+            PGDDateStart = pgd?.DateStart,
+            PGDGuaranteeNo = pg?.GuaranteeNo,
+            PGBankCode = pg?.BankCode,
+            MBBankName = mb?.BankName,
             MCSSpecDescription = v.SpecCode != null && specs.TryGetValue(v.SpecCode, out var sp) ? sp.SpecDesc : null
         };
     }).ToList();
@@ -71447,7 +71466,7 @@ app.MapGet("/api/reports/report-cardocreq", async (
         inputGuardNote = "GUARD DAU VAO DUNG: 'if (From > To) throw Rpt_ReportCarDocReq_InvalidInput_CVMortageEndDate'; va khi de trong thi mac dinh DateMin/DateMax => CHO PHEP TIM TRANG (khac #B371 bat buoc khoa tra cuu).",
         rbacHoleNote = "LO RBAC to hop (2): @strBUPatternOfUser DUOC BIND nhung DEM DUNG 1 LAN trong ca ham - chinh la dong bind => SQL KHONG DUNG; va grep NAM TRUC CON LAI => 0 HIT. Tra TOAN BO ho so xe + SO BAO LANH / NGAN HANG BAO LANH cua moi dai ly. KHONG TU BIT.",
         leftJoinChainNote = "TOAN BO chuoi bo sung la LEFT JOIN (Car_Car -> Car_DocReqDtl -> Car_DocReqList -> Pmt_GuaranteeDetail -> Pmt_Guarantee -> Mst_Bank -> Mst_CarSpec) => GIU NGUYEN DONG ke ca khi thieu ho so/bao lanh - NGUOC HAN #B371 (noi hai inner join lam mat dong im lang). Hai dieu kien loc trang thai dat TRONG ON (cdrd.DRDtlStatus NOT IN (R,C), pgd.GuaranteeDetailStatus NOT IN (R,C)) => DUNG CHO, khong bien left thanh inner. 'DROP TABLE #tbl_Car_VIN_Filter;' duoc viet DAY DU, khong comment (khac #B350/#B359). Thread.Sleep(4000) - khong port.",
-        debtNote = "NO - KHONG DOAN: Car_VIN.StatusMortageEnd, Pmt_Guarantee*, Mst_Bank.BankName chua du => cot bao lanh de NULL; de nghi giao ho so lay tu CarDocRequest/CarDocRequestCar da port."
+        gapFixNote = "#B375 DONG NO (2026-10-06): Car_VIN.StatusMortageEnd, Pmt_Guarantee*, Mst_Bank.BankName NAY DA DU entity (BankGuaranteeDtl/BankGuarantee/MstBank) => noi du chuoi. KEM SUA BUG: ban port truoc loc SAI field - gan dieu kien NOT IN('R','C') cho reqs.Status (cdrl/DRListStatus, nguon KHONG loc o day) thay vi reqCars.DRDtlStatus (cdrd, dung cho trong ON). CDRDDRDtlStatus truoc gan nham = head?.Status (header), nay doi dung = rc?.DRDtlStatus (dong xe)."
     });
 }).RequireAuthorization();
 
