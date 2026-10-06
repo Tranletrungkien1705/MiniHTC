@@ -28574,10 +28574,30 @@ app.MapGet("/api/report/warranty-chart", async (AppDbContext db, ITenantContext 
         .Select(g => new { month = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) })
         .OrderBy(x => x.month).ToList();
 
+    // #5776: "_ByArea"/"_ByModelB" nguon join Mst_VINModelOrginal theo tien to VIN (4 HOAC 5 ky tu).
+    // Khac bai tap nguon (left join + "or" => nguon dem MOT BCBH HAI LAN khi ca hai tien to deu khop):
+    // o day uu tien tien to 5 ky tu, chi lay DUNG MOT dong moi VIN de khong dem trung.
+    var vinLookups = await db.VinModelOrginalMsts.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1")
+        .Select(x => new { x.VINCode, x.ModelCode, x.OrginalCode }).ToListAsync();
+    var vinLookupByCode = vinLookups.ToDictionary(x => x.VINCode, x => x);
+    var withOrginal = joined.Select(c =>
+    {
+        var vin = c.Vin ?? "";
+        var m5 = vin.Length >= 5 ? vinLookupByCode.GetValueOrDefault(vin.Substring(0, 5)) : null;
+        var m4 = m5 ?? (vin.Length >= 4 ? vinLookupByCode.GetValueOrDefault(vin.Substring(0, 4)) : null);
+        return new { c.DealerCode, c.Amount, orginalCode = m4?.OrginalCode, modelB = m4?.ModelCode };
+    }).ToList();
+    var byArea = withOrginal.GroupBy(x => x.orginalCode)
+        .Select(g => new { orginalCode = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) })
+        .OrderBy(x => x.orginalCode).ToList();
+    var byModelB = withOrginal.GroupBy(x => x.modelB)
+        .Select(g => new { modelB = g.Key, count = g.Count(), amount = g.Sum(x => x.Amount) })
+        .OrderBy(x => x.modelB).ToList();
+
     return Results.Ok(new
     {
         fromDate = from, toDate = to,
-        byDealer, byModel, byMonth,
+        byDealer, byModel, byMonth, byArea, byModelB,
         // ===== #655 =====
         mechanismBehindTheCommonCenterStory = "tim ra CO CHE: StringUtils.Replace(sql, @strDBName_CommonCenter., dbAction == _dbDealer ? [<DBName_Main>].[dbo]. : chuoi RONG) => chay tren _dbDealer thi GOI CHEO sang Main, chay tren _dbWH/_dbMain thi doc CUC BO; day chinh la loi giai thich cho chuoi quan sat #619/#621/#624/#625/#636/#652",
         reinforcesRetractionInIssue619 = "cung co them phan RUT LAI o #619: @strDBName_CommonCenter KHONG he la mot DB rieng — no chi la TIEN TO TUY CHON, va gia tri duy nhat tung duoc gan la ten DB Main",
@@ -28589,16 +28609,18 @@ app.MapGet("/api/report/warranty-chart", async (AppDbContext db, ITenantContext 
         debugLinesAreCommentedHere = "AM TINH: dong -- select \"\" #tbl_x,* from #tbl_x o day DA duoc comment — NGUOC voi #654 noi dong tuong tu con ACTIVE va van tra ve client",
         unionAllAggregationIsCorrect = "AM TINH: khoi union all gop tien phu tung va tien cong roi sum() theo ROWID — hop le, khong nhan doi (moi nhanh chi dong gop cot cua minh)",
         dateGroupingUsesIso = "CONVERT(varchar(10)/(7), CreatedDate, 126) de gom ngay/thang — style 126 ISO nen thu tu chuoi = thu tu thoi gian",
-        sourceReturnsFourTables = "nguon tra BON bang: …_ByDealer, …_ByMonth, …_ByArea, …_ByModelB; port dung hai (byDealer, byModel)",
+        sourceReturnsFourTables = "nguon tra BON bang: …_ByDealer, …_ByMonth, …_ByArea, …_ByModelB; port du CA BON (xem byArea/byModelB duoi day, bo sung #5776)",
         // #5742 SUA LAI LY DO NO (ban ghi cu "_ByArea thieu vi MiniHTC chua mo hinh hoa VUNG" SAI —
         // doc toan van BizCarSv.ZTemp.cs:910-1199 (V20.2023.Release.V2) xac nhan "_ByArea" KHONG phai
         // dia ly/Mst_Area: la "t.Orginal" = mvo.OrginalCode lay qua left join Mst_VINModelOrginal (bang
-        // tra cuu XUAT XU theo tien to VIN — vd HMC/HMI/HTMV), MOT bang Mini CHUA CO entity nao tuong
-        // duong. "_ByModelB" dung CUNG join nay (mvo.ModelCode) nen chung 1 nguyen nhan chan. Join con
-        // biet la BUGGY o nguon (left join VOI "or" 2 do dai tien to VIN => 1 BCBH bi dem HAI LAN, xem
-        // #655 vinPrefixJoinThirdCaseButLeftJoin) — neu port sau nay PHAI tu sua loi dem trung nay,
-        // KHONG port y nguyen. "_ByMonth" da BO SUNG o #5742 (xem truong byMonth duoi day).
-        byAreaByModelBBlockedReason = "can entity Mst_VINModelOrginal (VINCode prefix -> OrginalCode/ModelCode) CHUA TON TAI trong Mini; them entity nay la hang muc MASTER DATA moi (can man quan tri rieng), khong phai sua report don thuan — ghi NO cho fire dau tu rieng",
+        // tra cuu XUAT XU theo tien to VIN — vd HMC/HMI/HTMV). "_ByModelB" dung CUNG join nay
+        // (mvo.ModelCode) nen chung 1 nguyen nhan chan.
+        // #5776 MO NO: ly do chan cu da STALE — entity nay DA TON TAI tu #726 (`VinModelOrginalMst`,
+        // `/api/vinmodelorginalmsts`, Program.cs:44299) duoi dang danh muc quan tri rieng, chi la bao
+        // cao nay chua tung noi (JOIN) toi. Port duoi day dung dung VinModelOrginalMst, va SUA loi dem
+        // trung cua nguon (left join voi "or" 2 do dai tien to VIN => 1 BCBH bi dem HAI LAN, xem #655
+        // vinPrefixJoinThirdCaseButLeftJoin): uu tien khop tien to 5 ky tu truoc, chi lay DUNG MOT dong
+        // moi VIN (khong port y nguyen loi nguon).
     });
 }).RequireAuthorization();
 
