@@ -110177,6 +110177,121 @@ app.MapGet("/api/reports/pivot-ordsalesdetail-by-htcv-invoice", async (
         preVinCarNote = "Mini CarVinMaster khoa theo VIN => xe Car_Car chua map VIN (cv NULL) khong mo hinh duoc; nguon van tra cac xe nay voi VIN NULL (#5800)."
     });
 });
+// ===== #5802 BÁO CÁO PIVOT HĐ HTCV THEO THÁNG — `Frm2019_RptPivot_VATHTCVInvoice_ByMonth` =====
+// Trace: menu `MDI_ID_REPORT_PIVOT_VATHTCVINVOICE_FORMONTH` (560, FrmMain.cs:805 SỐNG) → `ReportService.
+//   RptPivot_VATInvoice_ByMonth(from,to)` → WS64 → `_biz.RptPivot_VATInvoice_ByMonth` (2021.1.TCMotor
+//   `TERP.BizHTC/BizHTC.Report.cs:23699`, MỘT overload duy nhất, không có `_NewYYYYMMDD`). Trước #5802 Mini
+//   KHÔNG có route. Guard ToDate quá khứ + RBAC CheckHTCDirect đều bị COMMENT như các báo cáo HTCV khác.
+// Đối chiếu từng dòng:
+//   · 🔴 `strToDate` CHỈ build tham số, KHÔNG dùng trong bất kỳ WHERE nào (dòng lọc `<= @strToDate` bị
+//     comment) ⇒ `toDate` KHÔNG lọc gì cả, port vẫn nhận tham số nhưng ghi rõ bị bỏ qua.
+//   · #tbl_Filter: INNER JOIN VAT_HTCInvoiceDetail (CHỈ status 'F') + VAT_HTCInvoice + Car_Car (inner theo VIN,
+//     xe chưa map Car_Car ⇒ loại) với `HTCInvoiceDate >= FromDate`. KHÔNG distinct ⇒ VIN có ≥2 hoá đơn 'F' thoả
+//     ⇒ #tbl_Filter có ≥2 dòng cho VIN đó.
+//   · SELECT chính: với MỖI dòng #tbl_Filter, INNER JOIN LẠI *TOÀN BỘ* VAT_HTCInvoiceDetail theo VIN (status
+//     not in R,C — rộng hơn 'F' của bước lọc) rồi INNER JOIN VAT_HTCInvoice (status not in R,C) ⇒ NHÂN BẢN kép:
+//     1 VIN có k dòng 'F' làm #tbl_Filter × m dòng chi tiết sống (P/A/F) của VIN đó ⇒ k×m dòng ra báo cáo.
+//     Port giữ nguyên tích này, trả `rowMultiplicity` để thấy xe nào phình.
+//   · HTCInvoiceMonth = left(HTCInvoiceDate, 7) (chuỗi ISO) — port dùng `ToString("yyyy-MM")`.
+//   · dci (DutyCompletePercent/DutyCompletedDate) join theo VIN+CarId — dùng lại helper chung #5800.
+app.MapGet("/api/reports/pivot-vathtcvinvoice-by-month", async (
+    AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
+{
+    var from = fromDate?.Date ?? DateTime.MinValue;
+
+    // #tbl_Filter: inner join vhd(status='F', HTCInvoiceDate>=from) + vh + Car_Car(inner theo VIN) — KHÔNG distinct.
+    var vinsAll = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null && c.CarId != "")
+        .Select(c => c.VIN).Distinct().ToListAsync();
+    var dtlF = await db.VatHtcInvoiceDetails.Where(d => d.OrgId == t.OrgId && d.HTCStatusDetail == "F"
+        && vinsAll.Contains(d.VIN)).Select(d => new { d.VIN, d.HTCInvoiceCode }).ToListAsync();
+    var hdrByCode = (await db.VatHtcInvoices.Where(h => h.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(h => h.HTCInvoiceCode).ToDictionary(g => g.Key, g => g.ToList());
+    var filterVins = new List<string>();
+    foreach (var d in dtlF)
+        if (hdrByCode.TryGetValue(d.HTCInvoiceCode, out var hs))
+            foreach (var h in hs)
+                if (h.HTCInvoiceDate != null && h.HTCInvoiceDate >= from) filterVins.Add(d.VIN);
+
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null && c.CarId != "")
+        .ToListAsync()).GroupBy(c => c.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    // SELECT chính: mỗi dòng #tbl_Filter × TOÀN BỘ vhd(status not R/C) của VIN đó × vh(status not R/C).
+    var dtlLive = await db.VatHtcInvoiceDetails.Where(d => d.OrgId == t.OrgId
+        && d.HTCStatusDetail != "R" && d.HTCStatusDetail != "C").ToListAsync();
+    var dtlLiveByVin = dtlLive.GroupBy(d => d.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+    var hdrLive = (await db.VatHtcInvoices.Where(h => h.OrgId == t.OrgId
+        && h.VatHTCStatus != "R" && h.VatHTCStatus != "C").ToListAsync())
+        .GroupBy(h => h.HTCInvoiceCode).ToDictionary(g => g.Key, g => g.ToList());
+
+    var carsForDci = filterVins.Where(cars.ContainsKey).Select(v => cars[v]).ToList();
+    var dci = await DutyCompletedInfoAsync(db, t.OrgId, carsForDci);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = (await db.MstCarColors.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => (s.ModelCode, s.ColorCode)).ToDictionary(g => g.Key, g => g.First());
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var areas = (await db.Areas.Where(a => a.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(a => a.AreaCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = new List<object>();
+    var multiplicity = new Dictionary<string, int>();
+    foreach (var vin in filterVins)
+    {
+        if (!cars.TryGetValue(vin, out var c)) continue;   // inner join Car_Car — không map ⇒ loại
+        var dtls = dtlLiveByVin.TryGetValue(vin, out var dl) ? dl : new();
+        int n = 0;
+        foreach (var d in dtls)
+        {
+            if (!hdrLive.TryGetValue(d.HTCInvoiceCode, out var hs)) continue;
+            foreach (var h in hs)
+            {
+                n++;
+                colors.TryGetValue((c.ModelCode ?? "", c.ColorCode ?? ""), out var col);
+                specs.TryGetValue(c.ActualSpec ?? "", out var sp);
+                dealers.TryGetValue(c.DealerCode ?? "", out var dl2);
+                MstProvince? pv = null; Area? ar = null;
+                if (dl2?.ProvinceCode != null) provinces.TryGetValue(dl2.ProvinceCode, out pv);
+                if (pv?.AreaCode != null) areas.TryGetValue(pv.AreaCode, out ar);
+                var dciRow = dci.TryGetValue(c.CarId!, out var dlst)
+                    ? dlst.FirstOrDefault(x => string.Equals(x.VIN, vin, StringComparison.OrdinalIgnoreCase))
+                    : default;
+
+                rows.Add(new
+                {
+                    h.HTCInvoiceNo, VIN = vin, c.CarId, c.ModelCode,
+                    SpecDescription = sp?.SpecDesc,
+                    c.SOCode, c.ColorCode,
+                    col?.ColorExtCode, col?.ColorIntCode,
+                    VN_COLOR_NAME_COMBIND = col == null || col.ColorExtNameVN == null || col.ColorIntNameVN == null
+                        ? null : col.ColorExtNameVN + "/" + col.ColorIntNameVN,
+                    c.DealerCode,
+                    DealerName = dl2?.DealerName,
+                    AreaName = ar?.AreaName,
+                    DutyCompletePercent = dciRow.VIN != null ? dciRow.Pct : (decimal?)null,
+                    DutyCompletedDate = dciRow.VIN != null ? dciRow.DoneDate : null,
+                    h.HTCInvoiceDate,
+                    HTCInvoiceMonth = h.HTCInvoiceDate?.ToString("yyyy-MM"),
+                    TOTAL = 1
+                });
+            }
+        }
+        if (n > 0) multiplicity[vin] = multiplicity.TryGetValue(vin, out var ex) ? ex + n : n;
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        rowMultiplicity = multiplicity.Where(kv => kv.Value > 1).ToDictionary(kv => kv.Key, kv => kv.Value),
+        toDateIgnoredNote = "strToDate chi build tham so, dieu kien '<= @strToDate' bi comment o nguon => KHONG loc gi (#5802).",
+        doubleJoinNote = "Mot VIN co k dong HTCStatusDetail='F' lam #tbl_Filter, roi join lai TOAN BO chi tiet song (P/A/F) cua VIN do => k x m dong (#5802)."
+    });
+});
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
