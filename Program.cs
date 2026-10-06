@@ -13681,52 +13681,55 @@ app.MapGet("/api/seqcommon", async (AppDbContext db, ITenantContext t) =>
 // 📌 Bề mặt KPI của nguồn có **9 WebMethod**: Create · Update · Approved · Get · Get_Real · Get_WH ·
 //   Get_Real_WH · Create_AutoAllDealer · Create_AutoDealer. Lượt này port **bản ghi + Create/Get**;
 //   duyệt (`Approved`) và hai job tự sinh theo đại lý là **NỢ ĐÃ KHAI**.
-// ===== 🔴 #410 BỘ LỌC TRẠNG THÁI CỦA MÀN DANH SÁCH KPI **KHÔNG BAO GIỜ CHẠY** =====
-// TRACE: `FrmReportDisplay_KPI` (`:336`, `:759`) → `DBSerReportKPI.RptKPIGet` (`:230`) → WS `RptKPIGet`
-//   (`WSCarSv.asmx.cs:13471`) → biz `RptKPIGet` (`Service.Report.cs:4391`) → **`RptKPIGetWithParams`**
-//   (`:4527` — hàm `private` chứa toàn bộ SQL; bản `RptKPIGet` chỉ là vỏ bọc gán tên hàm/mã lỗi).
-//
-// 🔴 **LỖI THẬT**: form gọi với `Constants.Flag.Active`, mà `Flag.Active = "1"` (`Const.Main.cs:28`) —
-//   một giá trị **TRẦN, không có toán tử**. Biz đưa thẳng vào `SqlUtils.BuildClause("and", "t.Status", "1", …)`.
-//   Đọc thân `BuildClause` (`CommonUtils/DataUtils.cs:1074`): nó nhận diện tiền tố `=` `!=` `>=` `<=` `>` `<`
-//   `LIKE` `NOT LIKE` `IS NULL` `IS NOT NULL` `IN` `NOT IN`. Không khớp cái nào ⇒ `nCase` giữ **0**,
-//   **không nhánh nào chạy**, hàm trả `""` ⇒ **mệnh đề lọc biến mất, không lỗi, không log**.
-//   ⇒ Màn danh sách tưởng đang lọc "chỉ báo cáo còn hiệu lực" nhưng thật ra **trả về MỌI trạng thái**,
-//     kể cả bản đã huỷ. So sánh: `RptYear`/`RptMonth` được tầng service ghép `"=" +` nên **có** chạy.
-//     Ba tham số, ba số phận khác nhau, trong cùng một lời gọi.
-//   📌 MiniHTC **giữ bộ lọc hoạt động** (mặc định) vì bỏ đi là chặn hồi quy bản port trước; muốn tái hiện
-//     đúng nguồn thì truyền `statusFilter=source`. Cả hai chiều đều báo cờ, không im lặng.
-//
-// 🔴 **HAI PHÉP NỐI ẨN, cả hai đều LOẠI BỎ DÒNG mà màn hình không hề nói**:
-//   1. `join mst_Dealer dl on t.DealerCode = dl.DealerCode **and dl.FlagDealerHTC = '1'**`
-//      ⇒ báo cáo của đại lý **ngoài mạng lưới HTC** có trong bảng nhưng **không hiện**.
-//   2. `join sys_user u on t.RptBy = u.UserCode **and t.DealerCode = u.DealerCode**` — nối TRONG.
-//      ⇒ người lập báo cáo **nghỉ việc / bị xoá / CHUYỂN SANG ĐẠI LÝ KHÁC** thì **cả dòng KPI biến mất**
-//        khỏi danh sách, dù báo cáo vẫn nằm nguyên trong CSDL và có thể đã được duyệt.
-//        Đây là mất dữ liệu **lúc ĐỌC**: không ai xoá gì cả, chỉ là không còn nhìn thấy.
-//
-// ⚠️ Thứ tự nguồn: `order by t.RptYear, CAST(t.RptMonth AS INT)` — tháng lưu **CHỮ** nhưng sắp **SỐ**
-//   (sắp theo chữ sẽ ra 1, 10, 11, 12, 2…). ⚠️ Và nếu có bản ghi `RptMonth` không phải số thì `CAST`
-//   **ném lỗi và cả truy vấn hỏng** — không phải một dòng sai, mà là màn hình trắng.
-// ⚠️ `BuildClause` gọi `.ToUpper()` trên **cả chuỗi điều kiện lẫn giá trị tham số** ⇒ so sánh luôn ở dạng
-//   HOA. Giá trị lưu dạng thường trong CSDL sẽ **không khớp**.
-// ⚠️ Mọi chỉ tiêu số đều bọc `isnull(...,0)` ⇒ NULL và 0 **trả về giống hệt nhau**. Nghĩa là khác biệt
-//   NULL-hay-0 giữa lệnh TẠO (#403) và lệnh SỬA (#404) **không nhìn thấy được qua endpoint này**;
-//   nó chỉ lộ ra ở các báo cáo tổng hợp khác. Ghi lại để khỏi tưởng #404 đã tự hết.
-// ⚠️ Tham số `strDealerCode` của tầng service là **THAM SỐ CHẾT**: thân hàm bỏ qua nó và luôn truyền
-//   `"=" + SystemGlobal.strDealerCode` (phiên đăng nhập). Hiện các nơi gọi đều truyền đúng giá trị đó
-//   nên chưa gây sai; nhưng ai đó lọc theo đại lý khác sẽ **âm thầm nhận dữ liệu đại lý mình**.
+// ===== 🔴 #5774 SỬA LẠI TWIN #410: trace cũ bám màn ĐÃ CHẾT, không phải màn Mini đang port =====
+// Phát hiện qua 3 agent đọc toàn văn (2026-10-06): khối `#410` gốc trace `FrmReportDisplay_KPI` →
+//   `DBSerReportKPI.RptKPIGet` → bảng `Rpt_KPI` (khuôn GJ/BP). Nhưng `FrmMain.cs:583-586` (CẢ `V20` và
+//   `V20.2023.Release.V2`) CHO THẤY `MDI_ID_REPORTCREATE_KPI`/`REPORTDISPLAY_KPI`/... bị **COMMENT HẾT**
+//   khỏi menu — switch-case còn (`:1374-1390`) nhưng KHÔNG AI CHẠM TỚI được từ UI ⇒ **CHẾT**. Menu CÒN
+//   SỐNG duy nhất (`:587`, `MDI_ID_REPORT_KPI_NEW`) mở `FrmReportKPI` — màn DÙNG BẢNG `Report_KPI`
+//   (khuôn BDD/SCC/SCD/SCS, ĐÚNG khuôn entity `ReportKpi` Mini đang có ~90 cột). Twin #410 gốc SAI MÀN.
+// TWIN ĐÚNG: `FrmReportKPI.cs:914/919` → `ReportKPIService.cs:83-115` (`Report_KPIGet`) → WS
+//   `Report_KPIGet` (`WSCarSv.asmx.cs:27986`) → biz `Report_KPIGet` (`BizCarSv.zzzzCode.cs:4460`, vỏ bọc)
+//   → **`Report_KPIGet_WithParams_New20221101`** (`:4132-4459`, SQL thật). (`FrmReportKPI` còn gọi
+//   `Report_KPIGet_Real_New20221101` ở nhánh khác — hàm đó TÍNH TRỰC TIẾP từ Ser_RO/Ser_Engineer/
+//   Ser_Cavity/Mst_Param, KHÔNG đụng bảng `Report_KPI` — không áp dụng cho entity này, không port.)
+// Đối chiếu lại 5 điểm của twin cũ với TWIN ĐÚNG (xem toàn SQL `zzzzCode.cs:4178-4389`):
+//   (a) **Lọc trạng thái**: cơ chế KHÁC — form KHÔNG truyền `Flag.Active="1"` trần, mà truyền thẳng `""`
+//       (`FrmReportKPI.cs:914/919`) ⇒ `BuildClause` nhận chuỗi rỗng, tự trả `""` ngay từ đầu (không phải
+//       do không khớp toán tử). **Kết quả giống nhau**: lọc trạng thái KHÔNG BAO GIỜ chạy ở màn sống —
+//       không phải bug, mà là màn chưa từng cho người dùng lọc theo trạng thái. Port giữ nguyên: mặc định
+//       KHÔNG lọc (đúng nguồn), `status=...` là tiện ích THÊM của Mini (nguồn UI không có), `statusFilter`
+//       không còn ý nghĩa phân nhánh nguồn/Mini vì chỉ có 1 hành vi nguồn — bỏ khỏi API phía dưới.
+//   (b) Nối ẩn `mst_Dealer.FlagDealerHTC='1'`: **CÓ THẬT** ở twin đúng (`:4384`) — giữ nguyên hành vi Mini.
+//   (c) Nối TRONG ẩn `sys_user` theo `(CreatedBy=UserCode, DealerCode=DealerCode)`: **CÓ THẬT** ở twin đúng
+//       (`:4380-4382`, cột nguồn là `CreatedBy` không phải `RptBy`) — giữ nguyên hành vi Mini.
+//   (d) ❌ **KHÔNG CÒN ÁP DỤNG**: twin đúng KHÔNG CÓ `order by`/`CAST(RptMonth AS INT)` nào (đọc hết SQL
+//       `:4178-4389`, 0 ORDER BY) — tháng lấy bằng `CONVERT(INT, SUBSTRING(DateReport,6,2))` trong SELECT,
+//       không phải order-by nên không có rủi ro "ném lỗi cả truy vấn". Bug mô tả thuộc màn ĐÃ CHẾT. Việc
+//       Mini tự sắp theo năm/tháng + đẩy tháng không-phải-số xuống cuối là TIỆN ÍCH TỰ THÊM (nguồn không
+//       sắp gì cả) — giữ lại vì hợp lý, chỉ sửa lại bản chất: không phải "tái hiện đúng nguồn".
+//   (e) `.ToUpper()` trong `BuildClause`: **CÓ THẬT** ở twin đúng (cùng `DataUtils.cs:1084`, áp dụng khi
+//       lọc dealer/khác) — giữ nguyên hành vi Mini.
+//   (f) `isnull(...,0)` phủ mọi chỉ tiêu số: **CÓ THẬT** ở twin đúng (`:4198-4366`) — giữ nguyên ghi chú.
+//   (g) ❌ **KHÔNG CÒN ÁP DỤNG**: `strDealerCode` ở twin đúng **ÁP DỤNG ĐÚNG** qua
+//       `strDealerCodeConditionList`/`BuildClause` (`:4392`) — KHÔNG phải tham số chết. Ghi chú "tham số
+//       chết" cũ sai do bị gán nhầm từ màn khác (thật ra `Report_KPIGet_Real` có 1 tham số chết khác,
+//       `strListShellCode` bị ghi đè bởi config session ở `:2628` — nhưng hàm đó không liên quan bảng
+//       `Report_KPI`/entity này, không áp dụng ở đây).
+// 📌 Bài học: khi 1 cụm WinForm có "Create/Display pair" trùng tên nhóm, PHẢI tự kiểm `FrmMain.cs` còn
+//   menu-case SỐNG hay bị comment-out TRƯỚC khi trace sâu — tên nghe "mới hơn" không đảm bảo là bản chạy.
 app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? dealer, string? status,
-    long? autoId, string? year, string? month, string? statusFilter) =>
+    long? autoId, string? year, string? month) =>
 {
     var qy = db.ReportKpis.Where(x => x.OrgId == t.OrgId);
     if (autoId.HasValue) qy = qy.Where(x => x.Id == autoId.Value);
     if (!string.IsNullOrWhiteSpace(dealer)) qy = qy.Where(x => x.DealerCode == dealer!.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(year)) qy = qy.Where(x => x.RptYear == year!.Trim());
     if (!string.IsNullOrWhiteSpace(month)) qy = qy.Where(x => x.RptMonth == month!.Trim());
-    // `statusFilter=source` ⇒ tái hiện đúng nguồn: BỎ QUA bộ lọc trạng thái.
-    var statusDropped = string.Equals(statusFilter, "source", StringComparison.OrdinalIgnoreCase);
-    if (!statusDropped && !string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
+    // #5774: màn sống (`FrmReportKPI`) luôn truyền trạng thái RỖNG cho biz ⇒ KHÔNG BAO GIỜ lọc theo trạng
+    // thái ở nguồn (không phải bug BuildClause như twin #410 cũ tưởng — xem comment phía trên). `status`
+    // dưới đây là TIỆN ÍCH MINI THÊM (nguồn UI không có lựa chọn này), không phải tái hiện hành vi nguồn.
+    if (!string.IsNullOrWhiteSpace(status)) qy = qy.Where(x => x.Status == status);
 
     var all = await qy.ToListAsync();
     var beforeJoins = all.Count;
@@ -13886,32 +13889,26 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
               + "(nguồn nối TRONG theo cả UserCode LẪN DealerCode). Báo cáo vẫn nằm trong CSDL, chỉ là "
               + "không ai nhìn thấy nữa — mất dữ liệu lúc ĐỌC, không phải lúc ghi."
             : null,
-        statusFilterApplied = !statusDropped,
-        statusFilterNote = statusDropped
-            ? "Đang tái hiện NGUỒN: bộ lọc trạng thái BỊ BỎ. Nguồn truyền Flag.Active = \"1\" (không có "
-              + "toán tử) vào BuildClause ⇒ nCase = 0 ⇒ mệnh đề biến mất, không lỗi, không log."
-            : "MiniHTC ĐANG lọc theo trạng thái. Nguồn thì KHÔNG (Flag.Active = \"1\" thiếu toán tử nên "
-              + "BuildClause bỏ qua) ⇒ màn WinForm trả về MỌI trạng thái. Truyền statusFilter=source để so.",
+        statusFilterApplied = !string.IsNullOrWhiteSpace(status),
+        statusFilterNote = "#5774: màn sống (`FrmReportKPI`) luôn truyền trạng thái RỖNG cho biz ⇒ KHÔNG "
+            + "BAO GIỜ lọc theo trạng thái ở nguồn thật (không phải bug BuildClause — ghi chú cũ bám "
+            + "nhầm màn `FrmReportDisplay_KPI` đã CHẾT, bị comment khỏi menu `FrmMain.cs`). Tham số "
+            + "`status` ở đây là tiện ích Mini thêm, không phải tái hiện lựa chọn nguồn (nguồn không có).",
         nonNumericMonths,
         nonNumericMonthNote = nonNumericMonths.Count > 0
-            ? "Có RptMonth không phải số. Nguồn sắp bằng CAST(RptMonth AS INT) ⇒ những bản ghi này làm "
-              + "CẢ TRUY VẤN ném lỗi (màn hình trắng), không phải sai một dòng. MiniHTC đẩy chúng xuống cuối."
+            ? "Có RptMonth không phải số. #5774: twin đúng (`Report_KPIGet_WithParams_New20221101`) KHÔNG "
+              + "có order-by nào theo RptMonth (lấy tháng bằng CONVERT/SUBSTRING(DateReport) trong SELECT, "
+              + "không sắp) — rủi ro 'CAST ném lỗi cả truy vấn' thuộc màn ĐÃ CHẾT, không áp dụng ở đây. "
+              + "Thứ tự năm/tháng dưới đây là tiện ích Mini tự thêm (nguồn không sắp gì)."
             : null,
         derivedComputed = new[] { "EmployeeNumber", "CavityNumber", "RptMonthText", "UserName" },
-        derivedNotComputable = new[]
-        {
-            "CountCarGJ", "CountCarBP", "CountCarService(SQL)", "AmountGJ", "AmountBP",
-            "AmountService", "AmountPart", "AmountWork", "HourWork",
-        },
-        derivedNotComputableNote = "Nguồn còn tính 9 cột tổng nữa, nhưng các cột NGUỒN của chúng "
-            + "(CountPaymentGJ/CountWarrantyGJ/CountLocalGJ/CountPaymentBP/…, AmountGJ*/AmountBP*/"
-            + "AmountPart*/AmountService*/Hour*) CHƯA có trong entity ReportKpi ⇒ không tính được. "
-            + "Lưu ý CountCarService: nguồn DẪN XUẤT bằng phép cộng, MiniHTC lại LƯU thành cột — hai "
-            + "nguồn sự thật cho cùng một con số.",
+        derivedNotApplicableNote = "#5774: nguồn CÓ 9 cột tổng GJ/BP (CountCarGJ/CountCarBP/AmountGJ/"
+            + "AmountBP/AmountService/AmountPart/AmountWork/HourWork) nhưng chúng thuộc bảng `Rpt_KPI` "
+            + "(khuôn GJ/BP) của màn `FrmReportCreate_KPI`/`FrmReportDisplay_KPI` — cặp màn này bị COMMENT "
+            + "khỏi menu (`FrmMain.cs:583-586`, cả 2 release TCMotor) ⇒ KHÔNG ÁP DỤNG cho entity `ReportKpi` "
+            + "(khuôn bảng `Report_KPI` của màn SỐNG `FrmReportKPI`). Không ghi nợ khung — không có gì để port.",
         nullFlattenedNote = "Nguồn bọc isnull(...,0) mọi chỉ tiêu ⇒ NULL và 0 trả về GIỐNG HỆT NHAU. "
             + "Khác biệt NULL-hay-0 giữa lệnh TẠO (#403) và SỬA (#404) KHÔNG nhìn thấy qua endpoint này.",
-        deadParamNote = "Tầng service có tham số strDealerCode nhưng BỎ QUA nó, luôn dùng "
-            + "SystemGlobal.strDealerCode của phiên đăng nhập — tham số chết.",
         items,
     });
 }).RequireAuthorization();
