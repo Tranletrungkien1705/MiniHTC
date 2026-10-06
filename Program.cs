@@ -111336,6 +111336,96 @@ app.MapGet("/api/dms40/search-car-for-transport-minutes", async (
             "xe (khong hau kiem dem dong nhu #5806) nen port lay DONG DAU moi bang con cho moi xe (#5818)."
     });
 }).RequireAuthorization();
+// ===== #5820 TÌM XE ĐỂ TÍNH CPTC — `FrmDMS40_2019_SearchCar_FnExp_PmDc` =====
+// Trace: mở từ `FrmDMS40_2019_NewDMS40_FnExp_Calc_FnExp_PmDc` (menu sống FrmMain.cs:2760) →
+//   `DMS40_FnExp_Calc_FnExp_PmDcService.CarCarGet_ForDMS40FnExpWH` → WS → biz `…_WH_New202100813` →
+//   `CarCarGet_ForDMS40FnExpX_New20210813` (2010.HTC `DataWH/BizHTC.zTemp.cs:40226`). Trước #5820 Mini
+//   KHÔNG có route tìm-xe cho màn tạo CPTC (chỉ có `/api/fnexpcalcs` POST nhận thẳng danh sách CarId).
+// 🔴 PHÁT HIỆN — SÁU THAM SỐ TÍNH TOÁN (`objTermDateFrom/To`, `objTermPrevDateFrom/To`, `objFnExpPercent`,
+//   `objPmtDsTCGPercent`) ĐƯỢC TRUYỀN VÀO HÀM NHƯNG KHÔNG HỀ XUẤT HIỆN TRONG SQL hay `alParamsCoupleSql`
+//   — hàm tìm xe KHÔNG tính CPTC/PDAmount, chỉ trả thông tin xe thô (SOCode, đơn giá, spec, màu). Phần
+//   tính chi phí tài chính phải nằm ở màn khác (client hoặc `…_Save`) — KHÔNG port công thức tính vào đây
+//   vì nguồn không tính ở đây; port CHỈ trả dữ liệu xe, giữ đúng phạm vi hàm thật.
+// 📌 NỢ (không bịa): `cc.UnitPriceInit` và `cc.CPTCStatus` đọc trực tiếp từ `Car_Car` — Mini `CarVinMaster`
+//   CHƯA có hai cột này (chỉ có `UnitPriceActual`). Trả `UnitPriceInit=null`; `cptcStatus` chấp nhận tham
+//   số nhưng KHÔNG LỌC được, ghi `cptcStatusNotSupportedNote`. Nguồn còn tách riêng spec/màu theo Car_Car
+//   và theo Car_VIN rồi `isnull(vin_X, car_X)` ưu tiên VIN — Mini gộp Car_Car+Car_VIN thành MỘT bản ghi
+//   `CarVinMaster` nên không còn hai nguồn để ưu tiên (giản lược đã ghi nhận nhiều lần trong grind này).
+app.MapGet("/api/dms40/search-car-for-fnexp-calc", async (
+    AppDbContext db, ITenantContext t,
+    string? dealerCode, string? flagTCG, DateTime? osodApprovedDateFrom, DateTime? osodApprovedDateTo,
+    string? cptcStatus) =>
+{
+    var q = db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode!.Trim());
+    var cars = await q.ToListAsync();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    if (!string.IsNullOrWhiteSpace(flagTCG))
+        cars = cars.Where(c => dealers.TryGetValue(c.DealerCode ?? "", out var dl) && dl.FlagTCG == flagTCG!.Trim()).ToList();
+
+    var soCodes = cars.Where(c => c.SOCode != null).Select(c => c.SOCode!).Distinct().ToList();
+    var salesOrders = (await db.SalesOrders.Where(o => o.OrgId == t.OrgId && soCodes.Contains(o.SoCode)).ToListAsync())
+        .GroupBy(o => o.SoCode).ToDictionary(g => g.Key, g => g.First());
+    var soIds = salesOrders.Values.Select(o => o.Id).ToList();
+    var soLines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && soIds.Contains(l.SalesOrderId)).ToListAsync();
+    // osod join nguồn khớp bốn cột (SOCode qua SalesOrderId, SpecCode=cc.RootSpec, ModelCode, ColorCode).
+    var lineByKey = soLines.GroupBy(l => (l.SalesOrderId, l.SpecCode ?? "", l.ModelCode, l.ColorCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.First());
+
+    if (osodApprovedDateFrom.HasValue || osodApprovedDateTo.HasValue)
+    {
+        cars = cars.Where(c =>
+        {
+            if (c.SOCode == null || !salesOrders.TryGetValue(c.SOCode, out var so)) return false;
+            if (!lineByKey.TryGetValue((so.Id, c.RootSpec ?? "", c.ModelCode ?? "", c.ColorCode ?? ""), out var l) || l.ApprovedDate == null) return false;
+            if (osodApprovedDateFrom.HasValue && l.ApprovedDate < osodApprovedDateFrom.Value) return false;
+            if (osodApprovedDateTo.HasValue && l.ApprovedDate > osodApprovedDateTo.Value) return false;
+            return true;
+        }).ToList();
+    }
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+
+    var items = cars.OrderBy(c => c.CarId).Select(c =>
+    {
+        specs.TryGetValue(c.ActualSpec ?? c.SpecCode ?? "", out var sp);
+        colors.TryGetValue((c.ModelCode ?? "", c.ColorCode ?? ""), out var col);
+        models.TryGetValue(c.ModelCode ?? "", out var mdl);
+        SalesOrder? so = c.SOCode != null && salesOrders.TryGetValue(c.SOCode, out var o) ? o : null;
+
+        return new
+        {
+            c.CarId, c.VIN, c.DealerCode, OSOSOCode = c.SOCode,
+            UnitPriceInit = (decimal?)null, c.UnitPriceActual, c.CarCancelDate,
+            SOCode = c.SOCode, SOType = so?.OrderType,
+            c.ModelCode, ModelName = mdl?.ModelName,
+            c.ColorCode, ColorIntName = col?.ColorIntName, ColorIntNameVN = col?.ColorIntNameVN,
+            ColorExtName = col?.ColorExtName, ColorExtNameVN = col?.ColorExtNameVN,
+            COLOR_INT_EXT_EN = col == null ? null : col.ColorExtName + "/" + col.ColorIntName,
+            COLOR_INT_EXT_VN = col == null ? null : col.ColorExtNameVN + "/" + col.ColorIntNameVN,
+            SpecCode = c.ActualSpec ?? c.SpecCode, SpecDescription = sp?.SpecDesc, AssemblyStatus = sp?.AssemblyStatus
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        calcParamsNotUsedHereNote = "objTermDateFrom/To, objTermPrevDateFrom/To, objFnExpPercent, " +
+            "objPmtDsTCGPercent duoc truyen vao ham nguon nhung KHONG xuat hien trong SQL - ham tim xe nay " +
+            "KHONG tinh CPTC/PDAmount, chi tra du lieu xe tho; khong bia cong thuc vao day (#5820).",
+        unitPriceInitDebtNote = "cc.UnitPriceInit doc truc tiep tu Car_Car trong nguon; CarVinMaster Mini " +
+            "chua co cot nay (chi co UnitPriceActual) - tra null, khong lay nham tu SalesOrderLine (#5820).",
+        cptcStatusNotSupportedNote = "cc.CPTCStatus chua co tren CarVinMaster - cptcStatus chap nhan tham so " +
+            "nhung KHONG LOC duoc (#5820)."
+    });
+}).RequireAuthorization();
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
