@@ -2864,6 +2864,12 @@ public sealed class Reception
     public string? D_F_SpearTireStatus { get; set; }
     public string? R_F_BatteryOfCarStatus { get; set; }
     public string? D_F_BatteryOfCarStatus { get; set; }
+    // ===== 🔴 #1606 §12 — cột nguồn `Ser_ReceptionF.E_BodyPaintFilePath` (ĐƠN, KHÔNG phải cặp R_/D_) =====
+    // Bản LIVE `Ser_ReceptionF_ReceptionX` (`BizCarSv.Tab.cs:9994`, gọi từ `Ser_ReceptionF_Reception_New20210704`
+    // `:6597` — WS LIVE `WSCarSv.asmx.cs`) INSERT **MỘT** cột `E_BodyPaintFilePath` (giá trị `strE_BodyPaintFilePath`),
+    // KHÁC bản CHẾT `Ser_ReceptionF_ReceptionX_New20180917` (`:9212`) dùng CẶP `R_E_BodyPaintFilePath`/`D_E_BodyPaintFilePath`.
+    // Port cũ chỉ có cặp R_/D_ (theo bản chết) ⇒ mất cột LIVE. 3B: cả hai cây đều có cột đơn này.
+    public string? E_BodyPaintFilePath { get; set; }
 }
 
 /// <summary>#355 Dòng kiểm tra xe lúc tiếp nhận / giao (Ser_ReceptionFDtl). Khoá nguồn = (ReceptionFNo, ReceptionFAudCode, ReceptionFAudType).

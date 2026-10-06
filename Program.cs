@@ -93912,7 +93912,9 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
         R_D_FrontLeftWheelStatus = RcpFlag(dto.R_D_FrontLeftWheelStatus), R_D_FrontRightWheelStatus = RcpFlag(dto.R_D_FrontRightWheelStatus),
         R_D_BackLeftWheelStatus = RcpFlag(dto.R_D_BackLeftWheelStatus), R_D_BackRightWheelStatus = RcpFlag(dto.R_D_BackRightWheelStatus),
         R_E_BodyPaintFilePath = (dto.R_E_BodyPaintFilePath ?? "").Trim(), R_F_SpearTireStatus = RcpFlag(dto.R_F_SpearTireStatus),
-        R_F_BatteryOfCarStatus = RcpFlag(dto.R_F_BatteryOfCarStatus)
+        R_F_BatteryOfCarStatus = RcpFlag(dto.R_F_BatteryOfCarStatus),
+        // #1606 cot nguon E_BodyPaintFilePath (DON) — ban LIVE Ser_ReceptionF_ReceptionX ghi thang strE_BodyPaintFilePath.
+        E_BodyPaintFilePath = (dto.E_BodyPaintFilePath ?? "").Trim()
     };
     db.Receptions.Add(r);
     foreach (var d in dto.Ser_ReceptionFDtl ?? new())
@@ -111482,7 +111484,9 @@ record ReceptionDto(string? PlateNo,
     string? R_D_BackRightWheelStatus = null,
     string? R_E_BodyPaintFilePath = null,
     string? R_F_SpearTireStatus = null,
-    string? R_F_BatteryOfCarStatus = null);
+    string? R_F_BatteryOfCarStatus = null,
+    // #1606 cot nguon Ser_ReceptionF.E_BodyPaintFilePath (DON, ban LIVE Ser_ReceptionF_ReceptionX).
+    string? E_BodyPaintFilePath = null);
 record ReceptionFDtlDto(string? ReceptionFAudCode,
     string? ReceptionFAudType,
     string? ReceptionAudStatus = null,
