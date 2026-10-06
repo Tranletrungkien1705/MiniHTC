@@ -204,6 +204,21 @@ public sealed class SalesMan
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+/// <summary>
+/// #5836 — Loại vi phạm chế tài NVBH (`Mst_ViolateType` — `Mst_ViolateType_Get`, FrmMngSalesManViolateHTC).
+/// Hai mã ĐẶC BIỆT có nghiệp vụ riêng: **"TT"** (tạm thời — bắt buộc có `ViolateDateEnd`) và
+/// **"VV"** (vĩnh viễn — CẤM có `ViolateDateEnd`; tìm kiếm theo loại này còn bị xoá bộ lọc `DealerCode`
+/// nếu người gọi không phải đại lý "HTC", xem `/api/hrsalesmanviolates`).
+/// </summary>
+public sealed class MstViolateType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ViolateTypeId { get; set; } = "";
+    public string ViolateTypeName { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+}
+
 /// <summary>PDI inspection tracking (simplified) — KHÔNG có twin WinForm 1:1: FrmMngDlr_PDIRequest đã port đúng tại DlrPdiRequest; FrmMngPDI/FrmNewPDI đã port tại HtmvPdi. Entity này là flow tổng hợp HTC-track Requested→Inspecting→Passed/Failed per VIN.</summary>
 public sealed class PdiRequest
 {
@@ -2158,6 +2173,9 @@ public sealed class SalesManViolate
     public string? SmDateOfBirth { get; set; }            // snapshot ngày sinh (HR_SalesManViolate.SMDateOfBirth)
     public string? Remark { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>#5836 — Mốc sửa gần nhất (`LogLUDateTime`/`LogLUBy`) — `HR_SalesManViolate_Update` ghi cùng lúc với 3 cột cho sửa (`ViolateDateStart/End`/`Remark`).</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>

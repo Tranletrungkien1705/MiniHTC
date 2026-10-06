@@ -83282,6 +83282,146 @@ app.MapPost("/api/salesmen/{code}/update-status", async (
     });
 }).RequireAuthorization();
 
+// ===== #5836 TÌM/SỬA CHẾ TÀI VI PHẠM NVBH — `FrmMngSalesManViolateHTC` =====
+// Trace: menu sống `FrmMain.cs:2619` → `btnSearch_Click` → `dealerService.HR_SalesManViolate_Get`
+// (`DealerService.cs:5539`, 11 tham số) → WS `HR_SalesManViolate_Get01` → biz `HR_SalesManViolate_Get01`
+// (`Biz.HTC.WH.cs:209910`, LIVE) — SQL rẽ BA NHÁNH theo `ViolateTypeId`:
+//   · RỖNG: lọc 7 tiêu chí thường, UNION THÊM mọi dòng "VV" (vĩnh viễn) của CÙNG tập NVBH (SMHyundaiCode)
+//     khớp các tiêu chí đó — không tự lọc theo ngày/số lần cho nhánh VV gộp thêm này;
+//   · "TT" (tạm thời): lọc thường, KHÔNG union gì thêm;
+//   · "VV": lọc thường, NHƯNG bộ lọc `DealerCode` bị XOÁ (bỏ qua) trừ khi NGƯỜI GỌI thuộc đại lý "HTC"
+//     (`drAbilityOfUser["DealerCode"] == "HTC"`).
+// `btnSave_Click` (sửa inline trên lưới) → `dealerService.HR_SalesManViolate_Update` → biz cùng tên
+// (`Biz.HTC.WH.cs:210788`): guard `SMCode` tồn tại+Active, `Mst_SalesMan` tồn tại+Active, `ViolateDateStart`
+// bắt buộc, PHẢI là lần vi phạm GẦN NHẤT của NVBH (so theo `SMHyundaiCode`, không phải `SMCode` — một người
+// có thể đổi `SMCode` qua các đợt), rồi rẽ theo `ViolateTypeId` của BẢN GHI ĐANG SỬA (không phải tham số
+// truyền vào — không cho đổi loại vi phạm qua route sửa):
+//   · "VV": CẤM có `ViolateDateEnd` ("Với loại vi phạm VV không được sửa ngày kết thúc!");
+//   · khác: `ViolateDateEnd` bắt buộc, PHẢI lớn hơn hôm nay, và nếu đây KHÔNG PHẢI lần vi phạm đầu tiên
+//     (`ViolateNumber != 1`) thì `ViolateDateStart` PHẢI lớn hơn `ViolateDateEnd` của lần vi phạm gần nhất
+//     TRƯỚC ĐÓ của cùng người (chuỗi chế tài không được chồng lấn).
+// 📌 NỢ (ghi rõ, không bịa): `btnCreate_Click` mở `FrmCreateSalesManViolate` — màn TẠO MỚI vi phạm — CHƯA
+//   port ở lượt này (candidate riêng, chưa tới lượt trong hàng đợi); `msmt_SMTypeName` (tên loại NVBH hiển
+//   thị qua `Mst_SalesManType`) chưa port, trả `null` thay vì bịa join.
+app.MapGet("/api/salesmanviolates", async (AppDbContext db, ITenantContext t,
+    string? smHyundaiCode, string? smName, string? identityCardNo, string? smPhoneNo, string? dealerCode,
+    int? violateNumber, string? violateTypeId, DateTime? violateDateStart, DateTime? violateDateEnd,
+    DateTime? violateDateEndFrom, DateTime? violateDateEndTo, string? callerDealerCode) =>
+{
+    var all = await db.SalesManViolates.Where(v => v.OrgId == t.OrgId).ToListAsync();
+    var smMap = (await db.SalesMen.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SalesManCode).ToDictionary(g => g.Key, g => g.First());
+
+    bool MatchCommon(SalesManViolate v, bool applyDealerCode)
+    {
+        if (!string.IsNullOrWhiteSpace(smHyundaiCode))
+        {
+            if (!smMap.TryGetValue(v.SalesManCode, out var sm) || !string.Equals(sm.SMHyundaiCode, smHyundaiCode.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+        }
+        if (!string.IsNullOrWhiteSpace(smName) && !(v.SalesManName ?? "").Contains(smName.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+        if (!string.IsNullOrWhiteSpace(identityCardNo) && v.IdentityCardNo != identityCardNo.Trim()) return false;
+        if (!string.IsNullOrWhiteSpace(smPhoneNo) && v.PhoneNo != smPhoneNo.Trim()) return false;
+        if (applyDealerCode && !string.IsNullOrWhiteSpace(dealerCode) && v.DealerCode != dealerCode.Trim()) return false;
+        if (violateNumber.HasValue && v.ViolateNumber != violateNumber.Value) return false;
+        if (violateDateStart.HasValue && (v.ViolateDateStart is null || v.ViolateDateStart.Value < violateDateStart.Value)) return false;
+        if (violateDateEnd.HasValue && (v.ViolateDateEnd is null || v.ViolateDateEnd.Value > violateDateEnd.Value)) return false;
+        if (violateDateEndFrom.HasValue && (v.ViolateDateEnd is null || v.ViolateDateEnd.Value < violateDateEndFrom.Value)) return false;
+        if (violateDateEndTo.HasValue && (v.ViolateDateEnd is null || v.ViolateDateEnd.Value > violateDateEndTo.Value)) return false;
+        return true;
+    }
+
+    var typeId = (violateTypeId ?? "").Trim();
+    List<SalesManViolate> rows;
+    if (typeId.Length == 0)
+    {
+        var final = all.Where(v => MatchCommon(v, applyDealerCode: true)).ToList();
+        // Union thêm mọi dòng "VV" của cùng tập NVBH (SMHyundaiCode) khớp 7 tiêu chí (không áp lại ngày/số lần).
+        var candidateHyundaiCodes = all.Where(v => MatchCommon(v, applyDealerCode: true))
+            .Select(v => smMap.TryGetValue(v.SalesManCode, out var sm) ? sm.SMHyundaiCode : null)
+            .Where(c => c != null).Distinct().ToHashSet();
+        var vvUnion = all.Where(v => string.Equals(v.ViolateTypeId, "VV", StringComparison.OrdinalIgnoreCase)
+            && smMap.TryGetValue(v.SalesManCode, out var sm) && candidateHyundaiCodes.Contains(sm.SMHyundaiCode));
+        rows = final.Concat(vvUnion).GroupBy(v => v.Id).Select(g => g.First()).ToList();
+    }
+    else if (string.Equals(typeId, "VV", StringComparison.OrdinalIgnoreCase))
+    {
+        // 🔴 Bộ lọc DealerCode bị XOÁ trừ khi người gọi thuộc đại lý "HTC".
+        var applyDealer = string.Equals((callerDealerCode ?? "").Trim(), "HTC", StringComparison.OrdinalIgnoreCase);
+        rows = all.Where(v => string.Equals(v.ViolateTypeId, "VV", StringComparison.OrdinalIgnoreCase) && MatchCommon(v, applyDealerCode: applyDealer)).ToList();
+    }
+    else
+    {
+        rows = all.Where(v => string.Equals(v.ViolateTypeId, typeId, StringComparison.OrdinalIgnoreCase) && MatchCommon(v, applyDealerCode: true)).ToList();
+    }
+
+    var items = rows.OrderByDescending(v => v.Id).Take(500).Select(v => new
+    {
+        v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, v.ViolateNumber,
+        v.ViolateDateStart, v.ViolateDateEnd, v.IdentityCardNo, v.PhoneNo, v.SMType, v.SmDateOfBirth, v.Remark,
+        SMHyundaiCode = smMap.TryGetValue(v.SalesManCode, out var sm2) ? sm2.SMHyundaiCode : null,
+        SMStatus = smMap.TryGetValue(v.SalesManCode, out var sm3) ? sm3.SMStatus : null,
+        msmt_SMTypeName = (string?)null,   // NỢ: Mst_SalesManType chưa port
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstviolatetypes", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.MstViolateTypes.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ViolateTypeId, x.ViolateTypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/salesmanviolates/{smCode}/{violateNumber}/update", async (
+    string smCode, int violateNumber, SalesManViolateUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = smCode.Trim().ToUpperInvariant();
+    var v = await db.SalesManViolates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code && x.ViolateNumber == violateNumber);
+    if (v is null) return Results.NotFound(new { error = "HR_SalesManViolate_CheckDB_NotExist", smCode = code, violateNumber });
+    var sm = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == code && x.Status == "1");
+    if (sm is null) return Results.BadRequest(new { error = "Mst_SalesMan_CheckDB_NotExistOrInactive", smCode = code });
+    if (dto.ViolateDateStart is null) return Results.BadRequest(new { error = "HR_SalesManViolate_Update_ViolateDateStartNotNull" });
+
+    // 🔴 Phải là lần vi phạm GẦN NHẤT của NVBH — so theo SMHyundaiCode (một người có thể đổi SMCode).
+    var smHyundaiCode = sm.SMHyundaiCode ?? "";
+    if (smHyundaiCode.Length > 0)
+    {
+        var peerCodes = await db.SalesMen.Where(x => x.OrgId == t.OrgId && x.SMHyundaiCode == smHyundaiCode).Select(x => x.SalesManCode).ToListAsync();
+        var maxViolateNumber = await db.SalesManViolates.Where(x => x.OrgId == t.OrgId && peerCodes.Contains(x.SalesManCode)).MaxAsync(x => (int?)x.ViolateNumber) ?? 0;
+        if (violateNumber != maxViolateNumber)
+            return Results.BadRequest(new { error = "HR_SalesManViolate_Update_ViolateNumberNotMatch", violateNumber, maxViolateNumber, desc = "Vi phạm này không phải là vi phạm gần nhất!" });
+    }
+
+    var now = DateTime.Now;
+    if (string.Equals(v.ViolateTypeId, "VV", StringComparison.OrdinalIgnoreCase))
+    {
+        if (dto.ViolateDateEnd is not null)
+            return Results.BadRequest(new { error = "HR_SalesManViolate_Update_ViolateDateEndNotNull", desc = "Với loại vi phạm VV không được sửa ngày kết thúc!" });
+    }
+    else
+    {
+        if (dto.ViolateDateEnd is null)
+            return Results.BadRequest(new { error = "HR_SalesManViolate_Update_ViolateDateEndNotNull", desc = "Ngày kết thúc không được trống!" });
+        if (dto.ViolateDateEnd.Value <= now)
+            return Results.BadRequest(new { error = "HR_SalesManViolate_Update_ViolateDateEndSmallThanToDay", desc = "Ngày kết thúc chế tài phải lớn hơn ngày hôm nay!" });
+        if (violateNumber != 1 && smHyundaiCode.Length > 0)
+        {
+            var peerCodes = await db.SalesMen.Where(x => x.OrgId == t.OrgId && x.SMHyundaiCode == smHyundaiCode).Select(x => x.SalesManCode).ToListAsync();
+            var lastEnd = await db.SalesManViolates.Where(x => x.OrgId == t.OrgId && peerCodes.Contains(x.SalesManCode) && x.ViolateNumber != violateNumber)
+                .OrderByDescending(x => x.ViolateNumber).Select(x => x.ViolateDateEnd).FirstOrDefaultAsync();
+            if (lastEnd is not null && dto.ViolateDateStart.Value <= lastEnd.Value)
+                return Results.BadRequest(new { error = "HR_SalesManViolate_Update_ViolateDateStartSmallThanViolateDateEnd_Last", desc = "Ngày bắt đầu phải lớn hơn ngày kết thúc vi phạm chế tài gần nhất!", lastEnd });
+        }
+    }
+
+    v.ViolateDateStart = dto.ViolateDateStart.Value;
+    v.ViolateDateEnd = dto.ViolateDateEnd;
+    v.Remark = dto.Remark;
+    v.LogLUDateTime = now; v.LogLUBy = user.Identity?.Name ?? "system";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { v.SalesManCode, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.Remark });
+}).RequireAuthorization();
+
 // Dấu ngăn của nguồn là `|`; chấp nhận thêm `,` để client hiện tại không vỡ (khác biệt CÓ Ý).
 static List<string> SplitConditionList(string? s) =>
     string.IsNullOrWhiteSpace(s)
@@ -112787,6 +112927,7 @@ record VinProfileUpdDto(string? VIN, DateTime? MortageStartDate, DateTime? Morta
 record VinInvoiceTransferredDto(string? VIN, string? InvoiceNoTransferred, DateTime? InvoiceTransferredDate);   // #B109
 record OsDealDetailConfirmWarrantyDto(string? DealNo, string? CarId, DateTime? CusConfirmedWarrantyDate);   // #B104
 record SalesManUpdateStatusDto(string? SMHyundaiCode, string? SMStatus, DateTime? SMStartDate, DateTime? SMEndDate, string? SMReason, string? SMDesc);   // #B100 - KHONG co FlagActive: biz suy tu SMStatus
+record SalesManViolateUpdateDto(DateTime? ViolateDateStart, DateTime? ViolateDateEnd, string? Remark);   // #5836
 record SalesManCreateMultiDto(string? SMCode, string? DealerCode, string? SMName, string? SMGender,
     DateTime? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,
     string? QualificationCode, string? SMSpecialized, string? SMYearExperence, DateTime? SMStartDate,
