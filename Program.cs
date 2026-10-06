@@ -110292,6 +110292,147 @@ app.MapGet("/api/reports/pivot-vathtcvinvoice-by-month", async (
         doubleJoinNote = "Mot VIN co k dong HTCStatusDetail='F' lam #tbl_Filter, roi join lai TOAN BO chi tiet song (P/A/F) cua VIN do => k x m dong (#5802)."
     });
 });
+// ===== #5804 BÁO CÁO TỒN HỒ SƠ — `Frm_RptPivotTonHoSo` =====
+// Trace: menu `MDI_ID_REPORT_PIVOT_TONHOSO` (FrmMain.cs:1630 SỐNG) → `ReportService.ReportPivotTonHoSo
+//   (storeDate,reportDate)` → WS64 → `_biz.Rpt_InvCarDocument_01` (2021.1.TCMotor `TERP.BizHTC/
+//   BizHTC.Report.cs:23374`, MỘT overload duy nhất). Trước #5804 Mini KHÔNG có route. Guard ReportDate >
+//   hôm nay CÒN SỐNG (không bị comment, khác các báo cáo HTCV khác); RBAC CheckHTCDirect bị comment.
+//   `@strBUPatternOfUser` VÀ `@HTCDealerCode` đều BIND nhưng KHÔNG xuất hiện trong SQL ⇒ không lọc phạm vi.
+// Đối chiếu từng dòng:
+//   · 🔴 #tbl_Car_VIN_Filter so StoreDate bằng `Convert(nvarchar, x, 4)` — style 4 = **"dd.mm.yy"** (2 số
+//     năm) RỒI so sánh CHUỖI (`>=`). Đây là so sánh CHUỖI theo thứ tự ngày→tháng→năm-2-số, KHÔNG phải so
+//     sánh thời gian thật (vd "01.01.26" < "31.12.25" theo chuỗi dù 01/01/2026 muộn hơn 31/12/2025 thật).
+//     Port TÁI HIỆN ĐÚNG lỗi này (so chuỗi "dd.MM.yy" ordinal), không tự sửa — ghi `storeDateCompareIsBuggyNote`.
+//   · StatusMortageEnd in ('A','F') + (MortageEndDate is null OR ='') — SELECT DISTINCT VIN.
+//   · #tbl_Car_VIN_Summary tự JOIN Car_VIN với chính nó theo VIN (vô hại, không nhân dòng) chỉ để lấy
+//     QtyInvDate = DATEDIFF(day, DRFullDocDate, ReportDate); DRFullDocDate NULL ⇒ QtyInvDate NULL.
+//   · #tbl_Car_Car_DeliveryOutDate: Sto_DlvMinutes (port `TranspDlvConfirm`+`TranspDlvConfirmCar`) inner
+//     join Car_DeliveryOrderDetail (port `DeliveryOrder`+`DeliveryOrderCar`) qua RefOrdNo=DoNo và
+//     DeliveryVIN=VIN, ConfirmStatus not in R,C; lọc DlvStartDate not null, F/TDlvMnStatus not in R,C,
+//     TranspReqType='CARTRANSPORT'. KHÔNG distinct ⇒ VIN có ≥2 biên bản thoả ⇒ LEFT JOIN sau nhân dòng.
+//   · SELECT chính: Mst_CarSpec theo SpecCode VÀ theo ActualSpec, Mst_CarModel (port `CarModelStd`),
+//     Mst_CarColor (ModelCode+ColorCode) ĐỀU LÀ INNER ⇒ xe thiếu 1 trong 4 danh mục này BỊ RỚT KHỎI BÁO CÁO
+//     (không phải filter nghiệp vụ, là tai nạn danh mục thiếu) — port giữ INNER, trả `droppedNoCatalogMatch`.
+//     `left join Car_Car cc` có mặt trong nguồn nhưng KHÔNG cột nào của `cc` xuất hiện ở SELECT ⇒ JOIN CHẾT,
+//     port bỏ qua hẳn (không ảnh hưởng kết quả vì LEFT JOIN không lọc).
+//   · ProductionYear = Year(ProductionMonth)+'-01-01' — Mini lưu ProductionMonth dạng chuỗi, lấy 4 ký tự đầu.
+//   · QtyInvDate_Range: CASE 7 nhánh theo QtyInvDate (1-60/61-120/121-180/181-360/>360/else NULL).
+app.MapGet("/api/reports/pivot-tonhoso", async (
+    AppDbContext db, ITenantContext t, DateTime? storeDate, DateTime? reportDate) =>
+{
+    var today = DateTime.Today;
+    var report = (reportDate ?? today).Date;
+    var store = (storeDate ?? new DateTime(2016, 1, 1)).Date;     // mặc định form: dateStoreDate=2016-01-01
+    if (report > today)
+        return Results.BadRequest(new { error = "Rpt_InvCarDocument_01_InvalidReportDate", reportDate = report, sysDate = today });
+
+    // 🔴 Tái hiện NGUYÊN VĂN so sánh chuỗi "dd.MM.yy" (style 4) của nguồn — KHÔNG phải so sánh thời gian thật.
+    static string D4(DateTime d) => d.ToString("dd.MM.yy", System.Globalization.CultureInfo.InvariantCulture);
+    var storeKey = D4(store);
+
+    var filterVins = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId
+            && (c.StatusMortageEnd == "A" || c.StatusMortageEnd == "F")
+            && (c.MortageEndDate == null)
+            && c.StoreDate != null)
+        .ToListAsync())
+        .Where(c => string.CompareOrdinal(D4(c.StoreDate!.Value), storeKey) >= 0)
+        .Select(c => c.VIN).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && filterVins.Contains(c.VIN)).ToListAsync())
+        .GroupBy(c => c.VIN, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
+    var loaiThungs = (await db.LoaiThungMsts.Where(l => l.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(l => l.LoaiThung).ToDictionary(g => g.Key, g => g.First());
+
+    // #tbl_Car_Car_DeliveryOutDate — không distinct, có thể nhiều dòng/VIN.
+    var dlvCars = await (from sdm in db.TranspDlvConfirmCars
+                        join hdr0 in db.TranspDlvConfirms on sdm.TranspDlvConfirmId equals hdr0.Id
+                        where sdm.OrgId == t.OrgId && filterVins.Contains(sdm.VIN)
+                              && sdm.DlvStartDate != null
+                              && hdr0.FDlvMnStatus != "R" && hdr0.FDlvMnStatus != "C"
+                              && hdr0.TDlvMnStatus != "R" && hdr0.TDlvMnStatus != "C"
+                              && hdr0.TranspReqType == "CARTRANSPORT"
+                        select new { sdm.VIN, hdr0.RefOrdNo }).ToListAsync();
+    var doNos = dlvCars.Where(x => x.RefOrdNo != null).Select(x => x.RefOrdNo!).Distinct().ToList();
+    var dos = (await db.DeliveryOrders.Where(d => d.OrgId == t.OrgId && doNos.Contains(d.DoNo)).ToListAsync())
+        .ToDictionary(d => d.DoNo);
+    var doIds = dos.Values.Select(d => d.Id).ToList();
+    var doCars = await db.DeliveryOrderCars.Where(dc => dc.OrgId == t.OrgId && doIds.Contains(dc.DoId)
+            && dc.ConfirmStatus != "R" && dc.ConfirmStatus != "C")
+        .ToListAsync();
+    var doCarsByDoIdVin = doCars.ToLookup(dc => (dc.DoId, dc.Vin.ToUpperInvariant()));
+    var deliveryOutByVin = new Dictionary<string, List<DateTime?>>(StringComparer.OrdinalIgnoreCase);
+    foreach (var x in dlvCars)
+    {
+        if (x.RefOrdNo == null || !dos.TryGetValue(x.RefOrdNo, out var d)) continue;
+        foreach (var dc in doCarsByDoIdVin[(d.Id, x.VIN.ToUpperInvariant())])
+        {
+            if (!deliveryOutByVin.TryGetValue(x.VIN, out var lst)) deliveryOutByVin[x.VIN] = lst = new();
+            lst.Add(dc.DeliveryOutDate);
+        }
+    }
+
+    var rows = new List<object>();
+    var droppedNoCatalogMatch = new List<string>();
+    foreach (var vin in filterVins)
+    {
+        var c = cars[vin];
+        if (c.SpecCode == null || !specs.TryGetValue(c.SpecCode, out var mcs)) { droppedNoCatalogMatch.Add(vin); continue; }
+        if (c.ActualSpec == null || !specs.TryGetValue(c.ActualSpec, out var mscActual)) { droppedNoCatalogMatch.Add(vin); continue; }
+        if (c.ModelCode == null || !models.TryGetValue(c.ModelCode, out var mcm)) { droppedNoCatalogMatch.Add(vin); continue; }
+        if (!colors.TryGetValue((c.ModelCode ?? "", c.ColorCode ?? ""), out var mcc)) { droppedNoCatalogMatch.Add(vin); continue; }
+        LoaiThungMst? mlt = c.LoaiThung != null && loaiThungs.TryGetValue(c.LoaiThung, out var lt) ? lt : null;
+
+        int? qtyInvDate = c.DRFullDocDate == null ? null : (int)(report - c.DRFullDocDate.Value.Date).TotalDays;
+        string? range = qtyInvDate == null ? null
+            : qtyInvDate >= 0 && qtyInvDate <= 60 ? "1-60"
+            : qtyInvDate > 60 && qtyInvDate <= 120 ? "61-120"
+            : qtyInvDate > 120 && qtyInvDate <= 180 ? "121-180"
+            : qtyInvDate > 180 && qtyInvDate <= 360 ? "181-360"
+            : qtyInvDate > 360 ? "Trên 360" : null;
+        string? prodYear = c.ProductionMonth != null && c.ProductionMonth.Length >= 4
+            ? c.ProductionMonth.Substring(0, 4) + "-01-01" : null;
+
+        var deliveryOuts = deliveryOutByVin.TryGetValue(vin, out var dl) ? dl : new List<DateTime?> { null };
+        foreach (var deliveryOut in deliveryOuts)
+        {
+            rows.Add(new
+            {
+                VIN = vin, c.SpecCode, c.ActualSpec,
+                mcs_SpecDescription = mcs.SpecDesc,
+                msc_actual_SpecDescription = mscActual.SpecDesc,
+                c.ModelCode,
+                mcm_ModelName = mcm.ModelName,
+                c.ColorCode,
+                mcc.ColorExtName, mcc.ColorExtNameVN, mcc.ColorIntName, mcc.ColorIntNameVN,
+                QtyInvDate = qtyInvDate,
+                c.TypeCB, c.LoaiThung,
+                TenLoaiThung = mlt?.TenLoaiThung,
+                c.MortageBankCode,
+                ProductionYear = prodYear,
+                DeliveryOutDate = deliveryOut,
+                QtyInvDate_Range = range,
+                c.DocumentsStatus
+            });
+        }
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows, droppedNoCatalogMatch,
+        storeDateCompareIsBuggyNote = "Nguon so StoreDate bang Convert(nvarchar,x,4)='dd.mm.yy' roi so CHUOI " +
+            "(khong phai so ngay) - port tai hien dung loi nay (#5804).",
+        innerJoinCatalogNote = "Mst_CarSpec(SpecCode) + Mst_CarSpec(ActualSpec) + Mst_CarModel + Mst_CarColor " +
+            "deu la INNER JOIN o nguon => xe thieu 1 trong 4 danh muc nay bi RUNG khoi bao cao, khong phai loc " +
+            "nghiep vu (#5804)."
+    });
+});
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
