@@ -4924,6 +4924,10 @@ public sealed class MsgDlvCarDtl
     public Guid OrgId { get; set; }
     public long MsgDlvCarId { get; set; }
     public string CarId { get; set; } = "";
+    /// <summary>#5862 — nguồn khoá trùng theo CẶP (VIN, CarId) trên `Msg_MessageDeliveryCarDtl`
+    /// (`Msg_MessageDeliveryCarCreate_ExistOther`, `BizHTC.DeliveryMess.cs:770-801`); thiếu VIN thì
+    /// không dựng lại được guard chống thông báo trùng.</summary>
+    public string? VIN { get; set; }
     public string? CarSpecCode { get; set; }
     public string? CarColorCode { get; set; }
     public DateTime? CQEndDate { get; set; }

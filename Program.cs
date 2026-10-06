@@ -42849,13 +42849,69 @@ app.MapPost("/api/msgdlvcars", async (MsgDlvCarDto dto, AppDbContext db, ITenant
     var dup = cars.GroupBy(c => c.CarId!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dup != null) return Results.BadRequest(new { error = $"CarId {dup.Key} bị trùng!" });
     var msType = dto.MsType == "C" ? "C" : "M";
-    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var h = new MsgDlvCar { OrgId = t.OrgId, MsDlvNo = "MSG" + DateTime.Now.ToString("yyMMddHHmmss"), MsDateTime = DateTime.Now, DealerCode = dto.DealerCode.Trim(), MsType = msType, MsReadStatus = "N", SendBy = by };
-    db.MsgDlvCars.Add(h); await db.SaveChangesAsync();
+    var dealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+
+    // ===== 🔴 #5862 4 GUARD thiếu, đối chiếu `Msg_MessageDeliveryCarCreate` (BizHTC.DeliveryMess.cs:484) =====
+    // 1) guard InvalidDealerCode (567-591): đại lý PHẢI tồn tại + FlagActive='1'.
+    var dealerOk = await db.Dealers.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode && x.FlagActive == "1");
+    if (!dealerOk) return Results.BadRequest(new { error = $"Đại lý '{dealerCode}' không tồn tại hoặc không hoạt động." });
+
+    var carRows = new List<CarVinMaster>();
     foreach (var c in cars)
-        db.MsgDlvCarDtls.Add(new MsgDlvCarDtl { OrgId = t.OrgId, MsgDlvCarId = h.Id, CarId = c.CarId!.Trim(), CarSpecCode = c.CarSpecCode, CarColorCode = c.CarColorCode, CQEndDate = c.CQEndDate });
+    {
+        var carId = c.CarId!.Trim();
+        // 2) guard myCar_CheckCar (676-688 cho MESSAGE, 947-958 cho CANCEL): xe PHẢI tồn tại + FlagActive='1'
+        //    + DealerCode khớp; VINFreeStatus đảo chiều theo loại — MESSAGE đòi '0' (đã hết tự do, tức đã
+        //    gán/map), CANCEL đòi '1' (còn tự do). Khoá theo CarId (nguồn khoá theo Car_Car.CarId).
+        var car = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarId == carId && x.FlagActive == "1");
+        if (car is null) return Results.BadRequest(new { error = $"CarId '{carId}' không tồn tại hoặc không hoạt động." });
+        var errKeyCarIdDealer = msType == "C" ? "Msg_MessageDeliveryCarCreate_Cancel_CarIdExistOtherDealer" : "Msg_MessageDeliveryCarCreate_CarIdExistOtherDealer";
+        if (!string.Equals(car.DealerCode, dealerCode, StringComparison.OrdinalIgnoreCase))
+            return Results.BadRequest(new { error = $"CarId '{carId}' thuộc đại lý khác ('{car.DealerCode}').", errorCode = errKeyCarIdDealer });
+        var requiredVinFree = msType == "C" ? "1" : "0";
+        if (car.VINFreeStatus != requiredVinFree)
+            return Results.BadRequest(new { error = msType == "C"
+                ? $"CarId '{carId}' chưa được giải phóng (VINFreeStatus) nên không huỷ được thông báo."
+                : $"CarId '{carId}' còn tự do (VINFreeStatus), chưa thể thông báo giao xe." });
+
+        if (msType != "C")
+        {
+            // 3) guard ExistCDOD (707-738, chỉ nhánh MESSAGE): xe KHÔNG được có lệnh giao xe (LXX) còn sống
+            //    (Car_DeliveryOrderDetail.ConfirmStatus not in ('R','C')).
+            var hasLiveDo = await (from oc in db.DeliveryOrderCars
+                                   join o in db.DeliveryOrders on oc.DoId equals o.Id
+                                   where oc.OrgId == t.OrgId && oc.CarId == carId && oc.ConfirmStatus != "R" && oc.ConfirmStatus != "C"
+                                   select oc.Id).AnyAsync();
+            if (hasLiveDo) return Results.BadRequest(new { error = $"CarId '{carId}' đang có lệnh giao xe (LXX) còn hiệu lực, không thông báo lại được." });
+        }
+
+        // 4) guard ExistOther (770-801): CHƯA có thông báo khác cùng cặp (VIN, CarId) — khoá TOÀN BẢNG,
+        //    không giới hạn theo MsDlvNo (nguồn không lọc theo phiếu hiện hành).
+        if (!string.IsNullOrWhiteSpace(c.VIN))
+        {
+            var vin = c.VIN!.Trim();
+            var dupNotified = await db.MsgDlvCarDtls.AnyAsync(x => x.OrgId == t.OrgId && x.CarId == carId && x.VIN == vin);
+            if (dupNotified) return Results.BadRequest(new { error = $"CarId '{carId}' / VIN '{vin}' đã có thông báo giao xe trước đó." });
+        }
+        carRows.Add(car);
+    }
+
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var h = new MsgDlvCar { OrgId = t.OrgId, MsDlvNo = "MSG" + DateTime.Now.ToString("yyMMddHHmmss"), MsDateTime = DateTime.Now, DealerCode = dealerCode, MsType = msType, MsReadStatus = "N", SendBy = by };
+    db.MsgDlvCars.Add(h); await db.SaveChangesAsync();
+    for (int i = 0; i < cars.Count; i++)
+    {
+        var c = cars[i]; var car = carRows[i];
+        // CarSpecCode/CarColorCode DẪN XUẤT từ Car_Car/Car_VIN (dòng 704-706), không tin client.
+        db.MsgDlvCarDtls.Add(new MsgDlvCarDtl
+        {
+            OrgId = t.OrgId, MsgDlvCarId = h.Id, CarId = c.CarId!.Trim(), VIN = string.IsNullOrWhiteSpace(c.VIN) ? null : c.VIN!.Trim(),
+            CarSpecCode = car.SpecCode ?? c.CarSpecCode, CarColorCode = car.ColorCode ?? c.CarColorCode, CQEndDate = c.CQEndDate,
+        });
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.MsDlvNo, h.MsType, cars = cars.Count });
+    return Results.Ok(new { h.MsDlvNo, h.MsType, cars = cars.Count,
+        debtNote = "NO - khong bia: DateExpiredDlvCar (han TT nhan xe, +5 ngay lam viec qua Mst_Calendar) CHUA port vi phu thuoc ham lam viec f_WorkingDate_Get_01 chua co trong MiniHTC; chi ap dung cho SO Plan+Dealer-payment (dong 806-937 nguon)." });
 }).RequireAuthorization();
 
 app.MapGet("/api/msgdlvcars/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -114835,7 +114891,7 @@ record InvCarWarrantyUpdateDto(List<InvCarWarrantyUpdateRow>? Inv_CarWarranty);
 record InvCarWarrantyActiveDto(string? VIN, string? CustomerPhoneNo);
 record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
 record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);
-record MsgDlvCarLineDto(string? CarId, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate);
+record MsgDlvCarLineDto(string? CarId, string? VIN, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate);
 record ContractTypeDto(string? ContractType, string? ContractTypeDesc, string? FlagActive);
 record DOATSettingTimeDto(bool? FlagFirstRunTime, bool? FlagSecondRunTime);
 record CarHisOrderPolicyDto(string? SOCode, string CarId, string? ModelCode, string? SpecCode, string? SpecDescription, string? CrtTypeCode, string? ColorCode, string? ColorName, string OrderPolicyCode, string? OrderPolicyName, DateTime? ApprovedDate);
