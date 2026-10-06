@@ -32912,6 +32912,70 @@ app.MapPut("/api/trainingcourses/{id}/participants/{pid}", async (long id, long 
     return Results.Ok(new { p.Id, p.SMHyundaiCode, p.OrganizeDate });
 }).RequireAuthorization();
 
+// ===== #5848 NHẬP HÀNG LOẠT TỪ EXCEL (XUYÊN NHIỀU KHOÁ) — `FrmMst_TrainingDtlMng.btnApplyNew_Click` =====
+// Trace: menu sống qua `FrmMain.cs:2629` → mỗi dòng gọi `SequenceGetForDMS(TrainingDtlCode)` rồi
+// `dlService.Mst_TrainingDtl_CreateMulti(dtblTmp)` → biz `Mst_TrainingDtl_CreateMulti_New20210415`
+// (`Biz.HTC.WH.cs:194249`, LIVE). KHÁC route `/api/trainingcourses/{id}/participants` đã port trước
+// (#3401, chỉ nhận 1 khoá qua URL): màn "Mng" nhập Excel với MỖI DÒNG tự mang `TrainingCode` RIÊNG,
+// có thể trải trên NHIỀU khoá khác nhau trong CÙNG một lần nhập.
+// Guard mỗi dòng (CheckDB, Raise nếu sai) — ĐÚNG khuôn route đơn lẻ đã port, chỉ khác resolve
+// `TrainingCode` → khoá qua TỪNG DÒNG thay vì cố định theo URL:
+//   · `Mst_Training_CheckDB` (khoá tồn tại + Active);
+//   · `Mst_SalesMan_CheckDB` (NVBH tồn tại + Active);
+//   · trùng NVBH+ngày tổ chức TRÊN TOÀN HỆ THỐNG (không riêng khoá) ⇒ `_ExistOrganizeDate`.
+app.MapPost("/api/trainingparticipants/create-multi", async (
+    List<TrainingParticipantCreateMultiRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Mst_TrainingDtl_CreateMulti_TableBlank" });
+    var now = DateTime.Now;
+    var plan = new List<TrainingParticipant>();
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i];
+        var trainingCode = (r.TrainingCode ?? "").Trim();
+        var sm = (r.SMHyundaiCode ?? "").Trim();
+
+        var course = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TrainingUserCode == trainingCode);
+        if (course is null || course.FlagActive != "1") return Results.BadRequest(new { error = "Mst_Training_CheckDB_NotExistOrInactive", row = i, trainingCode });
+
+        var salesMan = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == sm);
+        if (salesMan is null || salesMan.Status != "1") return Results.BadRequest(new { error = "Mst_SalesMan_CheckDB_NotExistOrInactive", row = i, smHyundaiCode = sm });
+
+        var dup = await db.TrainingParticipants.AnyAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == sm && x.OrganizeDate == r.OrganizeDate);
+        if (dup) return Results.BadRequest(new { error = "Mst_TrainingDtl_CreateMulti_ExistOrganizeDate", row = i, smHyundaiCode = sm, organizeDate = r.OrganizeDate });
+
+        plan.Add(new TrainingParticipant
+        {
+            OrgId = t.OrgId, CourseId = course.Id,
+            TrainingDtlCode = "TDT" + now.ToString("yyMMddHHmmssfff") + i.ToString("D3"),
+            SMHyundaiCode = sm, SMName = salesMan.SalesManName,
+            OrganizeDate = r.OrganizeDate, FormalityTraining = r.FormalityTraining, Place = r.Place,
+            ResultIn = r.ResultIn, ResultOut = r.ResultOut,
+            FlagActive = r.FlagActive == "0" ? "0" : "1", UpdatedAt = now,
+        });
+    }
+    db.TrainingParticipants.AddRange(plan);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = plan.Count, trainingDtlCodes = plan.Select(p => p.TrainingDtlCode) });
+}).RequireAuthorization();
+
+// ===== #5848 XOÁ THEO MÃ BẢN GHI THẬT — `FrmMst_TrainingDtlMng.btnDelDb_Click` =====
+// Trace: `dlService.Mst_TrainingDtl_Delete(strTrainingDtlCode)` → biz `Mst_TrainingDtl_Delete_New20210415`
+// (`Biz.HTC.WH.cs:195144`, LIVE) — guard `Mst_TrainingDtl_CheckDB(..., Flag.Active)`: CHỈ xoá được bản
+// ghi ĐANG HOẠT ĐỘNG (khác `Mst_SalesManCertificate_Delete` ở #5844 không lọc Active). Route xoá cũ
+// (`DELETE /api/trainingcourses/{id}/participants/{pid}`) đòi biết TRƯỚC `CourseId` qua URL; màn "Mng"
+// chỉ có `TrainingDtlCode` (mã bản ghi thật) trong tay — thêm route riêng khớp đúng tham số nguồn.
+app.MapPost("/api/trainingparticipants/delete-by-code", async (string trainingDtlCode, AppDbContext db, ITenantContext t) =>
+{
+    var code = (trainingDtlCode ?? "").Trim();
+    var p = await db.TrainingParticipants.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TrainingDtlCode == code);
+    if (p is null || p.FlagActive != "1")
+        return Results.BadRequest(new { error = "Mst_TrainingDtl_CheckDB_NotExistOrInactive", trainingDtlCode = code });
+    db.TrainingParticipants.Remove(p);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code });
+}).RequireAuthorization();
+
 // Tiến trình tham gia khoá đào tạo — port 1:1 FrmQLTienTrinhThamGiaKhoaDT (2010.HTC/Admin/Product):
 // tra cứu lịch sử đào tạo XUYÊN KHOÁ của nhân viên (nguồn: DealerService.Mst_TrainingDtl_Get, 7 tham số lọc)
 // rồi xuất Excel. Lưới nguồn ghép Mst_Training (mã + tên khoá), Mst_SalesMan (mã + tên NV) và tên đại lý.
@@ -114308,6 +114372,7 @@ record SalesManCertificateCreateMultiRowDto(string? SMHyundaiCode, string? Certi
 record SalesManCertificateUpdateMultiRowDto(string? SMCerNo, DateTime? EffStartDate, DateTime? EffEndDate);   // #5846
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
 record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? TrainingDtlCode = null, string? SMName = null, string? FlagActive = null);
+record TrainingParticipantCreateMultiRowDto(string? TrainingCode, string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? FlagActive);   // #5848
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines, string? Remark = null);
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType, DateTime? DMReqDate = null, string? DealerCode = null, string? DRListCode = null, string? MortageBankCode = null, string? ReqRMNo = null, string? Remark = null);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
