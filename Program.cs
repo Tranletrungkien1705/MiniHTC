@@ -32846,6 +32846,60 @@ app.MapPost("/api/trainingcourses/{id}/toggle", async (long id, AppDbContext db,
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== #5852 NHẬP HÀNG LOẠT KHOÁ ĐÀO TẠO TỪ EXCEL — `FrmMst_TrainingMng.btnApplyNew_Click` =====
+// Trace: menu sống `FrmMain.cs:2626` → `dlService.Mst_Training_CreateMulti(dtblTmp)` → biz
+// `Mst_Training_CreateMulti_New20210415` (`Biz.HTC.WH.cs:192505`, LIVE). Guard mỗi dòng: `DealerCode`
+// phải tồn tại+Active (`myCommon_CheckDealer`); `TrainingUserCode` KHÔNG được trùng bản ghi đang có
+// (`Mst_Training_Create_ExistTrainingUserCode`) — kiểm riêng, khác hẳn mã nội bộ tự sinh qua Sequence
+// mà Mini KHÔNG mô hình hoá (entity `TrainingCourse` chỉ có `TrainingUserCode`, không có cột mã nội bộ
+// riêng — đã xác nhận đúng với route tạo-đơn `/api/trainingcourses` đã port trước, cùng khoá).
+app.MapPost("/api/trainingcourses/create-multi", async (
+    List<TrainingCourseDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Mst_Training_CreateMulti_TableBlank" });
+    var plan = new List<TrainingCourse>();
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i];
+        var code = (r.TrainingUserCode ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã khóa đào tạo.", row = i });
+        var dealer = (r.DealerCode ?? "").Trim();
+        var dealerOk = await db.Dealers.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.FlagActive == "1");
+        if (!dealerOk) return Results.BadRequest(new { error = "Mst_Dealer_CheckDB_NotExistOrInactive", row = i, dealerCode = dealer });
+        var dup = await db.TrainingCourses.AnyAsync(x => x.OrgId == t.OrgId && x.TrainingUserCode == code)
+                || plan.Any(p => p.TrainingUserCode == code);
+        if (dup) return Results.BadRequest(new { error = "Mst_Training_Create_ExistTrainingUserCode", row = i, trainingUserCode = code });
+        plan.Add(new TrainingCourse
+        {
+            OrgId = t.OrgId, TrainingUserCode = code, TrainingName = r.TrainingName, Department = r.Department,
+            DealerCode = dealer, TrainerCode = r.TrainerCode, TrainerName = r.TrainerName, Description = r.Description,
+            FlagActive = r.FlagActive == "0" ? "0" : "1", UpdatedAt = DateTime.Now,
+        });
+    }
+    db.TrainingCourses.AddRange(plan);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = plan.Count, trainingUserCodes = plan.Select(p => p.TrainingUserCode) });
+}).RequireAuthorization();
+
+// ===== #5852 XOÁ THEO MÃ — `FrmMst_TrainingMng.btnDelDb_Click` =====
+// Trace: `dlService.Mst_Training_Delete(strTrainingCode)` → biz `Mst_Training_Delete_New20210415`
+// (`Biz.HTC.WH.cs:193616`, LIVE) — guard `Mst_Training_CheckDB(..., Flag.Active)`: CHỈ xoá được khoá
+// ĐANG HOẠT ĐỘNG (cùng khuôn `_Delete` của `Mst_TrainingDtl`/`Mst_SalesManCertificate` — họ hàm nhất
+// quán). 🔴 Nguồn KHÔNG kiểm còn `Mst_TrainingDtl` (người tham gia) tham chiếu tới khoá hay không trước
+// khi xoá ⇒ xoá được cả khoá ĐANG CÓ người tham gia, để lại bản ghi tham gia MỒ CÔI — không bịa guard
+// tham chiếu giúp nguồn (giống #182's "xoá không guard" nhưng ở đây xác nhận đúng 1:1, không phải thiếu
+// sót do port).
+app.MapPost("/api/trainingcourses/delete-by-code", async (string trainingUserCode, AppDbContext db, ITenantContext t) =>
+{
+    var code = (trainingUserCode ?? "").Trim();
+    var row = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TrainingUserCode == code);
+    if (row is null || row.FlagActive != "1")
+        return Results.BadRequest(new { error = "Mst_Training_CheckDB_NotExistOrInactive", trainingUserCode = code });
+    db.TrainingCourses.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = code, orphanWarningNote = "Nguon KHONG kiem con Mst_TrainingDtl tham chieu - cac ban ghi tham gia cu co the mo coi CourseId, giong dung nguon (#5852)." });
+}).RequireAuthorization();
+
 app.MapGet("/api/trainingcourses/{id}/participants", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var course = await db.TrainingCourses.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
