@@ -83693,6 +83693,32 @@ app.MapGet("/api/mstviolatetypes", async (AppDbContext db, ITenantContext t) =>
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== #5854 Danh mục VÙNG — `FrmMst_Zone` (2010.HTC/Admin/Product) =====
+// Trace: menu sống `FrmMain.cs:1807` → `LoadGridView` luôn gọi `Mst_Zone_Get()` KHÔNG tham số (get-all)
+// → biz cùng tên (LIVE). `ZoneCode`/`ZoneName` READ-ONLY trên lưới (`OptionsColumn.AllowEdit = false`),
+// chỉ `FlagActive` sửa được → `btnSave_Click` → `Mst_Zone_Update(strZoneCode, strFlagActive)` → biz
+// `BizHTC.MasterData.cs:4431` → `Mst_Zone_UpdateX` (:4559, LIVE) — guard CHỈ cần tồn tại (không lọc
+// Active), ghi `FlagActive` + `LogLUDTime`/`LogLUBy` (tên cột nguồn viết TẮT, không có "ate").
+// Entity `MstZone` (#B89) ĐÃ CÓ SẴN (dùng làm bảng tra cứu cho `ZoneCode` ở nơi khác) nhưng CHƯA có
+// route riêng cho chính màn quản trị này — tái sử dụng, không tạo trùng.
+app.MapGet("/api/mstzones", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.MstZones.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.ZoneCode, x.ZoneName, x.FlagActive, x.LogLUDTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstzones/{zoneCode}/toggle-active", async (string zoneCode, string flagActive, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var code = (zoneCode ?? "").Trim();
+    var row = await db.MstZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ZoneCode == code);
+    if (row is null) return Results.NotFound(new { error = "Mst_Zone_CheckDB_NotExist", zoneCode = code });
+    row.FlagActive = (flagActive ?? "1").Trim();
+    row.LogLUDTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ZoneCode, row.FlagActive });
+}).RequireAuthorization();
+
 // ===== #5842 Danh mục LOẠI CHI PHÍ — `FrmMst_QuanLyLoaiChiPhi` (2010.HTC/Admin/Product) =====
 // Trace: menu sống `FrmMain.cs:1584` → nạp qua `BaseService.GetMasterDataTable(TBL_COST_TYPE =
 // "Mst_CostType")` → WS `CommonGetMasterData` (`WSHTC.asmx.cs:441`, dispatch LIVE tới
