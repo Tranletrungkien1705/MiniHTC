@@ -33088,6 +33088,41 @@ app.MapPost("/api/salesmancerts/create-multi", async (
     return Results.Ok(new { created = plan.Count, smCerNos = plan.Select(p => p.SMCerNo) });
 }).RequireAuthorization();
 
+// ===== #5846 SỬA NGÀY CẤP/HẾT HẠN CHỨNG CHỈ — `FrmMst_SalesManCertificateUpdate` =====
+// Trace: dialog mở từ `FrmMst_SalesManCertificateMng.btnEdit_Click` (menu sống qua màn cha, đã trace
+// ở #5844) → `btnSave_Click` LUÔN gọi `dealerService.Mst_SalesManCertificate_UpdateMulti(dtSaleMan)`
+// VỚI ĐÚNG MỘT DÒNG (API batch dùng cho cả sửa đơn lẻ) → biz cùng tên (`Biz.HTC.WH.cs:191003`, LIVE).
+// 🔴 PHÁT HIỆN — CHỈ SỬA ĐƯỢC HAI CỘT, DÙ UI GỬI NHIỀU HƠN: `DepartmentCode`/`SMType`/`CertificateCode`
+//   trên dialog đều `ReadOnly = true` VÀ trong SQL chỉ dùng làm ĐIỀU KIỆN JOIN (khớp cùng 5 cột với
+//   `SMCerNo`/`SMCode` để xác định đúng dòng — giống hệt guard của `_Delete`), KHÔNG nằm trong
+//   `SET` — chỉ `EffStartCertificate`/`EffEndCertificate` (+`LogLU*`) THỰC SỰ được ghi.
+// ⚪ `Remark` ở client bị gán cứng `DBNull.Value` trước khi gửi, nhưng biz KHÔNG hề đụng tới cột này
+//   (không có trong `StdDataInTable`, không có trong `SET`) ⇒ Remark cũ KHÔNG bị xoá — tưởng "luôn xoá
+//   remark" là SUY DIỄN SAI, đã đọc hết thân hàm để xác nhận không có tác dụng phụ này.
+// ⚪ Hai guard còn lại đều bị COMMENT TRỌN ở nguồn: "EffEndCertificate không được trống" và
+//   "ngày bắt đầu phải <= ngày kết thúc" — CHO QUA ÂM THẦM, không bịa guard giúp nguồn (giống #5844).
+app.MapPost("/api/salesmancerts/update-multi", async (
+    List<SalesManCertificateUpdateMultiRowDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Mst_SalesManCertificate_CreateMulti_TableBlank" });
+    var now = DateTime.Now;
+    var actor = user.Identity?.Name;
+    var plan = new List<SalesManCertificate>();
+    foreach (var r in rows)
+    {
+        var no = (r.SMCerNo ?? "").Trim();
+        var row = await db.SalesManCertificates.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCerNo == no);
+        if (row is null) return Results.BadRequest(new { error = "Mst_SalesManCertificate_CheckDB_NotExist", smCerNo = no });
+        if (r.EffStartDate is null) return Results.BadRequest(new { error = "Mst_SalesManCertificate_CreateMulti_InvalidEffStartCertificate", smCerNo = no });
+        plan.Add(row);
+        row.EffStartDate = r.EffStartDate;
+        row.EffEndDate = r.EffEndDate;
+        row.UpdatedAt = now; row.UpdatedBy = actor;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated = plan.Count, smCerNos = plan.Select(p => p.SMCerNo) });
+}).RequireAuthorization();
+
 app.MapPost("/api/salesmancerts", async (
     SalesManCertificateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
@@ -114270,6 +114305,7 @@ record SerStockOutOrderSvDto(string? DealerCode, DateTime? StockOutOrderTime, st
     DateTime? RequestDeliveryTime = null, string? Priority = null, string? BackOrderIndex = null, string? UserCode = null, string? CusID = null, string? QuoteID = null);   // #370
 record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive, string? SMCerNo = null, string? Remark = null);
 record SalesManCertificateCreateMultiRowDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? Remark);   // #5844
+record SalesManCertificateUpdateMultiRowDto(string? SMCerNo, DateTime? EffStartDate, DateTime? EffEndDate);   // #5846
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
 record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? TrainingDtlCode = null, string? SMName = null, string? FlagActive = null);
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines, string? Remark = null);
