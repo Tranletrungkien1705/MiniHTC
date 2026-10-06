@@ -71229,6 +71229,25 @@ app.MapGet("/api/reports/hrsalesman-typedealer", async (
     });
 }).RequireAuthorization();
 
+// ===== #5754 BÁO CÁO TỔNG HỢP SỐ LIỆU MASTER (`Rpt_MasterData_New20260514`, DMS40/zTemp.Report.cs:7341
+//       vỏ → `Rpt_MasterDataX` thân thật, cùng file:7179) — port 1:1 FrmRptMasterData, Views/Report =====
+// Trace: FrmRptMasterData.btnSearch_Click -> ReportService.Rpt_MasterData -> WS LIVE qua _New20260514.
+// SQL thân chỉ ĐỌC bảng snapshot `Rpt_MasterDataByDealer` (lọc RptType/DealerCode/AreaCode/RptMonth) rồi
+// enrich DealerName/ModelName/SpecDescription/ColorExtNameVN — 6 bảng, KHÔNG phức tạp.
+// ⚠️ GHI NỢ, KHÔNG ĐOÁN: đã grep TOÀN BỘ cây nguồn (`TERP.BizHTC*`, `RptSQLQuery.cs`, cả `Backup`/`Delete`)
+// cho "insert into Rpt_MasterDataByDealer" — 0 HIT. Mọi nơi dùng bảng này (hàm này, `Biz.HTC.WH.cs:172497`/
+// `:172771` bản _WH song sinh, `zTemp.0.30.Order.cs:8692` tính kế hoạch đặt hàng) đều CHỈ ĐỌC, không có
+// nơi nào GHI. Không có file .sql job/stored-proc nào trong repo đề cập bảng này — cơ chế nạp dữ liệu
+// (rất có thể SQL Server Agent job ngoài codebase, giống #928 Ser_Inv_PartInstance/#2104 kiểu batch-ngoài)
+// KHÔNG xác định được từ nguồn hiện có. Thêm entity rồi để trống mãi mãi (không ai ghi) sẽ VÔ NGHĨA —
+// không port cho tới khi tìm ra cơ chế nạp liệu thật (hỏi người dùng hoặc tìm trên máy 150/SQL Agent).
+app.MapGet("/api/reports/master-data", () => Results.Ok(new
+{
+    count = 0,
+    Rpt_MasterData = Array.Empty<object>(),
+    debtNote = "NO - KHONG DOAN: nguon Rpt_MasterDataByDealer (bang snapshot) KHONG co write-path nao trong toan bo cay source da grep (chi co READ) - co che nap lieu that rat co the la SQL Agent job NGOAI codebase, chua xac dinh duoc. KHONG them entity roi de rong vinh vien - cho tim ra co che nap lieu that truoc.",
+})).RequireAuthorization();
+
 // ===== #B382 ĐỐI CHIẾU HOÁ ĐƠN ĐẠI LÝ ↔ HỢP ĐỒNG — `Rpt_MatchInvDealerAndContract_WH_New20260514`
 //       (`BizHTC.Report.cs:32460` → SQL `RptSQLQuery.cs:19126`
 //        `mySql_Rpt_MatchInvDealerAndContract**V2**_New20260514()`) =====
