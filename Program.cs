@@ -68769,19 +68769,57 @@ app.MapPost("/api/dmscancelminutes/{no}/{action}", async (string no, string acti
 //                 với `BankCodeMD_Upd = DBNull.Value` ⇒ **XOÁ ngân hàng bảo lãnh MD khỏi hợp đồng**.
 //                 Đây mới là mục đích thật của "hoàn tất biên bản huỷ NH bảo lãnh".
 //   · `_FinishAndSendMail` = `_Finish` + xếp lô gửi mail ⇒ port bằng cờ `sendMail` (mail **ghi nợ**).
+//
+// ===== #5826 DUYỆT/HUỶ biên bản huỷ NH bảo lãnh MD — PHÍA NGÂN HÀNG (`FrmMngBankDMS40_DlrCtr_CancelBankMD`) =====
+// Trace: menu sống `FrmBankMain.cs:337` → `btnApprove_Click`/`btnCancel_Click` →
+//   `dms40_DlrCtr_CancelBankMDService.DMS40_DlrCtr_CancelBankMD_Approve`/`_Cancel` → WS
+//   `TERP.WSBank/App_Code/WSBank.cs:1510`/`:1570` (CHỈ một bản, không có overload `_NewYYYYMMDD`) → biz
+//   `0.34.Contract.cs:9718`/`:9935` — CẢ HAI cùng guard `CancelBankMDStatus.Pending` ("P") rồi rẽ nhánh
+//   LOẠI TRỪ: `_Approve` → "A" (ghi `ApproveDateTime`/`ApproveBy`), `_Cancel` → "C" (ghi `CancelDTime`/
+//   `CancelBy`) — CẢ HAI đều ghi thêm `RemarkBank` (CỘT RIÊNG, khác `Remark` lúc tạo và `RemarkDlr` của
+//   `_Finish`/`_Reject` — BA cột ghi chú độc lập của BA vai: đại lý tạo / ngân hàng duyệt-huỷ / đại lý
+//   xác nhận hoàn tất-từ chối).
+// 🔴 PHÁT HIỆN QUAN TRỌNG: thiếu đúng bước NÀY (P→A) khiến route `_Finish`/`_Reject` (#182, đã port trước
+//   đó, guard đòi status="A") KHÔNG BAO GIỜ CHẠY ĐƯỢC qua API — vì không có đường nào đưa biên bản từ "P"
+//   lên "A". #182 tự ghi "thiếu cả 3 lệnh" nhưng thực ra CHỈ đóng 2/3 (Reject+Finish gộp 1 route) — lệnh
+//   thứ 3 còn thiếu (Approve/Cancel, 2 action cùng 1 tầng P→{A|C}) chính là cặp này.
 app.MapPost("/api/dmscancelbankmd/{no}/{action}", async (string no, string action, CancelBankMDActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("finish" or "reject")) return Results.BadRequest(new { error = "action = finish|reject" });
+    if (action is not ("finish" or "reject" or "approve" or "cancel")) return Results.BadRequest(new { error = "action = finish|reject|approve|cancel" });
     no = no.Trim().ToUpperInvariant();
     var m = await db.DmsCancelBankMDs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CancelBankMDNo == no);
     if (m is null) return Results.NotFound(new { no });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    if (action is "approve" or "cancel")
+    {
+        // `_Approve`/`_Cancel` cùng guard: `DMS40_DlrCtr_CancelBankMD_CheckDB(..., CancelBankMDStatus.Pending)`.
+        if (m.CancelBankMDStatus != "P")
+            return Results.BadRequest(new { error = $"Biên bản đang ở '{m.CancelBankMDStatus}' — chỉ duyệt/huỷ khi đang chờ (P)." });
+        m.RemarkBank = dto?.RemarkBank;
+        m.LogLUDateTime = now; m.LogLUBy = who;
+        m.LUDTime = now; m.LUBy = who;
+        if (action == "approve")
+        {
+            m.CancelBankMDStatus = "A";
+            m.ApproveDateTime = now; m.ApproveBy = who;
+        }
+        else
+        {
+            m.CancelBankMDStatus = "C";
+            m.CancelDTime = now; m.CancelBy = who;
+        }
+        await db.SaveChangesAsync();
+        return Results.Ok(new { m.CancelBankMDNo, status = m.CancelBankMDStatus, m.DlrCtrNo, m.RemarkBank,
+            m.ApproveDateTime, m.ApproveBy, m.CancelDTime, m.CancelBy });
+    }
 
     // Cả hai lệnh cùng guard: `DMS40_DlrCtr_CancelBankMD_CheckDB(..., CancelBankMDStatus.Approved)`.
     if (m.CancelBankMDStatus != "A")
         return Results.BadRequest(new { error = $"Biên bản đang ở '{m.CancelBankMDStatus}' — chỉ hoàn tất/từ chối khi đã duyệt (A)." });
 
-    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var now = DateTime.Now;
     m.RemarkDlr = dto?.RemarkDlr;
     m.LogLUDateTime = now; m.LogLUBy = who;
     m.LUDTime = now; m.LUBy = who;      // nguồn ghi CẢ hai cặp: LogLU* (nhật ký) và LU* (sửa lần cuối)
@@ -114342,7 +114380,7 @@ record DmsCtrCancelDto(string? Remark = null);
 record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
 record CancelMinutesUpdateDto(string? FtColsUpd, string? FilePath);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
-record CancelBankMDActionDto(string? RemarkDlr = null, bool SendMail = false);
+record CancelBankMDActionDto(string? RemarkDlr = null, bool SendMail = false, string? RemarkBank = null);
 record GrtClaimCarDto(string VIN, decimal UnitPrice, string? BankCode);
 record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, List<GrtClaimCarDto>? Cars);
 record GrtClaimApproveDto(string? FileSigned = null);

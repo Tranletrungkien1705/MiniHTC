@@ -12650,6 +12650,20 @@ public sealed class DmsCancelBankMD
     /// `_Finish` và `_Reject` đều vào từ **"A"**.
     /// </summary>
     public string CancelBankMDStatus { get; set; } = "P";
+    /// <summary>
+    /// #5826 — Mốc DUYỆT bên ngân hàng (`ApproveDateTime`/`ApproveBy`), guard "P" → "A" (`_Approve`).
+    /// Đây là bước TIỀN ĐỀ bắt buộc để vào được "A" — thiếu bước này thì `_Finish`/`_Reject` (#182) không
+    /// bao giờ chạy được (guard của cả hai luôn đòi status = "A").
+    /// </summary>
+    public DateTime? ApproveDateTime { get; set; }
+    public string? ApproveBy { get; set; }
+    /// <summary>#5826 — Mốc HUỶ bên ngân hàng (`CancelDTime`/`CancelBy`), guard "P" → "C" (`_Cancel`,
+    /// nhánh loại trừ với `_Approve` — cùng vào từ "P").</summary>
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
+    /// <summary>#5826 — Ghi chú NGÂN HÀNG (`RemarkBank`) — nguồn ghi ở CẢ `_Approve` LẪN `_Cancel`,
+    /// KHÁC `Remark` (lúc tạo) và `RemarkDlr` (của `_Finish`/`_Reject`) — BA cột ghi chú độc lập.</summary>
+    public string? RemarkBank { get; set; }
     /// <summary>Mốc HOÀN TẤT (`FinishDTime`/`FinishBy`) — bước này gỡ NH bảo lãnh khỏi hợp đồng.</summary>
     public DateTime? FinishDTime { get; set; }
     public string? FinishBy { get; set; }
