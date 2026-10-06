@@ -11452,13 +11452,18 @@ app.MapPost("/api/dms40/mapvin/bo-save", async (
 //   bảng gốc sắp **`order by t.ATMVNo desc`** (mới nhất trước), khác các màn master sắp tăng dần.
 // 📌 **NỢ**: 15/17 bảng phụ chưa có thực thể trong MiniHTC ⇒ trả **mảng rỗng** kèm
 //   `tablesNotPorted`; **không bịa dữ liệu**.
+// #5768: `FrmMapVINDetail.btnSearch_Click` còn truyền `strCreateDTime` (lọc `CreateDTime` NGUYÊN NGÀY:
+// `>= ngày 00:00:00 and <= ngày 23:59:59`, `Auto_MapVIN_Get` tại `DbServices/Upgrade/
+// DMS40_Ord_SalesOrderRootService.cs:1848`) — route trước đây CHƯA nhận tham số này. Thêm đủ, giữ đúng
+// khoảng-ngày (không dùng `==`).
 app.MapGet("/api/dms40/mapvin/runs", async (
     AppDbContext db, ITenantContext t, string? atmvNo, string? atmvType,
-    string? onlyRunning, int? recordStart, int? recordCount) =>
+    DateTime? createDTime, string? onlyRunning, int? recordStart, int? recordCount) =>
 {
     var q = db.AutoMapVins.Where(a => a.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(atmvNo)) q = q.Where(a => a.ATMVNo == atmvNo.Trim());
     if (!string.IsNullOrWhiteSpace(atmvType)) q = q.Where(a => a.ATMVType == atmvType.Trim());
+    if (createDTime != null) q = q.Where(a => a.CreatedAt >= createDTime.Value.Date && a.CreatedAt < createDTime.Value.Date.AddDays(1));
     if (onlyRunning == "1") q = q.Where(a => a.ProcessDTime == null);
 
     // 🔴 order by ATMVNo DESC — mới nhất trước.
