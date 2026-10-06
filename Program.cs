@@ -110433,6 +110433,230 @@ app.MapGet("/api/reports/pivot-tonhoso", async (
             "nghiep vu (#5804)."
     });
 });
+// ===== #5806 TÌM VIN ĐỂ TẠO ĐỀ NGHỊ GIAO HÓA ĐƠN THU HỒI — `FrmCar_VIN_Get_ForRDInvoice` =====
+// Trace: không có mục menu riêng — form mở từ `FrmNewRDInvoice` (menu sống FrmMain.cs:1979) →
+//   `SalesService.SearchVinForRDInvoice(vin, typeCRR, drDtlStatus, guaranteeType)` → WS
+//   `CarVINGet_ForRDInvoice_New_WH` → `_biz.CarVINGet_ForRDInvoice_New_WH` (2010.HTC `DataWH/
+//   Biz.HTC.WH.cs:178621`) → `CarVINGet_ForRDInvoice_NewX` (:178756, SQL thật). Trước #5806 Mini KHÔNG
+//   có route. `vin` LUÔN rỗng ở màn này (form gọi `SearchVinForRDInvoice("", …)` cứng) — port vẫn nhận
+//   tham số cho đủ chữ ký nhưng ghi rõ KHÔNG màn nào thực sự truyền.
+// #tbl_Car_VIN_Filter (xe đủ điều kiện đề nghị giao HĐ thu hồi):
+//   MortageBankCode='HTC.HO' · RedeemDate có giá trị (đã giải chấp) · MortageEndDate RỖNG (chưa giao hồ sơ)
+//   · DocumentsStatus='A' · có ≥1 dòng `Car_DocReqDtl` DRDtlStatus='A2' (header `Car_DocReqList` sống)
+//   · KHÔNG có dòng `RD_ReqInvoiceDtl` sống (chưa từng xin giao hồ sơ).
+// #tbl_Car_VIN_Draft — SÁU LEFT/INNER JOIN liên tiếp, KHÔNG gom theo VIN trước khi tính `MyCount`:
+//   DocReqDtl(not R/C)×DocReqList(not R/C) INNER, BankGuaranteeDtl(not R/C)×BankGuarantee(not R/C) LEFT,
+//   VatHtcInvoiceDetail(not R/C)×VatHtcInvoice(not R/C) LEFT, VatTcgInvoiceDetail(not R/C)×VatTcgInvoice
+//   (not R/C) LEFT, CT_DealerContractDetail(not R/C) LEFT, TransportMinutesCar(not R/C) LEFT.
+// 🔴🔴🔴 **BẪY CHÍNH — `MyCount` ĐẾM TRÊN TÍCH DESCARTES CỦA CẢ SÁU JOIN, KHÔNG CHỈ DOC-REQ**: hậu kiểm
+//   `cvc.MyCount` (mặc định PHẢI =1, trừ khi `typeCRR` chứa cả "Dealer" VÀ "Special" thì được 1 HOẶC 2) chạy
+//   trên SỐ DÒNG DRAFT **TRƯỚC KHI** áp `TypeCRR`/`DRDtlStatus`/`GuaranteeType`. Một VIN có ĐÚNG 1 doc-req
+//   thoả nhưng lại có **2 dòng bảo lãnh** (hoặc 2 HĐ, 2 biên bản giao xe…) sẽ có `MyCount=2` ⇒ **BỊ LOẠI
+//   HOÀN TOÀN** dù lẽ ra hợp lệ — không liên quan gì đến số đề nghị giao hồ sơ. Port TÁI HIỆN ĐÚNG lỗi này
+//   (không gom trước), trả `excludedByMyCountGuard` để thấy VIN nào rơi vào bẫy.
+// 🔴 Nới `MyCount` chỉ khi **chuỗi tham số typeCRR chứa cả hai chữ "Dealer" và "Special"** (so khớp
+//   nguyên văn case-sensitive như nguồn — WinForm luôn gửi đúng "Dealer,Special" cho nhánh Đại lý).
+// 🔴 `PMPDGuaranteeRemain` = `GrtValue` của dòng bảo lãnh trừ tổng tiền đã thanh toán **gắn bảo lãnh**
+//   (status 'F', GuaranteeNo khác null) của CHÍNH VIN đó — không liên quan cọc thường (#B125/#B126/#B127).
+// 📌 NỢ (không bịa, trả null): `cv.CQEndDate`, `cv.CabinCONo`, `cv.InvoiceSpecName`, `cv.InvoiceFactorySearch`,
+//   `cv.InvoiceNoFactory` — bốn cột cuối trùng tên với cột trên `VAT_HTCInvoiceDetail`/`VAT_TCGInvoiceDetail`
+//   nhưng nguồn đọc từ CHÍNH `Car_VIN`, cột này Mini chưa có trên `CarVinMaster`. `cdrd.DealerCode` (đại lý
+//   ở CẤP DÒNG đề nghị) cũng chưa có trên `DocReqCar` — port tạm dùng `DealerCode` ở HEADER `DocReq` thay
+//   thế và ghi rõ đây là xấp xỉ, không phải cột gốc. Join `rrid` (RD_ReqInvoiceDtl) thứ hai trong Draft là
+//   JOIN CHẾT ở nguồn (điều kiện lọc lại `rrid.ReqIVNo is null` bị COMMENT, cột đó cũng không tồn tại) —
+//   không port.
+static IEnumerable<T?> OrNull<T>(List<T> list) where T : class => list.Count == 0 ? new T?[] { null } : list;
+
+app.MapGet("/api/reports/car-vin-for-rd-invoice", async (
+    AppDbContext db, ITenantContext t, string? vin, string? typeCRR, string? drDtlStatus, string? guaranteeType) =>
+{
+    static HashSet<string> SplitCsv(string? s) => (s ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var typeCRRSet = SplitCsv(typeCRR);
+    var drDtlStatusSet = SplitCsv(drDtlStatus);
+    var guaranteeTypeSet = SplitCsv(guaranteeType);
+    var vinFilter = (vin ?? "").Trim();
+    // Nới MyCount: so khớp NGUYÊN VĂN case-sensitive trên chuỗi tham số thô, giống nguồn (#5806).
+    var relaxMyCount = (typeCRR ?? "").Contains("Dealer") && (typeCRR ?? "").Contains("Special");
+
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId
+            && c.MortageBankCode == "HTC.HO" && c.RedeemDate != null && c.MortageEndDate == null
+            && c.DocumentsStatus == "A")
+        .ToListAsync())
+        .Where(c => vinFilter.Length == 0 || string.Equals(c.VIN, vinFilter, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+    var vins = cars.Select(c => c.VIN).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    // Loại VIN đã có đề nghị giao hồ sơ còn sống (RD_ReqInvoiceDtl not R/C).
+    var liveReqVins = (await db.RedeemInvoiceRequestLines.Where(r => r.OrgId == t.OrgId && r.VIN != null
+            && vins.Contains(r.VIN) && r.RDReqIvDtlStatus != "R" && r.RDReqIvDtlStatus != "C")
+        .Select(r => r.VIN!).ToListAsync()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var docReqHdr = (await db.DocReqs.Where(d => d.OrgId == t.OrgId && d.Status != "R" && d.Status != "C")
+        .ToListAsync()).ToDictionary(d => d.Id);
+    var docReqCarsByVin = (await db.DocReqCars.Where(x => x.OrgId == t.OrgId && vins.Contains(x.Vin)
+            && x.DRDtlStatus != "R" && x.DRDtlStatus != "C")
+        .ToListAsync()).GroupBy(x => x.Vin, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.Where(x => docReqHdr.ContainsKey(x.DocReqId)).ToList(), StringComparer.OrdinalIgnoreCase);
+
+    // #tbl_Car_VIN_Filter: phải có ≥1 dòng DRDtlStatus='A2' (riêng bước lọc này, KHÔNG dùng param).
+    var filterVins = vins.Where(v => !liveReqVins.Contains(v)
+        && docReqCarsByVin.TryGetValue(v, out var l) && l.Any(x => x.DRDtlStatus == "A2")).ToList();
+    var carByVin = cars.GroupBy(c => c.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var carIds = filterVins.Select(v => carByVin[v].CarId).Where(x => !string.IsNullOrEmpty(x)).Select(x => x!).Distinct().ToList();
+
+    var guaranteeByVin = (await (from gd in db.BankGuaranteeDtls
+                                 where gd.OrgId == t.OrgId && filterVins.Contains(gd.VIN) && gd.GuaranteeDetailStatus != "R" && gd.GuaranteeDetailStatus != "C"
+                                 join h0 in db.BankGuarantees on gd.GuaranteeId equals h0.Id into hj
+                                 from h in hj.DefaultIfEmpty()
+                                 select new { gd, h = (h != null && h.Status != "R" && h.Status != "C") ? h : null })
+        .ToListAsync()).GroupBy(x => x.gd.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+    var htcByVin = (await (from d in db.VatHtcInvoiceDetails
+                          where d.OrgId == t.OrgId && filterVins.Contains(d.VIN) && d.HTCStatusDetail != "R" && d.HTCStatusDetail != "C"
+                          join h0 in db.VatHtcInvoices on d.HTCInvoiceCode equals h0.HTCInvoiceCode into hj
+                          from h in hj.DefaultIfEmpty()
+                          select new { d, h = (h != null && h.VatHTCStatus != "R" && h.VatHTCStatus != "C") ? h : null })
+        .ToListAsync()).GroupBy(x => x.d.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+    var tcgByVin = (await (from d in db.VatTcgInvoiceDetails
+                          where d.OrgId == t.OrgId && filterVins.Contains(d.VIN) && d.TCGStatusDetail != "R" && d.TCGStatusDetail != "C"
+                          join h0 in db.VatTcgInvoices on d.TCGInvoiceCode equals h0.TCGInvoiceCode into hj
+                          from h in hj.DefaultIfEmpty()
+                          select new { d, h = (h != null && h.VatTCGStatus != "R" && h.VatTCGStatus != "C") ? h : null })
+        .ToListAsync()).GroupBy(x => x.d.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+    var contractByCar = (await db.DealerContractDetails.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarId)
+            && x.ContractDetailStatus != "R" && x.ContractDetailStatus != "C")
+        .ToListAsync()).GroupBy(x => x.CarId).ToDictionary(g => g.Key, g => g.ToList());
+
+    var transpByCar = (await db.TransportMinutesCars.Where(x => x.OrgId == t.OrgId && x.CarId != null && carIds.Contains(x.CarId)
+            && x.DtlStatus != "R" && x.DtlStatus != "C")
+        .ToListAsync()).GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.ToList());
+    var transpHdr = (await db.TransportMinutes.Where(x => x.OrgId == t.OrgId).ToListAsync()).ToDictionary(x => x.Id);
+
+    var pmpdGuaranteeSumByVin = (await (from pd in db.PmtPaymentDetails
+                                       join p in db.PmtPayments on pd.PaymentNo equals p.PaymentNo
+                                       where pd.OrgId == t.OrgId && p.OrgId == t.OrgId && p.PaymentStatus == "F"
+                                             && pd.CarId != null && carIds.Contains(pd.CarId) && pd.GuaranteeNo != null
+                                       select new { pd.CarId, pd.Amount }).ToListAsync())
+        .GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Sum(x => x.Amount ?? 0m));
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var rows = new List<object>();
+    var myCountByVin = new Dictionary<string, int>();
+    var excludedByMyCountGuard = new List<object>();
+    var today = DateTime.Today;
+
+    foreach (var v in filterVins)
+    {
+        var c = carByVin[v];
+        var cid = c.CarId ?? "";
+        var docRows = docReqCarsByVin.TryGetValue(v, out var dl) ? dl : new();
+        var grtRows = guaranteeByVin.TryGetValue(v, out var gl) ? gl : new();
+        var htcRows = htcByVin.TryGetValue(v, out var hl) ? hl : new();
+        var tcgRows = tcgByVin.TryGetValue(v, out var tl) ? tl : new();
+        var contractRows = cid.Length > 0 && contractByCar.TryGetValue(cid, out var cl) ? cl : new();
+        var transpRows = cid.Length > 0 && transpByCar.TryGetValue(cid, out var trl) ? trl : new();
+        var pmpdGrtSum = cid.Length > 0 && pmpdGuaranteeSumByVin.TryGetValue(cid, out var ps) ? ps : 0m;
+
+        var draft = new List<(DocReqCar dr, DocReq hdr, BankGuaranteeDtl? gr, BankGuarantee? grH,
+            VatHtcInvoiceDetail? hr, VatHtcInvoice? hrH, VatTcgInvoiceDetail? tr, VatTcgInvoice? trH,
+            DealerContractDetail? cr, TransportMinutesCar? pr)>();
+        foreach (var dr in docRows)
+        {
+            if (!docReqHdr.TryGetValue(dr.DocReqId, out var hdr)) continue;
+            foreach (var gr in OrNull(grtRows))
+            foreach (var hr in OrNull(htcRows))
+            foreach (var tr in OrNull(tcgRows))
+            foreach (var cr in OrNull(contractRows))
+            foreach (var pr in OrNull(transpRows))
+            {
+                draft.Add((dr, hdr,
+                    gr?.gd, gr?.h,
+                    hr?.d, hr?.h,
+                    tr?.d, tr?.h,
+                    cr, pr));
+            }
+        }
+        var myCount = draft.Count;
+        myCountByVin[v] = myCount;
+        var countOk = myCount == 1 || (relaxMyCount && (myCount == 1 || myCount == 2));
+
+        foreach (var row in draft)
+        {
+            string typeCRRVal = row.hdr.TypeCRR;
+            string drDtlStatusVal = row.dr.DRDtlStatus;
+            string? guaranteeTypeVal = row.grH?.GuaranteeType;
+            if (typeCRRSet.Count > 0 && !typeCRRSet.Contains(typeCRRVal)) continue;
+            if (drDtlStatusSet.Count > 0 && !drDtlStatusSet.Contains(drDtlStatusVal)) continue;
+            if (guaranteeTypeSet.Count > 0 && (guaranteeTypeVal == null || !guaranteeTypeSet.Contains(guaranteeTypeVal))) continue;
+            if (!countOk)
+            {
+                excludedByMyCountGuard.Add(new { VIN = v, myCount, typeCRRVal, drDtlStatusVal });
+                continue;
+            }
+            specs.TryGetValue(c.ActualSpec ?? "", out var mcs);
+            specs.TryGetValue(c.SpecCode ?? "", out var mcs2);
+            dealers.TryGetValue(row.hdr.DealerCode ?? "", out var md);
+            decimal? pmpdGuaranteeRemain = row.gr != null ? row.gr.GrtValue - pmpdGrtSum : (decimal?)null;
+            int? ngayConLai = row.gr?.DateExpired != null ? (int)(row.gr.DateExpired.Value.Date - today).TotalDays : (int?)null;
+            string? tmNo = row.pr != null && transpHdr.TryGetValue(row.pr.MinutesId, out var th) ? th.TransportMinutesNo : null;
+
+            rows.Add(new
+            {
+                c.VIN, c.PackingListNo, c.SpecCode, c.ActualSpec, c.ModelCode, c.ColorCode, c.EngineNo,
+                c.CQNo, c.CQStartDate, CQEndDate = (DateTime?)null,
+                c.CONo, c.CODate, CabinCONo = (string?)null,
+                c.DeclarationNo, c.MortageBankCode,
+                InvoiceNoFactory = (string?)null,
+                HTCInvoiceCode = row.hr?.HTCInvoiceCode, HTCInvoiceNo = row.hrH?.HTCInvoiceNo,
+                VHInvoiceIDCode = row.hrH?.InvoiceIDCode,
+                TCGInvoiceCode = row.tr?.TCGInvoiceCode, TCGInvoiceNo = row.trH?.TCGInvoiceNo,
+                VTInvoiceIDCode = row.trH?.InvoiceIDCode,
+                DealerContractNo = row.cr?.DealerContractNo,
+                CCDealerCode = c.DealerCode,
+                AC_SpecDescription = mcs?.SpecDesc, SpecDescription = mcs2?.SpecDesc,
+                PGGuaranteeNo = row.grH?.GuaranteeNo, PGBankCode = row.grH?.BankCode,
+                PGDDateExpired = row.gr?.DateExpired, PGDateOpen = row.grH?.DateOpen,
+                NumberOfDaysDeferredPayment = row.gr?.DeferredPaymentDays,
+                PGNgayConLai = ngayConLai,
+                PGBankCodeMonitor = row.grH?.BankCodeMonitor, PGGuaranteeType = guaranteeTypeVal,
+                CVDRFullDocDate = c.DRFullDocDate, CVDocumentsStatus = c.DocumentsStatus,
+                CDRLTypeCRR = typeCRRVal, CDRDDRListCode = row.hdr.DocReqNo, CDRDDRDtlStatus = drDtlStatusVal,
+                CTMDTransportMinutesNo = tmNo, CTMDTransportMinutesDtlStatus = row.pr?.DtlStatus,
+                CDRDDealerCode_approx = row.hdr.DealerCode,
+                c.CarId, c.DlrCtrNo, c.FlagDealerContractDMS40,
+                CDRDDealerName = md?.DealerName,
+                InvoiceSpecName = (string?)null,
+                vh_OS_HDDT_InvoiceCode = row.hrH?.OS_HDDT_InvoiceCode,
+                vt_OS_HDDT_InvoiceCode = row.trH?.OS_HDDT_InvoiceCode,
+                InvoiceFactorySearch = (string?)null,
+                c.SOCode, PMPDGuaranteeRemain = pmpdGuaranteeRemain
+            });
+        }
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        myCountByVin, excludedByMyCountGuard,
+        myCountGuardNote = "MyCount dem TREN TICH DESCARTES ca sau nhanh LEFT/INNER JOIN (doc-req, bao lanh, " +
+            "HD HTCV, HD TCG, hop dong dai ly, bien ban giao xe), KHONG rieng doc-req; VIN du dieu kien van bi " +
+            "LOAI het neu mot nhanh khac (vd bao lanh) co 2 dong (#5806).",
+        debtNote = "NO - khong bia: CQEndDate/CabinCONo/InvoiceSpecName/InvoiceFactorySearch/InvoiceNoFactory " +
+            "doc tu Car_VIN nguon, CarVinMaster Mini chua co cot nay; CDRDDealerCode_approx dung DealerCode " +
+            "o HEADER DocReq thay cho cot cap-dong DocReqCar chua co (#5806)."
+    });
+}).RequireAuthorization();
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
