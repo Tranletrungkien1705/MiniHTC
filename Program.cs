@@ -32976,6 +32976,61 @@ app.MapPost("/api/trainingparticipants/delete-by-code", async (string trainingDt
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
 
+// ===== #5850 SỬA CHI TIẾT THAM GIA ĐÀO TẠO — `FrmMst_TrainingDtlUpdate` (dialog mở từ
+// `FrmMst_TrainingDtlMng.btnEdit_Click`, menu sống qua màn cha đã trace ở #5848) =====
+// Trace: `btnSave_Click` → `dlService.Mst_TrainingDtl_Update(mstTrainingDtl)` (`DealerService.cs:4452`,
+// field-mask CỐ ĐỊNH 6 cột: `SMCode,FormalityTraining,OrganizeDate,Place,ResultIn,ResultOut`) → biz
+// `Mst_TrainingDtl_Update_New20210415` (`Biz.HTC.WH.cs:194887`, LIVE).
+// 🔴 PHÁT HIỆN — UI CHO ĐỔI KHOÁ (`glueTrainingCode` không readonly, có thể chọn khoá KHÁC), biz CÓ cờ
+//   `bUpd_TrainingCode` thật, NHƯNG mask client gửi lên KHÔNG BAO GIỜ chứa `"Mst_TrainingDtl.TrainingCode"`
+//   ⇒ `bUpd_TrainingCode` LUÔN false ⇒ đổi khoá trên UI KHÔNG BAO GIỜ được lưu, dù biz có validate khoá
+//   mới (`Mst_Training_CheckDB`) tồn tại+Active trước khi tới bước ghi — validate một giá trị RỒI BỎ
+//   QUA khi ghi, giống khuôn "tham số chết" đã gặp (#5820) nhưng ở đây là "được validate nhưng không ghi"
+//   chứ không phải "không được dùng ở đâu cả". Port CHỈ cho sửa đúng 6 cột thật sự được ghi.
+// 🔴 Guard tồn tại: `Mst_TrainingDtl_CheckDB(..., Flag.**Active**)` — CHỈ sửa được bản ghi ĐANG HOẠT ĐỘNG
+//   (khớp đúng guard của `_Delete` ở #5848). `Mst_SalesMan_CheckDB`/`Mst_Training_CheckDB` đòi NVBH và
+//   khoá (dù khoá không ghi) đều tồn tại+Active.
+// 📌 Kiểm trùng (NVBH+khoá+ngày) nằm Ở PHÍA CLIENT (WinForm), KHÔNG nằm trong biz — port VẪN tái hiện vì
+//   đây là luật nghiệp vụ thật ngăn trùng lịch học, bỏ qua sẽ là THỤT LÙI so với trải nghiệm thật (API
+//   là giao diện duy nhất của Mini, không có "client" riêng để tự chặn trước khi gọi API).
+app.MapPost("/api/trainingparticipants/update-by-code", async (
+    TrainingParticipantUpdateByCodeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var code = (dto.TrainingDtlCode ?? "").Trim();
+    var p = await db.TrainingParticipants.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TrainingDtlCode == code);
+    if (p is null || p.FlagActive != "1")
+        return Results.BadRequest(new { error = "Mst_TrainingDtl_CheckDB_NotExistOrInactive", trainingDtlCode = code });
+
+    var sm = (dto.SMHyundaiCode ?? "").Trim();
+    var salesMan = await db.SalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesManCode == sm);
+    if (salesMan is null || salesMan.Status != "1")
+        return Results.BadRequest(new { error = "Mst_SalesMan_CheckDB_NotExistOrInactive", smHyundaiCode = sm });
+
+    // TrainingCode được nhận và VALIDATE (đúng nguồn) nhưng KHÔNG LƯU — xem ghi chú #5850 phía trên.
+    var trainingCode = (dto.TrainingCode ?? "").Trim();
+    var courseExists = await db.TrainingCourses.AnyAsync(x => x.OrgId == t.OrgId && x.TrainingUserCode == trainingCode && x.FlagActive == "1");
+    if (!courseExists) return Results.BadRequest(new { error = "Mst_Training_CheckDB_NotExistOrInactive", trainingCode });
+
+    // Kiểm trùng (phía client ở nguồn): chỉ chạy khi NVBH/khoá/ngày thay đổi so với bản ghi gốc.
+    if (p.SMHyundaiCode != sm || p.OrganizeDate != dto.OrganizeDate)
+    {
+        var dup = await db.TrainingParticipants.AnyAsync(x => x.OrgId == t.OrgId && x.Id != p.Id
+            && x.SMHyundaiCode == sm && x.OrganizeDate == dto.OrganizeDate && x.FlagActive == "1");
+        if (dup) return Results.BadRequest(new { error = "Mst_TrainingDtl_Update_ExistOrganizeDate", smHyundaiCode = sm, organizeDate = dto.OrganizeDate });
+    }
+
+    p.SMHyundaiCode = sm; p.SMName = salesMan.SalesManName;
+    p.FormalityTraining = dto.FormalityTraining; p.OrganizeDate = dto.OrganizeDate; p.Place = dto.Place;
+    p.ResultIn = dto.ResultIn; p.ResultOut = dto.ResultOut;
+    p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        p.TrainingDtlCode, p.SMHyundaiCode, p.OrganizeDate,
+        trainingCodeIgnoredNote = "Doi khoa dao tao tren UI KHONG duoc luu - mask that cua nguon khong co TrainingCode, du co validate khoa moi ton tai+Active (#5850)."
+    });
+}).RequireAuthorization();
+
 // Tiến trình tham gia khoá đào tạo — port 1:1 FrmQLTienTrinhThamGiaKhoaDT (2010.HTC/Admin/Product):
 // tra cứu lịch sử đào tạo XUYÊN KHOÁ của nhân viên (nguồn: DealerService.Mst_TrainingDtl_Get, 7 tham số lọc)
 // rồi xuất Excel. Lưới nguồn ghép Mst_Training (mã + tên khoá), Mst_SalesMan (mã + tên NV) và tên đại lý.
@@ -114373,6 +114428,7 @@ record SalesManCertificateUpdateMultiRowDto(string? SMCerNo, DateTime? EffStartD
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
 record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? TrainingDtlCode = null, string? SMName = null, string? FlagActive = null);
 record TrainingParticipantCreateMultiRowDto(string? TrainingCode, string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? FlagActive);   // #5848
+record TrainingParticipantUpdateByCodeDto(string? TrainingDtlCode, string? TrainingCode, string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut);   // #5850
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines, string? Remark = null);
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType, DateTime? DMReqDate = null, string? DealerCode = null, string? DRListCode = null, string? MortageBankCode = null, string? ReqRMNo = null, string? Remark = null);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
