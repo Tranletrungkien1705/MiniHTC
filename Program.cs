@@ -83888,6 +83888,11 @@ app.MapPost("/api/mstvinmodelorginals/import", async (List<MstVinModelOrginalDto
             // Ghi đè: nếu ModelCode/OrginalCode khác thì ĐÂY LÀ MẤT ÁNH XẠ CŨ.
             if (hit.ModelCode != model || hit.OrginalCode != orginal) overwritten.Add(vin);
             hit.ModelCode = model; hit.OrginalCode = orginal;
+            // #1600 §12 — nguồn nhánh UPDATE ghi NĂM cột (alColumnEffective: ModelCode, OrginalCode,
+            // FlagActive, LogLUDateTime, LogLUBy) — port cũ BỎ SÓT `FlagActive = Constants.Flag.Active`
+            // ("1"). Hệ quả: nhập lại một VIN đã bị tắt (FlagActive="0") KHÔNG bật lại được, trong khi
+            // nguồn LUÔN bật lại. Nay ghi đúng như nguồn.
+            hit.FlagActive = "1";
             hit.LogLUDateTime = stamp; hit.LogLUBy = by;
         }
     }
