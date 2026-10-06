@@ -808,14 +808,33 @@ app.MapGet("/api/reports/dealers", async (AppDbContext db, ITenantContext t, str
 }).RequireAuthorization();
 
 // ===== PDI - Kiểm tra trước giao xe (port 1:1 FrmMngDlr_PDIRequest) =====
-app.MapGet("/api/pdi", async (AppDbContext db, ITenantContext t, string? status, string? vin) =>
+// #5780: PdiRequest la QUY TRINH KIEM TRA RIENG cua Mini (tu sinh ma PDI+timestamp, trang thai
+// Requested->Inspecting->Passed/Failed), KHONG phai ban port cua luong nguon Dlr_PDIRequest+
+// Dlr_PDIRequestDtl (proxy WS cheo sang DMS Sales, BizCarSv.DMSSales.cs:19/178) — nguon do da ghi
+// no cau truc o #743 ("Mini khong co ket noi DMS Sales thuc => ghi NO, khong bia"), KHONG DOI.
+// Bo loc duoi day CHI them vao QUY TRINH RIENG cua Mini (dealerCode/dateCreated da co san tren
+// entity, code la bien the cua dlrPDIReqNo) — khong lien quan nhanh DMS Sales proxy noi tren.
+// `dlrContractNo` (man nguon) KHONG co cot tuong duong trong PdiRequest — CHUA them (can quyet dinh
+// co nen mo rong entity hay khong), ghi no rieng ben duoi. Toggle Main/WH khong ap dung (Mini
+// khong mo hinh hoa 2 CSDL).
+app.MapGet("/api/pdi", async (AppDbContext db, ITenantContext t, string? status, string? vin,
+    string? code, string? dealerCode, DateTime? dateCreatedFrom, DateTime? dateCreatedTo) =>
 {
     var q = db.PdiRequests.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
     if (!string.IsNullOrWhiteSpace(vin)) { var v = vin.Trim().ToUpperInvariant(); q = q.Where(p => p.Vin == v); }
+    if (!string.IsNullOrWhiteSpace(code)) q = q.Where(p => p.Code.StartsWith(code!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(p => p.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (dateCreatedFrom is not null) q = q.Where(p => p.CreatedAt >= dateCreatedFrom.Value.Date);
+    if (dateCreatedTo is not null) q = q.Where(p => p.CreatedAt < dateCreatedTo.Value.Date.AddDays(1));
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     { p.Code, p.Vin, p.DealerCode, p.Status, p.Inspector, p.Result, p.CreatedAt, p.InspectedAt }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        dlrContractNoNotPortedNote = "Man nguon con loc theo dlrContractNo — PdiRequest CHUA co cot " +
+            "tuong duong (quy trinh rieng cua Mini, khong lay du lieu tu DMS Sales). Chua them."
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/pdi", async (PdiDto dto, AppDbContext db, ITenantContext t) =>
