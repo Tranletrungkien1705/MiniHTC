@@ -7564,6 +7564,95 @@ app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? de
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== #5830 TÌM BẢO LÃNH MỨC CHI TIẾT (theo xe) — `FrmMngGrtDetail` (2021.1.TCMotor) =====
+// Trace: menu sống `FrmMain.cs:1818` → `btnSearch_Click` → `salesSv.Pmt_GuaranteeDetailGet(...)` (13 tham
+// số bề mặt client) → `SalesService.cs:6966` xây CHUỖI ĐIỀU KIỆN rồi gọi `_dbService.PaymentGuaranteeGet`
+// (bản dịch vụ chỉ CÓ Ở CÂY TCMotor — `TERP.WSHTC.64/WSHTC.asmx.cs:8433` → biz
+// `TERP.BizHTC/BizHTC.Payment.cs:1176`, hàm "BuildWhere" khổng lồ ~45 tham số 7 bảng, CHỈ một overload).
+// `/api/bankgrts` (phía trên) trả HEADER (đếm `cars`), còn màn này cần DÒNG CHI TIẾT THEO XE — khác mức
+// dữ liệu, không phải chỉ thiếu filter.
+// Bảy tham số THỰC SỰ được client truyền (phần còn lại trong ~45 tham số luôn truyền rỗng, bỏ qua, không
+// bịa thêm filter nguồn không hề dùng ở màn này):
+//   `grtNo/dealerCode/bankCode/grtBankNo` → `Pmt_Guarantee` (header); `status` LUÔN hardcode **"A"**
+//   (nguồn comment dòng gán động, chỉ còn gán cứng — màn này CHỈ xem bảo lãnh đã duyệt);
+//   `dateFrom/dateTo` → khoảng `Pmt_Guarantee.CreatedDate`; `grtType` → `Pmt_Guarantee.GuaranteeType`;
+//   `tatToan` (0=tất cả · 1=đã tất toán · 2=chưa) → `Pmt_Guarantee.DateEnd` is/is not null;
+//   `carId`/`vin` → **`Car_Car.CarID`/`Car_Car.VIN`** (KHÔNG phải cột trên `Pmt_GuaranteeDetail` — tham số
+//   `strPMGDCarIdConditionList` của detail luôn truyền rỗng, dễ nhầm);
+//   `soCode` → `Ord_SalesOrder.SOCode` (qua VIN → `CarVinMaster.SOCode`);
+//   `actRecordNo` → `Pmt_Payment.AccountingRecordNo` (qua `Pmt_PaymentDetail.GuaranteeNo` rồi `PaymentNo`).
+app.MapGet("/api/bankgrts/detail-search", async (AppDbContext db, ITenantContext t,
+    string? grtNo, string? dealerCode, string? bankCode, string? grtBankNo, string? soCode,
+    string? actRecordNo, DateTime? dateFrom, DateTime? dateTo, string? carId, string? vin,
+    int tatToan, string? grtType) =>
+{
+    var gq = db.BankGuarantees.Where(g => g.OrgId == t.OrgId && g.Status == "A");
+    if (!string.IsNullOrWhiteSpace(grtNo)) gq = gq.Where(g => g.GuaranteeNo.Contains(grtNo.Trim()));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) gq = gq.Where(g => g.DealerCode == dealerCode.Trim());
+    if (!string.IsNullOrWhiteSpace(bankCode)) gq = gq.Where(g => g.BankCode.Contains(bankCode.Trim()));
+    if (!string.IsNullOrWhiteSpace(grtBankNo)) gq = gq.Where(g => g.BankGuaranteeNo.Contains(grtBankNo.Trim()));
+    if (!string.IsNullOrWhiteSpace(grtType)) gq = gq.Where(g => g.GuaranteeType == grtType.Trim());
+    if (dateFrom.HasValue) gq = gq.Where(g => g.CreatedAt >= dateFrom.Value);
+    if (dateTo.HasValue) gq = gq.Where(g => g.CreatedAt <= dateTo.Value);
+    if (tatToan == 1) gq = gq.Where(g => g.DateEnd != null);
+    else if (tatToan == 2) gq = gq.Where(g => g.DateEnd == null);
+    var headers = await gq.ToListAsync();
+    var headerByNo = headers.ToDictionary(g => g.GuaranteeNo);
+    var headerIds = headers.Select(g => g.Id).ToList();
+
+    var dtls = await db.BankGuaranteeDtls.Where(d => d.OrgId == t.OrgId && headerIds.Contains(d.GuaranteeId)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(vin))
+    { var k = vin.Trim().ToUpperInvariant(); dtls = dtls.Where(d => d.VIN.ToUpperInvariant().Contains(k)).ToList(); }
+
+    var vins = dtls.Select(d => d.VIN).Distinct().ToList();
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync())
+        .ToDictionary(c => c.VIN);
+    if (!string.IsNullOrWhiteSpace(carId))
+    {
+        var k = carId.Trim().ToUpperInvariant();
+        dtls = dtls.Where(d => cars.TryGetValue(d.VIN, out var cc) && (cc.CarId ?? "").ToUpperInvariant().Contains(k)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(soCode))
+    {
+        var k = soCode.Trim().ToUpperInvariant();
+        dtls = dtls.Where(d => cars.TryGetValue(d.VIN, out var cc) && (cc.SOCode ?? "").ToUpperInvariant().Contains(k)).ToList();
+    }
+
+    if (!string.IsNullOrWhiteSpace(actRecordNo))
+    {
+        var k = actRecordNo.Trim().ToUpperInvariant();
+        var grtNosWithRecord = (from pd in db.PmtPaymentDetails.Where(x => x.OrgId == t.OrgId && x.GuaranteeNo != null)
+                                 join p in db.PmtPayments.Where(x => x.OrgId == t.OrgId && x.AccountingRecordNo != null)
+                                    on pd.PaymentNo equals p.PaymentNo
+                                 where p.AccountingRecordNo!.ToUpper().Contains(k)
+                                 select pd.GuaranteeNo!).Distinct().ToList();
+        var set = grtNosWithRecord.ToHashSet();
+        dtls = dtls.Where(d => headerByNo.TryGetValue(
+            headers.First(h => h.Id == d.GuaranteeId).GuaranteeNo, out _) &&
+            set.Contains(headers.First(h => h.Id == d.GuaranteeId).GuaranteeNo)).ToList();
+    }
+
+    var items = dtls.OrderByDescending(d => d.Id).Take(500).Select(d =>
+    {
+        var g = headers.First(h => h.Id == d.GuaranteeId);
+        cars.TryGetValue(d.VIN, out var cc);
+        return new
+        {
+            g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.TermActual,
+            PGDateOpen = g.DateOpen, PGDateExpired = g.DateExpired, PGDDateEnd = g.DateEnd, g.DateEnd_Discount, g.DiscountPmtValue, g.DiscountPmtDate,
+            g.BankCodeMonitor, g.CreatedAt,
+            d.VIN, CarId = cc?.CarId, SOCode = cc?.SOCode, ModelCode = cc?.ModelCode, ColorCode = cc?.ColorCode,
+            d.GrtValue, d.GrtPercent, d.DiscountValue, d.DiscountPercent, d.DateStart, d.DateWarning, DtlDateExpired = d.DateExpired,
+            d.GuaranteeDetailStatus,
+        };
+    }).ToList();
+    return Results.Ok(new { count = items.Count, items,
+        realFiltersNote = "7 tham số thật dùng ở màn này: grtNo/dealerCode/bankCode/grtBankNo (header), " +
+            "status luôn 'A', dateFrom/to (CreatedDate), grtType, tatToan (DateEnd is/isnot null), " +
+            "carId/vin (Car_Car, KHÔNG phải Pmt_GuaranteeDetail), soCode (Ord_SalesOrder qua VIN), " +
+            "actRecordNo (Pmt_Payment.AccountingRecordNo qua Pmt_PaymentDetail.GuaranteeNo)." });
+}).RequireAuthorization();
+
 app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
