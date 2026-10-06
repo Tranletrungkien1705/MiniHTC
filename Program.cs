@@ -110965,6 +110965,137 @@ app.MapGet("/api/reports/car-vin-for-req-redeem", async (
             "the chap hieu luc moi la xe de xin GIAI chap, dung vong doi nguoc #5808 (#5810)."
     });
 }).RequireAuthorization();
+// ===== #5812 TÌM KHÁCH HÀNG+XE (PHẠM VI ĐẠI LÝ) — `FrmCustomerSearch` =====
+// Trace: dùng chung bởi nhiều màn (`FrmCustomerGroupCreate/Modify`, `FrmInsuranceCreate/Modify`,
+//   `FrmQuotationApp`, `FrmPartQuotation`, `FrmStockOutOrderCreate` — tất cả LIVE) → `MstCustomerService.
+//   SerCustomerCarGetPaging` → WS `Ser_CustomerCar_GetDL` → biz **`Ser_CustomerCar_GetDL20220626`**
+//   (2021.1.TCMotor `DMSCarSv/V20.2023.Release.V2/TERP.BizCarSv/BizCarSv.Customer.cs:1387`, chạy trên
+//   `_dbDealer` — khác #226 `Ser_CustomerCar_GetAllDL` chạy DB trung tâm). Trước #5812 Mini KHÔNG có route;
+//   #226 (`/api/servicecustomers/cars-search`) là HÀM KHÁC, không dùng lại được (luật C0-²²²: hai màn cùng
+//   cụm lọc khác nhau không suy từ cái đã port).
+// Đối chiếu từng dòng `Ser_CustomerCar_GetX` (BizCarSv.Customer.cs:1517):
+//   · Lọc điện thoại là **OR**, không phải AND hai cột: `(Tel LIKE @p) OR (Mobile LIKE @p)` — khớp MỘT
+//     trong hai cột là đủ, khác đa số màn khác (thường AND các điều kiện độc lập).
+//   · `ins.DealerCode = @dealerCode OR ins.DealerCode IS NULL` CHỈ bật khi có `dealerCode` — bảo hiểm của
+//     đại lý khác hoặc chưa gắn đại lý đều lọt qua.
+// 🔴🔴 **BẪY THẬT — HAI MAX ĐỘC LẬP PHẢI TRÙNG VÀO CÙNG MỘT DÒNG**: `#tbl_lhis` tính `MAX(CheckInDate)` và
+//   `MAX(FinishedDate)` TÁCH RIÊNG (group by CusID,DealerCode) — hai mốc có thể thuộc **hai phiếu sửa chữa
+//   khác nhau** (phiếu vào sau nhưng xong trước, hoặc ngược lại). `#tbl_ro_tmp` sau đó lọc phiếu khớp **ĐỒNG
+//   THỜI CẢ HAI** mốc (`ro.CheckInDate=MaxCheckInDate AND ro.FinishedDate=MaxFinishedDate`) — nếu không có
+//   phiếu nào thoả cả hai cùng lúc, "lần sửa gần nhất" (`LastCheckInDate`/`LastCusRequest`/`Km`) RỚT THÀNH
+//   NULL dù khách hàng có hàng chục phiếu đã hoàn tất. Port TÁI HIỆN ĐÚNG lỗi hai-max-độc-lập này.
+//   `CheckInCount`/`FirstCheckInDate` lại tính trên **MỌI** phiếu (không lọc `Status='FNS'`) — khác hẳn
+//   phạm vi của "lần gần nhất" (chỉ tính phiếu đã hoàn tất) — hai mẫu số khác nhau trong cùng một dòng.
+//   · Sắp xếp CUỐI theo `CheckInDate` (lần sửa gần nhất, có thể NULL) GIẢM DẦN — KHÁC thứ tự `CusName` dùng
+//     để phân trang/đánh `MyIdxSeq` ở bước lọc đầu; hai bước ORDER BY khác nhau trong cùng một truy vấn.
+app.MapGet("/api/servicecustomers/cars-search-dealer", async (
+    AppDbContext db, ITenantContext t,
+    string? cusId, string? dealerCode, string? cusName, string? address, string? phone,
+    string? plateNo, string? frameNo, string? engineNo, string? tradeMarkCode, string? modelCode,
+    int pageSize = 20, int currentPage = 1) =>
+{
+    if (pageSize <= 0) pageSize = 20;
+    if (currentPage <= 0) currentPage = 1;
+
+    var qy = from c in db.ServiceCustomers.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1")
+             join car0 in db.ServiceCars.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1") on c.CusCode equals car0.CusID into gj
+             from car in gj.DefaultIfEmpty()
+             select new { c, car };
+
+    if (!string.IsNullOrWhiteSpace(cusId)) qy = qy.Where(x => x.c.CusCode == cusId!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qy = qy.Where(x => x.c.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(x => x.c.CusName.ToLower().Contains(cusName!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(address)) qy = qy.Where(x => x.c.Address != null && x.c.Address.ToLower().Contains(address!.Trim().ToLower()));
+    // 🔴 OR hai cột, không AND — khớp Tel HOẶC Mobile.
+    if (!string.IsNullOrWhiteSpace(phone))
+    {
+        var p = phone!.Trim();
+        qy = qy.Where(x => (x.c.Tel != null && x.c.Tel.Contains(p)) || (x.c.Mobile != null && x.c.Mobile.Contains(p)));
+    }
+    if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(x => x.car != null && x.car.PlateNo != null && x.car.PlateNo.ToLower().Contains(plateNo!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(x => x.car != null && x.car.FrameNo.ToLower().Contains(frameNo!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(engineNo)) qy = qy.Where(x => x.car != null && x.car.EngineNo != null && x.car.EngineNo.ToLower().Contains(engineNo!.Trim().ToLower()));
+    if (!string.IsNullOrWhiteSpace(tradeMarkCode)) qy = qy.Where(x => x.car != null && x.car.TradeMark == tradeMarkCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(modelCode)) qy = qy.Where(x => x.car != null && x.car.ModelCode == modelCode!.Trim());
+
+    var all = await qy.ToListAsync();
+    var totalRows = all.Count;
+    // Phân trang theo CusName (đúng #tbl_ID của nguồn) — thứ tự hiển thị cuối lại khác (xem dưới).
+    var page = all.OrderBy(x => x.c.CusName).Skip((currentPage - 1) * pageSize).Take(pageSize).ToList();
+    var cusIds = page.Select(x => x.c.CusCode).Distinct().ToList();
+
+    var ros = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.CusID != null && cusIds.Contains(r.CusID)).ToListAsync();
+    var fnsByCus = ros.Where(r => r.Status == "FNS").GroupBy(r => r.CusID!).ToDictionary(g => g.Key, g => g.ToList());
+    var checkInCountByCus = ros.GroupBy(r => r.CusID!).ToDictionary(g => g.Key, g => g.Count());
+    var firstCheckInByCus = ros.Where(r => r.CheckInDate != null).GroupBy(r => r.CusID!)
+        .ToDictionary(g => g.Key, g => g.Min(r => r.CheckInDate));
+
+    // Hai MAX độc lập rồi đòi khớp cùng một dòng — tái hiện đúng bẫy nguồn.
+    var lastServiceByCus = new Dictionary<string, RepairOrder?>(StringComparer.Ordinal);
+    foreach (var grp in fnsByCus)
+    {
+        var maxCheckIn = grp.Value.Where(r => r.CheckInDate != null).Select(r => r.CheckInDate).DefaultIfEmpty(null).Max();
+        var maxFinished = grp.Value.Where(r => r.FinishedDate != null).Select(r => r.FinishedDate).DefaultIfEmpty(null).Max();
+        lastServiceByCus[grp.Key] = grp.Value.FirstOrDefault(r => r.CheckInDate == maxCheckIn && r.FinishedDate == maxFinished);
+    }
+
+    var models = (await db.ServiceModels.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var districts = (await db.MstDistricts.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => (d.ProvinceCode, d.DistrictCode)).ToDictionary(g => g.Key, g => g.First());
+    var cusTypes = (await db.CustomerTypes.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => c.CusTypeCode).ToDictionary(g => g.Key, g => g.First());
+    var insNos = page.Where(x => x.car?.InsNo != null).Select(x => x.car!.InsNo!).Distinct().ToList();
+    var insurances = (await db.ServiceInsurances.Where(i => i.OrgId == t.OrgId && insNos.Contains(i.InsNo)).ToListAsync())
+        .GroupBy(i => i.InsNo).ToDictionary(g => g.Key, g => g.First());
+
+    var items = page.Select(x =>
+    {
+        var c = x.c; var car = x.car;
+        models.TryGetValue(car?.ModelCode ?? "", out var mdl);
+        provinces.TryGetValue(c.ProvinceCode ?? "", out var prov);
+        districts.TryGetValue((c.ProvinceCode ?? "", c.DistrictCode ?? ""), out var dist);
+        cusTypes.TryGetValue(c.CusTypeID ?? "", out var ctype);
+        ServiceInsurance? ins = car?.InsNo != null && insurances.TryGetValue(car.InsNo, out var iv) ? iv : null;
+        lastServiceByCus.TryGetValue(c.CusCode, out var last);
+        firstCheckInByCus.TryGetValue(c.CusCode, out var firstCheckIn);
+        var checkInCount = checkInCountByCus.TryGetValue(c.CusCode, out var cc) ? cc : 0;
+
+        return new
+        {
+            c.CusCode, c.CusName, c.Sex, c.Address, c.Tel, c.Mobile,
+            car?.CarID, car?.PlateNo, car?.FrameNo, car?.EngineNo, car?.ModelCode,
+            ModelName = mdl?.ModelName,
+            car?.ProductYear, car?.ColorCode, car?.WarrantyRegistrationDate, car?.DateBuyCar, car?.CurrentKm,
+            car?.TradeMark, car?.SalesCarID, car?.InsStartDate, car?.InsNo,
+            InsName = ins?.InsVieName, InsPhone = ins?.Telephone, InsAddress = ins?.Address, InsTaxCode = ins?.Taxcode,
+            car?.InsFinishedDate, car?.InsContractNo, car?.MemberCarID, car?.WarrantyExpiresDate,
+            car?.CusConfirmedWarrantyDate, car?.WarrantyKM, car?.SerialNo, car?.BatteryNo, car?.PlateColorCode,
+            FirstCheckInDate = firstCheckIn, CheckInCount = checkInCount,
+            CusRequest = last?.CusRequest, CheckInDate = last?.CheckInDate,
+            LastCheckInDate = last?.CheckInDate, LastCusRequest = last?.CusRequest, Km = last?.Km,
+            ProvinceName = prov?.ProvinceName, DistrictName = dist?.DistrictName,
+            CusPersonType = ctype?.CusPersonType
+        };
+    })
+    // Thứ tự hiển thị cuối: theo CheckInDate (lần sửa gần nhất) GIẢM DẦN — khác thứ tự phân trang (CusName).
+    .OrderByDescending(x => x.CheckInDate).ToList();
+
+    return Results.Ok(new
+    {
+        totalRows,
+        totalPages = totalRows == 0 ? 0 : (int)Math.Ceiling(totalRows / (double)pageSize),
+        pageSize, currentPage, count = items.Count, items,
+        lastServiceDualMaxNote = "MAX(CheckInDate) va MAX(FinishedDate) tinh TACH RIENG roi doi phieu nao " +
+            "khop CA HAI cung luc - khong co phieu nao thoa thi 'lan sua gan nhat' (CheckInDate/CusRequest/Km) " +
+            "ra NULL du khach co nhieu phieu da hoan tat. CheckInCount/FirstCheckInDate tinh tren MOI phieu " +
+            "(khong loc FNS), khac pham vi 'lan gan nhat'. Port tai hien dung (#5812).",
+        orderMismatchNote = "Phan trang theo CusName (dung #tbl_ID nguon) nhung sap xep HIEN THI CUOI theo " +
+            "CheckInDate giam dan - hai ORDER BY khac nhau trong cung truy van nguon (#5812)."
+    });
+}).RequireAuthorization();
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
