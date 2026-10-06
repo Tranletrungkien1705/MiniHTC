@@ -68046,11 +68046,55 @@ app.MapPost("/api/dealercontracts/{no}/receipt", async (string no, DealerContrac
 }).RequireAuthorization();
 
 // ===== Hợp đồng đại lý DMS40 ký 2 bên (DmsDealerContract — port 1:1 FrmDMS40_CT_DealerContractHTC_New, 2010.HTC/Sales/DMS40) =====
-app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer) =>
+// ===== #5824 TÌM HỢP ĐỒNG ĐẠI LÝ DMS40 — PHÍA NGÂN HÀNG — `FrmMngBankDMS40_CT_DealerContract` =====
+// Trace: menu sống `FrmBankMain.cs:334` → `btnSearch_Click` gọi `strWhereClause(...)` dựng WHERE RAW rồi
+//   `dms40_CT_DealerContractService.DMS40_CT_DealerContractMaster_Get(strWhere, CheckWH)` → WS
+//   `DMS40_CT_DealerContract_Get`/`_Get_WH` (TERP.WSHTC.64/WSHTC.asmx.cs:66859, bản LIVE, không phải
+//   `.Rel.`/`- Copy.cs`) → biz `DMS40_CT_DealerContract_Get_New20181119` (Biz.HTC.WH.cs:79586) →
+//   `DMS40_CT_DealerContract_GetX` (:79848) — SQL raw `select ... from DMS40_CT_DealerContract ctdc
+//   inner join Mst_Dealer md on ... (BUPattern) left join DMS40_CT_DealerContractDetail ctdcdt on
+//   ctdc.DlrCtrNo = ctdcdt.DlrCtrNo` rồi nối `zzzzClauseWhere_strFilterWhereClause` — WHERE là CHUỖI THÔ do
+//   WinForm tự dựng (không qua BuildWhere allow-list), nên các cột filter dưới đây lấy ĐÚNG theo
+//   `strWhereClause`/`strWhereClauseDetail` (dòng 503-666 file WinForm), không suy đoán.
+// Route CŨ (`status`/`dealer`) đã có trước #5824 nhưng CHƯA đủ bộ lọc màn ngân hàng — bổ sung filter,
+// KHÔNG đổi ngữ nghĩa 2 tham số cũ (đổi tên sẽ phá caller khác đang dùng `status`/`dealer` exact-match).
+// 🔴 PHÁT HIỆN — MẶC ĐỊNH TRẠNG THÁI khi `dlrctrstatus` bỏ trống: nguồn KHÔNG trả hết, mà tự thêm
+//   `(DlrCtrStatus = 'S' or DlrCtrStatus = 'AJ')` (dòng 569-582) — chỉ hợp đồng Đã ký/Đã điều chỉnh.
+//   Mặc định này CHỈ thuộc màn ngân hàng (xây ở WinForm, không nằm trong biz dùng chung), các màn khác
+//   gọi cùng biz tự dựng WHERE riêng không có mặc định này — nên KHÔNG đổi default của route cũ, mà
+//   `status` nay nhận CSV (vd. "S,AJ"); FE màn ngân hàng PHẢI tự truyền "S,AJ" khi dropdown rỗng để khớp 1:1.
+// 📌 NỢ: scope `Mst_Dealer.BUCode like @strBUPatternOfUser` (ability-of-user theo BU) trong nguồn —
+//   Mini chỉ có tenant OrgId, không có khái niệm BUPattern/ability-of-user per-user ở route này; ghi nợ,
+//   không bịa logic BU giả.
+// ⚪ `contractdatefrom/to` KHÔNG được cộng giờ (so sánh thẳng chuỗi ngày), trong khi `createdfrom/to`
+//   CÓ cộng " 00:00:00"/" 23:59:59" — lệch quy ước thật của nguồn, giữ nguyên (không phải lỗi port).
+app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, string? status, string? dealer,
+    string? dlrctrno, string? carid, string? dlrsignstatus, string? htcsignstatus, string? bankcodemd,
+    string? flagdlrctradjust, DateTime? contractdatefrom, DateTime? contractdateto,
+    DateTime? createdfrom, DateTime? createdto) =>
 {
     var q = db.DmsDealerContracts.Where(c => c.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.DlrCtrStatus == status);
+    if (!string.IsNullOrWhiteSpace(status))
+    {
+        var statusList = status.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        q = q.Where(c => statusList.Contains(c.DlrCtrStatus));
+    }
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(c => c.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(dlrctrno)) q = q.Where(c => c.DlrCtrNo.StartsWith(dlrctrno.Trim()));
+    if (!string.IsNullOrWhiteSpace(dlrsignstatus)) q = q.Where(c => c.DlrSignStatus == dlrsignstatus);
+    if (!string.IsNullOrWhiteSpace(htcsignstatus)) q = q.Where(c => c.HTCSignStatus == htcsignstatus);
+    if (!string.IsNullOrWhiteSpace(bankcodemd)) q = q.Where(c => c.BankCodeMD == bankcodemd);
+    if (!string.IsNullOrWhiteSpace(flagdlrctradjust)) q = q.Where(c => c.FlagDlrCtrAdjust == flagdlrctradjust);
+    if (contractdatefrom.HasValue) q = q.Where(c => c.ContractDate >= contractdatefrom.Value);
+    if (contractdateto.HasValue) q = q.Where(c => c.ContractDate <= contractdateto.Value);
+    if (createdfrom.HasValue) q = q.Where(c => c.CreateDTime >= createdfrom.Value.Date);
+    if (createdto.HasValue) q = q.Where(c => c.CreateDTime <= createdto.Value.Date.AddDays(1).AddSeconds(-1));
+    if (!string.IsNullOrWhiteSpace(carid))
+    {
+        var idPrefix = carid.Trim();
+        var dlrCtrNosWithCar = db.DmsDealerContractDtls.Where(l => l.OrgId == t.OrgId && l.CarId.StartsWith(idPrefix)).Select(l => l.DlrCtrNo);
+        q = q.Where(c => dlrCtrNosWithCar.Contains(c.DlrCtrNo));
+    }
     var items = await q.OrderByDescending(c => c.Id).Take(500)
         .Select(c => new { c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt, c.DlrApprDTime, c.HTCAppr2DTime, c.BankCodeMD, c.FlagDlrCtrAdjust, c.DlrCtrNoParent,
             c.HTCAppr1DTime, c.HTCAppr1By, c.HTCAppr2By, c.DlrApprBy, c.RejectDTime, c.RejectBy, c.FilePath, c.Remark, c.LogLUDateTime, c.LogLUBy,
