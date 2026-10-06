@@ -32994,14 +32994,98 @@ app.MapDelete("/api/trainingcourses/{id}/participants/{pid}", async (long id, lo
 }).RequireAuthorization();
 
 // ===== Chứng chỉ nhân viên bán hàng (SalesManCertificate — port 1:1 FrmMst_SalesManCertificateCreate/Mng/Update, 2010.HTC/Admin) =====
-app.MapGet("/api/salesmancerts", async (AppDbContext db, ITenantContext t, string? q, string? cert, bool? all) =>
+// #5844 — bổ sung dealerCode/smType/smName cho đúng `Mst_SalesManCertificate_Get` (5 tham số,
+// `DealerService.cs:4513`) của `FrmMst_SalesManCertificateMng` — route cũ chỉ có q/cert/all.
+// `smName` lọc qua TÊN NVBH (join `Dlr_SalesMan`/`Mst_SalesMan`, nguồn dùng LIKE trên bảng NVBH).
+app.MapGet("/api/salesmancerts", async (AppDbContext db, ITenantContext t, string? q, string? cert, bool? all,
+    string? dealerCode, string? smType, string? smName) =>
 {
     var qry = db.SalesManCertificates.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(cert)) qry = qry.Where(x => x.CertificateCode == cert);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(smType)) qry = qry.Where(x => x.SMType == smType);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMHyundaiCode.Contains(q!) || x.CertificateCode.Contains(q!) || x.CertificateName!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).Select(x => new { x.Id, x.SMCerNo, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.DealerCode, x.EffStartDate, x.EffEndDate, x.Remark, x.FlagActive, x.UpdatedAt, x.CreatedAt, x.CreatedBy, x.UpdatedBy }).ToListAsync();   // #1247 §12
+    var rows = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(smName))
+    {
+        var hyundaiCodes = rows.Select(r => r.SMHyundaiCode).Distinct().ToList();
+        var matchedCodes = (await db.DlSalesMen.Where(x => x.OrgId == t.OrgId && hyundaiCodes.Contains(x.SMHyundaiCode) && x.SMName.Contains(smName!)).Select(x => x.SMHyundaiCode).ToListAsync())
+            .Concat(await db.SalesMen.Where(x => x.OrgId == t.OrgId && hyundaiCodes.Contains(x.SMHyundaiCode!) && x.SalesManName.Contains(smName!)).Select(x => x.SMHyundaiCode!).ToListAsync())
+            .ToHashSet();
+        rows = rows.Where(r => matchedCodes.Contains(r.SMHyundaiCode)).ToList();
+    }
+    var items = rows.Select(x => new { x.Id, x.SMCerNo, x.SMHyundaiCode, x.CertificateCode, x.CertificateName, x.SMType, x.DepartmentCode, x.DealerCode, x.EffStartDate, x.EffEndDate, x.Remark, x.FlagActive, x.UpdatedAt, x.CreatedAt, x.CreatedBy, x.UpdatedBy }).ToList();   // #1247 §12
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// ===== #5844 XOÁ HÀNG LOẠT — `FrmMst_SalesManCertificateMng.btnDelDb_Click` =====
+// Trace: `dlService.Mst_SalesManCertificate_Delete(dtblTmp)` → biz cùng tên (`Biz.HTC.WH.cs:191299`,
+// LIVE) — guard `Mst_SalesManCertificate_CheckDB` khớp ĐỦ 5 cột (`SMCerNo`/`SMCode`/`DepartmentCode`/
+// `SMType`/`CertificateCode`), nhưng `SMCerNo` đã là khoá DUY NHẤT của Mini (xem doc entity) nên khớp
+// theo `SMCerNo` là đủ để xác định đúng dòng — không bịa thêm kiểm tra 4 cột còn lại (nguồn kiểm dư vì
+// bảng nguồn không có ràng buộc UNIQUE trên riêng SMCerNo).
+app.MapPost("/api/salesmancerts/delete-multi", async (List<string> smCerNos, AppDbContext db, ITenantContext t) =>
+{
+    var nos = (smCerNos ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    if (nos.Count == 0) return Results.BadRequest(new { error = "Mst_SalesManCertificate_CreateMulti_TableBlank" });
+    var rows = await db.SalesManCertificates.Where(x => x.OrgId == t.OrgId && nos.Contains(x.SMCerNo)).ToListAsync();
+    var missing = nos.Except(rows.Select(r => r.SMCerNo)).ToList();
+    if (missing.Count > 0) return Results.BadRequest(new { error = "Mst_SalesManCertificate_CheckDB_NotExist", missing });
+    db.SalesManCertificates.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = rows.Count, smCerNos = nos });
+}).RequireAuthorization();
+
+// ===== #5844 NHẬP HÀNG LOẠT TỪ EXCEL — `FrmMst_SalesManCertificateMng.btnApplyNew_Click` =====
+// Trace: mỗi dòng gọi `SequenceGetForDMS(SMCerNo)` lấy số rồi `dlService.Mst_SalesManCertificate_CreateMulti`
+// → biz cùng tên (`Biz.HTC.WH.cs:190477`, LIVE) — PHÁT HIỆN: khối sinh `SMCerNo` NGAY TRONG BIZ bị COMMENT
+// HẲN (dòng 190572-190593) — biz CHỈ còn dùng `SMCerNo` client đã gán sẵn qua `SequenceGetForDMS` riêng,
+// không tự sinh. Guard mỗi dòng (CHECKDB, Raise nếu thiếu): `Mst_Department_CheckDB` (tồn tại+Active),
+// `Mst_SalesMan_CheckDB` (tồn tại, KHÔNG lọc Active — NVBH nghỉ việc vẫn gán được chứng chỉ),
+// `Mst_SalesManTypeCertificate_CheckDB` (bộ ba DepartmentCode×SMType×CertificateCode phải tồn tại trong
+// ma trận "loại NV nào cần chứng chỉ nào" — KHÔNG được gán chứng chỉ tuỳ ý ngoài ma trận này).
+// Mini không có bảng Sequence thật ⇒ tự sinh `SMCerNo` theo mẫu route tạo-đơn đã có (`"SMC" + giờ:phút:
+// giây:mili`) CỘNG thêm chỉ số dòng để đảm bảo DUY NHẤT trong cùng một lô (route tạo-đơn không cần vì
+// chỉ một dòng/lần gọi).
+app.MapPost("/api/salesmancerts/create-multi", async (
+    List<SalesManCertificateCreateMultiRowDto> rows, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Mst_SalesManCertificate_CreateMulti_TableBlank" });
+    var now = DateTime.Now;
+    var actor = user.Identity?.Name;
+    var plan = new List<SalesManCertificate>();
+    for (int i = 0; i < rows.Count; i++)
+    {
+        var r = rows[i];
+        var dept = (r.DepartmentCode ?? "").Trim();
+        var smType = (r.SMType ?? "").Trim();
+        var certCode = (r.CertificateCode ?? "").Trim();
+        var smHyundaiCode = (r.SMHyundaiCode ?? "").Trim();
+
+        var deptOk = await db.Departments.AnyAsync(x => x.OrgId == t.OrgId && x.DepartmentCode == dept && x.FlagActive == "1");
+        if (!deptOk) return Results.BadRequest(new { error = "Mst_Department_CheckDB_NotExistOrInactive", row = i, departmentCode = dept });
+
+        var smOk = await db.DlSalesMen.AnyAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == smHyundaiCode)
+                || await db.SalesMen.AnyAsync(x => x.OrgId == t.OrgId && x.SMHyundaiCode == smHyundaiCode);
+        if (!smOk) return Results.BadRequest(new { error = "Mst_SalesMan_CheckDB_NotExist", row = i, smHyundaiCode });
+
+        var matrixOk = await db.SalesManTypeCertificates.AnyAsync(x => x.OrgId == t.OrgId
+            && x.DepartmentCode == dept && x.SMType == smType && x.CertificateCode == certCode);
+        if (!matrixOk) return Results.BadRequest(new { error = "Mst_SalesManTypeCertificate_CheckDB_NotExist", row = i, departmentCode = dept, smType, certificateCode = certCode });
+
+        plan.Add(new SalesManCertificate
+        {
+            OrgId = t.OrgId, SMCerNo = "SMC" + now.ToString("yyMMddHHmmssfff") + i.ToString("D3"),
+            SMHyundaiCode = smHyundaiCode, CertificateCode = certCode, CertificateName = r.CertificateName,
+            SMType = smType, DepartmentCode = dept, DealerCode = r.DealerCode,
+            EffStartDate = r.EffStartDate, EffEndDate = r.EffEndDate, Remark = r.Remark,
+            CreatedAt = now, CreatedBy = actor, UpdatedAt = now, UpdatedBy = actor,
+        });
+    }
+    db.SalesManCertificates.AddRange(plan);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { created = plan.Count, smCerNos = plan.Select(p => p.SMCerNo) });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesmancerts", async (
@@ -114185,6 +114269,7 @@ record SerStockOutOrderLineDto(string? PartCode, string? PartName, string? Unit,
 record SerStockOutOrderSvDto(string? DealerCode, DateTime? StockOutOrderTime, string? RONo, string? CusName, string? Description, List<SerStockOutOrderLineDto>? Lines,
     DateTime? RequestDeliveryTime = null, string? Priority = null, string? BackOrderIndex = null, string? UserCode = null, string? CusID = null, string? QuoteID = null);   // #370
 record SalesManCertificateDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? FlagActive, string? SMCerNo = null, string? Remark = null);
+record SalesManCertificateCreateMultiRowDto(string? SMHyundaiCode, string? CertificateCode, string? CertificateName, string? SMType, string? DepartmentCode, string? DealerCode, DateTime? EffStartDate, DateTime? EffEndDate, string? Remark);   // #5844
 record TrainingCourseDto(string? TrainingUserCode, string? TrainingName, string? Department, string? DealerCode, string? TrainerCode, string? TrainerName, string? Description, string? FlagActive);
 record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? TrainingDtlCode = null, string? SMName = null, string? FlagActive = null);
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines, string? Remark = null);
