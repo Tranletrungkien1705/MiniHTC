@@ -8222,6 +8222,59 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
     return Results.Ok(new { p.PaymentNo, p.PaymentStatus, p.AccountingRecordNo });
 }).RequireAuthorization();
 
+// ===== #5832 DUYỆT TỰ ĐỘNG A (đối soát TCF) — `FrmMngPM.btnAutoAppA_Click` =====
+// Trace: menu sống qua `FrmMngPM` (`FrmMain.cs:1946/1955`) → `FrmMngPM_ApproveAuto` (dialog gom tham số,
+// KHÔNG tự gọi biz) → vòng lặp gọi `sv.PaymentPaymentApprove_Approve(...)` mỗi dòng (`SalesService.cs:34108`)
+// → WS `PaymentPaymentApprove_Approve` (`WSHTC.asmx.cs:10631`) → biz
+// `_biz.PaymentPaymentApprove_Approve_New20210601` (`TCFIntergration/BizHTC.TCFIntergration.cs:7119`) →
+// `PaymentPaymentApprove_New20210601` (`DataWH/BizHTC.zTemp.cs:63579`, PRIVATE — chỉ gọi được qua lớp vỏ
+// trên) → `PaymentPaymentApproveX_20210601` (:63781, bản `_New20210601`, KHÁC `_X_20191223` cũ hơn cùng
+// tên gốc — dễ nhầm, đã đọc đúng bản dispatch qua WS). Route `/approve` phía trên là duyệt THỦ CÔNG đơn
+// giản (P→A + AccountingRecordNo); route này là duyệt TỰ ĐỘNG qua đối soát sổ phụ ngân hàng (TCF), ghi
+// THÊM 5 cột TCF + PaymentEndDate — khác hẳn bộ cột, không phải chỉ thiếu filter.
+// 🔴 PHÁT HIỆN — NĂM THAM SỐ TRUYỀN XUYÊN QUA WS NHƯNG BỊ BIZ ÂM THẦM BỎ RƠI: chữ ký WS
+// `PaymentPaymentApprove_Approve` CÓ nhận `strTCF_PaymentType/strTCF_BankCodeReceive/strTCF_DealerCode/
+// strTCF_TotalAmount/strTCF_MaGiaoDich`, nhưng lệnh gọi `_biz.PaymentPaymentApprove_Approve_New20210601(...)`
+// (`WSHTC.asmx.cs:10699-10712`) KHÔNG truyền 5 tham số này xuống — client gửi lên nhưng server không
+// dùng. Port CHỈ nhận và BỎ QUA, không bịa cột lưu cho chúng (đúng mẫu #5820).
+// 🔴 `ApprovedBy` KHÔNG LUÔN là người đăng nhập: nếu `FlagDMS_TCF == "1"` (khớp tự động với sổ phụ),
+// nguồn ghi cứng `ApprovedBy = "WSHTC"` (vết kiểm toán là tài khoản hệ thống, không phải người bấm nút).
+// 🔴 Guard RIÊNG trước khi vào biz chính: `FlagDMS_TCF` không rỗng VÀ bằng "0" (Inactive) ⇒ lỗi
+// `PaymentPaymentApprove_DataTCFInvalid` — ngăn duyệt khi dữ liệu TCF được đánh dấu "chưa khớp".
+// 📌 NỢ — HIỆU ỨNG RA NGOÀI (không bịa): (1) file Excel đính kèm (`objFileName`/base64) được NHẬN nhưng
+// KHÔNG lưu — nguồn còn nối `DMS40_Email_BatchSendEmail_PmtPmtApproveSendMail` gửi mail kèm file, MiniHTC
+// không gửi mail; (2) `myPmt_Payment_Check_01`/`myPmt_Payment_CheckTotalValue` (PostCheck ràng buộc giá
+// trị) chưa port ở route này.
+app.MapPost("/api/bankpms/{no}/approve-tcf", async (string no, BankPmApproveTcfDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.PmtPayments.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PaymentNo == no);
+    if (p is null) return Results.NotFound(new { no });
+    if (p.PaymentStatus != "P") return Results.BadRequest(new { error = "Phiếu thanh toán không ở trạng thái chờ duyệt.", code = "myPayment_CheckPayment_StatusNotMatched", current = p.PaymentStatus });
+    var flagTcf = (dto.FlagDMS_TCF ?? "").Trim();
+    if (flagTcf.Length > 0 && flagTcf == "0")
+        return Results.BadRequest(new { error = "Dữ liệu TCF được đánh dấu chưa khớp (FlagDMS_TCF=0) — không thể duyệt tự động.", code = "PaymentPaymentApprove_DataTCFInvalid" });
+
+    var now = DateTime.Now;
+    p.PaymentStatus = "A";
+    p.AccountingRecordNo = (dto.AccountingRecordNo ?? "").Trim();
+    p.TCF_RemarkTranfer = dto.TCF_RemarkTranfer;
+    p.TCF_AutoId = (dto.TCF_AutoId ?? "").Trim();
+    p.TCF_BSInputNo = (dto.TCF_BSInputNo ?? "").Trim();
+    p.FlagDMS_TCF = flagTcf;
+    p.PaymentEndDate = dto.PaymentEndDate;
+    p.ApprovedDate = now;
+    p.ApprovedBy = string.Equals(flagTcf, "1", StringComparison.OrdinalIgnoreCase) ? "WSHTC" : (user.Identity?.Name ?? "system");
+    p.RemarkReason = "";   // nguồn luôn truyền rỗng ở luồng duyệt tự động này
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PaymentNo, p.PaymentStatus, p.AccountingRecordNo, p.ApprovedBy, p.ApprovedDate, p.PaymentEndDate,
+        p.TCF_RemarkTranfer, p.TCF_AutoId, p.TCF_BSInputNo, p.FlagDMS_TCF,
+        droppedParamsNote = "TCF_PaymentType/TCF_BankCodeReceive/TCF_DealerCode/TCF_TotalAmount/TCF_MaGiaoDich " +
+            "nguồn nhận ở WS nhưng KHÔNG truyền xuống biz — nhận và bỏ qua, không bịa cột lưu (#5832).",
+        fileAndMailDebtNote = "NỢ: file Excel đính kèm không lưu, mail duyệt không gửi, PostCheck " +
+            "(myPmt_Payment_Check_01/_CheckTotalValue) chưa port (#5832)." });
+}).RequireAuthorization();
+
 // Cập nhật số chứng từ kế toán trên phiếu TT (port 1:1 FrmUpdateChungTuKT, Sales/Payment) — ghi old->new.
 // #333 Trace: FrmUpdateChungTuKT.btnSave → SalesService.UpdateCTKT (map NewAccountingRecordNo → AccountingRecordNo)
 //   → WS `Pmt_Payment_UpdateFinancial` (TCFIntergration.cs:2771) — CÙNG hàm với /api/payments/update-financial.
@@ -112838,6 +112891,8 @@ record BankPmInterestDto(List<BankPmInterestRowDto>? Rows);
 record PmConfirmEndDateDto(List<PmEndDateRowDto>? Lines);
 record BankPmConfirmTcfRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? PaymentEndDate, string? TCF_RemarkTranfer,
     string? TCF_AutoId, string? TCF_BSInputNo, string? FlagDMS_TCF, string? TCF_MaGiaoDich);   // #332
+record BankPmApproveTcfDto(string? AccountingRecordNo, DateTime? PaymentEndDate, string? TCF_RemarkTranfer,
+    string? TCF_AutoId, string? TCF_BSInputNo, string? FlagDMS_TCF);   // #5832
 /// <summary>🔴 #342 Port 1:1 `myPmt_Guarantee_Upd_DateEnd_Discount_New20181119` (2010.HTC Biz.HTC.WH.cs:39804).
 /// Với mỗi bảo lãnh liên quan: tổng thanh toán từng xe = Σ Pmt_PaymentDetail.Amount của phiếu **PaymentStatus='F'**
 /// (chỉ khi bảo lãnh A/F), ngày = Max(PaymentEndDate); giá trị cần trả của dòng = min(GuaranteeValue, Car_Car.UnitPriceActual)

@@ -14032,6 +14032,9 @@ public sealed class PmtPayment
     public DateTime? ApprovedDate { get; set; }
     public string? ApprovedBy { get; set; }
     public DateTime? PaymentEndDate { get; set; }
+    /// <summary>#5832 — Lý do (`RemarkReason`) ghi bởi `PaymentPaymentApproveX_20210601` (DataWH/BizHTC.zTemp.cs:63903)
+    /// cùng lúc với duyệt/từ chối — CỘT RIÊNG, khác `Remark` thường dùng nơi khác.</summary>
+    public string? RemarkReason { get; set; }
     public DateTime? ConfirmDate { get; set; }
     public string? ConfirmBy { get; set; }
 
