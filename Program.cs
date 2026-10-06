@@ -111199,6 +111199,143 @@ app.MapGet("/api/servicecustomers/cars-search-dealer", async (
             "CheckInDate giam dan - hai ORDER BY khac nhau trong cung truy van nguon (#5812)."
     });
 }).RequireAuthorization();
+// ===== #5818 TÌM XE ĐỂ TẠO BIÊN BẢN GIAO XE — `FrmDMS40_2019_SearchCar_TM` =====
+// Trace: mở từ `FrmDMS40_2019_NewTransportMinutes` (menu sống FrmMain.cs:2677) → `Car_TransportMinutesService.
+//   Car_Car_GetForTransprt` → WS `Car_Car_GetForTransprt_WH` → biz `…_WH` → `Car_Car_GetForTransprtX`
+//   (2010.HTC `DataWH/Biz.HTC.WH.cs:54552`). Trước #5818 Mini CÓ write-path `POST /api/transminutes` nhưng
+//   nhận VIN tự do, KHÔNG có màn tìm-xe-đủ-điều-kiện phía trước — đây là route tìm kiếm còn thiếu.
+// 🔴🔴 **BẪY THẬT — LỌC VÀ HIỂN THỊ DÙNG HAI PHẠM VI TRẠNG THÁI KHÁC NHAU TRÊN CÙNG CỘT**: ở bước LỌC
+//   (`#tbl_Car_Car_Draft`), `pmgd.GuaranteeDetailStatus in ('A')` và `ctmd.TransportMinutesDtlStatus in
+//   (…)` đều BỊ COMMENT (join mở, mọi trạng thái đều lọt vào để so khớp tham số lọc) — nhưng ở bước HIỂN
+//   THỊ CUỐI, hai điều kiện đó lại CỨNG: `pmgd.GuaranteeDetailStatus in ('A')` và `ctmd.
+//   TransportMinutesDtlStatus in ('P','A','F')`. ⇒ Người dùng lọc theo một bảo lãnh/biên bản ở trạng thái
+//   KHÁC các giá trị trên vẫn tìm RA xe, nhưng cột bảo lãnh/biên bản trên lưới kết quả **TRỐNG TRƠN** (vì
+//   hiển thị chỉ nhận đúng tập trạng thái hẹp hơn) — không phải lỗi không tìm thấy, mà là "tìm thấy nhưng
+//   hiển thị rỗng". Port TÁI HIỆN ĐÚNG: lọc trên MỌI trạng thái, hiển thị chỉ lấy dòng khớp tập hẹp.
+// 📌 Đơn giản hoá CÓ GHI RÕ (không phải bẫy): nguồn LEFT JOIN nhiều bảng con (bảo lãnh/LXX/hợp đồng/BBBG)
+//   có thể nhân dòng theo xe; vì màn này chỉ là "tìm xe" (không có hậu kiểm đếm dòng như #5806), port lấy
+//   DÒNG ĐẦU của mỗi bảng con cho mỗi xe — đủ cho mục đích chọn xe, không nhân bản kết quả.
+app.MapGet("/api/dms40/search-car-for-transport-minutes", async (
+    AppDbContext db, ITenantContext t,
+    string? carId, string? vin, string? dlrCtrNo, string? deliveryOrderNo,
+    DateTime? deliveryEndDateFrom, DateTime? deliveryEndDateTo,
+    string? guaranteeNo, string? bankCode, string? guaranteeDetailStatus,
+    string? transportReqNo, string? transportReqDtlStatus,
+    string? transportMinutesNo, string? transportMinutesDtlStatus) =>
+{
+    var q = db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null);
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(c => c.CarId!.Contains(carId!.Trim()));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.VIN.Contains(vin!.Trim()));
+    if (!string.IsNullOrWhiteSpace(dlrCtrNo)) q = q.Where(c => c.DlrCtrNo != null && c.DlrCtrNo.Contains(dlrCtrNo!.Trim()));
+    var cars = await q.ToListAsync();
+    var carIds = cars.Select(c => c.CarId!).Distinct().ToList();
+
+    var doCars = (await db.DeliveryOrderCars.Where(x => x.OrgId == t.OrgId && x.CarId != null && carIds.Contains(x.CarId)
+            && (x.ConfirmStatus == "P" || x.ConfirmStatus == "A" || x.ConfirmStatus == "F"))
+        .ToListAsync());
+    var doHdr = (await db.DeliveryOrders.Where(d => d.OrgId == t.OrgId).ToListAsync()).ToDictionary(d => d.Id);
+    var doByCarId = doCars.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Select(x =>
+        (x, Hdr: doHdr.TryGetValue(x.DoId, out var h) ? h : null)).ToList());
+
+    var contracts = (await db.DealerContractDetails.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarId))
+        .ToListAsync()).GroupBy(x => x.CarId).ToDictionary(g => g.Key, g => g.First());
+
+    // Bảo lãnh: lọc trên MỌI trạng thái (khớp Draft nguồn — join mở); hiển thị chỉ lấy status='A' (khớp SELECT cuối nguồn).
+    var vins = cars.Select(c => c.VIN).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    var allGrt = await (from gd in db.BankGuaranteeDtls
+                       where gd.OrgId == t.OrgId && vins.Contains(gd.VIN)
+                       join h0 in db.BankGuarantees on gd.GuaranteeId equals h0.Id into hj
+                       from h in hj.DefaultIfEmpty()
+                       select new { gd, h }).ToListAsync();
+    var grtByVin = allGrt.GroupBy(x => x.gd.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+    var grtDisplayByVin = allGrt.Where(x => x.gd.GuaranteeDetailStatus == "A")
+        .GroupBy(x => x.gd.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var retrieveCars = (await db.RetrieveReqCars.Where(x => x.OrgId == t.OrgId && x.CarId != null && carIds.Contains(x.CarId))
+        .ToListAsync());
+    var retrieveHdr = (await db.RetrieveRequests.Where(r => r.OrgId == t.OrgId).ToListAsync()).ToDictionary(r => r.Id);
+    var retrieveByCarId = retrieveCars.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Select(x =>
+        (x, Hdr: retrieveHdr.TryGetValue(x.ReqId, out var h) ? h : null)).ToList());
+
+    var tmCars = (await db.TransportMinutesCars.Where(x => x.OrgId == t.OrgId && x.CarId != null && carIds.Contains(x.CarId))
+        .ToListAsync());
+    var tmHdr = (await db.TransportMinutes.Where(x => x.OrgId == t.OrgId).ToListAsync()).ToDictionary(x => x.Id);
+    var tmByCarId = tmCars.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Select(x =>
+        (x, Hdr: tmHdr.TryGetValue(x.MinutesId, out var h) ? h : null)).ToList());
+
+    // Lọc (Draft nguồn — MỌI trạng thái, không bị khoá cứng như hiển thị).
+    if (!string.IsNullOrWhiteSpace(deliveryOrderNo))
+        cars = cars.Where(c => doByCarId.TryGetValue(c.CarId!, out var l) && l.Any(x => x.Hdr != null && x.Hdr.DoNo.Contains(deliveryOrderNo!.Trim()))).ToList();
+    if (deliveryEndDateFrom.HasValue)
+        cars = cars.Where(c => doByCarId.TryGetValue(c.CarId!, out var l) && l.Any(x => x.x.DeliveryEndDate >= deliveryEndDateFrom.Value)).ToList();
+    if (deliveryEndDateTo.HasValue)
+        cars = cars.Where(c => doByCarId.TryGetValue(c.CarId!, out var l) && l.Any(x => x.x.DeliveryEndDate != null && x.x.DeliveryEndDate <= deliveryEndDateTo.Value)).ToList();
+    if (!string.IsNullOrWhiteSpace(guaranteeNo))
+        cars = cars.Where(c => grtByVin.TryGetValue(c.VIN, out var l) && l.Any(x => x.h != null && x.h.GuaranteeNo.Contains(guaranteeNo!.Trim()))).ToList();
+    if (!string.IsNullOrWhiteSpace(bankCode))
+        cars = cars.Where(c => grtByVin.TryGetValue(c.VIN, out var l) && l.Any(x => x.h != null && x.h.BankCode == bankCode!.Trim())).ToList();
+    if (!string.IsNullOrWhiteSpace(guaranteeDetailStatus))
+    {
+        var set = guaranteeDetailStatus!.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        cars = cars.Where(c => grtByVin.TryGetValue(c.VIN, out var l) && l.Any(x => set.Contains(x.gd.GuaranteeDetailStatus))).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(transportReqNo))
+        cars = cars.Where(c => retrieveByCarId.TryGetValue(c.CarId!, out var l) && l.Any(x => x.Hdr != null && x.Hdr.TranspReqNo.Contains(transportReqNo!.Trim()))).ToList();
+    if (!string.IsNullOrWhiteSpace(transportReqDtlStatus))
+    {
+        var set = transportReqDtlStatus!.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        cars = cars.Where(c => retrieveByCarId.TryGetValue(c.CarId!, out var l) && l.Any(x => set.Contains(x.x.TranspReqDtlStatus))).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(transportMinutesNo))
+        cars = cars.Where(c => tmByCarId.TryGetValue(c.CarId!, out var l) && l.Any(x => x.Hdr != null && x.Hdr.TransportMinutesNo.Contains(transportMinutesNo!.Trim()))).ToList();
+    if (!string.IsNullOrWhiteSpace(transportMinutesDtlStatus))
+    {
+        var set = transportMinutesDtlStatus!.Split(',', StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        cars = cars.Where(c => tmByCarId.TryGetValue(c.CarId!, out var l) && l.Any(x => set.Contains(x.x.DtlStatus))).ToList();
+    }
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorCode)).ToDictionary(g => g.Key, g => g.First());
+
+    var items = cars.OrderByDescending(c => c.CarId).Select(c =>
+    {
+        specs.TryGetValue(c.SpecCode ?? "", out var sp);
+        colors.TryGetValue((c.ModelCode ?? "", c.ColorCode ?? ""), out var col);
+        doByCarId.TryGetValue(c.CarId!, out var doL); var do0 = doL?.FirstOrDefault();
+        contracts.TryGetValue(c.CarId!, out var ctr);
+        grtDisplayByVin.TryGetValue(c.VIN, out var grtD);   // CHỈ status='A' — khớp SELECT cuối nguồn
+        tmByCarId.TryGetValue(c.CarId!, out var tmL);
+        var tm0 = tmL?.FirstOrDefault(x => x.x.DtlStatus == "P" || x.x.DtlStatus == "A" || x.x.DtlStatus == "F");
+
+        return new
+        {
+            c.CarId, c.VIN, c.SpecCode, cc_DlrCtrNo = c.DlrCtrNo,
+            mcs_SpecDescription = sp?.SpecDesc,
+            c.ColorCode,
+            mcc_ColorExtCode = col?.ColorExtCode, mcc_ColorExtName = col?.ColorExtName, mcc_ColorExtNameVN = col?.ColorExtNameVN,
+            mcc_ColorIntCode = col?.ColorIntCode, mcc_ColorIntName = col?.ColorIntName, mcc_ColorIntNameVN = col?.ColorIntNameVN,
+            cv_EngineNo = c.EngineNo,
+            cdod_DeliveryOrderNo = do0?.Hdr?.DoNo, cdod_DeliveryEndDate = do0?.x.DeliveryEndDate, do0?.x.ConfirmStatus,
+            ctdd_DlrCtrNo = ctr?.DealerContractNo, ctdd_DlrCtrStatusDtl = ctr?.ContractDetailStatus,
+            pmg_GuaranteeNo = grtD?.h?.GuaranteeNo, pmg_GuaranteeStatus = grtD?.h?.Status, pmg_BankCode = grtD?.h?.BankCode,
+            ctmd_TransportMinutesNo = tm0?.Hdr?.TransportMinutesNo, ctmd_TransportMinutesDtlStatus = tm0?.x.DtlStatus
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        filterVsDisplayScopeMismatchNote = "Loc tren MOI trang thai bao lanh/BBBG (join Draft mo); hien thi " +
+            "CHI lay bao lanh status='A' va BBBG status in P/A/F (khoa cung o SELECT cuoi nguon) - xe tim " +
+            "duoc co the hien cot bao lanh/BBBG RONG neu dong khop loc khac hai tap do (#5818).",
+        simplificationNote = "Nguon LEFT JOIN nhieu bang con co the nhan dong theo xe; man nay chi de TIM " +
+            "xe (khong hau kiem dem dong nhu #5806) nen port lay DONG DAU moi bang con cho moi xe (#5818)."
+    });
+}).RequireAuthorization();
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
