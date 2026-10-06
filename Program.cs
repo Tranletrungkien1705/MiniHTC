@@ -71476,7 +71476,14 @@ app.MapGet("/api/reports/dlrcontract-instock", async (
         doubleMechanismNote = "NAM THAM SO VUA BIND LAM PARAM RUNTIME VUA BI NUONG - CUNG TEN, CUNG HAM: bind @strCreatedDateFromConditionList, @strCreatedDateToConditonList, @strDeliveryDateFrom, @strDeliveryDateTo, @strDateBegin; roi Replace THAY CHINH NHUNG TEN DO bang gia tri. Sau Replace, SQL KHONG CON THAM CHIEU cac ten do => NAM THAM SO DA BIND TRO THANH MO COI. HAI NHANH (khong doan): neu EzDAL BAO LOI khi co tham so thua => ham CHET; neu BO QUA => chay duoc, nhung viec bind la THUA va GAY HIEU NHAM rang da tham so hoa. Day la DANG CUC DOAN NHAT cua [BAKE-PARAM-MIX]: MOT THAM SO DUOC XU LY BANG CA HAI CACH.",
         typoPlaceholderNote = "SAI CHINH TA TRONG TEN PLACEHOLDER - CO HE THONG: '@strCreatedDateToConditonList' va 'zzzzClauseWhere_strMAAreaCodeConditonList' (thieu chu i, dung phai la Condition). Vo hai CHI KHI SQL cung viet sai y het; lech mot chu => placeholder KHONG DUOC THAY => chuoi nam nguyen trong SQL => loi cu phap hoac tham so thieu.",
         rbacNote = "RBAC to hop (3): @strBUPatternOfUser BIND THAT; cong '//myCommon_CheckHTCDirect(' bi comment nhung CO LOC DONG => khong phai lo. Them BuildClause cho md.DealerCode va f.AreaCodeDealer (param @p, an toan). @strZoneCode duoc bind => nho luat da ghi trong bo nho (zonecode NULL vs rong lam bao cao ra 0 CAM); port truyen chuoi RONG thay vi NULL.",
-        debtNote = "NO - KHONG DOAN: Dlr_Contract + ton kho theo hop dong chua du => tra khung + co."
+        // #5758 SUA LAI LY DO NO: da grep xac nhan Mini DA CO DU entity Dlr_Contract/DlrContractDetail/
+        // DlrContractCancel/DlrContractCancelDtl/DealerZone — KHONG phai "thieu entity" nhu doc luot tuong.
+        // Doc toan van mySql_Rpt_DlrContractInstock_New20260514() (RptSQLQuery.cs:37296-37700+) xac nhan
+        // chan THAT la DO PHUC TAP CONG THUC: 19 BANG TAM doi chieu TON DAU KY -> GIAO XE TRONG KY -> HUY
+        // TRONG KY -> TON CUOI KY (doi chieu theo TUNG MOC thoi gian, khong phai snapshot 1 thoi diem) —
+        // cung hang phuc tap voi SalesBalanceOrder_GetX/Rpt_SummaryCarAtDealer_New20260514 da ghi no truoc.
+        // Khong port mot phan (se sai vi muc dich chinh la doi chieu theo ky) — de dau tu rieng.
+        debtNote = "NO - KHONG DOAN: entity da DU (Dlr_Contract/DlrContractDetail/DlrContractCancel/DealerZone deu co) nhung SQL nguon co 19 bang tam doi chieu ton dau ky/giao xe trong ky/huy trong ky/ton cuoi ky theo TUNG MOC thoi gian - do phuc tap cong thuc (khong phai thieu entity), can dau tu rieng, khong port mot phan."
     });
 }).RequireAuthorization();
 // ===== #B374 BÁO CÁO MAP VIN — `Rpt_MapVIN_WH_New20181119`
