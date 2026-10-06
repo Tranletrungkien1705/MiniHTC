@@ -2803,6 +2803,67 @@ public sealed class Reception
     public string? CardNo { get; set; }
     public string? MemberNo { get; set; }
     public string? CardType { get; set; }
+    // ===== #1604 §12 — 52 CỘT KIỂM TRA TRẠNG THÁI XE (D_A_*/R_A_*) của `Ser_ReceptionF` =====
+    // Nguồn `Ser_ReceptionF_ReceptionX` (`BizCarSv.Tab.cs:9994`) nhận 26 tham số `strR_*` và ghi vào
+    // `#input_Ser_ReceptionF` với GIÁ TRỊ THẬT (StandardizeFlag), còn 26 cột `D_*` ghi `null`.
+    // `Ser_ReceptionF_Save` (`:9038`) INSERT đủ 52 cột từ `#input_Ser_ReceptionF`.
+    // Port cũ thiếu HẲN 52 cột ⇒ mất toàn bộ kết quả kiểm tra xe lúc tiếp nhận.
+    // Nhóm A: đèn/taplo/còi/gạt mưa/âm thanh/điều hoà/gương/dây an toàn
+    public string? R_A_TaploLightsStatus { get; set; }
+    public string? D_A_TaploLightsStatus { get; set; }
+    public string? R_A_HornStatus { get; set; }
+    public string? D_A_HornStatus { get; set; }
+    public string? R_A_WindScreenwiperStatus { get; set; }
+    public string? D_A_WindScreenwiperStatus { get; set; }
+    public string? R_A_SoundStatus { get; set; }
+    public string? D_A_SoundStatus { get; set; }
+    public string? R_A_AirConditioningStatus { get; set; }
+    public string? D_A_AirConditioningStatus { get; set; }
+    public string? R_A_Windshield_Mirror_Status { get; set; }
+    public string? D_A_Windshield_Mirror_Status { get; set; }
+    public string? R_A_Seat_Belt_Status { get; set; }
+    public string? D_A_Seat_Belt_Status { get; set; }
+    // Nhóm B: đèn trước/sau
+    public string? R_B_FrontLightStatus { get; set; }
+    public string? D_B_FrontLightStatus { get; set; }
+    public string? R_B_BackLightStatus { get; set; }
+    public string? D_B_BackLightStatus { get; set; }
+    // Nhóm C: dầu máy/phanh/lái/nước làm mát/dây curoa/nước rửa/lọc gió/rò rỉ
+    public string? R_C_EngineOilLevelStatus { get; set; }
+    public string? D_C_EngineOilLevelStatus { get; set; }
+    public string? R_C_BrakeFluidLevelStatus { get; set; }
+    public string? D_C_BrakeFluidLevelStatus { get; set; }
+    public string? R_C_PowerSteeringLevelStatus { get; set; }
+    public string? D_C_PowerSteeringLevelStatus { get; set; }
+    public string? R_C_CoolantWaterLevelStatus { get; set; }
+    public string? D_C_CoolantWaterLevelStatus { get; set; }
+    public string? R_C_FanBelt_Status { get; set; }
+    public string? D_C_FanBelt_Status { get; set; }
+    public string? R_C_WasherFluidLevelStatus { get; set; }
+    public string? D_C_WasherFluidLevelStatus { get; set; }
+    public string? R_C_AirFilterStatus { get; set; }
+    public string? D_C_AirFilterStatus { get; set; }
+    public string? R_C_LiquidLeakageStatus { get; set; }
+    public string? D_C_LiquidLeakageStatus { get; set; }
+    public string? R_C_GasSystemLeakageStatus { get; set; }
+    public string? D_C_GasSystemLeakageStatus { get; set; }
+    // Nhóm D: bốn bánh
+    public string? R_D_FrontLeftWheelStatus { get; set; }
+    public string? D_D_FrontLeftWheelStatus { get; set; }
+    public string? R_D_FrontRightWheelStatus { get; set; }
+    public string? D_D_FrontRightWheelStatus { get; set; }
+    public string? R_D_BackLeftWheelStatus { get; set; }
+    public string? D_D_BackLeftWheelStatus { get; set; }
+    public string? R_D_BackRightWheelStatus { get; set; }
+    public string? D_D_BackRightWheelStatus { get; set; }
+    // Nhóm E: ảnh sơn thân xe
+    public string? R_E_BodyPaintFilePath { get; set; }
+    public string? D_E_BodyPaintFilePath { get; set; }
+    // Nhóm F: lốp dự phòng / ắc quy
+    public string? R_F_SpearTireStatus { get; set; }
+    public string? D_F_SpearTireStatus { get; set; }
+    public string? R_F_BatteryOfCarStatus { get; set; }
+    public string? D_F_BatteryOfCarStatus { get; set; }
 }
 
 /// <summary>#355 Dòng kiểm tra xe lúc tiếp nhận / giao (Ser_ReceptionFDtl). Khoá nguồn = (ReceptionFNo, ReceptionFAudCode, ReceptionFAudType).

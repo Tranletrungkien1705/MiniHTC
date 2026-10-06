@@ -93842,7 +93842,21 @@ app.MapPost("/api/receptions", async (ReceptionDto dto, AppDbContext db, ITenant
         LUDateTime = now, LUBy = who, ReceptionFStatus = "P", LogLUDateTime = now, LogLUBy = who,
         // merge session-a #271/#522/#1039
         AppNo = string.IsNullOrWhiteSpace(dto.AppNo) ? null : dto.AppNo!.Trim(), RemarkErrOrther = dto.RemarkErrOrther,
-        CardNo = dto.CardNo, MemberNo = dto.MemberNo, CardType = dto.CardType
+        CardNo = dto.CardNo, MemberNo = dto.MemberNo, CardType = dto.CardType,
+        // #1604 26 cot R_A_* — nguon StandardizeFlag tung cot (rong/"0" => "0", khac => "1"); D_A_* nguon ghi null.
+        R_A_TaploLightsStatus = RcpFlag(dto.R_A_TaploLightsStatus), R_A_HornStatus = RcpFlag(dto.R_A_HornStatus),
+        R_A_WindScreenwiperStatus = RcpFlag(dto.R_A_WindScreenwiperStatus), R_A_SoundStatus = RcpFlag(dto.R_A_SoundStatus),
+        R_A_AirConditioningStatus = RcpFlag(dto.R_A_AirConditioningStatus), R_A_Windshield_Mirror_Status = RcpFlag(dto.R_A_Windshield_Mirror_Status),
+        R_A_Seat_Belt_Status = RcpFlag(dto.R_A_Seat_Belt_Status), R_B_FrontLightStatus = RcpFlag(dto.R_B_FrontLightStatus),
+        R_B_BackLightStatus = RcpFlag(dto.R_B_BackLightStatus), R_C_EngineOilLevelStatus = RcpFlag(dto.R_C_EngineOilLevelStatus),
+        R_C_BrakeFluidLevelStatus = RcpFlag(dto.R_C_BrakeFluidLevelStatus), R_C_PowerSteeringLevelStatus = RcpFlag(dto.R_C_PowerSteeringLevelStatus),
+        R_C_CoolantWaterLevelStatus = RcpFlag(dto.R_C_CoolantWaterLevelStatus), R_C_FanBelt_Status = RcpFlag(dto.R_C_FanBelt_Status),
+        R_C_WasherFluidLevelStatus = RcpFlag(dto.R_C_WasherFluidLevelStatus), R_C_AirFilterStatus = RcpFlag(dto.R_C_AirFilterStatus),
+        R_C_LiquidLeakageStatus = RcpFlag(dto.R_C_LiquidLeakageStatus), R_C_GasSystemLeakageStatus = RcpFlag(dto.R_C_GasSystemLeakageStatus),
+        R_D_FrontLeftWheelStatus = RcpFlag(dto.R_D_FrontLeftWheelStatus), R_D_FrontRightWheelStatus = RcpFlag(dto.R_D_FrontRightWheelStatus),
+        R_D_BackLeftWheelStatus = RcpFlag(dto.R_D_BackLeftWheelStatus), R_D_BackRightWheelStatus = RcpFlag(dto.R_D_BackRightWheelStatus),
+        R_E_BodyPaintFilePath = (dto.R_E_BodyPaintFilePath ?? "").Trim(), R_F_SpearTireStatus = RcpFlag(dto.R_F_SpearTireStatus),
+        R_F_BatteryOfCarStatus = RcpFlag(dto.R_F_BatteryOfCarStatus)
     };
     db.Receptions.Add(r);
     foreach (var d in dto.Ser_ReceptionFDtl ?? new())
@@ -111386,7 +111400,33 @@ record ReceptionDto(string? PlateNo,
     string? AppNo = null,
     string? CardNo = null,
     string? MemberNo = null,
-    string? CardType = null);
+    string? CardType = null,
+    // #1604 26 cot R_A_* kiem tra trang thai xe (nguon Ser_ReceptionF_ReceptionX ghi gia tri THAT)
+    string? R_A_TaploLightsStatus = null,
+    string? R_A_HornStatus = null,
+    string? R_A_WindScreenwiperStatus = null,
+    string? R_A_SoundStatus = null,
+    string? R_A_AirConditioningStatus = null,
+    string? R_A_Windshield_Mirror_Status = null,
+    string? R_A_Seat_Belt_Status = null,
+    string? R_B_FrontLightStatus = null,
+    string? R_B_BackLightStatus = null,
+    string? R_C_EngineOilLevelStatus = null,
+    string? R_C_BrakeFluidLevelStatus = null,
+    string? R_C_PowerSteeringLevelStatus = null,
+    string? R_C_CoolantWaterLevelStatus = null,
+    string? R_C_FanBelt_Status = null,
+    string? R_C_WasherFluidLevelStatus = null,
+    string? R_C_AirFilterStatus = null,
+    string? R_C_LiquidLeakageStatus = null,
+    string? R_C_GasSystemLeakageStatus = null,
+    string? R_D_FrontLeftWheelStatus = null,
+    string? R_D_FrontRightWheelStatus = null,
+    string? R_D_BackLeftWheelStatus = null,
+    string? R_D_BackRightWheelStatus = null,
+    string? R_E_BodyPaintFilePath = null,
+    string? R_F_SpearTireStatus = null,
+    string? R_F_BatteryOfCarStatus = null);
 record ReceptionFDtlDto(string? ReceptionFAudCode,
     string? ReceptionFAudType,
     string? ReceptionAudStatus = null,
