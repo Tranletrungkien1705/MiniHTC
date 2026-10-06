@@ -35971,13 +35971,20 @@ app.MapDelete("/api/technicallibraries/{code}", async (string code, string deale
 // ===== Master nhà cung cấp phụ tùng (SerMstSupplier — port 1:1 FrmMstSupplierCreate/Search, TCMotor DMSCarSv) =====
 // #380 bản CHUẨN của Ser_MST_Supplier (song sinh ServiceSupplier đã gộp vào). Nguồn: MstSupplierService.MstSupplierSearch/GetAll
 //   lọc theo strDealerCode; ValidateInput (FrmMstSupplierCreate:80-99) bắt buộc Mã + Tên + Địa chỉ.
-app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealer, string? dealerCode) =>
+// #5858 — bổ sung supplierCode/supplierName/address cho đúng `MstSupplierSearch` (`FrmMstSupplierSearch`,
+// `MstSupplierService.cs:63`): nguồn truyền BA bộ lọc ĐỘC LẬP (mỗi ô nhập RIÊNG, AND với nhau qua
+// `like %…%`), KHÁC hẳn `q` cũ (OR gộp code/name trong MỘT ô). Giữ `q` để không phá caller cũ.
+app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string? q, bool? all, string? dealer, string? dealerCode,
+    string? supplierCode, string? supplierName, string? address) =>
 {
     var qry = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SupplierCode.Contains(q!) || x.SupplierName!.Contains(q!));
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(supplierCode)) qry = qry.Where(x => x.SupplierCode.Contains(supplierCode!));
+    if (!string.IsNullOrWhiteSpace(supplierName)) qry = qry.Where(x => x.SupplierName != null && x.SupplierName.Contains(supplierName!));
+    if (!string.IsNullOrWhiteSpace(address)) qry = qry.Where(x => x.Address != null && x.Address.Contains(address!));
     var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt, x.SupplierID /*merge session-a*/  }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
