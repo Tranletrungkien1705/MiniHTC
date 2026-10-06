@@ -109746,6 +109746,159 @@ static string? RollupDocReqTcgListStatus(List<string?> dtlStatuses)
     if (countAll == countF + countA2) return "A2";
     return null;                                                    // else — nguồn không làm gì
 }
+// ===== #5798 BÁO CÁO PIVOT TỒN KHO THEO HĐ HTCV — `Frm2019_RptPivot_Instock_ByHTCVInvoice` =====
+// Trace: menu `MDI_ID_REPORT_PIVOT_INSTOCK_BYINVOICEHTCV` (558, FrmMain.cs:806 SỐNG) → WS
+//   `RptPivot_Instock_ByInvoiceHTCV` → `_biz.RptPivot_Instock_ByInvoiceHTCV`
+//   (2021.1.TCMotor `TERP.BizHTC/BizHTC.Report.cs:23918`). Trước #5798 Mini KHÔNG có route nào.
+// Đối chiếu từng dòng:
+//   · Chỉ dùng `strToDate` (form truyền FromDate ""). Guard: ToDate > hôm nay ⇒ lỗi
+//     `Rpt_InvCarDocument_01_InvalidReportDate`. RBAC `myCommon_CheckHTCDirect` bị COMMENT (20141031 mở cho
+//     đại lý xem) và `@strBUPatternOfUser` bind nhưng KHÔNG dùng trong SQL ⇒ không lọc phạm vi.
+//   · #tbl_Filter: Car_VIN `StoreDate <= ToDate` LEFT JOIN VAT_HTCInvoiceDetail (HTCStatusDetail not in R,C)
+//     LEFT JOIN VAT_HTCInvoice (VatHTCStatus not in R,C), giữ dòng `HTCInvoiceDate > ToDate OR NULL`.
+//     🔴 Hai bẫy của LEFT JOIN, port GIỮ NGUYÊN: (1) chi tiết sống nhưng header R/C ⇒ vh NULL ⇒ ngày NULL ⇒
+//     xe VẪN tính tồn; (2) một VIN có ≥2 dòng HĐ thoả ⇒ NHÂN BẢN dòng (trả `duplicatedVins`).
+//   · MyDays = DateDiff(CQStartDate, **GetDate()**) — tính tới HÔM NAY, KHÔNG phải ToDate.
+//   · AreaName = vùng TRỰC TIẾP của tỉnh đại lý (không leo AreaRootCode).
+//   · DutyCompletePercent (`mySql_GetData_DutyCompletePercent_DutyCompletedDate`, :23631) = (cọc 'F' không gắn
+//     bảo lãnh + bảo lãnh chi tiết A/F của header A/F) * 100 / UnitPriceActual. Mẫu số 0 ⇒ nguồn NỔ chia 0;
+//     port trả 0 + liệt kê `zeroUnitPriceVins`.
+//   · LEFT JOIN Car_DeliveryOrderDetail (CarId + DeliveryVIN, ConfirmStatus not in R,C) và Car_DeliveryOrder
+//     (status not in R,C) ⇒ nhiều lệnh sống ⇒ nhân dòng. StorageCode = CASE: DeliveryEndDate có & ConfirmStatus
+//     'F' ⇒ DealerCode của lệnh; DeliveryEndDate rỗng ⇒ StorageCodeCurrent; còn lại NULL.
+app.MapGet("/api/reports/pivot-instock-by-htcv-invoice", async (
+    AppDbContext db, ITenantContext t, DateTime? toDate) =>
+{
+    var today = DateTime.Today;
+    var to = (toDate ?? today).Date;
+    if (to > today)
+        return Results.BadRequest(new { error = "Rpt_InvCarDocument_01_InvalidReportDate", toDate = to, sysDate = today });
+    var toEnd = to.AddDays(1);   // so sánh khoảng ngày, không `==`
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.VIN != ""
+        && c.StoreDate != null && c.StoreDate < toEnd).ToListAsync();
+    var vins = cars.Select(c => c.VIN).Distinct().ToList();
+
+    var invDtls = await db.VatHtcInvoiceDetails.Where(d => d.OrgId == t.OrgId && vins.Contains(d.VIN)
+        && d.HTCStatusDetail != "R" && d.HTCStatusDetail != "C")
+        .Select(d => new { d.VIN, d.HTCInvoiceCode }).ToListAsync();
+    var invCodes = invDtls.Select(d => d.HTCInvoiceCode).Distinct().ToList();
+    var invHdr = (await db.VatHtcInvoices.Where(h => h.OrgId == t.OrgId && invCodes.Contains(h.HTCInvoiceCode)
+        && h.VatHTCStatus != "R" && h.VatHTCStatus != "C")
+        .Select(h => new { h.HTCInvoiceCode, h.HTCInvoiceDate }).ToListAsync())
+        .GroupBy(h => h.HTCInvoiceCode).ToDictionary(g => g.Key, g => g.ToList());
+    var dtlByVin = invDtls.GroupBy(d => d.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+    // Tái hiện #tbl_Filter: mỗi dòng join (cv × vhd × vh) thoả điều kiện ngày ⇒ 1 dòng.
+    var filter = new List<CarVinMaster>();
+    foreach (var c in cars)
+    {
+        if (!dtlByVin.TryGetValue(c.VIN, out var dl)) { filter.Add(c); continue; }   // không có HĐ sống
+        foreach (var d in dl)
+        {
+            if (!invHdr.TryGetValue(d.HTCInvoiceCode, out var hs)) { filter.Add(c); continue; } // header R/C ⇒ NULL
+            foreach (var h in hs)
+                if (h.HTCInvoiceDate == null || h.HTCInvoiceDate >= toEnd) filter.Add(c);
+        }
+    }
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var colors = (await db.MstCarColors.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => (s.ModelCode, s.ColorCode)).ToDictionary(g => g.Key, g => g.First());
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var areas = (await db.Areas.Where(a => a.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(a => a.AreaCode).ToDictionary(g => g.Key, g => g.First());
+
+    // DutyCompletePercent
+    var carIds = filter.Where(c => !string.IsNullOrEmpty(c.CarId)).Select(c => c.CarId!).Distinct().ToList();
+    var depositF = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "F" }, true);
+    var fVins = filter.Select(c => c.VIN).Distinct().ToList();
+    var grtByVin = (await (from g in db.BankGuaranteeDtls
+                           join h in db.BankGuarantees on g.GuaranteeId equals h.Id
+                           where g.OrgId == t.OrgId && fVins.Contains(g.VIN)
+                                 && (g.GuaranteeDetailStatus == "A" || g.GuaranteeDetailStatus == "F")
+                                 && (h.Status == "A" || h.Status == "F")
+                           select new { g.VIN, g.GrtValue }).ToListAsync())
+        .GroupBy(x => x.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue), StringComparer.OrdinalIgnoreCase);
+
+    var doLines = await (from dc in db.DeliveryOrderCars
+                         join d in db.DeliveryOrders on dc.DoId equals d.Id
+                         where dc.OrgId == t.OrgId && dc.CarId != null && carIds.Contains(dc.CarId)
+                               && dc.ConfirmStatus != "R" && dc.ConfirmStatus != "C"
+                         select new { dc.CarId, dc.Vin, dc.DeliveryOutDate, dc.DeliveryEndDate, dc.ConfirmStatus,
+                                      d.DealerCode, d.Status }).ToListAsync();
+    var doByCar = doLines.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.ToList());
+
+    var rows = new List<object>();
+    var zeroUnitPrice = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var c in filter)
+    {
+        var cid = c.CarId ?? "";
+        specs.TryGetValue(c.ActualSpec ?? "", out var sp);
+        colors.TryGetValue((c.ModelCode ?? "", c.ColorCode ?? ""), out var col);
+        dealers.TryGetValue(c.DealerCode ?? "", out var dl);
+        MstProvince? pv = null; Area? ar = null;
+        if (dl?.ProvinceCode != null) provinces.TryGetValue(dl.ProvinceCode, out pv);
+        if (pv?.AreaCode != null) areas.TryGetValue(pv.AreaCode, out ar);
+
+        var dep = (cid.Length > 0 && depositF.TryGetValue(cid, out var dv)) ? dv.AmountTotal : 0m;
+        var grt = grtByVin.TryGetValue(c.VIN, out var gv) ? gv : 0m;
+        var unit = c.UnitPriceActual ?? 0m;
+        decimal pct = 0m;
+        if (unit == 0m) zeroUnitPrice.Add(c.VIN); else pct = (dep + grt) * 100m / unit;
+
+        // cdod LEFT JOIN trên CarId + DeliveryVIN; header R/C ⇒ cột cdo NULL (dòng cdod vẫn giữ).
+        var dls = (cid.Length > 0 && doByCar.TryGetValue(cid, out var ll))
+            ? ll.Where(x => string.Equals(x.Vin, c.VIN, StringComparison.OrdinalIgnoreCase)).ToList()
+            : null;
+        var joins = dls == null || dls.Count == 0
+            ? new List<(DateTime? Out, DateTime? End, string? Cfm, string? DoDealer)> { (null, null, null, null) }
+            : dls.Select(x => (x.DeliveryOutDate, x.DeliveryEndDate, (string?)x.ConfirmStatus,
+                               x.Status == "R" || x.Status == "C" ? null : (string?)x.DealerCode)).ToList();
+        foreach (var j in joins)
+        {
+            string? storageCode = j.Item2 != null && j.Item3 == "F" ? j.Item4
+                                : j.Item2 == null ? c.StorageCodeCurrent : null;
+            rows.Add(new
+            {
+                c.ModelCode,
+                SpecDescription = sp?.SpecDesc,
+                c.VIN, c.ColorCode,
+                col?.ColorExtCode, col?.ColorIntCode,
+                VN_COLOR_NAME_COMBIND = col == null || col.ColorExtNameVN == null || col.ColorIntNameVN == null
+                    ? null : col.ColorExtNameVN + "/" + col.ColorIntNameVN,   // NULL + '/' ⇒ NULL như SQL
+                c.LoaiThung,
+                MyDays = c.CQStartDate == null ? (int?)null : (today - c.CQStartDate.Value.Date).Days,
+                c.ProductionMonth,
+                ProductionYear = c.ProductionMonth == null ? null
+                    : c.ProductionMonth.Substring(0, Math.Min(4, c.ProductionMonth.Length)),
+                c.CarId, c.StorageCodeCurrent, c.DealerCode,
+                DealerName = dl?.DealerName,
+                AreaName = ar?.AreaName,
+                DeliveryOutDate = j.Item1,
+                DutyCompletePercent = pct,
+                StorageCode = storageCode,
+                c.SOCode,
+                TOTAL = 1
+            });
+        }
+    }
+
+    var duplicatedVins = filter.GroupBy(c => c.VIN).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+    return Results.Ok(new
+    {
+        toDate = to, count = rows.Count, items = rows,
+        duplicatedVins, zeroUnitPriceVins = zeroUnitPrice.ToList(),
+        rbacNote = "myCommon_CheckHTCDirect bi COMMENT (20141031 mo cho dai ly xem); @strBUPatternOfUser bind nhung SQL khong dung => khong loc pham vi (#5798).",
+        myDaysNote = "MyDays = DateDiff(CQStartDate, GetDate()) - tinh toi HOM NAY, khong phai ToDate (#5798)."
+    });
+});
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
