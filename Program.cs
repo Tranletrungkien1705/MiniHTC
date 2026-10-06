@@ -21365,7 +21365,12 @@ app.MapGet("/api/mngquotas/history", async (AppDbContext db, ITenantContext t, s
 // ===== #146: CHƯƠNG TRÌNH HẠN MỨC ĐIỀU KIỆN – KHUYẾN MÃI (Mst_Quota) =====
 // Nguồn: 0.01.Master.cs — Mst_Quota_AddMultiX_New20220406 (4262) ghi tại 4621.
 // 🔴 Port cũ hiểu SAI bảng này thành "hạn mức theo model/kỳ"; xem ghi chú ở entity Quota.
-app.MapGet("/api/mstquotas", async (AppDbContext db, ITenantContext t, string? dealer, string? code, string? flagActive) =>
+// #5792: them 3 bo loc ngay cua FrmMstMapVinConsessionaryProgram.btnSearch_Click (DOC CHINH XAC tu nguon,
+// SalesService.cs:33210-33230, KHONG phai qua /api/mngquotas nhu 1 agent truoc nham vi ten gan giong —
+// twin dung la ham `Mst_Quota_Get` doc bang `Mst_Quota`, khop voi entity `Quota` o DAY, khong phai
+// `MngQuota`): dateApplyFrom->SOApprDateFrom(>=), dateApplyTo->SOApprDateToInit(<=), endDate->SOApprDateTo(=).
+app.MapGet("/api/mstquotas", async (AppDbContext db, ITenantContext t, string? dealer, string? code, string? flagActive,
+    DateTime? dateApplyFrom, DateTime? dateApplyTo, DateTime? endDate) =>
 {
     // #1259 SUA BUG THAT: bang Quotas dung CHUNG cho 2 tinh nang khac nhau tren cung 1 bang - Mst_Quota
     // (cum nay, khoa QuotaCode BAT BUOC) va han muc xe theo model+ky (cum /api/quotas, khoa ModelCode
@@ -21375,6 +21380,9 @@ app.MapGet("/api/mstquotas", async (AppDbContext db, ITenantContext t, string? d
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(code)) q = q.Where(x => x.QuotaCode == code);
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
+    if (dateApplyFrom is not null) q = q.Where(x => x.SOApprDateFrom != null && x.SOApprDateFrom >= dateApplyFrom);
+    if (dateApplyTo is not null) q = q.Where(x => x.SOApprDateToInit != null && x.SOApprDateToInit <= dateApplyTo);
+    if (endDate is not null) q = q.Where(x => x.SOApprDateTo == endDate);
     var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.QuotaCode).Take(1000).Select(x => new {
         x.DealerCode, x.QuotaCode, x.QuotaName, x.ModelCondition, x.ModelPromotion,
         x.SpecCodeCondition, x.SpecCodePromotion, x.QtyCondition, x.QtyPromotion,
