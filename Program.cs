@@ -75515,6 +75515,75 @@ app.MapPost("/api/reports/principle-contract/dlr-approve2", async (
         dealerCodeMisuseNote = "BUG NGUON: drNew['DealerCode'] = strPartnerUserCode - cot DealerCode cua lo email nhan MA NGUOI DUNG, khong phai ma dai ly. Cung ho loi 'cot ...Name nhan ...Code' (#B269/#B284/#B290/#B329)."
     });
 }).RequireAuthorization();
+
+// ===== #5834 SỬA HÀNG LOẠT HĐ NGUYÊN TẮC — `FrmMngPrincipleContractHtc.btnApply_Click` (`Rpt_PrincipleContractUpdate`) =====
+// Trace: menu sống `FrmMain.cs:2205` → `btnApply_Click` dựng `ds_Update` từ các dòng lưới có cờ
+// EDIT **hoặc** DELETE → `rptPrincipleContractService.Rpt_PrincipleContractUpdate(ds_Update)`
+// (`Rpt_PrincipleContractService.cs:108`) → WS (`WSHTC.asmx.cs:72330`) → biz `Rpt_PrincipleContractUpdate`
+// (`DMS40/zTemp.0.34.Contract.cs:3206`, live — `<Compile Include="DMS40\zTemp.0.34.Contract.cs">`).
+// 🔴 PHÁT HIỆN — NÚT "XOÁ" TRÊN LƯỚI KHÔNG BAO GIỜ XOÁ: client gom CẢ dòng đánh dấu SỬA lẫn dòng đánh dấu
+//   XOÁ vào CÙNG MỘT bảng `dtSave` với CÙNG 7 cột dữ liệu (không có cột trạng thái/hành động nào được gửi
+//   kèm) rồi gọi `drowSave.SetAdded()` cho MỌI dòng — cờ XOÁ bị bỏ lại ở client, KHÔNG đi tới server. Phía
+//   biz nhận dữ liệu rồi tự `ResetAllDataRowState(..., Modified)` cho MỌI dòng (dòng 3437) ⇒ chỉ có MỘT
+//   con đường: `SaveData` kiểu UPDATE 6 cột. KHÔNG CÓ nhánh xoá nào trong toàn hàm (đã quét `Delete` không
+//   ra kết quả). Vậy "Xóa HĐ nguyên tắc" trên màn hình thật = ẨN DÒNG TRÊN LƯỚI RỒI LƯU LẠI NGUYÊN GIÁ TRỊ
+//   CŨ — KHÔNG xoá gì trong DB. Port tái hiện ĐÚNG: route này CHỈ update 6 cột, không nhận/không có hành
+//   vi xoá; nếu FE gọi route xoá riêng (vd `/api/principlecontracts/{no}/delete` #5676), đó là đường
+//   KHÁC của màn Admin, không phải hành vi thật của màn "Htc" này.
+// 🔴 GUARD CHẶT HƠN route `/edit` (#5676, chỉ cần `flagDirect`): ở đây đòi CẢ BA — `FlagActive="1"`,
+//   `DealerSignStatus="P"`, `NPPSignStatus="P"` (`myCommon_CheckRptPrincipleContract`, TConst.HTCSignStatus
+//   ≡ TConst.HTVSignStatus cùng giá trị — xem ghi chú 3 lớp hằng trùng nhau ở `npp-approve`) — chỉ sửa
+//   được TRƯỚC KHI chuỗi ký bắt đầu. Hai route cùng sửa 1 bảng nhưng khác guard — cố ý giữ riêng, không
+//   gộp vào `/edit` cũ.
+// 🔴 `DealerCode` KHÔNG lấy từ input (client có gửi nhưng biz BỎ QUA, lấy lại từ DB qua
+//   `myCommon_CheckRptPrincipleContract` — dòng 3413) ⇒ không thể đổi đại lý qua route này, khớp đúng quy
+//   tắc "DealerCode khoá" đã ghi ở #5676.
+app.MapPost("/api/reports/principle-contract/batch-update", async (
+    List<PrincipleContractBatchRowDto> rows, AppDbContext db, ITenantContext t) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_TableBeBlank" });
+    var nos = rows.Select(r => (r.PrincipleContractNo ?? "").Trim()).ToList();
+    if (nos.Distinct(StringComparer.OrdinalIgnoreCase).Count() != nos.Count)
+        return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_DuplicateKeyDetail" });
+
+    var plan = new List<(PrincipleContract p, PrincipleContractBatchRowDto r)>();
+    foreach (var r in rows)
+    {
+        var no = (r.PrincipleContractNo ?? "").Trim();
+        var p = await db.PrincipleContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PrincipleContractNo == no);
+        if (p is null) return Results.BadRequest(new { error = "CommonAppData_RptPrincipleContractNotFound", principleContractNo = no });
+        var g = PrincipleContractGuard(p, "1", "P", "P");
+        if (g is not null) return Results.BadRequest(new { error = g, principleContractNo = no });
+        if (string.IsNullOrWhiteSpace(r.BankInfo)) return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_BankInfoIsEmpty", principleContractNo = no });
+        if (r.PrincipleContractDate is null) return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_PrincipleContractDateIsEmpty", principleContractNo = no });
+        if (r.PrincipleContractExpectedDate is null) return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_PrincipleContractExpectedDateIsEmpty", principleContractNo = no });
+        if (r.PrincipleContractExpectedDate < r.PrincipleContractDate)
+            return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_PrincipleContractExpectedDateNotMatch", principleContractNo = no });
+        if (string.IsNullOrWhiteSpace(r.Representative)) return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_RepresentativeIsEmpty", principleContractNo = no });
+        if (string.IsNullOrWhiteSpace(r.JobTitle)) return Results.BadRequest(new { error = "Rpt_PrincipleContractUpdate_JobTitleIsEmpty", principleContractNo = no });
+        plan.Add((p, r));
+    }
+
+    var now = DateTime.Now;
+    foreach (var (p, r) in plan)
+    {
+        p.PrincipleContractDate = r.PrincipleContractDate!.Value;
+        p.PrincipleContractExpectedDate = r.PrincipleContractExpectedDate!.Value;
+        p.BankInfo = r.BankInfo!.Trim();
+        p.Representative = r.Representative!.Trim();
+        p.JobTitle = r.JobTitle!.Trim();
+        p.LogLUDateTime = now;
+        // DealerCode KHÔNG đổi — nguồn lấy lại từ DB, bỏ qua input (xem ghi chú #5834).
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        updated = plan.Count, principleContractNos = plan.Select(x => x.p.PrincipleContractNo),
+        deleteNeverHappensNote = "Nguon KHONG co nhanh xoa trong ham nay - moi dong (ke ca dong WinForm " +
+            "danh dau XOA tren luoi) deu chi duoc UPDATE 6 cot nay. Khong bia logic xoa (#5834)."
+    });
+}).RequireAuthorization();
+
 // ===== Master chính sách bán hàng (SalesPolicyMst — port 1:1 FrmMstPolicy_New/Mng, 2010.HTC/Sales) =====
 app.MapGet("/api/salespolicies", async (AppDbContext db, ITenantContext t, string? status, string? type) =>
 {
@@ -114588,6 +114657,8 @@ record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
 record PrincipleContractApproveDto(string PrincipleContractNo, string? PartnerUserCode = null, string? FilePath = null);
 record PrincipleContractDto(string DealerCode, string PrincipleContractNo, string BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string Representative, string JobTitle, string? DealerSignStatus = null, DateTime? DealerSignDTime = null, string? DealerSignBy = null, string? NPPSignStatus = null, DateTime? NPPSignDTime = null, string? NPPSignBy = null, string? FlagActive = null, DateTime? CreateDTime = null, string? FilePath = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record PrincipleContractEditDto(string? BankInfo, DateTime? PrincipleContractDate, DateTime? PrincipleContractExpectedDate, string? Representative, string? JobTitle);
+record PrincipleContractBatchRowDto(string? PrincipleContractNo, string? BankInfo, DateTime? PrincipleContractDate,
+    DateTime? PrincipleContractExpectedDate, string? Representative, string? JobTitle);   // #5834
 record CtmVisitDto(string? DealerCode, string Gender, string RangeAge, string ModelCode);
 record DriveTestDto(string? DealerCode, string DriverTestType, string? DrvTestPlateNo, string TestModelCode, DateTime? DriveDate, string? CustomerCode, string CustomerName, string PhoneNo, string Address, string DriverLicenseNo, string? RangeAge, string? Email, string? FlagActive = null);
 record DriveTestUpdateDto(string? DrvTestPlateNo, string? TestModelCode, DateTime? DriveDate, string? CustomerName, string? PhoneNo, string? Address, string? Email,
