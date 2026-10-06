@@ -4461,6 +4461,26 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //    · **`(dlsdd.DeliveryDate is null OR dlsdd.DeliveryDate >= @strTDate_From)`** —
 //      🔴 vế `is null` **được chấp nhận** ⇒ báo cáo gồm **cả xe CHƯA bán**; bỏ vế này là mất nửa dữ liệu.
 // ✅ `@strBUPatternOfUser` **dùng thật** (`where … and (md.BUCode like @strBUPatternOfUser)`, `:65368`).
+//
+// #5762 ĐÃ ĐỌC TIẾP TOÀN VĂN (trước đây #B71 chỉ trace tới WHERE, chưa đọc hết thân hàm): xác nhận hàm
+// này CHÍNH LÀ twin mà `FrmBanHangDL` (phần "Xe đã bán" của UNG_VIEN#4, pivot DealerCode×ModelCode) gọi
+// qua `ReportService.ReportDealerSales` → CÙNG WS `RptSellCustomerDealer_ForSale_Mst` này. KHÔNG CÓ
+// route/stub nào từng được tạo cho hàm này (chỉ có comment trace #B71) — xác nhận GAP THẬT, không stale.
+// Đọc tiếp thân hàm (`:65403-65548+`) lộ ra mức phức tạp VƯỢT XA những gì trace ban đầu ghi: KHÔNG CHỈ
+// filter, mà còn **self-join "nhìn trước"** (`#tbl_Info1 left join #tbl_Info1 f_Sell on f.CarId=f_Sell.CarId
+// and f.DealNo != f_Sell.DealNo` — tìm deal KẾ TIẾP của cùng 1 xe) rồi áp **máy trạng thái 7 nhánh**
+// (`MyStatus`: SELLCUSTOMER/SELLDEALER/INSTOCK/ONWAY/BUYDEALER/UNKNOWN, tổ hợp từ 3 cờ dẫn xuất
+// MyStt_Sell×DLSDFlagInitDeal×MyStt_StockIn) để phân loại MỖI XE đang ở trạng thái nào trong chu trình
+// HTC→Đại lý→Khách. KHÔNG port một phần được (toàn bộ giá trị báo cáo NẰM Ở việc phân loại đúng 7 trạng
+// thái; port thiếu 1 nhánh = SAI PHÂN LOẠI cho nhiều xe, không phải thiếu cột). Cùng hạng mục phức tạp với
+// `SalesBalanceOrder_GetX`/`Rpt_SummaryCarAtDealer_New20260514`/`Rpt_DlrContractInstock_New20260514`
+// (`#5758`) đã ghi nợ trước đó trong phiên — ghi nợ CÓ CĂN CỨ, để đầu tư riêng.
+app.MapGet("/api/reports/dealer-retail-sales", () => Results.Ok(new
+{
+    count = 0,
+    items = Array.Empty<object>(),
+    debtNote = "NO - KHONG DOAN: RptSellCustomerDealer_ForSale_Mst (FrmBanHangDL/FrmFiveDealerSalesPivot) dung self-join 'nhin truoc' (#tbl_Info1 left join chinh no tim deal KE TIEP cua cung 1 xe) + may trang thai 7 nhanh (SELLCUSTOMER/SELLDEALER/INSTOCK/ONWAY/BUYDEALER/UNKNOWN) de phan loai xe dang o dau trong chu trinh HTC->Dai ly->Khach. KHONG port mot phan duoc (gia tri bao cao la PHAN LOAI DUNG, thieu 1 nhanh se SAI PHAN LOAI nhieu xe). Cung hang phuc tap voi SalesBalanceOrder_GetX/Rpt_SummaryCarAtDealer_New20260514/dlrcontract-instock (#5758) - can dau tu rieng.",
+})).RequireAuthorization();
 
 // ===== #B72 KẾ HOẠCH GIAO XE THEO TUẦN — `RptStatistic_HTCStock03_New20260514` =====
 // (`FrmPivotDeliveryPlan`.) Trace LIVE: `ReportService.ReportDeliveryPlanPivot` (`:1341`) → WS
