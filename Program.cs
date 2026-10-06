@@ -61302,12 +61302,23 @@ app.MapPost("/api/doatconditions/{code}/toggle", async (string code, AppDbContex
 
 // ===== Đề nghị giao dịch ngân hàng (BankingTrans — port 1:1 FrmDeNghiGDNganHang, 2010.HTC/Sales/Payment) =====
 string[] _bankTransTypes = { "GNTT", "BLLC", "PHLC" };
-app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string? status, string? bank, string? type) =>
+// #5794: them 5 bo loc cua FrmQL_DeNghiGDNganHang.btnSearch_Click con thieu (doc dung tu nguon,
+// SalesService.cs:36559-36604, RQ_BankingTransactions_Get — tat ca deu "=" chinh xac, TRU CreatedDate
+// la khoang). strRQ_BANKINGTRANSNO la "=" (khong phai LIKE/tim gan dung) — giu dung, khong doan contains.
+app.MapGet("/api/bankingtrans", async (AppDbContext db, ITenantContext t, string? status, string? bank, string? type,
+    string? rqBankingTransNo, DateTime? createdDateFrom, DateTime? createdDateTo, string? dealerCode,
+    string? refBankCode, string? bkTransBankStatus) =>
 {
     var q = db.BankingTranses.Where(b => b.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(b => b.BkTransStatus == status);
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(b => b.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(b => b.BkTransType == type);
+    if (!string.IsNullOrWhiteSpace(rqBankingTransNo)) q = q.Where(b => b.RQ_BankingTransNo == rqBankingTransNo);
+    if (createdDateFrom is not null) q = q.Where(b => b.CreatedDate >= createdDateFrom.Value.Date);
+    if (createdDateTo is not null) q = q.Where(b => b.CreatedDate < createdDateTo.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(b => b.DealerCode == dealerCode);
+    if (!string.IsNullOrWhiteSpace(refBankCode)) q = q.Where(b => b.RefBankCode == refBankCode);
+    if (!string.IsNullOrWhiteSpace(bkTransBankStatus)) q = q.Where(b => b.BkTransBankStatus == bkTransBankStatus);
     var items = await q.OrderByDescending(b => b.Id).Take(500)
         .Select(b => new { b.RQ_BankingTransNo, b.BankCode, b.BkTransType, b.LoanType, b.DisbursementDate, b.AmountDisbursed, b.TotalAmount, b.BkTransStatus, b.Remark, b.CreatedDate, b.SentAt, b.ApprovedDate, b.BkTransBankStatus, b.PushedToBankAt,   // #276 §12
             b.RefBankCode, b.BankRemark, b.BankUpdatedAt,
