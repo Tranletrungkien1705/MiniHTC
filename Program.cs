@@ -37294,6 +37294,36 @@ app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
+// ===== #5856 XOÁ NHÀ CUNG CẤP — `FrmMstSupplierModify.btnDelete_Click` (2021.1.TCMotor/DMSCarSv) =====
+// Trace: menu sống qua `FrmMstSupplierSearch` (`FrmMain.cs:1125`) → `supplierService.DeleteSupplier`
+// (`MstSupplierService.cs:264`) → WS `SerSupplierDelete` (`HTCWSCarSv/WSCarSv.asmx.cs:14250`, bản KHÔNG
+// hậu tố ngày — LIVE, hai bản `.20210208`/`.20210412` là đóng băng) → biz cùng tên
+// (`BizCarSv.Inventory.Master.cs:629`, dispatch KHÔNG hậu tố, chỉ một overload).
+// 🔴 Guard THẬT: kiểm còn `Ser_Inv_StockIn` (phiếu nhập kho) nào tham chiếu NCC này theo
+// `(DealerCode, SupplierID)` hay không — CÒN thì CHẶN (`Ser_Inv_StockIn_Exist_NotDelete_Supplier`).
+// Mini không mô hình `SupplierID` riêng trên `ServiceStockIn` (chỉ `SupplierCode`, nhất quán với các
+// route `/api/sersuppliers` đã port trước dùng `SupplierCode` làm khoá chính) — guard theo
+// `(DealerCode, SupplierCode)`, khớp đúng Ý NGHĨA (chặn xoá NCC còn phiếu nhập) dù khác tên cột kỹ thuật.
+// Câu xoá thật nguồn còn khớp CẢ `DealerCode` (`and DealerCode = @DealerCode`) — nhà cung cấp cùng mã
+// nhưng khác đại lý KHÔNG bị ảnh hưởng (Mini đã có cột `DealerCode` trên `SerMstSupplier`, xem #911).
+app.MapDelete("/api/sersuppliers/{supplierCode}", async (string supplierCode, string? dealerCode, AppDbContext db, ITenantContext t) =>
+{
+    var code = (supplierCode ?? "").Trim().ToUpperInvariant();
+    var q = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode);
+    var row = await q.FirstOrDefaultAsync();
+    if (row is null) return Results.NotFound(new { supplierCode = code, dealerCode });
+
+    var hasStockIn = await db.ServiceStockIns.AnyAsync(x => x.OrgId == t.OrgId
+        && x.SupplierCode == row.SupplierCode && x.DealerCode == row.DealerCode);
+    if (hasStockIn)
+        return Results.BadRequest(new { error = "Ser_Inv_StockIn_Exist_NotDelete_Supplier", supplierCode = row.SupplierCode, dealerCode = row.DealerCode });
+
+    db.SerMstSuppliers.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = row.SupplierCode, row.DealerCode });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #620 BẢNG KÊ THANH TOÁN LỆNH SỬA CHỮA `SerROInvoiceBill_WH` (`BizCarSv.WH.cs:726`) =====
 // 3B: laptop `V20.2023.Release.V2:726` md5 `10d1b0d5` **KHỚP** máy 150 `V20.2023.Release:726` `10d1b0d5`.
 // TRACE WS: cổng **kho** `WSCarSv.asmx…:44993` gọi `_biz.SerROInvoiceBill_**WH**` (không hậu tố ngày);
