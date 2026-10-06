@@ -71096,50 +71096,162 @@ app.MapGet("/api/reports/dealerstock21", async (
     });
 }).RequireAuthorization();
 
-// ===== #B388 THỐNG KÊ NHÓM ĐẠI LÝ 01 — `RptStatistic_GrpDealer01_WH_New20260514`
-//       (`DataWH/Biz.HTC.WH.cs:165074` → SQL `RptSQLQuery.cs` `mySql_RptStatistic_GrpDealer01()`) =====
-// **3B khớp cả 2 máy**: laptop `165074,165262` ≡ 150 `165079,165267`
-//   ⇒ **`db98b3fea239776d0d9a24da8a24b63e`**.
-//
-// ✅ **RBAC tổ hợp (1)**: `myCommon_CheckHTCDirect(…)` **ACTIVE, không bị comment** ⇒ **có cổng**
-//   ⇒ **không phải lỗ**. `@strBUPatternOfUser` cũng được bind.
-// 🔴🔴 **LẠI DÙNG HẰNG DANH SÁCH ĐẠI LÝ BA BẢN — món nợ #B290 quay lại lần thứ BA**:
-//     `mySql_Rpt_GetClauseWhere_GrpDealer_01("cc.DealerCode")`
-//     `mySql_Rpt_GetClauseWhere_GrpDealer_01("md.DealerCode")`
-//   Đây **chính là** hằng có **ba bản** lệch nhau đã phát hiện ở #B290 (bản
-//   `TERP.BizBank/BizHTC.Common.cs:1096` **thiếu `VS086`**) và gặp lại ở #B350.
-//   ⇒ **Ba báo cáo cùng phụ thuộc một hằng đang lệch** ⇒ nếu chạy qua assembly khác nhau thì
-//     **khung dòng đại lý khác nhau**. 📌 **Vẫn đang chờ quyết định nghiệp vụ**; **không tự hợp nhất**.
-//   ⇒ Port **nhận danh sách qua tham số** để **không đẻ bản thứ tư** của hằng.
-// ✅ **Tham số hoá hoàn toàn**: `@strTDate`, `@strTMonth`, `@strTYear`, `@strZoneCode`,
-//   `@strHTCDealerCode`, `@strHTCDealerName` **bind thật**; hai `Replace` chỉ ghép **mảnh SQL dựng sẵn**
-//   (`zzzzClauseColumn_CarAndVINInfo_01`, `zzzzClauseJoin_CarAndVINInfo_01`) ⇒ **không nướng giá trị**.
-// 🔴 `@strHTCDealerName` nhận `HTCDealerCode` — **lần thứ MƯỜI MỘT**.
-// 🔴 `@strZoneCode` ⇒ port truyền **chuỗi rỗng** (xem #B387).
-// ⚠️ **NỢ**: chuỗi `CarAndVINInfo_01` + nhóm đại lý chưa đủ ⇒ trả khung + cờ.
+// ===== #5782 PORT THẬT `RptStatistic_GrpDealer01_New20260514`/`_WH_New20260514` (`BizHTC.Report.cs:6778`
+//       / `DataWH/Biz.HTC.WH.cs:165074`, SQL đầy đủ `RptSQLQuery.cs:52190-52301`) =====
+// Hai hàm (Main dùng bởi `FrmFiveDealerStatus` khi `CheckWH=false`, WH khi `CheckWH=true`) GIỐNG NHAU
+// TUYỆT ĐỐI ngoại trừ `_dbMain` vs `_dbWH` + `Thread.Sleep(4000)` ở bản WH — Mini CHỈ MỘT CSDL nên 1 route
+// này phục vụ CẢ HAI nhánh WinForm, không cần tách.
+// 🔴 SỬA LẠI SAI CỦA `#B388` CŨ: `strTDate/strTMonth/strTYear` **KHÔNG PHẢI tham số gọi** — đọc kỹ
+//   `BizHTC.Report.cs:6862-6864`, cả ba được GÁN CỨNG từ `DateTime.Now` (hôm nay/đầu tháng/đầu năm) ngay
+//   trong hàm, WinForm/WS không truyền chúng. Bản `#B388` cũ LỠ biến chúng thành tham số `tDate/tMonth/
+//   tYear` cho người gọi — port lần này BỎ 3 tham số sai đó, tính lại từ server giống nguồn.
+// 🔴 `groupByList` (tham số THẬT, `strGroupByList`) bắt buộc chứa ÍT NHẤT 1/9 token
+//   (`MDDealerCode/MDDealerName/DealerCode/CCModelCode/CCSpecCode/CCColorCode/CVModelCode/CVSpecCode/
+//   CVColorCode`, `BizHTC.Report.cs:6835`) — thiếu thì nguồn ném `RptStatistic_GrpDealer01_InvalidGroupByList`.
+// 📌 CC*/CV* (Car_Car riêng vs Car_VIN riêng của nguồn) GỘP THÀNH MỘT trong Mini (`CarVinMaster` chỉ có
+//   1 bộ `ModelCode/SpecCode/ColorCode`) — giản lược ĐÃ CHẤP NHẬN từ trước (#B04); 2 nhóm token trả về
+//   CÙNG một giá trị trong port này, không phải gap mới.
+// 🔴🔴 NỢ ẨN MỚI PHÁT HIỆN (đọc toàn văn SQL, `RptSQLQuery.cs:52266-52274`): nguồn LUÔN
+//   `right join Mst_Dealer ... on t.DealerCode = md.MDDealerCode` để "lấp đầy mọi đại lý trong nhóm" —
+//   BẤT KỂ `groupByList` có chọn `DealerCode`/`MDDealerCode` hay không. Nếu người gọi CHỈ chọn ví dụ
+//   `CCModelCode` (không có cột đại lý), câu SQL nguồn **sẽ LỖI** vì tham chiếu `t.DealerCode` không tồn
+//   tại trong SELECT — lỗi ẨM chưa từng kích hoạt vì `FrmFiveDealerStatus` luôn gửi kèm cả ba cột
+//   `MDDealerCode+MDDealerName+DealerCode`. Port KHÔNG mô phỏng crash SQL — ép guard rõ: `groupByList`
+//   PHẢI có `DealerCode` HOẶC `MDDealerCode`, trả 400 có lý do thay vì lỗi câm.
+// 🔴🔴 NỢ ẨN THỨ HAI (`RptSQLQuery.cs:52281-52293` so với `:52266-52274`): bước RIGHT JOIN `Mst_Dealer`
+//   "lấp đầy mọi đại lý" — nhưng bước SAU CÙNG lại LEFT JOIN `Mst_DealerZone`+lọc
+//   `mdz.FlagActive='1'` TRONG WHERE ⇒ đại lý KHÔNG có dòng `Mst_DealerZone` active bị LOẠI KHỎI KẾT QUẢ
+//   CUỐI — xoá sạch chủ đích "lấp đầy" của bước trước. Port GIỮ ĐÚNG hành vi này (nguồn thực sự thế,
+//   không phải suy đoán) — áp dụng lọc "đại lý phải có zone active" ở builder phía dưới và ghi cờ rõ.
+// ⚪ Danh sách đại lý "nhóm" vẫn là HẰNG BA BẢN LỆCH (#B290/#B350) — port GIỮ nguyên cách nhận qua tham
+//   số `grpDealerCodes` (không đẻ bản thứ tư), CHƯA tự hợp nhất.
 app.MapGet("/api/reports/grpdealer01", async (
-    AppDbContext db, ITenantContext t,
-    DateTime? tDate, string? tMonth, string? tYear, string? zoneCode, string? grpDealerCodes) =>
+    AppDbContext db, ITenantContext t, string? zoneCode, string? grpDealerCodes, string? groupByList) =>
 {
-    // 🔴 Danh sách đại lý của "nhóm" ở nguồn là HẰNG BA BẢN (#B290/#B350) — port nhận qua tham số
-    //   để KHÔNG chép lại bản thứ tư.
-    var grp = (grpDealerCodes ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
-        .Select(x => x.Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
-    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
-        .Where(d => grp.Count == 0 || grp.Contains(d.DealerCode.ToUpperInvariant()))
-        .ToList();
+    var zc = (zoneCode ?? "").Trim().ToUpperInvariant();
+    var grp = (grpDealerCodes ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+
+    var whitelist = new[] { "MDDEALERCODE", "MDDEALERNAME", "DEALERCODE", "CCMODELCODE", "CCSPECCODE", "CCCOLORCODE", "CVMODELCODE", "CVSPECCODE", "CVCOLORCODE" };
+    var requested = (groupByList ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.ToUpperInvariant()).Where(whitelist.Contains).Distinct().ToList();
+    if (requested.Count == 0)
+        return Results.BadRequest(new { error = "groupByList rỗng hoặc không khớp danh sách cho phép (MDDealerCode/MDDealerName/DealerCode/CCModelCode/CCSpecCode/CCColorCode/CVModelCode/CVSpecCode/CVColorCode).", errorSource = "RptStatistic_GrpDealer01_InvalidGroupByList" });
+    var groupByDealer = requested.Contains("MDDEALERCODE") || requested.Contains("DEALERCODE");
+    if (!groupByDealer)
+        return Results.BadRequest(new { error = "groupByList phải có MDDealerCode HOẶC DealerCode — nguồn RIGHT JOIN Mst_Dealer theo cột này, thiếu sẽ làm SQL nguồn lỗi (lỗi ẩm chưa từng kích hoạt, xem comment #5782).", errorSource = "RptStatistic_GrpDealer01_MissingDealerCodeInGroupBy" });
+    var groupByDealerName = requested.Contains("MDDEALERNAME");
+    var groupByModel = requested.Contains("CCMODELCODE") || requested.Contains("CVMODELCODE");
+    var groupBySpec = requested.Contains("CCSPECCODE") || requested.Contains("CVSPECCODE");
+    var groupByColor = requested.Contains("CCCOLORCODE") || requested.Contains("CVCOLORCODE");
+
+    var today = DateTime.Today;
+    var monthStart = new DateTime(today.Year, today.Month, 1);
+    var yearStart = new DateTime(today.Year, 1, 1);
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId)
+        .Select(d => new { d.DealerCode, d.DealerName }).ToListAsync())
+        .Where(d => grp.Count == 0 || grp.Contains(d.DealerCode.ToUpperInvariant())).ToList();
+    var dealerSet = dealers.Select(d => d.DealerCode.ToUpperInvariant()).ToHashSet();
+    var zoneRows = await db.DealerZones.Where(z => z.OrgId == t.OrgId && z.FlagActive == "1").ToListAsync();
+    var zoneDealerActive = zoneRows.ToDictionary(z => z.DealerCode.ToUpperInvariant(), z => z.ZoneCode, StringComparer.OrdinalIgnoreCase);
+
+    // #tbl_Car_Car_Filter: xe thuộc nhóm đại lý, FlagActive='1', đã được đại lý TIẾP NHẬN
+    // (Car_DeliveryOrderDetail.ConfirmStatus='F', DeliveryEndDate<=hôm nay).
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.FlagActive == "1"
+        && c.DealerCode != null && c.CarId != null)
+        .Select(c => new { c.CarId, c.DealerCode, c.ModelCode, c.SpecCode, c.ColorCode }).ToListAsync())
+        .Where(c => dealerSet.Contains(c.DealerCode!.ToUpperInvariant())).ToList();
+    var carIds = cars.Select(c => c.CarId!).ToList();
+    var deliveredCarIds = (await db.DeliveryOrderCars.Where(d => d.OrgId == t.OrgId && d.CarId != null
+        && carIds.Contains(d.CarId) && d.ConfirmStatus == "F" && d.DeliveryEndDate != null && d.DeliveryEndDate <= today)
+        .Select(d => d.CarId!).ToListAsync()).ToHashSet();
+    var filtered = cars.Where(c => deliveredCarIds.Contains(c.CarId!)).ToList();
+
+    // #tbl_Car_VIN_Raw01: ghép bán-tới-khách-cuối (DLS_Deal/DealDetail, DealerCodeBuyer rỗng) để lấy
+    // DeliveryDate thật; tính Tt_Date/Tt_Month/Tt_Year/Tt_Stock theo đúng công thức nguồn.
+    var filteredCarIds = filtered.Select(c => c.CarId!).ToList();
+    var dealDetails = await db.DealerDealDetails.Where(dd => dd.OrgId == t.OrgId && filteredCarIds.Contains(dd.CarId)
+        && (dd.DeliveryStatus == "A" || dd.DeliveryStatus == "F")).Select(dd => new { dd.DealId, dd.CarId, dd.DeliveryDate }).ToListAsync();
+    var dealIdsOfDetail = dealDetails.Select(dd => dd.DealId).Distinct().ToList();
+    var retailDealIds = (await db.DealerDeals.Where(dl => dl.OrgId == t.OrgId && dealIdsOfDetail.Contains(dl.Id)
+        && (dl.DealerCodeBuyer == null || dl.DealerCodeBuyer == "")).Select(dl => dl.Id).ToListAsync()).ToHashSet();
+
+    var raw = filtered.Select(c =>
+    {
+        var deliveryDate = dealDetails.Where(dd => dd.CarId == c.CarId && retailDealIds.Contains(dd.DealId))
+            .OrderByDescending(dd => dd.DeliveryDate).Select(dd => dd.DeliveryDate).FirstOrDefault();
+        var dealerZoneCode = zoneDealerActive.TryGetValue((c.DealerCode ?? "").ToUpperInvariant(), out var zcode) ? zcode : null;
+        return new
+        {
+            c.DealerCode, c.ModelCode, c.SpecCode, c.ColorCode, dealerZoneCode,
+            ttDate = deliveryDate.HasValue && deliveryDate.Value.Date == today ? 1 : 0,
+            ttMonth = deliveryDate.HasValue && deliveryDate.Value.Date >= monthStart && deliveryDate.Value.Date <= today ? 1 : 0,
+            ttYear = deliveryDate.HasValue && deliveryDate.Value.Date >= yearStart && deliveryDate.Value.Date <= today ? 1 : 0,
+            ttStock = !deliveryDate.HasValue || deliveryDate.Value.Date > today ? 1 : 0,
+        };
+    })
+    // Nguồn: `and (@strZoneCode = '' or mdz.ZoneCode = @strZoneCode) and mdz.FlagActive = '1'` — đại lý
+    // KHÔNG có dòng Mst_DealerZone active bị LOẠI, dù cột join là LEFT JOIN.
+    .Where(x => x.dealerZoneCode != null && (zc.Length == 0 || x.dealerZoneCode == zc))
+    // #tbl_Car_VIN_Raw: chỉ giữ dòng CÒN TRONG KHO (Tt_Stock=1) HOẶC đã bán TRONG NĂM NAY (Tt_Year=1).
+    .Where(x => x.ttStock == 1 || x.ttYear == 1)
+    .ToList();
+
+    var grouped = raw.GroupBy(x => new
+    {
+        DealerCode = x.DealerCode,
+        ModelCode = groupByModel ? x.ModelCode : null,
+        SpecCode = groupBySpec ? x.SpecCode : null,
+        ColorCode = groupByColor ? x.ColorCode : null,
+    }).Select(g => new
+    {
+        dealerCode = g.Key.DealerCode,
+        modelCode = g.Key.ModelCode, specCode = g.Key.SpecCode, colorCode = g.Key.ColorCode,
+        ttDate = g.Sum(x => x.ttDate), ttMonth = g.Sum(x => x.ttMonth), ttYear = g.Sum(x => x.ttYear), ttStock = g.Sum(x => x.ttStock),
+    }).ToList();
+
+    // Right join Mst_Dealer: lấp đầy MỌI đại lý trong nhóm (kể cả 0 xe) — rồi áp LẠI đúng bộ lọc
+    // zone-active ở trên cho cả dòng "lấp đầy" (nguồn lọc zone ở CẢ bước lấp-đầy và bước cuối).
+    var droppedByZoneFilter = 0;
+    var filled = new List<object>();
+    foreach (var d in dealers)
+    {
+        var dealerZoneCode = zoneDealerActive.TryGetValue(d.DealerCode.ToUpperInvariant(), out var zc2) ? zc2 : null;
+        if (dealerZoneCode == null || (zc.Length > 0 && dealerZoneCode != zc)) { droppedByZoneFilter++; continue; }
+        var rowsOfDealer = grouped.Where(g => g.dealerCode == d.DealerCode).ToList();
+        if (rowsOfDealer.Count == 0)
+        {
+            filled.Add(new
+            {
+                dealerCode = d.DealerCode, dealerName = groupByDealerName ? d.DealerName : null,
+                modelCode = (string?)null, specCode = (string?)null, colorCode = (string?)null,
+                ttDate = 0, ttMonth = 0, ttYear = 0, ttStock = 0,
+            });
+        }
+        else
+        {
+            foreach (var g in rowsOfDealer)
+                filled.Add(new { g.dealerCode, dealerName = groupByDealerName ? d.DealerName : null, g.modelCode, g.specCode, g.colorCode, g.ttDate, g.ttMonth, g.ttYear, g.ttStock });
+        }
+    }
 
     return Results.Ok(new
     {
-        count = 0,
-        dealersInScope = dealers.Count,
-        RptStatistic_GrpDealer01 = Array.Empty<object>(),
-        zoneCodeEcho = zoneCode ?? "",     // 🔴 chuỗi RỖNG, không NULL
-        filtersEcho = new { tDate, tMonth, tYear },
-        grpDealerConstThirdTimeNote = "LAI DUNG HANG DANH SACH DAI LY BA BAN - mon no #B290 quay lai LAN THU BA: 'mySql_Rpt_GetClauseWhere_GrpDealer_01(\"cc.DealerCode\")' va '...(\"md.DealerCode\")'. Day CHINH LA hang co BA BAN lech nhau da phat hien o #B290 (ban TERP.BizBank/BizHTC.Common.cs:1096 THIEU VS086) va gap lai o #B350. BA BAO CAO CUNG PHU THUOC MOT HANG DANG LECH => neu chay qua assembly khac nhau thi KHUNG DONG DAI LY KHAC NHAU. VAN DANG CHO QUYET DINH NGHIEP VU; KHONG tu hop nhat. Port nhan danh sach qua tham so grpDealerCodes de KHONG DE BAN THU TU.",
-        rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE, khong bi comment => CO CONG => KHONG phai lo. @strBUPatternOfUser cung duoc bind.",
-        fullyParameterisedNote = "THAM SO HOA HOAN TOAN: @strTDate, @strTMonth, @strTYear, @strZoneCode, @strHTCDealerCode, @strHTCDealerName BIND THAT; hai Replace chi ghep MANH SQL DUNG SAN => KHONG nuong gia tri. @strHTCDealerName nhan HTCDealerCode - LAN THU MUOI MOT. @strZoneCode => port truyen CHUOI RONG (xem #B387).",
-        debtNote = "NO - KHONG DOAN: chuoi CarAndVINInfo_01 + nhom dai ly chua du => tra khung + co."
+        count = filled.Count,
+        RptStatistic_GrpDealer01 = filled,
+        droppedByZoneFilter,
+        droppedByZoneFilterNote = droppedByZoneFilter > 0
+            ? "Đại lý KHÔNG có dòng Mst_DealerZone active (hoặc zone khác zoneCode truyền vào) bị loại khỏi " +
+              "kết quả — nguồn thực sự thế (xem comment #5782 'NỢ ẨN THỨ HAI'), không phải lỗi port."
+            : null,
+        zoneCodeEcho = zc,
+        groupByUsed = requested,
+        grpDealerConstNote = "Danh sách đại lý 'nhóm' là HẰNG BA BẢN LỆCH ở nguồn (#B290/#B350) — port nhận " +
+            "qua tham số grpDealerCodes (rỗng = mọi đại lý) để KHÔNG đẻ bản thứ tư.",
+        serverComputedDatesNote = "#5782: strTDate/strTMonth/strTYear nguồn KHÔNG phải tham số — gán cứng " +
+            "DateTime.Now (hôm nay/đầu tháng/đầu năm). Bản #B388 cũ LỠ biến chúng thành tham số cho người " +
+            "gọi — đã BỎ, tính lại từ server giống nguồn."
     });
 }).RequireAuthorization();
 // ===== #B383 CÔNG NỢ BẢO LÃNH 01 — `RptGuarantee_Debit_01_WH_New20260514`
