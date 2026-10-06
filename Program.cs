@@ -71248,6 +71248,16 @@ app.MapGet("/api/reports/master-data", () => Results.Ok(new
     debtNote = "NO - KHONG DOAN: nguon Rpt_MasterDataByDealer (bang snapshot) KHONG co write-path nao trong toan bo cay source da grep (chi co READ) - co che nap lieu that rat co the la SQL Agent job NGOAI codebase, chua xac dinh duoc. KHONG them entity roi de rong vinh vien - cho tim ra co che nap lieu that truoc.",
 })).RequireAuthorization();
 
+// ===== #5756 KHÔNG ÁP DỤNG — `FrmPivotKHSX_Rpt` (Kế hoạch sản xuất, "Pivot KHSX") =====
+// Trace: btnGet_Click -> ReportService.MMS_Rpt_MnfPlanSummary_ForMonth -> `wsNM.MMS_Rpt_MnfPlanSummary_ForMonth`
+// (ReportService.cs:5950) — `wsNM` là PROXY sang WEB SERVICE NGOÀI ("Network Master", `_strConfig_NM_*`
+// trong Web.config). Đã `find` TOÀN BỘ D:\idocNet cho "WSNM" (loại trừ Web References tự sinh) — 0 KẾT QUẢ:
+// server thật của dịch vụ này KHÔNG tồn tại trong bất kỳ project nào dưới D:\idocNet, tức là hệ THỨ BA
+// hoàn toàn ngoài phạm vi convert (rất có thể là MES/hệ kế hoạch sản xuất của NHÀ MÁY HTMV, không phải
+// hệ đại lý/HTC). Dữ liệu hiển thị 100% từ `dtLOT` (kết quả gọi ngoài) — KHÔNG CÓ cột nào enrich từ dữ
+// liệu local (Model/Spec/Dealer...), khác các báo cáo "cross-system" khác đã gặp (vd #B382) vẫn còn phần
+// local để port. `btnApprove_Click` ở nguồn cũng là HÀM RỖNG (no-op, chưa từng implement).
+// => KHÔNG áp dụng — không có bất kỳ phần nào local để port 1:1, không ghi nợ khung (không có gì chờ).
 // ===== #B382 ĐỐI CHIẾU HOÁ ĐƠN ĐẠI LÝ ↔ HỢP ĐỒNG — `Rpt_MatchInvDealerAndContract_WH_New20260514`
 //       (`BizHTC.Report.cs:32460` → SQL `RptSQLQuery.cs:19126`
 //        `mySql_Rpt_MatchInvDealerAndContract**V2**_New20260514()`) =====
