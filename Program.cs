@@ -110799,6 +110799,172 @@ app.MapGet("/api/reports/car-vin-for-req-mortgage", async (
         dealerScopeNotEnforcedNote = "md.BUCode like @strBUPatternOfUser dang SONG o nguon (khong bi comment) - Mini chua co claim BUPattern de enforce giong het, KHONG tu bit RBAC, cung khuon #B46/#B47 (#5808)."
     });
 }).RequireAuthorization();
+// ===== #5810 TÌM VIN ĐỂ TẠO ĐỀ NGHỊ GIẢI CHẤP — `FrmCar_VIN_Get_ForReqRedeem` =====
+// Trace: mở từ `FrmNewRedeem` (menu sống FrmMain.cs:1973) → `SalesService.Car_VIN_Get_ForReqRedeem`
+//   (14 tham số, build WHERE client-side) → WS `Car_VIN_Get_ForReqRedeem` (KHÔNG `_WH`) → biz `…X`
+//   (2010.HTC `DataWH/Biz.HTC.WH.cs:180538`). Trước #5810 Mini KHÔNG có route. Khác #5808: ở MÀN NÀY
+//   `cdrd`/`cdrl` CÓ được join trong `#tbl_Car_VIN_Filter_Draft1` ⇒ lọc `typeCRR`/`drDtlStatus` ở đây
+//   KHÔNG vỡ SQL (port implement bình thường, không trả 400 như #5808).
+// 🔴🔴 **BUG THẬT — THAM SỐ `mortageEndDate` TỰ VÔ HIỆU HOÁ CHÍNH NÓ**: client thêm filter CHÍNH XÁC GIÁ
+//   TRỊ (`cv.MortageEndDate = '1'` hoặc `'0'`) RỒI CÒN thêm MỘT filter khác phái sinh từ CÙNG giá trị đó
+//   (`"1"→isnull`, `"0"→isnotnull`) — hai mảnh AND lại thành `MortageEndDate = '1' and MortageEndDate
+//   isnull`, một điều kiện KHÔNG BAO GIỜ đúng (cột không thể vừa bằng chuỗi '1' vừa NULL). ⇒ chọn "Có"
+//   hoặc "Không" ở ô này LUÔN trả 0 dòng, bất kể dữ liệu — chỉ để trống mới hoạt động. Port TÁI HIỆN ĐÚNG
+//   (không tự sửa): `mortageEndDate ∈ {"0","1"}` ⇒ trả rỗng ngay, ghi `mortageEndDateAlwaysEmptyNote`.
+// 🔴 `dateExpired`: quy ước NGƯỢC với đa số màn khác trong CHÍNH hệ thống này — `"0"` nghĩa **CÓ** hạn
+//   (isnotnull), `"1"` nghĩa **KHÔNG CÓ** hạn (isnull) — đảo ngược quy ước "1=có" quen thấy (#5806/#5808).
+//   Port giữ đúng quy ước lạ này của màn này, không chuẩn hoá theo màn khác.
+// 🔴 `left join Car_DocReqDtl cdrd` RỒI `inner join Car_DocReqList cdrl on cdrd.DRListCode=cdrl.DRListCode`
+//   — LEFT bị INNER "ăn mất": VIN không có đề nghị giao tờ (`cdrd` NULL) thì `cdrd.DRListCode` NULL,
+//   NULL=NULL không bao giờ đúng ⇒ INNER loại hẳn ⇒ **chỉ xe ĐÃ CÓ ≥1 ĐNGT mới lọt qua bước lọc**, dù viết
+//   như LEFT JOIN (cùng khuôn "LEFT thành INNER" đã gặp ở #5800 DLS_Deal). Port giữ đúng (inner thật).
+// Điều kiện nền: `inner join RM_ReqMortgageDtl rmrmd on VIN and RMDtlStatus='A'` — CHỈ xe ĐANG thế chấp
+//   hiệu lực ('A', không phải "not in R,C") mới là xe để xin GIẢI chấp — đúng vòng đời ngược với #5808.
+// `TypeDMReq` (cột hiển thị, KHÔNG lọc): phân loại theo SỐ dòng ĐNGT đã duyệt khớp 1 trong 2 khuôn
+//   (NORMAL+A2 hoặc DEALER/SPECIAL+A1) của VIN: đúng 1 dòng ⇒ 'GUARANTEE' (NORMAL/A2) hoặc 'DIRECT'
+//   (DEALER|SPECIAL/A1); đúng 2 dòng VÀ là tổ hợp (NORMAL/A2)+(SPECIAL/A1) ⇒ 'DIRECT'; mọi tổ hợp khác
+//   (0, ≥3 dòng, hoặc 2 dòng không đúng tổ hợp) ⇒ NULL — port giữ đúng, KHÔNG suy diễn thêm nhánh.
+app.MapGet("/api/reports/car-vin-for-req-redeem", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? engineNo, string? cqNo, string? coNo, string? mortageBankCode, string? dealerCode,
+    string? guaranteeNo, string? transportMinutesNo, string? dateExpired, string? transportMinutesStatus,
+    string? documentsStatus, string? mortageEndDate, string? typeCRR, string? bankCodeMonitor) =>
+{
+    if (mortageEndDate == "0" || mortageEndDate == "1")
+        return Results.Ok(new
+        {
+            count = 0, items = Array.Empty<object>(),
+            mortageEndDateAlwaysEmptyNote = "Nguon tu AND hai dieu kien mau thuan (gia tri chinh xac '0'/'1' VA " +
+                "isnull/isnotnull phai sinh tu CUNG gia tri) => LUON tra 0 dong khi chon '0' hoac '1' o o nay, " +
+                "bat ke du lieu. Port tai hien dung, khong tu sua (#5810)."
+        });
+
+    var typeCRRSet = (typeCRR ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var tmStatusSet = (transportMinutesStatus ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries)
+        .Select(x => x.Trim()).Where(x => x.Length > 0).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    // Điều kiện nền: CHỈ xe đang thế chấp hiệu lực (RMDtlStatus='A' đúng — không phải not-in-R,C).
+    var liveMortgage = await db.ReqMortgageCars.Where(x => x.OrgId == t.OrgId && x.RMDtlStatus == "A").ToListAsync();
+    var vinsWithMortgage = liveMortgage.Select(x => x.VIN).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    var q = db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null && vinsWithMortgage.Contains(c.VIN));
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.VIN == vin!.Trim());
+    if (!string.IsNullOrWhiteSpace(engineNo)) q = q.Where(c => c.EngineNo == engineNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(cqNo)) q = q.Where(c => c.CQNo == cqNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(coNo)) q = q.Where(c => c.CONo == coNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(mortageBankCode)) q = q.Where(c => c.MortageBankCode == mortageBankCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(documentsStatus)) q = q.Where(c => c.DocumentsStatus == documentsStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode!.Trim());
+    var cars = await q.ToListAsync();
+
+    // left join cdrd rồi inner join cdrl => thực chất là INNER: chỉ xe có ≥1 ĐNGT mới qua được.
+    var vins0 = cars.Select(c => c.VIN).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    var docReqCarsByVin = (await db.DocReqCars.Where(x => x.OrgId == t.OrgId && vins0.Contains(x.Vin)).ToListAsync())
+        .GroupBy(x => x.Vin, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+    var docReqHdrAll = (await db.DocReqs.Where(h => h.OrgId == t.OrgId).ToListAsync()).ToDictionary(h => h.Id);
+    cars = cars.Where(c => docReqCarsByVin.ContainsKey(c.VIN)).ToList();
+
+    // Bảo lãnh hiệu lực (CHỈ status 'A', đúng nguồn) — nối qua CarId (Mini CarVinMaster có CarId thật).
+    var carIds = cars.Select(c => c.CarId!).Distinct().ToList();
+    var grt = (await (from gd in db.BankGuaranteeDtls
+                      where gd.OrgId == t.OrgId && gd.GuaranteeDetailStatus == "A"
+                      join h in db.BankGuarantees on gd.GuaranteeId equals h.Id
+                      where h.OrgId == t.OrgId && h.Status == "A"
+                      select new { gd, h }).ToListAsync());
+    // Pmt_GuaranteeDetail.CarId — Mini chưa có CarId tren BankGuaranteeDtl (chỉ VIN) — xấp xỉ qua VIN.
+    var grtByVin = grt.GroupBy(x => x.gd.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    if (!string.IsNullOrWhiteSpace(guaranteeNo))
+        cars = cars.Where(c => grtByVin.TryGetValue(c.VIN, out var gv) && gv.h.GuaranteeNo == guaranteeNo!.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(bankCodeMonitor))
+        cars = cars.Where(c => grtByVin.TryGetValue(c.VIN, out var gv) && gv.h.BankCodeMonitor == bankCodeMonitor!.Trim()).ToList();
+    if (dateExpired == "0") cars = cars.Where(c => grtByVin.TryGetValue(c.VIN, out var gv) && gv.gd.DateExpired != null).ToList();
+    else if (dateExpired == "1") cars = cars.Where(c => !grtByVin.TryGetValue(c.VIN, out var gv) || gv.gd.DateExpired == null).ToList();
+
+    // Biên bản giao xe.
+    var transp = (await db.TransportMinutesCars.Where(x => x.OrgId == t.OrgId && x.CarId != null && carIds.Contains(x.CarId))
+        .ToListAsync());
+    var transpHdr = (await db.TransportMinutes.Where(x => x.OrgId == t.OrgId).ToListAsync()).ToDictionary(x => x.Id);
+    var transpByCarId = transp.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Select(x =>
+        transpHdr.TryGetValue(x.MinutesId, out var h) ? h : null).Where(h => h != null).Select(h => h!).ToList());
+    if (!string.IsNullOrWhiteSpace(transportMinutesNo))
+        cars = cars.Where(c => transpByCarId.TryGetValue(c.CarId!, out var tl) && tl.Any(h => h.TransportMinutesNo == transportMinutesNo!.Trim())).ToList();
+    if (tmStatusSet.Count > 0)
+        cars = cars.Where(c => transpByCarId.TryGetValue(c.CarId!, out var tl) && tl.Any(h => tmStatusSet.Contains(h.Status))).ToList();
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var today = DateTime.Today;
+
+    var rows = new List<object>();
+    foreach (var c in cars)
+    {
+        var docRows = docReqCarsByVin[c.VIN];
+        // #tbl_Car_DocReqDtl_Filter: chỉ các dòng khớp 2 khuôn (NORMAL,A2) hoặc (DEALER|SPECIAL,A1).
+        var qualifying = docRows.Where(dr => docReqHdrAll.TryGetValue(dr.DocReqId, out var h) && h != null
+                && ((dr.DRDtlStatus == "A2" && h.TypeCRR == "NORMAL")
+                    || (dr.DRDtlStatus == "A1" && (h.TypeCRR == "DEALER" || h.TypeCRR == "SPECIAL"))))
+            .Select(dr => (dr.DRDtlStatus, TypeCRR: docReqHdrAll[dr.DocReqId].TypeCRR)).ToList();
+        string? typeDMReq = null;
+        if (qualifying.Count == 1)
+        {
+            var one = qualifying[0];
+            typeDMReq = one.TypeCRR == "NORMAL" ? "GUARANTEE" : "DIRECT";
+        }
+        else if (qualifying.Count == 2)
+        {
+            if (qualifying.Any(x => x.TypeCRR == "NORMAL" && x.DRDtlStatus == "A2")
+                && qualifying.Any(x => x.TypeCRR == "SPECIAL" && x.DRDtlStatus == "A1"))
+                typeDMReq = "DIRECT";
+        }
+        if (typeCRRSet.Count > 0 && !docRows.Any(dr => docReqHdrAll.TryGetValue(dr.DocReqId, out var h) && h != null
+                && typeCRRSet.Contains(h.TypeCRR))) continue;
+        // Dong hien thi dung ban ghi doc-req dau tien lam DRDtlStatus/TypeCRR/DRListStatus (nguon: left join
+        // don, mot dong cdrd/cdrl bat ky — khong co ORDER BY dut diem, lay ban dau tien).
+        var first = docRows.FirstOrDefault(dr => docReqHdrAll.ContainsKey(dr.DocReqId));
+        var firstHdr = first != null ? docReqHdrAll[first.DocReqId] : null;
+        specs.TryGetValue(c.SpecCode ?? "", out var mcs);
+        dealers.TryGetValue(c.DealerCode ?? "", out var md);
+        grtByVin.TryGetValue(c.VIN, out var gv2);
+        var reqRMNo = liveMortgage.FirstOrDefault(x => string.Equals(x.VIN, c.VIN, StringComparison.OrdinalIgnoreCase))?.ReqMortgageId;
+        transpByCarId.TryGetValue(c.CarId!, out var tmList);
+        var tm0 = tmList?.FirstOrDefault();
+        int qtyGrtDateRemain = gv2 != null && gv2.gd.DateExpired != null
+            ? Math.Max(0, (int)(today - gv2.gd.DateExpired.Value.Date).TotalDays) : 0;
+
+        rows.Add(new
+        {
+            c.VIN, c.SpecCode, SpecDescription = mcs?.SpecDesc, c.ModelCode, c.EngineNo, c.CQNo, c.CONo,
+            c.DeclarationNo, c.MortageBankCode, c.CarId, c.DealerCode,
+            DealerName = md?.DealerName,
+            DRDtlStatus = first?.DRDtlStatus,
+            GuaranteeNo = gv2?.h.GuaranteeNo, BankCode = gv2?.h.BankCode,
+            QtyGrtDateRemain = qtyGrtDateRemain,
+            BankCodeMonitor = gv2?.h.BankCodeMonitor,
+            c.DRFullDocDate, c.DocumentsStatus,
+            TypeCRR = firstHdr?.TypeCRR, DRListStatus = firstHdr?.Status,
+            TransportMinutesNo = tm0?.TransportMinutesNo, TransportMinutesStatus = tm0?.Status,
+            c.OrderNoMnfPlMMS,
+            ReqRMNo = reqRMNo,
+            TypeDMReq = typeDMReq
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        leftBecomesInnerNote = "left join Car_DocReqDtl roi inner join Car_DocReqList theo DRListCode cua " +
+            "cdrd => NULL=NULL khong bao gio dung => thuc chat la INNER: chi xe da co DNGT moi qua duoc " +
+            "(#5810).",
+        dateExpiredReversedConventionNote = "dateExpired man nay: '0'=CO han (isnotnull), '1'=KHONG co han " +
+            "(isnull) - NGUOC voi quy uoc '1=co' thay o cac man khac cung he thong (#5806/#5808) (#5810).",
+        baseMortgageGateNote = "Dieu kien nen la RMDtlStatus='A' DUNG (khong phai not-in-R,C) - chi xe DANG " +
+            "the chap hieu luc moi la xe de xin GIAI chap, dung vong doi nguoc #5808 (#5810)."
+    });
+}).RequireAuthorization();
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
