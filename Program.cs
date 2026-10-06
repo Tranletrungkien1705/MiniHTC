@@ -82727,11 +82727,20 @@ async Task<IResult> DlrContractCancelSetStatusMulti(
 // đã trỏ lại /api/cars/{carId}/update01 + GET /api/cars/prices.
 
 // ===== Lệnh đặt xe từ nhà máy (POCommand — port 1:1 FrmNewHMCOrder/FrmMngHMCOrder, DMSales.Foton) =====
-app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month, string? flagActive) =>
+// #5784: them poCmdCode (o nhap LIKE %...%) + orderMonthFrom/orderMonthTo (loc khoang, nguon
+// FrmMngHMCOrder dung >=/<= tren OrderMonth chu khong chi mot thang) — FrmMngHMCOrder.btnSearch_Click
+// -> SalesService.SearchPOCommand(poCmdCode, orderMonthFrom, orderMonthTo, dataWH). Giu `month` (khop
+// dung 1 thang) de tuong thich nguoc; OrderMonth dang "YYYYMM" (khong dau gach) nen so chuoi = so
+// thoi gian (dung quy uoc dateGroupingUsesIso da dung noi khac).
+app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month,
+    string? flagActive, string? poCmdCode, string? orderMonthFrom, string? orderMonthTo) =>
 {
     var q = db.POCommands.Where(o => o.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(o => o.Status == status);
     if (!string.IsNullOrWhiteSpace(month)) q = q.Where(o => o.OrderMonth == month);
+    if (!string.IsNullOrWhiteSpace(poCmdCode)) q = q.Where(o => o.PoCmdCode.Contains(poCmdCode!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(orderMonthFrom)) q = q.Where(o => o.OrderMonth.CompareTo(orderMonthFrom!.Trim()) >= 0);
+    if (!string.IsNullOrWhiteSpace(orderMonthTo)) q = q.Where(o => o.OrderMonth.CompareTo(orderMonthTo!.Trim()) <= 0);
     // Nguồn lọc theo cờ FlagActive (không có trạng thái); giữ tham số `status` cho tương thích cũ.
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(o => o.FlagActive == flagActive);
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
