@@ -219,6 +219,27 @@ public sealed class MstViolateType
     public string FlagActive { get; set; } = "1";
 }
 
+/// <summary>
+/// #5842 — Loại chi phí (`Mst_CostType` — port 1:1 `FrmMst_QuanLyLoaiChiPhi`, 2010.HTC/Admin/Product).
+/// Nạp qua cơ chế CHUNG `BaseService.GetMasterDataTable(TBL_COST_TYPE)` → WS `CommonGetMasterData`
+/// (`WSHTC.asmx.cs:441`, dispatch LIVE tới `_biz.CommonGetMasterData_New20181115`,
+/// `BizHTC.Common.cs:2317` — thân HÀM GIỐNG HỆT bản không hậu tố, chỉ khác tên/chữ ký) —
+/// `select * from <bảng> where <tham số runtime do client gửi>` sau khi qua whitelist
+/// `myCommon_GetSupportedTable_GetData` (dòng 803: `Mst_CostType` CÓ trong danh sách).
+/// 🔴 Màn WinForm CHỈ ĐỌC (`gridView1.OptionsBehavior.Editable = false`, không nút lưu nào) — nhưng bảng
+/// VẪN nằm trong whitelist GHI chung `CommonSaveMasterData` (`/api/masters/common-save`, đã ghi ở #B165) ⇒
+/// đúng mẫu "có trong whitelist ghi nhưng không có form quản trị ghi thật" như `Mst_DealerSalesGroupType`
+/// (#B169) — không bịa form ghi cho bảng này, chỉ port đúng những gì có WinForm thật sự dùng (đọc).
+/// </summary>
+public sealed class MstCostType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CostTypeCode { get; set; } = "";
+    public string? CostTypeName { get; set; }
+    public string FlagActive { get; set; } = "1";
+}
+
 /// <summary>PDI inspection tracking (simplified) — KHÔNG có twin WinForm 1:1: FrmMngDlr_PDIRequest đã port đúng tại DlrPdiRequest; FrmMngPDI/FrmNewPDI đã port tại HtmvPdi. Entity này là flow tổng hợp HTC-track Requested→Inspecting→Passed/Failed per VIN.</summary>
 public sealed class PdiRequest
 {

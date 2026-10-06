@@ -83401,6 +83401,21 @@ app.MapGet("/api/mstviolatetypes", async (AppDbContext db, ITenantContext t) =>
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== #5842 Danh mục LOẠI CHI PHÍ — `FrmMst_QuanLyLoaiChiPhi` (2010.HTC/Admin/Product) =====
+// Trace: menu sống `FrmMain.cs:1584` → nạp qua `BaseService.GetMasterDataTable(TBL_COST_TYPE =
+// "Mst_CostType")` → WS `CommonGetMasterData` (`WSHTC.asmx.cs:441`, dispatch LIVE tới
+// `_biz.CommonGetMasterData_New20181115`, `BizHTC.Common.cs:2317`) — `select * from Mst_CostType` sau
+// khi qua whitelist `myCommon_GetSupportedTable_GetData` (dòng 803: `Mst_CostType` CÓ trong danh sách).
+// Màn CHỈ ĐỌC (`gridView1.OptionsBehavior.Editable = false`, không nút lưu nào) — không bịa route ghi.
+app.MapGet("/api/mstcosttypes", async (AppDbContext db, ITenantContext t, string? flagActive) =>
+{
+    var q = db.MstCostTypes.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+    var items = await q.OrderBy(x => x.CostTypeCode)
+        .Select(x => new { x.CostTypeCode, x.CostTypeName, x.FlagActive }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 app.MapPost("/api/salesmanviolates/{smCode}/{violateNumber}/update", async (
     string smCode, int violateNumber, SalesManViolateUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
