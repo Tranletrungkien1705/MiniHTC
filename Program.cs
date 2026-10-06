@@ -76158,6 +76158,37 @@ async Task<IResult> DlrCancelSetStatus(DlrContractCancelMultiDto dto, string tar
     return Results.Ok(new { count = rows.Count, status = target, detailsSynced = dtls.Count });
 }
 
+// ===== #5828 XOÁ phiếu huỷ hợp đồng bán lẻ — `FrmMngCancelRetailContract.btnDLDelete_Click` =====
+// Trace: cùng biz `Dlr_ContractCancel_Save` (`BizHTC.Contract.cs:1587` → `_SaveX_New20230306` :2375) đã
+// port ở `/save` phía trên, nhưng gọi với `strFlagIsDelete="1"` (khác `/save` luôn gọi "0").
+// 🔴 PHÁT HIỆN — `_SaveX` KHI `bIsDelete=true` THỰC RA LUÔN LỖI SQL, KHÔNG BAO GIỜ XOÁ ĐƯỢC GÌ:
+//   · Bảng tạm `#input_Dlr_ContractCancel` CHỈ được TẠO trong 2 khối `if (!bIsDelete)` (dòng 2515/2555)
+//     — khi `bIsDelete=true` cả hai khối này bị BỎ QUA nên bảng tạm này KHÔNG HỀ tồn tại.
+//   · Khối `#region // SaveDB: //// Clear All:` (dòng 2890-2968) — nơi THỰC SỰ xoá 3 bảng
+//     `Dlr_ContractCancelCar`/`Dtl`/header — lại KHÔNG có guard `if (!bIsDelete)` bao ngoài (chạy
+//     VÔ ĐIỀU KIỆN) và `inner join #input_Dlr_ContractCancel f` — tham chiếu bảng tạm KHÔNG TỒN TẠI
+//     ⇒ SQL Server báo lỗi thật `Invalid object name '#input_Dlr_ContractCancel'` mỗi lần gọi.
+//   ⇒ Nút "Xóa đề nghị hủy" trên màn hình THẬT luôn quăng exception (`Util.ShowExceptionBox`), KHÔNG BAO
+//     GIỜ xoá được bản ghi nào — đây là bug nguồn CHƯA TỪNG hoạt động, không phải lỗi port.
+// Guard CHẠY TRƯỚC khi tới đoạn lỗi (vẫn áp dụng đúng, vì chạy sớm hơn khối crash):
+//   · Không tìm thấy `ContractCNo` → coi là thành công (nguồn `goto MyCodeLabel_Done` khi bIsDelete+not-found);
+//   · Tìm thấy nhưng `ContractCancelStatus = "A"` (Approved) → lỗi `Expected P or C` (dòng 2472-2483).
+//   · Tìm thấy và đang "P"/"C" → nguồn chạy tiếp tới khối SQL luôn lỗi ở trên ⇒ port TÁI HIỆN đúng lỗi
+//     thật (KHÔNG bịa logic xoá thành công, vì nguồn chưa từng xoá thành công ở nhánh này).
+app.MapPost("/api/dlrcontractcancels/{no}/delete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var head = await db.DlrContractCancels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractCNo == no);
+    if (head is null) return Results.Ok(new { no, deleted = false, note = "Không tồn tại — nguồn coi là thành công (no-op), không có gì để xoá." });
+    if (head.ContractCancelStatus == "A")
+        return Results.BadRequest(new { error = $"Phiếu đang 'A' (đã duyệt) — chỉ xoá được khi 'P' hoặc 'C'." });
+    return Results.Problem(
+        detail: "NGUỒN THẬT luôn lỗi SQL ở bước này ('Invalid object name #input_Dlr_ContractCancel') — " +
+            "bảng tạm cần để xoá chỉ được tạo ở nhánh KHÔNG xoá; nút 'Xóa đề nghị hủy' trên WinForm chưa " +
+            "từng hoạt động. Port tái hiện đúng lỗi thật, không bịa logic xoá thành công (#5828).",
+        statusCode: 500, title: "Dlr_ContractCancel_Save(FlagIsDelete=1) luôn lỗi ở nguồn");
+}).RequireAuthorization();
+
 // ===== HẠNG MỤC gói bảo dưỡng (Mst_MaintainTaskItem) =====
 // Port 1:1 cụm 4 hàm `_Create/_Update/_Delete/_Get_New20181119` (Biz.HTC.WH.cs:7236).
 // TWIN: cả hai bit khớp hoàn toàn (5/5 hàm, kể cả `Mst_MaintainTask_Get` của bảng cha).
