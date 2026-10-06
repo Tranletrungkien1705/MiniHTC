@@ -9145,6 +9145,86 @@ app.MapPost("/api/fnexpcalcs/{no}/{action}", async (string no, string action, Ap
     return Results.Ok(new { c.CaNo, c.Status });
 }).RequireAuthorization();
 
+// ===== #5816 TÌM KIẾM BẢNG TÍNH CPTC (QUẢN LÝ) — `FrmDMS40_2019_MngDMS40_FnExp_Calc_FnExp_PmDc` =====
+// Trace: menu sống FrmMain.cs:2763/2766 → `DMS40_FnExp_Calc_FnExp_PmDcService.DMS40_FnExp_Calc_FnExp_PmDc_Get`
+//   → WS → biz `DMS40_FnExp_Calc_FnExp_PmDc_Get` (2010.HTC `DMS40/0.41.CalcFnExp.cs:2754`) → `…GetX_
+//   New20190418` (:1475). Trước #5816 Mini chỉ có `/api/fnexpcalcs` (màn TẠO/duyệt, 3 bộ lọc: dealer/caNo/
+//   status) — màn NÀY là màn TÌM KIẾM riêng, rộng hơn (11 tham số + cờ Main/WH), không dùng lại được.
+// 🔴 BUG THẬT — `flagisHTC` NƯỚNG THẲNG VÀO LITERAL (không tham số hoá), khác MỌI bộ lọc còn lại của CHÍNH
+//   hàm này (đều qua `BuildWhere`/allow-list an toàn): `and ('@strFlagisHTC' = '' or cc.FlagisHTC =
+//   '@strFlagisHTC')` — `StringUtils.Replace` thay trực tiếp vào chuỗi SQL. Bề mặt injection còn đó dù
+//   client đã COMMENT bộ lọc `FlagisHTC` kiểu `AddWhereClause` thông thường (client vẫn gửi `flagisHTC`
+//   qua MỘT tham số RIÊNG, không qua `strWhereClause`) — không port theo kiểu nướng, nhưng GHI LẠI đúng
+//   hiện trạng nguồn, không tự vá giùm nguồn.
+// 📌 NỢ — Mini `FnExpCalc` chỉ có MỘT cột `Status` (gộp từ lần port trước, dùng tập giá trị tự đặt
+//   "Draft/Approved/Rejected"), nguồn có BA trục riêng: `DlrSignStatus`/`HTCSignStatus`/`FnExpStatus`
+//   ("NS"=chưa ký/"S"=đã ký). `dlrSignStatus`/`htcSignStatus` CHẤP NHẬN tham số nhưng KHÔNG LỌC được —
+//   trả `signStatusAxesNotSupportedNote`, không bịa giá trị tương ứng. BUPattern (`md.BUCode like
+//   @strBUPatternOfUser`) đang SỐNG ở nguồn (inner join, không comment) — Mini chưa có claim BUPattern để
+//   enforce, không tự bịt (khuôn #B46/#B47). Cờ Main/WH của nguồn không áp dụng — Mini một DB hợp nhất.
+app.MapGet("/api/fnexpcalcs/search", async (AppDbContext db, ITenantContext t,
+    string? caNo, string? dealerCode, DateTime? createdFrom, DateTime? createdTo,
+    string? dlrSignStatus, string? htcSignStatus, string? fnExpStatus,
+    string? carId, string? vin, string? flagEarlyCancel, string? flagisHTC) =>
+{
+    var q = db.FnExpCalcs.Where(c => c.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(caNo)) q = q.Where(c => c.CaNo.Contains(caNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode!.Trim());
+    if (createdFrom.HasValue) q = q.Where(c => c.CreatedAt >= createdFrom.Value);
+    if (createdTo.HasValue) q = q.Where(c => c.CreatedAt <= createdTo.Value);
+    // NỢ: FnExpStatus nguồn ("NS"/"S") khác tập giá trị Status hiện có của Mini — chỉ lọc khi khớp đúng chuỗi.
+    if (!string.IsNullOrWhiteSpace(fnExpStatus)) q = q.Where(c => c.Status == fnExpStatus!.Trim());
+
+    var cas = await q.ToListAsync();
+    if (!string.IsNullOrWhiteSpace(carId) || !string.IsNullOrWhiteSpace(vin)
+        || !string.IsNullOrWhiteSpace(flagEarlyCancel) || !string.IsNullOrWhiteSpace(flagisHTC))
+    {
+        var caIds = cas.Select(c => c.Id).ToList();
+        var lines = await db.FnExpCalcLines.Where(l => l.OrgId == t.OrgId && caIds.Contains(l.FnExpCalcId)).ToListAsync();
+        var carIds = lines.Select(l => l.CarId).Distinct().ToList();
+        var carsByCarId = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.CarId != null && carIds.Contains(c.CarId!))
+            .ToListAsync()).Where(c => c.CarId != null).GroupBy(c => c.CarId!).ToDictionary(g => g.Key, g => g.First());
+        bool LineMatches(FnExpCalcLine l)
+        {
+            if (!string.IsNullOrWhiteSpace(carId) && !l.CarId.Contains(carId!.Trim(), StringComparison.OrdinalIgnoreCase)) return false;
+            carsByCarId.TryGetValue(l.CarId, out var cv);
+            if (!string.IsNullOrWhiteSpace(vin) && !(cv != null && cv.VIN.Contains(vin!.Trim(), StringComparison.OrdinalIgnoreCase))) return false;
+            if (!string.IsNullOrWhiteSpace(flagEarlyCancel) && cv?.FlagEarlyCancel != flagEarlyCancel!.Trim()) return false;
+            if (!string.IsNullOrWhiteSpace(flagisHTC) && cv?.FlagisHTC != flagisHTC!.Trim()) return false;
+            return true;
+        }
+        var okCaIds = lines.Where(LineMatches).Select(l => l.FnExpCalcId).ToHashSet();
+        cas = cas.Where(c => okCaIds.Contains(c.Id)).ToList();
+    }
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    var items = cas.OrderBy(c => c.CaNo).Select(c =>
+    {
+        dealers.TryGetValue(c.DealerCode ?? "", out var dl);
+        var caLines = db.FnExpCalcLines.Where(l => l.OrgId == t.OrgId && l.FnExpCalcId == c.Id).ToList();
+        return new
+        {
+            c.CaNo, c.DealerCode, DealerName = dl?.DealerName, c.CreatedAt, c.Status,
+            fnExpStatusName = c.Status == "Approved" ? "Đã duyệt" : c.Status == "Rejected" ? "Từ chối" : "Chưa ký",
+            fnTotalAmountTotal = caLines.Sum(l => l.FnTotalAmount), pdAmountTotal = caLines.Sum(l => l.PDAmount),
+            lines = caLines.Count
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        signStatusAxesNotSupportedNote = "Nguon co BA truc rieng DlrSignStatus/HTCSignStatus/FnExpStatus; " +
+            "Mini FnExpCalc chi co MOT cot Status (tu port truoc, tap gia tri tu dat Draft/Approved/Rejected). " +
+            "dlrSignStatus/htcSignStatus CHAP NHAN tham so nhung KHONG LOC duoc - khong bia (#5816).",
+        bakeParamMixNote = "Nguon nuong flagisHTC THANG vao literal SQL (khong tham so hoa), khac moi bo loc " +
+            "con lai cua chinh ham nay (qua BuildWhere an toan) - ghi lai hien trang, khong tu va giup nguon (#5816).",
+        buPatternNotEnforcedNote = "md.BUCode like @strBUPatternOfUser dang SONG o nguon (inner join, khong " +
+            "comment) - Mini chua co claim BUPattern de enforce giong het, khong tu bit (#5816)."
+    });
+}).RequireAuthorization();
+
 // ===== Lịch sản xuất / ETA xe nhập (WoSchedule — port 1:1 FrmImportETAMng, Sales/WorkOrder) =====
 app.MapGet("/api/woschedules", async (AppDbContext db, ITenantContext t, string? no, string? createdBy, string? status) =>
 {
