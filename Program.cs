@@ -14741,11 +14741,23 @@ app.MapGet("/api/reportkpis/export-check", async (AppDbContext db, ITenantContex
 //   · `RptKPIGetReal_New20160602` (#412): đòi `substring(StartWorkDate,1,7) <= kỳ` ⇒ ngày trống **BỊ LOẠI**.
 //   ⇒ Nhân sự chưa khai ngày vào làm **có mặt ở màn báo giá nhưng biến mất khỏi KPI**. Cùng một người,
 //     hai màn trả lời khác nhau câu hỏi "đang làm việc?".
+// #5822 BỔ SUNG BA Ô LỌC CÒN THIẾU của `FrmEmployeeSearch` (`Views/Admin/FrmEmployeeSearch.cs:261`,
+//   `SerEmployeeGetStatus(groupRepair, engineerNo, engineerName, …)`) — route này trước chỉ phục vụ đúng
+//   bộ tham số của `FrmQuotationApp` (engineerType/status/dealer); CÙNG một hàm biz, khác màn gọi, khác
+//   tập tham số dùng tới — không phải route mới, chỉ thêm filter còn thiếu (đúng luật "route có nhưng
+//   thiếu filter không phải CHUA_CO").
 app.MapGet("/api/serviceengineers/by-type", async (AppDbContext db, ITenantContext t,
-    string? engineerType, string? status, string? dealer) =>
+    string? engineerType, string? status, string? dealer,
+    string? groupRepair, string? engineerNo, string? engineerName) =>
 {
     var all = await db.ServiceEngineers.Where(e => e.OrgId == t.OrgId
             && (dealer == null || e.DealerCode == dealer)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(groupRepair) && long.TryParse(groupRepair.Trim(), out var groupRid))
+        all = all.Where(e => e.GroupRID == groupRid).ToList();
+    if (!string.IsNullOrWhiteSpace(engineerNo))
+        all = all.Where(e => e.EngineerNo.Contains(engineerNo.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+    if (!string.IsNullOrWhiteSpace(engineerName))
+        all = all.Where(e => e.EngineerName.Contains(engineerName.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
 
     // Lọc theo MÃ LOẠI NHÂN SỰ (mã chữ, khoá ngoại tới Mst_Staff.StaffCode).
     var typeQ = (engineerType ?? "").Trim();
