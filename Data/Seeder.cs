@@ -1923,6 +1923,8 @@ public static class Seeder
         "ALTER TABLE public.\"ServicePackageParts\" ADD COLUMN IF NOT EXISTS \"ExpenseType\" text",
         // #1602 cot nguon SerID (Ser_ServicePackageServiceItems) - khoa nghiep vu dong cong
         "ALTER TABLE public.\"ServicePackageServices\" ADD COLUMN IF NOT EXISTS \"SerID\" text",
+        // #1603 cot nguon PartID (Ser_ServicePackagePartItems) - khoa nghiep vu dong phu tung
+        "ALTER TABLE public.\"ServicePackageParts\" ADD COLUMN IF NOT EXISTS \"PartID\" text",
         // #548 cac cot ma SerServicePackageUpdate ghi
         "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text",
         "ALTER TABLE public.\"ServicePackages\" ADD COLUMN IF NOT EXISTS \"TakingTime\" text",

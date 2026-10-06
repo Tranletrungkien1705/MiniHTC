@@ -3392,6 +3392,11 @@ public sealed class ServicePackagePart
     public Guid OrgId { get; set; }
     public long ServicePackageId { get; set; }
     public string PartCode { get; set; } = "";
+    // #1603 §12 - cot nguon PartID (Ser_ServicePackagePartItems) - port 1:1.
+    // Nguon ProcessSaveServicePackagePartItem (BizCarSv.ServicePackage.cs:1031) ghi `newRow["PartID"] = row["PartID"]`
+    // (dong dau tien cua vong lap) — khoa nghiep vu nguon la `PartID` (FK so ve Ser_Mst_Part), KHONG phai `PartCode`.
+    /// <summary>`PartID` — khoa so cua dong phu tung trong danh muc `Ser_Mst_Part` (nguon luu FK nay).</summary>
+    public string? PartID { get; set; }
     // ===== #552 §12 CÁC CỘT MÀ `ProcessSaveServicePackagePartItem` GHI =====
     /// <summary>SỐ LƯỢNG phụ tùng trong gói (`Quantity`) — trước nay MiniHTC **chỉ có `Factor`**,
     /// nên gói hai cái lọc dầu và gói một cái **không phân biệt được**.</summary>

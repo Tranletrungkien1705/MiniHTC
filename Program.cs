@@ -31846,7 +31846,7 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         var f = p.Factor <= 0 ? 1 : p.Factor; var qty = p.Quantity ?? 1; var amt = Math.Round(p.Price * f * qty, 2);
         partTotal += amt;
         partRows.Add(new ServicePackagePart { OrgId = t.OrgId, PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt,
-            Quantity = p.Quantity, VAT = p.VAT, Note = N(p.Note), ExpenseType = N(p.ExpenseType), LogLUDateTime = now, LogLUBy = who });
+            Quantity = p.Quantity, VAT = p.VAT, Note = N(p.Note), ExpenseType = N(p.ExpenseType), PartID = N(p.PartID), LogLUDateTime = now, LogLUBy = who });
     }
     static string? N(string? s) => string.IsNullOrWhiteSpace(s) ? null : s;
     if (isCreate)
@@ -31990,7 +31990,7 @@ app.MapPost("/api/servicepackages/{id:long}/update", async (long id, ServicePack
             // (dòng CÔNG thì KHÔNG — xem ProcessSaveServicePackageServiceItem biz:896-940, không gán LogLU*).
             db.ServicePackageParts.Add(new ServicePackagePart { OrgId = t.OrgId, ServicePackageId = h.Id,
                 PartCode = p.PartCode.Trim(), PartName = p.PartName, Price = p.Price, Factor = f, Amount = amt,
-                Quantity = p.Quantity, VAT = p.VAT, Note = p.Note, ExpenseType = p.ExpenseType,
+                Quantity = p.Quantity, VAT = p.VAT, Note = p.Note, ExpenseType = p.ExpenseType, PartID = p.PartID,
                 LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() });
         }
         h.PartTotal = partTotal2; newPartCount = dto.Parts.Count;
@@ -32082,7 +32082,7 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
         var newPrice551 = eff?.Price ?? p?.Price;
         return new
         {
-            x.PartCode, x.PartName, x.Price, x.Factor, x.Amount, x.Quantity, x.VAT, x.Note, x.ExpenseType, x.LogLUDateTime, x.LogLUBy,
+            x.PartCode, x.PartID, x.PartName, x.Price, x.Factor, x.Amount, x.Quantity, x.VAT, x.Note, x.ExpenseType, x.LogLUDateTime, x.LogLUBy,
             NewVAT = p?.VAT, NewPrice = newPrice551,
             NewAmount = newPrice551 is null ? (decimal?)null : x.Factor * newPrice551 * x.Quantity,
             PartPriceId = eff?.Id, FlagInTST = p?.FlagInTST,
@@ -32138,7 +32138,7 @@ app.MapPost("/api/serinsurances", async (SerInsuranceDto dto, AppDbContext db, I
     if (isNewIns1199) { row.CreatedDate = now1199; row.CreatedBy = by1199; }
     row.LogLUDateTime = now1199; row.LogLUBy = by1199;
     row.InsVieName = dto.InsVieName; row.InsEngName = dto.InsEngName; row.Address = dto.Address; row.Email = dto.Email; row.Telephone = dto.Telephone; row.Fax = dto.Fax; row.Taxcode = dto.Taxcode; row.Description = dto.Description; row.UpdatedAt = DateTime.Now;
-    row.Website = dto.Website; 
+    row.Website = dto.Website;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.InsNo, row.InsVieName, row.FlagActive, row.DealerCode });
@@ -46279,7 +46279,7 @@ app.MapGet("/api/report/warranty-accept/export", async (AppDbContext db, ITenant
         textCleanNote = "CusRequest bỏ - ' và xuống dòng; CarStatus bỏ - ' VÀ TOÀN BỘ khoảng trắng; "
             + "cả hai cắt còn 255 ký tự — đúng nguồn.",
         // #502: WARRANTYSTATUSTEXT đã trả (dùng bảng mã 6 giá trị của nguồn).
-        //   HTCROWNo vẫn nợ: nguồn lấy từ hàm vô hướng SQL 
+        //   HTCROWNo vẫn nợ: nguồn lấy từ hàm vô hướng SQL
         //   — không tái tạo được nếu chưa biết thân hàm đó, nên KHÔNG bịa.
         // #502b NỬA NỢ ĐÃ TRẢ: `WARRANTYSTATUSTEXT` nay dựng từ bảng mã 6 giá trị của nguồn
         //   (`SENT`/`PEND`/`CONF`/`ACCE`/`REJ`/`REVERT`, **không có ELSE**) — cùng bảng đã dùng ở #460/#466.
@@ -46796,11 +46796,11 @@ app.MapGet("/api/appointments", async (AppDbContext db, ITenantContext t, string
     {
         x.Id, x.AppNo, x.DealerCode, x.CavityID, CavityName = db.Cavities.Where(cv => cv.OrgId == t.OrgId && cv.CavityNo == x.CavityID).Select(cv => cv.CavityName).FirstOrDefault(), x.PlateNo, x.CusName, x.Mobile, x.ModelName, x.AppTypeCode,
         appFrom = x.AppFrom.ToString("yyyy-MM-dd HH:mm"), appTo = x.AppTo.ToString("yyyy-MM-dd HH:mm"), x.AppStatus, x.Note, x.CVDVCode, x.QuoteNo, x.CusRequest, x.FirstContactDateTime,
-         
+
         x.CarID,   // #319 §12: phải có ở CẢ GET lẫn POST
         // #323 §12: 4 cột ngày/giờ THÔ + 2 mã gốc — trả kèm để đối chiếu với AppFrom/AppTo đã gộp.
         x.AppDateTime, x.AppTime, x.AppDateTimeFrom, x.AppTimeFrom,
-         
+
         // #270 §12: cot bo sung co mat o CA GET lan POST
         x.CusID, x.Vin, x.HCCPushStatus, x.HCCPushDateTime,
         x.HCCFinishStatus, x.HCCFinishDateTime,   // #351 §12: ve DONG phai nhin thay duoc nhu ve MO
@@ -48572,12 +48572,12 @@ app.MapPut("/api/appointments/{appNo}", async (string appNo, AppointmentDto dto,
             mainInlineOnly = 0, neitherInline = 85,
             caveat = "Dem chu SQL VIET THANG; ban chinh dung macro zzB_..._zzE nen khoi bi coi la thieu." },
         // ===== ✅ #476 CÔNG CỤ ĐÃ BIẾT ĐẾM MACRO — con số nào còn dùng được =====
-        // Nâng  và : mỗi lần so đều in thêm 
+        // Nâng  và : mỗi lần so đều in thêm
         //   (số dòng giữ chỗ ). Nhờ vậy chỗ nào không so được là **nhìn thấy ngay**,
         //   không còn im lặng như #472/#473.
         // 📊 Trong **26 cặp KHÁC** của #471: **12 cặp có dùng macro** ⇒ số dòng SQL của chúng
         //   **không so sánh được**; chỉ **14 cặp không macro** mới là ứng viên lệch thật.
-        // Ví dụ rõ:  — main ,  
+        // Ví dụ rõ:  — main ,
         //   ⇒ bản chính **tiêm nhiều khối hơn**, nên con số 67→89 KHÔNG chứng minh điều gì.
         // ===== 🔴🔴 #478 GỐC CỦA MỌI PHÉP ĐO LIVENESS BỊ SAI: TÔI CHỈ QUÉT **MỘT** PROJECT WS =====
         // Cây nguồn có **BỐN** project web-service gọi tầng biz, không phải một:
@@ -59223,7 +59223,7 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
     var items = await query.OrderBy(x => x.CavityNo).Take(500)
         // #296 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
         .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartUseDate, x.FinishUseDate, x.Note, x.FlagActive,
-            x.DealerCode, x.CavityType, x.Status,  
+            x.DealerCode, x.CavityType, x.Status,
             x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1476: nguồn Ser_CavityGet SELECT ca.* ⇒ echo đủ cột (POST đã ghi #1047, GET chưa echo)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -82209,7 +82209,7 @@ app.MapGet("/api/sysusers/current", async (
     });
 }).RequireAuthorization();
 
-// merge: gỡ route trùng: app.MapGet("/api/sysobjecttypes", async (AppDbContext db, ITenantContext t, string? objectTypeList) 
+// merge: gỡ route trùng: app.MapGet("/api/sysobjecttypes", async (AppDbContext db, ITenantContext t, string? objectTypeList)
 
 // ===== #B98 DANH MỤC PHÒNG BAN — `Mst_Department_Get_New20181115` =====
 // Trace LIVE: WS → `_biz.Mst_Department_Get_New20181115` (`BizHTC.zzzzCode.cs:6839`);
@@ -100853,7 +100853,7 @@ app.MapGet("/api/reports/ro-warranty-htmv", async (AppDbContext db, ITenantConte
     var items = heads.Select(h => new
     {
         ROWID = h.Id, h.ROWNo, h.ROID, h.RONo, h.DealerCode, h.Vin, h.PlateNo,
-        h.WarrantyStatus, 
+        h.WarrantyStatus,
         statusName = h.WarrantyStatus switch
         {
             "SENT" => "Chờ xem xét", "APPROVED" => "Đã duyệt", "REJECTED" => "Từ chối",
@@ -110342,7 +110342,7 @@ app.MapGet("/api/retrievereqs", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(r => r.DealerCode == dealer);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.TranspReqStatus, r.CreatedDate, r.ApprovedDate, r.TranspReqType, 
+        r.TranspReqNo, r.DealerCode, r.TransporterCode, r.Reason, r.TranspReqStatus, r.CreatedDate, r.ApprovedDate, r.TranspReqType,
         // #156 parity Sto_TranspReq.
         r.TransportContractNo, r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,
         cars = db.RetrieveReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
@@ -110821,7 +110821,7 @@ app.MapGet("/api/reports/dealer-cars-summary", async (
             ccCarId = c.VIN, c.SpecCode, c.ModelCode, c.ColorCode, c.DealerCode,
             c.PaymentStatus, c.DeliveryStatus, c.SellStatus, c.FlagActive, c.FlagAllowChangeVIN,
             c.UnitPriceActual, c.CreatedDate, c.CreatedBy, c.CarCancelType, c.CarCancelDate,
-            cvVIN = c.VIN, cvPackingListNo = c.PackingListNo, 
+            cvVIN = c.VIN, cvPackingListNo = c.PackingListNo,
             cvEngineNo = c.EngineNo, cvKeyNo = c.KeyNo, cvCODate = c.CODate,
             osoSOCode = so?.SoCode, osoSOType = so?.OrderType, osoDealerCode = so?.DealerCode,
             osoSOStatus = so?.Status, osoProductionMonth = so?.ProductionMonth, osoExpectedMonth = so?.ExpectedMonth,
@@ -113112,7 +113112,8 @@ record SpPartDto(string PartCode,
     decimal? Quantity = null,
     decimal? VAT = null,
     string? Note = null,
-    string? ExpenseType = null);
+    string? ExpenseType = null,
+    string? PartID = null);
 record SerInsuranceDto(string? InsNo,
     string? InsVieName,
     string? InsEngName,
