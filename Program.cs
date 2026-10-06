@@ -546,17 +546,40 @@ app.MapDelete("/api/carprices/{id:long}", async (long id, AppDbContext db, ITena
 // cho nghiệp vụ khách hàng, và /api/master/CustomerBase cho danh mục "Nguồn khách hàng".
 
 // ===== Nhân viên bán hàng (Mst_SalesMan) — port 1:1 FrmCreateSalesMan =====
-app.MapGet("/api/salesmen", async (AppDbContext db, ITenantContext t, string? q, string? dealer) =>
+// #5766: them 4 bo loc ngay + FlagActive dung nguyen SearchSalesMan (DealerService.cs:3064,
+// FrmSalesMan.btnSearch_Click) — man NAY (FrmSalesMan, Mst_SalesMan) KHAC FrmMngSalesManApproved/
+// FrmMngSalesManHTC (Mst_DlSalesMan, da port #119). Doc toan van Mst_SalesMan_GetX_New20210415
+// (Biz.HTC.WH.cs:18014 vo -> SQL CommonSQLQuery.cs:1230, 12 bang tam) xac nhan CAC COT DAN XUAT
+// (DayDealerCur/DayWorkOld tinh luy ke qua Mst_SalesManHistoryInactive, tong CC/Training, danh sach
+// Certificate, so Violation qua HR_SalesManViolate) KHONG bounded — can dau tu rieng, GHI NO rieng
+// (xem debtNote). Phan CO THE port ngay: 4 bo loc (StartDate/EndDate tu-den, FlagActive) tren route
+// /api/salesmen DA CO san (chi thieu filter, khong thieu entity/route).
+app.MapGet("/api/salesmen", async (AppDbContext db, ITenantContext t, string? q, string? dealer,
+    DateTime? startedDateFrom, DateTime? startedDateTo, DateTime? endDateFrom, DateTime? endDateTo, string? flagActive) =>
 {
     var query = db.SalesMen.Where(s => s.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(s => s.SalesManCode.Contains(q) || s.SalesManName.Contains(q));
     if (!string.IsNullOrWhiteSpace(dealer)) query = query.Where(s => s.DealerCode == dealer);
+    // #5766: SearchSalesMan dung ">="/"<=" tren SMStartDate/SMEndDate (khong phai khoang "StdDTime" chuan
+    // #B57/#dmssales-stddate-vs-stddtime) — port giu dung nguyen ">="/"<=" vi nguon khong chuan hoa gio.
+    if (startedDateFrom != null) query = query.Where(s => s.StartDate != null && s.StartDate >= startedDateFrom);
+    if (startedDateTo != null) query = query.Where(s => s.StartDate != null && s.StartDate <= startedDateTo);
+    if (endDateFrom != null) query = query.Where(s => s.EndDate != null && s.EndDate >= endDateFrom);
+    if (endDateTo != null) query = query.Where(s => s.EndDate != null && s.EndDate <= endDateTo);
+    // #5766: nguon "strFlagActive" khi CO (chkActive.Checked) loc "SMStatus notin '0'" (tuc DANG LAM VIEC:
+    // chinh thuc/thu viec/CTV), KHONG phai so FlagActive — giu dung ten tham so client (de khop UI cu) nhung
+    // ap dung dung cot/dieu kien nguon.
+    if (!string.IsNullOrWhiteSpace(flagActive)) query = query.Where(s => s.SMStatus != "0");
     var items = await query.OrderBy(s => s.SalesManCode).Take(500).Select(s => new
     { s.SalesManCode, s.SalesManName, s.DealerCode, s.DepartmentCode, s.SalesType, s.Phone, s.Email, s.Status,
       s.Gender, s.DateOfBirth, s.Address, s.ProvinceCode, s.QualificationCode, s.Specialized, s.YearExperience,
       s.StartDate, s.EndDate, s.Position, s.PositionCode, s.CertificateCode, s.SMHyundaiCode, s.IdentityCardNo,
-      s.WebsiteLink, s.FacebookLink, s.FanpageLink, s.GroupLink, s.ZaloLink, s.AccountHTA, s.LastestUpdDateTime }).ToListAsync();
-    return Results.Ok(new { count = items.Count, items });
+      s.WebsiteLink, s.FacebookLink, s.FanpageLink, s.GroupLink, s.ZaloLink, s.AccountHTA, s.LastestUpdDateTime, s.SMStatus }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        debtNote538 = "NO - KHONG DOAN: FrmSalesMan con can cot dan xuat tu Mst_SalesMan_GetX_New20210415 (12 bang tam, CommonSQLQuery.cs:1230) - DayDealerCur/DayWorkOld (so ngay lam viec LUY KE qua Mst_SalesManHistoryInactive, tinh ca cac lan nghi-lam-lai), tong CC (cham soc khach hang), tong Training, danh sach Certificate, so Violation (HR_SalesManViolate). KHONG co entity/bang tuong duong nao trong Mini cho Mst_SalesManHistoryInactive/HR_SalesManViolate - can dau tu rieng (schema moi + doc sau tung bang), KHONG doan cong thuc.",
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesmen", async (SalesManDto dto, AppDbContext db, ITenantContext t) =>
