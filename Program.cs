@@ -31828,7 +31828,7 @@ app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext d
         svcTotal += amt;
         // Nguồn ProcessSaveServicePackageServiceItem KHÔNG gán LogLU* cho dòng công (chỉ dòng PT có) ⇒ để NULL.
         svcRows.Add(new ServicePackageService { OrgId = t.OrgId, SerCode = s.SerCode.Trim(), SerName = s.SerName, Price = s.Price, Factor = f, Amount = amt,
-            ActManHour = s.ActManHour, VAT = s.VAT, Note = N(s.Note), ExpenseType = N(s.ExpenseType), ROType = N(s.ROType) });
+            ActManHour = s.ActManHour, VAT = s.VAT, Note = N(s.Note), ExpenseType = N(s.ExpenseType), ROType = N(s.ROType), SerID = N(s.SerID) });
     }
     var partRows = new List<ServicePackagePart>();
     var seenP = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -31973,7 +31973,7 @@ app.MapPost("/api/servicepackages/{id:long}/update", async (long id, ServicePack
             svcTotal2 += amt;
             db.ServicePackageServices.Add(new ServicePackageService { OrgId = t.OrgId, ServicePackageId = h.Id,
                 SerCode = s.SerCode.Trim(), SerName = s.SerName, ExpenseType = s.ExpenseType, ROType = s.ROType,
-                Price = s.Price, Factor = f, Amount = amt, ActManHour = s.ActManHour, VAT = s.VAT, Note = s.Note });
+                Price = s.Price, Factor = f, Amount = amt, ActManHour = s.ActManHour, VAT = s.VAT, Note = s.Note, SerID = s.SerID });
         }
         h.ServiceTotal = svcTotal2; newServiceCount = dto.Services.Count;
     }
@@ -32053,7 +32053,7 @@ app.MapGet("/api/servicepackages/{id}/detail", async (long id, AppDbContext db, 
         svcMaster551.TryGetValue(x.SerCode, out var m);
         return new
         {
-            x.SerCode, x.SerName, x.Price, x.Factor, x.Amount, x.ActManHour, x.VAT, x.Note, x.ExpenseType, x.ROType, x.LogLUDateTime, x.LogLUBy,
+            x.SerCode, x.SerID, x.SerName, x.Price, x.Factor, x.Amount, x.ActManHour, x.VAT, x.Note, x.ExpenseType, x.ROType, x.LogLUDateTime, x.LogLUBy,
             StdManHour = m?.StdManHour, NewPrice = m?.Price, NewVAT = m?.Vat,
             NewAmount = m is null ? (decimal?)null : x.Factor * m.Price,
             FlagWarranty = m?.FlagWarranty,
@@ -113103,7 +113103,8 @@ record SpSvcDto(string SerCode,
     decimal? VAT = null,
     string? Note = null,
     string? ExpenseType = null,
-    string? ROType = null);
+    string? ROType = null,
+    string? SerID = null);
 record SpPartDto(string PartCode,
     string? PartName,
     decimal Price,

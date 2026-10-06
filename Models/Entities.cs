@@ -3359,6 +3359,12 @@ public sealed class ServicePackageService
     public Guid OrgId { get; set; }
     public long ServicePackageId { get; set; }
     public string SerCode { get; set; } = "";
+    // #1602 §12 - cot nguon SerID (Ser_ServicePackageServiceItems) - port 1:1.
+    // Nguon ProcessSaveServicePackageServiceItem (BizCarSv.ServicePackage.cs:896) ghi `newRow["SerID"] = row["SerID"]`
+    // va guard CheckInput (biz:381-390) NEM `SerServicePackageCreate_ServiceNotInList` khi `SerID` RONG —
+    // tuc khoa nghiep vu nguon la `SerID` (FK so ve Ser_Mst_Service), KHONG phai `SerCode`.
+    /// <summary>`SerID` — khoa so cua dong cong trong danh muc `Ser_Mst_Service` (nguon luu FK nay).</summary>
+    public string? SerID { get; set; }
     // ===== #552 §12 BA CỘT NỮA MÀ `ProcessSaveServicePackageServiceItem` GHI =====
     /// <summary>Giờ công THỰC TẾ của dòng (`ActManHour`) — khác `StdManHour` (định mức, nằm ở danh mục).</summary>
     public decimal? ActManHour { get; set; }
