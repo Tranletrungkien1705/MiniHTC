@@ -110657,6 +110657,148 @@ app.MapGet("/api/reports/car-vin-for-rd-invoice", async (
             "o HEADER DocReq thay cho cot cap-dong DocReqCar chua co (#5806)."
     });
 }).RequireAuthorization();
+// ===== #5808 TÌM VIN ĐỂ TẠO ĐỀ NGHỊ THẾ CHẤP — `FrmCar_VIN_Get_ForReqMortgage` =====
+// Trace: mở từ `FrmNewRM_ReqMortgage` (menu sống FrmMain.cs:2783) → `SalesService.Car_VIN_Get_ForReqMortgage`
+//   (13 tham số lọc, build `strWhereClause` client-side qua `AddWhereClause`) → WS `Car_VIN_Get_ForReqMortgage`
+//   (KHÔNG phải `_WH`, đúng hàm client gọi) → `_biz.Car_VIN_Get_ForReqMortgage` → `…X` (2010.HTC `DataWH/
+//   Biz.HTC.WH.cs:179908`, SQL thật). Trước #5808 Mini KHÔNG có route.
+// 🔴🔴🔴 **BUG THẬT — 2 THAM SỐ LÀM NGUỒN VỠ SQL, KHÔNG PHẢI CHỈ VÔ HIỆU**: `strFt_WhereClause` được xác
+//   thực qua `BuildWhere` với allow-list CÓ `cdrd.`/`cdrl.` (hợp lệ, không phải injection) — NHƯNG mảnh WHERE
+//   đó bị chèn vào **`#tbl_Car_VIN_Filter_Draft1`**, truy vấn CHỈ JOIN `cv`/`cc`/`md`/`pgd`/`pg` — KHÔNG hề
+//   JOIN `Car_DocReqDtl cdrd` / `Car_DocReqList cdrl` (hai bảng đó chỉ xuất hiện Ở BƯỚC SAU, #tbl_Car_VIN_Final,
+//   để HIỂN THỊ, không phải để lọc). ⇒ Người dùng chọn lọc theo **Loại ĐNGT** (`typeCRR`) hoặc **Trạng thái
+//   ĐNGT** (`drDtlStatus`) ⇒ SQL Server báo lỗi **"invalid column name" / multi-part identifier không bind
+//   được** — MÀN SỐNG NHƯNG HAI Ô LỌC NÀY LUÔN LÀM NÓ VỠ. Port KHÔNG lặng lẽ bỏ qua hai tham số này (sẽ SAI
+//   1:1 vì nguồn không "bỏ qua", nguồn "vỡ") — trả `400` kèm mã lỗi rõ ràng khi được truyền.
+// 🔴 `strReqRMNo` ("1"=đã tạo thế chấp/"0"=chưa) được CHẤP NHẬN làm tham số nhưng nhánh áp dụng nó
+//   (`sbSql.Append(... Tbl_RM_ReqMortgageDtl...)`) bị COMMENT ở tầng client — KHÔNG BAO GIỜ thực sự lọc.
+//   Port vẫn nhận tham số cho đủ chữ ký nhưng bỏ qua, ghi rõ trong `deadParamsNote`.
+// 🔴 `pgd.GuaranteeDetailStatus = 'A'` CỨNG (không phải `in ('A','F')` như #5806/#5798) — chỉ bảo lãnh đang
+//   hiệu lực mới hiện `BankCodeMonitor`; bảo lãnh đã tất toán ('F') bị bỏ qua ở MÀN NÀY (khác hẳn các màn
+//   bảo lãnh khác đã port).
+// Điều kiện nền bắt buộc: `isnull(cv.MMSDocReqIdx,'') <> ''` (phải có STT nội bộ). Điều kiện đủ điều kiện
+//   TẠO THẾ CHẤP MỚI (3 CTE lồng nhau): VIN CHƯA TỪNG thế chấp (không có `RM_ReqMortgageDtl` sống) **HOẶC**
+//   đã thế chấp **VÀ ĐÃ ĐƯỢC GIẢI CHẤP** (có `RD_ReqRedeemDtl` duyệt 'A' + header 'A'); VIN thế chấp nhưng
+//   CHƯA giải chấp bị loại — logic vòng đời thế chấp/giải chấp, không phải lỗi.
+// 📌 NỢ (không bịa): nguồn buộc redeem phải khớp ĐÚNG `ReqRMNo` của lần thế chấp đang xét
+//   (`rdrrd.VIN=... and rmrmd.ReqRMNo=rdrrd.ReqRMNo`); `ReqRedeemDtl` của Mini CHƯA có cột `ReqRMNo` để nối
+//   đúng khoá này — port xấp xỉ bằng "đã từng giải chấp VIN này lần nào approved" (không phân biệt theo
+//   đúng lần thế chấp), ghi rõ `redeemLinkApproxNote`. Trục phạm vi `md.BUCode like @strBUPatternOfUser`
+//   (RBAC) ĐANG SỐNG ở nguồn (không bị comment) — Mini chưa có claim BUPattern để enforce giống hệt, port
+//   KHÔNG tự bịt, chỉ ghi `dealerScopeNotEnforcedNote` (cùng khuôn #B46/#B47 — không tự vá RBAC).
+app.MapGet("/api/reports/car-vin-for-req-mortgage", async (
+    AppDbContext db, ITenantContext t,
+    string? vin, string? engineNo, string? cqNo, string? coNo, string? orderNoMnfPlMMS,
+    DateTime? mmsDocReqApprDTime, string? mmsDocReqNo, string? statusMortageEnd, string? mortageStartDate,
+    string? typeCRR, string? bankCodeMonitor, string? reqRMNo, string? drDtlStatus, string? redeemDate) =>
+{
+    if (!string.IsNullOrWhiteSpace(typeCRR) || !string.IsNullOrWhiteSpace(drDtlStatus))
+        return Results.BadRequest(new
+        {
+            error = "Car_VIN_Get_ForReqMortgage_TypeCRROrDRDtlStatusCrashesInSource",
+            note = "Nguon chen WHERE cdrd./cdrl. vao truy van KHONG join cdrd/cdrl (#tbl_Car_VIN_Filter_Draft1) " +
+                   "=> SQL Server loi 'invalid column name' that su khi dung 2 bo loc nay, khong phai bi bo qua (#5808)."
+        });
+
+    var q = db.CarVinMasters.Where(c => c.OrgId == t.OrgId
+        && c.MMSDocReqIdx != null && c.MMSDocReqIdx != "");
+    if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.VIN == vin!.Trim());
+    if (!string.IsNullOrWhiteSpace(engineNo)) q = q.Where(c => c.EngineNo == engineNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(cqNo)) q = q.Where(c => c.CQNo == cqNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(coNo)) q = q.Where(c => c.CONo == coNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(statusMortageEnd)) q = q.Where(c => c.StatusMortageEnd == statusMortageEnd!.Trim());
+    if (mortageStartDate == "1") q = q.Where(c => c.MortageStartDate == null);
+    else if (mortageStartDate == "0") q = q.Where(c => c.MortageStartDate != null);
+    if (redeemDate == "1") q = q.Where(c => c.RedeemDate != null);
+    else if (redeemDate == "0") q = q.Where(c => c.RedeemDate == null);
+    if (mmsDocReqApprDTime.HasValue)
+    {
+        var d0 = mmsDocReqApprDTime.Value.Date; var d1 = d0.AddDays(1);
+        q = q.Where(c => c.MMSDocReqApprDTime != null && c.MMSDocReqApprDTime >= d0 && c.MMSDocReqApprDTime < d1);
+    }
+    var cars = await q.ToListAsync();
+    if (!string.IsNullOrWhiteSpace(orderNoMnfPlMMS))
+        cars = cars.Where(c => (c.OrderNoMnfPlMMS ?? "").Contains(orderNoMnfPlMMS!.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+    if (!string.IsNullOrWhiteSpace(mmsDocReqNo))
+        cars = cars.Where(c => (c.MMSDocReqNo ?? "").Contains(mmsDocReqNo!.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+
+    var vins = cars.Select(c => c.VIN).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+    // Bảo lãnh hiệu lực (CHỈ status 'A', đúng nguồn) — nối qua VIN thay CarId (xấp xỉ #5798/#5806).
+    var grt = (await (from gd in db.BankGuaranteeDtls
+                      where gd.OrgId == t.OrgId && vins.Contains(gd.VIN) && gd.GuaranteeDetailStatus == "A"
+                      join h in db.BankGuarantees on gd.GuaranteeId equals h.Id
+                      where h.OrgId == t.OrgId && h.Status == "A"
+                      select new { gd.VIN, h.BankCodeMonitor }).ToListAsync())
+        .GroupBy(x => x.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First().BankCodeMonitor, StringComparer.OrdinalIgnoreCase);
+    if (!string.IsNullOrWhiteSpace(bankCodeMonitor))
+        vins = vins.Where(v => grt.TryGetValue(v, out var bc) && bc == bankCodeMonitor!.Trim()).ToList();
+
+    // Vòng đời thế chấp/giải chấp.
+    var liveMortgageCars = await db.ReqMortgageCars.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)
+            && x.RMDtlStatus != "R" && x.RMDtlStatus != "C")
+        .ToListAsync();
+    // ReqMortgageCar.ReqMortgageId la FK (long) toi ReqMortgage.Id, khong phai ReqRMNo string — noi dung theo Id.
+    var mortgageHdrLive = (await db.ReqMortgages.Where(h => h.OrgId == t.OrgId && h.Status != "R" && h.Status != "C")
+        .ToListAsync()).ToDictionary(h => h.Id);
+    var liveMortgageVinSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var x in liveMortgageCars)
+        if (mortgageHdrLive.ContainsKey(x.ReqMortgageId)) liveMortgageVinSet.Add(x.VIN);
+
+    // Da tung giai chap duyet (xap xi theo VIN, KHONG khoa dung ReqRMNo — NO, xem redeemLinkApproxNote).
+    var approvedRedeemVinSet = (await (from rd in db.ReqRedeemDtls
+                                       where rd.OrgId == t.OrgId && vins.Contains(rd.VIN) && rd.DMReqDtlStatus == "A"
+                                       join h in db.ReqRedeems on rd.ReqRedeemId equals h.Id
+                                       where h.OrgId == t.OrgId && h.Status == "A"
+                                       select rd.VIN).ToListAsync()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var eligibleVins = vins.Where(v => !liveMortgageVinSet.Contains(v) || approvedRedeemVinSet.Contains(v)).ToList();
+
+    var docReqCarsByVin = (await db.DocReqCars.Where(x => x.OrgId == t.OrgId && eligibleVins.Contains(x.Vin))
+        .ToListAsync()).GroupBy(x => x.Vin, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+    var docReqHdrAll = (await db.DocReqs.Where(h => h.OrgId == t.OrgId).ToListAsync()).ToDictionary(h => h.Id);
+
+    var ctTkhqCodes = (await db.CtTkhqs.Where(x => x.OrgId == t.OrgId).Select(x => x.DeclarationNo).ToListAsync())
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var rows = new List<object>();
+    foreach (var c in cars.Where(c => eligibleVins.Contains(c.VIN)))
+    {
+        // #tblCar_DocReqDtl: MAX(DRListCode) theo VIN, KHONG loc trang thai — lay ban ghi moi nhat de HIEN THI.
+        DocReqCar? latest = null; DocReq? latestHdr = null;
+        if (docReqCarsByVin.TryGetValue(c.VIN, out var drl))
+            foreach (var dr in drl)
+                if (docReqHdrAll.TryGetValue(dr.DocReqId, out var hdr)
+                    && (latestHdr == null || string.CompareOrdinal(hdr.DocReqNo, latestHdr.DocReqNo) > 0))
+                { latest = dr; latestHdr = hdr; }
+
+        rows.Add(new
+        {
+            c.VIN, c.MMSDocReqIdx, c.ModelCode, c.EngineNo, c.CQNo, c.CONo,
+            DeclarationNo = ctTkhqCodes.Contains(c.DeclarationNo ?? "") ? c.DeclarationNo : null,
+            c.CODate, c.MortageBankCode,
+            DRDtlStatus = latest?.DRDtlStatus,
+            c.OrderNoMnfPlMMS, c.MMSDocReqNo, c.MMSDocReqApprDTime,
+            TypeCRR = latestHdr?.TypeCRR,
+            BankCodeMonitor = grt.TryGetValue(c.VIN, out var bcm) ? bcm : null,
+            FlagReqDM = approvedRedeemVinSet.Contains(c.VIN) ? "1" : "0",
+            FlagReqRM = liveMortgageCars.Any(x => string.Equals(x.VIN, c.VIN, StringComparison.OrdinalIgnoreCase)
+                        && x.RMDtlStatus == "F" && mortgageHdrLive.TryGetValue(x.ReqMortgageId, out var h2) && h2.Status == "F") ? "1" : "0",
+        });
+    }
+
+    return Results.Ok(new
+    {
+        count = rows.Count, items = rows,
+        crashingFiltersNote = "typeCRR/drDtlStatus lam nguon vo SQL that (cdrd/cdrl khong duoc join o buoc loc) => 400, khong phai bo qua (#5808).",
+        deadParamsNote = "reqRMNo CHAP NHAN nhung nhanh ap dung bi COMMENT o client - KHONG BAO GIO loc that (#5808).",
+        redeemLinkApproxNote = "Nguon khoa redeem DUNG theo ReqRMNo cua lan the chap dang xet; ReqRedeemDtl Mini chua co cot ReqRMNo de noi dung khoa nay - port xap xi bang 'VIN da tung duoc giai chap duyet lan nao', khong phan biet theo dung lan the chap (#5808).",
+        guaranteeStatusNote = "pgd.GuaranteeDetailStatus CUNG 'A' (khong phai in('A','F') nhu cac man bao lanh khac) - bao lanh da tat toan KHONG hien BankCodeMonitor o man nay (#5808).",
+        dealerScopeNotEnforcedNote = "md.BUCode like @strBUPatternOfUser dang SONG o nguon (khong bi comment) - Mini chua co claim BUPattern de enforce giong het, KHONG tu bit RBAC, cung khuon #B46/#B47 (#5808)."
+    });
+}).RequireAuthorization();
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
