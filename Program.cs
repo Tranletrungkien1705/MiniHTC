@@ -39163,17 +39163,61 @@ app.MapGet("/api/cars/prices", async (AppDbContext db, ITenantContext t, string?
         .Select(c => new { c.VIN, c.UnitPriceActual, c.PaymentStatus, c.LogLUDateTime }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
+// #5778: them bo loc tim xe (khong can biet truoc VIN) cho `/api/cars/for-dealer-create-cdr`.
+// Trace lai FrmDealerSearchCarCDR (dialog mo tu FrmNewDocReq/FrmNewDocReqDealer, DMSales.Foton) —
+// bien `_biz.CarCarGet_ForCDRByDealer` (BizHTC.Car.cs:2814, DMSales.Foton) KHONG phai
+// `Car_Car_GetX_New20190722` nhu suy doan ban dau; ham nay dung ~115 tham so dat ten rieng (khong
+// qua DSL BuildClause chung) nhung CUNG CAU TRUC. Doc toan van xac nhan ~23/50 truong tim kiem map
+// THANG vao cot CO SAN cua CarVinMaster (khong can join bang moi): carId/modelCode/specCode/dealer/
+// soNo/colorCode/storage/plNo/dateCreate*/cancelStatus/mapVinDate. Cac truong con lai (contractNo/
+// lcNo/monthOrder/monthProduction/shippingDate*/doStage/dealerDeal*/grtStatus/pmPercent*/...) can
+// join sang CT_LC/CT_PackingList/Ord_SalesOrder/Car_DeliveryOrder/DLS_Deal hoac la co che MERGE 2
+// tham so thanh 1 menh de (dealerContractNo+Status, dealerDealStatus+No, storage+dealerInHtcStorage)
+// hoac bieu thuc dan xuat (pmPercent qua bang cache rieng) — CHUA port lo nay, ghi NO rieng.
 app.MapGet("/api/cars/for-dealer-create-cdr", async (
-    AppDbContext db, ITenantContext t, string? vins, string? buPattern) =>
+    AppDbContext db, ITenantContext t, string? vins, string? buPattern,
+    string? carId, string? modelCode, string? specCode, string? dealer, string? soNo,
+    string? colorCode, string? storage, string? plNo, string? cancelStatus, string? mapVinDate,
+    DateTime? dateCreateFrom, DateTime? dateCreateTo) =>
 {
     var vinList = string.IsNullOrWhiteSpace(vins)
         ? new List<string>()
         : vins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
               .Select(v => v.ToUpperInvariant()).Distinct().ToList();
-    if (vinList.Count == 0) return Results.BadRequest(new { error = "Cần danh sách VIN (tham số `vins`, ngăn bởi dấu phẩy)." });
+    var hasOtherFilter = !string.IsNullOrWhiteSpace(carId) || !string.IsNullOrWhiteSpace(modelCode)
+        || !string.IsNullOrWhiteSpace(specCode) || !string.IsNullOrWhiteSpace(dealer) || !string.IsNullOrWhiteSpace(soNo)
+        || !string.IsNullOrWhiteSpace(colorCode) || !string.IsNullOrWhiteSpace(storage) || !string.IsNullOrWhiteSpace(plNo)
+        || !string.IsNullOrWhiteSpace(cancelStatus) || !string.IsNullOrWhiteSpace(mapVinDate)
+        || dateCreateFrom is not null || dateCreateTo is not null;
+    if (vinList.Count == 0 && !hasOtherFilter)
+        return Results.BadRequest(new { error = "Cần danh sách VIN (`vins`) HOẶC ít nhất một bộ lọc tìm xe (carId/modelCode/specCode/dealer/soNo/colorCode/storage/plNo/cancelStatus/mapVinDate/dateCreateFrom/dateCreateTo)." });
 
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
-    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vinList.Contains(c.VIN)).ToListAsync();
+    var carQy = db.CarVinMasters.Where(c => c.OrgId == t.OrgId);
+    if (vinList.Count > 0) carQy = carQy.Where(c => vinList.Contains(c.VIN));
+    if (!string.IsNullOrWhiteSpace(carId)) carQy = carQy.Where(c => c.CarId != null && c.CarId.StartsWith(carId!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(modelCode)) carQy = carQy.Where(c => c.ModelCode != null && c.ModelCode.StartsWith(modelCode!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(specCode)) carQy = carQy.Where(c => c.SpecCode != null && c.SpecCode.StartsWith(specCode!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(dealer)) carQy = carQy.Where(c => c.DealerCode != null && c.DealerCode.StartsWith(dealer!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(soNo)) carQy = carQy.Where(c => c.SOCode != null && c.SOCode.StartsWith(soNo!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(colorCode)) carQy = carQy.Where(c => c.ColorCode != null && c.ColorCode.StartsWith(colorCode!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(storage)) carQy = carQy.Where(c => c.StorageCodeCurrent != null && c.StorageCodeCurrent.StartsWith(storage!.Trim().ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(plNo)) carQy = carQy.Where(c => c.PackingListNo != null && c.PackingListNo.StartsWith(plNo!.Trim().ToUpperInvariant()));
+    if (dateCreateFrom is not null) carQy = carQy.Where(c => c.CreatedDate != null && c.CreatedDate >= dateCreateFrom.Value.Date);
+    if (dateCreateTo is not null) carQy = carQy.Where(c => c.CreatedDate != null && c.CreatedDate < dateCreateTo.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(cancelStatus))
+    {
+        var statusList = cancelStatus.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => s.ToUpperInvariant()).ToList();
+        carQy = carQy.Where(c => c.FlagActive != null && statusList.Contains(c.FlagActive));
+    }
+    if (!string.IsNullOrWhiteSpace(mapVinDate))
+    {
+        var dateList = mapVinDate.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => DateTime.TryParse(s, out var d) ? d.Date : (DateTime?)null).Where(d => d != null).Select(d => d!.Value).ToList();
+        carQy = carQy.Where(c => c.MapVINDate != null && dateList.Contains(c.MapVINDate.Value.Date));
+    }
+    var cars = await carQy.Take(500).ToListAsync();
 
     var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
         .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
@@ -39185,11 +39229,10 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
     var tkhqs = await db.CtTkhqs.Where(k => k.OrgId == t.OrgId).Select(k => new { k.DeclarationNo, k.OpenDate, k.TaxPaymentDate }).ToListAsync();
 
     var items = new List<object>();
-    int droppedByDealerJoin = 0, notFoundVin = 0;
-    foreach (var v in vinList)
+    int droppedByDealerJoin = 0;
+    var notFoundVin = vinList.Count == 0 ? 0 : vinList.Count(v => !cars.Any(c => c.VIN == v));
+    foreach (var car in cars)
     {
-        var car = cars.FirstOrDefault(c => c.VIN == v);
-        if (car is null) { notFoundVin++; continue; }
         // `inner join Mst_Dealer` — đại lý không có trong danh mục, hoặc ngoài BUPattern ⇒ **mất dòng**.
         var dl = dealers.FirstOrDefault(d => d.DealerCode == car.DealerCode);
         if (dl is null) { droppedByDealerJoin++; continue; }
@@ -39219,11 +39262,19 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
     return Results.Ok(new
     {
         count = items.Count, items,
-        filterShape = "VIN IN (danh sách) — client chỉ dựng đúng một điều kiện `in`, không có LIKE.",
+        filterShape = "#5778: ngoai `vins` (IN danh sach, van giu nguyen), da them 11 bo loc LIKE/range/IN tren CHINH cot CarVinMaster (carId/modelCode/specCode/dealer/soNo/colorCode/storage/plNo/dateCreate*/cancelStatus/mapVinDate) — khong can `vins` truoc nua, co the TIM xe truc tiep.",
         rbacJoinColumn = "Car_Car.DealerCode (đại lý ĐANG GIỮ xe) — khác các màn giao dịch dùng DealerCodeBuyer.",
         joinNote = "Chỉ Mst_Dealer là INNER; spec/model/color/province/đơn hàng/Car_VIN/TKHQ/packing list đều LEFT ⇒ thiếu master không mất dòng xe.",
         droppedByDealerJoin, notFoundVin,
-        debt = "NỢ: nguồn còn left join CT_DealerContractDetail và CT_PackingList — MiniHTC chưa nối 2 bảng này ở truy vấn này."
+        debt = "NỢ: nguồn còn left join CT_DealerContractDetail và CT_PackingList — MiniHTC chưa nối 2 bảng này ở truy vấn này. " +
+            "#5778: CÒN ~27 trường tìm kiếm khác CHƯA port (standardOpt/advOpt qua Mst_CarSpec; contractNo/lcNo/shippingDate* qua " +
+            "CT_LC/CT_PackingList; monthOrder/monthProduction qua Ord_SalesOrder; doStage qua Car_DeliveryOrder; dealerDealNoUser/" +
+            "dealerDealCreatedFrom/To qua DLS_Deal; grtStatus/grtDetailStatus/DateExpiredConditionList*/DateEndConditionList* qua " +
+            "Pmt_GuaranteeDetail; pmPercentFrom/To qua bảng cache riêng mySql_GetClauseSelect_CachingForPaymentTotal; " +
+            "ableToCreateDo/TranReq/TranReqRetrieve/TranMin/docRequestStatus là cờ dẫn xuất từ nhiều join; dealerContractNo+" +
+            "dealerContractNoStatus, dealerDealStatus+dealerDealNo, storage+dealerInHtcStorage là 3 cặp MERGE 2 tham số thành 1 " +
+            "mệnh đề qua Util.MergeSearchCondition — port riêng 2 tham số sẽ SAI NGỮ NGHĨA nếu không tái hiện đúng cơ chế merge; " +
+            "getCarNullVin/getCarMapVin cũng là 1 cặp boolean dồn vào 1 mệnh đề VIN IS NULL/NOT NULL."
     });
 }).RequireAuthorization();
 app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
