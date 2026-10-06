@@ -83728,7 +83728,7 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
 }).RequireAuthorization();
 
 // #727 `Mst_CarModelStd_Update` (`:3646`) — port 1:1 kể cả việc **viết hoa** `ModelName`/`Remark`.
-app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     // Nguồn: SqlUtils.StandardizeParam(x) == Convert.ToString(x).Trim().ToUpper()
     static string StandardizeParam(object? v) => Convert.ToString(v ?? "")!.Trim().ToUpperInvariant();
@@ -83760,6 +83760,9 @@ app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, A
     //   ⇒ `_Update` KHÔNG BAO GIỜ ghi Remark xuống DB, bất kể giá trị gửi lên. #727 kết luận "Remark cũng bị
     //   viết hoa khi sửa" là SAI — Remark hoàn toàn không đổi lúc sửa; chỉ ModelName mới bị viết hoa.
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
+    // #1601 §12 — nguồn `_Update` ghi `t.LogLUDateTime = f.LogLUDateTime, t.LogLUBy = f.LogLUBy` VO DIEU KIEN
+    // (hai dòng đầu `zzB_Update_Mst_CarModelStd_ClauseSet_zzE`, ngoài mọi `if (bUpd_*)`). Port cũ bỏ sót.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
 
     return Results.Ok(new
