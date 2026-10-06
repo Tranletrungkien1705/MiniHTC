@@ -4505,6 +4505,33 @@ app.MapGet("/api/reports/dealer-retail-sales", () => Results.Ok(new
     debtNote = "NO - KHONG DOAN: RptSellCustomerDealer_ForSale_Mst (FrmBanHangDL/FrmFiveDealerSalesPivot) dung self-join 'nhin truoc' (#tbl_Info1 left join chinh no tim deal KE TIEP cua cung 1 xe) + may trang thai 7 nhanh (SELLCUSTOMER/SELLDEALER/INSTOCK/ONWAY/BUYDEALER/UNKNOWN) de phan loai xe dang o dau trong chu trinh HTC->Dai ly->Khach. KHONG port mot phan duoc (gia tri bao cao la PHAN LOAI DUNG, thieu 1 nhanh se SAI PHAN LOAI nhieu xe). Cung hang phuc tap voi SalesBalanceOrder_GetX/Rpt_SummaryCarAtDealer_New20260514/dlrcontract-instock (#5758) - can dau tu rieng.",
 })).RequireAuthorization();
 
+// ===== #5770 KHÔNG BOUNDED — `frmbctonghopxedaily` (`Rpt_SummaryCarAtDealer_New20260514`/
+//       `_New_New20260514`, `DataWH/BizHTC.zTemp.cs:38223`/`:38480` vỏ → `…X_New20260514` thân thật
+//       `:33926`) — áp dụng đúng kỹ thuật "kiểm route có sẵn trước" (#5764/#5766/#5768) TRƯỚC khi ghi nợ =====
+// Grep "Rpt_SummaryCarAtDealer" trong Program.cs: CHỈ có `#B124` (`Rpt_SummaryCarAtDealer_AddX`, hàm
+// KHÁC, tên đẹp không hậu tố ngày) đã port — KHÔNG có route/stub nào cho `_New20260514`/`_New_New20260514`.
+// Đọc TOÀN VĂN thân hàm `Rpt_SummaryCarAtDealerX_New20260514` (`:33926-38222`, hàm có `strIsGetDetail`
+// giống khuôn `#5748` tưởng có thể tách bounded — NHƯNG khác #5748 ở điểm quyết định):
+// 🔴 **TRƯỚC KHI chạm tới bất kỳ nhánh `strIsGetDetail` nào**, hàm đã chạy 2 khối "Gen CarID" SINH DÒNG
+//   ẢO BẰNG C# (không phải SQL): với mỗi hợp đồng/đơn hàng còn `QtyRemain` (số lượng CHƯA khớp VIN thật),
+//   vòng `for` tự sinh `CarID = "CARID.{DlrContractNo}.{thứ tự 5 số}"` làm KHOÁ GIẢ, nạp vào bảng tạm
+//   `#tbl_Dlr_Contract_GenCarID`/`#tbl_DMS40_Ord_SalesOrderRoot_GenCarID` rồi UNION với xe THẬT — đây là
+//   bước CHUẨN BỊ DỮ LIỆU NỀN, chạy VÔ ĐIỀU KIỆN cho MỌI giá trị `strIsGetDetail` (không nằm trong nhánh
+//   rẽ nào) ⇒ KHÁC `#5748` (nơi `strIsGetDetail` bọc một khối SQL con HOÀN TOÀN tách biệt, có thể bỏ qua).
+//   Ở đây, muốn trả ĐÚNG MỘT DÒNG tổng hợp theo đại lý cũng phải chạy xong bước sinh-khoá-giả này trước.
+// 📌 **KHÔNG port một phần được VÀ KHÔNG phải vì đếm bảng** (khác lý do ghi nợ cũ "~25+ bảng") — lý do
+//   THẬT là cơ chế sinh KHOÁ GIẢ bằng mã C# (không thể biểu diễn gọn bằng LINQ/SQL tương đương mà không
+//   tái tạo đúng thứ tự `nScan`/định dạng chuỗi `CARID.{DlrContractNo}.{00000}`) để đại diện xe "sắp có"
+//   (đã đặt cọc/ký HĐ nhưng chưa khớp VIN) trong số liệu tồn-tại-đại-lý — port thiếu bước này sẽ ĐẾM THIẾU
+//   toàn bộ xe đang chờ khớp VIN, sai số liệu kinh doanh. Cần đầu tư riêng (đọc hết 4297 dòng còn lại +
+//   `_New_New20260514` song sinh), không ghi nợ kiểu đoán nữa.
+app.MapGet("/api/reports/summary-car-at-dealer-v2026", () => Results.Ok(new
+{
+    count = 0,
+    items = Array.Empty<object>(),
+    debtNote = "NO - KHONG DOAN: Rpt_SummaryCarAtDealerX_New20260514 (BizHTC.zTemp.cs:33926) sinh CARID GIA bang C# (vong for, dinh dang 'CARID.{DlrContractNo}.{00000}') cho xe CHUA khop VIN thuc (con QtyRemain tren hop dong/don hang) TRUOC KHI cham toi nhanh strIsGetDetail - buoc nay chay VO DIEU KIEN, khong tach duoc nhu #5748. Thieu buoc nay se DEM THIEU xe dang cho khop VIN. Can dau tu rieng (doc het ham + ban song sinh _New_New20260514), khong phai vi dem bang.",
+})).RequireAuthorization();
+
 // ===== #B72 KẾ HOẠCH GIAO XE THEO TUẦN — `RptStatistic_HTCStock03_New20260514` =====
 // (`FrmPivotDeliveryPlan`.) Trace LIVE: `ReportService.ReportDeliveryPlanPivot` (`:1341`) → WS
 //   `RptStatistic_HTCStock03` (`WSHTC.asmx.cs:29005`) → **`_biz.RptStatistic_HTCStock03_New20260514`**
