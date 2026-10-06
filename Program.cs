@@ -29775,10 +29775,14 @@ app.MapGet("/api/_meta/htmv-rluu-report-audit", () => Results.Ok(new
     rluzCommentedOutIsIntentionalDebt = "AM TINH: zzzzClauseWhere_FrameNoFix_RLUZConditionList bi COMMENT (dong thu ba cung khoi) cho thay TUNG co dong xe thu ba RLUZ dinh dua vao loai tru nhung bi bo do — no ky thuat CO CHU Y, khong phai quen",
     miniAddsExcludeVinPrefixNoCodeDuplication = "Mini them excludeVinPrefix (cau hinh duoc) vao CUNG endpoint GET /api/warrantyclaims/report/htc (#895/#896) — vinPrefix=RLU&excludeVinPrefix=RLUU tai tao dung HTMV_Get ma khong nhan ban code, va WS caller gio CHON DUOC dong xe can loai tru thay vi phai sua nguon",
 })).RequireAuthorization();
+// #5772: FrmWarrantyReportHTCSearch con 4 o tim kiem rieng le chua co filter (SerROWarrantyReportSerivce.cs:
+// strROWID "=" exact, strROID "=" exact, strPlateNo "like %...%", strFrameNo "like %...%" - CHUA DOAN,
+// doc dung tu khoi dieu kien nguon). Them du 4, giu dung kieu so khop (exact vs contains) tung cot.
 app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantContext t,
     string? dealerCodeList, string? statusList, string? rowTypeCodeList, string? hmcApiStatusList,
     DateTime? createdDateFrom, DateTime? createdDateTo, string? vinPrefix, string? excludeVinPrefix,
-    string? warrantyStaffInChargeList, bool includeDetail = false) =>
+    string? warrantyStaffInChargeList, long? rowId, string? roId, string? plateNo, string? frameNo,
+    bool includeDetail = false) =>
 {
     // #977: strWarrantyStaffInChargeConditionList (nguon) - loc theo NHAN VIEN HTC phu trach BAO HANH cua dai ly, khac HTCStaffInCharge.
     var warrantyStaff = (warrantyStaffInChargeList ?? "").Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
@@ -29799,10 +29803,18 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
     if (hmcStatuses.Count > 0) query = query.Where(x => hmcStatuses.Contains(x.HMCApiStatus));
     if (createdDateFrom is not null) query = query.Where(x => x.CreatedAt >= createdDateFrom);
     if (createdDateTo is not null) query = query.Where(x => x.CreatedAt <= createdDateTo);
+    if (rowId is not null) query = query.Where(x => x.Id == rowId.Value);        // #5772: strROWID "=" exact
+    if (!string.IsNullOrWhiteSpace(roId)) query = query.Where(x => x.ROID == roId.Trim());   // #5772: strROID "=" exact
+    if (!string.IsNullOrWhiteSpace(plateNo)) query = query.Where(x => x.PlateNo != null && x.PlateNo.Contains(plateNo.Trim()));   // #5772: strPlateNo "like %...%"
     var claims = await query.OrderByDescending(x => x.CreatedAt).Take(500).ToListAsync();
 
     var carIds = claims.Select(x => x.CarID).Where(x => x != null).Select(x => x!).Distinct().ToList();
     var cars = await db.ServiceCars.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarID)).ToListAsync();
+    if (!string.IsNullOrWhiteSpace(frameNo))   // #5772: strFrameNo "like %...%" (khac vinPrefix la StartsWith)
+    {
+        var frameMatchIds = cars.Where(x => (x.FrameNo ?? "").Contains(frameNo.Trim(), StringComparison.OrdinalIgnoreCase)).Select(x => x.CarID).ToHashSet();
+        claims = claims.Where(c => c.CarID != null && frameMatchIds.Contains(c.CarID)).ToList();
+    }
     if (!string.IsNullOrWhiteSpace(vinPrefix))
     {
         var matchIds = cars.Where(x => (x.FrameNo ?? "").StartsWith(vinPrefix, StringComparison.OrdinalIgnoreCase)).Select(x => x.CarID).ToHashSet();
