@@ -35667,6 +35667,62 @@ app.MapPost("/api/tstparts/htv-update-name", async (List<TstHtvNameDto> rows, Ap
         noteOnlyUpdatesExisting = "nguon TST_Mst_Part_HTVUpdate CHI update ma da ton tai (TST_Mst_Part_CheckDB), khong tu tao moi" });
 }).RequireAuthorization();
 
+// ===== 🔴 #1605 `TST_Mst_Part_HTVUpdateForDealerOnlyPartName` (LIVE, `BizCarSv.Service.cs:17126`, WS `HTCWSCarSv/WSCarSv.asmx.cs:34059`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC #918 (`TST_Mst_Part_HTVUpdate` — cập nhật
+// `VieNameHTC`+`VieName` trên bảng TST theo `TSTPartCode`) và KHÁC #882 (`TST_Mst_Part_SyncPartInfo_DMSDealer`
+// — đồng bộ NHIỀU cột). Hàm này CHỈ cập nhật `VieName` + `LogLUDateTime` + `LogLUBy` trên `Ser_MST_Part`
+// (danh mục phụ tùng đại lý) theo khoá `PartID`, đọc tên từ DB trung tâm `[@strDBName_CommonCenter].[dbo].Ser_MST_Part`.
+// Nguồn: (1) bảng vào bắt buộc tên `"Ser_MST_Part"` — thiếu thì ném `..._SerMSTPartTableNotBlank`;
+//   (2) mỗi dòng `PartID` rỗng ⇒ ném `..._InvalidPartID`; (3) `CheckNotExistPartID` (Service.cs:160) ném
+//   `Ser_PartID_NotExist` nếu phụ tùng CHƯA có ở đại lý (CHỈ UPDATE, không thêm mới — cố ý, xem #882);
+//   (4) `update msp set msp.VieName = t.VieName, msp.LogLUDateTime = @LogLUDateTime, msp.LogLUBy = @LogLUBy`
+//   join theo `PartID`; (5) trả dataset RỖNG (hàm void).
+// ⚠️ Nguồn bake `@LogLUBy` trong nháy rồi Replace bằng `strPartnerUserCode` ⇒ bề mặt tiêm SQL (họ #882);
+//   Mini dùng tham số hoá qua EF, giữ nguyên giá trị `partnerUserCode`.
+// 3B: thân hàm (V20 `17126-17260` vs V20.2023.Release `16298-16432`) KHỚP sau chuẩn hoá `sed 's/[[:space:]]//g'`
+//   = IDENTICAL (md5 `1f5c22719fa1aab7e24aeab933b91827`).
+app.MapPost("/api/serviceparts/htv-update-name-for-dealer", async (List<ServicePartHtvNameDto> rows,
+    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    // (1) Nguồn: ds_Ser_MST_Part.Tables["Ser_MST_Part"] == null ⇒ ném ..._SerMSTPartTableNotBlank.
+    if (rows is null)
+        return Results.BadRequest(new { error = "TST_Mst_Part_HTVUpdateForDealerOnlyPartName_SerMSTPartTableNotBlank",
+            sourceGuard = "ds_Ser_MST_Part.Tables[\"Ser_MST_Part\"] == null => nem ..._SerMSTPartTableNotBlank" });
+    // (2) Mỗi dòng PartID rỗng ⇒ ném ..._InvalidPartID (nguồn kiểm TRONG vòng lặp, dừng ở dòng hỏng đầu tiên).
+    for (var i = 0; i < rows.Count; i++)
+    {
+        if (string.IsNullOrEmpty((rows[i].PartID ?? "").Trim()))
+            return Results.BadRequest(new { error = "TST_Mst_Part_HTVUpdateForDealerOnlyPartName_InvalidPartID", rowIndex = i,
+                sourceGuard = "string.IsNullOrEmpty(strPartID) => nem ..._InvalidPartID" });
+    }
+    var ids = rows.Select(x => (x.PartID ?? "").Trim()).Where(x => x.Length > 0).Distinct().ToList();
+    // (3) CheckNotExistPartID: phụ tùng PHẢI có ở đại lý (nguồn gọi trong vòng lặp ⇒ N+1; Mini kiểm MỘT lượt).
+    var existing = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.PartID != null && ids.Contains(x.PartID!)).ToListAsync();
+    var missing = ids.Where(i => existing.All(r => r.PartID != i)).ToList();
+    if (missing.Count > 0)
+        return Results.NotFound(new { error = "Ser_PartID_NotExist", partIds = missing,
+            note = "nguon CHI UPDATE, khong them moi — phu tung chua co o dai ly thi nem loi (co y va nhat quan)" });
+    // (4) update VieName + LogLUDateTime + LogLUBy theo PartID (nguồn lấy VieName từ DB trung tâm; Mini 1-DB).
+    var by = (partnerUserCode ?? "system").Trim(); var now = DateTime.Now;
+    var map = rows.GroupBy(x => (x.PartID ?? "").Trim()).ToDictionary(g => g.Key, g => g.Last());
+    var updated = 0;
+    foreach (var r in existing)
+    {
+        if (!map.TryGetValue(r.PartID!, out var s)) continue;
+        r.PartName = s.VieName;
+        r.LogLUDateTime = now;
+        r.LogLUBy = by;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    // (5) Nguồn trả dataset RỖNG (hàm void) — port trả tóm tắt thao tác.
+    return Results.Ok(new { updated,
+        sourceReturnsEmptyDataset = "TST_Mst_Part_HTVUpdateForDealerOnlyPartName la ham void => nguon tra dataset RONG",
+        onlyUpdatesExisting = "nguon CHI update (CheckNotExistPartID), khong tu tao moi",
+        onlyNameColumn = "nguon CHI ghi VieName + LogLUDateTime + LogLUBy (khac #882 dong bo nhieu cot)",
+        guardInsideLoop = "nguon goi CheckNotExistPartID trong VONG LAP => N+1; Mini kiem MOT luot" });
+}).RequireAuthorization();
+
 app.MapPost("/api/tstparts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.TstParts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
@@ -113315,6 +113371,9 @@ record TstMstPartTypeDto(string? TypeCode,
     string? TypeName,
     string? FlagActive);   // merge session-a
 record TstHtvNameDto(string? TSTPartCode,
+    string? VieName);   // merge session-a
+// #1605 `TST_Mst_Part_HTVUpdateForDealerOnlyPartName` — nguồn nhận ds_Ser_MST_Part (bảng "Ser_MST_Part") gồm PartID + VieName.
+record ServicePartHtvNameDto(string? PartID,
     string? VieName);   // merge session-a
 record RoAttachmentDto(string? RONo,
     string? ImageName,
