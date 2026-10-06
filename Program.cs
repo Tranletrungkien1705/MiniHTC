@@ -61577,6 +61577,35 @@ app.MapPost("/api/doatconditions/{code}/toggle", async (string code, AppDbContex
     return Results.Ok(new { c.DOATConditionCode, flagActive = c.FlagActive });
 }).RequireAuthorization();
 
+// ===== #5840 SỬA INLINE trên lưới quản lý — `FrmMst_DOATCondition.btnSave_Click` (2021.1.TCMotor/DMSales.Foton) =====
+// Trace: menu sống `FrmMain.cs:1298` → `btnSave_Click` → `ps.Mst_DOATCondition_Update(code, effDateEnd,
+// flagActive)` (`ProductService.cs:699`, mask LUÔN cứng cả hai cột) → WS → biz cùng tên
+// (`BizHTC/BizHTC.MasterData.cs:13586`, LIVE) — KHÁC route `/toggle` đã port trước (chỉ lật 0/1):
+// hàm này nhận GIÁ TRỊ TUỲ Ý cho `FlagActive` (không chỉ đảo ngược) VÀ sửa thêm `EffDateEnd`.
+// 🔴 Guard: `EffDateStart` (đọc từ DB) PHẢI <= `EffDateEnd` mới (so sánh chuỗi ngày chuẩn hoá) — nếu
+//   không, ném `Mst_DOATCondition_Update_InvalidEffDateEndAfterEffDateStart`.
+// ⚪ Khối kiểm "`EffDateEnd` rỗng thì lỗi" đã bị COMMENT HẲN ở nguồn (dòng 13674-13681) — `EffDateEnd`
+//   rỗng được CHO QUA ÂM THẦM, không phải tính năng, không bịa guard giúp nguồn.
+// 📌 NỢ (ghi rõ, không bịa cột): nguồn còn INSERT một dòng lịch sử vào `Mst_DOATConditionHist` kèm 8 cột
+//   cờ (`FlagLXX`/`FlagLDC`/`FlagYCDT`/`FlagMapVIN`/`FlagDealerActive`/`FlagQCEndDate`/
+//   `FlagTaxPaymentDate`/`FlagDutyCompletePercent`) — bảng lịch sử và các cờ này CHƯA có trên entity
+//   `DOATCondition` hiện tại của Mini (tạo lúc port mục #72, ít cờ hơn phiên bản nguồn ở lượt này); route
+//   CHỈ cập nhật 2 cột chính, KHÔNG ghi lịch sử (chưa mô hình hoá bảng Hist).
+app.MapPost("/api/doatconditions/{code}/update", async (string code, DOATConditionUpdDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var c = await db.DOATConditions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == code);
+    if (c is null) return Results.NotFound(new { code });
+    if (dto.EffDateEnd.HasValue && c.EffDateStart > dto.EffDateEnd.Value)
+        return Results.BadRequest(new { error = "Mst_DOATCondition_Update_InvalidEffDateEndAfterEffDateStart", effDateStart = c.EffDateStart, effDateEnd = dto.EffDateEnd });
+    if (dto.EffDateEnd.HasValue) c.EffDateEnd = dto.EffDateEnd.Value;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) c.FlagActive = dto.FlagActive.Trim();
+    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DOATConditionCode, c.EffDateStart, c.EffDateEnd, c.FlagActive,
+        historyNotWrittenNote = "NỢ: nguồn ghi Mst_DOATConditionHist kèm 8 cờ chưa mô hình hoá — chưa port (#5840)." });
+}).RequireAuthorization();
+
 // ===== Đề nghị giao dịch ngân hàng (BankingTrans — port 1:1 FrmDeNghiGDNganHang, 2010.HTC/Sales/Payment) =====
 string[] _bankTransTypes = { "GNTT", "BLLC", "PHLC" };
 // #5794: them 5 bo loc cua FrmQL_DeNghiGDNganHang.btnSearch_Click con thieu (doc dung tu nguon,
@@ -114634,6 +114663,7 @@ record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string
     string? SpecGroupCode = null, string? SpecDescriptionSX = null, string? CrtProductName = null, string? CrtTypeCode = null, string? LoaiThung = null, string? Remark = null);   // #360
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDto(string? DOATConditionCode, DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
+record DOATConditionUpdDto(DateTime? EffDateEnd, string? FlagActive);   // #5840
 /// <summary>Ký số một file ngân hàng — nguồn `RQ_BankingTransactions_SignBankFile` nhận
 /// `objRQ_BankingTransNo` + `objBFileIndex` + `objFileName` + base64 + `objSerialNumber`.</summary>
 record BankFileSignDto(string SerialNumber, string? FileName = null, string? FilePath = null);
