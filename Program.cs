@@ -39341,14 +39341,19 @@ app.MapGet("/api/cars/prices", async (AppDbContext db, ITenantContext t, string?
 //   - dealerDealNo+dealerDealStatus: nham cot `dlsdd.DealNo` (qua CarId) — dealerDealStatus="1"/"0" =>
 //     "is not null"/"is null" (SalesService.cs:1192-1200). Mini da co DealerDealDetail(CarId,DealId)+
 //     DealerDeal(DealNo) tu #5782/#5788 — dung lai, khong can entity moi.
-//   - dealerContractNo+dealerContractNoStatus: VAN ghi no (can join CT_DealerContractDetail, Mini CHUA
-//     co entity nay — khac 2 cap tren, day la thieu BANG, khong chi thieu cach hieu merge).
+// #5796: dong cap MERGE cuoi cung — dealerContractNo+dealerContractNoStatus nham cot
+// `ctdcd.DealerContractNo` qua CarId. Ghi no cu ("Mini CHUA co entity CT_DealerContractDetail") da
+// STALE: entity `DealerContractDetail` (CarId, DealerContractNo) DA CO SAN tu lau, chinh comment #123
+// o /api/dealercontracts (dong ~67845) da tu xac nhan day la ban port cua CT_DealerContractDetail —
+// chi la CDR chua tung noi toi. dealerContractNoStatus="1"/"0" => "is not null"/"is null"
+// (SalesService.cs:1182-1190), cung khuon 2 cap da dong o #5790.
 app.MapGet("/api/cars/for-dealer-create-cdr", async (
     AppDbContext db, ITenantContext t, string? vins, string? buPattern,
     string? carId, string? modelCode, string? specCode, string? dealer, string? soNo,
     string? colorCode, string? storage, string? plNo, string? cancelStatus, string? mapVinDate,
     DateTime? dateCreateFrom, DateTime? dateCreateTo, string? monthOrder, string? monthProduction, string? doStage,
-    string? dealerInHtcStorage, string? dealerDealNo, string? dealerDealStatus) =>
+    string? dealerInHtcStorage, string? dealerDealNo, string? dealerDealStatus,
+    string? dealerContractNo, string? dealerContractNoStatus) =>
 {
     var vinList = string.IsNullOrWhiteSpace(vins)
         ? new List<string>()
@@ -39360,9 +39365,10 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
         || !string.IsNullOrWhiteSpace(cancelStatus) || !string.IsNullOrWhiteSpace(mapVinDate)
         || !string.IsNullOrWhiteSpace(monthOrder) || !string.IsNullOrWhiteSpace(monthProduction) || !string.IsNullOrWhiteSpace(doStage)
         || !string.IsNullOrWhiteSpace(dealerInHtcStorage) || !string.IsNullOrWhiteSpace(dealerDealNo) || !string.IsNullOrWhiteSpace(dealerDealStatus)
+        || !string.IsNullOrWhiteSpace(dealerContractNo) || !string.IsNullOrWhiteSpace(dealerContractNoStatus)
         || dateCreateFrom is not null || dateCreateTo is not null;
     if (vinList.Count == 0 && !hasOtherFilter)
-        return Results.BadRequest(new { error = "Cần danh sách VIN (`vins`) HOẶC ít nhất một bộ lọc tìm xe (carId/modelCode/specCode/dealer/soNo/colorCode/storage/plNo/cancelStatus/mapVinDate/dateCreateFrom/dateCreateTo/monthOrder/monthProduction/doStage/dealerInHtcStorage/dealerDealNo/dealerDealStatus)." });
+        return Results.BadRequest(new { error = "Cần danh sách VIN (`vins`) HOẶC ít nhất một bộ lọc tìm xe (carId/modelCode/specCode/dealer/soNo/colorCode/storage/plNo/cancelStatus/mapVinDate/dateCreateFrom/dateCreateTo/monthOrder/monthProduction/doStage/dealerInHtcStorage/dealerDealNo/dealerDealStatus/dealerContractNo/dealerContractNoStatus)." });
 
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
     var carQy = db.CarVinMasters.Where(c => c.OrgId == t.OrgId);
@@ -39445,6 +39451,20 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
         if (dealerDealStatus == "1") cars = cars.Where(c => c.CarId != null && carIdToDealNo.ContainsKey(c.CarId)).ToList();
         else if (dealerDealStatus == "0") cars = cars.Where(c => c.CarId == null || !carIdToDealNo.ContainsKey(c.CarId)).ToList();
     }
+    if (!string.IsNullOrWhiteSpace(dealerContractNo) || !string.IsNullOrWhiteSpace(dealerContractNoStatus))
+    {
+        var carIdsForCtr = cars.Where(c => c.CarId != null).Select(c => c.CarId!).ToList();
+        var ctrByCarId = (await db.DealerContractDetails.Where(x => x.OrgId == t.OrgId && carIdsForCtr.Contains(x.CarId)
+            && x.DealerContractNo != null).Select(x => new { x.CarId, x.DealerContractNo }).ToListAsync())
+            .GroupBy(x => x.CarId).ToDictionary(g => g.Key, g => g.First().DealerContractNo!);
+        if (!string.IsNullOrWhiteSpace(dealerContractNo))
+        {
+            var needle = dealerContractNo!.Trim().ToUpperInvariant();
+            cars = cars.Where(c => c.CarId != null && ctrByCarId.TryGetValue(c.CarId, out var cn) && cn.ToUpperInvariant().Contains(needle)).ToList();
+        }
+        if (dealerContractNoStatus == "1") cars = cars.Where(c => c.CarId != null && ctrByCarId.ContainsKey(c.CarId)).ToList();
+        else if (dealerContractNoStatus == "0") cars = cars.Where(c => c.CarId == null || !ctrByCarId.ContainsKey(c.CarId)).ToList();
+    }
     cars = cars.Take(500).ToList();
 
     var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
@@ -39494,20 +39514,20 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
         rbacJoinColumn = "Car_Car.DealerCode (đại lý ĐANG GIỮ xe) — khác các màn giao dịch dùng DealerCodeBuyer.",
         joinNote = "Chỉ Mst_Dealer là INNER; spec/model/color/province/đơn hàng/Car_VIN/TKHQ/packing list đều LEFT ⇒ thiếu master không mất dòng xe.",
         droppedByDealerJoin, notFoundVin,
-        debt = "NỢ: nguồn còn left join CT_DealerContractDetail và CT_PackingList — MiniHTC chưa nối 2 bảng này ở truy vấn này. " +
+        debt = "NỢ: nguồn còn left join CT_PackingList — MiniHTC chưa nối bảng này ở truy vấn này. " +
             "#5786: đã bổ sung monthOrder/monthProduction (qua Ord_SalesOrder/SalesOrder) + doStage (qua Car_DeliveryOrder/" +
             "DeliveryOrder). #5790: đã bổ sung dealerInHtcStorage (merge với storage, cùng cột StorageCodeCurrent) + " +
             "dealerDealNo/dealerDealStatus (merge, qua DealerDealDetail/DealerDeal) — đọc lại `Util.MergeSearchCondition` " +
             "(Util.cs:175-204) xác nhận chỉ là GHÉP CHUỖI \"|\" để AND nhiều điều kiện độc lập trên CÙNG 1 cột, KHÔNG phải " +
-            "cơ chế rẽ nhánh — 2 cặp này port được bằng 2 `.Where()` độc lập, không cần tái hiện gì đặc biệt. CÒN ~21 trường " +
+            "cơ chế rẽ nhánh — port được bằng 2 `.Where()` độc lập, không cần tái hiện gì đặc biệt. #5796: đã bổ sung " +
+            "dealerContractNo/dealerContractNoStatus (merge, qua DealerContractDetail — ghi nợ cũ \"thiếu bảng\" đã STALE, " +
+            "entity này đã có sẵn từ lâu, chỉ CDR chưa nối tới) — ĐÃ ĐÓNG ĐỦ CẢ 3 CẶP MERGE. CÒN ~19 trường " +
             "tìm kiếm khác CHƯA port: standardOpt/advOpt qua Mst_CarSpec; contractNo/lcNo/shippingDate* qua " +
             "CT_LC/CT_PackingList; dealerDealNoUser/dealerDealCreatedFrom/To qua DLS_Deal; " +
             "grtStatus/grtDetailStatus/DateExpiredConditionList*/DateEndConditionList* qua Pmt_GuaranteeDetail; " +
             "pmPercentFrom/To qua bảng cache riêng mySql_GetClauseSelect_CachingForPaymentTotal; " +
             "ableToCreateDo/TranReq/TranReqRetrieve/TranMin/docRequestStatus là cờ dẫn xuất từ nhiều join; " +
-            "dealerContractNo+dealerContractNoStatus VẪN ghi nợ (khác 2 cặp đã đóng — cặp này thiếu hẳn BẢNG " +
-            "CT_DealerContractDetail trong Mini, không chỉ thiếu cách hiểu merge); getCarNullVin/getCarMapVin là 1 cặp " +
-            "boolean dồn vào 1 mệnh đề VIN IS NULL/NOT NULL.",
+            "getCarNullVin/getCarMapVin là 1 cặp boolean dồn vào 1 mệnh đề VIN IS NULL/NOT NULL.",
         debtNote5786 = "#5786: `monthOrder` SUY RA từ `SalesOrder.CreatedAt` (không thêm cột `OrderMonth` mới) vì nguồn tự tính " +
             "`OrderMonth = StandardizeMonth(dtimeTDateTime)` NGAY LÚC TẠO đơn (BizHTC.Order.cs:868 và nhiều nơi khác) — tức là " +
             "tháng tạo đơn, không phải giá trị người dùng chọn độc lập; thêm cột mới sẽ tạo 2 nguồn sự thật. `monthProduction` " +
