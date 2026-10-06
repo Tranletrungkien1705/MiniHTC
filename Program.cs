@@ -4463,6 +4463,129 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 //      như #B66/#B57 — hai trục ngày khác nhau, đừng dùng lẫn.
 // 🔴 Cây địa lý ba tầng của nguồn: `Mst_Dealer` → `Mst_Province` → `Mst_Area`, dựng qua `#tbl_Dealer`
 //    → `#tbl_AreaDealer` → `#tbl_Mst_Dealer`; ✅ `BUCode like @strBUPatternOfUser` **lọc thật**.
+// ===== #5788 PORT MỘT PHẦN #B68 (`FrmFiveDealerStockPivot`) — 3/10 cột bounded, 7/10 ghi nợ cụ thể =====
+// Đọc toàn văn SQL (`BizHTC.Report.cs:10086-10330`): nguồn tính 7 "bucket" CarId rồi UNION + LEFT JOIN lại
+// để ra 10 cột tổng hợp. Đối chiếu từng bucket với schema Mini:
+//   ✅ `z_Car_Dlv_InMonth`/`z_Car_Dlv_InYear`: DeliveryOrderCar(ConfirmStatus IN A,F) có DeliveryOutDate
+//      trong mốc — port được, dùng thẳng `DeliveryOrderCars`.
+//   ✅ `z_Car_DealerInStock`: DeliveryOrderCar(ConfirmStatus=F, DeliveryEndDate<=TDate) TRỪ (lọc ngược)
+//      xe đã bán tới khách cuối (`DealerDealDetail`+`DealerDeal.DealerCodeBuyer is null`) — port được.
+//   🔴🔴 `z_Car_BO_MapVIN`: nguồn còn đòi `left join VIN_MyStatus vms ... and vms.DeliveryOutDate is null`
+//      (`:10173-10178`) — `VIN_MyStatus` là MỘT VIEW SQL dùng ở >10 báo cáo khác, KHÔNG định nghĩa trong
+//      bất kỳ file .cs nào tìm được (chỉ thấy lời gọi `left join VIN_MyStatus`, không thấy `CREATE VIEW`).
+//      KHÔNG ĐOÁN ngữ nghĩa cột này — ghi nợ, không port.
+//   🔴🔴 `z_Car_BO_FreeN2/N1/N`: nguồn lọc `cc.VIN is null` (xe ĐÃ có `CarId`/đơn hàng nhưng CHƯA map VIN
+//      vật lý) rồi join `Ord_SalesOrder` theo `SOCode`+`OrderMonth`. MiniHTC KHÔNG mô hình hoá giai đoạn
+//      "có CarId, chưa có VIN" — entity `CarVinMaster` dùng chính `VIN` làm khoá tự nhiên (luôn có giá
+//      trị khi ghi, xem write-path `#B248`), nên không có khái niệm "xe tồn tại nhưng chưa map VIN" để
+//      truy vấn. Đây là THIẾU MÔ HÌNH DỮ LIỆU (cần entity "đơn hàng chưa map VIN" riêng), không phải chỉ
+//      thiếu filter — ghi nợ, không đoán cách mô phỏng.
+//   ⇒ `z_Car_BO` và `z_Car_DlsInStockAndBO` (tổng hợp từ các bucket BO) CŨNG ghi nợ theo (thiếu 3-4/4
+//      thành phần BO thật, trả tổng sẽ SAI nếu tính thiếu — port KHÔNG trả 2 cột này, tránh số liệu giả).
+// Cây địa lý: TÁI DÙNG đúng helper `RootAreaOfDealer` đã có ở `/api/reports/summary-car-at-dealer`
+//   (`Mst_Dealer.ProvinceCode → Mst_Province.AreaCode → Mst_Area.AreaRootCode → Mst_Area.AreaCode`,
+//   dòng ~10295) — không viết lại logic rollup khác.
+app.MapGet("/api/reports/five-dealer-stock-pivot", async (
+    AppDbContext db, ITenantContext t, string? tDate, string? dealerCode, string? provinceCode,
+    string? areaCode, string? groupByList, string? buPattern, string? enforceBuScope) =>
+{
+    var today = string.IsNullOrWhiteSpace(tDate) ? DateTime.Today : DateTime.Parse(tDate).Date;
+    var monthN = new DateTime(today.Year, today.Month, 1);
+    var monthN1 = monthN.AddMonths(-1);
+    var monthN2 = monthN.AddMonths(-2);
+    var yearStart = new DateTime(today.Year, 1, 1);
+
+    var whitelist = new[] { "CCDEALERCODE", "CCSOCODE", "CCSPECCODE", "CCMODELCODE", "CCCOLORCODE", "MDDEALERNAME", "MPVPROVINCECODE", "MPVPROVINCENAME", "MPVAREACODE" };
+    var requested = (groupByList ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(x => x.ToUpperInvariant()).Where(whitelist.Contains).Distinct().ToList();
+    if (requested.Count == 0)
+        return Results.BadRequest(new { error = "groupByList rỗng hoặc không khớp danh sách cho phép (CCDealerCode/CCSOCode/CCSpecCode/CCModelCode/CCColorCode/MDDealerName/MPVProvinceCode/MPVProvinceName/MPVAreaCode).", errorSource = "RptSales_Delivery_01_InvalidGroupByList" });
+    var gDealer = requested.Contains("CCDEALERCODE");
+    var gSo = requested.Contains("CCSOCODE");
+    var gSpec = requested.Contains("CCSPECCODE");
+    var gModel = requested.Contains("CCMODELCODE");
+    var gColor = requested.Contains("CCCOLORCODE");
+    var gDealerName = requested.Contains("MDDEALERNAME");
+    var gProvinceCode = requested.Contains("MPVPROVINCECODE");
+    var gProvinceName = requested.Contains("MPVPROVINCENAME");
+    var gAreaCode = requested.Contains("MPVAREACODE");
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1")
+        .Select(d => new { d.DealerCode, d.DealerName, d.ProvinceCode, d.BUCode }).ToListAsync());
+    if (!string.IsNullOrWhiteSpace(dealerCode)) dealers = dealers.Where(d => d.DealerCode == dealerCode!.Trim()).ToList();
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.ProvinceCode, p.ProvinceName, p.AreaCode }).ToListAsync());
+    var provinceOf = provinces.GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
+    var areaRootOf = (await db.Areas.Where(a => a.OrgId == t.OrgId)
+        .Select(a => new { a.AreaCode, a.AreaRootCode }).ToListAsync())
+        .GroupBy(a => a.AreaCode).ToDictionary(g => g.Key, g => g.First().AreaRootCode ?? "");
+    string RootAreaOfDealer(string? pcode) =>
+        provinceOf.TryGetValue(pcode ?? "", out var p) && areaRootOf.TryGetValue(p.AreaCode ?? "", out var r) ? r : "";
+    if (!string.IsNullOrWhiteSpace(provinceCode)) dealers = dealers.Where(d => d.ProvinceCode == provinceCode!.Trim()).ToList();
+    if (!string.IsNullOrWhiteSpace(areaCode)) dealers = dealers.Where(d => RootAreaOfDealer(d.ProvinceCode) == areaCode!.Trim()).ToList();
+    if (enforceBuScope == "1") { var pat = (buPattern ?? "HTC").Trim(); dealers = dealers.Where(d => (d.BUCode ?? "").StartsWith(pat)).ToList(); }
+    var dealerSet = dealers.Select(d => d.DealerCode).ToHashSet();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId
+        && c.DealerCode != null && dealerSet.Contains(c.DealerCode)
+        && c.CreatedDate != null && c.CreatedDate <= today
+        && (c.CarCancelDate == null || c.CarCancelDate > today))
+        .Select(c => new { c.CarId, c.VIN, c.DealerCode, c.SOCode, c.SpecCode, c.ModelCode, c.ColorCode }).ToListAsync();
+    var carIds = cars.Select(c => c.CarId!).Where(x => x != null).ToList();
+
+    var dods = await db.DeliveryOrderCars.Where(d => d.OrgId == t.OrgId && d.CarId != null && carIds.Contains(d.CarId)
+        && (d.ConfirmStatus == "A" || d.ConfirmStatus == "F"))
+        .Select(d => new { d.CarId, d.DeliveryOutDate, d.DeliveryEndDate }).ToListAsync();
+    var dlvInMonth = dods.Where(d => d.DeliveryOutDate >= monthN && d.DeliveryOutDate <= today).Select(d => d.CarId!).ToHashSet();
+    var dlvInYear = dods.Where(d => d.DeliveryOutDate >= yearStart && d.DeliveryOutDate <= today).Select(d => d.CarId!).ToHashSet();
+
+    var dealDetails = await db.DealerDealDetails.Where(dd => dd.OrgId == t.OrgId && carIds.Contains(dd.CarId)
+        && (dd.DeliveryStatus == "A" || dd.DeliveryStatus == "F") && dd.DeliveryDate != null && dd.DeliveryDate <= today)
+        .Select(dd => new { dd.DealId, dd.CarId }).ToListAsync();
+    var retailDealIds = (await db.DealerDeals.Where(dl => dl.OrgId == t.OrgId
+        && dealDetails.Select(x => x.DealId).Distinct().Contains(dl.Id) && (dl.DealerCodeBuyer == null || dl.DealerCodeBuyer == ""))
+        .Select(dl => dl.Id).ToListAsync()).ToHashSet();
+    var soldCarIds = dealDetails.Where(dd => retailDealIds.Contains(dd.DealId)).Select(dd => dd.CarId).ToHashSet();
+    var dealerInStock = dods.Where(d => d.DeliveryEndDate != null && d.DeliveryEndDate <= today && !soldCarIds.Contains(d.CarId!))
+        .Select(d => d.CarId!).ToHashSet();
+
+    var raw = cars.Select(c => new
+    {
+        c.DealerCode, c.SOCode, c.SpecCode, c.ModelCode, c.ColorCode,
+        dlvInMonth = c.CarId != null && dlvInMonth.Contains(c.CarId) ? 1 : 0,
+        dlvInYear = c.CarId != null && dlvInYear.Contains(c.CarId) ? 1 : 0,
+        dealerInStock = c.CarId != null && dealerInStock.Contains(c.CarId) ? 1 : 0,
+    }).ToList();
+
+    var grouped = raw.GroupBy(x => new
+    {
+        DealerCode = gDealer ? x.DealerCode : null, SoCode = gSo ? x.SOCode : null,
+        SpecCode = gSpec ? x.SpecCode : null, ModelCode = gModel ? x.ModelCode : null, ColorCode = gColor ? x.ColorCode : null,
+    }).Select(g =>
+    {
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == g.Key.DealerCode);
+        var pv = dl != null && provinceOf.TryGetValue(dl.ProvinceCode ?? "", out var p) ? p : null;
+        return new
+        {
+            dealerCode = g.Key.DealerCode, soCode = g.Key.SoCode, specCode = g.Key.SpecCode, modelCode = g.Key.ModelCode, colorCode = g.Key.ColorCode,
+            dealerName = gDealerName ? dl?.DealerName : null,
+            provinceCode = gProvinceCode ? dl?.ProvinceCode : null,
+            provinceName = gProvinceName ? pv?.ProvinceName : null,
+            areaCode = gAreaCode ? RootAreaOfDealer(dl?.ProvinceCode) : null,
+            zCarDlvInMonth = g.Sum(x => x.dlvInMonth), zCarDlvInYear = g.Sum(x => x.dlvInYear), zCarDealerInStock = g.Sum(x => x.dealerInStock),
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = grouped.Count, items = grouped, groupByUsed = requested,
+        notPortedNote = "z_Car_BO_MapVIN ghi nợ (phụ thuộc view SQL `VIN_MyStatus` không tìm thấy định nghĩa trong " +
+            "mã nguồn .cs, KHÔNG đoán ngữ nghĩa). z_Car_BO_FreeN2/N1/N ghi nợ (nguồn cần khái niệm 'xe có CarId/đơn " +
+            "hàng nhưng CHƯA map VIN vật lý' — CarVinMaster của Mini dùng VIN làm khoá tự nhiên, không mô hình hoá " +
+            "giai đoạn chưa-có-VIN). z_Car_BO và z_Car_DlsInStockAndBO (tổng hợp từ các bucket BO) KHÔNG trả để " +
+            "tránh số liệu giả do thiếu thành phần."
+    });
+}).RequireAuthorization();
 
 // ===== #B70 XE ĐÃ BÁN — CHĂM SÓC KHÁCH HÀNG — `RptSales_CtmCare_01_New20260514` =====
 // (`FrmPivotCarVerifiedCtmCare`.) Trace LIVE: `ReportService.ReportCarVerifiedCtmCare` → WS
