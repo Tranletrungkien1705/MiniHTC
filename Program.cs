@@ -62377,6 +62377,13 @@ app.MapPost("/api/bankingtrans", async (BankingTransDto dto, AppDbContext db, IT
 // 🔴 Nhánh TT lọc thêm `sdm.FDlvMnStatus not in ('R','C')` **và** `sdm.TDlvMnStatus not in ('R','C')`
 //   (`--20141030`) — **hai** trục trạng thái, cả hai đều phải khác R/C. Cột hằng **`1.0 TOTAL`** cho pivot.
 
+// #5764 XÁC NHẬN: hàm nay CHÍNH LA twin cua FrmSalesReport (UNG_VIEN#4 cu — tung bi ket luan "chua port").
+// Trace: FrmSalesReportByDealer/ByModel -> ReportService.ReportSalesMonthlyByDealer(groupBy="DealerCode")
+// / ByModel(groupBy="CVModelCode") -> CUNG mot WS RptStatistic_HTCStockOut02 nay. Route Mini da san
+// (GET /api/reports/htc-stockout02?groupByList=DealerCode|CVModelCode) tra dung pivot Day01..Day31 +
+// Total theo tung gia tri groupBy — da verify round-trip SQLite that (2 dai ly/model, 2 ngay khac nhau,
+// dem dung tung ngay). KET LUAN CU "FrmSalesReport chua port" (UNG_VIEN#4) da STALE — #B329 lam viec nay
+// SAU do, khong ai cap nhat lai ket luan cu. FrmSalesReport COI NHU DA XONG, khong con la gap.
 // ===== #B329/#B330/#B331 XE HTC XUẤT KHO — PIVOT THEO NGÀY TRONG THÁNG (Day01…Day31) —
 //       `RptStatistic_HTCStockOut02_WH_New20181119` (`DataWH/Biz.HTC.WH.cs`) =====
 // **3B khớp cả 2 máy — định vị theo TÊN, offset lệch 5 dòng**:
