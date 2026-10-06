@@ -109138,6 +109138,39 @@ app.MapPost("/api/repairorders/{no}/pause", async (string no, RoPauseDto dto, Ap
     return Results.Ok(new { r.RONo, r.FlagPause, paused = pause, aw.WorkTypePause });
 }).RequireAuthorization();
 
+// ===== 🔴 #1607 `Ser_RO_UpdateFlagPause` (LIVE, `BizCarSv.Service01.cs:14465`, WS `HTCWSCarSvTab/WSCarSvTab.asmx.cs:4563` `Ser_RO_UpdateFlagPause_ForTab`) =====
+// WebMethod LIVE chưa từng có route (grep tên hàm = 0 hit). KHÁC #418 (`Ser_AssignmentWork_UpdateFlagPause` —
+//   BẮT BUỘC có phân công, ghi thêm `WorkTypePause`): hàm này là TẠM DỪNG Ở CẤP RO, KHÔNG cần phân công.
+// Nguồn: (1) `bPause = StringEqual(strFlagPause, Flag.Active)` — "1" = DỪNG; `strROPause = bPause ? Active : Inactive`;
+//   (2) guard RO phải tồn tại (else `Ser_RO_UpdateFlagPause_NotFoundRO`);
+//   (3) guard `Status` phải `Repaired`(RPRD) hoặc `InGarage`(INGA) (else `Ser_RO_UpdateFlagPause_InvalidStatus`);
+//   (4) `update Ser_RO set FlagPause = strROPause, LogLUDateTime = now, LogLUBy = strPartnerUserCode`;
+//   (5) `InsertSer_ROWorkTime` một mốc: `FlagPlay = bPause ? Yes : No`, `FlagBegin = No`, `FlagEnd = No`;
+//   (6) trả dataset RỖNG (hàm void).
+// ⚠️ Nguồn ghi `FlagPause = strROPause` (KHÔNG đảo) — khác #418 (đảo: dừng ⇒ "0"). Port 1:1 giữ nguyên.
+// 3B: thân hàm (V20 `14465-14620` vs V20.2023.Release `15361-15516`) KHỚP sau chuẩn hoá `sed 's/[[:space:]]//g'`
+//   = IDENTICAL (md5 `58ff3c50b8f24f53180153c5b64fee0c`).
+app.MapPost("/api/repairorders/{no}/pause-ro", async (string no, RoPauseDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var r = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (r is null) return Results.BadRequest(new { error = $"Không tìm thấy RO {no}.", code = "Ser_RO_UpdateFlagPause_NotFoundRO" });
+    if (r.Status is not ("RPRD" or "INGA"))
+        return Results.BadRequest(new { error = $"RO {no} đang {r.Status} — chỉ tạm dừng/chạy lại khi INGA/RPRD.", code = "Ser_RO_UpdateFlagPause_InvalidStatus", r.Status });
+    var pause = (dto.FlagPause ?? "").Trim() == "1";
+    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    // (4) Nguồn ghi FlagPause = strROPause (KHÔNG đảo) — khác #418.
+    r.FlagPause = pause ? "1" : "0"; r.LogLUDateTime = now; r.LogLUBy = who;
+    // (5) Mốc giờ công: FlagPlay = dừng ? 1 : 0, Begin/End = 0.
+    if (await RoWorkTimeAdd(db, r, now, pause ? "1" : "0", "0", "0", who) is { } bad) return bad;
+    await db.SaveChangesAsync();
+    // (6) Nguồn trả dataset RỖNG (hàm void) — port trả tóm tắt thao tác.
+    return Results.Ok(new { r.RONo, r.FlagPause, paused = pause,
+        sourceReturnsEmptyDataset = "Ser_RO_UpdateFlagPause la ham void => nguon tra dataset RONG",
+        noAssignmentRequired = "khac #418 (Ser_AssignmentWork_UpdateFlagPause BAT BUOC co phan cong); ham nay tam dung o CAP RO",
+        flagPauseNotInverted = "nguon ghi FlagPause = strROPause (KHONG dao) — khac #418 dao (dung => 0)" });
+}).RequireAuthorization();
+
 // ===== 🏆🔴 #917 `Ser_RO_UpdateDPTD` (LIVE, `BizCarSv.Service01.cs:9241`) — điều phối KTV+khoang+ghi chú =====
 // Ghi ĐỒNG THỜI 3 cột `DPRemark`/`EngineerID`/`CavityID` lên `Ser_RO`; rỗng ⇒ xoá (DBNull), có giá trị ⇒
 // guard tồn tại (`CheckExistEngineer`/`CheckExistCavity`) trước khi ghi. Port cũ chỉ có cột `EngineerID`,
