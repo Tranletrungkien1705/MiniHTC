@@ -57042,7 +57042,7 @@ app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 500;
     var items = await qry.OrderBy(x => x.ModelCode).Skip(skip).Take(take)
-        .Select(x => new { x.ModelCode, x.ModelName, x.FlagActive, x.Remark, x.UpdatedAt }).ToListAsync();   // #1246 §12
+        .Select(x => new { x.ModelCode, x.ModelName, x.FlagActive, x.Remark, x.UpdatedAt, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1246 §12 + #1601
     return Results.Ok(new
     {
         count = items.Count, total, skip, take, items,
@@ -57089,7 +57089,7 @@ app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string
 //   ⇒ **chỉ sửa mới đổi được trạng thái hoạt động**, giống hệt kết luận #715 cho `ProcessCustomer*`.
 // ⚪ **ÂM TÍNH — khối `dsData` bị comment trong `_Update`** (`//DataSet dsData = TUtils.CUtils.StdDS(...)` …)
 //   là **tàn dư**, không phải tính năng bị tắt: đếm `dsData` trong toàn hàm = chỉ các dòng đã comment.
-app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Mã model trống!" });
@@ -57107,6 +57107,10 @@ app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITe
     row!.ModelName = isNew ? dto.ModelName?.Trim() : dto.ModelName?.Trim().ToUpperInvariant();
     row.FlagActive = dto.FlagActive ?? "1"; row.UpdatedAt = DateTime.Now;
     if (isNew) row.Remark = dto.Remark?.Trim();
+    // #1601 §12 — nguồn `_Add` INSERT 6 cột (ModelCode/ModelName/Remark/FlagActive/LogLUDateTime/LogLUBy);
+    // `_Update` ghi `t.LogLUDateTime = f.LogLUDateTime, t.LogLUBy = f.LogLUBy` VÔ ĐIỀU KIỆN (hai dòng đầu
+    // của `zzB_Update_Mst_CarModelStd_ClauseSet_zzE`, ngoài mọi `if (bUpd_*)`). Port cũ bỏ sót cả hai cột.
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.ModelCode, row.ModelName, row.FlagActive, isNew });
 }).RequireAuthorization();

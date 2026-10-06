@@ -17953,6 +17953,12 @@ public sealed class CarModelStd
     /// còn model tắt cờ thì **biến mất kể cả khi có giao dịch**. Không phải `FlagActive`.</summary>
     public string FlagBusinessPlan { get; set; } = "0";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    // #1601 §12 — `Mst_CarModelStd_Add` (Tab/BizCarSv.Tab.cs:3390) INSERT 6 cot gom `LogLUDateTime`/`LogLUBy`;
+    // `_Update` (:3646) ghi `t.LogLUDateTime = f.LogLUDateTime, t.LogLUBy = f.LogLUBy` VO DIEU KIEN trong
+    // `zzB_Update_Mst_CarModelStd_ClauseSet_zzE` (hai dong dau, khong nam trong `if (bUpd_*)`). Port cu thieu
+    // han hai cot nay => khong biet ai them/sua model, sua luc nao.
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Video tư vấn dịch vụ (Ser_Mst_FilePathVideo — port 1:1 FrmSerMstFilePathVideoCreate/Search, TCMotor DMSCarSv/Admin):

@@ -3737,6 +3737,8 @@ public static class Seeder
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"DepositDutyEndDate\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"GrtEndDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarModelStds\" ADD COLUMN IF NOT EXISTS \"FlagBusinessPlan\" text NOT NULL DEFAULT '0'",   // #B78
+                "ALTER TABLE public.\"CarModelStds\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",   // #1601
+                "ALTER TABLE public.\"CarModelStds\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",   // #1601
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"SORCode\" text NULL",   // #B79
                 // ===== #B80 `Car_Car` — ba cờ của CarCarUpdate02_New20260409 =====
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagMapVIN\" text NULL",
