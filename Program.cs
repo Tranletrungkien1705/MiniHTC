@@ -76636,8 +76636,6 @@ app.MapPost("/api/dlrcontractcancels/save", async (DlrContractCancelSaveDto dto,
     // Thay thế trọn bộ dòng của phiếu (nguồn xoá rồi insert … select lại).
     db.DlrContractCancelDtls.RemoveRange(
         await db.DlrContractCancelDtls.Where(d => d.OrgId == t.OrgId && d.ContractCNo == no).ToListAsync());
-    db.DlrContractCancelCars.RemoveRange(
-        await db.DlrContractCancelCars.Where(c => c.OrgId == t.OrgId && c.ContractCNo == no).ToListAsync());
 
     foreach (var d in dto.Details ?? new())
         db.DlrContractCancelDtls.Add(new DlrContractCancelDtl
@@ -76648,16 +76646,57 @@ app.MapPost("/api/dlrcontractcancels/save", async (DlrContractCancelSaveDto dto,
             ContractCancelDtlStatus = "P", Remark = d.Remark,
             LogLUDateTime = now, LogLUBy = who,
         });
-    foreach (var c in dto.Cars ?? new())
+
+    // ===== 🔴 #5860 4 GUARD/SIDE-EFFECT thiếu khi lưu xe huỷ, đối chiếu `Dlr_ContractCancel_SaveX_New20230306` =====
+    // Nguồn (BizHTC.Contract.cs) check TỪNG xe TRƯỚC khi ghi, không phải sau — port giữ đúng thứ tự.
+    var carsIn = dto.Cars ?? new();
+    // 1) guard InvalidCtrCTDNo (2692-2706): mỗi dòng xe PHẢI chọn Lý do huỷ.
+    var noReason = carsIn.FirstOrDefault(c => string.IsNullOrWhiteSpace(c.CtrCTDNo));
+    if (noReason is not null)
+        return Results.BadRequest(new { error = $"CarID hợp đồng {noReason.CtrCarId} chưa chọn Lý do hủy !" });
+    // 2) CtrCType THẬT lấy từ Mst_CtrCancelTypeDtl theo CtrCTDNo (SQL "update t set t.CtrCType = mcctd.CtrCType", dòng 2791)
+    //    — KHÔNG tin giá trị CtrCType client tự gửi lên (client chỉ gửi CtrCTDNo, CtrCType là tra cứu phía server).
+    var ctdNos = carsIn.Select(c => (c.CtrCTDNo ?? "").Trim()).Distinct().ToList();
+    var ctdMap = await db.CtrCancelTypeDtls.Where(x => x.OrgId == t.OrgId && ctdNos.Contains(x.CtrCTDNo))
+        .ToDictionaryAsync(x => x.CtrCTDNo, x => x.CtrCancelTypeCode);
+    // 3) guard RemarkInvalid (2786-2836): CtrCType (đã tra ở bước 2) = 'RC5' bắt buộc có Remark.
+    foreach (var c in carsIn)
+    {
+        var realCtrCType = ctdMap.TryGetValue((c.CtrCTDNo ?? "").Trim(), out var ctVal) ? ctVal : null;
+        if (realCtrCType == "RC5" && string.IsNullOrWhiteSpace(c.Remark))
+            return Results.BadRequest(new { error = $"CarID hợp đồng '{c.CtrCarId}', có Mã lý do hủy là 'RC5' nên cần nhập Ghi chú hủy!" });
+    }
+    // 4) guard Dlr_ContractCar_CheckDB (2678-2690): xe phải TỒN TẠI, CHƯA huỷ (FlagCancel<>'1'), CHƯA giao (FlagDelivery<>'1').
+    var carRows = new List<DlrContractCar>();
+    foreach (var c in carsIn)
+    {
+        var carRow = await db.DlrContractCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
+            && x.DlrContractNo == (c.DlrContractNo ?? "").Trim() && x.SpecCode == c.SpecCode
+            && x.ModelCode == c.ModelCode && x.ColorCode == c.ColorCode && x.CtrCarId == (c.CtrCarId ?? "").Trim());
+        if (carRow is null) return Results.BadRequest(new { error = $"Không tìm thấy CarID '{c.CtrCarId}' trong hợp đồng '{c.DlrContractNo}'." });
+        if (carRow.FlagCancel == "1") return Results.BadRequest(new { error = $"CarID '{c.CtrCarId}' đã bị huỷ trước đó." });
+        if (carRow.FlagDelivery == "1") return Results.BadRequest(new { error = $"CarID '{c.CtrCarId}' đã giao, không huỷ được." });
+        carRows.Add(carRow);
+    }
+
+    db.DlrContractCancelCars.RemoveRange(
+        await db.DlrContractCancelCars.Where(c => c.OrgId == t.OrgId && c.ContractCNo == no).ToListAsync());
+    foreach (var c in carsIn)
         db.DlrContractCancelCars.Add(new DlrContractCancelCar
         {
             OrgId = t.OrgId, ContractCNo = no, DlrContractNo = (c.DlrContractNo ?? "").Trim(),
             SpecCode = c.SpecCode, ModelCode = c.ModelCode, ColorCode = c.ColorCode,
             CtrCarId = (c.CtrCarId ?? "").Trim(), DlvExpectedDate = c.DlvExpectedDate,
-            CtrCType = c.CtrCType,      // loại huỷ — nguồn cho phép để trống (dòng 2725)
+            CtrCType = ctdMap.TryGetValue((c.CtrCTDNo ?? "").Trim(), out var ctSave) ? ctSave : null,  // DERIVED — không lấy từ client (2791)
             CtrCTDNo = c.CtrCTDNo, Remark = c.Remark,
             LogLUDateTime = now, LogLUBy = who,
         });
+    await db.SaveChangesAsync();
+
+    // 🔴 SIDE-EFFECT bị bỏ sót (BizHTC.Contract.cs:3193-3242, "Upd: Dlr_ContractCar"): FlagCancel='1' trên
+    //    chính xe vừa huỷ. ĐÂY mới là bước biến xe "đã huỷ" thật sự — thiếu bước này thì khối #198 bên dưới
+    //    (DlrCtrStatus='F') gần như KHÔNG BAO GIỜ kích hoạt vì FlagCancel không bao giờ đổi khỏi "0".
+    foreach (var carRow in carRows) { carRow.FlagCancel = "1"; carRow.LogLUDateTime = now; carRow.LogLUBy = who; }
     await db.SaveChangesAsync();
 
     // ===== 🔴 #198 SIDE-EFFECT bị bỏ sót: HỢP ĐỒNG TỰ CHUYỂN "HOÀN THÀNH" =====
