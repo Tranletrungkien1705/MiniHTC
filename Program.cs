@@ -3687,6 +3687,29 @@ case "htc-appr2-sign":
     return Results.Ok(new { m.TransportMinutesNo, dl = m.DLTransportMinutesStatus, htc = m.HTCTransportMinutesStatus, status = m.Status, m.FilePath });
 }).RequireAuthorization();
 
+// ===== #5814 XOÁ BIÊN BẢN GIAO XE — `Car_TransportMinutes_Delete` (`FrmDMS40_2019_MngTransportMinutes`) =====
+// Trace: menu sống FrmMain.cs:2680/2683 → `Car_TransportMinutesService.Car_TransportMinutes_Delete` → WS
+//   → biz `Car_TransportMinutes_Delete_New20190122` → `…_DeleteX` (2010.HTC `DataWH/Biz.HTC.WH.cs:56567`).
+//   Trước #5814 Mini có đủ `dl-appr`/`htc-appr1`/`htc-appr2`/`htc-appr2-sign`/`htc-appr-special`/
+//   `htc-cancel` nhưng THIẾU xoá — route cuối còn lại của `FrmDMS40_2019_MngTransportMinutes`.
+// 🔴 Guard DUY NHẤT: `DLTransportMinutesStatus` phải còn `"P"` (Pending — bên đại lý CHƯA duyệt).
+//   Khác `htc-cancel` (#181, kiểm BA trục), ở đây chỉ kiểm MỘT trục — biên bản đã qua `dl-appr` (dù HTC
+//   chưa đụng tới) là KHÔNG xoá được nữa, chỉ còn đường huỷ (`htc-cancel`, giữ lại dấu vết R trên dòng xe).
+// 🔴 XOÁ CỨNG (`delete` thật trên cả chi tiết và tiêu đề), KHÔNG lưu lịch sử — khác hẳn `htc-cancel` ghi
+//   `DtlStatus='R'`/`CancelDateTime`/`CancelBy` (giữ bản ghi). Hai đường "bỏ" khác ngữ nghĩa trong cùng cụm.
+app.MapDelete("/api/transminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var m = await db.TransportMinutes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransportMinutesNo == no);
+    if (m is null) return Results.NotFound(new { no });
+    if (m.DLTransportMinutesStatus != "P")
+        return Results.BadRequest(new { error = $"Chỉ xoá được khi bên đại lý còn \"P\" (Pending) — đang \"{m.DLTransportMinutesStatus}\". Đã qua duyệt đại lý thì dùng huỷ (htc-cancel), không xoá." });
+    db.TransportMinutesCars.RemoveRange(db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id));
+    db.TransportMinutes.Remove(m);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
+}).RequireAuthorization();
+
 // ===== Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2) =====
 app.MapGet("/api/holidays", async (AppDbContext db, ITenantContext t, int? year) =>
 {
