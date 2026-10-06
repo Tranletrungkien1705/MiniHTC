@@ -71149,7 +71149,15 @@ app.MapGet("/api/reports/hrsalesman-typearea", async (
         // KHONG co cot AreaBUPattern (xac nhan grep 0 hit) nen KHONG the dung nguyen co che "mo rong vung
         // con qua LIKE AreaBUPattern" cua nguon — them cot nay can hieu format pattern that + ra soat
         // write-path FrmArea (man quan tri Mst_Area) truoc, chua lam trong fire nay.
-        debtNote = "NO - KHONG DOAN: Mst_Area (Mini) chua co cot AreaBUPattern => khong dung duoc co che mo rong vung con cua nguon; HR_SalesManOfMonth/Dtl DA CO tu #141 (khong con la ly do chan)."
+        // #5760 DA DIEU TRA THEM (khong chi ghi lai no cu): grep "AreaBUPattern" toan cay BizHTC + FrmArea.cs
+        // (man WinForm quan tri Mst_Area) - 0 noi GHI cot nay trong toan bo C# (ca generic CommonSaveMasterData
+        // cung khong dong). Cot chi duoc DOC, chua tung thay GHI o dau - rat co the duoc nap/duy tri NGOAI
+        // code (SQL tay/job rieng), giong khuon #5754 (Rpt_MasterDataByDealer). ĐA XEM XET suy ra pattern tu
+        // AreaRootCode+Level da co (Mini) nhung KHONG CHAC chieu sau cay (AreaRootCode la cha truc tiep hay
+        // goc xuyen cap?) - doan sai se tra SAI NHOM nguoi dung (sai so lieu kinh doanh im lang, te hon de
+        // trong). KHONG doan - giu nguyen ghi no, dong huong dieu tra nay (khong thu lai cho toi khi co du
+        // lieu Area thuc hoac nguon moi).
+        debtNote = "NO - KHONG DOAN: Mst_Area (Mini) chua co cot AreaBUPattern => khong dung duoc co che mo rong vung con cua nguon; HR_SalesManOfMonth/Dtl DA CO tu #141 (khong con la ly do chan). #5760: da xem xet suy pattern tu AreaRootCode+Level co san nhung KHONG CHAC ngu nghia cay (cha truc tiep vs goc) - doan sai nguy hiem hon de trong, GIU NGUYEN ghi no."
     });
 }).RequireAuthorization();
 
