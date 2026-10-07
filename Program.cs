@@ -28426,11 +28426,15 @@ app.MapGet("/api/cusdebits/{cusId}/detail", async (string cusId, AppDbContext db
     });
 }).RequireAuthorization();
 
-app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+app.MapGet("/api/cusdebits", async (AppDbContext db, ITenantContext t, string? q, string? status, bool? isDebit) =>
 {
     var query = db.CusDebits.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.DebitNo.Contains(q!) || (x.CusName != null && x.CusName.Contains(q!)) || (x.RONo != null && x.RONo.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    // #1684 §12 FrmCusDebitSearch/FrmInsDebitSearch/FrmSupplierDebitSearch chkIsDebit (mac dinh Checked):
+    // nguon `strIsDebit.Equals(TConst.Flag.Active)` => loc "db.Deb > 0" (BizCarSv.Debit.cs:1923-1928);
+    // khong tick => khong loc (ca da tat toan). Deb = DebitAmount - PaidAmount.
+    if (isDebit == true) query = query.Where(x => x.DebitAmount - x.PaidAmount > 0);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.DebitNo, x.DealerCode, x.CusId, x.CusName, x.RONo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
@@ -49904,11 +49908,13 @@ app.MapGet("/api/appointments/cavity-board", async (AppDbContext db, ITenantCont
 }).RequireAuthorization();
 
 // ===== Công nợ bảo hiểm + thu tiền (InsDebit — port 1:1 FrmInsDebitSearch/FrmInsPaymentCreate, TCMotor) =====
-app.MapGet("/api/insdebits", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+app.MapGet("/api/insdebits", async (AppDbContext db, ITenantContext t, string? q, string? status, bool? isDebit) =>
 {
     var query = db.InsDebits.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.DebitNo.Contains(q!) || (x.InsName != null && x.InsName.Contains(q!)) || (x.InsNo != null && x.InsNo.Contains(q!)) || (x.RONo != null && x.RONo.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    // #1684 §12 — cung guard chkIsDebit voi FrmCusDebitSearch (xem chu thich tren /api/cusdebits).
+    if (isDebit == true) query = query.Where(x => x.DebitAmount - x.PaidAmount > 0);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.DebitNo, x.InsNo, x.InsName, x.RONo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
@@ -49975,16 +49981,26 @@ app.MapPost("/api/insdebits/{no}/payments", async (string no, InsDebitPaymentDto
 }).RequireAuthorization();
 
 // ===== Công nợ nhà cung cấp phụ tùng + thu tiền (SupplierDebit — port 1:1 FrmSuplierDebitCreate/FrmSupplierDebitSearch/FrmSupplierPaymentCreate, TCMotor DMSCarSv/Debit) =====
-app.MapGet("/api/supplierdebits", async (AppDbContext db, ITenantContext t, string? supplier, string? status) =>
+app.MapGet("/api/supplierdebits", async (AppDbContext db, ITenantContext t, string? supplier, string? supplierName, string? status, bool? isDebit) =>
 {
     var query = db.SupplierDebits.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(supplier)) query = query.Where(x => x.SupplierCode == supplier);
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
-    var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    // #1684 §12 — cung guard chkIsDebit voi FrmCusDebitSearch (xem chu thich o /api/cusdebits).
+    if (isDebit == true) query = query.Where(x => x.DebitAmount - x.PaidAmount > 0);
+    var rows = await query.OrderByDescending(x => x.Id).Take(500).ToListAsync();
+    // #1684 §12 FrmSupplierDebitSearch loc theo txtSupplierName.Text (TEN NCC), khong theo ma —
+    // SupplierDebit chi luu SupplierCode => join sang danh muc SerMstSuppliers lay SupplierName.
+    var codes = rows.Select(x => x.SupplierCode).Distinct().ToList();
+    var names = await db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && codes.Contains(x.SupplierCode))
+        .ToDictionaryAsync(x => x.SupplierCode, x => x.SupplierName);
+    var items = rows.Select(x => new
     {
-        x.Id, x.SupplierCode, x.StockInNo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
+        x.Id, x.SupplierCode, supplierName = names.TryGetValue(x.SupplierCode, out var sn) ? sn : null, x.StockInNo, x.DebitAmount, x.PaidAmount, balance = x.DebitAmount - x.PaidAmount, x.Status, x.Note,
         debitDate = x.DebitDate.HasValue ? x.DebitDate.Value.ToString("yyyy-MM-dd") : "", x.CreatedAt   // #1273 §12
-    }).ToListAsync();
+    }).ToList();
+    if (!string.IsNullOrWhiteSpace(supplierName))
+        items = items.Where(x => x.supplierName != null && x.supplierName.Contains(supplierName!, StringComparison.OrdinalIgnoreCase)).ToList();
     return Results.Ok(new { count = items.Count, totalDebit = items.Sum(i => i.DebitAmount), totalPaid = items.Sum(i => i.PaidAmount), totalBalance = items.Sum(i => i.balance), items });
 }).RequireAuthorization();
 

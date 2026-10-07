@@ -32,7 +32,9 @@
   </div>
 </div>
 
-<div class="row" style="margin:8px 0"><input id="q" placeholder="Tìm số nợ/hãng BH/RO" style="width:220px"><button onclick="load()">Tìm</button></div>
+<div class="row" style="margin:8px 0"><input id="q" placeholder="Tìm số nợ/hãng BH/RO" style="width:220px">
+  <label style="display:flex;align-items:center;gap:4px;margin:0"><input id="qIsDebit" type="checkbox" checked style="width:auto"> Chỉ còn nợ</label>
+  <button onclick="load()">Tìm</button></div>
 <div class="grid2" id="kpis"></div>
 <div class="wrap"><table><thead><tr><th>Số nợ</th><th>Hãng BH</th><th>RO</th><th class="num">Nợ</th><th class="num">Đã thu</th><th class="num">Còn</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Nhấn "Tìm".</td></tr></tbody></table></div>
@@ -63,7 +65,7 @@ async function create2(){ await token();
   m("msg","Đã tạo "+d.debitNo); F("fAmount").value=""; load();
 }
 async function load(){ await token();
-  const r=await fetch("/api/insdebits?q="+encodeURIComponent(F("q").value),{headers:H()}); const d=await r.json();
+  const r=await fetch("/api/insdebits?q="+encodeURIComponent(F("q").value)+"&isDebit="+F("qIsDebit").checked,{headers:H()}); const d=await r.json();
   F("kpis").innerHTML=`<div class="kpi"><b>${M(d.totalDebit)}</b><span class="muted">Tổng nợ</span></div><div class="kpi"><b style="color:var(--ok)">${M(d.totalPaid)}</b><span class="muted">Đã thu</span></div><div class="kpi"><b style="color:var(--warn)">${M(d.totalBalance)}</b><span class="muted">Còn nợ</span></div>`;
   F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${esc(o.debitNo)}</b></td><td>${esc(o.insName)}</td><td>${esc(o.rONo)}</td><td class="num">${M(o.debitAmount)}</td><td class="num">${M(o.paidAmount)}</td><td class="num">${M(o.balance)}</td><td><span class="pill s-${o.status}">${ST[o.status]||o.status}</span></td><td>${o.status==="Open"?`<button class="link" onclick="openPay('${o.debitNo}')">Thu</button>`:""}<button class="link" onclick="openPay('${o.debitNo}')">Sổ</button></td></tr>`).join("")||'<tr><td colspan="8" class="muted">Không có công nợ.</td></tr>';
 }
