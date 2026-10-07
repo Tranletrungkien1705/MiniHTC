@@ -9186,7 +9186,8 @@ app.MapPost("/api/qcdocreqs", async (QcDocReqDto dto, AppDbContext db, ITenantCo
         Remark = string.IsNullOrWhiteSpace(dto.Remark) ? null : dto.Remark.Trim(), LogLUDTime = DateTime.Now, LogLUBy = dto.CreateBy ?? "system" };   // #372
     db.QcDocReqs.Add(r2); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.QcDocReqCars.Add(new QcDocReqCar { OrgId = t.OrgId, QcDocReqId = r2.Id, OrderNo = c.OrderNo ?? "", ModelCode = c.ModelCode ?? "", SpecCode = c.SpecCode ?? "", ColorCode = c.ColorCode ?? "", VIN = c.VIN.Trim().ToUpperInvariant(), EngineNo = c.EngineNo ?? "", OriginNo = c.OriginNo ?? "", FGFormNo = c.FGFormNo ?? "", QCNo = c.QCNo ?? "", ClearanceFormNo = c.ClearanceFormNo ?? "", DocDeliverTypeCode = c.DocDeliverTypeCode ?? "", DocReqDtlStatus = "PENDING" });
+        db.QcDocReqCars.Add(new QcDocReqCar { OrgId = t.OrgId, QcDocReqId = r2.Id, OrderNo = c.OrderNo ?? "", ModelCode = c.ModelCode ?? "", SpecCode = c.SpecCode ?? "", ColorCode = c.ColorCode ?? "", VIN = c.VIN.Trim().ToUpperInvariant(), EngineNo = c.EngineNo ?? "", OriginNo = c.OriginNo ?? "", FGFormNo = c.FGFormNo ?? "", QCNo = c.QCNo ?? "", ClearanceFormNo = c.ClearanceFormNo ?? "", DocDeliverTypeCode = c.DocDeliverTypeCode ?? "", DocReqDtlStatus = "PENDING",
+            OrdMonth = c.OrdMonth ?? "", SpecDescription = c.SpecDescription ?? "", ColorNameVN = c.ColorNameVN ?? "", FGFormDate = c.FGFormDate, IssueDate = c.IssueDate, ClearanceFormDate = c.ClearanceFormDate, PDIDate = c.PDIDate });   // #5900
     await db.SaveChangesAsync();
     return Results.Ok(new { r2.DocReqNo, cars = cars.Count });
 }).RequireAuthorization();
@@ -9197,7 +9198,8 @@ app.MapGet("/api/qcdocreqs/{no}/cars", async (string no, AppDbContext db, ITenan
     var r = await db.QcDocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.QcDocReqCars.Where(c => c.OrgId == t.OrgId && c.QcDocReqId == r.Id)
-        .Select(c => new { c.OrderNo, c.ModelCode, c.SpecCode, c.ColorCode, c.VIN, c.EngineNo, c.OriginNo, c.FGFormNo, c.QCNo, c.ClearanceFormNo, c.DocReqDtlStatus, c.DocDeliverTypeCode /*merge session-a*/  }).ToListAsync();
+        .Select(c => new { c.OrderNo, c.ModelCode, c.SpecCode, c.ColorCode, c.VIN, c.EngineNo, c.OriginNo, c.FGFormNo, c.QCNo, c.ClearanceFormNo, c.DocReqDtlStatus, c.DocDeliverTypeCode, /*merge session-a*/
+            c.OrdMonth, c.SpecDescription, c.ColorNameVN, c.FGFormDate, c.IssueDate, c.ClearanceFormDate, c.PDIDate }).ToListAsync();   // #5900
     return Results.Ok(new { r.DocReqNo, r.DocReqStatus, count = cars.Count, cars, r.CreateBy, r.CreateDTime, r.ApprDTime /*merge session-a*/  });
 }).RequireAuthorization();
 
@@ -114380,7 +114382,8 @@ record DlvMinutesBatchPatchLineDto(
 record DlvMinutesBatchPatchDto(List<DlvMinutesBatchPatchLineDto>? Rows);
 record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate, string? CarId = null, string? DealerCode = null, string? Remark = null);
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars, string? Remark = null);
-record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode);
+record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode,
+    string? OrdMonth = null, string? SpecDescription = null, string? ColorNameVN = null, DateTime? FGFormDate = null, DateTime? IssueDate = null, DateTime? ClearanceFormDate = null, DateTime? PDIDate = null);   // #5900
 record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars, string? Remark = null);   // #372
 record BankPmCtktDto(string NewAccountingRecordNo);
 record BankPmInterestRowDto(string? PaymentNo, decimal? InterestRate, int? LoanPeriod);

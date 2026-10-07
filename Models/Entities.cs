@@ -14971,15 +14971,29 @@ public sealed class QcDocReqCar
     public Guid OrgId { get; set; }
     public long QcDocReqId { get; set; }
     public string OrderNo { get; set; } = "";       // Mv_OrderNo (so DH san xuat)
+    /// <summary>#5900 `Mv_OrdMonth` (FrmMngQCDocReq.cs:208) — thang dat hang.</summary>
+    public string OrdMonth { get; set; } = "";
     public string ModelCode { get; set; } = "";
     public string SpecCode { get; set; } = "";
+    /// <summary>#5900 `SpecDescription` (FrmMngQCDocReq.cs:211) — mo ta xe.</summary>
+    public string SpecDescription { get; set; } = "";
     public string ColorCode { get; set; } = "";
+    /// <summary>#5900 `Vin_Color_VN_Combined` (FrmMngQCDocReq.cs:213) — ten mau VN.</summary>
+    public string ColorNameVN { get; set; } = "";
     public string VIN { get; set; } = "";           // Mv_VinReal
     public string EngineNo { get; set; } = "";
     public string OriginNo { get; set; } = "";       // so xuat xu
     public string FGFormNo { get; set; } = "";       // so phieu xuat xuong
+    /// <summary>#5900 `Mv_FGFormDate` (FrmMngQCDocReq.cs:218) — ngay cap PXX.</summary>
+    public DateTime? FGFormDate { get; set; }
     public string QCNo { get; set; } = "";           // so phieu QC
+    /// <summary>#5900 `Mv_IssueDate` (FrmMngQCDocReq.cs:220) — ngay cap GCN.</summary>
+    public DateTime? IssueDate { get; set; }
     public string ClearanceFormNo { get; set; } = ""; // so phieu thong quan
+    /// <summary>#5900 `Mv_ClearanceFormDate` (FrmMngQCDocReq.cs:222) — ngay to khai.</summary>
+    public DateTime? ClearanceFormDate { get; set; }
+    /// <summary>#5900 `Mv_PDIDate` (FrmMngQCDocReq.cs:227) — ngay PDI.</summary>
+    public DateTime? PDIDate { get; set; }
     public string DocDeliverTypeCode { get; set; } = "";
     /// <summary>#372 `DocReqDtlStatus` (rename từ DtlStatus, TblQC_DocReqDtl) — PENDING/APPROVE/CANCEL.</summary>
     public string DocReqDtlStatus { get; set; } = "PENDING";
