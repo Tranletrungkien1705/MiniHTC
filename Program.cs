@@ -98055,6 +98055,66 @@ app.MapGet("/api/repairorders/warranty-lookup", async (AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== Báo cáo "Phụ tùng cần cho lệnh sửa chữa" (FrmTotalStockRepairOrder) — port 1:1 `SerStockOutOrderGet02` =====
+// Nguồn: `BizCarSv.Inventory.StockOut.cs:9789` (LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:15697` gọi thẳng — không
+// hậu tố, không WH, không Tab). Form double-click 1 dòng kết quả `Ser_RO_GetStatusList01_New20230417`
+// (đã port #899 ở `/api/repairorders/status-list-with-parts`) để MỞ RỘNG thành báo cáo in: lấy
+// `Ser_ROPartItems` của RO đó, JOIN với lệnh xuất kho sinh TỪ RO này (SourceType='RO' ở Mini ứng với
+// `t.ROID is not null and t.StockOutType='1'` ở nguồn) để ra `SOOQuantity` (đã YÊU CẦU xuất qua lệnh xuất,
+// `#tbl_OrderTemp`/`#tbl_soo`) và `SOQuantity` (đã THỰC XUẤT qua phiếu `Status='3'` Kết thúc, `#tbl_so`),
+// `OrderQuantity = SOOQuantity - SOQuantity` (còn thiếu). `AMOUNT` form tự tính = `NEED * PRICE` (cột PRICE
+// lấy từ `Ser_ROPartItems.Price`, KHÔNG nhân VAT/Factor ở báo cáo này — khác công thức Amount thường của RO).
+// 🔴 Nguồn có `strSqlGetData1` — dựng NGUYÊN một khối SQL dài (K1-K9 với bảng tạm `#tblInv_StockOutOrder`
+//   kiểu khác) rồi KHÔNG BAO GIỜ DÙNG (chỉ `strSqlGetData` được `ExecQuery`) — biến chết hoàn toàn, không
+//   ảnh hưởng kết quả; ghi lại vì dễ nhầm là có hai luồng dữ liệu song song.
+// 🔴 `AND BackOrderIndex=0` áp trên lệnh xuất ⇒ lệnh đã "đặt lại/giao bù" (BackOrderIndex>0) bị loại khỏi
+//   SOOQuantity — Mini giữ đúng (lọc `BackOrderIndex is null or "0"`).
+app.MapGet("/api/repairorders/{no}/parts-need-report", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    var ro = await db.RepairOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RONo == no);
+    if (ro is null) return Results.NotFound(new { error = $"Không tìm thấy lệnh sửa chữa {no}." });
+
+    var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.NeedQty, x.UnitPrice, x.Vat }).ToListAsync();
+
+    var orderIds = await db.SerStockOutOrders.Where(x => x.OrgId == t.OrgId && x.SourceType == "RO" && x.RONo == no
+        && (x.BackOrderIndex == null || x.BackOrderIndex == "0")).Select(x => x.Id).ToListAsync();
+
+    var sooByPart = await db.SerStockOutOrderLines.Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.OrderId))
+        .GroupBy(x => x.PartCode).Select(g => new { PartCode = g.Key, Qty = g.Sum(x => x.OrderQuantity) }).ToListAsync();
+
+    var finishedStockOutIds = await db.SerStockOutOrderStockOuts.Where(x => x.OrgId == t.OrgId && orderIds.Contains(x.StockOutOrderId))
+        .Select(x => x.StockOutId).Distinct()
+        .Join(db.PartStockOuts.Where(s => s.OrgId == t.OrgId && s.Status == "3"), id => id, s => s.Id, (id, s) => id)
+        .ToListAsync();
+
+    var soByPart = await db.PartStockOutLines.Where(x => x.OrgId == t.OrgId && finishedStockOutIds.Contains(x.StockOutId))
+        .GroupBy(x => x.PartCode).Select(g => new { PartCode = g.Key, Qty = g.Sum(x => x.Quantity) }).ToListAsync();
+
+    var sooMap = sooByPart.ToDictionary(x => x.PartCode!, x => x.Qty);
+    var soMap = soByPart.ToDictionary(x => x.PartCode, x => x.Qty);
+
+    var rows = parts.Select(p =>
+    {
+        var sooQty = sooMap.TryGetValue(p.PartCode, out var sq) ? sq : 0m;
+        var soQty = soMap.TryGetValue(p.PartCode, out var sq2) ? sq2 : 0m;
+        return new
+        {
+            p.PartCode, p.PartName, p.Unit, need = p.NeedQty, price = p.UnitPrice,
+            amount = p.NeedQty * p.UnitPrice,   // form: Convert.ToDouble(NEED) * Convert.ToDouble(PRICE) — khong VAT/Factor
+            sooQuantity = sooQty, soQuantity = soQty, orderQuantity = sooQty - soQty,
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        ro.RONo, roRONoBGPrefix = "LS-" + ro.RONo, count = rows.Count, rows,
+        onlyLiveConfirmed = "SerStockOutOrderGet02 — BizCarSv.Inventory.StockOut.cs:9789, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:15697",
+        deadVariableInSource = "nguon dung strSqlGetData1 — dung nguyen mot khoi SQL K1-K9 roi KHONG BAO GIO ExecQuery, bien chet hoan toan, khong anh huong ket qua",
+        amountFormulaIsNeedTimesPriceNoVat = "AMOUNT o man nay = NEED * PRICE (form FrmTotalStockRepairOrder.cs), KHAC cong thuc Amount thuong cua Ser_ROPartItems (Factor*Quantity*Price*(1+VAT%))",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴 #469 BÁO CÁO TỔNG XUẤT KHO — `Ser_InvReportTotalStockOutRpt_New20230623` =====
 // Nguồn: `BizCarSv.Inventory.Report.cs:1609` (WS gọi bản này; bản kho `…_WH` ở `WH.cs:10495`).
 // Chọn màn này từ danh sách lệch của #468 (**15 dòng SQL → 5**) — chênh lớn nhất theo tỉ lệ.
