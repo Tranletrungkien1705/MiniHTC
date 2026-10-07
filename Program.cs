@@ -105588,6 +105588,57 @@ app.MapGet("/api/report/stockin-detail-wh", async (AppDbContext db, ITenantConte
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #5896 BẢN ĐẠI LÝ `Ser_InvReportTotalStockInDetailRpt` (KHÔNG hậu tố `_WH`) — CHƯA PORT =====
+// `FrmReportTotalStockInDetail` (menu-live) ở nhánh THƯỜNG (checkbox "Query full history" TẮT) gọi thẳng
+// `InventoryReportService.Ser_InvReportTotalStockInDetailRpt(fromDate,toDate,dealerCode)` → biz LIVE
+// `BizCarSv.Inventory.Report.cs:6020` — hàm này CHẠY TRÊN `_dbDealer`, cấu trúc SQL GIỐNG HỆT bản `_WH`
+// ngay trên (cùng #666 — chỉ khác handle CSDL + lớp mã lỗi) — áp dụng ĐÚNG các cờ/bẫy đã ghi ở #666:
+// group theo (PartCode,Price,VAT) tách 1 mã thành nhiều dòng, guard chết `not in(4,5)` sau `=3`,
+// `endDateExclusive`, `SELECT *` đổi schema. Trước giờ Mini CHỈ port bản `_WH`
+// (`/api/report/stockin-detail-wh`) — route `/api/report/stockin-detail` cùng tên gần giống là báo cáo
+// KHÁC (#1507 `Ser_InventoryReport_In`, cột `Total`/`VATAmount` tách riêng) — không phải twin, không gộp.
+app.MapGet("/api/report/total-stockin-detail", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+
+    var qi = db.ServiceStockIns.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qi = qi.Where(x => x.DealerCode == dealerCode!.Trim());
+    qi = qi.Where(x => x.Status == "Confirmed");               // nguon: so.status = 3
+    if (from is not null) qi = qi.Where(x => x.StockInDate >= from);
+    if (to is not null) qi = qi.Where(x => x.StockInDate <= to);   // #415: giu 1:1, mat tron ngay cuoi
+    var heads = await qi.Select(x => new { x.Id, x.StockInNo, x.StockInDate }).ToListAsync();
+    var headIds = heads.Select(x => x.Id).ToList();
+
+    var lines = await db.ServiceStockInLines.Where(x => x.OrgId == t.OrgId && headIds.Contains(x.ServiceStockInId))
+        .Select(x => new { x.ServiceStockInId, x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat }).ToListAsync();
+
+    var rows = lines.GroupBy(x => new { x.PartCode, x.PartName, x.Price, x.Vat }).Select(g => new
+    {
+        partCode = g.Key.PartCode, partName = g.Key.PartName,
+        price = g.Key.Price, vat = g.Key.Vat,
+        quantity = g.Sum(x => x.Quantity),
+        amount = g.Sum(x => x.Quantity * x.Price + x.Quantity * x.Price * x.Vat * 0.01m),
+    }).OrderBy(x => x.partCode).ToList();
+
+    var byPart = rows.GroupBy(x => x.partCode).Select(g => new
+    {
+        partCode = g.Key, priceLevels = g.Count(),
+        quantity = g.Sum(x => x.quantity), amount = g.Sum(x => x.amount),
+    }).OrderBy(x => x.partCode).ToList();
+
+    var lastDayRows = to is null ? 0 : heads.Count(x => x.StockInDate is not null && x.StockInDate!.Value.Date == to);
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows, byPart,
+        sameStructureAsWhTwinNote = "#5896: cung ket cau SQL voi ban _WH da port (/api/report/stockin-detail-wh) — cac bay group-theo-gia-VAT, guard chet, endDateExclusive GIONG HET, xem chi tiet o route do",
+        partsSplitAcrossPriceLevels = byPart.Count(x => x.priceLevels > 1),
+        rowsOnLastDay = lastDayRows,
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴🔴 #665 BẢN SINH ĐÔI BẢO HIỂM `SerInsuranceDebitSearch_WH` (`WH.cs:4970-5322`) =====
 // 3B: laptop `:4970` md5 `f5b2e7f5` **KHỚP** máy 150 `:4970`. WS `WSCarSv.asmx.cs:32253` gọi thẳng.
 // Theo luật #414 tôi **DIFF hai chuỗi SQL với nhau trước** (`SerCusDebitSearch_WH` vs bản này) thay vì đọc rời —
