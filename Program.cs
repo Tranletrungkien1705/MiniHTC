@@ -32745,11 +32745,30 @@ app.MapPost("/api/redeeminvoicerequests/{id}/{action}", async (long id, string a
 }).RequireAuthorization();
 
 // ===== Đề nghị thu hồi hồ sơ xe (RedeemRequest header-detail — port 1:1 FrmNewRedeem/FrmMngRedeem, 2010.HTC/Sales/Redeem) =====
-app.MapGet("/api/redeemrequests", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+// ===== 🔴 #5870 `FrmQuanLyGiaiChap` gọi CÙNG `RD_ReqRedeem_Get` (`SalesService.cs:19599` — cùng bảng
+//    `TblRD_ReqRedeem`/`TblRD_ReqRedeemDtl` đã port ở #140) nhưng khớp SoDeNghi qua `GenEqualCondition2`
+//    (CHÍNH XÁC, không phải LIKE) và còn thêm 2 cặp khoảng ngày + lọc VIN mà route cũ chưa có:
+//    `dateCreatFrom/To` (CreatedDateTime header), `dateFrom/To` (DMReqDate — ngày đề nghị, ở DÒNG chi
+//    tiết, KHÁC CreatedDate), `vin` (khớp chính xác trên RD_ReqRedeemDtl.VIN). Dùng `q` (LIKE, dính cả
+//    DealerCode) cho `SoDeNghi` sẽ sai ngữ nghĩa — thêm tham số `no` riêng, khớp chính xác.
+app.MapGet("/api/redeemrequests", async (AppDbContext db, ITenantContext t, string? q, string? status,
+    string? no, DateTime? dateCreatFrom, DateTime? dateCreatTo, DateTime? dateFrom, DateTime? dateTo, string? vin) =>
 {
     var qry = db.RedeemRequests.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ReqRedeemNo.Contains(q!) || x.DealerCode!.Contains(q!));
+    if (!string.IsNullOrWhiteSpace(no)) qry = qry.Where(x => x.ReqRedeemNo == no);   // #5870: nguồn khớp CHÍNH XÁC
+    if (dateCreatFrom is not null) qry = qry.Where(x => x.CreatedDate >= dateCreatFrom);
+    if (dateCreatTo is not null) qry = qry.Where(x => x.CreatedDate <= dateCreatTo);
+    if (dateFrom is not null || dateTo is not null || !string.IsNullOrWhiteSpace(vin))
+    {
+        var lineQ = db.RedeemRequestLines.Where(l => l.OrgId == t.OrgId);
+        if (dateFrom is not null) lineQ = lineQ.Where(l => l.DMReqDate >= dateFrom);
+        if (dateTo is not null) lineQ = lineQ.Where(l => l.DMReqDate <= dateTo);
+        if (!string.IsNullOrWhiteSpace(vin)) lineQ = lineQ.Where(l => l.VIN == vin);   // nguồn khớp CHÍNH XÁC
+        var matchedIds = lineQ.Select(l => l.RequestId).Distinct();
+        qry = qry.Where(x => matchedIds.Contains(x.Id));
+    }
     var items = await qry.OrderByDescending(x => x.Id).Take(300).Select(x => new { x.Id, x.ReqRedeemNo, x.CreatedDate, x.DealerCode, x.VinCount, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedDate, x.ApprovedBy,
         x.Remark, x.LogLUDateTime, x.LogLUBy, x.Note }).ToListAsync();   // #140 parity RD_ReqRedeem + #1266 §12
     return Results.Ok(new { count = items.Count, items });
