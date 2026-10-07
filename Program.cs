@@ -15054,6 +15054,64 @@ app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
     int NE(params string[] codes) => engineers.Count(e => e.IsEngineer != null && codes.Contains(e.IsEngineer));
     int NC(params string[] codes) => cavities.Count(c => c.CavityType != null && codes.Contains(c.CavityType));
 
+    // ===== 🔴 #5876 §12 PHẦN CÒN THIẾU CỦA CHÍNH `RptKPIGetReal_New20160602` (ZTemp.cs:2438-2933):
+    // #412/#405 chỉ port 7 chỉ tiêu nhân sự/khoang ở trên — hàm nguồn còn 19 chỉ tiêu SỐ LƯỢT/DOANH THU/GIỜ
+    // CÔNG tính TRỰC TIẾP từ `Ser_RO`+`Ser_ROPartItems`+`Ser_ROServiceItems`+`Ser_Inv_StockOut(Detail)`,
+    // lọc theo `t.rono like '%-@RptYearMonth%'` (giống `roYearMonth` đã có ở trên, TÁI DÙNG đúng biến).
+    // Nguồn JOIN `ser_mst_part` chỉ để lấy `PartCode` — MiniHTC lưu PartCode thẳng trên dòng, không cần JOIN.
+    List<RepairOrder> roRows = new();
+    if (roYearMonth != null)
+    {
+        roRows = await db.RepairOrders.Where(r => r.OrgId == t.OrgId && r.DealerCode == dealer
+                && (r.Status == "FNS" || r.Status == "PAID") && r.RONo.Contains("-" + roYearMonth))
+            .ToListAsync();
+    }
+    var roIds = roRows.Select(r => r.Id).ToHashSet();
+    var roById = roRows.ToDictionary(r => r.Id);
+    var partLines = roIds.Count == 0 ? new List<RoPartItem>()
+        : await db.RoPartItems.Where(p => p.OrgId == t.OrgId && roIds.Contains(p.RoId)).ToListAsync();
+    var serviceLines = roIds.Count == 0 ? new List<RoServiceItem>()
+        : await db.RoServiceItems.Where(s => s.OrgId == t.OrgId && roIds.Contains(s.RoId)).ToListAsync();
+
+    // #tblCountService nguồn: UNION ALL (dòng phụ tùng, dòng công) rồi DISTINCT theo (roId, ExpenseType)
+    // — ROType/IsReRepair lấy từ HEADER của chính roId đó nên không cần đưa vào khoá distinct riêng.
+    var countServicePairs = partLines.Select(p => (RoId: p.RoId, ExpenseType: p.ExpenseType ?? ""))
+        .Concat(serviceLines.Select(s => (RoId: s.RoId, ExpenseType: s.ExpenseType ?? "")))
+        .Distinct()
+        .Select(x => (x.RoId, x.ExpenseType, ROType: roById[x.RoId].ROType, IsReRepair: roById[x.RoId].IsReRepair))
+        .ToList();
+    int CS(string roType, bool? isReRepair, params string[] expenseTypes) => countServicePairs.Count(x =>
+        x.ROType == roType && expenseTypes.Contains(x.ExpenseType)
+        && (isReRepair == null || (isReRepair == true) == (x.IsReRepair == "1")));
+
+    decimal PartAmt(IEnumerable<RoPartItem> src) => src.Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1 + p.Vat / 100m));
+    decimal SvcAmt(IEnumerable<RoServiceItem> src) => src.Sum(s => s.Factor * s.Price * (1 + s.Vat / 100m));
+    IEnumerable<RoPartItem> PartsWhere(string roType, params string[] expenseTypes) =>
+        partLines.Where(p => roById.TryGetValue(p.RoId, out var ro) && ro.ROType == roType
+            && expenseTypes.Contains(p.ExpenseType ?? ""));
+    IEnumerable<RoServiceItem> SvcWhere(string roType, params string[] expenseTypes) =>
+        serviceLines.Where(s => roById.TryGetValue(s.RoId, out var ro) && ro.ROType == roType
+            && (expenseTypes.Length == 0 || expenseTypes.Contains(s.ExpenseType ?? "")));
+
+    // Danh mục mã dầu nhớt Shell (nguồn: literal 10 mã trong SQL, KHÔNG phải danh mục tra bảng).
+    var oilPartCodes = new[] { "D001", "D002", "D003", "D004", "D005", "D006", "D007", "D008", "0510000441", "0520000611" };
+    var repairPartCodes = new[] { "D001", "D002", "D003", "D004", "D005", "D006", "D007", "D008" };
+
+    var stockOutIds = (await db.ServiceStockOuts.Where(o => o.OrgId == t.OrgId && o.DealerCode == dealer
+            && o.StockOutType == "2" && o.Status == "Confirmed"
+            && roYearMonth != null && o.StockOutNo.Contains("-" + roYearMonth))
+        .Select(o => o.Id).ToListAsync()).ToHashSet();
+    var stockOutLines = stockOutIds.Count == 0 ? new List<ServiceStockOutLine>()
+        : await db.ServiceStockOutLines.Where(l => l.OrgId == t.OrgId && stockOutIds.Contains(l.ServiceStockOutId)).ToListAsync();
+    decimal StockOutAmt(IEnumerable<string> codes) => stockOutLines.Where(l => codes.Contains(l.PartCode))
+        .Sum(l => l.Quantity * l.Price * (1 + l.Vat / 100m));
+
+    // Doanh thu phụ tùng sửa chữa/dầu nhớt RO: nguồn KHÔNG lọc theo ROType (JOIN thẳng #tblserRO, không
+    // thêm điều kiện ro.ROType) — áp dụng cho MỌI RO trong kỳ, cả GJ lẫn BP.
+    decimal PartAmtAnyRoType(IEnumerable<string> codes, bool exclude) =>
+        partLines.Where(p => roById.ContainsKey(p.RoId) && (exclude ? !codes.Contains(p.PartCode) : codes.Contains(p.PartCode)))
+            .Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1 + p.Vat / 100m));
+
     return Results.Ok(new
     {
         dealer, year, month,
@@ -15066,6 +15124,45 @@ app.MapGet("/api/reportkpis/real", async (AppDbContext db, ITenantContext t,
         cavityRONumber = NC("SCC"),
         cavityBPNumber = NC("BS"),
         cavityParkingNumber = NC("KD"),
+        // ===== #5876 19 chỉ tiêu SỐ LƯỢT/DOANH THU/GIỜ CÔNG còn lại của RptKPIGetReal_New20160602 =====
+        // GJ = sửa chữa chung (ROType='1') · BP = đồng sơn (ROType='2').
+        countPaymentGJ = CS("1", null, "ROREPAIR", "ROINSURANCE"),
+        countWarrantyGJ = CS("1", null, "ROWARRANTY"),
+        countLocalGJ = CS("1", null, "LOCAL"),
+        countRepairedGJ = CS("1", true, "LOCAL"),
+        countOtherGJ = CS("1", false, "LOCAL"),
+        countPaymentBP = CS("2", null, "ROREPAIR"),
+        countWarrantyBP = CS("2", null, "ROWARRANTY"),
+        countInsurancePaymentBP = CS("2", null, "ROINSURANCE"),
+        countLocalBP = CS("2", null, "LOCAL"),
+        countRepairedBP = CS("2", true, "LOCAL"),
+        countOrtherBP = CS("2", false, "LOCAL"),
+        amountGJPayment = PartAmt(PartsWhere("1", "ROREPAIR", "ROINSURANCE")) + SvcAmt(SvcWhere("1", "ROREPAIR", "ROINSURANCE")),
+        amountGJWarranty = PartAmt(PartsWhere("1", "ROWARRANTY")) + SvcAmt(SvcWhere("1", "ROWARRANTY")),
+        amountGJLocal = PartAmt(PartsWhere("1", "LOCAL")) + SvcAmt(SvcWhere("1", "LOCAL")),
+        amountBPPayment = PartAmt(PartsWhere("2", "ROREPAIR")) + SvcAmt(SvcWhere("2", "ROREPAIR")),
+        amountBPWarranty = PartAmt(PartsWhere("2", "ROWARRANTY")) + SvcAmt(SvcWhere("2", "ROWARRANTY")),
+        amountBPLocal = PartAmt(PartsWhere("2", "LOCAL")) + SvcAmt(SvcWhere("2", "LOCAL")),
+        amountBPPaymentInsurance = PartAmt(PartsWhere("2", "ROINSURANCE")) + SvcAmt(SvcWhere("2", "ROINSURANCE")),
+        amountPartRO = PartAmtAnyRoType(repairPartCodes, exclude: true),
+        amountPartSO = stockOutLines.Where(l => !repairPartCodes.Contains(l.PartCode))
+            .Sum(l => l.Quantity * l.Price * (1 + l.Vat / 100m)),
+        amountOill = PartAmtAnyRoType(oilPartCodes, exclude: false) + StockOutAmt(oilPartCodes),
+        amountServiceGJ = SvcAmt(SvcWhere("1")),
+        amountServiceBP = SvcAmt(SvcWhere("2")),
+        hourGJ = roRows.Where(r => r.ROType == "1").Sum(r => r.TotalActHours ?? 0m),
+        hourBP = roRows.Where(r => r.ROType == "2").Sum(r => r.TotalActHours ?? 0m),
+        roFilteredCount = roRows.Count,
+        roNumberFilterAppliedNote = "19 chỉ tiêu SL/DT/giờ công NÀY lọc kỳ bằng RONo LIKE '%-<yyMM>%' + "
+            + "StockOutNo LIKE '%-<yyMM>%' (đúng nguồn) — KHÁC bảy chỉ tiêu nhân sự/khoang ở trên (lọc theo "
+            + "cửa sổ StartWorkDate/FinishWorkDate, không đụng RONo).",
+        countDistinctByExpenseTypeNote = "Nguồn DISTINCT theo (roId, ExpenseType) rồi COUNT(*) — một RO có "
+            + "NHIỀU dòng khác ExpenseType (vd vừa ROREPAIR vừa ROWARRANTY) bị đếm vào CẢ HAI chỉ tiêu, "
+            + "không phải đếm đầu xe duy nhất. Giữ nguyên hành vi này, không tự ý thêm DISTINCT theo RO.",
+        partRevenueScopeNote = "amountPartRO/amountOill KHÔNG lọc theo ROType (nguồn JOIN thẳng #tblserRO, "
+            + "không thêm ro.ROType) — tính trên MỌI RO khớp kỳ, gồm cả GJ lẫn BP.",
+        oilPartCodeListNote = "Danh sách mã dầu nhớt Shell là LITERAL 10 mã trong SQL nguồn (D001-D008 + "
+            + "0510000441 + 0520000611), không phải danh mục tra bảng — giữ nguyên literal.",
         // Phân bố mã THỰC CÓ trong dữ liệu — để đối chiếu, không đoán.
         engineerTypeDistribution = engineers.GroupBy(e => e.IsEngineer ?? "(null)")
             .Select(g => new { code = g.Key, count = g.Count() }).OrderByDescending(x => x.count),
