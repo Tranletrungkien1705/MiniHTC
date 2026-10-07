@@ -37711,11 +37711,16 @@ app.MapGet("/api/ro-invoice-bill/{roNo}", async (AppDbContext db, ITenantContext
 // 📌 Lượt PARITY — vá endpoint `/api/stockadjs` đã có, **không** tăng bộ đếm màn.
 
 // ===== Phiếu điều chỉnh tồn kho (StockAdj — port 1:1 FrmStockAdjCreate/Search, TCMotor DMSCarSv) =====
-app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? status, string? no) =>
+app.MapGet("/api/stockadjs", async (AppDbContext db, ITenantContext t, string? status, string? no, bool? isPending, bool? isFinished, DateTime? fromDate, DateTime? toDate) =>
 {
     var q = db.StockAdjs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.Status == status);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.StockAdjNo.Contains(no!));
+    // FrmStockAdjSearch: isPending/isFinished KHÔNG loại trừ nhau — cả hai hoặc cả hai false = không lọc.
+    if (isPending == true && isFinished != true) q = q.Where(x => x.Status == "0");
+    else if (isFinished == true && isPending != true) q = q.Where(x => x.Status == "1");
+    if (fromDate is not null) q = q.Where(x => x.StockAdjDate != null && x.StockAdjDate >= fromDate);
+    if (toDate is not null) q = q.Where(x => x.StockAdjDate != null && x.StockAdjDate <= toDate);
     var rows = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
         x.Id, x.StockAdjNo, x.StorageCode, x.DealerCode, x.StockAdjDate, x.UserCreate, x.Remark, x.Status, x.CreatedBy, x.CreatedAt, x.ApprovedAt, x.LogLUDateTime, x.LogLUBy,   // #1228 §12
         lines = db.StockAdjLines.Count(l => l.OrgId == t.OrgId && l.StockAdjId == x.Id)
@@ -55333,11 +55338,17 @@ app.MapPost("/api/bulletins/{no}/toggle", async (string no, AppDbContext db, ITe
 }).RequireAuthorization();
 
 // ===== Báo giá phụ tùng dịch vụ (PartQuote header-detail — port 1:1 FrmPartQuotation/Search, TCMotor) =====
-app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
+app.MapGet("/api/partquotes", async (AppDbContext db, ITenantContext t, string? q, string? status, DateTime? fromDate, DateTime? toDate) =>
 {
     var query = db.PartQuotes.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.QuoteNo.Contains(q!) || (x.CusName != null && x.CusName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == status);
+    // #681 PARITY FrmPartQuotationSearch: lọc theo CreatedDate (checkbox trạng thái SOStatus 1/3/4/5/6
+    //   KHÔNG áp dụng — Mini dùng enum Status riêng Draft/Sent/Approved/Cancelled, không khớp 1:1 với
+    //   Status số nguồn (1=MớiTạo,2=Huỷ,3=ĐãTạoPhiếuXuất,4=ĐãXuất,5=ĐãĐiềuChỉnh,6=ĐãHuỷPhiếuXuất) — nợ, cần
+    //   port lại toàn bộ luồng trạng thái PartQuote mới khớp được 5 checkbox gốc.
+    if (fromDate is not null) query = query.Where(x => x.CreatedDate >= fromDate);
+    if (toDate is not null) query = query.Where(x => x.CreatedDate <= toDate);
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.QuoteNo, x.DealerCode, x.Creator, x.CreatedBy, x.IsActive, x.CusId, x.CusName, x.Mobile, x.ReceiveName, x.PaymentMethod, x.TotalAmount, x.Status,
@@ -92729,10 +92740,14 @@ app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITe
 //   (join `ser_mst_part part ON pp.Partid = part.partid`). Route cũ chỉ chiếu cột `pp.*` ⇒ THIẾU 5 cột ECHO từ bảng master
 //   (bài học #552: nguồn `alias.*` + join master ⇒ echo CẢ cột bảng gốc LẪN cột ECHO). Bổ sung: `VieName`/`EngName`/
 //   `OldPrice`/`OldVAT`/`FlagInTST` (tra `ServiceParts` theo `PartCode`). Field ECHO ⇒ KHÔNG cần DTO/POST (bài học #542).
-app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? part, string? onDate) =>
+app.MapGet("/api/partprices", async (AppDbContext db, ITenantContext t, string? part, string? onDate, string? vieName, DateTime? dateEffectFrom, DateTime? dateEffectTo) =>
 {
     var q = db.PartPrices.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(part)) q = q.Where(p => p.PartCode.Contains(part.ToUpper()));
+    // #681 PARITY FrmPartPriceSearch (MstPart_PriceGet2GetPaging): txtVieName lọc tên PT, dedDateEffectFrom/To lọc DateEffect.
+    if (!string.IsNullOrWhiteSpace(vieName)) q = q.Where(p => p.PartName != null && p.PartName.Contains(vieName));
+    if (dateEffectFrom is not null) q = q.Where(p => p.EffectiveDate >= dateEffectFrom);
+    if (dateEffectTo is not null) q = q.Where(p => p.EffectiveDate <= dateEffectTo);
     var rows = await q.OrderBy(p => p.PartCode).ThenByDescending(p => p.EffectiveDate).Take(1000).Select(p => new
     { p.Id, p.PartCode, p.PartName, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Status, p.Remark, p.IsActive,   // #295 §12
       p.UpdatedAt, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy }).ToListAsync();   // #1339 §12
