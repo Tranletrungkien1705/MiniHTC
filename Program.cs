@@ -93013,11 +93013,35 @@ app.MapGet("/api/stockbalance/available", async (AppDbContext db, ITenantContext
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
+// #5905 trace `FrmStockOutSearch` (Views/Services, 448 dòng) → `InvStockOutService.SerStockOutSearch` (client) →
+// biz LIVE `SerStockOutSearch_New20180623` (web, `BizCarSv.Inventory.StockOut.cs:3083`). Bộ lọc nguồn: StockOutNo
+// (LIKE, control đặt tên sai `txtRoID` nhưng gán vào tham số StockOutNo — KHÔNG phải lọc theo RO), StockOutOrderNo
+// (LIKE, qua bảng nối SerStockOutOrderStockOuts), khoảng ngày StockOutTime, 5 checkbox trạng thái gộp OR
+// (Pending=1/Executing=2/Finished=3/Adjustment=4/Reject=5 — cùng bộ mã TConst.Ser_Inv_StockOut đã dùng ở
+// /execute|/post|/reject|/adjust), StockOutType (bỏ qua nếu ="3"=[Tất cả]). Thiếu hoàn toàn ở route cũ (chỉ có
+// 1 status đơn + warehouse) — đã vá thêm, không cần sửa entity/Seeder/DTO (chỉ đọc).
+app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? status, string? warehouse,
+    string? statuses, string? stockOutNo, string? stockOutOrderNo, string? stockOutType, DateTime? fromDate, DateTime? toDate) =>
 {
     var q = db.PartStockOuts.Where(s => s.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
+    if (!string.IsNullOrWhiteSpace(statuses))
+    {
+        var list = statuses.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        if (list.Count > 0) q = q.Where(s => list.Contains(s.Status));
+    }
     if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
+    if (!string.IsNullOrWhiteSpace(stockOutNo)) q = q.Where(s => s.StockOutNo.Contains(stockOutNo));
+    if (!string.IsNullOrWhiteSpace(stockOutType) && stockOutType != "3") q = q.Where(s => s.StockOutType == stockOutType);
+    if (fromDate.HasValue) q = q.Where(s => s.StockOutDate >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(s => s.StockOutDate < toDate.Value.Date.AddDays(1));
+    if (!string.IsNullOrWhiteSpace(stockOutOrderNo))
+    {
+        var ids = await db.SerStockOutOrderStockOuts.Where(lk => lk.OrgId == t.OrgId
+            && lk.StockOutOrderNo != null && lk.StockOutOrderNo.Contains(stockOutOrderNo))
+            .Select(lk => lk.StockOutId).ToListAsync();
+        q = q.Where(s => ids.Contains(s.Id));
+    }
     var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
     {
         s.StockOutNo, s.StockOutDate, s.StockOutType, s.WarehouseCode, s.Reason, s.Status, s.PostedAt, s.DealerCode, s.CusID, s.Description, s.TwinSrcId,   // #377
@@ -94068,11 +94092,26 @@ app.MapGet("/api/stockins/vocab", () => Results.Ok(new
     note = "Phiếu NHẬP không có mã \"0\" (phiếu XUẤT thì có, xem /api/stockouts/vocab).",
 })).RequireAuthorization();
 
-app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
+// #5906 trace `FrmStockInSearch` (Views/Inventory, 311 dòng) → `InvStockInService.StockInSearch` (client) →
+// biz LIVE (web). Bộ lọc nguồn: StockInNo (LIKE), SupplierID (=), khoảng ngày StockInTime, OrderPartNo (LIKE),
+// 5 checkbox trạng thái gộp OR (cùng bộ mã 1..5 như `/api/stockouts`, #5905). Route cũ chỉ có status đơn +
+// warehouse — vá thêm cùng cách, không cần sửa entity/Seeder/DTO (chỉ đọc).
+app.MapGet("/api/stockins", async (AppDbContext db, ITenantContext t, string? status, string? warehouse,
+    string? statuses, string? stockInNo, string? supplierId, string? orderPartNo, DateTime? fromDate, DateTime? toDate) =>
 {
     var q = db.PartStockIns.Where(s => s.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(s => s.Status == status);
+    if (!string.IsNullOrWhiteSpace(statuses))
+    {
+        var list = statuses.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        if (list.Count > 0) q = q.Where(s => list.Contains(s.Status));
+    }
     if (!string.IsNullOrWhiteSpace(warehouse)) q = q.Where(s => s.WarehouseCode == warehouse);
+    if (!string.IsNullOrWhiteSpace(stockInNo)) q = q.Where(s => s.StockInNo.Contains(stockInNo));
+    if (!string.IsNullOrWhiteSpace(supplierId)) q = q.Where(s => s.SupplierID == supplierId);
+    if (!string.IsNullOrWhiteSpace(orderPartNo)) q = q.Where(s => s.OrderPartNo != null && s.OrderPartNo.Contains(orderPartNo));
+    if (fromDate.HasValue) q = q.Where(s => s.StockInDate >= fromDate.Value.Date);
+    if (toDate.HasValue) q = q.Where(s => s.StockInDate < toDate.Value.Date.AddDays(1));
     var items = await q.OrderByDescending(s => s.Id).Take(500).Select(s => new
     {
         s.StockInNo, s.StockInDate, s.StockInType, s.WarehouseCode, s.Staff, s.Status, s.PostedAt, s.DealerCode, s.SupplierID, s.Description, s.TwinSrcId,   // #377
