@@ -95131,34 +95131,46 @@ string[] roCompletedStatuses = { "PAID", "FNS" };
 // ☠️ Bảng Tab có LỖI NGUỒN: `when 'REJ' then N'Lập lệnh sửa chữa'` — lặp y nguyên nhãn của `HRO` ngay
 //   dòng trên; `REJ` là **huỷ**, không thể là "Lập lệnh sửa chữa". Giữ NGUYÊN VĂN (màn Tab đang hiện vậy),
 //   đánh dấu rõ để không ai đọc nhãn rồi suy ngược ra nghiệp vụ.
+// ===== 🔴🔴 #5904 SỬA BUG THẬT: KHOÁ CỦA BA BẢNG DƯỚI LÀ TÊN CŨ (`HasRO`…), NHƯNG `Ser_RO.Status`
+//   LƯU MÃ NGUỒN THẬT (`HRO`…) — PHÁT HIỆN KHI VERIFY ROUND-TRIP #5902 =====
+// #376 đã ghi "Ser_RO.Status LƯU MÃ nguồn" và RoCode()/RoStatusSourceCodes ở trên đều map tên cũ → MÃ.
+// Ba bảng nhãn này lại được tạo bằng khoá TÊN CŨ (copy nguyên văn từ #284/#286 lúc port, trước khi #376 đổi
+// cách lưu) ⇒ `RoStatusDisplayName(r.Status)`/`RoStatusDisplayNameFor(..., ro.Status)` tra bằng MÃ THẬT
+// (`"HRO"`) vào bảng có khoá TÊN (`"HasRO"`) ⇒ KHÔNG BAO GIỜ khớp ⇒ mọi lệnh LUÔN hiện nhãn mặc định
+// "Không xác định" (hoặc rỗng/NULL tuỳ màn) ở CẢ BA nơi dùng bảng này (`/api/repairorders/status-history`,
+// `/api/repairorders/status-list` #5902, báo cáo xuất kho `roStatusName`) — lỗi câm, không throw, không log.
+// Xác nhận round-trip: tạo RO Status="HRO" (mã thật, đúng cách mọi endpoint ghi) → GET trả
+// `statusName:"Không xác định"` thay vì "Chờ sửa" đúng như CASE SQL của nguồn. SỬA: đổi khoá cả ba bảng
+// sang MÃ THẬT theo đúng `TERP.Constants.Const.Main.cs:172-186` (CRE/PRT/W4P/HPA/HRO/REJ/INGA/CEND/RPRD/PAID/FNS/NORE).
+// Giá trị (nhãn hiển thị) GIỮ NGUYÊN — chỉ sửa khoá, không đổi nghiệp vụ nhãn.
 var roStatusDisplayNamesByScreen = new Dictionary<string, Dictionary<string, string>>
 {
     // Màn TRA LỆNH SỬA CHỮA (Ser_RO_GetStatusList02_GetClaimX) — dùng cho /api/repairorders/status-history.
     ["rosearch"] = new()
     {
-        ["Created"] = "Chờ sửa", ["PrintedQuote"] = "Chờ sửa", ["HasRO"] = "Chờ sửa",
-        ["InGarage"] = "Đang sửa", ["Repaired"] = "Sửa xong", ["CheckEnd"] = "Kiểm tra cuối cùng",
-        ["Paid"] = "Thanh toán xong",        // Issue 981 tách khỏi "Sửa xong"
-        ["Finished"] = "Đã giao xe", ["Rejected"] = "Lệnh hủy",
-        ["Wait4Part"] = "Hủy, Hẹn lại", ["HasPart"] = "Hủy, Hẹn lại", ["NotResponding"] = "Hủy, Hẹn lại",
+        ["CRE"] = "Chờ sửa", ["PRT"] = "Chờ sửa", ["HRO"] = "Chờ sửa",
+        ["INGA"] = "Đang sửa", ["RPRD"] = "Sửa xong", ["CEND"] = "Kiểm tra cuối cùng",
+        ["PAID"] = "Thanh toán xong",        // Issue 981 tách khỏi "Sửa xong"
+        ["FNS"] = "Đã giao xe", ["REJ"] = "Lệnh hủy",
+        ["W4P"] = "Hủy, Hẹn lại", ["HPA"] = "Hủy, Hẹn lại", ["NORE"] = "Hủy, Hẹn lại",
     },
     // Màn HOME của máy tính bảng (Ser_RO_HomeX) — chi tiết nhất.
     ["tabhome"] = new()
     {
-        ["Created"] = "Lập báo giá", ["PrintedQuote"] = "In báo giá",
-        ["Wait4Part"] = "Đợi phụ tùng", ["HasPart"] = "Đã có phụ tùng",
-        ["HasRO"] = "Lập lệnh sửa chữa",
-        ["Rejected"] = "Lập lệnh sửa chữa",   // ☠️ LỖI NGUỒN, giữ nguyên văn (xem chú thích trên)
-        ["InGarage"] = "Vào sửa chữa", ["CheckEnd"] = "Kiểm tra cuối cùng", ["Repaired"] = "Sửa xong",
-        ["Paid"] = "Đã thanh toán", ["Finished"] = "Đã hoàn thành", ["NotResponding"] = "Chưa dùng",
+        ["CRE"] = "Lập báo giá", ["PRT"] = "In báo giá",
+        ["W4P"] = "Đợi phụ tùng", ["HPA"] = "Đã có phụ tùng",
+        ["HRO"] = "Lập lệnh sửa chữa",
+        ["REJ"] = "Lập lệnh sửa chữa",   // ☠️ LỖI NGUỒN, giữ nguyên văn (xem chú thích trên)
+        ["INGA"] = "Vào sửa chữa", ["CEND"] = "Kiểm tra cuối cùng", ["RPRD"] = "Sửa xong",
+        ["PAID"] = "Đã thanh toán", ["FNS"] = "Đã hoàn thành", ["NORE"] = "Chưa dùng",
     },
     // Báo cáo XUẤT KHO phụ tùng (Inventory.StockOut).
     ["stockout"] = new()
     {
-        ["Created"] = "Chờ sửa", ["PrintedQuote"] = "Chờ sửa", ["HasRO"] = "Chờ sửa",
-        ["InGarage"] = "Đang sửa", ["Repaired"] = "Sửa xong", ["CheckEnd"] = "Kiểm tra cuối cùng",
-        ["Paid"] = "Thanh toán xong", ["Finished"] = "Đã giao xe", ["Rejected"] = "Lệnh hủy",
-        ["Wait4Part"] = "Không dùng", ["HasPart"] = "Không dùng", ["NotResponding"] = "Không dùng",
+        ["CRE"] = "Chờ sửa", ["PRT"] = "Chờ sửa", ["HRO"] = "Chờ sửa",
+        ["INGA"] = "Đang sửa", ["RPRD"] = "Sửa xong", ["CEND"] = "Kiểm tra cuối cùng",
+        ["PAID"] = "Thanh toán xong", ["FNS"] = "Đã giao xe", ["REJ"] = "Lệnh hủy",
+        ["W4P"] = "Không dùng", ["HPA"] = "Không dùng", ["NORE"] = "Không dùng",
     },
 };
 
