@@ -33216,14 +33216,19 @@ app.MapDelete("/api/trainingcourses/{id}/participants/{pid}", async (long id, lo
 // #5844 — bổ sung dealerCode/smType/smName cho đúng `Mst_SalesManCertificate_Get` (5 tham số,
 // `DealerService.cs:4513`) của `FrmMst_SalesManCertificateMng` — route cũ chỉ có q/cert/all.
 // `smName` lọc qua TÊN NVBH (join `Dlr_SalesMan`/`Mst_SalesMan`, nguồn dùng LIKE trên bảng NVBH).
+// ===== 🔴 #5868 `FrmQLTienTrinhCapChungChi` gọi CÙNG hàm `Mst_SalesManCertificate_Get` nhưng chỉ dùng
+//    ĐÚNG MỘT tham số `strSMHyundaiCode` (4 tham số còn lại luôn truyền ""). `q` hiện tại là OR RỘNG
+//    (SMHyundaiCode HOẶC CertificateCode HOẶC CertificateName) ⇒ dùng `q` cho màn này có thể trả DƯ dòng
+//    so với nguồn (nguồn chỉ LIKE một cột). Thêm `smHyundaiCode` riêng, LIKE ĐÚNG MỘT cột — khớp 1:1.
 app.MapGet("/api/salesmancerts", async (AppDbContext db, ITenantContext t, string? q, string? cert, bool? all,
-    string? dealerCode, string? smType, string? smName) =>
+    string? dealerCode, string? smType, string? smName, string? smHyundaiCode) =>
 {
     var qry = db.SalesManCertificates.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(cert)) qry = qry.Where(x => x.CertificateCode == cert);
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(smType)) qry = qry.Where(x => x.SMType == smType);
+    if (!string.IsNullOrWhiteSpace(smHyundaiCode)) qry = qry.Where(x => x.SMHyundaiCode.Contains(smHyundaiCode!));   // #5868: LIKE đúng 1 cột
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMHyundaiCode.Contains(q!) || x.CertificateCode.Contains(q!) || x.CertificateName!.Contains(q!));
     var rows = await qry.OrderBy(x => x.SMHyundaiCode).Take(500).ToListAsync();
     if (!string.IsNullOrWhiteSpace(smName))
