@@ -47222,6 +47222,78 @@ app.MapGet("/api/report/part-topprofit", async (AppDbContext db, ITenantContext 
     return Results.Ok(new { count = rows.Count, rows });
 }).RequireAuthorization();
 
+// ===== 🔴 #5880 `FrmReportPartTopProfit` — KHÁC HẲN `/api/report/part-topprofit` ngay trên =====
+// TRACE: `DoSearch()` gọi `InventoryReportService.Ser_InvReportPartTopProfit(fromDate,toDate,top)` → WS
+// `Ser_InvReportPartTopProfit` (`WSCarSv.asmx.cs:25003`, không `_New…`) → biz LIVE
+// `BizCarSv.Inventory.Report.cs:6729`. Route trên tính lãi TĨNH (Price-Cost trên bảng master), còn hàm
+// NÀY tính lợi nhuận THỰC HIỆN THEO KỲ: chỉ tính lô hàng đã NHẬP (StockIn Status='3') VÀ ĐÃ XUẤT trong
+// [FromDate,ToDate] (DateOut trong kỳ, DateIn <= ToDate), giá vốn ưu tiên dòng phiếu nhập/giá xuất ưu
+// tiên dòng phiếu xuất (fallback SIPrice/SOPrice của lô), giá vốn CHỈ tính khi `Mst_Param(MCC,MCC)=FIFO`
+// (ngược lại = 0, giữ nguyên nhánh Else '0' của nguồn — không suy đoán GetAverageCost đã bị comment).
+// `Top` rỗng = KHÔNG giới hạn (khác route trên mặc định 20) — đúng nguồn không gắn TOP khi tham số rỗng.
+// 🔴 #5880b: nguồn nhận `strDealerCode` (1 đại lý, KHÔNG phải list) và lọc THEO ĐẠI LÝ ở CẢ 4 BẢNG
+// (ser_inv_partInstance dealercode=@; Ser_Inv_StockIn dealercode=@+Status=3; mst_param dealercode=@;
+// ser_mst_part p.Dealercode=@ — BizCarSv.Inventory.Report.cs:6784/6786/6800/6822) — bản vá đầu thiếu hẳn
+// tham số này (lọc suông theo OrgId), giống đúng pattern sibling `/api/reports/inventory-balance`.
+app.MapGet("/api/report/part-topprofit-byperiod", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, DateTime? fromDate, DateTime? toDate, int? top) =>
+{
+    if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Can dealerCode (nguon loc theo dai ly)." });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Can fromDate va toDate." });
+    var dealer = dealerCode!.Trim();
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date;
+
+    var mcc = await db.MstParams.Where(p => p.OrgId == t.OrgId && p.DealerCode == dealer
+            && p.ParamCode == "MCC" && p.ParamType == "MCC")
+        .Select(p => p.ParamValue).FirstOrDefaultAsync();
+    var isFifo = string.Equals(mcc, "FIFO", StringComparison.OrdinalIgnoreCase);
+
+    var confirmedStockInNos = db.PartStockIns.Where(s => s.OrgId == t.OrgId && s.DealerCode == dealer && s.Status == "3").Select(s => s.StockInNo);
+    var inst = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer
+            && x.Status != "4" && x.Status != "5"
+            && x.StockInNo != null && confirmedStockInNos.Contains(x.StockInNo)
+            && x.StockOutNo != null
+            && x.DateOut != null && x.DateOut >= from && x.DateOut <= to
+            && x.DateIn != null && x.DateIn <= to)
+        .ToListAsync();
+
+    var stockInIds = inst.Where(x => x.StockInId != null).Select(x => x.StockInId!.Value).ToHashSet();
+    var stockOutIds = inst.Where(x => x.StockOutId != null).Select(x => x.StockOutId!.Value).ToHashSet();
+    var inLines = stockInIds.Count == 0 ? new List<PartStockInLine>()
+        : await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && stockInIds.Contains(l.StockInId)).ToListAsync();
+    var outLines = stockOutIds.Count == 0 ? new List<PartStockOutLine>()
+        : await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && stockOutIds.Contains(l.StockOutId)).ToListAsync();
+    var inByKey = inLines.GroupBy(l => l.StockInId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var outByKey = outLines.GroupBy(l => l.StockOutId + "|" + l.PartCode).ToDictionary(g => g.Key, g => g.First());
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId && p.DealerCode == dealer).ToDictionaryAsync(p => p.PartCode);
+
+    var rows = inst.GroupBy(x => x.PartCode).Select(g =>
+    {
+        parts.TryGetValue(g.Key, out var part);
+        decimal tongGiaNhap = 0m, tongGiaBan = 0m;
+        foreach (var x in g)
+        {
+            var siLine = x.StockInId != null && inByKey.TryGetValue(x.StockInId + "|" + x.PartCode, out var li) ? li : null;
+            var soLine = x.StockOutId != null && outByKey.TryGetValue(x.StockOutId + "|" + x.PartCode, out var lo) ? lo : null;
+            if (isFifo)
+            {
+                var siPrice = siLine?.Price ?? x.SIPrice ?? 0m;
+                var siVat = siLine?.VAT ?? 0m;
+                tongGiaNhap += siPrice * x.Quantity + siVat * 0.01m * siPrice * x.Quantity;
+            }
+            var soPrice = soLine?.Price ?? x.SOPrice ?? 0m;
+            var soVat = soLine?.VAT ?? 0m;
+            tongGiaBan += soPrice * x.Quantity + soVat * 0.01m * soPrice * x.Quantity;
+        }
+        return new { partCode = g.Key, partName = part?.PartName, unit = part?.Unit,
+            tongGiaNhap, tongGiaBan, profit = tongGiaBan - tongGiaNhap };
+    }).OrderByDescending(x => x.profit).ThenBy(x => x.partCode).ToList();
+
+    var limited = top is > 0 ? rows.Take(top.Value).ToList() : rows;
+    return Results.Ok(new { dealerCode = dealer, count = limited.Count, isFifo, rows = limited });
+}).RequireAuthorization();
+
 // Top phụ tùng luân chuyển: tổng số lượng đã xuất kho (chỉ phiếu đã duyệt) theo mã PT.
 app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext t, int? top) =>
 {
