@@ -47429,18 +47429,43 @@ app.MapGet("/api/report/part-toprevenue", async (AppDbContext db, ITenantContext
         sourceHasNoOrderBy = true, endDateExclusive = true });
 }).RequireAuthorization();
 
-// Biến động giá phụ tùng: từ các phiếu nhập kho — số lần giá khác nhau, giá thấp nhất/cao nhất theo mã PT.
-app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantContext t) =>
+// ===== 🔴 #5888 SỬA LẠI THEO ĐÚNG #419 (`FrmReportPartVariationPrice`) — bản cũ THIẾU LỌC KỲ + LỌC THỪA =====
+// Nguồn thật (`DoSearch()` → `Ser_InvReportPartTopVariationPrice(fromDate,toDate,top)` → biz LIVE
+// `BizCarSv.Inventory.Report.cs:7125`): lọc `Ser_Inv_StockIn.Status='3'` (đã xác nhận) + `StockinDate`
+// trong [FromDate,ToDate] (mốc HEADER phiếu nhập, không phải dòng chi tiết), INNER JOIN `ser_mst_part`
+// (phụ tùng mất khỏi danh mục biến mất — nhất quán cụm #416/#417/#419). Bản cũ KHÔNG lọc kỳ (dùng TOÀN
+// BỘ lịch sử nhập), KHÔNG giới hạn Top, và tự ý thêm `Where(countPrice>1)` — nguồn KHÔNG có điều kiện
+// này, mọi phụ tùng (kể cả chỉ 1 mức giá) đều xuất hiện. Đã bỏ lọc thừa, thêm lọc kỳ + Top.
+// 📌 #419: `CountPrice` đếm SỐ MỨC GIÁ KHÁC NHAU (DISTINCT), KHÔNG PHẢI số lần nhập — đặt tên rõ
+// `distinctPriceCount`, trả thêm `stockInLineCount` (số dòng nhập thật) để không ai hiểu nhầm.
+app.MapGet("/api/report/part-variationprice", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, int? top) =>
 {
-    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId)
-        .Select(l => new { l.PartCode, l.PartName, l.Price }).ToListAsync();
-    var rows = lines.GroupBy(l => l.PartCode).Select(g => new
-    {
-        partCode = g.Key, partName = g.Select(x => x.PartName).FirstOrDefault(x => x != null),
-        countPrice = g.Select(x => x.Price).Distinct().Count(), minPrice = g.Min(x => x.Price), maxPrice = g.Max(x => x.Price),
-        variation = g.Max(x => x.Price) - g.Min(x => x.Price)
-    }).Where(r => r.countPrice > 1).OrderByDescending(r => r.variation).ToList();
-    return Results.Ok(new { count = rows.Count, rows });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Can fromDate va toDate." });
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date;   // #5888: so <= toDate nhu nguon, endDateExclusive
+
+    var inIds = db.PartStockIns.Where(s => s.OrgId == t.OrgId && s.Status == "3"
+            && s.StockInDate >= from && s.StockInDate <= to)
+        .Select(s => s.Id);
+    var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && inIds.Contains(l.StockInId)).ToListAsync();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).ToDictionaryAsync(p => p.PartCode);
+
+    var rows = lines.Where(l => parts.ContainsKey(l.PartCode))
+        .GroupBy(l => l.PartCode).Select(g =>
+        {
+            var p = parts[g.Key];
+            var distinctPrices = g.Select(x => x.Price).Distinct().ToList();
+            return new
+            {
+                partCode = g.Key, partName = p.PartName, unit = p.Unit,
+                minPrice = distinctPrices.Count > 0 ? distinctPrices.Min() : (decimal?)null,
+                maxPrice = distinctPrices.Count > 0 ? distinctPrices.Max() : (decimal?)null,
+                distinctPriceCount = distinctPrices.Count, stockInLineCount = g.Count()
+            };
+        }).OrderByDescending(x => x.distinctPriceCount).ToList();
+    var limited = top is > 0 ? rows.Take(top.Value).ToList() : rows;
+    return Results.Ok(new { count = limited.Count, rows = limited, endDateExclusive = true });
 }).RequireAuthorization();
 
 // ===== Lịch hẹn dịch vụ + bảng khoang/bay (ServiceAppointment — port 1:1 FrmAppList + FrmShowCavityStatus, TCMotor) =====
@@ -99948,11 +99973,14 @@ app.MapGet("/api/_meta/dead-plain-variants-audit", () => Results.Ok(new
 // ⚪ `left join Ser_Inv_StockInDetail` nối BA cột (PartID + StockInID + LocationID), WHERE không đụng tới
 //   ⇒ **LEFT còn sống**; thiếu dòng nhập chi tiết thì rơi về `spi.SIPrice`. Kiểm tra âm tính.
 app.MapGet("/api/reports/inventory-balance", async (AppDbContext db, ITenantContext t,
-    DateTime? toDate, string? dealerCode) =>
+    DateTime? toDate, string? dealerCode, string? partCode) =>
 {
     if (toDate is null) return Results.BadRequest(new { error = "Cần toDate." });
     if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode (nguồn lọc theo đại lý)." });
     var dealer = dealerCode!.Trim();
+    // #472-fix: nguon `Ser_InvReportBalanceRpt_New20221011` nhan strPartCode, loc QUA p.PartCode
+    // (BuildClauseConditionList, danh sach ma, ban port truoc thieu han tham so nay).
+    var pc = (partCode ?? "").Trim();
     var toRawMidnight = toDate.Value.Date;
     var to = toDate.Value.Date.AddDays(1).AddSeconds(-1);
 
@@ -99994,18 +100022,35 @@ app.MapGet("/api/reports/inventory-balance", async (AppDbContext db, ITenantCont
         .ToDictionary(g => (g.Key.PartID ?? "") + "|" + (g.Key.LocationID ?? ""),
                       g => new { SX = g.Sum(x => x.Quantity), TX = g.Sum(Value) });
 
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId)
+        .Select(p => new { p.PartID, p.PartCode, p.PartName, p.Unit }).ToListAsync();
+    var partById = parts.Where(p => p.PartID != null)
+        .GroupBy(p => p.PartID!).ToDictionary(g => g.Key, g => g.First());
+
     // #tbl_Open = LEFT join sd -> sdo (dòng chỉ có ở xuất KHÔNG xuất hiện — đúng nguồn).
-    var items = sd.Select(kv => new
+    var items = sd.Select(kv =>
     {
-        PartID = kv.Key.Split((char)124)[0],
-        LocationID = kv.Key.Split((char)124)[1],
-        SLC = kv.Value.SD - (sdo.TryGetValue(kv.Key, out var o) ? o.SX : 0m),
-        TGC = kv.Value.TD - (sdo.TryGetValue(kv.Key, out var o2) ? o2.TX : 0m),
-    }).OrderBy(x => x.PartID).ThenBy(x => x.LocationID).ToList();
+        var partId = kv.Key.Split((char)124)[0];
+        partById.TryGetValue(partId, out var pm);
+        return new
+        {
+            PartID = partId,
+            PartCode = pm?.PartCode,
+            VieName = pm?.PartName,
+            Unit = pm?.Unit,
+            LocationID = kv.Key.Split((char)124)[1],
+            SLC = kv.Value.SD - (sdo.TryGetValue(kv.Key, out var o) ? o.SX : 0m),
+            TGC = kv.Value.TD - (sdo.TryGetValue(kv.Key, out var o2) ? o2.TX : 0m),
+        };
+    })
+    // #472-fix: nguon dung BuildClauseConditionList("and","p.PartCode",strPartCodeList,"|") => IN(...) KHOP
+    // CHINH XAC (khong phai LIKE substring nhu #473), form chi gui 1 ma don (khong co "|").
+    .Where(x => pc.Length == 0 || (x.PartCode != null && string.Equals(x.PartCode, pc, StringComparison.OrdinalIgnoreCase)))
+    .OrderBy(x => x.PartID).ThenBy(x => x.LocationID).ToList();
 
     return Results.Ok(new
     {
-        dealerCode = dealer,
+        dealerCode = dealer, partCode = pc.Length > 0 ? pc : null,
         toDate = to.ToString("yyyy-MM-dd HH:mm:ss"),
         fromDateHardcodedInSource = "1900-01-01",
         costMethod = mcc, isFifo,
@@ -100038,12 +100083,14 @@ app.MapGet("/api/reports/inventory-balance", async (AppDbContext db, ITenantCont
 //     nhau một tuần ra hai con số khác nhau cho cùng một mốc. Đây là lỗi "báo cáo theo KỲ" (#412).
 //     Port trả **cả hai**: `ageOfExist` (giữ đúng nguồn) và `ageAtReportDate` (tính tới mốc) + cờ.
 app.MapGet("/api/reports/inventory-balance-by-location", async (AppDbContext db, ITenantContext t,
-    DateTime? toDate, string? dealerCode, string? scope) =>
+    DateTime? toDate, string? dealerCode, string? scope, string? partCode) =>
 {
     if (toDate is null) return Results.BadRequest(new { error = "Cần toDate." });
     if (string.IsNullOrWhiteSpace(dealerCode)) return Results.BadRequest(new { error = "Cần dealerCode." });
     var dealer = dealerCode!.Trim();
     var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+    // #473-fix: nguon `p.PartCode like '%@PartCode%'` — ban port truoc thieu han tham so nay.
+    var pc = (partCode ?? "").Trim();
 
     // Mốc kẹp CHỈ ở bản Main (hằng HTC_WareHouse = "2017-12-31").
     var floor = new DateTime(2017, 12, 31);
@@ -100111,11 +100158,13 @@ app.MapGet("/api/reports/inventory-balance-by-location", async (AppDbContext db,
             // bổ sung: đếm tới MỐC báo cáo (nguồn không có)
             AgeAtReportDate = din.HasValue ? (int)(effective - din.Value.Date).TotalDays : (int?)null,
         };
-    }).OrderBy(x => x.PartCode).ThenBy(x => x.Location).ToList();
+    })
+    .Where(x => pc.Length == 0 || (x.PartCode != null && x.PartCode.Contains(pc, StringComparison.OrdinalIgnoreCase)))
+    .OrderBy(x => x.PartCode).ThenBy(x => x.Location).ToList();
 
     return Results.Ok(new
     {
-        dealerCode = dealer, scope = isWh ? "wh" : "main",
+        dealerCode = dealer, scope = isWh ? "wh" : "main", partCode = pc.Length > 0 ? pc : null,
         askedDate = asked.ToString("yyyy-MM-dd"),
         effectiveDate = effective.ToString("yyyy-MM-dd"),
         clampedToFloor = clamped, floorDate = "2017-12-31",
