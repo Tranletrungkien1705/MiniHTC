@@ -460,6 +460,39 @@ public sealed class BusinessPlanDtl
     public decimal BO_QtyM12 { get; set; }
 }
 
+/// <summary>🔴 #5909 — Dự báo HTC bán cho đại lý theo tháng (`Rpt_GoiYDatHang_HTC`), input cho báo cáo
+/// gợi ý đặt hàng (`FrmBCGoiYDatHang`, 2010.HTC/Sales). HTC nhập số dự kiến bán mỗi (đại lý, model, spec,
+/// màu) cho từng tháng (`RptMonth` dạng "yyyyMM"); report cộng 3 tháng (hiện tại/+1/+2) ra `QtyTotal_HTC`
+/// (`BizHTC.zTemp.Report.cs:8886-8977`).</summary>
+public sealed class GoiYDatHangHtc
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ColorExtCode { get; set; }
+    public string RptMonth { get; set; } = "";
+    public decimal Qty { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
+/// <summary>🔴 #5909 — Số tháng tồn kho &amp; back-order cuối kỳ do ĐẠI LÝ TỰ NHẬP (`Rpt_GoiYDatHang_Dealer`,
+/// `RptMonth='TKBO'`) — KHÔNG phải cột tính toán. Nguồn cho sửa qua lưới (`FrmBCGoiYDatHang.cs:427/434/446`,
+/// chỉ đại lý được sửa) rồi lưu bằng `Rpt_GoiYDatHang_Dealer_Save` (`BizHTC.zTemp.Report.cs:10381`).</summary>
+public sealed class GoiYDatHangDealer
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ColorExtCode { get; set; }
+    public string RptMonth { get; set; } = "TKBO";
+    public decimal Qty { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
+}
+
 /// <summary>Lái thử xe (FrmMstCarDriverTest — TCMotor): khách đăng ký lái thử → xác nhận → hoàn tất.</summary>
 public sealed class TestDrive
 {
@@ -9031,6 +9064,27 @@ public sealed class ReportDashboard
     public string? LogLUBy { get; set; }
 }
 
+/// <summary>
+/// 🔴 #30073 §12 — 14 cột con `*Local_SCL`/`*Local_Khac` (CountBDDLocal_SCL/_Khac,
+/// CountSCDLocal_SCL/_Khac, CountSCSLocal_SCL/_Khac, ServiceAmountBDDLocal_SCL/_Khac,
+/// ServiceAmountSCCLocal_SCL/_Khac, ServiceAmountSCDLocal_SCL/_Khac, ServiceAmountSCSLocal_SCL/_Khac).
+/// Xác nhận CÓ THẬT trong `TblReport_KPI` (DbDefine.cs:2365 vùng) + grid `FrmReportKPI.cs:149-214`
+/// + dictionary export/mail-merge `:686-752` — KHÔNG phải cột chết.
+/// ⚠️ NHƯNG đã lội tới tận biz layer (`BizCarSv.zzzzCode.cs`, `.WH.cs`, `Tab.BizCarSv.TabReport.zSqlTemplate.cs`,
+/// `Refs/SqlTemp/Report_KPIGet_Real_WHX.sql`) — ở **CẢ BỐN** nơi, SELECT đều ghi literal `, 0 CountBDDLocal_SCL`
+/// (không phải tính từ dữ liệu); `Report_KPICreate_New20221101`/`Report_KPIUpdate` (zzzzCode.cs:1150/1387)
+/// KHÔNG BAO GIỜ gán 14 cột này từ input. Và chính `FrmReportKPI.cs:486-557` cũng tự ép `row[...] = 0`
+/// trước khi hiển thị/xuất — nguồn ÉP CỨNG 0 ở ba tầng (SELECT, Create, UI). Cùng họ với 4 cột
+/// `CountWorkTime*` đã ghi ở #1066 (giữ HARDCODE 0 đúng nguồn).
+/// 🔴 BẪY TÊN: `FrmReportKPI.cs:189-190` gán NHẦM field name của dòng lưới "BDD-nội bộ-SCL/Khác" sang
+/// CONST `ServiceAmountSCCLocal_SCL`/`_Khac` (của SCC) thay vì `ServiceAmountBDDLocal_SCL`/`_Khac` — lỗi
+/// copy-paste CÓ THẬT trong UI nguồn (DbDefine.cs xác nhận hai hằng số tồn tại riêng). Port KHÔNG tái hiện
+/// lỗi UI này ở tầng entity/API — giữ 7 cặp cột ĐÚNG TÊN, tách biệt.
+/// 📌 QUYẾT ĐỊNH PORT: khác với `CountWorkTime*` (không có cột DB, chỉ literal trong response), 14 cột
+/// này LÀ cột DB thật (ắt phải tồn tại để lưới/xuất không lỗi). MiniHTC thêm đủ cột + DTO + POST/GET như
+/// các cột anh em khác (CHO PHÉP ghi/đọc qua API — không ép cứng 0 ở tầng Mini) vì MiniHTC không có cùng
+/// hạn chế của nguồn; chỉ ghi chú quirk này để không ai nhầm "thiếu port" lần 2.
+/// </summary>
 public sealed class ReportKpi
 {
     // ===== 🔴 #403 §12 KỲ BÁO CÁO — ba cột khung mà bản port cũ THIẾU HẲN =====
@@ -9062,6 +9116,10 @@ public sealed class ReportKpi
     public decimal? CavityRONumber { get; set; }
     public decimal? CountBDD { get; set; }
     public decimal? CountBDDLocal { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? CountBDDLocal_SCL { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? CountBDDLocal_Khac { get; set; }
     public decimal? CountBDDPerCavityMaintain { get; set; }
     public decimal? CountBDDRoRepair { get; set; }
     public decimal? CountCarService { get; set; }
@@ -9073,12 +9131,20 @@ public sealed class ReportKpi
     public decimal? CountSCCRoWarranty { get; set; }
     public decimal? CountSCD { get; set; }
     public decimal? CountSCDLocal { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? CountSCDLocal_SCL { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? CountSCDLocal_Khac { get; set; }
     public decimal? CountSCDPerCavityCopper { get; set; }
     public decimal? CountSCDRoInsurance { get; set; }
     public decimal? CountSCDRoRepair { get; set; }
     public decimal? CountSCDRoWarranty { get; set; }
     public decimal? CountSCS { get; set; }
     public decimal? CountSCSLocal { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? CountSCSLocal_SCL { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? CountSCSLocal_Khac { get; set; }
     public decimal? CountSCSPerCabinetPaint { get; set; }
     public decimal? CountSCSPerCavityBP { get; set; }
     public decimal? CountSCSRoInsurance { get; set; }
@@ -9122,16 +9188,32 @@ public sealed class ReportKpi
     public decimal? RevenuePerKTVSCS { get; set; }
     public decimal? SerProfitRate { get; set; }
     public decimal? ServiceAmountBDDLocal { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountBDDLocal_SCL { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountBDDLocal_Khac { get; set; }
     public decimal? ServiceAmountBDDRoRepair { get; set; }
     public decimal? ServiceAmountSCCLocal { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountSCCLocal_SCL { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountSCCLocal_Khac { get; set; }
     public decimal? ServiceAmountSCCRoInsurance { get; set; }
     public decimal? ServiceAmountSCCRoRepair { get; set; }
     public decimal? ServiceAmountSCCRoWarranty { get; set; }
     public decimal? ServiceAmountSCDLocal { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountSCDLocal_SCL { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountSCDLocal_Khac { get; set; }
     public decimal? ServiceAmountSCDRoInsurance { get; set; }
     public decimal? ServiceAmountSCDRoRepair { get; set; }
     public decimal? ServiceAmountSCDRoWarranty { get; set; }
     public decimal? ServiceAmountSCSLocal { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountSCSLocal_SCL { get; set; }
+    /// <summary>#30073 — nguồn ép cứng literal 0 (xem comment đầu class). Giữ settable ở Mini.</summary>
+    public decimal? ServiceAmountSCSLocal_Khac { get; set; }
     public decimal? ServiceAmountSCSRoInsurance { get; set; }
     public decimal? ServiceAmountSCSRoRepair { get; set; }
     public decimal? ServiceAmountSCSRoWarranty { get; set; }
@@ -14965,6 +15047,22 @@ public sealed class QcDocReq
 }
 
 /// <summary>Chi tiết chứng từ QC theo VIN (QC_DocReqDtl) — port 1:1 FrmMngQCDocReq detail.</summary>
+/// <summary>
+/// #COT_GAP cluster check (2026-10-08): audit flagged 9 "missing" columns Mv_ClearanceFormNo,
+/// Mv_ColorCode, Mv_EngineNo, Mv_FGFormNo, Mv_ModelCode, Mv_OriginNo, Mv_QCNo, Mv_SpecCode,
+/// Mv_SpecDescription on TblQC_DocReqDtl. Traced DbDefine.cs (TblQC_DocReqDtl, line ~4136) +
+/// FrmMngQCDocReq.cs InitGrid() (line ~207-227): the live DB table has NO plain-named
+/// MODELCODE/SPECCODE/COLORCODE/ENGINENO/ORIGINNO/FGFORMNO/QCNO/CLEARANCEFORMNO columns —
+/// MV_* is the only physical column for each. These were already ported below under the
+/// unprefixed property name (ModelCode=Mv_ModelCode, SpecCode=Mv_SpecCode, ColorCode=Mv_ColorCode,
+/// EngineNo=Mv_EngineNo, OriginNo=Mv_OriginNo, FGFormNo=Mv_FGFormNo, QCNo=Mv_QCNo,
+/// ClearanceFormNo=Mv_ClearanceFormNo) — NOT a second/duplicate column, just the Mv_ prefix
+/// dropped during an earlier porting pass. Mv_SpecDescription is a genuinely dead duplicate of
+/// SpecDescription: FrmMngQCDocReq.cs line 567 explicitly does
+/// `tableDtl.Columns.Remove(TblQC_DocReqDtl.Mv_SpecDescription)` before display/export — 0 live
+/// usage. Conclusion: do NOT add any of the 9 as new properties; audit false-positive from
+/// name-string matching, not a real gap.
+/// </summary>
 public sealed class QcDocReqCar
 {
     public long Id { get; set; }
