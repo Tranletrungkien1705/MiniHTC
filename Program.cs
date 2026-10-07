@@ -47356,24 +47356,35 @@ app.MapGet("/api/report/inventory-in", async (AppDbContext db, ITenantContext t,
     return Results.Ok(new { count = ordered.Count, totalAmount = ordered.Sum(r => r.total), rows = ordered });
 }).RequireAuthorization();
 
-// Top phụ tùng doanh thu: doanh thu = SL xuất (phiếu Confirmed) × giá bán hiện tại của PT, lọc khoảng ngày xuất.
+// ===== 🔴 #5882 SỬA LẠI THEO ĐÚNG #415 (`FrmReportPartTopRevenue`) — bản cũ SAI CÔNG THỨC =====
+// Bản trước tính `revenue = qtyOut * GIÁ HIỆN TẠI của ServicePart.Price` — SAI, vì nguồn thật
+// (`BizCarSv.Inventory.Report.cs:6571`, đã trace ở #415 phía dưới) tính doanh thu từ GIÁ + VAT
+// LỊCH SỬ ghi trên TỪNG DÒNG phiếu xuất tại thời điểm bán (`Price*Qty + Price*Qty*VAT/100`), không
+// phải giá catalog hiện tại — hai con số lệch hẳn khi giá phụ tùng từng đổi. Vá theo đúng SQL nguồn:
+// `sto.Status=3` (Kết thúc) + `StockOutTime` trong [FromDate,ToDate] + `AmountFinal>0` + KHÔNG inner-join
+// ServiceParts (nguồn left-join, phụ tùng mất khỏi danh mục vẫn được TÍNH, chỉ mất tên/đơn vị).
+// 🔴 Nguồn câu cuối `select @Top * from #tbl_Revenue` KHÔNG có order by thật (hai order-by trước đó nằm
+// trên SELECT INTO, không giữ thứ tự) ⇒ TOP N của nguồn là N dòng BẤT KỲ — MiniHTC CỐ Ý lệch nguồn:
+// sắp giảm dần theo doanh thu rồi mới cắt N (tái hiện "bất kỳ" là vô nghĩa, không thể kiểm chứng).
+// Trả cờ `sourceHasNoOrderBy=true` để biết số của WinForm gốc có thể khác thứ tự.
+// ⚠️ Nguồn so `StockOutTime <= '@ToDate'` (chuỗi ngày, ngầm 00:00:00) trên cột datetime ⇒ phiếu xuất
+// SAU 0h ngày cuối bị loại — lỗi lệch-một-ngày kinh điển, giữ nguyên hành vi, trả cờ `endDateExclusive=true`.
 app.MapGet("/api/report/part-toprevenue", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, int? top) =>
 {
-    var n = top is > 0 and <= 200 ? top.Value : 20;
     var outs = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3");
-    if (fromDate.HasValue) outs = outs.Where(o => o.StockOutDate.Date >= fromDate.Value.Date);
-    if (toDate.HasValue) outs = outs.Where(o => o.StockOutDate.Date <= toDate.Value.Date);
+    if (fromDate.HasValue) outs = outs.Where(o => o.StockOutDate >= fromDate.Value.Date);
+    if (toDate.HasValue) outs = outs.Where(o => o.StockOutDate <= toDate.Value.Date);   // #5882: endDateExclusive, dung nguyen loi nguon
     var outIds = outs.Select(o => o.Id);
-    var qtyByPart = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.StockOutId))
-        .GroupBy(l => l.PartCode).Select(g => new { partCode = g.Key, qty = g.Sum(x => x.Quantity) }).ToListAsync();
-    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).Select(p => new { p.PartCode, p.PartName, p.Unit, p.Price }).ToListAsync();
-    var priceMap = parts.ToDictionary(p => p.PartCode, p => p);
-    var rows = qtyByPart.Select(q => {
-        priceMap.TryGetValue(q.partCode, out var p);
-        var price = p?.Price ?? 0m;
-        return new { q.partCode, partName = p?.PartName, unit = p?.Unit, qtyOut = q.qty, price, revenue = q.qty * price };
-    }).OrderByDescending(x => x.revenue).Take(n).ToList();
-    return Results.Ok(new { count = rows.Count, totalRevenue = rows.Sum(r => r.revenue), rows });
+    var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && outIds.Contains(l.StockOutId)).ToListAsync();
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).ToDictionaryAsync(p => p.PartCode);
+    var rows = lines.GroupBy(l => l.PartCode).Select(g => {
+        parts.TryGetValue(g.Key, out var p);
+        var amount = g.Sum(l => (l.Price ?? 0m) * l.Quantity + (l.Price ?? 0m) * l.Quantity * l.VAT / 100m);
+        return new { partCode = g.Key, partName = p?.PartName, unit = p?.Unit, amountFinal = amount };
+    }).Where(x => x.amountFinal > 0).OrderByDescending(x => x.amountFinal).ToList();
+    var limited = top is > 0 ? rows.Take(top.Value).ToList() : rows;
+    return Results.Ok(new { count = limited.Count, totalRevenue = limited.Sum(r => r.amountFinal), rows = limited,
+        sourceHasNoOrderBy = true, endDateExclusive = true });
 }).RequireAuthorization();
 
 // Biến động giá phụ tùng: từ các phiếu nhập kho — số lần giá khác nhau, giá thấp nhất/cao nhất theo mã PT.
