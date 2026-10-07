@@ -105420,6 +105420,73 @@ app.MapGet("/api/report/total-stockout-detail", async (AppDbContext db, ITenantC
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #5898 BẢN ĐẠI LÝ THẬT CỦA MÀN LIVE `FrmReportTotalStockOutDetail` — `Ser_InvReportTotalStockOutDetailRpt_New20230623` =====
+// Route `/api/report/total-stockout-detail` ngay trên port theo CÂY V20 CŨ (ghi rõ ở `twoTreesDiffer`) —
+// nhưng màn `FrmReportTotalStockOutDetail` đang audit (cây `V20.2023.Release.V2`, LIVE) ở nhánh THƯỜNG gọi
+// `InventoryReportService.Ser_InvReportTotalStockOutDetailRpt(fromDate,toDate,dealerCode)` → WS cùng tên
+// (`WSCarSv.asmx.cs:13976`) → biz LIVE **`Ser_InvReportTotalStockOutDetailRpt_New20230623`**
+// (`BizCarSv.Inventory.Report.cs:1923`) — ĐÚNG hàm có nhánh `union all` thanh toán NCC, y hệt cấu trúc bản
+// `_WH_New20230623` (#668) đã port ở `/api/report/stockout-detail-wh` ngay trên — chỉ khác `_dbDealer` vs
+// `_dbWH`. Route cũ (cây V20) KHÔNG thay thế được route này vì khác hẳn nghiệp vụ (xem #1534/`twoTreesDiffer`).
+app.MapGet("/api/report/stockout-detail", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var from = fromDate?.Date;
+    var to = toDate?.Date;
+    var toEndOfDay = to?.AddDays(1).AddTicks(-1);   // nhanh NCC chuan hoa 23:59:59, nhanh xuat kho thi KHONG
+
+    var qo = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId && x.Status == "Confirmed");
+    if (from is not null) qo = qo.Where(x => x.StockOutDate >= from);
+    if (to is not null) qo = qo.Where(x => x.StockOutDate <= to);   // #415 giu 1:1 — KHONG cong ngay
+    var outs = await qo.Select(x => new { x.Id, x.StockOutDate }).ToListAsync();
+    var outIds = outs.Select(x => x.Id).ToList();
+
+    var outLines = await db.ServiceStockOutLines
+        .Where(x => x.OrgId == t.OrgId && outIds.Contains(x.ServiceStockOutId))
+        .Select(x => new { x.PartCode, x.PartName, x.Quantity, x.Price, x.Vat }).ToListAsync();
+
+    var qp = db.SupplierPayments.Where(x => x.OrgId == t.OrgId && x.Status == "A");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) qp = qp.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (from is not null) qp = qp.Where(x => x.ApprovedAt >= from);
+    if (toEndOfDay is not null) qp = qp.Where(x => x.ApprovedAt <= toEndOfDay);
+    var payNos = await qp.Select(x => x.PaymentNo).ToListAsync();
+
+    var payLines = await db.SupplierPaymentLines
+        .Where(x => x.OrgId == t.OrgId && payNos.Contains(x.PaymentNo))
+        .Select(x => new { x.PartCode, x.PartName, x.QtyPay, x.Price, x.Vat }).ToListAsync();
+
+    var rows = outLines.GroupBy(x => new { x.PartCode, x.PartName }).Select(g => new
+        {
+            source = "stockout", partCode = g.Key.PartCode, partName = g.Key.PartName,
+            quantity = g.Sum(x => x.Quantity),
+            amount = g.Sum(x => x.Quantity * x.Price + x.Quantity * x.Price * 0.01m * x.Vat),
+        })
+        .Concat(payLines.GroupBy(x => new { x.PartCode, x.PartName }).Select(g => new
+        {
+            source = "supplierpayment", partCode = g.Key.PartCode, partName = g.Key.PartName,
+            quantity = g.Sum(x => x.QtyPay),
+            amount = g.Sum(x => x.QtyPay * x.Price + x.QtyPay * x.Price * 0.01m * x.Vat),
+        }))
+        .OrderBy(x => x.partCode).ThenBy(x => x.source).ToList();
+
+    var byPart = rows.GroupBy(x => x.partCode).Select(g => new
+    {
+        partCode = g.Key, sources = g.Count(),
+        quantity = g.Sum(x => x.quantity), amount = g.Sum(x => x.amount),
+    }).OrderBy(x => x.partCode).ToList();
+
+    var lastDayOutRows = to is null ? 0 : outs.Count(x => x.StockOutDate is not null && x.StockOutDate!.Value.Date == to);
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows, byPart,
+        sameStructureAsWhTwin668Note = "#5898: cung cau truc voi ban _WH_New20230623 (#668) da port o /api/report/stockout-detail-wh — cung bay union-khong-gop/endDateExclusive-mot-nhanh/guard-chet, xem chi tiet o route do",
+        partsWithTwoSources = byPart.Count(x => x.sources > 1),
+        stockOutRowsOnLastDay = lastDayOutRows,
+        miniModelGap = "ServiceStockOut cua Mini KHONG co cot DealerCode nen bo loc dai ly moi ap duoc cho nhanh NCC (giong #668)",
+    });
+}).RequireAuthorization();
+
 // ===== 🔴🔴 #1536 TỔNG HỢP CHI TIẾT XUẤT KHO PHỤ TÙNG (bản KHO) `Ser_InvReportTotalStockOutDetailRpt_WH` =====
 // (`BizCarSv.WH.cs:22541-22700`, LIVE WS `HTCWSCarSv/WSCarSv.asmx.cs:29228` gọi THẲNG không hậu tố).
 // GREP TRƯỚC: Mini có `GET /api/report/stockout-detail-wh` (port `Ser_InvReportTotalStockOutDetailRpt_WH_New20230623` #668)
