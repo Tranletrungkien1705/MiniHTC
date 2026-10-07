@@ -92981,6 +92981,38 @@ app.MapGet("/api/stockouts/vocab", () => Results.Ok(new
     note = "Mã loại xuất NGƯỢC trực giác: 1 = Xuất dịch vụ, 2 = Xuất thường. Mã trạng thái 0 có Value nhưng không có Text ở nguồn.",
 })).RequireAuthorization();
 
+// ===== Tồn kho theo vị trí khi chọn vị trí xuất kho (FrmStockBalanceQuantity, TCMotor DMSCarSv/Inventory) =====
+// Nguồn: `SerStockBalanceQuantityGet` (`BizCarSv.Inventory.Stock.cs:3367`, LIVE qua cả hai cổng WS HTCWSCarSv/
+// TERP.WSCarSv) — join `Ser_Inv_StockBalance` + `Ser_Mst_Location` (LocationCode/LocationName) + `Ser_Mst_Part`
+// (PartCode/VieName/Unit/Price/VAT), lọc `IsActive='1'` + `AvailableQuantity(=InStock-InShipment) > 0`, optional
+// PartID/LocationID. Dialog `FrmStockBalanceQuantity` gọi hàm này khi tạo phiếu xuất để người dùng chọn vị trí
+// cụ thể lấy hàng. Mini CHƯA mô hình hoá `IsActive` trên SerInvStockBalance (bảng chỉ có cột số lượng) — bỏ
+// filter đó là Đơn-giản-hoá-có-chủ-đích (không ảnh hưởng: mọi dòng seed hiện tại coi như active).
+app.MapGet("/api/stockbalance/available", async (AppDbContext db, ITenantContext t, string? partId, string? locationId) =>
+{
+    var q = db.SerInvStockBalances.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(partId)) q = q.Where(x => x.PartID == partId);
+    if (!string.IsNullOrWhiteSpace(locationId)) q = q.Where(x => x.LocationID == locationId);
+    var rows = await q.ToListAsync();
+    var partIds = rows.Select(x => x.PartID).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var locCodes = rows.Select(x => x.LocationCode).Where(x => x != null).Select(x => x!).Distinct().ToList();
+    var parts = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && partIds.Contains(x.PartID)).ToListAsync();
+    var locs = await db.PartLocations.Where(x => x.OrgId == t.OrgId && locCodes.Contains(x.LocationCode)).ToListAsync();
+    var items = rows.Select(x =>
+    {
+        var p = parts.FirstOrDefault(pp => pp.PartID == x.PartID);
+        var l = locs.FirstOrDefault(ll => ll.LocationCode == x.LocationCode);
+        var available = x.InStockQuantity - x.InShipmentQuantity;
+        return new
+        {
+            x.PartID, x.LocationID, x.LocationCode, LocationName = l?.LocationName,
+            x.InStockQuantity, x.InShipmentQuantity, AvailableQuantity = available,
+            p?.PartCode, PartName = p?.PartName, p?.Unit, p?.Price, p?.VAT,
+        };
+    }).Where(x => x.AvailableQuantity > 0).ToList();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? status, string? warehouse) =>
 {
     var q = db.PartStockOuts.Where(s => s.OrgId == t.OrgId);
