@@ -47294,16 +47294,58 @@ app.MapGet("/api/report/part-topprofit-byperiod", async (AppDbContext db, ITenan
     return Results.Ok(new { dealerCode = dealer, count = limited.Count, isFifo, rows = limited });
 }).RequireAuthorization();
 
-// Top phụ tùng luân chuyển: tổng số lượng đã xuất kho (chỉ phiếu đã duyệt) theo mã PT.
-app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext t, int? top) =>
+// ===== 🔴 #5884 SỬA LẠI THEO ĐÚNG #417 (`FrmReportPartTopRotate`) — bản cũ SAI HẲN KẾT CẤU =====
+// Bản trước chỉ tính tổng SL xuất (sum PartStockOutLines) — KHÔNG đúng nguồn thật (`DoSearch()` gọi
+// `InventoryReportService.Ser_InvReportPartTopRotate(fromDate,toDate,top)` → WS → biz LIVE
+// `BizCarSv.Inventory.Report.cs:6902`), vốn tính CẢ 2 CHIỀU (nhập lẫn xuất) từ `Ser_Inv_PartInstance`
+// (= `PartInstance` Mini) rồi **INNER JOIN #IN với #OUT theo partid** — nghĩa là CHỈ phụ tùng CÓ CẢ
+// nhập LẪN xuất trong kỳ mới xuất hiện; phụ tùng chỉ-nhập hoặc chỉ-xuất (nhóm ứ đọng/bán-từ-tồn-cũ)
+// BỊ LOẠI khỏi báo cáo — giữ đúng hành vi này (không "sửa cho hợp lý"), trả đếm `inOnlyExcluded`/
+// `outOnlyExcluded` để biết có bao nhiêu phụ tùng bị ẩn.
+// 🔴 Nguồn `select distinct` trên TOÀN BỘ cột (gồm cả Quantity) trước khi gộp — hai dòng chi tiết
+// CÙNG phiếu, CÙNG phụ tùng, CÙNG số lượng bị coi là 1 dòng ⇒ đếm thiếu. Giữ nguyên `.Distinct()`.
+// 🔴 Thứ tự sắp xếp THẬT (`OutQuantity desc, InQuantity asc, SoLanXuat asc, SoLanNhap desc`) MÂU THUẪN
+// với chú thích đầu hàm nguồn ("1:SL xuất 2:SL nhập 3:Số lần xuất 4:Số lần nhập" — ngụ ý cùng chiều ưu
+// tiên) — giữ Y HỆT chiều nguồn (không tự đổi theo chú thích), trả cờ `sortDirectionSuspect=true`.
+app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate, int? top) =>
 {
-    var n = top is > 0 and <= 200 ? top.Value : 20;
-    var confirmedIds = db.PartStockOuts.Where(o => o.OrgId == t.OrgId && o.Status == "3").Select(o => o.Id);
-    var rows = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && confirmedIds.Contains(l.StockOutId))
-        .GroupBy(l => new { l.PartCode, l.PartName })
-        .Select(g => new { g.Key.PartCode, g.Key.PartName, totalOut = g.Sum(x => x.Quantity), timesOut = g.Count() })
-        .OrderByDescending(x => x.totalOut).Take(n).ToListAsync();
-    return Results.Ok(new { count = rows.Count, totalOut = rows.Sum(r => r.totalOut), rows });
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Can fromDate va toDate." });
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date;
+
+    var confirmedInIds = db.PartStockIns.Where(s => s.OrgId == t.OrgId && s.Status == "3").Select(s => s.Id);
+    var confirmedOutIds = db.PartStockOuts.Where(s => s.OrgId == t.OrgId && s.Status == "3").Select(s => s.Id);
+
+    var inRows = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && x.StockInId != null && confirmedInIds.Contains(x.StockInId.Value)
+            && x.DateIn != null && x.DateIn >= from && x.DateIn <= to)
+        .Select(x => new { x.PartCode, x.StockInId, x.StockInNo, x.Quantity, x.DateIn })
+        .Distinct().ToListAsync();                 // #417: DISTINCT nguyen ban - co the gop nham lo trung so lieu
+    var outRows = await db.PartInstances.Where(x => x.OrgId == t.OrgId
+            && x.StockOutId != null && confirmedOutIds.Contains(x.StockOutId.Value)
+            && x.DateOut != null && x.DateOut >= from && x.DateOut <= to)
+        .Select(x => new { x.PartCode, x.StockOutId, x.StockOutNo, x.Quantity, x.DateOut })
+        .Distinct().ToListAsync();
+
+    var inAgg = inRows.GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => (InQuantity: g.Sum(x => x.Quantity), SoLanNhap: g.Count()));
+    var outAgg = outRows.GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => (OutQuantity: g.Sum(x => x.Quantity), SoLanXuat: g.Count()));
+    var parts = await db.ServiceParts.Where(p => p.OrgId == t.OrgId).ToDictionaryAsync(p => p.PartCode);
+
+    var commonCodes = inAgg.Keys.Intersect(outAgg.Keys).Where(parts.ContainsKey).ToList();
+    var rows = commonCodes.Select(code =>
+    {
+        var (inQ, soLanNhap) = inAgg[code]; var (outQ, soLanXuat) = outAgg[code]; var p = parts[code];
+        return new { partCode = code, partName = p.PartName, unit = p.Unit,
+            inQuantity = inQ, outQuantity = outQ, soLanNhap, soLanXuat };
+    })
+    .OrderByDescending(x => x.outQuantity).ThenBy(x => x.inQuantity).ThenBy(x => x.soLanXuat).ThenByDescending(x => x.soLanNhap)
+    .ToList();
+
+    var limited = top is > 0 ? rows.Take(top.Value).ToList() : rows;
+    var inOnlyExcluded = inAgg.Keys.Except(outAgg.Keys).Count();
+    var outOnlyExcluded = outAgg.Keys.Except(inAgg.Keys).Count();
+    return Results.Ok(new { count = limited.Count, rows = limited,
+        sortDirectionSuspect = true, inOnlyExcluded, outOnlyExcluded });
 }).RequireAuthorization();
 
 // ===== 🔴 #5878 BÁO CÁO CẦN ĐẶT HÀNG (`FrmReportInvPartOrder`) — KHÁC SIBLING `part-minquantity` =====
