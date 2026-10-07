@@ -19237,14 +19237,21 @@ app.MapPost("/api/smsaccounts/{accountCode}/reset-password", async (string accou
 //     ⇒ **tổng thống kê thiếu**, và thiếu **im lặng** vì báo cáo vẫn ra số.
 //   ⚪ `left join Ser_groupRepair r` ⇒ dịch vụ **chưa gắn nhóm** vẫn được đếm — đúng ý (nhóm là thông tin phụ).
 // 📌 Mini: `GET /api/report/service-statistic-by-group` — **đếm riêng** ba nguyên nhân mất dòng thay vì để im lặng.
+// ===== 🔴 #5892 THIẾU HẲN THAM SỐ `status` — `FrmReportROTotalServiceByGroup` dùng nhiều checkbox =====
+// Biz nhận `strStatusList` (`BizCarSv.Service.Report.cs:673`) lọc `zzzzClauseWhereStatusList` =
+// `SqlUtils.BuildClauseConditionList("and","ro.Status",strStatusList,"|")` ⇒ `ro.Status IN (...)`, màn
+// nguồn dựng danh sách này từ NHIỀU checkbox cùng lúc (`Util.StretchListString`, cùng khuôn #5890). Route
+// Mini trước đây KHÔNG CÓ tham số `status` NÀO CẢ — bỏ sót hoàn toàn bộ lọc trạng thái. Thêm `status` CSV.
 app.MapGet("/api/report/service-statistic-by-group", async (AppDbContext db, ITenantContext t,
-    DateTime? fromDate, DateTime? toDate, string? dealerCode, string? scope) =>
+    DateTime? fromDate, DateTime? toDate, string? dealerCode, string? scope, string? status) =>
 {
     var isWh = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
+    var statusList = (status ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     var roQ = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
     if (fromDate.HasValue) roQ = roQ.Where(r => r.CheckInDate >= fromDate.Value);
     if (toDate.HasValue) roQ = roQ.Where(r => r.CheckInDate <= toDate.Value);
     if (!string.IsNullOrWhiteSpace(dealerCode)) roQ = roQ.Where(r => r.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (statusList.Count > 0) roQ = roQ.Where(r => statusList.Contains(r.Status));
     var ros = await roQ.Take(5000).ToListAsync();
     var roIds = ros.Select(r => r.Id).ToList();
     var items = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
