@@ -66920,11 +66920,26 @@ app.MapPost("/api/paymentgps/{no}/{action}", async (string no, string action, Ap
 }).RequireAuthorization();
 
 // ---- Họ AVN: thiết bị màn hình giải trí ----
-app.MapGet("/api/paymentavn", async (AppDbContext db, ITenantContext t, string? status, string? month) =>
+// ===== 🔴 #5874 `FrmQuanLyThanhToanAVN` gọi `Pmt_PaymentAVN_Get` (`SalesService.cs:35301`) với 8 tham
+//    số — route cũ chỉ có `status`/`month` (2/8). Nguồn khớp CHÍNH XÁC trên MỌI cột (kể cả PaymentAVNNo
+//    VÀ VIN — không LIKE), `CreateDateTime` là khoảng (đệm 00:00:00/23:59:59), `PmtMonth` so CHÍNH XÁC
+//    với "yyyy-MM-01" (client gửi "yyyy-MM"). Thêm đủ 6 tham số còn thiếu, giữ đúng ngữ nghĩa "=".
+app.MapGet("/api/paymentavn", async (AppDbContext db, ITenantContext t, string? status, string? month,
+    string? no, string? vin, DateTime? createdFrom, DateTime? createdTo, string? htvSignStatus, string? tcmsSignStatus) =>
 {
     var q = db.PmtPaymentAvns.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.PaymentAVNStatus == status);
     if (!string.IsNullOrWhiteSpace(month)) q = q.Where(x => x.PmtMonth == month);
+    if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.PaymentAVNNo == no);   // #5874: nguồn khớp CHÍNH XÁC
+    if (!string.IsNullOrWhiteSpace(htvSignStatus)) q = q.Where(x => x.HTVSignStatus == htvSignStatus);
+    if (!string.IsNullOrWhiteSpace(tcmsSignStatus)) q = q.Where(x => x.TCMSSignStatus == tcmsSignStatus);
+    if (createdFrom is not null) q = q.Where(x => x.CreateDateTime >= createdFrom);
+    if (createdTo is not null) q = q.Where(x => x.CreateDateTime <= createdTo);
+    if (!string.IsNullOrWhiteSpace(vin))   // nguồn khớp CHÍNH XÁC trên Pmt_PaymentAVNDetail.VIN
+    {
+        var nos = db.PmtPaymentAvnDetails.Where(d => d.OrgId == t.OrgId && d.VIN == vin).Select(d => d.PaymentAVNNo).Distinct();
+        q = q.Where(x => nos.Contains(x.PaymentAVNNo));
+    }
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
         x.PaymentAVNNo, x.PmtMonth, x.CreateDateTime, x.CreateBy, x.AmountTotal, x.PaymentAVNStatus,
         x.App1DTime, x.App1By, x.App2DTime, x.App2By, x.CancelDTime, x.CancelBy,
