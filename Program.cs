@@ -47234,6 +47234,25 @@ app.MapGet("/api/report/part-toprotate", async (AppDbContext db, ITenantContext 
     return Results.Ok(new { count = rows.Count, totalOut = rows.Sum(r => r.totalOut), rows });
 }).RequireAuthorization();
 
+// ===== 🔴 #5878 BÁO CÁO CẦN ĐẶT HÀNG (`FrmReportInvPartOrder`) — KHÁC SIBLING `part-minquantity` =====
+// TRACE: `DoSearch()` gọi `InventoryReportService.Ser_InventoryPartOrderNeed()` (không tham số) → WS
+// `SerInventoryPartOrderNeed` (`WSCarSv.asmx.cs:17300`, không có overload `_New…`) → biz LIVE
+// `BizCarSv.Inventory.Report.cs:5880` — SQL: `(InstockQuantity - MinQuantity) <= 0` (BAO GỒM dấu BẰNG),
+// KHÔNG lọc `FlagActive`, `order by partcode`.
+// 🔴 Màn này KHÁC `FrmReportPartMinQuantity` đã port ở `/api/report/part-minquantity` (ngay trên) ở
+// HAI điểm: (1) biên `<=0` (BẰNG cũng tính) thay vì `<` NGHIÊM NGẶT của route kia; (2) nguồn KHÔNG có
+// điều kiện `FlagActive` nào. Hai route cùng concept "cần đặt hàng" nhưng khác biên + khác tên hàm nguồn
+// → không gộp, giữ route riêng để đúng 1:1 từng màn.
+app.MapGet("/api/report/part-order-need", async (AppDbContext db, ITenantContext t) =>
+{
+    var rows = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.Quantity - x.MinQuantity <= 0)
+        .OrderBy(x => x.PartCode)
+        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.MinQuantity, instockQuantity = x.Quantity,
+            minQty = x.Quantity - x.MinQuantity }).ToListAsync();
+    return Results.Ok(new { count = rows.Count, rows,
+        boundaryNote = "#5878: nguon <=0 (BANG cung tinh la can dat hang), khac nghiem ngat '<' cua /api/report/part-minquantity; nguon khong loc FlagActive." });
+}).RequireAuthorization();
+
 // ===== 🔴 #1507 BÁO CÁO NHẬP KHO PHỤ TÙNG — `Ser_InventoryReport_In` (LIVE, `BizCarSv.Inventory.Report.cs:1026`) =====
 // Nguồn: `ser_mst_part p` JOIN (subquery `si`) ON `p.PartID = si.PartID`; subquery = `ser_inv_stockindetail stid`
 //   INNER JOIN (`ser_inv_stockin sti` WHERE `status = 3` AND `StockInDate` trong [FromDate, ToDate] AND lọc
