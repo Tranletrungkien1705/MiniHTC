@@ -438,6 +438,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     // #303: dòng CÔNG của đề nghị bảo hành (Ser_ROWarrantyReportServiceItems)
     public DbSet<StorageTransaction> StorageTransactions => Set<StorageTransaction>();
     public DbSet<BusinessPlanDtl> BusinessPlanDtls => Set<BusinessPlanDtl>();
+    public DbSet<GoiYDatHangHtc> GoiYDatHangHtcs => Set<GoiYDatHangHtc>();
+    public DbSet<GoiYDatHangDealer> GoiYDatHangDealers => Set<GoiYDatHangDealer>();
     public DbSet<BankingTransBankFile> BankingTransBankFiles => Set<BankingTransBankFile>();
     public DbSet<MstInsuranceCompany> MstInsuranceCompanies => Set<MstInsuranceCompany>();
     public DbSet<MstInsuranceType> MstInsuranceTypes => Set<MstInsuranceType>();

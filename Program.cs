@@ -14219,6 +14219,7 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
         x.CavityRONumber,
         x.CountBDD,
         x.CountBDDLocal,
+        x.CountBDDLocal_SCL, x.CountBDDLocal_Khac,   // #30073
         x.CountBDDPerCavityMaintain,
         x.CountBDDRoRepair,
         x.CountCarService,
@@ -14230,12 +14231,14 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
         x.CountSCCRoWarranty,
         x.CountSCD,
         x.CountSCDLocal,
+        x.CountSCDLocal_SCL, x.CountSCDLocal_Khac,   // #30073
         x.CountSCDPerCavityCopper,
         x.CountSCDRoInsurance,
         x.CountSCDRoRepair,
         x.CountSCDRoWarranty,
         x.CountSCS,
         x.CountSCSLocal,
+        x.CountSCSLocal_SCL, x.CountSCSLocal_Khac,   // #30073
         x.CountSCSPerCabinetPaint,
         x.CountSCSPerCavityBP,
         x.CountSCSRoInsurance,
@@ -14270,16 +14273,20 @@ app.MapGet("/api/reportkpis", async (AppDbContext db, ITenantContext t, string? 
         x.RevenuePerKTVSCS,
         x.SerProfitRate,
         x.ServiceAmountBDDLocal,
+        x.ServiceAmountBDDLocal_SCL, x.ServiceAmountBDDLocal_Khac,   // #30073
         x.ServiceAmountBDDRoRepair,
         x.ServiceAmountSCCLocal,
+        x.ServiceAmountSCCLocal_SCL, x.ServiceAmountSCCLocal_Khac,   // #30073
         x.ServiceAmountSCCRoInsurance,
         x.ServiceAmountSCCRoRepair,
         x.ServiceAmountSCCRoWarranty,
         x.ServiceAmountSCDLocal,
+        x.ServiceAmountSCDLocal_SCL, x.ServiceAmountSCDLocal_Khac,   // #30073
         x.ServiceAmountSCDRoInsurance,
         x.ServiceAmountSCDRoRepair,
         x.ServiceAmountSCDRoWarranty,
         x.ServiceAmountSCSLocal,
+        x.ServiceAmountSCSLocal_SCL, x.ServiceAmountSCSLocal_Khac,   // #30073
         x.ServiceAmountSCSRoInsurance,
         x.ServiceAmountSCSRoRepair,
         x.ServiceAmountSCSRoWarranty,
@@ -15566,6 +15573,10 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
         CavityRONumber = dto.CavityRONumber,
         CountBDD = dto.CountBDD,
         CountBDDLocal = dto.CountBDDLocal,
+        // #30073: nguon ep cung literal 0 cho 14 cot *Local_SCL/*Local_Khac (SELECT/UI/Create deu khong
+        // dung du lieu thuc), giu settable o Mini (xem comment dau class ReportKpi trong Entities.cs).
+        CountBDDLocal_SCL = dto.CountBDDLocal_SCL,
+        CountBDDLocal_Khac = dto.CountBDDLocal_Khac,
         CountBDDPerCavityMaintain = dto.CountBDDPerCavityMaintain,
         CountBDDRoRepair = dto.CountBDDRoRepair,
         CountCarService = dto.CountCarService,
@@ -15577,12 +15588,16 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
         CountSCCRoWarranty = dto.CountSCCRoWarranty,
         CountSCD = dto.CountSCD,
         CountSCDLocal = dto.CountSCDLocal,
+        CountSCDLocal_SCL = dto.CountSCDLocal_SCL,
+        CountSCDLocal_Khac = dto.CountSCDLocal_Khac,
         CountSCDPerCavityCopper = dto.CountSCDPerCavityCopper,
         CountSCDRoInsurance = dto.CountSCDRoInsurance,
         CountSCDRoRepair = dto.CountSCDRoRepair,
         CountSCDRoWarranty = dto.CountSCDRoWarranty,
         CountSCS = dto.CountSCS,
         CountSCSLocal = dto.CountSCSLocal,
+        CountSCSLocal_SCL = dto.CountSCSLocal_SCL,
+        CountSCSLocal_Khac = dto.CountSCSLocal_Khac,
         CountSCSPerCabinetPaint = dto.CountSCSPerCabinetPaint,
         CountSCSPerCavityBP = dto.CountSCSPerCavityBP,
         CountSCSRoInsurance = dto.CountSCSRoInsurance,
@@ -15616,16 +15631,24 @@ app.MapPost("/api/reportkpis", async (ReportKpiDto dto, AppDbContext db, ITenant
         RevenuePerKTVSCS = dto.RevenuePerKTVSCS,
         SerProfitRate = dto.SerProfitRate,
         ServiceAmountBDDLocal = dto.ServiceAmountBDDLocal,
+        ServiceAmountBDDLocal_SCL = dto.ServiceAmountBDDLocal_SCL,
+        ServiceAmountBDDLocal_Khac = dto.ServiceAmountBDDLocal_Khac,
         ServiceAmountBDDRoRepair = dto.ServiceAmountBDDRoRepair,
         ServiceAmountSCCLocal = dto.ServiceAmountSCCLocal,
+        ServiceAmountSCCLocal_SCL = dto.ServiceAmountSCCLocal_SCL,
+        ServiceAmountSCCLocal_Khac = dto.ServiceAmountSCCLocal_Khac,
         ServiceAmountSCCRoInsurance = dto.ServiceAmountSCCRoInsurance,
         ServiceAmountSCCRoRepair = dto.ServiceAmountSCCRoRepair,
         ServiceAmountSCCRoWarranty = dto.ServiceAmountSCCRoWarranty,
         ServiceAmountSCDLocal = dto.ServiceAmountSCDLocal,
+        ServiceAmountSCDLocal_SCL = dto.ServiceAmountSCDLocal_SCL,
+        ServiceAmountSCDLocal_Khac = dto.ServiceAmountSCDLocal_Khac,
         ServiceAmountSCDRoInsurance = dto.ServiceAmountSCDRoInsurance,
         ServiceAmountSCDRoRepair = dto.ServiceAmountSCDRoRepair,
         ServiceAmountSCDRoWarranty = dto.ServiceAmountSCDRoWarranty,
         ServiceAmountSCSLocal = dto.ServiceAmountSCSLocal,
+        ServiceAmountSCSLocal_SCL = dto.ServiceAmountSCSLocal_SCL,
+        ServiceAmountSCSLocal_Khac = dto.ServiceAmountSCSLocal_Khac,
         ServiceAmountSCSRoInsurance = dto.ServiceAmountSCSRoInsurance,
         ServiceAmountSCSRoRepair = dto.ServiceAmountSCSRoRepair,
         ServiceAmountSCSRoWarranty = dto.ServiceAmountSCSRoWarranty,
@@ -25899,8 +25922,10 @@ app.MapGet("/api/report/dealer-retail-sales", async (AppDbContext db, ITenantCon
     return Results.Ok(new { count = rows.Count, totalDeals = rows.Sum(r => r.deals), totalCars = rows.Sum(r => r.cars), grandValue = rows.Sum(r => r.totalValue), rows });
 }).RequireAuthorization();
 
-// ===== Báo cáo gợi ý đặt hàng (report tái-dùng SalesOrder + SalesOrderLine — port 1:1 FrmBCGoiYDatHang, 2010.HTC/Sales) =====
-// Gợi ý SL đặt = TB nhu cầu tháng (tổng SL đặt N tháng gần nhất / N) × hệ số; gom theo đại lý + model.
+// ===== Báo cáo nhu cầu đặt hàng theo lịch sử SalesOrder — KHÔNG phải port FrmBCGoiYDatHang (sửa nhãn sai
+// #5909: comment cũ ghi "port 1:1 FrmBCGoiYDatHang" nhưng công thức ở đây (TB SL đặt N tháng × hệ số, gom
+// SalesOrder) KHÔNG khớp công thức nguồn — xem route `/api/report/goi-y-dat-hang` phía dưới mới là bản port
+// thật. Giữ route này vì `ordersuggestion.html` đang dùng, chỉ sửa lại nhãn cho đúng sự thật.) =====
 app.MapGet("/api/report/order-suggestion", async (AppDbContext db, ITenantContext t, int? months, decimal? factor, string? dealer) =>
 {
     var n = months is > 0 and <= 24 ? months.Value : 6;
@@ -25918,6 +25943,177 @@ app.MapGet("/api/report/order-suggestion", async (AppDbContext db, ITenantContex
             return new { g.Key.DealerCode, g.Key.ModelCode, spec = g.Key.spec, totalQty = total, avgMonthly = avg, suggestOrder = (int)Math.Ceiling(avg * f) };
         }).OrderBy(r => r.DealerCode).ThenByDescending(r => r.totalQty).ToList();
     return Results.Ok(new { months = n, factor = f, count = rows.Count, totalSuggest = rows.Sum(r => r.suggestOrder), rows });
+}).RequireAuthorization();
+
+// ===== #5909 §12 — FrmBCGoiYDatHang (báo cáo GỢI Ý ĐẶT HÀNG thật, 2010.HTC/Sales). Trace nguồn:
+// FrmBCGoiYDatHang.cs -> SalesService.Rpt_GoiYDatHang -> WSHTC.asmx.cs:24285 -> BizHTC zTemp.Report.cs:9341
+// Rpt_GoiYDatHang -> Rpt_GoiYDatHangX (:8692) -> RptSQLQuery.cs GetDataDraft/GetDataTonHDBL/GetDataTKBO.
+// 9 cột nguồn `TblRpt_GoiYDatHang`, phân loại theo §0 DEBAI_STUB:
+//   (A) CẦN PORT — công thức rõ, port ĐÚNG công thức:
+//     QtyTotal_HTC = tổng Qty của GoiYDatHangHtcs 3 tháng hiện tại/+1/+2 (zTemp.Report.cs:8886-8977)
+//     Qty_AvgSale  = round(SL bán lẻ 12 tháng gần nhất / 12). Nguồn đọc bảng pivot `Rpt_MasterDataByDealer`
+//       (RptType='BANLE') — Mini chưa có bảng đó, tính trực tiếp từ DealerDealDetail+CarVinMasters.
+//     Qty_TKBO = ĐẠI LÝ TỰ NHẬP (không phải công thức), bảng mirror GoiYDatHangDealers; có POST riêng để
+//       lưu, tương đương `Rpt_GoiYDatHang_Dealer_Save` (zTemp.Report.cs:10381).
+//     Qty_TKBOCuoiKy = Qty_TKBO * Qty_AvgSale (zTemp.Report.cs:9144)
+//     Qty_GoiYDatHang = Qty_TKBOCuoiKy + QtyTotal_HTC - Qty_TKBODauKy (zTemp.Report.cs:9145)
+//     Rtl_QtyTotal = tổng Rtl_QtyM{hiện tại/+1/+2} của BusinessPlanDtl đã duyệt A2/ACTUAL, đúng năm từng
+//       tháng (xử lý qua năm mới) (zTemp.Report.cs:9229).
+//   (D) ĐƠN GIẢN HOÁ CÓ CHỦ ĐÍCH — nguồn nặng >500 dòng SQL/cột (nhiều bảng Car/Deal/Contract/Payment +
+//       trạng thái back-order + tuổi tồn theo kỳ), KHÔNG port nguyên văn SQL trong 1 cụm:
+//     Qty_TKBODauKy ~ số VIN tại đại lý (CarVinMasters.DealerCode) ĐÃ xuất kho (VinMyStatuses.DeliveryOutDate
+//       khác null) mà CHƯA bán lẻ xong (không có DealerDealDetail.DeliveryDate khác null ứng với VIN đó).
+//       Nguồn thật còn cộng back-order CHƯA map VIN + trừ số hủy hợp đồng theo tuổi tồn — KHÔNG port ở đây.
+//     Qty_HDBL ~ số hợp đồng bán lẻ (DealerDealDetail FlagCurrent='1') CHƯA giao xe (DeliveryDate null).
+//       Nguồn thật trừ thêm số hủy theo từng tuổi tồn (TonDauKy/PhatSinh/GiaoXe/Hủy) — KHÔNG port ở đây.
+//   (B) CỐ Ý BỎ: QtyTotal_Dealer — ĐÃ XÁC NHẬN là cột CHẾT ở nguồn LIVE (gán FieldName cho 2 cột lưới
+//       nhưng bị comment khỏi `listColTotal`/`listColDB` ở FrmBCGoiYDatHang.cs:335-338/389-399; không có
+//       SQL nào sinh cột này trong `Rpt_GoiYDatHangX` hiện hành, chỉ còn ở Backup/Delete). Không port (#540).
+//   ⚠️ Nhóm theo (DealerCode, ModelCode, SpecCode) — KHÔNG tách theo màu (`ColorExtCode`) như nguồn, vì
+//      CarVinMasters chỉ có `ColorCode` (không có cột màu thứ hai khớp `ColorExtCode`) — đơn giản hoá thêm.
+app.MapGet("/api/report/goi-y-dat-hang", async (AppDbContext db, ITenantContext t, string? dealerCode, string? modelCode, string? month) =>
+{
+    DateTime m0Start;
+    if (!string.IsNullOrWhiteSpace(month) && DateTime.TryParseExact(month + "01", "yyyyMMdd",
+            System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsed))
+        m0Start = parsed;
+    else
+        m0Start = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+    var months3 = new[] { m0Start, m0Start.AddMonths(1), m0Start.AddMonths(2) };
+    var monthKeys3 = months3.Select(d => d.ToString("yyyyMM")).ToArray();
+    var avgFrom = m0Start.AddMonths(-12);
+
+    var dealerF = (dealerCode ?? "").Trim();
+    var modelF = (modelCode ?? "").Trim();
+
+    // QtyTotal_HTC — dự báo HTC 3 tháng
+    var htcQ = db.GoiYDatHangHtcs.Where(x => x.OrgId == t.OrgId && monthKeys3.Contains(x.RptMonth));
+    if (dealerF.Length > 0) htcQ = htcQ.Where(x => x.DealerCode == dealerF);
+    if (modelF.Length > 0) htcQ = htcQ.Where(x => x.ModelCode == modelF);
+    var htcRows = await htcQ.Select(x => new { x.DealerCode, x.ModelCode, x.SpecCode, x.Qty }).ToListAsync();
+
+    // Qty_TKBO — đại lý tự nhập
+    var tkboQ = db.GoiYDatHangDealers.Where(x => x.OrgId == t.OrgId && x.RptMonth == "TKBO");
+    if (dealerF.Length > 0) tkboQ = tkboQ.Where(x => x.DealerCode == dealerF);
+    if (modelF.Length > 0) tkboQ = tkboQ.Where(x => x.ModelCode == modelF);
+    var tkboRows = await tkboQ.Select(x => new { x.DealerCode, x.ModelCode, x.SpecCode, x.Qty }).ToListAsync();
+
+    // Qty_AvgSale — SL bán lẻ 12 tháng gần nhất, lấy qua DealerDealDetail (FlagCurrent=1) join Deal + CarVinMaster
+    var dealQ = db.DealerDeals.Where(x => x.OrgId == t.OrgId && x.DealDate >= avgFrom && x.DealDate < m0Start);
+    if (dealerF.Length > 0) dealQ = dealQ.Where(x => x.DealerCode == dealerF);
+    var retailLines = await (from dd in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.FlagCurrent == "1")
+                              join d in dealQ on dd.DealId equals d.Id
+                              join cv in db.CarVinMasters.Where(x => x.OrgId == t.OrgId) on dd.VIN equals cv.VIN
+                              select new { d.DealerCode, cv.ModelCode, cv.SpecCode }).ToListAsync();
+    if (modelF.Length > 0) retailLines = retailLines.Where(x => x.ModelCode == modelF).ToList();
+
+    // Qty_HDBL (ĐƠN GIẢN HOÁ) — hợp đồng bán lẻ hiện hành chưa giao xe
+    var hdblLines = await (from dd in db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.FlagCurrent == "1" && x.DeliveryDate == null)
+                            join d in db.DealerDeals.Where(x => x.OrgId == t.OrgId) on dd.DealId equals d.Id
+                            join cv in db.CarVinMasters.Where(x => x.OrgId == t.OrgId) on dd.VIN equals cv.VIN
+                            select new { d.DealerCode, cv.ModelCode, cv.SpecCode }).ToListAsync();
+    if (dealerF.Length > 0) hdblLines = hdblLines.Where(x => x.DealerCode == dealerF).ToList();
+    if (modelF.Length > 0) hdblLines = hdblLines.Where(x => x.ModelCode == modelF).ToList();
+
+    // Qty_TKBODauKy (ĐƠN GIẢN HOÁ) — VIN đã xuất kho về đại lý, chưa bán lẻ xong
+    var deliveredVins = (await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.FlagCurrent == "1" && x.DeliveryDate != null && x.VIN != null)
+        .Select(x => x.VIN!).Distinct().ToListAsync()).ToHashSet();
+    var outboundVins = (await db.VinMyStatuses.Where(x => x.OrgId == t.OrgId && x.DeliveryOutDate != null)
+        .Select(x => x.VIN).ToListAsync()).ToHashSet();
+    var carQ = db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.DealerCode != null);
+    if (dealerF.Length > 0) carQ = carQ.Where(x => x.DealerCode == dealerF);
+    if (modelF.Length > 0) carQ = carQ.Where(x => x.ModelCode == modelF);
+    var dauKyLines = (await carQ.Select(x => new { x.VIN, x.DealerCode, x.ModelCode, x.SpecCode }).ToListAsync())
+        .Where(x => outboundVins.Contains(x.VIN) && !deliveredVins.Contains(x.VIN)).ToList();
+
+    // Rtl_QtyTotal — Kế hoạch KD đã duyệt A2/ACTUAL, 3 tháng hiện tại/+1/+2 (xử lý qua năm mới)
+    var planHeaders = await db.BusinessPlanHeaders.Where(x => x.OrgId == t.OrgId && x.Status == "A2" && x.Version == "ACTUAL"
+        && (dealerF.Length == 0 || x.DealerCode == dealerF)).ToListAsync();
+    var planCodeToDealer = planHeaders.ToDictionary(h => h.BusinessPlanCode, h => h.DealerCode);
+    var planYears = months3.Select(d => d.Year).Distinct().ToArray();
+    var planDtlsQ = db.BusinessPlanDtls.Where(x => x.OrgId == t.OrgId && planYears.Contains(x.YearPlan) && planCodeToDealer.Keys.Contains(x.BusinessPlanCode));
+    if (modelF.Length > 0) planDtlsQ = planDtlsQ.Where(x => x.ModelCode == modelF);
+    var planDtls = await planDtlsQ.ToListAsync();
+    static decimal RtlQtyMonth(BusinessPlanDtl d, int mo) => mo switch
+    {
+        1 => d.Rtl_QtyM1, 2 => d.Rtl_QtyM2, 3 => d.Rtl_QtyM3, 4 => d.Rtl_QtyM4, 5 => d.Rtl_QtyM5, 6 => d.Rtl_QtyM6,
+        7 => d.Rtl_QtyM7, 8 => d.Rtl_QtyM8, 9 => d.Rtl_QtyM9, 10 => d.Rtl_QtyM10, 11 => d.Rtl_QtyM11, 12 => d.Rtl_QtyM12,
+        _ => 0m
+    };
+    var rtlLines = new List<(string DealerCode, string ModelCode, decimal Qty)>();
+    foreach (var mDate in months3)
+        foreach (var d in planDtls.Where(x => x.YearPlan == mDate.Year))
+            if (planCodeToDealer.TryGetValue(d.BusinessPlanCode, out var dc))
+                rtlLines.Add((dc, d.ModelCode, RtlQtyMonth(d, mDate.Month)));
+
+    // gộp tất cả theo khoá (DealerCode, ModelCode, SpecCode) — SpecCode rỗng gộp vào "" khi nguồn không tách spec (Rtl_QtyTotal)
+    var keys = new HashSet<(string DealerCode, string ModelCode, string SpecCode)>();
+    foreach (var x in htcRows) keys.Add((x.DealerCode, x.ModelCode, x.SpecCode ?? ""));
+    foreach (var x in tkboRows) keys.Add((x.DealerCode, x.ModelCode, x.SpecCode ?? ""));
+    foreach (var x in retailLines) keys.Add((x.DealerCode, x.ModelCode, x.SpecCode ?? ""));
+    foreach (var x in hdblLines) keys.Add((x.DealerCode, x.ModelCode, x.SpecCode ?? ""));
+    foreach (var x in dauKyLines) keys.Add((x.DealerCode!, x.ModelCode ?? "", x.SpecCode ?? ""));
+
+    var rows = keys.Select(k =>
+    {
+        var qtyTotalHtc = htcRows.Where(x => x.DealerCode == k.DealerCode && x.ModelCode == k.ModelCode && (x.SpecCode ?? "") == k.SpecCode).Sum(x => x.Qty);
+        var qtyTkbo = tkboRows.Where(x => x.DealerCode == k.DealerCode && x.ModelCode == k.ModelCode && (x.SpecCode ?? "") == k.SpecCode).Sum(x => x.Qty);
+        var retailCount = retailLines.Count(x => x.DealerCode == k.DealerCode && x.ModelCode == k.ModelCode && (x.SpecCode ?? "") == k.SpecCode);
+        var qtyAvgSale = Math.Round(retailCount / 12m, 0);
+        var qtyHdbl = hdblLines.Count(x => x.DealerCode == k.DealerCode && x.ModelCode == k.ModelCode && (x.SpecCode ?? "") == k.SpecCode);
+        var qtyTkboDauKy = dauKyLines.Count(x => x.DealerCode == k.DealerCode && x.ModelCode == k.ModelCode && (x.SpecCode ?? "") == k.SpecCode);
+        var qtyTkboCuoiKy = Math.Round(qtyTkbo * qtyAvgSale, 0);
+        var qtyGoiYDatHang = Math.Round(qtyTkboCuoiKy + qtyTotalHtc - qtyTkboDauKy, 0);
+        var rtlQtyTotal = rtlLines.Where(x => x.DealerCode == k.DealerCode && x.ModelCode == k.ModelCode).Sum(x => x.Qty);
+        return new
+        {
+            dealerCode = k.DealerCode, modelCode = k.ModelCode, specCode = k.SpecCode,
+            qtyTotal_HTC = qtyTotalHtc, qty_AvgSale = qtyAvgSale, qty_TKBO = qtyTkbo,
+            qty_TKBODauKy = (decimal)qtyTkboDauKy, qty_TKBOCuoiKy = qtyTkboCuoiKy, qty_GoiYDatHang = qtyGoiYDatHang,
+            qty_HDBL = (decimal)qtyHdbl, rtl_QtyTotal = rtlQtyTotal
+        };
+    }).OrderBy(r => r.dealerCode).ThenBy(r => r.modelCode).ToList();
+
+    return Results.Ok(new { months = monthKeys3, count = rows.Count, rows });
+}).RequireAuthorization();
+
+// #5909 — HTC nhập dự báo bán cho đại lý theo tháng (input của QtyTotal_HTC), tương đương
+// `Rpt_GoiYDatHang_HTC_Save` nguồn (không trace được số dòng cụ thể do hàm save không có tên chuẩn hoá
+// trong zTemp.Report.cs — ghi rõ không suy diễn).
+app.MapPost("/api/report/goi-y-dat-hang/htc-forecast", async (AppDbContext db, ITenantContext t, GoiYDatHangHtcDto dto) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode) || string.IsNullOrWhiteSpace(dto.RptMonth))
+        return Results.BadRequest(new { error = "Can dealerCode, modelCode, rptMonth (yyyyMM)." });
+    var row = await db.GoiYDatHangHtcs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dto.DealerCode
+        && x.ModelCode == dto.ModelCode && (x.SpecCode ?? "") == (dto.SpecCode ?? "") && x.RptMonth == dto.RptMonth);
+    if (row is null)
+    {
+        row = new GoiYDatHangHtc { OrgId = t.OrgId, DealerCode = dto.DealerCode, ModelCode = dto.ModelCode, SpecCode = dto.SpecCode, RptMonth = dto.RptMonth };
+        db.GoiYDatHangHtcs.Add(row);
+    }
+    row.Qty = dto.Qty;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DealerCode, row.ModelCode, row.SpecCode, row.RptMonth, row.Qty });
+}).RequireAuthorization();
+
+// #5909 — đại lý tự nhập số tháng TK&BO cuối kỳ, tương đương `Rpt_GoiYDatHang_Dealer_Save`
+// (BizHTC.zTemp.Report.cs:10381).
+app.MapPost("/api/report/goi-y-dat-hang/dealer-tkbo", async (AppDbContext db, ITenantContext t, GoiYDatHangDealerDto dto) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.ModelCode))
+        return Results.BadRequest(new { error = "Can dealerCode, modelCode." });
+    var row = await db.GoiYDatHangDealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dto.DealerCode
+        && x.ModelCode == dto.ModelCode && (x.SpecCode ?? "") == (dto.SpecCode ?? "") && x.RptMonth == "TKBO");
+    if (row is null)
+    {
+        row = new GoiYDatHangDealer { OrgId = t.OrgId, DealerCode = dto.DealerCode, ModelCode = dto.ModelCode, SpecCode = dto.SpecCode, RptMonth = "TKBO" };
+        db.GoiYDatHangDealers.Add(row);
+    }
+    row.Qty = dto.Qty;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DealerCode, row.ModelCode, row.SpecCode, row.RptMonth, row.Qty });
 }).RequireAuthorization();
 
 // ===== Báo cáo doanh thu dịch vụ (report tái-dùng ServiceInvoice — port 1:1 FrmAccTotalRevenue + FrmSer_InvReportRevenueRpt, TCMotor) =====
@@ -42740,7 +42936,40 @@ app.MapGet("/api/dochandovers/{no}/cars", async (string no, AppDbContext db, ITe
     var cars = await db.DocHandoverMinuteCars.Where(c => c.OrgId == t.OrgId && c.DocHandoverMinuteId == h.Id)
         .Select(c => new { c.VIN, c.ModelProductionCode, c.SpecDescription, c.EngineNo, c.CQNo, c.CONo, c.CBNo, c.DeclarationNo, c.BankGuaranteeNo, c.BankName, c.DlrCtrNo, c.HTCInvoiceNo, c.TransportMinutesNo, c.QtyInvoiceOriginal, c.QtyTransportMnOriginal, c.QtyTransportMnCopy }).ToListAsync();
     var totInv = cars.Sum(c => c.QtyInvoiceOriginal); var totOrig = cars.Sum(c => c.QtyTransportMnOriginal); var totCopy = cars.Sum(c => c.QtyTransportMnCopy);
-    return Results.Ok(new { h.BBBGNo, h.DealerCode, h.DealerName, h.CreatedDate, h.CreatedBy, h.Remark, count = cars.Count, totInvoiceOriginal = totInv, totTransportOriginal = totOrig, totTransportCopy = totCopy, cars });   // #1377 §12
+    // #COT_INBienBanBGHS — 5 cot "thieu" cua TblINBienBanBGHS thuc ra la ALIAS JOIN tu nguon
+    // (vathtci_*/dlrc_* trong BizHTC.DlvProfileMinutes.cs ~982-1035), KHONG phai cot moi: lam giau
+    // (enrich) tu VatInvoice/VatInvoiceCar + DealerDeal/DealerDealDetail/DlrContract da co san,
+    // khong them cot luu moi (cv_CBNo/Ctmn_TransportMinutesNo/ctmn_TransportMinutesNo la false-positive
+    // cua cong cu do vi da luu san la CBNo/TransportMinutesNo tren DocHandoverMinuteCar).
+    var vins = cars.Select(c => c.VIN).ToList();
+    var invByVin = await (
+        from vc in db.VatInvoiceCars
+        where vc.OrgId == t.OrgId && vins.Contains(vc.VIN) && vc.HTCStatusDetail != "C" && vc.HTCStatusDetail != "R"
+        join vh in db.VatInvoices on vc.VatInvoiceId equals vh.Id
+        where vh.OrgId == t.OrgId && vh.VatHTCStatus != "C" && vh.VatHTCStatus != "R"
+        select new { vc.VIN, vh.Id, vh.HTCInvoiceCode, vh.HTCInvoiceDate, vh.OS_HDDT_InvoiceCode }
+    ).ToListAsync();
+    var invMap = invByVin.GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
+    var dlrByVin = await (
+        from dd in db.DealerDealDetails
+        where dd.OrgId == t.OrgId && dd.VIN != null && vins.Contains(dd.VIN!) && dd.FlagCurrent == "1"
+        join dl in db.DealerDeals on dd.DealId equals dl.Id
+        where dl.OrgId == t.OrgId && dl.FlagInitDeal == "0" && dl.DlrContractNo != null
+        join dc in db.DlrContracts on dl.DlrContractNo equals dc.DlrContractNo
+        where dc.OrgId == t.OrgId
+        select new { VIN = dd.VIN!, dc.Id, dc.DlrContractNoUser }
+    ).ToListAsync();
+    var dlrMap = dlrByVin.GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
+    var carsOut = cars.Select(c => {
+        invMap.TryGetValue(c.VIN, out var inv);
+        dlrMap.TryGetValue(c.VIN, out var dlr);
+        return new {
+            c.VIN, c.ModelProductionCode, c.SpecDescription, c.EngineNo, c.CQNo, c.CONo, c.CBNo, c.DeclarationNo, c.BankGuaranteeNo, c.BankName, c.DlrCtrNo, c.HTCInvoiceNo, c.TransportMinutesNo, c.QtyInvoiceOriginal, c.QtyTransportMnOriginal, c.QtyTransportMnCopy,
+            VatHTCInvoiceCode = inv?.HTCInvoiceCode, VatHTCInvoiceDate = inv?.HTCInvoiceDate, VatOSHDDTInvoiceCode = inv?.OS_HDDT_InvoiceCode,   // vathtci_HTCInvoiceCode / vathtci_HTCInvoiceDate / vathtci_OS_HDDT_InvoiceCode
+            DlrContractNoUser = dlr?.DlrContractNoUser   // dlrc_DlrContractNoUser; c.HTCInvoiceNo above already = vathtci_HTCInvoiceNo (so BBBG already shows so HD HTCV, giu nguyen, khong them cot trung)
+        };
+    }).ToList();
+    return Results.Ok(new { h.BBBGNo, h.DealerCode, h.DealerName, h.CreatedDate, h.CreatedBy, h.Remark, count = carsOut.Count, totInvoiceOriginal = totInv, totTransportOriginal = totOrig, totTransportCopy = totCopy, cars = carsOut });   // #1377 §12
 }).RequireAuthorization();
 
 // ===== Lệnh cân bằng/điều chuyển kho (StoRearCB — port 1:1 FrmMngRearCBSC, TCMotor/Sales/Logistic) =====
@@ -114857,11 +115086,16 @@ record ReportKpiDto(string? RptYear, string? RptMonth, string? RptBy,
     DateTime? ApprovedDate = null, decimal? CabinetPaintNumber = null, decimal? CarPerAdviserDay = null, decimal? CavityBPNumber = null,
     decimal? CavityCopperNumber = null, decimal? CavityMaintainNumber = null, decimal? CavityOtherNumber = null, decimal? CavityParkingNumber = null,
     decimal? CavityQtyPerEngineerBDNSCC = null, decimal? CavityRONumber = null, decimal? CountBDD = null, decimal? CountBDDLocal = null,
+    // #30073: 14 cot *Local_SCL/*Local_Khac - nguon ep cung literal 0 (xem comment dau class ReportKpi), giu settable o Mini.
+    decimal? CountBDDLocal_SCL = null, decimal? CountBDDLocal_Khac = null,
     decimal? CountBDDPerCavityMaintain = null, decimal? CountBDDRoRepair = null, decimal? CountCarService = null, decimal? CountSCC = null,
     decimal? CountSCCLocal = null, decimal? CountSCCPerCavityRO = null, decimal? CountSCCRoInsurance = null, decimal? CountSCCRoRepair = null,
-    decimal? CountSCCRoWarranty = null, decimal? CountSCD = null, decimal? CountSCDLocal = null, decimal? CountSCDPerCavityCopper = null,
+    decimal? CountSCCRoWarranty = null, decimal? CountSCD = null, decimal? CountSCDLocal = null,
+    decimal? CountSCDLocal_SCL = null, decimal? CountSCDLocal_Khac = null, decimal? CountSCDPerCavityCopper = null,
     decimal? CountSCDRoInsurance = null, decimal? CountSCDRoRepair = null, decimal? CountSCDRoWarranty = null, decimal? CountSCS = null,
-    decimal? CountSCSLocal = null, decimal? CountSCSPerCabinetPaint = null, decimal? CountSCSPerCavityBP = null, decimal? CountSCSRoInsurance = null,
+    decimal? CountSCSLocal = null,
+    decimal? CountSCSLocal_SCL = null, decimal? CountSCSLocal_Khac = null,
+    decimal? CountSCSPerCabinetPaint = null, decimal? CountSCSPerCavityBP = null, decimal? CountSCSRoInsurance = null,
     decimal? CountSCSRoRepair = null, decimal? CountSCSRoWarranty = null, decimal? CountSPK = null, decimal? CountSPKLocal = null,
     decimal? CountPDI = null, decimal? CountPDIRoRepair = null, decimal? CountPDILocal = null,
     decimal? CountSPKRoRepair = null, DateTime? DateReport = null, string? DealerCode = null, decimal? EmploymentRate = null,
@@ -114870,9 +115104,16 @@ record ReportKpiDto(string? RptYear, string? RptMonth, string? RptBy,
     decimal? PartAmountRoInsurance = null, decimal? PartAmountRoRepair = null, decimal? PartAmountRoWarranty = null, decimal? PartAmountShell = null,
     decimal? PartProfitRate = null, decimal? RevenuePerAdviser = null, decimal? RevenuePerKTVBDN = null, decimal? RevenuePerKTVSCC = null,
     decimal? RevenuePerKTVSCD = null, decimal? RevenuePerKTVSCS = null, decimal? SerProfitRate = null, decimal? ServiceAmountBDDLocal = null,
-    decimal? ServiceAmountBDDRoRepair = null, decimal? ServiceAmountSCCLocal = null, decimal? ServiceAmountSCCRoInsurance = null, decimal? ServiceAmountSCCRoRepair = null,
-    decimal? ServiceAmountSCCRoWarranty = null, decimal? ServiceAmountSCDLocal = null, decimal? ServiceAmountSCDRoInsurance = null, decimal? ServiceAmountSCDRoRepair = null,
-    decimal? ServiceAmountSCDRoWarranty = null, decimal? ServiceAmountSCSLocal = null, decimal? ServiceAmountSCSRoInsurance = null, decimal? ServiceAmountSCSRoRepair = null,
+    decimal? ServiceAmountBDDLocal_SCL = null, decimal? ServiceAmountBDDLocal_Khac = null,
+    decimal? ServiceAmountBDDRoRepair = null, decimal? ServiceAmountSCCLocal = null,
+    decimal? ServiceAmountSCCLocal_SCL = null, decimal? ServiceAmountSCCLocal_Khac = null,
+    decimal? ServiceAmountSCCRoInsurance = null, decimal? ServiceAmountSCCRoRepair = null,
+    decimal? ServiceAmountSCCRoWarranty = null, decimal? ServiceAmountSCDLocal = null,
+    decimal? ServiceAmountSCDLocal_SCL = null, decimal? ServiceAmountSCDLocal_Khac = null,
+    decimal? ServiceAmountSCDRoInsurance = null, decimal? ServiceAmountSCDRoRepair = null,
+    decimal? ServiceAmountSCDRoWarranty = null, decimal? ServiceAmountSCSLocal = null,
+    decimal? ServiceAmountSCSLocal_SCL = null, decimal? ServiceAmountSCSLocal_Khac = null,
+    decimal? ServiceAmountSCSRoInsurance = null, decimal? ServiceAmountSCSRoRepair = null,
     decimal? ServiceAmountSCSRoWarranty = null, decimal? ServiceAmountSPKLocal = null,
     decimal? ServiceAmountPDIRoRepair = null, decimal? ServiceAmountPDILocal = null, decimal? ServiceAmountSPKRoRepair = null, decimal? ServiceProductivity = null,
     decimal? ServiceTechnicianQty = null, decimal? ShellAmountOut = null, decimal? SparePartsStaff = null, decimal? StaffOrther = null,
@@ -116439,3 +116680,5 @@ static class CmSeq
 }
 record ReqPaymentDiscountDecideDto(bool Approve);
 record SoSupportLineDto(string? ModelCode, string? SpecCode, string? ColorCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
+record GoiYDatHangHtcDto(string DealerCode, string ModelCode, string? SpecCode, string RptMonth, decimal Qty);   // #5909
+record GoiYDatHangDealerDto(string DealerCode, string ModelCode, string? SpecCode, decimal Qty);   // #5909
