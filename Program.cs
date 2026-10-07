@@ -25941,6 +25941,73 @@ app.MapGet("/api/report/service-revenue", async (AppDbContext db, ITenantContext
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #5894 `FrmReportTotalRevenue` — CHƯA TỪNG PORT (tiêu đề comment trên ghi nhầm tên hàm) =====
+// Ghi chú "port 1:1 ... FrmSer_InvReportRevenueRpt" ở route `/api/report/service-revenue` phía trên
+// KHÔNG khớp: route đó gộp `ServiceInvoice` theo tháng, trong khi hàm nguồn thật của màn này
+// (`DoSearch()` → `ServiceReportService.Ser_InvReportRevenueRpt(creator,fromDate,toDate)` → WS cùng tên
+// → biz LIVE **`Ser_InvReportRevenueRpt_New20230417`**, `BizCarSv.Service.Report.cs:3081`) tính DOANH
+// THU TỪNG LỆNH SỬA CHỮA (RO) đã thanh toán, có tách phần BẢO HIỂM và phần CÒN NỢ — khác hẳn.
+// Nguồn lọc: `ro.Status in ('FNS','PAID')` + `PaidCreatedDate` trong [FromDate,ToDate] (so NGÀY, bỏ giờ
+// qua CONVERT 120) + lọc tuỳ chọn `ro.Creator` (người lập lệnh, KHÔNG phải người thu tiền).
+// `Amount`/`AmountVAT`/`SumAmount` = tổng TẤT CẢ dòng phụ tùng+dịch vụ của RO (không lọc ExpenseType);
+// `InsAmount` = CHỈ RIÊNG phần `ExpenseType='ROINSURANCE'` (thông tin thêm, KHÔNG trừ khỏi SumAmount).
+// `DebitAmount` = dư nợ khách hàng CÒN LẠI sau khi trừ đã thu (`CusDebit.DebitAmount - PaidAmount`, lọc
+// `DebitType='1'`, khớp theo `RONo`); `RevenueCash` = `SumAmount - DebitAmount` (tiền mặt THỰC THU).
+app.MapGet("/api/report/ro-revenue-paid", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? creator) =>
+{
+    if (fromDate is null || toDate is null) return Results.BadRequest(new { error = "Can fromDate va toDate." });
+    var from = fromDate.Value.Date;
+    var to = toDate.Value.Date;
+    var cr = (creator ?? "").Trim();
+
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId
+            && (x.Status == "Finished" || x.Status == "Paid")
+            && x.PaidCreatedDate != null && x.PaidCreatedDate.Value.Date >= from && x.PaidCreatedDate.Value.Date <= to
+            && (cr.Length == 0 || x.Creator == cr))
+        .ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+    var partLines = roIds.Count == 0 ? new List<RoPartItem>()
+        : await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    var serLines = roIds.Count == 0 ? new List<RoServiceItem>()
+        : await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId)).ToListAsync();
+    var roNos = ros.Select(x => x.RONo).ToList();
+    var debits = roNos.Count == 0 ? new List<CusDebit>()
+        : await db.CusDebits.Where(x => x.OrgId == t.OrgId && x.DebitType == "1" && roNos.Contains(x.RONo!)).ToListAsync();
+    var debitByRoNo = debits.GroupBy(x => x.RONo!).ToDictionary(g => g.Key, g => g.Sum(x => x.DebitAmount - x.PaidAmount));
+
+    var items = ros.Select(ro =>
+    {
+        var parts = partLines.Where(p => p.RoId == ro.Id).ToList();
+        var sers = serLines.Where(s => s.RoId == ro.Id).ToList();
+        var partAmount = parts.Sum(p => p.Factor * p.NeedQty * p.UnitPrice);
+        var partVat = parts.Sum(p => p.Factor * p.NeedQty * p.UnitPrice * p.Vat * 0.01m);
+        var serAmount = sers.Sum(s => s.Factor * s.Price);
+        var serVat = sers.Sum(s => s.Factor * s.Price * s.Vat * 0.01m);
+        var amount = partAmount + serAmount;
+        var amountVat = partVat + serVat;
+        var partIns = parts.Where(p => p.ExpenseType == "ROINSURANCE").Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1 + p.Vat * 0.01m));
+        var serIns = sers.Where(s => s.ExpenseType == "ROINSURANCE").Sum(s => s.Factor * s.Price * (1 + s.Vat * 0.01m));
+        var debitLeft = debitByRoNo.TryGetValue(ro.RONo, out var d) ? d : 0m;
+        var sumAmount = amount + amountVat;
+        return new
+        {
+            roNo = "BG-" + ro.RONo, plateNo = ro.LicensePlate, ro.CheckInDate, ro.PaidCreatedDate, ro.ActualDeliveryDate,
+            ro.CusName, phoneNo = ro.CusTel ?? ro.CusMobile, ro.TradeMarkCode,
+            amount, amountVAT = amountVat, sumAmount,
+            debitAmount = debitLeft, revenueCash = sumAmount - debitLeft,
+            insAmount = partIns + serIns,
+        };
+    }).OrderBy(x => x.roNo).ToList();
+    return Results.Ok(new
+    {
+        fromDate, toDate, creator = cr.Length > 0 ? cr : null,
+        count = items.Count, totalSumAmount = items.Sum(x => x.sumAmount), totalRevenueCash = items.Sum(x => x.revenueCash),
+        totalInsAmount = items.Sum(x => x.insAmount), items,
+        insAmountIsInfoOnlyNote = "insAmount CHI la phan tach thong tin (ExpenseType=ROINSURANCE), KHONG bi tru khoi sumAmount/amount dung nguon",
+    });
+}).RequireAuthorization();
+
 // ===== KPI dịch vụ tổng hợp (report tái-dùng RepairOrder + ServiceInvoice — port 1:1 FrmReportKPI/FrmReportCollectiveDisplay_KPI/FrmRpt_Correct_Repair_Rate, TCMotor) =====
 app.MapGet("/api/report/service-kpi", async (AppDbContext db, ITenantContext t, DateTime? fromDate, DateTime? toDate) =>
 {
@@ -56861,6 +56928,82 @@ app.MapGet("/api/report/ro-revenue-summary", async (AppDbContext db, ITenantCont
         positiveLeftJoinOnTotals = "AM TINH: hai left join vao bang tam tong tien + IsNull(..., 0) => phieu KHONG CO dong phu tung/dich vu van ra Revenue = 0 thay vi NULL => LAM DUNG, doi lap voi cac inner join o tren",
         positivePortActiveLines = "AM TINH: khoi tinh doanh thu bang TRUY VAN CON nam ngay do nhung DA BI COMMENT; ban ACTIVE dung bang tam #tbl_Ser_ROPartItems_SumTotal / #tbl_Ser_ROServiceItems_SumTotal => port DONG ACTIVE",
         twoMachinesVerified860 = "md5 chuan hoa 41102830 KHOP may 150",
+    });
+}).RequireAuthorization();
+// ===== #5894 BÁO CÁO DOANH THU CHI TIẾT THEO LỆNH — FrmReportTotalRevenue (`Ser_InvReportRevenueRpt`,
+// `BizCarSv.Service.Report.cs:2861`, LIVE qua WSHTC.asmx/TERP.WSCarSv, không có bản `_New*` nên không có
+// twin chết) — MÀN THỨ BA cùng họ "doanh thu" (#860 ro-revenue-summary tổng hợp theo lệnh KHÔNG tách công
+// nợ/thực thu; #867 revenue-by-engineer chia theo KTV) — đây là báo cáo DUY NHẤT tách DEBIT (còn nợ KH) vs
+// RevenueCash (thực thu = tổng tiền − nợ) + cột riêng tiền bảo hiểm (InsAmount), lọc theo strUserCode
+// (người TẠO lệnh, Ser_RO.Creator) — KHÔNG có ở hai báo cáo kia.
+// Khác #860 (VAT/100 — bẫy chia nguyên): hàm này dùng VAT*0.01 (ĐÚNG), giống #861.
+// Khác #860 (Factor==0 ⇒ fallback 1): SQL hàm này viết isnull(Factor,0) TRẦN, không fallback 1 ⇒ Mini
+// giữ Factor nguyên (0 vẫn là 0), không áp fallback như #860/#867.
+// Nguồn ghép tiền tố cứng "BG-"+RONo (hardcodedPrefixOnRoNo kiểu #860) — Mini KHÔNG replicate, trả RONo trần.
+// DebitAmount nguồn join Ser_CusDebit (DebitType='1', công nợ khách hàng) trừ ROPaymentAmount (tổng các
+// khoản đã thu qua Ser_PaymentDetail) ⇒ Mini dùng CusDebit.DebitAmount-PaidAmount (cột PaidAmount đã là
+// tổng lũy kế, tương đương — xem khai báo CusDebitPayment/CusDebit ở trên).
+app.MapGet("/api/report/ro-revenue-detail", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? creator) =>
+{
+    var cr = (creator ?? "").Trim();
+    var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
+        .Where(x => x.Status == "Finished" || x.Status == "Paid")
+        .Where(x => fromDate == null || (x.PaidCreatedDate != null && x.PaidCreatedDate >= fromDate))
+        .Where(x => toDate == null || (x.PaidCreatedDate != null && x.PaidCreatedDate < toDate!.Value.AddDays(1)))
+        .Where(x => cr.Length == 0 || x.Creator == cr)
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CheckInDate, x.PaidCreatedDate, x.ActualDeliveryDate,
+            x.CusName, x.CusTel, x.CusMobile, x.TradeMarkCode })
+        .ToListAsync();
+    var ids = ros.Select(x => x.Id).ToList();
+    var partRows = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.UnitPrice, x.NeedQty, x.Factor, x.Vat, x.ExpenseType }).ToListAsync();
+    var serRows = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && ids.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.Price, x.Factor, x.Vat, x.ExpenseType }).ToListAsync();
+    var roNos = ros.Select(x => x.RONo).ToHashSet();
+    var debits = await db.CusDebits.Where(x => x.OrgId == t.OrgId && x.DebitType == "1"
+            && x.RONo != null && roNos.Contains(x.RONo!))
+        .Select(x => new { x.RONo, x.DebitAmount, x.PaidAmount }).ToListAsync();
+    var debitByRo = debits.GroupBy(x => x.RONo!)
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.DebitAmount - x.PaidAmount));
+
+    var items = ros.Select(ro =>
+    {
+        var parts = partRows.Where(p => p.RoId == ro.Id).ToList();
+        var sers = serRows.Where(s => s.RoId == ro.Id).ToList();
+        // isnull(Factor,0) TRẦN trong nguồn — KHÔNG fallback 1 như #860/#867.
+        var partAmount = parts.Sum(p => p.Factor * p.NeedQty * p.UnitPrice);
+        var partVat = parts.Sum(p => p.Factor * p.NeedQty * p.UnitPrice * p.Vat * 0.01m);
+        var serAmount = sers.Sum(s => s.Factor * s.Price);          // dịch vụ KHÔNG nhân NeedQty, giống nguồn
+        var serVat = sers.Sum(s => s.Factor * s.Price * s.Vat * 0.01m);
+        var amount = partAmount + serAmount;
+        var amountVat = partVat + serVat;
+        var sumAmount = amount + amountVat;
+        var partIns = parts.Where(p => p.ExpenseType == "ROINSURANCE")
+            .Sum(p => p.Factor * p.NeedQty * p.UnitPrice * (1m + p.Vat * 0.01m));
+        var serIns = sers.Where(s => s.ExpenseType == "ROINSURANCE")
+            .Sum(s => s.Factor * s.Price * (1m + s.Vat * 0.01m));
+        var insAmount = partIns + serIns;
+        var debitAmount = debitByRo.TryGetValue(ro.RONo, out var d) ? d : 0m;
+        return new
+        {
+            roNo = ro.RONo, plateNo = ro.LicensePlate, ro.CheckInDate, ro.PaidCreatedDate, ro.ActualDeliveryDate,
+            ro.CusName, phoneNo = ro.CusTel ?? ro.CusMobile, ro.TradeMarkCode,
+            amount, amountVat, sumAmount, debitAmount, revenueCash = sumAmount - debitAmount, insAmount,
+        };
+    }).OrderBy(x => x.roNo).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate, toDate, creator = cr.Length > 0 ? cr : null,
+        count = items.Count,
+        totalAmount = items.Sum(x => x.amount), totalVat = items.Sum(x => x.amountVat),
+        totalSumAmount = items.Sum(x => x.sumAmount), totalDebit = items.Sum(x => x.debitAmount),
+        totalRevenueCash = items.Sum(x => x.revenueCash), totalInsAmount = items.Sum(x => x.insAmount),
+        items,
+        hardcodedPrefixOnRoNoNotReplicated = "Nguon ghep tien to cung 'BG-'+RONo (kieu #860's 'LS-') — Mini tra RONo tran, khong replicate loi dat ten.",
+        vatFormulaCorrectHere = "VAT*0.01 (DUNG) — KHAC bay VAT/100 cua #860; Factor isnull(,0) TRAN khong fallback 1.",
+        debitJoinSimplification = "Nguon tru ROPaymentAmount (sum Ser_PaymentDetail) qua Ser_CusDebit.DebitType='1'; Mini dung CusDebit.PaidAmount (da la luy ke) lam tuong duong.",
     });
 }).RequireAuthorization();
 app.MapGet("/api/_meta/quote-stockout-branches", () => Results.Ok(new
