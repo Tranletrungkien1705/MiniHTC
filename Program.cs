@@ -96544,8 +96544,17 @@ app.MapPost("/api/mstparams", async (MstParamDto dto, AppDbContext db, ITenantCo
 //     ⇒ nợ này **không rải đều**, nó nằm ở phần được thêm sau.
 app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantContext t,
     string? callerDealerCode, string? dealers, string? status, string? plateNo, string? frameNo,
-    string? cusName, DateTime? checkInDate, DateTime? actualDeliveryDate) =>
+    string? cusName, DateTime? checkInDate, DateTime? actualDeliveryDate, string? quotationNo) =>
 {
+    // ===== #5864 =====
+    // `FrmPartSearchInfo` (DMSCarSv, menu-live `FrmMain.cs:1082`) gọi `SerROGetStatus02` → WS
+    // `Ser_RO_GetStatusList02` (`WSCarSv.asmx.cs:10124`) → biz LIVE `Ser_RO_GetStatusList02_New20230220`
+    // (`Service.RO.cs:498`) — THÂN TRẦN, cùng màn tìm lệnh sửa chữa với `_GetClaimX` (đã port ở #688),
+    // cùng bảng nhãn trạng thái `rosearch` (so khớp 8/8 nhãn), nhưng có MỘT bộ lọc mà `_GetClaimX` không
+    // dùng: `strQuotationNoList` — tìm theo SỐ BÁO GIÁ (chuỗi `"=" + strQuationNo`, tức khớp CHÍNH XÁC,
+    // không phải LIKE). Nguồn tự chuẩn hoá: `strQuotationNoList.Replace("BG-", "")` trước khi so khớp
+    // (biểu mẫu "BG-xxxx" người dùng gõ vào ô số báo giá), vì cột lưu là `RONo` trần, không có tiền tố.
+    var normalizedQuotationNo = string.IsNullOrWhiteSpace(quotationNo) ? null : quotationNo!.Trim().Replace("BG-", "");
     // ===== #688 =====
     const string twinsDifferOnlyInTargetDatabase = "HAI BAN SINH DOI KHAC NHAU DUNG O CSDL DICH: diff chuan hoa khoang trang (122 vs 122 dong) chi ra ten ham, strFunctionName, strErrorCodeDefault va _dbMain vs _dbWH. KHONG khac nghiep vu. Ban Main con kem ly do nghiep vu viet ngay tai cho: #region // Init: // chia se lich su sua chua nen se de request tren Main => giai thich vi sao ban dai ly lai chay tren _dbMain chu khong _dbDealer";
     const string wrapperVersionSuffixIsFourYearsStale = "HAU TO PHIEN BAN CUA VO BOC LECH 4 NAM SO VOI THAN: vo boc ten …_GetClaim_WH_New20190710 nhung ben trong goi Ser_RO_GetStatusList02_GetClaimX_New20230220(…) => doc ten vo boc ma suy day la ban 2019 la SAI 4 NAM. Cung ho voi #683/#684/#687 (ten noi doi) nhung day la HAU TO NGAY — thu ma ca toi lan nguoi bao tri deu dung de doan ban nao moi";
@@ -96572,6 +96581,7 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
     if (!string.IsNullOrWhiteSpace(plateNo)) qy = qy.Where(r => r.LicensePlate.Contains(plateNo!.ToUpperInvariant()));
     if (!string.IsNullOrWhiteSpace(frameNo)) qy = qy.Where(r => r.Vin != null && r.Vin.Contains(frameNo!.ToUpperInvariant()));
     if (!string.IsNullOrWhiteSpace(cusName)) qy = qy.Where(r => r.CusName != null && r.CusName.Contains(cusName!));
+    if (normalizedQuotationNo is not null) qy = qy.Where(r => r.RONo == normalizedQuotationNo);   // #5864
     if (checkInDate.HasValue)
     {
         var d0 = checkInDate.Value.Date; var d1 = d0.AddDays(1);
@@ -96668,6 +96678,7 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
     {
         callerDealerCode = caller.Length == 0 ? null : caller,
         note = "Số lệnh (LS-) và người lập bị che ****** khi lệnh thuộc đại lý KHÁC đại lý gọi; tiền tố BG- không che.",
+        quotationNoFilterNote = "#5864: quotationNo khop CHINH XAC (khong LIKE) voi RONo sau khi tu dong bo 'BG-' - dung cho FrmPartSearchInfo (SerROGetStatus02).",
         // #284: nguồn DMSCarSv gộp biển số thành MỘT chuỗi ngăn bằng dấu phẩy (STUFF … FOR XML PATH).
         // #301: biển số cũng phải qua dự phòng, nếu không lệnh chưa chụp sẽ mất khỏi danh sách này.
         plateNoList = string.Join(",", rows
