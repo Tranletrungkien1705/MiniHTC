@@ -97175,6 +97175,86 @@ app.MapGet("/api/repairorders/status-history", async (AppDbContext db, ITenantCo
     });
 }).RequireAuthorization();
 
+// ===== #5902 Tìm lệnh sửa chữa theo trạng thái (Ser_RO_GetStatusList — port 1:1 FrmServiceStatus) =====
+// KHÁC `Ser_RO_GetStatusList02` (#688/#5864, đã port ở /status-history phía trên) — hai hàm sinh đôi tên
+// gần giống nhưng KHÔNG CÙNG MÀN: Nguồn `SerROService.SerROGetStatus` (DbServices/SerROService.cs:336)
+// → WS `Ser_RO_GetStatusList` (LIVE: HTCWSCarSv/WSCarSv.asmx.cs:10189 (web) +
+// TERP.WSCarSv/App_Code/WSCarSv.cs:15295 (đại lý); 0 hit ở WSCarSvTab.asmx.cs — KHÔNG có trên tablet)
+// → biz `BizCarSv.Service01.cs:579`.
+// 🔴🔴 GIỮ NGUYÊN BUG NGUỒN (luật port 1:1, không tự sửa hành vi): `FrmServiceStatus.GetStringStatus()`
+//   nối nhiều mã trạng thái đã tick bằng `Util.StretchListString` — nối bằng DẤU PHẨY (","). Nhưng biz lọc
+//   bằng `SqlUtils.BuildClauseConditionList("and", "ro.Status", strStatusList, "|")` — SPLIT theo DẤU GẠCH
+//   ĐỨNG ("|"), KHÔNG PHẢI PHẨY. Tick ĐÚNG 1 ô ⇒ chuỗi không có phẩy ⇒ lọc đúng 1 mã, chạy đúng. Tick
+//   NHIỀU ô (ví dụ "Chờ sửa"+"Đang sửa" ⇒ "CRE,PRT,HRO,INGA") ⇒ KHÔNG có "|" ⇒ Split trả nguyên chuỗi làm
+//   MỘT phần tử ⇒ SQL sinh `ro.Status in (N'CRE,PRT,HRO,INGA')` — so khớp literal không tồn tại ⇒ **KẾT QUẢ
+//   LUÔN RỖNG khi tick ≥2 ô**. Port giữ đúng hành vi này.
+// INNER JOIN đúng nguồn (KHÁC #301 fallback của /status-history): nguồn `inner join ser_Customer`/`ser_car`
+// ⇒ loại RO mà khách hoặc xe không còn tồn tại, không có đường dự phòng `isnull(...)`.
+app.MapGet("/api/repairorders/status-list", async (AppDbContext db, ITenantContext t,
+    string? dealerCodeList, string? statusList, string? plateNoPattern, string? frameNoPattern, string? quotationNo,
+    DateTime? checkInDateFrom, DateTime? checkInDateTo) =>
+{
+    var dealers = (dealerCodeList ?? "").Split('|', StringSplitOptions.RemoveEmptyEntries)
+        .Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
+    var qy = db.RepairOrders.Where(r => r.OrgId == t.OrgId);
+    if (dealers.Count > 0) qy = qy.Where(r => r.DealerCode != null && dealers.Contains(r.DealerCode));
+
+    // #5902 giữ bug nguồn: statusList chỉ lọc ĐÚNG khi phần tử phân tách bằng "|"; chuỗi nối bằng phẩy mà
+    // không có "|" bị coi là MỘT literal duy nhất ⇒ không khớp hàng nào (xem chú thích phía trên).
+    if (!string.IsNullOrWhiteSpace(statusList))
+    {
+        var codes = statusList.Split('|').Select(s => s.Trim().ToUpperInvariant()).Where(s => s.Length > 0).ToList();
+        if (codes.Count > 0) qy = qy.Where(r => codes.Contains(r.Status));
+    }
+    if (!string.IsNullOrWhiteSpace(plateNoPattern)) qy = qy.Where(r => r.LicensePlate.Contains(plateNoPattern!.ToUpperInvariant()));
+    if (!string.IsNullOrWhiteSpace(frameNoPattern)) qy = qy.Where(r => r.Vin != null && r.Vin.Contains(frameNoPattern!.ToUpperInvariant()));
+    var normalizedQuotationNo = string.IsNullOrWhiteSpace(quotationNo) ? null : quotationNo!.Trim().Replace("BG-", "");
+    if (normalizedQuotationNo is not null) qy = qy.Where(r => r.RONo == normalizedQuotationNo);
+    if (checkInDateFrom.HasValue) { var d0 = checkInDateFrom.Value.Date; qy = qy.Where(r => r.CheckInDate != null && r.CheckInDate >= d0); }
+    if (checkInDateTo.HasValue) { var d1 = checkInDateTo.Value.Date.AddDays(1); qy = qy.Where(r => r.CheckInDate != null && r.CheckInDate < d1); }
+
+    // Nguồn: TOP 500 + order by CheckInDate desc (k1), rồi order lại lần cuối (k3) theo cùng chiều.
+    var rows = await qy.OrderByDescending(r => r.CheckInDate).Take(500).ToListAsync();
+
+    var cusIds = rows.Select(r => r.CusID).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+    var vins = rows.Select(r => r.Vin).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToList();
+    var cusMap = cusIds.Count == 0 ? new Dictionary<string, ServiceCustomer>()
+        : (await db.ServiceCustomers.Where(c => c.OrgId == t.OrgId && cusIds.Contains(c.CusCode)).ToListAsync())
+            .GroupBy(c => c.CusCode).ToDictionary(g => g.Key, g => g.First());
+    var carMap = vins.Count == 0 ? new Dictionary<string, ServiceCar>()
+        : (await db.ServiceCars.Where(c => c.OrgId == t.OrgId && vins.Contains(c.FrameNo)).ToListAsync())
+            .GroupBy(c => c.FrameNo).ToDictionary(g => g.Key, g => g.First());
+
+    var items = rows
+        .Where(r => r.CusID is not null && cusMap.ContainsKey(r.CusID) && r.Vin is not null && carMap.ContainsKey(r.Vin))
+        .Select(r =>
+        {
+            var cus = cusMap[r.CusID!];
+            var car = carMap[r.Vin!];
+            return new
+            {
+                r.RONo,
+                roRONo = "BG-" + r.RONo,
+                r.DealerCode, r.Status,
+                statusName = RoStatusDisplayName(r.Status),
+                r.CheckInDate,
+                cusName = cus.CusName, plateNo = car.PlateNo, frameNo = car.FrameNo,
+                modelID = car.ModelCode, colorCode = car.ColorCode, tradeMarkCode = car.TradeMark,
+                // #5902 Đơn-giản-hoá-có-chủ-đích: nguồn ghép `TradeMarkName + ' - ' + ModelName` từ bảng
+                // danh mục hiệu xe/dòng xe; Mini chưa có bảng tên đầy đủ cho hai danh mục này ở ServiceCar,
+                // trả thẳng mã hiệu xe thay cho chuỗi ghép tên.
+                tradeMarkNameModel = car.TradeMark,
+            };
+        }).ToList();
+
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        statusListBugNote = "#5902: FrmServiceStatus noi nhieu ma da tick bang PHAY (Util.StretchListString) nhung bien SqlUtils.BuildClauseConditionList split theo '|' => tick >=2 o luon ra RONG. Giu nguyen bug nguon, khong tu sua.",
+        innerJoinNote = "Nguon inner join ser_Customer + ser_car (khong fallback nhu #301 cua /status-history) => RO thieu khach hoac xe trong Mini se bi loai khoi ket qua.",
+    });
+}).RequireAuthorization();
+
 app.MapGet("/api/repairorders/statuses", () => Results.Ok(new
 {
     flow = _roFlow,
