@@ -8844,17 +8844,63 @@ app.MapPost("/api/vatinvoices/{code}/delete", async (string code, string? reason
 }).RequireAuthorization();
 
 // ===== Công văn gia hạn bảo lãnh (GrtClaimExt — port 1:1 FrmMngGrtClaimPM, cụm Bank) =====
-app.MapGet("/api/grtclaimexts", async (AppDbContext db, ITenantContext t, string? dealer, string? no, string? sign) =>
+// ===== 🔴 #5866 `FrmQLCVanGiaHan_PhatHanhBL` dùng CHUNG bảng nhưng đòi 13 bộ lọc — route cũ chỉ có 3 =====
+// Nguồn `Pmt_GrtClaimExt_Get` (`SalesService.cs:20602`, dựng WHERE động qua `AddWhereClause`, LIKE trên
+// hầu hết cột) lọc trên 4 bảng: `Pmt_GrtClaimExt` (header), `Pmt_GrtClaimExtDtl` (chi tiết xe),
+// `Guarantee` (ngân hàng), `Car_Car` (số HĐ đại lý qua VIN). Route GET cũ (port cho `FrmMngGrtClaimPM`)
+// chỉ có dealer/no/sign — thêm đủ phần còn lại CHO MÀN NÀY, giữ nguyên route cũ (bổ sung, không phá vỡ).
+// ⚠️ `strPGCDCarId` (lọc CarId trên `Pmt_GrtClaimExtDtl`) nguồn LUÔN truyền "" ở màn này (`txtCarId` bị
+// comment trong `btnSearch_Click`) — KHÔNG port tham số đó riêng, dùng chung `carId` với `strCarID`
+// (tham số THẬT SỰ được dùng, buộc vào `txtCarID`).
+app.MapGet("/api/grtclaimexts", async (AppDbContext db, ITenantContext t, string? dealer, string? no, string? sign,
+    DateTime? createdFrom, DateTime? createdTo, DateTime? signDateFrom, DateTime? signDateTo, string? flagisHTC,
+    string? carId, string? vin, string? guaranteeNo, string? bankCode, string? bankCodeMonitor,
+    string? bankGuaranteeNo, string? dlrContractNo) =>
 {
     var q = db.GrtClaimExts.Where(g => g.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(g => g.DealerCode == dealer);
+    if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(g => g.DealerCode.Contains(dealer!));   // nguồn LIKE, không "="
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(g => g.GrtClaimExtNo.Contains(no!));
     if (!string.IsNullOrWhiteSpace(sign)) q = q.Where(g => g.SignStatus == sign);
+    if (!string.IsNullOrWhiteSpace(flagisHTC)) q = q.Where(g => g.FlagisHTC == flagisHTC);
+    if (createdFrom is not null) q = q.Where(g => g.CreatedAt >= createdFrom);
+    if (createdTo is not null) q = q.Where(g => g.CreatedAt <= createdTo);
+    if (signDateFrom is not null) q = q.Where(g => g.SignDateTime != null && g.SignDateTime >= signDateFrom);
+    if (signDateTo is not null) q = q.Where(g => g.SignDateTime != null && g.SignDateTime <= signDateTo);
+
+    // Bộ lọc nằm ở bảng chi tiết (CarId/VIN/GuaranteeNo) hoặc phải JOIN (Guarantee/Car_VIN) — lọc theo
+    // TẬP GrtClaimExtId khớp điều kiện rồi mới AND vào header, đúng ngữ nghĩa "có ít nhất 1 dòng khớp".
+    if (!string.IsNullOrWhiteSpace(carId) || !string.IsNullOrWhiteSpace(vin) || !string.IsNullOrWhiteSpace(guaranteeNo)
+        || !string.IsNullOrWhiteSpace(bankCode) || !string.IsNullOrWhiteSpace(bankCodeMonitor)
+        || !string.IsNullOrWhiteSpace(bankGuaranteeNo) || !string.IsNullOrWhiteSpace(dlrContractNo))
+    {
+        var dtlQ = db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId);
+        if (!string.IsNullOrWhiteSpace(carId)) dtlQ = dtlQ.Where(c => c.CarId.Contains(carId!));
+        if (!string.IsNullOrWhiteSpace(vin)) dtlQ = dtlQ.Where(c => c.VIN.Contains(vin!));
+        if (!string.IsNullOrWhiteSpace(guaranteeNo)) dtlQ = dtlQ.Where(c => c.GuaranteeNo.Contains(guaranteeNo!));
+        if (!string.IsNullOrWhiteSpace(bankCode) || !string.IsNullOrWhiteSpace(bankCodeMonitor) || !string.IsNullOrWhiteSpace(bankGuaranteeNo))
+        {
+            var grtNos = db.Guarantees.Where(x => x.OrgId == t.OrgId
+                && (string.IsNullOrWhiteSpace(bankCode) || x.BankCode == bankCode)
+                && (string.IsNullOrWhiteSpace(bankCodeMonitor) || x.BankCodeMonitor == bankCodeMonitor)
+                && (string.IsNullOrWhiteSpace(bankGuaranteeNo) || (x.BankGrtNo != null && x.BankGrtNo.Contains(bankGuaranteeNo!))))
+                .Select(x => x.GrtNo);
+            dtlQ = dtlQ.Where(c => grtNos.Contains(c.GuaranteeNo));
+        }
+        if (!string.IsNullOrWhiteSpace(dlrContractNo))
+        {
+            var vins = db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.DlrCtrNo != null && x.DlrCtrNo.Contains(dlrContractNo!)).Select(x => x.VIN);
+            dtlQ = dtlQ.Where(c => vins.Contains(c.VIN));
+        }
+        var matchedIds = dtlQ.Select(c => c.GrtClaimExtId).Distinct();
+        q = q.Where(g => matchedIds.Contains(g.Id));
+    }
+
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
         g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
         g.Remark, g.CancelDateTime, g.CancelBy, g.LUDateTime, g.LUBy,   // #191 §12: cột mới phải chiếu ở CẢ GET
         g.LogLUDateTime, g.LogLUBy,   // #1451 §12
+        g.FlagisHTC,   // #5866 §12
         cars = db.GrtClaimExtCars.Count(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });

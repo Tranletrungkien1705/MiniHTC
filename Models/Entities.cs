@@ -14832,6 +14832,9 @@ public sealed class GrtClaimExt
     public string? LUBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    /// <summary>#5866 — `Pmt_GrtClaimExt.FlagisHTC` (nhận "HTC"/"DL") — cột lọc của `FrmQLCVanGiaHan_PhatHanhBL`
+    /// (`Pmt_GrtClaimExt_Get` tham số `strFlagisHTC`), port cũ chưa có.</summary>
+    public string? FlagisHTC { get; set; }
 }
 
 /// <summary>Chi tiết công văn gia hạn theo VIN (Pmt_GrtClaimExtDtl) — port 1:1 FrmMngGrtClaimPM detail.</summary>
