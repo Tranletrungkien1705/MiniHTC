@@ -30566,8 +30566,18 @@ app.MapGet("/api/warrantyclaims/report/htc", async (AppDbContext db, ITenantCont
         htcrownoAcceOnlyIsIntentional = "AM TINH: zzB_tbl_..._HTCROWNo truyen cung ACCE — HTCROWNo chi ton tai cho claim da CHAP THUAN, cac trang thai khac NULL la DUNG THIET KE, khong phai bug",
     });
 }).RequireAuthorization();
+// #5908 FrmWarrantyReportHTC_HTMV_Search/_RLU_Search/_RLUU_Search (Views/Warranty) gọi các biến thể
+//   `Ser_ROWarrantyReportHTMV_Get`/`_HTC_RLU_Get`/`_HTC_RLUU_Get` (BizCarSv.WarrantyReport.cs:15276+) —
+//   CÙNG bảng `Ser_ROWarrantyReport` đã port ở đây, chỉ khác: (a) luôn ép cứng `car.FrameNo like 'RLU%'`
+//   (không phải tham số người dùng — khoá cứng theo dòng xe) + (b) lọc khoảng ngày CreatedDate
+//   + (c) hiển thị thêm DealerName/TotalAmount. Đơn-giản-hoá-có-chủ-đích: KHÔNG tách route riêng cho
+//   3 biến thể VIN-prefix (RLU/RLUU/HTMV dùng chung logic, chỉ khác tiền tố ép cứng) — client gọi
+//   `vin=RLU` (Contains, gần đúng LIKE 'RLU%') để mô phỏng; đã thêm 2 gap THẬT dùng chung cho mọi
+//   biến thể: `fromDate`/`toDate` (lọc CreatedDate, srr.CreatedDate nguồn) + `dealerName` trong output
+//   (join `db.Dealers`, nguồn join `Mst_Dealer dl`). TotalAmount đã có sẵn field `Amount` denorm.
 app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, string? status, string? plate,
-    string? vin, string? dealer, string? roId, string? rowId, string? isGetDetail, string? scope) =>
+    string? vin, string? dealer, string? roId, string? rowId, string? isGetDetail, string? scope,
+    DateTime? fromDate, DateTime? toDate) =>
 {
     var useMasterCar = string.Equals(scope?.Trim(), "wh", StringComparison.OrdinalIgnoreCase);
     var q = db.ServiceWarrantyClaims.Where(x => x.OrgId == t.OrgId);
@@ -30575,6 +30585,9 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(roId)) q = q.Where(x => x.ROID == roId!.Trim());
     if (!string.IsNullOrWhiteSpace(rowId)) q = q.Where(x => x.ROWNo == rowId!.Trim());
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.WarrantyStatus == status);
+    // #5908: khoảng ngày tạo (srr.CreatedDate nguồn, FrmWarrantyReportHTC_HTMV_Search/_RLU(U)_Search).
+    if (fromDate is not null) q = q.Where(x => x.CreatedAt >= fromDate.Value.Date);
+    if (toDate is not null) q = q.Where(x => x.CreatedAt < toDate.Value.Date.AddDays(1));
     // #470: nhánh kho lọc trên DANH MỤC XE, nhánh chính lọc trên ẢNH CHỤP của lệnh.
     if (useMasterCar)
     {
@@ -30615,9 +30628,14 @@ app.MapGet("/api/warrantyclaims", async (AppDbContext db, ITenantContext t, stri
         x.WarrantyRegistrationDate, x.WarrantyExpiresDate, x.WarrantyKM, x.Note,
         x.UpdatedAt,   // #1306 §12
     }).ToListAsync();
+    // #5908: tên đại lý (nguồn `inner join Mst_Dealer dl on dl.DealerCode = td.DealerCode`).
+    var dealerNameByCode = await db.Dealers.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.DealerCode, x.DealerName }).ToDictionaryAsync(x => x.DealerCode, x => x.DealerName);
     var withLabel = items.Select(i => new
     {
-        i.Id, i.ROWNo, i.DealerCode, i.RONo, i.Vin, i.PlateNo, i.WarrantyType, i.PartCode,
+        i.Id, i.ROWNo, i.DealerCode,
+        dealerName = i.DealerCode != null && dealerNameByCode.TryGetValue(i.DealerCode, out var dn) ? dn : null,   // #5908
+        i.RONo, i.Vin, i.PlateNo, i.WarrantyType, i.PartCode,
         i.Description, i.Amount, i.WarrantyStatus,
         warrantyStatusText = warrantyClaimStatusNames.TryGetValue(i.WarrantyStatus, out var wn) ? wn : null,
         i.HMCApiStatus, i.SyncHMCDateTime, i.ClmRcptNo, i.HMCApiQtyA, i.ClmNoSrl, i.HtcNote,
@@ -57953,15 +57971,19 @@ app.MapPost("/api/insuranceattachments/{roNo}", async (string roNo, InsuranceAtt
 }).RequireAuthorization();
 
 // ===== Chiến dịch marketing HTC gửi đại lý (CampaignMarketing — port 1:1 FrmSer_CampaignMarketing/Mng, TCMotor DMSCarSv/Ser_CampaignMarketing) =====
-app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, string? q) =>
+app.MapGet("/api/campaignmarketings", async (AppDbContext db, ITenantContext t, string? q, string? status) =>
 {
     var qry = db.CampaignMarketings.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.CamMarketingNo.Contains(q!) || x.CamMarketingName.Contains(q!));
+    // #1742: FrmSer_CampaignMarketingDealerMng (man dai ly) loc CUNG DUNG status=Approved — man HTC
+    // (FrmSer_CampaignMarketingMng) khong loc. Them status de endpoint dung chung duoc ca hai man nguon.
+    if (!string.IsNullOrWhiteSpace(status)) qry = qry.Where(x => x.CamMarketingStatus == status);
     // #626: nguồn sắp theo CamMarketingNo asc ngay trong câu dựng identity() ⇒ phân trang ổn định;
     //       nhưng hai điều kiện cắt trang thì BỊ COMMENT ⇒ trả hết. Port cắt thật và nói rõ.
     var total = await qry.CountAsync();
     var items = await qry.OrderBy(x => x.CamMarketingNo).Take(500).Select(x => new
     { x.CamMarketingNo, x.CamMarketingName, x.CamMarketingDesc, x.EffDateStart, x.EffDateEnd, x.WarrantyDateStart, x.WarrantyDateEnd, x.ConditionVIN, x.ConditionPlateNo, x.ConditionDealer,   // #1426 §12
+      x.CamMarketingStatus,   // #1742 §12: can de client loc/hien thi dung status vua truyen
       parts = db.CampaignMarketingParts.Count(p => p.OrgId == t.OrgId && p.CampaignId == x.Id) }).ToListAsync();
     return Results.Ok(new
     {
