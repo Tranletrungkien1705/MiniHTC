@@ -56665,14 +56665,18 @@ app.MapGet("/api/report/ro-profit", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 app.MapGet("/api/report/revenue-by-engineer", async (AppDbContext db, ITenantContext t,
-    DateTime? fromDate, DateTime? toDate, string? engineerNo) =>
+    DateTime? fromDate, DateTime? toDate, DateTime? fromDatePaid, DateTime? toDatePaid, string? engineerNo) =>
 {
     var eng = (engineerNo ?? "").Trim();
     var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
         .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
         .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
+        // #867-fix: nguon BuildClause CA HAI cua so ro.CheckInDate VA ro.PaidCreatedDate (dong 55787) —
+        // ban truoc chi loc CheckInDate, thieu han cua so PaidCreatedDate cua form (dateEdit1/dateEdit2).
+        .Where(x => fromDatePaid == null || (x.PaidCreatedDate != null && x.PaidCreatedDate >= fromDatePaid))
+        .Where(x => toDatePaid == null || (x.PaidCreatedDate != null && x.PaidCreatedDate < toDatePaid!.Value.AddDays(1)))
         .Where(x => x.Status == "Finished" || x.Status == "Paid")
-        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CusRequest, x.CheckInDate })
+        .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusName, x.CusRequest, x.CheckInDate, x.PaidCreatedDate })
         .ToListAsync();
     var roIds = ros.Select(x => x.Id).ToList();
     var roMap = ros.ToDictionary(x => x.Id, x => x);
@@ -56702,7 +56706,7 @@ app.MapGet("/api/report/revenue-by-engineer", async (AppDbContext db, ITenantCon
             if (!seen.Add(key)) distinctWouldSwallow++;
             rows.Add(new
             {
-                roNo = ro.RONo, plateNo = ro.LicensePlate, ro.CusName, ro.CusRequest, ro.CheckInDate,
+                roNo = ro.RONo, plateNo = ro.LicensePlate, ro.CusName, ro.CusRequest, ro.CheckInDate, ro.PaidCreatedDate,
                 serCode = it.SerCode, serName = it.SerName,
                 price = it.Price, vat = it.Vat, priceAfterVat,
                 engineerNo = en, engineerCount = engs.Count, revenueShare = share,
@@ -56711,7 +56715,7 @@ app.MapGet("/api/report/revenue-by-engineer", async (AppDbContext db, ITenantCon
     }
     return Results.Ok(new
     {
-        fromDate, toDate, engineerNo = eng.Length > 0 ? eng : null,
+        fromDate, toDate, fromDatePaid, toDatePaid, engineerNo = eng.Length > 0 ? eng : null,
         count = rows.Count, rowsSourceDistinctWouldSwallow = distinctWouldSwallow, items = rows,
         sourceDistinctSwallowsRealRows = "#867: select DISTINCT tren bao cao TIEN — mot phieu co HAI hang muc dich vu giong het nhau (cung dich vu, cung gia, cung KTV — chuyen binh thuong khi lam lai) se bi distinct GOP THANH MOT DONG => MAT DOANH THU, im lang. distinct o day ro rang dung de CHUA CHAY viec no dong do chuoi inner join, nhung no chua bang cach XOA CA DONG THAT",
         sourceMultipliesRowsByEngineerWithoutSplitting = "NO DONG THEO SO KTV, VA TIEN KHONG DUOC CHIA: INNER JOIN Ser_ROServiceItemsEngineer srie ON srie.ItemID = sri.ItemID AND srie.SerID = sri.SerID AND srie.ROID = sri.ROID roi INNER JOIN Ser_Engineer se ON se.EngineerID = srie.EngineerID => mot hang muc do N ky thuat vien cung lam ra N DONG, moi dong mang NGUYEN PriceAfterVAT; distinct KHONG cuu duoc vi se.EngineerName khac nhau => ai sum(PriceAfterVAT) se cong GAP N LAN. Mini chia tien theo so KTV (revenueShare)",
