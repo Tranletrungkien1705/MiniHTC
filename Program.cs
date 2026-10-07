@@ -56545,15 +56545,22 @@ app.MapGet("/api/_meta/ro-status-name-copies", () => Results.Ok(new
     },
     miniUsesOneSharedMap = "MiniHTC dung DUNG MOT bang anh xa nay cho moi bao cao (da ap o #869/#870), KHONG chep lai",
 })).RequireAuthorization();
+// ===== 🔴 #5890 SỬA `status` THÀNH DANH SÁCH NHIỀU GIÁ TRỊ cho `FrmReportROByDate` =====
+// Màn `FrmReportROByDate` (nguồn, `Views/Services/FrmReportROByDate.cs`) build `strStatusList` bằng
+// `Util.StretchListString` từ NHIỀU checkbox cùng lúc (vd tick "Chờ sửa"+"Đang sửa" ⇒ gửi MỘT DANH SÁCH
+// nhiều mã trạng thái), và biz `Ser_RO_Sumary` lọc `ro.Status IN (@list)` qua macro
+// `zzzzClauseWhere_strStatusList`. Route cũ chỉ so `x.Status == st` (MỘT giá trị) ⇒ không thể tái hiện
+// bất kỳ tổ hợp 2+ checkbox nào — đây mới là cách dùng BÌNH THƯỜNG của màn (một checkbox "Chờ sửa" một
+// mình đã cần OR nhiều trạng thái con). Sửa nhận `status` dạng CSV, lọc bằng `.Contains()`.
 app.MapGet("/api/report/ro-summary", async (AppDbContext db, ITenantContext t,
     DateTime? fromDate, DateTime? toDate, string? status) =>
 {
-    var st = (status ?? "").Trim();
+    var statusList = (status ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
     var ros = await db.RepairOrders.Where(x => x.OrgId == t.OrgId)
         .Where(x => fromDate == null || (x.CheckInDate != null && x.CheckInDate >= fromDate))
         // DUNG BIEN: < ToDate + 1 ngay (nguon dung <= ToDate nen mat ca ngay cuoi)
         .Where(x => toDate == null || (x.CheckInDate != null && x.CheckInDate < toDate!.Value.AddDays(1)))
-        .Where(x => st.Length == 0 || x.Status == st)
+        .Where(x => statusList.Count == 0 || statusList.Contains(x.Status))
         .Select(x => new { x.Id, x.RONo, x.LicensePlate, x.CusRequest, x.CheckInDate, x.Km, x.Status, x.Vin })
         .ToListAsync();
     var ids = ros.Select(x => x.Id).ToList();
@@ -56580,7 +56587,7 @@ app.MapGet("/api/report/ro-summary", async (AppDbContext db, ITenantContext t,
     }).OrderByDescending(x => x.CheckInDate).ToList();
     return Results.Ok(new
     {
-        fromDate, toDate, status = st.Length > 0 ? st : null,
+        fromDate, toDate, status = statusList.Count > 0 ? statusList : null,
         count = items.Count, totalRevenue = items.Sum(x => x.revenue), items,
         positiveDateFilterIsSargable = "#870 AM TINH: AND ro.CheckInDate >= @FromDate AND ro.CheckInDate <= @ToDate — KHONG datediff(day, ..., ro.CheckInDate) => SQL Server DUNG DUOC INDEX tren CheckInDate. Trai han #860/#861/#862/#868/#869 deu boc cot trong datediff",
         butUpperBoundLosesLastDay = "NHUNG <= @ToDate TREN COT DATETIME => MAT NGAY CUOI (luat #415): CheckInDate la datetime, @ToDate bake dang yyyy-MM-dd nen so sanh thanh <= ngay-do 00:00:00 => MOI PHIEU tiep nhan trong NGAY CUOI bi loai khoi bao cao. Viet dung la < dateadd(day, 1, @ToDate). Ham nay DUNG VE INDEX nhung SAI VE BIEN, con cac ham datediff kia SAI VE INDEX nhung DUNG VE BIEN (vi datediff(day,...) cat phan gio) => KHONG ham nao trong file lam dung CA HAI",
