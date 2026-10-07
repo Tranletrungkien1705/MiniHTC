@@ -77149,6 +77149,55 @@ app.MapGet("/api/salesmaninactivehistory", async (AppDbContext db, ITenantContex
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== 🔴 #5872 LỊCH SỬ CÔNG TÁC (`FrmQuanLyLSCongTac`) — `SalesMan_HistoryGet` =====
+// Nguồn: `SalesMan_HistoryGetX_New20230306` (`Biz.HTC.WH.cs:18168`, LIVE — bản `SalesMan_HistoryGet`
+// không hậu tố chỉ là vỏ bọc). KHÁC `/api/salesmaninactivehistory` (#chỉ nửa dưới của UNION): nguồn
+// UNION HAI nhánh — (1) `Mst_SalesMan` (nhân viên ĐANG làm, SMStartDate/SMEndDate = StartDate/EndDate
+// của chính hồ sơ) VÀ (2) `Mst_SalesManHistoryInactive` JOIN `Mst_SalesMan` lấy tên/loại (nhân viên ĐÃ
+// nghỉ). Route cũ (#...) chỉ có nhánh (2) — route này MỚI, UNION đủ cả hai, đúng tên hàm nguồn.
+// 🔴 Lọc: `SMHyundaiCode`/`DealerCode` khớp CHÍNH XÁC; `SMName` LIKE; 4 mốc ngày đều dạng khoảng
+// (`>=`/`<=`), áp dụng CHUNG cho cả hai nhánh.
+// 📌 `strFt_RecordStart`/`strFt_RecordCount` được TRUYỀN XUỐNG build SQL (`nFilterRecordStart/End`)
+// nhưng KHÔNG hề dùng trong WHERE hay `ROW_NUMBER()` nào — tham số CHẾT (họ #410). Port KHÔNG bịa phân
+// trang mà nguồn không thực sự có — trả toàn bộ (giới hạn 500 để an toàn, không phải 1:1 phân trang).
+app.MapGet("/api/salesmanhistory", async (AppDbContext db, ITenantContext t,
+    string? smHyundaiCode, string? dealerCode, string? smName,
+    DateTime? smStartDateFrom, DateTime? smStartDateTo, DateTime? smEndDateFrom, DateTime? smEndDateTo) =>
+{
+    bool MatchName(string? name) => string.IsNullOrWhiteSpace(smName) || (name ?? "").Contains(smName!);
+    bool MatchStart(DateTime? d) => (smStartDateFrom is null || (d != null && d >= smStartDateFrom))
+                                  && (smStartDateTo is null || (d != null && d <= smStartDateTo));
+    bool MatchEnd(DateTime? d) => (smEndDateFrom is null || (d != null && d >= smEndDateFrom))
+                                && (smEndDateTo is null || (d != null && d <= smEndDateTo));
+    // Nguồn: "'@x' = N'' or ..." tức CHƯA truyền mốc thì KHÔNG lọc theo mốc đó — nhưng đã truyền thì dòng
+    // NULL bị loại (so sánh NULL với mốc luôn false trong SQL) — giữ đúng bằng kiểm tra d != null ở trên.
+
+    var activeQ = db.SalesMen.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(smHyundaiCode)) activeQ = activeQ.Where(x => x.SMHyundaiCode == smHyundaiCode);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) activeQ = activeQ.Where(x => x.DealerCode == dealerCode);
+    var activeRows = (await activeQ.ToListAsync())
+        .Where(x => MatchName(x.SalesManName) && MatchStart(x.StartDate) && MatchEnd(x.EndDate))
+        .Select(x => new { x.SalesManCode, SMStartDate = x.StartDate, SMEndDate = x.EndDate, x.SMHyundaiCode,
+            SMName = x.SalesManName, x.SMReason, x.SMDesc, x.DealerCode, SMType = x.SalesType });
+
+    var inactiveQ = db.SalesManHistoryInactives.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(smHyundaiCode)) inactiveQ = inactiveQ.Where(x => x.SMHyundaiCode == smHyundaiCode);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) inactiveQ = inactiveQ.Where(x => x.DealerCode == dealerCode);
+    var inactiveRaw = await inactiveQ.ToListAsync();
+    var smCodes = inactiveRaw.Select(x => x.SMCode).Distinct().ToList();
+    var nameTypeByCode = await db.SalesMen.Where(x => x.OrgId == t.OrgId && smCodes.Contains(x.SalesManCode))
+        .Select(x => new { x.SalesManCode, x.SalesManName, x.SalesType }).ToDictionaryAsync(x => x.SalesManCode);
+    var inactiveRows = inactiveRaw
+        .Select(x => new { x, nt = nameTypeByCode.TryGetValue(x.SMCode, out var v) ? v : null })
+        .Where(x => MatchName(x.nt?.SalesManName) && MatchStart(x.x.SMStartDate) && MatchEnd(x.x.SMEndDate))
+        .Select(x => new { SalesManCode = x.x.SMCode, x.x.SMStartDate, x.x.SMEndDate, x.x.SMHyundaiCode,
+            SMName = x.nt?.SalesManName, x.x.SMReason, x.x.SMDesc, x.x.DealerCode, SMType = x.nt?.SalesType });
+
+    var items = activeRows.Concat(inactiveRows).Take(500).ToList();
+    return Results.Ok(new { count = items.Count, items,
+        unionNote = "Nguon UNION Mst_SalesMan (dang lam) + Mst_SalesManHistoryInactive JOIN Mst_SalesMan lay ten/loai (da nghi) - route /api/salesmaninactivehistory chi la NUA DUOI cua UNION nay." });
+}).RequireAuthorization();
+
 // Cho nghỉ việc: chụp hồ sơ hiện tại sang bảng lịch sử rồi hạ cờ hoạt động — đúng thứ tự của nguồn.
 app.MapPost("/api/salesmen/inactivate", async (SalesManInactivateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
