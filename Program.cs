@@ -113034,6 +113034,161 @@ app.MapGet("/api/dms40/search-car-for-fnexp-calc", async (
             "nhung KHONG LOC duoc (#5820)."
     });
 }).RequireAuthorization();
+
+// ===== 🔴 GRIND màn `FrmReportROVarianceCost` (Views/Services, V20.2023.Release.V2, LIVE) — CHUA PORT =====
+// GREP TRUOC: "FrmReportROVarianceCost" = 0 hit truoc khi vien nay them route. Form co HAI nhanh theo
+// checkbox `checkStockOut`: nhanh TAT (mac dinh) goi `ServiceReportService.Ser_ReportRoVarianceCost`
+// (bang BG, bien LIVE `TERP.BizCarSv/BizCarSv.Service.Report.cs:5267`); nhanh BAT goi
+// `Ser_Inv_StockOutOrderStockOut` (cung file, :5505) — hai bao cao KHAC HAN nhau, chi dung chung 1 man hinh.
+// Port route nay la nhanh RO (mac dinh); nhanh StockOut port rieng o route duoi.
+// Nguon UNION hai khoi: dong DICH VU (Ser_ROServiceItems + Ser_MST_Service) va dong PHU TUNG
+// (Ser_ROPartItems + Ser_Mst_Part), roi tinh ChenhLech = TriGia(ban, co Factor) - GiaChuan(KHONG nhan Factor,
+// chi nhan Quantity o dong PT). Mini: RoServiceItem/RoPartItem (RepairOrder con) doi voi ServiceMstService/
+// ServicePart (gia chuan danh muc) qua SerCode/PartCode (Mini khong co cot SerID/PartID ky thuat rieng).
+// 🔴 GUARD CHET (ho #407): Ro.DealerCode co guard "'@DealerCode' is null or ..." nhung car.DealerCode = '@DealerCode'
+//   KHONG co guard nao. strDealerCode luon la chuoi (Convert.ToString tren EditValue, khong bao gio thanh NULL
+//   that trong C#) nen ve "is null" o Ro.DealerCode KHONG BAO GIO dung trong thuc te; khi bo trong o dai ly (HTC
+//   admin xem "tat ca"), ca hai dieu kien thanh so ca dai ly voi chuoi rong => KHONG CO DAI LY NAO khop => 0 dong,
+//   khong he tra "tat ca dai ly" nhu ten man goi y. Port giu dung: loc dealerCode bang chinh xac (rong => 0 dong).
+// 🔴 Hai mac Factor nguon KHONG doi xung: dong dich vu GiaChuan = ser.Price KHONG nhan Factor; dong phu tung
+//   GiaChuan = pa.Price*Quantity CUNG KHONG nhan Factor — chi ve BAN (TriGia) nhan Factor o ca hai dong.
+// Ngay: DoSearch() doi FromDate -1 ngay / ToDate +1 ngay ROI dung CA HAI cot CheckInDate VA ActualDeliveryDate
+//   voi CUNG khung da no nay (AND, khong phai OR) — ca hai moc phai nam trong khung thi dong moi duoc chon.
+app.MapGet("/api/report/ro-variance-cost", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? plateNo, string? roNo, string? dealerCode) =>
+{
+    var dealer = dealerCode ?? "";   // #407-style: rong => khong khop dai ly nao (giu dung bug nguon)
+    var from = fromDate?.Date.AddDays(-1);
+    var to = toDate?.Date.AddDays(1);
+    var plate = plateNo?.Trim();
+    var roSearch = roNo?.Trim();
+
+    var roQ = db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.Status == "FNS");
+    if (from is not null) roQ = roQ.Where(x => x.CheckInDate >= from && x.ActualDeliveryDate >= from);
+    if (to is not null) roQ = roQ.Where(x => x.CheckInDate <= to && x.ActualDeliveryDate <= to);
+    if (!string.IsNullOrWhiteSpace(plate)) roQ = roQ.Where(x => x.LicensePlate == plate);
+    if (!string.IsNullOrWhiteSpace(roSearch)) roQ = roQ.Where(x => x.RONo.Contains(roSearch));
+
+    var ros = await roQ.Select(x => new {
+        x.Id, x.RONo, x.CheckInDate, x.ActualDeliveryDate, x.CarID, x.LicensePlate,
+        x.TradeMarkCode, x.TrademarkNameModel, x.Creator,
+    }).ToListAsync();
+    var roIds = ros.Select(x => x.Id).ToList();
+    var roById = ros.ToDictionary(x => x.Id);
+
+    var creators = ros.Select(x => x.Creator).Where(c => !string.IsNullOrEmpty(c)).Distinct().ToList();
+    var userNames = await db.SysUsers.Where(u => u.OrgId == t.OrgId && u.DealerCode == dealer && creators.Contains(u.UserCode))
+        .ToDictionaryAsync(u => u.UserCode, u => u.UserName);
+
+    var serviceLines = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.SerCode, x.SerName, x.Price, x.Vat, x.Factor }).ToListAsync();
+    var serCodes = serviceLines.Select(x => x.SerCode).Distinct().ToList();
+    var serMst = await db.ServiceMstServices.Where(x => x.OrgId == t.OrgId && serCodes.Contains(x.SerCode))
+        .ToDictionaryAsync(x => x.SerCode, x => x);
+
+    var partLines = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && roIds.Contains(x.RoId))
+        .Select(x => new { x.RoId, x.PartCode, x.PartName, x.UnitPrice, x.Vat, x.Factor, x.NeedQty }).ToListAsync();
+    var partCodes = partLines.Select(x => x.PartCode).Distinct().ToList();
+    var partMst = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && partCodes.Contains(x.PartCode))
+        .ToDictionaryAsync(x => x.PartCode, x => x);
+
+    var rows = new List<object>();
+    foreach (var l in serviceLines)
+    {
+        if (!roById.TryGetValue(l.RoId, out var ro)) continue;
+        serMst.TryGetValue(l.SerCode, out var std);
+        var giaChuan = std?.Price ?? 0m; var vatChuan = std?.Vat ?? 0m;
+        var triGia = l.Price * l.Factor + l.Price * l.Factor * l.Vat * 0.01m;
+        var chenhLech = triGia - (giaChuan + giaChuan * vatChuan * 0.01m);
+        rows.Add(new {
+            roId = ro.Id, roNo = "BG-" + ro.RONo, checkInDate = ro.CheckInDate, actualDeliveryDate = ro.ActualDeliveryDate,
+            carId = ro.CarID, plateNo = ro.LicensePlate, tradeMark = ro.TradeMarkCode, modelName = ro.TrademarkNameModel,
+            paSeCode = l.SerCode, paSeName = l.SerName, giaBan = l.Price, soLuong = (decimal?)null, vatBan = l.Vat,
+            giaChuan, vatChuan, triGia01 = Math.Round(triGia, 0), chenhLech = Math.Round(chenhLech, 0), spIndex = "1",
+            creator = ro.Creator, creatorName = ro.Creator != null && userNames.TryGetValue(ro.Creator, out var un) ? un : null,
+        });
+    }
+    foreach (var l in partLines)
+    {
+        if (!roById.TryGetValue(l.RoId, out var ro)) continue;
+        partMst.TryGetValue(l.PartCode, out var std);
+        var giaChuan = std?.Price ?? 0m; var vatChuan = std?.VAT ?? 0m;
+        var triGia = l.UnitPrice * l.NeedQty * l.Factor + l.UnitPrice * l.NeedQty * l.Factor * l.Vat * 0.01m;
+        var chenhLech = triGia - (giaChuan * l.NeedQty + giaChuan * l.NeedQty * vatChuan * 0.01m);
+        rows.Add(new {
+            roId = ro.Id, roNo = "BG-" + ro.RONo, checkInDate = ro.CheckInDate, actualDeliveryDate = ro.ActualDeliveryDate,
+            carId = ro.CarID, plateNo = ro.LicensePlate, tradeMark = ro.TradeMarkCode, modelName = ro.TrademarkNameModel,
+            paSeCode = l.PartCode, paSeName = l.PartName, giaBan = l.UnitPrice,
+            soLuong = l.NeedQty == 0 ? (decimal?)null : l.NeedQty, vatBan = l.Vat,
+            giaChuan, vatChuan, triGia01 = Math.Round(triGia, 0), chenhLech = Math.Round(chenhLech, 0), spIndex = "2",
+            creator = ro.Creator, creatorName = ro.Creator != null && userNames.TryGetValue(ro.Creator, out var un2) ? un2 : null,
+        });
+    }
+
+    return Results.Ok(new
+    {
+        dealerCode = dealer, fromDate = from, toDate = to, count = rows.Count,
+        rows = rows.OrderBy(r => ((dynamic)r).roNo).ThenBy(r => ((dynamic)r).spIndex).ToList(),
+        deadDealerGuardNote = "#407-style: nguon 've Ro.DealerCode co guard NULL, ve car.DealerCode KHONG co' " +
+            "nhung strDealerCode khong bao gio NULL thuc su (Convert.ToString) => dealerCode rong tra 0 dong, " +
+            "KHONG phai 'tat ca dai ly'. Port giu dung: dealer rong => 0 dong.",
+        factorAsymmetryNote = "GiaChuan KHONG nhan Factor (dong dich vu) / chi nhan Quantity KHONG nhan Factor " +
+            "(dong phu tung) trong khi GiaBan (TriGia) nhan Factor o ca hai — port giu dung bat doi xung nguon.",
+    });
+}).RequireAuthorization();
+
+// ===== nhanh StockOut cua CUNG man `FrmReportROVarianceCost` (checkbox checkStockOut BAT) =====
+// Nguon `Ser_Inv_StockOutOrderStockOut` (BizCarSv.Service.Report.cs:5505): Ser_Inv_StockOut join
+// Ser_Inv_StockOutDetail join Ser_Mst_Part, loc StockOutType='2' (phieu xuat thuong) + khung ngay +-1 ngay
+// tren StockOutTime, KHONG loc Status (khac han route /api/report/stockout-detail da port truoc — #5898 twin
+// note). Mini: ServiceStockOut/ServiceStockOutLine da co san PartPrice/PartVAT (gia chuan chup luc tao dong).
+// 🔴 Cong thuc tru nguon DUNG sisod.Price (gia BAN) cho ca hai ve cua phan tru — chi ve VAT moi dung pa.Vat
+//   (gia CHUAN): "(Price*Qty + (PartPrice*Qty)*PartVAT*0.01)" — KHONG phai "(PartPrice*Qty + PartPrice*Qty*PartVAT*0.01)"
+//   nhu dang doi xung voi dong RO ben tren. Giu dung 1:1, khong "sua" cho doi xung voi nhanh RO.
+app.MapGet("/api/report/ro-variance-cost-stockout", async (AppDbContext db, ITenantContext t,
+    DateTime? fromDate, DateTime? toDate, string? dealerCode) =>
+{
+    var from = fromDate?.Date.AddDays(-1);
+    var to = toDate?.Date.AddDays(1);
+
+    var soQ = db.ServiceStockOuts.Where(x => x.OrgId == t.OrgId && x.StockOutType == "2");
+    if (!string.IsNullOrWhiteSpace(dealerCode)) soQ = soQ.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (from is not null) soQ = soQ.Where(x => x.StockOutDate >= from);
+    if (to is not null) soQ = soQ.Where(x => x.StockOutDate <= to);
+    var heads = await soQ.Select(x => new { x.Id, x.StockOutNo, x.StockOutDate, x.UserCode }).ToListAsync();
+    var headIds = heads.Select(x => x.Id).ToList();
+    var headById = heads.ToDictionary(x => x.Id);
+
+    var lines = await db.ServiceStockOutLines.Where(x => x.OrgId == t.OrgId && headIds.Contains(x.ServiceStockOutId))
+        .Select(x => new { x.ServiceStockOutId, x.PartCode, x.PartName, x.Price, x.Quantity, x.Vat, x.PartPrice, x.PartVAT })
+        .ToListAsync();
+
+    var rows = lines.Select(l =>
+    {
+        var head = headById[l.ServiceStockOutId];
+        var giaChuan = l.PartPrice ?? 0m; var vatChuan = l.PartVAT ?? 0m;
+        var triGia = l.Price * l.Quantity * 1 + l.Price * l.Quantity * 1 * l.Vat * 0.01m;
+        var chenhLech = triGia - (l.Price * l.Quantity + giaChuan * l.Quantity * vatChuan * 0.01m);
+        return new
+        {
+            stockOutNo = head.StockOutNo, stockOutTime = head.StockOutDate,
+            paSeCode = l.PartCode, paSeName = l.PartName, giaBan = l.Price, soLuong = l.Quantity == 0 ? (decimal?)null : l.Quantity,
+            vatBan = l.Vat, giaChuan, vatChuan, triGia01 = Math.Round(triGia, 0), chenhLech = Math.Round(chenhLech, 0),
+            spIndex = "1", nguoiThaoTacCuoi = head.UserCode,
+        };
+    }).OrderBy(r => r.stockOutNo).ToList();
+
+    return Results.Ok(new
+    {
+        fromDate = from, toDate = to, count = rows.Count, rows,
+        subtractFormulaUsesSellPriceNote = "nguon tru (Price*Qty + (PartPrice*Qty)*PartVAT*0.01) - mot ve dung " +
+            "gia BAN (Price) khong phai gia CHUAN (PartPrice) cho phan tien goc, chi phan VAT moi dung gia chuan; " +
+            "port giu dung khong sua cho doi xung voi nhanh RO.",
+        lastOperatorNote = "nguon doc siso.LogLUBy ('nguoi thao tac cuoi'); Mini chua co cot LogLUBy tren " +
+            "ServiceStockOut, dung UserCode (nguoi lap phieu) thay the - gan dung, khac nghia nho.",
+    });
+}).RequireAuthorization();
+
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
