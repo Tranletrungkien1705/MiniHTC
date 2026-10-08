@@ -143,6 +143,20 @@ var MasterMovedCategories = new Dictionary<string, string>(StringComparer.Ordina
     ["Zone"] = "/api/zones",
 };
 // Catalog: mỗi mục = 1 màn Frm gốc của 2010.HTC.
+// #COLORVIN — FrmUpdateCar/TblColorVin báo thiếu 2 cột VIN_Color_Ext_Name_Vn/VIN_Color_Int_Name_Vn
+// (check_cot_1to1.py). Đã trace: TblColorVin (DbDefine.cs:658, 2021.1.TCMotor) KHÔNG phải bảng SQL
+// riêng — MasterInit.cs:337-357 build nó HOÀN TOÀN TRONG MEMORY bằng cách copy 1:1 từng dòng từ
+// TblColor (Model_Code/Color_Code→VIN_Color_Code/Color_Ext_Code→VIN_Color_Ext_Code/...). TblColor
+// (DbDefine.cs:677-693) là màu 2-tông theo Model: (ModelCode,ColorCode)→ExtCode/ExtName/ExtNameVn +
+// IntCode/IntName/IntNameVn + Fee + FlagActive — chính là nguồn của FrmColor, đã port ở Mini dưới
+// dạng generic phẳng `MasterItem{Category="Color",Code,Name}` (1 category = 1 Code+Name, dòng dưới).
+// Cấu trúc phẳng này đã CHỦ ĐÍCH đơn giản hoá, bỏ cặp Ext/Int + biến thể Vn — 2 cột báo thiếu chính
+// là nửa tiếng Việt của cặp Ext/Int đó. Khôi phục đủ sẽ cần tách Color khỏi MasterItem phẳng thành
+// entity 2-tông riêng, kéo theo FrmColor + lưới FrmUpdateCar (ColorVinCode/ColorVinName,
+// FrmUpdateCar.cs:83-89) + mọi nơi đọc `ColorVinCode` qua TblColorVin (DealerService.cs:1122,
+// SalesService.cs:2550/3375/4280/6206/6784/7019/7208 — DealDtl/DoDtl/DcDtl/GrtDtl/Pmd/Cdr/CdrD/
+// RejectCar) — vượt khuôn "vá cột thiếu" 1 cụm, hoãn sang lượt port lại Color riêng. SKIP có điều
+// tra, không port 2 cột này vào MasterItem (không có chỗ chứa Ext/Int riêng).
 var MasterCatalog = new (string Cat, string Label)[]
 {
     ("Color", "Màu xe (FrmColor)"),
@@ -177,6 +191,10 @@ var MasterCatalog = new (string Cat, string Label)[]
     ("DeliveryForm", "Hình thức giao hàng (FrmMst_DeliveryFormMng) [TCMotor]"),
     ("OrderComplainType", "Loại khiếu nại đơn PT (FrmMst_OrderComplainTypeMng) [TCMotor]"),
     ("OrderComplainImageType", "Loại ảnh khiếu nại (FrmMst_OrderComplainImageTypeMng) [TCMotor]"),
+    // check_cot_1to1.py báo thiếu `CustomerBaseName` trên Mst_CustomerBase — đã trace: KHÔNG phải cột chết,
+    // nhưng đã có sẵn qua `MasterItem.Name` của category này (DbDefine.cs:2233-2236 xác nhận CustomerBaseCode/
+    // CustomerBaseName là cặp Code/Name của CHÍNH bảng này, giống mọi category khác trong catalog) — tool báo
+    // thiếu vì so khớp theo tên cột literal, không nhận ra pattern Category+Code+Name phẳng. SKIP, không port riêng.
     ("CustomerBase", "Nguồn gốc khách hàng (FrmCustomerBase)"),
     ("Plant", "Nhà máy sản xuất (FrmPlant)"),
 };
@@ -43980,7 +43998,7 @@ app.MapGet("/api/womappings", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(car)) q = q.Where(x => x.CarId.Contains(car!));
     if (!string.IsNullOrWhiteSpace(so)) q = q.Where(x => x.SoCode == so);
     var items = await q.OrderBy(x => x.CarId).Take(1000)
-        .Select(x => new { x.Id, x.CarId, x.ColorCode, x.ColorNameVN, x.Description, x.SoCode, x.WorkOrderNoTemp, x.UpdatedAt }).ToListAsync();   // #1279 §12
+        .Select(x => new { x.Id, x.CarId, x.ColorCode, x.ColorNameVN, x.ColorNameEL, x.Description, x.SoCode, x.WorkOrderNoTemp, x.UpdatedAt }).ToListAsync();   // #1279 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -43992,10 +44010,10 @@ app.MapPost("/api/womappings", async (WOMappingDto dto, AppDbContext db, ITenant
     if (string.IsNullOrWhiteSpace(dto.WorkOrderNoTemp)) return Results.BadRequest(new { error = "Chưa nhập WorkOrder tạm cho xe này." });
     var w = await db.WOMappings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarId == cid);
     if (w is null) { w = new WOMapping { OrgId = t.OrgId, CarId = cid }; db.WOMappings.Add(w); }
-    w.ColorCode = dto.ColorCode; w.ColorNameVN = dto.ColorNameVN; w.Description = dto.Description; w.SoCode = dto.SoCode;
+    w.ColorCode = dto.ColorCode; w.ColorNameVN = dto.ColorNameVN; w.ColorNameEL = dto.ColorNameEL; w.Description = dto.Description; w.SoCode = dto.SoCode;
     w.WorkOrderNoTemp = dto.WorkOrderNoTemp!.Trim(); w.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { w.Id, w.CarId, w.WorkOrderNoTemp });
+    return Results.Ok(new { w.Id, w.CarId, w.ColorNameEL, w.WorkOrderNoTemp });
 }).RequireAuthorization();
 
 // ===== Kế hoạch bán hàng theo quý (SalePlan — port 1:1 FrmSalePlan, 2010.HTC/Sales) =====
@@ -68098,7 +68116,7 @@ app.MapPost("/api/bankingtrans/{no}/detail", async (string no, RqBtDetailDto dto
     foreach (var d in dto.PmtDtls ?? new())
         db.RqBankingTransPmtDtls.Add(new RqBankingTransPmtDtl { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = d.BkTransType, CarId = d.CarId, DlrCtrNo = d.DlrCtrNo, PmtPercent = d.PmtPercent, PmtAmount = d.PmtAmount, AmountActual = d.AmountActual, HTCInvoiceNo = d.HTCInvoiceNo, LogLUDateTime = now, LogLUBy = who });
     if (dto.PmtLC is { } pl)
-        db.RqBankingTransPmtLCs.Add(new RqBankingTransPmtLC { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = pl.BkTransType, PaymentType = pl.PaymentType, DisbursementType = pl.DisbursementType, LoanPeriod = pl.LoanPeriod, LoanPeriodDate = pl.LoanPeriodDate, InterestRate = pl.InterestRate, Remark = pl.Remark, LogLUDateTime = now, LogLUBy = who });
+        db.RqBankingTransPmtLCs.Add(new RqBankingTransPmtLC { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = pl.BkTransType, PaymentType = pl.PaymentType, DisbursementType = pl.DisbursementType, LoanPeriod = pl.LoanPeriod, LoanPeriodDate = pl.LoanPeriodDate, InterestRate = pl.InterestRate, Remark = pl.Remark, LDNo = pl.LDNo, DisbursermentDate = pl.DisbursermentDate, DisbursementAmount = pl.DisbursementAmount, LogLUDateTime = now, LogLUBy = who });
     foreach (var d in dto.PmtLCDtls ?? new())
         db.RqBankingTransPmtLCDtls.Add(new RqBankingTransPmtLCDtl { OrgId = t.OrgId, RQ_BankingTransNo = no, BkTransType = d.BkTransType, BankGuaranteeNo = d.BankGuaranteeNo, DealerCode = d.DealerCode, BankCode = d.BankCode, DateOpen = d.DateOpen, DateExpired = d.DateExpired, Amount = d.Amount, AmountPmt = d.AmountPmt, AmountDisbursement = d.AmountDisbursement, LogLUDateTime = now, LogLUBy = who });
     if (dto.Grt is { } g)
@@ -68133,7 +68151,7 @@ app.MapGet("/api/bankingtrans/{no}/detail", async (string no, AppDbContext db, I
         header = new { b.RQ_BankingTransNo, b.BankCode, b.BkTransType, b.BkTransStatus, b.DealerCode, b.BizResNumber, b.CreatedBy, b.ApprovedBy, b.FinishDate, b.FinishBy, b.CancelDate, b.CancelBy, b.LogLUDateTime, b.LogLUBy },
         pmt = await db.RqBankingTransPmts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.PaymentNo, x.PaymentType, x.DisbursementType, x.TransferAmount, x.LoanPeriod, x.LoanPeriodDate, x.TransferRemark, x.InterestRate, x.ReceivingUnit, x.BankAccountReceive, x.BankNameReceive, x.ProvinceName, x.Remark, x.DisbursementRequestDate, x.FirstInterestPmtDate, x.CreditContractNo, x.CreditContractDate, x.Purpose, x.InvoiceNo, x.Representative, x.FlagAuthority, x.AuthorityInfo, x.PaymentAccount, x.PaymentBankCode, x.LoanLimit, x.AmountDisbursed, x.BkTransPmtStatus }).FirstOrDefaultAsync(),
         pmtDtls = await db.RqBankingTransPmtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.CarId, x.DlrCtrNo, x.PmtPercent, x.PmtAmount, x.AmountActual, x.HTCInvoiceNo, x.BkTransPmtDtlStatus }).ToListAsync(),
-        pmtLC = await db.RqBankingTransPmtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.PaymentType, x.DisbursementType, x.LoanPeriod, x.LoanPeriodDate, x.InterestRate, x.Remark, x.BkTransPmtLCStatus }).FirstOrDefaultAsync(),
+        pmtLC = await db.RqBankingTransPmtLCs.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.PaymentType, x.DisbursementType, x.LoanPeriod, x.LoanPeriodDate, x.InterestRate, x.Remark, x.LDNo, x.DisbursermentDate, x.DisbursementAmount, x.BkTransPmtLCStatus }).FirstOrDefaultAsync(),
         pmtLCDtls = await db.RqBankingTransPmtLCDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.BankGuaranteeNo, x.DealerCode, x.BankCode, x.DateOpen, x.DateExpired, x.Amount, x.AmountPmt, x.AmountDisbursement, x.BkTransPmtLCDtlStatus }).ToListAsync(),
         grt = await db.RqBankingTransGrts.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.GuaranteeType, x.TotalAmount, x.DateExpiredValue, x.GrtForm, x.GrtReceive, x.GrtReceiveAddress, x.BizResNumber, x.GrtRecPerson, x.GrtRecPosition, x.GrtRecDepartment, x.GrtRecPersonAddress, x.DisbursementRequestDate, x.BkTransGrtStatus }).FirstOrDefaultAsync(),
         grtDtls = await db.RqBankingTransGrtDtls.Where(x => x.OrgId == t.OrgId && x.RQ_BankingTransNo == no).Select(x => new { x.BkTransType, x.CarId, x.DlrCtrNo, x.GrtPercent, x.GrtAmount, x.AmountActual, x.BkTransGrtDtlStatus }).ToListAsync(),
@@ -116308,7 +116326,7 @@ record EstimateOrderDto(string? DealerCode, string MonthEstimate, string? HtcSta
 record EstOrderApproveDto(List<string>? OrderNos);
 record EstOrderLineDto(string ModelCode, string? SpecCode, int Quantity, decimal QtySellCustomer = 0, decimal QtySellDealer = 0, decimal QtyInStock = 0, decimal QtyOnWay = 0, decimal QtyBuyDealer = 0, decimal QtyUnKnown = 0, decimal QtyBOChuaXuatKho = 0, decimal QtyBOKhongVINQuaKhu = 0, decimal QtyBOKhongVINHienTai = 0, decimal QtyBOKhongVINTuongLai = 0, decimal QtyOrdCarID = 0, decimal QtyOrdNotCarID = 0, decimal QtyEOrdN1 = 0, decimal QtyESellCusN0 = 0, decimal QtyESellCusN1 = 0, decimal QtyESellCusN2 = 0, decimal QtyESellCusN3 = 0);
 record GpsClaimFileDto(string GPSClaimNo, int FileIndex, string? GPSFilePath, string? GPSFileName, string? GPSFileType, string? Remark);
-record WOMappingDto(string CarId, string? ColorCode, string? ColorNameVN, string? Description, string? SoCode, string? WorkOrderNoTemp);
+record WOMappingDto(string CarId, string? ColorCode, string? ColorNameVN, string? ColorNameEL, string? Description, string? SoCode, string? WorkOrderNoTemp);
 record SalePlanDto(string DealerCode, string ModelCode, int YearPlan, int Q1, int Q2, int Q3, int Q4);
 record CabinInfoDto(string Vin, string? SpecCode, string? CabinCertificateNo, DateTime? CabinCertificateDate, string? CabinCONo, string? CabinInvoiceNo, DateTime? CabinInvoiceDate);
 record PaymentDiscountReqDto(string? DealerCode, string? GuaranteeNo, string? BankGuaranteeNo, string? BankCode, string? SpecDescription, decimal DiscountAmount);
@@ -116543,7 +116561,7 @@ record BankingTransDto(string BankCode, string BkTransType, DateTime? Disburseme
 // ---- #137: DTO 12 bảng vệ tinh của đề nghị GD ngân hàng (RQ_BankingTransactions_SaveX_20220817) ----
 record RqBtPmtDto(string? BkTransType, string? PaymentNo, string? PaymentType, string? DisbursementType, decimal TransferAmount, int LoanPeriod, DateTime? LoanPeriodDate, string? TransferRemark, decimal InterestRate, string? ReceivingUnit, string? BankAccountReceive, string? BankNameReceive, string? ProvinceName, string? Remark, DateTime? DisbursementRequestDate, DateTime? FirstInterestPmtDate, string? CreditContractNo, DateTime? CreditContractDate, string? Purpose, string? InvoiceNo, string? Representative, string? FlagAuthority, string? AuthorityInfo, string? PaymentAccount, string? PaymentBankCode, decimal LoanLimit, decimal AmountDisbursed);
 record RqBtPmtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal PmtPercent, decimal PmtAmount, decimal AmountActual, string? HTCInvoiceNo);
-record RqBtPmtLCDto(string? BkTransType, string? PaymentType, string? DisbursementType, int LoanPeriod, DateTime? LoanPeriodDate, decimal InterestRate, string? Remark);
+record RqBtPmtLCDto(string? BkTransType, string? PaymentType, string? DisbursementType, int LoanPeriod, DateTime? LoanPeriodDate, decimal InterestRate, string? Remark, string? LDNo, DateTime? DisbursermentDate, decimal DisbursementAmount);
 record RqBtPmtLCDtlDto(string? BkTransType, string? BankGuaranteeNo, string? DealerCode, string? BankCode, DateTime? DateOpen, DateTime? DateExpired, decimal Amount, decimal AmountPmt, decimal AmountDisbursement);
 record RqBtGrtDto(string? BkTransType, string? GuaranteeType, decimal TotalAmount, DateTime? DateExpiredValue, string? GrtForm, string? GrtReceive, string? GrtReceiveAddress, string? BizResNumber, string? GrtRecPerson, string? GrtRecPosition, string? GrtRecDepartment, string? GrtRecPersonAddress, DateTime? DisbursementRequestDate);
 record RqBtGrtDtlDto(string? BkTransType, string? CarId, string? DlrCtrNo, decimal GrtPercent, decimal GrtAmount, decimal AmountActual);

@@ -1680,6 +1680,11 @@ public sealed class VinPacking
 /// File đính kèm của yêu cầu bảo hành thiết bị GPS (`GPSF_GPSClaimAttachFile`) —
 /// nguồn StorageFG/BizHTC.ZTempGPS.cs (csproj **153**, md5 cd3c409e… khớp 2 máy), ghi tại 5900 và 6763.
 /// TWIN: cụm `GPSF_GPSClaim*` có ở **CẢ HAI** WS ⇒ không lệch.
+/// #30074 SKIP `GPSFileContent` (`TblGPSF_GPSClaimAttachFile.GPSFileContent`, DbDefine.cs:3751, byte[]):
+/// insert/update thật ở BizHTC.ZTempGPS.cs:5900-5920 và 6141-6153 KHÔNG có cột này trong danh sách cột —
+/// nó chỉ là `DataColumn` tạm (FrmGPSF_GPSClaimNew.cs:107/174, FrmGPSF_GPSClaimMng.cs:370-834,
+/// FrmPopupAttachFile.cs:41-207) mang bytes từ UI để `File.ReadAllBytes`/ghi file vật lý ra đĩa theo
+/// `GPSFilePath`, không phải cột lưu DB. Không thêm property/Seeder/DTO — cột chết dạng #540.
 /// </summary>
 public sealed class GpsClaimAttachFile
 {
@@ -2661,6 +2666,11 @@ public sealed class RoHistory
 // cot `ExpenseType` da co — khong phai cot vat ly tren bang. Cung ho voi `Ser_ROWarrantyStatusValue`
 // (hang so nhan warranty status). KHONG them property/Seeder/DTO moi — cot chet dang #540, chi ghi
 // doc-comment de tool khong bi lap lai khao sat.
+// ===== #CHK-COT khao sat 2026-10-08 — bo sung `FlagWarrantyEdit` (FrmQuotation/SerROServiceItems).
+// Grep toan DMSCarSv: moi noi dung `TblSerROServiceItems.FlagWarrantyEdit` deu nam trong dong COMMENT
+// (// dr[...] = false, FrmQuotation.cs:817/883/9089/9107/9125) — khong co READ/WRITE LIVE nao thuc su
+// chay. Cot da khai bao trong DbDefine nhung chet hoan toan o form duy nhat dung no. KHONG them
+// property/Seeder/DTO moi.
 public sealed class RoServiceItem{
     public long Id { get; set; }
     public Guid OrgId { get; set; }
@@ -2815,6 +2825,9 @@ public sealed class RoPartItem
 
 /// <summary>Phiếu yêu cầu xuất kho phụ tùng cho RO (Ser_RO_StockRequisition — port 1:1 FrmROStockRequisition, TCMotor DMSCarSv):
 /// gắn với 1 lệnh sửa chữa, xuất phụ tùng từ kho. Draft → Issued (đã xuất).</summary>
+// ===== #CHK-COT khao sat 2026-10-08 — check_cot_1to1.py bao thieu `StkReqID`. Day CHINH LA khoa nghiep vu
+// cua phieu (BizCarSv.Inventory.cs:218/358/494, FrmROStockRequisition.cs StkReqID) — da port duoi ten
+// KHAC la `ReqNo` (doi ten co chu dich, khong phai thieu). KHONG them property/Seeder/DTO moi.
 public sealed class StockReq
 {
     public long Id { get; set; }
@@ -3125,6 +3138,11 @@ public sealed class PartStock
 /// Cột nguồn (từ khối INSERT `BizCarSv.Inventory.Stock.cs:1499-1512`): `StockBalanceID`/`DealerCode`/`LocationCode`/
 /// `LocationID`/`PartID`/`InShipmentQuantity`/`InStockQuantity`/`CreatedDate`/`CreatedBy`/`LogLUDateTime`/`LogLUBy`.
 /// ⚠️ KHÁC `PartStock` (`Ser_Inv_PartStock`: WarehouseCode/PartCode/OnHand) — hai bảng khác nhau (bài học #554).</summary>
+// ===== #CHK-COT khao sat 2026-10-08 — check_cot_1to1.py bao thieu `StockOutQuantity` (FrmStockOutCreate).
+// Doc SerStockSerivce.cs:433 + FrmStockOutCreate.cs:750/758: day la `DataColumn` THEM VAO DataTable
+// IN-MEMORY luc hien thi grid (SL nguoi dung nhap de xuat), gia tri duoc copy ngay sang
+// Ser_InvStockOutDetail.Quantity (da co trong Mini) — khong phai cot vat ly luu tren Ser_Inv_StockBalance.
+// KHONG them property/Seeder/DTO moi — cot chet dang #540.
 public sealed class SerInvStockBalance
 {
     public long Id { get; set; }
@@ -3799,6 +3817,11 @@ public sealed class SerStockOutOrderStockOut
 }
 
 /// <summary>Dòng chi tiết lệnh xuất kho theo đơn (Ser_InvStockOutOrderDetail) — thuộc SerStockOutOrder. Mã PT + tên + ĐVT + SL yêu cầu.</summary>
+// ===== #CHK-COT khao sat 2026-10-08 — check_cot_1to1.py bao thieu `StockOutOrderDetailID`
+// (FrmStockOutOrderCreate). Doc FrmStockOutOrderCreate.cs:413/434: form CHI khai bao DataColumn roi
+// gan "" (rong) — khong nhap/hien gia tri thuc. PK nay do DB SINH TU DONG, dung de JOIN trong
+// BizCarSv.Inventory.StockOut.cs (nhieu cho) nhung client KHONG quan ly gia tri — da co `Id` noi bo
+// lam PK tuong duong trong Mini. KHONG them property/Seeder/DTO moi — cot chet dang #540.
 public sealed class SerStockOutOrderLine
 {
     public long Id { get; set; }
@@ -4037,6 +4060,11 @@ public sealed class RedeemInvoiceRequestLine
     public string? LogLUBy { get; set; }
 }
 
+// ===== #CHK-COT khao sat 2026-10-08 — check_cot_1to1.py bao thieu `SMTrainingSpecialized` tren
+// FrmMngSalesManHTC/FrmMngSalesManApproved. Grep toan `2021.1.TCMotor/Dev/DMSCarSv` (nguon LIVE TCMotor,
+// ca V20 va V20.2023.Release.V2): 0 hit. Cot nay CHI ton tai o `2010.HTC/Dev/.../Backup*` va
+// `Release.20220125` (cay 2010.HTC cu, thu muc Backup/Backup1) — khong phai nguon LIVE dang port.
+// KHONG them property/Seeder/DTO moi — cot chet/nguon sai nhanh (twin trap), chi ghi doc-comment.
 /// <summary>NVBH đại lý + duyệt BĐH (Mst_DlSalesMan) — port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC (2010.HTC/SalesDealer). Đại lý đăng ký NVBH → HTC/BĐH duyệt. 2 trạng thái: SMStatus (thử việc/chính thức/nghỉ/CTV) + BDHStatus (duyệt). KHÁC master SalesMan đơn giản. Upsert-by-SMCode.</summary>
 public sealed class DealerSalesMan
 {
@@ -4917,7 +4945,11 @@ public sealed class StoCBReqDtl
     public string? TypeCB { get; set; }
 }
 
-/// <summary>Bảo hành xe tồn kho — port 1:1 FrmMngInv_CarWarranty (Inv_CarWarranty, TCMotor). Theo dõi mốc bảo hành theo VIN + gửi KH xác nhận bảo hành (CustomerConfirmDate).</summary>
+/// <summary>Bảo hành xe tồn kho — port 1:1 FrmMngInv_CarWarranty (Inv_CarWarranty, TCMotor). Theo dõi mốc bảo hành theo VIN + gửi KH xác nhận bảo hành (CustomerConfirmDate).
+/// check_cot_1to1.py báo thiếu `WarrantyTypeName` — đã trace `FrmMngInv_CarWarranty.cs:215-227` (DMSales.Foton):
+/// chuỗi nhãn TIẾNG VIỆT hard-code suy ra từ `WarrantyType` ("0"→"Thông thường", "1"→"Điện tử"), gán thẳng vào
+/// cột DataTable in-memory lúc hiển thị, KHÔNG có trong SELECT nguồn (`DbDefine.cs:3191` khai cột nhưng không
+/// có cặp *Code riêng — chính `WarrantyType` đã là mã). Cột chết dạng #540 — SKIP, không thêm property.</summary>
 public sealed class InvCarWarranty
 {
     public long Id { get; set; }
@@ -5183,6 +5215,7 @@ public sealed class WOMapping
     public string CarId { get; set; } = "";
     public string? ColorCode { get; set; }
     public string? ColorNameVN { get; set; }
+    public string? ColorNameEL { get; set; }  // tên màu tiếng Anh (Ext/Int), song song ColorNameVN — SalesService.cs:19720
     public string? Description { get; set; }
     public string? SoCode { get; set; }
     public string? WorkOrderNoTemp { get; set; }  // WinForm core output: CarCarMapWorkOrder (line 193)
@@ -6237,7 +6270,9 @@ public sealed class WarrantyAttachment
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
-/// <summary>Danh mục loại tài liệu hồ sơ bảo hiểm (Mst_Attachment) — port 1:1 phần catalog của FrmInsuranceAttachmentAdd, TCMotor DMSCarSv/Insurance.</summary>
+/// <summary>Danh mục loại tài liệu hồ sơ bảo hiểm (Mst_Attachment) — port 1:1 phần catalog của FrmInsuranceAttachmentAdd, TCMotor DMSCarSv/Insurance.
+/// check_cot_1to1.py báo "thiếu" MstAttachmentID — false positive: đó là PK int của Mst_Attachment gốc,
+/// đã map vào `Id` dưới đây (grid chỉ bind PK để lookup, không phải cột dữ liệu riêng).</summary>
 public sealed class InsuranceAttachmentType
 {
     public long Id { get; set; }
@@ -6250,7 +6285,8 @@ public sealed class InsuranceAttachmentType
 }
 
 /// <summary>Checklist hồ sơ bảo hiểm đã thu theo RO (Ser_InsuranceAttachment — port 1:1 FrmInsuranceAttachmentAdd, TCMotor DMSCarSv/Insurance):
-/// đánh dấu loại tài liệu nào (theo InsuranceAttachmentType) đã có cho 1 RO. Tồn tại bản ghi = đã tích chọn.</summary>
+/// đánh dấu loại tài liệu nào (theo InsuranceAttachmentType) đã có cho 1 RO. Tồn tại bản ghi = đã tích chọn.
+/// check_cot_1to1.py báo "thiếu" InsuranceAttachmentID — false positive: PK int gốc đã map vào `Id` dưới đây.</summary>
 public sealed class InsuranceAttachment
 {
     public long Id { get; set; }
@@ -6301,6 +6337,9 @@ public sealed class ServiceWarrantyClaimTransaction
     public string? LogLUBy { get; set; }
 }
 
+// ===== #CHK-COT khao sat 2026-10-08 — check_cot_1to1.py bao thieu `NauralCode`. Grep toan DMSCarSv:
+// 4/4 cho dung (FrmQuotation.cs:8526/8552/8793, FrmWarrantyReport.cs:1818) deu nam trong dong COMMENT
+// (//...NauralCode].ToString()) — khong co READ/WRITE LIVE. KHONG them property/Seeder/DTO moi.
 /// <summary>Đề nghị bảo hành dịch vụ (đại lý gửi HTC duyệt theo RO) — port 1:1 FrmWarrantyReportDealerSearch/HTCSearch/HTCApproved (Ser_ROWarrantyReport, TCMotor).</summary>
 public sealed class ServiceWarrantyClaim
 {
@@ -8011,6 +8050,9 @@ public sealed class CarDocRequest
 {
     public long Id { get; set; }
     public Guid OrgId { get; set; }
+    // check_cot_1to1.py báo DR.DocRequestNo "thiếu" — false positive: đây CHÍNH LÀ RequestNo dưới đây
+    // (DbDefine.cs TblDR.DocRequestNo = "DOCREQUESTNO", C# property CDR.RequestNo map vào đó — tool so
+    // khớp theo tên cột DB literal nên không nhận ra property đã đổi tên). Không port thêm cột mới.
     public string RequestNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
     public string ReceivedPerson { get; set; } = "";
@@ -11224,6 +11266,11 @@ public sealed class RqBankingTransPmtLC
     public DateTime? LoanPeriodDate { get; set; }
     public decimal InterestRate { get; set; }
     public string? Remark { get; set; }
+    // #30074 nguồn TblRQ_BankingTransPmtLC.LDNo/DisbursermentDate/DisbursementAmount (DbDefine.cs:6166-6168),
+    // dùng tại FrmDeNghiGDNganHang.cs:1199-1201 (txtLDNoLC/txtDisbursementDateLC/txtDisbursementAmountLC) — cột thiếu.
+    public string? LDNo { get; set; }
+    public DateTime? DisbursermentDate { get; set; }
+    public decimal DisbursementAmount { get; set; }
     public string BkTransPmtLCStatus { get; set; } = "P";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
@@ -12395,7 +12442,12 @@ public sealed class PaymentTermDetail
     public string FlagDepositPmt { get; set; } = "0";
 }
 
-/// <summary>Quy cách xe (Mst_CarSpec) — port 1:1 FrmCarSpec (2010.HTC/Admin/Product). Master spec: model/std-opt/grade/OCN/số chỗ/spec gốc.</summary>
+/// <summary>Quy cách xe (Mst_CarSpec) — port 1:1 FrmCarSpec (2010.HTC/Admin/Product). Master spec: model/std-opt/grade/OCN/số chỗ/spec gốc.
+/// check_cot_1to1.py báo thiếu 3 cột `Mst_Origin.OriginName`/`Mst_CarSpec_Origin.OriginName`/`Mst_CarSpecGroup.SpecGroupName` —
+/// đã trace: cả 3 đều là NHÃN HIỂN THỊ join từ bảng master nhỏ (BizHTC\DMS40\0.34.Contract.cs:14442 `left join
+/// Mst_CarSpec_Origin mcso on mcs.OriginNo = mcso.OriginNo`), dùng làm `DisplayMember` của combobox trong
+/// `FrmCarSpec.cs:121-171` (ValueMember = `OriginNo`/`SpecGroupCode`). Cột mã thật (`OriginNo`, `SpecGroupCode`)
+/// đã port đủ dưới đây — SKIP không thêm property *Name riêng.</summary>
 public sealed class CarSpec
 {
     public long Id { get; set; }
@@ -16567,6 +16619,10 @@ public sealed class ServiceItemMst
     //       (BizCarSv.AssignmentOfWork.cs:3523 / 5304, WS LIVE) khi áp/gỡ công việc bảo hành cho đại lý =====
 }
 
+// ===== #CHK-COT khao sat 2026-10-08 — check_cot_1to1.py bao thieu `FlagDongThung` (FrmModel).
+// Cot nay CHI ton tai o `2021.1.TCMotor/Dev/DMSales.Foton` (thuong hieu Foton, FrmModel/CarModel rieng) —
+// KHAC voi FrmModel/FrmModelCreate/Modify/Search cua DMSCarSv (TCMotor/HTC, nguon LIVE dang port o day).
+// Trung ten Frm nhung khac san pham (twin trap kieu #330). KHONG them property/Seeder/DTO moi.
 /// <summary>Danh mục model xe dịch vụ (mã/tên/nhãn hiệu/mã SX) — port 1:1 FrmModel/FrmImportModel (TblModel, TCMotor).</summary>
 public sealed class ServiceModel
 {
