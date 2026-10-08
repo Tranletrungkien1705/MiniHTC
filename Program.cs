@@ -17674,6 +17674,17 @@ app.MapGet("/api/gpscalllogs/{logId}/pair", async (string logId, AppDbContext db
 // ⚠️ Guard phản trực giác: **duyệt vào từ "P" HOẶC "C"** (bản đã từ chối duyệt lại được);
 //    **từ chối chỉ vào từ "P"**.
 // ⚠️ Phần sinh dữ liệu tổng hợp (`mySql_Rpt_PlanRetail_Create`) CHƯA port — endpoint nhận dòng từ client.
+// 📌 NỢ (kỹ thuật-6 round 49) — `Rpt_PlanRetail_Update` (`FrmRpt_PlanRetailDtl.cs:544` →
+// `BizHTC.Report.cs:34417-35072`) CHƯA port. Không phải thiếu cột đơn giản: cần thêm `Remark` ở
+// `PlanRetail` + 8 cột `QtyAvailDealer/QtyCtrSignTarget/QtyPlan1st..6th` ở `PlanRetailDtl`, NHƯNG
+// UPDATE thật của nguồn là một phép "carry-forward" theo CASE trên `PlanTimes` (1-6): mỗi lần sửa
+// chỉ ô `QtyPlanNth` khớp đúng `PlanTimes` hiện tại lấy giá trị MỚI từ client, các ô `nth` NHỎ HƠN
+// được chép lại từ dòng `PlanTimes` ngay trước đó (join `#tbl_Rpt_PlanRetailDtl_Previous`, chỉ khi
+// plan trước đã `PRStatus='A'`), còn 3 cột tỷ lệ `QtyNewSignPerTarget/QtyRetailedPerPlan/
+// QtyRetailAndCtrPerPlan` lại tính từ `QtyNewSignInMonth/QtyRetailed/QtyRetailAndCtr` — các cột
+// TỔNG HỢP đến từ job báo cáo khác, chưa có trong Mini. Port đúng 1:1 cần thiết kế lại cả carry-
+// forward + nguồn 3 cột tổng hợp đó trước, không phải việc vá 1-3 cụm trong 1 lượt — để lại cho
+// một phiên riêng.
 app.MapGet("/api/planretails", async (AppDbContext db, ITenantContext t, string? month, string? dealer, string? status) =>
 {
     var qy = db.PlanRetails.Where(x => x.OrgId == t.OrgId);
