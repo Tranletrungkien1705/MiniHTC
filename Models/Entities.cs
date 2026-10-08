@@ -11274,6 +11274,14 @@ public sealed class RqBankingTransGrtLC
     public string? GrtLCReceiveAddress { get; set; }
     public string? BizResNumber { get; set; }
     public string? GrtLCRecPersonAddress { get; set; }
+    /// <summary>#1541 — 4 cột (Bank)* do ngân hàng xác nhận thực tế (`BizHTC.VietinBank.cs` đọc lại từ
+    /// DB sau khi ngân hàng phản hồi), khác với `BankLCNo`/`TotalAmount`/`DateStart`/`DateEnd` phía trên
+    /// (giá trị ĐỀ NGHỊ ban đầu). UI (`FrmDeNghiGDNganHang.cs:1037-1040`, panel `panelBankInfoLC`) chỉ
+    /// hiển thị read-only, không có form nhập — không port POST riêng cho 4 cột này.</summary>
+    public string? BankLCNo { get; set; }
+    public decimal? BankTotalAmount { get; set; }
+    public DateTime? BankDateStart { get; set; }
+    public DateTime? BankDateEnd { get; set; }
     public string BkTransGrtLCStatus { get; set; } = "P";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
