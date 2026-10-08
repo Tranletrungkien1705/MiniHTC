@@ -3868,6 +3868,40 @@ app.MapPost("/api/transplans", async (TransPlanDto dto, AppDbContext db, ITenant
     return Results.Ok(new { p.VINPlan, p.DealerCode, p.ModelCode, p.Vin, p.TPStatus, FlagRealVin = string.IsNullOrEmpty(p.Vin) ? "0" : "1" });
 }).RequireAuthorization();
 
+// #30081 Sửa KH theo nguồn ĐẦU VÀO (kỹ thuật-6 WS-method-diff) — Sto_TranspPlanUpdate_ByKeHoach_New20181119
+// (Biz.HTC.WH.cs:103115): chỉ sửa ExpectedDate+StorageCode, dùng ở FrmMngPlanTransport/FrmLenKeHoach_BanHang khi
+// không có xung đột VIN mới (nhánh "else" của UpdateTPWorker, SalesService.cs:1460/1471). 4 guard theo đúng thứ
+// tự nguồn: TPStatus phải "P" (Sto_TranspPlanUpdate_InvalidTPStatus), TransporterStatus KHÔNG được "F" đã nhận
+// chở (Sto_TranspPlanUpdate_KH_InvalidTransporterStatus — nguồn chặn cả "A"/"F", Mini chỉ có "F"), ExpectedDate
+// bắt buộc + phải >= ngày hiện tại (Sto_TranspPlanUpdate_InvalidDate_DateNow), không trùng cặp khoá
+// (ExpectedDate, TransporterCode, FProvinceCode, FDistrictCode, TProvinceCode, TDistrictCode, VIN) với KH khác
+// (Sto_TranspPlanUpdate_InvalidKey).
+app.MapPost("/api/transplans/{vinPlan}/update-plan", async (string vinPlan, TranspPlanUpdateByKeHoachDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    vinPlan = vinPlan.Trim().ToUpperInvariant();
+    var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vinPlan);
+    if (p is null) return Results.NotFound(new { vinPlan });
+    if (p.TPStatus != "P") return Results.BadRequest(new { error = "KH đã chốt, không sửa được (Sto_TranspPlanUpdate_InvalidTPStatus).", p.TPStatus });
+    if (p.TransporterStatus == "F") return Results.BadRequest(new { error = "Nhà vận chuyển đã nhận chở, không sửa được KH (Sto_TranspPlanUpdate_KH_InvalidTransporterStatus).", p.TransporterStatus });
+    if (dto.ExpectedDate is null) return Results.BadRequest(new { error = "Chưa có ngày dự kiến (Sto_TranspPlanUpdate_InvalidExpectedDate)." });
+    if (dto.ExpectedDate.Value.Date < DateTime.Now.Date) return Results.BadRequest(new { error = "Ngày vận tải dự kiến phải >= ngày hiện tại (Sto_TranspPlanUpdate_InvalidDate_DateNow).", dto.ExpectedDate, now = DateTime.Now.Date });
+    var dupQ = db.TransportPlans.Where(x => x.OrgId == t.OrgId && x.VINPlan != vinPlan && x.ExpectedDate.HasValue && x.ExpectedDate.Value.Date == dto.ExpectedDate.Value.Date);
+    if (!string.IsNullOrWhiteSpace(p.TransporterCode)) dupQ = dupQ.Where(x => x.TransporterCode == p.TransporterCode);
+    if (!string.IsNullOrWhiteSpace(p.FProvinceCode)) dupQ = dupQ.Where(x => x.FProvinceCode == p.FProvinceCode);
+    if (!string.IsNullOrWhiteSpace(p.FDistrictCode)) dupQ = dupQ.Where(x => x.FDistrictCode == p.FDistrictCode);
+    if (!string.IsNullOrWhiteSpace(p.TProvinceCode)) dupQ = dupQ.Where(x => x.TProvinceCode == p.TProvinceCode);
+    if (!string.IsNullOrWhiteSpace(p.TDistrictCode)) dupQ = dupQ.Where(x => x.TDistrictCode == p.TDistrictCode);
+    if (!string.IsNullOrWhiteSpace(p.Vin))
+    {
+        dupQ = dupQ.Where(x => x.Vin == p.Vin);
+        if (await dupQ.AnyAsync()) return Results.BadRequest(new { error = "Trùng khoá KH (ExpectedDate/TransporterCode/tuyến/VIN) với KH khác (Sto_TranspPlanUpdate_InvalidKey)." });
+    }
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    p.ExpectedDate = dto.ExpectedDate; p.StorageCode = dto.StorageCode; p.LogLUDateTime = now; p.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.VINPlan, p.ExpectedDate, p.StorageCode, p.TPStatus, p.TransporterStatus });
+}).RequireAuthorization();
+
 // #314 Chốt KH — Sto_TranspPlanApproved_New20181119 (Biz.HTC.WH.cs:101767): TPStatus "P" → "F"; 8 guard theo đúng thứ tự nguồn,
 // mỗi guard một mã lỗi riêng ("Chỉ được chốt VIN thật"). Ghi ApprovedDate/By + LUDate/LUBy + LogLU*.
 app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -114761,6 +114795,7 @@ record TmActionDto(string? FilePath = null);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
 record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null, string? FlagRealVin = null);
+record TranspPlanUpdateByKeHoachDto(DateTime? ExpectedDate, string? StorageCode);
 record RetrieveReqCarDto(string Vin, string? StorageCode, string? TranspReqType = null, string? RefOrdNo = null, string? CarId = null);
 record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars, string? TranspReqType, string? TransportContractNo = null);
 record VinPairDto(string FVIN, string RVIN);
