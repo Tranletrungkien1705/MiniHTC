@@ -5056,6 +5056,10 @@ public sealed class DeliveryRequestDetail
     public string? ModelCode { get; set; }
     public DateTime? DeliveryStartDate { get; set; }
     public string? Remark { get; set; }
+    /// <summary>`AMOUNTNEGATIVE` (Dlr_DRDetail) — số tiền chưa thanh toán (giá thực tế trừ tiền đã trả), hiển thị cột "Chưa T.Toán" ở FrmMngDR/FrmNewDR/FrmNewDocReq.</summary>
+    public decimal? AmountNeg { get; set; }
+    /// <summary>`DODELIVERYENDDATE` (Dlr_DRDetail) — ngày nhận xe, cột "Ngày nhận xe"/"Ngày N.Xe" ở FrmMngDR/FrmNewDR/FrmHTCMngDR.</summary>
+    public DateTime? DODeliveryEndDate { get; set; }
 }
 
 /// <summary>Dự kiến đơn hàng theo tháng (header: đại lý/tháng/NV phụ trách) — port 1:1 FrmQuanLyDuKienDH (Plan_EstimateOrder, 2010.HTC/Sales).</summary>
@@ -13337,6 +13341,24 @@ public sealed class MnfPlOrderDtl
     public string? ColorCode { get; set; }
     public int Quantity { get; set; } = 1;
     public int MnfPlIdx { get; set; }            // thứ tự SX (> 0)
+
+    // check_cot_1to1.py báo TblMnfPl_OrderDtl thiếu LotNo/OrderStatusDtl/QtyMonthN3 (10/13) — khảo sát
+    // `FrmDatHangSX.cs` (2010.HTC/Sales/WorkOrder, Release.2025):
+    //  - `LotNo` (và cả `Lot`/`LotDtl.LotNo`/`LotDtl.LotStatusDtl` ở các bảng liên quan): dòng 141
+    //    `//hong20170307: nâng cấp bỏ Lot` + toàn bộ code LotNo (141-150, 400-684, 895, 1089-1097) bị
+    //    COMMENT CHẾT — tính năng LOT đã bị gỡ khỏi màn hình sống. KHÔNG port (cột chết thật, #540).
+    //  - `OrderStatusDtl` (dòng 905): chỉ khai cột DataTable, KHÔNG có nơi gán giá trị sống nào trong
+    //    `FrmDatHangSX.cs`/`FrmQLDatHangSX.cs` (grep repo canonical 2010.HTC = 0 hit gán giá trị ngoài
+    //    Designer/DbDefine). KHÔNG port (cột chết thật).
+    //  - `QtyOrdMonthN0`/`QtyMonthN1`/`QtyMonthN2`/`QtyMonthN3` (dòng 897-902): LIVE — bind lưới nhập SL
+    //    đặt theo từng tháng SX, có Mask/SummaryItem/Caption động theo tháng. Đây LÀ 4 cột thật đang
+    //    thiếu TOÀN BỘ (không phải chỉ QtyMonthN3 — công cụ đo bị fuzzy-match nhầm "QtyOrdMonthN0" của
+    //    DTO báo cáo KHÔNG liên quan `MnfPlMmsRowDto`/`Rpt_Statistic_MnfPlOrder`, bảng nguồn
+    //    `#input_Rpt_MMS_Rpt_Statistic_MnfPlOrder` — khác `TblMnfPl_OrderDtl` ở đây). Port đủ 4 cột.
+    public int QtyOrdMonthN0 { get; set; }
+    public int QtyMonthN1 { get; set; }
+    public int QtyMonthN2 { get; set; }
+    public int QtyMonthN3 { get; set; }
 }
 
 /// <summary>Thiết bị gắn trên xe (Mng_Device_Car) — port 1:1 FrmMng_Device_Car/_Upd (2010.HTC/Sales). Gán loại thiết bị + hóa đơn nhập cho VIN.</summary>
@@ -14611,6 +14633,21 @@ public sealed class BankGuaranteeDtl
     /// khi duyệt dòng đề nghị giao hồ sơ (không phải lúc tạo bảo lãnh).</summary>
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+
+    // ===== check_cot_1to1.py báo thiếu PMPDAmount_Count/PMPDAmount_SumForGuarantee/PMPDDiscount_Sum
+    //       (FrmBankGrt, TblGuaranteeDetail 20/23) — ĐÃ KHẢO SÁT, KHÔNG PHẢI CỘT BẢNG =====
+    // Trace: `FrmBankGrt.cs:346-356` (TERP.BankClient/Views/Bank, Release.2025) gán 11 field cùng họ
+    // `PMGDFlagWarning/PMGDPercentGP/PMPDAmount_Sum/PMPDAmount_Count/PMPDAmount_SumForGuarantee/
+    // PMPDDiscount_Sum/PMPDAmount_SumForNoneGuarantee/PMPDPaymentTotalPercent/PMPDPercentGG/
+    // PMPDGuaranteeRemain/PMPDRemain` lên lưới — nhưng nguồn (`BizHTC.Payment.cs:1313-1324`,
+    // `BizHTC.Common.cs:855-862`) phát sinh TẤT CẢ 11 cột này từ SQL CTE/subquery tương quan
+    // `PaymentDetailWithDiscount_01` (join `Pmt_PaymentDetail`+`Pmt_Guarantee`+lịch làm việc
+    // `Mst_Calendar_GetForDayT`), KHÔNG phải cột vật lý trên `Pmt_GuaranteeDetail`. Cùng đúng debt
+    // đã ghi nhãn ở `Program.cs` endpoint `/api/reports/dealer-cars-summary` (#B37, biến
+    // `pmpdAmountSum/pmpdPaymentTotalPercent/pmpdRemain` trả null có nhãn) và khối SELECT
+    // `PMPDGuaranteeRemain` (#5830/#B40 lân cận) — KHÔNG thêm property/Seeder/DTO mới ở đây để
+    // tránh trùng debt đã khai báo nơi khác; màn `/api/bankgrts` nếu cần các cột này phải tái dùng
+    // đúng khối tính `PaymentDetailWithDiscount_01` đã có (chưa port), không bịa cột lưu tĩnh.
 }
 
 /// <summary>Lệnh xuất xe phía ngân hàng xác nhận (DO) — port 1:1 FrmBankDO. Header.</summary>

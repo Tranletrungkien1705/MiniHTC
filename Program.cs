@@ -43801,7 +43801,7 @@ app.MapPost("/api/deliveryrequests", async (DeliveryRequestDto dto, AppDbContext
     var h = new DeliveryRequest { OrgId = t.OrgId, DRNo = no, DealerCode = dto.DealerCode, RequestDate = dto.RequestDate ?? DateTime.Now, Status = "Draft" };
     db.DeliveryRequests.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.DeliveryRequestDetails.Add(new DeliveryRequestDetail { OrgId = t.OrgId, DeliveryRequestId = h.Id, CarId = c.CarId!.Trim(), ModelCode = c.ModelCode, DeliveryStartDate = c.DeliveryStartDate, Remark = c.Remark });
+        db.DeliveryRequestDetails.Add(new DeliveryRequestDetail { OrgId = t.OrgId, DeliveryRequestId = h.Id, CarId = c.CarId!.Trim(), ModelCode = c.ModelCode, DeliveryStartDate = c.DeliveryStartDate, Remark = c.Remark, AmountNeg = c.AmountNeg, DODeliveryEndDate = c.DODeliveryEndDate });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.DRNo, cars = cars.Count });
 }).RequireAuthorization();
@@ -43811,7 +43811,8 @@ app.MapGet("/api/deliveryrequests/{id}/cars", async (long id, AppDbContext db, I
     var h = await db.DeliveryRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var cars = await db.DeliveryRequestDetails.Where(l => l.OrgId == t.OrgId && l.DeliveryRequestId == id)
-        .Select(l => new { l.CarId, l.ModelCode, deliveryStartDate = l.DeliveryStartDate.HasValue ? l.DeliveryStartDate.Value.ToString("yyyy-MM-dd") : "", l.Remark }).ToListAsync();
+        .Select(l => new { l.CarId, l.ModelCode, deliveryStartDate = l.DeliveryStartDate.HasValue ? l.DeliveryStartDate.Value.ToString("yyyy-MM-dd") : "", l.Remark, l.AmountNeg,
+            dODeliveryEndDate = l.DODeliveryEndDate.HasValue ? l.DODeliveryEndDate.Value.ToString("yyyy-MM-dd") : "" }).ToListAsync();
     return Results.Ok(new { h.DRNo, h.DealerCode, h.RequestDate, h.Status, h.Note, h.CreatedAt, h.UpdatedAt, cars });   // #1414 §12
 }).RequireAuthorization();
 
@@ -72222,7 +72223,7 @@ app.MapPost("/api/mnfplorders", async (MnfPlOrderDto dto, AppDbContext db, ITena
     var o = new MnfPlOrder { OrgId = t.OrgId, OrderNo = no, OrdType = dto.OrdType.Trim(), OrdMonth = dto.OrdMonth.Trim(), Remark = dto.Remark, Status = "Draft" };
     db.MnfPlOrders.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.MnfPlOrderDtls.Add(new MnfPlOrderDtl { OrgId = t.OrgId, MnfPlOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, ColorCode = l.ColorCode, Quantity = l.Quantity, MnfPlIdx = l.MnfPlIdx });
+        db.MnfPlOrderDtls.Add(new MnfPlOrderDtl { OrgId = t.OrgId, MnfPlOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, SpecDescription = l.SpecDescription, ColorCode = l.ColorCode, Quantity = l.Quantity, MnfPlIdx = l.MnfPlIdx, QtyOrdMonthN0 = l.QtyOrdMonthN0, QtyMonthN1 = l.QtyMonthN1, QtyMonthN2 = l.QtyMonthN2, QtyMonthN3 = l.QtyMonthN3 });
     await db.SaveChangesAsync();
     return Results.Ok(new { o.OrderNo, lines = lines.Count });
 }).RequireAuthorization();
@@ -72233,7 +72234,7 @@ app.MapGet("/api/mnfplorders/{no}/lines", async (string no, AppDbContext db, ITe
     var o = await db.MnfPlOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderNo == no);
     if (o is null) return Results.NotFound(new { no });
     var lines = await db.MnfPlOrderDtls.Where(l => l.OrgId == t.OrgId && l.MnfPlOrderId == o.Id).OrderBy(l => l.MnfPlIdx)
-        .Select(l => new { l.MnfPlIdx, l.ModelCode, l.SpecCode, l.SpecDescription, l.ColorCode, l.Quantity }).ToListAsync();
+        .Select(l => new { l.MnfPlIdx, l.ModelCode, l.SpecCode, l.SpecDescription, l.ColorCode, l.Quantity, l.QtyOrdMonthN0, l.QtyMonthN1, l.QtyMonthN2, l.QtyMonthN3 }).ToListAsync();
     return Results.Ok(new { o.OrderNo, o.OrdType, o.OrdMonth, o.Remark, o.Status, o.CreatedAt, o.SentAt, count = lines.Count, lines, qty = lines.Sum(x => x.Quantity) });   // #1399 §12
 }).RequireAuthorization();
 
@@ -116227,7 +116228,7 @@ record BankStatementRemittanceUpdateDto(List<BankStatementRemittanceLineDto>? Li
 record CustPromotionDto(string CardNo, string ProgramCode, string? ProgramName, DateTime? EffDate, int QtyAllocated, string? Remark);
 record CustPromotionUseDto(int Qty);
 record DeliveryRequestDto(string? DealerCode, DateTime? RequestDate, List<DRCarDto>? Cars);
-record DRCarDto(string CarId, string? ModelCode, DateTime? DeliveryStartDate, string? Remark);
+record DRCarDto(string CarId, string? ModelCode, DateTime? DeliveryStartDate, string? Remark, decimal? AmountNeg = null, DateTime? DODeliveryEndDate = null);
 record DRActionDto(string Action, string? Note);
 record EstimateOrderDto(string? DealerCode, string MonthEstimate, string? HtcStaffInCharge, List<EstOrderLineDto>? Lines);
 // Nguồn duyệt THEO LÔ: bảng Plan_EstimateOrder nhiều dòng, lặp theo PLEOrdNo.
@@ -116612,7 +116613,7 @@ record InsCarUpdateDto(int InsuranceDay, decimal InsAmount, string? Remark);
 record CarLocationDto(string VIN, string? LocationOld, string Location);
 record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);
 record ReqRedeemDto(List<ReqRedeemCarDto>? Cars, string? Note = null);
-record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescription, string? ColorCode, int Quantity, int MnfPlIdx);
+record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescription, string? ColorCode, int Quantity, int MnfPlIdx, int QtyOrdMonthN0 = 0, int QtyMonthN1 = 0, int QtyMonthN2 = 0, int QtyMonthN3 = 0);
 record MnfPlOrderDto(string OrdType, string? OrdMonth, string? Remark, List<MnfPlOrderLineDto>? Lines);
 record TestCarRegisterCarDto(string VIN, string? ModelCode);
 record TestCarRegisterDto(string DealerCode, List<TestCarRegisterCarDto>? Cars);
