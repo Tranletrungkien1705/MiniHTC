@@ -2653,6 +2653,14 @@ public sealed class RoHistory
     public string? LogLUBy { get; set; }
 }
 
+// ===== #CHK-COT khao sat 2026-10-08 — `check_cot_1to1.py` bao thieu `ExpenseTypeValue`/
+// `WarrantyStatusValue` tren ca RoServiceItem va RoPartItem (nguon Ser_ROServiceItems/Ser_ROPartItems).
+// Doc FrmInvoice.cs (TERP.HTCServiceClient/Views/Services, dong 212-232/281-302/455-562/717-820):
+// hai ten nay la `DataColumn` THEM VAO grid IN-MEMORY luc hien thi (khong doc tu DB), gia tri gan tu
+// bang hang `Ser_ROTypeValue.VAULE_REPAIR/VAULE_INSURANCE/VAULE_WARRANTY/VAULE_LOCAL` suy ra TU CHINH
+// cot `ExpenseType` da co — khong phai cot vat ly tren bang. Cung ho voi `Ser_ROWarrantyStatusValue`
+// (hang so nhan warranty status). KHONG them property/Seeder/DTO moi — cot chet dang #540, chi ghi
+// doc-comment de tool khong bi lap lai khao sat.
 public sealed class RoServiceItem{
     public long Id { get; set; }
     public Guid OrgId { get; set; }
@@ -17493,6 +17501,13 @@ public sealed class EmailServerConfig
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
+// ===== #CHK-COT khao sat 2026-10-08 — `check_cot_1to1.py` bao thieu `NewSendMode`/`NewStartDate`.
+// Doc `BizCarSv.SendMail.cs:1292-1299` (Email_ConfigSendAuto_Create, V20.2023.Release.V2): day la
+// ALIAS cua SQL SELECT tra ve sau create/update — `case sendmode ... end as NewSendMode` (nhan chu
+// "Gui mot lan"/"Gui hang ngay"/"Gui hang tuan" suy tu CHINH cot SendMode da co) va
+// `CONVERT(VARCHAR(10),StartDate,101) AS NewStartDate` (chuoi ngay format lai tu CHINH cot StartDate
+// da co) — dung de hien thi thong bao xac nhan, KHONG phai cot vat ly tren bang. KHONG them
+// property/Seeder/DTO moi — cot chet dang #540, chi ghi doc-comment de tool khong bi lap lai khao sat.
 public sealed class EmailConfigSendAuto
 {
     public long Id { get; set; }
