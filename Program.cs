@@ -110421,6 +110421,29 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
     var invalidCode = target switch { "INGA" => "Ser_RO_UpdateStatus_InvalidStatusInGarage", "RPRD" => "Ser_RO_UpdateStatus_InvalidStatusRepaired", "CEND" => "Ser_RO_UpdateStatus_InvalidStatusCheckEnd", "PAID" => "Ser_RO_UpdateStatus_InvalidStatusPaid", _ => "Ser_RO_UpdateStatus_InvalidStatusFinished" };
     if (tgtIdx != curIdx + 1) return Results.BadRequest(new { error = $"Chỉ tiến 1 bước từ {r.Status} sang {_roFlow[Math.Min(curIdx + 1, _roFlow.Length - 1)]}.", code = invalidCode });
     DateTime? sd = dto.StatusDate is { } d0 ? new DateTime(d0.Year, d0.Month, d0.Day, d0.Hour, d0.Minute, 0) : null;
+    // #1333 CHỐT "có thẻ thì phải gọi lại hội viên" — nguồn `SerROStatusUpdatePaid_New20220926`
+    //   (`BizCarSv.ZTemp.cs:9186-9199`, bản cũ `:8864` cùng luật ⇒ luật ổn định qua 2 phiên bản):
+    //   `Ser_RO.CardNo` KHÔNG rỗng mà `objCrdDealSerRO` rỗng ⇒ throw
+    //   `SerROStatusUpdatePaid_ExistCardButNoReCallMemberShip`. Chốt NÀY áp riêng bước sang Paid
+    //   (WS `SerROToPaidStatus`, `WSCarSv.asmx.cs:11465-11503`), không áp cho bước khác.
+    //   `objCrdDealSerRO` của nguồn là 1 chuỗi JSON `UtilLoyalty.CrdDealSerRO` (`UtilLoyalty.cs:153`)
+    //   có sẵn `lstCrdDealSerRODtl` (`:193`) bên trong ⇒ hai tham số `CrdDealSerROJson` /
+    //   `CrdDealSerRODtlJson` của DTO này là hai nửa (header/chi tiết) của CÙNG payload đó, nên chốt
+    //   chỉ cần MỘT trong hai có mặt là coi như client đã gọi lại hội viên.
+    // ⛔ KHÔNG port phần thân: sau khi qua chốt, nguồn `POST` payload sang API Loyalty NGOÀI hệ thống
+    //   (`_strUrlAPI_Loyalty + API.CrdDealSerRO_Add`, `:9264`, qua `WebClient.UploadString`) và KHÔNG
+    //   ghi payload xuống DB idocNet (`SaveData("Ser_RO", ...)` ở `:9250` chỉ ghi `alColumnEffective`).
+    //   Cùng luật "không bịa dữ liệu hệ ngoài" như `externalWsNote`. Mini chỉ kiểm tra SỰ CÓ MẶT rồi
+    //   báo lại ở response (`crdDealSerROReceived`), không lưu, không tự gọi Loyalty.
+    bool crdDealSerROSent = !string.IsNullOrWhiteSpace(dto.CrdDealSerROJson)
+                            || !string.IsNullOrWhiteSpace(dto.CrdDealSerRODtlJson);
+    if (target == "PAID" && !string.IsNullOrWhiteSpace(r.CardNo) && !crdDealSerROSent)
+        return Results.BadRequest(new
+        {
+            error = $"Lệnh {r.RONo} có thẻ hội viên {r.CardNo!.Trim()} — phải gọi lại hội viên (CrdDealSerROJson) trước khi chuyển sang Đã thanh toán.",
+            code = "SerROStatusUpdatePaid_ExistCardButNoReCallMemberShip",
+            checkRONo = r.RONo, checkCardNo = r.CardNo!.Trim()
+        });
     if (target is ("INGA" or "RPRD" or "CEND" or "PAID") && sd is null)
         return Results.BadRequest(new { error = "Chưa nhập ngày chuyển trạng thái (StatusDate).", code = "SerROStatusUpdate" });
     if (target == "RPRD" && r.FlagPause == "0")
@@ -110465,7 +110488,9 @@ app.MapPost("/api/repairorders/{no}/advance", async (string no, RoAdvanceDto dto
         }
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, status = r.Status, r.StartDate, r.FinishedDate, r.CheckEndDate, r.PaidCreatedDate, r.IsCusPaymentAll, r.ActualDeliveryDate });
+    return Results.Ok(new { r.RONo, status = r.Status, r.StartDate, r.FinishedDate, r.CheckEndDate, r.PaidCreatedDate, r.IsCusPaymentAll, r.ActualDeliveryDate,
+        r.CardNo, crdDealSerROReceived = crdDealSerROSent,   // #1333
+        loyaltyExternalNote = crdDealSerROSent ? "Payload CrdDealSerRO ĐÃ nhận và qua chốt; nguồn chuyển tiếp sang API Loyalty ngoài hệ thống (UtilLoyalty.API.CrdDealSerRO_Add) — Mini KHÔNG tự gọi và KHÔNG lưu payload." : null });
 }).RequireAuthorization();
 
 // Chuyển sang trạng thái NGOÀI luồng thẳng (nguồn có nhưng port cũ thiếu hẳn):
