@@ -13656,6 +13656,12 @@ public sealed class SPSupportRetail
     /// thiếu hoàn toàn nên báo cáo không lọc được theo kỳ thanh toán.</summary>
     public DateTime? HTCDatePayment { get; set; }
     public string? Remark { get; set; }
+    /// <summary>Kỹ thuật-6 (WS-method-diff round 43): `SPL_SPSupportRetail.AmountHTCAppr` — số tiền HTC DUYỆT hỗ trợ,
+    /// snapshot từ `PRD_PaymentReqDiscount_VIN.AmountHTCAppr` lúc tạo (`SPL_SPSupportRetail_Create_New20190513`,
+    /// Biz.HTC.WH.cs:132212) và sửa được riêng sau đó qua `SPL_SPSupportRetail_Update_New20190507` (:132653/:132714,
+    /// cột có trong `alColumnEffective` ⇒ vật lý, không phải cột tính). Port cũ thiếu hoàn toàn, kéo theo chưa có
+    /// endpoint sửa dòng nào cho entity này (chỉ có tạo-hàng-loạt + xoá).</summary>
+    public decimal? AmountHTCAppr { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

@@ -41946,7 +41946,7 @@ app.MapGet("/api/spsupportretails", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(spsrCode)) qry = qry.Where(x => x.SPSRCode == spsrCode.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer.Trim().ToUpperInvariant());
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.HTCDatePayment, x.Remark, x.CreatedAt }).ToListAsync();   // #1276 §12
+    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.HTCDatePayment, x.AmountHTCAppr, x.Remark, x.CreatedAt }).ToListAsync();   // #1276 §12 + #30079
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(x => x.AmountSupport), items });
 }).RequireAuthorization();
 
@@ -42005,11 +42005,25 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
         {
             OrgId = t.OrgId, VIN = vin, SPSRCode = r.SPSRCode!.Trim().ToUpperInvariant(), DealerCode = vm.DealerCode,
             SpecCode = vm.SpecCode, ModelCode = vm.ModelCode, PRDiscountNo = r.PRDiscountNo!.Trim(), AmountSupport = r.AmountSupport, DateSupport = r.DateSupport ?? DateTime.Now,
-            DateFullStatus = r.DateFullStatus, HTCInvoiceNo = r.HTCInvoiceNo, HTCInvoiceDate = r.HTCInvoiceDate, HTCDatePayment = r.HTCDatePayment, Remark = r.Remark
+            DateFullStatus = r.DateFullStatus, HTCInvoiceNo = r.HTCInvoiceNo, HTCInvoiceDate = r.HTCInvoiceDate, HTCDatePayment = r.HTCDatePayment, AmountHTCAppr = r.AmountHTCAppr, Remark = r.Remark
         });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { added = rows.Count });
+}).RequireAuthorization();
+
+// Sửa 1 dòng (Status='E' trong lưới nguồn, port 1:1 SPL_SPSupportRetail_Update_New20190507, Biz.HTC.WH.cs:132366).
+// Nguồn guard: SPL_SPSupportRetail_CheckDB(Flag.Active) — dòng phải tồn tại + đang Active (ở đây chỉ cần tồn tại, Mini không có cờ Active riêng).
+app.MapPost("/api/spsupportretails/{vin}/{spsrCode}/edit", async (string vin, string spsrCode, SPSupportRetailEditDto dto, AppDbContext db, ITenantContext t) =>
+{
+    vin = vin.Trim().ToUpperInvariant(); spsrCode = spsrCode.Trim().ToUpperInvariant();
+    var r = await db.SPSupportRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.SPSRCode == spsrCode);
+    if (r is null) return Results.NotFound(new { vin, spsrCode });
+    if (dto.AmountSupport < 0) return Results.BadRequest(new { error = "Số tiền hỗ trợ không được âm." });
+    r.AmountSupport = dto.AmountSupport; r.DateSupport = dto.DateSupport ?? r.DateSupport;
+    r.PRDiscountNo = dto.PRDiscountNo; r.HTCDatePayment = dto.HTCDatePayment; r.AmountHTCAppr = dto.AmountHTCAppr; r.Remark = dto.Remark;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.VIN, r.SPSRCode, r.AmountSupport, r.DateSupport, r.PRDiscountNo, r.HTCDatePayment, r.AmountHTCAppr, r.Remark });
 }).RequireAuthorization();
 
 app.MapDelete("/api/spsupportretails/{vin}/{spsrCode}", async (string vin, string spsrCode, AppDbContext db, ITenantContext t) =>
@@ -116927,7 +116941,7 @@ record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, st
 record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines, string? AreaCode);
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
-record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null);
+record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null);   // #B248, #B323, #B332, #B360
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
@@ -116949,6 +116963,8 @@ record DealDetailPlateNoDto(string? PlateNo, bool IsHTC = true, bool ConfirmDupl
 record DealDetailDeliveryDateDto(DateTime? DeliveryDate);
 record SalesPolicyEligibilityImportDto(string? SPSRCode, string? ModelCode, string? SpecCode, string? DealerCode);
 record SPSupportRetailImportDto(List<SPSupportRetailRowDto>? Rows);
+// Kỹ thuật-6 (WS-method-diff round 43): port 1:1 SPL_SPSupportRetail_Update_New20190507 (Status='E' per dòng), FrmPolicySales_Mng.
+record SPSupportRetailEditDto(decimal AmountSupport, DateTime? DateSupport, string? PRDiscountNo, DateTime? HTCDatePayment, decimal? AmountHTCAppr, string? Remark);
 record DealerDealAttachRowDto(string? DealNo, string? FileNameNew, string? FilePathNew);
 record DealerDealAttachBatchDto(List<DealerDealAttachRowDto>? Rows);
 record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
