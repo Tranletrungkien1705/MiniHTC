@@ -21356,6 +21356,21 @@ app.MapPut("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string mod
         note = "Nguồn xoá sạch 2 bảng con rồi ghi lại — không sửa từng dòng." });
 }).RequireAuthorization();
 
+// Xoá gói — port 1:1 `Mst_MaintainType_Delete_New20181119` (Biz.HTC.WH.cs:8717, 8830-8859): XOÁ THẬT
+// cascading cả 3 bảng (MtnTp_MaintainTaskItem, MtnTp_Part, rồi Mst_MaintainType), KHÔNG phải hạ FlagActive.
+// Nguồn chỉ guard tồn-tại (CheckDB FlagExistToCheck=Yes), KHÔNG chặn theo tham chiếu nơi khác — giữ đúng.
+app.MapDelete("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string model, AppDbContext db, ITenantContext t) =>
+{
+    mtnTp = mtnTp.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    var h = await db.MstMaintainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model);
+    if (h is null) return Results.NotFound(new { mtnTp, model });
+    db.MtnTpMaintainTaskItems.RemoveRange(await db.MtnTpMaintainTaskItems.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
+    db.MtnTpParts.RemoveRange(await db.MtnTpParts.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
+    db.MstMaintainTypes.Remove(h);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { mtnTp, model, deleted = true });
+}).RequireAuthorization();
+
 // ===== #151: KẾT QUẢ BẢO TRÌ THEO HẠNG MỤC (StoF_MaintainMix) =====
 // Nguồn: StorageFG/BizHTC.StorageFG.Frm.cs (csproj 151) — StoF_Maintain_Save_New20181115 (106) ghi tại 637,
 //        StoF_Maintain_SaveEval_New20181115 (1011) ghi tại 1425. WS có _Get/_GetWH_New20181119.
@@ -41583,6 +41598,18 @@ app.MapPost("/api/registrationinfos/{id}/toggle", async (long id, AppDbContext d
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
+}).RequireAuthorization();
+
+// Xoá dòng — port 1:1 `Mst_RegistrationInfo_Delete` (`Biz.HTC.WH.cs:201013`, nguồn `FrmMst_ThongTinDuLieuDangKiem_ThiPhan.cs`
+// btnDelEx_Click đánh dấu dòng rồi btnSave_Click commit): XOÁ THẬT (`DataRow.Delete()`+`SaveData`), KHÔNG phải hạ cờ —
+// khác hẳn `/toggle` phía trên. Nguồn chỉ guard tồn-tại+đang Active, không chặn theo tham chiếu nơi khác.
+app.MapDelete("/api/registrationinfos/{id}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.RegistrationInfos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id });
+    db.RegistrationInfos.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { id, deleted = true });
 }).RequireAuthorization();
 
 // ===== Master GCN thùng theo loại xe (CabinCertificate — port 1:1 FrmQLTTXeXuatHoaDon, 2010.HTC) =====
@@ -77564,21 +77591,34 @@ app.MapPost("/api/salespolicies/{code}/toggle", async (string code, AppDbContext
 }).RequireAuthorization();
 
 // Hủy hàng loạt chính sách (port 1:1 FrmMstPolicy_Mng btnCancel_Click / DeleteSPL, 2010.HTC/Sales)
+// 🔴 Kỹ thuật-7 (WS-method-diff, Delete/Cancel): nguồn `SPL_SalesPolicyMst_Delete_New20190507`
+// (Biz.HTC.WH.cs:131561) chặn xoá bằng 3 guard trước khi DELETE cascading — port cũ xoá vô điều kiện,
+// thiếu cả 3. Vá đủ cả 3, theo đúng thứ tự nguồn (131643/131674/131700):
 app.MapPost("/api/salespolicies/cancel-batch", async (SalesPolicyCancelDto dto, AppDbContext db, ITenantContext t) =>
 {
     var codes = (dto.SPSRCodes ?? new()).Where(c => !string.IsNullOrWhiteSpace(c)).Select(c => c.Trim().ToUpperInvariant()).ToList();
     if (codes.Count == 0) return Results.BadRequest(new { error = "Chưa chọn chính sách để hủy" });
     var deleted = new List<string>();
+    var blocked = new List<object>();
     foreach (var code in codes)
     {
         var p = await db.SalesPolicyMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SPSRCode == code);
         if (p is null) continue;
+        // Guard 1 — `SPL_SalesPolicyMst_Delete_ExistsSPL_SPSupportRetail`: đã có VIN hỗ trợ bán lẻ gắn chính sách.
+        if (await db.SPSupportRetails.AnyAsync(x => x.OrgId == t.OrgId && x.SPSRCode == code))
+        { blocked.Add(new { code, reason = "Đã có VIN hỗ trợ bán lẻ (SPL_SPSupportRetail) gắn chính sách này." }); continue; }
+        // Guard 2 — `SPL_SalesPolicyMst_Update_SalesPolicyExistPaymentReqDiscount`: đã có đề nghị chiết khấu TT dùng chính sách.
+        if (await db.PaymentReqDiscounts.AnyAsync(x => x.OrgId == t.OrgId && x.SPCode == code))
+        { blocked.Add(new { code, reason = "Đã có đề nghị chiết khấu TT (PRD_PaymentReqDiscount) dùng chính sách này." }); continue; }
+        // Guard 3 — `SPL_SalesPolicyMst_Update_IsSPSRRootInOtherSPSRCode`: chính sách khác đang lấy đây làm SPSRRoot.
+        if (await db.SalesPolicyMsts.AnyAsync(x => x.OrgId == t.OrgId && x.SPSRRoot == code && x.SPSRCode != code))
+        { blocked.Add(new { code, reason = "Chính sách khác đang dùng mã này làm SPSRRoot (chính sách gốc)." }); continue; }
         db.SalesPolicyMstDetails.RemoveRange(db.SalesPolicyMstDetails.Where(l => l.OrgId == t.OrgId && l.PolicyId == p.Id));
         db.SalesPolicyMsts.Remove(p);
         deleted.Add(code);
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { deleted });
+    return Results.Ok(new { deleted, blocked });
 }).RequireAuthorization();
 
 // ===== #B41 Chinh sach tich diem theo loai chi phi (Mst_PolicyExpenseType — port 1:1 bang tra cuu LIVE trong
