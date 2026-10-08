@@ -9357,6 +9357,36 @@ app.MapPost("/api/reqmortgages/{no}/approve-vin", async (
         line.MortageStartDate, remainingPending = stillPending });
 }).RequireAuthorization();
 
+// 🔴 XOÁ DÒNG VIN CHỜ DUYỆT — port 1:1 `RM_ReqMortgageDtl_Delete` → `_DeleteX`
+// (BizHTC.GiaiChap.cs:1587/1703, caller FrmMngRM_ReqMortgage.cs:628). Nguồn: header phải "P"
+// (RM_ReqMortgage_CheckDB Pending) + mỗi dòng VIN phải "P" (RM_ReqMortgageDtl_CheckDB Pending)
+// rồi xoá hẳn dòng đó; nếu sau khi xoá KHÔNG còn dòng nào cho header, xoá luôn header.
+app.MapPost("/api/reqmortgages/{no}/delete-cars", async (
+    string no, ReqMortgageDeleteCarsDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v)).Select(v => v.Trim().ToUpperInvariant()).Distinct().ToList();
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn dòng VIN cần xoá." });
+    var r = await db.ReqMortgages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReqRMNo.ToUpper() == no);
+    if (r is null) return Results.NotFound(new { no });
+    if (r.Status != "P") return Results.BadRequest(new { error = $"Đề nghị đang ở '{r.Status}' — chỉ xoá dòng khi đề nghị còn chờ duyệt (P)." });
+
+    var lines = await db.ReqMortgageCars.Where(x => x.OrgId == t.OrgId && x.ReqMortgageId == r.Id && vins.Contains(x.VIN.ToUpper())).ToListAsync();
+    var missing = vins.Except(lines.Select(l => l.VIN.ToUpper())).ToList();
+    if (missing.Count > 0) return Results.NotFound(new { error = $"Không tìm thấy dòng VIN: {string.Join(", ", missing)}" });
+    var bad = lines.FirstOrDefault(l => l.RMDtlStatus != "P");
+    if (bad is not null) return Results.BadRequest(new { error = $"Dòng VIN {bad.VIN} đang '{bad.RMDtlStatus}', chỉ xoá khi 'P'." });
+
+    db.ReqMortgageCars.RemoveRange(lines);
+    await db.SaveChangesAsync();
+
+    var remaining = await db.ReqMortgageCars.CountAsync(x => x.OrgId == t.OrgId && x.ReqMortgageId == r.Id);
+    var headerDeleted = false;
+    if (remaining == 0) { db.ReqMortgages.Remove(r); await db.SaveChangesAsync(); headerDeleted = true; }
+
+    return Results.Ok(new { no, deleted = lines.Count, remaining, headerDeleted });
+}).RequireAuthorization();
+
 app.MapGet("/api/reqmortgages/statuses", () => Results.Ok(new
 {
     statuses = new[] {
@@ -115950,6 +115980,7 @@ record DlvMinutesBatchPatchLineDto(
 record DlvMinutesBatchPatchDto(List<DlvMinutesBatchPatchLineDto>? Rows);
 record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate, string? CarId = null, string? DealerCode = null, string? Remark = null);
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars, string? Remark = null);
+record ReqMortgageDeleteCarsDto(List<string>? Vins);
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode,
     string? OrdMonth = null, string? SpecDescription = null, string? ColorNameVN = null, DateTime? FGFormDate = null, DateTime? IssueDate = null, DateTime? ClearanceFormDate = null, DateTime? PDIDate = null);   // #5900
 record QcDocReqDto(string? CreateBy, List<QcDocReqCarDto>? Cars, string? Remark = null);   // #372
