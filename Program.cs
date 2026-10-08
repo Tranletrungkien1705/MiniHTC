@@ -3902,6 +3902,51 @@ app.MapPost("/api/transplans/{vinPlan}/update-plan", async (string vinPlan, Tran
     return Results.Ok(new { p.VINPlan, p.ExpectedDate, p.StorageCode, p.TPStatus, p.TransporterStatus });
 }).RequireAuthorization();
 
+// #30082 Sửa theo LOGISTIC (kỹ thuật-6 WS-method-diff) — Sto_TranspPlanUpdate_ByLogistic_New20181119
+// (Biz.HTC.WH.cs:103740): nhập/xoá đơn vị vận tải + tuyến (TransporterCode/F-T Province-District) + TransporterStatus,
+// dùng ở lưới "vận tải" FrmMngPlanTransport (nguồn gọi rất nhiều lần). Guard RIÊNG khác hẳn ByKeHoach: TPStatus phải
+// "P" (Sto_TranspPlanUpdate_InvalidTPStatus — dùng chung mã với ByKeHoach), TransporterStatus hiện tại KHÔNG được
+// "A"/"F" (Sto_TranspPlanUpdate_LG_InvalidTransporterStatus — mã lỗi RIÊNG, khác _KH_ của ByKeHoach; Mini chỉ có "F"),
+// 5 field tuyến phải nhập ĐỦ-hoặc-KHÔNG (Sto_TranspPlan_updateLogistic_InvalidFormat), TransporterCode phải tồn tại +
+// active (Sto_TranspPlanUpdate_InvalidTransporterCode), không trùng cặp khoá (ExpectedDate/TransporterCode/tuyến/VIN)
+// với KH khác CHỈ khi VIN hiện có không rỗng (Sto_TranspPlanUpdate_InvalidKey, giống ByKeHoach).
+app.MapPost("/api/transplans/{vinPlan}/update-logistic", async (string vinPlan, TranspPlanUpdateByLogisticDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    vinPlan = vinPlan.Trim().ToUpperInvariant();
+    var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vinPlan);
+    if (p is null) return Results.NotFound(new { vinPlan });
+    if (p.TPStatus != "P") return Results.BadRequest(new { error = "KH đã chốt, không sửa được (Sto_TranspPlanUpdate_InvalidTPStatus).", p.TPStatus });
+    if (p.TransporterStatus == "F") return Results.BadRequest(new { error = "Nhà vận chuyển đã nhận chở/duyệt, không sửa được tuyến (Sto_TranspPlanUpdate_LG_InvalidTransporterStatus).", p.TransporterStatus });
+    var cols = new[] { dto.TransporterCode, dto.FProvinceCode, dto.FDistrictCode, dto.TProvinceCode, dto.TDistrictCode };
+    var filled = cols.Count(c => !string.IsNullOrWhiteSpace(c));
+    if (filled != 0 && filled != cols.Length) return Results.BadRequest(new { error = "Phải nhập ĐỦ cả 5 thông tin tuyến hoặc để trống hết (Sto_TranspPlan_updateLogistic_InvalidFormat)." });
+    if (!string.IsNullOrWhiteSpace(dto.TransporterCode))
+    {
+        var trOk = await db.Transporters.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == dto.TransporterCode && x.FlagActive == "1");
+        if (!trOk) return Results.BadRequest(new { error = "Đơn vị vận tải không tồn tại hoặc không active (Sto_TranspPlanUpdate_InvalidTransporterCode).", dto.TransporterCode });
+    }
+    if (!string.IsNullOrWhiteSpace(p.Vin) && p.ExpectedDate.HasValue)
+    {
+        var dupQ = db.TransportPlans.Where(x => x.OrgId == t.OrgId && x.VINPlan != vinPlan && x.Vin == p.Vin && x.ExpectedDate.HasValue && x.ExpectedDate.Value.Date == p.ExpectedDate.Value.Date);
+        if (!string.IsNullOrWhiteSpace(dto.TransporterCode)) dupQ = dupQ.Where(x => x.TransporterCode == dto.TransporterCode);
+        if (!string.IsNullOrWhiteSpace(dto.FProvinceCode)) dupQ = dupQ.Where(x => x.FProvinceCode == dto.FProvinceCode);
+        if (!string.IsNullOrWhiteSpace(dto.FDistrictCode)) dupQ = dupQ.Where(x => x.FDistrictCode == dto.FDistrictCode);
+        if (!string.IsNullOrWhiteSpace(dto.TProvinceCode)) dupQ = dupQ.Where(x => x.TProvinceCode == dto.TProvinceCode);
+        if (!string.IsNullOrWhiteSpace(dto.TDistrictCode)) dupQ = dupQ.Where(x => x.TDistrictCode == dto.TDistrictCode);
+        if (await dupQ.AnyAsync()) return Results.BadRequest(new { error = "Trùng khoá KH (ExpectedDate/TransporterCode/tuyến/VIN) với KH khác (Sto_TranspPlanUpdate_InvalidKey)." });
+    }
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    p.TransporterCode = string.IsNullOrWhiteSpace(dto.TransporterCode) ? null : dto.TransporterCode;
+    p.FProvinceCode = string.IsNullOrWhiteSpace(dto.FProvinceCode) ? null : dto.FProvinceCode;
+    p.FDistrictCode = string.IsNullOrWhiteSpace(dto.FDistrictCode) ? null : dto.FDistrictCode;
+    p.TProvinceCode = string.IsNullOrWhiteSpace(dto.TProvinceCode) ? null : dto.TProvinceCode;
+    p.TDistrictCode = string.IsNullOrWhiteSpace(dto.TDistrictCode) ? null : dto.TDistrictCode;
+    p.TransporterStatus = dto.TransporterStatus;
+    p.LogLUDateTime = now; p.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.VINPlan, p.TransporterCode, p.FProvinceCode, p.FDistrictCode, p.TProvinceCode, p.TDistrictCode, p.TransporterStatus, p.TPStatus });
+}).RequireAuthorization();
+
 // #314 Chốt KH — Sto_TranspPlanApproved_New20181119 (Biz.HTC.WH.cs:101767): TPStatus "P" → "F"; 8 guard theo đúng thứ tự nguồn,
 // mỗi guard một mã lỗi riêng ("Chỉ được chốt VIN thật"). Ghi ApprovedDate/By + LUDate/LUBy + LogLU*.
 app.MapPost("/api/transplans/{vinPlan}/approve", async (string vinPlan, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -114796,6 +114841,7 @@ record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
 record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null, string? FlagRealVin = null);
 record TranspPlanUpdateByKeHoachDto(DateTime? ExpectedDate, string? StorageCode);
+record TranspPlanUpdateByLogisticDto(string? TransporterCode, string? FProvinceCode, string? FDistrictCode, string? TProvinceCode, string? TDistrictCode, string? TransporterStatus);
 record RetrieveReqCarDto(string Vin, string? StorageCode, string? TranspReqType = null, string? RefOrdNo = null, string? CarId = null);
 record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars, string? TranspReqType, string? TransportContractNo = null);
 record VinPairDto(string FVIN, string RVIN);
