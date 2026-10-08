@@ -670,6 +670,13 @@ public sealed class Quota
     public Guid OrgId { get; set; }
     public string DealerCode { get; set; } = "";
 
+    // 🔴 check_cot_1to1 báo thiếu `ModelNamePromotion`/`SpecDescPromotion` (FrmUpgradeMngOrderHtc/Dealer).
+    //    Trace nguồn (FrmUpgradeMngOrderHtc.cs:1324-1327): hai cột này KHÔNG đọc từ bảng `Mst_Quota` —
+    //    chúng được GÁN sau khi load, từ lookup riêng `CarModel`/`CarSpec`
+    //    (`rowsModel[0][Model_Name]`/`rowsSpec[0][Spec_Desc]`, prefix `MQ_` chỉ là tên cột DataTable UI).
+    //    Không phải cột vật lý trên `Mst_Quota` — SKIP, không port (đã có `ModelPromotion`/
+    //    `SpecCodePromotion` làm khoá để GET endpoint tự join nếu cần hiển thị tên).
+
     // ===== #146 parity Mst_Quota: 12 cột thật của nguồn =====
     /// <summary>Mã chương trình (`QuotaCode`) — khoá nghiệp vụ cùng với `DealerCode`.</summary>
     public string? QuotaCode { get; set; }
@@ -1304,9 +1311,20 @@ public sealed class BankBillMinutes
     public DateTime? BankBillReciveDate { get; set; }   // ngày nhận hối phiếu
     public string Status { get; set; } = "Created";     // Created → Received
     public DateTime CreatedDateTime { get; set; } = DateTime.Now;
+    // 🔴 check_cot_1to1 báo thiếu `BankBillPrintDate` (`FrmTaoBBBGTheoHoiPhieu`/`FrmQuanLyBBBGTheoHoiPhieu`).
+    //    Trace nguồn: UI có ô nhập (`dateEditBankBillPrintDate`) và đọc lại (`btnExportHoiPhieu_Click`),
+    //    nhưng đường LƯU thật bị COMMENT CHẾT — `Car_BankBillMinutesService.Car_BankBillMinutes_Add(...)`
+    //    gọi WS với `//strBankBillPrintDate,` (dòng bị chú thích), giá trị không bao giờ tới được WS/DB.
+    //    Cột chết (#540, write-path dead) — KHÔNG port.
 }
 
-/// <summary>Dòng xe trong BBBG (Car_BankBillMinutesDtl): VIN + LC/bảo lãnh + số tiền claim.</summary>
+/// <summary>Dòng xe trong BBBG (Car_BankBillMinutesDtl): VIN + LC/bảo lãnh + số tiền claim.
+/// 🔴 check_cot_1to1 báo thiếu `GuarenteeAmont`/`GuarenteePmtAmount_AF` (FrmQuanLyBBBGTheoHoiPhieu).
+/// Trace nguồn (`BizHTC.Car.cs:4119` report SQL + `DataWH/BizHTC.zTemp*.cs` các bản): CẢ HAI là alias
+/// JOIN — `GuarenteeAmont` = `Isnull(pmgd.GuaranteeValue, 0.00)` (đã có <see cref="BankGuaranteeDtl"/>.
+/// GuaranteeValue), `GuarenteePmtAmount_AF` = `pmpd.PMPDAmount_SumForGuarantee` (cùng debt subquery
+/// `PaymentDetailWithDiscount_01` đã ghi nhãn ở #B37/#B40). Không phải cột vật lý trên
+/// `Car_BankBillMinutesDtl` — SKIP, không port.</summary>
 public sealed class BankBillCar
 {
     public long Id { get; set; }
@@ -4541,6 +4559,10 @@ public sealed class PaymentReqDiscountVin
     public decimal UnitPriceActual { get; set; }
     public decimal AmountDealerRequest { get; set; }
     public string? CustomerName { get; set; }
+    // 🔴 check_cot_1to1 báo thiếu `DutyCompletedDateTTC_TTBL`/`CocOnly_CompletedDate` (FrmMngPaymentReqDiscountDealer
+    //    grid). Trace nguồn (`BizHTC.Report.cs:2790/2989/3195` + `:12229/12937/13937`): CẢ HAI đều là cột
+    //    SUBQUERY tính toán — `(...) DutyCompletedDateTTC_TTBL`/`(...) CocOnly_CompletedDate` — KHÔNG phải
+    //    cột vật lý trên `PRD_PaymentReqDiscount_VIN`/`...Dtl`. SKIP — không port.
 }
 
 /// <summary>Đề nghị chiết khấu TT theo VIN — header (PRD_PaymentReqDiscount) — port 1:1 FrmPayReDiscount (tạo đề nghị, đại lý) + FrmMngPaymentReqDiscountDealer (duyệt 2 cấp, HTC), 2010.HTC/Sales.
@@ -4923,6 +4945,8 @@ public sealed class InvCarWarranty
     public DateTime? LUDateTime { get; set; }
     public string? LUBy { get; set; }
     public string? LogLUBy { get; set; }
+    /// <summary>#NNN cột nguồn `Inv_CarWarranty.ZaloID` (BizHTC.Storage.DlvMinutes.cs:6035/6067, insert/select thẳng từ bảng gốc) — Zalo ID của KH để gửi xác nhận BH, port cũ thiếu.</summary>
+    public string? ZaloID { get; set; }
 }
 
 /// <summary>Master loại thùng đóng gói xe — port 1:1 FrmMst_LoaiThung (Mst_LoaiThung, TCMotor). LoaiThung = mã, TenLoaiThung = tên.</summary>
@@ -5386,6 +5410,19 @@ public sealed class Dms40SoRoot
 }
 
 /// <summary>Dòng model/spec/color trong đơn hàng gốc DMS40 — port 1:1 grid FrmUpgradeOrderApprovePlan (DMS40_Ord_SalesOrderRootDetail).</summary>
+/// <remarks>
+/// check_cot_1to1.py báo thiếu `TblERPV20Common.GRADEDESCRIPTION/OCNDESCRIPTION/STDOPTDESCRIPTION` trên
+/// 3 màn FrmUpgradeMngOrderDealer/FrmUpgradeOrderApprove/FrmUpgradeOrderApprovePlan — đã trace lại
+/// (2010.HTC Release.2025, cả 3 file .cs):
+/// - `MODELNAME/SPECDESCRIPTION/OCNDESCRIPTION/COLOR_INT_EXT_VN/EN` đều là cột DataTable grid client-side
+///   (KHÔNG phải cột lưu trên `DMS40_Ord_SalesOrderRootDetail`), được điền qua join Model/Spec/Color/OCN
+///   master khi load WS — đã CHỦ Ý bỏ ở Program.cs (xem comment "ĐƠN GIẢN HOÁ: bỏ nhánh ... join
+///   Model-Spec-Color master — quá sâu để trace 1:1 trong 1 fire" ngay trên route GET soroots). Quyết định
+///   vẫn giữ nguyên — không port lại.
+/// - `GRADEDESCRIPTION`/`STDOPTDESCRIPTION` riêng: chỉ xuất hiện trong block xoá cột tạm
+///   (`table.Columns.Remove(TblERPV20Common.GRADEDESCRIPTION/STDOPTDESCRIPTION)`) ở cả 3 file, KHÔNG có
+///   `gridCol*.FieldName =` nào gán hiển thị — cột chết thật (#540), không chỉ đơn giản hoá.
+/// </remarks>
 public sealed class Dms40SoRootDetail
 {
     public long Id { get; set; }
@@ -10541,6 +10578,11 @@ public sealed class PmtGuaranteeAttachFile
     public string? GrtFileRemark { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    // 🔴 check_cot_1to1 báo thiếu `FileIndexRoot`/`FileNameRoot` (FrmNewGrt/FrmUpdateGrtFile/FrmPopUpFile_BL).
+    //    Trace nguồn: hai cột này chỉ được `.Columns.Add(...)` lên DataTable UI tạm (grid hiển thị file
+    //    "gốc" trước khi lưu) — `FileNameRoot` = copy của `GrtFileName`, `FileIndexRoot` được map NGƯỢC
+    //    vào `FileIndex` thật lúc lưu (`dtr[FileIndex] = row[FileIndexRoot]`, FrmNewGrt.cs:1004). Không
+    //    phải cột vật lý trên `Pmt_GuaranteeAttachFile`. SKIP — không port.
 }
 
 /// <summary>
@@ -12717,6 +12759,23 @@ public sealed class DealerContract
 /// từ SQL 228. Nay giữ cả hai: `DealerContractId` cho liên kết nội bộ, `DealerContractNo` khớp nguồn.
 /// 🔴 GAP thứ hai: nguồn có **`ContractDetailStatus`** riêng cho từng DÒNG (đặt `Stage.Pending` = "P"
 /// khi tạo), tách khỏi `ContractStatus` của phần đầu — port cũ **thiếu hẳn trục trạng thái này**.
+/// 🟡 SKIP có điều tra (2026-10-08, `check_cot_1to1.py` báo thiếu `SeatNum`/`TotalMoney` ở
+/// `FrmClaimReport`/`FrmContractReportForDealer`, dest `MiniHTC:tcgclaimreport.html` +
+/// `dealercontractreport.html`): đã trace trọn `BizHTC.Contract.cs:610-700`
+/// (`ContractDealerContractGetReport_New20181115`) + `FrmContractReportForDealer.cs:244-313` +
+/// `FrmClaimReport.cs:248-304`. CẢ 6 cột `TblDealerContractDetail.{Quantity,TotalMoney,NewRate,
+/// SeatNum,ProductionYear,Source}` KHÔNG phải cột thật trên `CT_DealerContractDetail`
+/// (hàm tạo `ContractDealerContractCreate_New20181119:30962-30971` chỉ ghi
+/// `DealerContractNo/CarId/UnitPrice/ContractDetailStatus` — đúng 4 cột port đã có):
+/// · `Quantity`/`TotalMoney` trong report = **COUNT(*)** và **COUNT(*) * ctdcd.UnitPrice** — số
+///   tổng hợp (aggregate) tính runtime theo `GROUP BY SpecCode,SpecDescription,UnitPrice`
+///   (`BizHTC.Contract.cs:658-682`), không tồn tại trong CSDL.
+/// · `NewRate`/`SeatNum`/`ProductionYear`/`Source` = cột RỖNG client tự thêm
+///   (`RefineDataTable`/`GenerateReport`, `FrmContractReportForDealer.cs:244-251` +
+///   `FrmClaimReport.cs:252-258`) để NGƯỜI DÙNG tự điền tay vào báo cáo xuất Word — không có nơi
+///   gán giá trị từ WS/SQL nào trong cả hai form. Cột chết/không-phải-dữ-liệu-lưu-trữ (#540) —
+///   KHÔNG port. `TotalMoney` ở `FrmClaimReport` còn trùng tên với cột KHÁC HẲN
+///   (`gridColTotalMoney.FieldName = TblGuaranteeDetail.GrtValue`, đã có trên `BankGuaranteeDtl.GrtValue`).
 /// </summary>
 public sealed class DealerContractDetail
 {
@@ -14219,6 +14278,16 @@ public sealed class PmtPayment
     public DateTime? ConfirmDate { get; set; }
     public string? ConfirmBy { get; set; }
 
+    // ===== #B42 khao sat check_cot_1to1.py bao thieu 4 cot FrmMngPM (ApproveByMix/ApproveDateMix/RemarkNDTT/
+    //       UNCPaymentType) — SKIP, khong port. Doc trong ERP.V15.DataWH.Release.2025 (ban song thuc, DMSCarSv
+    //       FrmMngPM.cs chi la ban mirror khong co gi):
+    //   - ApproveByMix/ApproveDateMix: 0 hit o moi noi (FrmMngPM/.Designer/Biz.HTC.WH.My.cs/WSHTC.asmx.cs/
+    //     DMSCarSv/2023.H.CarServices). Khong co cap "Mix approver" nao cho Pmt_Payment.
+    //   - RemarkNDTT: chi con trong proxy WSDL cu (strRemarkNDTT, 2023.H.CarServices Reference.cs:28007) -
+    //     ham WS song hien tai Pmt_Payment_Save (WSHTC.asmx.cs:10310) dung strRemark, khong co strRemarkNDTT.
+    //   - UNCPaymentType: KHONG PHAI cot DB - la class hang so TConst.UNCPaymentType{TTC,TTBL}
+    //     (Const.Main.DMS40.cs:414), dung trong Pmt_Payment_GetUNCContent_New20221111 (Biz.HTC.WH.My.cs:26099).
+    //     Da port du roi qua PaymentType (duoi day) + POST /api/payments/unc-content (Program.cs:~82485).
     // ===== #155 parity Pmt_Payment (nguồn: BankIntergration/BizHTC.MBBank.cs, csproj 310,
     //       md5 ec9f1442… khớp 2 máy) — `Pmt_Payment_Save_New20230306` (2818), gán cột tại 3428-3455.
     // 🔴 TWIN: `Pmt_Payment_Save` CHỈ có ở WS 64-bit, và WS gọi HAI bản
@@ -14517,7 +14586,19 @@ public sealed class DlrPdiRequestDetail
 // ~dòng 38787) — cùng mẫu hình "2 nguồn sự thật" như ForeignContract (#4301). wwwroot/updatecar.html đã
 // trỏ lại /api/cars/{carId}/update01 + /api/cars/prices.
 
-/// <summary>Xe đang thế chấp tại ngân hàng — port 1:1 FrmBankCarMortage + FrmDeliveryPlan (cụm Bank).</summary>
+/// <summary>Xe đang thế chấp tại ngân hàng — port 1:1 FrmBankCarMortage + FrmDeliveryPlan (cụm Bank).
+/// 🟡 SKIP có điều tra (2026-10-08, `check_cot_1to1.py` báo thiếu `CDCreatedDate`/`CDDeclarationNo`
+/// trên nguồn `TblBankCarVINMortage` 22 cột, dest `MiniHTC:bankmortage.html`): đã trace trọn
+/// `TERP.BizBank/Report.cs:5105-5169` — đây là báo cáo tạm `#tbl_Car_VIN_Filter_Draft`, `CD` là
+/// ALIAS JOIN của bảng `CT_Declaration` (`cd`), nối qua `CT_PackingList cpl on cpl.DeclarationNo =
+/// cd.DeclarationNo` rồi `Car_VIN cv on cv.PackingListNo = cpl.PackingListNo`
+/// (`cd.DeclarationNo CDDeclarationNo`, `cd.CreatedDate CDCreatedDate`) — KHÔNG phải cột thật trên
+/// `BankCarMortage`/`Car_VIN`. Giống bẫy đã ghi ở các cột `MB`/`CV`/`CDOD` cùng dòng SQL (alias nguồn
+/// khác bảng). KHÁC các cột đó ở điểm: chuỗi nguồn `Car_VIN.PackingListNo → CT_PackingList.DeclarationNo
+/// → CT_Declaration` **chưa được port** vào MiniHTC (`PackingList` ở `Models/Entities.cs` không có
+/// trường `DeclarationNo`; không có entity nào cho `CT_Declaration`) — nên hướng vá đúng (join/lookup ở
+/// GET) cũng chưa làm được ngay; đây là NỢ CHUỖI JOIN, không phải thiếu 2 cột đơn lẻ. KHÔNG thêm
+/// `CDCreatedDate`/`CDDeclarationNo` làm property/Seeder mới vì sẽ bịa dữ liệu không trace được.</summary>
 public sealed class BankCarMortage
 {
     public long Id { get; set; }
