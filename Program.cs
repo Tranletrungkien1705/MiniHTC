@@ -58227,22 +58227,31 @@ app.MapPut("/api/customertypes/{code}", async (string code, CustomerTypeDto dto,
     var c = (code ?? "").Trim();
     var row = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == c);
     if (row is null) return Results.NotFound(new { error = "Ser_MST_CustomerType_NotFound", cusTypeCode = c });
+    // #30085 GAP THAT (ky thuat-6, WSCarSv.asmx.cs:4497 Ser_MST_CustomerType_Update, BizCarSv.Master.cs:6427):
+    // nguon GHI LAI DealerCode = strDealerCode (tham so dau vao) o MOI lan Update, va guard
+    // CheckExistCusTypeNameModify (BizCarSv.Master.cs:30) loc trung ten theo CHINH strDealerCode do (gia tri
+    // MOI dang ghi), khong phai DealerCode CU cua dong. Ban Mini truoc day KHONG he dung toi DealerCode trong
+    // PUT nay (DTO co san DealerCode nhung bi bo quen) => dong khong bao gio doi chu dai ly va guard dup sai
+    // theo gia tri CU. Va: giu nguyen DealerCode cu neu dto khong gui (requestoptional giong POST /customertypes).
+    var newDealerCode = dto.DealerCode ?? row.DealerCode;
     var newName = (dto.CusTypeName ?? row.CusTypeName ?? "").Trim();
     if (newName.Length > 0 && newName != row.CusTypeName)
     {
-        // Guard cua NGUON: CheckExistCusTypeNameModify — trung TEN trong cung dai ly, tru chinh minh.
+        // Guard cua NGUON: CheckExistCusTypeNameModify — trung TEN trong cung dai ly (dai ly MOI dang ghi), tru chinh minh.
         var dup = await db.CustomerTypes.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id
-            && x.CusTypeName == newName && x.DealerCode == row.DealerCode);
+            && x.CusTypeName == newName && x.DealerCode == newDealerCode);
         if (dup) return Results.Conflict(new { error = "Ser_CustomerType_Exist", cusTypeName = newName });
         row.CusTypeName = newName;
     }
     if (dto.CusFactor != 0m) row.CusFactor = dto.CusFactor;
     if (!string.IsNullOrWhiteSpace(dto.CusPersonType)) row.CusPersonType = dto.CusPersonType!;
+    row.DealerCode = newDealerCode; // #30085: nguon GHI LAI DealerCode o moi lan Update, khong chi luc Create.
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        row.Id, row.CusTypeCode, row.CusTypeName, row.CusFactor, row.CusPersonType,
+        row.Id, row.CusTypeCode, row.CusTypeName, row.CusFactor, row.CusPersonType, row.DealerCode,
         isActive = row.FlagActive,   // CHUOI, dung nhu cot DB — nguon doi ve kieu Boolean
+        gap30085DealerCodeRewrittenOnUpdate = "#30085 (ky thuat-6 WS-method-diff round 51): Ser_MST_CustomerType_Update (BizCarSv.Master.cs:6427) ghi lai DealerCode o MOI lan Update (khong chi Create) va guard trung ten loc theo DealerCode MOI; PUT truoc day bo quen ca hai, nay da vay du",
         guardPairIsConsistentHere = "AM TINH — CUM LAM DUNG: CheckExistCustomerTypeName (TAO) va CheckExistCusTypeNameModify (SUA) CA HAI loc dung (CusTypeName, DealerCode), ban SUA them CusTypeID <> @, KHONG ben nao dung toi IsActive => nhat quan, trai han bay #818/#839 noi TAO loc IsActive = strIsActive con SUA loc cung 1. Khi gap cum master tiep theo, so voi cum NAY, dung so voi #818",
         sourceParsesNumberTwoDifferentWays = "CUNG MOT O NHAP, HAI CACH HIEU SO, TRONG CUNG MOT HAM: ghi xuong DB la CHUOI THO (Rows[0][CusFactor] = strCusFactor, de SQL Server tu ep theo quy uoc bat bien) nhung doi ve client lai la double.Parse(strCusFactor) — THEO CULTURE cua tien trinh; tren may chu vi-VN thi 1.5 thanh 15, va chuoi rong nem FormatException => gia tri LUU va gia tri TRA VE co the khac nhau cho cung mot dau vao",
         sourceIsActiveTypeMismatch = "kieu IsActive lech giua ghi va doi: ghi DB la TConst.Flag.Active (CHUOI 1) con bang tra ve khai new DataColumn(IsActive, typeof(System.Boolean)) va gan dr[IsActive] = true",
