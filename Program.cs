@@ -3790,6 +3790,19 @@ app.MapDelete("/api/transminutes/{no}", async (string no, AppDbContext db, ITena
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
+// NỢ (round 63, kỹ thuật-10 Create/Add WS-method-diff): `Car_TransportMinutes_CreateAuto`
+// (`Car_TransportMinutesService.Car_TransportMinutes_CreateAuto()` → WS → biz
+// `Car_TransportMinutes_CreateAuto_New20190122`, `DataWH/Biz.HTC.WH.cs:56863-57191`, ~329 dòng) —
+// JOB TỰ ĐỘNG (nút bấm thật tại `FrmDMS40_2019_JobAuto.cs:76`, chạy mỗi ngày 1 lần theo comment nguồn),
+// KHÔNG phải CRUD đơn giản: build tập xe đủ điều kiện tạo BBBG qua JOIN 9+ bảng
+// (`Car_Car`+`Mst_Dealer`+`Pmt_GuaranteeDetail`+`Pmt_Guarantee`+`Car_DeliveryOrderDetail`+
+// `Sto_CarRetrieveDetail`+`Sto_TranspReqDtl`+`Sto_DlvMinutes`+`Dls_DealDetail`+`Dls_Deal`) với 6 điều
+// kiện lọc xe + luật gom nhóm "cùng Ngân hàng bảo lãnh + cùng đại lý vào 1 BBBG", rồi tự INSERT
+// `Car_TransportMinutes`/`Car_TransportMinutesDetail` cho từng nhóm — khác hẳn route tạo tay hiện có
+// (`POST /api/transminutes`, đã port) vốn nhận input trực tiếp từ UI, không tự suy luận tập xe.
+// Cùng hạng với `Rpt_PlanRetail_Update`/`DMS40_CT_DealerContract`/`Pmt_GuaranteeDetail_*Cancel*`/
+// `DMS40_Ord_SalesOrderRoot_FinishForSOTypePlan` — cần phiên riêng đọc hết + thiết kế, không vá 1 cụm.
+
 // ===== Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2) =====
 app.MapGet("/api/holidays", async (AppDbContext db, ITenantContext t, int? year) =>
 {
