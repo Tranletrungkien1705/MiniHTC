@@ -315,6 +315,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<RptPartsOrderDetail> RptPartsOrderDetails => Set<RptPartsOrderDetail>();            // #983
     public DbSet<RptPartsOrderDetailPart> RptPartsOrderDetailParts => Set<RptPartsOrderDetailPart>();            // #983
     public DbSet<RptAbilitySupplyPart> RptAbilitySupplyParts => Set<RptAbilitySupplyPart>();            // #1492
+    public DbSet<RptHisChangePriceCar> RptHisChangePriceCars => Set<RptHisChangePriceCar>();            // #30075
     public DbSet<SuggestPrice> SuggestPrices => Set<SuggestPrice>();            // #1480
     public DbSet<SuggestPriceDtl> SuggestPriceDtls => Set<SuggestPriceDtl>();            // #1480
     public DbSet<MngReportDataMonth> MngReportDataMonths => Set<MngReportDataMonth>();   // #5724

@@ -40429,12 +40429,17 @@ app.MapPost("/api/cars/{carId}/update01", async (
 
     var written = new List<string>();
     var vinMapped = !string.IsNullOrWhiteSpace(car.VIN) && car.VINFreeStatus == "0";
+    // #30075 — nguồn chỉ ghi `Rpt_HisChangePriceCar` khi giá THỰC SỰ đổi (`BizHTC.Car.cs:4433`,
+    // `if (!strUnitPriceActualNew.Equals(strUnitPriceActualOld))`), không phải mọi lần branch (a) chạy.
+    var priceOld = car.UnitPriceActual;
+    var priceChanged = false;
 
     // (a) Sửa ĐƠN GIÁ THỰC TẾ.
     if (dto.UnitPriceActualNew is not null)
     {
         if ((car.PaymentStatus ?? "P") != "P")
             return Results.BadRequest(new { error = $"Xe {cid}: chỉ sửa được đơn giá khi trạng thái thanh toán = 'P' (đang '{car.PaymentStatus}')." });
+        priceChanged = car.UnitPriceActual != dto.UnitPriceActualNew;
         car.UnitPriceActual = dto.UnitPriceActualNew; written.Add("UnitPriceActual");
     }
     // (b) Sửa HẠNG MAP VIN.
@@ -40461,14 +40466,49 @@ app.MapPost("/api/cars/{carId}/update01", async (
     }
 
     car.LogLUDateTime = DateTime.Now; car.LogLUBy = user.Identity?.Name ?? "system";
+    // #30075 — ghi nhật ký `Rpt_HisChangePriceCar` (gap thật, khảo sát kỹ thuật thứ 3 round 31; nguồn Foton
+    // `CarCarUpdate01`, KHÁC `CarCarUpdate01_New20181119` đã port — xem comment entity `RptHisChangePriceCar`).
+    if (priceChanged)
+    {
+        var model = await db.CarModelStds.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.ModelCode == car.ModelCode);
+        var spec = await db.CarSpecs.FirstOrDefaultAsync(s => s.OrgId == t.OrgId && s.SpecCode == car.SpecCode);
+        var color = await db.MstCarColors.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.ModelCode == car.ModelCode && c.ColorCode == car.ColorCode);
+        db.RptHisChangePriceCars.Add(new RptHisChangePriceCar
+        {
+            OrgId = t.OrgId, CarId = cid, ChangeDateTime = car.LogLUDateTime,
+            DealerCode = car.DealerCode, SOCode = car.SOCode,
+            ModelCode = car.ModelCode, ModelName = model?.ModelName,
+            SpecCode = car.SpecCode, SpecDescription = spec?.SpecDesc,
+            ColorCode = car.ColorCode, ColorExtNameVN = color?.ColorExtNameVN, ColorIntNameVN = color?.ColorIntNameVN,
+            PriceOld = priceOld ?? 0m, PriceNew = dto.UnitPriceActualNew ?? 0m,
+            ChangeBy = car.LogLUBy,
+        });
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         carId = cid, columnsWritten = written,
         car.UnitPriceActual, car.MapVINRanking, car.FlagAllowChangeVIN, car.PaymentStatus,
+        priceChangeLogged = priceChanged,
         branchNote = "Một hàm nguồn, BA nhánh độc lập theo tham số nào khác rỗng — mỗi nhánh guard riêng và tập cột ghi riêng.",
-        salesGuardNote = "Kiểm 'đã có bảo lãnh' CHỈ chạy khi IsUserFromSales='1'; nút 'Chặn Map Vin' truyền rỗng nên bỏ qua."
+        salesGuardNote = "Kiểm 'đã có bảo lãnh' CHỈ chạy khi IsUserFromSales='1'; nút 'Chặn Map Vin' truyền rỗng nên bỏ qua.",
+        priceChangeLogNote = "Rpt_HisChangePriceCar #30075: nguồn chỉ ghi khi PriceOld != PriceNew (BizHTC.Car.cs:4433)."
     });
+}).RequireAuthorization();
+
+// #30075 — GET báo cáo "Lịch sử thay đổi giá xe" (`FrmRpt_HisChangePriceCar`, DMSales.Foton), port
+// `Rpt_HisChangePriceCar_Get` (`BizHTC.Car.cs:4530-4649`). Nguồn lọc SOCode/CarId/ChangeDateTime (khoảng),
+// SELECT `rhcpc.*`; đây là hàng GHI 1:1 từ `/api/cars/{carId}/update01` nhánh (a) ở trên.
+app.MapGet("/api/reports/car-price-change-history", async (
+    AppDbContext db, ITenantContext t, string? soCode, string? carId, DateTime? changeDateTimeFrom, DateTime? changeDateTimeTo) =>
+{
+    var q = db.RptHisChangePriceCars.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(soCode)) q = q.Where(x => x.SOCode == soCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(carId)) q = q.Where(x => x.CarId == carId!.Trim().ToUpperInvariant());
+    if (changeDateTimeFrom is not null) q = q.Where(x => x.ChangeDateTime >= changeDateTimeFrom.Value);
+    if (changeDateTimeTo is not null) q = q.Where(x => x.ChangeDateTime <= changeDateTimeTo.Value);
+    var items = await q.OrderByDescending(x => x.ChangeDateTime).Take(500).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // #4901 — GET phụ trợ cho UI FrmUpdateCar (updatecar.html): liệt kê giá thực tế hiện có trên CarVinMaster

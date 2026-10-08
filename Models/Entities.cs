@@ -19094,6 +19094,37 @@ public sealed class RptPartsOrderDetail
     public string? LogLUBy { get; set; }
 }
 /// <summary>
+/// #30075 — nhật ký thay đổi ĐƠN GIÁ THỰC TẾ của xe (`Rpt_HisChangePriceCar`) — kỹ thuật thứ 3 round 31
+/// phát hiện là GAP THẬT (0 hit `FrmRpt_HisChangePriceCar`/`Rpt_HisChangePriceCar` trong Program.cs trước fire
+/// này). Nguồn: `TERP.BizHTC/BizHTC.Car.cs:4431-4486` (DMSales.Foton) — bên trong `CarCarUpdate01` (bản Foton,
+/// KHÁC `CarCarUpdate01_New20181119` đã port ở #B30/`/api/cars/{carId}/update01`), chỉ ghi dòng log khi
+/// `strUnitPriceActualNew != strUnitPriceActualOld`. Đọc: `Rpt_HisChangePriceCar_Get` (`:4530-4649`), SELECT
+/// `rhcpc.*` lọc theo SOCode/CarId/ChangeDateTime (khoảng). Đã loại 4/18 cột nguồn KHÔNG dùng ở
+/// `FrmRpt_HisChangePriceCar` (cột chết, §12/#540): `ColorExtName`/`ColorIntName` (chỉ dùng bản *VN* để hiển
+/// thị, bản không-VN không được map FieldName nào) và `LogLUDateTime`/`LogLUBy` (form tự xoá hai cột này khỏi
+/// `dtbTemp` trước khi export — `FrmRpt_HisChangePriceCar.cs:216-217`).
+/// </summary>
+public sealed class RptHisChangePriceCar
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string CarId { get; set; } = "";
+    public DateTime ChangeDateTime { get; set; }
+    public string? DealerCode { get; set; }
+    public string? SOCode { get; set; }
+    public string? ModelCode { get; set; }
+    public string? ModelName { get; set; }
+    public string? SpecCode { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? ColorCode { get; set; }
+    public string? ColorExtNameVN { get; set; }
+    public string? ColorIntNameVN { get; set; }
+    public decimal PriceOld { get; set; }
+    public decimal PriceNew { get; set; }
+    public string? ChangeBy { get; set; }
+}
+
+/// <summary>
 /// Bảng CHỤP số liệu KHẢ NĂNG CUNG ỨNG PHỤ TÙNG theo tháng (`Rpt_AbilitySupplyParts`) — port 1:1
 /// `Rpt_AbilitySupplyParts_Save_AutoDealer` (`BizCarSv.Inventory.Report.cs:8702`, vỏ → thân thật
 /// `…_Save_AutoDealerX` `:9174`, LIVE, WS `HTCWSCarSv/WSCarSv.asmx.cs:38516`).
