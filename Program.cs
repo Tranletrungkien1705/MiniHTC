@@ -32184,6 +32184,43 @@ app.MapGet("/api/servicepackages", async (AppDbContext db, ITenantContext t, str
     });
 }).RequireAuthorization();
 
+// ===== 🔴 #5900 ĐÓNG GAP #546 — TÌM GÓI DỊCH VỤ ĐỂ TẠO RO (`FrmROServicePackageSearchCreate`, chế độ tìm) =====
+// `#550` đã ghi: route `/api/servicepackages` ngay trên lọc THẲNG, KHÔNG replicate đúng màn này —
+// `SerServicePackageGetSearchCreateRO` (`BizCarSv.ServicePackage.cs:1794`, nhánh tìm-kiếm khi
+// `ServicePackageID` rỗng) UNION hai nhánh: ① `IsPublicFlag='1'` (gói DÙNG CHUNG — mọi người thấy) ∪
+// ② `Creator=<user hiện tại> AND IsPublicFlag='0'` (gói RIÊNG của CHÍNH người tạo). 🔴 Tên tham số client
+// `strIsPrivateFlagConditionList` ĐÁNH LẠC HƯỚNG — code áp đặt NÓ LÊN CHÍNH CỘT `sp.IsPublicFlag`
+// (`BizCarSv.ServicePackage.cs:1797`), KHÔNG PHẢI một cột "IsPrivateFlag" riêng — "riêng tư" chỉ là
+// `IsPublicFlag='0'` + đúng người tạo. KHÔNG có bộ lọc `TakingTime` ở hàm này (khác #550).
+// Đã đóng nợ bằng route riêng, Union đúng 2 nhánh, không dùng chung endpoint với #550 (đúng kết luận #550).
+app.MapGet("/api/servicepackages/search-for-ro", async (AppDbContext db, ITenantContext t,
+    string? dealerCode, string? packageNo, string? packageName, string? creator,
+    DateTime? createdDateFrom, DateTime? createdDateTo) =>
+{
+    var cr = (creator ?? "").Trim();
+    var q = db.ServicePackages.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode!.Trim());
+    if (!string.IsNullOrWhiteSpace(packageNo)) q = q.Where(x => x.ServicePackageNo.Contains(packageNo!.Trim()));
+    if (!string.IsNullOrWhiteSpace(packageName)) q = q.Where(x => x.ServicePackageName != null && x.ServicePackageName!.Contains(packageName!.Trim()));
+    if (createdDateFrom is not null) q = q.Where(x => x.CreatedDate != null && x.CreatedDate >= createdDateFrom);
+    if (createdDateTo is not null) q = q.Where(x => x.CreatedDate != null && x.CreatedDate <= createdDateTo);
+    // #5900: UNION 2 nhanh cua nguon — cong khai HOAC rieng cua chinh nguoi tao.
+    q = q.Where(x => x.IsPublicFlag == "1" || (cr.Length > 0 && x.Creator == cr && x.IsPublicFlag == "0"));
+
+    var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new
+    {
+        x.Id, x.ServicePackageNo, x.ServicePackageName, x.DealerCode, x.Description, x.Creator,
+        x.CreatedDate, x.CreatedBy, x.IsPublicFlag, x.IsUserBasePrice,
+    }).ToListAsync();
+    return Results.Ok(new
+    {
+        count = items.Count, items,
+        unionOfPublicOrOwnPrivateNote = "#5900/#546: hai nhanh UNION cua nguon - cong khai (IsPublicFlag=1) HOAC rieng cua chinh nguoi tao (Creator=user VA IsPublicFlag=0). Tham so client ten 'IsPrivateFlag' nhung ap len CHINH cot IsPublicFlag, khong phai cot rieng.",
+        noTakingTimeFilterHere = "Khac #550 (SerServicePackageGet): ham nay KHONG co bo loc TakingTime.",
+        detailEndpointIsSeparate = "Chi tiet dich vu/phu tung cua 1 goi (khi double-click chon) dung /api/servicepackages/{id}/detail da port (#546/#551).",
+    });
+}).RequireAuthorization();
+
 // #308 Tạo (ServicePackageID rỗng → SerServicePackageCreate) / sửa (có ID → SerServicePackageUpdate), BizCarSv.ServicePackage.cs:179/546.
 // Thay toàn bộ dòng CV + PT, tính tổng (Price×Factor mỗi dòng).
 app.MapPost("/api/servicepackages", async (ServicePackageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -43227,7 +43264,7 @@ app.MapGet("/api/invcarwarranties", async (AppDbContext db, ITenantContext t, st
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
         x.Id, x.VIN, x.PlateNo, x.ModelCode, x.SpecCode, x.DealerCode, x.DealerCodeBuyer,
         x.ReceiveDate, x.StoreDateExpired, x.DeliveryDate, x.WarrantyDate, x.CustomerConfirmDate, x.HTCVDateExpired, x.DealerDateExpired,
-        x.WarrantyKm, x.ColorCode, x.EngineNo, x.WarrantyType, x.Remark, x.CustomerCode, x.CustomerName, x.CustomerPhoneNo,
+        x.WarrantyKm, x.ColorCode, x.EngineNo, x.WarrantyType, x.Remark, x.CustomerCode, x.CustomerName, x.CustomerPhoneNo, x.ZaloID,
         x.CarWarrantyStatus, x.CreateDTime, x.CreateBy, x.LUDateTime, x.LUBy, x.LogLUDateTime, x.LogLUBy
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, confirmed = items.Count(x => x.CustomerConfirmDate != null), items });
@@ -43248,12 +43285,12 @@ app.MapPost("/api/invcarwarranties", async (InvCarWarrantyDto dto, AppDbContext 
         DealerCodeBuyer = dto.DealerCodeBuyer, ReceiveDate = dto.ReceiveDate, StoreDateExpired = dto.StoreDateExpired, DeliveryDate = dto.DeliveryDate,
         WarrantyDate = dto.WarrantyDate, CustomerConfirmDate = null, HTCVDateExpired = dto.HTCVDateExpired, DealerDateExpired = dto.DealerDateExpired,
         WarrantyKm = dto.WarrantyKm, ColorCode = P(dto.ColorCode), EngineNo = P(dto.EngineNo), WarrantyType = P(dto.WarrantyType), Remark = dto.Remark,
-        CustomerCode = dto.CustomerCode, CustomerName = dto.CustomerName, CustomerPhoneNo = dto.CustomerPhoneNo,
+        CustomerCode = dto.CustomerCode, CustomerName = dto.CustomerName, CustomerPhoneNo = dto.CustomerPhoneNo, ZaloID = dto.ZaloID,
         CarWarrantyStatus = "P", CreateDTime = now, CreateBy = who, LUDateTime = now, LUBy = who, LogLUDateTime = now, LogLUBy = who
     };
     db.InvCarWarranties.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.VIN, row.ModelCode, row.CarWarrantyStatus });
+    return Results.Ok(new { row.Id, row.VIN, row.ModelCode, row.CarWarrantyStatus, row.ZaloID });
 }).RequireAuthorization();
 
 // Sửa hàng loạt — Inv_CarWarrantyUpdate
@@ -116243,7 +116280,8 @@ record StoCBReqCarDto(string? VIN, string? ModelCode, string? SpecCode, string? 
 record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string? SpecCode, string? DealerCode, string? DealerCodeBuyer, DateTime? ReceiveDate, DateTime? StoreDateExpired, DateTime? DeliveryDate, DateTime? WarrantyDate, DateTime? HTCVDateExpired, DateTime? DealerDateExpired,
     // #359 cột AddX
     string? WarrantyKm = null, string? ColorCode = null, string? EngineNo = null, string? WarrantyType = null, string? Remark = null,
-    string? CustomerCode = null, string? CustomerName = null, string? CustomerPhoneNo = null);
+    string? CustomerCode = null, string? CustomerName = null, string? CustomerPhoneNo = null,
+    string? ZaloID = null);   // #NNN parity Inv_CarWarranty.ZaloID
 record InvCarWarrantyUpdateRow(string? VIN, DateTime? WarrantyDate, DateTime? DealerDateExpired, string? Remark);   // #359
 record InvCarWarrantyUpdateDto(List<InvCarWarrantyUpdateRow>? Inv_CarWarranty);
 record InvCarWarrantyActiveDto(string? VIN, string? CustomerPhoneNo);
