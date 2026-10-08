@@ -197,6 +197,26 @@ var MasterCatalog = new (string Cat, string Label)[]
     // thiếu vì so khớp theo tên cột literal, không nhận ra pattern Category+Code+Name phẳng. SKIP, không port riêng.
     ("CustomerBase", "Nguồn gốc khách hàng (FrmCustomerBase)"),
     ("Plant", "Nhà máy sản xuất (FrmPlant)"),
+    // check_cot_1to1.py báo `FrmNewCustomer`/`FrmNewRetailContract` bảng `CardType` thiếu cột
+    // `IDCardTypeName`. Trace: bảng master thật `Mst_CardType` (DbDefine.cs:2884-2891, bản Release.2025)
+    // gồm IDCardType/IDCardTypeName/CreatedDate/FlagActive — nạp vào cache MasterInit qua
+    // BizHTC.Common.cs:790,848, dùng làm combo Code/Name ở `FrmNewCustomer.cs:110-118`
+    // (`lueIDCardType`, ValueMember=IDCardType, DisplayMember=IDCardTypeName) và tương tự
+    // `FrmNewRetailContract.cs`. KHÁC với field code `IDCardType` đã có trên DealerCustomer/DlrContract —
+    // đây là bảng danh mục loại giấy tờ (CMND/CCCD/Passport...) chưa từng port. Thêm category generic,
+    // cùng khuôn CarCancelType/DealerType — Code/Name đã đủ, không cần entity/Seeder/DTO riêng.
+    ("CardType", "Loại giấy tờ tùy thân (Mst_CardType, combo FrmNewCustomer/FrmNewRetailContract)"),
+    // check_cot_1to1.py báo `FrmUpgradeOrder`/`FrmUpgradeOrderApprove`/`FrmUpgradeOrderApprovePlan`
+    // bảng `SalesPolicy` thiếu cột `SPName`. Trace: bảng master thật `Mst_SalesPolicy`
+    // (DbDefine.cs:122 `Tbl_SalesPolicy = "Mst_SalesPolicy"`, class `TblSalesPolicy` :2159-2164) CHỈ 3 cột
+    // SPCode/SPName/FlagActive — `Mst_SalesPolicyService.SalesPolicy_Get()` nạp làm combo
+    // ValueMember=SPCode/DisplayMember=SPName ở cả 3 màn (`FrmUpgradeOrder.cs:111-112,379-394`,
+    // `FrmUpgradeOrderApprove.cs:81-82,267-280`, `FrmUpgradeOrderApprovePlan.cs:83-84,270-283`).
+    // KHÁC entity `SalesPolicyMst`/`SPL_SalesPolicyMst` đã port (bảng chính sách hỗ trợ bán có dòng
+    // đại lý/năm SX/tiền hỗ trợ) — đây là danh mục code/name riêng, nhỏ, dùng làm combo chọn `SPCode`
+    // đã lưu sẵn trên `SalesOrder`/`Dms40SoRoot` (grep `SPCode` trong Program.cs/Entities.cs). Thêm
+    // category generic, cùng khuôn CardType/CarCancelType — không cần entity/Seeder/DTO riêng.
+    ("SalesPolicy", "Chính sách bán hàng (Mst_SalesPolicy, combo FrmUpgradeOrder*)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
