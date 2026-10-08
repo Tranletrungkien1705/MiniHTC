@@ -10138,6 +10138,55 @@ app.MapPost("/api/tcginvoices/approve", async (TcgInvoiceApproveDto dto, AppDbCo
     return Results.Ok(new { code, status = row.VatTCGStatus, row.TCGInvoiceNo, detailsSynced = dtls.Count });
 }).RequireAuthorization();
 
+// ===== #30080 kỹ thuật-6 WS-method-diff round 44: `VAT_TCGInvoiceUpdate` (Biz.HTC.WH.cs:119935-120242) =====
+// Nguồn: màn `FrmDetailTCGInvoice.cs:419` (nút "Lưu" sửa số/ngày/mẫu hoá đơn TCG) → client wrapper
+// `PrintVATService.VATTCGInvoiceUpdate` → WS `VAT_TCGInvoiceUpdate` — ĐỘC LẬP với `/api/tcginvoices/approve`
+// (approve chỉ gán số lúc duyệt, không có validate; màn này sửa LẠI số/ngày/mẫu SAU đó, chỉ khi hoá đơn
+// còn "P" — nguồn `myCheck_VAT_TCGInvoice(..., Stage.Pending)`). Vá route mới, KHÔNG cần cột/entity mới
+// (TCGInvoiceNo/TCGInvoiceDate/InvoiceIDCode đã có sẵn trên VatTcgInvoice).
+// 🔴 Validate theo đúng nguồn: (1) InvoiceIDCode phải tồn tại + active + loại "TCG" (`Mst_InvoiceID`);
+//    (2) TCGInvoiceNo bắt buộc, đúng 7 ký tự, toàn số; (3) không trùng (InvoiceIDCode, TCGInvoiceNo) với
+//    hoá đơn khác (loại trừ chính nó); (4) "CanDuoi"/"CanTren": so với hoá đơn liền dưới/liền trên theo
+//    số (cùng InvoiceIDCode, bỏ "C" đã huỷ) — ngày hoá đơn phải nằm trong khoảng [ngày liền dưới, ngày liền trên].
+app.MapPost("/api/tcginvoices/{code}/update-invoiceno", async (string code, TcgInvoiceUpdateNoDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    code = (code ?? "").Trim();
+    var row = await db.VatTcgInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TCGInvoiceCode == code);
+    if (row is null) return Results.NotFound(new { error = $"Không có hoá đơn {code}." });
+    if (row.VatTCGStatus != "P")
+        return Results.BadRequest(new { error = $"Hoá đơn đang '{row.VatTCGStatus}', chỉ sửa được khi 'P'." });
+
+    var idCode = (dto.InvoiceIDCode ?? "").Trim();
+    var invId = await db.InvoiceIDs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InvoiceIDCode == idCode && x.InvoiceIDType == "TCG" && x.FlagActive == "1");
+    if (invId is null) return Results.BadRequest(new { error = $"Mẫu hoá đơn (InvoiceIDCode) '{idCode}' không hợp lệ hoặc không active cho loại TCG." });
+
+    var no = (dto.TCGInvoiceNo ?? "").Trim();
+    if (no.Length == 0 || no.Length != 7 || !no.All(char.IsDigit))
+        return Results.BadRequest(new { error = "Số hoá đơn phải đủ 7 chữ số." });
+    var noVal = long.Parse(no);
+
+    if (await db.VatTcgInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.InvoiceIDCode == idCode && x.TCGInvoiceNo == no && x.TCGInvoiceCode != code))
+        return Results.BadRequest(new { error = $"Số hoá đơn {no} đã tồn tại trong mẫu {idCode}." });
+
+    var scope = await db.VatTcgInvoices.Where(x => x.OrgId == t.OrgId && x.InvoiceIDCode == idCode
+        && x.TCGInvoiceCode != code && x.VatTCGStatus != "C" && x.TCGInvoiceNo != null).ToListAsync();
+    var canDuoi = scope.Where(x => long.TryParse(x.TCGInvoiceNo, out var n) && n < noVal)
+        .OrderByDescending(x => long.Parse(x.TCGInvoiceNo!)).FirstOrDefault();
+    var canTren = scope.Where(x => long.TryParse(x.TCGInvoiceNo, out var n) && n > noVal)
+        .OrderBy(x => long.Parse(x.TCGInvoiceNo!)).FirstOrDefault();
+    var newDate = (dto.TCGInvoiceDate ?? DateTime.Now).Date;
+    if (canDuoi is not null && canDuoi.TCGInvoiceDate.HasValue && newDate < canDuoi.TCGInvoiceDate.Value.Date)
+        return Results.BadRequest(new { error = $"Ngày hoá đơn phải >= {canDuoi.TCGInvoiceDate.Value:yyyy-MM-dd} (ngày hoá đơn số {canDuoi.TCGInvoiceNo} liền dưới)." });
+    if (canTren is not null && canTren.TCGInvoiceDate.HasValue && newDate > canTren.TCGInvoiceDate.Value.Date)
+        return Results.BadRequest(new { error = $"Ngày hoá đơn phải <= {canTren.TCGInvoiceDate.Value:yyyy-MM-dd} (ngày hoá đơn số {canTren.TCGInvoiceNo} liền trên)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.TCGInvoiceNo = no; row.InvoiceIDCode = idCode; row.TCGInvoiceDate = newDate;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { code, row.TCGInvoiceNo, row.TCGInvoiceDate, row.InvoiceIDCode });
+}).RequireAuthorization();
+
 // ===== #B108 TÍNH TRƯỚC KHI DUYỆT HOÁ ĐƠN TCG — `VAT_TCGInvoice_CalcBeforeAppr` =====
 // Trace LIVE: WS → **`_biz.VAT_TCGInvoice_CalcBeforeAppr`** (`BizHTC.InvoiceHTC_TCG.cs:1052`) —
 //   **không có hậu tố `_NewYYYYMMDD`**. 3B đo thật, **khớp cả 2 máy**: start=1052 md5
@@ -115988,6 +116037,7 @@ record OrdPiCreateDto(string? RefNo, string? ModelCode, string? OrderMonth, stri
 record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, string? BrandName, string? CarType, DateTime? CustomsClearanceDate, string? InvoiceNoFactory, string? InvoiceFactorySearch, string? ProductionMonth);
 record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);
 record TcgInvoiceApproveDto(string? TCGInvoiceCode, bool? Approve, string? TCGInvoiceNo, DateTime? TCGInvoiceDate);
+record TcgInvoiceUpdateNoDto(string? TCGInvoiceNo, DateTime? TCGInvoiceDate, string? InvoiceIDCode);
 record TcgInvoiceKeyDto(string? TCGInvoiceCode);
 record AdjDeleteReasonDto(string? Adj_DeleteReason, string? InvoicePrintNo, string? BeforeAdj_DeleteRemark, string? AfterAdj_DeleteRemark);   // #330
 record TcgInvoiceDetailKeyDto(string? TCGInvoiceCode, string? VIN);
