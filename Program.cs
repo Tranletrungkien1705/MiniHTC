@@ -36388,6 +36388,153 @@ app.MapPost("/api/orderparts/hmc-report/send-hmc", async (AppDbContext db, ITena
     });
 }).RequireAuthorization();
 
+// ===== 🏆🔴🔴 #30076 CỤM MỚI `Rpt_DuBaoDatHang5THTMV{_Get,_Save,_UpdateMulti}` =====
+// GAP THẬT (0 hit `DuBaoDatHang5THTMV`/`RptDBDH5TCode` trước fire này — `FlagIsMonth` có hit khác ở
+// `Ord_OrderPlan_HTMV`, không liên quan). Nguồn WinForms `FrmRptDatHangHTMV5ThangTiepTheo(Detail).cs`, biz thật
+// `zTemp.Report.cs:14420` (đọc), `:14710` (tạo), `:15342` (sửa kế hoạch). Xem comment đầy đủ ở entity
+// `RptDuBaoDatHang5THTMV`/`RptDuBaoDatHang5THTMVDetail` (Models/Entities.cs) — không tạo bảng riêng cho
+// `...DetailForModel` (chỉ là DataTable group-by tại thời điểm đọc, không có INSERT/CREATE TABLE ở nguồn).
+// `Rpt_DuBaoDatHang5THTMV_SaveX` gọi WS ngoài `MMS_Rpt_Statistic_MnfPlOrder` để lấy avg bán hàng/tồn kho —
+// không model hoá ở Mini (không có hệ thống MMS), nên POST create nhận trực tiếp các Qty* đầu vào tương ứng.
+app.MapGet("/api/reports/dubaodathang-5t-htmv", async (AppDbContext db, ITenantContext t, string? flagIsMonth) =>
+{
+    var q = db.RptDuBaoDatHang5THTMVs.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagIsMonth)) q = q.Where(x => x.FlagIsMonth == flagIsMonth);
+    var items = await q.OrderByDescending(x => x.RptDBDH5TCode).Take(500)
+        .Select(x => new { x.RptDBDH5TCode, x.FlagIsMonth, x.CreatedDate, x.CreatedBy, x.UpdatedDate, x.UpdatedBy }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// GET chi tiết 1 bản ghi — port `Rpt_DuBaoDatHang5THTMVGetX` (`:14420-14709`): trả header + Detail (theo
+// Spec/Model) + DetailForModel (group theo ModelCode, SUM các cột rồi tính lại md_TotalBHTB/md_QtyTBBHMonthN..N4
+// — `:14582-14641`). Cả 2 mức đều TÍNH LẠI QtyTBBHMonthN../TotalBHTB từ TotalStorage/QtyChoose/QtyPlanMonthN..N4
+// tại thời điểm đọc (nguồn không tin cột lưu, xem comment entity Detail) — KHÔNG đọc cột stored tương ứng.
+app.MapGet("/api/reports/dubaodathang-5t-htmv/{rptDBDH5TCode}", async (string rptDBDH5TCode, AppDbContext db, ITenantContext t) =>
+{
+    var header = await db.RptDuBaoDatHang5THTMVs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == rptDBDH5TCode);
+    if (header is null) return Results.NotFound(new { error = $"Khong tim thay RptDBDH5TCode={rptDBDH5TCode}." });
+    var details = await db.RptDuBaoDatHang5THTMVDetails.Where(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == rptDBDH5TCode).ToListAsync();
+
+    static decimal TBBH(decimal totalStorage, decimal qtyChoose, decimal qtyPlanMonth)
+        => qtyChoose == 0 ? 0 : (totalStorage + qtyPlanMonth) / qtyChoose - 3;
+
+    var detailOut = details.Select(d =>
+    {
+        var totalStorage = d.TotalStorage ?? 0; var qtyChoose = d.QtyChoose ?? 0;
+        return new
+        {
+            d.SpecCode, d.ModelCode,
+            d.QtySellCusMonth12, d.QtySellCusMonth6, d.QtySellCusMonth3, d.QtySellCusMonth1,
+            d.QtyChoose, d.QtyStorageDealer, d.QtyBODealer, d.QtyStorageHTV, d.QtyBOHTMV, d.TotalStorage,
+            d.QtyPlanMonthN, d.QtyPlanMonthN1, d.QtyPlanMonthN2, d.QtyPlanMonthN3, d.QtyPlanMonthN4,
+            QtyTBBHMonthN = TBBH(totalStorage, qtyChoose, d.QtyPlanMonthN ?? 0),
+            QtyTBBHMonthN1 = TBBH(totalStorage, qtyChoose, d.QtyPlanMonthN1 ?? 0),
+            QtyTBBHMonthN2 = TBBH(totalStorage, qtyChoose, d.QtyPlanMonthN2 ?? 0),
+            QtyTBBHMonthN3 = TBBH(totalStorage, qtyChoose, d.QtyPlanMonthN3 ?? 0),
+            QtyTBBHMonthN4 = TBBH(totalStorage, qtyChoose, d.QtyPlanMonthN4 ?? 0),
+        };
+    }).ToList();
+
+    var detailForModel = details.GroupBy(x => x.ModelCode).Select(g =>
+    {
+        var mdQtyChoose = g.Sum(x => x.QtyChoose ?? 0);
+        var mdTotalStorage = g.Sum(x => x.TotalStorage ?? 0);
+        decimal MdTBBH(decimal qtyPlanMonth) => mdQtyChoose == 0 ? 0 : (mdTotalStorage + qtyPlanMonth) / mdQtyChoose - 3;
+        return new
+        {
+            ModelCode = g.Key,
+            md_QtySellCusMonth12 = g.Sum(x => x.QtySellCusMonth12 ?? 0), md_QtySellCusMonth6 = g.Sum(x => x.QtySellCusMonth6 ?? 0),
+            md_QtySellCusMonth3 = g.Sum(x => x.QtySellCusMonth3 ?? 0), md_QtySellCusMonth1 = g.Sum(x => x.QtySellCusMonth1 ?? 0),
+            md_QtyChoose = mdQtyChoose,
+            md_QtyStorageDealer = g.Sum(x => x.QtyStorageDealer ?? 0), md_QtyBODealer = g.Sum(x => x.QtyBODealer ?? 0),
+            md_QtyStorageHTV = g.Sum(x => x.QtyStorageHTV ?? 0), md_QtyBOHTMV = g.Sum(x => x.QtyBOHTMV ?? 0),
+            md_TotalStorage = mdTotalStorage,
+            md_QtyPlanMonthN = g.Sum(x => x.QtyPlanMonthN ?? 0), md_QtyPlanMonthN1 = g.Sum(x => x.QtyPlanMonthN1 ?? 0),
+            md_QtyPlanMonthN2 = g.Sum(x => x.QtyPlanMonthN2 ?? 0), md_QtyPlanMonthN3 = g.Sum(x => x.QtyPlanMonthN3 ?? 0),
+            md_QtyPlanMonthN4 = g.Sum(x => x.QtyPlanMonthN4 ?? 0),
+            md_TotalBHTB = mdQtyChoose == 0 ? 0 : mdTotalStorage / mdQtyChoose,
+            md_QtyTBBHMonthN = MdTBBH(g.Sum(x => x.QtyPlanMonthN ?? 0)), md_QtyTBBHMonthN1 = MdTBBH(g.Sum(x => x.QtyPlanMonthN1 ?? 0)),
+            md_QtyTBBHMonthN2 = MdTBBH(g.Sum(x => x.QtyPlanMonthN2 ?? 0)), md_QtyTBBHMonthN3 = MdTBBH(g.Sum(x => x.QtyPlanMonthN3 ?? 0)),
+            md_QtyTBBHMonthN4 = MdTBBH(g.Sum(x => x.QtyPlanMonthN4 ?? 0)),
+        };
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        header = new { header.RptDBDH5TCode, header.FlagIsMonth, header.CreatedDate, header.CreatedBy, header.UpdatedDate, header.UpdatedBy },
+        detail = detailOut, detailForModel,
+    });
+}).RequireAuthorization();
+
+// POST tạo mới — port `Rpt_DuBaoDatHang5THTMV_SaveX` (`:14847-15340`). Mã `RptDBDH5TCode` sinh tự động nếu
+// không truyền (nguồn sinh qua `SequenceGetForDMS_New20210626` — Mini dùng timestamp). Theo đúng nguồn
+// (`:15282/15289-15298`), các dòng detail luôn khởi tạo `QtyChoose=0`/`QtyPlanMonthN..N4=0` — chỉ sửa được
+// qua route update-plan bên dưới (`UpdateMulti`).
+app.MapPost("/api/reports/dubaodathang-5t-htmv", async (RptDuBaoDatHang5THTMVCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Details is null || dto.Details.Count == 0)
+        return Results.BadRequest(new { error = "Details khong duoc rong." });
+    var userCode = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    var code = string.IsNullOrWhiteSpace(dto.RptDBDH5TCode) ? $"DBDH5T{now:yyyyMMddHHmmssfff}" : dto.RptDBDH5TCode!.Trim();
+    if (await db.RptDuBaoDatHang5THTMVs.AnyAsync(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == code))
+        return Results.BadRequest(new { error = $"RptDBDH5TCode={code} da ton tai." });
+
+    db.RptDuBaoDatHang5THTMVs.Add(new RptDuBaoDatHang5THTMV
+    {
+        OrgId = t.OrgId, RptDBDH5TCode = code, FlagIsMonth = dto.FlagIsMonth,
+        CreatedDate = now, CreatedBy = userCode, LogLUDateTime = now, LogLUBy = userCode,
+    });
+    foreach (var d in dto.Details)
+        db.RptDuBaoDatHang5THTMVDetails.Add(new RptDuBaoDatHang5THTMVDetail
+        {
+            OrgId = t.OrgId, RptDBDH5TCode = code, SpecCode = d.SpecCode, ModelCode = d.ModelCode,
+            QtySellCusMonth12 = d.QtySellCusMonth12, QtySellCusMonth6 = d.QtySellCusMonth6,
+            QtySellCusMonth3 = d.QtySellCusMonth3, QtySellCusMonth1 = d.QtySellCusMonth1,
+            QtyChoose = 0, QtyStorageDealer = d.QtyStorageDealer, QtyBODealer = d.QtyBODealer,
+            QtyStorageHTV = d.QtyStorageHTV, QtyBOHTMV = d.QtyBOHTMV, TotalStorage = d.TotalStorage,
+            TotalBHTB = 0, QtyPlanMonthN = 0, QtyPlanMonthN1 = 0, QtyPlanMonthN2 = 0, QtyPlanMonthN3 = 0, QtyPlanMonthN4 = 0,
+            QtyTBBHMonthN = 0, QtyTBBHMonthN1 = 0, QtyTBBHMonthN2 = 0, QtyTBBHMonthN3 = 0, QtyTBBHMonthN4 = 0,
+            FlagIsMonth = dto.FlagIsMonth, LogLUDateTime = now, LogLUBy = userCode,
+        });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rptDBDH5TCode = code, detailCount = dto.Details.Count });
+}).RequireAuthorization();
+
+// POST sửa kế hoạch — port `Rpt_DuBaoDatHang5THTMV_UpdateMulti` (`:15342-15671`): khoá match
+// `(RptDBDH5TCode, SpecCode)` (`:15620-15621`), guard `QtyChoose`/`QtyPlanMonthN..N4` >= 0 (nguồn ném lỗi nếu
+// âm, `:15474-15550`), và cập nhật `UpdatedDate`/`UpdatedBy`/`LogLUDateTime`/`LogLUBy` trên header (`:15625-15635`).
+app.MapPost("/api/reports/dubaodathang-5t-htmv/{rptDBDH5TCode}/update-plan", async (string rptDBDH5TCode, List<RptDuBaoDatHang5THTMVPlanDto> lines, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var header = await db.RptDuBaoDatHang5THTMVs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == rptDBDH5TCode);
+    if (header is null) return Results.NotFound(new { error = $"Khong tim thay RptDBDH5TCode={rptDBDH5TCode}." });
+    if (lines is null || lines.Count == 0) return Results.BadRequest(new { error = "Danh sach dong khong duoc rong." });
+    foreach (var l in lines)
+    {
+        if (l.QtyChoose < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyChoose: SpecCode={l.SpecCode}" });
+        if (l.QtyPlanMonthN < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN: SpecCode={l.SpecCode}" });
+        if (l.QtyPlanMonthN1 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN1: SpecCode={l.SpecCode}" });
+        if (l.QtyPlanMonthN2 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN2: SpecCode={l.SpecCode}" });
+        if (l.QtyPlanMonthN3 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN3: SpecCode={l.SpecCode}" });
+        if (l.QtyPlanMonthN4 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN4: SpecCode={l.SpecCode}" });
+    }
+    var userCode = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    var updated = 0;
+    foreach (var l in lines)
+    {
+        var row = await db.RptDuBaoDatHang5THTMVDetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == rptDBDH5TCode && x.SpecCode == l.SpecCode);
+        if (row is null) continue;
+        row.QtyChoose = l.QtyChoose; row.QtyPlanMonthN = l.QtyPlanMonthN; row.QtyPlanMonthN1 = l.QtyPlanMonthN1;
+        row.QtyPlanMonthN2 = l.QtyPlanMonthN2; row.QtyPlanMonthN3 = l.QtyPlanMonthN3; row.QtyPlanMonthN4 = l.QtyPlanMonthN4;
+        row.LogLUDateTime = now; row.LogLUBy = userCode;
+        updated++;
+    }
+    header.UpdatedDate = now; header.UpdatedBy = userCode; header.LogLUDateTime = now; header.LogLUBy = userCode;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { rptDBDH5TCode, updatedCount = updated });
+}).RequireAuthorization();
+
 // ===== 🏆🔴 #930 `TST_Mst_PartGroup_Get`/`TST_Mst_PartType_Get` (LIVE, `BizCarSv.Service.cs:18136/:17862`) =====
 // Entity đã tồn tại từ #767 nhưng CHƯA TỪNG có endpoint — grep toàn Program.cs ra 0 lần đọc lẫn ghi.
 app.MapGet("/api/tstmstpartgroups", async (AppDbContext db, ITenantContext t, bool? all) =>
@@ -67365,6 +67512,149 @@ app.MapGet("/api/reports/gps-map-unmap", async (
         columnNote = "Nhanh UnMap KHONG lay VIN (chi StorageCode/GPSDvNo/CreateDateTime) - VIN cua cap lay tu DONG MAP. Hai cot ra doi ten: MapDateTime -> GPSMapVINDateTime, UnMapDateTime -> GPSUnMapVINDateTime.",
         commitNote = "Cua ket thuc bang CommitSafety ca _dbMain lan _dbWH du chi doc - cung khuon #B251.",
         shapeNote = "MiniHTC luu Sto_StoTransactionGPS DUNG HINH DANG NGUON (moi luot mot DONG, phan biet bang RefType + CreateDateTime) nen tai hien duoc NGUYEN VAN cach ghep theo so thu tu."
+    });
+}).RequireAuthorization();
+
+// ===== #30076 Rpt_CarMapGPSAtDealer_Summary — BC tổng hợp xe lắp/tháo thiết bị GPS theo đại lý =====
+// Trace: Form `FrmBCTongHopXeDaiLy_GPS` (TERP.HTCClient/Views/Report, :116-117) → WSHTC.asmx.cs:73075-73138
+//   → `BizHTC.ZTempGPS.cs:7628-8139` (`Rpt_CarMapGPSAtDealer_Summary`). 5 CỘT theo đại lý:
+//   1) QtyMapGPSOnWay            — xe CÓ map GPS, đang trên đường tới đại lý (BBGN F='A', T='P').
+//   2) QtyMapGPSAndNoMapInStock  — TỔNG xe đang tồn tại đại lý (map hay không map GPS đều tính).
+//   3) QtyMapGPSInStock          — trong xe tồn kho, xe ĐANG map GPS (hành động GPS gần nhất = map).
+//   4) QtyUnMapGPSInStock        — trong xe tồn kho, xe ĐÃ tháo GPS mà chưa bán lẻ (gần nhất = unmap).
+//   5) QtyUnMapGPSNoInForm       — xe ĐÃ bán tới khách cuối, GPS tháo nhưng (ngụ ý) chưa nhập lại kho.
+// 🔴 Nguồn dựng 3 bảng tạm #tbl_Sto_StoTransactionGPS_{Map,UnMap,Lastest} từ `Sto_StoTransactionGPS`
+//   (max AutoId theo RefType, nhóm theo StorageCode+GPSDvNo) để biết "hành động gần nhất của THIẾT BỊ
+//   là map hay unmap". MiniHTC lưu `GpsTransaction` ĐÚNG khuôn nguồn (1 dòng/lượt, `RefType` = GPSMAPVIN
+//   hoặc GPSUNMAPVIN, `Id` tăng dần = AutoId) nên port lấy dòng `Id` LỚN NHẤT theo **VIN** (thay vì theo
+//   StorageCode+GPSDvNo như nguồn — đơn giản hoá có chủ đích, vì report đọc theo VIN ở mọi bước sau) để
+//   suy ra trạng thái GPS hiện tại của xe: dòng gần nhất RefType=GPSMAPVIN ⇒ đang map; GPSUNMAPVIN ⇒ đã tháo.
+// Entity map: Mst_Dealer→Dealer · Sto_StoTransactionGPS→GpsTransaction · Sto_DlvMinutes(per-VIN)→
+//   TranspDlvConfirmCar⋈TranspDlvConfirm(header: DealerCode/FDlvMnStatus/TDlvMnStatus/TranspReqType/RefOrdNo) ·
+//   Car_Car→CarVinMaster(VIN) · Car_DeliveryOrderDetail→DeliveryOrderCar(Vin/ConfirmStatus/DeliveryEndDate)⋈
+//   DeliveryOrder(DoNo) · Dls_DealDetail→DealerDealDetail(CarId=VIN/FlagCurrent) · DLS_Deal→DealerDeal
+//   (DealerCode/DealerCodeBuyer/FlagInitDeal/CustomerCodeBuyer).
+// 🔴 KHÔNG tạo entity/bảng mới: đây là DataTable TỔNG HỢP tính on-the-fly từ dữ liệu đã có (giống
+//   payment-01-matrix/warranty-stats) — không có cột `CreatedDate`/snapshot nào ở nguồn cho biết nó
+//   persist; nguồn build bằng SQL tạm (`#tbl_...`) rồi trả về ngay, không `insert` vào bảng thật nào.
+// ⚠️ NỢ CHƯA PORT: lọc theo `AbilityOfUser.BUPattern` (`md.BUCode like @strBUPatternOfUser`) — MiniHTC
+//   chưa có khái niệm BU-pattern-của-user thống nhất; endpoint chỉ lọc theo `dealerCode` (tham số nguồn
+//   `strDealerCode`), không lọc theo BU của người gọi.
+app.MapGet("/api/reports/car-map-gps-dealer-summary", async (
+    AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var filterDealer = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim().ToUpperInvariant();
+
+    // --- Trạng thái GPS hiện tại của từng VIN: dòng GpsTransaction gần nhất (Id lớn nhất) theo VIN. ---
+    var txs = await db.GpsTransactions
+        .Where(x => x.OrgId == t.OrgId && !string.IsNullOrWhiteSpace(x.Vin))
+        .Select(x => new { x.Vin, x.Id, x.RefType, x.UnMapDateTime, x.CreateDateTime })
+        .ToListAsync();
+    var latestGpsByVin = txs
+        .GroupBy(x => x.Vin!.Trim().ToUpperInvariant())
+        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First());
+    bool IsCurrentlyMapped(string vin) =>
+        latestGpsByVin.TryGetValue(vin, out var lx) && lx.RefType == "GPSMAPVIN";
+    bool IsCurrentlyUnMapped(string vin) =>
+        latestGpsByVin.TryGetValue(vin, out var lx) && lx.RefType == "GPSUNMAPVIN";
+
+    // --- Cột 1: QtyMapGPSOnWay — Sto_DlvMinutes(FDlvMnStatus='A', TDlvMnStatus='P', TranspReqType='CARTRANSPORT')
+    //     ⋈ Car_DeliveryOrderDetail(ConfirmStatus not in R,C) theo VIN, lọc VIN đang map GPS. =====
+    var dlvCars = await (
+        from tc in db.TranspDlvConfirmCars
+        join th in db.TranspDlvConfirms on tc.TranspDlvConfirmId equals th.Id
+        where tc.OrgId == t.OrgId && th.OrgId == t.OrgId
+            && th.TranspReqType == "CARTRANSPORT" && th.FDlvMnStatus == "A" && th.TDlvMnStatus == "P"
+        select new { tc.VIN, th.DealerCode }
+    ).ToListAsync();
+    var doCarsByVin = await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.ConfirmStatus != "R" && x.ConfirmStatus != "C")
+        .Select(x => x.Vin).ToListAsync();
+    var doCarsByVinSet = doCarsByVin.Select(v => v.Trim().ToUpperInvariant()).ToHashSet();
+    var onWayByDealer = dlvCars
+        .Where(x => !string.IsNullOrWhiteSpace(x.VIN) && doCarsByVinSet.Contains(x.VIN.Trim().ToUpperInvariant())
+                    && IsCurrentlyMapped(x.VIN.Trim().ToUpperInvariant()))
+        .GroupBy(x => x.DealerCode)
+        .ToDictionary(g => g.Key, g => g.Select(x => x.VIN.Trim().ToUpperInvariant()).Distinct().Count());
+
+    // --- Tập xe TỒN KHO tại đại lý (#tblCarInStock của nguồn): Dls_DealDetail(FlagCurrent='1')
+    //     ⋈ DLS_Deal(DealerCodeBuyer) ⋈ Car_DeliveryOrderDetail(DeliveryEndDate NOT NULL, ConfirmStatus
+    //     not in R,C) ⋈ Sto_DlvMinutes(RefOrdNo=DeliveryOrderNo, TDlvMnStatus in A,F, TranspReqType=CARTRANSPORT). ---
+    var doHeaderByDoNo = await db.DeliveryOrders.Where(x => x.OrgId == t.OrgId)
+        .Select(x => new { x.Id, x.DoNo }).ToListAsync();
+    var doHeaderById = doHeaderByDoNo.ToDictionary(x => x.Id, x => x.DoNo);
+    var doCarsRaw = await db.DeliveryOrderCars
+        .Where(x => x.OrgId == t.OrgId && x.DeliveryEndDate != null && x.ConfirmStatus != "R" && x.ConfirmStatus != "C")
+        .Select(x => new { x.DoId, x.Vin }).ToListAsync();
+    var dlvByVinSet = (await (
+        from tc in db.TranspDlvConfirmCars
+        join th in db.TranspDlvConfirms on tc.TranspDlvConfirmId equals th.Id
+        where tc.OrgId == t.OrgId && th.OrgId == t.OrgId
+            && th.TranspReqType == "CARTRANSPORT" && (th.TDlvMnStatus == "A" || th.TDlvMnStatus == "F")
+        select new { VIN = tc.VIN, th.RefOrdNo }
+    ).ToListAsync())
+        .Where(x => !string.IsNullOrWhiteSpace(x.VIN) && !string.IsNullOrWhiteSpace(x.RefOrdNo))
+        .Select(x => (vin: x.VIN.Trim().ToUpperInvariant(), refOrdNo: x.RefOrdNo!.Trim()))
+        .ToHashSet();
+    var carsInStockVin = doCarsRaw
+        .Where(x => !string.IsNullOrWhiteSpace(x.Vin) && doHeaderById.TryGetValue(x.DoId, out var doNo)
+                    && dlvByVinSet.Contains((x.Vin.Trim().ToUpperInvariant(), doNo.Trim())))
+        .Select(x => x.Vin.Trim().ToUpperInvariant())
+        .ToHashSet();
+
+    var dealDetails = await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && x.FlagCurrent == "1").ToListAsync();
+    var dealsById = await db.DealerDeals.Where(x => x.OrgId == t.OrgId).ToDictionaryAsync(x => x.Id);
+
+    var inStockByDealer = new Dictionary<string, int>();
+    var mapInStockByDealer = new Dictionary<string, int>();
+    var unmapInStockByDealer = new Dictionary<string, int>();
+    foreach (var ddd in dealDetails)
+    {
+        if (!dealsById.TryGetValue(ddd.DealId, out var dd) || string.IsNullOrWhiteSpace(dd.DealerCodeBuyer)) continue;
+        var vin = (ddd.CarId ?? "").Trim().ToUpperInvariant();
+        if (vin.Length == 0 || !carsInStockVin.Contains(vin)) continue;
+        var dealerKey = dd.DealerCodeBuyer!;
+        inStockByDealer[dealerKey] = inStockByDealer.GetValueOrDefault(dealerKey) + 1;
+        if (IsCurrentlyMapped(vin)) mapInStockByDealer[dealerKey] = mapInStockByDealer.GetValueOrDefault(dealerKey) + 1;
+        else if (IsCurrentlyUnMapped(vin)) unmapInStockByDealer[dealerKey] = unmapInStockByDealer.GetValueOrDefault(dealerKey) + 1;
+    }
+
+    // --- Cột 5: QtyUnMapGPSNoInForm — Dls_DealDetail(FlagCurrent='1') ⋈ DLS_Deal(FlagInitDeal='0',
+    //     CustomerCodeBuyer not null) = đã bán tới khách cuối, lọc VIN mà hành động GPS gần nhất = unmap. ---
+    var noInformByDealer = new Dictionary<string, int>();
+    foreach (var ddd in dealDetails)
+    {
+        if (!dealsById.TryGetValue(ddd.DealId, out var dd)) continue;
+        if (dd.FlagInitDeal != "0" || string.IsNullOrWhiteSpace(dd.CustomerCodeBuyer)) continue;
+        var vin = (ddd.CarId ?? "").Trim().ToUpperInvariant();
+        if (vin.Length == 0 || !IsCurrentlyUnMapped(vin)) continue;
+        noInformByDealer[dd.DealerCode] = noInformByDealer.GetValueOrDefault(dd.DealerCode) + 1;
+    }
+
+    // --- Dựng #tbl_Summary: LEFT JOIN các dictionary trên theo DealerCode, IsNull(...,0). ---
+    var dealerQ = db.Dealers.Where(x => x.OrgId == t.OrgId);
+    if (filterDealer != null) dealerQ = dealerQ.Where(x => x.DealerCode.ToUpper() == filterDealer);
+    var dealers = await dealerQ.OrderBy(x => x.DealerCode).ToListAsync();
+
+    var rows = dealers.Select(d => new
+    {
+        d.DealerCode,
+        d.DealerName,
+        QtyMapGPSOnWay = onWayByDealer.GetValueOrDefault(d.DealerCode, 0),
+        QtyMapGPSAndNoMapInStock = inStockByDealer.GetValueOrDefault(d.DealerCode, 0),
+        QtyMapGPSInStock = mapInStockByDealer.GetValueOrDefault(d.DealerCode, 0),
+        QtyUnMapGPSInStock = unmapInStockByDealer.GetValueOrDefault(d.DealerCode, 0),
+        QtyUnMapGPSNoInForm = noInformByDealer.GetValueOrDefault(d.DealerCode, 0),
+    }).ToList();
+
+    return Results.Ok(new
+    {
+        count = rows.Count,
+        Rpt_CarMapGPSAtDealer_Summary = rows,
+        sourceFunction = "Rpt_CarMapGPSAtDealer_Summary",
+        formGoc = "FrmBCTongHopXeDaiLy_GPS",
+        abilityOfUserNote = "NỢ CHƯA PORT: nguồn ép `inner join Mst_Dealer md on (md.BUCode like @strBUPatternOfUser)` để chỉ trả đại lý thuộc BU của người gọi — MiniHTC chưa có BUPattern-của-user thống nhất nên bỏ, chỉ lọc theo dealerCode.",
+        deviceKeyVsVinKeyNote = "Nguồn khoá hành động GPS gần nhất theo (StorageCode, GPSDvNo); port khoá theo VIN (Id GpsTransaction lớn nhất của VIN) vì mọi bước sau đều join lại bằng VIN — đơn giản hoá có chủ đích, lệch khi một VIN có lịch sử nhiều thiết bị chồng StorageCode khác nhau cùng lúc (hiếm).",
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/sm-certificate", async (
@@ -113950,6 +114240,137 @@ app.MapGet("/api/report/ro-variance-cost-stockout", async (AppDbContext db, ITen
     });
 }).RequireAuthorization();
 
+// ===== #B392 BÁO CÁO DỰ KIẾN KẾ HOẠCH GIAO XE ĐẠI LÝ — `DMS40_Rpt_EstimateDeliveryPlan` =====
+// Trace LIVE: `FrmRptEstimateDeliveryPlan.cs:322` → WS `reportService.DMS40_Rpt_EstimateDeliveryPlan(
+//   strDateFrom, strDateTo, strZoneCode, dataWH)` → biz `DMS40_Rpt_EstimateDeliveryPlan_New20181115`
+//   (`TERP.BizHTC/DMS40/zTemp.0.21.PlanDelivery.cs:260`) → `..._New20260514` (dòng 164-258, bản LIVE,
+//   "2026-05-14 HungLD: Nâng cấp phân vùng") → SQL `mySql_DMS40_Rpt_EstimateDeliveryPlanX_New20260514`
+//   (`TERP.BizHTC.SQLQuery/RptSQLQuery.cs:12284-12554`).
+// 🔴 **CHỈ port nhánh ĐỌC/tìm kiếm này.** Form còn HAI lời gọi khác KHÔNG động tới:
+//   (1) `reportService.DMS40_Rpt_EstimateDeliveryPlan()` KHÔNG tham số (`FrmRptEstimateDeliveryPlan.cs:470`,
+//       nút "Tính báo cáo") — đây là nhánh TÍNH TOÁN/NẠP LẠI bảng `Rpt_EstimateDeliveryPlan`, một cluster
+//       KHÁC, chưa khảo sát — KHÔNG port ở đây.
+//   (2) `reportService.Auto_EstimateDeliveryPlan_Get()` (`:482`) — **ĐÃ PORT** tại `#B147` (route
+//       `/api/dms40/estimate-delivery-plans` phía trên) — không làm lại.
+// 📌 `Rpt_EstimateDeliveryPlan` là **BẢNG THẬT** (nguồn `from Rpt_EstimateDeliveryPlan t`), KHÔNG phải
+//   DataTable tạm — nạp bởi nhánh (1) ngoài phạm vi. Entity `RptEstimateDeliveryPlan` chỉ mang đúng cột
+//   SELECT ra (DealerCode/ModelCode/SpecCode/ColorExtCode/Date/ApprovedDate/SOCode/QtyCanMapVIN/Qty).
+// 🔴 **Lọc Zone là INNER ẨN**: nguồn `left join Mst_DealerZone mdz ... and mdz.FlagActive = '1'` trong
+//   WHERE ⇒ đại lý KHÔNG có dòng `Mst_DealerZone` đang hiệu lực thì **biến mất khỏi báo cáo**, dù không
+//   lọc `strZoneCode`. Port giữ đúng: luôn yêu cầu có `DealerZone` active, chỉ thêm so khớp `ZoneCode` khi
+//   `zoneCode` được truyền.
+// 📌 NỢ (chưa có thực thể trong MiniHTC, KHÔNG bịa dữ liệu):
+//   - `Car_Car` + `Ord_SalesOrderDetail` (chấm theo VIN map/not-map) ⇒ `QtyMap`/`QtyNotMap` trả `0` —
+//     **khớp đúng** hành vi `Isnull(h.QtyMap,0)`/`Isnull(g.QtyNotMap,0)` của nguồn khi không có dòng khớp.
+//   - `Mst_CarModel` (tên model) ⇒ `modelName` trả `null`.
+//   `SpecDescription` (từ `CarSpec.SpecDesc`), `ColorExtNameVN` (từ `MstCarColor`, khớp ModelCode+ColorExtCode),
+//   `AreaCodeDealer`/`AreaNameDealer`/`HTCStaffInCharge` (chuỗi Dealer→MstProvince→Area theo đúng `case
+//   Level=3→AreaRootCode, Level=2→AreaCode, else null` của nguồn) và `ZoneCode`/`ZoneName` đều PORT ĐỦ.
+app.MapGet("/api/reports/dms40-estimate-delivery-plan", async (
+    AppDbContext db, ITenantContext t,
+    string dateFrom, string? dateTo, string? dealerCode, string? zoneCode) =>
+{
+    if (string.IsNullOrWhiteSpace(dateFrom))
+        return Results.BadRequest(new { error = "DMS40_Rpt_EstimateDeliveryPlan_DateFromIsNotNull" });
+
+    var from = DateTime.Parse(dateFrom);
+    var to = string.IsNullOrWhiteSpace(dateTo) ? DateTime.Parse("2100-01-01") : DateTime.Parse(dateTo);
+    var dealer = dealerCode?.Trim();
+    var zone = zoneCode?.Trim();
+
+    // strMapVINDateFrom/To: đầu/cuối tháng của dateFrom — dùng cho join Car_Car (chưa có thực thể, NỢ).
+    var mapVinFrom = new DateTime(from.Year, from.Month, 1);
+    var mapVinTo = mapVinFrom.AddMonths(1).AddDays(-1);
+
+    var baseQ = db.RptEstimateDeliveryPlans.Where(x => x.OrgId == t.OrgId
+        && x.Date >= from && x.Date <= to);
+    if (!string.IsNullOrWhiteSpace(dealer)) baseQ = baseQ.Where(x => x.DealerCode == dealer);
+    var rows = await baseQ.ToListAsync();
+
+    var activeZones = await db.DealerZones.Where(z => z.OrgId == t.OrgId && z.FlagActive == "1").ToListAsync();
+    var zoneByDealer = activeZones.GroupBy(z => z.DealerCode).ToDictionary(g => g.Key, g => g.First());
+    // 🔴 lọc "INNER ẨN": chỉ giữ dòng của đại lý CÓ Mst_DealerZone đang hiệu lực.
+    rows = rows.Where(x => zoneByDealer.ContainsKey(x.DealerCode)).ToList();
+    if (!string.IsNullOrWhiteSpace(zone))
+        rows = rows.Where(x => zoneByDealer.TryGetValue(x.DealerCode, out var dz) && dz.ZoneCode == zone).ToList();
+
+    var zonesByCode = (await db.MstZones.Where(z => z.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(z => z.ZoneCode, z => z);
+    var dealersByCode = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(d => d.DealerCode, d => d);
+    var specsByCode = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+    var colorsByModelColor = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode, c.ColorExtCode)).ToDictionary(g => g.Key, g => g.First());
+    var provincesByCode = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(p => p.ProvinceCode, p => p);
+    var areasByCode = (await db.Areas.Where(a => a.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(a => a.AreaCode, a => a);
+
+    var result = rows.Select(x =>
+    {
+        dealersByCode.TryGetValue(x.DealerCode, out var dealerRow);
+        specsByCode.TryGetValue(x.SpecCode ?? "", out var specRow);
+        colorsByModelColor.TryGetValue((x.ModelCode, x.ColorExtCode ?? ""), out var colorRow);
+        zoneByDealer.TryGetValue(x.DealerCode, out var dzRow);
+        zonesByCode.TryGetValue(dzRow?.ZoneCode ?? "", out var zoneRow);
+
+        string? areaCodeDealer = null, areaNameDealer = null;
+        if (dealerRow is not null && !string.IsNullOrEmpty(dealerRow.ProvinceCode)
+            && provincesByCode.TryGetValue(dealerRow.ProvinceCode, out var province)
+            && !string.IsNullOrEmpty(province.AreaCode)
+            && areasByCode.TryGetValue(province.AreaCode, out var areaOfProvince))
+        {
+            // 🔴 nguồn: case Level=3 -> AreaRootCode, Level=2 -> AreaCode, else null.
+            areaCodeDealer = areaOfProvince.Level == 3 ? areaOfProvince.AreaRootCode
+                : areaOfProvince.Level == 2 ? areaOfProvince.AreaCode
+                : null;
+            if (!string.IsNullOrEmpty(areaCodeDealer) && areasByCode.TryGetValue(areaCodeDealer, out var areaDealer))
+                areaNameDealer = areaDealer.AreaName;
+        }
+
+        return new
+        {
+            x.DealerCode,
+            dealerName = dealerRow?.DealerName,
+            x.ModelCode,
+            modelName = (string?)null,   // NO - KHONG DOAN: Mst_CarModel chua co thuc the trong MiniHTC
+            x.SpecCode,
+            specDescription = specRow?.SpecDesc,
+            x.ColorExtCode,
+            colorExtNameVN = colorRow?.ColorExtNameVN,
+            x.Date,
+            x.ApprovedDate,
+            approvedMonth = x.ApprovedDate.HasValue ? new DateTime(x.ApprovedDate.Value.Year, x.ApprovedDate.Value.Month, 1) : (DateTime?)null,
+            x.SOCode,
+            x.QtyCanMapVIN,
+            x.Qty,
+            qtyMap = 0m,      // NO - KHONG DOAN: Car_Car + Ord_SalesOrderDetail chua co => khop Isnull(...,0) cua nguon khi khong co dong khop
+            qtyNotMap = 0m,   // NO - KHONG DOAN: tuong tu qtyMap
+            areaCodeDealer,
+            areaNameDealer,
+            htcStaffInCharge = dealerRow?.HTCStaffInCharge,
+            zoneCode = dzRow?.ZoneCode,
+            zoneName = zoneRow?.ZoneName,
+        };
+    }).OrderBy(r => r.DealerCode).ThenBy(r => r.ModelCode).ThenBy(r => r.SpecCode).ToList();
+
+    return Results.Ok(new
+    {
+        dateFrom = from, dateTo = to, mapVinDateFrom = mapVinFrom, mapVinDateTo = mapVinTo,
+        dealerCode = dealer, zoneCode = zone,
+        count = result.Count, rows = result,
+        scopeNote = "CHI port nhanh DOC/tim kiem (FrmRptEstimateDeliveryPlan.cs:322). Nhanh 'Tinh bao cao' " +
+            "(reportService.DMS40_Rpt_EstimateDeliveryPlan() khong tham so, :470) la mot cluster KHAC, KHONG dong toi. " +
+            "Auto_EstimateDeliveryPlan_Get (:482) DA PORT tai #B147, khong lam lai.",
+        hiddenInnerZoneFilterNote = "Nguon 'left join Mst_DealerZone ... and mdz.FlagActive=1' trong WHERE " +
+            "la INNER AN: dai ly KHONG co Mst_DealerZone dang hieu luc se BIEN MAT khoi bao cao du khong loc zoneCode.",
+        debtNote = "NO - KHONG DOAN: Car_Car + Ord_SalesOrderDetail (QtyMap/QtyNotMap) va Mst_CarModel (modelName) " +
+            "chua co thuc the trong MiniHTC. QtyMap/QtyNotMap tra 0 KHOP DUNG hanh vi Isnull(...,0) cua nguon " +
+            "khi khong co dong khop; modelName tra null, khong bia du lieu.",
+    });
+}).RequireAuthorization();
+
 app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status);
@@ -116938,4 +117359,10 @@ static class CmSeq
 record ReqPaymentDiscountDecideDto(bool Approve);
 record SoSupportLineDto(string? ModelCode, string? SpecCode, string? ColorCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate);
 record GoiYDatHangHtcDto(string DealerCode, string ModelCode, string? SpecCode, string RptMonth, decimal Qty);   // #5909
+// #30076 — Rpt_DuBaoDatHang5THTMV: xem comment route /api/reports/dubaodathang-5t-htmv.
+record RptDuBaoDatHang5THTMVDetailCreateDto(string? SpecCode, string? ModelCode,
+    decimal? QtySellCusMonth12, decimal? QtySellCusMonth6, decimal? QtySellCusMonth3, decimal? QtySellCusMonth1,
+    decimal? QtyStorageDealer, decimal? QtyBODealer, decimal? QtyStorageHTV, decimal? QtyBOHTMV, decimal? TotalStorage);
+record RptDuBaoDatHang5THTMVCreateDto(string? RptDBDH5TCode, string? FlagIsMonth, List<RptDuBaoDatHang5THTMVDetailCreateDto> Details);
+record RptDuBaoDatHang5THTMVPlanDto(string SpecCode, decimal QtyChoose, decimal QtyPlanMonthN, decimal QtyPlanMonthN1, decimal QtyPlanMonthN2, decimal QtyPlanMonthN3, decimal QtyPlanMonthN4);
 record GoiYDatHangDealerDto(string DealerCode, string ModelCode, string? SpecCode, decimal Qty);   // #5909

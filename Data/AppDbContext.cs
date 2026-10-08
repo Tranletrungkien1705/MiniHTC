@@ -319,6 +319,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SuggestPrice> SuggestPrices => Set<SuggestPrice>();            // #1480
     public DbSet<SuggestPriceDtl> SuggestPriceDtls => Set<SuggestPriceDtl>();            // #1480
     public DbSet<MngReportDataMonth> MngReportDataMonths => Set<MngReportDataMonth>();   // #5724
+    public DbSet<RptDuBaoDatHang5THTMV> RptDuBaoDatHang5THTMVs => Set<RptDuBaoDatHang5THTMV>();            // #30076
+    public DbSet<RptDuBaoDatHang5THTMVDetail> RptDuBaoDatHang5THTMVDetails => Set<RptDuBaoDatHang5THTMVDetail>();            // #30076
     public DbSet<TechnicalLibrary> TechnicalLibraries => Set<TechnicalLibrary>();
     public DbSet<SerMstSupplier> SerMstSuppliers => Set<SerMstSupplier>();
     public DbSet<StockAdj> StockAdjs => Set<StockAdj>();
@@ -609,6 +611,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<DealerInventoryThreshold> DealerInventoryThresholds => Set<DealerInventoryThreshold>();
     public DbSet<DealerZone> DealerZones => Set<DealerZone>();
     public DbSet<MstZone> MstZones => Set<MstZone>();   // #B89 danh muc VUNG (Mst_Zone)
+    public DbSet<RptEstimateDeliveryPlan> RptEstimateDeliveryPlans => Set<RptEstimateDeliveryPlan>();   // #B392 bang goc Rpt_EstimateDeliveryPlan
     public DbSet<AtedpRun> AtedpRuns => Set<AtedpRun>();   // #B134 luot chay job lap ke hoach giao xe
     public DbSet<TcgCarPrice> TcgCarPrices => Set<TcgCarPrice>();   // #B190 bang gia xe TCG theo thoi gian
     public DbSet<RptStatisticStockHis> RptStatisticStockHiss => Set<RptStatisticStockHis>();   // #B218

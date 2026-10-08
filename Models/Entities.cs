@@ -19228,3 +19228,96 @@ public sealed class MngReportDataMonth
     public string? FilePath { get; set; }
     public string? FilePathDtl { get; set; }
 }
+
+/// <summary>
+/// #30076 — bảng CHỤP header báo cáo "Dự báo đặt hàng HTMV 5 tháng tiếp theo" (`Rpt_DuBaoDatHang5THTMV`) —
+/// GAP THẬT (0 hit `DuBaoDatHang5THTMV`/`RptDBDH5TCode` trong Program.cs/Entities.cs/Seeder.cs trước fire này;
+/// lưu ý `FlagIsMonth` có hit khác ở bảng `Ord_OrderPlan_HTMV` không liên quan — đừng nhầm). Nguồn WinForms:
+/// `FrmRptDatHangHTMV5ThangTiepTheo.cs` + `...Detail.cs` gọi `Rpt_DuBaoDatHang5THTMVService.Rpt_DuBaoDatHang5THTMV_Get`;
+/// WS door `WSHTC.asmx.cs:90438`; biz thật `TERP.BizHTC/DMS40/zTemp.Report.cs:14420` (`Rpt_DuBaoDatHang5THTMVGetX`,
+/// đọc), `:14710` (`Rpt_DuBaoDatHang5THTMV_SaveX`, tạo mới — mã `RptDBDH5TCode` sinh qua sequence, chỉ 8 cột thật
+/// theo INSERT ở `:15213`), `:15342` (`Rpt_DuBaoDatHang5THTMV_UpdateMulti`, sửa `QtyChoose`/`QtyPlanMonthN..N4`
+/// theo khoá `(RptDBDH5TCode, SpecCode)` ở `:15602-15623`). KHÔNG có bảng vật lý riêng cho
+/// `Rpt_DuBaoDatHang5THTMVDetailForModel` — grep toàn nguồn 0 hit `insert into`/`CREATE TABLE` cho nó; đây chỉ
+/// là tên DataTable của kết quả GROUP BY ModelCode tính tại thời điểm đọc (`:14636-14641`), nên Mini KHÔNG tạo
+/// entity riêng (tránh transient-DataColumn trap) — GET bên dưới tự group lại từ Detail giống nguồn.
+/// </summary>
+public sealed class RptDuBaoDatHang5THTMV
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RptDBDH5TCode { get; set; } = "";
+    public string? FlagIsMonth { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? UpdatedDate { get; set; }
+    public string? UpdatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// #30076 — chi tiết theo Spec/Model của `Rpt_DuBaoDatHang5THTMV` (bảng `Rpt_DuBaoDatHang5THTMVDetail`) — xem
+/// comment ở `RptDuBaoDatHang5THTMV`. 24 cột thật theo INSERT nguồn (`zTemp.Report.cs:15242-15303`):
+/// `TotalBHTB`/`QtyTBBHMonthN..N4` CÓ trong câu INSERT (không phải cột ảo) nhưng nguồn LUÔN ghi `'0'` lúc tạo
+/// và KHÔNG BAO GIỜ cập nhật lại ở `UpdateMulti` (`:15602-15623` chỉ update `QtyChoose`/`QtyPlanMonthN..N4`)
+/// — giá trị hiển thị thật trên form luôn được TÍNH LẠI tại thời điểm đọc từ `TotalStorage`/`QtyChoose`/
+/// `QtyPlanMonthN..N4` (`:14539-14568`), route GET bên dưới port đúng hành vi này (tính lại, không tin cột lưu).
+/// </summary>
+public sealed class RptDuBaoDatHang5THTMVDetail
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RptDBDH5TCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ModelCode { get; set; }
+    public decimal? QtySellCusMonth12 { get; set; }
+    public decimal? QtySellCusMonth6 { get; set; }
+    public decimal? QtySellCusMonth3 { get; set; }
+    public decimal? QtySellCusMonth1 { get; set; }
+    public decimal? QtyChoose { get; set; }
+    public decimal? QtyStorageDealer { get; set; }
+    public decimal? QtyBODealer { get; set; }
+    public decimal? QtyStorageHTV { get; set; }
+    public decimal? QtyBOHTMV { get; set; }
+    public decimal? TotalStorage { get; set; }
+    public decimal? TotalBHTB { get; set; }
+    public decimal? QtyPlanMonthN { get; set; }
+    public decimal? QtyPlanMonthN1 { get; set; }
+    public decimal? QtyPlanMonthN2 { get; set; }
+    public decimal? QtyPlanMonthN3 { get; set; }
+    public decimal? QtyPlanMonthN4 { get; set; }
+    public decimal? QtyTBBHMonthN { get; set; }
+    public decimal? QtyTBBHMonthN1 { get; set; }
+    public decimal? QtyTBBHMonthN2 { get; set; }
+    public decimal? QtyTBBHMonthN3 { get; set; }
+    public decimal? QtyTBBHMonthN4 { get; set; }
+    public string? FlagIsMonth { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
+/// #B392 `Rpt_EstimateDeliveryPlan` — bảng THẬT (không phải DataTable tạm), đọc trực tiếp bởi
+/// `DMS40_Rpt_EstimateDeliveryPlanX_New20260514` (TERP.BizHTC/DMS40/zTemp.0.21.PlanDelivery.cs:164-258,
+/// SQL tại TERP.BizHTC.SQLQuery/RptSQLQuery.cs:12284 `from Rpt_EstimateDeliveryPlan t`). Bảng được NẠP bởi
+/// một nhánh KHÁC (nút "Tính báo cáo" → `reportService.DMS40_Rpt_EstimateDeliveryPlan()` không tham số,
+/// `FrmRptEstimateDeliveryPlan.cs:470`) — nhánh đó KHÔNG thuộc phạm vi cluster này (chỉ port nhánh ĐỌC/tìm
+/// kiếm, lời gọi `FrmRptEstimateDeliveryPlan.cs:322`). Cột lấy đúng theo SELECT nguồn: DealerCode/ModelCode/
+/// SpecCode/ColorExtCode/Date/ApprovedDate/SOCode/QtyCanMapVIN/Qty.
+/// </summary>
+public sealed class RptEstimateDeliveryPlan
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DealerCode { get; set; } = "";
+    public string ModelCode { get; set; } = "";
+    public string? SpecCode { get; set; }
+    public string? ColorExtCode { get; set; }
+    public DateTime Date { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? SOCode { get; set; }
+    public decimal? QtyCanMapVIN { get; set; }
+    public decimal? Qty { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+}
