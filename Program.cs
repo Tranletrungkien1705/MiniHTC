@@ -8227,6 +8227,19 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
     if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trên phiếu thanh toán." });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    // #30077 guard nguồn `myCar_CheckDlrCtrNo` — thêm mới ở bản 2025 (BankIntergration/BizHTC.MBBank.cs:239-300,
+    // gọi tại :3302 trong `Pmt_Payment_Save_New20230306`), KHÔNG có ở bản 20220125 (diff 2 cây nguồn cùng brand).
+    // Đòi DlrCtrNo không rỗng VÀ phải khớp đúng `Car_Car.DlrCtrNo` hiện tại của xe + xe FlagActive="1" —
+    // chặn phiếu thanh toán ghi nhầm số hợp đồng đại lý.
+    foreach (var c in cars)
+    {
+        if (string.IsNullOrWhiteSpace(c.DlrCtrNo)) return Results.BadRequest(new { error = $"Xe {c.VIN}: chưa có số hợp đồng đại lý (DlrCtrNo)." });
+        var carIdResolved = string.IsNullOrWhiteSpace(c.CarId) ? c.VIN.Trim().ToUpperInvariant() : c.CarId!.Trim();
+        var carDlr = await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.VIN == carIdResolved)
+            .Select(v => new { v.DlrCtrNo, v.FlagActive }).FirstOrDefaultAsync();
+        if (carDlr is null || carDlr.FlagActive != "1") return Results.BadRequest(new { error = $"Xe {c.VIN}: không tồn tại hoặc không active.", carId = carIdResolved });
+        if (carDlr.DlrCtrNo != c.DlrCtrNo.Trim()) return Results.BadRequest(new { error = $"Xe {c.VIN}: số hợp đồng {c.DlrCtrNo} không khớp hợp đồng hiện tại của xe ({carDlr.DlrCtrNo}).", carId = carIdResolved });
+    }
     var no = "PTT" + DateTime.Now.ToString("yyMMddHHmmss");
     var p2 = new PmtPayment
     {
