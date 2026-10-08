@@ -3397,6 +3397,7 @@ public static class Seeder
                 "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"ApprovedBy\" text NULL",
                 "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
                 "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"ReceiptContractDate\" timestamp NULL",
+                "ALTER TABLE public.\"DealerContracts\" ADD COLUMN IF NOT EXISTS \"DealerContractRoot\" text NULL",
                 "UPDATE public.\"DealerContracts\" SET \"Status\" = 'P' WHERE \"Status\" = 'Draft'",
                 "UPDATE public.\"DealerContracts\" SET \"Status\" = 'A' WHERE \"Status\" = 'Approved'",
                 "UPDATE public.\"DealerContracts\" SET \"Status\" = 'R' WHERE \"Status\" = 'Rejected'",

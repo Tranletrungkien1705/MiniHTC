@@ -12810,6 +12810,11 @@ public sealed class DealerContract
     public string? Remark { get; set; }
     /// <summary>Ngày nhận hợp đồng (`ReceiptContractDate`) — nguồn cập nhật ở `ContractDealerContractUpdate`.</summary>
     public DateTime? ReceiptContractDate { get; set; }
+    /// <summary>Số HĐ gốc (`DealerContractRoot`, `DbDefine.cs:436`) — khi HĐ này là bản sửa đổi/gia hạn,
+    /// lưu số HĐ ĐẦU TIÊN mà nó trace về (khác `DealerContractNo`/`DealerContractNoUser`). Nguồn cập
+    /// nhật riêng qua `ContractDealerContractUpdate_DealerContractRoot` (Biz.HTC.Contract.cs:1498-1579),
+    /// hiển thị ở `FrmContractReportForDealer.cs:82` (`txtContractNoOld`).</summary>
+    public string? DealerContractRoot { get; set; }
 }
 /// <summary>
 /// Dòng hợp đồng đại lý (`CT_DealerContractDetail` — 2010.HTC `Biz.HTC.WH.cs:30962-30971`,
