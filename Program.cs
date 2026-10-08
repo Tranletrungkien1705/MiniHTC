@@ -43006,6 +43006,16 @@ app.MapPost("/api/dealerstoragelocals", async (DealerStorageLocalDto dto, AppDbC
     return Results.Ok(new { row.Id, row.DealerCode, row.StorageCode, row.StorageName, row.FlagActive });
 }).RequireAuthorization();
 
+app.MapDelete("/api/dealerstoragelocals/{dealerCode}/{storageCode}", async (string dealerCode, string storageCode, AppDbContext db, ITenantContext t) =>
+{
+    // port 1:1 Dlr_StorageLocal_Delete_New20181119 (Biz.HTC.WH.cs:74509) — xoá thật theo (DealerCode, StorageCode), nguồn không có guard tồn-tại/active
+    var row = await db.DealerStorageLocals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode && x.StorageCode == storageCode);
+    if (row is null) return Results.NotFound(new { dealerCode, storageCode });
+    db.DealerStorageLocals.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = true });
+}).RequireAuthorization();
+
 app.MapPost("/api/dealerstoragelocals/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.DealerStorageLocals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
