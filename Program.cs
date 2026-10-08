@@ -93933,6 +93933,36 @@ app.MapPost("/api/partprices", async (PartPriceDto dto, AppDbContext db, ITenant
     return Results.Ok(new { p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate });
 }).RequireAuthorization();
 
+// ===== 🔴 #30084 `Ser_Mst_PartPrice_Update` (LIVE, `BizCarSv.Inventory.cs:742`, WS `HTCWSCarSv/WSCarSv.asmx.cs:25711`) =====
+// Nguồn tra theo `PartPriceID` (khoá kỹ thuật) rồi ghi `PartID/Price/DateEffect/Remark/IsActive/LogLUDateTime/LogLUBy`
+//   — KHÁC `POST /api/partprices` ở trên, vốn upsert theo khoá tự nhiên `(PartCode, EffectiveDate)` nên KHÔNG
+//   thể đổi `EffectiveDate` của một dòng đã có (đổi ngày = tạo dòng MỚI, dòng cũ bỏ lại — sai nghĩa "update").
+// Nguồn UI (`FrmPartPriceCreate.cs:216-316`, nhánh `b_isUpdate`) luôn giữ `txtPartCode` readonly khi sửa ⇒ không
+//   đổi `PartID` thực tế dù hàm biz nhận tham số đó — Mini giữ nguyên PartCode, chỉ sửa Price/EffectiveDate/
+//   Remark/IsActive (đơn giản hoá có chủ đích, không mất hành vi quan sát được từ UI thật).
+// Guard nguồn (`FrmPartPriceCreate.cs:284-288`): trước khi lưu, tra lại mốc giá ACTIVE cùng `PartID`+`DateEffect`
+//   MỚI — nếu đã có dòng khác (PartPriceID khác) trùng ⇒ "Thông tin giá bán đã tồn tại trên hệ thống".
+app.MapPost("/api/partprices/{id:long}/update", async (long id, PartPriceUpdateByIdDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var p = await db.PartPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (p is null) return Results.NotFound(new { error = "PartPrice not found" });
+    var newDate = dto.EffectiveDate.Date;
+    if (newDate != p.EffectiveDate)
+    {
+        var dup = await db.PartPrices.AnyAsync(x => x.OrgId == t.OrgId && x.Id != id && x.PartCode == p.PartCode
+            && x.EffectiveDate == newDate && x.IsActive == "1");
+        if (dup) return Results.BadRequest(new { error = "Thông tin giá bán đã tồn tại trên hệ thống" });
+    }
+    p.Price = dto.Price; p.PriceVAT = Math.Round(dto.Price * (1 + p.VAT / 100m), 2);
+    p.EffectiveDate = newDate;
+    p.Remark = dto.Remark;
+    p.IsActive = string.IsNullOrWhiteSpace(dto.IsActive) ? p.IsActive : dto.IsActive!.Trim();
+    p.LogLUDateTime = DateTime.Now; p.LogLUBy = (partnerUserCode ?? "system").Trim();
+    p.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.Id, p.PartCode, p.Price, p.VAT, p.PriceVAT, p.EffectiveDate, p.Remark, p.IsActive, p.LogLUDateTime, p.LogLUBy });
+}).RequireAuthorization();
+
 // ===== 🔴 #934 `Ser_Mst_PartPrice_Delete` (LIVE, `BizCarSv.Inventory.cs:1507`) — CHƯA TỪNG có đường xoá =====
 // Nguồn xoá MỀM (`IsActive` → Inactive, không xoá cứng) theo `PartPriceID`, với HAI guard:
 //   1) Mốc giá phải tồn tại và đang Active (`Ser_PartPrice_NotActive`).
@@ -115401,6 +115431,7 @@ record StockRejectDto(string? Reason);
 record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status,
     string? Remark = null, string? IsActive = null);   // #295
 record PartPriceImportRowDto(string? PartCode, string? PartName, decimal? Price, DateTime? EffectiveDate, string? Remark);   // #935
+record PartPriceUpdateByIdDto(decimal Price, DateTime EffectiveDate, string? Remark, string? IsActive);   // #30084 Ser_Mst_PartPrice_Update
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate, string? TradeMarkCode = null, int? ProductYear = null);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate,
     string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
