@@ -42157,9 +42157,18 @@ app.MapGet("/api/dms40/soroots/{no}", async (string no, AppDbContext db, ITenant
     no = no.Trim().ToUpperInvariant();
     var h = await db.Dms40SoRoots.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SORCode == no);
     if (h is null) return Results.NotFound(new { no });
+    // #1540 §12 GET-only: 3 cột "*QuantityTotal" nguồn (`TblDMS40_Ord_SalesOrderRootDetail`) — trace
+    // FrmUpgradeOrderApprove.cs:344 `row[ApprovedQuantity] = row[Approved1QuantityTotal]` xác nhận
+    // Approved1QuantityTotal/Approved2QuantityTotal CHỈ LÀ TÊN HIỂN THỊ của Approved1Quantity/Approved2Quantity
+    // đã port — không có cột lưu riêng, không cần entity/Seeder mới. UnApprovedQuantityTotal không có cột lưu
+    // (FrmUpgradeMngOrderHtc.cs:1864 code tính nó bị COMMENT CHẾT), tính lại theo đúng công thức chết đó:
+    // RequestedQuantity - Approved1Quantity - Approved2Quantity - CancelQuantityTotal. ApprovedQuantityTotal
+    // (không số) chỉ xuất hiện trong cùng đoạn code chết — SKIP, không port (#540 cột chết).
     var lines = await db.Dms40SoRootDetails.Where(l => l.OrgId == t.OrgId && l.SoRootId == h.Id)
         .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.UnitPriceInit, l.RequestedQuantity, l.Approved1Quantity, l.Approved2Quantity, l.CancelQuantityTotal, l.Remark,
-            l.RequestedDate, l.Approved1Date, l.Approved2Date, l.SORStatusDtl, l.QtyMonthCalculationN1 }).ToListAsync();   // #403
+            l.RequestedDate, l.Approved1Date, l.Approved2Date, l.SORStatusDtl, l.QtyMonthCalculationN1,
+            Approved1QuantityTotal = l.Approved1Quantity, Approved2QuantityTotal = l.Approved2Quantity,
+            UnApprovedQuantityTotal = l.RequestedQuantity - l.Approved1Quantity - l.Approved2Quantity - l.CancelQuantityTotal }).ToListAsync();   // #403 #1540
     return Results.Ok(new { h.SORCode, h.SOType, h.DealerCode, h.SPCode, h.OrderMonth, h.ProductionMonth, h.ExpectedMonth, h.Status, h.CreatedAt, h.ApprDTime,
         h.FinishDTime, h.FinishBy, h.GeneratedSoCode, lines });
 }).RequireAuthorization();
