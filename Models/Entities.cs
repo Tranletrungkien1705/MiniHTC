@@ -1564,6 +1564,11 @@ public sealed class TransportPlan
     /// <summary>🔴 #314 đổi tên khớp nguồn `TblStoTranspPlan.TPStatus` (port cũ: `Status`) + mã `TConst.Stage`:
     /// "P" chờ → "F" đã chốt (Sto_TranspPlanApproved_New20181119, Biz.HTC.WH.cs:101767). Port cũ: Pending/Finished.</summary>
     public string TPStatus { get; set; } = "P";
+    /// <summary>#30083 — `Sto_TranspPlan.CQStartDate` (ngày KTCL của xe gắn vào KH, nguồn
+    /// `Sto_TranspPlanUpdate_New20181119`/`_ByBanHang_New20181119`, Biz.HTC.WH.cs:103015/103660 — set/clear
+    /// cùng CarId/DealerCode trong `alColumnEffective`). KHÔNG cùng cột với `CarVinMaster.CQStartDate`
+    /// (Car_VIN), đây là snapshot riêng trên chính `Sto_TranspPlan`.</summary>
+    public DateTime? CQStartDate { get; set; }
     public DateTime? ApprovedDate { get; set; }
     /// <summary>#314 người chốt kế hoạch (`ApprovedBy`) — nguồn ghi cùng ApprovedDate.</summary>
     public string? ApprovedBy { get; set; }

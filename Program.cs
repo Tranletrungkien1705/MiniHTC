@@ -3842,7 +3842,7 @@ app.MapGet("/api/transplans", async (AppDbContext db, ITenantContext t, string? 
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     { p.VINPlan, p.Vin, p.ModelCode, p.DealerCode, p.StorageCode, p.FProvinceCode, p.TProvinceCode, p.TransporterCode, p.ExpectedDate, p.TPStatus, p.ApprovedDate, p.ApprovedBy,
       FlagRealVin = (p.Vin == null || p.Vin == "") ? "0" : "1", p.LogLUDateTime, p.LogLUBy,
-      p.FDistrictCode, p.TDistrictCode, p.TransporterStatus, p.TransporterAppDate, p.TransporterAppBy }).ToListAsync();
+      p.FDistrictCode, p.TDistrictCode, p.TransporterStatus, p.TransporterAppDate, p.TransporterAppBy, p.CarId, p.CQStartDate }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -3864,8 +3864,10 @@ app.MapPost("/api/transplans", async (TransPlanDto dto, AppDbContext db, ITenant
     p.StorageCode = dto.StorageCode; p.FProvinceCode = dto.FProvinceCode; p.TProvinceCode = dto.TProvinceCode;
     p.FDistrictCode = dto.FDistrictCode; p.TDistrictCode = dto.TDistrictCode;
     p.TransporterCode = dto.TransporterCode; p.ExpectedDate = dto.ExpectedDate;
+    // #30083 CarId/CQStartDate: cung trong alColumnEffective cua Sto_TranspPlanUpdate_New20181119 (Biz.HTC.WH.cs:103015) nhung bi thieu tu port #314 goc.
+    p.CarId = dto.CarId; p.CQStartDate = dto.CQStartDate;
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.VINPlan, p.DealerCode, p.ModelCode, p.Vin, p.TPStatus, FlagRealVin = string.IsNullOrEmpty(p.Vin) ? "0" : "1" });
+    return Results.Ok(new { p.VINPlan, p.DealerCode, p.ModelCode, p.Vin, p.TPStatus, FlagRealVin = string.IsNullOrEmpty(p.Vin) ? "0" : "1", p.CarId, p.CQStartDate });
 }).RequireAuthorization();
 
 // #30081 Sửa KH theo nguồn ĐẦU VÀO (kỹ thuật-6 WS-method-diff) — Sto_TranspPlanUpdate_ByKeHoach_New20181119
@@ -3945,6 +3947,38 @@ app.MapPost("/api/transplans/{vinPlan}/update-logistic", async (string vinPlan, 
     p.LogLUDateTime = now; p.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.VINPlan, p.TransporterCode, p.FProvinceCode, p.FDistrictCode, p.TProvinceCode, p.TDistrictCode, p.TransporterStatus, p.TPStatus });
+}).RequireAuthorization();
+
+// #30083 Sửa theo BÁN HÀNG (kỹ thuật-6 WS-method-diff) — Sto_TranspPlanUpdate_ByBanHang_New20181119
+// (Biz.HTC.WH.cs:103420): phòng bán hàng cập nhật CQStartDate/CarId/DealerCode khi gán VIN thật/mã xe mới, dùng ở
+// FrmLenKeHoach_BanHang (cả 5 nhánh xử lý cảnh báo xung đột Error1-5 và nhánh "không lỗi"). Guard theo đúng thứ
+// tự nguồn: DealerCode phải tồn tại + active (Sto_TranspPlanUpdate_InvalidDealerCode), TPStatus hiện tại phải
+// "P" (Sto_TranspPlanUpdate_InvalidTPStatus), TransporterStatus hiện tại KHÔNG được "A"/"F" (Mini chỉ có "F")
+// (Sto_TranspPlanUpdate_BH_InvalidTransporterStatus — mã lỗi RIÊNG, khác _KH_/_LG_), nếu có CarId thì phải tồn
+// tại + active (myCar_CheckCar). Nguồn còn nhận strVIN/strStorageCode nhưng CẢ HAI chỉ được standardize rồi ghi
+// vào 1 bảng tạm #tbl_Sto_TranspPlan KHÔNG BAO GIỜ dùng lại (dead params, cột chết) — không port theo §0/#540.
+app.MapPost("/api/transplans/{vinPlan}/update-sales", async (string vinPlan, TranspPlanUpdateByBanHangDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    vinPlan = vinPlan.Trim().ToUpperInvariant();
+    var p = await db.TransportPlans.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINPlan == vinPlan);
+    if (p is null) return Results.NotFound(new { vinPlan });
+    var dealerOk = await db.Dealers.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dto.DealerCode && x.FlagActive == "1");
+    if (!dealerOk) return Results.BadRequest(new { error = "Đại lý không tồn tại hoặc không active (Sto_TranspPlanUpdate_InvalidDealerCode).", dto.DealerCode });
+    if (p.TPStatus != "P") return Results.BadRequest(new { error = "KH đã chốt, không sửa được (Sto_TranspPlanUpdate_InvalidTPStatus).", p.TPStatus });
+    if (p.TransporterStatus == "F") return Results.BadRequest(new { error = "Nhà vận chuyển đã nhận chở/duyệt, không sửa được (Sto_TranspPlanUpdate_BH_InvalidTransporterStatus).", p.TransporterStatus });
+    if (!string.IsNullOrWhiteSpace(dto.CarId))
+    {
+        var carOk = await db.CarVinMasters.AnyAsync(x => x.OrgId == t.OrgId && x.CarId == dto.CarId && x.FlagActive == "1");
+        if (!carOk) return Results.BadRequest(new { error = "Mã xe (CarId) không tồn tại hoặc không active (myCar_CheckCar).", dto.CarId });
+    }
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
+    p.CQStartDate = dto.CQStartDate;
+    p.CarId = string.IsNullOrWhiteSpace(dto.CarId) ? null : dto.CarId;
+    p.DealerCode = dto.DealerCode;
+    p.TPStatus = dto.TPStatus;
+    p.LogLUDateTime = now; p.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.VINPlan, p.CQStartDate, p.CarId, p.DealerCode, p.TPStatus });
 }).RequireAuthorization();
 
 // #314 Chốt KH — Sto_TranspPlanApproved_New20181119 (Biz.HTC.WH.cs:101767): TPStatus "P" → "F"; 8 guard theo đúng thứ tự nguồn,
@@ -114839,9 +114873,10 @@ record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDt
 record TmActionDto(string? FilePath = null);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
-record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null, string? FlagRealVin = null);
+record TransPlanDto(string VINPlan, string? Vin, string ModelCode, string DealerCode, string? StorageCode, string? FProvinceCode, string? TProvinceCode, string? TransporterCode, DateTime? ExpectedDate, string? FDistrictCode = null, string? TDistrictCode = null, string? FlagRealVin = null, string? CarId = null, DateTime? CQStartDate = null);
 record TranspPlanUpdateByKeHoachDto(DateTime? ExpectedDate, string? StorageCode);
 record TranspPlanUpdateByLogisticDto(string? TransporterCode, string? FProvinceCode, string? FDistrictCode, string? TProvinceCode, string? TDistrictCode, string? TransporterStatus);
+record TranspPlanUpdateByBanHangDto(string TPStatus, string? CarId, DateTime? CQStartDate, string DealerCode);
 record RetrieveReqCarDto(string Vin, string? StorageCode, string? TranspReqType = null, string? RefOrdNo = null, string? CarId = null);
 record RetrieveReqDto(string DealerCode, string TransporterCode, string? Reason, List<RetrieveReqCarDto>? Cars, string? TranspReqType, string? TransportContractNo = null);
 record VinPairDto(string FVIN, string RVIN);
