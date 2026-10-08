@@ -8138,6 +8138,18 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (
     return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled, g.TermActual, g.TermWarning, g.RemarkReject, g.DateEnd, g.DateEnd_Discount });
 }).RequireAuthorization();
 
+// ⚠️ **NỢ** — kỹ thuật-7 (round 56) trace `PaymentGuaranteeSendEmail_CancelCarId` (TCFIntergration.cs:5728,
+//   caller thật `FrmNewGrt.cs:2418` — gọi SAU KHI từ chối/huỷ một vài xe trong bảo lãnh, chỉ để build file
+//   Excel đính kèm rồi queue 1 email thông báo, KHÔNG tự ghi dữ liệu nghiệp vụ nào ngoài hàng đợi email).
+//   Guard nguồn `myPayment_CheckGuarantee(..., strGuaranteeStatusListToCheck: "A, C")` cần trạng thái bảo
+//   lãnh là Approved HOẶC **Cancelled ("C")** — nhưng `BankGuarantee.Status` ở MiniHTC (bản CHUẨN Pmt_Guarantee,
+//   xem #349 phía trên) CHỈ từng đạt P→A→R qua `/api/bankgrts/{no}/{action}` (action=approve|reject|settle),
+//   KHÔNG có action nào gán "C" cả — nguồn gốc vấn đề là **toàn bộ hành động "huỷ 1 số xe trong bảo lãnh"
+//   (Pmt_GuaranteeDetail_Cancel hoặc tương đương) chưa được port**, không chỉ riêng bước gửi mail này.
+//   KHÔNG bịa action "cancel" nếu chưa đọc trọn luồng huỷ-theo-xe (khác biệt với reject toàn bộ bảo lãnh đã
+//   có) — cần một phiên riêng đọc `Pmt_GuaranteeDetail_*Cancel*`/`myPayment_CheckGuarantee` đầy đủ trước khi
+//   thiết kế action + entity + Seeder, không phải việc 1 cluster.
+
 // ===== Lệnh xuất xe - NH xác nhận nhận xe (BankDeliveryOrder — port 1:1 FrmBankDO, cụm Bank) =====
 app.MapGet("/api/bankdos", async (AppDbContext db, ITenantContext t, string? dealer, string? doNo, string? status,
     string? bankAbilityPattern, string? buAbilityPattern) =>
