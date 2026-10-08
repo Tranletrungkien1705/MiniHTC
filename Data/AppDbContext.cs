@@ -678,6 +678,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<PrincipleContract> PrincipleContracts => Set<PrincipleContract>();
     public DbSet<SalesPolicyMst> SalesPolicyMsts => Set<SalesPolicyMst>();
     public DbSet<SalesPolicyMstDetail> SalesPolicyMstDetails => Set<SalesPolicyMstDetail>();
+    public DbSet<MstPolicyExpenseType> MstPolicyExpenseTypes => Set<MstPolicyExpenseType>();
     public DbSet<StoFMaintain> StoFMaintains => Set<StoFMaintain>();
     public DbSet<StoFMaintainMain> StoFMaintainMains => Set<StoFMaintainMain>();
     public DbSet<CtmVisit> CtmVisits => Set<CtmVisit>();

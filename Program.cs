@@ -76797,6 +76797,40 @@ app.MapPost("/api/salespolicies/cancel-batch", async (SalesPolicyCancelDto dto, 
     return Results.Ok(new { deleted });
 }).RequireAuthorization();
 
+// ===== #B41 Chinh sach tich diem theo loai chi phi (Mst_PolicyExpenseType — port 1:1 bang tra cuu LIVE trong
+//       FrmInvoice.GetMemberCarID(), LoyaltyService().Mst_PolicyExpenseType_Get()). Dung tinh diem tich luy
+//       (AmountRate x tien sau thue, chan tran MaxAccumulationPoint khi FlagPoint="1") va diem xet hang (chan tran
+//       MaxRankReviewPoint khi FlagPointRank="1"). Expenype la khoa noi sang RoServiceItem/RoPartItem.ExpenseType -
+//       KHAC cot ExpenseType don gian da co (ma phan loai, khong co ty le/tran). Chi lo du lieu tra cuu, CHUA doi
+//       luong tinh diem server-side cua /api/repairorders (client dang tu gui diem da tinh) =====
+app.MapGet("/api/mst-policy-expense-types", async (AppDbContext db, ITenantContext t, string? expenype, string? active) =>
+{
+    var q = db.MstPolicyExpenseTypes.Where(p => p.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(expenype)) q = q.Where(p => p.Expenype == expenype);
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(p => p.FlagActive == active);
+    var items = await q.OrderBy(p => p.PolicyExpenypeNo).Select(p => new
+    {
+        p.PolicyExpenypeNo, p.DLCode, p.Expenype, p.ExpenypeNameActual, p.FlagPoint, p.FlagPointRank,
+        p.AmountRate, p.MaxRankReviewPoint, p.MaxAccumulationPoint, p.Remark, p.FlagActive, p.LogLUDTime
+    }).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapPost("/api/mst-policy-expense-types", async (MstPolicyExpenseTypeDto dto, AppDbContext db, ITenantContext t) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PolicyExpenypeNo)) return Results.BadRequest(new { error = "Chưa có mã chính sách." });
+    if (string.IsNullOrWhiteSpace(dto.Expenype)) return Results.BadRequest(new { error = "Chưa có loại chi phí (Expenype)." });
+    var code = dto.PolicyExpenypeNo.Trim();
+    var p = await db.MstPolicyExpenseTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PolicyExpenypeNo == code);
+    if (p is null) { p = new MstPolicyExpenseType { OrgId = t.OrgId, PolicyExpenypeNo = code }; db.MstPolicyExpenseTypes.Add(p); }
+    p.DLCode = dto.DLCode; p.Expenype = dto.Expenype.Trim(); p.ExpenypeNameActual = dto.ExpenypeNameActual;
+    p.FlagPoint = dto.FlagPoint == "1" ? "1" : "0"; p.FlagPointRank = dto.FlagPointRank == "1" ? "1" : "0";
+    p.AmountRate = dto.AmountRate; p.MaxRankReviewPoint = dto.MaxRankReviewPoint; p.MaxAccumulationPoint = dto.MaxAccumulationPoint;
+    p.Remark = dto.Remark; p.FlagActive = dto.FlagActive == "0" ? "0" : "1"; p.LogLUDTime = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PolicyExpenypeNo, p.Expenype, p.AmountRate, p.FlagPoint, p.FlagPointRank });
+}).RequireAuthorization();
+
 // ===== Phiếu bảo trì xe lưu kho bãi (StoFMaintain — port 1:1 FrmMaintenanceSlipList/Detail, 2010.HTC/Maintenance) =====
 app.MapGet("/api/stofmaintains", async (AppDbContext db, ITenantContext t, string? status, string? type, string? mtnStatus, string? mtnEvalStatus) =>
 {
@@ -114862,6 +114896,7 @@ record StoFMaintainEvalDto(List<StoFMaintainEvalLineDto>? Lines);
 record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal AmountSupport, string? Remark);
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record SalesPolicyCancelDto(List<string>? SPSRCodes);
+record MstPolicyExpenseTypeDto(string PolicyExpenypeNo, string? DLCode, string Expenype, string? ExpenypeNameActual, string? FlagPoint, string? FlagPointRank, decimal AmountRate, decimal? MaxRankReviewPoint, decimal? MaxAccumulationPoint, string? Remark, string? FlagActive);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
 record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);

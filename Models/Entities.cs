@@ -13484,6 +13484,32 @@ public sealed class SalesPolicyMstDetail
     public string? Remark { get; set; }
 }
 
+/// <summary>Chính sách tích điểm hội viên theo loại chi phí (`Mst_PolicyExpenseType`, `DbDefine.cs:2181`) — port 1:1
+/// bảng tra cứu LIVE trong `FrmInvoice.GetMemberCarID()` (`LoyaltyService().Mst_PolicyExpenseType_Get()`, dòng 4961):
+/// tính điểm tích luỹ (nhân `AmountRate` với tiền sau thuế dòng RO, chặn trần `MaxAccumulationPoint`) và điểm xét hạng
+/// (chặn trần `MaxRankReviewPoint`) khi `FlagPoint`/`FlagPointRank` = "1". `Expenype` là khoá nối sang
+/// `RoServiceItem.ExpenseType`/`RoPartItem.ExpenseType` — khác khái niệm với mã phân loại đơn giản đó.
+/// MiniHTC đã có SẴN cột đích (`RepairOrder.PointEndInv/PointRankTotalInv/PointTotal/PointVoucher`) nhưng CHƯA có
+/// bảng chính sách nguồn này — client hiện tự gửi điểm đã tính, port bảng này chỉ để lộ dữ liệu tra cứu, CHƯA đổi
+/// luồng tính điểm server-side (quá sâu để làm trong 1 cụm).</summary>
+public sealed class MstPolicyExpenseType
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string PolicyExpenypeNo { get; set; } = "";   // POLICYEXPENYPENO - PK nguon
+    public string? DLCode { get; set; }                  // DLCODE
+    public string Expenype { get; set; } = "";            // EXPENYPE - khoa noi ExpenseType (giu dung ten typo nguon)
+    public string? ExpenypeNameActual { get; set; }       // EXPENYPENAMEACTUAL
+    public string FlagPoint { get; set; } = "0";          // FLAGPOINT
+    public string FlagPointRank { get; set; } = "0";      // FLAGPOINTRANK
+    public decimal AmountRate { get; set; }               // AMOUNTRATE
+    public decimal? MaxRankReviewPoint { get; set; }      // MAXRANKREVIEWPOINT
+    public decimal? MaxAccumulationPoint { get; set; }    // MAXACCUMULATIONPOINT
+    public string? Remark { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDTime { get; set; }
+}
+
 /// <summary>Hỗ trợ bán lẻ theo VIN gắn với chính sách bán hàng (SPL_SPSupportRetail) — port 1:1 FrmPolicySales_Mng (2010.HTC/Sales).
 /// Nguồn gốc là 1 tra cứu tổng hợp (join SO/DO/HTCInvoice/PaymentReqDiscount để tính DateFullStatus="ngày đủ điều kiện"); ở đây ĐƠN GIẢN HOÁ thành trường nhập tay DateFullStatus (không tự tính từ join đa bảng — quá sâu để trace 1:1 trong 1 fire) + tham chiếu HTCInvoiceNo/HTCInvoiceDate nhập trực tiếp.</summary>
 public sealed class SPSupportRetail
