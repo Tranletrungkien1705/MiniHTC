@@ -161,6 +161,11 @@ var MasterCatalog = new (string Cat, string Label)[]
 {
     ("Color", "Màu xe (FrmColor)"),
     ("DealerType", "Loại đại lý (FrmDealerType)"),
+    // check_cot_1to1.py báo bảng "CarCancelType" thiếu cột "CarCancelTypeName" — SAME false-positive
+    // pattern như CustomerBase (xem ghi chú ở dòng ~194): tên hiển thị đã có sẵn qua MasterItem.Name
+    // của chính category này (Code/Name phẳng), tool chỉ không nhận ra pattern Category+Code+Name do
+    // so khớp theo tên cột literal. SKIP, không port cột riêng. (Join dùng tên hiển thị thật đã thêm ở
+    // GET /api/cancels → carCancelTypeView, GET dtlhistory → contractUpdateTypeName.)
     ("CarCancelType", "Lý do hủy xe (FrmCarCancelType)"),
     ("ContractCancelType", "Lý do hủy hợp đồng (FrmContractCancelType)"),
     ("Certificate", "Chứng chỉ/Chứng nhận (FrmCertificate)"),
@@ -217,6 +222,38 @@ var MasterCatalog = new (string Cat, string Label)[]
     // đã lưu sẵn trên `SalesOrder`/`Dms40SoRoot` (grep `SPCode` trong Program.cs/Entities.cs). Thêm
     // category generic, cùng khuôn CardType/CarCancelType — không cần entity/Seeder/DTO riêng.
     ("SalesPolicy", "Chính sách bán hàng (Mst_SalesPolicy, combo FrmUpgradeOrder*)"),
+    // check_cot_1to1.py báo `FrmStoF_GPSIn`/`FrmMngStoF_GPSIn` bảng "Mst_GPSInType" thiếu cột
+    // `GPSInTypeName`. Trace: bảng master thật `Mst_GPSInType` (DbDefine.cs:197 hằng bảng,
+    // `TblMst_GPSInType` :3586-3591 gồm GPSInType/GPSInTypeName/FlagActive), SELECT thuần không JOIN
+    // (`Mst_GPSInType_GetX`, Biz.HTC.WH.cs:13432-13520). Cả 2 màn dùng y hệt combo
+    // (ValueMember=GPSInType, DisplayMember=GPSInTypeName). Thêm category generic, không cần entity/
+    // Seeder/DTO riêng.
+    ("GPSInType", "Loại nhập kho GPS (Mst_GPSInType, combo FrmStoF_GPSIn/FrmMngStoF_GPSIn)"),
+    // check_cot_1to1.py báo `FrmCtr_ContractTypeModel` bảng "Ctr_ContractTypeModel" thiếu cột
+    // `mpm_PmtMethodName` (và riêng "Mst_PaymentMethod" thiếu `PmtMethodName`) — tiền tố thường `mpm_`
+    // ĐÚNG bẫy alias JOIN (`Ctr_ContractTypeModel_GetX`, BizHTC.MasterData.cs:11678-11703:
+    // `inner join Mst_PaymentMethod mpm on cctm.PmtMethodNo = mpm.PmtMethodNo`). `Mst_PaymentMethod`
+    // bản thân (DbDefine.cs:2870-2874) là bảng danh mục Code/Name nhỏ, CHƯA từng port — thêm category
+    // generic ở đây để GET /api/contracttypemodels join lấy tên hiển thị, KHÔNG thêm cột lưu trùng trên
+    // `ContractTypeModel` (xem enrich ở route đó).
+    ("PaymentMethod", "Hình thức thanh toán HĐ (Mst_PaymentMethod, combo FrmCtr_ContractTypeModel)"),
+    // check_cot_1to1.py báo `FrmDatHangSX` bảng "MnfPlOrderType" thiếu cột `OrdTypeName`. Trace: bảng
+    // master thật `Mst_MnfPlOrderType` (DbDefine.cs:217 hằng bảng, `TblMnfPlOrderType` :4035-4043 gồm
+    // OrdType/OrdTypeName/FlagActive) nạp qua `SalesService.MMS_Mst_MnfPlOrderType_Get()` (web service
+    // sang app NM — nguồn ở app khác nhưng bảng tra cứu này dùng chung) làm combo "Đơn Hàng"
+    // (ValueMember=OrdType, DisplayMember=OrdTypeName) ở cả `FrmDatHangSX.cs:72` và `FrmQLDatHangSX.cs:203`.
+    // KHÁC cột `OrdType` tự do đã lưu trên `MnfPlOrder` (giá trị code, không có bảng tra tên) — đây là
+    // danh mục Code/Name riêng, nhỏ, chưa từng port. Cùng khuôn CardType/SalesPolicy — không cần entity/
+    // Seeder/DTO riêng.
+    ("MnfPlOrderType", "Loại đơn hàng sản xuất (Mst_MnfPlOrderType, combo FrmDatHangSX/FrmQLDatHangSX)"),
+    // check_cot_1to1.py báo `FrmMstPolicy_New` bảng "SPL_SalesPolicyMst" thiếu cột `FormBusinessSupportName`.
+    // Trace: KHÔNG phải cột trên SalesPolicyMst — SQL thật (`BizHTC.Report.cs:22511-22543`) lấy tên qua
+    // `left join Mst_FormBusinessSupport mst_fbs on g.FormBusinessSupportCode = mst_fbs.FormBusinessSupportCode`,
+    // đúng bẫy alias JOIN (cùng dạng `mpm_`/`mst_fbs` đã ghi ở category PaymentMethod trên). Bảng tra cứu
+    // thật `Mst_FormBusinessSupport` (DbDefine.cs:278 hằng bảng, FormBusinessSupportCode/Name :3492-3493)
+    // CHƯA từng port — thêm category generic để enrich tên hiển thị cho `SalesPolicyMst.FormBusinessSupportCode`
+    // đã có sẵn, KHÔNG thêm cột lưu trùng trên entity.
+    ("FormBusinessSupport", "Hình thức hỗ trợ bán (Mst_FormBusinessSupport, enrich SalesPolicyMst.FormBusinessSupportCode)"),
 };
 
 app.MapGet("/api/master-categories", () => Results.Ok(new
@@ -1022,7 +1059,12 @@ app.MapGet("/api/cancels", async (AppDbContext db, ITenantContext t, string? sta
     { c.Code, c.Vin, c.CancelTypeCode, c.CarCancelRemark, c.FlagEarlyCancel, c.FlagMapVIN, c.Status, c.CreatedAt, c.ApprovedAt,
       // #201 §12: trạng thái THẬT của xe nằm ở `Car_Car.FlagActive`, không phải cột Status của nhật ký.
       flagActive = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.FlagActive).FirstOrDefault(),
-      carCancelDate = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.CarCancelDate).FirstOrDefault() }).ToListAsync();
+      carCancelDate = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.CarCancelDate).FirstOrDefault(),
+      // check_cot_1to1.py báo FrmMngCarCancel/RejectCar thiếu `CarCancelTypeView` — đây là tên hiển thị
+      // của `CancelTypeCode`, lấy qua combo category generic "CarCancelType" (MasterCatalog, dòng ~164)
+      // đã có sẵn, không phải cột lưu riêng — join MasterItem theo Category+Code để trả displayName.
+      carCancelTypeView = db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "CarCancelType" && m.Code == c.CancelTypeCode).Select(m => m.Name).FirstOrDefault()
+    }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -43020,6 +43062,11 @@ app.MapGet("/api/dochandovers/{no}/cars", async (string no, AppDbContext db, ITe
     var cars = await db.DocHandoverMinuteCars.Where(c => c.OrgId == t.OrgId && c.DocHandoverMinuteId == h.Id)
         .Select(c => new { c.VIN, c.ModelProductionCode, c.SpecDescription, c.EngineNo, c.CQNo, c.CONo, c.CBNo, c.DeclarationNo, c.BankGuaranteeNo, c.BankName, c.DlrCtrNo, c.HTCInvoiceNo, c.TransportMinutesNo, c.QtyInvoiceOriginal, c.QtyTransportMnOriginal, c.QtyTransportMnCopy }).ToListAsync();
     var totInv = cars.Sum(c => c.QtyInvoiceOriginal); var totOrig = cars.Sum(c => c.QtyTransportMnOriginal); var totCopy = cars.Sum(c => c.QtyTransportMnCopy);
+    // #1724 — check_cot_1to1.py bao bang "DlvProfileMinutesDtl" thieu cot DlvProfileMnNo. Trace:
+    // Car_DlvProfileMinutes_Get (BizHTC.DlvProfileMinutes.cs:231-320) SELECT thang tu
+    // Car_DlvProfileMinutes (alias cung-bang cdlvpmn, KHONG phai join-alias tu bang khac), cot nay
+    // chinh la so BBBG — da luu san duoi ten DocHandoverMinute.BBBGNo (h.BBBGNo o tren). False-positive
+    // cua cong cu do (so khop ten cot literal, khong nhan dien doi ten), KHONG them cot moi.
     // #COT_INBienBanBGHS — 5 cot "thieu" cua TblINBienBanBGHS thuc ra la ALIAS JOIN tu nguon
     // (vathtci_*/dlrc_* trong BizHTC.DlvProfileMinutes.cs ~982-1035), KHONG phai cot moi: lam giau
     // (enrich) tu VatInvoice/VatInvoiceCar + DealerDeal/DealerDealDetail/DlrContract da co san,
@@ -46220,7 +46267,12 @@ app.MapGet("/api/contracttypemodels", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.SOType).ThenBy(x => x.ModelCode).Take(1000)
         .Select(x => new { x.Id, x.SOType, x.PmtMethodNo, x.ModelCode, x.ContractType, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1290 §12
-    return Results.Ok(new { count = items.Count, items });
+    // #1724 — mpm_PmtMethodName (BizHTC.MasterData.cs:11686, join alias `mpm`): làm giàu tên hiển thị
+    // từ category generic "PaymentMethod" đã thêm ở MasterCatalog, KHÔNG lưu trùng cột trên entity.
+    var pmtNames = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "PaymentMethod")
+        .ToDictionaryAsync(m => m.Code, m => m.Name);
+    var itemsOut = items.Select(x => new { x.Id, x.SOType, x.PmtMethodNo, PmtMethodName = pmtNames.TryGetValue(x.PmtMethodNo, out var n) ? n : null, x.ModelCode, x.ContractType, x.FlagActive, x.UpdatedAt });
+    return Results.Ok(new { count = items.Count, items = itemsOut });
 }).RequireAuthorization();
 
 app.MapPost("/api/contracttypemodels", async (ContractTypeModelDto dto, AppDbContext db, ITenantContext t) =>
@@ -69314,7 +69366,7 @@ app.MapGet("/api/dealercontracts", async (AppDbContext db, ITenantContext t, str
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
         c.DealerContractNo, c.DealerContractNoUser, c.DealerCode, c.ContractDate, c.TotalAmount, c.Status, c.CreatedAt, c.ApprovedAt,
-        c.ApprovedBy, c.Remark, c.ReceiptContractDate,
+        c.ApprovedBy, c.Remark, c.ReceiptContractDate, c.DealerContractRoot,   // #1724 §12
         cars = db.DealerContractDetails.Count(l => l.OrgId == t.OrgId && l.DealerContractId == c.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -69351,6 +69403,7 @@ app.MapGet("/api/dealercontracts/{no}/cars", async (string no, AppDbContext db, 
         .Select(l => new { l.DealerContractNo, l.CarId, l.UnitPrice, l.ContractDetailStatus }).ToListAsync();
     return Results.Ok(new { c.DealerContractNo, c.DealerContractNoUser, c.DealerCode, c.ContractDate, c.TotalAmount, c.Status, c.CreatedAt, c.ApprovedAt,
         c.ApprovedBy, c.Remark, c.ReceiptContractDate,   // #1379 §12
+        c.DealerContractRoot,   // #1724 §12
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -69400,6 +69453,19 @@ app.MapPost("/api/dealercontracts/{no}/receipt", async (string no, DealerContrac
     c.ReceiptContractDate = dto.ReceiptContractDate;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.DealerContractNo, c.ReceiptContractDate, status = c.Status });
+}).RequireAuthorization();
+
+// 🔴 #1724 CẬP NHẬT SỐ HĐ GỐC — `ContractDealerContractUpdate_DealerContractRoot` (Biz.HTC.Contract.cs:
+// 1498-1579), hiển thị `FrmContractReportForDealer.cs:82` (`txtContractNoOld`). Nguồn không giới hạn
+// trạng thái khi sửa cột này — cho sửa độc lập với luồng duyệt/huỷ.
+app.MapPost("/api/dealercontracts/{no}/root", async (string no, DealerContractRootDto dto, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.DealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerContractNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    c.DealerContractRoot = dto.DealerContractRoot;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DealerContractNo, c.DealerContractRoot });
 }).RequireAuthorization();
 
 // ===== Hợp đồng đại lý DMS40 ký 2 bên (DmsDealerContract — port 1:1 FrmDMS40_CT_DealerContractHTC_New, 2010.HTC/Sales/DMS40) =====
@@ -78293,6 +78359,10 @@ app.MapGet("/api/dlrcontracts/{no}/dtlhistory", async (string no, AppDbContext d
         {
             x.VersionDTimeCurr, x.DlrContractNo, x.SpecCode, x.ModelCode, x.ColorCode, x.Qty,
             x.ContractUpdateType, x.UpdateBy, x.DlvExpectedDate, x.LogLUDateTime, x.LogLUBy,
+            // check_cot_1to1.py báo FrmMngRetailContractHistory/ContractCancelType thiếu
+            // `ContractUpdateTypeName` — tên hiển thị của `ContractUpdateType`, lấy qua combo category
+            // generic "ContractCancelType" (MasterCatalog, dòng ~165) đã có sẵn, không phải cột riêng.
+            contractUpdateTypeName = db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "ContractCancelType" && m.Code == x.ContractUpdateType).Select(m => m.Name).FirstOrDefault(),
         }).ToListAsync();
     // Gom theo phiên bản để đọc được "bảng dòng trông thế nào ở mỗi lần sửa".
     var versions = rows.GroupBy(r => r.VersionDTimeCurr)
@@ -116687,6 +116757,7 @@ record DealerContractDto(string? DealerContractNo, string? DealerContractNoUser,
 // Duyệt HĐ đại lý: nguồn cho sửa số HĐ người dùng + ngày HĐ ngay trong bước duyệt, và ghi Remark.
 record DealerContractActionDto(string? Remark, string? DealerContractNoUser, DateTime? ContractDate);
 record DealerContractReceiptDto(DateTime? ReceiptContractDate);
+record DealerContractRootDto(string? DealerContractRoot);
 record DmsDealerContractDto(string? DlrCtrNo, string DealerCode, DateTime? ContractDate, List<DmsDealerContractLineDto>? Lines = null, string? DCPType = null, string? Remark = null, bool FlagIsDelete = false);
 record DmsDealerContractLineDto(string? CarId, string? OriginNo, double ProductionYear = 0, decimal UnitPrice = 0, DateTime? ApprovedDate = null, string? FlagDepositPmt = null, string? Remark = null);
 record DealerContractUpdateDto(string? FtColsUpd, string? BankCodeMD = null, string? FilePath = null);
