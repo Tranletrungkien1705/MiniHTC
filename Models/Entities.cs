@@ -13937,6 +13937,15 @@ public sealed class CarVinMaster
     /// <summary>`Car_VIN.MMSDocReqNo` / `MMSDocReqApprDTime` — số + thời điểm duyệt yêu cầu chứng từ bên MMS (ghi cùng lô).</summary>
     public string? MMSDocReqNo { get; set; }
     public DateTime? MMSDocReqApprDTime { get; set; }
+
+    /// <summary>🔴 kỹ thuật-6 (WS-method-diff) — `Car_VIN.FlagRepair`/`RepairRemark`
+    /// (`CarVIN_UpdateFlagRepair_New20181119`, `Biz.HTC.WH.cs:65658`, WS `CarVIN_UpdateFlagRepair`).
+    /// Dùng thật ở `FrmMngPL` (client wrapper `SalesService.CarVinUpdate`): lưới "Trạng thái xe"
+    /// (`gridColDtlFlagRepair`) + import Excel đặt cờ cần sửa chữa cho từng VIN trước khi đóng gói
+    /// lên Packing List. KHÁC <see cref="HtmvPdiDtl"/>'s cùng-tên cặp cột (PDI, bảng
+    /// `HTMV_PDIDtl` — bảng riêng, không liên quan `Car_VIN`).</summary>
+    public string? FlagRepair { get; set; }
+    public string? RepairRemark { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>

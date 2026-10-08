@@ -3948,6 +3948,10 @@ public static class Seeder
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MMSDocReqIdx\" text NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MMSDocReqNo\" text NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"MMSDocReqApprDTime\" timestamp NULL",
+                // ky thuat-6 WS-method-diff — Car_VIN.FlagRepair/RepairRemark (CarVIN_UpdateFlagRepair_New20181119,
+                // Biz.HTC.WH.cs:65658), dung o FrmMngPL (grid "Trang thai xe" + import Excel).
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"FlagRepair\" text NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"RepairRemark\" text NULL",
                 // §12 #B365 — Ord_SalesOrder.ApprovedDate2 (bo loc chinh cua Rpt_PenaltyPmtDelay).
                 "ALTER TABLE public.\"SalesOrders\" ADD COLUMN IF NOT EXISTS \"ApprovedDate2\" timestamp NULL",
                 "ALTER TABLE public.\"Campaigns\" ADD COLUMN IF NOT EXISTS \"DealerCode\" text NULL",

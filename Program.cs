@@ -42193,6 +42193,18 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     return Results.Ok(new { added, skipped });
 }).RequireAuthorization();
 
+app.MapGet("/api/carvinmasters/{vin}", async (string vin, AppDbContext db, ITenantContext t) =>
+{
+    var v = vin.Trim().ToUpperInvariant();
+    var car = await db.CarVinMasters.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.VIN == v);
+    if (car is null) return Results.NotFound(new { vin = v });
+    return Results.Ok(new
+    {
+        car.VIN, car.ModelCode, car.SpecCode, car.DealerCode, car.FlagDocReq,
+        car.FlagRepair, car.RepairRemark   // kỹ thuật-6 #B367
+    });
+}).RequireAuthorization();
+
 // Import điều kiện eligible chính sách hỗ trợ bán lẻ (nguồn SPL_SalesPolicyMstDetail + MstDetailDealer, gộp phẳng) — phục vụ guard #4 SPSupportRetail.
 app.MapPost("/api/salespolicyeligibilities/import", async (List<SalesPolicyEligibilityImportDto> rows, AppDbContext db, ITenantContext t) =>
 {
@@ -44479,6 +44491,42 @@ app.MapPost("/api/carvinmasters/update-multi-flagdocreq", async (
         acceptedValues = new[] { "0", "1" },
         deadCodeNote = "Hàm anh em Car_VIN_Upd_Profile (SalesService.cs:21208) có TOÀN BỘ lời gọi WS bị COMMENT ⇒ dead code, không port."
     });
+}).RequireAuthorization();
+// ===== kỹ thuật-6 (WS-method-diff) #B367 — `Car_VIN.FlagRepair`/`RepairRemark` =====
+// Nguồn: WS `CarVIN_UpdateFlagRepair` (WSHTC.asmx.cs:15214) → `CarVIN_UpdateFlagRepair_New20181119`
+// (Biz.HTC.WH.cs:65658) — ghi ĐÚNG hai cột `FlagRepair`+`RepairRemark`, không đụng trạng thái nào.
+// Client wrapper `SalesService.CarVinUpdate` gọi 1-VIN/lần trong `UpdateVinWorker` (FrmMngPL.cs:947) —
+// nguồn từ lưới "Trạng thái xe" (gridColDtlFlagRepair) hoặc import Excel. Mini gộp bulk theo mẫu
+// `update-multi-flagdocreq` ở trên — hành vi tương đương (loop ghi từng VIN).
+app.MapPost("/api/carvinmasters/update-flagrepair", async (
+    List<CarVinFlagRepairDto> rows, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (rows is null || rows.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật đang rỗng." });
+    var list = rows.Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "Bảng VIN cần cập nhật đang rỗng." });
+
+    var vins = list.Select(r => r.Vin!.Trim().ToUpperInvariant()).ToList();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN)).ToListAsync();
+
+    foreach (var r in list)
+    {
+        var v = r.Vin!.Trim().ToUpperInvariant();
+        // `myCar_CheckVIN(..., TConst.Flag.Active, "")`
+        if (!cars.Any(c => c.VIN == v)) return Results.BadRequest(new { error = $"VIN {v} chưa khai báo trên hệ thống." });
+        // Nguồn: `strFlagRepair = (StringEqual(strFlagRepair, Flag.Active) ? Flag.Active : Flag.Inactive)` — luôn chuẩn hoá về "1"/"0", không báo lỗi.
+    }
+
+    int updated = 0;
+    foreach (var r in list)
+    {
+        var car = cars.First(c => c.VIN == r.Vin!.Trim().ToUpperInvariant());
+        car.FlagRepair = (r.FlagRepair == "1") ? "1" : "0";
+        car.RepairRemark = r.RepairRemark;
+        updated++;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { updated, columnsWritten = new[] { "FlagRepair", "RepairRemark" } });
 }).RequireAuthorization();
 app.MapPost("/api/carvinmasters/update-docdeliveryreqdate", async (
     List<CarVinDocDlvReqDto> rows, AppDbContext db, ITenantContext t, string? flagDirect) =>
@@ -68973,10 +69021,40 @@ app.MapPost("/api/dlvminutes/{no}/confirm", async (string no, DlvConfirmDto dto,
         if (row is null) return Results.BadRequest(new { error = $"Danh mục '{it.ItemCode}' không thuộc biên bản {no}." });
         row.TStatus = it.TStatus; items++;
     }
+
+    // 🔴 LỊCH SỬ LƯU KHO (`Sto_StorageTransaction`, RefType=BBGN) — khối do bản `.Release.2025` thêm vào
+    // CẢ HAI hàm Confirm (thường + sysadmin, round <37 chưa port). Nguồn:
+    // `BizHTC.Storage.DlvMinutes.cs:4658-4713` — ghi 1 dòng/VIN: StorageCode=TStorageCode (kho đến của
+    // biên bản), DTimeFrom=DlvEndDate. Guard trùng (VIN,RefNo) của nguồn (`Sto_StorageTransaction_Check`
+    // Inactive) THROW, nhưng đây là lệnh tự động 1-lần/biên bản (không thể xảy ra ở luồng bình thường do
+    // trục trạng thái P→A chỉ cho xác nhận một lần) ⇒ bỏ qua an toàn thay vì chặn nghiệp vụ chính.
+    var storageCodeHis = (m.TStorageCode ?? "").Trim();
+    int storageHisAdded = 0;
+    if (storageCodeHis.Length > 0)
+    {
+        var vinsForHis = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+            .Select(c => c.VIN).ToListAsync();
+        var day = endDate.Date;
+        foreach (var vinHis in vinsForHis)
+        {
+            var dupHis = await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vinHis && x.RefNo == m.DlvMinutesNo);
+            if (dupHis) continue;
+            var inDayHis = await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vinHis
+                && x.StorageCodeTo == storageCodeHis && x.DTimeTo != null && x.DTimeTo.Value.Date == day);
+            db.StorageTransactions.Add(new StorageTransaction
+            {
+                OrgId = t.OrgId, Vin = vinHis, RefNo = m.DlvMinutesNo, RefType = "BBGN",
+                StorageCode = storageCodeHis, StorageCodeTo = null, DTimeFrom = endDate, DTimeTo = null,
+                FlagInDay = inDayHis ? "1" : "0", Remark = null, CreatedBy = who,
+            });
+            storageHisAdded++;
+        }
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(new { m.DlvMinutesNo, m.TDlvMnStatus, m.TApprovedDate, m.TApprovedBy, m.DlvEndDate,
         m.DlvEndDateTime, m.DlvEndBy, m.TPValSys, m.TPValReal, m.TPVCode, expectedDays = fee?.ExpectedDays,
-        lateDays, m.GPSDvNo, m.GPSDvAddress, itemsUpdated = items });
+        lateDays, m.GPSDvNo, m.GPSDvAddress, itemsUpdated = items, storageHisAdded });
 }).RequireAuthorization();
 
 app.MapPost("/api/dlvminutes/{no}/inputfee", async (string no, DlvInputFeeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -69073,10 +69151,36 @@ app.MapPost("/api/dlvminutes/{no}/confirm-sysadmin", async (string no, DlvConfir
         if (row is null) return Results.BadRequest(new { error = $"Danh mục '{it.ItemCode}' không thuộc biên bản {no}." });
         row.TStatus = it.TStatus; items++;
     }
+
+    // 🔴 LỊCH SỬ LƯU KHO (`Sto_StorageTransaction`, RefType=BBGN) — xem chú thích đầy đủ ở `/confirm` (#169);
+    // bản `.Release.2025` chèn khối NÀY giống nhau vào cả hai hàm Confirm.
+    var storageCodeHis = (m.TStorageCode ?? "").Trim();
+    int storageHisAdded = 0;
+    if (storageCodeHis.Length > 0)
+    {
+        var vinsForHis = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id)
+            .Select(c => c.VIN).ToListAsync();
+        var day = endDate.Date;
+        foreach (var vinHis in vinsForHis)
+        {
+            var dupHis = await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vinHis && x.RefNo == m.DlvMinutesNo);
+            if (dupHis) continue;
+            var inDayHis = await db.StorageTransactions.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vinHis
+                && x.StorageCodeTo == storageCodeHis && x.DTimeTo != null && x.DTimeTo.Value.Date == day);
+            db.StorageTransactions.Add(new StorageTransaction
+            {
+                OrgId = t.OrgId, Vin = vinHis, RefNo = m.DlvMinutesNo, RefType = "BBGN",
+                StorageCode = storageCodeHis, StorageCodeTo = null, DTimeFrom = endDate, DTimeTo = null,
+                FlagInDay = inDayHis ? "1" : "0", Remark = null, CreatedBy = who,
+            });
+            storageHisAdded++;
+        }
+    }
+
     await db.SaveChangesAsync();
     return Results.Ok(new { m.DlvMinutesNo, m.TDlvMnStatus, m.TApprovedDate, m.TApprovedBy, m.DlvEndDate,
         m.DlvEndDateTime, m.DlvEndBy, m.TPValSys, m.TPValReal, m.TPVCode, expectedDays = fee?.ExpectedDays,
-        lateDays, m.GPSDvNo, m.GPSDvAddress, itemsUpdated = items, sysadmin = true });
+        lateDays, m.GPSDvNo, m.GPSDvAddress, itemsUpdated = items, sysadmin = true, storageHisAdded });
 }).RequireAuthorization();
 
 app.MapPost("/api/dlvminutes/{no}/correct", async (string no, DlvCorrectDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -116831,6 +116935,8 @@ record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOve
 record CarVinDocDlvReqDto(string? Vin, DateTime? DocDeliveryReqDate);
 /// <summary>#B27: một dòng bảng cập nhật cờ FlagDocReq — chỉ nhận "0" hoặc "1".</summary>
 record CarVinFlagDocReqDto(string? Vin, string? FlagDocReq);
+/// <summary>kỹ thuật-6: một dòng bảng cập nhật cờ cần sửa chữa của VIN (`CarVIN_UpdateFlagRepair`) — FlagRepair chỉ nhận "0" hoặc "1".</summary>
+record CarVinFlagRepairDto(string? Vin, string? FlagRepair, string? RepairRemark);
 /// <summary>#B30: ba nhánh độc lập của `CarCarUpdate01` — chỉ nhánh có tham số khác rỗng mới chạy.</summary>
 record CarUpdate01Dto(decimal? UnitPriceActualNew, string? MapVINRankingNew, string? FlagAllowChangeVINNew, string? IsUserFromSales);
 /// <summary>#B21: một dòng bảng cập nhật tờ trình của đề nghị giao hồ sơ (khoá `DRListCode`).</summary>
