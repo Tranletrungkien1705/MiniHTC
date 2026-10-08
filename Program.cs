@@ -85442,9 +85442,11 @@ app.MapPost("/api/salesmen/{code}/update-status", async (
 //   · khác: `ViolateDateEnd` bắt buộc, PHẢI lớn hơn hôm nay, và nếu đây KHÔNG PHẢI lần vi phạm đầu tiên
 //     (`ViolateNumber != 1`) thì `ViolateDateStart` PHẢI lớn hơn `ViolateDateEnd` của lần vi phạm gần nhất
 //     TRƯỚC ĐÓ của cùng người (chuỗi chế tài không được chồng lấn).
-// 📌 NỢ (ghi rõ, không bịa): `btnCreate_Click` mở `FrmCreateSalesManViolate` — màn TẠO MỚI vi phạm — CHƯA
-//   port ở lượt này (candidate riêng, chưa tới lượt trong hàng đợi); `msmt_SMTypeName` (tên loại NVBH hiển
-//   thị qua `Mst_SalesManType`) chưa port, trả `null` thay vì bịa join.
+// 📌 SỬA GHI CHÚ CŨ (round 62, ky thuat-10 WS-method-diff Create/Add): `btnCreate_Click` mở
+//   `FrmCreateSalesManViolate` — ghi chú trước đây nói "CHƯA port" là SAI/LỖI THỜI, đã port đủ ở
+//   `POST /api/smviolates` (dưới, dòng ~111781, 2 guard TT/VV + auto ViolateNumber khớp FrmCreateSalesManViolate
+//   dòng 249/275). `msmt_SMTypeName` (tên loại NVBH hiển thị qua `Mst_SalesManType`) vẫn CHƯA port, trả
+//   `null` thay vì bịa join — đây là phần nợ còn lại thật, không phải toàn bộ Create.
 app.MapGet("/api/salesmanviolates", async (AppDbContext db, ITenantContext t,
     string? smHyundaiCode, string? smName, string? identityCardNo, string? smPhoneNo, string? dealerCode,
     int? violateNumber, string? violateTypeId, DateTime? violateDateStart, DateTime? violateDateEnd,
