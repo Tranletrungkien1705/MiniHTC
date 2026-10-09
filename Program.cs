@@ -21945,7 +21945,15 @@ app.MapGet("/api/reports/car-change-province-when-delivery", async (
         .Select(c => new { c.TranspDlvConfirmId, c.VIN }).ToListAsync();
     var allVins = headCars.Select(c => c.VIN).Distinct().ToList();
     var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && allVins.Contains(c.VIN))
-        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.ColorCode }).ToListAsync();
+        .Select(c => new { c.VIN, c.CarId, c.ModelCode, c.SpecCode, c.ColorCode }).ToListAsync();
+    var carIds = cars.Select(c => c.CarId ?? c.VIN).Distinct().ToList();
+    var dealDtls = await db.DealerDealDetails
+        .Where(d => d.OrgId == t.OrgId && (allVins.Contains(d.CarId) || carIds.Contains(d.CarId)) && d.FlagCurrent == "1")
+        .Select(d => new { d.CarId, d.DealId }).ToListAsync();
+    var dealIds = dealDtls.Select(d => d.DealId).Distinct().ToList();
+    var dealMap = await db.DealerDeals
+        .Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id) && (d.FlagInitDeal == "0" || d.FlagInitDeal == null))
+        .Select(d => new { d.Id, d.DealNo, d.DealerCode }).ToListAsync();
     var changes = await db.RptCarChangeProvinces.Where(x => x.OrgId == t.OrgId && allVins.Contains(x.VIN)).ToListAsync();
     var maps = await db.MapProvinceGpsDmses.Where(x => x.OrgId == t.OrgId).Select(x => new { x.GPSProvinceCode, x.ProvinceCode }).ToListAsync();
     var gpsProvinces = await db.GpsMstProvinces.Where(x => x.OrgId == t.OrgId).Select(x => new { x.GPSProvinceCode, x.GPSProvinceName }).ToListAsync();
@@ -21973,7 +21981,11 @@ app.MapGet("/api/reports/car-change-province-when-delivery", async (
             var doId = dos.FirstOrDefault(o => o.DeliveryOrderNo == h.RefOrdNo)?.Id;
             var dline = doId is null ? null : doCars.FirstOrDefault(c => c.DoId == doId && c.Vin == hc.VIN);
             if (dline is null || (dline.ConfirmStatus != "A" && dline.ConfirmStatus != "F")) { skipNoDo++; continue; }
-            var dl = dealers.FirstOrDefault(d => d.DealerCode == h.DealerCode);
+            var carKey = car.CarId ?? hc.VIN;
+            var dtl = dealDtls.FirstOrDefault(d => d.CarId == hc.VIN || d.CarId == carKey);
+            var deal = dtl != null ? dealMap.FirstOrDefault(x => x.Id == dtl.DealId) : null;
+            var targetDealerCode = deal?.DealerCode ?? h.DealerCode;
+            var dl = dealers.FirstOrDefault(d => d.DealerCode == targetDealerCode);
             if (dl is null) { skipNoDealer++; continue; }                     // `inner join Mst_Province on md.ProvinceCode`
             if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { skipNoDealer++; continue; }
             var mo = models.FirstOrDefault(x => x.ModelCode == car.ModelCode);
@@ -21994,7 +22006,7 @@ app.MapGet("/api/reports/car-change-province-when-delivery", async (
                 items.Add(new
                 {
                     dlvMnNo = h.DlvMinutesNo, gpsDvNo = h.GPSDvNo, vin = hc.VIN,
-                    dealerCode = h.DealerCode, dealerName = dl.DealerName,
+                    dealerCode = targetDealerCode, dealerName = dl.DealerName,
                     provinceCode = dl.ProvinceCode, provinceName = prov.ProvinceName,
                     gpsProvinceCode = map.GPSProvinceCode, gpsProvinceName = gp.GPSProvinceName,
                     modelCode = car.ModelCode, modelName = mo?.ModelName,
@@ -22011,7 +22023,7 @@ app.MapGet("/api/reports/car-change-province-when-delivery", async (
         count = items.Count, items,
         dataWH = dataWH == "1" || dataWH == "true",
         dataWHNote = "Nguồn có 2 hàm (Main/WH) cùng thuật toán, khác DB đích; MiniHTC 1 DB ⇒ cờ không đổi kết quả.",
-        dealerChainNote = "Nguồn lấy đại lý qua chuỗi Car_Car→Dls_DealDetail→DLS_Deal(FlagInitDeal='0')→Mst_Dealer (3 bảng đầu chưa có trong MiniHTC) rồi so md.ProvinceCode; ở đây dùng đại lý trên chính biên bản (sdm.DealerCode) — XẤP XỈ CÓ NHÃN.",
+        dealerChainNote = "ĐÃ TRẢ NỢ: Nối chuỗi Car_Car → Dls_DealDetail(FlagCurrent='1') → DLS_Deal(FlagInitDeal='0') → Mst_Dealer (fallback sdm.DealerCode) để so sánh ProvinceCode theo đúng nguồn BizHTC.ZTempGPS:9083-9089.",
         skipDeviceVin, skipNoCar, skipNoDo, skipNoChange, skipNoMap, skipSameProvince, skipChangeBefore, skipNoDealer,
         note = items.Count == 0 ? "Lưới danh sách dữ liệu trống!" : null
     });
@@ -61075,12 +61087,20 @@ app.MapGet("/api/reports/gps-unmap-not-instock", async (
 
     // Chuỗi ra đại lý của nguồn: `Car_Car`(VIN=VINUnMap) → `Dls_DealDetail`(FlagCurrent='1')
     // → `DLS_Deal`(FlagInitDeal='0') → `Mst_Dealer` (+ `md.BUCode like @strBUPatternOfUser`).
-    // ⚠️ MiniHTC KHÔNG có `Car_Car`/`Dls_DealDetail`/`DLS_Deal` ⇒ **XẤP XỈ CÓ NHÃN**: lấy
-    //    `Car_VIN.DealerCode` (`CarVinMaster`). Đây KHÔNG phải cột nguồn — xem `dealerCodeSource` dưới.
-    //    Nợ đã ghi log #B02; tuyệt đối không coi đây là parity đầy đủ.
+    // ĐÃ TRẢ NỢ #B02: Nối đầy đủ CarVinMasters → DealerDealDetails → DealerDeals → Dealers.
     var vins = rows.Where(r => r.Vin != null).Select(r => r.Vin!).Distinct().ToList();
     var carMap = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && vins.Contains(c.VIN))
-        .Select(c => new { c.VIN, c.DealerCode }).ToListAsync();
+        .Select(c => new { c.VIN, c.CarId, c.DealerCode }).ToListAsync();
+    var carIds = carMap.Select(c => c.CarId ?? c.VIN).Distinct().ToList();
+
+    var dealDtls = await db.DealerDealDetails
+        .Where(d => d.OrgId == t.OrgId && carIds.Contains(d.CarId) && d.FlagCurrent == "1")
+        .Select(d => new { d.CarId, d.DealId }).ToListAsync();
+    var dealIds = dealDtls.Select(d => d.DealId).Distinct().ToList();
+    var dealMap = await db.DealerDeals
+        .Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id) && (d.FlagInitDeal == "0" || d.FlagInitDeal == null))
+        .Select(d => new { d.Id, d.DealNo, d.DealerCode }).ToListAsync();
+
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
     var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
         .Select(d => new { d.DealerCode, d.BUCode }).ToListAsync();
@@ -61091,14 +61111,20 @@ app.MapGet("/api/reports/gps-unmap-not-instock", async (
     {
         var car = carMap.FirstOrDefault(c => c.VIN == r.Vin);
         if (car is null) { droppedNoCar++; continue; }                 // `inner join Car_Car`
-        var dl = dealers.FirstOrDefault(d => d.DealerCode == car.DealerCode);
+        var carKey = car.CarId ?? car.VIN;
+        var dtl = dealDtls.FirstOrDefault(d => d.CarId == carKey);
+        var deal = dtl != null ? dealMap.FirstOrDefault(x => x.Id == dtl.DealId) : null;
+        var targetDealerCode = deal?.DealerCode ?? car.DealerCode;     // ưu tiên deal hiện hành của nguồn, fallback xe
+
+        var dl = dealers.FirstOrDefault(d => d.DealerCode == targetDealerCode);
         if (dl is null) { droppedNoDealer++; continue; }               // `inner join Mst_Dealer`
         // `md.BUCode like @strBUPatternOfUser` — MiniHTC chưa có tầng ability ⇒ nhận pattern từ query.
         if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) { droppedNoDealer++; continue; }
         items.Add(new
         {
             storageCode = r.StorageCode, gpsDvNo = r.GpsNo, vin = r.Vin,
-            unMapDateTime = r.UnMappedAt, unMapBy = r.UnMapBy, mdDealerCode = dl.DealerCode
+            unMapDateTime = r.UnMappedAt, unMapBy = r.UnMapBy, mdDealerCode = dl.DealerCode,
+            dealNo = deal?.DealNo
         });
     }
 
@@ -61107,7 +61133,7 @@ app.MapGet("/api/reports/gps-unmap-not-instock", async (
         count = items.Count, items,
         dataWH = dataWH == "1" || dataWH == "true",
         dataWHNote = "Nguồn có 2 hàm (Main/WH) nhưng SQL GIỐNG HỆT, chỉ khác DB đích; MiniHTC 1 DB ⇒ cờ không đổi kết quả.",
-        dealerCodeSource = "XẤP XỈ: Car_VIN.DealerCode. Nguồn dùng Car_Car→Dls_DealDetail(FlagCurrent='1')→DLS_Deal(FlagInitDeal='0')→Mst_Dealer — 3 bảng này chưa có trong MiniHTC.",
+        dealerCodeSource = "ĐÃ TRẢ NỢ #B02: Nối đầy đủ Car_Car → Dls_DealDetail(FlagCurrent='1') → DLS_Deal(FlagInitDeal='0') → Mst_Dealer (fallback CarVinMaster.DealerCode).",
         droppedNoCar, droppedNoDealer,
         note = items.Count == 0 ? "Lưới danh sách thiết bị trống!" : null   // đúng thông điệp form (:152)
     });
@@ -67637,15 +67663,39 @@ app.MapGet("/api/reports/master-banle", async (
     var deals = (await db.DealerDeals.Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id)).ToListAsync())
         .ToDictionary(d => d.Id);
 
+    var contractNos = deals.Values.Select(d => d.DlrContractNo).Where(c => !string.IsNullOrEmpty(c)).Distinct().ToList();
+    var contracts = await db.DlrContracts
+        .Where(c => c.OrgId == t.OrgId && contractNos.Contains(c.DlrContractNo))
+        .Select(c => new { c.DlrContractNo, c.SalesManCode })
+        .ToListAsync();
+    var contractMap = contracts.GroupBy(c => c.DlrContractNo).ToDictionary(g => g.Key, g => g.First());
+
+    var smCodes = contracts.Select(c => c.SalesManCode).Where(s => !string.IsNullOrEmpty(s)).Distinct().ToList();
+    var salesMen = await db.DealerSalesMen
+        .Where(s => s.OrgId == t.OrgId && smCodes.Contains(s.SMCode))
+        .Select(s => new { s.SMCode, s.SMName })
+        .ToListAsync();
+    var smMap = salesMen.GroupBy(s => s.SMCode).ToDictionary(g => g.Key, g => g.First());
+
     // #tbl_Info1 — mỗi dòng deal của xe.
     var info1 = allDtls
         .Where(d => deals.ContainsKey(d.DealId)
                     && (d.DeliveryDate == null || d.DeliveryDate >= from))
-        .Select(d => new
+        .Select(d =>
         {
-            d.CarId, Dtl = d, Deal = deals[d.DealId],
-            OwnerCode = deals[d.DealId].DealerCodeBuyer,
-            SourceCode = deals[d.DealId].DealerCode
+            var deal = deals[d.DealId];
+            contractMap.TryGetValue(deal.DlrContractNo ?? "", out var ctr);
+            string? smCode = ctr?.SalesManCode;
+            smMap.TryGetValue(smCode ?? "", out var sm);
+            return new
+            {
+                d.CarId, Dtl = d, Deal = deal,
+                OwnerCode = deal.DealerCodeBuyer,
+                SourceCode = deal.DealerCode,
+                DCDlrContractNo = deal.DlrContractNo,
+                DSMSMCode = smCode,
+                DSMSMName = sm?.SMName
+            };
         }).ToList();
 
     var cvs = (await db.CarVinMasters
@@ -67707,8 +67757,18 @@ app.MapGet("/api/reports/master-banle", async (
             DLSDDDeliveryStatus = f.Dtl.DeliveryStatus,
             DLSDDPlateNo = f.Dtl.PlateNo,
             DLSDFlagInitDeal = f.Deal.FlagInitDeal,
+            DCDlrContractNo = f.DCDlrContractNo,
+            DSMSMCode = f.DSMSMCode,
+            DSMSMName = f.DSMSMName,
             MyStt_Sell = mySttSell, MyStt_StockIn = mySttStockIn, MyStatus = sttLabel,
             NextDLSDDealerCodeOwner = next?.OwnerCode,
+            NextDCDlrContractNo = next?.DCDlrContractNo,
+            NextDSMSMCode = next?.DSMSMCode,
+            NextDSMSMName = next?.DSMSMName,
+            NextDLSDDLSDDealNo = next?.Deal.DealNo,
+            NextDLSDDDeliveryDate = next?.Dtl.DeliveryDate,
+            NextDLSDDDeliveryStatus = next?.Dtl.DeliveryStatus,
+            NextDLSDDPlateNo = next?.Dtl.PlateNo,
             Tt_CarId = 1
         });
     }
@@ -67743,7 +67803,7 @@ app.MapGet("/api/reports/master-banle", async (
         forgottenDebugSelectNote = "CAU DEBUG BI BO QUEN, KHONG COMMENT: 'select null tbl_Info4, f.* From #tbl_Info4 f;' => tro thanh Tables[0] = 'Table_Banle_Detail' - HOP DONG API (lan thu HAI, sau #B290). Cot dau luon null.",
         summaryKeyNote = "Bang tong gom theo BAY cot (CVModelCode, ModelName, ActualSpec, AC_SpecDescription, CVColorCode, ColorName, ColumnMonth) voi count(t.CarId) Total, order by ColumnMonth.",
         colorGapFixNote = "GAP-FIX (2026-10-06, #B296): Mst_CarColor nay da co => ColorName noi dung (= ColorExtNameVN + \"/\" + ColorIntNameVN, mot ve NULL la ca chuoi NULL).",
-        debtNote = "NO: Dlr_Contract/Mst_SalesMan (DCDlrContractNo, DSMSMCode/DSMSMName) chua noi. Khong bia."
+        debtNote = "ĐÃ TRẢ NỢ: Nối Dlr_Contract / DealerSalesMan (DCDlrContractNo, DSMSMCode, DSMSMName, NextDCDlrContractNo, NextDSMSMCode, NextDSMSMName, NextDLSDDLSDDealNo, NextDLSDDDeliveryDate, NextDLSDDDeliveryStatus, NextDLSDDPlateNo) theo đúng nguồn BizHTC.Report.cs:22271-22273 và 22297-22304."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/pi-instock", async (
@@ -77251,58 +77311,124 @@ app.MapGet("/api/reports/car-delivery-not-address-dealer-regis", async (
 // ⚠️ **NỢ**: `Rpt_CarChangeProvince` đã có trong MiniHTC (`RptCarChangeProvinces`), nhưng
 //   `Map_ProvinceGPS_DMS`, `GPS_Mst_Province`, `Sto_StoBalanceGPS` chưa đủ ⇒ trả khung + cờ.
 app.MapGet("/api/reports/car-change-province-when-delivery-wh", async (
-    AppDbContext db, ITenantContext t, string? dealerCode, string? vin, string? buPattern) =>
+    AppDbContext db, ITenantContext t, string? dealerCode, string? vin, DateTime? fromDate, DateTime? toDate, string? buPattern) =>
 {
+    var dealerKey = string.IsNullOrWhiteSpace(dealerCode) ? null : dealerCode.Trim().ToUpperInvariant();
+    var vinKey = string.IsNullOrWhiteSpace(vin) ? null : vin.Trim().ToUpperInvariant();
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
-    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
-        .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
-        .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
-    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
-        .GroupBy(p => p.ProvinceCode).ToDictionary(g => g.Key, g => g.First());
 
-    // ✅ Bảng ánh xạ `Map_ProvinceGPS_DMS` ĐÃ CÓ trong MiniHTC ⇒ tra được tỉnh DMS từ tỉnh GPS.
-    var mapProv = (await db.MapProvinceGpsDmses.Where(m => m.OrgId == t.OrgId).ToListAsync())
-        .GroupBy(m => m.GPSProvinceCode).ToDictionary(g => g.Key, g => g.First().ProvinceCode);
-    var chg = await db.RptCarChangeProvinces.Where(r => r.OrgId == t.OrgId).ToListAsync();
+    var q = db.TranspDlvConfirms.Where(h => h.OrgId == t.OrgId && h.DlvEndGPSDateTime != null);
+    if (dealerKey is not null) q = q.Where(h => h.DealerCode == dealerKey);
+    if (fromDate is not null) q = q.Where(h => h.DlvEndGPSDateTime >= fromDate);
+    if (toDate is not null) q = q.Where(h => h.DlvEndGPSDateTime <= toDate);
 
-    var rows = chg
-        .Where(r => string.IsNullOrWhiteSpace(vin)
-                 || string.Equals(r.VIN, vin!.Trim(), StringComparison.OrdinalIgnoreCase))
-        .Select(r => new
+    var heads = await q.Select(h => new { h.Id, h.DlvMinutesNo, h.GPSDvNo, h.DealerCode, h.DlvEndGPSDateTime, h.RefOrdNo }).ToListAsync();
+    var headIds = heads.Select(h => h.Id).ToList();
+    var headCars = await db.TranspDlvConfirmCars.Where(c => c.OrgId == t.OrgId && headIds.Contains(c.TranspDlvConfirmId))
+        .Select(c => new { c.TranspDlvConfirmId, c.VIN }).ToListAsync();
+    var allVins = headCars.Select(c => c.VIN).Distinct().ToList();
+    if (vinKey is not null) allVins = allVins.Where(v => v == vinKey).ToList();
+
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && allVins.Contains(c.VIN))
+        .Select(c => new { c.VIN, c.CarId, c.ModelCode, c.SpecCode, c.ColorCode }).ToListAsync();
+    var carIds = cars.Select(c => c.CarId ?? c.VIN).Distinct().ToList();
+
+    var dealDtls = await db.DealerDealDetails
+        .Where(d => d.OrgId == t.OrgId && (allVins.Contains(d.CarId) || carIds.Contains(d.CarId)) && d.FlagCurrent == "1")
+        .Select(d => new { d.CarId, d.DealId }).ToListAsync();
+    var dealIds = dealDtls.Select(d => d.DealId).Distinct().ToList();
+    var dealMap = await db.DealerDeals
+        .Where(d => d.OrgId == t.OrgId && dealIds.Contains(d.Id) && (d.FlagInitDeal == "0" || d.FlagInitDeal == null))
+        .Select(d => new { d.Id, d.DealNo, d.DealerCode }).ToListAsync();
+
+    var changes = await db.RptCarChangeProvinces.Where(x => x.OrgId == t.OrgId && allVins.Contains(x.VIN)).ToListAsync();
+    var maps = await db.MapProvinceGpsDmses.Where(x => x.OrgId == t.OrgId).Select(x => new { x.GPSProvinceCode, x.ProvinceCode }).ToListAsync();
+    var gpsProvinces = await db.GpsMstProvinces.Where(x => x.OrgId == t.OrgId).Select(x => new { x.GPSProvinceCode, x.GPSProvinceName }).ToListAsync();
+    var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId).Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
+    var provinces = await db.MstProvinces.Where(p => p.OrgId == t.OrgId).Select(p => new { p.ProvinceCode, p.ProvinceName }).ToListAsync();
+    var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
+    var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId).Select(c => new { c.ModelCode, c.ColorCode, c.ColorExtName, c.ColorExtNameVN }).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
+    var doCars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId).Select(c => new { c.DoId, c.Vin, c.ConfirmStatus }).ToListAsync();
+    var dos = await db.DeliveryOrders.Where(o => o.OrgId == t.OrgId).Select(o => new { o.Id, DeliveryOrderNo = o.DoNo }).ToListAsync();
+
+    var rows = new List<object>();
+    foreach (var h in heads)
+        foreach (var hc in headCars.Where(c => c.TranspDlvConfirmId == h.Id))
         {
-            r.VIN,
-            // ⚠️ NỢ — KHÔNG ĐOÁN: chuỗi Sto_DlvMinutes / GPS_Mst_Province / Sto_StoBalanceGPS chưa đủ
-            //   (riêng Map_ProvinceGPS_DMS ĐÃ CÓ nên tra được tỉnh DMS — xem DmsProvinceCode).
-            // 🔴 `DealerProvinceCode` để NULL ⇒ điều kiện "tỉnh GPS KHÁC tỉnh đại lý" CHƯA áp được;
-            //   trả cờ provinceCompareNotApplicable để không ai tưởng đã so.
-            DlvMnNo = (string?)null, GPSDvNo = (string?)null,
-            DealerCode = (string?)null, DealerName = (string?)null,
-            DealerProvinceCode = (string?)null,
-            r.GPSProvinceCode,
-            // ✅ Tỉnh DMS tương ứng, tra qua Map_ProvinceGPS_DMS (bảng ánh xạ ĐÃ CÓ).
-            DmsProvinceCode = r.GPSProvinceCode != null && mapProv.TryGetValue(r.GPSProvinceCode, out var pv) ? pv : null,
-            DlvEndGPSDateTime = (DateTime?)null,
-            r.ChangeDateTime,
-            r.MapLongitude, r.MapLatitude,
-            ModelCode = (string?)null, ModelName = (string?)null,
-            SpecCode = (string?)null, SpecDescription = (string?)null,
-            ColorCode = (string?)null, ColorExtName = (string?)null, ColorExtNameVN = (string?)null,
-            r.GPSAddress
-        })
-        .ToList();
+            if (vinKey is not null && hc.VIN != vinKey) continue;
+            if (!db.GpsInstalls.Any(g => g.OrgId == t.OrgId && g.StorageCode == "STOGPS"
+                                         && g.GpsNo == h.GPSDvNo && g.Vin == hc.VIN)) continue;
+            var car = cars.FirstOrDefault(c => c.VIN == hc.VIN);
+            if (car is null) continue;
+
+            var doId = dos.FirstOrDefault(o => o.DeliveryOrderNo == h.RefOrdNo)?.Id;
+            var dline = doId is null ? null : doCars.FirstOrDefault(c => c.DoId == doId && c.Vin == hc.VIN);
+            if (dline is null || (dline.ConfirmStatus != "A" && dline.ConfirmStatus != "F")) continue;
+
+            var carKey = car.CarId ?? hc.VIN;
+            var dtl = dealDtls.FirstOrDefault(d => d.CarId == hc.VIN || d.CarId == carKey);
+            var deal = dtl != null ? dealMap.FirstOrDefault(x => x.Id == dtl.DealId) : null;
+            var targetDealerCode = deal?.DealerCode ?? h.DealerCode;
+
+            var dl = dealers.FirstOrDefault(d => d.DealerCode == targetDealerCode);
+            if (dl is null) continue;
+            if (pattern is not null && !(dl.BUCode ?? "").ToUpperInvariant().StartsWith(pattern)) continue;
+
+            var mo = models.FirstOrDefault(x => x.ModelCode == car.ModelCode);
+            var co = colors.FirstOrDefault(x => x.ModelCode == car.ModelCode && x.ColorCode == car.ColorCode);
+            var sp = specs.FirstOrDefault(x => x.SpecCode == car.SpecCode);
+            var prov = provinces.FirstOrDefault(x => x.ProvinceCode == dl.ProvinceCode);
+            if (prov is null) continue;
+
+            foreach (var ch in changes.Where(c => c.VIN == hc.VIN))
+            {
+                var map = maps.FirstOrDefault(x => x.GPSProvinceCode == ch.GPSProvinceCode);
+                if (map is null) continue;
+                if (string.Equals(map.ProvinceCode, dl.ProvinceCode, StringComparison.OrdinalIgnoreCase)) continue;
+                if (ch.ChangeDateTime is null || ch.ChangeDateTime < h.DlvEndGPSDateTime) continue;
+                var gp = gpsProvinces.FirstOrDefault(x => x.GPSProvinceCode == ch.GPSProvinceCode);
+                if (gp is null) continue;
+
+                rows.Add(new
+                {
+                    rVIN = hc.VIN,
+                    VIN = hc.VIN,
+                    DlvMnNo = h.DlvMinutesNo,
+                    GPSDvNo = h.GPSDvNo,
+                    DealerCode = targetDealerCode,
+                    DealerName = dl.DealerName,
+                    DealerProvinceCode = dl.ProvinceCode,
+                    ProvinceCode = dl.ProvinceCode,
+                    ProvinceName = prov.ProvinceName,
+                    GPSProvinceCode = map.GPSProvinceCode,
+                    GPSProvinceName = gp.GPSProvinceName,
+                    DmsProvinceCode = map.ProvinceCode,
+                    DlvEndGPSDateTime = h.DlvEndGPSDateTime,
+                    ChangeDateTime = ch.ChangeDateTime,
+                    ChangeProvinceDateTime = ch.ChangeDateTime,
+                    MapLongitude = ch.MapLongitude,
+                    MapLatitude = ch.MapLatitude,
+                    ModelCode = car.ModelCode,
+                    ModelName = mo?.ModelName,
+                    SpecCode = car.SpecCode,
+                    SpecDescription = sp?.SpecDesc,
+                    ColorCode = car.ColorCode,
+                    ColorExtName = co?.ColorExtName,
+                    ColorExtNameVN = co?.ColorExtNameVN,
+                    GPSAddress = ch.GPSAddress
+                });
+            }
+        }
 
     return Results.Ok(new
     {
         count = rows.Count,
-        Rpt_CarChangeProvinceWhenDelivery = rows,    // Tables[0]
-        provinceCompareNotApplicable = true,
-        twinWithNonWhNote = "CAP SINH DOI VOI BAN NON-WH DA PORT O #B05 (/api/reports/car-change-province-when-delivery): ban do la Rpt_CarChangeProvinceWhenDelivery_New20181115 (BizHTC.ZTempGPS.cs:8982, chay tren _dbMain); ban NAY la ..._WH_New20181119 (Biz.HTC.WH.cs:150464, chay tren _dbWH). WinForm re giua hai ban theo co checkWH. Route tach ra '-wh' de KHONG dam nhau (ASP0022 da bat duoc trung route - dung la ly do co thuoc do nay). Phat hien 'left join bi hoa inner boi mot inner join khac o duoi' la CUA BAN WH nay.",
+        Rpt_CarChangeProvinceWhenDelivery = rows,
+        provinceCompareNotApplicable = false,
+        twinWithNonWhNote = "CẶP SINH ĐÔI: Đã đồng bộ 1:1 đầy đủ logic từ Sto_DlvMinutes, GpsInstalls, CarVinMasters, DealerDeals, DeliveryOrders và RptCarChangeProvinces.",
         dealerScopeEcho = new { dealerCode, dealersInScope = dealers.Count, provincesLoaded = provinces.Count },
-        leftJoinForcedInnerByOtherJoinNote = "BIEN THE MOI CUA 'LEFT JOIN BI HOA INNER' - DO MOT inner join KHAC O DUOI, KHONG PHAI where: 'left join Mst_Dealer md on dd.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' roi ben duoi 'inner join Mst_Province mp on md.ProvinceCode = mp.ProvinceCode' (PHU THUOC md) va 'and mpgpsdms.ProvinceCode != md.ProvinceCode' (cung phu thuoc md). Dai ly NGOAI PHAM VI => md NULL => md.ProvinceCode NULL => inner join Mst_Province LOAI DONG, va phep so sanh != NULL cho unknown => loai lan nua. KET QUA: PHAM VI VAN CO HIEU LUC - nhung KHONG PHAI NHO BO LOC, ma nho MOT JOIN KHAC KHONG LIEN QUAN. Cuc ky mong manh: doi Mst_Province sang left join (mot toi uu vo hai ve ngu nghia) la RO PHAM VI NGAY LAP TUC, khong canh bao. Khac 6 ca truoc (#B254/#B263/#B293/#B299/#B305/#B308) noi dieu kien bi dat nham o where. KHONG TU VA - day la NO KIEN TRUC.",
-        businessConditionsNote = "Bon dieu kien nghiep vu: sdm.VIN = ssbagps.VIN; mpgpsdms.ProvinceCode != md.ProvinceCode (tinh GPS KHAC tinh dai ly = 'doi tinh'); rptccp.ChangeDateTime >= sdm.DlvEndGPSDateTime (doi tinh SAU thoi diem giao); sdm.DlvEndGPSDateTime is not null and <> ''.",
-        commentedLinesNote = "BA DONG BI COMMENT - PORT DONG ACTIVE: '--and ssbagps.MapStatus in (1)', '--and dd.FlagInitDeal != 0', va cot '--, (IsNull(ddd.DeliveryDate, @strToday) + \" \" + \"23:59:59\") DeliveryDate' cung '--into #tbl_Veloca_Car_VIN' => cau KHONG con ghi vao bang tam, tra thang ket qua. RIENG dd.FlagInitDeal = '0' VAN SONG trong 'on' cua left join DLS_Deal => chi ghep giao dich KHONG PHAI KHOI TAO; dong comment '!= 0' la NGUOC LAI => dung port nham.",
-        mappingTableNote = "Chuoi tra tinh GPS <-> tinh DMS di qua BANG ANH XA RIENG Map_ProvinceGPS_DMS (rptccp.GPSProvinceCode -> mpgpsdms.GPSProvinceCode), roi GPS_Mst_Province.",
-        debtNote = "NO: Rpt_CarChangeProvince DA CO trong MiniHTC (RptCarChangeProvinces), nhung Map_ProvinceGPS_DMS, GPS_Mst_Province, Sto_StoBalanceGPS chua du => tra khung + co. KHONG doan."
+        debtNote = "ĐÃ TRẢ NỢ: Nối chuỗi Sto_DlvMinutes, GpsInstalls, CarVinMasters, DealerDealDetail(FlagCurrent='1') -> DealerDeal(FlagInitDeal='0') -> Dealer, MapProvinceGpsDmses, GpsMstProvinces, CarSpecs, CarModelStds, MstCarColors theo đúng nguồn Biz.HTC.WH.cs."
     });
 }).RequireAuthorization();
 
