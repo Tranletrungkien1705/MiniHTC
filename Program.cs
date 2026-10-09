@@ -70748,6 +70748,21 @@ app.MapGet("/api/dmsdealercontracts", async (AppDbContext db, ITenantContext t, 
 }).RequireAuthorization();
 
 // Chọn ngân hàng phát hành bảo lãnh MD (port 1:1 FrmDMS40_SelectedBankMD btnApply_Click) — chỉ khi chưa chọn NH (BankCodeMD rỗng).
+app.MapGet("/api/dmsdealercontracts/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim();
+    var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
+    if (c is null) return Results.NotFound(new { no });
+    return Results.Ok(new {
+        c.DlrCtrNo, c.DealerCode, c.ContractDate, c.DlrSignStatus, c.HTCSignStatus, c.DlrCtrStatus, c.CreatedAt,
+        c.DlrApprDTime, c.DlrApprBy, c.HTCAppr1DTime, c.HTCAppr1By, c.HTCAppr2DTime, c.HTCAppr2By,
+        c.BankCodeMD, c.FlagDlrCtrAdjust, c.DlrCtrNoParent, c.RejectDTime, c.RejectBy, c.FilePath, c.Remark,
+        c.LogLUDateTime, c.LogLUBy, c.DCPType, c.TotalAmount, c.CreateDTime, c.CreateBy, c.LUDTime, c.LUBy,
+        c.PMTermNo, c.DepositPercent, c.GuaranteePercent, c.GuaranteeDays, c.DepositDutyEndDays, c.GuaranteeEndDays,
+        c.CancelDTime, c.CancelBy
+    });
+}).RequireAuthorization();
+
 // #164: đọc dòng hợp đồng đại lý DMS40 (`DMS40_CT_DealerContractDetail`).
 app.MapGet("/api/dmsdealercontracts/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
@@ -70824,6 +70839,12 @@ app.MapPost("/api/dmsdealercontracts/{no}/update", async (string no, DealerContr
             .Select(x => new { x.CancelMinutesNo, x.CancelMinutesStatus }).FirstOrDefaultAsync();
         if (pending is not null)
             return Results.BadRequest(new { error = $"Còn biên bản huỷ {pending.CancelMinutesNo} ở trạng thái '{pending.CancelMinutesStatus}' — chưa gán ngân hàng mới được.", cancelMinutesNo = pending.CancelMinutesNo });
+        // (5) còn bản hợp đồng điều chỉnh chưa ở trạng thái huỷ ⇒ chặn (0.34.Contract.cs:3933-3968)
+        var pendingAdjust = await db.DmsDealerContracts
+            .Where(x => x.OrgId == t.OrgId && x.DlrCtrNoParent == no && x.DlrCtrStatus != "C")
+            .Select(x => new { x.DlrCtrNo, x.DlrCtrStatus }).FirstOrDefaultAsync();
+        if (pendingAdjust is not null)
+            return Results.BadRequest(new { error = $"Còn bản hợp đồng điều chỉnh {pendingAdjust.DlrCtrNo} ở trạng thái '{pendingAdjust.DlrCtrStatus}' — chưa gán ngân hàng mới được.", dlrCtrNoParent = pendingAdjust.DlrCtrNo });
     }
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -70836,17 +70857,47 @@ app.MapPost("/api/dmsdealercontracts/{no}/update", async (string no, DealerContr
         c.BankCodeMD, c.FilePath, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/dmsdealercontracts/{no}/selectbankmd", async (string no, DmsSelectBankMDDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dmsdealercontracts/{no}/selectbankmd", async (string no, DmsSelectBankMDDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim();
     var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == no);
     if (c is null) return Results.NotFound(new { no });
-    if (string.IsNullOrWhiteSpace(dto.BankCodeMD)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng phát hành bảo lãnh!" });
-    if (!string.IsNullOrWhiteSpace(c.BankCodeMD)) return Results.BadRequest(new { error = "HĐ đã có ngân hàng phát hành bảo lãnh, hãy dùng chức năng Hủy NH trước." });
-    c.BankCodeMD = dto.BankCodeMD.Trim().ToUpperInvariant();
+
+    // Port 1:1 DMS40_CT_DealerContract_UpdateBankCodeMDAndSendMail_New20181115 (0.34.Contract.cs:3784-4013)
+    if (c.DlrSignStatus != "A" || c.HTCSignStatus != "A2" || c.DlrCtrStatus != "S")
+        return Results.BadRequest(new { error = $"Chỉ gán ngân hàng bảo lãnh MD cho hợp đồng đã ký đủ (đang: đại lý '{c.DlrSignStatus}', bên A '{c.HTCSignStatus}', hợp đồng '{c.DlrCtrStatus}')." });
+
+    if (!string.IsNullOrWhiteSpace(c.BankCodeMD))
+        return Results.BadRequest(new { error = $"Hợp đồng đã có ngân hàng bảo lãnh '{c.BankCodeMD}' — muốn đổi phải lập biên bản huỷ NH bảo lãnh trước.", bankCodeMD = c.BankCodeMD });
+
+    var bank = (dto.BankCodeMD ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(bank)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng bảo lãnh MD." });
+    
+    var bd = await db.DealerBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankCode == bank && x.DealerCode == c.DealerCode);
+    if (bd is null) return Results.BadRequest(new { error = $"Ngân hàng {bank} không thuộc danh sách của đại lý {c.DealerCode}.", bankCode = bank });
+    if (bd.FlagActive != "1") return Results.BadRequest(new { error = $"Ngân hàng {bank} đã ngừng hoạt động.", bankCode = bank });
+    if (bd.FlagBankGrt != "1") return Results.BadRequest(new { error = $"Ngân hàng {bank} không được phép bảo lãnh.", bankCode = bank });
+
+    var pendingCancel = await db.DmsCancelMinutesSet
+        .Where(x => x.OrgId == t.OrgId && x.DlrCtrNo == no && x.CancelMinutesStatus != "C")
+        .Select(x => new { x.CancelMinutesNo, x.CancelMinutesStatus }).FirstOrDefaultAsync();
+    if (pendingCancel is not null)
+        return Results.BadRequest(new { error = $"Còn biên bản huỷ {pendingCancel.CancelMinutesNo} ở trạng thái '{pendingCancel.CancelMinutesStatus}' — chưa gán ngân hàng mới được.", cancelMinutesNo = pendingCancel.CancelMinutesNo });
+
+    var pendingAdjust = await db.DmsDealerContracts
+        .Where(x => x.OrgId == t.OrgId && x.DlrCtrNoParent == no && x.DlrCtrStatus != "C")
+        .Select(x => new { x.DlrCtrNo, x.DlrCtrStatus }).FirstOrDefaultAsync();
+    if (pendingAdjust is not null)
+        return Results.BadRequest(new { error = $"Còn bản hợp đồng điều chỉnh {pendingAdjust.DlrCtrNo} ở trạng thái '{pendingAdjust.DlrCtrStatus}' — chưa gán ngân hàng mới được.", dlrCtrNoParent = pendingAdjust.DlrCtrNo });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    c.BankCodeMD = bank;
     c.FlagDlrCtrAdjust = dto.FlagDlrCtrAdjust == "1" ? "1" : "0";
+    c.LogLUDateTime = DateTime.Now;
+    c.LogLUBy = who;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrCtrNo, c.BankCodeMD, c.FlagDlrCtrAdjust });
+    return Results.Ok(new { c.DlrCtrNo, c.BankCodeMD, c.FlagDlrCtrAdjust, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
 // ===== #166 lưu hợp đồng đại lý DMS40 — `DMS40_CT_DealerContract_SaveX_New20190404` =====
