@@ -8448,7 +8448,7 @@ public sealed class DealerDeal
     public string? LogLUBy { get; set; }
 }
 public sealed class DealerDealDetail
-{
+{    public decimal? WarrantyKM { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long DealId { get; set; }
@@ -13724,7 +13724,7 @@ public sealed class SPSupportRetail
 
 /// <summary>Master VIN tối giản (nguồn Car_Vin+Car_Car join, cùng nguồn đã dùng cho MiniVehicle) — chỉ phục vụ guard tồn tại VIN cho SPSupportRetail/... KHÔNG phải Car_VIN đầy đủ như MiniVehicle.</summary>
 public sealed class CarVinMaster
-{
+{    public string? BatteryNo { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string VIN { get; set; } = "";
@@ -18378,7 +18378,7 @@ public sealed class DelayTransport
 /// <summary>Master model chuẩn dịch vụ (Mst_CarModelStd — port 1:1 FrmMstCarModelStd, TCMotor DMSCarSv/Admin):
 /// mã model + tên, dùng làm danh mục model tham chiếu cho các màn dịch vụ khác.</summary>
 public sealed class CarModelStd
-{
+{    public string? SegmentType { get; set; }
     /// <summary>🔴 #727 §12 `Mst_CarModelStd.Remark` — `_Add` và `_Update` đều ghi cột này;
     /// ⚠️ `_Update` còn **VIẾT HOA** nó qua `StandardizeParam` trong khi `_Add` chỉ `.Trim()`.</summary>
     public string? Remark { get; set; }
@@ -19413,3 +19413,14 @@ public sealed class RptEstimateDeliveryPlan
     public decimal? Qty { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
+public sealed class CtmRangeAgeMst
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string RangeAgeCode { get; set; } = "";
+    public string RangeAgeName { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+}
+

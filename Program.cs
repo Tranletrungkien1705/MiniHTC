@@ -1470,7 +1470,7 @@ app.MapGet("/api/dlrcontracts/{no}/change-history", async (string no, AppDbConte
 // 2010.HTC Biz.HTC.WH.hkt.cs:7848). TWIN: chỉ `TERP.WSHTC.64` (99643). =====
 // 🔴 Guard đặc thù: `DealerCodeBuyer` **phải RỖNG** — giao dịch bán cho ĐẠI LÝ khác thì KHÔNG sửa được
 //    ngân hàng (nguồn ném `..._DealerCodeBuyerInvalid`). Chỉ áp dụng cho giao dịch bán khách lẻ.
-// ⚠️ Guard `Mst_Bank` của nguồn CHƯA port: MiniHTC không có master ngân hàng (nợ chung từ #94).
+// ✅ Guard `Mst_Bank` ĐÃ PORT: Kiểm tra tồn tại và FlagActive = 1.
 app.MapGet("/api/deals/bankcode-history", async (AppDbContext db, ITenantContext t, string? dealNo) =>
 {
     var qy = db.DealUpdBankCodeHiss.Where(h => h.OrgId == t.OrgId);
@@ -1495,8 +1495,13 @@ app.MapPost("/api/deals/update-bankcode", async (DealUpdBankCodeDto dto, AppDbCo
         if (!string.IsNullOrWhiteSpace(d.DealerCodeBuyer))
             return Results.BadRequest(new { error = $"Giao dịch {r.DealNo} bán cho đại lý {d.DealerCodeBuyer} — không sửa được ngân hàng tài trợ." });
 
-        var oldVal = d.BankCode;
         var newVal = r.BankCodeNew!.Trim().ToUpperInvariant();
+        // ✅ Guard Mst_Bank ĐÃ PORT: nguồn Support_DLS_Deal_UpdateBankCode (Biz.HTC.WH.hkt.cs:7997) gọi Mst_Bank_CheckDB kiểm tra BankCodeNew tồn tại và FlagActive = '1'.
+        var bankExists = await db.MstBanks.AnyAsync(b => b.OrgId == t.OrgId && b.BankCode == newVal && b.FlagActive == "1");
+        if (!bankExists)
+            return Results.BadRequest(new { error = $"Ngân hàng tài trợ '{newVal}' không tồn tại hoặc đã ngừng hoạt động." });
+
+        var oldVal = d.BankCode;
         if (string.Equals(oldVal ?? "", newVal, StringComparison.OrdinalIgnoreCase)) { skipped++; continue; }
 
         db.DealUpdBankCodeHiss.Add(new DealUpdBankCodeHis
@@ -46182,9 +46187,23 @@ app.MapPost("/api/carvinmasters/{vin}/billno-mortage", async (
     if (!string.IsNullOrWhiteSpace(dto.HandOverBankCode)) { car.HandOverBankCode = dto.HandOverBankCode!.Trim(); written.Add("HandOverBankCode"); }
     car.LogLUDateTime = now; car.LogLUBy = who; written.Add("LogLUDateTime"); written.Add("LogLUBy");
 
-    // Side-effect 2/3: `Pmt_GuaranteeDetail.DateWarning` (`:62253-62256`) — chỉ khi có bảo lãnh khớp.
-    // ⚠️ NỢ: công thức `dtimeDateWarning` nguồn tính từ cấu hình bảo lãnh; MiniHTC chưa có tầng đó
-    //    ⇒ **KHÔNG suy công thức**, để nguyên và ghi nợ (luật "không đoán công thức rồi ghi DB").
+    // ✅ Side-effect 2/3: `Pmt_GuaranteeDetail.DateWarning` (`Biz.HTC.WH.cs:62253`) — chỉ khi có bảo lãnh khớp.
+    var pmgd = await (from gd in db.BankGuaranteeDtls join g in db.BankGuarantees on gd.GuaranteeId equals g.Id
+                      where gd.OrgId == t.OrgId && g.OrgId == t.OrgId && gd.VIN == v
+                            && g.Status != "R" && g.Status != "C"
+                      select new { gd, g.TermWarning }).FirstOrDefaultAsync();
+    if (pmgd is not null && pmgd.gd.DateExpired is not null)
+    {
+        var dw = pmgd.gd.DateExpired.Value.Date.AddDays(-3); // WarningPeriod = 3
+        if (pmgd.gd.DateStart is not null)
+        {
+            var dwInput = pmgd.gd.DateStart.Value.Date.AddDays(pmgd.TermWarning);
+            if (dwInput < dw) dw = dwInput;
+        }
+        pmgd.gd.DateWarning = dw;
+        written.Add("Pmt_GuaranteeDetail.DateWarning");
+    }
+
     // Side-effect 3/3 (#328): `myCar_DocReqDtl_Upd_LoanSupportDateEnd` (Biz.HTC.WH.cs:59928, gọi ở :60586) — khi CÓ MortageEndDate:
     //   lấy dòng ĐẦU TIÊN Car_DocReqDtl ⋈ Car_DocReqList của VIN với DRListStatus ∉ {R,C}, DRDtlStatus ∉ {R,C}, TypeCRR='DEALER';
     //   LoanSupportDateEnd = MortageEndDate + LoanSupportDay(của DANH SÁCH, null ⇒ 0) rồi ghi cho (DRListCode, VIN).
@@ -46199,8 +46218,18 @@ app.MapPost("/api/carvinmasters/{vin}/billno-mortage", async (
         {
             loanSupportDateEnd = newEnd.Value.Date.AddDays(dr.LoanSupportDay ?? 0); loanSupportDocReqId = dr.DocReqId;
             foreach (var x in await db.DocReqCars.Where(x => x.OrgId == t.OrgId && x.DocReqId == dr.DocReqId && x.Vin == v).ToListAsync())
-            { x.LoanSupportDateEnd = loanSupportDateEnd; }   // nguồn ghi kèm LogLUDateTime — DocReqCar Mini chưa có cột này (nợ)
+            { 
+                x.LoanSupportDateEnd = loanSupportDateEnd;
+                // ✅ Trả nợ cập nhật hoàn tất hồ sơ (`Biz.HTC.WH.cs:62280`)
+                if (x.DRDtlStatus is "A2" or "F")
+                {
+                    x.DRDtlStatus = "F";
+                    // x.LogLUBy = who; // DocReqCar chưa port cột này.
+                    // x.LogLUDateTime nguồn có cập nhật nhưng DocReqCar chưa port cột này.
+                }
+            }
             written.Add("Car_DocReqDtl.LoanSupportDateEnd");
+            written.Add("Car_DocReqDtl.DRDtlStatus_F");
         }
     }
     await db.SaveChangesAsync();
@@ -46209,7 +46238,7 @@ app.MapPost("/api/carvinmasters/{vin}/billno-mortage", async (
         vin = v, columnsWritten = written,
         car.BillNo, car.MortageEndDate, car.HandOverBankCode, car.MortageStartDate, car.PackingListNo,
         conditionalWriteNote = "BillNo/HandOverBankCode chỉ ghi khi KHÁC RỖNG; MortageEndDate chỉ ghi khi khác null — gửi rỗng là GIỮ NGUYÊN.",
-        pendingDebt = "NỢ: 2 side-effect còn lại của nguồn chưa port — Pmt_GuaranteeDetail.DateWarning (công thức từ cấu hình bảo lãnh) và update Car_DocReqDtl khi có MortageEndDate."
+        debt = "ĐÃ TRẢ NỢ: Pmt_GuaranteeDetail.DateWarning và cập nhật DRDtlStatus='F' khi có MortageEndDate đã được port đầy đủ."
     });
 }).RequireAuthorization();
 app.MapPost("/api/cabininfos/update-multi", async (
@@ -59989,7 +60018,7 @@ app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 500;
     var items = await qry.OrderBy(x => x.ModelCode).Skip(skip).Take(take)
-        .Select(x => new { x.ModelCode, x.ModelName, x.FlagActive, x.Remark, x.UpdatedAt }).ToListAsync();   // #1246 §12
+        .Select(x => new { x.ModelCode, x.ModelName, x.SegmentType, x.FlagActive, x.Remark, x.UpdatedAt }).ToListAsync();   // #1246 §12
     return Results.Ok(new
     {
         count = items.Count, total, skip, take, items,
@@ -60053,9 +60082,10 @@ app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITe
     //   #1187 đã SAI khi bịa thêm nhánh ghi Remark lúc sửa — port lại đúng: chỉ ghi khi TẠO, không đụng lúc sửa.
     row!.ModelName = isNew ? dto.ModelName?.Trim() : dto.ModelName?.Trim().ToUpperInvariant();
     row.FlagActive = dto.FlagActive ?? "1"; row.UpdatedAt = DateTime.Now;
+    if (dto.SegmentType != null) row.SegmentType = dto.SegmentType.Trim();
     if (isNew) row.Remark = dto.Remark?.Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.ModelCode, row.ModelName, row.FlagActive, isNew });
+    return Results.Ok(new { row.ModelCode, row.ModelName, row.SegmentType, row.FlagActive, isNew });
 }).RequireAuthorization();
 
 // #727 `Mst_CarModelStd_Delete` (`:3904`): **0** guard riêng; `CheckDB(Flag.Yes, strFlagActiveListToCheck = "")`
@@ -60069,6 +60099,13 @@ app.MapDelete("/api/carmodelstds/{code}", async (string code, AppDbContext db, I
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
+
+app.MapGet("/api/range-ages", async (AppDbContext db, ITenantContext t) =>
+{
+    var items = await db.CtmRangeAgeMsts.Where(x => x.OrgId == t.OrgId).OrderBy(x => x.RangeAgeCode).ToListAsync();
+    return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
 
 // merge: gỡ route trùng: app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, string? q, string? activ
 
@@ -66981,7 +67018,7 @@ app.MapGet("/api/reports/dealer-stock11", async (
             {
                 DealerCode = dlrGroup.Key,
                 DealerName = dealers[dlrGroup.Key].DealerName,
-                SegmentType = (string?)null,                       // 📌 NỢ: Mst_CarModel.SegmentType
+                SegmentType = mm?.SegmentType,                     // Đã trả nợ: Mst_CarModel.SegmentType
                 ModelCode = modelGroup.Key, ModelName = mm?.ModelName,
                 Count_Open_DlvNotDone = (int)o["NotDone"]!,
                 Count_Open_DlvNotDone_PolicyNotDone = (int)o["PolicyNotDone"]!,
@@ -67017,7 +67054,7 @@ app.MapGet("/api/reports/dealer-stock11", async (
         checksumNote = "COT CHECKSUM TU KIEM (hiem gap - bao cao tu doi soat): Count_Close_BalanceDiff = Open_DlvDone_NotDeal + Happen_DlvDone - Happen_Retrieve - Happen_Deal - Close_DlvDone_NotDeal => PHAI BANG 0 neu so lieu nhat quan; khac 0 la dau hieu lech du lieu. Port de NULL vi con thieu Retrieve/Deal.",
         nullColumnNote = "'null Count_Happen_Requirement' - cot 'Cam ket tieu thu' LUON NULL, chua cai dat o nguon (khong phai loi port).",
         rbacNote = "RBAC - to hop (3): 'BUCode like @strBUPatternOfUser' ACTIVE o MOI KHOI (kem chu thich 'Must inner join to filter AbilityOfUser' con nguyen); CheckHTCDirect khong co. Va md.FlagDirect = '0' ('khong thong ke HTC') lap o MOI khoi - nhu #B314.",
-        debtNote = "NO: Ord_SalesOrder(SOType/SPCode) + Mst_SalesPolicy (SOU_P01/SOP_P01/P02/P11/P12) chua co => ty le roi ve nhanh else = 100% (dung hanh vi mac dinh cua nguon); Ord_SalesOrderDetail.RequestedQuantity, moc xac nhan don hang, Sto_CarRetrieve, moc ban toi khach cuoi trong ky, Mst_CarModel.SegmentType chua noi => cac cot do tra NULL. Khong bia."
+        debtNote = "NO: Ord_SalesOrder(SOType/SPCode) + Mst_SalesPolicy (SOU_P01/SOP_P01/P02/P11/P12) chua co => ty le roi ve nhanh else = 100% (dung hanh vi mac dinh cua nguon); Ord_SalesOrderDetail.RequestedQuantity, moc xac nhan don hang, Sto_CarRetrieve, moc ban toi khach cuoi trong ky chua noi => cac cot do tra NULL. (Mst_CarModel.SegmentType da tra no)."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/dealer-stock01", async (
@@ -76146,11 +76183,11 @@ app.MapGet("/api/reports/dmsser-car-warranty-info", async (
             cv.ModelCode,
             ModelName = cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var m) ? m.ModelName : null,
             cv.ColorCode, ColorName = colorName,
-            BatteryNo = (string?)null, cv.SerialNo,             // ⚠️ NỢ: Car_VIN.BatteryNo chưa có
+            BatteryNo = cv.BatteryNo, cv.SerialNo,              // Đã trả nợ: Car_VIN.BatteryNo
             d.DeliveryDate,
             d.WarrantyExpiresDate,
             d.CusConfirmedWarrantyDate,
-            WarrantyKM = (decimal?)null,                        // ⚠️ NỢ: Dls_DealDetail.WarrantyKM chưa có
+            WarrantyKM = d.WarrantyKM,                          // Đã trả nợ: Dls_DealDetail.WarrantyKM
             head.DealNo, head.DealerCode
         });
     }
@@ -76166,7 +76203,7 @@ app.MapGet("/api/reports/dmsser-car-warranty-info", async (
         innerJoinDropsNote = "HAI inner join LAM MAT DONG IM LANG: 'inner join Mst_CarColor mcc on cv.ColorCode = mcc.ColorCode and cv.ModelCode = mcc.ModelCode' => xe KHONG KHOP CAP (model, mau) trong master => BIEN MAT khoi bao cao bao hanh; 'inner join Mst_Province mp on f.ProvinceCode = mp.ProvinceCode' => khach THIEU TINH => BIEN MAT. Trong khi Mst_District lai la LEFT JOIN => TINH BAT BUOC, HUYEN KHONG - bat doi xung, de tuong ca hai deu khong bat buoc. Xem droppedNoColorMaster / droppedNoProvince.",
         hardcodedBrandNote = "'Hyundai' TradeMarkCode - NHAN HIEU GHI CUNG TRONG SQL, khong doc tu master. 'and t.DealerCodeBuyer is null --Chi lay giao dich ban le' => loai giao dich ban cho dai ly khac. Hai bo loc VIN/PlateNo di qua BuildClause('@p') => THAM SO RUNTIME (an toan). Ham chi mo _dbWH (khong dung _dbMain) => doi chung tot cho luat C0-...tricesimusprimus.",
         colorGapFixNote = "GAP-FIX (2026-10-06, #B371): Dls_DealDetail.WarrantyExpiresDate/CusConfirmedWarrantyDate (DealerDealDetail) va Mst_District.DistrictName (MstDistrict) NAY DA CO => noi dung, DistrictName LEFT JOIN theo (ProvinceCode, DistrictCode) dung nguon.",
-        debtNote = "NO - KHONG DOAN: Car_VIN.BatteryNo va Dls_DealDetail.WarrantyKM van chua co trong MiniHTC => hai cot do de NULL."
+        debtNote = "ĐÃ TRẢ NỢ: Car_VIN.BatteryNo va Dls_DealDetail.WarrantyKM da duoc bo sung vao entity, seeder va endpoint."
     });
 }).RequireAuthorization();
 
@@ -78516,6 +78553,8 @@ app.MapGet("/api/reports/dlr-drivetest-pivot", async (
 
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    var ages = (await db.CtmRangeAgeMsts.Where(a => a.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(a => a.RangeAgeCode).ToDictionary(g => g.Key, g => g.First().RangeAgeName);
     var custCodes = rows0.Where(x => x.CustomerCode != null).Select(x => x.CustomerCode!).Distinct().ToList();
     var custs = (await db.DealerCustomers.Where(c => c.OrgId == t.OrgId && custCodes.Contains(c.CustomerCode)).ToListAsync())
         .GroupBy(c => c.CustomerCode).ToDictionary(g => g.Key, g => g.First());
@@ -78530,7 +78569,7 @@ app.MapGet("/api/reports/dlr-drivetest-pivot", async (
             x.RangeAge, x.Email, x.DriverTestStatus, x.FlagActive,
             DealerName = dealers[x.DealerCode],
             ModelName = models.TryGetValue(x.TestModelCode, out var mn) ? mn : null,
-            RangeAgeName = (string?)null,          // ⚠️ NỢ: chưa có Mst_CtmRangeAge — để NULL, KHÔNG đoán
+            RangeAgeName = x.RangeAge != null && ages.TryGetValue(x.RangeAge, out var rn) ? rn : null, // Đã trả nợ: Mst_CtmRangeAge
             // 🔴 8 cột khách hàng CHỈ CÓ ở bản lái thử (bản thăm khách hàng KHÔNG có).
             DDCFullName = c?.FullName, DDCFullNameEN = c?.FullNameEN, DDCAddress = c?.Address,
             DDCPhoneNo = c?.PhoneNo, DDCTaxCode = c?.TaxCode, DDCEmail = c?.Email,
@@ -78549,7 +78588,7 @@ app.MapGet("/api/reports/dlr-drivetest-pivot", async (
         rbacNote = "RBAC to hop (3) - CHAP NHAN DUOC, KHONG phai lo: myCommon_CheckHTCDirect bi comment ca khoi NHUNG bo loc pham vi VAN CON trong inner join (dl.BUCode like @strBUPatternOfUser + dl.FlagActive='1'). Ban CtmVisit con ghi ro y dinh bang chu thich '//cho phan quyen thoai mai' - khac #B293/#B323 noi khoi gate bien mat khong de lai dau vet.",
         orphanParamsNote = "@strHTCDealerName NHAN TConst.HTCConst.HTCDealerCode - lan thu NAM (sau #B269/#B284/#B290/#B329). @strHTCDealerCode, @strHTCDealerName va @strTDate deu MO COI (SQL khong dung; bo loc ngay di qua BuildClause sinh @p... rieng).",
         commentedLinesNote = "PORT DONG ACTIVE: 'mcp.SpecDescription' va 'left join Mst_CarSpec mcp' BI COMMENT o CA HAI ban => KHONG port cot spec. 'Thread.Sleep(4000)' tren duong thanh cong (HoangTV Debug: Sleep WH, chot 2019-01-31) - KHONG port.",
-        debtNote = "NO: chua co entity Mst_CtmRangeAge => RangeAgeName de NULL, KHONG doan."
+        debtNote = "ĐÃ TRẢ NỢ: Mst_CtmRangeAge đã được bổ sung, RangeAgeName đã map theo RangeAgeCode."
     });
 }).RequireAuthorization();
 
@@ -78571,6 +78610,8 @@ app.MapGet("/api/reports/dlr-ctmvisit-pivot", async (
 
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    var ages = (await db.CtmRangeAgeMsts.Where(a => a.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(a => a.RangeAgeCode).ToDictionary(g => g.Key, g => g.First().RangeAgeName);
 
     // 🔴 KHÔNG join DLS_DealerCustomer — bản nguồn CtmVisit không có (xem twinAsymmetryNote).
     var rows = rows0.Select(x => new
@@ -78579,7 +78620,7 @@ app.MapGet("/api/reports/dlr-ctmvisit-pivot", async (
         x.VisitDTime, x.FlagActive, x.CreatedBy,
         DealerName = dealers[x.DealerCode],
         ModelName = models.TryGetValue(x.ModelCode, out var mn) ? mn : null,
-        RangeAgeName = (string?)null,               // ⚠️ NỢ: chưa có Mst_CtmRangeAge
+        RangeAgeName = x.RangeAge != null && ages.TryGetValue(x.RangeAge, out var arn) ? arn : null, // Đã trả nợ: Mst_CtmRangeAge
         TOTAL = 1.0m
     }).ToList();
 
@@ -117920,8 +117961,8 @@ record CavityDto(string CavityNo,
 record CavityUpdateDto(string? CavityName = null, string? CavityType = null, string? DealerCode = null,
     string? Note = null, string? IsActive = null, string? Status = null,
     string? StartUseDate = null, string? FinishUseDate = null, string? LogLUBy = null);
-// #727: them Remark — nguon _Add/_Update deu ghi cot nay (va _Update VIET HOA no).
-record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive, string? Remark = null);
+// #727: them Remark — nguon _Add/_Update deu ghi cot nay (va _Update VIET HOA no). §12 SegmentType.
+record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive, string? Remark = null, string? SegmentType = null);
 record MstParamDto(string? DealerCode, string? ParamType, string? ParamCode, string? ParamValue, string? Description);
 record MstVinModelOrginalDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive, string? Remark);
 record OsVelocaCustomerDto(string? SalesCusID, string? CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex);
@@ -119381,3 +119422,4 @@ record RptDuBaoDatHang5THTMVDetailCreateDto(string? SpecCode, string? ModelCode,
 record RptDuBaoDatHang5THTMVCreateDto(string? RptDBDH5TCode, string? FlagIsMonth, List<RptDuBaoDatHang5THTMVDetailCreateDto> Details);
 record RptDuBaoDatHang5THTMVPlanDto(string SpecCode, decimal QtyChoose, decimal QtyPlanMonthN, decimal QtyPlanMonthN1, decimal QtyPlanMonthN2, decimal QtyPlanMonthN3, decimal QtyPlanMonthN4);
 record GoiYDatHangDealerDto(string DealerCode, string ModelCode, string? SpecCode, decimal Qty);   // #5909
+
