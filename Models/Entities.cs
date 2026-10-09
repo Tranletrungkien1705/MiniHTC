@@ -13727,6 +13727,7 @@ public sealed class SPSupportRetail
 /// <summary>Master VIN tối giản (nguồn Car_Vin+Car_Car join, cùng nguồn đã dùng cho MiniVehicle) — chỉ phục vụ guard tồn tại VIN cho SPSupportRetail/... KHÔNG phải Car_VIN đầy đủ như MiniVehicle.</summary>
 public sealed class CarVinMaster
 {    public string? BatteryNo { get; set; }
+    public string? ProductionYearActual { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string VIN { get; set; } = "";
