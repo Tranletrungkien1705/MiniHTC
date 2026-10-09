@@ -10144,6 +10144,11 @@ public sealed class PlanRetail
     public string? CancelBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public string? CreatedBy { get; set; }
+    public string? Remark { get; set; }
+    public DateTime? UpdateDTime { get; set; }
+    public string? UpdateBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng chi tiết kế hoạch bán lẻ (`Rpt_PlanRetailDtl`).</summary>
@@ -10156,6 +10161,24 @@ public sealed class PlanRetailDtl
     public string? SpecCode { get; set; }
     public string? ColorCode { get; set; }
     public int Quantity { get; set; }
+
+    // ===== #30085 port Rpt_PlanRetail_Update =====
+    public int QtyAvailDealer { get; set; }
+    public int QtyCtrSignTarget { get; set; }
+    public int QtyPlan1st { get; set; }
+    public int QtyPlan2nd { get; set; }
+    public int QtyPlan3rd { get; set; }
+    public int QtyPlan4th { get; set; }
+    public int QtyPlan5th { get; set; }
+    public int QtyPlan6th { get; set; }
+    public int QtyNewSignInMonth { get; set; }
+    public decimal QtyNewSignPerTarget { get; set; }
+    public int QtyRetailed { get; set; }
+    public decimal QtyRetailedPerPlan { get; set; }
+    public int QtyRetailAndCtr { get; set; }
+    public decimal QtyRetailAndCtrPerPlan { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Kế hoạch bán lẻ gộp theo MODEL (`Rpt_PlanRetailModel`) — nguồn ghi cùng lúc với bảng chi tiết.</summary>

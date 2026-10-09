@@ -17949,23 +17949,15 @@ app.MapGet("/api/gpscalllogs/{logId}/pair", async (string logId, AppDbContext db
     });
 }).RequireAuthorization();
 
-// ===== Kế hoạch bán lẻ theo tháng (Rpt_PlanRetail — port 1:1 Rpt_PlanRetail_Create/Approve/Cancel,
-// 2010.HTC BizHTC.Report.cs:33001/33644/33900). TWIN: chỉ `TERP.WSHTC.64` (95765/95832/95901). =====
+// ===== Kế hoạch bán lẻ theo tháng (Rpt_PlanRetail — port 1:1 Rpt_PlanRetail_Create/Approve/Cancel/Update,
+// 2010.HTC BizHTC.Report.cs:33001/33644/33900/34417-35072). TWIN: chỉ `TERP.WSHTC.64` (95765/95832/95901). =====
 // 🔴 Trạng thái `TConst.PRStatus`: "P" mới tạo · "A" duyệt · "C" từ chối.
 // ⚠️ Guard phản trực giác: **duyệt vào từ "P" HOẶC "C"** (bản đã từ chối duyệt lại được);
 //    **từ chối chỉ vào từ "P"**.
-// ⚠️ Phần sinh dữ liệu tổng hợp (`mySql_Rpt_PlanRetail_Create`) CHƯA port — endpoint nhận dòng từ client.
-// 📌 NỢ (kỹ thuật-6 round 49) — `Rpt_PlanRetail_Update` (`FrmRpt_PlanRetailDtl.cs:544` →
-// `BizHTC.Report.cs:34417-35072`) CHƯA port. Không phải thiếu cột đơn giản: cần thêm `Remark` ở
-// `PlanRetail` + 8 cột `QtyAvailDealer/QtyCtrSignTarget/QtyPlan1st..6th` ở `PlanRetailDtl`, NHƯNG
-// UPDATE thật của nguồn là một phép "carry-forward" theo CASE trên `PlanTimes` (1-6): mỗi lần sửa
-// chỉ ô `QtyPlanNth` khớp đúng `PlanTimes` hiện tại lấy giá trị MỚI từ client, các ô `nth` NHỎ HƠN
-// được chép lại từ dòng `PlanTimes` ngay trước đó (join `#tbl_Rpt_PlanRetailDtl_Previous`, chỉ khi
-// plan trước đã `PRStatus='A'`), còn 3 cột tỷ lệ `QtyNewSignPerTarget/QtyRetailedPerPlan/
-// QtyRetailAndCtrPerPlan` lại tính từ `QtyNewSignInMonth/QtyRetailed/QtyRetailAndCtr` — các cột
-// TỔNG HỢP đến từ job báo cáo khác, chưa có trong Mini. Port đúng 1:1 cần thiết kế lại cả carry-
-// forward + nguồn 3 cột tổng hợp đó trước, không phải việc vá 1-3 cụm trong 1 lượt — để lại cho
-// một phiên riêng.
+// 📌 #30085 (Round 73) — `Rpt_PlanRetail_Update` (`FrmRpt_PlanRetailDtl.cs:544` → `BizHTC.Report.cs:34417-35072`):
+// Carry-forward theo CASE trên `PlanTimes` (1-6): mỗi lần sửa chỉ ô `QtyPlanNth` khớp đúng `PlanTimes` hiện tại
+// lấy giá trị MỚI từ client, các ô `nth` NHỎ HƠN được chép lại từ dòng `PlanTimes` ngay trước đó (join `#tbl_Rpt_PlanRetailDtl_Previous`,
+// chỉ khi plan trước đã `PRStatus='A'`), kèm tính tự động các cột tỷ lệ `QtyNewSignPerTarget`, `QtyRetailedPerPlan`, `QtyRetailAndCtrPerPlan`.
 app.MapGet("/api/planretails", async (AppDbContext db, ITenantContext t, string? month, string? dealer, string? status) =>
 {
     var qy = db.PlanRetails.Where(x => x.OrgId == t.OrgId);
@@ -17976,6 +17968,7 @@ app.MapGet("/api/planretails", async (AppDbContext db, ITenantContext t, string?
     {
         x.Id, x.PlanMonth, x.PlanTimes, x.PlanTimesPrev, x.DealerCode, x.PRStatus,
         x.ApprovedBy, x.ApprovedDate, x.CancelBy, x.CancelDate, x.CreatedBy, x.CreatedAt,
+        x.Remark, x.UpdateDTime, x.UpdateBy, x.LogLUDateTime, x.LogLUBy,
         lines = db.PlanRetailDtls.Count(l => l.OrgId == t.OrgId && l.PlanRetailId == x.Id),
         totalQty = db.PlanRetailDtls.Where(l => l.OrgId == t.OrgId && l.PlanRetailId == x.Id).Sum(l => (int?)l.Quantity) ?? 0
     }).ToListAsync();
@@ -17992,19 +17985,55 @@ app.MapPost("/api/planretails", async (PlanRetailDto dto, AppDbContext db, ITena
     if (await db.PlanRetails.AnyAsync(x => x.OrgId == t.OrgId && x.PlanMonth == month && x.PlanTimes == times && x.DealerCode == dealer))
         return Results.BadRequest(new { error = $"Kế hoạch {month} lần {times} của đại lý {dealer} đã tồn tại!" });
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var h = new PlanRetail
     {
         OrgId = t.OrgId, PlanMonth = month, PlanTimes = times, PlanTimesPrev = dto.PlanTimesPrev,
-        DealerCode = dealer, PRStatus = "P",
-        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        DealerCode = dealer, PRStatus = "P", Remark = dto.Remark,
+        CreatedBy = who, CreatedAt = DateTime.Now,
+        LogLUDateTime = DateTime.Now, LogLUBy = who
     };
     db.PlanRetails.Add(h); await db.SaveChangesAsync();
-    var lines = (dto.Lines ?? new()).Where(l => l.Quantity > 0).ToList();
+    var lines = (dto.Lines ?? new()).Where(l => l.Quantity > 0 || (l.QtyPlan1st ?? 0) > 0 || (l.QtyPlan2nd ?? 0) > 0 || (l.QtyPlan3rd ?? 0) > 0 || (l.QtyPlan4th ?? 0) > 0 || (l.QtyPlan5th ?? 0) > 0 || (l.QtyPlan6th ?? 0) > 0).ToList();
     foreach (var l in lines)
-        db.PlanRetailDtls.Add(new PlanRetailDtl { OrgId = t.OrgId, PlanRetailId = h.Id, ModelCode = l.ModelCode, SpecCode = l.SpecCode, ColorCode = l.ColorCode, Quantity = l.Quantity });
+    {
+        int p1 = l.QtyPlan1st ?? 0, p2 = l.QtyPlan2nd ?? 0, p3 = l.QtyPlan3rd ?? 0, p4 = l.QtyPlan4th ?? 0, p5 = l.QtyPlan5th ?? 0, p6 = l.QtyPlan6th ?? 0;
+        int activeQty = l.Quantity > 0 ? l.Quantity : (times switch {
+            "1" => p1, "2" => p2, "3" => p3, "4" => p4, "5" => p5, "6" => p6, _ => 0
+        });
+        if (times == "1" && p1 == 0 && activeQty > 0) p1 = activeQty;
+        else if (times == "2" && p2 == 0 && activeQty > 0) p2 = activeQty;
+        else if (times == "3" && p3 == 0 && activeQty > 0) p3 = activeQty;
+        else if (times == "4" && p4 == 0 && activeQty > 0) p4 = activeQty;
+        else if (times == "5" && p5 == 0 && activeQty > 0) p5 = activeQty;
+        else if (times == "6" && p6 == 0 && activeQty > 0) p6 = activeQty;
+
+        var dtl = new PlanRetailDtl
+        {
+            OrgId = t.OrgId, PlanRetailId = h.Id,
+            ModelCode = l.ModelCode, SpecCode = l.SpecCode, ColorCode = l.ColorCode,
+            Quantity = activeQty,
+            QtyAvailDealer = l.QtyAvailDealer ?? 0,
+            QtyCtrSignTarget = l.QtyCtrSignTarget ?? 0,
+            QtyPlan1st = p1, QtyPlan2nd = p2, QtyPlan3rd = p3,
+            QtyPlan4th = p4, QtyPlan5th = p5, QtyPlan6th = p6,
+            QtyNewSignInMonth = l.QtyNewSignInMonth ?? 0,
+            QtyRetailed = l.QtyRetailed ?? 0,
+            QtyRetailAndCtr = l.QtyRetailAndCtr ?? 0,
+            LogLUDateTime = DateTime.Now, LogLUBy = who
+        };
+        if (dtl.QtyCtrSignTarget > 0 && dtl.QtyNewSignInMonth > 0)
+            dtl.QtyNewSignPerTarget = Math.Round(((decimal)dtl.QtyNewSignInMonth / dtl.QtyCtrSignTarget) * 100m, 1);
+        if (activeQty > 0 && dtl.QtyRetailed > 0)
+            dtl.QtyRetailedPerPlan = Math.Round(((decimal)dtl.QtyRetailed / activeQty) * 100m, 1);
+        if (activeQty > 0 && dtl.QtyRetailAndCtr > 0)
+            dtl.QtyRetailAndCtrPerPlan = Math.Round(((decimal)dtl.QtyRetailAndCtr / activeQty) * 100m, 1);
+
+        db.PlanRetailDtls.Add(dtl);
+    }
     // Nguồn ghi CÙNG LÚC bảng gộp theo model (Rpt_PlanRetailModel) — gộp từ chi tiết.
     foreach (var g in lines.Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).GroupBy(l => l.ModelCode!.Trim().ToUpperInvariant()))
-        db.PlanRetailModels.Add(new PlanRetailModel { OrgId = t.OrgId, PlanRetailId = h.Id, ModelCode = g.Key, Quantity = g.Sum(x => x.Quantity) });
+        db.PlanRetailModels.Add(new PlanRetailModel { OrgId = t.OrgId, PlanRetailId = h.Id, ModelCode = g.Key, Quantity = g.Sum(x => x.Quantity > 0 ? x.Quantity : (times switch { "1" => x.QtyPlan1st ?? 0, "2" => x.QtyPlan2nd ?? 0, "3" => x.QtyPlan3rd ?? 0, "4" => x.QtyPlan4th ?? 0, "5" => x.QtyPlan5th ?? 0, "6" => x.QtyPlan6th ?? 0, _ => 0 })) });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.DealerCode, status = h.PRStatus, lines = lines.Count });
 }).RequireAuthorization();
@@ -18014,12 +18043,216 @@ app.MapGet("/api/planretails/{id}/lines", async (long id, AppDbContext db, ITena
     var h = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (h is null) return Results.NotFound(new { id });
     var lines = await db.PlanRetailDtls.Where(l => l.OrgId == t.OrgId && l.PlanRetailId == id)
-        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.Quantity }).ToListAsync();
+        .Select(l => new {
+            l.Id, l.ModelCode, l.SpecCode, l.ColorCode, l.Quantity,
+            l.QtyAvailDealer, l.QtyCtrSignTarget,
+            l.QtyPlan1st, l.QtyPlan2nd, l.QtyPlan3rd, l.QtyPlan4th, l.QtyPlan5th, l.QtyPlan6th,
+            l.QtyNewSignInMonth, l.QtyNewSignPerTarget,
+            l.QtyRetailed, l.QtyRetailedPerPlan,
+            l.QtyRetailAndCtr, l.QtyRetailAndCtrPerPlan,
+            l.LogLUDateTime, l.LogLUBy
+        }).ToListAsync();
     var byModel = await db.PlanRetailModels.Where(m => m.OrgId == t.OrgId && m.PlanRetailId == id)
         .Select(m => new { m.ModelCode, m.Quantity }).ToListAsync();
     return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.PlanTimesPrev, h.DealerCode, h.PRStatus,
-        h.ApprovedBy, h.ApprovedDate, h.CancelBy, h.CancelDate, h.CreatedBy, h.CreatedAt,   // #1402 §12
+        h.ApprovedBy, h.ApprovedDate, h.CancelBy, h.CancelDate, h.CreatedBy, h.CreatedAt,
+        h.Remark, h.UpdateDTime, h.UpdateBy, h.LogLUDateTime, h.LogLUBy,
         count = lines.Count, lines, byModel });
+}).RequireAuthorization();
+
+static async Task<IResult> ExecutePlanRetailUpdateAsync(PlanRetail h, string? remark, List<PlanRetailUpdateLineDto>? inputLines, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user)
+{
+    // Guard nguồn Rpt_PlanRetail_CheckDB: strPRStatusListToCheck = "P, C"
+    if (h.PRStatus != "P" && h.PRStatus != "C")
+        return Results.BadRequest(new { error = $"Kế hoạch đang ở '{h.PRStatus}' — chỉ được sửa kế hoạch ở trạng thái mới tạo (P) hoặc đã từ chối (C)." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    h.Remark = remark;
+    h.UpdateDTime = DateTime.Now;
+    h.UpdateBy = who;
+    h.LogLUDateTime = DateTime.Now;
+    h.LogLUBy = who;
+
+    int currentTimes = int.TryParse(h.PlanTimes, out var pt) ? pt : 1;
+    int prevTimes = currentTimes - 1;
+    Dictionary<string, PlanRetailDtl>? prevDict = null;
+    if (prevTimes > 0)
+    {
+        var prevPlan = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == h.DealerCode && x.PlanMonth == h.PlanMonth && x.PlanTimes == prevTimes.ToString() && x.PRStatus == "A");
+        if (prevPlan != null)
+        {
+            var prevDtls = await db.PlanRetailDtls.Where(x => x.OrgId == t.OrgId && x.PlanRetailId == prevPlan.Id).ToListAsync();
+            prevDict = new Dictionary<string, PlanRetailDtl>(StringComparer.OrdinalIgnoreCase);
+            foreach (var d in prevDtls)
+            {
+                var k = (d.ModelCode ?? "").Trim() + "|" + (d.SpecCode ?? "").Trim();
+                if (!prevDict.ContainsKey(k)) prevDict[k] = d;
+            }
+        }
+    }
+
+    var currentDtls = await db.PlanRetailDtls.Where(x => x.OrgId == t.OrgId && x.PlanRetailId == h.Id).ToListAsync();
+    var dtlMap = new Dictionary<string, PlanRetailDtl>(StringComparer.OrdinalIgnoreCase);
+    foreach (var d in currentDtls)
+    {
+        var k = (d.ModelCode ?? "").Trim() + "|" + (d.SpecCode ?? "").Trim();
+        if (!dtlMap.ContainsKey(k)) dtlMap[k] = d;
+    }
+
+    int updatedCount = 0;
+    foreach (var line in (inputLines ?? new()))
+    {
+        var k = (line.ModelCode ?? "").Trim() + "|" + (line.SpecCode ?? "").Trim();
+        if (!dtlMap.TryGetValue(k, out var dtl))
+        {
+            dtl = new PlanRetailDtl
+            {
+                OrgId = t.OrgId,
+                PlanRetailId = h.Id,
+                ModelCode = line.ModelCode,
+                SpecCode = line.SpecCode,
+                ColorCode = line.ColorCode
+            };
+            db.PlanRetailDtls.Add(dtl);
+            dtlMap[k] = dtl;
+        }
+
+        if (line.QtyAvailDealer.HasValue) dtl.QtyAvailDealer = line.QtyAvailDealer.Value;
+        if (line.QtyCtrSignTarget.HasValue) dtl.QtyCtrSignTarget = line.QtyCtrSignTarget.Value;
+        if (line.QtyNewSignInMonth.HasValue) dtl.QtyNewSignInMonth = line.QtyNewSignInMonth.Value;
+        if (line.QtyRetailed.HasValue) dtl.QtyRetailed = line.QtyRetailed.Value;
+        if (line.QtyRetailAndCtr.HasValue) dtl.QtyRetailAndCtr = line.QtyRetailAndCtr.Value;
+
+        PlanRetailDtl? prevDtl = null;
+        if (prevDict != null) prevDict.TryGetValue(k, out prevDtl);
+
+        int p1 = 0, p2 = 0, p3 = 0, p4 = 0, p5 = 0, p6 = 0;
+        switch (currentTimes)
+        {
+            case 1:
+                p1 = line.QtyPlan1st ?? dtl.QtyPlan1st;
+                break;
+            case 2:
+                p1 = prevDtl?.QtyPlan1st ?? 0;
+                p2 = line.QtyPlan2nd ?? dtl.QtyPlan2nd;
+                break;
+            case 3:
+                p1 = prevDtl?.QtyPlan1st ?? 0;
+                p2 = prevDtl?.QtyPlan2nd ?? 0;
+                p3 = line.QtyPlan3rd ?? dtl.QtyPlan3rd;
+                break;
+            case 4:
+                p1 = prevDtl?.QtyPlan1st ?? 0;
+                p2 = prevDtl?.QtyPlan2nd ?? 0;
+                p3 = prevDtl?.QtyPlan3rd ?? 0;
+                p4 = line.QtyPlan4th ?? dtl.QtyPlan4th;
+                break;
+            case 5:
+                p1 = prevDtl?.QtyPlan1st ?? 0;
+                p2 = prevDtl?.QtyPlan2nd ?? 0;
+                p3 = prevDtl?.QtyPlan3rd ?? 0;
+                p4 = prevDtl?.QtyPlan4th ?? 0;
+                p5 = line.QtyPlan5th ?? dtl.QtyPlan5th;
+                break;
+            case 6:
+                p1 = prevDtl?.QtyPlan1st ?? 0;
+                p2 = prevDtl?.QtyPlan2nd ?? 0;
+                p3 = prevDtl?.QtyPlan3rd ?? 0;
+                p4 = prevDtl?.QtyPlan4th ?? 0;
+                p5 = prevDtl?.QtyPlan5th ?? 0;
+                p6 = line.QtyPlan6th ?? dtl.QtyPlan6th;
+                break;
+            default:
+                p1 = line.QtyPlan1st ?? dtl.QtyPlan1st;
+                break;
+        }
+
+        dtl.QtyPlan1st = p1;
+        dtl.QtyPlan2nd = p2;
+        dtl.QtyPlan3rd = p3;
+        dtl.QtyPlan4th = p4;
+        dtl.QtyPlan5th = p5;
+        dtl.QtyPlan6th = p6;
+
+        int activePlanQty = currentTimes switch
+        {
+            1 => p1,
+            2 => p2,
+            3 => p3,
+            4 => p4,
+            5 => p5,
+            6 => p6,
+            _ => p1
+        };
+        dtl.Quantity = line.Quantity.HasValue && line.Quantity.Value > 0 ? line.Quantity.Value : activePlanQty;
+
+        if (dtl.QtyCtrSignTarget > 0 && dtl.QtyNewSignInMonth > 0)
+            dtl.QtyNewSignPerTarget = Math.Round(((decimal)dtl.QtyNewSignInMonth / dtl.QtyCtrSignTarget) * 100m, 1);
+        else
+            dtl.QtyNewSignPerTarget = 0;
+
+        if (activePlanQty > 0 && dtl.QtyRetailed > 0)
+            dtl.QtyRetailedPerPlan = Math.Round(((decimal)dtl.QtyRetailed / activePlanQty) * 100m, 1);
+        else
+            dtl.QtyRetailedPerPlan = 0;
+
+        if (activePlanQty > 0 && dtl.QtyRetailAndCtr > 0)
+            dtl.QtyRetailAndCtrPerPlan = Math.Round(((decimal)dtl.QtyRetailAndCtr / activePlanQty) * 100m, 1);
+        else
+            dtl.QtyRetailAndCtrPerPlan = 0;
+
+        dtl.LogLUDateTime = DateTime.Now;
+        dtl.LogLUBy = who;
+        updatedCount++;
+    }
+
+    // Nguồn ghi CÙNG LÚC bảng gộp theo model (Rpt_PlanRetailModel) — đồng bộ lại Quantity theo ModelCode
+    var models = await db.PlanRetailModels.Where(m => m.OrgId == t.OrgId && m.PlanRetailId == h.Id).ToListAsync();
+    var allDtls = dtlMap.Values.ToList();
+    foreach (var g in allDtls.Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).GroupBy(l => l.ModelCode!.Trim().ToUpperInvariant()))
+    {
+        var m = models.FirstOrDefault(x => string.Equals(x.ModelCode, g.Key, StringComparison.OrdinalIgnoreCase));
+        if (m == null)
+        {
+            m = new PlanRetailModel { OrgId = t.OrgId, PlanRetailId = h.Id, ModelCode = g.Key, Quantity = g.Sum(x => x.Quantity) };
+            db.PlanRetailModels.Add(m);
+        }
+        else
+        {
+            m.Quantity = g.Sum(x => x.Quantity);
+        }
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.DealerCode, status = h.PRStatus, updatedLines = updatedCount, remark = h.Remark });
+}
+
+app.MapPost("/api/planretails/update", async (PlanRetailBatchUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
+    if (string.IsNullOrWhiteSpace(dto.PlanMonth)) return Results.BadRequest(new { error = "Cần PlanMonth." });
+    if (string.IsNullOrWhiteSpace(dto.PlanTimes)) return Results.BadRequest(new { error = "Cần PlanTimes." });
+    var month = dto.PlanMonth.Trim();
+    if (month.Length > 7 && month.EndsWith("-01")) month = month.Substring(0, 7);
+    var times = dto.PlanTimes.Trim();
+    var dealer = dto.DealerCode.Trim().ToUpperInvariant();
+    var h = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && (x.PlanMonth == month || x.PlanMonth == dto.PlanMonth.Trim()) && x.PlanTimes == times && x.DealerCode == dealer);
+    if (h is null) return Results.NotFound(new { error = $"Không tìm thấy kế hoạch {dto.PlanMonth} lần {times} của đại lý {dealer}." });
+    return await ExecutePlanRetailUpdateAsync(h, dto.Remark, dto.Lines, db, t, user);
+}).RequireAuthorization();
+
+app.MapPost("/api/planretails/{id}/update", async (long id, PlanRetailUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var h = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    return await ExecutePlanRetailUpdateAsync(h, dto.Remark, dto.Lines, db, t, user);
+}).RequireAuthorization();
+
+app.MapPut("/api/planretails/{id}", async (long id, PlanRetailUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var h = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    return await ExecutePlanRetailUpdateAsync(h, dto.Remark, dto.Lines, db, t, user);
 }).RequireAuthorization();
 
 app.MapPost("/api/planretails/{id}/{action}", async (long id, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -116417,7 +116650,26 @@ record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? Sales
 record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate, DateTime? WarrantyExpiresDate = null);
 record SbhBatchDto(List<string>? Vins);
 // Kế hoạch bán lẻ: khoá nghiệp vụ PlanMonth + PlanTimes + DealerCode.
-record PlanRetailDto(string PlanMonth, string PlanTimes, string DealerCode, List<PlanRetailLineDto>? Lines, string? PlanTimesPrev = null);
+record PlanRetailDto(string PlanMonth, string PlanTimes, string DealerCode, List<PlanRetailLineDto>? Lines, string? PlanTimesPrev = null, string? Remark = null);
+record PlanRetailUpdateLineDto(
+    string? ModelCode,
+    string? SpecCode,
+    string? ColorCode = null,
+    int? Quantity = null,
+    int? QtyAvailDealer = null,
+    int? QtyCtrSignTarget = null,
+    int? QtyPlan1st = null,
+    int? QtyPlan2nd = null,
+    int? QtyPlan3rd = null,
+    int? QtyPlan4th = null,
+    int? QtyPlan5th = null,
+    int? QtyPlan6th = null,
+    int? QtyNewSignInMonth = null,
+    int? QtyRetailed = null,
+    int? QtyRetailAndCtr = null
+);
+record PlanRetailUpdateDto(string? Remark, List<PlanRetailUpdateLineDto>? Lines);
+record PlanRetailBatchUpdateDto(string DealerCode, string PlanMonth, string PlanTimes, string? Remark, List<PlanRetailUpdateLineDto>? Lines);
 // Nhật ký gọi API GPS: một dòng cho RQ, một dòng cho RS, chung LogId.
 record GpsCallLogDto(string? LogId, string? LogType, string? Status, string? Exception, string? DataSend, string? DataResponse, string? IDMSKey, string? FunctionName, string? FunctionType, string? Trycount, string? Url, string? Remark);
 // Nhật ký đẩy xe sang CarService: ErrCode "0" = thành công.
@@ -116568,7 +116820,13 @@ record TcgInvoiceUpdateNoDto(string? TCGInvoiceNo, DateTime? TCGInvoiceDate, str
 record TcgInvoiceKeyDto(string? TCGInvoiceCode);
 record AdjDeleteReasonDto(string? Adj_DeleteReason, string? InvoicePrintNo, string? BeforeAdj_DeleteRemark, string? AfterAdj_DeleteRemark);   // #330
 record TcgInvoiceDetailKeyDto(string? TCGInvoiceCode, string? VIN);
-record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity);
+record PlanRetailLineDto(string? ModelCode, string? SpecCode, string? ColorCode, int Quantity,
+    int? QtyAvailDealer = null, int? QtyCtrSignTarget = null,
+    int? QtyPlan1st = null, int? QtyPlan2nd = null, int? QtyPlan3rd = null,
+    int? QtyPlan4th = null, int? QtyPlan5th = null, int? QtyPlan6th = null,
+    int? QtyNewSignInMonth = null, decimal? QtyNewSignPerTarget = null,
+    int? QtyRetailed = null, decimal? QtyRetailedPerPlan = null,
+    int? QtyRetailAndCtr = null, decimal? QtyRetailAndCtrPerPlan = null);
 record GpsVinSyncRowDto(string VIN, string GpsId, string MapTime);
 record GpsVinSyncDto(List<GpsVinSyncRowDto>? Rows);
 record TranspDlvCarDto(string VIN, string? ModelCode);

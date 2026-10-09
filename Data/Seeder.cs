@@ -4337,6 +4337,28 @@ public static class Seeder
                 "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"RemarkCancel\" text NULL",
                 "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"CancelDTime\" timestamp NULL",
                 "ALTER TABLE public.\"BankGuaranteeDtls\" ADD COLUMN IF NOT EXISTS \"CancelBy\" text NULL",
+                // #30085 Rpt_PlanRetail_Update
+                "ALTER TABLE public.\"PlanRetails\" ADD COLUMN IF NOT EXISTS \"Remark\" text NULL",
+                "ALTER TABLE public.\"PlanRetails\" ADD COLUMN IF NOT EXISTS \"UpdateDTime\" timestamp NULL",
+                "ALTER TABLE public.\"PlanRetails\" ADD COLUMN IF NOT EXISTS \"UpdateBy\" text NULL",
+                "ALTER TABLE public.\"PlanRetails\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PlanRetails\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyAvailDealer\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyCtrSignTarget\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyPlan1st\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyPlan2nd\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyPlan3rd\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyPlan4th\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyPlan5th\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyPlan6th\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyNewSignInMonth\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyNewSignPerTarget\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyRetailed\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyRetailedPerPlan\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyRetailAndCtr\" integer NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"QtyRetailAndCtrPerPlan\" numeric NOT NULL DEFAULT 0",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"LogLUDateTime\" timestamp NULL",
+                "ALTER TABLE public.\"PlanRetailDtls\" ADD COLUMN IF NOT EXISTS \"LogLUBy\" text NULL",
             }) try { await db.Database.ExecuteSqlRawAsync(sql); } catch { }
         if (!await db.Orgs.AnyAsync(o => o.Id == TenantContext.DefaultOrgId))
             db.Orgs.Add(new Org { Id = TenantContext.DefaultOrgId, Name = "HTC", ApiKey = "demo-htc" });
