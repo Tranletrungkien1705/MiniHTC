@@ -5439,6 +5439,8 @@ public sealed class Dms40SoRoot
     public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprDTime { get; set; }
+    /// <summary>Người duyệt cấp 1 (`ApprBy`) — nguồn ghi cùng `ApprDTime`.</summary>
+    public string? ApprBy { get; set; }
 
     // ===== #163 parity `DMS40_Ord_SalesOrderRoot_Finish_New20210521` (DataWH/BizHTC.Order.cs:1478, csproj 315) =====
     /// <summary>Thời điểm hoàn tất (`FinishDTime`) — nguồn ghi cùng `SORStatus = 'F'`; port cũ chỉ đổi trạng thái.</summary>
