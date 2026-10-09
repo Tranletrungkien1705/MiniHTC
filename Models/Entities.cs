@@ -14791,6 +14791,8 @@ public sealed class BankGuarantee
     public DateTime? DateEnd_Discount { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime? CancelDate { get; set; }
+    public string? CancelBy { get; set; }
 }
 
 /// <summary>Chi tiết bảo lãnh theo VIN (Pmt_GuaranteeDetail) — port 1:1 FrmBankGrt detail.</summary>
@@ -14827,6 +14829,11 @@ public sealed class BankGuaranteeDtl
     /// khi duyệt dòng đề nghị giao hồ sơ (không phải lúc tạo bảo lãnh).</summary>
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+
+    public string? CarId { get; set; }
+    public string? RemarkCancel { get; set; }
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
 
     // ===== check_cot_1to1.py báo thiếu PMPDAmount_Count/PMPDAmount_SumForGuarantee/PMPDDiscount_Sum
     //       (FrmBankGrt, TblGuaranteeDetail 20/23) — ĐÃ KHẢO SÁT, KHÔNG PHẢI CỘT BẢNG =====

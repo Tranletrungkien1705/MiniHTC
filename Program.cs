@@ -8075,9 +8075,9 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot,
-        g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.ApprovedAt,   // #1371 §12
+        g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.ApprovedAt, g.CancelDate, g.CancelBy,   // #1371 §12 + #30084
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -8321,17 +8321,73 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (
     return Results.Ok(new { g.GuaranteeNo, g.Status, g.FlagSettled, g.TermActual, g.TermWarning, g.RemarkReject, g.DateEnd, g.DateEnd_Discount });
 }).RequireAuthorization();
 
-// ⚠️ **NỢ** — kỹ thuật-7 (round 56) trace `PaymentGuaranteeSendEmail_CancelCarId` (TCFIntergration.cs:5728,
-//   caller thật `FrmNewGrt.cs:2418` — gọi SAU KHI từ chối/huỷ một vài xe trong bảo lãnh, chỉ để build file
-//   Excel đính kèm rồi queue 1 email thông báo, KHÔNG tự ghi dữ liệu nghiệp vụ nào ngoài hàng đợi email).
-//   Guard nguồn `myPayment_CheckGuarantee(..., strGuaranteeStatusListToCheck: "A, C")` cần trạng thái bảo
-//   lãnh là Approved HOẶC **Cancelled ("C")** — nhưng `BankGuarantee.Status` ở MiniHTC (bản CHUẨN Pmt_Guarantee,
-//   xem #349 phía trên) CHỈ từng đạt P→A→R qua `/api/bankgrts/{no}/{action}` (action=approve|reject|settle),
-//   KHÔNG có action nào gán "C" cả — nguồn gốc vấn đề là **toàn bộ hành động "huỷ 1 số xe trong bảo lãnh"
-//   (Pmt_GuaranteeDetail_Cancel hoặc tương đương) chưa được port**, không chỉ riêng bước gửi mail này.
-//   KHÔNG bịa action "cancel" nếu chưa đọc trọn luồng huỷ-theo-xe (khác biệt với reject toàn bộ bảo lãnh đã
-//   có) — cần một phiên riêng đọc `Pmt_GuaranteeDetail_*Cancel*`/`myPayment_CheckGuarantee` đầy đủ trước khi
-//   thiết kế action + entity + Seeder, không phải việc 1 cluster.
+// #30084 Nợ lớn: Huỷ dòng xe trong bảo lãnh (PaymentGuaranteeDetailCancel_New20230306)
+app.MapPost("/api/bankgrts/{no}/cancel-car", async (
+    string no, BankGrtCancelCarDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.RemarkCancel)) return Results.BadRequest(new { error = "Lý do huỷ là bắt buộc (RemarkCancel)." });
+    no = no.Trim().ToUpperInvariant();
+    var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
+    if (g is null) return Results.NotFound(new { no });
+
+    var vin = dto.Vin?.Trim().ToUpperInvariant();
+    var carId = dto.CarId?.Trim();
+    var dtl = await db.BankGuaranteeDtls.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id
+        && (c.VIN == vin || (carId != null && c.CarId == carId)));
+    if (dtl is null) return Results.NotFound(new { error = "Không tìm thấy xe trong bảo lãnh này." });
+
+    if (dtl.GuaranteeDetailStatus != "A")
+        return Results.BadRequest(new { error = "PaymentGuaranteeDetailCancel_GrtDtlStatusNotApproved" });
+
+    // Guard 1: Yêu cầu hồ sơ xe (DocReqCar)
+    var docReqs = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && (x.Vin == dtl.VIN || (dtl.CarId != null && x.Vin == dtl.CarId))).ToListAsync();
+    if (docReqs.Any(x => x.DRDtlStatus != "C" && x.DRDtlStatus != "R"))
+        return Results.BadRequest(new { error = "PaymentGuaranteeDetailCancel_InvalidDRDtlStatus" });
+
+    // Guard 2: Tổng thanh toán cho xe này phải = 0
+    var pmtDetails = await (from pd in db.PmtPaymentDetails
+                            join p in db.PmtPayments on pd.PaymentNo equals p.PaymentNo
+                            where pd.OrgId == t.OrgId && p.OrgId == t.OrgId
+                               && pd.GuaranteeNo == g.GuaranteeNo
+                               && (pd.CarId == dtl.VIN || (dtl.CarId != null && pd.CarId == dtl.CarId))
+                               && (p.PaymentStatus == "P" || p.PaymentStatus == "A" || p.PaymentStatus == "F")
+                            select pd.Amount).ToListAsync();
+    decimal sumPmt = pmtDetails.Sum(a => a ?? 0m);
+    if (sumPmt > 0)
+        return Results.BadRequest(new { error = "PaymentGuaranteeDetailCancel_AccumulatePaymentNotZero" });
+
+    // Update detail
+    dtl.GuaranteeDetailStatus = "C";
+    dtl.RemarkCancel = dto.RemarkCancel.Trim();
+    dtl.CancelDTime = DateTime.Now;
+    dtl.CancelBy = user.Identity?.Name ?? "system";
+    dtl.GrtValue = 0; // Trả lại hạn mức (BizHTC.WH.cs:40003 myPmt_GuaranteeDetail_Upd_GuaranteeValue)
+
+    // Cascade update header (myPmt_Guarantee_Upd_GrtStatus01_New20181119)
+    var allDtls = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
+    var activeStatuses = new[] { "P", "A", "A1", "A2", "F" };
+    if (!allDtls.Any(d => activeStatuses.Contains(d.GuaranteeDetailStatus)))
+    {
+        g.Status = "C";
+        g.CancelDate = DateTime.Now;
+        g.CancelBy = user.Identity?.Name ?? "system";
+    }
+    // Update TotalAmount
+    g.TotalAmount = allDtls.Sum(d => d.GrtValue);
+
+    await db.SaveChangesAsync();
+
+    // Hiệu ứng phụ: tính lại ngày kết thúc
+    await GrtDiscount.UpdDateEnd01(db, t.OrgId, new[] { g.GuaranteeNo }, user.Identity?.Name ?? "system");
+    await GrtDiscount.UpdDateEndDiscount(db, t.OrgId, new[] { g.GuaranteeNo }, user.Identity?.Name ?? "system");
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new {
+        g.GuaranteeNo, g.Status, g.TotalAmount, g.CancelDate,
+        dtl.VIN, dtl.GuaranteeDetailStatus, dtl.RemarkCancel, dtl.CancelDTime
+    });
+}).RequireAuthorization();
 
 // ===== Lệnh xuất xe - NH xác nhận nhận xe (BankDeliveryOrder — port 1:1 FrmBankDO, cụm Bank) =====
 app.MapGet("/api/bankdos", async (AppDbContext db, ITenantContext t, string? dealer, string? doNo, string? status,
@@ -116186,6 +116242,7 @@ record InvoiceSetupUpdateDto(string? FtColsUpd, string? FlagInvoiceHTMV = null, 
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
 record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
 record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int? NumberOfDaysDeferredPayment, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
+record BankGrtCancelCarDto(string? Vin, string? CarId, string RemarkCancel);   // #30084 port PaymentGuaranteeDetailCancel_New20230306
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
 record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars, string? BankCode = null, string? BankCodeMonitor = null, string? BankBUCode = null, string? GuaranteeType = null);
 record BankDoConfirmDto(string? Remark);
