@@ -13818,6 +13818,8 @@ public sealed class CarVinMaster
     /// `group by cv.WorkOrderNo, cv.SpecCode, cv.ModelCode, cv.ColorCode` (`Biz.HTC.WH.cs:166864`).
     /// Không có cột này thì không đối chiếu được VIN thực tế với lịch sản xuất theo WO.</summary>
     public string? WorkOrderNo { get; set; }
+    /// <summary>Số Work Order tạm của xe (`Car_Car.WorkOrderNoTemp`) — 1 trong các bộ lọc màn tìm xe.</summary>
+    public string? WorkOrderNoTemp { get; set; }
     /// <summary>Ngày CO (`Car_VIN.CODate`).</summary>
     public DateTime? CODate { get; set; }
     /// <summary>Ngân hàng nhận BÀN GIAO hồ sơ xe (`Car_Vin.HandOverBankCode`) — lấy từ

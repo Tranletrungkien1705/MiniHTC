@@ -3762,6 +3762,7 @@ public static class Seeder
                 // ===== #B74 `WO_ScheduleDetail` — hai cột lịch SX =====
                 "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"WorkOrderNo\" text NULL",   // #B74
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"WorkOrderNoTemp\" text NULL",   // #30089 Car_Car.WorkOrderNoTemp
                 // ===== #B77 `Ord_SalesOrderDetail` — ba mốc suy ra =====
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"DepositDutyEndDate\" timestamp NULL",
                 "ALTER TABLE public.\"SalesOrderLines\" ADD COLUMN IF NOT EXISTS \"GrtEndDate\" timestamp NULL",

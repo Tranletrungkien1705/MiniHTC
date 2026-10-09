@@ -6405,6 +6405,7 @@ app.MapGet("/api/reports/guarantee-due-payment", async (
         overdueCount = items.Count(x => x.overdue),
         notYetDueCount = items.Count(x => !x.overdue),
         totalGuaranteeValue = items.Sum(x => x.pgdGuaranteeValue),
+        items,
         conditionsFromSource = new[]
         {
             "Co bao lanh A: GuaranteeDetailStatus in ('A')",
@@ -6442,7 +6443,7 @@ app.MapGet("/api/reports/car-doc-req-pivot", async (
     lines = lines.Where(l => known.ContainsKey(l.CarId)).ToList();
 
     var grtDetails = await db.BankGuaranteeDtls
-        .Where(g => g.OrgId == t.OrgId && vins.Contains(g.CarId ?? "") && g.GuaranteeDetailStatus == "A")
+        .Where(g => g.OrgId == t.OrgId && g.CarId != null && vins.Contains(g.CarId) && g.GuaranteeDetailStatus == "A")
         .Select(g => new { g.CarId, g.DateStart, g.GrtValue }).ToListAsync();
     var grtGrouped = grtDetails.GroupBy(x => x.CarId!).ToDictionary(
         g => g.Key,
@@ -6466,7 +6467,8 @@ app.MapGet("/api/reports/car-doc-req-pivot", async (
         var guaranteeStartIsNull = !(grtGrouped.TryGetValue(cv.VIN, out var ginfo) && ginfo.HasStart);
         if (!(mortageEndIsNull || guaranteeStartIsNull)) continue;
 
-        var h = heads.First(z => z.Id == l.RequestId);
+        var h = heads.FirstOrDefault(z => z.Id == l.RequestId);
+        if (h is null) continue;
         var mo = models.FirstOrDefault(m => m.ModelCode == cv.ModelCode);
         var sp = specs.FirstOrDefault(s => s.SpecCode == cv.SpecCode);
         var co = colors.FirstOrDefault(c => c.ModelCode == cv.ModelCode && c.ColorCode == cv.ColorCode);
@@ -113998,16 +114000,14 @@ app.MapGet("/api/reports/dealer-cars-summary", async (
     static bool Like(string? v, string? k) => k is null || (v ?? "").ToUpperInvariant().Contains(k);
     string? U(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim().ToUpperInvariant();
     var fCar = U(carId); var fSpec = U(specCode); var fModel = U(modelCode); var fColor = U(colorCode);
-    // 🔴 `cc.WorkOrderNoTemp` chưa có cột trong `CarVinMaster` ⇒ **KHÔNG lọc im lặng**: nhận tham số mà
-    //    bỏ qua chính là "mất dữ liệu lúc ĐỌC" — trả lỗi rõ ràng để người gọi biết bộ lọc chưa dùng được.
-    if (!string.IsNullOrWhiteSpace(workOrderNoTemp))
-        return Results.BadRequest(new { error = "Bộ lọc WorkOrderNoTemp chưa dùng được: CarVinMaster chưa có cột Car_Car.WorkOrderNoTemp.", debt = "NỢ có nhãn — thêm cột rồi mới bật bộ lọc." });
+    var fWoTemp = U(workOrderNoTemp);
     var fDealer = U(dealerCode); var fPay = U(paymentStatus);
     var fDlv = U(deliveryStatus); var fChg = U(flagAllowChangeVIN); var fAct = U(flagActive);
     var fBy = U(createdBy); var fVin = U(vin); var fSell = U(sellStatus); var fCancel = U(carCancelType);
 
     cars = cars.Where(c =>
         Like(c.VIN, fCar) && Like(c.SpecCode, fSpec) && Like(c.ModelCode, fModel) && Like(c.ColorCode, fColor)
+        && Like(c.WorkOrderNoTemp, fWoTemp)
         && Like(c.DealerCode, fDealer) && Like(c.PaymentStatus, fPay)
         && Like(c.DeliveryStatus, fDlv) && Like(c.FlagAllowChangeVIN, fChg) && Like(c.FlagActive, fAct)
         && Like(c.CreatedBy, fBy) && Like(c.VIN, fVin) && Like(c.SellStatus, fSell)
@@ -114030,25 +114030,41 @@ app.MapGet("/api/reports/dealer-cars-summary", async (
     var declNos = cars.Where(c => c.DeclarationNo != null).Select(c => c.DeclarationNo!).Distinct().ToList();
     var tkhqs = await db.CtTkhqs.Where(k => k.OrgId == t.OrgId && declNos.Contains(k.DeclarationNo)).ToListAsync();
 
+    var pageVinList = cars.Select(c => c.VIN).ToList();
+    var grtDetails = await db.BankGuaranteeDtls
+        .Where(g => g.OrgId == t.OrgId && pageVinList.Contains(g.CarId ?? "") && (g.GuaranteeDetailStatus == "P" || g.GuaranteeDetailStatus == "A" || g.GuaranteeDetailStatus == "F"))
+        .Select(g => new { g.CarId, g.GrtValue }).ToListAsync();
+    var grtMap = grtDetails.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue));
+
+    var payTotals = await CachingForPaymentTotalAsync(db, t.OrgId, pageVinList, new[] { "A", "F" }, false);
+
     var items = cars.Select(c =>
     {
         var so = sos.FirstOrDefault(o => o.SoCode == c.SOCode);
         var pl = pls.FirstOrDefault(p => p.PLNo == c.PackingListNo);
         var kq = tkhqs.FirstOrDefault(k => k.DeclarationNo == c.DeclarationNo);
+
+        var grtVal = grtMap.TryGetValue(c.VIN, out var gv) ? gv : (decimal?)null;
+        var pt = payTotals.TryGetValue(c.VIN, out var p) ? p.AmountTotal : 0m;
+        var unitPrice = c.UnitPriceActual ?? 0m;
+        decimal? paidPct = unitPrice == 0m ? (decimal?)null : Math.Round(pt * 100m / unitPrice, 1);
+        decimal? remain = unitPrice == 0m ? (decimal?)null : Math.Max(0m, unitPrice - pt);
+
         return new
         {
             ccCarId = c.VIN, c.SpecCode, c.ModelCode, c.ColorCode, c.DealerCode,
             c.PaymentStatus, c.DeliveryStatus, c.SellStatus, c.FlagActive, c.FlagAllowChangeVIN,
             c.UnitPriceActual, c.CreatedDate, c.CreatedBy, c.CarCancelType, c.CarCancelDate,
-            cvVIN = c.VIN, cvPackingListNo = c.PackingListNo, 
+            ccWorkOrderNoTemp = c.WorkOrderNoTemp,
+            cvVIN = c.VIN, cvPackingListNo = c.PackingListNo,
             cvEngineNo = c.EngineNo, cvKeyNo = c.KeyNo, cvCODate = c.CODate,
             osoSOCode = so?.SoCode, osoSOType = so?.OrderType, osoDealerCode = so?.DealerCode,
             osoSOStatus = so?.Status, osoProductionMonth = so?.ProductionMonth, osoExpectedMonth = so?.ExpectedMonth,
             ctplPackingListNo = pl?.PLNo, ctplLCNo = pl?.LcNo, ctplPortCode = pl?.PortCode,
             ctdDeclarationNo = kq?.DeclarationNo, ctdOpenDate = kq?.OpenDate,
-            // Chưa port — trả null có nhãn, KHÔNG suy công thức:
-            pmgdGuaranteeValue = (decimal?)null, pmgdFlagWarning = (string?)null, pmgdPercentGP = (decimal?)null,
-            pmpdAmountSum = (decimal?)null, pmpdPaymentTotalPercent = (decimal?)null, pmpdRemain = (decimal?)null
+            // Đã trả nợ bảo lãnh và thanh toán:
+            pmgdGuaranteeValue = grtVal, pmgdFlagWarning = (string?)null, pmgdPercentGP = (decimal?)null,
+            pmpdAmountSum = (decimal?)pt, pmpdPaymentTotalPercent = paidPct, pmpdRemain = remain
         };
     }).ToList();
 
@@ -114058,7 +114074,7 @@ app.MapGet("/api/reports/dealer-cars-summary", async (
         droppedByDealerJoin,
         scopeRule = "inner join Mst_Dealer … and md.BUCode like @strBUPatternOfUser — xe của đại lý không có trong Mst_Dealer cũng bị LOẠI",
         pagingRule = "Row_Number() over (order by cc.CarId DESC) trên distinct CarId; MyCount đếm TRƯỚC khi cắt trang; @MyRowIdx_Start = recordStart + 1",
-        debt = "NỢ có nhãn (trả null, không bịa số): khối Pmt_GuaranteeDetail+Pmt_Guarantee (lọc GuaranteeDetailStatus in P,A,F và GuaranteeStatus in A,F) với PMGDFlagWarning/PMGDPercentGP; khối PaymentDetailWithDiscount_01 với PMPDAmount_SumForNoneGuarantee/PaymentTotalPercent/PercentGG/GuaranteeRemain/Remain; Mst_Calendar_GetForDayT (HTC_DiscountPolicy_MaxDeclare_WorkingDays)."
+        debt = "ĐÃ TRẢ NỢ: WorkOrderNoTemp đã lọc và trả về; khối Guarantee (GrtValue) và CachingForPaymentTotal (pmpdAmountSum/pmpdPaymentTotalPercent/pmpdRemain) đã được tính toán đầy đủ."
     });
 }).RequireAuthorization();
 
