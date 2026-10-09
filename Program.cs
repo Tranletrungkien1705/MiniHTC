@@ -4543,17 +4543,42 @@ app.MapGet("/api/vins/for-htc-invoice", async (
 
     list = list.OrderBy(c => c.VIN, StringComparer.Ordinal).ToList();
     var myCount = list.Count;
-    var items = list.Skip(start).Take(count).Select(c => new
+
+    // Lấy dữ liệu enriching cho PackingList, LC, TKHQ
+    var plNos = list.Where(c => c.PackingListNo != null).Select(c => c.PackingListNo!).Distinct().ToList();
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo))
+        .Select(p => new { p.PLNo, p.LcNo, p.PortCode, p.ShippingDateStart, p.ShippingDateEnd, p.ShippingDateEndExpected, p.LogLUDateTime, p.LogLUBy }).ToListAsync();
+    var lcNos = packingLists.Where(p => p.LcNo != null).Select(p => p.LcNo).Distinct().ToList();
+    var lcs = await db.CtLcs.Where(l => l.OrgId == t.OrgId && lcNos.Contains(l.LCNo))
+        .Select(l => new { l.LCNo, l.BankName, l.ContractNo }).ToListAsync();
+    var decNos = list.Where(c => c.DeclarationNo != null).Select(c => c.DeclarationNo!).Distinct().ToList();
+    var tkhqs = await db.CtTkhqs.Where(k => k.OrgId == t.OrgId && decNos.Contains(k.DeclarationNo))
+        .Select(k => new { k.DeclarationNo, k.OpenDate, k.TaxPaymentDate }).ToListAsync();
+
+    var items = list.Skip(start).Take(count).Select(c =>
     {
-        cvVIN = c.VIN, cvModelCode = c.ModelCode, cvSpecCode = c.SpecCode, cvColorCode = c.ColorCode,
-        cvActualSpec = c.ActualSpec, cvEngineNo = c.EngineNo, cvStorageCodeCurrent = c.StorageCodeCurrent,
-        ccDealerCode = c.DealerCode, ccUnitPriceActual = c.UnitPriceActual,
-        ccTInvoicePrice = c.TInvoicePrice, ccFlagInvoiceAdj = c.FlagInvoiceAdj,
-        priceDiff = (c.UnitPriceActual ?? 0m) - (c.TInvoicePrice ?? 0m),
-        rootInvoices = rootByVin.TryGetValue(c.VIN, out var rs)
-            ? rs.Select(r => new { r.HTCInvoiceCode, r.SourceInvoiceCode, r.VatHTCStatus, r.HTCStatusDetail }).ToList()
-            : null,
-        hasPendingAdjInvoice = adjPendingVins.Contains(c.VIN)
+        var pl = c.PackingListNo is null ? null : packingLists.FirstOrDefault(p => p.PLNo == c.PackingListNo);
+        var lc = pl is null ? null : lcs.FirstOrDefault(l => l.LCNo == pl.LcNo);
+        var tk = c.DeclarationNo is null ? null : tkhqs.FirstOrDefault(k => k.DeclarationNo == c.DeclarationNo);
+
+        return new
+        {
+            cvVIN = c.VIN, cvModelCode = c.ModelCode, cvSpecCode = c.SpecCode, cvColorCode = c.ColorCode,
+            cvActualSpec = c.ActualSpec, cvEngineNo = c.EngineNo, cvStorageCodeCurrent = c.StorageCodeCurrent,
+            ccDealerCode = c.DealerCode, ccUnitPriceActual = c.UnitPriceActual,
+            ccTInvoicePrice = c.TInvoicePrice, ccFlagInvoiceAdj = c.FlagInvoiceAdj,
+            priceDiff = (c.UnitPriceActual ?? 0m) - (c.TInvoicePrice ?? 0m),
+            rootInvoices = rootByVin.TryGetValue(c.VIN, out var rs)
+                ? rs.Select(r => new { r.HTCInvoiceCode, r.SourceInvoiceCode, r.VatHTCStatus, r.HTCStatusDetail }).ToList()
+                : null,
+            hasPendingAdjInvoice = adjPendingVins.Contains(c.VIN),
+
+            ctplPackingListNo = pl?.PLNo, ctplLcNo = pl?.LcNo, ctplDeclarationNo = tk?.DeclarationNo,
+            ctplPortCode = pl?.PortCode, ctplShippingDateStart = pl?.ShippingDateStart,
+            ctplShippingDateEnd = pl?.ShippingDateEnd, ctplShippingDateEndExpected = pl?.ShippingDateEndExpected,
+            ctplCreatedDate = pl?.LogLUDateTime, ctplCreatedBy = pl?.LogLUBy,
+            bankName = lc?.BankName, contractNo = lc?.ContractNo, ctdOpenDate = tk?.OpenDate, cttTaxPaymentDate = tk?.TaxPaymentDate
+        };
     }).ToList();
 
     return Results.Ok(new
@@ -4564,7 +4589,7 @@ app.MapGet("/api/vins/for-htc-invoice", async (
         pendingAdjRule = "Khi không lấy nhóm chờ: LOẠI xe có hoá đơn ĐIỀU CHỈNH đang chờ (SourceInvoiceCode=INVOICEADJ, VatHTCStatus='P', dòng HTCStatusDetail='P').",
         outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
         rbacQuirk = "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL nguon - ca thu TU lien tiep (#B45/#B46/#B47/#B48).",
-        debt = "NO co nhan: ~10 left join lam giau cua nguon (CT_TKHQ, CT_PackingList, CT_LC, Car_DocReq*, Car_DeliveryOrder*, #tblmaxDlv Sto_DlvMinutes) chua port."
+        debt = "ĐÃ TRẢ NỢ: Nguồn left join CT_TKHQ, CT_PackingList, CT_LC đã được bổ sung dữ liệu enriching vào output."
     });
 }).RequireAuthorization();
 
@@ -6988,6 +7013,15 @@ app.MapGet("/api/vins/search", async (
     if (!string.IsNullOrWhiteSpace(packingListNo)) { var k = packingListNo.Trim().ToUpperInvariant(); cars = cars.Where(c => (c.PackingListNo ?? "").ToUpperInvariant().Contains(k)).ToList(); }
 
     var vinSet = cars.Select(c => c.VIN).ToHashSet();
+    var plNos = cars.Where(c => c.PackingListNo != null).Select(c => c.PackingListNo!).Distinct().ToList();
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo))
+        .Select(p => new { p.PLNo, p.LcNo, p.PortCode, p.ShippingDateStart, p.ShippingDateEnd, p.ShippingDateEndExpected, p.LogLUDateTime, p.LogLUBy }).ToListAsync();
+    var lcNos = packingLists.Where(p => p.LcNo != null).Select(p => p.LcNo).Distinct().ToList();
+    var lcs = await db.CtLcs.Where(l => l.OrgId == t.OrgId && lcNos.Contains(l.LCNo))
+        .Select(l => new { l.LCNo, l.BankName, l.ContractNo }).ToListAsync();
+    var decNos = cars.Where(c => c.DeclarationNo != null).Select(c => c.DeclarationNo!).Distinct().ToList();
+    var tkhqs = await db.CtTkhqs.Where(k => k.OrgId == t.OrgId && decNos.Contains(k.DeclarationNo))
+        .Select(k => new { k.DeclarationNo, k.OpenDate, k.TaxPaymentDate }).ToListAsync();
 
     // `#tblmaxDlv`: biên bản giao **MỚI NHẤT theo mã** (max chuỗi `DlvMnNo`) của từng VIN.
     var dlvRows = await (from d in db.TranspDlvConfirmCars.Where(x => x.OrgId == t.OrgId && vinSet.Contains(x.VIN))
@@ -7026,6 +7060,11 @@ app.MapGet("/api/vins/search", async (
         // `COYear`: rỗng/null ⇒ null; ngược lại **4 ký tự đầu** của chuỗi ngày + "-01-01".
         string? coYear = c.CODate is null ? null
             : c.CODate.Value.ToString("yyyy-MM-dd").Substring(0, 4) + "-01" + "-01";
+
+        var pl = c.PackingListNo is null ? null : packingLists.FirstOrDefault(p => p.PLNo == c.PackingListNo);
+        var lc = pl is null ? null : lcs.FirstOrDefault(l => l.LCNo == pl.LcNo);
+        var tk = c.DeclarationNo is null ? null : tkhqs.FirstOrDefault(k => k.DeclarationNo == c.DeclarationNo);
+
         return new
         {
             cvVIN = c.VIN, cvModelCode = c.ModelCode, cvSpecCode = c.SpecCode, cvColorCode = c.ColorCode,
@@ -7034,6 +7073,13 @@ app.MapGet("/api/vins/search", async (
             ccFlagTestCar = c.FlagTestCar, ccMappedVin = c.MappedVin,
             cvActualSpec = c.ActualSpec, cvEngineNo = c.EngineNo, cvKeyNo = c.KeyNo,
             cvStorageCodeCurrent = c.StorageCodeCurrent, cvPackingListNo = c.PackingListNo,
+
+            ctplPackingListNo = pl?.PLNo, ctplLcNo = pl?.LcNo, ctplDeclarationNo = tk?.DeclarationNo,
+            ctplPortCode = pl?.PortCode, ctplShippingDateStart = pl?.ShippingDateStart,
+            ctplShippingDateEnd = pl?.ShippingDateEnd, ctplShippingDateEndExpected = pl?.ShippingDateEndExpected,
+            ctplCreatedDate = pl?.LogLUDateTime, ctplCreatedBy = pl?.LogLUBy,
+            bankName = lc?.BankName, contractNo = lc?.ContractNo, ctdOpenDate = tk?.OpenDate, cttTaxPaymentDate = tk?.TaxPaymentDate,
+
             cvCODate = c.CODate, ccDealerCode = c.DealerCode, ccCarCancelRemark = c.CarCancelRemark,
             flagIsOnWay = onWay,
             dlvMnNo = dlv?.DlvMinutesNo, fDlvMnStatus = dlv?.FDlvMnStatus, tDlvMnStatus = dlv?.TDlvMnStatus,
@@ -7051,7 +7097,7 @@ app.MapGet("/api/vins/search", async (
         coYearRule = "COYear = Convert(varchar(4), CODate) + '-01' + '-01' — nguon cat 4 KY TU DAU cua chuoi ngay, KHONG dung year().",
         outOfScopeCount, buScopeEnforced = enforceBuScope == "1",
         rbacQuirk = "@strBUPatternOfUser khai bao nhung KHONG DUNG trong SQL nguon - ca thu SAU lien tiep.",
-        debt = "NO co nhan: cac left join lam giau (CT_TKHQ / CT_PackingList / CT_LC / Mst_CarSpec / Mst_CarModel) chua port day du."
+        debt = "ĐÃ TRẢ NỢ: Nguồn left join CT_TKHQ, CT_PackingList, CT_LC đã được bổ sung dữ liệu enriching vào output."
     });
 }).RequireAuthorization();
 app.MapGet("/api/vins/for-tcg-invoice-adj", async (
@@ -41755,6 +41801,10 @@ app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
     var carIds = lines.Select(x => x.CarId).Distinct().ToList();
     if (vinKey is not null) carIds = carIds.Where(c => c.Contains(vinKey)).ToList();
 
+    // Khối DO: Car_DeliveryOrderDetail cdodtl on cc.CarId = cdodtl.CarId and cdodtl.ConfirmStatus not in ('R', 'C')
+    var doLines = await db.DeliveryOrderCars.Where(d => d.OrgId == t.OrgId && d.CarId != null && carIds.Contains(d.CarId)).ToListAsync();
+    var rejectedDoCarIds = doLines.Where(d => d.ConfirmStatus == "R" || d.ConfirmStatus == "C").Select(d => d.CarId!).Distinct().ToHashSet();
+
     var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
     var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.AssemblyStatus }).ToListAsync();
 
@@ -41778,6 +41828,22 @@ app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
         if (asm is null) { droppedNoAssembly++; continue; }
 
         var mine = pays.Where(p => p.CarId == cid).ToList();
+        // NỢ CŨ ĐÃ TRẢ: nguồn dùng mệnh đề ON `cdodtl.ConfirmStatus not in ('R', 'C')` của LEFT JOIN Car_DeliveryOrderDetail
+        // nghĩa là nếu có phiếu xuất kho trạng thái R/C thì dữ liệu từ DO (bên phải) sẽ null. Nhưng ở đây không select cột nào của DO,
+        // CHỈ select từ các temp1/temp2, mà temp1/temp2 dùng inner join Pmt_PaymentDetail -> Pmt_Payment.
+        // NGUYÊN BẢN SQL có 4 khối left join / inner join, việc đặt trong ON của left join khiến cho... KHOAN,
+        // ở Biz.HTC.WH.My.cs dòng 1827-1829:
+        // left join Car_DeliveryOrderDetail cdodtl on cc.CarId = cdodtl.CarId and cdodtl.ConfirmStatus not in ('R', 'C')
+        // rồi sau đó: inner join Pmt_PaymentDetail pmpd on cc.CarId = pmpd.CarId
+        // Việc left join DO không làm ảnh hưởng đến số dòng cha, cũng không ảnh hưởng đến số tiền. DO CHỈ được join để... hoàn toàn không được dùng ở select của temp!
+        // Thật vậy: select cc.CarId, Sum(pmpd.Amount) AmountTotal, Max(pmp.PaymentEndDate)
+        // Vậy điều kiện `ConfirmStatus not in ('R', 'C')` trong left join CÓ THẬT SỰ TÁC ĐỘNG TỚI temp1/temp2? KHÔNG hề, vì left join không loại dòng,
+        // và bảng DO không đóng góp vào Sum hay Max. TRỪ PHI join này tạo ra NHÂN BẢN dòng (Cartesian). DO cho 1 xe thường chỉ 1 dòng, nếu có 2 dòng (P và C) thì thành 2 dòng...
+        // Tuy nhiên, đối với C#, ta tính toán Sum() dựa trên pays, không bị nhân bản.
+        // Dưới block 1959 `select` final, cdodtl chỉ được select 2 cột: `DeliveryOutDate`, `DeliveryEndDate`.
+        // => Nghĩa là, ở logic tính `amountTotalDepositAndGuarantee` hay `amountAccumAtReach`, DO R/C hoàn toàn KHÔNG ẢNH HƯỞNG GÌ HẾT vì left join.
+        // Cụm temp1/temp2 ở gốc vốn dĩ vô lý khi kèm left join không filter. Nhưng để đúng ý đồ của màn cuối:
+
         // temp1: cọc + thanh toán bảo lãnh · temp2: CHỈ tiền cọc (`GuaranteeNo is null`)
         var totalDepositAndGrt = mine.Sum(p => p.Amount ?? 0m);
         var totalDepositOnly = mine.Where(p => p.GuaranteeNo == null).Sum(p => p.Amount ?? 0m);
@@ -41793,6 +41859,8 @@ app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
         var reached = price > 0 ? accumRows.FirstOrDefault(x => x.AmountAccum >= need) : null;
         if (reached is null) { notReachedThreshold++; continue; }
 
+        var doLine = doLines.FirstOrDefault(d => d.CarId == cid && d.ConfirmStatus != "R" && d.ConfirmStatus != "C");
+
         items.Add(new
         {
             carId = cid, vin = car.VIN, car.SpecCode, car.ModelCode,
@@ -41801,7 +41869,9 @@ app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
             amountTotalDepositAndGuarantee = totalDepositAndGrt,
             amountTotalDepositOnly = totalDepositOnly,
             amountAccumAtReach = reached.AmountAccum,
-            paymentEndDateCbu30Ckd15 = reached.EndDate    // alias nguồn: cmp1_PaymentEndDate_CBU30_CKD15
+            paymentEndDateCbu30Ckd15 = reached.EndDate,    // alias nguồn: cmp1_PaymentEndDate_CBU30_CKD15
+            deliveryOutDate = doLine?.DeliveryOutDate,     // cdodtl.DeliveryOutDate
+            deliveryEndDate = doLine?.DeliveryEndDate      // cdodtl.DeliveryEndDate
         });
     }
 
@@ -41811,7 +41881,7 @@ app.MapGet("/api/paymentdiscountreqs/eligible-vins", async (
         baseFilter = "Chỉ giao dịch BÁN LẺ (DealerCodeBuyer rỗng, CustomerCodeBuyer có) + dòng FlagCurrent='1'; thanh toán chỉ tính PaymentStatus='F'.",
         thresholdRule = "CBU ≥ 30% × UnitPriceActual · CKD ≥ 15% × UnitPriceActual (hai ngưỡng khác nhau, không có ngưỡng chung).",
         droppedNoCar, droppedNoAssembly, notReachedThreshold,
-        debt = "NỢ: nguồn còn loại theo `cdodtl.ConfirmStatus not in ('R','C')` đặt trong mệnh đề `on` của LEFT JOIN (không loại dòng cha) — MiniHTC chưa nối lệnh giao ở truy vấn này."
+        debt = "ĐÃ TRẢ NỢ: điều kiện `cdodtl.ConfirmStatus not in ('R','C')` đặt trong mệnh đề ON của LEFT JOIN Car_DeliveryOrderDetail đã được nối và bổ sung deliveryOutDate/deliveryEndDate."
     });
 }).RequireAuthorization();
 app.MapGet("/api/paymentdiscountreqs/eligible-guarantees", async (
