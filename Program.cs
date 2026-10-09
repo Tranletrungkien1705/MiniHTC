@@ -4277,7 +4277,7 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
     var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P", CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.DocReqs.Add(d); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal });
+        db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal, DealerCode = string.IsNullOrWhiteSpace(c.DealerCode) ? d.DealerCode : c.DealerCode.Trim().ToUpperInvariant() });
     await db.SaveChangesAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, cars = vins.Count, status = d.Status });
 }).RequireAuthorization();
@@ -4288,7 +4288,7 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark }).ToListAsync();
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.DealerCode, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark }).ToListAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, d.Status, d.CreatedAt, d.SubmittedAt, d.DoneAt,
         d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy,   // #1378 §12
         count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
@@ -43623,7 +43623,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CabinCONo = r.CabinCONo, InvoiceSpecName = r.InvoiceSpecName, InvoiceFactorySearch = r.InvoiceFactorySearch, DateExpiredDlvCar = r.DateExpiredDlvCar, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -43638,7 +43638,8 @@ app.MapGet("/api/carvinmasters/{vin}", async (string vin, AppDbContext db, ITena
     return Results.Ok(new
     {
         car.VIN, car.ModelCode, car.SpecCode, car.DealerCode, car.FlagDocReq,
-        car.FlagRepair, car.RepairRemark, car.ProductionYearActual, car.Location   // kỹ thuật-6 #B367, §12 ProductionYearActual, Location
+        car.FlagRepair, car.RepairRemark, car.ProductionYearActual, car.Location,
+        car.CabinCONo, car.InvoiceSpecName, car.InvoiceFactorySearch, car.DateExpiredDlvCar   // kỹ thuật-6 #B367, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar
     });
 }).RequireAuthorization();
 
@@ -45681,9 +45682,9 @@ app.MapPost("/api/msgdlvcars", async (MsgDlvCarDto dto, AppDbContext db, ITenant
             if (hasLiveDo) return Results.BadRequest(new { error = $"CarId '{carId}' đang có lệnh giao xe (LXX) còn hiệu lực, không thông báo lại được." });
         }
 
-        // 4) guard ExistOther (770-801): CHƯA có thông báo khác cùng cặp (VIN, CarId) — khoá TOÀN BẢNG,
+        // 4) guard ExistOther (770-801, chỉ nhánh MESSAGE): CHƯA có thông báo khác cùng cặp (VIN, CarId) — khoá TOÀN BẢNG,
         //    không giới hạn theo MsDlvNo (nguồn không lọc theo phiếu hiện hành).
-        if (!string.IsNullOrWhiteSpace(c.VIN))
+        if (msType != "C" && !string.IsNullOrWhiteSpace(c.VIN))
         {
             var vin = c.VIN!.Trim();
             var dupNotified = await db.MsgDlvCarDtls.AnyAsync(x => x.OrgId == t.OrgId && x.CarId == carId && x.VIN == vin);
@@ -45692,22 +45693,76 @@ app.MapPost("/api/msgdlvcars", async (MsgDlvCarDto dto, AppDbContext db, ITenant
         carRows.Add(car);
     }
 
+    // 5) Tính DateExpiredDlvCar (+5 ngày làm việc theo Mst_Calendar cho SO Plan + Dealer payment)
+    var expiredDates = new List<DateTime?>();
+    var msDate = DateTime.Today;
+    List<MstCalendar>? cachedWorkingDays = null;
+    for (int i = 0; i < cars.Count; i++)
+    {
+        var car = carRows[i];
+        if (msType == "C")
+        {
+            var isPlanDealerCancel = !string.IsNullOrWhiteSpace(car.SOCode) && await (from s in db.SalesOrders
+                                      where s.OrgId == t.OrgId && s.SoCode == car.SOCode && (s.OrderType == "Plan" || s.OrderType == "PLAN") && (s.PayType == "Dealer" || s.PayType == "DLR" || s.PayType == "VONDAILY")
+                                      select s.Id).AnyAsync();
+            if (isPlanDealerCancel)
+            {
+                car.DateExpiredDlvCar = null;
+            }
+            expiredDates.Add(null);
+        }
+        else
+        {
+            var isPlanDealer = !string.IsNullOrWhiteSpace(car.SOCode) && await (from s in db.SalesOrders
+                               where s.OrgId == t.OrgId && s.SoCode == car.SOCode && (s.OrderType == "Plan" || s.OrderType == "PLAN") && (s.PayType == "Dealer" || s.PayType == "DLR" || s.PayType == "VONDAILY")
+                               select s.Id).AnyAsync();
+            if (isPlanDealer)
+            {
+                if (cachedWorkingDays is null)
+                {
+                    cachedWorkingDays = await db.MstCalendars
+                        .Where(x => x.OrgId == t.OrgId && (x.CalendarType == "WorkingDay" || x.CalendarType == "WORKINGDAY") && x.StatusValue == "0" && x.Date >= msDate)
+                        .OrderBy(x => x.Date)
+                        .ToListAsync();
+                }
+                const int nDayT = 5;
+                if (cachedWorkingDays.Count <= nDayT)
+                {
+                    return Results.BadRequest(new
+                    {
+                        error = "Chưa thiết lập đủ ngày làm việc trong lịch cho DateExpiredDlvCar (+5 ngày làm việc).",
+                        errorCode = "Msg_MessageDeliveryCarCreate_WorkingDayNotBeSet"
+                    });
+                }
+                var expDate = cachedWorkingDays[nDayT].Date;
+                car.DateExpiredDlvCar = expDate;
+                expiredDates.Add(expDate);
+            }
+            else
+            {
+                expiredDates.Add(null);
+            }
+        }
+    }
+
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var h = new MsgDlvCar { OrgId = t.OrgId, MsDlvNo = "MSG" + DateTime.Now.ToString("yyMMddHHmmss"), MsDateTime = DateTime.Now, DealerCode = dealerCode, MsType = msType, MsReadStatus = "N", SendBy = by };
     db.MsgDlvCars.Add(h); await db.SaveChangesAsync();
     for (int i = 0; i < cars.Count; i++)
     {
         var c = cars[i]; var car = carRows[i];
+        var expDate = expiredDates[i];
         // CarSpecCode/CarColorCode DẪN XUẤT từ Car_Car/Car_VIN (dòng 704-706), không tin client.
         db.MsgDlvCarDtls.Add(new MsgDlvCarDtl
         {
             OrgId = t.OrgId, MsgDlvCarId = h.Id, CarId = c.CarId!.Trim(), VIN = string.IsNullOrWhiteSpace(c.VIN) ? null : c.VIN!.Trim(),
             CarSpecCode = car.SpecCode ?? c.CarSpecCode, CarColorCode = car.ColorCode ?? c.CarColorCode, CQEndDate = c.CQEndDate,
+            DateExpiredDlvCar = expDate ?? c.DateExpiredDlvCar,
         });
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { h.MsDlvNo, h.MsType, cars = cars.Count,
-        debtNote = "NO - khong bia: DateExpiredDlvCar (han TT nhan xe, +5 ngay lam viec qua Mst_Calendar) CHUA port vi phu thuoc ham lam viec f_WorkingDate_Get_01 chua co trong MiniHTC; chi ap dung cho SO Plan+Dealer-payment (dong 806-937 nguon)." });
+        debtNote = "ĐÃ TRẢ NỢ: DateExpiredDlvCar (+5 ngày làm việc qua Mst_Calendar) đã tính và lưu vào CarVinMaster + MsgDlvCarDtl cho SO Plan+Dealer; huỷ về null khi msType=C; guard Msg_MessageDeliveryCarCreate_WorkingDayNotBeSet khi thiếu ngày." });
 }).RequireAuthorization();
 
 app.MapGet("/api/msgdlvcars/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -45715,7 +45770,7 @@ app.MapGet("/api/msgdlvcars/{no}/cars", async (string no, AppDbContext db, ITena
     var h = await db.MsgDlvCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MsDlvNo == no);
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.MsgDlvCarDtls.Where(c => c.OrgId == t.OrgId && c.MsgDlvCarId == h.Id)
-        .Select(c => new { c.CarId, c.CarSpecCode, c.CarColorCode, c.CQEndDate }).ToListAsync();
+        .Select(c => new { c.CarId, c.VIN, c.CarSpecCode, c.CarColorCode, c.CQEndDate, c.DateExpiredDlvCar }).ToListAsync();
     return Results.Ok(new { h.MsDlvNo, h.MsDateTime, h.DealerCode, h.MsType, h.MsReadStatus, h.SendBy, h.ReadAt, count = cars.Count, cars });   // #1376 §12
 }).RequireAuthorization();
 
@@ -68764,6 +68819,14 @@ app.MapGet("/api/reports/bl-quahan-dathanhtoan", async (
     var invInfo = (await db.CarVinInvoiceInfos.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN)).ToListAsync())
         .GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
 
+    var tmCars = (await (from tmc in db.TransportMinutesCars
+                         join tm in db.TransportMinutes on tmc.MinutesId equals tm.Id
+                         where tmc.OrgId == t.OrgId && tm.OrgId == t.OrgId
+                               && tmc.CarId != null && carIds.Contains(tmc.CarId)
+                               && tmc.DtlStatus != "R" && tmc.DtlStatus != "C"
+                         select new { tmc.CarId, tm.TransportMinutesNo }).ToListAsync())
+        .GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.First().TransportMinutesNo);
+
     var detail = new List<object>();
     var droppedNoUnitPrice = new List<object>();
     var nearlyFullyPaid = new List<object>();
@@ -68824,7 +68887,7 @@ app.MapGet("/api/reports/bl-quahan-dathanhtoan", async (
             PercentGuarantee = Math.Round(l.GrtValue / unitPrice, 8) * 100m,
             BankName = bk?.BankName,
             AmountTotal_TTC = amountTTC,
-            TransportMinutesNo = (string?)null,          // 📌 NỢ: Car_TransportMinutesDetail chưa nối theo CarId
+            TransportMinutesNo = (cv.CarId != null && tmCars.TryGetValue(cv.CarId, out var tmNo)) ? tmNo : null,
             NgayCham_0 = nc == 0 ? 1 : 0,
             NgayCham_1_2 = (nc >= 1 && nc <= 2) ? 1 : 0,
             NgayCham_3_6 = (nc >= 3 && nc <= 6) ? 1 : 0,
@@ -68863,7 +68926,7 @@ app.MapGet("/api/reports/bl-quahan-dathanhtoan", async (
         bucketNote = "BON khoang ngay cham: =0 / 1-2 / 3-6 / >6, va 'where t.NgayCham >= 0' => LOAI xe tra TRUOC han (cham am). Nhom NgayCham_0 = tra DUNG HAN nhung VAN nam trong bao cao 'qua han' - dung nguon, de gay hieu nham khi doc tieu de.",
         twoTablesOrderNote = "Hai bang, thu tu NGUOC TRUC GIAC: Tables[0] = chi tiet (co COT NHAN RONG 'select \"\" #tbl_Report_Detail_Final, *'); Tables[1] = tong theo ngan hang. Bay lenh 'drop table' KHONG co dau ';' - khac #B275 (comment het), khac #B272 (co ';').",
         rbacNote = "RBAC - to hop (1): CheckHTCDirect ACTIVE, SQL khong dung BUPattern => CO Y. Guard ngay ACTIVE (To rong => DateMax).",
-        debtNote = "NO: Car_TransportMinutesDetail chua noi theo CarId => TransportMinutesNo tra NULL, khong bia."
+        debtNote = "ĐÃ TRẢ NỢ: TransportMinutesNo đã nối từ TransportMinutesCars và TransportMinutes theo CarId (DtlStatus not in ('R', 'C'))."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/xuat-hoso", async (
@@ -116745,10 +116808,10 @@ app.MapGet("/api/reports/car-vin-for-rd-invoice", async (
             rows.Add(new
             {
                 c.VIN, c.PackingListNo, c.SpecCode, c.ActualSpec, c.ModelCode, c.ColorCode, c.EngineNo,
-                c.CQNo, c.CQStartDate, CQEndDate = (DateTime?)null,
-                c.CONo, c.CODate, CabinCONo = (string?)null,
+                c.CQNo, c.CQStartDate, CQEndDate = c.CQEndDate,
+                c.CONo, c.CODate, CabinCONo = c.CabinCONo,
                 c.DeclarationNo, c.MortageBankCode,
-                InvoiceNoFactory = (string?)null,
+                InvoiceNoFactory = c.InvoiceNoFactory,
                 HTCInvoiceCode = row.hr?.HTCInvoiceCode, HTCInvoiceNo = row.hrH?.HTCInvoiceNo,
                 VHInvoiceIDCode = row.hrH?.InvoiceIDCode,
                 TCGInvoiceCode = row.tr?.TCGInvoiceCode, TCGInvoiceNo = row.trH?.TCGInvoiceNo,
@@ -116764,13 +116827,14 @@ app.MapGet("/api/reports/car-vin-for-rd-invoice", async (
                 CVDRFullDocDate = c.DRFullDocDate, CVDocumentsStatus = c.DocumentsStatus,
                 CDRLTypeCRR = typeCRRVal, CDRDDRListCode = row.hdr.DocReqNo, CDRDDRDtlStatus = drDtlStatusVal,
                 CTMDTransportMinutesNo = tmNo, CTMDTransportMinutesDtlStatus = row.pr?.DtlStatus,
+                CDRDDealerCode = row.dr.DealerCode ?? row.hdr.DealerCode,
                 CDRDDealerCode_approx = row.hdr.DealerCode,
                 c.CarId, c.DlrCtrNo, c.FlagDealerContractDMS40,
                 CDRDDealerName = md?.DealerName,
-                InvoiceSpecName = (string?)null,
+                InvoiceSpecName = c.InvoiceSpecName,
                 vh_OS_HDDT_InvoiceCode = row.hrH?.OS_HDDT_InvoiceCode,
                 vt_OS_HDDT_InvoiceCode = row.trH?.OS_HDDT_InvoiceCode,
-                InvoiceFactorySearch = (string?)null,
+                InvoiceFactorySearch = c.InvoiceFactorySearch,
                 c.SOCode, PMPDGuaranteeRemain = pmpdGuaranteeRemain
             });
         }
@@ -116783,9 +116847,7 @@ app.MapGet("/api/reports/car-vin-for-rd-invoice", async (
         myCountGuardNote = "MyCount dem TREN TICH DESCARTES ca sau nhanh LEFT/INNER JOIN (doc-req, bao lanh, " +
             "HD HTCV, HD TCG, hop dong dai ly, bien ban giao xe), KHONG rieng doc-req; VIN du dieu kien van bi " +
             "LOAI het neu mot nhanh khac (vd bao lanh) co 2 dong (#5806).",
-        debtNote = "NO - khong bia: CQEndDate/CabinCONo/InvoiceSpecName/InvoiceFactorySearch/InvoiceNoFactory " +
-            "doc tu Car_VIN nguon, CarVinMaster Mini chua co cot nay; CDRDDealerCode_approx dung DealerCode " +
-            "o HEADER DocReq thay cho cot cap-dong DocReqCar chua co (#5806)."
+        debtNote = "ĐÃ TRẢ NỢ: CQEndDate, CabinCONo, InvoiceNoFactory, InvoiceSpecName, InvoiceFactorySearch đã lấy trực tiếp từ CarVinMaster; CDRDDealerCode đã lấy từ DocReqCar (fallback DocReq header)."
     });
 }).RequireAuthorization();
 // ===== #5808 TÌM VIN ĐỂ TẠO ĐỀ NGHỊ THẾ CHẤP — `FrmCar_VIN_Get_ForReqMortgage` =====
@@ -118804,7 +118866,7 @@ record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 record DoApproveDto(bool Approve = true, string? Reason = null);
 record DoCarUpdateDto(DateTime? DeliveryOutDate, string? DeliveryRemark);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
-record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal);
+record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = null);
 record DocReqCarActionDto(string? Remark);
 record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);
@@ -120228,7 +120290,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null, string? CabinCONo = null, string? InvoiceSpecName = null, string? InvoiceFactorySearch = null, DateTime? DateExpiredDlvCar = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>
@@ -120302,7 +120364,7 @@ record InvCarWarrantyUpdateDto(List<InvCarWarrantyUpdateRow>? Inv_CarWarranty);
 record InvCarWarrantyActiveDto(string? VIN, string? CustomerPhoneNo);
 record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
 record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);
-record MsgDlvCarLineDto(string? CarId, string? VIN, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate);
+record MsgDlvCarLineDto(string? CarId, string? VIN, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate, DateTime? DateExpiredDlvCar = null);
 record ContractTypeDto(string? ContractType, string? ContractTypeDesc, string? FlagActive);
 record DOATSettingTimeDto(bool? FlagFirstRunTime, bool? FlagSecondRunTime);
 record CarHisOrderPolicyDto(string? SOCode, string CarId, string? ModelCode, string? SpecCode, string? SpecDescription, string? CrtTypeCode, string? ColorCode, string? ColorName, string OrderPolicyCode, string? OrderPolicyName, DateTime? ApprovedDate);

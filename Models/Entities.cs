@@ -5039,6 +5039,7 @@ public sealed class MsgDlvCarDtl
     public string? CarSpecCode { get; set; }
     public string? CarColorCode { get; set; }
     public DateTime? CQEndDate { get; set; }
+    public DateTime? DateExpiredDlvCar { get; set; }
 }
 
 /// <summary>Master loại hợp đồng — port 1:1 FrmMst_ContractType (Mst_ContractType, TCMotor). ContractType = mã, mô tả + cờ hoạt động.</summary>
@@ -8018,6 +8019,7 @@ public sealed class DocReqCar
     public string? ModelCode { get; set; }
     public string? ColorCode { get; set; }
     public string? EngineNo { get; set; }
+    public string? DealerCode { get; set; }
     public decimal AmountTotal { get; set; }
     /// <summary>
     /// 🔴 Trạng thái của **TỪNG XE** trong đề nghị (`Car_DocReqDtl.DRDtlStatus`) — trục mà port cũ THIẾU HẲN.
@@ -13731,6 +13733,10 @@ public sealed class CarVinMaster
 {    public string? BatteryNo { get; set; }
     public string? ProductionYearActual { get; set; }
     public string? Location { get; set; }
+    public string? CabinCONo { get; set; }
+    public string? InvoiceSpecName { get; set; }
+    public string? InvoiceFactorySearch { get; set; }
+    public DateTime? DateExpiredDlvCar { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string VIN { get; set; } = "";
