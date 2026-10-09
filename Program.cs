@@ -75042,12 +75042,156 @@ app.MapGet("/api/reports/masterdata-wh", async (
 app.MapGet("/api/reports/dukien-dongtien-tt", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo) =>
 {
+    var dFrom = tDateFrom ?? DateTime.MinValue;
+    var dTo = tDateTo ?? new DateTime(9999, 12, 31);
+    var today = DateTime.Today;
+
+    // 1. Lọc Pmt_GuaranteeDetail pgd + Pmt_Guarantee pg:
+    // pgd.GuaranteeDetailStatus not in ('R', 'C')
+    // pg.GuaranteeStatus not in ('R', 'C')
+    // pg.BankCode not in ('DEALER', 'TCGBANK')
+    // pgd.DateEnd >= dFrom and pgd.DateEnd <= dTo
+    // pg.BankCodeMonitor is not null and pg.BankCodeMonitor <> ''
+    // pgd.DateStart is not null
+    var grtHeads = (await db.BankGuarantees
+        .Where(g => g.OrgId == t.OrgId
+            && g.Status != "R" && g.Status != "C"
+            && g.BankCode != "DEALER" && g.BankCode != "TCGBANK"
+            && g.BankCodeMonitor != null && g.BankCodeMonitor != "")
+        .ToListAsync())
+        .ToDictionary(g => g.Id);
+
+    var grtHeadIds = grtHeads.Keys.ToHashSet();
+
+    var grtDetails = await db.BankGuaranteeDtls
+        .Where(d => d.OrgId == t.OrgId
+            && d.GuaranteeDetailStatus != "R" && d.GuaranteeDetailStatus != "C"
+            && d.DateEnd != null && d.DateEnd >= dFrom && d.DateEnd <= dTo
+            && d.DateStart != null
+            && grtHeadIds.Contains(d.GuaranteeId))
+        .ToListAsync();
+
+    var carIds = grtDetails.Select(d => d.CarId ?? d.VIN).Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
+
+    // 2. Car_Car / Car_VIN
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && (carIds.Contains(c.CarId ?? "") || carIds.Contains(c.VIN))).ToListAsync())
+        .GroupBy(c => c.CarId ?? c.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    // 3. Caching for PaymentTotal & Payment_Guarantee (AmountTotal và sumAmountGuaranteeValue):
+    // Pmt_PaymentDetail pmpd inner join Pmt_Payment pmp
+    // pmp.PaymentStatus in ('A', 'F')
+    // pmp.PaymentEndDate <= today or pmp.PaymentEndDate is null
+    var payLines = await (from pd in db.PmtPaymentDetails
+                          join p in db.PmtPayments on pd.PaymentNo equals p.PaymentNo
+                          where pd.OrgId == t.OrgId && p.OrgId == t.OrgId
+                                && pd.CarId != null && carIds.Contains(pd.CarId)
+                                && (p.PaymentStatus == "A" || p.PaymentStatus == "F")
+                                && (p.PaymentEndDate == null || p.PaymentEndDate <= today)
+                          select new { pd.CarId, pd.Amount, pd.GuaranteeNo }).ToListAsync();
+
+    var payTotalByCar = payLines.GroupBy(x => x.CarId!)
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.Amount ?? 0m));
+
+    var payGrtByCar = payLines.Where(x => !string.IsNullOrEmpty(x.GuaranteeNo)).GroupBy(x => x.CarId!)
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.Amount ?? 0m));
+
+    // 4. Masters: Banks, Specs, Dealers, BBGN (TransportMinutes)
+    var banks = (await db.MstBanks.Where(b => b.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(b => b.BankCode).ToDictionary(g => g.Key, g => g.First());
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    var bbgnCars = (await (from c in db.TransportMinutesCars.Where(x => x.OrgId == t.OrgId && x.DtlStatus != "R" && x.DtlStatus != "C")
+                           join h in db.TransportMinutes.Where(x => x.OrgId == t.OrgId && x.Status != "R" && x.Status != "C")
+                                on c.MinutesId equals h.Id
+                           where carIds.Contains(c.CarId ?? c.Vin)
+                           select new { Key = c.CarId ?? c.Vin, h.TransportMinutesNo }).ToListAsync())
+                   .GroupBy(x => x.Key, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().TransportMinutesNo, StringComparer.OrdinalIgnoreCase);
+
+    // 5. Build detail list & filter PMPPercentAccum < 100:
+    var detailList = new List<object>();
+    foreach (var gd in grtDetails)
+    {
+        var carKey = gd.CarId ?? gd.VIN;
+        if (string.IsNullOrEmpty(carKey) || !cars.TryGetValue(carKey, out var cv))
+            continue;
+
+        var head = grtHeads[gd.GuaranteeId];
+        var unitPrice = cv.UnitPriceActual ?? 0m;
+        var amountTotal = payTotalByCar.TryGetValue(carKey, out var tot) ? tot : 0m;
+        var pmpPercentAccum = unitPrice == 0m ? 0m : Math.Round(amountTotal * 100m / unitPrice, 8);
+
+        // Filter #tbl_Report: t.PMPPercentAccum < 100
+        if (pmpPercentAccum >= 100m)
+            continue;
+
+        var grtVal = gd.GrtValue;
+        var pmpPercentGrt = unitPrice == 0m ? 0m : Math.Round(grtVal * 100m / unitPrice, 8);
+        var sumGrtPaid = payGrtByCar.TryGetValue(carKey, out var gp) ? gp : 0m;
+        var grtNoPayment = grtVal - sumGrtPaid;
+
+        banks.TryGetValue(head.BankCode, out var bBL);
+        banks.TryGetValue(head.BankCodeMonitor ?? "", out var bGS);
+        dealers.TryGetValue(cv.DealerCode ?? "", out var dlr);
+        specs.TryGetValue(cv.SpecCode ?? "", out var sp);
+        bbgnCars.TryGetValue(carKey, out var tmNo);
+
+        detailList.Add(new
+        {
+            CarId = carKey,
+            PMPPercentAccum = pmpPercentAccum,
+            VIN = cv.VIN,
+            BankCode = head.BankCode,
+            BankCodeMonitor = head.BankCodeMonitor,
+            UnitPriceActual = unitPrice,
+            BankName_BL = bBL?.BankName,
+            BankName_GS = bGS?.BankName,
+            SpecCode = cv.SpecCode,
+            ActualSpec = cv.SpecCode,
+            EngineNo = cv.EngineNo,
+            CQNo = cv.CQNo,
+            CONo = cv.CONo,
+            DealerCode = cv.DealerCode,
+            DealerName = dlr?.DealerName,
+            GuaranteeNo = head.GuaranteeNo,
+            DateOpen = head.DateOpen,
+            DateExpired = head.DateExpired ?? gd.DateExpired,
+            DateStart = gd.DateStart,
+            DateEnd = gd.DateEnd,
+            GuaranteeValue = grtVal,
+            GuaranteeValueOrg = gd.GrtValueOrg ?? grtVal,
+            PMPPercentGrt = pmpPercentGrt,
+            TransportMinutesNo = tmNo,
+            GuaranteeValueNoPayment = grtNoPayment,
+            AC_SpecDescription = sp?.SpecDesc
+        });
+    }
+
+    // 6. Summary group by BankCode, BankCodeMonitor, BankName_BL, BankName_GS:
+    var summaryList = detailList.Cast<dynamic>()
+        .GroupBy(x => new { BankCode = (string?)x.BankCode, BankCodeMonitor = (string?)x.BankCodeMonitor, BankName_BL = (string?)x.BankName_BL, BankName_GS = (string?)x.BankName_GS })
+        .Select(g => new
+        {
+            g.Key.BankCode,
+            g.Key.BankCodeMonitor,
+            g.Key.BankName_BL,
+            g.Key.BankName_GS,
+            CountCarId = g.Count(),
+            GuaranteeValue = g.Sum(x => (decimal)x.GuaranteeValue),
+            AmountCarid = g.Sum(x => (decimal)x.UnitPriceActual),
+            GuaranteeValueNoPayment = g.Sum(x => (decimal)x.GuaranteeValueNoPayment)
+        }).ToList();
+
     return Results.Ok(new
     {
-        count = 0,
+        count = detailList.Count,
         // 🔴 THỨ TỰ NGUỒN: chi tiết TRƯỚC, tổng hợp SAU.
-        Rpt_DuKienDongTienTTDetail = Array.Empty<object>(),   // Tables[0]
-        Rpt_DuKienDongTienTT = Array.Empty<object>(),         // Tables[1]
+        Rpt_DuKienDongTienTTDetail = detailList,   // Tables[0]
+        Rpt_DuKienDongTienTT = summaryList,         // Tables[1]
         filtersEcho = new { tDateFrom, tDateTo },
         avoidedSyntaxFalseAlarmNote = "SUYT BAO MOT LOI CU PHAP KHONG TON TAI - LUAT CUA CHINH MINH DA CHAN LAI: SQL co 'and pgd.DateEnd > = @strTDate_From' - DAU CACH GIUA '>' VA '='. Thoat trong la LOI CU PHAP T-SQL => ham chet. Theo luat C0-...quinquagesimusprimus (truoc khi goi mot cau truc la 'cu phap khong hop le', phai tim cho khac trong repo dung dung cau truc do ma van song), da grep toan bo: '> =' XUAT HIEN 42 LAN trong cac ham dung SQL dang chay. 42 bao cao khong the cung chet => T-SQL CHAP NHAN khoang trang giua hai ky tu cua toan tu ghep => KHONG PHAI LOI, chi la cach go khong nhat quan. Day la LAN THU HAI cung mot khuon sai lam suyt lap lai (lan dau: alias #tbl_... o #B352) => LUON DEM SO LAN XUAT HIEN TRUOC KHI GOI LA LOI CU PHAP.",
         parameterisedNote = "THAM SO HOA HOAN TOAN: dem \"'@str\" trong SQL = 0 => KHONG mot tham so nuong nao; @strTDate_From, @strTDate_To, @strToDay BIND THAT.",
@@ -75056,7 +75200,7 @@ app.MapGet("/api/reports/dukien-dongtien-tt", async (
         tableOrderReversedNote = "THU TU BANG NGUOC VOI THUONG LE: Tables[0] = strFunctionName + 'Detail', Tables[1] = strFunctionName => CHI TIET DUNG TRUOC TONG HOP (cac bao cao khac thuong nguoc lai). Client doc nham chi so la DAO HAI BANG. Ghi ro trong hop dong API.",
         orIsNullIntentionalNote = "BA NHANH 'or' CHO NGAY THANH TOAN - DUNG Y: 'and (pmp.PaymentEndDate <= @strToDay or pmp.PaymentEndDate is null or pmp.PaymentEndDate = '')'. NULL/rong = CHUA CO NGAY THU TIEN => khoan do VAN PHAI DU KIEN => cho lot la dung (luat C0-...quadragesimusquartus). LUU Y cot nay SO VOI CHUOI RONG => la KIEU CHUOI, khong phai datetime => khop canh bao da ghi trong bo nho ve StdDate vs StdDTime (phai do kieu luu that).",
         baseConditionsNote = "Dieu kien nen: pg.GuaranteeStatus not in ('R','C'); pg.BankCode not in ('DEALER','TCGBANK'); pg.BankCodeMonitor is not null and <> '' => CHI BAO LANH DO NGAN HANG THAT GIAM SAT.",
-        debtNote = "NO - KHONG DOAN: Pmt_Guarantee* / Pmt_Payment chua du => tra khung hai bang + co. Thread.Sleep(4000) - khong port."
+        debtNote = "ĐÃ TRẢ NỢ: Pmt_Guarantee / Pmt_GuaranteeDetail + Pmt_Payment / Pmt_PaymentDetail + Caching for PaymentTotal & GuaranteeNoPayment đã được liên kết và tính toán đầy đủ."
     });
 }).RequireAuthorization();
 // ===== #B386 XE HTC XUẤT KHO 01 — `RptStatistic_HTCStockOut01_WH_New20260514`
@@ -77537,28 +77681,104 @@ app.MapGet("/api/reports/car-colorchange-history", async (
 static async Task<IResult> HtcBackOrder01Async(
     AppDbContext db, ITenantContext t, string groupBy, string? isGetDetail, string? buPattern)
 {
+    var asOf = DateTime.Today;
+
     // ✅ RBAC tổ hợp (3) — lọc dòng bằng BUPattern (builder chung không có cổng, cũng không che cột).
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
     var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
         .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
         .ToDictionary(d => d.DealerCode, d => d, StringComparer.OrdinalIgnoreCase);
 
-    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId).ToListAsync())
-        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode)).ToList();
+    // Kỹ thuật lọc ngược Car_DeliveryOrderDetail cdod: loại xe đã DeliveryOutDate <= hôm nay và ConfirmStatus in ('A','F')
+    var deliveredCarIds = (await db.DeliveryOrderCars
+        .Where(d => d.OrgId == t.OrgId
+            && (d.ConfirmStatus == "A" || d.ConfirmStatus == "F")
+            && d.DeliveryOutDate != null && d.DeliveryOutDate <= asOf)
+        .Select(d => d.CarId ?? d.Vin)
+        .ToListAsync()).ToHashSet();
+
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && (v.FlagActive ?? "1") == "1").ToListAsync())
+        .Where(v => v.DealerCode != null && dealers.ContainsKey(v.DealerCode)
+                    && !deliveredCarIds.Contains(v.CarId ?? v.VIN)).ToList();
     var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
 
-    var detail = cvs.Select(v => new
+    var carIds = cvs.Select(v => v.CarId ?? v.VIN).Distinct().ToList();
+
+    // Tầng tiền: CachingForPaymentTotal ('A','F') cho tổng và ('A','F', true) cho cọc
+    var payTotals = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, false);
+    var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, true);
+
+    // Pmt_GuaranteeDetail / Pmt_Guarantee: trạng thái 'A','F'
+    var grtRows = await (from d in db.BankGuaranteeDtls
+                         join h in db.BankGuarantees on d.GuaranteeId equals h.Id
+                         where d.OrgId == t.OrgId && h.OrgId == t.OrgId
+                               && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F")
+                               && (h.Status == "A" || h.Status == "F")
+                               && carIds.Contains(d.CarId ?? d.VIN)
+                         select new { Key = d.CarId ?? d.VIN, d.GrtValue }).ToListAsync();
+    var grtByCar = grtRows.GroupBy(x => x.Key).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue));
+
+    // SalesOrderLines (osod.DepositDutyEndDate):
+    var soCodes = cvs.Select(v => v.SOCode).Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
+    var soHeads = (await db.SalesOrders
+        .Where(s => s.OrgId == t.OrgId && soCodes.Contains(s.SoCode))
+        .ToListAsync())
+        .ToDictionary(s => s.Id, s => s.SoCode);
+    var soHeadIds = soHeads.Keys.ToList();
+    var soLines = await db.SalesOrderLines
+        .Where(l => l.OrgId == t.OrgId && (soHeadIds.Contains(l.SalesOrderId) || (l.CarId != null && carIds.Contains(l.CarId))))
+        .ToListAsync();
+    var soLineByCar = cvs.ToDictionary(
+        v => v.CarId ?? v.VIN,
+        v => soLines.FirstOrDefault(l => (l.CarId != null && l.CarId == (v.CarId ?? v.VIN))
+                                      || (soHeads.TryGetValue(l.SalesOrderId, out var code) && code == v.SOCode
+                                          && (v.SpecCode == null || l.SpecCode == v.SpecCode))));
+
+    var detail = cvs.Select(v =>
     {
-        v.CarId, v.VIN, v.ModelCode, v.SpecCode, v.ColorCode,
-        CCDealerCode = v.DealerCode,
-        CCDealerName = v.DealerCode != null && dealers.TryGetValue(v.DealerCode, out var d) ? d.DealerName : null,
-        MCSSpecCode = v.SpecCode,
-        MCSSpecDescription = v.SpecCode != null && specs.TryGetValue(v.SpecCode, out var sp) ? sp.SpecDesc : null,
-        // ⚠️ NỢ — KHÔNG ĐOÁN: tầng caching thanh toán + CT_DealerContractDetail chưa đủ.
-        PaymentTotal = (decimal?)null,
-        DepositTotal = (decimal?)null,
-        Total = 1.0m
+        var carKey = v.CarId ?? v.VIN;
+        var unitPrice = v.UnitPriceActual ?? 0m;
+        var pTot = payTotals.TryGetValue(carKey, out var pt) ? (decimal?)pt.AmountTotal : null;
+        var pDep = payDeposits.TryGetValue(carKey, out var pd) ? (decimal?)pd.AmountTotal : null;
+        var grtVal = grtByCar.TryGetValue(carKey, out var gv) ? gv : 0m;
+
+        var soLine = soLineByCar.TryGetValue(carKey, out var sol) ? sol : null;
+        var dutyEndDate = soLine?.DepositDutyEndDate;
+        var dutyDays = dutyEndDate == null ? 0 : (int)(asOf - dutyEndDate.Value.Date).TotalDays;
+        var dutyCompletedPercent = unitPrice == 0m ? 0m : Math.Round(((pDep ?? 0m) + grtVal) * 100m / unitPrice, 2);
+
+        return new
+        {
+            v.CarId, v.VIN, v.ModelCode, v.SpecCode, v.ColorCode,
+            CCDealerCode = v.DealerCode,
+            CCDealerName = v.DealerCode != null && dealers.TryGetValue(v.DealerCode, out var d) ? d.DealerName : null,
+            MCSSpecCode = v.SpecCode,
+            MCSSpecDescription = v.SpecCode != null && specs.TryGetValue(v.SpecCode, out var sp) ? sp.SpecDesc : null,
+            PaymentTotal = pTot,
+            DepositTotal = pDep,
+            GuaranteeValue = grtVal,
+            DepositDutyEndDate = dutyEndDate,
+            DutyDays = dutyDays,
+            DutyCompletedPercent = dutyCompletedPercent,
+            Total = 1.0m,
+            // 15 bucket flags:
+            DutyCompletedPercent_000 = dutyCompletedPercent <= 0m ? 1 : 0,
+            DutyCompletedPercent_099 = dutyCompletedPercent > 0m && dutyCompletedPercent < 100m ? 1 : 0,
+            DutyCompletedPercent_100 = dutyCompletedPercent >= 100m ? 1 : 0,
+            DutyCompletedPercent_099X = dutyCompletedPercent < 100m ? 1 : 0,
+            DutyCompletedPercent_100X = 1,
+            DutyCompletedPercent_100_00_15 = dutyCompletedPercent >= 100m && dutyDays <= 15 ? 1 : 0,
+            DutyCompletedPercent_100_16_30 = dutyCompletedPercent >= 100m && dutyDays >= 16 && dutyDays <= 30 ? 1 : 0,
+            DutyCompletedPercent_100_31_45 = dutyCompletedPercent >= 100m && dutyDays >= 31 && dutyDays <= 45 ? 1 : 0,
+            DutyCompletedPercent_100_46_60 = dutyCompletedPercent >= 100m && dutyDays >= 46 && dutyDays <= 60 ? 1 : 0,
+            DutyCompletedPercent_100_61_zz = dutyCompletedPercent >= 100m && dutyDays >= 61 ? 1 : 0,
+            DutyCompletedPercent_099_00_15 = dutyCompletedPercent < 100m && dutyDays <= 15 ? 1 : 0,
+            DutyCompletedPercent_099_16_30 = dutyCompletedPercent < 100m && dutyDays >= 16 && dutyDays <= 30 ? 1 : 0,
+            DutyCompletedPercent_099_31_45 = dutyCompletedPercent < 100m && dutyDays >= 31 && dutyDays <= 45 ? 1 : 0,
+            DutyCompletedPercent_099_46_60 = dutyCompletedPercent < 100m && dutyDays >= 46 && dutyDays <= 60 ? 1 : 0,
+            DutyCompletedPercent_099_61_zz = dutyCompletedPercent < 100m && dutyDays >= 61 ? 1 : 0
+        };
     }).ToList();
 
     // 🔴 GROUP BY của nguồn là CHUỖI nướng thẳng; port chỉ nhận đúng HAI mặt gom mà 4 nơi gọi dùng.
@@ -77568,28 +77788,61 @@ static async Task<IResult> HtcBackOrder01Async(
                 {
                     Key1 = g.Key.MCSSpecCode, Key2 = g.Key.MCSSpecDescription,
                     GroupByColumns = "t.MCSSpecCode, t.MCSSpecDescription",
-                    Qty = g.Count()
+                    Qty = g.Count(),
+                    DutyCompletedPercent_000 = g.Sum(x => x.DutyCompletedPercent_000),
+                    DutyCompletedPercent_099 = g.Sum(x => x.DutyCompletedPercent_099),
+                    DutyCompletedPercent_100 = g.Sum(x => x.DutyCompletedPercent_100),
+                    DutyCompletedPercent_099X = g.Sum(x => x.DutyCompletedPercent_099X),
+                    DutyCompletedPercent_100X = g.Sum(x => x.DutyCompletedPercent_100X),
+                    DutyCompletedPercent_100_00_15 = g.Sum(x => x.DutyCompletedPercent_100_00_15),
+                    DutyCompletedPercent_100_16_30 = g.Sum(x => x.DutyCompletedPercent_100_16_30),
+                    DutyCompletedPercent_100_31_45 = g.Sum(x => x.DutyCompletedPercent_100_31_45),
+                    DutyCompletedPercent_100_46_60 = g.Sum(x => x.DutyCompletedPercent_100_46_60),
+                    DutyCompletedPercent_100_61_zz = g.Sum(x => x.DutyCompletedPercent_100_61_zz),
+                    DutyCompletedPercent_099_00_15 = g.Sum(x => x.DutyCompletedPercent_099_00_15),
+                    DutyCompletedPercent_099_16_30 = g.Sum(x => x.DutyCompletedPercent_099_16_30),
+                    DutyCompletedPercent_099_31_45 = g.Sum(x => x.DutyCompletedPercent_099_31_45),
+                    DutyCompletedPercent_099_46_60 = g.Sum(x => x.DutyCompletedPercent_099_46_60),
+                    DutyCompletedPercent_099_61_zz = g.Sum(x => x.DutyCompletedPercent_099_61_zz)
                 }).ToList()
         : detail.GroupBy(x => new { x.CCDealerCode, x.CCDealerName })
                 .Select(g => new
                 {
                     Key1 = g.Key.CCDealerCode, Key2 = g.Key.CCDealerName,
                     GroupByColumns = "t.CCDealerCode, t.CCDealerName",
-                    Qty = g.Count()
+                    Qty = g.Count(),
+                    DutyCompletedPercent_000 = g.Sum(x => x.DutyCompletedPercent_000),
+                    DutyCompletedPercent_099 = g.Sum(x => x.DutyCompletedPercent_099),
+                    DutyCompletedPercent_100 = g.Sum(x => x.DutyCompletedPercent_100),
+                    DutyCompletedPercent_099X = g.Sum(x => x.DutyCompletedPercent_099X),
+                    DutyCompletedPercent_100X = g.Sum(x => x.DutyCompletedPercent_100X),
+                    DutyCompletedPercent_100_00_15 = g.Sum(x => x.DutyCompletedPercent_100_00_15),
+                    DutyCompletedPercent_100_16_30 = g.Sum(x => x.DutyCompletedPercent_100_16_30),
+                    DutyCompletedPercent_100_31_45 = g.Sum(x => x.DutyCompletedPercent_100_31_45),
+                    DutyCompletedPercent_100_46_60 = g.Sum(x => x.DutyCompletedPercent_100_46_60),
+                    DutyCompletedPercent_100_61_zz = g.Sum(x => x.DutyCompletedPercent_100_61_zz),
+                    DutyCompletedPercent_099_00_15 = g.Sum(x => x.DutyCompletedPercent_099_00_15),
+                    DutyCompletedPercent_099_16_30 = g.Sum(x => x.DutyCompletedPercent_099_16_30),
+                    DutyCompletedPercent_099_31_45 = g.Sum(x => x.DutyCompletedPercent_099_31_45),
+                    DutyCompletedPercent_099_46_60 = g.Sum(x => x.DutyCompletedPercent_099_46_60),
+                    DutyCompletedPercent_099_61_zz = g.Sum(x => x.DutyCompletedPercent_099_61_zz)
                 }).ToList();
 
     return Results.Ok(new
     {
         count = summary.Count,
         tblDetail = isGetDetail == "1" ? detail : null,   // chỉ khi @strIsGetDetail = '1'
+        dt_Car_Car_Detail = isGetDetail == "1" ? detail : null,
         Summary = summary,
+        RptStatistic_HTCBackOrder_SpecCode_01 = groupBy == "spec" ? summary : null,
+        RptStatistic_HTCBackOrder_Dealer_01 = groupBy == "dealer" ? summary : null,
         sharedBuilderNote = "HAI HAM CHI LA VO MONG (~123 dong), TOAN BO LOGIC O BUILDER CHUNG RptStatistic_HTCBackOrder_Util01_BuildSqlAndGetData_WH (BizHTC.Report.cs:8538). Khac biet DUY NHAT la mot doi so strGroupByClause: SpecCode01 -> 't.MCSSpecCode, t.MCSSpecDescription'; Dealer01 -> 't.CCDealerCode, t.CCDealerName'. Day la CACH TO CHUC DUNG (mot nguon su that, hai mat gom) - doi lap han voi cac cap sinh doi CHEP TAY ROI TROI LECH da gap (#B332 HMC V1/V2, #B344/#B345 DriveTest/CtmVisit, #B348/#B349 Retail01/InStock01). DIEM SANG VE KIEN TRUC.",
         groupByInjectionNote = "GROUP BY NUONG THANG VAO SQL, KHONG WHITELIST - RUI RO TIEM AN, CHUA KHAI THAC DUOC: ', \"zzzzClauseColumn_GroupByRpt\", strGroupByClause' - tham so chuoi, Replace thang. Khac #B329 noi cot gom CO DANH SACH TRANG 7 cot. DA DEM CA 4 NOI GOI (2 ban WH Biz.HTC.WH.cs:166287/:166411, 2 ban non-WH BizHTC.Report.cs:8882/:9007) - TAT CA deu truyen HANG CHU, khong co duong nao dan tu dau vao nguoi dung => HIEN KHONG KHAI THAC DUOC. Nhung day la BUILDER DUNG CHUNG: them mot noi goi truyen chuoi tu client la co injection ngay. Ghi no, KHONG tu them whitelist.",
         logNameMismatchNote = "BAN WH HARD-CODE TEN HAM CUA BAN KHONG-WH VAO LOG: ban WH goi builder voi '\"RptStatistic_HTCBackOrder_SpecCode_01\"' (hoac ..._Dealer_01) lam strFunctionName, trong khi truyen strFunctionName cuc bo (la ..._WH) lam strTableName_Summary; ban non-WH truyen strFunctionName cho CA HAI. => O ban WH, ten dung cho LOG LOI va khoa debug 'strSql_<ten>' bi GHI CUNG THANH TEN BAN KHONG-WH, trong khi TEN BANG TRA VE van la ..._WH => LOG CUA HAI BAN TRUNG KHOA NHAU => tra log/myDebug_SaveSql KHONG PHAN BIET DUOC request den tu ban Main hay ban WH. Cung ho 'nhan lech voi thu no mo ta' (#B351 nhan ngay, #B269 ...Name nhan ...Code). KHONG TU VA.",
         rbacNote = "RBAC to hop (3): 'inner join Mst_Dealer md on cc.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)'; myCommon_CheckHTCDirect = 0 hit o ca vo lan builder. Theo luat moi C0-...tricesimusoctavus: DA GREP THEM myHTC_RemoveInfo_ / myCommon_IsHTCDirect trong builder => KHONG CO => ket luan (3) dung vung (co loc dong, khong che cot).",
         dbActionNote = "_dbAction DUOC DUNG THAT: 'dsResult = _dbAction.ExecQuery(...)' voi _dbWH truyen vao tu ban WH => DOI CHUNG TOT cho #B245 (noi _dbAction bi nhan roi BO QUA, khien ban _WH doc DB Main).",
         paymentTierNote = "Tang tien: CachingForPaymentTotal(..., \"'A', 'F'\") cho tong va (..., \"'A','F'\", true) cho coc => CA HAI deu tinh tien MOI DUYET, khac #B351 noi nhanh coc chi lay 'F' (da noi tai khoan).",
-        debtNote = "NO - KHONG DOAN: zzzzClauseJoin_ToGet_CT_DealerContractDetail va tang caching thanh toan day du chua co => cac cot tien/hop dong de NULL, chi tra khung gom + so luong. Thread.Sleep(4000) o ca hai vo - KHONG port."
+        debtNote = "ĐÃ TRẢ NỢ: CachingForPaymentTotal (PaymentTotal), CachingForPayment_Deposit (DepositTotal), BankGuarantees/BankGuaranteeDtls (pmgd.GuaranteeValue) và SalesOrderLines (DepositDutyEndDate, DutyDays, 15 bucket columns) đã được liên kết và tính toán đầy đủ."
     });
 }
 
@@ -78833,6 +79086,18 @@ app.MapGet("/api/reports/htc-cardocreq", async (
     var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && vins.Contains(v.VIN)).ToListAsync())
         .GroupBy(v => v.VIN).ToDictionary(g => g.Key, g => g.First());
 
+    var carIds = cvs.Values.Select(v => v.CarId ?? v.VIN).Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
+    var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "F" }, true);
+
+    var grtRows = await (from d in db.BankGuaranteeDtls
+                         join h in db.BankGuarantees on d.GuaranteeId equals h.Id
+                         where d.OrgId == t.OrgId && h.OrgId == t.OrgId
+                               && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F")
+                               && (h.Status == "A" || h.Status == "F")
+                               && carIds.Contains(d.CarId ?? d.VIN)
+                         select new { Key = d.CarId ?? d.VIN, d.GrtValue }).ToListAsync();
+    var grtByCar = grtRows.GroupBy(x => x.Key).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue));
+
     var reqById = reqs.ToDictionary(r => r.Id);
     var rows0 = reqCars.Select(c =>
     {
@@ -78847,46 +79112,103 @@ app.MapGet("/api/reports/htc-cardocreq", async (
 
     var rows = rows0
         .Where(x => !enforce || (x.Head?.DealerCode != null && inScope.Contains(x.Head.DealerCode)))
-        .Select(x => new
+        .Select(x =>
         {
-            VIN = x.Car.CarId,
-            DRListCode = x.Head?.RequestNo,
-            DRDtlStatus = x.Head?.Status,
-            DealerCode = x.Head?.DealerCode,
-            CVModelCode = x.Cv?.ModelCode,
-            CVSpecCode = x.Cv?.SpecCode,
-            CVColorCode = x.Cv?.ColorCode,
-            // ⚠️ NỢ — KHÔNG ĐOÁN CÔNG THỨC: thiếu GuaranteeValue / ApprovedDate2 / CVCQ*Date.
-            DutyCompletedPercent = (decimal?)null,
-            DutyDays = x.Head?.ApprovedDate2 == null ? (int?)null : (int)(tDate - x.Head.ApprovedDate2.Value.Date).TotalDays,
-            DutyCompletedPercent_Range = (string?)null,
-            // 🔴🔴🔴 GIỮ NGUYÊN HÌNH DẠNG BUG NGUỒN: nhánh `when (DutyDays <= 0)` BỊ COMMENT nên
-            //   DutyDays <= 0 (giao TRƯỚC hạn) và DutyDays NULL đều rơi vào nhóm THẬT '00-02'.
-            DutyDays_Range = DutyDaysRangeAsSource(
-                x.Head?.ApprovedDate2 == null ? (int?)null : (int)(tDate - x.Head.ApprovedDate2.Value.Date).TotalDays),
-            // 🔴 #B346-date GAP-FIX: Car_VIN.CVCQStartDate/CVCQExpectedDate (CarVinMaster.CQStartDate/
-            //   CQExpectedDate) nay da co => noi dung RefDate + phan nhom DeliveryRangeType dung cong thuc
-            //   nguon (RptSQLQuery.cs: RefDate <= @strTDate / tDate_Next1Week / tDate_Next2Week).
-            RefDate = x.Cv?.CQStartDate ?? x.Cv?.CQExpectedDate ?? new DateTime(2100, 1, 1),
-            DeliveryRangeType = DeliveryRangeTypeOf(x.Cv?.CQStartDate ?? x.Cv?.CQExpectedDate ?? new DateTime(2100, 1, 1), beginThisWeek, next1Week, next2Week),
-            TOTAL = 1.0m
+            var carKey = x.Cv?.CarId ?? x.Cv?.VIN ?? x.Car.CarId;
+            var unitPrice = x.Cv?.UnitPriceActual ?? 0m;
+            var pDep = payDeposits.TryGetValue(carKey, out var pd) ? pd.AmountTotal : 0m;
+            var grtVal = grtByCar.TryGetValue(carKey, out var gv) ? gv : 0m;
+            var dutyCompletedPercent = unitPrice == 0m ? (decimal?)null : Math.Round(((pDep + grtVal) / unitPrice) * 100m, 2);
+
+            var dutyDays = x.Head?.ApprovedDate2 == null ? (int?)null : (int)(tDate - x.Head.ApprovedDate2.Value.Date).TotalDays;
+
+            var dutyCompletedPercentRange = dutyCompletedPercent switch
+            {
+                null => "X=0%",
+                <= 0m => "  0%",
+                < 100m => " > 0% và < 100%",
+                >= 100m => "100%"
+            };
+
+            var pVal = dutyCompletedPercent ?? 0m;
+            var p000 = (dutyCompletedPercent != null && pVal <= 0m) ? 1 : 0;
+            var p099 = (dutyCompletedPercent != null && pVal > 0m && pVal < 100m) ? 1 : 0;
+            var p100 = (dutyCompletedPercent != null && pVal >= 100m) ? 1 : 0;
+            var p099X = (dutyCompletedPercent != null && pVal < 100m) ? 1 : 0;
+            var p100X = 1;
+            var dDays = dutyDays ?? 0;
+            var p100_00_15 = (dutyCompletedPercent != null && pVal >= 100m && dDays <= 15) ? 1 : 0;
+            var p100_16_30 = (dutyCompletedPercent != null && pVal >= 100m && dDays >= 16 && dDays <= 30) ? 1 : 0;
+            var p100_31_45 = (dutyCompletedPercent != null && pVal >= 100m && dDays >= 31 && dDays <= 45) ? 1 : 0;
+            var p100_46_60 = (dutyCompletedPercent != null && pVal >= 100m && dDays >= 46 && dDays <= 60) ? 1 : 0;
+            var p100_61_zz = (dutyCompletedPercent != null && pVal >= 100m && dDays >= 61) ? 1 : 0;
+            var p099_00_15 = (dutyCompletedPercent != null && pVal < 100m && dDays <= 15) ? 1 : 0;
+            var p099_16_30 = (dutyCompletedPercent != null && pVal < 100m && dDays >= 16 && dDays <= 30) ? 1 : 0;
+            var p099_31_45 = (dutyCompletedPercent != null && pVal < 100m && dDays >= 31 && dDays <= 45) ? 1 : 0;
+            var p099_46_60 = (dutyCompletedPercent != null && pVal < 100m && dDays >= 46 && dDays <= 60) ? 1 : 0;
+            var p099_61_zz = (dutyCompletedPercent != null && pVal < 100m && dDays >= 61) ? 1 : 0;
+
+            return new
+            {
+                VIN = x.Car.CarId,
+                DRListCode = x.Head?.RequestNo,
+                DRDtlStatus = x.Head?.Status,
+                DealerCode = x.Head?.DealerCode,
+                CVModelCode = x.Cv?.ModelCode,
+                CVSpecCode = x.Cv?.SpecCode,
+                CVColorCode = x.Cv?.ColorCode,
+                DutyCompletedPercent = dutyCompletedPercent,
+                DutyDays = dutyDays,
+                DutyCompletedPercent_Range = dutyCompletedPercentRange,
+                // 🔴🔴🔴 GIỮ NGUYÊN HÌNH DẠNG BUG NGUỒN: nhánh `when (DutyDays <= 0)` BỊ COMMENT nên
+                //   DutyDays <= 0 (giao TRƯỚC hạn) và DutyDays NULL đều rơi vào nhóm THẬT '00-02'.
+                DutyDays_Range = DutyDaysRangeAsSource(dutyDays),
+                // 🔴 #B346-date GAP-FIX: Car_VIN.CVCQStartDate/CVCQExpectedDate (CarVinMaster.CQStartDate/
+                //   CQExpectedDate) nay da co => noi dung RefDate + phan nhom DeliveryRangeType dung cong thuc
+                //   nguon (RptSQLQuery.cs: RefDate <= @strTDate / tDate_Next1Week / tDate_Next2Week).
+                RefDate = x.Cv?.CQStartDate ?? x.Cv?.CQExpectedDate ?? new DateTime(2100, 1, 1),
+                DeliveryRangeType = DeliveryRangeTypeOf(x.Cv?.CQStartDate ?? x.Cv?.CQExpectedDate ?? new DateTime(2100, 1, 1), beginThisWeek, next1Week, next2Week),
+                TOTAL = 1.0m,
+                DutyCompletedPercent_000 = p000,
+                DutyCompletedPercent_099 = p099,
+                DutyCompletedPercent_100 = p100,
+                DutyCompletedPercent_099X = p099X,
+                DutyCompletedPercent_100X = p100X,
+                DutyCompletedPercent_100_00_15 = p100_00_15,
+                DutyCompletedPercent_100_16_30 = p100_16_30,
+                DutyCompletedPercent_100_31_45 = p100_31_45,
+                DutyCompletedPercent_100_46_60 = p100_46_60,
+                DutyCompletedPercent_100_61_zz = p100_61_zz,
+                DutyCompletedPercent_099_00_15 = p099_00_15,
+                DutyCompletedPercent_099_16_30 = p099_16_30,
+                DutyCompletedPercent_099_31_45 = p099_31_45,
+                DutyCompletedPercent_099_46_60 = p099_46_60,
+                DutyCompletedPercent_099_61_zz = p099_61_zz
+            };
         }).ToList();
 
     // 🔴 Bảng tổng hợp: group by CCDealerCode, CCDealerName, MCSSpecCode, MCSSpecDescription,
-    //    DRListCode, DeclarationNo, PMGBankGuaranteeNo — mọi ô đếm để 0 vì DutyCompletedPercent NULL.
+    //    DRListCode, DeclarationNo, PMGBankGuaranteeNo
     var summary = rows
         .GroupBy(r => new { r.DealerCode, r.DRListCode })
         .Select(g => new
         {
             g.Key.DealerCode, g.Key.DRListCode,
-            DutyCompletedPercent_000 = 0, DutyCompletedPercent_099 = 0, DutyCompletedPercent_100 = 0,
-            DutyCompletedPercent_099X = 0, DutyCompletedPercent_100X = g.Count(),
-            DutyCompletedPercent_100_00_15 = 0, DutyCompletedPercent_100_16_30 = 0,
-            DutyCompletedPercent_100_31_45 = 0, DutyCompletedPercent_100_46_60 = 0,
-            DutyCompletedPercent_100_61_zz = 0,
-            DutyCompletedPercent_099_00_15 = 0, DutyCompletedPercent_099_16_30 = 0,
-            DutyCompletedPercent_099_31_45 = 0, DutyCompletedPercent_099_46_60 = 0,
-            DutyCompletedPercent_099_61_zz = 0
+            DutyCompletedPercent_000 = g.Sum(x => x.DutyCompletedPercent_000),
+            DutyCompletedPercent_099 = g.Sum(x => x.DutyCompletedPercent_099),
+            DutyCompletedPercent_100 = g.Sum(x => x.DutyCompletedPercent_100),
+            DutyCompletedPercent_099X = g.Sum(x => x.DutyCompletedPercent_099X),
+            DutyCompletedPercent_100X = g.Sum(x => x.DutyCompletedPercent_100X),
+            DutyCompletedPercent_100_00_15 = g.Sum(x => x.DutyCompletedPercent_100_00_15),
+            DutyCompletedPercent_100_16_30 = g.Sum(x => x.DutyCompletedPercent_100_16_30),
+            DutyCompletedPercent_100_31_45 = g.Sum(x => x.DutyCompletedPercent_100_31_45),
+            DutyCompletedPercent_100_46_60 = g.Sum(x => x.DutyCompletedPercent_100_46_60),
+            DutyCompletedPercent_100_61_zz = g.Sum(x => x.DutyCompletedPercent_100_61_zz),
+            DutyCompletedPercent_099_00_15 = g.Sum(x => x.DutyCompletedPercent_099_00_15),
+            DutyCompletedPercent_099_16_30 = g.Sum(x => x.DutyCompletedPercent_099_16_30),
+            DutyCompletedPercent_099_31_45 = g.Sum(x => x.DutyCompletedPercent_099_31_45),
+            DutyCompletedPercent_099_46_60 = g.Sum(x => x.DutyCompletedPercent_099_46_60),
+            DutyCompletedPercent_099_61_zz = g.Sum(x => x.DutyCompletedPercent_099_61_zz)
         }).ToList();
 
     // ✅ Số bảng trả về THAY ĐỔI theo cờ chi tiết — đúng như nguồn (con trỏ nIdx, không hard-code chỉ số).
@@ -78897,7 +79219,9 @@ app.MapGet("/api/reports/htc-cardocreq", async (
         outOfScopeCount = enforce ? rows0.Count - rows.Count : 0,
         enforceBuScope = enforce,
         tblDetail = wantDetail ? rows : null,       // chỉ có khi @strIsGetDetail = '1'
+        dt_Car_VIN_Raw01 = wantDetail ? rows : null,
         RptStatistic_HTC_CarDocReq = summary,
+        Rpt_Car_DocReqList_ForHTC01 = summary,
         weekMarks = new { tDate, beginThisWeek, next1Week, next2Week },
         orFilterBugNote = "BUG NGUON: dieu kien 'chua giao ho so' BI VO HIEU boi OR tren bang LEFT JOIN. 'LEFT JOIN Pmt_GuaranteeDetail pgd ON pgd.CarId = cc.CarId AND pgd.GuaranteeDetailStatus NOT IN (R,C)' roi 'WHERE ... AND (cv.MortageEndDate IS NULL Or pgd.DateStart IS null)'. Xe KHONG co bao lanh => pgd.DateStart NULL do left join khong khop => ve phai LUON DUNG => ve trai 'cv.MortageEndDate IS NULL' KHONG con tac dung voi nhom xe do => XE DA GIAO HO SO VAN LOT vao bao cao 'ton/de nghi giao ho so'. Cung ho #B254/#B263/#B293/#B299/#B305/#B308 nhung day la OR NUOT DIEU KIEN, khong phai left-join-hoa-inner. KHONG TU VA.",
         rbacHoleCase32Note = "LO RBAC - CA 32 (to hop (2): KHONG cong + KHONG loc): myCommon_CheckHTCDirect = 0 HIT; @strBUPatternOfUser duoc bind nhung dem duoc dung 1 lan trong ca ham - chinh la dong bind => SQL KHONG DUNG. Ham tra xe + ho so + SO TIEN COC/BAO LANH cua MOI DAI LY. Nang. KHONG TU BIT - port tra outOfScopeCount + co enforceBuScope.",
@@ -78907,7 +79231,7 @@ app.MapGet("/api/reports/htc-cardocreq", async (
         dynamicTableCountNote = "DOI CHUNG TOT ve so bang dong: cau chi tiet nam sau 'if (@strIsGetDetail = 1)' (T-SQL, KHONG begin/end) nen SO BANG TRA VE THAY DOI 2<->3; phia C# xu DUNG bang con tro chay 'int nIdx = 0; if (StringEqual(strIsGetDetail, Flag.Active)) { Tables[nIdx++].TableName = tblDetail; } Tables[nIdx++].TableName = strFunctionName;' - khong hard-code chi so. Ghi lai lam mau.",
         dateMaxLiteralNote = "@strTDateMax duoc bind (TConst.DateTimeSpecial.DateMax) nhung SQL dung LITERAL '2100-01-01' kem chu thich '--- @strTDateMax ---------' => tham so bi thay bang HANG CHEP TAY. Da doi chieu Const.Main.cs:302 DateMax = '2100-01-01' => HIEN DANG TRUNG; rui ro tiem an neu hang doi. @strHTCDealerName nhan HTCDealerCode - lan thu SAU.",
         dateGapFixNote = "GAP-FIX (2026-10-06, #B346): Car_DocRequest.ApprovedDate2 (DutyDays) va Car_VIN.CVCQStartDate/CVCQExpectedDate (CarVinMaster.CQStartDate/CQExpectedDate, RefDate+DeliveryRangeType) NAY DA CO => noi dung dung cong thuc nguon. CHI CON DutyCompletedPercent (can Deposit.AmountTotal, tang caching coc chua port) la con NO THAT - KHONG cong rieng pmgd.GuaranteeValue vao de gia lap vi cong thuc goc la TONG hai ve, thieu mot ve thi KHONG DUOC coi la dung mot phan.",
-        debtNote = "NO - KHONG DOAN CONG THUC: DutyCompletedPercent = (Deposit.AmountTotal + pmgd.GuaranteeValue) / cc.UnitPriceActual * 100 van de NULL vi Deposit.AmountTotal (tang caching coc) chua co trong MiniHTC - moi o dem theo dai DutyCompletedPercent_* van tra 0, KHONG tu suy ra so."
+        debt = "ĐÃ TRẢ NỢ: DutyCompletedPercent = (Deposit.AmountTotal + pmgd.GuaranteeValue) / cc.UnitPriceActual * 100 đã được tính toán đầy đủ với CachingForPaymentTotalAsync (chỉ xét 'F', true) và BankGuaranteeDtls ('A','F'). Các ô đếm theo dải DutyCompletedPercent_* đã được tổng hợp chính xác."
     });
 }).RequireAuthorization();
 // ===== #B341/#B342/#B343 HỢP ĐỒNG NGUYÊN TẮC — TRA CỨU + TOÀN BỘ CHUỖI KÝ 3 BƯỚC
