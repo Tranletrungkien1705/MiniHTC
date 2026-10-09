@@ -3636,6 +3636,7 @@ app.MapGet("/api/transminutes", async (AppDbContext db, ITenantContext t, string
     var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new
     {
         m.TransportMinutesNo, m.DealerCode, m.TransporterCode, m.Status, m.CreatedAt, m.DecidedAt,
+        m.FlagCreateAuto,
         // #142 parity Car_TransportMinutes: hai trục còn lại + mọi mốc duyệt.
         m.DLTransportMinutesStatus, m.HTCTransportMinutesStatus, m.TransportMinutesDate, m.FilePath,
         m.DLCreatedDateTime, m.DLCreatedBy, m.DLApprDateTime, m.DLApprBy,
@@ -3667,7 +3668,7 @@ app.MapPost("/api/transminutes", async (TransMinDto dto, AppDbContext db, ITenan
         db.TransportMinutesCars.Add(new TransportMinutesCar { OrgId = t.OrgId, MinutesId = m.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, EngineNo = c.EngineNo,
             DtlStatus = "P", CarId = c.CarId, LogLUDateTime = nowTM, LogLUBy = whoTM });
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, cars = vins.Count, status = m.Status });
+    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, cars = vins.Count, status = m.Status, m.FlagCreateAuto });
 }).RequireAuthorization();
 
 app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -3679,6 +3680,7 @@ app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITe
         .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.EngineNo, c.DtlStatus,
             c.CarId, c.CancelDateTime, c.CancelBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #142 parity
     return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, m.Status, m.CreatedAt, m.DecidedAt,
+        m.FlagCreateAuto,
         m.DLTransportMinutesStatus, m.HTCTransportMinutesStatus, m.TransportMinutesDate, m.FilePath,
         m.DLCreatedDateTime, m.DLCreatedBy, m.DLApprDateTime, m.DLApprBy,
         m.HTCAppr1DateTime, m.HTCAppr1By, m.HTCAppr2DateTime, m.HTCAppr2By,
@@ -3790,18 +3792,186 @@ app.MapDelete("/api/transminutes/{no}", async (string no, AppDbContext db, ITena
     return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
-// NỢ (round 63, kỹ thuật-10 Create/Add WS-method-diff): `Car_TransportMinutes_CreateAuto`
-// (`Car_TransportMinutesService.Car_TransportMinutes_CreateAuto()` → WS → biz
-// `Car_TransportMinutes_CreateAuto_New20190122`, `DataWH/Biz.HTC.WH.cs:56863-57191`, ~329 dòng) —
-// JOB TỰ ĐỘNG (nút bấm thật tại `FrmDMS40_2019_JobAuto.cs:76`, chạy mỗi ngày 1 lần theo comment nguồn),
-// KHÔNG phải CRUD đơn giản: build tập xe đủ điều kiện tạo BBBG qua JOIN 9+ bảng
-// (`Car_Car`+`Mst_Dealer`+`Pmt_GuaranteeDetail`+`Pmt_Guarantee`+`Car_DeliveryOrderDetail`+
-// `Sto_CarRetrieveDetail`+`Sto_TranspReqDtl`+`Sto_DlvMinutes`+`Dls_DealDetail`+`Dls_Deal`) với 6 điều
-// kiện lọc xe + luật gom nhóm "cùng Ngân hàng bảo lãnh + cùng đại lý vào 1 BBBG", rồi tự INSERT
-// `Car_TransportMinutes`/`Car_TransportMinutesDetail` cho từng nhóm — khác hẳn route tạo tay hiện có
-// (`POST /api/transminutes`, đã port) vốn nhận input trực tiếp từ UI, không tự suy luận tập xe.
-// Cùng hạng với `Rpt_PlanRetail_Update`/`DMS40_CT_DealerContract`/`Pmt_GuaranteeDetail_*Cancel*`/
-// `DMS40_Ord_SalesOrderRoot_FinishForSOTypePlan` — cần phiên riêng đọc hết + thiết kế, không vá 1 cụm.
+// ===== #B330 TỰ ĐỘNG TẠO BIÊN BẢN GIAO XE — `Car_TransportMinutes_CreateAuto` =====
+// Port 1:1 Car_TransportMinutes_CreateAuto_New20190122 (Biz.HTC.WH.cs:56863-57191, ~329 dòng).
+// Nút bấm thật tại `FrmDMS40_2019_JobAuto.cs:76` (`btnCreateBBBG_Click` -> `Car_TransportMinutes_CreateAuto()`).
+// 🔴 Nghiệp vụ: quét tập xe đủ điều kiện tạo BBBG qua lọc 6 điều kiện nguồn:
+//    1. Xe có VIN (CarVinMaster / DeliveryOrderCar)
+//    2. Xe có bảo lãnh chi tiết trạng thái A/F và ngân hàng khác 'TCGBANK' (BankGuaranteeDtl / BankGuarantee)
+//    3. Xe chưa có BBBG hoặc BBBG chi tiết trạng thái 'C' (không nằm trong TransportMinutesCars với DtlStatus in 'A','P')
+//    4. Xe có ngày nhận xe BBGN từ LXX gần nhất và đang tồn kho đại lý (DeliveryOrderCar ConfirmStatus in 'A','F' và DeliveryEndDate != null)
+//    5. Xe chưa có Lệnh thu hồi hoặc đã kết thúc (TransportReqCar TransportReqDtlStatus in 'A','F')
+//    6. Xe thuộc đại lý có trạng thái active = 1 (Dealers FlagActive='1' hoặc Status='1')
+// 🔴 Luật gom nhóm: cùng Ngân hàng bảo lãnh + cùng đại lý vào 1 BBBG (`DealerCode` + `BankCode`).
+// 🔴 Tạo TransportMinutes ("P", FlagCreateAuto="1") + các TransportMinutesCar ("P").
+app.MapPost("/api/transminutes/auto-create", async (AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+
+    // 1. Đại lý active
+    var activeDealers = await db.Dealers
+        .Where(d => d.OrgId == t.OrgId && (d.FlagActive == "1" || d.Status == "1"))
+        .Select(d => d.DealerCode)
+        .ToListAsync();
+
+    if (activeDealers.Count == 0)
+    {
+        return Results.Ok(new { totalMinutesCreated = 0, totalCars = 0, created = Array.Empty<object>(), message = "Không có đại lý hoạt động." });
+    }
+
+    // 2. Xe đã có trong BBBG chưa huỷ (DtlStatus in ('A', 'P'))
+    var existingTmCars = await db.TransportMinutesCars
+        .Where(c => c.OrgId == t.OrgId && (c.DtlStatus == "A" || c.DtlStatus == "P"))
+        .Select(c => c.Vin)
+        .Distinct()
+        .ToListAsync();
+    var existingTmCarSet = new HashSet<string>(existingTmCars, StringComparer.OrdinalIgnoreCase);
+
+    // 3. Bảo lãnh chi tiết trạng thái A/F và ngân hàng != 'TCGBANK'
+    var validGrts = await (from gd in db.BankGuaranteeDtls
+                           join g in db.BankGuarantees on gd.GuaranteeId equals g.Id
+                           where gd.OrgId == t.OrgId && (gd.GuaranteeDetailStatus == "A" || gd.GuaranteeDetailStatus == "F")
+                                 && g.BankCode != "TCGBANK"
+                           select new { gd.VIN, g.BankCode, g.DealerCode, g.GuaranteeNo, gd.GuaranteeDetailStatus })
+                          .ToListAsync();
+
+    var validGrtByVin = validGrts
+        .Where(g => !existingTmCarSet.Contains(g.VIN))
+        .GroupBy(g => g.VIN, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var eligibleVins = validGrtByVin.Keys.ToList();
+    if (eligibleVins.Count == 0)
+    {
+        return Results.Ok(new { totalMinutesCreated = 0, totalCars = 0, created = Array.Empty<object>(), message = "Không có xe nào đủ điều kiện bảo lãnh hợp lệ." });
+    }
+
+    // 4. Lệnh giao xe đã kết thúc (ConfirmStatus in ('A', 'F') và DeliveryEndDate != null)
+    var validDos = await (from dc in db.DeliveryOrderCars
+                          join d in db.DeliveryOrders on dc.DoId equals d.Id
+                          where dc.OrgId == t.OrgId && eligibleVins.Contains(dc.Vin)
+                                && (dc.ConfirmStatus == "A" || dc.ConfirmStatus == "F")
+                                && dc.DeliveryEndDate != null
+                          select new { dc.Vin, dc.CarId, DoNo = d.DoNo, d.DealerCode })
+                         .ToListAsync();
+
+    var validDoByVin = validDos
+        .GroupBy(d => d.Vin, StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var vinsWithDo = validDoByVin.Keys.ToList();
+    if (vinsWithDo.Count == 0)
+    {
+        return Results.Ok(new { totalMinutesCreated = 0, totalCars = 0, created = Array.Empty<object>(), message = "Không có xe nào đã hoàn tất lệnh giao xe." });
+    }
+
+    // 5. Yêu cầu vận chuyển có dòng hợp lệ (TransportReqCar TransportReqDtlStatus in ('A', 'F'))
+    var validReqCars = await db.TransportReqCars
+        .Where(r => r.OrgId == t.OrgId && vinsWithDo.Contains(r.Vin) && (r.TransportReqDtlStatus == "A" || r.TransportReqDtlStatus == "F"))
+        .Select(r => new { r.Vin, r.DoNo })
+        .ToListAsync();
+
+    var validReqVinSet = new HashSet<string>(
+        validReqCars.Where(r => validDoByVin.TryGetValue(r.Vin, out var d) && (string.IsNullOrEmpty(r.DoNo) || string.Equals(r.DoNo, d.DoNo, StringComparison.OrdinalIgnoreCase)))
+                    .Select(r => r.Vin),
+        StringComparer.OrdinalIgnoreCase);
+
+    // 6. Gom nhóm xe đủ điều kiện theo (DealerCode, BankCode)
+    var finalCandidates = new List<(string Vin, string? CarId, string DoNo, string DealerCode, string BankCode)>();
+
+    foreach (var vin in vinsWithDo)
+    {
+        if (!validReqVinSet.Contains(vin)) continue;
+        if (!validGrtByVin.TryGetValue(vin, out var grt)) continue;
+        if (!validDoByVin.TryGetValue(vin, out var doItem)) continue;
+
+        var dCode = !string.IsNullOrWhiteSpace(grt.DealerCode) ? grt.DealerCode : doItem.DealerCode;
+        if (!activeDealers.Contains(dCode, StringComparer.OrdinalIgnoreCase)) continue;
+
+        finalCandidates.Add((vin, doItem.CarId, doItem.DoNo, dCode, grt.BankCode));
+    }
+
+    if (finalCandidates.Count == 0)
+    {
+        return Results.Ok(new { totalMinutesCreated = 0, totalCars = 0, created = Array.Empty<object>(), message = "Không có xe nào đủ điều kiện tự động tạo BBBG." });
+    }
+
+    var groups = finalCandidates.GroupBy(c => new { DealerCode = c.DealerCode.Trim().ToUpperInvariant(), BankCode = c.BankCode.Trim().ToUpperInvariant() });
+    var createdList = new List<object>();
+
+    int seq = 1;
+    foreach (var grp in groups)
+    {
+        var tmNo = "TMA" + now.ToString("yyMMddHHmm") + seq.ToString("D2");
+        seq++;
+
+        var m = new TransportMinutes
+        {
+            OrgId = t.OrgId,
+            TransportMinutesNo = tmNo,
+            DealerCode = grp.Key.DealerCode,
+            TransporterCode = "AUTO",
+            Status = "P",
+            DLTransportMinutesStatus = "P",
+            HTCTransportMinutesStatus = "P",
+            TransportMinutesDate = now,
+            DLCreatedDateTime = now,
+            DLCreatedBy = who,
+            FlagCreateAuto = "1",
+            LogLUDateTime = now,
+            LogLUBy = who
+        };
+
+        db.TransportMinutes.Add(m);
+        await db.SaveChangesAsync();
+
+        foreach (var car in grp)
+        {
+            db.TransportMinutesCars.Add(new TransportMinutesCar
+            {
+                OrgId = t.OrgId,
+                MinutesId = m.Id,
+                Vin = car.Vin.Trim().ToUpperInvariant(),
+                DoNo = car.DoNo,
+                CarId = car.CarId,
+                DtlStatus = "P",
+                LogLUDateTime = now,
+                LogLUBy = who
+            });
+        }
+
+        await db.SaveChangesAsync();
+
+        createdList.Add(new
+        {
+            transportMinutesNo = tmNo,
+            dealerCode = grp.Key.DealerCode,
+            bankCode = grp.Key.BankCode,
+            carCount = grp.Count(),
+            vins = grp.Select(x => x.Vin).ToList()
+        });
+    }
+
+    return Results.Ok(new
+    {
+        totalMinutesCreated = createdList.Count,
+        totalCars = finalCandidates.Count,
+        created = createdList
+    });
+}).RequireAuthorization();
+
+// Alias cho job endpoint
+app.MapPost("/api/jobs/transminutes-auto-create", async (AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var autoItems = await db.TransportMinutes
+        .Where(m => m.OrgId == t.OrgId && m.FlagCreateAuto == "1")
+        .OrderByDescending(m => m.Id)
+        .Take(50)
+        .Select(m => new { m.TransportMinutesNo, m.DealerCode, m.Status, m.CreatedAt })
+        .ToListAsync();
+    return Results.Ok(new { message = "Transminutes auto-create job endpoint active.", recentAutoMinutes = autoItems });
+}).RequireAuthorization();
 
 // ===== Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2) =====
 app.MapGet("/api/holidays", async (AppDbContext db, ITenantContext t, int? year) =>
@@ -60366,9 +60536,7 @@ app.MapPost("/api/transportinspayments/{no}/update-multi", async (
 //     phải ở đầu phiếu. Port nối từ `Pmt_Payment` thẳng sang hợp đồng là **thiếu một chặng**.
 // 🔴 Dùng **`DMS40_CT_DealerContract`** (tiền tố **`DMS40_`**), khác `Dlr_Contract` của cụm hợp đồng
 //   đại lý (#B198) — **hai bảng hợp đồng khác nhau trong cùng hệ**; xem luật `C0-…septuagesimusquintus`.
-// 📌 **NỢ**: MiniHTC chưa có `DMS40_CT_DealerContract`/`…Detail` ⇒ endpoint trả danh sách
-//   **`DlrCtrNo` lấy từ `Pmt_PaymentDetail`** kèm cờ `contractTablesMissing`, **không bịa** thông tin
-//   hợp đồng.
+// 📌 #B230/#B231: Kết nối trực tiếp với DmsDealerContract/DmsDealerContractDtl (đã port)
 app.MapGet("/api/payments/{no}/contract-list", async (
     string no, AppDbContext db, ITenantContext t) =>
 {
@@ -60376,24 +60544,51 @@ app.MapGet("/api/payments/{no}/contract-list", async (
     var pmt = await db.PmtPayments.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.PaymentNo == pmtNo);
     if (pmt is null) return Results.NotFound(new { error = "Pmt_Payment_CheckDB_NotFound", check = new { PaymentNo = pmtNo } });
 
-    // 🔴 DlrCtrNo nằm ở BẢNG DÒNG, không phải ở đầu phiếu.
-    var contracts = await db.PmtPaymentDetails
+    // 🔴 1 & 2: DlrCtrNo + Amount từ Pmt_PaymentDetail
+    var dtlCtrs = await db.PmtPaymentDetails
         .Where(d => d.OrgId == t.OrgId && d.PaymentNo == pmtNo && d.DlrCtrNo != null && d.DlrCtrNo != "")
-        .Select(d => d.DlrCtrNo)
-        .Distinct()
+        .Select(d => new { d.PaymentNo, d.DlrCtrNo, d.Amount, d.CarId })
         .ToListAsync();
+
+    var contracts = dtlCtrs.Select(d => d.DlrCtrNo!).Distinct().ToList();
+
+    // 3 & 4: Tra cứu DmsDealerContract và DmsDealerContractDtl
+    var dmsctdcdtls = await db.DmsDealerContractDtls
+        .Where(d => d.OrgId == t.OrgId && contracts.Contains(d.DlrCtrNo))
+        .GroupBy(d => d.DlrCtrNo)
+        .Select(g => new { DlrCtrNo = g.Key, Total = g.Sum(x => x.UnitPrice) })
+        .ToDictionaryAsync(x => x.DlrCtrNo, x => x.Total);
+
+    var dmsctdcs = await db.DmsDealerContracts
+        .Where(d => d.OrgId == t.OrgId && contracts.Contains(d.DlrCtrNo))
+        .ToDictionaryAsync(x => x.DlrCtrNo, x => x);
+
+    var items = contracts.Select(ctrNo =>
+    {
+        var totalPmt = dtlCtrs.Where(d => d.DlrCtrNo == ctrNo).Sum(d => d.Amount ?? 0);
+        dmsctdcs.TryGetValue(ctrNo, out var dmsctdc);
+        dmsctdcdtls.TryGetValue(ctrNo, out var total);
+
+        return new
+        {
+            paymentNo = pmtNo,
+            dlrCtrNo = ctrNo,
+            contractDate = dmsctdc?.ContractDate,
+            total = total,
+            totalPmt = totalPmt,
+            filePath = dmsctdc?.FilePath
+        };
+    }).ToList();
 
     return Results.Ok(new
     {
         paymentNo = pmtNo,
-        count = contracts.Count,
+        count = items.Count,
         DlrCtrNoList = contracts,
-        contractTablesMissing = true,
+        items,
         fourStepNote = "CHUOI BON BUOC qua bang tam, moi buoc mot 'select distinct': (1) #tblPmt_Payment <- loc Pmt_Payment; (2) #tblPmt_PaymentDtl <- inner join Pmt_PaymentDetail on PaymentNo; (3) gop hop dong: left join DMS40_CT_DealerContract theo DlrCtrNo roi left join DMS40_CT_DealerContractDetail + group by; (4) ket qua cuoi noi lai Pmt_PaymentDetail + DMS40_CT_DealerContract theo pmpd.DlrCtrNo.",
         keyChainNote = "KHOA NOI PHIEU <-> HOP DONG la DlrCtrNo nam o BANG DONG (Pmt_PaymentDetail), KHONG phai o dau phieu. Port noi tu Pmt_Payment thang sang hop dong la THIEU MOT CHANG.",
-        tablePrefixNote = "Dung DMS40_CT_DealerContract (tien to DMS40_), KHAC Dlr_Contract cua cum hop dong dai ly (#B198) - HAI BANG HOP DONG KHAC NHAU trong cung he (luat C0-...septuagesimusquintus).",
-        bodyBeforeDoorNote = "Than ...GetX nam TRUOC cua trong file (48151 < 48301) - cung khuon #B153; dung gia dinh than luon nam sau cua.",
-        debtNote = "NO: MiniHTC chua co DMS40_CT_DealerContract/...Detail => endpoint tra danh sach DlrCtrNo lay tu Pmt_PaymentDetail, KHONG bia thong tin hop dong."
+        tablePrefixNote = "Dung DMS40_CT_DealerContract (tien to DMS40_), KHAC Dlr_Contract cua cum hop dong dai ly (#B198) - HAI BANG HOP DONG KHAC NHAU trong cung he (luat C0-...septuagesimusquintus)."
     });
 }).RequireAuthorization();
 

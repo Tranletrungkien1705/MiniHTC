@@ -1497,6 +1497,8 @@ public sealed class TransportMinutes
     public string? HTCAppr2By { get; set; }
     public DateTime? HTCCancelDateTime { get; set; }
     public string? HTCCancelBy { get; set; }
+    /// <summary>1 = Tạo tự động từ job Car_TransportMinutes_CreateAuto, 0 = Tạo tay (nhập trực tiếp).</summary>
+    public string FlagCreateAuto { get; set; } = "0";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
