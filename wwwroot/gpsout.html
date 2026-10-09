@@ -44,7 +44,14 @@ function addDev(){
 }
 async function create(){
   const devices=[...F("dtb").querySelectorAll("tr")].map(tr=>({gpsDvNo:tr.querySelector(".dv").value,gpsBoxNo:tr.querySelector(".bx").value,remark:tr.querySelector(".rm").value})).filter(d=>d.gpsDvNo);
-  const r=await fetch("/api/gpsouts",{method:"POST",headers:H(),body:JSON.stringify({storageCode:F("st").value,userCodeReceived:F("ur").value,remark:F("rm").value,devices})});
+  const payload = {storageCode:F("st").value,userCodeReceived:F("ur").value,remark:F("rm").value,devices};
+  // Cảnh báo FIFO TblStoF_GPSOut_WarningBeforeSave.List_GPSBoxNo
+  const c = await fetch("/api/gpsouts/calc",{method:"POST",headers:H(),body:JSON.stringify(payload)});
+  if (c.ok) {
+    const cj = await c.json();
+    if (cj.list_GPSBoxNo && !confirm(cj.warning)) return;
+  }
+  const r=await fetch("/api/gpsouts",{method:"POST",headers:H(),body:JSON.stringify(payload)});
   const j=await r.json();
   if(r.ok){ msg("Đã xuất "+j.sfgpsOutNo+" ("+j.devices+" TB)."); F("dtb").innerHTML="";addDev(); load(); } else msg("Lỗi: "+(j.error||r.status));
 }

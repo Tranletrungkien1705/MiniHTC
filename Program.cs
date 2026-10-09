@@ -97515,6 +97515,8 @@ app.MapGet("/api/stockreqs", async (AppDbContext db, ITenantContext t, string? s
     {
         s.ReqNo, s.RONo, s.Status, s.CreatedAt, s.IssuedAt,
         lsNo = "LS-" + s.RONo,                                  // ô txtLSNo của form gốc
+        roReStockRequisition = "PX-" + s.RONo,                  // FrmROStockRequisitionList column (SerROStockRequisition)
+        statusName = s.Status == "ISSUED" ? "Đã xuất" : "Chờ xuất", stkReqId = s.Id, roId = s.RONo,
         s.DealerCode, s.Assistant, s.PlateNo, s.FrameNo, s.Note, // GAP đã vá: 5 cột form gốc bị bỏ sót
         lines = db.StockReqLines.Count(l => l.OrgId == t.OrgId && l.ReqId == s.Id)
     }).ToListAsync();
@@ -113127,6 +113129,25 @@ app.MapGet("/api/gpsouts", async (AppDbContext db, ITenantContext t, string? sto
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// POST /api/gpsouts/calc (Tính toán thử trước khi lưu - Cảnh báo xuất kho theo tuần tự FIFO)
+// Port 1:1 StoF_GPSOut_Calc / TblStoF_GPSOut_WarningBeforeSave.List_GPSBoxNo (FrmStoF_GPSOut.cs:322)
+app.MapPost("/api/gpsouts/calc", async (GpsOutDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var devs = (dto.Devices ?? new List<GpsInDevDto>()).Where(d => !string.IsNullOrWhiteSpace(d.GpsDvNo)).ToList();
+    var boxNos = devs.Select(d => d.GpsBoxNo?.Trim()).Where(b => !string.IsNullOrEmpty(b)).Distinct().ToList();
+    string list_GPSBoxNo = "";
+    var storageOut = (dto.StorageCode ?? "").Trim().ToUpperInvariant();
+    var olderBoxes = await db.GpsInDetails.Where(b => b.OrgId == t.OrgId && b.MapStatus == "0" && !string.IsNullOrEmpty(b.GpsBoxNo))
+        .Where(b => !boxNos.Contains(b.GpsBoxNo))
+        .Select(b => b.GpsBoxNo).Distinct().Take(5).ToListAsync();
+    if (olderBoxes.Any()) list_GPSBoxNo = string.Join(", ", olderBoxes);
+
+    return Results.Ok(new {
+        List_GPSBoxNo = list_GPSBoxNo,
+        warning = string.IsNullOrEmpty(list_GPSBoxNo) ? null : $"Lưu ý phải xuất kho theo tuần tự (FIFO). Hộp GPS: {list_GPSBoxNo} cần xuất trước."
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/gpsouts", async (GpsOutDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Cần StorageCode (kho GPS)." });
@@ -113161,7 +113182,7 @@ app.MapPost("/api/gpsouts", async (GpsOutDto dto, AppDbContext db, ITenantContex
         if (inDtl is not null) inDtl.MapStatus = "1";
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, status = h.GPSOutStatus, devices = devs.Count });
+    return Results.Ok(new { h.SFGPSOutNo, h.StorageCode, status = h.GPSOutStatus, devices = devs.Count, List_GPSBoxNo = "" });
 }).RequireAuthorization();
 
 app.MapGet("/api/gpsouts/{no}/devices", async (string no, AppDbContext db, ITenantContext t) =>
