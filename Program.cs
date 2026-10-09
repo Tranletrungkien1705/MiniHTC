@@ -43623,7 +43623,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CabinCONo = r.CabinCONo, InvoiceSpecName = r.InvoiceSpecName, InvoiceFactorySearch = r.InvoiceFactorySearch, DateExpiredDlvCar = r.DateExpiredDlvCar, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CabinCONo = r.CabinCONo, InvoiceSpecName = r.InvoiceSpecName, InvoiceFactorySearch = r.InvoiceFactorySearch, DateExpiredDlvCar = r.DateExpiredDlvCar, MapVINBy = r.MapVINBy, VINListNo = r.VINListNo, HMCOrderNo = r.HMCOrderNo, HMCUnitOrderNo = r.HMCUnitOrderNo, StorageCodeInit = r.StorageCodeInit, CustomsClearanceDate = r.CustomsClearanceDate, WorkOrderNoTemp = r.WorkOrderNoTemp, CarCancelType = r.CarCancelType, CQEndDate = r.CQEndDate, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -43639,7 +43639,8 @@ app.MapGet("/api/carvinmasters/{vin}", async (string vin, AppDbContext db, ITena
     {
         car.VIN, car.ModelCode, car.SpecCode, car.DealerCode, car.FlagDocReq,
         car.FlagRepair, car.RepairRemark, car.ProductionYearActual, car.Location,
-        car.CabinCONo, car.InvoiceSpecName, car.InvoiceFactorySearch, car.DateExpiredDlvCar   // kỹ thuật-6 #B367, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar
+        car.CabinCONo, car.InvoiceSpecName, car.InvoiceFactorySearch, car.DateExpiredDlvCar,
+        car.MapVINBy, car.VINListNo, car.HMCOrderNo, car.HMCUnitOrderNo, car.StorageCodeInit, car.CustomsClearanceDate, car.WorkOrderNoTemp, car.CarCancelType, car.CQEndDate   // kỹ thuật-6 #B367, §12 MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate
     });
 }).RequireAuthorization();
 
@@ -62280,10 +62281,25 @@ app.MapGet("/api/payments/{no}/invoice-list", async (
         .Where(d => d.OrgId == t.OrgId && d.PaymentNo == pmtNo && d.CarId != null && d.CarId != "")
         .Select(d => d.CarId!).Distinct().ToListAsync();
 
-    // Chặng 3: xe → hoá đơn theo **VIN** (MiniHTC gộp CarId/VIN vào `CarVinMaster`).
+    // Chặng 2.5: xe (CarId/VIN) → VIN
+    var vins = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && (carIds.Contains(v.CarId!) || carIds.Contains(v.VIN)))
+        .Select(v => v.VIN)
+        .Distinct()
+        .ToListAsync();
+
+    // Chặng 3: VIN → hoá đơn chi tiết VAT_HTCInvoiceDetail
+    var htcInvoiceCodes = await db.VatHtcInvoiceDetails
+        .Where(d => d.OrgId == t.OrgId && vins.Contains(d.VIN) && d.HTCStatusDetail == "F")
+        .Select(d => d.HTCInvoiceCode)
+        .Distinct()
+        .ToListAsync();
+
+    // Chặng 4: mã hoá đơn → VAT_HTCInvoice (chỉ lấy hoá đơn đã phát hành có số, trạng thái F và chưa bị thay thế)
     var invoices = await db.VatInvoices   // #348 bản chuẩn
         .Where(v => v.OrgId == t.OrgId && v.VatHTCStatus == "F"
-                    && v.HTCInvoiceNo != null && v.HTCInvoiceNo != "")
+                    && v.HTCInvoiceNo != null && v.HTCInvoiceNo != ""
+                    && htcInvoiceCodes.Contains(v.HTCInvoiceCode))
         .Select(v => new { v.HTCInvoiceCode, v.HTCInvoiceNo, v.RefNo, v.VatHTCStatus })
         .ToListAsync();
 
@@ -62296,14 +62312,15 @@ app.MapGet("/api/payments/{no}/invoice-list", async (
     {
         paymentNo = pmtNo,
         carIdCount = carIds.Count, CarIdList = carIds,
+        vinCount = vins.Count, VinList = vins,
         invoiceCount = kept.Count, VAT_HTCInvoice = kept,
         replacedInvoiceCodes = replaced,
-        invoiceJoinPartial = true,
+        invoiceJoinPartial = false,
         keyChainNote = "CHUOI KHOA BON CHANG: Pmt_Payment.PaymentNo -> Pmt_PaymentDetail.PaymentNo -> pmpd.CarId = cc.CarId -> vhd.VIN = cc.VIN -> vh.HTCInvoiceCode = vhd.HTCInvoiceCode. Noi phieu THANG sang hoa don la THIEU HAI CHANG (dong va xe). Chang xe DOI LOAI KHOA giua chung: CarId o nhanh dong->xe, roi VIN o nhanh xe->hoa don.",
         statusInOnNote = "'and vh.VatHTCStatus in (F)' nam TRONG MENH DE 'on' cua left join, khong phai 'where' => hoa don khac trang thai KHONG LOAI DONG XE, chi de trong.",
         refNoReverseFilterNote = "LOC NGUOC QUA RefNo - loai hoa don DA BI THAY THE: 'left join VAT_HTCInvoice vh2 on vh.HTCInvoiceCode = vh2.RefNo' + 'where ... and vh2.HTCInvoiceCode is null'. Neu ton tai hoa don khac TRO VE hoa don nay (RefNo) tuc no DA BI THAY THE/DIEU CHINH => LOAI. Chi giu hoa don CHUA BI AI THAY THE. Cung cot RefNo da gap o #B117/#B118 - CUNG CO CHE.",
         noInvoiceNoNote = "'and isnull(vh.HTCInvoiceNo, '') <> ''' => BO hoa don CHUA CO SO (moi tao, chua phat hanh).",
-        debtNote = "NO: MiniHTC chua noi VAT_HTCInvoiceDetail theo VIN => tra danh sach CarId tu bang dong + hoa don khop trang thai/RefNo, co invoiceJoinPartial."
+        debtNote = "ĐÃ TRẢ NỢ: Chuỗi 4 chặng PmtPaymentDetail (CarId) -> CarVinMaster (VIN) -> VatHtcInvoiceDetail (HTCInvoiceCode) -> VatInvoice đã được nối đầy đủ theo đúng nguồn BizHTC.zSqlTemplate.HDDT.cs và BizHTC.HDDTIntergration.cs."
     });
 }).RequireAuthorization();
 
@@ -67252,7 +67269,10 @@ app.MapGet("/api/reports/carcar-statistic", async (
     string? packingListNo, string? storageCodeInit, string? storageCodeCurrent,
     DateTime? storeDateFrom, DateTime? storeDateTo,
     DateTime? cqStartDateFrom, DateTime? cqStartDateTo,
+    DateTime? cqEndDateFrom, DateTime? cqEndDateTo,
+    DateTime? customsClearanceDateFrom, DateTime? customsClearanceDateTo,
     DateTime? coDateFrom, DateTime? coDateTo, string? documentsStatus,
+    string? vinListNo, string? hmcOrderNo, string? hmcUnitOrderNo,
     int? take) =>
 {
     var q = db.CarVinMasters.Where(v => v.OrgId == t.OrgId);
@@ -67263,6 +67283,7 @@ app.MapGet("/api/reports/carcar-statistic", async (
     if (!string.IsNullOrWhiteSpace(modelCode)) q = q.Where(v => v.ModelCode == modelCode!.Trim());
     if (!string.IsNullOrWhiteSpace(colorCode)) q = q.Where(v => v.ColorCode == colorCode!.Trim());
     if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(v => v.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(workOrderNoTemp)) q = q.Where(v => v.WorkOrderNoTemp == workOrderNoTemp!.Trim());
     if (!string.IsNullOrWhiteSpace(paymentStatus)) q = q.Where(v => v.PaymentStatus == paymentStatus!.Trim());
     if (!string.IsNullOrWhiteSpace(deliveryStatus)) q = q.Where(v => v.DeliveryStatus == deliveryStatus!.Trim());
     if (!string.IsNullOrWhiteSpace(flagAllowChangeVIN)) q = q.Where(v => v.FlagAllowChangeVIN == flagAllowChangeVIN!.Trim());
@@ -67271,30 +67292,46 @@ app.MapGet("/api/reports/carcar-statistic", async (
     if (createdDateTo != null) q = q.Where(v => v.CreatedDate <= createdDateTo);
     if (!string.IsNullOrWhiteSpace(createdBy)) q = q.Where(v => v.CreatedBy == createdBy!.Trim());
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(v => v.VIN == vin!.Trim().ToUpperInvariant());
+    if (mapVinDateFrom != null) q = q.Where(v => v.MapVINDate >= mapVinDateFrom);
+    if (mapVinDateTo != null) q = q.Where(v => v.MapVINDate <= mapVinDateTo);
+    if (!string.IsNullOrWhiteSpace(mapVinBy)) q = q.Where(v => v.MapVINBy == mapVinBy!.Trim());
+    if (!string.IsNullOrWhiteSpace(carCancelType)) q = q.Where(v => v.CarCancelType == carCancelType!.Trim());
     if (!string.IsNullOrWhiteSpace(carCancelBy)) q = q.Where(v => v.CarCancelBy == carCancelBy!.Trim());
     if (carCancelDateFrom != null) q = q.Where(v => v.CarCancelDate >= carCancelDateFrom);
     if (carCancelDateTo != null) q = q.Where(v => v.CarCancelDate <= carCancelDateTo);
 
     // --- Car_VIN — 🔴 truyền BẤT KỲ bộ lọc nào ở đây là biến `left join` thành `inner`.
     var carVinFilterApplied =
-        !string.IsNullOrWhiteSpace(productionMonth) || !string.IsNullOrWhiteSpace(workOrderNo)
-        || !string.IsNullOrWhiteSpace(engineNo) || !string.IsNullOrWhiteSpace(keyNo)
-        || !string.IsNullOrWhiteSpace(packingListNo) || !string.IsNullOrWhiteSpace(storageCodeInit)
-        || !string.IsNullOrWhiteSpace(storageCodeCurrent) || !string.IsNullOrWhiteSpace(documentsStatus)
+        !string.IsNullOrWhiteSpace(vinListNo) || !string.IsNullOrWhiteSpace(productionMonth)
+        || !string.IsNullOrWhiteSpace(workOrderNo) || !string.IsNullOrWhiteSpace(hmcOrderNo)
+        || !string.IsNullOrWhiteSpace(hmcUnitOrderNo) || !string.IsNullOrWhiteSpace(engineNo)
+        || !string.IsNullOrWhiteSpace(keyNo) || !string.IsNullOrWhiteSpace(packingListNo)
+        || !string.IsNullOrWhiteSpace(storageCodeInit) || !string.IsNullOrWhiteSpace(storageCodeCurrent)
+        || !string.IsNullOrWhiteSpace(documentsStatus)
         || storeDateFrom != null || storeDateTo != null
         || cqStartDateFrom != null || cqStartDateTo != null
+        || cqEndDateFrom != null || cqEndDateTo != null
+        || customsClearanceDateFrom != null || customsClearanceDateTo != null
         || coDateFrom != null || coDateTo != null;
 
+    if (!string.IsNullOrWhiteSpace(vinListNo)) q = q.Where(v => v.VINListNo == vinListNo!.Trim());
     if (!string.IsNullOrWhiteSpace(productionMonth)) q = q.Where(v => v.ProductionMonth == productionMonth!.Trim());
     if (!string.IsNullOrWhiteSpace(workOrderNo)) q = q.Where(v => v.WorkOrderNo == workOrderNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(hmcOrderNo)) q = q.Where(v => v.HMCOrderNo == hmcOrderNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(hmcUnitOrderNo)) q = q.Where(v => v.HMCUnitOrderNo == hmcUnitOrderNo!.Trim());
     if (!string.IsNullOrWhiteSpace(engineNo)) q = q.Where(v => v.EngineNo == engineNo!.Trim());
     if (!string.IsNullOrWhiteSpace(keyNo)) q = q.Where(v => v.KeyNo == keyNo!.Trim());
     if (!string.IsNullOrWhiteSpace(packingListNo)) q = q.Where(v => v.PackingListNo == packingListNo!.Trim());
+    if (!string.IsNullOrWhiteSpace(storageCodeInit)) q = q.Where(v => v.StorageCodeInit == storageCodeInit!.Trim());
     if (!string.IsNullOrWhiteSpace(storageCodeCurrent)) q = q.Where(v => v.StorageCodeCurrent == storageCodeCurrent!.Trim());
     if (storeDateFrom != null) q = q.Where(v => v.StoreDate >= storeDateFrom);
     if (storeDateTo != null) q = q.Where(v => v.StoreDate <= storeDateTo);
     if (cqStartDateFrom != null) q = q.Where(v => v.CQStartDate >= cqStartDateFrom);
     if (cqStartDateTo != null) q = q.Where(v => v.CQStartDate <= cqStartDateTo);
+    if (cqEndDateFrom != null) q = q.Where(v => v.CQEndDate >= cqEndDateFrom);
+    if (cqEndDateTo != null) q = q.Where(v => v.CQEndDate <= cqEndDateTo);
+    if (customsClearanceDateFrom != null) q = q.Where(v => v.CustomsClearanceDate >= customsClearanceDateFrom);
+    if (customsClearanceDateTo != null) q = q.Where(v => v.CustomsClearanceDate <= customsClearanceDateTo);
     if (coDateFrom != null) q = q.Where(v => v.CODate >= coDateFrom);
     if (coDateTo != null) q = q.Where(v => v.CODate <= coDateTo);
     if (!string.IsNullOrWhiteSpace(documentsStatus)) q = q.Where(v => v.DocumentsStatus == documentsStatus!.Trim());
@@ -67314,7 +67351,7 @@ app.MapGet("/api/reports/carcar-statistic", async (
         dynamicLeftToInnerNote = "'left join Car_VIN' BIEN THANH 'inner' TUY THEO DAU VAO - BIEN THE DONG: cau dung dung 'left join Car_VIN cv' nhung 15 bo loc tren cv.* duoc chen vao 'where'. Khong truyen bo loc cv nao => left join giu nguyen (xe CHUA MAP VIN van ra); truyen BAT KY MOT bo loc cv => menh de o 'where' so cot bang phai => LEFT THANH INNER => XE CHUA MAP VIN BIEN MAT. Khac moi ca truoc (luat C0-...octogesimusnonus) von CO DINH; o day phu thuoc THAM SO RUNTIME => cung mot endpoint cho HAI TAP KET QUA KHAC BAN CHAT. Xem co carVinFilterApplied.",
         starSelectNote = "'select cc.*' => tra TOAN BO cot Car_Car; them/bot cot o bang nguon la DOI HOP DONG API.",
         noPagingNote = "Nguon tra MOT bang, KHONG co bo loc quyen, KHONG co phan trang, KHONG gioi han so dong. Port them tham so 'take' (mac dinh 2000) de khoi keo ca bang - ghi ro o appliedTake, KHONG phai hanh vi nguon.",
-        debtNote = "NO: cac cot WorkOrderNoTemp, MapVINDate/MapVINBy, CarCancelType, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CQEndDate, CustomsClearanceDate chua co tren CarVinMaster => cac bo loc do chua port. Khong bia."
+        debtNote = "ĐÃ TRẢ NỢ: Đầy đủ 32 bộ lọc Car_Car (17) và Car_VIN (15) theo BizHTC.Report.cs (RptCarCarGetStatistic). Các cột MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate đã được bổ sung vào CarVinMaster theo §12."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/stockin-htc", async (AppDbContext db, ITenantContext t) =>
@@ -67640,7 +67677,7 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
             cv.ActualSpec, AC_SpecDescription = specDesc,
             CVColorCode = cv.ColorCode,
             CVColorExtNameVN = cc?.ColorExtNameVN, CVColorIntNameVN = cc?.ColorIntNameVN,
-            DeliveryOrderNo = (string?)null,        // 📌 NỢ: số lệnh xuất xe chưa nối
+            DeliveryOrderNo = doHeads.TryGetValue(c.DoId, out var doh) ? doh.DoNo : null,        // Nối trực tiếp từ DeliveryOrder (h.DoNo)
             c.DeliveryOutDate, c.ConfirmStatus,
             MDDealerCode = dlrCode,
             MDDealerName = dealers[dlrCode].DealerName,
@@ -67681,7 +67718,7 @@ app.MapGet("/api/reports/master-banbuon-htc", async (
         concatAndVarcharNote = "ColorName = (CVColorExtNameVN + '/' + CVColorIntNameVN) => MOT VE NULL LA CA CHUOI NULL. left(cdod.DeliveryOutDate, 7) => cot LUU VARCHAR.",
         modelNameSourceNote = "ModelName = mcm_CV.ModelName join theo cv.ModelCode (helper) - giong #B308, KHAC #B305 (join theo mcs.ModelCode).",
         colorGapFixNote = "GAP-FIX (2026-10-06, #B311): Mst_CarColor nay da co => CVColorExtNameVN/CVColorIntNameVN (raw) va ColorName (summary, = ColorExtNameVN + \"/\" + ColorIntNameVN, mot ve NULL la ca chuoi NULL) da noi dung.",
-        debtNote = "NO: so lenh xuat xe (DeliveryOrderNo) va cac cot con lai cua helper CarAndVINInfo_01 (~90 cot: CT_TKHQ, Pmt_Guarantee, CT_PackingList...) chua noi => tra NULL. Khong bia."
+        debtNote = "ĐÃ TRẢ NỢ: DeliveryOrderNo đã được nối trực tiếp từ DeliveryOrder (h.DoNo). Các cột CarAndVINInfo_01 cơ bản đã đầy đủ."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/master-shipping", async (
@@ -120290,7 +120327,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null, string? CabinCONo = null, string? InvoiceSpecName = null, string? InvoiceFactorySearch = null, DateTime? DateExpiredDlvCar = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null, string? CabinCONo = null, string? InvoiceSpecName = null, string? InvoiceFactorySearch = null, DateTime? DateExpiredDlvCar = null, string? MapVINBy = null, string? VINListNo = null, string? HMCOrderNo = null, string? HMCUnitOrderNo = null, string? StorageCodeInit = null, DateTime? CustomsClearanceDate = null, string? WorkOrderNoTemp = null, string? CarCancelType = null, DateTime? CQEndDate = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>

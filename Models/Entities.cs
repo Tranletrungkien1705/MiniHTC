@@ -13737,6 +13737,12 @@ public sealed class CarVinMaster
     public string? InvoiceSpecName { get; set; }
     public string? InvoiceFactorySearch { get; set; }
     public DateTime? DateExpiredDlvCar { get; set; }
+    public string? MapVINBy { get; set; }
+    public string? VINListNo { get; set; }
+    public string? HMCOrderNo { get; set; }
+    public string? HMCUnitOrderNo { get; set; }
+    public string? StorageCodeInit { get; set; }
+    public DateTime? CustomsClearanceDate { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string VIN { get; set; } = "";
