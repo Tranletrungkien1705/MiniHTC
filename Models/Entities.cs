@@ -13983,11 +13983,13 @@ public sealed class CarVinMaster
     /// `CarVINUpdateMulti_CBInfo`/`_DateDeliveryCBInvoice` (TCMotor `BizHTC.Car.cs:6400`/`:6168`).
     /// `CBNo`+`CBDate` PHẢI cùng có hoặc cùng rỗng; nguồn còn đòi `CONo`+`CODate` đã có sẵn + `TypeCB='Y'`
     /// trước khi cho ghi CB info (xem guard tại route). `DateDeliveryCBInvoice` đòi `ModelCode` ∈
-    /// {HR,HR-CKD} + `TypeCB` ∈ {Y,N}. NỢ: nguồn còn side-effect tự set `StatusMortageEnd`="F" khi đủ 7
-    /// điều kiện (gồm `InvoiceNoFactory`/`InvoiceFactoryDate` — Mini CHƯA có 2 cột này) — chưa port.</summary>
+    /// {HR,HR-CKD} + `TypeCB` ∈ {Y,N}. Tự set `StatusMortageEnd`="F" khi đủ 7
+    /// điều kiện (gồm `InvoiceNoFactory`/`InvoiceFactoryDate`).</summary>
     public string? CBNo { get; set; }
     public DateTime? CBDate { get; set; }
     public DateTime? DateDeliveryCBInvoice { get; set; }
+    public string? InvoiceNoFactory { get; set; }
+    public DateTime? InvoiceFactoryDate { get; set; }
 
     /// <summary>🔴 #B112 — `Car_VIN.InspectionDate`: **ngày kiểm định** khi đóng thùng.
     /// Nguồn **chỉ ghi khi khác rỗng VÀ khác `DateTime.MinValue.ToString("yyyy-MM-dd")`**
@@ -15439,6 +15441,9 @@ public sealed class FnExpCalc
     public decimal FnExpPercent { get; set; }         // lai suat CPTC (%/nam)
     public decimal TotalFnExp { get; set; }            // tong chi phi tai chinh (tinh)
     public string Status { get; set; } = "Draft";      // Draft -> Approved / Rejected
+    public string? DlrSignStatus { get; set; }         // NS -> A / C
+    public string? HTCSignStatus { get; set; }         // NS -> A / C
+    public string? FnExpStatus { get; set; }           // NS -> S / C
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
 }

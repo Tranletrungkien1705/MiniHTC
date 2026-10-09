@@ -9828,7 +9828,7 @@ app.MapGet("/api/fnexpcalcs", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
-        c.CaNo, c.DealerCode, c.FnExpPercent, c.TotalFnExp, c.Status, c.CreatedAt, c.ApprovedAt,
+        c.CaNo, c.DealerCode, c.FnExpPercent, c.TotalFnExp, c.Status, c.DlrSignStatus, c.HTCSignStatus, c.FnExpStatus, c.CreatedAt, c.ApprovedAt,
         lines = db.FnExpCalcLines.Count(l => l.OrgId == t.OrgId && l.FnExpCalcId == c.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -9844,7 +9844,7 @@ app.MapPost("/api/fnexpcalcs", async (FnExpCalcDto dto, AppDbContext db, ITenant
     // Chi phi TC 1 dong = (coc*ngayCoc + BL*ngayBL) * laiSuat%/nam / 365, lam tron dong.
     decimal CalcLine(FnExpCalcLineDto l) => Math.Round((l.FnDepositAmount * l.FnDepositCountDate + l.FnGrtAmount * l.FnGrtCountDate) * (rate / 100m) / 365m, 0);
     var ca = "CA" + DateTime.Now.ToString("yyMMddHHmmss");
-    var c2 = new FnExpCalc { OrgId = t.OrgId, CaNo = ca, DealerCode = dto.DealerCode.Trim(), FnExpPercent = rate, Status = "Draft" };
+    var c2 = new FnExpCalc { OrgId = t.OrgId, CaNo = ca, DealerCode = dto.DealerCode.Trim(), FnExpPercent = rate, Status = "Draft", DlrSignStatus = dto.DlrSignStatus ?? "NS", HTCSignStatus = dto.HTCSignStatus ?? "NS", FnExpStatus = dto.FnExpStatus ?? "NS" };
     db.FnExpCalcs.Add(c2); await db.SaveChangesAsync();
     decimal total = 0;
     foreach (var l in lines)
@@ -9853,7 +9853,7 @@ app.MapPost("/api/fnexpcalcs", async (FnExpCalcDto dto, AppDbContext db, ITenant
         db.FnExpCalcLines.Add(new FnExpCalcLine { OrgId = t.OrgId, FnExpCalcId = c2.Id, CarId = l.CarId.Trim(), SOCode = l.SOCode ?? "", FnDepositAmount = l.FnDepositAmount, FnDepositCountDate = l.FnDepositCountDate, FnGrtAmount = l.FnGrtAmount, FnGrtCountDate = l.FnGrtCountDate, FnTotalAmount = fn, PDAmount = l.PDAmount, TermActual = l.TermActual });
     }
     c2.TotalFnExp = total; await db.SaveChangesAsync();
-    return Results.Ok(new { c2.CaNo, lines = lines.Count, totalFnExp = total });
+    return Results.Ok(new { c2.CaNo, lines = lines.Count, totalFnExp = total, c2.DlrSignStatus, c2.HTCSignStatus, c2.FnExpStatus });
 }).RequireAuthorization();
 
 app.MapGet("/api/fnexpcalcs/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -9863,7 +9863,7 @@ app.MapGet("/api/fnexpcalcs/{no}/lines", async (string no, AppDbContext db, ITen
     if (c is null) return Results.NotFound(new { no });
     var lines = await db.FnExpCalcLines.Where(l => l.OrgId == t.OrgId && l.FnExpCalcId == c.Id)
         .Select(l => new { l.CarId, l.SOCode, l.FnDepositAmount, l.FnDepositCountDate, l.FnGrtAmount, l.FnGrtCountDate, l.FnTotalAmount, l.PDAmount, l.TermActual }).ToListAsync();
-    return Results.Ok(new { c.CaNo, c.DealerCode, c.FnExpPercent, c.TotalFnExp, c.Status, c.CreatedAt, c.ApprovedAt, count = lines.Count, lines });   // #1403 §12
+    return Results.Ok(new { c.CaNo, c.DealerCode, c.FnExpPercent, c.TotalFnExp, c.Status, c.DlrSignStatus, c.HTCSignStatus, c.FnExpStatus, c.CreatedAt, c.ApprovedAt, count = lines.Count, lines });   // #1403 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/fnexpcalcs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
@@ -9874,9 +9874,21 @@ app.MapPost("/api/fnexpcalcs/{no}/{action}", async (string no, string action, Ap
     if (c is null) return Results.NotFound(new { no });
     if (c.Status != "Draft") return Results.BadRequest(new { error = "Bảng tính không ở trạng thái chờ duyệt." });
     c.Status = action == "approve" ? "Approved" : "Rejected";
-    if (action == "approve") c.ApprovedAt = DateTime.Now;
+    if (action == "approve")
+    {
+        c.ApprovedAt = DateTime.Now;
+        c.DlrSignStatus = "A";
+        c.HTCSignStatus = "A";
+        c.FnExpStatus = "S";
+    }
+    else
+    {
+        c.DlrSignStatus = "C";
+        c.HTCSignStatus = "C";
+        c.FnExpStatus = "C";
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.CaNo, c.Status });
+    return Results.Ok(new { c.CaNo, c.Status, c.DlrSignStatus, c.HTCSignStatus, c.FnExpStatus });
 }).RequireAuthorization();
 
 // ===== #5816 TÌM KIẾM BẢNG TÍNH CPTC (QUẢN LÝ) — `FrmDMS40_2019_MngDMS40_FnExp_Calc_FnExp_PmDc` =====
@@ -10418,10 +10430,13 @@ app.MapGet("/api/deals/search", async (
     details = details.Where(x => pagedDealIds.Contains(x.DealId)).ToList();
 
     var ctrDtls = await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var plNos = carsVin.Select(c => c.PackingListNo).Where(p => !string.IsNullOrWhiteSpace(p)).Distinct().ToList();
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo)).ToListAsync();
     var items = details.Select(x =>
     {
         var d = deals.First(z => z.Id == x.DealId);
         var cv = carsVin.FirstOrDefault(c => c.VIN == x.CarId);
+        var pl = cv?.PackingListNo is null ? null : packingLists.FirstOrDefault(p => p.PLNo == cv.PackingListNo);
         var prev = string.IsNullOrWhiteSpace(x.DealNoPrevious) ? null : deals.FirstOrDefault(z => z.DealNo == x.DealNoPrevious);
         // `left join Dlr_ContractDtl dcd on dlsd.DlrContractNo = dcd.DlrContractNo and cc.SpecCode = dcd.SpecCode
         //  and cc.ModelCode = dcd.ModelCode and **cc.ColorCode** = dcd.ColorCode`
@@ -10445,7 +10460,11 @@ app.MapGet("/api/deals/search", async (
             cvStoreDate = cv?.StoreDate,
             cvCQStartDate = cv?.CQStartDate,
             cvCQEndDate = cv?.CQEndDate,
-            cvCODate = cv?.CODate
+            cvCODate = cv?.CODate,
+            // #30088: 3 cột ngày của CT_PackingList (ShippingDateStart, ShippingDateEnd, ShippingDateEndExpected)
+            ctplShippingDateStart = pl?.ShippingDateStart,
+            ctplShippingDateEnd = pl?.ShippingDateEnd,
+            ctplShippingDateEndExpected = pl?.ShippingDateEndExpected
         };
     }).ToList();
 
@@ -10477,8 +10496,8 @@ app.MapGet("/api/deals/search", async (
         rbacJoinColumn = "dlsd.DealerCode (đại lý BÁN) — khác cars-to-sell-to-dealer/cars-to-pdi vốn join DealerCodeBuyer",
         droppedByDealerJoin,
         // #30087: Đã enrich đủ 4 cột ngày của CarVinMaster (StoreDate, CQStartDate, CQEndDate, CODate).
-        // NỢ còn lại: CTPLShippingDateStart/End/EndExpected (join CT_PackingList theo cv.PackingListNo) chưa có bảng CT_PackingList trong MiniHTC.
-        missingEnrichNote = "NỢ: CTPLShippingDateStart/End/EndExpected chưa có bảng CT_PackingList trong MiniHTC; 4 cột ngày CarVinMaster đã có đủ."
+        // #30088: Đã enrich đủ 3 cột ngày của PackingList (ShippingDateStart, ShippingDateEnd, ShippingDateEndExpected).
+        missingEnrichNote = "Đã enrich đủ CTPLShippingDateStart/End/EndExpected qua bảng PackingList (PLNo) và 4 cột ngày CarVinMaster."
     });
 }).RequireAuthorization();
 // #5420 — ĐÃ XOÁ "/api/deals/records*" (DealRecord/DealPatchLog, 4 route: list/upsert/patch/history):
@@ -43029,7 +43048,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -44328,14 +44347,13 @@ app.MapPost("/api/salesmantypes/{id}/toggle", async (long id, AppDbContext db, I
 // CarVINUpdateMulti_CBInfo (BizHTC.Car.cs:6400, lưu CBNo+CBDate — đòi CONo+CODate đã có sẵn + TypeCB='Y')
 // và CarVINUpdateMulti_DateDeliveryCBInvoice (:6168, lưu DateDeliveryCBInvoice — đòi ModelCode∈{HR,HR-CKD}
 // + TypeCB∈{Y,N}). Mini gộp 1 route (đơn giản hoá có chủ ý) nhưng port đủ guard tồn tại của cả 2 hàm.
-// NỢ: nguồn còn side-effect tự set StatusMortageEnd="F" khi đủ 7 điều kiện (gồm InvoiceNoFactory/
-// InvoiceFactoryDate — Mini chưa có 2 cột này) — chưa port, xem docstring CarVinMaster.CBNo.
+// Side-effect: tự động cập nhật StatusMortageEnd="F" (đã trả nợ #5187) khi có đủ InvoiceNoFactory và các điều kiện đóng thùng.
 app.MapGet("/api/carvincbinfos", async (AppDbContext db, ITenantContext t, string? vin) =>
 {
-    var q = db.CarVinMasters.Where(x => x.OrgId == t.OrgId && (x.CBNo != null || x.DateDeliveryCBInvoice != null));
+    var q = db.CarVinMasters.Where(x => x.OrgId == t.OrgId && (x.CBNo != null || x.DateDeliveryCBInvoice != null || x.InvoiceNoFactory != null));
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(x => x.VIN.Contains(vin!.Trim().ToUpperInvariant()));
     var items = await q.OrderByDescending(x => x.LogLUDateTime).Take(500)
-        .Select(x => new { x.VIN, x.CBNo, x.CBDate, x.DateDeliveryCBInvoice, x.LogLUBy, x.LogLUDateTime }).ToListAsync();
+        .Select(x => new { x.VIN, x.CBNo, x.CBDate, x.DateDeliveryCBInvoice, x.InvoiceNoFactory, x.InvoiceFactoryDate, x.StatusMortageEnd, x.LogDateTimeStatusMortageEnd, x.LogLUBy, x.LogLUDateTime }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -44386,6 +44404,22 @@ app.MapPost("/api/carvincbinfos/import", async (CarVinCBImportDto dto, AppDbCont
         var car = byVin[r.VIN!.Trim().ToUpperInvariant()];
         if (r.CBNo is not null) { car.CBNo = r.CBNo; car.CBDate = r.CBDate; }
         if (r.DateDeliveryCBInvoice is not null) car.DateDeliveryCBInvoice = r.DateDeliveryCBInvoice;
+        if (r.InvoiceNoFactory is not null) car.InvoiceNoFactory = r.InvoiceNoFactory;
+        if (r.InvoiceFactoryDate is not null) car.InvoiceFactoryDate = r.InvoiceFactoryDate;
+
+        // TCMotor BizHTC.Car.cs:6598-6612 (CarVINUpdateMulti_CBInfo): Khi xe model HR / HR-CKD,
+        // đã có đủ CONo + CODate + TypeCB='Y' + CBNo + CBDate + InvoiceNoFactory + InvoiceFactoryDate
+        // thì tự động chuyển StatusMortageEnd = "F" (Stage.Finished) và LogDateTimeStatusMortageEnd = now.
+        if (!string.IsNullOrWhiteSpace(car.CONo) && car.CODate.HasValue
+            && string.Equals(car.TypeCB, "Y", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(car.CBNo) && car.CBDate.HasValue
+            && !string.IsNullOrWhiteSpace(car.InvoiceNoFactory) && car.InvoiceFactoryDate.HasValue
+            && (string.Equals(car.ModelCode, "HR", StringComparison.OrdinalIgnoreCase) || string.Equals(car.ModelCode, "HR-CKD", StringComparison.OrdinalIgnoreCase)))
+        {
+            car.StatusMortageEnd = "F";
+            car.LogDateTimeStatusMortageEnd = now;
+        }
+
         car.LogLUBy = by; car.LogLUDateTime = now;
     }
     await db.SaveChangesAsync();
@@ -117379,7 +117413,7 @@ record PmEndDateRowDto(string? PaymentNo, string? AccountingRecordNo, DateTime? 
 record UpgradeOrderLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Quantity, string? PromotionModel, decimal DiscountAmount);
 record UpgradeOrderDto(string OrderType, string OrderPolicy, string OrderMonth, string? DealerCode, List<UpgradeOrderLineDto>? Lines);
 record FnExpCalcLineDto(string CarId, string? SOCode, decimal FnDepositAmount, int FnDepositCountDate, decimal FnGrtAmount, int FnGrtCountDate, decimal PDAmount, int TermActual);
-record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineDto>? Lines);
+record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineDto>? Lines, string? DlrSignStatus = null, string? HTCSignStatus = null, string? FnExpStatus = null);
 record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct, decimal? QtyRemainOrder, int QtyCurrProduct = 0, int QtyCurrEstimate = 0, int QtyCFOrder = 0);   // #404
 record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
 record WoProduceDto(int Qty);
@@ -118515,7 +118549,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null);   // #B248, #B323, #B332, #B360
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null);   // #B248, #B323, #B332, #B360
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>
@@ -118562,7 +118596,7 @@ record MstQualificationDto(string? QualificationCode, string? QualificationName,
 record MstPositionDto(string? PositionCode, string? PositionDesc, string? FlagActive);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive, string? FlagEmail = null);
 record CarVinCBImportDto(List<CarVinCBRowDto>? Rows);
-record CarVinCBRowDto(string? VIN, string? CBNo, DateTime? CBDate, DateTime? DateDeliveryCBInvoice);
+record CarVinCBRowDto(string? VIN, string? CBNo, DateTime? CBDate, DateTime? DateDeliveryCBInvoice, string? InvoiceNoFactory = null, DateTime? InvoiceFactoryDate = null);
 record InvoiceRecallImportDto(string? Reason, List<string?>? InvoiceNos);
 record CarContractTypeImportDto(List<CarContractTypeRowDto>? Rows);
 record CarContractTypeRowDto(string? CarId, string? ModelCode, string? SpecCode, string? ColorCode, string? SOCode, string? ContractType);
