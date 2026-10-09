@@ -6035,6 +6035,10 @@ app.MapGet("/api/reports/delay-guarantee-payment", async (
         && !hasDlvMinutes.Contains(c.VIN)     // (*) sdm.DlvMnNo is null
     ).ToList();
 
+    var carIds = rows.Select(x => x.VIN).ToList();
+    var payTotals = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, false);
+    var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, true);
+
     var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
 
     var items = rows.Select(c => new
@@ -6046,8 +6050,8 @@ app.MapGet("/api/reports/delay-guarantee-payment", async (
         ccColorCode = c.ColorCode, ccUnitPriceActual = c.UnitPriceActual,
         ccCreatedDate = c.CreatedDate,
         daysSinceCreated = c.CreatedDate is null ? (int?)null : (int)(asOf - c.CreatedDate.Value.Date).TotalDays,
-        pmpdAmountTotal = (decimal?)null,      // NỢ: CachingForPaymentTotal ('A','F')
-        pmpdDepositAmount = (decimal?)null     // NỢ: CachingForPayment_Deposit ('A','F', co true)
+        pmpdAmountTotal = payTotals.TryGetValue(c.VIN, out var tot) ? (decimal?)tot.AmountTotal : null,
+        pmpdDepositAmount = payDeposits.TryGetValue(c.VIN, out var dep) ? (decimal?)dep.AmountTotal : null
     }).OrderBy(x => x.ccDealerCode).ThenBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
 
     return Results.Ok(new
@@ -6060,7 +6064,7 @@ app.MapGet("/api/reports/delay-guarantee-payment", async (
         differsFromBackOrder = "KHAC #B65: dong 'and (vms.DeliveryOutDate is null)' o day BI COMMENT (:3012) va duoc THAY bang 'sdm.DlvMnNo is null'. Hai bao cao cung ho nhung CO Y KHAC TAP - khong duoc dong bo hoa.",
         dlvMinutesRule = "Bien ban giao khop: TranspReqType='CARTRANSPORT' VA (FDlv='A' AND TDlv='A') HOAC (FDlv='A' AND TDlv='P') => rut gon FDlv='A' va TDlv in ('A','P'); ghep qua cdod_t.DeliveryOrderNo = sdm.RefOrdNo.",
         versionNote = "Ban cu mySql_RptDelayguaranteePayment_RealTime() DA BI COMMENT (:67507) kem ly do '20221014. HuongTTT: NC tam nhin cho bao cao' - port ban _New20221014.",
-        debt = "NO co nhan: CachingForPaymentTotal ('A','F') va CachingForPayment_Deposit ('A','F', co true) chua port - cot tien tra null, KHONG suy so."
+        debt = "ĐÃ TRẢ NỢ: CachingForPaymentTotal ('A','F') va CachingForPayment_Deposit ('A','F', co true) tinh qua CachingForPaymentTotalAsync."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/dealer-group-sales-status", async (
@@ -6191,6 +6195,10 @@ app.MapGet("/api/reports/back-order", async (
 
     var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
 
+    var boCarIds = backOrder.Select(x => x.VIN).ToList();
+    var boPayTotals = await CachingForPaymentTotalAsync(db, t.OrgId, boCarIds, new[] { "A", "F" }, false);
+    var boPayDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, boCarIds, new[] { "A", "F" }, true);
+
     var detail = backOrder.Select(c => new
     {
         ccCarId = c.VIN, cvVIN = c.VIN, ccDealerCode = c.DealerCode,
@@ -6199,8 +6207,8 @@ app.MapGet("/api/reports/back-order", async (
         mcsSpecDescription = specs.FirstOrDefault(s => s.SpecCode == c.SpecCode)?.SpecDesc,
         ccModelCode = c.ModelCode, ccColorCode = c.ColorCode,
         ccUnitPriceActual = c.UnitPriceActual, ccCreatedDate = c.CreatedDate,
-        pmpdAmountTotal = (decimal?)null,        // NỢ: CachingForPaymentTotal
-        pmpdDepositAmount = (decimal?)null       // NỢ: CachingForPayment_Deposit
+        pmpdAmountTotal = boPayTotals.TryGetValue(c.VIN, out var tot) ? (decimal?)tot.AmountTotal : null,
+        pmpdDepositAmount = boPayDeposits.TryGetValue(c.VIN, out var dep) ? (decimal?)dep.AmountTotal : null
     }).ToList();
 
     // `strGroupByClause` — hai màn khác nhau đúng ở đây.
@@ -6622,6 +6630,9 @@ app.MapGet("/api/reports/car-delivered-not-duty-complete", async (
         d >= 181 && d <= 360 ? 1 : 0,
         d >= 361 ? 1 : 0);
 
+    var carIds = rows.Select(x => x.Cdod.Key).Distinct().ToList();
+    var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, true);
+
     var detail = rows.Select(z =>
     {
         var days = (int)(asOf - z.Cdod.DeliveryOutDate!.Value.Date).TotalDays;
@@ -6633,7 +6644,7 @@ app.MapGet("/api/reports/car-delivered-not-duty-complete", async (
             cdodDeliveryOutDate = z.Cdod.DeliveryOutDate, daysOut = days,
             type1_15 = b1, type16_30 = b2, type31_60 = b3, type61_180 = b4, type181_360 = b5, type361 = b6,
             uncategorized = (b1 + b2 + b3 + b4 + b5 + b6) == 0 ? 1 : 0,   // d = 0: nguồn không xếp nhóm
-            paymentDeposit = (decimal?)null    // NỢ: khối CachingForPayment_Deposit chưa port
+            paymentDeposit = payDeposits.TryGetValue(z.Cdod.Key, out var dep) ? (decimal?)dep.AmountTotal : null
         };
     }).ToList();
 
@@ -10383,7 +10394,12 @@ app.MapGet("/api/deals/search", async (
             cvEngineNo = cv?.EngineNo, cvKeyNo = cv?.KeyNo, cvActualSpec = cv?.ActualSpec, cvSerialNo = cv?.SerialNo,
             dlsdpDealerCode = prev?.DealerCode, dlsdpDealerCodeBuyer = prev?.DealerCodeBuyer,
             // `dcd.UnitPrice` của nguồn ↔ MiniHTC đặt tên `DlrContractDetail.Price` (đơn giá theo hợp đồng ĐL).
-            unitPrice = dcd?.Price
+            unitPrice = dcd?.Price,
+            // #30087: 4 cột ngày của Car_VIN (StoreDate, CQStartDate, CQEndDate, CODate)
+            cvStoreDate = cv?.StoreDate,
+            cvCQStartDate = cv?.CQStartDate,
+            cvCQEndDate = cv?.CQEndDate,
+            cvCODate = cv?.CODate
         };
     }).ToList();
 
@@ -10414,9 +10430,9 @@ app.MapGet("/api/deals/search", async (
         rowShape = "MỘT bản ghi = MỘT DÒNG XE (DLS_DealDetail), không phải một chứng từ",
         rbacJoinColumn = "dlsd.DealerCode (đại lý BÁN) — khác cars-to-sell-to-dealer/cars-to-pdi vốn join DealerCodeBuyer",
         droppedByDealerJoin,
-        // ⚠️ NỢ có nhãn: nguồn còn trả `CTPLShippingDate*` (join `CT_PackingList` theo `cv.PackingListNo`) và
-        //    `CVStoreDate`/`CVCQStartDate`/`CVCQEndDate`/`CVCODate` — MiniHTC `CarVinMaster` chưa có các cột đó.
-        missingEnrichNote = "NỢ: CTPLShippingDateStart/End/EndExpected + CVStoreDate/CVCQStartDate/CVCQEndDate/CVCODate chưa có cột trong CarVinMaster."
+        // #30087: Đã enrich đủ 4 cột ngày của CarVinMaster (StoreDate, CQStartDate, CQEndDate, CODate).
+        // NỢ còn lại: CTPLShippingDateStart/End/EndExpected (join CT_PackingList theo cv.PackingListNo) chưa có bảng CT_PackingList trong MiniHTC.
+        missingEnrichNote = "NỢ: CTPLShippingDateStart/End/EndExpected chưa có bảng CT_PackingList trong MiniHTC; 4 cột ngày CarVinMaster đã có đủ."
     });
 }).RequireAuthorization();
 // #5420 — ĐÃ XOÁ "/api/deals/records*" (DealRecord/DealPatchLog, 4 route: list/upsert/patch/history):
@@ -86497,8 +86513,8 @@ app.MapPost("/api/salesmen/{code}/update-status", async (
 // 📌 SỬA GHI CHÚ CŨ (round 62, ky thuat-10 WS-method-diff Create/Add): `btnCreate_Click` mở
 //   `FrmCreateSalesManViolate` — ghi chú trước đây nói "CHƯA port" là SAI/LỖI THỜI, đã port đủ ở
 //   `POST /api/smviolates` (dưới, dòng ~111781, 2 guard TT/VV + auto ViolateNumber khớp FrmCreateSalesManViolate
-//   dòng 249/275). `msmt_SMTypeName` (tên loại NVBH hiển thị qua `Mst_SalesManType`) vẫn CHƯA port, trả
-//   `null` thay vì bịa join — đây là phần nợ còn lại thật, không phải toàn bộ Create.
+//   dòng 249/275). #30088: `msmt_SMTypeName` (qua Mst_SalesManType theo DepartmentCode + SMType)
+//   và `mvt_ViolateTypeName` (qua Mst_ViolateType) đã được enrich đầy đủ 1:1 HR_SalesManViolate_Get01.
 app.MapGet("/api/salesmanviolates", async (AppDbContext db, ITenantContext t,
     string? smHyundaiCode, string? smName, string? identityCardNo, string? smPhoneNo, string? dealerCode,
     int? violateNumber, string? violateTypeId, DateTime? violateDateStart, DateTime? violateDateEnd,
@@ -86507,6 +86523,31 @@ app.MapGet("/api/salesmanviolates", async (AppDbContext db, ITenantContext t,
     var all = await db.SalesManViolates.Where(v => v.OrgId == t.OrgId).ToListAsync();
     var smMap = (await db.SalesMen.Where(s => s.OrgId == t.OrgId).ToListAsync())
         .GroupBy(s => s.SalesManCode).ToDictionary(g => g.Key, g => g.First());
+    var smTypes = await db.SalesManTypes.Where(s => s.OrgId == t.OrgId).ToListAsync();
+    var vTypes = await db.MstViolateTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var vTypeMap = vTypes.GroupBy(x => x.ViolateTypeId ?? "").ToDictionary(g => g.Key, g => g.First().ViolateTypeName);
+
+    string? ResolveSMTypeName(SalesManViolate v)
+    {
+        string? dept = null;
+        string? smt = v.SMType;
+        if (smMap.TryGetValue(v.SalesManCode, out var sm))
+        {
+            dept = sm.DepartmentCode;
+            if (string.IsNullOrWhiteSpace(smt)) smt = sm.SalesType;
+        }
+        if (!string.IsNullOrWhiteSpace(dept) && !string.IsNullOrWhiteSpace(smt))
+        {
+            var match = smTypes.FirstOrDefault(x => string.Equals(x.DepartmentCode, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(x.SMType, smt, StringComparison.OrdinalIgnoreCase));
+            if (match != null) return match.SMTypeName;
+        }
+        if (!string.IsNullOrWhiteSpace(smt))
+        {
+            var match = smTypes.FirstOrDefault(x => string.Equals(x.SMType, smt, StringComparison.OrdinalIgnoreCase));
+            if (match != null) return match.SMTypeName;
+        }
+        return null;
+    }
 
     bool MatchCommon(SalesManViolate v, bool applyDealerCode)
     {
@@ -86556,7 +86597,8 @@ app.MapGet("/api/salesmanviolates", async (AppDbContext db, ITenantContext t,
         v.ViolateDateStart, v.ViolateDateEnd, v.IdentityCardNo, v.PhoneNo, v.SMType, v.SmDateOfBirth, v.Remark,
         SMHyundaiCode = smMap.TryGetValue(v.SalesManCode, out var sm2) ? sm2.SMHyundaiCode : null,
         SMStatus = smMap.TryGetValue(v.SalesManCode, out var sm3) ? sm3.SMStatus : null,
-        msmt_SMTypeName = (string?)null,   // NỢ: Mst_SalesManType chưa port
+        msmt_SMTypeName = ResolveSMTypeName(v),
+        mvt_ViolateTypeName = vTypeMap.TryGetValue(v.ViolateTypeId ?? "", out var vtName) ? vtName : null,
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -112827,8 +112869,31 @@ app.MapGet("/api/smviolates", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(salesman)) q = q.Where(v => v.SalesManCode == salesman);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(type)) q = q.Where(v => v.ViolateTypeId == type);
-    var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new
-    { v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.SMType, v.SmDateOfBirth, v.Remark, v.CreatedAt, v.IdentityCardNo, v.PhoneNo }).ToListAsync();   // #1238 §12
+    var raw = await q.OrderByDescending(v => v.Id).Take(500).ToListAsync();
+    var smMap = (await db.SalesMen.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SalesManCode).ToDictionary(g => g.Key, g => g.First());
+    var smTypes = await db.SalesManTypes.Where(s => s.OrgId == t.OrgId).ToListAsync();
+    var vTypes = await db.MstViolateTypes.Where(x => x.OrgId == t.OrgId).ToListAsync();
+    var vTypeMap = vTypes.GroupBy(x => x.ViolateTypeId ?? "").ToDictionary(g => g.Key, g => g.First().ViolateTypeName);
+    string? ResolveSMTypeName(SalesManViolate v)
+    {
+        string? dept = null;
+        string? smt = v.SMType;
+        if (smMap.TryGetValue(v.SalesManCode, out var sm)) { dept = sm.DepartmentCode; if (string.IsNullOrWhiteSpace(smt)) smt = sm.SalesType; }
+        if (!string.IsNullOrWhiteSpace(dept) && !string.IsNullOrWhiteSpace(smt))
+        {
+            var m = smTypes.FirstOrDefault(x => string.Equals(x.DepartmentCode, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(x.SMType, smt, StringComparison.OrdinalIgnoreCase));
+            if (m != null) return m.SMTypeName;
+        }
+        if (!string.IsNullOrWhiteSpace(smt))
+        {
+            var m = smTypes.FirstOrDefault(x => string.Equals(x.SMType, smt, StringComparison.OrdinalIgnoreCase));
+            if (m != null) return m.SMTypeName;
+        }
+        return null;
+    }
+    var items = raw.Select(v => new
+    { v.SalesManCode, v.SalesManName, v.DealerCode, v.ViolateTypeId, ViolateTypeName = vTypeMap.TryGetValue(v.ViolateTypeId ?? "", out var vtName) ? vtName : null, v.ViolateNumber, v.ViolateDateStart, v.ViolateDateEnd, v.SMType, SMTypeName = ResolveSMTypeName(v), v.SmDateOfBirth, v.Remark, v.CreatedAt, v.IdentityCardNo, v.PhoneNo }).ToList();   // #1238 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -112857,7 +112922,7 @@ app.MapPost("/api/smviolates", async (SmViolateDto dto, AppDbContext db, ITenant
         SMType = dto.SMType, SmDateOfBirth = dto.SmDateOfBirth, Remark = dto.Remark
     };
     db.SalesManViolates.Add(v); await db.SaveChangesAsync();
-    return Results.Ok(new { v.SalesManCode, v.ViolateTypeId, v.ViolateNumber });
+    return Results.Ok(new { v.SalesManCode, v.ViolateTypeId, v.ViolateNumber, v.SMType });
 }).RequireAuthorization();
 
 // ===== Tồn/gán thiết bị GPS ↔ VIN (Sto_StoBalanceGPS — port 1:1 FrmMngSto_StoBalanceGPS + FrmUnmapThietBi) =====

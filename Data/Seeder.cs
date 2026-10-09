@@ -3758,6 +3758,7 @@ public static class Seeder
                 // #B72 - Car_VIN.CQStartDate / CQExpectedDate (quyet dinh RefDate va viec phan 4 nhom giao hang)
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQStartDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQExpectedDate\" timestamp NULL",
+                "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"CQEndDate\" timestamp NULL",
                 // ===== #B74 `WO_ScheduleDetail` — hai cột lịch SX =====
                 "ALTER TABLE public.\"WoScheduleLines\" ADD COLUMN IF NOT EXISTS \"CreatedDate\" timestamp NULL",
                 "ALTER TABLE public.\"CarVinMasters\" ADD COLUMN IF NOT EXISTS \"WorkOrderNo\" text NULL",   // #B74

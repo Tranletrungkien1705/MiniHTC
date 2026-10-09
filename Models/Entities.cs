@@ -13918,6 +13918,8 @@ public sealed class CarVinMaster
     public DateTime? TaxPaymentDate { get; set; }
     /// <summary>`Car_VIN.CQExpectedDate` — xem chú thích của [CQStartDate].</summary>
     public DateTime? CQExpectedDate { get; set; }
+    /// <summary>#30087 — `Car_VIN.CQEndDate`: ngày kết thúc kiểm định chất lượng CQ.</summary>
+    public DateTime? CQEndDate { get; set; }
     /// <summary>🔴 #B54 — `Car_VIN.MortageBankCode`: ngân hàng đang nhận thế chấp xe. Là điều kiện
     /// **ĐẦU TIÊN của cả bốn khối** báo cáo Nhập–Xuất–Tồn thế chấp (`mySql_Rpt_NhapXuatTonTrongKy_New20190213`,
     /// `RptSQLQuery.cs:10600`): `MortageBankCode is not null AND <> ''`. Thiếu cột ⇒ báo cáo không tồn tại được.
