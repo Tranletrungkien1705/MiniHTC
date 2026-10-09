@@ -8301,6 +8301,8 @@ public sealed class SalesOrder
     public string? SalesPolicy { get; set; }
     public DateTime? ExpectedMonth { get; set; }
     public DateTime? ProductionMonth { get; set; }
+    /// <summary>Tháng đặt hàng (`Ord_SalesOrder.OrderMonth`) — dùng phân bổ bucket Backorder BO Free N/N1/N2 trong RptSales_Delivery_01.</summary>
+    public DateTime? OrderMonth { get; set; }
     public DateTime? LatestDeliveryDate { get; set; }
     public DateTime? Approved1At { get; set; }
     public DateTime? Approved2At { get; set; }
