@@ -4038,6 +4038,8 @@ public sealed class RedeemInvoiceRequestLine
     public string? CarId { get; set; }
     /// <summary>`TypeRDReqIv` — nơi nhận hồ sơ: DEALER đại lý · BANKBL ngân hàng bảo lãnh · BANKLC ngân hàng LC.</summary>
     public string ReqType { get; set; } = "DEALER";
+    /// <summary>Hiển thị loại đề nghị xuất HĐ (`TypeRDReqIvView`, FrmMngRDInvoice / FrmNewRDInvoice / TblRD_ReqInvoiceDtl) — suy ra từ `ReqType` (DL: Đại lý, BL: Ngân hàng BL, LC: Ngân hàng LC).</summary>
+    public string? TypeRDReqIvView => ReqType switch { "BANKBL" => "Ngân hàng BL", "BANKLC" => "Ngân hàng LC", _ => "Đại lý" };
 
     /// <summary>
     /// 🔴 Trạng thái RIÊNG của DÒNG (`RDReqIvDtlStatus`) — **nơi thao tác duyệt thực sự xảy ra**.
@@ -4832,6 +4834,8 @@ public sealed class DocHandoverMinuteCar
     public string? DeclarationNo { get; set; } // tờ khai nhập khẩu
     public string? BankGuaranteeNo { get; set; }
     public string? BankName { get; set; }
+    /// <summary>Tên ngân hàng hội sở (`MBDPM_BankNameHO`, FrmInBienBanBGHS) — dùng khi đơn vị BGHS là BANKHOGUARANTEE.</summary>
+    public string? BankNameHO { get; set; }
     public string? DlrCtrNo { get; set; }
     public string? HTCInvoiceNo { get; set; }
     public string? TransportMinutesNo { get; set; }
@@ -8597,6 +8601,20 @@ public sealed class VatTcgInvoiceDetail
 }
 
 /// <summary>
+/// Danh sách Model xe được MIỄN TRỪ kiểm tra hóa đơn TCG khi chuyển giao (`VAT_ModelInvoice`, TCMotor).
+/// Khi ModelCode của VIN nằm trong bảng này thì bỏ qua điều kiện bắt buộc phải có hóa đơn TCG ở trạng thái không thuộc (R,C,P).
+/// </summary>
+public sealed class VatModelInvoice
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string ModelCode { get; set; } = "";
+    public string FlagTCGInvoice { get; set; } = "0";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+}
+
+/// <summary>
 /// HỢP ĐỒNG NGOẠI — nhập khẩu xe (`CT_ContractOversea` — port 1:1
 /// `ContractContractOverseaCreate_New20181119` / `…Delete_New20181119`, 2010.HTC
 /// `TERP.BizHTC/DataWH/Biz.HTC.WH.cs` dòng 32211 / 32497).
@@ -10775,6 +10793,8 @@ public sealed class MstCarColor
     public string? ColorIntCode { get; set; }
     public string? ColorIntName { get; set; }
     public string? ColorIntNameVN { get; set; }
+    /// <summary>Tên màu kết hợp Anh ngữ (`Color_En_Combined`, FrmDatHangSX) — cột alias tính toán UI.</summary>
+    public string? Color_En_Combined => (ColorExtName != null && ColorIntName != null) ? $"{ColorExtName}/{ColorIntName}" : null;
     /// <summary>
     /// Phụ phí màu (`ColorFee`). ⚠️ Nguồn đọc bằng `Convert.ToDouble` ⇒ là SỐ TIỀN cộng thêm
     /// cho màu đặc biệt, không phải tỉ lệ.
@@ -13472,6 +13492,8 @@ public sealed class ReqRedeemDtl
     public string? DRListCode { get; set; }
     /// <summary>`RD_ReqRedeemDtl.DMReqDtlStatus` — guard chỉ tính dòng **`not in ('R','C')`** (còn sống).</summary>
     public string? DMReqDtlStatus { get; set; }
+    /// <summary>🔴 MẮT NỐI sang đề nghị THẾ CHẤP (`ReqRMNo`) — giải chấp theo từng lần thế chấp.</summary>
+    public string? ReqRMNo { get; set; }
 }
 
 /// <summary>Đặt hàng sản xuất (MnfPl_Order + Dtl) — port 1:1 FrmDatHangSX/FrmQLDatHangSX (2010.HTC/Sales/WorkOrder). Đơn đặt hàng sản xuất theo model/spec/màu/SL + thứ tự SX.</summary>
@@ -14844,6 +14866,8 @@ public sealed class BankGuaranteeDtl
     public DateTime? DateExpired { get; set; }
     public DateTime? DateEnd { get; set; }   // ngày kết thúc bảo lãnh (FrmEditGrtExpiredDate)
     public int DeferredPaymentDays { get; set; }  // số ngày trả chậm (FrmEditGrtSoNgayTCLC)
+    /// <summary>Cờ gia hạn bảo lãnh (`FlagGrtExt`, FrmEditGrtSoNgayTCLC) — cột chết ở nguồn (bị comment trong `btnApply_Click`).</summary>
+    public string? FlagGrtExt { get; set; }
     public string? FlagDtlDiscount { get; set; }  // cờ chiết khấu dòng (FrmEditGrt)
 
     /// <summary>
@@ -15358,6 +15382,8 @@ public sealed class QcDocReqCar
     public string EngineNo { get; set; } = "";
     public string OriginNo { get; set; } = "";       // so xuat xu
     public string FGFormNo { get; set; } = "";       // so phieu xuat xuong
+    /// <summary>`FlagChangedFGFormNo` / `Mv_FlagChangedFGFormNo` (FrmMngQCDocReq / TblVIN_MMS / TblQC_DocReqDtl) — Cờ thay đổi phiếu xuất xưởng PXX ("1"/"0").</summary>
+    public string? FlagChangedFGFormNo { get; set; }
     /// <summary>#5900 `Mv_FGFormDate` (FrmMngQCDocReq.cs:218) — ngay cap PXX.</summary>
     public DateTime? FGFormDate { get; set; }
     public string QCNo { get; set; } = "";           // so phieu QC

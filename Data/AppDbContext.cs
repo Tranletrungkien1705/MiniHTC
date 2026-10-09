@@ -115,6 +115,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<SysGroup> SysGroups => Set<SysGroup>();
     public DbSet<VatTcgInvoice> VatTcgInvoices => Set<VatTcgInvoice>();
     public DbSet<VatTcgInvoiceDetail> VatTcgInvoiceDetails => Set<VatTcgInvoiceDetail>();
+    public DbSet<VatModelInvoice> VatModelInvoices => Set<VatModelInvoice>();
     public DbSet<MstDistrict> MstDistricts => Set<MstDistrict>();
     public DbSet<MstProvince> MstProvinces => Set<MstProvince>();   // #227
     public DbSet<MstDealerSalesType> MstDealerSalesTypes => Set<MstDealerSalesType>();
