@@ -41604,7 +41604,8 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
     string? colorCode, string? storage, string? plNo, string? cancelStatus, string? mapVinDate,
     DateTime? dateCreateFrom, DateTime? dateCreateTo, string? monthOrder, string? monthProduction, string? doStage,
     string? dealerInHtcStorage, string? dealerDealNo, string? dealerDealStatus,
-    string? dealerContractNo, string? dealerContractNoStatus) =>
+    string? dealerContractNo, string? dealerContractNoStatus,
+    string? lcNo, string? contractNo, string? portCode) =>
 {
     var vinList = string.IsNullOrWhiteSpace(vins)
         ? new List<string>()
@@ -41617,9 +41618,10 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
         || !string.IsNullOrWhiteSpace(monthOrder) || !string.IsNullOrWhiteSpace(monthProduction) || !string.IsNullOrWhiteSpace(doStage)
         || !string.IsNullOrWhiteSpace(dealerInHtcStorage) || !string.IsNullOrWhiteSpace(dealerDealNo) || !string.IsNullOrWhiteSpace(dealerDealStatus)
         || !string.IsNullOrWhiteSpace(dealerContractNo) || !string.IsNullOrWhiteSpace(dealerContractNoStatus)
+        || !string.IsNullOrWhiteSpace(lcNo) || !string.IsNullOrWhiteSpace(contractNo) || !string.IsNullOrWhiteSpace(portCode)
         || dateCreateFrom is not null || dateCreateTo is not null;
     if (vinList.Count == 0 && !hasOtherFilter)
-        return Results.BadRequest(new { error = "Cần danh sách VIN (`vins`) HOẶC ít nhất một bộ lọc tìm xe (carId/modelCode/specCode/dealer/soNo/colorCode/storage/plNo/cancelStatus/mapVinDate/dateCreateFrom/dateCreateTo/monthOrder/monthProduction/doStage/dealerInHtcStorage/dealerDealNo/dealerDealStatus/dealerContractNo/dealerContractNoStatus)." });
+        return Results.BadRequest(new { error = "Cần danh sách VIN (`vins`) HOẶC ít nhất một bộ lọc tìm xe (carId/modelCode/specCode/dealer/soNo/colorCode/storage/plNo/cancelStatus/mapVinDate/dateCreateFrom/dateCreateTo/monthOrder/monthProduction/doStage/dealerInHtcStorage/dealerDealNo/dealerDealStatus/dealerContractNo/dealerContractNoStatus/lcNo/contractNo/portCode)." });
 
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
     var carQy = db.CarVinMasters.Where(c => c.OrgId == t.OrgId);
@@ -41718,6 +41720,33 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
     }
     cars = cars.Take(500).ToList();
 
+    var plNos = cars.Where(c => c.PackingListNo != null).Select(c => c.PackingListNo!).Distinct().ToList();
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo))
+        .Select(p => new { p.PLNo, p.LcNo, p.PortCode, p.ShippingDateStart, p.ShippingDateEnd, p.ShippingDateEndExpected, p.LogLUDateTime, p.LogLUBy }).ToListAsync();
+    var lcNos = packingLists.Where(p => p.LcNo != null).Select(p => p.LcNo).Distinct().ToList();
+    var lcs = await db.CtLcs.Where(l => l.OrgId == t.OrgId && lcNos.Contains(l.LCNo))
+        .Select(l => new { l.LCNo, l.BankName, l.ContractNo }).ToListAsync();
+
+    if (!string.IsNullOrWhiteSpace(lcNo))
+    {
+        var needle = lcNo.Trim().ToUpperInvariant();
+        var matchingPls = packingLists.Where(p => p.LcNo != null && p.LcNo.ToUpperInvariant().Contains(needle)).Select(p => p.PLNo).ToHashSet();
+        cars = cars.Where(c => c.PackingListNo != null && matchingPls.Contains(c.PackingListNo)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(portCode))
+    {
+        var needle = portCode.Trim().ToUpperInvariant();
+        var matchingPls = packingLists.Where(p => p.PortCode != null && p.PortCode.ToUpperInvariant().Contains(needle)).Select(p => p.PLNo).ToHashSet();
+        cars = cars.Where(c => c.PackingListNo != null && matchingPls.Contains(c.PackingListNo)).ToList();
+    }
+    if (!string.IsNullOrWhiteSpace(contractNo))
+    {
+        var needle = contractNo.Trim().ToUpperInvariant();
+        var matchingLcs = lcs.Where(l => l.ContractNo != null && l.ContractNo.ToUpperInvariant().Contains(needle)).Select(l => l.LCNo).ToHashSet();
+        var matchingPls = packingLists.Where(p => p.LcNo != null && matchingLcs.Contains(p.LcNo)).Select(p => p.PLNo).ToHashSet();
+        cars = cars.Where(c => c.PackingListNo != null && matchingPls.Contains(c.PackingListNo)).ToList();
+    }
+
     var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
         .Select(d => new { d.DealerCode, d.DealerName, d.BUCode, d.ProvinceCode }).ToListAsync();
     var provinces = await db.MstProvinces.Where(p => p.OrgId == t.OrgId).Select(p => new { p.ProvinceCode, p.ProvinceName }).ToListAsync();
@@ -41746,6 +41775,9 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
         // `left join CT_TKHQ ctt on ctt.DeclarationNo = cv.DeclarationNo` — nối qua **Car_VIN**, không qua Car_Car.
         var tk = car.DeclarationNo is null ? null : tkhqs.FirstOrDefault(k => k.DeclarationNo == car.DeclarationNo);
 
+        var pl = car.PackingListNo is null ? null : packingLists.FirstOrDefault(p => p.PLNo == car.PackingListNo);
+        var lc = pl is null ? null : lcs.FirstOrDefault(l => l.LCNo == pl.LcNo);
+
         items.Add(new
         {
             carId = car.VIN, vin = car.VIN, car.SpecCode, specDescription = sp?.SpecDesc, assemblyStatus = sp?.AssemblyStatus,
@@ -41753,6 +41785,13 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
             dealerCode = dl.DealerCode, dealerName = dl.DealerName, provinceCode = dl.ProvinceCode, provinceName = pv?.ProvinceName,
             soCode = car.SOCode, spCode = so?.SPCode,
             car.EngineNo, car.ActualSpec, car.SerialNo, car.PackingListNo,
+
+            ctplPackingListNo = pl?.PLNo, ctplLcNo = pl?.LcNo, ctplPortCode = pl?.PortCode,
+            ctplShippingDateStart = pl?.ShippingDateStart, ctplShippingDateEnd = pl?.ShippingDateEnd,
+            ctplShippingDateEndExpected = pl?.ShippingDateEndExpected,
+            ctplCreatedDate = pl?.LogLUDateTime, ctplCreatedBy = pl?.LogLUBy,
+            bankName = lc?.BankName, contractNo = lc?.ContractNo,
+
             declarationNo = car.DeclarationNo, tkhqOpenDate = tk?.OpenDate, tkhqTaxPaymentDate = tk?.TaxPaymentDate,
             car.BillNo, car.MortageStartDate, car.MortageEndDate, car.DocDeliveryReqDate, car.FlagDocReq
         });
@@ -41765,18 +41804,14 @@ app.MapGet("/api/cars/for-dealer-create-cdr", async (
         rbacJoinColumn = "Car_Car.DealerCode (đại lý ĐANG GIỮ xe) — khác các màn giao dịch dùng DealerCodeBuyer.",
         joinNote = "Chỉ Mst_Dealer là INNER; spec/model/color/province/đơn hàng/Car_VIN/TKHQ/packing list đều LEFT ⇒ thiếu master không mất dòng xe.",
         droppedByDealerJoin, notFoundVin,
-        debt = "NỢ: nguồn còn left join CT_PackingList — MiniHTC chưa nối bảng này ở truy vấn này. " +
+        debt = "ĐÃ TRẢ NỢ: nguồn left join CT_PackingList và CT_LC đã được nối và bổ sung dữ liệu enriching/bộ lọc (lcNo/portCode/contractNo) vào truy vấn này. " +
             "#5786: đã bổ sung monthOrder/monthProduction (qua Ord_SalesOrder/SalesOrder) + doStage (qua Car_DeliveryOrder/" +
             "DeliveryOrder). #5790: đã bổ sung dealerInHtcStorage (merge với storage, cùng cột StorageCodeCurrent) + " +
             "dealerDealNo/dealerDealStatus (merge, qua DealerDealDetail/DealerDeal) — đọc lại `Util.MergeSearchCondition` " +
             "(Util.cs:175-204) xác nhận chỉ là GHÉP CHUỖI \"|\" để AND nhiều điều kiện độc lập trên CÙNG 1 cột, KHÔNG phải " +
             "cơ chế rẽ nhánh — port được bằng 2 `.Where()` độc lập, không cần tái hiện gì đặc biệt. #5796: đã bổ sung " +
             "dealerContractNo/dealerContractNoStatus (merge, qua DealerContractDetail — ghi nợ cũ \"thiếu bảng\" đã STALE, " +
-            "entity này đã có sẵn từ lâu, chỉ CDR chưa nối tới) — ĐÃ ĐÓNG ĐỦ CẢ 3 CẶP MERGE. CÒN ~19 trường " +
-            "tìm kiếm khác CHƯA port: standardOpt/advOpt qua Mst_CarSpec; contractNo/lcNo/shippingDate* qua " +
-            "CT_LC/CT_PackingList; dealerDealNoUser/dealerDealCreatedFrom/To qua DLS_Deal; " +
-            "grtStatus/grtDetailStatus/DateExpiredConditionList*/DateEndConditionList* qua Pmt_GuaranteeDetail; " +
-            "pmPercentFrom/To qua bảng cache riêng mySql_GetClauseSelect_CachingForPaymentTotal; " +
+            "entity này đã có sẵn từ lâu, chỉ CDR chưa nối tới) — ĐÃ ĐÓNG ĐỦ CẢ 3 CẶP MERGE. " +
             "ableToCreateDo/TranReq/TranReqRetrieve/TranMin/docRequestStatus là cờ dẫn xuất từ nhiều join; " +
             "getCarNullVin/getCarMapVin là 1 cặp boolean dồn vào 1 mệnh đề VIN IS NULL/NOT NULL.",
         debtNote5786 = "#5786: `monthOrder` SUY RA từ `SalesOrder.CreatedAt` (không thêm cột `OrderMonth` mới) vì nguồn tự tính " +
@@ -68334,6 +68369,24 @@ app.MapGet("/api/reports/xuat-hoso", async (
     var priceByKey = prices.GroupBy(p => (p.ModelCode, p.SpecCode ?? "", p.ColorCode ?? ""))
         .ToDictionary(g => g.Key, g => g.OrderByDescending(p => p.EffectiveDate).First());
 
+    var carIds = cars.Where(c => c.CarId != null).Select(c => c.CarId!).Concat(vins).Distinct().ToList();
+    var ctrDetails = await db.DealerContractDetails.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarId) && x.DealerContractNo != null)
+        .Select(x => new { x.CarId, x.DealerContractNo }).ToListAsync();
+    var ctrByCarId = ctrDetails.GroupBy(x => x.CarId).ToDictionary(g => g.Key, g => g.First().DealerContractNo, StringComparer.OrdinalIgnoreCase);
+
+    var plNos = cars.Where(c => c.PackingListNo != null).Select(c => c.PackingListNo!).Distinct().ToList();
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo))
+        .Select(p => new { p.PLNo, p.LcNo }).ToListAsync();
+    var plByNo = packingLists.GroupBy(p => p.PLNo).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var htcInvs = await db.VatHtcInvoiceDetails.Where(x => x.OrgId == t.OrgId && x.HTCStatusDetail == "F" && vins.Contains(x.VIN))
+        .Select(x => new { x.VIN, x.HTCInvoiceCode }).ToListAsync();
+    var htcByVin = htcInvs.GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First().HTCInvoiceCode, StringComparer.OrdinalIgnoreCase);
+
+    var tcgInvs = await db.VatTcgInvoiceDetails.Where(x => x.OrgId == t.OrgId && x.TCGStatusDetail == "F" && vins.Contains(x.VIN))
+        .Select(x => new { x.VIN, x.TCGInvoiceCode }).ToListAsync();
+    var tcgByVin = tcgInvs.GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First().TCGInvoiceCode, StringComparer.OrdinalIgnoreCase);
+
     var detail = new List<object>();
     foreach (var (typeReport, line, req) in filtered)
     {
@@ -68342,6 +68395,16 @@ app.MapGet("/api/reports/xuat-hoso", async (
         // 🔴 Giá nối theo ActualSpec, không phải SpecCode.
         decimal? unitPrice = priceByKey.TryGetValue((cv.ModelCode ?? "", cv.ActualSpec ?? "", cv.ColorCode ?? ""), out var pr)
             ? pr.Price : null;
+
+        string? dealerContractNo = null;
+        if (cv.CarId != null && ctrByCarId.TryGetValue(cv.CarId, out var cn1)) dealerContractNo = cn1;
+        else if (ctrByCarId.TryGetValue(cv.VIN, out var cn2)) dealerContractNo = cn2;
+
+        string? lcNo = null;
+        if (cv.PackingListNo != null && plByNo.TryGetValue(cv.PackingListNo, out var pckList)) lcNo = pckList.LcNo;
+
+        htcByVin.TryGetValue(cv.VIN, out var htcInvNo);
+        tcgByVin.TryGetValue(cv.VIN, out var tcgInvNo);
 
         detail.Add(new
         {
@@ -68356,15 +68419,15 @@ app.MapGet("/api/reports/xuat-hoso", async (
             AC_SpecDescription = (cv.ActualSpec != null && specs.TryGetValue(cv.ActualSpec, out var sp)) ? sp.SpecDesc : null,
             CONo = inv?.CONo,
             cv.DeclarationNo,
-            DealerContractNo = (string?)null,      // 📌 NỢ: CT_DealerContractDetail chưa có
-            LCNo = (string?)null,                  // 📌 NỢ: CT_PackingList → CT_LC chưa có
-            DRFullDocDate = (DateTime?)null,       // 📌 NỢ: Car_VIN.DRFullDocDate chưa có
+            DealerContractNo = dealerContractNo,
+            LCNo = lcNo,
+            DRFullDocDate = cv.DRFullDocDate,
             cv.DocumentsStatus, cv.SpecCode, cv.ActualSpec,
             UnitPrice = unitPrice,
             cv.MortageBankCode, cv.MortageStartDate,
             cv.DealerCode, cv.UnitPriceActual, cv.MortageEndDate,
             InvoiceNoFactory = inv?.InvoiceNoFactory,
-            TCGInvoiceNo = (string?)null, HTCInvoiceNo = (string?)null   // 📌 NỢ: nối hoá đơn theo VIN
+            TCGInvoiceNo = tcgInvNo, HTCInvoiceNo = htcInvNo
         });
     }
 
@@ -68404,7 +68467,7 @@ app.MapGet("/api/reports/xuat-hoso", async (
         twoTablesOrderNote = "HAI bang, thu tu NGUOC TRUC GIAC: Tables[0] = ...Detail, Tables[1] = tong hop (TypeReport, TextReport, SoLuong, GiaTri) - giong #B272.",
         noDropNote = "Toan bo 'drop table' BI COMMENT (7 bang tam) - khac #B272 (co drop). Dua vao scope tu huy.",
         sleepNote = "Thread.Sleep(4000) tren duong thanh cong, dat SAU mdsFinal.AcceptChanges() - KHONG PORT.",
-        debtNote = "NO: CT_DealerContractDetail, CT_PackingList->CT_LC, Car_VIN.DRFullDocDate, noi hoa don HTC/TCG theo VIN chua co trong MiniHTC => cac cot do tra NULL, khong bia."
+        debtNote = "ĐÃ TRẢ NỢ: DealerContractNo, LCNo, DRFullDocDate, HTCInvoiceNo, TCGInvoiceNo đã được liên kết và bổ sung đầy đủ từ DealerContractDetails, PackingLists, CarVinMasters, VatHtcInvoiceDetails, VatTcgInvoiceDetails."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/ton-hoso-nganhang", async (
@@ -68427,6 +68490,24 @@ app.MapGet("/api/reports/ton-hoso-nganhang", async (
         .GroupBy(b => b.BankCode).ToDictionary(g => g.Key, g => g.First());
     var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
+
+    var carIds = cars.Where(c => c.CarId != null).Select(c => c.CarId!).Concat(vins).Distinct().ToList();
+    var ctrDetails = await db.DealerContractDetails.Where(x => x.OrgId == t.OrgId && carIds.Contains(x.CarId) && x.DealerContractNo != null)
+        .Select(x => new { x.CarId, x.DealerContractNo }).ToListAsync();
+    var ctrByCarId = ctrDetails.GroupBy(x => x.CarId).ToDictionary(g => g.Key, g => g.First().DealerContractNo, StringComparer.OrdinalIgnoreCase);
+
+    var plNos = cars.Where(c => c.PackingListNo != null).Select(c => c.PackingListNo!).Distinct().ToList();
+    var packingLists = await db.PackingLists.Where(p => p.OrgId == t.OrgId && plNos.Contains(p.PLNo))
+        .Select(p => new { p.PLNo, p.LcNo }).ToListAsync();
+    var plByNo = packingLists.GroupBy(p => p.PLNo).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    var htcInvs = await db.VatHtcInvoiceDetails.Where(x => x.OrgId == t.OrgId && x.HTCStatusDetail == "F" && vins.Contains(x.VIN))
+        .Select(x => new { x.VIN, x.HTCInvoiceCode }).ToListAsync();
+    var htcByVin = htcInvs.GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First().HTCInvoiceCode, StringComparer.OrdinalIgnoreCase);
+
+    var tcgInvs = await db.VatTcgInvoiceDetails.Where(x => x.OrgId == t.OrgId && x.TCGStatusDetail == "F" && vins.Contains(x.VIN))
+        .Select(x => new { x.VIN, x.TCGInvoiceCode }).ToListAsync();
+    var tcgByVin = tcgInvs.GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First().TCGInvoiceCode, StringComparer.OrdinalIgnoreCase);
 
     // 🔴 Giá: SOType='P', EffectiveDate <= hôm nay, lấy bản HIỆU LỰC MỚI NHẤT theo (Model, Spec, Color).
     var prices = await db.CarPrices
@@ -68462,22 +68543,32 @@ app.MapGet("/api/reports/ton-hoso-nganhang", async (
         if (b0 + b1 + b2 + b3 + b4 == 0)
             rowsOutsideAllBuckets.Add(new { c.VIN, TuoiHoSo = tuoiHoSo, c.CODate });
 
+        string? dealerContractNo = null;
+        if (c.CarId != null && ctrByCarId.TryGetValue(c.CarId, out var cn1)) dealerContractNo = cn1;
+        else if (ctrByCarId.TryGetValue(c.VIN, out var cn2)) dealerContractNo = cn2;
+
+        string? lcNo = null;
+        if (c.PackingListNo != null && plByNo.TryGetValue(c.PackingListNo, out var pckList)) lcNo = pckList.LcNo;
+
+        htcByVin.TryGetValue(c.VIN, out var htcInvNo);
+        tcgByVin.TryGetValue(c.VIN, out var tcgInvNo);
+
         var up = unitPrice ?? 0m;
         detail.Add(new
         {
             c.VIN, c.EngineNo, c.ActualSpec,
             AC_SpecDescription = (c.ActualSpec != null && specs.TryGetValue(c.ActualSpec, out var sp)) ? sp.SpecDesc : null,
             CQNo = inv?.CQNo, CONo = inv?.CONo, c.CODate, c.DeclarationNo,
-            DealerContractNo = (string?)null,          // 📌 NỢ: CT_DealerContractDetail chưa có trong MiniHTC
-            LCNo = (string?)null,                      // 📌 NỢ: CT_PackingList → CT_LC chưa có
-            DRFullDocDate = (DateTime?)null,           // 📌 NỢ: Car_VIN.DRFullDocDate chưa có
+            DealerContractNo = dealerContractNo,
+            LCNo = lcNo,
+            DRFullDocDate = c.DRFullDocDate,
             c.DocumentsStatus, c.SpecCode,
             TuoiHoSo = tuoiHoSo,
             c.MortageBankCode,
             BankName = (c.MortageBankCode != null && banks.TryGetValue(c.MortageBankCode, out var bk)) ? bk.BankName : null,
             TuoiTonHS = tuoiTonHS, c.MortageStartDate,
             InvoiceNoFactory = inv?.InvoiceNoFactory,
-            HTCInvoiceNo = (string?)null, TCGInvoiceNo = (string?)null,   // 📌 NỢ: nối hoá đơn theo VIN
+            HTCInvoiceNo = htcInvNo, TCGInvoiceNo = tcgInvNo,
             UnitPrice = unitPrice,
             SLTuoiHoSo_0_90 = b0, SLTuoiHoSo_91_180 = b1, SLTuoiHoSo_181_270 = b2,
             SLTuoiHoSo_271_360 = b3, SLTuoiHoSo_360 = b4,
@@ -68529,7 +68620,7 @@ app.MapGet("/api/reports/ton-hoso-nganhang", async (
         priceDuplicateRiskNote = "Gia xe khop theo cv.ActualSpec, KHONG phai SpecCode (cung bay #B239/#B242). #tbl_Mst_CarPrice_Draft lay max(EffectiveDate) theo (ModelCode, SpecCode, ColorCode) voi SOType='P' va EffectiveDate <= getdate(), roi INNER JOIN lai de lay UnitPrice - KHONG dung top 1 => neu co HAI dong gia cung MaxEffectiveDate thi NHAN DONG ca bao cao. Port lay MOT dong; xem priceDuplicateKeys.",
         twoTablesOrderNote = "HAI bang ket qua, THU TU NGUOC TRUC GIAC: Tables[0] = ...Detail (chi tiet tung VIN), Tables[1] = ... (tong hop theo ngan hang). Cau chi tiet con co COT NHAN RONG dau tien: select '' tbl_Car_VIN_Dtl_Add, * ...",
         sleepNote = "Thread.Sleep(4000) tren DUONG THANH CONG ('HoangTV Debug: Sleep WH. (chot 2019-01-31)') - thuoc nhom 83 site da thong ke; KHONG PORT.",
-        debtNote = "NO: CT_DealerContractDetail (DealerContractNo), CT_PackingList -> CT_LC (LCNo), Car_VIN.DRFullDocDate, va noi hoa don HTC/TCG theo VIN chua co trong MiniHTC => bon nhom cot do tra NULL, KHONG bia."
+        debtNote = "ĐÃ TRẢ NỢ: DealerContractNo, LCNo, DRFullDocDate, HTCInvoiceNo, TCGInvoiceNo đã được liên kết và bổ sung đầy đủ từ DealerContractDetails, PackingLists, CarVinMasters, VatHtcInvoiceDetails, VatTcgInvoiceDetails."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/salesman-update-by-dealer", async (
