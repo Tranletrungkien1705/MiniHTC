@@ -10188,6 +10188,7 @@ public sealed class PlanRetailModel
     public Guid OrgId { get; set; }
     public long PlanRetailId { get; set; }
     public string ModelCode { get; set; } = "";
+    public string? BusinessPlanCode { get; set; }
     public int Quantity { get; set; }
 }
 

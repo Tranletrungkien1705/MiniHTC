@@ -17975,6 +17975,7 @@ app.MapGet("/api/planretails", async (AppDbContext db, ITenantContext t, string?
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// ===== #30086 (Round 75): Tạo kế hoạch bán lẻ và tự động đồng bộ Rpt_PlanRetailModel =====
 app.MapPost("/api/planretails", async (PlanRetailDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.PlanMonth)) return Results.BadRequest(new { error = "Cần PlanMonth (YYYY-MM)." });
@@ -18058,6 +18059,17 @@ app.MapGet("/api/planretails/{id}/lines", async (long id, AppDbContext db, ITena
         h.ApprovedBy, h.ApprovedDate, h.CancelBy, h.CancelDate, h.CreatedBy, h.CreatedAt,
         h.Remark, h.UpdateDTime, h.UpdateBy, h.LogLUDateTime, h.LogLUBy,
         count = lines.Count, lines, byModel });
+}).RequireAuthorization();
+
+// #30086 — Bảng tổng hợp model của kế hoạch bán lẻ (Rpt_PlanRetailModel: DealerCode, PlanMonth, PlanTimes, BusinessPlanCode, ModelCode, QtyPlan)
+app.MapGet("/api/planretails/{id}/models", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var h = await db.PlanRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (h is null) return Results.NotFound(new { id });
+    var models = await db.PlanRetailModels.Where(m => m.OrgId == t.OrgId && m.PlanRetailId == id)
+        .Select(m => new { m.Id, m.PlanRetailId, m.ModelCode, m.BusinessPlanCode, m.Quantity })
+        .ToListAsync();
+    return Results.Ok(new { h.Id, h.PlanMonth, h.PlanTimes, h.DealerCode, count = models.Count, models });
 }).RequireAuthorization();
 
 static async Task<IResult> ExecutePlanRetailUpdateAsync(PlanRetail h, string? remark, List<PlanRetailUpdateLineDto>? inputLines, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user)
@@ -43393,6 +43405,235 @@ app.MapPost("/api/dms40/soroots/{no}/finish", async (string no, AppDbContext db,
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { h.SORCode, h.Status, h.FinishDTime, h.FinishBy, generatedSoCode = generated, soLines = srcLines.Count });
+}).RequireAuthorization();
+
+// ===== Hoàn tất đơn hàng kế hoạch DMS40 — `DMS40_Ord_SalesOrderRoot_FinishForSOTypePlan_New20200804` =====
+// Nguồn: `TERP.BizHTC/DataWH/BizHTC.Order.cs:3703` (thân thật `DMS40_Ord_SalesOrderRoot_FinishForSOTypePlanX_New20200804` :2453-3048).
+// Gọi từ FrmUpgradeOrderApprovePlan.cs:583 (`dms40OrdSalesOrderRootService.DMS40_Ord_SalesOrderRoot_FinishForSOTypePlan`).
+// Hoàn tất đơn hàng kế hoạch: nhận Approved2Quantity/Approved2Date/UnitPriceInit/Remark theo dòng, kiểm tra hạn mức còn lại
+// (RemainQuantity = RequestedQuantity - tổng ApprovedQuantity của các đơn bán đã sinh), tự sinh Ord_SalesOrder với mã số theo quy tắc
+// SequenceGetForSOCode (hậu tố .01, .02... hoặc .01.TCG), và cập nhật trạng thái dòng/header thành "F".
+app.MapPost("/api/dms40/soroots/{no}/finish-plan", async (string no, Dms40SoRootFinishPlanDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    // Guard 1: Thời gian không được quá ngày 3 của tháng (nguồn: dtimeCheck > yyyy-MM-03)
+    if (now.Day > 3 && dto.BypassDateLimit != true)
+    {
+        return Results.BadRequest(new
+        {
+            error = "DMS40_Ord_SalesOrderRoot_FinishForSOTypePlan_NotAllowFinish",
+            message = "Chỉ được phép hoàn tất đơn hàng kế hoạch từ ngày 1 đến ngày 3 hàng tháng (sử dụng BypassDateLimit = true để bỏ qua trong kiểm thử)."
+        });
+    }
+
+    var h = await db.Dms40SoRoots.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SORCode == no);
+    if (h is null) return Results.NotFound(new { no });
+
+    // Guard 2: Trạng thái bắt buộc là Approved (A)
+    if (h.Status != "A")
+        return Results.BadRequest(new { error = "Chỉ có thể hoàn tất khi trạng thái là A (đã duyệt).", status = h.Status });
+
+    // Guard 3: SOType bắt buộc là Plan ('Plan' hoặc 'P')
+    var isPlan = string.Equals(h.SOType, "Plan", StringComparison.OrdinalIgnoreCase) || string.Equals(h.SOType, "P", StringComparison.OrdinalIgnoreCase);
+    if (!isPlan)
+        return Results.BadRequest(new { error = "DMS40_OSOR_FinishForSOTypePlanX_InvalidSOType", message = "Loại đơn hàng không phải đơn kế hoạch (Plan/P).", soType = h.SOType });
+
+    // Guard 4: Đại lý phải tồn tại và đang hoạt động
+    var dlr = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == h.DealerCode);
+    if (dlr is null) return Results.BadRequest(new { error = $"Đại lý {h.DealerCode} không tồn tại." });
+    if (dlr.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {h.DealerCode} đang ngừng hoạt động." });
+
+    // Guard 5: Dữ liệu dòng chi tiết gửi lên không được rỗng
+    var inputLines = dto.Lines ?? new List<Dms40SoRootFinishPlanLineDto>();
+    if (inputLines.Count == 0)
+        return Results.BadRequest(new { error = "DMS40_OSOR_FinishForSOTypePlanX_Input_DMS40_Ord_SalesOrderRootDetailTblInvalid", message = "Danh sách chi tiết duyệt hoàn tất không được rỗng." });
+
+    var rootDetails = await db.Dms40SoRootDetails.Where(l => l.OrgId == t.OrgId && l.SoRootId == h.Id).ToListAsync();
+
+    // Lấy tất cả các dòng SalesOrder đã sinh trước đó từ SORCode này để tính RemainQuantity
+    var existingSoCodes = await db.SalesOrders.Where(x => x.OrgId == t.OrgId && x.SORCode == h.SORCode).Select(x => x.Id).ToListAsync();
+    var existingSoLines = await db.SalesOrderLines.Where(x => x.OrgId == t.OrgId && existingSoCodes.Contains(x.SalesOrderId)).ToListAsync();
+
+    var todayStr = now.ToString("yyyy-MM-dd");
+
+    // Validate từng dòng input
+    foreach (var il in inputLines)
+    {
+        var matchDtl = rootDetails.FirstOrDefault(l =>
+            string.Equals(l.ModelCode, il.ModelCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(l.SpecCode, il.SpecCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(l.ColorCode, il.ColorCode, StringComparison.OrdinalIgnoreCase));
+
+        if (matchDtl is null)
+            return Results.BadRequest(new { error = "DMS40_OSOR_FinishForSOTypePlanX_Input_DMS40_Ord_SalesOrderRootDetailTblInvalid", message = $"Không tìm thấy dòng tương ứng với Model '{il.ModelCode}', Spec '{il.SpecCode}', Color '{il.ColorCode}' trong đơn gốc." });
+
+        if (il.Approved2Quantity < 0)
+            return Results.BadRequest(new { error = "DMS40_OSOR_FinishForSOTypePlanX_Input_InvalidValue", message = "Số lượng duyệt Approved2Quantity không được âm.", approved2Quantity = il.Approved2Quantity });
+
+        if (il.UnitPriceInit <= 0)
+            return Results.BadRequest(new { error = "DMS40_OSOR_FinishForSOTypePlanX_Input_InvalidValue", message = "Đơn giá UnitPriceInit phải lớn hơn 0.", unitPriceInit = il.UnitPriceInit });
+
+        if (il.Approved2Date.HasValue)
+        {
+            var app2DateStr = il.Approved2Date.Value.ToString("yyyy-MM-dd");
+            if (string.Compare(app2DateStr, todayStr, StringComparison.Ordinal) < 0)
+                return Results.BadRequest(new { error = "DMS40_OSOR_FinishForSOTypePlanX_Input_InvalidApprovedDate", message = "Ngày duyệt Approved2Date không được trong quá khứ.", approved2Date = il.Approved2Date });
+        }
+
+        // Tính RemainQuantity = RequestedQuantity - tổng ApprovedQuantity đã duyệt của các đơn bán trước
+        var prevApprovedTotal = existingSoLines
+            .Where(x => string.Equals(x.ModelCode, il.ModelCode, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(x.SpecCode, il.SpecCode, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(x.ColorCode, il.ColorCode, StringComparison.OrdinalIgnoreCase))
+            .Sum(x => x.ApprovedQuantity);
+
+        var remainQty = matchDtl.RequestedQuantity - prevApprovedTotal;
+        if (il.Approved2Quantity > remainQty)
+            return Results.BadRequest(new
+            {
+                error = "DMS40_OSOR_FinishForSOTypePlanX_Input_InvalidValue",
+                message = $"Số lượng duyệt {il.Approved2Quantity} vượt quá số lượng còn lại {remainQty} (Đã yêu cầu: {matchDtl.RequestedQuantity}, Đã duyệt đơn bán trước: {prevApprovedTotal}).",
+                approved2Quantity = il.Approved2Quantity,
+                remainQuantity = remainQty
+            });
+    }
+
+    // SequenceGetForSOCode: Sinh mã SOCode theo thứ tự
+    // Tìm SOCode cũ nhất / cao nhất đã sinh từ SORCode này
+    var existingSos = await db.SalesOrders
+        .Where(x => x.OrgId == t.OrgId && x.SORCode == h.SORCode && (x.OrderType == "Plan" || x.OrderType == "P"))
+        .OrderByDescending(x => x.SoCode)
+        .ToListAsync();
+
+    string strSOCode;
+    if (existingSos.Count == 0)
+    {
+        if (h.SORCode.Contains("TCG", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = h.SORCode.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2) strSOCode = $"{parts[0]}.01.{parts[1]}";
+            else strSOCode = $"{h.SORCode}.01";
+        }
+        else
+        {
+            strSOCode = $"{h.SORCode}.01";
+        }
+    }
+    else
+    {
+        var lastSoCode = existingSos[0].SoCode;
+        if (lastSoCode.Contains("TCG", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = lastSoCode.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            int nextSeq = 1;
+            if (parts.Length >= 2 && int.TryParse(parts[1], out var parsedSeq)) nextSeq = parsedSeq + 1;
+            var seqStr = nextSeq.ToString("D2");
+            if (parts.Length >= 3) strSOCode = $"{parts[0]}.{seqStr}.{parts[2]}";
+            else strSOCode = $"{parts[0]}.{seqStr}";
+        }
+        else
+        {
+            var parts = lastSoCode.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            int nextSeq = 1;
+            if (parts.Length >= 2 && int.TryParse(parts[^1], out var parsedSeq)) nextSeq = parsedSeq + 1;
+            var seqStr = nextSeq.ToString("D2");
+            strSOCode = $"{parts[0]}.{seqStr}";
+        }
+    }
+
+    // Sinh SalesOrder nếu có dòng có Approved2Quantity > 0
+    var validLinesToCreate = inputLines.Where(l => l.Approved2Quantity > 0).ToList();
+    string? generatedSoCode = null;
+
+    if (validLinesToCreate.Count > 0)
+    {
+        var so = new SalesOrder
+        {
+            OrgId = t.OrgId,
+            SoCode = strSOCode,
+            SORCode = h.SORCode,
+            OrderType = h.SOType ?? "Plan",
+            DealerCode = h.DealerCode,
+            SPCode = h.SPCode,
+            Status = "A2",
+            CreatedAt = now,
+            Approved1At = now,
+            Approved2At = now,
+            ApprovedBy1 = who,
+            ApprovedDate = validLinesToCreate[0].Approved2Date ?? now,
+            ApprovedDate2 = validLinesToCreate[0].Approved2Date ?? now
+        };
+        db.SalesOrders.Add(so);
+        await db.SaveChangesAsync();
+
+        foreach (var il in validLinesToCreate)
+        {
+            var matchDtl = rootDetails.First(l =>
+                string.Equals(l.ModelCode, il.ModelCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(l.SpecCode, il.SpecCode, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(l.ColorCode, il.ColorCode, StringComparison.OrdinalIgnoreCase));
+
+            db.SalesOrderLines.Add(new SalesOrderLine
+            {
+                OrgId = t.OrgId,
+                SalesOrderId = so.Id,
+                ModelCode = il.ModelCode ?? "",
+                SpecCode = il.SpecCode,
+                ColorCode = il.ColorCode,
+                RequestedQuantity = (int)matchDtl.RequestedQuantity,
+                RequestedDate = matchDtl.RequestedDate,
+                UnitPrice = il.UnitPriceInit,
+                UnitPriceInit = il.UnitPriceInit,
+                ApprovedQuantity = (int)il.Approved2Quantity,
+                ApprovedDate = il.Approved2Date ?? now,
+                MapVINRanking = 5.0m,
+                Remark = il.Remark ?? matchDtl.Remark
+            });
+        }
+        generatedSoCode = strSOCode;
+    }
+
+    // Cập nhật Dms40SoRootDetail và Header
+    foreach (var il in inputLines)
+    {
+        var matchDtl = rootDetails.FirstOrDefault(l =>
+            string.Equals(l.ModelCode, il.ModelCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(l.SpecCode, il.SpecCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(l.ColorCode, il.ColorCode, StringComparison.OrdinalIgnoreCase));
+
+        if (matchDtl is not null)
+        {
+            matchDtl.Approved2Quantity = il.Approved2Quantity;
+            matchDtl.Approved2Date = il.Approved2Date ?? now;
+            matchDtl.UnitPriceInit = il.UnitPriceInit;
+            matchDtl.Remark = il.Remark ?? matchDtl.Remark;
+            matchDtl.SORStatusDtl = "F";
+            matchDtl.LogLUDateTime = now;
+            matchDtl.LogLUBy = who;
+        }
+    }
+
+    h.Status = "F";
+    h.FinishDTime = now;
+    h.FinishBy = who;
+    h.LogLUDateTime = now;
+    h.LogLUBy = who;
+    h.GeneratedSoCode = generatedSoCode;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        h.SORCode,
+        h.Status,
+        h.FinishDTime,
+        h.FinishBy,
+        generatedSoCode,
+        soLines = validLinesToCreate.Count
+    });
 }).RequireAuthorization();
 
 // ===== 🔴 #208 HUỶ ĐƠN GỐC — `DMS40_Ord_SalesOrderRoot_Cancel1` (78681) / `Cancel2` (79242) =====
@@ -118250,6 +118491,8 @@ record Dms40SoRootLineDto(string? ModelCode, string? SpecCode, string? ColorCode
 record Dms40SoRootDto(string? SORCode, string? SOType, string? DealerCode, string? SPCode, DateTime? OrderMonth, List<Dms40SoRootLineDto>? Lines);
 record Dms40SoRootApproveLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal Approved1Quantity, DateTime? Approved1Date = null);
 record Dms40SoRootApproveDto(List<Dms40SoRootApproveLineDto>? Lines);
+record Dms40SoRootFinishPlanLineDto(string? ModelCode, string? SpecCode, string? ColorCode, decimal Approved2Quantity, DateTime? Approved2Date = null, decimal UnitPriceInit = 0, string? Remark = null);
+record Dms40SoRootFinishPlanDto(List<Dms40SoRootFinishPlanLineDto>? Lines, bool? BypassDateLimit = false);
 record StoragePdiVinDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string? OrderNoMMS, string? EngineNo, string? KeyNo, string? AVNSerialNo, string? BatteryNo, string? FlagActive, string? Remark, DateTime? FinishDTime, string? PDIStorageStatus = null,   // #B251
     string? OrdMonthMMS = null, string? OrderMonthActual = null, string? VINYear = null);   // #361
 record MnfPlOrderStatisticDto(List<MnfPlMmsRowDto>? MmsRows, string? OrderStatusQtyReturn);   // #B251-B253
