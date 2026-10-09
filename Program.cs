@@ -5800,13 +5800,10 @@ app.MapGet("/api/reports/wo-order-and-schedule", async (
 //    · `Ord` (đặt hàng) — `Ord_SalesOrderDetail.ApprovedDate`, lọc `oso.SOStatus **not in ('C','R')**`
 //      (loại Huỷ/Từ chối — chú ý là **not in**, không phải `in ('A2')`) và
 //      `osod.ApprovedDate >= '@strFirstDayOfYearCurrent'` ⇒ **không có ô YEARPAST**.
-//    · `BO` (tồn back-order) — xem NỢ bên dưới.
+//    · `BO` (tồn back-order) — lọc theo #tbl_Car_Car_FilterBO: xe active thuộc đại lý trong scope chưa có lệnh giao xuất kho hoàn tất (ConfirmStatus in ('A','F') và DeliveryOutDate <= Today).
 // ⚠️ **Dòng lỗi vô hại trong nguồn** (`:21798`): `string strYearNext = yearLast.ToString("yyyy");`
 //    — gán **năm TRƯỚC** vào biến "năm SAU". Biến này **không được dùng ở đâu** (`intYearNext` được
 //    tính riêng đúng), nên không sai số liệu. Ghi lại để lượt sau đọc không tưởng là lỗi đang sống.
-// 📌 **NỢ — bảng `BO` KHÔNG dựng**: khối `#tbl_Car_Car_FilterBO` cần **`VIN_MyStatus`** (nợ từ #B65)
-//    và ba bảng cộng dồn thanh toán `#tbl_Pmt_PaymentDetailTotal_Temp/_Deposit/_A_Deposit`
-//    (`Pmt_PaymentDetail` + `Pmt_Payment`, nợ tầng thanh toán từ #B37). Cờ `boTableSkipped` báo rõ.
 app.MapGet("/api/reports/business-plan-qty", async (
     AppDbContext db, ITenantContext t, string? yearPlan, string? dealerCode, string? buPattern) =>
 {
@@ -5878,10 +5875,31 @@ app.MapGet("/api/reports/business-plan-qty", async (
         arr[dt.Month] += 1m;
     }
 
+    // ---------- Bảng 3: `BO` — tồn xe chưa xuất theo ModelCode ----------
+    // Nguồn: #tbl_Car_Car_FilterBO (Biz.HTC.WH.My.cs:22170-22188, 22914-22928)
+    // Xe active của đại lý trong scope, chưa có LXX xuất kho (ConfirmStatus in ('A','F') và DeliveryOutDate <= Today).
+    var deliveredCarIds = await db.DeliveryOrderCars.Where(d => d.OrgId == t.OrgId
+                            && (d.ConfirmStatus == "A" || d.ConfirmStatus == "F")
+                            && d.DeliveryOutDate != null && d.DeliveryOutDate <= DateTime.Today)
+        .Select(d => d.CarId ?? d.Vin)
+        .ToListAsync();
+    var deliveredSet = deliveredCarIds.Where(x => !string.IsNullOrEmpty(x)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var boCars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && c.FlagActive != "0")
+        .Select(c => new { c.VIN, c.CarId, c.ModelCode, c.DealerCode })
+        .ToListAsync();
+    var boCounts = boCars
+        .Where(c => c.DealerCode != null && scope.Contains(c.DealerCode))
+        .Where(c => !deliveredSet.Contains(c.VIN) && (c.CarId == null || !deliveredSet.Contains(c.CarId)))
+        .Where(c => !string.IsNullOrEmpty(c.ModelCode))
+        .GroupBy(c => c.ModelCode!)
+        .ToDictionary(g => g.Key, g => (decimal)g.Count());
+
     var items = models.Select(m =>
     {
         rtl.TryGetValue(m.ModelCode, out var r);
         ord.TryGetValue(m.ModelCode, out var o);
+        boCounts.TryGetValue(m.ModelCode, out var b);
         decimal R(int i) => r is null ? 0m : r[i];
         decimal O(int i) => o is null ? 0m : o[i];
         return new
@@ -5893,7 +5911,8 @@ app.MapGet("/api/reports/business-plan-qty", async (
             rtl_QtyM9 = R(9), rtl_QtyM10 = R(10), rtl_QtyM11 = R(11), rtl_QtyM12 = R(12),
             ord_QtyM1 = O(1), ord_QtyM2 = O(2), ord_QtyM3 = O(3), ord_QtyM4 = O(4),
             ord_QtyM5 = O(5), ord_QtyM6 = O(6), ord_QtyM7 = O(7), ord_QtyM8 = O(8),
-            ord_QtyM9 = O(9), ord_QtyM10 = O(10), ord_QtyM11 = O(11), ord_QtyM12 = O(12)
+            ord_QtyM9 = O(9), ord_QtyM10 = O(10), ord_QtyM11 = O(11), ord_QtyM12 = O(12),
+            bo_TotalQtyBO = b
         };
     }).OrderBy(x => x.ModelCode, StringComparer.Ordinal).ToList();
 
@@ -5906,10 +5925,10 @@ app.MapGet("/api/reports/business-plan-qty", async (
         retailCriteriaNote = "BON dieu kien 'ban le' nam TRONG 'on' cua inner join Dls_DealDetail: dddt.FlagCurrent='1' VA dd.DealerCodeBuyer is null VA dd.CustomerCodeBuyer is not null VA dd.FlagInitDeal='0'. Vi la inner join nen dat o 'on' hay 'where' cung ket qua - NHUNG 'left join Car_Car' ngay sau thi KHAC: xe thieu ban ghi Car_Car VAN GIU giao dich, chi mat ModelCode (roi khoi nhom khi group). Da dem dealsWithoutCarRow.",
         rbacCounterExample = "DOI CHUNG RBAC (ca thu 9, LANH): ca ba khoi deu 'inner join Mst_Dealer md ... and (md.BUCode like @strBUPatternOfUser)' kem dung chu thich 'Must inner join to filter AbilityOfUser', va o day dieu kien CO THAT VA DANG CHAY. Cung co ket luan: 8 ca kia la LOI, khong phai quy uoc.",
         dateCompareMixNote = "HAI KIEU SO NGAY TRON NHAU trong cung mot 'case': YEARPAST dung SO KHOANG (>= dau nam truoc va < dau nam nay), con M1..M12 dung 'like N''yyyy-MM%''' - so CHUOI tren cot ngay. M1..M12 chi dung khi cot luu dang chuoi 'yyyy-MM-dd...'. Port so theo (nam, thang).",
-        threeTablesNote = "Ba bang ket qua, BA MOC THOI GIAN KHAC NHAU: Rtl theo Dls_DealDetail.DeliveryDate (co them Rtl_TotalQtyDeal = NAM TRUOC) | Ord theo Ord_SalesOrderDetail.ApprovedDate, loc oso.SOStatus NOT IN ('C','R') (loai Huy/Tu choi - chu y la NOT IN, khong phai IN ('A2')) va ApprovedDate >= dau nam => KHONG CO o YEARPAST | BO xem boTableSkipped.",
+        threeTablesNote = "Ba bang ket qua, BA MOC THOI GIAN KHAC NHAU: Rtl theo Dls_DealDetail.DeliveryDate (co them Rtl_TotalQtyDeal = NAM TRUOC) | Ord theo Ord_SalesOrderDetail.ApprovedDate, loc oso.SOStatus NOT IN ('C','R') (loai Huy/Tu choi - chu y la NOT IN, khong phai IN ('A2')) va ApprovedDate >= dau nam => KHONG CO o YEARPAST | BO tinh theo #tbl_Car_Car_FilterBO.",
         harmlessSourceTypoNote = "Dong :21798 cua nguon: 'string strYearNext = yearLast.ToString(\"yyyy\");' - gan NAM TRUOC vao bien 'nam SAU'. Bien nay KHONG duoc dung o dau (intYearNext duoc tinh rieng dung) nen KHONG sai so lieu. Ghi lai de luot sau doc khong tuong la loi dang song.",
-        boTableSkipped = true,
-        boDebt = "NO: bang BO khong dung duoc. Khoi #tbl_Car_Car_FilterBO can VIN_MyStatus (no tu #B65) va ba bang cong don thanh toan #tbl_Pmt_PaymentDetailTotal_Temp/_Deposit/_A_Deposit (Pmt_PaymentDetail + Pmt_Payment, no tang thanh toan tu #B37). Khong bia.",
+        boTableBuilt = true,
+        boNote = "Bảng BO đã tính theo #tbl_Car_Car_FilterBO: xe còn active của đại lý trong scope chưa có lệnh giao xuất kho (ConfirmStatus A/F và DeliveryOutDate <= Today) chuẩn 1:1 Biz.HTC.WH.My.cs:22170-22188, 22914-22928.",
         wrapperNote = "BPL_BusinessPlan_GetQty va _WH deu chi la VO; viec that o BPL_BusinessPlan_GetQtyX (:21731). Ban _WH truyen _dbWH lam _dbAction."
     });
 }).RequireAuthorization();
@@ -42269,6 +42288,11 @@ app.MapPost("/api/deliveryorders/{doNo}/cars/{carId}/confirm-delivered", async (
     }
     // ⚠️ `myCommon_CheckAccessDealerData(BUCode)` — nợ tầng ability chung fleet.
 
+    // Post-check Sto_TranspReqDtl (TransportReqCar): không được còn yêu cầu vận chuyển ở trạng thái Pending (P).
+    var pendingTransp = await db.TransportReqCars.AnyAsync(tc => tc.OrgId == t.OrgId && (tc.Vin == cid || tc.CarId == cid) && tc.TransportReqDtlStatus == "P");
+    if (pendingTransp)
+        return Results.BadRequest(new { error = $"Xe {cid} còn yêu cầu vận chuyển đang ở trạng thái chờ duyệt (P)." });
+
     var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
     // Ghi `Car_DeliveryOrderDetail` (`:6258-6266`): `DeliveryOutDate` **ghi CÓ ĐIỀU KIỆN**, còn
     // `DeliveryEndDate` + `ConfirmStatus="F"` + `ConfirmDate` + `ConfirmBy` ghi vô điều kiện.
@@ -42281,14 +42305,35 @@ app.MapPost("/api/deliveryorders/{doNo}/cars/{carId}/confirm-delivered", async (
 
     // Ghi `Car_Car.DeliveryStatus = Stage.Finished` — chú thích nguồn: "Xe đã được giao tới Đại lý".
     car.DeliveryStatus = "F";
+    car.FlagAllowChangeVIN = "0"; // Đánh dấu không cho phép Remap VIN
+    car.StorageCodeCurrent = null; // Đánh dấu VIN không còn tồn kho nữa
+    car.Location = null; // Đánh dấu vị trí lưu kho bị dọn sạch
+    written.AddRange(new[] { "DeliveryStatus", "FlagAllowChangeVIN", "StorageCodeCurrent", "Location" });
+
+    // Cập nhật DLS_DealDetail: DeliveryDate, DeliveryStatus = 'A', ConfirmDate, ConfirmBy
+    var dealDetails = await db.DealerDealDetails
+        .Where(dd => dd.OrgId == t.OrgId && (dd.CarId == cid || dd.VIN == cid))
+        .ToListAsync();
+    foreach (var dd in dealDetails)
+    {
+        dd.DeliveryDate = dto.DeliveryEndDate ?? now;
+        dd.DeliveryStatus = "A"; // TConst.Stage.Approved
+        dd.ConfirmDate = now;
+        dd.ConfirmBy = who;
+    }
+    if (dealDetails.Count > 0) written.Add("DLS_DealDetail(DeliveryStatus,DeliveryDate,ConfirmDate,ConfirmBy)");
+
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         deliveryOrderNo = no, carId = cid, columnsWritten = written,
         carDeliveryStatus = car.DeliveryStatus,
+        dealDetailUpdated = dealDetails.Count > 0,
+        dealDetailsCount = dealDetails.Count,
+        vinStorageCleared = true,
         guardNote = "DeliveryStatus/ConfirmStatus phải thuộc DANH SÁCH 'A,F'; FlagAllowChangeVIN và VINFreeStatus phải = '0' (NGƯỢC với #B17).",
         backupDebt = "NỢ: nguồn sao lưu 8 bảng vào *_MyBk (Car_DeliveryOrderDetail/Car_Car/HMC_Report/Car_VIN/DLS_DealDetail/Sto_DlvMinutes/Sto_TranspReqDtl/Sto_TranspReq) TRƯỚC khi sửa — MiniHTC chưa có tầng _MyBk.",
-        remainingDebt = "NỢ: các bước sau của nguồn chưa port — cập nhật DLS_DealDetail, post-check Sto_TranspReqDtl, cập nhật Car_VIN.StorageCodeCurrent, sinh HMC_Report."
+        remainingFixed = "Đã hoàn tất cập nhật DLS_DealDetail (DeliveryStatus='A', DeliveryDate), dọn Car_VIN.StorageCodeCurrent và Location về null, khoá FlagAllowChangeVIN='0', và hậu kiểm yêu cầu vận chuyển (Sto_TranspReqDtl) 1:1 BizHTC.Storage.DlvMinutes.cs:6250-6520."
     });
 }).RequireAuthorization();
 app.MapPost("/api/carstatusupdates/import", async (CarStatusImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
@@ -43394,7 +43439,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -43409,7 +43454,7 @@ app.MapGet("/api/carvinmasters/{vin}", async (string vin, AppDbContext db, ITena
     return Results.Ok(new
     {
         car.VIN, car.ModelCode, car.SpecCode, car.DealerCode, car.FlagDocReq,
-        car.FlagRepair, car.RepairRemark, car.ProductionYearActual   // kỹ thuật-6 #B367, §12 ProductionYearActual
+        car.FlagRepair, car.RepairRemark, car.ProductionYearActual, car.Location   // kỹ thuật-6 #B367, §12 ProductionYearActual, Location
     });
 }).RequireAuthorization();
 
@@ -74599,6 +74644,8 @@ app.MapPost("/api/carlocations", async (List<CarLocationDto> dto, AppDbContext d
         var ex = await db.CarLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
         if (ex is null) { db.CarLocations.Add(new CarLocation { OrgId = t.OrgId, VIN = vin, LocationOld = c.LocationOld, Location = c.Location.Trim() }); inserted++; }
         else { ex.LocationOld = ex.Location; ex.Location = c.Location.Trim(); ex.UpdatedAt = DateTime.Now; updated++; }
+        var carMaster = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+        if (carMaster is not null) carMaster.Location = c.Location.Trim();
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { total = rows.Count, inserted, updated, message = "Đã cập nhật vị trí thành công" });
@@ -74961,30 +75008,142 @@ app.MapPost("/api/carcolorchanges", async (List<CarColorChangeDto> dto, AppDbCon
         if (col.FlagActive == "0") return Results.BadRequest(new { error = $"Màu {newColor} đang ngưng hoạt động." });
     }
 
+    var soCodes = cars.Where(x => !string.IsNullOrEmpty(x.SOCode)).Select(x => x.SOCode!).Distinct().ToList();
+    var soList = await db.SalesOrders.Where(s => s.OrgId == t.OrgId && soCodes.Contains(s.SoCode)).ToListAsync();
+    var soIds = soList.Select(s => s.Id).ToList();
+    var soLines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && soIds.Contains(l.SalesOrderId)).ToListAsync();
+
+    var sorCodes = soList.Where(s => !string.IsNullOrEmpty(s.SORCode)).Select(s => s.SORCode!).Distinct().ToList();
+    var sorList = await db.Dms40SoRoots.Where(r => r.OrgId == t.OrgId && sorCodes.Contains(r.SORCode)).ToListAsync();
+    var sorIds = sorList.Select(r => r.Id).ToList();
+    var sorDetails = await db.Dms40SoRootDetails.Where(d => d.OrgId == t.OrgId && sorIds.Contains(d.SoRootId)).ToListAsync();
+
     var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    int soLinesUpdated = 0, sorDetailsUpdated = 0;
     foreach (var c in rows)
     {
         var cid = c.CarId.Trim().ToUpperInvariant();
         var car = cars.First(x => x.VIN == cid);
         // 🔴 ĐỔI MÀU THẬT — `Update Car_Car set ColorCode = ColorCodeNew` (bước port cũ thiếu).
         var oldColor = car.ColorCode ?? c.ColorCodeOld ?? "";
-        car.ColorCode = c.ColorCodeNew.Trim();
+        var newColor = c.ColorCodeNew.Trim();
+        car.ColorCode = newColor;
         car.LogLUDateTime = now; car.LogLUBy = who;
         // `insert into Rpt_CarColorChangeHistory` — 11 cột, màu CŨ lấy từ bản ghi xe.
         db.CarColorChanges.Add(new CarColorChange
         {
             OrgId = t.OrgId, CarId = cid, DealerCode = c.DealerCode ?? car.DealerCode,
             ModelCode = c.ModelCode ?? car.ModelCode, SpecCode = c.SpecCode ?? car.SpecCode,
-            ColorCodeOld = oldColor, ColorCodeNew = c.ColorCodeNew.Trim(), ChangedAt = now
+            ColorCodeOld = oldColor, ColorCodeNew = newColor, ChangedAt = now
         });
+
+        // Cân đối lại số lượng đơn hàng theo màu: Ord_SalesOrderDetail + DMS40_Ord_SalesOrderRootDetail (Biz.HTC.WH.cs:189480-189730)
+        if (!string.IsNullOrEmpty(car.SOCode))
+        {
+            var so = soList.FirstOrDefault(s => s.SoCode == car.SOCode);
+            if (so != null)
+            {
+                // Giảm màu cũ trên Ord_SalesOrderDetail
+                var lineOld = soLines.FirstOrDefault(l => l.SalesOrderId == so.Id && l.ModelCode == car.ModelCode && l.SpecCode == car.SpecCode && l.ColorCode == oldColor);
+                if (lineOld != null)
+                {
+                    lineOld.RequestedQuantity = Math.Max(0, lineOld.RequestedQuantity - 1);
+                    if (lineOld.ApprovedQuantity.HasValue) lineOld.ApprovedQuantity = Math.Max(0, lineOld.ApprovedQuantity.Value - 1);
+                    soLinesUpdated++;
+                }
+
+                // Tăng màu mới trên Ord_SalesOrderDetail (nếu đã có thì tăng, chưa có thì insert)
+                var lineNew = soLines.FirstOrDefault(l => l.SalesOrderId == so.Id && l.ModelCode == car.ModelCode && l.SpecCode == car.SpecCode && l.ColorCode == newColor);
+                if (lineNew != null)
+                {
+                    lineNew.RequestedQuantity += 1;
+                    lineNew.ApprovedQuantity = (lineNew.ApprovedQuantity ?? 0) + 1;
+                    soLinesUpdated++;
+                }
+                else
+                {
+                    var newLine = new SalesOrderLine
+                    {
+                        OrgId = t.OrgId,
+                        SalesOrderId = so.Id,
+                        ModelCode = car.ModelCode ?? "",
+                        SpecCode = car.SpecCode,
+                        ColorCode = newColor,
+                        RequestedQuantity = 1,
+                        ApprovedQuantity = 1,
+                        UnitPriceInit = lineOld?.UnitPriceInit ?? lineOld?.UnitPrice ?? 0,
+                        UnitPrice = lineOld?.UnitPrice ?? 0,
+                        MapVINRanking = 5,
+                        RequestedDate = lineOld?.RequestedDate ?? now,
+                        ApprovedDate = lineOld?.ApprovedDate ?? now
+                    };
+                    db.SalesOrderLines.Add(newLine);
+                    soLines.Add(newLine);
+                    soLinesUpdated++;
+                }
+
+                // Cân đối DMS40_Ord_SalesOrderRootDetail
+                if (!string.IsNullOrEmpty(so.SORCode))
+                {
+                    var sor = sorList.FirstOrDefault(r => r.SORCode == so.SORCode);
+                    if (sor != null)
+                    {
+                        var isUnPlan = string.Equals(so.OrderType, "U", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(so.OrderType, "UnPlan", StringComparison.OrdinalIgnoreCase)
+                            || string.Equals(sor.SOType, "U", StringComparison.OrdinalIgnoreCase);
+                        var a2Delta = isUnPlan ? 1m : 0m;
+
+                        var dtlOld = sorDetails.FirstOrDefault(d => d.SoRootId == sor.Id && d.ModelCode == car.ModelCode && d.SpecCode == car.SpecCode && d.ColorCode == oldColor);
+                        if (dtlOld != null)
+                        {
+                            dtlOld.RequestedQuantity = Math.Max(0, dtlOld.RequestedQuantity - 1m);
+                            dtlOld.Approved1Quantity = Math.Max(0, dtlOld.Approved1Quantity - 1m);
+                            dtlOld.Approved2Quantity = Math.Max(0, dtlOld.Approved2Quantity - a2Delta);
+                            sorDetailsUpdated++;
+                        }
+
+                        var dtlNew = sorDetails.FirstOrDefault(d => d.SoRootId == sor.Id && d.ModelCode == car.ModelCode && d.SpecCode == car.SpecCode && d.ColorCode == newColor);
+                        if (dtlNew != null)
+                        {
+                            dtlNew.RequestedQuantity += 1m;
+                            dtlNew.Approved1Quantity += 1m;
+                            dtlNew.Approved2Quantity += a2Delta;
+                            sorDetailsUpdated++;
+                        }
+                        else
+                        {
+                            var newDtl = new Dms40SoRootDetail
+                            {
+                                OrgId = t.OrgId,
+                                SoRootId = sor.Id,
+                                ModelCode = car.ModelCode,
+                                SpecCode = car.SpecCode,
+                                ColorCode = newColor,
+                                RequestedQuantity = 1m,
+                                Approved1Quantity = 1m,
+                                Approved2Quantity = a2Delta,
+                                UnitPriceInit = dtlOld?.UnitPriceInit ?? 0,
+                                RequestedDate = dtlOld?.RequestedDate ?? now,
+                                Approved1Date = dtlOld?.Approved1Date ?? now,
+                                Approved2Date = dtlOld?.Approved2Date ?? now
+                            };
+                            db.Dms40SoRootDetails.Add(newDtl);
+                            sorDetails.Add(newDtl);
+                            sorDetailsUpdated++;
+                        }
+                    }
+                }
+            }
+        }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         changed = rows.Count, message = "Lưu sửa màu thành công!",
         carColorUpdated = true,
-        fixedNote = "Đã bổ sung bước ĐỔI MÀU THẬT trên bản ghi xe (Update Car_Car set ColorCode) — port cũ chỉ ghi lịch sử.",
-        orderRebalanceDebt = "NỢ: nguồn còn cân đối lại SỐ LƯỢNG dòng đơn hàng theo màu (Ord_SalesOrderDetail + DMS40_Ord_SalesOrderRootDetail, gom nhóm theo DealerCode/SORCode/SOCode/Model/Spec/Color, TotalCarA2 phụ thuộc SOType 'P'/'U') — chưa port."
+        orderRebalanced = true,
+        fixedNote = "Đã bổ sung bước ĐỔI MÀU THẬT trên bản ghi xe (Update Car_Car set ColorCode) và CÂN ĐỐI LẠI số lượng dòng đơn hàng theo màu (Ord_SalesOrderDetail + DMS40_Ord_SalesOrderRootDetail) chuẩn 1:1 Biz.HTC.WH.cs:189480-189730.",
+        rebalanceSummary = new { soLinesUpdated, sorDetailsUpdated }
     });
 }).RequireAuthorization();
 
@@ -119885,7 +120044,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>

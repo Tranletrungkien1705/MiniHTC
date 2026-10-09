@@ -13728,6 +13728,7 @@ public sealed class SPSupportRetail
 public sealed class CarVinMaster
 {    public string? BatteryNo { get; set; }
     public string? ProductionYearActual { get; set; }
+    public string? Location { get; set; }
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string VIN { get; set; } = "";
