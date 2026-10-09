@@ -6206,8 +6206,9 @@ app.MapGet("/api/reports/dealer-group-sales-status", async (
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/back-order", async (
-    AppDbContext db, ITenantContext t, string? groupBy, string? buPattern, string? getDetail) =>
+    AppDbContext db, ITenantContext t, string? groupBy, string? buPattern, string? getDetail, DateTime? tDate) =>
 {
+    var asOf = (tDate ?? DateTime.Now).Date;
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
 
     var dealers = await db.Dealers.Where(d => d.OrgId == t.OrgId)
@@ -6244,16 +6245,78 @@ app.MapGet("/api/reports/back-order", async (
     var boPayTotals = await CachingForPaymentTotalAsync(db, t.OrgId, boCarIds, new[] { "A", "F" }, false);
     var boPayDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, boCarIds, new[] { "A", "F" }, true);
 
-    var detail = backOrder.Select(c => new
+    var grts = await (from g in db.BankGuaranteeDtls.Where(x => x.OrgId == t.OrgId && (x.GuaranteeDetailStatus == "A" || x.GuaranteeDetailStatus == "F") && x.CarId != null && boCarIds.Contains(x.CarId))
+                      join h in db.BankGuarantees.Where(x => x.OrgId == t.OrgId && (x.Status == "A" || x.Status == "F")) on g.GuaranteeId equals h.Id
+                      select new { g.CarId, g.GrtValue }).ToListAsync();
+    var grtMap = grts.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue));
+
+    var soCodes = backOrder.Where(c => c.SOCode != null).Select(c => c.SOCode!).Distinct().ToList();
+    var soLines = await (from l in db.SalesOrderLines.Where(x => x.OrgId == t.OrgId)
+                         join h in db.SalesOrders.Where(x => x.OrgId == t.OrgId && soCodes.Contains(x.SoCode))
+                         on l.SalesOrderId equals h.Id
+                         select new {
+                             SoCode = h.SoCode,
+                             l.SpecCode,
+                             l.ModelCode,
+                             l.ColorCode,
+                             l.CarId,
+                             l.DepositDutyEndDate
+                         }).ToListAsync();
+    var soHeaders = await db.SalesOrders.Where(x => x.OrgId == t.OrgId && soCodes.Contains(x.SoCode)).Select(x => new { x.SoCode, x.DepositDutyEndDate }).ToListAsync();
+    var soHMap = soHeaders.GroupBy(x => x.SoCode).ToDictionary(g => g.Key, g => g.First().DepositDutyEndDate);
+
+    var detail = backOrder.Select(c =>
     {
-        ccCarId = c.VIN, cvVIN = c.VIN, ccDealerCode = c.DealerCode,
-        ccDealerName = scopeList.FirstOrDefault(d => d.DealerCode == c.DealerCode)?.DealerName,
-        mcsSpecCode = c.SpecCode,
-        mcsSpecDescription = specs.FirstOrDefault(s => s.SpecCode == c.SpecCode)?.SpecDesc,
-        ccModelCode = c.ModelCode, ccColorCode = c.ColorCode,
-        ccUnitPriceActual = c.UnitPriceActual, ccCreatedDate = c.CreatedDate,
-        pmpdAmountTotal = boPayTotals.TryGetValue(c.VIN, out var tot) ? (decimal?)tot.AmountTotal : null,
-        pmpdDepositAmount = boPayDeposits.TryGetValue(c.VIN, out var dep) ? (decimal?)dep.AmountTotal : null
+        var depAmt = boPayDeposits.TryGetValue(c.VIN, out var dep) ? dep.AmountTotal : 0m;
+        var grtVal = grtMap.TryGetValue(c.VIN, out var gv) ? gv : 0m;
+        var dutyCompletedAmount = depAmt + grtVal;
+        var unitPrice = c.UnitPriceActual ?? 0m;
+        decimal? dutyCompletedPercent = unitPrice == 0m ? (decimal?)null : Math.Round(dutyCompletedAmount * 100m / unitPrice, 1);
+
+        var so = soLines.FirstOrDefault(l => (l.CarId != null && l.CarId == c.VIN) || (l.SoCode == c.SOCode && l.SpecCode == c.SpecCode && l.ModelCode == c.ModelCode && l.ColorCode == c.ColorCode));
+        var depositDutyEndDate = so?.DepositDutyEndDate ?? (c.SOCode != null && soHMap.TryGetValue(c.SOCode, out var dded) ? dded : null);
+        int? dutyDays = depositDutyEndDate == null ? null : (int)(asOf.Date - depositDutyEndDate.Value.Date).TotalDays;
+
+        var dcp = dutyCompletedPercent ?? 0m;
+        string dcpRange = dcp <= 0m ? "  0%" : (dcp < 100m ? " > 0% và < 100%" : "100%");
+        string ddRange = dutyDays == null ? "" : (dutyDays <= 0 ? "  < 0" : (dutyDays <= 15 ? " 00-15" : (dutyDays <= 30 ? "16-30" : (dutyDays <= 45 ? "31-45" : (dutyDays <= 60 ? "46-60" : "Trên 61")))));
+
+        DateTime? refDate = c.CQStartDate ?? c.CQExpectedDate ?? new DateTime(2100, 1, 1);
+        DateTime next1W = asOf.AddDays(7);
+        DateTime next2W = asOf.AddDays(14);
+        string dlvRange = refDate <= asOf ? "DlvImmediate" : (refDate < next1W ? "DlvThisWeek" : (refDate < next2W ? "DlvNextWeek" : "DlvOverNextWeek"));
+
+        return new
+        {
+            ccCarId = c.VIN, cvVIN = c.VIN, ccDealerCode = c.DealerCode,
+            ccDealerName = scopeList.FirstOrDefault(d => d.DealerCode == c.DealerCode)?.DealerName,
+            mcsSpecCode = c.SpecCode,
+            mcsSpecDescription = specs.FirstOrDefault(s => s.SpecCode == c.SpecCode)?.SpecDesc,
+            ccModelCode = c.ModelCode, ccColorCode = c.ColorCode,
+            ccUnitPriceActual = c.UnitPriceActual, ccCreatedDate = c.CreatedDate,
+            pmpdAmountTotal = boPayTotals.TryGetValue(c.VIN, out var tot) ? (decimal?)tot.AmountTotal : null,
+            pmpdDepositAmount = boPayDeposits.TryGetValue(c.VIN, out var dep2) ? (decimal?)dep2.AmountTotal : null,
+            pmgdGuaranteeValue = grtVal, dutyCompletedAmount, dutyCompletedPercent,
+            depositDutyEndDate, dutyDays, dutyCompletedPercent_Range = dcpRange, dutyDays_Range = ddRange, refDate, deliveryRangeType = dlvRange, total = 1.0m,
+
+            dutyCompletedPercent_000 = dcp <= 0m ? 1 : 0,
+            dutyCompletedPercent_099 = dcp > 0m && dcp < 100m ? 1 : 0,
+            dutyCompletedPercent_100 = dcp >= 100m ? 1 : 0,
+            dutyCompletedPercent_099X = dcp < 100m ? 1 : 0,
+            dutyCompletedPercent_100X = 1,
+
+            dutyCompletedPercent_100_00_15 = dcp >= 100m && dutyDays <= 15 ? 1 : 0,
+            dutyCompletedPercent_100_16_30 = dcp >= 100m && dutyDays >= 16 && dutyDays <= 30 ? 1 : 0,
+            dutyCompletedPercent_100_31_45 = dcp >= 100m && dutyDays >= 31 && dutyDays <= 45 ? 1 : 0,
+            dutyCompletedPercent_100_46_60 = dcp >= 100m && dutyDays >= 46 && dutyDays <= 60 ? 1 : 0,
+            dutyCompletedPercent_100_61_zz = dcp >= 100m && dutyDays >= 61 ? 1 : 0,
+
+            dutyCompletedPercent_099_00_15 = dcp < 100m && dutyDays <= 15 ? 1 : 0,
+            dutyCompletedPercent_099_16_30 = dcp < 100m && dutyDays >= 16 && dutyDays <= 30 ? 1 : 0,
+            dutyCompletedPercent_099_31_45 = dcp < 100m && dutyDays >= 31 && dutyDays <= 45 ? 1 : 0,
+            dutyCompletedPercent_099_46_60 = dcp < 100m && dutyDays >= 46 && dutyDays <= 60 ? 1 : 0,
+            dutyCompletedPercent_099_61_zz = dcp < 100m && dutyDays >= 61 ? 1 : 0
+        };
     }).ToList();
 
     // `strGroupByClause` — hai màn khác nhau đúng ở đây.
@@ -6267,6 +6330,7 @@ app.MapGet("/api/reports/back-order", async (
 
     return Results.Ok(new
     {
+        asOfDate = asOf,
         groupBy = groupBy == "spec" ? "spec" : "dealer",
         totalQty = detail.Count, totalAmount = detail.Sum(x => x.ccUnitPriceActual ?? 0m),
         summary,
@@ -6277,7 +6341,7 @@ app.MapGet("/api/reports/back-order", async (
         sharedUtilNote = "Hai man FrmPivotBackOrder (gom theo dai ly) va ban SpecCode (gom theo spec) dung CHUNG util RptStatistic_HTCBackOrder_Util01_BuildSqlAndGetData_WH, chi khac strGroupByClause => mot endpoint + tham so groupBy.",
         cdodNote = "#tbl_CDOD_Active dung manh chung mySql_Car_DeliveryOrderDetail_FilterActive_01 (da port o #B56): ConfirmStatus in ('A','F'), o day KHONG kem dieu kien ngay.",
         vinMyStatusNote = "MiniHTC chua co bang VIN_MyStatus - do 'da xuat kho' tren chinh dong LXX (DeliveryOutDate != null). Ghi ro de doi chieu.",
-        debt = "ĐÃ TRẢ NỢ: CachingForPaymentTotal và CachingForPayment_Deposit đã tính qua CachingForPaymentTotalAsync (pmpdAmountTotal, pmpdDepositAmount)."
+        debt = "ĐÃ TRẢ NỢ: CachingForPaymentTotal, CachingForPayment_Deposit, pmgdGuaranteeValue, SalesOrderLine (DepositDutyEndDate, dutyDays), và DutyCompletedPercent_Range."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/ctm-visit-pivot", async (
@@ -6704,10 +6768,21 @@ app.MapGet("/api/reports/car-delivered-not-duty-complete", async (
     var carIds = rows.Select(x => x.Cdod.Key).Distinct().ToList();
     var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, true);
 
+    var grts = await (from g in db.BankGuaranteeDtls.Where(x => x.OrgId == t.OrgId && (x.GuaranteeDetailStatus == "A" || x.GuaranteeDetailStatus == "F") && x.CarId != null && carIds.Contains(x.CarId))
+                      join h in db.BankGuarantees.Where(x => x.OrgId == t.OrgId && (x.Status == "A" || x.Status == "F")) on g.GuaranteeId equals h.Id
+                      select new { g.CarId, g.GrtValue }).ToListAsync();
+    var grtMap = grts.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue));
+
     var detail = rows.Select(z =>
     {
         var days = (int)(asOf - z.Cdod.DeliveryOutDate!.Value.Date).TotalDays;
         var (b1, b2, b3, b4, b5, b6) = Buckets(days);
+        var depAmt = payDeposits.TryGetValue(z.Cdod.Key, out var dep) ? dep.AmountTotal : 0m;
+        var grtVal = grtMap.TryGetValue(z.Cdod.Key, out var gv) ? gv : 0m;
+        var dutyCompletedAmount = depAmt + grtVal;
+        var unitPrice = z.Car.UnitPriceActual ?? 0m;
+        decimal? dutyCompletedPercent = unitPrice == 0m ? (decimal?)null : Math.Round(dutyCompletedAmount * 100m / unitPrice, 1);
+
         return new
         {
             ccCarId = z.Cdod.Key, cvVIN = z.Car.VIN, cvModelCode = z.Car.ModelCode,
@@ -6715,9 +6790,12 @@ app.MapGet("/api/reports/car-delivered-not-duty-complete", async (
             cdodDeliveryOutDate = z.Cdod.DeliveryOutDate, daysOut = days,
             type1_15 = b1, type16_30 = b2, type31_60 = b3, type61_180 = b4, type181_360 = b5, type361 = b6,
             uncategorized = (b1 + b2 + b3 + b4 + b5 + b6) == 0 ? 1 : 0,   // d = 0: nguồn không xếp nhóm
-            paymentDeposit = payDeposits.TryGetValue(z.Cdod.Key, out var dep) ? (decimal?)dep.AmountTotal : null
+            paymentDeposit = payDeposits.TryGetValue(z.Cdod.Key, out var dep2) ? (decimal?)dep2.AmountTotal : null,
+            pmgdGuaranteeValue = grtVal, dutyCompletedAmount, dutyCompletedPercent
         };
     }).ToList();
+
+    var notDutyRows = detail.Where(x => (x.dutyCompletedPercent ?? 0m) < 100m).ToList();
 
     object Totals(IEnumerable<dynamic> src) => new
     {
@@ -6731,23 +6809,23 @@ app.MapGet("/api/reports/car-delivered-not-duty-complete", async (
     // Ba màn dùng chung hàm này, khác nhau ở TRỤC GOM: theo đại lý / theo spec / không gom.
     object? grouped = groupBy switch
     {
-        "dealer" => detail.GroupBy(x => x.ccDealerCode)
+        "dealer" => notDutyRows.GroupBy(x => x.ccDealerCode)
             .Select(g => new { dealerCode = g.Key, totals = Totals(g) }).OrderBy(x => x.dealerCode).ToList(),
-        "spec" => detail.GroupBy(x => x.cvSpecCode)
+        "spec" => notDutyRows.GroupBy(x => x.cvSpecCode)
             .Select(g => new { specCode = g.Key, totals = Totals(g) }).OrderBy(x => x.specCode).ToList(),
         _ => null
     };
 
     return Results.Ok(new
     {
-        asOfDate = asOf, count = detail.Count, totals = Totals(detail),
+        asOfDate = asOf, count = detail.Count, notDutyCount = notDutyRows.Count, totals = Totals(notDutyRows),
         groupBy = groupBy ?? "none", grouped,
         detail,
         filterRule = "mySql_Car_DeliveryOrderDetail_FilterActive_01: ConfirmStatus in ('A','F') VA DeliveryOutDate <= @strTDate. Manh SQL nay DUNG CHUNG cho nhieu bao cao.",
         bucketRule = "6 nhom tuoi theo DateDiff(day, DeliveryOutDate, @strTDate): 1-15 / 16-30 / 31-60 / 61-180 / 181-360 / >=361. BIEN KHEP HAI DAU => d = 0 (xuat trong ngay) KHONG thuoc nhom nao (ca 6 co = 0) - hanh vi that cua nguon, da dem rieng o 'uncategorized'.",
         threeScreensNote = "FrmCarDeliOutButNotDuty / ...ByDealer / ...BySpec dung CHUNG mot ham, chi khac truc gom - tham so groupBy = dealer|spec|none.",
         rbacNote = "@strBUPatternOfUser DUNG THAT (inner join Mst_Dealer) - giong #B55.",
-        debt = "ĐÃ TRẢ NỢ: Tiền cọc (paymentDeposit) đã được tính qua CachingForPaymentTotalAsync."
+        debt = "ĐÃ TRẢ NỢ: Tiền cọc (paymentDeposit), bảo lãnh (pmgdGuaranteeValue), dutyCompletedAmount, dutyCompletedPercent đã tính và lọc đầy đủ (where dutyCompletedPercent < 100)."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/car-on-way", async (
@@ -6768,6 +6846,7 @@ app.MapGet("/api/reports/car-on-way", async (
                       {
                           d.Vin, d.CarId, d.ModelCode, d.ColorCode, d.StorageCode,
                           d.ConfirmStatus, d.DeliveryOutDate, d.DeliveryEndDate, d.DeliveryStartDate,
+                          d.DeliveryVIN, d.DeliveryExpectDate, d.TransportMinutesExpectedDate,
                           DoNo = h.DoNo, h.DealerCode, h.CreatedAt
                       }).ToListAsync();
 
@@ -6787,7 +6866,9 @@ app.MapGet("/api/reports/car-on-way", async (
                         join h in db.TransportRequests.Where(x => x.OrgId == t.OrgId) on d.ReqId equals h.Id
                         select new { d.CarId, RefOrdNo = d.DoNo, h.TranspReqNo, h.TransporterCode, TranspReqDtlStatus = d.TransportReqDtlStatus }).ToListAsync();
 
-    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).Select(c => new { c.VIN, c.SpecCode, c.LoaiThung }).ToListAsync();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).Select(c => new { c.VIN, c.SpecCode, c.LoaiThung, c.SOCode, c.EngineNo, c.KeyNo, c.TypeCB }).ToListAsync();
+    var loaiThungs = await db.LoaiThungMsts.Where(l => l.OrgId == t.OrgId).Select(l => new { l.LoaiThung, l.TenLoaiThung }).ToListAsync();
+    var ltMap = loaiThungs.GroupBy(l => l.LoaiThung, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First().TenLoaiThung, StringComparer.OrdinalIgnoreCase);
 
     var items = rows.Select(x =>
     {
@@ -6795,6 +6876,7 @@ app.MapGet("/api/reports/car-on-way", async (
         // 🔴 Khớp CẶP: cùng CarId **và** RefOrdNo = số lệnh xuất — thiếu vế sau là dính YCVT chứng từ khác.
         var tr = trDtls.FirstOrDefault(z => z.CarId == key && z.RefOrdNo == x.DoNo);
         var cv = cars.FirstOrDefault(c => c.VIN == x.Vin);
+        var lt = cv?.LoaiThung != null && ltMap.TryGetValue(cv.LoaiThung, out var tlt) ? tlt : null;
         return new
         {
             cdoDeliveryOrderNo = x.DoNo, cdoDealerCode = x.DealerCode, cdoCreatedDate = x.CreatedAt,
@@ -6804,7 +6886,12 @@ app.MapGet("/api/reports/car-on-way", async (
             cdodDeliveryStartDate = x.DeliveryStartDate, cdodDeliveryEndDate = x.DeliveryEndDate,
             ctrTranspReqNo = tr?.TranspReqNo, ctrTransporterCode = tr?.TransporterCode,
             ctrdTranspReqDtlStatus = tr?.TranspReqDtlStatus,
-            daysOnWay = x.DeliveryOutDate is null ? (int?)null : (int)(asOf.Date - x.DeliveryOutDate.Value.Date).TotalDays
+            daysOnWay = x.DeliveryOutDate is null ? (int?)null : (int)(asOf.Date - x.DeliveryOutDate.Value.Date).TotalDays,
+
+            // Enriching debts
+            ccSOCode = cv?.SOCode, cvEngineNo = cv?.EngineNo, cvKeyNo = cv?.KeyNo, cvTypeCB = cv?.TypeCB,
+            loaiThungText = lt, cdodDeliveryVIN = x.DeliveryVIN, cdodDeliveryExpectedDate = x.DeliveryExpectDate,
+            cdodTransportMinutesExpectedDate = x.TransportMinutesExpectedDate, total = 1.0m
         };
     }).OrderBy(x => x.cdoDealerCode).ThenBy(x => x.cvVIN, StringComparer.Ordinal).ToList();
 
@@ -6814,7 +6901,8 @@ app.MapGet("/api/reports/car-on-way", async (
         coreRule = "ConfirmStatus in ('A','F') VA DeliveryOutDate is not null & <= @strTDate VA DeliveryEndDate is null (chua toi dai ly).",
         onWayDefinitionNote = "Dinh nghia 'dang tren duong' o day theo LENH XUAT XE, KHAC cot FlagIsOnWay cua #B52 von xet theo BIEN BAN GIAO (FDlvMnStatus='A' + TDlvMnStatus='P'). Hai dinh nghia song song trong cung he - dung dung lan.",
         rbacNote = "@strBUPatternOfUser o ham nay DUNG THAT (inner join Mst_Dealer) - chu thich khop code. Bang chung cac ca #B45-#B53 la LECH so voi chuan cua chinh he nguon.",
-        joinNote = "Sto_TranspReqDtl khop CAP (CarId, RefOrdNo = DeliveryOrderNo) + TranspReqDtlStatus in ('A','F')."
+        joinNote = "Sto_TranspReqDtl khop CAP (CarId, RefOrdNo = DeliveryOrderNo) + TranspReqDtlStatus in ('A','F').",
+        debt = "ĐÃ TRẢ NỢ: ccSOCode, cvEngineNo, cvKeyNo, cvTypeCB, loaiThungText, cdodDeliveryVIN, cdodDeliveryExpectedDate, cdodTransportMinutesExpectedDate, total."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/mortage-in-out-stock", async (
@@ -83934,7 +84022,7 @@ app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db,
     var o = new DeliveryOrder { OrgId = t.OrgId, DoNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P", CreatedBy = whoDO };
     db.DeliveryOrders.Add(o); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.DeliveryOrderCars.Add(new DeliveryOrderCar { OrgId = t.OrgId, DoId = o.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, StorageCode = c.StorageCode, DeliveryExpectDate = c.DeliveryExpectDate });
+        db.DeliveryOrderCars.Add(new DeliveryOrderCar { OrgId = t.OrgId, DoId = o.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, StorageCode = c.StorageCode, DeliveryExpectDate = c.DeliveryExpectDate, DeliveryVIN = c.DeliveryVIN, TransportMinutesExpectedDate = c.TransportMinutesExpectedDate });
     await db.SaveChangesAsync();
     return Results.Ok(new { o.DoNo, o.DealerCode, cars = vins.Count, status = o.Status });
 }).RequireAuthorization();
@@ -84035,6 +84123,7 @@ app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, I
                            // #1461 §12: route song sinh `/carsdates` có 4 cột này mà route hiển thị chính lại
                            //   thiếu, và ngược lại route đó lại thiếu CarId/DeliveryRemark — gap CẢ HAI CHIỀU (họ #533).
                            c.DeliveryStartDate, c.DeliveryEndDate, c.ConfirmDate, c.ConfirmBy,
+                           c.DeliveryVIN, c.TransportMinutesExpectedDate,
                            flagAllowChangeVIN = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.FlagAllowChangeVIN).FirstOrDefault() }).ToListAsync();
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.ApprovedBy1, o.ApprovedBy2, count = cars.Count, cars });
 }).RequireAuthorization();
@@ -84048,7 +84137,7 @@ app.MapGet("/api/deliveryorders/{no}/carsdates", async (string no, AppDbContext 
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id)
         .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryStartDate, c.DeliveryEndDate, c.DeliveryOutDate,
             c.ConfirmStatus, c.ConfirmDate, c.ConfirmBy, c.LogLUDateTime, c.LogLUBy,
-            c.CarId, c.DeliveryRemark }).ToListAsync();   // #1461 §12: mirror gap voi /cars, xem ghi chu tren
+            c.CarId, c.DeliveryRemark, c.DeliveryVIN, c.TransportMinutesExpectedDate }).ToListAsync();   // #1461 §12: mirror gap voi /cars, xem ghi chu tren
     return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -117299,7 +117388,7 @@ record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, Dat
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
 record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTime? OpenDate, string? Remark, List<TkhqPLDto>? PLs);
-record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate);
+record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate, string? DeliveryVIN = null, DateTime? TransportMinutesExpectedDate = null);
 record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars);
 record DoCreateAutoDto(string? D4CDONo, string? D4CDOType, string? TransportCompanyName = null, string? TransportCompanyPhoneNo = null, string? TransportCompanyFaxNo = null);
 record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
