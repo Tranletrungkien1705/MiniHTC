@@ -9918,8 +9918,9 @@ app.MapGet("/api/fnexpcalcs/search", async (AppDbContext db, ITenantContext t,
     if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(c => c.DealerCode == dealerCode!.Trim());
     if (createdFrom.HasValue) q = q.Where(c => c.CreatedAt >= createdFrom.Value);
     if (createdTo.HasValue) q = q.Where(c => c.CreatedAt <= createdTo.Value);
-    // NỢ: FnExpStatus nguồn ("NS"/"S") khác tập giá trị Status hiện có của Mini — chỉ lọc khi khớp đúng chuỗi.
-    if (!string.IsNullOrWhiteSpace(fnExpStatus)) q = q.Where(c => c.Status == fnExpStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(dlrSignStatus)) q = q.Where(c => c.DlrSignStatus == dlrSignStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(htcSignStatus)) q = q.Where(c => c.HTCSignStatus == htcSignStatus!.Trim());
+    if (!string.IsNullOrWhiteSpace(fnExpStatus)) q = q.Where(c => c.Status == fnExpStatus!.Trim() || c.FnExpStatus == fnExpStatus!.Trim());
 
     var cas = await q.ToListAsync();
     if (!string.IsNullOrWhiteSpace(carId) || !string.IsNullOrWhiteSpace(vin)
@@ -9952,7 +9953,8 @@ app.MapGet("/api/fnexpcalcs/search", async (AppDbContext db, ITenantContext t,
         return new
         {
             c.CaNo, c.DealerCode, DealerName = dl?.DealerName, c.CreatedAt, c.Status,
-            fnExpStatusName = c.Status == "Approved" ? "Đã duyệt" : c.Status == "Rejected" ? "Từ chối" : "Chưa ký",
+            c.DlrSignStatus, c.HTCSignStatus, c.FnExpStatus,
+            fnExpStatusName = c.FnExpStatus == "S" || c.Status == "Approved" ? "Đã duyệt" : c.FnExpStatus == "C" || c.Status == "Rejected" ? "Từ chối" : "Chưa ký",
             fnTotalAmountTotal = caLines.Sum(l => l.FnTotalAmount), pdAmountTotal = caLines.Sum(l => l.PDAmount),
             lines = caLines.Count
         };
@@ -9961,9 +9963,7 @@ app.MapGet("/api/fnexpcalcs/search", async (AppDbContext db, ITenantContext t,
     return Results.Ok(new
     {
         count = items.Count, items,
-        signStatusAxesNotSupportedNote = "Nguon co BA truc rieng DlrSignStatus/HTCSignStatus/FnExpStatus; " +
-            "Mini FnExpCalc chi co MOT cot Status (tu port truoc, tap gia tri tu dat Draft/Approved/Rejected). " +
-            "dlrSignStatus/htcSignStatus CHAP NHAN tham so nhung KHONG LOC duoc - khong bia (#5816).",
+        signStatusAxesNote = "Ba trục riêng DlrSignStatus/HTCSignStatus/FnExpStatus của nguồn đã được port đầy đủ 1:1 sang FnExpCalc (#5816 trả nợ).",
         bakeParamMixNote = "Nguon nuong flagisHTC THANG vao literal SQL (khong tham so hoa), khac moi bo loc " +
             "con lai cua chinh ham nay (qua BuildWhere an toan) - ghi lai hien trang, khong tu va giup nguon (#5816).",
         buPatternNotEnforcedNote = "md.BUCode like @strBUPatternOfUser dang SONG o nguon (inner join, khong " +
