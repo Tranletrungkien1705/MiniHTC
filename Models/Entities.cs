@@ -13721,6 +13721,8 @@ public sealed class SPSupportRetail
     /// cột có trong `alColumnEffective` ⇒ vật lý, không phải cột tính). Port cũ thiếu hoàn toàn, kéo theo chưa có
     /// endpoint sửa dòng nào cho entity này (chỉ có tạo-hàng-loạt + xoá).</summary>
     public decimal? AmountHTCAppr { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 

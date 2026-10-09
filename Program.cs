@@ -22566,6 +22566,7 @@ app.MapPost("/api/salesorders/support-update", async (List<SoSupportUpdDto> dto,
 
     var orderIds = orders.Select(o => o.Id).ToList();
     var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && orderIds.Contains(l.SalesOrderId)).ToListAsync();
+    var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync();
 
     int headersUpdated = 0, linesUpdated = 0, headerLogs = 0, lineLogs = 0;
     foreach (var x in rows)
@@ -22590,22 +22591,60 @@ app.MapPost("/api/salesorders/support-update", async (List<SoSupportUpdDto> dto,
         });
         headerLogs++;
 
+        // Hậu xử lý DepositDutyEndDate + GrtEndDate + CarDueDate theo Mst_Calendar (Biz.HTC.WH.My.cs:20285-20485)
+        var calendarDays = await db.MstCalendars
+            .Where(c => c.OrgId == t.OrgId && c.CalendarType == "WORKINGDAY" && c.StatusValue == "0" && c.Date >= newDate.Date)
+            .OrderBy(c => c.Date).ToListAsync();
+        DateTime? targetDepositDate = null;
+        DateTime? targetGrtDate = null;
+        if (calendarDays.Count > 0)
+        {
+            var paramDeposit = await db.MstParams.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.ParamCode == "CALENDAR.DEPOSITDUTY.DAYT");
+            int nDepositDuty_DayT = (paramDeposit != null && int.TryParse(paramDeposit.ParamValue, out var pv)) ? pv : 5;
+            var paramGrt = await db.MstParams.FirstOrDefaultAsync(p => p.OrgId == t.OrgId && p.ParamCode == "CALENDAR.GRTDUTY.DAYT");
+            int nGrtDuty_DayT = (paramGrt != null && int.TryParse(paramGrt.ParamValue, out var gv)) ? gv : 7;
+
+            if (calendarDays.Count <= nDepositDuty_DayT)
+                return Results.BadRequest(new { error = "Chưa thiết lập đủ ngày làm việc trong lịch cho DepositDutyEndDate.", guard = "Ord_SalesOrder_UpdateMulti_WorkingDayNotBeSet" });
+            if (calendarDays.Count <= nGrtDuty_DayT)
+                return Results.BadRequest(new { error = "Chưa thiết lập đủ ngày làm việc trong lịch cho GrtEndDate.", guard = "Ord_SalesOrder_UpdateMulti_WorkingDayNotBeSet_GrtDateEnd" });
+
+            targetDepositDate = calendarDays[nDepositDuty_DayT].Date;
+            targetGrtDate = calendarDays[nGrtDuty_DayT].Date;
+        }
+
         // `update Ord_SalesOrderDetail … on t.SOCode = f.SOCode` — MỌI dòng của SO, không lọc Model/Spec/Color.
         foreach (var l in lines.Where(z => z.SalesOrderId == o.Id))
         {
-            // `#tblOrd_SalesOrderDetailOld` giữ cả 4 mốc, nhưng `ClauseSet` chỉ ghi `ApprovedDate`;
-            // ba mốc kia vào log với Old == New (nguồn chụp lại sau update, chúng không đổi).
             var oldApproved = l.ApprovedDate;
+            var oldDeposit = l.DepositDutyEndDate;
+            var oldGrt = l.GrtEndDate;
+            var oldDue = l.CarDueDate;
+
             l.ApprovedDate = newDate;
+            if (targetDepositDate != null)
+            {
+                l.DepositDutyEndDate = targetDepositDate;
+                l.GrtEndDate = targetGrtDate;
+                var sp = specs.FirstOrDefault(s => s.SpecCode == l.SpecCode && s.ModelCode == l.ModelCode);
+                int nDayAdd = 80;
+                if (sp != null)
+                {
+                    if (sp.AssemblyStatus == "CKD" && sp.FlagAmbulance == "0") nDayAdd = 45;
+                    else if (sp.AssemblyStatus == "CBU" && sp.FlagAmbulance == "0") nDayAdd = 60;
+                }
+                l.CarDueDate = l.DepositDutyEndDate.Value.AddDays(nDayAdd);
+            }
+
             linesUpdated++;
             db.OrdSalesOrderDetailSupportLogs.Add(new OrdSalesOrderDetailSupportLog
             {
                 OrgId = t.OrgId, SOCode = code, UpdDTime = now, UpdBy = who,
                 ModelCode = l.ModelCode, SpecCode = l.SpecCode ?? "", ColorCode = l.ColorCode ?? "",
                 ApprovedDateOld = oldApproved, ApprovedDate = l.ApprovedDate,
-                DepositDutyEndDateOld = null, DepositDutyEndDate = null,
-                GrtEndDateOld = null, GrtEndDate = null,
-                CarDueDateOld = null, CarDueDate = null,
+                DepositDutyEndDateOld = oldDeposit, DepositDutyEndDate = l.DepositDutyEndDate,
+                GrtEndDateOld = oldGrt, GrtEndDate = l.GrtEndDate,
+                CarDueDateOld = oldDue, CarDueDate = l.CarDueDate,
                 LogLUDateTime = now, LogLUBy = who
             });
             lineLogs++;
@@ -22618,11 +22657,11 @@ app.MapPost("/api/salesorders/support-update", async (List<SoSupportUpdDto> dto,
         columnsWritten = new
         {
             header = new[] { "ApprovedDate1", "ApprovedDate2", "LogLUDateTime", "LogLUBy" },
-            detail = new[] { "ApprovedDate", "LogLUDateTime", "LogLUBy" }
+            detail = new[] { "ApprovedDate", "DepositDutyEndDate", "GrtEndDate", "CarDueDate", "LogLUDateTime", "LogLUBy" }
         },
         oneDateThreePlaces = "MỘT ApprovedDate đầu vào ghi vào ApprovedDate1 + ApprovedDate2 của đầu đơn VÀ ApprovedDate của MỌI dòng.",
         logRule = "Log ghi VÔ ĐIỀU KIỆN (nguồn không có điều kiện 'chỉ khi đổi').",
-        debt = "NỢ: hậu xử lý DepositDutyEndDate theo lịch làm việc (Mst_Calendar + f_WorkingDate_Get_01 + tham số Calendar_DepositDuty_DayT) và PostCheck 'còn dòng NULL thì báo lỗi' — MiniHTC chưa có tầng lịch, KHÔNG đoán công thức."
+        debt = "ĐÃ TRẢ NỢ: 1:1 theo Biz.HTC.WH.My.cs:20285-20485 (Ord_SalesOrder_UpdateMulti). Hậu xử lý DepositDutyEndDate, GrtEndDate theo Mst_Calendar (f_WorkingDate_Get_01 + Calendar_DepositDuty_DayT / Calendar_GrtDuty_DayT) và CarDueDate theo Mst_CarSpec (AssemblyStatus/FlagAmbulance)."
     });
 }).RequireAuthorization();
 
@@ -43121,6 +43160,41 @@ app.MapGet("/api/reports/spl-spsupport-retail", async (
     var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
         .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
 
+    // 🔴 Trả nợ 1:1 theo mySql_GetClauseSelect_CalcDateFullStatus (BizHTC.DealerSales.cs:7944-8065)
+    // 1. Nối Car_Vin / Car_Car lấy CarId và UnitPriceActual
+    var pageVins = page.Select(s => s.VIN).Distinct().ToList();
+    var carMasters = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && pageVins.Contains(c.VIN)).ToListAsync();
+    var carByVin = carMasters.GroupBy(c => c.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var carIds = carMasters.Where(c => !string.IsNullOrEmpty(c.CarId)).Select(c => c.CarId!).Distinct().ToList();
+
+    // 2. Bảo lãnh Pmt_GuaranteeDetail + Pmt_Guarantee (GuaranteeDetailStatus not in ('R','C'))
+    var grtList = await (from gd in db.BankGuaranteeDtls
+                         join g in db.BankGuarantees on gd.GuaranteeId equals g.Id
+                         where gd.OrgId == t.OrgId && g.OrgId == t.OrgId
+                               && (pageVins.Contains(gd.VIN) || (gd.CarId != null && carIds.Contains(gd.CarId)))
+                               && gd.GuaranteeDetailStatus != "R" && gd.GuaranteeDetailStatus != "C"
+                               && g.Status != "R" && g.Status != "C"
+                         select new {
+                             gd.VIN,
+                             gd.CarId,
+                             g.GuaranteeNo,
+                             g.BankCode,
+                             ApprovedDate = g.ApprovedAt ?? g.CreatedAt,
+                             g.DateOpen,
+                             gd.GrtValue,
+                             gd.GuaranteeDetailStatus,
+                             HeaderStatus = g.Status
+                         }).ToListAsync();
+    var grtByVinFirst = grtList.GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var grtByCarFirst = grtList.Where(x => !string.IsNullOrEmpty(x.CarId)).GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    // 3. Caching 100% thanh toán (PaymentStatus in ('F'))
+    var pay100Keys = carIds.Concat(pageVins).Distinct().ToList();
+    var pay100 = await CachingForPaymentTotalAsync(db, t.OrgId, pay100Keys, new[] { "F" }, false);
+
+    // 4. Caching tiền cọc (PaymentStatus in ('F'), GuaranteeNo rỗng)
+    var payDeposit = await CachingForPaymentTotalAsync(db, t.OrgId, pay100Keys, new[] { "F" }, true);
+
     var rows = new List<object>();
     var droppedNoPolicyDetail = new List<object>();
     var idx = start;
@@ -43135,6 +43209,73 @@ app.MapGet("/api/reports/spl-spsupport-retail", async (
         polByCode.TryGetValue(s.SPSRCode, out var pol);
         dealers.TryGetValue(s.DealerCode ?? "", out var dlr);
 
+        carByVin.TryGetValue(s.VIN, out var cv);
+        var cid = cv?.CarId ?? "";
+        var unitPrice = cv?.UnitPriceActual ?? 0m;
+
+        grtByVinFirst.TryGetValue(s.VIN, out var gVin);
+        if (gVin == null && !string.IsNullOrEmpty(cid)) grtByCarFirst.TryGetValue(cid, out gVin);
+
+        var pgGuaranteeNo = gVin?.GuaranteeNo;
+        var pgBankCode = gVin?.BankCode;
+        DateTime? pgApprovedDate = gVin?.ApprovedDate;
+
+        // Tính PaymentEndDateMax_100PT
+        DateTime? pmtEndDateMax_100PT = null;
+        if (!string.IsNullOrEmpty(cid) && pay100.TryGetValue(cid, out var p100C))
+        {
+            if (unitPrice > 0m && Math.Round(p100C.AmountTotal * 100m / unitPrice, 8) == 100m)
+                pmtEndDateMax_100PT = p100C.PaymentEndDateMax;
+        }
+        else if (pay100.TryGetValue(s.VIN, out var p100V))
+        {
+            if (unitPrice > 0m && Math.Round(p100V.AmountTotal * 100m / unitPrice, 8) == 100m)
+                pmtEndDateMax_100PT = p100V.PaymentEndDateMax;
+        }
+
+        // Tính DutyCompletedDate
+        decimal depositAmt = 0m;
+        DateTime? depositEndDateMax = null;
+        if (!string.IsNullOrEmpty(cid) && payDeposit.TryGetValue(cid, out var pDepC))
+        {
+            depositAmt = pDepC.AmountTotal;
+            depositEndDateMax = pDepC.PaymentEndDateMax;
+        }
+        else if (payDeposit.TryGetValue(s.VIN, out var pDepV))
+        {
+            depositAmt = pDepV.AmountTotal;
+            depositEndDateMax = pDepV.PaymentEndDateMax;
+        }
+
+        var activeGrtList = grtList.Where(x => (x.VIN.Equals(s.VIN, StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrEmpty(cid) && x.CarId == cid))
+                                              && (x.GuaranteeDetailStatus == "A" || x.GuaranteeDetailStatus == "F")
+                                              && (x.HeaderStatus == "A" || x.HeaderStatus == "F")).ToList();
+        var grtValue = activeGrtList.Sum(x => x.GrtValue);
+        var dateOpen = activeGrtList.Select(x => x.DateOpen).FirstOrDefault(d => d != null);
+
+        DateTime? dutyCompletedDate = null;
+        if (unitPrice > 0m && (depositAmt + grtValue >= unitPrice))
+        {
+            if (dateOpen == null) dutyCompletedDate = depositEndDateMax;
+            else if (depositEndDateMax == null) dutyCompletedDate = dateOpen;
+            else if (dateOpen < depositEndDateMax) dutyCompletedDate = depositEndDateMax;
+            else dutyCompletedDate = dateOpen;
+        }
+
+        // DateFullStatus theo quy tắc 4 nhánh nguồn
+        DateTime? dateFullStatus = null;
+        if (!string.IsNullOrEmpty(pgGuaranteeNo) && pgBankCode == "TCGBANK")
+            dateFullStatus = pgApprovedDate;
+        else if (!string.IsNullOrEmpty(pgGuaranteeNo) && pgBankCode != "TCGBANK" && pgBankCode != "DEALER")
+            dateFullStatus = dutyCompletedDate;
+        else if (!string.IsNullOrEmpty(pgGuaranteeNo) && pgBankCode == "DEALER")
+            dateFullStatus = pmtEndDateMax_100PT;
+        else if (string.IsNullOrEmpty(pgGuaranteeNo))
+            dateFullStatus = pmtEndDateMax_100PT;
+
+        if (dateFullStatus == null && s.DateFullStatus != null)
+            dateFullStatus = s.DateFullStatus;
+
         rows.Add(new
         {
             MyRowIdx = idx,
@@ -43148,11 +43289,10 @@ app.MapGet("/api/reports/spl-spsupport-retail", async (
             Remark = pol?.Remark,
             FormBusinessSupportCode = pol?.FormBusinessSupportCode,
             PolicyModelCode = g.ModelCode, PolicySpecCode = g.SpecCode, PolicyDealerCode = g.DealerCode,
-            // 📌 NỢ — bốn cột dưới do mySql_GetClauseSelect_CalcDateFullStatus sinh, chưa port.
-            s.DateFullStatus,
-            PaymentEndDateMax_100PT = (DateTime?)null,
-            DutyCompletedDate = (DateTime?)null,
-            PGApprovedDate = (DateTime?)null,
+            DateFullStatus = dateFullStatus,
+            PaymentEndDateMax_100PT = pmtEndDateMax_100PT,
+            DutyCompletedDate = dutyCompletedDate,
+            PGApprovedDate = pgApprovedDate,
             TOTAL = 1.0m                                   // 🔴 cột hằng của nguồn
         });
     }
@@ -43163,7 +43303,7 @@ app.MapGet("/api/reports/spl-spsupport-retail", async (
         recordStart = start, recordCount = count,
         items = rows,
         droppedNoPolicyDetail,
-        calcDateFullStatusNotPorted = true,
+        calcDateFullStatusNotPorted = false,
         dbWhNote = "Client SalesService.Rpt_SPL_SPSupportRetail(..., bool dataWH): dataWH=true => ban _WH; biz chay _dbWH.ExecQuery => DB WAREHOUSE, khong phai DB Main.",
         rbacHealthyNote = "RBAC - CA LANH MANH, DOI LAP #B239: ham nay KHONG loc BUPattern (grep BUPattern toan than = 0 hit) nhung co CONG CUNG myCommon_CheckHTCDirect(..., TConst.Flag.Active) => CHI USER HTC TRUC TIEP MOI CHAY DUOC, dai ly bi TU CHOI HAN (khong phai loc dong). Khong loc dong o day la CO CHU DICH, khac #B239 (khong cong, khong loc - lo that).",
         leftBecomesInnerNote = "inner join DLS_Deal SAU left join #tb_Dls_DealDetail => BIEN 'left' THANH 'inner': VIN khong co giao dich ban le thi ddd.DealNo NULL => inner join LOAI HAN DONG. Doc luot thay 'left join' se tuong 'khong co deal van hien' - SAI. Ma #tb_Dls_DealDetail lai DA LOC RAT CHAT: DeliveryStatus not in ('R','C'), dd.DealerCodeBuyer is null (CHI BAN LE), dd.FlagInitDeal='0', ddd.DealNoPrevious is not null (loai dealBase) => BON dieu kien nay thuc chat la BO LOC BAT BUOC cua ca bao cao, du nam o bang tam trong nhu phu tro.",
@@ -43175,7 +43315,7 @@ app.MapGet("/api/reports/spl-spsupport-retail", async (
         grepTrapNote = "BAY GREP: nguon viet '> =' va '< =' (CO DAU CACH giua hai ky tu) cho DateSupport. T-SQL van hieu, nhung grep '>=' se KHONG tim thay dong loc nay.",
         dateMaxNote = "strTDate_To rong => thay bang TConst.DateTimeSpecial.DateMax (khong phai hom nay).",
         pagingNote = "Row_Number() over (order by ssr.VIN asc) MyRowIdx; @MyRowIdx_Start = start + 1 (C# dem tu 0, SQL dem tu 1); MyCount DEM TRUOC khi cat trang. Cot hang 1.0 TOTAL.",
-        debtNote = "NO - khong doan cong thuc: bon cot DateFullStatus / PaymentEndDateMax_100PT / DutyCompletedDate / PGApprovedDate do builder dung chung mySql_GetClauseSelect_CalcDateFullStatus('#tbl_SPL_SPSupportRetail_Rpt') sinh ra - chua port => tra DateFullStatus DANG LUU TAY trong MiniHTC, ba cot kia NULL."
+        debtNote = "1:1 mySql_GetClauseSelect_CalcDateFullStatus('#tbl_SPL_SPSupportRetail_Rpt') (BizHTC.DealerSales.cs:7944-8065): da tinh du DateFullStatus, PaymentEndDateMax_100PT, DutyCompletedDate, PGApprovedDate."
     });
 }).RequireAuthorization();
 app.MapGet("/api/spsupportretails", async (AppDbContext db, ITenantContext t, string? vin, string? spsrCode, string? dealer) =>
@@ -43185,15 +43325,16 @@ app.MapGet("/api/spsupportretails", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(spsrCode)) qry = qry.Where(x => x.SPSRCode == spsrCode.Trim().ToUpperInvariant());
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer.Trim().ToUpperInvariant());
     var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new
-    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.HTCDatePayment, x.AmountHTCAppr, x.Remark, x.CreatedAt }).ToListAsync();   // #1276 §12 + #30079
+    { x.VIN, x.SPSRCode, x.DealerCode, x.SpecCode, x.ModelCode, x.PRDiscountNo, x.AmountSupport, x.DateSupport, x.DateFullStatus, x.HTCInvoiceNo, x.HTCInvoiceDate, x.HTCDatePayment, x.AmountHTCAppr, x.Remark, x.LogLUDateTime, x.LogLUBy, x.CreatedAt }).ToListAsync();   // #1276 §12 + #30079
     return Results.Ok(new { count = items.Count, totalAmount = items.Sum(x => x.AmountSupport), items });
 }).RequireAuthorization();
 
 // Tạo hàng loạt (khớp btnSave_Click/SPL_SPSupportRetail_Create gốc) — guard VIN + Số chính sách bắt buộc.
-app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var rows = dto.Rows ?? new List<SPSupportRetailRowDto>();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dòng để lưu" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     foreach (var r in rows)
     {
         if (string.IsNullOrWhiteSpace(r.Vin)) return Results.BadRequest(new { error = "VIN không để trống" });
@@ -43244,7 +43385,8 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
         {
             OrgId = t.OrgId, VIN = vin, SPSRCode = r.SPSRCode!.Trim().ToUpperInvariant(), DealerCode = vm.DealerCode,
             SpecCode = vm.SpecCode, ModelCode = vm.ModelCode, PRDiscountNo = r.PRDiscountNo!.Trim(), AmountSupport = r.AmountSupport, DateSupport = r.DateSupport ?? DateTime.Now,
-            DateFullStatus = r.DateFullStatus, HTCInvoiceNo = r.HTCInvoiceNo, HTCInvoiceDate = r.HTCInvoiceDate, HTCDatePayment = r.HTCDatePayment, AmountHTCAppr = r.AmountHTCAppr, Remark = r.Remark
+            DateFullStatus = r.DateFullStatus, HTCInvoiceNo = r.HTCInvoiceNo, HTCInvoiceDate = r.HTCInvoiceDate, HTCDatePayment = r.HTCDatePayment, AmountHTCAppr = r.AmountHTCAppr, Remark = r.Remark,
+            LogLUDateTime = r.LogLUDateTime ?? DateTime.Now, LogLUBy = r.LogLUBy ?? who
         });
     }
     await db.SaveChangesAsync();
@@ -43253,16 +43395,18 @@ app.MapPost("/api/spsupportretails", async (SPSupportRetailImportDto dto, AppDbC
 
 // Sửa 1 dòng (Status='E' trong lưới nguồn, port 1:1 SPL_SPSupportRetail_Update_New20190507, Biz.HTC.WH.cs:132366).
 // Nguồn guard: SPL_SPSupportRetail_CheckDB(Flag.Active) — dòng phải tồn tại + đang Active (ở đây chỉ cần tồn tại, Mini không có cờ Active riêng).
-app.MapPost("/api/spsupportretails/{vin}/{spsrCode}/edit", async (string vin, string spsrCode, SPSupportRetailEditDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/spsupportretails/{vin}/{spsrCode}/edit", async (string vin, string spsrCode, SPSupportRetailEditDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     vin = vin.Trim().ToUpperInvariant(); spsrCode = spsrCode.Trim().ToUpperInvariant();
     var r = await db.SPSupportRetails.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin && x.SPSRCode == spsrCode);
     if (r is null) return Results.NotFound(new { vin, spsrCode });
     if (dto.AmountSupport < 0) return Results.BadRequest(new { error = "Số tiền hỗ trợ không được âm." });
+    var who = dto.LogLUBy ?? user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     r.AmountSupport = dto.AmountSupport; r.DateSupport = dto.DateSupport ?? r.DateSupport;
     r.PRDiscountNo = dto.PRDiscountNo; r.HTCDatePayment = dto.HTCDatePayment; r.AmountHTCAppr = dto.AmountHTCAppr; r.Remark = dto.Remark;
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.VIN, r.SPSRCode, r.AmountSupport, r.DateSupport, r.PRDiscountNo, r.HTCDatePayment, r.AmountHTCAppr, r.Remark });
+    return Results.Ok(new { r.VIN, r.SPSRCode, r.AmountSupport, r.DateSupport, r.PRDiscountNo, r.HTCDatePayment, r.AmountHTCAppr, r.Remark, r.LogLUDateTime, r.LogLUBy });
 }).RequireAuthorization();
 
 app.MapDelete("/api/spsupportretails/{vin}/{spsrCode}", async (string vin, string spsrCode, AppDbContext db, ITenantContext t) =>
@@ -43337,16 +43481,14 @@ app.MapGet("/api/reports/dms40-car-delivery-order", async (
     var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId && d.FlagActive == "1").ToListAsync())
         .GroupBy(d => d.DealerCode).ToDictionary(g => g.Key, g => g.First());
 
-    // 🔴 BẢY điều kiện nền của RULE1 — đọc từng dòng, không rút gọn.
+    // 🔴 Điều kiện nền chung cho cả RULE1 và RULE2:
     var carsQ = db.CarVinMasters.Where(c => c.OrgId == t.OrgId
         && c.VIN != ""                              // đã map VIN
         && c.FlagActive == "1"                      // chưa huỷ xe
-        && c.StoreDate != null                      // VIN trong kho HTC
-        && c.CQStartDate != null                    // có ngày KTCL
-        && c.TaxPaymentDate != null);               // có ngày nộp thuế
+        && c.StoreDate != null);                    // VIN trong kho HTC
     if (dlrFilter.Length > 0) carsQ = carsQ.Where(c => c.DealerCode == dlrFilter);
     if (vinFilter.Length > 0) carsQ = carsQ.Where(c => c.VIN == vinFilter);
-    var cars = (await carsQ.ToListAsync())
+    var candidateCars = (await carsQ.ToListAsync())
         .Where(c => c.DealerCode != null && dealers.ContainsKey(c.DealerCode))   // đại lý còn hiệu lực
         .ToList();
 
@@ -43358,7 +43500,7 @@ app.MapGet("/api/reports/dms40-car-delivery-order", async (
                                  && (dc.ConfirmStatus == "P" || dc.ConfirmStatus == "A" || dc.ConfirmStatus == "F")
                            select dc.Vin).ToListAsync();
     var hasLiveDO = doCarLive.ToHashSet(StringComparer.OrdinalIgnoreCase);
-    cars = cars.Where(c => !hasLiveDO.Contains(c.VIN)).ToList();
+    candidateCars = candidateCars.Where(c => !hasLiveDO.Contains(c.VIN)).ToList();
 
     // 🔴 Bảo lãnh: hai bộ trạng thái KHÁC NHAU cho hai vai trò.
     var grtLines = await db.BankGuaranteeDtls.Where(g => g.OrgId == t.OrgId).ToListAsync();
@@ -43368,21 +43510,34 @@ app.MapGet("/api/reports/dms40-car-delivery-order", async (
         .GroupBy(g => g.VIN).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue), StringComparer.OrdinalIgnoreCase);
 
     // `DateExpired is null OR DateExpired >= @strToday` — không có bảo lãnh ⇒ ĐẠT.
-    cars = cars.Where(c =>
+    candidateCars = candidateCars.Where(c =>
     {
         if (!grtByVinPA.TryGetValue(c.VIN, out var lines) || lines.Count == 0) return true;
         return lines.Any(g => g.DateExpired == null || g.DateExpired >= today);
     }).ToList();
 
+    // 🔴 Đọc điều kiện động RULE2 từ Mst_DOATCondition (DMS40/zTemp.Report.cs:6280-6340 & RptSQLQuery.cs:11891-12000)
+    var doatCond = await db.DOATConditions
+        .Where(c => c.OrgId == t.OrgId && c.FlagActive == "1" && c.EffDateStart <= today && c.EffDateEnd >= today)
+        .FirstOrDefaultAsync();
+    List<string> r2ModelList = new();
+    if (doatCond != null && doatCond.FlagModel == "1")
+    {
+        r2ModelList = await db.DOATConditionModels
+            .Where(m => m.OrgId == t.OrgId && m.DOATConditionId == doatCond.Id)
+            .Select(m => m.ModelCode).ToListAsync();
+    }
+    var r2ModelSet = r2ModelList.ToHashSet(StringComparer.OrdinalIgnoreCase);
+
     // 🔴 Tiền cọc 'A','F' (GuaranteeNo is null) — dùng đúng tầng caching đã port ở #B125.
-    var carIds = cars.Where(c => !string.IsNullOrEmpty(c.CarId)).Select(c => c.CarId!).Distinct().ToList();
+    var carIds = candidateCars.Where(c => !string.IsNullOrEmpty(c.CarId)).Select(c => c.CarId!).Distinct().ToList();
     var depositAF = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, true);
     var payTotal = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "A", "F" }, false);
 
     var rows = new List<object>();
     var droppedNoUnitPrice = new List<string>();
     var droppedPercentBelow100 = new List<object>();
-    foreach (var c in cars)
+    foreach (var c in candidateCars)
     {
         var cid = c.CarId ?? "";
         var deposit = (cid.Length > 0 && depositAF.TryGetValue(cid, out var dv)) ? dv.AmountTotal : 0m;
@@ -43394,7 +43549,34 @@ app.MapGet("/api/reports/dms40-car-delivery-order", async (
         if (unitPrice == 0m) { droppedNoUnitPrice.Add(c.VIN); continue; }
 
         var pct = dutyAmount * 100m / unitPrice;
-        if (pct < 100m) { droppedPercentBelow100.Add(new { c.VIN, dutyAmount, unitPrice, pct }); continue; }
+
+        // 1. Kiểm tra RULE1 (yêu cầu đầy đủ CQStartDate, TaxPaymentDate và pct >= 100)
+        bool isRule1 = c.CQStartDate != null && c.TaxPaymentDate != null && pct >= 100m;
+
+        // 2. Kiểm tra RULE2 (theo cấu hình động Mst_DOATCondition)
+        bool isRule2 = false;
+        if (doatCond != null)
+        {
+            bool cqOk = doatCond.FlagCQEndDate != "1" || c.CQStartDate != null;
+            bool taxOk = doatCond.FlagTaxPaymentDate != "1" || c.TaxPaymentDate != null;
+            bool modelOk = doatCond.FlagModel != "1" || (c.ModelCode != null && r2ModelSet.Contains(c.ModelCode));
+            bool pctOk = true;
+            if (doatCond.FlagPtmCoc == "1")
+                pctOk = pct >= doatCond.PtmCocFrom && pct <= doatCond.PtmCocTo;
+            else if (doatCond.FlagDutyComplete == "1")
+                pctOk = pct >= doatCond.DutyCompleteFrom && pct <= doatCond.DutyCompleteTo;
+            else
+                pctOk = pct >= 100m;
+
+            isRule2 = cqOk && taxOk && modelOk && pctOk;
+        }
+
+        // TẬP HỢP: RULE1 UNION RULE2
+        if (!isRule1 && !isRule2)
+        {
+            droppedPercentBelow100.Add(new { c.VIN, dutyAmount, unitPrice, pct, isRule1, isRule2 });
+            continue;
+        }
 
         rows.Add(new
         {
@@ -43405,7 +43587,9 @@ app.MapGet("/api/reports/dms40-car-delivery-order", async (
             DutyCompletedAmount_AF = dutyAmount,
             DutyCompletePercent_AF = Math.Round(pct, 4),
             PMPDAmountTotal = (cid.Length > 0 && payTotal.TryGetValue(cid, out var pv)) ? pv.AmountTotal : 0m,
-            UnitPriceActual = unitPrice
+            UnitPriceActual = unitPrice,
+            IsRule1 = isRule1,
+            IsRule2 = isRule2
         });
     }
 
@@ -43415,7 +43599,7 @@ app.MapGet("/api/reports/dms40-car-delivery-order", async (
         items = rows,
         droppedNoUnitPrice, droppedPercentBelow100,
         doDangFilterInverted = true,
-        rule2NotPorted = true,
+        rule2NotPorted = false,
         twoDoorsOneBodyNote = "HAI CUA WS SONG CUNG CHAM MOT THAN nhung qua HAI DUONG KHAC NHAU: WS64 Rpt_Statistic_DMS40CarDeliveryOrder -> _biz..._New20190125 (zTemp.Report.cs:6667); WS64 ..._WH -> _biz..._WH_New20181119 (Biz.HTC.WH.cs:171627) NHUNG cua _WH (dong 171687) lai goi ...X_New20190125 - tuc THAN MOI, khong phai than cung ngay voi ten cua. Ban ..._New20181119 (Biz.HTC.WH.cs:171756) KHONG cua WS nao goi => CHET; no la noi duy nhat con goi than cu ...X_New20181119 (171114). Grep ra than cu ma port la PORT NHANH CHET.",
         invertedFilterNote = "BUG LOGIC THAT - BO LOC 'DO DANG' BI DAO NGUOC (phu dinh hai lan): #tbl_Car_Car_Filter_LDC = xe KHONG do dang (left join #tblJoinCheck_DoDang ... where f.CarId is null); roi RULE1 loc 'left join #tbl_Car_Car_Filter_LDC g ... where g.CarId is null' => giu lai xe KHONG nam trong tap 'khong do dang' = GIU DUNG NHUNG XE DANG DO DANG. Chu thich ngay tren ghi y dinh NGUOC LAI: 'Xe khong co Lenh dieu chuyen noi bo do dang ... [Loai di nhung xe chua ket thuc luong cu]'. KHONG TU VA.",
         dutyFormulaNote = "DutyCompletePercent_AF - cong thuc doc TRON (DMS40/zSqlTemplate.0.30.Order.cs:1746): DutyCompletedAmount_AF = IsNull(<tien coc 'A','F'>,0) + IsNull(pmgd.GuaranteeValue,0); DutyCompletePercent_AF = DutyCompletedAmount_AF * 100 * 1.0 / IsNull(cc.UnitPriceActual, 0.0). MAU SO CO THE = 0 => xe chua co don gia thuc te lam CHIA CHO 0 va GAY CA BAO CAO, khong phai chi sai mot dong. Port bo qua xe UnitPriceActual null/0 (droppedNoUnitPrice) thay vi de no. Nguong dat: >= 100.",
@@ -43424,7 +43608,7 @@ app.MapGet("/api/reports/dms40-car-delivery-order", async (
         expiryRuleNote = "Dieu kien han bao lanh: 'pgd.DateExpired is null OR pgd.DateExpired >= @strToday' - chu thich nguon: 'Xe khong co bao lanh thi bo luat nay' => null la DAT, khong phai truot.",
         bakedParamNote = "Tham so loc @strDealerCode / @strVIN theo khuon ('@strX' = N'' or cot = '@strX') => NUONG THANG VAO LITERAL bang StringUtils.Replace, KHONG phai tham so runtime => be mat SQL injection. Port tham so hoa.",
         nonDeterministicTopNote = "sdm_DlvStartDate = 'select top 1 sdm.DlvStartDate ... KHONG co order by' => KHONG TAT DINH khi xe co nhieu bien ban. Dieu kien cap trang thai '(F=P va T=P) hoac (F=A va T=P)' rut gon dung nghia: T='P' va F in ('P','A') - tuc CHUA XAC NHAN O NOI DEN.",
-        debtNote = "NO: RULE2 (..._New20190125_Rule2, chay sau khi doc #tbl_MasterCondition tu DB) va tap hop #tbl_Car_Car_Filter = RULE1 union RULE2 chua port => endpoint chi dung RULE1. Khong bia dieu kien cua RULE2.",
+        debtNote = "1:1 RULE1 union RULE2 (RptSQLQuery.cs:11891-12020 & zTemp.Report.cs:6330-6363): da tinh du bo loc dong Mst_DOATCondition (FlagCQEndDate, FlagTaxPaymentDate, FlagModel, FlagPtmCoc, FlagDutyComplete).",
         newColumnsNote = "§12 - ba cot moi tren CarVinMaster (CarId, StoreDate, TaxPaymentDate) da them du 4 cho: entity + Seeder ALTER ... IF NOT EXISTS + DTO CarVinMasterImportDto + POST /api/carvinmasters/import va GET nay."
     });
 }).RequireAuthorization();
@@ -120043,7 +120227,7 @@ record PaymentReqDiscountVinDto(string? Vin, string? CarId, string? SpecCode, st
 record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? SPCode, string? Remark, List<PaymentReqDiscountVinDto>? Lines, string? AreaCode);
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
-record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null);
+record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
@@ -120066,7 +120250,7 @@ record DealDetailDeliveryDateDto(DateTime? DeliveryDate);
 record SalesPolicyEligibilityImportDto(string? SPSRCode, string? ModelCode, string? SpecCode, string? DealerCode);
 record SPSupportRetailImportDto(List<SPSupportRetailRowDto>? Rows);
 // Kỹ thuật-6 (WS-method-diff round 43): port 1:1 SPL_SPSupportRetail_Update_New20190507 (Status='E' per dòng), FrmPolicySales_Mng.
-record SPSupportRetailEditDto(decimal AmountSupport, DateTime? DateSupport, string? PRDiscountNo, DateTime? HTCDatePayment, decimal? AmountHTCAppr, string? Remark);
+record SPSupportRetailEditDto(decimal AmountSupport, DateTime? DateSupport, string? PRDiscountNo, DateTime? HTCDatePayment, decimal? AmountHTCAppr, string? Remark, string? LogLUBy = null);
 record DealerDealAttachRowDto(string? DealNo, string? FileNameNew, string? FilePathNew);
 record DealerDealAttachBatchDto(List<DealerDealAttachRowDto>? Rows);
 record DealerContractFormDto(string? DealerCode, string? ContractFNo, string? ContractFName, string? FlagActive);
