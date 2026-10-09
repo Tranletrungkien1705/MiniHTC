@@ -6365,11 +6365,18 @@ app.MapGet("/api/reports/guarantee-due-payment", async (
     var banks = await db.MstBanks.Where(b => b.OrgId == t.OrgId).Select(b => new { b.BankCode, b.BankName }).ToListAsync();
     var dealers = await db.Dealers.Where(x => x.OrgId == t.OrgId).Select(x => new { x.DealerCode, x.DealerName }).ToListAsync();
 
-    var items = rows.Select(r =>
+    var payTotals = await CachingForPaymentTotalAsync(db, t.OrgId, vins, new[] { "A", "F" }, false);
+
+    var rawItems = rows.Select(r =>
     {
         var cv = known[r.VIN];
         // `NgayCham = datediff(day, pgd.DateEnd, getdate())` — ÂM nghĩa là chưa tới hạn.
         var ngayCham = (int)(today - r.DateEnd!.Value.Date).TotalDays;
+
+        var pt = payTotals.TryGetValue(r.VIN, out var p) ? p.AmountTotal : 0m;
+        var unitPrice = cv.UnitPriceActual ?? 0m;
+        decimal paidPct = unitPrice == 0m ? 0m : Math.Round(pt * 100m / unitPrice, 1);
+
         return new
         {
             ccCarId = cv.VIN, cvVIN = r.VIN,
@@ -6383,10 +6390,13 @@ app.MapGet("/api/reports/guarantee-due-payment", async (
             dealerName = dealers.FirstOrDefault(x => x.DealerCode == r.DealerCode)?.DealerName,
             ngayCham,
             overdue = ngayCham >= 0,
-            paidPercent = (decimal?)null,      // NỢ: cần Pmt_PaymentDetail
-            amountNotPaid = (decimal?)null     // NỢ
+            paidPercent = paidPct,
+            amountNotPaid = Math.Max(0, unitPrice - pt)
         };
-    }).OrderBy(x => x.pgBankCode).ThenByDescending(x => x.ngayCham).ToList();
+    }).ToList();
+
+    var items = rawItems.Where(x => x.paidPercent < 100m)
+                        .OrderBy(x => x.pgBankCode).ThenByDescending(x => x.ngayCham).ToList();
 
     return Results.Ok(new
     {
@@ -6400,10 +6410,11 @@ app.MapGet("/api/reports/guarantee-due-payment", async (
             "Co bao lanh A: GuaranteeDetailStatus in ('A')",
             "Ngay ket thuc bao lanh trong [a;b]: DateEnd >= @From and <= @To",
             "KHONG lay VIN co NH phat hanh la TCGBANK va DEALER: BankCode not in ('TCGBANK','DEALER') - loai tru theo MA NGAN HANG, khong phai theo loai bao lanh",
-            "So ngay cham TT BL = datediff(day, DateEnd, getdate())"
+            "So ngay cham TT BL = datediff(day, DateEnd, getdate())",
+            "Tổng % đã thanh toán < 100% đến today (đã port)"
         },
         ngayChamNote = "Chu thich nguon noi 'So ngay cham >= 0' nhung dieu kien do KHONG co trong WHERE cua khoi loc => port DONG ACTIVE: khong chan, tra ca dong ngayCham AM (chua toi han) va dem rieng o notYetDueCount.",
-        debt = "NO co nhan: dieu kien 'Tong % da thanh toan < 100% den today' va cot paidPercent/amountNotPaid can tang Pmt_PaymentDetail - MiniHTC chua co, tra null, KHONG suy so. Khoi #tbl_Pmt_PaymentDetailTotal_Temp o nguon cung DA BI COMMENT ('Ham nay gay cham => tach thanh 2 ham o duoi')."
+        debt = "ĐÃ TRẢ NỢ: điều kiện 'Tổng % đã thanh toán < 100% đến today' và cột paidPercent/amountNotPaid qua CachingForPaymentTotalAsync."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/car-doc-req-pivot", async (
@@ -6430,6 +6441,15 @@ app.MapGet("/api/reports/car-doc-req-pivot", async (
     var droppedNoCarVin = lines.Count(l => !known.ContainsKey(l.CarId));
     lines = lines.Where(l => known.ContainsKey(l.CarId)).ToList();
 
+    var grtDetails = await db.BankGuaranteeDtls
+        .Where(g => g.OrgId == t.OrgId && vins.Contains(g.CarId ?? "") && g.GuaranteeDetailStatus == "A")
+        .Select(g => new { g.CarId, g.DateStart, g.GrtValue }).ToListAsync();
+    var grtGrouped = grtDetails.GroupBy(x => x.CarId!).ToDictionary(
+        g => g.Key,
+        g => new { HasStart = g.Any(x => x.DateStart != null), TotalValue = g.Sum(x => x.GrtValue) }
+    );
+    var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, vins, new[] { "A", "F" }, true);
+
     var models = await db.CarModelStds.Where(m => m.OrgId == t.OrgId).Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
     var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).Select(s => new { s.SpecCode, s.SpecDesc }).ToListAsync();
     var colors = await db.MstCarColors.Where(c => c.OrgId == t.OrgId)
@@ -6441,10 +6461,9 @@ app.MapGet("/api/reports/car-doc-req-pivot", async (
     {
         var cv = known[l.CarId];
         if (cv.DealerCode == null || !scope.Contains(cv.DealerCode)) { droppedByDealerJoin++; continue; }
-        // 🔴 Vế `OR` của nguồn — KHÔNG phải AND. (Vế `pgd.DateStart is null` luôn đúng ở MiniHTC vì
-        //    chưa có tầng `Pmt_GuaranteeDetail` ⇒ điều kiện này hiện **không loại dòng nào**; ghi nợ.)
+        // 🔴 Vế `OR` của nguồn — KHÔNG phải AND.
         var mortageEndIsNull = cv.MortageEndDate is null;
-        var guaranteeStartIsNull = true;                       // NỢ: chưa có Pmt_GuaranteeDetail
+        var guaranteeStartIsNull = !(grtGrouped.TryGetValue(cv.VIN, out var ginfo) && ginfo.HasStart);
         if (!(mortageEndIsNull || guaranteeStartIsNull)) continue;
 
         var h = heads.First(z => z.Id == l.RequestId);
@@ -6454,9 +6473,14 @@ app.MapGet("/api/reports/car-doc-req-pivot", async (
         var dl = dealers.FirstOrDefault(d => d.DealerCode == cv.DealerCode);
 
         int? dutyDays = h.ApprovedDate2 is null ? null : (int)(asOf - h.ApprovedDate2.Value.Date).TotalDays;
+
+        var depositAmt = payDeposits.TryGetValue(cv.VIN, out var pd) ? pd.AmountTotal : 0m;
+        var grtVal = grtGrouped.TryGetValue(cv.VIN, out var grt) ? grt.TotalValue : 0m;
+
         // Chia 0: nguồn không bảo vệ ⇒ port trả null và ĐẾM RIÊNG, không bịa 0%.
         decimal? dutyPct = null;
         if ((cv.UnitPriceActual ?? 0m) == 0m) divideByZeroRows++;
+        else dutyPct = Math.Round((depositAmt + grtVal) * 100m / cv.UnitPriceActual.Value, 1);
 
         items.Add(new
         {
@@ -6469,9 +6493,9 @@ app.MapGet("/api/reports/car-doc-req-pivot", async (
             ccDealerCode = cv.DealerCode, ccDealerName = dl?.DealerName,
             cvMortageEndDate = cv.MortageEndDate, cvCODate = cv.CODate,
             ccUnitPriceActual = cv.UnitPriceActual,
-            dutyCompletedPercent = dutyPct,          // NỢ: cần tầng cọc + bảo lãnh
-            pmpdDepositAmount = (decimal?)null,      // NỢ
-            pmgdGuaranteeValue = (decimal?)null      // NỢ
+            dutyCompletedPercent = dutyPct,
+            pmpdDepositAmount = depositAmt,
+            pmgdGuaranteeValue = grtVal
         });
     }
 
@@ -6483,7 +6507,7 @@ app.MapGet("/api/reports/car-doc-req-pivot", async (
         twoStatusAxesNote = "Ca DONG (DRDtlStatus) lan DAU (DRListStatus) deu phai 'A' - hai truc rieng, phai kiem ca hai.",
         dutyDaysRule = "DutyDays = DateDiff(day, cdrl.ApprovedDate2, @strTDate) - moc la duyet cap 2 cua DAU de nghi, KHONG phai cua dong.",
         divideByZeroNote = "DutyCompletedPercent cua nguon chia cho cc.UnitPriceActual KHONG co bao ve chia 0 - port tra null va dem rieng o divideByZeroRows, KHONG bia 0%.",
-        debt = "NO co nhan: Pmt_GuaranteeDetail va khoi CachingForPaymentTotal/CachingForPayment_Deposit (tien coc) chua co o MiniHTC => dutyCompletedPercent / pmpdDepositAmount / pmgdGuaranteeValue tra null. Ve loc 'pgd.DateStart IS NULL' hien khong loai dong nao. Cung mon no da ghi o #B37/#B56."
+        debt = "ĐÃ TRẢ NỢ: Pmt_GuaranteeDetail (DateStart/GrtValue) và CachingForPaymentTotal_Deposit (tiền cọc) đã tính và lọc đủ."
     });
 }).RequireAuthorization();
 app.MapGet("/api/reports/business-status-period", async (
