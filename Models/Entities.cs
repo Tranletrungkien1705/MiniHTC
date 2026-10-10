@@ -13185,6 +13185,9 @@ public sealed class GrtClaim
     public DateTime? RejectDate { get; set; }
     public string? RejectBy { get; set; }
     public string? RejectRemark { get; set; }
+    public string? Remark { get; set; }
+    public string? BankAccountNo { get; set; }
+    public int? NumberOfGuaranteeExt { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -14366,6 +14369,14 @@ public sealed class DlrContract
     public string? SMCode { get; set; }
     /// <summary>Ghi chú đại lý trên hợp đồng (`DlrNote`, DbDefine.cs:2578 TblDlr_Contract.DlrNote).</summary>
     public string? DlrNote { get; set; }
+    /// <summary>Ghi chú điều khoản hợp đồng (`Dlr_Contract.Remark`, Biz.HTC.WH.cs:112461).</summary>
+    public string? Remark { get; set; }
+    /// <summary>Họ tên giám đốc đại lý (`Dlr_Contract.DlrDirectorName`, Biz.HTC.WH.cs:112462).</summary>
+    public string? DlrDirectorName { get; set; }
+    /// <summary>Chức vụ người ký phía đại lý (`Dlr_Contract.DlrPosition`, Biz.HTC.WH.cs:112463).</summary>
+    public string? DlrPosition { get; set; }
+    /// <summary>Tài khoản ngân hàng khách hàng (`Dlr_Contract.CusAccountBank`, Biz.HTC.WH.cs:112465).</summary>
+    public string? CusAccountBank { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -14402,6 +14413,10 @@ public sealed class DlrContractDetail
     public decimal VAT { get; set; } = 10;
     public decimal AmountVAT { get; set; }
     public decimal TotalAmountAfterVAT { get; set; }
+    /// <summary>Năm sản xuất xe (Dlr_ContractDtl.ProductionYear, Biz.HTC.WH.cs:112637).</summary>
+    public string? ProductionYear { get; set; }
+    /// <summary>Xuất xứ xe (Dlr_ContractDtl.OriginCar, Biz.HTC.WH.cs:112639).</summary>
+    public string? OriginCar { get; set; }
 }
 
 /// <summary>
