@@ -8104,6 +8104,24 @@ public sealed class DocReqCar
     public DateTime? HTCInvoiceDate { get; set; }
     /// <summary>#Round116 §12: TblCar_DocReqDtl.FlagMortageEndDate (`DbDefine.cs:2725`) — cờ ngày kết thúc thế chấp.</summary>
     public string? FlagMortageEndDate { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.BankApprStatus (`Const.Main.cs:14746`) — trạng thái ngân hàng phê duyệt hồ sơ xe.</summary>
+    public string? BankApprStatus { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.BankApprDTime (`Const.Main.cs:14747`) — ngày giờ ngân hàng phê duyệt hồ sơ xe.</summary>
+    public DateTime? BankApprDTime { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.BankApprBy (`Const.Main.cs:14748`) — người ngân hàng phê duyệt hồ sơ xe.</summary>
+    public string? BankApprBy { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.DeclarationNo (`Const.Main.cs:14763`) — số tờ khai hải quan của xe.</summary>
+    public string? DeclarationNo { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.CODate (`Const.Main.cs:14766`) — ngày cấp C/O của xe.</summary>
+    public DateTime? CODate { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.DRFullDocDate (`Const.Main.cs:14767`) — ngày đủ bộ hồ sơ giấy tờ xe.</summary>
+    public DateTime? DRFullDocDate { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.DocumentsStatus (`Const.Main.cs:14772`) — trạng thái bộ chứng từ xe.</summary>
+    public string? DocumentsStatus { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.CustomsClearanceDate (`Const.Main.cs:14781`) — ngày thông quan xe.</summary>
+    public DateTime? CustomsClearanceDate { get; set; }
+    /// <summary>#Round117 §12: TblCar_DocReqDtl.HTCInvoiceNo (`Const.Main.cs:14787`) — số hoá đơn HTC của xe.</summary>
+    public string? HTCInvoiceNo { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
@@ -15115,6 +15133,12 @@ public sealed class BankGuaranteeDtl
     public DateTime? GrtDateEnd { get; set; }
     /// <summary>#Round116 §12: TblGuaranteeDetail.VHHTCInvoiceDate (`DbDefine.cs:922`) — ngày hoá đơn xe HTC theo dòng.</summary>
     public DateTime? VHHTCInvoiceDate { get; set; }
+    /// <summary>#Round117 §12: TblPmt_GuaranteeDetail.DateStartUpdateDTime (`Const.Main.cs:16072`) — ngày giờ cập nhật ngày bắt đầu hiệu lực bảo lãnh.</summary>
+    public DateTime? DateStartUpdateDTime { get; set; }
+    /// <summary>#Round117 §12: TblGuaranteeDetail.dmsctdc_DCPType (`DbDefine.cs:584`) — loại hình DCP theo xe.</summary>
+    public string? DCPType { get; set; }
+    /// <summary>#Round117 §12: TblGuaranteeDetail.dcpt_DCPTypeName (`DbDefine.cs:585`) — tên loại hình DCP theo xe.</summary>
+    public string? DCPTypeName { get; set; }
 
     // ===== check_cot_1to1.py báo thiếu PMPDAmount_Count/PMPDAmount_SumForGuarantee/PMPDDiscount_Sum
     //       (FrmBankGrt, TblGuaranteeDetail 20/23) — ĐÃ KHẢO SÁT, KHÔNG PHẢI CỘT BẢNG =====
