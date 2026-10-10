@@ -9886,7 +9886,7 @@ app.MapGet("/api/grtclaimexts", async (AppDbContext db, ITenantContext t, string
 
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
-        g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
+        g.GrtClaimExtNo, g.DealerCode, g.BankCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
         g.Remark, g.CancelDateTime, g.CancelBy, g.LUDateTime, g.LUBy,   // #191 §12: cột mới phải chiếu ở CẢ GET
         g.LogLUDateTime, g.LogLUBy,   // #1451 §12
         g.FlagisHTC,   // #5866 §12
@@ -9903,7 +9903,7 @@ app.MapPost("/api/grtclaimexts", async (GrtClaimExtDto dto, AppDbContext db, ITe
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
     var no = "CVGH" + DateTime.Now.ToString("yyMMddHHmmss");
-    var g2 = new GrtClaimExt { OrgId = t.OrgId, GrtClaimExtNo = no, DealerCode = dto.DealerCode.Trim(), NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt <= 0 ? 1 : dto.NumberOfGuaranteeExt, TotalCarNoStart = cars.Count, SignStatus = "P" };
+    var g2 = new GrtClaimExt { OrgId = t.OrgId, GrtClaimExtNo = no, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode?.Trim(), NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt <= 0 ? 1 : dto.NumberOfGuaranteeExt, TotalCarNoStart = cars.Count, SignStatus = "P" };
     // #191 parity: nguồn `_SaveX_New20200522` ghi kèm CreatedBy/Remark/LU*/LogLU* ngay khi tạo.
     var whoNew = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var nowNew = DateTime.Now;
@@ -9913,7 +9913,7 @@ app.MapPost("/api/grtclaimexts", async (GrtClaimExtDto dto, AppDbContext db, ITe
     foreach (var c in cars)
         db.GrtClaimExtCars.Add(new GrtClaimExtCar { OrgId = t.OrgId, GrtClaimExtId = g2.Id, CarId = c.CarId ?? "", VIN = c.VIN.Trim().ToUpperInvariant(), GuaranteeNo = c.GuaranteeNo ?? "", SignStatusDtl = "P" });
     await db.SaveChangesAsync();
-    return Results.Ok(new { g2.GrtClaimExtNo, cars = cars.Count });
+    return Results.Ok(new { g2.GrtClaimExtNo, g2.BankCode, cars = cars.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/grtclaimexts/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -9923,7 +9923,7 @@ app.MapGet("/api/grtclaimexts/{no}/cars", async (string no, AppDbContext db, ITe
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.GrtClaimExtCars.Where(c => c.OrgId == t.OrgId && c.GrtClaimExtId == g.Id)
         .Select(c => new { c.CarId, c.VIN, c.GuaranteeNo, c.SignStatusDtl, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
-    return Results.Ok(new { g.GrtClaimExtNo, g.DealerCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
+    return Results.Ok(new { g.GrtClaimExtNo, g.DealerCode, g.BankCode, g.NumberOfGuaranteeExt, g.TotalCarNoStart, g.SignStatus, g.FileName, g.SignDateTime, g.SignBy, g.CreatedAt, g.CreatedBy,
         g.Remark, g.CancelDateTime, g.CancelBy, g.LUDateTime, g.LUBy,   // #1450 §12
         g.LogLUDateTime, g.LogLUBy,   // #1451 §12
         count = cars.Count, cars });
@@ -10696,7 +10696,8 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
             DeliveryStatus = "A",                                      // TConst.Stage.Approved
             ConfirmDate = now, ConfirmBy = who,
             FlagCurrent = "1",                                         // TConst.Flag.Active
-            CtrCarId = ctrCarIds[v]
+            CtrCarId = ctrCarIds[v],
+            LogLUDateTime = now, LogLUBy = who
         });
         // 🔴 DeliveryType = **"001A"** (`HMCRpt_DeliveryToEndUser`, Const.Main.cs:330). Dòng dùng
         //    `HMCRpt_DeliveryToDealer` = "010A" nằm NGAY CẠNH nhưng **đã bị COMMENT** — port dòng ACTIVE.
@@ -10719,7 +10720,7 @@ app.MapGet("/api/wholesaledeals/{no}/cars", async (string no, AppDbContext db, I
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
         .Select(c => new { c.VIN, c.CarId, c.PlateNo, unitPrice = c.PriceAFVAT, c.Price, c.DealNoPrevious,
-            c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId /*merge session-a*/  }).ToListAsync();
+            c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId, c.LogLUDateTime, c.LogLUBy /*merge session-a*/  }).ToListAsync();
     return Results.Ok(new { d.DealNo, d.DealNoUser, buyerDealerCode = d.DealerCodeBuyer, d.DlrContractNo,
         count = cars.Count, totalAmount = cars.Sum(c => c.unitPrice), cars, d.SalesManCode, d.CreatedAt, d.SalesType, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver, d.CreatedBy, d.FlagInitDeal, d.LogLUDateTime, d.LogLUBy /*merge session-a*/  });
 }).RequireAuthorization();
@@ -72008,8 +72009,17 @@ app.MapPost("/api/dlvminutes/{no}/update-enddate", async (string no, DlvUpdEndDa
                 x.LogLUDateTime = now; x.LogLUBy = who;
                 doHit++;
             }
-            // ⚠️ NỢ: nhánh này còn ghi `DLS_DealDetail` (`DeliveryDate`, `DeliveryStatus = "A"`, `ConfirmDate`/`ConfirmBy`).
-            //    MiniHTC chưa port bảng `DLS_DealDetail` ⇒ ghi nợ, KHÔNG bịa bảng thay thế.
+            // ĐÃ TRẢ NỢ 1:1 theo BizHTC.Storage.DlvMinutes.cs:9562-9645 (Sto_DlvMinutes_UpdateDlvEndDate_New20181115):
+            // Nhánh CARTRANSPORT cập nhật DLS_DealDetail (DealerDealDetail) cho xe tương ứng.
+            foreach (var dealDtl in await db.DealerDealDetails.Where(x => x.OrgId == t.OrgId && (x.CarId == vin || x.VIN == vin)).ToListAsync())
+            {
+                dealDtl.DeliveryDate = endDate;
+                dealDtl.DeliveryStatus = "A";                    // nguồn: TConst.Stage.Approved
+                dealDtl.ConfirmDate = now;
+                dealDtl.ConfirmBy = who;
+                dealDtl.LogLUDateTime = now;
+                dealDtl.LogLUBy = who;
+            }
         }
         else if (reqType == "STORAGEREARRANGE")
         {
@@ -86603,7 +86613,7 @@ app.MapGet("/api/dealerdeals", async (AppDbContext db, ITenantContext t, string?
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealerdeals", async (DealerDealDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealerdeals", async (DealerDealDto dto, AppDbContext db, ITenantContext t, ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
     if (string.IsNullOrWhiteSpace(dto.CustomerCodeBuyer)) return Results.BadRequest(new { error = "Cần khách hàng người mua." });
@@ -86622,8 +86632,16 @@ app.MapPost("/api/dealerdeals", async (DealerDealDto dto, AppDbContext db, ITena
         DlrContractNo = dto.DlrContractNo, SalesType = dto.SalesType.Trim(), FlagPDI = flagPdi, ReasonNotPDI = dto.ReasonNotPDI
     };
     db.DealerDeals.Add(d); await db.SaveChangesAsync();
+    var whoDeal = user.Identity?.Name ?? "system";
+    var nowDeal = DateTime.Now;
     foreach (var c in cars)
-        db.DealerDealDetails.Add(new DealerDealDetail { OrgId = t.OrgId, DealId = d.Id, CarId = c.CarId.Trim().ToUpperInvariant(), CusInvoiceNo = c.CusInvoiceNo, CusInvoiceDate = c.CusInvoiceDate, PriceAFVAT = c.PriceAFVAT });
+        db.DealerDealDetails.Add(new DealerDealDetail
+        {
+            OrgId = t.OrgId, DealId = d.Id, CarId = c.CarId.Trim().ToUpperInvariant(),
+            CusInvoiceNo = c.CusInvoiceNo, CusInvoiceDate = c.CusInvoiceDate, PriceAFVAT = c.PriceAFVAT,
+            LogLUDateTime = c.LogLUDateTime ?? nowDeal,
+            LogLUBy = c.LogLUBy ?? whoDeal
+        });
     await db.SaveChangesAsync();
     return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, cars = cars.Count });
 }).RequireAuthorization();
@@ -86636,7 +86654,7 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
         // #1462 §12: cùng route #1459 nhưng ở TẦNG DÒNG XE — entity DealerDealDetail còn Price/DeliveryDate/
         //   WarrantyExpiresDate mà mảng cars của màn chi tiết chưa từng chiếu.
-        .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo, c.Price, c.DeliveryDate, c.WarrantyExpiresDate }).ToListAsync();
+        .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo, c.Price, c.DeliveryDate, c.WarrantyExpiresDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
     return Results.Ok(new { d.DealNo, d.DealNoUser, d.DealerCode, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, d.CtmCareFlag, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT),
         // #1459 §12: cùng gap #1458 — nguồn `dlsd.*` còn 9 cột nữa mà màn CHI TIẾT (đáng lẽ đủ nhất) cũng thiếu.
         d.DlrContractNo, d.BankCode, d.FlagInitDeal, d.CtmCareUpdDate, d.CtmCareUpdBy, d.CtmCareRemark,
@@ -87307,7 +87325,7 @@ app.MapPost("/api/cars/update-multi-speccode", async (
 
     var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
     var carIds = list.Select(r => r.CarId!.Trim().ToUpperInvariant()).ToList();
-    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && carIds.Contains(c.VIN)).ToListAsync();
+    var cars = await db.CarVinMasters.Where(c => c.OrgId == t.OrgId && (carIds.Contains(c.VIN) || (c.CarId != null && carIds.Contains(c.CarId)))).ToListAsync();
     var specs = await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync();
 
     // Nguồn kiểm **TỪNG DÒNG rồi mới ghi cả lô** — một dòng hỏng là **ném lỗi, không ghi gì**
@@ -87319,11 +87337,15 @@ app.MapPost("/api/cars/update-multi-speccode", async (
         // `myCar_CheckCar(..., FlagExist=Yes, FlagActive=Active, "", "",
         //                 strFlagAllowChangeVINListToCheck = Flag.Yes, strVINFreeStatusToCheck = Flag.Active, "")`
         // ⇒ xe phải TỒN TẠI, đang hoạt động, **cho phép đổi VIN** và **VIN đang TỰ DO**.
-        var car = cars.FirstOrDefault(c => c.VIN == cid);
+        var car = cars.FirstOrDefault(c => c.VIN == cid || c.CarId == cid);
         if (car is null) return Results.BadRequest(new { error = $"Xe {cid} không tồn tại." });
         if ((car.FlagActive ?? "1") == "0") return Results.BadRequest(new { error = $"Xe {cid} đã bị huỷ/ngưng hoạt động." });
-        // ⚠️ NỢ: `FlagAllowChangeVIN` và `VINFreeStatus` chưa có cột trong `CarVinMaster` ⇒ hai guard này
-        //    CHƯA kiểm được. Ghi nợ, không giả vờ đã kiểm.
+        // Guard nguồn: FlagAllowChangeVIN phải = Yes ("1").
+        if ((car.FlagAllowChangeVIN ?? "1") != "1")
+            return Results.BadRequest(new { error = $"Xe {cid} không cho phép đổi quy cách (FlagAllowChangeVIN != '1')." });
+        // Guard CỐT LÕI nguồn: xe PHẢI CHƯA map VIN (VINFreeStatus = Active = "1").
+        if ((car.VINFreeStatus ?? "1") != "1")
+            return Results.BadRequest(new { error = $"Xe {cid} đã map VIN — không đổi quy cách được (VINFreeStatus != '1')." });
         // `myCommon_CheckSpecCode(..., Flag.Active)` + kiểm `FlagActive` của chính bản ghi quy cách.
         var sp = specs.FirstOrDefault(s => s.SpecCode == spec);
         if (sp is null) return Results.BadRequest(new { error = $"Quy cách {spec} không tồn tại." });
@@ -87340,7 +87362,7 @@ app.MapPost("/api/cars/update-multi-speccode", async (
     foreach (var r in list)
     {
         var cid = r.CarId!.Trim().ToUpperInvariant();
-        var car = cars.First(c => c.VIN == cid);
+        var car = cars.First(c => c.VIN == cid || c.CarId == cid);
         car.SpecCode = r.SpecCode!.Trim();          // 3 cột của `alColumnEffective`
         car.LogLUDateTime = now; car.LogLUBy = who;
         updated++;
@@ -87350,7 +87372,7 @@ app.MapPost("/api/cars/update-multi-speccode", async (
     {
         updated, columnsWritten = new[] { "SpecCode", "LogLUDateTime", "LogLUBy" },
         rbacNote = "Nguồn có myCommon_CheckHTCDirect(Flag.Active) ở DÒNG ACTIVE — chỉ HTC trực tiếp; MiniHTC nhận qua cờ flagDirect (nợ tầng ability).",
-        unverifiedGuards = "FlagAllowChangeVIN='1' và VINFreeStatus='1' chưa kiểm được — CarVinMaster chưa có 2 cột đó (nợ có nhãn)."
+        guardsNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.zTemp.cs:150-189 & BizHTC.Car.cs:179-208: kiểm tra đầy đủ FlagAllowChangeVIN='1' (cho phép đổi VIN) và VINFreeStatus='1' (VIN tự do) trên CarVinMaster."
     });
 }).RequireAuthorization();
 app.MapGet("/api/dlrpdirequests/search", async (
@@ -90517,6 +90539,7 @@ app.MapPost("/api/grtclaimexts/gen-auto", async (
             OrgId = t.OrgId,
             GrtClaimExtNo = no,
             DealerCode = g.Key.DealerCode,
+            BankCode = g.Key.BankCode,
             // 🔴 Tham số CẤP LÔ ghi đè cột theo dòng.
             NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt <= 0 ? 1 : dto.NumberOfGuaranteeExt,
             TotalCarNoStart = g.Count(),
@@ -90556,7 +90579,7 @@ app.MapPost("/api/grtclaimexts/gen-auto", async (
         guaranteeCheckDisabledNote = "DONG ACTIVE vs COMMENT: trong #input_Car_Car_Full, BA left join BI COMMENT - Pmt_GuaranteeDetail (+ GuaranteeDetailStatus not in ('R','C')), Pmt_Guarantee (+ GuaranteeStatus not in ('R','C')) va Mst_CarInvoice. Dong dang chay chi con left join Car_VIN roi left join Car_Car => TU SINH KHONG KIEM TRANG THAI BAO LANH: xe co bao lanh da huy/tu choi VAN duoc gom vao. Hanh vi THAT; KHONG tu them dieu kien.",
         emptyInputNote = "Dau vao la BANG Car_Car: thieu => Input_Car_CarTblNotFound; RONG => BI TU CHOI (Input_Car_CarTblInvalid). Cung khuon #B82, khac #B76.",
         deadVersionNote = "Ngay tai loi goi WS con dau vet ban cu bi comment: '_New20201210(//_New20200522(' => ban _New20200522 CHET.",
-        bankCodeDebt = "NO: BankCode KHONG co tren GrtClaimExt cua MiniHTC (chi co o dong xe neu client gui). Vi no la MOT NUA KHOA GOM NHOM, port nhan bankCode theo TUNG XE trong body. KHONG suy tu bao lanh (tang Pmt_Guarantee chua du)."
+        bankCodeDebt = "ĐÃ TRẢ NỢ 1:1: GrtClaimExt.BankCode đã được bổ sung trên entity và Seeder (§12), lưu trực tiếp nửa khoá gom nhóm ngân hàng trên header công văn sinh tự động."
     });
 }).RequireAuthorization();
 
@@ -122482,7 +122505,7 @@ record SoFlagDoneDto(string? SOCode, string? FlagPmtDelayDone);
 record InsReqVinRow(string Vin, string RefOrdType, string? RefOrdNo, string? DtlStatus, DateTime? CreatedAt, string? LocationFrom, string? LocationTo);
 record Dms40ApproveDto(string? RuleType);
 record SoRenameDto(string? NewSoCode);
-record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT);
+record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars);
 record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNoUser, string? SalesManCode, List<DealerDealCarDto>? Cars);
 record EditDealKhgdDto(List<EditDealKhgdRowDto>? Rows);
@@ -122591,7 +122614,7 @@ record VatInvoiceNoDto(string? HTCInvoiceNo, string? InvoiceIDCode, DateTime? HT
 record VatHddtDto(string? OS_HDDT_InvoiceCode, string? OS_HDDT_RefNo);
 record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? SourceInvoiceCode, string? RefNo, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars, string? OS_HDDT_RefNo = null, string? PaymentMethodCode = null, decimal ValGoodsNotTaxable = 0, decimal ValGoodsNotChargeTax = 0, decimal ValGoodsVAT5 = 0, decimal ValVAT5 = 0, decimal ValGoodsVAT10 = 0, decimal ValVAT10 = 0, decimal TotalValInvoice = 0, decimal TotalValVAT = 0, decimal TotalValPmt = 0, string? CurrencyCode = null, decimal CurrencyRate = 1, string? InvoiceIDType = null, string? FlagisHTC = null);   // #348
 record GrtClaimExtCarDto(string VIN, string? CarId, string? GuaranteeNo);
-record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars, string? Remark = null);
+record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars, string? Remark = null, string? BankCode = null);
 record GrtClaimExtSignDto(string FileName, string? Remark = null);
 /// <summary>Huỷ công văn gia hạn — nguồn `Pmt_GrtClaimExt_Cancel` chỉ nhận `objGrtClaimExtNo` + `objRemark`.</summary>
 record GrtClaimExtCancelDto(string? Remark = null);

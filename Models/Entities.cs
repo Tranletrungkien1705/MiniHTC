@@ -8530,6 +8530,8 @@ public sealed class DealerDealDetail
     /// Nguồn: `TERP.BizHTC/HCC/BizHTC.HCC.cs:3856` (hàm `..._New20260805` — **chỉ có trên máy 150**).
     /// </summary>
     public DateTime? WarrantyExpiresDate { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -15286,6 +15288,8 @@ public sealed class GrtClaimExt
     public Guid OrgId { get; set; }
     public string GrtClaimExtNo { get; set; } = "";
     public string DealerCode { get; set; } = "";
+    /// <summary>Mã ngân hàng (nửa khoá gom nhóm công văn gia hạn bảo lãnh tự động Pmt_GrtClaimExt_GenAuto).</summary>
+    public string? BankCode { get; set; }
     public int NumberOfGuaranteeExt { get; set; }        // so lan gia han
     public int TotalCarNoStart { get; set; }              // tong xe chua bat dau
     public string SignStatus { get; set; } = "P";         // P=chua ky, S=da ky
