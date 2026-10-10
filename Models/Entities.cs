@@ -10,6 +10,7 @@ public sealed class Area
     public string AreaName { get; set; } = "";
     public string? AreaRootCode { get; set; }   // mã khu vực cha (cây phân cấp) — port 1:1 FrmArea, audit 2026-09-03 phát hiện thiếu
     public int Level { get; set; } = 1;         // cấp bậc, tự tính = Level(cha)+1; root=1
+    public string? AreaBUPattern { get; set; }  // #Round104 §12: Mst_Area.AreaBUPattern
     public string Status { get; set; } = "1";   // 1=hiệu lực, 0=ngừng (cờ 2010.HTC)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
@@ -8052,6 +8053,8 @@ public sealed class DocReqCar
     public DateTime? LetterRepresentationDate { get; set; }  // ngày tờ trình — port FrmUpdateDocReq
     public string? LetterRepresentationNo { get; set; }      // số tờ trình
     public int? LoanSupportDay { get; set; }                 // số ngày hỗ trợ vay vốn
+    public DateTime? LogLUDateTime { get; set; }             // #Round104 §12: TblCar_DocReqDtl.LogLUDateTime
+    public string? LogLUBy { get; set; }                     // #Round104 §12: TblCar_DocReqDtl.LogLUBy
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
@@ -8188,6 +8191,8 @@ public sealed class PackingList
     public string? PortCode { get; set; }
     /// <summary>HTMV | HMC (TConst.PLType).</summary>
     public string? PLType { get; set; }
+    /// <summary>Số tờ khai hải quan (CT_PackingList.DeclarationNo / DbDefine.Declaration_No).</summary>
+    public string? DeclarationNo { get; set; }
     public DateTime ShippingDateStart { get; set; }        // ngày lên tàu
     public DateTime ShippingDateEndExpected { get; set; }  // ngày DK đến cảng
     /// <summary>Ngày đến cảng THỰC TẾ — nguồn gán bằng ngày dự kiến khi tạo.</summary>
@@ -11646,6 +11651,8 @@ public sealed class DlrContractCar
     public string FlagCancel { get; set; } = "0";
     /// <summary>"1" = đã giao; khởi tạo "0".</summary>
     public string FlagDelivery { get; set; } = "0";
+    /// <summary>Đơn giá của xe trong hợp đồng (`CT_DealerContractDetail.UnitPrice`).</summary>
+    public decimal? UnitPrice { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -13932,6 +13939,9 @@ public sealed class CarVinMaster
     /// **`Car_Car`**, KHÁC hẳn `TInvoicePrice` trên bảng DÒNG hoá đơn (`VatHtcInvoiceDetail` /
     /// `VatTcgInvoiceDetail`) — trùng tên nhưng khác bảng, đừng dùng lẫn.</summary>
     public decimal? TInvoicePrice { get; set; }
+    /// <summary>🔴 #B124 / §12 — `Car_Car.DepositDutyEndDate`: ngày Đại lý cam kết thanh toán HẾT CỌC.
+    /// Dùng tính DutyDays = DateDiff(day, cc.DepositDutyEndDate, @strTDate) trong Rpt_SummaryCarAtDealer.</summary>
+    public DateTime? DepositDutyEndDate { get; set; }
     /// <summary>🔴 #B65 — `Car_Car.FlagEarlyCancel`: cờ **huỷ sớm**. Là một trong **bốn** điều kiện
     /// định nghĩa back-order (`RptStatistic_HTCBackOrder_Util01…`, `BizHTC.Report.cs:8593`):
     /// `cc.FlagActive = '1'` **và** `cc.FlagEarlyCancel = '0'`. Đây là **trục riêng**, KHÁC `FlagActive`
@@ -14045,6 +14055,10 @@ public sealed class CarVinMaster
     public string? MapVINStorage { get; set; }
     /// <summary>Loại Map VIN (`Car_Car.MapVINType`) — dùng trong Rpt_MapVINX_New20181119.</summary>
     public string? MapVINType { get; set; }
+    /// <summary>Đơn giá khởi tạo của xe (`Car_Car.UnitPriceInit`).</summary>
+    public decimal? UnitPriceInit { get; set; }
+    /// <summary>Trạng thái chi phí tài chính (`Car_Car.CPTCStatus`).</summary>
+    public string? CPTCStatus { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
