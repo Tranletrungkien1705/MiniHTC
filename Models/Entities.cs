@@ -8055,6 +8055,10 @@ public sealed class DocReqCar
     public int? LoanSupportDay { get; set; }                 // số ngày hỗ trợ vay vốn
     public DateTime? LogLUDateTime { get; set; }             // #Round104 §12: TblCar_DocReqDtl.LogLUDateTime
     public string? LogLUBy { get; set; }                     // #Round104 §12: TblCar_DocReqDtl.LogLUBy
+    /// <summary>#Round105 §12: TblDRDetail.DEALERCODEINVOICE (`DbDefine.cs:1850`) — mã đại lý xuất hóa đơn hồ sơ xe.</summary>
+    public string? DealerCodeInvoice { get; set; }
+    /// <summary>#Round105 §12: TblDRDetail.DRLISTCODE (`DbDefine.cs:1852`) — mã danh sách đề nghị giấy tờ xe.</summary>
+    public string? DRListCode { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
@@ -8141,6 +8145,10 @@ public sealed class CarDocRequestCar
     public string? ApprovedBy1 { get; set; }
     public DateTime? ApprovedDate2 { get; set; }
     public string? ApprovedBy2 { get; set; }
+    /// <summary>#Round105 §12: TblDRDetail.DEALERCODEINVOICE (`DbDefine.cs:1850`) — mã đại lý xuất hóa đơn hồ sơ xe.</summary>
+    public string? DealerCodeInvoice { get; set; }
+    /// <summary>#Round105 §12: TblDRDetail.DRLISTCODE (`DbDefine.cs:1852`) — mã danh sách đề nghị giấy tờ xe.</summary>
+    public string? DRListCode { get; set; }
 }
 
 /// <summary>
@@ -14059,6 +14067,8 @@ public sealed class CarVinMaster
     public decimal? UnitPriceInit { get; set; }
     /// <summary>Trạng thái chi phí tài chính (`Car_Car.CPTCStatus`).</summary>
     public string? CPTCStatus { get; set; }
+    /// <summary>#Round105 §12: Trạng thái thanh toán chậm (`Car_Car.TTCStatus`, `DbDefine.cs:1800`). Khởi tạo = "0".</summary>
+    public string? TTCStatus { get; set; } = "0";
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
