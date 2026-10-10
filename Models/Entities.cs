@@ -14073,6 +14073,10 @@ public sealed class CarVinMaster
     public DateTime? DateExpiredPmtGrt { get; set; }
     /// <summary>#Round106 §12: Ngày hết hạn TT còn lại (`Car_Car.DateExpiredPmtCL`, `DbDefine.cs:1300`).</summary>
     public DateTime? DateExpiredPmtCL { get; set; }
+    /// <summary>#Round107 §12: Ngày hết hạn TT nhận hồ sơ (`Car_Car.DateExpiredInvoice`, FrmSearchCar.cs:42, BizHTC.DeliveryMess.cs:1267).</summary>
+    public DateTime? DateExpiredInvoice { get; set; }
+    /// <summary>#Round107 §12: Cờ đã xử lý xong phạt trả chậm (`Car_Car.FlagPmtDelayDone`, DbDefine.cs:1828, FrmDataTTCCK.cs:287).</summary>
+    public string? FlagPmtDelayDone { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
@@ -14912,6 +14916,10 @@ public sealed class BankGuarantee
     public string? LogLUBy { get; set; }
     public DateTime? CancelDate { get; set; }
     public string? CancelBy { get; set; }
+    /// <summary>#Round107 §12: Loại phí bảo lãnh (Pmt_Guarantee.TypeFee, DbDefine.cs:873).</summary>
+    public string? TypeFee { get; set; }
+    /// <summary>#Round107 §12: Số lần gia hạn bảo lãnh (Pmt_Guarantee.NumberOfGuaranteeExt, DbDefine.cs:869).</summary>
+    public int? NumberOfGuaranteeExt { get; set; }
 }
 
 /// <summary>Chi tiết bảo lãnh theo VIN (Pmt_GuaranteeDetail) — port 1:1 FrmBankGrt detail.</summary>
