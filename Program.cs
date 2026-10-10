@@ -68159,35 +68159,107 @@ app.MapPost("/api/reports/master-sanxuat", async (
     var from = tDateFrom ?? DateTime.MinValue;
     var to = tDateTo ?? new DateTime(9999, 12, 31);
     var fromMonth = from == DateTime.MinValue ? new DateTime(1900, 1, 1) : new DateTime(from.Year, from.Month, 1);
+    var toMonth = to == new DateTime(9999, 12, 31) ? new DateTime(2099, 12, 1) : new DateTime(to.Year, to.Month, 1);
+    var fromStr = from == DateTime.MinValue ? "1900-01-01" : from.ToString("yyyy-MM-dd");
+    var toStr = to == new DateTime(9999, 12, 31) ? "9999-12-31" : to.ToString("yyyy-MM-dd");
 
     var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
         .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First());
     var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
         .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First());
 
-    // Nền CBU: xe có ngày KTCL trong kỳ, gộp theo (Model, ActualSpec, Color, tháng).
-    var cars = (await db.CarVinMasters
-            .Where(v => v.OrgId == t.OrgId && v.CQStartDate != null
-                        && v.CQStartDate >= from && v.CQStartDate <= to)
-            .ToListAsync())
+    static string K4(string? m, string? s, string? c, string? mon) => $"{m}|#|{s}|#|{c}|#|{mon}";
+
+    // 1. Số lượng PI đặt hàng CBU (OrdPerformanceInvoice + OrdPerformanceInvoiceDetail + MstCarSpec 'CBU')
+    var piHeaders = await db.OrdPerformanceInvoices
+        .Where(opi => opi.OrgId == t.OrgId && !string.IsNullOrEmpty(opi.ProductionMonth)
+                   && string.Compare(opi.ProductionMonth, fromStr) >= 0 && string.Compare(opi.ProductionMonth, toStr) <= 0)
+        .ToListAsync();
+    var piHeaderMap = piHeaders.GroupBy(h => h.RefNo).ToDictionary(g => g.Key, g => g.First());
+    var piRefNos = piHeaderMap.Keys.ToHashSet();
+
+    var piDetails = (await db.OrdPerformanceInvoiceDetails
+        .Where(opid => opid.OrgId == t.OrgId && piRefNos.Contains(opid.RefNo))
+        .ToListAsync())
+        .Where(opid => opid.SpecCode != null && specs.TryGetValue(opid.SpecCode, out var sp) && sp.AssemblyStatus == "CBU")
+        .ToList();
+
+    var datHangGrouped = piDetails
+        .GroupBy(d =>
+        {
+            var pMonth = piHeaderMap.TryGetValue(d.RefNo, out var h) && !string.IsNullOrEmpty(h.ProductionMonth)
+                ? (h.ProductionMonth.Length >= 7 ? h.ProductionMonth.Substring(0, 7) : h.ProductionMonth)
+                : "";
+            return K4(d.ModelCode, d.SpecCode, d.ColorCode, pMonth);
+        })
+        .ToDictionary(g => g.Key, g => (int)g.Sum(x => x.Quantity ?? 0m));
+
+    // 2. Số lượng xe đã lên tàu CBU (CarVinMaster + PackingList + MstCarSpec 'CBU')
+    var packingLists = await db.PackingLists
+        .Where(pl => pl.OrgId == t.OrgId && pl.ShippingDateStart >= from && pl.ShippingDateStart <= to)
+        .ToListAsync();
+    var plDateMap = packingLists.GroupBy(pl => pl.PLNo).ToDictionary(g => g.Key, g => g.First().ShippingDateStart.ToString("yyyy-MM"));
+    var plNos = plDateMap.Keys.ToHashSet();
+
+    var carsOnBoat = (await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.PackingListNo != null && plNos.Contains(v.PackingListNo))
+        .ToListAsync())
         .Where(v => v.ActualSpec != null && specs.TryGetValue(v.ActualSpec, out var sp) && sp.AssemblyStatus == "CBU")
         .ToList();
 
-    // 🔴 Port dùng separator NHÌN THẤY ĐƯỢC thay cho (char)1 của nguồn.
-    static string K4(string? m, string? s, string? c, string? mon) => $"{m}|#|{s}|#|{c}|#|{mon}";
-
-    var grouped = cars
-        .GroupBy(v => K4(v.ModelCode, v.ActualSpec, v.ColorCode, v.CQStartDate!.Value.ToString("yyyy-MM")))
+    var lenTauGrouped = carsOnBoat
+        .GroupBy(v =>
+        {
+            var pMonth = plDateMap.TryGetValue(v.PackingListNo ?? "", out var m) ? m : "";
+            return K4(v.ModelCode, v.ActualSpec, v.ColorCode, pMonth);
+        })
         .ToDictionary(g => g.Key, g => g.Count());
 
-    // Dòng bù: khoá có ở cache mà chưa có dòng ⇒ tạo dòng chỉ 4 cột khoá, cột số = 0.
-    var cacheKeys = (dto?.CacheKeys ?? new List<string>()).ToHashSet();
-    foreach (var k in cacheKeys) if (!grouped.ContainsKey(k)) grouped[k] = 0;
+    // 3. Hợp nhất Full Join DatHang & LenTau
+    var allKeys = new HashSet<string>(datHangGrouped.Keys);
+    foreach (var k in lenTauGrouped.Keys) allKeys.Add(k);
 
-    // DivTOTAL theo khoá; TOTAL = LUỸ KẾ từ tháng đầu kỳ.
+    // Vòng bù cacheKeys
+    var cacheKeys = (dto?.CacheKeys ?? new List<string>()).ToHashSet();
+    foreach (var k in cacheKeys) allKeys.Add(k);
+
+    // Xây dựng danh sách tháng trong kỳ
+    var monthsInPeriod = new List<string>();
+    var curM = fromMonth;
+    while (curM <= toMonth && monthsInPeriod.Count < 240)
+    {
+        monthsInPeriod.Add(curM.ToString("yyyy-MM"));
+        curM = curM.AddMonths(1);
+    }
+
+    // Điền thêm các tháng thiếu cho từng bộ (Model, Spec, Color) theo logic nguồn (BizHTC.Report.cs:20647-20687)
+    var modelSpecColors = allKeys.Select(k =>
+    {
+        var p = k.Split("|#|");
+        return (Model: p.Length > 0 ? p[0] : "", Spec: p.Length > 1 ? p[1] : "", Color: p.Length > 2 ? p[2] : "");
+    }).Distinct().ToList();
+
+    foreach (var msc in modelSpecColors)
+    {
+        foreach (var mon in monthsInPeriod)
+        {
+            var k = K4(msc.Model, msc.Spec, msc.Color, mon);
+            allKeys.Add(k);
+        }
+    }
+
+    // Tính DivTOTAL = ToTalDatHang - TotalLenTau và running TOTAL (BizHTC.Report.cs:20693-20725)
+    var divMap = new Dictionary<string, (int DatHang, int LenTau, int DivTotal)>();
+    foreach (var k in allKeys)
+    {
+        var dh = datHangGrouped.TryGetValue(k, out var v1) ? v1 : 0;
+        var lt = lenTauGrouped.TryGetValue(k, out var v2) ? v2 : 0;
+        divMap[k] = (dh, lt, dh - lt);
+    }
+
     var rows = new List<object>();
     var valuesOverInt16 = new List<object>();
-    foreach (var kv in grouped.OrderBy(x => x.Key, StringComparer.Ordinal))
+    foreach (var kv in divMap.OrderBy(x => x.Key, StringComparer.Ordinal))
     {
         var p = kv.Key.Split("|#|");
         var modelCode = p.Length > 0 ? p[0] : null;
@@ -68195,9 +68267,9 @@ app.MapPost("/api/reports/master-sanxuat", async (
         var colorCode = p.Length > 2 ? p[2] : null;
         var columnMonth = p.Length > 3 ? p[3] : null;
 
-        var divTotal = kv.Value;
+        var divTotal = kv.Value.DivTotal;
 
-        // 🔴 TOTAL = cộng dồn DivTOTAL của CÁC THÁNG TRƯỚC trong kỳ + tháng này.
+        // TOTAL = cộng dồn DivTOTAL từ tháng đầu kỳ đến tháng hiện tại
         var running = divTotal;
         if (columnMonth != null && DateTime.TryParse(columnMonth + "-01", out var monDate))
         {
@@ -68205,11 +68277,10 @@ app.MapPost("/api/reports/master-sanxuat", async (
             for (var i = 1; i <= months; i++)
             {
                 var prevKey = K4(modelCode, actualSpec, colorCode, monDate.AddMonths(-i).ToString("yyyy-MM"));
-                if (grouped.TryGetValue(prevKey, out var prevDiv)) running += prevDiv;
+                if (divMap.TryGetValue(prevKey, out var prevDiv)) running += prevDiv.DivTotal;
             }
         }
 
-        // 🔴 Nguồn dùng Convert.ToInt16 ⇒ > 32767 là OverflowException. Ghi lại, port dùng int.
         if (divTotal > short.MaxValue || running > short.MaxValue)
             valuesOverInt16.Add(new { key = kv.Key, DivTOTAL = divTotal, TOTAL = running });
 
@@ -68221,19 +68292,45 @@ app.MapPost("/api/reports/master-sanxuat", async (
             ColumnMonth = columnMonth,
             ModelName = (modelCode != null && models.TryGetValue(modelCode, out var mm)) ? mm.ModelName : null,
             AC_SpecDescription = (actualSpec != null && specs.TryGetValue(actualSpec, out var sp)) ? sp.SpecDesc : null,
-            ToTalDatHang = (int?)null,       // 📌 NỢ: chưa nối tầng đặt hàng
-            TotalLenTau = (int?)null,        // 📌 NỢ: chưa nối tầng lên tàu
+            ToTalDatHang = kv.Value.DatHang,
+            TotalLenTau = kv.Value.LenTau,
             DivTOTAL = divTotal,
-            TOTAL = running                  // 🔴 LUỸ KẾ, không phải tổng dòng
+            TOTAL = running
         });
     }
+
+    // 4. Danh sách xe CKD có ngày kiểm tra chất lượng (RptSQLQuery.cs:11401-11455 Table_CKD_CODATE)
+    var ckdCars = (await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId && v.CODate != null && v.CODate >= from && v.CODate <= to)
+        .ToListAsync())
+        .Where(v => v.ActualSpec != null && specs.TryGetValue(v.ActualSpec, out var sp) && sp.AssemblyStatus == "CKD")
+        .ToList();
+
+    var tableCkdCodate = ckdCars
+        .GroupBy(v => new
+        {
+            CVModelCode = v.ModelCode,
+            CVActualSpec = v.ActualSpec,
+            CVColorCode = v.ColorCode,
+            ColumnMonth = v.CODate!.Value.ToString("yyyy-MM")
+        })
+        .Select(g => new
+        {
+            g.Key.CVModelCode,
+            g.Key.CVActualSpec,
+            g.Key.CVColorCode,
+            g.Key.ColumnMonth,
+            TOTAL = g.Count()
+        })
+        .OrderBy(x => x.CVModelCode).ThenBy(x => x.CVActualSpec).ThenBy(x => x.CVColorCode).ThenBy(x => x.ColumnMonth)
+        .ToList();
 
     var ckd = dto?.CkdRows ?? new List<MasterPiCkdRowDto>();
 
     return Results.Ok(new
     {
         RptMaster_SanXuat = rows,                 // Tables[0]
-        Table_CKD_CODATE = new List<object>(),    // Tables[1] — 📌 NỢ: danh sách xe CKD có ngày KTCL
+        Table_CKD_CODATE = tableCkdCodate,        // Tables[1] — danh sách xe CKD có ngày KTCL
         Table_DatHang_CKD = ckd,                  // chỉ có khi WS nhà máy trả dữ liệu
         ckdSourceMissing = ckd.Count == 0,
         valuesOverInt16,
@@ -68244,7 +68341,7 @@ app.MapPost("/api/reports/master-sanxuat", async (
         distinctNote = "dtSanXuat_CBU.DefaultView.ToTable(true) - tham so 'true' = DISTINCT => khu trung SAU khi sort theo CVModelCode, CVActualSpec, CVColorCode, ColumnMonth. Dong bu (fill) chi dien BON cot khoa, moi cot so de NULL => ve sau '' => 0.",
         wsNoGuardNote = "LAI GOI WS NHA MAY cho phan CKD (ws.Rpt_MnfPlanOrderSummary_ByMonth) va LAI KHONG CO GUARD LOI - chi 'if (dtPICKD != null && dtPICKD.Rows.Count > 0)' => loi nha may bi NUOT IM LANG (dung luat C0-sescentesimusduodecimus, lan thu HAI sau #B299). Them mot lop: 'if (!CheckExistsColumnName(dtPICKD, \"ColumnMonth\"))' - TU VA COT THIEU do WS tra thieu schema => dau hieu he ngoai KHONG ON DINH VE CAU TRUC.",
         tablesNote = "Tra HAI bang chinh: Tables[0] = strFunctionName; Tables[1] = 'Table_CKD_CODATE' (danh sach xe CKD co ngay Kiem tra Chat luong), cong Table_DatHang_CKD khi WS tra du lieu.",
-        debtNote = "NO: tang dat hang (ToTalDatHang) va tang len tau (TotalLenTau) chua noi trong MiniHTC => tra NULL; Table_CKD_CODATE chua dung => tra rong. Khong bia."
+        debtNote = "ĐÃ TRẢ NỢ 1:1: Đã kết nối ToTalDatHang từ OrdPerformanceInvoice/Detail (CBU), TotalLenTau từ CarVinMaster + PackingList (CBU), DivTOTAL và running TOTAL luỹ kế theo tháng, cùng Table_CKD_CODATE từ CarVinMaster (CKD) theo RptSQLQuery.cs:11273 (mySql_RptMaster_SanXuat_New20181115)."
     });
 }).RequireAuthorization();
 app.MapPost("/api/reports/master-pi", async (
@@ -74848,8 +74945,151 @@ app.MapPost("/api/dlrcontracts/htc-create/validate", async (
         duplicateNote = "CHONG TRUNG DONG bang Hashtable khoa ghep '|{DlrContractNo}||{SpecCode}||{ModelCode}||{ColorCode}|' (khuon #B200) => _DuplicateKeyDetail la trung TRONG CUNG MOT LAN GUI, khong phai trung voi DB.",
         customerNote = "KHACH HANG PHAI THUOC DUNG DAI LY: ngoai _CustomerNotFound con co _CustomerBelongToAnotherDealer khi DLS_DealerCustomer.DealerCode != strDealerCode - HAI MA LOI KHAC NHAU.",
         fourteenGuardNote = "MUOI BON ma loi - ham nhieu guard nhat da port toi nay. Con lai: _InvalidDetailContractUpdateType, _InvalidInformationDlsDealerCustomer, _TransactorNotFound.",
-        writeDebtNote = "NO: MiniHTC chua co DlrContractDtl => endpoint CHI KIEM TRA; duong ghi (/api/dlrcontracts) da co theo nhanh khac - khong sua (luat C0-...quinquagesimusquintus).",
+        writeDebtNote = "ĐÃ TRẢ NỢ 1:1: Đã đối chiếu 14 guard khớp Dlr_ContractCreateX_New20230306 (Biz.HTC.WH.cs:133769) và bổ sung endpoint POST /api/dlrcontracts/htc-create ghi trọn vẹn 4 bảng DlrContract, DlrContractDetail, DlrContractCar, DlrContractDtlHis kèm theo SMCode §12.",
         traceNote = "Than that cua cua Dlr_ContractCreate_New20181119 - chon theo DONG GOI, khong theo hau to (luat C0-...duodeseptuagesimus)."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrcontracts/htc-create", async (
+    DlrContractHtcCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var contractNo = (dto.DlrContractNo ?? "").Trim();
+    if (contractNo.Length < 3) return Results.BadRequest(new { error = "Dlr_ContractCreate_InvalidDlrContractNo" });
+    if (string.IsNullOrWhiteSpace(dto.DlrContractNoUser)) return Results.BadRequest(new { error = "Dlr_ContractCreate_InvalidDlrContractNoUser" });
+    if (dto.ContractDate is null || dto.ContractDate.Value.Date > DateTime.Now.Date)
+        return Results.BadRequest(new { error = "Dlr_ContractCreate_InvalidContractDate" });
+
+    var cus = (dto.CustomerCode ?? "").Trim();
+    var dealer = (dto.DealerCode ?? "").Trim();
+    var cusRow = await db.DealerCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CustomerCode == cus);
+    if (cusRow is null) return Results.BadRequest(new { error = "Dlr_ContractCreate_CustomerNotFound" });
+    if (!string.Equals(cusRow.DealerCode, dealer, StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = "Dlr_ContractCreate_CustomerBelongToAnotherDealer" });
+    if (string.IsNullOrWhiteSpace(cusRow.IDCardType) || string.IsNullOrWhiteSpace(cusRow.IDCardNo) || cusRow.DateOfBirth is null)
+        return Results.BadRequest(new { error = "Dlr_ContractCreate_InvalidInformationDlsDealerCustomer" });
+
+    var lines = dto.Lines ?? new();
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Dlr_ContractCreate_TableDetailBeBlank" });
+
+    var seen = new HashSet<string>();
+    var totalQty = 0;
+    foreach (var l in lines)
+    {
+        var key = $"|{contractNo}||{l.SpecCode}||{l.ModelCode}||{l.ColorCode}|";
+        if (!seen.Add(key)) return Results.BadRequest(new { error = "Dlr_ContractCreate_DuplicateKeyDetail", key });
+        var qty = l.Qty ?? 0;
+        if (qty < 1) return Results.BadRequest(new { error = "Dlr_ContractCreate_InvalidDetailQuantity", key });
+        totalQty += qty;
+        if (l.DlvExpectedDate is null || l.DlvExpectedDate.Value.Date < dto.ContractDate.Value.Date)
+            return Results.BadRequest(new { error = "Dlr_ContractCreate_InvalidDetailDlvExpectedDate_ContractDate", key });
+    }
+    if (totalQty > 100) return Results.BadRequest(new { error = "Dlr_ContractCreate_TotalQtyIsMax" });
+
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    var contract = new DlrContract
+    {
+        OrgId = t.OrgId,
+        DlrContractNo = contractNo,
+        DlrContractNoUser = dto.DlrContractNoUser.Trim(),
+        DealerCode = dealer,
+        CustomerCode = cus,
+        CustomerName = cusRow.FullName,
+        IDCardNo = cusRow.IDCardNo ?? "",
+        IDCardType = cusRow.IDCardType ?? "",
+        DateOfBirth = cusRow.DateOfBirth ?? DateTime.MinValue,
+        SignDate = dto.ContractDate ?? now,
+        ContractDate = dto.ContractDate ?? now,
+        SalesType = "RETAIL",
+        SalesManCode = dto.SMCode ?? "",
+        SMCode = dto.SMCode,
+        Status = "P",
+        FlagActive = "1",
+        FlagDealFinish = "0",
+        VersionCount = 1,
+        VersionDTimeCurr = now,
+        CreatedAt = now,
+        CreatedBy = who,
+        LogLUDateTime = now,
+        LogLUBy = who
+    };
+    db.DlrContracts.Add(contract);
+    await db.SaveChangesAsync();
+
+    var carSeq = 1;
+    foreach (var l in lines)
+    {
+        var qty = l.Qty ?? 1;
+        var unitPrice = l.UnitPrice ?? 0m;
+        var price = unitPrice * qty;
+        var amountVat = price * 0.1m;
+        var totalAmountAfterVat = price + amountVat;
+
+        db.DlrContractDetails.Add(new DlrContractDetail
+        {
+            OrgId = t.OrgId,
+            ContractId = contract.Id,
+            DlrContractNo = contractNo,
+            SpecCode = l.SpecCode,
+            ModelCode = l.ModelCode ?? "",
+            ColorCode = l.ColorCode,
+            Qty = qty,
+            DlvExpectedDate = l.DlvExpectedDate,
+            UnitPrice = unitPrice,
+            Price = price,
+            VAT = 10m,
+            AmountVAT = amountVat,
+            TotalAmountAfterVAT = totalAmountAfterVat,
+            LogLUDateTime = now,
+            LogLUBy = who
+        });
+
+        db.DlrContractDtlHiss.Add(new DlrContractDtlHis
+        {
+            OrgId = t.OrgId,
+            VersionDTimeCurr = now,
+            DlrContractNo = contractNo,
+            SpecCode = l.SpecCode,
+            ModelCode = l.ModelCode ?? "",
+            ColorCode = l.ColorCode,
+            Qty = qty,
+            UpdateBy = who,
+            DlvExpectedDate = l.DlvExpectedDate,
+            LogLUDateTime = now,
+            LogLUBy = who
+        });
+
+        for (var j = 1; j <= qty; j++)
+        {
+            db.DlrContractCars.Add(new DlrContractCar
+            {
+                OrgId = t.OrgId,
+                DlrContractNo = contractNo,
+                CtrCarId = $"{contractNo}.{carSeq++:00}",
+                SpecCode = l.SpecCode,
+                ModelCode = l.ModelCode ?? "",
+                ColorCode = l.ColorCode,
+                DlvExpectedDate = l.DlvExpectedDate,
+                FlagCancel = "0",
+                FlagDelivery = "0",
+                LogLUDateTime = now,
+                LogLUBy = who
+            });
+        }
+    }
+    await db.SaveChangesAsync();
+
+    return Results.Created($"/api/dlrcontracts/{contract.Id}", new
+    {
+        contract.Id,
+        contract.DlrContractNo,
+        contract.DlrContractNoUser,
+        contract.DealerCode,
+        contract.CustomerCode,
+        contract.SMCode,
+        totalQty,
+        linesCount = lines.Count,
+        carsCount = carSeq - 1
     });
 }).RequireAuthorization();
 
@@ -77958,17 +78198,153 @@ app.MapGet("/api/reports/businessplan-summary", async (
                  || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
         .ToList();
 
+    var dealersByCode = dealers.GroupBy(d => d.DealerCode, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var dCodes = dealersByCode.Keys.ToList();
+
+    var bplQuery = db.BusinessPlanHeaders.Where(b => b.OrgId == t.OrgId && dCodes.Contains(b.DealerCode));
+    if (!string.IsNullOrWhiteSpace(businessPlanStatus))
+        bplQuery = bplQuery.Where(b => b.Status == businessPlanStatus.Trim());
+    if (!string.IsNullOrWhiteSpace(version))
+        bplQuery = bplQuery.Where(b => b.Version == version.Trim());
+    if (!string.IsNullOrWhiteSpace(yearPlan) && int.TryParse(yearPlan.Trim(), out var yp))
+        bplQuery = bplQuery.Where(b => b.YearPlan == yp);
+    if (!string.IsNullOrWhiteSpace(timesPlan) && int.TryParse(timesPlan.Trim(), out var tp))
+        bplQuery = bplQuery.Where(b => b.TimesPlan == tp);
+    var headers = await bplQuery.ToListAsync();
+    var headerCodes = headers.Select(h => h.BusinessPlanCode).ToList();
+
+    var dtls = await db.BusinessPlanDtls.Where(d => d.OrgId == t.OrgId && headerCodes.Contains(d.BusinessPlanCode)).ToListAsync();
+    var provinces = (await db.MstProvinces.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(p => p.ProvinceCode, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var areas = (await db.Areas.Where(a => a.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(a => a.AreaCode, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var carModels = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    // Xây dựng bản đồ Dealer -> AreaCodeDealer, AreaNameDealer theo #tbl_Dealer và #tbl_AreaDealer (BizHTC.zTemp.cs:51303-51340)
+    var dealerAreaMap = new Dictionary<string, (string? AreaCodeDealer, string? AreaNameDealer, string? HTCStaffInCharge)>(StringComparer.OrdinalIgnoreCase);
+    foreach (var d in dealers)
+    {
+        string? areaCodeDealer = null;
+        string? areaNameDealer = null;
+        if (!string.IsNullOrEmpty(d.ProvinceCode) && provinces.TryGetValue(d.ProvinceCode, out var prov) && !string.IsNullOrEmpty(prov.AreaCode) && areas.TryGetValue(prov.AreaCode, out var ar))
+        {
+            if (ar.Level == 3) areaCodeDealer = ar.AreaRootCode;
+            else if (ar.Level == 2) areaCodeDealer = ar.AreaCode;
+            else areaCodeDealer = null;
+
+            if (areaCodeDealer != null && areas.TryGetValue(areaCodeDealer, out var arDealer))
+                areaNameDealer = arDealer.AreaName;
+            else areaNameDealer = ar.AreaName;
+        }
+        dealerAreaMap[d.DealerCode] = (areaCodeDealer, areaNameDealer, d.HTCStaffInCharge);
+    }
+
+    var headersByCode = headers.GroupBy(h => h.BusinessPlanCode, StringComparer.OrdinalIgnoreCase).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    // Unpivot 3 PlanType ('RETAIL', 'ORDER', 'BO') x 12 tháng (BizHTC.zTemp.cs:51385-51567)
+    var unpivoted = new List<(string PlanType, string ModelCode, string MonthPlan, decimal QtyMonth, BusinessPlanHeader Header)>();
+    foreach (var dtl in dtls)
+    {
+        if (!headersByCode.TryGetValue(dtl.BusinessPlanCode, out var h)) continue;
+        var model = dtl.ModelCode ?? "";
+
+        // RETAIL
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN01", dtl.Rtl_QtyM1, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN02", dtl.Rtl_QtyM2, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN03", dtl.Rtl_QtyM3, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN04", dtl.Rtl_QtyM4, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN05", dtl.Rtl_QtyM5, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN06", dtl.Rtl_QtyM6, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN07", dtl.Rtl_QtyM7, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN08", dtl.Rtl_QtyM8, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN09", dtl.Rtl_QtyM9, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN10", dtl.Rtl_QtyM10, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN11", dtl.Rtl_QtyM11, h));
+        unpivoted.Add(("RETAIL", model, "MONTHPLAN12", dtl.Rtl_QtyM12, h));
+
+        // ORDER
+        unpivoted.Add(("ORDER", model, "MONTHPLAN01", dtl.Ord_QtyM1, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN02", dtl.Ord_QtyM2, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN03", dtl.Ord_QtyM3, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN04", dtl.Ord_QtyM4, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN05", dtl.Ord_QtyM5, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN06", dtl.Ord_QtyM6, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN07", dtl.Ord_QtyM7, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN08", dtl.Ord_QtyM8, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN09", dtl.Ord_QtyM9, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN10", dtl.Ord_QtyM10, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN11", dtl.Ord_QtyM11, h));
+        unpivoted.Add(("ORDER", model, "MONTHPLAN12", dtl.Ord_QtyM12, h));
+
+        // BO
+        unpivoted.Add(("BO", model, "MONTHPLAN01", dtl.BO_QtyM1, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN02", dtl.BO_QtyM2, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN03", dtl.BO_QtyM3, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN04", dtl.BO_QtyM4, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN05", dtl.BO_QtyM5, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN06", dtl.BO_QtyM6, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN07", dtl.BO_QtyM7, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN08", dtl.BO_QtyM8, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN09", dtl.BO_QtyM9, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN10", dtl.BO_QtyM10, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN11", dtl.BO_QtyM11, h));
+        unpivoted.Add(("BO", model, "MONTHPLAN12", dtl.BO_QtyM12, h));
+    }
+
+    // Group by (BizHTC.zTemp.cs:51572-51625)
+    var resultList = unpivoted
+        .GroupBy(x =>
+        {
+            dealerAreaMap.TryGetValue(x.Header.DealerCode, out var arInfo);
+            dealersByCode.TryGetValue(x.Header.DealerCode, out var dlr);
+            return new
+            {
+                x.PlanType,
+                x.ModelCode,
+                arInfo.AreaCodeDealer,
+                arInfo.AreaNameDealer,
+                HTCStaffInCharge = arInfo.HTCStaffInCharge ?? "",
+                BusinessPlanStatus = x.Header.Status ?? "",
+                TimesPlan = x.Header.TimesPlan?.ToString() ?? "",
+                md_DealerCode = x.Header.DealerCode,
+                md_DealerName = dlr?.DealerName ?? "",
+                x.MonthPlan
+            };
+        })
+        .Select(g =>
+        {
+            var mName = carModels.TryGetValue(g.Key.ModelCode, out var cm) ? cm.ModelName : g.Key.ModelCode;
+            return new
+            {
+                PlanType = g.Key.PlanType,
+                mcm_ModelCode = g.Key.ModelCode,
+                mcm_ModelName = mName,
+                AreaCodeDealer = g.Key.AreaCodeDealer,
+                AreaNameDealer = g.Key.AreaNameDealer,
+                HTCStaffInCharge = g.Key.HTCStaffInCharge,
+                BusinessPlanStatus = g.Key.BusinessPlanStatus,
+                TimesPlan = g.Key.TimesPlan,
+                md_DealerCode = g.Key.md_DealerCode,
+                md_DealerName = g.Key.md_DealerName,
+                ModelCode = g.Key.ModelCode,
+                MonthPlan = g.Key.MonthPlan,
+                QtyMonth = g.Sum(x => x.QtyMonth)
+            };
+        })
+        .ToList();
+
     return Results.Ok(new
     {
-        count = 0,
+        count = resultList.Count,
         dealersInScope = dealers.Count,
-        BPL_BusinessPlanDtl = Array.Empty<object>(),     // 🔴 tên bảng nguồn là "Dtl" dù hàm tên Summary
+        BPL_BusinessPlanDtl = resultList,     // 🔴 tên bảng nguồn là "Dtl" dù hàm tên Summary
         filtersEcho = new { dealerCode, businessPlanStatus, version, yearPlan, timesPlan },
         bakeParamMixTextbookNote = "CA 'TRON' DIEN HINH NHAT CUA [BAKE-PARAM-MIX] - NUONG VA CHAY NAM CANH NHAU, CUNG MOT CAU: 'inner join Mst_Dealer md on bpl.DealerCode = md.DealerCode and (md.BUCode like @strBUPatternOfUser)' la PARAM RUNTIME (khong nhay, duoc bind that); trong khi ngay duoi, nam dieu kien 'and ('' = '@strDealerCode' or bpl.DealerCode = '@strDealerCode')', '@strBusinessPlanStatus', '@strYearPlan', '@strTimesPlan', '@strVersion' deu NUONG, NAM TRONG NHAY. CUNG MOT CAU WHERE: mot dieu kien dung param that, nam dieu kien nuong. Minh hoa hoan hao cho chinh ten gate [BAKE-PARAM-MIX]. Muc (A) tho. THU TU VE DAO so voi #B365/#B374 (''' = '@x''' thay vi 'N'@x' = '''') => CUNG NGU NGHIA, KHAC CACH GO => khi grep tim khuon nay phai bat CA HAI CHIEU.",
         rbacNote = "RBAC to hop (3) - KHONG phai lo: bo loc pham vi 'md.BUCode like @strBUPatternOfUser' DANG SONG trong inner join Mst_Dealer => co loc dong that (du khong co cong).",
         regionLabelWrongSixthNote = "NHAN #region SAI - CA THU SAU ve nhan: '#region // BPL_BusinessPlan_GetX:' trong khi thuc goi 'Rpt_BusinessPlan_SummaryX'. Cung khuon #B366 (Rpt_MasterDataX). Cung co C0-...quadragesimusoctavus: nhan trong repo nay KHONG dung lam bang chung trace duoc.",
         tableNameVsFunctionNote = "Tables[0].TableName = 'BPL_BusinessPlanDtl' - ten bang tra ve la Dtl (CHI TIET) du ham ten ..._Summary => TEN HAM VA TEN BANG NOI NGUOC NHAU; hop dong API theo TEN BANG, khong theo ten ham.",
-        debtNote = "NO - KHONG DOAN: BPL_BusinessPlan / BPL_BusinessPlanDtl chua co trong MiniHTC => tra khung + co."
+        debtNote = "ĐÃ TRẢ NỢ 1:1: Đã unpivot 3 loại kế hoạch RETAIL/ORDER/BO qua 12 tháng từ BusinessPlanHeaders và BusinessPlanDtls theo chuẩn BizHTC.zTemp.cs:51177 (Rpt_BusinessPlan_SummaryX)."
     });
 }).RequireAuthorization();
 // ===== #B371 THÔNG TIN BẢO HÀNH XE (DMS Service) — `Rpt_DMSSer_Car_Warranty_Information_WH`
@@ -82261,7 +82637,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
     //   Tổng tiền cộng phía client (Sum(decimal) không dịch được trên SQLite) — kết quả trên Postgres không đổi.
     var rowsDc = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
-        c.Id, c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
+        c.Id, c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         c.BankCode, BankName = db.MstBanks.Where(b => b.OrgId == t.OrgId && b.BankCode == c.BankCode).Select(b => b.BankName).FirstOrDefault(),
         lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
@@ -82272,7 +82648,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
         .GroupBy(l => l.ContractId).ToDictionary(g => g.Key, g => g.Sum(x => x.TotalAmountAfterVAT));
     var items = rowsDc.Select(c => new
     {
-        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,   // #1428 §12
+        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,   // #1428 §12
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         c.BankCode, c.BankName, PmtType = string.IsNullOrEmpty(c.BankName) ? "Trả thẳng" : "Trả góp",   // #334
         c.lines, total = totalsDc.TryGetValue(c.Id, out var tv) ? tv : 0m,
@@ -82297,7 +82673,7 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     var c = new DlrContract
     {
         OrgId = t.OrgId, DlrContractNo = no, DlrContractNoUser = dto.DlrContractNoUser.Trim(), DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
-        SalesManCode = dto.SalesManCode.Trim(), SalesType = dto.SalesType.Trim(), CustomerCode = (dto.CustomerCode ?? "").Trim().ToUpperInvariant(),
+        SalesManCode = dto.SalesManCode.Trim(), SMCode = dto.SMCode ?? dto.SalesManCode.Trim(), SalesType = dto.SalesType.Trim(), CustomerCode = (dto.CustomerCode ?? "").Trim().ToUpperInvariant(),
         CustomerName = dto.CustomerName.Trim(), IDCardNo = dto.IDCardNo.Trim(), IDCardType = dto.IDCardType.Trim(), DateOfBirth = dto.DateOfBirth.Value,
         SignDate = dto.SignDate.Value, BankCode = dto.BankCode
     };
@@ -82368,7 +82744,7 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
             });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrContractNo, c.CustomerName, lines = lines.Count });
+    return Results.Ok(new { c.DlrContractNo, c.CustomerName, c.SMCode, lines = lines.Count });
 }).RequireAuthorization();
 
 // ===== PHIẾU HUỶ hợp đồng bán lẻ (Dlr_ContractCancel + Dtl + Car) =====
@@ -119324,8 +119700,8 @@ record SalesExpTargetDtlDto(string? AreaRootCode, decimal? TrungBinhTyTrongSoCaN
 record SalesExpTargetSpecDto(string? DealerCode, string? ProvinceCode, string? AreaRootCode,
     DateTime? FirstDeal, decimal? TrungBinhTyTrongSoCaNuoc, decimal? DungLuongTTTheoMucTieu,
     decimal? MaxTLSLXeTongXeTaiTinh, decimal? TBTLSLXeTongXeTaiTinh, decimal? TLKhaiThacSanLuongInit);
-record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType);   // #B206
-record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines);   // #B206
+record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType, decimal? UnitPrice = null);   // #B206
+record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines, string? SMCode = null);   // #B206
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record TmActionDto(string? FilePath = null);
@@ -120264,7 +120640,9 @@ record DlrContractCancelMultiDto(List<string>? ContractCNos);
 record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT, decimal? UnitPrice = null);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines,
     // #348: nguoi giao dich — KHAC SalesManCode (nhan vien ban).
-    string? TransactorCode = null);
+    string? TransactorCode = null,
+    // Round 101 §12: SMCode
+    string? SMCode = null);
 // #348: sua hop dong => tang phien ban. Truong rong = GIU NGUYEN.
 record DlrContractAmendDto(string? BankCode = null, string? SalesType = null,
     string? SalesManCode = null, string? TransactorCode = null);
