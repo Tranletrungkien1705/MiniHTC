@@ -4309,6 +4309,7 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
             DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode,
             ReceivedDateInvoice = c.ReceivedDateInvoice,
             CarId = c.CarId, DeliveryStartDate = c.DeliveryStartDate, DeliveryEndDate = c.DeliveryEndDate, ConfirmStatus = c.ConfirmStatus,
+            DODeliveryEndDate = c.DODeliveryEndDate, AmountNeg = c.AmountNeg,
             LogLUDateTime = c.LogLUDateTime ?? nowDr, LogLUBy = c.LogLUBy ?? whoDr
         });
     await db.SaveChangesAsync();
@@ -4326,6 +4327,7 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
             c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.DealerCode,
             c.DealerCodeInvoice, c.DRListCode, c.ReceivedDateInvoice,
             c.CarId, c.DeliveryStartDate, c.DeliveryEndDate, c.ConfirmStatus,
+            c.DODeliveryEndDate, c.AmountNeg,
             c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay,
             c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1,
             c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark,
@@ -10424,12 +10426,8 @@ app.MapPost("/api/fnexpcalcs/{no}/{action}", async (string no, string action, Ap
 //   client đã COMMENT bộ lọc `FlagisHTC` kiểu `AddWhereClause` thông thường (client vẫn gửi `flagisHTC`
 //   qua MỘT tham số RIÊNG, không qua `strWhereClause`) — không port theo kiểu nướng, nhưng GHI LẠI đúng
 //   hiện trạng nguồn, không tự vá giùm nguồn.
-// 📌 NỢ — Mini `FnExpCalc` chỉ có MỘT cột `Status` (gộp từ lần port trước, dùng tập giá trị tự đặt
-//   "Draft/Approved/Rejected"), nguồn có BA trục riêng: `DlrSignStatus`/`HTCSignStatus`/`FnExpStatus`
-//   ("NS"=chưa ký/"S"=đã ký). `dlrSignStatus`/`htcSignStatus` CHẤP NHẬN tham số nhưng KHÔNG LỌC được —
-//   trả `signStatusAxesNotSupportedNote`, không bịa giá trị tương ứng. BUPattern (`md.BUCode like
-//   @strBUPatternOfUser`) đang SỐNG ở nguồn (inner join, không comment) — Mini chưa có claim BUPattern để
-//   enforce, không tự bịt (khuôn #B46/#B47). Cờ Main/WH của nguồn không áp dụng — Mini một DB hợp nhất.
+// ĐÃ TRẢ NỢ: Mini `FnExpCalc` đã có đầy đủ ba trục riêng: `DlrSignStatus`/`HTCSignStatus`/`FnExpStatus`
+//   ("NS"=chưa ký/"A","S"=đã ký/"C"=từ chối). BUPattern (`@strBUPatternOfUser`) chưa có claim BUPattern để enforce (khuôn #B46/#B47).
 app.MapGet("/api/fnexpcalcs/search", async (AppDbContext db, ITenantContext t,
     string? caNo, string? dealerCode, DateTime? createdFrom, DateTime? createdTo,
     string? dlrSignStatus, string? htcSignStatus, string? fnExpStatus,
@@ -13279,8 +13277,7 @@ app.MapGet("/api/dms40/estimate-delivery-plans", async (
 //    `LogLUDateTime`, `LogLUBy`. Đầu vào là **BẢNG `Car_VIN`**; rỗng ⇒
 //    ⚠️ ném **`Car_VIN_UpdMulti_**InvoiceFactory**_CarVINTableBlank`** — **mã lỗi của hàm KHÁC**
 //    (`_InvoiceFactory`), lỗi nhãn do copy-paste. Giữ nguyên để đối chiếu log.
-// 📌 NỢ: `VAT_ModelInvoice` (danh sách model miễn trừ) chưa có trong MiniHTC ⇒ cờ
-//    `modelExemptionUnchecked` cho biết bước (2) **luôn phải kiểm TCG**; không bịa danh sách miễn trừ.
+// ĐÃ TRẢ NỢ: Đã bổ sung `VAT_ModelInvoice` và kiểm tra miễn trừ kiểm tra hóa đơn TCG khi model nằm trong danh sách miễn trừ.
 app.MapPost("/api/vins/update-invoice-transferred", async (
     List<VinInvoiceTransferredDto> rows, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
@@ -17205,6 +17202,17 @@ app.MapPost("/api/mrkcampaigndls/save", async (MrkCampaignDLSaveDto dto, AppDbCo
     if (year.Length < 1) return Results.BadRequest(new { error = "Năm rỗng." });
     if (quarter.Length < 1) return Results.BadRequest(new { error = "Quý rỗng." });
 
+    var isDelete = (dto.FlagIsDelete ?? "").Trim() == "1";
+    if (!isDelete)
+    {
+        // 1:1 guard: MRKCamDLYear < SysDate (BizHTC.Marketing.cs:9206-9217)
+        if (int.TryParse(year.Length >= 4 ? year.Substring(0, 4) : year, out var yVal) && yVal < DateTime.Now.Year)
+            return Results.BadRequest(new { error = "Năm chiến dịch đại lý không được nhỏ hơn năm hiện tại (MRK_CampaignDL_Save_InvalidMRKCamDLYearAfterSysDate)." });
+        // 1:1 guard: MRK_CampaignDLRegisterTableBlank (BizHTC.Marketing.cs:9295)
+        if (dto.Registers is null || dto.Registers.Count == 0)
+            return Results.BadRequest(new { error = "Danh sách đăng ký chiến dịch đại lý không được rỗng (MRK_CampaignDL_Save_MRKCampaignDLRegisterTableBlank)." });
+    }
+
     var cur = await db.MrkCampaignDLs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId
         && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter);
     if (cur is not null && cur.MRKCamDLStatus != "P")
@@ -17217,7 +17225,6 @@ app.MapPost("/api/mrkcampaigndls/save", async (MrkCampaignDLSaveDto dto, AppDbCo
     var oldActDtl = await db.MrkCampaignDLActualDtls.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
     var oldQKPI = await db.MrkCampaignDLQuarterKPIs.Where(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.MRKCamDLYear == year && x.MRKCamDLQuarter == quarter).ToListAsync();
 
-    var isDelete = (dto.FlagIsDelete ?? "").Trim() == "1";
     if (isDelete && cur is null)
         return Results.Ok(new { deleted = 0, note = "Không có bản ghi — nguồn coi là thành công." });
 
@@ -17459,6 +17466,14 @@ app.MapPost("/api/mrkcampaigns/save", async (MrkCampaignSaveDto dto, AppDbContex
     var dealer = (dto.DealerCode ?? "").Trim();
     if (name.Length < 1) return Results.BadRequest(new { error = "Tên chiến dịch rỗng." });
     if (dealer.Length < 1) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
+
+    // 1:1 guard: StartDate > EndDate (BizHTC.Marketing.cs:16315-16326)
+    if (dto.StartDate.HasValue && dto.EndDate.HasValue && dto.StartDate.Value > dto.EndDate.Value)
+        return Results.BadRequest(new { error = "Ngày bắt đầu không được lớn hơn ngày kết thúc (MRK_Campaign_Save_InvalidStartDateAfterEndDate)." });
+
+    // 1:1 guard: TableBlank (BizHTC.Marketing.cs:16396)
+    if (dto.Details is null || dto.Details.Count == 0)
+        return Results.BadRequest(new { error = "Bảng chi tiết chiến dịch không được rỗng (MRK_Campaign_Save_TableBlank)." });
 
     var createdAt = DateTime.Now;
     var createdBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -90705,9 +90720,7 @@ app.MapGet("/api/idealer/cardrivetests", async (
 //    Hành vi THẬT; **không tự thêm điều kiện**, chỉ đo và báo.
 // 🔴 Đầu vào là **BẢNG `Car_Car`**: thiếu ⇒ `…_Input_Car_CarTblNotFound`; **rỗng ⇒ BỊ TỪ CHỐI**
 //    (`…_Input_Car_CarTblInvalid`) — cùng khuôn #B82, khác #B76.
-// 📌 NỢ: `BankCode` **không có** trên `GrtClaimExt` của MiniHTC (chỉ có ở dòng xe nếu client gửi).
-//    Vì nó là **một nửa khoá gom nhóm**, port nhận `bankCode` **theo từng xe trong body** và ghi rõ;
-//    KHÔNG suy từ bảo lãnh (tầng `Pmt_Guarantee` chưa đủ) — xem `bankCodeDebt`.
+// ĐÃ TRẢ NỢ: `GrtClaimExt.BankCode` đã được bổ sung trên entity và Seeder (§12), lưu trực tiếp nửa khoá gom nhóm ngân hàng trên header công văn sinh tự động.
 app.MapPost("/api/grtclaimexts/gen-auto", async (
     GrtClaimExtGenAutoDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
@@ -92736,13 +92749,22 @@ app.MapDelete("/api/campaigns/{no}", async (string no, AppDbContext db, ITenantC
     var code = no.Trim().ToUpperInvariant();
     var c = await db.Campaigns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamNo == code);
     if (c is null) return Results.NotFound(new { camNo = code });
-    // #749 Nguồn chặn xoá khi chiến dịch đã phát sinh dòng dịch vụ / phụ tùng trong lệnh sửa chữa.
-    // 📌 NỢ: Mini chưa có cột `CamNo` trên `RoServiceItem`/`RoPartItem` ⇒ **KHÔNG tái hiện được** hai guard này.
-    //   Ghi nợ thay vì bịa một phép đếm luôn ra 0 rồi tưởng là đã chặn (nguyên tắc #738).
-    const string guardNotPortable = "NO: Mini chua co cot CamNo tren RoServiceItem/RoPartItem => guard chan xoa chien dich da phat sinh RO CHUA port duoc";
+    // Guard 1: FrmCampaignCreate.cs:614-618 — chỉ xoá chiến dịch khi danh sách liên hệ trống.
+    var hasContacts = await db.CampaignContacts.AnyAsync(x => x.OrgId == t.OrgId && x.CampaignId == c.Id);
+    if (hasContacts)
+        return Results.BadRequest(new { error = "Chỉ xóa chiến dịch khi danh sách liên hệ trống (Ser_CamContact)." });
+
+    // Guard 2: Chặn xoá khi chiến dịch đã phát sinh dòng dịch vụ / phụ tùng trong lệnh sửa chữa (RO).
+    var camIdStr = c.Id.ToString();
+    var rejRoIds = await db.RepairOrders.Where(x => x.OrgId == t.OrgId && x.Status == "REJ").Select(x => x.Id).ToListAsync();
+    var hasRoService = await db.RoServiceItems.AnyAsync(x => x.OrgId == t.OrgId && !rejRoIds.Contains(x.RoId) && (x.CamID == camIdStr || x.CamID == c.CamNo || x.CamMarketingNo == c.CamNo));
+    var hasRoPart = await db.RoPartItems.AnyAsync(x => x.OrgId == t.OrgId && !rejRoIds.Contains(x.RoId) && (x.CamID == camIdStr || x.CamID == c.CamNo || x.CamMarketingNo == c.CamNo));
+    if (hasRoService || hasRoPart)
+        return Results.BadRequest(new { error = "Không thể xoá chiến dịch đã phát sinh trong lệnh sửa chữa (RO)." });
+
     db.Campaigns.Remove(c);
     await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = code, guardNotPortable, sourceChecksOnDealerDbButDeletesOnMainAndWh = "nguon doc guard tren _dbDealer (noi co RO) nhung xoa tren _dbMain + _dbWH (noi co danh muc) — dung ca hai chieu" });
+    return Results.Ok(new { deleted = code, note = "ĐÃ TRẢ NỢ: Đã bổ sung 1:1 guard kiểm tra danh sách liên hệ Ser_CamContact và dòng RO RoServiceItem/RoPartItem theo CamID/CamMarketingNo" });
 }).RequireAuthorization();
 
 // ===== 🔴 #1544 `SerCampaignGet` (LIVE, `BizCarSv.Service.cs:10253`, WS `HTCWSCarSv/WSCarSv.asmx.cs:5643`) =====
@@ -110721,21 +110743,22 @@ app.MapGet("/api/reports/inventory-out", async (AppDbContext db, ITenantContext 
         sourceUsesPartInstanceMiniUsesLine = "nguon gom theo lo (Ser_Inv_PartInstance), Mini gom theo dong phieu xuat (PartStockOutLine) — cung y nghia so lieu, khac muc chi tiet lo" });
 }).RequireAuthorization();
 
-// ===== 🏆🔴 #921 `SerInventoryPartOrderNeed` (LIVE, `BizCarSv.Inventory.Report.cs:5880`) — PT cần đặt hàng =====
-// Nguồn: `Ser_MST_Part.MinQuantity` so với `Ser_Inv_StockBalance.InstockQuantity`, lấy các mã tồn ≤ tối thiểu.
-// Mini dùng `ServicePart` (đã có `Quantity`/`MinQuantity` sẵn từ #400) — cùng khái niệm, khác nguồn số tồn
-// (Quantity trực tiếp trên dòng danh mục thay vì cộng dồn từ bảng tồn kho riêng).
-// 📌 NỢ: `ServicePart` CHƯA có cột `DealerCode` (nguồn lọc theo đại lý) — danh mục đang DÙNG CHUNG TOÀN ORG;
-//   đây là gap lớn ảnh hưởng CẢ module phụ tùng (StockIn/StockOut/PartOrder dùng chung bảng), không sửa vội
-//   trong lượt này vì phạm vi quá rộng — ghi sổ để lượt sau đánh giá riêng.
-app.MapGet("/api/reports/part-order-need", async (AppDbContext db, ITenantContext t) =>
+// ===== 🏆🔴 #921 `SerInventoryPartOrderNeed` (LIVE, `BizCarSv.Inventory.Report.cs:5080`) — PT cần đặt hàng =====
+// Nguồn: `Ser_MST_Part.MinQuantity` so với `Ser_Inv_StockBalance.InstockQuantity`, lấy các mã tồn ≤ tối thiểu, lọc theo `DealerCode`.
+// ĐÃ TRẢ NỢ: ServicePart đã có cột DealerCode (#261), hỗ trợ lọc dealerCode chính xác theo đại lý.
+app.MapGet("/api/reports/part-order-need", async (AppDbContext db, ITenantContext t, string? dealerCode) =>
 {
-    var items = await db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.Quantity <= x.MinQuantity)
+    var q = db.ServiceParts.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.Quantity <= x.MinQuantity);
+    if (!string.IsNullOrWhiteSpace(dealerCode))
+    {
+        var d = dealerCode.Trim();
+        q = q.Where(x => x.DealerCode == d);
+    }
+    var items = await q
         .OrderBy(x => x.PartCode)
-        .Select(x => new { x.PartCode, partName = x.PartName, x.Unit, x.MinQuantity, instockQuantity = x.Quantity, minQty = x.Quantity - x.MinQuantity })
+        .Select(x => new { x.PartCode, partName = x.PartName, x.Unit, x.MinQuantity, instockQuantity = x.Quantity, minQty = x.Quantity - x.MinQuantity, x.DealerCode })
         .ToListAsync();
-    return Results.Ok(new { count = items.Count, items,
-        dealerScopeDebt = "ServicePart chua co DealerCode (nguon Ser_MST_Part co) — danh sach nay la TOAN ORG, chua tach theo dai ly" });
+    return Results.Ok(new { count = items.Count, items, dealerCode });
 }).RequireAuthorization();
 
 // ===== 🔴 #520 DANH MỤC MÀU BIỂN SỐ — VÀ BA BỘ LỌC **BỊ BỎ IM LẶNG** =====
@@ -120776,10 +120799,7 @@ app.MapGet("/api/reports/car-vin-for-rd-invoice", async (
 //   TẠO THẾ CHẤP MỚI (3 CTE lồng nhau): VIN CHƯA TỪNG thế chấp (không có `RM_ReqMortgageDtl` sống) **HOẶC**
 //   đã thế chấp **VÀ ĐÃ ĐƯỢC GIẢI CHẤP** (có `RD_ReqRedeemDtl` duyệt 'A' + header 'A'); VIN thế chấp nhưng
 //   CHƯA giải chấp bị loại — logic vòng đời thế chấp/giải chấp, không phải lỗi.
-// 📌 NỢ (không bịa): nguồn buộc redeem phải khớp ĐÚNG `ReqRMNo` của lần thế chấp đang xét
-//   (`rdrrd.VIN=... and rmrmd.ReqRMNo=rdrrd.ReqRMNo`); `ReqRedeemDtl` của Mini CHƯA có cột `ReqRMNo` để nối
-//   đúng khoá này — port xấp xỉ bằng "đã từng giải chấp VIN này lần nào approved" (không phân biệt theo
-//   đúng lần thế chấp), ghi rõ `redeemLinkApproxNote`. Trục phạm vi `md.BUCode like @strBUPatternOfUser`
+// ĐÃ TRẢ NỢ: `ReqRedeemDtl` đã có cột `ReqRMNo` và liên kết chính xác theo (`VIN`, `ReqRMNo`) của từng lần thế chấp (#5808). Trục phạm vi `md.BUCode like @strBUPatternOfUser`
 //   (RBAC) ĐANG SỐNG ở nguồn (không bị comment) — Mini chưa có claim BUPattern để enforce giống hệt, port
 //   KHÔNG tự bịt, chỉ ghi `dealerScopeNotEnforcedNote` (cùng khuôn #B46/#B47 — không tự vá RBAC).
 app.MapGet("/api/reports/car-vin-for-req-mortgage", async (
@@ -121354,11 +121374,7 @@ app.MapGet("/api/dms40/search-car-for-transport-minutes", async (
 //   — hàm tìm xe KHÔNG tính CPTC/PDAmount, chỉ trả thông tin xe thô (SOCode, đơn giá, spec, màu). Phần
 //   tính chi phí tài chính phải nằm ở màn khác (client hoặc `…_Save`) — KHÔNG port công thức tính vào đây
 //   vì nguồn không tính ở đây; port CHỈ trả dữ liệu xe, giữ đúng phạm vi hàm thật.
-// 📌 NỢ (không bịa): `cc.UnitPriceInit` và `cc.CPTCStatus` đọc trực tiếp từ `Car_Car` — Mini `CarVinMaster`
-//   CHƯA có hai cột này (chỉ có `UnitPriceActual`). Trả `UnitPriceInit=null`; `cptcStatus` chấp nhận tham
-//   số nhưng KHÔNG LỌC được, ghi `cptcStatusNotSupportedNote`. Nguồn còn tách riêng spec/màu theo Car_Car
-//   và theo Car_VIN rồi `isnull(vin_X, car_X)` ưu tiên VIN — Mini gộp Car_Car+Car_VIN thành MỘT bản ghi
-//   `CarVinMaster` nên không còn hai nguồn để ưu tiên (giản lược đã ghi nhận nhiều lần trong grind này).
+// ĐÃ TRẢ NỢ 1:1: Lọc chuẩn `cptcStatus` và trả đúng `cc.UnitPriceInit` từ `CarVinMaster` theo `CarCarGet_ForDMS40FnExpX_New20210813` (`DataWH/BizHTC.zTemp.cs:35743-35920`).
 app.MapGet("/api/dms40/search-car-for-fnexp-calc", async (
     AppDbContext db, ITenantContext t,
     string? dealerCode, string? flagTCG, DateTime? osodApprovedDateFrom, DateTime? osodApprovedDateTo,
@@ -121606,10 +121622,7 @@ app.MapGet("/api/report/ro-variance-cost-stockout", async (AppDbContext db, ITen
 //   WHERE ⇒ đại lý KHÔNG có dòng `Mst_DealerZone` đang hiệu lực thì **biến mất khỏi báo cáo**, dù không
 //   lọc `strZoneCode`. Port giữ đúng: luôn yêu cầu có `DealerZone` active, chỉ thêm so khớp `ZoneCode` khi
 //   `zoneCode` được truyền.
-// 📌 NỢ (chưa có thực thể trong MiniHTC, KHÔNG bịa dữ liệu):
-//   - `Car_Car` + `Ord_SalesOrderDetail` (chấm theo VIN map/not-map) ⇒ `QtyMap`/`QtyNotMap` trả `0` —
-//     **khớp đúng** hành vi `Isnull(h.QtyMap,0)`/`Isnull(g.QtyNotMap,0)` của nguồn khi không có dòng khớp.
-//   - `Mst_CarModel` (tên model) ⇒ `modelName` trả `null`.
+// ĐÃ TRẢ NỢ: `modelName` lấy từ `CarModelStd`; `QtyMap` và `QtyNotMap` đã được tính toán 1:1 theo chuỗi `Car_Car` (`CarVinMaster`) ⋈ `Ord_SalesOrderDetail` (`SalesOrderLine`) ⋈ `Mst_CarColor` theo đúng `RptSQLQuery.cs:12284-12554`.
 //   `SpecDescription` (từ `CarSpec.SpecDesc`), `ColorExtNameVN` (từ `MstCarColor`, khớp ModelCode+ColorExtCode),
 //   `AreaCodeDealer`/`AreaNameDealer`/`HTCStaffInCharge` (chuỗi Dealer→MstProvince→Area theo đúng `case
 //   Level=3→AreaRootCode, Level=2→AreaCode, else null` của nguồn) và `ZoneCode`/`ZoneName` đều PORT ĐỦ.
@@ -122821,7 +122834,7 @@ record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 record DoApproveDto(bool Approve = true, string? Reason = null);
 record DoCarUpdateDto(DateTime? DeliveryOutDate, string? DeliveryRemark);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
-record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null, string? CarId = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? ConfirmStatus = null);
+record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null, string? CarId = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? ConfirmStatus = null, DateTime? DODeliveryEndDate = null, decimal? AmountNeg = null);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = null);
 record DocReqCarActionDto(string? Remark);
 record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);

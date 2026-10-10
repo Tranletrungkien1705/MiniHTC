@@ -8076,6 +8076,10 @@ public sealed class DocReqCar
     public DateTime? DeliveryEndDate { get; set; }
     /// <summary>#Round113 §12: TblDRDetail.CONFIRMSTATUS (`DbDefine.cs:961`) — trạng thái xác nhận giao xe.</summary>
     public string? ConfirmStatus { get; set; }
+    /// <summary>#Round114 §12: TblDRDetail.DODELIVERYENDDATE (`DbDefine.cs:960`) — ngày kết thúc giao xe theo lệnh DO.</summary>
+    public DateTime? DODeliveryEndDate { get; set; }
+    /// <summary>#Round114 §12: TblDRDetail.AMOUNTNEGATIVE (`DbDefine.cs:963`) — số tiền âm/giảm trừ trong hồ sơ xe.</summary>
+    public decimal? AmountNeg { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
