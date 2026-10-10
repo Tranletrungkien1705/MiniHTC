@@ -8015,6 +8015,16 @@ public sealed class DocReq
     public int? LoanSupportDay { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqList.Remark (`DbDefine.cs:2672`) — ghi chú đề nghị giấy tờ xe.</summary>
+    public string? Remark { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqList.DRTCGListCode (`DbDefine.cs:2676`) — mã danh sách hồ sơ xe TCG.</summary>
+    public string? DRTCGListCode { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqList.DRTCGListStatus (`DbDefine.cs:2677`) — trạng thái danh sách hồ sơ xe TCG.</summary>
+    public string? DRTCGListStatus { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqList.TCGInvoiceDate (`DbDefine.cs:2682`) — ngày hoá đơn TCG xuất HTC.</summary>
+    public DateTime? TCGInvoiceDate { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqList.LoanSupportDateEnd (`DbDefine.cs:2680`) — ngày hết hạn hỗ trợ vay vốn.</summary>
+    public DateTime? LoanSupportDateEnd { get; set; }
 }
 
 /// <summary>Dòng xe làm hồ sơ (Car_DocReqDtl): VIN + model + màu + số máy + tiền.</summary>
@@ -8122,6 +8132,22 @@ public sealed class DocReqCar
     public DateTime? CustomsClearanceDate { get; set; }
     /// <summary>#Round117 §12: TblCar_DocReqDtl.HTCInvoiceNo (`Const.Main.cs:14787`) — số hoá đơn HTC của xe.</summary>
     public string? HTCInvoiceNo { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.TransportMinutesNo (`DbDefine.cs:2727`) — số biên bản bàn giao xe.</summary>
+    public string? TransportMinutesNo { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.CDODDeliveryEndDate (`DbDefine.cs:2726`) — ngày nhận xe thực tế.</summary>
+    public DateTime? CDODDeliveryEndDate { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.Description (`DbDefine.cs:2706`) — mô tả diễn giải hồ sơ xe.</summary>
+    public string? Description { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.UnitPriceActual (`DbDefine.cs:2707`) — đơn giá thực tế của xe.</summary>
+    public decimal? UnitPriceActual { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.SoCode (`DbDefine.cs:2704`) — mã đơn đặt hàng của xe.</summary>
+    public string? SoCode { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.ColorNameVN (`DbDefine.cs:2709`) — tên màu tiếng Việt của xe.</summary>
+    public string? ColorNameVN { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.ModelName (`DbDefine.cs:2701`) — tên model của xe.</summary>
+    public string? ModelName { get; set; }
+    /// <summary>#Round118 §12: TblCar_DocReqDtl.RequestNo (`DbDefine.cs:2705`) — số yêu cầu hồ sơ của xe.</summary>
+    public string? RequestNo { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ

@@ -4276,6 +4276,8 @@ app.MapGet("/api/docreqs", async (AppDbContext db, ITenantContext t, string? sta
     var items = await q.OrderByDescending(d => d.Id).Take(500).Select(d => new
     {
         d.DocReqNo, d.DealerCode, d.Status, d.CreatedAt, d.SubmittedAt, d.DoneAt,
+        d.Remark, d.DRTCGListCode, d.DRTCGListStatus, d.TCGInvoiceDate, d.LoanSupportDateEnd,
+        d.LetterRepresentationNo, d.LetterRepresentationDate, d.LoanSupportDay,
         cars = db.DocReqCars.Count(c => c.OrgId == t.OrgId && c.DocReqId == d.Id),
         total = db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id).Sum(c => (decimal?)c.AmountTotal) ?? 0
     }).ToListAsync();
@@ -4284,20 +4286,30 @@ app.MapGet("/api/docreqs", async (AppDbContext db, ITenantContext t, string? sta
 
 app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "CarDocReqCreateDealer_InvalidDRListCode", message = "Cần DealerCode." });
     var vins = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
-    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
+    if (vins.Count == 0) return Results.BadRequest(new { error = "CarDocReqCreate_TableDetailBeBlank" });
     var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    if (dupe != null) return Results.BadRequest(new { error = "CarDocReqCreateNormalOrSpecialX_DuplicateKeyDetail", vin = dupe.Key });
     var no = "DR" + DateTime.Now.ToString("yyMMddHHmmss");
     // 🔴 `TypeCRR` quyết định luồng duyệt (NORMAL duyệt 1 lần là xong) — nguồn có 3 đường tạo riêng
     //    (CreateHTC / CreateDealer / TCGCreateDealer) chỉ khác nhau ở loại này.
     var typeCRR = (dto.TypeCRR ?? "NORMAL").Trim().ToUpperInvariant();
     if (typeCRR is not ("NORMAL" or "SPECIAL" or "DEALER" or "DEALERTCG"))
-        return Results.BadRequest(new { error = "TypeCRR = NORMAL | SPECIAL | DEALER | DEALERTCG." });
+        return Results.BadRequest(new { error = "CarDocReqCreateNormalOrSpecialX_InvalidTypeCRR" });
+    if ((typeCRR == "NORMAL" || typeCRR == "SPECIAL") && (!string.IsNullOrWhiteSpace(dto.LetterRepresentationNo) || dto.LetterRepresentationDate != null || dto.LoanSupportDay != null))
+        return Results.BadRequest(new { error = "CarDocReqCreateNormalOrSpecialX_InvalidLetterRepresentation" });
     var nowDr = DateTime.Now;
     var whoDr = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P", CreatedBy = whoDr };
+    var d = new DocReq
+    {
+        OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
+        TypeCRR = typeCRR, Status = "P", CreatedBy = whoDr,
+        Remark = dto.Remark, DRTCGListCode = dto.DRTCGListCode, DRTCGListStatus = dto.DRTCGListStatus,
+        TCGInvoiceDate = dto.TCGInvoiceDate, LoanSupportDateEnd = dto.LoanSupportDateEnd,
+        LetterRepresentationNo = dto.LetterRepresentationNo, LetterRepresentationDate = dto.LetterRepresentationDate,
+        LoanSupportDay = dto.LoanSupportDay
+    };
     db.DocReqs.Add(d); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.DocReqCars.Add(new DocReqCar
@@ -4320,17 +4332,20 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
             DeclarationNo = c.DeclarationNo, CODate = c.CODate, DRFullDocDate = c.DRFullDocDate,
             DocumentsStatus = c.DocumentsStatus, CustomsClearanceDate = c.CustomsClearanceDate,
             HTCInvoiceNo = c.HTCInvoiceNo,
+            TransportMinutesNo = c.TransportMinutesNo, CDODDeliveryEndDate = c.CDODDeliveryEndDate,
+            Description = c.Description, UnitPriceActual = c.UnitPriceActual,
+            SoCode = c.SoCode, ColorNameVN = c.ColorNameVN, ModelName = c.ModelName, RequestNo = c.RequestNo,
             LogLUDateTime = c.LogLUDateTime ?? nowDr, LogLUBy = c.LogLUBy ?? whoDr
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DocReqNo, d.DealerCode, cars = vins.Count, status = d.Status });
+    return Results.Ok(new { d.DocReqNo, d.DealerCode, cars = vins.Count, status = d.Status, d.TypeCRR, d.Remark, d.DRTCGListCode, d.DRTCGListStatus, d.TCGInvoiceDate, d.LoanSupportDateEnd });
 }).RequireAuthorization();
 
 app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
-    if (d is null) return Results.NotFound(new { no });
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_DocReqNotFound", no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
         .Select(c => new
         {
@@ -4346,6 +4361,8 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
             c.DeclarationNo, c.CODate, c.DRFullDocDate,
             c.DocumentsStatus, c.CustomsClearanceDate,
             c.HTCInvoiceNo,
+            c.TransportMinutesNo, c.CDODDeliveryEndDate, c.Description, c.UnitPriceActual,
+            c.SoCode, c.ColorNameVN, c.ModelName, c.RequestNo,
             c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay,
             c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1,
             c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark,
@@ -4353,6 +4370,7 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
         }).ToListAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, d.Status, d.CreatedAt, d.SubmittedAt, d.DoneAt,
         d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy,   // #1378 §12
+        d.Remark, d.DRTCGListCode, d.DRTCGListStatus, d.TCGInvoiceDate, d.LoanSupportDateEnd,
         count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
 }).RequireAuthorization();
 
@@ -7983,19 +8001,20 @@ app.MapPost("/api/docreqs/{no}/cars/delete-tcg", async (string no, CdrCancelDto 
     // `..._TableDetailBeBlank`
     var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v))
         .Select(v => v.Trim().ToUpperInvariant()).ToList();
-    if (vins.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe nào để xoá.", guard = "Car_DocReqTCGDtlDelete_ByDealer_TableDetailBeBlank" });
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Car_DocReqTCGDtlDelete_ByDealer_TableDetailBeBlank", message = "Chưa chọn xe nào để xoá." });
     // `..._DuplicateKeyDetail`
     var dup = vins.GroupBy(v => v).FirstOrDefault(g => g.Count() > 1);
-    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng trong danh sách!", guard = "Car_DocReqTCGDtlDelete_ByDealer_DuplicateKeyDetail" });
+    if (dup != null) return Results.BadRequest(new { error = "Car_DocReqTCGDtlDelete_ByDealer_DuplicateKeyDetail", vin = dup.Key, message = $"VIN {dup.Key} bị trùng trong danh sách!" });
     vins = vins.Distinct().ToList();
 
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
-    if (d is null) return Results.NotFound(new { no });
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_Car_DocReqDtlNotFound", no });
     // `myCar_CheckCar_DocReqTCGList(…, Flag.Active, Stage.Pending)` — theo CODE là "P", không phải "C".
     if (d.Status != "P")
         return Results.BadRequest(new
         {
-            error = $"Đề nghị TCG đang ở '{d.Status}' — chỉ xoá được khi đang chờ duyệt 'P'.",
+            error = "CommonAppData_Car_DocReqDtl_DRDtlStatusNotMatched",
+            message = $"Đề nghị TCG đang ở '{d.Status}' — chỉ xoá được khi đang chờ duyệt 'P'.",
             guard = "myCar_CheckCar_DocReqTCGList(Stage.Pending)",
             sourceQuirk = "Chú thích nguồn viết 'chỉ xóa Đề nghị ở trạng thái C' nhưng THAM SỐ thực là Stage.Pending — port theo CODE."
         });
@@ -8005,9 +8024,9 @@ app.MapPost("/api/docreqs/{no}/cars/delete-tcg", async (string no, CdrCancelDto 
     {
         // `myCar_CheckCar_DocReqTCGDtl(…, Flag.Active, Stage.Pending)`
         var line = lines.FirstOrDefault(x => x.Vin == vin);
-        if (line is null) return Results.BadRequest(new { error = $"Xe {vin} không nằm trong đề nghị {no}." });
+        if (line is null) return Results.BadRequest(new { error = "CommonAppData_Car_DocReqDtlNotFound", vin, message = $"Xe {vin} không nằm trong đề nghị {no}." });
         if (line.DRDtlStatus != "P")
-            return Results.BadRequest(new { error = $"Xe {vin} đang ở '{line.DRDtlStatus}' — luồng TCG chỉ xoá được dòng đang 'P'.", note = "Khác luồng thường: ở đó phải HUỶ về 'C' trước rồi mới xoá (#B31)." });
+            return Results.BadRequest(new { error = "CommonAppData_Car_DocReqDtl_DRDtlStatusNotMatched", vin, message = $"Xe {vin} đang ở '{line.DRDtlStatus}' — luồng TCG chỉ xoá được dòng đang 'P'.", note = "Khác luồng thường: ở đó phải HUỶ về 'C' trước rồi mới xoá (#B31)." });
     }
 
     db.DocReqCars.RemoveRange(lines);
@@ -8039,7 +8058,7 @@ app.MapPost("/api/docreqs/{no}/edit-support", async (string no, DocReqSupportDto
 {
     no = no.Trim().ToUpperInvariant();
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
-    if (d is null) return Results.NotFound(new { no });
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_DocReqNotFound", no });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.Vin)).ToList();
     if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
     int updated = 0; var notFound = new List<string>();
@@ -8063,8 +8082,8 @@ app.MapPost("/api/docreqs/{no}/approve1", async (string no, AppDbContext db, ITe
 {
     no = no.Trim().ToUpperInvariant();
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
-    if (d is null) return Results.NotFound(new { no });
-    if (d.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt cấp 1 đề nghị đang chờ duyệt (P)." });
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_DocReqNotFound", no });
+    if (d.Status != "P") return Results.BadRequest(new { error = "CommonAppData_DRListStatusNotMatched", message = "Chỉ duyệt cấp 1 đề nghị đang chờ duyệt (P)." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
     d.ApprovedDate1 = now; d.ApprovedBy1 = who;
@@ -8084,8 +8103,8 @@ app.MapPost("/api/docreqs/{no}/cancel", async (string no, DocReqCarActionDto? dt
 {
     no = no.Trim().ToUpperInvariant();
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
-    if (d is null) return Results.NotFound(new { no });
-    if (d.Status != "P") return Results.BadRequest(new { error = "Chỉ huỷ được đề nghị đang chờ duyệt (P)." });
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_DocReqNotFound", no });
+    if (d.Status != "P") return Results.BadRequest(new { error = "CommonAppData_DRListStatusNotMatched", message = "Chỉ huỷ được đề nghị đang chờ duyệt (P)." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
 
     // 🔴 RBAC theo NGƯỜI TẠO, không theo đại lý ghi trên đề nghị: nguồn lấy `CreatedBy` → đại lý của
@@ -8105,13 +8124,13 @@ app.MapPost("/api/docreqs/{no}/cancel", async (string no, DocReqCarActionDto? dt
         var blocked = await db.DocReqCars.Where(x => x.OrgId == t.OrgId && vins.Contains(x.Vin) && specialIds.Contains(x.DocReqId))
             .Select(x => x.Vin).FirstOrDefaultAsync();
         if (blocked != null)
-            return Results.BadRequest(new { error = $"Xe {blocked} còn đề nghị loại đặc biệt — phải huỷ đề nghị đặc biệt trước." });
+            return Results.BadRequest(new { error = "CarDocReqListCancel_ExistAnotherSpecial", vin = blocked, message = $"Xe {blocked} còn đề nghị loại đặc biệt — phải huỷ đề nghị đặc biệt trước." });
     }
     // Guard hạ nguồn: đề nghị giải chấp (ReqDMNo) và đề nghị hoá đơn (ReqIVNo).
     var dm = await db.RedeemRequestLines.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN!)).Select(x => x.VIN).FirstOrDefaultAsync();
-    if (dm != null) return Results.BadRequest(new { error = $"Xe {dm} đã có đề nghị giải chấp — không huỷ được đề nghị hồ sơ." });
+    if (dm != null) return Results.BadRequest(new { error = "CarDocReqListCancel_ExistRedeem", vin = dm, message = $"Xe {dm} đã có đề nghị giải chấp — không huỷ được đề nghị hồ sơ." });
     var iv = await db.RedeemInvoiceRequestLines.Where(x => x.OrgId == t.OrgId && vins.Contains(x.VIN!)).Select(x => x.VIN).FirstOrDefaultAsync();
-    if (iv != null) return Results.BadRequest(new { error = $"Xe {iv} đã có đề nghị hoá đơn — không huỷ được đề nghị hồ sơ." });
+    if (iv != null) return Results.BadRequest(new { error = "CarDocReqListCancel_ExistRDInvoice", vin = iv, message = $"Xe {iv} đã có đề nghị hoá đơn — không huỷ được đề nghị hồ sơ." });
 
     var now = DateTime.Now;
     d.Status = "C"; d.CancelDate = now; d.CancelBy = who;
@@ -8151,9 +8170,9 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
         return Results.BadRequest(new { error = "action = approve2|reject|cancel" });
     no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
-    if (d is null) return Results.NotFound(new { no });
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_DocReqNotFound", no });
     var c = await db.DocReqCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqId == d.Id && x.Vin == vin);
-    if (c is null) return Results.NotFound(new { no, vin });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_Car_DocReqDtlNotFound", no, vin });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
 
@@ -8166,7 +8185,7 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
         //    (cột trạng thái `DRTCGDtlStatus`), MiniHTC đang gộp chung và phân biệt bằng `TypeCRR`.
         if (string.Equals(d.TypeCRR, "DEALERTCG", StringComparison.OrdinalIgnoreCase))
         {
-            if (c.DRDtlStatus != "P") return Results.BadRequest(new { error = $"Xe {vin} (luồng TCG) phải đang chờ duyệt (P)." });
+            if (c.DRDtlStatus != "P") return Results.BadRequest(new { error = "CommonAppData_Car_DocReqDtl_DRDtlStatusNotMatched", message = $"Xe {vin} (luồng TCG) phải đang chờ duyệt (P)." });
             c.DRDtlStatus = "A2";
             c.ApprovedDate1 = now; c.ApprovedBy1 = who; c.ApprovedDate2 = now; c.ApprovedBy2 = who;
             await db.SaveChangesAsync();
@@ -8194,7 +8213,7 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
             });
         }
         // Nguồn: `strRequestStatusListToCheck = Stage.Approved1` ⇒ CHỈ từ "A1".
-        if (c.DRDtlStatus != "A1") return Results.BadRequest(new { error = $"Xe {vin} phải ở trạng thái duyệt cấp 1 (A1)." });
+        if (c.DRDtlStatus != "A1") return Results.BadRequest(new { error = "CommonAppData_Car_DocReqDtl_DRDtlStatusNotMatched", message = $"Xe {vin} phải ở trạng thái duyệt cấp 1 (A1)." });
         c.DRDtlStatus = "A2"; c.ApprovedDate2 = now; c.ApprovedBy2 = who;
         await db.SaveChangesAsync();
         return Results.Ok(new { no, vin, status = c.DRDtlStatus, statusName = "Duyệt cấp 2" });
@@ -8202,12 +8221,12 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
 
     // Hai nhánh còn lại đều yêu cầu HEADER thuộc "P,A1,A2,F" (nguồn guard cả hai tầng).
     if (d.Status is not ("P" or "A1" or "A2" or "F"))
-        return Results.BadRequest(new { error = $"Đề nghị đang ở trạng thái '{d.Status}' — không thao tác được." });
+        return Results.BadRequest(new { error = "CommonAppData_DRListStatusNotMatched", message = $"Đề nghị đang ở trạng thái '{d.Status}' — không thao tác được." });
 
     if (action == "reject")
     {
         // 🔴 Nguồn cho từ chối CHỈ từ "A2" — tức là **từ chối SAU khi đã duyệt cấp 2**, không phải trước.
-        if (c.DRDtlStatus != "A2") return Results.BadRequest(new { error = $"Xe {vin} chỉ từ chối được sau khi đã duyệt cấp 2 (A2)." });
+        if (c.DRDtlStatus != "A2") return Results.BadRequest(new { error = "CommonAppData_Car_DocReqDtl_DRDtlStatusNotMatched", message = $"Xe {vin} chỉ từ chối được sau khi đã duyệt cấp 2 (A2)." });
         c.DRDtlStatus = "R"; c.RejectDate = now; c.RejectBy = who; c.Remark = dto?.Remark;
         await db.SaveChangesAsync();
         return Results.Ok(new { no, vin, status = c.DRDtlStatus, statusName = "Từ chối" });
@@ -8215,20 +8234,21 @@ app.MapPost("/api/docreqs/{no}/cars/{vin}/{action}", async (string no, string vi
 
     // cancel: dòng phải thuộc "A1,A2" + 3 ràng buộc hạ nguồn của nguồn.
     if (c.DRDtlStatus is not ("A1" or "A2"))
-        return Results.BadRequest(new { error = $"Xe {vin} chỉ huỷ được khi đang ở A1 hoặc A2." });
+        return Results.BadRequest(new { error = "CommonAppData_Car_DocReqDtl_DRDtlStatusNotMatched", message = $"Xe {vin} chỉ huỷ được khi đang ở A1 hoặc A2." });
     // (1) Đã phát hành hoá đơn HTC hoặc TCG cho xe ⇒ cấm huỷ.
     if (await db.InvoiceLines.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin))
-        return Results.BadRequest(new { error = $"Xe {vin} đã có hoá đơn — không huỷ được đề nghị hồ sơ." });
+        return Results.BadRequest(new { error = "CarDocReqDtlCancel_ExistInvoice", message = $"Xe {vin} đã có hoá đơn — không huỷ được đề nghị hồ sơ." });
     // (2) Đã có đề nghị giải chấp (`ReqDMNo`) ⇒ cấm.
     if (await db.RedeemRequestLines.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin))
-        return Results.BadRequest(new { error = $"Xe {vin} đã có đề nghị giải chấp — không huỷ được." });
+        return Results.BadRequest(new { error = "CarDocReqDtlCancel_ExistRedeem", message = $"Xe {vin} đã có đề nghị giải chấp — không huỷ được." });
     // (3) Xe đang nằm trong một đề nghị loại SPECIAL khác ⇒ cấm.
     var specialIds = db.DocReqs.Where(x => x.OrgId == t.OrgId && x.TypeCRR == "SPECIAL" && x.Id != d.Id).Select(x => x.Id);
     if (await db.DocReqCars.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vin && specialIds.Contains(x.DocReqId)))
-        return Results.BadRequest(new { error = $"Xe {vin} đang thuộc một đề nghị loại đặc biệt khác — không huỷ được." });
+        return Results.BadRequest(new { error = "CarDocReqDtlCancel_ExistAnotherSpecial", message = $"Xe {vin} đang thuộc một đề nghị loại đặc biệt khác — không huỷ được." });
     c.DRDtlStatus = "C"; c.Remark = dto?.Remark; c.CancelDate = DateTime.Now; c.CancelBy = user.Identity?.Name ?? "system";   // #B45 SS12
     await db.SaveChangesAsync();
-    return Results.Ok(new { no, vin, status = c.DRDtlStatus, statusName = "Huỷ" });}).RequireAuthorization();
+    return Results.Ok(new { no, vin, status = c.DRDtlStatus, statusName = "Huỷ" });
+}).RequireAuthorization();
 
 // ===== Thiết lập hóa đơn theo model (InvoiceSetup — port 1:1 FrmMst_InvoiceSetup, 2010.HTC/Admin/Product) =====
 app.MapGet("/api/invoicesetups", async (AppDbContext db, ITenantContext t, string? active, string? model) =>
@@ -8617,12 +8637,12 @@ app.MapGet("/api/bankgrts/detail-search", async (AppDbContext db, ITenantContext
 
 app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
-    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Chưa chọn ngân hàng bảo lãnh." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_InvalidDetailDealerCode", message = "Chưa chọn đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_InvalidBankCode", message = "Chưa chọn ngân hàng bảo lãnh." });
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có chi tiết xe bảo lãnh." });
+    if (cars.Count == 0) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_TableDetailBeBlank", message = "Chưa có chi tiết xe bảo lãnh." });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    if (dupe != null) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_DuplicateKeyDetail", vin = dupe.Key, message = $"VIN {dupe.Key} bị trùng!" });
     // 🔴 #186 SỬA BUG DỮ LIỆU: `GuaranteeType` KHÔNG phải cờ 0/1 mà là **loại bảo lãnh**
     //    (`TConst.GuaranteeType`, Const.Main.cs:1139): **"BL"** bảo lãnh · **"LCTC"** LC trả chậm
     //    · **"LCUP"** LC Upas · **"EPLC"**. Port cũ ép `dto.GuaranteeType == "1" ? "1" : "0"`
@@ -8630,11 +8650,11 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
     //    `LCTC`/`LCUP` ⇒ BANKLC) **KHÔNG BAO GIỜ khớp** — bug câm LIÊN CỤM.
     var gtIn = (dto.GuaranteeType ?? "").Trim().ToUpperInvariant();
     if (gtIn is not ("BL" or "LCTC" or "LCUP" or "EPLC"))
-        return Results.BadRequest(new { error = "Loại bảo lãnh phải là BL | LCTC | LCUP | EPLC." });
+        return Results.BadRequest(new { error = "PaymentGuaranteeCreate_InvalidGuaranteeType", message = "Loại bảo lãnh phải là BL | LCTC | LCUP | EPLC." });
     var gtype = gtIn;
     // 🔴 `LCUP` BẮT BUỘC có số ngày trả chậm >= 0 (`_InvalidNumberOfDaysDeferredPayment`).
     if (gtype == "LCUP" && (dto.NumberOfDaysDeferredPayment is null || dto.NumberOfDaysDeferredPayment < 0))
-        return Results.BadRequest(new { error = "Bảo lãnh LC Upas (LCUP) phải có số ngày trả chậm >= 0." });
+        return Results.BadRequest(new { error = "PaymentGuaranteeCreate_InvalidNumberOfDaysDeferredPayment", message = "Bảo lãnh LC Upas (LCUP) phải có số ngày trả chậm >= 0." });
     var no = "BLNH" + DateTime.Now.ToString("yyMMddHHmmss");
     var g2 = new BankGuarantee
     {
@@ -8665,7 +8685,7 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
         .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy, c.TotalCompletedDate, c.DiscountDays, c.DateRecieveGrtRoot, c.OSODGrtEndDate, c.SOCode, c.DlrCtrNo, c.NumberOfDaysDeferredPayment, c.FlagDealerContractDMS40, c.GrtClaimExtType, c.GrtDateExpired, c.GrtDateStart, c.GrtDateEnd, c.VHHTCInvoiceDate, c.DateStartUpdateDTime, c.DCPType, c.DCPTypeName }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot,
@@ -8678,12 +8698,12 @@ app.MapPost("/api/bankgrts/{no}/edit-expiry", async (string no, GrtExpiryEditDto
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
     foreach (var l in lines)
         if (l.DateExpired.HasValue && l.DateEnd.HasValue && l.DateEnd < l.DateExpired)
-            return Results.BadRequest(new { error = $"VIN {l.VIN}: ngày kết thúc phải >= ngày hết hạn." });
+            return Results.BadRequest(new { error = "PaymentGuaranteeDetailUpdate_InvalidDateParams", message = $"VIN {l.VIN}: ngày kết thúc phải >= ngày hết hạn." });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
     var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
     int updated = 0; var notFound = new List<string>();
@@ -8710,10 +8730,10 @@ app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto d
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
-    if (lines.Any(l => l.GrtValue < 0)) return Results.BadRequest(new { error = "Giá trị bảo lãnh không được âm." });
+    if (lines.Any(l => l.GrtValue < 0)) return Results.BadRequest(new { error = "PaymentGuaranteeDetailUpdate_InvalidGuaranteeValue", message = "Giá trị bảo lãnh không được âm." });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
     var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
     int updated = 0; var notFound = new List<string>();
@@ -8741,7 +8761,7 @@ app.MapPost("/api/bankgrts/{no}/edit-start", async (string no, GrtStartEditDto d
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
@@ -8767,10 +8787,10 @@ app.MapPost("/api/bankgrts/{no}/edit-deferred", async (string no, GrtDeferredEdi
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
-    if (lines.Any(l => l.DeferredPaymentDays < 0)) return Results.BadRequest(new { error = "Số ngày trả chậm không được âm." });
+    if (lines.Any(l => l.DeferredPaymentDays < 0)) return Results.BadRequest(new { error = "PaymentGuaranteeDetailUpdate_InvalidNumberOfDaysDeferredPayment", message = "Số ngày trả chậm không được âm." });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
     var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
     int updated = 0; var notFound = new List<string>();
@@ -8813,11 +8833,11 @@ app.MapPost("/api/bankgrts/{no}/update", async (string no, GrtUpdateDto dto, App
 {
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { error = "Không tìm thấy bảo lãnh.", no });
-    if (g.Status != "A") return Results.BadRequest(new { error = $"Chỉ cập nhật bảo lãnh đã duyệt (đang: {g.Status}).", g.Status });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
+    if (g.Status != "A") return Results.BadRequest(new { error = "CommonAppData_PaymentGuaranteeStatusNotMatched", status = g.Status, message = $"Chỉ cập nhật bảo lãnh đã duyệt (đang: {g.Status})." });
     var hasVal = dto.DiscountPmtValue is not null; var hasDate = dto.DiscountPmtDate is not null;
-    if (hasVal && !hasDate) return Results.BadRequest(new { error = "Có giá trị chiết khấu thực trả nhưng thiếu ngày (PaymentGuaranteeUpdate_InvalidDiscountPmtDate)." });
-    if (!hasVal && hasDate) return Results.BadRequest(new { error = "Có ngày chiết khấu thực trả nhưng thiếu giá trị (PaymentGuaranteeUpdate_InvalidDiscountPmtValue)." });
+    if (hasVal && !hasDate) return Results.BadRequest(new { error = "PaymentGuaranteeUpdate_InvalidDiscountPmtDate", message = "Có giá trị chiết khấu thực trả nhưng thiếu ngày." });
+    if (!hasVal && hasDate) return Results.BadRequest(new { error = "PaymentGuaranteeUpdate_InvalidDiscountPmtValue", message = "Có ngày chiết khấu thực trả nhưng thiếu giá trị." });
     if (hasVal && hasDate)
     {
         var grtVins = await db.BankGuaranteeDtls.Where(d => d.OrgId == t.OrgId && d.GuaranteeId == g.Id && d.GuaranteeDetailStatus != "R" && d.GuaranteeDetailStatus != "C")
@@ -8826,7 +8846,7 @@ app.MapPost("/api/bankgrts/{no}/update", async (string no, GrtUpdateDto dto, App
                             join h in db.ReqPaymentDiscounts on l.ReqId equals h.Id
                             where l.OrgId == t.OrgId && l.GuaranteeNo == no && l.PmtDctDtlStatus == "A2" && h.PmtDctStatus == "S" && grtVins.Contains(l.VIN)
                             select l.Id).AnyAsync();
-        if (!okDnck) return Results.BadRequest(new { error = "Bảo lãnh chưa có Đề nghị chiết khấu đã ký (PaymentGuaranteeUpdate_Invalid_Req_PaymentDiscount).", no });
+        if (!okDnck) return Results.BadRequest(new { error = "PaymentGuaranteeUpdate_Invalid_Req_PaymentDiscount", message = "Bảo lãnh chưa có Đề nghị chiết khấu đã ký.", no });
     }
     // Nguồn ghi đè cả 6 cột theo đúng giá trị gửi lên (rỗng ⇒ NULL).
     g.BankGuaranteeNo = (dto.BankGuaranteeNo ?? "").Trim();
@@ -8865,19 +8885,19 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (
     if (action is not ("approve" or "reject" or "settle")) return Results.BadRequest(new { error = "action = approve|reject|settle" });
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     if (action is "approve" or "reject")
     {
-        if (g.Status != "P") return Results.BadRequest(new { error = $"Bảo lãnh không ở trạng thái chờ duyệt (đang: {g.Status})." });
+        if (g.Status != "P") return Results.BadRequest(new { error = "CommonAppData_PaymentGuaranteeStatusNotMatched", status = g.Status, message = $"Bảo lãnh không ở trạng thái chờ duyệt (đang: {g.Status})." });
         if (action == "approve")
         {
             // Guard của nguồn (Biz.HTC.WH.My.cs:10600-10630): CẢ kỳ hạn đăng ký LẪN kỳ hạn thực tế
             // phải >= WarningPeriod, mỗi cái một mã lỗi riêng.
             var termActual = termActualQ ?? g.TermActual;
             if (g.Term < BankGrtWarningPeriod)
-                return Results.BadRequest(new { error = $"Kỳ hạn bảo lãnh phải >= {BankGrtWarningPeriod} (đang: {g.Term})." });
+                return Results.BadRequest(new { error = "PaymentGuaranteeApprove_InvalidTerm", term = g.Term, minTerm = BankGrtWarningPeriod, message = $"Kỳ hạn bảo lãnh phải >= {BankGrtWarningPeriod} (đang: {g.Term})." });
             if (termActual < BankGrtWarningPeriod)
-                return Results.BadRequest(new { error = $"Kỳ hạn thực tế phải >= {BankGrtWarningPeriod} (đang: {termActual})." });
+                return Results.BadRequest(new { error = "PaymentGuaranteeApprove_InvalidTermActual", termActual, minTerm = BankGrtWarningPeriod, message = $"Kỳ hạn thực tế phải >= {BankGrtWarningPeriod} (đang: {termActual})." });
             g.Status = "A"; g.ApprovedAt = DateTime.Now;
             g.TermActual = termActual;
             // Giá trị DẪN XUẤT của nguồn — không phải nhập tay.
@@ -8896,7 +8916,7 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (
     }
     else // settle = tất toán
     {
-        if (g.Status != "A") return Results.BadRequest(new { error = "Chỉ tất toán bảo lãnh đã duyệt." });
+        if (g.Status != "A") return Results.BadRequest(new { error = "CommonAppData_PaymentGuaranteeStatusNotMatched", status = g.Status, message = "Chỉ tất toán bảo lãnh đã duyệt." });
         if (g.FlagSettled == "1") return Results.BadRequest(new { error = "Bảo lãnh đã tất toán." });
         g.FlagSettled = "1"; g.SettledAt = DateTime.Now;
     }
@@ -8920,13 +8940,13 @@ app.MapPost("/api/bankgrts/{no}/cancel-car", async (
     if (string.IsNullOrWhiteSpace(dto.RemarkCancel)) return Results.BadRequest(new { error = "Lý do huỷ là bắt buộc (RemarkCancel)." });
     no = no.Trim().ToUpperInvariant();
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
-    if (g is null) return Results.NotFound(new { no });
+    if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
 
     var vin = dto.Vin?.Trim().ToUpperInvariant();
     var carId = dto.CarId?.Trim();
     var dtl = await db.BankGuaranteeDtls.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id
         && (c.VIN == vin || (carId != null && c.CarId == carId)));
-    if (dtl is null) return Results.NotFound(new { error = "Không tìm thấy xe trong bảo lãnh này." });
+    if (dtl is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeDetailNotFound", no, vin });
 
     if (dtl.GuaranteeDetailStatus != "A")
         return Results.BadRequest(new { error = "PaymentGuaranteeDetailCancel_GrtDtlStatusNotApproved" });
@@ -122884,8 +122904,8 @@ record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 record DoApproveDto(bool Approve = true, string? Reason = null);
 record DoCarUpdateDto(DateTime? DeliveryOutDate, string? DeliveryRemark);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
-record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null, string? CarId = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? ConfirmStatus = null, DateTime? DODeliveryEndDate = null, decimal? AmountNeg = null, string? DRTCGDtlStatus = null, string? DRTCGListCode = null, string? DealerCodeRecieve = null, string? DealerNameRecieve = null, string? ReqIVNo = null, string? TCGInvoiceNo = null, string? HTCInvoiceCode = null, string? TCGInvoiceCode = null, string? BankCode = null, string? InvoiceNoFactory = null, DateTime? HTCInvoiceDate = null, string? FlagMortageEndDate = null, string? BankApprStatus = null, DateTime? BankApprDTime = null, string? BankApprBy = null, string? DeclarationNo = null, DateTime? CODate = null, DateTime? DRFullDocDate = null, string? DocumentsStatus = null, DateTime? CustomsClearanceDate = null, string? HTCInvoiceNo = null);
-record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = null);
+record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null, string? CarId = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? ConfirmStatus = null, DateTime? DODeliveryEndDate = null, decimal? AmountNeg = null, string? DRTCGDtlStatus = null, string? DRTCGListCode = null, string? DealerCodeRecieve = null, string? DealerNameRecieve = null, string? ReqIVNo = null, string? TCGInvoiceNo = null, string? HTCInvoiceCode = null, string? TCGInvoiceCode = null, string? BankCode = null, string? InvoiceNoFactory = null, DateTime? HTCInvoiceDate = null, string? FlagMortageEndDate = null, string? BankApprStatus = null, DateTime? BankApprDTime = null, string? BankApprBy = null, string? DeclarationNo = null, DateTime? CODate = null, DateTime? DRFullDocDate = null, string? DocumentsStatus = null, DateTime? CustomsClearanceDate = null, string? HTCInvoiceNo = null, string? TransportMinutesNo = null, DateTime? CDODDeliveryEndDate = null, string? Description = null, decimal? UnitPriceActual = null, string? SoCode = null, string? ColorNameVN = null, string? ModelName = null, string? RequestNo = null);
+record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = null, string? Remark = null, string? DRTCGListCode = null, string? DRTCGListStatus = null, DateTime? TCGInvoiceDate = null, DateTime? LoanSupportDateEnd = null, string? LetterRepresentationNo = null, DateTime? LetterRepresentationDate = null, int? LoanSupportDay = null);
 record DocReqCarActionDto(string? Remark);
 record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);
 record DocReqSupportDto(List<DocReqSupportRowDto>? Rows);
