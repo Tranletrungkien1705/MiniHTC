@@ -14343,6 +14343,7 @@ public sealed class DlrContractDetail
     public int Qty { get; set; } = 1;
     public DateTime? DlvExpectedDate { get; set; }
     public decimal Price { get; set; }
+    public decimal? UnitPrice { get; set; }
     public decimal VAT { get; set; } = 10;
     public decimal AmountVAT { get; set; }
     public decimal TotalAmountAfterVAT { get; set; }

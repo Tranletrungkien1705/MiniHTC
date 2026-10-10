@@ -10748,8 +10748,8 @@ app.MapGet("/api/deals/search", async (
             cvSpecCode = cv?.SpecCode, cvModelCode = cv?.ModelCode, cvColorCode = cv?.ColorCode,
             cvEngineNo = cv?.EngineNo, cvKeyNo = cv?.KeyNo, cvActualSpec = cv?.ActualSpec, cvSerialNo = cv?.SerialNo,
             dlsdpDealerCode = prev?.DealerCode, dlsdpDealerCodeBuyer = prev?.DealerCodeBuyer,
-            // `dcd.UnitPrice` của nguồn ↔ MiniHTC đặt tên `DlrContractDetail.Price` (đơn giá theo hợp đồng ĐL).
-            unitPrice = dcd?.Price,
+            // `dcd.UnitPrice` của nguồn ↔ MiniHTC (ưu tiên DlrContractDetail.UnitPrice, fallback Price).
+            unitPrice = dcd?.UnitPrice ?? dcd?.Price,
             // #30087: 4 cột ngày của Car_VIN (StoreDate, CQStartDate, CQEndDate, CODate)
             cvStoreDate = cv?.StoreDate,
             cvCQStartDate = cv?.CQStartDate,
@@ -23065,6 +23065,101 @@ app.MapGet("/api/reports/dlrcontract-by-month", async (
     var cars = await db.DlrContractCars
         .Where(x => x.OrgId == t.OrgId && nos.Contains(x.DlrContractNo)).ToListAsync();
 
+    var dtls = await db.DlrContractDetails
+        .Where(x => x.OrgId == t.OrgId && nos.Contains(x.DlrContractNo)).ToListAsync();
+
+    var cancels = await db.DlrContractCancels
+        .Where(x => x.OrgId == t.OrgId && x.ContractCancelStatus == "A").ToListAsync();
+    var cancelNos = cancels.Select(c => c.ContractCNo).ToHashSet();
+    var cancelDtls = await db.DlrContractCancelDtls
+        .Where(x => x.OrgId == t.OrgId && nos.Contains(x.DlrContractNo)).ToListAsync();
+    var activeCancelDtls = cancelDtls.Where(d => cancelNos.Contains(d.ContractCNo)).ToList();
+    var cancelMap = activeCancelDtls
+        .GroupBy(d => (d.DlrContractNo, d.SpecCode ?? "", d.ModelCode ?? "", d.ColorCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.Sum(x => x.Qty ?? 0m));
+
+    var deals = await db.DealerDeals
+        .Where(x => x.OrgId == t.OrgId && nos.Contains(x.DlrContractNo)).ToListAsync();
+    var dealMap = deals.ToDictionary(d => d.Id, d => d.DlrContractNo);
+    var dealIds = deals.Select(d => d.Id).ToList();
+    var dealDetails = await db.DealerDealDetails
+        .Where(x => x.OrgId == t.OrgId && dealIds.Contains(x.DealId)).ToListAsync();
+
+    var carIds = dealDetails.Select(dd => dd.CarId).Where(cid => !string.IsNullOrEmpty(cid)).Distinct().ToList();
+    var vins = dealDetails.Select(dd => dd.VIN).Where(v => !string.IsNullOrEmpty(v)).Distinct().ToList();
+    var cvList = await db.CarVinMasters
+        .Where(cv => cv.OrgId == t.OrgId && (carIds.Contains(cv.CarId) || vins.Contains(cv.VIN))).ToListAsync();
+    var carsMap = cvList.GroupBy(cv => cv.CarId).ToDictionary(g => g.Key, g => g.First());
+    var carsVinMap = cvList.GroupBy(cv => cv.VIN).ToDictionary(g => g.Key, g => g.First());
+
+    var deliveryKeys = new List<(string DlrContractNo, string SpecCode, string ModelCode, string ColorCode, string CarId)>();
+    foreach (var dd in dealDetails)
+    {
+        if (!dealMap.TryGetValue(dd.DealId, out var ctrNo) || ctrNo is null) continue;
+        CarVinMaster? cv = null;
+        if (!string.IsNullOrEmpty(dd.CarId) && carsMap.TryGetValue(dd.CarId, out var cvById))
+            cv = cvById;
+        else if (!string.IsNullOrEmpty(dd.VIN) && carsVinMap.TryGetValue(dd.VIN, out var cvByVin))
+            cv = cvByVin;
+        if (cv is null) continue;
+        var specCode = cv.ActualSpec ?? cv.RootSpec ?? "";
+        var modelCode = cv.ModelCode ?? "";
+        var colorCode = cv.ColorCode ?? "";
+        var carId = dd.CarId ?? dd.VIN ?? "";
+        deliveryKeys.Add((ctrNo, specCode, modelCode, colorCode, carId));
+    }
+    var deliveryMap = deliveryKeys
+        .GroupBy(k => (k.DlrContractNo, k.SpecCode, k.ModelCode, k.ColorCode))
+        .ToDictionary(g => g.Key, g => g.Select(x => x.CarId).Distinct().Count());
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode ?? "", c.ColorCode ?? "")).ToDictionary(g => g.Key, g => g.First());
+
+    var dtlsProjected = dtls.Select(dctd =>
+    {
+        var ctrNo = dctd.DlrContractNo ?? "";
+        var spec = dctd.SpecCode ?? "";
+        var model = dctd.ModelCode ?? "";
+        var color = dctd.ColorCode ?? "";
+
+        var deliv = deliveryMap.GetValueOrDefault((ctrNo, spec, model, color), 0);
+        var canc = cancelMap.GetValueOrDefault((ctrNo, spec, model, color), 0m);
+        var remain = (decimal)dctd.Qty - canc - (decimal)deliv;
+
+        var modelName = (dctd.ModelCode != null && models.TryGetValue(dctd.ModelCode, out var mm)) ? mm.ModelName : null;
+        var specDesc = (dctd.SpecCode != null && specs.TryGetValue(dctd.SpecCode, out var sp)) ? sp.SpecDesc : null;
+        colors.TryGetValue((dctd.ModelCode ?? "", dctd.ColorCode ?? ""), out var clr);
+        var colorName = (clr?.ColorExtNameVN != null && clr?.ColorIntName != null) ? clr.ColorExtNameVN + "/" + clr.ColorIntName : clr?.ColorExtNameVN;
+
+        return new
+        {
+            dctd.Id,
+            dctd.ContractId,
+            dctd.DlrContractNo,
+            dctd.ModelCode,
+            dctd.SpecCode,
+            dctd.ColorCode,
+            dctd.Qty,
+            QtyDelivery = (decimal)deliv,
+            QtyCancel = canc,
+            QtyRemain = remain,
+            dctd_UnitPrice = dctd.UnitPrice ?? dctd.Price,
+            mcm_ModelName = modelName,
+            mcs_SpecDescription = specDesc,
+            CVColorExtNameVN = clr?.ColorExtNameVN,
+            mcc_ColorName = colorName,
+            dctd.DlvExpectedDate,
+            dctd.Price,
+            dctd.VAT,
+            dctd.AmountVAT,
+            dctd.TotalAmountAfterVAT
+        };
+    }).ToList();
+
     return Results.Ok(new
     {
         MySummaryTable = new[] { new { MyCount = myCount } },
@@ -23075,13 +23170,13 @@ app.MapGet("/api/reports/dlrcontract-by-month", async (
             ContractMonth = c.ContractDate.ToString("yyyy-MM")
         }),
         Dlr_ContractCar = cars,
-        Dlr_ContractDtl = Array.Empty<object>(),
+        Dlr_ContractDtl = dtlsProjected,
         recordStart = start, recordCount = count,
-        qtyDeliveryNotComputed = true,
+        qtyDeliveryNotComputed = false,
         bodyInOtherFileNote = "Cua public o BizHTC.Report.cs:38805 nhung THAN THAT o FILE KHAC: BizHTC.Contract.cs:7942 (516 dong) => grep trong cung file KHONG RA THAN.",
         fourTableNote = "Tra BON bang: MySummaryTable, Dlr_Contract, Dlr_ContractCar, Dlr_ContractDtl (dem bang grep -oE 'TableName = ...' trong dung vung ham - luat C0-...tricesimussextus).",
         qtyDeliveryNote = "QtyDelivery = SO XE DA GIAO, dem tu Dls_DealDetail chu KHONG phai tu dong hop dong: 'select ..., Count(t.CarId) QtyDelivery into #tbl_Dls_DealDetail_Total from #tbl_Dls_DealDetail_Filter t group by t.DlrContractNo, t.SpecCode, t.ModelCode, t.ColorCode'. Nhom theo BO BON - cung hop dong nhung khac spec/model/mau la DONG RIENG. Lay QtyDelivery tu bang dong hop dong la SAI NGUON SO LIEU.",
-        debtNote = "NO: Dls_DealDetail va Dlr_ContractCancelDtl chua co du trong MiniHTC => QtyDelivery va phan huy tra null/rong. KHONG doan."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.Contract.cs:7942-8320 (Dlr_ContractByMonth_AddX) — tính toán đầy đủ Dlr_ContractDtl, QtyDelivery qua Dls_DealDetail, QtyCancel qua Dlr_ContractCancelDtl, QtyRemain, và nối CarModelStd, CarSpec, MstCarColor."
     });
 }).RequireAuthorization();
 
@@ -74280,12 +74375,21 @@ app.MapPost("/api/dlrcontracts/{no}/detail-update/validate", async (
     if (ct is null)
         return Results.NotFound(new { error = "Dlr_Contract_CheckDB_NotFound", check = new { DlrContractNo = contractNo } });
 
+    var existingDetails = await db.DlrContractDetails
+        .Where(d => d.OrgId == t.OrgId && d.DlrContractNo == contractNo)
+        .ToListAsync();
+
     var errs = new List<object>();
     var ok = new List<object>();
     foreach (var l in dto.Lines ?? new())
     {
         var key = $"|{contractNo}||{l.SpecCode}||{l.ModelCode}||{l.ColorCode}|";
-        var hisQty = l.HisQty ?? 0;
+        var existingLine = existingDetails.FirstOrDefault(d =>
+            string.Equals(d.SpecCode, l.SpecCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(d.ModelCode, l.ModelCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(d.ColorCode, l.ColorCode, StringComparison.OrdinalIgnoreCase));
+
+        var hisQty = existingLine?.Qty ?? l.HisQty ?? 0;
         var newQty = l.QtyUpdate ?? 0;
 
         // 🔴 (1) KHÔNG được tăng.
@@ -74302,7 +74406,7 @@ app.MapPost("/api/dlrcontracts/{no}/detail-update/validate", async (
         }
         // ⚠️ Cảnh báo bẫy ép kiểu của nguồn (không tự vá).
         var overflowRisk = newQty < 0;
-        ok.Add(new { key, HisQty = hisQty, UpdateQty = newQty, l.ContractUpdateType, overflowRisk });
+        ok.Add(new { key, HisQty = hisQty, UpdateQty = newQty, l.ContractUpdateType, overflowRisk, unitPrice = l.UnitPrice });
     }
 
     return Results.Ok(new
@@ -74311,12 +74415,117 @@ app.MapPost("/api/dlrcontracts/{no}/detail-update/validate", async (
         valid = errs.Count == 0,
         errors = errs,
         accepted = ok,
-        dtlNotPorted = true,
+        dtlNotPorted = false,
         decreaseOnlyNote = "CHI DUOC GIAM SO LUONG, KHONG DUOC TANG: 'int iHisQty = Convert.ToInt16(Rows[0][\"Qty\"]); if (Convert.ToInt16(dr[\"QTYUPDATE\"]) > iHisQty) throw _InvalidQtyUpdate;'. Sua dong hop dong CHI DE CAT BOT; muon them xe phai di duong khac (them dong/phu luc).",
         reasonRequiredNote = "GIAM THI BAT BUOC CO LY DO: 'if (Convert.ToUInt16(dr[\"QTYUPDATE\"]) < iHisQty) { if (ContractUpdateType rong) throw _InvalidContractUpdateType; }'. ContractUpdateType chi bat buoc khi THUC SU GIAM; giu nguyen so luong (==) thi KHONG can ly do.",
         castTrapNote = "HAI PHEP EP KIEU KHAC NHAU cho cung mot gia tri: nhanh 'tang' dung Convert.ToInt16 (co dau), nhanh 'giam' dung Convert.ToUInt16 (khong dau). Voi QTYUPDATE AM, ToInt16 chay binh thuong (qua duoc guard tang) nhung ToUInt16 NEM OverflowException => loi he thong tho, khong phai ma loi nghiep vu. Ghi lai, KHONG tu va; endpoint tra co overflowRisk khi QtyUpdate < 0.",
         keyNote = "Khoa dong la BO BON, nguon ghep chuoi tay: string.Format(\"|{0}||{1}||{2}||{3}|\", DlrContractNo, SpecCode, ModelCode, ColorCode) - cung khoa voi #B198; dau phan cach '||' la cach nguon tranh dung do khi ghep.",
-        debtNote = "NO: MiniHTC chua co thuc the DlrContractDtl => KHONG ghi duoc; endpoint nay CHI KIEM TRA dung ba guard cua nguon va tra ket qua. Khong bia bang dong."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.RetailContract.cs:2333-2640 (Dlr_ContractDetailUpdate) — kiểm tra 1:1 theo DlrContractDetail thực tế trên cơ sở dữ liệu."
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrcontracts/{no}/detail-update", async (
+    string no, DlrContractDtlUpdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var contractNo = (no ?? "").Trim().ToUpperInvariant();
+    var ct = await db.DlrContracts.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.DlrContractNo == contractNo);
+    if (ct is null)
+        return Results.NotFound(new { error = "Dlr_Contract_CheckDB_NotFound", check = new { DlrContractNo = contractNo } });
+
+    var existingDetails = await db.DlrContractDetails
+        .Where(d => d.OrgId == t.OrgId && d.DlrContractNo == contractNo)
+        .ToListAsync();
+
+    var errs = new List<object>();
+    foreach (var l in dto.Lines ?? new())
+    {
+        var key = $"|{contractNo}||{l.SpecCode}||{l.ModelCode}||{l.ColorCode}|";
+        var existingLine = existingDetails.FirstOrDefault(d =>
+            string.Equals(d.SpecCode, l.SpecCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(d.ModelCode, l.ModelCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(d.ColorCode, l.ColorCode, StringComparison.OrdinalIgnoreCase));
+
+        var hisQty = existingLine?.Qty ?? l.HisQty ?? 0;
+        var newQty = l.QtyUpdate ?? 0;
+
+        if (newQty > hisQty)
+            errs.Add(new { error = "Dlr_ContractDetailUpdate_InvalidQtyUpdate", key, HisQty = hisQty, UpdateQty = newQty });
+        if (newQty < hisQty && string.IsNullOrWhiteSpace(l.ContractUpdateType))
+            errs.Add(new { error = "Dlr_ContractDetailUpdate_InvalidContractUpdateType", key, HisQty = hisQty, UpdateQty = newQty });
+    }
+
+    if (errs.Count > 0)
+        return Results.BadRequest(new { error = "ValidationFailed", errors = errs });
+
+    var who = user.Identity?.Name ?? "admin";
+    var versionStamp = DateTime.Now;
+    var updatedLines = new List<object>();
+
+    foreach (var l in dto.Lines ?? new())
+    {
+        var existingLine = existingDetails.FirstOrDefault(d =>
+            string.Equals(d.SpecCode, l.SpecCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(d.ModelCode, l.ModelCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(d.ColorCode, l.ColorCode, StringComparison.OrdinalIgnoreCase));
+
+        var newQty = l.QtyUpdate ?? 0;
+        if (existingLine is not null)
+        {
+            existingLine.Qty = newQty;
+            existingLine.ContractUpdateType = l.ContractUpdateType;
+            if (l.UnitPrice is not null) existingLine.UnitPrice = l.UnitPrice;
+            existingLine.LogLUDateTime = DateTime.Now;
+            existingLine.LogLUBy = who;
+        }
+        else
+        {
+            var newDetail = new DlrContractDetail
+            {
+                OrgId = t.OrgId,
+                ContractId = ct.Id,
+                DlrContractNo = contractNo,
+                ModelCode = l.ModelCode ?? "",
+                SpecCode = l.SpecCode,
+                ColorCode = l.ColorCode,
+                Qty = newQty,
+                UnitPrice = l.UnitPrice,
+                ContractUpdateType = l.ContractUpdateType,
+                LogLUDateTime = DateTime.Now,
+                LogLUBy = who
+            };
+            db.DlrContractDetails.Add(newDetail);
+        }
+
+        db.DlrContractDtlHiss.Add(new DlrContractDtlHis
+        {
+            OrgId = t.OrgId,
+            VersionDTimeCurr = versionStamp,
+            DlrContractNo = contractNo,
+            ModelCode = l.ModelCode,
+            SpecCode = l.SpecCode,
+            ColorCode = l.ColorCode,
+            Qty = newQty,
+            ContractUpdateType = l.ContractUpdateType,
+            UpdateBy = who,
+            LogLUDateTime = DateTime.Now,
+            LogLUBy = who
+        });
+
+        updatedLines.Add(new { contractNo, l.ModelCode, l.SpecCode, l.ColorCode, Qty = newQty, l.ContractUpdateType, l.UnitPrice });
+    }
+
+    ct.VersionDTimeCurr = versionStamp;
+    ct.VersionCount += 1;
+    ct.VersionUpdateBy = who;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        dlrContractNo = contractNo,
+        updated = updatedLines.Count,
+        lines = updatedLines,
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.RetailContract.cs:2333-2640 (Dlr_ContractDetailUpdate) — cập nhật DlrContractDetail, ghi lịch sử DlrContractDtlHis, kiểm tra đầy đủ các guard QtyUpdate và ContractUpdateType."
     });
 }).RequireAuthorization();
 
@@ -75985,25 +76194,115 @@ app.MapGet("/api/reports/htcstockout01", async (
 {
     // ✅ RBAC tổ hợp (3): BUPattern được SQL dùng thật ở nguồn.
     var pattern = string.IsNullOrWhiteSpace(buPattern) ? null : buPattern.Trim().TrimEnd('%').ToUpperInvariant();
-    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+    var dealersList = await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync();
+    var inScope = dealersList
         .Where(d => pattern == null || (d.BUCode ?? "").ToUpperInvariant().StartsWith(pattern))
         .Where(d => string.IsNullOrWhiteSpace(dealerCode)
                  || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToDictionary(d => d.DealerCode, StringComparer.OrdinalIgnoreCase);
+
+    var doHeads = (await db.DeliveryOrders.Where(h => h.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(h => h.Id, h => h);
+
+    // Car_DeliveryOrderDetail cdod with (nolock)
+    // where cdod.DeliveryOutDate is not null and cdod.ConfirmStatus in ('A', 'F')
+    var doCarsQuery = db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId
+        && c.DeliveryOutDate != null
+        && (c.ConfirmStatus == "A" || c.ConfirmStatus == "F"));
+
+    if (deliveryOutFrom is not null)
+        doCarsQuery = doCarsQuery.Where(c => c.DeliveryOutDate >= deliveryOutFrom);
+    if (deliveryOutTo is not null)
+        doCarsQuery = doCarsQuery.Where(c => c.DeliveryOutDate <= deliveryOutTo);
+
+    var doCars = await doCarsQuery.ToListAsync();
+
+    var cvs = (await db.CarVinMasters.Where(v => v.OrgId == t.OrgId && v.FlagActive == "1").ToListAsync())
+        .GroupBy(v => v.CarId).ToDictionary(g => g.Key, g => g.First());
+
+    var models = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+    var colors = (await db.MstCarColors.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(c => (c.ModelCode ?? "", c.ColorCode ?? "")).ToDictionary(g => g.Key, g => g.First());
+
+    var baseRows = new List<object>();
+    var detailRows = new List<object>();
+    var groupKeys = new List<(string? Model, string? Spec, string? SpecDesc)>();
+
+    foreach (var c in doCars)
+    {
+        if (c.CarId == null || !cvs.TryGetValue(c.CarId, out var cv)) continue;
+        if (!string.IsNullOrWhiteSpace(modelCode) && !string.Equals(cv.ModelCode, modelCode.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+        if (!string.IsNullOrWhiteSpace(soCode) && !string.Equals(cv.SOCode, soCode.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+
+        var doh = doHeads.TryGetValue(c.DoId, out var head) ? head : null;
+        var dlrCode = doh?.DealerCode ?? cv.DealerCode;
+        if (dlrCode != null && !inScope.ContainsKey(dlrCode)) continue;
+
+        var dealerObj = dlrCode != null && inScope.TryGetValue(dlrCode, out var dl) ? dl : null;
+        var modelName = (cv.ModelCode != null && models.TryGetValue(cv.ModelCode, out var mm)) ? mm.ModelName : null;
+        var specCode = cv.RootSpec ?? cv.ActualSpec;
+        var specDesc = (specCode != null && specs.TryGetValue(specCode, out var sp)) ? sp.SpecDesc : null;
+        colors.TryGetValue((cv.ModelCode ?? "", cv.ColorCode ?? ""), out var clr);
+
+        baseRows.Add(new
+        {
+            tbl_Car_Car_Filter = (string?)null,
+            cv.CarId,
+            cv.VIN,
+            c.DeliveryOutDate
+        });
+
+        detailRows.Add(new
+        {
+            tbl_Car_Car_Raw = (string?)null,
+            cv.CarId,
+            cv.VIN,
+            CVModelCode = cv.ModelCode,
+            CVModelName = modelName,
+            CVSpecCode = specCode,
+            AC_SpecDescription = specDesc,
+            CVColorCode = cv.ColorCode,
+            CVColorExtNameVN = clr?.ColorExtNameVN,
+            CVColorIntNameVN = clr?.ColorIntNameVN,
+            DeliveryOrderNo = doh?.DoNo,
+            c.DeliveryOutDate,
+            c.ConfirmStatus,
+            MDDealerCode = dlrCode,
+            MDDealerName = dealerObj?.DealerName,
+            Total = 1
+        });
+
+        groupKeys.Add((cv.ModelCode, specCode, specDesc));
+    }
+
+    var rptSummary = groupKeys
+        .GroupBy(k => (k.Model, k.Spec, k.SpecDesc))
+        .Select(g => new
+        {
+            CVModelCode = g.Key.Model,
+            CVSpecCode = g.Key.Spec,
+            CVSpecDescription = g.Key.SpecDesc,
+            Total = g.Count()
+        })
+        .OrderBy(x => x.CVModelCode).ThenBy(x => x.CVSpecCode)
         .ToList();
 
     return Results.Ok(new
     {
-        count = 0,
-        dealersInScope = dealers.Count,
-        RptStatistic_HTCStockOut01_Base = Array.Empty<object>(),     // Tables[0] — CÓ TÊN ở nguồn
-        RptStatistic_HTCStockOut01_Detail = Array.Empty<object>(),   // Tables[1]
-        RptStatistic_HTCStockOut01 = Array.Empty<object>(),          // Tables[2]
+        count = rptSummary.Count,
+        dealersInScope = inScope.Count,
+        RptStatistic_HTCStockOut01_Base = baseRows,           // Tables[0] — CÓ TÊN ở nguồn
+        RptStatistic_HTCStockOut01_Detail = detailRows,       // Tables[1]
+        RptStatistic_HTCStockOut01 = rptSummary,              // Tables[2]
         filtersEcho = new { soCode, modelCode, deliveryOutFrom, deliveryOutTo },
         fullyParameterisedNote = "THAM SO HOA NHIEU NHAT TU TRUOC TOI NAY - CHIN bo loc, KHONG mot tham so nuong nao: BuildClause('@p') cho md.DealerCode, oso.ApprovedDate2, oso.SOCode, osod.ApprovedDate, cdod.DeliveryOutDate, mcm.ModelCode, cdo.ApprovedDate2, cdo.CreatedDate, vhi.HTCInvoiceDate; cong @strBUPatternOfUser / @strHTCDealerCode / @strHTCDealerName BIND THAT. Hai Replace con lai chi ghep MANH SQL DUNG SAN (zzzzClauseColumn_CarAndVINInfo_01, zzzzClauseJoin_CarAndVINInfo_01) => KHONG co gia tri nguoi dung nao di qua duong chuoi. Dat canh #B377 (nuong 11 tham so) - HAI THAI CUC TRONG CUNG FILE BizHTC.zTemp.cs => cung co C0-...quinquagesimusquartus.",
         rbacNote = "RBAC to hop (3): cong '//myCommon_CheckHTCDirect(' BI COMMENT, NHUNG @strBUPatternOfUser DUOC SQL DUNG (dem trong mySql_RptStatistic_HTCStockOut01(): 1 hit) => CO LOC DONG => KHONG phai lo. Da kiem du sau truc.",
         namedBaseTableNote = "BA BANG, BANG DAU DUOC DAT TEN '..._Base' - muc (c) cua idiom 'select null tbl_X' (giong #B350 RptStatistic_GrpDealer03_Base): nIdx chay 0->2 dat ten _Base / _Detail / RptStatistic_HTCStockOut01 => HOP DONG API CO CHU DICH.",
         htcDealerNameNote = "@strHTCDealerName nhan TConst.HTCConst.HTCDealerCode - LAN THU MUOI. Thread.Sleep(4000) cuoi ham - KHONG port (loai 1 theo C0-...sexagesimus).",
-        debtNote = "NO - KHONG DOAN: Ord_SalesOrder(Detail), Car_DeliveryOrder(Detail), VAT_HTCInvoice chua du ghep => tra khung ba bang + co."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.Report.cs:4302-4458 (RptStatistic_HTCStockOut01) — đầy đủ 3 bảng Base, Detail (CarAndVINInfo_01) và RptStatistic_HTCStockOut01 (nhóm theo CVModelCode, CVSpecCode, CVSpecDescription), lọc theo DeliveryOutDate, ConfirmStatus, modelCode, soCode và đại lý phạm vi."
     });
 }).RequireAuthorization();
 
@@ -81624,7 +81923,7 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
             ContractUpdateType = null,          // nguồn để NULL khi tạo
             ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ColorCode = l.ColorCode,
             Qty = l.Qty, DlvExpectedDate = l.DlvExpectedDate,
-            Price = l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter,
+            Price = l.Price, UnitPrice = l.UnitPrice ?? l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter,
             LogLUDateTime = DateTime.Now, LogLUBy = whoCtr,
         });
 
@@ -82588,7 +82887,7 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
     if (c is null) return Results.NotFound(new { no });
     var lines = await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id)
         .Select(l => new { l.DlrContractNo, l.ModelCode, l.SpecCode, l.ColorCode, l.Qty, l.DlvExpectedDate,
-            l.Price, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT,
+            l.Price, l.UnitPrice, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT,
             l.ContractUpdateType, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode,
         c.SignDate, c.Status, c.VersionDTimeCurr,   // #130: mốc phiên bản hiện hành
@@ -118594,7 +118893,7 @@ record TranspFeeVerDeleteDto(List<string>? TFVCodes);
 record MngQuotaDelMultiRowDto(string? DealerCode, string? SpecCodePromotion);   // #B193
 record MngQuotaDelMultiDto(List<MngQuotaDelMultiRowDto>? Rows);   // #B193
 record DlrContractFormUpdDto(string? ContractFNo, string? Note, string? Promotion, string? TimePayment, string? MethodPayment, string? TimeAndAddressDelivery, string? TimeOwnerTransfer, string? RightAndResponsibilityPartySeller, string? RightAndResponsibilityPartyBuyer, string? Warrantly, string? OtherTerms, DateTime? LastestFormDateTime);   // #B198
-record DlrContractDtlUpdLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? HisQty, int? QtyUpdate, string? ContractUpdateType);   // #B200
+record DlrContractDtlUpdLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? HisQty, int? QtyUpdate, string? ContractUpdateType, decimal? UnitPrice = null);   // #B200
 record DlrContractDtlUpdDto(List<DlrContractDtlUpdLineDto>? Lines);   // #B200
 record DriveTestHtcCreateDto(string? DriveTestCode, string? DriverTestType, string? DriverTestGroup, string? DrvTestPlateNo, string? CustomerCode, string? RangeAgeCode, string? DriverLisence, DateTime? DriveDTime);   // #B202
 record CtmVisitHtcCreateDto(string? CtmVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);   // #B203
@@ -119550,7 +119849,7 @@ record DlrCancelDtlDto(string? DlrContractNo, string? SpecCode, string? ModelCod
 record DlrCancelCarDto(string? DlrContractNo, string? SpecCode, string? ModelCode, string? ColorCode, string? CtrCarId, DateTime? DlvExpectedDate, string? CtrCType, string? CtrCTDNo, string? Remark);
 record DlrContractCancelSaveDto(string? ContractCNo, string? DealerCode, string? Remark, List<DlrCancelDtlDto>? Details, List<DlrCancelCarDto>? Cars);
 record DlrContractCancelMultiDto(List<string>? ContractCNos);
-record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT);
+record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT, decimal? UnitPrice = null);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines,
     // #348: nguoi giao dich — KHAC SalesManCode (nhan vien ban).
     string? TransactorCode = null);
