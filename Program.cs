@@ -5792,10 +5792,14 @@ app.MapGet("/api/reports/wo-order-and-schedule", async (
         .ToList();
 
     var soCarIds = carsSoApprove.Select(c => c.CarId ?? c.VIN).Distinct().ToList();
-    var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, soCarIds, new[] { "A", "F" }, true);
-    var grtDetails = await db.BankGuaranteeDtls
-        .Where(g => g.OrgId == t.OrgId && g.CarId != null && soCarIds.Contains(g.CarId) && (g.GuaranteeDetailStatus == "A" || g.GuaranteeDetailStatus == "F"))
-        .Select(g => new { g.CarId, g.GrtValue }).ToListAsync();
+    var payDeposits = await CachingForPaymentTotalAsync(db, t.OrgId, soCarIds, new[] { "F" }, true);
+    var grtDetails = await (from d in db.BankGuaranteeDtls
+                            join h in db.BankGuarantees on d.GuaranteeId equals h.Id
+                            where d.OrgId == t.OrgId && h.OrgId == t.OrgId
+                                  && d.CarId != null && soCarIds.Contains(d.CarId)
+                                  && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F")
+                                  && (h.Status == "A" || h.Status == "F")
+                            select new { d.CarId, d.GrtValue }).ToListAsync();
     var grtGrouped = grtDetails.GroupBy(x => x.CarId!).ToDictionary(g => g.Key, g => g.Sum(x => x.GrtValue));
 
     var sumSoApprove = new Dictionary<string, (decimal C0, decimal C1, decimal C100, decimal CA, int Cars)>();
@@ -5937,7 +5941,7 @@ app.MapGet("/api/reports/wo-order-and-schedule", async (
         unionAllNote = "#tbl_WOSchCombine ghep bang UNION ALL (khong distinct) voi #tbl_WO_DoneButNotFraming => mot WO CO THE xuat hien hai lan theo thiet ke.",
         derivedFormulas = "QtyVIN = IsNull(hv.SumQty,0) | QtyFraming = QtyProduct - QtyVIN | QtyRemain = QtyOrder - QtyProduct | QtyPlan = QtyOrder - QtyProduct - QtyRemainOrder.",
         rbacNote = "Nguon goi myCommon_CheckHTCDirect(..., TConst.Flag.Active) - BAT BUOC FlagDirect - va bind @strBUPatternOfUser = drAbilityOfUser['BUPattern']. Co kiem that, KHAC 8 ca lo hong da ghi nhan.",
-        moneyDebt = "NO - KHONG DOAN CONG THUC: Pmt_GuaranteeDetail va mySql_GetClauseSelect_CachingForPaymentTotal(#tbl_Pmt_PaymentDetailTotal_Deposit, 'F', true) (chi tien coc DA NOI tren tai khoan) chua co trong MiniHTC => pmpd_DutyCompleted_C0/C1/C100 tra NULL. Rieng CA = tong so xe nen tinh duoc.",
+        moneyDebt = "ĐÃ TRẢ NỢ 1:1: BankGuarantees/BankGuaranteeDtls và CachingForPaymentTotalAsync ('F', isDeposit=true) tính đủ pmpd_DutyCompleted_C0/C1/C100/CA theo đúng Biz.HTC.WH.cs:166624.",
         woDoneButNotFramingSkipped = true,
         woDebt = "NO: bang WO_WorkOrder (ScheduleEndDate) va Ord_PerformanceInvoiceDetail (WorkOrderNo+Quantity) chua du trong MiniHTC => nhanh #tbl_WO_DoneButNotFraming cua union all KHONG duoc dung. Khong bia so."
     });
@@ -8584,7 +8588,7 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
     foreach (var c in cars)
         // #318 GuaranteeValueOrg = GuaranteeValue lúc tạo (PaymentGuaranteeCreate_New20230306, TCFIntergration.cs:527).
         db.BankGuaranteeDtls.Add(new BankGuaranteeDtl { OrgId = t.OrgId, GuaranteeId = g2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId?.Trim(), GrtValue = c.GrtValue, GrtValueOrg = c.GrtValue, GrtPercent = c.GrtPercent, DiscountValue = c.DiscountValue, DiscountPercent = c.DiscountPercent, DateStart = c.DateStart, DateWarning = c.DateWarning, DateExpired = c.DateExpired,
-            GuaranteeDetailStatus = "P" });   // nguồn tạo dòng ở Pending (BizHTC.zTemp.cs:14573)
+            GuaranteeDetailStatus = "P", TotalCompletedDate = c.TotalCompletedDate, DiscountDays = c.DiscountDays });   // nguồn tạo dòng ở Pending (BizHTC.zTemp.cs:14573), §12 TotalCompletedDate, DiscountDays
     await db.SaveChangesAsync();
     return Results.Ok(new { g2.GuaranteeNo, cars = cars.Count, totalAmount = g2.TotalAmount });
 }).RequireAuthorization();
@@ -8595,9 +8599,9 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy, c.TotalCompletedDate, c.DiscountDays }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot,
-        g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.ApprovedAt, g.CancelDate, g.CancelBy,   // #1371 §12 + #30084
+        g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.ApprovedAt, g.CancelDate, g.CancelBy,   // #1371 §12 + #30084, §12 TotalCompletedDate, DiscountDays
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -12051,17 +12055,48 @@ static async Task<IResult> RptPayment01Async(
         cars = cars.Where(c => okDealers.Contains(c.DealerCode ?? "")).ToList();
     }
 
-    var carIds = cars.Select(c => c.VIN).ToList();
+    var carIds = cars.Select(c => c.CarId ?? c.VIN).Concat(cars.Select(c => c.VIN)).Distinct().ToList();
 
     // 🔴 BỘ LỌC TRẠNG THÁI KHÁC NHAU GIỮA HAI CỬA — đây là điểm cốt tử của cặp này.
     var depositStatus = isMst ? new[] { "A", "F" } : new[] { "F" };
     var total = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, new[] { "F" }, false);
     var deposit = await CachingForPaymentTotalAsync(db, t.OrgId, carIds, depositStatus, true);
 
+    var grtInfo = await (from d in db.BankGuaranteeDtls
+                         join h in db.BankGuarantees on d.GuaranteeId equals h.Id
+                         where d.OrgId == t.OrgId && h.OrgId == t.OrgId
+                               && (d.GuaranteeDetailStatus == "A" || d.GuaranteeDetailStatus == "F")
+                               && (h.Status == "A" || h.Status == "F")
+                               && (carIds.Contains(d.CarId ?? "") || carIds.Contains(d.VIN ?? ""))
+                         select new {
+                             Key = !string.IsNullOrEmpty(d.CarId) ? d.CarId : d.VIN,
+                             d.GrtValue,
+                             h.BankGuaranteeNo,
+                             h.GuaranteeNo,
+                             h.DateOpen
+                         }).ToListAsync();
+    var grtByCar = grtInfo.GroupBy(x => x.Key!).ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
     var rows = cars.Select(c =>
     {
-        var hasTotal = total.TryGetValue(c.VIN, out var tt);
-        var hasDep = deposit.TryGetValue(c.VIN, out var dp);
+        var cid = c.CarId ?? c.VIN;
+        var hasTotal = total.TryGetValue(cid, out var tt) || total.TryGetValue(c.VIN, out tt);
+        var hasDep = deposit.TryGetValue(cid, out var dp) || deposit.TryGetValue(c.VIN, out dp);
+        var hasGrt = grtByCar.TryGetValue(cid, out var gi) || grtByCar.TryGetValue(c.VIN, out gi);
+        var grtVal = hasGrt ? gi.GrtValue : 0m;
+        var depTotal = hasDep ? dp.AmountTotal : 0m;
+        var dutyAmount = depTotal + grtVal;
+        var unitPrice = c.UnitPriceActual ?? 0m;
+        DateTime? dutyDate = null;
+        if (unitPrice > 0m && dutyAmount >= unitPrice)
+        {
+            var dateOpen = hasGrt ? gi.DateOpen : null;
+            var depEnd = hasDep ? dp.PaymentEndDateMax : null;
+            if (dateOpen == null) dutyDate = depEnd;
+            else if (depEnd == null) dutyDate = dateOpen;
+            else dutyDate = dateOpen < depEnd ? depEnd : dateOpen;
+        }
+
         return new
         {
             CarId = c.VIN, c.VIN, c.SpecCode, c.ModelCode, c.ColorCode, c.DealerCode, c.SOCode,
@@ -12071,10 +12106,13 @@ static async Task<IResult> RptPayment01Async(
             PmtPaymentEndDateMax = hasTotal ? tt.PaymentEndDateMax : null,
             PmtDepositTotal = hasDep ? dp.AmountTotal : (decimal?)null,
             PmtDepositEndDateMax = hasDep ? dp.PaymentEndDateMax : null,
-            // 📌 NỢ còn lại — không đoán công thức:
             RatioDebtPolicy = (decimal?)null,
             DiscountOfCar_02_Dtl = (decimal?)null,
-            GuaranteeValue = (decimal?)null,
+            GuaranteeValue = hasGrt ? (decimal?)gi.GrtValue : null,
+            BankGuaranteeNo = hasGrt ? gi.BankGuaranteeNo : null,
+            GuaranteeNo = hasGrt ? gi.GuaranteeNo : null,
+            DutyCompletedAmount = (hasDep || hasGrt) ? (decimal?)dutyAmount : null,
+            DutyCompletedDate = dutyDate,
             DateDayT = (DateTime?)null
         };
     }).ToList();
@@ -12094,7 +12132,7 @@ static async Task<IResult> RptPayment01Async(
         rbacHealthyNote = "PHAN VI DU LANH MANH VE RBAC (hiem): myCommon_GetAbilityOfUser KHONG bi comment, va alParamsCoupleSql bind '@strBUPatternOfUser' = drAbilityOfUser['BUPattern'] - QUYEN THAT; them myCommon_CheckHTCDirect. Bao cao nay CO loc pham vi dung. Ghi lai de doi chieu voi 22 ca lo da thong ke.",
         zoneNote = "strZoneCode: IsNullOrEmpty ? '' : StandardizeParam(...) => CHUAN HOA VE CHUOI RONG, KHONG de NULL - dung khuon tranh bay @strZoneCode = NULL lam mat sach dong.",
         buildClauseNote = "17 tham so loc deu di qua BuildClause('and', '<cot>', <danh sach>, '@p', ref params) => danh sach RONG => BO HAN menh de (khong phai 'in ()').",
-        remainingDebt = "NO CON LAI (khong doan): mySql_GetClauseSelect_Mst_Calendar_GetForDayT (bang tham so ngay lam viec), RatioDebtPolicy_V20, GetDiscountOfCar_02_Dtl, Pmt_Guarantee => cac cot chinh sach cong no / chiet khau / bao lanh de null."
+        remainingDebt = "ĐÃ TRẢ NỢ 1:1: BankGuarantees/BankGuaranteeDtls kết nối đầy đủ tính GuaranteeValue, BankGuaranteeNo, GuaranteeNo, DutyCompletedAmount, DutyCompletedDate theo RptSQLQuery.cs:54885-54915. Còn mySql_GetClauseSelect_Mst_Calendar_GetForDayT, RatioDebtPolicy_V20, GetDiscountOfCar_02_Dtl để null."
     });
 }
 
@@ -13782,6 +13820,10 @@ app.MapPost("/api/cars/get-list", async (
 
     var result = new List<object>();
     var batches = 0;
+    var totalAF = await CachingForPaymentTotalAsync(db, t.OrgId, list, new[] { "A", "F" }, false);
+    var depositAF = await CachingForPaymentTotalAsync(db, t.OrgId, list, new[] { "A", "F" }, true);
+    var depositF = await CachingForPaymentTotalAsync(db, t.OrgId, list, new[] { "F" }, true);
+
     for (var i = 0; i < list.Count; i += step)
     {
         var chunk = list.Skip(i).Take(step).ToList();
@@ -13789,6 +13831,12 @@ app.MapPost("/api/cars/get-list", async (
         var cars = await db.CarVinMasters
             .Where(c => c.OrgId == t.OrgId && chunk.Contains(c.VIN)).ToListAsync();
         foreach (var cc in cars)
+        {
+            var cid = cc.CarId ?? cc.VIN;
+            var pmtAF = totalAF.TryGetValue(cid, out var tAf) ? tAf.AmountTotal : (totalAF.TryGetValue(cc.VIN, out var tAfV) ? tAfV.AmountTotal : 0m);
+            var depAF = depositAF.TryGetValue(cid, out var dAf) ? dAf.AmountTotal : (depositAF.TryGetValue(cc.VIN, out var dAfV) ? dAfV.AmountTotal : 0m);
+            var depF = depositF.TryGetValue(cid, out var dF) ? dF.AmountTotal : (depositF.TryGetValue(cc.VIN, out var dFV) ? dFV.AmountTotal : 0m);
+
             result.Add(new
             {
                 CarId = cc.VIN, cc.VIN, cc.SpecCode, cc.ModelCode, cc.ColorCode,
@@ -13798,23 +13846,23 @@ app.MapPost("/api/cars/get-list", async (
                 cc.SOCode, cc.FlagActive, cc.FlagisHTC, cc.PackingListNo,
                 cc.CarCancelDate, cc.CarCancelRemark, cc.MortageBankCode,
                 cc.InvoiceNoTransferred, cc.InvoiceTransferredDate,
-                // 📌 Tầng thanh toán chưa có ⇒ MỌI cột tiền = null (không đoán).
-                PmtPaymentTotal_AF = (decimal?)null,
-                PmtDepositTotal_AF = (decimal?)null,
-                PmtDepositTotal_F = (decimal?)null
+                PmtPaymentTotal_AF = (decimal?)pmtAF,
+                PmtDepositTotal_AF = (decimal?)depAF,
+                PmtDepositTotal_F = (decimal?)depF
             });
+        }
     }
 
     return Results.Ok(new
     {
         inputCarIds = list.Count, batches, batchSize = step, count = result.Count, items = result,
-        paymentCachingSkipped = true,
+        paymentCachingSkipped = false,
         selfCorrection = "TU SUA GHI CHEP CUA #B113: o manifest #B113 toi ghi 'CarCarGetList cung file CO 1 lan dung @strBUPatternOfUser' - SAI. Con so 1 do den tu mot lenh grep GOP HAI MAU (strBUPatternOfUser|myUtil_GetDataForHugeList) va thuc chat khop LOI GOI HAM DUNG CHUNG, khong phai tham so pham vi. Dem lai rieng: strBUPatternOfUser = 0.",
         rbacHole = "Ham nay CUNG KHONG loc pham vi - CA THU 21, cung bien the 2 voi #B113. Bai hoc lap lai dung thu C0-...nonagesimusseptimus da canh bao: grep gop mau => so dem vo nghia. Tu nay moi mau dem RIENG mot lenh.",
         threeCachingNote = "BA manh caching thanh toan, BA bo loc trang thai KHAC NHAU: (1) CachingForPaymentTotal(#tbl_Pmt_PaymentDetailTotal_Temp, \"'A','F'\") - 'chi xet thanh toan DA DUYET TRO LEN'; (2) CachingForPaymentTotal(#tbl_..._A_Deposit, \"'A','F'\", true) - coc, DA DUYET TRO LEN; (3) CachingForPaymentTotal(#tbl_..._Deposit, \"'F'\", true) - coc, CHI DA HOAN TAT. Hai bang coc KHAC NHAU DUNG O BO LOC TRANG THAI; dung lan la lech so tien coc.",
         sharedColumnNote = "Cot ket qua lay tu ham dung chung mySql_GetClauseColumn_Car_Car_Result() - them cot vao day anh huong MOI man dung chung (xem ghi nho rieng ve bay trung cot cua ham nay).",
         hugeListNote = "Cung khuon chia lo 2000 qua myUtil_GetDataForHugeList + UnionAll(..., false) nhu #B113.",
-        paymentDebt = "NO: tang thanh toan (Pmt_PaymentDetail/Pmt_Payment + ba manh caching) chua co trong MiniHTC => MOI cot tien tra null. KHONG doan cong thuc."
+        paymentDebt = "ĐÃ TRẢ NỢ 1:1: CachingForPaymentTotalAsync ba tầng (total AF, deposit AF, deposit F) theo đúng BizHTC.Car.cs:915-917."
     });
 }).RequireAuthorization();
 
@@ -44025,7 +44073,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CabinCONo = r.CabinCONo, InvoiceSpecName = r.InvoiceSpecName, InvoiceFactorySearch = r.InvoiceFactorySearch, DateExpiredDlvCar = r.DateExpiredDlvCar, MapVINBy = r.MapVINBy, VINListNo = r.VINListNo, HMCOrderNo = r.HMCOrderNo, HMCUnitOrderNo = r.HMCUnitOrderNo, StorageCodeInit = r.StorageCodeInit, CustomsClearanceDate = r.CustomsClearanceDate, WorkOrderNoTemp = r.WorkOrderNoTemp, CarCancelType = r.CarCancelType, CQEndDate = r.CQEndDate, DocDeliveryReqDate = r.DocDeliveryReqDate, MapVINStorage = r.MapVINStorage, MapVINType = r.MapVINType, SOCode = r.SOCode, UnitPriceActual = r.UnitPriceActual, VINYear = r.VINYear, DepositDutyEndDate = r.DepositDutyEndDate, UnitPriceInit = r.UnitPriceInit, CPTCStatus = r.CPTCStatus, TTCStatus = r.TTCStatus ?? "0", FlagActive = r.FlagActive ?? "1", FlagEarlyCancel = r.FlagEarlyCancel ?? "0", CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CabinCONo = r.CabinCONo, InvoiceSpecName = r.InvoiceSpecName, InvoiceFactorySearch = r.InvoiceFactorySearch, DateExpiredDlvCar = r.DateExpiredDlvCar, MapVINBy = r.MapVINBy, VINListNo = r.VINListNo, HMCOrderNo = r.HMCOrderNo, HMCUnitOrderNo = r.HMCUnitOrderNo, StorageCodeInit = r.StorageCodeInit, CustomsClearanceDate = r.CustomsClearanceDate, WorkOrderNoTemp = r.WorkOrderNoTemp, CarCancelType = r.CarCancelType, CQEndDate = r.CQEndDate, DocDeliveryReqDate = r.DocDeliveryReqDate, MapVINStorage = r.MapVINStorage, MapVINType = r.MapVINType, SOCode = r.SOCode, UnitPriceActual = r.UnitPriceActual, VINYear = r.VINYear, DepositDutyEndDate = r.DepositDutyEndDate, UnitPriceInit = r.UnitPriceInit, CPTCStatus = r.CPTCStatus, TTCStatus = r.TTCStatus ?? "0", DateExpiredPmtGrt = r.DateExpiredPmtGrt, DateExpiredPmtCL = r.DateExpiredPmtCL, FlagActive = r.FlagActive ?? "1", FlagEarlyCancel = r.FlagEarlyCancel ?? "0", CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -44044,7 +44092,8 @@ app.MapGet("/api/carvinmasters/{vin}", async (string vin, AppDbContext db, ITena
         car.CabinCONo, car.InvoiceSpecName, car.InvoiceFactorySearch, car.DateExpiredDlvCar,
         car.MapVINBy, car.VINListNo, car.HMCOrderNo, car.HMCUnitOrderNo, car.StorageCodeInit, car.CustomsClearanceDate, car.WorkOrderNoTemp, car.CarCancelType, car.CQEndDate, car.DocDeliveryReqDate,
         car.MapVINStorage, car.MapVINType, car.SOCode, car.UnitPriceActual, car.VINYear, car.DepositDutyEndDate,
-        car.UnitPriceInit, car.CPTCStatus, car.TTCStatus   // kỹ thuật-6 #B367, §12 MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus
+        car.UnitPriceInit, car.CPTCStatus, car.TTCStatus,
+        car.DateExpiredPmtGrt, car.DateExpiredPmtCL   // kỹ thuật-6 #B367, §12 MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL
     });
 }).RequireAuthorization();
 
@@ -122474,7 +122523,7 @@ record InvoiceSetupItemDto(string? ModelCode, string? FlagInvoiceHTMV, string? F
 record InvoiceSetupMultiDto(List<InvoiceSetupItemDto>? Items);
 record InvoiceSetupUpdateDto(string? FtColsUpd, string? FlagInvoiceHTMV = null, string? FlagInvoiceTCG = null);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
-record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired, string? CarId = null);
+record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired, string? CarId = null, DateTime? TotalCompletedDate = null, int? DiscountDays = null);
 record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int? NumberOfDaysDeferredPayment, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
 record BankGrtCancelCarDto(string? Vin, string? CarId, string RemarkCancel);   // #30084 port PaymentGuaranteeDetailCancel_New20230306
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
@@ -123778,7 +123827,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null, string? CabinCONo = null, string? InvoiceSpecName = null, string? InvoiceFactorySearch = null, DateTime? DateExpiredDlvCar = null, string? MapVINBy = null, string? VINListNo = null, string? HMCOrderNo = null, string? HMCUnitOrderNo = null, string? StorageCodeInit = null, DateTime? CustomsClearanceDate = null, string? WorkOrderNoTemp = null, string? CarCancelType = null, DateTime? CQEndDate = null, DateTime? DocDeliveryReqDate = null, string? MapVINStorage = null, string? MapVINType = null, string? SOCode = null, decimal? UnitPriceActual = null, string? VINYear = null, DateTime? DepositDutyEndDate = null, decimal? UnitPriceInit = null, string? CPTCStatus = null, string? TTCStatus = null, string? FlagActive = null, string? FlagEarlyCancel = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null, string? CabinCONo = null, string? InvoiceSpecName = null, string? InvoiceFactorySearch = null, DateTime? DateExpiredDlvCar = null, string? MapVINBy = null, string? VINListNo = null, string? HMCOrderNo = null, string? HMCUnitOrderNo = null, string? StorageCodeInit = null, DateTime? CustomsClearanceDate = null, string? WorkOrderNoTemp = null, string? CarCancelType = null, DateTime? CQEndDate = null, DateTime? DocDeliveryReqDate = null, string? MapVINStorage = null, string? MapVINType = null, string? SOCode = null, decimal? UnitPriceActual = null, string? VINYear = null, DateTime? DepositDutyEndDate = null, decimal? UnitPriceInit = null, string? CPTCStatus = null, string? TTCStatus = null, string? FlagActive = null, string? FlagEarlyCancel = null, DateTime? DateExpiredPmtGrt = null, DateTime? DateExpiredPmtCL = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>

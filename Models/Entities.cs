@@ -14069,6 +14069,10 @@ public sealed class CarVinMaster
     public string? CPTCStatus { get; set; }
     /// <summary>#Round105 §12: Trạng thái thanh toán chậm (`Car_Car.TTCStatus`, `DbDefine.cs:1800`). Khởi tạo = "0".</summary>
     public string? TTCStatus { get; set; } = "0";
+    /// <summary>#Round106 §12: Ngày hết hạn TT bảo lãnh (`Car_Car.DateExpiredPmtGrt`, `DbDefine.cs:1299`).</summary>
+    public DateTime? DateExpiredPmtGrt { get; set; }
+    /// <summary>#Round106 §12: Ngày hết hạn TT còn lại (`Car_Car.DateExpiredPmtCL`, `DbDefine.cs:1300`).</summary>
+    public DateTime? DateExpiredPmtCL { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
@@ -14951,6 +14955,10 @@ public sealed class BankGuaranteeDtl
     public string? RemarkCancel { get; set; }
     public DateTime? CancelDTime { get; set; }
     public string? CancelBy { get; set; }
+    /// <summary>#Round106 §12: Ngày hoàn thành toàn bộ (`Pmt_GuaranteeDetail.TotalCompletedDate`, `DbDefine.cs:583`).</summary>
+    public DateTime? TotalCompletedDate { get; set; }
+    /// <summary>#Round106 §12: Số ngày chiết khấu (`Pmt_GuaranteeDetail.DiscountDays`, `DbDefine.cs:582`).</summary>
+    public int? DiscountDays { get; set; }
 
     // ===== check_cot_1to1.py báo thiếu PMPDAmount_Count/PMPDAmount_SumForGuarantee/PMPDDiscount_Sum
     //       (FrmBankGrt, TblGuaranteeDetail 20/23) — ĐÃ KHẢO SÁT, KHÔNG PHẢI CỘT BẢNG =====
