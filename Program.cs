@@ -893,22 +893,21 @@ app.MapGet("/api/reports/dealers", async (AppDbContext db, ITenantContext t, str
 // co nen mo rong entity hay khong), ghi no rieng ben duoi. Toggle Main/WH khong ap dung (Mini
 // khong mo hinh hoa 2 CSDL).
 app.MapGet("/api/pdi", async (AppDbContext db, ITenantContext t, string? status, string? vin,
-    string? code, string? dealerCode, DateTime? dateCreatedFrom, DateTime? dateCreatedTo) =>
+    string? code, string? dealerCode, DateTime? dateCreatedFrom, DateTime? dateCreatedTo, string? dlrContractNo) =>
 {
     var q = db.PdiRequests.Where(p => p.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(p => p.Status == status);
     if (!string.IsNullOrWhiteSpace(vin)) { var v = vin.Trim().ToUpperInvariant(); q = q.Where(p => p.Vin == v); }
     if (!string.IsNullOrWhiteSpace(code)) q = q.Where(p => p.Code.StartsWith(code!.Trim().ToUpperInvariant()));
     if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(p => p.DealerCode == dealerCode!.Trim().ToUpperInvariant());
+    if (!string.IsNullOrWhiteSpace(dlrContractNo)) { var c = dlrContractNo.Trim().ToUpperInvariant(); q = q.Where(p => p.DlrContractNo == c); }
     if (dateCreatedFrom is not null) q = q.Where(p => p.CreatedAt >= dateCreatedFrom.Value.Date);
     if (dateCreatedTo is not null) q = q.Where(p => p.CreatedAt < dateCreatedTo.Value.Date.AddDays(1));
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
-    { p.Code, p.Vin, p.DealerCode, p.Status, p.Inspector, p.Result, p.CreatedAt, p.InspectedAt }).ToListAsync();
+    { p.Code, p.Vin, p.DealerCode, p.Status, p.Inspector, p.Result, p.CreatedAt, p.InspectedAt, p.DlrContractNo }).ToListAsync();
     return Results.Ok(new
     {
-        count = items.Count, items,
-        dlrContractNoNotPortedNote = "Man nguon con loc theo dlrContractNo — PdiRequest CHUA co cot " +
-            "tuong duong (quy trinh rieng cua Mini, khong lay du lieu tu DMS Sales). Chua them."
+        count = items.Count, items
     });
 }).RequireAuthorization();
 
@@ -916,9 +915,17 @@ app.MapPost("/api/pdi", async (PdiDto dto, AppDbContext db, ITenantContext t) =>
 {
     if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
     var code = "PDI" + DateTime.Now.ToString("yyMMddHHmmss");
-    var p = new PdiRequest { OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(), DealerCode = dto.DealerCode ?? "", Status = "Requested" };
+    var p = new PdiRequest
+    {
+        OrgId = t.OrgId,
+        Code = code,
+        Vin = dto.Vin.Trim().ToUpperInvariant(),
+        DealerCode = dto.DealerCode ?? "",
+        DlrContractNo = string.IsNullOrWhiteSpace(dto.DlrContractNo) ? null : dto.DlrContractNo.Trim().ToUpperInvariant(),
+        Status = "Requested"
+    };
     db.PdiRequests.Add(p); await db.SaveChangesAsync();
-    return Results.Ok(new { p.Code, p.Vin, status = p.Status });
+    return Results.Ok(new { p.Code, p.Vin, status = p.Status, p.DlrContractNo });
 }).RequireAuthorization();
 
 app.MapPost("/api/pdi/{code}/{action}", async (string code, string action, PdiResultDto? dto, AppDbContext db, ITenantContext t) =>
@@ -4277,7 +4284,7 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
     var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P", CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
     db.DocReqs.Add(d); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal, DealerCode = string.IsNullOrWhiteSpace(c.DealerCode) ? d.DealerCode : c.DealerCode.Trim().ToUpperInvariant(), DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode, LogLUDateTime = c.LogLUDateTime, LogLUBy = c.LogLUBy });
+        db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal, DealerCode = string.IsNullOrWhiteSpace(c.DealerCode) ? d.DealerCode : c.DealerCode.Trim().ToUpperInvariant(), DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode, ReceivedDateInvoice = c.ReceivedDateInvoice, LogLUDateTime = c.LogLUDateTime, LogLUBy = c.LogLUBy });
     await db.SaveChangesAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, cars = vins.Count, status = d.Status });
 }).RequireAuthorization();
@@ -4288,7 +4295,7 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.DealerCode, c.DealerCodeInvoice, c.DRListCode, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.DealerCode, c.DealerCodeInvoice, c.DRListCode, c.ReceivedDateInvoice, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, d.Status, d.CreatedAt, d.SubmittedAt, d.DoneAt,
         d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy,   // #1378 §12
         count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
@@ -44074,7 +44081,7 @@ app.MapPost("/api/carvinmasters/import", async (List<CarVinMasterImportDto> rows
     {
         var vin = (r.Vin ?? "").Trim().ToUpperInvariant();
         if (vin == "" || existing.Contains(vin)) { skipped++; continue; }
-        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CabinCONo = r.CabinCONo, InvoiceSpecName = r.InvoiceSpecName, InvoiceFactorySearch = r.InvoiceFactorySearch, DateExpiredDlvCar = r.DateExpiredDlvCar, MapVINBy = r.MapVINBy, VINListNo = r.VINListNo, HMCOrderNo = r.HMCOrderNo, HMCUnitOrderNo = r.HMCUnitOrderNo, StorageCodeInit = r.StorageCodeInit, CustomsClearanceDate = r.CustomsClearanceDate, WorkOrderNoTemp = r.WorkOrderNoTemp, CarCancelType = r.CarCancelType, CQEndDate = r.CQEndDate, DocDeliveryReqDate = r.DocDeliveryReqDate, MapVINStorage = r.MapVINStorage, MapVINType = r.MapVINType, SOCode = r.SOCode, UnitPriceActual = r.UnitPriceActual, VINYear = r.VINYear, DepositDutyEndDate = r.DepositDutyEndDate, UnitPriceInit = r.UnitPriceInit, CPTCStatus = r.CPTCStatus, TTCStatus = r.TTCStatus ?? "0", DateExpiredPmtGrt = r.DateExpiredPmtGrt, DateExpiredPmtCL = r.DateExpiredPmtCL, DateExpiredInvoice = r.DateExpiredInvoice, FlagPmtDelayDone = r.FlagPmtDelayDone, FlagActive = r.FlagActive ?? "1", FlagEarlyCancel = r.FlagEarlyCancel ?? "0", CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL, DateExpiredInvoice, FlagPmtDelayDone
+        db.CarVinMasters.Add(new CarVinMaster { OrgId = t.OrgId, VIN = vin, ModelCode = r.ModelCode, SpecCode = r.SpecCode, DealerCode = r.DealerCode?.Trim().ToUpperInvariant(), ColorCode = r.ColorCode, CarId = r.CarId, StoreDate = r.StoreDate, TaxPaymentDate = r.TaxPaymentDate, CQStartDate = r.CQStartDate, ProductionMonth = r.ProductionMonth, RootSpec = r.RootSpec, MapVINDate = r.MapVINDate, CONo = r.CONo, CODate = r.CODate, TypeCB = r.TypeCB, ProductionYearActual = r.ProductionYearActual, Location = r.Location, CabinCONo = r.CabinCONo, InvoiceSpecName = r.InvoiceSpecName, InvoiceFactorySearch = r.InvoiceFactorySearch, DateExpiredDlvCar = r.DateExpiredDlvCar, MapVINBy = r.MapVINBy, VINListNo = r.VINListNo, HMCOrderNo = r.HMCOrderNo, HMCUnitOrderNo = r.HMCUnitOrderNo, StorageCodeInit = r.StorageCodeInit, CustomsClearanceDate = r.CustomsClearanceDate, WorkOrderNoTemp = r.WorkOrderNoTemp, CarCancelType = r.CarCancelType, CQEndDate = r.CQEndDate, DocDeliveryReqDate = r.DocDeliveryReqDate, MapVINStorage = r.MapVINStorage, MapVINType = r.MapVINType, SOCode = r.SOCode, UnitPriceActual = r.UnitPriceActual, VINYear = r.VINYear, DepositDutyEndDate = r.DepositDutyEndDate, UnitPriceInit = r.UnitPriceInit, CPTCStatus = r.CPTCStatus, TTCStatus = r.TTCStatus ?? "0", DateExpiredPmtGrt = r.DateExpiredPmtGrt, DateExpiredPmtCL = r.DateExpiredPmtCL, DateExpiredInvoice = r.DateExpiredInvoice, FlagPmtDelayDone = r.FlagPmtDelayDone, CabinCertificateNo = r.CabinCertificateNo, CabinCertificateDate = r.CabinCertificateDate, CabinInvoiceNo = r.CabinInvoiceNo, CabinInvoiceDate = r.CabinInvoiceDate, FlagActive = r.FlagActive ?? "1", FlagEarlyCancel = r.FlagEarlyCancel ?? "0", CreatedDate = DateTime.Now, CreatedBy = user.Identity?.Name ?? "system" });   // #B248, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL, DateExpiredInvoice, FlagPmtDelayDone, CabinCertificateNo, CabinCertificateDate, CabinInvoiceNo, CabinInvoiceDate
         existing.Add(vin); added++;
     }
     await db.SaveChangesAsync();
@@ -44094,7 +44101,8 @@ app.MapGet("/api/carvinmasters/{vin}", async (string vin, AppDbContext db, ITena
         car.MapVINBy, car.VINListNo, car.HMCOrderNo, car.HMCUnitOrderNo, car.StorageCodeInit, car.CustomsClearanceDate, car.WorkOrderNoTemp, car.CarCancelType, car.CQEndDate, car.DocDeliveryReqDate,
         car.MapVINStorage, car.MapVINType, car.SOCode, car.UnitPriceActual, car.VINYear, car.DepositDutyEndDate,
         car.UnitPriceInit, car.CPTCStatus, car.TTCStatus,
-        car.DateExpiredPmtGrt, car.DateExpiredPmtCL, car.DateExpiredInvoice, car.FlagPmtDelayDone   // kỹ thuật-6 #B367, §12 MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL, DateExpiredInvoice, FlagPmtDelayDone
+        car.DateExpiredPmtGrt, car.DateExpiredPmtCL, car.DateExpiredInvoice, car.FlagPmtDelayDone,
+        car.CabinCertificateNo, car.CabinCertificateDate, car.CabinInvoiceNo, car.CabinInvoiceDate   // #Round108 §12 CabinCertificateNo, CabinCertificateDate, CabinInvoiceNo, CabinInvoiceDate (DbDefine.cs:4590-4594, 20190213.z11.Upgrade.Car_Vin.Cabin.sql)
     });
 }).RequireAuthorization();
 
@@ -47172,15 +47180,28 @@ app.MapPost("/api/cabininfos/update-multi", async (
         var v = r.Vin!.Trim().ToUpperInvariant();
         var c = infos.FirstOrDefault(x => x.Vin == v);
         if (c is null) { c = new CabinInfo { OrgId = t.OrgId, Vin = v }; db.CabinInfos.Add(c); }
+        var cv = carVins.FirstOrDefault(x => x.VIN == v);
         // 🔴 `if (strCabinCertificateNo == null) strCabinCertificateNo = dt_Car_VIN_Check.Rows[0]["CabinCertificateNo"]`
         //    (`:640-644`) — null ⇒ **GIỮ giá trị đang có trong DB**, KHÔNG xoá về null.
         if (r.CabinCertificateNo is null) keptFromDb++;
-        else c.CabinCertificateNo = r.CabinCertificateNo.Trim();
+        else
+        {
+            c.CabinCertificateNo = r.CabinCertificateNo.Trim();
+            if (cv is not null) cv.CabinCertificateNo = c.CabinCertificateNo;
+        }
         c.CabinCertificateDate = r.CabinCertificateDate ?? c.CabinCertificateDate;
         c.CabinCONo = r.CabinCONo ?? c.CabinCONo;
         c.CabinInvoiceNo = r.CabinInvoiceNo ?? c.CabinInvoiceNo;
         c.CabinInvoiceDate = r.CabinInvoiceDate ?? c.CabinInvoiceDate;
         c.UpdatedAt = now;                      // ↔ LogLUDateTime của nguồn
+
+        if (cv is not null)
+        {
+            cv.CabinCertificateDate = c.CabinCertificateDate;
+            cv.CabinCONo = c.CabinCONo;
+            cv.CabinInvoiceNo = c.CabinInvoiceNo;
+            cv.CabinInvoiceDate = c.CabinInvoiceDate;
+        }
         updated++;
     }
     await db.SaveChangesAsync();
@@ -47189,7 +47210,7 @@ app.MapPost("/api/cabininfos/update-multi", async (
         updated, keptCertificateFromDb = keptFromDb,
         columnsWritten = new[] { "CabinCertificateNo", "CabinCONo", "CabinInvoiceNo", "CabinInvoiceDate", "CabinCertificateDate", "LogLUDateTime", "LogLUBy" },
         rbacNote = "myCommon_CheckHTCDirect(Flag.Active) là DÒNG ACTIVE ở nguồn — nhận qua cờ flagDirect (nợ tầng ability).",
-        storageNote = "NỢ mô hình: nguồn ghi thẳng Car_VIN; MiniHTC lưu ở bảng tách CabinInfo (khoá VIN)."
+        storageNote = "Đã đồng bộ song song vào CarVinMaster và CabinInfo theo đúng nguồn Car_VIN (Round 108 §12)."
     });
 }).RequireAuthorization();
 app.MapPost("/api/cabininfos", async (CabinInfoDto dto, AppDbContext db, ITenantContext t) =>
@@ -47202,6 +47223,16 @@ app.MapPost("/api/cabininfos", async (CabinInfoDto dto, AppDbContext db, ITenant
     if (c is null) { c = new CabinInfo { OrgId = t.OrgId, Vin = vin }; db.CabinInfos.Add(c); }
     c.SpecCode = dto.SpecCode; c.CabinCertificateNo = dto.CabinCertificateNo; c.CabinCertificateDate = dto.CabinCertificateDate;
     c.CabinCONo = dto.CabinCONo; c.CabinInvoiceNo = dto.CabinInvoiceNo; c.CabinInvoiceDate = dto.CabinInvoiceDate; c.UpdatedAt = DateTime.Now;
+
+    var cv = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
+    if (cv is not null)
+    {
+        cv.CabinCertificateNo = dto.CabinCertificateNo;
+        cv.CabinCertificateDate = dto.CabinCertificateDate;
+        cv.CabinCONo = dto.CabinCONo;
+        cv.CabinInvoiceNo = dto.CabinInvoiceNo;
+        cv.CabinInvoiceDate = dto.CabinInvoiceDate;
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.Vin });
 }).RequireAuthorization();
@@ -55590,6 +55621,10 @@ app.MapGet("/api/ro-invoices/{roNo}", async (AppDbContext db, ITenantContext t, 
         .Select(x => new { x.SerCode, x.SerName, x.Price, x.Factor, x.Vat, x.Amount }).ToListAsync();
     var parts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
         .Select(x => new { x.PartCode, x.PartName, x.NeedQty, x.UnitPrice, x.Vat, x.Amount }).ToListAsync();
+    var memberVouchers = await db.RoVoucherUses.Where(x => x.OrgId == t.OrgId && x.RoId == ro.Id)
+        .OrderBy(x => x.VoucherNo)
+        .Select(x => new { x.MemberNo, x.VoucherNo, x.PointVCUse, x.AppliedAt })
+        .ToListAsync();
 
     return Results.Ok(new
     {
@@ -55597,15 +55632,14 @@ app.MapGet("/api/ro-invoices/{roNo}", async (AppDbContext db, ITenantContext t, 
         pointConsumptionPrm = ro.PointConsumptionPrm,   // cột bản LIVE THÊM
         customer, vehicle,
         services, parts,
-        memberVouchers = Array.Empty<object>(),          // bảng thứ TƯ của bản LIVE — MiniHTC chưa nối
+        memberVouchers,                                  // bảng thứ TƯ của bản LIVE — Ser_RO_MemberVoucher (BizCarSv.Service.RO.cs:2512-2519)
         liveVariantIsNew20220926 = "WSCarSv.asmx.cs:32579 goi _New20220926; hai file WS cu goi _New20200118 => ba ban kia CHET",
         newVariantFixedOldBug = "ban cu co BA khoi case cung khuon: CusAddress lay ro.CusAddress (DUNG) nhung CusTel lay cus.Tel va CusMobile lay cus.Mobile (SAI) — dieu kien hoi ro.CusName con gia tri lay tu ho so khach; ban moi thay ca ba bang isnull(ro.X, isnull(cus.X, cus.ContX))",
         rareCaseNewerVariantIsTheFix = "gan nhu moi luot truoc ban moi lam hong them; day la lan ban moi SUA BUG",
         vehicleFieldsNowPreferOrderSnapshot = "isnull(ro.X, car.X) cho 11 cot: ModelID/PlateNo/FrameNo/EngineNo/ColorCode/TradeMarkCode/BatteryNo/SerialNo/WarrantyRegistrationDate/WarrantyExpiresDate/WarrantyKM",
         whyItMatters = "chung tu phai in dung thu da ghi luc tiep nhan, ke ca khi ho so xe DOI SAU DO",
         catalogJoinedTwice = "left join ser_mst_Model mdl1 va ser_mst_TradeMark tm1 (theo ma tren LENH) ben canh mdl/tm (theo ma cua XE); isnull(tm1.TradeMarkName, tm.TradeMarkName)",
-        resultShapeChanged = "ban moi tra them Tables[3] = Ser_RO_MemberVoucher va cot ro.PointConsumptionPrm => cho goi ban cu chi doc Tables[0..2]; §12 khong bat duoc loai thay doi nay",
-        memberVoucherNotWiredYet = "MiniHTC co entity MemberVoucher (Crd_MemberVoucher) nhung chua noi vao hoa don — ghi no, KHONG bia mang rong co du lieu",
+        resultShapeChanged = "ban moi tra them Tables[3] = Ser_RO_MemberVoucher va cot ro.PointConsumptionPrm => cho goi ban cu chi doc Tables[0..2]; §12 khong bat duoc loai thay doi nay"
     });
 }).RequireAuthorization();
 
@@ -88672,7 +88706,7 @@ app.MapPost("/api/cardocrequests", async (CarDocRequestDto dto, AppDbContext db,
     var r = new CarDocRequest { OrgId = t.OrgId, RequestNo = no, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), ReceivedPerson = dto.ReceivedPerson.Trim(), ReceivedAddress = dto.ReceivedAddress.Trim(), Status = "P", TypeCRR = typeCRR };   // #374 TConst.Stage.Pending
     db.CarDocRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.CarDocRequestCars.Add(new CarDocRequestCar { OrgId = t.OrgId, RequestId = r.Id, CarId = c.CarId.Trim().ToUpperInvariant(), Remark = c.Remark, DeliveryStartDate = c.DeliveryStartDate, CarDocReqTypeCRR = (c.CarDocReqTypeCRR ?? "NORMAL").Trim().ToUpperInvariant(), DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode });
+        db.CarDocRequestCars.Add(new CarDocRequestCar { OrgId = t.OrgId, RequestId = r.Id, CarId = c.CarId.Trim().ToUpperInvariant(), Remark = c.Remark, DeliveryStartDate = c.DeliveryStartDate, CarDocReqTypeCRR = (c.CarDocReqTypeCRR ?? "NORMAL").Trim().ToUpperInvariant(), DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode, ReceivedDateInvoice = c.ReceivedDateInvoice });
     await db.SaveChangesAsync();
     return Results.Ok(new { r.RequestNo, r.ReceivedPerson, r.TypeCRR, cars = cars.Count, status = r.Status });
 }).RequireAuthorization();
@@ -88683,7 +88717,7 @@ app.MapGet("/api/cardocrequests/{no}/cars", async (string no, AppDbContext db, I
     var r = await db.CarDocRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RequestNo == no);
     if (r is null) return Results.NotFound(new { no });
     var cars = await db.CarDocRequestCars.Where(c => c.OrgId == t.OrgId && c.RequestId == r.Id)
-        .Select(c => new { c.CarId, c.Remark, c.DeliveryStartDate, c.CarDocReqTypeCRR, c.DRDtlStatus, c.RejectDate, c.RejectBy, c.LogLUDateTime, c.LogLUBy, c.DealerCodeInvoice, c.DRListCode /*merge session-a*/  }).ToListAsync();
+        .Select(c => new { c.CarId, c.Remark, c.DeliveryStartDate, c.CarDocReqTypeCRR, c.DRDtlStatus, c.RejectDate, c.RejectBy, c.LogLUDateTime, c.LogLUBy, c.DealerCodeInvoice, c.DRListCode, c.ReceivedDateInvoice }).ToListAsync();
     return Results.Ok(new { r.RequestNo, r.Status, r.TypeCRR, count = cars.Count, cars, r.DealerCode, r.ReceivedPerson, r.ReceivedAddress, r.CreatedAt, r.DoneAt, r.RejectReason, r.RejectedAt /*merge session-a*/  });
 }).RequireAuthorization();
 
@@ -121402,7 +121436,7 @@ record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode
 // Sửa phòng ban / loại NVBH theo LÔ (nguồn nhận bảng `dtInput_SaleMan` nhiều dòng).
 record SalesManUpdDeptDto(List<SalesManUpdDeptRowDto>? Rows);
 record SalesManUpdDeptRowDto(string? SMCode, string? DepartmentCodeNew, string? SMTypeNew);
-record PdiDto(string Vin, string? DealerCode);
+record PdiDto(string Vin, string? DealerCode, string? DlrContractNo = null);
 record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string? RetrieveOrderNo, string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark);
 // #117: sửa dòng thu hồi (nguồn StorageCarRetrieveDetailUpdate).
@@ -122418,12 +122452,12 @@ record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 record DoApproveDto(bool Approve = true, string? Reason = null);
 record DoCarUpdateDto(DateTime? DeliveryOutDate, string? DeliveryRemark);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
-record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null);
+record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = null);
 record DocReqCarActionDto(string? Remark);
 record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);
 record DocReqSupportDto(List<DocReqSupportRowDto>? Rows);
-record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate, string? CarDocReqTypeCRR = null, string? DealerCodeInvoice = null, string? DRListCode = null);
+record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStartDate, string? CarDocReqTypeCRR = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null);
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars, string? TypeCRR);
 // #B39 — DTO 1:1 voi CancelCDRDetail(strDRListCode, List<string> lstVin) + Remark cua alColumnEffective
 record CdrCancelDto(List<string>? Vins, string? Remark);
@@ -123846,7 +123880,7 @@ record PaymentReqDiscountDto(string? PRDiscountNo, string? DealerCode, string? S
 record PrdHtcAmountLineDto(string? Vin, decimal AmountHTCAppr, DateTime? HTCApprDate = null, string? CustomerName = null, decimal? AmountDealerRequest = null);
 record PrdHtcAmountDto(List<PrdHtcAmountLineDto>? Lines);
 record SPSupportRetailRowDto(string? Vin, string? SPSRCode, string? DealerCode, string? SpecCode, string? ModelCode, string? PRDiscountNo, decimal AmountSupport, DateTime? DateSupport, DateTime? DateFullStatus, string? HTCInvoiceNo, DateTime? HTCInvoiceDate, string? Remark, DateTime? HTCDatePayment = null, decimal? AmountHTCAppr = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null, string? CabinCONo = null, string? InvoiceSpecName = null, string? InvoiceFactorySearch = null, DateTime? DateExpiredDlvCar = null, string? MapVINBy = null, string? VINListNo = null, string? HMCOrderNo = null, string? HMCUnitOrderNo = null, string? StorageCodeInit = null, DateTime? CustomsClearanceDate = null, string? WorkOrderNoTemp = null, string? CarCancelType = null, DateTime? CQEndDate = null, DateTime? DocDeliveryReqDate = null, string? MapVINStorage = null, string? MapVINType = null, string? SOCode = null, decimal? UnitPriceActual = null, string? VINYear = null, DateTime? DepositDutyEndDate = null, decimal? UnitPriceInit = null, string? CPTCStatus = null, string? TTCStatus = null, string? FlagActive = null, string? FlagEarlyCancel = null, DateTime? DateExpiredPmtGrt = null, DateTime? DateExpiredPmtCL = null, DateTime? DateExpiredInvoice = null, string? FlagPmtDelayDone = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL, DateExpiredInvoice, FlagPmtDelayDone
+record CarVinMasterImportDto(string? Vin, string? ModelCode, string? SpecCode, string? DealerCode, string? ColorCode, string? CarId = null, DateTime? StoreDate = null, DateTime? TaxPaymentDate = null, DateTime? CQStartDate = null, string? ProductionMonth = null, string? RootSpec = null, DateTime? MapVINDate = null, string? CONo = null, DateTime? CODate = null, string? TypeCB = null, string? ProductionYearActual = null, string? Location = null, string? CabinCONo = null, string? InvoiceSpecName = null, string? InvoiceFactorySearch = null, DateTime? DateExpiredDlvCar = null, string? MapVINBy = null, string? VINListNo = null, string? HMCOrderNo = null, string? HMCUnitOrderNo = null, string? StorageCodeInit = null, DateTime? CustomsClearanceDate = null, string? WorkOrderNoTemp = null, string? CarCancelType = null, DateTime? CQEndDate = null, DateTime? DocDeliveryReqDate = null, string? MapVINStorage = null, string? MapVINType = null, string? SOCode = null, decimal? UnitPriceActual = null, string? VINYear = null, DateTime? DepositDutyEndDate = null, decimal? UnitPriceInit = null, string? CPTCStatus = null, string? TTCStatus = null, string? FlagActive = null, string? FlagEarlyCancel = null, DateTime? DateExpiredPmtGrt = null, DateTime? DateExpiredPmtCL = null, DateTime? DateExpiredInvoice = null, string? FlagPmtDelayDone = null, string? CabinCertificateNo = null, DateTime? CabinCertificateDate = null, string? CabinInvoiceNo = null, DateTime? CabinInvoiceDate = null);   // #B248, #B323, #B332, #B360, §12 ProductionYearActual, Location, CabinCONo, InvoiceSpecName, InvoiceFactorySearch, DateExpiredDlvCar, MapVINBy, VINListNo, HMCOrderNo, HMCUnitOrderNo, StorageCodeInit, CustomsClearanceDate, WorkOrderNoTemp, CarCancelType, CQEndDate, DocDeliveryReqDate, MapVINStorage, MapVINType, SOCode, UnitPriceActual, VINYear, DepositDutyEndDate, UnitPriceInit, CPTCStatus, TTCStatus, DateExpiredPmtGrt, DateExpiredPmtCL, DateExpiredInvoice, FlagPmtDelayDone, CabinCertificateNo, CabinCertificateDate, CabinInvoiceNo, CabinInvoiceDate
 /// <summary>#B19: cập nhật số vận đơn + ngày hết thế chấp + ngân hàng nhận hồ sơ của một VIN.</summary>
 record CarVinBillNoDto(string? BillNo, DateTime? MortageEndDate, string? HandOverBankCode);
 /// <summary>#B20: một dòng của bảng `#input_Car_VIN` — cập nhật ngày đề nghị giao hồ sơ.</summary>

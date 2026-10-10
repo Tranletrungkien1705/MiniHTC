@@ -254,6 +254,8 @@ public sealed class PdiRequest
     public string? Result { get; set; }                  // ghi chú kết quả / lỗi
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? InspectedAt { get; set; }
+    /// <summary>#Round108 §12: TblDlr_PDIRequestDtl.DlrContractNo (`DbDefine.cs:2570`, `FrmMngDlr_PDIRequest.cs:283`) — số hợp đồng đại lý của yêu cầu PDI.</summary>
+    public string? DlrContractNo { get; set; }
 }
 
 /// <summary>
@@ -8059,6 +8061,8 @@ public sealed class DocReqCar
     public string? DealerCodeInvoice { get; set; }
     /// <summary>#Round105 §12: TblDRDetail.DRLISTCODE (`DbDefine.cs:1852`) — mã danh sách đề nghị giấy tờ xe.</summary>
     public string? DRListCode { get; set; }
+    /// <summary>#Round108 §12: TblCar_DocReqDtl.ReceivedDateInvoice (`DbDefine.cs:2071`, `FrmMngDlr_DocReq.cs`) — ngày nhận hoá đơn giấy tờ xe.</summary>
+    public DateTime? ReceivedDateInvoice { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
@@ -8149,6 +8153,8 @@ public sealed class CarDocRequestCar
     public string? DealerCodeInvoice { get; set; }
     /// <summary>#Round105 §12: TblDRDetail.DRLISTCODE (`DbDefine.cs:1852`) — mã danh sách đề nghị giấy tờ xe.</summary>
     public string? DRListCode { get; set; }
+    /// <summary>#Round108 §12: TblCar_DocReqDtl.ReceivedDateInvoice (`DbDefine.cs:2071`, `FrmMngDlr_DocReq.cs`) — ngày nhận hoá đơn giấy tờ xe.</summary>
+    public DateTime? ReceivedDateInvoice { get; set; }
 }
 
 /// <summary>
@@ -13757,6 +13763,14 @@ public sealed class CarVinMaster
     public string? VINYear { get; set; }
     public string? Location { get; set; }
     public string? CabinCONo { get; set; }
+    /// <summary>#Round108 §12: Tbl_UpdateCabin.CabinCertificateNo (`DbDefine.cs:4590`, `20190213.z11.Upgrade.Car_Vin.Cabin.sql`) — số chứng nhận thùng xe.</summary>
+    public string? CabinCertificateNo { get; set; }
+    /// <summary>#Round108 §12: Tbl_UpdateCabin.CabinCertificateDate (`DbDefine.cs:4594`) — ngày chứng nhận thùng xe.</summary>
+    public DateTime? CabinCertificateDate { get; set; }
+    /// <summary>#Round108 §12: Tbl_UpdateCabin.CabinInvoiceNo (`DbDefine.cs:4592`) — số hoá đơn thùng xe.</summary>
+    public string? CabinInvoiceNo { get; set; }
+    /// <summary>#Round108 §12: Tbl_UpdateCabin.CabinInvoiceDate (`DbDefine.cs:4593`) — ngày hoá đơn thùng xe.</summary>
+    public DateTime? CabinInvoiceDate { get; set; }
     public string? InvoiceSpecName { get; set; }
     public string? InvoiceFactorySearch { get; set; }
     public DateTime? DateExpiredDlvCar { get; set; }
