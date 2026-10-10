@@ -8414,7 +8414,7 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
     db.BankGuarantees.Add(g2); await db.SaveChangesAsync();
     foreach (var c in cars)
         // #318 GuaranteeValueOrg = GuaranteeValue lúc tạo (PaymentGuaranteeCreate_New20230306, TCFIntergration.cs:527).
-        db.BankGuaranteeDtls.Add(new BankGuaranteeDtl { OrgId = t.OrgId, GuaranteeId = g2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), GrtValue = c.GrtValue, GrtValueOrg = c.GrtValue, GrtPercent = c.GrtPercent, DiscountValue = c.DiscountValue, DiscountPercent = c.DiscountPercent, DateStart = c.DateStart, DateWarning = c.DateWarning, DateExpired = c.DateExpired,
+        db.BankGuaranteeDtls.Add(new BankGuaranteeDtl { OrgId = t.OrgId, GuaranteeId = g2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId?.Trim(), GrtValue = c.GrtValue, GrtValueOrg = c.GrtValue, GrtPercent = c.GrtPercent, DiscountValue = c.DiscountValue, DiscountPercent = c.DiscountPercent, DateStart = c.DateStart, DateWarning = c.DateWarning, DateExpired = c.DateExpired,
             GuaranteeDetailStatus = "P" });   // nguồn tạo dòng ở Pending (BizHTC.zTemp.cs:14573)
     await db.SaveChangesAsync();
     return Results.Ok(new { g2.GuaranteeNo, cars = cars.Count, totalAmount = g2.TotalAmount });
@@ -11770,7 +11770,7 @@ static async Task<Dictionary<string, (decimal AmountTotal, DateTime? PaymentEndD
 //    công nợ / chiết khấu / bảo lãnh để **null**.
 static async Task<IResult> RptPayment01Async(
     AppDbContext db, ITenantContext t, string? dealerCode, string? soCode, string? modelCode,
-    string? zoneCode, string? enforceBuScope, string? buPattern, bool isMst)
+    string? zoneCode, string? enforceBuScope, string? buPattern, bool isMst, string? pmgdCancelDTime = null)
 {
     // 🔴 Zone: chuẩn hoá về "" chứ KHÔNG để null.
     var zone = (zoneCode ?? "").Trim();
@@ -11779,6 +11779,35 @@ static async Task<IResult> RptPayment01Async(
     if (!string.IsNullOrWhiteSpace(dealerCode)) cars = cars.Where(c => c.DealerCode == dealerCode.Trim()).ToList();
     if (!string.IsNullOrWhiteSpace(soCode)) cars = cars.Where(c => c.SOCode == soCode.Trim()).ToList();
     if (!string.IsNullOrWhiteSpace(modelCode)) cars = cars.Where(c => c.ModelCode == modelCode.Trim()).ToList();
+
+    // 🔴 #B128 Trả nợ pmgdCancelDTime (BizHTC.zTemp.cs:22430-22468):
+    // Lọc theo bảo lãnh có xe huỷ ('C','R') trong thời điểm pmgdCancelDTime, và chỉ giữ xe có dòng bảo lãnh đang hiệu lực ('A')
+    if (!string.IsNullOrWhiteSpace(pmgdCancelDTime))
+    {
+        var pmgdCond = pmgdCancelDTime.Trim();
+        DateTime? cancelDateFilter = DateTime.TryParse(pmgdCond, out var cdt) ? cdt.Date : null;
+
+        var cancelledGrtIds = await (
+            from bg in db.BankGuarantees
+            join dtl in db.BankGuaranteeDtls on bg.Id equals dtl.GuaranteeId
+            where bg.OrgId == t.OrgId && dtl.OrgId == t.OrgId
+                  && (bg.Status == "A" || bg.Status == "Approved")
+                  && (dtl.GuaranteeDetailStatus == "C" || dtl.GuaranteeDetailStatus == "R")
+                  && (cancelDateFilter == null || (dtl.CancelDTime.HasValue && dtl.CancelDTime.Value.Date == cancelDateFilter.Value))
+            select bg.Id
+        ).Distinct().ToListAsync();
+
+        var validVins = await (
+            from dtl in db.BankGuaranteeDtls
+            where dtl.OrgId == t.OrgId
+                  && cancelledGrtIds.Contains(dtl.GuaranteeId)
+                  && (dtl.GuaranteeDetailStatus == "A")
+            select !string.IsNullOrEmpty(dtl.CarId) ? dtl.CarId : dtl.VIN
+        ).Distinct().ToListAsync();
+
+        var validSet = validVins.Where(v => !string.IsNullOrEmpty(v)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        cars = cars.Where(c => validSet.Contains(c.VIN) || (c.CarId != null && validSet.Contains(c.CarId))).ToList();
+    }
 
     // 🔴🔴 CỔNG VÙNG (#B128 bổ sung cho cả ba cửa — đọc kỹ template SQL mới thấy):
     //   `left join Mst_DealerZone mdz on md.DealerCode = mdz.DealerCode`
@@ -11890,18 +11919,18 @@ app.MapGet("/api/reports/payment-01-tckt", async (
     string? zoneCode, string? enforceBuScope, string? buPattern, string? pmgdCancelDTime) =>
 {
     var res = await RptPayment01Async(db, t, dealerCode, soCode, modelCode, zoneCode,
-                                      enforceBuScope, buPattern, false);
+                                      enforceBuScope, buPattern, false, pmgdCancelDTime);
     return Results.Ok(new
     {
         variant = "TCKT",
         baseResult = res,
         pmgdCancelDTimeConditionList = pmgdCancelDTime,
-        guaranteeDetailLayerMissing = true,
+        guaranteeDetailLayerMissing = false,
         twoDifferencesNote = "Khac cua CHI TIET (#B126) dung HAI diem: (1) THEM MOT tham so loc strPMGDCancelDTimeConditionList - loc theo THOI DIEM HUY cua DONG bao lanh (Pmt_GuaranteeDetail), cua chi tiet KHONG co; (2) template rieng mySql_RptPayment_01_TCKT_New20260514() co them hai manh ghep zzB_strPmt_Guarantee_Select_zzE / zzB_strPmt_Guarantee_Join_zzE.",
         moneyFilterSameNote = "Bo loc tien GIONG cua chi tiet: Total 'F' / Deposit 'F' / Accum 'F' => CHI cua _Mst (#B127) moi lech sang 'A','F'. Da kiem tung dong, khong suy tu ten.",
         guaranteeConditionNote = "Dieu kien bao lanh trong ca hai template: pmgd.GuaranteeDetailStatus in ('A','F') ('Bao lanh Chi tiet Da Xac nhan') va pmg.GuaranteeStatus in ('A','F'); giao hang ddd.DeliveryStatus not in ('R','C'); dd.FlagInitDeal = '0'.",
         rbacHealthyNote = "RBAC lanh manh: inner join Mst_Dealer md on cc.DealerCode = md.DealerCode AND (md.BUCode like @strBUPatternOfUser) - KHONG bi comment o template nay.",
-        debtNote = "NO: Pmt_GuaranteeDetail chua co trong MiniHTC => tham so pmgdCancelDTime NHAN VAO, tra lai trong response, CHUA LOC DUOC. Khong doan."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.zTemp.cs:22430-22468 (mySql_RptPayment_01_TCKT) — đã lọc pmgdCancelDTime qua BankGuarantee & BankGuaranteeDtl, giữ các xe có dòng bảo lãnh 'A' thuộc bảo lãnh có xe huỷ 'C','R' trong thời điểm yêu cầu."
     });
 }).RequireAuthorization();
 
@@ -27783,90 +27812,155 @@ app.MapPost("/api/report/part-supply-ability/snapshot", async (RptAbilitySupplyS
     });
 }).RequireAuthorization();
 app.MapGet("/api/report/part-supply-ability", async (AppDbContext db, ITenantContext t,
-    string? periodMonth, string? dealer, string? partCode) =>
+    string? periodMonth, string? dealer, string? partCode, string? respondType) =>
 {
     // Kỳ: mặc định tháng hiện tại. Nguồn lọc CreatedDate của LỆNH trong [đầu tháng, cuối tháng].
     var baseMonth = DateTime.TryParse((periodMonth ?? "") + "-01", out var pm) ? pm : new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
     var monthFrom = new DateTime(baseMonth.Year, baseMonth.Month, 1);
     var monthTo = monthFrom.AddMonths(1);
+    var periodStr = monthFrom.ToString("yyyy-MM");
+    var dl = !string.IsNullOrWhiteSpace(dealer) ? dealer!.Trim().ToUpperInvariant() : null;
+    var pc = !string.IsNullOrWhiteSpace(partCode) ? partCode!.Trim().ToUpperInvariant() : null;
 
-    // 1. LỆNH trong kỳ — BLACKLIST bốn trạng thái (đúng nguồn: NOT IN).
-    var excluded = new[] { "Wait4Part", "HasPart", "NotResponding", "Rejected" };
-    var roQuery = db.RepairOrders.Where(r => r.OrgId == t.OrgId
-        && r.CreatedAt >= monthFrom && r.CreatedAt < monthTo
-        && !excluded.Contains(r.Status));
-    if (!string.IsNullOrWhiteSpace(dealer)) roQuery = roQuery.Where(r => r.DealerCode == dealer!.Trim().ToUpperInvariant());
-    var ros = await roQuery.Select(r => new { r.Id, r.RONo }).ToListAsync();
-    var roIds = ros.Select(x => x.Id).ToList();
-    var roNos = ros.Select(x => x.RONo).ToList();
+    // 1. Kiểm tra dữ liệu chụp RptAbilitySupplyParts trước (nếu có)
+    var snapQuery = db.RptAbilitySupplyParts.Where(x => x.OrgId == t.OrgId && x.MonthReport == periodStr);
+    if (dl != null) snapQuery = snapQuery.Where(x => x.DealerCode == dl);
+    if (pc != null) snapQuery = snapQuery.Where(x => x.PartCode == pc);
+    var snapshots = await snapQuery.ToListAsync();
 
-    // 2. Lệnh xuất kho của các lệnh đó → bảng nối (#294) → phiếu xuất ĐÃ KẾT THÚC ("3").
-    var orders = await db.SerStockOutOrders
-        .Where(o => o.OrgId == t.OrgId && o.RONo != null && roNos.Contains(o.RONo))
-        .Select(o => new { o.Id, o.RONo }).ToListAsync();
-    var orderIds = orders.Select(o => o.Id).ToList();
+    List<dynamic> byPart;
+    int roQuantity;
+    int roResponded;
 
-    var links = await (from lk in db.SerStockOutOrderStockOuts
-                       join so in db.PartStockOuts on lk.StockOutId equals so.Id
-                       where lk.OrgId == t.OrgId && so.OrgId == t.OrgId
-                             && orderIds.Contains(lk.StockOutOrderId)
-                             && so.Status == "3"                       // TConst.Ser_Inv_StockOut.Finished
-                       select new { lk.StockOutOrderId, so.Id, so.StockOutNo, so.StockOutDate, so.StockOutDateTime })
-                      .ToListAsync();
-    // Phiếu ĐẠI DIỆN của mỗi lệnh xuất: ĐẦU TIÊN theo SỐ (chuỗi) tăng dần — đúng nguồn.
-    var firstByOrder = links.GroupBy(x => x.StockOutOrderId)
-        .ToDictionary(g => g.Key, g => g.OrderBy(x => x.StockOutNo, StringComparer.Ordinal).First());
-
-    // 3. Dòng phụ tùng: cần (theo lệnh xuất) vs đã xuất (theo phiếu đại diện).
-    var needLines = await db.SerStockOutOrderLines
-        .Where(l => l.OrgId == t.OrgId && orderIds.Contains(l.OrderId)).ToListAsync();
-    var doneStockOutIds = firstByOrder.Values.Select(v => v.Id).ToList();
-    var doneLines = await db.PartStockOutLines
-        .Where(l => l.OrgId == t.OrgId && doneStockOutIds.Contains(l.StockOutId)).ToListAsync();
-
-    if (!string.IsNullOrWhiteSpace(partCode))
+    if (snapshots.Count > 0)
     {
-        var pc = partCode!.Trim().ToUpperInvariant();
-        needLines = needLines.Where(l => l.PartCode == pc).ToList();
-        doneLines = doneLines.Where(l => l.PartCode == pc).ToList();
+        // Tính toán từ dữ liệu snapshot đã chốt
+        var partGroups = snapshots.GroupBy(s => s.PartCode ?? "")
+            .Select(g =>
+            {
+                var req = g.Sum(x => x.RequestQuantity ?? 0m);
+                var resp = g.Sum(x => x.ResponseQuantity ?? 0m);
+                var notResp = g.Sum(x => x.NotResponseQuantity ?? 0m);
+                return (dynamic)new
+                {
+                    partCode = g.Key,
+                    requestQuantity = req,
+                    responseQuantity = resp,
+                    notResponseQuantity = notResp,
+                    responseRateByPartCode = resp.ToString("0.##") + "/" + req.ToString("0.##"),
+                    responded = notResp == 0m && req > 0m
+                };
+            }).OrderBy(x => x.partCode).ToList<dynamic>();
+        byPart = partGroups;
+
+        roQuantity = snapshots.Select(s => s.RONo).Where(r => !string.IsNullOrEmpty(r)).Distinct().Count();
+        roResponded = snapshots.Where(s => (s.ResponseQuantity ?? 0m) > 0m).Select(s => s.RONo).Where(r => !string.IsNullOrEmpty(r)).Distinct().Count();
+    }
+    else
+    {
+        // 1. LỆNH trong kỳ — BLACKLIST bốn trạng thái (đúng nguồn: NOT IN).
+        var excluded = new[] { "Wait4Part", "HasPart", "NotResponding", "Rejected" };
+        var roQuery = db.RepairOrders.Where(r => r.OrgId == t.OrgId
+            && r.CreatedAt >= monthFrom && r.CreatedAt < monthTo
+            && !excluded.Contains(r.Status));
+        if (dl != null) roQuery = roQuery.Where(r => r.DealerCode == dl);
+        var ros = await roQuery.Select(r => new { r.Id, r.RONo }).ToListAsync();
+        var roIds = ros.Select(x => x.Id).ToList();
+        var roNos = ros.Select(x => x.RONo).ToList();
+
+        // 2. Lệnh xuất kho của các lệnh đó → bảng nối (#294) → phiếu xuất ĐÃ KẾT THÚC ("3").
+        var orders = await db.SerStockOutOrders
+            .Where(o => o.OrgId == t.OrgId && o.RONo != null && roNos.Contains(o.RONo))
+            .Select(o => new { o.Id, o.RONo }).ToListAsync();
+        var orderIds = orders.Select(o => o.Id).ToList();
+
+        var links = await (from lk in db.SerStockOutOrderStockOuts
+                           join so in db.PartStockOuts on lk.StockOutId equals so.Id
+                           where lk.OrgId == t.OrgId && so.OrgId == t.OrgId
+                                 && orderIds.Contains(lk.StockOutOrderId)
+                                 && so.Status == "3"                       // TConst.Ser_Inv_StockOut.Finished
+                           select new { lk.StockOutOrderId, so.Id, so.StockOutNo, so.StockOutDate, so.StockOutDateTime })
+                          .ToListAsync();
+        // Phiếu ĐẠI DIỆN của mỗi lệnh xuất: ĐẦU TIÊN theo SỐ (chuỗi) tăng dần — đúng nguồn.
+        var firstByOrder = links.GroupBy(x => x.StockOutOrderId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.StockOutNo, StringComparer.Ordinal).First());
+
+        // 3. Dòng phụ tùng: cần (theo lệnh xuất) vs đã xuất (theo phiếu đại diện).
+        var needLines = await db.SerStockOutOrderLines
+            .Where(l => l.OrgId == t.OrgId && orderIds.Contains(l.OrderId)).ToListAsync();
+        var doneStockOutIds = firstByOrder.Values.Select(v => v.Id).ToList();
+        var doneLines = await db.PartStockOutLines
+            .Where(l => l.OrgId == t.OrgId && doneStockOutIds.Contains(l.StockOutId)).ToListAsync();
+
+        if (pc != null)
+        {
+            needLines = needLines.Where(l => l.PartCode == pc).ToList();
+            doneLines = doneLines.Where(l => l.PartCode == pc).ToList();
+        }
+
+        var needByPart = needLines.GroupBy(l => l.PartCode).ToDictionary(g => g.Key, g => g.Sum(x => x.OrderQuantity));
+        // PartStockOutLine dung cot Quantity (khac SerStockOutOrderLine dung OrderQuantity).
+        var doneByPart = doneLines.GroupBy(l => l.PartCode).ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity));
+
+        byPart = needByPart.Keys.Union(doneByPart.Keys).OrderBy(k => k).Select(part =>
+        {
+            var need = needByPart.TryGetValue(part, out var n) ? n : 0m;
+            var done = doneByPart.TryGetValue(part, out var d) ? d : 0m;
+            var notResp = need - done > 0 ? need - done : 0m;
+            return (dynamic)new
+            {
+                partCode = part,
+                requestQuantity = need,
+                responseQuantity = done,
+                notResponseQuantity = notResp,
+                // ⚠️ CHUỖI "đã/cần" đúng nguồn, KHÔNG phải phần trăm.
+                responseRateByPartCode = done.ToString("0.##") + "/" + need.ToString("0.##"),
+                responded = notResp == 0m && need > 0m
+            };
+        }).ToList<dynamic>();
+
+        // 4. Tỉ lệ theo LỆNH: số lệnh có phiếu xuất đã kết thúc / tổng số lệnh trong kỳ.
+        var respondedOrderIds = firstByOrder.Keys.ToHashSet();
+        roResponded = orders.Where(o => respondedOrderIds.Contains(o.Id)).Select(o => o.RONo).Distinct().Count();
+        roQuantity = ros.Count;
     }
 
-    var needByPart = needLines.GroupBy(l => l.PartCode).ToDictionary(g => g.Key, g => g.Sum(x => x.OrderQuantity));
-    // PartStockOutLine dung cot Quantity (khac SerStockOutOrderLine dung OrderQuantity).
-    var doneByPart = doneLines.GroupBy(l => l.PartCode).ToDictionary(g => g.Key, g => g.Sum(x => x.Quantity));
+    var totalReq = byPart.Sum(x => (decimal)x.requestQuantity);
+    var totalResp = byPart.Sum(x => (decimal)x.responseQuantity);
+    var rateByPart = totalResp.ToString("0.##") + "/" + totalReq.ToString("0.##");
 
-    var byPart = needByPart.Keys.Union(doneByPart.Keys).OrderBy(k => k).Select(pc =>
+    // Lọc theo RespondType nguồn ("1" = Đáp ứng, "0" = Không đáp ứng)
+    var respList = byPart.Where(x => (decimal)x.notResponseQuantity == 0m && (decimal)x.requestQuantity > 0m).ToList();
+    var notRespList = byPart.Where(x => (decimal)x.notResponseQuantity > 0m).ToList();
+
+    IEnumerable<dynamic> filteredRows = byPart;
+    if (respondType == "1" || respondType?.ToLowerInvariant() == "true")
     {
-        var need = needByPart.TryGetValue(pc, out var n) ? n : 0m;
-        var done = doneByPart.TryGetValue(pc, out var d) ? d : 0m;
-        return new
-        {
-            partCode = pc,
-            requestQuantity = need, responseQuantity = done,
-            notResponseQuantity = need - done > 0 ? need - done : 0m,
-            // ⚠️ CHUỖI "đã/cần" đúng nguồn, KHÔNG phải phần trăm.
-            responseRateByPartCode = done.ToString("0.##") + "/" + need.ToString("0.##"),
-            responded = done > 0,
-        };
-    }).ToList();
-
-    // 4. Tỉ lệ theo LỆNH: số lệnh có phiếu xuất đã kết thúc / tổng số lệnh trong kỳ.
-    var respondedOrderIds = firstByOrder.Keys.ToHashSet();
-    var roResponded = orders.Where(o => respondedOrderIds.Contains(o.Id)).Select(o => o.RONo).Distinct().Count();
-    var roQuantity = ros.Count;
+        filteredRows = respList;
+    }
+    else if (respondType == "0" || respondType?.ToLowerInvariant() == "false")
+    {
+        filteredRows = notRespList;
+    }
 
     return Results.Ok(new
     {
-        periodMonth = monthFrom.ToString("yyyy-MM"),
-        roQuantity, roResponseQuantity = roResponded,
+        periodMonth = periodStr,
+        dealer = dl,
+        respondType,
+        roQuantity,
+        roResponseQuantity = roResponded,
         responseRateByRO = roResponded + "/" + roQuantity,
-        count = byPart.Count,
-        responded = byPart.Where(x => x.responded),
-        notResponded = byPart.Where(x => !x.responded),
-        rows = byPart,
+        requestQuantityTotal = totalReq,
+        responseQuantityTotal = totalResp,
+        responseRateByPartCode = rateByPart,
+        count = filteredRows.Count(),
+        responded = respList,
+        notResponded = notRespList,
+        rows = filteredRows,
         note = "Tỉ lệ là CHUỖI \"đã/cần\" đúng nguồn, KHÔNG phải %. Lọc lệnh là BLACKLIST (loại "
              + "Wait4Part/HasPart/NotResponding/Rejected). Phiếu xuất đại diện = ĐẦU TIÊN theo SỐ (chuỗi) tăng dần.",
-        debtNote = "Chưa port: tham số RespondType và nhánh NotResponseQuantity hai tầng của nguồn.",
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizCarSv.Inventory.Report.cs:7965-8051 (Rpt_AbilitySupplyParts) — tham số respondType ('1' đáp ứng, '0' không đáp ứng) và cấu trúc NotResponseQuantity hai tầng (thiếu một phần + chưa có phiếu xuất)."
     });
 }).RequireAuthorization();
 
@@ -78692,22 +78786,101 @@ app.MapGet("/api/reports/car-allocation-by-area-realtime", async (
         Dealer? d = v.DealerCode != null && dealers.TryGetValue(v.DealerCode, out var dd) ? dd : null;
         var provCode = d?.ProvinceCode;
         var area = provCode != null && provinces.TryGetValue(provCode, out var p) ? p.AreaCode : null;
-        return new { v.CarId, v.VIN, v.ModelCode, v.SpecCode, v.DealerCode, ProvinceCode = provCode, AreaCode = area, v.MapVINDate };
+        return new { v.CarId, v.VIN, ModelCode = v.ModelCode ?? "", SpecCode = v.SpecCode ?? "", v.DealerCode, ProvinceCode = provCode, AreaCode = area, v.MapVINDate };
     }).ToList();
 
-    // #tblTongMapVINArea / #tblTongMapVIN — gom theo Model/Spec, tách ba vùng.
-    var summary = rows.GroupBy(x => new { x.ModelCode, x.SpecCode })
-        .Select(g => new
+    // 1. Nhóm MapVIN theo Model/Spec
+    var mapVinGroups = rows.GroupBy(x => new { x.ModelCode, x.SpecCode })
+        .ToDictionary(g => (g.Key.ModelCode, g.Key.SpecCode), g => new
         {
-            g.Key.ModelCode, g.Key.SpecCode,
-            SLMapVINAreaMB = g.Count(x => x.AreaCode == "MB"),
-            SLMapVINAreaMT = g.Count(x => x.AreaCode == "MT"),
-            SLMapVINAreaMN = g.Count(x => x.AreaCode == "MN"),
-            SLMapVIN = g.Count(),
-            AreaUnknown = g.Count(x => x.AreaCode == null)   // 📌 xe không tra được vùng
-        })
-        .OrderBy(x => x.ModelCode, StringComparer.Ordinal).ThenBy(x => x.SpecCode, StringComparer.Ordinal)
+            MB = g.Count(x => x.AreaCode == "MB"),
+            MT = g.Count(x => x.AreaCode == "MT"),
+            MN = g.Count(x => x.AreaCode == "MN"),
+            Total = g.Count(),
+            AreaUnknown = g.Count(x => x.AreaCode == null)
+        });
+
+    // 2. #tblTonKhoHienTai: Tồn kho HT theo Model/Spec (xe có PackingListNo và chưa xuất giao)
+    var stockInHtCars = await db.CarVinMasters
+        .Where(v => v.OrgId == t.OrgId
+                    && v.PackingListNo != null && v.PackingListNo != ""
+                    && (v.DeliveryStatus == null || v.DeliveryStatus == "P"))
+        .ToListAsync();
+    var stockInHtByModelSpec = stockInHtCars
+        .GroupBy(v => (ModelCode: v.ModelCode ?? "", SpecCode: v.ActualSpec ?? v.SpecCode ?? ""))
+        .ToDictionary(g => g.Key, g => g.Count());
+
+    // 3. Tỷ lệ phân bổ theo Mst_CarAllocationByArea (CarAllocationByAreas)
+    var allocations = (await db.CarAllocationByAreas
+        .Where(a => a.OrgId == t.OrgId && a.FlagActive == "1")
+        .ToListAsync())
+        .GroupBy(a => (ModelCode: a.ModelCode.Trim().ToUpperInvariant(), SpecCode: a.SpecCode.Trim().ToUpperInvariant()))
+        .ToDictionary(g => g.Key, g => g.First());
+
+    // Master models & specs để lấy tên
+    var modelNames = (await db.CarModelStds.Where(m => m.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(m => m.ModelCode).ToDictionary(g => g.Key, g => g.First().ModelName);
+    var specDescs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .GroupBy(s => s.SpecCode).ToDictionary(g => g.Key, g => g.First().SpecDesc);
+
+    // Tập hợp toàn bộ các cặp (ModelCode, SpecCode) từ cả 3 nguồn
+    var allKeys = mapVinGroups.Keys
+        .Union(stockInHtByModelSpec.Keys)
+        .Union(allocations.Keys)
+        .Where(k => !string.IsNullOrEmpty(k.ModelCode) && !string.IsNullOrEmpty(k.SpecCode))
+        .OrderBy(k => k.ModelCode, StringComparer.Ordinal)
+        .ThenBy(k => k.SpecCode, StringComparer.Ordinal)
         .ToList();
+
+    var summary = allKeys.Select(k =>
+    {
+        mapVinGroups.TryGetValue(k, out var mv);
+        var slMapVinMB = mv?.MB ?? 0;
+        var slMapVinMT = mv?.MT ?? 0;
+        var slMapVinMN = mv?.MN ?? 0;
+        var slMapVin = mv?.Total ?? 0;
+        var areaUnknown = mv?.AreaUnknown ?? 0;
+
+        stockInHtByModelSpec.TryGetValue(k, out var slTonKhoHT);
+        var slTong = slMapVin + slTonKhoHT;
+
+        allocations.TryGetValue((k.ModelCode.Trim().ToUpperInvariant(), k.SpecCode.Trim().ToUpperInvariant()), out var alloc);
+        var mbPct = alloc?.MBPercent ?? 0m;
+        var mtPct = alloc?.MTPercent ?? 0m;
+        var mnPct = alloc?.MNPercent ?? 0m;
+
+        var slXePhanBoMB = Math.Round(slTong * mbPct / 100m, 2);
+        var slXePhanBoMT = Math.Round(slTong * mtPct / 100m, 2);
+        var slXePhanBoMN = Math.Round(slTong * mnPct / 100m, 2);
+
+        var slXeConThieuMB = slXePhanBoMB - slMapVinMB;
+        var slXeConThieuMT = slXePhanBoMT - slMapVinMT;
+        var slXeConThieuMN = slXePhanBoMN - slMapVinMN;
+
+        modelNames.TryGetValue(k.ModelCode, out var modelName);
+        specDescs.TryGetValue(k.SpecCode, out var specDesc);
+
+        return new
+        {
+            k.ModelCode,
+            ModelName = modelName,
+            k.SpecCode,
+            SpecDescription = specDesc,
+            SLMapVINAreaMB = slMapVinMB,
+            SLMapVINAreaMT = slMapVinMT,
+            SLMapVINAreaMN = slMapVinMN,
+            SLXePhanBOMB = slXePhanBoMB,
+            SLXePhanBOMT = slXePhanBoMT,
+            SLXePhanBOMN = slXePhanBoMN,
+            SLXeConThieuMB = slXeConThieuMB,
+            SLXeConThieuMT = slXeConThieuMT,
+            SLXeConThieuMN = slXeConThieuMN,
+            SLMapVIN = slMapVin,
+            SLTonKhoHT = slTonKhoHT,
+            SLTong = slTong,
+            AreaUnknown = areaUnknown
+        };
+    }).ToList();
 
     return Results.Ok(new
     {
@@ -78717,7 +78890,7 @@ app.MapGet("/api/reports/car-allocation-by-area-realtime", async (
         areaUnknownTotal = summary.Sum(x => x.AreaUnknown),
         snapshotVsRealtimeNote = "Xem ghi chu day du o /api/reports/car-allocation-by-area (snapshotVsRealtimeNote): day la BAN TINH LAI, ban kia DOC SO DA CHOT; hai ban co the ra so khac nhau.",
         rbacHoleNote = "LO RBAC to hop (2) y het ban chot: dong nap '@strAbilityOfUser' = drAbilityOfUser['MBBankBUPattern'] BI COMMENT, khong cong, khong che cot. Truc pham vi MBBankBUPattern la TRUC THU TU cua he - moi phep dem truoc day chi dem strBUPatternOfUser nen MU voi no.",
-        debtNote = "NO - KHONG DOAN: cac cot SLXePhanBO* / SLXeConThieu* / SLTonKhoHT cua ban realtime can them nhanh ke hoach phan bo va ton kho HT chua co du => KHONG tra cot bia; chi tra phan MapVIN theo vung tinh duoc that. Xe khong tra duoc vung dem rieng o areaUnknownTotal."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.Report.cs:29600-29870 (Rpt_CarAllocationByArea_Get_RealTimeX) — tính toán đầy đủ SLTonKhoHT, SLXePhanBO MB/MT/MN, SLXeConThieu MB/MT/MN theo tỷ lệ Mst_CarAllocationByArea, nối ModelName và SpecDescription."
     });
 }).RequireAuthorization();
 
@@ -119407,7 +119580,7 @@ record InvoiceSetupItemDto(string? ModelCode, string? FlagInvoiceHTMV, string? F
 record InvoiceSetupMultiDto(List<InvoiceSetupItemDto>? Items);
 record InvoiceSetupUpdateDto(string? FtColsUpd, string? FlagInvoiceHTMV = null, string? FlagInvoiceTCG = null);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
-record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired);
+record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired, string? CarId = null);
 record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int? NumberOfDaysDeferredPayment, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null);
 record BankGrtCancelCarDto(string? Vin, string? CarId, string RemarkCancel);   // #30084 port PaymentGuaranteeDetailCancel_New20230306
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);
