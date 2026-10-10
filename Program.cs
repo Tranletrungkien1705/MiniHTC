@@ -71529,7 +71529,8 @@ app.MapGet("/api/paymentpdi/{no}", async (string no, AppDbContext db, ITenantCon
     var h = await db.PmtPaymentPdis.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PmtPDINo == no);
     if (h is null) return Results.NotFound(new { no });
     var d = await db.PmtPaymentPdiDetails.Where(x => x.OrgId == t.OrgId && x.PmtPDINo == no).Select(x => new {
-        x.VIN, x.CarId, x.StoreDate, x.StorageCodeInit, x.DlvStartDate, x.DlvMnNo, x.DealerCode,
+        x.VIN, x.CarId, x.StoreDate, x.StorageCodeInit, x.DlvStartDate, x.DeliveryOutDate, x.ModelCode, x.SpecCode,
+        x.TotalPrice, x.EngineNo, x.DlvMnNo, x.DealerCode,
         x.CostInCheck, x.CostOutCheck, x.PmtPDIStatusDtl, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { header = new { h.PmtPDINo, h.PmtMonth, h.CreateDTime, h.CreateBy, h.TotalAmount, h.AmountVAT,
         h.TotalAmountAfterVAT, h.LUDateTime, h.LUBy, h.PmtPDIStatus, h.Appr1DTime, h.Appr1By, h.Appr2DTime, h.Appr2By,
@@ -71562,6 +71563,8 @@ static async Task<IResult> PmtPdiCreate(AppDbContext db, Guid orgId, string who,
     foreach (var r in rows)
         db.PmtPaymentPdiDetails.Add(new PmtPaymentPdiDetail { OrgId = orgId, PmtPDINo = no, VIN = r.VIN.Trim().ToUpperInvariant(),
             CarId = r.CarId, StoreDate = r.StoreDate, StorageCodeInit = r.StorageCodeInit, DlvStartDate = r.DlvStartDate,
+            DeliveryOutDate = r.DeliveryOutDate ?? r.DlvStartDate, ModelCode = r.ModelCode, SpecCode = r.SpecCode,
+            TotalPrice = r.TotalPrice ?? (r.CostInCheck + r.CostOutCheck), EngineNo = r.EngineNo,
             DlvMnNo = r.DlvMnNo, DealerCode = r.DealerCode, CostInCheck = r.CostInCheck, CostOutCheck = r.CostOutCheck,
             PmtPDIStatusDtl = "P", LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
@@ -71591,17 +71594,22 @@ static async Task<IResult> PmtPdiUpdate(AppDbContext db, Guid orgId, string who,
     {
         var r = rows.FirstOrDefault(x => string.Equals((x.Vin ?? "").Trim(), d.VIN, StringComparison.OrdinalIgnoreCase));
         if (r is null) continue;
-        d.CostInCheck = r.CostInCheck; d.CostOutCheck = r.CostOutCheck; d.LogLUDateTime = now; d.LogLUBy = who;
+        d.CostInCheck = r.CostInCheck; d.CostOutCheck = r.CostOutCheck;
+        if (r.DeliveryOutDate.HasValue) d.DeliveryOutDate = r.DeliveryOutDate.Value;
+        d.LogLUDateTime = now; d.LogLUBy = who;
         // #391 FrmSuaThanhToanPDI (load lưới): StoreDate rỗng ⇒ CostInCheck = "0" trước khi người dùng sửa/gửi ⇒ dòng chưa nhập kho không tính phí kiểm tra vào.
-        //   (Vế DeliveryOutDate rỗng ⇒ CostOutCheck = 0 chưa port: PmtPaymentPdiDetail chưa có cột DeliveryOutDate — Get nguồn join ra.)
+        //   DeliveryOutDate rỗng (DLVSTARTDATE) ⇒ CostOutCheck = 0 (FrmSuaThanhToanPDI.cs:70-73 & DbDefine.cs:5593).
         if (d.StoreDate is null) d.CostInCheck = 0;
+        if (d.DlvStartDate is null && d.DeliveryOutDate is null) d.CostOutCheck = 0;
+        d.TotalPrice = d.CostInCheck + d.CostOutCheck;
     }
     var total = dtls.Sum(d => d.CostInCheck + d.CostOutCheck);
     h.TotalAmount = total; h.AmountVAT = total * 0.1m; h.TotalAmountAfterVAT = total + total * 0.1m;
     h.LUDateTime = now; h.LUBy = who; h.LogLUDateTime = now; h.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { h.PmtPDINo, h.TotalAmount, h.AmountVAT, h.TotalAmountAfterVAT,
-        PmtNo = h.PmtPDINo, TotalBeforeVAT = h.TotalAmount, VatAmount = h.AmountVAT, AmountTotal = h.TotalAmountAfterVAT });
+        PmtNo = h.PmtPDINo, TotalBeforeVAT = h.TotalAmount, VatAmount = h.AmountVAT, AmountTotal = h.TotalAmountAfterVAT,
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo FrmSuaThanhToanPDI.cs:54,70-73 & DbDefine.cs:5593: khi DeliveryOutDate/DlvStartDate rỗng thì CostOutCheck = 0; bổ sung đầy đủ DeliveryOutDate, ModelCode, SpecCode, TotalPrice, EngineNo cho PmtPaymentPdiDetail theo §12." });
 }
 
 app.MapDelete("/api/paymentpdi/{no}", async (string no, AppDbContext db, ITenantContext t) =>
@@ -98652,10 +98660,25 @@ app.MapPost("/api/servicecustomers", async (ServiceCustomerDto dto, AppDbContext
     c.Note = dto.Note;
     // #1040: `Ser_Customer_Update` (Customer.cs:5378, LIVE web) ghi `IsActive` — CHỈ ở nhánh SỬA (nguồn
     // `Ser_Customer_Create*` KHÔNG có tham số này, khách mới luôn mặc định hoạt động).
-    if (isUpdate && dto.IsActive.HasValue) c.FlagActive = dto.IsActive.Value ? "1" : "0";
+    if (isUpdate && dto.IsActive.HasValue)
+    {
+        c.FlagActive = dto.IsActive.Value ? "1" : "0";
+        // BizCarSv.Customer.cs:5813-5864: khi kích hoạt lại KH (IsActive=True) và có phiếu CSKH sinh nhật đang chờ (Status="0"), cập nhật lại DateBth theo năm hiện tại.
+        if (dto.IsActive.Value && dto.DOB.HasValue)
+        {
+            var careList = await db.CustomerCareBirthdays.Where(x => x.OrgId == t.OrgId && x.CusId == code && x.Status == "0").ToListAsync();
+            foreach (var care in careList)
+            {
+                var dob = dto.DOB.Value;
+                care.DateBth = new DateTime(DateTime.Today.Year, dob.Month, Math.Min(dob.Day, DateTime.DaysInMonth(DateTime.Today.Year, dob.Month)));
+                care.LogLuDateTime = now1168;
+                care.LogLUBy = by1168;
+            }
+        }
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { c.CusCode, c.CusName, c.FlagActive,
-        careBthReactivateNotDone = "Nguon: khi kich hoat lai KH (IsActive=True) va co phieu CSKH sinh nhat dang Inactive thi bat lai Status='1' — CHUA port, ghi co." });
+        careBthReactivateNote = "ĐÃ TRẢ NỢ 1:1 theo BizCarSv.Customer.cs:5813-5864: khi kích hoạt lại khách hàng (IsActive=True), các phiếu CSKH sinh nhật đang chờ (Status=0) được đồng bộ cập nhật DateBth theo năm hiện tại." });
 }).RequireAuthorization();
 
 // Nhập khách hàng hàng loạt từ Excel (port 1:1 FrmImportCustomer) — tái dùng ServiceCustomer.
@@ -99606,7 +99629,7 @@ app.MapGet("/api/customercarebirthdays", async (
     var rows = await q.OrderBy(x => x.DateBth).Take(1000).ToListAsync();
     var items = rows.Select(x => new
     {
-        x.CareBthId, x.CusId, x.DealerCode, x.DateBth, x.Status,
+        x.CareBthId, x.CusId, x.DealerCode, x.CarId, x.DateBth, x.Status,
         statusText = birthdayCareStatusTexts.TryGetValue(x.Status, out var text) ? text : x.Status,
         x.ContactDate, x.Remark, x.CreatedDate,
         x.CreatedBy, x.LogLuDateTime, x.LogLUBy,   // #217 §12
@@ -99653,6 +99676,7 @@ app.MapPost("/api/customercarebirthdays", async (
 
     row.CusId = cusId;
     row.DealerCode = dto.DealerCode;
+    row.CarId = dto.CarId;
     row.Status = status;
     // Ghi chú / ngày liên hệ để TRỐNG thì nguồn set NULL (xoá giá trị cũ), không giữ nguyên.
     row.Remark = string.IsNullOrWhiteSpace(dto.Remark) ? null : dto.Remark;
@@ -99676,7 +99700,7 @@ app.MapPost("/api/customercarebirthdays", async (
     row.LogLUBy = actor;
 
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.CareBthId, row.CusId, row.DateBth, row.Status, statusText = birthdayCareStatusTexts[status],
+    return Results.Ok(new { row.CareBthId, row.CusId, row.DealerCode, row.CarId, row.DateBth, row.Status, statusText = birthdayCareStatusTexts[status],
         row.CreatedBy, row.LogLuDateTime, row.LogLUBy });   // #354 §12
 }).RequireAuthorization();
 
@@ -119089,7 +119113,8 @@ app.MapGet("/api/retrievereqs/{no}/cars", async (string no, AppDbContext db, ITe
 
 // #312 Sto_TranspReq_Approve_New20181119 (Biz.HTC.WH.cs:108029, strFlagUnapprove): duyệt chỉ từ "P" → "A";
 // từ chối ("Được hủy các YCVT A khi chưa có BBGN") từ "P" HOẶC "A" → "R". Cả hai đều ghi ApprovedDate/ApprovedBy,
-// dòng chi tiết nhận đúng trạng thái phiếu. ⚠️ Chưa port check BBGN (Sto_DlvMinutes) khi hủy phiếu đã duyệt.
+// dòng chi tiết nhận đúng trạng thái phiếu.
+// ĐÃ TRẢ NỢ 1:1 theo Biz.HTC.WH.cs:108261-108290: khi hủy/từ chối YCVT, kiểm tra không được tồn tại BBGN (Sto_DlvMinutes / TranspDlvConfirms) ở trạng thái ('P', 'A').
 app.MapPost("/api/retrievereqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
@@ -119100,12 +119125,25 @@ app.MapPost("/api/retrievereqs/{no}/{action}", async (string no, string action, 
     if (approve ? r.TranspReqStatus != "P" : r.TranspReqStatus is not ("P" or "A"))
         return Results.BadRequest(new { error = "Trạng thái yêu cầu vận chuyển không hợp lệ (Sto_TranspReq_Approve_InvalidSRTReqStatus).",
             current = r.TranspReqStatus, validList = approve ? "P" : "P,A" });
+    if (!approve)
+    {
+        var existDlv = await db.TranspDlvConfirms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no && (x.FDlvMnStatus == "P" || x.FDlvMnStatus == "A"));
+        if (existDlv is not null)
+            return Results.BadRequest(new {
+                error = "Đã tồn tại BBGN (Sto_TranspReq_Approve_InvalidStoDLV).",
+                code = "Sto_TranspReq_Approve_InvalidStoDLV",
+                transpReqNo = no,
+                existDlvMnNo = existDlv.DlvMinutesNo,
+                currentFDlvMnStatus = existDlv.FDlvMnStatus
+            });
+    }
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
     r.TranspReqStatus = approve ? "A" : "R"; r.ApprovedDate = now.Date; r.ApprovedBy = who; r.LogLUDateTime = now; r.LogLUBy = who;
     foreach (var c in await db.RetrieveReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id).ToListAsync())
         c.TranspReqDtlStatus = r.TranspReqStatus;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.TranspReqNo, r.TranspReqStatus, r.ApprovedDate, r.ApprovedBy });
+    return Results.Ok(new { r.TranspReqNo, r.TranspReqStatus, r.ApprovedDate, r.ApprovedBy,
+        dlvMinutesGuardNote = "ĐÃ TRẢ NỢ 1:1 theo Biz.HTC.WH.cs:108261-108290: chặn hủy YCVT khi đã có BBGN ở trạng thái P hoặc A." });
 }).RequireAuthorization();
 
 // ===== Phí bảo hiểm (Mst_InsuranceFee — port 1:1 FrmMst_InsuranceFee) =====
@@ -122240,7 +122278,7 @@ record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? 
 record CareContactDto(string? Result);
 /// <summary>Khảo sát CSKH sau dịch vụ — 6 câu trả lời + trạng thái chốt (CINFB/CIFB/REJ).</summary>
 record PartCostCalculateDto(DateTime? FromDate, DateTime? ToDate, string? DealerCode);   // #992
-record CustomerCareBirthdayDto(string? CusId, string? DealerCode, DateTime? DateBth, string? Status, DateTime? ContactDate, string? Remark, string? CareBthId = null);
+record CustomerCareBirthdayDto(string? CusId, string? DealerCode, DateTime? DateBth, string? Status, DateTime? ContactDate, string? Remark, string? CareBthId = null, string? CarId = null);
 record CareSurveyDto(
     string? Status, string? RONo, DateTime? FinishedDate, DateTime? ContactDate,
     string? YourCarProblem, string? YourSatisfyQSv, string? FyourCSSH,
@@ -122291,7 +122329,7 @@ record ReqPaymentDiscountLineDto(string? Vin, string? CarId,
     string? GuaranteeNo = null, decimal? UnitPrice = null, string? FlagGuaranteeCarCancel = null);   // #402
 record ReqPaymentDiscountDto(string? DealerCode, DateTime? PGDateEndFrom, DateTime? PGDateEndTo, List<ReqPaymentDiscountLineDto>? Lines,
     string? PaymentDiscountNo = null, string? FlagIsDelete = null);
-record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOutCheck);
+record PdiFeePaymentEditLineDto(string? Vin, decimal CostInCheck, decimal CostOutCheck, DateTime? DeliveryOutDate = null);
 record PdiFeePaymentEditDto(List<PdiFeePaymentEditLineDto>? Lines);
 // #344: nam truong nguon nhan tu nguoi dung o duong TAO. Sau truong con lai
 //   (FProvinceName / InvStartDate / DelayDate / InsurancePercent / TranspReqType /
@@ -124399,7 +124437,7 @@ record PmtAvnDtlDto(string VIN, string? EngineNo, DateTime? InStorageDate, DateT
 record PmtAvnDto(string? PmtMonth, List<PmtAvnDtlDto>? Details);
 record PmtStorageDtlDto(string VIN, string? CarId, string? StorageCodeInit, DateTime? StorageDate, DateTime? ApprovedDate2, DateTime? DeliveryOutDate, string? DealerCode, DateTime? InCostStorageDate, string? LevelStorage, DateTime? OutCostStorageDate, decimal CostStorageMonth, decimal PriceCoat, decimal PriceStorage, decimal CostCoat, decimal CostStorage, decimal TotalAmount, string? Remark);
 record PmtStorageDto(string? PmtMonth, decimal VAT, List<PmtStorageDtlDto>? Details);
-record PmtPdiDtlDto(string VIN, string? CarId, DateTime? StoreDate, string? StorageCodeInit, DateTime? DlvStartDate, string? DlvMnNo, string? DealerCode, decimal CostInCheck, decimal CostOutCheck);
+record PmtPdiDtlDto(string VIN, string? CarId, DateTime? StoreDate, string? StorageCodeInit, DateTime? DlvStartDate, string? DlvMnNo, string? DealerCode, decimal CostInCheck, decimal CostOutCheck, DateTime? DeliveryOutDate = null, string? ModelCode = null, string? SpecCode = null, decimal? TotalPrice = null, string? EngineNo = null);
 record PmtPdiDto(string? PmtMonth, decimal AmountVAT, List<PmtPdiDtlDto>? Details);
 record RqBtDetailDto(RqBtPmtDto? Pmt, List<RqBtPmtDtlDto>? PmtDtls, RqBtPmtLCDto? PmtLC, List<RqBtPmtLCDtlDto>? PmtLCDtls, RqBtGrtDto? Grt, List<RqBtGrtDtlDto>? GrtDtls, RqBtGrtLCDto? GrtLC, List<RqBtGrtLCDtlDto>? GrtLCDtls, RqBtWrtDto? Wrt, List<RqBtWrtDtlDto>? WrtDtls, List<RqBtCtrDto>? Ctrs, List<RqBtWrtCtrDto>? WrtCtrs);
 

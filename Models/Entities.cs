@@ -6738,6 +6738,7 @@ public sealed class CustomerCareBirthday
 
     public string CusId { get; set; } = "";
     public string? DealerCode { get; set; }
+    public string? CarId { get; set; }              // §12: TblSerCustomerCareBth.CarId (DbDefine.cs:619)
 
     /// <summary>
     /// Ngày sinh nhật đã CHUẨN HOÁ VỀ NĂM HIỆN TẠI (DATEBTH) — nguồn không lưu năm sinh gốc ở đây
@@ -11258,6 +11259,11 @@ public sealed class PmtPaymentPdiDetail
     public DateTime? StoreDate { get; set; }
     public string? StorageCodeInit { get; set; }
     public DateTime? DlvStartDate { get; set; }
+    public DateTime? DeliveryOutDate { get; set; }   // #385/#391 §12: Tbl_Pmt_PaymentPDIDetail.DeliveryOutDate (FrmSuaThanhToanPDI)
+    public string? ModelCode { get; set; }          // §12: Tbl_Pmt_PaymentPDIDetail.ModelCode
+    public string? SpecCode { get; set; }           // §12: Tbl_Pmt_PaymentPDIDetail.SpecCode
+    public decimal TotalPrice { get; set; }         // §12: Tbl_Pmt_PaymentPDIDetail.TotalPrice
+    public string? EngineNo { get; set; }           // §12: Tbl_Pmt_PaymentPDIDetail.EngineNo
     /// <summary>Số biên bản giao xe làm căn cứ (`DlvMnNo`).</summary>
     public string? DlvMnNo { get; set; }
     public string? DealerCode { get; set; }
