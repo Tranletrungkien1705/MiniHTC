@@ -4310,6 +4310,9 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
             ReceivedDateInvoice = c.ReceivedDateInvoice,
             CarId = c.CarId, DeliveryStartDate = c.DeliveryStartDate, DeliveryEndDate = c.DeliveryEndDate, ConfirmStatus = c.ConfirmStatus,
             DODeliveryEndDate = c.DODeliveryEndDate, AmountNeg = c.AmountNeg,
+            DRTCGDtlStatus = c.DRTCGDtlStatus, DRTCGListCode = c.DRTCGListCode,
+            DealerCodeRecieve = c.DealerCodeRecieve, DealerNameRecieve = c.DealerNameRecieve,
+            ReqIVNo = c.ReqIVNo, TCGInvoiceNo = c.TCGInvoiceNo,
             LogLUDateTime = c.LogLUDateTime ?? nowDr, LogLUBy = c.LogLUBy ?? whoDr
         });
     await db.SaveChangesAsync();
@@ -4328,6 +4331,8 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
             c.DealerCodeInvoice, c.DRListCode, c.ReceivedDateInvoice,
             c.CarId, c.DeliveryStartDate, c.DeliveryEndDate, c.ConfirmStatus,
             c.DODeliveryEndDate, c.AmountNeg,
+            c.DRTCGDtlStatus, c.DRTCGListCode, c.DealerCodeRecieve, c.DealerNameRecieve,
+            c.ReqIVNo, c.TCGInvoiceNo,
             c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay,
             c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1,
             c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark,
@@ -8633,7 +8638,8 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
     foreach (var c in cars)
         // #318 GuaranteeValueOrg = GuaranteeValue lúc tạo (PaymentGuaranteeCreate_New20230306, TCFIntergration.cs:527).
         db.BankGuaranteeDtls.Add(new BankGuaranteeDtl { OrgId = t.OrgId, GuaranteeId = g2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId?.Trim(), GrtValue = c.GrtValue, GrtValueOrg = c.GrtValue, GrtPercent = c.GrtPercent, DiscountValue = c.DiscountValue, DiscountPercent = c.DiscountPercent, DateStart = c.DateStart, DateWarning = c.DateWarning, DateExpired = c.DateExpired,
-            GuaranteeDetailStatus = "P", TotalCompletedDate = c.TotalCompletedDate, DiscountDays = c.DiscountDays });   // nguồn tạo dòng ở Pending (BizHTC.zTemp.cs:14573), §12 TotalCompletedDate, DiscountDays
+            GuaranteeDetailStatus = "P", TotalCompletedDate = c.TotalCompletedDate, DiscountDays = c.DiscountDays,
+            DateRecieveGrtRoot = c.DateRecieveGrtRoot, OSODGrtEndDate = c.OSODGrtEndDate, SOCode = c.SOCode, DlrCtrNo = c.DlrCtrNo });   // nguồn tạo dòng ở Pending (BizHTC.zTemp.cs:14573), §12 TotalCompletedDate, DiscountDays, DateRecieveGrtRoot, OSODGrtEndDate, SOCode, DlrCtrNo
     await db.SaveChangesAsync();
     return Results.Ok(new { g2.GuaranteeNo, cars = cars.Count, totalAmount = g2.TotalAmount, g2.TypeFee, g2.NumberOfGuaranteeExt });
 }).RequireAuthorization();
@@ -8644,7 +8650,7 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy, c.TotalCompletedDate, c.DiscountDays }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy, c.TotalCompletedDate, c.DiscountDays, c.DateRecieveGrtRoot, c.OSODGrtEndDate, c.SOCode, c.DlrCtrNo }).ToListAsync();
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot,
         g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.ApprovedAt, g.CancelDate, g.CancelBy, g.TypeFee, g.NumberOfGuaranteeExt,   // #1371 §12 + #30084, §12 TotalCompletedDate, DiscountDays, TypeFee, NumberOfGuaranteeExt
         count = cars.Count, cars });
@@ -17573,7 +17579,7 @@ app.MapPost("/api/mrkkpidisbursments/save", async (MrkKpiDisbursmentSaveDto dto,
     // So sánh KHÔNG phân biệt hoa thường, đúng như `StringEqualIgnoreCase` của nguồn.
     var matched = MrkKpiDisbTypes.FirstOrDefault(x => string.Equals(x, type, StringComparison.OrdinalIgnoreCase));
     if (matched is null)
-        return Results.BadRequest(new { error = $"Loại KPI/giải ngân không hợp lệ. Cho phép: {string.Join(", ", MrkKpiDisbTypes)}." });
+        return Results.BadRequest(new { error = $"Loại KPI/giải ngân không hợp lệ (MRK_KPIDisbursment_Save_InvalidKPIDisburmentType). Cho phép: {string.Join(", ", MrkKpiDisbTypes)}." });
 
     // Khoá bốn — dùng chung cho cả nhánh xoá lẫn nhánh upsert.
     var old = await db.MrkKpiDisbursments.Where(x => x.OrgId == t.OrgId
@@ -17653,8 +17659,8 @@ app.MapPost("/api/mrkscopelimits/save", async (MrkScopeLimitSaveDto dto, AppDbCo
 {
     var no = (dto.MRKScopeLimitNo ?? "").Trim();
     var year = (dto.MRKScopeLimitYear ?? "").Trim();
-    if (no.Length < 1) return Results.BadRequest(new { error = "Số hạn mức rỗng." });
-    if (year.Length < 1) return Results.BadRequest(new { error = "Năm hạn mức rỗng." });
+    if (no.Length < 1) return Results.BadRequest(new { error = "Số hạn mức rỗng (MRK_ScopeLimit_Save_InvalidMRKScopeLimitNo)." });
+    if (year.Length < 1) return Results.BadRequest(new { error = "Năm hạn mức rỗng (MRK_ScopeLimit_Save_InvalidMRKScopeLimitYear)." });
     // 🔴 Cờ `FlagIsDelete` của nguồn (`strFlagIsDelete == "1"`): CHỈ XOÁ, không đòi bảng chi tiết.
     // Bản ghi không tồn tại thì nguồn `goto MyCodeLabel_Done` — coi là THÀNH CÔNG, không báo lỗi.
     if ((dto.FlagIsDelete ?? "").Trim() == "1")
@@ -17662,7 +17668,7 @@ app.MapPost("/api/mrkscopelimits/save", async (MrkScopeLimitSaveDto dto, AppDbCo
         var cur = await db.MrkScopeLimits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MRKScopeLimitNo == no);
         if (cur is null) return Results.Ok(new { deleted = 0, no, note = "Không có bản ghi — nguồn coi là thành công." });
         if (cur.MRKScopeLimitStatus != "P")
-            return Results.BadRequest(new { error = $"Hạn mức {no} đang {cur.MRKScopeLimitStatus}, chỉ xoá được khi 'P'." });
+            return Results.BadRequest(new { error = $"Hạn mức {no} đang {cur.MRKScopeLimitStatus}, chỉ xoá được khi 'P' (MRK_ScopeLimit_Save_InvalidMRKScopeLimitStatus)." });
         var curDtls = await db.MrkScopeLimitDetails.Where(d => d.OrgId == t.OrgId && d.MRKScopeLimitNo == no).ToListAsync();
         db.MrkScopeLimitDetails.RemoveRange(curDtls);
         db.MrkScopeLimits.Remove(cur);
@@ -17671,7 +17677,7 @@ app.MapPost("/api/mrkscopelimits/save", async (MrkScopeLimitSaveDto dto, AppDbCo
     }
 
     var rows = (dto.Details ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DealerCode)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng." });
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng (MRK_ScopeLimit_Save_TableBlank)." });
 
     var seen = new HashSet<string>();
     foreach (var r in rows)
@@ -17680,7 +17686,7 @@ app.MapPost("/api/mrkscopelimits/save", async (MrkScopeLimitSaveDto dto, AppDbCo
             return Results.BadRequest(new { error = $"Đại lý {r.DealerCode} bị lặp trong bảng chi tiết." });
         // Guard nguồn: cả 10 số tiền đều không được âm (một mã lỗi chung).
         if (r.Amount1QuaterScopeLimit < 0m || r.Amount2QuaterScopeLimit < 0m || r.Amount3QuaterScopeLimit < 0m || r.Amount4QuaterScopeLimit < 0m || r.Amount1DisbursmentCash < 0m || r.Amount2DisbursmentCash < 0m || r.Amount3DisbursmentCash < 0m || r.Amount4DisbursmentCash < 0m || r.Amount5DisbursmentCash < 0m || r.Amount6DisbursmentCash < 0m)
-            return Results.BadRequest(new { error = $"Đại lý {r.DealerCode}: có số tiền âm." });
+            return Results.BadRequest(new { error = $"Đại lý {r.DealerCode}: có số tiền âm (MRK_ScopeLimit_Save_InvalidAmount)." });
     }
 
     var old = await db.MrkScopeLimits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MRKScopeLimitNo == no);
@@ -17689,7 +17695,7 @@ app.MapPost("/api/mrkscopelimits/save", async (MrkScopeLimitSaveDto dto, AppDbCo
     if (old is not null)
     {
         if (old.MRKScopeLimitStatus != "P")
-            return Results.BadRequest(new { error = $"Hạn mức {no} đang {old.MRKScopeLimitStatus}, chỉ sửa được khi 'P'." });
+            return Results.BadRequest(new { error = $"Hạn mức {no} đang {old.MRKScopeLimitStatus}, chỉ sửa được khi 'P' (MRK_ScopeLimit_Save_InvalidMRKScopeLimitStatus)." });
         // Giữ nguyên dấu vết tạo ban đầu.
         createdAt = old.CreatedDateTime; createdBy = old.CreatedBy ?? createdBy;
         db.MrkScopeLimitDetails.RemoveRange(
@@ -17912,8 +17918,12 @@ app.MapPost("/api/mktfeedetails/create", async (MktFeeDetailCreateDto dto, AppDb
     // Nguồn: strMKTStatusListToCheck = "P,A" — thêm dòng được cả khi phiếu ĐÃ duyệt.
     if (fee.MKTStatus != "P" && fee.MKTStatus != "A")
         return Results.BadRequest(new { error = $"Phiếu đang {fee.MKTStatus}, chỉ thêm dòng khi 'P' hoặc 'A'." });
-    if (dto.Qty is null || dto.Qty <= 0) return Results.BadRequest(new { error = "Số lượng phải > 0." });
-    if (dto.Price is null || dto.Price <= 0m) return Results.BadRequest(new { error = "Đơn giá phải > 0." });
+    if (dto.Qty is null) return Results.BadRequest(new { error = "Số lượng rỗng (MKT_MarketingFeeDetailUpdate_InvalidQty)." });
+    if (dto.Qty < 0) return Results.BadRequest(new { error = "Số lượng < 0 (MKT_MarketingFeeDetailUpdate_InvalidQty01)." });
+    if (dto.Qty == 0) return Results.BadRequest(new { error = "Số lượng phải > 0 (MKT_MarketingFeeDetailUpdate_InvalidQty01)." });
+    if (dto.Price is null) return Results.BadRequest(new { error = "Đơn giá rỗng (MKT_MarketingFeeDetailUpdate_InvalidPrice)." });
+    if (dto.Price < 0m) return Results.BadRequest(new { error = "Đơn giá < 0 (MKT_MarketingFeeDetailUpdate_InvalidPrice01)." });
+    if (dto.Price == 0m) return Results.BadRequest(new { error = "Đơn giá phải > 0." });
     if (!await db.MktActivities.AnyAsync(x => x.OrgId == t.OrgId && x.MKTActivityCode == act && x.FlagActive == "1"))
         return Results.BadRequest(new { error = $"Hoạt động {act} không tồn tại hoặc đã ngưng." });
     if (await db.MktFeeDetails.AnyAsync(d => d.OrgId == t.OrgId && d.MKTFeeCode == code && d.MKTActivityCode == act))
@@ -17942,8 +17952,12 @@ app.MapPost("/api/mktfeedetails/update", async (MktFeeDetailUpdateDto dto, AppDb
     if (row is null) return Results.NotFound(new { error = $"Phiếu {code} không có dòng {act}." });
     if (row.MKTFeeDetailStatus != "P")
         return Results.BadRequest(new { error = $"Dòng đang {row.MKTFeeDetailStatus}, chỉ sửa được khi 'P'." });
-    if (dto.Qty is null || dto.Qty <= 0) return Results.BadRequest(new { error = "Số lượng phải > 0." });
-    if (dto.Price is null || dto.Price <= 0m) return Results.BadRequest(new { error = "Đơn giá phải > 0." });
+    if (dto.Qty is null) return Results.BadRequest(new { error = "Số lượng rỗng (MKT_MarketingFeeDetailUpdate_InvalidQty)." });
+    if (dto.Qty < 0) return Results.BadRequest(new { error = "Số lượng < 0 (MKT_MarketingFeeDetailUpdate_InvalidQty01)." });
+    if (dto.Qty == 0) return Results.BadRequest(new { error = "Số lượng phải > 0 (MKT_MarketingFeeDetailUpdate_InvalidQty01)." });
+    if (dto.Price is null) return Results.BadRequest(new { error = "Đơn giá rỗng (MKT_MarketingFeeDetailUpdate_InvalidPrice)." });
+    if (dto.Price < 0m) return Results.BadRequest(new { error = "Đơn giá < 0 (MKT_MarketingFeeDetailUpdate_InvalidPrice01)." });
+    if (dto.Price == 0m) return Results.BadRequest(new { error = "Đơn giá phải > 0." });
 
     row.Qty = dto.Qty!.Value; row.Price = dto.Price!.Value; row.Remark = dto.Remark;
     row.LogLUDateTime = DateTime.Now;
@@ -18082,16 +18096,18 @@ app.MapPost("/api/mktfees/create", async (MktFeeCreateDto dto, AppDbContext db, 
         });
 
     var rows = dto.Details ?? new();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng." });
+    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng chi tiết rỗng (MKT_MarketingFeeCreate_TableMKTFeeDetailBeBlank)." });
     // Nguồn dựng khoá "|MKTFeeCode||MKTActivityCode|" để bắt TRÙNG ngay trong bảng đầu vào.
     var seen = new HashSet<string>();
     foreach (var r in rows)
     {
         var act = (r.MKTActivityCode ?? "").Trim();
         if (!seen.Add($"|{code}||{act}|"))
-            return Results.BadRequest(new { error = $"Hoạt động {act} bị lặp trong phiếu." });
-        if (r.Qty is null || r.Qty <= 0) return Results.BadRequest(new { error = $"Hoạt động {act}: Số lượng phải > 0." });
-        if (r.Price is null || r.Price <= 0m) return Results.BadRequest(new { error = $"Hoạt động {act}: Đơn giá phải > 0." });
+            return Results.BadRequest(new { error = $"Hoạt động {act} bị lặp trong phiếu (MKT_MarketingFeeCreate_DuplicateKeyMKTFeeDetail)." });
+        if (r.Qty is null) return Results.BadRequest(new { error = $"Hoạt động {act}: Số lượng rỗng (MKT_MarketingFeeCreate_InvalidMKTFeeDetailQty)." });
+        if (r.Qty <= 0) return Results.BadRequest(new { error = $"Hoạt động {act}: Số lượng phải > 0 (MKT_MarketingFeeCreate_InvalidMKTFeeDetailQty1)." });
+        if (r.Price is null) return Results.BadRequest(new { error = $"Hoạt động {act}: Đơn giá rỗng (MKT_MarketingFeeCreate_InvalidMKTFeeDetailPrice)." });
+        if (r.Price < 0m) return Results.BadRequest(new { error = $"Hoạt động {act}: Đơn giá phải >= 0 (MKT_MarketingFeeCreate_InvalidMKTFeeDetailPrice1)." });
         // Guard nguồn: hoạt động phải tồn tại VÀ đang Active ("1").
         var ok = await db.MktActivities.AnyAsync(x => x.OrgId == t.OrgId && x.MKTActivityCode == act && x.FlagActive == "1");
         if (!ok) return Results.BadRequest(new { error = $"Hoạt động {act} không tồn tại hoặc đã ngưng." });
@@ -18124,7 +18140,15 @@ app.MapPost("/api/mktfees/update", async (MktFeeUpdateDto dto, AppDbContext db, 
     if (row is null) return Results.NotFound(new { error = $"Không có phiếu {code}." });
     if (row.MKTStatus != "P") return Results.BadRequest(new { error = $"Phiếu đang {row.MKTStatus}, chỉ sửa được khi 'P'." });
     var name = (dto.MKTFeeName ?? "").Trim();
-    if (name.Length < 1) return Results.BadRequest(new { error = "Tên phiếu chi phí rỗng." });
+    if (name.Length < 1) return Results.BadRequest(new { error = "Tên phiếu chi phí rỗng (MKT_MarketingFeeUpdate_InvalidMKTFeeName)." });
+    if (dto.DateStart is not null && dto.DateEnd is not null
+        && dto.DateStart.Value.Date > dto.DateEnd.Value.Date)
+        return Results.BadRequest(new
+        {
+            error = "MKT_MarketingFeeUpdate_InvalidDate",
+            check = new { dto.DateStart, dto.DateEnd },
+            note = "Nguon: if (Convert.ToDateTime(strDateStart).Date > Convert.ToDateTime(strDateEnd).Date) throw _InvalidDate."
+        });
     row.MKTFeeName = name; row.DateStart = dto.DateStart; row.DateEnd = dto.DateEnd; row.Remark = dto.Remark;
     row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -18203,7 +18227,7 @@ app.MapPost("/api/mktfees/delete", async (MktFeeKeyDto dto, AppDbContext db, ITe
     var dtls = await db.MktFeeDetails.Where(d => d.OrgId == t.OrgId && d.MKTFeeCode == code).ToListAsync();
     var approved = dtls.Where(d => d.MKTFeeDetailStatus == "A").Select(d => d.MKTActivityCode).ToList();
     if (approved.Count > 0)
-        return Results.BadRequest(new { error = $"Đã có dòng được duyệt, không xoá được: {string.Join(", ", approved.Take(10))}." });
+        return Results.BadRequest(new { error = $"Đã có dòng được duyệt, không xoá được (MKT_MarketingFeeDelete_InvalidStatus): {string.Join(", ", approved.Take(10))}." });
     db.MktFeeDetails.RemoveRange(dtls);
     db.MktFees.Remove(row);
     await db.SaveChangesAsync();
@@ -122834,7 +122858,7 @@ record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 record DoApproveDto(bool Approve = true, string? Reason = null);
 record DoCarUpdateDto(DateTime? DeliveryOutDate, string? DeliveryRemark);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
-record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null, string? CarId = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? ConfirmStatus = null, DateTime? DODeliveryEndDate = null, decimal? AmountNeg = null);
+record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null, string? CarId = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? ConfirmStatus = null, DateTime? DODeliveryEndDate = null, decimal? AmountNeg = null, string? DRTCGDtlStatus = null, string? DRTCGListCode = null, string? DealerCodeRecieve = null, string? DealerNameRecieve = null, string? ReqIVNo = null, string? TCGInvoiceNo = null);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = null);
 record DocReqCarActionDto(string? Remark);
 record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);
@@ -122963,7 +122987,7 @@ record InvoiceSetupItemDto(string? ModelCode, string? FlagInvoiceHTMV, string? F
 record InvoiceSetupMultiDto(List<InvoiceSetupItemDto>? Items);
 record InvoiceSetupUpdateDto(string? FtColsUpd, string? FlagInvoiceHTMV = null, string? FlagInvoiceTCG = null);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
-record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired, string? CarId = null, DateTime? TotalCompletedDate = null, int? DiscountDays = null);
+record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired, string? CarId = null, DateTime? TotalCompletedDate = null, int? DiscountDays = null, DateTime? DateRecieveGrtRoot = null, DateTime? OSODGrtEndDate = null, string? SOCode = null, string? DlrCtrNo = null);
 record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int? NumberOfDaysDeferredPayment, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null, string? TypeFee = null, int? NumberOfGuaranteeExt = null);
 record BankGrtCancelCarDto(string? Vin, string? CarId, string RemarkCancel);   // #30084 port PaymentGuaranteeDetailCancel_New20230306
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate);

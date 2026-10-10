@@ -8080,6 +8080,18 @@ public sealed class DocReqCar
     public DateTime? DODeliveryEndDate { get; set; }
     /// <summary>#Round114 §12: TblDRDetail.AMOUNTNEGATIVE (`DbDefine.cs:963`) — số tiền âm/giảm trừ trong hồ sơ xe.</summary>
     public decimal? AmountNeg { get; set; }
+    /// <summary>#Round115 §12: TblCar_DocReqDtl.DRTCGDtlStatus (`DbDefine.cs:1853`) — trạng thái dòng hồ sơ xe TCG.</summary>
+    public string? DRTCGDtlStatus { get; set; }
+    /// <summary>#Round115 §12: TblCar_DocReqDtl.DRTCGListCode (`DbDefine.cs:1854`) — mã danh sách hồ sơ xe TCG.</summary>
+    public string? DRTCGListCode { get; set; }
+    /// <summary>#Round115 §12: TblCar_DocReqDtl.DealerCodeRecieve (`DbDefine.cs:1856`) — mã đại lý nhận hồ sơ giấy tờ xe.</summary>
+    public string? DealerCodeRecieve { get; set; }
+    /// <summary>#Round115 §12: TblCar_DocReqDtl.DealerNameRecieve (`DbDefine.cs:1857`) — tên đại lý nhận hồ sơ giấy tờ xe.</summary>
+    public string? DealerNameRecieve { get; set; }
+    /// <summary>#Round115 §12: TblCar_DocReqDtl.ReqIVNo (`DbDefine.cs:1867`) — số yêu cầu hoá đơn giấy tờ xe.</summary>
+    public string? ReqIVNo { get; set; }
+    /// <summary>#Round115 §12: TblCar_DocReqDtl.TCGInvoiceNo (`DbDefine.cs:1874`) — số hoá đơn TCG giấy tờ xe.</summary>
+    public string? TCGInvoiceNo { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
@@ -15069,6 +15081,14 @@ public sealed class BankGuaranteeDtl
     public DateTime? TotalCompletedDate { get; set; }
     /// <summary>#Round106 §12: Số ngày chiết khấu (`Pmt_GuaranteeDetail.DiscountDays`, `DbDefine.cs:582`).</summary>
     public int? DiscountDays { get; set; }
+    /// <summary>#Round115 §12: TblGuaranteeDetail.DateRecieveGrtRoot (`DbDefine.cs:928`) — ngày nhận bảo lãnh gốc của xe.</summary>
+    public DateTime? DateRecieveGrtRoot { get; set; }
+    /// <summary>#Round115 §12: TblGuaranteeDetail.OSODGrtEndDate (`DbDefine.cs:907`) — ngày hết hạn phát hành thanh toán bảo lãnh.</summary>
+    public DateTime? OSODGrtEndDate { get; set; }
+    /// <summary>#Round115 §12: TblGuaranteeDetail.SOCode (`DbDefine.cs:924`) — mã đơn đặt hàng xe.</summary>
+    public string? SOCode { get; set; }
+    /// <summary>#Round115 §12: TblGuaranteeDetail.DlrCtrNo (`DbDefine.cs:912`) — số hợp đồng đại lý của xe.</summary>
+    public string? DlrCtrNo { get; set; }
 
     // ===== check_cot_1to1.py báo thiếu PMPDAmount_Count/PMPDAmount_SumForGuarantee/PMPDDiscount_Sum
     //       (FrmBankGrt, TblGuaranteeDetail 20/23) — ĐÃ KHẢO SÁT, KHÔNG PHẢI CỘT BẢNG =====
