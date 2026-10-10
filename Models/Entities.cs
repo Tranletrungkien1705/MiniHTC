@@ -8092,6 +8092,18 @@ public sealed class DocReqCar
     public string? ReqIVNo { get; set; }
     /// <summary>#Round115 §12: TblCar_DocReqDtl.TCGInvoiceNo (`DbDefine.cs:1874`) — số hoá đơn TCG giấy tờ xe.</summary>
     public string? TCGInvoiceNo { get; set; }
+    /// <summary>#Round116 §12: TblCar_DocReqDtl.HTCInvoiceCode (`DbDefine.cs:2716`) — mã hoá đơn HTC.</summary>
+    public string? HTCInvoiceCode { get; set; }
+    /// <summary>#Round116 §12: TblCar_DocReqDtl.TCGInvoiceCode (`DbDefine.cs:2717`) — mã hoá đơn TCG.</summary>
+    public string? TCGInvoiceCode { get; set; }
+    /// <summary>#Round116 §12: TblCar_DocReqDtl.BankCode (`DbDefine.cs:2718`) — mã ngân hàng bảo lãnh.</summary>
+    public string? BankCode { get; set; }
+    /// <summary>#Round116 §12: TblCar_DocReqDtl.InvoiceNoFactory (`DbDefine.cs:2720`) — số hoá đơn xuất xưởng.</summary>
+    public string? InvoiceNoFactory { get; set; }
+    /// <summary>#Round116 §12: TblCar_DocReqDtl.HTCInvoiceDate (`DbDefine.cs:2721`) — ngày hoá đơn HTC.</summary>
+    public DateTime? HTCInvoiceDate { get; set; }
+    /// <summary>#Round116 §12: TblCar_DocReqDtl.FlagMortageEndDate (`DbDefine.cs:2725`) — cờ ngày kết thúc thế chấp.</summary>
+    public string? FlagMortageEndDate { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
@@ -15089,6 +15101,20 @@ public sealed class BankGuaranteeDtl
     public string? SOCode { get; set; }
     /// <summary>#Round115 §12: TblGuaranteeDetail.DlrCtrNo (`DbDefine.cs:912`) — số hợp đồng đại lý của xe.</summary>
     public string? DlrCtrNo { get; set; }
+    /// <summary>#Round116 §12: TblGuaranteeDetail.NumberOfDaysDeferredPayment (`DbDefine.cs:917`) — số ngày trả chậm theo dòng.</summary>
+    public int? NumberOfDaysDeferredPayment { get; set; }
+    /// <summary>#Round116 §12: TblGuaranteeDetail.FlagDealerContractDMS40 (`DbDefine.cs:910`) — cờ hợp đồng đại lý DMS40 theo dòng.</summary>
+    public string? FlagDealerContractDMS40 { get; set; }
+    /// <summary>#Round116 §12: TblGuaranteeDetail.GrtClaimExtType (`DbDefine.cs:911`) — loại gia hạn yêu cầu bảo lãnh.</summary>
+    public string? GrtClaimExtType { get; set; }
+    /// <summary>#Round116 §12: TblGuaranteeDetail.GrtDateExpired (`DbDefine.cs:919`) — ngày hết hạn bảo lãnh gốc mở rộng.</summary>
+    public DateTime? GrtDateExpired { get; set; }
+    /// <summary>#Round116 §12: TblGuaranteeDetail.GrtDateStart (`DbDefine.cs:920`) — ngày bắt đầu hiệu lực bảo lãnh bổ sung.</summary>
+    public DateTime? GrtDateStart { get; set; }
+    /// <summary>#Round116 §12: TblGuaranteeDetail.GrtDateEnd (`DbDefine.cs:921`) — ngày kết thúc bảo lãnh bổ sung.</summary>
+    public DateTime? GrtDateEnd { get; set; }
+    /// <summary>#Round116 §12: TblGuaranteeDetail.VHHTCInvoiceDate (`DbDefine.cs:922`) — ngày hoá đơn xe HTC theo dòng.</summary>
+    public DateTime? VHHTCInvoiceDate { get; set; }
 
     // ===== check_cot_1to1.py báo thiếu PMPDAmount_Count/PMPDAmount_SumForGuarantee/PMPDDiscount_Sum
     //       (FrmBankGrt, TblGuaranteeDetail 20/23) — ĐÃ KHẢO SÁT, KHÔNG PHẢI CỘT BẢNG =====
