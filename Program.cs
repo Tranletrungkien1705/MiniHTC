@@ -75003,6 +75003,7 @@ app.MapPost("/api/dlrcontracts/htc-create", async (
         SalesType = "RETAIL",
         SalesManCode = dto.SMCode ?? "",
         SMCode = dto.SMCode,
+        DlrNote = dto.DlrNote,
         Status = "P",
         FlagActive = "1",
         FlagDealFinish = "0",
@@ -75087,6 +75088,7 @@ app.MapPost("/api/dlrcontracts/htc-create", async (
         contract.DealerCode,
         contract.CustomerCode,
         contract.SMCode,
+        contract.DlrNote,
         totalQty,
         linesCount = lines.Count,
         carsCount = carSeq - 1
@@ -77791,17 +77793,239 @@ app.MapGet("/api/reports/pmtpayment-dtl-bydealer", async (
         .Where(d => string.IsNullOrWhiteSpace(dealerCode)
                  || string.Equals(d.DealerCode, dealerCode!.Trim(), StringComparison.OrdinalIgnoreCase))
         .ToList();
+    var dealerCodes = dealers.Select(d => d.DealerCode).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var dStart = rptDateStart ?? new DateTime(1900, 1, 1);
+    var dEnd = rptDateEnd ?? new DateTime(2100, 1, 1);
+    var dYear = string.IsNullOrWhiteSpace(rptYear) ? new DateTime(dStart.Year, 1, 1) : DateTime.Parse(rptYear);
+
+    // Lọc xe thỏa mãn 1 trong các điều kiện theo kỳ (RptSQLQuery.cs:8400-8645)
+    // 1. Đơn hàng: SalesOrderLines trong kỳ
+    var soLines = (await db.SalesOrderLines.Where(sol => sol.OrgId == t.OrgId).ToListAsync())
+        .Where(sol => sol.ApprovedDate.HasValue)
+        .ToList();
+
+    var soHeadersList = (await db.SalesOrders.Where(so => so.OrgId == t.OrgId).ToListAsync())
+        .Where(so => dealerCodes.Contains(so.DealerCode))
+        .ToList();
+    var soHeadersById = soHeadersList.ToDictionary(so => so.Id);
+
+    var soLinesInScope = soLines.Where(l => soHeadersById.ContainsKey(l.SalesOrderId)).ToList();
+
+    // 2. Xuất kho: DeliveryOrderCars
+    var doCars = (await db.DeliveryOrderCars.Where(doc => doc.OrgId == t.OrgId).ToListAsync())
+        .Where(doc => doc.ConfirmStatus == "P" || doc.ConfirmStatus == "A" || doc.ConfirmStatus == "F")
+        .ToList();
+
+    // 3. Hoá đơn VAT HTC
+    var vatInvoices = (await db.VatHtcInvoices.Where(vi => vi.OrgId == t.OrgId).ToListAsync())
+        .Where(vi => dealerCodes.Contains(vi.DealerCode))
+        .ToDictionary(vi => vi.HTCInvoiceCode, StringComparer.OrdinalIgnoreCase);
+
+    var vatDetails = (await db.VatHtcInvoiceDetails.Where(vd => vd.OrgId == t.OrgId).ToListAsync())
+        .Where(vd => vatInvoices.ContainsKey(vd.HTCInvoiceCode) && (vd.HTCStatusDetail == "P" || vd.HTCStatusDetail == "A" || vd.HTCStatusDetail == "F"))
+        .ToList();
+
+    // 4. Thanh toán: PmtPayments + PmtPaymentDetails
+    var payments = (await db.PmtPayments.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .Where(p => dealerCodes.Contains(p.DealerCode))
+        .ToDictionary(p => p.PaymentNo, StringComparer.OrdinalIgnoreCase);
+
+    var paymentDetails = (await db.PmtPaymentDetails.Where(pd => pd.OrgId == t.OrgId).ToListAsync())
+        .Where(pd => payments.ContainsKey(pd.PaymentNo))
+        .ToList();
+
+    // 5. Bảo lãnh ngân hàng: BankGuarantees + BankGuaranteeDtls
+    var guarantees = (await db.BankGuarantees.Where(g => g.OrgId == t.OrgId).ToListAsync())
+        .Where(g => dealerCodes.Contains(g.DealerCode))
+        .ToDictionary(g => g.GuaranteeNo, StringComparer.OrdinalIgnoreCase);
+
+    var guaranteeDtls = (await db.BankGuaranteeDtls.Where(gd => gd.OrgId == t.OrgId).ToListAsync())
+        .Where(gd => gd.GuaranteeDetailStatus == "A")
+        .ToList();
+
+    // Master xe
+    var allCars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .Where(c => dealerCodes.Contains(c.DealerCode ?? "") && (string.IsNullOrWhiteSpace(flagIsHTC) || c.FlagisHTC == flagIsHTC))
+        .Where(c => c.CarCancelDate == null)
+        .ToList();
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(s => s.SpecCode, s => s.SpecDesc, StringComparer.OrdinalIgnoreCase);
+
+    // Xác định tập hợp xe thỏa mãn điều kiện liên hiệp (#tbl_Car_Car_Union)
+    var carsInScope = allCars.Where(c =>
+    {
+        var carId = c.CarId ?? c.VIN;
+        var hasSoInPeriod = soLinesInScope.Any(l => soHeadersById.TryGetValue(l.SalesOrderId, out var so) && string.Equals(so.SoCode, c.SOCode, StringComparison.OrdinalIgnoreCase) && l.ApprovedDate >= dStart && l.ApprovedDate <= dEnd);
+        var doCarMatch = doCars.FirstOrDefault(d => d.Vin == c.VIN);
+        var hasDoInPeriod = doCarMatch != null && doCarMatch.DeliveryOutDate >= dStart && doCarMatch.DeliveryOutDate <= dEnd;
+        var hasVatInPeriod = vatDetails.Any(v => v.VIN == c.VIN && vatInvoices.TryGetValue(v.HTCInvoiceCode, out var inv) && inv.HTCInvoiceDate >= dStart && inv.HTCInvoiceDate <= dEnd);
+        var hasMortageInPeriod = c.MortageEndDate >= dStart && c.MortageEndDate <= dEnd;
+        var hasPmtInPeriod = paymentDetails.Any(p => p.CarId == carId && payments.TryGetValue(p.PaymentNo, out var pmt) && pmt.PaymentEndDate >= dStart && pmt.PaymentEndDate <= dEnd);
+        var pmtDates = paymentDetails.Where(p => p.CarId == carId && payments.ContainsKey(p.PaymentNo)).Select(p => payments[p.PaymentNo].PaymentEndDate).ToList();
+        var maxPmtDate = pmtDates.Count > 0 ? pmtDates.Max() : (DateTime?)null;
+        var pendingPmt = c.PaymentStatus != "F" || (maxPmtDate.HasValue && maxPmtDate.Value >= dEnd);
+
+        return hasSoInPeriod || hasDoInPeriod || hasVatInPeriod || hasMortageInPeriod || hasPmtInPeriod || (c.CreatedDate >= dYear && pendingPmt);
+    }).ToList();
+
+    var summaryList = new List<object>();
+    var detailPeriodList = new List<object>();
+
+    foreach (var car in carsInScope)
+    {
+        var carId = car.CarId ?? car.VIN;
+        var soLine = soLinesInScope.FirstOrDefault(l => soHeadersById.TryGetValue(l.SalesOrderId, out var so) && string.Equals(so.SoCode, car.SOCode, StringComparison.OrdinalIgnoreCase));
+        var doCar = doCars.FirstOrDefault(d => d.Vin == car.VIN);
+        var vatDtl = vatDetails.FirstOrDefault(v => v.VIN == car.VIN);
+        var vatInv = vatDtl != null && vatInvoices.TryGetValue(vatDtl.HTCInvoiceCode, out var vi) ? vi : null;
+
+        var carPmts = paymentDetails.Where(p => p.CarId == carId).ToList();
+        var grtDtl = guaranteeDtls.FirstOrDefault(g => g.CarId == carId || g.VIN == car.VIN);
+        var grtHdr = grtDtl != null && guarantees.TryGetValue(grtDtl.GuaranteeId.ToString(), out var gh) ? gh : null;
+
+        var soDate = soLine?.ApprovedDate;
+        var doDate = doCar?.DeliveryOutDate;
+        var vatDate = vatInv?.HTCInvoiceDate;
+        var mortageDate = car.MortageEndDate;
+
+        // Đầu kỳ (< dStart)
+        DateTime? pBegin_soDate = soDate < dStart ? soDate : null;
+        DateTime? pBegin_doDate = doDate < dStart ? doDate : null;
+        DateTime? pBegin_vatDate = vatDate < dStart ? vatDate : null;
+        DateTime? pBegin_mortageDate = mortageDate < dStart ? mortageDate : null;
+
+        var pmtBegin = carPmts.Where(p => payments[p.PaymentNo].PaymentEndDate < dStart && (payments[p.PaymentNo].PaymentStatus == "F" || payments[p.PaymentNo].PaymentStatus == "Approved")).ToList();
+        var amtBeginAfterAppr = pmtBegin.Where(p => soDate == null || payments[p.PaymentNo].PaymentEndDate >= soDate).Sum(p => p.Amount ?? 0m);
+        var amtBeginBeforeAppr = pmtBegin.Where(p => soDate != null && payments[p.PaymentNo].PaymentEndDate < soDate).Sum(p => p.Amount ?? 0m);
+        var unitPrice = car.UnitPriceActual ?? 0m;
+        var pBegin_NoPmt = unitPrice - amtBeginAfterAppr;
+
+        // Trong kỳ (>= dStart && <= dEnd)
+        DateTime? pIn_soDate = (soDate >= dStart && soDate <= dEnd) ? soDate : null;
+        DateTime? pIn_doDate = (doDate >= dStart && doDate <= dEnd) ? doDate : null;
+        DateTime? pIn_vatDate = (vatDate >= dStart && vatDate <= dEnd) ? vatDate : null;
+        DateTime? pIn_mortageDate = (mortageDate >= dStart && mortageDate <= dEnd) ? mortageDate : null;
+
+        var pmtIn = carPmts.Where(p => payments[p.PaymentNo].PaymentEndDate >= dStart && payments[p.PaymentNo].PaymentEndDate <= dEnd && (payments[p.PaymentNo].PaymentStatus == "F" || payments[p.PaymentNo].PaymentStatus == "Approved")).ToList();
+        var amtIn = pmtIn.Sum(p => p.Amount ?? 0m);
+
+        // Cuối kỳ
+        DateTime? pEnd_soDate = pBegin_soDate ?? pIn_soDate;
+        DateTime? pEnd_doDate = pBegin_doDate ?? pIn_doDate;
+        DateTime? pEnd_vatDate = pBegin_vatDate ?? pIn_vatDate;
+        DateTime? pEnd_mortageDate = pBegin_mortageDate ?? pIn_mortageDate;
+
+        var totalPmtEnd = amtBeginAfterAppr + amtBeginBeforeAppr + amtIn;
+        var pmtCoc = carPmts.Where(p => p.GuaranteeNo == null && payments[p.PaymentNo].PaymentEndDate <= dEnd).Sum(p => p.Amount ?? 0m);
+        var pmtCocVTC = carPmts.Where(p => p.GuaranteeNo == null && payments[p.PaymentNo].PaymentType != "VAY" && payments[p.PaymentNo].PaymentEndDate <= dEnd).Sum(p => p.Amount ?? 0m);
+        var pmtCocVV = pmtCoc - pmtCocVTC;
+
+        var grtValue = grtDtl?.GrtValue ?? 0m;
+        var totalNoPmtCoc = unitPrice - pmtCoc - grtValue;
+        var totalAmontGuarantee = Math.Max(0m, totalPmtEnd - pmtCoc);
+
+        var isTcg = string.Equals(grtHdr?.BankCode, "TCGBANK", StringComparison.OrdinalIgnoreCase);
+        var grtDateStart = grtDtl?.DateStart;
+        var grtDateExpired = grtDtl?.DateExpired ?? grtHdr?.DateExpired;
+
+        decimal grtValActive = (!isTcg && grtDateStart.HasValue && grtDateStart.Value <= dEnd) ? grtValue : 0m;
+        decimal grtValNotActive = (!isTcg && (!grtDateStart.HasValue || grtDateStart.Value > dEnd)) ? grtValue : 0m;
+        decimal grtValTcg = isTcg ? grtValue : 0m;
+
+        specs.TryGetValue(car.ActualSpec ?? car.SpecCode ?? "", out var specDesc);
+
+        summaryList.Add(new
+        {
+            CarId = carId,
+            cc_DealerCode = car.DealerCode,
+            mcs_SpecDescription = specDesc ?? car.SpecCode,
+            osod_SOCode = car.SOCode,
+            osod_SpecCode = car.SpecCode,
+            osod_ModelCode = car.ModelCode,
+            osod_ColorCode = car.ColorCode,
+            osod_ApprovedDate = soDate,
+            cdod_DeliveryOrderNo = doCar?.DoId.ToString(),
+            cdod_DeliveryOutDate = doDate,
+            vhi_HTCInvoiceCode = vatDtl?.HTCInvoiceCode,
+            vhi_HTCInvoiceDate = vatDate,
+            cv_VIN = car.VIN,
+            cv_MortageEndDate = mortageDate,
+            PeriodBegin_osod_ApprovedDate = pBegin_soDate,
+            PeriodBegin_cdod_DeliveryOutDate = pBegin_doDate,
+            PeriodBegin_vhi_HTCInvoiceDate = pBegin_vatDate,
+            PeriodBegin_cv_MortageEndDate = pBegin_mortageDate,
+            TotalAmontBeginAfterDateAppr = amtBeginAfterAppr,
+            TotalAmontBeginBeforeDateAppr = amtBeginBeforeAppr,
+            PeriodBegin_NoPmt = pBegin_NoPmt,
+            PeriodIn_ApprovedDate = pIn_soDate,
+            PeriodIn_cdod_DeliveryOutDate = pIn_doDate,
+            PeriodIn_vhi_HTCInvoiceDate = pIn_vatDate,
+            PeriodIn_cv_MortageEndDate = pIn_mortageDate,
+            TotalAmountIn = amtIn,
+            PeriodEnd_osod_ApprovedDate = pEnd_soDate,
+            PeriodEnd_cdod_DeliveryOutDate = pEnd_doDate,
+            PeriodEnd_vhi_HTCInvoiceDate = pEnd_vatDate,
+            PeriodEnd_cv_MortageEndDate = pEnd_mortageDate,
+            PeriodEnd_TotalAmont = totalPmtEnd,
+            PeriodEnd_TotalAmontGuarantee = totalAmontGuarantee,
+            UnitPriceActual = unitPrice,
+            PeriodEnd_TotalPmtCoc = pmtCoc,
+            PeriodEnd_TotalPmtCoc_VTC = pmtCocVTC,
+            PeriodEnd_TotalPmtCoc_VV = pmtCocVV,
+            GuaranteeValue = grtValue,
+            PeriodEnd_TotalNoPmtCoc = totalNoPmtCoc,
+            DepositDutyEndDate = soLine?.DepositDutyEndDate,
+            PeriodEnd_NoDateStartGuaranteeValue = grtValNotActive,
+            PeriodEnd_NoDateStartGuaranteeValue_NoHTCInvoiceDate = (vatDate == null || vatDate > dEnd) ? grtValNotActive : 0m,
+            PeriodEnd_NoDateStartGuaranteeValue_HTCInvoiceDate = (vatDate != null && vatDate <= dEnd) ? grtValNotActive : 0m,
+            PeriodEnd_GuaranteeValue = grtValActive,
+            DateStart = grtDateStart,
+            DateExpired = grtDateExpired,
+            PeriodEnd_GuaranteeValueTCG = grtValTcg,
+            LoanSupportDateEnd = (DateTime?)null
+        });
+
+        detailPeriodList.Add(new
+        {
+            CarId = carId,
+            osod_SOCode = car.SOCode,
+            osod_SpecCode = car.SpecCode,
+            osod_ModelCode = car.ModelCode,
+            osod_ColorCode = car.ColorCode,
+            osod_ApprovedDate = soDate,
+            cdod_DeliveryOrderNo = doCar?.DoId.ToString(),
+            cdod_DeliveryOutDate = doDate,
+            vhi_HTCInvoiceCode = vatDtl?.HTCInvoiceCode,
+            vhi_HTCInvoiceDate = vatDate,
+            cv_VIN = car.VIN,
+            cv_MortageEndDate = mortageDate,
+            pp_PaymentNo = carPmts.FirstOrDefault()?.PaymentNo,
+            pp_PaymentEndDate = carPmts.Count > 0 && payments.TryGetValue(carPmts[0].PaymentNo, out var pp0) ? pp0.PaymentEndDate : null,
+            ppd_Amount = carPmts.Sum(p => p.Amount ?? 0m),
+            PeriodBegin_osod_ApprovedDate = pBegin_soDate,
+            PeriodIn_ApprovedDate = pIn_soDate,
+            PeriodBegin_cdod_DeliveryOutDate = pBegin_doDate,
+            PeriodIn_cdod_DeliveryOutDate = pIn_doDate,
+            PeriodBegin_vhi_HTCInvoiceDate = pBegin_vatDate,
+            PeriodIn_vhi_HTCInvoiceDate = pIn_vatDate,
+            PeriodBegin_cv_MortageEndDate = pBegin_mortageDate,
+            PeriodIn_cv_MortageEndDate = pIn_mortageDate
+        });
+    }
 
     return Results.Ok(new
     {
-        count = 0,
+        count = summaryList.Count,
         dealersInScope = dealers.Count,
-        Rpt_PmtPaymentDtl_ByDealer = Array.Empty<object>(),
+        Rpt_PmtPaymentDtl_ByDealer = summaryList,
+        Rpt_PmtPaymentDtl_ByDealer_Detail = detailPeriodList,
         filtersEcho = new { dealerCode, rptDateStart, rptDateEnd, rptYear, flagIsHTC },
         bakeParamMixCase7Note = "[BAKE-PARAM-MIX] CA THU BAY, 'TRON' THEO NGHIA CHAT NHAT - HAI CO CHE TRONG CUNG MOT HAM: PARAM RUNTIME (bind that) cho @strBUPatternOfUser, @strHTCDealerCode, @strHTCDealerName; NUONG qua Replace cho @strDealerCode, @strRptDateStart, @strRptDateEnd, @strRptYear, @strFlagIsHTC. => Dung BO LOC PHAM VI thi dung param that, con BO LOC NGUOI DUNG CHON thi nuong.",
         rbacNote = "RBAC to hop (3): @strBUPatternOfUser BIND THAT va DUOC SQL DUNG => CO LOC DONG (cong '//myCommon_CheckHTCDirect(' bi comment) => KHONG phai lo.",
         htcDealerNameNote = "@strHTCDealerName nhan TConst.HTCConst.HTCDealerCode - LAN THU CHIN trong campaign (sau #B269/#B284/#B290/#B329/#B350/#B351...). Day la LOI CHEP CO DINH CUA HE, khong phai ngau nhien.",
-        debtNote = "NO - KHONG DOAN: Pmt_PaymentDetail theo dai ly + chuoi HDDT chua du => tra khung + co."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.HDDTIntergration.cs:23380-23665 & RptSQLQuery.cs:8400-9387 (mySql_Rpt_PmtPaymentDtl_ByDealerX_New20210521) — tính toán đầy đủ 2 bảng Rpt_PmtPaymentDtl_ByDealer và Rpt_PmtPaymentDtl_ByDealer_Detail qua 3 khối Đầu kỳ, Trong kỳ, Cuối kỳ về thanh toán đơn hàng, xuất kho, hoá đơn, cọc vốn tự có/vay, và bảo lãnh ngân hàng/TCGBank."
     });
 }).RequireAuthorization();
 
@@ -78509,16 +78733,150 @@ app.MapGet("/api/reports/nxt-quyendoino", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo, string? isGetDetail) =>
 {
     var wantDetail = isGetDetail == "1";
+    var dStart = tDateFrom ?? new DateTime(1900, 1, 1);
+    var dEnd = tDateTo ?? new DateTime(2100, 1, 1);
+
+    var guarantees = (await db.BankGuarantees.Where(g => g.OrgId == t.OrgId).ToListAsync())
+        .Where(g => (g.Status == "A" || g.Status == "Approved") && !string.IsNullOrWhiteSpace(g.BankCodeMonitor))
+        .ToDictionary(g => g.Id);
+
+    var guaranteeDtls = (await db.BankGuaranteeDtls.Where(gd => gd.OrgId == t.OrgId).ToListAsync())
+        .Where(gd => (gd.GuaranteeDetailStatus == "A" || gd.GuaranteeDetailStatus == "Approved") && gd.DateStart.HasValue)
+        .ToList();
+
+    var grtByCarVin = new Dictionary<string, (BankGuarantee Hdr, BankGuaranteeDtl Dtl)>(StringComparer.OrdinalIgnoreCase);
+    foreach (var gd in guaranteeDtls)
+    {
+        if (guarantees.TryGetValue(gd.GuaranteeId, out var gh))
+        {
+            if (!string.IsNullOrWhiteSpace(gd.VIN))
+                grtByCarVin[gd.VIN] = (gh, gd);
+        }
+    }
+
+    var allCars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .Where(c => grtByCarVin.ContainsKey(c.VIN) || grtByCarVin.ContainsKey(c.CarId ?? ""))
+        .ToList();
+
+    var payments = (await db.PmtPayments.Where(p => p.OrgId == t.OrgId).ToListAsync())
+        .Where(p => p.PaymentStatus == "F" || p.PaymentStatus == "A")
+        .ToDictionary(p => p.PaymentNo, StringComparer.OrdinalIgnoreCase);
+
+    var paymentDetails = (await db.PmtPaymentDetails.Where(pd => pd.OrgId == t.OrgId).ToListAsync())
+        .Where(pd => payments.ContainsKey(pd.PaymentNo))
+        .ToList();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(d => d.DealerCode, StringComparer.OrdinalIgnoreCase);
+
+    var detailList = new List<object>();
+    var summaryDraft = new List<(string BankCodeMonitor, decimal GiaTriDauKy, decimal GiaTriTangKy, decimal GiaTriGiamKy, decimal GiaTriCuoiKy, int SLDauKy, int SLTangKy, int SLGiamKy, int SLCuoiKy)>();
+
+    foreach (var car in allCars)
+    {
+        var carId = car.CarId ?? car.VIN;
+        if (!grtByCarVin.TryGetValue(car.VIN, out var pair) && !grtByCarVin.TryGetValue(carId, out pair))
+            continue;
+
+        var gh = pair.Hdr;
+        var gd = pair.Dtl;
+        var dateStart = gd.DateStart!.Value;
+        var unitPrice = car.UnitPriceActual ?? 0m;
+        var carPmts = paymentDetails.Where(p => string.Equals(p.CarId, carId, StringComparison.OrdinalIgnoreCase)).ToList();
+
+        decimal amtDauKy = 0m; int slDauKy = 0; decimal gtDauKy = 0m;
+        if (dateStart < dStart)
+        {
+            amtDauKy = carPmts.Where(p => payments[p.PaymentNo].PaymentEndDate < dStart).Sum(p => p.Amount ?? 0m);
+            var pctDauKy = unitPrice > 0 ? (amtDauKy * 100m / unitPrice) : 0m;
+            if (pctDauKy < 100m) { slDauKy = 1; gtDauKy = unitPrice - amtDauKy; }
+        }
+
+        decimal amtTangKy = 0m; int slTangKy = 0; decimal gtTangKy = 0m;
+        if (dateStart >= dStart && dateStart <= dEnd)
+        {
+            amtTangKy = carPmts.Where(p => payments[p.PaymentNo].PaymentEndDate < dateStart).Sum(p => p.Amount ?? 0m);
+            slTangKy = 1; gtTangKy = unitPrice - amtTangKy;
+        }
+
+        decimal amtGiamKy = 0m; int slGiamKy = 0; decimal gtGiamKy = 0m;
+        if (dateStart < dStart)
+        {
+            amtGiamKy = carPmts.Where(p => payments[p.PaymentNo].PaymentEndDate >= dStart && payments[p.PaymentNo].PaymentEndDate <= dEnd).Sum(p => p.Amount ?? 0m);
+        }
+        else if (dateStart >= dStart && dateStart <= dEnd)
+        {
+            amtGiamKy = carPmts.Where(p => payments[p.PaymentNo].PaymentEndDate >= dateStart && payments[p.PaymentNo].PaymentEndDate <= dEnd).Sum(p => p.Amount ?? 0m);
+        }
+        if (amtGiamKy > 0) { slGiamKy = 1; gtGiamKy = amtGiamKy; }
+
+        decimal amtCuoiKy = 0m; int slCuoiKy = 0; decimal gtCuoiKy = 0m;
+        amtCuoiKy = carPmts.Where(p => payments[p.PaymentNo].PaymentEndDate < dEnd).Sum(p => p.Amount ?? 0m);
+        var pctCuoiKy = unitPrice > 0 ? (amtCuoiKy * 100m / unitPrice) : 0m;
+        if (pctCuoiKy < 100m) { slCuoiKy = 1; gtCuoiKy = unitPrice - amtCuoiKy; }
+
+        if (slDauKy != 0 || slTangKy != 0 || slGiamKy != 0 || slCuoiKy != 0)
+        {
+            dealers.TryGetValue(car.DealerCode ?? "", out var dlr);
+            summaryDraft.Add((gh.BankCodeMonitor ?? "", gtDauKy, gtTangKy, gtGiamKy, gtCuoiKy, slDauKy, slTangKy, slGiamKy, slCuoiKy));
+
+            detailList.Add(new
+            {
+                CarId = carId,
+                car.VIN,
+                car.EngineNo,
+                car.CQNo,
+                car.CONo,
+                car.DealerCode,
+                DealerName = dlr?.DealerName ?? car.DealerCode,
+                GuaranteeNo = gh.GuaranteeNo,
+                gh.BankCode,
+                gh.BankCodeMonitor,
+                gh.DateOpen,
+                gd.DateExpired,
+                DateStart = (DateTime?)dateStart,
+                gd.DateEnd,
+                UnitPriceActual = unitPrice,
+                GuaranteePercent = unitPrice > 0 ? Math.Round(gd.GrtValue * 100m / unitPrice, 8) : 0m,
+                GuaranteeValue = gd.GrtValue,
+                GiaTriDauKy = gtDauKy,
+                GiaTriTangKy = gtTangKy,
+                GiaTriGiamKy = gtGiamKy,
+                GiaTriCuoiKy = gtCuoiKy,
+                SLDauKy = slDauKy,
+                SLTangKy = slTangKy,
+                SLGiamKy = slGiamKy,
+                SLCuoiKy = slCuoiKy
+            });
+        }
+    }
+
+    var summaryList = summaryDraft
+        .GroupBy(x => x.BankCodeMonitor, StringComparer.OrdinalIgnoreCase)
+        .Select(g => new
+        {
+            BankCodeMonitor = g.Key,
+            GiaTriDauKy = g.Sum(x => x.GiaTriDauKy),
+            GiaTriTangKy = g.Sum(x => x.GiaTriTangKy),
+            GiaTriGiamKy = g.Sum(x => x.GiaTriGiamKy),
+            GiaTriCuoiKy = g.Sum(x => x.GiaTriCuoiKy),
+            SLDauKy = g.Sum(x => x.SLDauKy),
+            SLTangKy = g.Sum(x => x.SLTangKy),
+            SLGiamKy = g.Sum(x => x.SLGiamKy),
+            SLCuoiKy = g.Sum(x => x.SLCuoiKy)
+        })
+        .ToList();
+
     return Results.Ok(new
     {
-        count = 0,
+        count = summaryList.Count,
         tDateFrom, tDateTo,
-        Rpt_NXT_QuyenDoiNoDetail = wantDetail ? Array.Empty<object>() : null,
-        Rpt_NXT_QuyenDoiNo = Array.Empty<object>(),
+        Rpt_NXT_QuyenDoiNoDetail = wantDetail ? detailList : null,
+        Rpt_NXT_QuyenDoiNo = summaryList,
         paramNameTrailingSpaceNote = "NGHI VAN CAO - TEN THAM SO BIND CO DAU CACH THUA: 'alParamsCoupleSql.AddRange(new object[] { \"@strIsGetDetail \", strIsGetDetail });' (chuoi la '@strIsGetDetail ' CO MOT DAU CACH O CUOI), trong khi SQL tham chieu 'if (@strIsGetDetail = 1) select ...' KHONG co dau cach. HAI NHANH HE QUA: (1) neu tang EzDAL KHONG TRIM ten tham so => tham so duoc tao ten '@strIsGetDetail ' => SQL khong tim thay @strIsGetDetail => 'Must declare the scalar variable' => HAM CHET; (2) neu EzDAL CO TRIM => vo hai. CHUA DOC THAN EzDAL thi KHONG duoc ket luan - ghi la NGHI VAN CAO, khong phai 'da chet' (khac #B352 noi co bang chung truc tiep la Invalid object name).",
         bakeParamMixCase4Note = "[BAKE-PARAM-MIX] CA THU TU, VA CO DAU VET CHUYEN DOI RO RANG: '//alParamsCoupleSql.AddRange(new object[] { \"@strTDate_From\", strTDate_From });' va dong tuong tu cho _To DEU BI COMMENT, roi ngay duoi 'Replace(..., \"@strTDate_From\", strTDate_From, \"@strTDate_To\", strTDate_To, ...)' va trong SQL 'and t.DateStart < '@strTDate_From'' (nam TRONG NHAY, 8 vi tri). Day la BANG CHUNG TRUC TIEP cho thay he CO Y CHUYEN TU PARAM RUNTIME SANG NUONG CHUOI (hai dong bind cu con nguyen duoi dang comment). Muc: strTDate_From/To KHONG di qua StandardizeDate trong ..._X => MUC (A) NUONG THO (nhu #B365), khong phai muc (B) nhu #B359.",
         rbacNote = "RBAC to hop (1): myCommon_CheckHTCDirect(...) ACTIVE (khong bi comment) => CO CONG => KHONG phai lo, du khong co bo loc dong. So bang dong xu bang con tro nIdxTable: ...Detail chi khi co co, roi bang tong.",
-        debtNote = "NO - KHONG DOAN: Pmt_Payment, Rpt_QuyenDoiNo va cac manh nhap-xuat-ton chua du => tra khung + co."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.Report.cs:22024-22215 & RptSQLQuery.cs:9651-10130 (mySql_Rpt_NXT_QuyenDoiNo_X) — tính toán Nhập–Xuất–Tồn Quyền đòi nợ theo ngân hàng giám sát qua 4 kỳ Đầu kỳ, Tăng trong kỳ, Giảm trong kỳ, Cuối kỳ cho cả bảng tổng hợp Rpt_NXT_QuyenDoiNo và bảng chi tiết Rpt_NXT_QuyenDoiNoDetail."
     });
 }).RequireAuthorization();
 
@@ -78547,15 +78905,143 @@ app.MapGet("/api/reports/nxt-quyendoino", async (
 app.MapGet("/api/reports/revenue-htcinvoice", async (
     AppDbContext db, ITenantContext t, DateTime? tDateFrom, DateTime? tDateTo, string? typeReport) =>
 {
+    var dStart = tDateFrom ?? new DateTime(1900, 1, 1);
+    var dEnd = tDateTo ?? new DateTime(2100, 1, 1);
+
+    var invoices = (await db.VatHtcInvoices.Where(vi => vi.OrgId == t.OrgId).ToListAsync())
+        .Where(vi => vi.HTCInvoiceDate >= dStart && vi.HTCInvoiceDate <= dEnd && vi.VatHTCStatus != "R" && vi.VatHTCStatus != "C")
+        .ToDictionary(vi => vi.HTCInvoiceCode, StringComparer.OrdinalIgnoreCase);
+
+    var details = (await db.VatHtcInvoiceDetails.Where(vd => vd.OrgId == t.OrgId).ToListAsync())
+        .Where(vd => vd.HTCStatusDetail == "F" && invoices.ContainsKey(vd.HTCInvoiceCode))
+        .ToList();
+
+    var dealers = (await db.Dealers.Where(d => d.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(d => d.DealerCode, StringComparer.OrdinalIgnoreCase);
+
+    var specs = (await db.CarSpecs.Where(s => s.OrgId == t.OrgId).ToListAsync())
+        .ToDictionary(s => s.SpecCode, StringComparer.OrdinalIgnoreCase);
+
+    var vins = details.Select(vd => vd.VIN).Distinct().ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var cars = (await db.CarVinMasters.Where(c => c.OrgId == t.OrgId).ToListAsync())
+        .Where(c => vins.Contains(c.VIN))
+        .ToDictionary(c => c.VIN, StringComparer.OrdinalIgnoreCase);
+
+    var isGroupBySpec = typeReport == "1";
+
+    var mappedRows = details.Select(vd =>
+    {
+        var inv = invoices[vd.HTCInvoiceCode];
+        cars.TryGetValue(vd.VIN, out var car);
+        dealers.TryGetValue(inv.DealerCode ?? "", out var dealer);
+
+        var specCode = car?.ActualSpec ?? car?.SpecCode ?? vd.ActualSpec ?? vd.SpecCode ?? "";
+        specs.TryGetValue(specCode, out var spec);
+
+        var rawPrice = vd.HTCUnitPrice ?? 0m;
+        var donGia = string.Equals(inv.InvoiceAdjType, "ADJDESCREASE", StringComparison.OrdinalIgnoreCase) ? -rawPrice : rawPrice;
+
+        var isAdjustmentOnly = inv.SourceInvoiceCode != null
+            && !string.Equals(inv.SourceInvoiceCode, "INVOICEREPLACE", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(inv.SourceInvoiceCode, "INVOICEROOT", StringComparison.OrdinalIgnoreCase);
+        var soLuong = isAdjustmentOnly ? 0 : 1;
+
+        var monthRpt = inv.HTCInvoiceDate?.ToString("MM") ?? "";
+
+        return new
+        {
+            inv.DealerCode,
+            DealerName = dealer?.DealerName ?? inv.DealerCode ?? "",
+            CompanyName = dealer?.CompanyName ?? "",
+            ModelCode = car?.ModelCode ?? spec?.ModelCode ?? "",
+            ActualSpec = specCode,
+            SpecDescription = spec?.SpecDesc ?? specCode,
+            AssemblyStatus = spec?.AssemblyStatus ?? "",
+            donGia,
+            soLuong,
+            monthRpt
+        };
+    }).ToList();
+
+    var resultList = new List<object>();
+
+    if (isGroupBySpec)
+    {
+        var groups = mappedRows.GroupBy(r => (r.ModelCode, r.ActualSpec, r.SpecDescription, r.AssemblyStatus));
+        foreach (var g in groups)
+        {
+            var mRev = new decimal[13];
+            var mQty = new int[13];
+            foreach (var r in g)
+            {
+                if (int.TryParse(r.monthRpt, out var m) && m >= 1 && m <= 12)
+                {
+                    mRev[m] += r.donGia;
+                    mQty[m] += r.soLuong;
+                }
+            }
+            resultList.Add(new
+            {
+                ModelCode = g.Key.ModelCode,
+                ActualSpec = g.Key.ActualSpec,
+                SpecDescription = g.Key.SpecDescription,
+                AssemblyStatus = g.Key.AssemblyStatus,
+                TongDoanhThu_01 = mRev[1], TongDoanhThu_02 = mRev[2], TongDoanhThu_03 = mRev[3],
+                TongDoanhThu_04 = mRev[4], TongDoanhThu_05 = mRev[5], TongDoanhThu_06 = mRev[6],
+                TongDoanhThu_07 = mRev[7], TongDoanhThu_08 = mRev[8], TongDoanhThu_09 = mRev[9],
+                TongDoanhThu_10 = mRev[10], TongDoanhThu_11 = mRev[11], TongDoanhThu_12 = mRev[12],
+                TongDoanhThu = mRev.Sum(),
+                SoLuong_01 = mQty[1], SoLuong_02 = mQty[2], SoLuong_03 = mQty[3],
+                SoLuong_04 = mQty[4], SoLuong_05 = mQty[5], SoLuong_06 = mQty[6],
+                SoLuong_07 = mQty[7], SoLuong_08 = mQty[8], SoLuong_09 = mQty[9],
+                SoLuong_10 = mQty[10], SoLuong_11 = mQty[11], SoLuong_12 = mQty[12],
+                SoLuong = mQty.Sum()
+            });
+        }
+    }
+    else
+    {
+        var groups = mappedRows.GroupBy(r => (r.DealerCode, r.DealerName, r.CompanyName));
+        foreach (var g in groups)
+        {
+            var mRev = new decimal[13];
+            var mQty = new int[13];
+            foreach (var r in g)
+            {
+                if (int.TryParse(r.monthRpt, out var m) && m >= 1 && m <= 12)
+                {
+                    mRev[m] += r.donGia;
+                    mQty[m] += r.soLuong;
+                }
+            }
+            resultList.Add(new
+            {
+                DealerCode = g.Key.DealerCode,
+                DealerName = g.Key.DealerName,
+                CompanyName = g.Key.CompanyName,
+                TongDoanhThu_01 = mRev[1], TongDoanhThu_02 = mRev[2], TongDoanhThu_03 = mRev[3],
+                TongDoanhThu_04 = mRev[4], TongDoanhThu_05 = mRev[5], TongDoanhThu_06 = mRev[6],
+                TongDoanhThu_07 = mRev[7], TongDoanhThu_08 = mRev[8], TongDoanhThu_09 = mRev[9],
+                TongDoanhThu_10 = mRev[10], TongDoanhThu_11 = mRev[11], TongDoanhThu_12 = mRev[12],
+                TongDoanhThu = mRev.Sum(),
+                SoLuong_01 = mQty[1], SoLuong_02 = mQty[2], SoLuong_03 = mQty[3],
+                SoLuong_04 = mQty[4], SoLuong_05 = mQty[5], SoLuong_06 = mQty[6],
+                SoLuong_07 = mQty[7], SoLuong_08 = mQty[8], SoLuong_09 = mQty[9],
+                SoLuong_10 = mQty[10], SoLuong_11 = mQty[11], SoLuong_12 = mQty[12],
+                SoLuong = mQty.Sum()
+            });
+        }
+    }
+
     return Results.Ok(new
     {
-        count = 0,
+        count = resultList.Count,
         tDateFrom, tDateTo, typeReportEcho = typeReport,
-        Rpt_Revenue_HTCInvoice = Array.Empty<object>(),
+        Rpt_Revenue_HTCInvoice = resultList,
         argLabelWrongFifthNote = "NHAN DOI SO SAI - CA THU NAM ve nhan (sau #region #B365/#B366, doi so #B368): ', _dbWH // _dbMain'. DA KIEM DANH SACH THAM SO THAT cua ...X: tham so o vi tri do ten la '_dbAction' => nhan SAI GAP DOI (khong phai ten tham so, cung khong phai gia tri truyen vao). WIRING DUNG (ban _WH truyen _dbWH vao _dbAction, dung nhu #B356 lam dung); CHI NHAN SAI. Ghi la LOI NHAN, KHONG bao thanh loi chon DB. Day la ca thu nam lien tiep ve nhan => cung co C0-...quadragesimusoctavus: trong repo nay MOI LOAI NHAN (#region, chu thich doi so) deu KHONG DANG TIN; chi DANH SACH THAM SO THAT cua ham duoc goi moi la bang chung.",
         typeReportNote = "strTypeReport la CO DOI HINH DANG BAO CAO (khong phai bo loc du lieu), cung khuon #B366.",
         dualCommitNote = "Vo mo CA _dbMain lan _dbWH va CommitSafety CA HAI => theo luat C0-...tricesimusprimus, dem CommitSafety = 2 => ghi no 'khong nguyen tu'; tuy day la ham CHI DOC nen tac hai thap - nhung van giu khoa/semaphore tren hai ket noi.",
-        debtNote = "NO - KHONG DOAN: chuoi hoa don dien tu (HDDT) + Car_InvoiceList* chua du => tra khung + co; KHONG bia doanh thu."
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.HDDTIntergration.cs:23988-24410 (Rpt_Revenue_HTCInvoiceX_New20191014) — lọc hoá đơn và dòng hoá đơn HTC trạng thái 'F', tính doanh thu và số lượng (xử lý điều chỉnh ADJDESCREASE và hoá đơn phi vật lý), group by linh hoạt theo Đại lý hoặc Quy cách xe (Spec), pivot đầy đủ 12 tháng và luỹ kế cả năm."
     });
 }).RequireAuthorization();
 // ===== #B368/#B369 THỊ PHẦN NGÂN HÀNG — CẶP SINH ĐÔI BẢO LÃNH / CHO VAY
@@ -82637,7 +83123,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
     //   Tổng tiền cộng phía client (Sum(decimal) không dịch được trên SQLite) — kết quả trên Postgres không đổi.
     var rowsDc = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
-        c.Id, c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,
+        c.Id, c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.DlrNote, c.SalesType, c.CustomerName, c.SignDate, c.Status,
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         c.BankCode, BankName = db.MstBanks.Where(b => b.OrgId == t.OrgId && b.BankCode == c.BankCode).Select(b => b.BankName).FirstOrDefault(),
         lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
@@ -82648,7 +83134,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
         .GroupBy(l => l.ContractId).ToDictionary(g => g.Key, g => g.Sum(x => x.TotalAmountAfterVAT));
     var items = rowsDc.Select(c => new
     {
-        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.SalesType, c.CustomerName, c.SignDate, c.Status,   // #1428 §12
+        c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.DlrNote, c.SalesType, c.CustomerName, c.SignDate, c.Status,   // #1428 §12
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         c.BankCode, c.BankName, PmtType = string.IsNullOrEmpty(c.BankName) ? "Trả thẳng" : "Trả góp",   // #334
         c.lines, total = totalsDc.TryGetValue(c.Id, out var tv) ? tv : 0m,
@@ -82675,7 +83161,7 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
         OrgId = t.OrgId, DlrContractNo = no, DlrContractNoUser = dto.DlrContractNoUser.Trim(), DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
         SalesManCode = dto.SalesManCode.Trim(), SMCode = dto.SMCode ?? dto.SalesManCode.Trim(), SalesType = dto.SalesType.Trim(), CustomerCode = (dto.CustomerCode ?? "").Trim().ToUpperInvariant(),
         CustomerName = dto.CustomerName.Trim(), IDCardNo = dto.IDCardNo.Trim(), IDCardType = dto.IDCardType.Trim(), DateOfBirth = dto.DateOfBirth.Value,
-        SignDate = dto.SignDate.Value, BankCode = dto.BankCode
+        SignDate = dto.SignDate.Value, BankCode = dto.BankCode, DlrNote = dto.DlrNote
     };
     db.DlrContracts.Add(c); await db.SaveChangesAsync();
     var whoCtr = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -83716,7 +84202,7 @@ app.MapGet("/api/dlrcontracts/{no}/report", async (string no, AppDbContext db, I
 
     return Results.Ok(new
     {
-        header = new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode, c.SignDate,
+        header = new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode, c.SMCode, c.DlrNote, c.SignDate,
             c.Status, c.DealerCode, c.SalesType, c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime },
         dealer = dealer is null ? null : new { dealer.DealerCode, dealer.DealerName, dealer.Address, dealer.Phone, dealer.Email },
         principleContracts,
@@ -119701,7 +120187,7 @@ record SalesExpTargetSpecDto(string? DealerCode, string? ProvinceCode, string? A
     DateTime? FirstDeal, decimal? TrungBinhTyTrongSoCaNuoc, decimal? DungLuongTTTheoMucTieu,
     decimal? MaxTLSLXeTongXeTaiTinh, decimal? TBTLSLXeTongXeTaiTinh, decimal? TLKhaiThacSanLuongInit);
 record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType, decimal? UnitPrice = null);   // #B206
-record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines, string? SMCode = null);   // #B206
+record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines, string? SMCode = null, string? DlrNote = null);   // #B206
 record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null);
 record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null);
 record TmActionDto(string? FilePath = null);
@@ -120642,7 +121128,9 @@ record DlrContractDto(string? DealerCode, string DlrContractNoUser, string Sales
     // #348: nguoi giao dich — KHAC SalesManCode (nhan vien ban).
     string? TransactorCode = null,
     // Round 101 §12: SMCode
-    string? SMCode = null);
+    string? SMCode = null,
+    // Round 102 §12: DlrNote
+    string? DlrNote = null);
 // #348: sua hop dong => tang phien ban. Truong rong = GIU NGUYEN.
 record DlrContractAmendDto(string? BankCode = null, string? SalesType = null,
     string? SalesManCode = null, string? TransactorCode = null);

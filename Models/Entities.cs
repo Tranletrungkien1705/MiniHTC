@@ -14316,6 +14316,8 @@ public sealed class DlrContract
     public string? TransactorCode { get; set; }
     /// <summary>Mã nhân viên bán (`SMCode`) — theo `Dlr_ContractCreateX_New20230306` (Biz.HTC.WH.cs:134073).</summary>
     public string? SMCode { get; set; }
+    /// <summary>Ghi chú đại lý trên hợp đồng (`DlrNote`, DbDefine.cs:2578 TblDlr_Contract.DlrNote).</summary>
+    public string? DlrNote { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
