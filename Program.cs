@@ -2951,7 +2951,7 @@ app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, 
     // #329 Lưới xe 1:1 `RM_ReqMortgageDtl` select của `RM_ReqMortgage_GetX` (BizHTC.GiaiChap.cs:424-476):
     //   cv_* lấy từ Car_VIN (MiniHTC: dòng giữ bản chụp CQNo/CONo/…; STT nội bộ + Số đơn hàng đọc CarVinMasters),
     //   rmrm_MortageBankCode = NH của ĐẦU phiếu; cdrd_DRDtlStatus = DRDtlStatus của Car_DocReqDtl MỚI NHẤT theo VIN
-    //   (nguồn `order by LogLUDateTime desc` — DocReqCars chưa có cột này ⇒ lấy Id lớn nhất, xem nợ);
+    //   (nguồn `order by LogLUDateTime desc` — trả nợ 1:1 sắp xếp theo LogLUDateTime desc, rồi Id desc);
     //   rdrrd_* = RD_ReqRedeemDtl LEFT JOIN theo (ReqDMNo, VIN).
     var lines = await db.ReqMortgageCars.Where(c => c.OrgId == t.OrgId && c.ReqMortgageId == m.Id).OrderBy(c => c.Id).ToListAsync();
     var vinsQ = lines.Select(c => c.VIN).Distinct().ToList();
@@ -2959,8 +2959,8 @@ app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, 
             .Select(x => new { x.VIN, x.MMSDocReqIdx, x.OrderNoMnfPlMMS }).ToListAsync())
         .GroupBy(x => x.VIN).ToDictionary(g => g.Key, g => g.First());
     var drMap = (await db.DocReqCars.Where(x => x.OrgId == t.OrgId && vinsQ.Contains(x.Vin))
-            .Select(x => new { x.Id, x.Vin, x.DRDtlStatus }).ToListAsync())
-        .GroupBy(x => x.Vin).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.Id).First().DRDtlStatus);
+            .Select(x => new { x.Id, x.Vin, x.DRDtlStatus, x.LogLUDateTime }).ToListAsync())
+        .GroupBy(x => x.Vin).ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.LogLUDateTime ?? DateTime.MinValue).ThenByDescending(x => x.Id).First().DRDtlStatus);
     var dmNos = lines.Where(c => !string.IsNullOrEmpty(c.ReqDMNo)).Select(c => c.ReqDMNo!).Distinct().ToList();
     var rdList = await (from l in db.RedeemRequestLines join h in db.RedeemRequests on l.RequestId equals h.Id
                         where l.OrgId == t.OrgId && dmNos.Contains(h.ReqRedeemNo)
@@ -2973,18 +2973,19 @@ app.MapGet("/api/mortgages/{reqNo}/cars", async (string reqNo, AppDbContext db, 
         {
             vin = c.VIN, c.ModelCode, c.EngineNo, dtlStatus = c.RMDtlStatus,
             c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy,
-            cv_MMSDocReqIdx = cv?.MMSDocReqIdx, c.CQNo, c.CONo, c.DeclarationNo, c.CODate,
-            rmrm_MortageBankCode = m.MortageBankCode, OrderNoMnfPlMMS = cv?.OrderNoMnfPlMMS,
+            cv_MMSDocReqIdx = cv?.MMSDocReqIdx ?? c.MMSDocReqIdx, c.CQNo, c.CONo, c.DeclarationNo, c.CODate,
+            rmrm_MortageBankCode = m.MortageBankCode, OrderNoMnfPlMMS = cv?.OrderNoMnfPlMMS ?? c.OrderNoMnfPlMMS,
             cdrd_DRDtlStatus = drMap.TryGetValue(c.VIN, out var ds) ? ds : null,
             rmrmd_RMDtlStatus = c.RMDtlStatus, rmrmd_ApprovedDate = c.ApprovedDate, rmrmd_ApprovedBy = c.ApprovedBy,
             rdrrd_ReqDMNo = rd?.ReqRedeemNo, rdrrd_ApprovedDate = rd?.ApprovedDate,
-            c.CarId, c.DealerCode, c.FinishDate, c.FinishBy, c.ReqDMNo, c.Remark, c.LogLUDateTime, c.LogLUBy,   // merge session-a #1449 §12
+            c.CarId, c.DealerCode, c.FinishDate, c.FinishBy, c.ReqDMNo, c.Remark, c.MMSDocReqIdx, c.LogLUDateTime, c.LogLUBy,   // merge session-a #1449 §12 + Round 112 §12
         };
     }).ToList();
     return Results.Ok(new { m.ReqRMNo, bankCode = m.MortageBankCode, m.Status, m.CreatedAt, m.ApprovedAt, m.FinishedAt,
         m.DealerCode, m.MortageDate, m.Remark,   // #1362 §12
         m.CreatedBy, m.LUDateTime, m.LUBy, m.ApprovedBy, m.FinishBy, m.LogLUDateTime, m.LogLUBy,   // #1430 §12
-        count = cars.Count, cars });
+        count = cars.Count, cars,
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.GiaiChap.cs:424-476: Car_DocReqDtl sắp xếp theo LogLUDateTime desc." });
 }).RequireAuthorization();
 
 // ===== Phiếu chi / thanh toán (Pmt_Payment — port 1:1 FrmNewPM/FrmMngPM) =====
@@ -4294,10 +4295,12 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
     var typeCRR = (dto.TypeCRR ?? "NORMAL").Trim().ToUpperInvariant();
     if (typeCRR is not ("NORMAL" or "SPECIAL" or "DEALER" or "DEALERTCG"))
         return Results.BadRequest(new { error = "TypeCRR = NORMAL | SPECIAL | DEALER | DEALERTCG." });
-    var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P", CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
+    var nowDr = DateTime.Now;
+    var whoDr = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P", CreatedBy = whoDr };
     db.DocReqs.Add(d); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal, DealerCode = string.IsNullOrWhiteSpace(c.DealerCode) ? d.DealerCode : c.DealerCode.Trim().ToUpperInvariant(), DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode, ReceivedDateInvoice = c.ReceivedDateInvoice, LogLUDateTime = c.LogLUDateTime, LogLUBy = c.LogLUBy });
+        db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal, DealerCode = string.IsNullOrWhiteSpace(c.DealerCode) ? d.DealerCode : c.DealerCode.Trim().ToUpperInvariant(), DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode, ReceivedDateInvoice = c.ReceivedDateInvoice, LogLUDateTime = c.LogLUDateTime ?? nowDr, LogLUBy = c.LogLUBy ?? whoDr });
     await db.SaveChangesAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, cars = vins.Count, status = d.Status });
 }).RequireAuthorization();
@@ -10077,6 +10080,7 @@ app.MapPost("/api/reqmortgages", async (ReqMortgageDto dto, AppDbContext db, ITe
             // #140 parity RM_ReqMortgageDtl. ReqDMNo cố ý ĐỂ TRỐNG: nguồn gán DBNull khi tạo,
             // chỉ điền khi có đề nghị giải chấp duyệt lên xe này (GiaiChap.cs:988).
             CarId = c.CarId, DealerCode = c.DealerCode ?? dto.DealerCode, Remark = c.Remark,
+            MMSDocReqIdx = c.MMSDocReqIdx, OrderNoMnfPlMMS = c.OrderNoMnfPlMMS,
             LogLUDateTime = nowRM, LogLUBy = whoRM });
     await db.SaveChangesAsync();
     return Results.Ok(new { r2.ReqRMNo, cars = cars.Count });
@@ -10091,7 +10095,7 @@ app.MapGet("/api/reqmortgages/{no}/cars", async (string no, AppDbContext db, ITe
         .Select(c => new { c.VIN, c.ModelCode, c.EngineNo, c.CQNo, c.CONo, c.DeclarationNo, c.CODate,
             c.RMDtlStatus, c.MortageBankCode, c.MortageStartDate, c.RedeemDate, c.ApprovedDate, c.ApprovedBy,
             // #140 parity RM_ReqMortgageDtl.
-            c.CarId, c.DealerCode, c.FinishDate, c.FinishBy, c.ReqDMNo, c.Remark, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+            c.CarId, c.DealerCode, c.FinishDate, c.FinishBy, c.ReqDMNo, c.Remark, c.MMSDocReqIdx, c.OrderNoMnfPlMMS, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
     return Results.Ok(new { r.ReqRMNo, r.MortageBankCode, r.DealerCode, r.Status, r.MortageDate, r.CreatedAt, r.ApprovedAt,
         r.CreatedBy, r.LUDateTime, r.LUBy, r.ApprovedBy, r.FinishedAt, r.FinishBy, r.Remark, r.LogLUDateTime, r.LogLUBy,   // #1361 §12
         count = cars.Count, cars });
@@ -34955,7 +34959,7 @@ app.MapGet("/api/redeemrequests/{id}", async (long id, AppDbContext db, ITenantC
     var lines = await db.RedeemRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == id).Select(x => new { x.Id, x.VIN, x.CarId, x.RedeemType,
         // #140 parity RD_ReqRedeemDtl — trước đây GET chỉ trả 3 cột dù entity đã có đủ.
         x.DMReqDtlStatus, x.DMReqDate, x.DealerCode, x.MortageBankCode, x.DRListCode, x.ReqRMNo,
-        x.ApprovedDate, x.ApprovedBy, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+        x.ApprovedDate, x.ApprovedBy, x.Remark, x.CDRLCreatedDate, x.MMSDocReqIdx, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { header = new { h.Id, h.ReqRedeemNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt, h.ApprovedDate, h.ApprovedBy,
         h.Remark, h.LogLUDateTime, h.LogLUBy }, lines });
 }).RequireAuthorization();
@@ -34988,7 +34992,7 @@ app.MapPost("/api/redeemrequests", async (RedeemRequestDto dto, AppDbContext db,
             // #140 parity RD_ReqRedeemDtl.
             DMReqDate = l.DMReqDate ?? h.CreatedDate, DealerCode = l.DealerCode ?? dto.DealerCode,
             DRListCode = l.DRListCode, MortageBankCode = l.MortageBankCode, ReqRMNo = l.ReqRMNo,
-            Remark = l.Remark, DMReqDtlStatus = "P", LogLUDateTime = DateTime.Now, LogLUBy = who });
+            Remark = l.Remark, DMReqDtlStatus = "P", CDRLCreatedDate = l.CDRLCreatedDate, MMSDocReqIdx = l.MMSDocReqIdx, LogLUDateTime = DateTime.Now, LogLUBy = who });
     await db.SaveChangesAsync();
     return Results.Ok(new { h.Id, h.ReqRedeemNo, h.VinCount, h.Status });
 }).RequireAuthorization();
@@ -35006,7 +35010,12 @@ app.MapPost("/api/redeemrequests/{id}/{action}", async (long id, string action, 
     h.ApprovedDate = DateTime.Now;
     var allLines = await db.RedeemRequestLines.Where(x => x.OrgId == t.OrgId && x.RequestId == h.Id).ToListAsync();
     var stampAt = DateTime.Now;
-    foreach (var ln in allLines) { ln.DMReqDtlStatus = target; ln.ApprovedDate = stampAt; }
+    foreach (var ln in allLines)
+    {
+        ln.DMReqDtlStatus = target;
+        ln.ApprovedDate = stampAt;
+        if (target == "A") ln.MortageBankCode = "HTC.HO";
+    }
 
     // ===== 🔴 #352 DUYỆT GIẢI CHẤP PHẢI ĐÓNG LUÔN DÒNG THẾ CHẤP =====
     // Nguồn `RD_ReqRedeemDtl_Approve_New20230306` (`BizHTC.GiaiChap.cs:2810`, md5 giống hệt 2 máy)
@@ -35029,12 +35038,18 @@ app.MapPost("/api/redeemrequests/{id}/{action}", async (long id, string action, 
         foreach (var rm in rmLines)
         {
             rm.ReqDMNo = h.ReqRedeemNo;      // con trỏ sang phiếu giải chấp
-            rm.RMDtlStatus = target;
+            rm.RMDtlStatus = "F";            // #Round112: TConst.Stage.Finished ("F") theo BizHTC.GiaiChap.cs:3032-3160 & RD_ReqRedeemDtl_ApproveX
+            rm.MortageBankCode = "HTC.HO";
+            rm.RedeemDate = stampAt.Date;
             rm.FinishDate = stampAt;         // = ApprovedDate của phiếu giải chấp
             rm.FinishBy = h.ApprovedBy;      // = ApprovedBy của phiếu giải chấp
             rm.LogLUDateTime = stampAt; rm.LogLUBy = h.ApprovedBy;
             mortgageClosed++;
         }
+        var carRows = await db.BankCarMortages.Where(x => x.OrgId == t.OrgId && x.VIN != null && vins.Contains(x.VIN)).ToListAsync();
+        foreach (var cr in carRows) cr.MortageBankCode = "HTC.HO";
+        var vinMasters = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.VIN != null && vins.Contains(x.VIN)).ToListAsync();
+        foreach (var cv in vinMasters) { cv.MortageBankCode = "HTC.HO"; cv.RedeemDate = stampAt.Date; cv.MortageStartDate = null; }
     }
     await db.SaveChangesAsync();
     return Results.Ok(new
@@ -76213,6 +76228,7 @@ app.MapPost("/api/reqredeems", async (
             OrgId = t.OrgId, RequestId = h.Id, VIN = c.VIN.Trim().ToUpperInvariant(), CarId = c.CarId,
             RedeemType = string.IsNullOrWhiteSpace(c.TypeDMReq) ? "DIRECT" : c.TypeDMReq!.Trim().ToUpperInvariant(),
             DealerCode = c.DealerCode, MortageBankCode = c.BankCode,
+            CDRLCreatedDate = c.CDRLCreatedDate, MMSDocReqIdx = c.MMSDocReqIdx,
             DMReqDtlStatus = "P",                      // nguồn tạo dòng ở Pending (Biz.HTC.WH.cs:126416)
         });
     await db.SaveChangesAsync();
@@ -76226,7 +76242,7 @@ app.MapGet("/api/reqredeems/{no}/cars", async (string no, AppDbContext db, ITena
     if (h is null) return Results.NotFound(new { no });
     var cars = await db.RedeemRequestLines.Where(c => c.OrgId == t.OrgId && c.RequestId == h.Id)
         .Select(c => new { c.VIN, c.CarId, c.DealerCode, typeDMReq = c.RedeemType, c.MortageBankCode,
-            c.DMReqDtlStatus, c.DRListCode, c.ApprovedDate, c.ApprovedBy, c.Remark }).ToListAsync();
+            c.DMReqDtlStatus, c.DRListCode, c.ApprovedDate, c.ApprovedBy, c.Remark, c.CDRLCreatedDate, c.MMSDocReqIdx }).ToListAsync();
     return Results.Ok(new { reqDMNo = h.ReqRedeemNo, h.CreatedDate, h.DealerCode, h.Note, h.VinCount, h.Status, h.CreatedBy, h.CreatedAt,
         h.ApprovedDate, h.ApprovedBy, h.Remark, h.LogLUDateTime, h.LogLUBy, count = cars.Count, cars });   // #1420 §12
 }).RequireAuthorization();
@@ -76259,6 +76275,8 @@ app.MapPost("/api/reqredeems/{no}/approve-vin", async (
     // Side-effect trên bảng xe thế chấp (nguồn ghi lên Car_Vin).
     var carRows = await db.BankCarMortages.Where(x => x.OrgId == t.OrgId && x.VIN.ToUpper() == v).ToListAsync();
     foreach (var cr in carRows) cr.MortageBankCode = "HTC.HO";
+    var vinMasters = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && x.VIN.ToUpper() == v).ToListAsync();
+    foreach (var cv in vinMasters) { cv.MortageBankCode = "HTC.HO"; cv.RedeemDate = now.Date; cv.MortageStartDate = null; }
 
     // 🔴 BỔ SUNG #57 (thiếu ở #55): nguồn ĐỒNG THỜI đóng DÒNG THẾ CHẤP của chính VIN đó
     // về "F" (đã giải chấp) và ghi **RedeemDate** (BizHTC.GiaiChap.cs:3032-3041).
@@ -122750,7 +122768,7 @@ record DlvMinutesBatchPatchLineDto(
     string? FProvinceCodeNew, string? FDistrictCodeNew,
     string? TProvinceCodeNew, string? TDistrictCodeNew);
 record DlvMinutesBatchPatchDto(List<DlvMinutesBatchPatchLineDto>? Rows);
-record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate, string? CarId = null, string? DealerCode = null, string? Remark = null);
+record ReqMortgageCarDto(string VIN, string? ModelCode, string? EngineNo, string? CQNo, string? CONo, string? DeclarationNo, DateTime? CODate, string? CarId = null, string? DealerCode = null, string? Remark = null, string? MMSDocReqIdx = null, string? OrderNoMnfPlMMS = null);
 record ReqMortgageDto(string MortageBankCode, string? DealerCode, DateTime? MortageDate, List<ReqMortgageCarDto>? Cars, string? Remark = null);
 record ReqMortgageDeleteCarsDto(List<string>? Vins);
 record QcDocReqCarDto(string VIN, string? OrderNo, string? ModelCode, string? SpecCode, string? ColorCode, string? EngineNo, string? OriginNo, string? FGFormNo, string? QCNo, string? ClearanceFormNo, string? DocDeliverTypeCode,
@@ -123847,7 +123865,7 @@ record TrainingParticipantDto(string? SMHyundaiCode, DateTime? OrganizeDate, str
 record TrainingParticipantCreateMultiRowDto(string? TrainingCode, string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut, string? FlagActive);   // #5848
 record TrainingParticipantUpdateByCodeDto(string? TrainingDtlCode, string? TrainingCode, string? SMHyundaiCode, DateTime? OrganizeDate, string? FormalityTraining, string? Place, string? ResultIn, string? ResultOut);   // #5850
 record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemRequestLineDto>? Lines, string? Remark = null);
-record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType, DateTime? DMReqDate = null, string? DealerCode = null, string? DRListCode = null, string? MortageBankCode = null, string? ReqRMNo = null, string? Remark = null);
+record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType, DateTime? DMReqDate = null, string? DealerCode = null, string? DRListCode = null, string? MortageBankCode = null, string? ReqRMNo = null, string? Remark = null, DateTime? CDRLCreatedDate = null, string? MMSDocReqIdx = null);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
@@ -124501,7 +124519,7 @@ record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<Insurance
 record InsApproveDto(string? Remark);
 record InsCarUpdateDto(int InsuranceDay, decimal InsAmount, string? Remark);
 record CarLocationDto(string VIN, string? LocationOld, string Location);
-record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode);
+record ReqRedeemCarDto(string VIN, string? CarId, string? DealerCode, string? TypeDMReq, string? BankCode, DateTime? CDRLCreatedDate = null, string? MMSDocReqIdx = null);
 record ReqRedeemDto(List<ReqRedeemCarDto>? Cars, string? Note = null);
 record MnfPlOrderLineDto(string ModelCode, string? SpecCode, string? SpecDescription, string? ColorCode, int Quantity, int MnfPlIdx, int QtyOrdMonthN0 = 0, int QtyMonthN1 = 0, int QtyMonthN2 = 0, int QtyMonthN3 = 0);
 record MnfPlOrderDto(string OrdType, string? OrdMonth, string? Remark, List<MnfPlOrderLineDto>? Lines);

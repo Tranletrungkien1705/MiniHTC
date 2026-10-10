@@ -3999,6 +3999,10 @@ public sealed class RedeemRequestLine
     /// Nhờ cặp này mà duyệt giải chấp biết phải đóng dòng thế chấp nào về "F".
     /// </summary>
     public string? ReqRMNo { get; set; }
+    /// <summary>#Round112 §12: TblRD_ReqRedeemDtl.CDRLCREATEDDATE (DbDefine.cs:3439) — ngày tạo danh sách hồ sơ xe liên quan.</summary>
+    public DateTime? CDRLCreatedDate { get; set; }
+    /// <summary>#Round112 §12: TblRD_ReqRedeemDtl.MMSDOCREQIDX (DbDefine.cs:3440) — STT nội bộ.</summary>
+    public string? MMSDocReqIdx { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -15440,6 +15444,10 @@ public sealed class ReqMortgageCar
     /// </summary>
     public string? ReqDMNo { get; set; }
     public string? Remark { get; set; }
+    /// <summary>#Round112 §12: TblRM_ReqMortgageDtl.MMSDocReqIdx (DbDefine.cs:6663) — STT nội bộ.</summary>
+    public string? MMSDocReqIdx { get; set; }
+    /// <summary>#Round112 §12: TblRM_ReqMortgageDtl.OrderNoMnfPlMMS (DbDefine.cs:6672) — số đơn hàng MMS.</summary>
+    public string? OrderNoMnfPlMMS { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
