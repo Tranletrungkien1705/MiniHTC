@@ -13607,6 +13607,11 @@ public sealed class CarColorChange
     public string ColorCodeOld { get; set; } = "";
     public string ColorCodeNew { get; set; } = "";
     public DateTime ChangedAt { get; set; } = DateTime.Now;
+    public string? SOCode { get; set; }
+    public string? ModelName { get; set; }
+    public string? RootSpec { get; set; }
+    public string? SpecDescription { get; set; }
+    public string? ChangeBy { get; set; }
 }
 
 /// <summary>Hợp đồng nguyên tắc (Rpt_PrincipleContract) — port 1:1 FrmPrincipleContractNew/FrmMngPrincipleContract (2010.HTC/Sales). HĐ nguyên tắc đại lý: ngân hàng, người đại diện, thời hạn.</summary>
@@ -14033,6 +14038,10 @@ public sealed class CarVinMaster
     /// `HTMV_PDIDtl` — bảng riêng, không liên quan `Car_VIN`).</summary>
     public string? FlagRepair { get; set; }
     public string? RepairRemark { get; set; }
+    /// <summary>Kho xe khi Map VIN (`Car_Car.MapVINStorage`) — dùng trong Rpt_MapVINX_New20181119.</summary>
+    public string? MapVINStorage { get; set; }
+    /// <summary>Loại Map VIN (`Car_Car.MapVINType`) — dùng trong Rpt_MapVINX_New20181119.</summary>
+    public string? MapVINType { get; set; }
 }
 
 /// <summary>Điều kiện eligible chính sách hỗ trợ bán lẻ, gộp phẳng SPL_SalesPolicyMstDetail (DealerCode=null: áp dụng mọi đại lý) + SPL_SalesPolicyMstDetailDealer (DealerCode cụ thể) — phục vụ guard #4 SPSupportRetail.</summary>
