@@ -8068,6 +8068,14 @@ public sealed class DocReqCar
     public string? DRListCode { get; set; }
     /// <summary>#Round108 §12: TblCar_DocReqDtl.ReceivedDateInvoice (`DbDefine.cs:2071`, `FrmMngDlr_DocReq.cs`) — ngày nhận hoá đơn giấy tờ xe.</summary>
     public DateTime? ReceivedDateInvoice { get; set; }
+    /// <summary>#Round113 §12: TblDRDetail.CARID (`DbDefine.cs:947`) — mã xe quản lý.</summary>
+    public string? CarId { get; set; }
+    /// <summary>#Round113 §12: TblDRDetail.DELIVERYSTARTDATE (`DbDefine.cs:958`) — ngày bắt đầu giao xe.</summary>
+    public DateTime? DeliveryStartDate { get; set; }
+    /// <summary>#Round113 §12: TblDRDetail.DELIVERYENDDATE (`DbDefine.cs:959`) — ngày kết thúc giao xe.</summary>
+    public DateTime? DeliveryEndDate { get; set; }
+    /// <summary>#Round113 §12: TblDRDetail.CONFIRMSTATUS (`DbDefine.cs:961`) — trạng thái xác nhận giao xe.</summary>
+    public string? ConfirmStatus { get; set; }
 }
 
 // #4301 — ForeignContract/ForeignContractLine (bảng tự tạo, free-form RefNo+LcTemp) XOÁ: trùng nghiệp vụ
@@ -12607,6 +12615,14 @@ public sealed class DOATCondition
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // Round 113 §12: FrmMst_DOATConditionCreate.cs:111-118 & BizHTC.MasterData.cs:13727-13760
+    public string FlagLXX { get; set; } = "1";
+    public string FlagLDC { get; set; } = "1";
+    public string FlagYCDT { get; set; } = "1";
+    public string FlagMapVIN { get; set; } = "1";
+    public string FlagDealerActive { get; set; } = "1";
+    public string FlagQCEndDate { get; set; } = "0";
+    public string FlagDutyCompletePercent { get; set; } = "0";
 }
 public sealed class DOATConditionModel
 {
@@ -12614,6 +12630,43 @@ public sealed class DOATConditionModel
     public Guid OrgId { get; set; }
     public long DOATConditionId { get; set; }
     public string ModelCode { get; set; } = "";
+    // Round 113 §12: Tbl_Mst_DOATConditionDtl (FrmMst_DOATConditionCreate.cs:128-133)
+    public string? PmtMethodNo { get; set; }
+    public decimal DutyCompletePercentFrom { get; set; }
+    public decimal DutyCompletePercentTo { get; set; }
+}
+
+/// <summary>Lịch sử thay đổi điều kiện tự động tạo DO (Mst_DOATConditionHist) — port 1:1 BizHTC.MasterData.cs:13727-13760.</summary>
+public sealed class DOATConditionHist
+{
+    public long Id { get; set; }
+    public Guid OrgId { get; set; }
+    public string DOATConditionCode { get; set; } = "";
+    public DateTime EffDateStart { get; set; }
+    public DateTime EffDateEnd { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public string FlagLXX { get; set; } = "1";
+    public string FlagLDC { get; set; } = "1";
+    public string FlagYCDT { get; set; } = "1";
+    public string FlagMapVIN { get; set; } = "1";
+    public string FlagDealerActive { get; set; } = "1";
+    public string FlagQCEndDate { get; set; } = "0";
+    public string FlagTaxPaymentDate { get; set; } = "0";
+    public string FlagDutyCompletePercent { get; set; } = "0";
+    public DateTime CreateHstDateTime { get; set; } = DateTime.Now;
+    public string CreateHstBy { get; set; } = "";
+    public string FlagActive { get; set; } = "1";
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string LogLUBy { get; set; } = "";
+    public string FunctionName { get; set; } = "MST_DOATCONDITION_UPDATE";
+    public string RefType { get; set; } = "UPDATE";
+    public string? RefCode00 { get; set; }
+    public string? RefCode01 { get; set; }
+    public string? RefCode02 { get; set; }
+    public string? RefCode03 { get; set; }
+    public string? RefCode04 { get; set; }
+    public string? RefCode05 { get; set; }
 }
 
 /// <summary>Đề nghị giao dịch ngân hàng (BankingTrans) — port 1:1 FrmDeNghiGDNganHang (2010.HTC/Sales/Payment). ĐN GD với ngân hàng: giải ngân GNTT / bảo lãnh LC / phát hành LC.</summary>
@@ -14567,6 +14620,8 @@ public sealed class PmtPayment
     public string? TCF_BSInputNo { get; set; }
     /// <summary>Cờ đã khớp DMS↔TCF (`FlagDMS_TCF`; client gửi từ cột `StatusMapTCF`) — PHẢI = "1" mới xác nhận được.</summary>
     public string? FlagDMS_TCF { get; set; }
+    /// <summary>#Round113 §12 — Loại thanh toán TTC hoặc TTBL (PaymentType_TTCORTTBL, DbDefine.cs:1765).</summary>
+    public string? PaymentType_TTCORTTBL { get; set; }
 }
 
 /// <summary>
@@ -14617,6 +14672,8 @@ public sealed class PmtPaymentDetail
     /// </summary>
     public decimal? LoanPeriod { get; set; }
     public decimal? InterestRate { get; set; }
+    /// <summary>#Round113 §12 — Mã ngân hàng bảo lãnh (PMGBankCode, DbDefine.cs:1786).</summary>
+    public string? PMGBankCode { get; set; }
 }
 
 /// <summary>
@@ -15930,6 +15987,12 @@ public sealed class TranspDlvConfirm
     /// (ngày nhận xe do người dùng nhập).</summary>
     public DateTime? DlvEndDateTime { get; set; }
     public string? DlvEndBy { get; set; }
+    /// <summary>#Round113 §12 — Tình trạng GPS lúc giao (FGPSDvStatus, DbDefine.cs:2338).</summary>
+    public string? FGPSDvStatus { get; set; }
+    /// <summary>#Round113 §12 — Ngày dự kiến giao hàng (ExpectedDlvEndDate, DbDefine.cs:2335).</summary>
+    public DateTime? ExpectedDlvEndDate { get; set; }
+    /// <summary>#Round113 §12 — Ngày dự kiến giao hàng HTMV (MTFHExpectedDlvEndDate, DbDefine.cs:2336).</summary>
+    public DateTime? MTFHExpectedDlvEndDate { get; set; }
 
     // ===== #170b nhat ky sua cuoi (LogLU*) — nguon ghi cap nay o moi buoc ghi =====
     public DateTime? LogLUDateTime { get; set; }

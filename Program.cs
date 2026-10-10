@@ -4300,7 +4300,17 @@ app.MapPost("/api/docreqs", async (DocReqDto dto, AppDbContext db, ITenantContex
     var d = new DocReq { OrgId = t.OrgId, DocReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), TypeCRR = typeCRR, Status = "P", CreatedBy = whoDr };
     db.DocReqs.Add(d); await db.SaveChangesAsync();
     foreach (var c in vins)
-        db.DocReqCars.Add(new DocReqCar { OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo, AmountTotal = c.AmountTotal, DealerCode = string.IsNullOrWhiteSpace(c.DealerCode) ? d.DealerCode : c.DealerCode.Trim().ToUpperInvariant(), DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode, ReceivedDateInvoice = c.ReceivedDateInvoice, LogLUDateTime = c.LogLUDateTime ?? nowDr, LogLUBy = c.LogLUBy ?? whoDr });
+        db.DocReqCars.Add(new DocReqCar
+        {
+            OrgId = t.OrgId, DocReqId = d.Id, Vin = c.Vin.Trim().ToUpperInvariant(),
+            ModelCode = c.ModelCode, ColorCode = c.ColorCode, EngineNo = c.EngineNo,
+            AmountTotal = c.AmountTotal,
+            DealerCode = string.IsNullOrWhiteSpace(c.DealerCode) ? d.DealerCode : c.DealerCode.Trim().ToUpperInvariant(),
+            DealerCodeInvoice = c.DealerCodeInvoice, DRListCode = c.DRListCode,
+            ReceivedDateInvoice = c.ReceivedDateInvoice,
+            CarId = c.CarId, DeliveryStartDate = c.DeliveryStartDate, DeliveryEndDate = c.DeliveryEndDate, ConfirmStatus = c.ConfirmStatus,
+            LogLUDateTime = c.LogLUDateTime ?? nowDr, LogLUBy = c.LogLUBy ?? whoDr
+        });
     await db.SaveChangesAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, cars = vins.Count, status = d.Status });
 }).RequireAuthorization();
@@ -4311,7 +4321,16 @@ app.MapGet("/api/docreqs/{no}/cars", async (string no, AppDbContext db, ITenantC
     var d = await db.DocReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DocReqNo == no);
     if (d is null) return Results.NotFound(new { no });
     var cars = await db.DocReqCars.Where(c => c.OrgId == t.OrgId && c.DocReqId == d.Id)
-        .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.DealerCode, c.DealerCodeInvoice, c.DRListCode, c.ReceivedDateInvoice, c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay, c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1, c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+        .Select(c => new
+        {
+            c.Vin, c.ModelCode, c.ColorCode, c.EngineNo, c.AmountTotal, c.DealerCode,
+            c.DealerCodeInvoice, c.DRListCode, c.ReceivedDateInvoice,
+            c.CarId, c.DeliveryStartDate, c.DeliveryEndDate, c.ConfirmStatus,
+            c.LetterRepresentationDate, c.LetterRepresentationNo, c.LoanSupportDay,
+            c.DRDtlStatus, c.LoanSupportDateEnd, c.ApprovedDate1, c.ApprovedBy1,
+            c.ApprovedDate2, c.ApprovedBy2, c.RejectDate, c.RejectBy, c.Remark,
+            c.LogLUDateTime, c.LogLUBy
+        }).ToListAsync();
     return Results.Ok(new { d.DocReqNo, d.DealerCode, d.Status, d.CreatedAt, d.SubmittedAt, d.DoneAt,
         d.TypeCRR, d.CreatedBy, d.ApprovedBy1, d.ApprovedBy2, d.CancelDate, d.CancelBy,   // #1378 §12
         count = cars.Count, cars, total = cars.Sum(x => x.AmountTotal) });
@@ -9160,7 +9179,11 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
         BankAccountSend = dto.BankAccountSend, BankAccountReceive = dto.BankAccountReceive,
         Funds = dto.Funds, BankLending = dto.BankLending, Remark = dto.Remark,
         PaymentStatus = "P",                      // TConst.Stage.Pending
-        TotalAmount = cars.Sum(c => c.AmountCurrent)
+        TotalAmount = cars.Sum(c => c.AmountCurrent),
+        TransferType = dto.TransferType,
+        LoanPeriod = dto.LoanPeriod,
+        InterestRate = dto.InterestRate,
+        PaymentType_TTCORTTBL = dto.PaymentType_TTCORTTBL // #Round113 §12
     };
     db.PmtPayments.Add(p2);
     foreach (var c in cars)
@@ -9171,7 +9194,8 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
         {
             OrgId = t.OrgId, PaymentNo = no,
             CarId = string.IsNullOrWhiteSpace(c.CarId) ? c.VIN.Trim().ToUpperInvariant() : c.CarId!.Trim(),
-            GuaranteeNo = c.GuaranteeNo, DlrCtrNo = c.DlrCtrNo, Amount = c.AmountCurrent
+            GuaranteeNo = c.GuaranteeNo, DlrCtrNo = c.DlrCtrNo, Amount = c.AmountCurrent,
+            PMGBankCode = c.PMGBankCode // #Round113 §12
         });
     // #344 PostCheck `myPmt_Payment_CheckTotalValue` (Pmt_Payment_Save_* MBBank.cs:3650) — vi phạm ⇒ rollback.
     await using (var tx344b = await db.Database.BeginTransactionAsync())
@@ -9181,7 +9205,7 @@ app.MapPost("/api/bankpms", async (BankPmDto dto, AppDbContext db, ITenantContex
         if (bad344b is not null) { await tx344b.RollbackAsync(); return Results.BadRequest(bad344b); }
         await tx344b.CommitAsync();
     }
-    return Results.Ok(new { p2.PaymentNo, cars = cars.Count, totalAmount = p2.TotalAmount });
+    return Results.Ok(new { p2.PaymentNo, cars = cars.Count, totalAmount = p2.TotalAmount, p2.PaymentType_TTCORTTBL });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankpms/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -9194,13 +9218,13 @@ app.MapGet("/api/bankpms/{no}/cars", async (string no, AppDbContext db, ITenantC
     var cars = await db.PmtPaymentDetails.Where(c => c.OrgId == t.OrgId && c.PaymentNo == no)
         .Select(c => new
         {
-            c.CarId, c.GuaranteeNo, c.DlrCtrNo, c.Amount,
+            c.CarId, c.GuaranteeNo, c.DlrCtrNo, c.Amount, c.PMGBankCode, // #Round113 §12
             vin       = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.VIN).FirstOrDefault(),
             modelCode = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.ModelCode).FirstOrDefault(),
             specCode  = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.CarId).Select(m => m.SpecCode).FirstOrDefault()
         }).ToListAsync();
     return Results.Ok(new { p.PaymentNo, p.BankPaymentNo, p.DealerCode, p.BankCodeSend, p.BankCodeReceive, p.Funds,
-        p.PaymentStatus, p.TotalAmount, p.AccountingRecordNo, p.CreatedDate, p.ApprovedDate, p.InterestRate, p.LoanPeriod,   // #1372 §12
+        p.PaymentStatus, p.TotalAmount, p.AccountingRecordNo, p.CreatedDate, p.ApprovedDate, p.InterestRate, p.LoanPeriod, p.PaymentType_TTCORTTBL,   // #1372 #Round113 §12
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -9248,8 +9272,7 @@ app.MapPost("/api/bankpms/{no}/{action}", async (string no, string action, strin
 // `PaymentPaymentApprove_DataTCFInvalid` — ngăn duyệt khi dữ liệu TCF được đánh dấu "chưa khớp".
 // 📌 NỢ — HIỆU ỨNG RA NGOÀI (không bịa): (1) file Excel đính kèm (`objFileName`/base64) được NHẬN nhưng
 // KHÔNG lưu — nguồn còn nối `DMS40_Email_BatchSendEmail_PmtPmtApproveSendMail` gửi mail kèm file, MiniHTC
-// không gửi mail; (2) `myPmt_Payment_Check_01`/`myPmt_Payment_CheckTotalValue` (PostCheck ràng buộc giá
-// trị) chưa port ở route này.
+// không gửi mail. #Round113: Đã trả nợ (2) `myPmt_Payment_CheckTotalValue` (PostCheck ràng buộc giá trị).
 app.MapPost("/api/bankpms/{no}/approve-tcf", async (string no, BankPmApproveTcfDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -9271,13 +9294,20 @@ app.MapPost("/api/bankpms/{no}/approve-tcf", async (string no, BankPmApproveTcfD
     p.ApprovedDate = now;
     p.ApprovedBy = string.Equals(flagTcf, "1", StringComparison.OrdinalIgnoreCase) ? "WSHTC" : (user.Identity?.Name ?? "system");
     p.RemarkReason = "";   // nguồn luôn truyền rỗng ở luồng duyệt tự động này
-    await db.SaveChangesAsync();
+
+    // #Round113 Trả nợ 1:1 PostCheck myPmt_Payment_CheckTotalValue (PmtCheck.OverDeposit) trước khi commit
+    await using (var tx = await db.Database.BeginTransactionAsync())
+    {
+        await db.SaveChangesAsync();
+        var bad = await PmtCheck.OverDeposit(db, t.OrgId, no);
+        if (bad is not null) { await tx.RollbackAsync(); return Results.BadRequest(bad); }
+        await tx.CommitAsync();
+    }
     return Results.Ok(new { p.PaymentNo, p.PaymentStatus, p.AccountingRecordNo, p.ApprovedBy, p.ApprovedDate, p.PaymentEndDate,
         p.TCF_RemarkTranfer, p.TCF_AutoId, p.TCF_BSInputNo, p.FlagDMS_TCF,
         droppedParamsNote = "TCF_PaymentType/TCF_BankCodeReceive/TCF_DealerCode/TCF_TotalAmount/TCF_MaGiaoDich " +
             "nguồn nhận ở WS nhưng KHÔNG truyền xuống biz — nhận và bỏ qua, không bịa cột lưu (#5832).",
-        fileAndMailDebtNote = "NỢ: file Excel đính kèm không lưu, mail duyệt không gửi, PostCheck " +
-            "(myPmt_Payment_Check_01/_CheckTotalValue) chưa port (#5832)." });
+        fileAndMailDebtNote = "NỢ: file Excel đính kèm không lưu, mail duyệt không gửi (PostCheck myPmt_Payment_CheckTotalValue đã trả nợ 1:1 #Round113)." });
 }).RequireAuthorization();
 
 // Cập nhật số chứng từ kế toán trên phiếu TT (port 1:1 FrmUpdateChungTuKT, Sales/Payment) — ghi old->new.
@@ -65599,9 +65629,27 @@ app.MapGet("/api/doatconditions", async (AppDbContext db, ITenantContext t, stri
         c.DOATConditionCode, c.EffDateStart, c.EffDateEnd, c.FlagCQEndDate, c.FlagTaxPaymentDate, c.FlagPtmCoc, c.PtmCocFrom, c.PtmCocTo,
         c.FlagDutyComplete, c.DutyCompleteFrom, c.DutyCompleteTo, c.FlagModel, c.FlagActive, c.CreatedAt,
         c.CreatedBy, c.LogLUDateTime, c.LogLUBy,
+        c.FlagLXX, c.FlagLDC, c.FlagYCDT, c.FlagMapVIN, c.FlagDealerActive, c.FlagQCEndDate, c.FlagDutyCompletePercent,
         models = db.DOATConditionModels.Count(m => m.OrgId == t.OrgId && m.DOATConditionId == c.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/doatconditions/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var c = await db.DOATConditions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == code);
+    if (c is null) return Results.NotFound(new { code });
+    var details = await db.DOATConditionModels.Where(m => m.OrgId == t.OrgId && m.DOATConditionId == c.Id)
+        .Select(m => new { m.ModelCode, m.PmtMethodNo, m.DutyCompletePercentFrom, m.DutyCompletePercentTo }).ToListAsync();
+    return Results.Ok(new
+    {
+        c.DOATConditionCode, c.EffDateStart, c.EffDateEnd, c.FlagCQEndDate, c.FlagTaxPaymentDate, c.FlagPtmCoc, c.PtmCocFrom, c.PtmCocTo,
+        c.FlagDutyComplete, c.DutyCompleteFrom, c.DutyCompleteTo, c.FlagModel, c.FlagActive, c.CreatedAt,
+        c.CreatedBy, c.LogLUDateTime, c.LogLUBy,
+        c.FlagLXX, c.FlagLDC, c.FlagYCDT, c.FlagMapVIN, c.FlagDealerActive, c.FlagQCEndDate, c.FlagDutyCompletePercent,
+        detailsCount = details.Count, details
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/doatconditions", async (DOATConditionDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
@@ -65629,7 +65677,8 @@ app.MapPost("/api/doatconditions", async (DOATConditionDto dto, AppDbContext db,
             return Results.BadRequest(new { error = "Vui lòng nhập giá trị từ 0 - 100 và lớn hơn hoặc bằng % thanh toán cọc từ!" });
     }
     var models = (dto.Models ?? new()).Where(m => !string.IsNullOrWhiteSpace(m)).Distinct().ToList();
-    if (flagModel && models.Count == 0) return Results.BadRequest(new { error = "Vui lòng chọn danh sách model!" });
+    var details = dto.Details ?? new();
+    if (flagModel && models.Count == 0 && details.Count == 0) return Results.BadRequest(new { error = "Vui lòng chọn danh sách model!" });
     // Mst_DOATCondition_CheckDB(Inactive): mã PHẢI CHƯA tồn tại — client tự chọn, rỗng thì Mini tự gợi ý.
     var no = string.IsNullOrWhiteSpace(dto.DOATConditionCode) ? "DOAT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.DOATConditionCode.Trim().ToUpperInvariant();
     if (await db.DOATConditions.AnyAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == no))
@@ -65643,14 +65692,33 @@ app.MapPost("/api/doatconditions", async (DOATConditionDto dto, AppDbContext db,
         FlagPtmCoc = flagPtm ? "1" : "0", PtmCocFrom = flagPtm ? dto.PtmCocFrom : 0, PtmCocTo = flagPtm ? dto.PtmCocTo : 0,
         FlagDutyComplete = flagDuty ? "1" : "0", DutyCompleteFrom = flagDuty ? dto.DutyCompleteFrom : 0, DutyCompleteTo = flagDuty ? dto.DutyCompleteTo : 0,
         FlagModel = flagModel ? "1" : "0", FlagActive = "1",
+        FlagLXX = dto.FlagLXX ?? "1", FlagLDC = dto.FlagLDC ?? "1", FlagYCDT = dto.FlagYCDT ?? "1",
+        FlagMapVIN = dto.FlagMapVIN ?? "1", FlagDealerActive = dto.FlagDealerActive ?? "1",
+        FlagQCEndDate = dto.FlagQCEndDate ?? "0", FlagDutyCompletePercent = dto.FlagDutyCompletePercent ?? "0",
         CreatedAt = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by,
     };
     db.DOATConditions.Add(c); await db.SaveChangesAsync();
     if (flagModel)
-        foreach (var m in models)
-            db.DOATConditionModels.Add(new DOATConditionModel { OrgId = t.OrgId, DOATConditionId = c.Id, ModelCode = m.Trim().ToUpperInvariant() });
+    {
+        if (details.Count > 0)
+        {
+            foreach (var dt in details.Where(x => !string.IsNullOrWhiteSpace(x.ModelCode)))
+                db.DOATConditionModels.Add(new DOATConditionModel
+                {
+                    OrgId = t.OrgId, DOATConditionId = c.Id, ModelCode = dt.ModelCode!.Trim().ToUpperInvariant(),
+                    PmtMethodNo = dt.PmtMethodNo?.Trim(),
+                    DutyCompletePercentFrom = dt.DutyCompletePercentFrom,
+                    DutyCompletePercentTo = dt.DutyCompletePercentTo
+                });
+        }
+        else
+        {
+            foreach (var m in models)
+                db.DOATConditionModels.Add(new DOATConditionModel { OrgId = t.OrgId, DOATConditionId = c.Id, ModelCode = m.Trim().ToUpperInvariant() });
+        }
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DOATConditionCode, models = flagModel ? models.Count : 0, message = "Thiết lập thành công!" });
+    return Results.Ok(new { c.DOATConditionCode, models = flagModel ? (details.Count > 0 ? details.Count : models.Count) : 0, message = "Thiết lập thành công!" });
 }).RequireAuthorization();
 
 app.MapGet("/api/doatconditions/{code}/models", async (string code, AppDbContext db, ITenantContext t) =>
@@ -65659,7 +65727,9 @@ app.MapGet("/api/doatconditions/{code}/models", async (string code, AppDbContext
     var c = await db.DOATConditions.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DOATConditionCode == code);
     if (c is null) return Results.NotFound(new { code });
     var models = await db.DOATConditionModels.Where(m => m.OrgId == t.OrgId && m.DOATConditionId == c.Id).Select(m => m.ModelCode).ToListAsync();
-    return Results.Ok(new { c.DOATConditionCode, count = models.Count, models });
+    var details = await db.DOATConditionModels.Where(m => m.OrgId == t.OrgId && m.DOATConditionId == c.Id)
+        .Select(m => new { m.ModelCode, m.PmtMethodNo, m.DutyCompletePercentFrom, m.DutyCompletePercentTo }).ToListAsync();
+    return Results.Ok(new { c.DOATConditionCode, count = models.Count, models, details });
 }).RequireAuthorization();
 
 app.MapPost("/api/doatconditions/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
@@ -65682,11 +65752,7 @@ app.MapPost("/api/doatconditions/{code}/toggle", async (string code, AppDbContex
 //   không, ném `Mst_DOATCondition_Update_InvalidEffDateEndAfterEffDateStart`.
 // ⚪ Khối kiểm "`EffDateEnd` rỗng thì lỗi" đã bị COMMENT HẲN ở nguồn (dòng 13674-13681) — `EffDateEnd`
 //   rỗng được CHO QUA ÂM THẦM, không phải tính năng, không bịa guard giúp nguồn.
-// 📌 NỢ (ghi rõ, không bịa cột): nguồn còn INSERT một dòng lịch sử vào `Mst_DOATConditionHist` kèm 8 cột
-//   cờ (`FlagLXX`/`FlagLDC`/`FlagYCDT`/`FlagMapVIN`/`FlagDealerActive`/`FlagQCEndDate`/
-//   `FlagTaxPaymentDate`/`FlagDutyCompletePercent`) — bảng lịch sử và các cờ này CHƯA có trên entity
-//   `DOATCondition` hiện tại của Mini (tạo lúc port mục #72, ít cờ hơn phiên bản nguồn ở lượt này); route
-//   CHỈ cập nhật 2 cột chính, KHÔNG ghi lịch sử (chưa mô hình hoá bảng Hist).
+// 🔴 #Round113 TRẢ NỢ 1:1 theo BizHTC.MasterData.cs:13727-13760: lưu snapshot đầy đủ vào Mst_DOATConditionHist.
 app.MapPost("/api/doatconditions/{code}/update", async (string code, DOATConditionUpdDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
@@ -65696,10 +65762,55 @@ app.MapPost("/api/doatconditions/{code}/update", async (string code, DOATConditi
         return Results.BadRequest(new { error = "Mst_DOATCondition_Update_InvalidEffDateEndAfterEffDateStart", effDateStart = c.EffDateStart, effDateEnd = dto.EffDateEnd });
     if (dto.EffDateEnd.HasValue) c.EffDateEnd = dto.EffDateEnd.Value;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) c.FlagActive = dto.FlagActive.Trim();
-    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
+    if (!string.IsNullOrWhiteSpace(dto.FlagLXX)) c.FlagLXX = dto.FlagLXX.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.FlagLDC)) c.FlagLDC = dto.FlagLDC.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.FlagYCDT)) c.FlagYCDT = dto.FlagYCDT.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.FlagMapVIN)) c.FlagMapVIN = dto.FlagMapVIN.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.FlagDealerActive)) c.FlagDealerActive = dto.FlagDealerActive.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.FlagQCEndDate)) c.FlagQCEndDate = dto.FlagQCEndDate.Trim();
+    if (!string.IsNullOrWhiteSpace(dto.FlagDutyCompletePercent)) c.FlagDutyCompletePercent = dto.FlagDutyCompletePercent.Trim();
+    var now = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
+    c.LogLUDateTime = now; c.LogLUBy = by;
+
+    // #Round113 Trả nợ 1:1 BizHTC.MasterData.cs:13723-13785: ghi snapshot vào Mst_DOATConditionHist
+    var hist = new DOATConditionHist
+    {
+        OrgId = t.OrgId,
+        DOATConditionCode = c.DOATConditionCode,
+        EffDateStart = c.EffDateStart,
+        EffDateEnd = c.EffDateEnd,
+        CreateDTime = c.CreatedAt,
+        CreateBy = c.CreatedBy,
+        FlagLXX = c.FlagLXX,
+        FlagLDC = c.FlagLDC,
+        FlagYCDT = c.FlagYCDT,
+        FlagMapVIN = c.FlagMapVIN,
+        FlagDealerActive = c.FlagDealerActive,
+        FlagQCEndDate = c.FlagQCEndDate,
+        FlagTaxPaymentDate = c.FlagTaxPaymentDate,
+        FlagDutyCompletePercent = c.FlagDutyCompletePercent,
+        CreateHstDateTime = now,
+        CreateHstBy = by,
+        FlagActive = c.FlagActive,
+        LogLUDateTime = now,
+        LogLUBy = by,
+        FunctionName = "MST_DOATCONDITION_UPDATE",
+        RefType = "UPDATE"
+    };
+    db.DOATConditionHists.Add(hist);
     await db.SaveChangesAsync();
     return Results.Ok(new { c.DOATConditionCode, c.EffDateStart, c.EffDateEnd, c.FlagActive,
-        historyNotWrittenNote = "NỢ: nguồn ghi Mst_DOATConditionHist kèm 8 cờ chưa mô hình hoá — chưa port (#5840)." });
+        historyRecorded = true,
+        debtNote = "ĐÃ TRẢ NỢ 1:1 theo BizHTC.MasterData.cs:13586-13785: Ghi snapshot đầy đủ vào Mst_DOATConditionHist." });
+}).RequireAuthorization();
+
+app.MapGet("/api/doatconditions/{code}/histories", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    code = code.Trim().ToUpperInvariant();
+    var items = await db.DOATConditionHists.Where(h => h.OrgId == t.OrgId && h.DOATConditionCode == code)
+        .OrderByDescending(h => h.Id).ToListAsync();
+    return Results.Ok(new { code, count = items.Count, items });
 }).RequireAuthorization();
 
 // ===== Đề nghị giao dịch ngân hàng (BankingTrans — port 1:1 FrmDeNghiGDNganHang, 2010.HTC/Sales/Payment) =====
@@ -71830,10 +71941,11 @@ app.MapPost("/api/dlvminutes/{no}/approve", async (string no, DlvMinutesApproveD
     //    🔴 Guard này áp cho **CẢ HAI** nhánh: `strFromFlagUnapprove` chỉ quyết định ghi "A" hay "R",
     //    KHÔNG nới guard. Nghĩa là nhánh false là **TỪ CHỐI** (P → R), không phải "bỏ duyệt" (A → P).
     if (m.FDlvMnStatus != "P")
-        return Results.BadRequest(new { error = "Biên bản bàn giao đã được phê duyệt", current = m.FDlvMnStatus });
+        return Results.BadRequest(new { error = "Biên bản bàn giao không ở trạng thái chờ duyệt (P)", code = "Sto_DlvMinutes_Approve_InvalidTransportReqStatus", current = m.FDlvMnStatus });
 
     // nguồn: bFromApprove = (FlagUnapprove == Flag.Inactive) ⇒ Approved, ngược lại Rejected (TỪ CHỐI).
     m.FDlvMnStatus = unapprove ? "R" : "A";
+    if (!unapprove) { m.FApprovedDate = now; m.FApprovedBy = who; }
 
     var vins = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).Where(v => v.Length > 0).ToList();
     if (vins.Count == 0)
@@ -71887,6 +71999,7 @@ app.MapGet("/api/dlvminutes", async (AppDbContext db, ITenantContext t, string? 
         m.TPlateNo, m.TDriverId, m.TDriverName, m.TGPSDvStatus, m.TRemark, m.TStatusIaKm, m.TStatusIaRemark,   // #1424 §12
         m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy,
         m.TFVCode, m.TFValSys, m.TPValSys, m.TPVCode, m.GPSDvNo, m.DlvEndGPSDateTime, m.DlvEndGPSBy, m.GPSDvAddress, m.GPSDvResponse, m.DlvEndDateTime, m.DlvEndBy,
+        m.FGPSDvStatus, m.ExpectedDlvEndDate, m.MTFHExpectedDlvEndDate, // #Round113 §12
         cars = db.TranspDlvConfirmCars.Count(c => c.OrgId == t.OrgId && c.TranspDlvConfirmId == m.Id),
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -71916,6 +72029,7 @@ app.MapPost("/api/dlvminutes", async (DlvMinutesDto dto, AppDbContext db, ITenan
         FDlvMnStatus = "P", TDlvMnStatus = "P",     // hai phía duyệt ĐỘC LẬP (TConst.Stage)
         // #169: bản biểu phí áp cho biên bản — bước xác nhận đọc lại cột này để tra ExpectedDays.
         TFVCode = fee?.TFVCode, TFValSys = fee?.ValFee, TFValReal = fee?.ValFee ?? 0m,
+        FGPSDvStatus = dto.FGPSDvStatus, ExpectedDlvEndDate = dto.ExpectedDlvEndDate, MTFHExpectedDlvEndDate = dto.MTFHExpectedDlvEndDate // #Round113 §12
     };
     db.TranspDlvConfirms.Add(m); await db.SaveChangesAsync();
 
@@ -71941,7 +72055,7 @@ app.MapPost("/api/dlvminutes", async (DlvMinutesDto dto, AppDbContext db, ITenan
         });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.DlvMinutesNo, vin = dto.VIN.Trim().ToUpperInvariant(), m.TFVCode, m.TFValSys, m.TFValReal });
+    return Results.Ok(new { m.DlvMinutesNo, vin = dto.VIN.Trim().ToUpperInvariant(), m.TFVCode, m.TFValSys, m.TFValReal, m.FGPSDvStatus, m.ExpectedDlvEndDate, m.MTFHExpectedDlvEndDate });
 }).RequireAuthorization();
 
 app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantContext t) =>
@@ -71960,6 +72074,7 @@ app.MapGet("/api/dlvminutes/{no}", async (string no, AppDbContext db, ITenantCon
         m.CorrectDate, m.CorrectBy, m.TFValReal, m.TPValReal, m.TFRemark, m.TFInputDate, m.TFInputBy,
         m.TFVCode, m.TPValSys, m.TPVCode, m.GPSDvNo, m.DlvEndGPSDateTime, m.DlvEndGPSBy,
         m.GPSDvAddress, m.GPSDvResponse, m.DlvEndDateTime, m.DlvEndBy,
+        m.FGPSDvStatus, m.ExpectedDlvEndDate, m.MTFHExpectedDlvEndDate, // #Round113 §12
         cars, checklist });
 }).RequireAuthorization();
 
@@ -85905,12 +86020,12 @@ app.MapGet("/api/pmtpayments", async (AppDbContext db, ITenantContext t, string?
         x.CreatedDate, x.CreatedBy, x.ApprovedDate, x.ApprovedBy,
         x.PaymentEndDate, x.ConfirmDate, x.ConfirmBy,
         // #155 parity Pmt_Payment: 4 cột nguồn ghi mà port cũ thiếu.
-        x.Remark, x.TransferType, x.LoanPeriod, x.InterestRate,
+        x.Remark, x.TransferType, x.LoanPeriod, x.InterestRate, x.PaymentType_TTCORTTBL, // #Round113 §12
     }).ToListAsync();
     var nos = items.Select(i => i.PaymentNo).ToList();
     var details = await db.PmtPaymentDetails.Where(d => d.OrgId == t.OrgId && nos.Contains(d.PaymentNo))
         .Select(d => new { d.PaymentNo, d.CarId, d.GuaranteeNo, d.DlrCtrNo, d.Amount,
-            d.LoanPeriod, d.InterestRate }).ToListAsync();   // #155 parity Pmt_PaymentDetail
+            d.LoanPeriod, d.InterestRate, d.PMGBankCode }).ToListAsync();   // #155 parity Pmt_PaymentDetail #Round113 §12
     return Results.Ok(new { count = items.Count, items, details });
 }).RequireAuthorization();
 
@@ -85945,6 +86060,7 @@ app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbCont
         // #155 parity Pmt_Payment.
         Remark = dto.Remark, TransferType = dto.TransferType,
         LoanPeriod = dto.LoanPeriod, InterestRate = dto.InterestRate,
+        PaymentType_TTCORTTBL = dto.PaymentType_TTCORTTBL, // #Round113 §12
     });
     // 🔴 #155 luật nguồn (MBBank.cs:3490-3502): từ 20220325 kỳ hạn vay / lãi suất KHÔNG lấy từ dòng nữa
     //    (hai dòng gán ở bảng chi tiết đã bị COMMENT kèm ghi chú "lấy theo MST ko cho sửa ở Dtl nữa")
@@ -85959,6 +86075,7 @@ app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbCont
             OrgId = t.OrgId, PaymentNo = no,   // khoá nối về đầu là SỐ phiếu, không phải Id
             CarId = r.CarId!.Trim(), GuaranteeNo = r.GuaranteeNo, DlrCtrNo = r.DlrCtrNo, Amount = r.Amount,
             LoanPeriod = loanPeriodLine, InterestRate = interestRateLine,   // #155: rót từ bảng đầu theo cờ Funds
+            PMGBankCode = r.PMGBankCode // #Round113 §12
         });
     // #344 PostCheck `myPmt_Payment_CheckTotalValue` (MBBank.cs:521) — ghi trong giao dịch rồi kiểm; vi phạm ⇒ rollback.
     await using (var tx344 = await db.Database.BeginTransactionAsync())
@@ -85968,7 +86085,7 @@ app.MapPost("/api/pmtpayments/create", async (PmtPaymentCreateDto dto, AppDbCont
         if (bad344 is not null) { await tx344.RollbackAsync(); return Results.BadRequest(bad344); }
         await tx344.CommitAsync();
     }
-    return Results.Ok(new { paymentNo = no, details = rows.Count, status = "P" });
+    return Results.Ok(new { paymentNo = no, details = rows.Count, status = "P", paymentType_TTCORTTBL = dto.PaymentType_TTCORTTBL });
 }).RequireAuthorization();
 
 // ===== 🔴 #280 CSI DASHBOARD — `Rpt_DMS_CSI_Dashboard` (`ERP.ICIC/ZTemp.cs:7107`) =====
@@ -117567,11 +117684,12 @@ app.MapPost("/api/repairorders/{no}/attachfiles", async (string no, RoAttachFile
 }).RequireAuthorization();
 
 // Chuyển trạng thái theo đúng chuỗi Ser_RO_Stage
-// #368 Sửa HEADER lệnh sửa chữa — port 1:1 `Ser_RO_Update_New20220926` (BizCarSv.ZTemp.cs:13209; WS Ser_RO_Update).
+// #368 Sửa HEADER và DÒNG lệnh sửa chữa — port 1:1 `Ser_RO_Update_New20220926` (BizCarSv.ZTemp.cs:13209; WS Ser_RO_Update).
 //   Check Input: LevelOfInspection ∈ {1,2,3}. Ghi đè (SaveData alEffectiveColumn) các cột header; ScheduleDate/CheckInDate dùng
 //   Convert.ToDateTime ⇒ bắt buộc; StartDate/FinishedDate chỉ ghi khi có; ReminderMaintanceDate rỗng ⇒ xoá; IsReRepair chỉ ghi khi có.
 //   FlagBackLSC = "1" và RO đang InGarage/Repaired/CheckEnd ⇒ quay về HasRO (nguồn còn đẩy RO sang HyundaiMe — hệ ngoài, không port).
-//   ⚠️ NỢ: phần cập nhật dòng dịch vụ/phụ tùng của hàm này chưa port.
+//   #Round113: Đã trả nợ 1:1 cập nhật danh sách dịch vụ và phụ tùng kèm các guard nguồn: Ser_RO_Check_ServiceNotInList,
+//   Ser_RO_Update_New20160514_ExpenseType, Ser_RO_Update_New20160514_ROType, Ser_RO_Check_PartNotInStock, Ser_RO_Update_New20160514_ExpenseTypeNotNull.
 app.MapPost("/api/repairorders/{no}/update", async (string no, RoHeaderUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
@@ -117581,6 +117699,46 @@ app.MapPost("/api/repairorders/{no}/update", async (string no, RoHeaderUpdateDto
     if (r is null) return Results.NotFound(new { no });
     if (dto.ScheduleDate is null || dto.CheckInDate is null)
         return Results.BadRequest(new { error = "Thiếu ngày hẹn (ScheduleDate) hoặc ngày vào xưởng (CheckInDate).", code = "Ser_RO_Update_InvalidDate" });
+
+    var svcInput = dto.Services;
+    var partInput = dto.Parts;
+    var checkCVBH = false;
+    if (svcInput is not null)
+    {
+        foreach (var s in svcInput)
+        {
+            if (string.IsNullOrWhiteSpace(s.SerCode))
+                return Results.BadRequest(new { error = "Dịch vụ không có trong danh mục.", code = "Ser_RO_Check_ServiceNotInList" });
+            if (string.IsNullOrWhiteSpace(s.ExpenseType))
+                return Results.BadRequest(new { error = "Thiếu loại chi phí dịch vụ.", code = "Ser_RO_Update_New20160514_ExpenseType", serCode = s.SerCode });
+            if (string.Equals(s.ExpenseType, "ROWARRANTY", StringComparison.OrdinalIgnoreCase)) checkCVBH = true;
+            if (string.IsNullOrWhiteSpace(s.ROType))
+                return Results.BadRequest(new { error = "Thiếu loại RO cho dịch vụ.", code = "Ser_RO_Update_New20160514_ROType", serCode = s.SerCode });
+        }
+    }
+    var validPartExpenseTypes = new[] { "ROREPAIR", "LOCAL", "ROINSURANCE", "ROWARRANTY" };
+    if (partInput is not null)
+    {
+        foreach (var p in partInput)
+        {
+            if (string.IsNullOrWhiteSpace(p.PartCode))
+                return Results.BadRequest(new { error = "Phụ tùng không có trong kho/danh mục.", code = "Ser_RO_Check_PartNotInStock" });
+            if (string.IsNullOrWhiteSpace(p.ExpenseType))
+                return Results.BadRequest(new { error = "Thiếu loại chi phí phụ tùng.", code = "Ser_RO_Update_New20160514_ExpenseTypeNotNull", partCode = p.PartCode });
+            if (!validPartExpenseTypes.Contains(p.ExpenseType.Trim().ToUpperInvariant()))
+                return Results.BadRequest(new { error = "Loại chi phí phụ tùng không hợp lệ.", code = "Ser_RO_Create_InvalidPart_ExpenseType", partCode = p.PartCode, expenseType = p.ExpenseType });
+        }
+    }
+    if (checkCVBH && svcInput is not null)
+    {
+        var warrantySerCodes = svcInput.Where(s => string.Equals(s.ExpenseType, "ROWARRANTY", StringComparison.OrdinalIgnoreCase))
+            .Select(s => s.SerCode.Trim().ToUpperInvariant()).Distinct().ToList();
+        var hasFlagWarrantyService = await db.ServiceItemMsts.AnyAsync(x => x.OrgId == t.OrgId
+            && warrantySerCodes.Contains(x.SerCode) && x.FlagWarranty == "1");
+        if (!hasFlagWarrantyService)
+            return Results.BadRequest(new { error = "Báo giá chưa có công việc bảo hành chính.", code = "Ser_RO_Update_NotFound_ROService_FlagWarranty" });
+    }
+
     r.Assistant = dto.Assistant; r.Engineer = dto.Engineer; r.QA = dto.QA; r.Operator = dto.Operator; r.QuanDoc = dto.QuanDoc;
     r.CusID = dto.CusID; r.CusName = dto.CusName; r.CusAddress = dto.CusAddress; r.CusTel = dto.CusTel;
     r.ScheduleDate = dto.ScheduleDate; r.CheckInDate = dto.CheckInDate.Value;
@@ -117597,9 +117755,58 @@ app.MapPost("/api/repairorders/{no}/update", async (string no, RoHeaderUpdateDto
     var backLsc = dto.FlagBackLSC == "1" && r.Status is "RPRD" or "CEND" or "INGA";
     if (backLsc) r.Status = "HRO";
     r.InsuranceDeductible = decimal.TryParse((dto.InsuranceDeductible ?? "").Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var ded) ? ded : 0m;
-    r.LogLUDateTime = DateTime.Now; r.LogLUBy = user.Identity?.Name ?? "system";
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.LogLUDateTime = DateTime.Now; r.LogLUBy = who;
+
+    // Cập nhật dịch vụ & phụ tùng khi có truyền danh sách dòng (#Round113 trả nợ 1:1)
+    if (svcInput is not null || partInput is not null)
+    {
+        if (svcInput is not null)
+        {
+            var oldServices = await db.RoServiceItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+            db.RoServiceItems.RemoveRange(oldServices);
+            var forceActive = r.ServiceStatus == "1";
+            var lineNow = DateTime.Now;
+            foreach (var s in svcInput)
+            {
+                var serviceAmount = s.Price > 0 ? s.Factor * s.Price * (1 + s.Vat / 100m) : s.Amount;
+                db.RoServiceItems.Add(new RoServiceItem
+                {
+                    OrgId = t.OrgId, RoId = r.Id, SerCode = s.SerCode.Trim(), SerName = s.SerName, Cause = s.Cause,
+                    Engineer = s.Engineer, Amount = serviceAmount, ROType = s.ROType, Factor = s.Factor, Price = s.Price,
+                    Vat = s.Vat, ActManHour = s.ActManHour, ExpenseType = s.ExpenseType, InsurancePrice = s.InsurancePrice,
+                    CamID = s.CamID, CamMarketingNo = s.CamMarketingNo, FlagAccrual = s.FlagAccrual, Note = s.Note,
+                    Remark = s.Remark, Status = forceActive ? "1" : (string.IsNullOrWhiteSpace(s.Status) ? "0" : s.Status),
+                    LogLUDateTime = lineNow, LogLUBy = who,
+                });
+            }
+        }
+        if (partInput is not null)
+        {
+            var oldParts = await db.RoPartItems.Where(x => x.OrgId == t.OrgId && x.RoId == r.Id).ToListAsync();
+            db.RoPartItems.RemoveRange(oldParts);
+            var lineNow = DateTime.Now;
+            foreach (var p in partInput)
+            {
+                var partQty = p.NeedQty <= 0 ? 1 : p.NeedQty;
+                var partAmount = p.Factor * partQty * p.UnitPrice * (1 + p.Vat / 100m);
+                db.RoPartItems.Add(new RoPartItem
+                {
+                    OrgId = t.OrgId, RoId = r.Id, PartCode = p.PartCode.Trim(), PartName = p.PartName, Unit = p.Unit,
+                    NeedQty = partQty, UnitPrice = p.UnitPrice, Factor = p.Factor, Vat = p.Vat, Amount = partAmount,
+                    Note = p.Note, ExpenseType = p.ExpenseType, FlagAccessory = p.FlagAccessory ?? "0",
+                    InsurancePrice = p.InsurancePrice, CamID = p.CamID, CamMarketingNo = p.CamMarketingNo,
+                    FlagAccrual = p.FlagAccrual,
+                    LogLUDateTime = lineNow, LogLUBy = who,
+                });
+            }
+        }
+    }
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.RONo, r.Status, backLSC = backLsc, r.LevelOfInspection, r.ScheduleDate, r.StartDate });
+    return Results.Ok(new { r.RONo, r.Status, backLSC = backLsc, r.LevelOfInspection, r.ScheduleDate, r.StartDate,
+        services = svcInput?.Count, parts = partInput?.Count,
+        debtResolved = "Ser_RO_Update_New20220926 line items & guards 1:1 resolved in Round 113." });
 }).RequireAuthorization();
 
 // #409 GẮN LỊCH HẸN cho RO — port `Ser_RO_UpdateAppId` (BizCarSv.Appointment.cs:1955; WS WSCarSv.asmx.cs:23866).
@@ -121879,7 +122086,9 @@ record RoHeaderUpdateDto(string? LevelOfInspection,
     string? IsReRepair,
     string? FlagOnlyPoint,
     string? FlagBackLSC,
-    string? InsuranceDeductible);
+    string? InsuranceDeductible,
+    List<RoServiceDto>? Services = null,
+    List<RoPartDto>? Parts = null);
 record RepairOrderDto(string LicensePlate,
     string? Vin,
     string? CusName,
@@ -122612,7 +122821,7 @@ record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 record DoApproveDto(bool Approve = true, string? Reason = null);
 record DoCarUpdateDto(DateTime? DeliveryOutDate, string? DeliveryRemark);
 record DoEditDateRowDto(string? Vin, DateTime? DeliveryStartDate, DateTime? DeliveryEndDate, DateTime? DeliveryOutDate);
-record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null);
+record DocReqCarDto(string Vin, string? ModelCode, string? ColorCode, string? EngineNo, decimal AmountTotal, string? DealerCode = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? DealerCodeInvoice = null, string? DRListCode = null, DateTime? ReceivedDateInvoice = null, string? CarId = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? ConfirmStatus = null);
 record DocReqDto(string DealerCode, List<DocReqCarDto>? Cars, string? TypeCRR = null);
 record DocReqCarActionDto(string? Remark);
 record DocReqSupportRowDto(string? Vin, DateTime? LetterRepresentationDate, string? LetterRepresentationNo, int? LoanSupportDay);
@@ -122667,8 +122876,8 @@ record DealerCustomerUpdateDto(string? CustomerCode, string? FullName, string? F
 record DlsDealSurveyDto(string? DealNo, string? Note, DateTime? ContactDate, string? Survey1, string? Survey2, string? Survey3, string? Survey4, string? Survey5, string? Survey6, string? Survey7, string? Survey8, string? Survey9, string? Survey10, string? Survey11, string? Survey12, string? Survey13, string? Survey14, string? Survey15, string? Survey16, string? Survey17, string? Survey18, string? Survey19, string? Survey20, string? Survey21, string? Survey22, string? Survey23, string? Survey24, string? Survey25, string? Survey26, string? Survey27, string? Survey28, string? Survey29);
 record DlsVinSurveyDto(string? VIN, string? Note, DateTime? ContactDate, string? SurveyGmail, string? Survey1, string? Survey2, string? Survey3, string? Survey4, string? Survey5, string? Survey6, string? Survey7, string? Survey8, string? Survey9, string? Survey10, string? Survey11, string? Survey12, string? Survey13, string? Survey14, string? Survey15, string? Survey16, string? Survey17, string? Survey18, string? Survey19, string? Survey20, string? Survey21, string? Survey22, string? Survey23, string? Survey24, string? Survey25, string? Survey26, string? Survey27, string? Survey28, string? Survey29, string? SurveyPosition);
 // Phiếu thanh toán đại lý: dòng nối về đầu bằng SỐ phiếu (PaymentNo), không phải khoá nội bộ.
-record PmtPaymentRowDto(string? CarId, string? GuaranteeNo, string? DlrCtrNo, decimal? Amount);
-record PmtPaymentCreateDto(string? PaymentNo, string? DealerCode, string? PaymentType, string? BankCodeSend, string? BankCodeReceive, string? BankPaymentNo, string? BankAccountSend, string? BankAccountReceive, decimal? TotalAmount, string? Funds, string? BankLending, List<PmtPaymentRowDto>? Details, string? Remark = null, string? TransferType = null, decimal? LoanPeriod = null, decimal? InterestRate = null);
+record PmtPaymentRowDto(string? CarId, string? GuaranteeNo, string? DlrCtrNo, decimal? Amount, string? PMGBankCode = null);
+record PmtPaymentCreateDto(string? PaymentNo, string? DealerCode, string? PaymentType, string? BankCodeSend, string? BankCodeReceive, string? BankPaymentNo, string? BankAccountSend, string? BankAccountReceive, decimal? TotalAmount, string? Funds, string? BankLending, List<PmtPaymentRowDto>? Details, string? Remark = null, string? TransferType = null, decimal? LoanPeriod = null, decimal? InterestRate = null, string? PaymentType_TTCORTTBL = null);
 // Tồn kho tối thiểu: nguồn nhận BẢNG nhiều dòng ở lệnh tạo (CreateMulti).
 record MinInventoryRowDto(string? SpecCode, string? ModelCode, decimal? QtyInv, string? FlagActive);
 record MinInventoryCreateDto(List<MinInventoryRowDto>? Rows);
@@ -122749,8 +122958,8 @@ record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars, st
 record BankDoConfirmDto(string? Remark);
 record BankTmCarDto(string VIN, string? CarId, string? EngineNo, string? SOCode, string? GuaranteeNo, string? DlrCtrNo, string? ColorCode);
 record BankTmDto(string DealerCode, string? BankCode, string? BankCodeMonitor, List<BankTmCarDto>? Cars);
-record BankPmCarDto(string VIN, string? CarId, string? ModelCode, string? SpecCode, string? SOCode, string? ColorCode, decimal AmountAccum, decimal PercentAccum, decimal UnitPriceActual, decimal AmountCurrent, decimal PercentCurrent, string? GuaranteeNo, string? BankGuaranteeNo, string? DlrCtrNo);
-record BankPmDto(string DealerCode, string BankCodeReceive, string? BankPaymentNo, string? BankCodeSend, string? BankAccountSend, string? BankAccountReceive, string? Funds, string? BankLending, string? Remark, List<BankPmCarDto>? Cars);
+record BankPmCarDto(string VIN, string? CarId, string? ModelCode, string? SpecCode, string? SOCode, string? ColorCode, decimal AmountAccum, decimal PercentAccum, decimal UnitPriceActual, decimal AmountCurrent, decimal PercentCurrent, string? GuaranteeNo, string? BankGuaranteeNo, string? DlrCtrNo, string? PMGBankCode = null);
+record BankPmDto(string DealerCode, string BankCodeReceive, string? BankPaymentNo, string? BankCodeSend, string? BankAccountSend, string? BankAccountReceive, string? Funds, string? BankLending, string? Remark, List<BankPmCarDto>? Cars, string? TransferType = null, decimal? LoanPeriod = null, decimal? InterestRate = null, string? PaymentType_TTCORTTBL = null);
 record VatInvoiceCarDto(string VIN, string? ModelCode, string? SpecCode, string? EngineNo, string? BrandName, string? CarType, string? InvoiceNoFactory, string? ProductionYear, decimal HTCUnitPrice, DateTime? CustomsClearanceDate);
 record VatInvoiceNoDto(string? HTCInvoiceNo, string? InvoiceIDCode, DateTime? HTCInvoiceDate);
 record VatHddtDto(string? OS_HDDT_InvoiceCode, string? OS_HDDT_RefNo);
@@ -124359,8 +124568,11 @@ record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string
     string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate,
     string? SpecGroupCode = null, string? SpecDescriptionSX = null, string? CrtProductName = null, string? CrtTypeCode = null, string? LoaiThung = null, string? Remark = null);   // #360
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
-record DOATConditionDto(string? DOATConditionCode, DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models);
-record DOATConditionUpdDto(DateTime? EffDateEnd, string? FlagActive);   // #5840
+record DOATConditionDtlDto(string? ModelCode, string? PmtMethodNo = null, decimal DutyCompletePercentFrom = 0, decimal DutyCompletePercentTo = 0);
+record DOATConditionDto(string? DOATConditionCode, DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models,
+    string? FlagLXX = null, string? FlagLDC = null, string? FlagYCDT = null, string? FlagMapVIN = null, string? FlagDealerActive = null, string? FlagQCEndDate = null, string? FlagDutyCompletePercent = null, List<DOATConditionDtlDto>? Details = null);
+record DOATConditionUpdDto(DateTime? EffDateEnd, string? FlagActive,
+    string? FlagLXX = null, string? FlagLDC = null, string? FlagYCDT = null, string? FlagMapVIN = null, string? FlagDealerActive = null, string? FlagQCEndDate = null, string? FlagDutyCompletePercent = null);   // #5840
 /// <summary>Ký số một file ngân hàng — nguồn `RQ_BankingTransactions_SignBankFile` nhận
 /// `objRQ_BankingTransNo` + `objBFileIndex` + `objFileName` + base64 + `objSerialNumber`.</summary>
 record BankFileSignDto(string SerialNumber, string? FileName = null, string? FilePath = null);
@@ -124459,7 +124671,7 @@ record PmtPdiDtlDto(string VIN, string? CarId, DateTime? StoreDate, string? Stor
 record PmtPdiDto(string? PmtMonth, decimal AmountVAT, List<PmtPdiDtlDto>? Details);
 record RqBtDetailDto(RqBtPmtDto? Pmt, List<RqBtPmtDtlDto>? PmtDtls, RqBtPmtLCDto? PmtLC, List<RqBtPmtLCDtlDto>? PmtLCDtls, RqBtGrtDto? Grt, List<RqBtGrtDtlDto>? GrtDtls, RqBtGrtLCDto? GrtLC, List<RqBtGrtLCDtlDto>? GrtLCDtls, RqBtWrtDto? Wrt, List<RqBtWrtDtlDto>? WrtDtls, List<RqBtCtrDto>? Ctrs, List<RqBtWrtCtrDto>? WrtCtrs);
 
-record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist, string? TFVCode = null);
+record DlvMinutesDto(string VIN, string? FProvinceCode, string? TProvinceCode, string? FDistrictCode, string? TDistrictCode, string TransporterCode, string? DriverCode, DateTime? DlvStartDate, DateTime? DlvEndDate, Dictionary<string, bool>? Checklist, string? TFVCode = null, string? FGPSDvStatus = null, DateTime? ExpectedDlvEndDate = null, DateTime? MTFHExpectedDlvEndDate = null);
 record HtmvPdiCarDto(string VIN, string? ColorCode, string? SpecCode, string? LCTemp, string? RefNo, string? ProductionMonth, string? EngineNo);
 record HtmvPdiDto(List<HtmvPdiCarDto>? Cars, string? Remark = null);
 record HtmvPdiCarsActionDto(List<string>? Vins);

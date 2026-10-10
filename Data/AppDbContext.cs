@@ -649,6 +649,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> opt) : DbContext
     public DbSet<AVNPrice> AVNPrices => Set<AVNPrice>();
     public DbSet<DOATCondition> DOATConditions => Set<DOATCondition>();
     public DbSet<DOATConditionModel> DOATConditionModels => Set<DOATConditionModel>();
+    public DbSet<DOATConditionHist> DOATConditionHists => Set<DOATConditionHist>();
     public DbSet<BankingTrans> BankingTranses => Set<BankingTrans>();
     public DbSet<DlvMinutes> DlvMinutesSet => Set<DlvMinutes>();
     public DbSet<HtmvPdi> HtmvPdis => Set<HtmvPdi>();
