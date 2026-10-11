@@ -74629,7 +74629,7 @@ app.MapGet("/api/storagerearranges", async (AppDbContext db, ITenantContext t, s
     {
         r.SCNo, r.Status, r.CreatedAt, r.Approved1At, r.ConfirmedAt,
         r.ApprovedBy1, r.Approved2At, r.ApprovedBy2, r.Remark,   // #1232 §12
-        r.CreatedBy, r.LogLUDateTime, r.LogLUBy,   // #Round121 §12
+        r.CreatedBy, r.CreatedDate, r.LogLUDateTime, r.LogLUBy,   // #Round121 & #Round128 §12
         cars = db.StorageRearrangeDetails.Count(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -74645,12 +74645,19 @@ app.MapPost("/api/storagerearranges", async (StorageRearrangeDto dto, AppDbConte
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
     var no = "SC" + now.ToString("yyMMddHHmmss");
-    var r = new StorageRearrange { OrgId = t.OrgId, SCNo = no, Status = "P", Remark = dto.Remark, CreatedBy = who, LogLUDateTime = now, LogLUBy = who };
+    var r = new StorageRearrange { OrgId = t.OrgId, SCNo = no, Status = "P", Remark = dto.Remark, CreatedBy = who, CreatedDate = dto.CreatedDate ?? now, LogLUDateTime = now, LogLUBy = who };
     db.StorageRearranges.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.StorageRearrangeDetails.Add(new StorageRearrangeDetail { OrgId = t.OrgId, StorageRearrangeId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), Remark = c.Remark, LogLUDateTime = now, LogLUBy = who });
+        db.StorageRearrangeDetails.Add(new StorageRearrangeDetail
+        {
+            OrgId = t.OrgId, StorageRearrangeId = r.Id,
+            VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(),
+            Remark = c.Remark, ExpectedStartDate = c.ExpectedStartDate, ExpectedEndDate = c.ExpectedEndDate,
+            CreatedDate = c.CreatedDate ?? now, CreatedBy = c.CreatedBy ?? who,
+            LogLUDateTime = now, LogLUBy = who
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.SCNo, cars = cars.Count, r.CreatedBy, r.LogLUDateTime, r.LogLUBy });
+    return Results.Ok(new { r.SCNo, cars = cars.Count, r.CreatedBy, r.CreatedDate, r.LogLUDateTime, r.LogLUBy });
 }).RequireAuthorization();
 
 app.MapGet("/api/storagerearranges/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -74661,9 +74668,10 @@ app.MapGet("/api/storagerearranges/{no}/cars", async (string no, AppDbContext db
     var cars = await db.StorageRearrangeDetails.Where(c => c.OrgId == t.OrgId && c.StorageRearrangeId == r.Id)
         .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.Remark, c.RearrangeDtlStatus, c.ExpectedStartDate, c.ExpectedEndDate,
             c.RearrangeOutDate, c.RearrangeEndDate, c.ConfirmDate, c.ConfirmBy,
+            c.CreatedDate, c.CreatedBy,   // #Round128 §12
             c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #Round121 §12
     return Results.Ok(new { r.SCNo, r.Status, r.CreatedAt, r.Approved1At, r.ConfirmedAt, r.ApprovedBy1, r.Approved2At, r.ApprovedBy2, r.Remark,
-        r.CreatedBy, r.LogLUDateTime, r.LogLUBy,   // #Round121 §12
+        r.CreatedBy, r.CreatedDate, r.LogLUDateTime, r.LogLUBy,   // #Round121 & #Round128 §12
         count = cars.Count, cars });   // #1384 §12
 }).RequireAuthorization();
 
@@ -85094,13 +85102,13 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
     if (string.IsNullOrWhiteSpace(dto.DlrContractNoUser)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNoUser" });
     if (string.IsNullOrWhiteSpace(dto.SalesManCode)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
     if (string.IsNullOrWhiteSpace(dto.SalesType)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
-    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
+    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidCustomerName" });
     if (string.IsNullOrWhiteSpace(dto.IDCardNo) || string.IsNullOrWhiteSpace(dto.IDCardType)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
     if (dto.DateOfBirth is null) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
     if (dto.SignDate is null) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "ContractDealerContractCreate_TableDetailBeBlank" });
-    if (lines.Any(l => l.Qty <= 0)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidTotalAmount" });
+    if (lines.Any(l => l.Qty <= 0)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDetailQuantity" });
     var dupeLine = lines.GroupBy(l => $"{l.ModelCode.Trim().ToUpperInvariant()}_{l.SpecCode?.Trim().ToUpperInvariant()}_{l.ColorCode?.Trim().ToUpperInvariant()}").FirstOrDefault(g => g.Count() > 1);
     if (dupeLine != null) return Results.BadRequest(new { error = "ContractDealerContractCreate_DuplicateKeyDetail", key = dupeLine.Key });
     var no = "DLC" + DateTime.Now.ToString("yyMMddHHmmss");
@@ -85151,6 +85159,7 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
             Price = l.Price, UnitPrice = l.UnitPrice ?? l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter,
             ProductionYear = l.ProductionYear, OriginCar = l.OriginCar,   // #Round 110 §12
             TotalMoney = l.TotalMoney ?? totalAfter, SeatNum = l.SeatNum,   // #Round 125 §12
+            CreatedDate = l.CreatedDate ?? DateTime.Now, CreatedBy = l.CreatedBy ?? whoCtr,   // #Round 128 §12
             LogLUDateTime = DateTime.Now, LogLUBy = whoCtr,
         });
 
@@ -86117,13 +86126,40 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
         .Select(l => new { l.DlrContractNo, l.ModelCode, l.SpecCode, l.ColorCode, l.Qty, l.DlvExpectedDate,
             l.Price, l.UnitPrice, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT,
             l.ContractUpdateType, l.ProductionYear, l.OriginCar, l.LogLUDateTime, l.LogLUBy,
-            l.TotalMoney, l.SeatNum }).ToListAsync();   // #Round 125 §12
+            l.TotalMoney, l.SeatNum,   // #Round 125 §12
+            l.CreatedDate, l.CreatedBy }).ToListAsync();   // #Round 128 §12
     return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode,
         c.SignDate, c.Status, c.VersionDTimeCurr,   // #130: mốc phiên bản hiện hành
         c.DealerCode, c.SalesType, c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,   // #1368 §12
         c.Remark, c.DlrDirectorName, c.DlrPosition, c.CusAccountBank, c.DlrNote,   // #Round 110 §12
         c.ApprovedDate, c.ApprovedBy, c.CreatedDate, c.TotalAmount,   // #Round 125 §12
         count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrcontracts/{no}/approve", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_ContractDealerContractNotFound", no });
+    if (c.Status != "P") return Results.BadRequest(new { error = "CommonAppData_ContractDealerContractStatusNotMatched", contract = c.DlrContractNo, status = c.Status });
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    c.Status = "A"; c.ApproveDTime = now; c.ApproveBy = who; c.ApprovedDate = now; c.ApprovedBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrContractNo, status = c.Status, c.ApprovedDate, c.ApprovedBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrcontracts/{no}/cancel", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_ContractDealerContractNotFound", no });
+    if (c.Status != "P") return Results.BadRequest(new { error = "CommonAppData_ContractDealerContractStatusNotMatched", contract = c.DlrContractNo, status = c.Status });
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    c.Status = "C"; c.CancelDTime = now; c.CancelBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { c.DlrContractNo, status = c.Status, c.CancelDTime, c.CancelBy });
 }).RequireAuthorization();
 
 // ===== #5748 BÁO CÁO HỢP ĐỒNG ĐẠI LÝ (port 1:1 FrmContractReportForDealer, Views/Report) =====
@@ -86312,7 +86348,8 @@ app.MapGet("/api/dealercustomers", async (AppDbContext db, ITenantContext t, str
         c.CustomerCode, c.FullName, c.FullNameEN, c.DealerCode, c.CusTypeCode, c.CusBaseCode,
         c.PhoneNo, c.Email, c.Address, c.ProvinceCode, c.DistrictCode, c.TaxCode,
         c.IDCardNo, c.IDCardType, c.Gender, c.DateOfBirth,
-        c.RepresentName, c.Position, c.CusAccountBank, c.CreatedBy, c.CreatedAt
+        c.RepresentName, c.Position, c.CusAccountBank, c.CreatedBy, c.CreatedAt,
+        c.CreatedDate, c.LogLUDateTime, c.LogLUBy   // #Round 128 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -86734,7 +86771,9 @@ app.MapPost("/api/dealercustomers/update", async (DealerCustomerUpdateDto dto, A
 {
     var code = (dto.CustomerCode ?? "").Trim().ToUpperInvariant();
     var c = await db.DealerCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CustomerCode == code);
-    if (c is null) return Results.NotFound(new { error = $"Không có khách hàng {code}." });
+    if (c is null) return Results.NotFound(new { error = "DealerSalesDealerCustomerUpdate_CustomerNotFound", customerCode = code });
+    if (dto.FullName is not null && string.IsNullOrWhiteSpace(dto.FullName)) return Results.BadRequest(new { error = "DealerSalesDealerCustomerUpdate_InvalidFullName" });
+    if (dto.FullNameEN is not null && dto.FullNameEN.Trim().Length < 1) return Results.BadRequest(new { error = "DealerSalesDealerCustomerUpdate_InvalidFullNameEN" });
 
     // Nguồn ghi các cột này không điều kiện; riêng IDCardType/IDCardNo chỉ ghi khi KHÔNG rỗng
     // (`if (!IsEmpty(...))`, dòng 108515-108516) — giữ đúng để không xoá mất giấy tờ đã lưu.
@@ -86754,6 +86793,9 @@ app.MapPost("/api/dealercustomers/update", async (DealerCustomerUpdateDto dto, A
     c.CusAccountBank = dto.CusAccountBank;
     if (!string.IsNullOrWhiteSpace(dto.IDCardType)) c.IDCardType = dto.IDCardType;
     if (!string.IsNullOrWhiteSpace(dto.IDCardNo)) c.IDCardNo = dto.IDCardNo;
+    var whoUpd = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    c.LogLUDateTime = DateTime.Now;
+    c.LogLUBy = whoUpd;
 
     // 🔴 Snapshot SAU khi sửa, đúng như nguồn.
     db.DealerCustomerUpdLogs.Add(new DealerCustomerUpdLog
@@ -86765,10 +86807,10 @@ app.MapPost("/api/dealercustomers/update", async (DealerCustomerUpdateDto dto, A
         IDCardNo = c.IDCardNo, IDCardType = c.IDCardType, Gender = c.Gender, DateOfBirth = c.DateOfBirth,
         RepresentName = c.RepresentName, Position = c.Position, CusAccountBank = c.CusAccountBank,
         LoggedAt = DateTime.Now,
-        LoggedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        LoggedBy = whoUpd,
     });
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.CustomerCode, c.FullName, logged = true });
+    return Results.Ok(new { c.CustomerCode, c.FullName, logged = true, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
 // Đọc nhật ký sửa. Vì nguồn lưu SNAPSHOT (không phải Old/New), muốn biết "đổi gì" phải so hai bản liên tiếp.
@@ -86787,8 +86829,10 @@ app.MapGet("/api/dealercustomers/updlogs", async (AppDbContext db, ITenantContex
 
 app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    if (dto.CustomerCode is not null && dto.CustomerCode.Trim().Length < 1) return Results.BadRequest(new { error = "DealerSalesDealerCustomerCreate_InvalidCustomerCode" });
     if (string.IsNullOrWhiteSpace(dto.CusTypeCode)) return Results.BadRequest(new { error = "Hãy nhập loại khách hàng." });
-    if (string.IsNullOrWhiteSpace(dto.FullName)) return Results.BadRequest(new { error = "Hãy nhập Họ tên." });
+    if (string.IsNullOrWhiteSpace(dto.FullName)) return Results.BadRequest(new { error = "DealerSalesDealerCustomerCreate_InvalidFullName" });
+    if (dto.FullNameEN is not null && dto.FullNameEN.Trim().Length < 1) return Results.BadRequest(new { error = "DealerSalesDealerCustomerCreate_InvalidFullNameEN" });
     if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Hãy nhập Địa chỉ." });
     if (string.IsNullOrWhiteSpace(dto.PhoneNo)) return Results.BadRequest(new { error = "Hãy nhập Số điện thoại." });
     // audit 2026-09-03: regex đúng nguồn Util.IsPhoneNumber2 (FrmNewCustomer.txtPhone_Validating)
@@ -86804,18 +86848,24 @@ app.MapPost("/api/dealercustomers", async (DealerCustomerDto dto, AppDbContext d
         return Results.BadRequest(new { error = "Email không hợp lệ." });
     var code = string.IsNullOrWhiteSpace(dto.CustomerCode) ? "DC" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CustomerCode.Trim().ToUpperInvariant();
     if (await db.DealerCustomers.AnyAsync(c => c.OrgId == t.OrgId && c.CustomerCode == code))
-        return Results.BadRequest(new { error = $"Mã KH {code} đã tồn tại!" });
+        return Results.BadRequest(new { error = "CommonAppData_DealerSalesCustomerFound", code, message = $"Mã KH {code} đã tồn tại!" });
+    var whoCust = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowCust = DateTime.Now;
     var c = new DealerCustomer
     {
         OrgId = t.OrgId, CustomerCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), CusTypeCode = dto.CusTypeCode.Trim(),
-        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        CreatedBy = whoCust,
+        CreatedAt = nowCust,
+        CreatedDate = dto.CreatedDate ?? nowCust,
+        LogLUDateTime = dto.LogLUDateTime ?? nowCust,
+        LogLUBy = dto.LogLUBy ?? whoCust,
         CusBaseCode = dto.CusBaseCode, FullName = dto.FullName.Trim(), FullNameEN = dto.FullNameEN, Address = dto.Address.Trim(), PhoneNo = dto.PhoneNo.Trim(),
         Email = dto.Email, TaxCode = dto.TaxCode, ProvinceCode = dto.ProvinceCode, DistrictCode = dto.DistrictCode,
         IDCardNo = dto.IDCardNo, IDCardType = dto.IDCardType, Gender = dto.Gender, DateOfBirth = dto.DateOfBirth,
         RepresentName = dto.RepresentName, Position = dto.Position, CusAccountBank = dto.CusAccountBank
     };
     db.DealerCustomers.Add(c); await db.SaveChangesAsync();
-    return Results.Ok(new { c.CustomerCode, c.FullName });
+    return Results.Ok(new { c.CustomerCode, c.FullName, c.CreatedDate, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Giao dịch bán lẻ đại lý (DealerDeal — port 1:1 FrmNewDeal/FrmMngDeal, DMSales.Foton/SalesDealer) =====
@@ -87153,6 +87203,7 @@ app.MapGet("/api/dealerdeals", async (AppDbContext db, ITenantContext t, string?
         d.CustomerCodeDriver, d.CustomerCodeHolder, d.DlrContractNo, d.BankCode, d.CtmCareFlag,
         d.FlagInitDeal, d.CtmCareUpdDate, d.CtmCareUpdBy, d.CtmCareRemark, d.ReasonNotPDI,
         d.DealerCodeBuyer, d.SalesManCode,
+        d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy,   // #Round 128 §12
         cars = db.DealerDealDetails.Count(c => c.OrgId == t.OrgId && c.DealId == d.Id),
         total = db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id).Sum(c => (decimal?)c.PriceAFVAT) ?? 0
     }).ToListAsync();
@@ -87164,35 +87215,42 @@ app.MapPost("/api/dealerdeals", async (DealerDealDto dto, AppDbContext db, ITena
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "CommonAppData_InvalidDealerCode" });
     if (string.IsNullOrWhiteSpace(dto.CustomerCodeBuyer)) return Results.BadRequest(new { error = "DealerSalesDealCreate_CustomerNotFound" });
     if (string.IsNullOrWhiteSpace(dto.SalesType)) return Results.BadRequest(new { error = "DealerSalesDealCreate_InvalidSalesType" });
+    if (dto.DealNoUser is not null && dto.DealNoUser.Trim().Length < 1) return Results.BadRequest(new { error = "DealerSalesDealCreate_InvalidDealNoUser" });
+    var buyer = await db.DealerCustomers.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CustomerCode == dto.CustomerCodeBuyer.Trim().ToUpperInvariant());
+    if (buyer is null) return Results.BadRequest(new { error = "DealerSalesDealCreate_CustomerNotFound" });
+    if (!string.IsNullOrWhiteSpace(buyer.DealerCode) && !string.IsNullOrWhiteSpace(dto.DealerCode) && !buyer.DealerCode.Equals(dto.DealerCode.Trim(), StringComparison.OrdinalIgnoreCase))
+        return Results.BadRequest(new { error = "DealerSalesDealCreate_CustomerBelongToAnotherDealer" });
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.CarId)).ToList();
     if (cars.Count == 0) return Results.BadRequest(new { error = "DealerSalesDealCreate_TableDetailBeBlank" });
     var dupe = cars.GroupBy(c => c.CarId.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
     if (dupe != null) return Results.BadRequest(new { error = "DealerSalesDealCreate_DuplicateKeyDetail", key = dupe.Key });
     var flagPdi = dto.FlagPDI == "0" ? "0" : "1";
     if (flagPdi == "0" && string.IsNullOrWhiteSpace(dto.ReasonNotPDI)) return Results.BadRequest(new { error = "DealerSalesDealCreate_ReasonNotPDIRequired" });
-    var no = "DL" + DateTime.Now.ToString("yyMMddHHmmss");
+    var whoDeal = user.Identity?.Name ?? "system";
+    var nowDeal = DateTime.Now;
+    var no = "DL" + nowDeal.ToString("yyMMddHHmmss");
     var d = new DealerDeal
     {
         OrgId = t.OrgId, DealNo = no, DealNoUser = dto.DealNoUser, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
         CustomerCodeBuyer = dto.CustomerCodeBuyer.Trim().ToUpperInvariant(), CustomerCodeDriver = dto.CustomerCodeDriver, CustomerCodeHolder = dto.CustomerCodeHolder,
         DlrContractNo = dto.DlrContractNo, SalesType = dto.SalesType.Trim(), FlagPDI = flagPdi, ReasonNotPDI = dto.ReasonNotPDI,
-        BankCode = dto.BankCode, BankName = dto.BankName, PmtType = dto.PmtType, FlagInitDeal = "0"
+        BankCode = dto.BankCode, BankName = dto.BankName, PmtType = dto.PmtType, FlagInitDeal = "0",
+        CreatedBy = whoDeal, CreatedDate = dto.CreatedDate ?? nowDeal, LogLUDateTime = nowDeal, LogLUBy = whoDeal
     };
     db.DealerDeals.Add(d); await db.SaveChangesAsync();
-    var whoDeal = user.Identity?.Name ?? "system";
-    var nowDeal = DateTime.Now;
     foreach (var c in cars)
         db.DealerDealDetails.Add(new DealerDealDetail
         {
             OrgId = t.OrgId, DealId = d.Id, CarId = c.CarId.Trim().ToUpperInvariant(),
             CusInvoiceNo = c.CusInvoiceNo, CusInvoiceDate = c.CusInvoiceDate, PriceAFVAT = c.PriceAFVAT,
+            CreatedDate = c.CreatedDate ?? nowDeal, CreatedBy = c.CreatedBy ?? whoDeal,   // #Round 128 §12
             LogLUDateTime = c.LogLUDateTime ?? nowDeal,
             LogLUBy = c.LogLUBy ?? whoDeal,
             OS_HDDT_InvoiceLink = c.OS_HDDT_InvoiceLink,
             OS_HDDT_InvoiceCode = c.OS_HDDT_InvoiceCode
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, cars = cars.Count, d.BankName, d.PmtType });
+    return Results.Ok(new { d.DealNo, d.CustomerCodeBuyer, cars = cars.Count, d.BankName, d.PmtType, d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy });
 }).RequireAuthorization();
 
 app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -87203,11 +87261,26 @@ app.MapGet("/api/dealerdeals/{no}/cars", async (string no, AppDbContext db, ITen
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
         // #1462 §12: cùng route #1459 nhưng ở TẦNG DÒNG XE — entity DealerDealDetail còn Price/DeliveryDate/
         //   WarrantyExpiresDate mà mảng cars của màn chi tiết chưa từng chiếu.
-        .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo, c.Price, c.DeliveryDate, c.WarrantyExpiresDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.LogLUDateTime, c.LogLUBy, c.OS_HDDT_InvoiceLink, c.OS_HDDT_InvoiceCode }).ToListAsync();
+        .Select(c => new { c.CarId, c.CusInvoiceNo, c.CusInvoiceDate, c.PriceAFVAT, c.PlateNo, c.Price, c.DeliveryDate, c.WarrantyExpiresDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy, c.OS_HDDT_InvoiceLink, c.OS_HDDT_InvoiceCode }).ToListAsync();
     return Results.Ok(new { d.DealNo, d.DealNoUser, d.DealerCode, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeDriver, d.CustomerCodeHolder, d.SalesType, d.FlagPDI, d.CtmCareFlag, count = cars.Count, cars, total = cars.Sum(x => x.PriceAFVAT),
         // #1459 §12: cùng gap #1458 — nguồn `dlsd.*` còn 9 cột nữa mà màn CHI TIẾT (đáng lẽ đủ nhất) cũng thiếu.
         d.DlrContractNo, d.BankCode, d.BankName, d.PmtType, d.FlagInitDeal, d.CtmCareUpdDate, d.CtmCareUpdBy, d.CtmCareRemark,
-        d.ReasonNotPDI, d.DealerCodeBuyer, d.SalesManCode });   // #1364 §12
+        d.ReasonNotPDI, d.DealerCodeBuyer, d.SalesManCode,
+        d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy });   // #1364 & #Round 128 §12
+}).RequireAuthorization();
+
+app.MapPost("/api/dealerdeals/{no}/delete", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_DealerSalesDealNotFound", dealNo = no });
+    var dtls = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id).ToListAsync();
+    if (dtls.Any(c => c.DeliveryStatus == "A" || c.DeliveryStatus == "F"))
+        return Results.BadRequest(new { error = "DealerSalesDealDelete_CarDeliveried" });
+    db.DealerDealDetails.RemoveRange(dtls);
+    db.DealerDeals.Remove(d);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealNo = no, deleted = true });
 }).RequireAuthorization();
 
 // #5364 — Guard CHUNG (đúng chuỗi myDealerSales_CheckDeal): coi FlagInitDeal NULL như "0" (được sửa — Mini
@@ -123244,8 +123317,8 @@ record SoFlagDoneDto(string? SOCode, string? FlagPmtDelayDone);
 record InsReqVinRow(string Vin, string RefOrdType, string? RefOrdNo, string? DtlStatus, DateTime? CreatedAt, string? LocationFrom, string? LocationTo);
 record Dms40ApproveDto(string? RuleType);
 record SoRenameDto(string? NewSoCode);
-record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? OS_HDDT_InvoiceLink = null, string? OS_HDDT_InvoiceCode = null);
-record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars, string? BankCode = null, string? BankName = null, string? PmtType = null);
+record DealerDealCarDto(string CarId, string? CusInvoiceNo, DateTime? CusInvoiceDate, decimal PriceAFVAT, DateTime? LogLUDateTime = null, string? LogLUBy = null, string? OS_HDDT_InvoiceLink = null, string? OS_HDDT_InvoiceCode = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record DealerDealDto(string DealerCode, string? DealNoUser, string CustomerCodeBuyer, string? CustomerCodeDriver, string? CustomerCodeHolder, string? DlrContractNo, string SalesType, string? FlagPDI, string? ReasonNotPDI, List<DealerDealCarDto>? Cars, string? BankCode = null, string? BankName = null, string? PmtType = null, DateTime? CreatedDate = null);
 record DealToDealerDto(string DealerCode, string DealerCodeBuyer, string? DealNoUser, string? SalesManCode, List<DealerDealCarDto>? Cars);
 record EditDealKhgdDto(List<EditDealKhgdRowDto>? Rows);
 record EditDealSalesTypeRowDto(string? DealNo, string? SalesType);
@@ -123262,7 +123335,7 @@ record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items, List<DlrPdiCarDto>? Cars = null, string? FlagAccessory = null, string? Remark = null);
 record DlrPdiCarDto(string? VIN, string? DlrContractNo, string? CtrCarId);
 record DlrPdiApproveDto(string? Remark);
-record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank);
+record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank, DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 // #124: sửa KH đại lý. IDCardType/IDCardNo chỉ ghi khi KHÔNG rỗng, đúng như nguồn.
 record DealerCustomerUpdateDto(string? CustomerCode, string? FullName, string? FullNameEN, string? Gender, string? Address, string? PhoneNo, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? CusBaseCode, DateTime? DateOfBirth, string? Email, string? RepresentName, string? Position, string? CusAccountBank, string? IDCardType, string? IDCardNo);
 // Khảo sát bán lẻ: 29 câu cột rời, đúng schema nguồn. SurveyDateTime do server đặt, không nhận từ client.
@@ -123304,7 +123377,7 @@ record DlrCancelDtlDto(string? DlrContractNo, string? SpecCode, string? ModelCod
 record DlrCancelCarDto(string? DlrContractNo, string? SpecCode, string? ModelCode, string? ColorCode, string? CtrCarId, DateTime? DlvExpectedDate, string? CtrCType, string? CtrCTDNo, string? Remark);
 record DlrContractCancelSaveDto(string? ContractCNo, string? DealerCode, string? Remark, List<DlrCancelDtlDto>? Details, List<DlrCancelCarDto>? Cars);
 record DlrContractCancelMultiDto(List<string>? ContractCNos);
-record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT, decimal? UnitPrice = null, string? ProductionYear = null, string? OriginCar = null, decimal? TotalMoney = null, string? SeatNum = null);
+record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT, decimal? UnitPrice = null, string? ProductionYear = null, string? OriginCar = null, decimal? TotalMoney = null, string? SeatNum = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines,
     // #348: nguoi giao dich — KHAC SalesManCode (nhan vien ban).
     string? TransactorCode = null,
@@ -125113,8 +125186,8 @@ record GrtClaimRejectDto(string? Remark = null);
 record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark, string? LoaiThung = null);
 record CBReqDto(List<CBReqCarDto>? Cars, string? Remark = null);
 record CbReqActionDto(string? Remark = null);
-record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);
-record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars, string? Remark = null);
+record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark, DateTime? ExpectedStartDate = null, DateTime? ExpectedEndDate = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars, string? Remark = null, DateTime? CreatedDate = null);
 // Duyệt chuyển kho: nguồn dùng MỘT hàm/cấp với cờ `strFlagUnapprove` (nghịch đảo) — ở đây phơi ra `Approve`.
 record ScApproveDto(bool Approve = true, string? Remark = null);
 record ScCarUpdateDto(DateTime? ExpectedEndDate, string? Remark);

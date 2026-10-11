@@ -8678,6 +8678,7 @@ public sealed class DealerDeal
     //      và hai báo cáo GPS (#B04/#B05) vì chúng đọc `DealerDeal`. Đây là mất dữ liệu lúc ĐỌC.
     /// <summary>Người tạo (`DLS_Deal.CreatedBy`) — nguồn ghi cùng `CreatedDate`.</summary>
     public string? CreatedBy { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 
@@ -8745,6 +8746,8 @@ public sealed class DealerDealDetail
     /// Nguồn: `TERP.BizHTC/HCC/BizHTC.HCC.cs:3856` (hàm `..._New20260805` — **chỉ có trên máy 150**).
     /// </summary>
     public DateTime? WarrantyExpiresDate { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 
@@ -13644,6 +13647,7 @@ public sealed class StorageRearrange
 
     // --- #Round121 §12 parity Sto_StorageRearrange / DbDefine.cs:815 ---
     public string? CreatedBy { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -13681,6 +13685,8 @@ public sealed class StorageRearrangeDetail
     public string? ConfirmBy { get; set; }
 
     // --- #Round121 §12 parity Sto_StorageRearrangeDetail / DbDefine.cs:825 ---
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -14751,6 +14757,8 @@ public sealed class DlrContractDetail
     public decimal? TotalMoney { get; set; }
     /// <summary>#Round 125 §12: TblDealerContractDetail.SeatNum (DbDefine.cs:245) — số chỗ ngồi.</summary>
     public string? SeatNum { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>
@@ -14796,6 +14804,9 @@ public sealed class DealerCustomer
     /// <summary>#124: nguồn có `CreatedBy` (BizHTC.DealerSales.cs:2021) — port cũ thiếu.</summary>
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
