@@ -12403,6 +12403,8 @@ public sealed class MngRateTonKhoBanHang
     public string ModelCode { get; set; } = "";
     public decimal? NguongBH { get; set; }
     public string? Remark { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -14558,6 +14560,10 @@ public sealed class CarDriverTest
     public DateTime? DateSupport2 { get; set; }
     public string? ClaimNoSupport { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Lượt khách thăm showroom (DLR_CtmVisit) — port 1:1 FrmCusVisit (DMSales.Foton/RetailContract). CRM: giới tính + độ tuổi + xe quan tâm.</summary>
@@ -15151,6 +15157,7 @@ public sealed class DlrPdiRequest
     public string? FlagAccessory { get; set; }
     /// <summary>Ngày/người TẠO (`CreatedDate`/`CreatedBy`) — nguồn ghi cùng lúc với `DlrPDIReqStatus = "P"`.</summary>
     public string? CreatedBy { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
 }
 public sealed class DlrPdiRequestDetail
 {
@@ -15164,6 +15171,7 @@ public sealed class DlrPdiRequestDetail
     /// </summary>
     public string? RONo { get; set; }
     public DateTime? ROCreatedDate { get; set; }
+    public DateTime? ROFinishedDate { get; set; }
     /// <summary>Trạng thái RO (`ROStatus`) — nguồn khởi tạo bằng literal **`"NORE"`** (NotResponding,
     /// chú thích ngay trên dòng gán :842). Không phải chuỗi rỗng, không phải NULL.</summary>
     public string? ROStatus { get; set; }
@@ -15183,6 +15191,14 @@ public sealed class DlrPdiRequestDetail
     public string? CtrCarId { get; set; }
     /// <summary>Số hợp đồng đại lý (`DlrContractNo` → `Dlr_Contract`).</summary>
     public string? DlrContractNo { get; set; }
+    public string? DealNo { get; set; }
+    public DateTime? DealDate { get; set; }
+    public string? SalesType { get; set; }
+    public string? DealerCode { get; set; }
+    public string? FlagDealNo { get; set; }
+    public string? FlagDlrContractNo { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 // #4901 — ĐÃ XOÁ CarActualPrice (bảng tự tạo CarId+UnitPriceActual, không guard): trùng nghiệp vụ với

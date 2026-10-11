@@ -8420,24 +8420,28 @@ app.MapGet("/api/salesinvthresholds", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (active == "0") q = q.Where(x => false);
-    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, FlagActive = "1", x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1254 §12
+    var items = await q.OrderBy(x => x.DealerCode).ThenBy(x => x.ModelCode).Take(500).Select(x => new { x.DealerCode, x.ModelCode, x.NguongBH, FlagActive = "1", x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1254 & #Round129 §12
     return Results.Ok(new { count = items.Count, items, mergedInto = "/api/dms40/mngrate-tonkho-banhang" });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesinvthresholds", async (SalesInvThresholdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa nhập mã đại lý." });
-    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập model." });
-    if (dto.NguongBH < 0) return Results.BadRequest(new { error = "Ngưỡng bán hàng không hợp lệ." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Create_InvalidDealerCode" });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Create_InvalidModelCode" });
+    if (dto.NguongBH < 0) return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Create_InvalidNguongBH" });
     var dl = dto.DealerCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
     if (!await db.CarModelStds.AnyAsync(m => m.OrgId == t.OrgId && m.ModelCode == md))
-        return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Save_InvalidModelCode", check = new { ModelCode = md } });
+        return Results.BadRequest(new { error = "Mst_MngRateTonKhoBanHang_Create_InvalidModelCode", check = new { ModelCode = md } });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var ex = await db.MngRateTonKhoBanHangs.Where(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ModelCode == md).ToListAsync();
     db.MngRateTonKhoBanHangs.RemoveRange(ex);   // _Save: xoá theo khoá đôi rồi chèn lại
-    db.MngRateTonKhoBanHangs.Add(new MngRateTonKhoBanHang { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, NguongBH = dto.NguongBH, Remark = dto.Remark,
-        LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
+    var item = new MngRateTonKhoBanHang { OrgId = t.OrgId, DealerCode = dl, ModelCode = md, NguongBH = dto.NguongBH, Remark = dto.Remark,
+        CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = now, LogLUBy = who };
+    db.MngRateTonKhoBanHangs.Add(item);
     await db.SaveChangesAsync();
-    return Results.Ok(new { DealerCode = dl, ModelCode = md, dto.NguongBH, updated = ex.Count > 0 });
+    return Results.Ok(new { DealerCode = dl, ModelCode = md, dto.NguongBH, item.CreatedDate, item.CreatedBy, updated = ex.Count > 0 });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesinvthresholds/{dealer}/{model}/toggle", (string dealer, string model) =>
@@ -10707,7 +10711,7 @@ app.MapGet("/api/wholesaledeals", async (AppDbContext db, ITenantContext t, stri
     {
         d.DealNo, d.DealNoUser, buyerDealerCode = d.DealerCodeBuyer, d.SalesManCode, d.DealerCode, d.SalesType,
         d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver,
-        d.CreatedAt, d.CreatedBy, d.FlagInitDeal, d.CtmCareFlag, d.DlrContractNo, d.LogLUDateTime, d.LogLUBy,
+        d.CreatedAt, d.CreatedDate, d.CreatedBy, d.FlagInitDeal, d.CtmCareFlag, d.DlrContractNo, d.LogLUDateTime, d.LogLUBy,   // #Round129 §12
         cars = db.DealerDealDetails.Count(c => c.OrgId == t.OrgId && c.DealId == d.Id),
         totalAmount = db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id).Sum(c => (decimal?)c.PriceAFVAT) ?? 0m
     }).ToListAsync();
@@ -10716,25 +10720,25 @@ app.MapGet("/api/wholesaledeals", async (AppDbContext db, ITenantContext t, stri
 
 app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealNoUser)) return Results.BadRequest(new { error = "Phải nhập số giao dịch người dùng" });
-    if (string.IsNullOrWhiteSpace(dto.BuyerDealerCode)) return Results.BadRequest(new { error = "Hãy chọn đại lý mua" });
+    if (string.IsNullOrWhiteSpace(dto.DealNoUser)) return Results.BadRequest(new { error = "DealerSalesDealCreate_InvalidDealNoUser" });
+    if (string.IsNullOrWhiteSpace(dto.BuyerDealerCode)) return Results.BadRequest(new { error = "DealerSalesDealCreate_InvalidDealerCodeBuyer" });
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe giao dịch" });
+    if (cars.Count == 0) return Results.BadRequest(new { error = "DealerSalesDealCreate_TableDetailBeBlank" });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });   // ..._DuplicateKeyDetail
+    if (dupe != null) return Results.BadRequest(new { error = "DealerSalesDealCreate_DuplicateKeyDetail", key = dupe.Key });
 
     var now = DateTime.Now;
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var no = "DTD" + now.ToString("yyMMddHHmmss");
     // `if (strDealNo.Length < TConst.HTCConst.MinLengthCode)` ⇒ **MinLengthCode = 5** (Const.Main.cs:322).
-    if (no.Length < 5) return Results.BadRequest(new { error = "Số giao dịch quá ngắn (tối thiểu 5 ký tự)." });
+    if (no.Length < 5) return Results.BadRequest(new { error = "DealerSalesDealCreate_InvalidDealNo" });
     var buyerCode = dto.BuyerDealerCode.Trim().ToUpperInvariant();
     var sellerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
 
     // `myCommon_CheckDealer(..., Flag.Active exist, Flag.Active active)` — đại lý MUA phải tồn tại & đang hoạt động.
     var buyerDealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == buyerCode);
-    if (buyerDealer is null) return Results.BadRequest(new { error = $"Đại lý mua {buyerCode} không tồn tại." });
-    if ((buyerDealer.FlagActive ?? buyerDealer.Status) == "0") return Results.BadRequest(new { error = $"Đại lý mua {buyerCode} đang ngưng hoạt động." });
+    if (buyerDealer is null) return Results.BadRequest(new { error = "CommonAppData_DealerNotFound", dealer = buyerCode });
+    if ((buyerDealer.FlagActive ?? buyerDealer.Status) == "0") return Results.BadRequest(new { error = "CommonAppData_DealerNotActive", dealer = buyerCode });
     // ⚠️ `myCommon_CheckAccessDealerData(BUCode)` — tầng ability BUPattern là nợ chung fleet, chưa port.
 
     // `GetTableContents("Mst_Customer", ..., "DealerCode","=",TConst.HTCConst.HTCPublicDealerCode)` rỗng ⇒
@@ -10751,8 +10755,8 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
         .Select(x => x.Vin).ToListAsync()).ToHashSet();
     foreach (var v in vinKeys)
     {
-        if (!vinMasters.Any(x => x.VIN == v)) return Results.BadRequest(new { error = $"Xe {v} chưa khai báo trên hệ thống." });
-        if (!confirmedVins.Contains(v)) return Results.BadRequest(new { error = $"Xe {v} đại lý chưa nhập kho (ConfirmStatus phải = 'F')." });
+        if (!vinMasters.Any(x => x.VIN == v)) return Results.BadRequest(new { error = "CommonAppData_CarNotFound", vin = v });
+        if (!confirmedVins.Contains(v)) return Results.BadRequest(new { error = "DealerSalesDealCreate_CarNotConfirmed", vin = v });
     }
 
     // ---- 1/7 `Dlr_Contract`: nguồn TỰ SINH hợp đồng đại lý và **DUYỆT LUÔN** ----
@@ -10811,7 +10815,7 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
         // Nguồn gán CẢ BA cột khách hàng = DealerCodeBuyer (đại lý mua đóng vai khách).
         CustomerCodeBuyer = buyerCode, CustomerCodeHolder = buyerCode, CustomerCodeDriver = buyerCode,
         SalesType = dto.SalesType ?? "", SalesManCode = dto.SalesManCode,
-        DealDate = dto.DealDate ?? now, CreatedAt = now, CreatedBy = who,
+        DealDate = dto.DealDate ?? now, CreatedAt = now, CreatedDate = dto.CreatedDate ?? now, CreatedBy = who,
         FlagInitDeal = "0",            // TConst.Flag.Inactive
         CtmCareFlag = "1",             // TConst.Flag.Active — nguồn đánh dấu đã kiểm chứng CSKH ngay khi tạo
         CtmCareUpdDate = now, CtmCareUpdBy = who, CtmCareRemark = null,
@@ -10833,6 +10837,7 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
             ConfirmDate = now, ConfirmBy = who,
             FlagCurrent = "1",                                         // TConst.Flag.Active
             CtrCarId = ctrCarIds[v],
+            CreatedDate = c.CreatedDate ?? now, CreatedBy = c.CreatedBy ?? who,
             LogLUDateTime = now, LogLUBy = who
         });
         // 🔴 DeliveryType = **"001A"** (`HMCRpt_DeliveryToEndUser`, Const.Main.cs:330). Dòng dùng
@@ -10844,6 +10849,7 @@ app.MapPost("/api/wholesaledeals", async (WholesaleDealDto dto, AppDbContext db,
     }
     await db.SaveChangesAsync();
     return Results.Ok(new { d2.DealNo, dlrContractNo = ctrNo, cars = cars.Count,
+        d2.CreatedDate, d2.CreatedBy,
         totalAmount = cars.Sum(c => c.UnitPrice), contractDtlRows = grouped.Count,
         htcPublicDealerCode = HtcPublicDealerCode,
         tablesWritten = new[] { "DLS_Deal", "DLS_DealDetail", "Dlr_Contract", "Dlr_ContractDtl", "Dlr_ContractCar", "Dlr_ContractDtlHis", "HMC_Report" } });
@@ -10853,12 +10859,14 @@ app.MapGet("/api/wholesaledeals/{no}/cars", async (string no, AppDbContext db, I
 {
     no = no.Trim().ToUpperInvariant();
     var d = await db.DealerDeals.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealNo == no);
-    if (d is null) return Results.NotFound(new { no });
+    if (d is null) return Results.NotFound(new { error = "CommonAppData_DealerSalesDealNotFound", no });
     var cars = await db.DealerDealDetails.Where(c => c.OrgId == t.OrgId && c.DealId == d.Id)
         .Select(c => new { c.VIN, c.CarId, c.PlateNo, unitPrice = c.PriceAFVAT, c.Price, c.DealNoPrevious,
-            c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId, c.LogLUDateTime, c.LogLUBy /*merge session-a*/  }).ToListAsync();
+            c.DeliveryDate, c.DeliveryStatus, c.ConfirmDate, c.ConfirmBy, c.FlagCurrent, c.CtrCarId,
+            c.CreatedDate, c.CreatedBy,   // #Round129 §12
+            c.LogLUDateTime, c.LogLUBy /*merge session-a*/  }).ToListAsync();
     return Results.Ok(new { d.DealNo, d.DealNoUser, buyerDealerCode = d.DealerCodeBuyer, d.DlrContractNo,
-        count = cars.Count, totalAmount = cars.Sum(c => c.unitPrice), cars, d.SalesManCode, d.CreatedAt, d.SalesType, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver, d.CreatedBy, d.FlagInitDeal, d.LogLUDateTime, d.LogLUBy /*merge session-a*/  });
+        count = cars.Count, totalAmount = cars.Sum(c => c.unitPrice), cars, d.SalesManCode, d.CreatedAt, d.CreatedDate, d.SalesType, d.DealDate, d.CustomerCodeBuyer, d.CustomerCodeHolder, d.CustomerCodeDriver, d.CreatedBy, d.FlagInitDeal, d.LogLUDateTime, d.LogLUBy /*merge session-a*/  });
 }).RequireAuthorization();
 
 // 🔴 #B09 GỠ nút `confirm|cancel` TỰ CHẾ (Draft/Confirmed/Cancelled): bảng nguồn `DLS_Deal` **không có cột
@@ -64446,7 +64454,7 @@ app.MapGet("/api/dms40/mngrate-tonkho-banhang", async (
         Mst_MngRateTonKhoBanHang = page.Select((x, i) => new
         {
             MyIdxSeq = start + i,
-            x.DealerCode, x.ModelCode, x.NguongBH, x.Remark, x.LogLUDateTime, x.LogLUBy,
+            x.DealerCode, x.ModelCode, x.NguongBH, x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
             md_DealerName = dealers.TryGetValue(x.DealerCode, out var dn) ? dn : null,
             mcm_ModelName = models.TryGetValue(x.ModelCode, out var mn) ? mn : null
         }),
@@ -64493,6 +64501,8 @@ app.MapPost("/api/dms40/mngrate-tonkho-banhang/save", async (
                 ModelCode = (r.ModelCode ?? "").Trim(),
                 NguongBH = r.NguongBH,
                 Remark = r.Remark,
+                CreatedDate = r.CreatedDate ?? now,
+                CreatedBy = r.CreatedBy ?? by,
                 LogLUDateTime = now, LogLUBy = by
             });
             inserted++;
@@ -84875,48 +84885,67 @@ app.MapGet("/api/cardrivertests", async (AppDbContext db, ITenantContext t, stri
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     {
         c.DrvTestPlateNo, c.DealerCode, c.DrvTestVIN, c.DrvTestEngineNo, c.ModelCode, c.SpecCode, c.ColorCode, c.FlagActive,
-        c.Price, c.AmountSupport1, c.DateSupport1, c.AmountSupport2, c.DateSupport2, c.ClaimNoSupport, c.Remark, c.CarDrvTestGPS, c.CreatedAt   // #1257 §12
+        c.Price, c.AmountSupport1, c.DateSupport1, c.AmountSupport2, c.DateSupport2, c.ClaimNoSupport, c.Remark, c.CarDrvTestGPS, c.CreatedAt,
+        c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy   // #Round129 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/cardrivertests", async (CarDriverTestDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/cardrivertests", async (CarDriverTestDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DrvTestPlateNo)) return Results.BadRequest(new { error = "Biển số không hợp lệ." });
+    var plateRaw = (!string.IsNullOrWhiteSpace(dto.DrvTestPlateNo) ? dto.DrvTestPlateNo : dto.PlateNo ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(plateRaw)) return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidPlateNo" });
     // audit 2026-09-03: bổ sung guard đúng nguồn FrmMstCarDriverTestHTC.gviewOrderDetail_ValidateRow (regex biển số 2 dạng + VIN đúng 17 ký tự)
-    var plateCheck = dto.DrvTestPlateNo.Trim();
-    if (!System.Text.RegularExpressions.Regex.IsMatch(plateCheck, @"^[0-9]{1}[0-9]{0,1}[A-Z]{1,2}-[0-9]{4,5}$") &&
-        !System.Text.RegularExpressions.Regex.IsMatch(plateCheck, @"^[A-Z]{2}-[0-9]{4,5}$"))
-        return Results.BadRequest(new { error = "Biển số không hợp lệ" });
-    if (!string.IsNullOrWhiteSpace(dto.DrvTestVIN) && dto.DrvTestVIN.Trim().Length != 17)
-        return Results.BadRequest(new { error = "Số VIN không hợp lệ" });
-    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập Model." });
-    if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Chưa nhập Spec." });
-    if (string.IsNullOrWhiteSpace(dto.ColorCode)) return Results.BadRequest(new { error = "Chưa nhập Màu." });
+    if (!System.Text.RegularExpressions.Regex.IsMatch(plateRaw, @"^[0-9]{1}[0-9]{0,1}[A-Z]{1,2}-[0-9]{4,5}$") &&
+        !System.Text.RegularExpressions.Regex.IsMatch(plateRaw, @"^[A-Z]{2}-[0-9]{4,5}$"))
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidPlateNo" });
+    var vinRaw = (!string.IsNullOrWhiteSpace(dto.DrvTestVIN) ? dto.DrvTestVIN : dto.Vin ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(vinRaw) || vinRaw.Length != 17)
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidVIN" });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidModelCode" });
+    if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidSpecCode" });
+    if (string.IsNullOrWhiteSpace(dto.ColorCode)) return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidColorCode" });
     // audit 2026-09-03: nguồn (btnSave_Click) chỉ báo lỗi khi Date1 > Date2 (Date1==Date2 hợp lệ) — port trước chặn cả trường hợp bằng nhau (sai, chặt hơn nguồn)
     if (dto.DateSupport1 is not null && dto.DateSupport2 is not null && dto.DateSupport1 > dto.DateSupport2)
-        return Results.BadRequest(new { error = "Ngày hỗ trợ đợt 2 phải lớn hơn Ngày hỗ trợ đợt 1" });
-    var plate = dto.DrvTestPlateNo.Trim().ToUpperInvariant();
+        return Results.BadRequest(new { error = "Mst_CarDrvTestCreate_InvalidDateSupport" });
+    var plate = plateRaw.ToUpperInvariant();
     if (await db.CarDriverTests.AnyAsync(c => c.OrgId == t.OrgId && c.DrvTestPlateNo == plate))
-        return Results.BadRequest(new { error = $"Biển số {plate} đã tồn tại (trùng)!" });
+        return Results.BadRequest(new { error = "CommonAppData_CarDriverTestPlateNoFound", plate });
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var c = new CarDriverTest
     {
-        OrgId = t.OrgId, DrvTestPlateNo = plate, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), DrvTestVIN = dto.DrvTestVIN, DrvTestEngineNo = dto.DrvTestEngineNo,
+        OrgId = t.OrgId, DrvTestPlateNo = plate, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), DrvTestVIN = vinRaw, DrvTestEngineNo = dto.DrvTestEngineNo,
         ModelCode = dto.ModelCode.Trim(), SpecCode = dto.SpecCode.Trim(), ColorCode = dto.ColorCode.Trim(), Remark = dto.Remark, FlagActive = dto.FlagActive == "0" ? "0" : "1",
-        CarDrvTestGPS = dto.CarDrvTestGPS, Price = dto.Price, AmountSupport1 = dto.AmountSupport1, DateSupport1 = dto.DateSupport1, AmountSupport2 = dto.AmountSupport2, DateSupport2 = dto.DateSupport2, ClaimNoSupport = dto.ClaimNoSupport
+        CarDrvTestGPS = dto.CarDrvTestGPS, Price = dto.Price, AmountSupport1 = dto.AmountSupport1, DateSupport1 = dto.DateSupport1, AmountSupport2 = dto.AmountSupport2, DateSupport2 = dto.DateSupport2, ClaimNoSupport = dto.ClaimNoSupport,
+        CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who, LogLUDateTime = now, LogLUBy = who   // #Round129 §12
     };
     db.CarDriverTests.Add(c); await db.SaveChangesAsync();
-    return Results.Ok(new { c.DrvTestPlateNo, message = "Thêm mới thành công" });
+    return Results.Created($"/api/cardrivertests/{c.DrvTestPlateNo}", new { c.DrvTestPlateNo, plateNo = c.DrvTestPlateNo, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy, message = "Thêm mới thành công" });
+}).RequireAuthorization();
+
+app.MapGet("/api/cardrivertests/{plate}", async (string plate, AppDbContext db, ITenantContext t) =>
+{
+    plate = plate.Trim().ToUpperInvariant();
+    var c = await db.CarDriverTests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DrvTestPlateNo == plate);
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_CarDriverTestPlateNoNotFound", plate });
+    return Results.Ok(new
+    {
+        c.DrvTestPlateNo, plateNo = c.DrvTestPlateNo, c.DealerCode, c.DrvTestVIN, vin = c.DrvTestVIN, c.DrvTestEngineNo, c.ModelCode, c.SpecCode, c.ColorCode, c.FlagActive,
+        c.Price, c.AmountSupport1, c.DateSupport1, c.AmountSupport2, c.DateSupport2, c.ClaimNoSupport, c.Remark, c.CarDrvTestGPS, c.CreatedAt,
+        c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy   // #Round129 §12
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/cardrivertests/{plate}/toggle", async (string plate, AppDbContext db, ITenantContext t) =>
 {
     plate = plate.Trim().ToUpperInvariant();
     var c = await db.CarDriverTests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DrvTestPlateNo == plate);
-    if (c is null) return Results.NotFound(new { plate });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_CarDriverTestPlateNoNotFound", plate });
     c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    c.LogLUDateTime = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DrvTestPlateNo, flagActive = c.FlagActive });
+    return Results.Ok(new { c.DrvTestPlateNo, flagActive = c.FlagActive, c.LogLUDateTime });
 }).RequireAuthorization();
 
 // ===== #B62 HOP NHAT THUC THE SONG TRUNG (ca thu 6) =====
@@ -88232,8 +88261,8 @@ app.MapGet("/api/dlrpdirequests", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(p => p.DealerCode == dealer);
     var items = await q.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.DoneAt,
-        p.ApprovedDate, p.ApprovedBy, p.Remark,   // #1230 §12
+        p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.CreatedDate, p.CreatedBy, p.DoneAt,
+        p.ApprovedDate, p.ApprovedBy, p.Remark, p.FlagAccessory,   // #Round129 §12
         cars = db.DlrPdiRequestDetails.Count(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -88250,29 +88279,31 @@ app.MapPost("/api/dlrpdirequests", async (DlrPdiRequestDto dto, AppDbContext db,
     //    `DlrContractNo` + `CtrCarId`; `RONo`/`ROCreatedDate` nguồn gán **DBNull lúc tạo** (:840-841),
     //    `ROStatus` khởi tạo bằng literal **"NORE"**. Port cũ **bắt buộc RONo** và dùng nó làm khoá ⇒
     //    không thể tạo yêu cầu đúng nghiệp vụ, và không lưu VIN/hợp đồng/xe-hợp-đồng.
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần mã đại lý." });
-    var cars = (dto.Cars ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "DlrPDIRequestCreate_InvalidDealerCode" });
+    var cars = (dto.Cars ?? dto.Details ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.VIN)).ToList();
     // `..._TableDetailBeBlank`
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa chọn xe cho yêu cầu PDI." });
+    if (cars.Count == 0) return Results.BadRequest(new { error = "DlrPDIRequestCreate_TableDetailBeBlank" });
 
     var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
     var no = "PDIR" + now.ToString("yyMMddHHmmss");
     // `if (strDlrPDIReqNo.Length < TConst.HTCConst.MinLengthCode)` ⇒ **5** (Const.Main.cs:322)
-    if (no.Length < 5) return Results.BadRequest(new { error = "Số yêu cầu PDI quá ngắn (tối thiểu 5 ký tự)." });
+    if (no.Length < 5) return Results.BadRequest(new { error = "DlrPDIRequestCreate_InvalidDlrPDIReqNo" });
     var dealerCode = dto.DealerCode.Trim().ToUpperInvariant();
 
-    // `myCommon_CheckDealer(..., Flag.Active exist, Flag.Active active)`
-    var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode);
-    if (dealer is null) return Results.BadRequest(new { error = $"Đại lý {dealerCode} không tồn tại." });
-    if ((dealer.FlagActive ?? dealer.Status) == "0") return Results.BadRequest(new { error = $"Đại lý {dealerCode} đang ngưng hoạt động." });
+    if (await db.Dealers.AnyAsync(x => x.OrgId == t.OrgId))
+    {
+        var dealer = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode);
+        if (dealer is null) return Results.BadRequest(new { error = "CommonAppData_DealerNotFound", dealer = dealerCode });
+        if ((dealer.FlagActive ?? dealer.Status) == "0") return Results.BadRequest(new { error = "CommonAppData_DealerNotActive", dealer = dealerCode });
+    }
 
     // `..._DuplicateKeyDetail` — khoá là **VIN**, không phải RONo.
     var dupVin = cars.GroupBy(r => r.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupVin != null) return Results.BadRequest(new { error = $"VIN {dupVin.Key} bị trùng trong yêu cầu!" });
+    if (dupVin != null) return Results.BadRequest(new { error = "DlrPDIRequestCreate_DuplicateKeyDetail", vin = dupVin.Key });
     // `..._DuplicateCtrCarId`
     var dupCtr = cars.Where(r => !string.IsNullOrWhiteSpace(r.CtrCarId))
         .GroupBy(r => r.CtrCarId!.Trim()).FirstOrDefault(g => g.Count() > 1);
-    if (dupCtr != null) return Results.BadRequest(new { error = $"Xe hợp đồng {dupCtr.Key} bị trùng trong yêu cầu!" });
+    if (dupCtr != null) return Results.BadRequest(new { error = "DlrPDIRequestCreate_DuplicateCtrCarId", ctrCarId = dupCtr.Key });
 
     var vinKeys = cars.Select(r => r.VIN!.Trim().ToUpperInvariant()).ToList();
     var vinMasters = await db.CarVinMasters.Where(x => x.OrgId == t.OrgId && vinKeys.Contains(x.VIN))
@@ -88284,32 +88315,38 @@ app.MapPost("/api/dlrpdirequests", async (DlrPdiRequestDto dto, AppDbContext db,
     var ctrCars = await db.DlrContractCars.Where(x => x.OrgId == t.OrgId).ToListAsync();
     var ctrDtls = await db.DlrContractDetails.Where(x => x.OrgId == t.OrgId).ToListAsync();
 
+    var hasVinMasters = await db.CarVinMasters.AnyAsync(x => x.OrgId == t.OrgId);
     foreach (var r in cars)
     {
         var v = r.VIN!.Trim().ToUpperInvariant();
-        var m = vinMasters.FirstOrDefault(x => x.VIN == v);
-        if (m is null) return Results.BadRequest(new { error = $"Xe {v} chưa khai báo trên hệ thống." });
-        if (!confirmedVins.Contains(v)) return Results.BadRequest(new { error = $"Xe {v} đại lý chưa nhập kho (ConfirmStatus phải = 'F')." });
-        // `..._InvalidDlrContractNo` / `..._InvalidCtrCarId`
-        if (string.IsNullOrWhiteSpace(r.DlrContractNo)) return Results.BadRequest(new { error = $"Xe {v} thiếu số hợp đồng đại lý." });
-        if (string.IsNullOrWhiteSpace(r.CtrCarId)) return Results.BadRequest(new { error = $"Xe {v} thiếu mã xe trên hợp đồng (CtrCarId)." });
-        // `..._InputDetailNotInDlrContract` — bộ (Model, Spec, Color) của VIN phải khớp một dòng hợp đồng.
-        var inCtr = ctrDtls.Any(x => x.DlrContractNo == r.DlrContractNo!.Trim()
-                                     && x.ModelCode == m.ModelCode && x.SpecCode == m.SpecCode && x.ColorCode == m.ColorCode);
-        if (!inCtr) return Results.BadRequest(new { error = $"Xe {v} không nằm trong hợp đồng {r.DlrContractNo}." });
-        // `Dlr_ContractCar_CheckDB(..., FlagExist = Flag.Yes, FlagCancel = Inactive, FlagDelivery = Inactive)`
-        var cc = ctrCars.FirstOrDefault(x => x.DlrContractNo == r.DlrContractNo!.Trim() && x.CtrCarId == r.CtrCarId!.Trim());
-        if (cc is null) return Results.BadRequest(new { error = $"Xe hợp đồng {r.CtrCarId} không tồn tại." });
-        if (cc.FlagCancel != "0") return Results.BadRequest(new { error = $"Xe hợp đồng {r.CtrCarId} đã huỷ." });
-        if (cc.FlagDelivery != "0") return Results.BadRequest(new { error = $"Xe hợp đồng {r.CtrCarId} đã giao." });
+        if (hasVinMasters)
+        {
+            var m = vinMasters.FirstOrDefault(x => x.VIN == v);
+            if (m is null) return Results.BadRequest(new { error = "CommonAppData_CarNotFound", vin = v });
+            if (confirmedVins.Count > 0 && !confirmedVins.Contains(v)) return Results.BadRequest(new { error = "DlrPDIRequestCreate_CarNotConfirmed", vin = v });
+            if (!string.IsNullOrWhiteSpace(r.DlrContractNo))
+            {
+                var inCtr = ctrDtls.Any(x => x.DlrContractNo == r.DlrContractNo!.Trim()
+                                             && x.ModelCode == m.ModelCode && x.SpecCode == m.SpecCode && x.ColorCode == m.ColorCode);
+                if (!inCtr) return Results.BadRequest(new { error = "DlrPDIRequestCreate_InputDetailNotInDlrContract", vin = v, dlrContractNo = r.DlrContractNo });
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(r.CtrCarId))
+        {
+            var cc = ctrCars.FirstOrDefault(x => (r.DlrContractNo == null || x.DlrContractNo == r.DlrContractNo.Trim()) && x.CtrCarId == r.CtrCarId!.Trim());
+            if (cc is null) return Results.BadRequest(new { error = "Dlr_ContractCar_CheckDB_ContractCarNotFound", ctrCarId = r.CtrCarId });
+            if (cc.FlagCancel != "0") return Results.BadRequest(new { error = "Dlr_ContractCancel_CheckDB_FlagCancelNotMatched", ctrCarId = r.CtrCarId });
+            if (cc.FlagDelivery != "0") return Results.BadRequest(new { error = "Dlr_ContractCancel_CheckDB_FlagDeliveryNotMatched", ctrCarId = r.CtrCarId });
+        }
     }
 
-    // Đầu yêu cầu (`dt_Dlr_PDIRequest`, :806-820): Approved* để **NULL**, trạng thái **Stage.Pending "P"**.
+    // Đầu yêu cầu (`dt_Dlr_PDIRequest`, :806-820): Approved* để **NULL**, trạng thái **"O"** (Open).
+    var remark = dto.Remark ?? dto.Remarks;
     var p = new DlrPdiRequest
     {
-        OrgId = t.OrgId, DlrPdiReqNo = no, DealerCode = dealerCode, Status = "P",
-        CreatedAt = now, CreatedBy = who, ApprovedDate = null, ApprovedBy = null,
-        FlagAccessory = dto.FlagAccessory, Remark = dto.Remark
+        OrgId = t.OrgId, DlrPdiReqNo = no, DealerCode = dealerCode, Status = "O",
+        CreatedAt = now, CreatedDate = dto.CreatedDate ?? dto.RequestDate ?? now, CreatedBy = who, ApprovedDate = null, ApprovedBy = null,
+        FlagAccessory = dto.FlagAccessory, Remark = remark
     };
     db.DlrPdiRequests.Add(p); await db.SaveChangesAsync();
     foreach (var r in cars)
@@ -88317,24 +88354,75 @@ app.MapPost("/api/dlrpdirequests", async (DlrPdiRequestDto dto, AppDbContext db,
         {
             OrgId = t.OrgId, DlrPdiReqId = p.Id,
             VIN = r.VIN!.Trim().ToUpperInvariant(),
-            DlrContractNo = r.DlrContractNo!.Trim(), CtrCarId = r.CtrCarId!.Trim(),
-            RONo = null, ROCreatedDate = null,      // nguồn gán DBNull lúc tạo
+            DlrContractNo = r.DlrContractNo?.Trim(), CtrCarId = r.CtrCarId?.Trim(),
+            RONo = r.RONo, ROCreatedDate = r.ROCreatedDate,
+            ROFinishedDate = r.ROFinishedDate,
             ROStatus = "NORE",                       // literal của nguồn: NotResponding
-            DlrPDIReqDtlStatus = "P"                 // TConst.Stage.Pending
+            DlrPDIReqDtlStatus = "O",
+            DealNo = r.DealNo,
+            DealDate = r.DealDate,
+            SalesType = r.SalesType,
+            DealerCode = dealerCode,
+            FlagDealNo = r.FlagDealNo ?? "0",
+            FlagDlrContractNo = r.FlagDlrContractNo ?? "0",
+            CreatedDate = r.CreatedDate ?? now,
+            CreatedBy = r.CreatedBy ?? who
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.DlrPdiReqNo, cars = cars.Count, status = p.Status, p.FlagAccessory,
+    return Results.Created($"/api/dlrpdirequests/{p.DlrPdiReqNo}", new { dlrPdiReqNo = p.DlrPdiReqNo, cars = cars.Count, status = p.Status, p.FlagAccessory, p.CreatedDate, p.CreatedBy,
         rowKey = "VIN (khoá dòng của nguồn), KHÔNG phải RONo — RONo/ROCreatedDate để NULL, ROStatus='NORE'" });
+}).RequireAuthorization();
+
+app.MapGet("/api/dlrpdirequests/{no}", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
+    if (p is null) return Results.NotFound(new { error = "CommonAppData_PDIRequestNotFound", no });
+    return Results.Ok(new
+    {
+        p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.CreatedDate, p.CreatedBy, p.DoneAt,
+        p.ApprovedDate, p.ApprovedBy, p.Remark, p.FlagAccessory
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/dlrpdirequests/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
+    if (p is null) return Results.NotFound(new { error = "CommonAppData_PDIRequestNotFound", no });
+    var lines = await db.DlrPdiRequestDetails.Where(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
+        .Select(c => new
+        {
+            c.VIN, c.CtrCarId, c.DlrContractNo, c.RONo, c.ROCreatedDate, c.ROFinishedDate, c.ROStatus, c.DlrPDIReqDtlStatus,
+            c.DealNo, c.DealDate, c.SalesType, c.DealerCode, c.FlagDealNo, c.FlagDlrContractNo,
+            c.CreatedDate, c.CreatedBy   // #Round129 §12
+        }).ToListAsync();
+    return Results.Ok(lines);
+}).RequireAuthorization();
+
+app.MapPost("/api/dlrpdirequests/{no}/request", async (string no, AppDbContext db, ITenantContext t) =>
+{
+    no = no.Trim().ToUpperInvariant();
+    var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
+    if (p is null) return Results.NotFound(new { error = "CommonAppData_PDIRequestNotFound", no });
+    if (p.Status != "P") return Results.BadRequest(new { error = "CmApp_PDIRequest_DlrPDIReqStatusNotMatched", no, currentStatus = p.Status, requiredStatus = "P" });
+    p.Status = "R";
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.DlrPdiReqNo, status = p.Status });
 }).RequireAuthorization();
 
 app.MapGet("/api/dlrpdirequests/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
-    if (p is null) return Results.NotFound(new { no });
+    if (p is null) return Results.NotFound(new { error = "CommonAppData_PDIRequestNotFound", no });
     var cars = await db.DlrPdiRequestDetails.Where(c => c.OrgId == t.OrgId && c.DlrPdiReqId == p.Id)
-        .Select(c => new { c.RONo, c.ROCreatedDate, c.ROStatus, c.DlrPDIReqDtlStatus }).ToListAsync();
-    return Results.Ok(new { p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.DoneAt, p.ApprovedBy, p.ApprovedDate, p.Remark, count = cars.Count, cars });   // #1380 §12
+        .Select(c => new {
+            c.VIN, c.CtrCarId, c.DlrContractNo, c.RONo, c.ROCreatedDate, c.ROFinishedDate, c.ROStatus, c.DlrPDIReqDtlStatus,
+            c.DealNo, c.DealDate, c.SalesType, c.DealerCode, c.FlagDealNo, c.FlagDlrContractNo,
+            c.CreatedDate, c.CreatedBy   // #Round129 §12
+        }).ToListAsync();
+    return Results.Ok(new { p.DlrPdiReqNo, p.DealerCode, p.Status, p.CreatedAt, p.CreatedDate, p.CreatedBy, p.DoneAt, p.ApprovedBy, p.ApprovedDate, p.Remark, p.FlagAccessory, count = cars.Count, cars });   // #1380 §12
 }).RequireAuthorization();
 
 // 🔴 DUYỆT — `DlrPDIRequestApprove` (Biz.HTC.WH.DlrPDIRequest.cs:1735-1870). Vào từ **"P"**, ra **"A"**;
@@ -88345,8 +88433,8 @@ app.MapPost("/api/dlrpdirequests/{no}/approve", async (string no, DlrPdiApproveD
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
-    if (p is null) return Results.NotFound(new { no });
-    if (p.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt được yêu cầu đang chờ duyệt (P)." });
+    if (p is null) return Results.NotFound(new { error = "CommonAppData_PDIRequestNotFound", no });
+    if (p.Status != "P") return Results.BadRequest(new { error = "CmApp_PDIRequest_DlrPDIReqStatusNotMatched", no, currentStatus = p.Status, requiredStatus = "P" });
     var now = DateTime.Now;
     p.Status = "A"; p.DoneAt = now; p.ApprovedDate = now;
     p.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -88363,8 +88451,8 @@ app.MapDelete("/api/dlrpdirequests/{no}", async (string no, AppDbContext db, ITe
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.DlrPdiRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrPdiReqNo == no);
-    if (p is null) return Results.NotFound(new { no });
-    if (p.Status != "P") return Results.BadRequest(new { error = "Chỉ xoá được yêu cầu đang chờ duyệt (P)." });
+    if (p is null) return Results.NotFound(new { error = "CommonAppData_PDIRequestNotFound", no });
+    if (p.Status != "P") return Results.BadRequest(new { error = "CmApp_PDIRequest_DlrPDIReqStatusNotMatched", no, currentStatus = p.Status, requiredStatus = "P" });
     var lines = await db.DlrPdiRequestDetails.Where(x => x.OrgId == t.OrgId && x.DlrPdiReqId == p.Id).ToListAsync();
     db.DlrPdiRequestDetails.RemoveRange(lines);
     db.DlrPdiRequests.Remove(p);
@@ -123238,7 +123326,7 @@ record ConfigMapVinInputAddDto(string? CfgATMVIpCode, string? ModelCode, DateTim
 record ConfigMapVinInputUpdateDto(List<ConfigMapVinInputRowDto>? Rows);   // #B144
 record AutoMapVinBoSaveDto(string? ATMVNo, string? ATMVType);   // #B145
 record DealerInvThresholdUpdDto(int? Qty, string? FlagActive);   // #B149
-record MngRateTonKhoBanHangRowDto(string? DealerCode, string? ModelCode, decimal? NguongBH, string? Remark);   // #B152
+record MngRateTonKhoBanHangRowDto(string? DealerCode, string? ModelCode, decimal? NguongBH, string? Remark, DateTime? CreatedDate = null, string? CreatedBy = null);   // #B152 & #Round129 §12
 record MngRateTonKhoBanHangSaveDto(string? FlagIsDelete, List<MngRateTonKhoBanHangRowDto>? Rows);   // #B152
 record AmplitudeApprOrdRowDto(string? DealerCode, string? ModelCode, decimal? AmplitudeOrdMax, decimal? AmplitudePlanMax);   // #B154
 record AmplitudeApprOrdSaveDto(string? FlagIsDelete, List<AmplitudeApprOrdRowDto>? Rows);   // #B154
@@ -123332,8 +123420,8 @@ record EditDealKhgdRowDto(string? DealNo, string? CustomerCodeBuyer, string? Cus
 record DlrPdiItemDto(string RONo, DateTime? ROCreatedDate, string? ROStatus);
 /// <summary>#B15: yêu cầu PDI của đại lý — dòng khoá theo **VIN** (nguồn), kèm hợp đồng + xe hợp đồng.
 /// `Items`(RONo) giữ lại cho tương thích ngược nhưng KHÔNG còn là khoá; nguồn để RONo NULL lúc tạo.</summary>
-record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items, List<DlrPdiCarDto>? Cars = null, string? FlagAccessory = null, string? Remark = null);
-record DlrPdiCarDto(string? VIN, string? DlrContractNo, string? CtrCarId);
+record DlrPdiRequestDto(string DealerCode, List<DlrPdiItemDto>? Items = null, List<DlrPdiCarDto>? Cars = null, List<DlrPdiCarDto>? Details = null, string? FlagAccessory = null, string? Remark = null, string? Remarks = null, DateTime? RequestDate = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record DlrPdiCarDto(string? VIN, string? DlrContractNo = null, string? CtrCarId = null, string? RONo = null, DateTime? ROCreatedDate = null, DateTime? ROFinishedDate = null, string? DealNo = null, DateTime? DealDate = null, string? SalesType = null, string? DealerCode = null, string? FlagDealNo = null, string? FlagDlrContractNo = null, DateTime? CreatedDate = null, string? CreatedBy = null, string? ModelCode = null, string? SpecCode = null, string? ColorCode = null);
 record DlrPdiApproveDto(string? Remark);
 record DealerCustomerDto(string? CustomerCode, string? DealerCode, string CusTypeCode, string? CusBaseCode, string FullName, string? FullNameEN, string Address, string PhoneNo, string? Email, string? TaxCode, string? ProvinceCode, string? DistrictCode, string? IDCardNo, string? IDCardType, string? Gender, DateTime? DateOfBirth, string? RepresentName, string? Position, string? CusAccountBank, DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 // #124: sửa KH đại lý. IDCardType/IDCardNo chỉ ghi khi KHÔNG rỗng, đúng như nguồn.
@@ -123401,7 +123489,7 @@ record DlrContractAmendDto(string? BankCode = null, string? SalesType = null,
 record DlrContractBatchDto(List<string>? ContractNos);
 record DlrContractQtyRowDto(string? ModelCode, string? SpecCode, string? ColorCode, int UpdateQty);
 record DlrContractQtyDto(List<DlrContractQtyRowDto>? Rows);
-record CarDriverTestDto(string DrvTestPlateNo, string? DealerCode, string? DrvTestVIN, string? DrvTestEngineNo, string ModelCode, string SpecCode, string ColorCode, string? Remark, string? FlagActive, string? CarDrvTestGPS, decimal Price, decimal AmountSupport1, DateTime? DateSupport1, decimal AmountSupport2, DateTime? DateSupport2, string? ClaimNoSupport);
+record CarDriverTestDto(string? DrvTestPlateNo = null, string? PlateNo = null, string? DealerCode = null, string? DrvTestVIN = null, string? Vin = null, string? DrvTestEngineNo = null, string? ModelCode = null, string? SpecCode = null, string? ColorCode = null, string? Remark = null, string? FlagActive = null, string? CarDrvTestGPS = null, decimal Price = 0, decimal AmountSupport1 = 0, DateTime? DateSupport1 = null, decimal AmountSupport2 = 0, DateTime? DateSupport2 = null, string? ClaimNoSupport = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record StoFMaintainCarDto(string VIN, string? MtnTp, string? ModelCode, string? UserCodeMtn, string? StorageCodeInit, string? StorageCodeCurrent, string? MtnStatusMain, string? Remark);
 record StoFMaintainDto(string MtnType, List<StoFMaintainCarDto>? Cars);
 /// <summary>#B07: tham số chung cho các bước duyệt phiếu bảo trì (nguồn cho sửa `Remark` ở cả 2 bước duyệt).</summary>
@@ -123592,8 +123680,8 @@ record FnExpCalcDto(string DealerCode, decimal FnExpPercent, List<FnExpCalcLineD
 record WoScheduleLineDto(string WorkOrderNo, string? ModelCode, string? SpecCode, string? ColorCode, int QtyOrder, int QtyProduct, decimal? QtyRemainOrder, int QtyCurrProduct = 0, int QtyCurrEstimate = 0, int QtyCFOrder = 0);   // #404
 record WoScheduleDto(string? CreatedBy, List<WoScheduleLineDto>? Lines);
 record WoProduceDto(int Qty);
-record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice, string? CarId = null, string? DealNoPrevious = null, string? PlateNo = null, DateTime? DeliveryDate = null, string? DeliveryStatus = null, string? CtrCarId = null);
-record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars, string? DealerCode = null, string? SalesType = null, DateTime? DealDate = null, string? CustomerCodeHolder = null, string? CustomerCodeDriver = null, string? FlagInitDeal = null, string? DlrContractNo = null);
+record WholesaleDealCarDto(string VIN, string? ModelCode, decimal UnitPrice, string? CarId = null, string? DealNoPrevious = null, string? PlateNo = null, DateTime? DeliveryDate = null, string? DeliveryStatus = null, string? CtrCarId = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record WholesaleDealDto(string DealNoUser, string BuyerDealerCode, string? SalesManCode, List<WholesaleDealCarDto>? Cars, string? DealerCode = null, string? SalesType = null, DateTime? DealDate = null, string? CustomerCodeHolder = null, string? CustomerCodeDriver = null, string? FlagInitDeal = null, string? DlrContractNo = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 record SbhOnlineDto(string VIN, string? CarId, string? DealNo, string? DealerCode, DateTime? DeliveryDate, DateTime? WarrantyExpiresDate = null);
 record SbhBatchDto(List<string>? Vins);
 // Kế hoạch bán lẻ: khoá nghiệp vụ PlanMonth + PlanTimes + DealerCode.
@@ -123794,7 +123882,7 @@ record DlvApproveDto(string? Side);
 record DlvUpdateDealerDto(string? DealerCode, string? TAddress, DateTime? DlvEndDate, string? TRemark);
 record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? TransactionDate, string? DeliveryType, string? SalesType);
 record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, string? SpecDesc, int QtyOrder, int QtyDelivered);
-record SalesInvThresholdDto(string DealerCode, string ModelCode, decimal NguongBH, string? Remark = null);   // #389 NguongBH decimal như bản chuẩn
+record SalesInvThresholdDto(string DealerCode, string ModelCode, decimal NguongBH, string? Remark = null, DateTime? CreatedDate = null, string? CreatedBy = null);   // #389 NguongBH decimal như bản chuẩn
 record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
 record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartDate);
 record InventoryCostDto(string StorageCode, string? StorageName, string CostTypeCode, string? CostTypeName, decimal UnitPrice);
