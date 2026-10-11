@@ -35068,7 +35068,7 @@ app.MapGet("/api/rowwarrantyworks", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
     var items = await qry.OrderBy(x => x.ROWWorkCode).Take(500).Select(x => new { x.Id, x.ROWWorkCode, x.ROWWorkName, x.Model,
         x.RateHour, x.Price, x.RatePrice, x.VAT, x.Remark, x.AppTypeCode, x.FlagActive,
-        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1486 §12 — echo đủ cột (nguồn SELECT smroww.*)
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1486 §12 — echo đủ cột (nguồn SELECT smroww.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -35077,7 +35077,9 @@ app.MapGet("/api/rowwarrantyworks", async (AppDbContext db, ITenantContext t, st
 app.MapPost("/api/rowwarrantyworks", async (ROWarrantyWorkDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.ROWWorkCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã công bảo hành (ROWWorkCode)." });
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập mã công bảo hành (ROWWorkCode)." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var who = (partnerUserCode ?? "system").Trim();
     var now = DateTime.Now;
     var row = await db.ROWarrantyWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == code);
@@ -35089,9 +35091,9 @@ app.MapPost("/api/rowwarrantyworks", async (ROWarrantyWorkDto dto, AppDbContext 
     row.ROWWorkName = dto.ROWWorkName; row.Model = dto.Model; row.RateHour = dto.RateHour; row.Price = dto.Price;
     row.RatePrice = dto.RatePrice; row.VAT = dto.VAT; row.Remark = dto.Remark; row.AppTypeCode = dto.AppTypeCode;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    row.LogLUDateTime = now; row.LogLUBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ROWWorkCode, row.ROWWorkName, row.Model, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ROWWorkCode, row.ROWWorkName, row.Model, row.RateHour, row.Price, row.RatePrice, row.VAT, row.Remark, row.AppTypeCode, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // `Ser_MST_ROWarrantyWork_Delete`: xoá CỨNG theo `ROWWorkCode`, KHÔNG kiểm tham chiếu (nguồn không có guard).
@@ -35099,7 +35101,7 @@ app.MapDelete("/api/rowwarrantyworks/{code}", async (string code, AppDbContext d
 {
     var c = code.Trim();
     var row = await db.ROWarrantyWorks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWWorkCode == c);
-    if (row is null) return Results.NotFound(new { code = c });
+    if (row is null) return Results.NotFound(new { code = c, error = "ErrCarSv.Ser_MST_ROWarrantyWork_NotFound" });
     db.ROWarrantyWorks.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = c });
@@ -35196,7 +35198,8 @@ app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(receptionFAudType)) qry = qry.Where(x => x.ReceptionFAudType == receptionFAudType);
     if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
     var items = await qry.OrderBy(x => x.ModelCode).ThenBy(x => x.ReceptionFAudType).Take(500).Select(x => new { x.Id, x.ModelCode,
-        x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1496 §12 — echo đủ cột (nguồn SELECT smmai.*)
+        x.ReceptionFAudType, x.FilePath, x.Remark, x.FlagActive,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1496 §12 — echo đủ cột (nguồn SELECT smmai.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -35206,21 +35209,24 @@ app.MapGet("/api/modelaudimages", async (AppDbContext db, ITenantContext t, stri
 app.MapPost("/api/modelaudimages", async (ModelAudImageDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var modelCode = (dto.ModelCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(modelCode)) return Results.BadRequest(new { error = "Chưa nhập mã dòng xe (ModelCode)." });
+    if (string.IsNullOrWhiteSpace(modelCode)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_ModelAudImage_Add_InvalidModelCode", message = "Chưa nhập mã dòng xe (ModelCode)." });
     var audType = (dto.ReceptionFAudType ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(audType)) return Results.BadRequest(new { error = "Chưa nhập loại kiểm tra (ReceptionFAudType)." });
+    if (string.IsNullOrWhiteSpace(audType)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_ModelAudImage_Add_InvalidReceptionFAudType", message = "Chưa nhập loại kiểm tra (ReceptionFAudType)." });
     var filePath = (dto.FilePath ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(filePath)) return Results.BadRequest(new { error = "Chưa nhập đường dẫn ảnh (FilePath)." });
+    if (string.IsNullOrWhiteSpace(filePath)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_ModelAudImage_Add_InvalidFilePath", message = "Chưa nhập đường dẫn ảnh (FilePath)." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var exists = await db.ModelAudImages.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == modelCode && x.ReceptionFAudType == audType);
-    if (exists) return Results.BadRequest(new { error = "Cặp (ModelCode, ReceptionFAudType) đã tồn tại (nguồn CheckDB Flag.No)." });
+    if (exists) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_ModelAudImage_CheckDB_ModelAudImageExist", message = "Cặp (ModelCode, ReceptionFAudType) đã tồn tại (nguồn CheckDB Flag.No)." });
     var who = (partnerUserCode ?? "system").Trim();
     var now = DateTime.Now;
     var row = new ModelAudImage { OrgId = t.OrgId, ModelCode = modelCode, ReceptionFAudType = audType, FlagActive = "1" };
     row.FilePath = filePath; row.Remark = dto.Remark;
-    row.LogLUDateTime = now; row.LogLUBy = who;
+    row.CreatedDate = now; row.CreatedBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
     db.ModelAudImages.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ModelCode, row.ReceptionFAudType, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ModelCode, row.ReceptionFAudType, row.FilePath, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // `Ser_Mst_ModelAudImage_Update`: guard `CheckDB(Flag.Yes)` = cặp khoá PHẢI tồn tại; `FilePath` rỗng ⇒ Raise.
@@ -35229,16 +35235,18 @@ app.MapPut("/api/modelaudimages/{modelCode}/{receptionFAudType}", async (string 
 {
     var mc = modelCode.Trim(); var at = receptionFAudType.Trim();
     var row = await db.ModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == mc && x.ReceptionFAudType == at);
-    if (row is null) return Results.NotFound(new { modelCode = mc, receptionFAudType = at });
+    if (row is null) return Results.NotFound(new { modelCode = mc, receptionFAudType = at, error = "ErrCarSv.Ser_Mst_ModelAudImage_CheckDB_ModelAudImageNotFound" });
     var filePath = (dto.FilePath ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(filePath)) return Results.BadRequest(new { error = "Chưa nhập đường dẫn ảnh (FilePath)." });
+    if (string.IsNullOrWhiteSpace(filePath)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_ModelAudImage_Update_InvalidFilePath", message = "Chưa nhập đường dẫn ảnh (FilePath)." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var who = (partnerUserCode ?? "system").Trim();
     var now = DateTime.Now;
     row.FilePath = filePath; row.Remark = dto.Remark;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    row.LogLUDateTime = now; row.LogLUBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ModelCode, row.ReceptionFAudType, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ModelCode, row.ReceptionFAudType, row.FilePath, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // `Ser_Mst_ModelAudImage_Delete`: guard `CheckDB(Flag.Yes)` = cặp khoá PHẢI tồn tại; xoá CỨNG theo cặp khoá.
@@ -35246,7 +35254,7 @@ app.MapDelete("/api/modelaudimages/{modelCode}/{receptionFAudType}", async (stri
 {
     var mc = modelCode.Trim(); var at = receptionFAudType.Trim();
     var row = await db.ModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == mc && x.ReceptionFAudType == at);
-    if (row is null) return Results.NotFound(new { modelCode = mc, receptionFAudType = at });
+    if (row is null) return Results.NotFound(new { modelCode = mc, receptionFAudType = at, error = "ErrCarSv.Ser_Mst_ModelAudImage_CheckDB_ModelAudImageNotFound" });
     db.ModelAudImages.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = new { modelCode = mc, receptionFAudType = at } });
@@ -49048,31 +49056,45 @@ app.MapGet("/api/complainterrorcodes", async (AppDbContext db, ITenantContext t,
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ErrorCode.Contains(q!) || x.ErrorName!.Contains(q!));
     var items = await qry.OrderBy(x => x.ErrorCode).Take(500)
-        .Select(x => new { x.Id, x.ErrorCode, x.ErrorName, x.ErrorDesc, x.ErrorTypeCode, x.WarrantyDate, x.WarrantyKm, x.Remark, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1287 §12
+        .Select(x => new { x.Id, x.ErrorCode, x.ErrorName, x.ErrorDesc, x.ErrorTypeCode, x.WarrantyDate, x.WarrantyKm, x.Remark, x.FlagActive,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1287 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/complainterrorcodes", async (ComplaintErrorCodeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/complainterrorcodes", async (ComplaintErrorCodeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? partnerUserCode) =>
 {
     var code = (dto.ErrorCode ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã lỗi." });
-    if (string.IsNullOrWhiteSpace((dto.ErrorName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên lỗi." });
-    if (dto.WarrantyDate < 0 || dto.WarrantyKm < 0) return Results.BadRequest(new { error = "Số ngày/km bảo hành không được âm." });
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập mã lỗi." });
+    if (string.IsNullOrWhiteSpace((dto.ErrorName ?? "").Trim())) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập tên lỗi." });
+    if (dto.WarrantyDate < 0 || dto.WarrantyKm < 0) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidNegativeValue", message = "Số ngày/km bảo hành không được âm." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
+    var who = user.Identity?.Name ?? partnerUserCode ?? "system";
+    var now = DateTime.Now;
     var row = await db.ComplaintErrorCodes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ErrorCode == code);
-    if (row is null) { row = new ComplaintErrorCode { OrgId = t.OrgId, ErrorCode = code }; db.ComplaintErrorCodes.Add(row); }
-    row.ErrorName = dto.ErrorName; row.ErrorDesc = dto.ErrorDesc; row.ErrorTypeCode = dto.ErrorTypeCode; row.WarrantyDate = dto.WarrantyDate; row.WarrantyKm = dto.WarrantyKm; row.Remark = dto.Remark; row.UpdatedAt = DateTime.Now;
+    if (row is null)
+    {
+        row = new ComplaintErrorCode { OrgId = t.OrgId, ErrorCode = code, CreatedDate = now, CreatedBy = who };
+        db.ComplaintErrorCodes.Add(row);
+    }
+    row.ErrorName = dto.ErrorName; row.ErrorDesc = dto.ErrorDesc; row.ErrorTypeCode = dto.ErrorTypeCode;
+    row.WarrantyDate = dto.WarrantyDate; row.WarrantyKm = dto.WarrantyKm; row.Remark = dto.Remark;
+    row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ErrorCode, row.ErrorName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ErrorCode, row.ErrorName, row.ErrorDesc, row.ErrorTypeCode, row.WarrantyDate, row.WarrantyKm, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
-app.MapPost("/api/complainterrorcodes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/complainterrorcodes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? partnerUserCode) =>
 {
     var row = await db.ComplaintErrorCodes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    if (row is null) return Results.NotFound(new { id, error = "ErrCarSv.Ser_MST_ROComplaintDiagnosticError_NotFound" });
+    var who = user.Identity?.Name ?? partnerUserCode ?? "system";
+    var now = DateTime.Now;
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== Loại bảo hành RO (ROWarrantyType — port 1:1 FrmMstWarrantyTypeMng, TCMotor DMSCarSv/Admin) =====
@@ -62728,24 +62750,41 @@ app.MapGet("/api/filepathvideos/for-tab", async (AppDbContext db, ITenantContext
 //   phép sửa `strFt_Cols_Upd`) — port cũ hoàn toàn chưa có đường bật/tắt, chỉ có xoá cứng.
 app.MapPost("/api/modelaudimages/toggle", async (string model, string audType, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    var row = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ReceptionFAudType == audType);
-    if (row is null) return Results.NotFound(new { model, audType });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
-    row.UpdatedAt = DateTime.Now;
-    // #1208: nhat quan voi POST cung bang — Ser_Mst_ModelAudImage_Update ghi LogLUDateTime/LogLUBy
-    // vo dieu kien moi lan sua (ke ca khi chi doi FlagActive).
-    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    var m = (model ?? "").Trim(); var at = (audType ?? "").Trim();
+    var who = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    var row = await db.ModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == m && x.ReceptionFAudType == at);
+    if (row is not null)
+    {
+        row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+        row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+    }
+    var rowSer = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == m && x.ReceptionFAudType == at);
+    if (rowSer is null) return Results.NotFound(new { model = m, audType = at, error = "ErrCarSv.Ser_Mst_ModelAudImage_CheckDB_ModelAudImageNotFound" });
+    rowSer.FlagActive = rowSer.FlagActive == "1" ? "0" : "1";
+    rowSer.UpdatedAt = now;
+    rowSer.LogLUDateTime = now; rowSer.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.ModelCode, row.ReceptionFAudType, row.FlagActive });
+    return Results.Ok(new { rowSer.ModelCode, rowSer.ReceptionFAudType, rowSer.FlagActive, rowSer.LogLUDateTime, rowSer.LogLUBy, rowSer.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapDelete("/api/modelaudimages", async (string model, string audType, AppDbContext db, ITenantContext t) =>
 {
-    var row = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ReceptionFAudType == audType);
-    if (row is null) return Results.NotFound(new { model, audType });
-    db.SerModelAudImages.Remove(row);
+    var m = (model ?? "").Trim(); var at = (audType ?? "").Trim();
+    var row = await db.ModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == m && x.ReceptionFAudType == at);
+    if (row is not null)
+    {
+        db.ModelAudImages.Remove(row);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { deleted = new { model = m, audType = at } });
+    }
+    var rowSer = await db.SerModelAudImages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == m && x.ReceptionFAudType == at);
+    if (rowSer is null) return Results.NotFound(new { model = m, audType = at, error = "ErrCarSv.Ser_Mst_ModelAudImage_CheckDB_ModelAudImageNotFound" });
+    db.SerModelAudImages.Remove(rowSer);
     await db.SaveChangesAsync();
-    return Results.Ok(new { deleted = new { model, audType } });
+    return Results.Ok(new { deleted = new { model = m, audType = at } });
 }).RequireAuthorization();
 
 // ===== Checklist hồ sơ bảo hiểm theo RO (InsuranceAttachment — port 1:1 FrmInsuranceAttachmentAdd, TCMotor DMSCarSv/Insurance) =====

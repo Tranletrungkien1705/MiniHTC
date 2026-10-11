@@ -4304,6 +4304,8 @@ public sealed class ROWarrantyWork
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // #151 §12: audit fields
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Thư viện kỹ thuật (Ser_Technical_Library) — port 1:1 FrmSer_Technical_Library (TCMotor DMSCarSv). Kho tri thức sửa chữa lặp: triệu chứng / nguyên nhân / giải pháp theo model/xe.</summary>
@@ -5961,6 +5963,11 @@ public sealed class ComplaintErrorCode
     public int WarrantyKm { get; set; }
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #151 §12: audit fields (Ser_MST_ROComplaintDiagnosticError: BizCarSv.AssignmentOfWork.cs:8017-8020)
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -9257,8 +9264,12 @@ public sealed class ModelAudImage
     public string? FilePath { get; set; }
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #151 §12: audit fields
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>
