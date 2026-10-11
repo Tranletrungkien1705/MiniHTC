@@ -1388,6 +1388,13 @@ public sealed class TransportReqCar
     public string TransportReqDtlStatus { get; set; } = "P";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+
+    // --- #Round121 §12 parity TransportRequestDetailCollection / DbDefine.cs:795 ---
+    public string? SpecDesc { get; set; }
+    public DateTime? DeliveryStartDate { get; set; }
+    public string? DealerCode { get; set; }
+    public string? EngineNo { get; set; }
+    public string? ModelCode { get; set; }
 }
 
 /// <summary>Phí vận chuyển theo tuyến (Mst_TranspFee — port 1:1 FrmNewTranspFee/FrmMngTranspFee, Phase2):
@@ -13513,6 +13520,11 @@ public sealed class StorageRearrange
     public string? ApprovedBy2 { get; set; }
     /// <summary>Ghi chú của người duyệt — nguồn ghi ở CẢ hai cấp và CẢ hai nhánh (duyệt lẫn không duyệt).</summary>
     public string? Remark { get; set; }
+
+    // --- #Round121 §12 parity Sto_StorageRearrange / DbDefine.cs:815 ---
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 public sealed class StorageRearrangeDetail
 {
@@ -13546,6 +13558,10 @@ public sealed class StorageRearrangeDetail
     public DateTime? RearrangeEndDate { get; set; }
     public DateTime? ConfirmDate { get; set; }
     public string? ConfirmBy { get; set; }
+
+    // --- #Round121 §12 parity Sto_StorageRearrangeDetail / DbDefine.cs:825 ---
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đề nghị bảo hiểm (Ins_InsuranceReq + Dtl) — port 1:1 FrmNewInsuranceReq (2010.HTC/Sales/Purchase). Đề nghị mua bảo hiểm cho lô VIN theo hãng + loại hình.</summary>
