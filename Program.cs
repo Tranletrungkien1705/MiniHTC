@@ -118829,7 +118829,7 @@ app.MapGet("/api/mstdeliveryforms", async (AppDbContext db, ITenantContext t,
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = await qy.OrderBy(x => x.DeliveryFormCode).Skip(skip).Take(take)
-        .Select(x => new { x.Id, x.DeliveryFormCode, x.DeliveryFormName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => new { x.Id, x.DeliveryFormCode, x.DeliveryFormName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt })
         .ToListAsync();
     return Results.Ok(new
     {
@@ -118853,7 +118853,7 @@ app.MapGet("/api/mstdeliveryforms/{code}", async (string code, AppDbContext db, 
     return Results.Ok(new
     {
         r.Id, r.DeliveryFormCode, r.DeliveryFormName, r.FlagActive,
-        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, r.CreatedAt, r.UpdatedAt
     });
 }).RequireAuthorization();
 
@@ -118882,11 +118882,12 @@ app.MapPost("/api/mstdeliveryforms", async (MstDeliveryFormDto dto, AppDbContext
     row.FlagActive = fa;
     row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = by;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         row.Id, row.DeliveryFormCode, row.DeliveryFormName, row.FlagActive,
-        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt, updated,
         writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
     });
 }).RequireAuthorization();
@@ -118900,8 +118901,19 @@ app.MapPost("/api/mstdeliveryforms/{code}/toggle", async (string code, AppDbCont
     r.FlagActive = r.FlagActive == "1" ? "0" : "1";
     r.LogLUDateTime = DateTime.Now;
     r.LogLUBy = by;
+    r.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.DeliveryFormCode, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
+    return Results.Ok(new { r.DeliveryFormCode, r.FlagActive, r.LogLUDateTime, r.LogLUBy, r.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mstdeliveryforms/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var r = await db.MstDeliveryForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeliveryFormCode == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_DeliveryForm_CheckDB_DeliveryFormNotFound", deliveryFormCode = c });
+    db.MstDeliveryForms.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = true, deliveryFormCode = c });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #633 HAI MASTER KHIẾU NẠI ĐƠN PHỤ TÙNG (`BizCarSv.Master.cs`) =====
@@ -118939,7 +118951,7 @@ app.MapGet("/api/mstordercomplaintypes", async (AppDbContext db, ITenantContext 
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = await qy.OrderBy(x => x.OrderComplainType).Skip(skip).Take(take)
-        .Select(x => new { x.Id, x.OrderComplainType, x.OrderComplainTypeName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => new { x.Id, x.OrderComplainType, x.OrderComplainTypeName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt })
         .ToListAsync();
     return Results.Ok(new
     {
@@ -118961,7 +118973,7 @@ app.MapGet("/api/mstordercomplaintypes/{type}", async (string type, AppDbContext
     return Results.Ok(new
     {
         r.Id, r.OrderComplainType, r.OrderComplainTypeName, r.FlagActive,
-        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, r.CreatedAt, r.UpdatedAt
     });
 }).RequireAuthorization();
 
@@ -118990,11 +119002,12 @@ app.MapPost("/api/mstordercomplaintypes", async (MstOrderComplainTypeDto dto, Ap
     row.FlagActive = fa;
     row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = by;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         row.Id, row.OrderComplainType, row.OrderComplainTypeName, row.FlagActive,
-        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt, updated,
         writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
     });
 }).RequireAuthorization();
@@ -119008,8 +119021,19 @@ app.MapPost("/api/mstordercomplaintypes/{type}/toggle", async (string type, AppD
     r.FlagActive = r.FlagActive == "1" ? "0" : "1";
     r.LogLUDateTime = DateTime.Now;
     r.LogLUBy = by;
+    r.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.OrderComplainType, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
+    return Results.Ok(new { r.OrderComplainType, r.FlagActive, r.LogLUDateTime, r.LogLUBy, r.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mstordercomplaintypes/{type}", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.MstOrderComplainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_OrderComplainType_CheckDB_OrderComplainTypeNotFound", orderComplainType = c });
+    db.MstOrderComplainTypes.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = true, orderComplainType = c });
 }).RequireAuthorization();
 
 // #5564 — Mst_OrderComplainImageType (DMSCarSv, TERP.BizCarSv/Mst_OrderComplainImageTypeService.cs):
@@ -119030,7 +119054,7 @@ app.MapGet("/api/mstordercomplainimagetypes", async (AppDbContext db, ITenantCon
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = await qy.OrderBy(x => x.OrderComplainImageType).Skip(skip).Take(take)
-        .Select(x => new { x.Id, x.OrderComplainImageType, x.OrderComplainImageName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => new { x.Id, x.OrderComplainImageType, x.OrderComplainImageName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt })
         .ToListAsync();
     return Results.Ok(new
     {
@@ -119048,7 +119072,7 @@ app.MapGet("/api/mstordercomplainimagetypes/{type}", async (string type, AppDbCo
     return Results.Ok(new
     {
         r.Id, r.OrderComplainImageType, r.OrderComplainImageName, r.FlagActive,
-        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, r.CreatedAt, r.UpdatedAt
     });
 }).RequireAuthorization();
 
@@ -119078,11 +119102,12 @@ app.MapPost("/api/mstordercomplainimagetypes", async (MstOrderComplainImageTypeD
     row.FlagActive = fa;
     row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = by;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         row.Id, row.OrderComplainImageType, row.OrderComplainImageName, row.FlagActive,
-        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt, updated,
         writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
     });
 }).RequireAuthorization();
@@ -119096,8 +119121,19 @@ app.MapPost("/api/mstordercomplainimagetypes/{type}/toggle", async (string type,
     r.FlagActive = r.FlagActive == "1" ? "0" : "1";
     r.LogLUDateTime = DateTime.Now;
     r.LogLUBy = by;
+    r.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.OrderComplainImageType, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
+    return Results.Ok(new { r.OrderComplainImageType, r.FlagActive, r.LogLUDateTime, r.LogLUBy, r.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mstordercomplainimagetypes/{type}", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.MstOrderComplainImageTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainImageType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_OrderComplainImageType_CheckDB_OrderComplainImageTypeNotFound", orderComplainImageType = c });
+    db.MstOrderComplainImageTypes.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = true, orderComplainImageType = c });
 }).RequireAuthorization();
 
 // ===== #Round154 1:1 error codes & guards Ser_Mst_ReceptionError (BizCarSv.Tab.cs:1206-1268, :1425) =====
@@ -128023,12 +128059,16 @@ record MstDeliveryFormDto(string? DeliveryFormCode,
     string? DeliveryFormName,
     string? FlagActive,
     DateTime? CreatedDate = null,
-    string? CreatedBy = null);   // merge session-a
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record MstOrderComplainTypeDto(string? OrderComplainType,
     string? OrderComplainTypeName,
     string? FlagActive,
     DateTime? CreatedDate = null,
-    string? CreatedBy = null);   // merge session-a
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record SerReceptionErrorDto(string? ReceptionErrorCode,
     string? ReceptionErrorName,
     string? Remark,
@@ -128039,7 +128079,9 @@ record MstOrderComplainImageTypeDto(string? OrderComplainImageType,
     string? OrderComplainImageName,
     string? FlagActive,
     DateTime? CreatedDate = null,
-    string? CreatedBy = null);   // merge session-a
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo,
     string? FilePath,
     string? FileName);   // merge session-a

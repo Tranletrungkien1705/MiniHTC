@@ -19367,6 +19367,8 @@ public sealed class MstDeliveryForm
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? UpdatedAt { get; set; } = DateTime.Now;
 }
 
 public sealed class MstOrderComplainType
@@ -19380,6 +19382,8 @@ public sealed class MstOrderComplainType
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>#909 Danh mục LỖI TIẾP NHẬN (`Ser_Mst_ReceptionError`, `TERP.BizCarSv/Tab/BizCarSv.Tab.cs:1425`, LIVE),
@@ -19418,6 +19422,8 @@ public sealed class MstOrderComplainImageType
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? UpdatedAt { get; set; } = DateTime.Now;
 }
 
 public sealed class ReceptionAttachFileMst
