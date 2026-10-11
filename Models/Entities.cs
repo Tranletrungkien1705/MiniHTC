@@ -8448,6 +8448,14 @@ public sealed class SalesOrder
     /// duy nhất còn SỐNG của màn `FrmMngOrderHtc` (mọi lời gọi `SearchSO` ở màn đó **đã bị comment**).
     /// Từ vựng: `"0"` / `"1"` (form chỉ gửi khi giá trị thuộc đúng hai giá trị này, `:611-617`).</summary>
     public string? FlagPmtDelayDone { get; set; }
+
+    // ===== #Round120 §12: TblOrd_SalesOrder (DbDefine.cs:4283-4292) =====
+    public DateTime? ApprovedDateOld { get; set; }
+    public DateTime? DepositDutyEndDateOld { get; set; }
+    public DateTime? GrtEndDateOld { get; set; }
+    public DateTime? CarDueDateOld { get; set; }
+    public DateTime? UpdDTime { get; set; }
+    public string? UpdBy { get; set; }
 }
 /// <summary>🔴 #5481 — Lượt duyệt tự động đơn hàng DMS40 (FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade).
 /// LIVE biz = `DMS40_Ord_SalesOrderRoot_ApprAuto_New20210522` (`BizHTC.Order.cs:28-1477`, qua WS
@@ -8572,6 +8580,10 @@ public sealed class DealerDeal
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    // ===== #Round120 §12: TblDealerDeal (DbDefine.cs:718, 720) =====
+    public string? BankName { get; set; }
+    public string? PmtType { get; set; }
 }
 public sealed class DealerDealDetail
 {    public decimal? WarrantyKM { get; set; }
@@ -8635,6 +8647,10 @@ public sealed class DealerDealDetail
     public DateTime? WarrantyExpiresDate { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    // ===== #Round120 §12: TblDealerDealDetail (DbDefine.cs:748, 749) =====
+    public string? OS_HDDT_InvoiceLink { get; set; }
+    public string? OS_HDDT_InvoiceCode { get; set; }
 }
 
 /// <summary>
