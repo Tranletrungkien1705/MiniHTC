@@ -20733,37 +20733,97 @@ app.MapGet("/api/bankaccounts", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(bank)) q = q.Where(a => a.BankCode == bank);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(a => a.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(a => a.FlagActive == active);
-    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new { a.AccountNo, a.AccountName, a.BankCode, a.DealerCode, a.FlagAccGrtClaim, a.FlagActive, a.CreatedAt }).ToListAsync();   // #1254 §12
+    var items = await q.OrderByDescending(a => a.Id).Take(500).Select(a => new
+    {
+        a.AccountNo, a.AccountNoHTC, a.AccountName, a.BankCode, a.DealerCode,
+        a.FlagAccGrtClaim, a.FlagActive, a.FlagisHTC, a.CreatedDate, a.CreatedBy,
+        a.LogLUDateTime, a.LogLUBy, a.CreatedAt
+    }).ToListAsync();   // #1254 §12, Round 139
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/bankaccounts", async (BankAccountDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/bankaccounts/{acc}", async (string acc, AppDbContext db, ITenantContext t) =>
 {
-    // audit 2026-09-03: nguồn (btnSave_Click, Excel-row validate) bắt buộc AccountName/BankCode/DealerCode/FlagAccGrtClaim
-    // — port trước chỉ check AccountNo, và dedupe chỉ theo AccountNo (nguồn dùng khóa hỗn hợp AccountNo+BankCode, xem
-    // BankAccountKey trong FrmMstAccountBank.cs — 1 số TK có thể lặp lại ở NH khác).
-    if (string.IsNullOrWhiteSpace(dto.AccountNo)) return Results.BadRequest(new { error = "Số tài khoản không được trống!" });
-    if (string.IsNullOrWhiteSpace(dto.AccountName)) return Results.BadRequest(new { error = "Tên tài khoản không được để trống" });
-    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "Mã ngân hàng không được để trống" });
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Mã đại lý không được để trống" });
-    if (string.IsNullOrWhiteSpace(dto.FlagAccGrtClaim) || (dto.FlagAccGrtClaim != "0" && dto.FlagAccGrtClaim != "1"))
-        return Results.BadRequest(new { error = "Cờ TK Công văn không hợp lệ!" });
-    var acc = dto.AccountNo.Trim(); var bankCode = dto.BankCode.Trim();
-    if (await db.BankAccounts.AnyAsync(a => a.OrgId == t.OrgId && a.AccountNo == acc && a.BankCode == bankCode))
-        return Results.BadRequest(new { error = $"Tài khoản import '{acc}' thuộc ngân hàng '{bankCode}' đã tồn tại!" });
-    var a2 = new BankAccount { OrgId = t.OrgId, AccountNo = acc, AccountName = dto.AccountName, BankCode = bankCode, DealerCode = dto.DealerCode, FlagAccGrtClaim = dto.FlagAccGrtClaim, FlagActive = "1" };
-    db.BankAccounts.Add(a2); await db.SaveChangesAsync();
-    return Results.Ok(new { a2.AccountNo });
+    var a = (acc ?? "").Trim();
+    var row = await db.BankAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountNo == a);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_BankAccount_CheckDB_BankAccountNotFound", accountNo = a });
+    return Results.Ok(new
+    {
+        row.AccountNo, row.AccountNoHTC, row.AccountName, row.BankCode, row.DealerCode,
+        row.FlagAccGrtClaim, row.FlagActive, row.FlagisHTC, row.CreatedDate, row.CreatedBy,
+        row.LogLUDateTime, row.LogLUBy
+    });
 }).RequireAuthorization();
 
-app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/bankaccounts", async (BankAccountDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    acc = acc.Trim();
-    var a = await db.BankAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountNo == acc);
-    if (a is null) return Results.NotFound(new { acc });
-    a.FlagActive = a.FlagActive == "1" ? "0" : "1";
+    // audit 2026-09-03, 2026-10-11: nguồn (btnSave_Click, Excel-row validate, Biz.HTC.WH.My.cs:9070-9140)
+    // bắt buộc AccountNo/AccountName/BankCode/DealerCode/FlagAccGrtClaim. Chuẩn hoá 1:1 error codes & guards.
+    if (string.IsNullOrWhiteSpace(dto.AccountNo)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Số tài khoản không được trống!" });
+    if (string.IsNullOrWhiteSpace(dto.AccountName)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Tên tài khoản không được để trống" });
+    if (string.IsNullOrWhiteSpace(dto.BankCode)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Mã ngân hàng không được để trống" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Mã đại lý không được để trống" });
+    if (string.IsNullOrWhiteSpace(dto.FlagAccGrtClaim) || (dto.FlagAccGrtClaim != "0" && dto.FlagAccGrtClaim != "1"))
+        return Results.BadRequest(new { error = "ErrHTC.Mst_BankAccount_Save_InvalidFlagAccGrtClaim", message = "Cờ TK Công văn không hợp lệ!" });
+
+    var acc = dto.AccountNo.Trim();
+    var bankCode = dto.BankCode.Trim().ToUpperInvariant();
+    var dealerCode = dto.DealerCode.Trim().ToUpperInvariant();
+
+    // Guard: kiểm tra BankCode tồn tại trong MstBank (Biz.HTC.WH.My.cs:9114-9136)
+    var bankExists = await db.MstBanks.AnyAsync(b => b.OrgId == t.OrgId && b.BankCode == bankCode);
+    if (!bankExists)
+        return Results.BadRequest(new { error = "ErrHTC.Mst_BankAccount_Save_InValidBankCode", message = $"Ngân hàng '{bankCode}' không tồn tại!" });
+
+    // Guard: kiểm tra DealerCode tồn tại trong Dealer (Biz.HTC.WH.My.cs:9093-9099)
+    var dealerExists = await db.Dealers.AnyAsync(d => d.OrgId == t.OrgId && d.DealerCode == dealerCode);
+    if (!dealerExists)
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstDealerNotFound", message = $"Đại lý '{dealerCode}' không tồn tại!" });
+
+    // Guard: kiểm tra duplicate AccountNo + BankCode (nguồn dùng khóa hỗn hợp AccountNo+BankCode)
+    if (await db.BankAccounts.AnyAsync(a => a.OrgId == t.OrgId && a.AccountNo == acc && a.BankCode == bankCode))
+        return Results.BadRequest(new { error = "ErrHTC.Mst_BankAccount_Save_DuplicateAccountNo", message = $"Tài khoản import '{acc}' thuộc ngân hàng '{bankCode}' đã tồn tại!" });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var flagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+
+    var a2 = new BankAccount
+    {
+        OrgId = t.OrgId,
+        AccountNo = acc,
+        AccountNoHTC = dto.AccountNoHTC?.Trim(),
+        AccountName = dto.AccountName.Trim(),
+        BankCode = bankCode,
+        DealerCode = dealerCode,
+        FlagAccGrtClaim = dto.FlagAccGrtClaim,
+        FlagActive = flagActive,
+        FlagisHTC = dto.FlagisHTC?.Trim(),
+        CreatedDate = dto.CreatedDate ?? now,
+        CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = dto.LogLUDateTime ?? now,
+        LogLUBy = dto.LogLUBy ?? who
+    };
+    db.BankAccounts.Add(a2);
     await db.SaveChangesAsync();
-    return Results.Ok(new { a.AccountNo, flagActive = a.FlagActive });
+    return Results.Ok(new
+    {
+        a2.AccountNo, a2.AccountNoHTC, a2.AccountName, a2.BankCode, a2.DealerCode,
+        a2.FlagAccGrtClaim, a2.FlagActive, a2.FlagisHTC, a2.CreatedDate, a2.CreatedBy,
+        a2.LogLUDateTime, a2.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/bankaccounts/{acc}/toggle", async (string acc, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var a = (acc ?? "").Trim();
+    var row = await db.BankAccounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AccountNo == a);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_BankAccount_CheckDB_BankAccountNotFound", accountNo = a });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.AccountNo, flagActive = row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // ===== 🔴 #228 BẢNG GIÁ GỬI TIN — `Mst_PriceSend_Get` (SMS.V10/SMS.Biz/BizSMS.MasterData.cs:851) =====
@@ -65914,8 +65974,25 @@ app.MapGet("/api/dealerzones", async (AppDbContext db, ITenantContext t, string?
     if (!string.IsNullOrWhiteSpace(zone)) q = q.Where(z => z.ZoneCode == zone);
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(z => z.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(z => z.FlagActive == active);
-    var items = await q.OrderByDescending(z => z.Id).Take(500).Select(z => new { z.DealerCode, z.ZoneCode, z.FlagActive, z.Remark, z.LogLUDateTime, z.LogLUBy, z.CreatedAt /*merge session-a*/  }).ToListAsync();   // #B92 §12
+    var items = await q.OrderByDescending(z => z.Id).Take(500).Select(z => new
+    {
+        z.Id, z.DealerCode, z.ZoneCode, z.FlagActive, z.Remark,
+        z.CreatedDate, z.CreatedBy, z.LogLUDateTime, z.LogLUBy, z.CreatedAt
+    }).ToListAsync();   // #B92 §12, Round 139
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/dealerzones/{dealer}/{zone}", async (string dealer, string zone, AppDbContext db, ITenantContext t) =>
+{
+    var dl = (dealer ?? "").Trim().ToUpperInvariant();
+    var zn = (zone ?? "").Trim().ToUpperInvariant();
+    var z = await db.DealerZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ZoneCode == zn);
+    if (z is null) return Results.NotFound(new { error = "ErrHTC.Mst_DealerZone_CheckDB_DealerZoneNotFound", dealerCode = dl, zoneCode = zn });
+    return Results.Ok(new
+    {
+        z.Id, z.DealerCode, z.ZoneCode, z.FlagActive, z.Remark,
+        z.CreatedDate, z.CreatedBy, z.LogLUDateTime, z.LogLUBy
+    });
 }).RequireAuthorization();
 
 // ===== #B92 GẮN ĐẠI LÝ VÀO VÙNG — `Mst_DealerZone_Add` (viết lại) =====
@@ -65944,7 +66021,7 @@ app.MapPost("/api/dealerzones", async (List<DealerZoneDto> rows, AppDbContext db
 {
     // Đầu vào là BẢNG; rỗng ⇒ TỪ CHỐI.
     if (rows is null || rows.Count == 0)
-        return Results.BadRequest(new { error = "Mst_DealerZone_AddX_Input_DealerZoneTblInvalid" });
+        return Results.BadRequest(new { error = "ErrHTC.Mst_DealerZone_AddX_Input_DealerZoneTblInvalid" });
 
     var now = DateTime.Now;
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -65955,23 +66032,23 @@ app.MapPost("/api/dealerzones", async (List<DealerZoneDto> rows, AppDbContext db
         var dl = (r.DealerCode ?? "").Trim().ToUpperInvariant();
         var zn = (r.ZoneCode ?? "").Trim().ToUpperInvariant();
         if (dl.Length == 0 || zn.Length == 0)
-            return Results.BadRequest(new { error = "Mst_DealerZone_AddX_Input_DealerZoneTblInvalid", check = new { Idx = i, DealerCode = dl, ZoneCode = zn } });
+            return Results.BadRequest(new { error = "ErrHTC.Mst_DealerZone_AddX_Input_DealerZoneTblInvalid", check = new { Idx = i, DealerCode = dl, ZoneCode = zn } });
 
         // Guard 1: đại lý phải TỒN TẠI và ĐANG HOẠT ĐỘNG.
         var dealer = await db.Dealers.FirstOrDefaultAsync(d => d.OrgId == t.OrgId && d.DealerCode == dl);
         if (dealer is null || dealer.FlagActive != "1")
-            return Results.BadRequest(new { error = "Common_InvalidDealerCode", check = new { Idx = i, DealerCode = dl } });
+            return Results.BadRequest(new { error = "ErrHTC.Common_InvalidDealerCode", check = new { Idx = i, DealerCode = dl } });
 
         // Guard 2: VÙNG phải TỒN TẠI và ĐANG HOẠT ĐỘNG (khác #B89 vốn truyền "" = không kiểm).
         var zone = await db.MstZones.FirstOrDefaultAsync(z => z.OrgId == t.OrgId && z.ZoneCode == zn);
         if (zone is null || zone.FlagActive != "1")
-            return Results.BadRequest(new { error = "Mst_Zone_InvalidOrInactive", check = new { Idx = i, ZoneCode = zn } });
+            return Results.BadRequest(new { error = "ErrHTC.Mst_Zone_InvalidOrInactive", check = new { Idx = i, ZoneCode = zn } });
 
         var cur = await db.DealerZones.FirstOrDefaultAsync(z => z.OrgId == t.OrgId && z.DealerCode == dl && z.ZoneCode == zn);
         if (cur is not null && cur.FlagActive == "1")
             return Results.BadRequest(new
             {
-                error = "Mst_DealerZone_AddX_Input_DealerZoneExist",
+                error = "ErrHTC.Mst_DealerZone_AddX_Input_DealerZoneExist",
                 check = new { Idx = i, DealerCode = dl, ZoneCode = zn, FlagActiveDB = cur.FlagActive }
             });
 
@@ -65987,7 +66064,8 @@ app.MapPost("/api/dealerzones", async (List<DealerZoneDto> rows, AppDbContext db
             db.DealerZones.Add(new DealerZone
             {
                 OrgId = t.OrgId, DealerCode = dl, ZoneCode = zn, FlagActive = "1",
-                Remark = r.Remark, LogLUDateTime = now, LogLUBy = by
+                Remark = r.Remark, CreatedDate = r.CreatedDate ?? now, CreatedBy = r.CreatedBy ?? by,
+                LogLUDateTime = r.LogLUDateTime ?? now, LogLUBy = r.LogLUBy ?? by
             });
             inserted.Add(new { dealerCode = dl, zoneCode = zn });
         }
@@ -66006,14 +66084,17 @@ app.MapPost("/api/dealerzones", async (List<DealerZoneDto> rows, AppDbContext db
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealerzones/{dealer}/{zone}/toggle", async (string dealer, string zone, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealerzones/{dealer}/{zone}/toggle", async (string dealer, string zone, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    dealer = dealer.Trim().ToUpperInvariant(); zone = zone.Trim().ToUpperInvariant();
-    var z = await db.DealerZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.ZoneCode == zone);
-    if (z is null) return Results.NotFound(new { dealer, zone });
+    var dl = (dealer ?? "").Trim().ToUpperInvariant();
+    var zn = (zone ?? "").Trim().ToUpperInvariant();
+    var z = await db.DealerZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.ZoneCode == zn);
+    if (z is null) return Results.NotFound(new { error = "ErrHTC.Mst_DealerZone_CheckDB_DealerZoneNotFound", dealerCode = dl, zoneCode = zn });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     z.FlagActive = z.FlagActive == "1" ? "0" : "1";
+    z.LogLUDateTime = DateTime.Now; z.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { z.DealerCode, z.ZoneCode, flagActive = z.FlagActive });
+    return Results.Ok(new { z.DealerCode, z.ZoneCode, flagActive = z.FlagActive, z.CreatedDate, z.CreatedBy, z.LogLUDateTime, z.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Điều khoản thanh toán (PaymentTerm — port 1:1 FrmMst_Dieu_Khoan_ThanhToan, 2010.HTC/Admin/Product) =====
@@ -93384,22 +93465,81 @@ app.MapPost("/api/mstviolatetypes/{id}/toggle", async (string id, AppDbContext d
 // Active), ghi `FlagActive` + `LogLUDTime`/`LogLUBy` (tên cột nguồn viết TẮT, không có "ate").
 // Entity `MstZone` (#B89) ĐÃ CÓ SẴN (dùng làm bảng tra cứu cho `ZoneCode` ở nơi khác) nhưng CHƯA có
 // route riêng cho chính màn quản trị này — tái sử dụng, không tạo trùng.
-app.MapGet("/api/mstzones", async (AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/mstzones", async (AppDbContext db, ITenantContext t, string? flagActive) =>
 {
-    var items = await db.MstZones.Where(x => x.OrgId == t.OrgId)
-        .Select(x => new { x.ZoneCode, x.ZoneName, x.FlagActive, x.LogLUDTime, x.LogLUBy }).ToListAsync();
+    var q = db.MstZones.Where(x => x.OrgId == t.OrgId);
+    if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
+    var items = await q.OrderBy(x => x.ZoneCode)
+        .Select(x => new { x.Id, x.ZoneCode, x.ZoneName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/mstzones/{zoneCode}/toggle-active", async (string zoneCode, string flagActive, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+app.MapGet("/api/mstzones/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (zoneCode ?? "").Trim();
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var r = await db.MstZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ZoneCode == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_Zone_CheckDB_ZoneNotFound", zoneCode = c });
+    return Results.Ok(new
+    {
+        r.Id, r.ZoneCode, r.ZoneName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDTime, r.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstzones", async (MstZoneDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.ZoneCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần ZoneCode." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.Mst_Zone_CheckDB_FlagActiveNotMatched", message = "FlagActive chỉ nhận 0/1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var row = await db.MstZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ZoneCode == code);
-    if (row is null) return Results.NotFound(new { error = "Mst_Zone_CheckDB_NotExist", zoneCode = code });
-    row.FlagActive = (flagActive ?? "1").Trim();
-    row.LogLUDTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new MstZone
+        {
+            OrgId = t.OrgId,
+            ZoneCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.MstZones.Add(row);
+    }
+    row.ZoneName = dto.ZoneName;
+    row.FlagActive = fa;
+    row.LogLUDTime = DateTime.Now;
+    row.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.ZoneCode, row.FlagActive });
+    return Results.Ok(new
+    {
+        row.Id, row.ZoneCode, row.ZoneName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDTime, row.LogLUBy, updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstzones/{zoneCode}/toggle-active", async (string zoneCode, string? flagActive, AppDbContext db, ITenantContext t, string? partnerUserCode, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (zoneCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.MstZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ZoneCode == code);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_Zone_CheckDB_ZoneNotFound", zoneCode = code });
+    var who = partnerUserCode ?? user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = string.IsNullOrWhiteSpace(flagActive) ? (row.FlagActive == "1" ? "0" : "1") : flagActive.Trim();
+    row.LogLUDTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ZoneCode, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstzones/{zoneCode}/toggle", async (string zoneCode, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (zoneCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.MstZones.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ZoneCode == code);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_Zone_CheckDB_ZoneNotFound", zoneCode = code });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ZoneCode, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // ===== #5842 Danh mục LOẠI CHI PHÍ — `FrmMst_QuanLyLoaiChiPhi` (2010.HTC/Admin/Product) =====
@@ -124674,7 +124814,7 @@ record DlvUpdateDealerDto(string? DealerCode, string? TAddress, DateTime? DlvEnd
 record HmcSalesDto(string VIN, string? DealerCode, string? ModelCode, DateTime? TransactionDate, string? DeliveryType, string? SalesType);
 record BackOrderDto(string DealerCode, string? DealerName, string ModelCode, string? SpecDesc, int QtyOrder, int QtyDelivered);
 record SalesInvThresholdDto(string DealerCode, string ModelCode, decimal NguongBH, string? Remark = null, DateTime? CreatedDate = null, string? CreatedBy = null);   // #389 NguongBH decimal như bản chuẩn
-record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim);
+record BankAccountDto(string AccountNo, string? AccountName, string? BankCode, string? DealerCode, string? FlagAccGrtClaim, string? AccountNoHTC = null, string? FlagisHTC = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record GpsUnitPriceDto(string ContractNo, decimal UnitPrice, DateTime? EffStartDate);
 record InventoryCostDto(string StorageCode, string? StorageName, string CostTypeCode, string? CostTypeName, decimal UnitPrice);
 record DelayTransportDto(string DealerCode, string? DealerName, string StorageCode, string? StorageName, int DelayDays);
@@ -125914,7 +126054,8 @@ record CarAllocationDto(string ModelCode, string SpecCode, decimal MBPercent, de
 record CarOCNDto(string OCNCode, string ModelCode, string? OCNDesc);
 record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode, string? BankBranchName, string? CreditContractNo, DateTime? CreditContractDate, decimal CreditAmount, string? FlagBankGrt, string? FlagBankPmt, string? Remark);
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
-record DealerZoneDto(string DealerCode, string ZoneCode, string? Remark);   // #B92 +Remark
+record DealerZoneDto(string DealerCode, string ZoneCode, string? Remark = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #B92 +Remark, Round 139 §12
+record MstZoneDto(string ZoneCode, string? ZoneName = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDTime = null, string? LogLUBy = null);
 /// <summary>Một dòng lưới model/quy cách của điều khoản thanh toán.</summary>
 record PaymentTermDetailDto(string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? FlagDepositPmt,
     DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);

@@ -12257,11 +12257,17 @@ public sealed class BankAccount
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string AccountNo { get; set; } = "";
+    public string? AccountNoHTC { get; set; }
     public string? AccountName { get; set; }
     public string? BankCode { get; set; }
     public string? DealerCode { get; set; }
     public string FlagAccGrtClaim { get; set; } = "0";
     public string FlagActive { get; set; } = "1";
+    public string? FlagisHTC { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
@@ -12813,6 +12819,8 @@ public sealed class MstZone
     public string ZoneCode { get; set; } = "";
     public string? ZoneName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     /// <summary>`Mst_Zone.LogLUDTime` — tên cột nguồn viết TẮT, không phải `LogLUDateTime`.</summary>
     public DateTime? LogLUDTime { get; set; }
     public string? LogLUBy { get; set; }
@@ -12829,6 +12837,8 @@ public sealed class DealerZone
     // ===== #B92 parity `Mst_DealerZone` (`BizHTC.MasterData.cs:5208`) =====
     /// <summary>`Mst_DealerZone.Remark` — nguồn mang cột này trong `MyBuildDBDT_Common`; port cũ thiếu.</summary>
     public string? Remark { get; set; }
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     /// <summary>🔴 Dấu vết sửa. Nguồn đặt tên **`LogLUDTime`** (như `Mst_Zone` ở #B89, KHÔNG có "ate");
     /// MiniHTC dùng `LogLUDateTime` cho thống nhất — giữ ánh xạ khi đồng bộ dữ liệu thật.</summary>
     public DateTime? LogLUDateTime { get; set; }
