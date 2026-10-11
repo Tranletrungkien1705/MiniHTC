@@ -65311,11 +65311,79 @@ app.MapGet("/api/masters/gps-error-types", async (
     return Results.Ok(new
     {
         MySummaryTable = new[] { new { MyCount = myCount } },
-        Mst_GPSErrorType = page.Select((x, i) => new { MyIdxSeq = start + i, x.GPSErrorType, x.GPSErrorTypeName, x.FlagActive }),
+        Mst_GPSErrorType = page.Select((x, i) => new
+        {
+            MyIdxSeq = start + i,
+            x.GPSErrorType,
+            x.GPSErrorTypeName,
+            x.FlagActive,
+            x.CreatedDate,
+            x.CreatedBy,
+            x.LogLUDateTime,
+            x.LogLUBy
+        }),
         recordStart = start, recordCount = count,
         readOnlyNote = "Chi co DUNG MOT cua _Get o WS64 => danh muc CHI DOC, khong sinh endpoint ghi (luat C0-...undequadragesimus).",
         threeFilterNote = "Nhan BA danh sach dieu kien roi (...GPSErrorTypeConditionList, ...GPSGPSErrorTypeNameConditionList - TEN CO 'GPSGPS' LAP, giu nguyen -, ...FlagActiveConditionList) thay vi mot strFt_WhereClause chung nhu hai man kia."
     });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/gps-error-types/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.GpsErrorTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GPSErrorType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_GPSErrorType_CheckDB_GPSErrorTypeNotFound", gpsErrorType = c });
+    return Results.Ok(new
+    {
+        row.Id, row.GPSErrorType, row.GPSErrorTypeName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/gps-error-types", async (GpsErrorTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.GPSErrorType ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần GPSErrorType." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.Mst_GPSErrorType_CheckDB_InvalidFlagActiveNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var row = await db.GpsErrorTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GPSErrorType == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new GpsErrorType
+        {
+            OrgId = t.OrgId,
+            GPSErrorType = code,
+            CreatedDate = DateTime.Now,
+            CreatedBy = who
+        };
+        db.GpsErrorTypes.Add(row);
+    }
+    row.GPSErrorTypeName = dto.GPSErrorTypeName?.Trim();
+    row.FlagActive = fa;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.GPSErrorType, row.GPSErrorTypeName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy,
+        updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/gps-error-types/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.GpsErrorTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GPSErrorType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_GPSErrorType_CheckDB_GPSErrorTypeNotFound", gpsErrorType = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.GPSErrorType, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // #5660 — Mst_Marriage (`Biz.HTC.WH.cs:191522/191826` — xác nhận lại đúng số dòng đã ghi, `--order by
@@ -65808,36 +65876,117 @@ app.MapGet("/api/masters/port-types", async (
     return Results.Ok(new
     {
         count = items.Count,
-        Mst_PortType = items.Select((x, i) => new { Index = i + 1, PORTTYPE = x.PortType, PORTTYPENAME = x.PortTypeName, STATUS = x.Status }),
+        Mst_PortType = items.Select((x, i) => new
+        {
+            Index = i + 1,
+            PORTTYPE = x.PortType,
+            PORTTYPENAME = x.PortTypeName,
+            STATUS = x.Status,
+            CreatedDate = x.CreatedDate,
+            CreatedBy = x.CreatedBy,
+            LogLUDateTime = x.LogLUDateTime,
+            LogLUBy = x.LogLUBy
+        }),
         columnNameNote = "TEN HANG C# KHAC GIA TRI CHUOI: TblPortType.PortTypeCode = 'PORTTYPE' (khong phai 'PortTypeCode'), PortTypeName = 'PORTTYPENAME', TblCommon.Status = 'STATUS'. Port lay TEN HANG lam ten cot la SAI TEN COT THAT - phai doc GIA TRI hang.",
         tableNameNote = "DbTable.Tbl_Port_Type = 'Mst_PortType' - grep 'Port_Type' KHONG ra ten bang that.",
         statusColumnNote = "Trang thai o bang nay la cot STATUS (TblCommon.Status), KHONG phai FlagActive nhu phan lon master khac."
     });
 }).RequireAuthorization();
 
+app.MapGet("/api/masters/port-types/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PortTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PortType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstPortTypeNotFound", portType = c });
+    return Results.Ok(new
+    {
+        row.Id, row.PortType, row.PortTypeName, row.Status,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/port-types", async (
+    PortTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.PortType ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần PortType." });
+    var st = string.IsNullOrWhiteSpace(dto.Status) ? "1" : dto.Status.Trim();
+    if (st is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Status chỉ nhận 0/1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var row = await db.PortTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PortType == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new PortTypeMst
+        {
+            OrgId = t.OrgId,
+            PortType = code,
+            CreatedDate = DateTime.Now,
+            CreatedBy = who
+        };
+        db.PortTypeMsts.Add(row);
+    }
+    row.PortTypeName = dto.PortTypeName?.Trim();
+    row.Status = st;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.PortType, row.PortTypeName, row.Status,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy,
+        updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/port-types/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PortTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PortType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstPortTypeNotFound", portType = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.Status = row.Status == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.PortType, row.Status, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
 app.MapPost("/api/masters/port-types/save", async (
-    PortTypeSaveDto dto, AppDbContext db, ITenantContext t) =>
+    PortTypeSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (dto.Rows is null || dto.Rows.Count == 0)
         return Results.BadRequest(new { error = "CommonSaveMasterData_TableNotFound", check = new { Table = "Mst_PortType" } });
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var existing = await db.PortTypeMsts.Where(x => x.OrgId == t.OrgId).ToListAsync();
     int ins = 0, upd = 0;
     foreach (var r in dto.Rows)
     {
-        var code = (r.PortType ?? "").Trim();
+        var code = (r.PortType ?? "").Trim().ToUpperInvariant();
         if (code.Length == 0) continue;
         var cur = existing.FirstOrDefault(x => x.PortType == code);
         if (cur is null)
         {
             db.PortTypeMsts.Add(new PortTypeMst
-            { OrgId = t.OrgId, PortType = code, PortTypeName = r.PortTypeName, Status = string.IsNullOrWhiteSpace(r.Status) ? "1" : r.Status.Trim() });
+            {
+                OrgId = t.OrgId,
+                PortType = code,
+                PortTypeName = r.PortTypeName,
+                Status = string.IsNullOrWhiteSpace(r.Status) ? "1" : r.Status.Trim(),
+                CreatedDate = DateTime.Now,
+                CreatedBy = who,
+                LogLUDateTime = DateTime.Now,
+                LogLUBy = who
+            });
             ins++;
         }
         else
         {
             cur.PortTypeName = r.PortTypeName;
             if (!string.IsNullOrWhiteSpace(r.Status)) cur.Status = r.Status.Trim();
+            cur.LogLUDateTime = DateTime.Now;
+            cur.LogLUBy = who;
             upd++;
         }
     }
@@ -65859,35 +66008,116 @@ app.MapGet("/api/masters/salesorder-types", async (
     return Results.Ok(new
     {
         count = items.Count,
-        Mst_SalesOrderType = items.Select((x, i) => new { Index = i + 1, SOTYPE = x.SOType, SOTYPENAME = x.SOTypeName, STATUS = x.Status }),
+        Mst_SalesOrderType = items.Select((x, i) => new
+        {
+            Index = i + 1,
+            SOTYPE = x.SOType,
+            SOTYPENAME = x.SOTypeName,
+            STATUS = x.Status,
+            CreatedDate = x.CreatedDate,
+            CreatedBy = x.CreatedBy,
+            LogLUDateTime = x.LogLUDateTime,
+            LogLUBy = x.LogLUBy
+        }),
         columnNameNote = "TblSoType.SO_Type = 'SOTYPE', SO_TypeName = 'SOTYPENAME' - ten hang khac gia tri chuoi (cung bay voi #B167).",
         tableNameNote = "DbTable.Tbl_So_Type = 'Mst_SalesOrderType'."
     });
 }).RequireAuthorization();
 
+app.MapGet("/api/masters/salesorder-types/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.SalesOrderTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstSalesOrderTypeNotFound", soType = c });
+    return Results.Ok(new
+    {
+        row.Id, row.SOType, row.SOTypeName, row.Status,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/salesorder-types", async (
+    SalesOrderTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.SOType ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần SOType." });
+    var st = string.IsNullOrWhiteSpace(dto.Status) ? "1" : dto.Status.Trim();
+    if (st is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Status chỉ nhận 0/1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var row = await db.SalesOrderTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new SalesOrderTypeMst
+        {
+            OrgId = t.OrgId,
+            SOType = code,
+            CreatedDate = DateTime.Now,
+            CreatedBy = who
+        };
+        db.SalesOrderTypeMsts.Add(row);
+    }
+    row.SOTypeName = dto.SOTypeName?.Trim();
+    row.Status = st;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.SOType, row.SOTypeName, row.Status,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy,
+        updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/salesorder-types/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.SalesOrderTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstSalesOrderTypeNotFound", soType = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.Status = row.Status == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.SOType, row.Status, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
 app.MapPost("/api/masters/salesorder-types/save", async (
-    SalesOrderTypeSaveDto dto, AppDbContext db, ITenantContext t) =>
+    SalesOrderTypeSaveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (dto.Rows is null || dto.Rows.Count == 0)
         return Results.BadRequest(new { error = "CommonSaveMasterData_TableNotFound", check = new { Table = "Mst_SalesOrderType" } });
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var existing = await db.SalesOrderTypeMsts.Where(x => x.OrgId == t.OrgId).ToListAsync();
     int ins = 0, upd = 0;
     foreach (var r in dto.Rows)
     {
-        var code = (r.SOType ?? "").Trim();
+        var code = (r.SOType ?? "").Trim().ToUpperInvariant();
         if (code.Length == 0) continue;
         var cur = existing.FirstOrDefault(x => x.SOType == code);
         if (cur is null)
         {
             db.SalesOrderTypeMsts.Add(new SalesOrderTypeMst
-            { OrgId = t.OrgId, SOType = code, SOTypeName = r.SOTypeName, Status = string.IsNullOrWhiteSpace(r.Status) ? "1" : r.Status.Trim() });
+            {
+                OrgId = t.OrgId,
+                SOType = code,
+                SOTypeName = r.SOTypeName,
+                Status = string.IsNullOrWhiteSpace(r.Status) ? "1" : r.Status.Trim(),
+                CreatedDate = DateTime.Now,
+                CreatedBy = who,
+                LogLUDateTime = DateTime.Now,
+                LogLUBy = who
+            });
             ins++;
         }
         else
         {
             cur.SOTypeName = r.SOTypeName;
             if (!string.IsNullOrWhiteSpace(r.Status)) cur.Status = r.Status.Trim();
+            cur.LogLUDateTime = DateTime.Now;
+            cur.LogLUBy = who;
             upd++;
         }
     }
@@ -124415,9 +124645,12 @@ record BankDealerUpdDto(string? FlagBankGrt, string? FlagBankPmt, string? FlagAc
 record CommonSaveTableDto(string? DbTableName, string? DsTableName);   // #B165
 record CommonSaveMasterDto(List<CommonSaveTableDto>? Tables);   // #B165
 record CarAllocationValidateDto(decimal? MBPercent, decimal? MTPercent, decimal? MNPercent);   // #B166
+record GpsErrorTypeDto(string? GPSErrorType, string? GPSErrorTypeName, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #Round141
 record PortTypeRowDto(string? PortType, string? PortTypeName, string? Status);   // #B167
+record PortTypeDto(string? PortType, string? PortTypeName, string? Status, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #Round141
 record PortTypeSaveDto(List<PortTypeRowDto>? Rows);   // #B167
 record SalesOrderTypeRowDto(string? SOType, string? SOTypeName, string? Status);   // #B168
+record SalesOrderTypeDto(string? SOType, string? SOTypeName, string? Status, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #Round141
 record SalesOrderTypeSaveDto(List<SalesOrderTypeRowDto>? Rows);   // #B168
 record InsuranceFeeRowDto(string? InsuranceContractNo, decimal? InsurancePercent, DateTime? EffStartDate, string? FlagActive);   // #B171
 record InsuranceFeeSaveDto(string? FlagIsDelete, List<InsuranceFeeRowDto>? Rows);   // #B171

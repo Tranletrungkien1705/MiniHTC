@@ -12574,6 +12574,11 @@ public sealed class GpsErrorType
     public string GPSErrorType { get; set; } = "";
     public string? GPSErrorTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round141 §12: Mst_GPSErrorType (BizHTC.ZTempGPS.cs:4453, 20180708.z1.NangCapBTBDVaGPS.sql:478) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B159 — `Mst_Marriage`: danh mục **tình trạng hôn nhân**, khoá `MarriageCode`.</summary>
@@ -12655,6 +12660,11 @@ public sealed class PortTypeMst
     public string PortType { get; set; } = "";
     public string? PortTypeName { get; set; }
     public string Status { get; set; } = "1";
+    // ===== #Round141 §12: Mst_PortType (DbDefine.cs:1294, FrmPortType.cs:64) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B168 — `Mst_SalesOrderType`: **loại đơn bán**. Cột thật **`SOTYPE`/`SOTYPENAME`**
@@ -12666,6 +12676,11 @@ public sealed class SalesOrderTypeMst
     public string SOType { get; set; } = "";
     public string? SOTypeName { get; set; }
     public string Status { get; set; } = "1";
+    // ===== #Round141 §12: Mst_SalesOrderType (DbDefine.cs:1683, FrmSalesOrderType.cs:64) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B169 — `Mst_DealerSalesGroupType`: **nhóm loại bán của đại lý**.
