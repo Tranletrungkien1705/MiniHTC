@@ -26003,47 +26003,75 @@ app.MapGet("/api/servicemodels", async (AppDbContext db, ITenantContext t, strin
     var stdByCode = await db.CarModelStds.Where(m => m.OrgId == t.OrgId && modelCodes.Contains(m.ModelCode))
         .Select(m => new { m.ModelCode, m.ModelName }).ToListAsync();
     var items = page.Select(x => new { x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.ModelID, x.DealerCode, x.FlagActive, x.IsActive,   // #1549 ECHO cot nguon IsActive
-        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt,   // #1313 §12
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt,   // #1313 #Round156 §12
         mcmstd_ModelCode = stdByCode.FirstOrDefault(m => m.ModelCode == x.ModelCode)?.ModelCode,   // #1499 ECHO
         mcmstd_ModelName = stdByCode.FirstOrDefault(m => m.ModelCode == x.ModelCode)?.ModelName }).ToList();   // #1499 ECHO
     return Results.Ok(new { count = items.Count, items,
         echoColumnsFromJoin = "#1499: mcmstd_ModelCode/mcmstd_ModelName (join Mst_CarModelStd theo ModelCode) — 2 cot ECHO nguon tra ra (bai hoc #542/#543)" });
 }).RequireAuthorization();
 
+app.MapGet("/api/servicemodels/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var x = await db.ServiceModels.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ModelCode == c);
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Model_NotFound", code = c });
+    var std = await db.CarModelStds.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.ModelCode == c);
+    return Results.Ok(new
+    {
+        x.ModelCode, x.ModelName, x.TradeMarkCode, x.ProductionCode, x.ModelID, x.DealerCode, x.FlagActive, x.IsActive,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt,
+        mcmstd_ModelCode = std?.ModelCode,
+        mcmstd_ModelName = std?.ModelName
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa nhập mã model." });
-    if (string.IsNullOrWhiteSpace(dto.ModelName)) return Results.BadRequest(new { error = "Chưa nhập tên model." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_Model_Create_ModelCodeNotEmty", message = "Chưa nhập mã model." });
+    if (string.IsNullOrWhiteSpace(dto.ModelName)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập tên model." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var code = dto.ModelCode.Trim().ToUpperInvariant();
+    var now = DateTime.Now;
+    var who = (partnerUserCode ?? "system").Trim();
     var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
     if (ex is not null)
     {
-        ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.ModelID = dto.ModelID; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1"; ex.IsActive = dto.IsActive;   // #1549
+        ex.ModelName = dto.ModelName; ex.TradeMarkCode = dto.TradeMarkCode; ex.ProductionCode = dto.ProductionCode; ex.ModelID = dto.ModelID; ex.DealerCode = dto.DealerCode;
+        if (!string.IsNullOrWhiteSpace(dto.FlagActive)) ex.FlagActive = dto.FlagActive!;
+        ex.IsActive = dto.IsActive ?? ex.FlagActive;
         // #1129 §12: nguồn `_Update_New20200203` (có tham số strIsActive) LUÔN ghi LogLUDateTime/LogLUBy —
-        // entity chưa từng có cột này, nhánh SỬA-QUA-UPSERT bỏ sót hoàn toàn.
-        ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = (partnerUserCode ?? "system").Trim();
+        ex.LogLUDateTime = dto.LogLUDateTime ?? now; ex.LogLUBy = dto.LogLUBy ?? who;
+        ex.UpdatedAt = now;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.ModelCode, updated = true });
+        return Results.Ok(new { ex.ModelCode, ex.ModelName, ex.TradeMarkCode, ex.ProductionCode, ex.ModelID, ex.DealerCode, ex.FlagActive, ex.IsActive, ex.CreatedDate, ex.CreatedBy, ex.LogLUDateTime, ex.LogLUBy, ex.CreatedAt, ex.UpdatedAt, updated = true });
     }
     // #1049: Ser_Mst_Model_Create_New20200203 ghi CreatedDate/CreatedBy VÔ ĐIỀU KIỆN lúc tạo.
-    var r = new ServiceModel { OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, ModelID = dto.ModelID, DealerCode = dto.DealerCode, FlagActive = "1", IsActive = dto.IsActive,   // #1549
-        CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim(),
+    var r = new ServiceModel
+    {
+        OrgId = t.OrgId, ModelCode = code, ModelName = dto.ModelName, TradeMarkCode = dto.TradeMarkCode, ProductionCode = dto.ProductionCode, ModelID = dto.ModelID, DealerCode = dto.DealerCode,
+        FlagActive = dto.FlagActive ?? "1", IsActive = dto.IsActive ?? (dto.FlagActive ?? "1"),
+        CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who,
         // #1129 §12: nguồn Create cũng ghi LogLUDateTime/LogLUBy cùng lúc với Created*.
-        LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim() };
+        LogLUDateTime = dto.LogLUDateTime ?? now, LogLUBy = dto.LogLUBy ?? who,
+        CreatedAt = now, UpdatedAt = now
+    };
     db.ServiceModels.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.ModelCode, updated = false });
+    return Results.Ok(new { r.ModelCode, r.ModelName, r.TradeMarkCode, r.ProductionCode, r.ModelID, r.DealerCode, r.FlagActive, r.IsActive, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, r.CreatedAt, r.UpdatedAt, updated = false });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicemodels/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ServiceModels.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ModelCode == code);
-    if (x is null) return Results.NotFound(new { code });
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Model_NotFound", code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.IsActive = x.FlagActive;
+    x.UpdatedAt = DateTime.Now;
     // #1129: toggle = gọi _Update_New20200203 đổi strIsActive — hàm nguồn luôn ghi 2 cột nhật ký.
     x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.ModelCode, flagActive = x.FlagActive });
+    return Results.Ok(new { x.ModelCode, flagActive = x.FlagActive, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt });
 }).RequireAuthorization();
 
 // Nhập model hàng loạt từ Excel (port 1:1 FrmImportModel) — cùng entity.
@@ -26282,9 +26310,23 @@ app.MapGet("/api/sermstlocations", async (AppDbContext db, ITenantContext t,
         .OrderBy(x => x.LocationCode)
         .Select(x => new { x.Id, x.LocationID, x.LocationCode, x.LocationName, x.StockNo, x.DealerCode, x.IsActive,
             x.LocationHight, x.LocationSurface, x.LocationType,   // #937
-            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })   // #1315 §12
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
+            x.CreatedAt, x.UpdatedAt })   // #1315 #Round156 §12
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/sermstlocations/{locationId}", async (string locationId, AppDbContext db, ITenantContext t) =>
+{
+    var id = (locationId ?? "").Trim();
+    var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Location_NotExist", locationId = id });
+    return Results.Ok(new
+    {
+        row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive,
+        row.LocationHight, row.LocationSurface, row.LocationType,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt
+    });
 }).RequireAuthorization();
 
 // ===== 🔴 #1516 `Ser_Mst_Location_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:4843`) — GET DANH MỤC VỊ TRÍ KHO =====
@@ -26405,24 +26447,30 @@ app.MapGet("/api/serlocations/getbyfilter", async (AppDbContext db, ITenantConte
 app.MapPost("/api/sermstlocations", async (SerMstLocationDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var lc = (dto.LocationCode ?? "").Trim().ToUpperInvariant();
-    if (lc.Length == 0) return Results.BadRequest(new { error = "thieu LocationCode" });
+    if (lc.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập mã vị trí kho." });
     var dl = (dto.DealerCode ?? "").Trim();
+    if (dl.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa chọn đại lý." });
+    if (!string.IsNullOrWhiteSpace(dto.IsActive) && dto.IsActive != "0" && dto.IsActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "IsActive chỉ được là 0 hoặc 1." });
     var dup = await db.SerMstLocations.AnyAsync(x => x.OrgId == t.OrgId && x.LocationCode == lc && x.DealerCode == dl);
-    if (dup) return Results.Conflict(new { error = "Ser_Location_Exist", locationCode = lc, dealerCode = dl });
+    if (dup) return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_LocationCodeExist", locationCode = lc, dealerCode = dl });
     // #1070: Ser_Mst_Location_Create ghi VÔ ĐIỀU KIỆN CreatedDate/CreatedBy/LogLUDateTime/LogLUBy.
     var by1070 = (partnerUserCode ?? "system").Trim(); var now1070 = DateTime.Now;
     var row = new SerMstLocation
     {
         OrgId = t.OrgId, LocationCode = lc, LocationName = dto.LocationName,
-        StockNo = dto.StockNo, DealerCode = dl, IsActive = "1",
+        StockNo = dto.StockNo, DealerCode = dl, IsActive = dto.IsActive ?? "1",
         LocationID = (dto.LocationID ?? lc),
         // #937 §12: Ser_Mst_Location_Create ghi ca ba cot nay, port cu bo sot.
         LocationHight = dto.LocationHight, LocationSurface = dto.LocationSurface, LocationType = dto.LocationType,
-        CreatedDate = now1070, CreatedBy = by1070, LogLUDateTime = now1070, LogLUBy = by1070,
+        CreatedDate = dto.CreatedDate ?? now1070, CreatedBy = dto.CreatedBy ?? by1070,
+        LogLUDateTime = dto.LogLUDateTime ?? now1070, LogLUBy = dto.LogLUBy ?? by1070,
+        CreatedAt = now1070, UpdatedAt = now1070
     };
     db.SerMstLocations.Add(row); await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive,
-        row.LocationHight, row.LocationSurface, row.LocationType });
+        row.LocationHight, row.LocationSurface, row.LocationType,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMstLocationDto dto,
@@ -26430,7 +26478,9 @@ app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMst
 {
     var id = (locationId ?? "").Trim();
     var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id);
-    if (row is null) return Results.NotFound(new { error = "Ser_Location_NotExist", locationId = id });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Location_NotExist", locationId = id });
+    if (!string.IsNullOrWhiteSpace(dto.IsActive) && dto.IsActive != "0" && dto.IsActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "IsActive chỉ được là 0 hoặc 1." });
     if (!string.IsNullOrWhiteSpace(dto.LocationName)) row.LocationName = dto.LocationName;
     if (!string.IsNullOrWhiteSpace(dto.StockNo)) row.StockNo = dto.StockNo;
     if (!string.IsNullOrWhiteSpace(dto.IsActive)) row.IsActive = dto.IsActive!;
@@ -26439,10 +26489,25 @@ app.MapPut("/api/sermstlocations/{locationId}", async (string locationId, SerMst
     if (dto.LocationSurface is not null) row.LocationSurface = dto.LocationSurface;
     if (dto.LocationType is not null) row.LocationType = dto.LocationType;
     // #1070: Ser_Mst_Location_Update ghi LogLUDateTime/LogLUBy (KHÔNG ghi lại CreatedDate/CreatedBy).
-    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now; row.LogLUBy = dto.LogLUBy ?? (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.LocationID, row.LocationCode, row.LocationName, row.StockNo, row.DealerCode, row.IsActive,
-        row.LocationHight, row.LocationSurface, row.LocationType });
+        row.LocationHight, row.LocationSurface, row.LocationType,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/sermstlocations/{locationId}/toggle", async (string locationId, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var id = (locationId ?? "").Trim();
+    var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Location_NotExist", locationId = id });
+    row.IsActive = row.IsActive == "1" ? "0" : "1";
+    row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.LocationID, isActive = row.IsActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #937b `Ser_Mst_Location_Import` (LIVE, `BizCarSv.Master.cs:7371`) — NHẬP HÀNG LOẠT, CHƯA CÓ =====
@@ -26470,9 +26535,10 @@ app.MapPost("/api/sermstlocations/import", async (List<SerMstLocationImportRowDt
         // chua tung dong cot nao.
         var by1183 = (partnerUserCode ?? "system").Trim(); var now1183 = DateTime.Now;
         var isNewLoc1183 = r is null;
-        if (r is null) { r = new SerMstLocation { OrgId = t.OrgId, LocationCode = lc, DealerCode = dl, LocationID = lc }; db.SerMstLocations.Add(r); }
+        if (r is null) { r = new SerMstLocation { OrgId = t.OrgId, LocationCode = lc, DealerCode = dl, LocationID = lc, CreatedAt = now1183, UpdatedAt = now1183 }; db.SerMstLocations.Add(r); }
         if (isNewLoc1183) { r.CreatedDate = now1183; r.CreatedBy = by1183; }
         r.LogLUDateTime = now1183; r.LogLUBy = by1183;
+        r.UpdatedAt = now1183;
         r.LocationName = row.LocationName;
         r.LocationHight = heightEmpty ? null : row.LocationHight;
         r.LocationSurface = heightEmpty ? null : row.LocationSurface;      // bug nguồn: gate theo Height, không theo Surface
@@ -26494,8 +26560,9 @@ app.MapDelete("/api/sermstlocations/{locationId}", async (string locationId, App
     // Va THAM SO CHET cua nguon: loc CA DealerCode, khong chi LocationID.
     var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id
         && (dl.Length == 0 || x.DealerCode == dl));
-    if (row is null) return Results.NotFound(new { error = "Ser_Location_NotExist", locationId = id, dealerCode = dl });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Location_NotExist", locationId = id, dealerCode = dl });
     row.IsActive = "0";   // XOA MEM, dung nhu nguon (update set IsActive = 0)
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -26617,16 +26684,16 @@ app.MapPost("/api/romaintancesettings", async (RoMaintanceSettingSaveDto dto,
 }).RequireAuthorization();
 app.MapDelete("/api/servicemodels/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var c = (code ?? "").Trim();
+    var c = (code ?? "").Trim().ToUpperInvariant();
     var row = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == c);
-    if (row is null) return Results.NotFound(new { error = "Ser_Mst_Model_NotFound", modelCode = c });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Model_NotFound", modelCode = c });
     // Guard cua NGUON (CheckModelForDelete) — NHUNG chay tren CUNG nguon voi lenh xoa, khac nguon.
     var inUse = await db.ServiceCars.CountAsync(x => x.OrgId == t.OrgId && x.ModelCode == c);
     if (inUse > 0)
     {
         return Results.Conflict(new
         {
-            error = "Ser_Mst_Model_Delete_UserAnother", modelCode = c, carCount = inUse,
+            error = "ErrCarSv.Ser_Mst_Model_Delete_UserAnother", modelCode = c, carCount = inUse,
             guardReadsDifferentDbThanDelete = "#845 DANG MOI: nguon goi CheckModelForDelete(_dbDealer, ...) — helper tra Ser_Car theo (ModelID, DealerCode) tren DB DAI LY — nhung than xoa chay _dbMain.ExecQuery va _dbWH.ExecQuery, KHONG he dung _dbDealer. Neu DB dai ly rong / chua dong bo / la dai ly khac thi guard DI QUA, con xe dang tham chieu model o Main va WH thanh MO COI. Guard va hanh dong NHIN HAI NGUON DU LIEU KHAC NHAU. Khac #819 (khong co guard) va khac #844 (helper cung nhan dbAction nhung duoc truyen DUNG DB) — o day guard CO MAT nhung TRO SAI NGUON",
         });
     }
@@ -41457,16 +41524,31 @@ app.MapGet("/api/serparttypes", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!) || (x.TypeCode != null && x.TypeCode.Contains(q!)));
     var items = await qry.OrderBy(x => x.TypeName).Take(500)
-        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.UpdatedAt }).ToListAsync();   // #1274 §12
+        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt }).ToListAsync();   // #1274 #Round156 §12
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/serparttypes/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var x = await db.SerPartTypes.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.Id == id);
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_PartType_NotFound", id });
+    return Results.Ok(new
+    {
+        x.Id, x.TypeCode, x.TypeName, x.DealerCode, x.FlagActive,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var name = (dto.TypeName ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "Chưa nhập tên loại phụ tùng." });
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập tên loại phụ tùng." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var dealerCode = string.IsNullOrWhiteSpace(dto.DealerCode) ? null : dto.DealerCode!.Trim();
     var typeCode = string.IsNullOrWhiteSpace(dto.TypeCode) ? null : dto.TypeCode!.Trim();
+    var now = DateTime.Now;
+    var who = (partnerUserCode ?? "system").Trim();
 
     SerPartType? row = id.HasValue
         ? await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id.Value)
@@ -41476,41 +41558,53 @@ app.MapPost("/api/serparttypes", async (long? id, SerPartTypeDto dto, AppDbConte
     {
         // _Create: kiểm CẢ HAI, trong CÙNG đại lý.
         if (typeCode is not null && await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeCode == typeCode && x.DealerCode == dealerCode))
-            return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Mã loại phụ tùng đã tồn tại ở đại lý này.", typeCode });
+            return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_PartType_Exist", message = "Mã loại phụ tùng đã tồn tại ở đại lý này.", typeCode });
         if (await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dealerCode))
-            return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
+            return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
         // #1053: strPartnerUserCode thật của nguồn — sửa hằng "api" tự chế thành tham số theo đúng convention.
-        row = new SerPartType { OrgId = t.OrgId, TypeCode = typeCode, DealerCode = dealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() };
+        row = new SerPartType
+        {
+            OrgId = t.OrgId, TypeCode = typeCode, DealerCode = dealerCode, TypeName = name,
+            FlagActive = dto.FlagActive ?? "1",
+            CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = dto.LogLUDateTime ?? now, LogLUBy = dto.LogLUBy ?? who,
+            CreatedAt = now, UpdatedAt = now
+        };
         db.SerPartTypes.Add(row);
     }
     else
     {
         // _Update: CHỈ kiểm trùng TÊN (loại trừ chính nó) — KHÔNG kiểm lại TypeCode, đúng bất đối xứng nguồn.
         if (await db.SerPartTypes.AnyAsync(x => x.OrgId == t.OrgId && x.TypeName == name && x.DealerCode == dealerCode && x.Id != row.Id))
-            return Results.Conflict(new { error = "Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
+            return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_PartType_Exist", message = "Tên loại phụ tùng đã tồn tại ở đại lý này.", name });
         row.TypeCode = typeCode;
         row.DealerCode = dealerCode;
+        row.TypeName = name;
+        if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+        row.LogLUDateTime = dto.LogLUDateTime ?? now;
+        row.LogLUBy = dto.LogLUBy ?? who;
+        row.UpdatedAt = now;
     }
-    row.TypeName = name;
-    row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.DealerCode, row.FlagActive });
+    return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.DealerCode, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt, updated = id.HasValue });
 }).RequireAuthorization();
 
-app.MapPost("/api/serparttypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/serparttypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_PartType_NotFound", id });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapDelete("/api/serparttypes/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.SerPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_PartType_NotFound", id });
     db.SerPartTypes.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = id,
@@ -127377,7 +127471,11 @@ record SerMstLocationDto(string? LocationID,
     string? IsActive,
     string? LocationHight = null,
     string? LocationSurface = null,
-    string? LocationType = null);   // merge session-a
+    string? LocationType = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record SerMstLocationImportRowDto(string? LocationCode,
     string? LocationName,
     string? LocationHight,
@@ -127587,7 +127685,7 @@ record ServiceStockOutLineDto(string PartCode, string? PartName, decimal Quantit
     string? StockOutOrderID = null, string? StockOutOrderNo = null);
 record ServiceStockOutDto(string? ReceiverCode, DateTime? StockOutDate, List<ServiceStockOutLineDto>? Lines, string? StockOutType = null, string? DealerCode = null,
     string? CusID = null, string? UserCode = null, string? TruckNo = null);   // #995/#996
-record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode, string? ModelID, string? IsActive = null);   // merge: ModelID (master) + IsActive (session-a)
+record ServiceModelDto(string ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode, string? ModelID, string? IsActive = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // merge: ModelID (master) + IsActive (session-a) + §12
 record ServiceModelImportRow(string? ModelCode, string? ModelName, string? TradeMarkCode, string? ProductionCode, string? DealerCode);
 record ServiceModelImportDto(List<ServiceModelImportRow>? Rows);
 record ServiceItemDto(string SerCode, string? SerName, decimal Cost, decimal Price, string? Model, decimal Vat, string? Note,
@@ -128024,7 +128122,11 @@ record SerStockDto(string? StockNo,
 record SerPartTypeDto(string? TypeName,
     string? FlagActive,
     string? TypeCode = null,
-    string? DealerCode = null);
+    string? DealerCode = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);
 record TstMstPartGroupDto(string? GroupCode,
     string? GroupName,
     string? FlagActive,

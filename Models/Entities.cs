@@ -4516,6 +4516,9 @@ public sealed class SerPartType
     public string? DealerCode { get; set; }
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>#1058 §12 — MÀN CHƯA TỪNG PORT: `Mst_Ser_AppType` (loại lịch hẹn), một trong ~20 bảng nằm trong
@@ -17620,6 +17623,7 @@ public sealed class ServiceModel
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Phiếu xuất kho phụ tùng dịch vụ (header) — port 1:1 FrmSerInventoryAccStockOut01 (TblSerInvStockOut, TCMotor).</summary>
@@ -18857,6 +18861,8 @@ public sealed class SerMstLocation
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 public sealed class CusServiceFactor
