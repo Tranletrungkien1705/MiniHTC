@@ -8371,6 +8371,9 @@ public sealed class PackingList
     /// ở bước duyệt hợp đồng. Port cũ thiếu hẳn ⇒ không truy được ai duyệt, lúc nào.</summary>
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    /// <summary>#Round124 §12: TblCT_PackingList.CreatedDate / CreatedBy (DbDefine.cs:1768, 1770).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
 }
 /// <summary>
@@ -8421,6 +8424,11 @@ public sealed class PackingListVin
     public long PLId { get; set; }
     public string Vin { get; set; } = "";
     public string? CrateType { get; set; }   // loại thùng (LoaiThung)
+    /// <summary>#Round124 §12: TblCT_PackingListDetail.CreatedDate / CreatedBy / LogLUDateTime / LogLUBy (DbDefine.cs:1796-1799).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết tờ khai hải quan (CT_TKHQ) — port 1:1 FrmNewCT_TKHQ (DMSales.Foton). Tờ khai HQ khai trực tiếp lô VIN (khác Tkhq theo packing-list).</summary>
@@ -15197,6 +15205,9 @@ public sealed class BankGuarantee
     public string? TypeFee { get; set; }
     /// <summary>#Round107 §12: Số lần gia hạn bảo lãnh (Pmt_Guarantee.NumberOfGuaranteeExt, DbDefine.cs:869).</summary>
     public int? NumberOfGuaranteeExt { get; set; }
+    /// <summary>#Round124 §12: TblGuarantee.CreatedDate / CreatedBy (DbDefine.cs:323, 325).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Chi tiết bảo lãnh theo VIN (Pmt_GuaranteeDetail) — port 1:1 FrmBankGrt detail.</summary>
@@ -15287,6 +15298,9 @@ public sealed class BankGuaranteeDtl
     // `PMPDGuaranteeRemain` (#5830/#B40 lân cận) — KHÔNG thêm property/Seeder/DTO mới ở đây để
     // tránh trùng debt đã khai báo nơi khác; màn `/api/bankgrts` nếu cần các cột này phải tái dùng
     // đúng khối tính `PaymentDetailWithDiscount_01` đã có (chưa port), không bịa cột lưu tĩnh.
+    /// <summary>#Round124 §12: TblGuaranteeDetail.CreatedDate / CreatedBy (DbDefine.cs:351, 353).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Lệnh xuất xe phía ngân hàng xác nhận (DO) — port 1:1 FrmBankDO. Header.</summary>
@@ -15581,6 +15595,9 @@ public sealed class VatInvoice
     public DateTime? ApprovedDate { get; set; }
     /// <summary>Người duyệt/huỷ (`ApprovedBy`).</summary>
     public string? ApprovedBy { get; set; }  // VAT_HTCInvoice
+    /// <summary>#Round124 §12: TblVAT_HTCInvoice.CreatedDate / CreatedBy (DbDefine.cs:2494, 2496).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? HTCInvoiceDate { get; set; }
 }
@@ -15598,8 +15615,16 @@ public sealed class VatInvoiceCar
     public string BrandName { get; set; } = "";
     public string CarType { get; set; } = "";
     public string InvoiceNoFactory { get; set; } = "";
+    /// <summary>#Round124 §12: TblVAT_HTCInvoiceDetail.InvoiceNoFactoryDate (DbDefine.cs:2516).</summary>
+    public DateTime? InvoiceNoFactoryDate { get; set; }
     public string ProductionYear { get; set; } = "";
+    /// <summary>#Round124 §12: TblVAT_HTCInvoiceDetail.ProductionMonth (DbDefine.cs:2519).</summary>
+    public string ProductionMonth { get; set; } = "";
     public decimal HTCUnitPrice { get; set; }
+    /// <summary>#Round124 §12: TblVAT_HTCInvoiceDetail.HTCVAT (DbDefine.cs:2508).</summary>
+    public decimal? HTCVAT { get; set; }
+    /// <summary>#Round124 §12: TblVAT_HTCInvoiceDetail.ActualSpec (DbDefine.cs:2507).</summary>
+    public string ActualSpec { get; set; } = "";
     public DateTime? CustomsClearanceDate { get; set; }
 
     // ===== #194 parity `VAT_HTCInvoiceApproveX` (HDDTIntergration/BizHTC.HDDTIntergration.cs:5562, bản máy 150) =====

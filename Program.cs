@@ -8597,7 +8597,9 @@ app.MapGet("/api/bankgrts", async (AppDbContext db, ITenantContext t, string? de
     var items = await q.OrderByDescending(g => g.Id).Take(500).Select(g => new
     {
         g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, // biểu thức CASE (EF không dịch được local function) — cùng bảng mã với GuaranteeTypeName()
-        GuaranteeTypeName = g.GuaranteeType == "BL" ? "Bảo lãnh" : g.GuaranteeType == "LCTC" ? "LC trả chậm" : g.GuaranteeType == "LCUP" ? "LC Upas" : g.GuaranteeType == "EPLC" ? "EPLC" : g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt, g.ApprovedAt,
+        GuaranteeTypeName = g.GuaranteeType == "BL" ? "Bảo lãnh" : g.GuaranteeType == "LCTC" ? "LC trả chậm" : g.GuaranteeType == "LCUP" ? "LC Upas" : g.GuaranteeType == "EPLC" ? "EPLC" : g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot, g.TotalAmount, g.Status, g.FlagSettled, g.CreatedAt,
+        g.CreatedDate, g.CreatedBy,   // #Round124 §12: TblGuarantee.CreatedDate/CreatedBy
+        g.ApprovedAt,
         g.DiscountPmtDate, g.DiscountPmtValue, g.Fee,
         g.DateEnd_Discount, g.LogLUDateTime, g.LogLUBy,   // #342
         cars = db.BankGuaranteeDtls.Count(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
@@ -8715,6 +8717,7 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
     if (gtype == "LCUP" && (dto.NumberOfDaysDeferredPayment is null || dto.NumberOfDaysDeferredPayment < 0))
         return Results.BadRequest(new { error = "PaymentGuaranteeCreate_InvalidNumberOfDaysDeferredPayment", message = "Bảo lãnh LC Upas (LCUP) phải có số ngày trả chậm >= 0." });
     var no = "BLNH" + DateTime.Now.ToString("yyMMddHHmmss");
+    var nowB = DateTime.Now;
     var g2 = new BankGuarantee
     {
         OrgId = t.OrgId, GuaranteeNo = no, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode.Trim(),
@@ -8723,6 +8726,8 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
         BankCodeMonitor = dto.BankCodeMonitor ?? "", BankBUCode = dto.BankBUCode,
         DateOpen = dto.DateOpen, DateExpired = dto.DateExpired, DateEnd = dto.DateEnd, Remark = dto.Remark ?? "",
         TypeFee = dto.TypeFee, NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt,
+        CreatedDate = dto.CreatedDate ?? nowB, CreatedBy = dto.CreatedBy ?? "system",   // #Round124 §12
+        LogLUDateTime = nowB, LogLUBy = "system",
         // Nguồn tạo ở "P" (TConst.Stage.Pending) — BizHTC.zTemp.cs:14542.
         Status = "P", FlagSettled = "0", TotalAmount = cars.Sum(c => c.GrtValue)
     };
@@ -8735,9 +8740,10 @@ app.MapPost("/api/bankgrts", async (BankGrtDto dto, AppDbContext db, ITenantCont
             NumberOfDaysDeferredPayment = c.NumberOfDaysDeferredPayment, FlagDealerContractDMS40 = c.FlagDealerContractDMS40,
             GrtClaimExtType = c.GrtClaimExtType, GrtDateExpired = c.GrtDateExpired, GrtDateStart = c.GrtDateStart,
             GrtDateEnd = c.GrtDateEnd, VHHTCInvoiceDate = c.VHHTCInvoiceDate,
-            DateStartUpdateDTime = c.DateStartUpdateDTime, DCPType = c.DCPType, DCPTypeName = c.DCPTypeName });   // nguồn tạo dòng ở Pending (BizHTC.zTemp.cs:14573), §12 TotalCompletedDate, DiscountDays, DateRecieveGrtRoot, OSODGrtEndDate, SOCode, DlrCtrNo, NumberOfDaysDeferredPayment, FlagDealerContractDMS40, GrtClaimExtType, GrtDateExpired, GrtDateStart, GrtDateEnd, VHHTCInvoiceDate, DateStartUpdateDTime, DCPType, DCPTypeName
+            DateStartUpdateDTime = c.DateStartUpdateDTime, DCPType = c.DCPType, DCPTypeName = c.DCPTypeName,
+            CreatedDate = c.CreatedDate ?? nowB, CreatedBy = c.CreatedBy ?? "system" });   // #Round124 §12
     await db.SaveChangesAsync();
-    return Results.Ok(new { g2.GuaranteeNo, cars = cars.Count, totalAmount = g2.TotalAmount, g2.TypeFee, g2.NumberOfGuaranteeExt });
+    return Results.Ok(new { g2.GuaranteeNo, cars = cars.Count, totalAmount = g2.TotalAmount, g2.TypeFee, g2.NumberOfGuaranteeExt, g2.CreatedDate, g2.CreatedBy });
 }).RequireAuthorization();
 
 app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -8746,9 +8752,9 @@ app.MapGet("/api/bankgrts/{no}/cars", async (string no, AppDbContext db, ITenant
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id)
-        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy, c.TotalCompletedDate, c.DiscountDays, c.DateRecieveGrtRoot, c.OSODGrtEndDate, c.SOCode, c.DlrCtrNo, c.NumberOfDaysDeferredPayment, c.FlagDealerContractDMS40, c.GrtClaimExtType, c.GrtDateExpired, c.GrtDateStart, c.GrtDateEnd, c.VHHTCInvoiceDate, c.DateStartUpdateDTime, c.DCPType, c.DCPTypeName }).ToListAsync();
+        .Select(c => new { c.VIN, c.GrtValue, c.GrtValueOrg, c.GrtPercent, c.DiscountValue, c.DiscountPercent, c.DateStart, c.DateWarning, c.DateExpired, c.GuaranteeDetailStatus, c.DateEnd, c.DeferredPaymentDays, c.FlagDtlDiscount, c.CarId, c.RemarkCancel, c.CancelDTime, c.CancelBy, c.TotalCompletedDate, c.DiscountDays, c.DateRecieveGrtRoot, c.OSODGrtEndDate, c.SOCode, c.DlrCtrNo, c.NumberOfDaysDeferredPayment, c.FlagDealerContractDMS40, c.GrtClaimExtType, c.GrtDateExpired, c.GrtDateStart, c.GrtDateEnd, c.VHHTCInvoiceDate, c.DateStartUpdateDTime, c.DCPType, c.DCPTypeName, c.CreatedDate, c.CreatedBy }).ToListAsync();   // #Round124 §12
     return Results.Ok(new { g.GuaranteeNo, g.DealerCode, g.BankCode, g.BankGuaranteeNo, g.GuaranteeType, g.Term, g.DateOpen, g.DateExpired, g.DateEnd, g.DateRecieveGrtRoot,
-        g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.ApprovedAt, g.CancelDate, g.CancelBy, g.TypeFee, g.NumberOfGuaranteeExt,   // #1371 §12 + #30084, §12 TotalCompletedDate, DiscountDays, TypeFee, NumberOfGuaranteeExt
+        g.Status, g.FlagSettled, g.TotalAmount, g.CreatedAt, g.CreatedDate, g.CreatedBy, g.ApprovedAt, g.CancelDate, g.CancelBy, g.TypeFee, g.NumberOfGuaranteeExt,   // #1371 §12 + #30084, §12 TotalCompletedDate, DiscountDays, TypeFee, NumberOfGuaranteeExt, #Round124 §12
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -8759,7 +8765,7 @@ app.MapPost("/api/bankgrts/{no}/edit-expiry", async (string no, GrtExpiryEditDto
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_TableDetailBeBlank", message = "Không có xe thay đổi." });
     foreach (var l in lines)
         if (l.DateExpired.HasValue && l.DateEnd.HasValue && l.DateEnd < l.DateExpired)
             return Results.BadRequest(new { error = "PaymentGuaranteeDetailUpdate_InvalidDateParams", message = $"VIN {l.VIN}: ngày kết thúc phải >= ngày hết hạn." });
@@ -8791,8 +8797,8 @@ app.MapPost("/api/bankgrts/{no}/edit-value", async (string no, GrtValueEditDto d
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
-    if (lines.Any(l => l.GrtValue < 0)) return Results.BadRequest(new { error = "PaymentGuaranteeDetailUpdate_InvalidGuaranteeValue", message = "Giá trị bảo lãnh không được âm." });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_TableDetailBeBlank", message = "Không có xe thay đổi." });
+    if (lines.Any(l => l.GrtValue < 0)) return Results.BadRequest(new { error = "PaymentGuaranteeDetailUpdate_InvalidGrtValNew", message = "Giá trị bảo lãnh không được âm." });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
     var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
     int updated = 0; var notFound = new List<string>();
@@ -8822,7 +8828,7 @@ app.MapPost("/api/bankgrts/{no}/edit-start", async (string no, GrtStartEditDto d
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_TableDetailBeBlank", message = "Không có dữ liệu được thay đổi." });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
     var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
     int updated = 0; var notFound = new List<string>();
@@ -8848,8 +8854,8 @@ app.MapPost("/api/bankgrts/{no}/edit-deferred", async (string no, GrtDeferredEdi
     var g = await db.BankGuarantees.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GuaranteeNo == no);
     if (g is null) return Results.NotFound(new { error = "CommonAppData_PaymentGuaranteeNotFound", no });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.VIN)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không có xe thay đổi." });
-    if (lines.Any(l => l.DeferredPaymentDays < 0)) return Results.BadRequest(new { error = "PaymentGuaranteeDetailUpdate_InvalidNumberOfDaysDeferredPayment", message = "Số ngày trả chậm không được âm." });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "PaymentGuaranteeCreate_TableDetailBeBlank", message = "Không có xe thay đổi." });
+    if (lines.Any(l => l.DeferredPaymentDays < 0)) return Results.BadRequest(new { error = "Pmt_Guarantee_UpdateNumberOfDaysDeferredPayment_InvalidNumberOfDaysDeferredPayment", message = "Số ngày trả chậm không được âm." });
     var cars = await db.BankGuaranteeDtls.Where(c => c.OrgId == t.OrgId && c.GuaranteeId == g.Id).ToListAsync();
     var byVin = cars.ToDictionary(c => c.VIN.ToUpperInvariant(), c => c);
     int updated = 0; var notFound = new List<string>();
@@ -8976,7 +8982,7 @@ app.MapPost("/api/bankgrts/{no}/{action}", async (
     else // settle = tất toán
     {
         if (g.Status != "A") return Results.BadRequest(new { error = "CommonAppData_PaymentGuaranteeStatusNotMatched", status = g.Status, message = "Chỉ tất toán bảo lãnh đã duyệt." });
-        if (g.FlagSettled == "1") return Results.BadRequest(new { error = "Bảo lãnh đã tất toán." });
+        if (g.FlagSettled == "1") return Results.BadRequest(new { error = "PaymentGuaranteeSettle_AlreadySettled", message = "Bảo lãnh đã tất toán." });
         g.FlagSettled = "1"; g.SettledAt = DateTime.Now;
     }
     await db.SaveChangesAsync();
@@ -9635,6 +9641,7 @@ app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string?
     var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new
     {
         v.HTCInvoiceCode, v.HTCInvoiceNo, v.InvoiceIDCode, v.InvoiceIDType, v.HTCInvoiceDate, v.VAT, v.DealerCode, v.BankCode, v.SourceInvoiceName, v.InvoiceAdjType, v.RootHTCInvoiceNo, v.OS_HDDT_InvoiceCode, v.VatHTCStatus, v.CreatedAt,   // #274 §12
+        v.CreatedDate, v.CreatedBy,   // #Round124 §12: TblVAT_HTCInvoice.CreatedDate/CreatedBy
         v.ApprovedDate, v.ApprovedBy,  v.FlagisHTC,   // #348
         v.Adj_DeleteReason, v.InvoicePrintNo, v.BeforeAdj_DeleteRemark, v.AfterAdj_DeleteRemark, v.LogLUDateTime, v.LogLUBy,   // #330
         v.OS_HDDT_RefNo, v.HddtSyncedAt, v.PaymentMethodCode, v.SourceInvoiceCode, v.RefNo,   // #195 §12
@@ -9649,80 +9656,51 @@ app.MapGet("/api/vatinvoices", async (AppDbContext db, ITenantContext t, string?
 
 app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
-    if (string.IsNullOrWhiteSpace(dto.InvoiceIDCode)) return Results.BadRequest(new { error = "Chưa nhập ký hiệu hóa đơn." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý.", errorCode = "VAT_HTCInvoiceCreate_InvalidDealerCode" });
+    if (string.IsNullOrWhiteSpace(dto.InvoiceIDCode)) return Results.BadRequest(new { error = "Chưa nhập ký hiệu hóa đơn.", errorCode = "VAT_HTCInvoiceCreate_InvalidInvoiceIDCode" });
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trên hóa đơn." });
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trên hóa đơn.", errorCode = "VAT_HTCInvoiceCreate_TableDetailBeBlank" });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!", errorCode = "VAT_HTCInvoiceCreate_DuplicateKeyDetail", vin = dupe.Key });
     // ===== 🔴 #195 HOÁ ĐƠN THAY THẾ / ĐIỀU CHỈNH — `VAT_HTCInvoiceCreate_Special_New20190816` (8329) =====
-    // Nguồn: `TERP.BizHTC/HDDTIntergration/BizHTC.HDDTIntergration.cs`, thư mục **`.Release.2025`**.
-    // Hằng `TConst.SourceInvoiceCode` (Const.Main.cs:33): INVOICEROOT · INVOICEADJ · INVOICEREPLACE.
-    //
-    // 🔴 BƯỚC 3B (đính chính kết luận #194): laptop CÓ CẢ `.Release.20220125` LẪN `.Release.2025`.
-    //    #194 trót so laptop`.20220125` với 150`.2025` — hai THƯ MỤC khác nhau, nên tưởng "file khác giữa 2 máy".
-    //    Đo lại đúng cặp `.Release.2025` ↔ `.Release.2025`: vẫn KHÁC, nhưng chỉ **8 dòng** ở đúng khối này —
-    //    laptop lưu `dt_VAT_HTCInvoice_RefNo` (hoá đơn GỐC), máy 150 lưu `dt_VAT_HTCInvoice` (hoá đơn MỚI).
-    //    Các dòng ngay trên đó GÁN vào `_RefNo` ⇒ bản **laptop** mới là bản đúng ⇒ canonical = laptop `.Release.2025`.
-    //
-    // Nguồn: khi `SourceInvoiceCode == INVOICEREPLACE`, sau khi tạo hoá đơn mới thì hoá đơn GỐC (`RefNo`)
-    //    bị chuyển `VatHTCStatus = Stage.Cancel ("C")` + ghi `LogLUDateTime`/`LogLUBy`.
     var srcCode = (dto.SourceInvoiceCode ?? "").Trim().ToUpperInvariant();
     if (srcCode.Length > 0 && srcCode is not ("INVOICEROOT" or "INVOICEADJ" or "INVOICEREPLACE"))
-        return Results.BadRequest(new { error = "SourceInvoiceCode phải là INVOICEROOT | INVOICEADJ | INVOICEREPLACE." });
+        return Results.BadRequest(new { error = "SourceInvoiceCode phải là INVOICEROOT | INVOICEADJ | INVOICEREPLACE.", errorCode = "VAT_HTCInvoiceImportNew_InvalidSourceInvoiceCode" });
 
     // ===== 🔴 #274 hai guard nữa của đường NHẬP (`VAT_HTCInvoiceImportNew_New20190816`, :9038 và :9109) =====
     var idType = string.IsNullOrWhiteSpace(dto.InvoiceIDType) ? "HTC" : dto.InvoiceIDType!.Trim().ToUpperInvariant();
     if (idType != "HTC")
-        return Results.BadRequest(new { error = "InvoiceIDType phải là HTC (nguồn: ..._InvalidInvoiceIDType).", invoiceIDType = idType });
+        return Results.BadRequest(new { error = "InvoiceIDType phải là HTC (nguồn: ..._InvalidInvoiceIDType).", errorCode = "VAT_HTCInvoiceCreate_InvalidInvoiceIDType", invoiceIDType = idType });
 
     // Nguồn liệt kê nguyên văn ba giá trị hợp lệ trong tham số lỗi: "NORMAL, ADJINCREASE, ADJDESCREASE".
     var adjType = (dto.InvoiceAdjType ?? "").Trim().ToUpperInvariant();
     if (adjType.Length > 0 && adjType is not ("NORMAL" or "ADJINCREASE" or "ADJDESCREASE"))
-        return Results.BadRequest(new { error = "InvoiceAdjType phải là NORMAL | ADJINCREASE | ADJDESCREASE." });
+        return Results.BadRequest(new { error = "InvoiceAdjType phải là NORMAL | ADJINCREASE | ADJDESCREASE.", errorCode = "VAT_HTCInvoiceCreate_InvalidInvoiceAdjType" });
 
-    // ☠️ KHÔNG port guard ngay sau đó của nguồn (:9124):
-    //     `if (StringEqualIgnoreCase(strInvoiceAdjType, TConst.SourceInvoiceCode.InvoiceReplace)`
-    //     ` || StringEqualIgnoreCase(strInvoiceAdjType, TConst.SourceInvoiceCode.InvoiceAdj))` … `throw InvalidRefNo`
-    //   Nó so **InvoiceAdjType** với hằng của **SourceInvoiceCode** — SAI BỘ TỪ VỰNG. Mà guard ngay TRÊN nó
-    //   vừa ép AdjType chỉ được là NORMAL/ADJINCREASE/ADJDESCREASE ⇒ điều kiện **LUÔN SAI, guard CHẾT**.
-    //   Hơn nữa ý định viết ra cũng ngược (ném khi RefNo CÓ, trong khi thay thế/điều chỉnh thì BẮT BUỘC có
-    //   RefNo). Port theo mặt chữ = code chết; port theo "ý định" = chặn nhầm nghiệp vụ ⇒ **không port**,
-    //   ghi lại để người nghiệp vụ quyết.
     var refNo = (dto.RefNo ?? "").Trim().ToUpperInvariant();
     VatInvoice? rootInv = null;
     if (srcCode == "INVOICEREPLACE")
     {
         if (refNo.Length == 0)
-            return Results.BadRequest(new { error = "Hoá đơn thay thế phải chỉ ra mã hoá đơn gốc (RefNo)." });
+            return Results.BadRequest(new { error = "Hoá đơn thay thế phải chỉ ra mã hoá đơn gốc (RefNo).", errorCode = "VAT_HTCInvoiceCreate_InvalidRefNo" });
         rootInv = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == refNo);
-        if (rootInv is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn gốc {refNo}.", refNo });
+        if (rootInv is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn gốc {refNo}.", errorCode = "CommonAppData_VAT_HTCInvoiceNotFound", refNo });
     }
 
     var code = "HDVAT" + DateTime.Now.ToString("yyMMddHHmmss");
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var v2 = new VatInvoice
     {
         OrgId = t.OrgId, HTCInvoiceCode = code, InvoiceIDCode = dto.InvoiceIDCode.Trim(), InvoiceIDType = idType, VAT = dto.VAT <= 0 ? 10 : dto.VAT, DealerCode = dto.DealerCode.Trim(), BankCode = dto.BankCode ?? "",
         SourceInvoiceName = dto.SourceInvoiceName ?? "", InvoiceAdjType = dto.InvoiceAdjType ?? "", RootHTCInvoiceNo = dto.RootHTCInvoiceNo ?? "",
         SourceInvoiceCode = srcCode, RefNo = refNo,      // #195
         FlagisHTC = dto.FlagisHTC?.Trim(),   // #348 (nguồn ghi lúc tạo; trước chỉ có ở song sinh VatHtcInvoice)
-        // Nguồn tạo ở "P" (chờ duyệt) và để SỐ + NGÀY hoá đơn NULL (Biz.HTC.WH.cs:120616-120619).
+        CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who,   // #Round124 §12
+        LogLUDateTime = now, LogLUBy = who,
         VatHTCStatus = "P",
         OS_HDDT_RefNo = dto.OS_HDDT_RefNo,
         PaymentMethodCode = string.IsNullOrWhiteSpace(dto.PaymentMethodCode) ? "CK" : dto.PaymentMethodCode!.Trim().ToUpperInvariant(),
-        // 🔴 #383 CHÍN CỘT TIỀN CỦA HOÁ ĐƠN VAT LÀ **DẪN XUẤT**, không nhận từ client nữa.
-        //   Bộ dò ghi (_audit/detect_column_write.js) cho kết quả: KHÔNG có chỗ ghi nào trong nguồn.
-        //   Nguồn TÍNH toàn bộ từ bảng chi tiết gom theo thuế suất
-        //   (`BizHTC.InvoiceHTC_TCG.cs`, `#tbl_VAT_TCGInvoiceDetail_GroupVATRate`):
-        //     `ValGoodsNotTaxable`   = tổng giá trị hàng có `VATRateCode IS NULL`   (KHÔNG chịu thuế)
-        //     `ValGoodsNotChargeTax` = tổng giá trị hàng có `VATRateCode = 'VAT0'`  (thuế suất 0%)
-        //     `ValGoodsVAT5`/`ValVAT5`   = giá trị / tiền thuế của nhóm `VAT5`
-        //     `ValGoodsVAT10`/`ValVAT10` = giá trị / tiền thuế của nhóm `VAT10`
-        //     `TotalValInvoice` = tổng giá trị trước thuế · `TotalValVAT` = tổng tiền thuế
-        //     `TotalValPmt` = `TotalValInvoice + TotalValVAT`
-        //   🔴 **KHÔNG chịu thuế** (`NULL`) và **thuế suất 0%** (`VAT0`) là HAI Ô KHÁC NHAU — gộp lại
-        //     là sai bản chất hoá đơn. Nguồn tách bằng hai truy vấn con riêng.
-        //   ⇒ Nhận từ client nghĩa là **client tự khai tiền thuế trên hoá đơn**. Tính lại bên dưới.
         ValGoodsNotTaxable = 0m, ValGoodsNotChargeTax = 0m,
         ValGoodsVAT5 = 0m, ValVAT5 = 0m,
         ValGoodsVAT10 = 0m, ValVAT10 = 0m,
@@ -9732,22 +9710,25 @@ app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITena
     };
     db.VatInvoices.Add(v2); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.VatInvoiceCars.Add(new VatInvoiceCar { OrgId = t.OrgId, VatInvoiceId = v2.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ModelCode = c.ModelCode ?? "", SpecCode = c.SpecCode ?? "", EngineNo = c.EngineNo ?? "", BrandName = c.BrandName ?? "", CarType = c.CarType ?? "", InvoiceNoFactory = c.InvoiceNoFactory ?? "", ProductionYear = c.ProductionYear ?? "", HTCUnitPrice = c.HTCUnitPrice, CustomsClearanceDate = c.CustomsClearanceDate });
+    {
+        var htcVat = c.HTCVAT ?? Math.Round(c.HTCUnitPrice * v2.VAT / 100m, 0);
+        db.VatInvoiceCars.Add(new VatInvoiceCar {
+            OrgId = t.OrgId, VatInvoiceId = v2.Id, VIN = c.VIN.Trim().ToUpperInvariant(),
+            ModelCode = c.ModelCode ?? "", SpecCode = c.SpecCode ?? "", EngineNo = c.EngineNo ?? "",
+            BrandName = c.BrandName ?? "", CarType = c.CarType ?? "", InvoiceNoFactory = c.InvoiceNoFactory ?? "",
+            ProductionYear = c.ProductionYear ?? "", HTCUnitPrice = c.HTCUnitPrice, CustomsClearanceDate = c.CustomsClearanceDate,
+            InvoiceNoFactoryDate = c.InvoiceNoFactoryDate, ProductionMonth = c.ProductionMonth ?? "",
+            HTCVAT = htcVat, ActualSpec = c.ActualSpec ?? c.SpecCode ?? "",   // #Round124 §12
+            LogLUDateTime = now, LogLUBy = who
+        });
+    }
     // 🔴 #195: huỷ hoá đơn GỐC — đúng khối `if (…InvoiceReplace)` của nguồn.
     if (rootInv is not null)
     {
         rootInv.VatHTCStatus = "C";
         rootInv.LogLUDateTime = DateTime.Now;
-        rootInv.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+        rootInv.LogLUBy = who;
     }
-    // ⚠️ KHÔNG port khối "Updte Detail" đi kèm: nguồn lọc `HTCInvoiceCode = strHTCInvoiceCode` — tức mã hoá đơn
-    //    **MỚI**, không phải `RefNo` — và còn đòi `HTCStatusDetail in ('F')` trong khi dòng vừa tạo đang là "P".
-    //    ⇒ ở nguồn khối đó KHÔNG khớp dòng nào, không làm gì cả. Port giữ đúng hành vi thật, ghi nợ để
-    //    người nghiệp vụ quyết có nên huỷ chi tiết hoá đơn gốc hay không.
-    // #383: tính CHÍN cột tiền từ các dòng vừa thêm, theo đúng cách gom của nguồn.
-    //   ⚠️ Nguồn gom theo thuế suất CỦA TỪNG DÒNG; MiniHTC chưa có cột thuế suất trên dòng
-    //   (`VatInvoiceCar` không có `VATRateCode`) nên dồn cả hoá đơn vào nhóm theo `VAT` của ĐẦU.
-    //   Trả cờ `perLineVatRateNotModelled` để không ai tưởng đã port đủ.
     var goods = cars.Sum(c => c.HTCUnitPrice);
     var rate = v2.VAT;
     decimal tax = Math.Round(goods * rate / 100m, 0);
@@ -9761,24 +9742,26 @@ app.MapPost("/api/vatinvoices", async (VatInvoiceDto dto, AppDbContext db, ITena
 
     await db.SaveChangesAsync();
     return Results.Ok(new { v2.HTCInvoiceCode, cars = cars.Count, sourceInvoiceCode = srcCode, refNo,
+        v2.CreatedDate, v2.CreatedBy,   // #Round124 §12
         v2.TotalValInvoice, v2.TotalValVAT, v2.TotalValPmt,
         amountsDerived = true,
         amountsNote = "Chín cột tiền do MÁY CHỦ tính từ dòng chi tiết; nguồn không lưu chúng và không nhận từ client.",
         notTaxableVsZeroRateNote = "KHÔNG chịu thuế (VATRateCode NULL) và thuế suất 0% (VAT0) là HAI ô khác nhau — nguồn tách riêng.",
         perLineVatRateNotModelled = true,
         perLineNote = "Nguồn gom theo thuế suất TỪNG DÒNG; MiniHTC chưa có cột thuế suất trên dòng nên dùng thuế suất của ĐẦU hoá đơn.",
-                            cancelledRootInvoice = rootInv?.HTCInvoiceCode });
+        cancelledRootInvoice = rootInv?.HTCInvoiceCode });
 }).RequireAuthorization();
 
 app.MapGet("/api/vatinvoices/{code}/cars", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
-    if (v is null) return Results.NotFound(new { code });
+    if (v is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn {code}.", errorCode = "CommonAppData_VAT_HTCInvoiceNotFound", code });
     var cars = await db.VatInvoiceCars.Where(c => c.OrgId == t.OrgId && c.VatInvoiceId == v.Id)
         .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo, c.BrandName, c.CarType, c.InvoiceNoFactory, c.ProductionYear, c.HTCUnitPrice, c.CustomsClearanceDate,
+                           c.InvoiceNoFactoryDate, c.ProductionMonth, c.HTCVAT, c.ActualSpec,   // #Round124 §12
                            c.HTCStatusDetail, c.ApprovedDate, c.ApprovedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #194 §12
-    return Results.Ok(new { v.HTCInvoiceCode, v.HTCInvoiceNo, v.DealerCode, v.VatHTCStatus, v.SourceInvoiceCode, v.RefNo, count = cars.Count, cars });   // #195 §12
+    return Results.Ok(new { v.HTCInvoiceCode, v.HTCInvoiceNo, v.DealerCode, v.VatHTCStatus, v.SourceInvoiceCode, v.RefNo, v.CreatedDate, v.CreatedBy, count = cars.Count, cars });   // #195 §12 + #Round124 §12
 }).RequireAuthorization();
 
 // ===== 🔴 ĐẨY HOÁ ĐƠN SANG HỆ HDDT (hoá đơn điện tử) — port BizHTC.InvoiceHTC_TCG.cs =====
@@ -9869,21 +9852,21 @@ app.MapPost("/api/vatinvoices/{code}/invoiceno", async (
 {
     code = code.Trim().ToUpperInvariant();
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
-    if (v is null) return Results.NotFound(new { code });
+    if (v is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn {code}.", errorCode = "CommonAppData_VAT_HTCInvoiceNotFound", code });
 
     var noStr = (dto.HTCInvoiceNo ?? "").Trim();
-    if (noStr.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số hoá đơn." });
+    if (noStr.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số hoá đơn.", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceNoInvalidLength" });
     if (!decimal.TryParse(noStr, out var noVal))
-        return Results.BadRequest(new { error = "Số hoá đơn phải là số (nguồn so sánh bằng giá trị số)." });
+        return Results.BadRequest(new { error = "Số hoá đơn phải là số (nguồn so sánh bằng giá trị số).", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceNoInvalidFormat1" });
 
     // 🔴 #274 ĐỘ DÀI: nguồn `if (strHTCInvoiceNo.Length < 7) throw ..._HTCInvoiceNoInvalidLength`,
     //   kèm dòng cũ bị comment `//if (strHTCInvoiceNo.Length != 7)` và ghi chú *"20180308 nới luật check số
     //   hoá đơn"* ⇒ luật ĐANG CHẠY là **tối thiểu 7**, KHÔNG phải đúng 7. Port theo dòng đang chạy.
     if (noStr.Length < 7)
-        return Results.BadRequest(new { error = "Số hoá đơn phải có ít nhất 7 ký tự.", htcInvoiceNo = noStr });
-    if (dto.HTCInvoiceDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày hoá đơn." });
+        return Results.BadRequest(new { error = "Số hoá đơn phải có ít nhất 7 ký tự.", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceNoInvalidLength", htcInvoiceNo = noStr });
+    if (dto.HTCInvoiceDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày hoá đơn.", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceDate" });
     var idCode = string.IsNullOrWhiteSpace(dto.InvoiceIDCode) ? v.InvoiceIDCode : dto.InvoiceIDCode!.Trim();
-    if (string.IsNullOrWhiteSpace(idCode)) return Results.BadRequest(new { error = "Chưa có ký hiệu hoá đơn." });
+    if (string.IsNullOrWhiteSpace(idCode)) return Results.BadRequest(new { error = "Chưa có ký hiệu hoá đơn.", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceNoInvalidFormat2" });
     var day = dto.HTCInvoiceDate.Value.Date;
 
     // 🔴 #274 TRÙNG SỐ HOÁ ĐƠN — nguồn `..._HTCInvoiceNoExist` (:9190). Port cũ thiếu hẳn.
@@ -9892,13 +9875,9 @@ app.MapPost("/api/vatinvoices/{code}/invoiceno", async (
         && x.InvoiceIDType == "HTC" && x.HTCInvoiceCode != code && x.HTCInvoiceNo == noStr
         && x.VatHTCStatus != "R" && x.VatHTCStatus != "C");
     if (noExists)
-        return Results.BadRequest(new { error = "Số hoá đơn đã tồn tại trong cùng ký hiệu.", htcInvoiceNo = noStr, invoiceIDCode = idCode });
+        return Results.BadRequest(new { error = "Số hoá đơn đã tồn tại trong cùng ký hiệu.", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceNoExist", htcInvoiceNo = noStr, invoiceIDCode = idCode });
 
     // Cùng ký hiệu, khác chính nó, đã có số + ngày.
-    // 🔴 #274 BỔ SUNG HAI ĐIỀU KIỆN LỌC của nguồn (:9262-9268) mà port cũ THIẾU:
-    //   `and vt.InvoiceIDType = 'HTC'` và `and vt.VatHTCStatus not in ('R','C')`.
-    //   Thiếu vế trạng thái là lỗi THẬT: một hoá đơn **đã huỷ/bị từ chối** vẫn được coi là "hàng xóm" và
-    //   **chặn oan** ngày của hoá đơn đang lập. Hoá đơn đã huỷ thì không còn ràng buộc thứ tự ngày nữa.
     var siblings = await db.VatInvoices
         .Where(x => x.OrgId == t.OrgId && x.InvoiceIDCode == idCode && x.HTCInvoiceCode != code
                     && x.InvoiceIDType == "HTC"
@@ -9912,11 +9891,11 @@ app.MapPost("/api/vatinvoices/{code}/invoiceno", async (
 
     var canDuoi = parsed.Where(x => x.no < noVal).OrderByDescending(x => x.no).FirstOrDefault();
     if (canDuoi != null && day < canDuoi.date)
-        return Results.BadRequest(new { error = $"Ngày hoá đơn ({day:yyyy-MM-dd}) không được sớm hơn ngày của hoá đơn số liền dưới ({canDuoi.no}, {canDuoi.date:yyyy-MM-dd})." });
+        return Results.BadRequest(new { error = $"Ngày hoá đơn ({day:yyyy-MM-dd}) không được sớm hơn ngày của hoá đơn số liền dưới ({canDuoi.no}, {canDuoi.date:yyyy-MM-dd}).", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceDate_CanDuoi" });
 
     var canTren = parsed.Where(x => x.no > noVal).OrderBy(x => x.no).FirstOrDefault();
     if (canTren != null && day > canTren.date)
-        return Results.BadRequest(new { error = $"Ngày hoá đơn ({day:yyyy-MM-dd}) không được muộn hơn ngày của hoá đơn số liền trên ({canTren.no}, {canTren.date:yyyy-MM-dd})." });
+        return Results.BadRequest(new { error = $"Ngày hoá đơn ({day:yyyy-MM-dd}) không được muộn hơn ngày của hoá đơn số liền trên ({canTren.no}, {canTren.date:yyyy-MM-dd}).", errorCode = "VAT_HTCInvoiceUpdate_HTCInvoiceDate_CanTren" });
 
     v.HTCInvoiceNo = noStr; v.InvoiceIDCode = idCode; v.HTCInvoiceDate = dto.HTCInvoiceDate;
     await db.SaveChangesAsync();
@@ -9929,11 +9908,10 @@ app.MapPost("/api/vatinvoices/{code}/approve", async (
 {
     code = code.Trim().ToUpperInvariant();
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
-    if (v is null) return Results.NotFound(new { code });
-    if (v.VatHTCStatus != "P") return Results.BadRequest(new { error = $"Chỉ duyệt được hoá đơn đang chờ duyệt (đang: {v.VatHTCStatus})." });
+    if (v is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn {code}.", errorCode = "CommonAppData_VAT_HTCInvoiceNotFound", code });
+    if (v.VatHTCStatus != "P") return Results.BadRequest(new { error = $"Chỉ duyệt được hoá đơn đang chờ duyệt (đang: {v.VatHTCStatus}).", errorCode = "CommonAppData_VAT_HTCInvoiceStatusNotMatched" });
     // 🔴 #194 CASCADE DÒNG CHI TIẾT — nguồn `VAT_HTCInvoiceApproveX` (BizHTC.HDDTIntergration.cs:5562,
     //    **bản máy 150**; md5 laptop `b61052b7` ≠ 150 `2933a7fa`, bản 150 mới hơn 93 dòng ⇒ canonical).
-    //    Lệnh này chạm 4 bảng ở nguồn; port cũ chỉ chạm header ⇒ dòng chi tiết đứng yên ở "P" mãi mãi.
     var whoAp = user.Identity?.Name ?? "system";
     var nowAp = DateTime.Now;
     v.VatHTCStatus = "F";
@@ -9951,10 +9929,8 @@ app.MapPost("/api/vatinvoices/{code}/unapprove", async (
 {
     code = code.Trim().ToUpperInvariant();
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
-    if (v is null) return Results.NotFound(new { code });
-    if (v.VatHTCStatus != "F") return Results.BadRequest(new { error = $"Chỉ huỷ được hoá đơn đã duyệt (đang: {v.VatHTCStatus})." });
-    // 🔴 #194: nhánh `!bApprove` của nguồn đặt dòng chi tiết = "C" và **CHỈ ghi LogLU\***,
-    //    KHÔNG ghi `ApprovedDate`/`ApprovedBy` trên dòng — khác hẳn nhánh duyệt. Giữ đúng sự khác biệt đó.
+    if (v is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn {code}.", errorCode = "CommonAppData_VAT_HTCInvoiceNotFound", code });
+    if (v.VatHTCStatus != "F") return Results.BadRequest(new { error = $"Chỉ huỷ được hoá đơn đã duyệt (đang: {v.VatHTCStatus}).", errorCode = "CommonAppData_VAT_HTCInvoiceStatusNotMatched" });
     var whoUn = user.Identity?.Name ?? "system";
     var nowUn = DateTime.Now;
     v.VatHTCStatus = "C";
@@ -9967,17 +9943,14 @@ app.MapPost("/api/vatinvoices/{code}/unapprove", async (
 }).RequireAuthorization();
 
 // TỪ CHỐI hoá đơn chờ duyệt — nguồn có mã "R" (SQL lọc `not in ('R','C')`).
-// ⚠️ #194: `VAT_HTCInvoiceApproveX` CHỈ có hai nhánh `bApprove` (F) và `!bApprove` (C) — **không có nhánh R**.
-//    Vì vậy KHÔNG cascade dòng chi tiết ở đây (không bịa hành vi nguồn không có); ghi nợ: cần tìm lệnh nào
-//    thực sự đặt "R" rồi đối chiếu riêng.
 app.MapPost("/api/vatinvoices/{code}/reject", async (
     string code, string? reason, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     code = code.Trim().ToUpperInvariant();
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
-    if (v is null) return Results.NotFound(new { code });
-    if (v.VatHTCStatus != "P") return Results.BadRequest(new { error = $"Chỉ từ chối được hoá đơn đang chờ duyệt (đang: {v.VatHTCStatus})." });
-    if (string.IsNullOrWhiteSpace(reason)) return Results.BadRequest(new { error = "Từ chối phải ghi lý do." });
+    if (v is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn {code}.", errorCode = "CommonAppData_VAT_HTCInvoiceNotFound", code });
+    if (v.VatHTCStatus != "P") return Results.BadRequest(new { error = $"Chỉ từ chối được hoá đơn đang chờ duyệt (đang: {v.VatHTCStatus}).", errorCode = "CommonAppData_VAT_HTCInvoiceStatusNotMatched" });
+    if (string.IsNullOrWhiteSpace(reason)) return Results.BadRequest(new { error = "Từ chối phải ghi lý do.", errorCode = "VAT_HTCInvoiceReject_ReasonBeBlank" });
     v.VatHTCStatus = "R"; v.DeleteReason = reason!.Trim();
     v.ApprovedDate = DateTime.Now; v.ApprovedBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
@@ -9989,9 +9962,10 @@ app.MapPost("/api/vatinvoices/{code}/delete", async (string code, string? reason
 {
     code = code.Trim().ToUpperInvariant();
     var v = await db.VatInvoices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.HTCInvoiceCode == code);
-    if (v is null) return Results.NotFound(new { code });
-    if (v.VatHTCStatus != "F") return Results.BadRequest(new { error = "Chỉ xóa được hóa đơn đã duyệt/phát hành." });
-    if (string.IsNullOrWhiteSpace(reason)) return Results.BadRequest(new { error = "Chưa nhập lý do xóa hóa đơn." });
+    if (v is null) return Results.NotFound(new { error = $"Không tìm thấy hoá đơn {code}.", errorCode = "CommonAppData_VAT_HTCInvoiceNotFound", code });
+    if (v.VatHTCStatus != "F") return Results.BadRequest(new { error = "Chỉ xóa được hóa đơn đã duyệt/phát hành.", errorCode = "CommonAppData_VAT_HTCInvoiceStatusNotMatched" });
+    if (v.SourceInvoiceCode == "INVOICEREPLACE") return Results.BadRequest(new { error = "Không thể xóa hóa đơn thay thế.", errorCode = "VAT_HTCInvoiceDelete_NotDelInvoiceReplace" });
+    if (string.IsNullOrWhiteSpace(reason)) return Results.BadRequest(new { error = "Chưa nhập lý do xóa hóa đơn.", errorCode = "VAT_HTCInvoiceDelete_ReasonBeBlank" });
     v.VatHTCStatus = "C"; v.DeleteReason = reason!.Trim();   // nguồn dùng Stage.Cancel
     await db.SaveChangesAsync();
     return Results.Ok(new { v.HTCInvoiceCode, status = v.VatHTCStatus, v.DeleteReason });
@@ -88889,7 +88863,9 @@ app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(port)) query = query.Where(p => p.PortCode == port);
     var items = await query.OrderByDescending(p => p.Id).Take(500).Select(p => new
     {
-        p.PLNo, p.LcNo, p.PortCode, p.PLType, p.DeclarationNo, p.ShippingDateStart, p.ShippingDateEndExpected, p.ShippingDateEnd, p.PLStatus, p.CreatedAt, p.LogLUDateTime, p.LogLUBy,   // #B81 §12
+        p.PLNo, p.LcNo, p.PortCode, p.PLType, p.DeclarationNo, p.ShippingDateStart, p.ShippingDateEndExpected, p.ShippingDateEnd, p.PLStatus, p.CreatedAt,
+        p.CreatedDate, p.CreatedBy,   // #Round124 §12: TblCT_PackingList.CreatedDate/CreatedBy
+        p.LogLUDateTime, p.LogLUBy,   // #B81 §12
         vins = db.PackingListVins.Count(v => v.OrgId == t.OrgId && v.PLId == p.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -88897,27 +88873,33 @@ app.MapGet("/api/packinglists", async (AppDbContext db, ITenantContext t, string
 
 app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.LcNo)) return Results.BadRequest(new { error = "Cần số LC." });
-    if (dto.ShippingDateStart is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày lên tàu." });
-    if (dto.ShippingDateEndExpected is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày DK đến cảng." });
+    if (string.IsNullOrWhiteSpace(dto.LcNo)) return Results.BadRequest(new { error = "Cần số LC.", errorCode = "ContractPackingListCreate_ImportantParamBeBlank" });
+    if (dto.ShippingDateStart is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày lên tàu.", errorCode = "ContractPackingListCreate_ImportantParamBeBlank" });
+    if (dto.ShippingDateEndExpected is null) return Results.BadRequest(new { error = "Chưa có thông tin ngày DK đến cảng.", errorCode = "ContractPackingListCreate_ImportantParamBeBlank" });
+    if (dto.ShippingDateEndExpected.Value < dto.ShippingDateStart.Value)
+        return Results.BadRequest(new { error = "Ngày dự kiến đến cảng không được sớm hơn ngày lên tàu.", errorCode = "ContractPackingListCreate_InvalidShippingDateEndExpected" });
     var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v.Vin)).ToList();
-    if (vins.Count == 0) return Results.BadRequest(new { error = "VIN trong danh sách không được trống!" });
+    if (vins.Count == 0) return Results.BadRequest(new { error = "VIN trong danh sách không được trống!", errorCode = "ContractPackingListCreate_TableDetailBeBlank" });
     var dupe = vins.GroupBy(v => v.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    var no = "PL" + DateTime.Now.ToString("yyMMddHHmmss");
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!", errorCode = "ContractPackingListCreate_DuplicateKeyDetail", vin = dupe.Key });
+    var whoPl = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowPl = DateTime.Now;
+    var no = "PL" + nowPl.ToString("yyMMddHHmmss");
     var p = new PackingList { OrgId = t.OrgId, PLNo = no, LcNo = dto.LcNo.Trim(), PortCode = dto.PortCode, PLType = dto.PLType, DeclarationNo = dto.DeclarationNo?.Trim(), ShippingDateStart = dto.ShippingDateStart.Value, ShippingDateEndExpected = dto.ShippingDateEndExpected.Value,
+        CreatedDate = dto.CreatedDate ?? nowPl, CreatedBy = dto.CreatedBy ?? whoPl,   // #Round124 §12
+        LogLUDateTime = nowPl, LogLUBy = whoPl,
         // 🔴 #123 parity CT_PackingList: nguồn gán ngày đến cảng THỰC TẾ bằng ngày dự kiến ngay khi tạo
         // (Biz.HTC.WH.cs:34688-34689), và đặt PLStatus = Stage.Finished ("F") NGAY — nhánh đặt "P" theo
         // PLType != HTMV đã bị COMMENT ở nguồn (34691-34693).
         ShippingDateEnd = dto.ShippingDateEndExpected.Value, PLStatus = "F" };
     db.PackingLists.Add(p); await db.SaveChangesAsync();
     foreach (var v in vins)
-        db.PackingListVins.Add(new PackingListVin { OrgId = t.OrgId, PLId = p.Id, Vin = v.Vin.Trim().ToUpperInvariant(), CrateType = v.CrateType });
+        db.PackingListVins.Add(new PackingListVin { OrgId = t.OrgId, PLId = p.Id, Vin = v.Vin.Trim().ToUpperInvariant(), CrateType = v.CrateType,
+            CreatedDate = v.CreatedDate ?? nowPl, CreatedBy = v.CreatedBy ?? whoPl, LogLUDateTime = nowPl, LogLUBy = whoPl });   // #Round124 §12
     // ===== #162 side-effect: nguồn `ContractPackingListCreate_New20190923` ghi BỐN bảng =====
     //   CT_PackingList · Car_VIN · VIN_MyStatus · Mng_Device_Car — port cũ chỉ có hai bảng đầu.
     foreach (var v in vins)
     {
-        var whoPl = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var nowPl = DateTime.Now;
         var vinUp = (v.Vin ?? "").Trim().ToUpperInvariant();
         // (1) dựng MỐC vòng đời cho VIN, hai mốc để NULL đúng như nguồn (điền ở bước sau).
         if (vinUp.Length > 0 && !await db.VinMyStatuses.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vinUp))
@@ -88943,7 +88925,7 @@ app.MapPost("/api/packinglists", async (PackingListDto dto, AppDbContext db, ITe
         }
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.PLNo, p.LcNo, p.DeclarationNo, vins = vins.Count });
+    return Results.Ok(new { p.PLNo, p.LcNo, p.DeclarationNo, vins = vins.Count, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy });
 }).RequireAuthorization();
 
 // ===== 🔴 LỊCH SỬ DI CHUYỂN KHO của xe (Sto_StorageTransaction — 2010.HTC ERP.V15.DataWH) =====
@@ -89101,10 +89083,10 @@ app.MapGet("/api/packinglists/{no}/vins", async (string no, AppDbContext db, ITe
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.PackingLists.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PLNo == no);
-    if (p is null) return Results.NotFound(new { no });
+    if (p is null) return Results.NotFound(new { error = $"Không tìm thấy packing list {no}.", errorCode = "CommonAppData_ContractPackingListNotFound", no });
     var vins = await db.PackingListVins.Where(v => v.OrgId == t.OrgId && v.PLId == p.Id)
-        .Select(v => new { v.Vin, v.CrateType }).ToListAsync();
-    return Results.Ok(new { p.PLNo, p.LcNo, count = vins.Count, vins });
+        .Select(v => new { v.Vin, v.CrateType, v.CreatedDate, v.CreatedBy, v.LogLUDateTime, v.LogLUBy }).ToListAsync();   // #Round124 §12
+    return Results.Ok(new { p.PLNo, p.LcNo, p.CreatedDate, p.CreatedBy, count = vins.Count, vins });
 }).RequireAuthorization();
 
 // #4301 — ĐÃ XOÁ "/api/foreigncontracts*" (ForeignContract/ForeignContractLine, bảng tự tạo free-form
@@ -123039,10 +123021,10 @@ record CarDocRequestCarDto(string CarId, string? Remark, DateTime? DeliveryStart
 record CarDocRequestDto(string? DealerCode, string ReceivedPerson, string ReceivedAddress, List<CarDocRequestCarDto>? Cars, string? TypeCRR);
 // #B39 — DTO 1:1 voi CancelCDRDetail(strDRListCode, List<string> lstVin) + Remark cua alColumnEffective
 record CdrCancelDto(List<string>? Vins, string? Remark);
-record PackingListVinDto(string Vin, string? CrateType);
+record PackingListVinDto(string Vin, string? CrateType, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record StorageTransactionDto(string? Vin, string? RefNo, string? RefType, string? StorageCode, string? StorageCodeTo, DateTime? DTimeFrom, DateTime? DTimeTo, string? Remark);
 record PackingListStorageDto(string? Vin, DateTime? StoreDate, string? StorageCodeCurrent);
-record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins, string? DeclarationNo = null);
+record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins, string? DeclarationNo = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins);
 record CtTkhqTaxRowDto(string? DeclarationNo, DateTime? TaxPaymentDate);
 record CtTkhqTaxDto(List<CtTkhqTaxRowDto>? Rows);
@@ -123159,8 +123141,8 @@ record InvoiceSetupItemDto(string? ModelCode, string? FlagInvoiceHTMV, string? F
 record InvoiceSetupMultiDto(List<InvoiceSetupItemDto>? Items);
 record InvoiceSetupUpdateDto(string? FtColsUpd, string? FlagInvoiceHTMV = null, string? FlagInvoiceTCG = null);
 record BankMortageDto(string VIN, string? CarId, string? SOCode, string? DealerCode, string? BankCode, string MortageBankCode, string? ModelCode, string? SpecCode, string? GuaranteeType, string? DeliveryRangeType, DateTime? MortageStartDate, DateTime? DlvStartDate, DateTime? DlvEndDate);
-record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired, string? CarId = null, DateTime? TotalCompletedDate = null, int? DiscountDays = null, DateTime? DateRecieveGrtRoot = null, DateTime? OSODGrtEndDate = null, string? SOCode = null, string? DlrCtrNo = null, int? NumberOfDaysDeferredPayment = null, string? FlagDealerContractDMS40 = null, string? GrtClaimExtType = null, DateTime? GrtDateExpired = null, DateTime? GrtDateStart = null, DateTime? GrtDateEnd = null, DateTime? VHHTCInvoiceDate = null, DateTime? DateStartUpdateDTime = null, string? DCPType = null, string? DCPTypeName = null);
-record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int? NumberOfDaysDeferredPayment, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null, string? TypeFee = null, int? NumberOfGuaranteeExt = null);
+record BankGrtCarDto(string VIN, decimal GrtValue, decimal GrtPercent, decimal DiscountValue, decimal DiscountPercent, DateTime? DateStart, DateTime? DateWarning, DateTime? DateExpired, string? CarId = null, DateTime? TotalCompletedDate = null, int? DiscountDays = null, DateTime? DateRecieveGrtRoot = null, DateTime? OSODGrtEndDate = null, string? SOCode = null, string? DlrCtrNo = null, int? NumberOfDaysDeferredPayment = null, string? FlagDealerContractDMS40 = null, string? GrtClaimExtType = null, DateTime? GrtDateExpired = null, DateTime? GrtDateStart = null, DateTime? GrtDateEnd = null, DateTime? VHHTCInvoiceDate = null, DateTime? DateStartUpdateDTime = null, string? DCPType = null, string? DCPTypeName = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record BankGrtDto(string DealerCode, string BankCode, string? BankGuaranteeNo, string? GuaranteeType, int? NumberOfDaysDeferredPayment, int Term, DateTime? DateOpen, DateTime? DateExpired, DateTime? DateEnd, string? Remark, List<BankGrtCarDto>? Cars, string? BankCodeMonitor = null, string? BankBUCode = null, string? TypeFee = null, int? NumberOfGuaranteeExt = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 record BankGrtCancelCarDto(string? Vin, string? CarId, string RemarkCancel);   // #30084 port PaymentGuaranteeDetailCancel_New20230306
 record BankDoCarDto(string VIN, string? CarId, string? BankGrtNo, string? SpecCode, string? ColorCode, DateTime? DeliveryExpectedDate, DateTime? DeliveryOutDate, string? StorageCode = null, DateTime? DeliveryStartDate = null, DateTime? DeliveryEndDate = null, string? DeliveryRemark = null, string? ConfirmBy = null, string? DlrCtrNo = null);
 record BankDoDto(string DealerCode, string? SOCode, List<BankDoCarDto>? Cars, string? BankCode = null, string? BankCodeMonitor = null, string? BankBUCode = null, string? GuaranteeType = null, string? DealerName = null, string? DeliveryAddress = null, DateTime? ApprovedDate = null, string? ApprovedBy = null, string? CreatedBy = null);
@@ -123169,10 +123151,10 @@ record BankTmCarDto(string VIN, string? CarId, string? EngineNo, string? SOCode,
 record BankTmDto(string DealerCode, string? BankCode, string? BankCodeMonitor, List<BankTmCarDto>? Cars, string? DLApprBy = null, string? HTCAppr2By = null, DateTime? HTCCancelDateTime = null, string? HTCCancelBy = null, string? DLTransportMinutesStatus = null, string? HTCTransportMinutesStatus = null, string? FilePath = null);
 record BankPmCarDto(string VIN, string? CarId, string? ModelCode, string? SpecCode, string? SOCode, string? ColorCode, decimal AmountAccum, decimal PercentAccum, decimal UnitPriceActual, decimal AmountCurrent, decimal PercentCurrent, string? GuaranteeNo, string? BankGuaranteeNo, string? DlrCtrNo, string? PMGBankCode = null, decimal? AmountTotal = null, decimal? PaymentTotalPercent = null);
 record BankPmDto(string DealerCode, string BankCodeReceive, string? BankPaymentNo, string? BankCodeSend, string? BankAccountSend, string? BankAccountReceive, string? Funds, string? BankLending, string? Remark, List<BankPmCarDto>? Cars, string? TransferType = null, decimal? LoanPeriod = null, decimal? InterestRate = null, string? PaymentType_TTCORTTBL = null, string? BulkInfo = null, string? StatusMapTCF = null, string? NewAccountingRecordNo = null);
-record VatInvoiceCarDto(string VIN, string? ModelCode, string? SpecCode, string? EngineNo, string? BrandName, string? CarType, string? InvoiceNoFactory, string? ProductionYear, decimal HTCUnitPrice, DateTime? CustomsClearanceDate);
+record VatInvoiceCarDto(string VIN, string? ModelCode, string? SpecCode, string? EngineNo, string? BrandName, string? CarType, string? InvoiceNoFactory, string? ProductionYear, decimal HTCUnitPrice, DateTime? CustomsClearanceDate, DateTime? InvoiceNoFactoryDate = null, string? ProductionMonth = null, decimal? HTCVAT = null, string? ActualSpec = null);
 record VatInvoiceNoDto(string? HTCInvoiceNo, string? InvoiceIDCode, DateTime? HTCInvoiceDate);
 record VatHddtDto(string? OS_HDDT_InvoiceCode, string? OS_HDDT_RefNo);
-record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? SourceInvoiceCode, string? RefNo, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars, string? OS_HDDT_RefNo = null, string? PaymentMethodCode = null, decimal ValGoodsNotTaxable = 0, decimal ValGoodsNotChargeTax = 0, decimal ValGoodsVAT5 = 0, decimal ValVAT5 = 0, decimal ValGoodsVAT10 = 0, decimal ValVAT10 = 0, decimal TotalValInvoice = 0, decimal TotalValVAT = 0, decimal TotalValPmt = 0, string? CurrencyCode = null, decimal CurrencyRate = 1, string? InvoiceIDType = null, string? FlagisHTC = null);   // #348
+record VatInvoiceDto(string DealerCode, string InvoiceIDCode, decimal VAT, string? BankCode, string? SourceInvoiceName, string? SourceInvoiceCode, string? RefNo, string? InvoiceAdjType, string? RootHTCInvoiceNo, List<VatInvoiceCarDto>? Cars, string? OS_HDDT_RefNo = null, string? PaymentMethodCode = null, decimal ValGoodsNotTaxable = 0, decimal ValGoodsNotChargeTax = 0, decimal ValGoodsVAT5 = 0, decimal ValVAT5 = 0, decimal ValGoodsVAT10 = 0, decimal ValVAT10 = 0, decimal TotalValInvoice = 0, decimal TotalValVAT = 0, decimal TotalValPmt = 0, string? CurrencyCode = null, decimal CurrencyRate = 1, string? InvoiceIDType = null, string? FlagisHTC = null, DateTime? CreatedDate = null, string? CreatedBy = null);   // #348
 record GrtClaimExtCarDto(string VIN, string? CarId, string? GuaranteeNo);
 record GrtClaimExtDto(string DealerCode, int NumberOfGuaranteeExt, List<GrtClaimExtCarDto>? Cars, string? Remark = null, string? BankCode = null);
 record GrtClaimExtSignDto(string FileName, string? Remark = null);
