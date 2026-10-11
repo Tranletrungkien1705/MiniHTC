@@ -37,6 +37,10 @@ public sealed class ReportHeader
     /// <summary>🔴 Trả ra dưới nhãn **Mobile**.</summary>
     public string? Showroom3 { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 public sealed class Dealer
@@ -229,7 +233,10 @@ public sealed class MstViolateType
     public Guid OrgId { get; set; }
     public string ViolateTypeId { get; set; } = "";
     public string ViolateTypeName { get; set; } = "";
+    public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -251,6 +258,8 @@ public sealed class MstCostType
     public string CostTypeCode { get; set; } = "";
     public string? CostTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>PDI inspection tracking (simplified) — KHÔNG có twin WinForm 1:1: FrmMngDlr_PDIRequest đã port đúng tại DlrPdiRequest; FrmMngPDI/FrmNewPDI đã port tại HtmvPdi. Entity này là flow tổng hợp HTC-track Requested→Inspecting→Passed/Failed per VIN.</summary>

@@ -29639,8 +29639,11 @@ app.MapGet("/api/reportheaders", async (AppDbContext db, ITenantContext t, strin
     var rows = await q0.OrderBy(x => x.DealerCode).Select(x => new
     {
         x.DealerCode,
+        x.DealerName, x.CompanyName, x.CompanyAddress, x.Website,
+        x.Showroom1, x.Showroom2, x.Showroom3,
         info1 = x.DealerName, info2 = x.CompanyName, info3 = x.CompanyAddress, info4 = x.Website,
-        Tel = x.Showroom1, Fax = x.Showroom2, Mobile = x.Showroom3, x.CreatedAt,   // #1275 §12
+        Tel = x.Showroom1, Fax = x.Showroom2, Mobile = x.Showroom3,
+        x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,   // #1275 §12
     }).ToListAsync();
 
     return Results.Ok(new
@@ -29673,11 +29676,13 @@ app.MapGet("/api/reportheaders/one", async (AppDbContext db, ITenantContext t, s
               one.DealerCode,
               info1 = one.DealerName, info2 = one.CompanyName, info3 = one.CompanyAddress, info4 = one.Website,
               Tel = one.Showroom1, Fax = one.Showroom2, Mobile = one.Showroom3,
+              one.CreatedAt, one.CreatedDate, one.CreatedBy, one.LogLUDateTime, one.LogLUBy,
           }
         : new
           {
               one.DealerCode, one.DealerName, one.CompanyName, one.CompanyAddress,
               one.Website, one.Showroom1, one.Showroom2, one.Showroom3,
+              one.CreatedAt, one.CreatedDate, one.CreatedBy, one.LogLUDateTime, one.LogLUBy,
           };
 
     var distinctDealers = all.Select(x => x.DealerCode).Distinct().Count();
@@ -29696,22 +29701,47 @@ app.MapGet("/api/reportheaders/one", async (AppDbContext db, ITenantContext t, s
 }).RequireAuthorization();
 
 // #375 §12: đường GHI cho tiêu đề báo cáo (nguồn sửa bằng màn master riêng).
-app.MapPost("/api/reportheaders", async (ReportHeaderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/reportheaders", async (ReportHeaderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
-    if (code.Length == 0) return Results.BadRequest(new { error = "DealerCode bắt buộc." });
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "DealerCode bắt buộc." });
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var row = await db.ReportHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
     if (row is null)
     {
-        row = new ReportHeader { OrgId = t.OrgId, DealerCode = code };
+        row = new ReportHeader
+        {
+            OrgId = t.OrgId,
+            DealerCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? who,
+        };
         db.ReportHeaders.Add(row);
     }
     row.DealerName = dto.DealerName; row.CompanyName = dto.CompanyName;
     row.CompanyAddress = dto.CompanyAddress; row.Website = dto.Website;
     row.Showroom1 = dto.Showroom1; row.Showroom2 = dto.Showroom2; row.Showroom3 = dto.Showroom3;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = dto.LogLUBy ?? who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.DealerCode, saved = true });
+    return Results.Ok(new
+    {
+        row.DealerCode, row.DealerName, row.CompanyName, row.CompanyAddress, row.Website,
+        row.Showroom1, row.Showroom2, row.Showroom3,
+        row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy,
+        saved = true
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/reportheaders/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.ReportHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstReportHeaderNotFound", dealerCode = c });
+    db.ReportHeaders.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { dealerCode = c, deleted = true });
 }).RequireAuthorization();
 
 // ===== 🔴 #400 CẬP NHẬT SỐ LƯỢNG **BO** TỪ MÀN TỒN KHO TỐI ƯU (`FrmTonKhoToiUu`) =====
@@ -93036,8 +93066,54 @@ app.MapGet("/api/salesmanviolates", async (AppDbContext db, ITenantContext t,
 app.MapGet("/api/mstviolatetypes", async (AppDbContext db, ITenantContext t) =>
 {
     var items = await db.MstViolateTypes.Where(x => x.OrgId == t.OrgId)
-        .Select(x => new { x.ViolateTypeId, x.ViolateTypeName, x.FlagActive }).ToListAsync();
+        .OrderBy(x => x.ViolateTypeId)
+        .Select(x => new { x.ViolateTypeId, x.ViolateTypeName, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstviolatetypes/{id}", async (string id, AppDbContext db, ITenantContext t) =>
+{
+    var code = (id ?? "").Trim().ToUpperInvariant();
+    var row = await db.MstViolateTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ViolateTypeId == code);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.HR_SalesManViolate_Create_ViolateTypeNotExist", violateTypeId = code });
+    return Results.Ok(new { row.ViolateTypeId, row.ViolateTypeName, row.Remark, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstviolatetypes", async (MstViolateTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.ViolateTypeId))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "ViolateTypeId bắt buộc." });
+    if (string.IsNullOrWhiteSpace(dto.ViolateTypeName))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "ViolateTypeName bắt buộc." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var id = dto.ViolateTypeId.Trim().ToUpperInvariant();
+    var row = await db.MstViolateTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ViolateTypeId == id);
+    if (row is null)
+    {
+        row = new MstViolateType { OrgId = t.OrgId, ViolateTypeId = id };
+        db.MstViolateTypes.Add(row);
+    }
+    row.ViolateTypeName = dto.ViolateTypeName.Trim();
+    row.Remark = dto.Remark;
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ViolateTypeId, row.ViolateTypeName, row.Remark, row.FlagActive, row.LogLUDateTime, row.LogLUBy, saved = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstviolatetypes/{id}/toggle", async (string id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (id ?? "").Trim().ToUpperInvariant();
+    var row = await db.MstViolateTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ViolateTypeId == code);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.HR_SalesManViolate_Create_ViolateTypeNotExist", violateTypeId = code });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.ViolateTypeId, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // ===== #5854 Danh mục VÙNG — `FrmMst_Zone` (2010.HTC/Admin/Product) =====
@@ -93077,8 +93153,52 @@ app.MapGet("/api/mstcosttypes", async (AppDbContext db, ITenantContext t, string
     var q = db.MstCostTypes.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
     var items = await q.OrderBy(x => x.CostTypeCode)
-        .Select(x => new { x.CostTypeCode, x.CostTypeName, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.CostTypeCode, x.CostTypeName, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mstcosttypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.MstCostTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CostTypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_CostTypeNotFound", costTypeCode = c });
+    return Results.Ok(new { row.CostTypeCode, row.CostTypeName, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstcosttypes", async (MstCostTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CostTypeCode))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "CostTypeCode bắt buộc." });
+    if (string.IsNullOrWhiteSpace(dto.CostTypeName))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "CostTypeName bắt buộc." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var code = dto.CostTypeCode.Trim().ToUpperInvariant();
+    var row = await db.MstCostTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CostTypeCode == code);
+    if (row is null)
+    {
+        row = new MstCostType { OrgId = t.OrgId, CostTypeCode = code };
+        db.MstCostTypes.Add(row);
+    }
+    row.CostTypeName = dto.CostTypeName.Trim();
+    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.CostTypeCode, row.CostTypeName, row.FlagActive, row.LogLUDateTime, row.LogLUBy, saved = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstcosttypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.MstCostTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CostTypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_CostTypeNotFound", costTypeCode = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.CostTypeCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/salesmanviolates/{smCode}/{violateNumber}/update", async (
@@ -123396,7 +123516,12 @@ record TransportInsPaymentEditDto(List<TransportInsPaymentEditLineDto>? Lines);
 // #362: SalesCusID — ma KH ben he Sales, dung de hop nhat ma KH khi dong bo Veloca.
 // #375 §12: tieu de bao cao. Showroom1/2/3 THUC CHAT la Tel/Fax/Mobile (ten cot noi doi).
 record ReportHeaderDto(string DealerCode, string? DealerName, string? CompanyName, string? CompanyAddress,
-    string? Website, string? Showroom1, string? Showroom2, string? Showroom3);
+    string? Website, string? Showroom1, string? Showroom2, string? Showroom3,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+// #5836 §12: loai vi pham che tai NVBH
+record MstViolateTypeDto(string ViolateTypeId, string ViolateTypeName, string? Remark = null, string? FlagActive = "1");
+// #5842 §12: loai chi phi
+record MstCostTypeDto(string CostTypeCode, string? CostTypeName, string? FlagActive = "1");
 // #399: DTO sua thong tin xe (nguon SerCarUpdate, 20 cot cua alColumnEffective).
 //   KHONG co truong hoi vien Loyalty: nguon co nhan nhung khoi dung no da bi comment.
 //   LUU Y kieu: ProductYear = int?, CurrentKm = decimal (khong nullable tren entity),
