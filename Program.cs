@@ -22994,7 +22994,7 @@ app.MapGet("/api/maintaintypes", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(mtnTp)) q = q.Where(x => x.MtnTp == mtnTp);
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive);
     var items = await q.OrderBy(x => x.ModelCode).ThenBy(x => x.MtnTp).Take(1000).Select(x => new {
-        x.MtnTp, x.ModelCode, x.MtnTpName, x.MtnTimes, x.FlagActive, x.LogLUDateTime, x.LogLUBy,
+        x.Id, x.MtnTp, x.ModelCode, x.MtnTpName, x.MtnTimes, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
         tasks = db.MtnTpMaintainTaskItems.Count(l => l.OrgId == t.OrgId && l.MtnTp == x.MtnTp && l.ModelCode == x.ModelCode),
         parts = db.MtnTpParts.Count(l => l.OrgId == t.OrgId && l.MtnTp == x.MtnTp && l.ModelCode == x.ModelCode) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -23002,15 +23002,15 @@ app.MapGet("/api/maintaintypes", async (AppDbContext db, ITenantContext t, strin
 
 app.MapGet("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string model, AppDbContext db, ITenantContext t) =>
 {
-    mtnTp = mtnTp.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    mtnTp = (mtnTp ?? "").Trim().ToUpperInvariant(); model = (model ?? "").Trim().ToUpperInvariant();
     var h = await db.MstMaintainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model);
-    if (h is null) return Results.NotFound(new { mtnTp, model });
+    if (h is null) return Results.NotFound(new { error = "ErrHTC.Mst_MaintainType_CheckDB_MstMaintainTypeNotFound", mtnTp, model });
     var tasks = await db.MtnTpMaintainTaskItems.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model)
-        .Select(x => new { x.MtnTkCode, x.MtnTkItemCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+        .Select(x => new { x.Id, x.MtnTkCode, x.MtnTkItemCode, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     var parts = await db.MtnTpParts.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model)
-        .Select(x => new { x.PartCode, x.Qty, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
-    return Results.Ok(new { header = new { h.MtnTp, h.ModelCode, h.MtnTpName, h.MtnTimes, h.FlagActive,
-        h.LogLUDateTime, h.LogLUBy }, tasks, parts });
+        .Select(x => new { x.Id, x.PartCode, x.Qty, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    return Results.Ok(new { header = new { h.Id, h.MtnTp, h.ModelCode, h.MtnTpName, h.MtnTimes, h.FlagActive,
+        h.CreatedDate, h.CreatedBy, h.LogLUDateTime, h.LogLUBy }, tasks, parts });
 }).RequireAuthorization();
 
 // Thêm gói — guard nguồn: cặp (MtnTp, ModelCode) PHẢI CHƯA tồn tại (CheckDB(…, TConst.Flag.No)).
@@ -23018,13 +23018,17 @@ app.MapPost("/api/maintaintypes", async (MaintainTypeDto dto, AppDbContext db, I
 {
     var mtnTp = (dto.MtnTp ?? "").Trim().ToUpperInvariant();
     var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
-    if (mtnTp.Length == 0 || model.Length == 0) return Results.BadRequest(new { error = "Cần cả mã gói bảo trì và mã dòng xe (khoá kép)." });
-    if (dto.MtnTimes < 0) return Results.BadRequest(new { error = "Số lần bảo trì không được âm." });
+    if (mtnTp.Length == 0 || model.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần cả mã gói bảo trì và mã dòng xe (khoá kép)." });
+    if (dto.MtnTimes < 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Số lần bảo trì không được âm." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.Mst_MaintainType_CheckDB_InvalidFlagActiveNotMatch", message = "FlagActive chỉ nhận 0/1." });
     if (await db.MstMaintainTypes.AnyAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model))
-        return Results.Conflict(new { error = $"Gói {mtnTp} của dòng xe {model} đã tồn tại." });
+        return Results.Conflict(new { error = "ErrHTC.Mst_MaintainType_CheckDB_MstMaintainTypeNotExist", message = $"Gói {mtnTp} của dòng xe {model} đã tồn tại." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
-    db.MstMaintainTypes.Add(new MstMaintainType { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
-        MtnTpName = dto.MtnTpName, MtnTimes = dto.MtnTimes, FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
+    var row = new MstMaintainType { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
+        MtnTpName = dto.MtnTpName, MtnTimes = dto.MtnTimes, FlagActive = fa,
+        CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who };
+    db.MstMaintainTypes.Add(row);
     foreach (var k in dto.Tasks ?? new())
         db.MtnTpMaintainTaskItems.Add(new MtnTpMaintainTaskItem { OrgId = t.OrgId, MtnTp = mtnTp, ModelCode = model,
             MtnTkCode = k.MtnTkCode, MtnTkItemCode = (k.MtnTkItemCode ?? "").Trim().ToUpperInvariant(),
@@ -23034,19 +23038,22 @@ app.MapPost("/api/maintaintypes", async (MaintainTypeDto dto, AppDbContext db, I
             PartCode = (p.PartCode ?? "").Trim().ToUpperInvariant(), Qty = p.Qty,
             FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { mtnTp, model, tasks = (dto.Tasks ?? new()).Count, parts = (dto.Parts ?? new()).Count });
+    return Results.Ok(new { header = new { row.Id, row.MtnTp, row.ModelCode, row.MtnTpName, row.MtnTimes, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy }, mtnTp, model, tasks = (dto.Tasks ?? new()).Count, parts = (dto.Parts ?? new()).Count });
 }).RequireAuthorization();
 
 // Sửa gói — port 1:1 `_Update_New20181119`: UPDATE bảng đầu, rồi **DELETE rồi INSERT LẠI** hai bảng con
 // (Biz.HTC.WH.cs:8570/8580 delete → 8602/8628 insert). Không có "sửa từng dòng con".
 app.MapPut("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string model, MaintainTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    mtnTp = mtnTp.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    mtnTp = (mtnTp ?? "").Trim().ToUpperInvariant(); model = (model ?? "").Trim().ToUpperInvariant();
     var h = await db.MstMaintainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model);
-    if (h is null) return Results.NotFound(new { mtnTp, model });
-    if (dto.MtnTimes < 0) return Results.BadRequest(new { error = "Số lần bảo trì không được âm." });
+    if (h is null) return Results.NotFound(new { error = "ErrHTC.Mst_MaintainType_CheckDB_MstMaintainTypeNotFound", mtnTp, model });
+    if (dto.MtnTimes < 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Số lần bảo trì không được âm." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive.Trim() is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.Mst_MaintainType_CheckDB_InvalidFlagActiveNotMatch", message = "FlagActive chỉ nhận 0/1." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
     h.MtnTpName = dto.MtnTpName ?? h.MtnTpName; h.MtnTimes = dto.MtnTimes;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) h.FlagActive = dto.FlagActive.Trim();
     h.LogLUDateTime = now; h.LogLUBy = who;
     db.MtnTpMaintainTaskItems.RemoveRange(await db.MtnTpMaintainTaskItems.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
     db.MtnTpParts.RemoveRange(await db.MtnTpParts.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
@@ -23059,7 +23066,7 @@ app.MapPut("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string mod
             PartCode = (p.PartCode ?? "").Trim().ToUpperInvariant(), Qty = p.Qty,
             FlagActive = "1", LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { mtnTp, model, tasks = (dto.Tasks ?? new()).Count, parts = (dto.Parts ?? new()).Count,
+    return Results.Ok(new { header = new { h.Id, h.MtnTp, h.ModelCode, h.MtnTpName, h.MtnTimes, h.FlagActive, h.CreatedDate, h.CreatedBy, h.LogLUDateTime, h.LogLUBy }, mtnTp, model, tasks = (dto.Tasks ?? new()).Count, parts = (dto.Parts ?? new()).Count,
         note = "Nguồn xoá sạch 2 bảng con rồi ghi lại — không sửa từng dòng." });
 }).RequireAuthorization();
 
@@ -23068,9 +23075,9 @@ app.MapPut("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string mod
 // Nguồn chỉ guard tồn-tại (CheckDB FlagExistToCheck=Yes), KHÔNG chặn theo tham chiếu nơi khác — giữ đúng.
 app.MapDelete("/api/maintaintypes/{mtnTp}/{model}", async (string mtnTp, string model, AppDbContext db, ITenantContext t) =>
 {
-    mtnTp = mtnTp.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    mtnTp = (mtnTp ?? "").Trim().ToUpperInvariant(); model = (model ?? "").Trim().ToUpperInvariant();
     var h = await db.MstMaintainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model);
-    if (h is null) return Results.NotFound(new { mtnTp, model });
+    if (h is null) return Results.NotFound(new { error = "ErrHTC.Mst_MaintainType_CheckDB_MstMaintainTypeNotFound", mtnTp, model });
     db.MtnTpMaintainTaskItems.RemoveRange(await db.MtnTpMaintainTaskItems.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
     db.MtnTpParts.RemoveRange(await db.MtnTpParts.Where(x => x.OrgId == t.OrgId && x.MtnTp == mtnTp && x.ModelCode == model).ToListAsync());
     db.MstMaintainTypes.Remove(h);
@@ -61187,7 +61194,7 @@ app.MapGet("/api/customertypes", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(personType)) query = query.Where(x => x.CusPersonType == personType);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.CusTypeCode).Take(500)
-        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt }).ToListAsync();   // #1245 §12 + #1292 §12
+        .Select(x => new { x.Id, x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1245 §12 + #1292 §12 + #Round143 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -61210,7 +61217,7 @@ app.MapGet("/api/customertypes/getall", async (AppDbContext db, ITenantContext t
     if (!string.IsNullOrWhiteSpace(dealerCodePattern)) qry = qry.Where(x => x.DealerCode != null && x.DealerCode.Contains(dealerCodePattern!));
     if (!string.IsNullOrWhiteSpace(cusTypeNamePattern)) qry = qry.Where(x => x.CusTypeName != null && x.CusTypeName.Contains(cusTypeNamePattern!));
     var items = await qry.OrderBy(x => x.CusTypeCode)
-        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt })
+        .Select(x => new { x.Id, x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items,
         onlyLiveConfirmed1518 = "#1518: Ser_MST_CustomerType_GetAll — BizCarSv.Master.cs:6029, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4694",
@@ -61240,7 +61247,7 @@ app.MapGet("/api/customertypes/get", async (AppDbContext db, ITenantContext t,
     // BuildClauseConditionSingle("and", "t.DealerCode", "like", …) — LIKE, không phải khớp chính xác.
     if (!string.IsNullOrWhiteSpace(dealerCodePattern)) qry = qry.Where(x => x.DealerCode != null && x.DealerCode.Contains(dealerCodePattern!));
     var items = await qry.OrderBy(x => x.CusTypeCode)
-        .Select(x => new { x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt })
+        .Select(x => new { x.Id, x.CusTypeCode, x.CusTypeName, x.CusFactor, x.CusPersonType, x.FlagActive, x.DealerCode, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items,
         onlyLiveConfirmed1521 = "#1521: Ser_MST_CustomerType_Get — BizCarSv.Master.cs:5918, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4662",
@@ -61250,13 +61257,26 @@ app.MapGet("/api/customertypes/get", async (AppDbContext db, ITenantContext t,
         twoTreesMatch = "3B: than ham Ser_MST_CustomerType_Get md5 KHOP giua V20 va V20.2023.Release (d172f74f)" });
 }).RequireAuthorization();
 
-// Upsert theo mã loại KH (GroupNo/mã trống = auto-gen).
-app.MapPost("/api/customertypes", async (CustomerTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/customertypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.CusTypeName)) return Results.BadRequest(new { error = "Chưa nhập tên loại khách hàng." });
-    if (dto.CusFactor < 0) return Results.BadRequest(new { error = "Hệ số giá không hợp lệ." });
+    var c = (code ?? "").Trim();
+    var row = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_CustomerType_NotFound", cusTypeCode = c });
+    return Results.Ok(new { row.Id, row.CusTypeCode, row.CusTypeName, row.CusFactor, row.CusPersonType, row.FlagActive, row.DealerCode, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+// Upsert theo mã loại KH (GroupNo/mã trống = auto-gen).
+app.MapPost("/api/customertypes", async (CustomerTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.CusTypeName)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập tên loại khách hàng." });
+    if (dto.CusFactor < 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Hệ số giá không hợp lệ." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive.Trim() is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0/1." });
     var person = _cusPersonTypes.Contains(dto.CusPersonType) ? dto.CusPersonType! : "Personal";
     var code = string.IsNullOrWhiteSpace(dto.CusTypeCode) ? "CT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.CusTypeCode.Trim().ToUpperInvariant();
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
     var ex = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == code);
     // #1245 SUA BUG THAT: CustomerType.DealerCode duoc doc boi guard #1041 (dong ~61690, "Ser_Customer_Update")
     // de kiem danh muc "KHACHLE" ton tai theo dai ly, nhung truoc day KHONG TUNG duoc ghi (DTO khong co
@@ -61264,14 +61284,20 @@ app.MapPost("/api/customertypes", async (CustomerTypeDto dto, AppDbContext db, I
     // LUON FALSE => moi lan set khach hang IsNormal="1" LUON BI CHAN, bat ke danh muc that co ton tai hay khong.
     if (ex is not null)
     {
-        ex.CusTypeName = dto.CusTypeName; ex.CusFactor = dto.CusFactor; ex.CusPersonType = person; ex.FlagActive = "1";
+        ex.CusTypeName = dto.CusTypeName; ex.CusFactor = dto.CusFactor; ex.CusPersonType = person;
+        if (!string.IsNullOrWhiteSpace(dto.FlagActive)) ex.FlagActive = fa;
         if (dto.DealerCode is not null) ex.DealerCode = dto.DealerCode;
+        ex.LogLUDateTime = now; ex.LogLUBy = who;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.CusTypeCode, updated = true });
+        return Results.Ok(new { ex.Id, ex.CusTypeCode, ex.CusTypeName, ex.CusFactor, ex.CusPersonType, ex.FlagActive, ex.DealerCode, ex.CreatedAt, ex.CreatedDate, ex.CreatedBy, ex.LogLUDateTime, ex.LogLUBy, updated = true });
     }
-    var r = new CustomerType { OrgId = t.OrgId, CusTypeCode = code, CusTypeName = dto.CusTypeName, CusFactor = dto.CusFactor, CusPersonType = person, FlagActive = "1", DealerCode = dto.DealerCode };
+    // Check trùng CusTypeName theo DealerCode (nguồn CheckExistCustomerTypeName)
+    var dupName = await db.CustomerTypes.AnyAsync(x => x.OrgId == t.OrgId && x.CusTypeName == dto.CusTypeName && x.DealerCode == dto.DealerCode);
+    if (dupName) return Results.Conflict(new { error = "ErrCarSv.Ser_CustomerType_Exist", cusTypeName = dto.CusTypeName });
+
+    var r = new CustomerType { OrgId = t.OrgId, CusTypeCode = code, CusTypeName = dto.CusTypeName, CusFactor = dto.CusFactor, CusPersonType = person, FlagActive = fa, DealerCode = dto.DealerCode, CreatedAt = now, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who };
     db.CustomerTypes.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.CusTypeCode, updated = false });
+    return Results.Ok(new { r.Id, r.CusTypeCode, r.CusTypeName, r.CusFactor, r.CusPersonType, r.FlagActive, r.DealerCode, r.CreatedAt, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, updated = false });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #844 MÀN MỚI: SỬA / XOÁ LOẠI KHÁCH HÀNG — `Ser_MST_CustomerType_{Create,Update,Delete}` =====
@@ -61337,11 +61363,11 @@ app.MapPost("/api/customertypes", async (CustomerTypeDto dto, AppDbContext db, I
 // 📌 Mini: `PUT /api/customertypes/{code}` và `DELETE /api/customertypes/{code}` — **giữ** guard tham chiếu của
 //   nguồn, **thêm** cảnh báo khi `CusFactor` gửi lên không phân tích được, và trả `isActive` **đúng kiểu chuỗi**.
 app.MapPut("/api/customertypes/{code}", async (string code, CustomerTypeDto dto,
-    AppDbContext db, ITenantContext t) =>
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var c = (code ?? "").Trim();
     var row = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == c);
-    if (row is null) return Results.NotFound(new { error = "Ser_MST_CustomerType_NotFound", cusTypeCode = c });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_CustomerType_NotFound", cusTypeCode = c });
     // #30085 GAP THAT (ky thuat-6, WSCarSv.asmx.cs:4497 Ser_MST_CustomerType_Update, BizCarSv.Master.cs:6427):
     // nguon GHI LAI DealerCode = strDealerCode (tham so dau vao) o MOI lan Update, va guard
     // CheckExistCusTypeNameModify (BizCarSv.Master.cs:30) loc trung ten theo CHINH strDealerCode do (gia tri
@@ -61355,16 +61381,22 @@ app.MapPut("/api/customertypes/{code}", async (string code, CustomerTypeDto dto,
         // Guard cua NGUON: CheckExistCusTypeNameModify — trung TEN trong cung dai ly (dai ly MOI dang ghi), tru chinh minh.
         var dup = await db.CustomerTypes.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id
             && x.CusTypeName == newName && x.DealerCode == newDealerCode);
-        if (dup) return Results.Conflict(new { error = "Ser_CustomerType_Exist", cusTypeName = newName });
+        if (dup) return Results.Conflict(new { error = "ErrCarSv.Ser_CustomerType_Exist", cusTypeName = newName });
         row.CusTypeName = newName;
     }
     if (dto.CusFactor != 0m) row.CusFactor = dto.CusFactor;
     if (!string.IsNullOrWhiteSpace(dto.CusPersonType)) row.CusPersonType = dto.CusPersonType!;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive.Trim() is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive.Trim();
     row.DealerCode = newDealerCode; // #30085: nguon GHI LAI DealerCode o moi lan Update, khong chi luc Create.
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
         row.Id, row.CusTypeCode, row.CusTypeName, row.CusFactor, row.CusPersonType, row.DealerCode,
+        row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy,
         isActive = row.FlagActive,   // CHUOI, dung nhu cot DB — nguon doi ve kieu Boolean
         gap30085DealerCodeRewrittenOnUpdate = "#30085 (ky thuat-6 WS-method-diff round 51): Ser_MST_CustomerType_Update (BizCarSv.Master.cs:6427) ghi lai DealerCode o MOI lan Update (khong chi Create) va guard trung ten loc theo DealerCode MOI; PUT truoc day bo quen ca hai, nay da vay du",
         guardPairIsConsistentHere = "AM TINH — CUM LAM DUNG: CheckExistCustomerTypeName (TAO) va CheckExistCusTypeNameModify (SUA) CA HAI loc dung (CusTypeName, DealerCode), ban SUA them CusTypeID <> @, KHONG ben nao dung toi IsActive => nhat quan, trai han bay #818/#839 noi TAO loc IsActive = strIsActive con SUA loc cung 1. Khi gap cum master tiep theo, so voi cum NAY, dung so voi #818",
@@ -61379,14 +61411,14 @@ app.MapDelete("/api/customertypes/{code}", async (string code, AppDbContext db, 
 {
     var c = (code ?? "").Trim();
     var row = await db.CustomerTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusTypeCode == c);
-    if (row is null) return Results.NotFound(new { error = "Ser_MST_CustomerType_NotFound", cusTypeCode = c });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_CustomerType_NotFound", cusTypeCode = c });
     // Guard cua NGUON (CheckCustomerTypeForDelete): con KHACH dang dung loai nay thi CAM xoa.
     var inUse = await db.ServiceCustomers.CountAsync(x => x.OrgId == t.OrgId && x.CusTypeID == c);
     if (inUse > 0)
     {
         return Results.Conflict(new
         {
-            error = "Ser_CustomerType_Delete_UserAnother", cusTypeCode = c, customerCount = inUse,
+            error = "ErrCarSv.Ser_CustomerType_Delete_UserAnother", cusTypeCode = c, customerCount = inUse,
             sourceHasThisGuard = "AM TINH: CheckCustomerTypeForDelete tra Ser_Customer theo (CusTypeID, DealerCode) va nem Ser_CustomerType_Delete_UserAnother => CHINH LA guard tham chieu ma SerEngineerDelete (#819) THIEU",
         });
     }
@@ -61402,14 +61434,16 @@ app.MapDelete("/api/customertypes/{code}", async (string code, AppDbContext db, 
         deleteSitsBetweenCreateAndUpdate = "thu tu trong file: Create :6146, Delete :6322, Update :6466 — Delete nam GIUA, de doc nham vung khi trich tay",
     });
 }).RequireAuthorization();
-app.MapPost("/api/customertypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/customertypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.CustomerTypes.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.CusTypeCode == code);
-    if (x is null) return Results.NotFound(new { code });
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_CustomerType_NotFound", code });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.CusTypeCode, flagActive = x.FlagActive });
+    return Results.Ok(new { x.Id, x.CusTypeCode, x.CusTypeName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Nhóm khách hàng dịch vụ (CustomerGroup header-detail — port 1:1 FrmCustomerGroupCreate/Search, TCMotor) =====
@@ -87037,55 +87071,93 @@ app.MapGet("/api/mininventories", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(modelCode)) qy = qy.Where(x => x.ModelCode == modelCode);
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
     var items = await qy.OrderBy(x => x.ModelCode).ThenBy(x => x.SpecCode).Select(x => new
-    { x.SpecCode, x.ModelCode, x.QtyInv, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+    { x.Id, x.SpecCode, x.ModelCode, x.QtyInv, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/mininventories/{specCode}", async (string specCode, AppDbContext db, ITenantContext t) =>
+{
+    var spec = (specCode ?? "").Trim();
+    var row = await db.MstMinInventories.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstMinInventoryNotFound", specCode = spec });
+    return Results.Ok(new { row.Id, row.SpecCode, row.ModelCode, row.QtyInv, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // `CreateMulti` — nguồn nhận BẢNG nhiều dòng trong một lệnh.
 app.MapPost("/api/mininventories/createmulti", async (MinInventoryCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.SpecCode)).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng đầu vào rỗng." });
+    if (dto.Rows is null || dto.Rows.Count == 0)
+        return Results.BadRequest(new { error = "ErrHTC.Mst_MinInventory_CreateMulti_TableBlank", message = "Bảng đầu vào rỗng." });
+    var rows = dto.Rows.ToList();
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var seen = new HashSet<string>();
     foreach (var r in rows)
     {
-        var spec = r.SpecCode!.Trim();
-        if (!seen.Add(spec)) return Results.BadRequest(new { error = $"Mã spec {spec} bị lặp trong bảng." });
+        var spec = (r.SpecCode ?? "").Trim();
+        if (spec.Length == 0)
+            return Results.BadRequest(new { error = "ErrHTC.Mst_MinInventory_CreateMulti_InvalidSpecCode", message = "Mã spec không được để trống." });
+        if (string.IsNullOrWhiteSpace(r.ModelCode))
+            return Results.BadRequest(new { error = "ErrHTC.Mst_MinInventory_CreateMulti_InvalidModelCode", message = "Mã model không được để trống." });
+        if ((r.QtyInv ?? 0) < 0)
+            return Results.BadRequest(new { error = "ErrHTC.Mst_MinInventory_CreateMulti_InvalidQtyInv", message = "Định mức tồn tối thiểu không hợp lệ." });
+        var fa = string.IsNullOrWhiteSpace(r.FlagActive) ? "1" : r.FlagActive.Trim();
+        if (fa is not ("0" or "1"))
+            return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMinInventoryNotMatch", message = "FlagActive chỉ nhận 0/1." });
+        if (!seen.Add(spec))
+            return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstMinInventoryExist", message = $"Mã spec {spec} bị lặp trong bảng." });
         if (await db.MstMinInventories.AnyAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec))
-            return Results.BadRequest(new { error = $"Đã có định mức tồn tối thiểu cho spec {spec}." });
+            return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstMinInventoryExist", message = $"Đã có định mức tồn tối thiểu cho spec {spec}." });
     }
-    foreach (var r in rows)
-        db.MstMinInventories.Add(new MstMinInventory
-        {
-            OrgId = t.OrgId, SpecCode = r.SpecCode!.Trim(), ModelCode = r.ModelCode,
-            QtyInv = r.QtyInv,
-            FlagActive = string.IsNullOrWhiteSpace(r.FlagActive) ? "1" : r.FlagActive!,
-            LogLUDateTime = DateTime.Now, LogLUBy = who,
-        });
+    var entities = rows.Select(r => new MstMinInventory
+    {
+        OrgId = t.OrgId,
+        SpecCode = r.SpecCode!.Trim(),
+        ModelCode = r.ModelCode,
+        QtyInv = r.QtyInv,
+        FlagActive = string.IsNullOrWhiteSpace(r.FlagActive) ? "1" : r.FlagActive.Trim(),
+        CreatedDate = now,
+        CreatedBy = who,
+        LogLUDateTime = now,
+        LogLUBy = who,
+    }).ToList();
+    db.MstMinInventories.AddRange(entities);
     await db.SaveChangesAsync();
-    return Results.Ok(new { created = rows.Count });
+    return Results.Ok(new
+    {
+        created = rows.Count,
+        items = entities.Select(x => new { x.Id, x.SpecCode, x.ModelCode, x.QtyInv, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/mininventories/update", async (MinInventoryRowDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var spec = (dto.SpecCode ?? "").Trim();
+    if (spec.Length == 0)
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Mã spec bắt buộc." });
     var row = await db.MstMinInventories.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec);
-    if (row is null) return Results.NotFound(new { error = $"Không có định mức cho spec {spec}." });
-    row.ModelCode = dto.ModelCode;
-    row.QtyInv = dto.QtyInv;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstMinInventoryNotFound", message = $"Không có định mức cho spec {spec}." });
+    if (dto.QtyInv.HasValue && dto.QtyInv.Value < 0)
+        return Results.BadRequest(new { error = "ErrHTC.Mst_MinInventory_CreateMulti_InvalidQtyInv", message = "Định mức tồn tối thiểu không hợp lệ." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive.Trim() is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMinInventoryNotMatch", message = "FlagActive chỉ nhận 0/1." });
+
+    if (dto.ModelCode is not null) row.ModelCode = dto.ModelCode;
+    if (dto.QtyInv.HasValue) row.QtyInv = dto.QtyInv;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive.Trim();
     row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.SpecCode, row.QtyInv, row.FlagActive });
+    return Results.Ok(new { row.Id, row.SpecCode, row.ModelCode, row.QtyInv, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/mininventories/delete", async (MinInventoryKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
     var spec = (dto.SpecCode ?? "").Trim();
+    if (spec.Length == 0)
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Mã spec bắt buộc." });
     var row = await db.MstMinInventories.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec);
-    if (row is null) return Results.NotFound(new { error = $"Không có định mức cho spec {spec}." });
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstMinInventoryNotFound", message = $"Không có định mức cho spec {spec}." });
     db.MstMinInventories.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = spec });
@@ -124858,7 +124930,7 @@ record DlsVinSurveyDto(string? VIN, string? Note, DateTime? ContactDate, string?
 record PmtPaymentRowDto(string? CarId, string? GuaranteeNo, string? DlrCtrNo, decimal? Amount, string? PMGBankCode = null);
 record PmtPaymentCreateDto(string? PaymentNo, string? DealerCode, string? PaymentType, string? BankCodeSend, string? BankCodeReceive, string? BankPaymentNo, string? BankAccountSend, string? BankAccountReceive, decimal? TotalAmount, string? Funds, string? BankLending, List<PmtPaymentRowDto>? Details, string? Remark = null, string? TransferType = null, decimal? LoanPeriod = null, decimal? InterestRate = null, string? PaymentType_TTCORTTBL = null);
 // Tồn kho tối thiểu: nguồn nhận BẢNG nhiều dòng ở lệnh tạo (CreateMulti).
-record MinInventoryRowDto(string? SpecCode, string? ModelCode, decimal? QtyInv, string? FlagActive);
+record MinInventoryRowDto(string? SpecCode, string? ModelCode, decimal? QtyInv, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MinInventoryCreateDto(List<MinInventoryRowDto>? Rows);
 record MinInventoryKeyDto(string? SpecCode);
 // Lịch làm việc: ResetYear khai giá trị cho TỪNG THỨ rồi trải ra cả năm.
@@ -125357,7 +125429,7 @@ record ReqPartPriceTstReplyDto(string? TSTReqPartPriceID, DateTime? TSTSentDate,
 record SerFilePathVideoDto(string? FilePathVideoCode, string? FilePathVideoName, string? FilePathVideo, string? FilePathAvatar, int IdxView, string? FlagActive,
     string? Remark = null);   // #1055
 record SerModelAudImageDto(string? ModelCode, string? ReceptionFAudType, string? FilePath, string? Remark = null);   // #1043
-record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType, string? DealerCode = null);
+record CustomerTypeDto(string? CusTypeCode, string? CusTypeName, decimal CusFactor, string? CusPersonType, string? DealerCode = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record DealerServiceOptionDto(string ParamCode, string? ParamValue);
 record InsContractDto(string? InContractNo, string? InContractCode, string InsNo, string? InsName, DateTime? StartDate, DateTime? FinishDate, decimal PaymentLimit, string? TypePayment);
 record BulletinDtlDto(string? SerCode, string? SerName, string? PartCode, string? PartName);
@@ -126629,7 +126701,7 @@ record InvoicePrintNoDto(string InvoiceIDType, string SourceInvoiceCode, DateTim
 // ---- #151: DTO gói bảo trì theo dòng xe + kết quả theo hạng mục ----
 record MtnTypeTaskDto(string? MtnTkCode, string MtnTkItemCode);
 record MtnTypePartDto(string PartCode, decimal Qty);
-record MaintainTypeDto(string MtnTp, string ModelCode, string? MtnTpName, int MtnTimes, List<MtnTypeTaskDto>? Tasks, List<MtnTypePartDto>? Parts);
+record MaintainTypeDto(string MtnTp, string ModelCode, string? MtnTpName, int MtnTimes, List<MtnTypeTaskDto>? Tasks, List<MtnTypePartDto>? Parts, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MaintainMixLineDto(string VIN, string? MtnTp, string? ModelCode, string? MtnTkCode, string? MtnTkItemCode, string? MtnVal, string? MtnStatusMix, string? Remark);
 
 // ---- #150: DTO cấu hình đầu vào thuật toán map VIN ----

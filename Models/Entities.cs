@@ -952,6 +952,9 @@ public sealed class MstMaintainType
     /// <summary>Số lần bảo trì của gói (`MtnTimes`) — nguồn đọc bằng `Convert.ToInt32` ⇒ số NGUYÊN.</summary>
     public int MtnTimes { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round143 §12: Mst_MaintainType (DbDefine, Biz.HTC.WH.cs:8570) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -11970,6 +11973,9 @@ public sealed class MstMinInventory
     /// <summary>Số lượng tồn tối thiểu cần giữ.</summary>
     public decimal? QtyInv { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round143 §12: Mst_MinInventory (DbDefine.cs:22430, Biz.HTC.WH.cs) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -18786,6 +18792,11 @@ public sealed class CustomerType
     public string CusPersonType { get; set; } = "Personal"; // Personal | Organization
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #Round143 §12: Ser_MST_CustomerType (DbDefine, BizCarSv.Master.cs:6146) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Nhóm khách hàng dịch vụ (header) — port 1:1 FrmCustomerGroupCreate (Tbl_SerCustomerGroup, TCMotor).</summary>
