@@ -596,6 +596,12 @@ public sealed class PurchaseOrderLine
     public string? ModelCode { get; set; }
     public string? ColorCode { get; set; }
     public int Quantity { get; set; } = 1;
+
+    // ===== §12 parity Ord_PurchaseOrderDetail (DbDefine.cs:58 & DB_COT.tsv:985-986) =====
+    public string? ColorName { get; set; }
+    public string? ColorNameVN { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -1401,6 +1407,9 @@ public sealed class TransportRequest
     public string? ApprovedBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    // ===== §12 parity Car_TransportReq (DbDefine.cs & DB_COT.tsv:938-941) =====
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime? ApprovedDate { get; set; }
 }
 
 /// <summary>Dòng xe trong YC vận chuyển (TranspReqDtl): VIN + DO + màu + kho.</summary>
@@ -1431,6 +1440,9 @@ public sealed class TransportReqCar
     public string? DealerCode { get; set; }
     public string? EngineNo { get; set; }
     public string? ModelCode { get; set; }
+    // ===== §12 parity Car_TransportReqDetail (DbDefine.cs & DB_COT.tsv:940-941) =====
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Phí vận chuyển theo tuyến (Mst_TranspFee — port 1:1 FrmNewTranspFee/FrmMngTranspFee, Phase2):
@@ -1549,6 +1561,10 @@ public sealed class TransportMinutes
     public string? LogLUBy { get; set; }
     /// <summary>#Round119 §12: TblTransportMinutes.ApprovedDate (`DbDefine.cs:1110`) — ngày duyệt biên bản giao nhận.</summary>
     public DateTime? ApprovedDate { get; set; }
+    // ===== §12 parity Car_TransportMinutes (DbDefine.cs:1100-1115 & DB_COT.tsv:909-932) =====
+    public DateTime? TransportMinutesExpectedDate { get; set; }
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Dòng xe trong BB vận chuyển (TransportMinutesDetail): VIN + DO + màu + trạng thái dòng.</summary>
@@ -1580,6 +1596,9 @@ public sealed class TransportMinutesCar
     public string? LogLUBy { get; set; }
     /// <summary>#Round119 §12: TblTransportMinutesDetail.TransportReqNo (`DbDefine.cs:1119`) — mã yêu cầu vận chuyển.</summary>
     public string? TransportReqNo { get; set; }
+    // ===== §12 parity Car_TransportMinutesDetail (DbDefine.cs & DB_COT.tsv:933-937) =====
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2):
@@ -16578,6 +16597,9 @@ public sealed class DeliveryLocation
     public string FlagActive { get; set; } = "1";
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== §12 parity Mst_DeliveryLocation (DbDefine.cs:2960-2971) =====
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).

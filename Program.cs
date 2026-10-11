@@ -377,7 +377,8 @@ app.MapGet("/api/deliverylocations", async (AppDbContext db, ITenantContext t,
 
     var items = await qy.OrderBy(x => x.d.DeliveryLocationCode).ThenBy(x => x.d.DealerCode)
         .Select(x => new { x.d.DeliveryLocationCode, x.d.DealerCode, x.dealerName,
-                           x.d.DeliveryLocationName, x.d.FlagActive, x.d.LogLUDateTime, x.d.LogLUBy })
+                           x.d.DeliveryLocationName, x.d.FlagActive, x.d.LogLUDateTime, x.d.LogLUBy,
+                           x.d.CreatedDate, x.d.CreatedBy })
         .ToListAsync();
 
     // ===== #635: đo thật hai hậu quả của nguồn trên chính dữ liệu đang có =====
@@ -425,28 +426,29 @@ app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbConte
     var code = (dto.DeliveryLocationCode ?? "").Trim();
     var dealer = (dto.DealerCode ?? "").Trim();
     var name = (dto.DeliveryLocationName ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã địa điểm giao hàng." });
+    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã địa điểm giao hàng.", code = "Mst_DeliveryLocation_Add_InvalidDeliveryLocationCode" });
     // 🔴 #249 GUARD KÝ TỰ ĐẶC BIỆT — `FrmMst_DeliveryLocation.cs` kiểm `regex.IsMatch(deliveryLocationCode)`.
     //    #232 port màn này mà BỎ SÓT guard; sweep "màn nào dùng regex của lớp cha" mới lộ ra.
     // #257: dùng ĐÚNG hằng của nguồn `MSG_WARNING_KEYSPE_DELIVERYLOCATIONCODE` (Constants.cs:40) =
     //   "Mã **địa điểm** không được phép chứa các ký tự đặc biệt" — #249 tôi tự chế thành
     //   "Mã địa điểm **giao hàng**…", sai chữ so với nguồn.
     if (HasSpecialChar(code))
-        return Results.BadRequest(new { error = "Mã địa điểm không được phép chứa các ký tự đặc biệt", code });
-    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa chọn đại lý." });
-    if (name.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên địa điểm giao hàng." });
-    if (name.Length > 200) return Results.BadRequest(new { error = "Tên địa điểm không được nhập quá dài!" });
+        return Results.BadRequest(new { error = "Mã địa điểm không được phép chứa các ký tự đặc biệt", code = "MSG_WARNING_KEYSPE_DELIVERYLOCATIONCODE", val = code });
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "Mst_DeliveryLocation_Add_InvalidDealerCode" });
+    if (name.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên địa điểm giao hàng.", code = "Mst_DeliveryLocation_Add_InvalidDeliveryLocationName" });
+    if (name.Length > 200) return Results.BadRequest(new { error = "Tên địa điểm không được nhập quá dài!", code = "Mst_DeliveryLocation_Add_InvalidDeliveryLocationName" });
 
     var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer);
-    if (d is null) return Results.BadRequest(new { error = $"Đại lý {dealer} không tồn tại." });
-    if (d.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {dealer} đang ngừng hoạt động." });
+    if (d is null) return Results.BadRequest(new { error = $"Đại lý {dealer} không tồn tại.", code = "CommonAppData_DealerNotFound" });
+    if (d.FlagActive != "1") return Results.BadRequest(new { error = $"Đại lý {dealer} đang ngừng hoạt động.", code = "Mst_DeliveryLocation_CheckDB_FlagActiveNotMatched" });
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var row = await db.DeliveryLocations.FirstOrDefaultAsync(
         x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealer);
     var isNew = row is null;
     if (row is null)
     {
-        row = new DeliveryLocation { OrgId = t.OrgId, DeliveryLocationCode = code, DealerCode = dealer };
+        row = new DeliveryLocation { OrgId = t.OrgId, DeliveryLocationCode = code, DealerCode = dealer, CreatedDate = dto.CreatedDate ?? DateTime.Now, CreatedBy = dto.CreatedBy ?? who };
         db.DeliveryLocations.Add(row);
         row.FlagActive = "1";   // _Add đặt cứng Active; client không đổi được lúc tạo
     }
@@ -456,10 +458,10 @@ app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbConte
     }
     row.DeliveryLocationName = name;
     row.LogLUDateTime = DateTime.Now;
-    row.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.DeliveryLocationCode, row.DealerCode, row.DeliveryLocationName,
-                            row.FlagActive, row.LogLUDateTime, row.LogLUBy, created = isNew });
+                            row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.CreatedDate, row.CreatedBy, created = isNew });
 }).RequireAuthorization();
 
 // Xoá — nguồn `Mst_DeliveryLocation_Delete` truyền ĐỦ CẶP (code, dealerCode).
@@ -469,7 +471,7 @@ app.MapDelete("/api/deliverylocations/{dealerCode}/{code}", async (
     dealerCode = dealerCode.Trim(); code = code.Trim();
     var row = await db.DeliveryLocations.FirstOrDefaultAsync(
         x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealerCode);
-    if (row is null) return Results.NotFound(new { dealerCode, code });
+    if (row is null) return Results.NotFound(new { dealerCode, deliveryLocationCode = code, error = "Không tìm thấy địa điểm giao hàng.", code = "Mst_DeliveryLocation_CheckDB_DeliveryLocationNotFound" });
     db.DeliveryLocations.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code, dealerCode });
@@ -1936,7 +1938,7 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
     if (code.Length < 5)
         return Results.BadRequest(new { error = "Số đơn mua phải có ít nhất 5 ký tự.", code = "OrderPOCreate_InvalidPOCode" });
     if (await db.PurchaseOrders.AnyAsync(x => x.OrgId == t.OrgId && x.POCode == code))
-        return Results.BadRequest(new { error = $"Số đơn mua {code} đã tồn tại!", code = "OrderPOCreate_POCodeIsExist" });
+        return Results.BadRequest(new { error = $"Số đơn mua {code} đã tồn tại!", code = "CommonAppData_OrdPOCodeFound" });
 
     // `OrderPOCreate_TableDetailBeBlank`
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
@@ -1965,7 +1967,7 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
         // `myCommon_CheckMatchingModelAndSpecCode` — spec phải tồn tại VÀ thuộc đúng model đã khai.
         var sp = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec && x.FlagActive == "1");
         if (sp is null)
-            return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động.", code = "CommonAppData_CarSpecNotFound", specCode = spec });
+            return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động.", code = "CommonAppData_SpecCodeNotFound", specCode = spec });
         if (model.Length > 0 && sp.ModelCode != model)
             return Results.BadRequest(new { error = $"Spec {spec} thuộc model {sp.ModelCode}, không phải {model}.", code = "OrderPOCreate_InvalidDetailModelCode", specCode = spec });
         if (model.Length == 0) model = sp.ModelCode;
@@ -1975,7 +1977,7 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
         {
             var okColor = await db.MstCarColors.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color && x.FlagActive == "1");
             if (!okColor)
-                return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", code = "OrderPOCreate_InvalidDetailColorCode", specCode = spec, colorCode = color });
+                return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", code = "CommonAppData_ColorCodeNotFound", specCode = spec, colorCode = color });
         }
 
         // `OrderPOCreate_DuplicateKeyDetail`
@@ -1983,7 +1985,11 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
         if (!seen.Add(key))
             return Results.BadRequest(new { error = $"Dòng trùng khoá (Spec/Model/Màu): {spec}/{model}/{color}.", code = "OrderPOCreate_DuplicateKeyDetail", key });
 
-        built.Add(new PurchaseOrderLine { OrgId = t.OrgId, POCode = code, SpecCode = spec, ModelCode = model, ColorCode = color, Quantity = l.Quantity });
+        built.Add(new PurchaseOrderLine
+        {
+            OrgId = t.OrgId, POCode = code, SpecCode = spec, ModelCode = model, ColorCode = color, Quantity = l.Quantity,
+            ColorName = l.ColorName, ColorNameVN = l.ColorNameVN, LogLUDateTime = l.LogLUDateTime ?? now, LogLUBy = l.LogLUBy ?? who
+        });
     }
 
     var o = new PurchaseOrder
@@ -2009,9 +2015,10 @@ app.MapGet("/api/purchaseorders/{code}/lines", async (string code, AppDbContext 
 {
     code = code.Trim().ToUpperInvariant();
     var o = await db.PurchaseOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.POCode == code);
-    if (o is null) return Results.NotFound(new { error = $"Không tìm thấy đơn mua {code}.", code = "CommonAppData_POCodeNotFound" });
+    if (o is null) return Results.NotFound(new { error = $"Không tìm thấy đơn mua {code}.", code = "CommonAppData_OrdPOCodeNotFound" });
     var lines = await db.PurchaseOrderLines.Where(l => l.OrgId == t.OrgId && l.PurchaseOrderId == o.Id)
-        .Select(l => new { l.POCode, l.SpecCode, l.ModelCode, l.ColorCode, l.Quantity }).ToListAsync();
+        .Select(l => new { l.POCode, l.SpecCode, l.ModelCode, l.ColorCode, l.Quantity,
+            l.ColorName, l.ColorNameVN, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive,
         o.CreatedDate, o.LogLUDateTime, o.LogLUBy,   // Round 123 §12
         count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
@@ -2023,9 +2030,9 @@ app.MapPost("/api/purchaseorders/{code}/cancel", async (string code, AppDbContex
 {
     code = code.Trim().ToUpperInvariant();
     var o = await db.PurchaseOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.POCode == code);
-    if (o is null) return Results.NotFound(new { error = $"Không tìm thấy đơn mua {code}.", code = "CommonAppData_POCodeNotFound" });
+    if (o is null) return Results.NotFound(new { error = $"Không tìm thấy đơn mua {code}.", code = "CommonAppData_OrdPOCodeNotFound" });
     if (o.FlagActive != "1")
-        return Results.BadRequest(new { error = "Đơn mua đã huỷ.", code = "OrderPOCancel_InvalidPOStatus" });
+        return Results.BadRequest(new { error = "Đơn mua đã huỷ.", code = "CommonAppData_OrdPOStatusNotMatched" });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     o.FlagActive = "0";
     o.LogLUDateTime = DateTime.Now;
@@ -3271,6 +3278,7 @@ app.MapGet("/api/transreqs", async (AppDbContext db, ITenantContext t, string? s
     {
         r.TranspReqNo, r.DealerCode, r.TransporterCode, r.TransContractNo, r.Status, r.CreatedAt, r.DecidedAt,
         r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,   // #142 parity Car_TransportReq
+        r.CreatedDate, r.ApprovedDate,   // §12
         cars = db.TransportReqCars.Count(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -3279,41 +3287,47 @@ app.MapGet("/api/transreqs", async (AppDbContext db, ITenantContext t, string? s
 app.MapPost("/api/transreqs", async (TransReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.TransporterCode))
-        return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode.", code = "Sto_TranspReq_Create_CheckInputMaster" });
+        return Results.BadRequest(new { error = "Cần DealerCode và TransporterCode.", code = "Car_TransportReq_Create_CheckInputMaster" });
     var vins = (dto.Cars ?? new List<TransReqCarDto>()).Where(c => !string.IsNullOrWhiteSpace(c.Vin)).ToList();
-    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN.", code = "Sto_TranspReq_Create_TableBlank" });
+    if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN.", code = "Car_TransportReq_Create_TableBlank" });
     var dupe = vins.GroupBy(c => c.Vin.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!", code = "Sto_TranspReq_Create_CheckInputDetail" });
+    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!", code = "Car_TransportReq_Create_CheckInputDetail", key = dupe.Key });
     var no = "TR" + DateTime.Now.ToString("yyMMddHHmmss");
+    var whoTR = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowTR = DateTime.Now;
     var r = new TransportRequest
     {
         OrgId = t.OrgId, TranspReqNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(),
         TransporterCode = dto.TransporterCode.Trim().ToUpperInvariant(), TransContractNo = dto.TransContractNo,
         Status = "P",   // #142 parity: mã nguồn, không phải "Pending"
-        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system", LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"
+        CreatedDate = dto.CreatedDate ?? nowTR, ApprovedDate = dto.ApprovedDate,
+        CreatedBy = whoTR, LogLUDateTime = nowTR, LogLUBy = whoTR
     };
     db.TransportRequests.Add(r); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.TransportReqCars.Add(new TransportReqCar { OrgId = t.OrgId, ReqId = r.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, StorageCode = c.StorageCode,
             CarId = c.CarId, TransportReqDtlStatus = "P",
             SpecDesc = c.SpecDesc, DeliveryStartDate = c.DeliveryStartDate, DealerCode = c.DealerCode ?? dto.DealerCode.Trim().ToUpperInvariant(), EngineNo = c.EngineNo, ModelCode = c.ModelCode,   // #Round121 §12
-            LogLUDateTime = DateTime.Now, LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" });
+            CreatedDate = c.CreatedDate ?? nowTR, CreatedBy = c.CreatedBy ?? whoTR,
+            LogLUDateTime = nowTR, LogLUBy = whoTR });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, cars = vins.Count, status = r.Status });
+    return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, cars = vins.Count, status = r.Status, r.CreatedDate, r.ApprovedDate });
 }).RequireAuthorization();
 
 app.MapGet("/api/transreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.TransportRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
-    if (r is null) return Results.NotFound(new { no, error = "Không tìm thấy yêu cầu vận chuyển.", code = "Sto_TranspReq_Approve_InvalidNo" });
+    if (r is null) return Results.NotFound(new { no, error = "Không tìm thấy yêu cầu vận chuyển.", code = "Car_TransportReq_Approve_InvalidTransportReqNo" });
     var cars = await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
         .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.StorageCode,
             c.CarId, c.TransportReqDtlStatus,
             c.SpecDesc, c.DeliveryStartDate, c.DealerCode, c.EngineNo, c.ModelCode,   // #Round121 §12
+            c.CreatedDate, c.CreatedBy,   // §12
             c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #142 parity
     return Results.Ok(new { r.TranspReqNo, r.DealerCode, r.TransporterCode, r.TransContractNo, r.Status, r.CreatedAt, r.DecidedAt,
         r.CreatedBy, r.ApprovedBy, r.LogLUDateTime, r.LogLUBy,   // #1383 §12
+        r.CreatedDate, r.ApprovedDate,   // §12
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -3340,19 +3354,19 @@ app.MapPost("/api/transreqs/{no}/{action}", async (string no, string action, App
     if (action is not ("approve" or "unapprove")) return Results.BadRequest(new { error = "action = approve|unapprove" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.TransportRequests.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TranspReqNo == no);
-    if (r is null) return Results.NotFound(new { no, error = "Không tìm thấy yêu cầu vận chuyển.", code = "Sto_TranspReq_Approve_InvalidNo" });
+    if (r is null) return Results.NotFound(new { no, error = "Không tìm thấy yêu cầu vận chuyển.", code = "Car_TransportReq_Approve_InvalidTransportReqNo" });
 
     var bApprove = action == "approve";
     if (bApprove)
     {
         if (r.Status != "P")
-            return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ duyệt khi còn chờ duyệt (P).", code = "Sto_TranspReq_Approve_InvalidSRTReqStatus" });
+            return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ duyệt khi còn chờ duyệt (P).", code = "Car_TransportReq_Approve_InvalidTransportReqStatus" });
     }
     else
     {
         // Ngả bỏ duyệt chấp nhận CẢ "A" lẫn "P".
         if (r.Status is not ("A" or "P"))
-            return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ bỏ duyệt khi đang chờ duyệt (P) hoặc đã duyệt (A).", code = "Sto_TranspReq_Approve_InvalidSRTReqStatus" });
+            return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.Status}' — chỉ bỏ duyệt khi đang chờ duyệt (P) hoặc đã duyệt (A).", code = "Car_TransportReq_Approve_InvalidTransportReqStatus" });
 
         // `Sto_TranspReq_Approve_InvalidStoDLV`: đã có BBGN ở trạng thái P/A thì không gỡ được.
         var vins = await db.TransportReqCars.Where(c => c.OrgId == t.OrgId && c.ReqId == r.Id)
@@ -3729,6 +3743,7 @@ app.MapGet("/api/transminutes", async (AppDbContext db, ITenantContext t, string
         m.HTCAppr1DateTime, m.HTCAppr1By, m.HTCAppr2DateTime, m.HTCAppr2By,
         m.HTCCancelDateTime, m.HTCCancelBy, m.LogLUDateTime, m.LogLUBy,
         m.ApprovedDate,   // #Round119 §12
+        m.TransportMinutesExpectedDate, m.CreatedDate, m.CreatedBy,   // §12
         cars = db.TransportMinutesCars.Count(c => c.OrgId == t.OrgId && c.MinutesId == m.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -3750,13 +3765,16 @@ app.MapPost("/api/transminutes", async (TransMinDto dto, AppDbContext db, ITenan
         Status = "P", DLTransportMinutesStatus = "P", HTCTransportMinutesStatus = "P",
         TransportMinutesDate = dto.TransportMinutesDate ?? nowTM,
         DLCreatedDateTime = nowTM, DLCreatedBy = whoTM, LogLUDateTime = nowTM, LogLUBy = whoTM,
-        ApprovedDate = dto.ApprovedDate };
+        ApprovedDate = dto.ApprovedDate,
+        TransportMinutesExpectedDate = dto.TransportMinutesExpectedDate,
+        CreatedDate = dto.CreatedDate ?? nowTM, CreatedBy = dto.CreatedBy ?? whoTM };
     db.TransportMinutes.Add(m); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.TransportMinutesCars.Add(new TransportMinutesCar { OrgId = t.OrgId, MinutesId = m.Id, Vin = c.Vin.Trim().ToUpperInvariant(), DoNo = c.DoNo, ColorCode = c.ColorCode, EngineNo = c.EngineNo,
-            DtlStatus = "P", CarId = c.CarId, LogLUDateTime = nowTM, LogLUBy = whoTM, TransportReqNo = c.TransportReqNo });
+            DtlStatus = "P", CarId = c.CarId, LogLUDateTime = nowTM, LogLUBy = whoTM, TransportReqNo = c.TransportReqNo,
+            CreatedDate = c.CreatedDate ?? nowTM, CreatedBy = c.CreatedBy ?? whoTM });
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, cars = vins.Count, status = m.Status, m.FlagCreateAuto, m.ApprovedDate });
+    return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, cars = vins.Count, status = m.Status, m.FlagCreateAuto, m.ApprovedDate, m.TransportMinutesExpectedDate, m.CreatedDate, m.CreatedBy });
 }).RequireAuthorization();
 
 app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
@@ -3766,7 +3784,8 @@ app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITe
     if (m is null) return Results.NotFound(new { error = "Car_TransportMinutes_CheckDB_TransportMinutesNoNotFound", no });
     var cars = await db.TransportMinutesCars.Where(c => c.OrgId == t.OrgId && c.MinutesId == m.Id)
         .Select(c => new { c.Vin, c.DoNo, c.ColorCode, c.EngineNo, c.DtlStatus,
-            c.CarId, c.CancelDateTime, c.CancelBy, c.LogLUDateTime, c.LogLUBy, c.TransportReqNo }).ToListAsync();   // #Round119 §12
+            c.CarId, c.CancelDateTime, c.CancelBy, c.LogLUDateTime, c.LogLUBy, c.TransportReqNo,
+            c.CreatedDate, c.CreatedBy }).ToListAsync();   // §12
     return Results.Ok(new { m.TransportMinutesNo, m.DealerCode, m.TransporterCode, m.Status, m.CreatedAt, m.DecidedAt,
         m.FlagCreateAuto,
         m.DLTransportMinutesStatus, m.HTCTransportMinutesStatus, m.TransportMinutesDate, m.FilePath,
@@ -3774,6 +3793,7 @@ app.MapGet("/api/transminutes/{no}/cars", async (string no, AppDbContext db, ITe
         m.HTCAppr1DateTime, m.HTCAppr1By, m.HTCAppr2DateTime, m.HTCAppr2By,
         m.HTCCancelDateTime, m.HTCCancelBy, m.LogLUDateTime, m.LogLUBy,   // #1381 §12
         m.ApprovedDate,   // #Round119 §12
+        m.TransportMinutesExpectedDate, m.CreatedDate, m.CreatedBy,   // §12
         count = cars.Count, cars });
 }).RequireAuthorization();
 
@@ -122327,7 +122347,7 @@ app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status, string? AreaBUPattern = null);
 // #232: `FlagActive` CHỈ có tác dụng khi SỬA — `Mst_DeliveryLocation_Add` đặt cứng Active.
-record DeliveryLocationDto(string? DeliveryLocationCode, string? DealerCode, string? DeliveryLocationName, string? FlagActive = null);
+record DeliveryLocationDto(string? DeliveryLocationCode, string? DealerCode, string? DeliveryLocationName, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 record MasterDto(string Code, string Name, string? ParentCode, string? Status);
 record ImportDealerRowDto(string? DealerCode, string? DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode,
     string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress, string? TaxCode,
@@ -122375,7 +122395,7 @@ record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal Part
 record PODto(string SupplierCode, string? Note, decimal Total);
 // Đơn mua xe từ hãng (Ord_PurchaseOrder) — nguồn không có trạng thái, chỉ cờ FlagActive.
 record PurchaseOrderDto(string? POCode, List<PurchaseOrderLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null, DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record PurchaseOrderLineDto(string SpecCode, string? ModelCode, string? ColorCode, int Quantity, string? POCode = null);
+record PurchaseOrderLineDto(string SpecCode, string? ModelCode, string? ColorCode, int Quantity, string? POCode = null, string? ColorName = null, string? ColorNameVN = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 // #394 Mst_BOM_Add: đầu + dòng; ModelCode/MaintLevel riêng MiniHTC (tuỳ chọn).
 record BomDto(string? BomCode, string? BOMDesc, string? Remark, List<BomLineDto>? Lines, string? ModelCode = null, string? MaintLevel = null);
 record BomUpdateDto(string? BOMDesc, string? Remark, string? FlagActive, List<BomLineDto>? Lines);   // #394 Mst_BOM_Update
@@ -122495,8 +122515,8 @@ record InvoiceListDto(List<InvoiceLineDto>? Lines);
 record BankBillCarDto(string Vin, string? EngineNo, string? LCNo, string? GuaranteeBankCode, decimal ClaimAmount);
 record BankBillDto(string BankCode, DateTime? BankBillDate, List<BankBillCarDto>? Cars);
 record BankBillReceiveDto(DateTime? BankBillReciveDate);
-record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode, string? CarId = null, string? SpecDesc = null, DateTime? DeliveryStartDate = null, string? DealerCode = null, string? EngineNo = null, string? ModelCode = null);
-record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars);
+record TransReqCarDto(string Vin, string? DoNo, string? ColorCode, string? StorageCode, string? CarId = null, string? SpecDesc = null, DateTime? DeliveryStartDate = null, string? DealerCode = null, string? EngineNo = null, string? ModelCode = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record TransReqDto(string DealerCode, string TransporterCode, string? TransContractNo, List<TransReqCarDto>? Cars, DateTime? CreatedDate = null, DateTime? ApprovedDate = null);
 record TranspFeeDto(string ProvinceCodeFrom, string ProvinceCodeTo, string? DistrictCodeFrom, string? DistrictCodeTo, string TransporterCode, string ModelCode, decimal ValFee, int ExpectedDays);
 // #347: phien ban MUC PHAT cuoc (nguon Mst_TranspPenaltyVer, MiniHTC gop vao TranspFee).
 record TranspPenaltyVerDto(decimal ValBased, decimal ValEx);
@@ -122528,8 +122548,8 @@ record SalesExpTargetSpecDto(string? DealerCode, string? ProvinceCode, string? A
     decimal? MaxTLSLXeTongXeTaiTinh, decimal? TBTLSLXeTongXeTaiTinh, decimal? TLKhaiThacSanLuongInit);
 record DlrContractHtcLineDto(string? SpecCode, string? ModelCode, string? ColorCode, int? Qty, DateTime? DlvExpectedDate, string? ContractUpdateType, decimal? UnitPrice = null);   // #B206
 record DlrContractHtcCreateDto(string? DlrContractNo, string? DlrContractNoUser, DateTime? ContractDate, string? DealerCode, string? CustomerCode, List<DlrContractHtcLineDto>? Lines, string? SMCode = null, string? DlrNote = null);   // #B206
-record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null, string? TransportReqNo = null);
-record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null, DateTime? ApprovedDate = null);
+record TransMinCarDto(string Vin, string? DoNo, string? ColorCode, string? EngineNo, string? CarId = null, string? TransportReqNo = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record TransMinDto(string DealerCode, string TransporterCode, List<TransMinCarDto>? Cars, DateTime? TransportMinutesDate = null, DateTime? ApprovedDate = null, DateTime? TransportMinutesExpectedDate = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 record TmActionDto(string? FilePath = null);
 record HolidayDto(DateTime? Date, bool IsHoliday, string? Description);
 record HolidayResetDto(int? Year, List<int>? WeekendDays);
