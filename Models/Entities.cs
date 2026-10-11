@@ -4827,6 +4827,9 @@ public sealed class SalesManType
     /// <summary>#315 `TblSalesManType.FlagEmail` — "1" ⇒ NV thuộc loại này BẮT BUỘC có Email
     /// (guard Mst_SalesMan_Update_InvalidSMEmail, Biz.HTC.WH.cs:18695).</summary>
     public string FlagEmail { get; set; } = "0";
+    public string? CertificateCode { get; set; }
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDate { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -4841,6 +4844,10 @@ public sealed class MstQualification
     public string? QualificationName { get; set; }
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>#319 `Mst_Position` — danh mục CHỨC VỤ (TblMst_Position: PositionCode, PositionDesc, FlagActive).
@@ -4853,6 +4860,10 @@ public sealed class MstPosition
     public string PositionCode { get; set; } = "";
     public string? PositionDesc { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B245 — Ma trận chứng chỉ **theo LOẠI nhân viên** (`Mst_SalesManTypeCertificate`),
