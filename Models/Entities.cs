@@ -1504,6 +1504,8 @@ public sealed class TransportMinutes
     public string FlagCreateAuto { get; set; } = "0";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutes.ApprovedDate (`DbDefine.cs:1110`) — ngày duyệt biên bản giao nhận.</summary>
+    public DateTime? ApprovedDate { get; set; }
 }
 
 /// <summary>Dòng xe trong BB vận chuyển (TransportMinutesDetail): VIN + DO + màu + trạng thái dòng.</summary>
@@ -1533,6 +1535,8 @@ public sealed class TransportMinutesCar
     public string? CancelBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutesDetail.TransportReqNo (`DbDefine.cs:1119`) — mã yêu cầu vận chuyển.</summary>
+    public string? TransportReqNo { get; set; }
 }
 
 /// <summary>Lịch ngày làm việc/nghỉ (Holiday — port 1:1 FrmCreateHoliday/FrmMngHoliday, Phase2):
@@ -7922,6 +7926,12 @@ public sealed class DeliveryOrder
     /// null nghĩa là lệnh lập tay. Nhờ hai cột này mới truy được lệnh giao nào thuộc đợt nào.</summary>
     public string? D4CDONo { get; set; }
     public string? D4CDOType { get; set; }
+    /// <summary>#Round119 §12: TblDo.Dealer_Name (`DbDefine.cs:626`) — tên đại lý nhận lệnh giao.</summary>
+    public string? DealerName { get; set; }
+    /// <summary>#Round119 §12: TblDo.Approved_Date (`DbDefine.cs:634`) — ngày duyệt lệnh giao tổng thể.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>#Round119 §12: TblDo.Approved_By (`DbDefine.cs:635`) — người duyệt lệnh giao tổng thể.</summary>
+    public string? ApprovedBy { get; set; }
 }
 
 /// <summary>Dòng xe trong DO (DoDetail): VIN + model + màu + kho + ngày giao dự kiến.</summary>
@@ -7959,6 +7969,14 @@ public sealed class DeliveryOrderCar
     /// <summary>#175 — `Car_DeliveryOrderDetail.CarId`: nguồn dựng dòng chi tiết bằng `CarId` (join `Car_Car`),
     /// VIN chỉ là cột đi kèm. Không có cột này thì không nối được về xe theo đúng khoá của nguồn.</summary>
     public string? CarId { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.Confirm_Remark (`DbDefine.cs:652`) — ghi chú xác nhận giao xe theo dòng.</summary>
+    public string? ConfirmRemark { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.DlrCtrNo (`DbDefine.cs:657`) — số hợp đồng đại lý của xe theo dòng.</summary>
+    public string? DlrCtrNo { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.Dealer_Code (`DbDefine.cs:658`) — mã đại lý theo dòng xe.</summary>
+    public string? DealerCode { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.Dealer_Name (`DbDefine.cs:659`) — tên đại lý theo dòng xe.</summary>
+    public string? DealerName { get; set; }
 }
 
 /// <summary>Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, TCMotor DMSales.Foton):
@@ -15206,6 +15224,16 @@ public sealed class BankDeliveryOrder
     public string Status { get; set; } = "Open";   // Open -> Confirmed (khi tat ca xe da nhan)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ConfirmedAt { get; set; }
+    /// <summary>#Round119 §12: TblDo.Dealer_Name (`DbDefine.cs:626`) — tên đại lý trên lệnh xuất xe ngân hàng.</summary>
+    public string? DealerName { get; set; }
+    /// <summary>#Round119 §12: TblDo.DeliveryAddress (`DbDefine.cs:628`) — địa chỉ giao hàng.</summary>
+    public string? DeliveryAddress { get; set; }
+    /// <summary>#Round119 §12: TblDo.Approved_Date (`DbDefine.cs:634`) — ngày duyệt lệnh xuất.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>#Round119 §12: TblDo.Approved_By (`DbDefine.cs:635`) — người duyệt lệnh xuất.</summary>
+    public string? ApprovedBy { get; set; }
+    /// <summary>#Round119 §12: TblDo.CreatedBy — người lập lệnh xuất.</summary>
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Chi tiết xe trên lệnh xuất, NH xác nhận nhận (DoDetail.Confirm_Status) — port 1:1 FrmBankDO detail.</summary>
@@ -15224,6 +15252,18 @@ public sealed class BankDoCar
     public string ConfirmStatus { get; set; } = "0";   // 0=chua nhan, 1=da nhan
     public string ConfirmRemark { get; set; } = "";
     public DateTime? ConfirmedAt { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.StorageCode (`DbDefine.cs:646`) — mã kho xuất xe.</summary>
+    public string? StorageCode { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.DeliveryStartDate (`DbDefine.cs:648`) — ngày bắt đầu giao xe.</summary>
+    public DateTime? DeliveryStartDate { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.DeliveryEndDate (`DbDefine.cs:649`) — ngày kết thúc giao xe.</summary>
+    public DateTime? DeliveryEndDate { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.DeliveryRemark (`DbDefine.cs:650`) — ghi chú giao xe theo dòng.</summary>
+    public string? DeliveryRemark { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.Confirm_By (`DbDefine.cs:654`) — người xác nhận giao xe theo dòng.</summary>
+    public string? ConfirmBy { get; set; }
+    /// <summary>#Round119 §12: TblDoDetail.DlrCtrNo (`DbDefine.cs:657`) — số hợp đồng đại lý theo dòng.</summary>
+    public string? DlrCtrNo { get; set; }
 }
 
 /// <summary>Biên bản vận chuyển xe (TransportMinutes) — port 1:1 FrmBankTransportMinutes. Dual-sign ĐL + HTC.</summary>
@@ -15244,6 +15284,20 @@ public sealed class BankTransportMinute
     public DateTime? DLApprDateTime { get; set; }         // DL ky
     public DateTime? HTCAppr2DateTime { get; set; }       // HTC ky
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>#Round119 §12: TblTransportMinutes.DLApprBy (`DbDefine.cs:1101`) — người đại lý ký duyệt.</summary>
+    public string? DLApprBy { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutes.HTCAppr2By (`DbDefine.cs:1105`) — người HTC ký duyệt cấp 2.</summary>
+    public string? HTCAppr2By { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutes.HTCCancelDateTime (`DbDefine.cs:1106`) — ngày giờ HTC hủy.</summary>
+    public DateTime? HTCCancelDateTime { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutes.HTCCancelBy (`DbDefine.cs:1107`) — người HTC hủy.</summary>
+    public string? HTCCancelBy { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutes.DLTransportMinutesStatus (`DbDefine.cs:1108`) — trạng thái ký đại lý ("P"/"A").</summary>
+    public string DLTransportMinutesStatus { get; set; } = "P";
+    /// <summary>#Round119 §12: TblTransportMinutes.HTCTransportMinutesStatus (`DbDefine.cs:1109`) — trạng thái ký HTC ("P"/"A1"/"A2"/"C").</summary>
+    public string HTCTransportMinutesStatus { get; set; } = "P";
+    /// <summary>#Round119 §12: TblTransportMinutes.FilePath (`DbDefine.cs:1097`) — đường dẫn file scan biên bản đã ký.</summary>
+    public string? FilePath { get; set; }
 }
 
 /// <summary>Chi tiết xe trên biên bản vận chuyển — port 1:1 FrmBankTransportMinutes detail.</summary>
@@ -15259,6 +15313,12 @@ public sealed class BankTmCar
     public string GuaranteeNo { get; set; } = "";
     public string DlrCtrNo { get; set; } = "";
     public string ColorCode { get; set; } = "";
+    /// <summary>#Round119 §12: TblTransportMinutesDetail.DONo (`DbDefine.cs:1118`) — số lệnh xuất xe.</summary>
+    public string? DeliveryOrderNo { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutesDetail.TransportReqNo (`DbDefine.cs:1119`) — mã yêu cầu vận chuyển.</summary>
+    public string? TransportReqNo { get; set; }
+    /// <summary>#Round119 §12: TblTransportMinutesDetail.TransportMinutesDtlStatus (`DbDefine.cs:1120`) — trạng thái chi tiết ("P"/"A"/"R").</summary>
+    public string TransportMinutesDtlStatus { get; set; } = "P";
 }
 
 /// <summary>
