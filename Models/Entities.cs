@@ -235,6 +235,9 @@ public sealed class MstViolateType
     public string ViolateTypeName { get; set; } = "";
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round142 §12: Mst_ViolateType (DbDefine, Biz.HTC.WH.cs:5891) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -258,6 +261,9 @@ public sealed class MstCostType
     public string CostTypeCode { get; set; } = "";
     public string? CostTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round142 §12: Mst_CostType (DbDefine:5666, Biz.HTC.WH.cs:197895) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -12346,6 +12352,9 @@ public sealed class DealerBank
     public string FlagActive { get; set; } = "1";
     /// <summary>#133: nguồn có `Remark` (Biz.HTC.WH.cs:4966) — port cũ thiếu.</summary>
     public string? Remark { get; set; }
+    // ===== #Round142 §12: Mst_BankDealer (DbDefine, Biz.HTC.WH.cs:4141) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
