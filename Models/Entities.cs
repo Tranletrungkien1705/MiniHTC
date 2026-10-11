@@ -1178,8 +1178,12 @@ public sealed class MstSettingRunJob
     public string JobCode { get; set; } = "";
     public string? JobName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #149 §12 — audit fields
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 public sealed class MstSoRateMax
@@ -9925,6 +9929,12 @@ public sealed class MstDoc
     public string? FilePath { get; set; }
     public string FlagActive { get; set; } = "1";
     public string? Remark { get; set; }
+    // #149 §12 — audit fields
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>
