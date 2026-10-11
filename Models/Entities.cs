@@ -6129,6 +6129,10 @@ public sealed class CompartmentMst
     public string CompartmentCode { get; set; } = "";
     public string? CompartmentName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -6140,6 +6144,10 @@ public sealed class StaffMst
     public string StaffCode { get; set; } = "";
     public string? StaffName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -6165,6 +6173,10 @@ public sealed class ExtraWorkLimitationMst
     public string WarrantyDtlCode { get; set; } = "";
     public decimal MaxPrice { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
