@@ -146,6 +146,10 @@ public sealed class CarPrice
     public string SoType { get; set; } = "";  // audit 2026-09-03: THIẾU HOÀN TOÀN — 1 phần khóa hỗn hợp gốc (Model+Spec+Color+EffectiveDate+SoType)
     public string Status { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 // audit 2026-09-03: entity "Customer"/"/api/customers"/"customer.html" (tick "port 1:1 FrmCustomerBase" trong
@@ -2456,6 +2460,7 @@ public sealed class Discount
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public DateTime EffectiveDate { get; set; }          // ngày hiệu lực (khoá)
+    public DateTime? EffectiveDateEnd { get; set; }      // ngày hết hiệu lực
     public decimal DiscountPercent { get; set; }         // % chiết khấu
     public decimal PenaltyPercent { get; set; }          // % phạt
     public decimal PenaltyPercentTCKT { get; set; }      // % phạt TCKT
@@ -2463,6 +2468,10 @@ public sealed class Discount
     public decimal PmtDsTCGPercent { get; set; }         // % chiết khấu thanh toán TCG
     public string Status { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Giá thiết bị/phụ kiện theo spec xe (Mst_DevicePrice_Spec — port 1:1 FrmMst_DevicePrice_Spec, Admin/Product):
@@ -11132,6 +11141,8 @@ public sealed class MstCarColor
     public string? Remark { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>
@@ -11147,6 +11158,8 @@ public sealed class MstCarColorSpec
     public string SpecCode { get; set; } = "";
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 public sealed class OrdOrderPlanHtmv

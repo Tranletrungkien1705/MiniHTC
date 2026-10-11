@@ -596,33 +596,40 @@ app.MapGet("/api/carprices", async (AppDbContext db, ITenantContext t, string? m
     var query = db.CarPrices.Where(c => c.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(model)) query = query.Where(c => c.ModelCode.Contains(model));
     var items = await query.OrderBy(c => c.ModelCode).ThenByDescending(c => c.EffectiveDate).Select(c => new
-    { c.Id, c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat, priceVat = c.Price * (1 + c.Vat / 100), c.Status, c.CreatedAt }).ToListAsync();   // #1254 §12
+    { c.Id, c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat, priceVat = c.Price * (1 + c.Vat / 100), c.Status, c.CreatedAt, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #1254 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Khớp gviewDbPrice_ValidatingEditor gốc: khoá hỗn hợp Model+Spec+Color+EffectiveDate+SoType (1 model/spec/color có NHIỀU giá theo thời điểm+loại đơn) — trước audit chỉ khoá theo Model+Spec+Color (mất hoàn toàn tính năng lịch sử giá).
-app.MapPost("/api/carprices", async (CarPriceDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/carprices", async (CarPriceDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Cần ModelCode." });
-    if (dto.Price < 0) return Results.BadRequest(new { error = "Price không hợp lệ." });
-    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Cần EffectiveDate." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần ModelCode." });
+    if (dto.Price < 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_NOT_NUMERIC", message = "Price không hợp lệ." });
+    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần EffectiveDate." });
     var model = dto.ModelCode.Trim().ToUpperInvariant();
     var spec = dto.SpecCode?.Trim().ToUpperInvariant() ?? "";
     var color = dto.ColorCode?.Trim().ToUpperInvariant() ?? "";
     var soType = dto.SoType?.Trim().ToUpperInvariant() ?? "";
     if (!string.IsNullOrEmpty(spec) && !await db.CarSpecs.AnyAsync(s => s.OrgId == t.OrgId && s.ModelCode == model && s.SpecCode == spec && s.FlagActive == "1"))
-        return Results.BadRequest(new { error = $"Mã spec '{spec}' của Mã model '{model}' không hợp lệ!" });
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstModelNotMatchWithSpecCode", message = $"Mã spec '{spec}' của Mã model '{model}' không hợp lệ!" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var c = await db.CarPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && (x.SpecCode ?? "") == spec && (x.ColorCode ?? "") == color && x.EffectiveDate == dto.EffectiveDate && x.SoType == soType);
-    if (c is null) { c = new CarPrice { OrgId = t.OrgId, ModelCode = model, SpecCode = spec, ColorCode = color, EffectiveDate = dto.EffectiveDate.Value, SoType = soType }; db.CarPrices.Add(c); }
+    if (c is null)
+    {
+        c = new CarPrice { OrgId = t.OrgId, ModelCode = model, SpecCode = spec, ColorCode = color, EffectiveDate = dto.EffectiveDate.Value, SoType = soType, CreatedDate = now, CreatedBy = who };
+        db.CarPrices.Add(c);
+    }
     c.Price = dto.Price; c.Vat = dto.Vat ?? 10; c.Status = dto.Status ?? "1";
+    c.LogLUDateTime = now; c.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat });
+    return Results.Ok(new { c.ModelCode, c.SpecCode, c.ColorCode, c.EffectiveDate, c.SoType, c.Price, c.Vat, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
 app.MapDelete("/api/carprices/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var c = await db.CarPrices.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (c is null) return Results.NotFound(new { id });
+    if (c is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstCarPriceNotFound", id });
     db.CarPrices.Remove(c); await db.SaveChangesAsync();
     return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
@@ -23859,7 +23866,7 @@ app.MapGet("/api/carcolors", async (AppDbContext db, ITenantContext t, string? m
     var items = await q.OrderBy(x => x.ModelCode).ThenBy(x => x.ColorCode).Take(1000).Select(x => new {
         x.ModelCode, x.ColorCode, x.ColorExtType, x.ColorExtCode, x.ColorExtName, x.ColorExtNameVN,
         x.ColorIntCode, x.ColorIntName, x.ColorIntNameVN, x.ColorFee, x.FlagActive, x.Remark,
-        x.LogLUDateTime, x.LogLUBy,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
         specs = db.MstCarColorSpecs.Count(s => s.OrgId == t.OrgId && s.ModelCode == x.ModelCode && s.ColorCode == x.ColorCode) }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -23868,12 +23875,12 @@ app.MapGet("/api/carcolors/{model}/{color}", async (string model, string color, 
 {
     model = model.Trim().ToUpperInvariant(); color = color.Trim().ToUpperInvariant();
     var h = await db.MstCarColors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color);
-    if (h is null) return Results.NotFound(new { model, color });
+    if (h is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstModelNotMatchWithColor", model, color });
     var specs = await db.MstCarColorSpecs.Where(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color)
-        .OrderBy(x => x.SpecCode).Select(x => new { x.SpecCode, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+        .OrderBy(x => x.SpecCode).Select(x => new { x.SpecCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { header = new { h.ModelCode, h.ColorCode, h.ColorExtType, h.ColorExtCode,
         h.ColorExtName, h.ColorExtNameVN, h.ColorIntCode, h.ColorIntName, h.ColorIntNameVN, h.ColorFee,
-        h.FlagActive, h.Remark, h.LogLUDateTime, h.LogLUBy }, count = specs.Count, specs });
+        h.FlagActive, h.Remark, h.CreatedDate, h.CreatedBy, h.LogLUDateTime, h.LogLUBy }, count = specs.Count, specs });
 }).RequireAuthorization();
 
 // Lưu (UPSERT theo cặp khoá) — nguồn `_SaveX` dùng đúng một hàm cho cả thêm lẫn sửa:
@@ -23886,18 +23893,18 @@ app.MapPost("/api/carcolors", async (CarColorDto dto, AppDbContext db, ITenantCo
 {
     var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
     var color = (dto.ColorCode ?? "").Trim().ToUpperInvariant();
-    if (model.Length == 0 || color.Length == 0) return Results.BadRequest(new { error = "Cần cả ModelCode và ColorCode (khoá kép)." });
-    if (dto.Specs is null) return Results.BadRequest(new { error = "Thiếu bảng Mst_CarColorSpec (nguồn bắt buộc có, kể cả rỗng)." });
+    if (model.Length == 0 || color.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần cả ModelCode và ColorCode (khoá kép)." });
+    if (dto.Specs is null) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Thiếu bảng Mst_CarColorSpec (nguồn bắt buộc có, kể cả rỗng)." });
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system"; var now = DateTime.Now;
 
     var rawSpecs = dto.Specs.Select(x => (x.SpecCode ?? "").Trim().ToUpperInvariant()).ToList();
     var blankSpec = rawSpecs.Any(x => x.Length == 0);   // quy ước "dòng trống = xoá sạch spec"
     var specs = rawSpecs.Where(x => x.Length > 0).Distinct().ToList();
-    if (!blankSpec && specs.Count == 0) return Results.BadRequest(new { error = "Phải có ít nhất 1 spec, hoặc gửi 1 dòng trống để xoá hết spec." });
+    if (!blankSpec && specs.Count == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Phải có ít nhất 1 spec, hoặc gửi 1 dòng trống để xoá hết spec." });
 
     var h = await db.MstCarColors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color);
     var created = h is null;
-    if (h is null) { h = new MstCarColor { OrgId = t.OrgId, ModelCode = model, ColorCode = color }; db.MstCarColors.Add(h); }
+    if (h is null) { h = new MstCarColor { OrgId = t.OrgId, ModelCode = model, ColorCode = color, CreatedDate = now, CreatedBy = who }; db.MstCarColors.Add(h); }
     h.ColorExtType = dto.ColorExtType; h.ColorExtCode = dto.ColorExtCode; h.ColorExtName = dto.ColorExtName;
     h.ColorExtNameVN = dto.ColorExtNameVN; h.ColorIntCode = dto.ColorIntCode; h.ColorIntName = dto.ColorIntName;
     h.ColorIntNameVN = dto.ColorIntNameVN; h.ColorFee = dto.ColorFee;
@@ -23910,9 +23917,9 @@ app.MapPost("/api/carcolors", async (CarColorDto dto, AppDbContext db, ITenantCo
     if (!blankSpec)
         foreach (var s in specs)
             db.MstCarColorSpecs.Add(new MstCarColorSpec { OrgId = t.OrgId, ModelCode = model, ColorCode = color,
-                SpecCode = s, LogLUDateTime = now, LogLUBy = who });
+                SpecCode = s, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who });
     await db.SaveChangesAsync();
-    return Results.Ok(new { model, color, created, specs = blankSpec ? 0 : specs.Count, specsCleared = blankSpec });
+    return Results.Ok(new { model, color, created, specs = blankSpec ? 0 : specs.Count, specsCleared = blankSpec, createdDate = h.CreatedDate, createdBy = h.CreatedBy, logLUDateTime = h.LogLUDateTime, logLUBy = h.LogLUBy });
 }).RequireAuthorization();
 
 // Xoá: nguồn dùng CÙNG hàm _SaveX với cờ FlagIsDelete="1" — xoá cả spec lẫn bản ghi màu.
@@ -119136,7 +119143,7 @@ app.MapGet("/api/discounts", async (AppDbContext db, ITenantContext t, string? o
 {
     var q = db.Discounts.Where(d => d.OrgId == t.OrgId);
     var items = await q.OrderByDescending(d => d.EffectiveDate).Take(500).Select(d => new
-    { d.EffectiveDate, d.DiscountPercent, d.PenaltyPercent, d.PenaltyPercentTCKT, d.FnExpPercent, d.PmtDsTCGPercent, d.Status, d.UpdatedAt }).ToListAsync();   // #1301 §12
+    { d.EffectiveDate, d.EffectiveDateEnd, d.DiscountPercent, d.PenaltyPercent, d.PenaltyPercentTCKT, d.FnExpPercent, d.PmtDsTCGPercent, d.Status, d.UpdatedAt, d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy }).ToListAsync();   // #1301 §12
     // biểu áp dụng cho 1 ngày = bản hiệu lực mới nhất ≤ ngày đó
     object? applicable = null;
     if (DateTime.TryParse(onDate, out var od))
@@ -119144,16 +119151,21 @@ app.MapGet("/api/discounts", async (AppDbContext db, ITenantContext t, string? o
     return Results.Ok(new { count = items.Count, applicable, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/discounts", async (DiscountDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/discounts", async (DiscountDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "Cần EffectiveDate." });
+    if (dto.EffectiveDate is null) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần EffectiveDate." });
+    if (dto.DiscountPercent < 0 || dto.PenaltyPercent < 0) return Results.BadRequest(new { error = "ErrHTC.PaymentGuaranteeCreate_InvalidDiscountPercent", message = "Tỉ lệ chiết khấu/phạt không hợp lệ." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var ed = dto.EffectiveDate.Value.Date;
     var d = await db.Discounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EffectiveDate == ed);
-    if (d is null) { d = new Discount { OrgId = t.OrgId, EffectiveDate = ed }; db.Discounts.Add(d); }
+    if (d is null) { d = new Discount { OrgId = t.OrgId, EffectiveDate = ed, CreatedDate = now, CreatedBy = who }; db.Discounts.Add(d); }
+    d.EffectiveDateEnd = dto.EffectiveDateEnd;
     d.DiscountPercent = dto.DiscountPercent; d.PenaltyPercent = dto.PenaltyPercent; d.PenaltyPercentTCKT = dto.PenaltyPercentTCKT;
-    d.FnExpPercent = dto.FnExpPercent; d.PmtDsTCGPercent = dto.PmtDsTCGPercent; d.Status = dto.Status ?? "1"; d.UpdatedAt = DateTime.Now;
+    d.FnExpPercent = dto.FnExpPercent; d.PmtDsTCGPercent = dto.PmtDsTCGPercent; d.Status = dto.Status ?? "1"; d.UpdatedAt = now;
+    d.LogLUDateTime = now; d.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.EffectiveDate, d.DiscountPercent, d.PenaltyPercent });
+    return Results.Ok(new { d.EffectiveDate, d.EffectiveDateEnd, d.DiscountPercent, d.PenaltyPercent, d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy });
 }).RequireAuthorization();
 
 // audit 2026-09-03: btnDelDb_Click gốc đánh dấu dòng DELETE rồi gộp vào Apply — port trước thiếu hoàn toàn thao tác xoá.
@@ -119161,7 +119173,7 @@ app.MapDelete("/api/discounts/{effectiveDate}", async (DateTime effectiveDate, A
 {
     var ed = effectiveDate.Date;
     var d = await db.Discounts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EffectiveDate == ed);
-    if (d is null) return Results.NotFound(new { effectiveDate = ed });
+    if (d is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstDiscountNotFound", effectiveDate = ed });
     db.Discounts.Remove(d);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = ed });
@@ -122603,7 +122615,7 @@ record DealerDto(string DealerCode, string DealerName, string? FlagDealerHTC,
     // vinh vien NULL => duyet bao hanh LUON THAT BAI voi loi Ser_ROWarrantyReport_WSUrlAddr_NotFound.
     string? WsUrlAddr = null,
     DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #Round131 §12
-record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
+record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? SalesType, string? Phone, string? Email, string? Status,
     string? Gender, DateTime? DateOfBirth, string? Address, string? ProvinceCode, string? QualificationCode, string? Specialized, string? YearExperience,
     DateTime? StartDate, DateTime? EndDate, string? Position, string? PositionCode, string? CertificateCode, string? SMHyundaiCode, string? IdentityCardNo,
@@ -122818,7 +122830,7 @@ record DlStatusDto(string SMStatus);
 record CarMtnDto(string Vin, string? StorageCode, string? ModelCode, string? MtnType, DateTime? MtnDate, int? CycleDays, string? UserCode, string? Remark, string? RefNo = null);
 record MaintExtDto(string Vin, string? ModelCode, string? StorageCode, string? MtnExtRemark, string? UserCodeMtnExt, string? SfMtnNo = null);
 record MaintExtActionDto(string? UserCodeMtnExt, string? SfMtnNo = null, DateTime? MtnExtStartDTime = null, DateTime? MtnExtEndDTime = null, string? MtnExtRemark = null);
-record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal PenaltyPercent, decimal PenaltyPercentTCKT, decimal FnExpPercent, decimal PmtDsTCGPercent, string? Status);
+record DiscountDto(DateTime? EffectiveDate, decimal DiscountPercent, decimal PenaltyPercent, decimal PenaltyPercentTCKT, decimal FnExpPercent, decimal PmtDsTCGPercent, string? Status, DateTime? EffectiveDateEnd = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record DevicePriceDto(string SpecCode, string? SpecDescription, string? DeviceTypeCode, string DeviceCode, string? DeviceName, decimal Price, decimal VAT, DateTime? EffectiveDate, string? Status);
 record TcgPriceDto(string SpecCode, decimal UnitPrice, string? Status);
 record QuotaAdjustDto(string DealerCode, string ModelCode, string Period, int DeltaQty);
@@ -125464,8 +125476,8 @@ record MngQuotaUpdDto(List<MngQuotaLineDto>? Lines, bool UpdQtyQuota = true);
 record MstQuotaDto(string DealerCode, string QuotaCode, string? QuotaName, string? ModelCondition, string? ModelPromotion, string? SpecCodeCondition, string? SpecCodePromotion, decimal QtyCondition, decimal QtyPromotion, DateTime? SOApprDateFrom, DateTime? SOApprDateTo, string? FlagActive);
 
 // ---- #145: DTO danh mục màu xe ----
-record CarColorSpecLineDto(string? SpecCode);
-record CarColorDto(string ModelCode, string ColorCode, string? ColorExtType, string? ColorExtCode, string? ColorExtName, string? ColorExtNameVN, string? ColorIntCode, string? ColorIntName, string? ColorIntNameVN, decimal ColorFee, string? FlagActive, string? Remark, List<CarColorSpecLineDto>? Specs);
+record CarColorSpecLineDto(string? SpecCode, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record CarColorDto(string ModelCode, string ColorCode, string? ColorExtType, string? ColorExtCode, string? ColorExtName, string? ColorExtNameVN, string? ColorIntCode, string? ColorIntName, string? ColorIntNameVN, decimal ColorFee, string? FlagActive, string? Remark, List<CarColorSpecLineDto>? Specs, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 
 // ---- #144: DTO kế hoạch đặt hàng nhà máy + quy đổi spec ATMV ----
 record OrderPlanHtmvLineDto(string SpecCode, string? ModelCode, decimal QtyBOApp, decimal QtySalesOrderP, decimal QtyStock, decimal QtyBOHTMV, decimal QtyStockDealer, decimal QtySalesOrderPlan, decimal QtySalesOrder, decimal QtyHTMVApp);
