@@ -15541,28 +15541,82 @@ app.MapDelete("/api/mstdistricts/{provinceCode}/{districtCode}", async (string p
 app.MapGet("/api/mstdealersalestypes", async (AppDbContext db, ITenantContext t, string? salesType, string? salesGroupType, string? flagActive) =>
 {
     var qy = db.MstDealerSalesTypes.Where(x => x.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(salesType)) qy = qy.Where(x => x.SalesType == salesType);
-    if (!string.IsNullOrWhiteSpace(salesGroupType)) qy = qy.Where(x => x.SalesGroupType == salesGroupType);
-    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive);
+    if (!string.IsNullOrWhiteSpace(salesType)) qy = qy.Where(x => x.SalesType == salesType.Trim());
+    if (!string.IsNullOrWhiteSpace(salesGroupType)) qy = qy.Where(x => x.SalesGroupType == salesGroupType.Trim());
+    if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive.Trim());
     var items = await qy.OrderBy(x => x.SalesType)
-        .Select(x => new { x.SalesType, x.SalesTypeNameVN, x.SalesGroupType, x.FlagActive }).ToListAsync();
+        .Select(x => new
+        {
+            x.SalesType, x.SalesTypeName, x.SalesTypeNameVN, x.SalesGroupType,
+            x.SalesTypeDes, x.SalesTypeDesVN, x.FlagActive,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy
+        }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/mstdealersalestypes", async (MstDealerSalesTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/mstdealersalestypes/{salesType}", async (string salesType, AppDbContext db, ITenantContext t) =>
+{
+    var code = (salesType ?? "").Trim();
+    var r = await db.MstDealerSalesTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesType == code);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstDealerSalesTypeNotFound", salesType = code });
+    return Results.Ok(new
+    {
+        r.SalesType, r.SalesTypeName, r.SalesTypeNameVN, r.SalesGroupType,
+        r.SalesTypeDes, r.SalesTypeDesVN, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdealersalestypes", async (MstDealerSalesTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var type = (dto.SalesType ?? "").Trim();
-    if (type.Length < 1) return Results.BadRequest(new { error = "Mã loại hình bán rỗng." });
-    if (await db.MstDealerSalesTypes.AnyAsync(x => x.OrgId == t.OrgId && x.SalesType == type))
-        return Results.BadRequest(new { error = $"Loại hình bán {type} đã tồn tại." });
-    db.MstDealerSalesTypes.Add(new MstDealerSalesType
+    if (type.Length < 1) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần SalesType." });
+    var group = (dto.SalesGroupType ?? "").Trim();
+    if (group.Length < 1) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần SalesGroupType." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstDealerSalesTypeNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var r = await db.MstDealerSalesTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesType == type);
+    var updated = r is not null;
+    if (r is null)
     {
-        OrgId = t.OrgId, SalesType = type, SalesTypeNameVN = dto.SalesTypeNameVN,
-        SalesGroupType = dto.SalesGroupType,
-        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!,
-    });
+        r = new MstDealerSalesType
+        {
+            OrgId = t.OrgId,
+            SalesType = type,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? actor
+        };
+        db.MstDealerSalesTypes.Add(r);
+    }
+    r.SalesGroupType = group;
+    if (dto.SalesTypeName != null) r.SalesTypeName = dto.SalesTypeName;
+    if (dto.SalesTypeNameVN != null) r.SalesTypeNameVN = dto.SalesTypeNameVN;
+    if (dto.SalesTypeDes != null) r.SalesTypeDes = dto.SalesTypeDes;
+    if (dto.SalesTypeDesVN != null) r.SalesTypeDesVN = dto.SalesTypeDesVN;
+    r.FlagActive = fa;
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = actor;
     await db.SaveChangesAsync();
-    return Results.Ok(new { salesType = type });
+    return Results.Ok(new
+    {
+        r.SalesType, r.SalesTypeName, r.SalesTypeNameVN, r.SalesGroupType,
+        r.SalesTypeDes, r.SalesTypeDesVN, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdealersalestypes/{salesType}/toggle", async (string salesType, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (salesType ?? "").Trim();
+    var r = await db.MstDealerSalesTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesType == code);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstDealerSalesTypeNotFound", salesType = code });
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.FlagActive = r.FlagActive == "1" ? "0" : "1";
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = actor;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.SalesType, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Gán VÙNG THỊ TRƯỜNG cho đại lý (Mst_Dealer_UpdateMRKAMCode — port 1:1
@@ -40725,38 +40779,87 @@ app.MapPost("/api/serapptypes/{id:long}/toggle", async (long id, AppDbContext db
 }).RequireAuthorization();
 
 // ===== 🔴 #1059 MÀN CHƯA TỪNG PORT: `Mst_Staff` (danh mục nhân viên chung) =====
-// Cùng cơ chế whitelist chung như #1058 — KHÔNG có hàm Create/Update riêng, chỉ 3 cột thật
-// (`TblMst_Staff`: StaffCode/StaffName/FlagActive), không có cột log nào để mô phỏng thêm.
 app.MapGet("/api/mststaffs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
     var qry = db.MstStaffs.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StaffCode.Contains(q!) || (x.StaffName != null && x.StaffName.Contains(q!)));
     var items = await qry.OrderBy(x => x.StaffCode).Take(500)
-        .Select(x => new { x.Id, x.StaffCode, x.StaffName, x.FlagActive }).ToListAsync();
+        .Select(x => new
+        {
+            x.Id, x.StaffCode, x.StaffName, x.FlagActive,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy
+        }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/mststaffs", async (MstStaffDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/mststaffs/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (dto.StaffCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhân viên." });
-    var row = await db.MstStaffs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StaffCode == code);
-    var isNew = row is null;
-    if (isNew) { row = new MstStaff { OrgId = t.OrgId, StaffCode = code }; db.MstStaffs.Add(row); }
-    row!.StaffName = dto.StaffName;
-    if (!isNew && dto.FlagActive != null) row.FlagActive = dto.FlagActive;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.StaffCode, row.StaffName, row.FlagActive, isNew });
+    var scode = (code ?? "").Trim();
+    var row = await db.MstStaffs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StaffCode == scode);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstStaffNotFound", staffCode = scode });
+    return Results.Ok(new
+    {
+        row.Id, row.StaffCode, row.StaffName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy
+    });
 }).RequireAuthorization();
 
-app.MapPost("/api/mststaffs/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mststaffs", async (MstStaffDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.StaffCode ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần StaffCode." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstStaffNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var row = await db.MstStaffs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StaffCode == code);
+    var isNew = row is null;
+    if (isNew)
+    {
+        row = new MstStaff
+        {
+            OrgId = t.OrgId,
+            StaffCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? actor
+        };
+        db.MstStaffs.Add(row);
+    }
+    row!.StaffName = dto.StaffName;
+    row.FlagActive = fa;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = actor;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.StaffCode, row.StaffName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, isNew
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mststaffs/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.MstStaffs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstStaffNotFound", id });
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = actor;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.StaffCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/mststaffs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var scode = (code ?? "").Trim();
+    var row = await db.MstStaffs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StaffCode == scode);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstStaffNotFound", staffCode = scode });
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = actor;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.StaffCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Master kho dịch vụ (SerStock — port 1:1 FrmStockCreate/Search, TCMotor DMSCarSv) =====
@@ -85056,29 +85159,83 @@ app.MapPost("/api/salespolicies/cancel-batch", async (SalesPolicyCancelDto dto, 
 app.MapGet("/api/mst-policy-expense-types", async (AppDbContext db, ITenantContext t, string? expenype, string? active) =>
 {
     var q = db.MstPolicyExpenseTypes.Where(p => p.OrgId == t.OrgId);
-    if (!string.IsNullOrWhiteSpace(expenype)) q = q.Where(p => p.Expenype == expenype);
-    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(p => p.FlagActive == active);
+    if (!string.IsNullOrWhiteSpace(expenype)) q = q.Where(p => p.Expenype == expenype.Trim());
+    if (!string.IsNullOrWhiteSpace(active)) q = q.Where(p => p.FlagActive == active.Trim());
     var items = await q.OrderBy(p => p.PolicyExpenypeNo).Select(p => new
     {
         p.PolicyExpenypeNo, p.DLCode, p.Expenype, p.ExpenypeNameActual, p.FlagPoint, p.FlagPointRank,
-        p.AmountRate, p.MaxRankReviewPoint, p.MaxAccumulationPoint, p.Remark, p.FlagActive, p.LogLUDTime
+        p.AmountRate, p.MaxRankReviewPoint, p.MaxAccumulationPoint, p.Remark, p.FlagActive,
+        p.CreatedDate, p.CreatedBy, p.LogLUDTime, p.LogLUBy
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/mst-policy-expense-types", async (MstPolicyExpenseTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/mst-policy-expense-types/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.PolicyExpenypeNo)) return Results.BadRequest(new { error = "Chưa có mã chính sách." });
-    if (string.IsNullOrWhiteSpace(dto.Expenype)) return Results.BadRequest(new { error = "Chưa có loại chi phí (Expenype)." });
+    var pno = (code ?? "").Trim();
+    var p = await db.MstPolicyExpenseTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PolicyExpenypeNo == pno);
+    if (p is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstPolicyExpenseTypeNotFound", policyExpenypeNo = pno });
+    return Results.Ok(new
+    {
+        p.PolicyExpenypeNo, p.DLCode, p.Expenype, p.ExpenypeNameActual, p.FlagPoint, p.FlagPointRank,
+        p.AmountRate, p.MaxRankReviewPoint, p.MaxAccumulationPoint, p.Remark, p.FlagActive,
+        p.CreatedDate, p.CreatedBy, p.LogLUDTime, p.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mst-policy-expense-types", async (MstPolicyExpenseTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PolicyExpenypeNo)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần PolicyExpenypeNo." });
+    if (string.IsNullOrWhiteSpace(dto.Expenype)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần Expenype." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstPolicyExpenseTypeNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var code = dto.PolicyExpenypeNo.Trim();
     var p = await db.MstPolicyExpenseTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PolicyExpenypeNo == code);
-    if (p is null) { p = new MstPolicyExpenseType { OrgId = t.OrgId, PolicyExpenypeNo = code }; db.MstPolicyExpenseTypes.Add(p); }
-    p.DLCode = dto.DLCode; p.Expenype = dto.Expenype.Trim(); p.ExpenypeNameActual = dto.ExpenypeNameActual;
-    p.FlagPoint = dto.FlagPoint == "1" ? "1" : "0"; p.FlagPointRank = dto.FlagPointRank == "1" ? "1" : "0";
-    p.AmountRate = dto.AmountRate; p.MaxRankReviewPoint = dto.MaxRankReviewPoint; p.MaxAccumulationPoint = dto.MaxAccumulationPoint;
-    p.Remark = dto.Remark; p.FlagActive = dto.FlagActive == "0" ? "0" : "1"; p.LogLUDTime = DateTime.Now;
+    var updated = p is not null;
+    if (p is null)
+    {
+        p = new MstPolicyExpenseType
+        {
+            OrgId = t.OrgId,
+            PolicyExpenypeNo = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? actor
+        };
+        db.MstPolicyExpenseTypes.Add(p);
+    }
+    p.DLCode = dto.DLCode;
+    p.Expenype = dto.Expenype.Trim();
+    p.ExpenypeNameActual = dto.ExpenypeNameActual;
+    p.FlagPoint = dto.FlagPoint == "1" ? "1" : "0";
+    p.FlagPointRank = dto.FlagPointRank == "1" ? "1" : "0";
+    p.AmountRate = dto.AmountRate;
+    p.MaxRankReviewPoint = dto.MaxRankReviewPoint;
+    p.MaxAccumulationPoint = dto.MaxAccumulationPoint;
+    p.Remark = dto.Remark;
+    p.FlagActive = fa;
+    p.LogLUDTime = DateTime.Now;
+    p.LogLUBy = actor;
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.PolicyExpenypeNo, p.Expenype, p.AmountRate, p.FlagPoint, p.FlagPointRank });
+    return Results.Ok(new
+    {
+        p.PolicyExpenypeNo, p.DLCode, p.Expenype, p.ExpenypeNameActual, p.FlagPoint, p.FlagPointRank,
+        p.AmountRate, p.MaxRankReviewPoint, p.MaxAccumulationPoint, p.Remark, p.FlagActive,
+        p.CreatedDate, p.CreatedBy, p.LogLUDTime, p.LogLUBy, updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mst-policy-expense-types/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var pno = (code ?? "").Trim();
+    var p = await db.MstPolicyExpenseTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PolicyExpenypeNo == pno);
+    if (p is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstPolicyExpenseTypeNotFound", policyExpenypeNo = pno });
+    var actor = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    p.FlagActive = p.FlagActive == "1" ? "0" : "1";
+    p.LogLUDTime = DateTime.Now;
+    p.LogLUBy = actor;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { p.PolicyExpenypeNo, p.FlagActive, p.LogLUDTime, p.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Phiếu bảo trì xe lưu kho bãi (StoFMaintain — port 1:1 FrmMaintenanceSlipList/Detail, 2010.HTC/Maintenance) =====
@@ -123995,7 +124152,11 @@ record StoFMaintainEvalDto(List<StoFMaintainEvalLineDto>? Lines);
 record SalesPolicyLineDto(string? DealerCode, string? YearOfManufacture, decimal AmountSupport, string? Remark);
 record SalesPolicyDto(string SPNo, string? SPSRType, string? SPSRRoot, string? FormBusinessSupportCode, DateTime? StartDate, DateTime? EndDate, string? FlagMstValid, string? Remark, string? FilePath, List<SalesPolicyLineDto>? Details);
 record SalesPolicyCancelDto(List<string>? SPSRCodes);
-record MstPolicyExpenseTypeDto(string PolicyExpenypeNo, string? DLCode, string Expenype, string? ExpenypeNameActual, string? FlagPoint, string? FlagPointRank, decimal AmountRate, decimal? MaxRankReviewPoint, decimal? MaxAccumulationPoint, string? Remark, string? FlagActive);
+record MstPolicyExpenseTypeDto(
+    string PolicyExpenypeNo, string? DLCode, string Expenype, string? ExpenypeNameActual,
+    string? FlagPoint, string? FlagPointRank, decimal AmountRate, decimal? MaxRankReviewPoint,
+    decimal? MaxAccumulationPoint, string? Remark, string? FlagActive,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDTime = null, string? LogLUBy = null);
 record CarColorChangeDto(string CarId, string? DealerCode, string? ModelCode, string? SpecCode, string? ColorCodeOld, string ColorCodeNew, string? SOCode = null, string? ModelName = null, string? RootSpec = null, string? SpecDescription = null, string? ChangeBy = null);
 record DeviceCarDto(string VIN, string? ModelCode, string? SpecCode, string? ColorCode, string DeviceTypeCode, string? InputInvoiceNo, DateTime? InputInvoiceDate);
 record InvoiceSetupDto(string ModelCode, string? FlagInvoiceHTMV, string? FlagInvoiceTCG);
@@ -124320,7 +124481,10 @@ record MstProvinceDto(string? ProvinceCode, string? ProvinceName = null, string?
     DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName = null, string? FlagActive = null, string? CreatedBy = null,
     DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);
+record MstDealerSalesTypeDto(
+    string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive,
+    string? SalesTypeName = null, string? SalesTypeDes = null, string? SalesTypeDesVN = null,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 // Người dùng/nhóm hệ thống. `UserPassword` gửi đúng chuỗi mẫu "********" nghĩa là GIỮ NGUYÊN mật khẩu cũ.
 record SysUserSaveDto(string? UserCode, string? UserName, string? UserPassword, string? PartnerCode, string? DealerCode, string? BankCode, string? TransporterCode, string? InsCompanyCode, string? FlagSysAdmin, string? FlagSysViewer, string? FlagActive);
 record SysUserKeyDto(string? UserCode);
@@ -125279,9 +125443,14 @@ record ReceptionFAudTypeMstDto(string? ReceptionFAudType,
 record SerAppTypeMstDto(string? AppTypeCode,
     string? AppTypeName,
     string? FlagActive = null);   // merge session-a
-record MstStaffDto(string? StaffCode,
+record MstStaffDto(
+    string? StaffCode,
     string? StaffName,
-    string? FlagActive = null);   // merge session-a
+    string? FlagActive = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
 record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
 record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);

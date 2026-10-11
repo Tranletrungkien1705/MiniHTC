@@ -4522,6 +4522,10 @@ public sealed class MstStaff
     public string StaffCode { get; set; } = "";
     public string? StaffName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Master kỳ khảo sát JD Power (Ser_MST_JDPowerTerm) — port 1:1 FrmJDPowerTermCreate/Search (TCMotor DMSCarSv). Mã kỳ + nội dung + ngày bắt đầu/kết thúc.</summary>
@@ -9414,10 +9418,17 @@ public sealed class MstDealerSalesType
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public string SalesType { get; set; } = "";
+    public string? SalesTypeName { get; set; }
     public string? SalesTypeNameVN { get; set; }
     /// <summary>Nhóm loại hình bán.</summary>
     public string? SalesGroupType { get; set; }
+    public string? SalesTypeDes { get; set; }
+    public string? SalesTypeDesVN { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -14169,7 +14180,10 @@ public sealed class MstPolicyExpenseType
     public decimal? MaxAccumulationPoint { get; set; }    // MAXACCUMULATIONPOINT
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Hỗ trợ bán lẻ theo VIN gắn với chính sách bán hàng (SPL_SPSupportRetail) — port 1:1 FrmPolicySales_Mng (2010.HTC/Sales).
