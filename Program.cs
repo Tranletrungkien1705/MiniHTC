@@ -35225,7 +35225,7 @@ app.MapGet("/api/receptionerrors", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(receptionErrorCode)) qry = qry.Where(x => x.ReceptionErrorCode == receptionErrorCode);
     if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
     var items = await qry.OrderBy(x => x.ReceptionErrorCode).Take(500).Select(x => new { x.Id, x.ReceptionErrorCode,
-        x.ReceptionErrorName, x.FlagActive, x.Remark, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1495 §12 — echo đủ cột (nguồn SELECT smre.*)
+        x.ReceptionErrorName, x.FlagActive, x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt }).ToListAsync();   // #1495 §12 — echo đủ cột (nguồn SELECT smre.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -119100,22 +119100,107 @@ app.MapPost("/api/mstordercomplainimagetypes/{type}/toggle", async (string type,
     return Results.Ok(new { r.OrderComplainImageType, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
 }).RequireAuthorization();
 
-// merge: gỡ route trùng: app.MapGet("/api/receptionerrors", async (AppDbContext db, ITenantContext t, string? q, bool? all) =
-
+// ===== #Round154 1:1 error codes & guards Ser_Mst_ReceptionError (BizCarSv.Tab.cs:1206-1268, :1425) =====
 app.MapPost("/api/receptionerrors", async (SerReceptionErrorDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.ReceptionErrorCode ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã lỗi tiếp nhận." });
-    var by = user.Identity?.Name ?? "system";
-    var row = await db.SerReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == code);
-    if (row is null) { row = new SerReceptionError { OrgId = t.OrgId, ReceptionErrorCode = code }; db.SerReceptionErrors.Add(row); }
-    row.ReceptionErrorName = dto.ReceptionErrorName; row.Remark = dto.Remark;
-    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
-    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần ReceptionErrorCode." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+
+    var row = await db.ReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new ReceptionError
+        {
+            OrgId = t.OrgId,
+            ReceptionErrorCode = code,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? by,
+            CreatedAt = now
+        };
+        db.ReceptionErrors.Add(row);
+    }
+    row.ReceptionErrorName = dto.ReceptionErrorName;
+    row.Remark = dto.Remark;
+    row.FlagActive = fa;
+    row.LogLUDateTime = now;
+    row.LogLUBy = by;
+    row.UpdatedAt = now;
+
+    // Đồng bộ sang twin-entity SerReceptionError
+    var twin = await db.SerReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == code);
+    if (twin is null)
+    {
+        twin = new SerReceptionError
+        {
+            OrgId = t.OrgId,
+            ReceptionErrorCode = code,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? by,
+            CreatedAt = now
+        };
+        db.SerReceptionErrors.Add(twin);
+    }
+    twin.ReceptionErrorName = dto.ReceptionErrorName;
+    twin.Remark = dto.Remark;
+    twin.FlagActive = fa;
+    twin.LogLUDateTime = now;
+    twin.LogLUBy = by;
+    twin.UpdatedAt = now;
+
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.ReceptionErrorCode, row.ReceptionErrorName, row.FlagActive,
-                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+    return Results.Ok(new
+    {
+        row.Id, row.ReceptionErrorCode, row.ReceptionErrorName, row.Remark, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt,
+        updated,
+        writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptionerrors/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim();
+    var r = await db.ReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == c);
+    if (r is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_ReceptionError_CheckDB_ReceptionErrorNotFound", receptionErrorCode = c });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var newFa = r.FlagActive == "1" ? "0" : "1";
+    r.FlagActive = newFa;
+    r.LogLUDateTime = now;
+    r.LogLUBy = by;
+    r.UpdatedAt = now;
+
+    var twin = await db.SerReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == c);
+    if (twin is not null)
+    {
+        twin.FlagActive = newFa;
+        twin.LogLUDateTime = now;
+        twin.LogLUBy = by;
+        twin.UpdatedAt = now;
+    }
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionErrorCode, r.FlagActive, r.LogLUDateTime, r.LogLUBy, r.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/receptionerrors/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var r = await db.ReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == c);
+    if (r is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_ReceptionError_CheckDB_ReceptionErrorNotFound", receptionErrorCode = c });
+    db.ReceptionErrors.Remove(r);
+
+    var twin = await db.SerReceptionErrors.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionErrorCode == c);
+    if (twin is not null) db.SerReceptionErrors.Remove(twin);
+
+    await db.SaveChangesAsync();
+    return Results.Ok(new { success = true, receptionErrorCode = c });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #632 MASTER FILE ĐÍNH KÈM PHIẾU TIẾP NHẬN `Ser_Mst_ReceptionAttachFile` (`Tab.cs:14419`) =====
@@ -119627,7 +119712,7 @@ app.MapGet("/api/receptionfaudtypemsts", async (AppDbContext db, ITenantContext 
     var items = await qy.OrderBy(x => x.ReceptionFAudType)   // nguồn KHÔNG sắp ở câu kết quả
         .Skip(skip).Take(take)
         .Select(x => new { x.Id, x.ReceptionFAudType, x.ReceptionFAudTypeName, x.FlagActive, x.Remark,
-                           x.LogLUDateTime, x.LogLUBy }).ToListAsync();
+                           x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt }).ToListAsync();
     return Results.Ok(new
     {
         count = items.Count, total, items,
@@ -119646,25 +119731,68 @@ app.MapGet("/api/receptionfaudtypemsts", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+// ===== #Round154 1:1 error codes & guards Ser_Mst_ReceptionFAudType (BizCarSv.Tab.cs:14554-14615) =====
 app.MapPost("/api/receptionfaudtypemsts", async (ReceptionFAudTypeMstDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
     var type = (dto.ReceptionFAudType ?? "").Trim();
-    if (type.Length == 0) return Results.BadRequest(new { error = "Chua nhap loai dau muc kiem tra." });
-    var by = user.Identity?.Name ?? "system";
+    if (string.IsNullOrWhiteSpace(type)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần ReceptionFAudType." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var row = await db.ReceptionFAudTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudType == type);
+    var updated = row is not null;
     if (row is null)
     {
-        row = new ReceptionFAudTypeMst { OrgId = t.OrgId, ReceptionFAudType = type };
+        row = new ReceptionFAudTypeMst
+        {
+            OrgId = t.OrgId,
+            ReceptionFAudType = type,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? by,
+            CreatedAt = now
+        };
         db.ReceptionFAudTypeMsts.Add(row);
     }
     row.ReceptionFAudTypeName = dto.ReceptionFAudTypeName;
-    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    row.FlagActive = fa;
     row.Remark = dto.Remark;
-    row.LogLUDateTime = DateTime.Now;
+    row.LogLUDateTime = now;
     row.LogLUBy = by;
+    row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ReceptionFAudType, row.ReceptionFAudTypeName, row.FlagActive, row.Remark, row.LogLUDateTime, row.LogLUBy });
+    return Results.Ok(new
+    {
+        row.Id, row.ReceptionFAudType, row.ReceptionFAudTypeName, row.FlagActive, row.Remark,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt,
+        updated,
+        writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptionfaudtypemsts/{type}/toggle", async (string type, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.ReceptionFAudTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_ReceptionFAudType_CheckDB_ReceptionFAudTypeNotFound", receptionFAudType = c });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.FlagActive = r.FlagActive == "1" ? "0" : "1";
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = by;
+    r.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionFAudType, r.FlagActive, r.LogLUDateTime, r.LogLUBy, r.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/receptionfaudtypemsts/{type}", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.ReceptionFAudTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_ReceptionFAudType_CheckDB_ReceptionFAudTypeNotFound", receptionFAudType = c });
+    db.ReceptionFAudTypeMsts.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { success = true, receptionFAudType = c });
 }).RequireAuthorization();
 
 app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
@@ -119688,7 +119816,7 @@ app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
             .Skip(start).Take(count)
             // #1056: nguồn `smrfa.*` trả ĐỦ bảng — thêm 4 cột trước đây bị bỏ sót.
             .Select(x => new { x.Id, x.ReceptionFAudCode, x.ReceptionFAudType, x.ReceptionFAudName, x.FlagActive,
-                x.Idx, x.Remark, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt })   // #1446 §12
+                x.Idx, x.Remark, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt })   // #1446 #Round154 §12
             .ToListAsync()
         : new();
 
@@ -119703,6 +119831,77 @@ app.MapGet("/api/receptionfauditmsts", async (AppDbContext db, ITenantContext t,
         detailFlagIsPresenceNotValue = true,
         masterLivesInCommonCenterDb = true,
     });
+}).RequireAuthorization();
+
+// ===== #Round154 1:1 error codes & guards Ser_Mst_ReceptionFAudit (BizCarSv.Tab.cs:14873-14941) =====
+app.MapPost("/api/receptionfauditmsts", async (ReceptionFAuditMstDto dto, AppDbContext db, ITenantContext t,
+    System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.ReceptionFAudCode ?? "").Trim();
+    var type = (dto.ReceptionFAudType ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(type))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần ReceptionFAudCode và ReceptionFAudType." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var row = await db.ReceptionFAuditMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudCode == code && x.ReceptionFAudType == type);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new ReceptionFAuditMst
+        {
+            OrgId = t.OrgId,
+            ReceptionFAudCode = code,
+            ReceptionFAudType = type,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? by,
+            CreatedAt = now
+        };
+        db.ReceptionFAuditMsts.Add(row);
+    }
+    row.ReceptionFAudName = dto.ReceptionFAudName;
+    row.FlagActive = fa;
+    row.Idx = dto.Idx;
+    row.Remark = dto.Remark;
+    row.LogLUDateTime = now;
+    row.LogLUBy = by;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.ReceptionFAudCode, row.ReceptionFAudType, row.ReceptionFAudName, row.FlagActive,
+        row.Idx, row.Remark, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt,
+        updated,
+        writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/receptionfauditmsts/{code}/{type}/toggle", async (string code, string type, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim();
+    var tp = (type ?? "").Trim();
+    var r = await db.ReceptionFAuditMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudCode == c && x.ReceptionFAudType == tp);
+    if (r is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_ReceptionFAudit_CheckDB_ReceptionFAudNotFound", receptionFAudCode = c, receptionFAudType = tp });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.FlagActive = r.FlagActive == "1" ? "0" : "1";
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = by;
+    r.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.ReceptionFAudCode, r.ReceptionFAudType, r.FlagActive, r.LogLUDateTime, r.LogLUBy, r.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/receptionfauditmsts/{code}/{type}", async (string code, string type, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var tp = (type ?? "").Trim();
+    var r = await db.ReceptionFAuditMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ReceptionFAudCode == c && x.ReceptionFAudType == tp);
+    if (r is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_ReceptionFAudit_CheckDB_ReceptionFAudNotFound", receptionFAudCode = c, receptionFAudType = tp });
+    db.ReceptionFAuditMsts.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { success = true, receptionFAudCode = c, receptionFAudType = tp });
 }).RequireAuthorization();
 
 // ===== 🔴 #528 PHÂN CÔNG CÔNG VIỆC — **BẢY CÔNG ĐOẠN GÕ CỨNG, GỬI RỖNG KHÔNG XOÁ ĐƯỢC** =====
@@ -127833,7 +128032,9 @@ record MstOrderComplainTypeDto(string? OrderComplainType,
 record SerReceptionErrorDto(string? ReceptionErrorCode,
     string? ReceptionErrorName,
     string? Remark,
-    string? FlagActive);   // merge session-a
+    string? FlagActive,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null);   // merge session-a
 record MstOrderComplainImageTypeDto(string? OrderComplainImageType,
     string? OrderComplainImageName,
     string? FlagActive,
@@ -127845,7 +128046,18 @@ record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo,
 record ReceptionFAudTypeMstDto(string? ReceptionFAudType,
     string? ReceptionFAudTypeName,
     string? FlagActive,
-    string? Remark);   // merge session-a
+    string? Remark,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null);   // merge session-a
+record ReceptionFAuditMstDto(
+    string? ReceptionFAudCode,
+    string? ReceptionFAudType,
+    string? ReceptionFAudName,
+    string? FlagActive = null,
+    int? Idx = null,
+    string? Remark = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null);
 record SerAppTypeMstDto(string? AppTypeCode,
     string? AppTypeName,
     string? FlagActive = null);   // merge session-a

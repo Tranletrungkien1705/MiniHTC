@@ -9253,6 +9253,10 @@ public sealed class ReceptionError
     public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>
@@ -19392,6 +19396,10 @@ public sealed class SerReceptionError
     public string FlagActive { get; set; } = "1";
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>#633 Master **LOẠI ẢNH** của khiếu nại (`Mst_OrderComplainImageType`), khoá
@@ -19454,6 +19462,10 @@ public sealed class ReceptionFAudTypeMst
     public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>#526 Master **ĐẦU MỤC KIỂM TRA** khi tiếp nhận/giao xe (`Ser_Mst_ReceptionFAudit`).
@@ -19475,6 +19487,9 @@ public sealed class ReceptionFAuditMst
     public string? Remark { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
