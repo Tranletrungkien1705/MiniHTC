@@ -380,7 +380,7 @@ app.MapGet("/api/deliverylocations", async (AppDbContext db, ITenantContext t,
     var items = await qy.OrderBy(x => x.d.DeliveryLocationCode).ThenBy(x => x.d.DealerCode)
         .Select(x => new { x.d.DeliveryLocationCode, x.d.DealerCode, x.dealerName,
                            x.d.DeliveryLocationName, x.d.FlagActive, x.d.LogLUDateTime, x.d.LogLUBy,
-                           x.d.CreatedDate, x.d.CreatedBy })
+                           x.d.CreatedDate, x.d.CreatedBy, x.d.CreatedAt, x.d.UpdatedAt })
         .ToListAsync();
 
     // ===== #635: đo thật hai hậu quả của nguồn trên chính dữ liệu đang có =====
@@ -411,6 +411,23 @@ app.MapGet("/api/deliverylocations", async (AppDbContext db, ITenantContext t,
         portKeepsFullKey = "port loc va sap theo DU CAP (DeliveryLocationCode, DealerCode) nen khong ro ri",
         twoGatewaysTwoFilterSemantics = "endpoint nay port tu duong WinForm/DMS (%…% + GenEqualCondition2); WS Mst_DeliveryLocation_Get goi _GetX dung BuildClause (doi toan tu o dau chuoi, thieu la roi im lang #410) => cung mot danh muc, HAI ngu nghia loc",
         siblingTableIsSafe = "AM TINH doi chung #634: Mst_DeliveryForm khoa MOT cot nen distinct mot cot la dung; cung mot khuon, khac khoa => khac hau qua",
+    });
+}).RequireAuthorization();
+
+// Chi tiết 1 địa điểm theo cặp khoá (dealerCode, code)
+app.MapGet("/api/deliverylocations/{dealerCode}/{code}", async (
+    string dealerCode, string code, AppDbContext db, ITenantContext t) =>
+{
+    dealerCode = dealerCode.Trim(); code = code.Trim();
+    var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealerCode);
+    var row = await db.DeliveryLocations.FirstOrDefaultAsync(
+        x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealerCode);
+    if (row is null) return Results.NotFound(new { dealerCode, deliveryLocationCode = code, error = "Không tìm thấy địa điểm giao hàng.", code = "Mst_DeliveryLocation_CheckDB_DeliveryLocationNotFound" });
+    return Results.Ok(new
+    {
+        row.Id, row.DeliveryLocationCode, row.DealerCode, dealerName = d?.DealerName,
+        row.DeliveryLocationName, row.FlagActive, row.LogLUDateTime, row.LogLUBy,
+        row.CreatedDate, row.CreatedBy, row.CreatedAt, row.UpdatedAt
     });
 }).RequireAuthorization();
 
@@ -448,9 +465,10 @@ app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbConte
     var row = await db.DeliveryLocations.FirstOrDefaultAsync(
         x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealer);
     var isNew = row is null;
+    var now = DateTime.Now;
     if (row is null)
     {
-        row = new DeliveryLocation { OrgId = t.OrgId, DeliveryLocationCode = code, DealerCode = dealer, CreatedDate = dto.CreatedDate ?? DateTime.Now, CreatedBy = dto.CreatedBy ?? who };
+        row = new DeliveryLocation { OrgId = t.OrgId, DeliveryLocationCode = code, DealerCode = dealer, CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who, CreatedAt = now, UpdatedAt = now };
         db.DeliveryLocations.Add(row);
         row.FlagActive = "1";   // _Add đặt cứng Active; client không đổi được lúc tạo
     }
@@ -459,11 +477,31 @@ app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbConte
         row.FlagActive = dto.FlagActive!.Trim();   // chỉ _Update mới nhận cờ
     }
     row.DeliveryLocationName = name;
-    row.LogLUDateTime = DateTime.Now;
+    row.LogLUDateTime = now;
     row.LogLUBy = who;
+    row.UpdatedAt = now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.DeliveryLocationCode, row.DealerCode, row.DeliveryLocationName,
-                            row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.CreatedDate, row.CreatedBy, created = isNew });
+                            row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.CreatedDate, row.CreatedBy,
+                            row.CreatedAt, row.UpdatedAt, created = isNew });
+}).RequireAuthorization();
+
+// Bật/tắt trạng thái địa điểm giao hàng theo cặp khoá (dealerCode, code)
+app.MapPost("/api/deliverylocations/{dealerCode}/{code}/toggle", async (
+    string dealerCode, string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    dealerCode = dealerCode.Trim(); code = code.Trim();
+    var row = await db.DeliveryLocations.FirstOrDefaultAsync(
+        x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealerCode);
+    if (row is null) return Results.NotFound(new { dealerCode, deliveryLocationCode = code, error = "Không tìm thấy địa điểm giao hàng.", code = "Mst_DeliveryLocation_CheckDB_DeliveryLocationNotFound" });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.DeliveryLocationCode, row.DealerCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // Xoá — nguồn `Mst_DeliveryLocation_Delete` truyền ĐỦ CẶP (code, dealerCode).
@@ -39279,7 +39317,7 @@ app.MapGet("/api/sersuppliers", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(supplierCode)) qry = qry.Where(x => x.SupplierCode.Contains(supplierCode!));
     if (!string.IsNullOrWhiteSpace(supplierName)) qry = qry.Where(x => x.SupplierName != null && x.SupplierName.Contains(supplierName!));
     if (!string.IsNullOrWhiteSpace(address)) qry = qry.Where(x => x.Address != null && x.Address.Contains(address!));
-    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt, x.SupplierID /*merge session-a*/  }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SupplierCode).Take(500).Select(x => new { x.Id, x.SupplierCode, x.SupplierName, x.Address, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt, x.SupplierID /*merge session-a*/  }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -39315,28 +39353,42 @@ app.MapGet("/api/sersuppliers/getforcode", async (AppDbContext db, ITenantContex
         twoTreesMatch = "3B: than ham SerSupplierGetForCode md5 KHOP giua V20 va V20.2023.Release (a8fe4869)" });
 }).RequireAuthorization();
 
+// Chi tiết 1 nhà cung cấp theo mã NCC
+app.MapGet("/api/sersuppliers/{supplierCode}", async (string supplierCode, string? dealerCode, AppDbContext db, ITenantContext t) =>
+{
+    var code = (supplierCode ?? "").Trim().ToUpperInvariant();
+    var q = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim());
+    var row = await q.FirstOrDefaultAsync();
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NotFound", supplierCode = code, dealerCode });
+    return Results.Ok(new
+    {
+        row.Id, row.SupplierCode, row.SupplierName, row.Address, row.Phone, row.Fax,
+        row.ContactName, row.ContactPhone, row.DealerCode, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt, row.SupplierID
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.SupplierCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
-    if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp." });
-    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập địa chỉ." });
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_CodeEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NameEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập địa chỉ.", code = "ErrCarSv.Ser_Mst_Supplier_AddressEmpty" });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1") return Results.BadRequest(new { error = "Trạng thái hoạt động không hợp lệ.", code = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch" });
     if (!string.IsNullOrWhiteSpace(dto.Phone) && !dto.Phone!.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')')) return Results.BadRequest(new { error = "Số điện thoại không hợp lệ." });
     // #911 §12: nguồn khoá trùng theo (SupplierCode, DealerCode, IsActive) — thiếu DealerCode thì hai đại lý
     // không thể cùng dùng một mã NCC (điều nguồn cho phép).
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code.ToUpper() && x.DealerCode == dto.DealerCode);
     var by1073 = (partnerUserCode ?? "system").Trim(); var now1073 = DateTime.Now;
     // #1073: Create ghi VÔ ĐIỀU KIỆN cả 4 cột nhật ký; Update chỉ ghi lại LogLU*.
-    if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, DealerCode = dto.DealerCode, CreatedDate = now1073, CreatedBy = by1073 }; db.SerMstSuppliers.Add(row); }
-    row.SupplierName = dto.SupplierName; row.Address = dto.Address; row.Phone = dto.Phone; row.Fax = dto.Fax; row.UpdatedAt = DateTime.Now;
+    if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, DealerCode = dto.DealerCode, CreatedDate = dto.CreatedDate ?? now1073, CreatedBy = dto.CreatedBy ?? by1073, CreatedAt = dto.CreatedAt ?? now1073, UpdatedAt = now1073 }; db.SerMstSuppliers.Add(row); }
+    row.SupplierName = dto.SupplierName; row.Address = dto.Address; row.Phone = dto.Phone; row.Fax = dto.Fax; row.UpdatedAt = now1073;
     row.ContactName = dto.ContactName; row.ContactPhone = dto.ContactPhone; row.DealerCode = dto.DealerCode;
-    // #1031: nguồn `SerSupplierCreate` (Inventory.Master.cs:259) ghi thẳng hai cột này (gán trực tiếp,
-    // không guard rỗng) — entity đã có sẵn từ #574 nhưng DTO/endpoint chưa từng wire.
-    row.ContactName = dto.ContactName; row.ContactPhone = dto.ContactPhone;
     row.LogLUDateTime = now1073; row.LogLUBy = by1073;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.DealerCode, row.FlagActive, row.ContactName, row.ContactPhone });
+    return Results.Ok(new { row.Id, row.SupplierCode, row.SupplierName, row.DealerCode, row.FlagActive, row.ContactName, row.ContactPhone, row.Address, row.Phone, row.Fax, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #818 PARITY NHÀ CUNG CẤP PHỤ TÙNG — `SerSupplier{Create,Update,Delete,Get,GetForCode}` =====
@@ -40538,15 +40590,17 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
 {
     var code = (supplierCode ?? "").Trim();
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode == code);
-    if (row is null) return Results.NotFound(new { error = "Ser_Mst_Supplier_NotFound", supplierCode = code });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NotFound", supplierCode = code });
     // GAP 2 — nguon chi kiem o CREATE, Mini kiem ca o UPDATE.
     var newName = dto.SupplierName ?? row.SupplierName;
     var newAddr = dto.Address ?? row.Address;
-    if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newAddr))
-    {
-        return Results.BadRequest(new { error = "checkSupplierFieldEmpty: ten va dia chi bat buoc",
-            sourceOnlyChecksOnCreate = true });
-    }
+    if (string.IsNullOrWhiteSpace(newName))
+        return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NameEmpty" });
+    if (string.IsNullOrWhiteSpace(newAddr))
+        return Results.BadRequest(new { error = "Chưa nhập địa chỉ.", code = "ErrCarSv.Ser_Mst_Supplier_AddressEmpty" });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "Trạng thái hoạt động không hợp lệ.", code = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch" });
+
     // GAP 1 — kiem trung ma KHONG phan biet IsActive (nguon: Create theo strIsActive, Update cung '1').
     // #911: khoa trung PHAI ke ca DealerCode (nguon: checkExistSupplierCodeModify loc ca DealerCode).
     var newCode = (dto.SupplierCode ?? code).Trim();
@@ -40555,7 +40609,7 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
     {
         var dup = await db.SerMstSuppliers.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id
             && x.SupplierCode == newCode && x.DealerCode == newDealerCode);
-        if (dup) return Results.Conflict(new { error = "Ser_Mst_Supplier_Exist", supplierCode = newCode, dealerCode = newDealerCode });
+        if (dup) return Results.Conflict(new { error = "Mã nhà cung cấp đã tồn tại.", code = "ErrCarSv.Ser_Mst_Supplier_Exist", supplierCode = newCode, dealerCode = newDealerCode });
         row.SupplierCode = newCode; row.DealerCode = newDealerCode;
     }
     row.SupplierName = newName; row.Address = newAddr;
@@ -40572,7 +40626,7 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
     return Results.Ok(new
     {
         row.Id, row.SupplierCode, row.SupplierName, row.Address, row.Phone, row.Fax, row.DealerCode, row.FlagActive,
-        row.ContactName, row.ContactPhone,
+        row.ContactName, row.ContactPhone, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt,
         sourceDuplicateGuardScopeDiffers = "GAP 1 (#404): checkExistSupplierCode (TAO) loc IsActive = strIsActive — gia tri cua chinh ban ghi sap tao; checkExistSupplierCodeModify (SUA) loc IsActive = 1 CUNG. => tao NCC moi voi IsActive = 0 thi guard CHI tim trong nhom da vo hieu hoa => TRUNG MA voi mot NCC DANG HOAT DONG van tao duoc; chieu nguoc lai cung vay => Ser_MST_Supplier co the co NHIEU dong cung SupplierCode + DealerCode khac nhau IsActive",
         sourceUpdateSkipsFieldEmptyCheck = "GAP 2: Create goi checkSupplierFieldEmpty(..., strSupplierName, strAddress, strIsActive) nhung Update KHONG goi => SUA mot NCC co the XOA TRANG ten va dia chi trong khi TAO MOI thi bat buoc phai nhap",
         sourceModifyGuardExcludesItself = "AM TINH: checkExistSupplierCodeModify co SupplierID <> strSupplierID => loai chinh no ra, dung khuon da thay o #807",
@@ -40582,43 +40636,43 @@ app.MapPut("/api/sersuppliers/{supplierCode}", async (string supplierCode, SerSu
         twoMachinesVerified = "Inventory.Master.cs 2104 dong tren CA HAI may; md5 chuan hoa SerSupplierUpdate tren 150 = 2480a044 KHOP laptop",
     });
 }).RequireAuthorization();
-app.MapPost("/api/sersuppliers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+
+app.MapPost("/api/sersuppliers/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NotFound", id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
-    // #1127 cùng luật #1126: `strIsActive` là tham số của `SerSupplierUpdate` (Inventory.Master.cs:451-467),
-    // hàm LUÔN ghi LogLUDateTime/LogLUBy = strPartnerUserCode — toggle chính là gọi Update đổi IsActive,
-    // port cũ bỏ sót 2 cột nhật ký ở đường ghi này (PUT #1073 đã đúng, chỉ toggle thiếu).
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FlagActive, row.UpdatedAt, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/sersuppliers/{supplierCode}/toggle", async (string supplierCode, string? dealerCode, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var code = (supplierCode ?? "").Trim().ToUpperInvariant();
+    var q = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code);
+    if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode.Trim());
+    var row = await q.FirstOrDefaultAsync();
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NotFound", supplierCode = code, dealerCode });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SupplierCode, row.FlagActive, row.UpdatedAt, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // ===== #5856 XOÁ NHÀ CUNG CẤP — `FrmMstSupplierModify.btnDelete_Click` (2021.1.TCMotor/DMSCarSv) =====
-// Trace: menu sống qua `FrmMstSupplierSearch` (`FrmMain.cs:1125`) → `supplierService.DeleteSupplier`
-// (`MstSupplierService.cs:264`) → WS `SerSupplierDelete` (`HTCWSCarSv/WSCarSv.asmx.cs:14250`, bản KHÔNG
-// hậu tố ngày — LIVE, hai bản `.20210208`/`.20210412` là đóng băng) → biz cùng tên
-// (`BizCarSv.Inventory.Master.cs:629`, dispatch KHÔNG hậu tố, chỉ một overload).
-// 🔴 Guard THẬT: kiểm còn `Ser_Inv_StockIn` (phiếu nhập kho) nào tham chiếu NCC này theo
-// `(DealerCode, SupplierID)` hay không — CÒN thì CHẶN (`Ser_Inv_StockIn_Exist_NotDelete_Supplier`).
-// Mini không mô hình `SupplierID` riêng trên `ServiceStockIn` (chỉ `SupplierCode`, nhất quán với các
-// route `/api/sersuppliers` đã port trước dùng `SupplierCode` làm khoá chính) — guard theo
-// `(DealerCode, SupplierCode)`, khớp đúng Ý NGHĨA (chặn xoá NCC còn phiếu nhập) dù khác tên cột kỹ thuật.
-// Câu xoá thật nguồn còn khớp CẢ `DealerCode` (`and DealerCode = @DealerCode`) — nhà cung cấp cùng mã
-// nhưng khác đại lý KHÔNG bị ảnh hưởng (Mini đã có cột `DealerCode` trên `SerMstSupplier`, xem #911).
 app.MapDelete("/api/sersuppliers/{supplierCode}", async (string supplierCode, string? dealerCode, AppDbContext db, ITenantContext t) =>
 {
     var code = (supplierCode ?? "").Trim().ToUpperInvariant();
     var q = db.SerMstSuppliers.Where(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code);
     if (!string.IsNullOrWhiteSpace(dealerCode)) q = q.Where(x => x.DealerCode == dealerCode);
     var row = await q.FirstOrDefaultAsync();
-    if (row is null) return Results.NotFound(new { supplierCode = code, dealerCode });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NotFound", supplierCode = code, dealerCode });
 
     var hasStockIn = await db.ServiceStockIns.AnyAsync(x => x.OrgId == t.OrgId
         && x.SupplierCode == row.SupplierCode && x.DealerCode == row.DealerCode);
     if (hasStockIn)
-        return Results.BadRequest(new { error = "Ser_Inv_StockIn_Exist_NotDelete_Supplier", supplierCode = row.SupplierCode, dealerCode = row.DealerCode });
+        return Results.BadRequest(new { error = "Nhà cung cấp đã có phiếu nhập kho, không thể xóa.", code = "ErrCarSv.Ser_Inv_StockIn_Exist_NotDelete_Supplier", supplierCode = row.SupplierCode, dealerCode = row.DealerCode });
 
     db.SerMstSuppliers.Remove(row);
     await db.SaveChangesAsync();
@@ -41379,26 +41433,41 @@ app.MapGet("/api/serstocks", async (AppDbContext db, ITenantContext t, string? q
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.StockNo.Contains(q!) || x.StockName!.Contains(q!));
     var items = await qry.OrderBy(x => x.StockNo).Take(500).Select(x => new { x.Id, x.StockNo, x.StockName, x.Contact, x.Address, x.Email, x.FlagActive,
-        x.TelePhone, x.Fax, x.Mobi, x.Manager, x.Description, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1347 §12
+        x.TelePhone, x.Fax, x.Mobi, x.Manager, x.Description, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt }).ToListAsync();   // #1347 §12
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+// Chi tiết 1 kho dịch vụ theo mã kho
+app.MapGet("/api/serstocks/{stockNo}", async (string stockNo, AppDbContext db, ITenantContext t) =>
+{
+    var no = (stockNo ?? "").Trim();
+    var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy kho.", code = "ErrCarSv.Ser_Inv_Stock_NotExist", stockNo = no });
+    return Results.Ok(new
+    {
+        row.Id, row.StockNo, row.StockName, row.Contact, row.Address, row.Email, row.FlagActive,
+        row.TelePhone, row.Fax, row.Mobi, row.Manager, row.Description, row.DealerCode,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/serstocks", async (SerStockDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = (dto.StockNo ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập mã kho." });
-    if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Chưa nhập mã kho.", code = "ErrCarSv.Ser_Inv_Stock_NotExist" });
+    if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ.", code = "ErrHTC.CommonAppData_EmailInvalid" });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1") return Results.BadRequest(new { error = "Trạng thái hoạt động không hợp lệ.", code = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch" });
     var by1074 = (partnerUserCode ?? "system").Trim(); var now1074 = DateTime.Now;
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
     // #1074: SerStockCreate ghi VÔ ĐIỀU KIỆN 6 cột nghiệp vụ + 4 cột nhật ký (DealerCode/CreatedDate/
     // CreatedBy chỉ set lúc TẠO — Update không đụng lại).
-    if (row is null) { row = new SerStock { OrgId = t.OrgId, StockNo = no, DealerCode = dto.DealerCode, CreatedDate = now1074, CreatedBy = by1074 }; db.SerStocks.Add(row); }
-    row.StockName = dto.StockName; row.Contact = dto.Contact; row.Address = dto.Address; row.Email = dto.Email; row.UpdatedAt = DateTime.Now;
+    if (row is null) { row = new SerStock { OrgId = t.OrgId, StockNo = no, DealerCode = dto.DealerCode, CreatedDate = dto.CreatedDate ?? now1074, CreatedBy = dto.CreatedBy ?? by1074, CreatedAt = dto.CreatedAt ?? now1074, UpdatedAt = now1074 }; db.SerStocks.Add(row); }
+    row.StockName = dto.StockName; row.Contact = dto.Contact; row.Address = dto.Address; row.Email = dto.Email; row.UpdatedAt = now1074;
     row.TelePhone = dto.TelePhone; row.Fax = dto.Fax; row.Mobi = dto.Mobi; row.Manager = dto.Manager; row.Description = dto.Description;
     row.LogLUDateTime = now1074; row.LogLUBy = by1074;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.StockNo, row.StockName, row.FlagActive, row.TelePhone, row.Fax, row.Mobi, row.Manager, row.Description, row.DealerCode });
+    return Results.Ok(new { row.Id, row.StockNo, row.StockName, row.FlagActive, row.TelePhone, row.Fax, row.Mobi, row.Manager, row.Description, row.DealerCode, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #838 MÀN MỚI: SỬA / XOÁ KHO — `SerStock{Get,Create,Update,Delete}` (`Inventory.Master.cs`) =====
@@ -41437,13 +41506,13 @@ app.MapPut("/api/serstocks/{stockNo}", async (string stockNo, SerStockDto dto,
 {
     var no = (stockNo ?? "").Trim();
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
-    if (row is null) return Results.NotFound(new { error = "Ser_Inv_Stock_NotExist", stockNo = no });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy kho.", code = "ErrCarSv.Ser_Inv_Stock_NotExist", stockNo = no });
     var newNo = (dto.StockNo ?? no).Trim();
     if (!string.Equals(newNo, no, StringComparison.OrdinalIgnoreCase))
     {
         // Guard NGUON THIEU o ca hai nhanh — Mini them.
         var dup = await db.SerStocks.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.StockNo == newNo);
-        if (dup) return Results.Conflict(new { error = "trung ma kho", stockNo = newNo, sourceHasNoSuchGuard = true });
+        if (dup) return Results.Conflict(new { error = "Mã kho đã tồn tại.", code = "ErrCarSv.Ser_Inv_StockNoInLocation_Exist", stockNo = newNo, sourceHasNoSuchGuard = true });
         row.StockNo = newNo;
     }
     if (dto.StockName != null) row.StockName = dto.StockName;
@@ -41458,11 +41527,12 @@ app.MapPut("/api/serstocks/{stockNo}", async (string stockNo, SerStockDto dto,
     if (dto.Manager != null) row.Manager = dto.Manager;
     if (dto.Description != null) row.Description = dto.Description;
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        row.Id, row.StockNo, row.StockName, row.FlagActive,
+        row.Id, row.StockNo, row.StockName, row.FlagActive, row.CreatedAt, row.UpdatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy,
         sourceNeitherBranchGuardsDuplicate = "NGUON: SerStockCreate KHONG co #region Check nao (trich TRON danh sach region theo #403: temp / Init / Save data / catch / finally), Raise=0, Check*=0. SerStockUpdate CO goi checkExistStockCode nhung helper do nem khi KHONG tim thay (Ser_Inv_Stock_NotExist) => guard PHAI TON TAI cho nhanh sua, KHONG phai chong trung => khong nhanh nao chan tao hai kho cung StockNo trong mot dai ly",
         threeMasterScreensThreeLevels = "KHONG doc voi thanh nguoc chieu #818: #818 (SerSupplier*) Create CO checkExistSupplierCode (nem khi TIM THAY) con Update loc sai pham vi; #824 (SerInsurance*) CA HAI deu co va nhat quan; day la truong hop THU BA — CA HAI deu thieu => ba man master co BA MUC BAO VE khac nhau cho cung mot loai nghiep vu",
     });
@@ -41472,12 +41542,12 @@ app.MapDelete("/api/serstocks/{stockNo}", async (string stockNo, AppDbContext db
 {
     var no = (stockNo ?? "").Trim();
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
-    if (row is null) return Results.NotFound(new { error = "Ser_Inv_Stock_NotExist", stockNo = no });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy kho.", code = "ErrCarSv.Ser_Inv_Stock_NotExist", stockNo = no });
     // Guard cua NGUON: Ser_Inv_Stock_NotDeleteOnlyOneStock — khong cho xoa kho CUOI CUNG.
     var total = await db.SerStocks.CountAsync(x => x.OrgId == t.OrgId);
     if (total <= 1)
     {
-        return Results.Conflict(new { error = "Ser_Inv_Stock_NotDeleteOnlyOneStock",
+        return Results.Conflict(new { error = "Không thể xóa kho cuối cùng.", code = "ErrCarSv.Ser_Inv_Stock_NotDeleteOnlyOneStock",
             message = "khong duoc xoa kho cuoi cung", remaining = total });
     }
     db.SerStocks.Remove(row);
@@ -41492,16 +41562,26 @@ app.MapDelete("/api/serstocks/{stockNo}", async (string stockNo, AppDbContext db
         twoMachinesVerified = "md5 chuan hoa SerStockDelete tren may 150 = abeb16f7 KHOP laptop",
     });
 }).RequireAuthorization();
-app.MapPost("/api/serstocks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+
+app.MapPost("/api/serstocks/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy kho.", code = "ErrCarSv.Ser_Inv_Stock_NotExist", id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
-    // #1204 SUA BUG THAT: nhat quan voi POST cung bang (SerStockUpdate ghi LogLUDateTime/LogLUBy
-    // vo dieu kien moi lan sua) — toggle truoc do khong dong dau cot nao.
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.StockNo, row.FlagActive, row.UpdatedAt, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/serstocks/{stockNo}/toggle", async (string stockNo, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var no = (stockNo ?? "").Trim();
+    var row = await db.SerStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == no);
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy kho.", code = "ErrCarSv.Ser_Inv_Stock_NotExist", stockNo = no });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.StockNo, row.FlagActive, row.UpdatedAt, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Master loại phụ tùng DV (SerPartType — port 1:1 FrmPartTypeCreate/Search, TCMotor DMSCarSv) =====
@@ -65377,14 +65457,14 @@ app.MapGet("/api/servicestocks", async (AppDbContext db, ITenantContext t, strin
     if (!string.IsNullOrWhiteSpace(address)) q = q.Where(x => x.Address != null && x.Address.Contains(address!));
     var items = await q.OrderBy(x => x.StockNo).Take(500)
         .Select(x => new { x.StockNo, x.StockName, x.Contact, x.Address, x.Email, x.TelePhone, x.Fax, x.Mobi, x.Manager, x.Description, x.DealerCode, x.FlagActive,
-            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1506 §12
+            x.CreatedAt, x.UpdatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1506 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Upsert theo mã kho — `SerStockCreate` ghi đủ 4 cột nhật ký khi TẠO; `SerStockUpdate` chỉ ghi LogLUDateTime/LogLUBy.
 app.MapPost("/api/servicestocks", async (ServiceStockDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.StockNo)) return Results.BadRequest(new { error = "Chưa nhập mã kho." });
+    if (string.IsNullOrWhiteSpace(dto.StockNo)) return Results.BadRequest(new { error = "Chưa nhập mã kho.", code = "ErrCarSv.Ser_Inv_Stock_NotExist" });
     var code = dto.StockNo.Trim().ToUpperInvariant();
     var by = (partnerUserCode ?? "system").Trim(); var now = DateTime.Now;
     var ex = await db.ServiceStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockNo == code);
@@ -65395,15 +65475,17 @@ app.MapPost("/api/servicestocks", async (ServiceStockDto dto, AppDbContext db, I
         ex.Description = dto.Description; ex.DealerCode = dto.DealerCode;
         ex.FlagActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim();
         ex.LogLUDateTime = now; ex.LogLUBy = by;   // #1506: nhánh SỬA chỉ ghi LogLUDateTime/LogLUBy
+        ex.UpdatedAt = now;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.StockNo, updated = true });
+        return Results.Ok(new { ex.StockNo, updated = true, ex.CreatedAt, ex.UpdatedAt });
     }
     var r = new ServiceStock { OrgId = t.OrgId, StockNo = code, StockName = dto.StockName, Contact = dto.Contact, Address = dto.Address, Email = dto.Email,
         TelePhone = dto.TelePhone, Fax = dto.Fax, Mobi = dto.Mobi, Manager = dto.Manager, Description = dto.Description, DealerCode = dto.DealerCode,
         FlagActive = string.IsNullOrWhiteSpace(dto.IsActive) ? "1" : dto.IsActive!.Trim(),
+        CreatedAt = dto.CreatedAt ?? now, UpdatedAt = now,
         CreatedDate = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by };   // #1506: nhánh TẠO ghi đủ 4 cột
     db.ServiceStocks.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.StockNo, updated = false });
+    return Results.Ok(new { r.StockNo, updated = false, r.CreatedAt, r.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== Nhà cung cấp phụ tùng dịch vụ — ⛔ #380 HỢP NHẤT SONG SINH: ServiceSupplier ≡ SerMstSupplier (cùng Ser_MST_Supplier,
@@ -65416,39 +65498,39 @@ app.MapGet("/api/servicesuppliers", async (AppDbContext db, ITenantContext t, st
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.SupplierCode).Take(500)
         .Select(x => new { x.SupplierCode, x.SupplierName, x.Phone, x.Fax, x.ContactName, x.ContactPhone, x.Address, x.DealerCode, x.FlagActive,
-            x.CreatedDate,  x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1329 §12
+            x.CreatedDate,  x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt }).ToListAsync();   // #1329 §12
     return Results.Ok(new { count = items.Count, items, mergedInto = "/api/sersuppliers" });
 }).RequireAuthorization();
 
 // Upsert theo mã nhà cung cấp — cùng luật nguồn với /api/sersuppliers (Mã + Tên + Địa chỉ bắt buộc).
 app.MapPost("/api/servicesuppliers", async (ServiceSupplierDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp." });
-    if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp." });
-    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập địa chỉ." });
+    if (string.IsNullOrWhiteSpace(dto.SupplierCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_CodeEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.SupplierName)) return Results.BadRequest(new { error = "Chưa nhập tên nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NameEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Chưa nhập địa chỉ.", code = "ErrCarSv.Ser_Mst_Supplier_AddressEmpty" });
     var code = dto.SupplierCode.Trim().ToUpperInvariant();
     var ex = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code);
     var updated = ex is not null;
-    if (ex is null) { ex = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code }; db.SerMstSuppliers.Add(ex); }
+    var by1189 = (partnerUserCode ?? "system").Trim(); var now1189 = DateTime.Now;
+    if (ex is null) { ex = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, CreatedAt = dto.CreatedAt ?? now1189, CreatedDate = now1189, CreatedBy = by1189 }; db.SerMstSuppliers.Add(ex); }
     ex.SupplierName = dto.SupplierName; ex.Phone = dto.Phone; ex.Fax = dto.Fax; ex.ContactName = dto.ContactName; ex.ContactPhone = dto.ContactPhone;
     // #1189 (session-a): Create ghi đủ 4 cột nhật ký, Update chỉ LogLU*.
-    var by1189 = (partnerUserCode ?? "system").Trim(); var now1189 = DateTime.Now;
-    if (!updated) { ex.CreatedDate = now1189; ex.CreatedBy = by1189; }
-    ex.LogLUDateTime = now1189; ex.LogLUBy = by1189; ex.Address = dto.Address; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1"; ex.UpdatedAt = DateTime.Now;
+    if (!updated) { ex.CreatedDate = now1189; ex.CreatedBy = by1189; ex.CreatedAt = dto.CreatedAt ?? now1189; }
+    ex.LogLUDateTime = now1189; ex.LogLUBy = by1189; ex.Address = dto.Address; ex.DealerCode = dto.DealerCode; ex.FlagActive = "1"; ex.UpdatedAt = now1189;
     await db.SaveChangesAsync();
-    return Results.Ok(new { ex.SupplierCode, updated });
+    return Results.Ok(new { ex.SupplierCode, updated, ex.CreatedAt, ex.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicesuppliers/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.SerMstSuppliers.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.SupplierCode.ToUpper() == code);
-    if (x is null) return Results.NotFound(new { code });
+    if (x is null) return Results.NotFound(new { error = "Không tìm thấy nhà cung cấp.", code = "ErrCarSv.Ser_Mst_Supplier_NotFound", supplierCode = code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1"; x.UpdatedAt = DateTime.Now;
     // #1189: toggle = SerSupplierUpdate nhánh strIsActive đổi — luôn ghi LogLUDateTime/LogLUBy.
     x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.SupplierCode, flagActive = x.FlagActive });
+    return Results.Ok(new { x.SupplierCode, flagActive = x.FlagActive, x.UpdatedAt, x.LogLUDateTime, x.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Thời hạn bảo hành theo model (WarrantyPeriodMst — port 1:1 FrmMngMst_WarrantyPeriod, TCMotor/Admin/Product) =====
@@ -115105,11 +115187,13 @@ app.MapPut("/api/deliverylocations/{dealerCode}/{code}", async (string dealerCod
     if (updFlag && !string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
     row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = dto.PartnerUserCode;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
         row.Id, row.DeliveryLocationCode, row.DealerCode, row.DeliveryLocationName, row.FlagActive,
+        row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt,
         updName, updFlag, nothingWouldBeUpdated,
         // ===== #739 =====
         columnWhitelistUsesStringContainsNotListMembership = "DANH SACH COT DUOC PHEP CAP NHAT DUNG string.Contains, KHONG PHAI KIEM PHAN TU: bool bUpd_DeliveryLocationName = strFt_Cols_Upd.Contains(Mst_DeliveryLocation.DeliveryLocationName.ToUpper()); tuong tu cho FlagActive. HAI HE QUA: (1) strFt_Cols_Upd RONG => .Contains(...) = false => KHONG COT NAO duoc cap nhat => goi _Update THANH CONG nhung KHONG DOI GI, IM LANG; (2) client gui ten cot CHUA chuoi kia nhu mot phan (…DELIVERYLOCATIONNAME2) => KHOP NHAM. Dung ho #725 (strStatusListToCheck.Contains) nhung o do la DANH SACH TRANG THAI, o day la DANH SACH COT DUOC GHI — tuc no quyet dinh DU LIEU NAO BI SUA. KHAC #725 o mot diem: chuoi rong o #725 lam guard BO QUA (long hon), o day lam cap nhat KHONG XAY RA (chat hon) — CUNG MOT SAI LAM, HAI HUONG HAU QUA NGUOC NHAU",
@@ -125678,7 +125762,7 @@ app.Run();
 
 record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status, string? AreaBUPattern = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 // #232: `FlagActive` CHỈ có tác dụng khi SỬA — `Mst_DeliveryLocation_Add` đặt cứng Active.
-record DeliveryLocationDto(string? DeliveryLocationCode, string? DealerCode, string? DeliveryLocationName, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null);
+record DeliveryLocationDto(string? DeliveryLocationCode, string? DealerCode, string? DeliveryLocationName, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? CreatedAt = null, DateTime? UpdatedAt = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MasterDto(string Code, string Name, string? ParentCode, string? Status);
 record ImportDealerRowDto(string? DealerCode, string? DealerName, string? DealerType, string? BUCode, string? BuPattern, string? ProvinceCode,
     string? DealerPhoneNo, string? DealerFaxNo, string? CompanyName, string? CompanyAddress, string? ShowroomAddress, string? TaxCode,
@@ -127272,9 +127356,9 @@ record OrderAmplitudeDto(string DealerCode, string? DealerName, string ModelCode
 record VinProductionYearDto(string VinChar, string ProductionYear, string? AssemblyStatus, string? FlagActive = "1");
 record StorageGlobalMapDto(string StorageCode, string ModelCode, string? FlagActive = "1");
 record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod, string? FlagActive = "1");
-record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode);
+record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode, DateTime? CreatedAt = null, DateTime? UpdatedAt = null, string? FlagActive = null);
 // #1506 Ser_Inv_Stock — SerStockCreate/SerStockUpdate (BizCarSv.Inventory.Master.cs:1779/:1620).
-record ServiceStockDto(string StockNo, string? StockName, string? Contact, string? Address, string? Email, string? TelePhone, string? Fax, string? Mobi, string? Manager, string? Description, string? DealerCode, string? IsActive);
+record ServiceStockDto(string StockNo, string? StockName, string? Contact, string? Address, string? Email, string? TelePhone, string? Fax, string? Mobi, string? Manager, string? Description, string? DealerCode, string? IsActive, DateTime? CreatedAt = null, DateTime? UpdatedAt = null);
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
 record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
@@ -128083,7 +128167,13 @@ record SerSupplierDto(string? SupplierCode,
     string? FlagActive,
     string? ContactName = null,
     string? ContactPhone = null,
-    string? DealerCode = null);
+    string? DealerCode = null,
+    DateTime? CreatedAt = null,
+    DateTime? UpdatedAt = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);
 record StockAdjDto(string? StockAdjNo,
     string? StorageCode,
     string? DealerCode,
@@ -128118,7 +128208,13 @@ record SerStockDto(string? StockNo,
     string? Mobi = null,
     string? Manager = null,
     string? Description = null,
-    string? DealerCode = null);
+    string? DealerCode = null,
+    DateTime? CreatedAt = null,
+    DateTime? UpdatedAt = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);
 record SerPartTypeDto(string? TypeName,
     string? FlagActive,
     string? TypeCode = null,

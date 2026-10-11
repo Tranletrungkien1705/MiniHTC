@@ -4381,6 +4381,7 @@ public sealed class SerMstSupplier
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; }
 
     // ===== #380 [c] gộp song sinh Ser_MST_Supplier — cột nguồn DbDefine TblSerMstSupplier (DEALERCODE/CONTACTNAME/CONTACTPHONE) =====
@@ -4496,6 +4497,7 @@ public sealed class SerStock
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
 
     public DateTime UpdatedAt { get; set; }
 }
@@ -16870,6 +16872,8 @@ public sealed class DeliveryLocation
     // ===== §12 parity Mst_DeliveryLocation (DbDefine.cs:2960-2971) =====
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Chiến dịch marketing dịch vụ (header: tên/mô tả/điều kiện đại lý) — port 1:1 FrmSer_CampaignMarketing (Tbl_Ser_CampaignMarketing, TCMotor).
@@ -19172,6 +19176,7 @@ public sealed class ServiceStock
     public string? DealerCode { get; set; }
     public string FlagActive { get; set; } = "1";   // IsActive
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 
     // #1506 §12 — `SerStockCreate` ghi đủ 4 cột nhật ký khi TẠO; `SerStockUpdate` chỉ ghi LogLUDateTime/LogLUBy.
     public DateTime? CreatedDate { get; set; }
