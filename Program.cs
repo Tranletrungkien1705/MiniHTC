@@ -64176,41 +64176,73 @@ app.MapGet("/api/maintenancelevels", async (AppDbContext db, ITenantContext t, s
     var query = db.MaintenanceLevelMsts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.Km).Take(500)
-        .Select(x => new { x.Km, x.MaintenanceCount, x.Note, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
+        .Select(x => new { x.Id, x.Km, x.MaintenanceCount, x.Note, x.FlagActive, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #Round145 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Upsert theo mốc km (mỗi mốc km 1 cấp bảo dưỡng).
-app.MapPost("/api/maintenancelevels", async (MaintenanceLevelDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/maintenancelevels/{km:int}", async (int km, AppDbContext db, ITenantContext t) =>
 {
-    if (dto.Km <= 0) return Results.BadRequest(new { error = "Mốc km phải lớn hơn 0." });
-    if (dto.MaintenanceCount < 0) return Results.BadRequest(new { error = "Số lần bảo dưỡng không hợp lệ." });
+    var row = await db.MaintenanceLevelMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Km == km);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_ROMaintanceSetting_NotFound", km });
+    return Results.Ok(new { row.Id, row.Km, row.MaintenanceCount, row.Note, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+// Upsert theo mốc km (mỗi mốc km 1 cấp bảo dưỡng).
+app.MapPost("/api/maintenancelevels", async (MaintenanceLevelDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (dto.Km <= 0 || dto.MaintenanceCount < 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_ROMaintanceSetting_Save_InvalidValue", message = "Mốc km phải lớn hơn 0 và số lần bảo dưỡng không âm." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.Mst_MaintainType_CheckDB_InvalidFlagActiveNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var ex = await db.MaintenanceLevelMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Km == dto.Km);
     if (ex is not null)
     {
-        ex.MaintenanceCount = dto.MaintenanceCount; ex.Note = dto.Note; ex.FlagActive = "1";
+        ex.MaintenanceCount = dto.MaintenanceCount;
+        ex.Note = dto.Note;
+        ex.FlagActive = fa;
+        ex.LogLUDateTime = now;
+        ex.LogLUBy = who;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.Km, updated = true });
+        return Results.Ok(new { ex.Id, ex.Km, ex.MaintenanceCount, ex.Note, ex.FlagActive, ex.CreatedDate, ex.CreatedBy, ex.LogLUDateTime, ex.LogLUBy, updated = true });
     }
-    var r = new MaintenanceLevelMst { OrgId = t.OrgId, Km = dto.Km, MaintenanceCount = dto.MaintenanceCount, Note = dto.Note, FlagActive = "1" };
-    db.MaintenanceLevelMsts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.Km, updated = false });
+    var r = new MaintenanceLevelMst
+    {
+        OrgId = t.OrgId,
+        Km = dto.Km,
+        MaintenanceCount = dto.MaintenanceCount,
+        Note = dto.Note,
+        FlagActive = fa,
+        CreatedDate = dto.CreatedDate ?? now,
+        CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = now,
+        LogLUBy = who
+    };
+    db.MaintenanceLevelMsts.Add(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Id, r.Km, r.MaintenanceCount, r.Note, r.FlagActive, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, updated = false });
 }).RequireAuthorization();
 
-app.MapPost("/api/maintenancelevels/{km:int}/toggle", async (int km, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/maintenancelevels/{km:int}/toggle", async (int km, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var x = await db.MaintenanceLevelMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.Km == km);
-    if (x is null) return Results.NotFound(new { km });
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_ROMaintanceSetting_NotFound", km });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now;
+    x.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.Km, flagActive = x.FlagActive });
+    return Results.Ok(new { x.Km, flagActive = x.FlagActive, x.LogLUDateTime, x.LogLUBy });
 }).RequireAuthorization();
 
 app.MapDelete("/api/maintenancelevels/{km:int}", async (int km, AppDbContext db, ITenantContext t) =>
 {
     var x = await db.MaintenanceLevelMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.Km == km);
-    if (x is null) return Results.NotFound(new { km });
-    db.MaintenanceLevelMsts.Remove(x); await db.SaveChangesAsync();
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_ROMaintanceSetting_NotFound", km });
+    db.MaintenanceLevelMsts.Remove(x);
+    await db.SaveChangesAsync();
     return Results.Ok(new { deleted = km });
 }).RequireAuthorization();
 
@@ -64221,37 +64253,83 @@ app.MapGet("/api/extraparts", async (AppDbContext db, ITenantContext t, string? 
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(x => x.PartCode.Contains(q!) || (x.PartName != null && x.PartName.Contains(q!)));
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.PartCode).Take(500)
-        .Select(x => new { x.PartCode, x.PartName, x.Unit, x.Price, x.MaxQuantity, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
+        .Select(x => new { x.Id, x.PartCode, x.PartName, x.Unit, x.Price, x.MaxQuantity, x.FlagActive, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #Round145 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// Upsert theo mã phụ tùng phát sinh.
-app.MapPost("/api/extraparts", async (ExtraPartDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/extraparts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "Chưa nhập mã phụ tùng." });
-    if (string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "Chưa nhập tên phụ tùng." });
-    if (dto.Price < 0 || dto.MaxQuantity < 0) return Results.BadRequest(new { error = "Giá/SL tối đa không hợp lệ." });
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.ExtraPartMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartExtra_NotFound", code = c });
+    return Results.Ok(new { row.Id, row.PartCode, row.PartName, row.Unit, row.Price, row.MaxQuantity, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+// Upsert theo mã phụ tùng phát sinh.
+app.MapPost("/api/extraparts", async (ExtraPartDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    if (string.IsNullOrWhiteSpace(dto.PartCode)) return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_PartExtraSave_PartExIDNotExistInList", message = "Chưa nhập mã phụ tùng." });
+    if (string.IsNullOrWhiteSpace(dto.PartName)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập tên phụ tùng." });
+    if (dto.Price < 0 || dto.MaxQuantity < 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_NOT_NUMERIC", message = "Giá/SL tối đa không hợp lệ." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
     var code = dto.PartCode.Trim().ToUpperInvariant();
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var ex = await db.ExtraPartMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PartCode == code);
     if (ex is not null)
     {
-        ex.PartName = dto.PartName; ex.Unit = dto.Unit; ex.Price = dto.Price; ex.MaxQuantity = dto.MaxQuantity; ex.FlagActive = "1";
+        ex.PartName = dto.PartName;
+        ex.Unit = dto.Unit;
+        ex.Price = dto.Price;
+        ex.MaxQuantity = dto.MaxQuantity;
+        ex.FlagActive = fa;
+        ex.LogLUDateTime = now;
+        ex.LogLUBy = who;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.PartCode, updated = true });
+        return Results.Ok(new { ex.Id, ex.PartCode, ex.PartName, ex.Unit, ex.Price, ex.MaxQuantity, ex.FlagActive, ex.CreatedDate, ex.CreatedBy, ex.LogLUDateTime, ex.LogLUBy, updated = true });
     }
-    var r = new ExtraPartMst { OrgId = t.OrgId, PartCode = code, PartName = dto.PartName, Unit = dto.Unit, Price = dto.Price, MaxQuantity = dto.MaxQuantity, FlagActive = "1" };
-    db.ExtraPartMsts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.PartCode, updated = false });
+    var r = new ExtraPartMst
+    {
+        OrgId = t.OrgId,
+        PartCode = code,
+        PartName = dto.PartName,
+        Unit = dto.Unit,
+        Price = dto.Price,
+        MaxQuantity = dto.MaxQuantity,
+        FlagActive = fa,
+        CreatedDate = dto.CreatedDate ?? now,
+        CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = now,
+        LogLUBy = who
+    };
+    db.ExtraPartMsts.Add(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.Id, r.PartCode, r.PartName, r.Unit, r.Price, r.MaxQuantity, r.FlagActive, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, updated = false });
 }).RequireAuthorization();
 
-app.MapPost("/api/extraparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/extraparts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.ExtraPartMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.PartCode == code);
-    if (x is null) return Results.NotFound(new { code });
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartExtra_NotFound", code });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now;
+    x.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.PartCode, flagActive = x.FlagActive });
+    return Results.Ok(new { x.PartCode, flagActive = x.FlagActive, x.LogLUDateTime, x.LogLUBy });
+}).RequireAuthorization();
+
+app.MapDelete("/api/extraparts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = code.Trim().ToUpperInvariant();
+    var x = await db.ExtraPartMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.PartCode == c);
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartExtra_NotFound", code = c });
+    db.ExtraPartMsts.Remove(x);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 // ===== Công việc phát sinh (ExtraWorkMst — port 1:1 FrmMstExtraWorkMng, TCMotor) =====
@@ -119805,10 +119883,11 @@ app.MapGet("/api/warrantyrenewalcategorymsts", async (AppDbContext db, ITenantCo
     var qy = db.WarrantyRenewalCategoryMsts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(flagActive)) qy = qy.Where(x => x.FlagActive == flagActive!.Trim());
     var items = await qy.OrderBy(x => x.WrtReneCateCode).Take(1000)
-        .Select(x => new { x.Id, x.WrtReneCateCode, x.WrtReneCateName, x.FlagActive, x.CreatedAt, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1333 §12
+        .Select(x => new { x.Id, x.WrtReneCateCode, x.WrtReneCateName, x.FlagActive, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #Round145 §12
     return Results.Ok(new
     {
-        count = items.Count, items,
+        count = items.Count,
+        items,
         tableName = "Ser_MST_ROWarrantyRenewalCategory",
         masterIsPerDatabaseNotCommonCenter = true,
         sourceHasNoOrderBy = true,
@@ -119816,44 +119895,91 @@ app.MapGet("/api/warrantyrenewalcategorymsts", async (AppDbContext db, ITenantCo
     });
 }).RequireAuthorization();
 
+app.MapGet("/api/warrantyrenewalcategorymsts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.WarrantyRenewalCategoryMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WrtReneCateCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_ROWarrantyRenewalCategory_NotFound", code = c });
+    return Results.Ok(new { row.Id, row.WrtReneCateCode, row.WrtReneCateName, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
 app.MapPost("/api/warrantyrenewalcategorymsts", async (List<WarrantyRenewalCategoryDto> rows,
-    AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+    AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? partnerUserCode) =>
 {
     if (rows is null || rows.Count == 0)
-        return Results.BadRequest(new { error = "Cần bảng Ser_MST_ROWarrantyRenewalCategory." });
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_ROWarrantyRenewalCategory_Save_InvalidValue", message = "Cần bảng Ser_MST_ROWarrantyRenewalCategory." });
+    for (var i = 0; i < rows.Count; i++)
+    {
+        var c = (rows[i].WrtReneCateCode ?? "").Trim();
+        if (c.Length == 0)
+            return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_ROWarrantyRenewalCategoryDelete_WrtReneCateCodeNotExistInList", message = "WrtReneCateCode rỗng.", line = i + 1 });
+        var fa = string.IsNullOrWhiteSpace(rows[i].FlagActive) ? "1" : rows[i].FlagActive!.Trim();
+        if (fa is not ("0" or "1"))
+            return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1.", line = i + 1 });
+    }
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? partnerUserCode ?? "system";
+    var now = DateTime.Now;
     var created = 0; var updated = 0;
+    var resultItems = new List<object>();
     foreach (var r in rows)
     {
-        var code = (r.WrtReneCateCode ?? "").Trim();
-        if (code.Length == 0) return Results.BadRequest(new { error = "WrtReneCateCode rỗng." });
+        var code = (r.WrtReneCateCode ?? "").Trim().ToUpperInvariant();
+        var fa = string.IsNullOrWhiteSpace(r.FlagActive) ? "1" : r.FlagActive!.Trim();
         var row = await db.WarrantyRenewalCategoryMsts
             .FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WrtReneCateCode == code);
         if (row is null)
         {
-            row = new WarrantyRenewalCategoryMst { OrgId = t.OrgId, WrtReneCateCode = code };
-            db.WarrantyRenewalCategoryMsts.Add(row); created++;
+            row = new WarrantyRenewalCategoryMst
+            {
+                OrgId = t.OrgId,
+                WrtReneCateCode = code,
+                WrtReneCateName = string.IsNullOrWhiteSpace(r.WrtReneCateName) ? null : r.WrtReneCateName,
+                FlagActive = fa,
+                CreatedDate = r.CreatedDate ?? now,
+                CreatedBy = r.CreatedBy ?? who,
+                LogLUDateTime = now,
+                LogLUBy = who
+            };
+            db.WarrantyRenewalCategoryMsts.Add(row);
+            created++;
         }
-        else updated++;
-        // Rỗng ⇒ null (khuôn DBNull: gửi rỗng XOÁ).
-        row.WrtReneCateName = string.IsNullOrWhiteSpace(r.WrtReneCateName) ? null : r.WrtReneCateName;
-        if (!string.IsNullOrWhiteSpace(r.FlagActive)) row.FlagActive = r.FlagActive!.Trim();
-        // #1098: nguon ghi LogLUDateTime/LogLUBy o CA Create lan Update.
-        row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+        else
+        {
+            row.WrtReneCateName = string.IsNullOrWhiteSpace(r.WrtReneCateName) ? null : r.WrtReneCateName;
+            row.FlagActive = fa;
+            row.LogLUDateTime = now;
+            row.LogLUBy = who;
+            updated++;
+        }
+        resultItems.Add(new { row.WrtReneCateCode, row.WrtReneCateName, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { count = rows.Count, created, updated, emptyMeansClear = true });
+    return Results.Ok(new { count = rows.Count, created, updated, items = resultItems, emptyMeansClear = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/warrantyrenewalcategorymsts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.WarrantyRenewalCategoryMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WrtReneCateCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_ROWarrantyRenewalCategory_NotFound", code = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.WrtReneCateCode, flagActive = row.FlagActive, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/warrantyrenewalcategorymsts/delete", async (List<string> codes,
     AppDbContext db, ITenantContext t) =>
 {
-    var list = (codes ?? new()).Select(x => (x ?? "").Trim()).Where(x => x.Length > 0).ToList();
-    if (list.Count == 0) return Results.BadRequest(new { error = "Cần danh sách WrtReneCateCode." });
+    var list = (codes ?? new()).Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
+    if (list.Count == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_ROWarrantyRenewalCategoryDelete_WrtReneCateCodeNotExistInList", message = "Cần danh sách WrtReneCateCode." });
     var rows = await db.WarrantyRenewalCategoryMsts
         .Where(x => x.OrgId == t.OrgId && list.Contains(x.WrtReneCateCode)).ToListAsync();
     var missing = list.Where(c => rows.All(r => r.WrtReneCateCode != c)).ToList();
     if (missing.Count > 0)
-        return Results.BadRequest(new { error = "Mã loại gia hạn không tồn tại.", missing });
+        return Results.NotFound(new { error = "ErrCarSv.Ser_MST_ROWarrantyRenewalCategory_NotFound", message = "Mã loại gia hạn không tồn tại.", missing });
 
     // LỆCH CỐ Ý: nguồn KHÔNG kiểm tham chiếu; ở đây chặn để không sinh dữ liệu mồ côi.
     var used = await db.WarrantyExtensionDateLogs
@@ -119862,15 +119988,18 @@ app.MapPost("/api/warrantyrenewalcategorymsts/delete", async (List<string> codes
     if (used.Count > 0)
         return Results.BadRequest(new
         {
-            error = "Loại gia hạn đang được dùng ở bản ghi gia hạn theo VIN.",
-            usedBy = used, orphanGuardAddedNotInSource = true,
+            error = "ErrCarSv.Ser_MST_ROWarrantyRenewalCategory_Delete_InUse",
+            message = "Loại gia hạn đang được dùng ở bản ghi gia hạn theo VIN.",
+            usedBy = used,
+            orphanGuardAddedNotInSource = true,
         });
 
     db.WarrantyRenewalCategoryMsts.RemoveRange(rows);
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        requested = list.Count, deleted = rows.Count,
+        requested = list.Count,
+        deleted = rows.Count,
         orphanGuardAddedNotInSource = true,
         contrastWith = "#540 (ma loi) CO guard tham chieu; ham nay thi KHONG",
     });
@@ -124540,7 +124669,11 @@ record ReceptionDeliveryDto(string? BodyPaintFilePath,
     List<ReceptionFAttachFileDto>? Ser_ReceptionFAttachFile = null);
 record WarrantyRenewalCategoryDto(string? WrtReneCateCode,
     string? WrtReneCateName,
-    string? FlagActive);   // merge session-a
+    string? FlagActive,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record RoWorkArisingQuotaDto(string? ROWArisCode,
     string? ROWArisName,
     string? ROWTypeDtlCode,
@@ -125600,8 +125733,8 @@ record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Pho
 // #1506 Ser_Inv_Stock — SerStockCreate/SerStockUpdate (BizCarSv.Inventory.Master.cs:1779/:1620).
 record ServiceStockDto(string StockNo, string? StockName, string? Contact, string? Address, string? Email, string? TelePhone, string? Fax, string? Mobi, string? Manager, string? Description, string? DealerCode, string? IsActive);
 record ExtraWorkDto(string ExtraWorkCode, string? ExtraWorkName, decimal MaxPrice, decimal Vat, string? Remark);
-record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity);
-record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note);
+record ExtraPartDto(string PartCode, string? PartName, string? Unit, decimal Price, int MaxQuantity, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record MaintenanceLevelDto(int Km, int MaintenanceCount, string? Note, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CavityDto(string CavityNo,
     string? CavityName,
     string? CompartmentType,

@@ -18903,6 +18903,12 @@ public sealed class MaintenanceLevelMst
     public string? Note { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#Round145 §12: MstMaintenanceLevel (Ser_MST_ROMaintanceSetting) nhật ký tạo & sửa.</summary>
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>#541 Danh mục **LOẠI GIA HẠN BẢO HÀNH** (`Ser_MST_ROWarrantyRenewalCategory`).
@@ -18922,6 +18928,10 @@ public sealed class WarrantyRenewalCategoryMst
     /// như `Mst_Param` #1072).</summary>
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#Round145 §12 — bổ sung CreatedDate/CreatedBy cho đủ chuẩn 4 cột nhật ký MiniHTC.</summary>
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>#539 ĐỊNH MỨC công phát sinh **theo loại bảo hành chi tiết** (`Ser_MST_ROWorkArisingQuota`).
@@ -18991,6 +19001,12 @@ public sealed class ExtraPartMst
     public int MaxQuantity { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    /// <summary>#Round145 §12: ExtraPartMst (Tbl_Mst_Extra_Parts_Mng / Ser_MST_PartExtra) nhật ký tạo & sửa.</summary>
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Công việc phát sinh (mã/tên/giá tối đa/VAT) — port 1:1 FrmMstExtraWorkMng (Tbl_Mst_Extra_Work_Mng, TCMotor).</summary>
