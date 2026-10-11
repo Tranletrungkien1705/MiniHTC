@@ -34968,30 +34968,33 @@ app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, s
 app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.TradeMarkCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã thương hiệu." });
-    if (string.IsNullOrWhiteSpace((dto.TradeMarkName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên thương hiệu." });
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrCarSv.Ser_TradeMarkCodeNotEmty", message = "Chưa nhập mã thương hiệu." });
+    if (string.IsNullOrWhiteSpace((dto.TradeMarkName ?? "").Trim())) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập tên thương hiệu." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == code && x.DealerCode == dto.DealerCode);
     // #1049: Ser_Mst_TradeMark_Create ghi CreatedDate/CreatedBy lúc TẠO.
     if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code, DealerCode = dto.DealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() }; db.ServiceTradeMarks.Add(row); }
     row.TradeMarkName = dto.TradeMarkName; row.UpdatedAt = DateTime.Now;
     if (dto.DealerCode != null) row.DealerCode = dto.DealerCode;
+    if (dto.Logo != null) row.Logo = dto.Logo;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     // #1128 §12: nguồn `Ser_Mst_TradeMark_Create` LẪN `_Update` đều ghi `LogLUDateTime`/`LogLUBy` =
     // strPartnerUserCode (thêm 2 cột vào entity, chưa từng có) — endpoint này gộp cả hai nhánh nên ghi vô điều kiện.
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive });
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive, row.Logo, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { id, error = "ErrCarSv.Ser_Mst_TradeMark_NotFound" });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     // #1128: toggle = gọi Ser_Mst_TradeMark_Update đổi IsActive — hàm nguồn luôn ghi 2 cột nhật ký.
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #965 `Ser_Mst_TradeMark_Delete` (LIVE, `BizCarSv.Master.cs:1778`) — XOÁ CỨNG CÓ GUARD THAM CHIẾU
@@ -35002,9 +35005,9 @@ app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext d
 app.MapDelete("/api/servicetrademarks/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
 {
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { id, error = "ErrCarSv.Ser_Mst_TradeMark_NotFound" });
     var inUse = await db.ServiceModels.AnyAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == row.TradeMarkCode && x.DealerCode == row.DealerCode);
-    if (inUse) return Results.Conflict(new { error = "Ser_Mst_TradeMark_Delete_UserAnother",
+    if (inUse) return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_TradeMark_Delete_UserAnother",
         message = "Còn dòng xe (Ser_MST_Model) đang dùng thương hiệu này ở cùng đại lý — không xoá được." });
     db.ServiceTradeMarks.Remove(row);
     await db.SaveChangesAsync();
@@ -35043,7 +35046,7 @@ app.MapGet("/api/servicetrademarks/get", async (AppDbContext db, ITenantContext 
     }
     var items = await qry.OrderBy(x => x.TradeMarkCode)
         .Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive, x.Logo,
-            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt })
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items,
         onlyLiveConfirmed1519 = "#1519: Ser_Mst_TradeMark_Get — BizCarSv.Master.cs:1515, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:2113",
@@ -35114,7 +35117,8 @@ app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(filePathVideoName)) qry = qry.Where(x => x.FilePathVideoName != null && x.FilePathVideoName.Contains(filePathVideoName!));
     if (!string.IsNullOrWhiteSpace(flagActive)) qry = qry.Where(x => x.FlagActive == flagActive);
     var items = await qry.OrderBy(x => x.FilePathVideoCode).Take(500).Select(x => new { x.Id, x.FilePathVideoCode, x.IdxView,
-        x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.Remark, x.FlagActive, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1494 §12 — echo đủ cột (nguồn SELECT smfpv.*)
+        x.FilePathVideoName, x.FilePathVideo, x.FilePathAvatar, x.Remark, x.FlagActive,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1494 §12 — echo đủ cột (nguồn SELECT smfpv.*)
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -35123,18 +35127,19 @@ app.MapGet("/api/filepathvideos", async (AppDbContext db, ITenantContext t, stri
 app.MapPost("/api/filepathvideos", async (FilePathVideoDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var code = (dto.FilePathVideoCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã đường dẫn video (FilePathVideoCode)." });
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_FilePathVideo_Add_InvalidFilePathVideoCode", message = "Chưa nhập mã đường dẫn video (FilePathVideoCode)." });
     var exists = await db.FilePathVideos.AnyAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == code);
-    if (exists) return Results.BadRequest(new { error = "Mã đường dẫn video đã tồn tại (nguồn CheckDB Flag.No)." });
+    if (exists) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_FilePathVideo_CheckDB_FilePathVideExist", message = "Mã đường dẫn video đã tồn tại (nguồn CheckDB Flag.No)." });
     var who = (partnerUserCode ?? "system").Trim();
     var now = DateTime.Now;
     var row = new MstFilePathVideo { OrgId = t.OrgId, FilePathVideoCode = code, FlagActive = "1" };
     row.IdxView = dto.IdxView; row.FilePathVideoName = dto.FilePathVideoName; row.FilePathVideo = dto.FilePathVideo;
     row.FilePathAvatar = dto.FilePathAvatar; row.Remark = dto.Remark;
-    row.LogLUDateTime = now; row.LogLUBy = who;
+    row.CreatedDate = now; row.CreatedBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
     db.FilePathVideos.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FilePathVideoCode, row.FilePathVideoName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FilePathVideoCode, row.FilePathVideoName, row.IdxView, row.FilePathVideo, row.FilePathAvatar, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // `Ser_Mst_FilePathVideo_Update`: guard `CheckDB(Flag.Yes)` = mã PHẢI tồn tại. Ghi CHỌN LỌC theo `Ft_Cols_Upd`
@@ -35143,15 +35148,15 @@ app.MapPut("/api/filepathvideos/{code}", async (string code, FilePathVideoDto dt
 {
     var c = code.Trim();
     var row = await db.FilePathVideos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == c);
-    if (row is null) return Results.NotFound(new { code = c });
+    if (row is null) return Results.NotFound(new { code = c, error = "ErrCarSv.Ser_Mst_FilePathVideo_CheckDB_FilePathVideNotFound" });
     var who = (partnerUserCode ?? "system").Trim();
     var now = DateTime.Now;
     row.IdxView = dto.IdxView; row.FilePathVideoName = dto.FilePathVideoName; row.FilePathVideo = dto.FilePathVideo;
     row.FilePathAvatar = dto.FilePathAvatar; row.Remark = dto.Remark;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    row.LogLUDateTime = now; row.LogLUBy = who;
+    row.LogLUDateTime = now; row.LogLUBy = who; row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FilePathVideoCode, row.FilePathVideoName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FilePathVideoCode, row.FilePathVideoName, row.IdxView, row.FilePathVideo, row.FilePathAvatar, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 // `Ser_Mst_FilePathVideo_Delete`: guard `CheckDB(Flag.Yes)` = mã PHẢI tồn tại; xoá CỨNG theo `FilePathVideoCode`.
@@ -35159,7 +35164,7 @@ app.MapDelete("/api/filepathvideos/{code}", async (string code, AppDbContext db,
 {
     var c = code.Trim();
     var row = await db.FilePathVideos.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FilePathVideoCode == c);
-    if (row is null) return Results.NotFound(new { code = c });
+    if (row is null) return Results.NotFound(new { code = c, error = "ErrCarSv.Ser_Mst_FilePathVideo_CheckDB_FilePathVideNotFound" });
     db.FilePathVideos.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = c });
@@ -49114,7 +49119,7 @@ app.MapGet("/api/rowarrantytypes", async (AppDbContext db, ITenantContext t, str
             // Chuỗi hiển thị dựng đúng như lưới nguồn (loại trừ 4 mã + bỏ qua cặp TC/R).
             rowPhotoType = BuildWarrantyPhotoTypeDisplay(x.ROWTypeCode, x.ROWTypeDtlCode, photosOfType.Select(p => p.ROWPTCode)),
             photos = photosOfType.Select(p => new { p.ROWPTCode, p.ROWPTName }),
-            x.FlagActive, x.UpdatedAt
+            x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt, x.UpdatedBy
         };
     }).ToList();
     return Results.Ok(new { count = items.Count, notFound = items.Count == 0, items });
@@ -49211,23 +49216,40 @@ app.MapPost("/api/rowarrantytypes", async (
 {
     var tc = (dto.ROWTypeCode ?? "").Trim().ToUpperInvariant();
     var dc = (dto.ROWTypeDtlCode ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(tc)) return Results.BadRequest(new { error = "Chưa nhập mã loại bảo hành." });
-    if (string.IsNullOrWhiteSpace(dc)) return Results.BadRequest(new { error = "Chưa nhập mã loại chi tiết." });
+    if (string.IsNullOrWhiteSpace(tc)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập mã loại bảo hành." });
+    if (string.IsNullOrWhiteSpace(dc)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập mã loại chi tiết." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
 
     var photoLines = (dto.Photos ?? new()).Where(p => !string.IsNullOrWhiteSpace(p.ROWPTCode)).ToList();
     var duplicatedPhoto = photoLines
         .GroupBy(p => p.ROWPTCode!.Trim().ToUpperInvariant())
         .FirstOrDefault(g => g.Count() > 1);
     if (duplicatedPhoto is not null)
-        return Results.BadRequest(new { error = $"Loại ảnh '{duplicatedPhoto.Key}' bị trùng!" });
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_DUPLICATE_VALUE", message = $"Loại ảnh '{duplicatedPhoto.Key}' bị trùng!" });
 
+    var who = (user.Identity?.Name ?? "system").Trim();
+    var now = DateTime.Now;
     var row = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWTypeCode == tc && x.ROWTypeDtlCode == dc);
-    if (row is null) { row = new ROWarrantyType { OrgId = t.OrgId, ROWTypeCode = tc, ROWTypeDtlCode = dc }; db.ROWarrantyTypes.Add(row); }
+    if (row is null)
+    {
+        row = new ROWarrantyType
+        {
+            OrgId = t.OrgId,
+            ROWTypeCode = tc,
+            ROWTypeDtlCode = dc,
+            CreatedDate = now,
+            CreatedBy = who
+        };
+        db.ROWarrantyTypes.Add(row);
+    }
     row.ROWTypeName = dto.ROWTypeName;
     row.ROWTypeDtlName = dto.ROWTypeDtlName;
     if (!string.IsNullOrWhiteSpace(dto.ROWTID)) row.ROWTID = dto.ROWTID!.Trim();
-    row.UpdatedAt = DateTime.Now;
-    row.UpdatedBy = user.Identity?.Name;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    row.UpdatedBy = who;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();   // cần Id trước khi ghi bảng chi tiết
 
@@ -49249,20 +49271,22 @@ app.MapPost("/api/rowarrantytypes", async (
         await db.SaveChangesAsync();
     }
 
-    return Results.Ok(new { row.Id, row.ROWTypeCode, row.ROWTypeDtlCode, photos = photoLines.Count, row.ROWPhotoType, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ROWTID, row.ROWTypeCode, row.ROWTypeDtlCode, photos = photoLines.Count, row.ROWPhotoType, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, row.UpdatedBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/rowarrantytypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { id, error = "ErrCarSv.Ser_MST_ROWarrantyType_NotFound" });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     // #1207 SUA BUG THAT: nhat quan voi POST cung bang (ghi UpdatedBy vo dieu kien moi lan luu) —
     // toggle truoc do khong dong dau nguoi thao tac (nguon chi co Ser_MST_ROWarrantyType_Get, khong
     // co ham Update/Save nao — quy uoc UpdatedBy la cua Mini, giu nhat quan giua hai duong ghi).
     row.UpdatedBy = user.Identity?.Name;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, row.UpdatedBy });
 }).RequireAuthorization();
 
 // ===== #146 Khoang/ngăn kho (CompartmentMst — port 1:1 FrmMst_Compartment, TCMotor DMSCarSv/Admin) =====
@@ -127263,7 +127287,7 @@ record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, st
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
-record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null);   // #915 DealerCode
+record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null, string? Logo = null);   // #915 DealerCode, #1508 Logo
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 // merge master+session-a: hợp tham số record (chú thích nguồn xem lịch sử git hai nhánh)

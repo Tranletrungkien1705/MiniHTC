@@ -5990,6 +5990,11 @@ public sealed class ROWarrantyType
     public string? ROWPhotoType { get; set; }
 
     public string FlagActive { get; set; } = "1";
+    // #150 §12: audit fields (Tbl_Ser_MST_ROWarrantyType: DbDefine.cs:2763-2773)
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
     public string? UpdatedBy { get; set; }
 }
@@ -9200,8 +9205,12 @@ public sealed class MstFilePathVideo
     public string? FilePathAvatar { get; set; }
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    // #150 §12: audit fields
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>
