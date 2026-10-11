@@ -12584,6 +12584,11 @@ public sealed class MstMarriage
     public string MarriageCode { get; set; } = "";
     public string? MarriageName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round140 §12: Mst_Marriage (DbDefine.cs:2955, Const.Main.cs:5542) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B160 — `Mst_DisbursementType`: danh mục **hình thức giải ngân**, khoá
@@ -12595,6 +12600,11 @@ public sealed class DisbursementType
     public string DisbursementType_ { get; set; } = "";
     public string? DisbursementTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round140 §12: Mst_DisbursementType (BizHTC.VietinBank.cs:26940, Const.Main.cs) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>⛔ #388 DEPRECATED — SONG SINH của <see cref="DealerBank"/> (cùng bảng nguồn Mst_BankDealer). Bản chuẩn = DealerBank: có đủ cột của
@@ -12669,6 +12679,11 @@ public sealed class DealerSalesGroupType
     public string SalesGroupType { get; set; } = "";
     public string? SalesGroupTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round140 §12: Mst_DealerSalesGroupType (FrmSalesGroupType.cs:181, DbDefine.cs:45) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B190 — `Mst_TCGCarPrice`: **bảng giá xe TCG theo thời gian**, khoá bộ ba

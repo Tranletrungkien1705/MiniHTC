@@ -65338,12 +65338,68 @@ app.MapGet("/api/masters/marriages", async (
     return Results.Ok(new
     {
         MySummaryTable = new[] { new { MyCount = myCount } },
-        Mst_Marriage = page.Select((x, i) => new { MyIdxSeq = start + i, x.MarriageCode, x.MarriageName, x.FlagActive }),
+        Mst_Marriage = page.Select((x, i) => new { MyIdxSeq = start + i, x.MarriageCode, x.MarriageName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }),
         recordStart = start, recordCount = count,
         sourceHasNoOrderBy = true,
         noOrderByNote = "Mst_Marriage KHONG SAP XEP: dong '--order by mm.MarriageCode' BI COMMENT, trong khi hai danh muc kia sap ro rang. Bang Draft van danh identity(bigint,0,1) MyIdxSeq => SO THU TU PHU THUOC THU TU SQL SERVER TRA VE, khong on dinh giua cac lan chay => phan trang co the TRUNG/SOT DONG khi lat trang. Port MiniHTC sap theo MarriageCode de ON DINH - day la KHAC BIET CO CHU Y so voi nguon, khong tu them order by vao nguon.",
         machineDiffNote = "CA 3B LECH DAU TIEN: Biz.HTC.WH.cs co 212978 dong o laptop va 212983 dong o may 150; Mst_Marriage_GetX bat dau o 191826 (laptop) va 191831 (may 150) - lech dung 5 dong. Do theo cung mot dai so => md5 KHAC NHAU; dinh vi THEO TEN tren tung may roi do 157 dong => md5 KHOP (57d5f68938a5eb74287150a81b5d7b30)."
     });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/marriages/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var r = await db.MstMarriages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MarriageCode == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstMarriageNotFound", marriageCode = c });
+    return Results.Ok(new
+    {
+        r.Id, r.MarriageCode, r.MarriageName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/marriages", async (MstMarriageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.MarriageCode ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần MarriageCode." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var row = await db.MstMarriages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MarriageCode == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new MstMarriage
+        {
+            OrgId = t.OrgId,
+            MarriageCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.MstMarriages.Add(row);
+    }
+    row.MarriageName = dto.MarriageName;
+    row.FlagActive = fa;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.MarriageCode, row.MarriageName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/marriages/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.MstMarriages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.MarriageCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstMarriageNotFound", marriageCode = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.MarriageCode, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 app.MapGet("/api/masters/disbursement-types", async (
@@ -65363,11 +65419,67 @@ app.MapGet("/api/masters/disbursement-types", async (
     return Results.Ok(new
     {
         MySummaryTable = new[] { new { MyCount = myCount } },
-        Mst_DisbursementType = page.Select((x, i) => new { MyIdxSeq = start + i, DisbursementType = x.DisbursementType_, x.DisbursementTypeName, x.FlagActive }),
+        Mst_DisbursementType = page.Select((x, i) => new { MyIdxSeq = start + i, DisbursementType = x.DisbursementType_, x.DisbursementTypeName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }),
         recordStart = start, recordCount = count,
         orderNote = "Sap 'mdt.DisbursementType asc'; MyCount dem TRUOC khi cat trang; hai bang ra.",
         moduleNote = "Ham nam trong cum tich hop ngan hang (BankIntergration/BizHTC.VietinBank.cs) chu khong phai file master chung - tim theo ten, dung tim theo thu muc."
     });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/disbursement-types/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var r = await db.DisbursementTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DisbursementType_ == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_DisbursementType_CheckDB_DisbursementTypeNotFound", disbursementType = c });
+    return Results.Ok(new
+    {
+        r.Id, DisbursementType = r.DisbursementType_, r.DisbursementTypeName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/disbursement-types", async (DisbursementTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.DisbursementType ?? "").Trim().ToUpperInvariant();
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần DisbursementType." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.Mst_DisbursementType_CheckDB_FlagActiveNotMatched", message = "FlagActive chỉ nhận 0/1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var row = await db.DisbursementTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DisbursementType_ == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new DisbursementType
+        {
+            OrgId = t.OrgId,
+            DisbursementType_ = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.DisbursementTypes.Add(row);
+    }
+    row.DisbursementTypeName = dto.DisbursementTypeName;
+    row.FlagActive = fa;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, DisbursementType = row.DisbursementType_, row.DisbursementTypeName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/disbursement-types/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.DisbursementTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DisbursementType_ == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_DisbursementType_CheckDB_DisbursementTypeNotFound", disbursementType = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { DisbursementType = row.DisbursementType_, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // ===== #B161–#B164 NGÂN HÀNG CỦA ĐẠI LÝ — `Mst_BankDealer_Get` / `_Create` / `_Update` / `_Delete`
@@ -65789,28 +65901,72 @@ app.MapGet("/api/masters/dealer-salesgroup-types", async (
     var q = db.DealerSalesGroupTypes.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(flagActive)) q = q.Where(x => x.FlagActive == flagActive.Trim());
     var items = await q.OrderBy(x => x.SalesGroupType)
-        .Select(x => new { x.SalesGroupType, x.SalesGroupTypeName, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.SalesGroupType, x.SalesGroupTypeName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, Mst_DealerSalesGroupType = items });
+}).RequireAuthorization();
+
+app.MapGet("/api/masters/dealer-salesgroup-types/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var r = await db.DealerSalesGroupTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesGroupType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstDealerSalesGroupTypeNotFound", salesGroupType = c });
+    return Results.Ok(new
+    {
+        r.Id, r.SalesGroupType, r.SalesGroupTypeName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+    });
 }).RequireAuthorization();
 
 // #321 FrmSalesGroupType.btnApply_Click (Views/Admin/Dealer/FrmSalesGroupType.cs:181-246) → SaveMasterDataTable(Mst_DealerSalesGroupType):
 // mã ToUpper().Trim(); dòng NEW ⇒ thêm, EDIT ⇒ sửa tên, DELETE ⇒ xoá. Form chỉ ghi 2 cột SalesGroupType + SalesGroupTypeName.
-app.MapPost("/api/masters/dealer-salesgroup-types", async (DealerSalesGroupTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/masters/dealer-salesgroup-types", async (DealerSalesGroupTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.SalesGroupType ?? "").ToUpper().Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Thiếu mã nhóm loại bán (SalesGroupType)." });
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần mã nhóm loại bán (SalesGroupType)." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0/1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var r = await db.DealerSalesGroupTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesGroupType == code);
     if (dto.FlagIsDelete == "1")
     {
-        if (r is null) return Results.NotFound(new { error = "Không tìm thấy nhóm loại bán.", code });
+        if (r is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstDealerSalesGroupTypeNotFound", salesGroupType = code });
         db.DealerSalesGroupTypes.Remove(r); await db.SaveChangesAsync();
         return Results.Ok(new { salesGroupType = code, deleted = true });
     }
     var updated = r is not null;
-    if (r is null) { r = new DealerSalesGroupType { OrgId = t.OrgId, SalesGroupType = code }; db.DealerSalesGroupTypes.Add(r); }
+    if (r is null)
+    {
+        r = new DealerSalesGroupType
+        {
+            OrgId = t.OrgId,
+            SalesGroupType = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.DealerSalesGroupTypes.Add(r);
+    }
     r.SalesGroupTypeName = dto.SalesGroupTypeName;
+    r.FlagActive = fa;
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.SalesGroupType, r.SalesGroupTypeName, r.FlagActive, updated });
+    return Results.Ok(new
+    {
+        r.Id, r.SalesGroupType, r.SalesGroupTypeName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, updated
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/masters/dealer-salesgroup-types/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.DealerSalesGroupTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesGroupType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstDealerSalesGroupTypeNotFound", salesGroupType = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = who;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.SalesGroupType, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 
@@ -125795,7 +125951,9 @@ record CarTestCarDto(string? TestCarCode, string? DealerCode, string? Remark, Li
 record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows, string? Mode = null);   // #420 Mode: factory | transferred
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate,
     string? InvoiceFactorySearch = null, string? InvoiceSpecName = null, string? InvoiceNoTransferred = null, string? InvoiceTransferredSearch = null, DateTime? InvoiceTransferredDate = null);   // #400
-record DealerSalesGroupTypeDto(string? SalesGroupType, string? SalesGroupTypeName, string? FlagIsDelete = null);
+record DealerSalesGroupTypeDto(string? SalesGroupType, string? SalesGroupTypeName, string? FlagActive = "1", string? FlagIsDelete = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record MstMarriageDto(string? MarriageCode, string? MarriageName, string? FlagActive = "1", DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record DisbursementTypeDto(string? DisbursementType, string? DisbursementTypeName, string? FlagActive = "1", DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MstPortDto(string? PortCode, string? PortName, string? PortAddress, string? PortType, string? ProvinceCode, string? FlagIsDelete = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MstQualificationDto(string? QualificationCode, string? QualificationName, string? Remark, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MstPositionDto(string? PositionCode, string? PositionDesc, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
