@@ -26184,7 +26184,7 @@ app.MapGet("/api/rowarrantyphototypes", async (AppDbContext db, ITenantContext t
         .Where(x => c.Length == 0 || x.ROWPTCode == c)
         .Where(x => all == true || x.FlagActive == "1")
         .OrderBy(x => x.ROWPTCode)
-        .Select(x => new { x.Id, x.ROWPTCode, x.ROWPTName, x.FlagActive }).ToListAsync();
+        .Select(x => new { x.Id, x.ROWPTCode, x.ROWPTName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -26196,16 +26196,47 @@ app.MapGet("/api/rowarrantyphototypes", async (AppDbContext db, ITenantContext t
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/rowarrantyphototypes", async (RoWarrantyPhotoTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/rowarrantyphototypes", async (RoWarrantyPhotoTypeDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var c = (dto.ROWPTCode ?? "").Trim().ToUpperInvariant();
-    if (c.Length == 0) return Results.BadRequest(new { error = "thieu ROWPTCode" });
+    if (c.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Thiếu mã loại ảnh bảo hành (ROWPTCode)." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var row = await db.RoWarrantyPhotoTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWPTCode == c);
-    if (row is null) { row = new RoWarrantyPhotoType { OrgId = t.OrgId, ROWPTCode = c }; db.RoWarrantyPhotoTypes.Add(row); }
+    var now = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
+    var isNew = row is null;
+    if (row is null) { row = new RoWarrantyPhotoType { OrgId = t.OrgId, ROWPTCode = c, FlagActive = "1" }; db.RoWarrantyPhotoTypes.Add(row); }
+    if (isNew) { row.CreatedDate = now; row.CreatedBy = by; }
+    row.LogLUDateTime = now; row.LogLUBy = by; row.UpdatedAt = now;
     if (dto.ROWPTName != null) row.ROWPTName = dto.ROWPTName;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ROWPTCode, row.ROWPTName, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ROWPTCode, row.ROWPTName, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/rowarrantyphototypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.RoWarrantyPhotoTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWPTCode == c);
+    if (row is null) return Results.NotFound(new { code = c, error = "ErrCarSv.Ser_MST_ROWarrantyPhotoType_NotFound" });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    var now = DateTime.Now;
+    row.UpdatedAt = now;
+    row.LogLUDateTime = now;
+    row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ROWPTCode, row.ROWPTName, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/rowarrantyphototypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.RoWarrantyPhotoTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWPTCode == c);
+    if (row is null) return Results.NotFound(new { code = c, error = "ErrCarSv.Ser_MST_ROWarrantyPhotoType_NotFound" });
+    db.RoWarrantyPhotoTypes.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 app.MapGet("/api/rowarrantytypes/{id:long}/phototypes", async (long id, AppDbContext db, ITenantContext t) =>
@@ -34916,10 +34947,12 @@ app.MapGet("/api/serinsurances", async (AppDbContext db, ITenantContext t, strin
 app.MapPost("/api/serinsurances", async (SerInsuranceDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var no = (dto.InsNo ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "Phải nhập vào mã hãng bảo hiểm" });
-    if (string.IsNullOrWhiteSpace(dto.InsVieName)) return Results.BadRequest(new { error = "Phải nhập vào tên tiếng việt" });
-    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "Phải nhập vào địa chỉ" });
-    if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    if (string.IsNullOrWhiteSpace(no)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Phải nhập vào mã hãng bảo hiểm." });
+    if (string.IsNullOrWhiteSpace(dto.InsVieName)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Phải nhập vào tên tiếng việt." });
+    if (string.IsNullOrWhiteSpace(dto.Address)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Phải nhập vào địa chỉ." });
+    if (!string.IsNullOrWhiteSpace(dto.Email) && !(dto.Email!.Contains('@') && dto.Email.Contains('.'))) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_INVALID_EMAIL", message = "Email không hợp lệ." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var dealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
     // #1199 SUA BUG THAT: nguon checkExistSerIns/checkCreateExistSerIns (BizCarSv.Service.cs:8868/8925)
     // khoa TON TAI theo BO DOI (InsNo, DealerCode) — port cu khoa InsNo TOAN CUC (cung lop bug #1008 da
@@ -34927,28 +34960,38 @@ app.MapPost("/api/serinsurances", async (SerInsuranceDto dto, AppDbContext db, I
     var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsNo.ToUpper() == no.ToUpper() && x.DealerCode == dealerCode);
     var by1199 = (partnerUserCode ?? "system").Trim(); var now1199 = DateTime.Now;
     var isNewIns1199 = row is null;
-    if (row is null) { row = new SerInsurance { OrgId = t.OrgId, InsNo = no, DealerCode = dealerCode }; db.SerInsurances.Add(row); }
+    if (row is null) { row = new SerInsurance { OrgId = t.OrgId, InsNo = no, DealerCode = dealerCode, FlagActive = "1" }; db.SerInsurances.Add(row); }
     // #1199: SerInsuranceCreate (:9308+9396-9399) ghi du 4 cot nhat ky khi TAO; SerInsuranceUpdate
     // (:9147+9236-9237) chi ghi LogLUDateTime/LogLUBy khi SUA.
     if (isNewIns1199) { row.CreatedDate = now1199; row.CreatedBy = by1199; }
     row.LogLUDateTime = now1199; row.LogLUBy = by1199;
-    row.InsVieName = dto.InsVieName; row.InsEngName = dto.InsEngName; row.Address = dto.Address; row.Email = dto.Email; row.Telephone = dto.Telephone; row.Fax = dto.Fax; row.Taxcode = dto.Taxcode; row.Description = dto.Description; row.UpdatedAt = DateTime.Now;
-    row.Website = dto.Website; 
+    row.InsVieName = dto.InsVieName; row.InsEngName = dto.InsEngName; row.Address = dto.Address; row.Email = dto.Email; row.Telephone = dto.Telephone; row.Fax = dto.Fax; row.Taxcode = dto.Taxcode; row.Description = dto.Description; row.UpdatedAt = now1199;
+    row.Website = dto.Website;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.InsNo, row.InsVieName, row.FlagActive, row.DealerCode });
+    return Results.Ok(new { row.Id, row.InsNo, row.InsVieName, row.InsEngName, row.Address, row.Email, row.Telephone, row.Fax, row.Website, row.Taxcode, row.Description, row.DealerCode, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapPost("/api/serinsurances/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { id, error = "ErrCarSv.Ser_Insurance_NotExist" });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
     // #1199: nhất quán với POST cùng bảng (LogLUBy đã đóng ở nhánh sửa của SerInsuranceUpdate).
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive,
+    return Results.Ok(new { row.Id, row.InsNo, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt,
         sourceActuallyHardDeletesNotToggle = "SerInsuranceDelete (BizCarSv.Service.cs:9475) la XOA CUNG (delete Ser_InsuranceCustomer + Ser_Insurance theo InsNo+DealerCode), KHONG co ham doi FlagActive nao trong nguon — toggle o day la thiet ke rieng cua Mini, giu nguyen vi doi sang xoa cung se mat du lieu; chua co bang con SerInsuranceCustomer tuong ung o bang nay (khac /api/insurances da co)." });
+}).RequireAuthorization();
+
+// `SerInsuranceDelete` (BizCarSv.Service.cs:9475): xoá CỨNG bản ghi theo mã/id, guard 404 `ErrCarSv.Ser_Insurance_NotExist`.
+app.MapDelete("/api/serinsurances/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.SerInsurances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { id, error = "ErrCarSv.Ser_Insurance_NotExist" });
+    db.SerInsurances.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = id });
 }).RequireAuthorization();
 
 // ===== Master thương hiệu xe dịch vụ (ServiceTradeMark — port 1:1 FrmTradeMarkCreate/Search, TCMotor DMSCarSv/Admin) =====
@@ -35269,30 +35312,47 @@ app.MapGet("/api/customervisits", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     if (from.HasValue) qry = qry.Where(x => x.CreatedAt >= from.Value);
     if (to.HasValue) qry = qry.Where(x => x.CreatedAt <= to.Value);
-    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CusVisitCode, x.DealerCode, x.Gender, x.RangeAgeCode, x.ModelCode, x.CreatedAt }).ToListAsync();
+    var items = await qry.OrderByDescending(x => x.Id).Take(500).Select(x => new { x.Id, x.CusVisitCode, x.DealerCode, x.Gender, x.RangeAgeCode, x.ModelCode, x.FlagActive, x.VisitDTime, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt }).ToListAsync();
     var byModel = items.GroupBy(x => x.ModelCode ?? "?").Select(g => new { model = g.Key, count = g.Count() }).OrderByDescending(g => g.count).ToList();
     var byGender = items.GroupBy(x => x.Gender ?? "?").Select(g => new { gender = g.Key, count = g.Count() }).ToList();
     return Results.Ok(new { count = items.Count, byModel, byGender, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/customervisits", async (CustomerVisitDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/customervisits", async (CustomerVisitDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace((dto.RangeAgeCode ?? "").Trim())) return Results.BadRequest(new { error = "Chưa chọn độ tuổi khách." });
-    if (string.IsNullOrWhiteSpace((dto.ModelCode ?? "").Trim())) return Results.BadRequest(new { error = "Chưa chọn model xe quan tâm." });
+    if (string.IsNullOrWhiteSpace((dto.RangeAgeCode ?? "").Trim())) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa chọn độ tuổi khách." });
+    if (string.IsNullOrWhiteSpace((dto.ModelCode ?? "").Trim())) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa chọn model xe quan tâm." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
+
+    var now = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
+    var code = string.IsNullOrWhiteSpace((dto.CusVisitCode ?? "").Trim()) ? "CV" + now.ToString("yyMMddHHmmssfff") : dto.CusVisitCode!.Trim();
+
     var v = new CustomerVisit
     {
         OrgId = t.OrgId,
         // #B62-fix: cùng khuôn mã sinh với `/api/ctmvisits` ("CV" + yyMMddHHmmssfff) — sau hợp nhất hai
         // endpoint ghi CHUNG cột `CusVisitCode`, để hai khuôn (yyyy… 19 ký tự vs yy… 17 ký tự) là mã nhào.
-        CusVisitCode = string.IsNullOrWhiteSpace((dto.CusVisitCode ?? "").Trim()) ? "CV" + DateTime.Now.ToString("yyMMddHHmmssfff") : dto.CusVisitCode!.Trim(),
+        CusVisitCode = code,
         // #B62-fix: `DealerCode` thô sẽ bị INNER join `Mst_Dealer` trong pivot LOẠI IM LẶNG (đếm vào
         // `droppedByDealerJoin`) vì nguồn không trim/upper. Chuẩn hoá đúng như nhánh song trùng đã làm.
-        DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), Gender = dto.Gender, RangeAgeCode = dto.RangeAgeCode, ModelCode = dto.ModelCode!.Trim(),
-        CreatedAt = DateTime.Now
+        DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
+        Gender = dto.Gender,
+        RangeAgeCode = dto.RangeAgeCode!.Trim(),
+        ModelCode = dto.ModelCode!.Trim(),
+        FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim(),
+        VisitDTime = dto.VisitDTime ?? now,
+        CreatedDate = now,
+        CreatedBy = by,
+        LogLUDateTime = now,
+        LogLUBy = by,
+        CreatedAt = now,
+        UpdatedAt = now
     };
     db.CustomerVisits.Add(v);
     await db.SaveChangesAsync();
-    return Results.Ok(new { v.Id, v.CusVisitCode, v.ModelCode });
+    return Results.Ok(new { v.Id, v.CusVisitCode, v.DealerCode, v.Gender, v.RangeAgeCode, v.ModelCode, v.FlagActive, v.VisitDTime, v.CreatedDate, v.CreatedBy, v.LogLUDateTime, v.LogLUBy, v.CreatedAt, v.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== NVBH đại lý + duyệt BĐH (DealerSalesMan — port 1:1 FrmMngSalesManApproved/FrmMngSalesManHTC, 2010.HTC/SalesDealer) =====
@@ -87103,19 +87163,37 @@ app.MapGet("/api/ctmvisits", async (AppDbContext db, ITenantContext t, string? d
     var q = db.CustomerVisits.Where(v => v.OrgId == t.OrgId);   // #B62 tro chung bang
     if (!string.IsNullOrWhiteSpace(dealer)) q = q.Where(v => v.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(v => v.ModelCode == model);
-    var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new { v.CusVisitCode, v.DealerCode, v.Gender, RangeAge = v.RangeAgeCode, v.ModelCode, v.CreatedAt }).ToListAsync();
+    var items = await q.OrderByDescending(v => v.Id).Take(500).Select(v => new { v.Id, v.CusVisitCode, v.DealerCode, v.Gender, RangeAge = v.RangeAgeCode, v.RangeAgeCode, v.ModelCode, v.FlagActive, v.VisitDTime, v.CreatedDate, v.CreatedBy, v.LogLUDateTime, v.LogLUBy, v.CreatedAt, v.UpdatedAt }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/ctmvisits", async (CtmVisitDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/ctmvisits", async (CtmVisitDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Hãy chọn loại xe khách quan tâm." });
-    if (string.IsNullOrWhiteSpace(dto.Gender)) return Results.BadRequest(new { error = "Hãy chọn giới tính." });
-    if (string.IsNullOrWhiteSpace(dto.RangeAge)) return Results.BadRequest(new { error = "Hãy chọn độ tuổi." });
-    var code = "CV" + DateTime.Now.ToString("yyMMddHHmmssfff");
-    var v = new CustomerVisit { OrgId = t.OrgId, CusVisitCode = code, DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(), Gender = dto.Gender.Trim(), RangeAgeCode = dto.RangeAge.Trim(), ModelCode = dto.ModelCode.Trim() };
+    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Hãy chọn loại xe khách quan tâm." });
+    if (string.IsNullOrWhiteSpace(dto.Gender)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Hãy chọn giới tính." });
+    if (string.IsNullOrWhiteSpace(dto.RangeAge)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Hãy chọn độ tuổi." });
+    var now = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
+    var code = "CV" + now.ToString("yyMMddHHmmssfff");
+    var v = new CustomerVisit
+    {
+        OrgId = t.OrgId,
+        CusVisitCode = code,
+        DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
+        Gender = dto.Gender.Trim(),
+        RangeAgeCode = dto.RangeAge.Trim(),
+        ModelCode = dto.ModelCode.Trim(),
+        FlagActive = "1",
+        VisitDTime = now,
+        CreatedDate = now,
+        CreatedBy = by,
+        LogLUDateTime = now,
+        LogLUBy = by,
+        CreatedAt = now,
+        UpdatedAt = now
+    };
     db.CustomerVisits.Add(v); await db.SaveChangesAsync();   // #B62 tro chung bang
-    return Results.Ok(new { v.CusVisitCode, message = "Thêm mới lượt khách thăm showroom thành công" });
+    return Results.Ok(new { v.Id, v.CusVisitCode, v.DealerCode, v.Gender, RangeAge = v.RangeAgeCode, v.RangeAgeCode, v.ModelCode, v.FlagActive, v.VisitDTime, v.CreatedDate, v.CreatedBy, v.LogLUDateTime, v.LogLUBy, v.CreatedAt, v.UpdatedAt, message = "Thêm mới lượt khách thăm showroom thành công" });
 }).RequireAuthorization();
 
 // ===== Lượt khách lái thử (DriveTest — port 1:1 FrmNewTestDriver, DMSales.Foton/RetailContract) =====
@@ -127325,7 +127403,7 @@ record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType, Date
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
+record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode, string? FlagActive = null, DateTime? VisitDTime = null);
 record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null, string? Logo = null);   // #915 DealerCode, #1508 Logo
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);

@@ -4244,6 +4244,14 @@ public sealed class CustomerVisit
     public string? RangeAgeCode { get; set; }
     public string? ModelCode { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #Round152 §12: DLR_CtmVisit (BizHTC.RetailContract.cs:1118-1127) =====
+    public string FlagActive { get; set; } = "1";
+    public DateTime? VisitDTime { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Master thương hiệu xe dịch vụ (Ser_MST_TradeMark) — port 1:1 FrmTradeMarkCreate/Search (TCMotor DMSCarSv/Admin). Mã + tên thương hiệu. Upsert-by-code + toggle.</summary>
@@ -6035,6 +6043,12 @@ public sealed class RoWarrantyPhotoType
     public string ROWPTCode { get; set; } = "";
     public string? ROWPTName { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round152 §12: Ser_MST_ROWarrantyPhotoType (BizCarSv.Master.cs:10554) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>
