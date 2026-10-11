@@ -5933,6 +5933,10 @@ public sealed class PaymentTermMst
     public int PaymentCLDueDays { get; set; }
     public int PaymentNHSDueDays { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -6159,7 +6163,12 @@ public sealed class VinModelOrginalMst
     public string VINCode { get; set; } = "";
     public string ModelCode { get; set; } = "";
     public string? OrginalCode { get; set; }
+    public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -9328,6 +9337,12 @@ public sealed class TstMstPartGroup
     public string GroupCode { get; set; } = "";
     public string? GroupName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>#767 Loại phụ tùng của hệ TST (`TST_Mst_PartType`) — hàm đọc là bản sinh đôi của `…PartGroup_Get`.</summary>
@@ -9338,6 +9353,12 @@ public sealed class TstMstPartType
     public string TypeCode { get; set; } = "";
     public string? TypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 public sealed class SysGroup

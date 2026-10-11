@@ -38693,48 +38693,195 @@ app.MapPost("/api/reports/dubaodathang-5t-htmv/{rptDBDH5TCode}/update-plan", asy
     return Results.Ok(new { rptDBDH5TCode, updatedCount = updated });
 }).RequireAuthorization();
 
-// ===== 🏆🔴 #930 `TST_Mst_PartGroup_Get`/`TST_Mst_PartType_Get` (LIVE, `BizCarSv.Service.cs:18136/:17862`) =====
-// Entity đã tồn tại từ #767 nhưng CHƯA TỪNG có endpoint — grep toàn Program.cs ra 0 lần đọc lẫn ghi.
+// ===== 🏆🔴 #Round147 `TST_Mst_PartGroup_Get`/`TST_Mst_PartType_Get` (LIVE, `BizCarSv.Service.cs:18136/:17862`) =====
 app.MapGet("/api/tstmstpartgroups", async (AppDbContext db, ITenantContext t, bool? all) =>
 {
     var qry = db.TstMstPartGroups.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
-    var items = await qry.OrderBy(x => x.GroupCode).Take(500).Select(x => new { x.GroupCode, x.GroupName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.GroupCode).Take(500)
+        .Select(x => new { x.Id, x.GroupCode, x.GroupName, x.FlagActive, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #Round147 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/tstmstpartgroups", async (TstMstPartGroupDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/tstmstpartgroups/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (dto.GroupCode ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã nhóm phụ tùng TST." });
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.TstMstPartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartGroup_NotFound", code = c });
+    return Results.Ok(new { row.Id, row.GroupCode, row.GroupName, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstpartgroups", async (TstMstPartGroupDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.GroupCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_PartGroup_Create_InvalidGroupCode", field = "GroupCode", message = "Chưa nhập mã nhóm phụ tùng TST." });
+    var name = (dto.GroupName ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_PartGroup_Create_InvalidGroupName", field = "GroupName", message = "Chưa nhập tên nhóm phụ tùng TST." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var row = await db.TstMstPartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
-    if (row is null) { row = new TstMstPartGroup { OrgId = t.OrgId, GroupCode = code }; db.TstMstPartGroups.Add(row); }
-    row.GroupName = dto.GroupName;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    if (row is null)
+    {
+        row = new TstMstPartGroup
+        {
+            OrgId = t.OrgId,
+            GroupCode = code,
+            GroupName = name,
+            FlagActive = fa,
+            CreatedAt = now,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            UpdatedAt = now
+        };
+        db.TstMstPartGroups.Add(row);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { row.Id, row.GroupCode, row.GroupName, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = false });
+    }
+    row.GroupName = name;
+    row.FlagActive = fa;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.GroupCode, row.GroupName, row.FlagActive,
-        writeIsPortAddition = "nguon chi co ham doc (TST_Mst_PartGroup_Get) — chua thay ham ghi trong toan solution" });
+    return Results.Ok(new { row.Id, row.GroupCode, row.GroupName, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstpartgroups/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var row = await db.TstMstPartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartGroup_NotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.GroupCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstpartgroups/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.TstMstPartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartGroup_NotFound", code = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.GroupCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/tstmstpartgroups/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.TstMstPartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartGroup_NotFound", code = c });
+    db.TstMstPartGroups.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 app.MapGet("/api/tstmstparttypes", async (AppDbContext db, ITenantContext t, bool? all) =>
 {
     var qry = db.TstMstPartTypes.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
-    var items = await qry.OrderBy(x => x.TypeCode).Take(500).Select(x => new { x.TypeCode, x.TypeName, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.TypeCode).Take(500)
+        .Select(x => new { x.Id, x.TypeCode, x.TypeName, x.FlagActive, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #Round147 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/tstmstparttypes", async (TstMstPartTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/tstmstparttypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (dto.TypeCode ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã loại phụ tùng TST." });
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.TstMstPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartType_NotFound", code = c });
+    return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstparttypes", async (TstMstPartTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.TypeCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "TypeCode", message = "Chưa nhập mã loại phụ tùng TST." });
+    var name = (dto.TypeName ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_PartType_Create_InvalidTypeName", field = "TypeName", message = "Chưa nhập tên loại phụ tùng TST." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var row = await db.TstMstPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeCode == code);
-    if (row is null) { row = new TstMstPartType { OrgId = t.OrgId, TypeCode = code }; db.TstMstPartTypes.Add(row); }
-    row.TypeName = dto.TypeName;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    if (row is null)
+    {
+        row = new TstMstPartType
+        {
+            OrgId = t.OrgId,
+            TypeCode = code,
+            TypeName = name,
+            FlagActive = fa,
+            CreatedAt = now,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            UpdatedAt = now
+        };
+        db.TstMstPartTypes.Add(row);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = false });
+    }
+    row.TypeName = name;
+    row.FlagActive = fa;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.TypeCode, row.TypeName, row.FlagActive,
-        writeIsPortAddition = "nguon chi co ham doc (TST_Mst_PartType_Get, sinh doi cua PartGroup_Get) — chua thay ham ghi trong toan solution" });
+    return Results.Ok(new { row.Id, row.TypeCode, row.TypeName, row.FlagActive, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstparttypes/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var row = await db.TstMstPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartType_NotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TypeCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/tstmstparttypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.TstMstPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartType_NotFound", code = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TypeCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/tstmstparttypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.TstMstPartTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TypeCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_MST_PartType_NotFound", code = c });
+    db.TstMstPartTypes.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 // ===== Thư viện kỹ thuật (TechnicalLibrary — port 1:1 FrmSer_Technical_Library, TCMotor DMSCarSv) =====
@@ -49713,38 +49860,106 @@ app.MapPost("/api/serassignmentworks/{roNo}/stage", async (string roNo, SerAssig
     return Results.Ok(new { roNo, stageCode, CavityId = s.Cav, PlanStart = s.PS, PlanFinish = s.PF, ActualStart = s.AS, ActualFinish = s.AF, planFinishShrunk, roStatusTo });
 }).RequireAuthorization();
 
-// ===== Mã VIN gốc theo model (VinModelOrginalMst — port 1:1 FrmVINModelOrginal, TCMotor DMSCarSv/Admin) =====
+// ===== #Round147 Mã VIN gốc theo model (VinModelOrginalMst — port 1:1 FrmVINModelOrginal, TCMotor DMSCarSv/Admin) =====
 app.MapGet("/api/vinmodelorginalmsts", async (AppDbContext db, ITenantContext t, string? model, bool? all) =>
 {
     var qry = db.VinModelOrginalMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.VINCode).ThenBy(x => x.ModelCode).Take(1000)
-        .Select(x => new { x.Id, x.VINCode, x.ModelCode, x.OrginalCode, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1322 §12
+        .Select(x => new { x.Id, x.VINCode, x.ModelCode, x.OrginalCode, x.Remark, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #Round147 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/vinmodelorginalmsts", async (VinModelOrginalMstDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/vinmodelorginalmsts/{vinCode}/{modelCode}", async (string vinCode, string modelCode, AppDbContext db, ITenantContext t) =>
+{
+    var vc = (vinCode ?? "").Trim().ToUpperInvariant();
+    var mc = (modelCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vc && x.ModelCode == mc);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_NotFound", vinCode = vc, modelCode = mc });
+    return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.OrginalCode, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/vinmodelorginalmsts", async (VinModelOrginalMstDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var vc = (dto.VINCode ?? "").Trim().ToUpperInvariant();
     var mc = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(vc)) return Results.BadRequest(new { error = "Chưa nhập mã VIN gốc." });
-    if (string.IsNullOrWhiteSpace(mc)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (string.IsNullOrWhiteSpace(vc)) return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Create_VINCodeNotEmpty", field = "VINCode", message = "Chưa nhập mã VIN gốc." });
+    if (string.IsNullOrWhiteSpace(mc)) return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Create_ModelCodeNotEmpty", field = "ModelCode", message = "Chưa chọn model." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var row = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vc && x.ModelCode == mc);
-    if (row is null) { row = new VinModelOrginalMst { OrgId = t.OrgId, VINCode = vc, ModelCode = mc }; db.VinModelOrginalMsts.Add(row); }
-    row.OrginalCode = dto.OrginalCode; row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    if (row is null)
+    {
+        row = new VinModelOrginalMst
+        {
+            OrgId = t.OrgId,
+            VINCode = vc,
+            ModelCode = mc,
+            OrginalCode = dto.OrginalCode?.Trim(),
+            Remark = dto.Remark?.Trim(),
+            FlagActive = fa,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            UpdatedAt = now
+        };
+        db.VinModelOrginalMsts.Add(row);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.OrginalCode, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = false });
+    }
+    row.OrginalCode = dto.OrginalCode?.Trim();
+    row.Remark = dto.Remark?.Trim();
+    row.FlagActive = fa;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.OrginalCode, row.FlagActive });
+    return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.OrginalCode, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = true });
 }).RequireAuthorization();
 
-app.MapPost("/api/vinmodelorginalmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/vinmodelorginalmsts/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_NotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/vinmodelorginalmsts/{vinCode}/{modelCode}/toggle", async (string vinCode, string modelCode, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var vc = (vinCode ?? "").Trim().ToUpperInvariant();
+    var mc = (modelCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vc && x.ModelCode == mc);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_NotFound", vinCode = vc, modelCode = mc });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/vinmodelorginalmsts/{vinCode}/{modelCode}", async (string vinCode, string modelCode, AppDbContext db, ITenantContext t) =>
+{
+    var vc = (vinCode ?? "").Trim().ToUpperInvariant();
+    var mc = (modelCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vc && x.ModelCode == mc);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_NotFound", vinCode = vc, modelCode = mc });
+    db.VinModelOrginalMsts.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = $"{vc}/{mc}" });
 }).RequireAuthorization();
 
 // ===== Hạng mục công bảo hành theo model (WarrantyWorkMst — port 1:1 FrmMstWarrantyWorkMng, TCMotor DMSCarSv/Admin) =====
@@ -49997,40 +50212,110 @@ app.MapPost("/api/warrantyworkmsts/{id}/toggle", async (long id, AppDbContext db
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
 
-// ===== Điều khoản thanh toán chiết khấu/công nợ (PaymentTermMst — port 1:1 FrmMst_PaymentTerm, TCMotor DMSales.Foton/Admin/Product) =====
+// ===== #Round147 Điều khoản thanh toán chiết khấu/công nợ (PaymentTermMst — port 1:1 FrmMst_PaymentTerm, TCMotor DMSales.Foton/Admin/Product) =====
 app.MapGet("/api/paymenttermmsts", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
     var qry = db.PaymentTermMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.DCPType.Contains(q!) || x.DCPTypeName!.Contains(q!));
     var items = await qry.OrderBy(x => x.DCPType).Take(500)
-        .Select(x => new { x.Id, x.DCPType, x.DCPTypeName, x.PaymentDueDays, x.GuaranteeDueDays, x.PaymentCLDueDays, x.PaymentNHSDueDays, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1288 §12
+        .Select(x => new { x.Id, x.DCPType, x.DCPTypeName, x.PaymentDueDays, x.GuaranteeDueDays, x.PaymentCLDueDays, x.PaymentNHSDueDays, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #Round147 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/paymenttermmsts", async (PaymentTermMstDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/paymenttermmsts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (dto.DCPType ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã điều khoản." });
-    if (string.IsNullOrWhiteSpace((dto.DCPTypeName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên điều khoản." });
-    if (dto.PaymentDueDays < 0 || dto.GuaranteeDueDays < 0 || dto.PaymentCLDueDays < 0 || dto.PaymentNHSDueDays < 0)
-        return Results.BadRequest(new { error = "Số ngày đến hạn không được âm." });
-    var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DCPType == code);
-    if (row is null) { row = new PaymentTermMst { OrgId = t.OrgId, DCPType = code }; db.PaymentTermMsts.Add(row); }
-    row.DCPTypeName = dto.DCPTypeName; row.PaymentDueDays = dto.PaymentDueDays; row.GuaranteeDueDays = dto.GuaranteeDueDays;
-    row.PaymentCLDueDays = dto.PaymentCLDueDays; row.PaymentNHSDueDays = dto.PaymentNHSDueDays; row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.DCPType, row.DCPTypeName, row.FlagActive });
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DCPType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_PaymentTerm_NotFound", code = c });
+    return Results.Ok(new { row.Id, row.DCPType, row.DCPTypeName, row.PaymentDueDays, row.GuaranteeDueDays, row.PaymentCLDueDays, row.PaymentNHSDueDays, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
-app.MapPost("/api/paymenttermmsts/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/paymenttermmsts", async (PaymentTermMstDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.DCPType ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "DCPType", message = "Chưa nhập mã điều khoản." });
+    var name = (dto.DCPTypeName ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "DCPTypeName", message = "Chưa nhập tên điều khoản." });
+    if (dto.PaymentDueDays < 0 || dto.GuaranteeDueDays < 0 || dto.PaymentCLDueDays < 0 || dto.PaymentNHSDueDays < 0)
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_NOT_NUMERIC", message = "Số ngày đến hạn không được âm." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DCPType == code);
+    if (row is null)
+    {
+        row = new PaymentTermMst
+        {
+            OrgId = t.OrgId,
+            DCPType = code,
+            DCPTypeName = name,
+            PaymentDueDays = dto.PaymentDueDays,
+            GuaranteeDueDays = dto.GuaranteeDueDays,
+            PaymentCLDueDays = dto.PaymentCLDueDays,
+            PaymentNHSDueDays = dto.PaymentNHSDueDays,
+            FlagActive = fa,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            UpdatedAt = now
+        };
+        db.PaymentTermMsts.Add(row);
+        await db.SaveChangesAsync();
+        return Results.Ok(new { row.Id, row.DCPType, row.DCPTypeName, row.PaymentDueDays, row.GuaranteeDueDays, row.PaymentCLDueDays, row.PaymentNHSDueDays, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = false });
+    }
+    row.DCPTypeName = name;
+    row.PaymentDueDays = dto.PaymentDueDays;
+    row.GuaranteeDueDays = dto.GuaranteeDueDays;
+    row.PaymentCLDueDays = dto.PaymentCLDueDays;
+    row.PaymentNHSDueDays = dto.PaymentNHSDueDays;
+    row.FlagActive = fa;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DCPType, row.DCPTypeName, row.PaymentDueDays, row.GuaranteeDueDays, row.PaymentCLDueDays, row.PaymentNHSDueDays, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = true });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymenttermmsts/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_PaymentTerm_NotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.DCPType, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/paymenttermmsts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DCPType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_PaymentTerm_NotFound", code = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.DCPType, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/paymenttermmsts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PaymentTermMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DCPType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_PaymentTerm_NotFound", code = c });
+    db.PaymentTermMsts.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 // ===== Tùy chọn tiêu chuẩn theo model+hạng — ⛔ #379 HỢP NHẤT SONG SINH: CarStdOpt (Foton) ≡ CarStdOption (2010.HTC), cùng bảng
@@ -126770,10 +127055,18 @@ record SerPartTypeDto(string? TypeName,
     string? DealerCode = null);
 record TstMstPartGroupDto(string? GroupCode,
     string? GroupName,
-    string? FlagActive);   // merge session-a
+    string? FlagActive,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record TstMstPartTypeDto(string? TypeCode,
     string? TypeName,
-    string? FlagActive);   // merge session-a
+    string? FlagActive,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);   // merge session-a
 record TstHtvNameDto(string? TSTPartCode,
     string? VieName);   // merge session-a
 record RoAttachmentDto(string? RONo,
@@ -126980,7 +127273,7 @@ record MaintWorkItemDto(string? WorkItemCode, string? WorkItemName, string? Flag
 record RateApprOrderModelMaxDto(string? DealerCode, string? ModelCode, decimal RateApprMax, string? FlagActive);
 record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCode, string? ContractType, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CarStdOptDto(string? ModelCode, string? StdCode, string? StdDesc, string? GradeCode, string? GradeDesc, string? FlagActive);
-record PaymentTermMstDto(string? DCPType, string? DCPTypeName, int PaymentDueDays, int GuaranteeDueDays, int PaymentCLDueDays, int PaymentNHSDueDays, string? FlagActive);
+record PaymentTermMstDto(string? DCPType, string? DCPTypeName, int PaymentDueDays, int GuaranteeDueDays, int PaymentCLDueDays, int PaymentNHSDueDays, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record ComplaintErrorCodeDto(string? ErrorCode, string? ErrorName, string? ErrorDesc, string? ErrorTypeCode, int WarrantyDate, int WarrantyKm, string? Remark, string? FlagActive);
 record ROWarrantyTypePhotoDto(string? ROWPTCode, string? ROWPTName);
 record ROWarrantyTypeDto(string? ROWTypeCode, string? ROWTypeName, string? ROWTypeDtlCode, string? ROWTypeDtlName, string? ROWPhotoType, string? FlagActive, List<ROWarrantyTypePhotoDto>? Photos = null, string? ROWTID = null);
@@ -126988,7 +127281,7 @@ record WarrantyWorkMstDto(string? ROWWorkCode, string? ROWWorkName, string? Mode
 record WarrantyWorkImportDto(List<WarrantyWorkMstDto>? Rows);
 record CompartmentMstDto(string? CompartmentCode, string? CompartmentName, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record StaffMstDto(string? StaffCode, string? StaffName, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record VinModelOrginalMstDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive);
+record VinModelOrginalMstDto(string? VINCode, string? ModelCode, string? OrginalCode, string? Remark = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record ExtraWorkLimitationMstDto(string? ExtraWorkCode, string? ExtraWorkName, string? WarrantyDtlCode, decimal MaxPrice, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record WarrantyExtensionDateLogDto(string? VIN, string? RONo, string? ExtCategoryCode, string? ExtCategoryName, DateTime? ExtensionDate, string? Remark, string? FlagActive, string? ROWRID = null);
 record SerAssignmentWorkEngineerLineDto(string? EngineerNo, string? WorkType);
