@@ -79,37 +79,39 @@ app.MapGet("/api/areas", async (AppDbContext db, ITenantContext t, string? q) =>
     var query = db.Areas.Where(a => a.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(q)) query = query.Where(a => a.AreaCode.Contains(q) || a.AreaName.Contains(q));
     var items = await query.OrderBy(a => a.AreaCode)
-        .Select(a => new { a.AreaCode, a.AreaName, a.AreaRootCode, a.Level, a.Status, a.AreaBUPattern }).ToListAsync();
+        .Select(a => new { a.AreaCode, a.AreaName, a.AreaRootCode, a.Level, a.Status, a.AreaBUPattern, a.CreatedDate, a.CreatedBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Khớp btnApply_Click gốc: Level tự tính = Level(cha theo AreaRootCode)+1; root (không có cha, hoặc cha không tồn tại)=1.
-app.MapPost("/api/areas", async (AreaDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/areas", async (AreaDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.AreaCode) || string.IsNullOrWhiteSpace(dto.AreaName))
-        return Results.BadRequest(new { error = "Cần AreaCode và AreaName." });
+    if (string.IsNullOrWhiteSpace(dto.AreaCode))
+        return Results.BadRequest(new { error = "Chưa nhập mã khu vực.", code = "Mst_Area_Add_InvalidAreaCode" });
+    if (string.IsNullOrWhiteSpace(dto.AreaName))
+        return Results.BadRequest(new { error = "Chưa nhập tên khu vực.", code = "Mst_Area_Add_InvalidAreaName" });
     var code = dto.AreaCode.Trim().ToUpperInvariant();
     var rootCode = string.IsNullOrWhiteSpace(dto.AreaRootCode) ? null : dto.AreaRootCode.Trim().ToUpperInvariant();
     int level = 1;
     if (rootCode is not null)
     {
         var parent = await db.Areas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AreaCode == rootCode);
-        if (parent is null) return Results.BadRequest(new { error = $"Khu vực cha '{rootCode}' không tồn tại." });
-        if (parent.AreaCode == code) return Results.BadRequest(new { error = "Khu vực không thể là cha của chính nó." });
+        if (parent is null) return Results.BadRequest(new { error = $"Khu vực cha '{rootCode}' không tồn tại.", code = "Mst_Area_Add_AreaRootNotExist" });
+        if (parent.AreaCode == code) return Results.BadRequest(new { error = "Khu vực không thể là cha của chính nó.", code = "Mst_Area_Add_AreaRootCannotBeSelf" });
         level = parent.Level + 1;
     }
     var a = await db.Areas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AreaCode == code);
-    if (a is null) { a = new Area { OrgId = t.OrgId, AreaCode = code, AreaName = dto.AreaName.Trim(), AreaRootCode = rootCode, Level = level, Status = dto.Status ?? "1", AreaBUPattern = dto.AreaBUPattern }; db.Areas.Add(a); }
-    else { a.AreaName = dto.AreaName.Trim(); a.AreaRootCode = rootCode; a.Level = level; a.Status = dto.Status ?? a.Status; if (dto.AreaBUPattern is not null) a.AreaBUPattern = dto.AreaBUPattern; }   // btnApply: upsert
+    if (a is null) { a = new Area { OrgId = t.OrgId, AreaCode = code, AreaName = dto.AreaName.Trim(), AreaRootCode = rootCode, Level = level, Status = dto.Status ?? "1", AreaBUPattern = dto.AreaBUPattern, CreatedDate = dto.CreatedDate ?? DateTime.Now, CreatedBy = dto.CreatedBy ?? (user.Identity?.Name ?? "system") }; db.Areas.Add(a); }
+    else { a.AreaName = dto.AreaName.Trim(); a.AreaRootCode = rootCode; a.Level = level; a.Status = dto.Status ?? a.Status; if (dto.AreaBUPattern is not null) a.AreaBUPattern = dto.AreaBUPattern; if (dto.CreatedBy is not null) a.CreatedBy = dto.CreatedBy; }   // btnApply: upsert
     await db.SaveChangesAsync();
-    return Results.Ok(new { a.AreaCode, a.AreaName, a.AreaRootCode, a.Level, a.Status, a.AreaBUPattern });
+    return Results.Ok(new { a.AreaCode, a.AreaName, a.AreaRootCode, a.Level, a.Status, a.AreaBUPattern, a.CreatedDate, a.CreatedBy });
 }).RequireAuthorization();
 
 app.MapDelete("/api/areas/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
     code = code.Trim().ToUpperInvariant();
     var a = await db.Areas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.AreaCode == code);
-    if (a is null) return Results.NotFound(new { code });
+    if (a is null) return Results.NotFound(new { error = "Không tìm thấy khu vực.", code = "Mst_Area_CheckDB_AreaNotFound", areaCode = code });
     db.Areas.Remove(a); await db.SaveChangesAsync();   // btnDelDb
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
@@ -501,7 +503,7 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q,
       d.ContactName, d.Signer, d.SignerPosition, d.CtrNoSigner, d.CtrNoSignerPosition, d.Remark, d.HTCStaffInCharge, d.WarrantyStaffInCharge,   // #977
       d.DealerAddress01, d.DealerAddress02, d.DealerAddress03, d.DealerAddress04, d.DealerAddress05,
       d.FlagTCG, d.FlagOrdTCG, d.FlagAutoLXX, d.FlagAutoMapVIN, d.FlagAutoSOAppr, d.Status,
-      d.FlagDoiTac, d.TCKTEmail, d.WsUrlAddr, d.CreatedAt }).ToListAsync();   // #362 #1223 #1271 §12
+      d.FlagDoiTac, d.TCKTEmail, d.WsUrlAddr, d.CreatedAt, d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy }).ToListAsync();   // #362 #1223 #1271 §12 #Round131 §12
     return Results.Ok(new
     {
         count = items.Count, items,
@@ -513,15 +515,21 @@ app.MapGet("/api/dealers", async (AppDbContext db, ITenantContext t, string? q,
 }).RequireAuthorization();
 
 // Khớp gviewDb_ValidatingEditor gốc: ProvinceCode/BUCode/BuPattern/DealerName bắt buộc.
-app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode) || string.IsNullOrWhiteSpace(dto.DealerName))
-        return Results.BadRequest(new { error = "Cần DealerCode và DealerName." });
-    if (string.IsNullOrWhiteSpace(dto.ProvinceCode) || string.IsNullOrWhiteSpace(dto.BUCode) || string.IsNullOrWhiteSpace(dto.BuPattern))
-        return Results.BadRequest(new { error = "Cần ProvinceCode, BUCode và BuPattern." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode))
+        return Results.BadRequest(new { error = "Chưa nhập mã đại lý.", code = "CommonAppData_DealerCodeBeBlank" });
+    if (string.IsNullOrWhiteSpace(dto.DealerName))
+        return Results.BadRequest(new { error = "Chưa nhập tên đại lý.", code = "CommonAppData_DealerNameBeBlank" });
+    if (string.IsNullOrWhiteSpace(dto.ProvinceCode))
+        return Results.BadRequest(new { error = "Chưa nhập mã tỉnh thành.", code = "Mst_Dealer_InvalidProvinceCode" });
+    if (string.IsNullOrWhiteSpace(dto.BUCode))
+        return Results.BadRequest(new { error = "Chưa nhập mã đơn vị kinh doanh (BUCode).", code = "Mst_Dealer_InvalidBUCode" });
+    if (string.IsNullOrWhiteSpace(dto.BuPattern))
+        return Results.BadRequest(new { error = "Chưa nhập phân loại BU (BuPattern).", code = "Mst_Dealer_InvalidBuPattern" });
     var code = dto.DealerCode.Trim().ToUpperInvariant();
     var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
-    if (d is null) { d = new Dealer { OrgId = t.OrgId, DealerCode = code }; db.Dealers.Add(d); }
+    if (d is null) { d = new Dealer { OrgId = t.OrgId, DealerCode = code, CreatedDate = dto.CreatedDate ?? DateTime.Now, CreatedBy = dto.CreatedBy ?? (user.Identity?.Name ?? "system") }; db.Dealers.Add(d); }
     d.DealerName = dto.DealerName.Trim(); d.DealerType = dto.DealerType; d.BUCode = dto.BUCode; d.BuPattern = dto.BuPattern; d.ProvinceCode = dto.ProvinceCode;
     d.Address = dto.Address; d.Phone = dto.Phone; d.Fax = dto.Fax; d.Email = dto.Email; d.TaxCode = dto.TaxCode;
     d.FlagDirect = dto.FlagDirect; d.FlagActive = dto.FlagActive; d.DealerScale = dto.DealerScale;
@@ -547,8 +555,9 @@ app.MapPost("/api/dealers", async (DealerDto dto, AppDbContext db, ITenantContex
     d.FlagTCG = dto.FlagTCG; d.FlagOrdTCG = dto.FlagOrdTCG; d.FlagAutoLXX = dto.FlagAutoLXX; d.FlagAutoMapVIN = dto.FlagAutoMapVIN; d.FlagAutoSOAppr = dto.FlagAutoSOAppr;
     d.Status = dto.Status ?? "1";
     d.FlagDoiTac = dto.FlagDoiTac == "1" ? "1" : "0"; d.TCKTEmail = string.IsNullOrWhiteSpace(dto.TCKTEmail) ? null : dto.TCKTEmail.Trim();   // #362
+    d.LogLUDateTime = DateTime.Now; d.LogLUBy = dto.LogLUBy ?? (user.Identity?.Name ?? "system");
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DealerCode, d.DealerName, d.Status, d.FlagDoiTac, d.TCKTEmail });
+    return Results.Ok(new { d.DealerCode, d.DealerName, d.Status, d.FlagDoiTac, d.TCKTEmail, d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy });
 }).RequireAuthorization();
 
 // Import hàng loạt data thật từ Mst_Dealer (SQL nguồn 2010.HTC) — dedupe theo DealerCode.
@@ -576,7 +585,7 @@ app.MapDelete("/api/dealers/{code}", async (string code, AppDbContext db, ITenan
 {
     code = code.Trim().ToUpperInvariant();
     var d = await db.Dealers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == code);
-    if (d is null) return Results.NotFound(new { code });
+    if (d is null) return Results.NotFound(new { error = "Không tìm thấy đại lý.", code = "CommonAppData_MstDealerNotFound", dealerCode = code });
     db.Dealers.Remove(d); await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code });
 }).RequireAuthorization();
@@ -34930,49 +34939,52 @@ app.MapGet("/api/dealersalesmen", async (AppDbContext db, ITenantContext t, stri
     if (!string.IsNullOrWhiteSpace(dealer)) qry = qry.Where(x => x.DealerCode == dealer);
     if (!string.IsNullOrWhiteSpace(bdh)) qry = qry.Where(x => x.BDHStatus == bdh);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.SMCode.Contains(q!) || x.SMName!.Contains(q!) || x.SMHyundaiCode!.Contains(q!));
-    var items = await qry.OrderBy(x => x.SMCode).Take(500).Select(x => new { x.Id, x.SMCode, x.SMHyundaiCode, x.SMName, x.DealerCode, x.SMEmail, x.SMPhoneNo, x.IdentityCardNo, x.SMGender, x.ProvinceCode, x.QualificationCode, x.StartDate, x.EndDate, x.SMStatus, x.BDHStatus, x.FlagActive }).ToListAsync();
+    var items = await qry.OrderBy(x => x.SMCode).Take(500).Select(x => new { x.Id, x.SMCode, x.SMHyundaiCode, x.SMName, x.DealerCode, x.SMEmail, x.SMPhoneNo, x.IdentityCardNo, x.SMGender, x.ProvinceCode, x.QualificationCode, x.StartDate, x.EndDate, x.SMStatus, x.BDHStatus, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealersalesmen", async (DealerSalesManDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealersalesmen", async (DealerSalesManDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.SMCode ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH." });
-    if (string.IsNullOrWhiteSpace((dto.SMName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên NVBH." });
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã NVBH.", code = "Mst_SalesMan_Create_InvalidSMCode" });
+    if (string.IsNullOrWhiteSpace((dto.SMName ?? "").Trim())) return Results.BadRequest(new { error = "Chưa nhập tên NVBH.", code = "Mst_SalesMan_Create_InvalidSMName" });
     var work = (dto.SMStatus ?? "THUVIEC").Trim().ToUpperInvariant();
-    if (!smWorkStatuses.Contains(work)) return Results.BadRequest(new { error = "Trạng thái làm việc không hợp lệ (THUVIEC/CHINHTHUC/NGHIVIEC/CTVIEN)." });
-    if (!string.IsNullOrWhiteSpace(dto.SMEmail) && !(dto.SMEmail!.Contains('@') && dto.SMEmail.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ." });
+    if (!smWorkStatuses.Contains(work)) return Results.BadRequest(new { error = "Trạng thái làm việc không hợp lệ (THUVIEC/CHINHTHUC/NGHIVIEC/CTVIEN).", code = "Mst_SalesMan_Create_InvalidSaleManWorking" });
+    if (!string.IsNullOrWhiteSpace(dto.SMEmail) && !(dto.SMEmail!.Contains('@') && dto.SMEmail.Contains('.'))) return Results.BadRequest(new { error = "Email không hợp lệ.", code = "Mst_SalesMan_Create_InvalidSMEmail" });
     var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SMCode == code);
-    if (row is null) { row = new DealerSalesMan { OrgId = t.OrgId, SMCode = code, BDHStatus = "CHALLENGE" }; db.DealerSalesMen.Add(row); }   // #204
+    if (row is null) { row = new DealerSalesMan { OrgId = t.OrgId, SMCode = code, BDHStatus = "CHALLENGE", CreatedDate = dto.CreatedDate ?? DateTime.Now, CreatedBy = dto.CreatedBy ?? (user.Identity?.Name ?? "system") }; db.DealerSalesMen.Add(row); }   // #204
     row.SMHyundaiCode = dto.SMHyundaiCode; row.SMName = dto.SMName; row.DealerCode = dto.DealerCode; row.SMEmail = dto.SMEmail; row.SMPhoneNo = dto.SMPhoneNo; row.IdentityCardNo = dto.IdentityCardNo; row.SMGender = dto.SMGender; row.ProvinceCode = dto.ProvinceCode; row.QualificationCode = dto.QualificationCode; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.SMStatus = work; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = dto.LogLUBy ?? (user.Identity?.Name ?? "system");
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.SMCode, row.SMName, row.SMStatus, row.BDHStatus });
+    return Results.Ok(new { row.Id, row.SMCode, row.SMName, row.SMStatus, row.BDHStatus, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealersalesmen/{id}/{action}", async (long id, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealersalesmen/{id}/{action}", async (long id, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy NVBH.", code = "CommonAppData_MstSalesManNotFound", id });
     // 🔴 #204 BỔ NHIỆM, KHÔNG PHẢI DUYỆT — `TConst.BDHStatus` (Const.Main.cs:1227) chỉ có `CHALLENGE`
     //    (đang thử thách) và `APPOINT` (đã bổ nhiệm). Nguồn KHÔNG có nhánh "từ chối" cho trục này ⇒ bỏ
     //    `reject`, và `approve` đổi thành `appoint` cho đúng nghiệp vụ (giữ `approve` làm bí danh để client cũ
     //    không vỡ — cùng cách xử lý "giữ đường dẫn, đổi ngữ nghĩa bên dưới" ở #203).
     var act = action.ToLowerInvariant();
     if (act == "reject")
-        return Results.BadRequest(new { error = "Nguồn không có bước từ chối bổ nhiệm — chỉ CHALLENGE → APPOINT." });
+        return Results.BadRequest(new { error = "Nguồn không có bước từ chối bổ nhiệm — chỉ CHALLENGE → APPOINT.", code = "Mst_SalesMan_Appoint_InvalidAction" });
     var target = act is "appoint" or "approve" ? "APPOINT" : "";
-    if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (appoint)." });
-    if (row.BDHStatus != "CHALLENGE") return Results.BadRequest(new { error = $"NVBH đang ở '{row.BDHStatus}' — chỉ bổ nhiệm khi đang CHALLENGE." });
+    if (target == "") return Results.BadRequest(new { error = "Hành động không hợp lệ (appoint).", code = "Mst_SalesMan_Appoint_InvalidAction" });
+    if (row.BDHStatus != "CHALLENGE") return Results.BadRequest(new { error = $"NVBH đang ở '{row.BDHStatus}' — chỉ bổ nhiệm khi đang CHALLENGE.", code = "Mst_SalesMan_Appoint_InvalidBDHStatus" });
     row.BDHStatus = target; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.BDHStatus });
 }).RequireAuthorization();
 
-app.MapPost("/api/dealersalesmen/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dealersalesmen/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.DealerSalesMen.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
+    if (row is null) return Results.NotFound(new { error = "Không tìm thấy NVBH.", code = "CommonAppData_MstSalesManNotFound", id });
     row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.FlagActive });
 }).RequireAuthorization();
@@ -88634,13 +88646,14 @@ app.MapGet("/api/salesorders", async (AppDbContext db, ITenantContext t, string?
         o.SoCode, o.OrderType, o.PayType, o.SORCode, o.DealerCode, o.Status, o.CreatedAt, o.SentAt,
         o.SalesPolicy, o.ExpectedMonth, o.LatestDeliveryDate, o.Approved1At, o.Approved2At, o.RejectReason,
         o.ApprovedDateOld, o.DepositDutyEndDateOld, o.GrtEndDateOld, o.CarDueDateOld, o.UpdDTime, o.UpdBy,
+        o.CreatedDate, o.CreatedBy, o.ApprovedDate1, o.ApprovedBy2,
         lines = db.SalesOrderLines.Count(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id),
         qty = db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id).Sum(l => (int?)l.RequestedQuantity) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/salesorders", async (SalesOrderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/salesorders", async (SalesOrderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "CommonAppData_InvalidDealerCode" });
     var type = (dto.OrderType ?? "Plan").Trim();
@@ -88653,12 +88666,16 @@ app.MapPost("/api/salesorders", async (SalesOrderDto dto, AppDbContext db, ITena
     var no = (type == "Plan" ? "SOP" : "SOU") + DateTime.Now.ToString("yyMMddHHmmss");
     var o = new SalesOrder { OrgId = t.OrgId, SoCode = no, OrderType = type, PayType = dto.PayType, OrderMonth = dto.OrderMonth, ApprovedDate2 = dto.ApprovedDate2, FlagPmtDelayDone = dto.FlagPmtDelayDone, PenalizeActual = dto.PenalizeActual ?? 0m, SORCode = string.IsNullOrWhiteSpace(dto.SORCode) ? null : dto.SORCode.Trim(), // 🔴 Nguồn tạo đơn là "P" (chờ duyệt) NGAY — không có bước nháp/gửi.
     DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P",
-    ApprovedDateOld = dto.ApprovedDateOld, DepositDutyEndDateOld = dto.DepositDutyEndDateOld, GrtEndDateOld = dto.GrtEndDateOld, CarDueDateOld = dto.CarDueDateOld, UpdDTime = dto.UpdDTime, UpdBy = dto.UpdBy };
+    ApprovedDateOld = dto.ApprovedDateOld, DepositDutyEndDateOld = dto.DepositDutyEndDateOld, GrtEndDateOld = dto.GrtEndDateOld, CarDueDateOld = dto.CarDueDateOld, UpdDTime = dto.UpdDTime, UpdBy = dto.UpdBy,
+    CreatedDate = dto.CreatedDate ?? DateTime.Now, CreatedBy = dto.CreatedBy ?? (user.Identity?.Name ?? "system"),
+    ApprovedDate1 = dto.ApprovedDate1, ApprovedBy2 = dto.ApprovedBy2 };
     db.SalesOrders.Add(o); await db.SaveChangesAsync();
     foreach (var l in lines)
-        db.SalesOrderLines.Add(new SalesOrderLine { OrgId = t.OrgId, SalesOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ContractType = l.ContractType, YearProduction = l.YearProduction, RequestedQuantity = l.RequestedQuantity, RequestedDate = l.RequestedDate, UnitPrice = l.UnitPrice, RemarkDL = l.RemarkDL, ColorCode = l.ColorCode, CarId = l.CarId });
+        db.SalesOrderLines.Add(new SalesOrderLine { OrgId = t.OrgId, SalesOrderId = o.Id, ModelCode = l.ModelCode.Trim(), SpecCode = l.SpecCode, ContractType = l.ContractType, YearProduction = l.YearProduction, RequestedQuantity = l.RequestedQuantity, RequestedDate = l.RequestedDate, UnitPrice = l.UnitPrice, RemarkDL = l.RemarkDL, ColorCode = l.ColorCode, CarId = l.CarId,
+        CreatedDate = l.CreatedDate ?? DateTime.Now, CreatedBy = l.CreatedBy ?? (user.Identity?.Name ?? "system"),
+        LogLUDateTime = l.LogLUDateTime ?? DateTime.Now, LogLUBy = l.LogLUBy ?? (user.Identity?.Name ?? "system") });
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.SoCode, o.OrderType, lines = lines.Count, status = o.Status, o.OrderMonth, o.ApprovedDate2, o.FlagPmtDelayDone, o.PenalizeActual, o.ApprovedDateOld, o.DepositDutyEndDateOld, o.GrtEndDateOld, o.CarDueDateOld, o.UpdDTime, o.UpdBy });
+    return Results.Ok(new { o.SoCode, o.OrderType, lines = lines.Count, status = o.Status, o.OrderMonth, o.ApprovedDate2, o.FlagPmtDelayDone, o.PenalizeActual, o.ApprovedDateOld, o.DepositDutyEndDateOld, o.GrtEndDateOld, o.CarDueDateOld, o.UpdDTime, o.UpdBy, o.CreatedDate, o.CreatedBy, o.ApprovedDate1, o.ApprovedBy2 });
 }).RequireAuthorization();
 
 app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
@@ -88667,10 +88684,11 @@ app.MapGet("/api/salesorders/{no}/lines", async (string no, AppDbContext db, ITe
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
     if (o is null) return Results.NotFound(new { error = "CommonAppData_OrdSOCodeNotFound", no });
     var lines = await db.SalesOrderLines.Where(l => l.OrgId == t.OrgId && l.SalesOrderId == o.Id)
-        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate, l.UnitPriceInit, l.MapVINRanking, l.Remark, l.CarId }).ToListAsync();
+        .Select(l => new { l.ModelCode, l.SpecCode, l.ColorCode, l.ContractType, l.YearProduction, l.RequestedQuantity, l.RequestedDate, l.UnitPrice, l.RemarkDL, l.ApprovedQuantity, l.ApprovedDate, l.UnitPriceInit, l.MapVINRanking, l.Remark, l.CarId, l.CreatedDate, l.CreatedBy, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
     return Results.Ok(new { o.SoCode, o.OrderType, o.PayType, o.DealerCode, o.Status, o.CreatedAt, o.SentAt,
         o.SalesPolicy, o.ExpectedMonth, o.OrderMonth, o.ApprovedDate2, o.FlagPmtDelayDone, o.PenalizeActual, o.LatestDeliveryDate, o.Approved1At, o.Approved2At, o.RejectReason,   // #1391 §12, ApprovedDate2
         o.ApprovedDateOld, o.DepositDutyEndDateOld, o.GrtEndDateOld, o.CarDueDateOld, o.UpdDTime, o.UpdBy,
+        o.CreatedDate, o.CreatedBy, o.ApprovedDate1, o.ApprovedBy2,
         count = lines.Count, lines, qty = lines.Sum(x => x.RequestedQuantity) });
 }).RequireAuthorization();
 
@@ -88948,7 +88966,7 @@ app.MapPost("/api/salesorders/{no}/approve1", async (string no, SoApprove1Dto dt
     }
     o.SPCode = dto.SPCode; o.SalesPolicy = dto.SalesPolicy; o.ExpectedMonth = dto.ExpectedMonth;
     o.ProductionMonth = dto.ProductionMonth; o.LatestDeliveryDate = dto.LatestDeliveryDate;
-    o.Status = "A1"; o.Approved1At = DateTime.Now;
+    o.Status = "A1"; o.Approved1At = DateTime.Now; o.ApprovedDate1 = DateTime.Now;
     o.ApprovedBy1 = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Duyệt cấp 1", approvedLines = lines.Count });
@@ -88958,7 +88976,7 @@ app.MapPost("/api/salesorders/{no}/approve1", async (string no, SoApprove1Dto dt
 // 🔴 Duyệt cấp 2 — `OrderSOApprove2_New20181119` (Biz.HTC.WH.cs:25698-25813). Vào từ "A1".
 //    Nguồn có **HAI ngả trong CÙNG một hàm**: mặc định → "A2"; nếu `strFlagUnapprove = Flag.Active`
 //    thì **BỎ DUYỆT, trả đơn về "P"**. Port cũ thiếu hẳn ngả bỏ duyệt.
-app.MapPost("/api/salesorders/{no}/approve2", async (string no, AppDbContext db, ITenantContext t, bool? unapprove) =>
+app.MapPost("/api/salesorders/{no}/approve2", async (string no, AppDbContext db, ITenantContext t, bool? unapprove, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.SalesOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SoCode == no);
@@ -88966,11 +88984,12 @@ app.MapPost("/api/salesorders/{no}/approve2", async (string no, AppDbContext db,
     if (o.Status != "A1") return Results.BadRequest(new { error = "CommonAppData_OrdSOStatusNotMatched" });
     if (unapprove == true)
     {
-        o.Status = "P"; o.Approved1At = null; o.Approved2At = null;
+        o.Status = "P"; o.Approved1At = null; o.Approved2At = null; o.ApprovedDate1 = null; o.ApprovedBy2 = null;
         await db.SaveChangesAsync();
         return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Chờ duyệt (đã bỏ duyệt)" });
     }
     o.Status = "A2"; o.Approved2At = DateTime.Now;
+    o.ApprovedBy2 = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { o.SoCode, status = o.Status, statusName = "Duyệt cấp 2" });
 }).RequireAuthorization();
@@ -122345,7 +122364,7 @@ app.MapGet("/api/reports/dms40-estimate-delivery-plan", async (
 
 app.Run();
 
-record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status, string? AreaBUPattern = null);
+record AreaDto(string AreaCode, string AreaName, string? AreaRootCode, string? Status, string? AreaBUPattern = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 // #232: `FlagActive` CHỈ có tác dụng khi SỬA — `Mst_DeliveryLocation_Add` đặt cứng Active.
 record DeliveryLocationDto(string? DeliveryLocationCode, string? DealerCode, string? DeliveryLocationName, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null);
 record MasterDto(string Code, string Name, string? ParentCode, string? Status);
@@ -122367,7 +122386,8 @@ record DealerDto(string DealerCode, string DealerName, string? FlagDealerHTC,
     // #1223 §12: WsUrlAddr la du lieu MASTER cua dai ly (dia chi web service, dung o
     // /api/warrantyclaims/{id}/action) - truoc day KHONG co duong ghi/doc nao qua API, moi dai ly
     // vinh vien NULL => duyet bao hanh LUON THAT BAI voi loi Ser_ROWarrantyReport_WSUrlAddr_NotFound.
-    string? WsUrlAddr = null);   // merge session-a
+    string? WsUrlAddr = null,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #Round131 §12
 record CarPriceDto(string ModelCode, string? SpecCode, string? ColorCode, DateTime? EffectiveDate, string? SoType, decimal Price, decimal? Vat, string? Status);
 record SalesManDto(string? SalesManCode, string SalesManName, string? DealerCode, string? DepartmentCode, string? SalesType, string? Phone, string? Email, string? Status,
     string? Gender, DateTime? DateOfBirth, string? Address, string? ProvinceCode, string? QualificationCode, string? Specialized, string? YearExperience,
@@ -123412,10 +123432,10 @@ record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, str
 record CtTkhqTaxRowDto(string? DeclarationNo, DateTime? TaxPaymentDate);
 record CtTkhqTaxDto(List<CtTkhqTaxRowDto>? Rows);
 record CtTkhqDeleteDto(List<string>? DeclarationNos);
-record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL, string? ColorCode = null, string? CarId = null);
+record SalesOrderLineDto(string ModelCode, string? SpecCode, string? ContractType, string? YearProduction, int RequestedQuantity, DateTime? RequestedDate, decimal UnitPrice, string? RemarkDL, string? ColorCode = null, string? CarId = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record SoEditDatesDto(List<SoEditDateRowDto>? Lines);
 record SoEditDateRowDto(string? SOCode, DateTime? ApprovedDate, DateTime? DepositDutyEndDate, DateTime? GrtEndDate, DateTime? CarDueDate, DateTime? ApprovedDate2 = null);   // #B365 §12
-record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, string? SORCode, List<SalesOrderLineDto>? Lines, DateTime? OrderMonth = null, DateTime? ApprovedDate2 = null, string? FlagPmtDelayDone = null, decimal? PenalizeActual = null, DateTime? ApprovedDateOld = null, DateTime? DepositDutyEndDateOld = null, DateTime? GrtEndDateOld = null, DateTime? CarDueDateOld = null, DateTime? UpdDTime = null, string? UpdBy = null);
+record SalesOrderDto(string DealerCode, string? OrderType, string? PayType, string? SORCode, List<SalesOrderLineDto>? Lines, DateTime? OrderMonth = null, DateTime? ApprovedDate2 = null, string? FlagPmtDelayDone = null, decimal? PenalizeActual = null, DateTime? ApprovedDateOld = null, DateTime? DepositDutyEndDateOld = null, DateTime? GrtEndDateOld = null, DateTime? CarDueDateOld = null, DateTime? UpdDTime = null, string? UpdBy = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? ApprovedDate1 = null, string? ApprovedBy2 = null);
 record SoApprove1Dto(string? SalesPolicy, DateTime? ExpectedMonth, DateTime? ProductionMonth, DateTime? LatestDeliveryDate, string? SPCode = null, List<SoApprove1LineDto>? Lines = null);
 // Dòng duyệt cấp 1 do người duyệt nhập — nguồn đối chiếu theo khoá SpecCode/ModelCode/ColorCode.
 record SoApprove1LineDto(string? ModelCode, string? SpecCode, string? ColorCode, int ApprovedQuantity, DateTime? ApprovedDate, decimal UnitPriceInit, string? Remark);
@@ -124655,7 +124675,7 @@ record RedeemRequestDto(string? ReqRedeemNo, DateTime? CreatedDate, string? Deal
 record RedeemRequestLineDto(string? VIN, string? CarId, string? RedeemType, DateTime? DMReqDate = null, string? DealerCode = null, string? DRListCode = null, string? MortageBankCode = null, string? ReqRMNo = null, string? Remark = null, DateTime? CDRLCreatedDate = null, string? MMSDocReqIdx = null);
 record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, string? DealerCode, string? Note, List<RedeemInvoiceRequestLineDto>? Lines);
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
-record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus);
+record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode);
 record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null);   // #915 DealerCode
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);

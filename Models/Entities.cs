@@ -13,6 +13,9 @@ public sealed class Area
     public string? AreaBUPattern { get; set; }  // #Round104 §12: Mst_Area.AreaBUPattern
     public string Status { get; set; } = "1";   // 1=hiệu lực, 0=ngừng (cờ 2010.HTC)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #Round131 §12: Mst_Area (DbDefine.cs:3379-3382) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>Đại lý (Mst_Dealer) — port 1:1 FrmDealer (2010.HTC/Admin/Dealer).</summary>
@@ -122,6 +125,11 @@ public sealed class Dealer
     public string? OrgHCCID { get; set; }
     /// <summary>`NetworkHCCID` — mã mạng lưới bên HCC (khác `NetworkID` của bảng `CmCt_Mst_Network`).</summary>
     public string? NetworkHCCID { get; set; }
+    // ===== #Round131 §12: Mst_Dealer (DbDefine.cs:3422-3428) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Bảng giá xe (Mst_CarPrice) — port 1:1 FrmCarPrice: giá theo Model/Spec/Color.</summary>
@@ -4187,6 +4195,11 @@ public sealed class DealerSalesMan
     public string BDHStatus { get; set; } = "CHALLENGE";
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; }
+    // ===== #Round131 §12: Mst_DealerSalesMan (DbDefine.cs:5178-5185) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Ghi nhận khách đến xem xe (Dlr_CtmVisit) — port 1:1 FrmCusVisit (2010.HTC/Sales/RetailContract). Log walk-in showroom: mã ghi (theo thời điểm) + đại lý + giới tính + độ tuổi + model quan tâm. Insert-only, không sửa/xóa.</summary>
@@ -8575,6 +8588,11 @@ public sealed class SalesOrder
     public DateTime? CarDueDateOld { get; set; }
     public DateTime? UpdDTime { get; set; }
     public string? UpdBy { get; set; }
+    // ===== #Round131 §12: TblOrd_SalesOrder (DbDefine.cs:4270-4282) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? ApprovedDate1 { get; set; }
+    public string? ApprovedBy2 { get; set; }
 }
 /// <summary>🔴 #5481 — Lượt duyệt tự động đơn hàng DMS40 (FrmDuyetTuDongDonHang, 2010.HTC/Sales/Upgrade).
 /// LIVE biz = `DMS40_Ord_SalesOrderRoot_ApprAuto_New20210522` (`BizHTC.Order.cs:28-1477`, qua WS
@@ -8653,6 +8671,11 @@ public sealed class SalesOrderLine
     /// · **80** cho MỌI trường hợp còn lại — kể cả khi `left join Mst_CarSpec` KHÔNG khớp
     /// (`AssemblyStatus` NULL) ⇒ spec sai/thiếu **im lặng nhận 80 ngày**, không báo lỗi.</summary>
     public DateTime? CarDueDate { get; set; }
+    // ===== #Round131 §12: TblSo (DbDefine.cs:4293-4305) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Giao dịch bán lẻ của đại lý (DealerDeal) — port 1:1 FrmNewDeal/FrmMngDeal (DMSales.Foton/SalesDealer). Đại lý bán xe cho khách: 3 vai trò KH (mua/lái/đứng tên), kiểu bán lẻ, cờ PDI.</summary>
