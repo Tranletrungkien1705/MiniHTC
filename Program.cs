@@ -47909,31 +47909,48 @@ app.MapGet("/api/transporters", async (AppDbContext db, ITenantContext t, string
     {
         x.Id, x.TransporterCode, x.TransporterName, x.Address, x.PhoneNo, x.FaxNo, x.DirectorFullName, x.DirectorPhoneNo, x.ContactorPhoneNo, x.FlagActive, x.UpdatedAt,   // #1282 §12
         x.ContactorFullName, x.TransportContractNo, x.Remark,   // #331
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
         cars = db.TransporterCars.Count(c => c.OrgId == t.OrgId && c.TransporterCode == x.TransporterCode),
         drivers = db.TransporterDrivers.Count(d => d.OrgId == t.OrgId && d.TransporterCode == x.TransporterCode)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/transporters", async (TransporterDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transporters", async (TransporterDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.TransporterCode ?? "").Trim();
-    if (code == "") return Results.BadRequest(new { error = "Thiếu mã nhà vận tải." });
+    if (code == "") return Results.BadRequest(new { error = "ErrHTC.CommonAppData_TransporterCodeBeBlank", code = "ErrHTC.CommonAppData_TransporterCodeBeBlank", message = "Thiếu mã nhà vận tải." });
     var s = await db.Transporters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransporterCode == code);
-    if (s is null) { s = new Transporter { OrgId = t.OrgId, TransporterCode = code }; db.Transporters.Add(s); }
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (s is null)
+    {
+        s = new Transporter
+        {
+            OrgId = t.OrgId,
+            TransporterCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.Transporters.Add(s);
+    }
     s.TransporterName = dto.TransporterName; s.Address = dto.Address; s.PhoneNo = dto.PhoneNo; s.FaxNo = dto.FaxNo;
     s.DirectorFullName = dto.DirectorFullName; s.DirectorPhoneNo = dto.DirectorPhoneNo; s.ContactorPhoneNo = dto.ContactorPhoneNo; s.UpdatedAt = DateTime.Now;
     // #331 nguồn SaveMasterDataTable ghi NGUYÊN dòng lưới ⇒ 3 cột này cũng được ghi đè.
     s.ContactorFullName = dto.ContactorFullName; s.TransportContractNo = dto.TransportContractNo; s.Remark = dto.Remark;
+    s.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now;
+    s.LogLUBy = dto.LogLUBy ?? who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { s.Id, s.TransporterCode });
+    return Results.Ok(new { s.Id, s.TransporterCode, s.CreatedDate, s.CreatedBy, s.LogLUDateTime, s.LogLUBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/transporters/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transporters/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var s = await db.Transporters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransporterCode == code.Trim());
-    if (s is null) return Results.NotFound(new { code });
+    if (s is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_TransporterNotFound", code = "ErrHTC.CommonAppData_TransporterNotFound", transporterCode = code });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     s.FlagActive = s.FlagActive == "1" ? "0" : "1"; s.UpdatedAt = DateTime.Now;
+    s.LogLUDateTime = DateTime.Now;
+    s.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.TransporterCode, s.FlagActive });
 }).RequireAuthorization();
@@ -47942,28 +47959,44 @@ app.MapPost("/api/transporters/{code}/toggle", async (string code, AppDbContext 
 app.MapGet("/api/transporters/{code}/cars", async (string code, AppDbContext db, ITenantContext t) =>
 {
     var cars = await db.TransporterCars.Where(x => x.OrgId == t.OrgId && x.TransporterCode == code.Trim())
-        .OrderBy(x => x.PlateNo).Select(x => new { x.Id, x.PlateNo, x.FlagActive }).ToListAsync();
+        .OrderBy(x => x.PlateNo).Select(x => new { x.Id, x.PlateNo, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { transporterCode = code, count = cars.Count, cars });
 }).RequireAuthorization();
 
-app.MapPost("/api/transporters/{code}/cars", async (string code, TransporterCarDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transporters/{code}/cars", async (string code, TransporterCarDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var tc = code.Trim();
-    if (!await db.Transporters.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc)) return Results.BadRequest(new { error = "Nhà vận tải không tồn tại." });
+    if (!await db.Transporters.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_TransporterNotFound", code = "ErrHTC.CommonAppData_TransporterNotFound", message = "Nhà vận tải không tồn tại." });
     var plate = (dto.PlateNo ?? "").Trim().ToUpperInvariant();
-    if (plate == "") return Results.BadRequest(new { error = "Thiếu biển số." });
+    if (plate == "")
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", code = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Thiếu biển số." });
     if (await db.TransporterCars.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc && x.PlateNo == plate))
-        return Results.BadRequest(new { error = "Biển số đã có: " + plate });
-    db.TransporterCars.Add(new TransporterCar { OrgId = t.OrgId, TransporterCode = tc, PlateNo = plate });
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_PlateNoExist", code = "ErrHTC.CommonAppData_PlateNoExist", message = "Biển số đã có: " + plate });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var c = new TransporterCar
+    {
+        OrgId = t.OrgId,
+        TransporterCode = tc,
+        PlateNo = plate,
+        CreatedDate = dto.CreatedDate ?? DateTime.Now,
+        CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+        LogLUBy = dto.LogLUBy ?? who
+    };
+    db.TransporterCars.Add(c);
     await db.SaveChangesAsync();
-    return Results.Ok(new { plate });
+    return Results.Ok(new { plate, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/transporters/cars/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transporters/cars/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var c = await db.TransporterCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (c is null) return Results.NotFound(new { id });
+    if (c is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_TransporterCarNotFound", code = "ErrHTC.CommonAppData_TransporterCarNotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    c.LogLUDateTime = DateTime.Now;
+    c.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Id, c.FlagActive });
 }).RequireAuthorization();
@@ -47972,28 +48005,47 @@ app.MapPost("/api/transporters/cars/{id}/toggle", async (long id, AppDbContext d
 app.MapGet("/api/transporters/{code}/drivers", async (string code, AppDbContext db, ITenantContext t) =>
 {
     var drivers = await db.TransporterDrivers.Where(x => x.OrgId == t.OrgId && x.TransporterCode == code.Trim())
-        .OrderBy(x => x.DriverId).Select(x => new { x.Id, x.DriverId, x.DriverFullName, x.DriverLicenseNo, x.DriverPhoneNo, x.FlagActive }).ToListAsync();
+        .OrderBy(x => x.DriverId).Select(x => new { x.Id, x.DriverId, x.DriverFullName, x.DriverLicenseNo, x.DriverPhoneNo, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { transporterCode = code, count = drivers.Count, drivers });
 }).RequireAuthorization();
 
-app.MapPost("/api/transporters/{code}/drivers", async (string code, TransporterDriverDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transporters/{code}/drivers", async (string code, TransporterDriverDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var tc = code.Trim();
-    if (!await db.Transporters.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc)) return Results.BadRequest(new { error = "Nhà vận tải không tồn tại." });
+    if (!await db.Transporters.AnyAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_TransporterNotFound", code = "ErrHTC.CommonAppData_TransporterNotFound", message = "Nhà vận tải không tồn tại." });
     var did = (dto.DriverId ?? "").Trim();
-    if (did == "") return Results.BadRequest(new { error = "Thiếu mã tài xế." });
+    if (did == "")
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", code = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Thiếu mã tài xế." });
     var d = await db.TransporterDrivers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TransporterCode == tc && x.DriverId == did);
-    if (d is null) { d = new TransporterDriver { OrgId = t.OrgId, TransporterCode = tc, DriverId = did }; db.TransporterDrivers.Add(d); }
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (d is null)
+    {
+        d = new TransporterDriver
+        {
+            OrgId = t.OrgId,
+            TransporterCode = tc,
+            DriverId = did,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.TransporterDrivers.Add(d);
+    }
     d.DriverFullName = dto.DriverFullName; d.DriverLicenseNo = dto.DriverLicenseNo; d.DriverPhoneNo = dto.DriverPhoneNo;
+    d.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now;
+    d.LogLUBy = dto.LogLUBy ?? who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { d.DriverId });
+    return Results.Ok(new { d.DriverId, d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/transporters/drivers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/transporters/drivers/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var d = await db.TransporterDrivers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (d is null) return Results.NotFound(new { id });
+    if (d is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_TransporterDriverNotFound", code = "ErrHTC.CommonAppData_TransporterDriverNotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     d.FlagActive = d.FlagActive == "1" ? "0" : "1";
+    d.LogLUDateTime = DateTime.Now;
+    d.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { d.Id, d.FlagActive });
 }).RequireAuthorization();
@@ -65731,6 +65783,7 @@ app.MapGet("/api/paymentterms", async (AppDbContext db, ITenantContext t, string
     {
         p.PMTermNo, p.EffectiveDateFrom, p.EffectiveDateTo, p.ModelCode, p.SpecCode, p.FlagDepositPmt, p.DepositPercent, p.GuaranteePercent,
         p.GuaranteeDays, p.DepositDutyEndDays, p.GuaranteeEndDays, p.DepositDealDateDays, p.FlagActive, p.CreatedAt,   // #1256 §12
+        p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy,
         // Số dòng model/quy cách áp dụng — chi tiết lấy ở /api/paymentterms/{no}/details.
         details = db.PaymentTermDetails.Count(d => d.OrgId == t.OrgId && d.PMTermNo == p.PMTermNo)
     }).ToListAsync();
@@ -65741,46 +65794,46 @@ app.MapGet("/api/paymentterms", async (AppDbContext db, ITenantContext t, string
 /// Kiểm phần đầu (header) của điều khoản thanh toán — giữ NGUYÊN VĂN thứ tự và câu thông báo
 /// của btnSave_Click (FrmNew_Dieu_Khoan_ThanhToan), rồi tới các luật số học của biz Mst_PaymentTerm_Create.
 /// </summary>
-static string? ValidatePaymentTermHeader(PaymentTermDto dto)
+static (string? ErrorCode, string? Message) ValidatePaymentTermHeader(PaymentTermDto dto)
 {
-    if (dto.EffectiveDateFrom is null) return "Chưa nhập Ngày XNĐH từ!";
-    if (dto.EffectiveDateTo is null) return "Chưa nhập Ngày XNĐH đến!";
-    if (dto.DepositPercent is null) return "Chưa nhập % Cọc!";
-    if (dto.GuaranteePercent is null) return "Chưa nhập % Bảo lãnh!";
-    if (dto.GuaranteeDays is null) return "Chưa nhập Chính sách gia hạn thời gian BL (ngày)!";
-    if (dto.DepositDutyEndDays is null) return "Chưa nhập Thời hạn TTC!";
-    if (dto.GuaranteeEndDays is null) return "Chưa nhập Thời hạn PHBL!";
-    if (dto.DepositDealDateDays is null) return "Chưa nhập Thời hạn TTC theo Ngày báo bán!";
+    if (dto.EffectiveDateFrom is null) return ("ErrHTC.Mst_PaymentTerm_Create_EffectiveDateFromIsEmpty", "Chưa nhập Ngày XNĐH từ!");
+    if (dto.EffectiveDateTo is null) return ("ErrHTC.Mst_PaymentTerm_Create_EffectiveDateToIsEmpty", "Chưa nhập Ngày XNĐH đến!");
+    if (dto.DepositPercent is null) return ("ErrHTC.Mst_PaymentTerm_Create_DepositPercentIsEmpty", "Chưa nhập % Cọc!");
+    if (dto.GuaranteePercent is null) return ("ErrHTC.Mst_PaymentTerm_Create_GuaranteePercentIsEmpty", "Chưa nhập % Bảo lãnh!");
+    if (dto.GuaranteeDays is null) return ("ErrHTC.Mst_PaymentTerm_Create_GuaranteeDaysIsEmpty", "Chưa nhập Chính sách gia hạn thời gian BL (ngày)!");
+    if (dto.DepositDutyEndDays is null) return ("ErrHTC.Mst_PaymentTerm_Create_DepositDutyEndDaysIsEmpty", "Chưa nhập Thời hạn TTC!");
+    if (dto.GuaranteeEndDays is null) return ("ErrHTC.Mst_PaymentTerm_Create_GuaranteeEndDaysIsEmpty", "Chưa nhập Thời hạn PHBL!");
+    if (dto.DepositDealDateDays is null) return ("ErrHTC.Mst_PaymentTerm_Create_DepositDealDateDaysIsEmpty", "Chưa nhập Thời hạn TTC theo Ngày báo bán!");
 
     // Biz: ngày đến không được nhỏ hơn ngày từ.
-    if (dto.EffectiveDateTo < dto.EffectiveDateFrom) return "Ngày XNĐH đến phải >= Ngày XNĐH từ!";
+    if (dto.EffectiveDateTo < dto.EffectiveDateFrom) return ("ErrHTC.Mst_PaymentTerm_Create_InvalidEffectiveDate", "Ngày XNĐH đến phải >= Ngày XNĐH từ!");
 
     // Biz chỉ đòi >= 0 cho MỌI số (không có trần 100 cho phần trăm).
-    if (dto.DepositPercent < 0) return "% Cọc không hợp lệ!";
-    if (dto.GuaranteePercent < 0) return "% Bảo lãnh không hợp lệ!";
-    if (dto.GuaranteeDays < 0) return "Chính sách gia hạn thời gian BL (ngày) không hợp lệ!";
-    if (dto.DepositDutyEndDays < 0) return "Thời hạn TTC không hợp lệ!";
-    if (dto.GuaranteeEndDays < 0) return "Thời hạn PHBL không hợp lệ!";
-    if (dto.DepositDealDateDays < 0) return "Thời hạn TTC theo Ngày báo bán không hợp lệ!";
-    return null;
+    if (dto.DepositPercent < 0) return ("ErrHTC.Mst_PaymentTerm_Create_InvalidDepositPercent", "% Cọc không hợp lệ!");
+    if (dto.GuaranteePercent < 0) return ("ErrHTC.Mst_PaymentTerm_Create_InvalidGuaranteePercent", "% Bảo lãnh không hợp lệ!");
+    if (dto.GuaranteeDays < 0) return ("ErrHTC.Mst_PaymentTerm_Create_InvalidGuaranteeDays", "Chính sách gia hạn thời gian BL (ngày) không hợp lệ!");
+    if (dto.DepositDutyEndDays < 0) return ("ErrHTC.Mst_PaymentTerm_Create_DepositDutyEndDaysInvalid", "Thời hạn TTC không hợp lệ!");
+    if (dto.GuaranteeEndDays < 0) return ("ErrHTC.Mst_PaymentTerm_Create_GuaranteeEndDaysInvalid", "Thời hạn PHBL không hợp lệ!");
+    if (dto.DepositDealDateDays < 0) return ("ErrHTC.Mst_PaymentTerm_Create_InvalidDepositDealDateDays", "Thời hạn TTC theo Ngày báo bán không hợp lệ!");
+    return (null, null);
 }
 
 /// <summary>Kiểm lưới model/quy cách: bắt buộc có dòng, không trùng CẶP (model, quy cách).</summary>
-static string? ValidatePaymentTermDetails(List<PaymentTermDetailDto>? details)
+static (string? ErrorCode, string? Message) ValidatePaymentTermDetails(List<PaymentTermDetailDto>? details)
 {
     var lines = (details ?? new()).Where(d => !string.IsNullOrWhiteSpace(d.ModelCode)).ToList();
     // Biz: Mst_PaymentTerm_Create_TableDtlBlank; form: "Lưới danh sách model không có dữ liệu!".
-    if (lines.Count == 0) return "Lưới danh sách model không có dữ liệu!";
+    if (lines.Count == 0) return ("ErrHTC.Mst_PaymentTerm_Create_TableDtlBlank", "Lưới danh sách model không có dữ liệu!");
     var duplicated = lines
         .GroupBy(d => $"{d.ModelCode!.Trim().ToUpperInvariant()}|{(d.SpecCode ?? "").Trim().ToUpperInvariant()}")
         .FirstOrDefault(g => g.Count() > 1);
-    if (duplicated is not null) return $"Model/quy cách '{duplicated.Key}' bị trùng!";
-    return null;
+    if (duplicated is not null) return ("ErrHTC.Mst_PaymentTerm_Create_TableDtlDuplicate", $"Model/quy cách '{duplicated.Key}' bị trùng!");
+    return (null, null);
 }
 
 /// <summary>Ghi lại toàn bộ lưới model/quy cách của một điều khoản (thay thế trọn, đúng cách nguồn lưu bảng chi tiết).</summary>
 static void ReplacePaymentTermDetails(
-    AppDbContext db, Guid orgId, string pmTermNo, List<PaymentTermDetailDto> details)
+    AppDbContext db, Guid orgId, string pmTermNo, List<PaymentTermDetailDto> details, string? userCode = null)
 {
     db.PaymentTermDetails.RemoveRange(
         db.PaymentTermDetails.Where(d => d.OrgId == orgId && d.PMTermNo == pmTermNo));
@@ -65793,7 +65846,11 @@ static void ReplacePaymentTermDetails(
             ModelName = line.ModelName,
             SpecCode = (line.SpecCode ?? "").Trim().ToUpperInvariant(),
             SpecDescription = line.SpecDescription,
-            FlagDepositPmt = line.FlagDepositPmt == "1" ? "1" : "0"
+            FlagDepositPmt = line.FlagDepositPmt == "1" ? "1" : "0",
+            CreatedDate = line.CreatedDate ?? DateTime.Now,
+            CreatedBy = line.CreatedBy ?? userCode,
+            LogLUDateTime = line.LogLUDateTime ?? DateTime.Now,
+            LogLUBy = line.LogLUBy ?? userCode
         });
 }
 
@@ -65802,28 +65859,30 @@ app.MapGet("/api/paymentterms/{no}/details", async (string no, AppDbContext db, 
 {
     no = no.Trim().ToUpperInvariant();
     var term = await db.PaymentTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMTermNo == no);
-    if (term is null) return Results.NotFound(new { no });
+    if (term is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstPaymentTermNotFound", code = "ErrHTC.CommonAppData_MstPaymentTermNotFound", no });
     var details = await db.PaymentTermDetails
         .Where(d => d.OrgId == t.OrgId && d.PMTermNo == no)
-        .Select(d => new { d.ModelCode, d.ModelName, d.SpecCode, d.SpecDescription, d.FlagDepositPmt })
+        .Select(d => new { d.ModelCode, d.ModelName, d.SpecCode, d.SpecDescription, d.FlagDepositPmt, d.CreatedDate, d.CreatedBy, d.LogLUDateTime, d.LogLUBy })
         .ToListAsync();
     return Results.Ok(new
     {
         term.PMTermNo, term.EffectiveDateFrom, term.EffectiveDateTo,
         term.DepositPercent, term.GuaranteePercent, term.GuaranteeDays,
         term.DepositDutyEndDays, term.GuaranteeEndDays, term.DepositDealDateDays,
-        term.FlagActive, count = details.Count, details
+        term.FlagActive, term.CreatedDate, term.CreatedBy, term.LogLUDateTime, term.LogLUBy,
+        count = details.Count, details
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/paymentterms", async (PaymentTermDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/paymentterms", async (PaymentTermDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    var headerError = ValidatePaymentTermHeader(dto);
-    if (headerError is not null) return Results.BadRequest(new { error = headerError });
-    var detailError = ValidatePaymentTermDetails(dto.Details);
-    if (detailError is not null) return Results.BadRequest(new { error = detailError });
+    var (headerError, headerMsg) = ValidatePaymentTermHeader(dto);
+    if (headerError is not null) return Results.BadRequest(new { error = headerError, code = headerError, message = headerMsg });
+    var (detailError, detailMsg) = ValidatePaymentTermDetails(dto.Details);
+    if (detailError is not null) return Results.BadRequest(new { error = detailError, code = detailError, message = detailMsg });
     var details = dto.Details!.Where(d => !string.IsNullOrWhiteSpace(d.ModelCode)).ToList();
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var no = "PMT" + DateTime.Now.ToString("yyMMddHHmmss");
     var p = new PaymentTerm
     {
@@ -65832,28 +65891,33 @@ app.MapPost("/api/paymentterms", async (PaymentTermDto dto, AppDbContext db, ITe
         DepositPercent = dto.DepositPercent!.Value, GuaranteePercent = dto.GuaranteePercent!.Value,
         GuaranteeDays = dto.GuaranteeDays!.Value, DepositDutyEndDays = dto.DepositDutyEndDays!.Value,
         GuaranteeEndDays = dto.GuaranteeEndDays!.Value, DepositDealDateDays = dto.DepositDealDateDays!.Value,
-        FlagActive = "1"
+        FlagActive = "1",
+        CreatedDate = dto.CreatedDate ?? DateTime.Now,
+        CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+        LogLUBy = dto.LogLUBy ?? who
     };
     db.PaymentTerms.Add(p);
-    ReplacePaymentTermDetails(db, t.OrgId, no, details);
+    ReplacePaymentTermDetails(db, t.OrgId, no, details, who);
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.PMTermNo, details = details.Count, message = "Tạo thành công" });
+    return Results.Ok(new { p.PMTermNo, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy, details = details.Count, message = "Tạo thành công" });
 }).RequireAuthorization();
 
 // Sửa điều khoản (MODE_EDIT của form → biz Mst_PaymentTerm_Update): thay TRỌN header + lưới model.
 app.MapPost("/api/paymentterms/{no}", async (
-    string no, PaymentTermDto dto, AppDbContext db, ITenantContext t) =>
+    string no, PaymentTermDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.PaymentTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMTermNo == no);
-    if (p is null) return Results.NotFound(new { no });
+    if (p is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstPaymentTermNotFound", code = "ErrHTC.CommonAppData_MstPaymentTermNotFound", no });
 
-    var headerError = ValidatePaymentTermHeader(dto);
-    if (headerError is not null) return Results.BadRequest(new { error = headerError });
-    var detailError = ValidatePaymentTermDetails(dto.Details);
-    if (detailError is not null) return Results.BadRequest(new { error = detailError });
+    var (headerError, headerMsg) = ValidatePaymentTermHeader(dto);
+    if (headerError is not null) return Results.BadRequest(new { error = headerError, code = headerError, message = headerMsg });
+    var (detailError, detailMsg) = ValidatePaymentTermDetails(dto.Details);
+    if (detailError is not null) return Results.BadRequest(new { error = detailError, code = detailError, message = detailMsg });
     var details = dto.Details!.Where(d => !string.IsNullOrWhiteSpace(d.ModelCode)).ToList();
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     p.EffectiveDateFrom = dto.EffectiveDateFrom!.Value;
     p.EffectiveDateTo = dto.EffectiveDateTo!.Value;
     p.DepositPercent = dto.DepositPercent!.Value;
@@ -65862,17 +65926,22 @@ app.MapPost("/api/paymentterms/{no}", async (
     p.DepositDutyEndDays = dto.DepositDutyEndDays!.Value;
     p.GuaranteeEndDays = dto.GuaranteeEndDays!.Value;
     p.DepositDealDateDays = dto.DepositDealDateDays!.Value;
-    ReplacePaymentTermDetails(db, t.OrgId, no, details);
+    p.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now;
+    p.LogLUBy = dto.LogLUBy ?? who;
+    ReplacePaymentTermDetails(db, t.OrgId, no, details, who);
     await db.SaveChangesAsync();
-    return Results.Ok(new { p.PMTermNo, details = details.Count, message = "Sửa thành công" });
+    return Results.Ok(new { p.PMTermNo, p.CreatedDate, p.CreatedBy, p.LogLUDateTime, p.LogLUBy, details = details.Count, message = "Sửa thành công" });
 }).RequireAuthorization();
 
-app.MapPost("/api/paymentterms/{no}/toggle", async (string no, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/paymentterms/{no}/toggle", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var p = await db.PaymentTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PMTermNo == no);
-    if (p is null) return Results.NotFound(new { no });
+    if (p is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstPaymentTermNotFound", code = "ErrHTC.CommonAppData_MstPaymentTermNotFound", no });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     p.FlagActive = p.FlagActive == "1" ? "0" : "1";
+    p.LogLUDateTime = DateTime.Now;
+    p.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.PMTermNo, flagActive = p.FlagActive });
 }).RequireAuthorization();
@@ -65887,36 +65956,40 @@ app.MapGet("/api/carspecs", async (AppDbContext db, ITenantContext t, string? mo
     var items = await query.OrderByDescending(c => c.Id).Take(500)
         .Select(c => new { c.SpecCode, c.ModelCode, c.StdOptCode, c.GradeCode, c.OCNCode, c.SpecDesc, c.RootSpec, c.NumberOfSeats, c.FlagAmbulance, c.FlagActive,
             c.AssemblyStatus, c.FlagInvoiceFactory, c.FlagDepositPmt, c.OriginNo, c.QuotaDate,
-            c.SpecGroupCode, c.SpecDescriptionSX, c.CrtProductName, c.CrtTypeCode, c.LoaiThung, c.Remark, c.CreatedAt }).ToListAsync();   // #360 #1256
+            c.SpecGroupCode, c.SpecDescriptionSX, c.CrtProductName, c.CrtTypeCode, c.LoaiThung, c.Remark, c.CreatedAt,
+            c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy }).ToListAsync();   // #360 #1256 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/carspecs", async (CarSpecDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/carspecs", async (CarSpecDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.SpecCode)) return Results.BadRequest(new { error = "Chưa nhập mã Spec." });
+    if (string.IsNullOrWhiteSpace(dto.SpecCode))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstSpecCodeNotFound", code = "ErrHTC.CommonAppData_MstSpecCodeNotFound", message = "Chưa nhập mã Spec." });
     var code = dto.SpecCode.Trim().ToUpperInvariant();
     if (await db.CarSpecs.AnyAsync(c => c.OrgId == t.OrgId && c.SpecCode == code))
-        return Results.BadRequest(new { error = $"Mã Spec {code} đã tồn tại!" });
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstCarSpecExist", code = "ErrHTC.CommonAppData_MstCarSpecExist", message = $"Mã Spec {code} đã tồn tại!" });
     // audit 2026-09-03: guard bổ sung đúng nguồn FrmCarSpec.cs (gviewDB_ValidatingEditor + btnApply_Click)
-    if (string.IsNullOrWhiteSpace(dto.RootSpec)) return Results.BadRequest(new { error = "RootSpec không để trống." });
+    if (string.IsNullOrWhiteSpace(dto.RootSpec))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", code = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "RootSpec không để trống." });
     var root = dto.RootSpec.Trim().ToUpperInvariant();
     var assembly = (dto.AssemblyStatus ?? "").Trim().ToUpperInvariant();
     var flagInv = dto.FlagInvoiceFactory == "1" ? "1" : "0";
-    if (assembly == "CKD" && flagInv != "1") return Results.BadRequest(new { error = "Xe CKD phải có Hóa đơn nhà máy" });
-    if (assembly == "CBU" && string.IsNullOrWhiteSpace(dto.OriginNo)) return Results.BadRequest(new { error = "Xe CBU phải có Xuất xứ" });
+    if (assembly == "CKD" && flagInv != "1") return Results.BadRequest(new { error = "ErrHTC.Mst_CarSpec_CKD_InvoiceFactoryRequired", code = "ErrHTC.Mst_CarSpec_CKD_InvoiceFactoryRequired", message = "Xe CKD phải có Hóa đơn nhà máy" });
+    if (assembly == "CBU" && string.IsNullOrWhiteSpace(dto.OriginNo)) return Results.BadRequest(new { error = "ErrHTC.Mst_CarSpec_CBU_OriginRequired", code = "ErrHTC.Mst_CarSpec_CBU_OriginRequired", message = "Xe CBU phải có Xuất xứ" });
     if (root != code)
     {
         // RootSpec tham chiếu 1 spec khác đã tồn tại + đang active + cùng ModelCode (nguồn: CheckRootSpec + "Thêm mới spec - RootSpec phải active")
         var rootSpec = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == root);
-        if (rootSpec is null) return Results.BadRequest(new { error = $"RootSpec {root} không hợp lệ." });
-        if (rootSpec.FlagActive != "1") return Results.BadRequest(new { error = $"RootSpec: {root} inactive." });
+        if (rootSpec is null) return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstCarSpecNotFound", code = "ErrHTC.CommonAppData_MstCarSpecNotFound", message = $"RootSpec {root} không hợp lệ." });
+        if (rootSpec.FlagActive != "1") return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstCarSpecNotMatch", code = "ErrHTC.CommonAppData_InvalidFlagActiveMstCarSpecNotMatch", message = $"RootSpec: {root} inactive." });
         if (!string.Equals(rootSpec.ModelCode, dto.ModelCode, StringComparison.OrdinalIgnoreCase))
-            return Results.BadRequest(new { error = $"RootSpec {root} không hợp lệ. Các specCode cùng RootSpec phải cùng ModelCode." });
+            return Results.BadRequest(new { error = "ErrHTC.CommonAppData_MstModelNotMatchWithSpecCode", code = "ErrHTC.CommonAppData_MstModelNotMatchWithSpecCode", message = $"RootSpec {root} không hợp lệ. Các specCode cùng RootSpec phải cùng ModelCode." });
     }
     // #360 LoaiThung là ô chọn từ Mst_LoaiThung (FrmCarSpec Foton) ⇒ giá trị gửi lên phải có trong master đang hoạt động.
     var loaiThung = string.IsNullOrWhiteSpace(dto.LoaiThung) ? null : dto.LoaiThung.Trim();
     if (loaiThung is not null && !await db.LoaiThungMsts.AnyAsync(x => x.OrgId == t.OrgId && x.LoaiThung == loaiThung && x.FlagActive == "1"))
-        return Results.BadRequest(new { error = $"Loại thùng {loaiThung} không có trong danh mục.", code = "Mst_LoaiThung_NotExist", LoaiThung = loaiThung });
+        return Results.BadRequest(new { error = "Mst_LoaiThung_NotExist", code = "Mst_LoaiThung_NotExist", message = $"Loại thùng {loaiThung} không có trong danh mục.", LoaiThung = loaiThung });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var c = new CarSpec
     {
         SpecGroupCode = string.IsNullOrWhiteSpace(dto.SpecGroupCode) ? null : dto.SpecGroupCode.Trim(), SpecDescriptionSX = dto.SpecDescriptionSX,
@@ -65924,18 +65997,25 @@ app.MapPost("/api/carspecs", async (CarSpecDto dto, AppDbContext db, ITenantCont
         OrgId = t.OrgId, SpecCode = code, ModelCode = dto.ModelCode, StdOptCode = dto.StdOptCode, GradeCode = dto.GradeCode, OCNCode = dto.OCNCode,
         SpecDesc = dto.SpecDesc, RootSpec = root, NumberOfSeats = dto.NumberOfSeats, FlagAmbulance = dto.FlagAmbulance == "1" ? "1" : "0", FlagActive = "1",
         AssemblyStatus = dto.AssemblyStatus, FlagInvoiceFactory = flagInv, FlagDepositPmt = dto.FlagDepositPmt == "1" ? "1" : "0",
-        OriginNo = dto.OriginNo, QuotaDate = dto.QuotaDate
+        OriginNo = dto.OriginNo, QuotaDate = dto.QuotaDate,
+        CreatedDate = dto.CreatedDate ?? DateTime.Now,
+        CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+        LogLUBy = dto.LogLUBy ?? who
     };
     db.CarSpecs.Add(c); await db.SaveChangesAsync();
-    return Results.Ok(new { c.SpecCode });
+    return Results.Ok(new { c.SpecCode, c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/carspecs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/carspecs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     code = code.Trim().ToUpperInvariant();
     var c = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == code);
-    if (c is null) return Results.NotFound(new { code });
+    if (c is null) return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstCarSpecNotFound", code = "ErrHTC.CommonAppData_MstCarSpecNotFound", specCode = code });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     c.FlagActive = c.FlagActive == "1" ? "0" : "1";
+    c.LogLUDateTime = DateTime.Now;
+    c.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.SpecCode, flagActive = c.FlagActive });
 }).RequireAuthorization();
@@ -125099,9 +125179,11 @@ record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonth
 record StorageDto(string StorageCode, string? StorageName = null, string? StorageAddress = null, string? ProvinceCode = null, string? StorageType = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CarStdOptionDto(string ModelCode, string StdCode, string? StdDesc, string? GradeCode, string? GradeDesc);
 record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo, string? ContactorPhoneNo,
-    string? ContactorFullName = null, string? TransportContractNo = null, string? Remark = null);   // #331
-record TransporterCarDto(string PlateNo);
-record TransporterDriverDto(string DriverId, string? DriverFullName, string? DriverLicenseNo, string? DriverPhoneNo);
+    string? ContactorFullName = null, string? TransportContractNo = null, string? Remark = null,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #331
+record TransporterCarDto(string PlateNo, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record TransporterDriverDto(string DriverId, string? DriverFullName, string? DriverLicenseNo, string? DriverPhoneNo,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record DealerCADto(string DealerCode, string? CaSubject, string? CaIssuer, string? Serial, DateTime? ValidFrom, DateTime? ValidTo);
 record StorageRateDto(string StorageCode, string ModelCode, string? SpecCode, string? ColorExtCode, decimal MBVal, decimal MTVal, decimal MNVal);
 record MaintPackageDto(string TypeCode, string? TypeName, int Times, string? ModelCode, List<MpWorkDto>? Works, List<MpSupplyDto>? Supplies);
@@ -125290,7 +125372,8 @@ record DealerBankDto(string BankCode, string DealerCode, string? BankBranchCode,
 record DealerInvThresholdDto(string DealerCode, string ModelCode, int Qty);
 record DealerZoneDto(string DealerCode, string ZoneCode, string? Remark);   // #B92 +Remark
 /// <summary>Một dòng lưới model/quy cách của điều khoản thanh toán.</summary>
-record PaymentTermDetailDto(string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? FlagDepositPmt);
+record PaymentTermDetailDto(string? ModelCode, string? ModelName, string? SpecCode, string? SpecDescription, string? FlagDepositPmt,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 /// <summary>
 /// Điều khoản thanh toán: header + LƯỚI model/quy cách (nguồn là bảng chi tiết riêng Mst_PaymentTermDetail).
 /// Các trường số để nullable để phân biệt "chưa nhập" (báo lỗi bắt buộc) với "nhập số 0" (hợp lệ).
@@ -125299,10 +125382,12 @@ record PaymentTermDto(
     DateTime? EffectiveDateFrom, DateTime? EffectiveDateTo,
     decimal? DepositPercent, decimal? GuaranteePercent,
     int? GuaranteeDays, int? DepositDutyEndDays, int? GuaranteeEndDays, int? DepositDealDateDays,
-    List<PaymentTermDetailDto>? Details);
+    List<PaymentTermDetailDto>? Details,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CarSpecDto(string SpecCode, string? ModelCode, string? StdOptCode, string? GradeCode, string? OCNCode, string? SpecDesc, string? RootSpec, int? NumberOfSeats, string? FlagAmbulance,
     string? AssemblyStatus, string? FlagInvoiceFactory, string? FlagDepositPmt, string? OriginNo, DateTime? QuotaDate,
-    string? SpecGroupCode = null, string? SpecDescriptionSX = null, string? CrtProductName = null, string? CrtTypeCode = null, string? LoaiThung = null, string? Remark = null);   // #360
+    string? SpecGroupCode = null, string? SpecDescriptionSX = null, string? CrtProductName = null, string? CrtTypeCode = null, string? LoaiThung = null, string? Remark = null,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #360
 record AVNPriceDto(string AVNCode, decimal UnitPriceAVN, DateTime? EffDateTime);
 record DOATConditionDtlDto(string? ModelCode, string? PmtMethodNo = null, decimal DutyCompletePercentFrom = 0, decimal DutyCompletePercentTo = 0);
 record DOATConditionDto(string? DOATConditionCode, DateTime? EffDateStart, DateTime? EffDateEnd, string? FlagCQEndDate, string? FlagTaxPaymentDate, string? FlagPtmCoc, decimal PtmCocFrom, decimal PtmCocTo, string? FlagDutyComplete, decimal DutyCompleteFrom, decimal DutyCompleteTo, string? FlagModel, List<string>? Models,

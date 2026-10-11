@@ -5689,6 +5689,10 @@ public sealed class Transporter
     public string? Remark { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Xe tải của nhà vận tải — port 1:1 FrmTransporterCar (Tbl_Mst_TransporterCar, Admin/Product 2010.HTC).</summary>
@@ -5699,6 +5703,10 @@ public sealed class TransporterCar
     public string TransporterCode { get; set; } = "";
     public string PlateNo { get; set; } = "";
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Tài xế của nhà vận tải — port 1:1 FrmTransporterDriver (Tbl_Mst_TransporterDriver, Admin/Product 2010.HTC).</summary>
@@ -5712,6 +5720,10 @@ public sealed class TransporterDriver
     public string? DriverLicenseNo { get; set; }
     public string? DriverPhoneNo { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chữ ký số đại lý (chứng thư số CA) — port 1:1 FrmQLChuKyDienTu (Tbl_Dlr_CA, Admin/DMS40 2010.HTC).</summary>
@@ -12799,6 +12811,10 @@ public sealed class PaymentTerm
     public int DepositDealDateDays { get; set; }
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -12822,6 +12838,10 @@ public sealed class PaymentTermDetail
 
     /// <summary>Cờ áp dụng đặt cọc cho cặp model/quy cách này: "1" = có, "0" = không.</summary>
     public string FlagDepositPmt { get; set; } = "0";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Quy cách xe (Mst_CarSpec) — port 1:1 FrmCarSpec (2010.HTC/Admin/Product). Master spec: model/std-opt/grade/OCN/số chỗ/spec gốc.
@@ -12851,6 +12871,10 @@ public sealed class CarSpec
     public string? OriginNo { get; set; }            // bắt buộc nếu AssemblyStatus=CBU
     public DateTime? QuotaDate { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
     // ===== #360 cột biến thể TCMotor/Foton (DbDefine TblCarSpec; FrmCarSpec Foton :61-94) — lưu qua SaveMasterDataTable, Frm KHÔNG kiểm =====
     /// <summary>`SpecGroupCode` — lookup Mst_CarSpecGroup; biz Foton dùng ở Car_Car_UpdOrderPolicyX (phải = "XEDAUKEO", BizHTC.Car.cs:25538).</summary>
     public string? SpecGroupCode { get; set; }
