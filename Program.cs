@@ -46104,7 +46104,7 @@ app.MapGet("/api/stocbreqs", async (AppDbContext db, ITenantContext t, string? s
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(x => x.CBReqStatus == status);
     if (!string.IsNullOrWhiteSpace(no)) q = q.Where(x => x.CBReqNo.Contains(no!));
     var items = await q.OrderByDescending(x => x.Id).Take(500).Select(x => new {
-        x.Id, x.CBReqNo, x.CreatedDate, x.CBReqStatus, x.Remark, x.CreatedBy, x.ApprovedAt, x.ApprovedBy,   // #1229 §12
+        x.Id, x.CBReqNo, x.CreatedDate, x.CBReqStatus, x.Remark, x.CreatedBy, x.ApprovedAt, x.ApprovedDate, x.ApprovedBy, x.LogLUDateTime, x.LogLUBy,   // #Round126 §12
         cars = db.StoCBReqDtls.Count(c => c.OrgId == t.OrgId && c.StoCBReqId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -46113,25 +46113,26 @@ app.MapGet("/api/stocbreqs", async (AppDbContext db, ITenantContext t, string? s
 app.MapPost("/api/stocbreqs", async (StoCBReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Chưa có xe trong đề nghị." });
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Sto_CBReqCreate_TableDetailBeBlank" });
     var dup = cars.GroupBy(c => c.VIN!.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dup != null) return Results.BadRequest(new { error = $"VIN {dup.Key} bị trùng!" });
+    if (dup != null) return Results.BadRequest(new { error = "Sto_CBReqCreate_DuplicateKeyDetail", vin = dup.Key });
     var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    var h = new StoCBReq { OrgId = t.OrgId, CBReqNo = "CBR" + DateTime.Now.ToString("yyMMddHHmmss"), CreatedDate = DateTime.Now, CBReqStatus = "P", Remark = dto.Remark, CreatedBy = by };
+    var now = DateTime.Now;
+    var h = new StoCBReq { OrgId = t.OrgId, CBReqNo = "CBR" + now.ToString("yyMMddHHmmss"), CreatedDate = now, CBReqStatus = "P", Remark = dto.Remark, CreatedBy = by, LogLUDateTime = now, LogLUBy = by };
     db.StoCBReqs.Add(h); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.StoCBReqDtls.Add(new StoCBReqDtl { OrgId = t.OrgId, StoCBReqId = h.Id, VIN = c.VIN!.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, SpecCode = c.SpecCode, EngineNo = c.EngineNo });
+        db.StoCBReqDtls.Add(new StoCBReqDtl { OrgId = t.OrgId, StoCBReqId = h.Id, VIN = c.VIN!.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, SpecCode = c.SpecCode, EngineNo = c.EngineNo, StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo, LoaiThung = c.LoaiThung ?? c.TypeCB, TypeCB = c.TypeCB ?? c.LoaiThung, Remark = c.Remark, LogLUDateTime = now, LogLUBy = by });
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.CBReqNo, cars = cars.Count });
+    return Results.Ok(new { h.CBReqNo, h.CBReqStatus, h.CreatedDate, h.CreatedBy, h.LogLUDateTime, h.LogLUBy, cars = cars.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/stocbreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
-    if (h is null) return Results.NotFound(new { no });
+    if (h is null) return Results.NotFound(new { error = "CommonAppData_CBReqNoNotFound", no });
     var cars = await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == h.Id)
-        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo }).ToListAsync();
-    return Results.Ok(new { h.CBReqNo, h.CreatedDate, h.CBReqStatus, h.Remark, h.CreatedBy, h.ApprovedAt, h.ApprovedBy, count = cars.Count, cars });   // #1360 §12
+        .Select(c => new { c.VIN, c.ModelCode, c.SpecCode, c.EngineNo, c.StorageCodeFrom, c.StorageCodeTo, c.LoaiThung, c.TypeCB, c.Remark, c.CBReqDtlStatus, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+    return Results.Ok(new { h.CBReqNo, h.CreatedDate, h.CBReqStatus, h.Remark, h.CreatedBy, h.ApprovedAt, h.ApprovedDate, h.ApprovedBy, h.LogLUDateTime, h.LogLUBy, count = cars.Count, cars });   // #Round126 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t,
@@ -46139,12 +46140,12 @@ app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, App
 {
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     var h = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
-    if (h is null) return Results.NotFound(new { no });
-    if (h.CBReqStatus != "P") return Results.BadRequest(new { error = $"Đề nghị đang '{h.CBReqStatus}', chỉ duyệt khi 'P'." });
+    if (h is null) return Results.NotFound(new { error = "CommonAppData_CBReqNoNotFound", no });
+    if (h.CBReqStatus != "P") return Results.BadRequest(new { error = "CommonAppData_CBReqStatusNotMatched", status = h.CBReqStatus });
 
     // 🔴 Guard nguồn khi DUYỆT (Biz.HTC.WH.cs:116100-116128): chặn nếu VIN của đề nghị này
     // ĐÃ nằm trong một LỆNH SẮP XẾP (đóng thùng) mà dòng đó chưa bị "R"/"C".
-    // Nguồn báo: "Đã tồn tại Lệnh đóng thùng A".
+    // Nguồn báo: "Sto_CBReqApprove_ExistSto_RearrangeCB".
     if (action == "approve")
     {
         var vinsCb = await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == h.Id)
@@ -46154,16 +46155,25 @@ app.MapPost("/api/stocbreqs/{no}/{action}", async (string no, string action, App
                         && c.RearCBDtlStatus != "R" && c.RearCBDtlStatus != "C")
             .Select(c => c.VIN).FirstOrDefaultAsync();
         if (clashRc != null)
-            return Results.BadRequest(new { error = "Đã tồn tại Lệnh đóng thùng A", vin = clashRc });
+            return Results.BadRequest(new { error = "Sto_CBReqApprove_ExistSto_RearrangeCB", vin = clashRc });
     }
 
+    var now = DateTime.Now;
+    var who = user.Identity?.Name ?? "system";
     h.CBReqStatus = action == "approve" ? "A" : "R";
-    h.ApprovedBy = user.Identity?.Name ?? "system";
-    if (action == "approve") h.ApprovedAt = DateTime.Now;
+    h.ApprovedBy = who;
+    h.ApprovedDate = action == "approve" ? now : null;
+    h.ApprovedAt = h.ApprovedDate;
+    h.LogLUDateTime = now;
+    h.LogLUBy = who;
     foreach (var dtl in await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == h.Id).ToListAsync())
+    {
         dtl.CBReqDtlStatus = h.CBReqStatus;
+        dtl.LogLUDateTime = now;
+        dtl.LogLUBy = who;
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.CBReqNo, h.CBReqStatus });
+    return Results.Ok(new { h.CBReqNo, h.CBReqStatus, h.ApprovedDate, h.ApprovedBy });
 }).RequireAuthorization();
 
 // ===== Bảo hành xe tồn kho (InvCarWarranty — port 1:1 FrmMngInv_CarWarranty, TCMotor) =====
@@ -73979,25 +73989,49 @@ app.MapGet("/api/dmscancelminutes", async (AppDbContext db, ITenantContext t, st
 {
     var q = db.DmsCancelMinutesSet.Where(m => m.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(dlrCtrNo)) q = q.Where(m => m.DlrCtrNo == dlrCtrNo);
-    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new { m.CancelMinutesNo, m.DlrCtrNo, m.Remark, m.FlagIsDelete, m.CancelMinutesStatus, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CreatedAt,
-        m.FilePath, m.LogLUDateTime, m.LogLUBy }).ToListAsync();
+    var items = await q.OrderByDescending(m => m.Id).Take(500).Select(m => new {
+        m.CancelMinutesNo, m.DlrCtrNo, m.DealerCode, m.FileName, m.Remark, m.FlagIsDelete, m.CancelMinutesStatus,
+        m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CreatedAt, m.FilePath,
+        m.CreateDTime, m.CreateBy, m.LUDTime, m.LUBy,
+        m.DlrApprDTime, m.DlrApprBy, m.HTCAppr1DTime, m.HTCAppr1By, m.HTCAppr2DTime, m.HTCAppr2By,
+        m.RejectDTime, m.RejectBy, m.CancelDTime, m.CancelBy,
+        m.LogLUDateTime, m.LogLUBy   // #Round126 §12
+    }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/dmscancelminutes", async (DmsCancelMinutesDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dmscancelminutes", async (DmsCancelMinutesDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DlrCtrNo)) return Results.BadRequest(new { error = "Cần số hợp đồng." });
+    if (string.IsNullOrWhiteSpace(dto.DlrCtrNo)) return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_CreateDL_Input_DlrCtrNoIsEmpty" });
     var dlr = dto.DlrCtrNo.Trim();
     var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == dlr);
-    if (c is null) return Results.BadRequest(new { error = $"Không tìm thấy HĐ {dlr}." });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_ContractDealerContractNotFound", dlrCtrNo = dlr });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var seq = await db.DmsCancelMinutesSet.CountAsync(m => m.OrgId == t.OrgId && m.DlrCtrNo == dlr) + 1;
     var no = dlr + "." + seq;
-    var m = new DmsCancelMinutes { OrgId = t.OrgId, CancelMinutesNo = no, DlrCtrNo = dlr, Remark = dto.Remark, FlagIsDelete = dto.FlagIsDelete == "1" ? "1" : "0" };
+    var m = new DmsCancelMinutes
+    {
+        OrgId = t.OrgId,
+        CancelMinutesNo = no,
+        DlrCtrNo = dlr,
+        DealerCode = dto.DealerCode ?? c.DealerCode,
+        FileName = dto.FileName,
+        FilePath = dto.FilePath,
+        Remark = dto.Remark,
+        FlagIsDelete = dto.FlagIsDelete == "1" ? "1" : "0",
+        CreateDTime = now,
+        CreateBy = who,
+        LUDTime = now,
+        LUBy = who,
+        LogLUDateTime = now,
+        LogLUBy = who
+    };
     db.DmsCancelMinutesSet.Add(m);
     // 🔴 Port cũ huỷ hợp đồng NGAY khi tạo biên bản — SAI. Nguồn (`_Save_New20181115`) chỉ tạo biên bản
     //    ở trạng thái "NS" với hai trục ký đang chờ ("P"); hợp đồng chỉ bị huỷ khi **HTC duyệt cấp 2**.
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.CancelMinutesNo, m.DlrCtrNo, status = m.CancelMinutesStatus, message = "Tạo biên bản hủy hợp đồng thành công!" });
+    return Results.Ok(new { m.CancelMinutesNo, m.DlrCtrNo, m.DealerCode, m.FileName, m.FilePath, status = m.CancelMinutesStatus, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CreateDTime, m.CreateBy, m.LogLUDateTime, m.LogLUBy, message = "Tạo biên bản hủy hợp đồng thành công!" });
 }).RequireAuthorization();
 
 // 🔴 QUY TRÌNH KÝ BIÊN BẢN HUỶ HĐ — `DMS40_DlrCtr_CancelMinutes_*` (0.34.Contract.cs:6767-9000).
@@ -74030,68 +74064,87 @@ app.MapPost("/api/dmscancelminutes/{no}/update", async (string no, CancelMinutes
 {
     no = no.Trim();
     var m = await db.DmsCancelMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CancelMinutesNo == no);
-    if (m is null) return Results.NotFound(new { no });
+    if (m is null) return Results.NotFound(new { error = "CommonAppData_DlrCtrCancelMinutesNotFound", no });
 
     // `strFt_Cols_Upd` — mask cột, so khớp KHÔNG phân biệt hoa thường đúng như nguồn (`.ToUpper()`).
     var mask = (dto.FtColsUpd ?? "").ToUpperInvariant();
     var updFilePath = mask.Contains("DMS40_DLRCTR_CANCELMINUTES.FILEPATH");
 
     if (updFilePath && m.DlrSignCcMnStatus != "A")
-        return Results.BadRequest(new { error = $"Đại lý đang ở '{m.DlrSignCcMnStatus}' — chỉ sửa file khi đại lý đã ký (A)." });
+        return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_ApproveDL_InvalidStatus", status = m.DlrSignCcMnStatus });
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
     if (updFilePath) m.FilePath = (dto.FilePath ?? "").Trim();
     // Hai cột nhật ký LUÔN được ghi, kể cả khi mask rỗng.
+    m.LUDTime = now; m.LUBy = who;
     m.LogLUDateTime = now; m.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.CancelMinutesNo, updatedFilePath = updFilePath, m.FilePath, m.LogLUDateTime, m.LogLUBy });
+    return Results.Ok(new { m.CancelMinutesNo, updatedFilePath = updFilePath, m.FilePath, m.LUDTime, m.LUBy, m.LogLUDateTime, m.LogLUBy });
 }).RequireAuthorization();
 
-app.MapPost("/api/dmscancelminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/dmscancelminutes/{no}/{action}", async (string no, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (action is not ("dlr-approve" or "dlr-cancel" or "htc-appr1" or "htc-appr2" or "reject"))
         return Results.BadRequest(new { error = "action = dlr-approve|dlr-cancel|htc-appr1|htc-appr2|reject" });
     no = no.Trim();
     var m = await db.DmsCancelMinutesSet.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CancelMinutesNo == no);
-    if (m is null) return Results.NotFound(new { no });
+    if (m is null) return Results.NotFound(new { error = "CommonAppData_DlrCtrCancelMinutesNotFound", no });
+
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
 
     if (action == "dlr-approve")
     {
-        if (m.DlrSignCcMnStatus != "P") return Results.BadRequest(new { error = $"Đại lý đang ở '{m.DlrSignCcMnStatus}' — chỉ duyệt khi đang chờ (P)." });
+        if (m.DlrSignCcMnStatus != "P") return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_ApproveDL_InvalidStatus", status = m.DlrSignCcMnStatus });
         m.DlrSignCcMnStatus = "A";
+        m.DlrApprDTime = now; m.DlrApprBy = who;
+        m.LUDTime = now; m.LUBy = who;
+        m.LogLUDateTime = now; m.LogLUBy = who;
         await db.SaveChangesAsync();
-        return Results.Ok(new { m.CancelMinutesNo, m.DlrSignCcMnStatus, m.CancelMinutesStatus });
+        return Results.Ok(new { m.CancelMinutesNo, m.DlrSignCcMnStatus, m.CancelMinutesStatus, m.DlrApprDTime, m.DlrApprBy });
     }
 
     // Bốn hành động còn lại đều yêu cầu đại lý đã duyệt ("A").
-    if (m.DlrSignCcMnStatus != "A") return Results.BadRequest(new { error = "Đại lý chưa duyệt biên bản (cần Dlr = A)." });
+    if (m.DlrSignCcMnStatus != "A") return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_ApproveDL_InvalidStatus", dlrStatus = m.DlrSignCcMnStatus });
 
     if (action == "dlr-cancel")
     {
-        if (m.HTCSignCcMnStatus != "P") return Results.BadRequest(new { error = "Chỉ đại lý huỷ được khi HTC chưa duyệt (P)." });
+        if (m.HTCSignCcMnStatus != "P") return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_CancelDL_InvalidStatus", htcStatus = m.HTCSignCcMnStatus });
         m.DlrSignCcMnStatus = "C"; m.CancelMinutesStatus = "C";
+        m.CancelDTime = now; m.CancelBy = who;
+        m.LUDTime = now; m.LUBy = who;
+        m.LogLUDateTime = now; m.LogLUBy = who;
     }
     else if (action == "htc-appr1")
     {
-        if (m.HTCSignCcMnStatus != "P") return Results.BadRequest(new { error = $"HTC đang ở '{m.HTCSignCcMnStatus}' — duyệt cấp 1 chỉ từ chờ (P)." });
+        if (m.HTCSignCcMnStatus != "P") return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_HTCAppr1_InvalidStatus", htcStatus = m.HTCSignCcMnStatus });
         m.HTCSignCcMnStatus = "A1";
+        m.HTCAppr1DTime = now; m.HTCAppr1By = who;
+        m.LUDTime = now; m.LUBy = who;
+        m.LogLUDateTime = now; m.LogLUBy = who;
     }
     else if (action == "htc-appr2")
     {
-        if (m.HTCSignCcMnStatus != "A1") return Results.BadRequest(new { error = "Phải duyệt cấp 1 (A1) trước." });
+        if (m.HTCSignCcMnStatus != "A1") return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_HTCAppr2_InvalidStatus", htcStatus = m.HTCSignCcMnStatus });
         m.HTCSignCcMnStatus = "A"; m.CancelMinutesStatus = "S";
+        m.HTCAppr2DTime = now; m.HTCAppr2By = who;
+        m.LUDTime = now; m.LUBy = who;
+        m.LogLUDateTime = now; m.LogLUBy = who;
         // 🔴 Chỉ ở BƯỚC NÀY hợp đồng mới thực sự bị huỷ.
         var c = await db.DmsDealerContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrCtrNo == m.DlrCtrNo);
         if (c is not null) { c.DlrCtrStatus = "C"; }
     }
     else // reject
     {
-        if (m.HTCSignCcMnStatus is not ("P" or "A1")) return Results.BadRequest(new { error = "Chỉ từ chối khi HTC đang chờ (P) hoặc mới duyệt cấp 1 (A1)." });
+        if (m.HTCSignCcMnStatus is not ("P" or "A1")) return Results.BadRequest(new { error = "DMS40_DlrCtr_CancelMinutes_Reject_InvalidStatus", htcStatus = m.HTCSignCcMnStatus });
         m.HTCSignCcMnStatus = "R"; m.CancelMinutesStatus = "C";
+        m.RejectDTime = now; m.RejectBy = who;
+        m.LUDTime = now; m.LUBy = who;
+        m.LogLUDateTime = now; m.LogLUBy = who;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { m.CancelMinutesNo, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CancelMinutesStatus });
+    return Results.Ok(new { m.CancelMinutesNo, m.DlrSignCcMnStatus, m.HTCSignCcMnStatus, m.CancelMinutesStatus, m.LUDTime, m.LUBy });
 }).RequireAuthorization();
 
 // Hủy NH phát hành bảo lãnh MD (FrmDMS40_DlrCtr_CancelBankMD)
@@ -74445,7 +74498,7 @@ app.MapGet("/api/cbreqs", async (AppDbContext db, ITenantContext t, string? stat
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(r => r.CBReqStatus == status);
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
-        r.CBReqNo, r.CBReqStatus, r.CreatedDate, r.ApprovedAt, r.Remark,   // #1237 §12
+        r.CBReqNo, r.CBReqStatus, r.CreatedDate, r.ApprovedAt, r.ApprovedDate, r.ApprovedBy, r.Remark, r.CreatedBy, r.LogLUDateTime, r.LogLUBy,   // #Round126 §12
         cars = db.StoCBReqDtls.Count(c => c.OrgId == t.OrgId && c.StoCBReqId == r.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -74454,27 +74507,30 @@ app.MapGet("/api/cbreqs", async (AppDbContext db, ITenantContext t, string? stat
 app.MapPost("/api/cbreqs", async (CBReqDto dto, AppDbContext db, ITenantContext t) =>
 {
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 VIN." });
-    if (cars.Any(c => string.IsNullOrWhiteSpace(c.StorageCodeTo))) return Results.BadRequest(new { error = "Mã kho đến không được để trống." });
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Sto_CBReqCreate_TableDetailBeBlank" });
+    if (cars.Any(c => string.IsNullOrWhiteSpace(c.StorageCodeTo))) return Results.BadRequest(new { error = "Sto_CBReqCreate_InvalidDetailStorageCodeTo" });
+    if (cars.Any(c => !string.IsNullOrWhiteSpace(c.StorageCodeFrom) && c.StorageCodeFrom.Trim().Equals(c.StorageCodeTo.Trim(), StringComparison.OrdinalIgnoreCase)))
+        return Results.BadRequest(new { error = "Sto_CBReqCreate_InvalidStorageCodeTo" });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
+    if (dupe != null) return Results.BadRequest(new { error = "Sto_CBReqCreate_DuplicateKeyDetail", vin = dupe.Key });
     var no = "CB" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new StoCBReq { OrgId = t.OrgId, CBReqNo = no, CBReqStatus = "P", CreatedDate = DateTime.Now };  // #179: TConst.Stage, khong phai "Draft"
+    var now = DateTime.Now;
+    var r = new StoCBReq { OrgId = t.OrgId, CBReqNo = no, CBReqStatus = "P", CreatedDate = now, CreatedBy = "system", LogLUDateTime = now, LogLUBy = "system", Remark = dto.Remark };  // #179: TConst.Stage, khong phai "Draft"
     db.StoCBReqs.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.StoCBReqDtls.Add(new StoCBReqDtl { OrgId = t.OrgId, StoCBReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), TypeCB = c.TypeCB, Remark = c.Remark });
+        db.StoCBReqDtls.Add(new StoCBReqDtl { OrgId = t.OrgId, StoCBReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), StorageCodeFrom = c.StorageCodeFrom, StorageCodeTo = c.StorageCodeTo.Trim().ToUpperInvariant(), TypeCB = c.TypeCB ?? c.LoaiThung, LoaiThung = c.LoaiThung ?? c.TypeCB, Remark = c.Remark, LogLUDateTime = now, LogLUBy = "system" });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.CBReqNo, cars = cars.Count });
+    return Results.Ok(new { r.CBReqNo, r.CBReqStatus, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, r.Remark, cars = cars.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/cbreqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
-    if (r is null) return Results.NotFound(new { no });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_CBReqNoNotFound", no });
     var cars = await db.StoCBReqDtls.Where(c => c.OrgId == t.OrgId && c.StoCBReqId == r.Id)
-        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.TypeCB, c.Remark }).ToListAsync();
-    return Results.Ok(new { r.CBReqNo, r.CBReqStatus, r.CreatedDate, r.ApprovedAt, r.Remark, count = cars.Count, cars });   // #1358 §12
+        .Select(c => new { c.VIN, c.StorageCodeFrom, c.StorageCodeTo, c.TypeCB, c.LoaiThung, c.Remark, c.CBReqDtlStatus, c.LogLUDateTime, c.LogLUBy }).ToListAsync();
+    return Results.Ok(new { r.CBReqNo, r.CBReqStatus, r.CreatedDate, r.ApprovedAt, r.ApprovedDate, r.ApprovedBy, r.Remark, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, count = cars.Count, cars });   // #Round126 §12
 }).RequireAuthorization();
 
 app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqActionDto? dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -74497,9 +74553,9 @@ app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqA
     if (action is not ("approve" or "unapprove")) return Results.BadRequest(new { error = "action = approve|unapprove" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.StoCBReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CBReqNo == no);
-    if (r is null) return Results.NotFound(new { no });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_CBReqNoNotFound", no });
     if (r.CBReqStatus != "P")
-        return Results.BadRequest(new { error = $"Yêu cầu đang ở '{r.CBReqStatus}' — chỉ duyệt/bỏ duyệt khi còn chờ duyệt (P)." });
+        return Results.BadRequest(new { error = "CommonAppData_CBReqStatusNotMatched", status = r.CBReqStatus });
 
     var bApprove = action == "approve";
     var lines = await db.StoCBReqDtls.Where(x => x.OrgId == t.OrgId && x.StoCBReqId == r.Id).ToListAsync();
@@ -74512,7 +74568,7 @@ app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqA
                 && vins.Contains(x.VIN) && x.RearCBDtlStatus != "R" && x.RearCBDtlStatus != "C")
             .Select(x => new { x.VIN, x.RearCBDtlStatus }).FirstOrDefaultAsync();
         if (blocker is not null)
-            return Results.BadRequest(new { error = $"Đã tồn tại lệnh đóng thùng cho VIN {blocker.VIN} (trạng thái '{blocker.RearCBDtlStatus}') — không bỏ duyệt được yêu cầu.", vin = blocker.VIN });
+            return Results.BadRequest(new { error = "Sto_CBReqApprove_ExistSto_RearrangeCB", vin = blocker.VIN });
     }
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -74520,8 +74576,17 @@ app.MapPost("/api/cbreqs/{no}/{action}", async (string no, string action, CbReqA
     // `bApprove ? Stage.Approved : Stage.Rejected`
     r.CBReqStatus = bApprove ? "A" : "R";
     r.Remark = dto?.Remark;                 // nguồn ghi Remark ở CẢ HAI ngả
-    r.ApprovedAt = bApprove ? now : null;
-    foreach (var l in lines) l.CBReqDtlStatus = r.CBReqStatus;
+    r.ApprovedDate = bApprove ? now : null;
+    r.ApprovedAt = r.ApprovedDate;
+    r.ApprovedBy = who;
+    r.LogLUDateTime = now;
+    r.LogLUBy = who;
+    foreach (var l in lines)
+    {
+        l.CBReqDtlStatus = r.CBReqStatus;
+        l.LogLUDateTime = now;
+        l.LogLUBy = who;
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.CBReqNo, status = r.CBReqStatus, r.Remark, unapprove = !bApprove, linesUpdated = lines.Count });
 }).RequireAuthorization();
@@ -76326,38 +76391,81 @@ app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, strin
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt,
-        r.ApprovedDate, r.ApprovedBy, r.Remark,   // #1230 §12
+        r.EffectiveDate, r.CreatedDate, r.CreatedBy, r.ApprovedDate, r.ApprovedBy, r.Remark, r.LogLUDateTime, r.LogLUBy,   // #Round126 §12
         cars = db.InsuranceReqDtls.Count(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id),
         totalAmount = db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id).Sum(c => (decimal?)c.InsAmount) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/insurancereqs", async (InsuranceReqDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/insurancereqs", async (InsuranceReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.InsCompanyCode)) return Results.BadRequest(new { error = "Phải chọn hãng bảo hiểm." });
-    if (string.IsNullOrWhiteSpace(dto.InsTypeCode)) return Results.BadRequest(new { error = "Phải chọn loại hình bảo hiểm." });
+    if (string.IsNullOrWhiteSpace(dto.InsCompanyCode)) return Results.BadRequest(new { error = "Ins_InsuranceReqCreate_InvalidInsCompanyCode" });
+    if (string.IsNullOrWhiteSpace(dto.InsTypeCode)) return Results.BadRequest(new { error = "Ins_InsuranceReqCreate_InvalidInsTypeCode" });
     var cars = (dto.Cars ?? new()).Where(c => !string.IsNullOrWhiteSpace(c.VIN)).ToList();
-    if (cars.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
+    if (cars.Count == 0) return Results.BadRequest(new { error = "Ins_InsuranceReqCreate_TableDetailBeBlank" });
+    if (cars.Any(c => c.InsuranceDay <= 0)) return Results.BadRequest(new { error = "Ins_InsuranceReqCreate_InvalidDetailInsuranceDay" });
     var dupe = cars.GroupBy(c => c.VIN.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    var no = "INS" + DateTime.Now.ToString("yyMMddHHmmss");
-    var r = new InsuranceReq { OrgId = t.OrgId, InsReqNo = no, InsCompanyCode = dto.InsCompanyCode.Trim(), InsTypeCode = dto.InsTypeCode.Trim(), Status = "P" };
+    if (dupe != null) return Results.BadRequest(new { error = "Ins_InsuranceReqCreate_DuplicateKeyDetail", vin = dupe.Key });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var no = "INS" + now.ToString("yyMMddHHmmss");
+    var r = new InsuranceReq
+    {
+        OrgId = t.OrgId,
+        InsReqNo = no,
+        InsCompanyCode = dto.InsCompanyCode.Trim(),
+        InsTypeCode = dto.InsTypeCode.Trim(),
+        Status = "P",
+        EffectiveDate = dto.EffectiveDate,
+        CreatedAt = now,
+        CreatedDate = now,
+        CreatedBy = who,
+        LogLUDateTime = now,
+        LogLUBy = who,
+        Remark = dto.Remark
+    };
     db.InsuranceReqs.Add(r); await db.SaveChangesAsync();
     foreach (var c in cars)
-        db.InsuranceReqDtls.Add(new InsuranceReqDtl { OrgId = t.OrgId, InsuranceReqId = r.Id, VIN = c.VIN.Trim().ToUpperInvariant(), ExpectedStartDate = c.ExpectedStartDate, InsAmount = c.InsAmount, InsuranceDay = c.InsuranceDay, LocationFrom = c.LocationFrom, LocationTo = c.LocationTo, Price = c.Price, Rate = c.Rate, TransporterCode = c.TransporterCode, Remark = c.Remark });
+        db.InsuranceReqDtls.Add(new InsuranceReqDtl
+        {
+            OrgId = t.OrgId,
+            InsuranceReqId = r.Id,
+            VIN = c.VIN.Trim().ToUpperInvariant(),
+            ExpectedStartDate = c.ExpectedStartDate,
+            InsAmount = c.InsAmount,
+            InsuranceDay = c.InsuranceDay,
+            LocationFrom = c.LocationFrom,
+            LocationTo = c.LocationTo,
+            Price = c.Price,
+            Rate = c.Rate,
+            TransporterCode = c.TransporterCode,
+            Remark = c.Remark,
+            RefOrdType = c.RefOrdType,
+            RefOrdNo = c.RefOrdNo,
+            ProvinceCodeFrom = c.ProvinceCodeFrom,
+            ProvinceCodeTo = c.ProvinceCodeTo,
+            CreatedDate = now,
+            CreatedBy = who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            DeliveryOutDate = c.DeliveryOutDate
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.InsReqNo, cars = cars.Count });
+    return Results.Ok(new { r.InsReqNo, r.Status, r.InsCompanyCode, r.InsTypeCode, r.EffectiveDate, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, cars = cars.Count });
 }).RequireAuthorization();
 
 app.MapGet("/api/insurancereqs/{no}/cars", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
-    if (r is null) return Results.NotFound(new { no });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_Ins_InsuranceReqNotFound", no });
     var cars = await db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id)
-        .Select(c => new { c.VIN, c.ExpectedStartDate, c.InsAmount, c.InsuranceDay, c.LocationFrom, c.LocationTo, c.Price, c.Rate, c.TransporterCode, c.Remark, c.InsReqDtlStatus }).ToListAsync();
-    return Results.Ok(new { r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt, r.ApprovedBy, r.ApprovedDate, r.Remark, count = cars.Count, cars });   // #1375 §12
+        .Select(c => new {
+            c.VIN, c.ExpectedStartDate, c.InsAmount, c.InsuranceDay, c.LocationFrom, c.LocationTo, c.Price, c.Rate, c.TransporterCode, c.Remark, c.InsReqDtlStatus,
+            c.RefOrdType, c.RefOrdNo, c.ProvinceCodeFrom, c.ProvinceCodeTo, c.CreatedDate, c.CreatedBy, c.ApprovedDate, c.ApprovedBy, c.LogLUDateTime, c.LogLUBy, c.DeliveryOutDate
+        }).ToListAsync();
+    return Results.Ok(new { r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt, r.EffectiveDate, r.CreatedDate, r.CreatedBy, r.ApprovedBy, r.ApprovedDate, r.Remark, r.LogLUDateTime, r.LogLUBy, count = cars.Count, cars });   // #Round126 §12
 }).RequireAuthorization();
 
 // 🔴 DUYỆT / TỪ CHỐI — `Ins_InsuranceReqApprove_New20181119` (Biz.HTC.WH.cs:125335-125520).
@@ -76370,34 +76478,46 @@ app.MapPost("/api/insurancereqs/{no}/{action}", async (string no, string action,
     if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
     no = no.Trim().ToUpperInvariant();
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
-    if (r is null) return Results.NotFound(new { no });
-    if (r.Status != "P") return Results.BadRequest(new { error = "Chỉ duyệt được yêu cầu đang chờ duyệt (P)." });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_Ins_InsuranceReqNotFound", no });
+    if (r.Status != "P") return Results.BadRequest(new { error = "Ins_InsuranceReqApprove_InvalidFlagUnapprove", status = r.Status });
     var ok = action == "approve";
     var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     r.Status = ok ? "A" : "R";
     r.Remark = dto?.Remark; r.ApprovedDate = now;
-    r.ApprovedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.ApprovedBy = who;
+    r.LogLUDateTime = now; r.LogLUBy = who;
     if (ok) r.ConfirmedAt = now;
     // Lan xuống MỌI dòng — nguồn dùng một câu update không lọc theo trạng thái dòng.
     var lines = await db.InsuranceReqDtls.Where(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id).ToListAsync();
-    foreach (var l in lines) l.InsReqDtlStatus = ok ? "A" : "R";
+    foreach (var l in lines)
+    {
+        l.InsReqDtlStatus = ok ? "A" : "R";
+        l.ApprovedDate = now;
+        l.ApprovedBy = who;
+        l.LogLUDateTime = now;
+        l.LogLUBy = who;
+    }
     await db.SaveChangesAsync();
     return Results.Ok(new { r.InsReqNo, status = r.Status, statusName = ok ? "Đã duyệt" : "Từ chối", linesUpdated = lines.Count });
 }).RequireAuthorization();
 
 // 🔴 SỬA DÒNG — `Ins_InsuranceReqDtlUpdate_New20181119` (125568): chỉ sửa `InsuranceDay`, `Remark`,
 // `InsAmount`; guard trạng thái **DÒNG phải là "P"** (không xét trạng thái header).
-app.MapPost("/api/insurancereqs/{no}/cars/{vin}", async (string no, string vin, InsCarUpdateDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/insurancereqs/{no}/cars/{vin}", async (string no, string vin, InsCarUpdateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
-    if (r is null) return Results.NotFound(new { no });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_Ins_InsuranceReqNotFound", no });
     var c = await db.InsuranceReqDtls.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id && x.VIN == vin);
-    if (c is null) return Results.NotFound(new { no, vin });
-    if (c.InsReqDtlStatus != "P") return Results.BadRequest(new { error = $"Xe {vin} không còn ở trạng thái chờ duyệt (P) — không sửa được." });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_Ins_InsuranceReqDtlNotFound", no, vin });
+    if (c.InsReqDtlStatus != "P") return Results.BadRequest(new { error = "Ins_InsuranceReqDtlUpdate", status = c.InsReqDtlStatus });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     c.InsuranceDay = dto.InsuranceDay; c.InsAmount = dto.InsAmount; c.Remark = dto.Remark;
+    c.LogLUDateTime = now; c.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { no, c.VIN, c.InsuranceDay, c.InsAmount, c.Remark });
+    return Results.Ok(new { no, c.VIN, c.InsuranceDay, c.InsAmount, c.Remark, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
 // 🔴 XOÁ DÒNG — `Ins_InsuranceReqDtlDelete_New20181119` (125711): guard dòng **"P,A"**
@@ -76406,10 +76526,10 @@ app.MapDelete("/api/insurancereqs/{no}/cars/{vin}", async (string no, string vin
 {
     no = no.Trim().ToUpperInvariant(); vin = vin.Trim().ToUpperInvariant();
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
-    if (r is null) return Results.NotFound(new { no });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_Ins_InsuranceReqNotFound", no });
     var c = await db.InsuranceReqDtls.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id && x.VIN == vin);
-    if (c is null) return Results.NotFound(new { no, vin });
-    if (c.InsReqDtlStatus is not ("P" or "A")) return Results.BadRequest(new { error = $"Xe {vin} ở trạng thái '{c.InsReqDtlStatus}' — không xoá được." });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_Ins_InsuranceReqDtlNotFound", no, vin });
+    if (c.InsReqDtlStatus is not ("P" or "A")) return Results.BadRequest(new { error = "Ins_InsuranceReqDtlDelete", status = c.InsReqDtlStatus });
     db.InsuranceReqDtls.Remove(c);
     await db.SaveChangesAsync();
     var left = await db.InsuranceReqDtls.CountAsync(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id);
@@ -76424,8 +76544,8 @@ app.MapDelete("/api/insurancereqs/{no}", async (string no, AppDbContext db, ITen
 {
     no = no.Trim().ToUpperInvariant();
     var r = await db.InsuranceReqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.InsReqNo == no);
-    if (r is null) return Results.NotFound(new { no });
-    if (r.Status is not ("P" or "A")) return Results.BadRequest(new { error = $"Yêu cầu ở trạng thái '{r.Status}' — không xoá được." });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_Ins_InsuranceReqNotFound", no });
+    if (r.Status is not ("P" or "A")) return Results.BadRequest(new { error = "Ins_InsuranceReqDelete", status = r.Status });
     var lines = await db.InsuranceReqDtls.Where(x => x.OrgId == t.OrgId && x.InsuranceReqId == r.Id).ToListAsync();
     db.InsuranceReqDtls.RemoveRange(lines);
     db.InsuranceReqs.Remove(r);
@@ -124534,7 +124654,7 @@ record StoRearCBCarDto(string? VIN, string? SpecCode, string? EngineNo, string? 
 record AppSessionDto(string? UserCode, string? LanguageCode, string? PartnerCode, string? PartnerUserCode, string? OtherInfo);
 record AppSessionUpdateDto(string? SessionIdUpdate, DateTime? DateTimeLastAccess);   // #1515 SysSessionUpdate
 record StoCBReqDto(string? Remark, List<StoCBReqCarDto>? Cars);
-record StoCBReqCarDto(string? VIN, string? ModelCode, string? SpecCode, string? EngineNo);
+record StoCBReqCarDto(string? VIN, string? ModelCode, string? SpecCode, string? EngineNo, string? StorageCodeFrom = null, string? StorageCodeTo = null, string? LoaiThung = null, string? TypeCB = null, string? Remark = null);
 record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string? SpecCode, string? DealerCode, string? DealerCodeBuyer, DateTime? ReceiveDate, DateTime? StoreDateExpired, DateTime? DeliveryDate, DateTime? WarrantyDate, DateTime? HTCVDateExpired, DateTime? DealerDateExpired,
     // #359 cột AddX
     string? WarrantyKm = null, string? ColorCode = null, string? EngineNo = null, string? WarrantyType = null, string? Remark = null,
@@ -124921,7 +125041,7 @@ record DmsSelectBankMDDto(string? BankCodeMD, string? FlagDlrCtrAdjust);
 record DmsHtcApproveDto(int Level = 1, bool Reject = false, string? Remark = null, string? FilePath = null);
 record DmsDlrApproveDto(string? Remark = null, string? FilePath = null, bool SendMail = false);
 record DmsCtrCancelDto(string? Remark = null);
-record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete);
+record DmsCancelMinutesDto(string DlrCtrNo, string? Remark, string? FlagIsDelete, string? DealerCode = null, string? FileName = null, string? FilePath = null);
 record CancelMinutesUpdateDto(string? FtColsUpd, string? FilePath);
 record DmsCancelBankMDDto(string DlrCtrNo, string? BankCodeMD, string? Remark, string? FlagIsDelete);
 record CancelBankMDActionDto(string? RemarkDlr = null, bool SendMail = false, string? RemarkBank = null);
@@ -124930,21 +125050,21 @@ record GrtClaimDto(string DealerCode, DateTime? ContractDate, string FlagisHTC, 
 record GrtClaimApproveDto(string? FileSigned = null);
 record GrtClaimMultiDto(List<string>? GrtClaimNos);
 record GrtClaimRejectDto(string? Remark = null);
-record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark);
-record CBReqDto(List<CBReqCarDto>? Cars);
+record CBReqCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? TypeCB, string? Remark, string? LoaiThung = null);
+record CBReqDto(List<CBReqCarDto>? Cars, string? Remark = null);
 record CbReqActionDto(string? Remark = null);
 record StorageRearrangeCarDto(string VIN, string? StorageCodeFrom, string StorageCodeTo, string? Remark);
 record StorageRearrangeDto(List<StorageRearrangeCarDto>? Cars, string? Remark = null);
 // Duyệt chuyển kho: nguồn dùng MỘT hàm/cấp với cờ `strFlagUnapprove` (nghịch đảo) — ở đây phơi ra `Approve`.
 record ScApproveDto(bool Approve = true, string? Remark = null);
 record ScCarUpdateDto(DateTime? ExpectedEndDate, string? Remark);
-record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark);
+record InsuranceReqCarDto(string VIN, DateTime? ExpectedStartDate, decimal InsAmount, int InsuranceDay, string? LocationFrom, string? LocationTo, decimal Price, decimal Rate, string? TransporterCode, string? Remark, string? RefOrdType = null, string? RefOrdNo = null, string? ProvinceCodeFrom = null, string? ProvinceCodeTo = null, DateTime? DeliveryOutDate = null);
 record EmailAutoTempLineDto(string? DealerCode, string? CusID, string? CusEmail,
     string? Subject, string? Body, string? TypeEmail, string? Status);   // #591
 record MstInsCompanyDto(string? InsCompanyCode, string? InsCompanyName, string? FlagActive,
     string? Address, string? Tel, string? Fax, string? Website);   // #569 §12
 record MstInsTypeDto(string? InsCompanyCode, string? InsTypeCode, DateTime? EffectiveDate, string? InsTypeName, string? FlagActive);
-record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<InsuranceReqCarDto>? Cars);
+record InsuranceReqDto(string InsCompanyCode, string InsTypeCode, List<InsuranceReqCarDto>? Cars, DateTime? EffectiveDate = null, string? Remark = null);
 record InsApproveDto(string? Remark);
 record InsCarUpdateDto(int InsuranceDay, decimal InsAmount, string? Remark);
 record CarLocationDto(string VIN, string? LocationOld, string Location);

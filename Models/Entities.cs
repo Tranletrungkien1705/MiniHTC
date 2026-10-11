@@ -4997,6 +4997,9 @@ public sealed class StoCBReq
     public string? Remark { get; set; }
     public string? CreatedBy { get; set; }
     public DateTime? ApprovedAt { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Chi tiết xe trong đề nghị cân bằng kho — port 1:1 Sto_CBReqDtl (TCMotor).</summary>
@@ -5022,6 +5025,9 @@ public sealed class StoCBReqDtl
     public string? StorageCodeTo { get; set; }
     /// <summary>Loại thùng — xem chú thích của [StorageCodeFrom].</summary>
     public string? TypeCB { get; set; }
+    public string? LoaiThung { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Bảo hành xe tồn kho — port 1:1 FrmMngInv_CarWarranty (Inv_CarWarranty, TCMotor). Theo dõi mốc bảo hành theo VIN + gửi KH xác nhận bảo hành (CustomerConfirmDate).
@@ -13190,6 +13196,22 @@ public sealed class DmsCancelMinutes
     public Guid OrgId { get; set; }
     public string CancelMinutesNo { get; set; } = "";
     public string DlrCtrNo { get; set; } = "";
+    public string? DealerCode { get; set; }
+    public string? FileName { get; set; }
+    public DateTime? CreateDTime { get; set; }
+    public string? CreateBy { get; set; }
+    public DateTime? LUDTime { get; set; }
+    public string? LUBy { get; set; }
+    public DateTime? DlrApprDTime { get; set; }
+    public string? DlrApprBy { get; set; }
+    public DateTime? HTCAppr1DTime { get; set; }
+    public string? HTCAppr1By { get; set; }
+    public DateTime? HTCAppr2DTime { get; set; }
+    public string? HTCAppr2By { get; set; }
+    public DateTime? RejectDTime { get; set; }
+    public string? RejectBy { get; set; }
+    public DateTime? CancelDTime { get; set; }
+    public string? CancelBy { get; set; }
     public string? Remark { get; set; }
     public string FlagIsDelete { get; set; } = "0";
     /// <summary>
@@ -13696,6 +13718,7 @@ public sealed class InsuranceReq
     public string InsReqNo { get; set; } = "";
     public string InsCompanyCode { get; set; } = "";  // hãng BH
     public string InsTypeCode { get; set; } = "";      // loại hình BH
+    public DateTime? EffectiveDate { get; set; }
     /// <summary>
     /// 🔴 Trạng thái yêu cầu (`Ins_InsuranceReq.InsReqStatus`) theo `TConst.Stage`:
     /// **"P" chờ duyệt → "A" duyệt / "R" từ chối**. Dùng `Stage.Approved` = **"A"**, KHÔNG phải A1/A2.
@@ -13705,12 +13728,16 @@ public sealed class InsuranceReq
     /// </summary>
     public string Status { get; set; } = "P";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
     public DateTime? ConfirmedAt { get; set; }
     /// <summary>Ngày duyệt/từ chối (`ApprovedDate`) — nguồn ghi cho CẢ hai nhánh, không riêng nhánh duyệt.</summary>
     public DateTime? ApprovedDate { get; set; }
     public string? ApprovedBy { get; set; }
     /// <summary>Ghi chú của người duyệt (`Ins_InsuranceReq.Remark`) — ghi cả khi duyệt lẫn khi từ chối.</summary>
     public string? Remark { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 public sealed class InsuranceReqDtl
 {
@@ -13718,6 +13745,10 @@ public sealed class InsuranceReqDtl
     public Guid OrgId { get; set; }
     public long InsuranceReqId { get; set; }
     public string VIN { get; set; } = "";
+    public string? RefOrdType { get; set; }
+    public string? RefOrdNo { get; set; }
+    public string? ProvinceCodeFrom { get; set; }
+    public string? ProvinceCodeTo { get; set; }
     public DateTime? ExpectedStartDate { get; set; }
     public decimal InsAmount { get; set; }
     public int InsuranceDay { get; set; }
@@ -13733,6 +13764,13 @@ public sealed class InsuranceReqDtl
     /// Guard: sửa dòng chỉ khi **"P"**; xoá dòng khi **"P" hoặc "A"**.
     /// </summary>
     public string InsReqDtlStatus { get; set; } = "P";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? ApprovedDate { get; set; }
+    public string? ApprovedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime? DeliveryOutDate { get; set; }
 }
 
 /// <summary>Cập nhật vị trí xe trong bãi (Vin.Location) — port 1:1 FrmLocationCar (2010.HTC/Sales/Logistic). Cập nhật vị trí lưu bãi theo VIN.</summary>
