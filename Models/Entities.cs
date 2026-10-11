@@ -19168,6 +19168,8 @@ public sealed class MstDeliveryForm
     public string DeliveryFormCode { get; set; } = "";
     public string? DeliveryFormName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -19179,6 +19181,8 @@ public sealed class MstOrderComplainType
     public string OrderComplainType { get; set; } = "";
     public string? OrderComplainTypeName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }
@@ -19211,6 +19215,8 @@ public sealed class MstOrderComplainImageType
     /// <summary>Cột nguồn: **`OrderComplainImageName`** — bỏ chữ "Type", khác bảng anh em.</summary>
     public string? OrderComplainImageName { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
 }

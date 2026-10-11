@@ -116633,7 +116633,7 @@ app.MapGet("/api/mstdeliveryforms", async (AppDbContext db, ITenantContext t,
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = await qy.OrderBy(x => x.DeliveryFormCode).Skip(skip).Take(take)
-        .Select(x => new { x.Id, x.DeliveryFormCode, x.DeliveryFormName, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => new { x.Id, x.DeliveryFormCode, x.DeliveryFormName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
     return Results.Ok(new
     {
@@ -116649,20 +116649,63 @@ app.MapGet("/api/mstdeliveryforms", async (AppDbContext db, ITenantContext t,
     });
 }).RequireAuthorization();
 
+app.MapGet("/api/mstdeliveryforms/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var r = await db.MstDeliveryForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeliveryFormCode == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_DeliveryForm_CheckDB_DeliveryFormNotFound", deliveryFormCode = c });
+    return Results.Ok(new
+    {
+        r.Id, r.DeliveryFormCode, r.DeliveryFormName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/mstdeliveryforms", async (MstDeliveryFormDto dto, AppDbContext db, ITenantContext t,
     System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.DeliveryFormCode ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chua nhap ma hinh thuc giao xe." });
-    var by = user.Identity?.Name ?? "system";
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần DeliveryFormCode." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.Mst_DeliveryForm_CheckDB_FlagActiveNotMatched", message = "FlagActive chỉ nhận 0/1." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var row = await db.MstDeliveryForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeliveryFormCode == code);
-    if (row is null) { row = new MstDeliveryForm { OrgId = t.OrgId, DeliveryFormCode = code }; db.MstDeliveryForms.Add(row); }
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new MstDeliveryForm
+        {
+            OrgId = t.OrgId,
+            DeliveryFormCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? by
+        };
+        db.MstDeliveryForms.Add(row);
+    }
     row.DeliveryFormName = dto.DeliveryFormName;
-    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
-    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    row.FlagActive = fa;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = by;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.DeliveryFormCode, row.DeliveryFormName, row.FlagActive,
-                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+    return Results.Ok(new
+    {
+        row.Id, row.DeliveryFormCode, row.DeliveryFormName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated,
+        writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstdeliveryforms/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim();
+    var r = await db.MstDeliveryForms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeliveryFormCode == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_DeliveryForm_CheckDB_DeliveryFormNotFound", deliveryFormCode = c });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.FlagActive = r.FlagActive == "1" ? "0" : "1";
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.DeliveryFormCode, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #633 HAI MASTER KHIẾU NẠI ĐƠN PHỤ TÙNG (`BizCarSv.Master.cs`) =====
@@ -116700,7 +116743,7 @@ app.MapGet("/api/mstordercomplaintypes", async (AppDbContext db, ITenantContext 
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = await qy.OrderBy(x => x.OrderComplainType).Skip(skip).Take(take)
-        .Select(x => new { x.Id, x.OrderComplainType, x.OrderComplainTypeName, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => new { x.Id, x.OrderComplainType, x.OrderComplainTypeName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
     return Results.Ok(new
     {
@@ -116714,20 +116757,63 @@ app.MapGet("/api/mstordercomplaintypes", async (AppDbContext db, ITenantContext 
     });
 }).RequireAuthorization();
 
+app.MapGet("/api/mstordercomplaintypes/{type}", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.MstOrderComplainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_OrderComplainType_CheckDB_OrderComplainTypeNotFound", orderComplainType = c });
+    return Results.Ok(new
+    {
+        r.Id, r.OrderComplainType, r.OrderComplainTypeName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/mstordercomplaintypes", async (MstOrderComplainTypeDto dto, AppDbContext db,
     ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.OrderComplainType ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chua nhap loai khieu nai." });
-    var by = user.Identity?.Name ?? "system";
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần OrderComplainType." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.Mst_OrderComplainType_CheckDB_FlagActiveNotMatched", message = "FlagActive chỉ nhận 0/1." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var row = await db.MstOrderComplainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainType == code);
-    if (row is null) { row = new MstOrderComplainType { OrgId = t.OrgId, OrderComplainType = code }; db.MstOrderComplainTypes.Add(row); }
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new MstOrderComplainType
+        {
+            OrgId = t.OrgId,
+            OrderComplainType = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? by
+        };
+        db.MstOrderComplainTypes.Add(row);
+    }
     row.OrderComplainTypeName = dto.OrderComplainTypeName;
-    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
-    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    row.FlagActive = fa;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = by;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.OrderComplainType, row.OrderComplainTypeName, row.FlagActive,
-                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+    return Results.Ok(new
+    {
+        row.Id, row.OrderComplainType, row.OrderComplainTypeName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated,
+        writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstordercomplaintypes/{type}/toggle", async (string type, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.MstOrderComplainTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_OrderComplainType_CheckDB_OrderComplainTypeNotFound", orderComplainType = c });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.FlagActive = r.FlagActive == "1" ? "0" : "1";
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.OrderComplainType, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
 }).RequireAuthorization();
 
 // #5564 — Mst_OrderComplainImageType (DMSCarSv, TERP.BizCarSv/Mst_OrderComplainImageTypeService.cs):
@@ -116748,7 +116834,7 @@ app.MapGet("/api/mstordercomplainimagetypes", async (AppDbContext db, ITenantCon
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 1000 ? recordCount!.Value : 500;
     var items = await qy.OrderBy(x => x.OrderComplainImageType).Skip(skip).Take(take)
-        .Select(x => new { x.Id, x.OrderComplainImageType, x.OrderComplainImageName, x.FlagActive, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => new { x.Id, x.OrderComplainImageType, x.OrderComplainImageName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
     return Results.Ok(new
     {
@@ -116758,21 +116844,64 @@ app.MapGet("/api/mstordercomplainimagetypes", async (AppDbContext db, ITenantCon
     });
 }).RequireAuthorization();
 
+app.MapGet("/api/mstordercomplainimagetypes/{type}", async (string type, AppDbContext db, ITenantContext t) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.MstOrderComplainImageTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainImageType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_OrderComplainImageType_CheckDB_OrderComplainImageTypeNotFound", orderComplainImageType = c });
+    return Results.Ok(new
+    {
+        r.Id, r.OrderComplainImageType, r.OrderComplainImageName, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy
+    });
+}).RequireAuthorization();
+
 app.MapPost("/api/mstordercomplainimagetypes", async (MstOrderComplainImageTypeDto dto, AppDbContext db,
     ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     // #5564
     var code = (dto.OrderComplainImageType ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chua nhap loai anh khieu nai." });
-    var by = user.Identity?.Name ?? "system";
+    if (code.Length == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Cần OrderComplainImageType." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1")) return Results.BadRequest(new { error = "ErrHTC.Mst_OrderComplainImageType_CheckDB_FlagActiveNotMatched", message = "FlagActive chỉ nhận 0/1." });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var row = await db.MstOrderComplainImageTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainImageType == code);
-    if (row is null) { row = new MstOrderComplainImageType { OrgId = t.OrgId, OrderComplainImageType = code }; db.MstOrderComplainImageTypes.Add(row); }
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new MstOrderComplainImageType
+        {
+            OrgId = t.OrgId,
+            OrderComplainImageType = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? by
+        };
+        db.MstOrderComplainImageTypes.Add(row);
+    }
     row.OrderComplainImageName = dto.OrderComplainImageName;
-    row.FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
-    row.LogLUDateTime = DateTime.Now; row.LogLUBy = by;
+    row.FlagActive = fa;
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = by;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.OrderComplainImageType, row.OrderComplainImageName, row.FlagActive,
-                            writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay" });
+    return Results.Ok(new
+    {
+        row.Id, row.OrderComplainImageType, row.OrderComplainImageName, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, updated,
+        writeIsPortAddition = "nguon KHONG co ham ghi cho danh muc nay"
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/mstordercomplainimagetypes/{type}/toggle", async (string type, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (type ?? "").Trim();
+    var r = await db.MstOrderComplainImageTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.OrderComplainImageType == c);
+    if (r is null) return Results.NotFound(new { error = "ErrHTC.Mst_OrderComplainImageType_CheckDB_OrderComplainImageTypeNotFound", orderComplainImageType = c });
+    var by = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    r.FlagActive = r.FlagActive == "1" ? "0" : "1";
+    r.LogLUDateTime = DateTime.Now;
+    r.LogLUBy = by;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { r.OrderComplainImageType, r.FlagActive, r.LogLUDateTime, r.LogLUBy });
 }).RequireAuthorization();
 
 // merge: gỡ route trùng: app.MapGet("/api/receptionerrors", async (AppDbContext db, ITenantContext t, string? q, bool? all) =
@@ -125422,17 +125551,23 @@ record EngineerUpdateDto(string? EngineerNo,
     string? GroupRCode = null);   // merge session-a
 record MstDeliveryFormDto(string? DeliveryFormCode,
     string? DeliveryFormName,
-    string? FlagActive);   // merge session-a
+    string? FlagActive,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null);   // merge session-a
 record MstOrderComplainTypeDto(string? OrderComplainType,
     string? OrderComplainTypeName,
-    string? FlagActive);   // merge session-a
+    string? FlagActive,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null);   // merge session-a
 record SerReceptionErrorDto(string? ReceptionErrorCode,
     string? ReceptionErrorName,
     string? Remark,
     string? FlagActive);   // merge session-a
 record MstOrderComplainImageTypeDto(string? OrderComplainImageType,
     string? OrderComplainImageName,
-    string? FlagActive);   // merge session-a
+    string? FlagActive,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null);   // merge session-a
 record ReceptionAttachFileMstDto(string? ReceptionAttachFileNo,
     string? FilePath,
     string? FileName);   // merge session-a
