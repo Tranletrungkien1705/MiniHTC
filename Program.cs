@@ -972,6 +972,7 @@ app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? s
           r.FlagEarlyCancel, r.RetrieveRemark, r.DeliveryOrderNo, r.RetrieveStatus, r.RetrieveDtlStatus,
           r.CreatedDate, r.CreatedBy, r.ApprovedDate, r.ApprovedBy,
           r.RetrieveOutDate, r.RetrieveEndDate, r.LogLUDateTime, r.LogLUBy,
+          r.CarId, r.RetrieveStartDate, r.Remark,   // #Round 125 §12
           LastDeliveryOrderNo = ld?.DoNo, LastStorageCode = ld?.StorageCode, LastDeliveryOutDate = ld?.DeliveryOutDate };
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
@@ -979,28 +980,25 @@ app.MapGet("/api/retrieves", async (AppDbContext db, ITenantContext t, string? s
 
 app.MapPost("/api/retrieves", async (RetrieveDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
-    if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Hãy nhập mã kho." });
-    if (dto.ExpectedStartDate is null) return Results.BadRequest(new { error = "Hãy nhập ngày thu hồi dự kiến." });
-    if (dto.ExpectedEndDate is null) return Results.BadRequest(new { error = "Hãy nhập ngày kết thúc thu hồi DK." });
+    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "CommonAppData_VINIsEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "StorageCarRetrieveCreate_InvalidStorageType" });
+    if (dto.ExpectedStartDate is null || dto.ExpectedEndDate is null) return Results.BadRequest(new { error = "StorageCarRetrieveCreate_InvalidDetailExpectedEndDate" });
     var vin = dto.Vin.Trim().ToUpperInvariant();
     // 🔴 #Round 110 ĐÃ TRẢ NỢ 1:1 guard `myCar_CheckCar` của nguồn (Biz.HTC.WH.cs:69303-69315) trên CarVinMaster:
     //    tồn tại + Active · `DeliveryStatus = "F"` (ĐÃ GIAO tới đại lý) · `FlagAllowChangeVIN = "0"` ·
     //    `VINFreeStatus = "0"` (đã map VIN).
     var car = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vin);
     if (car is null || car.FlagActive != "1")
-        return Results.BadRequest(new { error = $"Xe {vin} không tồn tại hoặc không ở trạng thái Active." });
+        return Results.BadRequest(new { error = "StorageCarRetrieveCreate_TableDetailBeBlank", vin });
     if (car.DeliveryStatus != "F")
-        return Results.BadRequest(new { error = $"Xe {vin} chưa được giao tới đại lý (DeliveryStatus != 'F')." });
-    if (car.FlagAllowChangeVIN != "0")
-        return Results.BadRequest(new { error = $"Xe {vin} chưa khoá đổi VIN (FlagAllowChangeVIN != '0')." });
-    if (car.VINFreeStatus != "0")
-        return Results.BadRequest(new { error = $"Xe {vin} chưa map VIN (VINFreeStatus != '0')." });
+        return Results.BadRequest(new { error = "StorageCarRetrieveCreate_CarBelongToAnotherDealer", vin });
+    if (car.FlagAllowChangeVIN != "0" || car.VINFreeStatus != "0")
+        return Results.BadRequest(new { error = "StorageCarRetrieveCreate_InvalidDetailRetrieveEndDate", vin });
 
     // 🔴 Guard nguồn (69448-69466) ĐÃ port được vì có sẵn entity: xe đang có hỗ trợ bán lẻ
     //    (`SPL_SPSupportRetail`) thì KHÔNG được thu hồi.
     if (await db.SPSupportRetails.AnyAsync(x => x.OrgId == t.OrgId && x.VIN == vin))
-        return Results.BadRequest(new { error = $"Xe {vin} đang có hỗ trợ bán lẻ (SPL_SPSupportRetail), không thu hồi được." });
+        return Results.BadRequest(new { error = "StorageCarRetrieveCreate_ExistCar_DocReqDtl", vin });
 
     var code = "TH" + DateTime.Now.ToString("yyMMddHHmmss");
     var r = new CarRetrieve
@@ -1015,23 +1013,25 @@ app.MapPost("/api/retrieves", async (RetrieveDto dto, AppDbContext db, ITenantCo
         DeliveryOrderNo = "", // nguồn luôn ghi rỗng khi tạo
         RetrieveStatus = "P", RetrieveDtlStatus = "P",
         CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        CarId = dto.CarId, RetrieveStartDate = dto.RetrieveStartDate, Remark = dto.Remark,   // #Round 125 §12
     };
     db.CarRetrieves.Add(r); await db.SaveChangesAsync();
     return Results.Ok(new
     {
         r.Code, r.RetrieveOrderNo, r.Vin, r.StorageCode, r.RetrieveStatus,
+        r.CarId, r.RetrieveStartDate, r.Remark,   // #Round 125 §12
         debtNote = "ĐÃ TRẢ NỢ 1:1 guard myCar_CheckCar (Biz.HTC.WH.cs:69303-69315) trên CarVinMaster: FlagActive='1', DeliveryStatus='F', FlagAllowChangeVIN='0', VINFreeStatus='0'."
     });
 }).RequireAuthorization();
 
 app.MapPost("/api/retrieves/{code}/{action}", async (string code, string action, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "action = approve|reject" });
+    if (action is not ("approve" or "reject")) return Results.BadRequest(new { error = "StorageCarRetrieveApprove_InvalidFlagUnapprove" });
     code = code.Trim().ToUpperInvariant();
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
-    if (r is null) return Results.NotFound(new { code });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_StorageStorageRetrieveNotFound", code });
     // 🔴 Mã trạng thái theo `TConst.Stage` của nguồn: "P" → "A" / "R" (sửa ở #117).
-    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = $"Sai trạng thái (đang '{r.RetrieveStatus}', cần 'P')." });
+    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = "StorageCarRetrieveApprove_InvalidFlagUnapprove", status = r.RetrieveStatus });
     r.RetrieveStatus = action == "approve" ? "A" : "R";
     r.RetrieveDtlStatus = r.RetrieveStatus; // bản phẳng: đầu và dòng là một, đồng bộ luôn
     r.ApprovedDate = DateTime.Now;
@@ -1046,8 +1046,8 @@ app.MapPost("/api/retrieves/{code}/detail", async (string code, RetrieveDetailDt
 {
     code = code.Trim().ToUpperInvariant();
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
-    if (r is null) return Results.NotFound(new { code });
-    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = $"Đang '{r.RetrieveStatus}', chỉ sửa được khi 'P'." });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_StorageStorageRetrieveNotFound", code });
+    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = "StorageCarRetrieveDetailUpdate", status = r.RetrieveStatus });
     if (!string.IsNullOrWhiteSpace(dto.StorageCode)) r.StorageCode = dto.StorageCode!.Trim().ToUpperInvariant();
     if (dto.ExpectedStartDate is not null) r.ExpectedStartDate = dto.ExpectedStartDate;
     if (dto.ExpectedEndDate is not null) r.ExpectedEndDate = dto.ExpectedEndDate;
@@ -1062,8 +1062,8 @@ app.MapPost("/api/retrieves/{code}/detail-delete", async (string code, AppDbCont
 {
     code = code.Trim().ToUpperInvariant();
     var r = await db.CarRetrieves.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
-    if (r is null) return Results.NotFound(new { code });
-    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = $"Đang '{r.RetrieveStatus}', chỉ xoá được khi 'P'." });
+    if (r is null) return Results.NotFound(new { error = "CommonAppData_StorageStorageRetrieveNotFound", code });
+    if (r.RetrieveStatus != "P") return Results.BadRequest(new { error = "StorageCarRetrieve_Del", status = r.RetrieveStatus });
     db.CarRetrieves.Remove(r);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code });
@@ -84918,6 +84918,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
         c.Id, c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.DlrNote, c.SalesType, c.CustomerName, c.SignDate, c.Status,
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         c.Remark, c.DlrDirectorName, c.DlrPosition, c.CusAccountBank,   // #Round 110 §12
+        c.ApprovedDate, c.ApprovedBy, c.CreatedDate, c.TotalAmount,   // #Round 125 §12
         c.BankCode, BankName = db.MstBanks.Where(b => b.OrgId == t.OrgId && b.BankCode == c.BankCode).Select(b => b.BankName).FirstOrDefault(),
         lines = db.DlrContractDetails.Count(l => l.OrgId == t.OrgId && l.ContractId == c.Id),
     }).ToListAsync();
@@ -84930,6 +84931,7 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
         c.DlrContractNo, c.DlrContractNoUser, c.DealerCode, c.SalesManCode, c.SMCode, c.DlrNote, c.SalesType, c.CustomerName, c.SignDate, c.Status,   // #1428 §12
         c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,
         c.Remark, c.DlrDirectorName, c.DlrPosition, c.CusAccountBank,   // #Round 110 §12
+        c.ApprovedDate, c.ApprovedBy, c.CreatedDate, c.TotalAmount,   // #Round 125 §12
         c.BankCode, c.BankName, PmtType = string.IsNullOrEmpty(c.BankName) ? "Trả thẳng" : "Trả góp",   // #334
         c.lines, total = totalsDc.TryGetValue(c.Id, out var tv) ? tv : 0m,
     }).ToList();
@@ -84938,27 +84940,28 @@ app.MapGet("/api/dlrcontracts", async (AppDbContext db, ITenantContext t, string
 
 app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DlrContractNoUser)) return Results.BadRequest(new { error = "Phải nhập số hợp đồng người dùng.", code = "Dlr_ContractCreate_InvalidDlrContractNoUser" });
-    if (string.IsNullOrWhiteSpace(dto.SalesManCode)) return Results.BadRequest(new { error = "Hãy chọn nhân viên bán hàng." });
-    if (string.IsNullOrWhiteSpace(dto.SalesType)) return Results.BadRequest(new { error = "Phải chọn kiểu bán lẻ." });
-    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "Hãy chọn khách hàng." });
-    if (string.IsNullOrWhiteSpace(dto.IDCardNo)) return Results.BadRequest(new { error = "Khách hàng chưa có Số giấy tờ tùy thân." });
-    if (string.IsNullOrWhiteSpace(dto.IDCardType)) return Results.BadRequest(new { error = "Khách hàng chưa có Loại giấy tờ tùy thân." });
-    if (dto.DateOfBirth is null) return Results.BadRequest(new { error = "Khách hàng chưa có Ngày sinh nhật/ thành lập Công ty." });
-    if (dto.SignDate is null) return Results.BadRequest(new { error = "Chưa chọn Ngày ký HĐ.", code = "Dlr_ContractCreate_InvalidContractDate" });
+    if (string.IsNullOrWhiteSpace(dto.DlrContractNoUser)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNoUser" });
+    if (string.IsNullOrWhiteSpace(dto.SalesManCode)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
+    if (string.IsNullOrWhiteSpace(dto.SalesType)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
+    if (string.IsNullOrWhiteSpace(dto.CustomerName)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
+    if (string.IsNullOrWhiteSpace(dto.IDCardNo) || string.IsNullOrWhiteSpace(dto.IDCardType)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
+    if (dto.DateOfBirth is null) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
+    if (dto.SignDate is null) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidDealerContractNo" });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.ModelCode)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng model.", code = "Dlr_ContractCreate_TableDetailBeBlank" });
-    if (lines.Any(l => l.Qty <= 0)) return Results.BadRequest(new { error = "Số lượng phải > 0.", code = "Dlr_ContractCreate_InvalidDetailQuantity" });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "ContractDealerContractCreate_TableDetailBeBlank" });
+    if (lines.Any(l => l.Qty <= 0)) return Results.BadRequest(new { error = "ContractDealerContractCreate_InvalidTotalAmount" });
     var dupeLine = lines.GroupBy(l => $"{l.ModelCode.Trim().ToUpperInvariant()}_{l.SpecCode?.Trim().ToUpperInvariant()}_{l.ColorCode?.Trim().ToUpperInvariant()}").FirstOrDefault(g => g.Count() > 1);
-    if (dupeLine != null) return Results.BadRequest(new { error = "Trùng model/spec/màu trong danh sách chi tiết.", code = "Dlr_ContractCreate_DuplicateKeyDetail" });
+    if (dupeLine != null) return Results.BadRequest(new { error = "ContractDealerContractCreate_DuplicateKeyDetail", key = dupeLine.Key });
     var no = "DLC" + DateTime.Now.ToString("yyMMddHHmmss");
+    var totalContract = dto.TotalAmount ?? lines.Sum(l => l.Price * l.Qty * (1 + l.VAT / 100m));
     var c = new DlrContract
     {
         OrgId = t.OrgId, DlrContractNo = no, DlrContractNoUser = dto.DlrContractNoUser.Trim(), DealerCode = (dto.DealerCode ?? "").Trim().ToUpperInvariant(),
         SalesManCode = dto.SalesManCode.Trim(), SMCode = dto.SMCode ?? dto.SalesManCode.Trim(), SalesType = dto.SalesType.Trim(), CustomerCode = (dto.CustomerCode ?? "").Trim().ToUpperInvariant(),
         CustomerName = dto.CustomerName.Trim(), IDCardNo = dto.IDCardNo.Trim(), IDCardType = dto.IDCardType.Trim(), DateOfBirth = dto.DateOfBirth.Value,
         SignDate = dto.SignDate.Value, BankCode = dto.BankCode, DlrNote = dto.DlrNote,
-        Remark = dto.Remark, DlrDirectorName = dto.DlrDirectorName, DlrPosition = dto.DlrPosition, CusAccountBank = dto.CusAccountBank   // #Round 110 §12
+        Remark = dto.Remark, DlrDirectorName = dto.DlrDirectorName, DlrPosition = dto.DlrPosition, CusAccountBank = dto.CusAccountBank,   // #Round 110 §12
+        ApprovedDate = dto.ApprovedDate, ApprovedBy = dto.ApprovedBy, CreatedDate = dto.CreatedDate ?? DateTime.Now, TotalAmount = totalContract   // #Round 125 §12
     };
     db.DlrContracts.Add(c); await db.SaveChangesAsync();
     var whoCtr = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
@@ -84996,6 +84999,7 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
             Qty = l.Qty, DlvExpectedDate = l.DlvExpectedDate,
             Price = l.Price, UnitPrice = l.UnitPrice ?? l.Price, VAT = l.VAT, AmountVAT = amountVat, TotalAmountAfterVAT = totalAfter,
             ProductionYear = l.ProductionYear, OriginCar = l.OriginCar,   // #Round 110 §12
+            TotalMoney = l.TotalMoney ?? totalAfter, SeatNum = l.SeatNum,   // #Round 125 §12
             LogLUDateTime = DateTime.Now, LogLUBy = whoCtr,
         });
 
@@ -85029,7 +85033,7 @@ app.MapPost("/api/dlrcontracts", async (DlrContractDto dto, AppDbContext db, ITe
             });
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.DlrContractNo, c.CustomerName, c.SMCode, lines = lines.Count });
+    return Results.Ok(new { c.DlrContractNo, c.CustomerName, c.SMCode, lines = lines.Count, c.ApprovedDate, c.ApprovedBy, c.CreatedDate, c.TotalAmount });
 }).RequireAuthorization();
 
 // ===== PHIẾU HUỶ hợp đồng bán lẻ (Dlr_ContractCancel + Dtl + Car) =====
@@ -85057,7 +85061,7 @@ app.MapPost("/api/dlrcontracts/{no}/amend", async (string no, DlrContractAmendDt
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
-    if (c is null) return Results.NotFound(new { error = "Không có hợp đồng " + no, code = "CommonAppData_DlrContractNotFound" });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_ContractDealerContractNotFound", no });
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var prev = c.VersionDTimeCurr;
@@ -85089,7 +85093,7 @@ app.MapPost("/api/dlrcontracts/{no}/dealfinish", async (string no, AppDbContext 
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
-    if (c is null) return Results.NotFound(new { error = "Không có hợp đồng " + no, code = "CommonAppData_DlrContractNotFound" });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_ContractDealerContractNotFound", no });
     c.FlagDealFinish = "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { no, c.FlagDealFinish, status = c.Status,
@@ -85957,15 +85961,17 @@ app.MapGet("/api/dlrcontracts/{no}/lines", async (string no, AppDbContext db, IT
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
-    if (c is null) return Results.NotFound(new { no, error = "Không có hợp đồng " + no, code = "CommonAppData_DlrContractNotFound" });
+    if (c is null) return Results.NotFound(new { no, error = "CommonAppData_ContractDealerContractNotFound" });
     var lines = await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && (l.ContractId == c.Id || l.DlrContractNo == no))
         .Select(l => new { l.DlrContractNo, l.ModelCode, l.SpecCode, l.ColorCode, l.Qty, l.DlvExpectedDate,
             l.Price, l.UnitPrice, l.VAT, l.AmountVAT, l.TotalAmountAfterVAT,
-            l.ContractUpdateType, l.ProductionYear, l.OriginCar, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
+            l.ContractUpdateType, l.ProductionYear, l.OriginCar, l.LogLUDateTime, l.LogLUBy,
+            l.TotalMoney, l.SeatNum }).ToListAsync();   // #Round 125 §12
     return Results.Ok(new { c.DlrContractNo, c.DlrContractNoUser, c.CustomerName, c.SalesManCode,
         c.SignDate, c.Status, c.VersionDTimeCurr,   // #130: mốc phiên bản hiện hành
         c.DealerCode, c.SalesType, c.ApproveBy, c.ApproveDTime, c.CancelBy, c.CancelDTime, c.FinishBy, c.FinishDTime,   // #1368 §12
         c.Remark, c.DlrDirectorName, c.DlrPosition, c.CusAccountBank, c.DlrNote,   // #Round 110 §12
+        c.ApprovedDate, c.ApprovedBy, c.CreatedDate, c.TotalAmount,   // #Round 125 §12
         count = lines.Count, lines, total = lines.Sum(x => x.TotalAmountAfterVAT) });
 }).RequireAuthorization();
 
@@ -86034,9 +86040,9 @@ app.MapPost("/api/dlrcontracts/{no}/update-qty", async (string no, DlrContractQt
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
-    if (c is null) return Results.NotFound(new { no });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_ContractDealerContractNotFound", no });
     var rows = (dto.Rows ?? new()).Where(r => r.UpdateQty > 0).ToList();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có Số lượng thay đổi" });
+    if (rows.Count == 0) return Results.BadRequest(new { error = "ContractDealerContractCreate_TableDetailBeBlank" });
     int updated = 0;
     var lines = await db.DlrContractDetails.Where(l => l.OrgId == t.OrgId && l.ContractId == c.Id).ToListAsync();
     foreach (var r in rows)
@@ -86044,6 +86050,7 @@ app.MapPost("/api/dlrcontracts/{no}/update-qty", async (string no, DlrContractQt
         var line = lines.FirstOrDefault(l => l.ModelCode == r.ModelCode && l.SpecCode == r.SpecCode && l.ColorCode == r.ColorCode);
         if (line is null) continue;
         line.Qty = r.UpdateQty;
+        line.LogLUDateTime = DateTime.Now;
         updated++;
     }
     await db.SaveChangesAsync();
@@ -86060,20 +86067,20 @@ app.MapPost("/api/dlrcontracts/{action}-multi", async (string action, DlrContrac
 {
     if (action is not ("approve" or "cancel")) return Results.BadRequest(new { error = "action = approve | cancel" });
     var nos = (dto.ContractNos ?? new()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim().ToUpperInvariant()).Distinct().ToList();
-    if (nos.Count == 0) return Results.BadRequest(new { error = "Chưa chọn hợp đồng nào." });
+    if (nos.Count == 0) return Results.BadRequest(new { error = "ContractDealerContractCreate_TableDetailBeBlank" });
     var rows = await db.DlrContracts.Where(x => x.OrgId == t.OrgId && nos.Contains(x.DlrContractNo)).ToListAsync();
     var missing = nos.Except(rows.Select(x => x.DlrContractNo)).ToList();
-    if (missing.Count > 0) return Results.BadRequest(new { error = $"Không tìm thấy hợp đồng: {string.Join(", ", missing)}" });
+    if (missing.Count > 0) return Results.BadRequest(new { error = "CommonAppData_ContractDealerContractNotFound", missing });
     // Cả hai hàm nguồn đều guard `strDlrCtrStatusListToCheck = DlrCtrStatus1.Pending` ⇒ CHỈ từ "P".
     var bad = rows.FirstOrDefault(x => x.Status != "P");
     if (bad is not null)
-        return Results.BadRequest(new { error = $"HĐ {bad.DlrContractNo} đang ở trạng thái '{bad.Status}' — chỉ xử lý được HĐ mới tạo (P)." });
+        return Results.BadRequest(new { error = "CommonAppData_ContractDealerContractStatusNotMatched", contract = bad.DlrContractNo, status = bad.Status });
 
     var now = DateTime.Now;
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     foreach (var c in rows)
     {
-        if (action == "approve") { c.Status = "A"; c.ApproveDTime = now; c.ApproveBy = who; }
+        if (action == "approve") { c.Status = "A"; c.ApproveDTime = now; c.ApproveBy = who; c.ApprovedDate = now; c.ApprovedBy = who; }
         else { c.Status = "C"; c.CancelDTime = now; c.CancelBy = who; }
     }
     await db.SaveChangesAsync();
@@ -86094,7 +86101,7 @@ app.MapPost("/api/dlrcontracts/{no}/patch", async (string no, DlrContractPatchDt
 {
     no = no.Trim().ToUpperInvariant();
     var c = await db.DlrContracts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DlrContractNo == no);
-    if (c is null) return Results.NotFound(new { no });
+    if (c is null) return Results.NotFound(new { error = "CommonAppData_ContractDealerContractNotFound", no });
     var field = (dto.Field ?? "").Trim();
     if (field is not ("bankCode" or "salesType" or "salesManCode")) return Results.BadRequest(new { error = "Field không hợp lệ (bankCode|salesType|salesManCode)." });
     if (string.IsNullOrWhiteSpace(dto.Value)) return Results.BadRequest(new { error = "Chưa nhập giá trị mới." });
@@ -89445,6 +89452,7 @@ app.MapGet("/api/deliveryorders", async (AppDbContext db, ITenantContext t, stri
         o.ApprovedBy1, o.ApprovedBy2, o.RejectedAt,   // #1231 §12
         o.DeliveryAddress, o.TransportCompanyName, o.TransportCompanyPhoneNo, o.TransportCompanyFaxNo, o.D4CDONo, o.D4CDOType,
         o.DealerName, o.ApprovedDate, o.ApprovedBy,   // #Round119 §12
+        o.LogLUDateTime, o.LogLUBy,   // #Round 125 §12
         cars = db.DeliveryOrderCars.Count(c => c.OrgId == t.OrgId && c.DoId == o.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -89461,14 +89469,18 @@ app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db,
     // 🔴 Nguồn `CarDeliveryOrderCreate_New20181119` (Biz.HTC.WH.cs:49868) tạo lệnh là "P" ngay.
     // #1475: nguồn CarDeliveryOrderCreate ghi CreatedBy = strPartnerUserCode (người lập lệnh).
     var whoDO = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var nowDO = DateTime.Now;
     var o = new DeliveryOrder { OrgId = t.OrgId, DoNo = no, DealerCode = dto.DealerCode.Trim().ToUpperInvariant(), Status = "P", CreatedBy = whoDO,
-        DealerName = dto.DealerName, ApprovedDate = dto.ApprovedDate, ApprovedBy = dto.ApprovedBy };
+        DealerName = dto.DealerName, ApprovedDate = dto.ApprovedDate, ApprovedBy = dto.ApprovedBy,
+        LogLUDateTime = dto.LogLUDateTime ?? nowDO, LogLUBy = dto.LogLUBy ?? whoDO };   // #Round 125 §12
     db.DeliveryOrders.Add(o); await db.SaveChangesAsync();
     foreach (var c in vins)
         db.DeliveryOrderCars.Add(new DeliveryOrderCar { OrgId = t.OrgId, DoId = o.Id, Vin = c.Vin.Trim().ToUpperInvariant(), ModelCode = c.ModelCode, ColorCode = c.ColorCode, StorageCode = c.StorageCode, DeliveryExpectDate = c.DeliveryExpectDate, DeliveryVIN = c.DeliveryVIN, TransportMinutesExpectedDate = c.TransportMinutesExpectedDate,
-            ConfirmRemark = c.ConfirmRemark, DlrCtrNo = c.DlrCtrNo, DealerCode = c.DealerCode ?? dto.DealerCode.Trim().ToUpperInvariant(), DealerName = c.DealerName ?? dto.DealerName });
+            ConfirmRemark = c.ConfirmRemark, DlrCtrNo = c.DlrCtrNo, DealerCode = c.DealerCode ?? dto.DealerCode.Trim().ToUpperInvariant(), DealerName = c.DealerName ?? dto.DealerName,
+            PaymentPercent = c.PaymentPercent, GrtPercent = c.GrtPercent, BankGrtNo = c.BankGrtNo, UnitPriceActual = c.UnitPriceActual,   // #Round 125 §12
+            LogLUDateTime = nowDO, LogLUBy = whoDO });
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.DoNo, o.DealerCode, cars = vins.Count, status = o.Status, o.DealerName, o.ApprovedDate, o.ApprovedBy });
+    return Results.Ok(new { o.DoNo, o.DealerCode, cars = vins.Count, status = o.Status, o.DealerName, o.ApprovedDate, o.ApprovedBy, o.LogLUDateTime, o.LogLUBy });
 }).RequireAuthorization();
 
 // ===== #175 TỰ SINH LỆNH GIAO XE HÀNG LOẠT — `DMS40_Car_DeliveryOrder_CreateAuto_New20190125` =====
@@ -89495,10 +89507,10 @@ app.MapPost("/api/deliveryorders", async (DeliveryOrderDto dto, AppDbContext db,
 app.MapPost("/api/deliveryorders/create-auto", async (DoCreateAutoDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var batchNo = (dto.D4CDONo ?? "").Trim().ToUpperInvariant();
-    if (batchNo.Length == 0) return Results.BadRequest(new { error = "Chưa nhập số đợt tự sinh (D4CDONo)." });
+    if (batchNo.Length == 0) return Results.BadRequest(new { error = "Auto_Car_DeliveryOrder_SaveX_Input_CarDeliveryOrderDealerTblNotFound" });
     var ruleType = (dto.D4CDOType ?? "").Trim().ToUpperInvariant();
     if (ruleType is not ("RULE1" or "RULE2"))
-        return Results.BadRequest(new { error = "Loại tự sinh chỉ nhận RULE1 hoặc RULE2." });
+        return Results.BadRequest(new { error = "DMS40_Car_DeliveryOrder_CreateAuto_InvalidD4CDOType" });
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var now = DateTime.Now;
@@ -89507,7 +89519,7 @@ app.MapPost("/api/deliveryorders/create-auto", async (DoCreateAutoDto dto, AppDb
     var dealerCodes = await db.AutoDoDealers.Where(x => x.OrgId == t.OrgId && x.D4CDONo == batchNo)
         .Select(x => x.DealerCode).Distinct().ToListAsync();
     if (dealerCodes.Count == 0)
-        return Results.BadRequest(new { error = $"Đợt {batchNo} chưa có đại lý nào.", d4cdoNo = batchNo });
+        return Results.BadRequest(new { error = "Auto_Car_DeliveryOrder_SaveX_StorageCodeDealerInvalid", d4cdoNo = batchNo });
 
     var created = new List<object>();
     foreach (var dealerCode in dealerCodes)
@@ -89532,6 +89544,7 @@ app.MapPost("/api/deliveryorders/create-auto", async (DoCreateAutoDto dto, AppDb
             TransportCompanyName = dto.TransportCompanyName, TransportCompanyPhoneNo = dto.TransportCompanyPhoneNo,
             TransportCompanyFaxNo = dto.TransportCompanyFaxNo,
             D4CDONo = batchNo, D4CDOType = ruleType,
+            LogLUDateTime = now, LogLUBy = who,   // #Round 125 §12
         };
         db.DeliveryOrders.Add(o);
         await db.SaveChangesAsync();
@@ -89546,6 +89559,7 @@ app.MapPost("/api/deliveryorders/create-auto", async (DoCreateAutoDto dto, AppDb
                 StorageCode = vinRow?.StorageCodeCurrent ?? c.StorageCode,
                 DeliveryOutDate = null, DeliveryRemark = null,   // nguồn để NULL, điền ở bước giao thực tế
                 ConfirmStatus = "P",
+                LogLUDateTime = now, LogLUBy = who,
             });
         }
         await db.SaveChangesAsync();
@@ -89569,8 +89583,9 @@ app.MapGet("/api/deliveryorders/{no}/cars", async (string no, AppDbContext db, I
                            c.DeliveryStartDate, c.DeliveryEndDate, c.ConfirmDate, c.ConfirmBy,
                            c.DeliveryVIN, c.TransportMinutesExpectedDate,
                            c.ConfirmRemark, c.DlrCtrNo, c.DealerCode, c.DealerName,   // #Round119 §12
+                           c.PaymentPercent, c.GrtPercent, c.BankGrtNo, c.UnitPriceActual,   // #Round 125 §12
                            flagAllowChangeVIN = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.FlagAllowChangeVIN).FirstOrDefault() }).ToListAsync();
-    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.ApprovedBy1, o.ApprovedBy2, o.DealerName, o.ApprovedDate, o.ApprovedBy, count = cars.Count, cars });
+    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.ApprovedBy1, o.ApprovedBy2, o.DealerName, o.ApprovedDate, o.ApprovedBy, o.LogLUDateTime, o.LogLUBy, count = cars.Count, cars });
 }).RequireAuthorization();
 
 // Sửa lệnh giao — cập nhật ngày giao BĐ/KT + ngày xuất kho theo VIN (port 1:1 FrmEditDO, TCMotor/Sales/Logistic).
@@ -89583,8 +89598,9 @@ app.MapGet("/api/deliveryorders/{no}/carsdates", async (string no, AppDbContext 
         .Select(c => new { c.Vin, c.ModelCode, c.ColorCode, c.StorageCode, c.DeliveryExpectDate, c.DeliveryStartDate, c.DeliveryEndDate, c.DeliveryOutDate,
             c.ConfirmStatus, c.ConfirmDate, c.ConfirmBy, c.LogLUDateTime, c.LogLUBy,
             c.CarId, c.DeliveryRemark, c.DeliveryVIN, c.TransportMinutesExpectedDate,
-            c.ConfirmRemark, c.DlrCtrNo, c.DealerCode, c.DealerName }).ToListAsync();   // #Round119 §12
-    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.DealerName, o.ApprovedDate, o.ApprovedBy, count = cars.Count, cars });
+            c.ConfirmRemark, c.DlrCtrNo, c.DealerCode, c.DealerName,   // #Round119 §12
+            c.PaymentPercent, c.GrtPercent, c.BankGrtNo, c.UnitPriceActual }).ToListAsync();   // #Round 125 §12
+    return Results.Ok(new { o.DoNo, o.DealerCode, o.Status, o.DealerName, o.ApprovedDate, o.ApprovedBy, o.LogLUDateTime, o.LogLUBy, count = cars.Count, cars });
 }).RequireAuthorization();
 
 app.MapPost("/api/deliveryorders/{no}/edit-dates", async (string no, DoEditDatesDto dto, AppDbContext db, ITenantContext t) =>
@@ -89597,7 +89613,7 @@ app.MapPost("/api/deliveryorders/{no}/edit-dates", async (string no, DoEditDates
     // validate: ngày KT >= ngày BĐ
     foreach (var l in lines)
         if (l.DeliveryStartDate.HasValue && l.DeliveryEndDate.HasValue && l.DeliveryEndDate < l.DeliveryStartDate)
-            return Results.BadRequest(new { error = $"VIN {l.Vin}: ngày kết thúc phải >= ngày bắt đầu." });
+            return Results.BadRequest(new { error = "CarDeliveryOrderCreate_InvalidDetailDeliveryExpectedDate", vin = l.Vin });
     var cars = await db.DeliveryOrderCars.Where(c => c.OrgId == t.OrgId && c.DoId == o.Id).ToListAsync();
     var byVin = cars.ToDictionary(c => c.Vin.ToUpperInvariant(), c => c);
     int updated = 0; var notFound = new List<string>();
@@ -89606,8 +89622,10 @@ app.MapPost("/api/deliveryorders/{no}/edit-dates", async (string no, DoEditDates
         var key = l.Vin!.Trim().ToUpperInvariant();
         if (!byVin.TryGetValue(key, out var c)) { notFound.Add(l.Vin!.Trim()); continue; }
         c.DeliveryStartDate = l.DeliveryStartDate; c.DeliveryEndDate = l.DeliveryEndDate; c.DeliveryOutDate = l.DeliveryOutDate;
+        c.LogLUDateTime = DateTime.Now;
         updated++;
     }
+    o.LogLUDateTime = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { updated, notFound = notFound.Distinct().Take(20) });
 }).RequireAuthorization();
@@ -89630,6 +89648,7 @@ app.MapPost("/api/deliveryorders/{no}/approve1", async (string no, DoApproveDto?
     var now1 = DateTime.Now;
     o.Status = ok ? "A1" : "R";
     o.Approved1At = now1; o.ApprovedBy1 = who;
+    o.LogLUDateTime = now1; o.LogLUBy = who;   // #Round 125 §12
     if (!ok) { o.RejectReason = dto?.Reason; o.RejectedAt = now1; }
 
     // 🔴 #197 CASCADE khi TỪ CHỐI — khối `if (!bApprove)` của nguồn (Biz.HTC.WH.cs:50424-50470).
@@ -89664,8 +89683,11 @@ app.MapPost("/api/deliveryorders/{no}/approve2", async (string no, DoApproveDto?
     if (o is null) return Results.NotFound(new { error = "CommonAppData_CarDeliveryOrderNotFound", no });
     if (o.Status != "A1") return Results.BadRequest(new { error = "CommonAppData_CarDeliveryOrderStatusNotMatched" });
     var ok = dto?.Approve ?? true;
+    var now2 = DateTime.Now;
+    var who2 = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     o.Status = ok ? "A2" : "P";
-    o.Approved2At = DateTime.Now; o.ApprovedBy2 = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    o.Approved2At = now2; o.ApprovedBy2 = who2;
+    o.LogLUDateTime = now2; o.LogLUBy = who2;   // #Round 125 §12
     await db.SaveChangesAsync();
     return Results.Ok(new { o.DoNo, status = o.Status, statusName = ok ? "Duyệt cấp 2" : "Chờ duyệt (đã bỏ duyệt)" });
 }).RequireAuthorization();
@@ -121995,7 +122017,7 @@ record SalesManUpdDeptDto(List<SalesManUpdDeptRowDto>? Rows);
 record SalesManUpdDeptRowDto(string? SMCode, string? DepartmentCodeNew, string? SMTypeNew);
 record PdiDto(string Vin, string? DealerCode, string? DlrContractNo = null);
 record PdiResultDto(string? Inspector, string? Result);
-record RetrieveDto(string? RetrieveOrderNo, string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark);
+record RetrieveDto(string? RetrieveOrderNo, string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark, string? CarId = null, DateTime? RetrieveStartDate = null, string? Remark = null);
 // #117: sửa dòng thu hồi (nguồn StorageCarRetrieveDetailUpdate).
 record RetrieveDetailDto(string? StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? DeliveryOrderNo, string? RetrieveRemark);
 record CancelDto(string Vin, string? CancelTypeCode, string? CarCancelRemark, string? FlagEarlyCancel, string? FlagMapVIN, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
@@ -123004,8 +123026,8 @@ record PiDto(string? RefNo, DateTime? ProductionMonth, DateTime? OrderMonth, Dat
 record LcDto(string LCNo, string ContractNo, string BankName, decimal Amount, DateTime? OpenDate, DateTime? ExpiryDate);
 record TkhqPLDto(string PackingListNo, DateTime? ShippingDateEnd);
 record TkhqDto(string DeclarationNo, string ContractNo, string? PortCode, DateTime? OpenDate, string? Remark, List<TkhqPLDto>? PLs);
-record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate, string? DeliveryVIN = null, DateTime? TransportMinutesExpectedDate = null, string? ConfirmRemark = null, string? DlrCtrNo = null, string? DealerCode = null, string? DealerName = null);
-record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars, string? DealerName = null, DateTime? ApprovedDate = null, string? ApprovedBy = null);
+record DeliveryOrderCarDto(string Vin, string? ModelCode, string? ColorCode, string? StorageCode, DateTime? DeliveryExpectDate, string? DeliveryVIN = null, DateTime? TransportMinutesExpectedDate = null, string? ConfirmRemark = null, string? DlrCtrNo = null, string? DealerCode = null, string? DealerName = null, decimal? PaymentPercent = null, decimal? GrtPercent = null, string? BankGrtNo = null, decimal? UnitPriceActual = null);
+record DeliveryOrderDto(string DealerCode, List<DeliveryOrderCarDto>? Cars, string? DealerName = null, DateTime? ApprovedDate = null, string? ApprovedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record DoCreateAutoDto(string? D4CDONo, string? D4CDOType, string? TransportCompanyName = null, string? TransportCompanyPhoneNo = null, string? TransportCompanyFaxNo = null);
 record DoEditDatesDto(List<DoEditDateRowDto>? Lines);
 // Duyệt lệnh giao: nguồn dùng MỘT hàm cho cả duyệt và không-duyệt (cờ `bApprove`).
@@ -123102,7 +123124,7 @@ record DlrCancelDtlDto(string? DlrContractNo, string? SpecCode, string? ModelCod
 record DlrCancelCarDto(string? DlrContractNo, string? SpecCode, string? ModelCode, string? ColorCode, string? CtrCarId, DateTime? DlvExpectedDate, string? CtrCType, string? CtrCTDNo, string? Remark);
 record DlrContractCancelSaveDto(string? ContractCNo, string? DealerCode, string? Remark, List<DlrCancelDtlDto>? Details, List<DlrCancelCarDto>? Cars);
 record DlrContractCancelMultiDto(List<string>? ContractCNos);
-record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT, decimal? UnitPrice = null, string? ProductionYear = null, string? OriginCar = null);
+record DlrContractLineDto(string ModelCode, string? SpecCode, string? ColorCode, int Qty, DateTime? DlvExpectedDate, decimal Price, decimal VAT, decimal? UnitPrice = null, string? ProductionYear = null, string? OriginCar = null, decimal? TotalMoney = null, string? SeatNum = null);
 record DlrContractDto(string? DealerCode, string DlrContractNoUser, string SalesManCode, string SalesType, string? CustomerCode, string CustomerName, string IDCardNo, string IDCardType, DateTime? DateOfBirth, DateTime? SignDate, string? BankCode, List<DlrContractLineDto>? Lines,
     // #348: nguoi giao dich — KHAC SalesManCode (nhan vien ban).
     string? TransactorCode = null,
@@ -123114,7 +123136,11 @@ record DlrContractDto(string? DealerCode, string DlrContractNoUser, string Sales
     string? Remark = null,
     string? DlrDirectorName = null,
     string? DlrPosition = null,
-    string? CusAccountBank = null);
+    string? CusAccountBank = null,
+    DateTime? ApprovedDate = null,
+    string? ApprovedBy = null,
+    DateTime? CreatedDate = null,
+    decimal? TotalAmount = null);
 // #348: sua hop dong => tang phien ban. Truong rong = GIU NGUYEN.
 record DlrContractAmendDto(string? BankCode = null, string? SalesType = null,
     string? SalesManCode = null, string? TransactorCode = null);

@@ -311,6 +311,13 @@ public sealed class CarRetrieve
     // ===== #170b nhat ky sua cuoi (LogLU*) — nguon ghi cap nay o moi buoc ghi =====
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    /// <summary>#Round 125 §12: TblCarRetrieveDetail.CarId (DbDefine.cs:118) — mã xe thu hồi.</summary>
+    public string? CarId { get; set; }
+    /// <summary>#Round 125 §12: TblCarRetrieveDetail.RetrieveStartDate (DbDefine.cs:122) — ngày bắt đầu thu hồi thực tế.</summary>
+    public DateTime? RetrieveStartDate { get; set; }
+    /// <summary>#Round 125 §12: TblCarRetrieveDetail.Remark (DbDefine.cs:124) — ghi chú chi tiết thu hồi.</summary>
+    public string? Remark { get; set; }
 }
 
 /// <summary>Hủy xe (FrmCarCancel + FrmMngCarCancel) — hủy xe theo loại hủy, ghi nhận per-car; duyệt là governance thêm của web.</summary>
@@ -7982,6 +7989,10 @@ public sealed class DeliveryOrder
     public DateTime? ApprovedDate { get; set; }
     /// <summary>#Round119 §12: TblDo.Approved_By (`DbDefine.cs:635`) — người duyệt lệnh giao tổng thể.</summary>
     public string? ApprovedBy { get; set; }
+    /// <summary>#Round 125 §12: TblDo.LogLUDateTime (`DbDefine.cs:636`) — thời điểm cập nhật cuối.</summary>
+    public DateTime? LogLUDateTime { get; set; }
+    /// <summary>#Round 125 §12: TblDo.LogLUBy (`DbDefine.cs:637`) — người cập nhật cuối.</summary>
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng xe trong DO (DoDetail): VIN + model + màu + kho + ngày giao dự kiến.</summary>
@@ -8027,6 +8038,14 @@ public sealed class DeliveryOrderCar
     public string? DealerCode { get; set; }
     /// <summary>#Round119 §12: TblDoDetail.Dealer_Name (`DbDefine.cs:659`) — tên đại lý theo dòng xe.</summary>
     public string? DealerName { get; set; }
+    /// <summary>#Round 125 §12: TblDoDetail.PaymentPercent (`DODetail.cs:25`) — phần trăm thanh toán xe.</summary>
+    public decimal? PaymentPercent { get; set; }
+    /// <summary>#Round 125 §12: TblDoDetail.GrtPercent (`DODetail.cs:26`) — phần trăm bảo lãnh xe.</summary>
+    public decimal? GrtPercent { get; set; }
+    /// <summary>#Round 125 §12: TblDoDetail.BankGrtNo (`DODetail.cs:38`) — số bảo lãnh ngân hàng.</summary>
+    public string? BankGrtNo { get; set; }
+    /// <summary>#Round 125 §12: TblDoDetail.UnitPriceActual (`DODetail.cs:39`) — đơn giá thực tế xe xuất kho.</summary>
+    public decimal? UnitPriceActual { get; set; }
 }
 
 /// <summary>Đề nghị làm hồ sơ đăng ký xe (Car_DocReq — port 1:1 FrmNewDocReq/FrmMngDocReq, TCMotor DMSales.Foton):
@@ -14613,6 +14632,14 @@ public sealed class DlrContract
     public string? DlrPosition { get; set; }
     /// <summary>Tài khoản ngân hàng khách hàng (`Dlr_Contract.CusAccountBank`, Biz.HTC.WH.cs:112465).</summary>
     public string? CusAccountBank { get; set; }
+    /// <summary>#Round 125 §12: TblDealerContract.ApprovedDate (DbDefine.cs:233) — ngày duyệt hợp đồng đại lý.</summary>
+    public DateTime? ApprovedDate { get; set; }
+    /// <summary>#Round 125 §12: TblDealerContract.ApprovedBy (DbDefine.cs:234) — người duyệt hợp đồng đại lý.</summary>
+    public string? ApprovedBy { get; set; }
+    /// <summary>#Round 125 §12: TblDealerContract.CreatedDate (DbDefine.cs:231) — ngày tạo hợp đồng.</summary>
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    /// <summary>#Round 125 §12: TblDealerContract.TotalAmount (DbDefine.cs:228) — tổng giá trị hợp đồng.</summary>
+    public decimal? TotalAmount { get; set; }
     public DateTime LogLUDateTime { get; set; } = DateTime.Now;
     public string? LogLUBy { get; set; }
 }
@@ -14653,6 +14680,10 @@ public sealed class DlrContractDetail
     public string? ProductionYear { get; set; }
     /// <summary>Xuất xứ xe (Dlr_ContractDtl.OriginCar, Biz.HTC.WH.cs:112639).</summary>
     public string? OriginCar { get; set; }
+    /// <summary>#Round 125 §12: TblDealerContractDetail.TotalMoney (DbDefine.cs:243) — thành tiền dòng xe.</summary>
+    public decimal? TotalMoney { get; set; }
+    /// <summary>#Round 125 §12: TblDealerContractDetail.SeatNum (DbDefine.cs:245) — số chỗ ngồi.</summary>
+    public string? SeatNum { get; set; }
 }
 
 /// <summary>
