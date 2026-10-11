@@ -19183,6 +19183,12 @@ public sealed class WarrantyPeriodMst
     public int StoragePeriod { get; set; }            // tháng — kỳ lưu kho tối đa
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #Round153 §12: WarrantyPeriodMst (Tbl_Mst_WarrantyPeriod) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Kho ảo ↔ model được phép chứa — port 1:1 FrmMst_StorageGlobal (Tbl_Mst_StorageGlobal).</summary>
@@ -19194,6 +19200,12 @@ public sealed class StorageGlobalMap
     public string ModelCode { get; set; } = "";
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #Round153 §12: StorageGlobalMap (Tbl_Mst_StorageGlobal) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Ký tự VIN → năm sản xuất thực tế + trạng thái lắp ráp — port 1:1 FrmMst_VINProductionYear_Actual (Tbl_Mst_VINProductionYear_Actual).</summary>
@@ -19206,6 +19218,12 @@ public sealed class VinProductionYear
     public string? AssemblyStatus { get; set; }       // ASSEMBLYSTATUS: CKD/CBU...
     public string FlagActive { get; set; } = "1";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    // ===== #Round153 §12: VinProductionYear (Tbl_Mst_VINProductionYear_Actual) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>⛔ #389 DEPRECATED — SONG SINH của <see cref="AmplitudeApprOrd"/> (cùng bảng nguồn Mst_AmplitudeApprOrd, FrmMstTiLeDatHangKeHoach). Bản chuẩn port đúng

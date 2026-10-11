@@ -65364,37 +65364,140 @@ app.MapGet("/api/warrantyperiods", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode.Contains(model!.ToUpper()));
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.ModelCode, x.ModelName, x.DealerWarrantyPeriod, x.HtcvWarrantyPeriod, x.LimitedWarrantyKM, x.StoragePeriod, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
+        .Select(x => new
+        {
+            x.Id,
+            x.ModelCode,
+            x.ModelName,
+            x.DealerWarrantyPeriod,
+            x.HtcvWarrantyPeriod,
+            x.LimitedWarrantyKM,
+            x.StoragePeriod,
+            x.FlagActive,
+            x.CreatedDate,
+            x.CreatedBy,
+            x.LogLUDateTime,
+            x.LogLUBy,
+            x.CreatedAt,
+            x.UpdatedAt
+        }).ToListAsync();   // #1260 #Round153 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Upsert theo model (mỗi model 1 cấu hình thời hạn bảo hành).
-app.MapPost("/api/warrantyperiods", async (WarrantyPeriodDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyperiods", async (WarrantyPeriodDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa chọn model." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa chọn model." });
     if (dto.DealerWarrantyPeriod < 0 || dto.HtcvWarrantyPeriod < 0 || dto.LimitedWarrantyKM < 0 || dto.StoragePeriod < 0)
-        return Results.BadRequest(new { error = "Giá trị thời hạn/số km không hợp lệ." });
+        return Results.BadRequest(new { error = "ErrHTC.Mst_WarrantyPeriodCreate_InvalidValue", message = "Giá trị thời hạn/số km không hợp lệ." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_Mst_WarrantyPeriodInvalidFlagActive", message = "FlagActive chỉ nhận 0 hoặc 1." });
+
+    var user = (partnerUserCode ?? "system").Trim();
     var md = dto.ModelCode.Trim().ToUpperInvariant();
     var ex = await db.WarrantyPeriodMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == md);
     if (ex is not null)
     {
-        ex.ModelName = dto.ModelName; ex.DealerWarrantyPeriod = dto.DealerWarrantyPeriod; ex.HtcvWarrantyPeriod = dto.HtcvWarrantyPeriod; ex.LimitedWarrantyKM = dto.LimitedWarrantyKM; ex.StoragePeriod = dto.StoragePeriod; ex.FlagActive = "1";
+        ex.ModelName = dto.ModelName;
+        ex.DealerWarrantyPeriod = dto.DealerWarrantyPeriod;
+        ex.HtcvWarrantyPeriod = dto.HtcvWarrantyPeriod;
+        ex.LimitedWarrantyKM = dto.LimitedWarrantyKM;
+        ex.StoragePeriod = dto.StoragePeriod;
+        ex.FlagActive = dto.FlagActive ?? "1";
+        ex.LogLUDateTime = DateTime.Now;
+        ex.LogLUBy = user;
+        ex.UpdatedAt = DateTime.Now;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.ModelCode, updated = true });
+        return Results.Ok(new
+        {
+            ex.Id,
+            ex.ModelCode,
+            ex.ModelName,
+            ex.DealerWarrantyPeriod,
+            ex.HtcvWarrantyPeriod,
+            ex.LimitedWarrantyKM,
+            ex.StoragePeriod,
+            ex.FlagActive,
+            ex.CreatedDate,
+            ex.CreatedBy,
+            ex.LogLUDateTime,
+            ex.LogLUBy,
+            ex.CreatedAt,
+            ex.UpdatedAt,
+            updated = true
+        });
     }
-    var r = new WarrantyPeriodMst { OrgId = t.OrgId, ModelCode = md, ModelName = dto.ModelName, DealerWarrantyPeriod = dto.DealerWarrantyPeriod, HtcvWarrantyPeriod = dto.HtcvWarrantyPeriod, LimitedWarrantyKM = dto.LimitedWarrantyKM, StoragePeriod = dto.StoragePeriod, FlagActive = "1" };
-    db.WarrantyPeriodMsts.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.ModelCode, updated = false });
+    var r = new WarrantyPeriodMst
+    {
+        OrgId = t.OrgId,
+        ModelCode = md,
+        ModelName = dto.ModelName,
+        DealerWarrantyPeriod = dto.DealerWarrantyPeriod,
+        HtcvWarrantyPeriod = dto.HtcvWarrantyPeriod,
+        LimitedWarrantyKM = dto.LimitedWarrantyKM,
+        StoragePeriod = dto.StoragePeriod,
+        FlagActive = dto.FlagActive ?? "1",
+        CreatedDate = DateTime.Now,
+        CreatedBy = user,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = user,
+        CreatedAt = DateTime.Now,
+        UpdatedAt = DateTime.Now
+    };
+    db.WarrantyPeriodMsts.Add(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        r.Id,
+        r.ModelCode,
+        r.ModelName,
+        r.DealerWarrantyPeriod,
+        r.HtcvWarrantyPeriod,
+        r.LimitedWarrantyKM,
+        r.StoragePeriod,
+        r.FlagActive,
+        r.CreatedDate,
+        r.CreatedBy,
+        r.LogLUDateTime,
+        r.LogLUBy,
+        r.CreatedAt,
+        r.UpdatedAt,
+        updated = false
+    });
 }).RequireAuthorization();
 
-app.MapPost("/api/warrantyperiods/{model}/toggle", async (string model, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/warrantyperiods/{model}/toggle", async (string model, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     model = model.Trim().ToUpperInvariant();
     var x = await db.WarrantyPeriodMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ModelCode == model);
-    if (x is null) return Results.NotFound(new { model });
+    if (x is null)
+        return Results.NotFound(new { error = "ErrHTC.CommonAppData_Mst_WarrantyPeriodNotFound", model });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now;
+    x.LogLUBy = (partnerUserCode ?? "system").Trim();
+    x.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.ModelCode, flagActive = x.FlagActive });
+    return Results.Ok(new
+    {
+        x.Id,
+        x.ModelCode,
+        flagActive = x.FlagActive,
+        x.LogLUDateTime,
+        x.LogLUBy,
+        x.UpdatedAt
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/warrantyperiods/{model}", async (string model, AppDbContext db, ITenantContext t) =>
+{
+    model = model.Trim().ToUpperInvariant();
+    var x = await db.WarrantyPeriodMsts.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.ModelCode == model);
+    if (x is null)
+        return Results.NotFound(new { error = "ErrHTC.CommonAppData_Mst_WarrantyPeriodNotFound", model });
+    db.WarrantyPeriodMsts.Remove(x);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = model });
 }).RequireAuthorization();
 
 // ===== Kho ảo ↔ model được phép chứa (StorageGlobalMap — port 1:1 FrmMst_StorageGlobal, Admin/Dealer) =====
@@ -65405,43 +65508,122 @@ app.MapGet("/api/storageglobalmaps", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(model)) q = q.Where(x => x.ModelCode == model);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.StorageCode).ThenBy(x => x.ModelCode).Take(500)
-        .Select(x => new { x.StorageCode, x.ModelCode, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1260 §12
+        .Select(x => new
+        {
+            x.Id,
+            x.StorageCode,
+            x.ModelCode,
+            x.FlagActive,
+            x.CreatedDate,
+            x.CreatedBy,
+            x.LogLUDateTime,
+            x.LogLUBy,
+            x.CreatedAt,
+            x.UpdatedAt
+        }).ToListAsync();   // #1260 #Round153 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Gán 1 model vào kho ảo (mỗi cặp kho+model 1 dòng; đã có = kích hoạt lại).
-app.MapPost("/api/storageglobalmaps", async (StorageGlobalMapDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/storageglobalmaps", async (StorageGlobalMapDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.StorageCode)) return Results.BadRequest(new { error = "Chưa chọn kho ảo." });
-    if (string.IsNullOrWhiteSpace(dto.ModelCode)) return Results.BadRequest(new { error = "Chưa chọn model." });
-    var st = dto.StorageCode.Trim().ToUpperInvariant(); var md = dto.ModelCode.Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(dto.StorageCode))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa chọn kho ảo." });
+    if (string.IsNullOrWhiteSpace(dto.ModelCode))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa chọn model." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.Mst_StorageGlobal_CheckDB_InvalidFlagActiveNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+
+    var user = (partnerUserCode ?? "system").Trim();
+    var st = dto.StorageCode.Trim().ToUpperInvariant();
+    var md = dto.ModelCode.Trim().ToUpperInvariant();
     var ex = await db.StorageGlobalMaps.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == st && x.ModelCode == md);
     if (ex is not null)
     {
-        ex.FlagActive = "1"; await db.SaveChangesAsync();
-        return Results.Ok(new { ex.StorageCode, ex.ModelCode, updated = true });
+        ex.FlagActive = dto.FlagActive ?? "1";
+        ex.LogLUDateTime = DateTime.Now;
+        ex.LogLUBy = user;
+        ex.UpdatedAt = DateTime.Now;
+        await db.SaveChangesAsync();
+        return Results.Ok(new
+        {
+            ex.Id,
+            ex.StorageCode,
+            ex.ModelCode,
+            ex.FlagActive,
+            ex.CreatedDate,
+            ex.CreatedBy,
+            ex.LogLUDateTime,
+            ex.LogLUBy,
+            ex.CreatedAt,
+            ex.UpdatedAt,
+            updated = true
+        });
     }
-    var r = new StorageGlobalMap { OrgId = t.OrgId, StorageCode = st, ModelCode = md, FlagActive = "1" };
-    db.StorageGlobalMaps.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.StorageCode, r.ModelCode, updated = false });
+    var r = new StorageGlobalMap
+    {
+        OrgId = t.OrgId,
+        StorageCode = st,
+        ModelCode = md,
+        FlagActive = dto.FlagActive ?? "1",
+        CreatedDate = DateTime.Now,
+        CreatedBy = user,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = user,
+        CreatedAt = DateTime.Now,
+        UpdatedAt = DateTime.Now
+    };
+    db.StorageGlobalMaps.Add(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        r.Id,
+        r.StorageCode,
+        r.ModelCode,
+        r.FlagActive,
+        r.CreatedDate,
+        r.CreatedBy,
+        r.LogLUDateTime,
+        r.LogLUBy,
+        r.CreatedAt,
+        r.UpdatedAt,
+        updated = false
+    });
 }).RequireAuthorization();
 
-app.MapPost("/api/storageglobalmaps/{storage}/{model}/toggle", async (string storage, string model, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/storageglobalmaps/{storage}/{model}/toggle", async (string storage, string model, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    storage = storage.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    storage = storage.Trim().ToUpperInvariant();
+    model = model.Trim().ToUpperInvariant();
     var x = await db.StorageGlobalMaps.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.StorageCode == storage && v.ModelCode == model);
-    if (x is null) return Results.NotFound(new { storage, model });
+    if (x is null)
+        return Results.NotFound(new { error = "ErrHTC.Mst_StorageGlobal_CheckDB_MstStorageGlobalNotFound", storage, model });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now;
+    x.LogLUBy = (partnerUserCode ?? "system").Trim();
+    x.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.StorageCode, x.ModelCode, flagActive = x.FlagActive });
+    return Results.Ok(new
+    {
+        x.Id,
+        x.StorageCode,
+        x.ModelCode,
+        flagActive = x.FlagActive,
+        x.LogLUDateTime,
+        x.LogLUBy,
+        x.UpdatedAt
+    });
 }).RequireAuthorization();
 
 app.MapDelete("/api/storageglobalmaps/{storage}/{model}", async (string storage, string model, AppDbContext db, ITenantContext t) =>
 {
-    storage = storage.Trim().ToUpperInvariant(); model = model.Trim().ToUpperInvariant();
+    storage = storage.Trim().ToUpperInvariant();
+    model = model.Trim().ToUpperInvariant();
     var x = await db.StorageGlobalMaps.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.StorageCode == storage && v.ModelCode == model);
-    if (x is null) return Results.NotFound(new { storage, model });
-    db.StorageGlobalMaps.Remove(x); await db.SaveChangesAsync();
+    if (x is null)
+        return Results.NotFound(new { error = "ErrHTC.Mst_StorageGlobal_CheckDB_MstStorageGlobalNotFound", storage, model });
+    db.StorageGlobalMaps.Remove(x);
+    await db.SaveChangesAsync();
     return Results.Ok(new { deleted = storage + "/" + model });
 }).RequireAuthorization();
 
@@ -65453,35 +65635,136 @@ app.MapGet("/api/vinproductionyears", async (AppDbContext db, ITenantContext t, 
     if (!string.IsNullOrWhiteSpace(year)) q = q.Where(x => x.ProductionYear == year);
     if (!string.IsNullOrWhiteSpace(active)) q = q.Where(x => x.FlagActive == active);
     var items = await q.OrderBy(x => x.VinChar).Take(500)
-        .Select(x => new { x.VinChar, x.ProductionYear, x.AssemblyStatus, x.FlagActive, x.CreatedAt }).ToListAsync();   // #1261 §12
+        .Select(x => new
+        {
+            x.Id,
+            x.VinChar,
+            x.ProductionYear,
+            x.AssemblyStatus,
+            x.FlagActive,
+            x.CreatedDate,
+            x.CreatedBy,
+            x.LogLUDateTime,
+            x.LogLUBy,
+            x.CreatedAt,
+            x.UpdatedAt
+        }).ToListAsync();   // #1261 #Round153 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // Upsert theo ký tự VIN + trạng thái lắp ráp (cùng 1 ký tự có thể khác năm theo CKD/CBU).
-app.MapPost("/api/vinproductionyears", async (VinProductionYearDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/vinproductionyears", async (VinProductionYearDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.VinChar)) return Results.BadRequest(new { error = "Chưa nhập ký tự VIN." });
-    if (string.IsNullOrWhiteSpace(dto.ProductionYear)) return Results.BadRequest(new { error = "Chưa nhập năm sản xuất." });
-    var vc = dto.VinChar.Trim().ToUpperInvariant(); var asm = (dto.AssemblyStatus ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(dto.VinChar))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập ký tự VIN." });
+    if (dto.VinChar.Trim().Length > 1)
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Ký tự VIN chỉ được nhập 1 ký tự." });
+    if (string.IsNullOrWhiteSpace(dto.ProductionYear))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập năm sản xuất." });
+    if (!int.TryParse(dto.ProductionYear.Trim(), out _))
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Năm sản xuất phải là số nguyên." });
+
+    var asm = (dto.AssemblyStatus ?? "").Trim().ToUpperInvariant();
+    if (!string.IsNullOrWhiteSpace(asm) && asm != "CBU" && asm != "CKD")
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Loại xe chỉ được nhập là CBU hoặc CKD." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+
+    var user = (partnerUserCode ?? "system").Trim();
+    var vc = dto.VinChar.Trim().ToUpperInvariant();
     var ex = await db.VinProductionYears.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VinChar == vc && (x.AssemblyStatus ?? "") == asm);
     if (ex is not null)
     {
-        ex.ProductionYear = dto.ProductionYear.Trim(); ex.FlagActive = "1";
+        ex.ProductionYear = dto.ProductionYear.Trim();
+        ex.FlagActive = dto.FlagActive ?? "1";
+        ex.LogLUDateTime = DateTime.Now;
+        ex.LogLUBy = user;
+        ex.UpdatedAt = DateTime.Now;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.VinChar, ex.AssemblyStatus, updated = true });
+        return Results.Ok(new
+        {
+            ex.Id,
+            ex.VinChar,
+            ex.ProductionYear,
+            ex.AssemblyStatus,
+            ex.FlagActive,
+            ex.CreatedDate,
+            ex.CreatedBy,
+            ex.LogLUDateTime,
+            ex.LogLUBy,
+            ex.CreatedAt,
+            ex.UpdatedAt,
+            updated = true
+        });
     }
-    var r = new VinProductionYear { OrgId = t.OrgId, VinChar = vc, ProductionYear = dto.ProductionYear.Trim(), AssemblyStatus = asm, FlagActive = "1" };
-    db.VinProductionYears.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.VinChar, r.AssemblyStatus, updated = false });
+    var r = new VinProductionYear
+    {
+        OrgId = t.OrgId,
+        VinChar = vc,
+        ProductionYear = dto.ProductionYear.Trim(),
+        AssemblyStatus = asm,
+        FlagActive = dto.FlagActive ?? "1",
+        CreatedDate = DateTime.Now,
+        CreatedBy = user,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = user,
+        CreatedAt = DateTime.Now,
+        UpdatedAt = DateTime.Now
+    };
+    db.VinProductionYears.Add(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        r.Id,
+        r.VinChar,
+        r.ProductionYear,
+        r.AssemblyStatus,
+        r.FlagActive,
+        r.CreatedDate,
+        r.CreatedBy,
+        r.LogLUDateTime,
+        r.LogLUBy,
+        r.CreatedAt,
+        r.UpdatedAt,
+        updated = false
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/vinproductionyears/{vinChar}/{asm}/toggle", async (string vinChar, string asm, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    vinChar = vinChar.Trim().ToUpperInvariant();
+    asm = asm.Trim().ToUpperInvariant();
+    if (asm == "-") asm = "";
+    var x = await db.VinProductionYears.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.VinChar == vinChar && (v.AssemblyStatus ?? "") == asm);
+    if (x is null)
+        return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstVINProductionYearNotFound", vinChar, asm });
+    x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now;
+    x.LogLUBy = (partnerUserCode ?? "system").Trim();
+    x.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        x.Id,
+        x.VinChar,
+        x.AssemblyStatus,
+        flagActive = x.FlagActive,
+        x.LogLUDateTime,
+        x.LogLUBy,
+        x.UpdatedAt
+    });
 }).RequireAuthorization();
 
 app.MapDelete("/api/vinproductionyears/{vinChar}/{asm}", async (string vinChar, string asm, AppDbContext db, ITenantContext t) =>
 {
-    vinChar = vinChar.Trim().ToUpperInvariant(); asm = asm.Trim().ToUpperInvariant();
+    vinChar = vinChar.Trim().ToUpperInvariant();
+    asm = asm.Trim().ToUpperInvariant();
     if (asm == "-") asm = "";
     var x = await db.VinProductionYears.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.VinChar == vinChar && (v.AssemblyStatus ?? "") == asm);
-    if (x is null) return Results.NotFound(new { vinChar, asm });
-    db.VinProductionYears.Remove(x); await db.SaveChangesAsync();
+    if (x is null)
+        return Results.NotFound(new { error = "ErrHTC.CommonAppData_MstVINProductionYearNotFound", vinChar, asm });
+    db.VinProductionYears.Remove(x);
+    await db.SaveChangesAsync();
     return Results.Ok(new { deleted = vinChar });
 }).RequireAuthorization();
 
@@ -126657,9 +126940,9 @@ record DelayTransportDto(string DealerCode, string? DealerName, string StorageCo
 record WarningEmailDto(string WarningType, string? WarningName, string EmailList);
 record ParamPdiDto(string ParamCode, string? ParamName, string? ParamValue);
 record OrderAmplitudeDto(string DealerCode, string? DealerName, string ModelCode, string? ModelName, decimal AmplitudeOrdMax, decimal AmplitudePlanMax);
-record VinProductionYearDto(string VinChar, string ProductionYear, string? AssemblyStatus);
-record StorageGlobalMapDto(string StorageCode, string ModelCode);
-record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod);
+record VinProductionYearDto(string VinChar, string ProductionYear, string? AssemblyStatus, string? FlagActive = "1");
+record StorageGlobalMapDto(string StorageCode, string ModelCode, string? FlagActive = "1");
+record WarrantyPeriodDto(string ModelCode, string? ModelName, int DealerWarrantyPeriod, int HtcvWarrantyPeriod, int LimitedWarrantyKM, int StoragePeriod, string? FlagActive = "1");
 record ServiceSupplierDto(string SupplierCode, string? SupplierName, string? Phone, string? Fax, string? ContactName, string? ContactPhone, string? Address, string? DealerCode);
 // #1506 Ser_Inv_Stock — SerStockCreate/SerStockUpdate (BizCarSv.Inventory.Master.cs:1779/:1620).
 record ServiceStockDto(string StockNo, string? StockName, string? Contact, string? Address, string? Email, string? TelePhone, string? Fax, string? Mobi, string? Manager, string? Description, string? DealerCode, string? IsActive);
