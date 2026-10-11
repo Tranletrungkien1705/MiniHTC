@@ -38547,7 +38547,7 @@ app.MapPost("/api/orderparts/hmc-report/send-hmc", async (AppDbContext db, ITena
 }).RequireAuthorization();
 
 // ===== 🏆🔴🔴 #30076 CỤM MỚI `Rpt_DuBaoDatHang5THTMV{_Get,_Save,_UpdateMulti}` =====
-// GAP THẬT (0 hit `DuBaoDatHang5THTMV`/`RptDBDH5TCode` trước fire này — `FlagIsMonth` có hit khác ở
+// ===== 🏆🔴 #Round148 #541 GAP THẬT (0 hit `DuBaoDatHang5THTMV`/`RptDBDH5TCode` trước fire này — `FlagIsMonth` có hit khác ở
 // `Ord_OrderPlan_HTMV`, không liên quan). Nguồn WinForms `FrmRptDatHangHTMV5ThangTiepTheo(Detail).cs`, biz thật
 // `zTemp.Report.cs:14420` (đọc), `:14710` (tạo), `:15342` (sửa kế hoạch). Xem comment đầy đủ ở entity
 // `RptDuBaoDatHang5THTMV`/`RptDuBaoDatHang5THTMVDetail` (Models/Entities.cs) — không tạo bảng riêng cho
@@ -38559,18 +38559,18 @@ app.MapGet("/api/reports/dubaodathang-5t-htmv", async (AppDbContext db, ITenantC
     var q = db.RptDuBaoDatHang5THTMVs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(flagIsMonth)) q = q.Where(x => x.FlagIsMonth == flagIsMonth);
     var items = await q.OrderByDescending(x => x.RptDBDH5TCode).Take(500)
-        .Select(x => new { x.RptDBDH5TCode, x.FlagIsMonth, x.CreatedDate, x.CreatedBy, x.UpdatedDate, x.UpdatedBy }).ToListAsync();
+        .Select(x => new { x.RptDBDH5TCode, x.FlagIsMonth, x.CreatedDate, x.CreatedBy, x.UpdatedDate, x.UpdatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-// GET chi tiết 1 bản ghi — port `Rpt_DuBaoDatHang5THTMVGetX` (`:14420-14709`): trả header + Detail (theo
+// #541 GET chi tiết 1 bản ghi — port `Rpt_DuBaoDatHang5THTMVGetX` (`:14420-14709`): trả header + Detail (theo
 // Spec/Model) + DetailForModel (group theo ModelCode, SUM các cột rồi tính lại md_TotalBHTB/md_QtyTBBHMonthN..N4
 // — `:14582-14641`). Cả 2 mức đều TÍNH LẠI QtyTBBHMonthN../TotalBHTB từ TotalStorage/QtyChoose/QtyPlanMonthN..N4
 // tại thời điểm đọc (nguồn không tin cột lưu, xem comment entity Detail) — KHÔNG đọc cột stored tương ứng.
 app.MapGet("/api/reports/dubaodathang-5t-htmv/{rptDBDH5TCode}", async (string rptDBDH5TCode, AppDbContext db, ITenantContext t) =>
 {
     var header = await db.RptDuBaoDatHang5THTMVs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == rptDBDH5TCode);
-    if (header is null) return Results.NotFound(new { error = $"Khong tim thay RptDBDH5TCode={rptDBDH5TCode}." });
+    if (header is null) return Results.NotFound(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_NotFound", rptDBDH5TCode });
     var details = await db.RptDuBaoDatHang5THTMVDetails.Where(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == rptDBDH5TCode).ToListAsync();
 
     static decimal TBBH(decimal totalStorage, decimal qtyChoose, decimal qtyPlanMonth)
@@ -38619,24 +38619,24 @@ app.MapGet("/api/reports/dubaodathang-5t-htmv/{rptDBDH5TCode}", async (string rp
 
     return Results.Ok(new
     {
-        header = new { header.RptDBDH5TCode, header.FlagIsMonth, header.CreatedDate, header.CreatedBy, header.UpdatedDate, header.UpdatedBy },
+        header = new { header.RptDBDH5TCode, header.FlagIsMonth, header.CreatedDate, header.CreatedBy, header.UpdatedDate, header.UpdatedBy, header.LogLUDateTime, header.LogLUBy },
         detail = detailOut, detailForModel,
     });
 }).RequireAuthorization();
 
-// POST tạo mới — port `Rpt_DuBaoDatHang5THTMV_SaveX` (`:14847-15340`). Mã `RptDBDH5TCode` sinh tự động nếu
+// #541 POST tạo mới — port `Rpt_DuBaoDatHang5THTMV_SaveX` (`:14847-15340`). Mã `RptDBDH5TCode` sinh tự động nếu
 // không truyền (nguồn sinh qua `SequenceGetForDMS_New20210626` — Mini dùng timestamp). Theo đúng nguồn
 // (`:15282/15289-15298`), các dòng detail luôn khởi tạo `QtyChoose=0`/`QtyPlanMonthN..N4=0` — chỉ sửa được
 // qua route update-plan bên dưới (`UpdateMulti`).
 app.MapPost("/api/reports/dubaodathang-5t-htmv", async (RptDuBaoDatHang5THTMVCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (dto.Details is null || dto.Details.Count == 0)
-        return Results.BadRequest(new { error = "Details khong duoc rong." });
+        return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "Details", message = "Details không được rỗng." });
     var userCode = user.Identity?.Name ?? "WSHTC";
     var now = DateTime.Now;
     var code = string.IsNullOrWhiteSpace(dto.RptDBDH5TCode) ? $"DBDH5T{now:yyyyMMddHHmmssfff}" : dto.RptDBDH5TCode!.Trim();
     if (await db.RptDuBaoDatHang5THTMVs.AnyAsync(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == code))
-        return Results.BadRequest(new { error = $"RptDBDH5TCode={code} da ton tai." });
+        return Results.BadRequest(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_SaveX_RptDBDH5TCodeExisted", rptDBDH5TCode = code });
 
     db.RptDuBaoDatHang5THTMVs.Add(new RptDuBaoDatHang5THTMV
     {
@@ -38645,36 +38645,36 @@ app.MapPost("/api/reports/dubaodathang-5t-htmv", async (RptDuBaoDatHang5THTMVCre
     });
     foreach (var d in dto.Details)
         db.RptDuBaoDatHang5THTMVDetails.Add(new RptDuBaoDatHang5THTMVDetail
-        {
-            OrgId = t.OrgId, RptDBDH5TCode = code, SpecCode = d.SpecCode, ModelCode = d.ModelCode,
-            QtySellCusMonth12 = d.QtySellCusMonth12, QtySellCusMonth6 = d.QtySellCusMonth6,
-            QtySellCusMonth3 = d.QtySellCusMonth3, QtySellCusMonth1 = d.QtySellCusMonth1,
-            QtyChoose = 0, QtyStorageDealer = d.QtyStorageDealer, QtyBODealer = d.QtyBODealer,
-            QtyStorageHTV = d.QtyStorageHTV, QtyBOHTMV = d.QtyBOHTMV, TotalStorage = d.TotalStorage,
-            TotalBHTB = 0, QtyPlanMonthN = 0, QtyPlanMonthN1 = 0, QtyPlanMonthN2 = 0, QtyPlanMonthN3 = 0, QtyPlanMonthN4 = 0,
-            QtyTBBHMonthN = 0, QtyTBBHMonthN1 = 0, QtyTBBHMonthN2 = 0, QtyTBBHMonthN3 = 0, QtyTBBHMonthN4 = 0,
-            FlagIsMonth = dto.FlagIsMonth, LogLUDateTime = now, LogLUBy = userCode,
-        });
+    {
+        OrgId = t.OrgId, RptDBDH5TCode = code, SpecCode = d.SpecCode, ModelCode = d.ModelCode,
+        QtySellCusMonth12 = d.QtySellCusMonth12, QtySellCusMonth6 = d.QtySellCusMonth6,
+        QtySellCusMonth3 = d.QtySellCusMonth3, QtySellCusMonth1 = d.QtySellCusMonth1,
+        QtyChoose = 0, QtyStorageDealer = d.QtyStorageDealer, QtyBODealer = d.QtyBODealer,
+        QtyStorageHTV = d.QtyStorageHTV, QtyBOHTMV = d.QtyBOHTMV, TotalStorage = d.TotalStorage,
+        TotalBHTB = 0, QtyPlanMonthN = 0, QtyPlanMonthN1 = 0, QtyPlanMonthN2 = 0, QtyPlanMonthN3 = 0, QtyPlanMonthN4 = 0,
+        QtyTBBHMonthN = 0, QtyTBBHMonthN1 = 0, QtyTBBHMonthN2 = 0, QtyTBBHMonthN3 = 0, QtyTBBHMonthN4 = 0,
+        FlagIsMonth = dto.FlagIsMonth, LogLUDateTime = now, LogLUBy = userCode,
+    });
     await db.SaveChangesAsync();
     return Results.Ok(new { rptDBDH5TCode = code, detailCount = dto.Details.Count });
 }).RequireAuthorization();
 
-// POST sửa kế hoạch — port `Rpt_DuBaoDatHang5THTMV_UpdateMulti` (`:15342-15671`): khoá match
+// #541 POST sửa kế hoạch — port `Rpt_DuBaoDatHang5THTMV_UpdateMulti` (`:15342-15671`): khoá match
 // `(RptDBDH5TCode, SpecCode)` (`:15620-15621`), guard `QtyChoose`/`QtyPlanMonthN..N4` >= 0 (nguồn ném lỗi nếu
 // âm, `:15474-15550`), và cập nhật `UpdatedDate`/`UpdatedBy`/`LogLUDateTime`/`LogLUBy` trên header (`:15625-15635`).
 app.MapPost("/api/reports/dubaodathang-5t-htmv/{rptDBDH5TCode}/update-plan", async (string rptDBDH5TCode, List<RptDuBaoDatHang5THTMVPlanDto> lines, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var header = await db.RptDuBaoDatHang5THTMVs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.RptDBDH5TCode == rptDBDH5TCode);
-    if (header is null) return Results.NotFound(new { error = $"Khong tim thay RptDBDH5TCode={rptDBDH5TCode}." });
-    if (lines is null || lines.Count == 0) return Results.BadRequest(new { error = "Danh sach dong khong duoc rong." });
+    if (header is null) return Results.NotFound(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_NotFound", rptDBDH5TCode });
+    if (lines is null || lines.Count == 0) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "Lines", message = "Danh sách dòng không được rỗng." });
     foreach (var l in lines)
     {
-        if (l.QtyChoose < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyChoose: SpecCode={l.SpecCode}" });
-        if (l.QtyPlanMonthN < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN: SpecCode={l.SpecCode}" });
-        if (l.QtyPlanMonthN1 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN1: SpecCode={l.SpecCode}" });
-        if (l.QtyPlanMonthN2 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN2: SpecCode={l.SpecCode}" });
-        if (l.QtyPlanMonthN3 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN3: SpecCode={l.SpecCode}" });
-        if (l.QtyPlanMonthN4 < 0) return Results.BadRequest(new { error = $"Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN4: SpecCode={l.SpecCode}" });
+        if (l.QtyChoose < 0) return Results.BadRequest(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyChoose", specCode = l.SpecCode });
+        if (l.QtyPlanMonthN < 0) return Results.BadRequest(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN", specCode = l.SpecCode });
+        if (l.QtyPlanMonthN1 < 0) return Results.BadRequest(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN1", specCode = l.SpecCode });
+        if (l.QtyPlanMonthN2 < 0) return Results.BadRequest(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN2", specCode = l.SpecCode });
+        if (l.QtyPlanMonthN3 < 0) return Results.BadRequest(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN3", specCode = l.SpecCode });
+        if (l.QtyPlanMonthN4 < 0) return Results.BadRequest(new { error = "ErrHTC.Rpt_DuBaoDatHang5THTMV_UpdateMulti_InvalidQtyPlanMonthN4", specCode = l.SpecCode });
     }
     var userCode = user.Identity?.Name ?? "WSHTC";
     var now = DateTime.Now;
@@ -46902,35 +46902,100 @@ app.MapPost("/api/invcarwarranties/{id}/confirm", (long id) => Results.BadReques
     error = "Kích hoạt bảo hành phải qua /api/invcarwarranties/active (VIN + SĐT khách hàng, Inv_CarWarrantyActive).", route = "/api/invcarwarranties/active"
 })).RequireAuthorization();
 
-// ===== Master loại thùng (LoaiThungMst — port 1:1 FrmMst_LoaiThung, TCMotor) =====
+// ===== 🏆🔴 #Round148 Master loại thùng (LoaiThungMst — port 1:1 FrmMst_LoaiThung, TCMotor / 20160708.z1.Upgrade.MstLoaiThung.sql) =====
 app.MapGet("/api/loaithungs", async (AppDbContext db, ITenantContext t, string? q, bool? all) =>
 {
     var qry = db.LoaiThungMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.LoaiThung.Contains(q!) || x.TenLoaiThung!.Contains(q!));
-    var items = await qry.OrderBy(x => x.LoaiThung).Take(500).Select(x => new { x.Id, x.LoaiThung, x.TenLoaiThung, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1278 §12
+    var items = await qry.OrderBy(x => x.LoaiThung).Take(500)
+        .Select(x => new { x.Id, x.LoaiThung, x.TenLoaiThung, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #Round148 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/loaithungs", async (LoaiThungDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/loaithungs/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (dto.LoaiThung ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã loại thùng." });
-    var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LoaiThung == code);
-    if (row is null) { row = new LoaiThungMst { OrgId = t.OrgId, LoaiThung = code }; db.LoaiThungMsts.Add(row); }
-    row.TenLoaiThung = dto.TenLoaiThung; row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.LoaiThung, row.TenLoaiThung, row.FlagActive });
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LoaiThung == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_LoaiThung_NotFound", code = c });
+    return Results.Ok(new { row.Id, row.LoaiThung, row.TenLoaiThung, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
-app.MapPost("/api/loaithungs/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/loaithungs", async (LoaiThungDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.LoaiThung ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "LoaiThung", message = "Chưa nhập mã loại thùng." });
+    var name = (dto.TenLoaiThung ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "TenLoaiThung", message = "Chưa nhập tên loại thùng." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa != "0" && fa != "1") return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", field = "FlagActive", message = "FlagActive chỉ được là 0 hoặc 1." });
+
+    var who = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LoaiThung == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new LoaiThungMst
+        {
+            OrgId = t.OrgId,
+            LoaiThung = code,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.LoaiThungMsts.Add(row);
+    }
+    row.TenLoaiThung = name;
+    row.FlagActive = fa;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.LoaiThung, row.TenLoaiThung, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt,
+        updated, saved = true
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/loaithungs/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_LoaiThung_NotFound", id });
+    var who = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.LoaiThung, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/loaithungs/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LoaiThung == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_LoaiThung_NotFound", code = c });
+    var who = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.LoaiThung, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/loaithungs/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.LoaiThungMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LoaiThung == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_LoaiThung_NotFound", code = c });
+    db.LoaiThungMsts.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = true, code = c });
 }).RequireAuthorization();
 
 // ===== Thông báo giao xe (MsgDlvCar — port 1:1 FrmMngMsgDeliveryCar, TCMotor/Sales/Logistic) =====
@@ -113442,7 +113507,7 @@ app.MapGet("/api/platecolormsts", async (AppDbContext db, ITenantContext t,
     var items = await qy
         .OrderBy(x => x.IndexColor == null ? 0 : 1).ThenBy(x => x.IndexColor)   // NULL lên đầu, đúng SQL Server
         .ThenBy(x => x.PlateColorCode)
-        .Select(x => new { x.Id, x.PlateColorCode, x.PlateColorName, x.ColorHexCode, x.IndexColor, x.FlagActive, x.UpdatedAt })   // #1298 §12
+        .Select(x => new { x.Id, x.PlateColorCode, x.PlateColorName, x.ColorHexCode, x.IndexColor, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt })   // #Round148 #1298 §12
         .ToListAsync();
 
     return Results.Ok(new
@@ -113454,6 +113519,93 @@ app.MapGet("/api/platecolormsts", async (AppDbContext db, ITenantContext t,
         sourceOrdersByIndexColorOnly = true,
         liveOnlyViaClientServiceChannel = "Mst_PlateColorService.cs:40 (#519)",
     });
+}).RequireAuthorization();
+
+app.MapGet("/api/platecolormsts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PlateColorMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateColorCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_PlateColor_NotFound", code = c });
+    return Results.Ok(new { row.Id, row.PlateColorCode, row.PlateColorName, row.ColorHexCode, row.IndexColor, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/platecolormsts", async (PlateColorMstDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.PlateColorCode ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "PlateColorCode", message = "Chưa nhập mã màu biển số." });
+    var name = (dto.PlateColorName ?? "").Trim();
+    if (string.IsNullOrWhiteSpace(name)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "PlateColorName", message = "Chưa nhập tên màu biển số." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa != "0" && fa != "1") return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", field = "FlagActive", message = "FlagActive chỉ được là 0 hoặc 1." });
+
+    var who = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    var row = await db.PlateColorMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateColorCode == code);
+    var updated = row is not null;
+    if (row is null)
+    {
+        row = new PlateColorMst
+        {
+            OrgId = t.OrgId,
+            PlateColorCode = code,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who
+        };
+        db.PlateColorMsts.Add(row);
+    }
+    row.PlateColorName = name;
+    row.ColorHexCode = dto.ColorHexCode;
+    row.IndexColor = dto.IndexColor;
+    row.FlagActive = fa;
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.Id, row.PlateColorCode, row.PlateColorName, row.ColorHexCode, row.IndexColor, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt,
+        updated, saved = true
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/platecolormsts/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var row = await db.PlateColorMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_PlateColor_NotFound", id });
+    var who = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.PlateColorCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/platecolormsts/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PlateColorMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateColorCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_PlateColor_NotFound", code = c });
+    var who = user.Identity?.Name ?? "WSHTC";
+    var now = DateTime.Now;
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.PlateColorCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/platecolormsts/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PlateColorMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PlateColorCode == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_PlateColor_NotFound", code = c });
+    db.PlateColorMsts.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = true, code = c });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #523 TẢI TỆP TỪ MÁY TÍNH BẢNG — **GHI FILE HAI LẦN, GUARD TOÀN VẸN VÔ NGHĨA** =====
@@ -127222,7 +127374,8 @@ record InvCarWarrantyDto(string? VIN, string? PlateNo, string? ModelCode, string
 record InvCarWarrantyUpdateRow(string? VIN, DateTime? WarrantyDate, DateTime? DealerDateExpired, string? Remark);   // #359
 record InvCarWarrantyUpdateDto(List<InvCarWarrantyUpdateRow>? Inv_CarWarranty);
 record InvCarWarrantyActiveDto(string? VIN, string? CustomerPhoneNo);
-record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
+record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record PlateColorMstDto(string? PlateColorCode, string? PlateColorName, string? ColorHexCode = null, int? IndexColor = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);
 record MsgDlvCarLineDto(string? CarId, string? VIN, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate, DateTime? DateExpiredDlvCar = null);
 record ContractTypeDto(string? ContractType, string? ContractTypeDesc, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);

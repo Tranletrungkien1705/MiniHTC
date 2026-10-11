@@ -5156,7 +5156,11 @@ public sealed class LoaiThungMst
     public string LoaiThung { get; set; } = "";
     public string? TenLoaiThung { get; set; }
     public string FlagActive { get; set; } = "1";
-    public DateTime UpdatedAt { get; set; }
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Thông báo giao xe (header) — port 1:1 FrmMngMsgDeliveryCar (Msg_MsgDlvCar, TCMotor/Sales/Logistic). HTC/NPP gửi thông báo giao xe tới đại lý; đại lý theo dõi + đánh dấu đã đọc.</summary>
@@ -6123,6 +6127,10 @@ public sealed class PlateColorMst
     /// <summary>Thứ tự hiển thị — nguồn `order by t.IndexColor` (**không** sắp theo mã/tên).</summary>
     public int? IndexColor { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
