@@ -1077,6 +1077,7 @@ app.MapGet("/api/cancels", async (AppDbContext db, ITenantContext t, string? sta
     if (!string.IsNullOrWhiteSpace(status)) q = q.Where(c => c.Status == status);
     var items = await q.OrderByDescending(c => c.Id).Take(500).Select(c => new
     { c.Code, c.Vin, c.CancelTypeCode, c.CarCancelRemark, c.FlagEarlyCancel, c.FlagMapVIN, c.Status, c.CreatedAt, c.ApprovedAt,
+      c.CreatedBy, c.LogLUDateTime, c.LogLUBy,   // §12
       // #201 §12: trạng thái THẬT của xe nằm ở `Car_Car.FlagActive`, không phải cột Status của nhật ký.
       flagActive = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.FlagActive).FirstOrDefault(),
       carCancelDate = db.CarVinMasters.Where(m => m.OrgId == t.OrgId && m.VIN == c.Vin).Select(m => m.CarCancelDate).FirstOrDefault(),
@@ -1106,15 +1107,17 @@ app.MapGet("/api/cancels", async (AppDbContext db, ITenantContext t, string? sta
 //  4. 🔴 **không được có lệnh giao xe** — còn dòng `Car_DeliveryOrderDetail` ⇒ `CarCarCancel_CarDeliveryOrderExisting`.
 app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.Vin)) return Results.BadRequest(new { error = "Cần Vin." });
-    if (string.IsNullOrWhiteSpace(dto.CancelTypeCode)) return Results.BadRequest(new { error = "Cần loại hủy (CancelTypeCode)." });
+    if (string.IsNullOrWhiteSpace(dto.Vin))
+        return Results.BadRequest(new { error = "Cần Vin.", code = "CommonAppData_VINIsEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.CancelTypeCode) || dto.CancelTypeCode.Trim().ToUpperInvariant() == "NONE")
+        return Results.BadRequest(new { error = "Cần loại hủy (CancelTypeCode) hợp lệ.", code = "CarCarCancel_InvalidCarCancelType" });
 
     var vinC = dto.Vin.Trim().ToUpperInvariant();
     var cvmC = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == vinC);
     // guard 2 — xe phải tồn tại và đang hoạt động (nguồn: strFlagActiveListToCheck = Flag.Active).
-    if (cvmC is null) return Results.NotFound(new { error = $"Không tìm thấy xe {vinC}.", vin = vinC });
+    if (cvmC is null) return Results.NotFound(new { error = $"Không tìm thấy xe {vinC}.", code = "CommonAppData_CarCarNotFound", vin = vinC });
     if ((cvmC.FlagActive ?? "1") != "1")
-        return Results.BadRequest(new { error = $"Xe {vinC} đang không hoạt động — không huỷ lại được." });
+        return Results.BadRequest(new { error = $"Xe {vinC} đang không hoạt động — không huỷ lại được.", code = "CommonAppData_CarCarStatusNotMatched" });
     // guard 3 — còn phát sinh thanh toán thì KHÔNG huỷ.
     // #350 port 1:1 `CarCarCancel_New20181119` (Biz.HTC.WH.cs:58290-58309) + `mySql_GetClauseSelect_ForGetCarPaymentTotal`:
     //   Σ Pmt_PaymentDetail.Amount theo **CarId**, chỉ phiếu PaymentStatus ∈ {A,F}; khác 0 ⇒ `CarCarCancel_PaymentMustBeZero`.
@@ -1127,14 +1130,18 @@ app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContex
         return Results.BadRequest(new { error = $"Xe {vinC} đã phát sinh thanh toán — tổng thanh toán phải bằng 0.", code = "CarCarCancel_PaymentMustBeZero", AmountTotal = paidC });
     // guard 4 — đã nằm trong lệnh giao xe thì KHÔNG huỷ.
     if (await db.DeliveryOrderCars.AnyAsync(x => x.OrgId == t.OrgId && x.Vin == vinC))
-        return Results.BadRequest(new { error = $"Xe {vinC} đang nằm trong lệnh giao xe — không huỷ được." });
+        return Results.BadRequest(new { error = $"Xe {vinC} đang nằm trong lệnh giao xe — không huỷ được.", code = "CarCarCancel_CarDeliveryOrderExisting" });
     var code = "HX" + DateTime.Now.ToString("yyMMddHHmmss");
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var c = new CarCancel
     {
         OrgId = t.OrgId, Code = code, Vin = dto.Vin.Trim().ToUpperInvariant(),
         CancelTypeCode = dto.CancelTypeCode.Trim(), CarCancelRemark = dto.CarCancelRemark,
         FlagEarlyCancel = dto.FlagEarlyCancel, FlagMapVIN = dto.FlagMapVIN,
-        Status = "Requested"
+        Status = "Requested",
+        CreatedBy = who,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = who
     };
     db.CarCancels.Add(c);
     // #201: ghi 5 cột THẬT của `Car_Car` — đây mới là chỗ nguồn lưu trạng thái huỷ.
@@ -1142,11 +1149,12 @@ app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContex
     cvmC.CarCancelType = dto.CancelTypeCode.Trim();
     cvmC.CarCancelRemark = dto.CarCancelRemark;
     cvmC.CarCancelDate = DateTime.Now;
-    cvmC.CarCancelBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    cvmC.CarCancelBy = who;
     cvmC.LogLUDateTime = DateTime.Now; cvmC.LogLUBy = cvmC.CarCancelBy;
     await db.SaveChangesAsync();
     return Results.Ok(new { c.Code, c.Vin, status = c.Status, flagActive = cvmC.FlagActive,
-                            cvmC.CarCancelType, cvmC.CarCancelDate, cvmC.CarCancelBy });
+                            cvmC.CarCancelType, cvmC.CarCancelDate, cvmC.CarCancelBy,
+                            c.CreatedBy, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
 // ⚠️ #201 ĐÃ BỎ `POST /api/cancels/{code}/{action}` (approve|reject) — **nguồn KHÔNG có lệnh duyệt huỷ xe**.
@@ -1217,32 +1225,49 @@ app.MapGet("/api/planheaders", async (AppDbContext db, ITenantContext t, string?
     if (year.HasValue) q = q.Where(h => h.YearPlan == year.Value);
     var items = await q.OrderByDescending(h => h.Id).Take(500)
         .Select(h => new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt,
-            h.Approve1By, h.Approve2By, h.TimesPlan, h.LogLUDateTime, h.LogLUBy }).ToListAsync();   // #1226 §12
+            h.Approve1By, h.Approve2By, h.TimesPlan, h.LogLUDateTime, h.LogLUBy,
+            h.CreatedDate, h.CreatedBy, h.AreaCodeDealer, h.AreaNameDealer, h.PlanType, h.FlagActive, h.MonthPlan }).ToListAsync();   // #1226 & Round 123 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/planheaders", async (PlanHeaderDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/planheaders", async (PlanHeaderDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Cần DealerCode." });
-    if (dto.YearPlan <= 0) return Results.BadRequest(new { error = "Cần YearPlan." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode))
+        return Results.BadRequest(new { error = "Cần DealerCode.", code = "CommonAppData_InvalidDealerCode" });
+    if (dto.YearPlan <= 0)
+        return Results.BadRequest(new { error = "Cần YearPlan.", code = "BPL_BusinessPlan_Create_InvalidYearPlan" });
     var dealer = dto.DealerCode.Trim().ToUpperInvariant();
+    var ver = dto.Version == "ACTUAL" ? "ACTUAL" : "INIT";
+    if (await db.BusinessPlanHeaders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == dealer && x.YearPlan == dto.YearPlan && x.Version == ver))
+        return Results.BadRequest(new { error = $"Kế hoạch năm {dto.YearPlan} của đại lý {dealer} phiên bản {ver} đã tồn tại.", code = "BPL_BusinessPlan_Create_ExistBusinessPlanDealer" });
+
     var code = $"BPL{dto.YearPlan}-{dealer}-{(await db.BusinessPlanHeaders.CountAsync(h => h.OrgId == t.OrgId) + 1):D4}";
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var h = new BusinessPlanHeader
     {
         OrgId = t.OrgId, BusinessPlanCode = code, DealerCode = dealer, YearPlan = dto.YearPlan,
-        Version = dto.Version == "ACTUAL" ? "ACTUAL" : "INIT",
+        Version = ver,
         Status = "P",   // TConst.BusinessPlanStatus.Pending (BizHTC.zTemp.cs:48481)
-        HTCStaffInCharge = dto.HTCStaffInCharge
+        HTCStaffInCharge = dto.HTCStaffInCharge,
+        CreatedDate = dto.CreatedDate ?? DateTime.Now,
+        CreatedBy = dto.CreatedBy ?? who,
+        AreaCodeDealer = dto.AreaCodeDealer,
+        AreaNameDealer = dto.AreaNameDealer,
+        PlanType = dto.PlanType,
+        FlagActive = dto.FlagActive ?? "1",
+        MonthPlan = dto.MonthPlan,
+        LogLUDateTime = DateTime.Now,
+        LogLUBy = who
     };
     db.BusinessPlanHeaders.Add(h); await db.SaveChangesAsync();
-    return Results.Ok(new { h.BusinessPlanCode, h.Status });
+    return Results.Ok(new { h.BusinessPlanCode, h.Status, h.CreatedDate, h.CreatedBy, h.AreaCodeDealer, h.AreaNameDealer, h.PlanType, h.FlagActive, h.MonthPlan, h.LogLUDateTime, h.LogLUBy });
 }).RequireAuthorization();
 
 app.MapPost("/api/planheaders/{code}/approve1", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
-    if (h is null) return Results.NotFound(new { code });
-    if (h.Status != "P") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
+    if (h is null) return Results.NotFound(new { error = $"Không tìm thấy kế hoạch {code}.", code = "CommonAppData_BusinessPlanNotFound" });
+    if (h.Status != "P") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!", code = "BPL_BusinessPlan_Save_InvalidBusinessPlanStatus" });
     h.Status = "A1"; h.Approve1At = DateTime.Now; h.Approve1By = user.Identity?.Name ?? "system";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.BusinessPlanCode, h.Status });
@@ -1251,8 +1276,8 @@ app.MapPost("/api/planheaders/{code}/approve1", async (string code, AppDbContext
 app.MapPost("/api/planheaders/{code}/approve2", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
-    if (h is null) return Results.NotFound(new { code });
-    if (h.Status != "A1") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!" });
+    if (h is null) return Results.NotFound(new { error = $"Không tìm thấy kế hoạch {code}.", code = "CommonAppData_BusinessPlanNotFound" });
+    if (h.Status != "A1") return Results.BadRequest(new { error = "Trạng thái kế hoạch kinh doanh không hợp lệ!", code = "CommonAppData_BusinessPlanStatusNotMatched" });
     h.Status = "A2"; h.Approve2At = DateTime.Now; h.Approve2By = user.Identity?.Name ?? "system";
     // 🔴 Nguồn ghi trạng thái DÒNG là "A" (KHÔNG phải "A2" như header) — BizHTC.zTemp.cs:50221.
     var dtls = await db.BusinessPlanDtls.Where(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code).ToListAsync();
@@ -1283,11 +1308,11 @@ app.MapPost("/api/planheaders/{code}/approve2", async (string code, AppDbContext
 app.MapPost("/api/planheaders/{code}/unapprove2", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
-    if (h is null) return Results.NotFound(new { code });
+    if (h is null) return Results.NotFound(new { error = $"Không tìm thấy kế hoạch {code}.", code = "CommonAppData_BusinessPlanNotFound" });
     if (h.Status != "A2")
-        return Results.BadRequest(new { error = $"Kế hoạch đang ở '{h.Status}' — chỉ bỏ duyệt được bản đã duyệt cấp 2 (A2)." });
+        return Results.BadRequest(new { error = $"Kế hoạch đang ở '{h.Status}' — chỉ bỏ duyệt được bản đã duyệt cấp 2 (A2).", code = "CommonAppData_BusinessPlanStatusNotMatched" });
     if (h.Version != "ACTUAL")
-        return Results.BadRequest(new { error = $"Phiên bản '{h.Version}' — chỉ bỏ duyệt được bản THỰC TẾ (ACTUAL)." });
+        return Results.BadRequest(new { error = $"Phiên bản '{h.Version}' — chỉ bỏ duyệt được bản THỰC TẾ (ACTUAL).", code = "BPL_BusinessPlan_UnApprove2_InvalidVersion" });
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     // Nguồn ghi lại đúng bộ này: trạng thái về "P", Version giữ "ACTUAL", năm cột mốc duyệt về NULL.
@@ -1318,15 +1343,17 @@ app.MapGet("/api/planheaders/statuses", () => Results.Ok(new
 app.MapGet("/api/planheaders/{code}/lines", async (string code, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
-    if (h is null) return Results.NotFound(new { code });
+    if (h is null) return Results.NotFound(new { error = $"Không tìm thấy kế hoạch {code}.", code = "CommonAppData_BusinessPlanNotFound" });
     var lines = await db.BusinessPlanDtls.Where(l => l.OrgId == t.OrgId && l.BusinessPlanCode == code)
         .OrderBy(l => l.ModelCode).Select(l => new
         {
             l.Id, l.ModelCode, l.BusinessPlanDtlStatus, l.VersionDtl, l.Rtl_TotalQtyDeal, l.BO_TotalQtyBO,
-            l.Rtl_QtyM1, l.Rtl_QtyM2, l.Rtl_QtyM3, l.Rtl_QtyM4, l.Rtl_QtyM5, l.Rtl_QtyM6, l.Rtl_QtyM7, l.Rtl_QtyM8, l.Rtl_QtyM9, l.Rtl_QtyM10, l.Rtl_QtyM11, l.Rtl_QtyM12, l.Ord_QtyM1, l.Ord_QtyM2, l.Ord_QtyM3, l.Ord_QtyM4, l.Ord_QtyM5, l.Ord_QtyM6, l.Ord_QtyM7, l.Ord_QtyM8, l.Ord_QtyM9, l.Ord_QtyM10, l.Ord_QtyM11, l.Ord_QtyM12, l.BO_QtyM1, l.BO_QtyM2, l.BO_QtyM3, l.BO_QtyM4, l.BO_QtyM5, l.BO_QtyM6, l.BO_QtyM7, l.BO_QtyM8, l.BO_QtyM9, l.BO_QtyM10, l.BO_QtyM11, l.BO_QtyM12, 
+            l.Rtl_QtyM, l.Ord_QtyM, l.BO_QtyM,
+            l.Rtl_QtyM1, l.Rtl_QtyM2, l.Rtl_QtyM3, l.Rtl_QtyM4, l.Rtl_QtyM5, l.Rtl_QtyM6, l.Rtl_QtyM7, l.Rtl_QtyM8, l.Rtl_QtyM9, l.Rtl_QtyM10, l.Rtl_QtyM11, l.Rtl_QtyM12, l.Ord_QtyM1, l.Ord_QtyM2, l.Ord_QtyM3, l.Ord_QtyM4, l.Ord_QtyM5, l.Ord_QtyM6, l.Ord_QtyM7, l.Ord_QtyM8, l.Ord_QtyM9, l.Ord_QtyM10, l.Ord_QtyM11, l.Ord_QtyM12, l.BO_QtyM1, l.BO_QtyM2, l.BO_QtyM3, l.BO_QtyM4, l.BO_QtyM5, l.BO_QtyM6, l.BO_QtyM7, l.BO_QtyM8, l.BO_QtyM9, l.BO_QtyM10, l.BO_QtyM11, l.BO_QtyM12,
         }).ToListAsync();
     return Results.Ok(new { h.BusinessPlanCode, h.DealerCode, h.YearPlan, h.Version, h.Status, h.HTCStaffInCharge, h.CreatedAt, h.Approve1At, h.Approve2At, h.CancelledAt,
         h.Approve1By, h.Approve2By, h.TimesPlan, h.LogLUDateTime, h.LogLUBy,   // #1401 §12
+        h.CreatedDate, h.CreatedBy, h.AreaCodeDealer, h.AreaNameDealer, h.PlanType, h.FlagActive, h.MonthPlan,   // Round 123 §12
         count = lines.Count, lines });
 }).RequireAuthorization();
 
@@ -1334,11 +1361,13 @@ app.MapPost("/api/planheaders/{code}/lines", async (
     string code, BusinessPlanDtlDto dto, AppDbContext db, ITenantContext t) =>
 {
     var h = await db.BusinessPlanHeaders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BusinessPlanCode == code);
-    if (h is null) return Results.NotFound(new { code });
+    if (h is null) return Results.NotFound(new { error = $"Không tìm thấy kế hoạch {code}.", code = "CommonAppData_BusinessPlanNotFound" });
     // Nguồn chỉ cho sửa chi tiết khi kế hoạch còn chờ duyệt (BizHTC.zTemp.cs:48742).
-    if (h.Status != "P") return Results.BadRequest(new { error = $"Chỉ sửa chi tiết khi kế hoạch đang chờ duyệt (đang: {h.Status})." });
+    if (h.Status != "P")
+        return Results.BadRequest(new { error = $"Chỉ sửa chi tiết khi kế hoạch đang chờ duyệt (đang: {h.Status}).", code = "BPL_BusinessPlan_Save_InvalidBusinessPlanStatus" });
     var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
-    if (model.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã model." });
+    if (model.Length == 0)
+        return Results.BadRequest(new { error = "Chưa nhập mã model.", code = "BPL_BusinessPlan_Create_ModelCodeInvalid" });
 
     var row = await db.BusinessPlanDtls.FirstOrDefaultAsync(l => l.OrgId == t.OrgId && l.BusinessPlanCode == code && l.ModelCode == model);
     if (row is null)
@@ -1351,44 +1380,47 @@ app.MapPost("/api/planheaders/{code}/lines", async (
     row.BusinessPlanDtlStatus = "P";
     row.Rtl_TotalQtyDeal = dto.Rtl_TotalQtyDeal;
     row.BO_TotalQtyBO = dto.BO_TotalQtyBO;
-        row.Rtl_QtyM1 = dto.Rtl_QtyM1;
-        row.Rtl_QtyM2 = dto.Rtl_QtyM2;
-        row.Rtl_QtyM3 = dto.Rtl_QtyM3;
-        row.Rtl_QtyM4 = dto.Rtl_QtyM4;
-        row.Rtl_QtyM5 = dto.Rtl_QtyM5;
-        row.Rtl_QtyM6 = dto.Rtl_QtyM6;
-        row.Rtl_QtyM7 = dto.Rtl_QtyM7;
-        row.Rtl_QtyM8 = dto.Rtl_QtyM8;
-        row.Rtl_QtyM9 = dto.Rtl_QtyM9;
-        row.Rtl_QtyM10 = dto.Rtl_QtyM10;
-        row.Rtl_QtyM11 = dto.Rtl_QtyM11;
-        row.Rtl_QtyM12 = dto.Rtl_QtyM12;
-        row.Ord_QtyM1 = dto.Ord_QtyM1;
-        row.Ord_QtyM2 = dto.Ord_QtyM2;
-        row.Ord_QtyM3 = dto.Ord_QtyM3;
-        row.Ord_QtyM4 = dto.Ord_QtyM4;
-        row.Ord_QtyM5 = dto.Ord_QtyM5;
-        row.Ord_QtyM6 = dto.Ord_QtyM6;
-        row.Ord_QtyM7 = dto.Ord_QtyM7;
-        row.Ord_QtyM8 = dto.Ord_QtyM8;
-        row.Ord_QtyM9 = dto.Ord_QtyM9;
-        row.Ord_QtyM10 = dto.Ord_QtyM10;
-        row.Ord_QtyM11 = dto.Ord_QtyM11;
-        row.Ord_QtyM12 = dto.Ord_QtyM12;
-        row.BO_QtyM1 = dto.BO_QtyM1;
-        row.BO_QtyM2 = dto.BO_QtyM2;
-        row.BO_QtyM3 = dto.BO_QtyM3;
-        row.BO_QtyM4 = dto.BO_QtyM4;
-        row.BO_QtyM5 = dto.BO_QtyM5;
-        row.BO_QtyM6 = dto.BO_QtyM6;
-        row.BO_QtyM7 = dto.BO_QtyM7;
-        row.BO_QtyM8 = dto.BO_QtyM8;
-        row.BO_QtyM9 = dto.BO_QtyM9;
-        row.BO_QtyM10 = dto.BO_QtyM10;
-        row.BO_QtyM11 = dto.BO_QtyM11;
-        row.BO_QtyM12 = dto.BO_QtyM12;
+    row.Rtl_QtyM = dto.Rtl_QtyM;
+    row.Ord_QtyM = dto.Ord_QtyM;
+    row.BO_QtyM = dto.BO_QtyM;
+    row.Rtl_QtyM1 = dto.Rtl_QtyM1;
+    row.Rtl_QtyM2 = dto.Rtl_QtyM2;
+    row.Rtl_QtyM3 = dto.Rtl_QtyM3;
+    row.Rtl_QtyM4 = dto.Rtl_QtyM4;
+    row.Rtl_QtyM5 = dto.Rtl_QtyM5;
+    row.Rtl_QtyM6 = dto.Rtl_QtyM6;
+    row.Rtl_QtyM7 = dto.Rtl_QtyM7;
+    row.Rtl_QtyM8 = dto.Rtl_QtyM8;
+    row.Rtl_QtyM9 = dto.Rtl_QtyM9;
+    row.Rtl_QtyM10 = dto.Rtl_QtyM10;
+    row.Rtl_QtyM11 = dto.Rtl_QtyM11;
+    row.Rtl_QtyM12 = dto.Rtl_QtyM12;
+    row.Ord_QtyM1 = dto.Ord_QtyM1;
+    row.Ord_QtyM2 = dto.Ord_QtyM2;
+    row.Ord_QtyM3 = dto.Ord_QtyM3;
+    row.Ord_QtyM4 = dto.Ord_QtyM4;
+    row.Ord_QtyM5 = dto.Ord_QtyM5;
+    row.Ord_QtyM6 = dto.Ord_QtyM6;
+    row.Ord_QtyM7 = dto.Ord_QtyM7;
+    row.Ord_QtyM8 = dto.Ord_QtyM8;
+    row.Ord_QtyM9 = dto.Ord_QtyM9;
+    row.Ord_QtyM10 = dto.Ord_QtyM10;
+    row.Ord_QtyM11 = dto.Ord_QtyM11;
+    row.Ord_QtyM12 = dto.Ord_QtyM12;
+    row.BO_QtyM1 = dto.BO_QtyM1;
+    row.BO_QtyM2 = dto.BO_QtyM2;
+    row.BO_QtyM3 = dto.BO_QtyM3;
+    row.BO_QtyM4 = dto.BO_QtyM4;
+    row.BO_QtyM5 = dto.BO_QtyM5;
+    row.BO_QtyM6 = dto.BO_QtyM6;
+    row.BO_QtyM7 = dto.BO_QtyM7;
+    row.BO_QtyM8 = dto.BO_QtyM8;
+    row.BO_QtyM9 = dto.BO_QtyM9;
+    row.BO_QtyM10 = dto.BO_QtyM10;
+    row.BO_QtyM11 = dto.BO_QtyM11;
+    row.BO_QtyM12 = dto.BO_QtyM12;
     await db.SaveChangesAsync();
-    return Results.Ok(new { code, row.ModelCode, row.BusinessPlanDtlStatus, row.VersionDtl });
+    return Results.Ok(new { code, row.ModelCode, row.BusinessPlanDtlStatus, row.VersionDtl, row.Rtl_QtyM, row.Ord_QtyM, row.BO_QtyM });
 }).RequireAuthorization();
 
 // ===== Lái thử xe (port 1:1 FrmMstCarDriverTest — TCMotor) =====
@@ -1862,6 +1894,7 @@ app.MapGet("/api/purchaseorders", async (AppDbContext db, ITenantContext t, stri
     var items = await qy.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
         o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, o.CreatedAt,
+        o.CreatedDate, o.LogLUDateTime, o.LogLUBy,   // Round 123 §12
         lines = db.PurchaseOrderLines.Count(l => l.OrgId == t.OrgId && l.PurchaseOrderId == o.Id),
         totalQty = db.PurchaseOrderLines.Where(l => l.OrgId == t.OrgId && l.PurchaseOrderId == o.Id).Sum(l => (int?)l.Quantity) ?? 0
     }).ToListAsync();
@@ -1901,15 +1934,17 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
     //    (`myCommon_CheckMatchingModelAndSpecCode`) — không suy `ModelCode` ra từ spec như bên POCommand.
     var code = (dto.POCode ?? "").Trim().ToUpperInvariant();
     if (code.Length < 5)
-        return Results.BadRequest(new { error = "Số đơn mua phải có ít nhất 5 ký tự." });
+        return Results.BadRequest(new { error = "Số đơn mua phải có ít nhất 5 ký tự.", code = "OrderPOCreate_InvalidPOCode" });
     if (await db.PurchaseOrders.AnyAsync(x => x.OrgId == t.OrgId && x.POCode == code))
-        return Results.BadRequest(new { error = $"Số đơn mua {code} đã tồn tại!" });
+        return Results.BadRequest(new { error = $"Số đơn mua {code} đã tồn tại!", code = "OrderPOCreate_POCodeIsExist" });
 
     // `OrderPOCreate_TableDetailBeBlank`
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào." });
+    if (lines.Count == 0)
+        return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào.", code = "OrderPOCreate_TableDetailBeBlank" });
 
     var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     // #B34 StandardizeMonth (Utils.cs:382-389) tra "yyyy-MM-01", KHONG phai "yyyyMM".
     var orderMonth = now.ToString("yyyy-MM") + "-01";
     var productionMonth = now.AddMonths(1).ToString("yyyy-MM") + "-01";
@@ -1925,28 +1960,30 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
 
         // `OrderPOCreate_InvalidDetailQuantity`: chặn ÂM, cho phép 0.
         if (l.Quantity < 0)
-            return Results.BadRequest(new { error = $"Spec {spec}: số lượng không hợp lệ.", specCode = spec });
+            return Results.BadRequest(new { error = $"Spec {spec}: số lượng không hợp lệ.", code = "OrderPOCreate_InvalidDetailQuantity", specCode = spec });
 
         // `myCommon_CheckMatchingModelAndSpecCode` — spec phải tồn tại VÀ thuộc đúng model đã khai.
         var sp = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec && x.FlagActive == "1");
-        if (sp is null) return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động.", specCode = spec });
+        if (sp is null)
+            return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động.", code = "CommonAppData_CarSpecNotFound", specCode = spec });
         if (model.Length > 0 && sp.ModelCode != model)
-            return Results.BadRequest(new { error = $"Spec {spec} thuộc model {sp.ModelCode}, không phải {model}.", specCode = spec });
+            return Results.BadRequest(new { error = $"Spec {spec} thuộc model {sp.ModelCode}, không phải {model}.", code = "OrderPOCreate_InvalidDetailModelCode", specCode = spec });
         if (model.Length == 0) model = sp.ModelCode;
 
         // `myCommon_CheckMatchingModelAndColor`
         if (color.Length > 0)
         {
             var okColor = await db.MstCarColors.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color && x.FlagActive == "1");
-            if (!okColor) return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", specCode = spec, colorCode = color });
+            if (!okColor)
+                return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", code = "OrderPOCreate_InvalidDetailColorCode", specCode = spec, colorCode = color });
         }
 
         // `OrderPOCreate_DuplicateKeyDetail`
         var key = $"|{code}||{spec}||{model}||{color}|";
         if (!seen.Add(key))
-            return Results.BadRequest(new { error = $"Dòng trùng khoá (Spec/Model/Màu): {spec}/{model}/{color}.", key });
+            return Results.BadRequest(new { error = $"Dòng trùng khoá (Spec/Model/Màu): {spec}/{model}/{color}.", code = "OrderPOCreate_DuplicateKeyDetail", key });
 
-        built.Add(new PurchaseOrderLine { OrgId = t.OrgId, SpecCode = spec, ModelCode = model, ColorCode = color, Quantity = l.Quantity });
+        built.Add(new PurchaseOrderLine { OrgId = t.OrgId, POCode = code, SpecCode = spec, ModelCode = model, ColorCode = color, Quantity = l.Quantity });
     }
 
     var o = new PurchaseOrder
@@ -1954,13 +1991,17 @@ app.MapPost("/api/purchaseorders", async (PurchaseOrderDto dto, AppDbContext db,
         OrgId = t.OrgId, POCode = code,
         OrderMonth = orderMonth, ProductionMonth = productionMonth, ExpectedMonth = expectedMonth,
         FlagActive = "1",
-        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        CreatedBy = who,
         CreatedAt = now,
+        CreatedDate = dto.CreatedDate ?? now,
+        LogLUDateTime = dto.LogLUDateTime ?? now,
+        LogLUBy = dto.LogLUBy ?? who
     };
     db.PurchaseOrders.Add(o); await db.SaveChangesAsync();
     foreach (var b in built) { b.PurchaseOrderId = o.Id; db.PurchaseOrderLines.Add(b); }
     await db.SaveChangesAsync();
     return Results.Ok(new { o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy,
+        o.CreatedDate, o.LogLUDateTime, o.LogLUBy,   // Round 123 §12
         lines = built.Count, totalQty = built.Sum(l => l.Quantity) });
 }).RequireAuthorization();
 
@@ -1968,23 +2009,29 @@ app.MapGet("/api/purchaseorders/{code}/lines", async (string code, AppDbContext 
 {
     code = code.Trim().ToUpperInvariant();
     var o = await db.PurchaseOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.POCode == code);
-    if (o is null) return Results.NotFound(new { code });
+    if (o is null) return Results.NotFound(new { error = $"Không tìm thấy đơn mua {code}.", code = "CommonAppData_POCodeNotFound" });
     var lines = await db.PurchaseOrderLines.Where(l => l.OrgId == t.OrgId && l.PurchaseOrderId == o.Id)
-        .Select(l => new { l.SpecCode, l.ModelCode, l.ColorCode, l.Quantity }).ToListAsync();
-    return Results.Ok(new { o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
+        .Select(l => new { l.POCode, l.SpecCode, l.ModelCode, l.ColorCode, l.Quantity }).ToListAsync();
+    return Results.Ok(new { o.POCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive,
+        o.CreatedDate, o.LogLUDateTime, o.LogLUBy,   // Round 123 §12
+        count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });
 }).RequireAuthorization();
 
 // 🔴 HUỶ — `OrderPOCancel_New20181119`: guard `myOrder_CheckPO(..., Flag.Active)` rồi gán
 // `FlagActive = Flag.Inactive`. Nguồn **KHÔNG xoá dòng chi tiết** khi huỷ.
-app.MapPost("/api/purchaseorders/{code}/cancel", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/purchaseorders/{code}/cancel", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     code = code.Trim().ToUpperInvariant();
     var o = await db.PurchaseOrders.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.POCode == code);
-    if (o is null) return Results.NotFound(new { code });
-    if (o.FlagActive != "1") return Results.BadRequest(new { error = "Đơn mua đã huỷ." });
+    if (o is null) return Results.NotFound(new { error = $"Không tìm thấy đơn mua {code}.", code = "CommonAppData_POCodeNotFound" });
+    if (o.FlagActive != "1")
+        return Results.BadRequest(new { error = "Đơn mua đã huỷ.", code = "OrderPOCancel_InvalidPOStatus" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     o.FlagActive = "0";
+    o.LogLUDateTime = DateTime.Now;
+    o.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.POCode, o.FlagActive });
+    return Results.Ok(new { o.POCode, o.FlagActive, o.LogLUDateTime, o.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Đơn đặt hàng NCC (port 1:1 Supplier PO — TCMotor) =====
@@ -121969,11 +122016,11 @@ record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string? RetrieveOrderNo, string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark);
 // #117: sửa dòng thu hồi (nguồn StorageCarRetrieveDetailUpdate).
 record RetrieveDetailDto(string? StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? DeliveryOrderNo, string? RetrieveRemark);
-record CancelDto(string Vin, string? CancelTypeCode, string? CarCancelRemark, string? FlagEarlyCancel, string? FlagMapVIN);
+record CancelDto(string Vin, string? CancelTypeCode, string? CarCancelRemark, string? FlagEarlyCancel, string? FlagMapVIN, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
-record BusinessPlanDtlDto(string? ModelCode, decimal Rtl_TotalQtyDeal = 0, decimal BO_TotalQtyBO = 0, decimal Rtl_QtyM1 = 0, decimal Rtl_QtyM2 = 0, decimal Rtl_QtyM3 = 0, decimal Rtl_QtyM4 = 0, decimal Rtl_QtyM5 = 0, decimal Rtl_QtyM6 = 0, decimal Rtl_QtyM7 = 0, decimal Rtl_QtyM8 = 0, decimal Rtl_QtyM9 = 0, decimal Rtl_QtyM10 = 0, decimal Rtl_QtyM11 = 0, decimal Rtl_QtyM12 = 0, decimal Ord_QtyM1 = 0, decimal Ord_QtyM2 = 0, decimal Ord_QtyM3 = 0, decimal Ord_QtyM4 = 0, decimal Ord_QtyM5 = 0, decimal Ord_QtyM6 = 0, decimal Ord_QtyM7 = 0, decimal Ord_QtyM8 = 0, decimal Ord_QtyM9 = 0, decimal Ord_QtyM10 = 0, decimal Ord_QtyM11 = 0, decimal Ord_QtyM12 = 0, decimal BO_QtyM1 = 0, decimal BO_QtyM2 = 0, decimal BO_QtyM3 = 0, decimal BO_QtyM4 = 0, decimal BO_QtyM5 = 0, decimal BO_QtyM6 = 0, decimal BO_QtyM7 = 0, decimal BO_QtyM8 = 0, decimal BO_QtyM9 = 0, decimal BO_QtyM10 = 0, decimal BO_QtyM11 = 0, decimal BO_QtyM12 = 0);
-record PlanHeaderDto(string DealerCode, int YearPlan, string? Version, string? HTCStaffInCharge);
+record BusinessPlanDtlDto(string? ModelCode, decimal Rtl_TotalQtyDeal = 0, decimal BO_TotalQtyBO = 0, decimal Rtl_QtyM = 0, decimal Ord_QtyM = 0, decimal BO_QtyM = 0, decimal Rtl_QtyM1 = 0, decimal Rtl_QtyM2 = 0, decimal Rtl_QtyM3 = 0, decimal Rtl_QtyM4 = 0, decimal Rtl_QtyM5 = 0, decimal Rtl_QtyM6 = 0, decimal Rtl_QtyM7 = 0, decimal Rtl_QtyM8 = 0, decimal Rtl_QtyM9 = 0, decimal Rtl_QtyM10 = 0, decimal Rtl_QtyM11 = 0, decimal Rtl_QtyM12 = 0, decimal Ord_QtyM1 = 0, decimal Ord_QtyM2 = 0, decimal Ord_QtyM3 = 0, decimal Ord_QtyM4 = 0, decimal Ord_QtyM5 = 0, decimal Ord_QtyM6 = 0, decimal Ord_QtyM7 = 0, decimal Ord_QtyM8 = 0, decimal Ord_QtyM9 = 0, decimal Ord_QtyM10 = 0, decimal Ord_QtyM11 = 0, decimal Ord_QtyM12 = 0, decimal BO_QtyM1 = 0, decimal BO_QtyM2 = 0, decimal BO_QtyM3 = 0, decimal BO_QtyM4 = 0, decimal BO_QtyM5 = 0, decimal BO_QtyM6 = 0, decimal BO_QtyM7 = 0, decimal BO_QtyM8 = 0, decimal BO_QtyM9 = 0, decimal BO_QtyM10 = 0, decimal BO_QtyM11 = 0, decimal BO_QtyM12 = 0);
+record PlanHeaderDto(string DealerCode, int YearPlan, string? Version, string? HTCStaffInCharge, DateTime? CreatedDate = null, string? CreatedBy = null, string? AreaCodeDealer = null, string? AreaNameDealer = null, string? PlanType = null, string? FlagActive = null, string? MonthPlan = null);
 record ImportSalesManDto(string? SMCode, string? SMHyundaiCode, string? IdentityCardNo, string? DealerCode, string? DepartmentCode, string? SMType,
     string? SMName, string? SMGender, string? SMDateOfBirth, string? SMPhoneNo, string? SMEmail, string? SMAddress, string? ProvinceCode,
     string? SMSpecialized, string? QualificationCode, string? SMPostionCode, string? SMStartDate, string? SMStatus,
@@ -121982,8 +122029,8 @@ record TestDriveDto(string CustomerName, string? Phone, string ModelCode, string
 record WClaimDto(string Vin, string? DealerCode, string? ErrorCode, decimal PartsCost, decimal LaborCost);
 record PODto(string SupplierCode, string? Note, decimal Total);
 // Đơn mua xe từ hãng (Ord_PurchaseOrder) — nguồn không có trạng thái, chỉ cờ FlagActive.
-record PurchaseOrderDto(string? POCode, List<PurchaseOrderLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
-record PurchaseOrderLineDto(string SpecCode, string? ModelCode, string? ColorCode, int Quantity);
+record PurchaseOrderDto(string? POCode, List<PurchaseOrderLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null, DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record PurchaseOrderLineDto(string SpecCode, string? ModelCode, string? ColorCode, int Quantity, string? POCode = null);
 // #394 Mst_BOM_Add: đầu + dòng; ModelCode/MaintLevel riêng MiniHTC (tuỳ chọn).
 record BomDto(string? BomCode, string? BOMDesc, string? Remark, List<BomLineDto>? Lines, string? ModelCode = null, string? MaintLevel = null);
 record BomUpdateDto(string? BOMDesc, string? Remark, string? FlagActive, List<BomLineDto>? Lines);   // #394 Mst_BOM_Update

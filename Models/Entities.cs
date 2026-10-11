@@ -327,6 +327,11 @@ public sealed class CarCancel
     public string Status { get; set; } = "Requested";   // Requested → Approved / Rejected (governance web thêm)
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? ApprovedAt { get; set; }
+
+    // ===== §12 parity TblRejectCar (DbDefine.cs:1950) & nhật ký tác vụ =====
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Cấu hình hệ thống (key-value) — port 1:1 các FrmMngConfig*/Setup của 2010.HTC.</summary>
@@ -392,6 +397,15 @@ public sealed class BusinessPlanHeader
     /// <summary>Nhật ký sửa cuối — nguồn ghi `LogLUDateTime`/`LogLUBy` ở mọi bước duyệt/bỏ duyệt.</summary>
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+
+    // ===== §12 parity TblBPL_BusinessPlan (DbDefine.cs:4791-4809) =====
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public string? AreaCodeDealer { get; set; }
+    public string? AreaNameDealer { get; set; }
+    public string? PlanType { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public string? MonthPlan { get; set; }
 }
 
 /// <summary>
@@ -419,6 +433,14 @@ public sealed class BusinessPlanDtl
     public decimal Rtl_TotalQtyDeal { get; set; }
     /// <summary>Tổng back-order cả năm (`BO_TotalQtyBO`).</summary>
     public decimal BO_TotalQtyBO { get; set; }
+
+    // ===== §12 parity TblBPL_BusinessPlanDtl (DbDefine.cs:4818, 4832, 4846) =====
+    /// <summary>Tổng kế hoạch bán lẻ lũy kế / tháng tổng (`Rtl_QtyM`).</summary>
+    public decimal Rtl_QtyM { get; set; }
+    /// <summary>Tổng kế hoạch đặt hàng lũy kế / tháng tổng (`Ord_QtyM`).</summary>
+    public decimal Ord_QtyM { get; set; }
+    /// <summary>Tổng kế hoạch back-order lũy kế / tháng tổng (`BO_QtyM`).</summary>
+    public decimal BO_QtyM { get; set; }
 
     // ----- Kế hoạch bán lẻ (Rtl_) theo 12 tháng -----
     public decimal Rtl_QtyM1 { get; set; }
@@ -548,6 +570,11 @@ public sealed class PurchaseOrder
     public string FlagActive { get; set; } = "1";
     public string? CreatedBy { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+
+    // ===== §12 parity Ord_PurchaseOrder (DbDefine.cs:70 & Biz.HTC.WH.cs:28087, 28250) =====
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng đơn mua xe (`Ord_PurchaseOrderDetail`): spec + model + màu + số lượng.</summary>
@@ -556,6 +583,8 @@ public sealed class PurchaseOrderLine
     public long Id { get; set; }
     public Guid OrgId { get; set; }
     public long PurchaseOrderId { get; set; }
+    /// <summary>Số đơn mua xe liên kết (`Ord_PurchaseOrderDetail.POCode`).</summary>
+    public string POCode { get; set; } = "";
     public string SpecCode { get; set; } = "";
     public string? ModelCode { get; set; }
     public string? ColorCode { get; set; }
