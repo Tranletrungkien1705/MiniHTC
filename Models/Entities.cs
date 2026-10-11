@@ -5198,6 +5198,10 @@ public sealed class ContractTypeMst
     public string ContractType { get; set; } = "";
     public string? ContractTypeDesc { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; }
 }
 
@@ -5895,6 +5899,10 @@ public sealed class ContractTypeModel
     public string ModelCode { get; set; } = "";
     public string ContractType { get; set; } = "";
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -6459,6 +6467,10 @@ public sealed class InsuranceAttachmentType
     public string? Name { get; set; }
     public string? Note { get; set; }
     public string Status { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 

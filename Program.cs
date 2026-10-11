@@ -46953,29 +46953,92 @@ app.MapGet("/api/contracttypes", async (AppDbContext db, ITenantContext t, strin
     var qry = db.ContractTypeMsts.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.ContractType.Contains(q!) || x.ContractTypeDesc!.Contains(q!));
-    var items = await qry.OrderBy(x => x.ContractType).Take(500).Select(x => new { x.Id, x.ContractType, x.ContractTypeDesc, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1278 §12
+    var items = await qry.OrderBy(x => x.ContractType).Take(500)
+        .Select(x => new { x.Id, x.ContractType, x.ContractTypeDesc, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1278 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/contracttypes", async (ContractTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/contracttypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (dto.ContractType ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã loại hợp đồng." });
-    var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractType == code);
-    if (row is null) { row = new ContractTypeMst { OrgId = t.OrgId, ContractType = code }; db.ContractTypeMsts.Add(row); }
-    row.ContractTypeDesc = dto.ContractTypeDesc; row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ContractType, row.ContractTypeDesc, row.FlagActive });
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_ContractType_CheckDB_ContractTypeNotFound", message = $"Không tìm thấy loại hợp đồng {c}." });
+    return Results.Ok(new { row.Id, row.ContractType, row.ContractTypeDesc, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
-app.MapPost("/api/contracttypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/contracttypes", async (ContractTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.ContractType ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập mã loại hợp đồng." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.Mst_ContractType_CheckDB_FlagActiveNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractType == code);
+    if (row is null)
+    {
+        row = new ContractTypeMst
+        {
+            OrgId = t.OrgId,
+            ContractType = code,
+            ContractTypeDesc = dto.ContractTypeDesc,
+            FlagActive = fa,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            UpdatedAt = now
+        };
+        db.ContractTypeMsts.Add(row);
+    }
+    else
+    {
+        row.ContractTypeDesc = dto.ContractTypeDesc;
+        row.FlagActive = fa;
+        row.LogLUDateTime = now;
+        row.LogLUBy = who;
+        row.UpdatedAt = now;
+    }
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ContractType, row.ContractTypeDesc, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypes/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_ContractType_CheckDB_ContractTypeNotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.ContractType, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_ContractType_CheckDB_ContractTypeNotFound", code = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.ContractType, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapDelete("/api/contracttypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.ContractTypeMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractType == c);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Mst_ContractType_CheckDB_ContractTypeNotFound", code = c });
+    db.ContractTypeMsts.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 // #5248 — re-verify: Mst_DOATSettingTime_Add (BizHTC.MasterData.cs:14377-14435) set bản ghi mới
@@ -49813,46 +49876,117 @@ app.MapPost("/api/carstdopts/{id}/toggle", async (long id, AppDbContext db, ITen
 }).RequireAuthorization();
 
 // ===== Cấu hình mẫu phụ lục HĐ theo loại ĐH+HTTT+model (ContractTypeModel — port 1:1 FrmCtr_ContractTypeModel, TCMotor DMSales.Foton/Admin/Product) =====
-app.MapGet("/api/contracttypemodels", async (AppDbContext db, ITenantContext t, string? soType, string? model, bool? all) =>
+app.MapGet("/api/contracttypemodels", async (AppDbContext db, ITenantContext t, string? soType, string? pmtMethodNo, string? model, bool? all) =>
 {
     var qry = db.ContractTypeModels.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.FlagActive == "1");
     if (!string.IsNullOrWhiteSpace(soType)) qry = qry.Where(x => x.SOType == soType);
+    if (!string.IsNullOrWhiteSpace(pmtMethodNo)) qry = qry.Where(x => x.PmtMethodNo == pmtMethodNo);
     if (!string.IsNullOrWhiteSpace(model)) qry = qry.Where(x => x.ModelCode == model);
     var items = await qry.OrderBy(x => x.SOType).ThenBy(x => x.ModelCode).Take(1000)
-        .Select(x => new { x.Id, x.SOType, x.PmtMethodNo, x.ModelCode, x.ContractType, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1290 §12
+        .Select(x => new { x.Id, x.SOType, x.PmtMethodNo, x.ModelCode, x.ContractType, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1290 §12
     // #1724 — mpm_PmtMethodName (BizHTC.MasterData.cs:11686, join alias `mpm`): làm giàu tên hiển thị
     // từ category generic "PaymentMethod" đã thêm ở MasterCatalog, KHÔNG lưu trùng cột trên entity.
     var pmtNames = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "PaymentMethod")
         .ToDictionaryAsync(m => m.Code, m => m.Name);
-    var itemsOut = items.Select(x => new { x.Id, x.SOType, x.PmtMethodNo, PmtMethodName = pmtNames.TryGetValue(x.PmtMethodNo, out var n) ? n : null, x.ModelCode, x.ContractType, x.FlagActive, x.UpdatedAt });
+    var itemsOut = items.Select(x => new { x.Id, x.SOType, x.PmtMethodNo, PmtMethodName = pmtNames.TryGetValue(x.PmtMethodNo, out var n) ? n : null, x.ModelCode, x.ContractType, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt });
     return Results.Ok(new { count = items.Count, items = itemsOut });
 }).RequireAuthorization();
 
-app.MapPost("/api/contracttypemodels", async (ContractTypeModelDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/contracttypemodels/{soType}/{pmtMethodNo}/{modelCode}", async (string soType, string pmtMethodNo, string modelCode, AppDbContext db, ITenantContext t) =>
+{
+    var so = (soType ?? "").Trim().ToUpperInvariant();
+    var pmt = (pmtMethodNo ?? "").Trim().ToUpperInvariant();
+    var model = (modelCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.ContractTypeModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == so && x.PmtMethodNo == pmt && x.ModelCode == model);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Ctr_ContractTypeModel_CheckDB_ContractTypeModelNotFound", message = "Không tìm thấy cấu hình mẫu phụ lục hợp đồng." });
+    var pmtName = await db.Masters.Where(m => m.OrgId == t.OrgId && m.Category == "PaymentMethod" && m.Code == row.PmtMethodNo).Select(m => m.Name).FirstOrDefaultAsync();
+    return Results.Ok(new { row.Id, row.SOType, row.PmtMethodNo, PmtMethodName = pmtName, row.ModelCode, row.ContractType, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypemodels", async (ContractTypeModelDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var so = (dto.SOType ?? "").Trim().ToUpperInvariant();
     var pmt = (dto.PmtMethodNo ?? "").Trim().ToUpperInvariant();
     var model = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(so)) return Results.BadRequest(new { error = "Chưa chọn loại đơn hàng." });
-    if (string.IsNullOrWhiteSpace(pmt)) return Results.BadRequest(new { error = "Chưa chọn hình thức thanh toán." });
-    if (string.IsNullOrWhiteSpace(model)) return Results.BadRequest(new { error = "Chưa chọn model." });
-    if (string.IsNullOrWhiteSpace((dto.ContractType ?? "").Trim())) return Results.BadRequest(new { error = "Chưa chọn mẫu phụ lục HĐ." });
+    var ctrType = (dto.ContractType ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(so) || string.IsNullOrWhiteSpace(pmt) || string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(ctrType))
+        return Results.BadRequest(new { error = "ErrHTC.Ctr_ContractTypeModel_Save_Input_Ctr_ContractTypeModelTblInvalid", message = "Thiếu thông tin loại đơn hàng, hình thức thanh toán, model hoặc loại hợp đồng." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.Ctr_ContractTypeModel_CheckDB_FlagActiveNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var row = await db.ContractTypeModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == so && x.PmtMethodNo == pmt && x.ModelCode == model);
-    if (row is null) { row = new ContractTypeModel { OrgId = t.OrgId, SOType = so, PmtMethodNo = pmt, ModelCode = model }; db.ContractTypeModels.Add(row); }
-    row.ContractType = dto.ContractType!.Trim().ToUpperInvariant(); row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    if (row is null)
+    {
+        row = new ContractTypeModel
+        {
+            OrgId = t.OrgId,
+            SOType = so,
+            PmtMethodNo = pmt,
+            ModelCode = model,
+            ContractType = ctrType,
+            FlagActive = fa,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            UpdatedAt = now
+        };
+        db.ContractTypeModels.Add(row);
+    }
+    else
+    {
+        row.ContractType = ctrType;
+        row.FlagActive = fa;
+        row.LogLUDateTime = now;
+        row.LogLUBy = who;
+        row.UpdatedAt = now;
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.SOType, row.PmtMethodNo, row.ModelCode, row.ContractType, row.FlagActive });
+    return Results.Ok(new { row.Id, row.SOType, row.PmtMethodNo, row.ModelCode, row.ContractType, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
-app.MapPost("/api/contracttypemodels/{id}/toggle", async (long id, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/contracttypemodels/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var row = await db.ContractTypeModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
-    if (row is null) return Results.NotFound(new { id });
-    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Ctr_ContractTypeModel_CheckDB_ContractTypeModelNotFound", id });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive });
+    return Results.Ok(new { row.Id, row.SOType, row.PmtMethodNo, row.ModelCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapPost("/api/contracttypemodels/{soType}/{pmtMethodNo}/{modelCode}/toggle", async (string soType, string pmtMethodNo, string modelCode, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var so = (soType ?? "").Trim().ToUpperInvariant();
+    var pmt = (pmtMethodNo ?? "").Trim().ToUpperInvariant();
+    var model = (modelCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.ContractTypeModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == so && x.PmtMethodNo == pmt && x.ModelCode == model);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Ctr_ContractTypeModel_CheckDB_ContractTypeModelNotFound", soType = so, pmtMethodNo = pmt, modelCode = model });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.SOType, row.PmtMethodNo, row.ModelCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapDelete("/api/contracttypemodels/{soType}/{pmtMethodNo}/{modelCode}", async (string soType, string pmtMethodNo, string modelCode, AppDbContext db, ITenantContext t) =>
+{
+    var so = (soType ?? "").Trim().ToUpperInvariant();
+    var pmt = (pmtMethodNo ?? "").Trim().ToUpperInvariant();
+    var model = (modelCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.ContractTypeModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SOType == so && x.PmtMethodNo == pmt && x.ModelCode == model);
+    if (row is null) return Results.NotFound(new { error = "ErrHTC.Ctr_ContractTypeModel_CheckDB_ContractTypeModelNotFound", soType = so, pmtMethodNo = pmt, modelCode = model });
+    db.ContractTypeModels.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = new { soType = so, pmtMethodNo = pmt, modelCode = model } });
 }).RequireAuthorization();
 
 // ===== Tỷ lệ duyệt đơn hàng tối đa theo đại lý+model (RateApprOrderModelMax — port 1:1 FrmRateApprOrderModelMax, 2010.HTC/Admin/Dealer) =====
@@ -61893,19 +62027,81 @@ app.MapGet("/api/insuranceattachmenttypes", async (AppDbContext db, ITenantConte
 {
     var qry = db.InsuranceAttachmentTypes.Where(x => x.OrgId == t.OrgId);
     if (all != true) qry = qry.Where(x => x.Status == "1");
-    var items = await qry.OrderBy(x => x.Code).Take(500).Select(x => new { x.Code, x.Name, x.Note, x.Status, x.UpdatedAt }).ToListAsync();   // #1292 §12
+    var items = await qry.OrderBy(x => x.Code).Take(500)
+        .Select(x => new { x.Id, x.Code, x.Name, x.Note, x.Status, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1292 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/insuranceattachmenttypes", async (InsuranceAttachmentTypeDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/insuranceattachmenttypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
-    var code = (dto.Code ?? "").Trim();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã tài liệu." });
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.InsuranceAttachmentTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_Attachment_NotFound", message = $"Không tìm thấy loại tài liệu {c}." });
+    return Results.Ok(new { row.Id, row.Code, row.Name, row.Note, row.Status, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/insuranceattachmenttypes", async (InsuranceAttachmentTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var code = (dto.Code ?? "").Trim().ToUpperInvariant();
+    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", message = "Chưa nhập mã tài liệu." });
+    var status = string.IsNullOrWhiteSpace(dto.Status) ? "1" : dto.Status.Trim();
+    if (status is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Trạng thái chỉ nhận 0 hoặc 1." });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var row = await db.InsuranceAttachmentTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == code);
-    if (row is null) { row = new InsuranceAttachmentType { OrgId = t.OrgId, Code = code }; db.InsuranceAttachmentTypes.Add(row); }
-    row.Name = dto.Name; row.Note = dto.Note; row.UpdatedAt = DateTime.Now;
+    if (row is null)
+    {
+        row = new InsuranceAttachmentType
+        {
+            OrgId = t.OrgId,
+            Code = code,
+            Name = dto.Name,
+            Note = dto.Note,
+            Status = status,
+            CreatedDate = dto.CreatedDate ?? now,
+            CreatedBy = dto.CreatedBy ?? who,
+            LogLUDateTime = now,
+            LogLUBy = who,
+            UpdatedAt = now
+        };
+        db.InsuranceAttachmentTypes.Add(row);
+    }
+    else
+    {
+        row.Name = dto.Name;
+        row.Note = dto.Note;
+        row.Status = status;
+        row.LogLUDateTime = now;
+        row.LogLUBy = who;
+        row.UpdatedAt = now;
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Code, row.Name });
+    return Results.Ok(new { row.Id, row.Code, row.Name, row.Note, row.Status, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/insuranceattachmenttypes/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.InsuranceAttachmentTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_Attachment_NotFound", code = c });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.Status = row.Status == "1" ? "0" : "1";
+    row.LogLUDateTime = DateTime.Now;
+    row.LogLUBy = who;
+    row.UpdatedAt = DateTime.Now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.Code, row.Status, row.LogLUDateTime, row.LogLUBy });
+}).RequireAuthorization();
+
+app.MapDelete("/api/insuranceattachmenttypes/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.InsuranceAttachmentTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Code == c);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_Attachment_NotFound", code = c });
+    db.InsuranceAttachmentTypes.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c });
 }).RequireAuthorization();
 
 // Trả toàn bộ danh mục kèm cờ đã-có cho 1 RO (khớp checklist tích-chọn trong FrmInsuranceAttachmentAdd).
@@ -124555,7 +124751,7 @@ record CareSurveyDto(
 record CareMaintanceDto(string? Status, string? DateAppointment = null, DateTime? ContactDate = null, string? Note = null);
 record CustomerCareMaceDto(string? MaceType, string? RONo, string? Vin, string? CusName, DateTime? MaceRecomentDate);
 record CareMaceContactDto(string? Status, DateTime? ContactDate, DateTime? ApointDate, string? Remark);
-record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note);
+record InsuranceAttachmentTypeDto(string? Code, string? Name, string? Note, string? Status = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record InsuranceAttachmentSaveDto(List<string>? Codes, Dictionary<string, string?>? Notes = null);   // #998: Notes theo Code
 record CampaignMarketingPartDto(string? PartCode, decimal PercentDiscount);
 // #392: dau vao duyet chien dich marketing. Remark = null khi rong (dung nguon).
@@ -126407,7 +126603,7 @@ record InvCarWarrantyActiveDto(string? VIN, string? CustomerPhoneNo);
 record LoaiThungDto(string? LoaiThung, string? TenLoaiThung, string? FlagActive);
 record MsgDlvCarDto(string DealerCode, string? MsType, List<MsgDlvCarLineDto>? Cars);
 record MsgDlvCarLineDto(string? CarId, string? VIN, string? CarSpecCode, string? CarColorCode, DateTime? CQEndDate, DateTime? DateExpiredDlvCar = null);
-record ContractTypeDto(string? ContractType, string? ContractTypeDesc, string? FlagActive);
+record ContractTypeDto(string? ContractType, string? ContractTypeDesc, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record DOATSettingTimeDto(bool? FlagFirstRunTime, bool? FlagSecondRunTime);
 record CarHisOrderPolicyDto(string? SOCode, string CarId, string? ModelCode, string? SpecCode, string? SpecDescription, string? CrtTypeCode, string? ColorCode, string? ColorName, string OrderPolicyCode, string? OrderPolicyName, DateTime? ApprovedDate);
 record BankStatementImportDto(List<BankStatementRowDto>? Lines);
@@ -126453,7 +126649,7 @@ record MpWorkDto(string? WorkItemCode, string WorkContentCode);
 record MpSupplyDto(string SupplyCode, decimal Qty);
 record MaintWorkItemDto(string? WorkItemCode, string? WorkItemName, string? FlagActive);
 record RateApprOrderModelMaxDto(string? DealerCode, string? ModelCode, decimal RateApprMax, string? FlagActive);
-record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCode, string? ContractType, string? FlagActive);
+record ContractTypeModelDto(string? SOType, string? PmtMethodNo, string? ModelCode, string? ContractType, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CarStdOptDto(string? ModelCode, string? StdCode, string? StdDesc, string? GradeCode, string? GradeDesc, string? FlagActive);
 record PaymentTermMstDto(string? DCPType, string? DCPTypeName, int PaymentDueDays, int GuaranteeDueDays, int PaymentCLDueDays, int PaymentNHSDueDays, string? FlagActive);
 record ComplaintErrorCodeDto(string? ErrorCode, string? ErrorName, string? ErrorDesc, string? ErrorTypeCode, int WarrantyDate, int WarrantyKm, string? Remark, string? FlagActive);
