@@ -15298,46 +15298,74 @@ app.MapGet("/api/mstbanks", async (AppDbContext db, ITenantContext t, string? ba
     var items = await qy.OrderBy(x => x.BankCode)
         .Select(x => new { x.BankCode, x.BankName, x.BankCodeParent, x.FlagActive,
             x.BankBUCode, x.BankBUPattern, x.PhoneNo, x.FaxNo, x.Address, x.FlagPaymentBank, x.FlagMortageBank,
-            x.FlagMonitorBank, x.PICEmail, x.BenBankCode, x.NumberOfGuaranteeExt }).ToListAsync();
+            x.FlagMonitorBank, x.PICEmail, x.BenBankCode, x.NumberOfGuaranteeExt,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // #311 FrmBank.btnApply_Click (Admin/Product/FrmBank.cs:308): mã đã có → SỬA (SetModified), chưa có → THÊM (SetAdded)
 // qua SaveMasterDataTable — port cũ chặn "đã tồn tại" là SAI hành vi nguồn.
-app.MapPost("/api/mstbanks", async (MstBankDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mstbanks", async (MstBankDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.BankCode ?? "").Trim();
-    if (code.Length < 1) return Results.BadRequest(new { error = "Mã ngân hàng rỗng." });
+    if (code.Length < 1) return Results.BadRequest(new { code = "CommonAppData_BankCodeBeBlank", error = "Mã ngân hàng rỗng." });
     // Guard Frm: FlagActive / FlagPaymentBank chỉ nhận "0"/"1" (MSG_WARNING_INVALID_DATA_TYPE); PICEmail phải hợp lệ.
     var flagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim();
-    if (flagActive is not ("0" or "1")) return Results.BadRequest(new { error = "FlagActive chỉ nhận 0/1." });
+    if (flagActive is not ("0" or "1")) return Results.BadRequest(new { code = "MSG_WARNING_INVALID_DATA_TYPE", error = "FlagActive chỉ nhận 0/1." });
     if (!string.IsNullOrWhiteSpace(dto.FlagPaymentBank) && dto.FlagPaymentBank.Trim() is not ("0" or "1"))
-        return Results.BadRequest(new { error = "FlagPaymentBank chỉ nhận 0/1." });
+        return Results.BadRequest(new { code = "MSG_WARNING_INVALID_DATA_TYPE", error = "FlagPaymentBank chỉ nhận 0/1." });
     var email = (dto.PICEmail ?? "").Trim();
     if (email.Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$"))
-        return Results.BadRequest(new { error = $"Email '{email}' không hợp lệ!" });
+        return Results.BadRequest(new { code = "MSG_WARNING_INVALID_EMAIL", error = $"Email '{email}' không hợp lệ!" });
     var parent = (dto.BankCodeParent ?? "").Trim();
     // Có khai báo ngân hàng mẹ thì mẹ phải tồn tại (cấu trúc cha–con của master này).
     if (parent.Length > 0 && !await db.MstBanks.AnyAsync(x => x.OrgId == t.OrgId && x.BankCode == parent))
-        return Results.BadRequest(new { error = $"Ngân hàng mẹ {parent} không tồn tại." });
+        return Results.BadRequest(new { code = "CommonAppData_BankParentNotFound", error = $"Ngân hàng mẹ {parent} không tồn tại." });
     static string? N(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
     var b = await db.MstBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankCode == code);
     var updated = b is not null;
-    if (b is null) { b = new MstBank { OrgId = t.OrgId, BankCode = code }; db.MstBanks.Add(b); }
+    var userName = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (b is null)
+    {
+        b = new MstBank
+        {
+            OrgId = t.OrgId,
+            BankCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? userName,
+            LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+            LogLUBy = dto.LogLUBy ?? userName
+        };
+        db.MstBanks.Add(b);
+    }
+    else
+    {
+        b.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now;
+        b.LogLUBy = dto.LogLUBy ?? userName;
+    }
     b.BankName = dto.BankName; b.BankCodeParent = parent.Length > 0 ? parent : null; b.FlagActive = flagActive;
     b.BankBUCode = N(dto.BankBUCode); b.BankBUPattern = N(dto.BankBUPattern); b.PhoneNo = N(dto.PhoneNo); b.FaxNo = N(dto.FaxNo);
     b.Address = N(dto.Address); b.FlagPaymentBank = N(dto.FlagPaymentBank); b.FlagMortageBank = N(dto.FlagMortageBank);
     b.FlagMonitorBank = N(dto.FlagMonitorBank); b.PICEmail = email.Length > 0 ? email : null; b.BenBankCode = N(dto.BenBankCode);
     b.NumberOfGuaranteeExt = dto.NumberOfGuaranteeExt;
     await db.SaveChangesAsync();
-    return Results.Ok(new { bankCode = code, updated });
+    return Results.Ok(new { bankCode = code, bankName = b.BankName, flagActive = b.FlagActive,
+        createdDate = b.CreatedDate, createdBy = b.CreatedBy, logLUDateTime = b.LogLUDateTime, logLUBy = b.LogLUBy, updated });
 }).RequireAuthorization();
 
 // #311 FrmBank xoá dòng lưới DB (EditStatus DELETE → drowTmp.Delete() → SaveMasterDataTable).
 app.MapPost("/api/mstbanks/{code}/delete", async (string code, AppDbContext db, ITenantContext t) =>
 {
     var b = await db.MstBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankCode == code.Trim());
-    if (b is null) return Results.NotFound(new { error = "Không tìm thấy ngân hàng.", code });
+    if (b is null) return Results.NotFound(new { code = "CommonAppData_MstBankNotFound", error = "Không tìm thấy ngân hàng.", bankCode = code });
+    db.MstBanks.Remove(b); await db.SaveChangesAsync();
+    return Results.Ok(new { bankCode = b.BankCode, deleted = true });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mstbanks/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var b = await db.MstBanks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BankCode == code.Trim());
+    if (b is null) return Results.NotFound(new { code = "CommonAppData_MstBankNotFound", error = "Không tìm thấy ngân hàng.", bankCode = code });
     db.MstBanks.Remove(b); await db.SaveChangesAsync();
     return Results.Ok(new { bankCode = b.BankCode, deleted = true });
 }).RequireAuthorization();
@@ -15362,7 +15390,7 @@ app.MapGet("/api/mstprovinces", async (AppDbContext db, ITenantContext t,
         qy = qy.Where(x => x.ProvinceName != null && x.ProvinceName.ToLower().Contains(provinceName!.Trim().ToLower()));
 
     var items = await qy.OrderBy(x => x.ProvinceName).Take(500)
-        .Select(x => new { x.Id, x.ProvinceCode, x.ProvinceName, x.AreaCode, x.FlagActive, x.CreatedDate, x.CreatedBy })
+        .Select(x => new { x.Id, x.ProvinceCode, x.ProvinceName, x.AreaCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
@@ -15371,22 +15399,47 @@ app.MapPost("/api/mstprovinces", async (MstProvinceDto dto, AppDbContext db, ITe
     System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.ProvinceCode ?? "").Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã tỉnh/thành." });
+    if (code.Length == 0) return Results.BadRequest(new { code = "Mst_Province_Check_ExistProvinceCode", error = "Chưa nhập mã tỉnh/thành." });
     var row = await db.MstProvinces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == code);
     var isNew = row is null;
+    var userName = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     if (row is null)
     {
-        row = new MstProvince { OrgId = t.OrgId, ProvinceCode = code,
-                                CreatedDate = DateTime.Now,
-                                CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system" };
+        row = new MstProvince
+        {
+            OrgId = t.OrgId,
+            ProvinceCode = code,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? userName,
+            LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+            LogLUBy = dto.LogLUBy ?? userName
+        };
         db.MstProvinces.Add(row);
+    }
+    else
+    {
+        row.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now;
+        row.LogLUBy = dto.LogLUBy ?? userName;
     }
     // upsert: cả HAI nhánh cùng gán bộ cột nghiệp vụ (luật `C0-trecentesimustricesimusseptimus`).
     row.ProvinceName = dto.ProvinceName;
     row.AreaCode = dto.AreaCode;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.ProvinceCode, row.ProvinceName, row.AreaCode, row.FlagActive, created = isNew });
+    return Results.Ok(new { row.Id, row.ProvinceCode, row.ProvinceName, row.AreaCode, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, created = isNew });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mstprovinces/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var prov = (code ?? "").Trim();
+    var row = await db.MstProvinces.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == prov);
+    if (row is null) return Results.NotFound(new { code = "MyCheckExist_ProvinceNotFound", error = "Không tìm thấy tỉnh/thành.", provinceCode = prov });
+    if (await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == prov))
+        return Results.BadRequest(new { code = "Mst_Province_Check_ExistDistrictCode", error = "Tỉnh/thành có quận/huyện trực thuộc, không thể xoá." });
+    db.MstProvinces.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { provinceCode = prov, deleted = true });
 }).RequireAuthorization();
 
 // ===== 🔴 #702 ĐỐI CHIẾU `Mst_District_Get` (`BizCarSv.Master.cs:8974-9111`, md5 `d46c4e2e` **KHỚP** máy 150) =====
@@ -15426,7 +15479,7 @@ app.MapGet("/api/mstdistricts", async (AppDbContext db, ITenantContext t, string
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 2000 ? recordCount!.Value : 1000;
     var items = await qy.OrderBy(x => x.ProvinceCode).ThenBy(x => x.DistrictCode).Skip(skip).Take(take)
-        .Select(x => new { x.ProvinceCode, x.DistrictCode, x.DistrictName, x.FlagActive, x.CreatedDate, x.CreatedBy }).ToListAsync();
+        .Select(x => new { x.ProvinceCode, x.DistrictCode, x.DistrictName, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new
     {
         count = items.Count, total, skip, take, items,
@@ -15441,24 +15494,41 @@ app.MapGet("/api/mstdistricts", async (AppDbContext db, ITenantContext t, string
     });
 }).RequireAuthorization();
 
-app.MapPost("/api/mstdistricts", async (MstDistrictDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mstdistricts", async (MstDistrictDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var prov = (dto.ProvinceCode ?? "").Trim();
     var dist = (dto.DistrictCode ?? "").Trim();
-    if (prov.Length < 1) return Results.BadRequest(new { error = "Mã tỉnh rỗng." });
-    if (dist.Length < 1) return Results.BadRequest(new { error = "Mã quận/huyện rỗng." });
+    if (prov.Length < 1) return Results.BadRequest(new { code = "CommonAppData_ProvinceCodeBeBlank", error = "Mã tỉnh rỗng." });
+    if (dist.Length < 1) return Results.BadRequest(new { code = "CommonAppData_DistrictCodeBeBlank", error = "Mã quận/huyện rỗng." });
     // 🔴 Khoá là CẶP — cùng mã huyện ở tỉnh khác vẫn hợp lệ.
     if (await db.MstDistricts.AnyAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == prov && x.DistrictCode == dist))
-        return Results.BadRequest(new { error = $"Quận/huyện {dist} của tỉnh {prov} đã tồn tại." });
-    db.MstDistricts.Add(new MstDistrict
+        return Results.BadRequest(new { code = "MyCheckExist_DistrictFound", error = $"Quận/huyện {dist} của tỉnh {prov} đã tồn tại." });
+    var userName = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var d = new MstDistrict
     {
         OrgId = t.OrgId, ProvinceCode = prov, DistrictCode = dist, DistrictName = dto.DistrictName,
         FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!,
         // #702 §12: hai cot moi phai duoc GHI o POST, khong chi doc o GET.
-        CreatedDate = DateTime.Now, CreatedBy = string.IsNullOrWhiteSpace(dto.CreatedBy) ? "system" : dto.CreatedBy!.Trim(),
-    });
+        CreatedDate = dto.CreatedDate ?? DateTime.Now,
+        CreatedBy = string.IsNullOrWhiteSpace(dto.CreatedBy) ? userName : dto.CreatedBy!.Trim(),
+        LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+        LogLUBy = dto.LogLUBy ?? userName
+    };
+    db.MstDistricts.Add(d);
     await db.SaveChangesAsync();
-    return Results.Ok(new { provinceCode = prov, districtCode = dist });
+    return Results.Ok(new { provinceCode = prov, districtCode = dist, districtName = d.DistrictName, flagActive = d.FlagActive,
+        createdDate = d.CreatedDate, createdBy = d.CreatedBy, logLUDateTime = d.LogLUDateTime, logLUBy = d.LogLUBy });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mstdistricts/{provinceCode}/{districtCode}", async (string provinceCode, string districtCode, AppDbContext db, ITenantContext t) =>
+{
+    var prov = (provinceCode ?? "").Trim();
+    var dist = (districtCode ?? "").Trim();
+    var d = await db.MstDistricts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ProvinceCode == prov && x.DistrictCode == dist);
+    if (d is null) return Results.NotFound(new { code = "MyCheckExist_DistrictNotFound", error = "Không tìm thấy quận/huyện.", provinceCode = prov, districtCode = dist });
+    db.MstDistricts.Remove(d);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { provinceCode = prov, districtCode = dist, deleted = true });
 }).RequireAuthorization();
 
 app.MapGet("/api/mstdealersalestypes", async (AppDbContext db, ITenantContext t, string? salesType, string? salesGroupType, string? flagActive) =>
@@ -45547,32 +45617,64 @@ app.MapGet("/api/mstports", async (AppDbContext db, ITenantContext t, string? po
     var q = db.MstPorts.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(portType)) q = q.Where(x => x.PortType == portType.Trim().ToUpper());
     if (!string.IsNullOrWhiteSpace(province)) q = q.Where(x => x.ProvinceCode == province.Trim().ToUpper());
-    var items = await q.OrderBy(x => x.PortCode).Select(x => new { x.PortCode, x.PortName, x.PortAddress, x.PortType, x.ProvinceCode }).ToListAsync();
+    var items = await q.OrderBy(x => x.PortCode)
+        .Select(x => new { x.PortCode, x.PortName, x.PortAddress, x.PortType, x.ProvinceCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
 // FrmPort.btnApply_Click: mã đã có ⇒ SỬA, chưa có ⇒ THÊM; dòng DELETE ⇒ xoá (FlagIsDelete="1").
-app.MapPost("/api/mstports", async (MstPortDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/mstports", async (MstPortDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.PortCode ?? "").ToUpper().Trim();
-    if (code.Length == 0) return Results.BadRequest(new { error = "Thiếu mã cảng (PortCode)." });
+    if (code.Length == 0) return Results.BadRequest(new { code = "CommonAppData_PortCodeBeBlank", error = "Thiếu mã cảng (PortCode)." });
     var r = await db.MstPorts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PortCode == code);
     if (dto.FlagIsDelete == "1")
     {
-        if (r is null) return Results.NotFound(new { error = "Không tìm thấy cảng.", code });
+        if (r is null) return Results.NotFound(new { code = "CommonAppData_MstPortNotFound", error = "Không tìm thấy cảng.", portCode = code });
         db.MstPorts.Remove(r); await db.SaveChangesAsync();
         return Results.Ok(new { portCode = code, deleted = true });
     }
     // gviewExcel_ValidatingEditor: mọi ô bắt buộc (MSG_WARNING_EMPTY_VALUE) trừ địa chỉ.
-    if (string.IsNullOrWhiteSpace(dto.PortName)) return Results.BadRequest(new { error = "Tên cảng không được để trống." });
-    if (string.IsNullOrWhiteSpace(dto.PortType)) return Results.BadRequest(new { error = "Loại cảng không được để trống." });
-    if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { error = "Mã tỉnh không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.PortName)) return Results.BadRequest(new { code = "MSG_WARNING_EMPTY_VALUE", error = "Tên cảng không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.PortType)) return Results.BadRequest(new { code = "MSG_WARNING_EMPTY_VALUE", error = "Loại cảng không được để trống." });
+    if (string.IsNullOrWhiteSpace(dto.ProvinceCode)) return Results.BadRequest(new { code = "MSG_WARNING_EMPTY_VALUE", error = "Mã tỉnh không được để trống." });
     var updated = r is not null;
-    if (r is null) { r = new MstPort { OrgId = t.OrgId, PortCode = code }; db.MstPorts.Add(r); }
+    var userName = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (r is null)
+    {
+        r = new MstPort
+        {
+            OrgId = t.OrgId,
+            PortCode = code,
+            FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim(),
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? userName,
+            LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+            LogLUBy = dto.LogLUBy ?? userName
+        };
+        db.MstPorts.Add(r);
+    }
+    else
+    {
+        if (!string.IsNullOrWhiteSpace(dto.FlagActive)) r.FlagActive = dto.FlagActive!.Trim();
+        r.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now;
+        r.LogLUBy = dto.LogLUBy ?? userName;
+    }
     r.PortName = dto.PortName; r.PortAddress = dto.PortAddress;
     r.PortType = dto.PortType.ToUpper().Trim(); r.ProvinceCode = dto.ProvinceCode.ToUpper().Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { r.PortCode, r.PortName, r.PortAddress, r.PortType, r.ProvinceCode, updated });
+    return Results.Ok(new { r.PortCode, r.PortName, r.PortAddress, r.PortType, r.ProvinceCode, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, updated });
+}).RequireAuthorization();
+
+app.MapDelete("/api/mstports/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var pcode = (code ?? "").ToUpper().Trim();
+    var r = await db.MstPorts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PortCode == pcode);
+    if (r is null) return Results.NotFound(new { code = "CommonAppData_MstPortNotFound", error = "Không tìm thấy cảng.", portCode = pcode });
+    db.MstPorts.Remove(r);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { portCode = pcode, deleted = true });
 }).RequireAuthorization();
 
 // ===== #319 Danh mục trình độ (Mst_Qualification) & chức vụ (Mst_Position) — nguồn chỉ có *_Get trên WS; lưu = upsert theo mã =====
@@ -47685,31 +47787,64 @@ app.MapGet("/api/storages", async (AppDbContext db, ITenantContext t, string? q,
     if (!string.IsNullOrWhiteSpace(type)) query = query.Where(x => x.StorageType == type);
     if (active == "1" || active == "0") query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.StorageCode).Take(1000)
-        .Select(x => new { x.Id, x.StorageCode, x.StorageName, x.StorageAddress, x.ProvinceCode, x.StorageType, x.FlagActive, x.UpdatedAt }).ToListAsync();   // #1282 §12
+        .Select(x => new { x.Id, x.StorageCode, x.StorageName, x.StorageAddress, x.ProvinceCode, x.StorageType, x.FlagActive,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1282 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
-app.MapPost("/api/storages", async (StorageDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/storages", async (StorageDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var code = (dto.StorageCode ?? "").Trim();
-    if (code == "") return Results.BadRequest(new { error = "Thiếu mã kho." });
+    if (code == "") return Results.BadRequest(new { code = "CommonAppData_StorageCodeBeBlank", error = "Thiếu mã kho." });
     // WinForm line 216-219: StorageType phải là "BT" (Bãi tập kết) hoặc "DT" (Đóng thùng)
     var stype = (dto.StorageType ?? "").Trim().ToUpperInvariant();
-    if (stype != "" && stype != "BT" && stype != "DT") return Results.BadRequest(new { error = "Loại kho phải là BT hoặc DT." });
+    if (stype != "" && stype != "BT" && stype != "DT") return Results.BadRequest(new { code = "MSG_WARNING_INVALID_DATA_TYPE", error = "Loại kho phải là BT hoặc DT." });
     var s = await db.Storages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == code);
-    if (s is null) { s = new Storage { OrgId = t.OrgId, StorageCode = code }; db.Storages.Add(s); }
-    s.StorageName = dto.StorageName; s.StorageAddress = dto.StorageAddress; s.ProvinceCode = dto.ProvinceCode; s.StorageType = dto.StorageType; s.UpdatedAt = DateTime.Now;
+    var userName = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    if (s is null)
+    {
+        s = new Storage
+        {
+            OrgId = t.OrgId,
+            StorageCode = code,
+            FlagActive = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!.Trim(),
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? userName,
+            LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now,
+            LogLUBy = dto.LogLUBy ?? userName,
+            UpdatedAt = DateTime.Now
+        };
+        db.Storages.Add(s);
+    }
+    else
+    {
+        if (!string.IsNullOrWhiteSpace(dto.FlagActive)) s.FlagActive = dto.FlagActive!.Trim();
+        s.LogLUDateTime = dto.LogLUDateTime ?? DateTime.Now;
+        s.LogLUBy = dto.LogLUBy ?? userName;
+        s.UpdatedAt = DateTime.Now;
+    }
+    s.StorageName = dto.StorageName; s.StorageAddress = dto.StorageAddress; s.ProvinceCode = dto.ProvinceCode; s.StorageType = dto.StorageType;
     await db.SaveChangesAsync();
-    return Results.Ok(new { s.Id, s.StorageCode });
+    return Results.Ok(new { s.Id, s.StorageCode, s.StorageName, s.StorageAddress, s.ProvinceCode, s.StorageType, s.FlagActive,
+        s.CreatedDate, s.CreatedBy, s.LogLUDateTime, s.LogLUBy, s.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapPost("/api/storages/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
 {
     var s = await db.Storages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == code.Trim());
-    if (s is null) return Results.NotFound(new { code });
+    if (s is null) return Results.NotFound(new { code = "CommonAppData_StorageNotFound", error = "Không tìm thấy kho.", storageCode = code });
     s.FlagActive = s.FlagActive == "1" ? "0" : "1"; s.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { s.StorageCode, s.FlagActive });
+}).RequireAuthorization();
+
+app.MapDelete("/api/storages/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var s = await db.Storages.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StorageCode == code.Trim());
+    if (s is null) return Results.NotFound(new { code = "CommonAppData_StorageNotFound", error = "Không tìm thấy kho.", storageCode = code });
+    db.Storages.Remove(s);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { storageCode = s.StorageCode, deleted = true });
 }).RequireAuthorization();
 
 app.MapPost("/api/storages/import", async (List<StorageDto> rows, AppDbContext db, ITenantContext t) =>
@@ -123859,9 +123994,12 @@ record SeqCommonDto(string? SequenceType, string? ParamPrefix, string? ParamPost
 record MstBankDto(string? BankCode, string? BankName, string? BankCodeParent, string? FlagActive,
     string? BankBUCode = null, string? BankBUPattern = null, string? PhoneNo = null, string? FaxNo = null, string? Address = null,
     string? FlagPaymentBank = null, string? FlagMortageBank = null, string? FlagMonitorBank = null, string? PICEmail = null,
-    string? BenBankCode = null, int? NumberOfGuaranteeExt = null);
-record MstProvinceDto(string? ProvinceCode, string? ProvinceName = null, string? AreaCode = null, string? FlagActive = null);
-record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName, string? FlagActive, string? CreatedBy);
+    string? BenBankCode = null, int? NumberOfGuaranteeExt = null, DateTime? CreatedDate = null, string? CreatedBy = null,
+    DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record MstProvinceDto(string? ProvinceCode, string? ProvinceName = null, string? AreaCode = null, string? FlagActive = null,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record MstDistrictDto(string? ProvinceCode, string? DistrictCode, string? DistrictName = null, string? FlagActive = null, string? CreatedBy = null,
+    DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MstDealerSalesTypeDto(string? SalesType, string? SalesTypeNameVN, string? SalesGroupType, string? FlagActive);
 // Người dùng/nhóm hệ thống. `UserPassword` gửi đúng chuỗi mẫu "********" nghĩa là GIỮ NGUYÊN mật khẩu cũ.
 record SysUserSaveDto(string? UserCode, string? UserName, string? UserPassword, string? PartnerCode, string? DealerCode, string? BankCode, string? TransporterCode, string? InsCompanyCode, string? FlagSysAdmin, string? FlagSysViewer, string? FlagActive);
@@ -124894,7 +125032,7 @@ record CarVinInvoiceImportDto(List<CarVinInvoiceRowDto>? Rows, string? Mode = nu
 record CarVinInvoiceRowDto(string? VIN, string? InvoiceNoFactory, DateTime? InvoiceFactoryDate, string? BillNo, string? CQNo, string? CONo, string? MortageBankCode, DateTime? MortageStartDate, DateTime? MortageEndDate, DateTime? RedeemDate,
     string? InvoiceFactorySearch = null, string? InvoiceSpecName = null, string? InvoiceNoTransferred = null, string? InvoiceTransferredSearch = null, DateTime? InvoiceTransferredDate = null);   // #400
 record DealerSalesGroupTypeDto(string? SalesGroupType, string? SalesGroupTypeName, string? FlagIsDelete = null);
-record MstPortDto(string? PortCode, string? PortName, string? PortAddress, string? PortType, string? ProvinceCode, string? FlagIsDelete = null);
+record MstPortDto(string? PortCode, string? PortName, string? PortAddress, string? PortType, string? ProvinceCode, string? FlagIsDelete = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MstQualificationDto(string? QualificationCode, string? QualificationName, string? Remark, string? FlagActive);
 record MstPositionDto(string? PositionCode, string? PositionDesc, string? FlagActive);
 record SalesManTypeDto(string? DepartmentCode, string? SMType, string? SMTypeName, string? FlagActive, string? FlagEmail = null);
@@ -124958,7 +125096,7 @@ record OcAttachDto(string? ImageName,
     string? FileNote);   // #363 tên cột nguồn
 record MinInvBalanceDto(string ModelList, string? SpecMix, string? DealerList, decimal TotalQty);
 record WarrantyExpiresDto(string ModelCode, string? ModelName, int WarrantyMonths, int WarrantyKM);
-record StorageDto(string StorageCode, string? StorageName, string? StorageAddress, string? ProvinceCode, string? StorageType);
+record StorageDto(string StorageCode, string? StorageName = null, string? StorageAddress = null, string? ProvinceCode = null, string? StorageType = null, string? FlagActive = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CarStdOptionDto(string ModelCode, string StdCode, string? StdDesc, string? GradeCode, string? GradeDesc);
 record TransporterDto(string TransporterCode, string? TransporterName, string? Address, string? PhoneNo, string? FaxNo, string? DirectorFullName, string? DirectorPhoneNo, string? ContactorPhoneNo,
     string? ContactorFullName = null, string? TransportContractNo = null, string? Remark = null);   // #331

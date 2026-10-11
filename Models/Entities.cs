@@ -5647,6 +5647,10 @@ public sealed class Storage
     public string? ProvinceCode { get; set; }
     public string? StorageType { get; set; }
     public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
@@ -9310,6 +9314,10 @@ public sealed class MstBank
     public string? BenBankCode { get; set; }
     /// <summary>Số lần gia hạn bảo lãnh tối đa.</summary>
     public int? NumberOfGuaranteeExt { get; set; }
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -9334,6 +9342,8 @@ public sealed class MstProvince
     public string FlagActive { get; set; } = "1";
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 public sealed class MstDistrict
@@ -9347,6 +9357,8 @@ public sealed class MstDistrict
     // #702: nguon `Mst_District_Get` co BuildClause tren `md.CreatedDate` va `md.CreatedBy`.
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -12555,6 +12567,11 @@ public sealed class MstPort
     /// <summary>Loại cảng (→ Mst_PortType.PortType).</summary>
     public string? PortType { get; set; }
     public string? ProvinceCode { get; set; }
+    public string FlagActive { get; set; } = "1";
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>🔴 #B167 — `Mst_PortType`: **loại cảng**. ⚠️ Cột thật là **`PORTTYPE`/`PORTTYPENAME`**
