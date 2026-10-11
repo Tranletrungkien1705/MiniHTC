@@ -14101,66 +14101,79 @@ app.MapPost("/api/tcginvoices/detail-delete", async (TcgInvoiceDetailKeyDto dto,
 //    ⇒ dòng PI chưa gắn hợp đồng thì `ContractNo` rỗng; đó là cách phân biệt PI đã/chưa vào hợp đồng.
 // ⚠️ Tên bảng nguồn là "Performance" nhưng nghiệp vụ là **Proforma** Invoice — giữ nguyên tên nguồn.
 // ⚠️ Nguồn ghi song song `_dbMain` + `_dbWH` — nợ `_dbWH` chung fleet; RBAC `CheckHTCDirect` chưa port.
+// #127 #Round127 CtContractOverseas & CtLcs & OrdPerformanceInvoices audit
 app.MapGet("/api/contractoverseas", async (AppDbContext db, ITenantContext t, string? contractNo) =>
 {
     var qy = db.CtContractOverseas.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(contractNo)) qy = qy.Where(x => x.ContractNo == contractNo);
     var items = await qy.OrderByDescending(x => x.Id).Take(500)
-        .Select(x => new { x.ContractNo, x.CreatedDate, x.CreatedBy }).ToListAsync();
+        .Select(x => new { x.ContractNo, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #127 #Round127 §12
     var nos = items.Select(i => i.ContractNo).ToList();
     var lines = await db.OrdPerformanceInvoiceDetails
         .Where(d => d.OrgId == t.OrgId && d.ContractNo != null && nos.Contains(d.ContractNo))
         .Select(d => new
         {
             d.ContractNo, d.RefNo, d.LCTemp, d.SpecCode, d.ModelCode, d.ColorCode,
-            d.WorkOrderNo, d.PortCode, d.PlantCode, d.Quantity,
+            d.WorkOrderNo, d.PortCode, d.PlantCode, d.Quantity, d.LogLUDateTime, d.LogLUBy,   // #127 #Round127 §12
         }).ToListAsync();
     var lcs = await db.CtLcs.Where(x => x.OrgId == t.OrgId && nos.Contains(x.ContractNo))
-        .Select(x => new { x.LCNo, x.ContractNo, x.BankName, x.CreatedDate, x.CreatedBy }).ToListAsync();
+        .Select(x => new { x.LCNo, x.ContractNo, x.BankName, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #127 #Round127 §12
     return Results.Ok(new { count = items.Count, items, piLines = lines, lcs });
 }).RequireAuthorization();
 
 // 🔴 Ký hợp đồng ngoại: tạo bản ghi hợp đồng VÀ gán ContractNo xuống các dòng PI được chọn.
+// #127 #Round127 CtContractOverseas create
 app.MapPost("/api/contractoverseas/create", async (CtContractOverseaCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var no = (dto.ContractNo ?? "").Trim();
     // Guard nguồn: MinLengthCode = 5 (TConst.HTCConst, Const.Main.cs:322).
-    if (no.Length < 5) return Results.BadRequest(new { error = "Số hợp đồng ngắn hơn MinLengthCode (5)." });
+    if (no.Length < 5) return Results.BadRequest(new { error = "ContractContractOverseaCreate_InvalidContractNo" });
     if (await db.CtContractOverseas.AnyAsync(x => x.OrgId == t.OrgId && x.ContractNo == no))
-        return Results.BadRequest(new { error = $"Hợp đồng {no} đã tồn tại." });
+        return Results.BadRequest(new { error = "CommonAppData_ContractCTOverseaFound" });
     var refs = (dto.PiRefNos ?? new()).Select(r => (r ?? "").Trim()).Where(r => r.Length > 0).Distinct().ToList();
     // Guard nguồn: bảng chi tiết đầu vào KHÔNG được rỗng.
-    if (refs.Count == 0) return Results.BadRequest(new { error = "Bảng dòng Proforma Invoice rỗng." });
+    if (refs.Count == 0) return Results.BadRequest(new { error = "ContractContractOverseaCreate_TableDetailBeBlank" });
 
     var lines = await db.OrdPerformanceInvoiceDetails
         .Where(d => d.OrgId == t.OrgId && refs.Contains(d.RefNo)).ToListAsync();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Không tìm thấy dòng PI nào theo danh sách gửi lên." });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "ContractContractOverseaCreate_PILCTempNotFound" });
     // Dòng đã thuộc hợp đồng khác thì không gán lại — giữ ngữ nghĩa "ContractNo rỗng = chưa vào hợp đồng".
     var taken = lines.Where(d => !string.IsNullOrWhiteSpace(d.ContractNo) && d.ContractNo != no)
                      .Select(d => $"{d.RefNo}→{d.ContractNo}").Distinct().ToList();
     if (taken.Count > 0)
-        return Results.BadRequest(new { error = $"Có dòng PI đã thuộc hợp đồng khác: {string.Join(", ", taken.Take(10))}." });
+        return Results.BadRequest(new { error = "ContractContractOverseaCreate_PILCTempBelongToAnotherContract", details = taken });
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    db.CtContractOverseas.Add(new CtContractOversea
+    var now = DateTime.Now;
+    var row = new CtContractOversea
     {
-        OrgId = t.OrgId, ContractNo = no, CreatedDate = DateTime.Now, CreatedBy = who,
-    });
-    foreach (var d in lines) d.ContractNo = no; // 🔴 nguồn gán xuống từng dòng PI
+        OrgId = t.OrgId, ContractNo = no,
+        CreatedDate = dto.CreatedDate ?? now, CreatedBy = who,
+        LogLUDateTime = dto.LogLUDateTime ?? now, LogLUBy = dto.LogLUBy ?? who,   // #127 #Round127 §12
+    };
+    db.CtContractOverseas.Add(row);
+    foreach (var d in lines)
+    {
+        d.ContractNo = no; // 🔴 nguồn gán xuống từng dòng PI
+        d.LogLUDateTime = now; d.LogLUBy = who;   // #127 #Round127 §12
+    }
     await db.SaveChangesAsync();
-    return Results.Ok(new { contractNo = no, piLinesLinked = lines.Count });
+    return Results.Ok(new { contractNo = no, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, piLinesLinked = lines.Count });
 }).RequireAuthorization();
 
 // Xoá hợp đồng ngoại — gỡ luôn ContractNo khỏi các dòng PI để chúng trở lại trạng thái "chưa vào hợp đồng".
-app.MapPost("/api/contractoverseas/delete", async (CtContractOverseaKeyDto dto, AppDbContext db, ITenantContext t) =>
+// #127 #Round127 CtContractOverseas delete
+app.MapPost("/api/contractoverseas/delete", async (CtContractOverseaKeyDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var no = (dto.ContractNo ?? "").Trim();
     var row = await db.CtContractOverseas.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ContractNo == no);
-    if (row is null) return Results.NotFound(new { error = $"Không có hợp đồng {no}." });
+    if (row is null) return Results.NotFound(new { error = "CommonAppData_ContractCTOverseaNotFound" });
     if (await db.CtLcs.AnyAsync(x => x.OrgId == t.OrgId && x.ContractNo == no))
-        return Results.BadRequest(new { error = $"Hợp đồng {no} đã có L/C, không xoá được." });
+        return Results.BadRequest(new { error = "ContractContractOverseaDelete" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     var lines = await db.OrdPerformanceInvoiceDetails.Where(d => d.OrgId == t.OrgId && d.ContractNo == no).ToListAsync();
-    foreach (var d in lines) d.ContractNo = null;
+    foreach (var d in lines) { d.ContractNo = null; d.LogLUDateTime = now; d.LogLUBy = who; }
     db.CtContractOverseas.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = no, piLinesUnlinked = lines.Count });
@@ -14168,47 +14181,55 @@ app.MapPost("/api/contractoverseas/delete", async (CtContractOverseaKeyDto dto, 
 
 // #4409 — ⚠️ Route là `/api/ctlcs`, KHÔNG phải `/api/lcs`: `/api/lcs` đã thuộc L/C của DMSales.Foton
 //    (entity `LettersOfCredit`, ~dòng 21400) — BẢNG KHÁC HẲN với `CT_LC` của 2010.HTC, không được gộp.
+// #127 #Round127 CtLcs audit
 app.MapGet("/api/ctlcs", async (AppDbContext db, ITenantContext t, string? lcNo, string? contractNo) =>
 {
     var qy = db.CtLcs.Where(x => x.OrgId == t.OrgId);
     if (!string.IsNullOrWhiteSpace(lcNo)) qy = qy.Where(x => x.LCNo == lcNo);
     if (!string.IsNullOrWhiteSpace(contractNo)) qy = qy.Where(x => x.ContractNo == contractNo);
     var items = await qy.OrderByDescending(x => x.Id)
-        .Select(x => new { x.LCNo, x.ContractNo, x.BankName, x.CreatedDate, x.CreatedBy }).ToListAsync();
+        .Select(x => new { x.LCNo, x.ContractNo, x.BankName, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #127 #Round127 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #127 #Round127 CtLcs create
 app.MapPost("/api/ctlcs/create", async (CtLcCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var lcNo = (dto.LCNo ?? "").Trim();
     var no = (dto.ContractNo ?? "").Trim();
-    if (lcNo.Length < 1) return Results.BadRequest(new { error = "Số L/C rỗng." });
+    if (lcNo.Length < 1) return Results.BadRequest(new { error = "ContractLCCreate_InvalidLCNo" });
     if (await db.CtLcs.AnyAsync(x => x.OrgId == t.OrgId && x.LCNo == lcNo))
-        return Results.BadRequest(new { error = $"L/C {lcNo} đã tồn tại." });
+        return Results.BadRequest(new { error = "CommonAppData_ContractLCFound" });
     if (!await db.CtContractOverseas.AnyAsync(x => x.OrgId == t.OrgId && x.ContractNo == no))
-        return Results.BadRequest(new { error = $"Hợp đồng ngoại {no} không tồn tại." });
-    db.CtLcs.Add(new CtLc
+        return Results.BadRequest(new { error = "CommonAppData_ContractCTOverseaNotFound" });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var row = new CtLc
     {
         OrgId = t.OrgId, LCNo = lcNo, ContractNo = no, BankName = dto.BankName,
-        CreatedDate = DateTime.Now,
-        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
-    });
+        CreatedDate = dto.CreatedDate ?? now,
+        CreatedBy = who,
+        LogLUDateTime = dto.LogLUDateTime ?? now, LogLUBy = dto.LogLUBy ?? who,   // #127 #Round127 §12
+    };
+    db.CtLcs.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { lcNo, contractNo = no });
+    return Results.Ok(new { lcNo, contractNo = no, bankName = dto.BankName, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy });
 }).RequireAuthorization();
 
 // Nguồn `ContractLCDelete` là XOÁ THẬT (`Rows[0].Delete()`).
+// #127 #Round127 CtLcs delete
 app.MapPost("/api/ctlcs/delete", async (CtLcKeyDto dto, AppDbContext db, ITenantContext t) =>
 {
     var lcNo = (dto.LCNo ?? "").Trim();
     var row = await db.CtLcs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LCNo == lcNo);
-    if (row is null) return Results.NotFound(new { error = $"Không có L/C {lcNo}." });
+    if (row is null) return Results.NotFound(new { error = "CommonAppData_ContractLCNotFound" });
     db.CtLcs.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = lcNo });
 }).RequireAuthorization();
 
 // Proforma Invoice — phần đầu + dòng. `ContractNo` của dòng do lệnh ký hợp đồng ngoại gán, KHÔNG nhận ở đây.
+// #127 #Round127 OrdPerformanceInvoices audit
 app.MapGet("/api/performanceinvoices", async (AppDbContext db, ITenantContext t, string? refNo, string? modelCode, bool? unlinkedOnly) =>
 {
     var qy = db.OrdPerformanceInvoices.Where(x => x.OrgId == t.OrgId);
@@ -14217,7 +14238,7 @@ app.MapGet("/api/performanceinvoices", async (AppDbContext db, ITenantContext t,
     var items = await qy.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.RefNo, x.ModelCode, x.OrderMonth, x.ProductionMonth, x.ExpectedMonth,
-        x.FlagAutoPL, x.CreatedDate, x.CreatedBy,
+        x.FlagAutoPL, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,   // #127 #Round127 §12
     }).ToListAsync();
     var refs = items.Select(i => i.RefNo).ToList();
     var dq = db.OrdPerformanceInvoiceDetails.Where(d => d.OrgId == t.OrgId && refs.Contains(d.RefNo));
@@ -14227,26 +14248,33 @@ app.MapGet("/api/performanceinvoices", async (AppDbContext db, ITenantContext t,
     {
         d.RefNo, d.LCTemp, d.SpecCode, d.ModelCode, d.ColorCode,
         d.WorkOrderNo, d.PortCode, d.PlantCode, d.Quantity, d.ContractNo,
+        d.LogLUDateTime, d.LogLUBy,   // #127 #Round127 §12
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items, details });
 }).RequireAuthorization();
 
+// #127 #Round127 OrdPerformanceInvoices create
 app.MapPost("/api/performanceinvoices/create", async (OrdPiCreateDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     var refNo = (dto.RefNo ?? "").Trim();
-    if (refNo.Length < 1) return Results.BadRequest(new { error = "Số PI rỗng." });
+    if (refNo.Length < 1) return Results.BadRequest(new { error = "OrderPICreate_InvalidPIRefNo" });
     if (await db.OrdPerformanceInvoices.AnyAsync(x => x.OrgId == t.OrgId && x.RefNo == refNo))
-        return Results.BadRequest(new { error = $"PI {refNo} đã tồn tại." });
+        return Results.BadRequest(new { error = "CommonAppData_OrdPIFound" });
     var rows = dto.Details ?? new();
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Bảng dòng PI rỗng." });
+    if (rows.Count == 0) return Results.BadRequest(new { error = "OrderPICreate_TableDetailBeBlank" });
+    if (rows.Any(r => (r.Quantity ?? 0) < 0)) return Results.BadRequest(new { error = "OrderPICreate_InvalidDetailQuantity" });
 
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
-    db.OrdPerformanceInvoices.Add(new OrdPerformanceInvoice
+    var now = DateTime.Now;
+    var pi = new OrdPerformanceInvoice
     {
         OrgId = t.OrgId, RefNo = refNo, ModelCode = dto.ModelCode,
         OrderMonth = dto.OrderMonth, ProductionMonth = dto.ProductionMonth, ExpectedMonth = dto.ExpectedMonth,
-        FlagAutoPL = dto.FlagAutoPL, CreatedDate = DateTime.Now, CreatedBy = who,
-    });
+        FlagAutoPL = dto.FlagAutoPL,
+        CreatedDate = dto.CreatedDate ?? now, CreatedBy = who,
+        LogLUDateTime = dto.LogLUDateTime ?? now, LogLUBy = dto.LogLUBy ?? who,   // #127 #Round127 §12
+    };
+    db.OrdPerformanceInvoices.Add(pi);
     foreach (var r in rows)
         db.OrdPerformanceInvoiceDetails.Add(new OrdPerformanceInvoiceDetail
         {
@@ -14255,9 +14283,10 @@ app.MapPost("/api/performanceinvoices/create", async (OrdPiCreateDto dto, AppDbC
             WorkOrderNo = r.WorkOrderNo, PortCode = r.PortCode, PlantCode = r.PlantCode,
             Quantity = r.Quantity,
             ContractNo = null, // 🔴 chỉ lệnh ký hợp đồng ngoại mới gán cột này
+            LogLUDateTime = r.LogLUDateTime ?? now, LogLUBy = r.LogLUBy ?? who,   // #127 #Round127 §12
         });
     await db.SaveChangesAsync();
-    return Results.Ok(new { refNo, details = rows.Count });
+    return Results.Ok(new { refNo, pi.CreatedDate, pi.CreatedBy, pi.LogLUDateTime, pi.LogLUBy, details = rows.Count });
 }).RequireAuthorization();
 
 // ===== Danh mục MÀN HÌNH / CHỨC NĂNG (Sys_Object) — mảnh cuối của bộ RBAC =====
@@ -76379,6 +76408,7 @@ app.MapPost("/api/insurancetypes", async (MstInsTypeDto dto, AppDbContext db, IT
     return Results.Ok(new { row.Id, row.InsCompanyCode, row.InsTypeCode, row.EffectiveDate, row.InsTypeName });
 }).RequireAuthorization();
 
+// #126 #Round126 InsuranceReqs audit
 app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, string? status, string? company, string? insCompanyPattern) =>
 {
     var q = db.InsuranceReqs.Where(r => r.OrgId == t.OrgId);
@@ -76391,13 +76421,14 @@ app.MapGet("/api/insurancereqs", async (AppDbContext db, ITenantContext t, strin
     var items = await q.OrderByDescending(r => r.Id).Take(500).Select(r => new
     {
         r.InsReqNo, r.InsCompanyCode, r.InsTypeCode, r.Status, r.CreatedAt, r.ConfirmedAt,
-        r.EffectiveDate, r.CreatedDate, r.CreatedBy, r.ApprovedDate, r.ApprovedBy, r.Remark, r.LogLUDateTime, r.LogLUBy,   // #Round126 §12
+        r.EffectiveDate, r.CreatedDate, r.CreatedBy, r.ApprovedDate, r.ApprovedBy, r.Remark, r.LogLUDateTime, r.LogLUBy,   // #126 #Round126 §12
         cars = db.InsuranceReqDtls.Count(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id),
         totalAmount = db.InsuranceReqDtls.Where(c => c.OrgId == t.OrgId && c.InsuranceReqId == r.Id).Sum(c => (decimal?)c.InsAmount) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #126 #Round126 InsuranceReqs create
 app.MapPost("/api/insurancereqs", async (InsuranceReqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     if (string.IsNullOrWhiteSpace(dto.InsCompanyCode)) return Results.BadRequest(new { error = "Ins_InsuranceReqCreate_InvalidInsCompanyCode" });
@@ -88269,6 +88300,7 @@ app.MapDelete("/api/dlrpdirequests/{no}", async (string no, AppDbContext db, ITe
 }).RequireAuthorization();
 
 // ===== Chi tiết tờ khai hải quan (CtTkhq/CT_TKHQ — port 1:1 FrmNewCT_TKHQ, DMSales.Foton) =====
+// #127 #Round127 CtTkhqs audit
 app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? port) =>
 {
     var query = db.CtTkhqs.Where(k => k.OrgId == t.OrgId);
@@ -88276,6 +88308,7 @@ app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? por
     var items = await query.OrderByDescending(k => k.Id).Take(500).Select(k => new
     {
         k.DeclarationNo, k.OpenDate, k.PortCode, k.Remark, k.TaxPaymentDate, k.CreatedAt,
+        k.CreatedDate, k.CreatedBy, k.LogLUDateTime, k.LogLUBy,   // #127 #Round127 §12
         vins = db.CtTkhqVins.Count(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
@@ -88293,21 +88326,16 @@ app.MapGet("/api/cttkhqs", async (AppDbContext db, ITenantContext t, string? por
 //   · `CT_TKHQ_CheckDB(Flag.Active)` — TKHQ không tồn tại ⇒ **ném lỗi** (port cũ gom `notFound` rồi trả 200)
 //   + `..._OpenDateAfterTaxPaymentDate` — `OpenDate > TaxPaymentDate` ⇒ chặn (port cũ đã có).
 // 🔴 RBAC `myCommon_CheckHTCDirect(..., Flag.Active)` (`:38258`) là DÒNG ACTIVE.
-// ⚠️ **QUIRK CỦA NGUỒN — CỐ Ý KHÔNG PORT NGUYÊN:** dòng ghi của nguồn là
-//      `dt_CT_TKHQ.Rows[i]["TaxPaymentDate"] = dt_CT_TKHQ_Input.Rows[**0**]["TaxPaymentDate"];`  (`:38386`)
-//    tức **mọi dòng đều nhận ngày của DÒNG ĐẦU TIÊN**, trong khi vòng kiểm phía trên lại kiểm **từng dòng**
-//    (`dr = ..._Input.Rows[i]`). Đây gần như chắc chắn là **lỗi chỉ số của nguồn** và port nguyên sẽ **ghi sai
-//    ngày cho các dòng 2..n**. Đã port theo ngữ nghĩa ĐÚNG (mỗi dòng ngày của chính nó) và **phơi quirk ra
-//    trong response** (`sourceQuirk`) để người dùng quyết — KHÔNG im lặng chọn hộ.
-app.MapPost("/api/cttkhqs/tax-payment-date", async (CtTkhqTaxDto dto, AppDbContext db, ITenantContext t, string? flagDirect) =>
+// #127 #Round127 CtTkhqs tax-payment-date
+app.MapPost("/api/cttkhqs/tax-payment-date", async (CtTkhqTaxDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? flagDirect) =>
 {
     if (flagDirect == "0") return Results.BadRequest(new { error = "Chỉ người dùng HTC trực tiếp (FlagDirect='1') được cập nhật ngày nộp thuế." });
     var rows = (dto.Rows ?? new()).Where(r => !string.IsNullOrWhiteSpace(r.DeclarationNo)).ToList();
-    // `..._TableDetailBeBlank`
-    if (rows.Count == 0) return Results.BadRequest(new { error = "Không có dữ liệu được thay đổi" });
-    // `..._DuplicateKeyDetail`
+    // `ContractTKHQUpdate_TaxPaymentDate_TableDetailBeBlank`
+    if (rows.Count == 0) return Results.BadRequest(new { error = "ContractTKHQUpdate_TaxPaymentDate_TableDetailBeBlank" });
+    // `ContractTKHQUpdate_TaxPaymentDate_DuplicateKeyDetail`
     var dup = rows.GroupBy(r => r.DeclarationNo!.Trim()).FirstOrDefault(g => g.Count() > 1);
-    if (dup != null) return Results.BadRequest(new { error = $"Tờ khai {dup.Key} bị trùng trong bảng gửi lên!" });
+    if (dup != null) return Results.BadRequest(new { error = "ContractTKHQUpdate_TaxPaymentDate_DuplicateKeyDetail", declarationNo = dup.Key });
 
     var nos = rows.Select(r => r.DeclarationNo!.Trim()).ToList();
     var tkhqs = await db.CtTkhqs.Where(x => x.OrgId == t.OrgId && nos.Contains(x.DeclarationNo)).ToListAsync();
@@ -88317,28 +88345,31 @@ app.MapPost("/api/cttkhqs/tax-payment-date", async (CtTkhqTaxDto dto, AppDbConte
     {
         var no = r.DeclarationNo!.Trim();
         var k = tkhqs.FirstOrDefault(x => x.DeclarationNo == no);
-        if (k is null) return Results.BadRequest(new { error = $"Tờ khai {no} không tồn tại." });
-        // `..._InvalidOpenDate` — `StandardizeDate(OpenDate)` rỗng ⇒ chặn.
-        if (k.OpenDate == default) return Results.BadRequest(new { error = $"Tờ khai {no} chưa có ngày mở tờ khai." });
-        // `..._InvalidTaxPaymentDate`
-        if (r.TaxPaymentDate is null) return Results.BadRequest(new { error = $"Tờ khai {no} thiếu ngày nộp thuế." });
-        // `..._OpenDateAfterTaxPaymentDate` — nguồn so bằng `strOpenDate.CompareTo(strTaxPaymentDate) > 0`
+        if (k is null) return Results.BadRequest(new { error = "CommonAppData_ContractTKHQNotFound", declarationNo = no });
+        // `ContractTKHQUpdate_TaxPaymentDate_InvalidOpenDate` — `StandardizeDate(OpenDate)` rỗng ⇒ chặn.
+        if (k.OpenDate == default) return Results.BadRequest(new { error = "ContractTKHQUpdate_TaxPaymentDate_InvalidOpenDate", declarationNo = no });
+        // `ContractTKHQUpdate_TaxPaymentDate_InvalidTaxPaymentDate`
+        if (r.TaxPaymentDate is null) return Results.BadRequest(new { error = "ContractTKHQUpdate_TaxPaymentDate_InvalidTaxPaymentDate", declarationNo = no });
+        // `ContractTKHQUpdate_TaxPaymentDate_OpenDateAfterTaxPaymentDate` — nguồn so bằng `strOpenDate.CompareTo(strTaxPaymentDate) > 0`
         //   trên chuỗi "yyyy-MM-dd" ⇒ so theo NGÀY, không theo giờ.
         if (k.OpenDate.Date > r.TaxPaymentDate.Value.Date)
-            return Results.BadRequest(new { error = $"TKHQ: {no} ngày nộp thuế phải sau Ngày mở TKHQ!" });
+            return Results.BadRequest(new { error = "ContractTKHQUpdate_TaxPaymentDate_OpenDateAfterTaxPaymentDate", declarationNo = no });
     }
 
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
     int updated = 0;
     foreach (var r in rows)
     {
         var k = tkhqs.First(x => x.DeclarationNo == r.DeclarationNo!.Trim());
         k.TaxPaymentDate = r.TaxPaymentDate;   // ngữ nghĩa ĐÚNG: mỗi dòng ngày của chính nó
+        k.LogLUDateTime = now; k.LogLUBy = who;   // #127 #Round127 §12
         updated++;
     }
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        updated, columnsWritten = new[] { "TaxPaymentDate" },
+        updated, columnsWritten = new[] { "TaxPaymentDate", "LogLUDateTime", "LogLUBy" },
         sourceQuirk = rows.Count > 1
             ? "⚠️ Nguồn gán ..._Input.Rows[0][TaxPaymentDate] cho MỌI dòng (Biz.HTC.WH.cs:38386) — gần như chắc chắn là lỗi chỉ số. Bản port này gán ĐÚNG ngày của từng dòng. Nếu cần khớp tuyệt đối hành vi nguồn, xác nhận để đổi."
             : null,
@@ -88347,10 +88378,11 @@ app.MapPost("/api/cttkhqs/tax-payment-date", async (CtTkhqTaxDto dto, AppDbConte
 }).RequireAuthorization();
 
 // Xóa hàng loạt tờ khai (port 1:1 FrmMngCT_TKHQ btnDeleteTk_Click)
+// #127 #Round127 CtTkhqs delete-batch
 app.MapPost("/api/cttkhqs/delete-batch", async (CtTkhqDeleteDto dto, AppDbContext db, ITenantContext t) =>
 {
     var nos = (dto.DeclarationNos ?? new()).Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).ToList();
-    if (nos.Count == 0) return Results.BadRequest(new { error = "Chưa chọn tờ khai để xóa" });
+    if (nos.Count == 0) return Results.BadRequest(new { error = "ContractTKHQCreate_TableDetailBeBlank" });
     var deleted = new List<string>();
     foreach (var no in nos)
     {
@@ -88364,32 +88396,49 @@ app.MapPost("/api/cttkhqs/delete-batch", async (CtTkhqDeleteDto dto, AppDbContex
     return Results.Ok(new { deleted });
 }).RequireAuthorization();
 
-app.MapPost("/api/cttkhqs", async (CtTkhqDto dto, AppDbContext db, ITenantContext t) =>
+// #127 #Round127 CtTkhqs create
+app.MapPost("/api/cttkhqs", async (CtTkhqDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.DeclarationNo)) return Results.BadRequest(new { error = "Cần số tờ khai." });
-    if (dto.OpenDate is null) return Results.BadRequest(new { error = "Cần ngày mở tờ khai." });
+    if (string.IsNullOrWhiteSpace(dto.DeclarationNo)) return Results.BadRequest(new { error = "ContractTKHQCreate_InvalidDeclarationNo" });
+    if (dto.OpenDate is null) return Results.BadRequest(new { error = "ContractTKHQCreate_InvalidOpenDate" });
     var no = dto.DeclarationNo.Trim();
     if (await db.CtTkhqs.AnyAsync(k => k.OrgId == t.OrgId && k.DeclarationNo == no))
-        return Results.BadRequest(new { error = $"Số tờ khai {no} đã tồn tại!" });
+        return Results.BadRequest(new { error = "CommonAppData_ContractTKHQFound" });
     var vins = (dto.Vins ?? new()).Where(v => !string.IsNullOrWhiteSpace(v)).ToList();
-    if (vins.Count == 0) return Results.BadRequest(new { error = "VIN không để trống." });
+    if (vins.Count == 0) return Results.BadRequest(new { error = "ContractTKHQCreate_TableDetailBeBlank" });
     var dupe = vins.GroupBy(v => v.Trim().ToUpperInvariant()).FirstOrDefault(g => g.Count() > 1);
-    if (dupe != null) return Results.BadRequest(new { error = $"VIN {dupe.Key} bị trùng!" });
-    var k = new CtTkhq { OrgId = t.OrgId, DeclarationNo = no, OpenDate = dto.OpenDate.Value, PortCode = dto.PortCode, Remark = dto.Remark };
+    if (dupe != null) return Results.BadRequest(new { error = "ContractTKHQCreate_DuplicateKeyDetail", vin = dupe.Key });
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    var now = DateTime.Now;
+    var k = new CtTkhq
+    {
+        OrgId = t.OrgId, DeclarationNo = no, OpenDate = dto.OpenDate.Value, PortCode = dto.PortCode, Remark = dto.Remark,
+        TaxPaymentDate = dto.TaxPaymentDate,
+        CreatedDate = dto.CreatedDate ?? now,
+        CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = dto.LogLUDateTime ?? now,
+        LogLUBy = dto.LogLUBy ?? who,   // #127 #Round127 §12
+    };
     db.CtTkhqs.Add(k); await db.SaveChangesAsync();
     foreach (var v in vins)
-        db.CtTkhqVins.Add(new CtTkhqVin { OrgId = t.OrgId, CtTkhqId = k.Id, Vin = v.Trim().ToUpperInvariant() });
+        db.CtTkhqVins.Add(new CtTkhqVin
+        {
+            OrgId = t.OrgId, CtTkhqId = k.Id, Vin = v.Trim().ToUpperInvariant(),
+            LogLUDateTime = now, LogLUBy = who,   // #127 #Round127 §12
+        });
     await db.SaveChangesAsync();
-    return Results.Ok(new { k.DeclarationNo, vins = vins.Count });
+    return Results.Ok(new { k.DeclarationNo, k.CreatedDate, k.CreatedBy, k.LogLUDateTime, k.LogLUBy, vins = vins.Count });
 }).RequireAuthorization();
 
+// #127 #Round127 CtTkhqs vins
 app.MapGet("/api/cttkhqs/{no}/vins", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim();
     var k = await db.CtTkhqs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DeclarationNo == no);
-    if (k is null) return Results.NotFound(new { no });
-    var vins = await db.CtTkhqVins.Where(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id).Select(v => v.Vin).ToListAsync();
-    return Results.Ok(new { k.DeclarationNo, count = vins.Count, vins });
+    if (k is null) return Results.NotFound(new { error = "CommonAppData_ContractTKHQNotFound", no });
+    var vins = await db.CtTkhqVins.Where(v => v.OrgId == t.OrgId && v.CtTkhqId == k.Id)
+        .Select(v => new { v.Vin, v.LogLUDateTime, v.LogLUBy }).ToListAsync();   // #127 #Round127 §12
+    return Results.Ok(new { k.DeclarationNo, k.CreatedDate, k.CreatedBy, k.LogLUDateTime, k.LogLUBy, count = vins.Count, vins });
 }).RequireAuthorization();
 
 // ===== Đơn đặt hàng (SalesOrder/So — port 1:1 FrmOrder, DMSales.Foton) =====
@@ -92799,6 +92848,7 @@ async Task<IResult> DlrContractCancelSetStatusMulti(
 // -> SalesService.SearchPOCommand(poCmdCode, orderMonthFrom, orderMonthTo, dataWH). Giu `month` (khop
 // dung 1 thang) de tuong thich nguoc; OrderMonth dang "YYYYMM" (khong dau gach) nen so chuoi = so
 // thoi gian (dung quy uoc dateGroupingUsesIso da dung noi khac).
+// #127 #Round127 POCommands audit
 app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? status, string? month,
     string? flagActive, string? poCmdCode, string? orderMonthFrom, string? orderMonthTo) =>
 {
@@ -92813,12 +92863,14 @@ app.MapGet("/api/pocommands", async (AppDbContext db, ITenantContext t, string? 
     var items = await q.OrderByDescending(o => o.Id).Take(500).Select(o => new
     {
         o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, o.CreatedAt,
+        o.CreatedDate, o.LogLUDateTime, o.LogLUBy,   // #127 #Round127 §12
         lines = db.POCommandLines.Count(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id),
         totalQty = db.POCommandLines.Where(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id).Sum(l => (int?)l.Quantity) ?? 0
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
+// #127 #Round127 POCommands create
 app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     // ===== #173 port TRỌN `OrderPOCommandCreate_New20181119` (DataWH/Biz.HTC.WH.cs:28295, csproj 272) =====
@@ -92838,15 +92890,16 @@ app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenant
     //      tức âm thầm **vứt bỏ** các dòng đặt 0 xe — sai dữ liệu, không sai build.
     var code = (dto.PoCmdCode ?? "").Trim().ToUpperInvariant();
     if (code.Length < 5)
-        return Results.BadRequest(new { error = "Số lệnh đặt xe phải có ít nhất 5 ký tự." });
+        return Results.BadRequest(new { error = "OrderPOCommandCreate_InvalidPOCommandCode" });
     if (await db.POCommands.AnyAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == code))
-        return Results.BadRequest(new { error = $"Số lệnh {code} đã tồn tại!" });
+        return Results.BadRequest(new { error = "CommonAppData_OrdPOCommandCodeFound" });
 
     // `TableDetailBeBlank`
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.SpecCode)).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Chưa có dòng chi tiết nào." });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "OrderPOCommandCreate_TableDetailBeBlank" });
 
     var now = DateTime.Now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     // #B34 StandardizeMonth (Utils.cs:382-389) tra "yyyy-MM-01", KHONG phai "yyyyMM".
     var orderMonth = now.ToString("yyyy-MM") + "-01";
     var productionMonth = now.AddMonths(1).ToString("yyyy-MM") + "-01";
@@ -92863,31 +92916,32 @@ app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenant
 
         // `InvalidDetailQuantity`: nguồn chặn ÂM, cho phép 0.
         if (l.Quantity < 0)
-            return Results.BadRequest(new { error = $"Spec {spec}: số lượng không hợp lệ.", specCode = spec });
+            return Results.BadRequest(new { error = "OrderPOCommandCreate_InvalidDetailQuantity", specCode = spec });
 
         // `myCommon_CheckSpecCode(..., Flag.Active)` ⇒ lấy ModelCode TỪ MASTER.
         var sp = await db.CarSpecs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SpecCode == spec && x.FlagActive == "1");
-        if (sp is null) return Results.BadRequest(new { error = $"Spec {spec} không tồn tại hoặc đã ngừng hoạt động.", specCode = spec });
+        if (sp is null) return Results.BadRequest(new { error = "CommonAppData_SpecCodeNotFound", specCode = spec });
         var model = sp.ModelCode;
 
         // `myCommon_CheckMatchingModelAndColor` — cặp model–màu phải có trong master màu.
         if (color.Length > 0)
         {
             var okColor = await db.MstCarColors.AnyAsync(x => x.OrgId == t.OrgId && x.ModelCode == model && x.ColorCode == color && x.FlagActive == "1");
-            if (!okColor) return Results.BadRequest(new { error = $"Màu {color} không thuộc model {model}.", specCode = spec, colorCode = color });
+            if (!okColor) return Results.BadRequest(new { error = "CommonAppData_ColorCodeNotFound", specCode = spec, colorCode = color });
         }
 
         // `DuplicateKeyDetail` — khoá NĂM phần của nguồn: |POCommandCode||LCTemp||SpecCode||ModelCode||ColorCode|
         var key = $"|{code}||{lcTemp}||{spec}||{model}||{color}|";
         if (!seen.Add(key))
-            return Results.BadRequest(new { error = $"Dòng trùng khoá (LCTemp/Spec/Model/Màu): {lcTemp}/{spec}/{model}/{color}.", key });
+            return Results.BadRequest(new { error = "OrderPOCommandCreate_DuplicateKeyDetail", key });
 
         built.Add(new POCommandLine
         {
             OrgId = t.OrgId, SpecCode = spec, SpecDesc = sp.SpecDesc,
             ModelCode = model,          // suy ra từ master, KHÔNG lấy input
             ColorCode = color, PortCode = l.PortCode, PlantCode = l.PlantCode,
-            LCTemp = lcTemp, Quantity = l.Quantity
+            LCTemp = lcTemp, Quantity = l.Quantity,
+            LogLUDateTime = l.LogLUDateTime ?? now, LogLUBy = l.LogLUBy ?? who   // #127 #Round127 §12
         });
     }
 
@@ -92895,40 +92949,46 @@ app.MapPost("/api/pocommands", async (POCommandDto dto, AppDbContext db, ITenant
     {
         OrgId = t.OrgId, PoCmdCode = code,
         OrderMonth = orderMonth, ProductionMonth = productionMonth, ExpectedMonth = expectedMonth,
-        CreatedBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system",
+        CreatedBy = who,
         CreatedAt = now,
+        CreatedDate = dto.CreatedDate ?? now, LogLUDateTime = dto.LogLUDateTime ?? now, LogLUBy = dto.LogLUBy ?? who,   // #127 #Round127 §12
         FlagActive = "1", Status = "Draft",
     };
     db.POCommands.Add(o); await db.SaveChangesAsync();
     foreach (var b in built) { b.PoCmdId = o.Id; db.POCommandLines.Add(b); }
     await db.SaveChangesAsync();
     return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.CreatedBy, o.FlagActive,
+        o.CreatedAt, o.CreatedDate, o.LogLUDateTime, o.LogLUBy,   // #127 #Round127 §12
         lines = built.Count, totalQty = built.Sum(l => l.Quantity) });
 }).RequireAuthorization();
 
+// #127 #Round127 POCommands lines
 app.MapGet("/api/pocommands/{no}/lines", async (string no, AppDbContext db, ITenantContext t) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.POCommands.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == no);
-    if (o is null) return Results.NotFound(new { no });
+    if (o is null) return Results.NotFound(new { error = "CommonAppData_OrdPOCommandCodeNotFound", no });
     var lines = await db.POCommandLines.Where(l => l.OrgId == t.OrgId && l.PoCmdId == o.Id)
-        .Select(l => new { l.SpecCode, l.SpecDesc, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.LCTemp, l.Quantity }).ToListAsync();
-    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, o.CreatedAt, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });   // #1400 §12
+        .Select(l => new { l.SpecCode, l.SpecDesc, l.ModelCode, l.ColorCode, l.PortCode, l.PlantCode, l.LCTemp, l.Quantity, l.LogLUDateTime, l.LogLUBy }).ToListAsync();
+    return Results.Ok(new { o.PoCmdCode, o.OrderMonth, o.ProductionMonth, o.ExpectedMonth, o.FlagActive, o.CreatedBy, o.CreatedAt, o.CreatedDate, o.LogLUDateTime, o.LogLUBy, count = lines.Count, lines, totalQty = lines.Sum(x => x.Quantity) });   // #127 #Round127 §12
 }).RequireAuthorization();
 
 // ⚠️ ĐÃ BỎ `/send`: nguồn KHÔNG có bước "gửi hãng" — `Ord_POCommand` không có cột trạng thái nào.
 // 🔴 HUỶ LỆNH — `OrderPOCommandCancel_New20181119` (Biz.HTC.WH.cs:28555-28640): guard
 // `myOrder_CheckPOCommand(..., Flag.Active)` rồi gán `FlagActive = Flag.Inactive` ("0").
 // Đây là **hành động đổi trạng thái DUY NHẤT** của cụm này.
-app.MapPost("/api/pocommands/{no}/cancel", async (string no, AppDbContext db, ITenantContext t) =>
+// #127 #Round127 POCommands cancel
+app.MapPost("/api/pocommands/{no}/cancel", async (string no, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
     no = no.Trim().ToUpperInvariant();
     var o = await db.POCommands.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.PoCmdCode == no);
-    if (o is null) return Results.NotFound(new { no });
-    if (o.FlagActive != "1") return Results.BadRequest(new { error = "Lệnh đặt hàng đã huỷ." });
+    if (o is null) return Results.NotFound(new { error = "CommonAppData_OrdPOCommandCodeNotFound", no });
+    if (o.FlagActive != "1") return Results.BadRequest(new { error = "CommonAppData_OrdPOCommandStatusNotMatched" });
     o.FlagActive = "0";
+    o.LogLUDateTime = DateTime.Now;
+    o.LogLUBy = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     await db.SaveChangesAsync();
-    return Results.Ok(new { o.PoCmdCode, o.FlagActive });
+    return Results.Ok(new { o.PoCmdCode, o.FlagActive, o.LogLUDateTime, o.LogLUBy });
 }).RequireAuthorization();
 
 // ===== Hóa đơn dịch vụ (Ser_Invoice — port 1:1 FrmInvoice) =====
@@ -123082,8 +123142,8 @@ record ServiceInvoiceDto(string RONo, decimal VatPercent, decimal DiscountAmount
     decimal AmountDiscountOther = 0,   // txtAmountDiscountOther — chiết khấu khác (số nguyên >= 0)
     decimal PointTotal = 0,            // txtPointTotal — tổng điểm tích
     string? CardTypeExpect = null);    // txtCardTypeExpect — hạng thẻ dự kiến sau tích
-record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity, string? ModelCode = null, string? LCTemp = null);
-record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null);
+record POCommandLineDto(string SpecCode, string? SpecDesc, string? ColorCode, string? PortCode, string? PlantCode, int Quantity, string? ModelCode = null, string? LCTemp = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record POCommandDto(string? PoCmdCode, List<POCommandLineDto>? Lines, string? OrderMonth = null, string? ProductionMonth = null, string? ExpectedMonth = null, DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record PiLineDto(string SpecCode, string? ModelCode, string? ColorCode, string? PortCode, string? PlantCode, string? WorkOrderNo, int Quantity, decimal UnitPrice, string? LCTemp, string? FlagDelete, string? FlagAutoPL);
 record UncContentDto(string? DealerCode, string? PaymentType, string? PaymentNo, string? GuaranteeType, List<string>? CarIds);   // #B79 - dau vao la BANG Input_CarId cua nguon
 record CarUpdateFlagsDto(string? CarCancelRemark, string? FlagMapVIN, string? FlagEarlyCancel, string? FlagCarDeliveryOrder, string? FlagTestCar);   // #B80
@@ -123167,7 +123227,7 @@ record PackingListVinDto(string Vin, string? CrateType, DateTime? CreatedDate = 
 record StorageTransactionDto(string? Vin, string? RefNo, string? RefType, string? StorageCode, string? StorageCodeTo, DateTime? DTimeFrom, DateTime? DTimeTo, string? Remark);
 record PackingListStorageDto(string? Vin, DateTime? StoreDate, string? StorageCodeCurrent);
 record PackingListDto(string LcNo, string? PortCode, string? PLType, DateTime? ShippingDateStart, DateTime? ShippingDateEndExpected, List<PackingListVinDto>? Vins, string? DeclarationNo = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
-record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins);
+record CtTkhqDto(string DeclarationNo, DateTime? OpenDate, string? PortCode, string? Remark, List<string>? Vins, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, DateTime? TaxPaymentDate = null);
 record CtTkhqTaxRowDto(string? DeclarationNo, DateTime? TaxPaymentDate);
 record CtTkhqTaxDto(List<CtTkhqTaxRowDto>? Rows);
 record CtTkhqDeleteDto(List<string>? DeclarationNos);
@@ -123620,12 +123680,12 @@ record RptAbilitySupplyRowDto(string? ROID, string? RONo, string? PlateNo, strin
 // #1493 — đầu vào upsert chăm sóc khách sinh nhật (Ser_CustomerCareDOB_Create).
 record CustomerCareDobDto(string? CusCareID, DateTime? ContactDate, string? Note);
 // Hợp đồng ngoại / L/C / Proforma Invoice. ContractNo của dòng PI do lệnh ký hợp đồng gán, không nhận từ client.
-record CtContractOverseaCreateDto(string? ContractNo, List<string>? PiRefNos);
+record CtContractOverseaCreateDto(string? ContractNo, List<string>? PiRefNos, DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CtContractOverseaKeyDto(string? ContractNo);
-record CtLcCreateDto(string? LCNo, string? ContractNo, string? BankName);
+record CtLcCreateDto(string? LCNo, string? ContractNo, string? BankName, DateTime? CreatedDate = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CtLcKeyDto(string? LCNo);
-record OrdPiRowDto(string? LCTemp, string? SpecCode, string? ModelCode, string? ColorCode, string? WorkOrderNo, string? PortCode, string? PlantCode, decimal? Quantity);
-record OrdPiCreateDto(string? RefNo, string? ModelCode, string? OrderMonth, string? ProductionMonth, string? ExpectedMonth, string? FlagAutoPL, List<OrdPiRowDto>? Details);
+record OrdPiRowDto(string? LCTemp, string? SpecCode, string? ModelCode, string? ColorCode, string? WorkOrderNo, string? PortCode, string? PlantCode, decimal? Quantity, DateTime? LogLUDateTime = null, string? LogLUBy = null);
+record OrdPiCreateDto(string? RefNo, string? ModelCode, string? OrderMonth, string? ProductionMonth, string? ExpectedMonth, string? FlagAutoPL, List<OrdPiRowDto>? Details, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 // Hoá đơn TCG: khoá dòng = cặp (TCGInvoiceCode, VIN). TInvoicePrice nguồn luôn ghi 0 nên không nhận từ client.
 record TcgInvoiceRowDto(string? VIN, decimal? TCGUnitPrice, decimal? TCGVAT, string? BrandName, string? CarType, DateTime? CustomsClearanceDate, string? InvoiceNoFactory, string? InvoiceFactorySearch, string? ProductionMonth);
 record TcgInvoiceCreateDto(string? TCGInvoiceCode, string? SourceInvoiceCode, string? InvoiceAdjType, string? InvoiceIDType, string? RefNo, string? VAT, string? FlagView, string? TInvoiceCode, string? FlagImport, List<TcgInvoiceRowDto>? Details);

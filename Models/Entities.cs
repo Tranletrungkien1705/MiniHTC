@@ -7805,6 +7805,10 @@ public sealed class POCommand
     public string Status { get; set; } = "Draft";
     public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime? SentAt { get; set; }
+    /// <summary>#Round127 §12: Ord_POCommand.CreatedDate / LogLUDateTime / LogLUBy (DbDefine.cs:279-281).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Dòng lệnh đặt (POCommandDetail): spec + màu + SL + cảng + nhà máy.</summary>
@@ -7823,6 +7827,9 @@ public sealed class POCommandLine
     /// <summary>Mã model (`ModelCode`) — nguồn ghi riêng, tách khỏi `SpecCode`; port cũ thiếu.</summary>
     public string? ModelCode { get; set; }
     public int Quantity { get; set; } = 1;
+    /// <summary>#Round127 §12: Ord_POCommandDetail.LogLUDateTime / LogLUBy (DbDefine.cs:296-297).</summary>
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Proforma Invoice nhập xe (Pi — port 1:1 FrmNewPI/FrmMngPI, TCMotor DMSales.Foton):
@@ -8467,6 +8474,11 @@ public sealed class CtTkhq
     public string? Remark { get; set; }
     public DateTime? TaxPaymentDate { get; set; } // ngày nộp thuế — port FrmMngCT_TKHQ, PHẢI >= OpenDate
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    /// <summary>#Round127 §12: CT_TKHQ.CreatedDate / CreatedBy / LogLUDateTime / LogLUBy (DbDefine.cs:462-463).</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 public sealed class CtTkhqVin
 {
@@ -8474,6 +8486,11 @@ public sealed class CtTkhqVin
     public Guid OrgId { get; set; }
     public long CtTkhqId { get; set; }
     public string Vin { get; set; } = "";
+    /// <summary>#Round127 §12: CT_TKHQ_VIN.CreatedDate / CreatedBy / LogLUDateTime / LogLUBy.</summary>
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Đơn đặt hàng (Sales Order — So) — port 1:1 FrmOrder (DMSales.Foton). Đại lý gửi đơn đặt xe: loại kế hoạch/ngoài KH, hình thức thanh toán, dòng model/số lượng.</summary>
@@ -8864,6 +8881,9 @@ public sealed class CtContractOversea
     public string ContractNo { get; set; } = "";
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public string? CreatedBy { get; set; }
+    /// <summary>#Round127 §12: CT_ContractOversea.LogLUDateTime / LogLUBy (DbDefine.cs:847-848).</summary>
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -8881,6 +8901,9 @@ public sealed class CtLc
     public string? BankName { get; set; }
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public string? CreatedBy { get; set; }
+    /// <summary>#Round127 §12: CT_LC.LogLUDateTime / LogLUBy (DbDefine.cs:855-856).</summary>
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -8904,6 +8927,9 @@ public sealed class OrdPerformanceInvoice
     public string? FlagAutoPL { get; set; }
     public DateTime CreatedDate { get; set; } = DateTime.Now;
     public string? CreatedBy { get; set; }
+    /// <summary>#Round127 §12: Ord_PerformanceInvoice.LogLUDateTime / LogLUBy.</summary>
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
@@ -8929,6 +8955,9 @@ public sealed class OrdPerformanceInvoiceDetail
     public decimal? Quantity { get; set; }
     /// <summary>Do ContractContractOverseaCreate gán xuống, không phải người dùng nhập.</summary>
     public string? ContractNo { get; set; }
+    /// <summary>#Round127 §12: Ord_PerformanceInvoiceDetail.LogLUDateTime / LogLUBy (BizHTC.Contract.cs:1838).</summary>
+    public DateTime LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>
