@@ -1603,6 +1603,20 @@ public sealed class TransportPlan
     public DateTime? TransporterAppDate { get; set; }
     /// <summary>Người của nhà vận chuyển thao tác (`TransporterAppBy`).</summary>
     public string? TransporterAppBy { get; set; }
+    /// <summary>#Round122 §12 — Ngày tạo kế hoạch vận chuyển (CreatedDate, DbDefine.cs:2835).</summary>
+    public DateTime CreatedDate { get; set; } = DateTime.Now;
+    /// <summary>#Round122 §12 — Người tạo kế hoạch vận chuyển (CreatedBy, DbDefine.cs:2836).</summary>
+    public string? CreatedBy { get; set; }
+    /// <summary>#Round122 §12 — Loại kế hoạch vận chuyển (TPType, DbDefine.cs:2834).</summary>
+    public string? TPType { get; set; }
+    /// <summary>#Round122 §12 — Số tham chiếu (RefNo, DbDefine.cs:2844).</summary>
+    public string? RefNo { get; set; }
+    /// <summary>#Round122 §12 — Mã phiên bản xe (SpecCode, DbDefine.cs:2846).</summary>
+    public string? SpecCode { get; set; }
+    /// <summary>#Round122 §12 — Mã màu xe (ColorCode, DbDefine.cs:2848).</summary>
+    public string? ColorCode { get; set; }
+    /// <summary>#Round122 §12 — Cờ VIN thật (FlagRealVin, DbDefine.cs:2843).</summary>
+    public string? FlagRealVin { get; set; }
 }
 
 /// <summary>Yêu cầu vận chuyển thu hồi xe (StoTranspReq/retrieve — port 1:1 FrmNewRetrieveTransReq/FrmMngRetrieveTransReq, Phase2):
@@ -14744,6 +14758,12 @@ public sealed class PmtPayment
     public string? FlagDMS_TCF { get; set; }
     /// <summary>#Round113 §12 — Loại thanh toán TTC hoặc TTBL (PaymentType_TTCORTTBL, DbDefine.cs:1765).</summary>
     public string? PaymentType_TTCORTTBL { get; set; }
+    /// <summary>#Round122 §12 — Thông tin lô gửi ngân hàng (BulkInfo, DbDefine.cs:1759).</summary>
+    public string? BulkInfo { get; set; }
+    /// <summary>#Round122 §12 — Trạng thái map TCF (StatusMapTCF, DbDefine.cs:1762).</summary>
+    public string? StatusMapTCF { get; set; }
+    /// <summary>#Round122 §12 — Số chứng từ kế toán mới (NewAccountingRecordNo, DbDefine.cs:1746).</summary>
+    public string? NewAccountingRecordNo { get; set; }
 }
 
 /// <summary>
@@ -14796,6 +14816,14 @@ public sealed class PmtPaymentDetail
     public decimal? InterestRate { get; set; }
     /// <summary>#Round113 §12 — Mã ngân hàng bảo lãnh (PMGBankCode, DbDefine.cs:1786).</summary>
     public string? PMGBankCode { get; set; }
+    /// <summary>#Round122 §12 — Tổng tiền luỹ kế (AmountAccum/PMPDAMOUNTTOTAL, DbDefine.cs:1777).</summary>
+    public decimal? AmountAccum { get; set; }
+    /// <summary>#Round122 §12 — Phần trăm luỹ kế (PercentAccum/PMT_PERCENT_ACCUM, DbDefine.cs:1779).</summary>
+    public decimal? PercentAccum { get; set; }
+    /// <summary>#Round122 §12 — Tổng tiền thanh toán dòng (AmountTotal/PMT_AMOUNT_TOTAL, DbDefine.cs:1782).</summary>
+    public decimal? AmountTotal { get; set; }
+    /// <summary>#Round122 §12 — Phần trăm thanh toán tổng (PaymentTotalPercent, DbDefine.cs:1784).</summary>
+    public decimal? PaymentTotalPercent { get; set; }
 }
 
 /// <summary>
@@ -16189,6 +16217,10 @@ public sealed class TranspDlvConfirm
     // ===== #170b nhat ky sua cuoi (LogLU*) — nguon ghi cap nay o moi buoc ghi =====
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    /// <summary>#Round122 §12 — Số lệnh giao xe (DeliveryOrderNo, DbDefine.cs:2340).</summary>
+    public string? DeliveryOrderNo { get; set; }
+    /// <summary>#Round122 §12 — Người tạo biên bản (CreatedBy, DbDefine.cs:2228).</summary>
+    public string? CreatedBy { get; set; }
 }
 
 /// <summary>
