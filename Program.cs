@@ -62936,7 +62936,11 @@ app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string
     var skip = recordStart is > 0 ? recordStart!.Value : 0;
     var take = recordCount is > 0 and <= 500 ? recordCount!.Value : 500;
     var items = await qry.OrderBy(x => x.ModelCode).Skip(skip).Take(take)
-        .Select(x => new { x.ModelCode, x.ModelName, x.SegmentType, x.FlagActive, x.Remark, x.UpdatedAt }).ToListAsync();   // #1246 §12
+        .Select(x => new
+        {
+            x.ModelCode, x.ModelName, x.SegmentType, x.FlagActive, x.Remark,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt
+        }).ToListAsync();   // #1246 §12
     return Results.Ok(new
     {
         count = items.Count, total, skip, take, items,
@@ -62953,57 +62957,78 @@ app.MapGet("/api/carmodelstds", async (AppDbContext db, ITenantContext t, string
     });
 }).RequireAuthorization();
 
-// ===== 🔴🔴🔴 #727 ĐỐI CHIẾU BA HÀM GHI `Mst_CarModelStd_Add/_Update/_Delete` — VÒNG PARITY =====
-// `Tab/BizCarSv.Tab.cs` — `_Add` :3390-3644 md5 `e1c01163` · `_Update` :3646-3902 md5 `ef9c6a15` ·
-// `_Delete` :3904-4084 md5 `99247c02`. BƯỚC 2: route `/api/carmodelstds` **đã có** từ #678 (bản `_Get_WH`)
-// nhưng **ba hàm GHI thì chưa từng được đọc** ⇒ vá vào endpoint sẵn có, **KHÔNG tính màn mới**.
-// Đối chiếu cặp create/update theo luật #404 — và lệch ở **ba** điểm, điểm đầu là lỗi dữ liệu thật.
-//
-// 🔴🔴🔴 **`ModelName` VÀ `Remark` BỊ VIẾT HOA KHI **SỬA** NHƯNG GIỮ NGUYÊN KHI **THÊM****:
-//   · `_Add`:    `strModelName = string.Format("{0}", objModelName).**Trim()**;`        ⇒ giữ nguyên chữ
-//   · `_Update`: `strModelName = SqlUtils.**StandardizeParam**(objModelName);`          ⇒ `.Trim().**ToUpper()**`
-//   Đã mở định nghĩa (**cả hai** bản đều giống nhau: `CommonUtils/DataUtils.cs:1200` và `TERP.Utils/Utils.cs:222`
-//   ⇒ `return Convert.ToString(objParam).Trim().ToUpper();`).
-//   ⇒ Thêm *"Santa Fe"* thì lưu **"Santa Fe"**; sau đó **sửa bất kỳ trường nào** ⇒ `ModelName` thành **"SANTA FE"**
-//     và `Remark` (câu ghi chú tiếng Việt) **cũng bị viết hoa toàn bộ**.
-//   ⇒ **Mất dữ liệu hiển thị, im lặng, do chính thao tác sửa** — người dùng không hề đụng vào ô đó.
-//   ⚪ `ModelCode` thì **cả hai** hàm đều dùng `StandardizeParam` ⇒ **nhất quán** (mã vốn nên viết hoa).
-//   📌 Đây là mặt trái của họ "chuẩn hoá không đồng đều" đã gặp ở #718 (khối `.Trim()` bị comment) và #726
-//     (`VINCode` có `.Trim()`, hai cột kia không) — nhưng nặng hơn vì nó **biến đổi** dữ liệu chứ không chỉ bỏ sót.
-// 🔴🔴 **#404 — SỐ GUARD LỆCH HẲN GIỮA BA HÀM** (đếm `CMyException.Raise`): `_Add` = **2** · `_Update` = **1** ·
-//   `_Delete` = **0**.
-//   · `_Add`: kiểm `ModelCode` rỗng **và** `ModelName` rỗng, rồi `CheckDB(Flag.**No**)` = **không được tồn tại**.
-//   · `_Update`: **chỉ** kiểm `ModelName` rỗng, rồi `CheckDB(Flag.**Yes**)` = **phải tồn tại**.
-//     ⚪ `ModelCode` rỗng **không lọt**: `CheckDB(Flag.Yes)` sẽ không tìm thấy ⇒ ném *NotFound*. **Tình cờ an toàn**,
-//       chỉ khác **thông điệp** (đúng khuôn đã ghi ở #689 cho `Mst_BOM`).
-//   · `_Delete`: **không có validate riêng nào**, chỉ `CheckDB(Flag.Yes)` với `strFlagActiveListToCheck = ""`
-//     ⇒ **xoá được cả bản ghi đang ngưng hoạt động lẫn đang hoạt động**, không phân biệt.
-// 🔴 **`_Update` NHẬN THÊM `objFt_Cols_Upd`** (danh sách cột được phép cập nhật) mà `_Add` không có — cùng khuôn
-//   "chỉ ghi cột được chỉ định" đã thấy ở #714 (`alEffectiveColumn`). `_Update` cũng nhận thêm `objFlagActive`
-//   ⇒ **chỉ sửa mới đổi được trạng thái hoạt động**, giống hệt kết luận #715 cho `ProcessCustomer*`.
-// ⚪ **ÂM TÍNH — khối `dsData` bị comment trong `_Update`** (`//DataSet dsData = TUtils.CUtils.StdDS(...)` …)
-//   là **tàn dư**, không phải tính năng bị tắt: đếm `dsData` trong toàn hàm = chỉ các dòng đã comment.
-app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
+app.MapGet("/api/carmodelstds/{code}", async (string code, AppDbContext db, ITenantContext t) =>
 {
+    code = code.Trim().ToUpperInvariant();
+    var row = await db.CarModelStds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_CarModelStd_CheckDB_ModelCodeNotFound", modelCode = code });
+    return Results.Ok(new
+    {
+        row.Id, row.ModelCode, row.ModelName, row.SegmentType, row.FlagActive, row.Remark,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/carmodelstds", async (CarModelStdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
     var code = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
-    if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Mã model trống!" });
-    if (string.IsNullOrWhiteSpace((dto.ModelName ?? "").Trim())) return Results.BadRequest(new { error = "Tên model trống!" });
+    if (string.IsNullOrWhiteSpace(code))
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_CarModelStd_Create_InvalidModelCode", message = "Mã model trống!" });
+    if (string.IsNullOrWhiteSpace((dto.ModelName ?? "").Trim()))
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_CarModelStd_Create_InvalidModelName", message = "Tên model trống!" });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Cờ hoạt động không hợp lệ." });
+
     var row = await db.CarModelStds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
     var isNew = row is null;
-    if (isNew) { row = new CarModelStd { OrgId = t.OrgId, ModelCode = code }; db.CarModelStds.Add(row); }
-    // #427 ĐÍNH CHÍNH #1187: `Mst_CarModelStd_Update` (Tab/BizCarSv.Tab.cs:3646) stage `strRemark` vào temp
-    //   table nhưng KHÔNG đưa vào `zzB_Update_Mst_CarModelStd_ClauseSet_zzE` (SET chỉ có ModelName có điều
-    //   kiện `bUpd_ModelName` + FlagActive có điều kiện `bUpd_FlagActive` + LogLU*) ⇒ sửa KHÔNG BAO GIỜ ghi
-    //   Remark, dù client gửi gì. `_Add` (:3390) THÌ CÓ ghi Remark (insert liệt kê cột `Remark`, chỉ `.Trim()`,
-    //   KHÔNG ToUpper). Caller WinForm (`MstCarModelStdService.Mst_CarModelStd_Update`) hard-code
-    //   `strFtColUpd` LUÔN gồm cả `ModelName` + `FlagActive` ⇒ hai cột đó LUÔN được cập nhật trong thực tế.
-    //   #1187 đã SAI khi bịa thêm nhánh ghi Remark lúc sửa — port lại đúng: chỉ ghi khi TẠO, không đụng lúc sửa.
-    row!.ModelName = isNew ? dto.ModelName?.Trim() : dto.ModelName?.Trim().ToUpperInvariant();
-    row.FlagActive = dto.FlagActive ?? "1"; row.UpdatedAt = DateTime.Now;
-    if (dto.SegmentType != null) row.SegmentType = dto.SegmentType.Trim();
-    if (isNew) row.Remark = dto.Remark?.Trim();
+    if (!isNew)
+    {
+        return Results.Conflict(new { error = "ErrCarSv.Mst_CarModelStd_CheckDB_ModelCodeExist", modelCode = code });
+    }
+
+    row = new CarModelStd
+    {
+        OrgId = t.OrgId,
+        ModelCode = code,
+        ModelName = dto.ModelName?.Trim(),
+        Remark = dto.Remark?.Trim(),
+        SegmentType = dto.SegmentType?.Trim(),
+        FlagActive = dto.FlagActive ?? "1",
+        CreatedDate = now,
+        CreatedBy = who,
+        LogLUDateTime = now,
+        LogLUBy = who,
+        CreatedAt = now,
+        UpdatedAt = now
+    };
+    db.CarModelStds.Add(row);
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.ModelCode, row.ModelName, row.SegmentType, row.FlagActive, isNew });
+    return Results.Ok(new
+    {
+        row.Id, row.ModelCode, row.ModelName, row.SegmentType, row.FlagActive, row.Remark,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt,
+        isNew = true
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/carmodelstds/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    code = code.Trim().ToUpperInvariant();
+    var row = await db.CarModelStds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_CarModelStd_CheckDB_ModelCodeNotFound", modelCode = code });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1";
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        row.ModelCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt
+    });
 }).RequireAuthorization();
 
 // #727 `Mst_CarModelStd_Delete` (`:3904`): **0** guard riêng; `CheckDB(Flag.Yes, strFlagActiveListToCheck = "")`
@@ -63012,7 +63037,7 @@ app.MapDelete("/api/carmodelstds/{code}", async (string code, AppDbContext db, I
 {
     code = code.Trim().ToUpperInvariant();
     var row = await db.CarModelStds.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
-    if (row is null) return Results.NotFound(new { code });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_CarModelStd_CheckDB_ModelCodeNotFound", modelCode = code });
     db.CarModelStds.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code });
@@ -65148,20 +65173,31 @@ app.MapPut("/api/cavities/{code}", async (string code, CavityUpdateDto dto, AppD
     var no = code.Trim().ToUpperInvariant();
     var dl = dealerCode?.Trim().ToUpperInvariant();
     var c = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == no && (dl == null || x.DealerCode == dl));
-    if (c is null) return Results.NotFound(new { code = no });
+    if (c is null) return Results.NotFound(new { error = "ErrCarSv.Ser_CavityNo_NotFound", cavityNo = no });
 
-    c.CavityName = dto.CavityName; c.CavityType = dto.CavityType;
-    c.DealerCode = dto.DealerCode?.Trim().ToUpperInvariant();
+    if (dto.CavityName != null) c.CavityName = dto.CavityName;
+    if (dto.CavityType != null) c.CavityType = dto.CavityType;
+    if (!string.IsNullOrWhiteSpace(dto.DealerCode)) c.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
     // Nguồn chỉ ghi Note/IsActive/Status khi tham số KHÁC RỖNG (xem Ser_CavityCreate:12813-12827).
     if (!string.IsNullOrWhiteSpace(dto.Note)) c.Note = dto.Note;
     if (!string.IsNullOrWhiteSpace(dto.IsActive)) c.FlagActive = dto.IsActive!.Trim();
     if (!string.IsNullOrWhiteSpace(dto.Status)) c.Status = dto.Status!.Trim();
-    c.StartUseDate = dto.StartUseDate; c.FinishUseDate = dto.FinishUseDate;
+    if (dto.StartUseDate != null) c.StartUseDate = dto.StartUseDate;
+    if (dto.FinishUseDate != null) c.FinishUseDate = dto.FinishUseDate;
     // #1102 SỬA BUG THẬT: nguồn `Ser_CavityUpdate` (Service.cs:13672) ghi LogLUBy = strPartnerUserCode
     // (actor server) — port cũ nhận thẳng dto.LogLUBy tự client gửi. Đổi sang partnerUserCode đúng quy ước.
-    c.LogLUDateTime = DateTime.Now; c.LogLUBy = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    c.LogLUDateTime = now;
+    c.LogLUBy = (partnerUserCode ?? "system").Trim();
+    c.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { c.CavityNo, c.Status, c.FlagActive, c.StartUseDate, c.FinishUseDate });
+    return Results.Ok(new
+    {
+        c.Id, c.CavityNo, c.DealerCode, c.CavityName, c.CavityType, c.CompartmentType, c.Status,
+        c.StartUseDate, c.FinishUseDate, c.Note, c.FlagActive,
+        c.CreatedDate, c.CreatedBy, c.LogLUDateTime, c.LogLUBy, c.CreatedAt, c.UpdatedAt,
+        updated = true
+    });
 }).RequireAuthorization();
 
 app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q, string? compartment, string? active) =>
@@ -65172,10 +65208,38 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
     if (!string.IsNullOrWhiteSpace(active)) query = query.Where(x => x.FlagActive == active);
     var items = await query.OrderBy(x => x.CavityNo).Take(500)
         // #296 §12: cột bổ sung có mặt ở CẢ GET lẫn POST
-        .Select(x => new { x.CavityNo, x.CavityName, x.CompartmentType, x.StartUseDate, x.FinishUseDate, x.Note, x.FlagActive,
-            x.DealerCode, x.CavityType, x.Status,  
-            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy }).ToListAsync();   // #1476: nguồn Ser_CavityGet SELECT ca.* ⇒ echo đủ cột (POST đã ghi #1047, GET chưa echo)
+        .Select(x => new { x.Id, x.CavityNo, x.CavityName, x.CompartmentType, x.StartUseDate, x.FinishUseDate, x.Note, x.FlagActive,
+            x.DealerCode, x.CavityType, x.Status,
+            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt }).ToListAsync();   // #1476: nguồn Ser_CavityGet SELECT ca.* ⇒ echo đủ cột (POST đã ghi #1047, GET chưa echo)
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/cavities/{code}", async (string code, AppDbContext db, ITenantContext t, string? dealerCode) =>
+{
+    var no = code.Trim().ToUpperInvariant();
+    var dl = dealerCode?.Trim().ToUpperInvariant();
+    var x = await db.Cavities.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CavityNo == no && (dl == null || c.DealerCode == dl));
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_CavityNo_NotFound", cavityNo = no });
+    return Results.Ok(new
+    {
+        x.Id, x.CavityNo, x.CavityName, x.CompartmentType, x.StartUseDate, x.FinishUseDate, x.Note, x.FlagActive,
+        x.DealerCode, x.CavityType, x.Status,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/cavities/{dealerCode}/{code}", async (string dealerCode, string code, AppDbContext db, ITenantContext t) =>
+{
+    var no = code.Trim().ToUpperInvariant();
+    var dl = dealerCode.Trim().ToUpperInvariant();
+    var x = await db.Cavities.FirstOrDefaultAsync(c => c.OrgId == t.OrgId && c.CavityNo == no && c.DealerCode == dl);
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_CavityNo_NotFound", dealerCode = dl, cavityNo = no });
+    return Results.Ok(new
+    {
+        x.Id, x.CavityNo, x.CavityName, x.CompartmentType, x.StartUseDate, x.FinishUseDate, x.Note, x.FlagActive,
+        x.DealerCode, x.CavityType, x.Status,
+        x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.CreatedAt, x.UpdatedAt
+    });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #945 companion-scan (#400/#401 mở rộng CheckExist*): `CheckCavityFieldEmpty`/`CheckExistCavityNo`
@@ -65188,52 +65252,84 @@ app.MapGet("/api/cavities", async (AppDbContext db, ITenantContext t, string? q,
 // (Update, đã port đúng ở #296) đã set `DealerCode` — bất đối xứng Create/Update (luật #404).
 app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.CavityNo)) return Results.BadRequest(new { error = "Ser_Cavity_CavityNoEmpty" });
-    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Ser_Engineer_DealerEmpty" });
-    if (string.IsNullOrWhiteSpace(dto.CavityName)) return Results.BadRequest(new { error = "Chưa nhập tên khoang." });
+    if (string.IsNullOrWhiteSpace(dto.CavityNo)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Cavity_CavityNoEmpty", message = "Chưa nhập mã khoang." });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Cavity_DealerEmpty", message = "Chưa có mã đại lý." });
+    if (string.IsNullOrWhiteSpace(dto.CavityName)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Cavity_CavityNameEmpty", message = "Chưa nhập tên khoang." });
+    if (!string.IsNullOrWhiteSpace(dto.IsActive) && dto.IsActive != "0" && dto.IsActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Cờ hoạt động không hợp lệ." });
     // #249: `FrmCavityCreate.cs:93` `regex.IsMatch(txtCavityNo.Text)`
     if (HasSpecialChar(dto.CavityNo!.Trim()))
         return Results.BadRequest(new { error = "Mã khoang không được phép chứa các ký tự đặc biệt" });
     var code = dto.CavityNo.Trim().ToUpperInvariant();
     var dl = dto.DealerCode!.Trim().ToUpperInvariant();
     var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code && x.DealerCode == dl);
+    var now = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
     if (ex is not null)
     {
         // #1005: nguon Ser_CavityCreate ghi CavityType VO DIEU KIEN + Status (khi khac rong) + StartUseDate/
         // FinishUseDate (LUON, null neu rong) — DTO da co san tu #296 nhung nhanh POST nay chua tung doc.
-        ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate; ex.Note = dto.Note; ex.FlagActive = "1";
+        ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate; ex.Note = dto.Note;
+        ex.FlagActive = dto.IsActive ?? "1";
         ex.CavityType = dto.CavityType;
         if (!string.IsNullOrWhiteSpace(dto.Status)) ex.Status = dto.Status;
         ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate;
         // #1124 cùng luật #1102 (Ser_CavityUpdate luôn ghi LogLUDateTime/LogLUBy = strPartnerUserCode khi
         // sửa khoang) — nhánh nâng cấp lại (upsert khi đã tồn tại) trong CHÍNH endpoint tạo này thực chất
         // là một lượt SỬA, nhưng chưa từng ghi 2 cột nhật ký.
-        ex.LogLUDateTime = DateTime.Now; ex.LogLUBy = (partnerUserCode ?? "system").Trim();
+        ex.LogLUDateTime = now; ex.LogLUBy = by; ex.UpdatedAt = now;
         await db.SaveChangesAsync();
-        return Results.Ok(new { ex.CavityNo, ex.DealerCode, updated = true });
+        return Results.Ok(new
+        {
+            ex.Id, ex.CavityNo, ex.DealerCode, ex.CavityName, ex.CavityType, ex.CompartmentType, ex.Status,
+            ex.StartUseDate, ex.FinishUseDate, ex.Note, ex.FlagActive,
+            ex.CreatedDate, ex.CreatedBy, ex.LogLUDateTime, ex.LogLUBy, ex.CreatedAt, ex.UpdatedAt,
+            updated = true
+        });
     }
     // #1047: nguồn `Ser_CavityCreate` ghi VÔ ĐIỀU KIỆN CreatedDate/CreatedBy/LogLUDateTime/LogLUBy
     // cùng giá trị strTDate/strPartnerUserCode lúc TẠO — thiếu hẳn ở port cũ.
-    var by = (partnerUserCode ?? "system").Trim();
-    var now = DateTime.Now;
-    var r = new Cavity { OrgId = t.OrgId, CavityNo = code, DealerCode = dl, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType, StartUseDate = dto.StartUseDate, FinishUseDate = dto.FinishUseDate, Note = dto.Note, FlagActive = "1",
+    var r = new Cavity
+    {
+        OrgId = t.OrgId, CavityNo = code, DealerCode = dl, CavityName = dto.CavityName, CompartmentType = dto.CompartmentType,
+        StartUseDate = dto.StartUseDate, FinishUseDate = dto.FinishUseDate, Note = dto.Note, FlagActive = dto.IsActive ?? "1",
         CavityType = dto.CavityType, Status = dto.Status,   // #1005
-        CreatedDate = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by };   // #1047
+        CreatedDate = now, CreatedBy = by, LogLUDateTime = now, LogLUBy = by,
+        CreatedAt = now, UpdatedAt = now
+    };   // #1047
     db.Cavities.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.CavityNo, r.DealerCode, updated = false });
+    return Results.Ok(new
+    {
+        r.Id, r.CavityNo, r.DealerCode, r.CavityName, r.CavityType, r.CompartmentType, r.Status,
+        r.StartUseDate, r.FinishUseDate, r.Note, r.FlagActive,
+        r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, r.CreatedAt, r.UpdatedAt,
+        updated = false
+    });
 }).RequireAuthorization();
 
 app.MapPost("/api/cavities/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.Cavities.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.CavityNo == code);
-    if (x is null) return Results.NotFound(new { code });
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_CavityNo_NotFound", cavityNo = code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
     // #1206 SUA BUG THAT: nhat quan voi POST cung bang (#1102/#1124, Ser_CavityUpdate luon ghi
     // LogLUDateTime/LogLUBy khi sua khoang) — toggle truoc do khong dong dau cot nao.
-    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim();
+    var now = DateTime.Now;
+    var by = (partnerUserCode ?? "system").Trim();
+    x.LogLUDateTime = now; x.LogLUBy = by; x.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.CavityNo, flagActive = x.FlagActive });
+    return Results.Ok(new { x.CavityNo, flagActive = x.FlagActive, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapDelete("/api/cavities/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var no = code.Trim().ToUpperInvariant();
+    var c = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == no);
+    if (c is null) return Results.NotFound(new { error = "ErrCarSv.Ser_CavityNo_NotFound", cavityNo = no });
+    db.Cavities.Remove(c);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = no });
 }).RequireAuthorization();
 
 // ===== #145 Cấp bảo dưỡng theo mốc km (MaintenanceLevelMst — port 1:1 FrmMstMaintenanceLevelMng, TCMotor) =====
@@ -96452,9 +96548,38 @@ app.MapGet("/api/grouprepairs", async (AppDbContext db, ITenantContext t, long? 
         .Select(g => new
         {
             GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.DealerCode, g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy,
+            g.CreatedAt, g.UpdatedAt,
             engineers = db.ServiceEngineers.Count(e => e.OrgId == t.OrgId && e.GroupRID == g.Id)   // #421
         }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/grouprepairs/{groupRID:long}", async (long groupRID, AppDbContext db, ITenantContext t) =>
+{
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == groupRID);
+    if (g is null) return Results.NotFound(new { error = "ErrCarSv.Ser_GroupRepairNo_NotFound", groupRID });
+    var engineers = await db.ServiceEngineers.CountAsync(e => e.OrgId == t.OrgId && e.GroupRID == g.Id);
+    return Results.Ok(new
+    {
+        GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.DealerCode,
+        g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy, g.CreatedAt, g.UpdatedAt,
+        engineers
+    });
+}).RequireAuthorization();
+
+app.MapGet("/api/grouprepairs/{dealerCode}/{groupRNo}", async (string dealerCode, string groupRNo, AppDbContext db, ITenantContext t) =>
+{
+    var dl = dealerCode.Trim().ToUpperInvariant();
+    var no = groupRNo.Trim().ToUpperInvariant();
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.DealerCode == dl && x.GroupRNo == no);
+    if (g is null) return Results.NotFound(new { error = "ErrCarSv.Ser_GroupRepairNo_NotFound", dealerCode = dl, groupRNo = no });
+    var engineers = await db.ServiceEngineers.CountAsync(e => e.OrgId == t.OrgId && e.GroupRID == g.Id);
+    return Results.Ok(new
+    {
+        GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.Note, g.IsActive, g.DealerCode,
+        g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy, g.CreatedAt, g.UpdatedAt,
+        engineers
+    });
 }).RequireAuthorization();
 
 // Create (GroupRID rỗng) hoặc Update (có GroupRID) — giữ một route như port cũ.
@@ -96469,12 +96594,14 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
     if (dto.GroupRID is not null)
     {
         g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == dto.GroupRID);
-        if (g is null) return Results.BadRequest(new { error = $"Không tìm thấy nhóm sửa chữa GroupRID={dto.GroupRID}.", code = "Ser_GroupRepair_NotExist" });
+        if (g is null) return Results.NotFound(new { error = "ErrCarSv.Ser_GroupRepairNo_NotFound", groupRID = dto.GroupRID });
     }
     // CheckGroupRFieldEmpty
-    if (no.Length == 0) return Results.BadRequest(new { error = "Chưa nhập mã nhóm sửa chữa.", code = "Ser_GroupRepair_GroupRepairNoEmpty" });
-    if (dealer.Length == 0) return Results.BadRequest(new { error = "Chưa có mã đại lý.", code = "Ser_GroupRepair_DealerEmpty" });
-    if (name.Length == 0) return Results.BadRequest(new { error = "Chưa nhập tên nhóm sửa chữa.", code = "Ser_GroupRepair_GroupRepairNameEmpty" });
+    if (no.Length == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_GroupRepair_GroupRepairNoEmpty", message = "Chưa nhập mã nhóm sửa chữa." });
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_GroupRepair_DealerEmpty", message = "Chưa có mã đại lý." });
+    if (name.Length == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_GroupRepair_GroupRepairNameEmpty", message = "Chưa nhập tên nhóm sửa chữa." });
+    if (!string.IsNullOrWhiteSpace(dto.IsActive) && dto.IsActive != "0" && dto.IsActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Trạng thái không hợp lệ." });
     // #249 (session-a) FrmGroupRepairCreate.cs:92 regex ký tự đặc biệt.
     if (HasSpecialChar(no)) return Results.BadRequest(new { error = "Mã nhóm sửa chữa không được phép chứa các ký tự đặc biệt" });
     var noUp = no.ToUpperInvariant();
@@ -96482,12 +96609,13 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
     {
         // CheckExistGroupRNo — so khớp nguyên văn GroupRNo + DealerCode (không xét IsActive)
         if (await db.GroupRepairs.AnyAsync(x => x.OrgId == t.OrgId && x.GroupRNo == noUp && x.DealerCode == dealer))
-            return Results.BadRequest(new { error = $"Mã nhóm {noUp} đã tồn tại ở đại lý {dealer}.", code = "Ser_GroupRepairNo_Exist" });
+            return Results.Conflict(new { error = "ErrCarSv.Ser_GroupRepairNo_Exist", message = $"Mã nhóm {noUp} đã tồn tại ở đại lý {dealer}." });
         g = new GroupRepair
         {
             OrgId = t.OrgId, DealerCode = dealer, GroupRNo = noUp, GroupRName = name,
-            Note = string.IsNullOrEmpty(dto.Note) ? null : dto.Note, IsActive = string.IsNullOrEmpty(dto.IsActive) ? null : dto.IsActive,
-            CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who
+            Note = string.IsNullOrEmpty(dto.Note) ? null : dto.Note, IsActive = string.IsNullOrEmpty(dto.IsActive) ? "1" : dto.IsActive,
+            CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who,
+            CreatedAt = now, UpdatedAt = now
         };
         db.GroupRepairs.Add(g);
     }
@@ -96495,19 +96623,79 @@ app.MapPost("/api/grouprepairs", async (GroupRepairDto dto, AppDbContext db, ITe
     {
         // CheckExistGroupRNoModify — trùng với nhóm KHÁC đang hoạt động
         if (await db.GroupRepairs.AnyAsync(x => x.OrgId == t.OrgId && x.GroupRNo == noUp && x.DealerCode == dealer && x.Id != g.Id && x.IsActive == "1"))
-            return Results.BadRequest(new { error = $"Mã nhóm {noUp} đã tồn tại ở đại lý {dealer}.", code = "Ser_GroupRepairNo_Exist" });
+            return Results.Conflict(new { error = "ErrCarSv.Ser_GroupRepairNo_Exist", message = $"Mã nhóm {noUp} đã tồn tại ở đại lý {dealer}." });
         g.DealerCode = dealer; g.GroupRNo = noUp; g.GroupRName = name; g.Note = dto.Note;
         g.IsActive = string.IsNullOrEmpty(dto.IsActive) ? null : dto.IsActive;
-        g.LogLUDateTime = now; g.LogLUBy = who;
+        g.LogLUDateTime = now; g.LogLUBy = who; g.UpdatedAt = now;
     }
     await db.SaveChangesAsync();
-    return Results.Ok(new { GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.DealerCode, g.IsActive });
+    return Results.Ok(new
+    {
+        GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.DealerCode, g.Note, g.IsActive,
+        g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy, g.CreatedAt, g.UpdatedAt
+    });
+}).RequireAuthorization();
+
+app.MapPut("/api/grouprepairs/{groupRID:long}", async (long groupRID, GroupRepairDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == groupRID);
+    if (g is null) return Results.NotFound(new { error = "ErrCarSv.Ser_GroupRepairNo_NotFound", groupRID });
+
+    var no = (dto.GroupRNo ?? g.GroupRNo).Trim();
+    var dealer = (dto.DealerCode ?? g.DealerCode ?? "").Trim();
+    var name = (dto.GroupRName ?? g.GroupRName).Trim();
+    if (no.Length == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_GroupRepair_GroupRepairNoEmpty", message = "Chưa nhập mã nhóm sửa chữa." });
+    if (dealer.Length == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_GroupRepair_DealerEmpty", message = "Chưa có mã đại lý." });
+    if (name.Length == 0) return Results.BadRequest(new { error = "ErrCarSv.Ser_GroupRepair_GroupRepairNameEmpty", message = "Chưa nhập tên nhóm sửa chữa." });
+    if (!string.IsNullOrWhiteSpace(dto.IsActive) && dto.IsActive != "0" && dto.IsActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Trạng thái không hợp lệ." });
+    var noUp = no.ToUpperInvariant();
+
+    if (await db.GroupRepairs.AnyAsync(x => x.OrgId == t.OrgId && x.GroupRNo == noUp && x.DealerCode == dealer && x.Id != g.Id && x.IsActive == "1"))
+        return Results.Conflict(new { error = "ErrCarSv.Ser_GroupRepairNo_Exist", message = $"Mã nhóm {noUp} đã tồn tại ở đại lý {dealer}." });
+
+    g.DealerCode = dealer; g.GroupRNo = noUp; g.GroupRName = name;
+    if (dto.Note != null) g.Note = dto.Note;
+    if (!string.IsNullOrWhiteSpace(dto.IsActive)) g.IsActive = dto.IsActive;
+    g.LogLUDateTime = now; g.LogLUBy = who; g.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        GroupRID = g.Id, g.GroupRNo, g.GroupRName, g.DealerCode, g.Note, g.IsActive,
+        g.CreatedDate, g.CreatedBy, g.LogLUDateTime, g.LogLUBy, g.CreatedAt, g.UpdatedAt
+    });
+}).RequireAuthorization();
+
+app.MapPost("/api/grouprepairs/{groupRID:long}/toggle", async (long groupRID, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == groupRID);
+    if (g is null) return Results.NotFound(new { error = "ErrCarSv.Ser_GroupRepairNo_NotFound", groupRID });
+    g.IsActive = g.IsActive == "1" ? "0" : "1";
+    g.LogLUDateTime = now; g.LogLUBy = who; g.UpdatedAt = now;
+    await db.SaveChangesAsync();
+    return Results.Ok(new
+    {
+        GroupRID = g.Id, g.GroupRNo, g.IsActive, g.LogLUDateTime, g.LogLUBy, g.UpdatedAt
+    });
+}).RequireAuthorization();
+
+app.MapDelete("/api/grouprepairs/{groupRID:long}", async (long groupRID, AppDbContext db, ITenantContext t) =>
+{
+    var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == groupRID);
+    if (g is null) return Results.NotFound(new { error = "ErrCarSv.Ser_GroupRepairNo_NotFound", groupRID });
+    db.GroupRepairs.Remove(g);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = groupRID });
 }).RequireAuthorization();
 
 app.MapPost("/api/grouprepairs/{groupRID:long}/delete", async (long groupRID, AppDbContext db, ITenantContext t) =>
 {
     var g = await db.GroupRepairs.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == groupRID);
-    if (g is null) return Results.BadRequest(new { error = $"Không tìm thấy nhóm sửa chữa GroupRID={groupRID}.", code = "Ser_GroupRepair_NotExist" });
+    if (g is null) return Results.NotFound(new { error = "ErrCarSv.Ser_GroupRepairNo_NotFound", groupRID });
     db.GroupRepairs.Remove(g);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = groupRID });
@@ -96983,8 +97171,10 @@ app.MapPost("/api/reqpartprices", async (ReqPartPriceDto dto, AppDbContext db, I
 }).RequireAuthorization();
 
 // #727 `Mst_CarModelStd_Update` (`:3646`) — port 1:1 kể cả việc **viết hoa** `ModelName`/`Remark`.
-app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, AppDbContext db, ITenantContext t) =>
+app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
 {
+    var who = user.Identity?.Name ?? "system";
+    var now = DateTime.Now;
     // Nguồn: SqlUtils.StandardizeParam(x) == Convert.ToString(x).Trim().ToUpper()
     static string StandardizeParam(object? v) => Convert.ToString(v ?? "")!.Trim().ToUpperInvariant();
 
@@ -96993,14 +97183,16 @@ app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, A
 
     // Nguồn `_Update` CHỈ kiểm ModelName rỗng (không kiểm ModelCode rỗng — CheckDB bắt hộ).
     if (modelName.Length == 0)
-        return Results.BadRequest(new { error = "ErrCarSv.Mst_CarModelStd_Update_InvalidModelName" });
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_CarModelStd_Update_InvalidModelName", message = "Tên model không hợp lệ." });
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "Cờ hoạt động không hợp lệ." });
 
     var row = await db.CarModelStds.Where(x => x.OrgId == t.OrgId && x.ModelCode == modelCode)
         .OrderBy(x => x.Id).FirstOrDefaultAsync();
     if (row is null)
-        return Results.BadRequest(new
+        return Results.NotFound(new
         {
-            error = "ErrCarSv.Mst_CarModelStd_NotFound", modelCode,
+            error = "ErrCarSv.Mst_CarModelStd_CheckDB_ModelCodeNotFound", modelCode,
             emptyModelCodeIsCaughtHereNotByItsOwnGuard = modelCode.Length == 0,
         });
 
@@ -97009,17 +97201,17 @@ app.MapPut("/api/carmodelstds/{code}", async (string code, CarModelStdDto dto, A
         && string.Equals(row.ModelName, modelName, StringComparison.OrdinalIgnoreCase);
 
     row.ModelName = modelName;
-    // #427 ĐÍNH CHÍNH #727: `strRemark` CÓ được stage vào `#input_Mst_CarModelStd` nhưng
-    //   `zzB_Update_Mst_CarModelStd_ClauseSet_zzE` (câu SET thật) chỉ gồm LogLU* + ModelName (có điều kiện
-    //   `bUpd_ModelName`) + FlagActive (có điều kiện `bUpd_FlagActive`) — KHÔNG có `t.Remark = f.Remark`
-    //   ⇒ `_Update` KHÔNG BAO GIỜ ghi Remark xuống DB, bất kể giá trị gửi lên. #727 kết luận "Remark cũng bị
-    //   viết hoa khi sửa" là SAI — Remark hoàn toàn không đổi lúc sửa; chỉ ModelName mới bị viết hoa.
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!.Trim();
+    row.LogLUDateTime = now;
+    row.LogLUBy = who;
+    row.UpdatedAt = now;
     await db.SaveChangesAsync();
 
     return Results.Ok(new
     {
-        row.Id, row.ModelCode, row.ModelName, row.Remark, row.FlagActive, updated = true,
+        row.Id, row.ModelCode, row.ModelName, row.Remark, row.FlagActive,
+        row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt,
+        updated = true,
         nameChangedOnlyByCasing,
         // ===== #727 (đã đính chính #427) =====
         updateUppercasesNameButAddDoesNot = "CHI ModelName bi viet hoa khi SUA, giu nguyen khi THEM: _Add dung string.Format({0}, objModelName).Trim() (giu nguyen chu), _Update dung SqlUtils.StandardizeParam(objModelName) = Convert.ToString(x).Trim().ToUpper(). Da mo dinh nghia CA HAI ban (CommonUtils/DataUtils.cs:1200 va TERP.Utils/Utils.cs:222) — GIONG HET NHAU. => them Santa Fe thi luu Santa Fe; sau do SUA BAT KY TRUONG NAO => ModelName thanh SANTA FE => MAT DU LIEU HIEN THI, IM LANG, DO CHINH THAO TAC SUA. ModelCode thi CA HAI ham deu StandardizeParam => nhat quan. Da do bang nameChangedOnlyByCasing. (#427: Remark KHONG bi anh huong — xem ghi chu rieng o tren, _Update khong ghi Remark xuong DB.)",
@@ -126793,7 +126985,7 @@ record RoWarrantyRenewalDto(string? VIN = null, string? WrtReneCateCode = null, 
 record WarrantyWorkSyncRowDto(string? ROWWorkCode = null, string? ROWWorkName = null, decimal? RatePrice = null,
     decimal? Price = null, decimal? VAT = null, string? Remark = null, string? FlagActive = null);
 record ComplaintDiagErrorDto(string? ErrorCode = null, string? ErrorName = null, string? ErrorTypeCode = null, string? FlagActive = null, string? ErrorDesc = null, string? Remark = null);
-record GroupRepairDto(string? GroupRNo, string? GroupRName, string? Note, string? IsActive, string? DealerCode = null, long? GroupRID = null);   // #356 rename khớp nguồn
+record GroupRepairDto(string? GroupRNo, string? GroupRName, string? Note, string? IsActive, string? DealerCode = null, long? GroupRID = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);   // #356 rename khớp nguồn
 record EngineerDto(string EngineerNo, string EngineerName, string? GroupRCode, string? Note, string? IsActive, string? IsEngineer, DateTime? StartWorkDate, DateTime? FinishWorkDate, string? DealerCode = null, long? GroupRID = null);   // #396 tên trường = Ser_Engineer   // #421 GroupRID
 /// <summary>
 /// 1 khách hàng được chọn vào chiến dịch (lưới FrmCamp_CustomerList).
@@ -127437,13 +127629,19 @@ record CavityDto(string CavityNo,
     string? Note,
     string? DealerCode = null,
     string? CavityType = null,
-    string? Status = null);
+    string? Status = null,
+    string? IsActive = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null);
 // #296: sửa khoang (`Ser_CavityUpdate`). `Note`/`IsActive`/`Status` rỗng ⇒ GIỮ NGUYÊN (đúng nguồn).
 record CavityUpdateDto(string? CavityName = null, string? CavityType = null, string? DealerCode = null,
     string? Note = null, string? IsActive = null, string? Status = null,
     string? StartUseDate = null, string? FinishUseDate = null, string? LogLUBy = null);
 // #727: them Remark — nguon _Add/_Update deu ghi cot nay (va _Update VIET HOA no). §12 SegmentType.
-record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive, string? Remark = null, string? SegmentType = null);
+record CarModelStdDto(string? ModelCode, string? ModelName, string? FlagActive, string? Remark = null, string? SegmentType = null,
+    DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record MstParamDto(string? DealerCode, string? ParamType, string? ParamCode, string? ParamValue, string? Description);
 record MstVinModelOrginalDto(string? VINCode, string? ModelCode, string? OrginalCode, string? FlagActive, string? Remark);
 record OsVelocaCustomerDto(string? SalesCusID, string? CusName, string? CusTypeID, string? Address, string? Mobile, string? Tel, string? Email, string? TaxCode, string? Sex);

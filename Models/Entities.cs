@@ -7816,6 +7816,8 @@ public sealed class GroupRepair
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Kỹ thuật viên dịch vụ (Ser_Engineer — port 1:1 FrmEngineerCreate + FrmEmployeeCreate/Search, TCMotor DMSCarSv/Admin):
@@ -18993,6 +18995,7 @@ public sealed class Cavity
     public string? CreatedBy { get; set; }
 
     public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Cấp bảo dưỡng theo mốc km (KM → số lần BD) — port 1:1 FrmMstMaintenanceLevelMng (TCMotor).</summary>
@@ -19324,7 +19327,12 @@ public sealed class CarModelStd
     /// `Biz.HTC.WH.My.cs:22005`) ⇒ model bật cờ mà **không có giao dịch nào vẫn hiện dòng 0**,
     /// còn model tắt cờ thì **biến mất kể cả khi có giao dịch**. Không phải `FlagActive`.</summary>
     public string FlagBusinessPlan { get; set; } = "0";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
     public DateTime UpdatedAt { get; set; } = DateTime.Now;
+    public DateTime? CreatedDate { get; set; }
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; }
+    public string? LogLUBy { get; set; }
 }
 
 /// <summary>Video tư vấn dịch vụ (Ser_Mst_FilePathVideo — port 1:1 FrmSerMstFilePathVideoCreate/Search, TCMotor DMSCarSv/Admin):
