@@ -19014,6 +19014,7 @@ public sealed class MaintenanceLevelMst
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>#541 Danh mục **LOẠI GIA HẠN BẢO HÀNH** (`Ser_MST_ROWarrantyRenewalCategory`).
@@ -19112,6 +19113,7 @@ public sealed class ExtraPartMst
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Công việc phát sinh (mã/tên/giá tối đa/VAT) — port 1:1 FrmMstExtraWorkMng (Tbl_Mst_Extra_Work_Mng, TCMotor).</summary>
@@ -19134,6 +19136,7 @@ public sealed class ExtraWorkMst
     public string? CreatedBy { get; set; }
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>⛔ #380 DEPRECATED — SONG SINH của <see cref="SerMstSupplier"/> (cùng bảng nguồn Ser_MST_Supplier / TblSerMstSupplier, cùng FrmMstSupplierCreate).
