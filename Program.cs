@@ -30522,9 +30522,23 @@ app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? 
         x.Id, x.GroupCode, x.GroupName, x.ParentID,
         parentCode = x.ParentID is { } p1 && byId.TryGetValue(p1, out var pg1) ? pg1.GroupCode : null,   // dẫn xuất hiển thị
         parentName = x.ParentID is { } p2 && byId.TryGetValue(p2, out var pg2) ? pg2.GroupName : null,
-        x.OrderId, x.FlagActive, x.DealerCode, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.FamilyID, x.CreatedDate   // merge #1508 #1316
+        x.OrderId, x.FlagActive, x.DealerCode, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.FamilyID, x.UpdatedAt   // merge #1508 #1316 §12
     }).ToList();
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/partgroups/{code}", async (string code, AppDbContext db, ITenantContext t) =>
+{
+    var gc = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == gc);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_PartGroup_NotFound", groupCode = gc });
+    string? parentCode = null; string? parentName = null;
+    if (row.ParentID is { } pid)
+    {
+        var parent = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == pid);
+        parentCode = parent?.GroupCode; parentName = parent?.GroupName;
+    }
+    return Results.Ok(new { row.Id, row.GroupCode, row.GroupName, row.ParentID, parentCode, parentName, row.OrderId, row.FlagActive, row.DealerCode, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.FamilyID, row.UpdatedAt });
 }).RequireAuthorization();
 
 // Upsert theo mã nhóm = `Ser_MST_PartGroup_Create` (mới) / `_Update` (đã có) — BizCarSv.Master.cs:3840/4200.
@@ -30533,37 +30547,36 @@ app.MapGet("/api/partgroups", async (AppDbContext db, ITenantContext t, string? 
 //   Ghi DealerCode, CreatedBy (tạo) + LogLU* (cả hai) như nguồn.
 app.MapPost("/api/partgroups", async (PartGroupDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.GroupCode)) return Results.BadRequest(new { error = "Chưa nhập mã nhóm." });
-    if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "Chưa nhập tên nhóm." });
+    if (string.IsNullOrWhiteSpace(dto.GroupCode)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "GroupCode", message = "Chưa nhập mã nhóm." });
+    if (string.IsNullOrWhiteSpace(dto.GroupName)) return Results.BadRequest(new { error = "ErrHTC.MSG_WARNING_EMPTY_VALUE", field = "GroupName", message = "Chưa nhập tên nhóm." });
+    var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
+    if (fa is not ("0" or "1"))
+        return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
     var code = dto.GroupCode.Trim().ToUpperInvariant();
-    var by1071 = (partnerUserCode ?? "system").Trim(); var now1071 = DateTime.Now;
-    var ex = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
+    var dup = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == code);
+    if (dup is not null) return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_PartGroupCode_Exist", groupCode = code });
     long? parentId = dto.ParentID;
     if (parentId is null && !string.IsNullOrWhiteSpace(dto.ParentCode))
     {
         var pc = dto.ParentCode.Trim().ToUpperInvariant();
         var pg = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == pc);
-        if (pg is null) return Results.BadRequest(new { error = $"Nhóm cha {pc} không tồn tại." });
+        if (pg is null) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_PartGroup_ParentNotFound", message = $"Nhóm cha {pc} không tồn tại." });
         parentId = pg.Id;
     }
     if (parentId is not null)
     {
-        if (ex is not null && parentId == ex.Id) return Results.BadRequest(new { error = "Nhóm cha không được trùng chính nó." });
-        if (!await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.Id == parentId)) return Results.BadRequest(new { error = $"Nhóm cha (ParentID {parentId}) không tồn tại." });
+        if (!await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.Id == parentId)) return Results.BadRequest(new { error = "ErrCarSv.Ser_Mst_PartGroup_ParentNotFound", message = $"Nhóm cha (ParentID {parentId}) không tồn tại." });
     }
-    var who = user.Identity?.Name ?? "system"; var now = DateTime.Now;
+    var who = user.Identity?.Name ?? (partnerUserCode ?? "system").Trim(); var now = DateTime.Now;
     var dealer = string.IsNullOrWhiteSpace(dto.DealerCode) ? null : dto.DealerCode.Trim().ToUpperInvariant();
-    if (ex is not null)
+    var r = new PartGroup
     {
-        ex.GroupName = dto.GroupName; ex.ParentID = parentId; ex.OrderId = dto.OrderId; ex.FlagActive = "1";
-        ex.DealerCode = dealer ?? ex.DealerCode; ex.LogLUDateTime = now; ex.LogLUBy = who;
-        await db.SaveChangesAsync();
-        return Results.Ok(new { ex.Id, ex.GroupCode, ex.ParentID, updated = true });
-    }
-    var r = new PartGroup { OrgId = t.OrgId, GroupCode = code, GroupName = dto.GroupName, ParentID = parentId, OrderId = dto.OrderId, FlagActive = "1",
-        DealerCode = dealer, CreatedDate = now, CreatedBy = who, LogLUDateTime = now, LogLUBy = who };   // #1071
+        OrgId = t.OrgId, GroupCode = code, GroupName = dto.GroupName, ParentID = parentId, OrderId = dto.OrderId, FlagActive = fa,
+        DealerCode = dealer, CreatedAt = now, CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who,
+        LogLUDateTime = now, LogLUBy = who, UpdatedAt = now
+    };
     db.PartGroups.Add(r); await db.SaveChangesAsync();
-    return Results.Ok(new { r.Id, r.GroupCode, r.ParentID, updated = false });
+    return Results.Ok(new { r.Id, r.GroupCode, r.GroupName, r.ParentID, r.OrderId, r.FlagActive, r.DealerCode, r.CreatedAt, r.CreatedDate, r.CreatedBy, r.LogLUDateTime, r.LogLUBy, r.UpdatedAt, updated = false });
 }).RequireAuthorization();
 
 // ===== 🔴🔴🔴 #839 MÀN MỚI: SỬA / XOÁ NHÓM PHỤ TÙNG — `Ser_MST_PartGroup_{Create,Update,Delete}` =====
@@ -30647,26 +30660,28 @@ app.MapPut("/api/partgroups/{code}", async (string code, PartGroupDto dto, AppDb
 {
     var gc = (code ?? "").Trim().ToUpperInvariant();
     var row = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == gc);
-    if (row is null) return Results.NotFound(new { error = "khong tim thay nhom phu tung", groupCode = gc });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_PartGroup_NotFound", groupCode = gc });
     var newCode = (dto.GroupCode ?? gc).Trim().ToUpperInvariant();
     if (!string.Equals(newCode, gc, StringComparison.OrdinalIgnoreCase))
     {
         // Va bay #818/#839: kiem trung ma KHONG phan biet FlagActive.
         var dup = await db.PartGroups.AnyAsync(x => x.OrgId == t.OrgId && x.Id != row.Id && x.GroupCode == newCode);
-        if (dup) return Results.Conflict(new { error = "Ser_Mst_PartGroupCode_Exist", groupCode = newCode });
+        if (dup) return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_PartGroupCode_Exist", groupCode = newCode });
         row.GroupCode = newCode;
     }
     if (dto.GroupName != null) row.GroupName = dto.GroupName;
     if (dto.ParentCode != null) row.ParentID = string.IsNullOrWhiteSpace(dto.ParentCode) ? null : await db.PartGroups.Where(x => x.OrgId == t.OrgId && x.GroupCode == dto.ParentCode.Trim().ToUpper()).Select(x => (long?)x.Id).FirstOrDefaultAsync();   // merge: ParentID (#408)
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive) && (dto.FlagActive == "0" || dto.FlagActive == "1")) row.FlagActive = dto.FlagActive;
+    if (dto.OrderId != 0) row.OrderId = dto.OrderId;
+    if (dto.DealerCode != null) row.DealerCode = dto.DealerCode;
     // #1071: Ser_MST_PartGroup_Update ghi lại LogLUDateTime/LogLUBy.
-    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim(); row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
-        row.Id, row.GroupCode, row.GroupName, row.ParentID, row.FlagActive,
-        sourceRepeatsBug818 = "LAP LAI CHINH XAC BAY #818: checkExistPartGroupCode (TAO) loc IsActive = strIsActive — gia tri cua chinh ban ghi sap tao; checkExistPartGroupCodeModify (SUA) loc IsActive = 1 CUNG. Y het cap checkExistSupplierCode/...Modify o #818 => tao nhom voi IsActive = 0 thi TRUNG MA voi nhom DANG HOAT DONG van lot",
-        twoOccurrencesMakeItAPattern = "gap HAI lan voi HAI man master khac nhau (SerSupplier* o Inventory.Master.cs, Ser_MST_PartGroup_* o Master.cs) => KHONG con la ca biet, day la KHUON CHEP-DAN cua cap helper checkExist...Code / checkExist...CodeModify => moi man master khac dung cap ten nay PHAI SOI LAI",
-        typoInHelperVariable = "bien trong helper sua ten la strPartGroupD — THIEU chu I (dang le strPartGroupID), nguyen van nguon",
+        row.Id, row.GroupCode, row.GroupName, row.ParentID, row.OrderId, row.FlagActive, row.DealerCode,
+        row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt,
+        updated = true
     });
 }).RequireAuthorization();
 
@@ -30675,7 +30690,7 @@ app.MapDelete("/api/partgroups/{code}", async (string code, AppDbContext db, ITe
 {
     var gc = (code ?? "").Trim().ToUpperInvariant();
     var row = await db.PartGroups.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.GroupCode == gc);
-    if (row is null) return Results.NotFound(new { error = "khong tim thay nhom phu tung", groupCode = gc });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_PartGroup_NotFound", groupCode = gc });
     // Guard NGUON KHONG CO — Mini them: phu tung dang thuoc nhom, va nhom con.
     var partCount = await db.ServiceParts.CountAsync(x => x.OrgId == t.OrgId && x.PartGroupCode == gc);
     var childCount = await db.PartGroups.CountAsync(x => x.OrgId == t.OrgId && x.ParentID == row.Id);
@@ -30693,22 +30708,19 @@ app.MapDelete("/api/partgroups/{code}", async (string code, AppDbContext db, ITe
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
+        deleted = gc,
         groupCode = gc, orphanedParts = partCount, orphanedChildGroups = childCount,
-        sourceDeleteHasNoGuardAtAll = "AP #403 — trich TRON danh sach region cua Ser_MST_PartGroup_Delete: #region // Temp:, #region // Init:, #region // Delete:, catch, finally — KHONG co #region Check; Raise=0, this.Check*=0, my*_Check*=0 => KHONG guard that",
-        sourceDeletesThreeDatabases = "than xoa la delete t from Ser_MST_PartGroup t ... chay tren BA CSDL (_dbMain.ExecQuery, _dbWH.ExecQuery, _dbDealer.ExecQuery) — lai dung #742 (ExecQuery KHONG read-only)",
-        consequenceOrphans = "xoa mot nhom phu tung KHONG kiem rang buoc: phu tung dang thuoc nhom do thanh MO COI, va nhom con (ParentCode) cung mat cha",
-        fourthOfTheSixteen = "ca THU TU trong nhom 16 ham Delete khong guard cua #825 duoc doc tay — sau SerInsuranceDelete (#824), Ser_Email_Attachment_Delete (#821), Ser_Mst_Service_Delete (#825, hoa ra la GUARD IM LANG)",
-        twoMachinesVerified = "md5 chuan hoa Ser_MST_PartGroup_Delete tren may 150 = 6628b66b KHOP laptop",
     });
 }).RequireAuthorization();
-app.MapPost("/api/partgroups/{code}/toggle", async (string code, AppDbContext db, ITenantContext t) =>
+app.MapPost("/api/partgroups/{code}/toggle", async (string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     code = code.Trim().ToUpperInvariant();
     var x = await db.PartGroups.FirstOrDefaultAsync(v => v.OrgId == t.OrgId && v.GroupCode == code);
-    if (x is null) return Results.NotFound(new { code });
+    if (x is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_PartGroup_NotFound", groupCode = code });
     x.FlagActive = x.FlagActive == "1" ? "0" : "1";
+    x.LogLUDateTime = DateTime.Now; x.LogLUBy = (partnerUserCode ?? "system").Trim(); x.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { x.GroupCode, flagActive = x.FlagActive });
+    return Results.Ok(new { x.Id, x.GroupCode, flagActive = x.FlagActive, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== Công nợ khách hàng dịch vụ + thu tiền (CusDebit — port 1:1 FrmCusDebitCreate/FrmCusPaymentCreate, TCMotor) =====
@@ -35109,8 +35121,24 @@ app.MapGet("/api/servicetrademarks", async (AppDbContext db, ITenantContext t, s
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TradeMarkCode.Contains(q!) || x.TradeMarkName!.Contains(q!));
     var items = await qry.OrderBy(x => x.TradeMarkCode).Take(500).Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive,
-        x.Logo, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1343 §12 + #1508 echo Logo (nguon t.*)
+        x.Logo, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #1343 §12 + #1508 echo Logo (nguon t.*)
     return Results.Ok(new { count = items.Count, items });
+}).RequireAuthorization();
+
+app.MapGet("/api/servicetrademarks/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
+{
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_TradeMark_NotFound", id });
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive, row.Logo, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapGet("/api/servicetrademarks/{dealerCode}/{code}", async (string dealerCode, string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var d = (dealerCode ?? "").Trim();
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == c && x.DealerCode == d);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_TradeMark_NotFound", dealerCode = d, code = c });
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive, row.Logo, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
@@ -35122,7 +35150,19 @@ app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbConte
         return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == code && x.DealerCode == dto.DealerCode);
     // #1049: Ser_Mst_TradeMark_Create ghi CreatedDate/CreatedBy lúc TẠO.
-    if (row is null) { row = new ServiceTradeMark { OrgId = t.OrgId, TradeMarkCode = code, DealerCode = dto.DealerCode, CreatedDate = DateTime.Now, CreatedBy = (partnerUserCode ?? "system").Trim() }; db.ServiceTradeMarks.Add(row); }
+    if (row is null)
+    {
+        row = new ServiceTradeMark
+        {
+            OrgId = t.OrgId,
+            TradeMarkCode = code,
+            DealerCode = dto.DealerCode,
+            CreatedAt = DateTime.Now,
+            CreatedDate = dto.CreatedDate ?? DateTime.Now,
+            CreatedBy = dto.CreatedBy ?? (partnerUserCode ?? "system").Trim()
+        };
+        db.ServiceTradeMarks.Add(row);
+    }
     row.TradeMarkName = dto.TradeMarkName; row.UpdatedAt = DateTime.Now;
     if (dto.DealerCode != null) row.DealerCode = dto.DealerCode;
     if (dto.Logo != null) row.Logo = dto.Logo;
@@ -35131,10 +35171,10 @@ app.MapPost("/api/servicetrademarks", async (ServiceTradeMarkDto dto, AppDbConte
     // strPartnerUserCode (thêm 2 cột vào entity, chưa từng có) — endpoint này gộp cả hai nhánh nên ghi vô điều kiện.
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive, row.Logo, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.TradeMarkName, row.DealerCode, row.FlagActive, row.Logo, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
-app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+app.MapPost("/api/servicetrademarks/{id:long}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { id, error = "ErrCarSv.Ser_Mst_TradeMark_NotFound" });
@@ -35142,7 +35182,19 @@ app.MapPost("/api/servicetrademarks/{id}/toggle", async (long id, AppDbContext d
     // #1128: toggle = gọi Ser_Mst_TradeMark_Update đổi IsActive — hàm nguồn luôn ghi 2 cột nhật ký.
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt });
+}).RequireAuthorization();
+
+app.MapPost("/api/servicetrademarks/{dealerCode}/{code}/toggle", async (string dealerCode, string code, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var c = (code ?? "").Trim();
+    var d = (dealerCode ?? "").Trim();
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == c && x.DealerCode == d);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_TradeMark_NotFound", dealerCode = d, code = c });
+    row.FlagActive = row.FlagActive == "1" ? "0" : "1"; row.UpdatedAt = DateTime.Now;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TradeMarkCode, row.DealerCode, row.FlagActive, row.LogLUDateTime, row.LogLUBy, row.CreatedAt, row.UpdatedAt });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #965 `Ser_Mst_TradeMark_Delete` (LIVE, `BizCarSv.Master.cs:1778`) — XOÁ CỨNG CÓ GUARD THAM CHIẾU
@@ -35160,6 +35212,20 @@ app.MapDelete("/api/servicetrademarks/{id:long}", async (long id, AppDbContext d
     db.ServiceTradeMarks.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = id });
+}).RequireAuthorization();
+
+app.MapDelete("/api/servicetrademarks/{dealerCode}/{code}", async (string dealerCode, string code, AppDbContext db, ITenantContext t) =>
+{
+    var c = (code ?? "").Trim();
+    var d = (dealerCode ?? "").Trim();
+    var row = await db.ServiceTradeMarks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == c && x.DealerCode == d);
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_TradeMark_NotFound", dealerCode = d, code = c });
+    var inUse = await db.ServiceModels.AnyAsync(x => x.OrgId == t.OrgId && x.TradeMarkCode == row.TradeMarkCode && x.DealerCode == row.DealerCode);
+    if (inUse) return Results.Conflict(new { error = "ErrCarSv.Ser_Mst_TradeMark_Delete_UserAnother",
+        message = "Còn dòng xe (Ser_MST_Model) đang dùng thương hiệu này ở cùng đại lý — không xoá được." });
+    db.ServiceTradeMarks.Remove(row);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = c, dealerCode = d });
 }).RequireAuthorization();
 
 // ===== 🔴 #1519 `Ser_Mst_TradeMark_Get` (LIVE, `HTCWSCarSv/WSCarSv.asmx.cs:2113`) — GET DANH MỤC THƯƠNG HIỆU =====
@@ -35194,7 +35260,7 @@ app.MapGet("/api/servicetrademarks/get", async (AppDbContext db, ITenantContext 
     }
     var items = await qry.OrderBy(x => x.TradeMarkCode)
         .Select(x => new { x.Id, x.TradeMarkCode, x.TradeMarkName, x.DealerCode, x.FlagActive, x.Logo,
-            x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt })
+            x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt })
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items,
         onlyLiveConfirmed1519 = "#1519: Ser_Mst_TradeMark_Get — BizCarSv.Master.cs:1515, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:2113",
@@ -41152,7 +41218,7 @@ app.MapGet("/api/serservicetypes", async (AppDbContext db, ITenantContext t, str
     if (!string.IsNullOrWhiteSpace(q)) qry = qry.Where(x => x.TypeName.Contains(q!));
     if (!string.IsNullOrWhiteSpace(dealerCode)) qry = qry.Where(x => x.DealerCode == dealerCode);
     var items = await qry.OrderBy(x => x.TypeName).Take(500)
-        .Select(x => new { x.Id, x.TypeName, x.FlagActive, x.DealerCode, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #149 §12
+        .Select(x => new { x.Id, x.TypeName, x.FlagActive, x.DealerCode, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt }).ToListAsync();   // #149 §12
     return Results.Ok(new { count = items.Count, items });
 }).RequireAuthorization();
 
@@ -41160,7 +41226,7 @@ app.MapGet("/api/serservicetypes/{id:long}", async (long id, AppDbContext db, IT
 {
     var row = await db.SerServiceTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id == id);
     if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_ServiceTypeID_NotFound", id });
-    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapPost("/api/serservicetypes", async (SerServiceTypeDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user, string? partnerUserCode) =>
@@ -41182,6 +41248,7 @@ app.MapPost("/api/serservicetypes", async (SerServiceTypeDto dto, AppDbContext d
             TypeName = name,
             DealerCode = dto.DealerCode,
             FlagActive = fa,
+            CreatedAt = now,
             CreatedDate = dto.CreatedDate ?? now,
             CreatedBy = dto.CreatedBy ?? who,
             LogLUDateTime = now,
@@ -41190,14 +41257,14 @@ app.MapPost("/api/serservicetypes", async (SerServiceTypeDto dto, AppDbContext d
         };
         db.SerServiceTypes.Add(row);
         await db.SaveChangesAsync();
-        return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = false, saved = true });
+        return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = false, saved = true });
     }
     row.FlagActive = fa;
     row.LogLUDateTime = now;
     row.LogLUBy = who;
     row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = true, saved = true });
+    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = true, saved = true });
 }).RequireAuthorization();
 
 app.MapPost("/api/serservicetypes/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
@@ -41211,7 +41278,7 @@ app.MapPost("/api/serservicetypes/{id}/toggle", async (long id, AppDbContext db,
     row.LogLUBy = who;
     row.UpdatedAt = now;
     await db.SaveChangesAsync();
-    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
+    return Results.Ok(new { row.Id, row.TypeName, row.FlagActive, row.DealerCode, row.CreatedAt, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt });
 }).RequireAuthorization();
 
 app.MapDelete("/api/serservicetypes/{id:long}", async (long id, AppDbContext db, ITenantContext t) =>
@@ -41290,7 +41357,7 @@ app.MapGet("/api/serservicetypes/get", async (AppDbContext db, ITenantContext t,
         }
     }
     var items = await qry.OrderBy(x => x.TypeName)
-        .Select(x => new { x.Id, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy })
+        .Select(x => new { x.Id, x.TypeName, x.DealerCode, x.FlagActive, x.CreatedAt, x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy, x.UpdatedAt })
         .ToListAsync();
     return Results.Ok(new { count = items.Count, items,
         onlyLiveConfirmed1520 = "#1520: Ser_Mst_ServiceType_Get — BizCarSv.Master.cs:5098, LIVE xac nhan qua HTCWSCarSv/WSCarSv.asmx.cs:4507",
@@ -127453,10 +127520,17 @@ record SerPartOrderDto(string? DealerCode,
     List<SerPartOrderLineDto>? Lines = null);
 record PartGroupDto(string GroupCode,
     string? GroupName,
-    string? ParentCode,
-    int OrderId,
+    string? ParentCode = null,
+    int OrderId = 0,
     long? ParentID = null,
-    string? DealerCode = null);
+    string? DealerCode = null,
+    string? FlagActive = null,
+    DateTime? CreatedDate = null,
+    string? CreatedBy = null,
+    DateTime? LogLUDateTime = null,
+    string? LogLUBy = null,
+    DateTime? CreatedAt = null,
+    DateTime? UpdatedAt = null);
 record ServicePartDto(string PartCode,
     string? PartName,
     string? EngName,
@@ -128104,7 +128178,7 @@ record RedeemInvoiceRequestDto(string? ReqRDInvoiceNo, DateTime? CreatedDate, st
 record RedeemInvoiceRequestLineDto(string? VIN, string? CarId, string? ReqType, string? CarDocReqTypeCRR = null);
 record DealerSalesManDto(string? SMCode, string? SMHyundaiCode, string? SMName, string? DealerCode, string? SMEmail, string? SMPhoneNo, string? IdentityCardNo, string? SMGender, string? ProvinceCode, string? QualificationCode, DateTime? StartDate, DateTime? EndDate, string? SMStatus, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record CustomerVisitDto(string? CusVisitCode, string? DealerCode, string? Gender, string? RangeAgeCode, string? ModelCode, string? FlagActive = null, DateTime? VisitDTime = null);
-record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null, string? Logo = null);   // #915 DealerCode, #1508 Logo
+record ServiceTradeMarkDto(string? TradeMarkCode, string? TradeMarkName, string? FlagActive, string? DealerCode = null, string? Logo = null, DateTime? CreatedDate = null, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null, DateTime? CreatedAt = null, DateTime? UpdatedAt = null);   // #915 DealerCode, #1508 Logo
 record TstExchangeUnitDto(string? TSTPartCode, string? VieName, string? TSTUnit, string? DMSUnit, decimal ExchangeRate, string? FlagActive);
 record TstPartSyncDto(string? TSTPartCode, decimal TSTPrice);
 // merge master+session-a: hợp tham số record (chú thích nguồn xem lịch sử git hai nhánh)
@@ -128196,7 +128270,9 @@ record SerServiceTypeDto(string? TypeName,
     DateTime? CreatedDate = null,
     string? CreatedBy = null,
     DateTime? LogLUDateTime = null,
-    string? LogLUBy = null);
+    string? LogLUBy = null,
+    DateTime? CreatedAt = null,
+    DateTime? UpdatedAt = null);
 record SerStockDto(string? StockNo,
     string? StockName,
     string? Contact,

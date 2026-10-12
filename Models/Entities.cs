@@ -4267,6 +4267,7 @@ public sealed class ServiceTradeMark
     // bảng `Ser_Mst_TradeMark` (bài học #539). Cột `Logo` có trong bảng nguồn nhưng CHƯA TỪNG được mô hình
     // hoá ở Mini ⇒ GET bỏ sót. `_Create`/`_Update` KHÔNG ghi `Logo` (chỉ đọc) ⇒ field ECHO, không cần DTO/POST.
     public string? Logo { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
     // #1049 §12 — `Ser_Mst_TradeMark_Create` (BizCarSv.Master.cs:1710, LIVE) ghi `CreatedDate`/`CreatedBy`.
     public DateTime? CreatedDate { get; set; }
     public string? CreatedBy { get; set; }
@@ -4459,6 +4460,7 @@ public sealed class SerServiceType
     public Guid OrgId { get; set; }
     public string TypeName { get; set; } = "";
     public string FlagActive { get; set; } = "1";
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
     // #1052 §12 — `Ser_Mst_ServiceType_Create` (BizCarSv.Master.cs:5288, LIVE) ghi `CreatedDate`/`CreatedBy`
     // vô điều kiện — cùng mẫu hình #453 (đã vá cho `SerPartType` ở #963 nhưng chưa vá cho bảng song sinh này).
     public DateTime? CreatedDate { get; set; }
@@ -18029,6 +18031,7 @@ public sealed class PartGroup
     // #1071 §12 — `Ser_MST_PartGroup_Create` (BizCarSv.Master.cs:3930, LIVE) ghi VÔ ĐIỀU KIỆN cả 4 cột
     // nhật ký; `_Update` (:4292) chỉ ghi lại `LogLUDateTime`/`LogLUBy` — cùng khuôn #1070.
     public DateTime? CreatedDate { get; set; }
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>Công nợ khách hàng dịch vụ (theo RO) — port 1:1 FrmCusDebitCreate (TblCusDebit, TCMotor).</summary>
