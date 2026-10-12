@@ -4539,6 +4539,11 @@ public sealed class SerAppTypeMst
     public string FlagActive { get; set; } = "1";
     public DateTime? LogLUDateTime { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== #Round161 §12: Mst_Ser_AppType (DbDefine.cs:53, Mst_Ser_AppType.cs:10) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>#1059 §12 — MÀN CHƯA TỪNG PORT: `Mst_Staff` (danh mục nhân viên chung), cùng whitelist
@@ -6148,9 +6153,15 @@ public sealed class NetworkMst
     public string? WSUrlAddr { get; set; }
     public string? DBUrlAddr { get; set; }
     public string? WAUrlAddr { get; set; }
-    public string? FlagActive { get; set; }
+    public string? FlagActive { get; set; } = "1";
     public DateTime? LogLUDTimeUTC { get; set; }
     public string? LogLUBy { get; set; }
+    // ===== #Round161 §12: CmCt_Mst_Network (Error.CarSv.cs:198-236, DbDefine:557) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 public sealed class PlateColorMst
@@ -10922,6 +10933,13 @@ public sealed class MstMaintainTaskItem
     /// <summary>Thứ tự hiển thị trong gói.</summary>
     public int? ViewIdx { get; set; }
     public string FlagActive { get; set; } = "1";
+    // ===== #Round161 §12: Mst_MaintainTaskItem (Error.HTC.StorageFG.cs, Const.Main.cs:5697) =====
+    public DateTime? CreatedDate { get; set; } = DateTime.Now;
+    public string? CreatedBy { get; set; }
+    public DateTime? LogLUDateTime { get; set; } = DateTime.Now;
+    public string? LogLUBy { get; set; }
+    public DateTime CreatedAt { get; set; } = DateTime.Now;
+    public DateTime UpdatedAt { get; set; } = DateTime.Now;
 }
 
 /// <summary>
