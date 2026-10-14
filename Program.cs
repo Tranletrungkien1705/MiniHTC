@@ -26580,6 +26580,10 @@ app.MapPost("/api/sermstlocations/{locationId}/toggle", async (string locationId
 app.MapPost("/api/sermstlocations/import", async (List<SerMstLocationImportRowDto> rows, string? dealerCode,
     AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
+    // Nguồn `Ser_Mst_Location_Import` (BizCarSv.Master.cs:7425): `ds_Location == null || Tables.Count == 0` ⇒ `Ser_MST_Location_Import_TableNotFound`.
+    // JSON không có "DataSet không bảng": coi body null/mảng rỗng là tương đương (diễn giải của Mini, không phải dòng nguồn).
+    if (rows is null || rows.Count == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_MST_Location_Import_TableNotFound", message = "Không có dữ liệu import vị trí kho." });
     var dl = (dealerCode ?? "").Trim();
     var saved = new List<object>();
     foreach (var row in rows)
