@@ -32730,6 +32730,19 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
             if (master is null || master.FlagWarranty != "1") Deny("InvalidCVC", $"{cvcCode} không thuộc Mst công việc bảo hành!", new { serCode = cvcCode });
         }
     }
+    // SerialNo (WarrantyReport.cs:4699) — XM|SB × A: BCBH phải có số seri. BatteryNo (:4721) — XM|SB × B: phải có mã ắc quy.
+    if ((tc is "XM" or "SB") && dc == "A" && string.IsNullOrEmpty(c.SerialNo)) Deny("InvalidSerialNo", "BCBH chưa có số seri!");
+    if ((tc is "XM" or "SB") && dc == "B" && string.IsNullOrEmpty(c.BatteryNo)) Deny("InvalidBatteryNo", "BCBH chưa có mã ắc quy!");
+    // WarrantyRegistrationDate (:5198) — SB × A|B|P|W: phải có ngày đăng ký bảo hành.
+    if (tc == "SB" && dc is "A" or "B" or "P" or "W" && c.WarrantyRegistrationDate is null) Deny("InvalidWarrantyRegisDate", "Ngày ĐKBH của BCBH trống!");
+    // CreatedDateAndWarrantyRegisDateAndKM (:5212) — SB × B: Km < 20.000 và (ngày gửi BCBH − ngày ĐKBH) không quá 360 ngày.
+    if (tc == "SB" && dc == "B")
+    {
+        if (decimal.TryParse(c.Km, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var kmB) && kmB >= 20000m)
+            Deny("InvalidKM", "Số Km của BCBH lớn hơn 20,000KM!");
+        if (c.WarrantyRegistrationDate is { } regB && regB.Date.AddDays(360) < c.CreatedAt.Date)
+            Deny("InvalidCreatedDateAndWarrantyRegisDate", "Ngày gửi BCBH-Ngày bảo hành > 12 tháng!");
+    }
 
     // Phụ tùng CHÍNH của hồ sơ (PTC) — nguồn lọc đúng loại này, không phải mọi dòng phụ tùng.
     var ptcCodes = await db.WarrantyClaimPartItems
