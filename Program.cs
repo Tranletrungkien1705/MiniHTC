@@ -32709,6 +32709,28 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
     // (nguồn chặn ngay đầu hàm, trước khi rẽ nhánh theo ROWTypeCode/ROWTypeDtlCode). Mini gom vi phạm thay vì ném ngay.
     if (string.IsNullOrWhiteSpace(c.Vin)) Deny("InvalidVIN", "VIN của BCBH trống!");
 
+    // Cây quyết định của nguồn (WARRANTY_APPROVE_CHECK_TREE.md): kiểm con theo (ROWTypeCode, ROWTypeDtlCode). Mini gom vi phạm thay vì ném ngay.
+    var tc = c.ROWTypeCode; var dc = c.ROWTypeDtlCode;
+    // FinishedDate (WarrantyReport.cs:4833) — nhánh XM|SB × A|B|P|W và PT × S: BCBH phải có ngày sửa xong; ngày gửi BCBH không quá 7 ngày sau ngày sửa xong.
+    if ((tc is "XM" or "SB" && dc is "A" or "B" or "P" or "W") || (tc == "PT" && dc == "S"))
+    {
+        if (c.FinishedDate is null) Deny("InvalidRO_FinishedDate", "BCBH chưa có ngày sửa xong!");
+        else if (c.FinishedDate.Value.Date.AddDays(7) < c.CreatedAt.Date) Deny("InvalidRO_FinishedDate", "Ngày gửi BCBH-Ngày sửa xong <=7!");
+    }
+    // CVC (WarrantyReport.cs:4963) — mọi nhánh trừ TC: BCBH phải có ĐÚNG 1 công việc chính (ROWSerType = CVC) và công việc đó thuộc danh mục bảo hành.
+    if (tc is "XM" or "SB" or "PT" or "BT")
+    {
+        var cvcItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id && x.ROWSerType == "CVC").ToListAsync();
+        if (cvcItems.Count == 0) Deny("InvalidCVC", "BCBH chưa có công việc chính!");
+        else if (cvcItems.Count > 1) Deny("InvalidCVC", "BCBH có nhiều hơn công việc chính!");
+        else
+        {
+            var cvcCode = cvcItems[0].SerCode;
+            var master = await db.ServiceItemMsts.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.SerCode == cvcCode && (m.DealerCode == c.DealerCode || m.DealerCode == null));
+            if (master is null || master.FlagWarranty != "1") Deny("InvalidCVC", $"{cvcCode} không thuộc Mst công việc bảo hành!", new { serCode = cvcCode });
+        }
+    }
+
     // Phụ tùng CHÍNH của hồ sơ (PTC) — nguồn lọc đúng loại này, không phải mọi dòng phụ tùng.
     var ptcCodes = await db.WarrantyClaimPartItems
         .Where(x => x.OrgId == t.OrgId && x.ClaimId == id && x.RowPartType == "PTC")
