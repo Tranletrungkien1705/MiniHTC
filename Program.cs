@@ -98636,7 +98636,9 @@ app.MapPut("/api/partner/cars/{carID}", async (string carID, PartnerCarDto dto, 
     var stamp = DateTime.Now;
     if (!string.IsNullOrEmpty(callerDealer)) row.DealerCode = callerDealer;
     row.PlateNo = (dto.PlateNo ?? row.PlateNo)?.Trim();
-    row.CusID = OrNull(dto.CusID); row.FrameNo = OrNull(dto.FrameNo); row.EngineNo = OrNull(dto.EngineNo);
+    // Nguồn `ProcessCarUpdate` (BizCarSv.Car.cs) gán `FrameNo = strFrameNo` VÔ ĐIỀU KIỆN (rỗng vẫn ghi ""). Cột FrameNo của Mini là NOT NULL
+    // nên dùng "" thay vì null (trước đây OrNull ⇒ NULL ⇒ crash 500 khi client không gửi FrameNo).
+    row.CusID = OrNull(dto.CusID); row.FrameNo = dto.FrameNo ?? ""; row.EngineNo = OrNull(dto.EngineNo);
     row.ColorCode = OrNull(dto.ColorCode); row.ModelCode = OrNull(dto.ModelID);
     row.TradeMark = OrNull(dto.TradeMarkCode); row.ProductYear = int.TryParse(dto.ProductYear, out var py2) ? py2 : row.ProductYear;
     row.CurrentKm = decimal.TryParse(dto.CurrentKm, out var ckm2) ? ckm2 : row.CurrentKm; row.InsNo = OrNull(dto.InsNo);
