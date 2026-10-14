@@ -32771,6 +32771,15 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
                 Deny("InvalidKM", "Số Km của BCBH > Số KM giới hạn bảo hành của xe tạo BCBH!");
         }
     }
+    // ComplaintDiagnosticError (WarrantyReport.cs:5886) — XM|SB × A|B|P|W: mã lỗi phàn nàn (PN) và mã lỗi chẩn đoán (CD) của BCBH phải tồn tại trong danh mục
+    // đúng loại và đang hoạt động. (Các luật Km/ngày bảo hành theo mã lỗi đã bị nguồn COMMENT bỏ từ 20220402 ⇒ không port.)
+    if ((tc is "XM" or "SB") && dc is "A" or "B" or "P" or "W")
+    {
+        if (string.IsNullOrEmpty(c.ErrorCodePN) || !await db.RoComplaintDiagnosticErrors.AnyAsync(e => e.OrgId == t.OrgId && e.ErrorCode == c.ErrorCodePN && e.ErrorTypeCode == "PN" && e.FlagActive == "1"))
+            Deny("InvalidComplaintDiagnosticError", "Không tìm thấy mã lỗi phàn nàn!");
+        if (string.IsNullOrEmpty(c.ErrorCodeCD) || !await db.RoComplaintDiagnosticErrors.AnyAsync(e => e.OrgId == t.OrgId && e.ErrorCode == c.ErrorCodeCD && e.ErrorTypeCode == "CD" && e.FlagActive == "1"))
+            Deny("InvalidComplaintDiagnosticError", "Không tìm thấy mã lỗi chuẩn đoán!");
+    }
     // WarrantyFile / _VIN / _KM (WarrantyReport.cs:4905, ~5060, ~5120) — mọi nhánh trừ TC: ảnh đính kèm của RO.
     if (tc is "XM" or "SB" or "PT" or "BT")
     {
