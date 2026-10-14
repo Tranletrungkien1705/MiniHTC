@@ -22510,7 +22510,9 @@ app.MapGet("/api/emailautotemps", async (AppDbContext db, ITenantContext t,
     var rows = await qy.OrderByDescending(x => x.Id).Take(500).ToListAsync();
     var items = rows.Select(x => new
     {
-        autoTempId = x.Id, x.AutoTempID, x.BatchId, x.DealerCode, x.CusID, x.CusEmail, x.Subject,   // #1357 §12
+        // `id` = khóa phụ của Mini (dùng cho PUT/DELETE theo id). Trước đây đặt tên `autoTempId` ⇒ TRÙNG JSON với cột nguồn `AutoTempID`
+        // ⇒ GET này luôn trả 500 (JsonException: property name collides). Cột nguồn `AutoTempID` giữ nguyên.
+        id = x.Id, x.AutoTempID, x.BatchId, x.DealerCode, x.CusID, x.CusEmail, x.Subject,   // #1357 §12
         x.TypeEmail, newTypeEmail = EmailTypeLabelAuto(x.TypeEmail),
         x.ConfigAutoID, x.SendType, x.Remark, x.CurrentDate, x.Status,
         statusText = EmailAutoTempStatusLabel(emailAutoTempStatusNames, x.Status),
@@ -29677,7 +29679,9 @@ app.MapGet("/api/serviceparts/multi-invsearch", async (AppDbContext db, ITenantC
             x.Id, x.PartCode, x.PartName, x.EngName, x.Unit, x.Price, x.Cost, x.Location,
             x.Quantity, x.MinQuantity, x.PartGroupCode, x.Model, x.Note, x.FlagActive, x.CreatedAt,
             x.PartID, x.PartTypeID, x.DealerCode, x.VAT, x.InventoryQuantity,
-            x.TotalPrice, x.BalanceLocationId, x.FreqUsed, x.PriceEffect,
+            // `PriceEffect` KHÔNG lấy cột lưu: nguồn tính `ISNULL(PriceEffectTmp, Price) AS PriceEffect` lúc đọc (xem `priceEffect` bên dưới);
+            // lấy cả hai ⇒ JSON trùng tên ⇒ GET luôn 500.
+            x.TotalPrice, x.BalanceLocationId, x.FreqUsed,
             x.TSTPrice, x.TSTPriceBefore, x.FlagInTST, x.CusDebt,
             x.CreatedDate, x.CreatedBy, x.LogLUDateTime, x.LogLUBy,
             partGroupName = groups.FirstOrDefault(g => g.GroupCode == x.PartGroupCode)?.GroupName,
@@ -98572,6 +98576,10 @@ app.MapPost("/api/partner/cars", async (PartnerCarDto dto, AppDbContext db, ITen
         .OrderBy(x => x.Id).FirstOrDefaultAsync();      // nguồn `top 1 *` KHÔNG ORDER BY
     if (dup is not null)
         return Results.BadRequest(new { error = "ErrCarSv.Ser_PlateNo_Exist", plateNo = plate, dealerCode = dlr });
+    // FrameNo là cột bắt buộc: nguồn (ProcessCarCreate) gán thẳng, DB từ chối ⇒ trả lỗi chung `Ser_Car_Create`.
+    // Trước đây thiếu FrameNo ⇒ crash 500 (NOT NULL ServiceCars.FrameNo).
+    if (string.IsNullOrEmpty(dto.FrameNo))
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_Car_Create", message = "Thiếu số khung (FrameNo).", plateNo = plate, dealerCode = dlr });
 
     var stamp = DateTime.Now;
     string? OrNull(string? v) => string.IsNullOrEmpty(v) ? null : v;
