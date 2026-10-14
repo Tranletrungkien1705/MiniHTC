@@ -32771,6 +32771,37 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
                 Deny("InvalidKM", "Số Km của BCBH > Số KM giới hạn bảo hành của xe tạo BCBH!");
         }
     }
+    // WarrantyFile / _VIN / _KM (WarrantyReport.cs:4905, ~5060, ~5120) — mọi nhánh trừ TC: ảnh đính kèm của RO.
+    if (tc is "XM" or "SB" or "PT" or "BT")
+    {
+        var atts = await db.RoAttachments.Where(x => x.OrgId == t.OrgId && x.RONo == c.RONo).ToListAsync();
+        // WarrantyFile: loại bảo hành → các loại ảnh BẮT BUỘC (trừ 'KHAC') phải có ít nhất 1 ảnh theo ROWPTCode.
+        var wt = await db.ROWarrantyTypes.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ROWTypeCode == tc && x.ROWTypeDtlCode == dc);
+        if (wt is not null)
+        {
+            var required = await db.ROWarrantyTypePhotos.Where(x => x.OrgId == t.OrgId && x.ROWarrantyTypeId == wt.Id && x.ROWPTCode != "KHAC").ToListAsync();
+            var missingPhotos = required.Where(p => !atts.Any(a => a.ROWPTCode == p.ROWPTCode)).Select(p => p.ROWPTCode).ToList();
+            if (missingPhotos.Count > 0) Deny("InvalidWarrantyFile", "BCBH chưa đủ loại ảnh!", new { missing = missingPhotos });
+        }
+        // WarrantyFile_VIN: đúng 1 ảnh VIN và giá trị nhập (Remark) trùng VIN của BCBH.
+        if (!string.IsNullOrWhiteSpace(c.Vin))
+        {
+            var vinPhotos = atts.Where(a => a.ROWPTCode == "VIN").ToList();
+            if (vinPhotos.Count == 0) Deny("InvalidWarrantyFile_VIN", "BCBH chưa có ảnh VIN!");
+            else if (vinPhotos.Count > 1) Deny("InvalidWarrantyFile_VIN", "BCBH có nhiều hơn 1 ảnh VIN!");
+            else if (!string.Equals((vinPhotos[0].Remark ?? "").Trim(), c.Vin.Trim(), StringComparison.OrdinalIgnoreCase))
+                Deny("InvalidWarrantyFile_VIN", "Giá trị của ảnh VIN không trùng với VIN của BCBH!");
+        }
+        // WarrantyFile_KM: đúng 1 ảnh KM và giá trị nhập trùng Km của BCBH (Km rỗng đã báo InvalidKM ở trên).
+        if (!string.IsNullOrWhiteSpace(c.Km))
+        {
+            var kmPhotos = atts.Where(a => a.ROWPTCode == "KM").ToList();
+            if (kmPhotos.Count == 0) Deny("InvalidWarrantyFile_KM", "BCBH chưa có ảnh KM!");
+            else if (kmPhotos.Count > 1) Deny("InvalidWarrantyFile_KM", "BCBH có nhiều hơn 1 ảnh KM!");
+            else if ((kmPhotos[0].Remark ?? "").Trim() != c.Km.Trim())
+                Deny("InvalidWarrantyFile_KM", "Giá trị của ảnh KM không trùng với số Km của báo giá!");
+        }
+    }
     // PartIDError (:6467) — XM|SB × P|W, PT × S, TC × R: BCBH phải có phụ tùng lỗi.
     if ((((tc is "XM" or "SB") && dc is "P" or "W") || (tc == "PT" && dc == "S") || (tc == "TC" && dc == "R")) && string.IsNullOrEmpty(c.PartIDError))
         Deny("InvalidPartIDError", "Báo cáo bảo hành chưa có phụ tùng lỗi!");
