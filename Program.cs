@@ -32771,6 +32771,19 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
                 Deny("InvalidKM", "Số Km của BCBH > Số KM giới hạn bảo hành của xe tạo BCBH!");
         }
     }
+    // ServiceROTypeBDD (WarrantyReport.cs:6066) — SB × W: số RO đã hoàn thành (FNS) khác RO của BCBH, cùng VIN (không phân biệt đại lý), có công việc bảo dưỡng định kỳ
+    // (ROType = BDD) phải >= số lần bảo dưỡng yêu cầu theo Km (max Maintances của Ser_MST_ROMaintanceSetting với Km <= Km BCBH).
+    if (tc == "SB" && dc == "W" && !string.IsNullOrWhiteSpace(c.Km) && !string.IsNullOrWhiteSpace(c.Vin)
+        && decimal.TryParse(c.Km, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var kmBdd))
+    {
+        var countBdd = await (from ro in db.RepairOrders
+                              join si in db.RoServiceItems on ro.Id equals si.RoId
+                              where ro.OrgId == t.OrgId && si.OrgId == t.OrgId && ro.Vin == c.Vin && ro.Status == "FNS" && ro.RONo != c.RONo && si.ROType == "BDD"
+                              select ro.Id).Distinct().CountAsync();
+        var needBdd = (await db.RoMaintanceSettings.Where(m => m.OrgId == t.OrgId && m.Km != null && m.Km <= kmBdd).Select(m => m.Maintances).ToListAsync())
+            .Select(s => int.TryParse(s, out var n) ? n : 0).DefaultIfEmpty(0).Max();
+        if (countBdd < needBdd) Deny("InvalidROMaintanceSetting", "Số lượt bảo dưỡng (số RO có chứa loại CV là bảo dưỡng định kỳ) < số lần bảo dưỡng theo Km!", new { countBdd, needBdd });
+    }
     // ComplaintDiagnosticError (WarrantyReport.cs:5886) — XM|SB × A|B|P|W: mã lỗi phàn nàn (PN) và mã lỗi chẩn đoán (CD) của BCBH phải tồn tại trong danh mục
     // đúng loại và đang hoạt động. (Các luật Km/ngày bảo hành theo mã lỗi đã bị nguồn COMMENT bỏ từ 20220402 ⇒ không port.)
     if ((tc is "XM" or "SB") && dc is "A" or "B" or "P" or "W")
@@ -32871,6 +32884,20 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
                      "Phụ tùng chính đã được thay thế hơn 6 tháng trước!", ctx);
             if (kmDiff > 10000m)
                 Deny("InvalidKM", "Xe đã chạy được hơn 10,000 KM từ khi Phụ tùng chính đã được thay thế!", ctx);
+            // WarrantyFile_KM1 (WarrantyReport.cs:5779, gọi cuối `CreatedDate_OtherROActualDeliveryDate`): đúng 1 ảnh KM1; giá trị nhập (Remark) không rỗng,
+            // là số, và bằng Km của RO có phụ tùng chính đã giao xe gần nhất.
+            var km1Photos = await db.RoAttachments.Where(a => a.OrgId == t.OrgId && a.RONo == c.RONo && a.ROWPTCode == "KM1").ToListAsync();
+            if (km1Photos.Count == 0) Deny("InvalidWarrantyFile_KM1", "BCBH chưa có ảnh KM1!");
+            else if (km1Photos.Count > 1) Deny("InvalidWarrantyFile_KM1", "BCBH có nhiều hơn 1 ảnh KM1!");
+            else
+            {
+                var km1Text = (km1Photos[0].Remark ?? "").Trim();
+                if (km1Text.Length == 0) Deny("InvalidWarrantyFile_KM1", "Giá trị của ảnh KM1 không được trống!");
+                else if (!decimal.TryParse(km1Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var km1Val))
+                    Deny("InvalidWarrantyFile_KM1", "Giá trị của ảnh KM1 phải là chữ số!");
+                else if (!decimal.TryParse(other.Km, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var otherKmVal) || km1Val != otherKmVal)
+                    Deny("InvalidWarrantyFile_KM1", "Giá trị của ảnh KM1 không trùng với số KM của báo giá có chứa phụ tùng chính đã giao xe gần nhất!", ctx);
+            }
         }
         else
         {
