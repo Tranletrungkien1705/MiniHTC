@@ -122991,7 +122991,9 @@ app.MapPost("/api/repairorders/{no}/reject", async (string no, RoRejectDto dto, 
     if (string.IsNullOrWhiteSpace(dto.Note)) return Results.BadRequest(new { error = "Chưa nhập lý do từ chối." });
     // #901 FIX: đủ bốn trạng thái nguồn chặn (RPRD/PAID/FNS/REJ) — port cũ thiếu Repaired/Paid.
     if (r.Status is "RPRD" or "PAID" or "FNS" or "REJ")
-        return Results.BadRequest(new { error = "Lệnh đã Sửa xong/Đã thanh toán/Đã hoàn thành/Đã từ chối, không thể huỷ.", status = r.Status });
+        return Results.BadRequest(new { error = "Lệnh đã Sửa xong/Đã thanh toán/Đã hoàn thành/Đã từ chối, không thể huỷ.", status = r.Status,
+            // nguồn tách 2 mã: đã Từ chối ⇒ SerRO_ROIsReject; Repaired/Paid/Finished ⇒ SerRO_NotUpdateROReject
+            code = r.Status == "REJ" ? "SerRO_ROIsReject" : "SerRO_NotUpdateROReject" });
     r.Status = "REJ"; r.RejectNote = dto.Note.Trim(); r.RejectedAt = DateTime.Now;
     // #1142: nguồn `SerROUpdateToROReject_New20210329` (Service01.cs:10377-10478) ghi Status/LogLUDateTime/
     // LogLUBy trong CÙNG một lệnh SaveData — port cũ hoàn toàn bỏ sót 2 cột nhật ký trên chính Ser_RO.
