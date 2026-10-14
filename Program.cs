@@ -62878,6 +62878,8 @@ app.MapGet("/api/customergroups", async (AppDbContext db, ITenantContext t, stri
     var items = await query.OrderByDescending(x => x.Id).Take(500).Select(x => new
     {
         x.GroupNo, x.GroupName, x.Description, x.FlagActive,
+        // §12 round-trip: 6 cột #1077 đã lưu ở POST nhưng trước đây GET không trả ra.
+        x.Address, x.Email, x.TelePhone, x.Fax, x.TaxCode, x.DealerCode,
         members = db.CustomerGroupMembers.Count(m => m.OrgId == t.OrgId && m.CustomerGroupId == x.Id)
     }).ToListAsync();
     return Results.Ok(new { count = items.Count, items });
