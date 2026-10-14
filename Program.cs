@@ -79811,8 +79811,11 @@ app.MapGet("/api/insurancetypes", async (
         .Select(x => new { x.Id, x.InsCompanyCode, x.InsTypeCode, x.EffectiveDate, x.InsTypeName, x.FlagActive, x.UpdatedAt })
         .ToListAsync();
     // Nguồn LEFT JOIN Mst_InsuranceCompany để lấy tên công ty.
-    var names = await db.MstInsuranceCompanies.Where(c => c.OrgId == t.OrgId)
-        .ToDictionaryAsync(c => c.InsCompanyCode, c => c.InsCompanyName);
+    // `/api/insurancecompanies/htc-create` bám nguồn `_Create` KHÔNG guard trùng mã ⇒ bảng có thể có nhiều dòng cùng InsCompanyCode;
+    // ToDictionary thuần ném ArgumentException ⇒ GET 500. Lấy dòng đầu theo Id (giống `top 1` của LEFT JOIN nguồn không ORDER BY).
+    var names = (await db.MstInsuranceCompanies.Where(c => c.OrgId == t.OrgId).OrderBy(c => c.Id)
+        .Select(c => new { c.InsCompanyCode, c.InsCompanyName }).ToListAsync())
+        .GroupBy(c => c.InsCompanyCode).ToDictionary(g => g.Key, g => g.First().InsCompanyName);
     return Results.Ok(new { count = items.Count,
         items = items.Select(i => new { i.Id, i.InsCompanyCode,
             insCompanyName = names.ContainsKey(i.InsCompanyCode) ? names[i.InsCompanyCode] : null,
