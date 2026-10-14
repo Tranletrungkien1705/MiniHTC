@@ -104935,6 +104935,88 @@ app.MapGet("/api/customercars", async (AppDbContext db, ITenantContext t, string
     return Results.Ok(new { count = items.Count, items, mergedInto = "/api/servicecars" });
 }).RequireAuthorization();
 
+// ===== `SerCustomerCarSync_FromPDI` (BizCarSv.Customer.cs:9248, LIVE qua WS:34830) + `ProcessSaveCar01_FromPDI` (:10296) + `_FromPDIExt` (:10437) =====
+// Nguồn LẤY thông tin yêu cầu PDI từ hệ DMS.Sales (`WSHTC64.GetInforForSerCustomerCarSync`, bảng `Dlr_PDIRequestDtl`) rồi:
+//   1) nếu đã có RO của (DlrPDIReqNo, VIN) không phải REJ ⇒ `SerCustomerCarSync_FromPDI_Exist_RO`;
+//   2) xe (VIN, đại lý, active) ĐÃ có bên Service ⇒ cập nhật khách hàng gắn xe (khi bên Sale có CustomerCode) + ghi SerialNo/BatteryNo của xe;
+//   3) CHƯA có xe ⇒ tìm/tạo khách hàng theo (SalesCusID, đại lý) rồi tạo xe (PlateNo = đại lý + VIN, TradeMark "HYUNDAI", CurrentKm 0, người tạo "SYS.PDI").
+// MiniHTC không gọi được DMS.Sales nên nhận luôn dữ liệu `Dlr_PDIRequestDtl` trong body (`pdi`). Quirk giữ nguyên: Gender "1" ⇒ Sex "False"
+// (comment nguồn nói 1 = Nam nhưng code gán ngược), ModelID tra từ Ser_MST_Model được thay bằng gán ModelCode trực tiếp.
+app.MapPost("/api/customercars/sync-from-pdi", async (CustomerCarSyncFromPdiDto dto, AppDbContext db, ITenantContext t) =>
+{
+    var req = (dto.DlrPDIReqNo ?? "").Trim();
+    var vin = (dto.VIN ?? "").Trim().ToUpperInvariant();
+    if (req.Length == 0 || vin.Length == 0)
+        return Results.BadRequest(new { error = "Thiếu số yêu cầu PDI hoặc VIN.", code = "SerCustomerCarSync_FromPDI" });
+    if (dto.Pdi is null)
+        return Results.BadRequest(new { error = "Không lấy được thông tin yêu cầu PDI từ DMS.Sales.", code = "GetInforForSerCustomerCarSync" });
+    var existRo = await (from ro in db.RepairOrders
+                         join car in db.ServiceCars on ro.CarID equals car.CarID
+                         where ro.OrgId == t.OrgId && car.OrgId == t.OrgId && ro.DlrPDIReqNo == req && car.FrameNo == vin && ro.Status != "REJ"
+                         select ro.RONo).FirstOrDefaultAsync();
+    if (existRo is not null)
+        return Results.BadRequest(new { error = "Đã có lệnh sửa chữa cho yêu cầu PDI và VIN này.", code = "SerCustomerCarSync_FromPDI_Exist_RO", roNo = existRo });
+
+    var p = dto.Pdi;
+    var dealer = (p.DealerCode ?? "").Trim();
+    var salesCusId = (p.CustomerCode ?? "").Trim();
+    var sex = (p.Gender ?? "") == "1" ? "False" : "True";
+    var dobText = p.DateOfBirth ?? ""; if (dobText.Length > 10) dobText = dobText.Substring(0, 10);
+    DateTime? dob = DateTime.TryParse(dobText, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var dobParsed) ? dobParsed : null;
+    var district = string.IsNullOrEmpty(p.DistrictCode) || p.DistrictCode == "0" ? null : p.DistrictCode;
+    void ApplyCustomer(ServiceCustomer c)
+    {
+        c.SalesCusID = salesCusId; c.CusName = p.FullName ?? ""; c.Address = p.Address; c.Tel = p.PhoneNo; c.Mobile = p.PhoneNo; c.TaxCode = p.TaxCode;
+        c.ContName = p.FullName; c.ContAddress = p.Address; c.ContTel = p.PhoneNo; c.ContMobile = p.PhoneNo;
+        c.ProvinceCode = p.ProvinceCode; c.DistrictCode = district; c.Sex = sex; c.IDCardNo = p.IDCardNo; c.DOB = dob;
+    }
+    var now = DateTime.Now;
+    var existing = await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.FrameNo == vin && x.FlagActive == "1" && x.DealerCode == dealer);
+    if (existing is not null)
+    {
+        // Xe đã có bên Service: cập nhật khách hàng gắn xe (chỉ khi bên Sale có thông tin khách hàng), rồi ghi SerialNo/BatteryNo.
+        var customerUpdated = false;
+        if (salesCusId.Length > 0 && !string.IsNullOrEmpty(existing.CusID))
+        {
+            var cus = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CusCode == existing.CusID);
+            if (cus is not null) { ApplyCustomer(cus); customerUpdated = true; }
+        }
+        if (!string.IsNullOrEmpty(existing.CusID)) { existing.SerialNo = (p.SerialNo ?? "").Trim(); existing.BatteryNo = (p.BatteryNo ?? "").Trim(); }
+        await db.SaveChangesAsync();
+        return Results.Ok(new { mode = "update", vin, dealerCode = dealer, cusCode = existing.CusID, customerUpdated, carId = existing.CarID });
+    }
+
+    // Chưa có xe: tìm khách hàng theo (SalesCusID, đại lý) hoặc tạo mới.
+    ServiceCustomer? customer = null;
+    if (salesCusId.Length > 0)
+        customer = await db.ServiceCustomers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SalesCusID == salesCusId && x.DealerCode == dealer);
+    var createdCustomer = false;
+    if (customer is null)
+    {
+        customer = new ServiceCustomer { OrgId = t.OrgId, CusCode = "CUS" + now.ToString("yyMMddHHmmssfff"), DealerCode = dealer, FlagActive = "1",
+            IsContact = string.IsNullOrWhiteSpace(p.FullName) ? "1" : "0", CreatedDate = now, CreatedBy = "SYS.PDI" };
+        ApplyCustomer(customer);
+        db.ServiceCustomers.Add(customer);
+        createdCustomer = true;
+    }
+    DateTime? dealDate = DateTime.TryParse(p.DealDate, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var dd) ? dd.Date : null;
+    var newCar = new ServiceCar
+    {
+        OrgId = t.OrgId, DealerCode = dealer, CusID = customer.CusCode, PlateNo = dealer + vin, FrameNo = vin,
+        EngineNo = string.IsNullOrWhiteSpace(p.EngineNo) ? null : p.EngineNo, ColorCode = string.IsNullOrWhiteSpace(p.ColorExtNameVN) ? null : p.ColorExtNameVN,
+        ModelCode = string.IsNullOrWhiteSpace(p.ModelCode) ? null : p.ModelCode, TradeMark = "HYUNDAI", CurrentKm = 0,
+        SalesCarID = string.IsNullOrWhiteSpace(p.CarID) ? null : p.CarID,
+        SerialNo = string.IsNullOrWhiteSpace(p.SerialNo) ? null : p.SerialNo, BatteryNo = string.IsNullOrWhiteSpace(p.BatteryNo) ? null : p.BatteryNo,
+        FlagActive = "1", CreatedDate = now, CreatedBy = "SYS.PDI",
+    };
+    if (dealDate is not null) { newCar.DateBuyCar = dealDate.Value.ToString("yyyy-MM-dd"); newCar.WarrantyRegistrationDate = dealDate; }   // ngày bảo hành = ngày bán xe
+    db.ServiceCars.Add(newCar);
+    await db.SaveChangesAsync();
+    newCar.CarID = newCar.Id.ToString();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { mode = "create", vin, dealerCode = dealer, cusCode = customer.CusCode, createdCustomer, carId = newCar.CarID });
+}).RequireAuthorization();
+
 app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     var vin = (string.IsNullOrWhiteSpace(dto.Vin) ? dto.FrameNo ?? "" : dto.Vin).Trim().ToUpperInvariant();
@@ -127329,6 +127411,11 @@ record PartPriceDto(string PartCode, string? PartName, decimal Price, decimal VA
     string? Remark = null, string? IsActive = null);   // #295
 record PartPriceImportRowDto(string? PartCode, string? PartName, decimal? Price, DateTime? EffectiveDate, string? Remark);   // #935
 record PartPriceUpdateByIdDto(decimal Price, DateTime EffectiveDate, string? Remark, string? IsActive);   // #30084 Ser_Mst_PartPrice_Update
+// `Dlr_PDIRequestDtl` (DMS.Sales) — các cột `SerCustomerCarSync_FromPDI` đọc; MiniHTC nhận trong body vì không gọi được DMS.Sales.
+record PdiRequestDtlDto(string? DealerCode, string? CustomerCode, string? FullName, string? Address, string? PhoneNo, string? TaxCode,
+    string? ProvinceCode, string? DistrictCode, string? Gender, string? IDCardNo, string? DateOfBirth,
+    string? EngineNo, string? ColorExtNameVN, string? ModelCode, string? DealDate, string? CarID, string? SerialNo, string? BatteryNo);
+record CustomerCarSyncFromPdiDto(string? DlrPDIReqNo, string? VIN, PdiRequestDtlDto? Pdi);
 record CustomerCarDto(string? Vin, string? PlateNo, string? FrameNo, string? EngineNo, string? ModelCode, string? ColorCode, string? PlateColorCode, string? CusCode, string? CusName, string? CusPhone, DateTime? SaleDate, string? TradeMarkCode = null, int? ProductYear = null);
 record CustomerCareDto(string? CareType, string? RONo, string? PlateNo, string? CusName, string? CusPhone, DateTime? ContactDate,
     string? CusID, string? CarID);   // #457 §12: hai khoá nối của nguồn
