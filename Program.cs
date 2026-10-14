@@ -50638,6 +50638,12 @@ app.MapPost("/api/vinmodelorginalmsts", async (VinModelOrginalMstDto dto, AppDbC
     var mc = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(vc)) return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Create_VINCodeNotEmpty", field = "VINCode", message = "Chưa nhập mã VIN gốc." });
     if (string.IsNullOrWhiteSpace(mc)) return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Create_ModelCodeNotEmpty", field = "ModelCode", message = "Chưa chọn model." });
+    // `Mst_VINModelOrginal_Create` (BizCarSv.Master.cs:9340, :9395-9420): mã VIN gốc dài 4 HOẶC 5 ký tự (`..._InvalidVINCode_Length`) và chỉ gồm chữ+số
+    // (regex nguồn `[^a-zA-Z0-9]`, KHÔNG cho . _ - ⇒ `..._InvalidVINCode`). Trước đây thiếu cả hai guard.
+    if (vc.Length != 4 && vc.Length != 5)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Create_InvalidVINCode_Length", field = "VINCode", message = "Mã VIN gốc phải dài 4 hoặc 5 ký tự.", length = vc.Length });
+    if (System.Text.RegularExpressions.Regex.IsMatch(vc, "[^a-zA-Z0-9]"))
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Create_InvalidVINCode", field = "VINCode", message = "Mã VIN gốc chỉ gồm chữ và số." });
     var fa = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive.Trim();
     if (fa is not ("0" or "1"))
         return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ nhận 0 hoặc 1." });
