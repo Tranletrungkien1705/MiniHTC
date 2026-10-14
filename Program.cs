@@ -464,18 +464,15 @@ app.MapPost("/api/deliverylocations", async (DeliveryLocationDto dto, AppDbConte
     var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
     var row = await db.DeliveryLocations.FirstOrDefaultAsync(
         x => x.OrgId == t.OrgId && x.DeliveryLocationCode == code && x.DealerCode == dealer);
-    var isNew = row is null;
+    // Guard 4 của `_Add` (BizCarSv.Master.cs:11186): CheckDB(FlagExistToCheck = No) ⇒ cặp khóa ĐÃ TỒN TẠI thì lỗi.
+    // Trước đây route này là upsert nên guard bị bỏ qua dù chú thích ghi "port đủ"; muốn sửa thì dùng PUT /{dealerCode}/{code}.
+    if (row is not null)
+        return Results.BadRequest(new { error = "Mã địa điểm đã tồn tại trong hệ thống!", code = "Mst_DeliveryLocation_CheckDB_DeliveryLocationExist", dealerCode = dealer, deliveryLocationCode = code });
+    var isNew = true;
     var now = DateTime.Now;
-    if (row is null)
-    {
-        row = new DeliveryLocation { OrgId = t.OrgId, DeliveryLocationCode = code, DealerCode = dealer, CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who, CreatedAt = now, UpdatedAt = now };
-        db.DeliveryLocations.Add(row);
-        row.FlagActive = "1";   // _Add đặt cứng Active; client không đổi được lúc tạo
-    }
-    else if (!string.IsNullOrWhiteSpace(dto.FlagActive))
-    {
-        row.FlagActive = dto.FlagActive!.Trim();   // chỉ _Update mới nhận cờ
-    }
+    row = new DeliveryLocation { OrgId = t.OrgId, DeliveryLocationCode = code, DealerCode = dealer, CreatedDate = dto.CreatedDate ?? now, CreatedBy = dto.CreatedBy ?? who, CreatedAt = now, UpdatedAt = now };
+    db.DeliveryLocations.Add(row);
+    row.FlagActive = "1";   // _Add đặt cứng Active; client không đổi được lúc tạo
     row.DeliveryLocationName = name;
     row.LogLUDateTime = now;
     row.LogLUBy = who;
