@@ -4291,7 +4291,8 @@ app.MapPost("/api/transplans/{vinPlan}/update-logistic", async (string vinPlan, 
     p.FDistrictCode = string.IsNullOrWhiteSpace(dto.FDistrictCode) ? null : dto.FDistrictCode;
     p.TProvinceCode = string.IsNullOrWhiteSpace(dto.TProvinceCode) ? null : dto.TProvinceCode;
     p.TDistrictCode = string.IsNullOrWhiteSpace(dto.TDistrictCode) ? null : dto.TDistrictCode;
-    p.TransporterStatus = dto.TransporterStatus;
+    // Nguồn (Biz.HTC.WH.cs:101395,101714): `StandardizeParam` rồi ghi thẳng ⇒ thiếu tham số = chuỗi rỗng, KHÔNG null. Cột NOT NULL ⇒ gán null thì 500.
+    p.TransporterStatus = dto.TransporterStatus ?? "";
     p.LogLUDateTime = now; p.LogLUBy = who;
     await db.SaveChangesAsync();
     return Results.Ok(new { p.VINPlan, p.TransporterCode, p.FProvinceCode, p.FDistrictCode, p.TProvinceCode, p.TDistrictCode, p.TransporterStatus, p.TPStatus });
