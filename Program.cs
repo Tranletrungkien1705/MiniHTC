@@ -63809,9 +63809,17 @@ app.MapPost("/api/campaignmarketings/{no}/scope", async (string no, CampaignScop
     no = no.Trim().ToUpperInvariant();
     var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamMarketingNo == no);
     if (c is null) return Results.NotFound(new { no });
+    // KHÔNG còn `Distinct()` âm thầm: nguồn (`Ser_CampaignMarketing_Update`, CampaignMarketing\BizCarSv.CampaignMarketing.cs:4498/:4556/:4615)
+    // dựng hashtable khoá "|CamMarketingNo||VIN|" và NÉM `..._DuplicateKeyDetail` khi bảng đầu vào có khoá trùng.
     static List<string> Norm(List<string>? xs) => (xs ?? new List<string>())
-        .Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).Distinct().ToList();
+        .Select(x => (x ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0).ToList();
     var vins = Norm(dto.Vins); var plates = Norm(dto.StartPlateNos); var dealers = Norm(dto.DealerCodes);
+    if (vins.GroupBy(x => x).Any(g => g.Count() > 1))
+        return Results.BadRequest(new { error = "Danh sách VIN bị trùng.", code = "Ser_CampaignMarketing_Update_Input_CampaignMarketingVINTbl_DuplicateKeyDetail" });
+    if (plates.GroupBy(x => x).Any(g => g.Count() > 1))
+        return Results.BadRequest(new { error = "Danh sách biển số bị trùng.", code = "Ser_CampaignMarketing_Update_Input_CampaignMarketingPlateNoTbl_DuplicateKeyDetail" });
+    if (dealers.GroupBy(x => x).Any(g => g.Count() > 1))
+        return Results.BadRequest(new { error = "Danh sách đại lý bị trùng.", code = "Ser_CampaignMarketing_Update_Input_CampaignMarketingDealerTbl_DuplicateKeyDetail" });
     if (vins.Count == 0 && plates.Count == 0 && dealers.Count == 0)
         return Results.BadRequest(new { error = "Cần ít nhất một trong: Vins, StartPlateNos, DealerCodes." });
 
@@ -63861,7 +63869,10 @@ app.MapPost("/api/campaignmarketings/{no}/fullvins", async (string no, CampaignF
     var c = await db.CampaignMarketings.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CamMarketingNo == no);
     if (c is null) return Results.NotFound(new { no });
     var vins = (dto.VinNos ?? new List<string>()).Select(x => (x ?? "").Trim().ToUpperInvariant())
-        .Where(x => x.Length > 0).Distinct().ToList();
+        .Where(x => x.Length > 0).ToList();
+    // Nguồn NÉM `..._FullVINTbl_DuplicateKeyDetail` khi danh sách VIN đầy đủ có khoá trùng (BizCarSv.CampaignMarketing.cs:3073/:3819); trước đây `Distinct()` âm thầm.
+    if (vins.GroupBy(x => x).Any(g => g.Count() > 1))
+        return Results.BadRequest(new { error = "Danh sách VIN đầy đủ bị trùng.", code = "Ser_CampaignMarketing_Update_Input_CampaignMarketingFullVINTbl_DuplicateKeyDetail" });
     if (vins.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất một VIN." });
     // Nguồn SỬA = XOÁ SẠCH rồi ghi lại (#393) — giữ đúng lệ đó cho bảng con này.
     var old = await db.CampaignMarketingFullVins.Where(v => v.OrgId == t.OrgId && v.CamNo == no).ToListAsync();
