@@ -63814,6 +63814,21 @@ app.MapPut("/api/campaignmarketings/{no}", async (string no, CampaignMarketingDt
         return Results.BadRequest(new { error = "Chỉ sửa được chiến dịch đang CHỜ DUYỆT (P).",
             currentStatus = c.CamMarketingStatus });
 
+    // Guard của `Ser_CampaignMarketing_Update` (CampaignMarketing\BizCarSv.CampaignMarketing.cs) — chạy TRƯỚC khi gán dữ liệu.
+    if (dto.CamMarketingName is not null && string.IsNullOrWhiteSpace(dto.CamMarketingName))
+        return Results.BadRequest(new { error = "Chưa nhập tên chiến dịch.", code = "Ser_CampaignMarketing_Update_InvalidCamMarketingName" });
+    var effStartU = dto.EffDateStart ?? c.EffDateStart; var effEndU = dto.EffDateEnd ?? c.EffDateEnd;
+    if (effEndU < effStartU)
+        return Results.BadRequest(new { error = "Ngày kết thúc chiến dịch không được trước ngày bắt đầu.", code = "Ser_CampaignMarketing_Update_EffDateEndAftereEffDateStart" });
+    if (dto.WarrantyDateStart is not null && dto.WarrantyDateEnd is not null && dto.WarrantyDateEnd.Value < dto.WarrantyDateStart.Value)
+        return Results.BadRequest(new { error = "Ngày kết thúc bảo hành không được trước ngày bắt đầu.", code = "Ser_CampaignMarketing_Update_WarrantyDateEndAftereWarrantyDateStart" });
+    var dupPartU = (dto.Parts ?? new()).Select(p => (p.PartCode ?? "").Trim().ToUpperInvariant()).Where(x => x.Length > 0)
+        .GroupBy(x => x).FirstOrDefault(g => g.Count() > 1);
+    if (dupPartU is not null)
+        return Results.BadRequest(new { error = $"Mã phụ tùng '{dupPartU.Key}' bị lặp trên lưới!", code = "Ser_CampaignMarketing_Update_Input_CampaignMarketingPartTbl_DuplicateKeyDetail" });
+    if ((dto.Parts ?? new()).Any(p => p.PercentDiscount < 0 || p.PercentDiscount > 100))
+        return Results.BadRequest(new { error = "Hệ số giảm(%) phải >= 0 và <= 100!", code = "Ser_CampaignMarketing_Update_Input_CampaignMarketingPartTbl_InvalidPercentDiscount" });
+
     c.CamMarketingName = dto.CamMarketingName ?? c.CamMarketingName;
     c.CamMarketingDesc = dto.CamMarketingDesc;
     // EffDate* KHONG nullable tren entity => giu gia tri cu khi DTO khong gui.
@@ -63955,12 +63970,18 @@ app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbCon
     if (string.IsNullOrWhiteSpace(dto.CamMarketingDesc)) return Results.BadRequest(new { error = "Chưa nhập nội dung chiến dịch." });
     if (dto.EffDateStart is null) return Results.BadRequest(new { error = "Chưa nhập ngày chiến dịch từ." });
     if (dto.EffDateEnd is null) return Results.BadRequest(new { error = "Chưa nhập ngày chiến dịch đến." });
+    // `Ser_CampaignMarketing_Create` (CampaignMarketing\BizCarSv.CampaignMarketing.cs): ngày kết thúc không được trước ngày bắt đầu
+    // (hiệu lực: luôn kiểm; bảo hành: chỉ kiểm khi nhập đủ cả hai).
+    if (dto.EffDateEnd.Value < dto.EffDateStart.Value)
+        return Results.BadRequest(new { error = "Ngày kết thúc chiến dịch không được trước ngày bắt đầu.", code = "Ser_CampaignMarketing_Create_EffDateEndAftereEffDateStart" });
+    if (dto.WarrantyDateStart is not null && dto.WarrantyDateEnd is not null && dto.WarrantyDateEnd.Value < dto.WarrantyDateStart.Value)
+        return Results.BadRequest(new { error = "Ngày kết thúc bảo hành không được trước ngày bắt đầu.", code = "Ser_CampaignMarketing_Create_WarrantyDateEndAftereWarrantyDateStart" });
     var parts = dto.Parts ?? new List<CampaignMarketingPartDto>();
     var dupCodes = parts.Select(p => (p.PartCode ?? "").Trim().ToUpperInvariant()).Where(c => c.Length > 0)
         .GroupBy(c => c).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
-    if (dupCodes.Count > 0) return Results.BadRequest(new { error = $"Mã phụ tùng '{dupCodes[0]}' bị lặp trên lưới!" });
+    if (dupCodes.Count > 0) return Results.BadRequest(new { error = $"Mã phụ tùng '{dupCodes[0]}' bị lặp trên lưới!", code = "Ser_CampaignMarketing_Create_Input_CampaignMarketingPartTbl_DuplicateKeyDetail" });
     foreach (var p in parts)
-        if (p.PercentDiscount < 0 || p.PercentDiscount > 100) return Results.BadRequest(new { error = "Hệ số giảm(%) phải >= 0 và <= 100!" });
+        if (p.PercentDiscount < 0 || p.PercentDiscount > 100) return Results.BadRequest(new { error = "Hệ số giảm(%) phải >= 0 và <= 100!", code = "Ser_CampaignMarketing_Create_Input_CampaignMarketingPartTbl_InvalidPercentDiscount" });
 
     var no = "CM" + DateTime.Now.ToString("yyMMddHHmmss");
     var c = new CampaignMarketing
@@ -63969,7 +63990,8 @@ app.MapPost("/api/campaignmarketings", async (CampaignMarketingDto dto, AppDbCon
         EffDateStart = dto.EffDateStart.Value, EffDateEnd = dto.EffDateEnd.Value,
         WarrantyDateStart = dto.WarrantyDateStart, WarrantyDateEnd = dto.WarrantyDateEnd,
         ConditionVIN = dto.ConditionVIN, ConditionPlateNo = dto.ConditionPlateNo, ConditionDealer = dto.ConditionDealer,
-        ConditionFullVIN = dto.ConditionFullVIN, CamMarketingStatus = dto.CamMarketingStatus, Remark = dto.Remark,
+        // Ser_CampaignMarketing_Create không nhận tham số trạng thái: khởi tạo luôn là Pending ("P"). Trước đây gán dto (null ⇒ NOT NULL ⇒ 500).
+        ConditionFullVIN = dto.ConditionFullVIN, CamMarketingStatus = "P", Remark = dto.Remark,
         CreateDTime = DateTime.Now, CreateBy = user.Identity?.Name ?? "system",   // #366
         // #1117 §12: Ser_CampaignMarketing_Create_20220926 ghi LogLUDateTime/LogLUBy = strPartnerUserCode.
         LogLUDateTime = DateTime.Now, LogLUBy = (partnerUserCode ?? "system").Trim(),
