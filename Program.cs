@@ -37405,15 +37405,40 @@ app.MapPost("/api/tstexchangeunits", async (TstExchangeUnitDto dto, AppDbContext
     // #249: `FrmTST_Mst_Exchange_Unit.cs` kiểm `regex.IsMatch(strTSTPartCode)` / `(tstPartCode)`
     if (HasSpecialChar(code))
         return Results.BadRequest(new { error = "Mã vật tư không được phép chứa các ký tự đặc biệt", code });
-    if (dto.ExchangeRate <= 0) return Results.BadRequest(new { error = "Tỷ lệ quy đổi phải > 0." });
-    var row = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code);
-    if (row is null) { row = new TstExchangeUnit { OrgId = t.OrgId, TSTPartCode = code }; db.TstExchangeUnits.Add(row); }
+    // `TST_Mst_Exchange_Unit_Add` (BizCarSv.Service.cs:18093): CheckDB(Flag.No) ⇒ mã đã có thì ném `TST_Mst_Exchange_CheckDB_TSTPartCodeExist`;
+    // rồi VieName / TSTUnit / DMSUnit rỗng ⇒ `Add_Invalid_*`; ExchangeRate rỗng hoặc <= 0 ⇒ `Add_Invalid_ExchangeRate`.
+    // Trước đây POST là UPSERT và không kiểm 3 trường chuỗi; sửa dữ liệu qua PUT /api/tstexchangeunits/{code}.
+    if (dto.ExchangeRate <= 0) return Results.BadRequest(new { error = "Tỷ lệ quy đổi phải > 0.", code = "TST_Mst_Exchange_Unit_Add_Invalid_ExchangeRate" });
+    if (await db.TstExchangeUnits.AnyAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == code))
+        return Results.BadRequest(new { error = "Mã phụ tùng TST đã tồn tại trong bảng quy đổi.", code = "TST_Mst_Exchange_CheckDB_TSTPartCodeExist", tstPartCode = code });
+    if (string.IsNullOrWhiteSpace(dto.VieName)) return Results.BadRequest(new { error = "Chưa nhập tên tiếng Việt.", code = "TST_Mst_Exchange_Unit_Add_Invalid_VieName" });
+    if (string.IsNullOrWhiteSpace(dto.TSTUnit)) return Results.BadRequest(new { error = "Chưa nhập đơn vị TST.", code = "TST_Mst_Exchange_Unit_Add_Invalid_TSTUnit" });
+    if (string.IsNullOrWhiteSpace(dto.DMSUnit)) return Results.BadRequest(new { error = "Chưa nhập đơn vị DMS.", code = "TST_Mst_Exchange_Unit_Add_Invalid_DMSUnit" });
+    var row = new TstExchangeUnit { OrgId = t.OrgId, TSTPartCode = code }; db.TstExchangeUnits.Add(row);
     row.VieName = dto.VieName; row.TSTUnit = dto.TSTUnit; row.DMSUnit = dto.DMSUnit; row.ExchangeRate = dto.ExchangeRate; row.UpdatedAt = DateTime.Now;
     if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
     // #1118: nguon ghi LogLUDateTime/LogLUBy = strPartnerUserCode o CA Add lan Update.
     row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.TSTPartCode, row.ExchangeRate, row.FlagActive });
+}).RequireAuthorization();
+
+// `TST_Mst_Exchange_Unit_Update` (BizCarSv.Service.cs:18386): CheckDB(Flag.Yes) ⇒ mã PHẢI tồn tại (`..._TSTPartCodeNotFound`);
+// cùng bộ guard VieName/TSTUnit/DMSUnit/ExchangeRate với Add; luôn ghi LogLUDateTime/LogLUBy.
+app.MapPut("/api/tstexchangeunits/{code}", async (string code, TstExchangeUnitDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var key = (code ?? "").Trim();
+    var row = await db.TstExchangeUnits.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.TSTPartCode == key);
+    if (row is null) return Results.BadRequest(new { error = "Không tìm thấy mã phụ tùng TST trong bảng quy đổi.", code = "TST_Mst_Exchange_CheckDB_TSTPartCodeNotFound", tstPartCode = key });
+    if (string.IsNullOrWhiteSpace(dto.VieName)) return Results.BadRequest(new { error = "Chưa nhập tên tiếng Việt.", code = "TST_Mst_Exchange_Unit_Add_Invalid_VieName" });
+    if (string.IsNullOrWhiteSpace(dto.TSTUnit)) return Results.BadRequest(new { error = "Chưa nhập đơn vị TST.", code = "TST_Mst_Exchange_Unit_Add_Invalid_TSTUnit" });
+    if (string.IsNullOrWhiteSpace(dto.DMSUnit)) return Results.BadRequest(new { error = "Chưa nhập đơn vị DMS.", code = "TST_Mst_Exchange_Unit_Add_Invalid_DMSUnit" });
+    if (dto.ExchangeRate <= 0) return Results.BadRequest(new { error = "Tỷ lệ quy đổi phải > 0.", code = "TST_Mst_Exchange_Unit_Add_Invalid_ExchangeRate" });
+    row.VieName = dto.VieName; row.TSTUnit = dto.TSTUnit; row.DMSUnit = dto.DMSUnit; row.ExchangeRate = dto.ExchangeRate; row.UpdatedAt = DateTime.Now;
+    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
+    row.LogLUDateTime = DateTime.Now; row.LogLUBy = (partnerUserCode ?? "system").Trim();
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.TSTPartCode, row.VieName, row.TSTUnit, row.DMSUnit, row.ExchangeRate, row.FlagActive });
 }).RequireAuthorization();
 
 app.MapPost("/api/tstexchangeunits/{id}/toggle", async (long id, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
