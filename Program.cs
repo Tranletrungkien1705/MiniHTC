@@ -58691,10 +58691,14 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
         return Results.BadRequest(new { error = "Số bản tin không được phép chứa các ký tự đặc biệt" });
 
     var vinLines = dto.Vins ?? new();
+    // `Blt_BulletinCreate` (BizCarSv.Bulletin.cs:1399): CheckBulletinDetailEmpty(dtBulletinDetail) ⇒ bảng VIN phải có ít nhất 1 dòng.
+    // Trước đây bản tin không có VIN nào vẫn được nhận.
+    if (vinLines.Count == 0)
+        return Results.BadRequest(new { error = "Danh sách số khung không được để trống!", code = "Blt_Bulletin_DetailEmpty" });
     foreach (var line in vinLines)
     {
         // Nguồn gọi CheckVINEmpty cho từng dòng trước khi ghi.
-        if (string.IsNullOrWhiteSpace(line.VinNo)) return Results.BadRequest(new { error = "Số khung không được để trống!" });
+        if (string.IsNullOrWhiteSpace(line.VinNo)) return Results.BadRequest(new { error = "Số khung không được để trống!", code = "Blt_Bulletin_VinEmpty" });
     }
     // #577: nguồn kiểm trùng bằng dtBulletinDetail.Select("VinNo='…'") nối tay ⇒ VIN có dấu nháy làm hỏng
     //   biểu thức lọc, và là O(n²). Ở đây gom nhóm — cùng kết quả, không dính hai vấn đề trên.
@@ -58702,7 +58706,7 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
         .GroupBy(v => v.VinNo!.Trim().ToUpperInvariant())
         .FirstOrDefault(g => g.Count() > 1);
     if (duplicatedVin is not null)
-        return Results.BadRequest(new { error = $"Số khung '{duplicatedVin.Key}' bị trùng trong danh sách!" });
+        return Results.BadRequest(new { error = $"Số khung '{duplicatedVin.Key}' bị trùng trong danh sách!", code = "Blt_Bulletin_VinNoDuplicate" });
     // #577: nguồn KHÔNG kiểm VIN đã gắn ở bản tin KHÁC — port chỉ ĐẾM để báo, không chặn (giữ hành vi nguồn).
     var vinKeys = vinLines.Select(v => v.VinNo!.Trim().ToUpperInvariant()).ToList();
     var vinAlreadyOnOtherBulletin = vinKeys.Count == 0 ? 0 : await db.BulletinVins
