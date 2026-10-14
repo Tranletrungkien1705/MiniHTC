@@ -102013,8 +102013,13 @@ app.MapPost("/api/orderparts", async (OrderPartDto dto, AppDbContext db, ITenant
             return Results.BadRequest(new { error = "Hình thức Bảo hành VIN bắt buộc nhập!" });
     }
 
-    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.OrderQty > 0).ToList();
+    // `Ser_Order_Part_SaveX` (BizCarSv.A.02.OrderPart.cs): MỌI dòng chi tiết phải có QtyOrd >= 1, ngược lại ném
+    // `Ser_Order_Part_Save_Input_InvalidQtyOrd`. Trước đây dòng SL <= 0 bị âm thầm BỎ QUA, SL 0,5 lọt qua.
+    var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode)).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + OrderQty > 0)." });
+    if (lines.Any(l => l.OrderQty < 1))
+        return Results.BadRequest(new { error = "Số lượng đặt phải >= 1.", code = "Ser_Order_Part_Save_Input_InvalidQtyOrd",
+            partCode = lines.First(l => l.OrderQty < 1).PartCode });
 
     // ===== 🔴 #259 GHI CHÚ DÒNG > 1000 — `Ser_Order_PartDtl.Remark` =====
     // `FrmSer_Order_Part_Detail.cs:1274-1278` (md5 `51b5a41f` — KHỚP 2 máy):
@@ -102473,6 +102478,25 @@ app.MapPost("/api/orderparts/{no}/{action}", async (string no, string action, Or
     if (action == "approve")
     {
         if (o.OrderPartStatus != "P") return Results.BadRequest(new { error = "Chỉ gửi NCC đơn Mới tạo." });
+        // Guard của `Ser_Order_Part_Appr` (BizCarSv.A.02.OrderPart.cs:2601-2645, 2873), theo thứ tự nguồn. Trước đây 4 trường này
+        // là TÙY CHỌN khi duyệt (chỉ ghi nếu có) ⇒ duyệt được đơn thiếu số đơn NCC / ngày gửi NCC.
+        if (string.IsNullOrWhiteSpace(dto?.OrderSuppierNo))
+            return Results.BadRequest(new { error = "Số đơn hàng NCC không được để trống", code = "Ser_Order_Part_Appr_InvalidOrderSuppierNo" });
+        if (dto?.RequestSuppierDate is null)
+            return Results.BadRequest(new { error = "Ngày gửi NCC không được để trống", code = "Ser_Order_Part_Appr_InvalidRequestSuppierDate" });
+        if (dto.RequestSuppierDate.Value.Date < DateTime.Today)
+            return Results.BadRequest(new { error = "Ngày gửi NCC >= ngày hiện tại", code = "Ser_Order_Part_Appr_InvalidRequestSuppierDate" });
+        if (dto.ResponseSuppierDate is null)
+            return Results.BadRequest(new { error = "Ngày xác nhận không được để trống", code = "Ser_Order_Part_Appr_InvalidRequestSuppierDate" });
+        if (dto.Lines is { Count: > 0 })
+        {
+            var qtyOrdByCode = (await db.OrderPartLines.Where(x => x.OrgId == t.OrgId && x.OrderPartId == o.Id).ToListAsync())
+                .GroupBy(x => x.PartCode).ToDictionary(g => g.Key, g => g.First().OrderQty);
+            foreach (var dl in dto.Lines)
+                if (dl.QtyAppr is not null && !string.IsNullOrWhiteSpace(dl.PartCode)
+                    && qtyOrdByCode.TryGetValue(dl.PartCode.Trim().ToUpperInvariant(), out var qo) && qo < dl.QtyAppr.Value)
+                    return Results.BadRequest(new { error = "Số lượng đặt < Số lượng duyệt", code = "Ser_Order_Part_Appr_Input_InvalidQtyAppr", partCode = dl.PartCode });
+        }
 
         // ===== 🔴 #246 DUYỆT = GỬI ĐƠN HÀNG SANG NCC QUA BRAVO, không phải đổi cờ =====
         // Nguồn `Ser_Order_Part_Appr` (BizCarSv.A.02.OrderPart.cs:2691), khối gọi API tại :3258-3320.
