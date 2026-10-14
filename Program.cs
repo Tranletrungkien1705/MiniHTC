@@ -26083,6 +26083,13 @@ app.MapPost("/api/servicemodels", async (ServiceModelDto dto, AppDbContext db, I
     if (!string.IsNullOrWhiteSpace(dto.FlagActive) && dto.FlagActive != "0" && dto.FlagActive != "1")
         return Results.BadRequest(new { error = "ErrHTC.CommonAppData_InvalidFlagActiveMstMaintainNotMatch", message = "FlagActive chỉ được là 0 hoặc 1." });
     var code = dto.ModelCode.Trim().ToUpperInvariant();
+    // `Ser_Mst_Model_Create_New20200203` (BizCarSv.Master.cs:2602) và `_Update_New20200203` (:3063) đều gọi `Mst_CarModelStd_CheckDB(Yes, Active)`
+    // (BizCarSv.Tab.cs:2902): model phải có trong danh mục chuẩn `Mst_CarModelStd` (⇒ `..._ModelCodeNotFound`) và đang FlagActive=1 (⇒ `..._ModelCodeNotMatched`).
+    var stdModel = await db.CarModelStds.FirstOrDefaultAsync(m => m.OrgId == t.OrgId && m.ModelCode == code);
+    if (stdModel is null)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_CarModelStd_CheckDB_ModelCodeNotFound", message = "Model chưa có trong danh mục chuẩn (Mst_CarModelStd).", modelCode = code });
+    if (stdModel.FlagActive != "1")
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_CarModelStd_CheckDB_ModelCodeNotMatched", message = "Model trong danh mục chuẩn đang ngưng hoạt động.", modelCode = code });
     var now = DateTime.Now;
     var who = (partnerUserCode ?? "system").Trim();
     var ex = await db.ServiceModels.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.ModelCode == code);
