@@ -65504,28 +65504,10 @@ app.MapPost("/api/cavities", async (CavityDto dto, AppDbContext db, ITenantConte
     var ex = await db.Cavities.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CavityNo == code && x.DealerCode == dl);
     var now = DateTime.Now;
     var by = (partnerUserCode ?? "system").Trim();
+    // `CheckExistCavityNo` (BizCarSv.Service.cs:13275) — Ser_CavityCreate ném `Ser_CavityNo_Exist` khi cặp
+    // (CavityNo, DealerCode) đã có. Trước đây nhánh này là UPSERT (nuốt guard); muốn sửa dùng PUT /api/cavities/{code}.
     if (ex is not null)
-    {
-        // #1005: nguon Ser_CavityCreate ghi CavityType VO DIEU KIEN + Status (khi khac rong) + StartUseDate/
-        // FinishUseDate (LUON, null neu rong) — DTO da co san tu #296 nhung nhanh POST nay chua tung doc.
-        ex.CavityName = dto.CavityName; ex.CompartmentType = dto.CompartmentType; ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate; ex.Note = dto.Note;
-        ex.FlagActive = dto.IsActive ?? "1";
-        ex.CavityType = dto.CavityType;
-        if (!string.IsNullOrWhiteSpace(dto.Status)) ex.Status = dto.Status;
-        ex.StartUseDate = dto.StartUseDate; ex.FinishUseDate = dto.FinishUseDate;
-        // #1124 cùng luật #1102 (Ser_CavityUpdate luôn ghi LogLUDateTime/LogLUBy = strPartnerUserCode khi
-        // sửa khoang) — nhánh nâng cấp lại (upsert khi đã tồn tại) trong CHÍNH endpoint tạo này thực chất
-        // là một lượt SỬA, nhưng chưa từng ghi 2 cột nhật ký.
-        ex.LogLUDateTime = now; ex.LogLUBy = by; ex.UpdatedAt = now;
-        await db.SaveChangesAsync();
-        return Results.Ok(new
-        {
-            ex.Id, ex.CavityNo, ex.DealerCode, ex.CavityName, ex.CavityType, ex.CompartmentType, ex.Status,
-            ex.StartUseDate, ex.FinishUseDate, ex.Note, ex.FlagActive,
-            ex.CreatedDate, ex.CreatedBy, ex.LogLUDateTime, ex.LogLUBy, ex.CreatedAt, ex.UpdatedAt,
-            updated = true
-        });
-    }
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_CavityNo_Exist", message = "Mã khoang đã tồn tại.", cavityNo = code, dealerCode = dl });
     // #1047: nguồn `Ser_CavityCreate` ghi VÔ ĐIỀU KIỆN CreatedDate/CreatedBy/LogLUDateTime/LogLUBy
     // cùng giá trị strTDate/strPartnerUserCode lúc TẠO — thiếu hẳn ở port cũ.
     var r = new Cavity
