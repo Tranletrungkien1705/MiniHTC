@@ -104794,7 +104794,7 @@ app.MapGet("/api/customercars", async (AppDbContext db, ITenantContext t, string
     if (!string.IsNullOrWhiteSpace(vin)) q = q.Where(c => c.FrameNo.Contains(vin.ToUpper()));
     if (!string.IsNullOrWhiteSpace(cus)) q = q.Where(c => (c.CusName != null && c.CusName.Contains(cus)) || (c.CusMobile != null && c.CusMobile.Contains(cus)));
     var items = await q.OrderBy(c => c.PlateNo).Take(500).Select(c => new
-    { Vin = c.FrameNo, c.PlateNo, c.FrameNo, c.EngineNo, c.ModelCode, c.ColorCode, c.PlateColorCode, CusCode = c.CusID, c.CusName, CusPhone = c.CusMobile, SaleDate = c.DateBuyCar }).ToListAsync();
+    { Vin = c.FrameNo, c.PlateNo, c.FrameNo, c.EngineNo, c.ModelCode, c.ColorCode, c.PlateColorCode, CusCode = c.CusID, c.CusName, CusPhone = c.CusMobile, SaleDate = c.DateBuyCar, TradeMarkCode = c.TradeMark, c.ProductYear }).ToListAsync();
     return Results.Ok(new { count = items.Count, items, mergedInto = "/api/servicecars" });
 }).RequireAuthorization();
 
@@ -104810,6 +104810,8 @@ app.MapPost("/api/customercars", async (CustomerCarDto dto, AppDbContext db, ITe
     c.EngineNo = dto.EngineNo; c.ModelCode = dto.ModelCode; c.ColorCode = dto.ColorCode; c.PlateColorCode = dto.PlateColorCode;
     c.CusID = dto.CusCode; c.CusName = dto.CusName; c.CusMobile = dto.CusPhone; c.DateBuyCar = dto.SaleDate?.ToString("yyyy-MM-dd");
     c.ProductYear = dto.ProductYear;   // #1283 SUA BUG THAT #976: hai gia tri nhan tu import bi rot am tham
+    // Round-trip: TradeMarkCode (Ser_Car.TradeMarkCode, BizCarSv.Car.cs:214/472) lưu ở ServiceCar.TradeMark; canonical chỉ gán khi khác rỗng.
+    if (!string.IsNullOrWhiteSpace(dto.TradeMarkCode)) c.TradeMark = dto.TradeMarkCode;
     // #1283 SUA BUG THAT: doc-comment #1089 tren entity tu nhan "port dung theo duong import" (ghi du 4
     // cot nhat ky khi TAO, LogLUDateTime/LogLUBy khi SUA) nhung day la DUY NHAT duong ghi cua CustomerCar
     // va truoc day khong ghi cot nao trong 4 cot do - man hinh khong bao gio thay ai/khi nao tao/sua.
