@@ -14908,6 +14908,20 @@ app.MapPost("/api/sysusers/delete", async (SysUserKeyDto dto, AppDbContext db, I
         await db.SaveChangesAsync();
         return Results.Ok(new { deactivated = code, flagActive = row.FlagActive, mode = "soft (DMSCarSv)" });
     }
+    // `Ser_SysSaveUser` (BizCarSv.System.cs:1884) — chặn XOÁ CỨNG người dùng đã phát sinh dữ liệu: nguồn quét 7 bảng theo (DealerCode, cột người tạo)
+    // ⇒ `Ser_SysCannotDeleteUser`. Ser_RO/Ser_Inv_Quote/Ser_ServicePackage: Creator · Ser_ROWarrantyReport: Creator|CreatedBy · Rpt_KPI: RptBy ·
+    // Ser_Inv_StockIn/StockOut: UserCode. Trước đây xoá thẳng, để lại dữ liệu mồ côi.
+    var uDlr = row.DealerCode; var uCode = row.UserCode;
+    var userInUse =
+           await db.RepairOrders.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == uDlr && x.Creator == uCode)
+        || await db.PartQuotes.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == uDlr && x.Creator == uCode)
+        || await db.ServiceWarrantyClaims.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == uDlr && (x.Creator == uCode || x.CreatedBy == uCode))
+        || await db.ServicePackages.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == uDlr && x.Creator == uCode)
+        || await db.ReportKpis.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == uDlr && x.RptBy == uCode)
+        || await db.PartStockIns.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == uDlr && x.UserCode == uCode)
+        || await db.PartStockOuts.AnyAsync(x => x.OrgId == t.OrgId && x.DealerCode == uDlr && x.UserCode == uCode);
+    if (userInUse)
+        return Results.BadRequest(new { error = "Người dùng đã phát sinh dữ liệu, không thể xoá.", code = "Ser_SysCannotDeleteUser", userCode = uCode });
     db.SysUsers.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = code, mode = "hard (2010.HTC)" });
