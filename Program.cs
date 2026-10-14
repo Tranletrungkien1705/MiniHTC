@@ -102538,6 +102538,7 @@ app.MapGet("/api/servicecustomers", async (AppDbContext db, ITenantContext t, st
       // #221 §12: 15 trường mới phải chiếu ở CẢ GET
       c.DealerCode, c.ProvinceCode, c.DistrictCode, c.Fax, c.Website, c.IDCardNo, c.Bank, c.BankAccountNo,
       c.OrgTypeID, c.IsNormal, c.IsContact, c.ContAddress, c.ContFax, c.ContSex, c.Note,
+      c.ContTel, c.ContEmail,   // round-trip: POST đã lưu hai cột liên hệ này nhưng GET trước đây không trả.
       // #316: số ĐỂ GỌI theo đúng nguồn (bàn trước, di động sau) + biến thể 3 cấp.
       cusPhone = CusDisplayPhone(c.Tel, c.Mobile),
       cusPhone3 = CusDisplayPhone3(c.Tel, c.Mobile, c.ContTel),
