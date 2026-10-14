@@ -58873,7 +58873,9 @@ app.MapGet("/api/bulletins", async (AppDbContext db, ITenantContext t, string? q
 // ⚠️ Khoá kho chép từ `select @@Identity` + `Convert.ToInt32` — lặp lại đúng lỗi phạm vi/kiểu của #570/#575.
 // ⚪ Âm tính: `BulletinNoHMC` gán **vô điều kiện** trong khi các cột khác có guard rỗng — nhưng phía trên đã
 //   có `if (string.IsNullOrEmpty(strBulletinNoHMC)) throw Blt_Bulletin_InvalidBulletinNoHMC` nên **không lọt**.
-app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+// Logic LƯU bản tin dùng chung cho POST (= `Blt_BulletinCreate_20210224`, chỉ TẠO) và PUT (= `Blt_BulletinUpdate_20210224`, chỉ SỬA).
+// Trước đây POST là UPSERT nên nuốt guard `CheckExistBulletinNo` ⇒ `Blt_BulletinNo_Exist` của nhánh tạo (BizCarSv.Bulletin.cs:1560).
+async Task<IResult> BulletinSave(BulletinDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode, bool createOnly)
 {
     if (string.IsNullOrWhiteSpace(dto.Remark)) return Results.BadRequest(new { error = "Chưa nhập nội dung thông báo." });
     // Biz chặn thiếu số bản tin hãng (Blt_Bulletin_InvalidBulletinNoHMC) — form không có luật này.
@@ -58908,6 +58910,10 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
 
     var no = string.IsNullOrWhiteSpace(dto.BulletinNo) ? "BLT" + DateTime.Now.ToString("yyMMddHHmmss") : dto.BulletinNo.Trim().ToUpperInvariant();
     var row = await db.Bulletins.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.BulletinNo == no);
+    if (createOnly && row is not null)
+        return Results.BadRequest(new { error = "Số bản tin đã tồn tại.", code = "Blt_BulletinNo_Exist", bulletinNo = no });
+    if (!createOnly && row is null)
+        return Results.NotFound(new { error = "Không tìm thấy bản tin.", bulletinNo = no });
     var updated = row is not null;
     // #1057: Blt_BulletinCreate_20210224 ghi VÔ ĐIỀU KIỆN 4 cột nhật ký lúc TẠO — Update KHÔNG ghi lại.
     if (row is null) { row = new Bulletin { OrgId = t.OrgId, BulletinNo = no,
@@ -58971,7 +58977,10 @@ app.MapPost("/api/bulletins", async (BulletinDto dto, AppDbContext db, ITenantCo
         updateDeletesThenReinsertsDetails = "Blt_BulletinDtlDelete + Blt_BulletinDetailDelete roi chen lai => IDDetail doi so sau moi lan sua",
         updateClearsRemarkAndIsActiveWhenEmpty = "Remark va IsActive rong => DBNull; cac cot khac rong thi khong gan nhung VAN nam trong alColumnEffective",
     });
-}).RequireAuthorization();
+}
+app.MapPost("/api/bulletins", (BulletinDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) => BulletinSave(dto, db, t, partnerUserCode, true)).RequireAuthorization();
+app.MapPut("/api/bulletins/{no}", (string no, BulletinDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+    BulletinSave(dto with { BulletinNo = no }, db, t, partnerUserCode, false)).RequireAuthorization();
 
 // Chi tiết một bản tin: dịch vụ/phụ tùng liên quan + danh sách VIN áp dụng kèm trạng thái từng xe.
 // ===== 🔴 #377 THÔNG BÁO KỸ THUẬT ÁP CHO MỘT XE (`Blt_Bulletin_Get_byVin_ForTab`, `Bulletin.cs:4145`) =====
