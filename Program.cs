@@ -32733,6 +32733,24 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
     // SerialNo (WarrantyReport.cs:4699) — XM|SB × A: BCBH phải có số seri. BatteryNo (:4721) — XM|SB × B: phải có mã ắc quy.
     if ((tc is "XM" or "SB") && dc == "A" && string.IsNullOrEmpty(c.SerialNo)) Deny("InvalidSerialNo", "BCBH chưa có số seri!");
     if ((tc is "XM" or "SB") && dc == "B" && string.IsNullOrEmpty(c.BatteryNo)) Deny("InvalidBatteryNo", "BCBH chưa có mã ắc quy!");
+    // WarrantyExpiresDateAndWarrantyKM (:6490) — SB × A|P|W: ngày sửa xong <= ngày hết hạn BH của xe và Km BCBH <= Km giới hạn BH của xe (xe tra theo CarID của BCBH).
+    if (tc == "SB" && dc is "A" or "P" or "W")
+    {
+        var carW = string.IsNullOrEmpty(c.CarID) ? null : await db.ServiceCars.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.CarID == c.CarID);
+        if (carW is null) Deny("InvalidCarID", "Không tìm thấy thông tin xe của BCBH!");
+        else if (carW.WarrantyExpiresDate is null) Deny("InvalidCarID", "Không tìm thấy ngày hết hạn bảo hành của xe!");
+        else if (carW.WarrantyKM is null) Deny("InvalidCarID", "Không tìm thấy Km giới hạn BH của xe!");
+        else
+        {
+            if (c.FinishedDate is { } fin && fin.Date > carW.WarrantyExpiresDate.Value.Date)
+                Deny("InvalidFinishedDate", "Ngày sửa xong > Ngày hết hạn bảo hành của xe tạo BCBH!");
+            if (decimal.TryParse(c.Km, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var kmW) && kmW > carW.WarrantyKM.Value)
+                Deny("InvalidKM", "Số Km của BCBH > Số KM giới hạn bảo hành của xe tạo BCBH!");
+        }
+    }
+    // PartIDError (:6467) — XM|SB × P|W, PT × S, TC × R: BCBH phải có phụ tùng lỗi.
+    if ((((tc is "XM" or "SB") && dc is "P" or "W") || (tc == "PT" && dc == "S") || (tc == "TC" && dc == "R")) && string.IsNullOrEmpty(c.PartIDError))
+        Deny("InvalidPartIDError", "Báo cáo bảo hành chưa có phụ tùng lỗi!");
     // WarrantyRegistrationDate (:5198) — SB × A|B|P|W: phải có ngày đăng ký bảo hành.
     if (tc == "SB" && dc is "A" or "B" or "P" or "W" && c.WarrantyRegistrationDate is null) Deny("InvalidWarrantyRegisDate", "Ngày ĐKBH của BCBH trống!");
     // CreatedDateAndWarrantyRegisDateAndKM (:5212) — SB × B: Km < 20.000 và (ngày gửi BCBH − ngày ĐKBH) không quá 360 ngày.
