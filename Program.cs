@@ -43223,29 +43223,38 @@ app.MapGet("/api/jdpowerterms", async (AppDbContext db, ITenantContext t, string
 //   (nguồn có guard nhưng đặt sai chỗ và mất transaction; Mini **không** tái hiện lỗi đó — ghi rõ là khác biệt CÓ CHỦ Ý).
 app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    var code = (dto.JDPTermCode ?? "").Trim();
+    // POST = `JDPowerTerm_Create` (BizCarSv.Service01.cs:14945). Thứ tự guard theo nguồn:
+    //   CheckDB(Flag.No) ⇒ `JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeExist`; mã 4..25 ký tự ⇒ `..._InvalidJDPTermCodeLength`;
+    //   tên 4..25 ký tự ⇒ `..._InvalidJDPTermNameLength`; ngày bắt đầu > kết thúc ⇒ `..._InvalidDate`;
+    //   mỗi VIN dài đúng 17 ký tự ⇒ `..._Input_VIN_InvalidVINLength`; VIN trùng ⇒ `..._VINDuplicate`.
+    // Rồi TẮT MỌI kỳ cũ (FlagActive=0) và chèn kỳ mới Active (#826). Sửa kỳ đã có ⇒ dùng PUT /api/jdpowerterms/{code}.
+    // Trước đây POST là UPSERT không kiểm trùng mã / độ dài và không tắt kỳ cũ (nhiều kỳ cùng Active).
+    var code = (dto.JDPTermCode ?? "").Trim().ToUpperInvariant();
     if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "Chưa nhập mã kỳ khảo sát." });
-    if (dto.StartDate.HasValue && dto.EndDate.HasValue && dto.EndDate < dto.StartDate) return Results.BadRequest(new { error = "Ngày kết thúc phải >= ngày bắt đầu." });
+    var name = (dto.JDPTermName ?? "").Trim();
     var row = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == code);
-    // 🔴 #742 Nguồn kiểm "chỉ một kỳ Active" SAU khi đã `SaveData`, mà `bNeedTransaction = false` ⇒ ném lỗi nhưng
-    //   dữ liệu đã ghi. Mini kiểm TRƯỚC khi ghi — khác biệt CÓ CHỦ Ý, không phải port thiếu.
-    if ((dto.FlagActive ?? "") == "1")
-    {
-        var otherActive = await db.JDPowerTerms
-            .CountAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.JDPTermCode != code);
-        if (otherActive > 0) return Results.BadRequest(new { error = "Đã tồn tại kỳ khảo sát đang hiệu lực.", otherActive });
-    }
-    var isNew1085 = row is null;
-    if (row is null) { row = new JDPowerTerm { OrgId = t.OrgId, JDPTermCode = code }; db.JDPowerTerms.Add(row); }
-    row.JDPTermName = dto.JDPTermName; row.StartDate = dto.StartDate; row.EndDate = dto.EndDate; row.UpdatedAt = DateTime.Now;
-    if (!string.IsNullOrWhiteSpace(dto.FlagActive)) row.FlagActive = dto.FlagActive!;
-    // #1085: JDPowerTerm_Create ghi du 4 cot nhat ky khi TAO; JDPowerTerm_Update KHONG dong cac cot nay (gap that cua nguon).
-    if (isNew1085)
-    {
-        var now1085 = DateTime.Now;
-        row.CreatedDate = now1085; row.CreatedBy = (partnerUserCode ?? "system").Trim();
-        row.LogLUDateTime = now1085; row.LogLUBy = row.CreatedBy;
-    }
+    if (row is not null)
+        return Results.BadRequest(new { error = "Mã kỳ khảo sát đã tồn tại.", code = "JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeExist", jdpTermCode = code });
+    if (code.Length < 4 || code.Length > 25)
+        return Results.BadRequest(new { error = "Mã kỳ khảo sát phải từ 4 đến 25 ký tự.", code = "JDPowerTerm_Create_InvalidJDPTermCodeLength", min = 4, max = 25 });
+    if (name.Length < 4 || name.Length > 25)
+        return Results.BadRequest(new { error = "Tên kỳ khảo sát phải từ 4 đến 25 ký tự.", code = "JDPowerTerm_Create_InvalidJDPTermNameLength", min = 4, max = 25 });
+    if (dto.StartDate.HasValue && dto.EndDate.HasValue && dto.StartDate > dto.EndDate)
+        return Results.BadRequest(new { error = "Ngày kết thúc phải >= ngày bắt đầu.", code = "JDPowerTerm_Create_InvalidDate" });
+    var vinsIn = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).ToList();
+    if (vinsIn.Any(v => v.Length != 17))
+        return Results.BadRequest(new { error = "VIN phải đủ 17 ký tự.", code = "JDPowerTerm_Create_Input_VIN_InvalidVINLength" });
+    if (vinsIn.GroupBy(v => v).Any(g => g.Count() > 1))
+        return Results.BadRequest(new { error = "Danh sách VIN bị trùng.", code = "JDPowerTerm_Create_VINDuplicate" });
+    var nowC = DateTime.Now; var byC = (partnerUserCode ?? "system").Trim();
+    foreach (var old in await db.JDPowerTerms.Where(x => x.OrgId == t.OrgId && x.FlagActive == "1").ToListAsync())
+    { old.FlagActive = "0"; old.LogLUDateTime = nowC; old.LogLUBy = byC; }   // "Update All JDPower Old : FlagActive = 0"
+    row = new JDPowerTerm { OrgId = t.OrgId, JDPTermCode = code, JDPTermName = name, StartDate = dto.StartDate, EndDate = dto.EndDate,
+        FlagActive = "1", UpdatedAt = nowC };
+    db.JDPowerTerms.Add(row);
+    // #1085: JDPowerTerm_Create ghi du 4 cot nhat ky khi TAO.
+    row.CreatedDate = nowC; row.CreatedBy = byC; row.LogLUDateTime = nowC; row.LogLUBy = byC;
+    foreach (var v in vinsIn) db.JDPowerTermDtls.Add(new JDPowerTermDtl { OrgId = t.OrgId, JDPTermCode = code, VIN = v, LogLUDateTime = nowC, LogLUBy = byC });
     await db.SaveChangesAsync();
     return Results.Ok(new
     {
@@ -43258,6 +43267,34 @@ app.MapPost("/api/jdpowerterms", async (JDPowerTermDto dto, AppDbContext db, ITe
         updateLacksCodeLengthGuard = "#826: JDPowerTerm_Create co CA HAI guard do dai — JDPowerTerm_Create_InvalidJDPTermCodeLength va _InvalidJDPTermNameLength. JDPowerTerm_Update_Mst chi co JDPowerTerm_Update_IvalidJDPTermNameLength (NGUYEN VAN sai chinh ta Ivalid) va KHONG co guard do dai MA => sua ten thi bi kiem do dai, sua ma thi khong",
         twoMachinesVerified826 = "md5 chuan hoa JDPowerTerm_Create tren may 150 = 83eefe19 KHOP laptop",
     });
+}).RequireAuthorization();
+
+// PUT = `JDPowerTerm_Update` (BizCarSv.Service01.cs:15381): CheckDB(Flag.Active) ⇒ kỳ PHẢI tồn tại
+// (`JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeNotFound`); ghi JDPTermName + FlagActive (cột có hiệu lực); nếu FlagActive="1" mà đã có kỳ
+// khác Active ⇒ `JDPowerTerm_Update_ExistJDPActive` (Mini kiểm TRƯỚC khi ghi — khác nguồn kiểm sau SaveData, CÓ CHỦ Ý như #742).
+// Mã VIN: cùng guard độ dài/trùng như Create; nguồn chỉ Update bảng chi tiết khi có VIN gửi lên.
+app.MapPut("/api/jdpowerterms/{code}", async (string code, JDPowerTermDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
+{
+    var key = (code ?? "").Trim().ToUpperInvariant();
+    var row = await db.JDPowerTerms.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.JDPTermCode == key);
+    if (row is null)
+        return Results.BadRequest(new { error = "Không tìm thấy kỳ khảo sát.", code = "JDP_Mst_JDPowerTerm_CheckDB_JDPTermCodeNotFound", jdpTermCode = key });
+    var vinsU = (dto.Vins ?? new()).Select(v => (v ?? "").Trim().ToUpperInvariant()).ToList();
+    if (vinsU.Any(v => v.Length != 17))
+        return Results.BadRequest(new { error = "VIN phải đủ 17 ký tự.", code = "JDPowerTerm_Create_Input_VIN_InvalidVINLength" });
+    if (vinsU.GroupBy(v => v).Any(g => g.Count() > 1))
+        return Results.BadRequest(new { error = "Danh sách VIN bị trùng.", code = "JDPowerTerm_Create_VINDuplicate" });
+    var newFlag = string.IsNullOrWhiteSpace(dto.FlagActive) ? row.FlagActive : dto.FlagActive!.Trim();
+    if (newFlag == "1" && await db.JDPowerTerms.AnyAsync(x => x.OrgId == t.OrgId && x.FlagActive == "1" && x.JDPTermCode != key))
+        return Results.BadRequest(new { error = "Đã tồn tại kỳ khảo sát đang hiệu lực.", code = "JDPowerTerm_Update_ExistJDPActive" });
+    if (dto.JDPTermName is not null) row.JDPTermName = dto.JDPTermName.Trim();
+    row.FlagActive = newFlag; row.UpdatedAt = DateTime.Now;
+    var nowU = DateTime.Now; var byU = (partnerUserCode ?? "system").Trim();
+    foreach (var v in vinsU)
+        if (!await db.JDPowerTermDtls.AnyAsync(d => d.OrgId == t.OrgId && d.JDPTermCode == key && d.VIN == v))
+            db.JDPowerTermDtls.Add(new JDPowerTermDtl { OrgId = t.OrgId, JDPTermCode = key, VIN = v, LogLUDateTime = nowU, LogLUBy = byU });
+    await db.SaveChangesAsync();
+    return Results.Ok(new { row.Id, row.JDPTermCode, row.JDPTermName, row.FlagActive, vinsAdded = vinsU.Count });
 }).RequireAuthorization();
 
 // ===== 🔴🔴 #842 MÀN MỚI: XOÁ KỲ KHẢO SÁT JD POWER — `JDPowerTerm_Delete` (+ TRẢ NỢ bảng chi tiết) =====
@@ -129084,7 +129121,7 @@ record MstStaffDto(
     string? CreatedBy = null,
     DateTime? LogLUDateTime = null,
     string? LogLUBy = null);   // merge session-a
-record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive);
+record JDPowerTermDto(string? JDPTermCode, string? JDPTermName, DateTime? StartDate, DateTime? EndDate, string? FlagActive, List<string>? Vins = null);
 record PdiPaymentImportDto(List<PdiPaymentRowDto>? Rows);
 record PdiPaymentRowDto(string? VIN, string? ModelCode, string? SpecCode, string? ColorExtName, string? StorageCodeInit, string? DealerCode, DateTime? StoreDate, DateTime? DeliveryOutDate);
 /// <summary>#B22: `strTypeStatus` của nguồn quyết định GHI CỘT NÀO — TConst.CarCarTypeStatus: TTC | CPTC.</summary>
