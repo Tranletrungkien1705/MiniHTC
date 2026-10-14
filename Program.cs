@@ -32730,6 +32730,29 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
             if (master is null || master.FlagWarranty != "1") Deny("InvalidCVC", $"{cvcCode} không thuộc Mst công việc bảo hành!", new { serCode = cvcCode });
         }
     }
+    // Bulletin (WarrantyReport.cs:6151) — BT × C: công việc chính (CVC) phải thuộc một bản tin kỹ thuật ĐANG HOẠT ĐỘNG có VIN của xe ở trạng thái P,
+    // bản tin liệt kê đúng mã công việc đó (Btl_BulletinDtl.SerCode) và chưa hết hạn. Đếm dòng join như nguồn: 0 ⇒ InvalidCVC, >1 ⇒ InvalidCVC.
+    if (tc == "BT" && dc == "C")
+    {
+        var btItems = await db.WarrantyClaimServiceItems.Where(x => x.OrgId == t.OrgId && x.ClaimId == id && x.ROWSerType == "CVC" && x.BulletinID != null).ToListAsync();
+        var btRows = new List<(Bulletin Bul, bool SerInBulletin)>();
+        foreach (var it in btItems)
+        {
+            var bul = await db.Bulletins.FirstOrDefaultAsync(b => b.OrgId == t.OrgId && b.Id == it.BulletinID && b.FlagActive == "1");
+            if (bul is null) continue;
+            if (!await db.BulletinVins.AnyAsync(v => v.OrgId == t.OrgId && v.BulletinNo == bul.BulletinNo && v.VinNo == c.Vin && v.Status == "P")) continue;
+            var dtlHits = await db.BulletinDtls.CountAsync(d => d.OrgId == t.OrgId && d.BulletinNo == bul.BulletinNo && d.SerCode == it.SerCode);
+            if (dtlHits == 0) btRows.Add((bul, false));
+            else for (var k = 0; k < dtlHits; k++) btRows.Add((bul, true));
+        }
+        if (btRows.Count == 0) Deny("InvalidCVC", "BCBH chưa có công việc chính hoặc chưa có công việc chính theo bản tin kỹ thuật!");
+        else if (btRows.Count > 1) Deny("InvalidCVC", "BCBH chỉ có 1 công việc chính!");
+        else
+        {
+            if (!btRows[0].SerInBulletin) Deny("InvalidCVC", "Công việc chính không có trong bản tin kỹ thuật!");
+            if (btRows[0].Bul.DateExpired is { } exp && exp.Date < DateTime.Today) Deny("InvalidBulletin", "Số bản tin kỹ thuật hết hạn!");
+        }
+    }
     // SerialNo (WarrantyReport.cs:4699) — XM|SB × A: BCBH phải có số seri. BatteryNo (:4721) — XM|SB × B: phải có mã ắc quy.
     if ((tc is "XM" or "SB") && dc == "A" && string.IsNullOrEmpty(c.SerialNo)) Deny("InvalidSerialNo", "BCBH chưa có số seri!");
     if ((tc is "XM" or "SB") && dc == "B" && string.IsNullOrEmpty(c.BatteryNo)) Deny("InvalidBatteryNo", "BCBH chưa có mã ắc quy!");
