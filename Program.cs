@@ -106178,8 +106178,14 @@ app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDb
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
 
-    if (string.IsNullOrWhiteSpace(dto.StockOutNo)) return Results.BadRequest(new { error = "Chưa nhập số phiếu xuất." });
+    if (string.IsNullOrWhiteSpace(dto.StockOutNo)) return Results.BadRequest(new { error = "Chưa nhập số phiếu xuất.", code = "Ser_Inv_StockOut_StockOutNoEmpty" });
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Chưa chọn kho." });
+    // `CheckStockOutFieldEmpty` cũng được gọi trong SerStockOutUpdate (BizCarSv.Inventory.StockOut.cs:1516/1702): Type → Dealer → Date → StaffID.
+    // Trước đây thiếu ⇒ gửi thiếu sẽ GHI ĐÈ StockOutType/UserCode thành null.
+    if (string.IsNullOrWhiteSpace(dto.StockOutType)) return Results.BadRequest(new { error = "Chưa chọn loại phiếu xuất.", code = "Ser_Inv_StockOut_StockOutTypeEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode ?? h.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "Ser_Inv_StockOut_DealerEmpty" });
+    if (dto.StockOutDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày xuất kho.", code = "Ser_Inv_StockOut_StockOutDateEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.StaffID)) return Results.BadRequest(new { error = "Chưa có nhân viên xuất kho.", code = "Ser_Inv_StockOut_StaffIDEmpty" });
 
     // #1009: guard THẬT nhưng CHỈ có ở bản 150 (V20.2023.Release, mới hơn laptop) — đọc trọn
     // `UpdateStockOut` (dbAction-first overload, xác nhận LIVE qua `SerStockOutUpdate` gọi `_dbDealer` đầu
