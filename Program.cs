@@ -39474,7 +39474,14 @@ app.MapPost("/api/sersuppliers", async (SerSupplierDto dto, AppDbContext db, ITe
     if (!string.IsNullOrWhiteSpace(dto.Phone) && !dto.Phone!.All(c => char.IsDigit(c) || c is ' ' or '-' or '+' or '(' or ')')) return Results.BadRequest(new { error = "Số điện thoại không hợp lệ." });
     // #911 §12: nguồn khoá trùng theo (SupplierCode, DealerCode, IsActive) — thiếu DealerCode thì hai đại lý
     // không thể cùng dùng một mã NCC (điều nguồn cho phép).
-    var row = await db.SerMstSuppliers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code.ToUpper() && x.DealerCode == dto.DealerCode);
+    // `SerSupplierCreate` (BizCarSv.Inventory.Master.cs:259): checkExistSupplierCode(SupplierCode, DealerCode, IsActive) ⇒ `Ser_Mst_Supplier_Exist`,
+    // rồi checkSupplierFieldEmpty: Code → Name → Address → DealerCode (`Ser_Mst_Supplier_DealerEmpty`). Sửa dữ liệu dùng PUT /api/sersuppliers/{supplierCode}.
+    // Trước đây POST là UPSERT (nuốt guard trùng mã) và nhận DealerCode rỗng.
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "ErrCarSv.Ser_Mst_Supplier_DealerEmpty" });
+    var activeNew = string.IsNullOrWhiteSpace(dto.FlagActive) ? "1" : dto.FlagActive!;
+    if (await db.SerMstSuppliers.AnyAsync(x => x.OrgId == t.OrgId && x.SupplierCode.ToUpper() == code.ToUpper() && x.DealerCode == dto.DealerCode && x.FlagActive == activeNew))
+        return Results.BadRequest(new { error = "Mã nhà cung cấp đã tồn tại.", code = "ErrCarSv.Ser_Mst_Supplier_Exist", supplierCode = code, dealerCode = dto.DealerCode });
+    SerMstSupplier? row = null;
     var by1073 = (partnerUserCode ?? "system").Trim(); var now1073 = DateTime.Now;
     // #1073: Create ghi VÔ ĐIỀU KIỆN cả 4 cột nhật ký; Update chỉ ghi lại LogLU*.
     if (row is null) { row = new SerMstSupplier { OrgId = t.OrgId, SupplierCode = code, DealerCode = dto.DealerCode, CreatedDate = dto.CreatedDate ?? now1073, CreatedBy = dto.CreatedBy ?? by1073, CreatedAt = dto.CreatedAt ?? now1073, UpdatedAt = now1073 }; db.SerMstSuppliers.Add(row); }
