@@ -26612,6 +26612,26 @@ app.MapDelete("/api/sermstlocations/{locationId}", async (string locationId, App
     var row = await db.SerMstLocations.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.LocationID == id
         && (dl.Length == 0 || x.DealerCode == dl));
     if (row is null) return Results.NotFound(new { error = "ErrCarSv.Ser_Mst_Location_NotExist", locationId = id, dealerCode = dl });
+    // 3 guard của `Ser_Mst_Location_Delete` (BizCarSv.Master.cs:6990-7120), thứ tự nguồn, mỗi guard CHỈ đọc DÒNG ĐẦU (`top 1`/`Rows[0]`):
+    //  1) còn tồn kho tại vị trí (Ser_Inv_StockBalance.InStockQuantity > 0)        ⇒ `Ser_Location_AvaiableQuantityBalance`
+    //  2) còn dòng phiếu NHẬP (phiếu Status không phải 4/5) có ActualLocationID này, Quantity > 0 ⇒ `Ser_Location_AvaiableStockInDetail`
+    //  3) còn dòng phiếu XUẤT (phiếu Status không phải 4/5) tương tự                ⇒ `Ser_Location_AvaiableStockOutDetail`
+    // Trước đây xoá mềm thẳng, bỏ qua cả ba. Nguồn lọc theo đại lý của vị trí.
+    var locDealer = row.DealerCode;
+    var firstBal = await db.SerInvStockBalances.Where(b => b.OrgId == t.OrgId && b.LocationID == id && b.DealerCode == locDealer)
+        .OrderBy(b => b.Id).FirstOrDefaultAsync();
+    if (firstBal is not null && firstBal.InStockQuantity > 0)
+        return Results.BadRequest(new { error = "Vị trí còn tồn kho, không xoá được.", code = "Ser_Location_AvaiableQuantityBalance", locationId = id });
+    var firstIn = await (from l in db.PartStockInLines join h in db.PartStockIns on l.StockInId equals h.Id
+                         where l.OrgId == t.OrgId && h.OrgId == t.OrgId && h.Status != "4" && h.Status != "5" && l.DealerCode == locDealer && l.ActualLocationID == id
+                         orderby l.Id select new { h.StockInNo, l.Quantity }).FirstOrDefaultAsync();
+    if (firstIn is not null && firstIn.Quantity > 0)
+        return Results.BadRequest(new { error = "Vị trí còn phiếu nhập chưa hoàn tất, không xoá được.", code = "Ser_Location_AvaiableStockInDetail", stockInNo = firstIn.StockInNo });
+    var firstOut = await (from l in db.PartStockOutLines join h in db.PartStockOuts on l.StockOutId equals h.Id
+                          where l.OrgId == t.OrgId && h.OrgId == t.OrgId && h.Status != "4" && h.Status != "5" && l.DealerCode == locDealer && l.ActualLocationID == id
+                          orderby l.Id select new { h.StockOutNo, l.Quantity }).FirstOrDefaultAsync();
+    if (firstOut is not null && firstOut.Quantity > 0)
+        return Results.BadRequest(new { error = "Vị trí còn phiếu xuất chưa hoàn tất, không xoá được.", code = "Ser_Location_AvaiableStockOutDetail", stockOutNo = firstOut.StockOutNo });
     row.IsActive = "0";   // XOA MEM, dung nhu nguon (update set IsActive = 0)
     row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
