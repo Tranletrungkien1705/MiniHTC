@@ -106335,7 +106335,8 @@ app.MapPost("/api/stockouts/{no}/execute", async (string no, AppDbContext db, IT
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "1") return Results.BadRequest(new { error = "Chỉ chuyển Tiến hành từ phiếu Mới tạo (1)." });
+    // Mã lỗi theo SerStockOutStatusUpdate (StockOut.cs:3992-4020): ngoài {1,2} ⇒ NotPendingExecuting; đang Tiến hành mà đi tiếp sang "2" ⇒ NotFinished.
+    if (h.Status != "1") return Results.BadRequest(new { error = "Chỉ chuyển Tiến hành từ phiếu Mới tạo (1).", code = h.Status == "2" ? "Ser_Inv_StockOut_NotFinished" : "Ser_Inv_StockOut_NotPendingExecuting", status = h.Status });
     h.Status = "2";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Tiến hành" });
@@ -106346,7 +106347,7 @@ app.MapPost("/api/stockouts/{no}/revert", async (string no, AppDbContext db, ITe
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ lùi được phiếu đang Tiến hành (2)." });
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ lùi được phiếu đang Tiến hành (2).", code = h.Status == "1" ? "Ser_Inv_StockOut_NotExecuting" : "Ser_Inv_StockOut_NotPendingExecuting", status = h.Status });
     h.Status = "1";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockOutNo, status = h.Status, statusName = "Mới tạo" });
@@ -106357,7 +106358,7 @@ app.MapPost("/api/stockouts/{no}/post", async (string no, AppDbContext db, ITena
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu đang ở trạng thái Tiến hành (2)." });
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu đang ở trạng thái Tiến hành (2).", code = h.Status == "1" ? "Ser_Inv_StockOut_NotExecuting" : "Ser_Inv_StockOut_NotPendingExecuting", status = h.Status });
     var lines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id).ToListAsync();
     // kiểm tồn đủ trước
     foreach (var l in lines)
@@ -106610,8 +106611,11 @@ app.MapPut("/api/stockouts/{no}", async (string no, StockOutUpdateDto dto, AppDb
 
     // 🔴 KHÔNG guard theo Status MỚI. Chỉ khi client GỬI Status thì mới kiểm — và chỉ nhận "1"/"5".
     var newStatus = (dto.Status ?? "").Trim();
-    if (newStatus.Length > 0 && newStatus != "1" && newStatus != "5")
-        return Results.BadRequest(new { error = "Status gửi lên chỉ được là Mới tạo (1) hoặc Huỷ (5).", status = newStatus });
+    // Đọc lại nguồn (V20 :1525 & :1711; V20.2023.Release.V2 :2237): `if (!IsEmpty(strStatus)) CheckStockOutNotPending(strStatus)`, mà
+    // `CheckStockOutNotPending` (:167) CHỈ chấp nhận `Pending = "1"` (Const.Main.cs:235) ⇒ gửi "5" ném `Ser_Inv_StockOut_NotPending`.
+    // Port cũ nhận cả "5" (nhầm với CheckStockOutForDelete) — đường Huỷ là POST /reject, không đi qua PUT.
+    if (newStatus.Length > 0 && newStatus != "1")
+        return Results.BadRequest(new { error = "Status gửi lên chỉ được là Mới tạo (1).", code = "Ser_Inv_StockOut_NotPending", status = newStatus });
 
     h.StockOutNo = dto.StockOutNo!.Trim().ToUpperInvariant();
     h.WarehouseCode = dto.WarehouseCode!.Trim().ToUpperInvariant();
@@ -106642,6 +106646,7 @@ app.MapDelete("/api/stockouts/{no}", async (string no, AppDbContext db, ITenantC
 
     if (h.Status != "1" && h.Status != "5")
         return Results.BadRequest(new { error = "Chỉ xoá được phiếu xuất ở trạng thái Mới tạo (1) hoặc Huỷ (5).",
+            code = "Ser_Inv_StockOut_NotDelete",   // CheckStockOutForDelete (StockOut.cs:184)
             status = h.Status, statusName = stockOutStatusNames.TryGetValue(h.Status ?? "", out var sn) ? sn : null });
 
     string? warn = null;
