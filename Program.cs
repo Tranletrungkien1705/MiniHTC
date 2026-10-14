@@ -98045,6 +98045,12 @@ app.MapGet("/api/mstvinmodelorginals/search", async (AppDbContext db, ITenantCon
 app.MapPost("/api/mstvinmodelorginals/import", async (List<MstVinModelOrginalDto> rows,
     AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
+    // Nguồn (BizCarSv.Master.cs:9655-9673): DataSet null/không bảng ⇒ `..._Import_NotFound`; bảng Mst_VINModelOrginal 0 dòng ⇒ `..._Import_TableDetailBeBlank`.
+    // JSON: body null ↔ NotFound, mảng rỗng ↔ TableDetailBeBlank (diễn giải Mini).
+    if (rows is null)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Import_NotFound", message = "Không có dữ liệu import." });
+    if (rows.Count == 0)
+        return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Import_TableDetailBeBlank", message = "Bảng import không có dòng nào." });
     var badPattern = new System.Text.RegularExpressions.Regex("[^a-zA-Z0-9]");   // nguồn: static pattern
     var stamp = DateTime.Now;
     var by = (partnerUserCode ?? "system").Trim();
@@ -98089,6 +98095,7 @@ app.MapPost("/api/mstvinmodelorginals/import", async (List<MstVinModelOrginalDto
             // Ghi đè: nếu ModelCode/OrginalCode khác thì ĐÂY LÀ MẤT ÁNH XẠ CŨ.
             if (hit.ModelCode != model || hit.OrginalCode != orginal) overwritten.Add(vin);
             hit.ModelCode = model; hit.OrginalCode = orginal;
+            hit.FlagActive = "1";   // nguồn :9777 nhánh Update ghi FlagActive = Active (kích hoạt lại dòng đã tắt)
             hit.LogLUDateTime = stamp; hit.LogLUBy = by;
         }
     }
