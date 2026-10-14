@@ -106669,13 +106669,48 @@ app.MapPost("/api/stockouts/{no}/reject", async (string no, StockRejectDto dto, 
     var h = await db.PartStockOuts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockOutNo == no);
     if (h is null) return Results.NotFound(new { no });
     if (string.IsNullOrWhiteSpace(dto.Reason)) return Results.BadRequest(new { error = "Bạn chưa nhập lý do hủy phiếu xuất." });
+    // `SerStockOutReject` (StockOut.cs:5688): phiếu đã Huỷ ("5") ⇒ `Ser_Inv_StockOut_RejectCurrent`. Đây là guard DUY NHẤT của nguồn (mọi trạng thái khác đều huỷ được).
+    if (h.Status == "5")
+        return Results.BadRequest(new { error = "Phiếu xuất đã ở trạng thái Huỷ.", code = "Ser_Inv_StockOut_RejectCurrent", stockOutNo = h.StockOutNo, status = h.Status });
     var who = http.User.Identity?.Name ?? http.User.FindFirst("email")?.Value ?? "system";
+    // Hoàn tồn/lô — nguồn StockOut.cs:5731-5877. Mỗi dòng chi tiết: lấy các lô PartInstance đã gán cho phiếu này (OUTSTOCK ≙ StockOutId = h.Id).
+    //  • Nếu còn mảnh lô cùng (Part, StockIn, Location) chưa xuất (INSTOCK) ⇒ lô đã xuất bị đánh REJECT ("5") và SL của nó cộng ngược vào mảnh INSTOCK (gộp lại lô đã tách).
+    //  • Ngược lại ⇒ trả lô về INSTOCK: xoá StockOutId/StockOutNo/DateOut, SOPrice = 0.
+    //  • Có ít nhất một lô được xử lý ⇒ tồn (kho, mã, vị trí) += SL cả dòng (dQtyTotal). Phiếu chưa Kết thúc không có lô ⇒ KHÔNG hoàn tồn (đúng nguồn).
+    // ⚠️ Mini khớp lô theo PartCode + StockOutId (không theo vị trí) vì /post cũng FIFO không lọc vị trí; nguồn lọc thêm LocationID/DealerCode.
+    var rejNow = DateTime.Now;
+    var rejLines = await db.PartStockOutLines.Where(l => l.OrgId == t.OrgId && l.StockOutId == h.Id).ToListAsync();
+    var restored = new List<object>();
+    foreach (var l in rejLines)
+    {
+        var outLots = await db.PartInstances.Where(x => x.OrgId == t.OrgId && x.StockOutId == h.Id && x.PartCode == l.PartCode && x.Status != "5").ToListAsync();
+        if (outLots.Count == 0) continue;
+        foreach (var lot in outLots)
+        {
+            var back = await db.PartInstances.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.Id != lot.Id && x.PartCode == lot.PartCode
+                && x.StockInId == lot.StockInId && x.LocationID == lot.LocationID && x.StockOutId == null && x.Status != "5");
+            if (back is not null)
+            {
+                back.Quantity += lot.Quantity; back.LogLUDateTime = rejNow; back.LogLUBy = who;
+                lot.Status = "5";
+            }
+            else
+            {
+                lot.StockOutId = null; lot.StockOutNo = null; lot.DateOut = null; lot.SOPrice = 0;
+            }
+        }
+        var rLoc = l.Location ?? "";
+        var rStock = await db.PartStocks.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.WarehouseCode == h.WarehouseCode && x.PartCode == l.PartCode && (x.Location ?? "") == rLoc);
+        if (rStock is null) { rStock = new PartStock { OrgId = t.OrgId, WarehouseCode = h.WarehouseCode, PartCode = l.PartCode, Location = rLoc, OnHand = 0 }; db.PartStocks.Add(rStock); }
+        rStock.OnHand += l.Quantity; rStock.UpdatedAt = rejNow;
+        restored.Add(new { l.PartCode, location = rLoc, qty = l.Quantity, lots = outLots.Count });
+    }
     h.Status = "5"; h.RejectReason = dto.Reason!.Trim(); h.RejectedBy = who; h.RejectedAt = DateTime.Now;
     // #1151: nguồn SerStockOutReject (StockOut.cs:5619-5719) ghi LogLUDateTime/LogLUBy = strPartnerUserCode
     // trong CÙNG alColumnEffective với Status/RejectBy — port cũ hoàn toàn bỏ sót 2 cột nhật ký.
     h.LogLUDateTime = DateTime.Now; h.LogLUBy = who;
     await db.SaveChangesAsync();
-    return Results.Ok(new { h.StockOutNo, status = h.Status });
+    return Results.Ok(new { h.StockOutNo, status = h.Status, restored });
 }).RequireAuthorization();
 
 // ===== Phiếu nhập kho phụ tùng (Ser_Inv_StockIn — port 1:1 FrmStockInCreate) + tồn kho PartStock =====
