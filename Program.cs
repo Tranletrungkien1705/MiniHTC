@@ -50897,10 +50897,22 @@ app.MapDelete("/api/vinmodelorginalmsts/{vinCode}/{modelCode}", async (string vi
     var vc = (vinCode ?? "").Trim().ToUpperInvariant();
     var mc = (modelCode ?? "").Trim().ToUpperInvariant();
     var row = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vc && x.ModelCode == mc);
-    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_NotFound", vinCode = vc, modelCode = mc });
+    if (row is null) return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_Delete_VINNotFound", vinCode = vc, modelCode = mc });
     db.VinModelOrginalMsts.Remove(row);
     await db.SaveChangesAsync();
     return Results.Ok(new { deleted = $"{vc}/{mc}" });
+}).RequireAuthorization();
+
+// `Mst_VINModelOrginal_Delete` (BizCarSv.Master.cs:9485): khoá chỉ là VINCode — không có ⇒ `..._Delete_VINNotFound`;
+// `delete from Mst_VINModelOrginal where VINCode = @VINCode` xoá MỌI dòng của VIN đó (mọi model).
+app.MapDelete("/api/vinmodelorginalmsts/{vinCode}", async (string vinCode, AppDbContext db, ITenantContext t) =>
+{
+    var vc = (vinCode ?? "").Trim().ToUpperInvariant();
+    var rows = await db.VinModelOrginalMsts.Where(x => x.OrgId == t.OrgId && x.VINCode == vc).ToListAsync();
+    if (rows.Count == 0) return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_Delete_VINNotFound", vinCode = vc });
+    db.VinModelOrginalMsts.RemoveRange(rows);
+    await db.SaveChangesAsync();
+    return Results.Ok(new { deleted = vc, count = rows.Count });
 }).RequireAuthorization();
 
 // ===== Hạng mục công bảo hành theo model (WarrantyWorkMst — port 1:1 FrmMstWarrantyWorkMng, TCMotor DMSCarSv/Admin) =====
