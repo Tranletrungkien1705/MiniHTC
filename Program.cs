@@ -106990,7 +106990,8 @@ app.MapPost("/api/stockins/{no}/execute", async (string no, AppDbContext db, ITe
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "1") return Results.BadRequest(new { error = "Chỉ chuyển Tiến hành từ phiếu Mới tạo (1)." });
+    // Mã lỗi theo SerStockInStatusUpdate (StockIn.cs:3293-3320): ngoài {1,2} ⇒ NotPendingExecuting; đang Tiến hành mà đi tiếp sang "2" ⇒ NotFinished.
+    if (h.Status != "1") return Results.BadRequest(new { error = "Chỉ chuyển Tiến hành từ phiếu Mới tạo (1).", code = h.Status == "2" ? "Ser_Inv_StockIn_NotFinished" : "Ser_Inv_StockIn_NotPendingExecuting", status = h.Status });
     h.Status = "2";
     await db.SaveChangesAsync();
     return Results.Ok(new { h.StockInNo, status = h.Status, statusName = "Tiến hành" });
@@ -107021,7 +107022,7 @@ app.MapPost("/api/stockins/{no}/revert", async (string no, AppDbContext db, ITen
     no = no.Trim().ToUpperInvariant();
     var h = await db.PartStockIns.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.StockInNo == no);
     if (h is null) return Results.NotFound(new { no });
-    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ lùi được phiếu đang Tiến hành (2)." });
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ lùi được phiếu đang Tiến hành (2).", code = h.Status == "1" ? "Ser_Inv_StockIn_NotExecuting" : "Ser_Inv_StockIn_NotPendingExecuting", status = h.Status });
     // Đích mặc định giữ như cũ ("1"); nguồn còn cho "5" (hằng Reject).
     var target = string.IsNullOrWhiteSpace(toStatus) ? "1" : toStatus!.Trim();
     if (target != "1" && target != "5")
@@ -107063,7 +107064,8 @@ app.MapPost("/api/stockins/{no}/post", async (string no, AppDbContext db, ITenan
     if (h is null) return Results.NotFound(new { no });
     // 🔴 Nguồn CHỈ cho Kết thúc từ "2" Tiến hành (`CheckStockInNotPendingExecuting` + nhánh
     //    `strCurrentStatus == Executing` ⇒ `CheckStockInNotFinished`) — KHÔNG có đường 1→3 thẳng.
-    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu đang ở trạng thái Tiến hành (2)." });
+    //    Mã lỗi: đang Mới tạo (1) mà đòi sang "3" ⇒ nhánh Pending ⇒ `CheckStockInNotExecuting`; ngoài {1,2} ⇒ `NotPendingExecuting`.
+    if (h.Status != "2") return Results.BadRequest(new { error = "Chỉ kết thúc được phiếu đang ở trạng thái Tiến hành (2).", code = h.Status == "1" ? "Ser_Inv_StockIn_NotExecuting" : "Ser_Inv_StockIn_NotPendingExecuting", status = h.Status });
     var lines = await db.PartStockInLines.Where(l => l.OrgId == t.OrgId && l.StockInId == h.Id).ToListAsync();
     foreach (var l in lines)
     {
@@ -107215,6 +107217,7 @@ app.MapPut("/api/stockins/{no}", async (string no, StockInUpdateDto dto, AppDbCo
     // Guard TRẠNG THÁI HIỆN TẠI: chỉ "1" Mới tạo hoặc "2" Tiến hành.
     if (h.Status != "1" && h.Status != "2")
         return Results.BadRequest(new { error = "Chỉ sửa được phiếu nhập ở trạng thái Mới tạo (1) hoặc Tiến hành (2).",
+            code = "Ser_Inv_StockIn_NotPendingExecuting",   // CheckStockInNotPendingExecuting — SerStockInUpdate (StockIn.cs:1808)
             status = h.Status });
 
     // CheckStockInFieldEmpty — nguồn bắt buộc các trường này.
@@ -107254,6 +107257,7 @@ app.MapDelete("/api/stockins/{no}", async (string no, AppDbContext db, ITenantCo
 
     if (h.Status != "1" && h.Status != "5")
         return Results.BadRequest(new { error = "Chỉ xoá được phiếu nhập ở trạng thái Mới tạo (1) hoặc Huỷ (5).",
+            code = "Ser_Inv_StockIn_NotPending",   // CheckStockInNotPending (nhận Pending HOẶC Reject) — SerStockInDelete (StockIn.cs:2163)
             status = h.Status, statusName = stockInStatusNames.TryGetValue(h.Status ?? "", out var sn) ? sn : null });
 
     // Phiếu điều chỉnh trỏ về phiếu gốc: nguồn CHỈ kiểm tra phiếu gốc còn không, KHÔNG chặn xoá.
