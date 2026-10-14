@@ -32671,6 +32671,9 @@ app.MapPost("/api/warrantyclaims/{id:long}/approve-check", async (long id, AppDb
     void Deny(string code, string desc, object? ctx = null) => violations.Add(new { code, desc, ctx });
 
     if (string.IsNullOrWhiteSpace(c.Km)) Deny("InvalidKM", "Số Km của BCBH trống!");
+    // `ROWarrantyReport_Approve_Check` (BizCarSv.WarrantyReport.cs:3979): VIN của BCBH rỗng ⇒ `DMSSer_ROWarrantyReport_Approve_Check_InvalidVIN`
+    // (nguồn chặn ngay đầu hàm, trước khi rẽ nhánh theo ROWTypeCode/ROWTypeDtlCode). Mini gom vi phạm thay vì ném ngay.
+    if (string.IsNullOrWhiteSpace(c.Vin)) Deny("InvalidVIN", "VIN của BCBH trống!");
 
     // Phụ tùng CHÍNH của hồ sơ (PTC) — nguồn lọc đúng loại này, không phải mọi dòng phụ tùng.
     var ptcCodes = await db.WarrantyClaimPartItems
