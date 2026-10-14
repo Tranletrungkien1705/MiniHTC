@@ -72,15 +72,13 @@ async function load(){ await token();
   F("rows").innerHTML=(d.items||[]).map(o=>{
     // Luồng nguồn: P → A (xác nhận) → F (hoàn thành); huỷ chỉ từ P. Xác nhận/huỷ ở nguồn làm THEO LÔ.
     let act=o.status==="P"?`<button class="sm" onclick="batch('${o.dlrContractNo}','approve')">Xác nhận</button> <button class="sm" onclick="batch('${o.dlrContractNo}','cancel')">Hủy</button>`
-      :o.status==="A"?`<button class="sm" onclick="finish('${o.dlrContractNo}')">Hoàn thành</button>`:"";
+      :"";   // Không có nút "Hoàn thành": nguồn không có lệnh này (xem #198 ở Program.cs) — F chỉ sinh tự động khi lưu phiếu huỷ xe.
     return `<tr><td><b>${o.dlrContractNo}</b> <a href="#" class="cars" onclick="lines('${o.dlrContractNo}');return false">xem dòng</a></td><td>${o.dlrContractNoUser}</td><td>${o.dealerCode||""}</td><td>${o.salesManCode}</td><td>${o.customerName}</td><td>${day(o.signDate)}</td><td>${o.lines}</td><td class="num">${money(o.total)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.dlrContractNo}"></tr>`;
   }).join("")||'<tr><td colspan="10" class="muted">Chưa có hợp đồng.</td></tr>';
 }
 // Nguồn Dlr_Contract_ApproveMulti / _CancelMulti nhận DANH SÁCH số HĐ — ở đây gửi mảng 1 phần tử.
 async function batch(no,action){ const r=await fetch(`/api/dlrcontracts/${action}-multi`,{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify({contractNos:[no]})});
   const j=await r.json(); if(r.ok){ msg(`${no}: ${LBL[j.status]||j.status}`); load(); } else msg("Lỗi: "+(j.error||r.status)); }
-async function finish(no){ const r=await fetch(`/api/dlrcontracts/${no}/finish`,{method:"POST",headers:H()});
-  const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function lines(no){
   const row=F("x-"+no); if(row.innerHTML){ row.innerHTML=""; return; }
   const d=await (await fetch(`/api/dlrcontracts/${no}/lines`,{headers:H()})).json();
