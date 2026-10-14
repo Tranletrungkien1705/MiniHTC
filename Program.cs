@@ -105242,8 +105242,15 @@ app.MapGet("/api/stockouts", async (AppDbContext db, ITenantContext t, string? s
 app.MapPost("/api/stockouts", async (StockOutDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
+    // `CheckStockOutFieldEmpty` (BizCarSv.Inventory.StockOut.cs, gọi từ SerStockOutCreate :615), theo thứ tự nguồn:
+    // StockOutNo (Mini tự sinh) → StockOutType → DealerCode → StockOutDate → StaffID (= UserCode). Trước đây thiếu cả 4 guard
+    // (dealer rỗng còn sinh số phiếu "PX--yymmdd-001").
+    if (string.IsNullOrWhiteSpace(dto.StockOutType)) return Results.BadRequest(new { error = "Chưa chọn loại phiếu xuất.", code = "Ser_Inv_StockOut_StockOutTypeEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "Ser_Inv_StockOut_DealerEmpty" });
+    if (dto.StockOutDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày xuất kho.", code = "Ser_Inv_StockOut_StockOutDateEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.UserCode)) return Results.BadRequest(new { error = "Chưa có nhân viên xuất kho.", code = "Ser_Inv_StockOut_StaffIDEmpty" });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
-    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
+    if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0).", code = "Ser_Inv_StockOut_StockOutDetailEmpty" });
     // #415 số phiếu xuất theo nguồn InvStockOutService.GenerateStockOutNo: "PX-" + DealerCode + "-" + yyMMdd + "-" + NNN (đếm theo ngày,
     //   theo đại lý). Port cũ "SO"+yyMMddHHmmss TRÙNG khi tạo 2 phiếu cùng giây ⇒ /post|/reject theo số chọn nhầm phiếu.
     var soDealer = (dto.DealerCode ?? "").Trim().ToUpperInvariant();
