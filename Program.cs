@@ -50834,12 +50834,25 @@ app.MapPost("/api/vinmodelorginalmsts", async (VinModelOrginalMstDto dto, AppDbC
         await db.SaveChangesAsync();
         return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.OrginalCode, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = false });
     }
+    // Nguồn `Mst_VINModelOrginal_Create` chỉ INSERT (SaveData) — trùng khoá là lỗi DB, KHÔNG phải upsert. Sửa đi qua PUT (Mst_VINModelOrginal_Update).
+    return Results.BadRequest(new { error = "ErrCarSv.Mst_VINModelOrginal_Create_DuplicateKey", field = "VINCode", message = "Mã VIN gốc + model đã tồn tại (dùng PUT để sửa).", vinCode = vc, modelCode = mc });
+}).RequireAuthorization();
+
+// `Mst_VINModelOrginal_Update` (BizCarSv.Master.cs:9860): tìm theo VINCode, không có ⇒ `Mst_VINModelOrginal_Update_TableNotFound`;
+// chỉ ghi ModelCode + OrginalCode (alColumnEffective) — không đụng Remark/FlagActive.
+app.MapPut("/api/vinmodelorginalmsts/{vinCode}", async (string vinCode, VinModelOrginalMstDto dto, AppDbContext db, ITenantContext t, System.Security.Claims.ClaimsPrincipal user) =>
+{
+    var vc = (vinCode ?? "").Trim().ToUpperInvariant();
+    var row = await db.VinModelOrginalMsts.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VINCode == vc);
+    if (row is null)
+        return Results.NotFound(new { error = "ErrCarSv.Mst_VINModelOrginal_Update_TableNotFound", message = "Không tìm thấy mã VIN gốc.", vinCode = vc });
+    var mc = (dto.ModelCode ?? "").Trim().ToUpperInvariant();
+    if (!string.IsNullOrWhiteSpace(mc)) row.ModelCode = mc;
     row.OrginalCode = dto.OrginalCode?.Trim();
-    row.Remark = dto.Remark?.Trim();
-    row.FlagActive = fa;
-    row.LogLUDateTime = now;
+    var who = user.Identity?.Name ?? user.FindFirst("email")?.Value ?? "system";
+    row.LogLUDateTime = DateTime.Now;
     row.LogLUBy = who;
-    row.UpdatedAt = now;
+    row.UpdatedAt = DateTime.Now;
     await db.SaveChangesAsync();
     return Results.Ok(new { row.Id, row.VINCode, row.ModelCode, row.OrginalCode, row.Remark, row.FlagActive, row.CreatedDate, row.CreatedBy, row.LogLUDateTime, row.LogLUBy, row.UpdatedAt, updated = true });
 }).RequireAuthorization();
