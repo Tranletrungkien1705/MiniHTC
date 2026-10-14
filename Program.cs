@@ -53912,16 +53912,26 @@ app.MapPost("/api/tvo/appointments", async (TvoAppCreateDto dto, AppDbContext db
         ("AppTime", dto.AppTime), ("CusRequest", dto.CusRequest), ("DealerCode", dto.DealerCode),
     };
     foreach (var (k, v) in req)
-        if (string.IsNullOrWhiteSpace(v)) return Results.BadRequest(new { error = "Thiếu tham số bắt buộc: " + k });
+        if (string.IsNullOrWhiteSpace(v)) return Results.BadRequest(new { error = "Thiếu tham số bắt buộc: " + k,
+            // mã lỗi nguồn dạng `HTCMobileTVO_Ser_App_Create_Check_Invalid<Trường>`
+            code = "HTCMobileTVO_Ser_App_Create_Check_Invalid" + k });
 
     var dealer = dto.DealerCode!.Trim().ToUpperInvariant();
     var plate = dto.PlateNo!.Trim().ToUpperInvariant();
 
     // Nguồn gọi CheckExistDealerCode / CheckExistTradeMarkCode / CheckExistEngineerCode(nếu có CVDV).
-    if (!await db.Dealers.AnyAsync(d => d.OrgId == t.OrgId && d.DealerCode == dealer))
-        return Results.BadRequest(new { error = "Đại lý không tồn tại: " + dealer });
+    // `HTCMobileTVO_Ser_App_Create_New20210423` (BizCarSv.TVO.cs:2018): CheckExistDealerCode(Flag.Active) → CheckExistTradeMarkCode(TradeMarkCode,
+    // DealerCode, Active) → CheckExistEngineerCode(CVDV, DealerCode, Active) nếu có CVDV. Trước đây chỉ kiểm đại lý TỒN TẠI (không kiểm đang hoạt động),
+    // bỏ hẳn hai kiểm tra còn lại.
+    if (!await db.Dealers.AnyAsync(d => d.OrgId == t.OrgId && d.DealerCode == dealer && d.FlagActive == "1"))
+        return Results.BadRequest(new { error = "Đại lý không tồn tại hoặc đã ngừng hoạt động: " + dealer, code = "HTCMobileTVO_Ser_App_DealerCodeNotFound" });
+    var tmCode = dto.TradeMarkCode!.Trim();
+    if (!await db.ServiceTradeMarks.AnyAsync(m => m.OrgId == t.OrgId && m.TradeMarkCode == tmCode && m.DealerCode == dealer && m.FlagActive == "1"))
+        return Results.BadRequest(new { error = "Thương hiệu xe không tồn tại: " + tmCode, code = "HTCMobileTVO_Ser_App_Create_Check_TradeMarkCode_NotFound" });
 
     var cvdv = (dto.CVDVCode ?? "").Trim();
+    if (cvdv.Length > 0 && !await db.ServiceEngineers.AnyAsync(e => e.OrgId == t.OrgId && e.EngineerNo == cvdv && e.DealerCode == dealer && e.IsActive == "1"))
+        return Results.BadRequest(new { error = "Cố vấn dịch vụ không tồn tại: " + cvdv, code = "HTCMobileTVO_Ser_App_CVDVNotFound" });
 
     // ---- (1) tra khách + xe THEO BIỂN SỐ (xe còn hiệu lực) ----
     var car = await db.ServiceCars.FirstOrDefaultAsync(c => c.OrgId == t.OrgId
