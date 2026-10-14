@@ -96881,8 +96881,14 @@ app.MapGet("/api/campaigns", async (AppDbContext db, ITenantContext t, string? a
 
 app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantContext t, string? partnerUserCode) =>
 {
-    if (string.IsNullOrWhiteSpace(dto.CamNo) || string.IsNullOrWhiteSpace(dto.CamName))
-        return Results.BadRequest(new { error = "Cần CamNo và CamName." });
+    // `CheckCamFieldEmpty` (BizCarSv.Service.cs, gọi từ SerCampaignCreate :9771): CamNo → Ser_Cam_CamNoEmpty,
+    // DealerCode → Ser_Cam_DealerEmpty, CamName → Ser_Cam_CamNameEmpty. Trước đây thiếu guard DealerCode.
+    if (string.IsNullOrWhiteSpace(dto.CamNo))
+        return Results.BadRequest(new { error = "Cần CamNo và CamName.", code = "Ser_Cam_CamNoEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode))
+        return Results.BadRequest(new { error = "Chưa có mã đại lý.", code = "Ser_Cam_DealerEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.CamName))
+        return Results.BadRequest(new { error = "Cần CamNo và CamName.", code = "Ser_Cam_CamNameEmpty" });
     // #250: `FrmCampaignCreate.cs` kiểm `regex.IsMatch(txtCamNo.Text)` (bản đồ regex #249).
     if (HasSpecialChar(dto.CamNo.Trim()))
         return Results.BadRequest(new { error = "Mã chương trình không được phép chứa các ký tự đặc biệt" });
@@ -96891,7 +96897,7 @@ app.MapPost("/api/campaigns", async (CampaignDto dto, AppDbContext db, ITenantCo
         return Results.BadRequest(new { error = "Ngày kết thúc phải ≥ ngày bắt đầu." });   // guard gốc FrmCampaignCreate
     var no = dto.CamNo.Trim().ToUpperInvariant();
     if (await db.Campaigns.AnyAsync(x => x.OrgId == t.OrgId && x.CamNo == no && x.DealerCode == dto.DealerCode))
-        return Results.BadRequest(new { error = $"Mã chiến dịch {no} đã tồn tại." });
+        return Results.BadRequest(new { error = $"Mã chiến dịch {no} đã tồn tại.", code = "Ser_CamNo_Exist" });
     // #1079: SerCampaignCreate (Service.cs:9698) ghi du 4 cot nhat ky (tren ban WH cua nguon) khi TAO.
     var by1079 = (partnerUserCode ?? "system").Trim(); var now1079 = DateTime.Now;
     var c = new Campaign { OrgId = t.OrgId, CamNo = no, CamName = dto.CamName, StartDate = dto.StartDate.Value, FinishDate = dto.FinishDate, Content = dto.Content, Status = "1", DealerCode = dto.DealerCode,
