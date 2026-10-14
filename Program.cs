@@ -97279,9 +97279,14 @@ app.MapPost("/api/engineers", async (EngineerDto dto, AppDbContext db, ITenantCo
         return Results.BadRequest(new { error = "Ngày bắt đầu làm việc không được lớn hơn ngày kết thúc làm việc." });
     var by = (partnerUserCode ?? "system").Trim();
     var now = DateTime.Now;
-    var e = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no);
+    // `SerEngineerCreate01` (BizCarSv.Service.cs:12474) gọi `CheckExistEngineerNo(EngineerNo, DealerCode)` (:576) ⇒ ném
+    // `Ser_EngineerNo_Exist` khi cặp khóa đã có. Trước đây POST là UPSERT (nuốt guard); sửa dữ liệu dùng PUT /api/engineers/{engineerNo}.
+    var dlrEng = string.IsNullOrWhiteSpace(dto.DealerCode) ? null : dto.DealerCode.Trim().ToUpperInvariant();
+    var e = await db.ServiceEngineers.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.EngineerNo == no && (dlrEng == null || x.DealerCode == dlrEng));
+    if (e is not null)
+        return Results.BadRequest(new { error = "ErrCarSv.Ser_EngineerNo_Exist", message = "Mã nhân viên đã tồn tại.", engineerNo = no, dealerCode = dlrEng });
     var whoEng = user.Identity?.Name ?? "system";   // #396 Create01 ghi CreatedBy + LogLU*; Update01 ghi LogLU*
-    if (e is null) { e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no, CreatedBy = whoEng, CreatedDate = DateTime.Now }; db.ServiceEngineers.Add(e); }   // #1048
+    e = new ServiceEngineer { OrgId = t.OrgId, EngineerNo = no, CreatedBy = whoEng, CreatedDate = DateTime.Now }; db.ServiceEngineers.Add(e);   // #1048
     e.LogLUDateTime = DateTime.Now; e.LogLUBy = whoEng; if (dto.DealerCode is not null) e.DealerCode = dto.DealerCode.Trim().ToUpperInvariant();
     // #421 GroupRID như nguồn (rỗng ⇒ NULL, nguồn không kiểm nhóm); GroupRCode cũ (mã) vẫn nhận ⇒ đổi ra Id (mã không có ⇒ 400).
     long? groupRID = dto.GroupRID;
