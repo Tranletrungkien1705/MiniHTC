@@ -106425,6 +106425,14 @@ app.MapPost("/api/stockins", async (StockInDto dto, AppDbContext db, ITenantCont
     if (dto.OrderPartId is { } opIdIn && !await db.SerPartOrders.AnyAsync(x => x.OrgId == t.OrgId && x.Id == opIdIn))
         return Results.BadRequest(new { error = $"Không tìm thấy đơn đặt phụ tùng {opIdIn}." });
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Cần WarehouseCode." });
+    // `CheckStockInFieldEmpty` (BizCarSv.Inventory.StockIn.cs, gọi từ SerStockInCreate :735), theo thứ tự nguồn:
+    // StockInNo (Mini tự sinh) → SupplierID → StockInType → DealerCode → StockInDate → StaffID (= UserCode, :806 `UserCode = strStaffID`).
+    // Trước đây thiếu cả 5 guard (dealer rỗng còn sinh số phiếu "PN--yymmdd-001").
+    if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp.", code = "Ser_Inv_StockIn_SupplierIDEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.StockInType)) return Results.BadRequest(new { error = "Chưa chọn loại phiếu nhập.", code = "Ser_Inv_StockIn_StockInTypeEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "Ser_Inv_StockIn_DealerEmpty" });
+    if (dto.StockInDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày nhập kho.", code = "Ser_Inv_StockIn_StockInDateEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.UserCode)) return Results.BadRequest(new { error = "Chưa có nhân viên nhập kho.", code = "Ser_Inv_StockIn_StaffIDEmpty" });
     var lines = (dto.Lines ?? new()).Where(l => !string.IsNullOrWhiteSpace(l.PartCode) && l.Quantity > 0).ToList();
     if (lines.Count == 0) return Results.BadRequest(new { error = "Cần ít nhất 1 dòng phụ tùng (PartCode + Quantity > 0)." });
     // #415 số phiếu nhập theo nguồn InvStockInService.GenerateStockInNo: "PN-" + DealerCode + "-" + yyMMdd + "-" + NNN.
@@ -106837,9 +106845,15 @@ app.MapPut("/api/stockins/{no}", async (string no, StockInUpdateDto dto, AppDbCo
             status = h.Status });
 
     // CheckStockInFieldEmpty — nguồn bắt buộc các trường này.
-    if (string.IsNullOrWhiteSpace(dto.StockInNo)) return Results.BadRequest(new { error = "Chưa nhập số phiếu nhập." });
-    if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp." });
+    if (string.IsNullOrWhiteSpace(dto.StockInNo)) return Results.BadRequest(new { error = "Chưa nhập số phiếu nhập.", code = "Ser_Inv_StockIn_StockInNoEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.SupplierID)) return Results.BadRequest(new { error = "Chưa chọn nhà cung cấp.", code = "Ser_Inv_StockIn_SupplierIDEmpty" });
     if (string.IsNullOrWhiteSpace(dto.WarehouseCode)) return Results.BadRequest(new { error = "Chưa chọn kho." });
+    // Phần còn lại của CheckStockInFieldEmpty (SerStockInUpdate :1651/:1798/:1968): Type → Dealer (lấy từ phiếu đã lưu) → Date → StaffID.
+    // Trước đây thiếu ⇒ gửi thiếu sẽ GHI ĐÈ StockInType/UserCode thành null.
+    if (string.IsNullOrWhiteSpace(dto.StockInType)) return Results.BadRequest(new { error = "Chưa chọn loại phiếu nhập.", code = "Ser_Inv_StockIn_StockInTypeEmpty" });
+    if (string.IsNullOrWhiteSpace(h.DealerCode)) return Results.BadRequest(new { error = "Chưa chọn đại lý.", code = "Ser_Inv_StockIn_DealerEmpty" });
+    if (dto.StockInDate is null) return Results.BadRequest(new { error = "Chưa nhập ngày nhập kho.", code = "Ser_Inv_StockIn_StockInDateEmpty" });
+    if (string.IsNullOrWhiteSpace(dto.StaffID)) return Results.BadRequest(new { error = "Chưa có nhân viên nhập kho.", code = "Ser_Inv_StockIn_StaffIDEmpty" });
 
     h.StockInNo = dto.StockInNo!.Trim().ToUpperInvariant();   // nguồn ToUpper
     h.SupplierID = dto.SupplierID; h.WarehouseCode = dto.WarehouseCode!.Trim().ToUpperInvariant();
