@@ -26,7 +26,6 @@
 <div class="bar" style="margin:10px 0">
   <input id="qt" placeholder="Lọc ĐVVT" oninput="load()" style="width:110px">
   <input id="qn" placeholder="Lọc số BB" oninput="load()" style="width:120px">
-  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Pending">Chờ xác nhận</option><option value="Confirmed">Đã xác nhận</option></select>
 </div>
 <div class="wrap"><table><thead><tr><th>Số BB giao nhận</th><th>ĐVVT</th><th>Đại lý</th><th class="num">Số xe</th><th>Trạng thái</th><th>Ngày XN</th><th>Ghi chú</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="8" class="muted">Đang tải…</td></tr></tbody></table></div>
@@ -36,7 +35,7 @@
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const ST={Pending:"Chờ xác nhận",Confirmed:"Đã xác nhận"};
+const ST={P:"Chờ duyệt",A:"Đã duyệt",R:"Từ chối"};   /* trục thật của nguồn: FDlvMnStatus (bên giao) / TDlvMnStatus (bên nhận); ConfirmStatus là cột scaffold */
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -54,10 +53,10 @@ async function save(){
   if(r.ok){ msg(`Đã tạo ${j.dlvMinutesNo} (${j.cars} xe)`); F("carRows").innerHTML=""; addRow(); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
-  const d=await (await fetch(`/api/transpdlv?transporter=${F("qt").value}&no=${F("qn").value}&status=${F("qs").value}`,{headers:H()})).json();
+  const d=await (await fetch(`/api/transpdlv?transporter=${F("qt").value}&no=${F("qn").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    const act=o.confirmStatus==="Pending"?`<button class="sm ok" onclick="confirm1('${o.dlvMinutesNo}')">Xác nhận</button>`:"";
-    return `<tr onclick="detail('${o.dlvMinutesNo}')"><td><b>${o.dlvMinutesNo}</b></td><td>${o.transporterCode}</td><td>${o.dealerCode||""}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.confirmStatus}">${ST[o.confirmStatus]||o.confirmStatus}</span></td><td>${(o.confirmDate||"").replace("T"," ").substring(0,16)||"—"}</td><td>${o.remark||""}</td><td onclick="event.stopPropagation()">${act}</td></tr>`;
+    const act=o.fDlvMnStatus==="P"?`<button class="sm ok" onclick="appr('${o.dlvMinutesNo}','0')">Duyệt</button> <button class="sm bad" onclick="appr('${o.dlvMinutesNo}','1')">Từ chối</button>`:"";
+    return `<tr onclick="detail('${o.dlvMinutesNo}')"><td><b>${o.dlvMinutesNo}</b></td><td>${o.transporterCode}</td><td>${o.dealerCode||""}</td><td class="num">${o.cars}</td><td><span class="pill">Giao: ${ST[o.fDlvMnStatus]||o.fDlvMnStatus||"—"}</span> <span class="pill">Nhận: ${ST[o.tDlvMnStatus]||o.tDlvMnStatus||"—"}</span></td><td>${(o.confirmDate||"").replace("T"," ").substring(0,16)||"—"}</td><td>${o.remark||""}</td><td onclick="event.stopPropagation()">${act}</td></tr>`;
   }).join("")||'<tr><td colspan="8" class="muted">Chưa có biên bản.</td></tr>';
 }
 async function detail(no){
@@ -65,10 +64,11 @@ async function detail(no){
   F("detCard").style.display=""; F("detNo").textContent=no;
   F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${c.modelCode||""}</td></tr>`).join("")||'<tr><td colspan="2" class="muted">Không có xe.</td></tr>';
 }
-async function confirm1(no){
-  const rm=prompt("Ghi chú xác nhận (tùy chọn):",""); if(rm===null) return;
-  const r=await fetch(`/api/transpdlv/${no}/confirm`,{method:"POST",headers:H(),body:JSON.stringify({remark:rm})});
-  const j=await r.json(); if(r.ok){ msg(`${no}: đã xác nhận`); load(); } else msg("Lỗi: "+(j.error||r.status));
+// Duyệt/từ chối = POST /api/dlvminutes/{no}/approve (Sto_DlvMinutes_Approve_New20190416); flagUnapprove "1" ⇒ ghi "R". Nguồn không có lệnh "confirm" (#199).
+async function appr(no,unap){
+  if(!confirm((unap==="1"?"Từ chối":"Duyệt")+" biên bản "+no+"?")) return;
+  const r=await fetch(`/api/dlvminutes/${no}/approve`,{method:"POST",headers:H(),body:JSON.stringify({flagUnapprove:unap})});
+  const j=await r.json(); if(r.ok){ msg(`${no}: ${unap==="1"?"đã từ chối":"đã duyệt"}`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 addRow(); load();
 </script>
