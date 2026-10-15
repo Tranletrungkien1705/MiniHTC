@@ -52,12 +52,12 @@ async function create(){
   const body={effectiveDateFrom:F("ef").value||null,effectiveDateTo:F("et").value||null,modelCode:F("md").value,specCode:F("sp").value,flagDepositPmt:F("fdp").checked?"1":"0",depositPercent:parseFloat(F("dp").value)||0,guaranteePercent:parseFloat(F("gp").value)||0,guaranteeDays:parseInt(F("gd").value)||0,depositDutyEndDays:parseInt(F("dd").value)||0,guaranteeEndDays:parseInt(F("ge").value)||0,depositDealDateDays:parseInt(F("dl").value)||0};
   const r=await fetch("/api/paymentterms",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
-  if(r.ok){ msg("Đã lưu "+j.pMTermNo); ["md","sp","dp","gp","gd","dd","ge","dl"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã lưu "+j.pmTermNo); ["md","sp","dp","gp","gd","dd","ge","dl"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/paymentterms?model=${F("qm").value}&active=${F("fa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.pMTermNo}</b></td><td>${day(o.effectiveDateFrom)}–${day(o.effectiveDateTo)}</td><td>${o.modelCode||"—"}${o.specCode?"/"+o.specCode:""}</td><td>${o.depositPercent}%</td><td>${o.guaranteePercent}%</td><td>${o.guaranteeDays}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.pMTermNo}')">Đổi TT</button></td></tr>`
+    `<tr><td><b>${o.pmTermNo}</b></td><td>${day(o.effectiveDateFrom)}–${day(o.effectiveDateTo)}</td><td>${o.modelCode||"—"}${o.specCode?"/"+o.specCode:""}</td><td>${o.depositPercent}%</td><td>${o.guaranteePercent}%</td><td>${o.guaranteeDays}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.pmTermNo}')">Đổi TT</button></td></tr>`
   ).join("")||'<tr><td colspan="8" class="muted">Chưa có điều khoản.</td></tr>';
 }
 async function toggle(c){ const r=await fetch(`/api/paymentterms/${c}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }

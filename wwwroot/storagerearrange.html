@@ -42,16 +42,16 @@ async function create(){
   const cars=[...F("ctb").querySelectorAll("tr")].map(tr=>({vin:tr.querySelector(".vin").value,storageCodeFrom:tr.querySelector(".sf").value,storageCodeTo:tr.querySelector(".st").value,remark:tr.querySelector(".rm").value})).filter(c=>c.vin);
   const r=await fetch("/api/storagerearranges",{method:"POST",headers:H(),body:JSON.stringify({cars})});
   const j=await r.json();
-  if(r.ok){ msg("Đã tạo "+j.sCNo+" ("+j.cars+" xe)."); F("ctb").innerHTML="";addCar(); load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã tạo "+j.scNo+" ("+j.cars+" xe)."); F("ctb").innerHTML="";addCar(); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/storagerearranges?status=${F("fst").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
     // Nguồn chỉ có 2 cấp duyệt (không có "xác nhận"/"huỷ"). Không-duyệt ở cấp 1 = TỪ CHỐI ("R"),
     // còn ở cấp 2 = BỎ DUYỆT, trả phiếu về "P" — hai cấp khác nhau, đúng nguồn.
-    let act=o.status==="P"?`<button class="sm" onclick="act1('${o.sCNo}','approve1',true)">Duyệt cấp 1</button> <button class="sm" onclick="act1('${o.sCNo}','approve1',false)">Từ chối</button>`
-      :o.status==="A1"?`<button class="sm" onclick="act1('${o.sCNo}','approve2',true)">Duyệt cấp 2</button> <button class="sm" onclick="act1('${o.sCNo}','approve2',false)">Bỏ duyệt</button>`:"";
-    return `<tr><td><b>${o.sCNo}</b> <a href="#" class="cars" onclick="cars('${o.sCNo}');return false">xem xe</a></td><td>${o.cars}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.sCNo}"></tr>`;
+    let act=o.status==="P"?`<button class="sm" onclick="act1('${o.scNo}','approve1',true)">Duyệt cấp 1</button> <button class="sm" onclick="act1('${o.scNo}','approve1',false)">Từ chối</button>`
+      :o.status==="A1"?`<button class="sm" onclick="act1('${o.scNo}','approve2',true)">Duyệt cấp 2</button> <button class="sm" onclick="act1('${o.scNo}','approve2',false)">Bỏ duyệt</button>`:"";
+    return `<tr><td><b>${o.scNo}</b> <a href="#" class="cars" onclick="cars('${o.scNo}');return false">xem xe</a></td><td>${o.cars}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${act}</td></tr><tr id="x-${o.scNo}"></tr>`;
   }).join("")||'<tr><td colspan="5" class="muted">Chưa có yêu cầu.</td></tr>';
 }
 async function act1(no,a,ok){ let rm=null;

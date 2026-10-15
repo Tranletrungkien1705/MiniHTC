@@ -41,12 +41,12 @@ function msg(t){ F("msg").textContent=t; }
 async function create(){
   const r=await fetch("/api/avnprices",{method:"POST",headers:H(),body:JSON.stringify({aVNCode:F("ac").value,unitPriceAVN:parseFloat(F("pr").value)||0,effDateTime:F("ed").value||null})});
   const j=await r.json();
-  if(r.ok){ msg("Đã lưu "+j.aVNCode); F("ac").value="";F("pr").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã lưu "+j.avnCode); F("ac").value="";F("pr").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/avnprices?code=${F("q").value}&active=${F("fa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.aVNCode}</b></td><td class="num">${money(o.unitPriceAVN)}</td><td>${day(o.effDateTime)}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.aVNCode}')">Đổi TT</button></td></tr>`
+    `<tr><td><b>${o.avnCode}</b></td><td class="num">${money(o.unitPriceAVN)}</td><td>${day(o.effDateTime)}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.avnCode}')">Đổi TT</button></td></tr>`
   ).join("")||'<tr><td colspan="5" class="muted">Chưa có giá AVN.</td></tr>';
 }
 async function toggle(c){ const r=await fetch(`/api/avnprices/${c}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }

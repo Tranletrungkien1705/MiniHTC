@@ -35,12 +35,12 @@ function msg(t){ F("msg").textContent=t; }
 async function create(){
   const r=await fetch("/api/carocns",{method:"POST",headers:H(),body:JSON.stringify({oCNCode:F("oc").value,modelCode:F("md").value,oCNDesc:F("ds").value})});
   const j=await r.json();
-  if(r.ok){ msg("Đã lưu "+j.oCNCode+"/"+j.modelCode); ["oc","md","ds"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã lưu "+j.ocnCode+"/"+j.modelCode); ["oc","md","ds"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/carocns?q=${F("q").value}&model=${F("qm").value}&active=${F("fa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.oCNCode}</b></td><td>${o.modelCode}</td><td>${o.oCNDesc||""}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.modelCode}','${o.oCNCode}')">Đổi TT</button></td></tr>`
+    `<tr><td><b>${o.ocnCode}</b></td><td>${o.modelCode}</td><td>${o.ocnDesc||""}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"HĐ":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.modelCode}','${o.ocnCode}')">Đổi TT</button></td></tr>`
   ).join("")||'<tr><td colspan="5" class="muted">Chưa có OCN.</td></tr>';
 }
 async function toggle(md,oc){ const r=await fetch(`/api/carocns/${md}/${oc}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }

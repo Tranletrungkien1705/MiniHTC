@@ -37,14 +37,14 @@ async function save(){
   const b={lCNo:F("lc").value,contractNo:F("ct").value,bankName:F("bk").value,amount:Number(F("am").value||0),openDate:F("od").value||null,expiryDate:F("ed").value||null};
   const r=await fetch("/api/lcs",{method:"POST",headers:H(),body:JSON.stringify(b)});
   const j=await r.json();
-  if(r.ok){ msg("Đã lưu "+j.lCNo+"."); F("lc").value="";F("am").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã lưu "+j.lcNo+"."); F("lc").value="";F("am").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/lcs?status=${F("fst").value}&contract=${F("q").value}`,{headers:H()})).json();
   F("tv").textContent=n(d.totalAmount);
   F("rows").innerHTML=(d.items||[]).map(l=>{
-    let act=l.status==="Open"?`<button class="sm" onclick="close_('${l.lCNo}')">Tất toán</button>`:"";
-    return `<tr><td><b>${l.lCNo}</b></td><td>${l.contractNo}</td><td>${l.bankName}</td><td class="n">${n(l.amount)}</td>
+    let act=l.status==="Open"?`<button class="sm" onclick="close_('${l.lcNo}')">Tất toán</button>`:"";
+    return `<tr><td><b>${l.lcNo}</b></td><td>${l.contractNo}</td><td>${l.bankName}</td><td class="n">${n(l.amount)}</td>
       <td>${day(l.openDate)}</td><td class="${l.expired?'exp':''}">${day(l.expiryDate)}${l.expired?" ⚠":""}</td>
       <td><span class="pill p-${l.status}">${LBL[l.status]||l.status}</span></td><td>${act}</td></tr>`;
   }).join("")||'<tr><td colspan="8" class="muted">Chưa có LC.</td></tr>';

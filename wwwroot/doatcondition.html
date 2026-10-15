@@ -58,12 +58,12 @@ async function create(){
   const body={effDateStart:F("ds").value||null,effDateEnd:F("de").value||null,flagCQEndDate:F("fcq").checked?"1":"0",flagTaxPaymentDate:F("ftx").checked?"1":"0",flagPtmCoc:F("fptm").checked?"1":"0",ptmCocFrom:parseFloat(F("pcf").value)||0,ptmCocTo:parseFloat(F("pct").value)||0,flagDutyComplete:F("fdt").checked?"1":"0",dutyCompleteFrom:parseFloat(F("dcf").value)||0,dutyCompleteTo:parseFloat(F("dct").value)||0,flagModel:F("fmd").checked?"1":"0",models:F("mdl").value.split(",").map(s=>s.trim()).filter(Boolean)};
   const r=await fetch("/api/doatconditions",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
-  if(r.ok){ msg(j.message+" ("+j.dOATConditionCode+")"); load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg(j.message+" ("+j.doatConditionCode+")"); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/doatconditions?active=${F("fa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>
-    `<tr><td><b>${o.dOATConditionCode}</b></td><td>${day(o.effDateStart)}–${day(o.effDateEnd)}</td><td>${o.flagPtmCoc==="1"?o.ptmCocFrom+"-"+o.ptmCocTo+"%":"—"}</td><td>${o.flagDutyComplete==="1"?o.dutyCompleteFrom+"-"+o.dutyCompleteTo+"%":"—"}</td><td>${o.flagModel==="1"?o.models+" model":"tất cả"}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"Hiệu lực":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.dOATConditionCode}')">Đổi TT</button></td></tr>`
+    `<tr><td><b>${o.doatConditionCode}</b></td><td>${day(o.effDateStart)}–${day(o.effDateEnd)}</td><td>${o.flagPtmCoc==="1"?o.ptmCocFrom+"-"+o.ptmCocTo+"%":"—"}</td><td>${o.flagDutyComplete==="1"?o.dutyCompleteFrom+"-"+o.dutyCompleteTo+"%":"—"}</td><td>${o.flagModel==="1"?o.models+" model":"tất cả"}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.flagActive}">${o.flagActive==="1"?"Hiệu lực":"Ngừng"}</span></td><td><button class="sm" onclick="toggle('${o.doatConditionCode}')">Đổi TT</button></td></tr>`
   ).join("")||'<tr><td colspan="8" class="muted">Chưa có điều kiện.</td></tr>';
 }
 async function toggle(c){ const r=await fetch(`/api/doatconditions/${c}/toggle`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
