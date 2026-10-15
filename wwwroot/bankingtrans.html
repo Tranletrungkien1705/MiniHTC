@@ -46,20 +46,20 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const body={bankCode:F("bk").value,transType:F("tp").value,disbursementDate:F("dd").value||null,amountDisbursed:parseFloat(F("am").value)||0,totalAmount:0,remark:F("rm").value};
+  const body={bankCode:F("bk").value,bkTransType:F("tp").value,disbursementDate:F("dd").value||null,amountDisbursed:parseFloat(F("am").value)||0,totalAmount:0,remark:F("rm").value};
   const r=await fetch("/api/bankingtrans",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
-  if(r.ok){ msg("Đã tạo "+j.soDeNghi); F("am").value="";F("rm").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg("Đã tạo "+j.rQ_BankingTransNo); F("am").value="";F("rm").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/bankingtrans?status=${F("fst").value}&type=${F("fty").value}&bank=${F("q").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
-    let act=o.status==="Draft"?`<button class="sm" onclick="send('${o.soDeNghi}')">Gửi</button>`
-      :o.status==="Sent"?`<button class="sm" onclick="act1('${o.soDeNghi}','approve')">Duyệt</button> <button class="sm" onclick="act1('${o.soDeNghi}','reject')">Từ chối</button>`:"";
-    act += ` <button class="sm" onclick="act1('${o.soDeNghi}','pushbank')">Gửi NH</button>`;
-    if (o.status==="Approved" && ["A1","A2","A3"].includes(o.bankStatus)) act += ` <button class="sm" onclick="act1('${o.soDeNghi}','cancel-request')">Hủy ĐN</button>`;
-    if (o.status==="Draft" && o.bankStatus==="P") act += ` <button class="sm" onclick="delReq('${o.soDeNghi}')" style="color:#dc2626">Xóa</button>`;
-    return `<tr><td><b>${o.soDeNghi}</b></td><td>${o.bankCode}</td><td>${o.transType}</td><td>${dd(o.disbursementDate)}</td><td class="num">${money(o.amountDisbursed)}</td><td>${day(o.createdAt)}</td><td><span class="pill p-${o.status}">${LBL[o.status]||o.status}</span></td><td>${o.bankStatus}</td><td>${act}</td></tr>`;
+    let act=o.bkTransStatus==="Draft"?`<button class="sm" onclick="send('${o.rQ_BankingTransNo}')">Gửi</button>`
+      :o.bkTransStatus==="Sent"?`<button class="sm" onclick="act1('${o.rQ_BankingTransNo}','approve')">Duyệt</button> <button class="sm" onclick="act1('${o.rQ_BankingTransNo}','reject')">Từ chối</button>`:"";
+    act += ` <button class="sm" onclick="act1('${o.rQ_BankingTransNo}','pushbank')">Gửi NH</button>`;
+    if (o.bkTransStatus==="Approved" && ["A1","A2","A3"].includes(o.bkTransBankStatus)) act += ` <button class="sm" onclick="act1('${o.rQ_BankingTransNo}','cancel-request')">Hủy ĐN</button>`;
+    if (o.bkTransStatus==="Draft" && o.bkTransBankStatus==="P") act += ` <button class="sm" onclick="delReq('${o.rQ_BankingTransNo}')" style="color:#dc2626">Xóa</button>`;
+    return `<tr><td><b>${o.rQ_BankingTransNo}</b></td><td>${o.bankCode}</td><td>${o.bkTransType}</td><td>${dd(o.disbursementDate)}</td><td class="num">${money(o.amountDisbursed)}</td><td>${day(o.createdDate)}</td><td><span class="pill p-${o.bkTransStatus}">${LBL[o.bkTransStatus]||o.bkTransStatus}</span></td><td>${o.bkTransBankStatus}</td><td>${act}</td></tr>`;
   }).join("")||'<tr><td colspan="9" class="muted">Chưa có đề nghị.</td></tr>';
 }
 async function send(no){ const r=await fetch(`/api/bankingtrans/${no}/send`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }

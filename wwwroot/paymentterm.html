@@ -49,7 +49,7 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const body={effectiveDateFrom:F("ef").value||null,effectiveDateTo:F("et").value||null,modelCode:F("md").value,specCode:F("sp").value,flagDepositPmt:F("fdp").checked?"1":"0",depositPercent:parseFloat(F("dp").value)||0,guaranteePercent:parseFloat(F("gp").value)||0,guaranteeDays:parseInt(F("gd").value)||0,depositDutyEndDays:parseInt(F("dd").value)||0,guaranteeEndDays:parseInt(F("ge").value)||0,depositDealDateDays:parseInt(F("dl").value)||0};
+  const body={effectiveDateFrom:F("ef").value||null,effectiveDateTo:F("et").value||null,details:(F("md").value||F("sp").value)?[{modelCode:F("md").value||null,specCode:F("sp").value||null,flagDepositPmt:F("fdp").checked?"1":"0"}]:[],depositPercent:parseFloat(F("dp").value)||0,guaranteePercent:parseFloat(F("gp").value)||0,guaranteeDays:parseInt(F("gd").value)||0,depositDutyEndDays:parseInt(F("dd").value)||0,guaranteeEndDays:parseInt(F("ge").value)||0,depositDealDateDays:parseInt(F("dl").value)||0};
   const r=await fetch("/api/paymentterms",{method:"POST",headers:H(),body:JSON.stringify(body)});
   const j=await r.json();
   if(r.ok){ msg("Đã lưu "+j.pmTermNo); ["md","sp","dp","gp","gd","dd","ge","dl"].forEach(x=>F(x).value=""); load(); } else msg("Lỗi: "+(j.error||r.status));
