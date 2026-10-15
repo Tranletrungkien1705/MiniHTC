@@ -67,7 +67,7 @@ async function load(){ await token();
   }).join("")||'<tr><td colspan="9" class="muted">Chưa có đơn hàng.</td></tr>';
 }
 // Nguồn không có bước "gửi đơn" — đơn tạo ra đã là P (chờ duyệt).
-async function cancelSo(no){ const rs=prompt("Lý do huỷ đơn:",""); if(rs===null) return; const r=await fetch(`/api/salesorders/${no}/cancel`,{method:"POST",headers:H(),body:JSON.stringify({reason:rs})}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
+async function cancelSo(no){ if(!confirm("Huỷ đơn "+no+"? (nguồn OrderSOCancel không có lý do huỷ)")) return; const r=await fetch(`/api/salesorders/${no}/cancel`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function unapprove(no){ if(!confirm("Bỏ duyệt cấp 1, trả đơn về Chờ duyệt?")) return; const r=await fetch(`/api/salesorders/${no}/approve2?unapprove=true`,{method:"POST",headers:H()}); const j=await r.json(); if(r.ok) load(); else msg("Lỗi: "+(j.error||r.status)); }
 async function rename(no){ const nc=prompt("Số đơn hàng mới:",no); if(!nc||nc===no) return;
   const r=await fetch(`/api/salesorders/${no}/rename-code`,{method:"POST",headers:H(),body:JSON.stringify({newSoCode:nc})});
