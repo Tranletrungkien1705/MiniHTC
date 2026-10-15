@@ -33,9 +33,9 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-Type":"application/json"}; }
 function msg(t){ F("msg").textContent=t; }
 async function create(){
-  const r=await fetch("/api/dealerzones",{method:"POST",headers:H(),body:JSON.stringify({dealerCode:F("dl").value,zoneCode:F("zn").value})});
+  const r=await fetch("/api/dealerzones",{method:"POST",headers:H(),body:JSON.stringify([{dealerCode:F("dl").value,zoneCode:F("zn").value}])});
   const j=await r.json();
-  if(r.ok){ msg("Đã gán "+j.dealerCode+" → "+j.zoneCode); F("dl").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
+  if(r.ok){ msg(j.insertedCount?"Đã gán "+F("dl").value+" → "+F("zn").value:"Đã bật lại (hồi sinh) "+F("dl").value+" → "+F("zn").value); F("dl").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function load(){ await token();
   const d=await (await fetch(`/api/dealerzones?zone=${F("qz").value}&dealer=${F("qd").value}&active=${F("fa").value}`,{headers:H()})).json();
