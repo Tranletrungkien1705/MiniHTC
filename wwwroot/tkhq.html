@@ -38,8 +38,7 @@ function H(){ return {"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY,"Content-T
 function msg(t){ F("msg").textContent=t; }
 // Tạo = POST /api/cttkhqs (CT_TKHQ + VIN). CT_TKHQ của nguồn KHÔNG có Status/ContractNo/packing list ⇒ không có "thông quan" (xem #B64 ở Program.cs).
 async function create(){ await token();
-  const vins=F("vins").value.split(/?
-/).map(x=>x.trim()).filter(Boolean);
+  const vins=F("vins").value.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
   const r=await fetch("/api/cttkhqs",{method:"POST",headers:H(),body:JSON.stringify({declarationNo:F("dn").value,portCode:F("pc").value||null,openDate:F("od").value||null,taxPaymentDate:F("tp").value||null,remark:F("rm").value||null,vins})});
   const j=await r.json();
   if(r.ok){ msg("Đã mở "+(j.declarationNo||F("dn").value)+" ("+vins.length+" VIN)."); F("dn").value="";F("vins").value=""; load(); } else msg("Lỗi: "+(j.error||r.status));
