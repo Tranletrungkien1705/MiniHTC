@@ -13,7 +13,7 @@
   button.ok{color:#fff;background:var(--ok);border-color:var(--ok)} button.bad{color:#fff;background:var(--bad);border-color:var(--bad)}
   table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
   th{opacity:.7;font-size:11px;text-transform:uppercase} td.num{text-align:right;font-variant-numeric:tabular-nums} .wrap{overflow-x:auto}
-  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-Draft{color:var(--warn)} .s-Issued{color:var(--ok)} .s-Deleted{color:var(--bad)}
+  .pill{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)} .s-P{color:var(--warn)} .s-F{color:var(--ok)} .s-C{color:var(--bad)} .s-R{color:var(--bad)}
   #msg{font-size:13px} .carrow input{width:96px}
 </style></head>
 <body>
@@ -35,7 +35,7 @@
 <div class="bar" style="margin:10px 0">
   <input id="qd" placeholder="Lọc đại lý" oninput="load()" style="width:100px">
   <input id="qn" placeholder="Lọc mã/số HĐ" oninput="load()" style="width:120px">
-  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="Draft">Nháp</option><option value="Issued">Đã phát hành</option><option value="Deleted">Đã xóa</option></select>
+  <select id="qs" onchange="load()"><option value="">Mọi trạng thái</option><option value="P">Chờ duyệt</option><option value="F">Đã duyệt</option><option value="C">Đã huỷ</option><option value="R">Bị từ chối</option></select>
   <select id="qa" onchange="load()"><option value="">HĐ gốc + ĐC</option><option value="root">HĐ gốc</option><option value="adj">HĐ điều chỉnh</option></select>
 </div>
 <div class="wrap"><table><thead><tr><th>Mã HĐ</th><th>Số HĐ</th><th>Ký hiệu</th><th>Đại lý</th><th class="num">VAT%</th><th>Loại</th><th class="num">Tổng giá</th><th class="num">Số xe</th><th>Trạng thái</th><th>Số biên bản</th><th>Lý do điều chỉnh/thay thế</th><th>Nội dung trước điều chỉnh</th><th>Nội dung sau điều chỉnh</th><th></th></tr></thead>
@@ -46,7 +46,7 @@
 </div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
-const ST={Draft:"Nháp",Issued:"Đã phát hành",Deleted:"Đã xóa"};
+const ST={P:"Chờ duyệt",F:"Đã duyệt",C:"Đã huỷ",R:"Bị từ chối"};   // mã theo TConst.Stage của nguồn (GET /api/vatinvoices/statuses)
 async function token(){ if(TOKEN) return TOKEN;
   const r=await fetch("https://minisso.onrender.com/oauth/token",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},
     body:"grant_type=password&client_id=fleet-service&client_secret=service-secret-demo&username=admin@minisso.dev&password=Admin@123&scope=openid profile email roles"});
@@ -70,8 +70,9 @@ async function load(){ await token();
   const d=await (await fetch(`/api/vatinvoices?dealer=${F("qd").value}&invNo=${F("qn").value}&status=${F("qs").value}&adjType=${F("qa").value}`,{headers:H()})).json();
   F("rows").innerHTML=(d.items||[]).map(o=>{
     let act="";
-    if(o.vatHTCStatus==="Draft") act=`<button class="sm ok" onclick="issue('${o.htcInvoiceCode}')">Phát hành</button>`;
-    else if(o.vatHTCStatus==="Issued") act=`<button class="sm bad" onclick="del('${o.htcInvoiceCode}')">Xóa</button>`;
+    // Luồng nguồn: P → (duyệt) F | (từ chối) R ; F → (xóa/huỷ duyệt) C. Số hoá đơn gán RIÊNG qua /invoiceno.
+    if(o.vatHTCStatus==="P") act=`<button class="sm ok" onclick="issue('${o.htcInvoiceCode}')">Duyệt</button> <button class="sm bad" onclick="rej('${o.htcInvoiceCode}')">Từ chối</button>`;
+    else if(o.vatHTCStatus==="F") act=`<button class="sm bad" onclick="del('${o.htcInvoiceCode}')">Xóa</button> <button class="sm" onclick="unap('${o.htcInvoiceCode}')">Hủy duyệt</button>`;
     return `<tr onclick="detail('${o.htcInvoiceCode}')"><td><b>${o.htcInvoiceCode}</b></td><td>${o.htcInvoiceNo||"—"}</td><td>${o.invoiceIDCode}</td><td>${o.dealerCode}</td><td class="num">${o.vat}</td><td>${o.invoiceAdjType||"Gốc"}</td><td class="num">${money(o.totalPrice)}</td><td class="num">${o.cars}</td><td><span class="pill s-${o.vatHTCStatus}">${ST[o.vatHTCStatus]||o.vatHTCStatus}</span></td><td>${o.invoicePrintNo||""}</td><td>${o.adj_DeleteReason||""}</td><td>${o.beforeAdj_DeleteRemark||""}</td><td>${o.afterAdj_DeleteRemark||""}</td><td onclick="event.stopPropagation()">${act} <button class="sm" onclick="adjReason('${o.htcInvoiceCode}')">Lý do/BB</button></td></tr>`;
   }).join("")||'<tr><td colspan="14" class="muted">Chưa có hóa đơn.</td></tr>';
 }
@@ -81,8 +82,18 @@ async function detail(code){
   F("detRows").innerHTML=(d.cars||[]).map(c=>`<tr><td><b>${c.vin}</b></td><td>${c.modelCode||""}</td><td>${c.specCode||""}</td><td>${c.engineNo||""}</td><td>${c.brandName||""}</td><td>${c.carType||""}</td><td>${c.invoiceNoFactory||""}</td><td>${c.productionYear||""}</td><td class="num">${money(c.htcUnitPrice)}</td></tr>`).join("")||'<tr><td colspan="9" class="muted">Không có xe.</td></tr>';
 }
 async function issue(code){
-  const r=await fetch(`/api/vatinvoices/${code}/issue`,{method:"POST",headers:H()});
-  const j=await r.json(); if(r.ok){ msg(`${code}: phát hành, số HĐ ${j.htcInvoiceNo} (${j.oS_HDDT_InvoiceCode})`); load(); } else msg("Lỗi: "+(j.error||r.status));
+  const r=await fetch(`/api/vatinvoices/${code}/approve`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok){ msg(`${code}: đã duyệt (${j.detailRows} dòng xe)`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function rej(code){
+  const reason=prompt("Lý do từ chối:"); if(reason===null) return;
+  const r=await fetch(`/api/vatinvoices/${code}/reject?reason=${encodeURIComponent(reason)}`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok){ msg(`${code}: đã từ chối`); load(); } else msg("Lỗi: "+(j.error||r.status));
+}
+async function unap(code){
+  const reason=prompt("Lý do hủy duyệt:"); if(reason===null) return;
+  const r=await fetch(`/api/vatinvoices/${code}/unapprove?reason=${encodeURIComponent(reason)}`,{method:"POST",headers:H()});
+  const j=await r.json(); if(r.ok){ msg(`${code}: đã hủy duyệt`); load(); } else msg("Lỗi: "+(j.error||r.status));
 }
 async function del(code){
   const reason=prompt("Lý do xóa hóa đơn:"); if(reason===null) return;
