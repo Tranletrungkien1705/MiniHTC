@@ -22,11 +22,12 @@
 <div class="card">
   <h3 style="margin-top:0">Thêm / cập nhật khoang</h3>
   <div class="row">
+    <div><label>Đại lý *</label><input id="fDealer" style="width:90px" placeholder="HTC01"></div>
     <div><label>Mã khoang *</label><input id="fNo" style="width:110px" placeholder="BAY01"></div>
     <div style="flex:1;min-width:140px"><label>Tên khoang *</label><input id="fName" style="width:100%"></div>
     <div><label>Loại khoang</label><input id="fType" style="width:110px" placeholder="Chung"></div>
-    <div><label>Giờ bắt đầu</label><input id="fStart" type="time" style="width:120px"></div>
-    <div><label>Giờ kết thúc</label><input id="fFinish" type="time" style="width:120px"></div>
+    <div><label>Ngày bắt đầu dùng</label><input id="fStart" type="date" style="width:120px"></div>
+    <div><label>Ngày kết thúc dùng</label><input id="fFinish" type="date" style="width:120px"></div>
     <div style="flex:1;min-width:120px"><label>Ghi chú</label><input id="fNote" style="width:100%"></div>
     <button class="primary" onclick="save()">Lưu</button><span id="msg"></span>
   </div>
@@ -35,7 +36,7 @@
   <div><label>Tìm mã/tên</label><input id="qQ" style="width:180px" onkeydown="if(event.key==='Enter')load()"></div>
   <button onclick="load()">Xem danh sách</button>
 </div>
-<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên khoang</th><th>Loại</th><th>Giờ làm việc</th><th>Ghi chú</th><th>TT</th><th></th></tr></thead>
+<div class="wrap"><table><thead><tr><th>Mã</th><th>Tên khoang</th><th>Loại</th><th>Thời gian sử dụng</th><th>Ghi chú</th><th>TT</th><th></th></tr></thead>
 <tbody id="rows"><tr><td colspan="7" class="muted">Nhấn "Xem danh sách".</td></tr></tbody></table></div>
 <script>
 let TOKEN=null; const KEY="demo-htc"; const F=id=>document.getElementById(id);
@@ -47,7 +48,7 @@ async function token(){ if(TOKEN) return TOKEN;
 function H(extra){ return Object.assign({"Authorization":"Bearer "+TOKEN,"X-Api-Key":KEY}, extra||{}); }
 function msg(t){ F("msg").textContent=t; setTimeout(()=>{if(F("msg").textContent===t)F("msg").textContent="";},2500); }
 async function save(){ await token();
-  const body={CavityNo:F("fNo").value,CavityName:F("fName").value,CompartmentType:F("fType").value,StartWorkTime:F("fStart").value,FinishWorkTime:F("fFinish").value,Note:F("fNote").value};
+  const body={DealerCode:F("fDealer").value,CavityNo:F("fNo").value,CavityName:F("fName").value,CompartmentType:F("fType").value,StartUseDate:F("fStart").value,FinishUseDate:F("fFinish").value,Note:F("fNote").value};
   const r=await fetch("/api/cavities",{method:"POST",headers:H({"Content-Type":"application/json"}),body:JSON.stringify(body)});
   const d=await r.json();
   if(!r.ok){ msg("Lỗi: "+(d.error||r.status)); return; }
@@ -57,11 +58,11 @@ async function toggle(c){ await token();
   const r=await fetch("/api/cavities/"+encodeURIComponent(c)+"/toggle",{method:"POST",headers:H()});
   if(!r.ok){ msg("Lỗi"); return; } load();
 }
-function edit(o){ F("fNo").value=o.cavityNo;F("fName").value=o.cavityName||"";F("fType").value=o.compartmentType||"";F("fStart").value=o.startWorkTime||"";F("fFinish").value=o.finishWorkTime||"";F("fNote").value=o.note||""; window.scrollTo(0,0); }
+function edit(o){ F("fDealer").value=o.dealerCode||"";F("fNo").value=o.cavityNo;F("fName").value=o.cavityName||"";F("fType").value=o.compartmentType||"";F("fStart").value=(o.startUseDate||"").substring(0,10);F("fFinish").value=(o.finishUseDate||"").substring(0,10);F("fNote").value=o.note||""; window.scrollTo(0,0); }
 async function load(){ await token();
   const r=await fetch("/api/cavities?q="+encodeURIComponent(F("qQ").value),{headers:H()});
   const d=await r.json();
-  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.cavityNo}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.compartmentType)}</td><td>${(o.startWorkTime||"")+(o.finishWorkTime?" - "+o.finishWorkTime:"")}</td><td>${esc(o.note)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.cavityNo}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có dữ liệu.</td></tr>';
+  F("rows").innerHTML=(d.items||[]).map(o=>`<tr><td><b>${o.cavityNo}</b></td><td>${esc(o.cavityName)}</td><td>${esc(o.compartmentType)}</td><td>${(o.startUseDate||"").substring(0,10)+(o.finishUseDate?" → "+o.finishUseDate.substring(0,10):"")}</td><td>${esc(o.note)}</td><td><span class="pill ${o.flagActive==='1'?'on':'off'}">${o.flagActive==='1'?'BẬT':'TẮT'}</span></td><td><button class="link" onclick='edit(${JSON.stringify(o)})'>Sửa</button><button class="link" onclick="toggle('${o.cavityNo}')">Bật/Tắt</button></td></tr>`).join("")||'<tr><td colspan="7" class="muted">Chưa có dữ liệu.</td></tr>';
 }
 </script>
 </body></html>
