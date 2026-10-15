@@ -1210,6 +1210,26 @@ app.MapPost("/api/cancels", async (CancelDto dto, AppDbContext db, ITenantContex
                             c.CreatedBy, c.LogLUDateTime, c.LogLUBy });
 }).RequireAuthorization();
 
+// ===== KÍCH HOẠT LẠI XE ĐÃ HUỶ — `CarCarReActive_New20181119` (DataWH/Biz.HTC.WH.cs:58408) =====
+// Lệnh thứ hai của cặp huỷ/kích hoạt lại (xem chú thích #201 ngay trên). Guard: xe phải tồn tại và đang `FlagActive = Inactive`
+// (`myCar_CheckCar(Exist=Active, FlagActiveListToCheck=Inactive)`); ghi 5 cột `Car_Car`: FlagActive="1", CarCancelType="NONE",
+// CarCancelRemark = tham số, CarCancelDate = NULL, CarCancelBy = NULL (nguồn KHÔNG ghi LogLU* ở lệnh này).
+app.MapPost("/api/cancels/{vin}/reactivate", async (string vin, CancelReactiveDto? dto, AppDbContext db, ITenantContext t) =>
+{
+    var v = (vin ?? "").Trim().ToUpperInvariant();
+    var cvm = await db.CarVinMasters.FirstOrDefaultAsync(x => x.OrgId == t.OrgId && x.VIN == v);
+    if (cvm is null) return Results.NotFound(new { error = $"Không tìm thấy xe {v}.", code = "CommonAppData_CarCarNotFound", vin = v });
+    if ((cvm.FlagActive ?? "1") != "0")
+        return Results.BadRequest(new { error = $"Xe {v} đang hoạt động — không cần kích hoạt lại.", code = "CommonAppData_CarCarStatusNotMatched", vin = v, flagActive = cvm.FlagActive });
+    cvm.FlagActive = "1";
+    cvm.CarCancelType = "NONE";
+    cvm.CarCancelRemark = dto?.CarCancelRemark;
+    cvm.CarCancelDate = null;
+    cvm.CarCancelBy = null;
+    await db.SaveChangesAsync();
+    return Results.Ok(new { vin = v, flagActive = cvm.FlagActive, cvm.CarCancelType, cvm.CarCancelRemark, cvm.CarCancelDate, cvm.CarCancelBy });
+}).RequireAuthorization();
+
 // ⚠️ #201 ĐÃ BỎ `POST /api/cancels/{code}/{action}` (approve|reject) — **nguồn KHÔNG có lệnh duyệt huỷ xe**.
 //    Đã quét CẢ HAI cổng `TERP.WSHTC` (32-bit) và `TERP.WSHTC.64` (đúng luật `C0-ducentesimusnonagesimusquartus`):
 //    toàn hệ chỉ có **hai** lệnh cho việc này — `CarCarCancel_New20181119` và `CarCarReActive_New20181119`.
@@ -127005,6 +127025,7 @@ record PdiResultDto(string? Inspector, string? Result);
 record RetrieveDto(string? RetrieveOrderNo, string Vin, string? DealerCode, string StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? FlagEarlyCancel, string? RetrieveRemark, string? CarId = null, DateTime? RetrieveStartDate = null, string? Remark = null);
 // #117: sửa dòng thu hồi (nguồn StorageCarRetrieveDetailUpdate).
 record RetrieveDetailDto(string? StorageCode, DateTime? ExpectedStartDate, DateTime? ExpectedEndDate, string? DeliveryOrderNo, string? RetrieveRemark);
+record CancelReactiveDto(string? CarCancelRemark);
 record CancelDto(string Vin, string? CancelTypeCode, string? CarCancelRemark, string? FlagEarlyCancel, string? FlagMapVIN, string? CreatedBy = null, DateTime? LogLUDateTime = null, string? LogLUBy = null);
 record ConfigDto(string ConfigKey, string? ConfigValue, string? Description);
 record PlanDto(string DealerCode, string ModelCode, string Month, int TargetQty, int? ActualQty);
